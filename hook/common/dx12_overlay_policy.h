@@ -1314,17 +1314,17 @@ inline bool ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
 inline bool ShouldInstallFFXPresentCallbackBridgeForConfigure(bool recognizedFrameGenerationConfigure,
                                                               bool frameGenerationEnabled,
                                                               bool presentCallbackAvailable = true) {
-    // Install CE's present-callback bridge for any ENABLED frame-generation configure, even with NO app
-    // present callback. RATIONALE (breadcrumb-proven, session 20260618_153608): the no-callback queue
-    // submit completes CE's overlay GPU list but leaves the runtime-owned backbuffer in PRESENT, while AMD
-    // keeps it in PIXEL_SHADER_RESOURCE (0x80) — corrupting AMD's expected state so its next interpolation
-    // GPU work hangs (TDR off) and ffxQuery waits on a fence-event that never fires. The FFX present
-    // callback is the ONLY path that gives CE AMD's EXACT resource states (desc->...state) and AMD's
-    // sanctioned safe sync point. Disabled / startup-arming packets stay excluded by `frameGenerationEnabled`
-    // (the documented GTA fail-fast on a synthetic callback before the enabled configure). Independently
-    // revertible: re-add `&& presentCallbackAvailable`.
-    (void)presentCallbackAvailable;
-    return recognizedFrameGenerationConfigure && frameGenerationEnabled;
+    // Only WRAP a REAL app/default present callback. Synthesizing CE's bridge where the game provided
+    // NO callback was tried twice (1b71d43, then 8acb8fd) and BOTH times wedged AMD's ffxQuery in ~8
+    // frames: installing a callback flips AMD's FfxFrameInterpolationSwapchain out of its native internal
+    // no-callback composition mode, and CE's synthesized current->output compose (GPU-breadcrumb-proven to
+    // COMPLETE on the GPU, session 20260618_155443) still leaves AMD's presenter parked forever on its
+    // auto-reset pacing event (handle 0x35EC, Waiting). The breadcrumb FALSIFIED 8acb8fd's "exact states
+    // fix it" hypothesis. For the no-app-callback case CE must instead PRESERVE AMD's internal composition
+    // (see ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration: nativeFSRInternalNoCallbackComposition
+    // keeps the normal DX12 overlay route). Disabled / startup-arming packets stay excluded by
+    // `frameGenerationEnabled` (documented GTA fail-fast on a synthetic callback before the enabled configure).
+    return recognizedFrameGenerationConfigure && frameGenerationEnabled && presentCallbackAvailable;
 }
 
 inline bool ShouldResetFFXPresentCallbackOverlayBackend(bool backendInitialized, bool deviceChanged,

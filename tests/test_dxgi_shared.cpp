@@ -2473,13 +2473,14 @@ TEST(DXGISharedTest, FFXPresentCallbackComposesOutputOnlyWithoutRuntimeCompositi
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldComposeFFXPresentSourceToOutput(false, true, false));
 }
 
-TEST(DXGISharedTest, FFXPresentCallbackBridgeInstalledForAnyEnabledConfigure) {
-    // App callback present -> install (wrap it).
+TEST(DXGISharedTest, FFXPresentCallbackBridgeRequiresRealAppCallback) {
+    // App/default callback present -> install (WRAP the real callback).
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, true, true));
-    // NO app callback (GTA native FSR FG) -> STILL install: the callback is the only path that gives CE
-    // AMD's exact backbuffer resource states (the queue submit leaves the backbuffer in PRESENT while AMD
-    // expects PIXEL_SHADER_RESOURCE, hanging AMD's interpolation; session 20260618_153608).
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, true, false));
+    // NO app callback (GTA native FSR FG) -> do NOT synthesize a bridge. Tried twice (1b71d43, 8acb8fd):
+    // installing a callback flips AMD out of its native internal no-callback composition and wedges
+    // ffxQuery in ~8 frames even though CE's compose GPU work completes (breadcrumb, session 20260618_155443).
+    // The no-app-callback case must PRESERVE AMD internal composition + the normal DX12 overlay route.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, true, false));
     // Disabled / startup-arming configure -> never install (documented GTA fail-fast).
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, false, false));
