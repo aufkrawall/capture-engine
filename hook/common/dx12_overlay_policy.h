@@ -1314,14 +1314,17 @@ inline bool ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(
 inline bool ShouldInstallFFXPresentCallbackBridgeForConfigure(bool recognizedFrameGenerationConfigure,
                                                               bool frameGenerationEnabled,
                                                               bool presentCallbackAvailable = true) {
-    // Disabled configure traffic can repeat rapidly during native-FSR teardown.
-    // Installing a new CE present-callback bridge on those OFF packets keeps CE
-    // entangled in the old runtime-owned Present path and adds log churn even
-    // though FFX is explicitly disabling frame generation.
-    // Fresh startup-arming disabled packets are also forwarded unmodified. GTA
-    // can fail-fast if a disabled setup configure receives a synthetic callback
-    // pointer before native FSR has accepted the real enabled configure.
-    return recognizedFrameGenerationConfigure && frameGenerationEnabled && presentCallbackAvailable;
+    // Install CE's present-callback bridge for any ENABLED frame-generation configure, even with NO app
+    // present callback. RATIONALE (breadcrumb-proven, session 20260618_153608): the no-callback queue
+    // submit completes CE's overlay GPU list but leaves the runtime-owned backbuffer in PRESENT, while AMD
+    // keeps it in PIXEL_SHADER_RESOURCE (0x80) — corrupting AMD's expected state so its next interpolation
+    // GPU work hangs (TDR off) and ffxQuery waits on a fence-event that never fires. The FFX present
+    // callback is the ONLY path that gives CE AMD's EXACT resource states (desc->...state) and AMD's
+    // sanctioned safe sync point. Disabled / startup-arming packets stay excluded by `frameGenerationEnabled`
+    // (the documented GTA fail-fast on a synthetic callback before the enabled configure). Independently
+    // revertible: re-add `&& presentCallbackAvailable`.
+    (void)presentCallbackAvailable;
+    return recognizedFrameGenerationConfigure && frameGenerationEnabled;
 }
 
 inline bool ShouldResetFFXPresentCallbackOverlayBackend(bool backendInitialized, bool deviceChanged,

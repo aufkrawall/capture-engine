@@ -2473,10 +2473,17 @@ TEST(DXGISharedTest, FFXPresentCallbackComposesOutputOnlyWithoutRuntimeCompositi
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldComposeFFXPresentSourceToOutput(false, true, false));
 }
 
-TEST(DXGISharedTest, FFXPresentCallbackBridgeRequiresRealAppCallback) {
+TEST(DXGISharedTest, FFXPresentCallbackBridgeInstalledForAnyEnabledConfigure) {
+    // App callback present -> install (wrap it).
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, true, true));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, true, false));
+    // NO app callback (GTA native FSR FG) -> STILL install: the callback is the only path that gives CE
+    // AMD's exact backbuffer resource states (the queue submit leaves the backbuffer in PRESENT while AMD
+    // expects PIXEL_SHADER_RESOURCE, hanging AMD's interpolation; session 20260618_153608).
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, true, false));
+    // Disabled / startup-arming configure -> never install (documented GTA fail-fast).
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, false, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(true, false, false));
+    // Not a recognized FG configure -> inert.
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(false, true, true));
 }
 

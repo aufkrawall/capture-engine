@@ -5207,7 +5207,14 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
             }
         }
         auto* cmdList = static_cast<ID3D12GraphicsCommandList*>(desc->commandList);
+        // GPU-breadcrumb the no-app-callback self-compose path (recorded into AMD's command list, which AMD
+        // executes after this callback returns). On freeze: start=reached the callback, rt=self-compose copy
+        // executed, draw=overlay executed. If all reach the latest seq but ffxQuery still wedges, even AMD's
+        // correct-state path can't host CE work; if they stop, that op is where AMD's GPU hangs.
+        BeginOverlayGpuBreadcrumbFrame(static_cast<ID3D12Device*>(desc->device));
+        WriteOverlayGpuBreadcrumb(cmdList, kOverlayBcStart);
         CopyFFXPresentSourceToOutput(cmdList, desc);
+        WriteOverlayGpuBreadcrumb(cmdList, kOverlayBcAfterRTBarrier);
     } else if (originalCallback && ffxCallbackHasCurrentBackBuffer && ffxCallbackOutputDiffersFromCurrent &&
                (desc->isGeneratedFrame || ffxRuntimeOwnsNativeFSRPresentation)) {
         static std::atomic<int> s_ffxPresentAppCompositionLogCount{0};
@@ -5225,6 +5232,8 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     if (RenderOverlayViaFFXPresentCallback(desc)) {
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
     }
+    WriteOverlayGpuBreadcrumb(static_cast<ID3D12GraphicsCommandList*>(desc->commandList), kOverlayBcAfterDraw);
+    WriteOverlayGpuBreadcrumb(static_cast<ID3D12GraphicsCommandList*>(desc->commandList), kOverlayBcBeforeClose);
     HookUpdatePreferredOverlayFGPublicationState(g_FGCompat.IsFGActive(), g_FGCompat.GetRuntimeMode(),
                                                  "DX12_RenderOverlayViaFFXPresentCallback");
     if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
