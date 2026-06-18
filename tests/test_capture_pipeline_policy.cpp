@@ -423,6 +423,35 @@ TEST(CapturePipelinePolicyTest, WgcStartupBarrierDelaysUntilFutureFreshFrame) {
     EXPECT_TRUE(policy::IsWgcFramePastStartupBarrier(1200, 1100));
 }
 
+TEST(CapturePipelinePolicyTest, WgcStartupReserveSelectionUsesDelayedCandidateWhenSpanExists) {
+    const int64_t candidates[] = {1000, 1100, 1200, 1300, 1400};
+    const auto selection = policy::SelectWgcStartupReserveCandidate(candidates, 5, 300, 50);
+
+    EXPECT_TRUE(selection.usedDelayReserve);
+    EXPECT_EQ(selection.selectedIndex, 1u);
+    EXPECT_EQ(selection.targetSelectionQpc, 1100);
+    EXPECT_EQ(selection.reserveSpanQpc, 400);
+    EXPECT_EQ(selection.selectedDelayQpc, 300);
+}
+
+TEST(CapturePipelinePolicyTest, WgcStartupReserveSelectionFallsBackWhenSpanIsInsufficient) {
+    const int64_t candidates[] = {1000, 1100, 1180};
+    const auto selection = policy::SelectWgcStartupReserveCandidate(candidates, 3, 300, 40);
+
+    EXPECT_FALSE(selection.usedDelayReserve);
+    EXPECT_EQ(selection.selectedIndex, 2u);
+    EXPECT_EQ(selection.reserveSpanQpc, 180);
+    EXPECT_EQ(selection.selectedDelayQpc, 0);
+}
+
+TEST(CapturePipelinePolicyTest, WgcSyncDelayHoldAttributionSeparatesSourceLimitedPressure) {
+    EXPECT_TRUE(policy::IsWgcSyncDelayHoldSourceLimited(120, 120, 116, 20, false, false, false));
+    EXPECT_TRUE(policy::IsWgcSyncDelayHoldSourceLimited(120, 120, 120, policy::kWgcRecoveryEmptyTickPermille, false,
+                                                        false, false));
+    EXPECT_TRUE(policy::IsWgcSyncDelayHoldSourceLimited(120, 120, 120, 0, true, false, false));
+    EXPECT_FALSE(policy::IsWgcSyncDelayHoldSourceLimited(120, 120, 120, 0, false, false, false));
+}
+
 TEST(CapturePipelinePolicyTest, WgcCfrSourceCaptureDefaultsToUncapped) {
     EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(0), 0u);
     EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(60), 0u);

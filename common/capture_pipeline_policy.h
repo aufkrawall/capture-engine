@@ -145,8 +145,7 @@ inline int64_t GetInjectCfrSourcePublicationIntervalUs(
 }
 
 inline int64_t GetInjectCfrSourcePublicationIntervalQpc(
-    uint32_t outputFps, int64_t qpcTicksPerSecond,
-    uint32_t headroomPermille = kInjectCfrPublicationHeadroomPermille) {
+    uint32_t outputFps, int64_t qpcTicksPerSecond, uint32_t headroomPermille = kInjectCfrPublicationHeadroomPermille) {
     if (qpcTicksPerSecond <= 0) {
         return 0;
     }
@@ -316,9 +315,9 @@ inline bool IsWgcTrueSourceStarvedForRecovery(uint32_t outputFps, uint32_t recen
 }
 
 inline bool IsWgcSourceHealthyEnoughForEncoderLimitedSmoothness(uint32_t outputFps, uint32_t recentInputMin250Fps,
-                                                               uint32_t recentInputMin500Fps,
-                                                               uint32_t noFreshTickPermille,
-                                                               uint32_t bufferedWgcFrames) {
+                                                                uint32_t recentInputMin500Fps,
+                                                                uint32_t noFreshTickPermille,
+                                                                uint32_t bufferedWgcFrames) {
     if (outputFps == 0 || (recentInputMin250Fps == 0 && recentInputMin500Fps == 0)) {
         return false;
     }
@@ -338,7 +337,7 @@ inline bool IsWgcSourceHealthyEnoughToSuppressEncoderLimitedCatchup(uint32_t out
                                                                     uint32_t noFreshTickPermille, bool lowSourceMode) {
     (void)lowSourceMode;
     return IsWgcSourceHealthyEnoughForEncoderLimitedSmoothness(outputFps, recentInputMin250Fps, recentInputMin250Fps,
-                                                              noFreshTickPermille, 0);
+                                                               noFreshTickPermille, 0);
 }
 
 inline bool IsWgcSourceDegradedForLiveCatchup(uint32_t outputFps, uint32_t recentDeliveredMin250Fps,
@@ -367,6 +366,24 @@ inline bool IsWgcDeepUnderfeed(uint32_t outputFps, uint32_t recentDeliveredMin25
     const uint32_t severeFloor = outputFps > kWgcDeepUnderfeedMarginFps ? (outputFps - kWgcDeepUnderfeedMarginFps) : 0u;
     return recentDeliveredMin250Fps < severeFloor || recentInputMin250Fps < severeFloor ||
            emptyTickPermille >= kWgcDeepUnderfeedEmptyTickPermille;
+}
+
+inline bool IsWgcSyncDelayHoldSourceLimited(uint32_t outputFps, uint32_t recentDeliveredMin250Fps,
+                                            uint32_t recentInputMin250Fps, uint32_t emptyTickPermille,
+                                            bool sourceStarved, bool lowSourceMode, bool deepUnderfeed) {
+    if (sourceStarved || lowSourceMode || deepUnderfeed) {
+        return true;
+    }
+    if (outputFps == 0) {
+        return false;
+    }
+    if (emptyTickPermille >= kWgcRecoveryEmptyTickPermille) {
+        return true;
+    }
+    if (recentInputMin250Fps > 0 && recentInputMin250Fps < outputFps) {
+        return true;
+    }
+    return recentDeliveredMin250Fps > 0 && recentDeliveredMin250Fps < outputFps;
 }
 
 inline bool ShouldPrioritizeWgcAudioLeadCatchup(double audioLeadExcessMs,
@@ -575,6 +592,81 @@ inline int64_t GetWgcStartupAudioAnchorQpc(int64_t videoFrameQpc, int64_t conten
         return videoFrameQpc;
     }
     return videoFrameQpc + contentDelayQpc;
+}
+
+struct WgcStartupReserveSelection {
+    size_t selectedIndex = 0;
+    bool usedDelayReserve = false;
+    int64_t targetSelectionQpc = 0;
+    int64_t reserveSpanQpc = 0;
+    int64_t selectedDelayQpc = 0;
+};
+
+inline WgcStartupReserveSelection SelectWgcStartupReserveCandidate(const int64_t* selectionQpcs, size_t count,
+                                                                   int64_t contentDelayQpc,
+                                                                   int64_t reserveToleranceQpc) {
+    WgcStartupReserveSelection result{};
+    if (!selectionQpcs || count == 0) {
+        return result;
+    }
+
+    size_t earliestIndex = 0;
+    size_t latestIndex = 0;
+    for (size_t i = 1; i < count; ++i) {
+        if (selectionQpcs[i] < selectionQpcs[earliestIndex]) {
+            earliestIndex = i;
+        }
+        if (selectionQpcs[i] > selectionQpcs[latestIndex] ||
+            (selectionQpcs[i] == selectionQpcs[latestIndex] && i > latestIndex)) {
+            latestIndex = i;
+        }
+    }
+
+    result.selectedIndex = latestIndex;
+    const int64_t latestSelectionQpc = selectionQpcs[latestIndex];
+    const int64_t earliestSelectionQpc = selectionQpcs[earliestIndex];
+    result.reserveSpanQpc = latestSelectionQpc > earliestSelectionQpc ? (latestSelectionQpc - earliestSelectionQpc) : 0;
+    if (contentDelayQpc <= 0 || count < 2 || latestSelectionQpc <= 0) {
+        return result;
+    }
+
+    const int64_t toleranceQpc = std::max<int64_t>(0, reserveToleranceQpc);
+    const int64_t requiredSpanQpc = contentDelayQpc > toleranceQpc ? (contentDelayQpc - toleranceQpc) : 0;
+    if (result.reserveSpanQpc < requiredSpanQpc) {
+        return result;
+    }
+
+    const int64_t targetSelectionQpc = latestSelectionQpc - contentDelayQpc;
+    if (targetSelectionQpc <= 0) {
+        return result;
+    }
+    result.targetSelectionQpc = targetSelectionQpc;
+
+    size_t bestIndex = latestIndex;
+    int64_t bestDistanceQpc = selectionQpcs[latestIndex] > targetSelectionQpc
+                                  ? (selectionQpcs[latestIndex] - targetSelectionQpc)
+                                  : (targetSelectionQpc - selectionQpcs[latestIndex]);
+    for (size_t i = 0; i < count; ++i) {
+        if (selectionQpcs[i] <= 0) {
+            continue;
+        }
+        const int64_t distanceQpc = selectionQpcs[i] > targetSelectionQpc ? (selectionQpcs[i] - targetSelectionQpc)
+                                                                          : (targetSelectionQpc - selectionQpcs[i]);
+        if (distanceQpc < bestDistanceQpc ||
+            (distanceQpc == bestDistanceQpc && selectionQpcs[i] > selectionQpcs[bestIndex])) {
+            bestDistanceQpc = distanceQpc;
+            bestIndex = i;
+        }
+    }
+
+    const int64_t selectedDelayQpc =
+        latestSelectionQpc > selectionQpcs[bestIndex] ? (latestSelectionQpc - selectionQpcs[bestIndex]) : 0;
+    if (bestIndex != latestIndex && selectedDelayQpc + toleranceQpc >= contentDelayQpc) {
+        result.selectedIndex = bestIndex;
+        result.selectedDelayQpc = selectedDelayQpc;
+        result.usedDelayReserve = true;
+    }
+    return result;
 }
 
 inline bool IsWgcFramePastStartupBarrier(int64_t frameQpc, int64_t startupBarrierQpc) {
@@ -984,8 +1076,8 @@ inline bool IsWgcSourceStarved(const WgcAdaptiveTelemetry& telemetry,
         return false;
     }
 
-    return IsWgcInputBelowTarget(telemetry.outputFps, telemetry.recentInputMin250Fps,
-                                 telemetry.recentInputMin500Fps, fpsMargin);
+    return IsWgcInputBelowTarget(telemetry.outputFps, telemetry.recentInputMin250Fps, telemetry.recentInputMin500Fps,
+                                 fpsMargin);
 }
 
 inline bool IsWgcSchedulerDeliveryLimited(const WgcAdaptiveTelemetry& telemetry,
@@ -1014,8 +1106,7 @@ inline WgcLiveRecoveryState ClassifyWgcLiveRecoveryState(const WgcAdaptiveTeleme
 
     if (encoderBottlenecked && outputShortfallTicks >= kWgcRecoveryEnterShortfallTicks &&
         IsWgcSourceHealthyEnoughForEncoderLimitedSmoothness(telemetry.outputFps, telemetry.recentInputMin250Fps,
-                                                            telemetry.recentInputMin500Fps,
-                                                            telemetry.emptyTickPermille,
+                                                            telemetry.recentInputMin500Fps, telemetry.emptyTickPermille,
                                                             telemetry.bufferedWgcFrames)) {
         return WgcLiveRecoveryState::kEncoderLimited;
     }
@@ -1196,8 +1287,7 @@ inline uint32_t GetWgcLiveVisualDebtLimitTicksForMode(int64_t targetIntervalTick
         return GetWgcLiveVisualDebtLimitTicks(targetIntervalTicks, qpcTicksPerSecond);
     }
 
-    return GetWgcLiveVisualDebtLimitTicks(targetIntervalTicks, qpcTicksPerSecond,
-                                          kWgcEncoderLimitedLiveVisualDebtMs,
+    return GetWgcLiveVisualDebtLimitTicks(targetIntervalTicks, qpcTicksPerSecond, kWgcEncoderLimitedLiveVisualDebtMs,
                                           kWgcEncoderLimitedLiveVisualDebtFrames);
 }
 
@@ -1214,15 +1304,13 @@ inline uint32_t GetWgcLiveVisualDebtExcessTicks(uint32_t outputShortfallTicks, i
 }
 
 inline uint32_t GetWgcLiveVisualDebtExcessTicksForMode(uint32_t outputShortfallTicks, int64_t targetIntervalTicks,
-                                                       int64_t qpcTicksPerSecond,
-                                                       bool encoderLimitedSmoothnessMode) {
+                                                       int64_t qpcTicksPerSecond, bool encoderLimitedSmoothnessMode) {
     if (!encoderLimitedSmoothnessMode) {
         return GetWgcLiveVisualDebtExcessTicks(outputShortfallTicks, targetIntervalTicks, qpcTicksPerSecond);
     }
 
     return GetWgcLiveVisualDebtExcessTicks(outputShortfallTicks, targetIntervalTicks, qpcTicksPerSecond,
-                                           kWgcEncoderLimitedLiveVisualDebtMs,
-                                           kWgcEncoderLimitedLiveVisualDebtFrames);
+                                           kWgcEncoderLimitedLiveVisualDebtMs, kWgcEncoderLimitedLiveVisualDebtFrames);
 }
 
 inline uint32_t GetWgcLiveSchedulerRebaseTicksThisLoop(
@@ -1236,12 +1324,11 @@ inline uint32_t GetWgcLiveSchedulerRebaseTicksThisLoop(
 }
 
 inline uint32_t GetWgcLiveSchedulerRebaseTicksThisLoopForMode(uint32_t requestedTicks, uint32_t outputShortfallTicks,
-                                                              uint32_t excessTicks,
-                                                              bool encoderLimitedSmoothnessMode) {
-    return GetWgcLiveSchedulerRebaseTicksThisLoop(
-        requestedTicks, outputShortfallTicks, excessTicks,
-        encoderLimitedSmoothnessMode ? kWgcEncoderLimitedLiveSchedulerRebaseTicksPerLoop
-                                     : kWgcMaxLiveSchedulerRebaseTicksPerLoop);
+                                                              uint32_t excessTicks, bool encoderLimitedSmoothnessMode) {
+    return GetWgcLiveSchedulerRebaseTicksThisLoop(requestedTicks, outputShortfallTicks, excessTicks,
+                                                  encoderLimitedSmoothnessMode
+                                                      ? kWgcEncoderLimitedLiveSchedulerRebaseTicksPerLoop
+                                                      : kWgcMaxLiveSchedulerRebaseTicksPerLoop);
 }
 
 inline int64_t GetWgcLiveVisualDebtFloorQpc(int64_t liveNowQpc, int64_t targetIntervalTicks,
@@ -1255,12 +1342,10 @@ inline int64_t GetWgcLiveVisualDebtFloorQpc(int64_t liveNowQpc, int64_t targetIn
 }
 
 inline int64_t GetWgcLiveVisualDebtFloorQpcForMode(int64_t liveNowQpc, int64_t targetIntervalTicks,
-                                                   int64_t qpcTicksPerSecond,
-                                                   bool encoderLimitedSmoothnessMode) {
+                                                   int64_t qpcTicksPerSecond, bool encoderLimitedSmoothnessMode) {
     const int64_t debtLimitQpc =
         encoderLimitedSmoothnessMode
-            ? GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcTicksPerSecond,
-                                           kWgcEncoderLimitedLiveVisualDebtMs,
+            ? GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcTicksPerSecond, kWgcEncoderLimitedLiveVisualDebtMs,
                                            kWgcEncoderLimitedLiveVisualDebtFrames)
             : GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcTicksPerSecond);
     if (liveNowQpc <= 0 || debtLimitQpc <= 0) {
