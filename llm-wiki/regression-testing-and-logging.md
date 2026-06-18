@@ -292,6 +292,7 @@ python .\testapp\run_tests.py --api all --arch both --tests 1 --duration 5 --min
 python .\tools\run_av_sync_matrix.py --fast-zero-drift --keep-going
 python .\tools\run_av_sync_matrix.py --codec-finalization-pass --keep-going
 python .\tools\run_av_sync_matrix.py --short-stress --keep-going
+python .\tools\run_av_sync_matrix.py --sync-smoothness-gate --keep-going
 python .\tools\run_av_sync_matrix.py --late-app-source-gate --keep-going
 python .\tools\run_av_sync_matrix.py --wgc-overload-gate --keep-going
 python .\tools\run_av_sync_matrix.py --full-matrix --include-source-stall --keep-going

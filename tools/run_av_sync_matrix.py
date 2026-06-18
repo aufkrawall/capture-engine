@@ -24,6 +24,10 @@ PROCESS_NAME = "dx12_av_sync_test.exe"
 SECONDARY_PROCESS_NAME = "dx12_av_sync_late.exe"
 SUPPORTED_CODECS = ["aac", "alac", "flac", "opus", "pcm"]
 SUPPORTED_METHODS = ["wgc", "inject"]
+SYNC_SMOOTHNESS_DEFAULT_DELAY_MS = 35.0
+SYNC_SMOOTHNESS_MAX_OFFSET_MS = 10.0
+SYNC_SMOOTHNESS_MAX_MEAN_OFFSET_MS = 5.0
+SYNC_SMOOTHNESS_MAX_TRACK_SPREAD_MS = 5.0
 
 
 @dataclass
@@ -959,6 +963,23 @@ def build_scenarios(args):
                      nvenc_preset=preset, bitrate="180Mbps", max_bitrate="260Mbps")
             for preset in ("p5", "p6", "p7")
         ]
+    if args.profile == "sync-smoothness":
+        # This profile is a product-safe stress gate for the video-delay sync model:
+        # lead=0 plus a test-only modeled render-loopback latency means WGC/inject must
+        # preserve near-zero content sync while handling realistic CFR smoothness pressure.
+        return [
+            Scenario("wgc", "alac", 120, label="active_delay_near_target", duration_sec=22, app_fps=118),
+            Scenario("wgc", "aac", 60, label="active_delay_above_target_stall", duration_sec=22, app_fps=90,
+                     include_source_stall=True, source_stall="8.0:220,14.0:120"),
+            Scenario("wgc", "opus", 120, label="active_delay_encoder_pressure", duration_sec=22, app_fps=240,
+                     width=1920, height=1080, gpu_load=180, nvenc_preset="p5", bitrate="160Mbps",
+                     max_bitrate="240Mbps"),
+            Scenario("inject", "flac", 120, label="active_delay_above_target", duration_sec=22, app_fps=144),
+            Scenario("inject", "pcm", 60, label="active_delay_below_target_stall", duration_sec=22, app_fps=50,
+                     include_source_stall=True, source_stall="8.0:220,14.0:120"),
+            Scenario("inject", "aac", 120, label="active_delay_encoder_pressure", duration_sec=22,
+                     width=1920, height=1080, gpu_load=150),
+        ]
     if args.profile == "full":
         return build_matrix_scenarios(SUPPORTED_METHODS, SUPPORTED_CODECS, [60, 120])
     if args.profile == "long-soak":
@@ -1004,12 +1025,18 @@ def explicit_app_audio_lead(argv):
     return any(item == "--app-audio-lead-ms" or item.startswith("--app-audio-lead-ms=") for item in argv)
 
 
+def explicit_option(argv, option):
+    if argv is None:
+        argv = sys.argv[1:]
+    return any(item == option or item.startswith(f"{option}=") for item in argv)
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="Run deterministic A/V sync capture scenarios and analyze them.")
     parser.add_argument(
         "--profile",
-        choices=["quick", "codec-pass", "stress", "wgc-overload", "late-app", "raw-offset", "full", "long-soak",
-                 "custom"],
+        choices=["quick", "codec-pass", "stress", "wgc-overload", "late-app", "raw-offset", "sync-smoothness",
+                 "full", "long-soak", "custom"],
         default="quick",
         help="Scenario profile. Bare runner defaults to the fast zero-drift quick gate.",
     )
@@ -1019,6 +1046,8 @@ def build_parser():
     parser.add_argument("--wgc-overload-gate", dest="profile_aliases", action="append_const", const="wgc-overload")
     parser.add_argument("--late-app-source-gate", dest="profile_aliases", action="append_const", const="late-app")
     parser.add_argument("--raw-offset-gate", dest="profile_aliases", action="append_const", const="raw-offset")
+    parser.add_argument("--sync-smoothness-gate", dest="profile_aliases", action="append_const",
+                        const="sync-smoothness")
     parser.add_argument("--full-matrix", dest="profile_aliases", action="append_const", const="full")
     parser.add_argument("--long-soak", dest="profile_aliases", action="append_const", const="long-soak")
     parser.add_argument("--long-soak-minutes", type=float, default=40.0)
@@ -1078,6 +1107,13 @@ def build_parser():
         "the raw capture differential, the measured value drives it toward 0.",
     )
     parser.add_argument(
+        "--sync-smoothness-delay-ms",
+        type=float,
+        default=SYNC_SMOOTHNESS_DEFAULT_DELAY_MS,
+        help="Test-only modeled render-loopback latency for --sync-smoothness-gate when "
+        "--audio-capture-latency-ms is not explicitly provided.",
+    )
+    parser.add_argument(
         "--app-latency-ms",
         dest="app_capture_latency_ms",
         type=float,
@@ -1122,6 +1158,21 @@ def parse_args(argv=None):
         # The raw-offset gate measures the true uncalibrated capture differential, so it must
         # not apply the method-aware stimulus lead that the other profiles use to cancel it.
         args.app_audio_lead_ms = "0"
+    if args.profile == "sync-smoothness":
+        if args.sync_smoothness_delay_ms < 0.0 or args.sync_smoothness_delay_ms > 500.0:
+            fail("--sync-smoothness-delay-ms must be between 0 and 500")
+        if not explicit_app_audio_lead(argv):
+            # The active-delay gate models the post-probe product state. The stimulus must not
+            # hide the offset by emitting early audio; video-delay correction must do the work.
+            args.app_audio_lead_ms = "0"
+        if not explicit_option(argv, "--audio-capture-latency-ms"):
+            args.audio_capture_latency_ms = args.sync_smoothness_delay_ms
+        if not explicit_option(argv, "--max-av-offset-ms"):
+            args.max_av_offset_ms = SYNC_SMOOTHNESS_MAX_OFFSET_MS
+        if not explicit_option(argv, "--max-mean-av-offset-ms"):
+            args.max_mean_av_offset_ms = SYNC_SMOOTHNESS_MAX_MEAN_OFFSET_MS
+        if not explicit_option(argv, "--max-track-spread-ms"):
+            args.max_track_spread_ms = SYNC_SMOOTHNESS_MAX_TRACK_SPREAD_MS
     if args.long_soak_minutes < 30.0 or args.long_soak_minutes > 45.0:
         fail("--long-soak-minutes must be between 30 and 45")
     return args
@@ -1172,6 +1223,39 @@ def self_test():
     # An explicit override is still honored even under the raw-offset gate.
     raw_offset_override = parse_args(["--raw-offset-gate", "--app-audio-lead-ms", "5", "--dry-run"])
     assert str(raw_offset_override.app_audio_lead_ms) == "5"
+
+    sync_smoothness = parse_args(["--sync-smoothness-gate", "--dry-run"])
+    sync_smoothness_scenarios = build_scenarios(sync_smoothness)
+    assert sync_smoothness.profile == "sync-smoothness"
+    assert str(sync_smoothness.app_audio_lead_ms) == "0"
+    assert sync_smoothness.audio_capture_latency_ms == SYNC_SMOOTHNESS_DEFAULT_DELAY_MS
+    assert sync_smoothness.max_av_offset_ms == SYNC_SMOOTHNESS_MAX_OFFSET_MS
+    assert sync_smoothness.max_mean_av_offset_ms == SYNC_SMOOTHNESS_MAX_MEAN_OFFSET_MS
+    assert sync_smoothness.max_track_spread_ms == SYNC_SMOOTHNESS_MAX_TRACK_SPREAD_MS
+    assert len(sync_smoothness_scenarios) == 6
+    assert {scenario.capture_method for scenario in sync_smoothness_scenarios} == {"wgc", "inject"}
+    assert {scenario.audio_codec for scenario in sync_smoothness_scenarios} == set(SUPPORTED_CODECS)
+    assert {scenario.fps for scenario in sync_smoothness_scenarios} == {60, 120}
+    assert any(scenario.include_source_stall for scenario in sync_smoothness_scenarios)
+    assert any(int(scenario.app_fps) < scenario.fps for scenario in sync_smoothness_scenarios if scenario.app_fps)
+    assert any(int(scenario.app_fps) > scenario.fps for scenario in sync_smoothness_scenarios if scenario.app_fps)
+    assert any(scenario.nvenc_preset == "p5" for scenario in sync_smoothness_scenarios)
+    sync_smoothness_override = parse_args(
+        [
+            "--sync-smoothness-gate",
+            "--audio-capture-latency-ms",
+            "12",
+            "--app-audio-lead-ms",
+            "3",
+            "--max-av-offset-ms",
+            "20",
+            "--dry-run",
+        ]
+    )
+    assert sync_smoothness_override.audio_capture_latency_ms == 12.0
+    assert str(sync_smoothness_override.app_audio_lead_ms) == "3"
+    assert sync_smoothness_override.max_av_offset_ms == 20.0
+    assert sync_smoothness_override.max_mean_av_offset_ms == SYNC_SMOOTHNESS_MAX_MEAN_OFFSET_MS
 
     codec_pass = parse_args(["--codec-finalization-pass", "--dry-run"])
     codec_scenarios = build_scenarios(codec_pass)

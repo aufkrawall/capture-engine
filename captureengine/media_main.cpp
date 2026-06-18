@@ -1870,6 +1870,10 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t wgcSelectionTargetClampMaxUs = 0;
     uint32_t wgcHoldForNextTickCount = 0;
     uint32_t wgcSelectionDelayTickCount = 0;
+    uint32_t wgcSyncDelayHoldCount = 0;
+    uint64_t wgcSyncDelayHoldTotal = 0;
+    uint32_t wgcTooNewLeadMaxUs = 0;
+    uint32_t wgcTooNewLeadSessionMaxUs = 0;
     uint32_t wgcAdaptiveThrottleAdjustments = 0;
     WgcAdaptiveThrottleMode wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kOff;
     uint32_t wgcAdaptiveThrottlePendingTargetFps = 0;
@@ -2244,15 +2248,17 @@ void EncoderThreadFunc(const AppConfig& config) {
             ? static_cast<double>(injectContentDelayFrames) * frameIntervalMs -
                   static_cast<double>(maxAudioCaptureLatencyMs)
             : 0.0;
+    const double avContentDelayFrames =
+        (avContentDelayActive && frameIntervalMs > 0.0) ? maxAudioCaptureLatencyMs / frameIntervalMs : 0.0;
     if (avContentDelayActive) {
         LogInfo(
             "[AVSyncApply] armed: maxAudioCaptureLatencyMs=%.3f delayUs=%lld method=%s injectDelayFrames=%zu "
-            "residualEstimateMs=%.3f confidence=%s reason=%s "
+            "videoDelayFrames=%.2f residualEstimateMs=%.3f confidence=%s reason=%s "
             "(delays video content to match late loopback audio; audio/PTS unchanged)",
             static_cast<double>(maxAudioCaptureLatencyMs),
             (long long)((avContentDelayQpc * 1000000) / qpcFreq.QuadPart),
             IsActiveScreenGrab() ? "wgc-selection-bias" : "inject-buffer-reserve", injectContentDelayFrames,
-            IsActiveScreenGrab() ? 0.0 : injectResidualEstimateMs, config.avSyncConfidence.c_str(),
+            avContentDelayFrames, IsActiveScreenGrab() ? 0.0 : injectResidualEstimateMs, config.avSyncConfidence.c_str(),
             config.avSyncReason.c_str());
     } else {
         LogWarn(
@@ -2951,22 +2957,46 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (skippedTooNewForSlot) {
                     ++wgcRepeatPolicyHoldCount;
                     ++wgcRepeatPolicyHoldTotal;
+                    if (selectionDelayApplied) {
+                        ++wgcSyncDelayHoldCount;
+                        ++wgcSyncDelayHoldTotal;
+                    }
+                    const int64_t firstSelectionTimestamp =
+                        !bufferedWgcFrames.empty() ? GetFrameSelectionTimestamp(bufferedWgcFrames.front()) : 0;
+                    int64_t leadUs = 0;
+                    if (qpcFreq.QuadPart > 0 && firstSelectionTimestamp > effectiveSelectionTargetQpc) {
+                        leadUs = ((firstSelectionTimestamp - effectiveSelectionTargetQpc) * 1000000) /
+                                 qpcFreq.QuadPart;
+                        const uint32_t leadUsClamped = SaturatingToUint32(static_cast<uint64_t>(leadUs));
+                        wgcTooNewLeadMaxUs = std::max(wgcTooNewLeadMaxUs, leadUsClamped);
+                        wgcTooNewLeadSessionMaxUs = std::max(wgcTooNewLeadSessionMaxUs, leadUsClamped);
+                    }
                     static uint64_t s_lastTooNewWgcSelectionLogTick = 0;
                     const uint64_t nowTick = GetTickCount64();
                     if (nowTick - s_lastTooNewWgcSelectionLogTick >= 1000) {
-                        const int64_t firstSelectionTimestamp =
-                            !bufferedWgcFrames.empty() ? GetFrameSelectionTimestamp(bufferedWgcFrames.front()) : 0;
-                        int64_t leadUs = 0;
-                        if (qpcFreq.QuadPart > 0 && firstSelectionTimestamp > effectiveSelectionTargetQpc) {
-                            leadUs =
-                                ((firstSelectionTimestamp - effectiveSelectionTargetQpc) * 1000000) / qpcFreq.QuadPart;
-                        }
+                        const int64_t allowedLeadUs =
+                            (qpcFreq.QuadPart > 0 && targetIntervalTicks > 0)
+                                ? (targetIntervalTicks *
+                                   static_cast<int64_t>(ce::capture_policy::kWgcCfrSelectionMaxLeadTicks) *
+                                   1000000) /
+                                      qpcFreq.QuadPart
+                                : 0;
+                        const int64_t avDelayUs =
+                            (qpcFreq.QuadPart > 0 && avContentDelayQpc > 0)
+                                ? (avContentDelayQpc * 1000000) / qpcFreq.QuadPart
+                                : 0;
                         LogInfo(
                             "[EncoderThread] WGC CFR slot repeat: buffered frame is too new for scheduled slot "
-                            "(lead=%lldus targetQpc=%lld firstQpc=%lld buffered=%zu shortfall=%u)",
-                            static_cast<long long>(leadUs), static_cast<long long>(effectiveSelectionTargetQpc),
+                            "(lead=%lldus allowedLead=%lldus avDelay=%lldus syncDelay=%d lowSource=%d "
+                            "sourceStarved=%d encoderLimited=%d targetQpc=%lld firstQpc=%lld buffered=%zu "
+                            "shortfall=%u minIn=%u minDel=%u noFresh=%upm)",
+                            static_cast<long long>(leadUs), static_cast<long long>(allowedLeadUs),
+                            static_cast<long long>(avDelayUs), selectionDelayApplied ? 1 : 0, lowSourceMode ? 1 : 0,
+                            wgcSourceStarvedCurrent ? 1 : 0, isWgcEncoderLimitedSmoothnessMode() ? 1 : 0,
+                            static_cast<long long>(effectiveSelectionTargetQpc),
                             static_cast<long long>(firstSelectionTimestamp), bufferedWgcFrames.size(),
-                            outputShortfallTicks);
+                            outputShortfallTicks, wgcRecentInputMin250Fps, wgcRecentDeliveredMin250Fps,
+                            wgcNoFreshTickPermille);
                         s_lastTooNewWgcSelectionLogTick = nowTick;
                     }
                 }
@@ -4212,6 +4242,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcRepeatNoFreshCount = 0;
                 wgcRepeatPolicyHoldCount = 0;
                 wgcRepeatPolicyHoldTotal = 0;
+                wgcSyncDelayHoldCount = 0;
+                wgcSyncDelayHoldTotal = 0;
+                wgcTooNewLeadMaxUs = 0;
+                wgcTooNewLeadSessionMaxUs = 0;
                 wgcCoverageRepeatHoldCount = 0;
                 wgcCoverageDelayTicksCurrent = 0;
                 wgcRepeatTimerLateCount = 0;
@@ -5588,7 +5622,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "WgcAct Fresh=%u "
                 "DupSrc=%u DropObs=%u "
                 "DropDebt=%u/%llu DebtMax=%uus SelMiss=%u StaleUni=%u "
-                "Ancient=%u RepFreshMiss=%u RepHold=%u RepCov=%u CovDelay=%u RepLate=%u RepCatch=%u | TsReg=%u "
+                "Ancient=%u RepFreshMiss=%u RepHold=%u SyncHold=%u TooNewLead=%uus RepCov=%u CovDelay=%u "
+                "RepLate=%u RepCatch=%u | TsReg=%u "
                 "TsStall=%u "
                 "TimerRebase=%u WgcDebtMax=%llu WgcLiveRebase=%u/%llu/%u | "
                 "EncLowBypass=%u/%llu ModeMis=%u/%llu SrcBack=%u/%llu | "
@@ -5621,8 +5656,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcSelectDuplicateSourceCount, wgcDropObsoleteCount, wgcDropStaleDebtCount,
                 static_cast<unsigned long long>(wgcDropStaleDebtTotal), wgcDropStaleDebtMaxUs,
                 wgcFreshSelectionMissCount, wgcStaleUniqueFallbackCount, wgcAncientSelectionCount,
-                wgcRepeatNoFreshCount, wgcRepeatPolicyHoldCount, wgcCoverageRepeatHoldCount,
-                wgcCoverageDelayTicksCurrent, wgcRepeatTimerLateCount, wgcRepeatCatchupCount,
+                wgcRepeatNoFreshCount, wgcRepeatPolicyHoldCount, wgcSyncDelayHoldCount, wgcTooNewLeadMaxUs,
+                wgcCoverageRepeatHoldCount, wgcCoverageDelayTicksCurrent, wgcRepeatTimerLateCount,
+                wgcRepeatCatchupCount,
                 tsRegress - lastTimestampRegressionCount, tsStall - lastTimestampStallCount, timerRebases,
                 static_cast<unsigned long long>(wgcVisualDebtMaxExcessTicks), wgcLiveSchedulerRebaseThisWindow,
                 static_cast<unsigned long long>(wgcLiveSchedulerRebaseTotal), wgcLiveSchedulerRebaseMaxTicks,
@@ -5654,16 +5690,19 @@ void EncoderThreadFunc(const AppConfig& config) {
                 LogInfo(
                     "[WGC CFR CADENCE EVENT] mode=%s shortfall=%u/%.1fms phaseErrorAvg=%dus "
                     "phaseErrorMax=%uus rebaseWindow=%u encoderDropWindow=%u encoderDropTotal=%llu "
-                    "tooNewRepeat=%u staleDrop=%u freshMiss=%upm bufNow=%zu oldest=%.1fms enc=%.2fms "
+                    "tooNewRepeat=%u syncDelayHold=%u tooNewLeadMax=%uus staleDrop=%u freshMiss=%upm bufNow=%zu "
+                    "oldest=%.1fms enc=%.2fms "
                     "sustain=%.1ffps overload=0x%X lowSourceBypass=%u modeMismatch=%u sourceBacktrack=%u "
-                    "cause=S%d/D%d/E%d",
+                    "avDelay=%.1fms cause=S%d/D%d/E%d",
                     cadenceMode, outputShortfallTicks, shortfallDurationMs, avgSignedWgcSelectionErrorUs,
                     wgcSelectionErrorMaxUs, wgcLiveSchedulerRebaseThisWindow, wgcEncoderLimitedSourceDropThisWindow,
                     static_cast<unsigned long long>(wgcEncoderLimitedSourceDropTotal), wgcRepeatPolicyHoldCount,
-                    wgcDropStaleDebtCount, wgcNoFreshTickPermille, bufferedWgcFrames.size(), oldestBufferedFrameAgeMs,
-                    smoothedEncodeMs, sustainableOutputFps, overloadFlags,
+                    wgcSyncDelayHoldCount, wgcTooNewLeadMaxUs, wgcDropStaleDebtCount, wgcNoFreshTickPermille,
+                    bufferedWgcFrames.size(), oldestBufferedFrameAgeMs, smoothedEncodeMs, sustainableOutputFps,
+                    overloadFlags,
                     wgcEncoderLimitedSuppressedByLowSourceThisWindow, wgcCapacityPressureModeMismatchThisWindow,
-                    wgcSelectedSourceBacktrackThisWindow, wgcSourceStarvedCurrent ? 1 : 0,
+                    wgcSelectedSourceBacktrackThisWindow, avContentDelayActive ? maxAudioCaptureLatencyMs : 0.0f,
+                    wgcSourceStarvedCurrent ? 1 : 0,
                     wgcSchedulerLimitedCurrent ? 1 : 0, wgcEncoderRecoveryLimitedCurrent ? 1 : 0);
             }
 
@@ -5780,6 +5819,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcHoldForNextTickCount = 0;
             wgcHeldFreshFrameTickCount = 0;
             wgcSelectionDelayTickCount = 0;
+            wgcSyncDelayHoldCount = 0;
+            wgcTooNewLeadMaxUs = 0;
             cfrCatchupTicksExecuted = 0;
             wgcFreshCatchupCount = 0;
             wgcReserveSpendTickCount = 0;
@@ -5923,13 +5964,15 @@ void EncoderThreadFunc(const AppConfig& config) {
             LogInfo(
                 "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=%llu maxDropTicks=%u cadenceEvents=%llu "
                 "phaseErrorMax=%uus shortfallMax=%.1fms staleDebtDrops=%llu liveRebase=%llu/%u "
-                "tooNewRepeats=%u lowSourceBypass=%llu modeMismatch=%llu sourceBacktrack=%llu",
+                "tooNewRepeats=%u syncDelayHolds=%llu tooNewLeadMax=%uus avDelay=%.1fms lowSourceBypass=%llu "
+                "modeMismatch=%llu sourceBacktrack=%llu",
                 static_cast<unsigned long long>(wgcEncoderLimitedSourceDropTotal), wgcEncoderLimitedSourceDropMaxTicks,
                 static_cast<unsigned long long>(wgcEncoderLimitedCadenceEventCount),
                 captureSessionSummary.maxWgcContentPhaseErrorUs, captureSessionSummary.maxShortfallDurationMs,
                 static_cast<unsigned long long>(wgcDropStaleDebtTotal),
                 static_cast<unsigned long long>(wgcLiveSchedulerRebaseTotal), wgcLiveSchedulerRebaseMaxTicks,
-                SaturatingToUint32(wgcRepeatPolicyHoldTotal),
+                SaturatingToUint32(wgcRepeatPolicyHoldTotal), static_cast<unsigned long long>(wgcSyncDelayHoldTotal),
+                wgcTooNewLeadSessionMaxUs, avContentDelayActive ? maxAudioCaptureLatencyMs : 0.0f,
                 static_cast<unsigned long long>(wgcEncoderLimitedSuppressedByLowSourceTotal),
                 static_cast<unsigned long long>(wgcCapacityPressureModeMismatchTotal),
                 static_cast<unsigned long long>(wgcSelectedSourceBacktrackTotal));

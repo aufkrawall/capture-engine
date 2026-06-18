@@ -141,7 +141,8 @@ WGC_SUMMARY_RE = re.compile(
 WGC_SMOOTHNESS_SUMMARY_RE = re.compile(
     r"\[WGC CFR SMOOTHNESS SUMMARY\].*encoderLimitedDrops=(\d+) maxDropTicks=(\d+) cadenceEvents=(\d+) "
     r"phaseErrorMax=(\d+)us shortfallMax=([0-9.]+)ms staleDebtDrops=(\d+) liveRebase=(\d+)/(\d+) "
-    r"tooNewRepeats=(\d+)(?: lowSourceBypass=(\d+) modeMismatch=(\d+) sourceBacktrack=(\d+))?",
+    r"tooNewRepeats=(\d+)(?: syncDelayHolds=(\d+) tooNewLeadMax=(\d+)us avDelay=([0-9.]+)ms)?"
+    r"(?: lowSourceBypass=(\d+) modeMismatch=(\d+) sourceBacktrack=(\d+))?",
     re.IGNORECASE,
 )
 WGC_PERF_RE = re.compile(r"\[WGC Perf\].*", re.IGNORECASE)
@@ -846,6 +847,9 @@ def analyze_log(log_path):
         "wgc_startup_frame_age_us": [],
         "wgc_encoder_limited_drops": [],
         "wgc_phase_error_us": [],
+        "wgc_sync_delay_holds": [],
+        "wgc_too_new_lead_us": [],
+        "wgc_av_delay_ms": [],
         "wgc_low_source_bypass": [],
         "wgc_mode_mismatch": [],
         "wgc_source_backtrack": [],
@@ -855,9 +859,12 @@ def analyze_log(log_path):
         if smoothness_match:
             cadence_metrics["wgc_encoder_limited_drops"].append(parse_int(smoothness_match.group(1)))
             cadence_metrics["wgc_phase_error_us"].append(parse_int(smoothness_match.group(4)))
-            cadence_metrics["wgc_low_source_bypass"].append(parse_int(smoothness_match.group(10)))
-            cadence_metrics["wgc_mode_mismatch"].append(parse_int(smoothness_match.group(11)))
-            cadence_metrics["wgc_source_backtrack"].append(parse_int(smoothness_match.group(12)))
+            cadence_metrics["wgc_sync_delay_holds"].append(parse_int(smoothness_match.group(10)))
+            cadence_metrics["wgc_too_new_lead_us"].append(parse_int(smoothness_match.group(11)))
+            cadence_metrics["wgc_av_delay_ms"].append(parse_float(smoothness_match.group(12)))
+            cadence_metrics["wgc_low_source_bypass"].append(parse_int(smoothness_match.group(13)))
+            cadence_metrics["wgc_mode_mismatch"].append(parse_int(smoothness_match.group(14)))
+            cadence_metrics["wgc_source_backtrack"].append(parse_int(smoothness_match.group(15)))
         startup_frame_age_match = WGC_STARTUP_FRAME_AGE_RE.search(line)
         if startup_frame_age_match:
             cadence_metrics["wgc_startup_frame_age_us"].append(parse_int(startup_frame_age_match.group(1)))
@@ -1124,9 +1131,12 @@ def parse_media_triage(media_text):
                     "live_rebase_total": parse_int(smoothness_match.group(7)),
                     "live_rebase_max_ticks": parse_int(smoothness_match.group(8)),
                     "too_new_repeats": parse_int(smoothness_match.group(9)),
-                    "low_source_bypass": parse_int(smoothness_match.group(10)),
-                    "mode_mismatch": parse_int(smoothness_match.group(11)),
-                    "source_backtrack": parse_int(smoothness_match.group(12)),
+                    "sync_delay_holds": parse_int(smoothness_match.group(10)),
+                    "too_new_lead_max_us": parse_int(smoothness_match.group(11)),
+                    "av_delay_ms": parse_float(smoothness_match.group(12)),
+                    "low_source_bypass": parse_int(smoothness_match.group(13)),
+                    "mode_mismatch": parse_int(smoothness_match.group(14)),
+                    "source_backtrack": parse_int(smoothness_match.group(15)),
                     "line": line,
                 }
             )
@@ -2157,6 +2167,22 @@ def self_test():
         assert "wgc_encoder_overload_policy_fault" in report["verdicts"]
         assert "ce_visual_timeline_fault" in report["verdicts"]
         assert "ce_audio_timeline_fault" not in report["verdicts"]
+
+        wgc_sync_delay_smoothness_summary = make_session(
+            "wgc_sync_delay_smoothness_summary",
+            media=(
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=1 "
+                "phaseErrorMax=9000us shortfallMax=16.7ms staleDebtDrops=0 liveRebase=0/0 "
+                "tooNewRepeats=12 syncDelayHolds=10 tooNewLeadMax=42000us avDelay=35.0ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0\n"
+            ),
+        )
+        sync_delay_report = classify_session_triage(wgc_sync_delay_smoothness_summary)
+        sync_delay_summary = sync_delay_report["evidence"]["wgc_smoothness_summary"][0]
+        assert sync_delay_summary["too_new_repeats"] == 12
+        assert sync_delay_summary["sync_delay_holds"] == 10
+        assert sync_delay_summary["too_new_lead_max_us"] == 42000
+        assert sync_delay_summary["av_delay_ms"] == 35.0
 
         source_starved_with_overload = make_session(
             "source_starved_with_overload",
