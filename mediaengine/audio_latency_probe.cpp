@@ -4,8 +4,7 @@
 #include <mmdeviceapi.h>
 #include <windows.h>
 
-#include <fstream>
-#include <sstream>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -18,6 +17,7 @@
 // correction rather than a guessed value). The endpoint latency is measured with SEVERAL
 // independent shots and aggregated by median+consistency so a single noisy reading cannot
 // over/under-correct - this is what lets the value be trusted automatically with no hand-set config.
+// The usable value is cached only in process memory; no device latency file is written.
 
 namespace ce::audio {
 namespace {
@@ -35,6 +35,10 @@ constexpr REFERENCE_TIME kRefPerSec = 10000000;  // 100-ns units per second
 constexpr int kProbeShots = 5;
 constexpr int kProbeMinAgreeingShots = 3;
 constexpr double kProbeMaxSpreadMs = 8.0;  // ~half a 60 fps frame; well within the A/V floor
+
+std::mutex g_LatencyCacheMutex;
+std::vector<LatencyCacheEntry> g_LatencyMemoryCache;
+bool g_LegacyDiskCacheCleanupAttempted = false;
 
 template <typename T>
 void SafeRelease(T*& p) {
@@ -92,7 +96,7 @@ std::string WideToUtf8(const wchar_t* w) {
     return out;
 }
 
-std::string CacheFilePath(const std::string& cacheDir) {
+std::string LegacyCacheFilePath(const std::string& cacheDir) {
     if (cacheDir.empty()) {
         return std::string();
     }
@@ -104,29 +108,57 @@ std::string CacheFilePath(const std::string& cacheDir) {
     return path;
 }
 
-bool ReadCacheFile(const std::string& path, std::vector<LatencyCacheEntry>& out) {
+void CleanupLegacyDiskCacheOnce(const std::string& cacheDir) {
+    const std::string path = LegacyCacheFilePath(cacheDir);
     if (path.empty()) {
-        return false;
+        return;
     }
-    std::ifstream f(path, std::ios::binary);
-    if (!f) {
-        return false;
+
+    {
+        std::lock_guard<std::mutex> lock(g_LatencyCacheMutex);
+        if (g_LegacyDiskCacheCleanupAttempted) {
+            return;
+        }
+        g_LegacyDiskCacheCleanupAttempted = true;
     }
-    std::stringstream ss;
-    ss << f.rdbuf();
-    return ParseLatencyCache(ss.str(), out);
+
+    const DWORD attrs = GetFileAttributesA(path.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        return;
+    }
+
+    if (DeleteFileA(path.c_str())) {
+        DLL_Log("[AVSyncProbe] legacyDiskCache=deleted cacheMode=memory file=audio_latency_cache.ini");
+    } else {
+        DLL_Log("[AVSyncProbe] legacyDiskCache=delete_failed cacheMode=memory file=audio_latency_cache.ini error=%lu",
+                static_cast<unsigned long>(GetLastError()));
+    }
 }
 
-void WriteCacheFile(const std::string& path, const std::vector<LatencyCacheEntry>& entries) {
-    if (path.empty()) {
+bool LookupMemoryCache(const std::string& key, double* outMs) {
+    std::lock_guard<std::mutex> lock(g_LatencyCacheMutex);
+    return LookupLatencyCache(g_LatencyMemoryCache, key, outMs);
+}
+
+void StoreMemoryCache(const std::string& key, double latencyMs) {
+    std::lock_guard<std::mutex> lock(g_LatencyCacheMutex);
+    UpsertLatencyCache(g_LatencyMemoryCache, key, latencyMs);
+}
+
+size_t MemoryCacheEntryCount() {
+    std::lock_guard<std::mutex> lock(g_LatencyCacheMutex);
+    return g_LatencyMemoryCache.size();
+}
+
+void ClearMemoryCacheForForceRemeasure(const std::string& key) {
+    if (key.empty()) {
         return;
     }
-    std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    if (!f) {
-        DLL_Log("[AVSyncProbe] WARNING: could not write cache file %s", path.c_str());
-        return;
-    }
-    f << SerializeLatencyCache(entries);
+    std::lock_guard<std::mutex> lock(g_LatencyCacheMutex);
+    g_LatencyMemoryCache.erase(
+        std::remove_if(g_LatencyMemoryCache.begin(), g_LatencyMemoryCache.end(),
+            [&](const LatencyCacheEntry& e) { return e.key == key; }),
+        g_LatencyMemoryCache.end());
 }
 
 // Downmix one interleaved float frame block to mono channel 0 (sufficient for narrowband
@@ -495,29 +527,29 @@ RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDi
 
     DLL_Log(
         "[AVSyncProbe] endpoint: key=%s rate=%d channels=%d bits=%d blockAlign=%d channelMask=0x%x "
-        "devicePeriod=%lluus minPeriod=%lluus force=%d cacheDir=%s",
+        "devicePeriod=%lluus minPeriod=%lluus force=%d cacheMode=memory cacheDir=deprecated",
         deviceKey.c_str(), sampleRate, channels, bitsPerSample, blockAlign, channelMask,
         static_cast<unsigned long long>(defaultPeriod100ns / 10),
-        static_cast<unsigned long long>(minPeriod100ns / 10), forceRemeasure ? 1 : 0,
-        cacheDir.empty() ? "<none>" : cacheDir.c_str());
+        static_cast<unsigned long long>(minPeriod100ns / 10), forceRemeasure ? 1 : 0);
 
-    // Cache lookup (unless forced).
-    const std::string cachePath = CacheFilePath(cacheDir);
-    std::vector<LatencyCacheEntry> cache;
-    ReadCacheFile(cachePath, cache);
+    CleanupLegacyDiskCacheOnce(cacheDir);
+
+    // Process-memory cache lookup (unless forced). No persistent endpoint latency file is used.
     if (!forceRemeasure) {
         double cached = 0.0;
-        if (LookupLatencyCache(cache, deviceKey, &cached) && IsPlausibleLatencyMs(cached)) {
-            DLL_Log("[AVSyncProbe] cache=hit key=%s latency=%.3f ms (no marker rendered)", deviceKey.c_str(), cached);
+        if (LookupMemoryCache(deviceKey, &cached) && IsPlausibleLatencyMs(cached)) {
+            DLL_Log("[AVSyncProbe] cache=memory_hit key=%s latency=%.3f ms entries=%zu (no marker rendered)",
+                    deviceKey.c_str(), cached, MemoryCacheEntryCount());
             result.ok = true;
             result.fromCache = true;
             result.latencyMs = cached;
             cleanup();
             return result;
         }
-        DLL_Log("[AVSyncProbe] cache=miss key=%s", deviceKey.c_str());
+        DLL_Log("[AVSyncProbe] cache=memory_miss key=%s entries=%zu", deviceKey.c_str(), MemoryCacheEntryCount());
     } else {
-        DLL_Log("[AVSyncProbe] cache=bypass key=%s", deviceKey.c_str());
+        ClearMemoryCacheForForceRemeasure(deviceKey);
+        DLL_Log("[AVSyncProbe] cache=memory_bypass key=%s entries=%zu", deviceKey.c_str(), MemoryCacheEntryCount());
     }
 
     if (!IsIEEEFloatFormat(mixFormat)) {
@@ -574,11 +606,10 @@ RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDi
     result.measured = true;
     result.latencyMs = agg.latencyMs;
 
-    UpsertLatencyCache(cache, deviceKey, agg.latencyMs);
-    WriteCacheFile(cachePath, cache);
-    DLL_Log("[AVSyncProbe] measured: agreeingShots=%d/%d key=%s latency=%.3f ms cache=%s confidence=high",
-            agg.agreeingCount, kProbeShots, deviceKey.c_str(), agg.latencyMs,
-            cachePath.empty() ? "<no cache>" : cachePath.c_str());
+    StoreMemoryCache(deviceKey, agg.latencyMs);
+    DLL_Log("[AVSyncProbe] measured: agreeingShots=%d/%d key=%s latency=%.3f ms cache=memory entries=%zu "
+            "confidence=high",
+            agg.agreeingCount, kProbeShots, deviceKey.c_str(), agg.latencyMs, MemoryCacheEntryCount());
 
     cleanup();
     return result;

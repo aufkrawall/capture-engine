@@ -166,7 +166,7 @@ TEST(AudioLatencyProbeTest, ComputeRenderLatencyAndPlausibility) {
     EXPECT_FALSE(IsPlausibleLatencyMs(5000.0));
 }
 
-TEST(AudioLatencyProbeTest, CacheRoundTripAndUpsert) {
+TEST(AudioLatencyProbeTest, MemoryCacheLookupAndUpsert) {
     std::vector<LatencyCacheEntry> entries;
     const std::string keyA =
         MakeRenderEndpointCacheKey("{0.0.0.00000000}.{guid-a}", 192000, 2, 32, 8, 3, 100000, 30000);
@@ -177,42 +177,12 @@ TEST(AudioLatencyProbeTest, CacheRoundTripAndUpsert) {
     UpsertLatencyCache(entries, keyA, 47.0);  // overwrite
     ASSERT_EQ(entries.size(), 2u);
 
-    const std::string text = SerializeLatencyCache(entries);
-    EXPECT_NE(text.find(kLatencyCacheHeader), std::string::npos);
-
-    std::vector<LatencyCacheEntry> parsed;
-    ASSERT_TRUE(ParseLatencyCache(text, parsed));
     double v = 0.0;
-    ASSERT_TRUE(LookupLatencyCache(parsed, keyA, &v));
+    ASSERT_TRUE(LookupLatencyCache(entries, keyA, &v));
     EXPECT_NEAR(v, 47.0, 1e-3);
-    ASSERT_TRUE(LookupLatencyCache(parsed, keyB, &v));
+    ASSERT_TRUE(LookupLatencyCache(entries, keyB, &v));
     EXPECT_NEAR(v, 12.5, 1e-3);
-    EXPECT_FALSE(LookupLatencyCache(parsed, "missing", &v));
-}
-
-TEST(AudioLatencyProbeTest, CacheParseToleratesGarbageAndComments) {
-    const std::string text =
-        "# CE audio render-endpoint latency cache v2\n"
-        "\n"
-        "  # a comment\n"
-        "  good|48000|2=33.5\n"  // leading whitespace trimmed
-        "broken-line-no-eq\n"
-        "=novalue\n"
-        "bad|val|x=not_a_number\n";
-    std::vector<LatencyCacheEntry> parsed;
-    ASSERT_TRUE(ParseLatencyCache(text, parsed));
-    ASSERT_EQ(parsed.size(), 1u);
-    EXPECT_EQ(parsed[0].key, "good|48000|2");
-    EXPECT_NEAR(parsed[0].latencyMs, 33.5, 1e-6);
-}
-
-TEST(AudioLatencyProbeTest, CacheParseIgnoresStaleHeader) {
-    const std::string text =
-        "# CE audio render-endpoint latency cache v1\n"
-        "stale|48000|2=33.5\n";
-    std::vector<LatencyCacheEntry> parsed;
-    ASSERT_TRUE(ParseLatencyCache(text, parsed));
-    EXPECT_TRUE(parsed.empty());
+    EXPECT_FALSE(LookupLatencyCache(entries, "missing", &v));
 }
 
 TEST(AudioLatencyProbeTest, CacheKeySanitizesDelimiters) {

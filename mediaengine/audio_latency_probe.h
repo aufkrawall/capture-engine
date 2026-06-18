@@ -12,7 +12,7 @@
 // the driver-hidden render->loopback path latency.
 //
 // This header holds only the PURE, hardware-independent logic (marker synthesis, onset detection,
-// latency arithmetic, and the per-device cache format) so it is fully unit-testable. The WASAPI
+// latency arithmetic, and the in-process cache helpers) so it is fully unit-testable. The WASAPI
 // orchestration lives in audio_latency_probe.cpp.
 
 #include <algorithm>
@@ -24,10 +24,6 @@
 #include "audio_time_utils.h"
 
 namespace ce::audio {
-
-// Cache schema marker. Bump when the marker design or measurement semantics change so stale
-// cached values are ignored rather than silently reused.
-inline constexpr const char* kLatencyCacheHeader = "# CE audio render-endpoint latency cache v2";
 
 // Implausible measurements are rejected (fail-safe to config). A real render->loopback path is
 // bounded by a few hundred ms even for deep AVR/Bluetooth buffers.
@@ -238,15 +234,16 @@ inline MedianLatencyResult MedianWithConsistency(std::vector<double> values, int
     return r;
 }
 
-// ---- Per-device latency cache (text file, key=latencyMs) -------------------------------------
+// ---- Per-process render-endpoint latency cache -----------------------------------------------
 
 struct LatencyCacheEntry {
     std::string key;
     double latencyMs = 0.0;
 };
 
-// Cache keys must not contain '=' / CR / LF (the line format). Device IDs do not, but sanitize
-// defensively. The key folds in sample rate + channels so a reconfigured endpoint re-measures.
+// Cache keys are process-local, but sanitize delimiters defensively so diagnostic output stays
+// single-line. The key folds in endpoint format/period metadata so a reconfigured endpoint
+// re-measures.
 inline std::string SanitizeCacheToken(const std::string& s) {
     std::string out = s;
     for (char& c : out) {
@@ -264,70 +261,6 @@ inline std::string MakeRenderEndpointCacheKey(const std::string& deviceId, int s
            "|bits" + std::to_string(bitsPerSample) + "|align" + std::to_string(blockAlign) +
            "|mask" + std::to_string(channelMask) + "|period" + std::to_string(defaultPeriod100ns) +
            "|min" + std::to_string(minPeriod100ns);
-}
-
-// Parse the cache text. Lines are "key=latencyMs"; the header line and blank/comment lines are
-// ignored. A missing/stale header returns an empty cache so old marker semantics are not reused.
-inline bool ParseLatencyCache(const std::string& text, std::vector<LatencyCacheEntry>& out) {
-    out.clear();
-    bool sawCurrentHeader = false;
-    size_t pos = 0;
-    while (pos <= text.size()) {
-        size_t end = text.find('\n', pos);
-        std::string line = (end == std::string::npos) ? text.substr(pos) : text.substr(pos, end - pos);
-        pos = (end == std::string::npos) ? text.size() + 1 : end + 1;
-
-        // Trim CR/space.
-        while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) {
-            line.pop_back();
-        }
-        size_t lead = 0;
-        while (lead < line.size() && (line[lead] == ' ' || line[lead] == '\t')) {
-            ++lead;
-        }
-        line = line.substr(lead);
-        if (line.empty()) {
-            continue;
-        }
-        if (line[0] == '#') {
-            if (line == kLatencyCacheHeader) {
-                sawCurrentHeader = true;
-            }
-            continue;
-        }
-        if (!sawCurrentHeader) {
-            out.clear();
-            return true;
-        }
-        const size_t eq = line.find('=');
-        if (eq == std::string::npos || eq == 0) {
-            continue;
-        }
-        const std::string key = line.substr(0, eq);
-        const std::string valueStr = line.substr(eq + 1);
-        try {
-            const double value = std::stod(valueStr);
-            out.push_back(LatencyCacheEntry{key, value});
-        } catch (...) {
-            continue;
-        }
-    }
-    return true;
-}
-
-inline std::string SerializeLatencyCache(const std::vector<LatencyCacheEntry>& entries) {
-    std::string text = kLatencyCacheHeader;
-    text += "\n";
-    for (const auto& e : entries) {
-        // 3 decimals is well below the ~half-frame measurement floor.
-        char buf[64];
-        snprintf(buf, sizeof(buf), "%.3f", e.latencyMs);
-        text += e.key;
-        text += "=";
-        text += buf;
-        text += "\n";
-    }
-    return text;
 }
 
 inline bool LookupLatencyCache(const std::vector<LatencyCacheEntry>& entries, const std::string& key, double* outMs) {
@@ -358,19 +291,20 @@ inline void UpsertLatencyCache(std::vector<LatencyCacheEntry>& entries, const st
 struct RenderLatencyProbeResult {
     bool ok = false;         // a usable latency is available (cache hit or fresh measurement)
     bool measured = false;   // true if a fresh WASAPI measurement was performed this call
-    bool fromCache = false;  // true if served from the on-disk cache
+    bool fromCache = false;  // true if served from the process-memory cache
     double latencyMs = 0.0;  // render->loopback latency for the default render endpoint
     std::string deviceKey;   // cache key (deviceId|rate|channels)
     int sampleRate = 0;
     int channels = 0;
 };
 
-// Measure (or load from cache) the default render endpoint's render->loopback capture latency by
+// Measure (or load from process-memory cache) the default render endpoint's render->loopback capture latency by
 // rendering a brief near-inaudible marker and detecting its onset in a loopback capture of the
-// same endpoint. `cacheDir` is the directory for the persistent per-device cache file (may be
-// empty to disable caching). When `forceRemeasure` is true any cached value is ignored. This call
-// is fail-safe: it never throws and returns ok=false on any error (caller falls back to config).
-// Plays a faint calibration sound once per uncached device. Logs every component via DLL_Log.
+// same endpoint. `cacheDir` is accepted for ABI compatibility only; no persistent cache is read or
+// written. When `forceRemeasure` is true any process-memory value is ignored. This call is
+// fail-safe: it never throws and returns ok=false on any error (caller falls back to config). Plays
+// a faint calibration sound once per uncached endpoint per CE process. Logs every component via
+// DLL_Log.
 RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDir, bool forceRemeasure);
 
 }  // namespace ce::audio

@@ -1662,6 +1662,62 @@ def has_wgc_av_sync_delay_realization_risk(media_evidence):
     return False
 
 
+def wgc_active_delay_matches_request(item):
+    requested_delay_ms = item.get("av_delay_ms", 0.0)
+    startup_delay_ms = item.get("startup_delay_ms", 0.0)
+    effective_delay_ms = item.get("effective_delay_ms", 0.0)
+    return (
+        requested_delay_ms > 0.0
+        and startup_delay_ms > 0.0
+        and effective_delay_ms > 0.0
+        and abs(startup_delay_ms - requested_delay_ms) <= 5.0
+        and abs(effective_delay_ms - requested_delay_ms) <= 5.0
+    )
+
+
+def wgc_late_residual_is_bounded(item):
+    if item.get("delay_residual_avg_abs_us", 0) > 5000:
+        return False
+    if item.get("delay_residual_p95_us", 0) > 10000:
+        return False
+    late_max_us = item.get("delay_residual_late_max_us", 0)
+    if late_max_us > 10000:
+        return False
+    if late_max_us <= 0 and item.get("delay_residual_max_us", 0) > 10000:
+        return False
+    return True
+
+
+def wgc_has_delay_residual_evidence(item):
+    return (
+        item.get("realized_delay_avg_us", 0) > 0
+        or item.get("delay_residual_avg_abs_us", 0) > 0
+        or item.get("delay_residual_max_us", 0) > 0
+        or item.get("delay_residual_p95_us", 0) > 0
+        or item.get("delay_residual_late_max_us", 0) > 0
+        or item.get("delay_residual_early_max_us", 0) > 0
+    )
+
+
+def wgc_has_source_limited_delay_context(media_evidence, item):
+    source_holds = item.get("sync_delay_source_limited_holds", 0)
+    policy_holds = item.get("sync_delay_policy_holds", 0)
+    if source_holds > 0 and source_holds >= policy_holds:
+        return True
+    if source_holds > 0 and has_source_starvation(media_evidence):
+        return True
+    return has_source_starvation(media_evidence) and item.get("delay_reservoir_low_water_ticks", 0) > 0
+
+
+def wgc_is_bounded_source_limited_active_delay(media_evidence, item):
+    return (
+        wgc_active_delay_matches_request(item)
+        and wgc_has_delay_residual_evidence(item)
+        and wgc_has_source_limited_delay_context(media_evidence, item)
+        and wgc_late_residual_is_bounded(item)
+    )
+
+
 def has_wgc_av_sync_delay_residual_fault(media_evidence):
     for item in media_evidence["wgc_smoothness_summary"]:
         if item.get("av_delay_ms", 0.0) <= 0.0:
@@ -1669,25 +1725,14 @@ def has_wgc_av_sync_delay_residual_fault(media_evidence):
 
         # Newer WGC summaries log actual selected-frame delay realization. Treat
         # this as stronger evidence than startup/effective configuration parity.
-        residual_logged = (
-            item.get("realized_delay_avg_us", 0) > 0
-            or item.get("delay_residual_avg_abs_us", 0) > 0
-            or item.get("delay_residual_max_us", 0) > 0
-            or item.get("delay_residual_p95_us", 0) > 0
-        )
-        startup_delay_ms = item.get("startup_delay_ms", 0.0)
-        effective_delay_ms = item.get("effective_delay_ms", 0.0)
-        requested_delay_ms = item.get("av_delay_ms", 0.0)
-        realized_delay_matches = (
-            startup_delay_ms > 0.0
-            and effective_delay_ms > 0.0
-            and abs(startup_delay_ms - requested_delay_ms) <= 5.0
-            and abs(effective_delay_ms - requested_delay_ms) <= 5.0
-        )
+        residual_logged = wgc_has_delay_residual_evidence(item)
+        realized_delay_matches = wgc_active_delay_matches_request(item)
+        bounded_source_limited = wgc_is_bounded_source_limited_active_delay(media_evidence, item)
         if (
             realized_delay_matches
             and item.get("sync_delay_policy_holds", 0) >= 10
             and item.get("too_new_lead_max_us", 0) > 10000
+            and not bounded_source_limited
         ):
             return True
         if not residual_logged:
@@ -1697,7 +1742,15 @@ def has_wgc_av_sync_delay_residual_fault(media_evidence):
             return True
         if item.get("delay_residual_p95_us", 0) > 10000:
             return True
-        if item.get("delay_residual_max_us", 0) > 10000:
+        if item.get("delay_residual_late_max_us", 0) > 10000:
+            return True
+        if (
+            item.get("delay_residual_max_us", 0) > 10000
+            and not (
+                bounded_source_limited
+                and item.get("delay_residual_early_max_us", 0) >= item.get("delay_residual_max_us", 0)
+            )
+        ):
             return True
 
     return False
@@ -1711,19 +1764,18 @@ def has_wgc_sync_delay_policy_fault(media_evidence):
 
         policy_holds = item.get("sync_delay_policy_holds", 0)
         if policy_holds >= 10:
+            if wgc_is_bounded_source_limited_active_delay(media_evidence, item):
+                continue
             return True
+
+        source_holds = item.get("sync_delay_source_limited_holds", 0)
+        if source_holds > 0 or policy_holds > 0:
+            continue
 
         # Compatibility for logs before source-limited/policy split: extreme realized-delay
         # hold clusters are a visual policy fault, but not proof that the A/V delay itself
         # was unrealized when startup/effective delay already match the request.
-        startup_delay_ms = item.get("startup_delay_ms", 0.0)
-        effective_delay_ms = item.get("effective_delay_ms", 0.0)
-        realized_delay_logged = startup_delay_ms > 0.0 and effective_delay_ms > 0.0
-        realized_delay_matches = (
-            realized_delay_logged
-            and abs(startup_delay_ms - requested_delay_ms) <= 5.0
-            and abs(effective_delay_ms - requested_delay_ms) <= 5.0
-        )
+        realized_delay_matches = wgc_active_delay_matches_request(item)
         if not realized_delay_matches:
             continue
         sync_delay_holds = item.get("sync_delay_holds", 0)
@@ -1741,19 +1793,15 @@ def has_wgc_sync_delay_reserve_pressure(media_evidence):
         requested_delay_ms = item.get("av_delay_ms", 0.0)
         if requested_delay_ms <= 0.0:
             continue
-        if item.get("sync_delay_policy_holds", 0) > 0:
+        bounded_source_limited = wgc_is_bounded_source_limited_active_delay(media_evidence, item)
+        if item.get("sync_delay_policy_holds", 0) > 0 and not bounded_source_limited:
             continue
         if item.get("sync_delay_source_limited_holds", 0) > 0:
             return True
+        if bounded_source_limited:
+            return True
 
-        startup_delay_ms = item.get("startup_delay_ms", 0.0)
-        effective_delay_ms = item.get("effective_delay_ms", 0.0)
-        realized_delay_matches = (
-            startup_delay_ms > 0.0
-            and effective_delay_ms > 0.0
-            and abs(startup_delay_ms - requested_delay_ms) <= 5.0
-            and abs(effective_delay_ms - requested_delay_ms) <= 5.0
-        )
+        realized_delay_matches = wgc_active_delay_matches_request(item)
         if realized_delay_matches and 0 < item.get("sync_delay_holds", 0) < 120:
             return True
 
@@ -2537,6 +2585,34 @@ def self_test():
         assert "wgc_av_sync_delay_unrealized" not in legacy_pressure_report["verdicts"]
         assert "wgc_sync_delay_reserve_pressure" in legacy_pressure_report["verdicts"]
         assert "ce_visual_timeline_fault" not in legacy_pressure_report["verdicts"]
+
+        wgc_sync_delay_goodish_source_limited = make_session(
+            "wgc_sync_delay_goodish_source_limited",
+            media=(
+                "[WGC CFR SUMMARY] Live=13965 Dup=3006 DupPct=21.5% NoFresh=261pm NoReserve=296pm "
+                "DupReason(src=3006 def=0 timer=0 drain=0) SourceLimitedRepeats=3006 StarvedEpisodes=281 "
+                "longest=6469ms longestDup=401 worstIn=4 worstDel=4\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=114 "
+                "phaseErrorMax=103462us shortfallMax=0.0ms staleDebtDrops=1 liveRebase=0/0 "
+                "tooNewRepeats=1676 syncDelayHolds=1676 tooNewLeadMax=160855us avDelay=32.0ms "
+                "startupDelay=32.0ms scheduleOffset=102131us effectiveDelay=32.0ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=1291 syncDelayPolicyHolds=385 startupReserveFrames=2 "
+                "startupReserveSpan=7961us startupDelayTarget=31995us startupReserveSelected=0 "
+                "startupReserveReason=reserve_timeout delayReservoirLowWaterFrames=4 "
+                "delayReservoirTargetFrames=5 delayReservoirLowWaterTicks=4140 realizedDelayAvg=31500us "
+                "realizedDelayMin=22009us realizedDelayMax=237273us delayResidualAvg=494/2444us "
+                "delayResidualMax=205278us delayResidualP95=5000us delayResidualLateMax=9986us "
+                "delayResidualEarlyMax=205278us\n"
+            ),
+        )
+        goodish_report = classify_session_triage(wgc_sync_delay_goodish_source_limited)
+        assert "wgc_source_starvation" in goodish_report["verdicts"]
+        assert "wgc_sync_delay_reserve_pressure" in goodish_report["verdicts"]
+        assert "wgc_av_sync_delay_residual" not in goodish_report["verdicts"]
+        assert "wgc_sync_delay_policy_fault" not in goodish_report["verdicts"]
+        assert "ce_visual_timeline_fault" not in goodish_report["verdicts"]
+        assert "ce_audio_timeline_fault" not in goodish_report["verdicts"]
 
         wgc_sync_delay_policy_fault = make_session(
             "wgc_sync_delay_policy_fault",

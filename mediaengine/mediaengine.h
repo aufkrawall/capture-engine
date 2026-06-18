@@ -90,11 +90,12 @@ MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs();
 // failure.
 MEDIAENGINE_API bool MediaEngine_WasLastFrameDeferred();
 
-// Measure (or load from per-device cache under cacheDir) the default render endpoint's
+// Measure (or load from process-memory cache) the default render endpoint's
 // render->loopback audio capture latency via a brief near-inaudible marker probe. On success
-// returns true and writes the latency in milliseconds to *outLatencyMs. forceRemeasure ignores the
-// cache. Fail-safe: returns false on any error (caller falls back to the configured value). Used to
-// auto-detect [General] audio_capture_latency_ms. Does not require MediaEngine_Init.
+// returns true and writes the latency in milliseconds to *outLatencyMs. `cacheDir` is accepted for
+// ABI compatibility only; no persistent cache file is read or written. forceRemeasure ignores the
+// process cache. Fail-safe: returns false on any error (caller falls back to the configured value).
+// Used to auto-detect [General] audio_capture_latency_ms. Does not require MediaEngine_Init.
 MEDIAENGINE_API bool MediaEngine_MeasureRenderEndpointLatency(const char* cacheDir, bool forceRemeasure,
                                                               double* outLatencyMs);
 

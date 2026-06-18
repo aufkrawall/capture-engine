@@ -104,10 +104,12 @@ void StartRecording(const AppConfig& config);
 
 // --- Auto-detected render-endpoint audio latency (per-device latency model, Part B) -----------
 // Measured once per media process via the WASAPI render->loopback probe (mediaengine export), then
-// applied to the render-domain audio sources on every config (re)load. The probe is cached to disk
-// per render endpoint, so a fresh process is a cache hit (no calibration sound replay).
+// applied to the render-domain audio sources on every config (re)load. The probe cache is
+// process-memory only; a fresh process may re-probe, but no endpoint latency file is written.
 static double g_AutoDetectedRenderLatencyMs = -1.0;  // <0 = not measured / unavailable
 static bool g_RenderLatencyMeasureAttempted = false;
+static bool g_LegacyAudioLatencyCacheCleanupAttempted = false;
+static std::mutex g_LegacyAudioLatencyCacheCleanupMutex;
 static std::string g_AvSyncConfidence = "low";
 static std::string g_AvSyncReason = "not_measured";
 static bool g_AvSyncUsedAudioProbe = false;
@@ -178,15 +180,48 @@ static void ApplyAutoDetectedRenderLatencyToConfig(AppConfig& config) {
         "[AVSyncAuto] passiveInputs renderSources=%d micSources=%d generalRenderLatencyMs=0.000 autodetect=1 "
         "probe=%s chosenDelayMs=%.3f appliedSources=%d confidence=%s reason=%s domain=render_endpoint",
         renderDomainSources, micDomainSources,
-        config.avSyncUsedAudioProbe ? "audio_render_loopback" : "cache_or_manual", static_cast<double>(ms), applied,
-        config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
+        config.avSyncUsedAudioProbe ? "audio_render_loopback" : "memory_cache_or_manual", static_cast<double>(ms),
+        applied, config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
+}
+
+static void DeleteLegacyAudioLatencyCacheFileOnce(const std::string& cacheDir) {
+    if (cacheDir.empty()) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_LegacyAudioLatencyCacheCleanupMutex);
+        if (g_LegacyAudioLatencyCacheCleanupAttempted) {
+            return;
+        }
+        g_LegacyAudioLatencyCacheCleanupAttempted = true;
+    }
+
+    std::string path = cacheDir;
+    if (!path.empty() && path.back() != '\\' && path.back() != '/') {
+        path += '\\';
+    }
+    path += "audio_latency_cache.ini";
+
+    const DWORD attrs = GetFileAttributesA(path.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        return;
+    }
+
+    if (DeleteFileA(path.c_str())) {
+        LogInfo("[AVSyncProbe] legacyDiskCache=deleted cacheMode=memory file=audio_latency_cache.ini");
+    } else {
+        LogInfo("[AVSyncProbe] legacyDiskCache=delete_failed cacheMode=memory file=audio_latency_cache.ini error=%lu",
+                static_cast<unsigned long>(GetLastError()));
+    }
 }
 
 // Perform the one-time product-safe audio-only render->loopback measurement. Call only when NOT
 // recording. On a cache miss it may render a near-inaudible marker; it never opens a calibration
 // window or emits a video stimulus. Safe to call repeatedly; it runs at most once per process and
-// is a cheap disk cache hit otherwise.
+// is a cheap memory cache hit otherwise.
 static void MeasureRenderLatencyOnce(const AppConfig& config, const std::string& cacheDir) {
+    DeleteLegacyAudioLatencyCacheFileOnce(cacheDir);
     if (g_RenderLatencyMeasureAttempted) {
         return;
     }
@@ -1969,6 +2004,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     int64_t wgcAvSyncStartupVideoQpc = 0;
     int64_t wgcStartupReserveWaitStartQpc = 0;
     uint32_t wgcStartupReserveWaitCount = 0;
+    int64_t wgcStartupReserveWaitInitialSpanUs = 0;
+    uint32_t wgcStartupReserveWaitFreshenedMax = 0;
     uint32_t wgcFreshWarmupFrameCount = 0;
     uint32_t wgcOldestBufferedFrameAgeUs = 0;
     double wgcCoverageRepeatAccumulator = 0.0;
@@ -2221,6 +2258,8 @@ void EncoderThreadFunc(const AppConfig& config) {
         wgcAvSyncStartupVideoQpc = 0;
         wgcStartupReserveWaitStartQpc = 0;
         wgcStartupReserveWaitCount = 0;
+        wgcStartupReserveWaitInitialSpanUs = 0;
+        wgcStartupReserveWaitFreshenedMax = 0;
         wgcFreshWarmupFrameCount = 0;
     };
     auto TrackWarmupWgcFreshFrame = [&](const QueuedFrame& queuedFrame) {
@@ -4417,7 +4456,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                         QueryPerformanceCounter(&waitNow);
                         if (wgcStartupReserveWaitStartQpc <= 0) {
                             wgcStartupReserveWaitStartQpc = waitNow.QuadPart;
+                            wgcStartupReserveWaitInitialSpanUs = wgcStartupReserveSpanUs;
                         }
+                        wgcStartupReserveWaitFreshenedMax =
+                            std::max<uint32_t>(wgcStartupReserveWaitFreshenedMax, SaturatingToUint32(startupFreshened));
                         const int64_t waitBudgetQpc = avContentDelayQpc + targetIntervalTicks * 2;
                         const bool waitBudgetRemaining =
                             waitNow.QuadPart - wgcStartupReserveWaitStartQpc < waitBudgetQpc;
@@ -4434,10 +4476,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                             if (wgcStartupReserveWaitCount <= 3 || (wgcStartupReserveWaitCount % 30u) == 0u) {
                                 LogInfo(
                                     "[EncoderThread] WGC startup delay-reserve wait: reason=%s candidates=%zu "
-                                    "newer=%zu lowWater=%u target=%u span=%lldus waited=%lldus budget=%lldus",
+                                    "newer=%zu lowWater=%u target=%u span=%lldus initialSpan=%lldus "
+                                    "freshened=%u waited=%lldus budget=%lldus",
                                     wgcStartupReserveReason.c_str(), startupCandidates.size(),
                                     newerStartupReserveFrames, getWgcDelayReservoirLowWaterFrames(),
                                     getWgcDelayReservoirTargetFrames(), static_cast<long long>(wgcStartupReserveSpanUs),
+                                    static_cast<long long>(wgcStartupReserveWaitInitialSpanUs),
+                                    wgcStartupReserveWaitFreshenedMax,
                                     static_cast<long long>(qpcToUs(waitNow.QuadPart - wgcStartupReserveWaitStartQpc)),
                                     static_cast<long long>(qpcToUs(waitBudgetQpc)));
                             }
@@ -4462,6 +4507,17 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                     LARGE_INTEGER anchorNow;
                     QueryPerformanceCounter(&anchorNow);
+                    const int64_t startupReserveWaitedUs =
+                        wgcStartupReserveWaitStartQpc > 0
+                            ? qpcToUs(anchorNow.QuadPart - wgcStartupReserveWaitStartQpc)
+                            : 0;
+                    const int64_t startupReserveSpanGrowthUs =
+                        wgcStartupReserveWaitStartQpc > 0
+                            ? std::max<int64_t>(0, wgcStartupReserveSpanUs - wgcStartupReserveWaitInitialSpanUs)
+                            : 0;
+                    const int64_t startupSelectedDelayUs = qpcDeltaToUs(startupReserveSelection.selectedDelayQpc);
+                    const bool startupReserveFallback =
+                        avContentDelayActive && !startupReserveSelection.usedDelayReserve;
                     const int64_t startDeltaUs =
                         ((frame.timestamp - wgcStartupBarrierQpc) * 1000000) / qpcFreq.QuadPart;
                     const int64_t frameAgeUs =
@@ -4474,7 +4530,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                         "discardedBeforeDelay=%u freshened=%zu bufferedExamined=%zu queueExamined=%zu "
                         "discardedOlder=%zu discardedBeforeBarrier=%zu pathMismatch=%zu startupReserveFrames=%u "
                         "startupReserveSpanUs=%lld startupDelayTargetUs=%lld startupSelectedByDelayReserve=%d "
-                        "startupReserveReason=%s keptReserveFrames=%zu",
+                        "startupReserveReason=%s keptReserveFrames=%zu startupReserveWaits=%u "
+                        "startupReserveWaitedUs=%lld startupReserveInitialSpanUs=%lld "
+                        "startupReserveSpanGrowthUs=%lld startupReserveWaitFreshened=%u "
+                        "startupSelectedIndex=%zu startupSelectedDelayUs=%lld startupFallback=%d",
                         static_cast<long long>(wgcStartupBarrierQpc), static_cast<long long>(frame.timestamp),
                         static_cast<long long>(startDeltaUs), static_cast<long long>(frameAgeUs),
                         wgcStartupBarrierDroppedFrames, wgcStartupPreLiveDelayDroppedFrames, startupFreshened,
@@ -4482,7 +4541,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                         startupDiscardedBeforeBarrier, startupDiscardedPathMismatch, wgcStartupReserveFrames,
                         static_cast<long long>(wgcStartupReserveSpanUs),
                         static_cast<long long>(wgcStartupDelayTargetUs), wgcStartupSelectedByDelayReserve ? 1 : 0,
-                        wgcStartupReserveReason.c_str(), bufferedWgcFrames.size());
+                        wgcStartupReserveReason.c_str(), bufferedWgcFrames.size(), wgcStartupReserveWaitCount,
+                        static_cast<long long>(startupReserveWaitedUs),
+                        static_cast<long long>(wgcStartupReserveWaitInitialSpanUs),
+                        static_cast<long long>(startupReserveSpanGrowthUs), wgcStartupReserveWaitFreshenedMax,
+                        selectedStartupIndex, static_cast<long long>(startupSelectedDelayUs),
+                        startupReserveFallback ? 1 : 0);
                 }
 
                 pendingLiveActivation = true;
