@@ -19301,6 +19301,47 @@ void DX12_ResetOverlayFrameDelay() {
     HookLog("DX12: Reset overlay frame delay counter");
 }
 
+// Minimal-overhead ProcessFrame for no-callback FSR FG: skips the ~400 lines of policy/lock/heuristic
+// work in DX12_ProcessFrameExternal (two g_CommandQueueMutex acquisitions, FSR heuristic checks, stale
+// cleanup with AddRef/Release, PostSL processing) that take ~27.5ms and desync AMD's QPC-timed pacing.
+// Does only: frame-count reset, RecordFrame, sc3 acquire, capture decision, inner ProcessFrame (which
+// has the overlay-skip gate — no overlay draw during no-callback FSR FG). Capture still works.
+void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain) {
+    if (HookIsShuttingDown() || !pSwapChain) {
+        return;
+    }
+    if (!g_DeviceRemoved.load(std::memory_order_acquire)) {
+        g_RenderWatchdog.HeartbeatFromHelperThread();
+    }
+    IDXGISwapChain3* sc3 = nullptr;
+    if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) {
+        return;
+    }
+    const int count = g_CommandListsExecutedThisFrame.exchange(0);
+    g_BundleOverlayAppendedThisFrame.store(false, std::memory_order_release);
+    ++g_FGDebugFrameCount;
+    g_FGCompat.RecordFrame(count);
+    const bool isInterpolatedFrame = (count == 0);
+    bool processCapture = !isInterpolatedFrame;
+    if (processCapture && ShouldSkipCaptureForTargetCadence()) {
+        processCapture = false;
+    }
+    SharedMemoryLayout* screenshotShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    OverlayConfig screenshotOverlayCfg = GetActiveDX12OverlayConfig(screenshotShm);
+    const bool screenshotRequested =
+        screenshotShm && screenshotShm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire);
+    const bool screenshotWantsOverlay =
+        screenshotRequested && screenshotOverlayCfg.showOverlay && screenshotOverlayCfg.screenshotIncludeOverlay;
+    if (screenshotRequested && !screenshotWantsOverlay) {
+        CaptureRequestedDX12Screenshot(sc3, screenshotShm);
+    }
+    ProcessFrame(sc3, processCapture);
+    if (screenshotWantsOverlay && !ShouldUseConfirmedPostSLForOverlayIncludedWork(screenshotOverlayCfg)) {
+        CaptureRequestedDX12Screenshot(sc3, screenshotShm);
+    }
+    sc3->Release();
+}
+
 void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     // CRITICAL: Skip all rendering during shutdown to prevent crashes
     if (HookIsShuttingDown()) {
@@ -20312,6 +20353,21 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     bool wasInsideECL = s_insideECL;
     s_insideECL = true;
     auto eclGuard = ce::make_scope_guard([&]() { s_insideECL = wasInsideECL; });
+
+    // Minimal-overhead fast-path: during no-callback FSR FG, AMD's internal ECL calls on the FSR runtime
+    // queue (or any non-game queue) must not go through CE's policy/lock/module-resolution overhead —
+    // that overhead desyncs AMD's QPC-timed pacing (ffxQuery+0x225fe). Just forward immediately. The
+    // game's own ECLs on g_OriginalGameQueue still get full processing (for frame counting + bundle path).
+    if (g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) &&
+        pThis != g_OriginalGameQueue) {
+        ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
+        if (original) {
+            original(pThis, NumCommandLists, ppCommandLists);
+        } else {
+            pThis->ExecuteCommandLists(NumCommandLists, ppCommandLists);
+        }
+        return;
+    }
 
     // Skip our own overlay queue - don't count overlay submissions as game
     // command lists and don't re-register the overlay queue as the game queue.

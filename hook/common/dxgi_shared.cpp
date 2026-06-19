@@ -2665,7 +2665,14 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             // Present (below) is slow, the swapchain flip blocked on the hung GPU.
             LARGE_INTEGER diagPfT0, diagPfT1, diagPfFreq;
             QueryPerformanceCounter(&diagPfT0);
-            HandleDX12ProcessFrame(pSwapChain, true);
+            // Minimal-overhead path during no-callback FSR FG: skip the ~27.5ms outer ProcessFrameExternal
+            // (policy/lock/heuristic work that desyncs AMD's QPC-timed pacing). The minimal path does only
+            // frame-count reset + capture — the overlay is already suspended by the skip policy.
+            if (DX12_IsNativeFSRInternalNoCallbackCompositionActive()) {
+                DX12_ProcessFrameMinimal(pSwapChain);
+            } else {
+                HandleDX12ProcessFrame(pSwapChain, true);
+            }
             QueryPerformanceCounter(&diagPfT1);
             QueryPerformanceFrequency(&diagPfFreq);
             const double diagPfMs =

@@ -113,6 +113,8 @@ bool DX12_IsFFXUiResourceCompositionActive();
 bool DX12_ShouldCompositeOverlayOntoFFXUiResource();
 // Direct read of the no-callback composition flag (for the VEH one-shot disarm logic).
 bool DX12_IsNativeFSRInternalNoCallbackCompositionActive();
+// Minimal-overhead ProcessFrame for no-callback FSR FG (skips policy/lock/heuristic work).
+void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain);
 // Cache the UI texture from the game's RegisterUiResource call for the next frame's ECL bundle (Step 3).
 void DX12_CacheFFXUiResourceForBundle(void* uiResource, uint32_t ffxState, uint32_t flags);
 // Called from Hooked_ffxConfigure right before forwarding the configure to AMD. Stamps a QPC + frame

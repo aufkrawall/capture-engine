@@ -52,6 +52,7 @@ void DX12_NoteFfxConfigureForward(uint64_t) {}
 void DX12_CacheFFXUiResourceForBundle(void*, uint32_t, uint32_t) {}
 void FFXHook_ResetVehDisarmAndRearm() {}
 bool DX12_IsNativeFSRInternalNoCallbackCompositionActive() { return false; }
+void DX12_ProcessFrameMinimal(IDXGISwapChain*) {}
 
 // DX12_SetCommandQueue is extern "C" in the header
 extern "C" void DX12_SetCommandQueue(ID3D12CommandQueue*) {}
