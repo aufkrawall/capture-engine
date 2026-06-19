@@ -20482,6 +20482,49 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         return;
     }
 
+    // Step 3 bundle check (no-callback FSR FG): fire the bundle BEFORE the quiesce check. The quiesce
+    // suppresses CE side effects during protected startup, but the bundle is the intended overlay
+    // mechanism for no-callback FSR FG and must fire as soon as the conditions are met (the cached
+    // UI texture from RegisterUiResource and the no-callback composition flag). If the bundle fires,
+    // forward the ECL with CE's overlay CL appended and return — skip the quiesce and the rest of
+    // the detour (no need for frame counting, queue registration, or module resolution on this ECL).
+    if (s_insideCEOverlayECLDepth == 0 &&
+        g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) &&
+        pThis == g_OriginalGameQueue &&
+        !g_BundleOverlayAppendedThisFrame.load(std::memory_order_acquire) &&
+        g_CachedFFXUiTexture.load(std::memory_order_acquire) != nullptr) {
+        ID3D12Device* bundleDevice = g_Device.load(std::memory_order_acquire);
+        if (bundleDevice) {
+            ID3D12GraphicsCommandList* overlayCL = RecordBundleOverlayForGameECL(bundleDevice);
+            if (overlayCL) {
+                const UINT bundledCount = NumCommandLists + 1;
+                ID3D12CommandList** bundledLists = static_cast<ID3D12CommandList**>(
+                    _alloca(sizeof(ID3D12CommandList*) * bundledCount));
+                for (UINT i = 0; i < NumCommandLists; ++i) {
+                    bundledLists[i] = ppCommandLists[i];
+                }
+                bundledLists[NumCommandLists] = overlayCL;
+                ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
+                if (original) {
+                    original(pThis, bundledCount, bundledLists);
+                }
+                g_BundleOverlayAppendedThisFrame.store(true, std::memory_order_release);
+                static std::atomic<int> s_bundleLogCount{0};
+                const int logN = s_bundleLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logN < 20 || (logN % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: FFX UI-bundle overlay appended to game ECL (queue=%p numLists=%u->%u "
+                        "uiTex=%p slot=%d frame=%d log=%d)",
+                        pThis, NumCommandLists, bundledCount,
+                        g_CachedFFXUiTexture.load(std::memory_order_acquire),
+                        g_BundleOverlayFrame.load(std::memory_order_relaxed) - 1,
+                        g_BundleOverlayFrame.load(std::memory_order_relaxed), logN + 1);
+                }
+                return;  // Bundle forwarded, skip quiesce and rest of detour
+            }
+        }
+    }
+
     if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
         static std::atomic<int> s_protectedOfficialFFXECLPassThroughLogCount{0};
         const uint32_t progressCount =
