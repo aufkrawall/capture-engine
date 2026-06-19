@@ -2660,29 +2660,30 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
 
         if (!steamOnlyTest && api == APIType::D3D12) {
-            // DIAGNOSTIC: time CE's overlay submission (ProcessFrame). If this is the multi-second
-            // phase, CE's overlay GPU record/submit path is the stall; if it's fast and the real
-            // Present (below) is slow, the swapchain flip blocked on the hung GPU.
-            LARGE_INTEGER diagPfT0, diagPfT1, diagPfFreq;
-            QueryPerformanceCounter(&diagPfT0);
-            // Minimal-overhead path during no-callback FSR FG: skip the ~27.5ms outer ProcessFrameExternal
-            // (policy/lock/heuristic work that desyncs AMD's QPC-timed pacing). The minimal path does only
-            // frame-count reset + capture — the overlay is already suspended by the skip policy.
-            if (DX12_IsNativeFSRInternalNoCallbackCompositionActive()) {
-                DX12_ProcessFrameMinimal(pSwapChain);
-            } else {
-                HandleDX12ProcessFrame(pSwapChain, true);
-            }
-            QueryPerformanceCounter(&diagPfT1);
-            QueryPerformanceFrequency(&diagPfFreq);
-            const double diagPfMs =
-                (double)(diagPfT1.QuadPart - diagPfT0.QuadPart) * 1000.0 / (double)diagPfFreq.QuadPart;
-            if (diagPfMs >= 5.0) {
-                static std::atomic<int> s_diagPfLog{0};
-                const int n = s_diagPfLog.fetch_add(1, std::memory_order_relaxed);
-                if (n < 200 || (n % 50) == 0) {
-                    HookLogImportant("DX12 DIAG: ProcessFrame (overlay) SLOW %.1fms (tid=0x%04X)", diagPfMs,
-                                     GetCurrentThreadId());
+            // Near-passthrough during no-callback FSR FG: skip ProcessFrame entirely (even the minimal
+            // path does QueryInterface + RecordFrame + inner ProcessFrame — overhead that accumulates
+            // drift in AMD's QPC-timed pacing over ~900 frames). Capture is not possible in this mode
+            // (the overlay is suspended); if capture is needed, the full path runs.
+            const bool noCallbackFSRFG = DX12_IsNativeFSRInternalNoCallbackCompositionActive();
+            if (!noCallbackFSRFG) {
+                LARGE_INTEGER diagPfT0, diagPfT1, diagPfFreq;
+                QueryPerformanceCounter(&diagPfT0);
+                if (DX12_IsNativeFSRInternalNoCallbackCompositionActive()) {
+                    DX12_ProcessFrameMinimal(pSwapChain);
+                } else {
+                    HandleDX12ProcessFrame(pSwapChain, true);
+                }
+                QueryPerformanceCounter(&diagPfT1);
+                QueryPerformanceFrequency(&diagPfFreq);
+                const double diagPfMs =
+                    (double)(diagPfT1.QuadPart - diagPfT0.QuadPart) * 1000.0 / (double)diagPfFreq.QuadPart;
+                if (diagPfMs >= 5.0) {
+                    static std::atomic<int> s_diagPfLog{0};
+                    const int n = s_diagPfLog.fetch_add(1, std::memory_order_relaxed);
+                    if (n < 200 || (n % 50) == 0) {
+                        HookLogImportant("DX12 DIAG: ProcessFrame (overlay) SLOW %.1fms (tid=0x%04X)", diagPfMs,
+                                         GetCurrentThreadId());
+                    }
                 }
             }
         } else if (!steamOnlyTest && DXGIShared::ShouldRunSharedD3D10Or11ProcessFrame(api)) {
@@ -2713,7 +2714,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // Always wait for overlay fence before Present.  The overlay ECL was
     // submitted during ProcessFrame (non-deferred), so the fence signals
     // completion before the buffer flips.
-    if (api == APIType::D3D12) {
+    if (api == APIType::D3D12 && !DX12_IsNativeFSRInternalNoCallbackCompositionActive()) {
         // DIAGNOSTIC: time the overlay-completion wait (one half of the present-thread cost; the
         // other is the real Present call timed below). Compare 32-bit vs 64-bit; a multi-second
         // wait here means CE's overlay GPU work hung, vs a slow real Present means the swapchain
@@ -2830,7 +2831,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 
     // Flush deferred overlay fence Signal AFTER Present.  The NVIDIA driver
     // stalls the GPU when Signal sits between our overlay ECL and Present.
-    if (api == APIType::D3D12) {
+    // Skip during no-callback FSR FG: the deferred Signal on the game queue is an extra
+    // ID3D12CommandQueue::Signal on an AMD-tracked queue — exactly what wedges ffxQuery pacing.
+    if (api == APIType::D3D12 && !DX12_IsNativeFSRInternalNoCallbackCompositionActive()) {
         InvokeDX12FlushDeferredSignal();
         // Feed the present result into focus-transition/occlusion tracking so vtable-hooked
         // DX12 apps engage the invisible-safe not-presentable hold during the Alt+Tab mode
