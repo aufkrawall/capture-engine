@@ -4311,7 +4311,7 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
     const bool skip = ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         g_FGRuntimeOwnsSwapchain, streamlineFGRunning, runtimeMode, authoritativeFSRActive,
         runtimeOwnedNativeFGPresentPath, ffxStallAllowsNormalOverlay, nativeFSRInternalNoCallbackComposition,
-        DX12_IsFFXUiResourceCompositionActive());
+        DX12_IsFFXUiResourceCachedForBundle());
     if (!skip) {
         // Normal (non-override) path says don't skip — reset the suppression
         // timer so the next suppression episode gets a fresh 2-second window.

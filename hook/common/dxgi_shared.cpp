@@ -2660,13 +2660,20 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
 
         if (!steamOnlyTest && api == APIType::D3D12) {
-            // Near-passthrough during no-callback FSR FG: call the minimal ProcessFrame path.
-            // The UI-texture bundle overlay route (no extra ECL call) is the preferred transport
-            // during no-callback FSR, but when the bundle is unavailable (no registered UI texture
-            // intercepted), the normal DX12 overlay route falls through.
+            // Near-passthrough during no-callback FSR FG: when the UI-texture bundle is active
+            // (GTA-style), skip ProcessFrame entirely — even the minimal path's QueryInterface +
+            // RecordFrame + inner ProcessFrame overhead on the runtime queue desyncs AMD's QPC-timed
+            // pacing and freezes GTA (~900 frames). When the bundle is unavailable (no registered UI
+            // texture intercepted — test app), call the minimal ProcessFrame path so the overlay
+            // renders through the normal DX12 route.
             const bool noCallbackFSRFG = DX12_IsNativeFSRInternalNoCallbackCompositionActive();
             if (noCallbackFSRFG) {
-                DX12_ProcessFrameMinimal(pSwapChain);
+                if (DX12_IsFFXUiResourceCachedForBundle()) {
+                    // Bundle active — skip all CE overhead (near-passthrough).
+                } else {
+                    // No bundle available — run minimal ProcessFrame so the overlay renders.
+                    DX12_ProcessFrameMinimal(pSwapChain);
+                }
             } else {
                 LARGE_INTEGER diagPfT0, diagPfT1, diagPfFreq;
                 QueryPerformanceCounter(&diagPfT0);
