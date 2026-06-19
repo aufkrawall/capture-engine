@@ -478,7 +478,8 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     // is NOT called — all separate-ECL routes wedge AMD's pacing. Forwarded unchanged.
     if (parsedDesc &&
         parsedDesc->type == ce::ffx_api::kConfigureDescTypeFrameGenerationSwapChainRegisterUiResourceDX12 &&
-        DX12_ShouldCacheFFXUiResourceForBundle()) {
+        (DX12_ShouldCacheFFXUiResourceForBundle() ||
+         !g_ffxConfigureVehPermanentlyDisarmed.load(std::memory_order_acquire))) {
         const auto* uiDesc =
             reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource*>(desc);
         if (uiDesc->uiResource.resource) {
@@ -1112,14 +1113,14 @@ static LONG WINAPI FfxConfigureBreakpointVEH(EXCEPTION_POINTERS* ep) {
             static_cast<unsigned>(result));
     }
 
-    // One-shot VEH detection: if we just processed an ENABLED no-callback ffxConfigure (type=0x20002)
-    // and the no-callback composition flag is now set, permanently disarm the VEH. CE has what it needs
-    // (the latched g_NativeFSRInternalNoCallbackComposition flag); subsequent ffxConfigure calls must run
-    // natively to avoid multi-threaded 0xCC contention desyncing AMD's QPC-timed pacing. The byte was
-    // already restored at the top of the handler — just skip the re-arm.
+    // One-shot VEH detection: disarm only after BOTH (1) the no-callback flag is set AND (2) the UI
+    // texture has been cached from a RegisterUiResource call. If we disarm before the cache is populated,
+    // subsequent ffxConfigure calls run natively and the cache is never filled → the bundle never fires.
+    // The RegisterUiResource (type=0x30002) may arrive before or after the enabled configure (type=0x20002)
+    // that sets the no-callback flag, so we must wait for both conditions.
     if (desc &&
-        desc->type == ce::ffx_api::kConfigureDescTypeFrameGeneration &&
         DX12_IsNativeFSRInternalNoCallbackCompositionActive() &&
+        DX12_IsFFXUiResourceCachedForBundle() &&
         !g_ffxConfigureVehPermanentlyDisarmed.exchange(true, std::memory_order_acq_rel)) {
         HookLogImportant(
             "FFX Hook: VEH permanently disarmed after one-shot no-callback detection (context=%p) — "

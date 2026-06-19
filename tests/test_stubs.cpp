@@ -54,6 +54,7 @@ void FFXHook_ResetVehDisarmAndRearm() {}
 bool DX12_IsNativeFSRInternalNoCallbackCompositionActive() { return false; }
 void DX12_ProcessFrameMinimal(IDXGISwapChain*) {}
 bool DX12_ShouldCacheFFXUiResourceForBundle() { return false; }
+bool DX12_IsFFXUiResourceCachedForBundle() { return false; }
 
 // DX12_SetCommandQueue is extern "C" in the header
 extern "C" void DX12_SetCommandQueue(ID3D12CommandQueue*) {}

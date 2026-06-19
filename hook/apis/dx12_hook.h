@@ -113,6 +113,8 @@ bool DX12_IsFFXUiResourceCompositionActive();
 bool DX12_ShouldCompositeOverlayOntoFFXUiResource();
 // Cache the UI texture for the ECL bundle (Phase 2). Gated to no-callback FSR FG only.
 bool DX12_ShouldCacheFFXUiResourceForBundle();
+// True if the UI texture has been cached (for the VEH disarm condition).
+bool DX12_IsFFXUiResourceCachedForBundle();
 // Direct read of the no-callback composition flag (for the VEH one-shot disarm logic).
 bool DX12_IsNativeFSRInternalNoCallbackCompositionActive();
 // Minimal-overhead ProcessFrame for no-callback FSR FG (skips policy/lock/heuristic work).

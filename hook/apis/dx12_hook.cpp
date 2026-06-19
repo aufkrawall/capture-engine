@@ -5414,8 +5414,15 @@ bool DX12_ShouldCompositeOverlayOntoFFXUiResource() {
 // Cache the UI texture from RegisterUiResource for the ECL bundle (Phase 2). The composite (separate-ECL
 // route) is dead code — only the cache + bundle are active. The bundle appends CE's overlay CL to the
 // game's existing ECL (zero extra ECL calls, zero extra Signals). Gated to no-callback FSR FG only.
+// Note: the call site in Hooked_ffxConfigure also caches during the VEH detection phase (before the
+// no-callback flag is set) so the cache is populated before the VEH disarms.
 bool DX12_ShouldCacheFFXUiResourceForBundle() {
     return g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire);
+}
+
+// True if the UI texture has been cached from a RegisterUiResource call (for the VEH disarm condition).
+bool DX12_IsFFXUiResourceCachedForBundle() {
+    return g_CachedFFXUiTexture.load(std::memory_order_acquire) != nullptr;
 }
 
 // Direct read of the no-callback composition flag (for the VEH one-shot disarm logic in ffx_hook.cpp).
