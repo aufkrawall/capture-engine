@@ -160,6 +160,12 @@ WGC_DELAY_REALIZATION_RE = re.compile(
     r"delayResidualEarlyMax=(\d+)us",
     re.IGNORECASE,
 )
+WGC_DELAY_RELAXED_RE = re.compile(
+    r"delayResidualRelaxedSelections=(\d+) delayResidualRelaxedMax=(\d+)us"
+    r"(?: delayResidualRelaxedRejectedSync=(\d+) delayRepeatClusterPressure=(\d+) "
+    r"delayRepeatClusterMax=(\d+))?",
+    re.IGNORECASE,
+)
 WGC_PERF_RE = re.compile(r"\[WGC Perf\].*", re.IGNORECASE)
 INJECT_PERF_RE = re.compile(r"\[Inject Perf\].*", re.IGNORECASE)
 INJECT_CFR_SUMMARY_RE = re.compile(
@@ -1174,6 +1180,7 @@ def parse_media_triage(media_text):
         if smoothness_match:
             smoothness_extra = WGC_SMOOTHNESS_EXTRA_RE.search(line)
             delay_realization = WGC_DELAY_REALIZATION_RE.search(line)
+            delay_relaxed = WGC_DELAY_RELAXED_RE.search(line)
             wgc_smoothness_summary.append(
                 {
                     "encoder_limited_drops": parse_int(smoothness_match.group(1)),
@@ -1213,6 +1220,11 @@ def parse_media_triage(media_text):
                     "delay_residual_p95_us": parse_int(delay_realization.group(10)) if delay_realization else 0,
                     "delay_residual_late_max_us": parse_int(delay_realization.group(11)) if delay_realization else 0,
                     "delay_residual_early_max_us": parse_int(delay_realization.group(12)) if delay_realization else 0,
+                    "delay_relaxed_selections": parse_int(delay_relaxed.group(1)) if delay_relaxed else 0,
+                    "delay_relaxed_max_us": parse_int(delay_relaxed.group(2)) if delay_relaxed else 0,
+                    "delay_relaxed_rejected_sync": parse_int(delay_relaxed.group(3)) if delay_relaxed else 0,
+                    "delay_repeat_cluster_pressure": parse_int(delay_relaxed.group(4)) if delay_relaxed else 0,
+                    "delay_repeat_cluster_max_ticks": parse_int(delay_relaxed.group(5)) if delay_relaxed else 0,
                     "line": line,
                 }
             )
@@ -1836,6 +1848,14 @@ def summarize_stop_audio_shortfalls(media_evidence):
     }
 
 
+def is_sparse_app_source_silence(item):
+    return (
+        bool(item.get("process")) and item.get("process") != "-"
+        and item.get("ring_peak_samples", 0) == 0
+        and (item.get("pad_samples", 0) > 0 or item.get("ring_underruns", 0) > 0)
+    )
+
+
 def summarize_started_app_source_health(media_evidence, log_summary):
     counts = log_summary["counts"] if log_summary else {}
     stop_sources = media_evidence["stop_audio_sources"]
@@ -1848,6 +1868,8 @@ def summarize_started_app_source_health(media_evidence, log_summary):
         if item.get("packet_gap_samples", 0) >= 48000 and item.get("late_join_suppressed_samples", 0) == 0
     ]
     underrun_sources = [item for item in stop_sources if item.get("ring_underruns", 0) > 0 or item.get("pad_samples", 0) > 0]
+    sparse_silence_sources = [item for item in underrun_sources if is_sparse_app_source_silence(item)]
+    active_underrun_sources = [item for item in underrun_sources if not is_sparse_app_source_silence(item)]
     return {
         "late_join_live_count": counts.get("audio_late_app_live_join", 0),
         "late_source_backlog_count": counts.get("audio_late_app_source_backlog", 0),
@@ -1855,6 +1877,8 @@ def summarize_started_app_source_health(media_evidence, log_summary):
         "late_join_sources": late_join_sources,
         "backlog_sources": backlog_sources,
         "underrun_sources": underrun_sources,
+        "sparse_silence_sources": sparse_silence_sources,
+        "active_underrun_sources": active_underrun_sources,
     }
 
 
@@ -1887,6 +1911,17 @@ def classify_session_triage(session_dir, capture_path=None):
         audio_fault_counts = {name: log_summary["counts"].get(name, 0) for name in TRIAGE_AUDIO_FAULT_EVENTS}
         visual_fault_counts = {name: log_summary["counts"].get(name, 0) for name in TRIAGE_VISUAL_FAULT_EVENTS}
         mux_fault_counts = {name: log_summary["counts"].get(name, 0) for name in TRIAGE_MUX_FAULT_EVENTS}
+    strict_audio_fault_counts = dict(audio_fault_counts)
+    sparse_only_app_silence = (
+        started_app_source_health["app_gap_silence_count"] > 0
+        and bool(started_app_source_health["sparse_silence_sources"])
+        and not started_app_source_health["active_underrun_sources"]
+        and started_app_source_health["late_source_backlog_count"] == 0
+        and not started_app_source_health["backlog_sources"]
+    )
+    if sparse_only_app_silence:
+        strict_audio_fault_counts["audio_underrun"] = 0
+        strict_audio_fault_counts["audio_app_source_gap_silence"] = 0
     writer_sync_after_timeout = (
         log_summary is not None
         and log_summary["counts"].get("writer_finalize_timeout", 0) > 0
@@ -1936,7 +1971,10 @@ def classify_session_triage(session_dir, capture_path=None):
     if started_app_source_health["late_source_backlog_count"] > 0 or started_app_source_health["backlog_sources"]:
         verdicts.append("late_app_source_backlog")
     if started_app_source_health["app_gap_silence_count"] > 0:
-        verdicts.append("started_app_source_underrun")
+        if sparse_only_app_silence:
+            verdicts.append("sparse_app_source_silence")
+        else:
+            verdicts.append("started_app_source_underrun")
     if post_mux_probe_hang:
         verdicts.append("post_mux_probe_hang")
     elif post_mux_probe_timeout:
@@ -1951,7 +1989,7 @@ def classify_session_triage(session_dir, capture_path=None):
     if stop_audio_shortfalls["multi_source_short_count"] > 0:
         verdicts.append("multi_app_audio_track_stall")
     if (
-        any(audio_fault_counts.values())
+        any(strict_audio_fault_counts.values())
         or post_mux_strict_mismatches
         or final_packet_strict
         or media_evidence["zero_drift_warnings"]
@@ -2006,6 +2044,7 @@ def classify_session_triage(session_dir, capture_path=None):
             "wgc_sync_delay_reserve_pressure": wgc_sync_delay_reserve_pressure,
             "late_app_source_backlog": "late_app_source_backlog" in verdicts,
             "started_app_source_underrun": "started_app_source_underrun" in verdicts,
+            "sparse_app_source_silence": "sparse_app_source_silence" in verdicts,
             "post_mux_probe_hang": post_mux_probe_hang,
             "post_mux_probe_timeout": post_mux_probe_timeout,
             "ce_process_crash": bool(hook_evidence["crash_events"]),
@@ -2033,6 +2072,7 @@ def classify_session_triage(session_dir, capture_path=None):
             },
             "perf_csv": perf_summaries,
             "audio_fault_counts": audio_fault_counts,
+            "strict_audio_fault_counts": strict_audio_fault_counts,
             "visual_fault_counts": visual_fault_counts,
             "mux_fault_counts": mux_fault_counts,
             "strict_mux_fault_counts": strict_mux_fault_counts,
@@ -2090,10 +2130,13 @@ def print_triage_report(report):
     app_health = evidence["started_app_source_health"]
     if app_health["late_source_backlog_count"] or app_health["late_join_live_count"] or app_health["app_gap_silence_count"]:
         print(
-            "  app_source_health late_live_join={live} late_backlog={backlog} gap_silence={gap}".format(
+            "  app_source_health late_live_join={live} late_backlog={backlog} gap_silence={gap} "
+            "sparse_silence_sources={sparse} active_underruns={active}".format(
                 live=app_health["late_join_live_count"],
                 backlog=app_health["late_source_backlog_count"],
                 gap=app_health["app_gap_silence_count"],
+                sparse=len(app_health["sparse_silence_sources"]),
+                active=len(app_health["active_underrun_sources"]),
             )
         )
     if report["evidence"]["crash_events"]:
@@ -2128,7 +2171,8 @@ def print_triage_report(report):
                 "selected={reserve_selected} reason={reserve_reason} realized_avg={realized_avg:.3f}ms "
                 "residual_avg={residual_avg_signed:+.3f}/{residual_avg_abs:.3f}ms "
                 "residual_p95={residual_p95:.3f}ms residual_max={residual_max:.3f}ms "
-                "reservoir={low_water}/{target} low_ticks={low_ticks}".format(
+                "reservoir={low_water}/{target} low_ticks={low_ticks} "
+                "relaxed={relaxed} reject_sync={reject_sync} repeat_pressure={repeat_pressure}/{repeat_max}".format(
                     requested=worst_sync_delay.get("av_delay_ms", 0.0),
                     startup=worst_sync_delay.get("startup_delay_ms", 0.0),
                     effective=worst_sync_delay.get("effective_delay_ms", 0.0),
@@ -2149,6 +2193,10 @@ def print_triage_report(report):
                     low_water=worst_sync_delay.get("delay_reservoir_low_water_frames", 0),
                     target=worst_sync_delay.get("delay_reservoir_target_frames", 0),
                     low_ticks=worst_sync_delay.get("delay_reservoir_low_water_ticks", 0),
+                    relaxed=worst_sync_delay.get("delay_relaxed_selections", 0),
+                    reject_sync=worst_sync_delay.get("delay_relaxed_rejected_sync", 0),
+                    repeat_pressure=worst_sync_delay.get("delay_repeat_cluster_pressure", 0),
+                    repeat_max=worst_sync_delay.get("delay_repeat_cluster_max_ticks", 0),
                 )
             )
     rounding = evidence["rounding_evidence"]
@@ -2662,6 +2710,55 @@ def self_test():
         assert "ce_visual_timeline_fault" in mixed_policy_report["verdicts"]
         assert "ce_audio_timeline_fault" not in mixed_policy_report["verdicts"]
 
+        wgc_sync_delay_long_run_p5_mixed_pressure = make_session(
+            "wgc_sync_delay_long_run_p5_mixed_pressure",
+            media=(
+                "[WGC CFR SUMMARY] Live=150230 Dup=13764 DupPct=9.1% NoFresh=142pm NoReserve=148pm "
+                "DupReason(src=13764 def=0 timer=0 drain=0) SourceLimitedRepeats=13764 StarvedEpisodes=3743 "
+                "longest=11406ms longestDup=528 worstIn=24 worstDel=24\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=1235 "
+                "phaseErrorMax=279304us shortfallMax=0.0ms staleDebtDrops=1 liveRebase=0/0 "
+                "tooNewRepeats=13140 syncDelayHolds=13140 tooNewLeadMax=195524us avDelay=32.3ms "
+                "startupDelay=32.3ms scheduleOffset=-236210us effectiveDelay=32.3ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=5859 syncDelayPolicyHolds=7281 startupReserveFrames=1 "
+                "startupReserveSpan=0us startupDelayTarget=32276us startupReserveSelected=0 "
+                "startupReserveReason=reserve_timeout delayReservoirLowWaterFrames=4 "
+                "delayReservoirTargetFrames=5 delayReservoirLowWaterTicks=22377 realizedDelayAvg=31715us "
+                "realizedDelayMin=18476us realizedDelayMax=62767us delayResidualAvg=560/2297us "
+                "delayResidualMax=30491us delayResidualP95=5000us delayResidualLateMax=13800us "
+                "delayResidualEarlyMax=30491us delayResidualRelaxedSelections=7917 "
+                "delayResidualRelaxedMax=13800us delayResidualRelaxedRejectedSync=44 "
+                "delayRepeatClusterPressure=7281 delayRepeatClusterMax=120 mixedPolicyFault=1\n"
+                "[PullAudio] App source gap silence: track=1 src=5 buffered=0 requested=400 "
+                "target=219800ms encoded=10550000. Source contributes silence for missing range.\n"
+                "[PullAudio] WARNING: Source underrun - src 5 padding 400 samples with silence "
+                "(available=0 needed=400 forceDrain=0)\n"
+                "[STOP AUDIO TRACK] Track 1: encoded=60092400 expected=60092400 diff=+0 (+0.000 ms) "
+                "sources=[1,3,5,7]\n"
+                "[STOP AUDIO] Source 5: track=1 encoded=60092400 trim=cov:0 latTotal:0 liveUncat:0 "
+                "pad:49648177 qgap:480 qjoin:5232636 qjoinKeep:480 ringPeak=0 ringUnderruns=124120 "
+                "process=Brave.exe\n"
+                "[VideoEncoder] Final packet timeline: target=1251925000 us videoEnd=1251925000 us "
+                "audioMinEnd=1251925000 us audioMaxEnd=1251925000 us maxPacketDelta=0 us "
+                "streams(v=1 a=3) audioPastTarget=0\n"
+                "[VideoEncoder] Final metadata durations: target=1251925000 us video=1251925000 us "
+                "audioMin=1251925000 us audioMax=1251925000 us maxDelta=0 us streams(v=1 a=3) "
+                "overload(encoder=0 mux=0) backpressure=0\n"
+            ),
+        )
+        long_run_report = classify_session_triage(wgc_sync_delay_long_run_p5_mixed_pressure)
+        long_run_summary = long_run_report["evidence"]["wgc_smoothness_summary"][0]
+        assert long_run_summary["delay_relaxed_rejected_sync"] == 44
+        assert long_run_summary["delay_repeat_cluster_pressure"] == 7281
+        assert long_run_summary["delay_repeat_cluster_max_ticks"] == 120
+        assert "wgc_source_starvation" in long_run_report["verdicts"]
+        assert "wgc_av_sync_delay_residual" in long_run_report["verdicts"]
+        assert "wgc_sync_delay_policy_fault" in long_run_report["verdicts"]
+        assert "sparse_app_source_silence" in long_run_report["verdicts"]
+        assert "ce_visual_timeline_fault" in long_run_report["verdicts"]
+        assert "ce_audio_timeline_fault" not in long_run_report["verdicts"]
+
         wgc_sync_delay_policy_fault = make_session(
             "wgc_sync_delay_policy_fault",
             media=(
@@ -2739,6 +2836,31 @@ def self_test():
         assert "late_app_source_backlog" not in report["verdicts"]
         assert "ce_audio_timeline_fault" not in report["verdicts"]
         assert report["evidence"]["started_app_source_health"]["late_join_live_count"] == 1
+
+        sparse_app_source_silence = make_session(
+            "sparse_app_source_silence",
+            media=(
+                "[PullAudio] App source gap silence: track=1 src=5 buffered=0 requested=400 "
+                "target=219800ms encoded=10550000. Source contributes silence for missing range.\n"
+                "[PullAudio] WARNING: Source underrun - src 5 padding 400 samples with silence "
+                "(available=0 needed=400 forceDrain=0)\n"
+                "[STOP AUDIO TRACK] Track 1: encoded=60092400 expected=60092400 diff=+0 (+0.000 ms) "
+                "sources=[1,3,5,7]\n"
+                "[STOP AUDIO] Source 5: track=1 encoded=60092400 trim=cov:0 latTotal:0 liveUncat:0 "
+                "pad:49648177 qgap:480 qjoin:5232636 qjoinKeep:480 ringPeak=0 ringUnderruns=124120 "
+                "process=Brave.exe\n"
+                "[VideoEncoder] Final packet timeline: target=1251925000 us videoEnd=1251925000 us "
+                "audioMinEnd=1251925000 us audioMaxEnd=1251925000 us maxPacketDelta=0 us "
+                "streams(v=1 a=3) audioPastTarget=0\n"
+            ),
+        )
+        report = classify_session_triage(sparse_app_source_silence)
+        assert "sparse_app_source_silence" in report["verdicts"]
+        assert "started_app_source_underrun" not in report["verdicts"]
+        assert "ce_audio_timeline_fault" not in report["verdicts"]
+        assert report["evidence"]["audio_fault_counts"]["audio_underrun"] == 1
+        assert report["evidence"]["strict_audio_fault_counts"]["audio_underrun"] == 0
+        assert len(report["evidence"]["started_app_source_health"]["sparse_silence_sources"]) == 1
 
         crash_session = make_session(
             "crash_session",

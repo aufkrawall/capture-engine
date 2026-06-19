@@ -886,6 +886,16 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayRelaxedCandidateMustBeatRepeatWith
     EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(110001, 80000, 100000, 8333, 1000000));
 }
 
+TEST(CapturePipelinePolicyTest, WgcActiveDelayRelaxedCandidateAccountsForRepeatClusterCost) {
+    EXPECT_EQ(policy::GetWgcActiveDelayRepeatClusterPenaltyQpc(0, 100), 0);
+    EXPECT_EQ(policy::GetWgcActiveDelayRepeatClusterPenaltyQpc(1, 100), 25);
+    EXPECT_EQ(policy::GetWgcActiveDelayRepeatClusterPenaltyQpc(20, 100), 100);
+
+    EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1070, 1060, 1000, 100, 1000000, 0));
+    EXPECT_TRUE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1070, 1060, 1000, 100, 1000000, 1));
+    EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(110001, 109000, 100000, 8333, 1000000, 4));
+}
+
 TEST(CapturePipelinePolicyTest, WgcActiveDelayMixedPolicyPressureUsesShareNotOnlyCount) {
     EXPECT_FALSE(policy::IsWgcActiveDelayMixedPolicyPressureFault(1291, 385, 1676));
     EXPECT_TRUE(policy::IsWgcActiveDelayMixedPolicyPressureFault(782, 322, 1104));
@@ -903,6 +913,11 @@ TEST(CapturePipelinePolicyTest, WgcDelayReservoirFramesFollowMeasuredDelay) {
     EXPECT_FALSE(policy::IsWgcDelayReservoirBelowLowWater(4, 301, 100));
     EXPECT_FALSE(policy::IsWgcDelayReservoirRecovered(4, 301, 100));
     EXPECT_TRUE(policy::IsWgcDelayReservoirRecovered(5, 301, 100));
+
+    EXPECT_FALSE(policy::ShouldPreserveWgcStartupPartialReserve(1, 0, true, true));
+    EXPECT_FALSE(policy::ShouldPreserveWgcStartupPartialReserve(4, 180, false, true));
+    EXPECT_FALSE(policy::ShouldPreserveWgcStartupPartialReserve(4, 180, true, false));
+    EXPECT_TRUE(policy::ShouldPreserveWgcStartupPartialReserve(4, 180, true, true));
 }
 
 TEST(CapturePipelinePolicyTest, WgcFreshCatchupRejectsFramesOutsideLiveVisualDebtWindow) {

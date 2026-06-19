@@ -123,3 +123,7 @@ inline bool IsEntryBreakpointHit(const void* exceptionAddress, uintptr_t instruc
 }  // namespace detail
 
 }  // namespace FFXHook
+
+// Reset the one-shot VEH disarm and re-arm the breakpoint for the next FG-on transition.
+// Called when FG turns off (DX12_OnNativeFSRFrameGenerationContextsDestroyed / ForceClear).
+void FFXHook_ResetVehDisarmAndRearm();

@@ -95,6 +95,14 @@ std::recursive_mutex g_FfxConfigureBreakpointMutex;
 static void* g_ffxConfigureVehHandle = nullptr;
 static uint8_t g_ffxConfigureOriginalFirstByte = 0;
 static std::atomic<bool> g_ffxConfigureVehArmed{false};
+// One-shot VEH detection: after CE processes the first ENABLED no-callback ffxConfigure, the VEH is
+// permanently disarmed (byte restored, no re-arm). All subsequent ffxConfigure calls execute natively
+// with zero CE overhead — eliminating the multi-threaded 0xCC contention that desyncs AMD's QPC-timed
+// pacing (ffxQuery+0x225fe). GTA's ffxConfigure calls come from 6-7 threads; the 0xCC byte mutation
+// on a code page those threads call into creates timing irregularities. The synthetic test app (single-
+// threaded VEH hits) is stable; GTA (multi-threaded) wedges in ~8-10 frames. Reset by
+// FFXHook_ResetVehDisarmAndRearm when FG turns off (for on→off→on transitions).
+static std::atomic<bool> g_ffxConfigureVehPermanentlyDisarmed{false};
 static std::atomic<int> g_FfxConfigureOriginalForwardDepth{0};
 static std::atomic<bool> g_FfxConfigureDeferredRearm{false};
 static std::atomic<void*> g_FfxConfigureDeferredRearmTarget{nullptr};
@@ -893,6 +901,12 @@ static bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target, const char* module
         return false;
     }
 
+    // One-shot detection: if the VEH was permanently disarmed (after the first enabled no-callback
+    // ffxConfigure), do NOT re-arm. The byte stays as the original — ffxConfigure runs natively.
+    if (g_ffxConfigureVehPermanentlyDisarmed.load(std::memory_order_acquire)) {
+        return false;
+    }
+
     if (g_FfxConfigureOriginalForwardDepth.load(std::memory_order_acquire) > 0) {
         g_FfxConfigureDeferredRearmTarget.store(reinterpret_cast<void*>(target), std::memory_order_release);
         g_FfxConfigureDeferredRearm.store(true, std::memory_order_release);
@@ -1098,12 +1112,28 @@ static LONG WINAPI FfxConfigureBreakpointVEH(EXCEPTION_POINTERS* ep) {
             static_cast<unsigned>(result));
     }
 
-    // Re-arm after the real ffxConfigure returns. This keeps protected official
-    // runtimes on a breakpoint hook without installing a permanent JMP, and
-    // prevents early non-FG/disabled configures from consuming the only chance
-    // to catch a later save-load FG enable.
-    ArmFfxConfigureBreakpoint(reinterpret_cast<PfnFfxConfigure>(target), "protected official FFX runtime",
-                              "post-call rearm");
+    // One-shot VEH detection: if we just processed an ENABLED no-callback ffxConfigure (type=0x20002)
+    // and the no-callback composition flag is now set, permanently disarm the VEH. CE has what it needs
+    // (the latched g_NativeFSRInternalNoCallbackComposition flag); subsequent ffxConfigure calls must run
+    // natively to avoid multi-threaded 0xCC contention desyncing AMD's QPC-timed pacing. The byte was
+    // already restored at the top of the handler — just skip the re-arm.
+    if (desc &&
+        desc->type == ce::ffx_api::kConfigureDescTypeFrameGeneration &&
+        DX12_IsNativeFSRInternalNoCallbackCompositionActive() &&
+        !g_ffxConfigureVehPermanentlyDisarmed.exchange(true, std::memory_order_acq_rel)) {
+        HookLogImportant(
+            "FFX Hook: VEH permanently disarmed after one-shot no-callback detection (context=%p) — "
+            "subsequent ffxConfigure calls run natively (multi-threaded 0xCC contention was desyncing "
+            "AMD's ffxQuery pacing)",
+            contextPtr);
+    } else {
+        // Re-arm after the real ffxConfigure returns. This keeps protected official
+        // runtimes on a breakpoint hook without installing a permanent JMP, and
+        // prevents early non-FG/disabled configures from consuming the only chance
+        // to catch a later save-load FG enable.
+        ArmFfxConfigureBreakpoint(reinterpret_cast<PfnFfxConfigure>(target), "protected official FFX runtime",
+                                  "post-call rearm");
+    }
 
     // Return directly to the caller: pop the return address from the stack
     // and skip the patched ffxConfigure body entirely (Hooked_ffxConfigure
@@ -1156,6 +1186,20 @@ static bool InstallBridgeOnTrackedContextsImpl(void* swapChain) {
 }
 
 }  // anonymous namespace
+
+// Reset the one-shot VEH disarm and re-arm the breakpoint for the next FG-on transition.
+// Called from DX12_OnNativeFSRFrameGenerationContextsDestroyed / ForceClearNativeFSRInternalNoCallbackComposition
+// when FG turns off. The next enabled ffxConfigure will fire the VEH once, detect no-callback mode, and
+// disarm again — one VEH hit per FG-on transition, no sustained multi-threaded contention.
+void FFXHook_ResetVehDisarmAndRearm() {
+    g_ffxConfigureVehPermanentlyDisarmed.store(false, std::memory_order_release);
+    void* target = g_ffxConfigureTarget.load(std::memory_order_acquire);
+    if (target) {
+        ArmFfxConfigureBreakpoint(reinterpret_cast<PfnFfxConfigure>(target),
+                                  "protected official FFX runtime", "FG-off re-arm for next on-transition");
+        HookLogImportant("FFX Hook: VEH disarm reset + re-armed for next FG-on transition (target=%p)", target);
+    }
+}
 
 // ============================================================================
 // Public API

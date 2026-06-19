@@ -41,6 +41,8 @@ constexpr uint32_t kWgcCoverageDelayMaxTicks = 32;
 constexpr uint32_t kWgcCfrSelectionMaxLeadTicks = 3;
 constexpr uint32_t kWgcActiveDelayResidualTolerancePermille = 600;
 constexpr uint32_t kWgcActiveDelayResidualHardLimitUs = 10000;
+constexpr uint32_t kWgcActiveDelayRepeatClusterPenaltyPermille = 250;
+constexpr uint32_t kWgcActiveDelayRepeatClusterPenaltyMaxPermille = 1000;
 constexpr uint32_t kWgcActiveDelayPolicyHoldFaultMinCount = 120;
 constexpr uint32_t kWgcActiveDelayPolicyHoldFaultPermille = 250;
 constexpr uint32_t kWgcDelayReservoirTargetExtraFrames = 1;
@@ -1467,9 +1469,21 @@ inline bool IsWgcFrameTooNewForActiveDelayHardLimit(int64_t frameSelectionQpc, i
            selectionTargetQpc + GetWgcActiveDelayResidualHardLimitQpc(targetIntervalTicks, qpcTicksPerSecond);
 }
 
+inline int64_t GetWgcActiveDelayRepeatClusterPenaltyQpc(uint32_t repeatClusterTicks, int64_t targetIntervalTicks) {
+    if (repeatClusterTicks == 0 || targetIntervalTicks <= 0) {
+        return 0;
+    }
+
+    const uint32_t penaltyPermille = std::min<uint32_t>(
+        repeatClusterTicks * kWgcActiveDelayRepeatClusterPenaltyPermille,
+        kWgcActiveDelayRepeatClusterPenaltyMaxPermille);
+    return std::max<int64_t>(1, (targetIntervalTicks * static_cast<int64_t>(penaltyPermille)) / 1000);
+}
+
 inline bool IsWgcActiveDelayRelaxedCandidateUseful(int64_t candidateSelectionQpc, int64_t repeatSelectionQpc,
                                                    int64_t selectionTargetQpc, int64_t targetIntervalTicks,
-                                                   int64_t qpcTicksPerSecond) {
+                                                   int64_t qpcTicksPerSecond,
+                                                   uint32_t repeatClusterTicks = 0) {
     if (candidateSelectionQpc <= 0 || repeatSelectionQpc <= 0 || selectionTargetQpc <= 0 || targetIntervalTicks <= 0) {
         return false;
     }
@@ -1486,7 +1500,13 @@ inline bool IsWgcActiveDelayRelaxedCandidateUseful(int64_t candidateSelectionQpc
     const int64_t candidateDamage = candidateSelectionQpc >= selectionTargetQpc
                                         ? (candidateSelectionQpc - selectionTargetQpc)
                                         : (selectionTargetQpc - candidateSelectionQpc);
-    return candidateDamage < repeatDamage;
+    if (candidateDamage < repeatDamage) {
+        return true;
+    }
+
+    const int64_t repeatClusterPenalty =
+        GetWgcActiveDelayRepeatClusterPenaltyQpc(repeatClusterTicks, targetIntervalTicks);
+    return repeatClusterPenalty > 0 && candidateDamage <= repeatDamage + repeatClusterPenalty;
 }
 
 inline bool IsWgcActiveDelayMixedPolicyPressureFault(
@@ -1509,6 +1529,11 @@ inline bool IsWgcDelayReservoirBelowLowWater(size_t bufferedFrames, int64_t cont
 inline bool IsWgcDelayReservoirRecovered(size_t bufferedFrames, int64_t contentDelayQpc, int64_t targetIntervalTicks) {
     const uint32_t targetFrames = GetWgcDelayReservoirTargetFrames(contentDelayQpc, targetIntervalTicks);
     return targetFrames == 0 || bufferedFrames >= targetFrames;
+}
+
+inline bool ShouldPreserveWgcStartupPartialReserve(size_t candidateCount, int64_t reserveSpanQpc,
+                                                   bool contentDelayActive, bool waitTimedOut) {
+    return contentDelayActive && waitTimedOut && candidateCount > 1 && reserveSpanQpc > 0;
 }
 
 inline bool IsWgcFrameWithinLiveVisualDebtWindow(int64_t frameSelectionQpc, int64_t liveNowQpc,

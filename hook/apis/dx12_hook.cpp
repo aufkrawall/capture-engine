@@ -3226,26 +3226,32 @@ static bool ShouldDrawOverlayOnOrigGameDuringDormantProtectedOfficialFFXStartup(
     const bool allow = ce::dx12_overlay_policy::ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
         /*protectedOfficialFFXStartupPending=*/true, effectiveOverlayInit, effectiveSyncInit,
         hasDistinctStagedTakeoverQueue, directFFX, ffxPresentCallbackActive, sustainedGameProgressOnOriginalQueue);
+    // GTA-freeze guardrail (restored 2026-06-19, dropped in 2985ef0): deny dormant overlay draw when the
+    // runtime owns the swapchain or the swapchain queue is not the game's original queue. Drawing on the
+    // staged/runtime-owned queue during dormant FSR-arming was proven to wedge AMD's ffxQuery pacing (the
+    // VEH multi-threaded 0xCC contention was the root cause). The overlay is suspended during FSR FG
+    // transitions instead.
+    const bool guardrailAllow = allow && !g_FGRuntimeOwnsSwapchain && scQueueIsOrigGame;
     // Diagnostic: this predicate is fragile / toggles run-to-run (session 20260615_215657: true for 1
     // frame then false forever, leaving the 2D-menu overlay blank). When protected-FFX is pending but we
     // DENY the dormant draw, log every sub-condition so the flipping one is attributable in one run.
-    if (!allow) {
+    if (!guardrailAllow) {
         static std::atomic<int> s_dormantDenyLog{0};
         const int n = s_dormantDenyLog.fetch_add(1, std::memory_order_relaxed);
         if (n < 16 || (n % 300) == 0) {
             HookLogImportant(
-                "DX12: [dormant-draw DENY] syncBootstrap=%d overlayBootstrap=%d runtimeOwns=%d(ignored) overlayInit=%d "
-                "syncInit=%d scQueue==origGame=%d(ignored) hasStagedTakeoverQueue=%d directFFX=%d callbackActive=%d "
-                "sustainedProgress=%d (progress=%u scQ=%p origGame=%p) #%d",
+                "DX12: [dormant-draw DENY] syncBootstrap=%d overlayBootstrap=%d runtimeOwns=%d overlayInit=%d "
+                "syncInit=%d scQueue==origGame=%d hasStagedTakeoverQueue=%d directFFX=%d callbackActive=%d "
+                "sustainedProgress=%d guardrailBlocked=%d (progress=%u scQ=%p origGame=%p) #%d",
                 inSyncInitBootstrap ? 1 : 0, inOverlayInitBootstrap ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0,
                 effectiveOverlayInit ? 1 : 0, effectiveSyncInit ? 1 : 0, scQueueIsOrigGame ? 1 : 0,
                 hasDistinctStagedTakeoverQueue ? 1 : 0, directFFX ? 1 : 0, ffxPresentCallbackActive ? 1 : 0,
-                sustainedGameProgressOnOriginalQueue ? 1 : 0,
+                sustainedGameProgressOnOriginalQueue ? 1 : 0, (allow && !guardrailAllow) ? 1 : 0,
                 g_ProtectedOfficialFFXStartupProcessFrameSkips.load(std::memory_order_acquire), dormantSwapchainQueue,
                 dormantOriginalGameQueue, n + 1);
         }
     }
-    return allow;
+    return guardrailAllow;
 }
 
 // The staged sync-init path (overlayInit=true, syncInit=false) needs to know whether to bootstrap sync
@@ -4961,6 +4967,8 @@ static void ResetFFXPresentCallbackOverlayBackend(const char* reason) {
 static void ForceClearNativeFSRInternalNoCallbackComposition(const char* reason) {
     if (g_NativeFSRInternalNoCallbackComposition.exchange(false, std::memory_order_acq_rel)) {
         HookLogImportant("DX12: Cleared retained native FSR internal no-callback composition route (%s)", reason);
+        // Re-arm the VEH breakpoint for the next FG-on transition (one-shot detection cycle reset).
+        FFXHook_ResetVehDisarmAndRearm();
     }
 }
 
@@ -5400,6 +5408,12 @@ bool DX12_IsFFXUiResourceCompositionActive() {
 // route the overlay through the game's UI resource instead of submitting on AMD's runtime present queue.
 // (App-callback FSR games keep using the present-callback overlay route, so we must not double-draw.)
 bool DX12_ShouldCompositeOverlayOntoFFXUiResource() {
+    return false;  // Disabled: all UI-composite/bundle routes wedge AMD. The VEH one-shot disarm is the fix.
+}
+
+// Direct read of the no-callback composition flag (for the VEH one-shot disarm logic in ffx_hook.cpp).
+// Unlike DX12_IsFFXUiResourceCompositionActive (which is recency-gated), this returns the raw latched flag.
+bool DX12_IsNativeFSRInternalNoCallbackCompositionActive() {
     return g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire);
 }
 
