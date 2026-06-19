@@ -1488,6 +1488,24 @@ inline bool IsWgcFrameTooNewForActiveDelayHardLimit(int64_t frameSelectionQpc, i
            selectionTargetQpc + GetWgcActiveDelayResidualHardLimitQpc(targetIntervalTicks, qpcTicksPerSecond);
 }
 
+inline bool IsWgcActiveDelayFinalSelectionWithinHardLimit(int64_t predictedSelectionQpc, int64_t rawSelectionQpc,
+                                                          int64_t selectionTargetQpc, int64_t targetIntervalTicks,
+                                                          int64_t qpcTicksPerSecond) {
+    if (selectionTargetQpc <= 0 || targetIntervalTicks <= 0) {
+        return true;
+    }
+    if (IsWgcFrameTooNewForActiveDelayHardLimit(predictedSelectionQpc, selectionTargetQpc, targetIntervalTicks,
+                                                qpcTicksPerSecond)) {
+        return false;
+    }
+    if (rawSelectionQpc > 0 &&
+        IsWgcFrameTooNewForActiveDelayHardLimit(rawSelectionQpc, selectionTargetQpc, targetIntervalTicks,
+                                                qpcTicksPerSecond)) {
+        return false;
+    }
+    return true;
+}
+
 inline int64_t GetWgcActiveDelayRepeatClusterPenaltyQpc(uint32_t repeatClusterTicks, int64_t targetIntervalTicks) {
     if (repeatClusterTicks == 0 || targetIntervalTicks <= 0) {
         return 0;

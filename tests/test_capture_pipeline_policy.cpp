@@ -920,6 +920,13 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayScoresRelaxedCandidateReasons) {
     EXPECT_FALSE(score.Accepted());
 }
 
+TEST(CapturePipelinePolicyTest, WgcActiveDelayFinalSelectionChecksPredictedAndRawTimestamps) {
+    EXPECT_TRUE(policy::IsWgcActiveDelayFinalSelectionWithinHardLimit(109000, 108000, 100000, 8333, 1000000));
+    EXPECT_FALSE(policy::IsWgcActiveDelayFinalSelectionWithinHardLimit(111000, 108000, 100000, 8333, 1000000));
+    EXPECT_FALSE(policy::IsWgcActiveDelayFinalSelectionWithinHardLimit(108000, 111000, 100000, 8333, 1000000));
+    EXPECT_TRUE(policy::IsWgcActiveDelayFinalSelectionWithinHardLimit(108000, 0, 100000, 8333, 1000000));
+}
+
 TEST(CapturePipelinePolicyTest, WgcActiveDelayRelaxedCandidateAccountsForRepeatClusterCost) {
     EXPECT_EQ(policy::GetWgcActiveDelayRepeatClusterPenaltyQpc(0, 100), 0);
     EXPECT_EQ(policy::GetWgcActiveDelayRepeatClusterPenaltyQpc(1, 100), 25);
