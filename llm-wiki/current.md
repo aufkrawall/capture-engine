@@ -1,6 +1,6 @@
 # Current State
 
-Last cross-checked: 2026-06-19.
+Last cross-checked: 2026-06-19 (dx12_fg_switch_test overlay missing during no-callback FSR FG: fixed DetourPresent near-passthrough skip + ShouldSkipSeparateOverlayGpuWork policy).
 
 ## High-Signal Current Items
 

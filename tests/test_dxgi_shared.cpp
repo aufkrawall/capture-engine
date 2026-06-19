@@ -2497,17 +2497,15 @@ TEST(DXGISharedTest, NativeFSRInternalNoCallbackCompositionUsesNormalOverlayRout
 }
 
 TEST(DXGISharedTest, NativeFSRNoCallbackSkipsRuntimeQueueWhenUiResourceCompositionActive) {
-    // No-app-callback native FSR FG: the overlay is SUSPENDED (all submission routes wedge AMD's ffxQuery
-    // pacing — UI-composite from game queue, UI-composite from CE queue, present callback, ECL bundle).
-    // The VEH one-shot disarm eliminates the root cause (multi-threaded 0xCC contention), but overlay
-    // routes need re-validation without the VEH contamination. Until then, always skip (suspend) when
-    // nativeFSRInternalNoCallbackComposition is true, regardless of ffxUiResourceCompositionActive.
+    // No-app-callback native FSR FG via UI-resource composition (bundle path): the overlay is
+    // appended to the game's existing ECL — skip the separate overlay GPU work.
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, /*ffxPresentCallbackFallbackAllowed=*/false,
         /*nativeFSRInternalNoCallbackComposition=*/true, /*ffxUiResourceCompositionActive=*/true));
 
-    // Same when UI-resource composition is NOT active — suspend either way.
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+    // No-app-callback native FSR WITHOUT UI-resource composition (no bundle available):
+    // the normal DX12 overlay route renders on the original game queue — do NOT skip.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, /*ffxPresentCallbackFallbackAllowed=*/false,
         /*nativeFSRInternalNoCallbackComposition=*/true, /*ffxUiResourceCompositionActive=*/false));
 }

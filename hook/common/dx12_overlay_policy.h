@@ -1115,6 +1115,12 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         // the overlay ECL lands on the game's own queue, not the runtime's present queue, so
         // it does NOT wedge AMD's ffxQuery pacing. The near-passthrough DetourPresent calls
         // DX12_ProcessFrameMinimal which runs ProcessFrame; the overlay renders there.
+        //
+        // Fall through to the normal-overlay path: return false, allow rendering.
+        // Do NOT reach the callback-only check below (which would return true = skip).
+        (void)runtimeOwnsSwapchain;
+        (void)ffxPresentCallbackFallbackAllowed;
+        return false;
     }
 
     // Native/runtime-owned FSR is stricter than the generic runtime-owned
