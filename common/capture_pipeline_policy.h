@@ -41,6 +41,8 @@ constexpr uint32_t kWgcCoverageDelayMaxTicks = 32;
 constexpr uint32_t kWgcCfrSelectionMaxLeadTicks = 3;
 constexpr uint32_t kWgcActiveDelayResidualTolerancePermille = 600;
 constexpr uint32_t kWgcActiveDelayResidualHardLimitUs = 10000;
+constexpr uint32_t kWgcActiveDelayPolicyHoldFaultMinCount = 120;
+constexpr uint32_t kWgcActiveDelayPolicyHoldFaultPermille = 250;
 constexpr uint32_t kWgcDelayReservoirTargetExtraFrames = 1;
 constexpr uint32_t kWgcMaxLiveVisualDebtMs = 250;
 constexpr uint32_t kWgcMaxLiveVisualDebtFrames = 32;
@@ -1463,6 +1465,39 @@ inline bool IsWgcFrameTooNewForActiveDelayHardLimit(int64_t frameSelectionQpc, i
 
     return frameSelectionQpc >
            selectionTargetQpc + GetWgcActiveDelayResidualHardLimitQpc(targetIntervalTicks, qpcTicksPerSecond);
+}
+
+inline bool IsWgcActiveDelayRelaxedCandidateUseful(int64_t candidateSelectionQpc, int64_t repeatSelectionQpc,
+                                                   int64_t selectionTargetQpc, int64_t targetIntervalTicks,
+                                                   int64_t qpcTicksPerSecond) {
+    if (candidateSelectionQpc <= 0 || repeatSelectionQpc <= 0 || selectionTargetQpc <= 0 || targetIntervalTicks <= 0) {
+        return false;
+    }
+    if (!IsWgcFrameTooNewForActiveDelaySlot(candidateSelectionQpc, selectionTargetQpc, targetIntervalTicks)) {
+        return false;
+    }
+    if (IsWgcFrameTooNewForActiveDelayHardLimit(candidateSelectionQpc, selectionTargetQpc, targetIntervalTicks,
+                                                qpcTicksPerSecond)) {
+        return false;
+    }
+
+    const int64_t repeatDamage = repeatSelectionQpc >= selectionTargetQpc ? (repeatSelectionQpc - selectionTargetQpc)
+                                                                          : (selectionTargetQpc - repeatSelectionQpc);
+    const int64_t candidateDamage = candidateSelectionQpc >= selectionTargetQpc
+                                        ? (candidateSelectionQpc - selectionTargetQpc)
+                                        : (selectionTargetQpc - candidateSelectionQpc);
+    return candidateDamage < repeatDamage;
+}
+
+inline bool IsWgcActiveDelayMixedPolicyPressureFault(
+    uint32_t sourceLimitedHolds, uint32_t policyHolds, uint32_t totalHolds,
+    uint32_t minPolicyHolds = kWgcActiveDelayPolicyHoldFaultMinCount,
+    uint32_t minPolicyPermille = kWgcActiveDelayPolicyHoldFaultPermille) {
+    if (policyHolds < minPolicyHolds || totalHolds == 0) {
+        return false;
+    }
+    const uint64_t policyPermille = (static_cast<uint64_t>(policyHolds) * 1000ull) / static_cast<uint64_t>(totalHolds);
+    return policyPermille >= minPolicyPermille || policyHolds > sourceLimitedHolds;
 }
 
 inline bool IsWgcDelayReservoirBelowLowWater(size_t bufferedFrames, int64_t contentDelayQpc,

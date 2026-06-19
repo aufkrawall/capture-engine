@@ -879,6 +879,20 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayUsesStrictResidualTolerance) {
     EXPECT_TRUE(policy::IsWgcFrameTooNewForActiveDelaySlot(1250, 1000, 100));
 }
 
+TEST(CapturePipelinePolicyTest, WgcActiveDelayRelaxedCandidateMustBeatRepeatWithinHardLimit) {
+    EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1060, 900, 1000, 100, 1000000));
+    EXPECT_TRUE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1061, 900, 1000, 100, 1000000));
+    EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1061, 1040, 1000, 100, 1000000));
+    EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(110001, 80000, 100000, 8333, 1000000));
+}
+
+TEST(CapturePipelinePolicyTest, WgcActiveDelayMixedPolicyPressureUsesShareNotOnlyCount) {
+    EXPECT_FALSE(policy::IsWgcActiveDelayMixedPolicyPressureFault(1291, 385, 1676));
+    EXPECT_TRUE(policy::IsWgcActiveDelayMixedPolicyPressureFault(782, 322, 1104));
+    EXPECT_TRUE(policy::IsWgcActiveDelayMixedPolicyPressureFault(0, 120, 120));
+    EXPECT_FALSE(policy::IsWgcActiveDelayMixedPolicyPressureFault(20, 8, 28));
+}
+
 TEST(CapturePipelinePolicyTest, WgcDelayReservoirFramesFollowMeasuredDelay) {
     EXPECT_EQ(policy::GetWgcDelayReservoirDelayFrames(0, 100), 0u);
     EXPECT_EQ(policy::GetWgcDelayReservoirDelayFrames(301, 100), 4u);

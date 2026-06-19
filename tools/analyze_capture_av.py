@@ -208,6 +208,9 @@ LATE_APP_PRIMED_SRC_RE = re.compile(
     re.IGNORECASE,
 )
 
+WGC_ACTIVE_DELAY_POLICY_HOLD_FAULT_MIN_COUNT = 120
+WGC_ACTIVE_DELAY_POLICY_HOLD_FAULT_PERMILLE = 250
+
 TRIAGE_AUDIO_FAULT_EVENTS = {
     "audio_latency_cap",
     "audio_retain_trim",
@@ -1709,11 +1712,22 @@ def wgc_has_source_limited_delay_context(media_evidence, item):
     return has_source_starvation(media_evidence) and item.get("delay_reservoir_low_water_ticks", 0) > 0
 
 
+def wgc_has_mixed_policy_pressure(item):
+    source_holds = item.get("sync_delay_source_limited_holds", 0)
+    policy_holds = item.get("sync_delay_policy_holds", 0)
+    total_holds = item.get("sync_delay_holds", 0) or (source_holds + policy_holds)
+    if policy_holds < WGC_ACTIVE_DELAY_POLICY_HOLD_FAULT_MIN_COUNT or total_holds <= 0:
+        return False
+    policy_permille = (policy_holds * 1000) // total_holds
+    return policy_permille >= WGC_ACTIVE_DELAY_POLICY_HOLD_FAULT_PERMILLE or policy_holds > source_holds
+
+
 def wgc_is_bounded_source_limited_active_delay(media_evidence, item):
     return (
         wgc_active_delay_matches_request(item)
         and wgc_has_delay_residual_evidence(item)
         and wgc_has_source_limited_delay_context(media_evidence, item)
+        and not wgc_has_mixed_policy_pressure(item)
         and wgc_late_residual_is_bounded(item)
     )
 
@@ -2613,6 +2627,40 @@ def self_test():
         assert "wgc_sync_delay_policy_fault" not in goodish_report["verdicts"]
         assert "ce_visual_timeline_fault" not in goodish_report["verdicts"]
         assert "ce_audio_timeline_fault" not in goodish_report["verdicts"]
+
+        wgc_sync_delay_mixed_policy_pressure = make_session(
+            "wgc_sync_delay_mixed_policy_pressure",
+            media=(
+                "[WGC CFR SUMMARY] Live=10869 Dup=2072 DupPct=19.0% NoFresh=230pm NoReserve=256pm "
+                "DupReason(src=2072 def=0 timer=0 drain=0) SourceLimitedRepeats=2072 StarvedEpisodes=235 "
+                "longest=4359ms longestDup=214 worstIn=4 worstDel=4\n"
+                "[WGC CFR CADENCE EVENT] mode=normal_pressure shortfall=0/0.0ms phaseErrorAvg=427us "
+                "phaseErrorMax=6782us rebaseWindow=0 encoderDropWindow=0 encoderDropTotal=0 "
+                "tooNewRepeat=11 syncDelayHold=11 syncDelaySourceHold=1 syncDelayPolicyHold=10 "
+                "tooNewLeadMax=12459us staleDrop=0 freshMiss=117pm bufNow=5 oldest=24.9ms enc=0.41ms "
+                "sustain=2428.8fps overload=0x0 lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "avDelay=31.0ms delayResidualAvg=382/2320us delayResidualMax=76400us "
+                "delayResidualP95=5000us delayResidualLateMax=9990us reservoir=4/5 lowTicks=14 cause=S0/D0/E0\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=88 "
+                "phaseErrorMax=34457us shortfallMax=0.0ms staleDebtDrops=42 liveRebase=0/0 "
+                "tooNewRepeats=1104 syncDelayHolds=1104 tooNewLeadMax=165483us avDelay=31.0ms "
+                "startupDelay=31.0ms scheduleOffset=300848us effectiveDelay=31.0ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=782 syncDelayPolicyHolds=322 startupReserveFrames=18 "
+                "startupReserveSpan=243048us startupDelayTarget=31003us startupReserveSelected=1 "
+                "startupReserveReason=selected delayReservoirLowWaterFrames=4 "
+                "delayReservoirTargetFrames=5 delayReservoirLowWaterTicks=2783 realizedDelayAvg=30618us "
+                "realizedDelayMin=21013us realizedDelayMax=107403us delayResidualAvg=384/2319us "
+                "delayResidualMax=76400us delayResidualP95=5000us delayResidualLateMax=9990us "
+                "delayResidualEarlyMax=76400us\n"
+            ),
+        )
+        mixed_policy_report = classify_session_triage(wgc_sync_delay_mixed_policy_pressure)
+        assert "wgc_source_starvation" in mixed_policy_report["verdicts"]
+        assert "wgc_av_sync_delay_residual" in mixed_policy_report["verdicts"]
+        assert "wgc_sync_delay_policy_fault" in mixed_policy_report["verdicts"]
+        assert "ce_visual_timeline_fault" in mixed_policy_report["verdicts"]
+        assert "ce_audio_timeline_fault" not in mixed_policy_report["verdicts"]
 
         wgc_sync_delay_policy_fault = make_session(
             "wgc_sync_delay_policy_fault",
