@@ -449,7 +449,18 @@ TEST(CapturePipelinePolicyTest, WgcSyncDelayHoldAttributionSeparatesSourceLimite
     EXPECT_TRUE(policy::IsWgcSyncDelayHoldSourceLimited(120, 120, 120, policy::kWgcRecoveryEmptyTickPermille, false,
                                                         false, false));
     EXPECT_TRUE(policy::IsWgcSyncDelayHoldSourceLimited(120, 120, 120, 0, true, false, false));
+    EXPECT_TRUE(policy::IsWgcSyncDelayHoldSourceLimited(120, 120, 120, 0, false, false, false, true));
     EXPECT_FALSE(policy::IsWgcSyncDelayHoldSourceLimited(120, 120, 120, 0, false, false, false));
+}
+
+TEST(CapturePipelinePolicyTest, WgcActiveDelaySourceRecoveryClassifiesSevereStalls) {
+    EXPECT_TRUE(policy::IsWgcSevereSourceStallForActiveDelay(120, 120, 120, policy::kWgcDeepUnderfeedEmptyTickPermille,
+                                                             8));
+    EXPECT_TRUE(policy::IsWgcSevereSourceStallForActiveDelay(120, 120, 8, 20, 0));
+    EXPECT_TRUE(policy::IsWgcSevereSourceStallForActiveDelay(120, 8, 120, 20, 0));
+    EXPECT_FALSE(policy::IsWgcSevereSourceStallForActiveDelay(120, 120, 8, 20, 4));
+    EXPECT_FALSE(policy::IsWgcSevereSourceStallForActiveDelay(120, 120, 120, 20, 0));
+    EXPECT_FALSE(policy::IsWgcSevereSourceStallForActiveDelay(0, 0, 0, 1000, 0));
 }
 
 TEST(CapturePipelinePolicyTest, WgcCfrSourceCaptureDefaultsToUncapped) {
@@ -884,6 +895,29 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayRelaxedCandidateMustBeatRepeatWith
     EXPECT_TRUE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1061, 900, 1000, 100, 1000000));
     EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1061, 1040, 1000, 100, 1000000));
     EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(110001, 80000, 100000, 8333, 1000000));
+}
+
+TEST(CapturePipelinePolicyTest, WgcActiveDelayScoresRelaxedCandidateReasons) {
+    auto score = policy::ScoreWgcActiveDelayRelaxedCandidate(1061, 900, 1000, 100, 1000000);
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kAcceptBetterTarget);
+    EXPECT_TRUE(score.Accepted());
+    EXPECT_STREQ(policy::WgcActiveDelayRelaxedDecisionToString(score.decision), "better_target");
+
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(1070, 1060, 1000, 100, 1000000, 1, 4000, 9000, 9000);
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kAcceptRepeatCluster);
+    EXPECT_TRUE(score.Accepted());
+
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(1070, 1060, 1000, 100, 1000000, 0);
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectRepeatCost);
+    EXPECT_FALSE(score.Accepted());
+
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(1070, 1060, 1000, 100, 1000000, 1, 6000, 9000, 9000);
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom);
+    EXPECT_FALSE(score.Accepted());
+
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(110001, 109000, 100000, 8333, 1000000, 4);
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectSyncRisk);
+    EXPECT_FALSE(score.Accepted());
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelayRelaxedCandidateAccountsForRepeatClusterCost) {

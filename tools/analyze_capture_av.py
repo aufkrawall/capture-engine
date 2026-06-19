@@ -163,7 +163,10 @@ WGC_DELAY_REALIZATION_RE = re.compile(
 WGC_DELAY_RELAXED_RE = re.compile(
     r"delayResidualRelaxedSelections=(\d+) delayResidualRelaxedMax=(\d+)us"
     r"(?: delayResidualRelaxedRejectedSync=(\d+) delayRepeatClusterPressure=(\d+) "
-    r"delayRepeatClusterMax=(\d+))?",
+    r"delayRepeatClusterMax=(\d+)"
+    r"(?: delayResidualRelaxedBetter=(\d+) delayResidualRelaxedCluster=(\d+) "
+    r"delayResidualRelaxedRejectedHeadroom=(\d+) delayResidualRelaxedRejectedCost=(\d+) "
+    r"delaySourceRecoveryHolds=(\d+) delaySourceRecoveryTicks=(\d+))?)?",
     re.IGNORECASE,
 )
 WGC_PERF_RE = re.compile(r"\[WGC Perf\].*", re.IGNORECASE)
@@ -1225,6 +1228,12 @@ def parse_media_triage(media_text):
                     "delay_relaxed_rejected_sync": parse_int(delay_relaxed.group(3)) if delay_relaxed else 0,
                     "delay_repeat_cluster_pressure": parse_int(delay_relaxed.group(4)) if delay_relaxed else 0,
                     "delay_repeat_cluster_max_ticks": parse_int(delay_relaxed.group(5)) if delay_relaxed else 0,
+                    "delay_relaxed_better_target": parse_int(delay_relaxed.group(6)) if delay_relaxed else 0,
+                    "delay_relaxed_repeat_cluster": parse_int(delay_relaxed.group(7)) if delay_relaxed else 0,
+                    "delay_relaxed_rejected_headroom": parse_int(delay_relaxed.group(8)) if delay_relaxed else 0,
+                    "delay_relaxed_rejected_cost": parse_int(delay_relaxed.group(9)) if delay_relaxed else 0,
+                    "delay_source_recovery_holds": parse_int(delay_relaxed.group(10)) if delay_relaxed else 0,
+                    "delay_source_recovery_ticks": parse_int(delay_relaxed.group(11)) if delay_relaxed else 0,
                     "line": line,
                 }
             )
@@ -2172,7 +2181,10 @@ def print_triage_report(report):
                 "residual_avg={residual_avg_signed:+.3f}/{residual_avg_abs:.3f}ms "
                 "residual_p95={residual_p95:.3f}ms residual_max={residual_max:.3f}ms "
                 "reservoir={low_water}/{target} low_ticks={low_ticks} "
-                "relaxed={relaxed} reject_sync={reject_sync} repeat_pressure={repeat_pressure}/{repeat_max}".format(
+                "relaxed={relaxed} better={relaxed_better} cluster={relaxed_cluster} "
+                "reject_sync={reject_sync} reject_headroom={reject_headroom} reject_cost={reject_cost} "
+                "repeat_pressure={repeat_pressure}/{repeat_max} source_recovery={source_recovery_holds}/"
+                "{source_recovery_ticks}".format(
                     requested=worst_sync_delay.get("av_delay_ms", 0.0),
                     startup=worst_sync_delay.get("startup_delay_ms", 0.0),
                     effective=worst_sync_delay.get("effective_delay_ms", 0.0),
@@ -2194,9 +2206,15 @@ def print_triage_report(report):
                     target=worst_sync_delay.get("delay_reservoir_target_frames", 0),
                     low_ticks=worst_sync_delay.get("delay_reservoir_low_water_ticks", 0),
                     relaxed=worst_sync_delay.get("delay_relaxed_selections", 0),
+                    relaxed_better=worst_sync_delay.get("delay_relaxed_better_target", 0),
+                    relaxed_cluster=worst_sync_delay.get("delay_relaxed_repeat_cluster", 0),
                     reject_sync=worst_sync_delay.get("delay_relaxed_rejected_sync", 0),
+                    reject_headroom=worst_sync_delay.get("delay_relaxed_rejected_headroom", 0),
+                    reject_cost=worst_sync_delay.get("delay_relaxed_rejected_cost", 0),
                     repeat_pressure=worst_sync_delay.get("delay_repeat_cluster_pressure", 0),
                     repeat_max=worst_sync_delay.get("delay_repeat_cluster_max_ticks", 0),
+                    source_recovery_holds=worst_sync_delay.get("delay_source_recovery_holds", 0),
+                    source_recovery_ticks=worst_sync_delay.get("delay_source_recovery_ticks", 0),
                 )
             )
     rounding = evidence["rounding_evidence"]
@@ -2710,6 +2728,51 @@ def self_test():
         assert "ce_visual_timeline_fault" in mixed_policy_report["verdicts"]
         assert "ce_audio_timeline_fault" not in mixed_policy_report["verdicts"]
 
+        wgc_sync_delay_fortidelay2_mixed_pressure = make_session(
+            "wgc_sync_delay_fortidelay2_mixed_pressure",
+            media=(
+                "[WGC CFR SUMMARY] Live=8709 Dup=1545 DupPct=17.7% NoFresh=227pm NoReserve=258pm "
+                "DupReason(src=1545 def=0 timer=0 drain=0) SourceLimitedRepeats=1545 StarvedEpisodes=184 "
+                "longest=4250ms longestDup=200 worstIn=4 worstDel=4\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=72 "
+                "phaseErrorMax=5382us shortfallMax=0.0ms staleDebtDrops=32 liveRebase=0/0 "
+                "tooNewRepeats=893 syncDelayHolds=893 tooNewLeadMax=163581us avDelay=27.5ms "
+                "startupDelay=27.5ms scheduleOffset=308784us effectiveDelay=27.5ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=603 syncDelayPolicyHolds=290 startupReserveFrames=14 "
+                "startupReserveSpan=152803us startupDelayTarget=27474us startupReserveSelected=1 "
+                "startupReserveReason=selected delayReservoirLowWaterFrames=4 "
+                "delayReservoirTargetFrames=5 delayReservoirLowWaterTicks=2254 realizedDelayAvg=26815us "
+                "realizedDelayMin=17664us realizedDelayMax=220633us delayResidualAvg=658/2397us "
+                "delayResidualMax=193159us delayResidualP95=5000us delayResidualLateMax=9810us "
+                "delayResidualEarlyMax=193159us delayResidualRelaxedSelections=462 "
+                "delayResidualRelaxedMax=9810us delayResidualRelaxedRejectedSync=41577 "
+                "delayRepeatClusterPressure=175 delayRepeatClusterMax=92 mixedPolicyFault=1\n"
+                "[STOP AUDIO TRACK] Track 1: encoded=3484000 expected=3484000 diff=+0 (+0.000 ms) "
+                "sources=[1,3,5,7]\n"
+                "[STOP AUDIO TRACK] Track 2: encoded=3484000 expected=3484000 diff=+0 (+0.000 ms) "
+                "sources=[4,6,8]\n"
+                "[STOP AUDIO TRACK] Track 3: encoded=3484000 expected=3484000 diff=+0 (+0.000 ms) "
+                "sources=[0,2]\n"
+                "[VideoEncoder] Final packet timeline: target=72583333 us videoEnd=72583333 us "
+                "audioMinEnd=72583333 us audioMaxEnd=72583333 us maxPacketDelta=0 us streams(v=1 a=3) "
+                "audioPastTarget=0\n"
+                "[VideoEncoder] Final metadata durations: target=72583333 us video=72583333 us "
+                "audioMin=72583333 us audioMax=72583333 us maxDelta=0 us streams(v=1 a=3) "
+                "overload(encoder=0 mux=0) backpressure=0\n"
+            ),
+        )
+        fortidelay2_report = classify_session_triage(wgc_sync_delay_fortidelay2_mixed_pressure)
+        fortidelay2_summary = fortidelay2_report["evidence"]["wgc_smoothness_summary"][0]
+        assert fortidelay2_summary["delay_relaxed_rejected_sync"] == 41577
+        assert fortidelay2_summary["delay_repeat_cluster_pressure"] == 175
+        assert fortidelay2_summary["delay_repeat_cluster_max_ticks"] == 92
+        assert "wgc_source_starvation" in fortidelay2_report["verdicts"]
+        assert "wgc_av_sync_delay_residual" in fortidelay2_report["verdicts"]
+        assert "wgc_sync_delay_policy_fault" in fortidelay2_report["verdicts"]
+        assert "ce_visual_timeline_fault" in fortidelay2_report["verdicts"]
+        assert "ce_audio_timeline_fault" not in fortidelay2_report["verdicts"]
+
         wgc_sync_delay_long_run_p5_mixed_pressure = make_session(
             "wgc_sync_delay_long_run_p5_mixed_pressure",
             media=(
@@ -2729,7 +2792,10 @@ def self_test():
                 "delayResidualMax=30491us delayResidualP95=5000us delayResidualLateMax=13800us "
                 "delayResidualEarlyMax=30491us delayResidualRelaxedSelections=7917 "
                 "delayResidualRelaxedMax=13800us delayResidualRelaxedRejectedSync=44 "
-                "delayRepeatClusterPressure=7281 delayRepeatClusterMax=120 mixedPolicyFault=1\n"
+                "delayRepeatClusterPressure=7281 delayRepeatClusterMax=120 "
+                "delayResidualRelaxedBetter=2400 delayResidualRelaxedCluster=5517 "
+                "delayResidualRelaxedRejectedHeadroom=120 delayResidualRelaxedRejectedCost=64 "
+                "delaySourceRecoveryHolds=3200 delaySourceRecoveryTicks=8000 mixedPolicyFault=1\n"
                 "[PullAudio] App source gap silence: track=1 src=5 buffered=0 requested=400 "
                 "target=219800ms encoded=10550000. Source contributes silence for missing range.\n"
                 "[PullAudio] WARNING: Source underrun - src 5 padding 400 samples with silence "
@@ -2752,6 +2818,12 @@ def self_test():
         assert long_run_summary["delay_relaxed_rejected_sync"] == 44
         assert long_run_summary["delay_repeat_cluster_pressure"] == 7281
         assert long_run_summary["delay_repeat_cluster_max_ticks"] == 120
+        assert long_run_summary["delay_relaxed_better_target"] == 2400
+        assert long_run_summary["delay_relaxed_repeat_cluster"] == 5517
+        assert long_run_summary["delay_relaxed_rejected_headroom"] == 120
+        assert long_run_summary["delay_relaxed_rejected_cost"] == 64
+        assert long_run_summary["delay_source_recovery_holds"] == 3200
+        assert long_run_summary["delay_source_recovery_ticks"] == 8000
         assert "wgc_source_starvation" in long_run_report["verdicts"]
         assert "wgc_av_sync_delay_residual" in long_run_report["verdicts"]
         assert "wgc_sync_delay_policy_fault" in long_run_report["verdicts"]
