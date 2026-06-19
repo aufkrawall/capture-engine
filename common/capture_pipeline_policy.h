@@ -48,6 +48,9 @@ constexpr uint32_t kWgcActiveDelayRepeatClusterPenaltyMaxPermille = 1000;
 constexpr uint32_t kWgcActiveDelayPolicyHoldFaultMinCount = 120;
 constexpr uint32_t kWgcActiveDelayPolicyHoldFaultPermille = 250;
 constexpr uint32_t kWgcActiveDelaySourceRecoveryHoldMs = 1500;
+constexpr uint32_t kWgcCfrSmoothnessExcessRepeatFaultMinCount = 120;
+constexpr uint32_t kWgcCfrSmoothnessExcessRepeatFaultPermille = 50;
+constexpr uint32_t kWgcCfrSmoothnessExcessRepeatClusterFaultTicks = 24;
 constexpr uint32_t kWgcDelayReservoirTargetExtraFrames = 1;
 constexpr uint32_t kWgcMaxLiveVisualDebtMs = 250;
 constexpr uint32_t kWgcMaxLiveVisualDebtFrames = 32;
@@ -798,6 +801,31 @@ inline bool ShouldUseWgcMaxRateForRecovery(const WgcAdaptiveTelemetry& telemetry
     }
 
     return telemetry.recentInputMin250Fps > 0 && telemetry.recentInputMin250Fps < telemetry.outputFps;
+}
+
+inline bool ShouldUseWgcMaxRateForDelayReservoirRecovery(const WgcAdaptiveTelemetry& telemetry,
+                                                         bool delayReservoirBelowLowWater,
+                                                         bool lowSourceModeActive,
+                                                         bool liveRecoveryModeActive) {
+    if (!delayReservoirBelowLowWater || telemetry.outputFps == 0) {
+        return false;
+    }
+    if (lowSourceModeActive || liveRecoveryModeActive) {
+        return false;
+    }
+    if (telemetry.emptyTickPermille >= kWgcDeepUnderfeedEmptyTickPermille) {
+        return false;
+    }
+    if (telemetry.recentInputMin250Fps > 0 &&
+        telemetry.recentInputMin250Fps + kWgcRecoverySourceMarginFps < telemetry.outputFps) {
+        return false;
+    }
+    if (telemetry.recentDeliveredMin250Fps > 0 &&
+        telemetry.recentDeliveredMin250Fps + kWgcRecoverySourceMarginFps < telemetry.outputFps &&
+        telemetry.emptyTickPermille >= kWgcLowSourceExitEmptyTickPermille) {
+        return false;
+    }
+    return true;
 }
 
 inline bool ShouldRestoreWgcOvercaptureCap(const WgcAdaptiveTelemetry& telemetry, uint32_t noFreshTickPermille,
@@ -1654,6 +1682,47 @@ inline bool IsWgcActiveDelayMixedPolicyPressureFault(
     }
     const uint64_t policyPermille = (static_cast<uint64_t>(policyHolds) * 1000ull) / static_cast<uint64_t>(totalHolds);
     return policyPermille >= minPolicyPermille || policyHolds > sourceLimitedHolds;
+}
+
+struct WgcCfrRepeatLowerBound {
+    uint32_t unavoidableRepeats = 0;
+    uint32_t excessRepeats = 0;
+    uint32_t excessPermille = 0;
+};
+
+inline WgcCfrRepeatLowerBound EstimateWgcCfrSourceRepeatLowerBound(uint32_t outputTicks, uint32_t uniqueSourceFrames,
+                                                                   uint32_t actualRepeats) {
+    WgcCfrRepeatLowerBound result{};
+    if (outputTicks == 0) {
+        return result;
+    }
+
+    const uint32_t usableSourceFrames = std::min(outputTicks, uniqueSourceFrames);
+    result.unavoidableRepeats = outputTicks - usableSourceFrames;
+    result.excessRepeats = actualRepeats > result.unavoidableRepeats ? (actualRepeats - result.unavoidableRepeats) : 0;
+    result.excessPermille =
+        static_cast<uint32_t>((static_cast<uint64_t>(result.excessRepeats) * 1000ull) / outputTicks);
+    return result;
+}
+
+inline bool IsWgcCfrSmoothnessNotMaximal(uint32_t totalOutputTicks, uint32_t excessRepeats,
+                                         uint32_t policyAddedRepeats, uint32_t excessRepeatClusterMaxTicks,
+                                         uint32_t postSelectionRejectedSync) {
+    if (postSelectionRejectedSync > 0) {
+        return true;
+    }
+    if (excessRepeatClusterMaxTicks >= kWgcCfrSmoothnessExcessRepeatClusterFaultTicks) {
+        return true;
+    }
+    if (policyAddedRepeats >= kWgcCfrSmoothnessExcessRepeatFaultMinCount) {
+        return true;
+    }
+    if (totalOutputTicks == 0 || excessRepeats < kWgcCfrSmoothnessExcessRepeatFaultMinCount) {
+        return false;
+    }
+    const uint64_t excessPermille =
+        (static_cast<uint64_t>(excessRepeats) * 1000ull) / static_cast<uint64_t>(totalOutputTicks);
+    return excessPermille >= kWgcCfrSmoothnessExcessRepeatFaultPermille;
 }
 
 inline bool IsWgcDelayReservoirBelowLowWater(size_t bufferedFrames, int64_t contentDelayQpc,

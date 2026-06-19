@@ -491,6 +491,29 @@ TEST(CapturePipelinePolicyTest, WgcOvercaptureSwitchesToMaxRateDuringRecovery) {
     EXPECT_TRUE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, 20, false, false));
 }
 
+TEST(CapturePipelinePolicyTest, WgcDelayReservoirRecoveryRequiresHealthySource) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredMin250Fps = 122;
+    telemetry.recentDeliveredMin500Fps = 122;
+    telemetry.recentInputMin250Fps = 122;
+    telemetry.recentInputMin500Fps = 122;
+    telemetry.emptyTickPermille = 20;
+
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(telemetry, false, false, false));
+    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(telemetry, true, false, false));
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(telemetry, true, true, false));
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(telemetry, true, false, true));
+
+    telemetry.recentInputMin250Fps = 90;
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(telemetry, true, false, false));
+
+    telemetry.recentInputMin250Fps = 122;
+    telemetry.recentDeliveredMin250Fps = 90;
+    telemetry.emptyTickPermille = policy::kWgcLowSourceExitEmptyTickPermille;
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(telemetry, true, false, false));
+}
+
 TEST(CapturePipelinePolicyTest, WgcOvercaptureRestoresOnlyAfterStableFreshSource) {
     policy::WgcAdaptiveTelemetry telemetry{};
     telemetry.outputFps = 120;
@@ -942,6 +965,37 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayMixedPolicyPressureUsesShareNotOnl
     EXPECT_TRUE(policy::IsWgcActiveDelayMixedPolicyPressureFault(782, 322, 1104));
     EXPECT_TRUE(policy::IsWgcActiveDelayMixedPolicyPressureFault(0, 120, 120));
     EXPECT_FALSE(policy::IsWgcActiveDelayMixedPolicyPressureFault(20, 8, 28));
+}
+
+TEST(CapturePipelinePolicyTest, WgcCfrSourceRepeatLowerBoundCountsOnlyUnavoidableRepeats) {
+    auto bound = policy::EstimateWgcCfrSourceRepeatLowerBound(120, 90, 35);
+    EXPECT_EQ(bound.unavoidableRepeats, 30u);
+    EXPECT_EQ(bound.excessRepeats, 5u);
+    EXPECT_EQ(bound.excessPermille, 41u);
+
+    bound = policy::EstimateWgcCfrSourceRepeatLowerBound(120, 100, 20);
+    EXPECT_EQ(bound.unavoidableRepeats, 20u);
+    EXPECT_EQ(bound.excessRepeats, 0u);
+
+    bound = policy::EstimateWgcCfrSourceRepeatLowerBound(120, 110, 14);
+    EXPECT_EQ(bound.unavoidableRepeats, 10u);
+    EXPECT_EQ(bound.excessRepeats, 4u);
+
+    bound = policy::EstimateWgcCfrSourceRepeatLowerBound(120, 119, 1);
+    EXPECT_EQ(bound.unavoidableRepeats, 1u);
+    EXPECT_EQ(bound.excessRepeats, 0u);
+
+    bound = policy::EstimateWgcCfrSourceRepeatLowerBound(120, 140, 0);
+    EXPECT_EQ(bound.unavoidableRepeats, 0u);
+    EXPECT_EQ(bound.excessRepeats, 0u);
+}
+
+TEST(CapturePipelinePolicyTest, WgcCfrSmoothnessFaultUsesExcessRepeatsAndClusters) {
+    EXPECT_FALSE(policy::IsWgcCfrSmoothnessNotMaximal(1200, 40, 20, 4, 0));
+    EXPECT_TRUE(policy::IsWgcCfrSmoothnessNotMaximal(1200, 121, 0, 4, 0));
+    EXPECT_TRUE(policy::IsWgcCfrSmoothnessNotMaximal(1200, 40, 120, 4, 0));
+    EXPECT_TRUE(policy::IsWgcCfrSmoothnessNotMaximal(1200, 40, 0, 24, 0));
+    EXPECT_TRUE(policy::IsWgcCfrSmoothnessNotMaximal(1200, 0, 0, 0, 1));
 }
 
 TEST(CapturePipelinePolicyTest, WgcDelayReservoirFramesFollowMeasuredDelay) {
