@@ -478,7 +478,7 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     // is NOT called — all separate-ECL routes wedge AMD's pacing. Forwarded unchanged.
     if (parsedDesc &&
         parsedDesc->type == ce::ffx_api::kConfigureDescTypeFrameGenerationSwapChainRegisterUiResourceDX12 &&
-        DX12_ShouldCompositeOverlayOntoFFXUiResource()) {
+        DX12_ShouldCacheFFXUiResourceForBundle()) {
         const auto* uiDesc =
             reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource*>(desc);
         if (uiDesc->uiResource.resource) {

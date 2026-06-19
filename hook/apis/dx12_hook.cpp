@@ -5408,7 +5408,14 @@ bool DX12_IsFFXUiResourceCompositionActive() {
 // route the overlay through the game's UI resource instead of submitting on AMD's runtime present queue.
 // (App-callback FSR games keep using the present-callback overlay route, so we must not double-draw.)
 bool DX12_ShouldCompositeOverlayOntoFFXUiResource() {
-    return false;  // Disabled: all UI-composite/bundle routes wedge AMD. The VEH one-shot disarm is the fix.
+    return false;  // Composite (separate-ECL route) stays disabled — it wedges AMD. Dead code, not called.
+}
+
+// Cache the UI texture from RegisterUiResource for the ECL bundle (Phase 2). The composite (separate-ECL
+// route) is dead code — only the cache + bundle are active. The bundle appends CE's overlay CL to the
+// game's existing ECL (zero extra ECL calls, zero extra Signals). Gated to no-callback FSR FG only.
+bool DX12_ShouldCacheFFXUiResourceForBundle() {
+    return g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire);
 }
 
 // Direct read of the no-callback composition flag (for the VEH one-shot disarm logic in ffx_hook.cpp).

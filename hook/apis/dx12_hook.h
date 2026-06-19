@@ -111,6 +111,8 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
 bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResource, uint32_t ffxState, uint32_t flags);
 bool DX12_IsFFXUiResourceCompositionActive();
 bool DX12_ShouldCompositeOverlayOntoFFXUiResource();
+// Cache the UI texture for the ECL bundle (Phase 2). Gated to no-callback FSR FG only.
+bool DX12_ShouldCacheFFXUiResourceForBundle();
 // Direct read of the no-callback composition flag (for the VEH one-shot disarm logic).
 bool DX12_IsNativeFSRInternalNoCallbackCompositionActive();
 // Minimal-overhead ProcessFrame for no-callback FSR FG (skips policy/lock/heuristic work).
