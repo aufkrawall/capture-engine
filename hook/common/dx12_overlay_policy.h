@@ -1103,13 +1103,18 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     // register a UI resource (composition not active), fall back to the legacy runtime-queue route so the
     // overlay is at least visible.
     if (nativeFSRInternalNoCallbackComposition) {
-        // Suspend the overlay during no-callback FSR FG. All submission routes (UI-composite from game
-        // queue, UI-composite from CE queue, present callback, ECL bundle) wedge AMD's ffxQuery pacing.
-        // The VEH one-shot disarm eliminates the multi-threaded 0xCC contention root cause, but the
-        // overlay routes need re-validation without the VEH contamination (Phase 2). Until then, the
-        // overlay is suspended — the confirmed-working fallback.
-        (void)ffxUiResourceCompositionActive;
-        return true;
+        // No-app-callback native FSR via UI-resource composition (bundle): the overlay is
+        // appended to the game's existing ECL on its own queue — no extra ECL call on AMD's
+        // pacing-critical queue. Skip the separate overlay GPU work because the bundle path
+        // handles it.
+        if (ffxUiResourceCompositionActive) {
+            return true;
+        }
+        // No UI resource was registered (or the VEH one-shot disarmed before intercepting it).
+        // The normal DX12 overlay route (separate ECL on the original game queue) stays live:
+        // the overlay ECL lands on the game's own queue, not the runtime's present queue, so
+        // it does NOT wedge AMD's ffxQuery pacing. The near-passthrough DetourPresent calls
+        // DX12_ProcessFrameMinimal which runs ProcessFrame; the overlay renders there.
     }
 
     // Native/runtime-owned FSR is stricter than the generic runtime-owned

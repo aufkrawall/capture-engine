@@ -2660,19 +2660,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         }
 
         if (!steamOnlyTest && api == APIType::D3D12) {
-            // Near-passthrough during no-callback FSR FG: skip ProcessFrame entirely (even the minimal
-            // path does QueryInterface + RecordFrame + inner ProcessFrame — overhead that accumulates
-            // drift in AMD's QPC-timed pacing over ~900 frames). Capture is not possible in this mode
-            // (the overlay is suspended); if capture is needed, the full path runs.
+            // Near-passthrough during no-callback FSR FG: call the minimal ProcessFrame path.
+            // The UI-texture bundle overlay route (no extra ECL call) is the preferred transport
+            // during no-callback FSR, but when the bundle is unavailable (no registered UI texture
+            // intercepted), the normal DX12 overlay route falls through.
             const bool noCallbackFSRFG = DX12_IsNativeFSRInternalNoCallbackCompositionActive();
-            if (!noCallbackFSRFG) {
+            if (noCallbackFSRFG) {
+                DX12_ProcessFrameMinimal(pSwapChain);
+            } else {
                 LARGE_INTEGER diagPfT0, diagPfT1, diagPfFreq;
                 QueryPerformanceCounter(&diagPfT0);
-                if (DX12_IsNativeFSRInternalNoCallbackCompositionActive()) {
-                    DX12_ProcessFrameMinimal(pSwapChain);
-                } else {
-                    HandleDX12ProcessFrame(pSwapChain, true);
-                }
+                HandleDX12ProcessFrame(pSwapChain, true);
                 QueryPerformanceCounter(&diagPfT1);
                 QueryPerformanceFrequency(&diagPfFreq);
                 const double diagPfMs =
