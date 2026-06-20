@@ -946,6 +946,15 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayClassifiesUnstableFpsWindows) {
     telemetry.recentInputMin250Fps = 140;
     EXPECT_EQ(policy::ClassifyWgcActiveDelayWindow(telemetry, false, false, false, false, false, false),
               policy::WgcActiveDelayWindowClass::kSourceLimited);
+
+    telemetry.averageJitterUs = policy::GetWgcFrameIntervalUs(telemetry.outputFps) + 500;
+    EXPECT_EQ(policy::ClassifyWgcActiveDelayWindow(telemetry, false, false, false, false, false, true),
+              policy::WgcActiveDelayWindowClass::kRecoverableUnderfill);
+
+    telemetry.emptyTickPermille = policy::kWgcLowSourceExitEmptyTickPermille;
+    telemetry.averageJitterUs = (policy::GetWgcFrameIntervalUs(telemetry.outputFps) * 2) + 500;
+    EXPECT_EQ(policy::ClassifyWgcActiveDelayWindow(telemetry, false, false, false, false, false, true),
+              policy::WgcActiveDelayWindowClass::kSourceLimited);
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelayRelaxedCandidateMustBeatRepeatWithinHardLimit) {
@@ -994,6 +1003,40 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelaySoftLateTargetProtectsHealthyWindo
     score = policy::ScoreWgcActiveDelayRelaxedCandidate(
         109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
         policy::WgcActiveDelayWindowClass::kSourceLimited, policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
+    EXPECT_TRUE(score.Accepted());
+}
+
+TEST(CapturePipelinePolicyTest, WgcActiveDelayRepeatRescueScoresSafeFramesBeforeRepeat) {
+    const uint32_t softLateTargetUs = policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000);
+
+    auto score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
+        106000, 105000, 90000, 100000, 8333, 1000000, 1, 0, 0, 0,
+        policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kAcceptBetterTarget);
+    EXPECT_TRUE(score.Accepted());
+
+    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
+        106000, 111000, 90000, 100000, 8333, 1000000, 1, 0, 0, 0,
+        policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectSyncRisk);
+    EXPECT_FALSE(score.Accepted());
+
+    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
+        109000, 109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
+        policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom);
+    EXPECT_FALSE(score.Accepted());
+
+    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
+        109000, 109000, 108000, 100000, 8333, 1000000, 0, 0, 0, 0,
+        policy::WgcActiveDelayWindowClass::kSourceLimited, softLateTargetUs);
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectRepeatCost);
+    EXPECT_FALSE(score.Accepted());
+
+    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
+        109000, 109000, 108000, 100000, 8333, 1000000, 2, 0, 0, 0,
+        policy::WgcActiveDelayWindowClass::kSourceLimited, softLateTargetUs);
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kAcceptRepeatCluster);
     EXPECT_TRUE(score.Accepted());
 }
 

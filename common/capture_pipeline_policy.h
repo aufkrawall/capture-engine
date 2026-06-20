@@ -50,6 +50,8 @@ constexpr uint32_t kWgcActiveDelayRepeatClusterPenaltyMaxPermille = 1000;
 constexpr uint32_t kWgcActiveDelayPolicyHoldFaultMinCount = 120;
 constexpr uint32_t kWgcActiveDelayPolicyHoldFaultPermille = 250;
 constexpr uint32_t kWgcActiveDelaySourceRecoveryHoldMs = 1500;
+constexpr uint32_t kWgcActiveDelayRecoverableJitterPermille = 1000;
+constexpr uint32_t kWgcActiveDelaySourceLimitedJitterPermille = 2000;
 constexpr uint32_t kWgcCfrSmoothnessExcessRepeatFaultMinCount = 120;
 constexpr uint32_t kWgcCfrSmoothnessExcessRepeatFaultPermille = 50;
 constexpr uint32_t kWgcCfrSmoothnessExcessRepeatClusterFaultTicks = 24;
@@ -312,6 +314,10 @@ inline bool IsWgcInputBelowTarget(uint32_t outputFps, uint32_t recentInputMin250
     }
 
     return recentInputMin250Fps + fpsMargin < outputFps || recentInputMin500Fps + fpsMargin < outputFps;
+}
+
+inline uint32_t GetWgcFrameIntervalUs(uint32_t outputFps) {
+    return outputFps > 0 ? std::max<uint32_t>(1u, 1000000u / outputFps) : 0u;
 }
 
 inline bool IsWgcTrueSourceStarvedForRecovery(uint32_t outputFps, uint32_t recentInputMin250Fps,
@@ -788,6 +794,32 @@ struct WgcAdaptiveTelemetry {
     double duplicateRatio = 0.0;
 };
 
+inline bool IsWgcActiveDelayRecoverableJitter(const WgcAdaptiveTelemetry& telemetry) {
+    const uint32_t frameIntervalUs = GetWgcFrameIntervalUs(telemetry.outputFps);
+    if (frameIntervalUs == 0 || telemetry.averageJitterUs == 0) {
+        return false;
+    }
+
+    return static_cast<uint64_t>(telemetry.averageJitterUs) * 1000ull >=
+           static_cast<uint64_t>(frameIntervalUs) * kWgcActiveDelayRecoverableJitterPermille;
+}
+
+inline bool IsWgcActiveDelaySourceLimitedJitter(const WgcAdaptiveTelemetry& telemetry) {
+    const uint32_t frameIntervalUs = GetWgcFrameIntervalUs(telemetry.outputFps);
+    if (frameIntervalUs == 0 || telemetry.averageJitterUs == 0) {
+        return false;
+    }
+
+    if (static_cast<uint64_t>(telemetry.averageJitterUs) * 1000ull <
+        static_cast<uint64_t>(frameIntervalUs) * kWgcActiveDelaySourceLimitedJitterPermille) {
+        return false;
+    }
+
+    return telemetry.emptyTickPermille >= kWgcLowSourceExitEmptyTickPermille ||
+           telemetry.recentDeliveredMin250Fps < telemetry.outputFps ||
+           telemetry.recentInputMin250Fps < telemetry.outputFps;
+}
+
 inline bool ShouldUseWgcMaxRateForRecovery(const WgcAdaptiveTelemetry& telemetry, uint32_t noFreshTickPermille,
                                            bool lowSourceModeActive, bool liveRecoveryModeActive) {
     if (telemetry.outputFps == 0) {
@@ -1209,11 +1241,13 @@ inline WgcActiveDelayWindowClass ClassifyWgcActiveDelayWindow(const WgcAdaptiveT
     }
     if (IsWgcInputBelowTarget(telemetry.outputFps, telemetry.recentInputMin250Fps,
                               telemetry.recentInputMin500Fps) ||
-        telemetry.emptyTickPermille >= kWgcDeepUnderfeedEmptyTickPermille) {
+        telemetry.emptyTickPermille >= kWgcDeepUnderfeedEmptyTickPermille ||
+        IsWgcActiveDelaySourceLimitedJitter(telemetry)) {
         return WgcActiveDelayWindowClass::kSourceLimited;
     }
     if (lowSourceMode || liveRecoveryMode || IsWgcSchedulerDeliveryLimited(telemetry) ||
-        telemetry.emptyTickPermille >= kWgcLowSourceEmptyTickPermille) {
+        telemetry.emptyTickPermille >= kWgcLowSourceEmptyTickPermille ||
+        IsWgcActiveDelayRecoverableJitter(telemetry)) {
         return WgcActiveDelayWindowClass::kRecoverableUnderfill;
     }
     return WgcActiveDelayWindowClass::kHealthy;
@@ -1737,6 +1771,66 @@ inline bool IsWgcActiveDelayRelaxedCandidateUseful(int64_t candidateSelectionQpc
                                                residualAvgAbsUs, residualP95Us, residualLateMaxUs, windowClass,
                                                softLateTargetUs)
         .Accepted();
+}
+
+inline WgcActiveDelayRelaxedCandidateScore ScoreWgcActiveDelayRepeatRescueCandidate(
+    int64_t candidateSelectionQpc, int64_t candidateRawSelectionQpc, int64_t repeatSelectionQpc,
+    int64_t selectionTargetQpc, int64_t targetIntervalTicks, int64_t qpcTicksPerSecond,
+    uint32_t repeatClusterTicks = 0, uint32_t residualAvgAbsUs = 0, uint32_t residualP95Us = 0,
+    uint32_t residualLateMaxUs = 0, WgcActiveDelayWindowClass windowClass = WgcActiveDelayWindowClass::kSourceLimited,
+    uint32_t softLateTargetUs = kWgcActiveDelaySoftLateTargetMaxUs) {
+    WgcActiveDelayRelaxedCandidateScore result{};
+    if (candidateSelectionQpc <= 0 || repeatSelectionQpc <= 0 || selectionTargetQpc <= 0 ||
+        targetIntervalTicks <= 0) {
+        result.decision = WgcActiveDelayRelaxedDecision::kRejectInvalid;
+        return result;
+    }
+    if (!IsWgcActiveDelayFinalSelectionWithinHardLimit(candidateSelectionQpc, candidateRawSelectionQpc,
+                                                       selectionTargetQpc, targetIntervalTicks, qpcTicksPerSecond)) {
+        result.decision = WgcActiveDelayRelaxedDecision::kRejectSyncRisk;
+        return result;
+    }
+
+    const int64_t predictedLateQpc =
+        candidateSelectionQpc > selectionTargetQpc ? (candidateSelectionQpc - selectionTargetQpc) : 0;
+    const int64_t rawLateQpc =
+        candidateRawSelectionQpc > selectionTargetQpc ? (candidateRawSelectionQpc - selectionTargetQpc) : 0;
+    const int64_t lateQpc = std::max(predictedLateQpc, rawLateQpc);
+    if (lateQpc > 0 && qpcTicksPerSecond > 0) {
+        const uint64_t candidateLateUs =
+            (static_cast<uint64_t>(lateQpc) * 1000000ull) / static_cast<uint64_t>(qpcTicksPerSecond);
+        result.candidateLateResidualUs = candidateLateUs > UINT32_MAX ? UINT32_MAX
+                                                                      : static_cast<uint32_t>(candidateLateUs);
+    }
+    if (!HasWgcActiveDelayResidualHeadroom(result.candidateLateResidualUs, residualAvgAbsUs, residualP95Us,
+                                           residualLateMaxUs, windowClass, softLateTargetUs)) {
+        result.decision = WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom;
+        return result;
+    }
+
+    result.repeatDamageQpc = repeatSelectionQpc >= selectionTargetQpc ? (repeatSelectionQpc - selectionTargetQpc)
+                                                                      : (selectionTargetQpc - repeatSelectionQpc);
+    result.candidateDamageQpc = candidateSelectionQpc >= selectionTargetQpc
+                                    ? (candidateSelectionQpc - selectionTargetQpc)
+                                    : (selectionTargetQpc - candidateSelectionQpc);
+    result.repeatClusterPenaltyQpc =
+        GetWgcActiveDelayRepeatClusterPenaltyQpc(repeatClusterTicks, targetIntervalTicks);
+    result.repeatBudgetQpc =
+        INT64_MAX - result.repeatDamageQpc < result.repeatClusterPenaltyQpc
+            ? INT64_MAX
+            : result.repeatDamageQpc + result.repeatClusterPenaltyQpc;
+
+    if (result.candidateDamageQpc < result.repeatDamageQpc) {
+        result.decision = WgcActiveDelayRelaxedDecision::kAcceptBetterTarget;
+        return result;
+    }
+    if (result.repeatClusterPenaltyQpc > 0 && result.candidateDamageQpc <= result.repeatBudgetQpc) {
+        result.decision = WgcActiveDelayRelaxedDecision::kAcceptRepeatCluster;
+        return result;
+    }
+
+    result.decision = WgcActiveDelayRelaxedDecision::kRejectRepeatCost;
+    return result;
 }
 
 inline bool IsWgcActiveDelayMixedPolicyPressureFault(

@@ -176,7 +176,16 @@ WGC_DELAY_RELAXED_RE = re.compile(
     r"delayResidualRelaxedRejectedHeadroom=(\d+) delayResidualRelaxedRejectedCost=(\d+) "
     r"(?:delaySoftLateRejected=(\d+) delaySoftLateAccepted=(\d+) "
     r"delayOlderFrameAvoidedRepeat=(\d+) delaySourceLimitedRepeats=(\d+) )?"
+    r"(?:delayRepeatRescue=\d+/\d+ delayRepeatRescueRejected=\d+/\d+/\d+ "
+    r"delayRepeatSafeCandidate=\d+ delayRepeatNoSafeCandidate=\d+ "
+    r"delayRepeatWindowClass=\d+/\d+/\d+ delayRepeatReserveMax=\d+/\d+us )?"
     r"delaySourceRecoveryHolds=(\d+) delaySourceRecoveryTicks=(\d+))?)?",
+    re.IGNORECASE,
+)
+WGC_DELAY_REPEAT_RESCUE_RE = re.compile(
+    r"delayRepeatRescue=(\d+)/(\d+) delayRepeatRescueRejected=(\d+)/(\d+)/(\d+) "
+    r"delayRepeatSafeCandidate=(\d+) delayRepeatNoSafeCandidate=(\d+) "
+    r"delayRepeatWindowClass=(\d+)/(\d+)/(\d+) delayRepeatReserveMax=(\d+)/(\d+)us",
     re.IGNORECASE,
 )
 WGC_DELAY_POST_REJECT_RE = re.compile(r"delayPostSelectionRejectedSync=(\d+)", re.IGNORECASE)
@@ -1205,6 +1214,7 @@ def parse_media_triage(media_text):
             delay_realization = WGC_DELAY_REALIZATION_RE.search(line)
             delay_raw = WGC_DELAY_RAW_RESIDUAL_RE.search(line)
             delay_relaxed = WGC_DELAY_RELAXED_RE.search(line)
+            delay_repeat_rescue = WGC_DELAY_REPEAT_RESCUE_RE.search(line)
             delay_post_reject = WGC_DELAY_POST_REJECT_RE.search(line)
             smoothness_lower_bound = WGC_SMOOTHNESS_LOWER_BOUND_RE.search(line)
             wgc_smoothness_summary.append(
@@ -1274,6 +1284,42 @@ def parse_media_triage(media_text):
                     "delay_source_limited_repeats": parse_int(delay_relaxed.group(13)) if delay_relaxed else 0,
                     "delay_source_recovery_holds": parse_int(delay_relaxed.group(14)) if delay_relaxed else 0,
                     "delay_source_recovery_ticks": parse_int(delay_relaxed.group(15)) if delay_relaxed else 0,
+                    "delay_repeat_rescue_success": parse_int(delay_repeat_rescue.group(1))
+                    if delay_repeat_rescue
+                    else 0,
+                    "delay_repeat_rescue_attempts": parse_int(delay_repeat_rescue.group(2))
+                    if delay_repeat_rescue
+                    else 0,
+                    "delay_repeat_rescue_rejected_sync": parse_int(delay_repeat_rescue.group(3))
+                    if delay_repeat_rescue
+                    else 0,
+                    "delay_repeat_rescue_rejected_headroom": parse_int(delay_repeat_rescue.group(4))
+                    if delay_repeat_rescue
+                    else 0,
+                    "delay_repeat_rescue_rejected_cost": parse_int(delay_repeat_rescue.group(5))
+                    if delay_repeat_rescue
+                    else 0,
+                    "delay_repeat_safe_candidate": parse_int(delay_repeat_rescue.group(6))
+                    if delay_repeat_rescue
+                    else 0,
+                    "delay_repeat_no_safe_candidate": parse_int(delay_repeat_rescue.group(7))
+                    if delay_repeat_rescue
+                    else 0,
+                    "delay_repeat_window_healthy": parse_int(delay_repeat_rescue.group(8))
+                    if delay_repeat_rescue
+                    else 0,
+                    "delay_repeat_window_recoverable": parse_int(delay_repeat_rescue.group(9))
+                    if delay_repeat_rescue
+                    else 0,
+                    "delay_repeat_window_source_limited": parse_int(delay_repeat_rescue.group(10))
+                    if delay_repeat_rescue
+                    else 0,
+                    "delay_repeat_reserve_depth_max": parse_int(delay_repeat_rescue.group(11))
+                    if delay_repeat_rescue
+                    else 0,
+                    "delay_repeat_reserve_span_max_us": parse_int(delay_repeat_rescue.group(12))
+                    if delay_repeat_rescue
+                    else 0,
                     "delay_post_selection_rejected_sync": parse_int(delay_post_reject.group(1))
                     if delay_post_reject
                     else 0,
@@ -1953,6 +1999,13 @@ def has_wgc_cfr_smoothness_not_maximal(media_evidence):
     return False
 
 
+def has_wgc_repeat_with_safe_candidate(media_evidence):
+    return any(
+        item.get("delay_repeat_safe_candidate", 0) > 0 and item.get("policy_added_repeats", 0) > 0
+        for item in media_evidence["wgc_smoothness_summary"]
+    )
+
+
 def has_wgc_sync_delay_reserve_pressure(media_evidence):
     for item in media_evidence["wgc_smoothness_summary"]:
         requested_delay_ms = item.get("av_delay_ms", 0.0)
@@ -2108,6 +2161,9 @@ def classify_session_triage(session_dir, capture_path=None):
     wgc_cfr_smoothness_not_maximal = has_wgc_cfr_smoothness_not_maximal(media_evidence)
     if wgc_cfr_smoothness_not_maximal:
         verdicts.append("wgc_cfr_smoothness_not_maximal")
+    wgc_repeat_with_safe_candidate = has_wgc_repeat_with_safe_candidate(media_evidence)
+    if wgc_repeat_with_safe_candidate:
+        verdicts.append("wgc_repeat_despite_safe_candidate")
     wgc_sync_delay_reserve_pressure = has_wgc_sync_delay_reserve_pressure(media_evidence)
     if (
         wgc_sync_delay_reserve_pressure
@@ -2160,6 +2216,7 @@ def classify_session_triage(session_dir, capture_path=None):
         or wgc_active_delay_post_selection_reject
         or wgc_sync_delay_policy_fault
         or wgc_cfr_smoothness_not_maximal
+        or wgc_repeat_with_safe_candidate
     ):
         verdicts.append("ce_visual_timeline_fault")
     if hook_evidence["external_overlay_lines"]:
@@ -2198,6 +2255,7 @@ def classify_session_triage(session_dir, capture_path=None):
             "wgc_active_delay_post_selection_reject": wgc_active_delay_post_selection_reject,
             "wgc_sync_delay_policy_fault": wgc_sync_delay_policy_fault,
             "wgc_cfr_smoothness_not_maximal": wgc_cfr_smoothness_not_maximal,
+            "wgc_repeat_with_safe_candidate": wgc_repeat_with_safe_candidate,
             "wgc_sync_delay_reserve_pressure": wgc_sync_delay_reserve_pressure,
             "late_app_source_backlog": "late_app_source_backlog" in verdicts,
             "started_app_source_underrun": "started_app_source_underrun" in verdicts,
@@ -2335,6 +2393,10 @@ def print_triage_report(report):
                 "reject_sync={reject_sync} reject_headroom={reject_headroom} reject_cost={reject_cost} "
                 "soft_late={soft_late_reject}/{soft_late_accept} older_frame={older_frame} "
                 "source_limited_repeat={source_limited_repeat} "
+                "repeat_rescue={repeat_rescue_success}/{repeat_rescue_attempts} "
+                "repeat_safe={repeat_safe}/{repeat_no_safe} "
+                "repeat_class={repeat_healthy}/{repeat_recoverable}/{repeat_source_limited} "
+                "repeat_reserve_max={repeat_reserve_depth}/{repeat_reserve_span}us "
                 "post_reject_sync={post_reject} post_rescue_sync={post_rescue} "
                 "repeat_pressure={repeat_pressure}/{repeat_max} lower_bound={lower_bound} "
                 "excess_repeats={excess_repeats} policy_added={policy_added} "
@@ -2376,6 +2438,15 @@ def print_triage_report(report):
                     soft_late_accept=worst_sync_delay.get("delay_soft_late_accepted", 0),
                     older_frame=worst_sync_delay.get("delay_older_frame_avoided_repeat", 0),
                     source_limited_repeat=worst_sync_delay.get("delay_source_limited_repeats", 0),
+                    repeat_rescue_success=worst_sync_delay.get("delay_repeat_rescue_success", 0),
+                    repeat_rescue_attempts=worst_sync_delay.get("delay_repeat_rescue_attempts", 0),
+                    repeat_safe=worst_sync_delay.get("delay_repeat_safe_candidate", 0),
+                    repeat_no_safe=worst_sync_delay.get("delay_repeat_no_safe_candidate", 0),
+                    repeat_healthy=worst_sync_delay.get("delay_repeat_window_healthy", 0),
+                    repeat_recoverable=worst_sync_delay.get("delay_repeat_window_recoverable", 0),
+                    repeat_source_limited=worst_sync_delay.get("delay_repeat_window_source_limited", 0),
+                    repeat_reserve_depth=worst_sync_delay.get("delay_repeat_reserve_depth_max", 0),
+                    repeat_reserve_span=worst_sync_delay.get("delay_repeat_reserve_span_max_us", 0),
                     post_reject=worst_sync_delay.get("delay_post_selection_rejected_sync", 0),
                     post_rescue=worst_sync_delay.get("delay_post_selection_rescued_sync", 0),
                     repeat_pressure=worst_sync_delay.get("delay_repeat_cluster_pressure", 0),
@@ -3002,6 +3073,61 @@ def self_test():
         assert "wgc_cfr_smoothness_not_maximal" in delay_20260620_report["verdicts"]
         assert "ce_visual_timeline_fault" in delay_20260620_report["verdicts"]
         assert "ce_audio_timeline_fault" not in delay_20260620_report["verdicts"]
+
+        wgc_sync_delay_fortineu_safe_candidate_pressure = make_session(
+            "wgc_sync_delay_fortineu_safe_candidate_pressure",
+            media=(
+                "[WGC CFR SUMMARY] Live=31799 Dup=3055 DupPct=9.6% NoFresh=130pm NoReserve=158pm "
+                "DupReason(src=3055 def=0 timer=0 drain=0) SourceLimitedRepeats=3055 StarvedEpisodes=663 "
+                "longest=2703ms longestDup=172 worstIn=4 worstDel=4\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=210 "
+                "phaseErrorMax=214038us shortfallMax=8.3ms staleDebtDrops=0 liveRebase=0/0 "
+                "tooNewRepeats=2644 syncDelayHolds=2644 tooNewLeadMax=110473us avDelay=33.6ms "
+                "startupDelay=33.6ms scheduleOffset=-169584us effectiveDelay=33.6ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=1709 syncDelayPolicyHolds=935 startupReserveFrames=1 "
+                "startupReserveSpan=0us startupDelayTarget=33600us startupReserveSelected=0 "
+                "startupReserveReason=source_startup_underfeed delayReservoirLowWaterFrames=5 "
+                "delayReservoirTargetFrames=6 delayReservoirLowWaterTicks=5043 realizedDelayAvg=33175us "
+                "realizedDelayMin=22000us realizedDelayMax=79000us delayResidualAvg=405/2210us "
+                "delayResidualMax=45594us delayResidualP95=5000us delayResidualLateMax=9997us "
+                "delayResidualEarlyMax=45594us rawResidualAvg=504/2407us rawResidualMax=50000us "
+                "rawResidualP95=5000us rawResidualLateMax=9958us rawResidualEarlyMax=50000us "
+                "predictedResidualAvg=405/2210us predictedResidualP95=5000us "
+                "predictedResidualLateMax=9997us rawMinusPredictedAvg=98/100us "
+                "rawMinusPredictedMax=1000us delayResidualRelaxedSelections=1218 "
+                "delayResidualRelaxedMax=9958us delayResidualRelaxedRejectedSync=479466 "
+                "delayRepeatClusterPressure=295 delayRepeatClusterMax=56 "
+                "delayResidualRelaxedBetter=1217 delayResidualRelaxedCluster=0 "
+                "delayResidualRelaxedRejectedHeadroom=7584 delayResidualRelaxedRejectedCost=9124 "
+                "delaySoftLateRejected=7496 delaySoftLateAccepted=1978 "
+                "delayOlderFrameAvoidedRepeat=27484 delaySourceLimitedRepeats=1945 "
+                "delayRepeatRescue=0/935 delayRepeatRescueRejected=0/0/935 "
+                "delayRepeatSafeCandidate=699 delayRepeatNoSafeCandidate=236 "
+                "delayRepeatWindowClass=0/699/236 delayRepeatReserveMax=6/50000us "
+                "delaySourceRecoveryHolds=675 delaySourceRecoveryTicks=12971 "
+                "delayPostSelectionRejectedSync=0 delayPostSelectionRescuedSync=0 "
+                "sourceRepeatLowerBound=1945 excessRepeats=699 policyAddedRepeats=699 "
+                "excessRepeatClusters=12 excessRepeatClusterMax=1 smoothnessNotMaximal=1 "
+                "mixedPolicyFault=1\n"
+                "[STOP AUDIO TRACK] Track 1: encoded=12720000 expected=12720000 diff=+0 (+0.000 ms) "
+                "sources=[1,3,5,7]\n"
+                "[VideoEncoder] Final packet timeline: target=265000000 us videoEnd=265000000 us "
+                "audioMinEnd=265000000 us audioMaxEnd=265000000 us maxPacketDelta=0 us streams(v=1 a=3) "
+                "audioPastTarget=0\n"
+                "[VideoEncoder] Final metadata durations: target=265000000 us video=265000000 us "
+                "audioMin=265000000 us audioMax=265000000 us maxDelta=0 us streams(v=1 a=3) "
+                "overload(encoder=0 mux=0) backpressure=0\n"
+            ),
+        )
+        fortineu_report = classify_session_triage(wgc_sync_delay_fortineu_safe_candidate_pressure)
+        fortineu_summary = fortineu_report["evidence"]["wgc_smoothness_summary"][0]
+        assert fortineu_summary["delay_repeat_safe_candidate"] == 699
+        assert fortineu_summary["delay_repeat_rescue_attempts"] == 935
+        assert "wgc_repeat_despite_safe_candidate" in fortineu_report["verdicts"]
+        assert "wgc_cfr_smoothness_not_maximal" in fortineu_report["verdicts"]
+        assert "ce_visual_timeline_fault" in fortineu_report["verdicts"]
+        assert "ce_audio_timeline_fault" not in fortineu_report["verdicts"]
 
         wgc_sync_delay_20260619_162335 = make_session(
             "wgc_sync_delay_20260619_162335",
