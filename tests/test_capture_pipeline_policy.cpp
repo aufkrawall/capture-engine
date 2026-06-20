@@ -1016,6 +1016,13 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayRepeatRescueScoresSafeFramesBefore
     EXPECT_TRUE(score.Accepted());
 
     score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
+        106000, 106000, 100000, 100000, 8333, 1000000, 0, 0, 0, 0,
+        policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kAcceptSoftRepeatAvoidance);
+    EXPECT_TRUE(score.Accepted());
+    EXPECT_STREQ(policy::WgcActiveDelayRelaxedDecisionToString(score.decision), "soft_repeat_avoidance");
+
+    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
         106000, 111000, 90000, 100000, 8333, 1000000, 1, 0, 0, 0,
         policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectSyncRisk);
@@ -1029,6 +1036,12 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayRepeatRescueScoresSafeFramesBefore
 
     score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
         109000, 109000, 108000, 100000, 8333, 1000000, 0, 0, 0, 0,
+        policy::WgcActiveDelayWindowClass::kSourceLimited, softLateTargetUs);
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectRepeatCost);
+    EXPECT_FALSE(score.Accepted());
+
+    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
+        106000, 106000, 100000, 100000, 8333, 1000000, 0, 0, 0, 0,
         policy::WgcActiveDelayWindowClass::kSourceLimited, softLateTargetUs);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectRepeatCost);
     EXPECT_FALSE(score.Accepted());

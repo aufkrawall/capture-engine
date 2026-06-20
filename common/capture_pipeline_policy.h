@@ -1640,6 +1640,7 @@ enum class WgcActiveDelayRelaxedDecision : uint8_t {
     kRejectRepeatCost = 4,
     kAcceptBetterTarget = 5,
     kAcceptRepeatCluster = 6,
+    kAcceptSoftRepeatAvoidance = 7,
 };
 
 inline const char* WgcActiveDelayRelaxedDecisionToString(WgcActiveDelayRelaxedDecision decision) {
@@ -1658,6 +1659,8 @@ inline const char* WgcActiveDelayRelaxedDecisionToString(WgcActiveDelayRelaxedDe
             return "better_target";
         case WgcActiveDelayRelaxedDecision::kAcceptRepeatCluster:
             return "repeat_cluster";
+        case WgcActiveDelayRelaxedDecision::kAcceptSoftRepeatAvoidance:
+            return "soft_repeat_avoidance";
     }
     return "unknown";
 }
@@ -1672,7 +1675,8 @@ struct WgcActiveDelayRelaxedCandidateScore {
 
     bool Accepted() const {
         return decision == WgcActiveDelayRelaxedDecision::kAcceptBetterTarget ||
-               decision == WgcActiveDelayRelaxedDecision::kAcceptRepeatCluster;
+               decision == WgcActiveDelayRelaxedDecision::kAcceptRepeatCluster ||
+               decision == WgcActiveDelayRelaxedDecision::kAcceptSoftRepeatAvoidance;
     }
 };
 
@@ -1747,6 +1751,19 @@ inline WgcActiveDelayRelaxedCandidateScore ScoreWgcActiveDelayRelaxedCandidate(
     if (result.candidateDamageQpc < result.repeatDamageQpc) {
         result.decision = WgcActiveDelayRelaxedDecision::kAcceptBetterTarget;
         return result;
+    }
+    if (windowClass != WgcActiveDelayWindowClass::kSourceLimited &&
+        result.candidateLateResidualUs <= softLateTargetUs && qpcTicksPerSecond > 0) {
+        const uint64_t softBudgetQpc =
+            (static_cast<uint64_t>(softLateTargetUs) * static_cast<uint64_t>(qpcTicksPerSecond)) / 1000000ull;
+        const int64_t softRepeatBudgetQpc =
+            INT64_MAX - result.repeatDamageQpc < static_cast<int64_t>(softBudgetQpc)
+                ? INT64_MAX
+                : result.repeatDamageQpc + static_cast<int64_t>(softBudgetQpc);
+        if (result.candidateDamageQpc <= softRepeatBudgetQpc) {
+            result.decision = WgcActiveDelayRelaxedDecision::kAcceptSoftRepeatAvoidance;
+            return result;
+        }
     }
     if (result.repeatClusterPenaltyQpc > 0 && result.candidateDamageQpc <= result.repeatBudgetQpc) {
         result.decision = WgcActiveDelayRelaxedDecision::kAcceptRepeatCluster;
@@ -1823,6 +1840,19 @@ inline WgcActiveDelayRelaxedCandidateScore ScoreWgcActiveDelayRepeatRescueCandid
     if (result.candidateDamageQpc < result.repeatDamageQpc) {
         result.decision = WgcActiveDelayRelaxedDecision::kAcceptBetterTarget;
         return result;
+    }
+    if (windowClass != WgcActiveDelayWindowClass::kSourceLimited &&
+        result.candidateLateResidualUs <= softLateTargetUs && qpcTicksPerSecond > 0) {
+        const uint64_t softBudgetQpc =
+            (static_cast<uint64_t>(softLateTargetUs) * static_cast<uint64_t>(qpcTicksPerSecond)) / 1000000ull;
+        const int64_t softRepeatBudgetQpc =
+            INT64_MAX - result.repeatDamageQpc < static_cast<int64_t>(softBudgetQpc)
+                ? INT64_MAX
+                : result.repeatDamageQpc + static_cast<int64_t>(softBudgetQpc);
+        if (result.candidateDamageQpc <= softRepeatBudgetQpc) {
+            result.decision = WgcActiveDelayRelaxedDecision::kAcceptSoftRepeatAvoidance;
+            return result;
+        }
     }
     if (result.repeatClusterPenaltyQpc > 0 && result.candidateDamageQpc <= result.repeatBudgetQpc) {
         result.decision = WgcActiveDelayRelaxedDecision::kAcceptRepeatCluster;
