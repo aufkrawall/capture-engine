@@ -945,7 +945,8 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayClassifiesUnstableFpsWindows) {
 
     telemetry.recentInputMin250Fps = 140;
     EXPECT_EQ(policy::ClassifyWgcActiveDelayWindow(telemetry, false, false, false, false, false, false),
-              policy::WgcActiveDelayWindowClass::kSourceLimited);
+              policy::WgcActiveDelayWindowClass::kHardSourceStall);
+    EXPECT_TRUE(policy::IsWgcActiveDelaySourceLimitedClass(policy::WgcActiveDelayWindowClass::kHardSourceStall));
 
     telemetry.averageJitterUs = policy::GetWgcFrameIntervalUs(telemetry.outputFps) + 500;
     EXPECT_EQ(policy::ClassifyWgcActiveDelayWindow(telemetry, false, false, false, false, false, true),
@@ -955,6 +956,21 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayClassifiesUnstableFpsWindows) {
     telemetry.averageJitterUs = (policy::GetWgcFrameIntervalUs(telemetry.outputFps) * 2) + 500;
     EXPECT_EQ(policy::ClassifyWgcActiveDelayWindow(telemetry, false, false, false, false, false, true),
               policy::WgcActiveDelayWindowClass::kSourceLimited);
+
+    telemetry.emptyTickPermille = 0;
+    telemetry.averageJitterUs = 0;
+    telemetry.recentDeliveredMin250Fps = 140;
+    telemetry.recentInputMin250Fps = 140;
+    telemetry.recentInputMin500Fps = 140;
+    EXPECT_EQ(policy::ClassifyWgcActiveDelayWindow(telemetry, false, false, false, false, true, true),
+              policy::WgcActiveDelayWindowClass::kPostStallRecovery);
+    EXPECT_FALSE(policy::IsWgcActiveDelaySourceLimitedClass(policy::WgcActiveDelayWindowClass::kPostStallRecovery));
+    EXPECT_EQ(policy::ClassifyWgcActiveDelayWindow(telemetry, false, false, false, false, true, false),
+              policy::WgcActiveDelayWindowClass::kHardSourceStall);
+
+    telemetry.recentInputMin250Fps = 90;
+    EXPECT_EQ(policy::ClassifyWgcActiveDelayWindow(telemetry, false, false, false, false, true, true),
+              policy::WgcActiveDelayWindowClass::kPostStallRecovery);
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelayRelaxedCandidateMustBeatRepeatWithinHardLimit) {
@@ -1001,6 +1017,20 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelaySoftLateTargetProtectsHealthyWindo
     EXPECT_TRUE(score.Accepted());
 
     score = policy::ScoreWgcActiveDelayRelaxedCandidate(
+        109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 0,
+        policy::WgcActiveDelayWindowClass::kRecoverableUnderfill,
+        policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom);
+    EXPECT_FALSE(score.Accepted());
+
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(
+        109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 0,
+        policy::WgcActiveDelayWindowClass::kPostStallRecovery,
+        policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom);
+    EXPECT_FALSE(score.Accepted());
+
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(
         109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
         policy::WgcActiveDelayWindowClass::kSourceLimited, policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
     EXPECT_TRUE(score.Accepted());
@@ -1035,6 +1065,18 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayRepeatRescueScoresSafeFramesBefore
     EXPECT_FALSE(score.Accepted());
 
     score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
+        106000, 106000, 100000, 100000, 8333, 1000000, 0, 12000, 20000, 10000,
+        policy::WgcActiveDelayWindowClass::kPostStallRecovery, softLateTargetUs);
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kAcceptSoftRepeatAvoidance);
+    EXPECT_TRUE(score.Accepted());
+
+    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
+        109000, 109000, 80000, 100000, 8333, 1000000, 1, 12000, 20000, 10000,
+        policy::WgcActiveDelayWindowClass::kPostStallRecovery, softLateTargetUs);
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom);
+    EXPECT_FALSE(score.Accepted());
+
+    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
         109000, 109000, 108000, 100000, 8333, 1000000, 0, 0, 0, 0,
         policy::WgcActiveDelayWindowClass::kSourceLimited, softLateTargetUs);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectRepeatCost);
@@ -1058,6 +1100,13 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayFinalSelectionChecksPredictedAndRa
     EXPECT_FALSE(policy::IsWgcActiveDelayFinalSelectionWithinHardLimit(111000, 108000, 100000, 8333, 1000000));
     EXPECT_FALSE(policy::IsWgcActiveDelayFinalSelectionWithinHardLimit(108000, 111000, 100000, 8333, 1000000));
     EXPECT_TRUE(policy::IsWgcActiveDelayFinalSelectionWithinHardLimit(108000, 0, 100000, 8333, 1000000));
+    EXPECT_EQ(policy::GetWgcActiveDelayFinalSelectionLateResidualUs(106000, 105000, 100000, 1000000), 6000u);
+    EXPECT_TRUE(policy::IsWgcActiveDelayFinalSelectionWithinSoftLateTarget(106000, 105000, 100000, 8333, 1000000,
+                                                                           6249));
+    EXPECT_FALSE(policy::IsWgcActiveDelayFinalSelectionWithinSoftLateTarget(109000, 105000, 100000, 8333, 1000000,
+                                                                            6249));
+    EXPECT_FALSE(policy::IsWgcActiveDelayFinalSelectionWithinSoftLateTarget(111000, 105000, 100000, 8333, 1000000,
+                                                                            6249));
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelayRelaxedCandidateAccountsForRepeatClusterCost) {

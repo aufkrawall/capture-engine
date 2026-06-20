@@ -985,6 +985,8 @@ enum class WgcActiveDelayWindowClass : uint8_t {
     kHealthy = 0,
     kRecoverableUnderfill,
     kSourceLimited,
+    kHardSourceStall,
+    kPostStallRecovery,
 };
 
 inline const char* WgcActiveDelayWindowClassToString(WgcActiveDelayWindowClass state) {
@@ -995,8 +997,17 @@ inline const char* WgcActiveDelayWindowClassToString(WgcActiveDelayWindowClass s
             return "recoverable_underfill";
         case WgcActiveDelayWindowClass::kSourceLimited:
             return "source_limited";
+        case WgcActiveDelayWindowClass::kHardSourceStall:
+            return "hard_source_stall";
+        case WgcActiveDelayWindowClass::kPostStallRecovery:
+            return "post_stall_recovery";
     }
     return "unknown";
+}
+
+inline bool IsWgcActiveDelaySourceLimitedClass(WgcActiveDelayWindowClass state) {
+    return state == WgcActiveDelayWindowClass::kSourceLimited ||
+           state == WgcActiveDelayWindowClass::kHardSourceStall;
 }
 
 inline const char* WgcLiveRecoveryStateToString(WgcLiveRecoveryState state) {
@@ -1236,13 +1247,21 @@ inline WgcActiveDelayWindowClass ClassifyWgcActiveDelayWindow(const WgcAdaptiveT
     if (telemetry.outputFps == 0) {
         return WgcActiveDelayWindowClass::kHealthy;
     }
-    if (!hardSafeCandidateAvailable || sourceStarved || deepUnderfeed || activeDelaySourceRecovery) {
-        return WgcActiveDelayWindowClass::kSourceLimited;
-    }
-    if (IsWgcInputBelowTarget(telemetry.outputFps, telemetry.recentInputMin250Fps,
+
+    const bool telemetrySourceLimited =
+        sourceStarved || deepUnderfeed ||
+        IsWgcInputBelowTarget(telemetry.outputFps, telemetry.recentInputMin250Fps,
                               telemetry.recentInputMin500Fps) ||
         telemetry.emptyTickPermille >= kWgcDeepUnderfeedEmptyTickPermille ||
-        IsWgcActiveDelaySourceLimitedJitter(telemetry)) {
+        IsWgcActiveDelaySourceLimitedJitter(telemetry);
+
+    if (!hardSafeCandidateAvailable) {
+        return WgcActiveDelayWindowClass::kHardSourceStall;
+    }
+    if (activeDelaySourceRecovery) {
+        return WgcActiveDelayWindowClass::kPostStallRecovery;
+    }
+    if (telemetrySourceLimited) {
         return WgcActiveDelayWindowClass::kSourceLimited;
     }
     if (lowSourceMode || liveRecoveryMode || IsWgcSchedulerDeliveryLimited(telemetry) ||
@@ -1621,6 +1640,38 @@ inline bool IsWgcActiveDelayFinalSelectionWithinHardLimit(int64_t predictedSelec
     return true;
 }
 
+inline uint32_t GetWgcActiveDelayFinalSelectionLateResidualUs(int64_t predictedSelectionQpc, int64_t rawSelectionQpc,
+                                                             int64_t selectionTargetQpc,
+                                                             int64_t qpcTicksPerSecond) {
+    if (selectionTargetQpc <= 0 || qpcTicksPerSecond <= 0) {
+        return 0;
+    }
+    const int64_t predictedLateQpc =
+        predictedSelectionQpc > selectionTargetQpc ? (predictedSelectionQpc - selectionTargetQpc) : 0;
+    const int64_t rawLateQpc =
+        rawSelectionQpc > selectionTargetQpc ? (rawSelectionQpc - selectionTargetQpc) : 0;
+    const int64_t lateQpc = std::max(predictedLateQpc, rawLateQpc);
+    if (lateQpc <= 0) {
+        return 0;
+    }
+    const uint64_t lateUs =
+        (static_cast<uint64_t>(lateQpc) * 1000000ull) / static_cast<uint64_t>(qpcTicksPerSecond);
+    return lateUs > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(lateUs);
+}
+
+inline bool IsWgcActiveDelayFinalSelectionWithinSoftLateTarget(int64_t predictedSelectionQpc, int64_t rawSelectionQpc,
+                                                               int64_t selectionTargetQpc,
+                                                               int64_t targetIntervalTicks,
+                                                               int64_t qpcTicksPerSecond,
+                                                               uint32_t softLateTargetUs) {
+    if (!IsWgcActiveDelayFinalSelectionWithinHardLimit(predictedSelectionQpc, rawSelectionQpc, selectionTargetQpc,
+                                                       targetIntervalTicks, qpcTicksPerSecond)) {
+        return false;
+    }
+    return GetWgcActiveDelayFinalSelectionLateResidualUs(predictedSelectionQpc, rawSelectionQpc, selectionTargetQpc,
+                                                        qpcTicksPerSecond) <= softLateTargetUs;
+}
+
 inline int64_t GetWgcActiveDelayRepeatClusterPenaltyQpc(uint32_t repeatClusterTicks, int64_t targetIntervalTicks) {
     if (repeatClusterTicks == 0 || targetIntervalTicks <= 0) {
         return 0;
@@ -1687,8 +1738,11 @@ inline bool HasWgcActiveDelayResidualHeadroom(
     if (candidateLateResidualUs > kWgcActiveDelayResidualHardLimitUs) {
         return false;
     }
-    if (windowClass != WgcActiveDelayWindowClass::kSourceLimited && candidateLateResidualUs > softLateTargetUs &&
-        residualLateMaxUs >= softLateTargetUs) {
+    if (windowClass == WgcActiveDelayWindowClass::kPostStallRecovery &&
+        candidateLateResidualUs <= softLateTargetUs) {
+        return true;
+    }
+    if (!IsWgcActiveDelaySourceLimitedClass(windowClass) && candidateLateResidualUs > softLateTargetUs) {
         return false;
     }
     if (residualAvgAbsUs > kWgcActiveDelayResidualMeanTargetUs) {
@@ -1752,7 +1806,7 @@ inline WgcActiveDelayRelaxedCandidateScore ScoreWgcActiveDelayRelaxedCandidate(
         result.decision = WgcActiveDelayRelaxedDecision::kAcceptBetterTarget;
         return result;
     }
-    if (windowClass != WgcActiveDelayWindowClass::kSourceLimited &&
+    if (!IsWgcActiveDelaySourceLimitedClass(windowClass) &&
         result.candidateLateResidualUs <= softLateTargetUs && qpcTicksPerSecond > 0) {
         const uint64_t softBudgetQpc =
             (static_cast<uint64_t>(softLateTargetUs) * static_cast<uint64_t>(qpcTicksPerSecond)) / 1000000ull;
@@ -1841,7 +1895,7 @@ inline WgcActiveDelayRelaxedCandidateScore ScoreWgcActiveDelayRepeatRescueCandid
         result.decision = WgcActiveDelayRelaxedDecision::kAcceptBetterTarget;
         return result;
     }
-    if (windowClass != WgcActiveDelayWindowClass::kSourceLimited &&
+    if (!IsWgcActiveDelaySourceLimitedClass(windowClass) &&
         result.candidateLateResidualUs <= softLateTargetUs && qpcTicksPerSecond > 0) {
         const uint64_t softBudgetQpc =
             (static_cast<uint64_t>(softLateTargetUs) * static_cast<uint64_t>(qpcTicksPerSecond)) / 1000000ull;

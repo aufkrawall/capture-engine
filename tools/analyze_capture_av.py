@@ -180,7 +180,10 @@ WGC_DELAY_RELAXED_RE = re.compile(
     r"(?:delayRepeatPromoted=\d+/\d+ delayRepeatPromoteRejectedSoft=\d+ "
     r"delayRepeatSafeAfterPromote=\d+ )?"
     r"delayRepeatSafeCandidate=\d+ delayRepeatNoSafeCandidate=\d+ "
-    r"delayRepeatWindowClass=\d+/\d+/\d+ delayRepeatReserveMax=\d+/\d+us )?"
+    r"(?:delayRepeatSoftSafeCandidate=\d+ delayRepeatNoSoftSafeCandidate=\d+ )?"
+    r"delayRepeatWindowClass=\d+/\d+/\d+ "
+    r"(?:delayRepeatWindowState=\d+/\d+/\d+/\d+/\d+ delayPostStallSafeFrames=\d+ )?"
+    r"delayRepeatReserveMax=\d+/\d+us )?"
     r"delaySourceRecoveryHolds=(\d+) delaySourceRecoveryTicks=(\d+))?)?",
     re.IGNORECASE,
 )
@@ -189,7 +192,10 @@ WGC_DELAY_REPEAT_RESCUE_RE = re.compile(
     r"(?:delayRepeatPromoted=(\d+)/(\d+) delayRepeatPromoteRejectedSoft=(\d+) "
     r"delayRepeatSafeAfterPromote=(\d+) )?"
     r"delayRepeatSafeCandidate=(\d+) delayRepeatNoSafeCandidate=(\d+) "
-    r"delayRepeatWindowClass=(\d+)/(\d+)/(\d+) delayRepeatReserveMax=(\d+)/(\d+)us",
+    r"(?:delayRepeatSoftSafeCandidate=(\d+) delayRepeatNoSoftSafeCandidate=(\d+) )?"
+    r"delayRepeatWindowClass=(\d+)/(\d+)/(\d+) "
+    r"(?:delayRepeatWindowState=(\d+)/(\d+)/(\d+)/(\d+)/(\d+) delayPostStallSafeFrames=(\d+) )?"
+    r"delayRepeatReserveMax=(\d+)/(\d+)us",
     re.IGNORECASE,
 )
 WGC_DELAY_POST_REJECT_RE = re.compile(r"delayPostSelectionRejectedSync=(\d+)", re.IGNORECASE)
@@ -252,6 +258,9 @@ WGC_ACTIVE_DELAY_POLICY_HOLD_FAULT_MIN_COUNT = 120
 WGC_ACTIVE_DELAY_POLICY_HOLD_FAULT_PERMILLE = 250
 WGC_CFR_SMOOTHNESS_EXCESS_REPEAT_FAULT_MIN_COUNT = 120
 WGC_CFR_SMOOTHNESS_EXCESS_REPEAT_CLUSTER_FAULT_TICKS = 24
+WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT = 10
+WGC_AUDIO_LATE_RISK_P95_US = 7000
+WGC_AUDIO_LATE_RISK_NEAR_CAP_US = 9500
 
 TRIAGE_AUDIO_FAULT_EVENTS = {
     "audio_latency_cap",
@@ -1245,26 +1254,45 @@ def update_wgc_smoothness_item_from_line(item, line):
 
     delay_repeat_rescue = WGC_DELAY_REPEAT_RESCUE_RE.search(line)
     if delay_repeat_rescue:
-        item.update(
-            {
-                "delay_repeat_rescue_success": parse_int(delay_repeat_rescue.group(1)),
-                "delay_repeat_rescue_attempts": parse_int(delay_repeat_rescue.group(2)),
-                "delay_repeat_rescue_rejected_sync": parse_int(delay_repeat_rescue.group(3)),
-                "delay_repeat_rescue_rejected_headroom": parse_int(delay_repeat_rescue.group(4)),
-                "delay_repeat_rescue_rejected_cost": parse_int(delay_repeat_rescue.group(5)),
-                "delay_repeat_promoted_before_repeat": parse_int(delay_repeat_rescue.group(6)),
-                "delay_repeat_promotion_attempts": parse_int(delay_repeat_rescue.group(7)),
-                "delay_repeat_promotion_rejected_soft": parse_int(delay_repeat_rescue.group(8)),
-                "delay_repeat_safe_after_promotion": parse_int(delay_repeat_rescue.group(9)),
-                "delay_repeat_safe_candidate": parse_int(delay_repeat_rescue.group(10)),
-                "delay_repeat_no_safe_candidate": parse_int(delay_repeat_rescue.group(11)),
-                "delay_repeat_window_healthy": parse_int(delay_repeat_rescue.group(12)),
-                "delay_repeat_window_recoverable": parse_int(delay_repeat_rescue.group(13)),
-                "delay_repeat_window_source_limited": parse_int(delay_repeat_rescue.group(14)),
-                "delay_repeat_reserve_depth_max": parse_int(delay_repeat_rescue.group(15)),
-                "delay_repeat_reserve_span_max_us": parse_int(delay_repeat_rescue.group(16)),
-            }
-        )
+        repeat_fields = {
+            "delay_repeat_rescue_success": parse_int(delay_repeat_rescue.group(1)),
+            "delay_repeat_rescue_attempts": parse_int(delay_repeat_rescue.group(2)),
+            "delay_repeat_rescue_rejected_sync": parse_int(delay_repeat_rescue.group(3)),
+            "delay_repeat_rescue_rejected_headroom": parse_int(delay_repeat_rescue.group(4)),
+            "delay_repeat_rescue_rejected_cost": parse_int(delay_repeat_rescue.group(5)),
+            "delay_repeat_promoted_before_repeat": parse_int(delay_repeat_rescue.group(6)),
+            "delay_repeat_promotion_attempts": parse_int(delay_repeat_rescue.group(7)),
+            "delay_repeat_promotion_rejected_soft": parse_int(delay_repeat_rescue.group(8)),
+            "delay_repeat_safe_after_promotion": parse_int(delay_repeat_rescue.group(9)),
+            "delay_repeat_safe_candidate": parse_int(delay_repeat_rescue.group(10)),
+            "delay_repeat_no_safe_candidate": parse_int(delay_repeat_rescue.group(11)),
+            "delay_repeat_window_healthy": parse_int(delay_repeat_rescue.group(14)),
+            "delay_repeat_window_recoverable": parse_int(delay_repeat_rescue.group(15)),
+            "delay_repeat_window_source_limited": parse_int(delay_repeat_rescue.group(16)),
+            "delay_repeat_state_healthy": parse_int(delay_repeat_rescue.group(17)),
+            "delay_repeat_state_recoverable": parse_int(delay_repeat_rescue.group(18)),
+            "delay_repeat_state_source_limited": parse_int(delay_repeat_rescue.group(19)),
+            "delay_repeat_state_hard_stall": parse_int(delay_repeat_rescue.group(20)),
+            "delay_repeat_state_post_stall": parse_int(delay_repeat_rescue.group(21)),
+            "delay_post_stall_safe_frames": parse_int(delay_repeat_rescue.group(22)),
+            "delay_repeat_reserve_depth_max": parse_int(delay_repeat_rescue.group(23)),
+            "delay_repeat_reserve_span_max_us": parse_int(delay_repeat_rescue.group(24)),
+        }
+        if delay_repeat_rescue.group(12) is not None:
+            repeat_fields["delay_repeat_soft_safe_candidate"] = parse_int(delay_repeat_rescue.group(12))
+            repeat_fields["delay_repeat_no_soft_safe_candidate"] = parse_int(delay_repeat_rescue.group(13))
+        item.update(repeat_fields)
+
+    repeat_named_fields = {
+        "delayNearCapAccepted": "delay_near_cap_accepted",
+        "delayHardOnlyCandidates": "delay_hard_only_candidates",
+        "delaySyncProtectedRepeats": "delay_sync_protected_repeats",
+        "delayOldestSoftSafeAgeMax": "delay_oldest_soft_safe_age_max_us",
+    }
+    for field_name, key in repeat_named_fields.items():
+        value = parse_named_int_field(line, field_name)
+        if value is not None:
+            item[key] = value
 
     lower_bound_fields = {
         "delayPostSelectionRejectedSync": "delay_post_selection_rejected_sync",
@@ -2112,6 +2140,43 @@ def has_wgc_av_sync_delay_residual_fault(media_evidence):
     return False
 
 
+def has_wgc_audio_late_risk(media_evidence):
+    for item in media_evidence["wgc_smoothness_summary"]:
+        if item.get("av_delay_ms", 0.0) <= 0.0:
+            continue
+
+        soft_late_accepted = item.get("delay_soft_late_accepted", 0)
+        near_cap_accepted = item.get("delay_near_cap_accepted", 0)
+        if (
+            soft_late_accepted >= WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT
+            or near_cap_accepted >= WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT
+        ):
+            return True
+
+        if (
+            item.get("delay_residual_p95_us", 0) > WGC_AUDIO_LATE_RISK_P95_US
+            or item.get("raw_residual_p95_us", 0) > WGC_AUDIO_LATE_RISK_P95_US
+            or item.get("predicted_residual_p95_us", 0) > WGC_AUDIO_LATE_RISK_P95_US
+        ):
+            return True
+
+        # A single late max near the hard cap is acceptable during true source-limited
+        # stalls. It becomes actionable when the selector accepted relaxed frames in
+        # that region, because that can make audio feel late despite exact mux/audio
+        # durations.
+        accepted_relaxed_frames = soft_late_accepted + near_cap_accepted
+        if accepted_relaxed_frames <= 0:
+            continue
+        if (
+            item.get("delay_residual_late_max_us", 0) >= WGC_AUDIO_LATE_RISK_NEAR_CAP_US
+            or item.get("raw_residual_late_max_us", 0) >= WGC_AUDIO_LATE_RISK_NEAR_CAP_US
+            or item.get("predicted_residual_late_max_us", 0) >= WGC_AUDIO_LATE_RISK_NEAR_CAP_US
+        ):
+            return True
+
+    return False
+
+
 def has_wgc_sync_delay_policy_fault(media_evidence):
     for item in media_evidence["wgc_smoothness_summary"]:
         requested_delay_ms = item.get("av_delay_ms", 0.0)
@@ -2167,12 +2232,42 @@ def has_wgc_smoothness_evidence_incomplete(media_evidence):
 
 
 def has_wgc_repeat_with_safe_candidate(media_evidence):
+    has_soft_safe_evidence = any(
+        "delay_repeat_soft_safe_candidate" in item for item in media_evidence["wgc_smoothness_summary"]
+    )
+    if has_soft_safe_evidence:
+        return any(
+            item.get("delay_repeat_soft_safe_candidate", 0) > 0
+            and item.get("policy_added_repeats", 0) > 0
+            for item in media_evidence["wgc_smoothness_summary"]
+        )
     return any(
         (
             item.get("delay_repeat_safe_after_promotion", 0) > 0
             or item.get("delay_repeat_safe_candidate", 0) > 0
         )
         and item.get("policy_added_repeats", 0) > 0
+        for item in media_evidence["wgc_smoothness_summary"]
+    )
+
+
+def has_wgc_post_stall_recovery_fault(media_evidence):
+    has_soft_safe_evidence = any(
+        "delay_repeat_soft_safe_candidate" in item for item in media_evidence["wgc_smoothness_summary"]
+    )
+    return any(
+        item.get("delay_repeat_state_post_stall", 0) > 0
+        and (
+            (
+                item.get("delay_repeat_soft_safe_candidate", 0) > 0
+                if has_soft_safe_evidence
+                else (
+                    item.get("delay_repeat_safe_candidate", 0) > 0
+                    or item.get("delay_repeat_safe_after_promotion", 0) > 0
+                )
+            )
+            or item.get("policy_added_repeats", 0) > 0
+        )
         for item in media_evidence["wgc_smoothness_summary"]
     )
 
@@ -2320,6 +2415,9 @@ def classify_session_triage(session_dir, capture_path=None):
     wgc_av_sync_delay_residual_fault = has_wgc_av_sync_delay_residual_fault(media_evidence)
     if wgc_av_sync_delay_residual_fault:
         verdicts.append("wgc_av_sync_delay_residual")
+    wgc_audio_late_risk = has_wgc_audio_late_risk(media_evidence)
+    if wgc_audio_late_risk:
+        verdicts.append("wgc_audio_late_risk")
     wgc_timestamp_domain_mismatch = has_wgc_timestamp_domain_mismatch(media_evidence)
     if wgc_timestamp_domain_mismatch:
         verdicts.append("wgc_timestamp_domain_mismatch")
@@ -2338,6 +2436,9 @@ def classify_session_triage(session_dir, capture_path=None):
     wgc_repeat_with_safe_candidate = has_wgc_repeat_with_safe_candidate(media_evidence)
     if wgc_repeat_with_safe_candidate:
         verdicts.append("wgc_repeat_despite_safe_candidate")
+    wgc_post_stall_recovery_fault = has_wgc_post_stall_recovery_fault(media_evidence)
+    if wgc_post_stall_recovery_fault:
+        verdicts.append("wgc_post_stall_recovery_fault")
     wgc_sync_delay_reserve_pressure = has_wgc_sync_delay_reserve_pressure(media_evidence)
     if (
         wgc_sync_delay_reserve_pressure
@@ -2345,6 +2446,7 @@ def classify_session_triage(session_dir, capture_path=None):
         and not wgc_cfr_smoothness_not_maximal
         and not wgc_av_sync_delay_risk
         and not wgc_av_sync_delay_residual_fault
+        and not wgc_audio_late_risk
         and not wgc_timestamp_domain_mismatch
         and not wgc_active_delay_post_selection_reject
         and not wgc_smoothness_evidence_incomplete
@@ -2387,12 +2489,14 @@ def classify_session_triage(session_dir, capture_path=None):
         or wgc_encoder_overload_policy_fault
         or wgc_av_sync_delay_risk
         or wgc_av_sync_delay_residual_fault
+        or wgc_audio_late_risk
         or wgc_timestamp_domain_mismatch
         or wgc_active_delay_post_selection_reject
         or wgc_sync_delay_policy_fault
         or wgc_cfr_smoothness_not_maximal
         or wgc_smoothness_evidence_incomplete
         or wgc_repeat_with_safe_candidate
+        or wgc_post_stall_recovery_fault
     ):
         verdicts.append("ce_visual_timeline_fault")
     if hook_evidence["external_overlay_lines"]:
@@ -2427,12 +2531,14 @@ def classify_session_triage(session_dir, capture_path=None):
             "wgc_encoder_overload_policy": wgc_encoder_overload_policy_fault,
             "wgc_av_sync_delay_unrealized": wgc_av_sync_delay_risk,
             "wgc_av_sync_delay_residual": wgc_av_sync_delay_residual_fault,
+            "wgc_audio_late_risk": wgc_audio_late_risk,
             "wgc_timestamp_domain_mismatch": wgc_timestamp_domain_mismatch,
             "wgc_active_delay_post_selection_reject": wgc_active_delay_post_selection_reject,
             "wgc_sync_delay_policy_fault": wgc_sync_delay_policy_fault,
             "wgc_cfr_smoothness_not_maximal": wgc_cfr_smoothness_not_maximal,
             "wgc_smoothness_evidence_incomplete": wgc_smoothness_evidence_incomplete,
             "wgc_repeat_with_safe_candidate": wgc_repeat_with_safe_candidate,
+            "wgc_post_stall_recovery_fault": wgc_post_stall_recovery_fault,
             "wgc_sync_delay_reserve_pressure": wgc_sync_delay_reserve_pressure,
             "late_app_source_backlog": "late_app_source_backlog" in verdicts,
             "started_app_source_underrun": "started_app_source_underrun" in verdicts,
@@ -2569,14 +2675,19 @@ def print_triage_report(report):
                 "relaxed={relaxed} better={relaxed_better} cluster={relaxed_cluster} "
                 "reject_sync={reject_sync} reject_headroom={reject_headroom} reject_cost={reject_cost} "
                 "soft_late={soft_late_reject}/{soft_late_accept} older_frame={older_frame} "
+                "near_cap={near_cap} hard_only={hard_only} sync_protected={sync_protected} "
                 "source_limited_repeat={source_limited_repeat} "
                 "repeat_rescue={repeat_rescue_success}/{repeat_rescue_attempts} "
                 "repeat_promote={repeat_promote}/{repeat_promote_attempts} "
                 "repeat_promote_soft_reject={repeat_promote_soft_reject} "
                 "repeat_safe_after_promote={repeat_safe_after_promote} "
                 "repeat_safe={repeat_safe}/{repeat_no_safe} "
+                "repeat_soft_safe={repeat_soft_safe}/{repeat_no_soft_safe} "
                 "repeat_class={repeat_healthy}/{repeat_recoverable}/{repeat_source_limited} "
+                "repeat_state={state_healthy}/{state_recoverable}/{state_source}/{state_hard}/{state_post} "
+                "post_stall_safe={post_stall_safe} "
                 "repeat_reserve_max={repeat_reserve_depth}/{repeat_reserve_span}us "
+                "oldest_soft_safe={oldest_soft_safe}us "
                 "post_reject_sync={post_reject} post_rescue_sync={post_rescue} "
                 "repeat_pressure={repeat_pressure}/{repeat_max} lower_bound={lower_bound} "
                 "excess_repeats={excess_repeats} policy_added={policy_added} "
@@ -2618,6 +2729,9 @@ def print_triage_report(report):
                     soft_late_reject=worst_sync_delay.get("delay_soft_late_rejected", 0),
                     soft_late_accept=worst_sync_delay.get("delay_soft_late_accepted", 0),
                     older_frame=worst_sync_delay.get("delay_older_frame_avoided_repeat", 0),
+                    near_cap=worst_sync_delay.get("delay_near_cap_accepted", 0),
+                    hard_only=worst_sync_delay.get("delay_hard_only_candidates", 0),
+                    sync_protected=worst_sync_delay.get("delay_sync_protected_repeats", 0),
                     source_limited_repeat=worst_sync_delay.get("delay_source_limited_repeats", 0),
                     repeat_rescue_success=worst_sync_delay.get("delay_repeat_rescue_success", 0),
                     repeat_rescue_attempts=worst_sync_delay.get("delay_repeat_rescue_attempts", 0),
@@ -2627,11 +2741,20 @@ def print_triage_report(report):
                     repeat_safe_after_promote=worst_sync_delay.get("delay_repeat_safe_after_promotion", 0),
                     repeat_safe=worst_sync_delay.get("delay_repeat_safe_candidate", 0),
                     repeat_no_safe=worst_sync_delay.get("delay_repeat_no_safe_candidate", 0),
+                    repeat_soft_safe=worst_sync_delay.get("delay_repeat_soft_safe_candidate", 0),
+                    repeat_no_soft_safe=worst_sync_delay.get("delay_repeat_no_soft_safe_candidate", 0),
                     repeat_healthy=worst_sync_delay.get("delay_repeat_window_healthy", 0),
                     repeat_recoverable=worst_sync_delay.get("delay_repeat_window_recoverable", 0),
                     repeat_source_limited=worst_sync_delay.get("delay_repeat_window_source_limited", 0),
+                    state_healthy=worst_sync_delay.get("delay_repeat_state_healthy", 0),
+                    state_recoverable=worst_sync_delay.get("delay_repeat_state_recoverable", 0),
+                    state_source=worst_sync_delay.get("delay_repeat_state_source_limited", 0),
+                    state_hard=worst_sync_delay.get("delay_repeat_state_hard_stall", 0),
+                    state_post=worst_sync_delay.get("delay_repeat_state_post_stall", 0),
+                    post_stall_safe=worst_sync_delay.get("delay_post_stall_safe_frames", 0),
                     repeat_reserve_depth=worst_sync_delay.get("delay_repeat_reserve_depth_max", 0),
                     repeat_reserve_span=worst_sync_delay.get("delay_repeat_reserve_span_max_us", 0),
+                    oldest_soft_safe=worst_sync_delay.get("delay_oldest_soft_safe_age_max_us", 0),
                     post_reject=worst_sync_delay.get("delay_post_selection_rejected_sync", 0),
                     post_rescue=worst_sync_delay.get("delay_post_selection_rescued_sync", 0),
                     repeat_pressure=worst_sync_delay.get("delay_repeat_cluster_pressure", 0),
@@ -3650,6 +3773,162 @@ def self_test():
         assert "wgc_sync_delay_reserve_pressure" in lower_bound_report["verdicts"]
         assert "wgc_cfr_smoothness_not_maximal" not in lower_bound_report["verdicts"]
         assert "ce_visual_timeline_fault" not in lower_bound_report["verdicts"]
+
+        wgc_post_stall_recovery_repeat = make_session(
+            "wgc_post_stall_recovery_repeat",
+            media=(
+                "[WGC CFR SUMMARY] Live=1200 Dup=160 DupPct=13.3% NoFresh=130pm NoReserve=90pm "
+                "DupReason(src=160 def=0 timer=0 drain=0) SourceLimitedRepeats=120 StarvedEpisodes=8 "
+                "longest=640ms longestDup=16 worstIn=70 worstDel=70\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=12 "
+                "phaseErrorMax=7000us shortfallMax=0.0ms staleDebtDrops=0 liveRebase=0/0 "
+                "tooNewRepeats=160 syncDelayHolds=160 tooNewLeadMax=38000us avDelay=32.0ms "
+                "startupDelay=32.0ms scheduleOffset=0us effectiveDelay=32.0ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=120 syncDelayPolicyHolds=40 startupReserveFrames=5 "
+                "startupReserveSpan=42000us startupDelayTarget=32000us startupReserveSelected=1 "
+                "startupReserveReason=selected\n"
+                "[WGC CFR SMOOTHNESS DELAY] delayReservoirLowWaterFrames=4 delayReservoirTargetFrames=5 "
+                "delayReservoirLowWaterTicks=80 realizedDelayAvg=32000us realizedDelayMin=28000us "
+                "realizedDelayMax=39000us delayResidualAvg=600/2100us delayResidualMax=7000us "
+                "delayResidualP95=5000us delayResidualLateMax=7000us delayResidualEarlyMax=4000us "
+                "rawResidualAvg=700/2200us rawResidualMax=8000us rawResidualP95=5000us "
+                "rawResidualLateMax=8000us rawResidualEarlyMax=4000us predictedResidualAvg=600/2100us "
+                "predictedResidualP95=5000us predictedResidualLateMax=7000us "
+                "rawMinusPredictedAvg=100/300us rawMinusPredictedMax=900us\n"
+                "[WGC CFR SMOOTHNESS REPEAT] delayResidualRelaxedSelections=40 "
+                "delayResidualRelaxedMax=6000us delayResidualRelaxedRejectedSync=0 "
+                "delayRepeatClusterPressure=40 delayRepeatClusterMax=8 delayResidualRelaxedBetter=20 "
+                "delayResidualRelaxedCluster=20 delayResidualRelaxedRejectedHeadroom=0 "
+                "delayResidualRelaxedRejectedCost=0 delaySoftLateRejected=0 delaySoftLateAccepted=0 "
+                "delayOlderFrameAvoidedRepeat=20 delaySourceLimitedRepeats=120 "
+                "delayRepeatRescue=0/40 delayRepeatRescueRejected=0/0/40 "
+                "delayRepeatPromoted=0/40 delayRepeatPromoteRejectedSoft=0 "
+                "delayRepeatSafeAfterPromote=40 delayRepeatSafeCandidate=40 delayRepeatNoSafeCandidate=120 "
+                "delayRepeatSoftSafeCandidate=40 delayRepeatNoSoftSafeCandidate=120 "
+                "delayRepeatWindowClass=0/40/120 delayRepeatWindowState=0/0/120/120/40 "
+                "delayPostStallSafeFrames=60 delayRepeatReserveMax=5/42000us "
+                "delaySourceRecoveryHolds=120 delaySourceRecoveryTicks=600\n"
+                "[WGC CFR SMOOTHNESS VERDICT] delayPostSelectionRejectedSync=0 "
+                "delayPostSelectionRescuedSync=0 sourceRepeatLowerBound=120 excessRepeats=40 "
+                "policyAddedRepeats=40 excessRepeatClusters=8 excessRepeatClusterMax=8 "
+                "smoothnessNotMaximal=0 mixedPolicyFault=0\n"
+            ),
+        )
+        post_stall_report = classify_session_triage(wgc_post_stall_recovery_repeat)
+        post_stall_summary = post_stall_report["evidence"]["wgc_smoothness_summary"][0]
+        assert post_stall_summary["delay_repeat_state_post_stall"] == 40
+        assert post_stall_summary["delay_post_stall_safe_frames"] == 60
+        assert post_stall_summary["delay_repeat_soft_safe_candidate"] == 40
+        assert "wgc_post_stall_recovery_fault" in post_stall_report["verdicts"]
+        assert "ce_visual_timeline_fault" in post_stall_report["verdicts"]
+
+        wgc_hard_only_repeat_not_soft_safe = make_session(
+            "wgc_hard_only_repeat_not_soft_safe",
+            media=(
+                "[WGC CFR SUMMARY] Live=1200 Dup=160 DupPct=13.3% NoFresh=130pm NoReserve=90pm "
+                "DupReason(src=160 def=0 timer=0 drain=0) SourceLimitedRepeats=160 StarvedEpisodes=8 "
+                "longest=640ms longestDup=16 worstIn=70 worstDel=70\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=12 "
+                "phaseErrorMax=7000us shortfallMax=0.0ms staleDebtDrops=0 liveRebase=0/0 "
+                "tooNewRepeats=160 syncDelayHolds=160 tooNewLeadMax=38000us avDelay=32.0ms "
+                "startupDelay=32.0ms scheduleOffset=0us effectiveDelay=32.0ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=160 syncDelayPolicyHolds=0 startupReserveFrames=5 "
+                "startupReserveSpan=42000us startupDelayTarget=32000us startupReserveSelected=1 "
+                "startupReserveReason=selected\n"
+                "[WGC CFR SMOOTHNESS DELAY] delayReservoirLowWaterFrames=4 delayReservoirTargetFrames=5 "
+                "delayReservoirLowWaterTicks=80 realizedDelayAvg=32000us realizedDelayMin=28000us "
+                "realizedDelayMax=39000us delayResidualAvg=600/2100us delayResidualMax=7000us "
+                "delayResidualP95=5000us delayResidualLateMax=7000us delayResidualEarlyMax=4000us "
+                "rawResidualAvg=700/2200us rawResidualMax=8000us rawResidualP95=5000us "
+                "rawResidualLateMax=8000us rawResidualEarlyMax=4000us predictedResidualAvg=600/2100us "
+                "predictedResidualP95=5000us predictedResidualLateMax=7000us "
+                "rawMinusPredictedAvg=100/300us rawMinusPredictedMax=900us\n"
+                "[WGC CFR SMOOTHNESS REPEAT] delayResidualRelaxedSelections=0 "
+                "delayResidualRelaxedMax=0us delayResidualRelaxedRejectedSync=0 "
+                "delayRepeatClusterPressure=0 delayRepeatClusterMax=0 delayResidualRelaxedBetter=0 "
+                "delayResidualRelaxedCluster=0 delayResidualRelaxedRejectedHeadroom=0 "
+                "delayResidualRelaxedRejectedCost=0 delaySoftLateRejected=40 delaySoftLateAccepted=0 "
+                "delayOlderFrameAvoidedRepeat=0 delaySourceLimitedRepeats=160 "
+                "delayRepeatRescue=0/160 delayRepeatRescueRejected=0/40/0 "
+                "delayRepeatPromoted=0/160 delayRepeatPromoteRejectedSoft=40 "
+                "delayRepeatSafeAfterPromote=40 delayRepeatSafeCandidate=40 delayRepeatNoSafeCandidate=120 "
+                "delayRepeatSoftSafeCandidate=0 delayRepeatNoSoftSafeCandidate=160 "
+                "delayRepeatWindowClass=0/40/120 delayRepeatWindowState=0/0/120/120/40 "
+                "delayPostStallSafeFrames=0 delayRepeatReserveMax=5/42000us "
+                "delaySourceRecoveryHolds=120 delaySourceRecoveryTicks=600\n"
+                "[WGC CFR SMOOTHNESS VERDICT] delayPostSelectionRejectedSync=0 "
+                "delayPostSelectionRescuedSync=0 sourceRepeatLowerBound=160 excessRepeats=0 "
+                "policyAddedRepeats=0 excessRepeatClusters=0 excessRepeatClusterMax=0 "
+                "smoothnessNotMaximal=0 mixedPolicyFault=0\n"
+            ),
+        )
+        hard_only_report = classify_session_triage(wgc_hard_only_repeat_not_soft_safe)
+        hard_only_summary = hard_only_report["evidence"]["wgc_smoothness_summary"][0]
+        assert hard_only_summary["delay_repeat_safe_candidate"] == 40
+        assert hard_only_summary["delay_repeat_soft_safe_candidate"] == 0
+        assert "wgc_repeat_despite_safe_candidate" not in hard_only_report["verdicts"]
+        assert "wgc_post_stall_recovery_fault" not in hard_only_report["verdicts"]
+
+        wgc_sync_delay_fortibad_audio_late_risk = make_session(
+            "wgc_sync_delay_fortibad_audio_late_risk",
+            media=(
+                "[WGC CFR SUMMARY] Live=25926 Dup=2489 DupPct=9.6% NoFresh=120pm NoReserve=140pm "
+                "DupReason(src=2489 def=0 timer=0 drain=0) SourceLimitedRepeats=2489 StarvedEpisodes=579 "
+                "longest=1922ms longestDup=190 worstIn=4 worstDel=4\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=221 "
+                "phaseErrorMax=83180us shortfallMax=0.0ms staleDebtDrops=1 liveRebase=0/0 "
+                "tooNewRepeats=2147 syncDelayHolds=2147 tooNewLeadMax=150000us avDelay=29.5ms "
+                "startupDelay=29.5ms scheduleOffset=0us effectiveDelay=29.5ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=2147 syncDelayPolicyHolds=0 startupReserveFrames=8 "
+                "startupReserveSpan=58000us startupDelayTarget=29500us startupReserveSelected=1 "
+                "startupReserveReason=selected\n"
+                "[WGC CFR SMOOTHNESS DELAY] delayReservoirLowWaterFrames=4 delayReservoirTargetFrames=5 "
+                "delayReservoirLowWaterTicks=1600 realizedDelayAvg=29100us realizedDelayMin=21000us "
+                "realizedDelayMax=112680us delayResidualAvg=351/2249us delayResidualMax=83180us "
+                "delayResidualP95=5000us delayResidualLateMax=9858us delayResidualEarlyMax=83180us "
+                "rawResidualAvg=389/2344us rawResidualMax=83180us rawResidualP95=5000us "
+                "rawResidualLateMax=9858us rawResidualEarlyMax=83180us predictedResidualAvg=351/2249us "
+                "predictedResidualP95=5000us predictedResidualLateMax=9858us "
+                "rawMinusPredictedAvg=38/300us rawMinusPredictedMax=1000us\n"
+                "[WGC CFR SMOOTHNESS REPEAT] delayResidualRelaxedSelections=14717 "
+                "delayResidualRelaxedMax=9858us delayResidualRelaxedRejectedSync=0 "
+                "delayRepeatClusterPressure=0 delayRepeatClusterMax=0 delayResidualRelaxedBetter=12000 "
+                "delayResidualRelaxedCluster=2717 delayResidualRelaxedRejectedHeadroom=0 "
+                "delayResidualRelaxedRejectedCost=0 delaySoftLateRejected=14717 delaySoftLateAccepted=2211 "
+                "delayOlderFrameAvoidedRepeat=16 delaySourceLimitedRepeats=2147 "
+                "delayRepeatRescue=16/2163 delayRepeatRescueRejected=0/1233/0 "
+                "delayRepeatPromoted=16/2163 delayRepeatPromoteRejectedSoft=1233 "
+                "delayRepeatSafeAfterPromote=0 delayRepeatSafeCandidate=1329 delayRepeatNoSafeCandidate=818 "
+                "delayRepeatSoftSafeCandidate=0 delayRepeatNoSoftSafeCandidate=2147 "
+                "delayRepeatWindowClass=0/0/2147 delayRepeatWindowState=0/0/2147/2147/0 "
+                "delayPostStallSafeFrames=0 delayRepeatReserveMax=5/58000us "
+                "delaySourceRecoveryHolds=0 delaySourceRecoveryTicks=0 "
+                "delayNearCapAccepted=2211 delayHardOnlyCandidates=1329 "
+                "delaySyncProtectedRepeats=2147 delayOldestSoftSafeAgeMax=0us\n"
+                "[WGC CFR SMOOTHNESS VERDICT] delayPostSelectionRejectedSync=0 "
+                "delayPostSelectionRescuedSync=0 sourceRepeatLowerBound=2147 excessRepeats=0 "
+                "policyAddedRepeats=0 excessRepeatClusters=0 excessRepeatClusterMax=0 "
+                "smoothnessNotMaximal=0 mixedPolicyFault=0\n"
+                "[STOP AUDIO TRACK] Track 1: encoded=1000 expected=1000 diff=+0 (+0.000 ms) sources=[1]\n"
+                "[VideoEncoder] Final packet timeline: target=1000 us videoEnd=1000 us "
+                "audioMinEnd=1000 us audioMaxEnd=1000 us maxPacketDelta=0 us streams(v=1 a=1) audioPastTarget=0\n"
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us "
+                "audioMin=1000 us audioMax=1000 us maxDelta=0 us streams(v=1 a=1) "
+                "overload(encoder=0 mux=0) backpressure=0\n"
+            ),
+        )
+        fortibad_risk_report = classify_session_triage(wgc_sync_delay_fortibad_audio_late_risk)
+        fortibad_risk_summary = fortibad_risk_report["evidence"]["wgc_smoothness_summary"][0]
+        assert fortibad_risk_summary["delay_soft_late_accepted"] == 2211
+        assert fortibad_risk_summary["delay_near_cap_accepted"] == 2211
+        assert fortibad_risk_summary["policy_added_repeats"] == 0
+        assert "wgc_audio_late_risk" in fortibad_risk_report["verdicts"]
+        assert "wgc_cfr_smoothness_not_maximal" not in fortibad_risk_report["verdicts"]
+        assert "ce_visual_timeline_fault" in fortibad_risk_report["verdicts"]
+        assert "ce_audio_timeline_fault" not in fortibad_risk_report["verdicts"]
 
         wgc_sync_delay_20260619_214948 = make_session(
             "wgc_sync_delay_20260619_214948",
