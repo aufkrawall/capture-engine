@@ -174,6 +174,8 @@ WGC_DELAY_RELAXED_RE = re.compile(
     r"delayRepeatClusterMax=(\d+)"
     r"(?: delayResidualRelaxedBetter=(\d+) delayResidualRelaxedCluster=(\d+) "
     r"delayResidualRelaxedRejectedHeadroom=(\d+) delayResidualRelaxedRejectedCost=(\d+) "
+    r"(?:delaySoftLateRejected=(\d+) delaySoftLateAccepted=(\d+) "
+    r"delayOlderFrameAvoidedRepeat=(\d+) delaySourceLimitedRepeats=(\d+) )?"
     r"delaySourceRecoveryHolds=(\d+) delaySourceRecoveryTicks=(\d+))?)?",
     re.IGNORECASE,
 )
@@ -1266,8 +1268,12 @@ def parse_media_triage(media_text):
                     "delay_relaxed_repeat_cluster": parse_int(delay_relaxed.group(7)) if delay_relaxed else 0,
                     "delay_relaxed_rejected_headroom": parse_int(delay_relaxed.group(8)) if delay_relaxed else 0,
                     "delay_relaxed_rejected_cost": parse_int(delay_relaxed.group(9)) if delay_relaxed else 0,
-                    "delay_source_recovery_holds": parse_int(delay_relaxed.group(10)) if delay_relaxed else 0,
-                    "delay_source_recovery_ticks": parse_int(delay_relaxed.group(11)) if delay_relaxed else 0,
+                    "delay_soft_late_rejected": parse_int(delay_relaxed.group(10)) if delay_relaxed else 0,
+                    "delay_soft_late_accepted": parse_int(delay_relaxed.group(11)) if delay_relaxed else 0,
+                    "delay_older_frame_avoided_repeat": parse_int(delay_relaxed.group(12)) if delay_relaxed else 0,
+                    "delay_source_limited_repeats": parse_int(delay_relaxed.group(13)) if delay_relaxed else 0,
+                    "delay_source_recovery_holds": parse_int(delay_relaxed.group(14)) if delay_relaxed else 0,
+                    "delay_source_recovery_ticks": parse_int(delay_relaxed.group(15)) if delay_relaxed else 0,
                     "delay_post_selection_rejected_sync": parse_int(delay_post_reject.group(1))
                     if delay_post_reject
                     else 0,
@@ -2327,6 +2333,8 @@ def print_triage_report(report):
                 "reservoir={low_water}/{target} low_ticks={low_ticks} "
                 "relaxed={relaxed} better={relaxed_better} cluster={relaxed_cluster} "
                 "reject_sync={reject_sync} reject_headroom={reject_headroom} reject_cost={reject_cost} "
+                "soft_late={soft_late_reject}/{soft_late_accept} older_frame={older_frame} "
+                "source_limited_repeat={source_limited_repeat} "
                 "post_reject_sync={post_reject} post_rescue_sync={post_rescue} "
                 "repeat_pressure={repeat_pressure}/{repeat_max} lower_bound={lower_bound} "
                 "excess_repeats={excess_repeats} policy_added={policy_added} "
@@ -2364,6 +2372,10 @@ def print_triage_report(report):
                     reject_sync=worst_sync_delay.get("delay_relaxed_rejected_sync", 0),
                     reject_headroom=worst_sync_delay.get("delay_relaxed_rejected_headroom", 0),
                     reject_cost=worst_sync_delay.get("delay_relaxed_rejected_cost", 0),
+                    soft_late_reject=worst_sync_delay.get("delay_soft_late_rejected", 0),
+                    soft_late_accept=worst_sync_delay.get("delay_soft_late_accepted", 0),
+                    older_frame=worst_sync_delay.get("delay_older_frame_avoided_repeat", 0),
+                    source_limited_repeat=worst_sync_delay.get("delay_source_limited_repeats", 0),
                     post_reject=worst_sync_delay.get("delay_post_selection_rejected_sync", 0),
                     post_rescue=worst_sync_delay.get("delay_post_selection_rescued_sync", 0),
                     repeat_pressure=worst_sync_delay.get("delay_repeat_cluster_pressure", 0),
@@ -2934,6 +2946,63 @@ def self_test():
         assert "ce_visual_timeline_fault" in fortidelay2_report["verdicts"]
         assert "ce_audio_timeline_fault" not in fortidelay2_report["verdicts"]
 
+        wgc_sync_delay_20260620_044434_unstable_fps = make_session(
+            "wgc_sync_delay_20260620_044434_unstable_fps",
+            media=(
+                "[WGC CFR SUMMARY] Live=29098 Dup=3369 DupPct=11.5% NoFresh=161pm NoReserve=183pm "
+                "DupReason(src=3369 def=0 timer=0 drain=0) SourceLimitedRepeats=3369 StarvedEpisodes=757 "
+                "longest=9313ms longestDup=573 worstIn=4 worstDel=4\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=242 "
+                "phaseErrorMax=110628us shortfallMax=0.0ms staleDebtDrops=1 liveRebase=0/0 "
+                "tooNewRepeats=2927 syncDelayHolds=2927 tooNewLeadMax=95075us avDelay=28.3ms "
+                "startupDelay=28.3ms scheduleOffset=404156us effectiveDelay=28.3ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=2159 syncDelayPolicyHolds=768 startupReserveFrames=1 "
+                "startupReserveSpan=0us startupDelayTarget=28334us startupReserveSelected=0 "
+                "startupReserveReason=source_startup_underfeed delayReservoirLowWaterFrames=4 "
+                "delayReservoirTargetFrames=5 delayReservoirLowWaterTicks=5346 realizedDelayAvg=27764us "
+                "realizedDelayMin=18412us realizedDelayMax=78381us delayResidualAvg=569/2322us "
+                "delayResidualMax=50047us delayResidualP95=5000us delayResidualLateMax=9922us "
+                "delayResidualEarlyMax=50047us rawResidualAvg=676/2502us rawResidualMax=63403us "
+                "rawResidualP95=6000us rawResidualLateMax=9996us rawResidualEarlyMax=63403us "
+                "predictedResidualAvg=569/2322us predictedResidualP95=5000us "
+                "predictedResidualLateMax=9922us rawMinusPredictedAvg=107/107us "
+                "rawMinusPredictedMax=66811us delayResidualRelaxedSelections=1447 "
+                "delayResidualRelaxedMax=9922us delayResidualRelaxedRejectedSync=335410 "
+                "delayRepeatClusterPressure=429 delayRepeatClusterMax=34 "
+                "delayResidualRelaxedBetter=1445 delayResidualRelaxedCluster=1 "
+                "delayResidualRelaxedRejectedHeadroom=103 delayResidualRelaxedRejectedCost=11644 "
+                "delaySourceRecoveryHolds=841 delaySourceRecoveryTicks=14564 "
+                "delayPostSelectionRejectedSync=0 delayPostSelectionRescuedSync=0 "
+                "sourceRepeatLowerBound=2426 excessRepeats=508 policyAddedRepeats=508 "
+                "excessRepeatClusters=0 excessRepeatClusterMax=0 smoothnessNotMaximal=1 "
+                "mixedPolicyFault=1\n"
+                "[STOP AUDIO TRACK] Track 1: encoded=11640400 expected=11640400 diff=+0 (+0.000 ms) "
+                "sources=[1,3,5,7]\n"
+                "[STOP AUDIO TRACK] Track 2: encoded=11640400 expected=11640400 diff=+0 (+0.000 ms) "
+                "sources=[4,6,8]\n"
+                "[STOP AUDIO TRACK] Track 3: encoded=11640400 expected=11640400 diff=+0 (+0.000 ms) "
+                "sources=[0,2]\n"
+                "[VideoEncoder] Final packet timeline: target=242508333 us videoEnd=242508333 us "
+                "audioMinEnd=242508333 us audioMaxEnd=242508333 us maxPacketDelta=0 us streams(v=1 a=3) "
+                "audioPastTarget=0\n"
+                "[VideoEncoder] Final metadata durations: target=242508333 us video=242508333 us "
+                "audioMin=242508333 us audioMax=242508333 us maxDelta=0 us streams(v=1 a=3) "
+                "overload(encoder=0 mux=0) backpressure=0\n"
+            ),
+        )
+        delay_20260620_report = classify_session_triage(wgc_sync_delay_20260620_044434_unstable_fps)
+        delay_20260620_summary = delay_20260620_report["evidence"]["wgc_smoothness_summary"][0]
+        assert delay_20260620_summary["source_repeat_lower_bound"] == 2426
+        assert delay_20260620_summary["policy_added_repeats"] == 508
+        assert delay_20260620_summary["delay_repeat_cluster_pressure"] == 429
+        assert "wgc_source_starvation" in delay_20260620_report["verdicts"]
+        assert "wgc_av_sync_delay_residual" in delay_20260620_report["verdicts"]
+        assert "wgc_sync_delay_policy_fault" in delay_20260620_report["verdicts"]
+        assert "wgc_cfr_smoothness_not_maximal" in delay_20260620_report["verdicts"]
+        assert "ce_visual_timeline_fault" in delay_20260620_report["verdicts"]
+        assert "ce_audio_timeline_fault" not in delay_20260620_report["verdicts"]
+
         wgc_sync_delay_20260619_162335 = make_session(
             "wgc_sync_delay_20260619_162335",
             media=(
@@ -3070,6 +3139,8 @@ def self_test():
                 "delayRepeatClusterPressure=0 delayRepeatClusterMax=0 "
                 "delayResidualRelaxedBetter=40 delayResidualRelaxedCluster=40 "
                 "delayResidualRelaxedRejectedHeadroom=0 delayResidualRelaxedRejectedCost=0 "
+                "delaySoftLateRejected=0 delaySoftLateAccepted=0 "
+                "delayOlderFrameAvoidedRepeat=80 delaySourceLimitedRepeats=260 "
                 "delaySourceRecoveryHolds=80 delaySourceRecoveryTicks=400 "
                 "delayPostSelectionRejectedSync=0 delayPostSelectionRescuedSync=0 "
                 "sourceRepeatLowerBound=260 excessRepeats=0 policyAddedRepeats=0 "
@@ -3081,6 +3152,8 @@ def self_test():
         lower_bound_summary = lower_bound_report["evidence"]["wgc_smoothness_summary"][0]
         assert lower_bound_summary["source_repeat_lower_bound"] == 260
         assert lower_bound_summary["excess_repeats"] == 0
+        assert lower_bound_summary["delay_older_frame_avoided_repeat"] == 80
+        assert lower_bound_summary["delay_source_limited_repeats"] == 260
         assert "wgc_source_starvation" in lower_bound_report["verdicts"]
         assert "wgc_sync_delay_reserve_pressure" in lower_bound_report["verdicts"]
         assert "wgc_cfr_smoothness_not_maximal" not in lower_bound_report["verdicts"]

@@ -908,9 +908,44 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayUsesStrictResidualTolerance) {
     EXPECT_EQ(policy::GetWgcActiveDelayResidualHardLimitQpc(8333, 1000000), 10000);
     EXPECT_FALSE(policy::IsWgcFrameTooNewForActiveDelayHardLimit(110000, 100000, 8333, 1000000));
     EXPECT_TRUE(policy::IsWgcFrameTooNewForActiveDelayHardLimit(110001, 100000, 8333, 1000000));
+    EXPECT_EQ(policy::GetWgcActiveDelaySoftLateTargetUs(4167, 1000000), 5000u);
+    EXPECT_EQ(policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000), 6249u);
+    EXPECT_EQ(policy::GetWgcActiveDelaySoftLateTargetUs(16667, 1000000), 7000u);
 
     EXPECT_FALSE(policy::IsWgcFrameTooNewForCfrSlot(1250, 1000, 100));
     EXPECT_TRUE(policy::IsWgcFrameTooNewForActiveDelaySlot(1250, 1000, 100));
+}
+
+TEST(CapturePipelinePolicyTest, WgcActiveDelayClassifiesUnstableFpsWindows) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredFps = 140;
+    telemetry.recentDeliveredMin250Fps = 140;
+    telemetry.recentDeliveredMin500Fps = 140;
+    telemetry.recentInputMin250Fps = 140;
+    telemetry.recentInputMin500Fps = 140;
+    telemetry.bufferedWgcFrames = 5;
+
+    EXPECT_EQ(policy::ClassifyWgcActiveDelayWindow(telemetry, false, false, false, false, false, true),
+              policy::WgcActiveDelayWindowClass::kHealthy);
+
+    telemetry.recentDeliveredMin250Fps = 110;
+    EXPECT_EQ(policy::ClassifyWgcActiveDelayWindow(telemetry, false, false, false, false, false, true),
+              policy::WgcActiveDelayWindowClass::kRecoverableUnderfill);
+
+    telemetry.recentDeliveredMin250Fps = 140;
+    telemetry.emptyTickPermille = policy::kWgcLowSourceEmptyTickPermille;
+    EXPECT_EQ(policy::ClassifyWgcActiveDelayWindow(telemetry, false, false, false, false, false, true),
+              policy::WgcActiveDelayWindowClass::kRecoverableUnderfill);
+
+    telemetry.emptyTickPermille = 0;
+    telemetry.recentInputMin250Fps = 90;
+    EXPECT_EQ(policy::ClassifyWgcActiveDelayWindow(telemetry, false, false, false, false, false, true),
+              policy::WgcActiveDelayWindowClass::kSourceLimited);
+
+    telemetry.recentInputMin250Fps = 140;
+    EXPECT_EQ(policy::ClassifyWgcActiveDelayWindow(telemetry, false, false, false, false, false, false),
+              policy::WgcActiveDelayWindowClass::kSourceLimited);
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelayRelaxedCandidateMustBeatRepeatWithinHardLimit) {
@@ -941,6 +976,25 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayScoresRelaxedCandidateReasons) {
     score = policy::ScoreWgcActiveDelayRelaxedCandidate(110001, 109000, 100000, 8333, 1000000, 4);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectSyncRisk);
     EXPECT_FALSE(score.Accepted());
+}
+
+TEST(CapturePipelinePolicyTest, WgcActiveDelaySoftLateTargetProtectsHealthyWindows) {
+    auto score = policy::ScoreWgcActiveDelayRelaxedCandidate(
+        109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
+        policy::WgcActiveDelayWindowClass::kHealthy, policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
+    EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom);
+    EXPECT_FALSE(score.Accepted());
+
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(
+        106000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
+        policy::WgcActiveDelayWindowClass::kRecoverableUnderfill,
+        policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
+    EXPECT_TRUE(score.Accepted());
+
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(
+        109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
+        policy::WgcActiveDelayWindowClass::kSourceLimited, policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
+    EXPECT_TRUE(score.Accepted());
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelayFinalSelectionChecksPredictedAndRawTimestamps) {

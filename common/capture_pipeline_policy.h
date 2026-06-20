@@ -43,6 +43,8 @@ constexpr uint32_t kWgcActiveDelayResidualTolerancePermille = 600;
 constexpr uint32_t kWgcActiveDelayResidualHardLimitUs = 10000;
 constexpr uint32_t kWgcActiveDelayResidualMeanTargetUs = 5000;
 constexpr uint32_t kWgcActiveDelayResidualP95TargetUs = 10000;
+constexpr uint32_t kWgcActiveDelaySoftLateTargetMinUs = 5000;
+constexpr uint32_t kWgcActiveDelaySoftLateTargetMaxUs = 7000;
 constexpr uint32_t kWgcActiveDelayRepeatClusterPenaltyPermille = 250;
 constexpr uint32_t kWgcActiveDelayRepeatClusterPenaltyMaxPermille = 1000;
 constexpr uint32_t kWgcActiveDelayPolicyHoldFaultMinCount = 120;
@@ -947,6 +949,24 @@ enum class WgcLiveRecoveryState : uint8_t {
     kEncoderLimited,
 };
 
+enum class WgcActiveDelayWindowClass : uint8_t {
+    kHealthy = 0,
+    kRecoverableUnderfill,
+    kSourceLimited,
+};
+
+inline const char* WgcActiveDelayWindowClassToString(WgcActiveDelayWindowClass state) {
+    switch (state) {
+        case WgcActiveDelayWindowClass::kHealthy:
+            return "healthy";
+        case WgcActiveDelayWindowClass::kRecoverableUnderfill:
+            return "recoverable_underfill";
+        case WgcActiveDelayWindowClass::kSourceLimited:
+            return "source_limited";
+    }
+    return "unknown";
+}
+
 inline const char* WgcLiveRecoveryStateToString(WgcLiveRecoveryState state) {
     switch (state) {
         case WgcLiveRecoveryState::kHealthy:
@@ -1174,6 +1194,29 @@ inline WgcLiveRecoveryState ClassifyWgcLiveRecoveryState(const WgcAdaptiveTeleme
     }
 
     return WgcLiveRecoveryState::kHealthy;
+}
+
+inline WgcActiveDelayWindowClass ClassifyWgcActiveDelayWindow(const WgcAdaptiveTelemetry& telemetry,
+                                                             bool lowSourceMode, bool liveRecoveryMode,
+                                                             bool sourceStarved, bool deepUnderfeed,
+                                                             bool activeDelaySourceRecovery,
+                                                             bool hardSafeCandidateAvailable) {
+    if (telemetry.outputFps == 0) {
+        return WgcActiveDelayWindowClass::kHealthy;
+    }
+    if (!hardSafeCandidateAvailable || sourceStarved || deepUnderfeed || activeDelaySourceRecovery) {
+        return WgcActiveDelayWindowClass::kSourceLimited;
+    }
+    if (IsWgcInputBelowTarget(telemetry.outputFps, telemetry.recentInputMin250Fps,
+                              telemetry.recentInputMin500Fps) ||
+        telemetry.emptyTickPermille >= kWgcDeepUnderfeedEmptyTickPermille) {
+        return WgcActiveDelayWindowClass::kSourceLimited;
+    }
+    if (lowSourceMode || liveRecoveryMode || IsWgcSchedulerDeliveryLimited(telemetry) ||
+        telemetry.emptyTickPermille >= kWgcLowSourceEmptyTickPermille) {
+        return WgcActiveDelayWindowClass::kRecoverableUnderfill;
+    }
+    return WgcActiveDelayWindowClass::kHealthy;
 }
 
 inline bool ShouldEnterWgcLiveRecoveryMode(const WgcAdaptiveTelemetry& telemetry, uint32_t outputShortfallTicks,
@@ -1497,6 +1540,16 @@ inline int64_t GetWgcActiveDelayResidualHardLimitQpc(int64_t targetIntervalTicks
     return std::max<int64_t>(strictToleranceQpc, hardLimitQpc);
 }
 
+inline uint32_t GetWgcActiveDelaySoftLateTargetUs(int64_t targetIntervalTicks, int64_t qpcTicksPerSecond) {
+    if (targetIntervalTicks <= 0 || qpcTicksPerSecond <= 0) {
+        return kWgcActiveDelaySoftLateTargetMinUs;
+    }
+    const uint64_t frameUs =
+        (static_cast<uint64_t>(targetIntervalTicks) * 1000000ull) / static_cast<uint64_t>(qpcTicksPerSecond);
+    const uint32_t softTargetUs = static_cast<uint32_t>((frameUs * 3ull) / 4ull);
+    return std::clamp(softTargetUs, kWgcActiveDelaySoftLateTargetMinUs, kWgcActiveDelaySoftLateTargetMaxUs);
+}
+
 inline bool IsWgcFrameTooNewForActiveDelaySlot(int64_t frameSelectionQpc, int64_t selectionTargetQpc,
                                                int64_t targetIntervalTicks) {
     if (frameSelectionQpc <= 0 || selectionTargetQpc <= 0 || targetIntervalTicks <= 0) {
@@ -1589,9 +1642,15 @@ struct WgcActiveDelayRelaxedCandidateScore {
     }
 };
 
-inline bool HasWgcActiveDelayResidualHeadroom(uint32_t candidateLateResidualUs, uint32_t residualAvgAbsUs,
-                                              uint32_t residualP95Us, uint32_t residualLateMaxUs) {
+inline bool HasWgcActiveDelayResidualHeadroom(
+    uint32_t candidateLateResidualUs, uint32_t residualAvgAbsUs, uint32_t residualP95Us, uint32_t residualLateMaxUs,
+    WgcActiveDelayWindowClass windowClass = WgcActiveDelayWindowClass::kSourceLimited,
+    uint32_t softLateTargetUs = kWgcActiveDelaySoftLateTargetMaxUs) {
     if (candidateLateResidualUs > kWgcActiveDelayResidualHardLimitUs) {
+        return false;
+    }
+    if (windowClass != WgcActiveDelayWindowClass::kSourceLimited && candidateLateResidualUs > softLateTargetUs &&
+        residualLateMaxUs >= softLateTargetUs) {
         return false;
     }
     if (residualAvgAbsUs > kWgcActiveDelayResidualMeanTargetUs) {
@@ -1606,7 +1665,9 @@ inline bool HasWgcActiveDelayResidualHeadroom(uint32_t candidateLateResidualUs, 
 inline WgcActiveDelayRelaxedCandidateScore ScoreWgcActiveDelayRelaxedCandidate(
     int64_t candidateSelectionQpc, int64_t repeatSelectionQpc, int64_t selectionTargetQpc,
     int64_t targetIntervalTicks, int64_t qpcTicksPerSecond, uint32_t repeatClusterTicks = 0,
-    uint32_t residualAvgAbsUs = 0, uint32_t residualP95Us = 0, uint32_t residualLateMaxUs = 0) {
+    uint32_t residualAvgAbsUs = 0, uint32_t residualP95Us = 0, uint32_t residualLateMaxUs = 0,
+    WgcActiveDelayWindowClass windowClass = WgcActiveDelayWindowClass::kSourceLimited,
+    uint32_t softLateTargetUs = kWgcActiveDelaySoftLateTargetMaxUs) {
     WgcActiveDelayRelaxedCandidateScore result{};
     if (candidateSelectionQpc <= 0 || repeatSelectionQpc <= 0 || selectionTargetQpc <= 0 ||
         targetIntervalTicks <= 0) {
@@ -1632,7 +1693,7 @@ inline WgcActiveDelayRelaxedCandidateScore ScoreWgcActiveDelayRelaxedCandidate(
                                                                       : static_cast<uint32_t>(candidateLateUs);
     }
     if (!HasWgcActiveDelayResidualHeadroom(result.candidateLateResidualUs, residualAvgAbsUs, residualP95Us,
-                                           residualLateMaxUs)) {
+                                           residualLateMaxUs, windowClass, softLateTargetUs)) {
         result.decision = WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom;
         return result;
     }
@@ -1666,10 +1727,15 @@ inline bool IsWgcActiveDelayRelaxedCandidateUseful(int64_t candidateSelectionQpc
                                                    int64_t selectionTargetQpc, int64_t targetIntervalTicks,
                                                    int64_t qpcTicksPerSecond,
                                                    uint32_t repeatClusterTicks = 0, uint32_t residualAvgAbsUs = 0,
-                                                   uint32_t residualP95Us = 0, uint32_t residualLateMaxUs = 0) {
+                                                   uint32_t residualP95Us = 0, uint32_t residualLateMaxUs = 0,
+                                                   WgcActiveDelayWindowClass windowClass =
+                                                       WgcActiveDelayWindowClass::kSourceLimited,
+                                                   uint32_t softLateTargetUs =
+                                                       kWgcActiveDelaySoftLateTargetMaxUs) {
     return ScoreWgcActiveDelayRelaxedCandidate(candidateSelectionQpc, repeatSelectionQpc, selectionTargetQpc,
                                                targetIntervalTicks, qpcTicksPerSecond, repeatClusterTicks,
-                                               residualAvgAbsUs, residualP95Us, residualLateMaxUs)
+                                               residualAvgAbsUs, residualP95Us, residualLateMaxUs, windowClass,
+                                               softLateTargetUs)
         .Accepted();
 }
 
