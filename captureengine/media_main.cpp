@@ -1421,11 +1421,16 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                                 static uint64_t s_lastQueuedLineageLogTick = 0;
                                 const uint64_t nowTick = GetTickCount64();
                                 if (nowTick - s_lastQueuedLineageLogTick >= 1000) {
+                                    const uint32_t ringWrite =
+                                        g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
+                                    const uint32_t nextRead = localReadIndex + 1;
                                     LogInfo(
-                                        "[Inject Thread] Queue frame=%u ring=%u tex=%d fence=%llu ts=%lld qDepth=%u",
+                                        "[Inject Thread] Queue frame=%u ring=%u tex=%d fence=%llu ts=%lld qDepth=%u "
+                                        "ringNextRead=%u ringWrite=%u ringDepthAfter=%u",
                                         lineage.frameIndex, lineage.ringIndex, lineage.textureIndex,
                                         static_cast<unsigned long long>(lineage.fenceValue),
-                                        static_cast<long long>(lineage.timestamp), queueDepth);
+                                        static_cast<long long>(lineage.timestamp), queueDepth, nextRead, ringWrite,
+                                        static_cast<uint32_t>(ringWrite - nextRead));
                                     s_lastQueuedLineageLogTick = nowTick;
                                 }
                                 if (!g_InjectDeliveredFirstFrame.exchange(true, std::memory_order_acq_rel)) {
@@ -1445,7 +1450,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
 
                     if (dropFrame) {
                         localReadIndex++;
-                        g_pSharedMem->frameRing.readIndex.store(localReadIndex, std::memory_order_release);
+                        PublishFrameRingReadIndexAtLeast(g_pSharedMem->frameRing, localReadIndex);
                         continue;
                     }
                 } else {
@@ -1453,13 +1458,15 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     // does not stall behind frames that will never be encoded.
                     slot.valid.store(0, std::memory_order_release);
                     localReadIndex++;
-                    g_pSharedMem->frameRing.readIndex.store(localReadIndex, std::memory_order_release);
+                    PublishFrameRingReadIndexAtLeast(g_pSharedMem->frameRing, localReadIndex);
                     continue;
                 }
 
                 localReadIndex++;
+                PublishFrameRingReadIndexAtLeast(g_pSharedMem->frameRing, localReadIndex);
             } else {
                 localReadIndex++;
+                PublishFrameRingReadIndexAtLeast(g_pSharedMem->frameRing, localReadIndex);
             }
         } else {
             emptySpinCount++;
@@ -1480,7 +1487,11 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
             uint32_t overloadFlags = 0;
             uint32_t muxQueueBytes = 0;
             uint32_t encoderQueueDepth = static_cast<uint32_t>(g_FrameQueue.Size());
+            uint32_t ringReadIndex = 0;
+            uint32_t ringWriteIndex = 0;
             if (g_pSharedMem) {
+                ringReadIndex = g_pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
+                ringWriteIndex = g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
                 uint32_t currentDup = g_pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
                 uint32_t currentLate = g_pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
                 uint32_t currentTrimmed = g_InjectBufferedTrimmedFrames.load(std::memory_order_relaxed);
@@ -1518,11 +1529,12 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
             g_pSharedMem->runtimeState.sourceFramesReceived.fetch_add(inputFrames, std::memory_order_relaxed);
             LogInfo(
                 "[Inject Perf] Input: %u | Queued: %u | DropFull: %u | DropPace: %u | PubFps: %u | HostQ: %u | EncQ: "
-                "%u | Dup: %u | Late: %u | Trim: %u | SelDrop: %u | Def: %u | Encode: %lldus | Fence: %lldus | Mux: "
-                "%uKB | Overload: 0x%X",
+                "%u | RingR: %u | RingW: %u | RingDepth: %u | Dup: %u | Late: %u | Trim: %u | SelDrop: %u | Def: %u "
+                "| Encode: %lldus | Fence: %lldus | Mux: %uKB | Overload: 0x%X",
                 inputFrames, pushedCount, droppedCount, pacingDroppedCount, injectPublicationFps,
-                static_cast<uint32_t>(g_FrameQueue.Size()), encoderQueueDepth, dupDelta, lateDelta, trimDelta,
-                cadenceDropDelta, deferredDelta, MediaEngine_GetLastFrameEncodeTimeUs(),
+                static_cast<uint32_t>(g_FrameQueue.Size()), encoderQueueDepth, ringReadIndex, ringWriteIndex,
+                static_cast<uint32_t>(ringWriteIndex - ringReadIndex),
+                dupDelta, lateDelta, trimDelta, cadenceDropDelta, deferredDelta, MediaEngine_GetLastFrameEncodeTimeUs(),
                 MediaEngine_GetLastFrameFenceWaitUs(), (muxQueueBytes + 1023u) / 1024u, overloadFlags);
             pushedCount = 0;
             droppedCount = 0;
@@ -1798,7 +1810,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     auto DiscardQueuedFrame = [&](QueuedFrame& queuedFrame) {
         if (queuedFrame.isInjectMode) {
             if (g_pSharedMem) {
-                g_pSharedMem->frameRing.readIndex.store(queuedFrame.ringIndex + 1, std::memory_order_release);
+                PublishFrameRingReadIndexAtLeast(g_pSharedMem->frameRing, queuedFrame.ringIndex + 1);
             }
         } else {
             ReleaseQueuedFrameTexture(queuedFrame);
@@ -4490,17 +4502,19 @@ void EncoderThreadFunc(const AppConfig& config) {
                     };
                     bool canPopInjectFrame = true;
                     if (availableCount > 1 && encoderGridStartQpc > 0) {
+                        const int64_t injectSelectionGridStartQpc =
+                            ComputeDelayedContentGridStartQpc(encoderGridStartQpc, avContentDelayQpc);
                         auto isAllowedCandidate = [&](const QueuedFrame& candidate) {
                             return isFreshInjectCandidate(candidate) &&
                                    !MatchesInjectFrameLineage(candidate, lastDeferredLineage);
                         };
                         size_t bestIdx =
-                            SelectFrameClosestToGridIf(bufferedInjectFrames, availableCount, encoderGridStartQpc,
+                            SelectFrameClosestToGridIf(bufferedInjectFrames, availableCount, injectSelectionGridStartQpc,
                                                        selectionGridTick, targetIntervalTicks, isAllowedCandidate);
                         bool usedDeferredFallback = false;
                         if (bestIdx >= availableCount) {
                             bestIdx = SelectFrameClosestToGridIf(bufferedInjectFrames, availableCount,
-                                                                 encoderGridStartQpc, selectionGridTick,
+                                                                 injectSelectionGridStartQpc, selectionGridTick,
                                                                  targetIntervalTicks, isFreshInjectCandidate);
                             usedDeferredFallback = lastDeferredLineage.IsValid();
                         }
@@ -4511,17 +4525,19 @@ void EncoderThreadFunc(const AppConfig& config) {
                             selectionLogCounter++;
                             if (selectionLogCounter <= 12 || (selectionLogCounter % 240) == 0) {
                                 const int64_t idealQpc =
-                                    ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTick, targetIntervalTicks);
+                                    ComputeIdealOutputQpc(injectSelectionGridStartQpc, selectionGridTick,
+                                                          targetIntervalTicks);
                                 LogInfo(
                                     "[EncoderThread] Select tick=%lld idealQpc=%lld chose idx=%zu frame=%u tex=%d "
                                     "ts=%lld oldest=%lld "
-                                    "avail=%zu reserve=%zu credit=%.3f%s",
+                                    "avail=%zu reserve=%zu delayFrames=%zu delayUs=%lld credit=%.3f%s",
                                     static_cast<long long>(selectionGridTick), static_cast<long long>(idealQpc),
                                     bestIdx, bufferedInjectFrames[bestIdx].frameIndex,
                                     bufferedInjectFrames[bestIdx].textureIndex,
                                     static_cast<long long>(bufferedInjectFrames[bestIdx].timestamp),
                                     static_cast<long long>(bufferedInjectFrames.front().timestamp), availableCount,
-                                    minBufferedInjectFrames, frameCreditAccumulator,
+                                    minBufferedInjectFrames, injectContentDelayFrames,
+                                    static_cast<long long>(qpcToUs(avContentDelayQpc)), frameCreditAccumulator,
                                     usedDeferredFallback ? " fallback=deferred-only" : "");
                             }
                         }
@@ -5410,7 +5426,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const size_t catchupInjectReserveFrames = ce::capture_policy::GetInjectReserveFrames(
                         config.video.useVFR, smoothedInjectFenceMs, frameIntervalMs);
                     const size_t catchupMinBufferedInjectFrames =
-                        ce::capture_policy::GetMinBufferedInjectFrames(catchupInjectReserveFrames, recordingOutputLive);
+                        ce::capture_policy::GetMinBufferedInjectFrames(catchupInjectReserveFrames,
+                                                                       recordingOutputLive) +
+                        injectContentDelayFrames;
                     const bool encoderBottleneckedNow = g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
                     const bool allowFreshInjectCatchup = ce::capture_policy::ShouldUseFreshInjectCatchup(
                         config.video.useVFR, encoderBottleneckedNow, encoderTooSlowForTargetCurrent,
@@ -5425,16 +5443,18 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                                                            lastEmittedInjectSourceQpc);
                         };
                         if (availableCount > 1 && encoderGridStartQpc > 0) {
+                            const int64_t injectSelectionGridStartQpc =
+                                ComputeDelayedContentGridStartQpc(encoderGridStartQpc, avContentDelayQpc);
                             auto isAllowedCandidate = [&](const QueuedFrame& candidate) {
                                 return isFreshInjectCandidate(candidate) &&
                                        !MatchesInjectFrameLineage(candidate, lastDeferredLineage);
                             };
-                            bestIdx =
-                                SelectFrameClosestToGridIf(bufferedInjectFrames, availableCount, encoderGridStartQpc,
-                                                           catchupGridTick, targetIntervalTicks, isAllowedCandidate);
+                            bestIdx = SelectFrameClosestToGridIf(bufferedInjectFrames, availableCount,
+                                                                 injectSelectionGridStartQpc, catchupGridTick,
+                                                                 targetIntervalTicks, isAllowedCandidate);
                             if (bestIdx >= availableCount) {
                                 bestIdx = SelectFrameClosestToGridIf(bufferedInjectFrames, availableCount,
-                                                                     encoderGridStartQpc, catchupGridTick,
+                                                                     injectSelectionGridStartQpc, catchupGridTick,
                                                                      targetIntervalTicks, isFreshInjectCandidate);
                             }
                         }
@@ -5569,8 +5589,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                                     g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
                                     g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1,
                                                                                            std::memory_order_relaxed);
-                                    g_pSharedMem->frameRing.readIndex.store(catchupFrame.ringIndex + 1,
-                                                                            std::memory_order_release);
+                                    PublishFrameRingReadIndexAtLeast(g_pSharedMem->frameRing,
+                                                                     catchupFrame.ringIndex + 1);
                                 }
 
                                 g_LastFrame = std::move(catchupFrame);
@@ -6145,8 +6165,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         g_pSharedMem->runtimeState.drainFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                     }
                     if (frameToProcess) {
-                        g_pSharedMem->frameRing.readIndex.store(frameToProcess->ringIndex + 1,
-                                                                std::memory_order_release);
+                        PublishFrameRingReadIndexAtLeast(g_pSharedMem->frameRing, frameToProcess->ringIndex + 1);
                     }
                 }
             } else {

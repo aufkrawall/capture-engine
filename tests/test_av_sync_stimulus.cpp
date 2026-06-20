@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <utility>
 
 #include "../testapp/av_sync_stimulus.h"
 
@@ -60,6 +61,24 @@ TEST(AvSyncStimulusTest, EncoderStressTileHashIsDeterministicAndFrameVariant) {
     EXPECT_NE(base, avs::EncoderStressTileHash(4, 7, 100, 2));
     EXPECT_NE(base, avs::EncoderStressTileHash(3, 7, 101, 2));
     EXPECT_NE(base, avs::EncoderStressTileHash(3, 7, 100, 3));
+}
+
+TEST(AvSyncStimulusTest, EncoderStressLayoutUsesOnlyFullTiles) {
+    const std::array<std::pair<int, int>, 4> sizes = {{{1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160}}};
+    for (const auto [width, height] : sizes) {
+        const auto layout = avs::ComputeEncoderStressLayout(width, height, 24, 24, 6);
+        ASSERT_TRUE(layout.valid) << width << "x" << height;
+        EXPECT_GT(layout.rows, 0);
+        EXPECT_GT(layout.columns, 0);
+        EXPECT_EQ((layout.bottom - layout.top) % layout.tile, 0);
+        EXPECT_EQ((layout.right - layout.left) % layout.tile, 0);
+        EXPECT_EQ(layout.bottom, layout.top + layout.rows * layout.tile);
+        EXPECT_EQ(layout.right, layout.left + layout.columns * layout.tile);
+        EXPECT_LE(layout.bottom, std::min(static_cast<int>(height * 0.68), height - 24 - 96));
+        EXPECT_LE(layout.right, width - 24);
+        EXPECT_LT(layout.reserveLeft, layout.reserveRight);
+        EXPECT_LT(layout.reserveTop, layout.reserveBottom);
+    }
 }
 
 TEST(AvSyncStimulusTest, SourceStallSpecParsesStartAndDuration) {

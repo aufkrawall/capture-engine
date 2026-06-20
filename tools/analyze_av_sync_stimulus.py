@@ -1648,7 +1648,7 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
     audio_lead_seconds = parse_float(video_summary.get("audio_stimulus_lead_seconds"), 0.0)
     video_transitions = filter_transitions_for_analysis(video_summary["transitions"], video_summary)
     video_audio_reference_transitions = use_video_transition_uncertainty_intervals(video_transitions)
-    audio_transition_sets = []
+    strict_audio_offset_point_sets = []
     for result in audio_results:
         is_strict_audio = result["ordinal"] not in non_strict_audio
         if result.get("decode_error"):
@@ -1668,8 +1668,6 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
             result["transitions"], video_summary, stimulus_time_adjust=audio_lead_seconds
         )
         transitions_for_matching = transitions
-        if is_strict_audio:
-            audio_transition_sets.append((result["ordinal"], transitions_for_matching))
         checks.append(
             make_check(
                 f"audio.a:{result['ordinal']}.markers"
@@ -1695,6 +1693,8 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
         result["av_offset_stats_ms"] = {
             key: round(value, 3) if isinstance(value, float) else value for key, value in offset_stats.items()
         }
+        if is_strict_audio:
+            strict_audio_offset_point_sets.append((result["ordinal"], offset_points))
         max_offset_ms = offset_stats["max_abs"]
         checks.append(
             make_check(
@@ -1745,20 +1745,35 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
             )
         )
 
-    if len(audio_transition_sets) >= 2:
-        reference_ordinal, reference = audio_transition_sets[0]
+    if len(strict_audio_offset_point_sets) >= 2:
+        reference_ordinal, reference_points = strict_audio_offset_point_sets[0]
+        reference_offsets = {
+            (point.get("to"), round(parse_float(point.get("reference_time"), 0.0), 6)): point["offset_seconds"]
+            for point in reference_points
+        }
         max_spread_ms = 0.0
-        missing_total = 0
-        for ordinal, transitions in audio_transition_sets[1:]:
-            offsets, missing = match_transition_offsets(reference, transitions, args.transition_match_window_ms / 1000.0)
-            missing_total += missing
-            max_spread_ms = max(max_spread_ms, max((abs(offset) * 1000.0 for offset in offsets), default=0.0))
+        shared_events = 0
+        missing_shared_events = 0
+        for ordinal, points in strict_audio_offset_point_sets[1:]:
+            candidate_offsets = {
+                (point.get("to"), round(parse_float(point.get("reference_time"), 0.0), 6)): point["offset_seconds"]
+                for point in points
+            }
+            shared_keys = sorted(set(reference_offsets.keys()) & set(candidate_offsets.keys()))
+            shared_events += len(shared_keys)
+            missing_shared_events += max(0, len(reference_offsets) - len(shared_keys))
+            for key in shared_keys:
+                max_spread_ms = max(max_spread_ms, abs(candidate_offsets[key] - reference_offsets[key]) * 1000.0)
         checks.append(
             make_check(
                 "audio.inter_track_spread_ms",
-                missing_total == 0 and max_spread_ms <= args.max_track_spread_ms,
-                round(max_spread_ms, 3),
-                f"<= {args.max_track_spread_ms} ms",
+                shared_events > 0 and max_spread_ms <= args.max_track_spread_ms,
+                {
+                    "max_spread_ms": round(max_spread_ms, 3),
+                    "shared_events": shared_events,
+                    "missing_shared_events": missing_shared_events,
+                },
+                f"<= {args.max_track_spread_ms} ms across shared video-matched events",
                 "inter_track_spread",
             )
         )
@@ -2103,6 +2118,26 @@ def self_test():
     spread_checks = [check for check in strict_spread_checks if check["name"] == "audio.inter_track_spread_ms"]
     assert spread_checks and spread_checks[0]["passed"]
     assert all("opportunistic" not in check["name"] or check["passed"] for check in strict_spread_checks)
+    strict_spread_extra_audio_transition = [
+        {"ordinal": 0, "codec": "aac", "sample_rate": 48000, "transitions": strict_spread_video["transitions"]},
+        {
+            "ordinal": 1,
+            "codec": "aac",
+            "sample_rate": 48000,
+            "transitions": [
+                {"to": 1, "time": 1.003},
+                {"to": 2, "time": 2.003},
+                {"to": 3, "time": 3.003},
+                {"to": 4, "time": 4.003},
+            ],
+        },
+    ]
+    strict_spread_extra_checks = evaluate(Args(), strict_spread_video, strict_spread_extra_audio_transition, {}, {})
+    extra_spread_checks = [
+        check for check in strict_spread_extra_checks if check["name"] == "audio.inter_track_spread_ms"
+    ]
+    assert extra_spread_checks and extra_spread_checks[0]["passed"]
+    assert extra_spread_checks[0]["actual"]["shared_events"] == 3
 
     frames = [
         {"pts": 0.00, "palette": 1},

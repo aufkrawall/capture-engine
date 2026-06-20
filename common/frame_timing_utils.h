@@ -95,6 +95,14 @@ inline int64_t ComputeIdealOutputQpc(int64_t gridStartQpc, int64_t gridTickCount
     return gridStartQpc + (gridTickCount - 1) * targetIntervalTicks;
 }
 
+inline int64_t ComputeDelayedContentGridStartQpc(int64_t gridStartQpc, int64_t contentDelayQpc) {
+    if (gridStartQpc <= 0 || contentDelayQpc <= 0) {
+        return gridStartQpc;
+    }
+
+    return gridStartQpc - contentDelayQpc;
+}
+
 inline int64_t ComputeWgcSelectionTargetQpc(int64_t scheduledSampleQpc, int64_t gridStartQpc, int64_t gridTickCount,
                                             int64_t targetIntervalTicks) {
     if (scheduledSampleQpc > 0) {

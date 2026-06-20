@@ -489,6 +489,11 @@ TEST(AudioSyncUtilsTest, StartedSparseAppAudioSourcesMayContributeSilence) {
     EXPECT_FALSE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, false, true, false));
     EXPECT_FALSE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, true, false, false));
     EXPECT_FALSE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, true, true, true));
+    EXPECT_FALSE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, true, true, false, true));
+
+    EXPECT_TRUE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(true, 0));
+    EXPECT_FALSE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(true, 1));
+    EXPECT_FALSE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(false, 0));
 }
 
 TEST(AudioSyncUtilsTest, LateFirstPacketOverlapsAlreadyEncodedSilence) {

@@ -601,26 +601,21 @@ void DrawEncoderStressScene(D3D12_CPU_DESCRIPTOR_HANDLE rtv, const testapp::avsy
         return;
     }
 
-    const LONG tile = std::clamp<LONG>(g_WindowWidth / 80, 24, 64);
-    const LONG left = kMarkerMargin;
-    const LONG right = g_WindowWidth - kMarkerMargin;
-    const LONG top = kMarkerMargin + 2 * (kMarkerTile + kMarkerGap) + 18;
-    const LONG bottom = std::min<LONG>(static_cast<LONG>(g_WindowHeight * 0.68), g_WindowHeight - kMarkerMargin - 96);
-    const LONG reserveLeft = static_cast<LONG>(g_WindowWidth * 0.40);
-    const LONG reserveRight = static_cast<LONG>(g_WindowWidth * 0.60);
-    const LONG reserveTop = static_cast<LONG>(g_WindowHeight * 0.38);
-    const LONG reserveBottom = static_cast<LONG>(g_WindowHeight * 0.52);
-    if (bottom <= top || right <= left) {
+    const auto layout =
+        testapp::avsync::ComputeEncoderStressLayout(g_WindowWidth, g_WindowHeight, kMarkerMargin, kMarkerTile,
+                                                    kMarkerGap);
+    if (!layout.valid) {
         return;
     }
 
-    for (LONG y = top; y < bottom; y += tile) {
-        for (LONG x = left; x < right; x += tile) {
-            if (x < reserveRight && x + tile > reserveLeft && y < reserveBottom && y + tile > reserveTop) {
+    for (LONG y = layout.top; y < layout.bottom; y += layout.tile) {
+        for (LONG x = layout.left; x < layout.right; x += layout.tile) {
+            if (x < layout.reserveRight && x + layout.tile > layout.reserveLeft && y < layout.reserveBottom &&
+                y + layout.tile > layout.reserveTop) {
                 continue;
             }
-            const uint32_t tileX = static_cast<uint32_t>((x - left) / tile);
-            const uint32_t tileY = static_cast<uint32_t>((y - top) / tile);
+            const uint32_t tileX = static_cast<uint32_t>((x - layout.left) / layout.tile);
+            const uint32_t tileY = static_cast<uint32_t>((y - layout.top) / layout.tile);
             const uint32_t hash = testapp::avsync::EncoderStressTileHash(tileX, tileY, frameId, state.paletteIndex);
             const float color[] = {
                 0.08f + static_cast<float>(hash & 0xffu) * (0.84f / 255.0f),
@@ -628,7 +623,7 @@ void DrawEncoderStressScene(D3D12_CPU_DESCRIPTOR_HANDLE rtv, const testapp::avsy
                 0.08f + static_cast<float>((hash >> 16) & 0xffu) * (0.84f / 255.0f),
                 1.0f,
             };
-            ClearRect(rtv, x, y, std::min<LONG>(x + tile - 2, right), std::min<LONG>(y + tile - 2, bottom), color);
+            ClearRect(rtv, x, y, x + layout.tile - 2, y + layout.tile - 2, color);
         }
     }
 }
@@ -829,6 +824,16 @@ void WriteManifest() {
     fprintf(out, "  \"visual_marker_version\": %d,\n", testapp::avsync::kVisualMarkerVersion);
     fprintf(out, "  \"encoder_stress_scene\": %d,\n", g_EncoderStressScene ? 1 : 0);
     fprintf(out, "  \"encoder_stress_scene_reserved_event_sample\": [0.40, 0.38, 0.60, 0.52],\n");
+    const auto stressLayout =
+        testapp::avsync::ComputeEncoderStressLayout(g_WindowWidth, g_WindowHeight, kMarkerMargin, kMarkerTile,
+                                                    kMarkerGap);
+    fprintf(out,
+            "  \"encoder_stress_layout\": {\"valid\": %d, \"tile\": %d, \"left\": %d, \"right\": %d, "
+            "\"top\": %d, \"bottom\": %d, \"columns\": %d, \"rows\": %d, "
+            "\"reserve\": [%d, %d, %d, %d]},\n",
+            stressLayout.valid ? 1 : 0, stressLayout.tile, stressLayout.left, stressLayout.right, stressLayout.top,
+            stressLayout.bottom, stressLayout.columns, stressLayout.rows, stressLayout.reserveLeft,
+            stressLayout.reserveTop, stressLayout.reserveRight, stressLayout.reserveBottom);
     fprintf(out, "  \"qpc_frequency\": %lld,\n", static_cast<long long>(g_QpcFreq.QuadPart));
     fprintf(out, "  \"app_start_qpc\": %lld,\n", static_cast<long long>(g_AppStartQpc.QuadPart));
     fprintf(out, "  \"stimulus_start_qpc\": %lld,\n", static_cast<long long>(g_StimulusStartQpc.QuadPart));

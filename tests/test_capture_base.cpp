@@ -258,3 +258,16 @@ TEST(CaptureBaseTest, SignalFrameReadyWritesRingAndDropsWhenFull) {
     EXPECT_EQ(sharedMem.frameRing.writeIndex.load(std::memory_order_acquire), FRAME_RING_SIZE);
     EXPECT_EQ(sharedMem.frameRing.droppedFrames.load(std::memory_order_relaxed), 1u);
 }
+
+TEST(CaptureBaseTest, PublishFrameRingReadIndexIsMonotonic) {
+    SharedMemoryLayout sharedMem;
+
+    PublishFrameRingReadIndexAtLeast(sharedMem.frameRing, 5);
+    EXPECT_EQ(sharedMem.frameRing.readIndex.load(std::memory_order_acquire), 5u);
+
+    PublishFrameRingReadIndexAtLeast(sharedMem.frameRing, 3);
+    EXPECT_EQ(sharedMem.frameRing.readIndex.load(std::memory_order_acquire), 5u);
+
+    PublishFrameRingReadIndexAtLeast(sharedMem.frameRing, 9);
+    EXPECT_EQ(sharedMem.frameRing.readIndex.load(std::memory_order_acquire), 9u);
+}

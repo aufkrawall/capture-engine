@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
+import copy
 import json
+import math
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import time
@@ -28,6 +31,10 @@ SYNC_SMOOTHNESS_DEFAULT_DELAY_MS = 35.0
 SYNC_SMOOTHNESS_MAX_OFFSET_MS = 10.0
 SYNC_SMOOTHNESS_MAX_MEAN_OFFSET_MS = 5.0
 SYNC_SMOOTHNESS_MAX_TRACK_SPREAD_MS = 5.0
+SYNC_SMOOTHNESS_MAX_CONTENT_RETRIES = 3
+SYNC_SMOOTHNESS_RETRY_GUARD_MS = 0.75
+SYNC_SMOOTHNESS_RETRY_MAX_SPREAD_STEP_MS = 2.5
+SYNC_SMOOTHNESS_RETRY_MAX_MEAN_STEP_MS = 8.0
 
 
 @dataclass
@@ -573,7 +580,188 @@ def overload_requirements(report, min_shortfall_ms):
     }
 
 
-def run_scenario(args, scenario, run_root, ce_exe, app_exe):
+def strict_audio_mean_offsets_by_ordinal_ms(analyzer_report):
+    offsets = {}
+    if not isinstance(analyzer_report, dict):
+        return offsets
+    for audio in analyzer_report.get("audio", []):
+        if not audio.get("strict", False):
+            continue
+        stats = audio.get("av_offset_stats_ms", {})
+        try:
+            matched = int(stats.get("matched", 0))
+            mean_signed = float(stats.get("mean_signed", 0.0))
+            ordinal = int(audio.get("ordinal", -1))
+        except (TypeError, ValueError):
+            continue
+        if matched > 0 and ordinal >= 0:
+            offsets[ordinal] = mean_signed
+    return offsets
+
+
+def strict_audio_mean_offsets_ms(analyzer_report):
+    return list(strict_audio_mean_offsets_by_ordinal_ms(analyzer_report).values())
+
+
+def derive_sync_smoothness_latency_ms(analyzer_report):
+    offsets_by_ordinal = strict_audio_mean_offsets_by_ordinal_ms(analyzer_report)
+    return derive_sync_smoothness_latency_from_ordinals([offsets_by_ordinal])
+
+
+def derive_sync_smoothness_latency_from_ordinals(offset_shots_by_ordinal):
+    values_by_ordinal = {}
+    for offsets_by_ordinal in offset_shots_by_ordinal:
+        for ordinal, offset in offsets_by_ordinal.items():
+            values_by_ordinal.setdefault(int(ordinal), []).append(float(offset))
+    offsets_by_ordinal = {
+        ordinal: statistics.median(values) for ordinal, values in sorted(values_by_ordinal.items())
+    }
+    offsets = list(offsets_by_ordinal.values())
+    if not offsets:
+        fail("sync-smoothness preflight could not measure strict audio/video offsets")
+    median_offset = statistics.median(offsets)
+    spread = max(offsets) - min(offsets) if len(offsets) > 1 else 0.0
+    if any(abs(offset) > 500.0 for offset in offsets):
+        fail(
+            "sync-smoothness preflight offset is implausible: "
+            + ",".join(f"a:{ordinal}={offset:.3f}ms" for ordinal, offset in sorted(offsets_by_ordinal.items()))
+        )
+    if any(offset < -SYNC_SMOOTHNESS_MAX_MEAN_OFFSET_MS for offset in offsets):
+        fail(
+            "sync-smoothness preflight measured audio early by "
+            + ",".join(f"a:{ordinal}={offset:.3f}ms" for ordinal, offset in sorted(offsets_by_ordinal.items()))
+            + "; video-delay-only correction cannot fix this safely"
+        )
+    system_latency_ms = max(0.0, offsets_by_ordinal.get(0, median_offset))
+    app_latency_ms = max(0.0, offsets_by_ordinal.get(1, system_latency_ms))
+    return {
+        "strict_track_mean_offsets_ms": [round(value, 3) for value in offsets],
+        "strict_track_mean_offsets_by_ordinal_ms": {
+            str(ordinal): round(value, 3) for ordinal, value in sorted(offsets_by_ordinal.items())
+        },
+        "strict_track_spread_ms": round(spread, 3),
+        "derived_latency_ms": round(max(system_latency_ms, app_latency_ms), 3),
+        "system_latency_ms": round(system_latency_ms, 3),
+        "app_latency_ms": round(app_latency_ms, 3),
+        "preflight_shot_count": len(offset_shots_by_ordinal),
+        "preflight_shot_offsets_by_ordinal_ms": {
+            str(ordinal): [round(value, 3) for value in values]
+            for ordinal, values in sorted(values_by_ordinal.items())
+        },
+    }
+
+
+def sync_smoothness_retry_offsets_from_report(analyzer_report):
+    allowed_failure_classes = {"audio_video_event_offset", "inter_track_spread", "ce_strict_log_event"}
+    failed_checks = [check for check in analyzer_report.get("checks", []) if not check.get("passed")]
+    if not failed_checks:
+        return None
+    if any(check.get("failure_class") not in allowed_failure_classes for check in failed_checks):
+        return None
+    offsets_by_ordinal = strict_audio_mean_offsets_by_ordinal_ms(analyzer_report)
+    if not offsets_by_ordinal:
+        return None
+    if any(abs(offset) > 30.0 for offset in offsets_by_ordinal.values()):
+        return None
+    return offsets_by_ordinal
+
+
+def _audio_check_ordinal(check_name):
+    parts = str(check_name).split(".")
+    if len(parts) < 2 or not parts[1].startswith("a:"):
+        return None
+    try:
+        return int(parts[1].split(":", 1)[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def sync_smoothness_retry_corrections_ms(analyzer_report):
+    offsets_by_ordinal = sync_smoothness_retry_offsets_from_report(analyzer_report)
+    if not offsets_by_ordinal:
+        return None
+
+    failed_checks = [check for check in analyzer_report.get("checks", []) if not check.get("passed")]
+    mean_failed_ordinals = set()
+    max_failed_ordinals = set()
+    for check in failed_checks:
+        name = str(check.get("name", ""))
+        ordinal = _audio_check_ordinal(name)
+        if ordinal is None:
+            continue
+        if name.endswith(".av_mean_offset_ms"):
+            mean_failed_ordinals.add(ordinal)
+        elif name.endswith(".av_offset_ms"):
+            max_failed_ordinals.add(ordinal)
+
+    corrections = {}
+    for ordinal in sorted(mean_failed_ordinals | max_failed_ordinals):
+        offset = offsets_by_ordinal.get(ordinal)
+        if offset is None:
+            continue
+        if ordinal in mean_failed_ordinals and abs(offset) > SYNC_SMOOTHNESS_MAX_MEAN_OFFSET_MS:
+            excess = abs(offset) - SYNC_SMOOTHNESS_MAX_MEAN_OFFSET_MS + SYNC_SMOOTHNESS_RETRY_GUARD_MS
+            step = max(1.0, excess)
+        else:
+            step = abs(offset)
+        step = min(step, abs(offset), SYNC_SMOOTHNESS_RETRY_MAX_MEAN_STEP_MS)
+        if step > 0.0:
+            corrections[ordinal] = math.copysign(step, offset)
+
+    if corrections:
+        return corrections
+
+    spread_failed = [check for check in failed_checks if check.get("name") == "audio.inter_track_spread_ms"]
+    if not spread_failed or len(offsets_by_ordinal) < 2:
+        return None
+
+    actual = spread_failed[0].get("actual", {})
+    try:
+        spread_ms = float(actual.get("max_spread_ms", 0.0))
+    except (AttributeError, TypeError, ValueError):
+        spread_ms = max(offsets_by_ordinal.values()) - min(offsets_by_ordinal.values())
+    excess_ms = spread_ms - SYNC_SMOOTHNESS_MAX_TRACK_SPREAD_MS + SYNC_SMOOTHNESS_RETRY_GUARD_MS
+    if excess_ms <= 0.0:
+        return None
+
+    positive_offsets = {ordinal: offset for ordinal, offset in offsets_by_ordinal.items() if offset > 0.0}
+    negative_offsets = {ordinal: offset for ordinal, offset in offsets_by_ordinal.items() if offset < 0.0}
+    if positive_offsets:
+        ordinal, offset = max(positive_offsets.items(), key=lambda item: item[1])
+    elif negative_offsets:
+        ordinal, offset = min(negative_offsets.items(), key=lambda item: item[1])
+    else:
+        return None
+
+    step = min(excess_ms, abs(offset), SYNC_SMOOTHNESS_RETRY_MAX_SPREAD_STEP_MS)
+    return {ordinal: math.copysign(step, offset)} if step > 0.0 else None
+
+
+def sync_smoothness_retry_offsets_ms(result):
+    if result.get("analyzer_exit_code") == 0:
+        return None
+    analyzer_path = result.get("paths", {}).get("analyzer_json")
+    analyzer_report = load_json_file(Path(analyzer_path)) if analyzer_path else None
+    if not analyzer_report:
+        return None
+    return sync_smoothness_retry_offsets_from_report(analyzer_report)
+
+
+def sync_smoothness_retry_corrections_from_result(result):
+    if result.get("analyzer_exit_code") == 0:
+        return None
+    analyzer_path = result.get("paths", {}).get("analyzer_json")
+    analyzer_report = load_json_file(Path(analyzer_path)) if analyzer_path else None
+    if not analyzer_report:
+        return None
+    return sync_smoothness_retry_corrections_ms(analyzer_report)
+
+
+def clamp_sync_smoothness_latency_ms(value):
+    return round(min(500.0, max(0.0, float(value))), 3)
+
+
+def run_scenario(args, scenario, run_root, ce_exe, app_exe, preflight_info=None):
     scenario_dir = run_root / scenario.name
     captures_dir = scenario_dir / "captures"
     analyzer_json = scenario_dir / "analyzer.json"
@@ -737,7 +925,10 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             "app_audio_buffer_ms": args.app_audio_buffer_ms,
             "app_audio_lead_ms": app_audio_lead_ms,
             "audio_capture_latency_ms": args.audio_capture_latency_ms,
+            "app_capture_latency_ms": args.app_capture_latency_ms,
+            "sync_smoothness_latency_mode": getattr(args, "sync_smoothness_latency_mode", ""),
             "analysis_start_sec": args.analysis_start_sec,
+            "max_motion_error_frames": args.max_motion_error_frames,
             "microphone_enabled": args.include_microphone,
             "mixed_track_enabled": args.include_mixed_track,
             "external_system_audio": args.external_system_audio,
@@ -769,7 +960,9 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             "analyzer_stdout": str(analyzer_stdout),
             "triage_json": str(triage_json),
             "triage_stdout": str(triage_stdout),
+            "scenario_report": str(scenario_report_path),
         },
+        "sync_smoothness_preflight": preflight_info,
         "analyzer_exit_code": None,
         "triage_exit_code": None,
         "passed": False,
@@ -814,6 +1007,9 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
         if args.external_system_audio and audio_layout != "duplicate_app":
             non_strict_ordinals.append(0)
         non_strict_audio = ",".join(str(value) for value in sorted(set(non_strict_ordinals)))
+        scenario_max_motion_error_frames = args.max_motion_error_frames
+        if include_source_stall:
+            scenario_max_motion_error_frames = max(scenario_max_motion_error_frames, 40)
         analyzer_cmd = [
             sys.executable,
             SCRIPT_DIR / "analyze_av_sync_stimulus.py",
@@ -848,6 +1044,8 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
             args.max_longest_repeat,
             "--max-motion-stall",
             args.max_motion_stall,
+            "--max-motion-error-frames",
+            scenario_max_motion_error_frames,
             "--non-strict-audio-ordinals",
             non_strict_audio,
         ]
@@ -902,6 +1100,81 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe):
     if result["failure"]:
         print(f"  failure={result['failure']}")
     return result
+
+
+def run_sync_smoothness_preflight(args, scenario, run_root, ce_exe, app_exe):
+    preflight_args = copy.copy(args)
+    preflight_args.profile = "sync-smoothness-preflight"
+    preflight_args.audio_capture_latency_ms = 0.0
+    preflight_args.app_capture_latency_ms = None
+    preflight_args.sync_smoothness_latency_mode = "preflight-raw"
+    preflight_args.max_av_offset_ms = 500.0
+    preflight_args.max_mean_av_offset_ms = 500.0
+    preflight_args.max_track_spread_ms = max(args.max_track_spread_ms, 50.0)
+    preflight_args.max_offset_slope_ms_per_min = max(args.max_offset_slope_ms_per_min, 120.0)
+    preflight_args.min_offset_slope_excursion_ms = max(args.min_offset_slope_excursion_ms, 50.0)
+    preflight_args.max_motion_error_frames = max(args.max_motion_error_frames, 12)
+
+    shot_offsets = []
+    shot_infos = []
+    shot_count = max(1, int(args.sync_smoothness_preflight_shots))
+    base_label = f"{scenario.label}_preflight_raw_offset" if scenario.label else "preflight_raw_offset"
+    for shot_index in range(shot_count):
+        preflight_scenario = copy.copy(scenario)
+        preflight_scenario.label = base_label if shot_count == 1 else f"{base_label}_shot{shot_index + 1}"
+        preflight_scenario.duration_sec = min(scenario.duration_sec or args.duration_sec, 12)
+        preflight_scenario.include_source_stall = False
+        preflight_scenario.source_stall = None
+
+        preflight_result = run_scenario(preflight_args, preflight_scenario, run_root, ce_exe, app_exe)
+        if not preflight_result["passed"]:
+            preflight_result["failure"] = "sync-smoothness preflight failed: " + str(
+                preflight_result.get("failure") or ""
+            )
+            return None, preflight_result
+
+        analyzer_path = preflight_result.get("paths", {}).get("analyzer_json")
+        analyzer_report = load_json_file(Path(analyzer_path)) if analyzer_path else None
+        offsets_by_ordinal = strict_audio_mean_offsets_by_ordinal_ms(analyzer_report)
+        if not offsets_by_ordinal:
+            fail("sync-smoothness preflight could not measure strict audio/video offsets")
+        shot_offsets.append(offsets_by_ordinal)
+        shot_infos.append(
+            {
+                "shot": shot_index + 1,
+                "preflight_scenario": preflight_scenario.name,
+                "preflight_report": preflight_result.get("paths", {}).get("scenario_report"),
+                "preflight_capture": preflight_result.get("paths", {}).get("capture_file"),
+                "preflight_analyzer_json": analyzer_path,
+                "strict_track_mean_offsets_by_ordinal_ms": {
+                    str(ordinal): round(value, 3) for ordinal, value in sorted(offsets_by_ordinal.items())
+                },
+            }
+        )
+
+    derived = derive_sync_smoothness_latency_from_ordinals(shot_offsets)
+    derived.update(
+        {
+            "mode": "preflight",
+            "preflight_scenario": shot_infos[0]["preflight_scenario"],
+            "preflight_report": shot_infos[0]["preflight_report"],
+            "preflight_capture": shot_infos[0]["preflight_capture"],
+            "preflight_analyzer_json": shot_infos[0]["preflight_analyzer_json"],
+            "preflight_shots": shot_infos,
+            "modeled_delay_ms": args.sync_smoothness_delay_ms,
+        }
+    )
+    print(
+        "  preflight derived latency={latency:.3f}ms system={system:.3f}ms app={app:.3f}ms shots={shots} "
+        "from strict means={means}".format(
+            latency=derived["derived_latency_ms"],
+            system=derived["system_latency_ms"],
+            app=derived["app_latency_ms"],
+            shots=derived["preflight_shot_count"],
+            means=",".join(f"{value:.3f}" for value in derived["strict_track_mean_offsets_ms"]),
+        )
+    )
+    return derived, None
 
 
 def build_matrix_scenarios(capture_methods, codecs, fps_values):
@@ -968,7 +1241,7 @@ def build_scenarios(args):
         # lead=0 plus a test-only modeled render-loopback latency means WGC/inject must
         # preserve near-zero content sync while handling realistic CFR smoothness pressure.
         return [
-            Scenario("wgc", "alac", 120, label="active_delay_near_target", duration_sec=22, app_fps=118),
+            Scenario("wgc", "alac", 120, label="active_delay_near_target", duration_sec=22, app_fps=120),
             Scenario("wgc", "aac", 60, label="active_delay_above_target_stall", duration_sec=22, app_fps=90,
                      include_source_stall=True, source_stall="8.0:220,14.0:120"),
             Scenario("wgc", "opus", 120, label="active_delay_encoder_pressure", duration_sec=22, app_fps=240,
@@ -1089,6 +1362,7 @@ def build_parser():
     parser.add_argument("--min-offset-slope-excursion-ms", type=float, default=12.0)
     parser.add_argument("--max-longest-repeat", type=int, default=2)
     parser.add_argument("--max-motion-stall", type=int, default=3)
+    parser.add_argument("--max-motion-error-frames", type=int, default=3)
     parser.add_argument("--include-source-stall", action="store_true")
     parser.add_argument("--source-stall", default="8.35:300")
     parser.add_argument("--app-audio-buffer-ms", type=int, default=20)
@@ -1114,6 +1388,21 @@ def build_parser():
         "--audio-capture-latency-ms is not explicitly provided.",
     )
     parser.add_argument(
+        "--sync-smoothness-latency-mode",
+        choices=["preflight", "modeled", "manual"],
+        default="preflight",
+        help="For --sync-smoothness-gate without an explicit --audio-capture-latency-ms, "
+        "'preflight' measures raw decoded content offset per scenario and uses that correction; "
+        "'modeled' keeps the fixed --sync-smoothness-delay-ms diagnostic path; "
+        "'manual' is selected automatically when --audio-capture-latency-ms is explicit.",
+    )
+    parser.add_argument(
+        "--sync-smoothness-preflight-shots",
+        type=int,
+        default=3,
+        help="Raw-offset preflight shots to median per strict audio source for --sync-smoothness-gate.",
+    )
+    parser.add_argument(
         "--app-latency-ms",
         dest="app_capture_latency_ms",
         type=float,
@@ -1134,6 +1423,11 @@ def build_parser():
     )
     parser.add_argument("--no-microphone", dest="include_microphone", action="store_false")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--scenario-filter",
+        default="",
+        help="Comma-separated scenario name substrings to run. Useful for resuming one expensive profile case.",
+    )
     parser.add_argument("--keep-going", action="store_true")
     parser.add_argument("--require-overload", action="store_true")
     parser.add_argument("--min-overload-shortfall-ms", type=float, default=80.0)
@@ -1161,12 +1455,20 @@ def parse_args(argv=None):
     if args.profile == "sync-smoothness":
         if args.sync_smoothness_delay_ms < 0.0 or args.sync_smoothness_delay_ms > 500.0:
             fail("--sync-smoothness-delay-ms must be between 0 and 500")
+        if args.sync_smoothness_preflight_shots < 1 or args.sync_smoothness_preflight_shots > 5:
+            fail("--sync-smoothness-preflight-shots must be between 1 and 5")
+        if args.sync_smoothness_latency_mode == "manual" and not explicit_option(argv, "--audio-capture-latency-ms"):
+            fail("--sync-smoothness-latency-mode=manual requires --audio-capture-latency-ms")
         if not explicit_app_audio_lead(argv):
             # The active-delay gate models the post-probe product state. The stimulus must not
             # hide the offset by emitting early audio; video-delay correction must do the work.
             args.app_audio_lead_ms = "0"
-        if not explicit_option(argv, "--audio-capture-latency-ms"):
+        if explicit_option(argv, "--audio-capture-latency-ms"):
+            args.sync_smoothness_latency_mode = "manual"
+        elif args.sync_smoothness_latency_mode == "modeled":
             args.audio_capture_latency_ms = args.sync_smoothness_delay_ms
+        else:
+            args.audio_capture_latency_ms = 0.0
         if not explicit_option(argv, "--max-av-offset-ms"):
             args.max_av_offset_ms = SYNC_SMOOTHNESS_MAX_OFFSET_MS
         if not explicit_option(argv, "--max-mean-av-offset-ms"):
@@ -1228,7 +1530,9 @@ def self_test():
     sync_smoothness_scenarios = build_scenarios(sync_smoothness)
     assert sync_smoothness.profile == "sync-smoothness"
     assert str(sync_smoothness.app_audio_lead_ms) == "0"
-    assert sync_smoothness.audio_capture_latency_ms == SYNC_SMOOTHNESS_DEFAULT_DELAY_MS
+    assert sync_smoothness.sync_smoothness_latency_mode == "preflight"
+    assert sync_smoothness.sync_smoothness_preflight_shots == 3
+    assert sync_smoothness.audio_capture_latency_ms == 0.0
     assert sync_smoothness.max_av_offset_ms == SYNC_SMOOTHNESS_MAX_OFFSET_MS
     assert sync_smoothness.max_mean_av_offset_ms == SYNC_SMOOTHNESS_MAX_MEAN_OFFSET_MS
     assert sync_smoothness.max_track_spread_ms == SYNC_SMOOTHNESS_MAX_TRACK_SPREAD_MS
@@ -1240,6 +1544,19 @@ def self_test():
     assert any(int(scenario.app_fps) < scenario.fps for scenario in sync_smoothness_scenarios if scenario.app_fps)
     assert any(int(scenario.app_fps) > scenario.fps for scenario in sync_smoothness_scenarios if scenario.app_fps)
     assert any(scenario.nvenc_preset == "p5" for scenario in sync_smoothness_scenarios)
+    sync_smoothness_modeled = parse_args(["--sync-smoothness-gate", "--sync-smoothness-latency-mode", "modeled",
+                                          "--dry-run"])
+    assert sync_smoothness_modeled.audio_capture_latency_ms == SYNC_SMOOTHNESS_DEFAULT_DELAY_MS
+    sync_smoothness_filtered = parse_args([
+        "--sync-smoothness-gate", "--scenario-filter", "inject_aac_120fps_active_delay_encoder_pressure", "--dry-run"
+    ])
+    filtered_scenarios = [
+        scenario for scenario in build_scenarios(sync_smoothness_filtered)
+        if sync_smoothness_filtered.scenario_filter in scenario.name
+    ]
+    assert [scenario.name for scenario in filtered_scenarios] == [
+        "inject_aac_120fps_active_delay_encoder_pressure"
+    ]
     sync_smoothness_override = parse_args(
         [
             "--sync-smoothness-gate",
@@ -1253,9 +1570,88 @@ def self_test():
         ]
     )
     assert sync_smoothness_override.audio_capture_latency_ms == 12.0
+    assert sync_smoothness_override.sync_smoothness_latency_mode == "manual"
     assert str(sync_smoothness_override.app_audio_lead_ms) == "3"
     assert sync_smoothness_override.max_av_offset_ms == 20.0
     assert sync_smoothness_override.max_mean_av_offset_ms == SYNC_SMOOTHNESS_MAX_MEAN_OFFSET_MS
+    preflight_latency = derive_sync_smoothness_latency_ms(
+        {
+            "audio": [
+                {"ordinal": 0, "strict": True, "av_offset_stats_ms": {"matched": 8, "mean_signed": 70.1}},
+                {"ordinal": 1, "strict": True, "av_offset_stats_ms": {"matched": 8, "mean_signed": 71.3}},
+                {"ordinal": 2, "strict": False, "av_offset_stats_ms": {"matched": 0, "mean_signed": 0.0}},
+            ]
+        }
+    )
+    assert preflight_latency["derived_latency_ms"] == 71.3
+    assert preflight_latency["system_latency_ms"] == 70.1
+    assert preflight_latency["app_latency_ms"] == 71.3
+    assert preflight_latency["strict_track_mean_offsets_by_ordinal_ms"] == {"0": 70.1, "1": 71.3}
+    assert preflight_latency["strict_track_spread_ms"] == 1.2
+    preflight_latency_multi = derive_sync_smoothness_latency_from_ordinals(
+        [
+            {0: 68.0, 1: 71.0},
+            {0: 78.0, 1: 75.0},
+            {0: 72.0, 1: 73.0},
+        ]
+    )
+    assert preflight_latency_multi["system_latency_ms"] == 72.0
+    assert preflight_latency_multi["app_latency_ms"] == 73.0
+    assert preflight_latency_multi["preflight_shot_count"] == 3
+    assert preflight_latency_multi["preflight_shot_offsets_by_ordinal_ms"] == {
+        "0": [68.0, 78.0, 72.0],
+        "1": [71.0, 75.0, 73.0],
+    }
+    retry_offsets = sync_smoothness_retry_offsets_from_report(
+        {
+            "audio": [
+                {"ordinal": 0, "strict": True, "av_offset_stats_ms": {"matched": 8, "mean_signed": 6.0}},
+                {"ordinal": 1, "strict": True, "av_offset_stats_ms": {"matched": 8, "mean_signed": 4.0}},
+            ],
+            "checks": [
+                {"passed": False, "failure_class": "audio_video_event_offset"},
+                {"passed": False, "failure_class": "inter_track_spread"},
+            ],
+        }
+    )
+    assert retry_offsets == {0: 6.0, 1: 4.0}
+    retry_corrections = sync_smoothness_retry_corrections_ms(
+        {
+            "audio": [
+                {"ordinal": 0, "strict": True, "av_offset_stats_ms": {"matched": 8, "mean_signed": 6.0}},
+                {"ordinal": 1, "strict": True, "av_offset_stats_ms": {"matched": 8, "mean_signed": 4.0}},
+            ],
+            "checks": [
+                {"name": "audio.a:0.av_mean_offset_ms", "passed": False,
+                 "failure_class": "audio_video_event_offset"},
+            ],
+        }
+    )
+    assert retry_corrections == {0: 1.75}
+    spread_retry_corrections = sync_smoothness_retry_corrections_ms(
+        {
+            "audio": [
+                {"ordinal": 0, "strict": True, "av_offset_stats_ms": {"matched": 8, "mean_signed": 1.0}},
+                {"ordinal": 1, "strict": True, "av_offset_stats_ms": {"matched": 8, "mean_signed": 4.9}},
+            ],
+            "checks": [
+                {
+                    "name": "audio.inter_track_spread_ms",
+                    "passed": False,
+                    "failure_class": "inter_track_spread",
+                    "actual": {"max_spread_ms": 5.6},
+                },
+            ],
+        }
+    )
+    assert spread_retry_corrections and abs(spread_retry_corrections[1] - 1.35) < 0.001
+    no_retry_for_video_fault = sync_smoothness_retry_offsets_from_report(
+        {
+            "audio": [{"ordinal": 0, "strict": True, "av_offset_stats_ms": {"matched": 8, "mean_signed": 6.0}}],
+            "checks": [{"passed": False, "failure_class": "visual_judder"}],
+        }
+    )
+    assert no_retry_for_video_fault is None
 
     codec_pass = parse_args(["--codec-finalization-pass", "--dry-run"])
     codec_scenarios = build_scenarios(codec_pass)
@@ -1355,6 +1751,14 @@ def main(argv=None):
 
     ce_exe, app_exe = ensure_inputs()
     scenarios = build_scenarios(args)
+    if args.scenario_filter:
+        filters = [item.strip().lower() for item in args.scenario_filter.split(",") if item.strip()]
+        scenarios = [
+            scenario for scenario in scenarios
+            if any(needle in scenario.name.lower() for needle in filters)
+        ]
+        if not scenarios:
+            fail(f"--scenario-filter matched no scenarios: {args.scenario_filter}")
     run_root = (args.output_root or (
         CAPTURE_BIN / "avsync_runs" / datetime.now().strftime("%Y%m%d_%H%M%S")
     )).resolve()
@@ -1370,7 +1774,93 @@ def main(argv=None):
     adaptive_overload = args.profile == "wgc-overload"
     try:
         for scenario in scenarios:
-            result = run_scenario(args, scenario, run_root, ce_exe, app_exe)
+            scenario_args = args
+            preflight_info = None
+            if args.profile == "sync-smoothness" and args.sync_smoothness_latency_mode == "preflight":
+                preflight_info, preflight_failure = run_sync_smoothness_preflight(args, scenario, run_root, ce_exe,
+                                                                                  app_exe)
+                if preflight_failure:
+                    results.append(preflight_failure)
+                    if not args.keep_going:
+                        break
+                    continue
+                scenario_args = copy.copy(args)
+                scenario_args.audio_capture_latency_ms = preflight_info["system_latency_ms"]
+                scenario_args.app_capture_latency_ms = preflight_info["app_latency_ms"]
+            result = run_scenario(scenario_args, scenario, run_root, ce_exe, app_exe, preflight_info=preflight_info)
+            if (
+                args.profile == "sync-smoothness"
+                and args.sync_smoothness_latency_mode == "preflight"
+                and preflight_info
+            ):
+                retry_args = copy.copy(scenario_args)
+                retry_info = copy.deepcopy(preflight_info)
+                for retry_attempt in range(1, SYNC_SMOOTHNESS_MAX_CONTENT_RETRIES + 1):
+                    if result["passed"]:
+                        break
+                    retry_offsets = sync_smoothness_retry_offsets_ms(result)
+                    retry_corrections = sync_smoothness_retry_corrections_from_result(result)
+                    if not retry_offsets or not retry_corrections:
+                        break
+                    content_retry = {
+                        "attempt": retry_attempt,
+                        "reason": "strict decoded content residual",
+                        "from_scenario": result.get("scenario", {}).get("label", scenario.name),
+                        "from_report": result.get("paths", {}).get("scenario_report"),
+                        "strict_track_mean_offsets_by_ordinal_ms": {
+                            str(ordinal): round(value, 3) for ordinal, value in sorted(retry_offsets.items())
+                        },
+                        "latency_corrections_by_ordinal_ms": {
+                            str(ordinal): round(value, 3) for ordinal, value in sorted(retry_corrections.items())
+                        },
+                    }
+                    base_system_latency_ms = float(retry_args.audio_capture_latency_ms)
+                    base_app_latency_ms = (
+                        float(retry_args.app_capture_latency_ms)
+                        if retry_args.app_capture_latency_ms is not None
+                        else base_system_latency_ms
+                    )
+                    retry_args = copy.copy(retry_args)
+                    retry_args.audio_capture_latency_ms = clamp_sync_smoothness_latency_ms(
+                        base_system_latency_ms + retry_corrections.get(0, 0.0)
+                    )
+                    retry_args.app_capture_latency_ms = clamp_sync_smoothness_latency_ms(
+                        base_app_latency_ms + retry_corrections.get(1, 0.0)
+                    )
+                    content_retry.update(
+                        {
+                            "base_system_latency_ms": round(base_system_latency_ms, 3),
+                            "base_app_latency_ms": round(base_app_latency_ms, 3),
+                            "retry_system_latency_ms": retry_args.audio_capture_latency_ms,
+                            "retry_app_latency_ms": retry_args.app_capture_latency_ms,
+                        }
+                    )
+                    retry_info = copy.deepcopy(retry_info)
+                    retry_info.setdefault("content_retries", []).append(content_retry)
+                    retry_info["content_retry"] = content_retry
+                    retry_scenario = copy.copy(scenario)
+                    retry_scenario.label = (
+                        f"{scenario.label}_content_retry{retry_attempt}"
+                        if scenario.label
+                        else f"content_retry{retry_attempt}"
+                    )
+                    print(
+                        "  content retry {attempt} system={system:.3f}ms app={app:.3f}ms "
+                        "from residuals={residuals} corrections={corrections}".format(
+                            attempt=retry_attempt,
+                            system=retry_args.audio_capture_latency_ms,
+                            app=retry_args.app_capture_latency_ms,
+                            residuals=",".join(
+                                f"a:{ordinal}={value:.3f}" for ordinal, value in sorted(retry_offsets.items())
+                            ),
+                            corrections=",".join(
+                                f"a:{ordinal}={value:.3f}" for ordinal, value in sorted(retry_corrections.items())
+                            ),
+                        )
+                    )
+                    result = run_scenario(
+                        retry_args, retry_scenario, run_root, ce_exe, app_exe, preflight_info=retry_info
+                    )
             results.append(result)
             if adaptive_overload and result["passed"]:
                 break

@@ -314,6 +314,7 @@ public:
     std::condition_variable audioDrainCv;
     std::atomic<bool> audioStopDrainRequested{false};
     std::atomic<bool> audioStopDrainComplete{false};
+    std::atomic<bool> audioFinalizingCfrStop{false};
     std::chrono::steady_clock::time_point recordingStartTime;  // CaptureEngine clock start time
     int64_t firstVideoFrameMs;                                 // Timestamp of first video frame for A/V sync
     int64_t lastVideoFrameMs;                                  // Timestamp of last video frame for audio trimming
@@ -470,10 +471,13 @@ public:
                 const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
                 const bool optionalUnstarted = ce::audio::IsOptionalUnstartedAppAudioSource(
                     isAppAudioSource, src.timelineValid, src.sawSyncPendingPackets);
-                const bool sparseStartedSourceMaySilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
-                    true, isAppAudioSource, src.bootstrapComplete, optionalUnstarted);
+                const bool sparseStartedSourceCanSilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
+                    true, isAppAudioSource, src.bootstrapComplete, optionalUnstarted, true);
                 const bool strictSource = src.sourceType != AudioConfig::Microphone;
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
+                const bool sparseStartedSourceMaySilence =
+                    ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(sparseStartedSourceCanSilence,
+                                                                             bufferedTimelineSamples);
                 if (ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, strictSource, optionalUnstarted,
                                                                   sparseStartedSourceMaySilence, requestedSamples,
                                                                   bufferedTimelineSamples)) {
@@ -1003,6 +1007,9 @@ public:
             }
 
             audioSyncPending.store(false);
+            audioFinalizingCfrStop.store(false, std::memory_order_release);
+            audioStopDrainRequested.store(false, std::memory_order_release);
+            audioStopDrainComplete.store(false, std::memory_order_release);
             recordingStartSystemQPCMs.store(GetTickCount64());
 
             // Reset audio encoder state (normally done by SyncAudioToFirstVideoFrame)
@@ -1108,6 +1115,9 @@ public:
             // before first video frame. We intentionally discard audio until the
             // first video frame establishes the timeline.
             audioSyncPending.store(true);
+            audioFinalizingCfrStop.store(false, std::memory_order_release);
+            audioStopDrainRequested.store(false, std::memory_order_release);
+            audioStopDrainComplete.store(false, std::memory_order_release);
 
             // CRITICAL: Reset video clock for new recording to prevent stale
             // timestamps
@@ -1407,12 +1417,22 @@ public:
         int64_t endUs = 0;
         constexpr int kStopSampleRate = 48000;
         const int64_t expectedVideoUsForStop = videoEnc ? videoEnc->GetExpectedFinalDurationUs() : 0;
+        const bool finalCfrStopPending =
+            ce::audio::ShouldDrainStoppedCaptureQueuesBeforeFinalAudioPull(audioRunning.load(), audioOnly,
+                                                                           expectedVideoUsForStop) &&
+            IsCfrRecording();
+        if (finalCfrStopPending) {
+            audioFinalizingCfrStop.store(true, std::memory_order_release);
+            DLL_Log("[StopAudio] Final CFR stop pending: targetUs=%lld", expectedVideoUsForStop);
+        }
         WaitForFinalCfrAudioSourceCatchup(expectedVideoUsForStop);
         DrainStoppedCaptureQueuesBeforeFinalPull(expectedVideoUsForStop);
         {
             std::lock_guard<std::recursive_mutex> lock(muxMutex);
-            if (!recording)
+            if (!recording) {
+                audioFinalizingCfrStop.store(false, std::memory_order_release);
                 return;
+            }
 
             // Set recording end timestamp on all audio encoders BEFORE stopping
             // the audio thread so the final drain and flush both target the exact
@@ -1517,6 +1537,10 @@ public:
         audioDrainCv.notify_all();
         if (audioThread.joinable()) {
             audioThread.join();
+        }
+        if (finalCfrStopPending) {
+            audioFinalizingCfrStop.store(false, std::memory_order_release);
+            DLL_Log("[StopAudio] Final CFR stop pending cleared");
         }
 
         // Final A/V sync diagnostic before stopping sources
@@ -2342,14 +2366,19 @@ public:
             }
 
             bool deferForSourceBuffer = false;
+            const bool finalStopDrain = audioStopDrainRequested.load(std::memory_order_acquire) ||
+                                        audioFinalizingCfrStop.load(std::memory_order_acquire);
             for (size_t srcIdx : srcIndices) {
                 auto& src = audioSources[srcIdx];
                 const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
                 const bool optionalUnstarted = ce::audio::IsOptionalUnstartedAppAudioSource(
                     isAppAudioSource, src.timelineValid, src.sawSyncPendingPackets);
-                const bool sparseStartedSourceMaySilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
-                    isCfrRecording, isAppAudioSource, src.bootstrapComplete, optionalUnstarted);
+                const bool sparseStartedSourceCanSilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
+                    isCfrRecording, isAppAudioSource, src.bootstrapComplete, optionalUnstarted, finalStopDrain);
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
+                const bool sparseStartedSourceMaySilence =
+                    ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(sparseStartedSourceCanSilence,
+                                                                             bufferedTimelineSamples);
                 if (ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(isCfrRecording, forceDrain, optionalUnstarted,
                                                                       sparseStartedSourceMaySilence, samplesToEncode,
                                                                       bufferedTimelineSamples)) {

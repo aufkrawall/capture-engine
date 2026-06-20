@@ -690,8 +690,15 @@ inline bool ShouldWaitForFinalCfrSourceCatchup(bool isCfrRecording, bool strictS
 }
 
 inline bool ShouldTreatSparseStartedSourceAsSilence(bool isCfrRecording, bool isAppAudioSource,
-                                                    bool sourceBootstrapComplete, bool optionalUnstartedSource) {
-    return isCfrRecording && isAppAudioSource && sourceBootstrapComplete && !optionalUnstartedSource;
+                                                    bool sourceBootstrapComplete, bool optionalUnstartedSource,
+                                                    bool finalStopDrain = false) {
+    return isCfrRecording && isAppAudioSource && sourceBootstrapComplete && !optionalUnstartedSource &&
+           !finalStopDrain;
+}
+
+inline bool ShouldTreatStartedAppSourceShortfallAsSilence(bool sparseStartedSourceMaySilence,
+                                                          size_t bufferedTimelineSamples) {
+    return sparseStartedSourceMaySilence && bufferedTimelineSamples == 0;
 }
 
 inline PacketTimelineAdjustment ComputePacketTimelineAdjustment(int64_t packetStartSamples,

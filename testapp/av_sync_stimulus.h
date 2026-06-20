@@ -43,6 +43,56 @@ struct StimulusState {
     Rgb8 color;
 };
 
+struct EncoderStressLayout {
+    int tile = 0;
+    int left = 0;
+    int right = 0;
+    int top = 0;
+    int bottom = 0;
+    int columns = 0;
+    int rows = 0;
+    int reserveLeft = 0;
+    int reserveRight = 0;
+    int reserveTop = 0;
+    int reserveBottom = 0;
+    bool valid = false;
+};
+
+inline EncoderStressLayout ComputeEncoderStressLayout(int width, int height, int markerMargin, int markerTile,
+                                                      int markerGap) {
+    EncoderStressLayout layout{};
+    if (width <= 0 || height <= 0) {
+        return layout;
+    }
+
+    layout.tile = std::clamp(width / 80, 24, 64);
+    layout.left = markerMargin;
+    const int maxRight = width - markerMargin;
+    layout.top = markerMargin + 2 * (markerTile + markerGap) + 18;
+    const int maxBottom = std::min(static_cast<int>(height * 0.68), height - markerMargin - 96);
+    layout.reserveLeft = static_cast<int>(width * 0.40);
+    layout.reserveRight = static_cast<int>(width * 0.60);
+    layout.reserveTop = static_cast<int>(height * 0.38);
+    layout.reserveBottom = static_cast<int>(height * 0.52);
+
+    const int usableWidth = maxRight - layout.left;
+    const int usableHeight = maxBottom - layout.top;
+    if (usableWidth < layout.tile || usableHeight < layout.tile) {
+        return layout;
+    }
+
+    layout.columns = usableWidth / layout.tile;
+    layout.rows = usableHeight / layout.tile;
+    if (layout.columns <= 0 || layout.rows <= 0) {
+        return layout;
+    }
+
+    layout.right = layout.left + layout.columns * layout.tile;
+    layout.bottom = layout.top + layout.rows * layout.tile;
+    layout.valid = layout.right > layout.left && layout.bottom > layout.top;
+    return layout;
+}
+
 struct SourceStallSpec {
     double startSeconds = 0.0;
     double durationSeconds = 0.0;

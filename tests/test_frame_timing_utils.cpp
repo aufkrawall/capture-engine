@@ -228,6 +228,31 @@ TEST(FrameTimingUtilsTest, ComputeIdealOutputQpcUsesPreviousGridTick) {
     EXPECT_EQ(ComputeIdealOutputQpc(100, 3, 50), 200);
 }
 
+TEST(FrameTimingUtilsTest, ComputeDelayedContentGridStartShiftsInjectSelectionTarget) {
+    const int64_t liveGridStartQpc = 1000;
+    const int64_t delayedGridStartQpc = ComputeDelayedContentGridStartQpc(liveGridStartQpc, 150);
+    EXPECT_EQ(delayedGridStartQpc, 850);
+    EXPECT_EQ(ComputeIdealOutputQpc(delayedGridStartQpc, 3, 50), 950);
+
+    std::deque<QueuedFrame> frames;
+    QueuedFrame delayedCandidate;
+    delayedCandidate.timestamp = 948;
+    frames.push_back(std::move(delayedCandidate));
+
+    QueuedFrame liveCandidate;
+    liveCandidate.timestamp = 1098;
+    frames.push_back(std::move(liveCandidate));
+
+    EXPECT_EQ(SelectFrameClosestToGrid(frames, frames.size(), liveGridStartQpc, 3, 50), 1u);
+    EXPECT_EQ(SelectFrameClosestToGrid(frames, frames.size(), delayedGridStartQpc, 3, 50), 0u);
+}
+
+TEST(FrameTimingUtilsTest, ComputeDelayedContentGridStartIgnoresInactiveDelay) {
+    EXPECT_EQ(ComputeDelayedContentGridStartQpc(1000, 0), 1000);
+    EXPECT_EQ(ComputeDelayedContentGridStartQpc(1000, -10), 1000);
+    EXPECT_EQ(ComputeDelayedContentGridStartQpc(0, 100), 0);
+}
+
 TEST(FrameTimingUtilsTest, ComputeWgcSelectionTargetPrefersScheduledSampleQpc) {
     EXPECT_EQ(ComputeWgcSelectionTargetQpc(250, 100, 3, 50), 250);
     EXPECT_EQ(ComputeWgcSelectionTargetQpc(0, 100, 3, 50), 200);

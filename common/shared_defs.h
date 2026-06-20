@@ -497,6 +497,18 @@ struct FrameRingBuffer {
     }
 };
 
+inline bool FrameRingIndexAfter(uint32_t candidate, uint32_t current) {
+    return static_cast<int32_t>(candidate - current) > 0;
+}
+
+inline void PublishFrameRingReadIndexAtLeast(FrameRingBuffer& ring, uint32_t nextReadIndex) {
+    uint32_t current = ring.readIndex.load(std::memory_order_acquire);
+    while (FrameRingIndexAfter(nextReadIndex, current) &&
+           !ring.readIndex.compare_exchange_weak(current, nextReadIndex, std::memory_order_release,
+                                                 std::memory_order_acquire)) {
+    }
+}
+
 // D3D9 Shmem Fallback Buffer
 // Used when shared handles are not available (e.g. legacy D3D9 on Win11)
 // Moving to separate shared memory to reduce 32-bit address space consumption
