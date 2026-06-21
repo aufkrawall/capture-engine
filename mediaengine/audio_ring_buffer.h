@@ -73,6 +73,31 @@ public:
         return capacity;
     }
 
+    // Grow the backing capacity to at least `newCapacitySamples`. Used to defer
+    // full ring allocation until a source actually starts capturing (e.g. an
+    // app-audio source whose target process may never run), so idle sources do
+    // not pre-allocate the large CFR retention buffer.
+    //
+    // Only grows, never shrinks, and only when the buffer is currently EMPTY
+    // (available == 0) so no buffered audio can be lost. Mutex-protected, so it
+    // is safe against concurrent Write/Read/Skip. Returns true if the capacity is
+    // already sufficient or was successfully grown; false if it could not grow
+    // because the buffer was non-empty.
+    bool EnsureCapacity(size_t newCapacitySamples) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (newCapacitySamples <= capacity) {
+            return true;
+        }
+        if (available.load(std::memory_order_acquire) != 0) {
+            return false;  // refuse to realloc while holding buffered audio
+        }
+        buffer.assign(newCapacitySamples, 0.0f);
+        capacity = newCapacitySamples;
+        readPos = 0;
+        writePos = 0;
+        return true;
+    }
+
     // Check overflow status (debug)
     bool HasOverflowed() const {
         return overflowFlag.load();

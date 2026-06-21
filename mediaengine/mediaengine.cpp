@@ -57,6 +57,7 @@ public:
         std::unique_ptr<AudioEncoder> encoder;        // Owned encoder (if first source for this track)
         AudioEncoder* sharedEncoderPtr = nullptr;     // Always points to the encoder to use
         std::unique_ptr<AudioRingBuffer> ringBuffer;  // Pull Model Buffer (Writer=Capture, Reader=Encoder)
+        size_t fullRingBufferCapacityFloats = 0;      // Target capacity; app sources start small and grow on first capture
         std::unique_ptr<AudioResampler> resampler;    // Resampler for this source (to standard format)
         int mixChannels = 2;
         uint32_t mixChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
@@ -3765,11 +3766,27 @@ private:
         const bool isCfrPath = ce::audio::ShouldUseCfrAudioContinuityPolicy(config.video.useVFR);
         const size_t ringBufferSeconds = isCfrPath ? kCfrAudioRingBufferSeconds : kDefaultAudioRingBufferSeconds;
         const int channels = std::clamp(source.mixChannels, 1, 8);
-        size_t capacity = static_cast<size_t>(kMixerSampleRate) * ringBufferSeconds * channels;
-        source.ringBuffer = std::make_unique<AudioRingBuffer>(capacity);
+        const size_t capacity = static_cast<size_t>(kMixerSampleRate) * ringBufferSeconds * channels;
+        source.fullRingBufferCapacityFloats = capacity;
+
+        // App-audio sources commonly target candidate processes that may not be
+        // running (a "capture whichever game is running" profile). Allocating the
+        // full multi-second CFR retention buffer (~11.5 MB at 30s/48k/stereo) for
+        // every such source wastes memory on sources that never capture. Start app
+        // sources with a small buffer and grow in-place to full capacity on first
+        // captured audio (see AudioLoop). System/mic sources are always active, so
+        // they keep full capacity immediately.
+        constexpr size_t kAppAudioInitialRingBufferSeconds = 1;
+        const size_t initialCapacity =
+            (source.appCapture != nullptr)
+                ? std::min(capacity, static_cast<size_t>(kMixerSampleRate) * kAppAudioInitialRingBufferSeconds * channels)
+                : capacity;
+        source.ringBuffer = std::make_unique<AudioRingBuffer>(initialCapacity);
         DLL_Log(
-            "MediaEngine::Init RingBuffer created for source %zu. Cap=%zu floats (%zus), rate=%d channels=%d mask=0x%x",
-            sourceIdx, capacity, ringBufferSeconds, kMixerSampleRate, channels, source.mixChannelMask);
+            "MediaEngine::Init RingBuffer created for source %zu. Cap=%zu floats (initial, full=%zu floats/%zus), "
+            "rate=%d channels=%d mask=0x%x deferred=%d",
+            sourceIdx, initialCapacity, capacity, ringBufferSeconds, kMixerSampleRate, channels,
+            source.mixChannelMask, initialCapacity < capacity ? 1 : 0);
 
         source.syncResampler = std::make_unique<AudioResampler>();
         AudioResampler::InputFormat syncInFmt;
@@ -4024,6 +4041,18 @@ private:
                 }
 
                 if (gotPacket && !packet.data.empty()) {
+                    // First captured audio for this source: grow its ring buffer to
+                    // full CFR capacity (deferred for app-audio sources whose target
+                    // process may never run). The buffer is still empty at this point,
+                    // so the in-place grow is lossless, and AudioLoop is the only
+                    // thread touching this buffer, so it is race-free.
+                    if (src.ringBuffer && src.ringBuffer->GetCapacity() < src.fullRingBufferCapacityFloats) {
+                        if (src.ringBuffer->EnsureCapacity(src.fullRingBufferCapacityFloats)) {
+                            DLL_Log(
+                                "[AudioLoop] Grew ring buffer for src %d to full capacity %zu floats on first capture",
+                                (int)srcIdx, src.fullRingBufferCapacityFloats);
+                        }
+                    }
                     int64_t startQPC = recordingStartSystemQPCMs.load(std::memory_order_acquire);
                     if (startQPC != 0 && sourceTimestamps[srcIdx] == 0 && packet.timestamp < (startQPC - 5)) {
                         if (!sourceLoggedPreStartDrop[srcIdx]) {

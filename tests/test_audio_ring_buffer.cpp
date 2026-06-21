@@ -143,3 +143,49 @@ TEST(AudioRingBufferTest, WriteRetainNewWithOversizedInputKeepsNewestCapacityWin
     EXPECT_FLOAT_EQ(output[2], 5.0f);
     EXPECT_FLOAT_EQ(output[3], 6.0f);
 }
+
+// EnsureCapacity backs the deferred app-audio ring buffer growth: idle sources
+// keep a small buffer; on first capture the buffer grows in-place to full size.
+TEST(AudioRingBufferTest, EnsureCapacityGrowsEmptyBufferAndAcceptsFullWindow) {
+    AudioRingBuffer ring(2);  // small initial (deferred app-audio source)
+    EXPECT_EQ(ring.GetCapacity(), 2u);
+
+    EXPECT_TRUE(ring.EnsureCapacity(8));
+    EXPECT_EQ(ring.GetCapacity(), 8u);
+    EXPECT_EQ(ring.GetAvailable(), 0u);
+    EXPECT_EQ(ring.GetFree(), 8u);
+
+    // The grown buffer behaves like one constructed at the full size.
+    const float input[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
+    EXPECT_EQ(ring.Write(input, 8), 8u);
+    EXPECT_FALSE(ring.HasOverflowed());
+    std::vector<float> output(8, 0.0f);
+    EXPECT_EQ(ring.Read(output.data(), output.size()), 8u);
+    for (size_t i = 0; i < output.size(); ++i) {
+        EXPECT_FLOAT_EQ(output[i], input[i]);
+    }
+}
+
+TEST(AudioRingBufferTest, EnsureCapacityNeverShrinksAndIsIdempotent) {
+    AudioRingBuffer ring(8);
+    EXPECT_TRUE(ring.EnsureCapacity(4));  // already large enough
+    EXPECT_EQ(ring.GetCapacity(), 8u);
+    EXPECT_TRUE(ring.EnsureCapacity(8));  // equal
+    EXPECT_EQ(ring.GetCapacity(), 8u);
+}
+
+TEST(AudioRingBufferTest, EnsureCapacityRefusesToGrowWhileHoldingBufferedAudio) {
+    AudioRingBuffer ring(4);
+    const float input[] = {1.0f, 2.0f};
+    EXPECT_EQ(ring.Write(input, 2), 2u);  // buffer now non-empty
+
+    EXPECT_FALSE(ring.EnsureCapacity(16));  // must not realloc with data present
+    EXPECT_EQ(ring.GetCapacity(), 4u);
+    EXPECT_EQ(ring.GetAvailable(), 2u);
+
+    // After draining, growth is allowed again.
+    std::vector<float> output(2, 0.0f);
+    EXPECT_EQ(ring.Read(output.data(), output.size()), 2u);
+    EXPECT_TRUE(ring.EnsureCapacity(16));
+    EXPECT_EQ(ring.GetCapacity(), 16u);
+}
