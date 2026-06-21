@@ -2668,10 +2668,20 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             // renders through the normal DX12 route.
             const bool noCallbackFSRFG = DX12_IsNativeFSRInternalNoCallbackCompositionActive();
             if (noCallbackFSRFG) {
-                if (DX12_IsFFXUiResourceCachedForBundle()) {
-                    // Bundle active — skip all CE overhead (near-passthrough).
+                const ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute noCallbackRoute =
+                    ce::dx12_overlay_policy::ChooseNoCallbackFSRFGOverlayRoute(
+                        DX12_IsFFXUiResourceCachedForBundle(), DX12_IsFFXUiBundleOverlayActivelyFiring());
+                if (noCallbackRoute == ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute::kSkipBundleCovers) {
+                    // The ECL UI-bundle is actively compositing the overlay onto AMD's UI texture
+                    // (post-interpolation), so skip the separate backbuffer ProcessFrame — that keeps AMD's
+                    // pacing-critical present queue undisturbed (submitting overlay work there freezes GTA
+                    // ~900 frames).
                 } else {
-                    // No bundle available — run minimal ProcessFrame so the overlay renders.
+                    // Either no UI bundle (test-app style) OR the bundle is cached but not yet/again firing
+                    // (FG-on transition window, or a stale UI texture). Draw via the minimal backbuffer path so
+                    // the overlay is NEVER blank across the transition. Freeze-safe transient bridge: once the
+                    // ECL bundle engages, DX12_IsFFXUiBundleOverlayActivelyFiring() flips true and control
+                    // returns to the cheap skip branch above.
                     DX12_ProcessFrameMinimal(pSwapChain);
                 }
             } else {

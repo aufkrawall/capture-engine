@@ -115,6 +115,10 @@ bool DX12_ShouldCompositeOverlayOntoFFXUiResource();
 bool DX12_ShouldCacheFFXUiResourceForBundle();
 // True if the UI texture has been cached (for the VEH disarm condition).
 bool DX12_IsFFXUiResourceCachedForBundle();
+// True if the ECL UI-bundle overlay actually appended within the recent window (i.e. the bundle is really
+// compositing the overlay onto AMD's UI texture). DetourPresent uses this to decide whether it can safely
+// skip the separate backbuffer ProcessFrame or must fall back to a draw so the overlay is never blank.
+bool DX12_IsFFXUiBundleOverlayActivelyFiring();
 // Direct read of the no-callback composition flag (for the VEH one-shot disarm logic).
 bool DX12_IsNativeFSRInternalNoCallbackCompositionActive();
 // Minimal-overhead ProcessFrame for no-callback FSR FG (skips policy/lock/heuristic work).

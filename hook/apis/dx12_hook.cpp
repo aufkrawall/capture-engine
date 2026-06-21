@@ -5305,6 +5305,11 @@ static std::atomic<uint32_t> g_CachedFFXUiState{0};
 static std::atomic<uint32_t> g_CachedFFXUiFlags{0};
 static std::atomic<bool> g_BundleOverlayAppendedThisFrame{false};
 static std::atomic<int> g_BundleOverlayFrame{0};
+// GetTickCount64() of the last successful bundle overlay append. DetourPresent uses this (via
+// DX12_IsFFXUiBundleOverlayActivelyFiring) to tell "bundle is really compositing the overlay" apart from
+// "bundle cached but not firing" so it can avoid blanking the overlay during the FG-on transition window.
+static std::atomic<uint64_t> g_BundleOverlayLastAppendTickMs{0};
+static constexpr uint64_t kFFXUiBundleActiveThresholdMs = 250;  // ~15 frames @60fps real
 
 // --- FFX UI-composite timeline ring buffer (freeze diagnosis) -----------------------------------------
 // Records the last kFFXUiCompositeTimelineSize composite calls with QPC stamps, fence state, and game-ECL
@@ -5425,6 +5430,19 @@ bool DX12_IsFFXUiResourceCachedForBundle() {
     return g_CachedFFXUiTexture.load(std::memory_order_acquire) != nullptr;
 }
 
+// True if the ECL UI-bundle overlay actually appended within kFFXUiBundleActiveThresholdMs — i.e. the bundle
+// is genuinely compositing the overlay onto AMD's UI texture this epoch. When false (FG-on transition window,
+// or a bundle that cannot fire), DetourPresent draws via the minimal backbuffer path instead of skipping, so
+// the overlay is never blank. Once the bundle engages, this returns true and the cheap skip path resumes.
+bool DX12_IsFFXUiBundleOverlayActivelyFiring() {
+    const uint64_t last = g_BundleOverlayLastAppendTickMs.load(std::memory_order_acquire);
+    if (last == 0) {
+        return false;
+    }
+    const uint64_t now = GetTickCount64();
+    return (now >= last) && (now - last) <= kFFXUiBundleActiveThresholdMs;
+}
+
 // Direct read of the no-callback composition flag (for the VEH one-shot disarm logic in ffx_hook.cpp).
 // Unlike DX12_IsFFXUiResourceCompositionActive (which is recency-gated), this returns the raw latched flag.
 bool DX12_IsNativeFSRInternalNoCallbackCompositionActive() {
@@ -5436,27 +5454,140 @@ bool DX12_IsNativeFSRInternalNoCallbackCompositionActive() {
 // Called from DetourExecuteCommandLists on the game's ECL thread. Does NOT submit or signal — the
 // caller appends the returned list to the game's command-list array and forwards the bundled ECL.
 static DXGI_FORMAT FFXUiCompositeRtvFormat(DXGI_FORMAT texFormat);  // forward decl — defined below
-static ID3D12GraphicsCommandList* RecordBundleOverlayForGameECL(ID3D12Device* device) {
+
+// Rate-limited diagnostic for why the UI-bundle overlay did NOT append on a given frame. The previous
+// silent null-return inside RecordBundleOverlayForGameECL is exactly why the dead-init bug (bundle GPU
+// resources never created) stayed invisible in GTA for an entire FG session. Keep this loud-but-bounded
+// so any future bundle regression is obvious in hook_debug.log.
+static void LogBundleOverlaySkip(const char* reason) {
+    static std::atomic<int> s_bundleSkipLog{0};
+    const int n = s_bundleSkipLog.fetch_add(1, std::memory_order_relaxed);
+    if (n < 20 || (n % 600) == 0) {
+        HookLogImportant(
+            "DX12: FFX UI-bundle overlay SKIPPED (reason=%s uiTex=%p list=%p rtvHeap=%p adapterInit=%d log=%d)",
+            reason, (void*)g_CachedFFXUiTexture.load(std::memory_order_acquire), (void*)g_FFXUiCompositeList,
+            (void*)g_FFXUiCompositeRtvHeap, g_FFXPresentOverlayAdapter.IsInitialized() ? 1 : 0, n + 1);
+    }
+}
+
+// LIVE lazy initializer for the FFX UI-bundle overlay path. Creates exactly what RecordBundleOverlayForGameECL
+// needs — the RTV heap, the 3 command allocators, the command list, and the dedicated FFX overlay adapter —
+// scoped to the current device. It deliberately does NOT create the separate-ECL submit queue/fence: the
+// bundle appends its command list to the GAME's ExecuteCommandLists (covered by the game's own fence), so it
+// never submits or signals on any AMD-tracked queue (that is what preserves AMD's pacing / freeze-safety).
+// Must be called while holding g_FFXUiCompositeMutex. Returns true when list + RTV heap + adapter are ready.
+//
+// Root-cause note (GTA no-callback FSR FG overlay invisibility): these resources were previously created ONLY
+// inside DX12_CompositeOverlayOntoFFXUiResource, which is dead code (DX12_ShouldCompositeOverlayOntoFFXUiResource()
+// hard-returns false and nothing calls it). So the bundle's null-resource guard always tripped and the overlay
+// was invisible whenever a UI texture was cached. This helper is the standalone live init that fixes that. The
+// device-change branch releases only the GPU infra + adapter; it must NOT clear g_CachedFFXUiTexture (doing so
+// would blank the overlay the very next frame, since the per-frame UI-resource cache may be stale post-VEH-disarm).
+static bool EnsureFFXUiCompositeBundleResources(ID3D12Device* device, ID3D12CommandQueue* gameQueue,
+                                                DXGI_FORMAT rtvFormat, int width, int height) {
+    if (!device) {
+        return false;
+    }
+    if (g_FFXUiCompositeDevice != device) {
+        if (g_FFXUiCompositeList) { g_FFXUiCompositeList->Release(); g_FFXUiCompositeList = nullptr; }
+        for (auto& a : g_FFXUiCompositeAlloc) { if (a) { a->Release(); a = nullptr; } }
+        if (g_FFXUiCompositeRtvHeap) { g_FFXUiCompositeRtvHeap->Release(); g_FFXUiCompositeRtvHeap = nullptr; }
+        {
+            std::lock_guard<std::recursive_mutex> olock(g_OverlayMutex);
+            if (g_FFXPresentOverlayAdapter.IsInitialized()) {
+                g_FFXPresentOverlayAdapter.Shutdown();
+            }
+        }
+        g_FFXPresentOverlayDevice = nullptr;
+        g_FFXPresentOverlayFormat = DXGI_FORMAT_UNKNOWN;
+        g_FFXUiCompositeAdapterFormat = DXGI_FORMAT_UNKNOWN;
+        g_FFXUiCompositeDevice = device;
+    }
+    for (auto& a : g_FFXUiCompositeAlloc) {
+        if (!a && FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&a)))) {
+            HookLogImportant("DX12: FFX UI-bundle FAILED to create command allocator");
+            return false;
+        }
+    }
+    if (!g_FFXUiCompositeList) {
+        if (FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_FFXUiCompositeAlloc[0], nullptr,
+                                             IID_PPV_ARGS(&g_FFXUiCompositeList)))) {
+            HookLogImportant("DX12: FFX UI-bundle FAILED to create command list");
+            return false;
+        }
+        g_FFXUiCompositeList->Close();
+    }
+    if (!g_FFXUiCompositeRtvHeap) {
+        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
+        if (FAILED(device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&g_FFXUiCompositeRtvHeap)))) {
+            HookLogImportant("DX12: FFX UI-bundle FAILED to create RTV heap");
+            return false;
+        }
+    }
+    {
+        std::lock_guard<std::recursive_mutex> olock(g_OverlayMutex);
+        if (!g_FFXPresentOverlayAdapter.IsInitialized() || g_FFXUiCompositeAdapterFormat != rtvFormat) {
+            if (g_FFXPresentOverlayAdapter.IsInitialized()) {
+                g_FFXPresentOverlayAdapter.Shutdown();
+            }
+            g_FFXPresentOverlayAdapter.SetHwnd(nullptr);
+            if (!g_FFXPresentOverlayAdapter.InitDX12(device, gameQueue, static_cast<int>(rtvFormat))) {
+                HookLogImportant("DX12: FFX UI-bundle FAILED to init overlay adapter (fmt=%d)",
+                                 static_cast<int>(rtvFormat));
+                return false;
+            }
+            g_FFXPresentOverlayAdapter.SetHDR(false, static_cast<int>(rtvFormat));
+            g_FFXPresentOverlayDevice = device;
+            g_FFXPresentOverlayFormat = rtvFormat;
+            g_FFXUiCompositeAdapterFormat = rtvFormat;
+            static std::atomic<int> s_bundleAdapterInitLog{0};
+            if (s_bundleAdapterInitLog.fetch_add(1, std::memory_order_relaxed) < 8) {
+                HookLogImportant("DX12: FFX UI-bundle initialized overlay adapter (fmt=%d %dx%d device=%p)",
+                                 static_cast<int>(rtvFormat), width, height, (void*)device);
+            }
+        }
+    }
+    return g_FFXUiCompositeList != nullptr && g_FFXUiCompositeRtvHeap != nullptr &&
+           g_FFXPresentOverlayAdapter.IsInitialized();
+}
+
+// Step 3: Record CE's overlay draw onto the cached UI texture into g_FFXUiCompositeList, close it, and
+// return it for bundling into the game's ECL. Returns the closed command list, or nullptr on failure.
+// Called from DetourExecuteCommandLists on the game's ECL thread (gameQueue == pThis == g_OriginalGameQueue).
+// Does NOT submit or signal — the caller appends the returned list to the game's command-list array and
+// forwards the bundled ECL (covered by the game's own fence).
+static ID3D12GraphicsCommandList* RecordBundleOverlayForGameECL(ID3D12Device* device,
+                                                                ID3D12CommandQueue* gameQueue) {
     auto* uiTexture = g_CachedFFXUiTexture.load(std::memory_order_acquire);
     if (!uiTexture) {
+        LogBundleOverlaySkip("texture-null");
         return nullptr;
     }
     const uint32_t ffxState = g_CachedFFXUiState.load(std::memory_order_acquire);
     const uint32_t flags = g_CachedFFXUiFlags.load(std::memory_order_acquire);
+    (void)flags;
 
     std::lock_guard<std::recursive_mutex> lock(g_FFXUiCompositeMutex);
 
-    if (!g_FFXUiCompositeList || !g_FFXUiCompositeFence || !g_FFXUiCompositeRtvHeap) {
-        return nullptr;
-    }
-
     const D3D12_RESOURCE_DESC td = uiTexture->GetDesc();
     if (td.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || td.Width == 0 || td.Height == 0) {
+        LogBundleOverlaySkip("bad-desc");
         return nullptr;
     }
     const int width = static_cast<int>(td.Width);
     const int height = static_cast<int>(td.Height);
     const DXGI_FORMAT rtvFormat = FFXUiCompositeRtvFormat(td.Format);
+
+    // Lazily build the bundle's GPU resources + overlay adapter (root-cause fix — see helper above).
+    // The bundle rides the game's fence, so no separate-ECL queue/fence is required here.
+    if (!EnsureFFXUiCompositeBundleResources(device, gameQueue, rtvFormat, width, height)) {
+        LogBundleOverlaySkip("ensure-failed");
+        return nullptr;
+    }
+    if (!g_FFXUiCompositeList || !g_FFXUiCompositeRtvHeap) {
+        LogBundleOverlaySkip("resources-null");
+        return nullptr;
+    }
 
     // 3-slot rotation (no fence Signal — the overlay CL is part of the game's ECL, covered by the game's fence).
     const int slot = g_BundleOverlayFrame.load(std::memory_order_relaxed) % kFFXUiCompositeSlotCount;
@@ -5507,6 +5638,7 @@ static ID3D12GraphicsCommandList* RecordBundleOverlayForGameECL(ID3D12Device* de
     g_BundleOverlayFrame.fetch_add(1, std::memory_order_relaxed);
     g_FFXUiResourceCompositionActive.store(true, std::memory_order_release);
     g_FFXUiCompositeLastTickMs.store(GetTickCount64(), std::memory_order_release);
+    g_BundleOverlayLastAppendTickMs.store(GetTickCount64(), std::memory_order_release);
     NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
     return g_FFXUiCompositeList;
 }
@@ -5517,12 +5649,25 @@ void DX12_CacheFFXUiResourceForBundle(void* uiResourcePtr, uint32_t ffxState, ui
     if (!uiResourcePtr) {
         return;
     }
-    g_CachedFFXUiTexture.store(static_cast<ID3D12Resource*>(uiResourcePtr), std::memory_order_release);
+    ID3D12Resource* prev =
+        g_CachedFFXUiTexture.exchange(static_cast<ID3D12Resource*>(uiResourcePtr), std::memory_order_acq_rel);
     g_CachedFFXUiState.store(ffxState, std::memory_order_release);
     g_CachedFFXUiFlags.store(flags, std::memory_order_release);
     g_BundleOverlayAppendedThisFrame.store(false, std::memory_order_release);
     g_FFXUiResourceCompositionActive.store(true, std::memory_order_release);
     g_FFXUiCompositeLastTickMs.store(GetTickCount64(), std::memory_order_release);
+    // Diagnostic: surface whether the game re-registers the SAME UI texture every frame (stable pointer → the
+    // post-VEH-disarm cache freeze is harmless) or ROTATES textures (pointer changes → the cache must be
+    // refreshed per frame to avoid drawing onto a texture AMD no longer composites). A single GTA run answers
+    // the rotation question and gates whether the heavier per-frame re-cache work is needed.
+    static std::atomic<uint64_t> s_uiCacheUpdateCount{0};
+    const uint64_t n = s_uiCacheUpdateCount.fetch_add(1, std::memory_order_relaxed);
+    const bool changed = prev != static_cast<ID3D12Resource*>(uiResourcePtr);
+    if (n < 20 || changed || (n % 600) == 0) {
+        HookLogImportant(
+            "DX12: FFX UI-bundle cached UI resource %p (prev=%p changed=%d state=0x%X flags=0x%X update=%llu)",
+            uiResourcePtr, (void*)prev, changed ? 1 : 0, ffxState, flags, (unsigned long long)(n + 1));
+    }
 }
 
 void DX12_NoteFfxConfigureForward(uint64_t configureType) {
@@ -20495,7 +20640,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         g_CachedFFXUiTexture.load(std::memory_order_acquire) != nullptr) {
         ID3D12Device* bundleDevice = g_Device.load(std::memory_order_acquire);
         if (bundleDevice) {
-            ID3D12GraphicsCommandList* overlayCL = RecordBundleOverlayForGameECL(bundleDevice);
+            ID3D12GraphicsCommandList* overlayCL = RecordBundleOverlayForGameECL(bundleDevice, pThis);
             if (overlayCL) {
                 const UINT bundledCount = NumCommandLists + 1;
                 ID3D12CommandList** bundledLists = static_cast<ID3D12CommandList**>(
@@ -20918,7 +21063,7 @@ skip_command_queue_registration:
         g_CachedFFXUiTexture.load(std::memory_order_acquire) != nullptr) {
         ID3D12Device* bundleDevice = g_Device.load(std::memory_order_acquire);
         if (bundleDevice) {
-            ID3D12GraphicsCommandList* overlayCL = RecordBundleOverlayForGameECL(bundleDevice);
+            ID3D12GraphicsCommandList* overlayCL = RecordBundleOverlayForGameECL(bundleDevice, pThis);
             if (overlayCL) {
                 // Build a stack array [gameLists..., overlayCL] and forward the bundled ECL.
                 // NumCommandLists is typically 1-4 (max ~90 seen in logs); stack allocation is safe.

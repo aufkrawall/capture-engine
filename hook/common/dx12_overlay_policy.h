@@ -413,6 +413,30 @@ inline bool ShouldSkipCommandQueueVTableHookForFrameGenerationRuntimeModule(bool
     return vtableFromStreamlineModule || executeFromStreamlineModule || vtableFromFFXModule || executeFromFFXModule;
 }
 
+// How DetourPresent renders the overlay during native no-callback FSR FG (GTA-style: AMD composites a
+// registered UI texture onto every real + interpolated frame with no app present callback).
+enum class NoCallbackFSRFGOverlayRoute {
+    kSkipBundleCovers,   // bundle is actively compositing onto AMD's UI texture — skip the backbuffer ProcessFrame
+    kMinimalBackbuffer,  // draw via minimal ProcessFrame so the overlay is never blank
+};
+
+// The ECL UI-bundle (overlay command list appended to the game's own ExecuteCommandLists, drawn onto AMD's
+// UI texture) is the freeze-safe steady-state overlay path under no-callback FSR FG: it adds zero extra ECL
+// calls / Signals on AMD's pacing-critical present queue. We may ONLY skip the separate backbuffer
+// ProcessFrame when that bundle is BOTH cached AND actively firing. Otherwise (the FG-on transition window
+// before the bundle engages, or a stale/rotated UI texture) we must still draw via the minimal backbuffer
+// path so the overlay is never blank — never a silent skip-with-no-draw.
+//
+// Regression guard: the GTA invisibility bug was exactly a silent skip while the bundle never fired. This
+// function makes "skip" conditional on the bundle actually firing, so that failure can no longer hide.
+inline NoCallbackFSRFGOverlayRoute ChooseNoCallbackFSRFGOverlayRoute(bool uiResourceCachedForBundle,
+                                                                     bool bundleOverlayActivelyFiring) {
+    if (uiResourceCachedForBundle && bundleOverlayActivelyFiring) {
+        return NoCallbackFSRFGOverlayRoute::kSkipBundleCovers;
+    }
+    return NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer;
+}
+
 inline bool ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
     bool hasOriginalGameQueue, bool queueMatchesOriginalGameQueue, bool streamlineRuntimeAvailable,
     bool hadFSRFGPhase, bool fsrFGApiActive, fg_runtime::RuntimeMode runtimeMode) {

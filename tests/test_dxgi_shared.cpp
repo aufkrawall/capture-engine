@@ -5503,3 +5503,64 @@ TEST(DXGISharedSourceTest, StaleFSRQueueClearReceivesWarmResumeFlag) {
     EXPECT_NE(text.find("resumeConfirmedPostSLFromKeepAlive", clearCall), std::string::npos);
     EXPECT_LT(text.find("resumeConfirmedPostSLFromKeepAlive", clearCall), clearCallEnd);
 }
+
+// ---------------------------------------------------------------------------
+// No-callback FSR FG overlay routing (GTA overlay-invisibility regression).
+// During native no-callback FSR FG, DetourPresent may ONLY skip the separate
+// backbuffer ProcessFrame when the ECL UI-bundle is ACTUALLY firing; otherwise
+// it must draw via the minimal path so the overlay is never blank. The original
+// bug was a silent skip while the bundle never fired -> invisible all session.
+// ---------------------------------------------------------------------------
+TEST(DXGISharedTest, NoCallbackFSRFGOverlayRouteOnlySkipsWhenBundleActuallyFiring) {
+    using ce::dx12_overlay_policy::ChooseNoCallbackFSRFGOverlayRoute;
+    using ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute;
+
+    // Bundle cached AND actively firing -> safe to skip (bundle composites the overlay).
+    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*cached=*/true, /*firing=*/true)),
+              static_cast<int>(NoCallbackFSRFGOverlayRoute::kSkipBundleCovers));
+
+    // Cached but NOT firing (FG-on transition window, or a stale/rotated UI texture) -> must draw,
+    // never a silent skip. This is precisely the case that left the GTA overlay invisible.
+    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*cached=*/true, /*firing=*/false)),
+              static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer));
+
+    // No bundle cached (test-app style) -> minimal backbuffer path renders the overlay.
+    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*cached=*/false, /*firing=*/false)),
+              static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer));
+    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*cached=*/false, /*firing=*/true)),
+              static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer));
+}
+
+// ---------------------------------------------------------------------------
+// FFX UI-bundle overlay must initialize its own GPU resources in the LIVE bundle
+// path. The GTA invisibility bug was that the bundle's command list / RTV heap /
+// allocators were created ONLY inside the dead DX12_CompositeOverlayOntoFFXUiResource
+// (never called: DX12_ShouldCompositeOverlayOntoFFXUiResource() hard-returns false),
+// so RecordBundleOverlayForGameECL always tripped its null-resource guard and the
+// overlay was invisible for the whole FG session.
+// ---------------------------------------------------------------------------
+TEST(DXGISharedSourceTest, BundleOverlayRecordInitializesItsOwnResources) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    // RecordBundleOverlayForGameECL must call the live initializer so the bundle no longer depends on the
+    // dead composite function for its GPU resources.
+    const size_t record = text.find("RecordBundleOverlayForGameECL(ID3D12Device");
+    ASSERT_NE(record, std::string::npos);
+    const size_t recordBodyEnd = text.find("return g_FFXUiCompositeList;", record);
+    ASSERT_NE(recordBodyEnd, std::string::npos);
+    const size_t ensureCall = text.find("EnsureFFXUiCompositeBundleResources(", record);
+    ASSERT_NE(ensureCall, std::string::npos);
+    EXPECT_LT(ensureCall, recordBodyEnd);
+
+    // The bundle previously no-op'd because its guard required g_FFXUiCompositeFence, which only the dead
+    // composite path ever created. The live bundle rides the game's fence, so the readiness guard must NOT
+    // require the fence (list + RTV heap only).
+    EXPECT_NE(text.find("if (!g_FFXUiCompositeList || !g_FFXUiCompositeRtvHeap) {"), std::string::npos);
+}
