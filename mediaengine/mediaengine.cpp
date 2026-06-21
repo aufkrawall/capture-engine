@@ -8,6 +8,8 @@
 #include "audio_latency_probe.h"
 
 #include <dxgi1_5.h>
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -16,6 +18,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include "../common/frame_timing_utils.h"
@@ -811,6 +814,8 @@ public:
 
         // Maps track number to encoder for that track
         std::map<int, AudioEncoder*> trackToEncoder;
+        // Guards against summing two identical app-audio captures into one track.
+        std::set<std::string> seenAppAudioTrackKeys;
 
         for (size_t i = 0; i < config->audioSources.size(); i++) {
             const AudioConfig& audioConfig = config->audioSources[i];
@@ -836,6 +841,19 @@ public:
 
             // For each target track, create or reuse an encoder
             for (int track : targetTracks) {
+                // Defense in depth: never create a second app-audio capture for the
+                // same process on the same track. Summing identical captures combs.
+                if (audioConfig.sourceType == AudioConfig::AppAudio) {
+                    const std::string appKey = AppAudioTrackKey(audioConfig, track);
+                    if (!seenAppAudioTrackKeys.insert(appKey).second) {
+                        DLL_Log(
+                            "MediaEngine::Init WARNING: duplicate app-audio source (process='%s' processId=%lu) "
+                            "already targets track %d - skipping duplicate capture to avoid comb-filter artifacts",
+                            audioConfig.processName.empty() ? "<pid>" : audioConfig.processName.c_str(),
+                            (unsigned long)audioConfig.processId, track);
+                        continue;
+                    }
+                }
                 TrackAudioFormat trackFormat = GetTrackAudioFormat(track);
                 AudioConfig resolvedAudioConfig = audioConfig;
                 resolvedAudioConfig.outputChannels = audioConfig.downmix ? 2 : trackFormat.channels;
@@ -3204,24 +3222,12 @@ public:
                 }
             }
 
-            {
-                // Always use a smooth soft-knee limiter so any residual discontinuity from
-                // packet stitching, drift correction, or track transitions cannot turn into
-                // a hard clipped click at the encoder input.
-                constexpr float kKnee = 0.9f;
-                constexpr float kRange = 1.0f - kKnee;
-                constexpr float kScale = 1.0f / kRange;
-                for (auto& s : mixBuffer) {
-                    if (s > kKnee) {
-                        float excess = (s - kKnee) * kScale;
-                        s = kKnee + kRange * (excess / (1.0f + excess));
-                    } else if (s < -kKnee) {
-                        float excess = (-s - kKnee) * kScale;
-                        s = -(kKnee + kRange * (excess / (1.0f + excess)));
-                    }
-                    s = std::tanh(s * 1.2f) / 1.2f;
-                }
-            }
+            // Always use a smooth soft-knee limiter so any residual discontinuity from
+            // packet stitching, drift correction, or track transitions cannot turn into
+            // a hard clipped click at the encoder input. The limiter is transparent for
+            // |sample| <= knee (bit-exact passthrough) and only shapes peaks above it, so
+            // in-range audio is untouched (no global tanh waveshaper / no thinning).
+            ce::audio::ApplySoftKneeLimiter(mixBuffer.data(), mixBuffer.size());
 
             // Encode the mixed samples using first source's encoder
             AudioEncoder* encoder = audioSources[firstSrcIdx].sharedEncoderPtr;
@@ -3601,6 +3607,8 @@ public:
         // Re-create audio sources with new config (including new codec)
         // Maps track number to encoder for that track
         std::map<int, AudioEncoder*> trackToEncoder;
+        // Guards against summing two identical app-audio captures into one track.
+        std::set<std::string> seenAppAudioTrackKeys;
 
         for (size_t i = 0; i < config.audioSources.size(); i++) {
             const AudioConfig& audioConfig = config.audioSources[i];
@@ -3621,6 +3629,20 @@ public:
 
             // For each target track, create or reuse an encoder
             for (int track : targetTracks) {
+                // Defense in depth: never create a second app-audio capture for the
+                // same process on the same track. Summing identical captures combs.
+                if (audioConfig.sourceType == AudioConfig::AppAudio) {
+                    const std::string appKey = AppAudioTrackKey(audioConfig, track);
+                    if (!seenAppAudioTrackKeys.insert(appKey).second) {
+                        DLL_Log(
+                            "MediaEngine::ReloadConfig WARNING: duplicate app-audio source (process='%s' "
+                            "processId=%lu) already targets track %d - skipping duplicate capture to avoid "
+                            "comb-filter artifacts",
+                            audioConfig.processName.empty() ? "<pid>" : audioConfig.processName.c_str(),
+                            (unsigned long)audioConfig.processId, track);
+                        continue;
+                    }
+                }
                 TrackAudioFormat trackFormat = GetTrackAudioFormat(track);
                 AudioConfig resolvedAudioConfig = audioConfig;
                 resolvedAudioConfig.outputChannels = audioConfig.downmix ? 2 : trackFormat.channels;
@@ -3720,6 +3742,15 @@ public:
     }
 
 private:
+    // Identity of an app-audio capture targeting a specific track. Two app-audio
+    // sources that resolve to the same process AND feed the same track would
+    // capture the same audio twice; summing those near-identical (independently
+    // buffered, phase-offset) streams into one track produces comb-filter
+    // "metallic" artifacts. We use this key to detect and skip such duplicates.
+    static std::string AppAudioTrackKey(const AudioConfig& cfg, int track) {
+        return ce::audio::AppAudioTrackIdentity(cfg.processName, static_cast<unsigned long>(cfg.processId), track);
+    }
+
     // Shared initialization for ring buffer and sync resampler on an AudioSource.
     // Parses sample rate from config (defaults to 48000) and sets up both.
     void InitAudioSourceBuffers(AudioSource& source, const AudioConfig& audioConfig, size_t sourceIdx) {
@@ -3771,6 +3802,35 @@ private:
             auto& src = audioSources[i];
             trackSourceCount[src.track]++;
             trackSourceIndices[src.track].push_back(i);
+        }
+
+        // Per-track source summary (process names) and a runtime guard that surfaces
+        // any duplicate app-audio capture feeding one track (identical streams comb).
+        for (auto& kv : trackSourceIndices) {
+            std::string summary;
+            std::set<std::string> appIdentities;
+            for (size_t idx : kv.second) {
+                auto& s = audioSources[idx];
+                std::string label;
+                if (s.sourceType == AudioConfig::AppAudio) {
+                    const char* pn = s.config.processName.empty() ? "<pid>" : s.config.processName.c_str();
+                    label = std::string("app:") + pn;
+                    if (!appIdentities.insert(AppAudioTrackKey(s.config, kv.first)).second) {
+                        DLL_Log(
+                            "AudioLoop: WARNING - track %d has duplicate app-audio capture for '%s' - identical "
+                            "streams will comb-filter when mixed",
+                            kv.first, pn);
+                    }
+                } else if (s.sourceType == AudioConfig::Microphone) {
+                    label = "mic";
+                } else {
+                    label = "system";
+                }
+                if (!summary.empty())
+                    summary += ", ";
+                summary += label;
+            }
+            DLL_Log("AudioLoop: Track %d sources: [%s]", kv.first, summary.c_str());
         }
 
         bool needsMixing = false;

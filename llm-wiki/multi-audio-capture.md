@@ -1,6 +1,6 @@
 # Multi Audio Capture
 
-Last cross-checked: 2026-06-18 (hybrid automatic render-domain A/V sync probe and diagnostics)
+Last cross-checked: 2026-06-21 (config override Process-key leak → triplicated app-audio comb fix; soft-knee limiter de-tanh; duplicate-capture safeguard)
 Stale-risk: medium
 
 Primary sources:
@@ -31,6 +31,8 @@ The audio pipeline supports separate system audio, microphone, and process/app a
 
 Recording the same source to multiple output tracks is supported, including duplicate app-audio tracks and mixed tracks that combine system/app/microphone sources. This is a contract, not a configuration error: fixes must preserve duplicate routing and mixing rather than disabling or deduplicating sources to avoid bugs.
 
+The one narrow exception is two app-audio captures of the *same resolved process feeding the same track*. Those would sum two independent WASAPI process-loopback captures of identical audio (each with its own buffering/packet phase and per-source equalization delay) into one track, which is never desirable: at best +6 dB, in practice comb filtering / a "metallic" timbre. `MediaEngine` dedupes by `ce::audio::AppAudioTrackIdentity` (lowercased process name, or PID when nameless, plus track index): the first capture for a `(process, track)` is created; any later duplicate for the *same track* is skipped with a `WARNING`. This does NOT touch the documented contracts — the same app on track 1 AND track 2 has two distinct identities (different track index) and is preserved, and mixed system/app/mic tracks mix different identities. The runtime per-track source summary `AudioLoop: Track N sources: [...]` plus a duplicate warning surface this at a glance.
+
 The CFR media clock remains authoritative for normal recordings. Final audio is padded by sample accounting to the final video/CFR endpoint, stream duration metadata is written from that final video duration, and per-track final deltas are logged. Enabled tracks are materialized through the encoder even when the contributing source is silent or inactive; do not rely on sparse container gaps to represent silence.
 
 Each exported track owns an independent audio timeline cursor. Per-source counters are diagnostics and source-local stitching aids only; they must not decide the muxed stream timestamp. At the shared A/V anchor, system and microphone sources become timeline-valid immediately and contribute encoded silence until timestamped real packets arrive. App-audio sources remain optional only when CE has not seen evidence that the process is already producing audio. If process-loopback packets arrived while sync was pending, the app source must wait for the first post-anchor packet and enough real buffered samples before bootstrap; otherwise the app track can encode a one-chunk silent head and appear shifted against system loopback. Late app packets are still placed by QPC/source timestamp and overlap/drop already-encoded silence instead of delaying the whole track. This replaced the old 500 ms forced-bootstrap/backlog-trim behavior that made non-ALAC Track 3 content appear shorter even when container packet durations matched.
@@ -56,6 +58,10 @@ WASAPI capture records device-reported stream latency, device period, packet dur
 - `sample_rate=default` resolves to 48000 Hz. Explicit 44100, 48000, and 96000 are respected where the codec supports them. Opus always resolves to 48000 Hz and logs the adjustment.
 - `bit_depth=default` resolves to 24-bit for PCM, ALAC, and FLAC. AAC and Opus ignore output bit depth because they encode from the float mix path.
 
+### Override invariant (reserved selector keys)
+
+`[App.N]` override sections are matched to the running process by their `Process` / `ProcessName` key, and `LoadConfig`'s `GetStr` then resolves other keys with a fallback to the matched `[App.N]` section. That fallback must NOT apply to the reserved selector keys themselves: `IsReservedOverrideSelectorKey` excludes bare `process` / `processname` from the simplified `[App.N] key=value` fallback so they cannot leak into another section's same-named key. Concretely, `[AppAudio.N] process=` must keep its own literal value; before this guard, an `[App.2] Process=<running game>` override rewrote *every* `[AppAudio.N] process` to the running game, collapsing all app-audio sources onto one PID and summing three identical captures per track → comb-filter "metallic" audio (Strange Brigade, build 0.1.4186). The explicit form `[App.N] AppAudio.N.process=...` still overrides; only the bare reserved key is excluded. Diagnostics: `Config: applying per-process override section [App.N] ...`, `Config: [AppAudio.N] app-audio source process='...' tracks=[...]`, and a `WARNING` if a resolved app-audio process differs from its section literal. Regression coverage in `tests/test_config_override.cpp`.
+
 ## Codec Policy
 
 - `pcm` is an alias, not an FFmpeg encoder name. It resolves to `pcm_s24le` by default, `pcm_s16le` for `bit_depth=16`, and `pcm_f32le` for `bit_depth=32`.
@@ -72,6 +78,7 @@ The bundled Windows FFmpeg build must include `libopus` plus the concrete PCM en
 - Process loopback capture requests the resolved per-track channel count/mask instead of forcing stereo.
 - Resampling prefers FFmpeg channel layouts derived from Windows channel masks. Unknown masks are logged and fall back to FFmpeg's default layout for the channel count.
 - Mixing stays float32. Sources already matching the track layout are mixed channel-for-channel. Lower-channel secondary sources are upmixed conservatively into the resolved track layout.
+- The summed mix passes through `ce::audio::ApplySoftKneeLimiter` (soft-knee at 0.9, asymptotic to ±1) before encoding. It is bit-exact for `|sample| <= 0.9` and only shapes peaks above the knee, so in-range audio (important for lossless ALAC/FLAC/PCM) is untouched. There is deliberately NO additional global `tanh` waveshaper: the previous code applied `tanh(s*1.2)/1.2` to every sample, squashing a clean 0.9 peak to ~0.66 (ceiling ~0.695 ≈ -3.2 dBFS) and adding amplitude-dependent compression/harmonic distortion to all tracks (thin/"too light" timbre). Unit coverage in `tests/test_audio_sync_utils.cpp`.
 - Inactive app sources and all-silent tracks still produce full-length encoded silence when configured as an output track. Silence is fed through each codec path in bounded chunks, then packet duration/skip metadata clamps the externally visible end to the video duration.
 - Source startup is timeline-valid, not real-sample-gated. A silent-but-started source is ready at sample 0. A late source joins by timestamp and may log a late cursor advance, but it must not shift the track cursor or cause startup trimming.
 - A started app source that later goes sparse is silence-padded source-locally. Mixed tracks continue with the other sources and the shared track cursor.

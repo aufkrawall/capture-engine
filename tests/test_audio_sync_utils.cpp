@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
+
 #include "../mediaengine/audio_sync_utils.h"
 
 TEST(AudioSyncUtilsTest, ComputesVideoPipelineLagOnlyWhenEncodedVideoLagsWallClock) {
@@ -603,4 +605,65 @@ TEST(AudioSyncUtilsTest, CoverageLossDefaultParamsBackwardCompatible) {
     EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(0, 16034, 12));
     EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 200, 12));
     EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, 300, 220));
+}
+
+// --- Soft-knee mix limiter (replaces the old unconditional tanh waveshaper) ---
+
+TEST(AudioSyncUtilsTest, SoftKneeLimiterIsBitTransparentBelowKnee) {
+    // Samples at or below the knee (0.9) must pass through unchanged so lossless
+    // in-range audio is never thinned/compressed.
+    float samples[] = {0.0f, 0.1f, -0.1f, 0.5f, -0.5f, 0.8999f, -0.8999f, 0.9f, -0.9f};
+    float expected[] = {0.0f, 0.1f, -0.1f, 0.5f, -0.5f, 0.8999f, -0.8999f, 0.9f, -0.9f};
+    constexpr size_t n = sizeof(samples) / sizeof(samples[0]);
+    ce::audio::ApplySoftKneeLimiter(samples, n);
+    for (size_t i = 0; i < n; ++i) {
+        EXPECT_FLOAT_EQ(samples[i], expected[i]) << "index " << i;
+    }
+}
+
+TEST(AudioSyncUtilsTest, SoftKneeLimiterBoundsPeaksBelowFullScaleWithoutCollapsing) {
+    // Above the knee, output must stay strictly inside (-1, 1) (no hard clip) yet
+    // remain above the knee (the old tanh squashed a clean 0.9 down to ~0.66).
+    float samples[] = {0.95f, 1.0f, 3.0f, -0.95f, -1.0f, -3.0f};
+    constexpr size_t n = sizeof(samples) / sizeof(samples[0]);
+    ce::audio::ApplySoftKneeLimiter(samples, n);
+    for (size_t i = 0; i < n; ++i) {
+        EXPECT_LT(std::fabs(samples[i]), 1.0f) << "index " << i;
+        EXPECT_GT(std::fabs(samples[i]), 0.9f) << "index " << i;
+    }
+}
+
+TEST(AudioSyncUtilsTest, SoftKneeLimiterIsMonotonicAboveKnee) {
+    float arr[3] = {0.95f, 1.5f, 5.0f};
+    ce::audio::ApplySoftKneeLimiter(arr, 3);
+    EXPECT_LT(arr[0], arr[1]);
+    EXPECT_LT(arr[1], arr[2]);
+    EXPECT_LT(arr[2], 1.0f);
+}
+
+TEST(AudioSyncUtilsTest, SoftKneeLimiterHandlesEmptyAndNull) {
+    ce::audio::ApplySoftKneeLimiter(nullptr, 0);
+    ce::audio::ApplySoftKneeLimiter(nullptr, 10);
+    float dummy = 0.5f;
+    ce::audio::ApplySoftKneeLimiter(&dummy, 0);
+    EXPECT_FLOAT_EQ(dummy, 0.5f);
+}
+
+// --- App-audio capture identity (duplicate-capture safeguard) ---
+
+TEST(AudioSyncUtilsTest, AppAudioTrackIdentityIsCaseInsensitivePerProcessAndTrack) {
+    // Same process (any case) + same track => identical key (would be deduped).
+    EXPECT_EQ(ce::audio::AppAudioTrackIdentity("Game.exe", 0, 1),
+              ce::audio::AppAudioTrackIdentity("game.EXE", 0, 1));
+    // Different track => different key (legitimately fans out to multiple tracks).
+    EXPECT_NE(ce::audio::AppAudioTrackIdentity("game.exe", 0, 1),
+              ce::audio::AppAudioTrackIdentity("game.exe", 0, 2));
+    // Different process => different key.
+    EXPECT_NE(ce::audio::AppAudioTrackIdentity("a.exe", 0, 1),
+              ce::audio::AppAudioTrackIdentity("b.exe", 0, 1));
+    // Falls back to PID when no name is set.
+    EXPECT_EQ(ce::audio::AppAudioTrackIdentity("", 1234, 1),
+              ce::audio::AppAudioTrackIdentity("", 1234, 1));
+    EXPECT_NE(ce::audio::AppAudioTrackIdentity("", 1234, 1),
+              ce::audio::AppAudioTrackIdentity("", 5678, 1));
 }

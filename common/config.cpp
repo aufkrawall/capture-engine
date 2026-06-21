@@ -19,6 +19,22 @@ std::string Trim(const std::string& s, const char* chars = " \t\r\n\"()") {
     return res;
 }
 
+// Reserved [App.N] override-section keys. These identify *which* process an
+// [App.N] override section applies to (its selector), so they must never be
+// reused as override *values* for another section's same-named key. In
+// particular the per-source process name in [AppAudio.N] must not be rewritten
+// to the running game: doing so collapsed every app-audio source onto one PID
+// and summed identical captures into a track, producing comb-filter ("metallic")
+// audio. See the GetStr override fallback in LoadConfig.
+static bool IsReservedOverrideSelectorKey(const char* key) {
+    if (!key)
+        return false;
+    std::string lowered = key;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return lowered == "process" || lowered == "processname";
+}
+
 static std::string NormalizePseudoOverlayProcessList(const std::string& raw) {
     std::stringstream ss(raw);
     std::string item;
@@ -734,6 +750,13 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         }
     }
 
+    if (!overrideSection.empty()) {
+        LogInfo("Config: applying per-process override section [%s] for process '%s'",
+                overrideSection.c_str(), currentProcessName.c_str());
+    } else if (!currentProcessName.empty()) {
+        LogDebug("Config: no [App.N] override section matched process '%s'", currentProcessName.c_str());
+    }
+
     // Helper macro for GetPrivateProfileString with Override Support
     auto GetStr = [&](const char* section, const char* key, const char* def) {
         if (!overrideSection.empty()) {
@@ -745,10 +768,18 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                 return val;
 
             // 2. Try Override Simplified: [App.N] Key=Value
-            GetPrivateProfileStringA(overrideSection.c_str(), key, "", buffer, 4096, path.c_str());
-            val = Trim(buffer);
-            if (!val.empty())
-                return val;
+            //    But never let the override section's reserved selector keys
+            //    ("Process"/"ProcessName") leak as a value for another section's
+            //    same-named key (e.g. [AppAudio.N] process=). Those keys identify
+            //    the target process of the [App.N] section; treating them as
+            //    overridable collapsed every app-audio source onto the running
+            //    game and summed identical captures into one track (metallic audio).
+            if (!IsReservedOverrideSelectorKey(key)) {
+                GetPrivateProfileStringA(overrideSection.c_str(), key, "", buffer, 4096, path.c_str());
+                val = Trim(buffer);
+                if (!val.empty())
+                    return val;
+            }
         }
         // 3. Fallback to global
         GetPrivateProfileStringA(section, key, def, buffer, 4096, path.c_str());
@@ -1409,7 +1440,32 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         appAudio.captureLatencyMs = GetFloat(section, "capture_latency_ms", config.audioCaptureLatencyMs);
         appAudio.sourceType = AudioConfig::AppAudio;
 
+        // Diagnostic: surface any override that rewrote this source's process name.
+        // The literal section value is read directly (bypassing override fallback);
+        // if it differs from the resolved name, an [App.N] override leaked into it.
+        {
+            char rawProc[4096];
+            GetPrivateProfileStringA(section, "process", "", rawProc, sizeof(rawProc), path.c_str());
+            std::string literalProc = Trim(rawProc);
+            if (!literalProc.empty() && !appAudio.processName.empty() &&
+                _stricmp(literalProc.c_str(), appAudio.processName.c_str()) != 0) {
+                LogWarn(
+                    "Config: [%s] process resolved to '%s' but section literal is '%s' "
+                    "- a per-process override rewrote the app-audio source!",
+                    section, appAudio.processName.c_str(), literalProc.c_str());
+            }
+        }
+
         if (appAudio.enabled && (!appAudio.processName.empty() || appAudio.processId != 0)) {
+            std::string trackList;
+            for (size_t t = 0; t < appAudio.tracks.size(); ++t) {
+                if (t)
+                    trackList += ",";
+                trackList += std::to_string(appAudio.tracks[t]);
+            }
+            LogInfo("Config: [%s] app-audio source process='%s' processId=%lu tracks=[%s]", section,
+                    appAudio.processName.empty() ? "-" : appAudio.processName.c_str(),
+                    (unsigned long)appAudio.processId, trackList.c_str());
             config.audioSources.push_back(appAudio);
         }
     }

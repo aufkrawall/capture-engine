@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
+#include <set>
+#include <string>
 #include "../common/config.h"
 
 class ConfigOverrideTest : public ::testing::Test {
@@ -162,4 +164,99 @@ TEST_F(ConfigOverrideTest, StreamlineDllPathParsing) {
     LoadConfig(tempConfigFile, config, "test.exe");
 
     EXPECT_EQ(config.graphics.streamlineDllPath, "C:\\custom\\sl\\dlls");
+}
+
+// Regression: an [App.N] override section's reserved "Process" selector key must
+// NOT leak into the [AppAudio.N] "process" field. Before the fix this collapsed
+// every app-audio source onto the running game, summing identical captures into a
+// track and producing comb-filter ("metallic") audio.
+TEST_F(ConfigOverrideTest, AppAudioProcessNotRewrittenByAppSelectorKey) {
+    std::string iniContent =
+        "[App.1]\n"
+        "Process=game.exe\n"
+        "\n"
+        "[AppAudio.1]\n"
+        "enabled=true\n"
+        "process=other.exe\n"
+        "track=1\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "game.exe");
+
+    int appCount = 0;
+    for (const auto& s : config.audioSources) {
+        if (s.sourceType == AudioConfig::AppAudio) {
+            ++appCount;
+            EXPECT_EQ(s.processName, "other.exe");  // not rewritten to "game.exe"
+        }
+    }
+    EXPECT_EQ(appCount, 1);
+}
+
+// The explicit per-app override form ([App.N] AppAudio.1.process=...) must still
+// work; only the bare reserved selector key is excluded from the fallback.
+TEST_F(ConfigOverrideTest, AppAudioExplicitProcessOverrideStillApplies) {
+    std::string iniContent =
+        "[App.1]\n"
+        "Process=game.exe\n"
+        "AppAudio.1.process=explicit.exe\n"
+        "\n"
+        "[AppAudio.1]\n"
+        "enabled=true\n"
+        "process=other.exe\n"
+        "track=1\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "game.exe");
+
+    for (const auto& s : config.audioSources) {
+        if (s.sourceType == AudioConfig::AppAudio) {
+            EXPECT_EQ(s.processName, "explicit.exe");
+        }
+    }
+}
+
+// Reproduces the Strange Brigade profile: three candidate game processes routed to
+// tracks 1 & 2, with an [App.N] override matching the running game. All three
+// app-audio sources must keep their distinct process names (only the running one
+// will actually capture at runtime), never collapsing onto the running game.
+TEST_F(ConfigOverrideTest, MultipleAppAudioSourcesKeepDistinctProcessNames) {
+    std::string iniContent =
+        "[AppAudio.1]\n"
+        "enabled=true\n"
+        "Process=FortniteClient-Win64-Shipping.exe\n"
+        "track=1,2\n"
+        "\n"
+        "[AppAudio.2]\n"
+        "enabled=true\n"
+        "Process=StrangeBrigade_DX12.exe\n"
+        "track=1,2\n"
+        "\n"
+        "[AppAudio.3]\n"
+        "enabled=true\n"
+        "Process=StrangeBrigade_Vulkan.exe\n"
+        "track=1,2\n"
+        "\n"
+        "[App.2]\n"
+        "Process=StrangeBrigade_DX12.exe\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "StrangeBrigade_DX12.exe");
+
+    std::set<std::string> names;
+    for (const auto& s : config.audioSources) {
+        if (s.sourceType == AudioConfig::AppAudio) {
+            names.insert(s.processName);
+        }
+    }
+    EXPECT_EQ(names.size(), 3u);
+    EXPECT_EQ(names.count("FortniteClient-Win64-Shipping.exe"), 1u);
+    EXPECT_EQ(names.count("StrangeBrigade_DX12.exe"), 1u);
+    EXPECT_EQ(names.count("StrangeBrigade_Vulkan.exe"), 1u);
 }

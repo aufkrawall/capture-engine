@@ -1,8 +1,10 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 namespace ce::audio {
 
@@ -768,6 +770,56 @@ inline PacketTimelineAdjustment ComputeStartupAwarePacketTimelineAdjustment(
     }
 
     return adjustment;
+}
+
+// Smooth soft-knee limiter for the final per-track mix. Samples with magnitude
+// at or below `knee` pass through bit-exact; above the knee the excess is mapped
+// through x/(1+x) so the output asymptotically approaches (but never reaches)
+// +-1.0. This guarantees no hard clip / no clipped click at the encoder input
+// while keeping in-range audio fully transparent (important for lossless codecs).
+//
+// NOTE: deliberately contains NO additional global waveshaper (e.g. tanh). An
+// unconditional tanh squashes and harmonically distorts every sample even when
+// far below full scale, which audibly thins the audio. The soft-knee alone is
+// sufficient to bound the signal.
+// Stable identity for an app-audio capture targeting a specific track. Two
+// app-audio sources that resolve to the same process and feed the same track
+// would capture identical audio twice; summing those independently buffered,
+// phase-offset streams into one track causes comb-filter ("metallic") artifacts.
+// Process name is matched case-insensitively; an explicit PID is used when no
+// name is set.
+inline std::string AppAudioTrackIdentity(const std::string& processName, unsigned long processId, int track) {
+    std::string id;
+    if (!processName.empty()) {
+        id = processName;
+        std::transform(id.begin(), id.end(), id.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    } else {
+        id = "pid:" + std::to_string(processId);
+    }
+    return id + "#" + std::to_string(track);
+}
+
+inline void ApplySoftKneeLimiter(float* buffer, size_t count, float knee = 0.9f) {
+    if (!buffer || count == 0) {
+        return;
+    }
+    const float range = 1.0f - knee;
+    if (range <= 0.0f) {
+        return;
+    }
+    const float scale = 1.0f / range;
+    for (size_t i = 0; i < count; ++i) {
+        float s = buffer[i];
+        if (s > knee) {
+            const float excess = (s - knee) * scale;
+            buffer[i] = knee + range * (excess / (1.0f + excess));
+        } else if (s < -knee) {
+            const float excess = (-s - knee) * scale;
+            buffer[i] = -(knee + range * (excess / (1.0f + excess)));
+        }
+        // else: |s| <= knee -> untouched (bit-exact passthrough)
+    }
 }
 
 }  // namespace ce::audio
