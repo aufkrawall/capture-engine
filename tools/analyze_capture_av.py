@@ -134,8 +134,10 @@ WGC_SOURCE_STARVED_RE = re.compile(
 WGC_ATTRIBUTION_RE = re.compile(r"\[WGC CFR ATTRIBUTION\]\s*(.*)", re.IGNORECASE)
 WGC_CADENCE_EVENT_RE = re.compile(r"\[WGC CFR CADENCE EVENT\]\s*mode=([A-Za-z_]+)\s*(.*)", re.IGNORECASE)
 WGC_SUMMARY_RE = re.compile(
-    r"\[WGC CFR SUMMARY\].*Live=(\d+) Dup=(\d+).*DupReason\(src=(\d+) def=(\d+) timer=(\d+) drain=(\d+)\).*"
-    r"SourceLimitedRepeats=(\d+) StarvedEpisodes=(\d+) longest=(\d+)ms",
+    r"\[WGC CFR SUMMARY\].*Live=(\d+) Dup=(\d+) DupPct=([0-9.]+)% "
+    r".*DupReason\(src=(\d+) def=(\d+) timer=(\d+) drain=(\d+)\).*"
+    r"SourceLimitedRepeats=(\d+) StarvedEpisodes=(\d+) longest=(\d+)ms "
+    r"longestDup=(\d+) worstIn=(\d+) worstDel=(\d+)",
     re.IGNORECASE,
 )
 WGC_SMOOTHNESS_SUMMARY_RE = re.compile(
@@ -1371,13 +1373,17 @@ def parse_media_triage(media_text):
                 {
                     "live": parse_int(summary_match.group(1)),
                     "duplicate": parse_int(summary_match.group(2)),
-                    "dup_src": parse_int(summary_match.group(3)),
-                    "dup_def": parse_int(summary_match.group(4)),
-                    "dup_timer": parse_int(summary_match.group(5)),
-                    "dup_drain": parse_int(summary_match.group(6)),
-                    "source_limited_repeats": parse_int(summary_match.group(7)),
-                    "starved_episodes": parse_int(summary_match.group(8)),
-                    "longest_ms": parse_int(summary_match.group(9)),
+                    "duplicate_pct": parse_float(summary_match.group(3)),
+                    "dup_src": parse_int(summary_match.group(4)),
+                    "dup_def": parse_int(summary_match.group(5)),
+                    "dup_timer": parse_int(summary_match.group(6)),
+                    "dup_drain": parse_int(summary_match.group(7)),
+                    "source_limited_repeats": parse_int(summary_match.group(8)),
+                    "starved_episodes": parse_int(summary_match.group(9)),
+                    "longest_ms": parse_int(summary_match.group(10)),
+                    "longest_dup_ticks": parse_int(summary_match.group(11)),
+                    "worst_input_fps": parse_int(summary_match.group(12)),
+                    "worst_delivered_fps": parse_int(summary_match.group(13)),
                     "line": line,
                 }
             )
@@ -1763,11 +1769,27 @@ def has_source_starvation(media_evidence):
 
 def summarize_wgc_source_limits(media_evidence):
     summary_rows = media_evidence["wgc_summary"]
+    live_ticks = sum(row["live"] for row in summary_rows)
+    duplicate_ticks = sum(row["duplicate"] for row in summary_rows)
+    source_limited_repeats = sum(row["source_limited_repeats"] for row in summary_rows)
     return {
         "detail_episode_count": len(media_evidence["source_starved_episodes"]),
         "summary_starved_episodes": sum(row["starved_episodes"] for row in summary_rows),
-        "summary_source_limited_repeats": sum(row["source_limited_repeats"] for row in summary_rows),
+        "summary_live": live_ticks,
+        "summary_duplicate": duplicate_ticks,
+        "summary_duplicate_pct": (duplicate_ticks * 100.0 / live_ticks) if live_ticks else 0.0,
+        "summary_source_limited_repeats": source_limited_repeats,
+        "summary_source_limited_pct": (source_limited_repeats * 100.0 / live_ticks) if live_ticks else 0.0,
         "summary_longest_ms": max((row["longest_ms"] for row in summary_rows), default=0),
+        "summary_longest_dup_ticks": max((row["longest_dup_ticks"] for row in summary_rows), default=0),
+        "summary_worst_input_fps": min(
+            (row["worst_input_fps"] for row in summary_rows if row["worst_input_fps"] > 0),
+            default=0,
+        ),
+        "summary_worst_delivered_fps": min(
+            (row["worst_delivered_fps"] for row in summary_rows if row["worst_delivered_fps"] > 0),
+            default=0,
+        ),
     }
 
 
@@ -2073,6 +2095,20 @@ def wgc_is_bounded_source_limited_active_delay(media_evidence, item):
     )
 
 
+def wgc_is_sync_protected_source_limited_ceiling(media_evidence, item):
+    return (
+        wgc_is_bounded_source_limited_active_delay(media_evidence, item)
+        and item.get("source_repeat_lower_bound", 0) > 0
+        and item.get("excess_repeats", 0) == 0
+        and item.get("policy_added_repeats", 0) == 0
+        and item.get("smoothness_not_maximal", 0) == 0
+        and item.get("delay_post_selection_rejected_sync", 0) == 0
+        and item.get("delay_soft_late_accepted", 0) == 0
+        and item.get("delay_repeat_soft_safe_candidate", 0) == 0
+        and item.get("delay_sync_protected_repeats", 0) > 0
+    )
+
+
 def has_wgc_timestamp_domain_mismatch(media_evidence):
     for item in media_evidence["wgc_smoothness_summary"]:
         if item.get("av_delay_ms", 0.0) <= 0.0 or not wgc_has_raw_delay_residual_evidence(item):
@@ -2147,16 +2183,19 @@ def has_wgc_audio_late_risk(media_evidence):
 
         soft_late_accepted = item.get("delay_soft_late_accepted", 0)
         near_cap_accepted = item.get("delay_near_cap_accepted", 0)
-        if (
-            soft_late_accepted >= WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT
-            or near_cap_accepted >= WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT
-        ):
+        source_limited_ceiling = wgc_is_sync_protected_source_limited_ceiling(media_evidence, item)
+        if soft_late_accepted >= WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT:
+            return True
+        if near_cap_accepted >= WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT and not source_limited_ceiling:
             return True
 
         if (
-            item.get("delay_residual_p95_us", 0) > WGC_AUDIO_LATE_RISK_P95_US
-            or item.get("raw_residual_p95_us", 0) > WGC_AUDIO_LATE_RISK_P95_US
-            or item.get("predicted_residual_p95_us", 0) > WGC_AUDIO_LATE_RISK_P95_US
+            not source_limited_ceiling
+            and (
+                item.get("delay_residual_p95_us", 0) > WGC_AUDIO_LATE_RISK_P95_US
+                or item.get("raw_residual_p95_us", 0) > WGC_AUDIO_LATE_RISK_P95_US
+                or item.get("predicted_residual_p95_us", 0) > WGC_AUDIO_LATE_RISK_P95_US
+            )
         ):
             return True
 
@@ -2166,6 +2205,8 @@ def has_wgc_audio_late_risk(media_evidence):
         # durations.
         accepted_relaxed_frames = soft_late_accepted + near_cap_accepted
         if accepted_relaxed_frames <= 0:
+            continue
+        if source_limited_ceiling and soft_late_accepted == 0:
             continue
         if (
             item.get("delay_residual_late_max_us", 0) >= WGC_AUDIO_LATE_RISK_NEAR_CAP_US
@@ -2222,6 +2263,13 @@ def has_wgc_cfr_smoothness_not_maximal(media_evidence):
         if item.get("excess_repeat_cluster_max_ticks", 0) >= WGC_CFR_SMOOTHNESS_EXCESS_REPEAT_CLUSTER_FAULT_TICKS:
             return True
     return False
+
+
+def has_wgc_source_limited_smoothness_ceiling(media_evidence):
+    return any(
+        wgc_is_sync_protected_source_limited_ceiling(media_evidence, item)
+        for item in media_evidence["wgc_smoothness_summary"]
+    )
 
 
 def has_wgc_smoothness_evidence_incomplete(media_evidence):
@@ -2430,6 +2478,9 @@ def classify_session_triage(session_dir, capture_path=None):
     wgc_cfr_smoothness_not_maximal = has_wgc_cfr_smoothness_not_maximal(media_evidence)
     if wgc_cfr_smoothness_not_maximal:
         verdicts.append("wgc_cfr_smoothness_not_maximal")
+    wgc_source_limited_smoothness_ceiling = has_wgc_source_limited_smoothness_ceiling(media_evidence)
+    if wgc_source_limited_smoothness_ceiling:
+        verdicts.append("wgc_source_limited_smoothness_ceiling")
     wgc_smoothness_evidence_incomplete = has_wgc_smoothness_evidence_incomplete(media_evidence)
     if wgc_smoothness_evidence_incomplete:
         verdicts.append("wgc_smoothness_evidence_incomplete")
@@ -2536,6 +2587,7 @@ def classify_session_triage(session_dir, capture_path=None):
             "wgc_active_delay_post_selection_reject": wgc_active_delay_post_selection_reject,
             "wgc_sync_delay_policy_fault": wgc_sync_delay_policy_fault,
             "wgc_cfr_smoothness_not_maximal": wgc_cfr_smoothness_not_maximal,
+            "wgc_source_limited_smoothness_ceiling": wgc_source_limited_smoothness_ceiling,
             "wgc_smoothness_evidence_incomplete": wgc_smoothness_evidence_incomplete,
             "wgc_repeat_with_safe_candidate": wgc_repeat_with_safe_candidate,
             "wgc_post_stall_recovery_fault": wgc_post_stall_recovery_fault,
@@ -2608,11 +2660,20 @@ def print_triage_report(report):
     wgc_source_limits = evidence["wgc_source_limits"]
     print(
         "  wgc_source_starved_episodes={detail} summary_episodes={summary} "
-        "source_limited_repeats={repeats} longest_ms={longest} perf_csv={perf_count}".format(
+        "source_limited_repeats={repeats} dup={dup}/{live} ({dup_pct:.1f}%) "
+        "source_limited_pct={src_pct:.1f}% longest_ms={longest} longest_dup={longest_dup} "
+        "worst_fps={worst_in}/{worst_del} perf_csv={perf_count}".format(
             detail=wgc_source_limits["detail_episode_count"],
             summary=wgc_source_limits["summary_starved_episodes"],
             repeats=wgc_source_limits["summary_source_limited_repeats"],
+            dup=wgc_source_limits["summary_duplicate"],
+            live=wgc_source_limits["summary_live"],
+            dup_pct=wgc_source_limits["summary_duplicate_pct"],
+            src_pct=wgc_source_limits["summary_source_limited_pct"],
             longest=wgc_source_limits["summary_longest_ms"],
+            longest_dup=wgc_source_limits["summary_longest_dup_ticks"],
+            worst_in=wgc_source_limits["summary_worst_input_fps"],
+            worst_del=wgc_source_limits["summary_worst_delivered_fps"],
             perf_count=len(evidence["perf_csv"]),
         )
     )
@@ -3929,6 +3990,65 @@ def self_test():
         assert "wgc_cfr_smoothness_not_maximal" not in fortibad_risk_report["verdicts"]
         assert "ce_visual_timeline_fault" in fortibad_risk_report["verdicts"]
         assert "ce_audio_timeline_fault" not in fortibad_risk_report["verdicts"]
+
+        wgc_sync_delay_source_limited_ceiling = make_session(
+            "wgc_sync_delay_source_limited_ceiling",
+            media=(
+                "[WGC CFR SUMMARY] Live=131396 Dup=11732 DupPct=8.9% NoFresh=119pm NoReserve=123pm "
+                "DupReason(src=11731 def=0 timer=1 drain=0) SourceLimitedRepeats=11731 StarvedEpisodes=3084 "
+                "longest=7547ms longestDup=319 worstIn=24 worstDel=24\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=1069 "
+                "phaseErrorMax=7246us shortfallMax=0.0ms staleDebtDrops=12 liveRebase=0/0 "
+                "tooNewRepeats=11302 syncDelayHolds=11302 tooNewLeadMax=140610us avDelay=33.0ms "
+                "startupDelay=33.0ms scheduleOffset=81368us effectiveDelay=33.0ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=11302 syncDelayPolicyHolds=0 startupReserveFrames=33 "
+                "startupReserveSpan=228518us startupDelayTarget=33045us startupReserveSelected=1 "
+                "startupReserveReason=selected\n"
+                "[WGC CFR SMOOTHNESS DELAY] delayReservoirLowWaterFrames=4 delayReservoirTargetFrames=5 "
+                "delayReservoirLowWaterTicks=16239 realizedDelayAvg=32792us realizedDelayMin=23269us "
+                "realizedDelayMax=195397us delayResidualAvg=252/2164us delayResidualMax=162352us "
+                "delayResidualP95=5000us delayResidualLateMax=9776us delayResidualEarlyMax=162352us "
+                "rawResidualAvg=264/2276us rawResidualMax=49465us rawResidualP95=5000us "
+                "rawResidualLateMax=9981us rawResidualEarlyMax=49465us predictedResidualAvg=252/2164us "
+                "predictedResidualP95=5000us predictedResidualLateMax=9776us "
+                "rawMinusPredictedAvg=11/11us rawMinusPredictedMax=167508us\n"
+                "[WGC CFR SMOOTHNESS REPEAT] delayResidualRelaxedSelections=4141 "
+                "delayResidualRelaxedMax=9776us delayResidualRelaxedRejectedSync=1916996 "
+                "delayRepeatClusterPressure=641 delayRepeatClusterMax=176 delayResidualRelaxedBetter=3126 "
+                "delayResidualRelaxedCluster=1 delayResidualRelaxedRejectedHeadroom=97704 "
+                "delayResidualRelaxedRejectedCost=2108 delaySoftLateRejected=97640 delaySoftLateAccepted=0 "
+                "delayOlderFrameAvoidedRepeat=115574 delaySourceLimitedRepeats=11328 "
+                "delayRepeatRescue=49/11351 delayRepeatRescueRejected=42801/7965/212 "
+                "delayRepeatPromoted=49/11351 delayRepeatPromoteRejectedSoft=7960 "
+                "delayRepeatSafeAfterPromote=7531 delayRepeatSafeCandidate=7531 "
+                "delayRepeatNoSafeCandidate=3771 delayRepeatSoftSafeCandidate=0 "
+                "delayRepeatNoSoftSafeCandidate=11302 delayRepeatWindowClass=1012/6329/3961 "
+                "delayRepeatWindowState=1012/6329/3961/3771/3082 delayPostStallSafeFrames=45288 "
+                "delayRepeatReserveMax=9/56199us delaySourceRecoveryHolds=3804 "
+                "delaySourceRecoveryTicks=50346 delayNearCapAccepted=2104 delayHardOnlyCandidates=7531 "
+                "delaySyncProtectedRepeats=11302 delayOldestSoftSafeAgeMax=0us\n"
+                "[WGC CFR SMOOTHNESS VERDICT] delayPostSelectionRejectedSync=0 "
+                "delayPostSelectionRescuedSync=0 sourceRepeatLowerBound=11328 excessRepeats=0 "
+                "policyAddedRepeats=0 excessRepeatClusters=0 excessRepeatClusterMax=0 "
+                "smoothnessNotMaximal=0 mixedPolicyFault=0\n"
+                "[STOP AUDIO TRACK] Track 1: encoded=52558800 expected=52558800 diff=+0 (+0.000 ms) sources=[1]\n"
+                "[VideoEncoder] Final packet timeline: target=1094975000 us videoEnd=1094975000 us "
+                "audioMinEnd=1094975000 us audioMaxEnd=1094975000 us maxPacketDelta=0 us streams(v=1 a=1) audioPastTarget=0\n"
+                "[VideoEncoder] Final metadata durations: target=1094975000 us video=1094975000 us "
+                "audioMin=1094975000 us audioMax=1094975000 us maxDelta=0 us streams(v=1 a=1) "
+                "overload(encoder=0 mux=0) backpressure=0\n"
+            ),
+        )
+        ceiling_report = classify_session_triage(wgc_sync_delay_source_limited_ceiling)
+        ceiling_limits = ceiling_report["evidence"]["wgc_source_limits"]
+        assert ceiling_limits["summary_duplicate"] == 11732
+        assert ceiling_limits["summary_longest_dup_ticks"] == 319
+        assert "wgc_source_limited_smoothness_ceiling" in ceiling_report["verdicts"]
+        assert "wgc_audio_late_risk" not in ceiling_report["verdicts"]
+        assert "wgc_cfr_smoothness_not_maximal" not in ceiling_report["verdicts"]
+        assert "ce_visual_timeline_fault" not in ceiling_report["verdicts"]
+        assert "ce_audio_timeline_fault" not in ceiling_report["verdicts"]
 
         wgc_sync_delay_20260619_214948 = make_session(
             "wgc_sync_delay_20260619_214948",
