@@ -2667,6 +2667,21 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             // texture intercepted — test app), call the minimal ProcessFrame path so the overlay
             // renders through the normal DX12 route.
             const bool noCallbackFSRFG = DX12_IsNativeFSRInternalNoCallbackCompositionActive();
+            {
+                // Transition-edge diagnostic: the post-startup ProcessFrame route log is rate-limited, so the
+                // FSR<->off handoff is otherwise invisible. Mark the exact edge + ownership/queue state so the
+                // FSR->off recovery (does normal ProcessFrame resume, or does the runtime-owned latch stick?) is
+                // attributable from the log alone.
+                static std::atomic<bool> s_prevNoCallbackFSRFG{false};
+                if (s_prevNoCallbackFSRFG.exchange(noCallbackFSRFG, std::memory_order_relaxed) != noCallbackFSRFG) {
+                    HookLogImportant(
+                        "DetourPresent: no-callback FSR FG window %s — overlay route is now %s (runtimeOwns=%d)",
+                        noCallbackFSRFG ? "STARTED" : "ENDED",
+                        noCallbackFSRFG ? "UI-resource bundle only (no backbuffer submit)"
+                                        : "normal ProcessFrame backbuffer",
+                        (DXGIShared::DoesFGRuntimeOwnSwapchain() || HookHasRuntimeOwnedNativeFGPresentPath()) ? 1 : 0);
+                }
+            }
             if (noCallbackFSRFG) {
                 // Per-frame boundary: reset the once-per-frame UI-bundle append latch so the next frame's game
                 // ECL can append CE's overlay again (DX12_ProcessFrameMinimal, which used to reset it, no longer
