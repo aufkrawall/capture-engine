@@ -1,6 +1,6 @@
 # Multi Audio Capture
 
-Last cross-checked: 2026-06-22 (WASAPI out-of-domain qpcPosition guard + leading-silence gap capacity clamp: 192 kHz-loopback bad_alloc crash fix)
+Last cross-checked: 2026-06-22 (codec channel-layout fallback: 8ch/7.1 endpoint no longer drops all audio with ALAC; WASAPI out-of-domain qpcPosition guard; leading-silence gap capacity clamp)
 Stale-risk: medium
 
 Primary sources:
@@ -68,6 +68,7 @@ WASAPI capture records device-reported stream latency, device period, packet dur
 - `opus` resolves to `libopus`, sets `application=audio`, uses 48 kHz, and does not fall back to FFmpeg's native Opus encoder.
 - AAC and Opus treat configured bitrate as a stereo quality target: mono/stereo use the configured Kbps value, 5.1 scales by `* 3`, and 7.1 scales by `* 4`.
 - ALAC and FLAC honor the resolved bit depth where the encoder supports the matching sample format.
+- Channel-layout fallback: a codec advertising a fixed supported-layout list (`AVCodec::ch_layouts`) is validated before `avcodec_open2`. If the resolved track layout is rejected, `AudioEncoder::Init` remaps it (`CodecSupportsChannelLayout`/`PickSupportedChannelLayout`): a same-channel-count supported layout is preferred and applied as a RELABEL (the resampler keeps emitting the original layout via the unchanged `outputChannelMask`, so every channel's samples pass through and only mismatched position labels change), otherwise it downmixes (retargeting `outputChannelMask`/`outputChannels`). This exists because ALAC supports `7.1(wide)` (FL FR FC LFE BL BR FLC FRC) but NOT plain `7.1` (…SL SR, mask `0x63f`): an 8ch/7.1 default endpoint previously failed `avcodec_open2` with EINVAL (-22) on EVERY track, dropping the whole encoder set and producing a recording with NO audio. Now ALAC stores the 7.1 data in its 7.1(wide) slots; all 8 channels are preserved. Unit coverage in `tests/test_audio_encoder.cpp` (`AlacSevenPointOne*`).
 - AAC and Opus do not receive arbitrary short final frames; finalization pads to codec frame boundaries and relies on sample accounting plus `AV_PKT_DATA_SKIP_SAMPLES`/trailing metadata for the effective duration.
 
 The bundled Windows FFmpeg build must include `libopus` plus the concrete PCM encoders above. `--skip-updates` reuses the existing FFmpeg tree and DLLs, so changing the codec set requires a one-time FFmpeg rebuild before normal `--skip-updates` validation can prove Opus/PCM availability.

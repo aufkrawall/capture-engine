@@ -75,6 +75,54 @@ bool CodecSupportsSampleFormat(const AVCodec* codec, AVSampleFormat fmt) {
     return false;
 }
 
+// True if the codec advertises no channel-layout restriction (ch_layouts == null)
+// or the requested layout is in its supported list. Some lossless codecs accept
+// only a fixed set of layouts: ALAC supports 7.1(wide) but NOT plain 7.1, so a
+// 7.1 (side) endpoint fed verbatim makes avcodec_open2 fail with EINVAL.
+bool CodecSupportsChannelLayout(const AVCodec* codec, const AVChannelLayout* layout) {
+    if (!codec || !codec->ch_layouts || !layout) {
+        return true;  // No restriction advertised by the codec.
+    }
+    for (const AVChannelLayout* p = codec->ch_layouts; p->nb_channels != 0; ++p) {
+        if (av_channel_layout_compare(p, layout) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Picks a codec-supported channel layout to use when the requested one is
+// rejected. Preference order: a supported layout with the SAME channel count
+// (lets every channel's samples be preserved - only mismatched position labels
+// change, e.g. 7.1 stored in ALAC's 7.1-wide slots), else stereo, else the
+// codec's first supported layout. Returns false if the codec lists no layout at
+// all (caller keeps the requested layout and lets avcodec_open2 decide).
+bool PickSupportedChannelLayout(const AVCodec* codec, int desiredChannels, AVChannelLayout* out) {
+    if (!codec || !codec->ch_layouts || !out) {
+        return false;
+    }
+    const AVChannelLayout* firstSupported = nullptr;
+    const AVChannelLayout* stereo = nullptr;
+    const AVChannelLayout* sameCount = nullptr;
+    for (const AVChannelLayout* p = codec->ch_layouts; p->nb_channels != 0; ++p) {
+        if (!firstSupported) {
+            firstSupported = p;
+        }
+        if (p->nb_channels == 2 && !stereo) {
+            stereo = p;
+        }
+        if (p->nb_channels == desiredChannels && !sameCount) {
+            sameCount = p;
+        }
+    }
+    const AVChannelLayout* chosen = sameCount ? sameCount : (stereo ? stereo : firstSupported);
+    if (!chosen) {
+        return false;
+    }
+    av_channel_layout_copy(out, chosen);
+    return true;
+}
+
 struct AudioCodecPolicy {
     std::string requestedName;
     std::string encoderName;
@@ -323,6 +371,44 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
                 outputChannelMask, chLayout.nb_channels, outputChannels);
         outputChannels = chLayout.nb_channels;
     }
+
+    // Validate the resolved layout against the codec's supported layouts. Some
+    // codecs accept only a fixed set (ALAC supports 7.1(wide) but NOT plain 7.1),
+    // so a surround endpoint fed verbatim makes avcodec_open2 fail with EINVAL and
+    // drops ALL audio for the track (observed: an 8ch/7.1 default endpoint silently
+    // produced a recording with no audio). Remap to a usable layout instead so
+    // audio is always recorded.
+    if (!CodecSupportsChannelLayout(codec, &chLayout)) {
+        char reqDesc[128] = {0};
+        av_channel_layout_describe(&chLayout, reqDesc, sizeof(reqDesc));
+        AVChannelLayout remapped{};
+        if (PickSupportedChannelLayout(codec, chLayout.nb_channels, &remapped)) {
+            char newDesc[128] = {0};
+            av_channel_layout_describe(&remapped, newDesc, sizeof(newDesc));
+            const bool sameCount = remapped.nb_channels == chLayout.nb_channels;
+            // Same channel count -> relabel only: keep outputChannelMask (the
+            // resampler's output layout) at the original so every channel's samples
+            // pass through unchanged; the encoder simply tags them with the
+            // codec-supported layout. Different count -> downmix, and retarget the
+            // resampler (outputChannelMask/outputChannels) to the new layout.
+            DLL_Log("[AudioEncoder] Codec %s rejects channel layout '%s'; %s to '%s' (%d ch) so audio is preserved",
+                    codecName.c_str(), reqDesc, sameCount ? "relabeling" : "downmixing", newDesc,
+                    remapped.nb_channels);
+            av_channel_layout_uninit(&chLayout);
+            av_channel_layout_copy(&chLayout, &remapped);
+            if (!sameCount) {
+                outputChannels = chLayout.nb_channels;
+                outputChannelMask = (chLayout.order == AV_CHANNEL_ORDER_NATIVE)
+                                        ? static_cast<uint32_t>(chLayout.u.mask)
+                                        : DefaultChannelMask(outputChannels);
+            }
+            av_channel_layout_uninit(&remapped);
+        } else {
+            DLL_Log("[AudioEncoder] WARNING: codec %s lists no usable channel layout for '%s'; open may fail",
+                    codecName.c_str(), reqDesc);
+        }
+    }
+
     av_channel_layout_copy(&codecCtx->ch_layout, &chLayout);
     av_channel_layout_uninit(&chLayout);
 

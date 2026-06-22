@@ -137,6 +137,63 @@ TEST_F(AudioEncoderTest, AacScalesSevenPointOneBitrate) {
     EXPECT_EQ(encoder.GetCodecContext()->ch_layout.nb_channels, 8);
 }
 
+// Regression: an 8ch/7.1 (side) default endpoint must not silently drop all audio
+// with ALAC, which supports 7.1(wide) but NOT plain 7.1. The encoder must remap to
+// a same-count supported layout and still open, preserving all 8 channels.
+TEST_F(AudioEncoderTest, AlacSevenPointOneRemapsToSupportedLayoutInsteadOfFailing) {
+    AudioConfig config;
+    config.codec = "alac";
+    config.sampleRate = "48000";
+    config.outputChannels = 8;
+    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER |
+                               SPEAKER_LOW_FREQUENCY | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT |
+                               SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;  // 0x63f = 7.1 (side)
+
+    ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
+    ASSERT_NE(encoder.GetCodecContext(), nullptr);
+    EXPECT_EQ(encoder.GetCodecContext()->codec_id, AV_CODEC_ID_ALAC);
+    // All 8 channels preserved (relabeled to ALAC's 7.1(wide)), not downmixed/dropped.
+    EXPECT_EQ(encoder.GetCodecContext()->ch_layout.nb_channels, 8);
+}
+
+// ALAC layouts it already supports (e.g. 5.1 back) must pass through untouched.
+TEST_F(AudioEncoderTest, AlacSupportedLayoutIsLeftUnchanged) {
+    AudioConfig config;
+    config.codec = "alac";
+    config.sampleRate = "48000";
+    config.outputChannels = 6;
+    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER |
+                               SPEAKER_LOW_FREQUENCY | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;  // 5.1(back)
+
+    ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
+    ASSERT_NE(encoder.GetCodecContext(), nullptr);
+    EXPECT_EQ(encoder.GetCodecContext()->ch_layout.nb_channels, 6);
+}
+
+// End-to-end: 7.1 (side) float audio must actually encode through ALAC's relabeled
+// 7.1(wide) layout and produce packets - proving the remap preserves the data path,
+// not just avcodec_open2.
+TEST_F(AudioEncoderTest, AlacSevenPointOneEncodesAndProducesPackets) {
+    AudioConfig config;
+    config.codec = "alac";
+    config.sampleRate = "48000";
+    config.outputChannels = 8;
+    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER |
+                               SPEAKER_LOW_FREQUENCY | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT |
+                               SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;
+
+    ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
+    encoder.SetStreamIndex(1);
+    encoder.SetRecordingStart(0);
+
+    auto data = CreateDummyFloatAudio(200, 48000, 8);  // 200ms of 8ch float
+    encoder.EncodeSamples(data.data(), static_cast<int>(data.size()), 8, 48000, 32, 32,
+                          8 * static_cast<int>(sizeof(float)), true, config.outputChannelMask, 0);
+    encoder.Stop();
+
+    EXPECT_FALSE(receivedPackets.empty());
+}
+
 TEST_F(AudioEncoderTest, AacFlushClampsPaddedFinalPacketToVideoTarget) {
     AudioConfig config;
     config.codec = "aac";
