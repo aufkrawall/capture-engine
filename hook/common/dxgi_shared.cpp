@@ -2668,6 +2668,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             // renders through the normal DX12 route.
             const bool noCallbackFSRFG = DX12_IsNativeFSRInternalNoCallbackCompositionActive();
             if (noCallbackFSRFG) {
+                // Per-frame boundary: reset the once-per-frame UI-bundle append latch so the next frame's game
+                // ECL can append CE's overlay again (DX12_ProcessFrameMinimal, which used to reset it, no longer
+                // runs under runtime-owned FG).
+                DX12_ResetNoCallbackBundleFrame();
                 // CRASH BOUNDARY: under runtime-owned native FSR FG, CE must NEVER submit overlay GPU work on
                 // AMD's backbuffer / runtime present queue (the documented ffxQuery null-deref AV, session
                 // 20260621_191028). The overlay's only AMD-safe channel there is the UI-resource composition

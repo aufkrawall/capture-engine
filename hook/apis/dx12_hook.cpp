@@ -20579,6 +20579,72 @@ static const GUID SKID_D3D12SwapChainBufferBitmap = {
     0xbc53df3b, 0x956f, 0x47db, {0xa6, 0x53, 0x5, 0xd7, 0xb8, 0x71, 0x53, 0x38}};
 static std::atomic<int> g_ECLCallCount{0};
 
+// Append CE's overlay command list onto the game's existing no-callback FSR FG ExecuteCommandLists call
+// (NumCommandLists+1 in the SAME ECL call → zero extra ECL calls and zero extra fence Signals, so AMD's
+// pacing is never perturbed — the freeze-safe bundle). Draws the overlay onto the cached/CE-substituted UI
+// texture, which AMD composites post-interpolation. Fires at most once per frame, and ONLY on the queue the
+// game actually renders on under no-callback FSR FG: g_OriginalGameQueue, OR the FG-runtime-owned swapchain
+// queue. The latter is essential — once AMD's FfxFrameInterpolationSwapchain owns presentation the game
+// submits its scene+UI on the runtime queue and g_OriginalGameQueue goes idle (session 20260622_172043:
+// ECLs flowed on g_SwapchainQueue 000001D3303..DD30 while origGame ..58270 was idle, so an origGame-only
+// bundle never fired and the overlay blanked). Appending to the game's OWN submission there is not a separate
+// submit on AMD's queue — it rides the call AMD already syncs, so it is within the crash boundary (unlike the
+// removed DX12_ProcessFrameMinimal backbuffer submit). Returns true iff it appended + forwarded the bundled
+// ECL (the caller must then return without forwarding again).
+static bool TryAppendNoCallbackBundleOverlay(ID3D12CommandQueue* pThis, UINT NumCommandLists,
+                                             ID3D12CommandList* const* ppCommandLists) {
+    if (s_insideCEOverlayECLDepth != 0 ||
+        !g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) ||
+        g_BundleOverlayAppendedThisFrame.load(std::memory_order_acquire) ||
+        g_CachedFFXUiTexture.load(std::memory_order_acquire) == nullptr) {
+        return false;
+    }
+    ID3D12CommandQueue* liveFgQueue = g_SwapchainQueue;
+    const bool eligibleQueue = (pThis == g_OriginalGameQueue) || (liveFgQueue && pThis == liveFgQueue);
+    if (!eligibleQueue) {
+        return false;
+    }
+    ID3D12Device* bundleDevice = g_Device.load(std::memory_order_acquire);
+    if (!bundleDevice) {
+        return false;
+    }
+    ID3D12GraphicsCommandList* overlayCL = RecordBundleOverlayForGameECL(bundleDevice, pThis);
+    if (!overlayCL) {
+        return false;
+    }
+    const UINT bundledCount = NumCommandLists + 1;
+    ID3D12CommandList** bundledLists =
+        static_cast<ID3D12CommandList**>(_alloca(sizeof(ID3D12CommandList*) * bundledCount));
+    for (UINT i = 0; i < NumCommandLists; ++i) {
+        bundledLists[i] = ppCommandLists[i];
+    }
+    bundledLists[NumCommandLists] = overlayCL;
+    ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
+    if (original) {
+        original(pThis, bundledCount, bundledLists);
+    } else {
+        pThis->ExecuteCommandLists(bundledCount, bundledLists);
+    }
+    g_BundleOverlayAppendedThisFrame.store(true, std::memory_order_release);
+    static std::atomic<int> s_bundleLogCount{0};
+    const int logN = s_bundleLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logN < 20 || (logN % 300) == 0) {
+        HookLogImportant(
+            "DX12: FFX UI-bundle overlay appended to game ECL (queue=%p %s numLists=%u->%u uiTex=%p frame=%d log=%d)",
+            pThis, pThis == g_OriginalGameQueue ? "origGame" : "liveFgQueue", NumCommandLists, bundledCount,
+            (void*)g_CachedFFXUiTexture.load(std::memory_order_acquire),
+            g_BundleOverlayFrame.load(std::memory_order_relaxed), logN + 1);
+    }
+    return true;
+}
+
+// Reset the once-per-frame bundle-append latch. Called from DetourPresent for every no-callback FSR FG
+// present (the per-frame boundary) since DX12_ProcessFrameMinimal — which used to reset it — no longer runs
+// under runtime-owned FG.
+void DX12_ResetNoCallbackBundleFrame() {
+    g_BundleOverlayAppendedThisFrame.store(false, std::memory_order_release);
+}
+
 void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT NumCommandLists,
                                                  ID3D12CommandList* const* ppCommandLists) {
     // Safety: during FG transitions, SL may call ECL on a queue that's being freed.
@@ -20732,6 +20798,13 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // game's own ECLs on g_OriginalGameQueue still get full processing (for frame counting + bundle path).
     if (g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) &&
         pThis != g_OriginalGameQueue) {
+        // The game renders on the FG-runtime-owned swapchain queue under no-callback FSR FG (origGame goes
+        // idle). Append CE's overlay onto the game's existing ECL here (the freeze-safe bundle — zero extra
+        // ECL calls/Signals), then forward the bundled list. All other (AMD-internal / non-live) ECLs forward
+        // immediately so CE's heavier per-ECL processing never desyncs AMD's QPC-timed pacing.
+        if (TryAppendNoCallbackBundleOverlay(pThis, NumCommandLists, ppCommandLists)) {
+            return;
+        }
         ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
         if (original) {
             original(pThis, NumCommandLists, ppCommandLists);
@@ -20846,41 +20919,9 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // UI texture from RegisterUiResource and the no-callback composition flag). If the bundle fires,
     // forward the ECL with CE's overlay CL appended and return — skip the quiesce and the rest of
     // the detour (no need for frame counting, queue registration, or module resolution on this ECL).
-    if (s_insideCEOverlayECLDepth == 0 &&
-        g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) &&
-        pThis == g_OriginalGameQueue &&
-        !g_BundleOverlayAppendedThisFrame.load(std::memory_order_acquire) &&
-        g_CachedFFXUiTexture.load(std::memory_order_acquire) != nullptr) {
-        ID3D12Device* bundleDevice = g_Device.load(std::memory_order_acquire);
-        if (bundleDevice) {
-            ID3D12GraphicsCommandList* overlayCL = RecordBundleOverlayForGameECL(bundleDevice, pThis);
-            if (overlayCL) {
-                const UINT bundledCount = NumCommandLists + 1;
-                ID3D12CommandList** bundledLists = static_cast<ID3D12CommandList**>(
-                    _alloca(sizeof(ID3D12CommandList*) * bundledCount));
-                for (UINT i = 0; i < NumCommandLists; ++i) {
-                    bundledLists[i] = ppCommandLists[i];
-                }
-                bundledLists[NumCommandLists] = overlayCL;
-                ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
-                if (original) {
-                    original(pThis, bundledCount, bundledLists);
-                }
-                g_BundleOverlayAppendedThisFrame.store(true, std::memory_order_release);
-                static std::atomic<int> s_bundleLogCount{0};
-                const int logN = s_bundleLogCount.fetch_add(1, std::memory_order_relaxed);
-                if (logN < 20 || (logN % 300) == 0) {
-                    HookLogImportant(
-                        "DX12: FFX UI-bundle overlay appended to game ECL (queue=%p numLists=%u->%u "
-                        "uiTex=%p slot=%d frame=%d log=%d)",
-                        pThis, NumCommandLists, bundledCount,
-                        g_CachedFFXUiTexture.load(std::memory_order_acquire),
-                        g_BundleOverlayFrame.load(std::memory_order_relaxed) - 1,
-                        g_BundleOverlayFrame.load(std::memory_order_relaxed), logN + 1);
-                }
-                return;  // Bundle forwarded, skip quiesce and rest of detour
-            }
-        }
+    // (Reached only for origGame ECLs; the FG-runtime-owned-queue case is handled by the fast-path above.)
+    if (TryAppendNoCallbackBundleOverlay(pThis, NumCommandLists, ppCommandLists)) {
+        return;  // Bundle forwarded, skip quiesce and rest of detour
     }
 
     if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
@@ -21267,44 +21308,12 @@ skip_command_queue_registration:
     // calls → no fence tracking corruption. The UI texture is written on the game queue (as part of the
     // game's ECL) → no foreign-queue write. The cached UI texture comes from the previous frame's
     // ffxConfigure (GTA registers the same texture every frame). Only once per frame (per-frame flag).
+    // Fallback bundle attempt for origGame ECLs that reached the heavy path without the early bundle firing
+    // (e.g. bundle resources not ready on the first frame). Steam/deferred-overlay paths keep their own
+    // submission ordering, so skip the bundle there.
     bool bundledOverlay = false;
-    if (!eclCallerIsSteam && !hasDeferredOverlay &&
-        s_insideCEOverlayECLDepth == 0 &&
-        g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) &&
-        pThis == g_OriginalGameQueue &&
-        !g_BundleOverlayAppendedThisFrame.load(std::memory_order_acquire) &&
-        g_CachedFFXUiTexture.load(std::memory_order_acquire) != nullptr) {
-        ID3D12Device* bundleDevice = g_Device.load(std::memory_order_acquire);
-        if (bundleDevice) {
-            ID3D12GraphicsCommandList* overlayCL = RecordBundleOverlayForGameECL(bundleDevice, pThis);
-            if (overlayCL) {
-                // Build a stack array [gameLists..., overlayCL] and forward the bundled ECL.
-                // NumCommandLists is typically 1-4 (max ~90 seen in logs); stack allocation is safe.
-                const UINT bundledCount = NumCommandLists + 1;
-                ID3D12CommandList** bundledLists = static_cast<ID3D12CommandList**>(
-                    _alloca(sizeof(ID3D12CommandList*) * bundledCount));
-                for (UINT i = 0; i < NumCommandLists; ++i) {
-                    bundledLists[i] = ppCommandLists[i];
-                }
-                bundledLists[NumCommandLists] = overlayCL;
-                if (original) {
-                    original(pThis, bundledCount, bundledLists);
-                }
-                g_BundleOverlayAppendedThisFrame.store(true, std::memory_order_release);
-                bundledOverlay = true;
-                static std::atomic<int> s_bundleLogCount{0};
-                const int logN = s_bundleLogCount.fetch_add(1, std::memory_order_relaxed);
-                if (logN < 20 || (logN % 300) == 0) {
-                    HookLogImportant(
-                        "DX12: FFX UI-bundle overlay appended to game ECL (queue=%p numLists=%u->%u "
-                        "uiTex=%p slot=%d frame=%d log=%d)",
-                        pThis, NumCommandLists, bundledCount,
-                        g_CachedFFXUiTexture.load(std::memory_order_acquire),
-                        g_BundleOverlayFrame.load(std::memory_order_relaxed) - 1,
-                        g_BundleOverlayFrame.load(std::memory_order_relaxed), logN + 1);
-                }
-            }
-        }
+    if (!eclCallerIsSteam && !hasDeferredOverlay) {
+        bundledOverlay = TryAppendNoCallbackBundleOverlay(pThis, NumCommandLists, ppCommandLists);
     }
 
     if (!bundledOverlay && original)

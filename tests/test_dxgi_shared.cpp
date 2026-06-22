@@ -5604,3 +5604,49 @@ TEST(DXGISharedSourceTest, BundleOverlayRecordInitializesItsOwnResources) {
     // require the fence (list + RTV heap only).
     EXPECT_NE(text.find("if (!g_FFXUiCompositeList || !g_FFXUiCompositeRtvHeap) {"), std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// The UI-bundle must fire on the queue the game ACTUALLY renders on under
+// no-callback FSR FG. Once AMD's FfxFrameInterpolationSwapchain owns
+// presentation the game submits its scene+UI on the runtime-owned swapchain
+// queue and g_OriginalGameQueue goes idle (session 20260622_172043) — an
+// origGame-only bundle never fires and the overlay blanks. The shared
+// TryAppendNoCallbackBundleOverlay helper must therefore accept g_SwapchainQueue
+// as well, and the no-callback ECL fast-path (which force-forwards non-origGame
+// ECLs) must call it before forwarding so the live-queue bundle can engage.
+// ---------------------------------------------------------------------------
+TEST(DXGISharedSourceTest, NoCallbackBundleFiresOnLiveFGRuntimeQueueNotOnlyOrigGame) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    // The shared append helper must exist and treat BOTH the original game queue and the live FG-runtime
+    // swapchain queue as eligible (otherwise the bundle never fires when the game renders on the runtime queue).
+    const size_t helper = text.find("bool TryAppendNoCallbackBundleOverlay(");
+    ASSERT_NE(helper, std::string::npos);
+    const size_t helperBodyEnd = text.find("\n}", helper);
+    ASSERT_NE(helperBodyEnd, std::string::npos);
+    const size_t eligible = text.find("eligibleQueue", helper);
+    ASSERT_NE(eligible, std::string::npos);
+    EXPECT_LT(eligible, helperBodyEnd);
+    const size_t origGameRef = text.find("pThis == g_OriginalGameQueue", helper);
+    const size_t liveQueueRef = text.find("pThis == liveFgQueue", helper);
+    ASSERT_NE(origGameRef, std::string::npos);
+    ASSERT_NE(liveQueueRef, std::string::npos);
+    EXPECT_LT(origGameRef, helperBodyEnd);
+    EXPECT_LT(liveQueueRef, helperBodyEnd);
+
+    // The helper must be CALLED from multiple ECL paths (the no-callback fast-path that forwards non-origGame
+    // ECLs, plus the origGame heavy-path sites) — not merely defined. Count the call form.
+    const std::string callForm = "TryAppendNoCallbackBundleOverlay(pThis, NumCommandLists, ppCommandLists)";
+    size_t callSites = 0;
+    for (size_t pos = text.find(callForm); pos != std::string::npos; pos = text.find(callForm, pos + 1)) {
+        ++callSites;
+    }
+    EXPECT_GE(callSites, static_cast<size_t>(2)) << "bundle helper must be wired into the fast-path + origGame paths";
+}

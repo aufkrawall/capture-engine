@@ -51,6 +51,7 @@ void DX12_LogOverlayGpuBreadcrumbs(const char*) {}
 void DX12_NoteFfxConfigureForward(uint64_t) {}
 void FFXHook_ResetVehDisarmAndRearm() {}
 bool DX12_IsNativeFSRInternalNoCallbackCompositionActive() { return false; }
+void DX12_ResetNoCallbackBundleFrame() {}
 void DX12_ProcessFrameMinimal(IDXGISwapChain*) {}
 bool DX12_ShouldCacheFFXUiResourceForBundle() { return false; }
 bool DX12_IsFFXUiResourceCachedForBundle() { return false; }

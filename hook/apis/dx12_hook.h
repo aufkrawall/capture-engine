@@ -122,6 +122,9 @@ bool DX12_IsFFXUiResourceCachedForBundle();
 bool DX12_IsFFXUiBundleOverlayActivelyFiring();
 // Direct read of the no-callback composition flag (for the VEH one-shot disarm logic).
 bool DX12_IsNativeFSRInternalNoCallbackCompositionActive();
+// Reset the once-per-frame UI-bundle append latch. DetourPresent calls this for every no-callback FSR FG
+// present (the per-frame boundary), since DX12_ProcessFrameMinimal no longer runs under runtime-owned FG.
+void DX12_ResetNoCallbackBundleFrame();
 // Minimal-overhead ProcessFrame for no-callback FSR FG (skips policy/lock/heuristic work).
 void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain);
 // Decide + prepare the overlay target for a no-callback FSR FG RegisterUiResource intercept. Updates the
