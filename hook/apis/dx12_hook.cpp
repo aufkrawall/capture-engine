@@ -5653,11 +5653,19 @@ static ID3D12GraphicsCommandList* RecordBundleOverlayForGameECL(ID3D12Device* de
     if (FAILED(allocResetHr) || FAILED(listResetHr)) {
         static std::atomic<int> s_bundleResetFailLog{0};
         const int n = s_bundleResetFailLog.fetch_add(1, std::memory_order_relaxed);
-        if (n < 10) {
+        if (n < 10 || (n % 600) == 0) {
             HookLogImportant(
-                "DX12: FFX UI-bundle allocator/list Reset FAILED (slot=%d frame=%d allocHr=0x%08X listHr=0x%08X)",
+                "DX12: FFX UI-bundle allocator/list Reset FAILED (slot=%d frame=%d allocHr=0x%08X listHr=0x%08X) — "
+                "recreating command list to recover (a list->Reset E_INVALIDARG means a prior Close left it open)",
                 slot, g_BundleOverlayFrame.load(std::memory_order_relaxed),
                 static_cast<unsigned>(allocResetHr), static_cast<unsigned>(listResetHr));
+        }
+        // RECOVERY: a failed list->Reset (E_INVALIDARG) means the list is stuck open from a prior failed Close.
+        // Release it so EnsureFFXUiCompositeBundleResources recreates a clean closed list next frame — otherwise
+        // every subsequent frame fails the same Reset and the overlay blanks permanently.
+        if (FAILED(listResetHr) && g_FFXUiCompositeList) {
+            g_FFXUiCompositeList->Release();
+            g_FFXUiCompositeList = nullptr;
         }
         return nullptr;
     }
@@ -5694,7 +5702,27 @@ static ID3D12GraphicsCommandList* RecordBundleOverlayForGameECL(ID3D12Device* de
     WriteOverlayGpuBreadcrumb(g_FFXUiCompositeList, kOverlayBcAfterDraw);
     TransitionResourceIfNeeded(g_FFXUiCompositeList, uiTexture, D3D12_RESOURCE_STATE_RENDER_TARGET, regState);
     WriteOverlayGpuBreadcrumb(g_FFXUiCompositeList, kOverlayBcBeforeClose);
-    if (FAILED(g_FFXUiCompositeList->Close())) {
+    const HRESULT closeHr = g_FFXUiCompositeList->Close();
+    if (FAILED(closeHr)) {
+        // A Close failure (commonly E_INVALIDARG from an invalid recording — e.g. a resource barrier whose
+        // StateBefore does not match the UI texture's real state, which happens when a game registers a UI
+        // resource with a wrong/mis-encoded FFX state) leaves the list OPEN. Log it (was silent), and release
+        // the list so the next frame rebuilds a clean one — otherwise the next list->Reset fails forever and
+        // the overlay blanks permanently. Also surfaces the registered ffxState so a bad state is attributable.
+        static std::atomic<int> s_bundleCloseFailLog{0};
+        const int n = s_bundleCloseFailLog.fetch_add(1, std::memory_order_relaxed);
+        if (n < 20 || (n % 600) == 0) {
+            HookLogImportant(
+                "DX12: FFX UI-bundle command list Close FAILED hr=0x%08X (uiTex=%p ffxState=0x%X regState=0x%X "
+                "needsClear=%d) — recreating list to recover; a persistent failure points at the registered "
+                "UI-resource state vs the texture's actual D3D12 state",
+                static_cast<unsigned>(closeHr), (void*)uiTexture, ffxState, static_cast<unsigned>(regState),
+                needsTransparentClear ? 1 : 0);
+        }
+        if (g_FFXUiCompositeList) {
+            g_FFXUiCompositeList->Release();
+            g_FFXUiCompositeList = nullptr;
+        }
         return nullptr;
     }
 

@@ -276,10 +276,14 @@ static void RegisterFSRUiResource() {
     ID3D12Resource* uiTex = AcquireFsrUiRegistrationTexture();
     ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12 uiDesc = {};
     uiDesc.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_REGISTERUIRESOURCE_DX12;
-    // NATIVE D3D12 state by the same frame-interpolation-swapchain contract as HUDLessColor in
-    // ConfigureFSR (see the comment there).
+    // The FFX resource STATE here is an FfxApiResourceState, NOT a D3D12_RESOURCE_STATES — they are different
+    // bit encodings. The UI texture is physically left in kColorReadState (D3D12 PIXEL|NON_PIXEL shader
+    // resource = 0xC0); its FFX equivalent is FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ (0xC). Passing the raw
+    // D3D12 value (0xC0) here decodes on the FFX side as INDIRECT_ARGUMENT|PRESENT, so the runtime AND CE's
+    // overlay bundle transition the UI texture from the WRONG StateBefore (invalid barrier → command-list
+    // Close fails → overlay blanks). Mirrors how real games declare a HUD UI resource.
     uiDesc.uiResource =
-        ffxApiGetResourceDX12(uiTex, testapp::dx12fg::kColorReadState, FFX_API_RESOURCE_USAGE_READ_ONLY);
+        ffxApiGetResourceDX12(uiTex, FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ, FFX_API_RESOURCE_USAGE_READ_ONLY);
     // We re-render the UI texture every frame without synchronizing against the FG swapchain's
     // interpolation present. Ask the swapchain to double-buffer (snapshot) the UI resource so a
     // next-frame UI rewrite can't race compositing onto an in-flight generated frame (HUD tearing).
