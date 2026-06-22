@@ -55,6 +55,8 @@ static void LoadConfig() {
         ClampInt(GetPrivateProfileIntA("Stress", "fsr_present_callback_toggle_interval_seconds",
                                        g_FsrPresentCallbackToggleIntervalSeconds, configPath.c_str()),
                  1, 120);
+    g_FsrDegenerateUiResource = GetPrivateProfileIntA("Stress", "fsr_degenerate_ui_resource",
+                                                      g_FsrDegenerateUiResource ? 1 : 0, configPath.c_str()) != 0;
     g_DxgiVideoMemoryQueryStress = GetPrivateProfileIntA("Stress", "dxgi_video_memory_query_stress",
                                                          g_DxgiVideoMemoryQueryStress ? 1 : 0, configPath.c_str()) != 0;
     g_DxgiVideoMemoryQueryCountPerFrame = ClampInt(
@@ -275,6 +277,14 @@ static void ParseCommandLine(int argc, char* argv[]) {
         }
         if (strcmp(argv[i], "--no-fsr-present-callback-stress") == 0) {
             g_FsrPresentCallbackStress = false;
+            continue;
+        }
+        if (strcmp(argv[i], "--fsr-degenerate-ui") == 0) {
+            g_FsrDegenerateUiResource = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--no-fsr-degenerate-ui") == 0) {
+            g_FsrDegenerateUiResource = false;
             continue;
         }
         if (strcmp(argv[i], "--startup-preload-fg") == 0) {

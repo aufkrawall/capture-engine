@@ -103,6 +103,12 @@ static bool g_DlssStressDidRequestOff = false;
 static bool g_EnableDred = false;
 static bool g_FsrPresentCallbackStress = true;
 static int g_FsrPresentCallbackToggleIntervalSeconds = 6;
+// Opt-in (default OFF): register a 1x1 UI placeholder instead of the full-size UI texture, mimicking GTA V
+// Enhanced's degenerate no-callback FSR FG UI resource. With CE injected this exercises the substitution path
+// (CE swaps in its own backbuffer-sized texture and composites the overlay onto it). [Stress]
+// fsr_degenerate_ui_resource=1 / --fsr-degenerate-ui.
+static bool g_FsrDegenerateUiResource = false;
+static ComPtr<ID3D12Resource> g_FsrDegenerateUiTexture;
 static bool g_DxgiVideoMemoryQueryStress = true;
 static int g_DxgiVideoMemoryQueryCountPerFrame = 96;
 static int g_BootstrapNativeSwapchainStressCount = 0;
@@ -927,6 +933,9 @@ static void ReleaseDX12RendererResourcesForSwitch(const char* reason) {
     g_Taa.Release();
     g_PresentBlit.Release();
     testapp::dx12fg::ReleaseAuxiliaryResources(g_FgInputs);
+    // Degenerate-UI placeholder is device-bound; release it with the renderer so it is recreated against the
+    // new device on the next registration (preserves the multi-switch FSR->DLSS->FSR coverage).
+    g_FsrDegenerateUiTexture.Reset();
     g_Scene.Release();
     for (auto& renderTarget : g_RenderTargets) {
         renderTarget.Reset();
@@ -1588,6 +1597,9 @@ static void Cleanup() {
     g_Taa.Release();
     g_PresentBlit.Release();
     testapp::dx12fg::ReleaseAuxiliaryResources(g_FgInputs);
+    // Degenerate-UI placeholder is device-bound; release it with the renderer so it is recreated against the
+    // new device on the next registration (preserves the multi-switch FSR->DLSS->FSR coverage).
+    g_FsrDegenerateUiTexture.Reset();
     g_Scene.Release();
     for (auto& renderTarget : g_RenderTargets) {
         renderTarget.Reset();

@@ -233,17 +233,53 @@ static bool WaitForFSRSwapChainPresents(const char* reason) {
     return ret == FFX_API_RETURN_OK;
 }
 
+// Resolve which texture to register as the FSR FG UI resource. Default: the full-size UI texture (the
+// universal path — composited HUD, exercised on every normal run). Opt-in degenerate mode
+// (g_FsrDegenerateUiResource): a 1x1 placeholder that mimics GTA V Enhanced's degenerate UI registration, so
+// an INJECTED run exercises CE's substitution path (CE swaps in its own backbuffer-sized texture). The
+// placeholder is lazily created once in the same format as the real UI texture and is never rendered to (CE
+// substitutes it; standalone runs just composite an empty 1x1, which is the point of the test).
+static ID3D12Resource* AcquireFsrUiRegistrationTexture() {
+    if (!g_FsrDegenerateUiResource) {
+        return g_FgInputs.uiColor.Get();
+    }
+    if (!g_FsrDegenerateUiTexture && g_Device && g_FgInputs.uiColor) {
+        const D3D12_RESOURCE_DESC src = g_FgInputs.uiColor->GetDesc();
+        D3D12_HEAP_PROPERTIES heap = {};
+        heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC td = {};
+        td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        td.Width = 1;
+        td.Height = 1;
+        td.DepthOrArraySize = 1;
+        td.MipLevels = 1;
+        td.Format = src.Format;
+        td.SampleDesc.Count = 1;
+        if (SUCCEEDED(g_Device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &td,
+                                                        testapp::dx12fg::kColorReadState, nullptr,
+                                                        IID_PPV_ARGS(&g_FsrDegenerateUiTexture)))) {
+            g_FsrDegenerateUiTexture->SetName(L"FsrDegenerateUiPlaceholder1x1");
+            testapp::Log(
+                "[FG-DIAG] Degenerate-UI mode: registering 1x1 UI placeholder %p (fmt=%d) to exercise CE's "
+                "no-callback FSR FG substitution path\n",
+                (void*)g_FsrDegenerateUiTexture.Get(), static_cast<int>(src.Format));
+        }
+    }
+    return g_FsrDegenerateUiTexture ? g_FsrDegenerateUiTexture.Get() : g_FgInputs.uiColor.Get();
+}
+
 static void RegisterFSRUiResource() {
     if (!g_FfxConfigure || !g_FfxSwapChainCtx || !g_FgInputs.valid || !g_FgInputs.uiColor) {
         return;
     }
 
+    ID3D12Resource* uiTex = AcquireFsrUiRegistrationTexture();
     ffxConfigureDescFrameGenerationSwapChainRegisterUiResourceDX12 uiDesc = {};
     uiDesc.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_REGISTERUIRESOURCE_DX12;
     // NATIVE D3D12 state by the same frame-interpolation-swapchain contract as HUDLessColor in
     // ConfigureFSR (see the comment there).
-    uiDesc.uiResource = ffxApiGetResourceDX12(g_FgInputs.uiColor.Get(), testapp::dx12fg::kColorReadState,
-                                              FFX_API_RESOURCE_USAGE_READ_ONLY);
+    uiDesc.uiResource =
+        ffxApiGetResourceDX12(uiTex, testapp::dx12fg::kColorReadState, FFX_API_RESOURCE_USAGE_READ_ONLY);
     // We re-render the UI texture every frame without synchronizing against the FG swapchain's
     // interpolation present. Ask the swapchain to double-buffer (snapshot) the UI resource so a
     // next-frame UI rewrite can't race compositing onto an in-flight generated frame (HUD tearing).
