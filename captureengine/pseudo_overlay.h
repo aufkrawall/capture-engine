@@ -109,6 +109,11 @@ private:
     bool warnVisible_ = false;
     ULONGLONG warnCycleStart_ = 0;
 
+    // Pump-health diagnostic: GetTickCount64() of the previous timer tick. A gap larger
+    // than kPumpStallWarnMs means the overlay-owning thread stopped pumping messages for
+    // that long (see OnTimerTick / Finding B).
+    ULONGLONG lastTimerTickMs_ = 0;
+
     // Foreground-acquire grace state. After a whitelisted PID (re)acquires foreground
     // focus, the visible overlay is suppressed for `config_.foregroundAcquireGraceMs`
     // ms to avoid racing Windows MPO / fullscreen buffer rebinds on Alt+Tab-in. The
@@ -151,6 +156,9 @@ private:
     // Timer ID
     static constexpr UINT_PTR kTimerId = 1001;
     static constexpr UINT kTimerInterval = 500;  // ms
+    // Warn if the gap between timer ticks exceeds this (3x the interval): the topmost
+    // overlay windows were unresponsive that long, which can wedge a game MPO transition.
+    static constexpr ULONGLONG kPumpStallWarnMs = 1500;
 
     // Window class names
     static constexpr const char* kIndicatorClass = "CE_PseudoOv";

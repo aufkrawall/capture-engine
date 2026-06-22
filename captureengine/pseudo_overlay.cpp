@@ -6,6 +6,7 @@
 #include "../common/capture_pipeline_policy.h"
 #include "../common/inject_overlay_policy.h"
 #include "../common/logging.h"
+#include "../common/pseudo_overlay_visibility.h"
 
 #include <dwmapi.h>
 
@@ -235,11 +236,19 @@ HWND GetMainWindowForProcess(DWORD pid) {
 
 bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, bool isRecording, bool warnVisible,
                             ULONGLONG overloadWarnUntil, ULONGLONG screenshotNotifyUntil, bool ghostActive) {
-    const ULONGLONG now = GetTickCount64();
-    const bool showIndicator = isRecording && config.mode != 2;
-    const bool showWarning =
-        warnVisible || (config.showEncoderOverloadWarn && now < overloadWarnUntil) || (now < screenshotNotifyUntil);
-    return showIndicator || showWarning || ghostActive;
+    // Delegate to the pure, unit-tested policy helper. The helper gates the NOT-RECORDING
+    // warning on !isRecording so it can never leak into an active recording (see
+    // common/pseudo_overlay_visibility.h and tests/test_pseudo_overlay_visibility.cpp).
+    ce::pseudo_overlay::OverlayVisibilityInputs in;
+    in.mode = config.mode;
+    in.isRecording = isRecording;
+    in.warnVisible = warnVisible;
+    in.showEncoderOverloadWarn = config.showEncoderOverloadWarn;
+    in.ghostActive = ghostActive;
+    in.nowMs = GetTickCount64();
+    in.overloadWarnUntilMs = overloadWarnUntil;
+    in.screenshotNotifyUntilMs = screenshotNotifyUntil;
+    return ce::pseudo_overlay::ShouldPseudoOverlayBeVisible(in);
 }
 }  // namespace
 
@@ -617,6 +626,25 @@ void PseudoOverlay::OnTimerTick() {
 
     const int64_t tickStartUs = Log_GetQpcUs();
     ULONGLONG now = GetTickCount64();
+
+    // Pump-health diagnostic (Finding B). This timer only fires every kTimerInterval ms
+    // while the thread that owns the (topmost, layered) overlay windows keeps pumping
+    // messages. A large gap between ticks means that thread was blocked for that long
+    // (e.g. a multi-second controller WaitForSingleObject on a child process), during which
+    // the topmost overlay windows are unresponsive. A non-pumping topmost window on the
+    // game's output can wedge a foreground / MPO fullscreen transition and present as a
+    // frozen game window. Correlate this with the controller's "Main-thread blocked ..ms"
+    // warning to localize which blocking section starved the pump.
+    if (lastTimerTickMs_ != 0 && now > lastTimerTickMs_) {
+        const ULONGLONG tickGapMs = now - lastTimerTickMs_;
+        if (tickGapMs >= kPumpStallWarnMs) {
+            LogWarn("[PseudoOverlay] Message-pump stall: %llums between timer ticks (interval=%ums) — "
+                    "topmost overlay windows were unresponsive this long; a foreground/MPO transition "
+                    "during this window can freeze the game window",
+                    static_cast<unsigned long long>(tickGapMs), kTimerInterval);
+        }
+    }
+    lastTimerTickMs_ = now;
 
     // Foreground-acquire grace tracking. The decision (suppress or render) is evaluated
     // inside UpdateOverlay() so every entry path that calls UpdateOverlay() benefits
@@ -1009,7 +1037,10 @@ void PseudoOverlay::UpdateOverlay() {
     ULONGLONG now = GetTickCount64();
     bool showScreenshot = now < screenshotNotifyUntil_.load();
     bool showOverload = !showScreenshot && config_.showEncoderOverloadWarn && (now < overloadWarnUntil_.load());
-    bool showW = warnVisible_ || showOverload || showScreenshot;
+    // Gate the NOT-RECORDING term on !isRecording (defense-in-depth alongside the
+    // ShouldOverlayBeVisible policy) so a stale warnVisible_ can never render the warning
+    // window during an active recording.
+    bool showW = (warnVisible_ && !isRecording) || showOverload || showScreenshot;
     BYTE warnAlpha = 0;
     bool doUpdateWarn = false;
 
@@ -1294,6 +1325,7 @@ void PseudoOverlay::Shutdown() {
     warnActive_ = false;
     warnVisible_ = false;
     warnCycleStart_ = 0;
+    lastTimerTickMs_ = 0;
     mappedInjectPid_ = 0;
     lastEncoderOverloadFlags_ = 0;
     lastCaptureHealthFlags_ = 0;
@@ -1352,6 +1384,17 @@ void PseudoOverlay::UpdateConfig(const PseudoOverlayConfig& cfg) {
 
 void PseudoOverlay::SetRecordingState(bool recording) {
     isRecording_.store(recording);
+    if (recording) {
+        // Recording and the NOT-RECORDING warning are mutually exclusive. Clear the blink
+        // state synchronously here so UpdateOverlay() tears the warning window down on this
+        // call instead of leaving it up until the next 500 ms timer tick. Without this, a
+        // recording started while the warning was visible kept a layered topmost window up
+        // (and showed "NOT RECORDING") for up to ~500 ms into the recording, violating the
+        // mode-2 "inactive while recording" contract (overload/screenshot notifications stay
+        // the only sanctioned exceptions).
+        warnActive_ = false;
+        warnVisible_ = false;
+    }
     if (initialized_) {
         UpdateOverlay();
         if (hOv_) {

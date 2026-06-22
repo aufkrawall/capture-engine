@@ -113,6 +113,25 @@ bool IsProcessRunning(HANDLE hProcess) {
     return GetExitCodeProcess(hProcess, &exitCode) && exitCode == STILL_ACTIVE;
 }
 
+// Diagnostic (Finding B): measures how long the controller's main thread spends inside a
+// blocking section. While this thread blocks, the topmost pseudo-overlay windows it owns
+// (and the global record/screenshot hotkeys) stop pumping messages. A long stall here can
+// wedge a game foreground / MPO fullscreen transition and present as a frozen game window.
+// Pairs with the "[PseudoOverlay] Message-pump stall" warning to localize the cause.
+struct MainThreadBlockTimer {
+    const char* label_;
+    ULONGLONG startMs_;
+    explicit MainThreadBlockTimer(const char* label) : label_(label), startMs_(GetTickCount64()) {}
+    ~MainThreadBlockTimer() {
+        const ULONGLONG elapsedMs = GetTickCount64() - startMs_;
+        if (elapsedMs >= 250) {
+            LogWarn("[Controller] Main-thread blocked %llums in %s — topmost overlay + global hotkeys "
+                    "were unresponsive this long (can wedge a game MPO/foreground transition)",
+                    static_cast<unsigned long long>(elapsedMs), label_);
+        }
+    }
+};
+
 bool ShouldStartMediaProcessAtStartup() {
     return g_AutoRecordEnabled;
 }
@@ -676,7 +695,12 @@ void ToggleRecording() {
             shm->runtimeState.audioOnly.store(false, std::memory_order_release);
         });
 
-        if (g_Config.fpsLimiter.captureSyncEnabled && !EnsureLimiterProcessReady(10000)) {
+        bool limiterReady = true;
+        if (g_Config.fpsLimiter.captureSyncEnabled) {
+            MainThreadBlockTimer _blk("record-start limiter readiness wait");
+            limiterReady = EnsureLimiterProcessReady(10000);
+        }
+        if (!limiterReady) {
             LogError("[Controller] Limiter process is not ready for capture-synced recording");
             g_Recording = false;
             if (g_Tray)
@@ -1338,9 +1362,12 @@ int ControllerMain(HINSTANCE hInstance) {
                         }
                     }
 
-                    SyncLoggerAndSensorProcesses(g_Config);
-                    SyncLimiterProcess(g_Config);
-                    SendCommandToAll(ProcessCommand::ReloadConfig);
+                    {
+                        MainThreadBlockTimer _blk("config-reload service sync");
+                        SyncLoggerAndSensorProcesses(g_Config);
+                        SyncLimiterProcess(g_Config);
+                        SendCommandToAll(ProcessCommand::ReloadConfig);
+                    }
 
                     // Pseudo-overlay config hot-reload
                     if (g_PseudoOverlay) {

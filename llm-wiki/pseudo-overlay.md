@@ -1,12 +1,13 @@
 # Pseudo-Overlay
 
-Last cross-checked: 2026-06-01 (build after pseudo-overlay focus grace period)
+Last cross-checked: 2026-06-23 (mode-2 record-start visibility leak fix + pump-stall diagnostics)
 
 Primary sources:
 - `captureengine/pseudo_overlay.h`
 - `captureengine/pseudo_overlay.cpp`
 - `common/pseudo_overlay_focus_grace.h`
 - `common/pseudo_overlay_focus_grace.cpp`
+- `common/pseudo_overlay_visibility.h` (`ShouldPseudoOverlayBeVisible` pure policy)
 - `common/config.h` (`PseudoOverlayConfig`)
 - `common/config.cpp` (`process_list` parsing, `foreground_acquire_grace_ms`)
 
@@ -31,6 +32,61 @@ Both windows have `WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` to p
 
 - Single `WM_TIMER` fires every **500ms** (`kTimerInterval`, `pseudo_overlay.h:152`)
 - `TimerProc` calls `OnTimerTick()` which drives all state checks and `UpdateOverlay()`
+
+## Visibility Policy & Mode-2 "Inactive While Recording" Contract
+
+Whether the overlay should have ANY visible window this update is decided by the pure helper
+`ce::pseudo_overlay::ShouldPseudoOverlayBeVisible(...)` in `common/pseudo_overlay_visibility.h`
+(unit-tested in `tests/test_pseudo_overlay_visibility.cpp`). The live `ShouldOverlayBeVisible`
+wrapper in `pseudo_overlay.cpp` just fills the inputs and delegates.
+
+Visibility terms:
+- **Indicator** — `isRecording && mode != 2`.
+- **NOT-RECORDING warning** — `warnVisible && !isRecording` (gated on `!isRecording`; see below).
+- **Encoder-overload warning** — `showEncoderOverloadWarn && now < overloadWarnUntil`.
+- **Screenshot notification** — `now < screenshotNotifyUntil`.
+- **Ghost keepalive** — `alwaysRender` (explicit opt-in).
+
+**Mode-2 contract:** with `mode=2` and a recording active, the overlay is inactive (no windows,
+no `UpdateLayeredWindow`/`SetWindowPos`, no `EnsureOverlayWindows`) **except** the two sanctioned
+notifications: encoder-overload and screenshot-saved. Those may spawn a short-lived topmost
+window mid-recording (accepted as singular slight-stutter events). The steady-state timer does NOT
+call `UpdateOverlay` in this state; only lightweight CPU polling runs (no window/plane work).
+
+**Record-start leak fix (2026-06-23):** the NOT-RECORDING warning is mutually exclusive with
+recording, but `warnVisible_` used to be cleared only by the next 500 ms timer tick. Starting a
+recording while the warning was visible therefore left the layered topmost warning window up (and
+re-rendered "NOT RECORDING") for up to ~500 ms into the recording. Fixed two ways: `SetRecordingState(true)`
+now clears `warnActive_/warnVisible_` synchronously before `UpdateOverlay()`, and the policy helper
+gates the warning term on `!isRecording` (single source of truth; the `showW` term in `UpdateOverlay`
+is also gated defensively).
+
+## Message-Pump Health (Finding B — game-freeze risk, diagnostics only so far)
+
+The two overlay windows are `WS_EX_TOPMOST | WS_EX_LAYERED` and are owned by the controller's
+**single main thread** (the timer is `SetTimer(NULL, …)` armed in `Init`; the windows are created
+from `OnTimerTick` on that thread and pumped by the main `PeekMessage`/`DispatchMessage` loop). That
+thread also performs multi-second **non-pumping** `WaitForSingleObject` waits:
+- record-start: `EnsureLimiterProcessReady(10000)` (`main.cpp` ~679, only if `captureSyncEnabled`)
+- config-reload: `SyncLoggerAndSensorProcesses` (5s+5s) + `SyncLimiterProcess` (10s) (`main.cpp` ~1341)
+- process teardown/sync: `ShutdownIpcChildProcess(…,5000)`, `WaitForSingleObject(processHandle,…)`
+
+While blocked, the topmost overlay windows stop pumping. A non-responsive topmost window on the
+game's output can wedge a foreground / MPO fullscreen transition and present as a frozen game window
+(fits the reported freeze "with and without WGC"; also explains why a mode-2 recording feels safe —
+no topmost overlay window is alive then). Hotkeys (`RegisterHotKey(NULL,…)`) are on the same thread,
+so they are also unresponsive during these waits.
+
+Diagnostics added (no behavior change yet):
+- `[PseudoOverlay] Message-pump stall: Nms between timer ticks` — emitted in `OnTimerTick` when the
+  inter-tick gap ≥ `kPumpStallWarnMs` (1500 ms, 3× the 500 ms interval). Proves the pump was starved.
+- `[Controller] Main-thread blocked Nms in <label>` — RAII `MainThreadBlockTimer` in `main.cpp`
+  around the record-start limiter wait and the config-reload service sync (warns at ≥250 ms).
+
+**Stale-risk / open:** the root-cause fix (dedicated never-blocking overlay UI thread, or pumped
+controller waits) is **deferred** pending a real-hardware trace correlating a freeze with a pump
+stall — the MPO freeze cannot be reproduced in-repo and the threading refactor must not introduce
+races. This is a hypothesis with strong code evidence, not a confirmed-and-fixed bug.
 
 ## Foreground-Acquire Grace Period (Alt+Tab-in settle)
 
@@ -151,6 +207,11 @@ All pseudo-overlay diagnostic logging uses `LogDebug` (only visible at debug/tra
 | `foreground_acquire_grace_ms` config | `common/config.cpp` | ~1389 |
 | Grace policy header | `common/pseudo_overlay_focus_grace.h` | full |
 | Grace policy implementation | `common/pseudo_overlay_focus_grace.cpp` | full |
+| Visibility policy (pure) | `common/pseudo_overlay_visibility.h` | full |
+| Visibility tests | `tests/test_pseudo_overlay_visibility.cpp` | full |
+| Record-start warn-clear | `captureengine/pseudo_overlay.cpp` | `SetRecordingState` |
+| Pump-stall diagnostic | `captureengine/pseudo_overlay.cpp` | `OnTimerTick` (`lastTimerTickMs_`, `kPumpStallWarnMs`) |
+| Controller block timer | `captureengine/main.cpp` | `MainThreadBlockTimer` + record-start/config-reload wraps |
 | Pseudo-overlay header | `captureengine/pseudo_overlay.h` | full |
 | Pseudo-overlay implementation | `captureengine/pseudo_overlay.cpp` | full |
 | Grace state update + decision | `captureengine/pseudo_overlay.cpp` | `UpdateForegroundGraceState` / `EvaluateForegroundGrace` |
