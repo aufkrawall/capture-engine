@@ -1,6 +1,6 @@
 # Multi Audio Capture
 
-Last cross-checked: 2026-06-21 (config override Process-key leak → triplicated app-audio comb fix; soft-knee limiter de-tanh; duplicate-capture safeguard)
+Last cross-checked: 2026-06-22 (WASAPI out-of-domain qpcPosition guard + leading-silence gap capacity clamp: 192 kHz-loopback bad_alloc crash fix)
 Stale-risk: medium
 
 Primary sources:
@@ -90,6 +90,8 @@ Useful logs for this area:
 
 - `[AudioCapture] ProbeMixFormat ...`: endpoint sample rate, channels, and channel mask.
 - `[AudioCapture] Started ... streamLatency=... loopback=... devicePeriod=... minPeriod=... bufferFrames=... bufferDur=...` and `[AppAudioCapture] Started ... streamLatency=... devicePeriod=... minPeriod=... bufferFrames=... bufferDur=...`: WASAPI latency/passive telemetry. `streamLatency` is no longer subtracted from packet QPC (delay-only model); the Source Sync Start lines show `wouldAdvanceQpc=` purely as the retired-behavior reference. App-audio packet logs should show `processLoopbackPacketBias=half_period`.
+- `[AudioCapture] WARNING: out-of-domain WASAPI qpcPosition=... substituted with nowQpc=...`: a capture endpoint reported a QPC position outside the valid window around the live performance counter (observed: a 192 kHz loopback device emitting a first-packet position ~497 days in the future). `AudioCapture::CaptureLoop` now validates every `IAudioCaptureClient::GetBuffer` QPC via `ce::audio::SanitizeCaptureQpcPosition` and substitutes the current QPC; the raw value is still preserved on `AudioPacket::rawQpcPosition`. Throttled to 8 lines/session. Healthy positions pass through bit-identical, so any occurrence flags a driver quirk worth noting. Without this guard the bogus timestamp made `AudioLoop` request a multi-TB leading-silence `std::vector<float>` → `std::bad_alloc` → `std::terminate` (uncaught crash, exception code `0x20474343`).
+- `[AudioLoop] WARNING: clamped oversized timeline gap src=... gap=... -> ... (ringCapacity=...)`: defense-in-depth bound. A single packet's leading-silence gap is clamped to the ring buffer capacity via `ce::audio::ClampTimelineGapSamplesToCapacity` (WriteRetainNew would drop the excess anyway), so a corrupt timestamp can never size a pathological allocation even if it slips past the capture-side QPC guard. With the QPC guard in place this should never fire in normal operation.
 - `[AVSyncProbe] ...`: render→loopback latency self-measurement (endpoint format, marker frequency/amplitude, cache hit/miss, measured shots/spread, audibility/fallback reason). The near-inaudible marker plays at most once per render endpoint cache key and is skipped for likely audible sample rates.
 - `[AVSyncAuto] ...`: passive inputs, probe result, chosen delay, confidence (`high`/`medium`/`low`), reason, engine reload status, audio equalization, and stop summary including codec/sample state. Low confidence means no guessed automatic delay was applied.
 - `[AVSyncApply] ...`: video-only correction path. WGC uses `wgc-selection-bias`; inject uses `inject-buffer-reserve` with reserve frame count and residual estimate. Audio samples and PTS remain sample-exact.
@@ -129,9 +131,9 @@ Focused regression coverage lives in:
 - `tests/test_audio_resampler.cpp`
   - Channel-mask preservation for stereo and 5.1 resampling paths.
 - `tests/test_audio_sync_utils.cpp`
-  - Packed/interleaved silence buffer sizing includes every channel, final packet durations clamp to the video sample target, timeline-valid startup no longer waits for buffered real audio, app audio stays optional until first packet, pre-start app-audio packets make the app source strict for bootstrap, source write cursors never trail the encoded track cursor, and late first packets overlap already-encoded silence.
+  - Packed/interleaved silence buffer sizing includes every channel, final packet durations clamp to the video sample target, timeline-valid startup no longer waits for buffered real audio, app audio stays optional until first packet, pre-start app-audio packets make the app source strict for bootstrap, source write cursors never trail the encoded track cursor, late first packets overlap already-encoded silence, and `ClampTimelineGapSamplesToCapacity` bounds an oversized/out-of-domain leading-silence gap to the ring capacity while leaving in-range gaps and degenerate inputs untouched.
 - `tests/test_audio_time_utils.cpp`
-  - Loopback capture-latency compensation clamps safely and leaves non-loopback timestamps unchanged.
+  - Loopback capture-latency compensation clamps safely and leaves non-loopback timestamps unchanged, and `SanitizeCaptureQpcPosition` passes through healthy positions but replaces far-future (the 192 kHz-loopback ~497-day garbage) and far-past/zero positions with the live QPC, trusting the value only when no reference clock is available.
 - `tools/analyze_capture_av.py`
   - Strict post-write validation with FFprobe/FFmpeg: full video/audio scan, decode stderr checks, waveform-tail marker spread, `--strict-sync-events`, and log-event gates for forced bootstrap, bootstrap trim, source underrun, audio trim/drop/extreme-drift paths, WGC fresh catch-up, stop-drain abort, WGC held stop repeats, nonzero WGC drain duplicate summaries, writer finalize timeout, post-mux probe hang/timeout, late app-source backlog without live join, CE crash-handler output, and multi-source stop-time audio shortfalls. Discarded post-stop WGC callbacks stay visible as endpoint-protection telemetry but are not audio failures by themselves.
 - `testapp/av_sync_stimulus.h` and `tests/test_av_sync_stimulus.cpp`

@@ -49,3 +49,45 @@ TEST(AudioTimeUtilsTest, ProcessLoopbackPacketTimestampCompensationUsesPacketCen
     EXPECT_EQ(ce::audio::ApplyProcessLoopbackPacketTimestampCompensation(100000, 960, 48000), 0u);
 }
 
+// --- WASAPI capture QPC sanity guard (192 kHz-loopback bad_alloc regression) ---
+
+TEST(AudioTimeUtilsTest, SanitizeCaptureQpcPassesThroughHealthyPositions) {
+    const uint64_t now = 305000000000ULL;  // ~8.5h uptime in 100-ns units
+    // Slightly in the past (typical: timestamp of a just-read buffer) -> untouched.
+    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(now - 50000, now), now - 50000);
+    // Exactly now -> untouched.
+    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(now, now), now);
+    // Small benign future skew within tolerance -> untouched (raw QPC preserved).
+    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(now + 5000000, now), now + 5000000);
+}
+
+TEST(AudioTimeUtilsTest, SanitizeCaptureQpcReplacesFarFutureGarbage) {
+    const uint64_t now = 305000000000ULL;
+    // The observed failure: a first-packet position hundreds of days in the future.
+    const uint64_t garbageFuture = now + 429000000000000ULL;  // ~497 days ahead
+    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(garbageFuture, now), now);
+    // Just past the future tolerance also gets corrected.
+    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(
+                  now + ce::audio::kDefaultCaptureQpcFutureToleranceUnits + 1, now),
+              now);
+}
+
+TEST(AudioTimeUtilsTest, SanitizeCaptureQpcReplacesFarPastGarbage) {
+    const uint64_t now = 305000000000ULL;
+    // Absurdly stale / near-zero positions are also out-of-domain.
+    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(0, now), now);
+    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(
+                  now - ce::audio::kDefaultCaptureQpcPastToleranceUnits - 1, now),
+              now);
+    // Within the past tolerance -> preserved.
+    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(
+                  now - ce::audio::kDefaultCaptureQpcPastToleranceUnits + 1, now),
+              now - ce::audio::kDefaultCaptureQpcPastToleranceUnits + 1);
+}
+
+TEST(AudioTimeUtilsTest, SanitizeCaptureQpcTrustsValueWhenNoReferenceClock) {
+    // nowQpc100ns == 0 means QueryPerformanceCounter is unavailable; trust the value.
+    const uint64_t reported = 999999999999999ULL;
+    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(reported, 0), reported);
+}
+

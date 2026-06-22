@@ -518,6 +518,13 @@ void AudioCapture::CaptureLoop() {
     int logCounter = 0;
     int errCount = 0;   // Count GetNextPacketSize errors (reset each session)
     int loopCount = 0;  // Count packets seen (reset each session)
+    int qpcSanitizeLogCount = 0;  // Throttle out-of-domain QPC warnings (reset each session)
+
+    // Cache QPC frequency once for converting the live performance counter into the
+    // same 100-ns domain WASAPI reports its qpcPosition in, so we can validate it.
+    LARGE_INTEGER qpcFreqLI;
+    QueryPerformanceFrequency(&qpcFreqLI);
+    const uint64_t qpcFreq = static_cast<uint64_t>(qpcFreqLI.QuadPart);
     uint64_t queueDropPackets = 0;
     uint64_t queueDropFrames = 0;
     uint64_t lastQueueDropLogTick = 0;
@@ -555,6 +562,36 @@ void AudioCapture::CaptureLoop() {
             if (drainingAfterStop) {
                 ++finalDrainPackets;
                 finalDrainFrames += numFramesAvailable;
+            }
+
+            // WASAPI driver timestamp sanity guard. The qpcPosition returned by
+            // GetBuffer is device/driver-provided and not always trustworthy: some
+            // endpoints (observed on a 192 kHz loopback device) report a garbage
+            // first-packet position hundreds of days in the future. Used verbatim,
+            // that bogus value makes the media-engine timeline math request an
+            // unbounded leading-silence allocation (multi-TB std::vector ->
+            // std::bad_alloc -> std::terminate). Validate against the live QPC and
+            // substitute it for out-of-domain values so the timeline stays in-domain
+            // on every device; healthy positions pass through bit-identical. The raw
+            // value is still preserved on the packet for diagnostics below.
+            const uint64_t rawQpcPosition = qpcPosition;
+            {
+                LARGE_INTEGER nowQpcLI;
+                QueryPerformanceCounter(&nowQpcLI);
+                const uint64_t nowQpc100ns =
+                    ce::audio::RawQpcToHundredNanoseconds(static_cast<uint64_t>(nowQpcLI.QuadPart), qpcFreq);
+                const uint64_t sanitizedQpc = ce::audio::SanitizeCaptureQpcPosition(qpcPosition, nowQpc100ns);
+                if (sanitizedQpc != qpcPosition) {
+                    if (qpcSanitizeLogCount++ < 8) {
+                        DLL_Log(
+                            "[AudioCapture] WARNING: out-of-domain WASAPI qpcPosition=%llu substituted with "
+                            "nowQpc=%llu (devPos=%llu rate=%u loopback=%d) - driver reported an invalid capture "
+                            "timestamp",
+                            (unsigned long long)qpcPosition, (unsigned long long)nowQpc100ns,
+                            (unsigned long long)devicePosition, pwfx->nSamplesPerSec, isLoopback_ ? 1 : 0);
+                    }
+                    qpcPosition = sanitizedQpc;
+                }
             }
 
             // Debug: Check drift between Device Position (samples) and QPC time.
@@ -596,7 +633,7 @@ void AudioCapture::CaptureLoop() {
             packet.validBitsPerSample = 0;  // Default: same as bitsPerSample
             packet.channelMask = ExtractChannelMask(pwfx);
             packet.devicePosition = devicePosition;      // Store for debugging if needed
-            packet.rawQpcPosition = qpcPosition;         // Store raw WASAPI timestamp for debugging
+            packet.rawQpcPosition = rawQpcPosition;       // Store unmodified WASAPI timestamp for debugging
             packet.streamLatency = streamLatency100ns_;  // telemetry only (see below)
             // A/V capture latency is corrected by DELAYING video content (and equalizing faster
             // audio sources up to it), never by advancing live audio: the earlier samples do not

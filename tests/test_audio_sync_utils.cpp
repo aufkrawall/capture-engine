@@ -523,6 +523,30 @@ TEST(AudioSyncUtilsTest, PacketTimelineAdjustmentComputesPacketOverlap) {
     EXPECT_EQ(adjustment.overlapSamples, 240);
 }
 
+// Defense-in-depth bound that prevents an out-of-domain packet timestamp from
+// sizing a pathological leading-silence allocation (192 kHz-loopback bad_alloc).
+TEST(AudioSyncUtilsTest, TimelineGapClampLeavesInRangeGapsUntouched) {
+    // 30 s stereo ring at 48 kHz -> 1.44M samples of capacity per channel-frame.
+    const int64_t ringCapacitySamples = 48000 * 30;
+    EXPECT_EQ(ce::audio::ClampTimelineGapSamplesToCapacity(480, ringCapacitySamples), 480);
+    EXPECT_EQ(ce::audio::ClampTimelineGapSamplesToCapacity(ringCapacitySamples, ringCapacitySamples),
+              ringCapacitySamples);
+}
+
+TEST(AudioSyncUtilsTest, TimelineGapClampBoundsOversizedGapToRingCapacity) {
+    const int64_t ringCapacitySamples = 48000 * 30;
+    // The crash value: ~2 trillion samples (~497 days) -> clamped to ring capacity.
+    EXPECT_EQ(ce::audio::ClampTimelineGapSamplesToCapacity(2061584303294LL, ringCapacitySamples),
+              ringCapacitySamples);
+}
+
+TEST(AudioSyncUtilsTest, TimelineGapClampHandlesDegenerateInputs) {
+    EXPECT_EQ(ce::audio::ClampTimelineGapSamplesToCapacity(0, 48000), 0);
+    EXPECT_EQ(ce::audio::ClampTimelineGapSamplesToCapacity(-100, 48000), 0);
+    // Unknown/zero capacity disables the bound (cannot clamp without a reference).
+    EXPECT_EQ(ce::audio::ClampTimelineGapSamplesToCapacity(5000, 0), 5000);
+}
+
 TEST(AudioSyncUtilsTest, PacketTimelineAdjustmentClampsNegativePacketStarts) {
     const auto adjustment = ce::audio::ComputePacketTimelineAdjustment(-200, 0, 48);
     EXPECT_EQ(adjustment.gapSamples, 0);

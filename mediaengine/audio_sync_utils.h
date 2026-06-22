@@ -722,6 +722,23 @@ inline PacketTimelineAdjustment ComputePacketTimelineAdjustment(int64_t packetSt
     return adjustment;
 }
 
+// A single packet's leading-silence timeline gap can never legitimately exceed
+// what the destination ring buffer can retain: WriteRetainNew drops the oldest
+// samples to make room, so any silence beyond the capacity is discarded the moment
+// it is written. Bounding the gap to the ring capacity keeps a corrupt or
+// out-of-domain packet timestamp from sizing a pathological silence allocation
+// (the 192 kHz-loopback bad_alloc crash) while leaving every in-range gap
+// untouched. ringCapacitySamples <= 0 disables the bound.
+inline int64_t ClampTimelineGapSamplesToCapacity(int64_t gapSamples, int64_t ringCapacitySamples) {
+    if (gapSamples <= 0) {
+        return 0;
+    }
+    if (ringCapacitySamples <= 0) {
+        return gapSamples;
+    }
+    return std::min<int64_t>(gapSamples, ringCapacitySamples);
+}
+
 inline int64_t ComputeStartupFirstPacketRebaseOffset(int64_t packetStartSamples, bool sawSyncPendingPackets,
                                                      int64_t cappedStartupGapSamples, int64_t rebaseThresholdSamples) {
     if (!sawSyncPendingPackets) {

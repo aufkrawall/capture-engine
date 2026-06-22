@@ -4266,7 +4266,27 @@ private:
                                     const size_t packetTimelineFadeSamples =
                                         static_cast<size_t>(std::max<int64_t>(1, targetFmt.sampleRate / 750));
                                     if (timelineAdjustment.gapSamples > 0) {
-                                        const size_t gapSamples = static_cast<size_t>(timelineAdjustment.gapSamples);
+                                        // Defense-in-depth: bound the leading-silence gap to what the ring
+                                        // buffer can actually retain. WriteRetainNew drops the oldest samples
+                                        // to make room, so any excess is discarded anyway; clamping here makes
+                                        // it impossible for a corrupt/out-of-domain packet timestamp to size a
+                                        // pathological allocation (previously a bogus 192kHz-loopback QPC
+                                        // produced a multi-TB std::vector<float> -> bad_alloc -> terminate).
+                                        const int64_t ringCapacitySamples =
+                                            static_cast<int64_t>(src.ringBuffer->GetCapacity()) /
+                                            std::max<int64_t>(1, targetFmt.channels);
+                                        const int64_t boundedGapSamples = ce::audio::ClampTimelineGapSamplesToCapacity(
+                                            timelineAdjustment.gapSamples, ringCapacitySamples);
+                                        if (boundedGapSamples < timelineAdjustment.gapSamples) {
+                                            DLL_Log(
+                                                "[AudioLoop] WARNING: clamped oversized timeline gap src=%d "
+                                                "gap=%lld -> %lld samples (ringCapacity=%lld); qpcStart=%llu likely "
+                                                "out-of-domain timestamp",
+                                                (int)srcIdx, (long long)timelineAdjustment.gapSamples,
+                                                (long long)boundedGapSamples, (long long)ringCapacitySamples,
+                                                (unsigned long long)packet.qpcPosition);
+                                        }
+                                        const size_t gapSamples = static_cast<size_t>(boundedGapSamples);
                                         std::vector<float> silence(gapSamples * targetFmt.channels, 0.0f);
                                         const size_t writtenGapFloats =
                                             src.ringBuffer->WriteRetainNew(silence.data(), silence.size());
