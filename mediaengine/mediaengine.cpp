@@ -2788,19 +2788,28 @@ public:
                                     if (driftLogCounter++ % 500 == 0) {
                                         const double compensationPercent = (double)src.currentRateDelta * 100.0 /
                                                                            (static_cast<double>(SAMPLE_RATE) * 10.0);
+                                        const bool tier2WouldActivate = ce::audio::ShouldActivateTier2Trim(
+                                            trueDrift, SAMPLE_RATE, kTier2DriftThresholdMs);
+                                        // Whether the tier2 trim path is actually permitted to run this pull. In WGC
+                                        // CFR it is intentionally suppressed (prefer video repeats over audio cuts),
+                                        // so the common "tier2=1 tier2Applied=0" pair means the drift threshold is
+                                        // exceeded but the standing buffer is deliberately PRESERVED, not trimmed -
+                                        // benign extra latency that stays out of the encoded timeline (content is
+                                        // placed by packet QPC), NOT an audio cut. Logged distinctly so the standing
+                                        // startup backlog is not misread as an active trim/convergence failure.
+                                        const bool tier2TrimEnabled =
+                                            isWgcCfrRecording && !wgcEncoderOnlyOverload && !startupTimelineProtected &&
+                                            (!kWgcPreferVideoRepeatsOverAudioCuts || wallClockAnchorActive);
                                         DLL_Log(
                                             "[PullAudio] Src %zu drift: "
                                             "trueDrift=%lld "
                                             "(rb=%lld expected=%lld "
                                             "pipelineLag=%lldms) "
                                             "tier1=%d (%.4f%%) "
-                                            "tier2=%d encBottleneck=%d",
+                                            "tier2=%d tier2Applied=%d encBottleneck=%d",
                                             srcIdx, trueDrift, rbLevel, expectedLead, effectiveWgcDriftLagMs, newDelta,
-                                            compensationPercent,
-                                            ce::audio::ShouldActivateTier2Trim(trueDrift, SAMPLE_RATE,
-                                                                               kTier2DriftThresholdMs)
-                                                ? 1
-                                                : 0,
+                                            compensationPercent, tier2WouldActivate ? 1 : 0,
+                                            (tier2WouldActivate && tier2TrimEnabled) ? 1 : 0,
                                             wgcEncoderBottlenecked ? 1 : 0);
                                     }
 
