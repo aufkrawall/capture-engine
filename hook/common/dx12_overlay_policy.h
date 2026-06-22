@@ -416,25 +416,63 @@ inline bool ShouldSkipCommandQueueVTableHookForFrameGenerationRuntimeModule(bool
 // How DetourPresent renders the overlay during native no-callback FSR FG (GTA-style: AMD composites a
 // registered UI texture onto every real + interpolated frame with no app present callback).
 enum class NoCallbackFSRFGOverlayRoute {
-    kSkipBundleCovers,   // bundle is actively compositing onto AMD's UI texture — skip the backbuffer ProcessFrame
-    kMinimalBackbuffer,  // draw via minimal ProcessFrame so the overlay is never blank
+    kSkipBundleCovers,   // overlay rides AMD's UI-resource composition (game-ECL bundle) — skip the backbuffer ProcessFrame
+    kMinimalBackbuffer,  // draw via minimal ProcessFrame (ONLY safe when AMD does NOT own the swapchain)
 };
 
-// The ECL UI-bundle (overlay command list appended to the game's own ExecuteCommandLists, drawn onto AMD's
-// UI texture) is the freeze-safe steady-state overlay path under no-callback FSR FG: it adds zero extra ECL
-// calls / Signals on AMD's pacing-critical present queue. We may ONLY skip the separate backbuffer
-// ProcessFrame when that bundle is BOTH cached AND actively firing. Otherwise (the FG-on transition window
-// before the bundle engages, or a stale/rotated UI texture) we must still draw via the minimal backbuffer
-// path so the overlay is never blank — never a silent skip-with-no-draw.
+// CRASH BOUNDARY (session 20260621_191028 — amd_fidelityfx_dx12!ffxQuery null-deref AV):
+// When AMD's FfxFrameInterpolationSwapchain owns presentation (runtimeOwnsSwapchain), CE must perform ZERO
+// GPU work on AMD's backbuffer / runtime present queue. The minimal backbuffer ProcessFrame submits overlay
+// work on exactly that queue, which corrupts AMD's presentation state and null-derefs it inside ffxQuery.
+// So under runtime-owned FSR FG the overlay's ONLY channel is AMD's UI-resource composition: the game-ECL
+// bundle draws the overlay onto the registered (or CE-substituted) UI texture on the GAME queue, which AMD
+// composites post-interpolation on its own queue with the same game-queue->present sync the game's own HUD
+// already rides. That path never touches AMD's runtime queue, so it is always selected here — never the
+// backbuffer submit.
 //
-// Regression guard: the GTA invisibility bug was exactly a silent skip while the bundle never fired. This
-// function makes "skip" conditional on the bundle actually firing, so that failure can no longer hide.
-inline NoCallbackFSRFGOverlayRoute ChooseNoCallbackFSRFGOverlayRoute(bool uiResourceCachedForBundle,
+// The kMinimalBackbuffer route remains ONLY for a no-callback composition window where AMD does NOT own the
+// swapchain (defensive escape hatch / non-runtime-owned harness paths). There, the backbuffer submit is safe;
+// skip only when the bundle is actually firing so the overlay is never blank — never a silent skip-with-no-draw.
+inline NoCallbackFSRFGOverlayRoute ChooseNoCallbackFSRFGOverlayRoute(bool runtimeOwnsSwapchain,
+                                                                     bool uiResourceCachedForBundle,
                                                                      bool bundleOverlayActivelyFiring) {
+    if (runtimeOwnsSwapchain) {
+        // NEVER submit on AMD's backbuffer/runtime queue here — the overlay rides UI composition only.
+        return NoCallbackFSRFGOverlayRoute::kSkipBundleCovers;
+    }
     if (uiResourceCachedForBundle && bundleOverlayActivelyFiring) {
         return NoCallbackFSRFGOverlayRoute::kSkipBundleCovers;
     }
     return NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer;
+}
+
+// Which texture the overlay is drawn onto under no-callback FSR FG UI-resource composition.
+enum class FFXUiOverlayTarget {
+    kCompositeOntoGameTexture,      // game registered a usable, ~backbuffer-sized UI texture — blend overlay on top
+    kSubstituteCEFullSizeTexture,   // game registered a degenerate placeholder (GTA's 1x1) — substitute CE's own texture
+};
+
+// GTA Enhanced leaves UI composition ENABLED but registers a 1x1 placeholder UI texture, so AMD composites
+// nothing usable. Drawing the overlay onto a 1x1 texture is useless (and trips CreateCommandList/Reset
+// E_INVALIDARG), so when the game's UI texture is degenerate relative to the backbuffer, CE substitutes its
+// own backbuffer-sized texture into the forwarded RegisterUiResource and AMD composites THAT. When the game
+// registers a usable full-size UI texture (the test app, and games that composite their HUD this way), CE
+// blends the overlay directly onto it (no substitution, no extra allocation).
+//
+// If the backbuffer size is not known yet (0), fall back to the clearly-degenerate (<=1px) test only, so we
+// never substitute against a usable texture just because we could not size-compare it.
+inline FFXUiOverlayTarget ChooseFFXUiOverlayTarget(uint32_t gameTexWidth, uint32_t gameTexHeight,
+                                                   uint32_t backbufferWidth, uint32_t backbufferHeight) {
+    const bool triviallyDegenerate = gameTexWidth <= 1 || gameTexHeight <= 1;
+    const bool haveBackbufferSize = backbufferWidth > 0 && backbufferHeight > 0;
+    // A usable UI texture must cover most of the backbuffer. Anything under half the backbuffer in either
+    // dimension is treated as a placeholder, not the real HUD-composition surface.
+    const bool muchSmallerThanBackbuffer =
+        haveBackbufferSize && (gameTexWidth * 2u < backbufferWidth || gameTexHeight * 2u < backbufferHeight);
+    if (triviallyDegenerate || muchSmallerThanBackbuffer) {
+        return FFXUiOverlayTarget::kSubstituteCEFullSizeTexture;
+    }
+    return FFXUiOverlayTarget::kCompositeOntoGameTexture;
 }
 
 inline bool ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(

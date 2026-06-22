@@ -5505,30 +5505,70 @@ TEST(DXGISharedSourceTest, StaleFSRQueueClearReceivesWarmResumeFlag) {
 }
 
 // ---------------------------------------------------------------------------
-// No-callback FSR FG overlay routing (GTA overlay-invisibility regression).
-// During native no-callback FSR FG, DetourPresent may ONLY skip the separate
-// backbuffer ProcessFrame when the ECL UI-bundle is ACTUALLY firing; otherwise
-// it must draw via the minimal path so the overlay is never blank. The original
-// bug was a silent skip while the bundle never fired -> invisible all session.
+// No-callback FSR FG overlay routing — CRASH REGRESSION (session 20260621_191028,
+// amd_fidelityfx_dx12!ffxQuery null-deref AV). When AMD owns the swapchain
+// (runtime-owned native FSR FG) CE must NEVER submit overlay work on AMD's
+// backbuffer/runtime queue: the route selector must ALWAYS skip the backbuffer
+// ProcessFrame regardless of bundle-firing state, so the overlay rides AMD's
+// UI-resource composition only. Iteration 1 selected kMinimalBackbuffer when the
+// bundle was not firing, which submitted on AMD's queue and crashed GTA.
 // ---------------------------------------------------------------------------
-TEST(DXGISharedTest, NoCallbackFSRFGOverlayRouteOnlySkipsWhenBundleActuallyFiring) {
+TEST(DXGISharedTest, NoCallbackFSRFGOverlayRouteNeverSubmitsBackbufferWhenRuntimeOwnsSwapchain) {
     using ce::dx12_overlay_policy::ChooseNoCallbackFSRFGOverlayRoute;
     using ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute;
 
-    // Bundle cached AND actively firing -> safe to skip (bundle composites the overlay).
-    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*cached=*/true, /*firing=*/true)),
+    // Runtime-owned (AMD owns the swapchain): ALWAYS skip the backbuffer submit, in EVERY bundle state.
+    // These four cases are the exact crash boundary — the backbuffer submit must never be chosen here.
+    for (bool cached : {false, true}) {
+        for (bool firing : {false, true}) {
+            EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/true, cached, firing)),
+                      static_cast<int>(NoCallbackFSRFGOverlayRoute::kSkipBundleCovers))
+                << "runtime-owned must never submit on AMD's queue (cached=" << cached << " firing=" << firing << ")";
+        }
+    }
+
+    // Non-runtime-owned (AMD does NOT own the swapchain — safe to submit on the backbuffer):
+    // bundle cached AND actively firing -> safe to skip (bundle composites the overlay).
+    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/false, /*cached=*/true, /*firing=*/true)),
               static_cast<int>(NoCallbackFSRFGOverlayRoute::kSkipBundleCovers));
+    // Cached but NOT firing, or not cached -> draw via the safe minimal backbuffer path (never blank).
+    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/false, /*cached=*/true, /*firing=*/false)),
+              static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer));
+    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/false, /*cached=*/false, /*firing=*/false)),
+              static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer));
+    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/false, /*cached=*/false, /*firing=*/true)),
+              static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer));
+}
 
-    // Cached but NOT firing (FG-on transition window, or a stale/rotated UI texture) -> must draw,
-    // never a silent skip. This is precisely the case that left the GTA overlay invisible.
-    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*cached=*/true, /*firing=*/false)),
-              static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer));
+// ---------------------------------------------------------------------------
+// FFX UI-resource overlay target selection (GTA 1x1 placeholder vs usable HUD
+// texture). GTA Enhanced leaves UI composition enabled but registers a 1x1
+// placeholder, so CE must substitute its own backbuffer-sized texture; games /
+// the test app that register a usable full-size UI texture get the overlay
+// blended directly onto it.
+// ---------------------------------------------------------------------------
+TEST(DXGISharedTest, FFXUiOverlayTargetSubstitutesForDegenerateGameTexture) {
+    using ce::dx12_overlay_policy::ChooseFFXUiOverlayTarget;
+    using ce::dx12_overlay_policy::FFXUiOverlayTarget;
 
-    // No bundle cached (test-app style) -> minimal backbuffer path renders the overlay.
-    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*cached=*/false, /*firing=*/false)),
-              static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer));
-    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*cached=*/false, /*firing=*/true)),
-              static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer));
+    // GTA's 1x1 placeholder against a 4K backbuffer -> substitute CE's full-size texture.
+    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*texW=*/1, /*texH=*/1, /*bbW=*/3840, /*bbH=*/2160)),
+              static_cast<int>(FFXUiOverlayTarget::kSubstituteCEFullSizeTexture));
+
+    // A usable full-size UI texture (test app) -> composite onto it directly.
+    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*texW=*/3840, /*texH=*/2160, /*bbW=*/3840, /*bbH=*/2160)),
+              static_cast<int>(FFXUiOverlayTarget::kCompositeOntoGameTexture));
+
+    // A UI texture much smaller than the backbuffer (under half in a dimension) is a placeholder -> substitute.
+    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*texW=*/640, /*texH=*/360, /*bbW=*/3840, /*bbH=*/2160)),
+              static_cast<int>(FFXUiOverlayTarget::kSubstituteCEFullSizeTexture));
+
+    // Backbuffer size unknown (0): only the trivially-degenerate (<=1px) case substitutes; otherwise composite
+    // (never substitute against a possibly-usable texture we cannot size-compare).
+    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*texW=*/1, /*texH=*/1, /*bbW=*/0, /*bbH=*/0)),
+              static_cast<int>(FFXUiOverlayTarget::kSubstituteCEFullSizeTexture));
+    EXPECT_EQ(static_cast<int>(ChooseFFXUiOverlayTarget(/*texW=*/2560, /*texH=*/1440, /*bbW=*/0, /*bbH=*/0)),
+              static_cast<int>(FFXUiOverlayTarget::kCompositeOntoGameTexture));
 }
 
 // ---------------------------------------------------------------------------

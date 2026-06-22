@@ -10,6 +10,7 @@
 
 namespace ce::ffx_api {
 struct CallbackDescFrameGenerationPresent;
+struct Resource;
 using PresentCallback = uint32_t (*)(CallbackDescFrameGenerationPresent*, void*);
 }  // namespace ce::ffx_api
 
@@ -123,8 +124,12 @@ bool DX12_IsFFXUiBundleOverlayActivelyFiring();
 bool DX12_IsNativeFSRInternalNoCallbackCompositionActive();
 // Minimal-overhead ProcessFrame for no-callback FSR FG (skips policy/lock/heuristic work).
 void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain);
-// Cache the UI texture from the game's RegisterUiResource call for the next frame's ECL bundle (Step 3).
-void DX12_CacheFFXUiResourceForBundle(void* uiResource, uint32_t ffxState, uint32_t flags);
+// Decide + prepare the overlay target for a no-callback FSR FG RegisterUiResource intercept. Updates the
+// bundle's cached target texture + clear policy. Returns true iff CE substituted its own backbuffer-sized
+// texture for a degenerate game UI texture (e.g. GTA's 1x1); on true *ceSubstitute (FfxApiResource ABI) is
+// filled and the caller must forward it instead of the game's resource so AMD composites CE's texture.
+bool DX12_PrepareFFXUiOverlayTarget(const ce::ffx_api::Resource& gameUi, uint32_t flags,
+                                    ce::ffx_api::Resource* ceSubstitute);
 // Called from Hooked_ffxConfigure right before forwarding the configure to AMD. Stamps a QPC + frame
 // counter so the freeze-watchdog timeline can correlate composite calls with ffxConfigure forwards.
 void DX12_NoteFfxConfigureForward(uint64_t configureType);

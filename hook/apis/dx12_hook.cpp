@@ -1489,6 +1489,14 @@ static OverlayAdapter g_FFXPresentOverlayAdapter;
 static ID3D12Device* g_FFXPresentOverlayDevice = nullptr;
 static DXGI_FORMAT g_FFXPresentOverlayFormat = DXGI_FORMAT_UNKNOWN;
 
+// Live backbuffer geometry cached from the FG-enable ffxConfigure swapchain (see
+// DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain). Used to size CE's substitute UI texture and to
+// size-classify the game's registered no-callback FSR FG UI texture (usable HUD surface vs degenerate
+// placeholder). Declared here (before that helper) so the cache write can reference them.
+static std::atomic<uint32_t> g_NoCallbackBackbufferWidth{0};
+static std::atomic<uint32_t> g_NoCallbackBackbufferHeight{0};
+static std::atomic<uint32_t> g_NoCallbackBackbufferFormat{0};  // DXGI_FORMAT
+
 // Device/format the descriptor-free backend was built for. The backend is
 // DEVICE-scoped (PSOs, root signature, font buffer, vb/ib upload pool; the
 // backbuffer is fetched per frame) and intentionally survives swapchain
@@ -4664,6 +4672,21 @@ void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain) {
     const bool isActualHDR = ResolveSwapchainOutputHDRState(
         dxgiSwapChain, desc.BufferDesc.Format, "DX12: Cached runtime-owned callback HDR source", &outputColorSpace);
     UpdateLastKnownSwapchainHDRStateCache(desc.BufferDesc.Format, isActualHDR, outputColorSpace);
+
+    // Cache backbuffer geometry for the no-callback FSR FG UI-resource substitution path: CE sizes its own
+    // substitute UI texture to the backbuffer and uses these dims to tell a usable game UI texture apart from
+    // a degenerate placeholder (GTA's 1x1). Logged on first capture / on change so a GTA run shows the size.
+    if (desc.BufferDesc.Width != 0 && desc.BufferDesc.Height != 0) {
+        const uint32_t prevW = g_NoCallbackBackbufferWidth.exchange(desc.BufferDesc.Width, std::memory_order_acq_rel);
+        const uint32_t prevH = g_NoCallbackBackbufferHeight.exchange(desc.BufferDesc.Height, std::memory_order_acq_rel);
+        g_NoCallbackBackbufferFormat.store(static_cast<uint32_t>(desc.BufferDesc.Format), std::memory_order_release);
+        if (prevW != desc.BufferDesc.Width || prevH != desc.BufferDesc.Height) {
+            HookLogImportant(
+                "DX12: Cached no-callback FSR FG backbuffer geometry %ux%u fmt=%d (prev %ux%u) — sizes the CE "
+                "substitute UI texture / classifies the game's registered UI texture",
+                desc.BufferDesc.Width, desc.BufferDesc.Height, static_cast<int>(desc.BufferDesc.Format), prevW, prevH);
+        }
+    }
 }
 
 static void TransitionResourceIfNeeded(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* resource,
@@ -5303,6 +5326,21 @@ static std::atomic<uint64_t> g_FFXUiCompositeLastTickMs{0};
 static std::atomic<ID3D12Resource*> g_CachedFFXUiTexture{nullptr};
 static std::atomic<uint32_t> g_CachedFFXUiState{0};
 static std::atomic<uint32_t> g_CachedFFXUiFlags{0};
+// When the bundle target is CE's OWN substituted texture (the game registered a degenerate placeholder, e.g.
+// GTA's 1x1), the texture starts empty and must be cleared to transparent each frame so only the overlay
+// composites over the game frame. When the target is the game's own usable UI texture, we must NOT clear (the
+// overlay blends on top of the game's HUD already present in that texture).
+static std::atomic<bool> g_BundleTargetNeedsTransparentClear{false};
+// (g_NoCallbackBackbufferWidth/Height/Format are declared earlier, near g_FFXPresentOverlayFormat, because
+// DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain writes them before this point in the file.)
+// CE-owned, backbuffer-sized UI texture substituted into RegisterUiResource when the game's UI texture is
+// degenerate. AMD composites THIS texture post-interpolation; the game-ECL bundle draws the overlay onto it
+// every frame on the game queue. CE owns it (persists across frames), so the cached bundle-target pointer
+// stays valid. Released on teardown / device change (ReleaseFFXUiCompositeInfra).
+static ID3D12Resource* g_CEUiSubstituteTexture = nullptr;
+static uint32_t g_CEUiSubstituteWidth = 0;
+static uint32_t g_CEUiSubstituteHeight = 0;
+static DXGI_FORMAT g_CEUiSubstituteFormat = DXGI_FORMAT_UNKNOWN;
 static std::atomic<bool> g_BundleOverlayAppendedThisFrame{false};
 static std::atomic<int> g_BundleOverlayFrame{0};
 // GetTickCount64() of the last successful bundle overlay append. DetourPresent uses this (via
@@ -5574,9 +5612,27 @@ static ID3D12GraphicsCommandList* RecordBundleOverlayForGameECL(ID3D12Device* de
         LogBundleOverlaySkip("bad-desc");
         return nullptr;
     }
+    // DEGENERATE-TARGET GUARD: never draw the overlay onto a placeholder UI texture (GTA registers a 1x1).
+    // Drawing onto a 1x1 RT is useless and trips CreateCommandList/Reset E_INVALIDARG (session 20260621_191028).
+    // When the game's UI texture is degenerate, DX12_PrepareFFXUiOverlayTarget normally substitutes CE's own
+    // backbuffer-sized texture; if that substitution was unavailable (no backbuffer geometry yet), the bundle
+    // must skip rather than draw garbage. The overlay stays blank that frame but never crashes.
+    {
+        const uint32_t bbW = g_NoCallbackBackbufferWidth.load(std::memory_order_acquire);
+        const uint32_t bbH = g_NoCallbackBackbufferHeight.load(std::memory_order_acquire);
+        const bool degenerate =
+            td.Width <= 1 || td.Height <= 1 ||
+            (bbW > 0 && bbH > 0 && (static_cast<uint32_t>(td.Width) * 2u < bbW ||
+                                    static_cast<uint32_t>(td.Height) * 2u < bbH));
+        if (degenerate) {
+            LogBundleOverlaySkip("degenerate-target");
+            return nullptr;
+        }
+    }
     const int width = static_cast<int>(td.Width);
     const int height = static_cast<int>(td.Height);
     const DXGI_FORMAT rtvFormat = FFXUiCompositeRtvFormat(td.Format);
+    const bool needsTransparentClear = g_BundleTargetNeedsTransparentClear.load(std::memory_order_acquire);
 
     // Lazily build the bundle's GPU resources + overlay adapter (root-cause fix — see helper above).
     // The bundle rides the game's fence, so no separate-ECL queue/fence is required here.
@@ -5617,6 +5673,13 @@ static ID3D12GraphicsCommandList* RecordBundleOverlayForGameECL(ID3D12Device* de
     WriteOverlayGpuBreadcrumb(g_FFXUiCompositeList, kOverlayBcStart);
     TransitionResourceIfNeeded(g_FFXUiCompositeList, uiTexture, regState, D3D12_RESOURCE_STATE_RENDER_TARGET);
     WriteOverlayGpuBreadcrumb(g_FFXUiCompositeList, kOverlayBcAfterRTBarrier);
+    if (needsTransparentClear) {
+        // CE's substitute texture is CE-owned and otherwise empty — clear it to transparent so ONLY the overlay
+        // composites over the game frame (the game's real content shows through AMD's UI composition). The game's
+        // own UI texture is never cleared (the overlay blends on top of the HUD already present there).
+        const float kTransparent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        g_FFXUiCompositeList->ClearRenderTargetView(rtv, kTransparent, 0, nullptr);
+    }
     {
         std::lock_guard<std::recursive_mutex> olock(g_OverlayMutex);
         g_FFXPresentOverlayAdapter.SetIPCClient(g_IPC);
@@ -5643,31 +5706,171 @@ static ID3D12GraphicsCommandList* RecordBundleOverlayForGameECL(ID3D12Device* de
     return g_FFXUiCompositeList;
 }
 
-// Cache the UI texture from the game's ffxConfigure(RegisterUiResource) call for the next frame's bundle.
-// Called from Hooked_ffxConfigure. Also keeps the recency gate alive so the legacy route stays suppressed.
-void DX12_CacheFFXUiResourceForBundle(void* uiResourcePtr, uint32_t ffxState, uint32_t flags) {
-    if (!uiResourcePtr) {
+// Set the texture the game-ECL bundle draws the overlay onto next frame (either the game's own usable UI
+// texture, or CE's substitute). needsTransparentClear is true only for CE's substitute (it is CE-owned and
+// otherwise empty, so it must be cleared each frame); false for the game's own UI texture (blend on top of the
+// HUD already present there). Diagnostic surfaces whether the registered texture is stable or rotates per
+// frame (the post-VEH-disarm cache-freeze question).
+static void SetBundleTargetTexture(ID3D12Resource* targetTexture, uint32_t ffxState, uint32_t flags,
+                                   bool needsTransparentClear, const char* targetKind) {
+    if (!targetTexture) {
         return;
     }
-    ID3D12Resource* prev =
-        g_CachedFFXUiTexture.exchange(static_cast<ID3D12Resource*>(uiResourcePtr), std::memory_order_acq_rel);
+    ID3D12Resource* prev = g_CachedFFXUiTexture.exchange(targetTexture, std::memory_order_acq_rel);
     g_CachedFFXUiState.store(ffxState, std::memory_order_release);
     g_CachedFFXUiFlags.store(flags, std::memory_order_release);
+    g_BundleTargetNeedsTransparentClear.store(needsTransparentClear, std::memory_order_release);
     g_BundleOverlayAppendedThisFrame.store(false, std::memory_order_release);
     g_FFXUiResourceCompositionActive.store(true, std::memory_order_release);
     g_FFXUiCompositeLastTickMs.store(GetTickCount64(), std::memory_order_release);
-    // Diagnostic: surface whether the game re-registers the SAME UI texture every frame (stable pointer → the
-    // post-VEH-disarm cache freeze is harmless) or ROTATES textures (pointer changes → the cache must be
-    // refreshed per frame to avoid drawing onto a texture AMD no longer composites). A single GTA run answers
-    // the rotation question and gates whether the heavier per-frame re-cache work is needed.
     static std::atomic<uint64_t> s_uiCacheUpdateCount{0};
     const uint64_t n = s_uiCacheUpdateCount.fetch_add(1, std::memory_order_relaxed);
-    const bool changed = prev != static_cast<ID3D12Resource*>(uiResourcePtr);
+    const bool changed = prev != targetTexture;
     if (n < 20 || changed || (n % 600) == 0) {
         HookLogImportant(
-            "DX12: FFX UI-bundle cached UI resource %p (prev=%p changed=%d state=0x%X flags=0x%X update=%llu)",
-            uiResourcePtr, (void*)prev, changed ? 1 : 0, ffxState, flags, (unsigned long long)(n + 1));
+            "DX12: FFX UI-bundle target %s=%p (prev=%p changed=%d state=0x%X flags=0x%X clear=%d update=%llu)",
+            targetKind ? targetKind : "tex", (void*)targetTexture, (void*)prev, changed ? 1 : 0, ffxState, flags,
+            needsTransparentClear ? 1 : 0, (unsigned long long)(n + 1));
     }
+}
+
+// Create/resize CE's own backbuffer-sized UI texture (substituted into RegisterUiResource when the game's UI
+// texture is degenerate). Created with ALLOW_RENDER_TARGET (the bundle draws the overlay onto it) in the same
+// resource state AMD will read it in (mirrors the game's registered ffxState). Returns the texture or nullptr.
+// Caller holds g_FFXUiCompositeMutex.
+static ID3D12Resource* EnsureCEUiSubstituteTexture(ID3D12Device* device, uint32_t width, uint32_t height,
+                                                   DXGI_FORMAT format, D3D12_RESOURCE_STATES initialState) {
+    if (!device || width == 0 || height == 0 || format == DXGI_FORMAT_UNKNOWN) {
+        return nullptr;
+    }
+    if (g_CEUiSubstituteTexture && g_CEUiSubstituteWidth == width && g_CEUiSubstituteHeight == height &&
+        g_CEUiSubstituteFormat == format) {
+        return g_CEUiSubstituteTexture;
+    }
+    if (g_CEUiSubstituteTexture) {
+        g_CEUiSubstituteTexture->Release();
+        g_CEUiSubstituteTexture = nullptr;
+        g_CEUiSubstituteWidth = 0;
+        g_CEUiSubstituteHeight = 0;
+        g_CEUiSubstituteFormat = DXGI_FORMAT_UNKNOWN;
+    }
+    D3D12_HEAP_PROPERTIES heapProps = {};
+    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC td = {};
+    td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    td.Width = width;
+    td.Height = height;
+    td.DepthOrArraySize = 1;
+    td.MipLevels = 1;
+    td.Format = format;
+    td.SampleDesc.Count = 1;
+    td.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = FFXUiCompositeRtvFormat(format);  // typed RTV format (the bundle clears with this)
+    ID3D12Resource* tex = nullptr;
+    const HRESULT hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &td, initialState,
+                                                       &clearValue, IID_PPV_ARGS(&tex));
+    if (FAILED(hr) || !tex) {
+        HookLogImportant("DX12: FFX UI substitute texture creation FAILED (%ux%u fmt=%d hr=0x%08X)", width, height,
+                         static_cast<int>(format), static_cast<unsigned>(hr));
+        return nullptr;
+    }
+    tex->SetName(L"CE_FFXUiSubstituteTexture");
+    g_CEUiSubstituteTexture = tex;
+    g_CEUiSubstituteWidth = width;
+    g_CEUiSubstituteHeight = height;
+    g_CEUiSubstituteFormat = format;
+    HookLogImportant(
+        "DX12: Created CE substitute UI texture %ux%u fmt=%d initState=0x%X — AMD composites this onto real+generated "
+        "frames; the game-ECL bundle draws the overlay onto it every frame",
+        width, height, static_cast<int>(format), static_cast<unsigned>(initialState));
+    return tex;
+}
+
+// Decide + prepare the overlay target for a no-callback FSR FG RegisterUiResource intercept. Updates the
+// bundle's cached target + clear policy; on substitution fills *ceSubstitute with CE's backbuffer-sized
+// texture (FfxApiResource ABI) so the caller forwards it instead of the game's degenerate placeholder.
+bool DX12_PrepareFFXUiOverlayTarget(const ce::ffx_api::Resource& gameUi, uint32_t flags,
+                                    ce::ffx_api::Resource* ceSubstitute) {
+    auto* gameTex = static_cast<ID3D12Resource*>(gameUi.resource);
+    if (!gameTex) {
+        return false;
+    }
+
+    // Authoritative geometry/format from the actual D3D12 resource (the FFX description can be partially filled);
+    // fall back to the FFX description dims if the resource is not a usable 2D texture.
+    uint32_t gameW = gameUi.description.width;
+    uint32_t gameH = gameUi.description.height;
+    DXGI_FORMAT gameFmt = DXGI_FORMAT_UNKNOWN;
+    {
+        const D3D12_RESOURCE_DESC gd = gameTex->GetDesc();
+        if (gd.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && gd.Width != 0 && gd.Height != 0) {
+            gameW = static_cast<uint32_t>(gd.Width);
+            gameH = gd.Height;
+            gameFmt = gd.Format;
+        }
+    }
+    const uint32_t bbW = g_NoCallbackBackbufferWidth.load(std::memory_order_acquire);
+    const uint32_t bbH = g_NoCallbackBackbufferHeight.load(std::memory_order_acquire);
+
+    const auto target = ce::dx12_overlay_policy::ChooseFFXUiOverlayTarget(gameW, gameH, bbW, bbH);
+    if (target == ce::dx12_overlay_policy::FFXUiOverlayTarget::kCompositeOntoGameTexture) {
+        SetBundleTargetTexture(gameTex, gameUi.state, flags, /*needsTransparentClear=*/false, "game-tex");
+        return false;
+    }
+
+    // Degenerate game UI texture (GTA's 1x1): substitute CE's own backbuffer-sized texture so AMD composites
+    // the overlay. Requires known backbuffer geometry + a valid device; otherwise fall back to caching the game
+    // texture (the bundle's degenerate guard then safely skips the draw — never a 1x1 garbage submit / crash).
+    ID3D12Device* device = g_Device.load(std::memory_order_acquire);
+    const DXGI_FORMAT substituteFmt =
+        (gameFmt != DXGI_FORMAT_UNKNOWN)
+            ? gameFmt
+            : static_cast<DXGI_FORMAT>(g_NoCallbackBackbufferFormat.load(std::memory_order_acquire));
+    if (!device || bbW == 0 || bbH == 0 || substituteFmt == DXGI_FORMAT_UNKNOWN || !ceSubstitute) {
+        SetBundleTargetTexture(gameTex, gameUi.state, flags, /*needsTransparentClear=*/false,
+                               "game-tex-degenerate-no-substitute");
+        static std::atomic<int> s_substFallbackLog{0};
+        const int n = s_substFallbackLog.fetch_add(1, std::memory_order_relaxed);
+        if (n < 20 || (n % 300) == 0) {
+            HookLogImportant(
+                "DX12: FFX UI substitute UNAVAILABLE (device=%p bb=%ux%u fmt=%d) — degenerate game UI texture %ux%u "
+                "kept as bundle target; bundle skips the draw rather than draw onto a placeholder (log=%d)",
+                (void*)device, bbW, bbH, static_cast<int>(substituteFmt), gameW, gameH, n + 1);
+        }
+        return false;
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(g_FFXUiCompositeMutex);
+    const D3D12_RESOURCE_STATES initialState = GetDX12StateFromFFXResourceState(gameUi.state);
+    ID3D12Resource* ceTex =
+        EnsureCEUiSubstituteTexture(device, bbW, bbH, substituteFmt,
+                                    initialState ? initialState : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    if (!ceTex) {
+        SetBundleTargetTexture(gameTex, gameUi.state, flags, /*needsTransparentClear=*/false, "game-tex-subst-failed");
+        return false;
+    }
+
+    // Mirror the game's description/state so AMD treats CE's texture identically; override only geometry + ptr.
+    *ceSubstitute = gameUi;
+    ceSubstitute->resource = ceTex;
+    ceSubstitute->description.width = bbW;
+    ceSubstitute->description.height = bbH;
+
+    SetBundleTargetTexture(ceTex, gameUi.state, flags, /*needsTransparentClear=*/true, "ce-substitute-tex");
+
+    static std::atomic<int> s_substLog{0};
+    const int n = s_substLog.fetch_add(1, std::memory_order_relaxed);
+    if (n < 20 || (n % 300) == 0) {
+        HookLogImportant(
+            "DX12: Substituted CE full-size UI texture %p (%ux%u fmt=%d) for degenerate game UI texture %p (%ux%u) — "
+            "AMD composites CE's texture; overlay refreshed every frame via the game-ECL bundle (state=0x%X flags=0x%X "
+            "log=%d)",
+            (void*)ceTex, bbW, bbH, static_cast<int>(substituteFmt), (void*)gameTex, gameW, gameH, gameUi.state, flags,
+            n + 1);
+    }
+    return true;
 }
 
 void DX12_NoteFfxConfigureForward(uint64_t configureType) {
@@ -5703,8 +5906,18 @@ static void ReleaseFFXUiCompositeInfra() {
     g_CachedFFXUiTexture.store(nullptr, std::memory_order_release);
     g_CachedFFXUiState.store(0, std::memory_order_release);
     g_CachedFFXUiFlags.store(0, std::memory_order_release);
+    g_BundleTargetNeedsTransparentClear.store(false, std::memory_order_release);
     g_BundleOverlayAppendedThisFrame.store(false, std::memory_order_release);
     g_BundleOverlayFrame.store(0, std::memory_order_relaxed);
+    // Release CE's own substitute UI texture (degenerate-game-texture path). Released here on teardown / device
+    // change only — never from the per-frame bundle path (that would blank the overlay every frame).
+    if (g_CEUiSubstituteTexture) {
+        g_CEUiSubstituteTexture->Release();
+        g_CEUiSubstituteTexture = nullptr;
+    }
+    g_CEUiSubstituteWidth = 0;
+    g_CEUiSubstituteHeight = 0;
+    g_CEUiSubstituteFormat = DXGI_FORMAT_UNKNOWN;
 }
 
 // Pick an RTV-compatible (non-TYPELESS) format for the UI texture so CreateRenderTargetView succeeds.

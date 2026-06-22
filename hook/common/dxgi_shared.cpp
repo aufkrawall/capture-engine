@@ -2668,20 +2668,40 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             // renders through the normal DX12 route.
             const bool noCallbackFSRFG = DX12_IsNativeFSRInternalNoCallbackCompositionActive();
             if (noCallbackFSRFG) {
+                // CRASH BOUNDARY: under runtime-owned native FSR FG, CE must NEVER submit overlay GPU work on
+                // AMD's backbuffer / runtime present queue (the documented ffxQuery null-deref AV, session
+                // 20260621_191028). The overlay's only AMD-safe channel there is the UI-resource composition
+                // (the game-ECL bundle draws onto the registered/CE-substituted UI texture), so the route
+                // selector returns kSkipBundleCovers whenever AMD owns the swapchain.
+                const bool runtimeOwnsSwapchain =
+                    DXGIShared::DoesFGRuntimeOwnSwapchain() || HookHasRuntimeOwnedNativeFGPresentPath();
                 const ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute noCallbackRoute =
                     ce::dx12_overlay_policy::ChooseNoCallbackFSRFGOverlayRoute(
-                        DX12_IsFFXUiResourceCachedForBundle(), DX12_IsFFXUiBundleOverlayActivelyFiring());
+                        runtimeOwnsSwapchain, DX12_IsFFXUiResourceCachedForBundle(),
+                        DX12_IsFFXUiBundleOverlayActivelyFiring());
                 if (noCallbackRoute == ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute::kSkipBundleCovers) {
-                    // The ECL UI-bundle is actively compositing the overlay onto AMD's UI texture
-                    // (post-interpolation), so skip the separate backbuffer ProcessFrame — that keeps AMD's
-                    // pacing-critical present queue undisturbed (submitting overlay work there freezes GTA
-                    // ~900 frames).
+                    // The overlay rides AMD's UI-resource composition (the game-ECL bundle draws it onto the
+                    // registered/CE-substituted UI texture, post-interpolation), so skip the separate backbuffer
+                    // ProcessFrame — that keeps AMD's pacing-critical present queue undisturbed (submitting
+                    // overlay work there null-derefs AMD inside ffxQuery / freezes GTA ~900 frames).
+                } else if (runtimeOwnsSwapchain) {
+                    // DEFENSIVE GUARD RAIL: the route selector must never pick the backbuffer submit while AMD
+                    // owns the swapchain. If we ever reach here it is a logic regression at the exact crash
+                    // boundary — log loudly and skip the submit rather than risk the ffxQuery wedge.
+                    static std::atomic<int> s_noCallbackBackbufferGuardLog{0};
+                    const int guardLog = s_noCallbackBackbufferGuardLog.fetch_add(1, std::memory_order_relaxed);
+                    if (guardLog < 20 || (guardLog % 300) == 0) {
+                        HookLogImportant(
+                            "DetourPresent: GUARD — refusing minimal backbuffer ProcessFrame under runtime-owned "
+                            "no-callback FSR FG (crash boundary; overlay rides UI composition only) log=%d",
+                            guardLog + 1);
+                    }
                 } else {
-                    // Either no UI bundle (test-app style) OR the bundle is cached but not yet/again firing
-                    // (FG-on transition window, or a stale UI texture). Draw via the minimal backbuffer path so
-                    // the overlay is NEVER blank across the transition. Freeze-safe transient bridge: once the
-                    // ECL bundle engages, DX12_IsFFXUiBundleOverlayActivelyFiring() flips true and control
-                    // returns to the cheap skip branch above.
+                    // Non-runtime-owned no-callback composition (AMD does not own this swapchain): the backbuffer
+                    // submit is safe here. Either no UI bundle (test-app style) OR the bundle is cached but not
+                    // yet/again firing (transition window). Draw via the minimal backbuffer path so the overlay is
+                    // NEVER blank. Once the bundle engages, DX12_IsFFXUiBundleOverlayActivelyFiring() flips true
+                    // and control returns to the cheap skip branch above.
                     DX12_ProcessFrameMinimal(pSwapChain);
                 }
             } else {

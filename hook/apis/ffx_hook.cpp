@@ -387,6 +387,10 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     }
 
     ce::ffx_api::ConfigureDescFrameGeneration localConfig = {};
+    // Backing storage for a substituted RegisterUiResource forward (CE swaps in its own full-size UI texture
+    // when the game registers a degenerate 1x1 placeholder). Function-scoped so it outlives the synchronous
+    // forward at CallFfxConfigureOriginalGuarded below.
+    ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource localUiConfig = {};
     const ffxConfigureDescHeader* descToCall = desc;
     const auto* parsedDesc = reinterpret_cast<const ce::ffx_api::ApiHeader*>(desc);
     const bool recognizedFGConfigure = parsedDesc && parsedDesc->type == ce::ffx_api::kConfigureDescTypeFrameGeneration;
@@ -483,8 +487,17 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         const auto* uiDesc =
             reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource*>(desc);
         if (uiDesc->uiResource.resource) {
-            DX12_CacheFFXUiResourceForBundle(uiDesc->uiResource.resource, uiDesc->uiResource.state,
-                                              uiDesc->flags);
+            // Decide composite-onto-game-texture vs substitute-CE-full-size-texture and update the bundle's
+            // cached target. GTA leaves UI composition enabled but registers a 1x1 placeholder, so CE substitutes
+            // its own backbuffer-sized texture and forwards THAT (so AMD composites the overlay onto every real +
+            // generated frame). The test app / games that register a usable full-size UI texture forward unchanged
+            // and CE blends the overlay onto the game's own texture via the bundle.
+            ce::ffx_api::Resource ceSubstitute = {};
+            if (DX12_PrepareFFXUiOverlayTarget(uiDesc->uiResource, uiDesc->flags, &ceSubstitute)) {
+                localUiConfig = *uiDesc;
+                localUiConfig.uiResource = ceSubstitute;
+                descToCall = reinterpret_cast<const ffxConfigureDescHeader*>(&localUiConfig);
+            }
         } else {
             static std::atomic<int> s_emptyUiResLogCount{0};
             if (s_emptyUiResLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {

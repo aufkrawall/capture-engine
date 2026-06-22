@@ -49,7 +49,6 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char*, bool, bool) { re
 void DX12_DumpDredIfDeviceRemoved(const char*) {}
 void DX12_LogOverlayGpuBreadcrumbs(const char*) {}
 void DX12_NoteFfxConfigureForward(uint64_t) {}
-void DX12_CacheFFXUiResourceForBundle(void*, uint32_t, uint32_t) {}
 void FFXHook_ResetVehDisarmAndRearm() {}
 bool DX12_IsNativeFSRInternalNoCallbackCompositionActive() { return false; }
 void DX12_ProcessFrameMinimal(IDXGISwapChain*) {}
