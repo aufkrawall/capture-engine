@@ -52,6 +52,7 @@ void DX12_NoteFfxConfigureForward(uint64_t) {}
 void FFXHook_ResetVehDisarmAndRearm() {}
 bool DX12_IsNativeFSRInternalNoCallbackCompositionActive() { return false; }
 bool DX12_IsLiveSwapchainQueueOriginalGameQueue() { return false; }
+bool DX12_IsNativeFSRFGSuspendedDisablePending() { return false; }
 void DX12_ResetNoCallbackBundleFrame() {}
 void DX12_ProcessFrameMinimal(IDXGISwapChain*) {}
 bool DX12_ShouldCacheFFXUiResourceForBundle() { return false; }

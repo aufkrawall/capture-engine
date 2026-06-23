@@ -5523,47 +5523,64 @@ TEST(DXGISharedTest, NoCallbackFSRFGOverlayRouteNeverSubmitsBackbufferWhenRuntim
     using ce::dx12_overlay_policy::ChooseNoCallbackFSRFGOverlayRoute;
     using ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute;
 
-    // Runtime-owned AND the live present is on AMD's SEPARATE FG queue (live queue != origGame): ALWAYS skip
-    // the backbuffer submit, in EVERY bundle state. These four cases are the exact crash boundary — the
-    // backbuffer submit must never be chosen while AMD genuinely owns the present queue.
+    // ACTIVELY INTERPOLATING: runtime-owned, NOT suspended, live present on AMD's SEPARATE FG queue (live
+    // queue != origGame). ALWAYS skip the backbuffer submit, in EVERY bundle state. These four cases are the
+    // exact crash boundary — the backbuffer submit must never be chosen while AMD is interpolating.
+    // Args: (runtimeOwns, liveQueueIsOrigGame, fsrFGDisabledSuspendPending, cached, firing).
     for (bool cached : {false, true}) {
         for (bool firing : {false, true}) {
             EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(
-                          /*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/false, cached, firing)),
+                          /*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/false, /*suspendPending=*/false, cached,
+                          firing)),
                       static_cast<int>(NoCallbackFSRFGOverlayRoute::kSkipBundleCovers))
-                << "runtime-owned on AMD's FG queue must never submit on AMD's queue (cached=" << cached
+                << "actively interpolating on AMD's FG queue must never submit on AMD's queue (cached=" << cached
                 << " firing=" << firing << ")";
         }
     }
 
+    // NO-CALLBACK SUSPENSION (session 20260623_054929): runtime-owned but FG explicitly disabled (AMD keeps the
+    // swapchain, not interpolating). The backbuffer is safe again — skip only when the bundle is actually
+    // covering (AMD still composites the UI resource during a suspension), else draw on the backbuffer so the
+    // overlay is never blank if the bundle has a gap.
+    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(
+                  /*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/false, /*suspendPending=*/true, /*cached=*/true,
+                  /*firing=*/true)),
+              static_cast<int>(NoCallbackFSRFGOverlayRoute::kSkipBundleCovers));
+    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(
+                  /*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/false, /*suspendPending=*/true, /*cached=*/true,
+                  /*firing=*/false)),
+              static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer))
+        << "no-callback suspension with a bundle coverage gap must draw via backbuffer (AMD not interpolating)";
+
     // STALE-LATCH RECOVERY (FSR->off): the no-callback latch is still set but the game recreated a native
     // swapchain and presents on its OWN queue again (live queue == origGame). AMD's FG swapchain is gone, the
-    // bundle is invisible, and the backbuffer route is safe (AMD's FG queue != origGame). Must draw via the
-    // backbuffer in EVERY bundle state — even though runtimeOwns is still latched true.
-    for (bool cached : {false, true}) {
-        for (bool firing : {false, true}) {
-            EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(
-                          /*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/true, cached, firing)),
-                      static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer))
-                << "stale latch with live present back on origGame must draw via backbuffer (cached=" << cached
-                << " firing=" << firing << ")";
+    // bundle is invisible, and the backbuffer route is safe. Must draw via the backbuffer in EVERY bundle
+    // state — even though runtimeOwns is still latched true and regardless of suspend-pending.
+    for (bool suspend : {false, true}) {
+        for (bool cached : {false, true}) {
+            for (bool firing : {false, true}) {
+                EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(
+                              /*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/true, suspend, cached, firing)),
+                          static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer))
+                    << "stale latch with live present back on origGame must draw via backbuffer";
+            }
         }
     }
 
     // Non-runtime-owned (AMD does NOT own the swapchain — safe to submit on the backbuffer):
     // bundle cached AND actively firing -> safe to skip (bundle composites the overlay).
     EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/false, /*liveQueueIsOrigGame=*/false,
-                                                                 /*cached=*/true, /*firing=*/true)),
+                                                                 /*suspendPending=*/false, /*cached=*/true,
+                                                                 /*firing=*/true)),
               static_cast<int>(NoCallbackFSRFGOverlayRoute::kSkipBundleCovers));
     // Cached but NOT firing, or not cached -> draw via the safe minimal backbuffer path (never blank).
     EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/false, /*liveQueueIsOrigGame=*/false,
-                                                                 /*cached=*/true, /*firing=*/false)),
+                                                                 /*suspendPending=*/false, /*cached=*/true,
+                                                                 /*firing=*/false)),
               static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer));
     EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/false, /*liveQueueIsOrigGame=*/false,
-                                                                 /*cached=*/false, /*firing=*/false)),
-              static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer));
-    EXPECT_EQ(static_cast<int>(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/false, /*liveQueueIsOrigGame=*/false,
-                                                                 /*cached=*/false, /*firing=*/true)),
+                                                                 /*suspendPending=*/false, /*cached=*/false,
+                                                                 /*firing=*/false)),
               static_cast<int>(NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer));
 }
 

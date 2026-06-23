@@ -5500,6 +5500,17 @@ bool DX12_IsLiveSwapchainQueueOriginalGameQueue() {
     return g_SwapchainQueue != nullptr && g_OriginalGameQueue != nullptr && g_SwapchainQueue == g_OriginalGameQueue;
 }
 
+// True when native FSR FG has been explicitly DISABLED (ffxConfigure frameGenerationEnabled=0) while AMD's
+// runtime-owned swapchain is still the live present path — i.e. a no-callback SUSPENSION (menu/loading), not
+// full off. AMD keeps the swapchain but is NOT interpolating, so the ffxQuery interpolation-pacing wedge is
+// inactive and separate overlay GPU work on the backbuffer is safe again (the documented suspension behavior).
+// DetourPresent uses this to relax the crash-boundary skip during a suspension so the overlay is never blank
+// if the bundle has a coverage gap. Cleared on the next enabled ffxConfigure (resume). This is an explicit
+// configure-driven latch, not a heuristic runtime-mode read, so it does not flicker under active interpolation.
+bool DX12_IsNativeFSRFGSuspendedDisablePending() {
+    return g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
+}
+
 // Step 3: Record CE's overlay draw onto the cached UI texture into g_FFXUiCompositeList, close it, and
 // return it for bundling into the game's ECL. Returns the closed command list, or nullptr on failure.
 // Called from DetourExecuteCommandLists on the game's ECL thread. Does NOT submit or signal — the

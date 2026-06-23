@@ -2699,37 +2699,44 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 // own queue (live swapchain queue == origGame), AMD's FG swapchain is gone — a still-set
                 // no-callback latch is stale and the backbuffer route is safe again (FSR->off recovery).
                 const bool liveSwapchainQueueIsOriginalGameQueue = DX12_IsLiveSwapchainQueueOriginalGameQueue();
+                // SUSPEND SIGNAL: native FSR FG explicitly disabled while AMD still owns the swapchain (no-callback
+                // suspension — AMD keeps the swapchain but is NOT interpolating). The crash boundary is the
+                // interpolation pacing path, so the backbuffer submit is safe again during a suspension.
+                const bool fsrFGDisabledSuspendPending = DX12_IsNativeFSRFGSuspendedDisablePending();
+                // AMD is ACTIVELY interpolating on its own runtime queue only when runtime-owned, NOT suspended,
+                // and the live queue is AMD's separate FG queue (not origGame). That is the only state where the
+                // backbuffer submit is forbidden.
+                const bool amdActivelyInterpolatingOnFGQueue =
+                    runtimeOwnsSwapchain && !fsrFGDisabledSuspendPending && !liveSwapchainQueueIsOriginalGameQueue;
                 const ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute noCallbackRoute =
                     ce::dx12_overlay_policy::ChooseNoCallbackFSRFGOverlayRoute(
-                        runtimeOwnsSwapchain, liveSwapchainQueueIsOriginalGameQueue,
+                        runtimeOwnsSwapchain, liveSwapchainQueueIsOriginalGameQueue, fsrFGDisabledSuspendPending,
                         DX12_IsFFXUiResourceCachedForBundle(), DX12_IsFFXUiBundleOverlayActivelyFiring());
                 if (noCallbackRoute == ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute::kSkipBundleCovers) {
                     // The overlay rides AMD's UI-resource composition (the game-ECL bundle draws it onto the
                     // registered/CE-substituted UI texture, post-interpolation), so skip the separate backbuffer
                     // ProcessFrame — that keeps AMD's pacing-critical present queue undisturbed (submitting
                     // overlay work there null-derefs AMD inside ffxQuery / freezes GTA ~900 frames).
-                } else if (runtimeOwnsSwapchain && !liveSwapchainQueueIsOriginalGameQueue) {
-                    // DEFENSIVE GUARD RAIL: the backbuffer submit is forbidden ONLY while AMD genuinely owns the
-                    // live present queue — i.e. runtime-owned AND the live queue is AMD's separate FG queue (not
-                    // origGame). The route selector never produces kMinimalBackbuffer in that case, so reaching
-                    // here is a logic regression at the exact crash boundary — log loudly and skip rather than
-                    // risk the ffxQuery wedge. (A stale latch with the live queue back on origGame is NOT this
-                    // case — it correctly takes the backbuffer path below.)
+                } else if (amdActivelyInterpolatingOnFGQueue) {
+                    // DEFENSIVE GUARD RAIL: the backbuffer submit is forbidden ONLY while AMD is actively
+                    // interpolating on its own FG queue. The route selector never produces kMinimalBackbuffer in
+                    // that case, so reaching here is a logic regression at the exact crash boundary — log loudly
+                    // and skip rather than risk the ffxQuery wedge. (A suspension, or a stale latch with the live
+                    // present back on origGame, is NOT this case — those correctly take the backbuffer path below.)
                     static std::atomic<int> s_noCallbackBackbufferGuardLog{0};
                     const int guardLog = s_noCallbackBackbufferGuardLog.fetch_add(1, std::memory_order_relaxed);
                     if (guardLog < 20 || (guardLog % 300) == 0) {
                         HookLogImportant(
-                            "DetourPresent: GUARD — refusing minimal backbuffer ProcessFrame under runtime-owned "
-                            "no-callback FSR FG on AMD's FG queue (crash boundary; overlay rides UI composition only) "
-                            "log=%d",
+                            "DetourPresent: GUARD — refusing minimal backbuffer ProcessFrame while AMD actively "
+                            "interpolates on its FG queue (crash boundary; overlay rides UI composition only) log=%d",
                             guardLog + 1);
                     }
                 } else {
-                    // Backbuffer submit is safe here: either AMD does not own this swapchain (test-app style /
-                    // bundle not yet firing), OR a STALE no-callback latch with the live present back on the game's
-                    // own queue (FSR->off recovery — AMD's FG swapchain is gone, the bundle is invisible). Draw via
-                    // the minimal backbuffer path so the overlay is NEVER blank across the off transition; once the
-                    // bundle engages (active FG) control returns to the cheap skip branch above.
+                    // Backbuffer submit is safe here: AMD does not own this swapchain (test-app style / bundle not
+                    // yet firing), OR a no-callback SUSPENSION (FG disabled, AMD not interpolating), OR a STALE
+                    // no-callback latch with the live present back on the game's own queue (FSR->off recovery).
+                    // Draw via the minimal backbuffer path so the overlay is NEVER blank across these windows;
+                    // once active interpolation resumes, control returns to the cheap skip branch above.
                     DX12_ProcessFrameMinimal(pSwapChain);
                 }
             } else {

@@ -125,6 +125,9 @@ bool DX12_IsNativeFSRInternalNoCallbackCompositionActive();
 // True when the live swapchain queue is the game's own original queue (AMD's FG swapchain is gone). Used by
 // DetourPresent to detect a STALE no-callback latch on FSR->off and safely fall back to the backbuffer route.
 bool DX12_IsLiveSwapchainQueueOriginalGameQueue();
+// True when native FSR FG is DISABLED/SUSPENDED while AMD still owns the swapchain (no-callback suspension —
+// AMD is not interpolating). DetourPresent relaxes the crash-boundary backbuffer skip during a suspension.
+bool DX12_IsNativeFSRFGSuspendedDisablePending();
 // Reset the once-per-frame UI-bundle append latch. DetourPresent calls this for every no-callback FSR FG
 // present (the per-frame boundary), since DX12_ProcessFrameMinimal no longer runs under runtime-owned FG.
 void DX12_ResetNoCallbackBundleFrame();
