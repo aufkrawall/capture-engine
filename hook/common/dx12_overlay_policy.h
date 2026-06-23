@@ -434,8 +434,21 @@ enum class NoCallbackFSRFGOverlayRoute {
 // swapchain (defensive escape hatch / non-runtime-owned harness paths). There, the backbuffer submit is safe;
 // skip only when the bundle is actually firing so the overlay is never blank — never a silent skip-with-no-draw.
 inline NoCallbackFSRFGOverlayRoute ChooseNoCallbackFSRFGOverlayRoute(bool runtimeOwnsSwapchain,
+                                                                     bool liveSwapchainQueueIsOriginalGameQueue,
                                                                      bool uiResourceCachedForBundle,
                                                                      bool bundleOverlayActivelyFiring) {
+    // STALE-LATCH RECOVERY (FSR->off, session 20260622_180830): the no-callback composition latch (and the
+    // runtime-owned latch) can OUTLIVE the FSR session when the off-signal is missed — ffxDestroyContext can
+    // be bypassed, the one-shot ffxConfigure VEH is permanently disarmed, and CE deliberately preserves
+    // runtime ownership "until a stronger off signal arrives". When the game has recreated a NATIVE swapchain
+    // and presents on its OWN queue again (the live swapchain queue is the original game queue), AMD's
+    // FfxFrameInterpolationSwapchain is gone — AMD is no longer compositing the UI texture, so the bundle is
+    // invisible. The backbuffer route is SAFE here (the crash boundary is submitting on AMD's SEPARATE FG
+    // queue, which by definition != the original game queue), so draw via the backbuffer to keep the overlay
+    // visible until the stale latch clears. This takes precedence over the runtime-owned skip.
+    if (liveSwapchainQueueIsOriginalGameQueue) {
+        return NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer;
+    }
     if (runtimeOwnsSwapchain) {
         // NEVER submit on AMD's backbuffer/runtime queue here — the overlay rides UI composition only.
         return NoCallbackFSRFGOverlayRoute::kSkipBundleCovers;

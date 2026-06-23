@@ -5487,6 +5487,19 @@ bool DX12_IsNativeFSRInternalNoCallbackCompositionActive() {
     return g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire);
 }
 
+// True when the LIVE swapchain queue is the game's own original queue. During ACTIVE no-callback FSR FG the
+// game presents on AMD's SEPARATE FfxFrameInterpolationSwapchain queue (g_SwapchainQueue != origGame); once
+// FSR turns off and the game recreates a NATIVE swapchain it presents on its own queue again
+// (g_SwapchainQueue == origGame). DetourPresent uses this as the reliable real-time signal that AMD's FG
+// swapchain is gone — so a still-set no-callback latch is STALE (the off-signal was missed: ffxDestroyContext
+// bypass / one-shot ffxConfigure VEH disarmed / preserved ownership), AMD is no longer compositing the UI
+// texture, and the overlay must fall back to the (now-safe) backbuffer route. It is safe because the crash
+// boundary is submitting on AMD's separate FG queue, which by definition != the original game queue.
+bool DX12_IsLiveSwapchainQueueOriginalGameQueue() {
+    std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+    return g_SwapchainQueue != nullptr && g_OriginalGameQueue != nullptr && g_SwapchainQueue == g_OriginalGameQueue;
+}
+
 // Step 3: Record CE's overlay draw onto the cached UI texture into g_FFXUiCompositeList, close it, and
 // return it for bundling into the game's ECL. Returns the closed command list, or nullptr on failure.
 // Called from DetourExecuteCommandLists on the game's ECL thread. Does NOT submit or signal — the
