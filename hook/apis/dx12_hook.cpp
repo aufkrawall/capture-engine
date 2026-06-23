@@ -5776,7 +5776,17 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
     // cleared (the overlay blends on top of the HUD already present there). Mirrors the retired bundle.
     const bool needsTransparentClear = g_BundleTargetNeedsTransparentClear.load(std::memory_order_acquire);
 
-    if (g_FFXUiCompositeDevice != device) {
+    if (g_FFXUiCompositeDevice == nullptr) {
+        // FIRST-TIME init on this device: just record it. This is NOT a device change, so it must NOT call
+        // ReleaseFFXUiCompositeInfra — that clears g_CachedFFXUiTexture, which Hooked_ffxConfigure just
+        // populated and (after the one-shot ffxConfigure VEH disarms) may never repopulate. Session
+        // 20260624_001619: the spurious first-call teardown nulled the cache, so the wrapper saw a null cache
+        // on every subsequent present and the overlay composited exactly ONE frame then went blank.
+        g_FFXUiCompositeDevice = device;
+    } else if (g_FFXUiCompositeDevice != device) {
+        // GENUINE device change: the infra + cache + substitute all belong to the now-dead device. Tear them
+        // down and bail this frame — the passed uiTexture is from the old device. The next present rebuilds once
+        // a UI texture is re-registered on the new device (or stays blank-but-safe if the VEH already disarmed).
         ReleaseFFXUiCompositeInfra();
         if (g_FFXPresentOverlayAdapter.IsInitialized()) {
             g_FFXPresentOverlayAdapter.Shutdown();
@@ -5785,6 +5795,7 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
         g_FFXPresentOverlayFormat = DXGI_FORMAT_UNKNOWN;
         g_FFXUiCompositeAdapterFormat = DXGI_FORMAT_UNKNOWN;
         g_FFXUiCompositeDevice = device;
+        return false;
     }
 
     // Lazily build the dedicated CE-queue submission infra (separate from the present-thread overlay and
@@ -5883,10 +5894,18 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
     if (FAILED(allocResetHr) || FAILED(listResetHr)) {
         static std::atomic<int> s_resetFailLog{0};
         const int n = s_resetFailLog.fetch_add(1, std::memory_order_relaxed);
-        if (n < 10) {
+        if (n < 10 || (n % 600) == 0) {
             HookLogImportant(
-                "DX12: FFX UI-composite allocator/list Reset FAILED (slot=%d frame=%d allocHr=0x%08X listHr=0x%08X)",
+                "DX12: FFX UI-composite allocator/list Reset FAILED (slot=%d frame=%d allocHr=0x%08X listHr=0x%08X) — "
+                "recreating command list to recover",
                 slot, g_FFXUiCompositeFrame, static_cast<unsigned>(allocResetHr), static_cast<unsigned>(listResetHr));
+        }
+        // RECOVERY: a failed list->Reset (E_INVALIDARG) means the list is stuck OPEN from a prior failed Close.
+        // Release it so the lazy-init above recreates a clean closed list next frame — otherwise every subsequent
+        // frame fails the same Reset and the overlay blanks permanently.
+        if (FAILED(listResetHr) && g_FFXUiCompositeList) {
+            g_FFXUiCompositeList->Release();
+            g_FFXUiCompositeList = nullptr;
         }
         return false;
     }
@@ -5926,7 +5945,25 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
     WriteOverlayGpuBreadcrumb(g_FFXUiCompositeList, kOverlayBcAfterDraw);
     TransitionResourceIfNeeded(g_FFXUiCompositeList, uiTexture, D3D12_RESOURCE_STATE_RENDER_TARGET, regState);
     WriteOverlayGpuBreadcrumb(g_FFXUiCompositeList, kOverlayBcBeforeClose);
-    if (FAILED(g_FFXUiCompositeList->Close())) {
+    const HRESULT closeHr = g_FFXUiCompositeList->Close();
+    if (FAILED(closeHr)) {
+        // A Close failure (commonly E_INVALIDARG from an invalid recording — e.g. a barrier whose StateBefore
+        // does not match the UI texture's real state) leaves the list OPEN. Log it and release the list so the
+        // next frame rebuilds a clean one — otherwise the next list->Reset fails forever and the overlay blanks
+        // permanently. A persistent failure points at the registered UI-resource state vs the texture's real state.
+        static std::atomic<int> s_compositeCloseFailLog{0};
+        const int n = s_compositeCloseFailLog.fetch_add(1, std::memory_order_relaxed);
+        if (n < 20 || (n % 600) == 0) {
+            HookLogImportant(
+                "DX12: FFX UI-composite command list Close FAILED hr=0x%08X (uiTex=%p ffxState=0x%X regState=0x%X "
+                "needsClear=%d) — recreating list to recover",
+                static_cast<unsigned>(closeHr), (void*)uiTexture, ffxState, static_cast<unsigned>(regState),
+                needsTransparentClear ? 1 : 0);
+        }
+        if (g_FFXUiCompositeList) {
+            g_FFXUiCompositeList->Release();
+            g_FFXUiCompositeList = nullptr;
+        }
         return false;
     }
 
