@@ -53,11 +53,10 @@ void FFXHook_ResetVehDisarmAndRearm() {}
 bool DX12_IsNativeFSRInternalNoCallbackCompositionActive() { return false; }
 bool DX12_IsLiveSwapchainQueueOriginalGameQueue() { return false; }
 bool DX12_IsNativeFSRFGSuspendedDisablePending() { return false; }
-void DX12_ResetNoCallbackBundleFrame() {}
+bool DX12_CompositeOverlayOntoCachedFFXUiResource() { return false; }
 void DX12_ProcessFrameMinimal(IDXGISwapChain*) {}
 bool DX12_ShouldCacheFFXUiResourceForBundle() { return false; }
 bool DX12_IsFFXUiResourceCachedForBundle() { return false; }
-bool DX12_IsFFXUiBundleOverlayActivelyFiring() { return false; }
 
 // DX12_SetCommandQueue is extern "C" in the header
 extern "C" void DX12_SetCommandQueue(ID3D12CommandQueue*) {}

@@ -2683,15 +2683,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 }
             }
             if (noCallbackFSRFG) {
-                // Per-frame boundary: reset the once-per-frame UI-bundle append latch so the next frame's game
-                // ECL can append CE's overlay again (DX12_ProcessFrameMinimal, which used to reset it, no longer
-                // runs under runtime-owned FG).
-                DX12_ResetNoCallbackBundleFrame();
                 // CRASH BOUNDARY: under runtime-owned native FSR FG, CE must NEVER submit overlay GPU work on
                 // AMD's backbuffer / runtime present queue (the documented ffxQuery null-deref AV, session
-                // 20260621_191028). The overlay's only AMD-safe channel there is the UI-resource composition
-                // (the game-ECL bundle draws onto the registered/CE-substituted UI texture), so the route
-                // selector returns kSkipBundleCovers whenever AMD owns the swapchain.
+                // 20260621_191028). The overlay's only AMD-safe channel there is the UI-resource composition:
+                // CE draws onto the registered/CE-substituted UI texture on its OWN fenced queue
+                // (DX12_CompositeOverlayOntoCachedFFXUiResource) and AMD composites it post-interpolation, so
+                // the route selector returns kSkipBundleCovers whenever AMD owns the swapchain.
                 const bool runtimeOwnsSwapchain =
                     DXGIShared::DoesFGRuntimeOwnSwapchain() || HookHasRuntimeOwnedNativeFGPresentPath();
                 // STALE-LATCH SIGNAL: during ACTIVE no-callback FSR FG the game presents on AMD's SEPARATE FG
@@ -2708,15 +2705,24 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 // backbuffer submit is forbidden.
                 const bool amdActivelyInterpolatingOnFGQueue =
                     runtimeOwnsSwapchain && !fsrFGDisabledSuspendPending && !liveSwapchainQueueIsOriginalGameQueue;
+                // bundleOverlayActivelyFiring is hardwired false: the fenced composite is driven ONLY from the
+                // kSkipBundleCovers arm below, so there is no independent "AMD is compositing the UI resource"
+                // signal apart from active interpolation — which the route decides BEFORE this arg is consulted
+                // (runtimeOwns && !suspend && !origGame). In every state where the route DOES consult firing
+                // (suspension / non-runtime-owned / stale-latch), AMD is NOT cleanly compositing the UI resource,
+                // so the correct + safe choice is the backbuffer route. Passing true would self-sustain the
+                // composite across a suspension (AMD stops compositing there) and blank the overlay.
                 const ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute noCallbackRoute =
                     ce::dx12_overlay_policy::ChooseNoCallbackFSRFGOverlayRoute(
                         runtimeOwnsSwapchain, liveSwapchainQueueIsOriginalGameQueue, fsrFGDisabledSuspendPending,
-                        DX12_IsFFXUiResourceCachedForBundle(), DX12_IsFFXUiBundleOverlayActivelyFiring());
+                        DX12_IsFFXUiResourceCachedForBundle(), /*bundleOverlayActivelyFiring=*/false);
                 if (noCallbackRoute == ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute::kSkipBundleCovers) {
-                    // The overlay rides AMD's UI-resource composition (the game-ECL bundle draws it onto the
-                    // registered/CE-substituted UI texture, post-interpolation), so skip the separate backbuffer
-                    // ProcessFrame — that keeps AMD's pacing-critical present queue undisturbed (submitting
-                    // overlay work there null-derefs AMD inside ffxQuery / freezes GTA ~900 frames).
+                    // The overlay rides AMD's UI-resource composition: draw it onto the registered/CE-substituted
+                    // UI texture on CE's OWN fenced queue (never AMD's present queue), and AMD composites it
+                    // post-interpolation. This keeps AMD's pacing-critical present queue undisturbed (submitting
+                    // overlay work there null-derefs AMD inside ffxQuery / freezes GTA ~900 frames). The composite
+                    // CPU-waits for its fence before this present forwards, so AMD reads a fully-written texture.
+                    DX12_CompositeOverlayOntoCachedFFXUiResource();
                 } else if (amdActivelyInterpolatingOnFGQueue) {
                     // DEFENSIVE GUARD RAIL: the backbuffer submit is forbidden ONLY while AMD is actively
                     // interpolating on its own FG queue. The route selector never produces kMinimalBackbuffer in
@@ -2732,11 +2738,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                             guardLog + 1);
                     }
                 } else {
-                    // Backbuffer submit is safe here: AMD does not own this swapchain (test-app style / bundle not
-                    // yet firing), OR a no-callback SUSPENSION (FG disabled, AMD not interpolating), OR a STALE
+                    // Backbuffer submit is safe here: AMD does not own this swapchain (non-runtime-owned escape
+                    // hatch), OR a no-callback SUSPENSION (FG disabled, AMD not interpolating), OR a STALE
                     // no-callback latch with the live present back on the game's own queue (FSR->off recovery).
                     // Draw via the minimal backbuffer path so the overlay is NEVER blank across these windows;
-                    // once active interpolation resumes, control returns to the cheap skip branch above.
+                    // once active interpolation resumes, control returns to the composite skip branch above.
                     DX12_ProcessFrameMinimal(pSwapChain);
                 }
             } else {

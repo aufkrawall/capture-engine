@@ -107,19 +107,18 @@ void DX12_ClearNativeFSRStartupConfigureArming(const char* reason);
 void DX12_ClearOfficialFFXRuntimeOwnedPresentPathAssumption(const char* reason);
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* callbackDesc,
                                                  void* userCtx);
-// Draw the inject overlay onto a game-registered FFX UI resource (no-app-callback FSR FG). Submits on the
-// GAME's queue, never AMD's runtime present queue, so AMD composites it post-interpolation without wedging.
+// Draw the inject overlay onto a game-registered FFX UI resource (no-app-callback FSR FG). Submits on CE's
+// OWN fenced queue (g_FFXUiCompositeQueue), never AMD's runtime present queue or the game queue, and CPU-waits
+// for completion, so AMD composites it post-interpolation without wedging.
 bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResource, uint32_t ffxState, uint32_t flags);
+// Drive the composite from DetourPresent's no-callback FSR FG branch using the cached (CE-substituted or game)
+// UI texture. The per-present overlay refresh under active no-callback FSR FG. Returns true if composited.
+bool DX12_CompositeOverlayOntoCachedFFXUiResource();
 bool DX12_IsFFXUiResourceCompositionActive();
-bool DX12_ShouldCompositeOverlayOntoFFXUiResource();
-// Cache the UI texture for the ECL bundle (Phase 2). Gated to no-callback FSR FG only.
+// Cache the UI texture for the per-present composite. Gated to no-callback FSR FG only.
 bool DX12_ShouldCacheFFXUiResourceForBundle();
 // True if the UI texture has been cached (for the VEH disarm condition).
 bool DX12_IsFFXUiResourceCachedForBundle();
-// True if the ECL UI-bundle overlay actually appended within the recent window (i.e. the bundle is really
-// compositing the overlay onto AMD's UI texture). DetourPresent uses this to decide whether it can safely
-// skip the separate backbuffer ProcessFrame or must fall back to a draw so the overlay is never blank.
-bool DX12_IsFFXUiBundleOverlayActivelyFiring();
 // Direct read of the no-callback composition flag (for the VEH one-shot disarm logic).
 bool DX12_IsNativeFSRInternalNoCallbackCompositionActive();
 // True when the live swapchain queue is the game's own original queue (AMD's FG swapchain is gone). Used by
@@ -128,13 +127,10 @@ bool DX12_IsLiveSwapchainQueueOriginalGameQueue();
 // True when native FSR FG is DISABLED/SUSPENDED while AMD still owns the swapchain (no-callback suspension —
 // AMD is not interpolating). DetourPresent relaxes the crash-boundary backbuffer skip during a suspension.
 bool DX12_IsNativeFSRFGSuspendedDisablePending();
-// Reset the once-per-frame UI-bundle append latch. DetourPresent calls this for every no-callback FSR FG
-// present (the per-frame boundary), since DX12_ProcessFrameMinimal no longer runs under runtime-owned FG.
-void DX12_ResetNoCallbackBundleFrame();
 // Minimal-overhead ProcessFrame for no-callback FSR FG (skips policy/lock/heuristic work).
 void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain);
 // Decide + prepare the overlay target for a no-callback FSR FG RegisterUiResource intercept. Updates the
-// bundle's cached target texture + clear policy. Returns true iff CE substituted its own backbuffer-sized
+// composite's cached target texture + clear policy. Returns true iff CE substituted its own backbuffer-sized
 // texture for a degenerate game UI texture (e.g. GTA's 1x1); on true *ceSubstitute (FfxApiResource ABI) is
 // filled and the caller must forward it instead of the game's resource so AMD composites CE's texture.
 bool DX12_PrepareFFXUiOverlayTarget(const ce::ffx_api::Resource& gameUi, uint32_t flags,

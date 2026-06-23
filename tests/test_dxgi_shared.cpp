@@ -2620,37 +2620,8 @@ TEST(DXGISharedTest, FFXUiCompositeSubmitQueueMustNotBeGameQueue) {
         << "CE's UI-composite queue must be a separate queue from the game queue";
 }
 
-// Test the Step 3 bundle per-frame flag logic: the flag must be set once per frame and cleared at the
-// frame boundary (ProcessFrame) and at the next ffxConfigure(RegisterUiResource) call. This prevents
-// double-appending CE's overlay CL to multiple game ECLs within the same frame.
-TEST(DXGISharedTest, FFXUiBundlePerFrameFlagLogic) {
-    // Simulate the per-frame flag lifecycle:
-    // 1. Start of frame: flag = false (cleared by ProcessFrame or ffxConfigure)
-    // 2. First game-queue ECL: bundle appends, sets flag = true
-    // 3. Second game-queue ECL: flag is true → skip (no double-append)
-    // 4. Next ffxConfigure: clears flag = false (for the next frame)
-    bool bundleFlag = false;
-
-    // Frame N: first ECL — should append (flag was false)
-    EXPECT_FALSE(bundleFlag);
-    bundleFlag = true;  // RecordBundleOverlayForGameECL sets the flag after appending
-    EXPECT_TRUE(bundleFlag);
-
-    // Frame N: second ECL — should NOT append (flag is true)
-    EXPECT_TRUE(bundleFlag);  // the check in DetourExecuteCommandLists skips
-
-    // Frame boundary: ProcessFrame clears the flag
-    bundleFlag = false;
-    EXPECT_FALSE(bundleFlag);
-
-    // Frame N+1: first ECL — should append again (flag was cleared)
-    EXPECT_FALSE(bundleFlag);
-    bundleFlag = true;
-    EXPECT_TRUE(bundleFlag);
-}
-
 // Test the cached UI texture null-skip: when no UI texture is cached (first frame or after FG off),
-// the bundle must not attempt to record an overlay CL (null → skip).
+// the composite wrapper (DX12_CompositeOverlayOntoCachedFFXUiResource) must not attempt to draw (null → skip).
 TEST(DXGISharedTest, FFXUiBundleCachedTextureNullSkip) {
     void* cachedTexture = nullptr;
     // First frame: no cached texture → skip bundle
@@ -5616,50 +5587,72 @@ TEST(DXGISharedTest, FFXUiOverlayTargetSubstitutesForDegenerateGameTexture) {
 }
 
 // ---------------------------------------------------------------------------
-// FFX UI-bundle overlay must initialize its own GPU resources in the LIVE bundle
-// path. The GTA invisibility bug was that the bundle's command list / RTV heap /
-// allocators were created ONLY inside the dead DX12_CompositeOverlayOntoFFXUiResource
-// (never called: DX12_ShouldCompositeOverlayOntoFFXUiResource() hard-returns false),
-// so RecordBundleOverlayForGameECL always tripped its null-resource guard and the
-// overlay was invisible for the whole FG session.
+// GTA crash fix (session 20260623_060436, nvwgf2umx null-deref inside
+// ExecuteCommandLists): the no-callback FSR FG overlay must be driven by the
+// FENCED CE-owned-queue composite, NOT the game-ECL bundle. The bundle reused
+// its allocators with no GPU fence and corrupted an in-flight command list when
+// GTA's startup churn fell >3 frames behind. DetourPresent's kSkipBundleCovers
+// arm must call DX12_CompositeOverlayOntoCachedFFXUiResource(), and the retired
+// bundle drive (TryAppendNoCallbackBundleOverlay / RecordBundleOverlayForGameECL)
+// plus the dead DX12_ShouldCompositeOverlayOntoFFXUiResource gate must be gone.
 // ---------------------------------------------------------------------------
-TEST(DXGISharedSourceTest, BundleOverlayRecordInitializesItsOwnResources) {
+TEST(DXGISharedSourceTest, NoCallbackPresentDrivesFencedCompositeNotBundle) {
     namespace fs = std::filesystem;
+
+    auto readFile = [](const fs::path& p) {
+        std::ifstream stream(p, std::ios::binary);
+        EXPECT_TRUE(stream.good()) << p.string();
+        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    };
+
+    const fs::path present = fs::current_path() / "hook" / "common" / "dxgi_shared.cpp";
+    ASSERT_TRUE(fs::exists(present));
+    const std::string presentText = readFile(present);
+    ASSERT_FALSE(presentText.empty());
+
+    // The no-callback present path must DRIVE the fenced composite (the per-present overlay refresh).
+    EXPECT_NE(presentText.find("DX12_CompositeOverlayOntoCachedFFXUiResource()"), std::string::npos)
+        << "DetourPresent must drive the fenced CE-owned-queue composite under no-callback FSR FG";
+    // The composite must be driven from the kSkipBundleCovers arm (the active-interpolation route).
+    const size_t skipArm = presentText.find("NoCallbackFSRFGOverlayRoute::kSkipBundleCovers");
+    ASSERT_NE(skipArm, std::string::npos);
+    const size_t compositeCall = presentText.find("DX12_CompositeOverlayOntoCachedFFXUiResource()", skipArm);
+    ASSERT_NE(compositeCall, std::string::npos);
+    // The retired per-frame bundle reset must no longer be called from the present path.
+    EXPECT_EQ(presentText.find("DX12_ResetNoCallbackBundleFrame"), std::string::npos)
+        << "the per-frame bundle-append latch reset is retired with the bundle";
+
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
-
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = readFile(source);
     ASSERT_FALSE(text.empty());
 
-    // RecordBundleOverlayForGameECL must call the live initializer so the bundle no longer depends on the
-    // dead composite function for its GPU resources.
-    const size_t record = text.find("RecordBundleOverlayForGameECL(ID3D12Device");
-    ASSERT_NE(record, std::string::npos);
-    const size_t recordBodyEnd = text.find("return g_FFXUiCompositeList;", record);
-    ASSERT_NE(recordBodyEnd, std::string::npos);
-    const size_t ensureCall = text.find("EnsureFFXUiCompositeBundleResources(", record);
-    ASSERT_NE(ensureCall, std::string::npos);
-    EXPECT_LT(ensureCall, recordBodyEnd);
+    // The crashing bundle drive must be fully retired — no dead code left behind.
+    EXPECT_EQ(text.find("TryAppendNoCallbackBundleOverlay"), std::string::npos)
+        << "the unfenced game-ECL bundle drive must be removed";
+    EXPECT_EQ(text.find("RecordBundleOverlayForGameECL"), std::string::npos)
+        << "the unfenced bundle record helper must be removed";
+    EXPECT_EQ(text.find("DX12_ShouldCompositeOverlayOntoFFXUiResource"), std::string::npos)
+        << "the dead composite gate (hard-returned false) must be removed";
 
-    // The bundle previously no-op'd because its guard required g_FFXUiCompositeFence, which only the dead
-    // composite path ever created. The live bundle rides the game's fence, so the readiness guard must NOT
-    // require the fence (list + RTV heap only).
-    EXPECT_NE(text.find("if (!g_FFXUiCompositeList || !g_FFXUiCompositeRtvHeap) {"), std::string::npos);
+    // The cached-target wrapper must exist and forward to the real composite.
+    const size_t wrapper = text.find("bool DX12_CompositeOverlayOntoCachedFFXUiResource()");
+    ASSERT_NE(wrapper, std::string::npos);
+    const size_t wrapperBodyEnd = text.find("\n}", wrapper);
+    ASSERT_NE(wrapperBodyEnd, std::string::npos);
+    EXPECT_LT(text.find("DX12_CompositeOverlayOntoFFXUiResource(uiTexture, ffxState, flags)", wrapper),
+              wrapperBodyEnd);
 }
 
 // ---------------------------------------------------------------------------
-// The UI-bundle must fire on the queue the game ACTUALLY renders on under
-// no-callback FSR FG. Once AMD's FfxFrameInterpolationSwapchain owns
-// presentation the game submits its scene+UI on the runtime-owned swapchain
-// queue and g_OriginalGameQueue goes idle (session 20260622_172043) — an
-// origGame-only bundle never fires and the overlay blanks. The shared
-// TryAppendNoCallbackBundleOverlay helper must therefore accept g_SwapchainQueue
-// as well, and the no-callback ECL fast-path (which force-forwards non-origGame
-// ECLs) must call it before forwarding so the live-queue bundle can engage.
+// The composite must clear CE's SUBSTITUTE target to transparent each frame (it
+// is CE-owned and otherwise empty, so only the overlay should composite over the
+// game frame). When the target is the game's own usable UI texture the overlay
+// blends on top of the HUD already there — so the clear is gated on the
+// g_BundleTargetNeedsTransparentClear flag. This is the same clear policy the
+// retired bundle had; it must now live inside the composite.
 // ---------------------------------------------------------------------------
-TEST(DXGISharedSourceTest, NoCallbackBundleFiresOnLiveFGRuntimeQueueNotOnlyOrigGame) {
+TEST(DXGISharedSourceTest, FFXUiCompositeClearsSubstituteTargetTransparent) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
@@ -5669,28 +5662,22 @@ TEST(DXGISharedSourceTest, NoCallbackBundleFiresOnLiveFGRuntimeQueueNotOnlyOrigG
     std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
     ASSERT_FALSE(text.empty());
 
-    // The shared append helper must exist and treat BOTH the original game queue and the live FG-runtime
-    // swapchain queue as eligible (otherwise the bundle never fires when the game renders on the runtime queue).
-    const size_t helper = text.find("bool TryAppendNoCallbackBundleOverlay(");
-    ASSERT_NE(helper, std::string::npos);
-    const size_t helperBodyEnd = text.find("\n}", helper);
-    ASSERT_NE(helperBodyEnd, std::string::npos);
-    const size_t eligible = text.find("eligibleQueue", helper);
-    ASSERT_NE(eligible, std::string::npos);
-    EXPECT_LT(eligible, helperBodyEnd);
-    const size_t origGameRef = text.find("pThis == g_OriginalGameQueue", helper);
-    const size_t liveQueueRef = text.find("pThis == liveFgQueue", helper);
-    ASSERT_NE(origGameRef, std::string::npos);
-    ASSERT_NE(liveQueueRef, std::string::npos);
-    EXPECT_LT(origGameRef, helperBodyEnd);
-    EXPECT_LT(liveQueueRef, helperBodyEnd);
+    const size_t composite = text.find("bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr");
+    ASSERT_NE(composite, std::string::npos);
+    const size_t compositeBodyEnd = text.find("\n}", text.find("return true;", composite));
+    ASSERT_NE(compositeBodyEnd, std::string::npos);
 
-    // The helper must be CALLED from multiple ECL paths (the no-callback fast-path that forwards non-origGame
-    // ECLs, plus the origGame heavy-path sites) — not merely defined. Count the call form.
-    const std::string callForm = "TryAppendNoCallbackBundleOverlay(pThis, NumCommandLists, ppCommandLists)";
-    size_t callSites = 0;
-    for (size_t pos = text.find(callForm); pos != std::string::npos; pos = text.find(callForm, pos + 1)) {
-        ++callSites;
-    }
-    EXPECT_GE(callSites, static_cast<size_t>(2)) << "bundle helper must be wired into the fast-path + origGame paths";
+    // The composite reads the substitute clear flag and clears the RTV to transparent before drawing.
+    const size_t clearFlag = text.find("needsTransparentClear", composite);
+    ASSERT_NE(clearFlag, std::string::npos);
+    EXPECT_LT(clearFlag, compositeBodyEnd);
+    const size_t clearCall = text.find("ClearRenderTargetView(rtv", composite);
+    ASSERT_NE(clearCall, std::string::npos);
+    EXPECT_LT(clearCall, compositeBodyEnd);
+
+    // The composite must guard against a degenerate (e.g. 1x1) cached target so it never crashes when no
+    // substitute was available — mirroring the retired bundle's degenerate guard.
+    const size_t degenerate = text.find("degenerate", composite);
+    ASSERT_NE(degenerate, std::string::npos);
+    EXPECT_LT(degenerate, compositeBodyEnd);
 }

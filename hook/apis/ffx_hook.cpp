@@ -476,10 +476,11 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
 
     // No-app-callback native FSR FG: the game registers its HUD as a UI resource EVERY frame
     // (type=0x00030002 on the swapchain context). AMD composites that UI resource onto BOTH real and
-    // generated frames POST-interpolation on its own queue. Step 3: cache the UI texture for the next
-    // frame's ECL bundle (RecordBundleOverlayForGameECL appends CE's overlay CL to the game's existing ECL,
-    // adding zero extra ECL calls and zero extra Signals). The composite function (separate ECL submit)
-    // is NOT called — all separate-ECL routes wedge AMD's pacing. Forwarded unchanged.
+    // generated frames POST-interpolation on its own queue. Cache the UI texture (or substitute CE's own
+    // backbuffer-sized texture for a degenerate game placeholder) so the per-present composite
+    // (DX12_CompositeOverlayOntoCachedFFXUiResource, driven from DetourPresent) can draw CE's overlay onto it
+    // on CE's OWN fenced queue. AMD then composites the overlay post-interpolation. Forwarded unchanged unless
+    // a substitute texture was swapped in.
     if (parsedDesc &&
         parsedDesc->type == ce::ffx_api::kConfigureDescTypeFrameGenerationSwapChainRegisterUiResourceDX12 &&
         (DX12_ShouldCacheFFXUiResourceForBundle() ||
@@ -487,11 +488,11 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         const auto* uiDesc =
             reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource*>(desc);
         if (uiDesc->uiResource.resource) {
-            // Decide composite-onto-game-texture vs substitute-CE-full-size-texture and update the bundle's
+            // Decide composite-onto-game-texture vs substitute-CE-full-size-texture and update the composite's
             // cached target. GTA leaves UI composition enabled but registers a 1x1 placeholder, so CE substitutes
             // its own backbuffer-sized texture and forwards THAT (so AMD composites the overlay onto every real +
             // generated frame). The test app / games that register a usable full-size UI texture forward unchanged
-            // and CE blends the overlay onto the game's own texture via the bundle.
+            // and CE blends the overlay onto the game's own texture via the per-present composite.
             ce::ffx_api::Resource ceSubstitute = {};
             if (DX12_PrepareFFXUiOverlayTarget(uiDesc->uiResource, uiDesc->flags, &ceSubstitute)) {
                 localUiConfig = *uiDesc;
