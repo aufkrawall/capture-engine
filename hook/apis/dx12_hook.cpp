@@ -7639,6 +7639,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
                 gameCreatedSwapchain,
                 g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
                 g_NativeFSRContextsDestroyedAwaitingGameSwapchain.load(std::memory_order_acquire),
+                g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
                 DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
         if (endNativeFGTeardownOnGameSwapchainCreation) {
             runtimeOwns = false;

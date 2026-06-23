@@ -1777,18 +1777,24 @@ TEST(DXGISharedTest, NativeFSRNoCallbackCompositionRetainedAcrossSuspension) {
 TEST(DXGISharedTest, GameSwapchainCreationEndsRuntimeOwnedNativeFSRTeardown) {
     using ce::dx12_overlay_policy::ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation;
 
-    // 20260611_191950 FSR->OFF: the game recreates its swapchain on a FRESH
-    // queue after explicit native-FSR OFF/destroy; that creation is the
-    // stronger off signal and must end the runtime-owned teardown.
-    EXPECT_TRUE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, true, false, false));
-    EXPECT_TRUE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, false, true, false));
-    EXPECT_TRUE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, true, true, false));
+    // Args: (gameCreated, explicitOff, contextsDestroyed, noCallbackCompositionActive, streamlineFG).
+    // 20260611_191950 FSR->OFF: the game recreates its swapchain on a FRESH queue after explicit native-FSR
+    // OFF/destroy; that creation is the stronger off signal and must end the runtime-owned teardown.
+    EXPECT_TRUE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, true, false, false, false));
+    EXPECT_TRUE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, false, true, false, false));
+    EXPECT_TRUE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, true, true, false, false));
 
-    // Runtime/third-party creators, missing off/destroy evidence, or live
-    // Streamline FG keep the existing conservative teardown handling.
-    EXPECT_FALSE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(false, true, true, false));
-    EXPECT_FALSE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, false, false, false));
-    EXPECT_FALSE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, true, true, true));
+    // 20260623_053805 FSR->OFF under the no-callback route: the explicit OFF/destroy signals are MISSED
+    // (ffxDestroyContext bypass + one-shot ffxConfigure VEH permanently disarmed) and the game recreates on a
+    // fresh queue, so neither pending flag nor the origGame-return ever fires. The no-callback composition being
+    // active is itself the runtime-owned-native-FG state, so a game-created swapchain there must end the
+    // teardown (otherwise the overlay stays blanked on the bundle-only route forever).
+    EXPECT_TRUE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, false, false, true, false));
+
+    // Runtime/third-party creators, NO off evidence at all, or live Streamline FG keep the conservative path.
+    EXPECT_FALSE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(false, true, true, true, false));
+    EXPECT_FALSE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, false, false, false, false));
+    EXPECT_FALSE(ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(true, true, true, true, true));
 }
 
 TEST(DXGISharedTest, GameSwapchainRecoveryToggleSkipsFSROffTransitionCooldown) {

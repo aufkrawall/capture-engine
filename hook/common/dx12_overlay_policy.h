@@ -804,12 +804,25 @@ inline bool ShouldReinitOverlayImmediatelyAfterNoCallbackFFXTakeoverSwapchainCha
 // (observed in dx12_fg_switch_test FSR->OFF, 20260611_191950) otherwise stay
 // misclassified as runtime-owned forever, which blanks the overlay through
 // FG cooldowns and can re-latch FSR heuristics on plain game queues.
-inline bool ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(bool gameCreatedSwapchain,
-                                                                         bool explicitNativeFSROffPending,
-                                                                         bool nativeFSRContextsDestroyedPending,
-                                                                         bool streamlineFGRunning) {
+//
+// nativeFSRInternalNoCallbackCompositionActive (added 2026-06-23, session
+// 20260623_053805): under the no-callback composition route the explicit
+// OFF/destroy signals can be MISSED ENTIRELY — ffxDestroyContext is bypassed by
+// raw export pointers, and the one-shot ffxConfigure VEH is permanently disarmed
+// after detection — so neither pending flag is ever set and (with the test app
+// recreating on a FRESH queue) the origGame-return teardown never fires either.
+// The no-callback composition being active IS the runtime-owned-native-FG state,
+// so a game-created swapchain there is itself sufficient proof of OFF: the game
+// has replaced AMD's FfxFrameInterpolationSwapchain with its own native
+// swapchain. The present-callback toggle only RECONFIGURES (it does not recreate
+// the swapchain), so an active FSR session produces no game-created swapchain and
+// hence no false positive.
+inline bool ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(
+    bool gameCreatedSwapchain, bool explicitNativeFSROffPending, bool nativeFSRContextsDestroyedPending,
+    bool nativeFSRInternalNoCallbackCompositionActive, bool streamlineFGRunning) {
     return gameCreatedSwapchain && !streamlineFGRunning &&
-           (explicitNativeFSROffPending || nativeFSRContextsDestroyedPending);
+           (explicitNativeFSROffPending || nativeFSRContextsDestroyedPending ||
+            nativeFSRInternalNoCallbackCompositionActive);
 }
 
 // FSR_FG -> non-FG classification flip right after the game-created swapchain
