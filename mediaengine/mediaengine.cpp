@@ -114,6 +114,9 @@ public:
         uint64_t lastPacketTimelineAdjustWarnTick = 0;
         uint64_t lastAppPlaceDiagTick = 0;            // Throttle app-source placement-divergence diagnostics
         uint64_t lastAppConsumeDiagTick = 0;          // Throttle app-source consume/drain diagnostics
+        uint64_t catastrophicResyncSamples = 0;       // Stale samples dropped resyncing to live after a read-stall
+        uint32_t catastrophicResyncEvents = 0;        // Number of catastrophic backlog resyncs (alt-tab/DPC/overload)
+        uint64_t lastCatastrophicResyncTick = 0;      // Throttle catastrophic resync logging
         double wgcCoverageLossTrimAccumulator = 0.0;  // Fractional carry for paced overload micro-trims
 
         // Rate-based drift correction state
@@ -2826,9 +2829,52 @@ public:
                     if (!forceDrain && src.ringBuffer && !startupTimelineProtected) {
                         constexpr int64_t kMaxOverflowSamples = SAMPLE_RATE / 2;            // 500ms max overflow
                         constexpr int64_t kWgcCfrEmergencyRingMarginSamples = SAMPLE_RATE;  // 1s before full
+                        // A catastrophic backlog (a sustained read-stall from alt-tab, a DPC latency spike,
+                        // or encoder overload, while live process-loopback capture keeps writing) is the one
+                        // case where the CFR "never trim audio" policy must yield: otherwise the ring saturates
+                        // and the source goes permanently silent. 2s is far above any legitimate jitter, so the
+                        // healthy steady state (~100-200ms backlog) is never touched. Generic, not device tuning.
+                        constexpr int64_t kCatastrophicAppBacklogSamples = SAMPLE_RATE * 2;  // 2s = stall, not jitter
                         rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                         const int64_t rbCapacitySamples =
                             static_cast<int64_t>(src.ringBuffer->GetCapacity() / CHANNELS);
+
+                        // Resync a catastrophically backlogged CFR app source to the live edge so a read-stall
+                        // cannot end the track in permanent silence. Drops stale backlog, keeps the newest audio,
+                        // and fades the seam (CaptureDropFadeAnchor). One discontinuity after a real stall, never
+                        // a dead track. Below the threshold the no-trim policy is preserved untouched.
+                        const int64_t catastrophicResyncTrim = ce::audio::ComputeCatastrophicBacklogResyncTrim(
+                            isCfrRecording, src.sourceType == AudioConfig::AppAudio,
+                            static_cast<int64_t>(rbAvailable), targetLatencySamples, kCatastrophicAppBacklogSamples,
+                            SAMPLE_RATE / 10 /* keep >= 100ms live cushion */);
+                        if (catastrophicResyncTrim > 0) {
+                            const int64_t backlogBefore = static_cast<int64_t>(rbAvailable);
+                            CaptureDropFadeAnchor(src, CHANNELS);
+                            src.dropFadeSamplesRemaining = (int)kRuntimeDropFadeSamples;
+                            size_t trimmedFloats =
+                                src.ringBuffer->Skip(static_cast<size_t>(catastrophicResyncTrim) * CHANNELS);
+                            size_t trimmedSamples = trimmedFloats / CHANNELS;
+                            ce::audio::ConsumeSyntheticBufferedSamples(src.startupSyntheticRingSamples, trimmedSamples);
+                            ce::audio::ConsumeSyntheticBufferedSamples(src.startupGapProtectionSamples, trimmedSamples);
+                            src.latencyTrimSamples += trimmedSamples;
+                            src.catastrophicResyncSamples += trimmedSamples;
+                            src.catastrophicResyncEvents++;
+                            rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
+                            const uint64_t nowTick = GetTickCount64();
+                            if (nowTick - src.lastCatastrophicResyncTick >= 1000) {
+                                DLL_Log(
+                                    "[PullAudio] App source catastrophic backlog resync - src %d dropped %lld stale "
+                                    "samples (%.2fs) to live edge after read-stall (backlogWas=%lld now=%lld "
+                                    "target=%lld cap=%lld event#%u). Recovery from alt-tab/DPC/encoder stall; the "
+                                    "track stays live instead of going permanently silent.",
+                                    (int)srcIdx, (long long)trimmedSamples,
+                                    static_cast<double>(trimmedSamples) / SAMPLE_RATE, (long long)backlogBefore,
+                                    (long long)rbAvailable, (long long)targetLatencySamples,
+                                    (long long)rbCapacitySamples, src.catastrophicResyncEvents);
+                                src.lastCatastrophicResyncTick = nowTick;
+                            }
+                        }
+
                         const int64_t overflowCapSamples = ce::audio::ComputeRuntimeOverflowCapSamples(
                             isCfrRecording, targetLatencySamples, rbCapacitySamples, kMaxOverflowSamples,
                             kWgcCfrEmergencyRingMarginSamples);
