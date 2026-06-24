@@ -371,6 +371,33 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
     return result;
 }
 
+// --- Per-present substitute UI-resource re-registration (GTA no-callback FSR FG) ------------------------
+// GTA Enhanced registers a 1x1 placeholder UI resource EVERY frame. CE substitutes its own backbuffer-sized
+// texture, but only on the few RegisterUiResource calls intercepted BEFORE the one-shot ffxConfigure VEH
+// disarms (session 20260624_004915: cfgFrame stops at 4). After that, GTA's per-frame RegisterUiResource(1x1)
+// calls reach AMD directly and REVERT the registered UI resource to the empty 1x1, so AMD composites nothing
+// and the overlay (correctly drawn onto CE's substitute every present) is invisible. To keep AMD compositing
+// CE's substitute, CE re-asserts it once per present from DetourPresent's no-callback branch (after the
+// composite, before the real Present), using the same ffxConfigure(RegisterUiResource) call GTA itself makes.
+// This is the documented UI-composition mechanism — NOT GPU work on AMD's present queue/backbuffer — so it
+// stays within the crash boundary. Only stored for the degenerate-substitute path (the test app re-registers
+// its OWN real texture every frame, so it needs no re-assertion). Cleared when the substitute is released.
+static std::mutex g_SubstReRegMutex;
+static ffxContext* g_SubstReRegContext = nullptr;
+static PfnFfxConfigure g_SubstReRegConfigure = nullptr;
+static ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource g_SubstReRegDesc = {};
+static std::atomic<bool> g_SubstReRegActive{false};
+
+static void StoreSubstituteUiReRegistration(ffxContext* context, PfnFfxConfigure originalConfigure,
+                                            const ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource&
+                                                substitutedDesc) {
+    std::lock_guard<std::mutex> lock(g_SubstReRegMutex);
+    g_SubstReRegContext = context;
+    g_SubstReRegConfigure = originalConfigure;
+    g_SubstReRegDesc = substitutedDesc;
+    g_SubstReRegActive.store(true, std::memory_order_release);
+}
+
 ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescHeader* desc) {
     PfnFfxConfigure originalConfigure =
         t_FfxConfigureOriginalOverride ? t_FfxConfigureOriginalOverride : g_Original_ffxConfigure;
@@ -498,6 +525,9 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
                 localUiConfig = *uiDesc;
                 localUiConfig.uiResource = ceSubstitute;
                 descToCall = reinterpret_cast<const ffxConfigureDescHeader*>(&localUiConfig);
+                // Remember the substituted register so DetourPresent can re-assert it every present (GTA
+                // overrides AMD's UI resource with its 1x1 each frame once the VEH disarms — see above).
+                StoreSubstituteUiReRegistration(context, originalConfigure, localUiConfig);
             }
         } else {
             static std::atomic<int> s_emptyUiResLogCount{0};
@@ -1201,6 +1231,42 @@ static bool InstallBridgeOnTrackedContextsImpl(void* swapChain) {
 }
 
 }  // anonymous namespace
+
+// Called from DetourPresent's no-callback branch (via DX12_CompositeOverlayOntoCachedFFXUiResource) after the
+// overlay was composited onto CE's substitute, so AMD composites CE's substitute for the upcoming present
+// instead of GTA's per-frame 1x1. No-op for the game-tex path (never stored) and when no-callback FSR FG is
+// inactive. Re-asserting at present (after the game's render-thread RegisterUiResource has run, right before
+// the present that triggers AMD's UI composition) keeps CE's substitute as the effective registration; it is
+// the same ffxConfigure(RegisterUiResource) call the game makes per frame.
+void FFXHook_ReRegisterSubstituteUiResource() {
+    if (!g_SubstReRegActive.load(std::memory_order_acquire) ||
+        !DX12_IsNativeFSRInternalNoCallbackCompositionActive()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_SubstReRegMutex);
+    if (!g_SubstReRegConfigure || !g_SubstReRegContext) {
+        return;
+    }
+    g_SubstReRegConfigure(g_SubstReRegContext, reinterpret_cast<const ffxConfigureDescHeader*>(&g_SubstReRegDesc));
+    static std::atomic<int> s_reRegLog{0};
+    const int n = s_reRegLog.fetch_add(1, std::memory_order_relaxed);
+    if (n < 10 || (n % 600) == 0) {
+        HookLogImportant(
+            "FFX Hook: re-registered CE substitute UI resource %p (ctx=%p) so AMD composites it over GTA's "
+            "per-frame 1x1 (log=%d)",
+            g_SubstReRegDesc.uiResource.resource, (void*)g_SubstReRegContext, n + 1);
+    }
+}
+
+// Stop re-registering when CE's substitute texture is released (device change / teardown) — the stored desc's
+// resource pointer is then dangling. Called from ReleaseFFXUiCompositeInfra (dx12_hook.cpp).
+void FFXHook_ClearSubstituteUiReRegistration() {
+    std::lock_guard<std::mutex> lock(g_SubstReRegMutex);
+    g_SubstReRegActive.store(false, std::memory_order_release);
+    g_SubstReRegContext = nullptr;
+    g_SubstReRegConfigure = nullptr;
+    g_SubstReRegDesc = {};
+}
 
 // Reset the one-shot VEH disarm and re-arm the breakpoint for the next FG-on transition.
 // Called from DX12_OnNativeFSRFrameGenerationContextsDestroyed / ForceClearNativeFSRInternalNoCallbackComposition

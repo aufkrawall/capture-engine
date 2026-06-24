@@ -5688,6 +5688,9 @@ static void ReleaseFFXUiCompositeInfra() {
     g_CachedFFXUiState.store(0, std::memory_order_release);
     g_CachedFFXUiFlags.store(0, std::memory_order_release);
     g_BundleTargetNeedsTransparentClear.store(false, std::memory_order_release);
+    // Stop the per-present substitute re-registration: the stored desc's resource pointer (CE's substitute)
+    // is about to dangle. ffx_hook re-stores it on the next RegisterUiResource substitution.
+    FFXHook_ClearSubstituteUiReRegistration();
     // Release CE's own substitute UI texture (degenerate-game-texture path). Released here on teardown / device
     // change only — never from the per-frame composite path (that would blank the overlay every frame).
     if (g_CEUiSubstituteTexture) {
@@ -6051,14 +6054,22 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
 // EnsureCEUiSubstituteTexture resize on the ffxConfigure thread can never release the texture out from under
 // the composite (the cached pointer is otherwise swapped without the lock). Returns true if composited.
 bool DX12_CompositeOverlayOntoCachedFFXUiResource() {
-    std::lock_guard<std::recursive_mutex> lock(g_FFXUiCompositeMutex);
-    ID3D12Resource* uiTexture = g_CachedFFXUiTexture.load(std::memory_order_acquire);
-    if (!uiTexture) {
-        return false;
+    bool composited = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_FFXUiCompositeMutex);
+        ID3D12Resource* uiTexture = g_CachedFFXUiTexture.load(std::memory_order_acquire);
+        if (uiTexture) {
+            const uint32_t ffxState = g_CachedFFXUiState.load(std::memory_order_acquire);
+            const uint32_t flags = g_CachedFFXUiFlags.load(std::memory_order_acquire);
+            composited = DX12_CompositeOverlayOntoFFXUiResource(uiTexture, ffxState, flags);
+        }
     }
-    const uint32_t ffxState = g_CachedFFXUiState.load(std::memory_order_acquire);
-    const uint32_t flags = g_CachedFFXUiFlags.load(std::memory_order_acquire);
-    return DX12_CompositeOverlayOntoFFXUiResource(uiTexture, ffxState, flags);
+    // Re-assert CE's substituted UI resource AFTER drawing the overlay onto it, so AMD composites CE's
+    // substitute (with the overlay) for the upcoming present instead of GTA's per-frame 1x1 placeholder.
+    // No-op for the test app's game-tex path (never stored) and when no-callback FSR FG is inactive. Done
+    // outside g_FFXUiCompositeMutex (it reads its own stored desc, not the composite resources).
+    FFXHook_ReRegisterSubstituteUiResource();
+    return composited;
 }
 
 static bool UpdateHeuristicFSRFGState(bool active, const char* source) {

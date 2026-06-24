@@ -5681,3 +5681,42 @@ TEST(DXGISharedSourceTest, FFXUiCompositeClearsSubstituteTargetTransparent) {
     ASSERT_NE(degenerate, std::string::npos);
     EXPECT_LT(degenerate, compositeBodyEnd);
 }
+
+// ---------------------------------------------------------------------------
+// GTA registers a 1x1 placeholder UI resource EVERY frame; after the one-shot ffxConfigure VEH disarms, those
+// calls reach AMD directly and override CE's substitute, so AMD composites the empty 1x1 and the overlay is
+// invisible (session 20260624_004915). CE must RE-ASSERT its substitute each present (after the composite,
+// before Present), and stop when the substitute is released. Verify the wiring across the two hook TUs.
+// ---------------------------------------------------------------------------
+TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceIsReRegisteredEachPresent) {
+    namespace fs = std::filesystem;
+    auto readFile = [](const fs::path& p) {
+        EXPECT_TRUE(fs::exists(p)) << p.string();
+        std::ifstream stream(p, std::ios::binary);
+        EXPECT_TRUE(stream.good()) << p.string();
+        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    };
+
+    const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+    ASSERT_FALSE(dx12.empty());
+    // The per-present composite wrapper re-asserts the substitute after drawing the overlay onto it.
+    const size_t wrapper = dx12.find("bool DX12_CompositeOverlayOntoCachedFFXUiResource()");
+    ASSERT_NE(wrapper, std::string::npos);
+    const size_t wrapperEnd = dx12.find("\n}", wrapper);
+    ASSERT_NE(wrapperEnd, std::string::npos);
+    const size_t reReg = dx12.find("FFXHook_ReRegisterSubstituteUiResource()", wrapper);
+    ASSERT_NE(reReg, std::string::npos);
+    EXPECT_LT(reReg, wrapperEnd);
+    // The re-registration is cleared when the substitute is released (dangling-desc safety).
+    EXPECT_NE(dx12.find("FFXHook_ClearSubstituteUiReRegistration()"), std::string::npos);
+
+    const std::string ffx = readFile(fs::current_path() / "hook" / "apis" / "ffx_hook.cpp");
+    ASSERT_FALSE(ffx.empty());
+    // The substitute register is stored ONLY on the degenerate-substitute path (inside the substitution block).
+    const size_t prepare = ffx.find("DX12_PrepareFFXUiOverlayTarget(uiDesc->uiResource");
+    ASSERT_NE(prepare, std::string::npos);
+    const size_t store = ffx.find("StoreSubstituteUiReRegistration(context, originalConfigure", prepare);
+    ASSERT_NE(store, std::string::npos);
+    // The re-register call forwards to the REAL ffxConfigure (g_SubstReRegConfigure), not CE's hook.
+    EXPECT_NE(ffx.find("g_SubstReRegConfigure(g_SubstReRegContext"), std::string::npos);
+}

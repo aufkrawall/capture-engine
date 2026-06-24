@@ -127,3 +127,11 @@ inline bool IsEntryBreakpointHit(const void* exceptionAddress, uintptr_t instruc
 // Reset the one-shot VEH disarm and re-arm the breakpoint for the next FG-on transition.
 // Called when FG turns off (DX12_OnNativeFSRFrameGenerationContextsDestroyed / ForceClear).
 void FFXHook_ResetVehDisarmAndRearm();
+
+// Re-assert CE's substituted UI resource (no-callback FSR FG, GTA 1x1 placeholder case) so AMD composites
+// CE's substitute instead of GTA's per-frame 1x1. Called once per present after the composite, before the
+// real Present (from DX12_CompositeOverlayOntoCachedFFXUiResource). No-op for the game-tex path and when
+// no-callback FSR FG is inactive.
+void FFXHook_ReRegisterSubstituteUiResource();
+// Stop re-registering when CE's substitute texture is released. Called from ReleaseFFXUiCompositeInfra.
+void FFXHook_ClearSubstituteUiReRegistration();
