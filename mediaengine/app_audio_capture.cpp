@@ -646,6 +646,13 @@ void AppAudioCapture::CaptureLoop() {
     bool firstSet = false;
     int logCounter = 0;
     uint64_t logicalFrameCursor = 0;
+    // Content telemetry (diagnostics): per-window silent-flag / amplitude tracking so we can
+    // tell whether process loopback keeps delivering REAL audio or goes (and stays) silent
+    // while the stream stays alive. Reset each Source Sync log window (~5 s).
+    uint64_t windowTotalFrames = 0;
+    uint64_t windowSilentFlagFrames = 0;
+    uint64_t windowZeroContentFrames = 0;
+    float windowPeakAbs = 0.0f;
     uint64_t lastProcessCheckTick = 0;
     uint64_t queueDropPackets = 0;
     uint64_t queueDropFrames = 0;
@@ -837,6 +844,25 @@ void AppAudioCapture::CaptureLoop() {
                     "QPC=%.4fs, Drift=%.2f ms (%.4f%%)",
                     targetPID.load(), samplesDuration, qpcDuration, driftMs,
                     qpcDuration > 0 ? (driftMs / (qpcDuration * 1000.0) * 100.0) : 0.0);
+                // Diagnostics: is the captured CONTENT real or silent this window? peakAbs≈0 with
+                // high silent/zero frame ratios while the stream stays alive points to a stuck-silent
+                // process loopback; peakAbs>0 means real audio is captured and any track silence is
+                // a downstream placement/consumption problem, not capture.
+                const double silentPct =
+                    windowTotalFrames > 0 ? (100.0 * static_cast<double>(windowSilentFlagFrames +
+                                                                         windowZeroContentFrames) /
+                                             static_cast<double>(windowTotalFrames))
+                                          : 0.0;
+                DLL_Log(
+                    "[AppAudioCapture] Content (%lu): peakAbs=%.5f silentFlagFrames=%llu zeroFrames=%llu "
+                    "totalFrames=%llu silent=%.1f%%",
+                    targetPID.load(), windowPeakAbs, static_cast<unsigned long long>(windowSilentFlagFrames),
+                    static_cast<unsigned long long>(windowZeroContentFrames),
+                    static_cast<unsigned long long>(windowTotalFrames), silentPct);
+                windowTotalFrames = 0;
+                windowSilentFlagFrames = 0;
+                windowZeroContentFrames = 0;
+                windowPeakAbs = 0.0f;
             }
 
             // Build packet with format info
@@ -884,10 +910,33 @@ void AppAudioCapture::CaptureLoop() {
             size_t bytes = numFramesAvailable * pwfx->nBlockAlign;
             packet.data.resize(bytes);
 
+            windowTotalFrames += numFramesAvailable;
             if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
                 memset(packet.data.data(), 0, bytes);
+                windowSilentFlagFrames += numFramesAvailable;
             } else {
                 memcpy(packet.data.data(), pData, bytes);
+                // Content amplitude probe (diagnostics): our requested capture format is
+                // 32-bit IEEE float, so scan the packet for the peak |sample| and whether it
+                // is all-zero despite no SILENT flag. This distinguishes "loopback delivers
+                // real audio" from "loopback stuck delivering silence" downstream confusion.
+                if (packet.isFloat && pwfx->wBitsPerSample == 32) {
+                    const float* samples = reinterpret_cast<const float*>(pData);
+                    const size_t sampleCount = bytes / sizeof(float);
+                    float packetPeak = 0.0f;
+                    for (size_t i = 0; i < sampleCount; ++i) {
+                        const float a = samples[i] < 0.0f ? -samples[i] : samples[i];
+                        if (a > packetPeak) {
+                            packetPeak = a;
+                        }
+                    }
+                    if (packetPeak > windowPeakAbs) {
+                        windowPeakAbs = packetPeak;
+                    }
+                    if (packetPeak == 0.0f) {
+                        windowZeroContentFrames += numFramesAvailable;
+                    }
+                }
             }
 
             {

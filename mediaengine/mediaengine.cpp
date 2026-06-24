@@ -112,6 +112,8 @@ public:
         uint64_t lastRetainedTrimWarnTick = 0;        // Rate-limit explicit retained-audio warnings
         uint64_t lastExtremeDriftWarnTick = 0;        // Rate-limit chronic large-drift diagnostics
         uint64_t lastPacketTimelineAdjustWarnTick = 0;
+        uint64_t lastAppPlaceDiagTick = 0;            // Throttle app-source placement-divergence diagnostics
+        uint64_t lastAppConsumeDiagTick = 0;          // Throttle app-source consume/drain diagnostics
         double wgcCoverageLossTrimAccumulator = 0.0;  // Fractional carry for paced overload micro-trims
 
         // Rate-based drift correction state
@@ -3047,6 +3049,25 @@ public:
                         src.startupRealAudioSeen = true;
                     }
                 }
+                // Consume/drain diagnostics (throttled 1/s, app sources). If an app source has
+                // real audio sitting in its ring (rbAvail large) but contributes 0 real samples
+                // to this pull (postResampleBuffer empty -> fullSilence), the drain stalled even
+                // though data exists. syncReady=0 or a stuck swr compensation are the suspects.
+                if (src.sourceType == AudioConfig::AppAudio) {
+                    const uint64_t nowConsumeTick = GetTickCount64();
+                    const size_t rbAvailSamples =
+                        src.ringBuffer ? src.ringBuffer->GetAvailable() / CHANNELS : 0;
+                    const bool starvedWithRingData = (realCopiedSamples == 0 && rbAvailSamples > 0);
+                    if (nowConsumeTick - src.lastAppConsumeDiagTick >= 1000) {
+                        DLL_Log(
+                            "[AppDiag] consume src=%zu track=%d realCopied=%zu postResampleBuf=%zu rbAvail=%zu "
+                            "syncReady=%d rateCompActive=%d underruns=%u%s",
+                            srcIdx, track, realCopiedSamples, src.postResampleBuffer.size() / CHANNELS, rbAvailSamples,
+                            (src.syncResampler && src.syncResampler->IsReady()) ? 1 : 0, src.rateCompActive ? 1 : 0,
+                            src.ringBufferUnderrunCount, starvedWithRingData ? " STARVED_WITH_RING_DATA" : "");
+                        src.lastAppConsumeDiagTick = nowConsumeTick;
+                    }
+                }
                 if (toCopy < totalFloats) {
                     // Underrun: apply a short fade-out on the last real samples
                     // before the silence boundary to prevent audible clicks.
@@ -4336,6 +4357,45 @@ private:
                                                 (unsigned long long)src.qpcAlignedWrittenSamples,
                                                 (unsigned long long)packet.qpcPosition);
                                             src.lastPacketTimelineAdjustWarnTick = nowTick;
+                                        }
+                                    }
+
+                                    // Placement-divergence diagnostics (throttled 1/s, app sources). The smoking
+                                    // gun for "app track goes silent while capture stays live" is the qpc-placed
+                                    // write position racing ahead of the read/encoded cursor: that fills the ring
+                                    // (forcing retain-trim of the very audio the reader needs) while the reader
+                                    // underruns at its own cursor. writeMinusEncoded growing unbounded + ringAvail
+                                    // pinned near capacity is the failure; a stable small writeMinusEncoded is healthy.
+                                    if (src.sourceType == AudioConfig::AppAudio) {
+                                        const uint64_t nowDiagTick = GetTickCount64();
+                                        if (nowDiagTick - src.lastAppPlaceDiagTick >= 1000) {
+                                            const int64_t encodedCursor = srcIdx < encodedSamplesPerSource.size()
+                                                                              ? encodedSamplesPerSource[srcIdx]
+                                                                              : 0;
+                                            const int64_t writeMinusEncoded =
+                                                static_cast<int64_t>(src.qpcAlignedWrittenSamples) - encodedCursor;
+                                            const size_t ringAvailSamples =
+                                                src.ringBuffer
+                                                    ? src.ringBuffer->GetAvailable() / std::max(1, targetFmt.channels)
+                                                    : 0;
+                                            const size_t ringCapSamples =
+                                                src.ringBuffer
+                                                    ? src.ringBuffer->GetCapacity() / std::max(1, targetFmt.channels)
+                                                    : 0;
+                                            DLL_Log(
+                                                "[AppDiag] place src=%d track=%d placed=%lld writeCursor=%llu "
+                                                "encodedCursor=%lld writeMinusEncoded=%lld pendingWriteSamples=%zu "
+                                                "ringAvail=%zu/%zu gapTotal=%llu overlapTotal=%llu lastGap=%lld "
+                                                "lastOverlap=%lld",
+                                                (int)srcIdx, src.track, (long long)packetStartSamples,
+                                                (unsigned long long)src.qpcAlignedWrittenSamples,
+                                                (long long)encodedCursor, (long long)writeMinusEncoded, writeSamples,
+                                                ringAvailSamples, ringCapSamples,
+                                                (unsigned long long)src.packetTimelineGapSamples,
+                                                (unsigned long long)src.packetTimelineOverlapSamples,
+                                                (long long)timelineAdjustment.gapSamples,
+                                                (long long)timelineAdjustment.overlapSamples);
+                                            src.lastAppPlaceDiagTick = nowDiagTick;
                                         }
                                     }
                                 }
