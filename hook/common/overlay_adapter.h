@@ -75,7 +75,14 @@ public:
     void SetHwnd(void* hwnd) {
         std::lock_guard<std::mutex> lock(stateMutex);
         this->hwnd = hwnd;
+        // Share a valid game window across ALL overlay adapters so an adapter that never gets SetHwnd
+        // (e.g. the descriptor-free DX12 backend) resolves the game's DPI instead of falling back to
+        // GetForegroundWindow() — which during startup can be a 96-DPI launcher/splash (overlay rendered
+        // at 100% instead of the Windows 150% scale; session 20260624_004915).
+        RememberDpiReferenceHwnd(hwnd);
     }
+    // Remember a known-valid game window for cross-adapter DPI resolution (file-static; see .cpp).
+    static void RememberDpiReferenceHwnd(void* hwnd);
     void SetGraphicsAPI(const char* api);
     void SetReserveInactiveFGSpace(bool reserve);
     void InvalidateCachedFrame();

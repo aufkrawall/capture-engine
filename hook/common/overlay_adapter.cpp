@@ -100,9 +100,27 @@ std::string FormatEncoderOverloadLabel(uint32_t sustainFpsX100, uint32_t targetF
 }  // namespace
 
 // Helper to detect Windows DPI scaling
+// A known-valid game window remembered from any adapter's SetHwnd, used as the DPI fallback before
+// GetForegroundWindow(). During game startup the foreground window can be a 96-DPI launcher/splash, which
+// made adapters that init without their own hwnd (the descriptor-free DX12 backend) render at 100% instead
+// of the Windows scale.
+static std::atomic<HWND> g_SharedOverlayDpiHwnd{nullptr};
+
+void OverlayAdapter::RememberDpiReferenceHwnd(void* hwnd) {
+    HWND h = reinterpret_cast<HWND>(hwnd);
+    if (IsWindow(h)) {
+        g_SharedOverlayDpiHwnd.store(h, std::memory_order_release);
+    }
+}
+
 static float GetWindowsDpiScale(HWND targetHwnd) {
     // Prefer the target game window if available.
     HWND hwnd = targetHwnd;
+    if (!IsWindow(hwnd)) {
+        // Fall back to a real game window seen by another adapter before the foreground window — the
+        // foreground can be a non-game / pre-DPI-aware window during startup (yields 96 DPI = 1.0).
+        hwnd = g_SharedOverlayDpiHwnd.load(std::memory_order_acquire);
+    }
     if (!IsWindow(hwnd)) {
         hwnd = GetForegroundWindow();
     }
