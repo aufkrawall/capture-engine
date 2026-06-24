@@ -11,6 +11,8 @@
 #include <thread>
 #include <vector>
 
+#include "audio_recovery_policy.h"
+
 struct AudioPacket {
     std::vector<uint8_t> data;
     int64_t timestamp;  // ms
@@ -60,6 +62,7 @@ private:
     HANDLE captureEvent_ = nullptr;
     DWORD activeStreamFlags = 0;
     bool isLoopback_ = false;
+    std::string deviceId_;  // Stored so the stream can be re-resolved/re-activated after device invalidation.
     uint64_t streamLatency100ns_ = 0;
     // Endpoint timing reported by WASAPI at Start(), logged for A/V offset diagnosis.
     // GetStreamLatency() frequently returns 0 for loopback, so these expose the real
@@ -75,5 +78,18 @@ private:
     std::mutex queueMutex;
     std::deque<AudioPacket> packetQueue;  // Use deque for O(1) front removal
 
+    // Mid-recording stream re-activation policy (endpoint device invalidation).
+    ce::audio::StreamRecoveryConfig recoveryConfig_;
+
     void CaptureLoop();
+
+    // Resolve the configured/default endpoint into pDevice (AddRef'd, caller owns).
+    // Shared by Start() and ReactivateClient() so both use identical resolution.
+    bool ResolveCaptureDevice();
+    // Activate + initialize + start the client on the already-resolved pDevice,
+    // leaving pAudioClient/pCaptureClient/pwfx ready. Does NOT spawn the thread.
+    bool ActivateAndStartClientOnDevice();
+    // Release the dead client+device and re-resolve+re-activate in place, keeping
+    // the capture thread and queue alive. Used by CaptureLoop on a fatal error.
+    bool ReactivateClient();
 };

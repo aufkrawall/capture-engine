@@ -15,6 +15,7 @@
 
 // Include for AudioPacket definition
 #include "audio_capture.h"
+#include "audio_recovery_policy.h"
 
 /**
  * Per-application audio capture using Windows 10/11 process loopback API.
@@ -118,9 +119,22 @@ private:
 
     // Initialize capture for the given PID (called internally)
     bool InitializeCaptureForPID(DWORD pid);
+    // Activate + initialize + start a process-loopback client for pid, leaving
+    // pAudioClient/pCaptureClient/pwfx ready. Does NOT launch the capture thread,
+    // so it is reusable for both first start and mid-stream re-activation.
+    bool ActivateClientForPID(DWORD pid);
+    // Abandon the current (dead) client and re-activate a fresh one in place,
+    // keeping the capture thread, queue, and downstream track alive. Used by the
+    // capture loop on a fatal stream error or a silent stall.
+    bool ReactivateClientForPID(DWORD pid);
     bool StartCaptureThreadForCurrentClient();
     void BeginAsyncStartForPID(DWORD pid);
     void FinalizePendingAsyncStart();
+
+    // Abandon process-loopback COM interfaces (without releasing them: releasing
+    // crashes AudioSes CLoopbackMixer cleanup) plus free pwfx and reset stream
+    // fields. Shared by CleanupCapture() and ReactivateClientForPID().
+    void AbandonClientInterfaces();
 
     // Cleanup capture resources
     void CleanupCapture();
@@ -149,6 +163,9 @@ private:
     int requestedSampleRate = 48000;
     int requestedChannels = 2;
     uint32_t requestedChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+
+    // Mid-recording stream re-activation policy (device-invalidation + silent stall).
+    ce::audio::StreamRecoveryConfig recoveryConfig_;
 
     // Target process info
     std::atomic<DWORD> targetPID{0};

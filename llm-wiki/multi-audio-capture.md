@@ -1,6 +1,6 @@
 # Multi Audio Capture
 
-Last cross-checked: 2026-06-22 (codec channel-layout fallback: 8ch/7.1 endpoint no longer drops all audio with ALAC; WASAPI out-of-domain qpcPosition guard; leading-silence gap capacity clamp)
+Last cross-checked: 2026-06-24 (WASAPI capture stream re-activation on device-invalidation + process-loopback silent-stall watchdog)
 Stale-risk: medium
 
 Primary sources:
@@ -8,6 +8,7 @@ Primary sources:
 - `common/config.cpp`
 - `mediaengine/audio_capture.cpp`
 - `mediaengine/app_audio_capture.cpp`
+- `mediaengine/audio_recovery_policy.h`
 - `mediaengine/audio_time_utils.h`
 - `mediaengine/audio_resampler.cpp`
 - `mediaengine/audio_encoder.cpp`
@@ -40,6 +41,17 @@ Each exported track owns an independent audio timeline cursor. Per-source counte
 A process-loopback source that first becomes active well after recording start joins live at the current track cursor, preserving only a tiny fade/cushion window. CE logs `[AudioLoop] Late app source live join ... suppressedGap=... preservedGap=... process=...` and stop summaries expose `qjoin` / `qjoinKeep`. A raw `Source primed ... lateStart=...` line is not a failure when the same source has live-join evidence; it is a failure when it means old source-local backlog was retained and later mixed into the live track. This distinction matters for duplicate process-loopback routing and late helper-process tests.
 
 After bootstrap, a sparse started app source contributes silence for the requested range when it lacks buffered samples. It must not block the entire exported track during live pulls or final drain. Stop-time force drain loops over bounded chunks until all exported track cursors reach the video endpoint or no progress is possible, so long recordings cannot end with only one extra 500 ms pull.
+
+### Mid-recording stream recovery (device-invalidation + silent stall)
+
+A WASAPI capture stream can die mid-recording and, before this hardening, both capture loops would spin forever without ever producing another packet while `isCapturing` stayed `true` — so nothing restarted them and the downstream track silence-padded to the end of the recording (system audio kept working only because its endpoint was not the one that died). Two real failure modes drive this, both far more likely on per-process/app loopback (it is bound to the target process's audio-session lifecycle, unlike always-running endpoint loopback):
+
+1. A FATAL stream error (`AUDCLNT_E_DEVICE_INVALIDATED` and the device-invalidation family): the render endpoint changed (default-device switch, driver/power event, HDMI/Bluetooth/USB-DAC reset over a long 60–70 min session). Every subsequent `GetNextPacketSize`/`GetBuffer` fails.
+2. A SILENT STALL with no error HRESULT: the target app tore down and recreated its audio session (a game auto-muting on alt-tab out and unmuting on refocus); the process-loopback mixer does not reattach, so the stream stays alive but yields zero packets while the process is running and audible again.
+
+`ce::audio` (`audio_recovery_policy.h`, pure/unit-tested) decides WHEN to re-activate: `IsFatalWasapiStreamError` classifies the device-invalidation family narrowly; `NextRecoveryBackoffMs`/`RecoveryBackoffElapsed` apply exponential backoff (base 1 s → cap 30 s) so an unrecoverable stream (or a legitimately paused app) is not hammered; `ShouldReactivateForSilentStall` only arms after the stream delivered ≥1 packet (`sawAnyPacket`) and has been silent ≥10 s.
+
+Both `AppAudioCapture::CaptureLoop` and `AudioCapture::CaptureLoop` now re-activate the client IN PLACE on a fatal error (keeping the capture thread, packet queue, and downstream track alive), and a healthy `GetBuffer` resets the backoff. App audio additionally runs the silent-stall watchdog (endpoint loopback does not have that failure mode, so system audio gets fatal-error recovery only). App-audio re-activation goes through `ReactivateClientForPID` → `AbandonClientInterfaces` (abandons, never releases, the process-loopback COM interfaces — see the AudioSes crash boundary below — the leaked wrappers are tiny and bounded by backoff). System audio re-activation (`ReactivateClient`) re-resolves the endpoint via the shared `ResolveCaptureDevice`/`ActivateAndStartClientOnDevice` helpers and CAN safely `Release()` the old interfaces (only `IAudioClient::Stop()` trips the AudioSes crash for endpoint loopback). The app-audio process-exit check also now tolerates 3 consecutive missed `IsProcessRunning` probes before declaring exit, so a transient `OpenProcess` hiccup cannot permanently kill a live capture. Per-session error logging replaced a latent `static int errCount` that silently swallowed every error after the first session.
 
 Process-loopback teardown has a Windows AudioSes crash boundary. Dumps from duplicate/late app-audio runs showed `AudioSes!CLoopbackMixer::Cleanup` / `AudioLimiterAPO` crashes after app-capture shutdown. `AppAudioCapture` therefore logs `Abandoning process-loopback COM interfaces during cleanup ... to avoid AudioSes CLoopbackMixer teardown crash` and leaves those OS-backed interfaces to the short-lived media process teardown instead of calling the crash-prone `Stop()`/release path. Any `crash.log` / dump remains a strict run failure in triage; the abandon log is the expected healthy shutdown breadcrumb.
 
@@ -108,7 +120,11 @@ Useful logs for this area:
 - `[AudioLoop] Late source cursor advance ...`: a late packet arrived after the track cursor already encoded silence; this is explicit placement diagnostics, not a reason to move the exported track.
 - `[AudioLoop] Late app source live join ... suppressedGap=... preservedGap=... process=...`: a process-loopback source first became active late and CE trimmed stale source-local backlog instead of backfilling it into the live mix.
 - `[STOP AUDIO] Source ... qjoin:... qjoinKeep:... process=...`: stop-time proof that a late app source joined live; `qjoin>0` with clean decoded strict markers means a later `lateStart` prime line was handled intentionally.
-- `[AppAudioCapture] Abandoning process-loopback COM interfaces during cleanup ...`: expected process-loopback teardown protection for the AudioSes CLoopbackMixer crash family. A companion `crash.log` or dump is not expected and is a strict failure.
+- `[AppAudioCapture] Abandoning process-loopback COM interfaces ...`: expected process-loopback teardown/re-activation protection for the AudioSes CLoopbackMixer crash family. A companion `crash.log` or dump is not expected and is a strict failure.
+- `[AppAudioCapture] FATAL stream error from GetNextPacketSize/GetBuffer: 0x... - attempting re-activation` and `[AudioCapture] FATAL stream error ...`: a device-invalidation-family HRESULT killed the stream; the loop is re-activating the client in place. Followed by `Re-activating ... (reason=... attempt=N nextBackoffMs=...)` and `Re-activation succeeded`/`FAILED`. A handful per long session (device/driver flap) is healthy recovery; a steady stream of FAILED with no success means the endpoint/process is truly gone.
+- `[AppAudioCapture] Process-loopback silent stall for PID ... (N ms without packets, process alive) - re-activating`: the app went silent with no error (e.g. game auto-muted on alt-tab and recreated its session); the watchdog re-attaches. Expected to be followed by resumed `Source Sync` lines once the app is audible again.
+- `[AppAudioCapture] Target process ... not found on check K/3 - deferring exit`: a single `IsProcessRunning` miss; capture is NOT torn down until 3 consecutive misses. A genuine exit logs `... exited (missed 3 consecutive checks)`.
+- `[AppAudioCapture]/[AudioCapture] Stream recovery summary ...: N re-activation attempt(s), M succeeded`: end-of-session recovery accounting. Absent when no recovery was needed.
 - `[PullAudio] WARNING: CFR audio ring near capacity ...`: pressure diagnostic. The code preserves audio; an actual overflow/drop is a validation failure.
 - `[PullAudio] WARNING: CFR post-resample backlog exceeded guard ...`: pressure diagnostic. The code preserves audio; post-resample trimming is a validation failure.
 - `[STOP AUDIO TRACK] Track ... encoded=... expected=... realMixed=... fullSilence=... partialSilence=... sources=[...]`: exported-track cursor summary, including real/silence accounting.
@@ -136,6 +152,8 @@ Focused regression coverage lives in:
   - Packed/interleaved silence buffer sizing includes every channel, final packet durations clamp to the video sample target, timeline-valid startup no longer waits for buffered real audio, app audio stays optional until first packet, pre-start app-audio packets make the app source strict for bootstrap, source write cursors never trail the encoded track cursor, late first packets overlap already-encoded silence, and `ClampTimelineGapSamplesToCapacity` bounds an oversized/out-of-domain leading-silence gap to the ring capacity while leaving in-range gaps and degenerate inputs untouched.
 - `tests/test_audio_time_utils.cpp`
   - Loopback capture-latency compensation clamps safely and leaves non-loopback timestamps unchanged, and `SanitizeCaptureQpcPosition` passes through healthy positions but replaces far-future (the 192 kHz-loopback ~497-day garbage) and far-past/zero positions with the live QPC, trusting the value only when no reference clock is available.
+- `tests/test_audio_recovery_policy.cpp`
+  - Stream-recovery policy (`audio_recovery_policy.h`): `IsFatalWasapiStreamError` flags only the device-invalidation family (not transient AUDCLNT errors, `S_OK`/`S_FALSE`, or generic `E_FAIL`); `NextRecoveryBackoffMs` doubles from base to the cap; `RecoveryBackoffElapsed` allows the first attempt immediately and otherwise honors the window and a backwards clock; `ShouldReactivateForSilentStall` never fires before the first packet, requires the full silent window, still honors backoff between attempts, and ignores a backwards packet clock.
 - `tools/analyze_capture_av.py`
   - Strict post-write validation with FFprobe/FFmpeg: full video/audio scan, decode stderr checks, waveform-tail marker spread, `--strict-sync-events`, and log-event gates for forced bootstrap, bootstrap trim, source underrun, audio trim/drop/extreme-drift paths, WGC fresh catch-up, stop-drain abort, WGC held stop repeats, nonzero WGC drain duplicate summaries, writer finalize timeout, post-mux probe hang/timeout, late app-source backlog without live join, CE crash-handler output, and multi-source stop-time audio shortfalls. Discarded post-stop WGC callbacks stay visible as endpoint-protection telemetry but are not audio failures by themselves.
 - `testapp/av_sync_stimulus.h` and `tests/test_av_sync_stimulus.cpp`

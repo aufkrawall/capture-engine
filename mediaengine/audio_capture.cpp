@@ -221,6 +221,7 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
     DLL_Log("[AudioCapture] Start called: deviceId=%s loopback=%d", deviceId.empty() ? "default" : deviceId.c_str(),
             isLoopback);
     isLoopback_ = isLoopback;
+    deviceId_ = deviceId;  // Remembered so CaptureLoop can re-resolve after device invalidation.
     streamLatency100ns_ = 0;
     HRESULT hr;
 
@@ -244,21 +245,35 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
     if (FAILED(hr))
         return false;
 
-    if (deviceId.empty()) {
-        EDataFlow dataFlow = isLoopback ? eRender : eCapture;
-        hr = pEnumerator->GetDefaultAudioEndpoint(dataFlow, eConsole, &pDevice);
-        DLL_Log("[AudioCapture] Using default %s endpoint", isLoopback ? "render (loopback)" : "capture (microphone)");
-    } else {
-        EDataFlow dataFlow = isLoopback ? eRender : eCapture;
+    if (!ResolveCaptureDevice()) {
+        return false;
+    }
+    if (!ActivateAndStartClientOnDevice()) {
+        return false;
+    }
 
+    isCapturing = true;
+    captureThread = std::thread(&AudioCapture::CaptureLoop, this);
+
+    return true;
+}
+
+bool AudioCapture::ResolveCaptureDevice() {
+    HRESULT hr;
+    const EDataFlow dataFlow = isLoopback_ ? eRender : eCapture;
+
+    if (deviceId_.empty()) {
+        hr = pEnumerator->GetDefaultAudioEndpoint(dataFlow, eConsole, &pDevice);
+        DLL_Log("[AudioCapture] Using default %s endpoint", isLoopback_ ? "render (loopback)" : "capture (microphone)");
+    } else {
         // 1. Try exact device ID match (opaque WASAPI device ID string)
-        int wideLen = MultiByteToWideChar(CP_UTF8, 0, deviceId.c_str(), -1, nullptr, 0);
+        int wideLen = MultiByteToWideChar(CP_UTF8, 0, deviceId_.c_str(), -1, nullptr, 0);
         if (wideLen > 0) {
             std::wstring wideId(static_cast<size_t>(wideLen), L'\0');
-            MultiByteToWideChar(CP_UTF8, 0, deviceId.c_str(), -1, wideId.data(), wideLen);
+            MultiByteToWideChar(CP_UTF8, 0, deviceId_.c_str(), -1, wideId.data(), wideLen);
             hr = pEnumerator->GetDevice(wideId.c_str(), &pDevice);
             if (SUCCEEDED(hr)) {
-                DLL_Log("[AudioCapture] Using device by ID: %s", deviceId.c_str());
+                DLL_Log("[AudioCapture] Using device by ID: %s", deviceId_.c_str());
             }
         } else {
             hr = E_FAIL;
@@ -287,11 +302,11 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
                                                         nullptr, nullptr);
                                     if (!friendlyName.empty() && friendlyName.back() == '\0')
                                         friendlyName.pop_back();
-                                    if (friendlyName == deviceId) {
+                                    if (friendlyName == deviceId_) {
                                         pDevice = pCandidate;
                                         pDevice->AddRef();
                                         hr = S_OK;
-                                        DLL_Log("[AudioCapture] Using device by friendly name: %s", deviceId.c_str());
+                                        DLL_Log("[AudioCapture] Using device by friendly name: %s", deviceId_.c_str());
                                     }
                                 }
                             }
@@ -308,7 +323,7 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
 
         // 3. If both failed, fall back to default endpoint
         if (!pDevice) {
-            DLL_Log("[AudioCapture] Device '%s' not found by ID or name, falling back to default", deviceId.c_str());
+            DLL_Log("[AudioCapture] Device '%s' not found by ID or name, falling back to default", deviceId_.c_str());
             hr = pEnumerator->GetDefaultAudioEndpoint(dataFlow, eConsole, &pDevice);
         }
     }
@@ -316,6 +331,12 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
         DLL_Log("[AudioCapture] GetDefaultAudioEndpoint failed: 0x%x", hr);
         return false;
     }
+    return true;
+}
+
+bool AudioCapture::ActivateAndStartClientOnDevice() {
+    HRESULT hr;
+    const bool isLoopback = isLoopback_;
 
     if (!captureEvent_) {
         captureEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -438,10 +459,43 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
     DLL_Log("[AudioCapture] Capture mode: %s",
             (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
 
-    isCapturing = true;
-    captureThread = std::thread(&AudioCapture::CaptureLoop, this);
-
     return true;
+}
+
+bool AudioCapture::ReactivateClient() {
+    // Endpoint capture/loopback: releasing the interfaces (without IAudioClient::Stop())
+    // is safe — only Stop() trips the AudioSes CLoopbackMixer crash. Re-resolve the
+    // endpoint because a device-invalidation usually means the default/target device
+    // changed underneath us. The capture thread and packet queue stay alive.
+    if (pCaptureClient) {
+        pCaptureClient->Release();
+        pCaptureClient = NULL;
+    }
+    if (pAudioClient) {
+        pAudioClient->Release();
+        pAudioClient = NULL;
+    }
+    if (pwfx) {
+        CoTaskMemFree(pwfx);
+        pwfx = NULL;
+    }
+    if (pDevice) {
+        pDevice->Release();
+        pDevice = NULL;
+    }
+    activeStreamFlags = 0;
+    streamLatency100ns_ = 0;
+    defaultDevicePeriod100ns_ = 0;
+    minDevicePeriod100ns_ = 0;
+    bufferFrameCount_ = 0;
+
+    if (!pEnumerator) {
+        return false;
+    }
+    if (!ResolveCaptureDevice()) {
+        return false;
+    }
+    return ActivateAndStartClientOnDevice();
 }
 
 void AudioCapture::Stop(bool discardPendingPackets) {
@@ -531,6 +585,41 @@ void AudioCapture::CaptureLoop() {
     uint64_t finalDrainPackets = 0;
     uint64_t finalDrainFrames = 0;
 
+    // --- Mid-recording stream recovery (endpoint device invalidation) ---
+    const ce::audio::StreamRecoveryConfig recoveryCfg = recoveryConfig_;
+    uint64_t lastReactivateTick = 0;
+    uint64_t recoveryBackoffMs = 0;
+    uint64_t reactivateAttempts = 0;
+    uint64_t reactivateSuccesses = 0;
+    int fatalErrLogCount = 0;
+    int getBufferErrLogCount = 0;
+    constexpr int kErrLogCap = 8;
+    auto attemptReactivate = [&](const char* reason, long hrCode) -> bool {
+        const uint64_t now = GetTickCount64();
+        if (!ce::audio::RecoveryBackoffElapsed(now, lastReactivateTick, recoveryBackoffMs)) {
+            return false;
+        }
+        ++reactivateAttempts;
+        lastReactivateTick = now;
+        recoveryBackoffMs = ce::audio::NextRecoveryBackoffMs(recoveryBackoffMs, recoveryCfg);
+        DLL_Log(
+            "[AudioCapture] Re-activating %s stream (reason=%s hr=0x%lx attempt=%llu nextBackoffMs=%llu)",
+            isLoopback_ ? "loopback" : "capture", reason, static_cast<unsigned long>(hrCode),
+            static_cast<unsigned long long>(reactivateAttempts), static_cast<unsigned long long>(recoveryBackoffMs));
+        const bool ok = ReactivateClient();
+        if (ok) {
+            ++reactivateSuccesses;
+            firstSet = false;  // drift baseline restarts on the fresh client (devicePosition resets)
+            DLL_Log("[AudioCapture] Re-activation succeeded (attempt=%llu mode=%s)",
+                    static_cast<unsigned long long>(reactivateAttempts),
+                    (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
+        } else {
+            DLL_Log("[AudioCapture] Re-activation FAILED (attempt=%llu) - will retry with backoff",
+                    static_cast<unsigned long long>(reactivateAttempts));
+        }
+        return ok;
+    };
+
     while (isCapturing) {
         if ((activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
             const DWORD waitResult = WaitForSingleObject(captureEvent_, 200);
@@ -542,10 +631,28 @@ void AudioCapture::CaptureLoop() {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
+        // A previous re-activation may have failed and left no client; recover it
+        // here (with backoff) before any client call so we never deref nullptr.
+        if (!pCaptureClient) {
+            attemptReactivate("client_null", 0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            continue;
+        }
+
         hr = pCaptureClient->GetNextPacketSize(&packetLength);
         if (FAILED(hr)) {
+            if (ce::audio::IsFatalWasapiStreamError(hr)) {
+                if (fatalErrLogCount++ < kErrLogCap) {
+                    DLL_Log(
+                        "[AudioCapture] FATAL stream error from GetNextPacketSize: 0x%lx (loopback=%d) - "
+                        "attempting re-activation",
+                        static_cast<unsigned long>(hr), isLoopback_ ? 1 : 0);
+                }
+                attemptReactivate("GetNextPacketSize_fatal", hr);
+                continue;
+            }
             if (errCount++ < 5) {
-                DLL_Log("[AudioCapture] GetNextPacketSize failed: 0x%x", hr);
+                DLL_Log("[AudioCapture] GetNextPacketSize failed (transient): 0x%lx", static_cast<unsigned long>(hr));
             }
             continue;
         }
@@ -557,8 +664,21 @@ void AudioCapture::CaptureLoop() {
         const bool drainingAfterStop = !isCapturing.load(std::memory_order_acquire);
         while (packetLength != 0) {
             hr = pCaptureClient->GetBuffer(&pData, &numFramesAvailable, &flags, &devicePosition, &qpcPosition);
-            if (FAILED(hr))
+            if (FAILED(hr)) {
+                if (ce::audio::IsFatalWasapiStreamError(hr)) {
+                    if (fatalErrLogCount++ < kErrLogCap) {
+                        DLL_Log(
+                            "[AudioCapture] FATAL stream error from GetBuffer: 0x%lx (loopback=%d) - attempting "
+                            "re-activation",
+                            static_cast<unsigned long>(hr), isLoopback_ ? 1 : 0);
+                    }
+                    attemptReactivate("GetBuffer_fatal", hr);
+                } else if (getBufferErrLogCount++ < kErrLogCap) {
+                    DLL_Log("[AudioCapture] GetBuffer failed: 0x%lx", static_cast<unsigned long>(hr));
+                }
                 break;
+            }
+            recoveryBackoffMs = 0;  // healthy delivery resets backoff for responsive future recovery
             if (drainingAfterStop) {
                 ++finalDrainPackets;
                 finalDrainFrames += numFramesAvailable;
@@ -705,6 +825,11 @@ void AudioCapture::CaptureLoop() {
     }
 
     DLL_Log("[AudioCapture] CaptureLoop exited");
+    if (reactivateAttempts > 0) {
+        DLL_Log("[AudioCapture] Stream recovery summary (loopback=%d): %llu re-activation attempt(s), %llu succeeded",
+                isLoopback_ ? 1 : 0, static_cast<unsigned long long>(reactivateAttempts),
+                static_cast<unsigned long long>(reactivateSuccesses));
+    }
     if (finalDrainPackets > 0 || finalDrainFrames > 0) {
         DLL_Log("[AudioCapture] Final stop drain queued %llu packet(s) / %llu frame(s)",
                 static_cast<unsigned long long>(finalDrainPackets), static_cast<unsigned long long>(finalDrainFrames));

@@ -374,6 +374,22 @@ bool AppAudioCapture::StartCaptureThreadForCurrentClient() {
 }
 
 bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
+    if (!ActivateClientForPID(pid)) {
+        return false;
+    }
+    return StartCaptureThreadForCurrentClient();
+}
+
+bool AppAudioCapture::ReactivateClientForPID(DWORD pid) {
+    // Drop the dead client without releasing the process-loopback COM interfaces
+    // (releasing them crashes AudioSes CLoopbackMixer cleanup). The capture
+    // thread, packet queue, and downstream track stay alive; we just swap in a
+    // freshly activated client so packets resume on the same source.
+    AbandonClientInterfaces();
+    return ActivateClientForPID(pid);
+}
+
+bool AppAudioCapture::ActivateClientForPID(DWORD pid) {
     const HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(coInitHr) && coInitHr != RPC_E_CHANGED_MODE) {
         DLL_Log("[AppAudioCapture] CoInitializeEx failed: 0x%x", coInitHr);
@@ -570,23 +586,21 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
     DLL_Log("[AppAudioCapture] Capture mode: %s",
             (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
 
-    return StartCaptureThreadForCurrentClient();
+    return true;
 }
 
-void AppAudioCapture::CleanupCapture() {
-    if (captureEvent_) {
-        ResetEvent(captureEvent_);
-    }
-
+void AppAudioCapture::AbandonClientInterfaces() {
     // Process loopback is backed by AudioSes' CLoopbackMixer. On current Windows 11
     // builds the mixer can crash in AudioLimiterAPO cleanup when the process-loopback
-    // COM interfaces are released during source shutdown, especially with duplicate
-    // process-loopback captures. The media process is short-lived per recording, so
-    // leave these OS-owned interfaces for process teardown instead of touching the
-    // crash-prone AudioSes cleanup path while CE is finalizing.
+    // COM interfaces are released, especially with duplicate process-loopback
+    // captures. The media process is short-lived per recording, so leave these
+    // OS-owned interfaces for process teardown instead of touching the crash-prone
+    // AudioSes cleanup path. Mid-recording re-activation goes through here too; the
+    // abandoned wrappers are tiny and bounded by recovery backoff, so the leak is
+    // negligible and reclaimed at process exit.
     if (pCaptureClient || pAudioClient) {
         DLL_Log(
-            "[AppAudioCapture] Abandoning process-loopback COM interfaces during cleanup "
+            "[AppAudioCapture] Abandoning process-loopback COM interfaces "
             "(audioClient=%p captureClient=%p flags=0x%lx) to avoid AudioSes CLoopbackMixer teardown crash",
             pAudioClient, pCaptureClient, activeStreamFlags);
         pCaptureClient = nullptr;
@@ -603,6 +617,13 @@ void AppAudioCapture::CleanupCapture() {
     defaultDevicePeriod100ns = 0;
     minDevicePeriod100ns = 0;
     bufferFrameCount = 0;
+}
+
+void AppAudioCapture::CleanupCapture() {
+    if (captureEvent_) {
+        ResetEvent(captureEvent_);
+    }
+    AbandonClientInterfaces();
 }
 
 void AppAudioCapture::CaptureLoop() {
@@ -632,14 +653,72 @@ void AppAudioCapture::CaptureLoop() {
     uint64_t finalDrainPackets = 0;
     uint64_t finalDrainFrames = 0;
 
+    // --- Mid-recording stream recovery state (device-invalidation + silent stall) ---
+    const ce::audio::StreamRecoveryConfig recoveryCfg = recoveryConfig_;
+    uint64_t lastPacketTick = GetTickCount64();  // arms the silent-stall window from stream start
+    uint64_t lastReactivateTick = 0;
+    uint64_t recoveryBackoffMs = 0;
+    bool sawAnyPacket = false;
+    uint64_t reactivateAttempts = 0;
+    uint64_t reactivateSuccesses = 0;
+    // Per-session throttled error logging (NOT static: must reset every session, or
+    // a long-lived process silently swallows every error after the first session).
+    int fatalErrLogCount = 0;
+    int transientErrLogCount = 0;
+    int getBufferErrLogCount = 0;
+    constexpr int kErrLogCap = 8;
+    // Require a few consecutive misses before declaring the process gone, so a
+    // transient OpenProcess hiccup cannot permanently kill an otherwise-live capture.
+    int processMissingStreak = 0;
+    constexpr int kProcessMissingStreakToExit = 3;
+
+    // Tear down the dead client and re-activate in place. Honors backoff so a stream
+    // that cannot be recovered (or an app that is legitimately paused) is not hammered.
+    auto attemptReactivate = [&](const char* reason, long hrCode) -> bool {
+        const uint64_t now = GetTickCount64();
+        if (!ce::audio::RecoveryBackoffElapsed(now, lastReactivateTick, recoveryBackoffMs)) {
+            return false;
+        }
+        const DWORD pid = targetPID.load();
+        ++reactivateAttempts;
+        lastReactivateTick = now;
+        recoveryBackoffMs = ce::audio::NextRecoveryBackoffMs(recoveryBackoffMs, recoveryCfg);
+        DLL_Log(
+            "[AppAudioCapture] Re-activating process-loopback stream for PID %lu (reason=%s hr=0x%lx "
+            "attempt=%llu nextBackoffMs=%llu)",
+            pid, reason, static_cast<unsigned long>(hrCode), static_cast<unsigned long long>(reactivateAttempts),
+            static_cast<unsigned long long>(recoveryBackoffMs));
+        const bool ok = ReactivateClientForPID(pid);
+        // Restart the silent-stall window regardless of outcome: on success we wait
+        // for fresh audio; on failure we wait the full window before the next try.
+        lastPacketTick = GetTickCount64();
+        if (ok) {
+            ++reactivateSuccesses;
+            DLL_Log("[AppAudioCapture] Re-activation succeeded for PID %lu (attempt=%llu mode=%s)", pid,
+                    static_cast<unsigned long long>(reactivateAttempts),
+                    (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
+        } else {
+            DLL_Log("[AppAudioCapture] Re-activation FAILED for PID %lu (attempt=%llu) - will retry with backoff", pid,
+                    static_cast<unsigned long long>(reactivateAttempts));
+        }
+        return ok;
+    };
+
     while (isCapturing.load() && !shouldStop.load()) {
         const uint64_t nowTick = GetTickCount64();
         if (nowTick - lastProcessCheckTick >= 500) {
             lastProcessCheckTick = nowTick;
             if (!IsProcessRunning(targetPID.load())) {
-                DLL_Log("[AppAudioCapture] Target process %lu exited", targetPID.load());
-                targetPID.store(0, std::memory_order_release);
-                break;
+                if (++processMissingStreak >= kProcessMissingStreakToExit) {
+                    DLL_Log("[AppAudioCapture] Target process %lu exited (missed %d consecutive checks)",
+                            targetPID.load(), processMissingStreak);
+                    targetPID.store(0, std::memory_order_release);
+                    break;
+                }
+                DLL_Log("[AppAudioCapture] Target process %lu not found on check %d/%d - deferring exit",
+                        targetPID.load(), processMissingStreak, kProcessMissingStreakToExit);
+            } else {
+                processMissingStreak = 0;
             }
         }
 
@@ -653,18 +732,47 @@ void AppAudioCapture::CaptureLoop() {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
+        // A previous re-activation may have failed and abandoned the client; recover
+        // it here (with backoff) before any client call, so we never deref nullptr.
+        if (!pCaptureClient) {
+            attemptReactivate("client_null", 0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            continue;
+        }
+
         hr = pCaptureClient->GetNextPacketSize(&packetLength);
         if (FAILED(hr)) {
-            static int errCount = 0;
-            if (errCount++ < 5) {
-                DLL_Log("[AppAudioCapture] GetNextPacketSize failed: 0x%x", hr);
+            if (ce::audio::IsFatalWasapiStreamError(hr)) {
+                if (fatalErrLogCount++ < kErrLogCap) {
+                    DLL_Log(
+                        "[AppAudioCapture] FATAL stream error from GetNextPacketSize: 0x%lx (PID %lu) - "
+                        "attempting re-activation",
+                        static_cast<unsigned long>(hr), targetPID.load());
+                }
+                attemptReactivate("GetNextPacketSize_fatal", hr);
+                continue;
             }
-
+            if (transientErrLogCount++ < kErrLogCap) {
+                DLL_Log("[AppAudioCapture] GetNextPacketSize failed (transient): 0x%lx", static_cast<unsigned long>(hr));
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
             continue;
         }
 
         if (packetLength == 0) {
+            // Silent-stall watchdog: a process-loopback stream that delivered audio
+            // before but has gone fully silent (no packets, no error) while its
+            // process is still running usually means the app tore down and recreated
+            // its audio session (e.g. a game auto-muting on alt-tab) and the mixer
+            // did not reattach. Re-activate to reattach to the live session.
+            if (ce::audio::ShouldReactivateForSilentStall(sawAnyPacket, GetTickCount64(), lastPacketTick,
+                                                          lastReactivateTick, recoveryBackoffMs, recoveryCfg)) {
+                DLL_Log(
+                    "[AppAudioCapture] Process-loopback silent stall for PID %lu (%llu ms without packets, process "
+                    "alive) - re-activating",
+                    targetPID.load(), static_cast<unsigned long long>(GetTickCount64() - lastPacketTick));
+                attemptReactivate("silent_stall", 0);
+            }
             continue;
         }
 
@@ -672,8 +780,25 @@ void AppAudioCapture::CaptureLoop() {
             !isCapturing.load(std::memory_order_acquire) || shouldStop.load(std::memory_order_acquire);
         while (packetLength != 0) {
             hr = pCaptureClient->GetBuffer(&pData, &numFramesAvailable, &flags, &devicePosition, &qpcPosition);
-            if (FAILED(hr))
+            if (FAILED(hr)) {
+                if (ce::audio::IsFatalWasapiStreamError(hr)) {
+                    if (fatalErrLogCount++ < kErrLogCap) {
+                        DLL_Log(
+                            "[AppAudioCapture] FATAL stream error from GetBuffer: 0x%lx (PID %lu) - attempting "
+                            "re-activation",
+                            static_cast<unsigned long>(hr), targetPID.load());
+                    }
+                    attemptReactivate("GetBuffer_fatal", hr);
+                } else if (getBufferErrLogCount++ < kErrLogCap) {
+                    DLL_Log("[AppAudioCapture] GetBuffer failed: 0x%lx", static_cast<unsigned long>(hr));
+                }
                 break;
+            }
+            // Healthy delivery: the stream is alive. Reset the silent-stall window,
+            // arm the watchdog, and clear backoff so future recovery is responsive.
+            lastPacketTick = GetTickCount64();
+            sawAnyPacket = true;
+            recoveryBackoffMs = 0;
             if (drainingAfterStop) {
                 ++finalDrainPackets;
                 finalDrainFrames += numFramesAvailable;
@@ -804,6 +929,11 @@ void AppAudioCapture::CaptureLoop() {
     }
 
     DLL_Log("[AppAudioCapture] Capture loop exited");
+    if (reactivateAttempts > 0) {
+        DLL_Log("[AppAudioCapture] Stream recovery summary for PID %lu: %llu re-activation attempt(s), %llu succeeded",
+                targetPID.load(), static_cast<unsigned long long>(reactivateAttempts),
+                static_cast<unsigned long long>(reactivateSuccesses));
+    }
     if (finalDrainPackets > 0 || finalDrainFrames > 0) {
         DLL_Log("[AppAudioCapture] Final stop drain queued %llu packet(s) / %llu frame(s) for PID %lu",
                 static_cast<unsigned long long>(finalDrainPackets), static_cast<unsigned long long>(finalDrainFrames),
