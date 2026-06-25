@@ -114,6 +114,15 @@ public:
         uint64_t lastPacketTimelineAdjustWarnTick = 0;
         uint64_t lastAppPlaceDiagTick = 0;            // Throttle app-source placement-divergence diagnostics
         uint64_t lastAppConsumeDiagTick = 0;          // Throttle app-source consume/drain diagnostics
+        // App-audio latency observability: the ring backlog at consume time IS the audio-behind-video
+        // delay. Sampled every pull so the recording-wide distribution (and any elevated/variable
+        // latency) is obvious in the logs instead of needing manual reconstruction.
+        uint32_t appLatencyBuckets[5] = {0, 0, 0, 0, 0};  // <50, 50-150, 150-300, 300-600, >600 ms
+        uint64_t appLatencySampleCount = 0;
+        uint64_t appLatencySumMs = 0;
+        uint32_t appLatencyMaxMs = 0;
+        uint32_t appLatencyDrainingSamples = 0;       // samples observed while actively draining
+        uint64_t lastAppLatencyWarnTick = 0;          // throttle the elevated-latency warning
         uint64_t catastrophicResyncSamples = 0;       // Stale samples dropped resyncing to live after a read-stall
         uint32_t catastrophicResyncEvents = 0;        // Number of catastrophic backlog resyncs (alt-tab/DPC/overload)
         uint64_t lastCatastrophicResyncTick = 0;      // Throttle catastrophic resync logging
@@ -1578,6 +1587,30 @@ public:
                     "track=%d",
                     i, encSamples, expectedVideoSamples, diffSamples, diffMs, audioSources[i].track);
             }
+            // App-audio latency distribution over the whole recording (audio-behind-video delay). This
+            // is the headline observability fix: it makes elevated/variable latency obvious at a glance
+            // instead of needing manual reconstruction. A healthy source sits almost entirely in <50ms;
+            // significant time in 300-600ms means the drain is not keeping latency near live.
+            for (size_t i = 0; i < audioSources.size(); i++) {
+                const AudioSource& s = audioSources[i];
+                if (s.sourceType != AudioConfig::AppAudio || s.appLatencySampleCount == 0) {
+                    continue;
+                }
+                const uint64_t n = s.appLatencySampleCount;
+                const double avgMs = static_cast<double>(s.appLatencySumMs) / static_cast<double>(n);
+                const double elevatedPct =
+                    100.0 * static_cast<double>(s.appLatencyBuckets[2] + s.appLatencyBuckets[3] + s.appLatencyBuckets[4]) /
+                    static_cast<double>(n);
+                DLL_Log(
+                    "[STOP AUDIO LATENCY] Source %zu track=%d appAudioDelay avg=%.0fms max=%ums "
+                    "buckets(<50/50-150/150-300/300-600/>600ms)=%.0f%%/%.0f%%/%.0f%%/%.0f%%/%.0f%% "
+                    ">=150ms=%.0f%% drainingSamples=%u/%llu. Lower/more-uniform is better; high 300-600ms "
+                    "means audio ran noticeably behind video.",
+                    i, s.track, avgMs, s.appLatencyMaxMs, 100.0 * s.appLatencyBuckets[0] / n,
+                    100.0 * s.appLatencyBuckets[1] / n, 100.0 * s.appLatencyBuckets[2] / n,
+                    100.0 * s.appLatencyBuckets[3] / n, 100.0 * s.appLatencyBuckets[4] / n, elevatedPct,
+                    s.appLatencyDrainingSamples, static_cast<unsigned long long>(n));
+            }
             DLL_Log("[StopAudio] Video: expectedDuration=%lld ms (%lld samples)", expectedVideoMs,
                     expectedVideoSamples);
         }
@@ -2056,6 +2089,19 @@ public:
         constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = true;
         constexpr double kDefaultMaxCompensationPercent = 1.0;
         constexpr double kTier1MaxPitchPercent = 0.05;  // Keep WGC source-clock correction below audible pitch shift.
+        // HYBRID app-audio latency drain. A read-stall (alt-tab/DPC/encoder) leaves an app source's
+        // ring backlog lingering at 300-600ms (observed), which is real audio-behind-video latency
+        // that swings audibly. The tuned WGC tier1 policy deliberately suppresses drain compensation
+        // to protect smoothness, so this gives a CFR APP-AUDIO source in the drain band a modestly
+        // higher pitch cap to pull that backlog back toward the live target - keeping latency low and
+        // CONSISTENT. Strictly scoped: system/mic, video, and every clean (no-stall) run keep the
+        // 0.05% policy untouched, and the existing paced-trim / catastrophic resync stay the upper
+        // drop caps. 0.5% over ~tens of seconds targets inaudibility; raise if drain is too slow.
+        constexpr double kAppAudioDrainMaxPitchPercent = 0.5;
+        // 100ms hysteresis above the target: healthy steady state sits <50ms (observed bimodal: <50ms
+        // or >150ms), so the drain only engages on genuinely elevated post-stall backlog and never in
+        // normal/clean operation. The matrix-green check confirms clean runs do not enter the band.
+        constexpr int64_t kAppAudioDrainSlackSamples = SAMPLE_RATE / 10;
         constexpr int64_t kTier2DriftThresholdMs = 20;
         constexpr int64_t kWgcEncoderShortfallBufferedLagMaxMs = 4000;
         constexpr uint32_t kWgcEncoderHealthyDeliveryMarginFps = 4;
@@ -2490,13 +2536,19 @@ public:
 
                 const int64_t targetLatencySamples = targetBufferedSamples;
                 if (src.bootstrapComplete && src.syncResampler && src.syncResampler->IsReady()) {
-                    const double maxCompensationPercent =
-                        isCfrRecording ? kTier1MaxPitchPercent : kDefaultMaxCompensationPercent;
-                    src.syncResampler->SetMaxCompensationPercent(maxCompensationPercent);
                     size_t rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                     const int64_t expectedLeadSamplesForCorrection =
                         std::max<int64_t>(targetLatencySamples,
                                           kBaseTargetLatencySamples + (effectiveWgcDriftLagMs * SAMPLE_RATE / 1000));
+                    // Drain band: a CFR app-audio source whose backlog sits meaningfully above the live
+                    // target gets the higher pitch cap so the tier1 controller can pull it back down.
+                    const bool appAudioDrainBand =
+                        isCfrRecording && src.sourceType == AudioConfig::AppAudio &&
+                        static_cast<int64_t>(rbAvailable) > expectedLeadSamplesForCorrection + kAppAudioDrainSlackSamples;
+                    const double maxCompensationPercent =
+                        appAudioDrainBand ? kAppAudioDrainMaxPitchPercent
+                                          : (isCfrRecording ? kTier1MaxPitchPercent : kDefaultMaxCompensationPercent);
+                    src.syncResampler->SetMaxCompensationPercent(maxCompensationPercent);
                     const bool allowWgcCoverageLossTrim =
                         isWgcCfrRecording && wgcCoverageLossActive && !kWgcPreferVideoRepeatsOverAudioCuts &&
                         static_cast<int64_t>(rbAvailable) > targetLatencySamples + kWgcCoverageLossLeadSlackSamples;
@@ -2658,6 +2710,12 @@ public:
                         if (rbLevel >= kMinCompensationBufferSamples) {
                             const int64_t expectedLead = expectedLeadSamplesForCorrection;
                             const int64_t trueDrift = rbLevel - expectedLead;
+                            // HYBRID drain: a CFR app-audio source with a lingering post-stall backlog above the
+                            // live target may use the higher drain pitch cap and bypass the WGC positive-drift
+                            // suppression below, so the controller pulls its latency back toward live.
+                            const bool appAudioDrain =
+                                isCfrRecording && src.sourceType == AudioConfig::AppAudio &&
+                                rbLevel > expectedLead + kAppAudioDrainSlackSamples;
 
                             // Drift sanity check: detect extreme drift that indicates measurement error
                             if (std::abs(trueDrift) > SAMPLE_RATE * 2) {  // >2 seconds
@@ -2703,13 +2761,16 @@ public:
                                         if (allowCfrSourceClockCorrection) {
                                             tier1Delta = ce::audio::ComputeTier1CompensationDeltaWithDeadband(
                                                 trueDrift, static_cast<int64_t>(SAMPLE_RATE) * 10,
-                                                kTier1MaxPitchPercent, SAMPLE_RATE / 12);
+                                                appAudioDrain ? kAppAudioDrainMaxPitchPercent : kTier1MaxPitchPercent,
+                                                SAMPLE_RATE / 12);
                                             const int32_t maxCompensationDelta =
                                                 src.syncResampler->GetMaxCompensationDelta();
                                             src.targetRateSaturated = tier1Delta != 0 &&
                                                                       std::abs(tier1Delta) >= maxCompensationDelta &&
                                                                       std::abs(trueDrift) > maxCompensationDelta;
-                                            if (isWgcCfrRecording && tier1Delta > 0) {
+                                            // appAudioDrain deliberately bypasses the WGC positive-drift suppression so a
+                                            // backlogged app source drains toward live; everything else keeps the policy.
+                                            if (isWgcCfrRecording && tier1Delta > 0 && !appAudioDrain) {
                                                 const int64_t positiveCompensationHysteresisSamples =
                                                     ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(
                                                         targetLatencySamples, kWgcCfrLeadWarningSamples);
@@ -3106,13 +3167,47 @@ public:
                     const size_t rbAvailSamples =
                         src.ringBuffer ? src.ringBuffer->GetAvailable() / CHANNELS : 0;
                     const bool starvedWithRingData = (realCopiedSamples == 0 && rbAvailSamples > 0);
+
+                    // Latency observability: the ring backlog at consume time IS the audio-behind-video
+                    // delay (buffered audio waiting to be emitted). Sample it EVERY pull so the
+                    // recording-wide distribution and any elevated/variable latency are obvious in the
+                    // logs rather than needing manual reconstruction from raw cursor values.
+                    const uint32_t appDelayMs =
+                        static_cast<uint32_t>(static_cast<uint64_t>(rbAvailSamples) * 1000ull / SAMPLE_RATE);
+                    const int latBucket = appDelayMs < 50    ? 0
+                                          : appDelayMs < 150 ? 1
+                                          : appDelayMs < 300 ? 2
+                                          : appDelayMs < 600 ? 3
+                                                             : 4;
+                    src.appLatencyBuckets[latBucket]++;
+                    src.appLatencySampleCount++;
+                    src.appLatencySumMs += appDelayMs;
+                    if (appDelayMs > src.appLatencyMaxMs) {
+                        src.appLatencyMaxMs = appDelayMs;
+                    }
+                    if (src.rateCompActive) {
+                        src.appLatencyDrainingSamples++;
+                    }
+
+                    // Flag clearly-elevated latency loudly WHILE it happens (the signal that was missing).
+                    // Post-fix the drain should keep this rare; frequent firing means latency is not draining.
+                    constexpr uint32_t kAppLatencyWarnMs = 250;
+                    if (appDelayMs >= kAppLatencyWarnMs && nowConsumeTick - src.lastAppLatencyWarnTick >= 5000) {
+                        DLL_Log(
+                            "[AppLatency] WARNING: app audio src=%zu track=%d is %ums behind video "
+                            "(rbAvail=%zu samples, draining=%d). Read-stall backlog; should drain toward live.",
+                            srcIdx, track, appDelayMs, rbAvailSamples, src.rateCompActive ? 1 : 0);
+                        src.lastAppLatencyWarnTick = nowConsumeTick;
+                    }
+
                     if (nowConsumeTick - src.lastAppConsumeDiagTick >= 1000) {
                         DLL_Log(
-                            "[AppDiag] consume src=%zu track=%d realCopied=%zu postResampleBuf=%zu rbAvail=%zu "
-                            "syncReady=%d rateCompActive=%d underruns=%u%s",
-                            srcIdx, track, realCopiedSamples, src.postResampleBuffer.size() / CHANNELS, rbAvailSamples,
-                            (src.syncResampler && src.syncResampler->IsReady()) ? 1 : 0, src.rateCompActive ? 1 : 0,
-                            src.ringBufferUnderrunCount, starvedWithRingData ? " STARVED_WITH_RING_DATA" : "");
+                            "[AppDiag] consume src=%zu track=%d delayMs=%u realCopied=%zu postResampleBuf=%zu "
+                            "rbAvail=%zu syncReady=%d rateCompActive=%d underruns=%u%s",
+                            srcIdx, track, appDelayMs, realCopiedSamples, src.postResampleBuffer.size() / CHANNELS,
+                            rbAvailSamples, (src.syncResampler && src.syncResampler->IsReady()) ? 1 : 0,
+                            src.rateCompActive ? 1 : 0, src.ringBufferUnderrunCount,
+                            starvedWithRingData ? " STARVED_WITH_RING_DATA" : "");
                         src.lastAppConsumeDiagTick = nowConsumeTick;
                     }
                 }

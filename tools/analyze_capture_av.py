@@ -38,6 +38,10 @@ LOG_PATTERNS = {
     # Read-stall recovery fired (alt-tab/DPC/encoder freeze drove an app-source backlog past the
     # catastrophic threshold). Expected only after a real multi-second stall; never in a clean run.
     "audio_catastrophic_resync": re.compile(r"\[PullAudio\] App source catastrophic backlog resync"),
+    # App audio ran >=250ms behind video (read-stall backlog not yet drained). Zero in a clean run,
+    # but legitimately fires in late-join/stall scenarios, so it is an explicit-gate signal (gate it
+    # per scenario with --max-log-event audio_app_latency_elevated=0), NOT in the strict-zero set.
+    "audio_app_latency_elevated": re.compile(r"\[AppLatency\] WARNING: app audio"),
     "audio_underrun": re.compile(r"\[PullAudio\] WARNING: Source underrun(?!.*forceDrain=1)"),
     "audio_stop_tail_padding": re.compile(r"\[PullAudio\] WARNING: Source underrun.*forceDrain=1"),
     "audio_source_padding_summary": re.compile(r"\[STOP AUDIO\] Source \d+: .* pad:[1-9]\d*"),
