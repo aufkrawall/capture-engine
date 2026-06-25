@@ -1858,6 +1858,11 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t pacingEmaUpdates = 0;
     double smoothedInputPerTick = 1.0;    // EMA: avg unique frames per encoder tick
     double frameCreditAccumulator = 0.0;  // Bresenham error term
+    // Bresenham credit for the inject-parity WGC active-delay pacer (separate from the inject
+    // accumulator above; only one capture path runs per recording). Advancing unique WGC frames at
+    // the source rate keeps the delay floor fed so the realized delay stays stable and the
+    // source-limited repeats are evenly distributed.
+    double wgcDelayCreditAccumulator = 0.0;
     // Output-grid tracking for timestamp-aware frame selection.
     // When multiple buffered frames are available (game fps > target fps),
     // selecting the frame closest to the ideal output grid time produces
@@ -1997,6 +2002,11 @@ void EncoderThreadFunc(const AppConfig& config) {
     // fix be confirmed from logs and distinguishes it from per-tick reserve defense.
     uint64_t wgcDelayUniformCadenceTotal = 0;
     uint32_t wgcDelayUniformCadenceWindow = 0;
+    // Reservoir depth-cap trims: surplus oldest frames the uniform-cadence pacer dropped to keep the
+    // realized content delay from inflating when a VRR source transiently delivered above output.
+    uint64_t wgcDelayPaceCapTrimTotal = 0;
+    uint32_t wgcDelayPaceCapTrimWindow = 0;
+    DWORD wgcDelayPaceCapTrimLastLogTick = 0;
     uint64_t wgcDelayOlderFrameAvoidedRepeatTotal = 0;
     uint32_t wgcDelayOlderFrameAvoidedRepeatWindow = 0;
     uint64_t wgcDelaySourceLimitedRepeatTotal = 0;
@@ -2476,9 +2486,10 @@ void EncoderThreadFunc(const AppConfig& config) {
             config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
         if (IsActiveScreenGrab()) {
             LogInfo(
-                "[AVSyncApply] wgc_cadence_policy: uniformCadence=%d (when active, a GPU-bound source that "
-                "cannot sustain the delay reservoir selects closest-to-target with monotonic + hard-cap "
-                "guards instead of per-tick reserve defense; realized content delay floats gracefully)",
+                "[AVSyncApply] wgc_cadence_policy: uniformCadence=%d (when active, WGC paces the content "
+                "delay like the inject path: a delay-deep frame floor with unique frames advanced at the "
+                "source input rate, so a VRR/under-delivering source keeps the realized delay stable and "
+                "the source-limited repeats uniform instead of clustering into delay-slot holds)",
                 config.wgcActiveDelayUniformCadence ? 1 : 0);
         }
     } else {
@@ -4691,8 +4702,22 @@ void EncoderThreadFunc(const AppConfig& config) {
                     wgcTelemetryTickArmed = true;
                     wgcBufferedAtTickStart = static_cast<uint32_t>(bufferedWgcFrames.size());
                     wgcReserveAvailableAtTickStart = false;
+                    // On the uniform-cadence active-delay path the content delay must be maintained
+                    // continuously. A VRR / GPU-bound source running below the output target is the
+                    // STEADY STATE (absorbed by even holds at the delay floor + setpoint cap), not a
+                    // reason to abandon the delay. Live-recovery only exits once the source outruns
+                    // the output target, so letting it disable the selection delay collapses the
+                    // realized content delay to ~0 and latches there for tens of seconds (the collapse
+                    // half of the realized-delay rubber-band). Keep the delay applied; live-recovery
+                    // still drives capture-rate refill. The legacy (non-uniform) reservoir path keeps
+                    // its original behavior of yielding to live-recovery.
+                    const bool uniformCadenceActiveDelay =
+                        avContentDelayActive && config.wgcActiveDelayUniformCadence;
+                    const bool liveRecoverySuppressesDelay =
+                        ce::capture_policy::ShouldLiveRecoverySuppressWgcSelectionDelay(wgcLiveRecoveryModeActive,
+                                                                                       uniformCadenceActiveDelay);
                     const bool activeDelayInspection =
-                        avContentDelayActive && !wgcLiveRecoveryModeActive && recordingOutputLive;
+                        avContentDelayActive && recordingOutputLive && !liveRecoverySuppressesDelay;
                     const uint32_t requiredReservoirFrames =
                         activeDelayInspection ? std::max<uint32_t>(1u, getWgcDelayReservoirLowWaterFrames()) : 1u;
                     const int64_t reservoirInspectionTargetQpc =
@@ -4704,10 +4729,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                         requiredReservoirFrames, &wgcFreshAvailableAtTickStart,
                                                         &wgcReserveAvailableAtTickStart);
                     wgcSelectionDelayAppliedThisTick =
-                        !wgcLiveRecoveryModeActive && ce::capture_policy::ShouldApplyWgcSelectionDelay(
-                                                          recordingOutputLive, outputShortfallTicks,
-                                                          g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
-                                                          wgcReserveAvailableAtTickStart, avContentDelayActive);
+                        !liveRecoverySuppressesDelay && ce::capture_policy::ShouldApplyWgcSelectionDelay(
+                                                            recordingOutputLive, outputShortfallTicks,
+                                                            g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
+                                                            wgcReserveAvailableAtTickStart, avContentDelayActive);
                     if (wgcSelectionDelayAppliedThisTick) {
                         ++wgcSelectionDelayTickCount;
                     }
@@ -4731,9 +4756,89 @@ void EncoderThreadFunc(const AppConfig& config) {
                             : 0;
                     const int64_t effectiveSelectionTargetQpc =
                         wgcSelectionDelayAppliedThisTick ? delayedSelectionTargetQpc : liveSelectionTargetQpc;
-                    if (tryPopBufferedWgcFrameForTarget(effectiveSelectionTargetQpc, liveSelectionTargetQpc,
-                                                        selectionNowQpc.QuadPart, wgcSelectionDelayAppliedThisTick,
-                                                        &frame)) {
+                    const bool useInjectParityDelayPacing = wgcSelectionDelayAppliedThisTick &&
+                                                            avContentDelayActive &&
+                                                            config.wgcActiveDelayUniformCadence;
+                    if (useInjectParityDelayPacing) {
+                        // Inject-parity input-rate pacing for the active A/V content delay. A VRR /
+                        // under-delivering source (present rate dipping below the output target) makes
+                        // a rigid "show content exactly L old" reservoir impossible to feed, so the
+                        // timestamp-target path holds "too-new-for-slot" frames in clusters = stutter.
+                        // Instead keep a delay-deep floor and advance unique frames at the SOURCE rate
+                        // (Bresenham), repeating evenly when output outpaces the source. The emitted
+                        // frame is always ~floor source-frames old, so the realized delay stays stable
+                        // (A/V sync preserved) and the unavoidable repeats are uniform (smooth).
+                        while (!bufferedWgcFrames.empty() && lastEmittedWgcSourceQpc > 0 &&
+                               bufferedWgcFrames.front().timestamp > 0 &&
+                               bufferedWgcFrames.front().timestamp <= lastEmittedWgcSourceQpc) {
+                            QueuedFrame stale = std::move(bufferedWgcFrames.front());
+                            bufferedWgcFrames.pop_front();
+                            ReleaseQueuedFrameTexture(stale);
+                            ++wgcDropObsoleteCount;
+                        }
+                        if (!bufferedWgcFrames.empty()) {
+                            const size_t floorFrames = ce::capture_policy::GetWgcActiveDelayPaceFloorFrames(
+                                avContentDelayQpc, targetIntervalTicks);
+                            const size_t maxDepthFrames = ce::capture_policy::GetWgcActiveDelayPaceMaxDepthFrames(
+                                avContentDelayQpc, targetIntervalTicks);
+                            const size_t bufferedBeforePace = bufferedWgcFrames.size();
+                            wgcDelayCreditAccumulator += smoothedInputPerTick;
+                            wgcDelayCreditAccumulator = std::min(wgcDelayCreditAccumulator, 5.0);
+                            const auto pace = ce::capture_policy::DecideWgcActiveDelayPace(
+                                wgcDelayCreditAccumulator, bufferedWgcFrames.size(), floorFrames, maxDepthFrames);
+                            for (uint32_t dropIdx = 0;
+                                 dropIdx < pace.dropBeforeAdvance && bufferedWgcFrames.size() > 1; ++dropIdx) {
+                                QueuedFrame excess = std::move(bufferedWgcFrames.front());
+                                bufferedWgcFrames.pop_front();
+                                ReleaseQueuedFrameTexture(excess);
+                                ++wgcDropObsoleteCount;
+                            }
+                            if (pace.capDrops > 0) {
+                                // The reservoir had drifted above the delay-depth cap (a VRR / GPU-bound
+                                // source delivered above the CFR output rate). Trimming the oldest surplus
+                                // pins the realized content delay near the target instead of letting it
+                                // inflate. Throttle the warning so a busy window stays readable.
+                                wgcDelayPaceCapTrimTotal += pace.capDrops;
+                                wgcDelayPaceCapTrimWindow += pace.capDrops;
+                                const DWORD capTrimNowTick = GetTickCount();
+                                if (capTrimNowTick - wgcDelayPaceCapTrimLastLogTick >= 1000) {
+                                    const size_t depthAfter = bufferedWgcFrames.size();
+                                    const int64_t realizedDepthUs =
+                                        targetIntervalTicks > 0 && qpcFreq.QuadPart > 0
+                                            ? (static_cast<int64_t>(bufferedBeforePace) * targetIntervalTicks * 1000000) /
+                                                  qpcFreq.QuadPart
+                                            : 0;
+                                    LogWarn(
+                                        "[WGC CFR] active-delay reservoir over target: trimmed %u surplus frame(s) "
+                                        "depthBefore=%zu depthAfter=%zu cap=%zu floor=%zu ~realizedDelay=%lldus "
+                                        "target=%lldus (VRR source above output; bounding content delay, A/V sync "
+                                        "preserved)",
+                                        pace.capDrops, bufferedBeforePace, depthAfter, maxDepthFrames, floorFrames,
+                                        static_cast<long long>(realizedDepthUs),
+                                        static_cast<long long>(qpcToUs(avContentDelayQpc)));
+                                    wgcDelayPaceCapTrimLastLogTick = capTrimNowTick;
+                                }
+                            }
+                            wgcDelayCreditAccumulator -= pace.creditConsumed;
+                            if (pace.advance && !bufferedWgcFrames.empty()) {
+                                frame = std::move(bufferedWgcFrames.front());
+                                bufferedWgcFrames.pop_front();
+                                popped = true;
+                                ++wgcSelectFreshCount;
+                                ++wgcDelayUniformCadenceWindow;
+                                ++wgcDelayUniformCadenceTotal;
+                                if (qpcFreq.QuadPart > 0 && frame.timestamp > 0 &&
+                                    selectionNowQpc.QuadPart > frame.timestamp) {
+                                    const int64_t realizedDelayUs =
+                                        ((selectionNowQpc.QuadPart - frame.timestamp) * 1000000) / qpcFreq.QuadPart;
+                                    const int64_t residualUs = qpcToUs(avContentDelayQpc) - realizedDelayUs;
+                                    recordWgcDelayRealization(residualUs, residualUs);
+                                }
+                            }
+                        }
+                    } else if (tryPopBufferedWgcFrameForTarget(effectiveSelectionTargetQpc, liveSelectionTargetQpc,
+                                                               selectionNowQpc.QuadPart,
+                                                               wgcSelectionDelayAppliedThisTick, &frame)) {
                         popped = true;
                     }
                 }
@@ -5470,6 +5575,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 // Reset Bresenham credit for a clean start; keep smoothedInputPerTick
                 // so the EMA calibration from warmup carries over.
                 frameCreditAccumulator = 0.0;
+                wgcDelayCreditAccumulator = 0.0;
                 selectionLogCounter = 0;
                 pacingInputThisWindow = 0;
                 pacingTicksThisWindow = 0;
@@ -5519,6 +5625,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcDelayNearCapAcceptedWindow = 0;
                 wgcDelayUniformCadenceTotal = 0;
                 wgcDelayUniformCadenceWindow = 0;
+                wgcDelayPaceCapTrimTotal = 0;
+                wgcDelayPaceCapTrimWindow = 0;
                 wgcDelayOlderFrameAvoidedRepeatTotal = 0;
                 wgcDelayOlderFrameAvoidedRepeatWindow = 0;
                 wgcDelaySourceLimitedRepeatTotal = 0;
@@ -7150,7 +7258,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     "sourceLimitRepeat=%u repeatRescue=%u/%u repeatPromote=%u/%u repeatPromoteSoft=%u "
                     "repeatSafeAfter=%u repeatSafe=%u/%u repeatSoftSafe=%u/%u repeatClass=%u/%u/%u "
                     "repeatReserve=%u/%uus hardOnly=%u syncProtected=%u nearCap=%u oldestSoftSafe=%uus "
-                    "uniformCadence=%u sourceRecovery=%u/%llu cause=S%d/D%d/E%d",
+                    "uniformCadence=%u delayPaceCapTrim=%u sourceRecovery=%u/%llu cause=S%d/D%d/E%d",
                     cadenceMode, outputShortfallTicks, shortfallDurationMs, avgSignedWgcSelectionErrorUs,
                     wgcSelectionErrorMaxUs, wgcLiveSchedulerRebaseThisWindow, wgcEncoderLimitedSourceDropThisWindow,
                     static_cast<unsigned long long>(wgcEncoderLimitedSourceDropTotal), wgcRepeatPolicyHoldCount,
@@ -7185,7 +7293,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     wgcDelayRepeatReserveDepthWindowMax, wgcDelayRepeatReserveSpanWindowMaxUs,
                     wgcDelayRepeatHardOnlyCandidateWindow, wgcDelaySyncProtectedRepeatWindow,
                     wgcDelayNearCapAcceptedWindow, wgcDelayOldestSoftSafeAgeWindowMaxUs,
-                    wgcDelayUniformCadenceWindow, wgcSyncDelaySourceRecoveryHoldCount,
+                    wgcDelayUniformCadenceWindow, wgcDelayPaceCapTrimWindow, wgcSyncDelaySourceRecoveryHoldCount,
                     static_cast<unsigned long long>(wgcSyncDelaySourceRecoveryHoldTotal),
                     wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
                     wgcEncoderRecoveryLimitedCurrent ? 1 : 0);
@@ -7338,6 +7446,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcDelaySoftLateAcceptedWindow = 0;
             wgcDelayNearCapAcceptedWindow = 0;
             wgcDelayUniformCadenceWindow = 0;
+            wgcDelayPaceCapTrimWindow = 0;
             wgcDelayOlderFrameAvoidedRepeatWindow = 0;
             wgcDelaySourceLimitedRepeatWindow = 0;
             wgcDelayRepeatRescueAttemptWindow = 0;
@@ -7614,7 +7723,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "delayPostStallSafeFrames=%llu delayRepeatReserveMax=%u/%uus "
                 "delaySourceRecoveryHolds=%llu delaySourceRecoveryTicks=%llu "
                 "delayNearCapAccepted=%llu delayHardOnlyCandidates=%llu "
-                "delaySyncProtectedRepeats=%llu delayOldestSoftSafeAgeMax=%uus delayUniformCadence=%llu",
+                "delaySyncProtectedRepeats=%llu delayOldestSoftSafeAgeMax=%uus delayUniformCadence=%llu "
+                "delayPaceCapTrim=%llu",
                 static_cast<unsigned long long>(wgcDelayRelaxedSelectionCount),
                 wgcDelayRelaxedSelectionMaxUs, static_cast<unsigned long long>(wgcDelayRelaxedRejectedSyncRiskTotal),
                 static_cast<unsigned long long>(wgcDelayRepeatClusterPressureTotal),
@@ -7656,7 +7766,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(wgcDelayRepeatHardOnlyCandidateTotal),
                 static_cast<unsigned long long>(wgcDelaySyncProtectedRepeatTotal),
                 wgcDelayOldestSoftSafeAgeMaxUs,
-                static_cast<unsigned long long>(wgcDelayUniformCadenceTotal));
+                static_cast<unsigned long long>(wgcDelayUniformCadenceTotal),
+                static_cast<unsigned long long>(wgcDelayPaceCapTrimTotal));
             LogInfo(
                 "[WGC CFR SMOOTHNESS VERDICT] delayPostSelectionRejectedSync=%llu "
                 "delayPostSelectionRescuedSync=%llu sourceRepeatLowerBound=%llu excessRepeats=%llu "

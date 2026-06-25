@@ -56,6 +56,12 @@ constexpr uint32_t kWgcCfrSmoothnessExcessRepeatFaultMinCount = 120;
 constexpr uint32_t kWgcCfrSmoothnessExcessRepeatFaultPermille = 50;
 constexpr uint32_t kWgcCfrSmoothnessExcessRepeatClusterFaultTicks = 24;
 constexpr uint32_t kWgcDelayReservoirTargetExtraFrames = 1;
+// Jitter headroom (frames) above the active-delay reservoir target before the uniform-cadence pacer
+// trims the oldest surplus. Bounds the realized content delay so a VRR / GPU-bound source whose
+// present rate transiently rises above the CFR output rate cannot inflate the reservoir without
+// bound. Kept small so the realized delay stays close to the target while still absorbing ~1 frame
+// of VRR jitter without trimming on every wobble.
+constexpr size_t kWgcActiveDelayPaceMaxExcessFrames = 1;
 constexpr uint32_t kWgcMaxLiveVisualDebtMs = 250;
 constexpr uint32_t kWgcMaxLiveVisualDebtFrames = 32;
 constexpr uint32_t kWgcMaxLiveSchedulerRebaseTicksPerLoop = 1;
@@ -272,6 +278,17 @@ inline bool ShouldApplyWgcSelectionDelay(bool recordingOutputLive, uint32_t outp
         return recordingOutputLive;
     }
     return false;
+}
+
+// Whether WGC live-recovery should suppress the active content-delay selection for this tick.
+// Live-recovery (max-rate catch-up after a shortfall) legitimately runs the legacy reservoir-target
+// path near-live. But on the uniform-cadence path a below-target source is the STEADY STATE absorbed
+// by even holds at the delay floor, and live-recovery only exits once the source outruns the output
+// target -- so suppressing the delay there collapses the realized content delay to ~0 and latches it
+// for tens of seconds (the collapse half of the realized-delay rubber-band). Keep the delay applied
+// on the uniform-cadence path; live-recovery still drives capture-rate refill.
+inline bool ShouldLiveRecoverySuppressWgcSelectionDelay(bool liveRecoveryActive, bool uniformCadenceActiveDelay) {
+    return liveRecoveryActive && !uniformCadenceActiveDelay;
 }
 
 inline bool ShouldAllowWgcExtraCatchupTicks(bool encoderBottlenecked, size_t bufferedWgcFrames,
@@ -2081,12 +2098,80 @@ inline bool ShouldPreferEarlierFreshWgcFrameToPreserveReserve(int64_t earlierFra
 }
 
 // Uniform-cadence mode is active when an A/V content delay is being applied to the WGC selection
-// (selectionDelayApplied) AND the config opts in. In this mode the selector keeps the otherwise
-// clean CFR cadence by taking the closest-to-target frame and lets the realized content delay
-// float, instead of perturbing cadence to defend a reservoir that a GPU-bound under-delivering
-// source cannot sustain. Monotonic and hard-cap sync guards remain in force regardless.
+// (selectionDelayApplied) AND the config opts in. In this mode WGC paces the active-delay output
+// like the inject path: it keeps a frame-count delay floor and advances unique frames at the
+// SOURCE input rate (Bresenham), so a VRR/under-delivering source (present rate dipping below the
+// output target) keeps the buffer fed and the ~delay-old frame available, with the unavoidable
+// source-limited repeats distributed evenly instead of clustered into delay-slot holds. This
+// preserves A/V sync (the realized delay stays ~floor frames deep) while staying smooth.
 inline bool IsWgcActiveDelayUniformCadenceMode(bool selectionDelayApplied, bool uniformCadenceConfigEnabled) {
     return selectionDelayApplied && uniformCadenceConfigEnabled;
+}
+
+// Result of the inject-parity input-rate pacing decision for the WGC active-delay floor model.
+struct WgcActiveDelayPaceResult {
+    bool advance = false;             // pop one unique frame for this output tick
+    uint32_t dropBeforeAdvance = 0;   // even-decimation drops when the source outran the output
+    uint32_t capDrops = 0;            // subset of dropBeforeAdvance forced by the reservoir depth cap
+    double creditConsumed = 0.0;      // amount to subtract from the running credit accumulator
+};
+
+// Maximum buffered depth the uniform-cadence active-delay pacer allows before trimming the oldest
+// surplus. The realized content delay is ~(depth-1) source-intervals (the emitted/oldest frame is
+// behind the newest by depth-1 frames), so the reservoir target depth (floor+extra) realizes the
+// floor-deep delay; the cap is that target plus a small jitter band. Bounding the depth bounds the
+// realized content delay, which is the fix for the unbounded inflation observed when a VRR source
+// transiently delivers above the output rate (realized delay drifting 31ms -> 248ms).
+inline size_t GetWgcActiveDelayPaceMaxDepthFrames(int64_t contentDelayQpc, int64_t targetIntervalTicks) {
+    const uint32_t targetFrames = GetWgcDelayReservoirTargetFrames(contentDelayQpc, targetIntervalTicks);
+    const size_t target = targetFrames > 0 ? static_cast<size_t>(targetFrames) : 1u;
+    return target + static_cast<size_t>(kWgcActiveDelayPaceMaxExcessFrames);
+}
+
+// Decide whether to advance/drop/hold for one WGC active-delay output tick. Mirrors the inject
+// Bresenham pacer: with the credit already incremented by the source unique-frames-per-tick rate,
+// decimate evenly while the source is ahead (credit >= 2, keep floor+1), advance one unique frame
+// when credit >= 1 and the buffer is above the delay floor, otherwise hold (an evenly distributed
+// source-limited repeat). The delay floor (frames kept) is what realizes the content delay, so the
+// emitted frame is always ~floor source-frames old; it can never be "too new" for the slot, which
+// is why this path needs no per-tick reserve defense.
+//
+// Setpoint restoring drain (maxDepthFrames): the pure source-rate matcher has NO restoring force
+// toward the floor, so any transient where the source outran the output (a VRR / GPU-bound present
+// rate briefly above the CFR target) inflates the buffer and the inflation never drains back -- the
+// realized content delay then drifts upward without bound until a starvation event empties it. Trim
+// the oldest excess down to maxDepthFrames every tick so the realized delay is pinned at ~floor.
+// Because the surplus arrives gradually (a fraction of a frame per tick), this trims evenly and
+// stays smooth; it never trims into floor+1, so it cannot starve the delay reserve.
+inline WgcActiveDelayPaceResult DecideWgcActiveDelayPace(double creditAfterIncrement, size_t bufferedFrames,
+                                                         size_t floorFrames, size_t maxDepthFrames) {
+    WgcActiveDelayPaceResult result;
+    size_t available = bufferedFrames;
+    const size_t depthCap = std::max(maxDepthFrames, floorFrames + 1);
+    while (available > depthCap) {
+        ++result.dropBeforeAdvance;
+        ++result.capDrops;
+        --available;
+    }
+    while ((creditAfterIncrement - result.creditConsumed) >= 2.0 && available > floorFrames + 1) {
+        ++result.dropBeforeAdvance;
+        --available;
+        result.creditConsumed += 1.0;
+    }
+    if ((creditAfterIncrement - result.creditConsumed) >= 1.0 && available > floorFrames) {
+        result.advance = true;
+        result.creditConsumed += 1.0;
+    }
+    return result;
+}
+
+// Delay floor (frames retained ahead of the emitted frame) for the inject-parity WGC pacer. This
+// is the WGC analogue of injectContentDelayFrames; the realized content delay is ~floor source
+// frames. Reuses the existing reservoir delay-frame derivation so WGC and the timestamp-target
+// path agree on the nominal depth.
+inline size_t GetWgcActiveDelayPaceFloorFrames(int64_t contentDelayQpc, int64_t targetIntervalTicks) {
+    const uint32_t delayFrames = GetWgcDelayReservoirDelayFrames(contentDelayQpc, targetIntervalTicks);
+    return delayFrames > 0 ? static_cast<size_t>(delayFrames) : 1u;
 }
 
 // Final reserve-defense decision used by the WGC active-delay selector. The older (reserve-

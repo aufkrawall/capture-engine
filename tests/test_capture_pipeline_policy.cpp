@@ -656,6 +656,20 @@ TEST(CapturePipelinePolicyTest, WgcSelectionDelayAppliesOnlyForConfiguredContent
     EXPECT_FALSE(policy::ShouldApplyWgcSelectionDelay(false, 0, false, false, true));
 }
 
+TEST(CapturePipelinePolicyTest, LiveRecoverySuppressesDelayOnlyOffUniformCadencePath) {
+    // Legacy reservoir-target path (uniform cadence off): live-recovery yields to near-live catch-up.
+    EXPECT_TRUE(policy::ShouldLiveRecoverySuppressWgcSelectionDelay(/*liveRecovery=*/true,
+                                                                    /*uniformCadenceActiveDelay=*/false));
+    EXPECT_FALSE(policy::ShouldLiveRecoverySuppressWgcSelectionDelay(/*liveRecovery=*/false,
+                                                                     /*uniformCadenceActiveDelay=*/false));
+    // Uniform-cadence path: the content delay is maintained continuously, even during live-recovery,
+    // so the realized delay cannot collapse/latch. This is the fix for the 0..248ms delay swing.
+    EXPECT_FALSE(policy::ShouldLiveRecoverySuppressWgcSelectionDelay(/*liveRecovery=*/true,
+                                                                     /*uniformCadenceActiveDelay=*/true));
+    EXPECT_FALSE(policy::ShouldLiveRecoverySuppressWgcSelectionDelay(/*liveRecovery=*/false,
+                                                                     /*uniformCadenceActiveDelay=*/true));
+}
+
 TEST(CapturePipelinePolicyTest, WgcLiveRecoveryModeTracksSourceSchedulerAndEncoderStress) {
     policy::WgcAdaptiveTelemetry telemetry{};
     telemetry.outputFps = 120;
@@ -818,6 +832,106 @@ TEST(CapturePipelinePolicyTest, WgcUniformCadenceSuppressesReserveDefenseOlderFr
     // Uniform-cadence mode never re-introduces an older pick even under reserve pressure / low source.
     EXPECT_FALSE(policy::ShouldPreferEarlierFreshWgcFrameForReserveDefense(1000, 1040, 1020, 100, true, true, true,
                                                                           false, /*uniformCadenceMode=*/true));
+}
+
+TEST(CapturePipelinePolicyTest, WgcActiveDelayPaceFloorMatchesReservoirDelayFrames) {
+    // 370/100 ticks -> ceil = 4 floor frames (the realized content delay depth).
+    EXPECT_EQ(policy::GetWgcActiveDelayPaceFloorFrames(370, 100), 4u);
+    // Never returns 0 when a delay is active (would let the buffer fully drain).
+    EXPECT_EQ(policy::GetWgcActiveDelayPaceFloorFrames(1, 100), 1u);
+}
+
+TEST(CapturePipelinePolicyTest, WgcActiveDelayPaceAdvancesAtSourceRateAndHoldsAtFloor) {
+    // A large max-depth makes the setpoint cap inert so these cases exercise the source-rate pacing.
+    constexpr size_t kNoCap = 64;
+    // Source ~= output (credit 1.0), buffer above the floor: advance one unique frame.
+    auto steady = policy::DecideWgcActiveDelayPace(1.0, /*buffered=*/6, /*floor=*/4, kNoCap);
+    EXPECT_TRUE(steady.advance);
+    EXPECT_EQ(steady.dropBeforeAdvance, 0u);
+    EXPECT_EQ(steady.capDrops, 0u);
+    EXPECT_DOUBLE_EQ(steady.creditConsumed, 1.0);
+
+    // Source below output (credit < 1): HOLD -> an evenly distributed source-limited repeat.
+    auto under = policy::DecideWgcActiveDelayPace(0.9, /*buffered=*/6, /*floor=*/4, kNoCap);
+    EXPECT_FALSE(under.advance);
+    EXPECT_EQ(under.dropBeforeAdvance, 0u);
+    EXPECT_DOUBLE_EQ(under.creditConsumed, 0.0);
+
+    // At the floor: hold even with full credit so the buffer never drains below the delay depth
+    // (this is what keeps the realized delay stable / A/V sync preserved).
+    auto atFloor = policy::DecideWgcActiveDelayPace(1.0, /*buffered=*/4, /*floor=*/4, kNoCap);
+    EXPECT_FALSE(atFloor.advance);
+    EXPECT_EQ(atFloor.dropBeforeAdvance, 0u);
+
+    // Source faster than output (credit >= 2) with headroom above floor+1: decimate one evenly,
+    // then advance one. Keeps cadence smooth while holding the floor.
+    auto over = policy::DecideWgcActiveDelayPace(2.5, /*buffered=*/8, /*floor=*/4, kNoCap);
+    EXPECT_TRUE(over.advance);
+    EXPECT_EQ(over.dropBeforeAdvance, 1u);
+    EXPECT_EQ(over.capDrops, 0u);
+    EXPECT_DOUBLE_EQ(over.creditConsumed, 2.0);
+
+    // Overcapture but only floor+1 buffered: do not decimate into the floor, just advance one.
+    auto overTight = policy::DecideWgcActiveDelayPace(2.5, /*buffered=*/5, /*floor=*/4, kNoCap);
+    EXPECT_TRUE(overTight.advance);
+    EXPECT_EQ(overTight.dropBeforeAdvance, 0u);
+    EXPECT_DOUBLE_EQ(overTight.creditConsumed, 1.0);
+}
+
+TEST(CapturePipelinePolicyTest, WgcActiveDelayPaceMaxDepthBoundsRealizedDelay) {
+    // Reservoir target = floor(4) + extra(1) = 5; cap = target + jitter band(1) = 6.
+    EXPECT_EQ(policy::GetWgcActiveDelayPaceMaxDepthFrames(370, 100), 6u);
+    // Never collapses below floor+1 even for a tiny delay.
+    EXPECT_GE(policy::GetWgcActiveDelayPaceMaxDepthFrames(1, 100), 2u);
+
+    // Regression: an inflated reservoir (a VRR source previously delivered above the output rate and
+    // the pure source-rate matcher never drained it) must be trimmed back toward the cap EVEN when
+    // the current credit is below 1 (source now at/below output). Before the setpoint cap this case
+    // produced zero drops and the realized content delay stayed stuck ~20 frames deep.
+    auto inflated = policy::DecideWgcActiveDelayPace(/*credit=*/0.9, /*buffered=*/20, /*floor=*/4, /*maxDepth=*/6);
+    EXPECT_EQ(inflated.capDrops, 14u);            // 20 -> 6
+    EXPECT_EQ(inflated.dropBeforeAdvance, 14u);   // all from the cap, none credit-driven
+    EXPECT_FALSE(inflated.advance);               // credit 0.9 < 1 after the cap, so just trim+hold
+    EXPECT_DOUBLE_EQ(inflated.creditConsumed, 0.0);
+
+    // The cap never trims into the delay floor: at exactly the cap there is nothing to trim.
+    auto atCap = policy::DecideWgcActiveDelayPace(/*credit=*/0.9, /*buffered=*/6, /*floor=*/4, /*maxDepth=*/6);
+    EXPECT_EQ(atCap.capDrops, 0u);
+    // A pathological maxDepth below floor+1 is clamped so the cap can never starve the reserve.
+    auto clampLow = policy::DecideWgcActiveDelayPace(/*credit=*/1.0, /*buffered=*/5, /*floor=*/4, /*maxDepth=*/0);
+    EXPECT_EQ(clampLow.capDrops, 0u);  // depthCap = max(0, floor+1) = 5, buffered 5 -> no trim
+}
+
+TEST(CapturePipelinePolicyTest, WgcActiveDelayPaceStaysBoundedUnderVrrSourceAboveOutput) {
+    // Simulate a VRR / GPU-bound source delivering above the CFR output rate (1.2 unique frames per
+    // output tick) for an extended period. Without the setpoint cap the buffer (and therefore the
+    // realized content delay) grows without bound (~0.2 frame/tick -> ~120 frames over 600 ticks);
+    // with the cap it stays pinned near the reservoir depth.
+    const size_t floor = 4;
+    const size_t cap = policy::GetWgcActiveDelayPaceMaxDepthFrames(370, 100);  // 6
+    const double inPerTick = 1.2;
+    size_t buffered = floor;
+    double credit = 0.0;
+    double arrivalFrac = 0.0;
+    size_t maxObservedDepth = buffered;
+    for (int tick = 0; tick < 600; ++tick) {
+        arrivalFrac += inPerTick;
+        const size_t arrived = static_cast<size_t>(arrivalFrac);
+        arrivalFrac -= static_cast<double>(arrived);
+        buffered += arrived;
+        credit = std::min(credit + inPerTick, 5.0);
+        const auto pace = policy::DecideWgcActiveDelayPace(credit, buffered, floor, cap);
+        const size_t drops = std::min<size_t>(pace.dropBeforeAdvance, buffered);
+        buffered -= drops;
+        credit -= pace.creditConsumed;
+        if (pace.advance && buffered > 0) {
+            --buffered;
+        }
+        maxObservedDepth = std::max(maxObservedDepth, buffered);
+    }
+    // Bounded near the cap (one tick of arrivals of headroom), never the unbounded ~120 of the bug.
+    EXPECT_LE(maxObservedDepth, cap + 2);
+    EXPECT_LE(buffered, cap + 1);
 }
 
 TEST(CapturePipelinePolicyTest, WgcSingleFreshHoldRequiresFragileSourceConditions) {

@@ -2283,10 +2283,20 @@ def has_wgc_cfr_smoothness_not_maximal(media_evidence):
 
 
 def wgc_realized_delay_spread_us(item):
-    """Realized content-delay spread (max - min) for an active-delay smoothness summary item."""
+    """Realized content-delay spread (max - min) for an active-delay smoothness summary item.
+
+    A realized minimum of 0 is NOT "no data": it is a genuine FULL COLLAPSE of the content delay
+    (the worst case -- the delay disengaged and video ran near-live), which is exactly the collapse
+    half of the GPU-bound realized-delay rubber-band. Only an absent/zero MAX means no realization
+    samples, so gate on delay_max alone and clamp a negative min to 0.
+    """
     delay_max = item.get("realized_delay_max_us", 0)
     delay_min = item.get("realized_delay_min_us", 0)
-    if delay_max <= 0 or delay_min <= 0 or delay_max < delay_min:
+    if delay_max <= 0:
+        return 0
+    if delay_min < 0:
+        delay_min = 0
+    if delay_max < delay_min:
         return 0
     return delay_max - delay_min
 
@@ -3321,6 +3331,34 @@ def self_test():
         # The runtime self-classified the run as fine; the spread must still be flagged.
         assert "wgc_cfr_smoothness_not_maximal" not in realized_unstable_report["verdicts"]
         assert "wgc_active_delay_realized_delay_unstable" in realized_unstable_report["verdicts"]
+
+        # Full-collapse shape (real 20260625_135221 session): the realized content delay both inflated
+        # (max 248 ms vs 31.6 ms target) AND fully collapsed to 0 (live-recovery latched and disabled
+        # the delay for tens of seconds). A realizedDelayMin of 0 is the WORST case, but the legacy
+        # spread guard (`delay_min <= 0`) treated it as "no data" and returned 0, silently hiding the
+        # most severe instability. The classifier must now fire on min=0 with a valid large max.
+        wgc_realized_delay_collapse = make_session(
+            "wgc_realized_delay_collapse",
+            media=(
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=10 "
+                "phaseErrorMax=159206us shortfallMax=66.7ms staleDebtDrops=58 liveRebase=0/0 "
+                "tooNewRepeats=13 syncDelayHolds=0 tooNewLeadMax=71540us avDelay=31.6ms "
+                "startupDelay=31.6ms scheduleOffset=347201us effectiveDelay=31.6ms "
+                "lowSourceBypass=1 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=0 syncDelayPolicyHolds=0 startupReserveFrames=32 "
+                "startupReserveSpan=219477us startupDelayTarget=31558us startupReserveSelected=1 "
+                "startupReserveReason=selected delayReservoirLowWaterFrames=4 delayReservoirTargetFrames=5 "
+                "delayReservoirLowWaterTicks=735 realizedDelayAvg=64372us realizedDelayMin=0us "
+                "realizedDelayMax=248196us delayResidualAvg=-32813/35303us delayResidualMax=216638us "
+                "delayResidualP95=141000us delayResidualLateMax=37181us delayResidualEarlyMax=216638us\n"
+            ),
+        )
+        realized_collapse_report = classify_session_triage(wgc_realized_delay_collapse)
+        realized_collapse_summary = realized_collapse_report["evidence"]["wgc_smoothness_summary"][0]
+        assert realized_collapse_summary["realized_delay_min_us"] == 0
+        assert realized_collapse_summary["realized_delay_max_us"] == 248196
+        assert wgc_realized_delay_spread_us(realized_collapse_summary) == 248196
+        assert "wgc_active_delay_realized_delay_unstable" in realized_collapse_report["verdicts"]
 
         wgc_sync_delay_realized_source_pressure = make_session(
             "wgc_sync_delay_realized_source_pressure",
