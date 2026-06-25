@@ -31,6 +31,13 @@ LOG_PATTERNS = {
     "wgc_cfr_lead_warning": re.compile(r"\[PullAudio\] WGC CFR lead warning:"),
     "wgc_coverage_mode_active": re.compile(r"CovMode=1"),
     "audio_large_gap": re.compile(r"\[PullAudio\] Large A/V gap"),
+    # CFR warp branch: the track fell >2s behind the live target (the read-stall freeze precursor).
+    # In a clean deterministic run a track never falls this far behind, so any occurrence is a fault;
+    # a stall scenario expects it as the recovery path and sets an explicit threshold instead.
+    "audio_large_cfr_backlog": re.compile(r"\[PullAudio\] Large CFR audio backlog"),
+    # Read-stall recovery fired (alt-tab/DPC/encoder freeze drove an app-source backlog past the
+    # catastrophic threshold). Expected only after a real multi-second stall; never in a clean run.
+    "audio_catastrophic_resync": re.compile(r"\[PullAudio\] App source catastrophic backlog resync"),
     "audio_underrun": re.compile(r"\[PullAudio\] WARNING: Source underrun(?!.*forceDrain=1)"),
     "audio_stop_tail_padding": re.compile(r"\[PullAudio\] WARNING: Source underrun.*forceDrain=1"),
     "audio_source_padding_summary": re.compile(r"\[STOP AUDIO\] Source \d+: .* pad:[1-9]\d*"),
@@ -92,6 +99,8 @@ STRICT_SYNC_LOG_EVENTS = (
     "audio_overflow_protection_trim",
     "audio_post_resample_trim",
     "audio_large_gap",
+    "audio_large_cfr_backlog",
+    "audio_catastrophic_resync",
     "audio_underrun",
     "audio_source_padding_summary",
     "audio_overflow",

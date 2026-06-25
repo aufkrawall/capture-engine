@@ -757,6 +757,40 @@ TEST(AudioSyncUtilsTest, SuppressBufferDeferNeverFiresDuringInitialStartupCatchu
     EXPECT_FALSE(ce::audio::ShouldSuppressBufferDeferForCatchup(rate * 100, maxGap, true));
 }
 
+// End-to-end regression guard for the multi-app track FREEZE (logs/20260625_022047): a track that
+// fell >2s behind after a read-stall entered the warp branch (pull chunk clamped to MAX_SILENCE_CHUNK
+// = 0.5s); the buffer-wait defer then required EVERY co-mixed source to have >=0.5s buffered, but a
+// second app sitting at the live edge (~100ms) could never reach that, so the whole track deferred
+// every iteration and froze into permanent silence. This composes the two production decisions exactly
+// as PullAndEncodeAudio does (`!trackLargeBacklogDrain && ShouldDeferCfrAudioPullForSourceBuffer(...)`)
+// and pins the fix: it FAILS on the pre-fix logic (would defer -> freeze) and passes post-fix.
+TEST(AudioSyncUtilsTest, MultiAppCatchupDoesNotFreezeOnUnderBufferedLiveSource) {
+    const int64_t rate = 48000;
+    const int64_t maxGap = rate * 2;            // 2s warp threshold (MAX_GAP_SAMPLES)
+    const int64_t warpChunk = rate / 2;         // 0.5s clamped pull chunk (MAX_SILENCE_CHUNK)
+    const int64_t liveSourceBuffered = rate / 10;  // a co-mixed app keeping up at the live edge (~100ms)
+    const int64_t trackBehindSamples = rate * 100;  // track 100s behind after a sustained stall
+
+    // Pre-fix root cause: the buffer-wait defer ALONE would freeze the track, because the live source
+    // has less than the (warp-inflated) requested 0.5s chunk and can never accrue it.
+    EXPECT_TRUE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(
+        /*isCfr*/ true, /*forceDrain*/ false, /*optionalUnstarted*/ false,
+        /*sparseStartedSourceMaySilence*/ false, /*requestedSamples*/ warpChunk,
+        /*bufferedTimelineSamples*/ static_cast<size_t>(liveSourceBuffered)));
+
+    // Fix: a track >2s behind suppresses the defer, so the composed decision makes forward progress.
+    const bool suppress = ce::audio::ShouldSuppressBufferDeferForCatchup(trackBehindSamples, maxGap, false);
+    EXPECT_TRUE(suppress);
+    const bool wouldDeferAndFreeze =
+        !suppress && ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(
+                         true, false, false, false, warpChunk, static_cast<size_t>(liveSourceBuffered));
+    EXPECT_FALSE(wouldDeferAndFreeze);  // the track must catch up, never freeze into permanent silence
+
+    // And the normal (not-behind) path still keeps the buffer-wait protection: a healthy track that is
+    // only a small quantum behind does NOT suppress, so brief startup/jitter buffering still applies.
+    EXPECT_FALSE(ce::audio::ShouldSuppressBufferDeferForCatchup(/*samplesToEncode*/ 240, maxGap, false));
+}
+
 TEST(AudioSyncUtilsTest, CatastrophicResyncKeepCushionHonorsTargetLatency) {
     const int64_t rate = 48000;
     const int64_t threshold = rate * 2;
