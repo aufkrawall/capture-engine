@@ -2349,6 +2349,16 @@ public:
 
             const int64_t MAX_GAP_SAMPLES = (SAMPLE_RATE * 2);
             const int64_t MAX_SILENCE_CHUNK = SAMPLE_RATE / 2;
+            // A track this far behind the live target is catching up after a read-stall (alt-tab, DPC
+            // spike, encoder overload). It MUST make forward progress every pull: deferring to wait for
+            // an under-buffered source would freeze it forever, because a co-mixed source sitting at the
+            // live edge (e.g. a second app keeping up at ~100ms) NEVER accrues the full catch-up chunk.
+            // That freeze is exactly how a multi-app track went permanently silent after one app's
+            // backlog stalled it - the track deferred every iteration, its cursor froze, and the stalled
+            // app's ring saturated. Only fires when >2s behind (a real stall), so normal pulls keep the
+            // defer/buffer-wait protection untouched.
+            const bool trackLargeBacklogDrain =
+                ce::audio::ShouldSuppressBufferDeferForCatchup(samplesToEncode, MAX_GAP_SAMPLES, initialTrackCatchup);
             if (samplesToEncode > MAX_GAP_SAMPLES && !initialTrackCatchup && !isCfrRecording) {
                 warpCount++;
                 DLL_Log(
@@ -2394,7 +2404,8 @@ public:
                 const bool sparseStartedSourceMaySilence =
                     ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(sparseStartedSourceCanSilence,
                                                                              bufferedTimelineSamples);
-                if (ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(isCfrRecording, forceDrain, optionalUnstarted,
+                if (!trackLargeBacklogDrain &&
+                    ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(isCfrRecording, forceDrain, optionalUnstarted,
                                                                       sparseStartedSourceMaySilence, samplesToEncode,
                                                                       bufferedTimelineSamples)) {
                     deferForSourceBuffer = true;

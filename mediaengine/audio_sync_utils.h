@@ -598,6 +598,19 @@ inline int64_t ComputeCatastrophicBacklogResyncTrim(bool isCfrRecording, bool is
     return trimSamples > 0 ? trimSamples : 0;
 }
 
+// A track that has fallen more than maxGapSamples behind the live target is catching up after a
+// read-stall (alt-tab, DPC spike, encoder overload) and MUST make forward progress on every pull.
+// When this returns true the caller suppresses the buffer-wait defer: otherwise a co-mixed source
+// sitting at the live edge (a second app keeping up at ~100ms) never accrues the full catch-up
+// chunk, so the defer fires every iteration, the track cursor freezes, and the stalled source's
+// ring saturates into permanent silence. Only triggers when already multiple seconds behind, so a
+// healthy track keeps the defer/buffer-wait protection. initialTrackCatchup is the legitimate
+// startup catch-up (its own path) and is never treated as a stall.
+inline bool ShouldSuppressBufferDeferForCatchup(int64_t samplesToEncode, int64_t maxGapSamples,
+                                                bool initialTrackCatchup) {
+    return samplesToEncode > std::max<int64_t>(0, maxGapSamples) && !initialTrackCatchup;
+}
+
 inline int64_t ComputeAudioSamplesAllowedBeforeEnd(int64_t targetSamples, int64_t encodedSamples,
                                                    int64_t queuedSamples) {
     return std::max<int64_t>(

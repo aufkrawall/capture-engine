@@ -737,6 +737,26 @@ TEST(AudioSyncUtilsTest, CatastrophicResyncDropsStaleBacklogKeepingLiveCushion) 
               huge - rate / 10);
 }
 
+TEST(AudioSyncUtilsTest, SuppressBufferDeferOnlyWhenCatastrophicallyBehind) {
+    const int64_t rate = 48000;
+    const int64_t maxGap = rate * 2;  // 2s catch-up threshold
+    // Healthy/normal pull (small chunk) -> keep the buffer-wait defer protection.
+    EXPECT_FALSE(ce::audio::ShouldSuppressBufferDeferForCatchup(240, maxGap, false));
+    EXPECT_FALSE(ce::audio::ShouldSuppressBufferDeferForCatchup(rate, maxGap, false));   // 1s behind
+    EXPECT_FALSE(ce::audio::ShouldSuppressBufferDeferForCatchup(maxGap, maxGap, false));  // exactly 2s: not yet
+    // More than 2s behind (a real read-stall left the track behind) -> suppress defer, force progress.
+    EXPECT_TRUE(ce::audio::ShouldSuppressBufferDeferForCatchup(maxGap + 1, maxGap, false));
+    EXPECT_TRUE(ce::audio::ShouldSuppressBufferDeferForCatchup(rate * 100, maxGap, false));  // 100s behind
+}
+
+TEST(AudioSyncUtilsTest, SuppressBufferDeferNeverFiresDuringInitialStartupCatchup) {
+    const int64_t rate = 48000;
+    const int64_t maxGap = rate * 2;
+    // The legitimate startup catch-up has its own path and must not be treated as a stall,
+    // even when its first chunk is large.
+    EXPECT_FALSE(ce::audio::ShouldSuppressBufferDeferForCatchup(rate * 100, maxGap, true));
+}
+
 TEST(AudioSyncUtilsTest, CatastrophicResyncKeepCushionHonorsTargetLatency) {
     const int64_t rate = 48000;
     const int64_t threshold = rate * 2;
