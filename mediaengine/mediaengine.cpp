@@ -2148,15 +2148,9 @@ public:
                       wgcTargetFps, wgcDeliveredFps, wgcDeliveredMin250Fps, wgcDeliveredMin500Fps,
                       wgcEncoderBottlenecked, wgcQueueEmptyTickPermille, wgcBufferedAtTickMin, wgcSingleFrameTickCount)
                 : 0;
-        uint32_t effectiveDeliveredFpsForAudioContinuity = wgcDeliveredFps;
-        if (wgcDeliveredMin250Fps > 0) {
-            effectiveDeliveredFpsForAudioContinuity =
-                std::min(effectiveDeliveredFpsForAudioContinuity, wgcDeliveredMin250Fps);
-        }
-        if (wgcDeliveredMin500Fps > 0) {
-            effectiveDeliveredFpsForAudioContinuity =
-                std::min(effectiveDeliveredFpsForAudioContinuity, wgcDeliveredMin500Fps);
-        }
+        const uint32_t effectiveDeliveredFpsForAudioContinuity =
+            ce::audio::ComputeEffectiveDeliveredFpsForAudioContinuity(wgcDeliveredFps, wgcDeliveredMin250Fps,
+                                                                      wgcDeliveredMin500Fps);
         const bool wgcEncoderOnlyOverload =
             isWgcCfrRecording && ce::audio::ShouldProtectWgcAudioContinuityDuringEncoderOverload(
                                      wgcEncoderBottlenecked, wgcCoverageLossActive, wgcRecordingCadenceFps,
@@ -2176,14 +2170,14 @@ public:
                                                      wgcEncoderShortfallBufferedLagMs)
                 : videoPipelineLagMs + timelineShortfallMs;
         const int64_t wgcSelectedContentLeadMs =
-            isWgcCfrRecording ? std::max<int64_t>(0, wgcSelectionBiasUs / 1000) : 0;
+            isWgcCfrRecording ? ce::audio::ComputeWgcSelectedContentLeadMs(wgcSelectionBiasUs) : 0;
         const int64_t wgcSelectedContentLagMs =
-            isWgcCfrRecording ? std::max<int64_t>(0, (-wgcSelectionBiasUs) / 1000) : 0;
+            isWgcCfrRecording ? ce::audio::ComputeWgcSelectedContentLagMs(wgcSelectionBiasUs) : 0;
         const int64_t wgcVisualContentLagMs =
-            isWgcCfrRecording
-                ? std::clamp<int64_t>(timelineShortfallMs + wgcSelectedContentLagMs - wgcSelectedContentLeadMs, 0,
-                                      kWgcVisualSyncMaxBufferedLagMs)
-                : 0;
+            isWgcCfrRecording ? ce::audio::ComputeWgcVisualContentLagMs(timelineShortfallMs, wgcSelectedContentLeadMs,
+                                                                        wgcSelectedContentLagMs,
+                                                                        kWgcVisualSyncMaxBufferedLagMs)
+                              : 0;
         const int64_t baseEffectiveWgcTargetBufferLagMs =
             isWgcCfrRecording ? ce::audio::ComputeWgcCfrTargetBufferLagMs(
                                     wgcAudioLagTargets, wgcSteadyStateBufferedAudioLagMs,

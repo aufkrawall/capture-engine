@@ -747,3 +747,35 @@ TEST(AudioSyncUtilsTest, CatastrophicResyncKeepCushionHonorsTargetLatency) {
     const int64_t trim = ce::audio::ComputeCatastrophicBacklogResyncTrim(true, true, backlog, target, threshold, keep);
     EXPECT_EQ(backlog - trim, rate / 2);  // retained cushion == target latency (the larger of the two)
 }
+
+// --- WGC audio-continuity input helpers (extracted from PullAndEncodeAudio) ---
+
+TEST(AudioSyncUtilsTest, EffectiveDeliveredFpsTakesWorstOfMeasuredWindows) {
+    // Instantaneous rate is healthy but a windowed minimum dipped -> worst wins.
+    EXPECT_EQ(ce::audio::ComputeEffectiveDeliveredFpsForAudioContinuity(120, 90, 100), 90u);
+    EXPECT_EQ(ce::audio::ComputeEffectiveDeliveredFpsForAudioContinuity(120, 100, 80), 80u);
+}
+
+TEST(AudioSyncUtilsTest, EffectiveDeliveredFpsIgnoresUnmeasuredZeroWindows) {
+    // A window reporting 0 (not measured yet) must not drag the effective rate to 0.
+    EXPECT_EQ(ce::audio::ComputeEffectiveDeliveredFpsForAudioContinuity(120, 0, 0), 120u);
+    EXPECT_EQ(ce::audio::ComputeEffectiveDeliveredFpsForAudioContinuity(120, 0, 95), 95u);
+    EXPECT_EQ(ce::audio::ComputeEffectiveDeliveredFpsForAudioContinuity(120, 95, 0), 95u);
+}
+
+TEST(AudioSyncUtilsTest, WgcSelectedContentLeadLagSplitsSignedBias) {
+    // Positive bias -> content leads the timeline; negative -> it lags.
+    EXPECT_EQ(ce::audio::ComputeWgcSelectedContentLeadMs(8000), 8);
+    EXPECT_EQ(ce::audio::ComputeWgcSelectedContentLagMs(8000), 0);
+    EXPECT_EQ(ce::audio::ComputeWgcSelectedContentLeadMs(-12000), 0);
+    EXPECT_EQ(ce::audio::ComputeWgcSelectedContentLagMs(-12000), 12);
+    EXPECT_EQ(ce::audio::ComputeWgcSelectedContentLeadMs(0), 0);
+    EXPECT_EQ(ce::audio::ComputeWgcSelectedContentLagMs(0), 0);
+}
+
+TEST(AudioSyncUtilsTest, WgcVisualContentLagClampsToRange) {
+    // shortfall + lag - lead, clamped to [0, max].
+    EXPECT_EQ(ce::audio::ComputeWgcVisualContentLagMs(50, 0, 30, 4000), 80);
+    EXPECT_EQ(ce::audio::ComputeWgcVisualContentLagMs(50, 70, 0, 4000), 0);   // lead exceeds shortfall -> floored at 0
+    EXPECT_EQ(ce::audio::ComputeWgcVisualContentLagMs(10000, 0, 0, 4000), 4000);  // capped at max
+}

@@ -202,6 +202,23 @@ inline int64_t ComputeWgcCfrTargetBufferLagMs(const WgcAudioLagTargets& lagTarge
     return targetBufferLagMs;
 }
 
+// Effective delivered FPS for WGC audio-continuity decisions: the worst (minimum)
+// of the instantaneous delivered rate and the windowed minimums, ignoring windows
+// that have not measured yet (reported as 0). A transient delivery dip in any
+// window must not be masked by a healthy instantaneous rate when deciding whether
+// to protect audio continuity during encoder overload.
+inline uint32_t ComputeEffectiveDeliveredFpsForAudioContinuity(uint32_t deliveredFps, uint32_t deliveredMin250Fps,
+                                                               uint32_t deliveredMin500Fps) {
+    uint32_t effective = deliveredFps;
+    if (deliveredMin250Fps > 0) {
+        effective = std::min(effective, deliveredMin250Fps);
+    }
+    if (deliveredMin500Fps > 0) {
+        effective = std::min(effective, deliveredMin500Fps);
+    }
+    return effective;
+}
+
 inline int64_t ComputeWgcSteadyStateBufferedAudioLagMs(uint32_t targetFps, uint32_t deliveredFps,
                                                        uint32_t deliveredMin250Fps, uint32_t deliveredMin500Fps,
                                                        bool encoderBottlenecked, uint32_t queueEmptyTickPermille,
@@ -213,13 +230,8 @@ inline int64_t ComputeWgcSteadyStateBufferedAudioLagMs(uint32_t targetFps, uint3
         return 0;
     }
 
-    uint32_t effectiveDeliveredFps = deliveredFps;
-    if (deliveredMin250Fps > 0) {
-        effectiveDeliveredFps = std::min(effectiveDeliveredFps, deliveredMin250Fps);
-    }
-    if (deliveredMin500Fps > 0) {
-        effectiveDeliveredFps = std::min(effectiveDeliveredFps, deliveredMin500Fps);
-    }
+    const uint32_t effectiveDeliveredFps =
+        ComputeEffectiveDeliveredFpsForAudioContinuity(deliveredFps, deliveredMin250Fps, deliveredMin500Fps);
 
     const int64_t fpsDeficit =
         std::max<int64_t>(0, static_cast<int64_t>(targetFps) - static_cast<int64_t>(effectiveDeliveredFps));
@@ -262,6 +274,25 @@ inline bool ShouldProtectWgcAudioContinuityDuringEncoderOverload(bool encoderBot
 
     const uint32_t healthyDeliveryFloor = targetFps > deliveryMarginFps ? (targetFps - deliveryMarginFps) : targetFps;
     return deliveredFps >= healthyDeliveryFloor;
+}
+
+// WGC live source-selection bias (signed us) split into how far the selected
+// content runs AHEAD of (lead) and BEHIND (lag) the scheduled timeline, in ms.
+// A positive bias means the scheduler is picking content that leads the timeline.
+inline int64_t ComputeWgcSelectedContentLeadMs(int64_t selectionBiasUs) {
+    return std::max<int64_t>(0, selectionBiasUs / 1000);
+}
+inline int64_t ComputeWgcSelectedContentLagMs(int64_t selectionBiasUs) {
+    return std::max<int64_t>(0, (-selectionBiasUs) / 1000);
+}
+
+// Visual content lag the audio path should target: the timeline shortfall plus how
+// far the selected content trails, minus how far it leads, clamped to [0, max].
+// Captures how far behind real visual content the encoded video actually is so
+// audio can be held to match it without over-buffering.
+inline int64_t ComputeWgcVisualContentLagMs(int64_t timelineShortfallMs, int64_t selectedContentLeadMs,
+                                            int64_t selectedContentLagMs, int64_t maxBufferedLagMs) {
+    return std::clamp<int64_t>(timelineShortfallMs + selectedContentLagMs - selectedContentLeadMs, 0, maxBufferedLagMs);
 }
 
 inline int64_t ComputeWgcCoverageLossTrimSamples(int64_t samplesToEncode, double coverageLossRatio,
