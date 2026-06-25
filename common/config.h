@@ -307,6 +307,12 @@ struct AppConfig {
     std::string captureMethod;  // "inject", "wgc", "auto"
     bool wgcSkipSplitDeviceFlush = false;
     bool wgcSameDeviceCapture = false;
+    // When an A/V content delay is active, prefer uniform CFR cadence (closest-to-target
+    // selection with monotonic + hard-cap guards) over per-tick delay-reservoir defense.
+    // A GPU-bound source that under-delivers cannot sustain the reservoir; defending it
+    // per-tick perturbs the otherwise-clean cadence into abnormal judder. When true the
+    // realized content delay is allowed to float gracefully (track lengths/PTS unchanged).
+    bool wgcActiveDelayUniformCadence = true;
     std::string logFilePath;  // Path to captureengine.log
 
     std::string crashDumpDir;  // Directory for crash dumps

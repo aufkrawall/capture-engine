@@ -22,6 +22,10 @@ wgc_window_detection=(
 ; WGC performance options. wgc_same_device_capture=true should have lowest overhead.
 wgc_same_device_capture=true
 ;wgc_skip_split_device_flush=false
+; wgc_active_delay_uniform_cadence=true: with an active A/V content delay, prefer uniform
+; CFR cadence over per-tick delay-reservoir defense so a GPU-bound under-delivering source
+; does not produce abnormal judder; the realized content delay floats gracefully.
+;wgc_active_delay_uniform_cadence=true
 
 [Injection]
 ; Entry format: process:window:mode

@@ -1992,6 +1992,11 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t wgcDelaySoftLateAcceptedWindow = 0;
     uint64_t wgcDelayNearCapAcceptedTotal = 0;
     uint32_t wgcDelayNearCapAcceptedWindow = 0;
+    // Frames selected under uniform-cadence active-delay mode (reserve-defense perturbations
+    // skipped, closest-to-target with monotonic + hard-cap guards). Lets the GPU-bound judder
+    // fix be confirmed from logs and distinguishes it from per-tick reserve defense.
+    uint64_t wgcDelayUniformCadenceTotal = 0;
+    uint32_t wgcDelayUniformCadenceWindow = 0;
     uint64_t wgcDelayOlderFrameAvoidedRepeatTotal = 0;
     uint32_t wgcDelayOlderFrameAvoidedRepeatWindow = 0;
     uint64_t wgcDelaySourceLimitedRepeatTotal = 0;
@@ -2469,6 +2474,13 @@ void EncoderThreadFunc(const AppConfig& config) {
             IsActiveScreenGrab() ? "wgc-selection-bias" : "inject-buffer-reserve", injectContentDelayFrames,
             avContentDelayFrames, IsActiveScreenGrab() ? 0.0 : injectResidualEstimateMs,
             config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
+        if (IsActiveScreenGrab()) {
+            LogInfo(
+                "[AVSyncApply] wgc_cadence_policy: uniformCadence=%d (when active, a GPU-bound source that "
+                "cannot sustain the delay reservoir selects closest-to-target with monotonic + hard-cap "
+                "guards instead of per-tick reserve defense; realized content delay floats gracefully)",
+                config.wgcActiveDelayUniformCadence ? 1 : 0);
+        }
     } else {
         LogWarn(
             "[AVSyncApply] inactive: maxAudioCaptureLatencyMs=%.3f delayUs=0 method=%s injectDelayFrames=0 "
@@ -3187,6 +3199,14 @@ void EncoderThreadFunc(const AppConfig& config) {
             const bool lowSourceMode = wgcLowSourceModeActive;
             const bool deepUnderfeed = ce::capture_policy::IsWgcDeepUnderfeed(
                 outputFps, wgcRecentDeliveredMin250Fps, wgcRecentInputMin250Fps, wgcNoFreshTickPermille);
+            // When an A/V content delay is active, a GPU-bound source that under-delivers cannot
+            // sustain the delay reservoir. Defending it per-tick by selecting older-than-target
+            // frames (reserve-preservation index-0 bias + soft-late older search) perturbs the
+            // otherwise-uniform CFR cadence into abnormal judder. In uniform-cadence mode we take
+            // the closest-to-target frame (monotonic + hard-cap guards stay intact) and let the
+            // realized content delay float gracefully; anti-freeze rescue/relaxed paths are kept.
+            const bool preferUniformActiveDelayCadence = ce::capture_policy::IsWgcActiveDelayUniformCadenceMode(
+                selectionDelayApplied, config.wgcActiveDelayUniformCadence);
             ce::capture_policy::WgcAdaptiveTelemetry activeDelayTelemetry{};
             activeDelayTelemetry.outputFps = outputFps;
             activeDelayTelemetry.recentDeliveredFps = wgcRecentDeliveredFps;
@@ -3875,11 +3895,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                 const QueuedFrame& chosenFresh = bufferedWgcFrames[selectedIndex];
                 if (earlierFresh.timestamp > lastEmittedWgcSourceQpc &&
                     chosenFresh.timestamp > earlierFresh.timestamp &&
-                    ce::capture_policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(
+                    ce::capture_policy::ShouldPreferEarlierFreshWgcFrameForReserveDefense(
                         earlierFresh.selectionTimestamp > 0 ? earlierFresh.selectionTimestamp : earlierFresh.timestamp,
                         chosenFresh.selectionTimestamp > 0 ? chosenFresh.selectionTimestamp : chosenFresh.timestamp,
                         effectiveSelectionTargetQpc, targetIntervalTicks, wgcReservePressureActive, lowSourceMode,
-                        deepUnderfeed, wgcLiveRecoveryModeActive)) {
+                        deepUnderfeed, wgcLiveRecoveryModeActive, preferUniformActiveDelayCadence)) {
                     selectedIndex = 0;
                 } else {
                     ++wgcReserveSpendTickCount;
@@ -3903,7 +3923,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
                 return activeDelayCandidateLateResidualUs(bufferedWgcFrames[candidateIndex]);
             };
-            if (selectionDelayApplied && candidateIndices && !candidateIndices->empty() &&
+            if (!preferUniformActiveDelayCadence && selectionDelayApplied && candidateIndices &&
+                !candidateIndices->empty() &&
                 !ce::capture_policy::IsWgcActiveDelaySourceLimitedClass(activeDelayWindowClassFor(true)) &&
                 activeDelayLateResidualUsForIndex(selectedIndex) > activeDelaySoftLateTargetUs) {
                 bool foundSoftCandidate = false;
@@ -4139,6 +4160,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                 bufferedWgcFrames.pop_front();
                 ReleaseQueuedFrameTexture(obsolete);
                 ++wgcDropObsoleteCount;
+            }
+
+            if (preferUniformActiveDelayCadence) {
+                ++wgcDelayUniformCadenceWindow;
+                ++wgcDelayUniformCadenceTotal;
             }
 
             *selectedFrame = std::move(bufferedWgcFrames.front());
@@ -5491,6 +5517,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcDelaySoftLateAcceptedWindow = 0;
                 wgcDelayNearCapAcceptedTotal = 0;
                 wgcDelayNearCapAcceptedWindow = 0;
+                wgcDelayUniformCadenceTotal = 0;
+                wgcDelayUniformCadenceWindow = 0;
                 wgcDelayOlderFrameAvoidedRepeatTotal = 0;
                 wgcDelayOlderFrameAvoidedRepeatWindow = 0;
                 wgcDelaySourceLimitedRepeatTotal = 0;
@@ -7122,7 +7150,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     "sourceLimitRepeat=%u repeatRescue=%u/%u repeatPromote=%u/%u repeatPromoteSoft=%u "
                     "repeatSafeAfter=%u repeatSafe=%u/%u repeatSoftSafe=%u/%u repeatClass=%u/%u/%u "
                     "repeatReserve=%u/%uus hardOnly=%u syncProtected=%u nearCap=%u oldestSoftSafe=%uus "
-                    "sourceRecovery=%u/%llu cause=S%d/D%d/E%d",
+                    "uniformCadence=%u sourceRecovery=%u/%llu cause=S%d/D%d/E%d",
                     cadenceMode, outputShortfallTicks, shortfallDurationMs, avgSignedWgcSelectionErrorUs,
                     wgcSelectionErrorMaxUs, wgcLiveSchedulerRebaseThisWindow, wgcEncoderLimitedSourceDropThisWindow,
                     static_cast<unsigned long long>(wgcEncoderLimitedSourceDropTotal), wgcRepeatPolicyHoldCount,
@@ -7157,7 +7185,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     wgcDelayRepeatReserveDepthWindowMax, wgcDelayRepeatReserveSpanWindowMaxUs,
                     wgcDelayRepeatHardOnlyCandidateWindow, wgcDelaySyncProtectedRepeatWindow,
                     wgcDelayNearCapAcceptedWindow, wgcDelayOldestSoftSafeAgeWindowMaxUs,
-                    wgcSyncDelaySourceRecoveryHoldCount,
+                    wgcDelayUniformCadenceWindow, wgcSyncDelaySourceRecoveryHoldCount,
                     static_cast<unsigned long long>(wgcSyncDelaySourceRecoveryHoldTotal),
                     wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
                     wgcEncoderRecoveryLimitedCurrent ? 1 : 0);
@@ -7309,6 +7337,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcDelaySoftLateRejectedWindow = 0;
             wgcDelaySoftLateAcceptedWindow = 0;
             wgcDelayNearCapAcceptedWindow = 0;
+            wgcDelayUniformCadenceWindow = 0;
             wgcDelayOlderFrameAvoidedRepeatWindow = 0;
             wgcDelaySourceLimitedRepeatWindow = 0;
             wgcDelayRepeatRescueAttemptWindow = 0;
@@ -7585,7 +7614,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "delayPostStallSafeFrames=%llu delayRepeatReserveMax=%u/%uus "
                 "delaySourceRecoveryHolds=%llu delaySourceRecoveryTicks=%llu "
                 "delayNearCapAccepted=%llu delayHardOnlyCandidates=%llu "
-                "delaySyncProtectedRepeats=%llu delayOldestSoftSafeAgeMax=%uus",
+                "delaySyncProtectedRepeats=%llu delayOldestSoftSafeAgeMax=%uus delayUniformCadence=%llu",
                 static_cast<unsigned long long>(wgcDelayRelaxedSelectionCount),
                 wgcDelayRelaxedSelectionMaxUs, static_cast<unsigned long long>(wgcDelayRelaxedRejectedSyncRiskTotal),
                 static_cast<unsigned long long>(wgcDelayRepeatClusterPressureTotal),
@@ -7626,7 +7655,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(wgcDelayNearCapAcceptedTotal),
                 static_cast<unsigned long long>(wgcDelayRepeatHardOnlyCandidateTotal),
                 static_cast<unsigned long long>(wgcDelaySyncProtectedRepeatTotal),
-                wgcDelayOldestSoftSafeAgeMaxUs);
+                wgcDelayOldestSoftSafeAgeMaxUs,
+                static_cast<unsigned long long>(wgcDelayUniformCadenceTotal));
             LogInfo(
                 "[WGC CFR SMOOTHNESS VERDICT] delayPostSelectionRejectedSync=%llu "
                 "delayPostSelectionRescuedSync=%llu sourceRepeatLowerBound=%llu excessRepeats=%llu "

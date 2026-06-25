@@ -790,6 +790,36 @@ TEST(CapturePipelinePolicyTest, WgcReserveBiasPrefersEarlierFreshFrameWhenDiffer
     EXPECT_FALSE(policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, true, true, true));
 }
 
+TEST(CapturePipelinePolicyTest, WgcActiveDelayUniformCadenceModeRequiresDelayAndConfigOptIn) {
+    // Only active when the selection delay is applied AND the config opts in.
+    EXPECT_TRUE(policy::IsWgcActiveDelayUniformCadenceMode(true, true));
+    EXPECT_FALSE(policy::IsWgcActiveDelayUniformCadenceMode(true, false));
+    EXPECT_FALSE(policy::IsWgcActiveDelayUniformCadenceMode(false, true));
+    EXPECT_FALSE(policy::IsWgcActiveDelayUniformCadenceMode(false, false));
+}
+
+TEST(CapturePipelinePolicyTest, WgcUniformCadenceSuppressesReserveDefenseOlderFramePerturbation) {
+    // Exact scenario that perturbed cadence under the GPU-bound Strange Brigade run: a healthy
+    // reserve (not under pressure) where the earlier frame is within bias of the closest-to-target
+    // frame, so the legacy reserve defense would drag selection to the older frame.
+    EXPECT_TRUE(policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, false, false,
+                                                                          false, false));
+
+    // With reserve defense enabled (uniformCadenceMode = false) the composed policy still prefers
+    // the older reserve-building frame, matching the legacy behavior.
+    EXPECT_TRUE(policy::ShouldPreferEarlierFreshWgcFrameForReserveDefense(1000, 1040, 1020, 100, false, false, false,
+                                                                         false, /*uniformCadenceMode=*/false));
+
+    // In uniform-cadence mode the perturbation is suppressed: the selector keeps the
+    // closest-to-target frame and lets the realized delay float (the fix for the abnormal judder).
+    EXPECT_FALSE(policy::ShouldPreferEarlierFreshWgcFrameForReserveDefense(1000, 1040, 1020, 100, false, false, false,
+                                                                          false, /*uniformCadenceMode=*/true));
+
+    // Uniform-cadence mode never re-introduces an older pick even under reserve pressure / low source.
+    EXPECT_FALSE(policy::ShouldPreferEarlierFreshWgcFrameForReserveDefense(1000, 1040, 1020, 100, true, true, true,
+                                                                          false, /*uniformCadenceMode=*/true));
+}
+
 TEST(CapturePipelinePolicyTest, WgcSingleFreshHoldRequiresFragileSourceConditions) {
     EXPECT_TRUE(policy::ShouldAllowSingleFreshWgcHold(true, false, 118, 120, 0.98));
     EXPECT_TRUE(policy::ShouldAllowSingleFreshWgcHold(false, true, 120, 120, 0.99));

@@ -2080,6 +2080,31 @@ inline bool ShouldPreferEarlierFreshWgcFrameToPreserveReserve(int64_t earlierFra
     return earlierDistance <= (selectedDistance + reserveBiasQpc);
 }
 
+// Uniform-cadence mode is active when an A/V content delay is being applied to the WGC selection
+// (selectionDelayApplied) AND the config opts in. In this mode the selector keeps the otherwise
+// clean CFR cadence by taking the closest-to-target frame and lets the realized content delay
+// float, instead of perturbing cadence to defend a reservoir that a GPU-bound under-delivering
+// source cannot sustain. Monotonic and hard-cap sync guards remain in force regardless.
+inline bool IsWgcActiveDelayUniformCadenceMode(bool selectionDelayApplied, bool uniformCadenceConfigEnabled) {
+    return selectionDelayApplied && uniformCadenceConfigEnabled;
+}
+
+// Final reserve-defense decision used by the WGC active-delay selector. The older (reserve-
+// building) frame is preferred over the closest-to-target frame only when reserve defense is in
+// effect; uniform-cadence mode disables it so an under-delivering source does not get its cadence
+// perturbed by per-tick older-frame selection.
+inline bool ShouldPreferEarlierFreshWgcFrameForReserveDefense(
+    int64_t earlierFrameTimestampQpc, int64_t selectedFrameTimestampQpc, int64_t selectionTargetQpc,
+    int64_t targetIntervalTicks, bool reservePressureActive, bool lowSourceMode, bool deepUnderfeed,
+    bool liveRecoveryMode, bool uniformCadenceMode) {
+    if (uniformCadenceMode) {
+        return false;
+    }
+    return ShouldPreferEarlierFreshWgcFrameToPreserveReserve(
+        earlierFrameTimestampQpc, selectedFrameTimestampQpc, selectionTargetQpc, targetIntervalTicks,
+        reservePressureActive, lowSourceMode, deepUnderfeed, liveRecoveryMode);
+}
+
 inline bool ShouldAllowSingleFreshWgcHold(bool reservePressureActive, bool lowSourceMode, uint32_t recentInputMin250Fps,
                                           uint32_t outputFps, double smoothedInputPerTick) {
     if (!(reservePressureActive || lowSourceMode) || outputFps == 0) {

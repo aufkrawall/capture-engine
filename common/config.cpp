@@ -334,6 +334,10 @@ wgc_window_detection=(
 ; WGC performance options. wgc_same_device_capture=true should have lowest overhead.
 wgc_same_device_capture=true
 ;wgc_skip_split_device_flush=false
+; wgc_active_delay_uniform_cadence=true: with an active A/V content delay, prefer uniform
+; CFR cadence over per-tick delay-reservoir defense so a GPU-bound under-delivering source
+; does not produce abnormal judder; the realized content delay floats gracefully.
+;wgc_active_delay_uniform_cadence=true
 
 ; audio_capture_latency_ms - Render-endpoint (Domain 1) A/V sync offset (ms): how late the
 ; system loopback AND every app process-loopback source land vs the video. CE corrects this by
@@ -862,6 +866,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.captureMethod = NormalizeCaptureMethod(GetStr("General", "capture_method", "auto"));
     config.wgcSkipSplitDeviceFlush = GetBool("General", "wgc_skip_split_device_flush", false);
     config.wgcSameDeviceCapture = GetBool("General", "wgc_same_device_capture", false);
+    config.wgcActiveDelayUniformCadence = GetBool("General", "wgc_active_delay_uniform_cadence", true);
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
     config.audioCaptureLatencyMs = GetFloat("General", "audio_capture_latency_ms", 0.0f);
     config.micCaptureLatencyMs = GetFloat("General", "mic_capture_latency_ms", 0.0f);

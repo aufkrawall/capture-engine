@@ -276,6 +276,10 @@ WGC_CFR_SMOOTHNESS_EXCESS_REPEAT_CLUSTER_FAULT_TICKS = 24
 WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT = 10
 WGC_AUDIO_LATE_RISK_P95_US = 7000
 WGC_AUDIO_LATE_RISK_NEAR_CAP_US = 9500
+# Realized content-delay spread (max - min) on an active-delay run above which the displayed
+# content age swings enough to be visible as non-uniform playback / abnormal judder, distinct
+# from plain CFR repeat/drop. The GPU-bound Strange Brigade run swung 22.9..44.4 ms (~21.5 ms).
+WGC_REALIZED_DELAY_INSTABILITY_SPREAD_US = 12000
 
 TRIAGE_AUDIO_FAULT_EVENTS = {
     "audio_latency_cap",
@@ -2278,6 +2282,31 @@ def has_wgc_cfr_smoothness_not_maximal(media_evidence):
     return False
 
 
+def wgc_realized_delay_spread_us(item):
+    """Realized content-delay spread (max - min) for an active-delay smoothness summary item."""
+    delay_max = item.get("realized_delay_max_us", 0)
+    delay_min = item.get("realized_delay_min_us", 0)
+    if delay_max <= 0 or delay_min <= 0 or delay_max < delay_min:
+        return 0
+    return delay_max - delay_min
+
+
+def has_wgc_active_delay_realized_delay_unstable(media_evidence):
+    """The realized content delay rubber-bands on an active-delay run.
+
+    This is the GPU-bound under-delivery judder signature: the displayed content age swings by
+    more than ~1.5 frame intervals while track lengths/PTS stay equal, so plain duration/sync
+    checks (and the runtime's own ``smoothnessNotMaximal``) report the run as fine. Surfaced as a
+    distinct verdict so the abnormal-judder condition is unambiguous in triage.
+    """
+    for item in media_evidence["wgc_smoothness_summary"]:
+        if item.get("av_delay_ms", 0.0) <= 0.0:
+            continue
+        if wgc_realized_delay_spread_us(item) >= WGC_REALIZED_DELAY_INSTABILITY_SPREAD_US:
+            return True
+    return False
+
+
 def has_wgc_source_limited_smoothness_ceiling(media_evidence):
     return any(
         wgc_is_sync_protected_source_limited_ceiling(media_evidence, item)
@@ -2491,6 +2520,9 @@ def classify_session_triage(session_dir, capture_path=None):
     wgc_cfr_smoothness_not_maximal = has_wgc_cfr_smoothness_not_maximal(media_evidence)
     if wgc_cfr_smoothness_not_maximal:
         verdicts.append("wgc_cfr_smoothness_not_maximal")
+    wgc_active_delay_realized_delay_unstable = has_wgc_active_delay_realized_delay_unstable(media_evidence)
+    if wgc_active_delay_realized_delay_unstable:
+        verdicts.append("wgc_active_delay_realized_delay_unstable")
     wgc_source_limited_smoothness_ceiling = has_wgc_source_limited_smoothness_ceiling(media_evidence)
     if wgc_source_limited_smoothness_ceiling:
         verdicts.append("wgc_source_limited_smoothness_ceiling")
@@ -3255,6 +3287,40 @@ def self_test():
         assert "wgc_av_sync_delay_residual" not in residual_bounded_report["verdicts"]
         assert "wgc_av_sync_delay_unrealized" not in residual_bounded_report["verdicts"]
         assert "ce_visual_timeline_fault" not in residual_bounded_report["verdicts"]
+        # An 8 ms realized-delay spread is bounded: the instability classifier must stay quiet.
+        assert "wgc_active_delay_realized_delay_unstable" not in residual_bounded_report["verdicts"]
+
+        # GPU-bound under-delivery judder signature (Strange Brigade sbwgcjudder shape): residuals
+        # and holds look bounded and the runtime reports smoothnessNotMaximal=0, but the realized
+        # content delay rubber-bands 22.9..44.4 ms. The legacy analyzer trusted the runtime verdict
+        # and called this "fine"; the instability classifier must now flag it distinctly.
+        wgc_realized_delay_unstable = make_session(
+            "wgc_realized_delay_unstable",
+            media=(
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=101 "
+                "phaseErrorMax=3260us shortfallMax=58.3ms staleDebtDrops=13 liveRebase=0/0 "
+                "tooNewRepeats=544 syncDelayHolds=544 tooNewLeadMax=40208us avDelay=31.1ms "
+                "startupDelay=31.1ms scheduleOffset=99714us effectiveDelay=31.1ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=544 syncDelayPolicyHolds=0 startupReserveFrames=34 "
+                "startupReserveSpan=229296us startupDelayTarget=31111us startupReserveSelected=1 "
+                "startupReserveReason=selected delayReservoirLowWaterFrames=4 delayReservoirTargetFrames=5 "
+                "delayReservoirLowWaterTicks=1279 realizedDelayAvg=30756us realizedDelayMin=22875us "
+                "realizedDelayMax=44419us delayResidualAvg=354/2199us delayResidualMax=13308us "
+                "delayResidualP95=5000us delayResidualLateMax=8236us delayResidualEarlyMax=13308us\n"
+                "[WGC CFR SMOOTHNESS VERDICT] delayPostSelectionRejectedSync=0 "
+                "delayPostSelectionRescuedSync=0 sourceRepeatLowerBound=544 excessRepeats=0 "
+                "policyAddedRepeats=0 excessRepeatClusters=0 excessRepeatClusterMax=0 "
+                "smoothnessNotMaximal=0 mixedPolicyFault=0\n"
+            ),
+        )
+        realized_unstable_report = classify_session_triage(wgc_realized_delay_unstable)
+        realized_unstable_summary = realized_unstable_report["evidence"]["wgc_smoothness_summary"][0]
+        assert realized_unstable_summary["realized_delay_min_us"] == 22875
+        assert realized_unstable_summary["realized_delay_max_us"] == 44419
+        # The runtime self-classified the run as fine; the spread must still be flagged.
+        assert "wgc_cfr_smoothness_not_maximal" not in realized_unstable_report["verdicts"]
+        assert "wgc_active_delay_realized_delay_unstable" in realized_unstable_report["verdicts"]
 
         wgc_sync_delay_realized_source_pressure = make_session(
             "wgc_sync_delay_realized_source_pressure",
