@@ -2,6 +2,8 @@
 #include <windows.h>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <climits>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -277,6 +279,29 @@ static bool TryParseUInt32(const std::string& value, uint32_t& out, int base = 1
     }
     out = static_cast<uint32_t>(parsed);
     return true;
+}
+
+// Validate a config sample_rate string at load time. Accepts the "default"
+// sentinel (or empty) and any positive integer; anything else (a hand-edited
+// typo such as "48kHz", a negative value, etc.) is logged once and normalized to
+// "default" so it can never reach - and crash - encoder init downstream. This is
+// the boundary defense; ce::audio::ParseSampleRateOr is the defense-in-depth at
+// the parse sites.
+static std::string NormalizeSampleRate(const std::string& raw, const char* section) {
+    if (raw.empty() || raw == "default") {
+        return raw;
+    }
+    // Strict: the entire (already-trimmed) value must be a positive integer. Kept
+    // self-contained so common/ does not depend on mediaengine; mirrors the parse
+    // semantics of ce::audio::ParseSampleRateOr.
+    errno = 0;
+    char* end = nullptr;
+    const long parsed = std::strtol(raw.c_str(), &end, 10);
+    if (end != raw.c_str() && end != nullptr && *end == '\0' && errno != ERANGE && parsed > 0 && parsed <= INT_MAX) {
+        return raw;  // valid positive integer
+    }
+    LogWarn("[Config] Invalid sample_rate \"%s\" in [%s]; falling back to default (48000)", raw.c_str(), section);
+    return "default";
 }
 
 // Helper to create default config if missing
@@ -1335,7 +1360,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     sysAudio.device = GetStr("Audio", "device", "");
     sysAudio.codec = GetStr("Audio", "codec", "alac");
     sysAudio.bitrate = GetInt("Audio", "bitrate", 192);
-    sysAudio.sampleRate = GetStr("Audio", "sample_rate", "default");
+    sysAudio.sampleRate = NormalizeSampleRate(GetStr("Audio", "sample_rate", "default"), "Audio");
     sysAudio.bitDepth = GetStr("Audio", "bit_depth", "default");
     sysAudio.downmix = GetBool("Audio", "downmix", false);
     sysAudio.captureLatencyMs = GetFloat("Audio", "capture_latency_ms", config.audioCaptureLatencyMs);
@@ -1434,7 +1459,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         appAudio.tracks = GetIntList(section, "track", appIdx + 2);
         appAudio.codec = GetStr(section, "codec", sysAudio.codec.c_str());
         appAudio.bitrate = GetInt(section, "bitrate", sysAudio.bitrate);
-        appAudio.sampleRate = GetStr(section, "sample_rate", sysAudio.sampleRate.c_str());
+        appAudio.sampleRate = NormalizeSampleRate(GetStr(section, "sample_rate", sysAudio.sampleRate.c_str()), section);
         appAudio.bitDepth = GetStr(section, "bit_depth", sysAudio.bitDepth.c_str());
         appAudio.downmix = GetBool(section, "downmix", sysAudio.downmix);
         appAudio.captureLatencyMs = GetFloat(section, "capture_latency_ms", config.audioCaptureLatencyMs);

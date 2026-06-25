@@ -1,6 +1,10 @@
 #pragma once
 
+#include <cerrno>
+#include <climits>
 #include <cstdint>
+#include <cstdlib>
+#include <string>
 
 namespace ce::audio {
 
@@ -100,6 +104,26 @@ inline uint64_t SanitizeCaptureQpcPosition(uint64_t reportedQpc100ns, uint64_t n
         return nowQpc100ns;
     }
     return reportedQpc100ns;
+}
+
+// Safe parse of a config sample-rate string into Hz. Accepts the "default"
+// sentinel (or empty) -> defaultRate, or a string that is ENTIRELY a positive
+// decimal integer. Unlike std::stoi this NEVER throws and is strict: any
+// non-numeric, partial ("48kHz"), non-positive, or out-of-range value falls back
+// to defaultRate rather than silently parsing a nonsense leading number. A
+// hand-edited config typo must never crash encoder init with an unhandled
+// std::invalid_argument / std::out_of_range, nor produce a bogus 48 Hz stream.
+inline int ParseSampleRateOr(const std::string& value, int defaultRate = 48000) {
+    if (value.empty() || value == "default") {
+        return defaultRate;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const long parsed = std::strtol(value.c_str(), &end, 10);
+    if (end == value.c_str() || end == nullptr || *end != '\0' || errno == ERANGE || parsed <= 0 || parsed > INT_MAX) {
+        return defaultRate;  // not a pure positive integer -> safe fallback
+    }
+    return static_cast<int>(parsed);
 }
 
 }  // namespace ce::audio

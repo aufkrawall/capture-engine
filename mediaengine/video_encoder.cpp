@@ -3,6 +3,7 @@
 #include "../common/frame_timing_utils.h"
 #include "../common/raii_helpers.h"
 #include "../common/shared_defs.h"
+#include "audio_time_utils.h"  // For ce::audio::ParseSampleRateOr
 #include "mediaengine.h"
 #include "mux_invariants.h"
 #include "video_encoder_options.h"
@@ -2339,9 +2340,9 @@ int VideoEncoder::AddAudioStream(const AudioConfig& config, AVCodecContext* audi
         }
         st->time_base = {1, sampleRate};
     } else {
-        // Fallback (might fail for extradata-dependent codecs)
-        int sampleRate =
-            (!config.sampleRate.empty() && config.sampleRate != "default") ? std::stoi(config.sampleRate) : 48000;
+        // Fallback (might fail for extradata-dependent codecs). ParseSampleRateOr
+        // never throws on a malformed config sample_rate (unlike std::stoi).
+        int sampleRate = ce::audio::ParseSampleRateOr(config.sampleRate, 48000);
         st->time_base = {1, sampleRate};
         st->codecpar->codec_id = codec->id;
         st->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;

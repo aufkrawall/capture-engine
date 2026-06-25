@@ -196,10 +196,7 @@ public:
     }
 
     static int ParseAudioSampleRate(const AudioConfig& audioConfig) {
-        if (!audioConfig.sampleRate.empty() && audioConfig.sampleRate != "default") {
-            return std::stoi(audioConfig.sampleRate);
-        }
-        return 48000;
+        return ce::audio::ParseSampleRateOr(audioConfig.sampleRate, 48000);
     }
 
     static int AudioSourceLayoutPriority(AudioConfig::SourceType sourceType) {

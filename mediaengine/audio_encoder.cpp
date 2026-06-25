@@ -1,6 +1,7 @@
 #include "audio_encoder.h"
 #include "audio_sync_utils.h"
-#include "mediaengine.h"  // For DLL_Log
+#include "audio_time_utils.h"  // For ce::audio::ParseSampleRateOr
+#include "mediaengine.h"       // For DLL_Log
 #include <mmreg.h>
 
 extern "C" {
@@ -327,11 +328,9 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
         }
     }
 
-    // Parse sample rate - "default" means use 48000, otherwise parse as int
-    int sampleRate = 48000;  // Default fallback
-    if (!config.sampleRate.empty() && config.sampleRate != "default") {
-        sampleRate = std::stoi(config.sampleRate);
-    }
+    // Parse sample rate - "default" means use 48000, otherwise parse as int.
+    // ParseSampleRateOr never throws on malformed config (would crash encoder init).
+    int sampleRate = ce::audio::ParseSampleRateOr(config.sampleRate, 48000);
     if (codec->id == AV_CODEC_ID_OPUS && sampleRate != 48000) {
         DLL_Log("[AudioEncoder] Opus requires 48000Hz output, adjusting sample_rate from %d to 48000", sampleRate);
         sampleRate = 48000;

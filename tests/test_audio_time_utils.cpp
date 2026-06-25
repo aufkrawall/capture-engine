@@ -91,3 +91,35 @@ TEST(AudioTimeUtilsTest, SanitizeCaptureQpcTrustsValueWhenNoReferenceClock) {
     EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(reported, 0), reported);
 }
 
+TEST(AudioTimeUtilsTest, ParseSampleRateAcceptsDefaultSentinelAndEmpty) {
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("default", 48000), 48000);
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("", 48000), 48000);
+    // The fallback is honored, not hardcoded.
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("default", 44100), 44100);
+}
+
+TEST(AudioTimeUtilsTest, ParseSampleRateParsesValidPositiveIntegers) {
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("48000", 48000), 48000);
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("44100", 48000), 44100);
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("96000", 48000), 96000);
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("192000", 48000), 192000);
+}
+
+TEST(AudioTimeUtilsTest, ParseSampleRateFallsBackOnMalformedInputWithoutThrowing) {
+    // These all threw std::invalid_argument / std::out_of_range under the old
+    // std::stoi path and crashed encoder init. They must now fall back safely.
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("48kHz", 48000), 48000);
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("abc", 48000), 48000);
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("-44100", 48000), 48000);
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("0", 48000), 48000);
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("   ", 48000), 48000);
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("99999999999999999999", 48000), 48000);  // out of range
+}
+
+TEST(AudioTimeUtilsTest, ParseSampleRateRejectsPartialNumbersStrictly) {
+    // A distinct fallback proves the value was rejected outright, not parsed as a
+    // bogus leading integer (the old std::stoi would have yielded 48 / 44100).
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("48000abc", 44100), 44100);
+    EXPECT_EQ(ce::audio::ParseSampleRateOr("44100x", 96000), 96000);
+}
+
