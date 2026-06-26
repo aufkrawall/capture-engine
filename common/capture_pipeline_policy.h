@@ -1413,6 +1413,25 @@ inline int64_t GetWgcSelectionTargetQpc(int64_t scheduledSampleQpc, int64_t fall
     return delayedSelectionTargetQpc > 0 ? delayedSelectionTargetQpc : selectionTargetQpc;
 }
 
+// Single source of truth for the WGC active-delay selection target. It subtracts the configured
+// content delay UNLESS live-recovery legitimately suppresses it for this path (legacy reservoir path
+// only -- the uniform-cadence path HOLDS the delay through live-recovery, see
+// ShouldLiveRecoverySuppressWgcSelectionDelay). The per-tick "is the delay applied this tick" flag
+// (ShouldApplyWgcSelectionDelay -> wgcSelectionDelayAppliedThisTick) and this target computation MUST
+// agree: if the flag says "delay applied" while the target silently drops the delay, the realized
+// content delay collapses to ~0 and -- because a perpetually-below-output VRR source keeps
+// live-recovery latched forever -- stays collapsed for the rest of the recording (real regression
+// 20260626_050554). Routing both decisions through ShouldLiveRecoverySuppressWgcSelectionDelay keeps
+// them from diverging again.
+inline int64_t GetWgcActiveDelaySelectionTargetQpc(int64_t scheduledSampleQpc, int64_t fallbackTargetQpc,
+                                                   int64_t targetIntervalTicks, bool recordingOutputLive,
+                                                   bool applyLiveDelay, bool liveRecoveryActive,
+                                                   bool uniformCadenceActiveDelay, int64_t contentDelayQpc) {
+    const bool suppress = ShouldLiveRecoverySuppressWgcSelectionDelay(liveRecoveryActive, uniformCadenceActiveDelay);
+    return GetWgcSelectionTargetQpc(scheduledSampleQpc, fallbackTargetQpc, targetIntervalTicks,
+                                    recordingOutputLive && applyLiveDelay && !suppress, contentDelayQpc);
+}
+
 inline int64_t GetWgcLiveVisualDebtLimitQpc(int64_t targetIntervalTicks, int64_t qpcTicksPerSecond,
                                             uint32_t maxDebtMs = kWgcMaxLiveVisualDebtMs,
                                             uint32_t maxDebtFrames = kWgcMaxLiveVisualDebtFrames) {
@@ -2188,6 +2207,85 @@ inline bool ShouldPreferEarlierFreshWgcFrameForReserveDefense(
     return ShouldPreferEarlierFreshWgcFrameToPreserveReserve(
         earlierFrameTimestampQpc, selectedFrameTimestampQpc, selectionTargetQpc, targetIntervalTicks,
         reservePressureActive, lowSourceMode, deepUnderfeed, liveRecoveryMode);
+}
+
+// ---- WGC active-delay nearest-target playout (fixed-latency jitter-buffer resampling) -------------
+//
+// The Bresenham source-rate pacer (DecideWgcActiveDelayPace) emits the OLDEST buffered frame and
+// bounds the buffer by COUNT (the depth cap). Under bursty WGC delivery -- DWM hands frames to the
+// capture frame pool in late batches even when the game itself presents perfectly smoothly (real
+// signature: game present max-interval ~10 ms while WGC delivery dips to 24-110 fps with 170-200 ms
+// callback gaps) -- that count/oldest model produces two visible defects:
+//   1. The count-based cap dumps a whole delivered burst in a single output tick (a cluster of drops)
+//      and then the buffer runs dry across the following delivery lull (a cluster of repeats), so a
+//      ~115 fps source manufactures ~20 dups AND ~14 drops in the SAME second. That simultaneous
+//      drop+dup churn is far harsher than uniform CFR judder.
+//   2. Oldest-first emission rubber-bands the realized content delay: the oldest frame's age is ~0 ms
+//      right after a burst and hundreds of ms at the end of a lull (observed realizedDelay 0..243 ms
+//      against a 30 ms target), which is also a latent A/V-sync defect.
+//
+// Nearest-target playout treats the buffer as a fixed-latency jitter buffer. Each output tick selects
+// the buffered frame nearest the playout target (gridTickQpc - contentDelayQpc): it advances the
+// front over frames the audio timeline has already passed (older than the target, when a strictly
+// newer not-too-new successor exists), then emits the front if its slot has aged in, otherwise holds.
+// Frames newer than the target stay buffered as future reserve. Because emission position is keyed to
+// the timestamp grid (not a count), this consumes unique frames at the SOURCE rate by construction --
+// repeating evenly when the source is below output, decimating evenly when above -- so it neither
+// over-drains like the old grid-rate timestamp-target reservoir (which force-advanced one unique
+// frame per OUTPUT tick and clustered "too new" holds) nor clusters, and the realized delay is pinned
+// near contentDelayQpc regardless of delivery burstiness. After a true delivery gap it resumes at the
+// correct delay by DROPPING the audio-passed backlog (replaying it would put video behind audio)
+// rather than replaying it as a rubber-band; the unavoidable in-gap freeze stays a clean freeze.
+//
+// `leadToleranceQpc` is how far past (newer than) the target a frame may be and still count as the
+// slot frame -- reuse GetWgcActiveDelayResidualToleranceQpc so the playout boundary matches the
+// active-delay "too new for slot" boundary used elsewhere.
+
+// Should the current front be dropped in favour of `nextTimestampQpc`? True when the successor is
+// strictly newer (monotonic safety) and is still at-or-before the playout slot within the lead
+// tolerance, i.e. it is a closer representative of the target than the older front, so the front is
+// already-past surplus history. Stops naturally at the newest not-too-new frame, leaving any future
+// frames as reserve.
+inline bool ShouldDropWgcFrontForNearerPlayout(int64_t frontTimestampQpc, int64_t nextTimestampQpc,
+                                               int64_t playoutTargetQpc, int64_t leadToleranceQpc) {
+    if (frontTimestampQpc <= 0 || nextTimestampQpc <= 0 || playoutTargetQpc <= 0) {
+        return false;
+    }
+    if (nextTimestampQpc <= frontTimestampQpc) {
+        return false;  // not strictly newer -> never advance past (duplicate/non-monotonic safety)
+    }
+    return nextTimestampQpc <= playoutTargetQpc + leadToleranceQpc;
+}
+
+struct WgcNearestPlayoutDecision {
+    bool emit = false;  // pop and emit the (post-stale-drop) front frame for this slot
+    bool hold = false;  // repeat the previous frame: the slot frame has not been delivered yet
+};
+
+// After stale-dropping, decide what to do with the front frame for this output tick. Emit when it has
+// aged into the slot (timestamp <= target + leadTolerance) and is strictly newer than the last
+// emitted frame (monotonic). Otherwise hold -- the slot frame is still in the future, so leave the
+// newer buffered frames as reserve and repeat the previous frame (an evenly distributed
+// source-limited / delivery-gap repeat). A lone frame older than the target is still emitted (it is
+// the freshest available content and strictly newer than the last emit), which makes an in-gap freeze
+// a clean monotonic hold instead of a backward rubber-band.
+inline WgcNearestPlayoutDecision DecideWgcNearestPlayout(int64_t frontTimestampQpc, int64_t playoutTargetQpc,
+                                                         int64_t leadToleranceQpc,
+                                                         int64_t lastEmittedTimestampQpc) {
+    WgcNearestPlayoutDecision decision;
+    if (frontTimestampQpc <= 0 || playoutTargetQpc <= 0) {
+        return decision;  // no usable timing -> caller falls back / holds
+    }
+    if (frontTimestampQpc <= lastEmittedTimestampQpc) {
+        decision.hold = true;  // would be non-monotonic -> repeat
+        return decision;
+    }
+    if (frontTimestampQpc <= playoutTargetQpc + leadToleranceQpc) {
+        decision.emit = true;
+    } else {
+        decision.hold = true;  // front still in the future beyond tolerance -> slot not aged in
+    }
+    return decision;
 }
 
 inline bool ShouldAllowSingleFreshWgcHold(bool reservePressureActive, bool lowSourceMode, uint32_t recentInputMin250Fps,

@@ -452,3 +452,39 @@ TEST(FrameTimingUtilsTest, InputFrameRatePredictorTracksJitterAndZeroFrequencySa
     EXPECT_DOUBLE_EQ(predictor.GetPredictedFps(0), 0.0);
     EXPECT_DOUBLE_EQ(predictor.GetJitterUs(0), 0.0);
 }
+
+TEST(FrameTimingUtilsTest, InjectDelayedGridSelectionPinsRealizedDelayUnderAbundantBuffer) {
+    // The inject video path sees the full smooth present stream, so its buffer holds many frames
+    // spanning a wide timestamp range. Selecting the frame nearest the DELAYED content grid
+    // (gridStart - contentDelay) pins the realized content delay near contentDelay regardless of how
+    // deep the buffer is. This is what structurally protects inject from the oldest-first realized-
+    // delay rubber-band that affected the WGC active-delay path before the nearest-target playout fix:
+    // emitting the OLDEST buffered frame here would yield a realized delay of ~2x contentDelay, while
+    // nearest-grid selection yields exactly contentDelay.
+    const int64_t interval = 100;      // qpc ticks per frame
+    const int64_t contentDelay = 400;  // 4 frames
+    const int64_t gridStart = 1000000;
+    const int64_t injectGridStart = ComputeDelayedContentGridStartQpc(gridStart, contentDelay);
+    EXPECT_EQ(injectGridStart, gridStart - contentDelay);
+
+    for (int64_t tick = 1; tick <= 50; ++tick) {
+        const int64_t nowQpc = gridStart + (tick - 1) * interval;  // scheduled emit time for this tick
+        std::deque<QueuedFrame> frames;                            // abundant buffer up to "now"
+        for (int64_t ts = gridStart - 2 * contentDelay; ts <= nowQpc; ts += interval) {
+            QueuedFrame f;
+            f.timestamp = ts;
+            f.selectionTimestamp = ts;
+            frames.push_back(std::move(f));
+        }
+        const size_t best = SelectFrameClosestToGridIf(frames, frames.size(), injectGridStart, tick, interval,
+                                                       [](const QueuedFrame&) { return true; });
+        ASSERT_LT(best, frames.size());
+        const int64_t realizedDelay = nowQpc - frames[best].timestamp;
+        // Pinned within half a frame of the configured content delay (never the oldest-frame age,
+        // which here would be ~2x contentDelay and grow with buffer depth).
+        EXPECT_GE(realizedDelay, contentDelay - interval / 2);
+        EXPECT_LE(realizedDelay, contentDelay + interval / 2);
+        const int64_t oldestFrameDelay = nowQpc - frames.front().timestamp;
+        EXPECT_GT(oldestFrameDelay, realizedDelay);  // the bug behaviour we are guarding against
+    }
+}

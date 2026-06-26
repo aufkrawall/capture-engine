@@ -1858,11 +1858,6 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t pacingEmaUpdates = 0;
     double smoothedInputPerTick = 1.0;    // EMA: avg unique frames per encoder tick
     double frameCreditAccumulator = 0.0;  // Bresenham error term
-    // Bresenham credit for the inject-parity WGC active-delay pacer (separate from the inject
-    // accumulator above; only one capture path runs per recording). Advancing unique WGC frames at
-    // the source rate keeps the delay floor fed so the realized delay stays stable and the
-    // source-limited repeats are evenly distributed.
-    double wgcDelayCreditAccumulator = 0.0;
     // Output-grid tracking for timestamp-aware frame selection.
     // When multiple buffered frames are available (game fps > target fps),
     // selecting the frame closest to the ideal output grid time produces
@@ -3153,9 +3148,26 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                           bool applyLiveDelay) {
             const int64_t fallbackTargetQpc =
                 ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTickForTick, targetIntervalTicks);
-            return ce::capture_policy::GetWgcSelectionTargetQpc(
-                scheduledQpcForTick, fallbackTargetQpc, targetIntervalTicks,
-                recordingOutputLive && applyLiveDelay && !wgcLiveRecoveryModeActive, avContentDelayQpc);
+            // The selection target must keep subtracting the content delay through WGC live-recovery on
+            // the uniform-cadence path. A VRR / GPU-bound source running below the output target keeps
+            // live-recovery LATCHED indefinitely (it only exits once the source outruns output, which a
+            // perpetually-below-target source never does), so a raw `!wgcLiveRecoveryModeActive` gate
+            // here collapses the realized content delay to ~0 and latches it there for the rest of the
+            // recording -- the collapse half of the realized-delay rubber-band (real session
+            // 20260626_050554: live-recovery engaged at ~31 s and the realized delay sat at ~0/late
+            // residual ~31.5 ms until stop, i.e. video ran ~31.5 ms ahead of the loopback audio it is
+            // meant to align with, and the collapse transition is a visible content fast-forward).
+            // Mirror ShouldLiveRecoverySuppressWgcSelectionDelay so the legacy reservoir path still
+            // yields to live-recovery while the uniform path HOLDS the delay (live-recovery keeps
+            // driving max-rate capture refill regardless; only the SELECTION delay is preserved). This
+            // matches the flag that ShouldApplyWgcSelectionDelay already keeps set
+            // (wgcSelectionDelayAppliedThisTick) -- previously the flag said "apply delay" while this
+            // target computation silently dropped it. GetWgcActiveDelaySelectionTargetQpc is the single
+            // source of truth that keeps the two decisions from diverging again.
+            const bool uniformCadenceActiveDelay = avContentDelayActive && config.wgcActiveDelayUniformCadence;
+            return ce::capture_policy::GetWgcActiveDelaySelectionTargetQpc(
+                scheduledQpcForTick, fallbackTargetQpc, targetIntervalTicks, recordingOutputLive, applyLiveDelay,
+                wgcLiveRecoveryModeActive, uniformCadenceActiveDelay, avContentDelayQpc);
         };
         const auto computeWgcSelectionTargetQpc = [&](bool applyLiveDelay) {
             return computeWgcSelectionTargetForTick(scheduledSampleQpc, selectionGridTick, applyLiveDelay);
@@ -4760,14 +4772,25 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                             avContentDelayActive &&
                                                             config.wgcActiveDelayUniformCadence;
                     if (useInjectParityDelayPacing) {
-                        // Inject-parity input-rate pacing for the active A/V content delay. A VRR /
-                        // under-delivering source (present rate dipping below the output target) makes
-                        // a rigid "show content exactly L old" reservoir impossible to feed, so the
-                        // timestamp-target path holds "too-new-for-slot" frames in clusters = stutter.
-                        // Instead keep a delay-deep floor and advance unique frames at the SOURCE rate
-                        // (Bresenham), repeating evenly when output outpaces the source. The emitted
-                        // frame is always ~floor source-frames old, so the realized delay stays stable
-                        // (A/V sync preserved) and the unavoidable repeats are uniform (smooth).
+                        // Fixed-latency jitter-buffer playout for the active A/V content delay. WGC
+                        // delivery is bursty/gappy under a GPU-bound VRR borderless source: DWM hands
+                        // frames to the capture pool in late batches even when the game itself presents
+                        // perfectly smoothly (real signature: game present max-interval ~10 ms while WGC
+                        // delivery dips to 24-110 fps with 170-200 ms callback gaps). The previous
+                        // oldest-first + count-based depth cap turned that delivery jitter into harsh
+                        // stutter -- a ~115 fps source manufactured ~20 dups AND ~14 drops in the SAME
+                        // second (simultaneous drop+dup churn), and oldest-first emission rubber-banded
+                        // the realized content delay 0..243 ms against a 30 ms target.
+                        //
+                        // Instead select the buffered frame nearest the grid playout target
+                        // (gridTick - contentDelay): drop frames the audio timeline has already passed,
+                        // emit the slot frame once it has aged in, otherwise hold (an evenly distributed
+                        // source-limited / delivery-gap repeat) leaving newer frames as reserve. This
+                        // consumes unique frames at the SOURCE rate by construction (no over-drain, no
+                        // clustered "too new" holds like the old grid-rate reservoir) and pins the
+                        // realized delay near the target regardless of delivery burstiness. After a true
+                        // gap it resumes at the correct delay by dropping the audio-passed backlog
+                        // (replaying it would put video behind audio) so the in-gap freeze stays clean.
                         while (!bufferedWgcFrames.empty() && lastEmittedWgcSourceQpc > 0 &&
                                bufferedWgcFrames.front().timestamp > 0 &&
                                bufferedWgcFrames.front().timestamp <= lastEmittedWgcSourceQpc) {
@@ -4776,65 +4799,84 @@ void EncoderThreadFunc(const AppConfig& config) {
                             ReleaseQueuedFrameTexture(stale);
                             ++wgcDropObsoleteCount;
                         }
+                        // Grid-anchored content-delay target (UNCLAMPED: the uniform-cadence path
+                        // maintains the delay through low-source/recovery rather than clamping toward
+                        // live, which would re-collapse the realized delay -- the other half of the
+                        // rubber-band).
+                        const int64_t playoutTargetQpc = (encoderGridStartQpc > 0 && targetIntervalTicks > 0)
+                                                             ? computeDelayedWgcSelectionTargetQpc()
+                                                             : 0;
+                        const int64_t playoutLeadToleranceQpc =
+                            ce::capture_policy::GetWgcActiveDelayResidualToleranceQpc(targetIntervalTicks);
                         if (!bufferedWgcFrames.empty()) {
-                            const size_t floorFrames = ce::capture_policy::GetWgcActiveDelayPaceFloorFrames(
-                                avContentDelayQpc, targetIntervalTicks);
-                            const size_t maxDepthFrames = ce::capture_policy::GetWgcActiveDelayPaceMaxDepthFrames(
-                                avContentDelayQpc, targetIntervalTicks);
-                            const size_t bufferedBeforePace = bufferedWgcFrames.size();
-                            wgcDelayCreditAccumulator += smoothedInputPerTick;
-                            wgcDelayCreditAccumulator = std::min(wgcDelayCreditAccumulator, 5.0);
-                            const auto pace = ce::capture_policy::DecideWgcActiveDelayPace(
-                                wgcDelayCreditAccumulator, bufferedWgcFrames.size(), floorFrames, maxDepthFrames);
-                            for (uint32_t dropIdx = 0;
-                                 dropIdx < pace.dropBeforeAdvance && bufferedWgcFrames.size() > 1; ++dropIdx) {
-                                QueuedFrame excess = std::move(bufferedWgcFrames.front());
+                            uint32_t playoutStaleDrops = 0;
+                            while (bufferedWgcFrames.size() > 1 && playoutTargetQpc > 0 &&
+                                   ce::capture_policy::ShouldDropWgcFrontForNearerPlayout(
+                                       bufferedWgcFrames[0].timestamp, bufferedWgcFrames[1].timestamp,
+                                       playoutTargetQpc, playoutLeadToleranceQpc)) {
+                                QueuedFrame staleFront = std::move(bufferedWgcFrames.front());
                                 bufferedWgcFrames.pop_front();
-                                ReleaseQueuedFrameTexture(excess);
+                                ReleaseQueuedFrameTexture(staleFront);
                                 ++wgcDropObsoleteCount;
+                                ++playoutStaleDrops;
                             }
-                            if (pace.capDrops > 0) {
-                                // The reservoir had drifted above the delay-depth cap (a VRR / GPU-bound
-                                // source delivered above the CFR output rate). Trimming the oldest surplus
-                                // pins the realized content delay near the target instead of letting it
-                                // inflate. Throttle the warning so a busy window stays readable.
-                                wgcDelayPaceCapTrimTotal += pace.capDrops;
-                                wgcDelayPaceCapTrimWindow += pace.capDrops;
+                            if (playoutStaleDrops > 0) {
+                                // Age-based catch-up after a WGC delivery gap/burst: the audio-passed
+                                // backlog is dropped (not replayed), so the realized delay stays pinned
+                                // instead of rubber-banding. Expected/healthy under a bursty source;
+                                // throttle the log so a busy window stays readable.
+                                wgcDelayPaceCapTrimTotal += playoutStaleDrops;
+                                wgcDelayPaceCapTrimWindow += playoutStaleDrops;
                                 const DWORD capTrimNowTick = GetTickCount();
-                                if (capTrimNowTick - wgcDelayPaceCapTrimLastLogTick >= 1000) {
-                                    const size_t depthAfter = bufferedWgcFrames.size();
-                                    const int64_t realizedDepthUs =
-                                        targetIntervalTicks > 0 && qpcFreq.QuadPart > 0
-                                            ? (static_cast<int64_t>(bufferedBeforePace) * targetIntervalTicks * 1000000) /
-                                                  qpcFreq.QuadPart
-                                            : 0;
+                                if (playoutStaleDrops >= 3 && capTrimNowTick - wgcDelayPaceCapTrimLastLogTick >= 1000) {
                                     LogWarn(
-                                        "[WGC CFR] active-delay reservoir over target: trimmed %u surplus frame(s) "
-                                        "depthBefore=%zu depthAfter=%zu cap=%zu floor=%zu ~realizedDelay=%lldus "
-                                        "target=%lldus (VRR source above output; bounding content delay, A/V sync "
+                                        "[WGC CFR] active-delay playout catch-up: dropped %u audio-passed frame(s) "
+                                        "after a WGC delivery gap depthAfter=%zu target=%lldus (bursty source "
+                                        "delivery, NOT a game render hitch; realized content delay pinned, A/V sync "
                                         "preserved)",
-                                        pace.capDrops, bufferedBeforePace, depthAfter, maxDepthFrames, floorFrames,
-                                        static_cast<long long>(realizedDepthUs),
+                                        playoutStaleDrops, bufferedWgcFrames.size(),
                                         static_cast<long long>(qpcToUs(avContentDelayQpc)));
                                     wgcDelayPaceCapTrimLastLogTick = capTrimNowTick;
                                 }
                             }
-                            wgcDelayCreditAccumulator -= pace.creditConsumed;
-                            if (pace.advance && !bufferedWgcFrames.empty()) {
+                            const auto playout =
+                                playoutTargetQpc > 0
+                                    ? ce::capture_policy::DecideWgcNearestPlayout(bufferedWgcFrames.front().timestamp,
+                                                                                 playoutTargetQpc,
+                                                                                 playoutLeadToleranceQpc,
+                                                                                 lastEmittedWgcSourceQpc)
+                                    : ce::capture_policy::WgcNearestPlayoutDecision{/*emit=*/true, /*hold=*/false};
+                            if (playout.emit && !bufferedWgcFrames.empty()) {
                                 frame = std::move(bufferedWgcFrames.front());
                                 bufferedWgcFrames.pop_front();
                                 popped = true;
                                 ++wgcSelectFreshCount;
                                 ++wgcDelayUniformCadenceWindow;
                                 ++wgcDelayUniformCadenceTotal;
+                                // Measure the realized content delay against the GRID playout reference
+                                // (scheduledSampleQpc == the slot's ideal wall time), NOT wall-clock
+                                // `selectionNowQpc`. The emitted frame lands at a fixed PTS slot and the
+                                // co-timed audio is anchored to the same grid, so the file's true A/V
+                                // content offset is `gridSlotTime - frame.timestamp`, independent of how
+                                // late the encoder thread happened to wake. Using `selectionNowQpc` here
+                                // folded encoder-thread scheduling jitter (30-88 ms late wakes under
+                                // 100% GPU / network-drive mux I/O in 20260626_050554) into the metric,
+                                // inflating realizedDelay to ~108 ms and tripping
+                                // wgc_active_delay_realized_delay_unstable even though the content placed
+                                // in each slot was grid-correct. Thread-wake jitter is reported
+                                // separately as SchedSel/SelMax; this counter must stay content-honest.
+                                const int64_t gridReferenceQpc =
+                                    scheduledSampleQpc > 0 ? scheduledSampleQpc : selectionNowQpc.QuadPart;
                                 if (qpcFreq.QuadPart > 0 && frame.timestamp > 0 &&
-                                    selectionNowQpc.QuadPart > frame.timestamp) {
+                                    gridReferenceQpc > frame.timestamp) {
                                     const int64_t realizedDelayUs =
-                                        ((selectionNowQpc.QuadPart - frame.timestamp) * 1000000) / qpcFreq.QuadPart;
+                                        ((gridReferenceQpc - frame.timestamp) * 1000000) / qpcFreq.QuadPart;
                                     const int64_t residualUs = qpcToUs(avContentDelayQpc) - realizedDelayUs;
                                     recordWgcDelayRealization(residualUs, residualUs);
                                 }
                             }
+                            // playout.hold -> leave the buffer intact; the encoder repeats the last
+                            // emitted frame (an even source-limited / delivery-gap repeat).
                         }
                     } else if (tryPopBufferedWgcFrameForTarget(effectiveSelectionTargetQpc, liveSelectionTargetQpc,
                                                                selectionNowQpc.QuadPart,
@@ -5575,7 +5617,6 @@ void EncoderThreadFunc(const AppConfig& config) {
                 // Reset Bresenham credit for a clean start; keep smoothedInputPerTick
                 // so the EMA calibration from warmup carries over.
                 frameCreditAccumulator = 0.0;
-                wgcDelayCreditAccumulator = 0.0;
                 selectionLogCounter = 0;
                 pacingInputThisWindow = 0;
                 pacingTicksThisWindow = 0;

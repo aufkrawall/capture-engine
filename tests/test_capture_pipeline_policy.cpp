@@ -1,4 +1,8 @@
 #include <gtest/gtest.h>
+
+#include <cstdint>
+#include <deque>
+
 #include "../common/capture_pipeline_policy.h"
 
 namespace policy = ce::capture_policy;
@@ -932,6 +936,214 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayPaceStaysBoundedUnderVrrSourceAbov
     // Bounded near the cap (one tick of arrivals of headroom), never the unbounded ~120 of the bug.
     EXPECT_LE(maxObservedDepth, cap + 2);
     EXPECT_LE(buffered, cap + 1);
+}
+
+TEST(CapturePipelinePolicyTest, WgcNearestPlayoutDropsAlreadyPastFramesForCloserSlot) {
+    const int64_t target = 1000;
+    const int64_t leadTol = policy::GetWgcActiveDelayResidualToleranceQpc(100);  // 60
+    // A strictly-newer successor that is still at/before the slot (within lead tolerance) means the
+    // older front is already-past history -> drop it.
+    EXPECT_TRUE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/900, /*next=*/980, target, leadTol));
+    EXPECT_TRUE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/900, /*next=*/target + leadTol, target, leadTol));
+    // The successor is in the future beyond tolerance -> keep the front (it is the slot frame) and
+    // hold the future frame as reserve.
+    EXPECT_FALSE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/980, /*next=*/target + leadTol + 1, target, leadTol));
+    // Non-monotonic / duplicate successor is never advanced past.
+    EXPECT_FALSE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/900, /*next=*/900, target, leadTol));
+    EXPECT_FALSE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/900, /*next=*/880, target, leadTol));
+}
+
+TEST(CapturePipelinePolicyTest, WgcNearestPlayoutEmitHoldDecision) {
+    const int64_t target = 1000;
+    const int64_t leadTol = policy::GetWgcActiveDelayResidualToleranceQpc(100);  // 60
+    // Frame at the slot (within lead tolerance) and strictly newer than last emit -> emit.
+    EXPECT_TRUE(policy::DecideWgcNearestPlayout(/*front=*/990, target, leadTol, /*lastEmitted=*/950).emit);
+    EXPECT_TRUE(policy::DecideWgcNearestPlayout(/*front=*/target + leadTol, target, leadTol, 950).emit);
+    // Frame still in the future beyond tolerance -> hold (slot not aged in yet), keep as reserve.
+    auto future = policy::DecideWgcNearestPlayout(/*front=*/target + leadTol + 1, target, leadTol, 950);
+    EXPECT_FALSE(future.emit);
+    EXPECT_TRUE(future.hold);
+    // Non-monotonic front -> hold (never emit backwards).
+    auto stale = policy::DecideWgcNearestPlayout(/*front=*/940, target, leadTol, /*lastEmitted=*/950);
+    EXPECT_FALSE(stale.emit);
+    EXPECT_TRUE(stale.hold);
+    // A lone frame OLDER than the target but newer than last emit is still emitted (freshest content
+    // during a delivery gap) -> a clean monotonic hold/freeze, never a backward jump.
+    EXPECT_TRUE(policy::DecideWgcNearestPlayout(/*front=*/700, target, leadTol, /*lastEmitted=*/650).emit);
+}
+
+namespace {
+// Minimal nearest-target playout driver mirroring the media_main integration: per output tick it
+// stale-drops already-past frames, then emits the slot frame or holds. Returns realized-delay and
+// cadence statistics so tests can assert smoothness + bounded delay without the encoder.
+struct PlayoutStats {
+    int emits = 0;
+    int holds = 0;
+    int staleDrops = 0;
+    int longestHoldRun = 0;
+    int64_t maxRealizedDelay = 0;
+    int64_t minRealizedDelay = INT64_MAX;
+    int dropDupSameTickViolations = 0;  // a tick must never both stale-drop AND hold (churn signature)
+};
+PlayoutStats RunNearestPlayout(int ticks, int64_t interval, int64_t contentDelay, int deliveryBatchTicks,
+                               int64_t startupFill, bool liveRecoveryLatched = false,
+                               bool uniformCadence = true) {
+    PlayoutStats s;
+    std::deque<int64_t> buffer;  // frame source timestamps, oldest first
+    const int64_t leadTol = policy::GetWgcActiveDelayResidualToleranceQpc(interval);
+    int64_t lastEmitted = 0;
+    int64_t lastDeliveredTs = -interval;  // source timestamp delivered up to (exclusive of next)
+    int64_t lastBurstTick = 0;
+    int holdRun = 0;
+    // Pre-roll: deliver enough startup frames so the first slot is covered.
+    for (int64_t i = 0; i < startupFill; ++i) {
+        lastDeliveredTs += interval;
+        buffer.push_back(lastDeliveredTs);
+    }
+    for (int tick = 0; tick < ticks; ++tick) {
+        const int64_t now = (startupFill + tick) * interval;  // grid time advances one frame/tick
+        // Bursty delivery: every deliveryBatchTicks, deliver every source frame produced since the
+        // last burst (smooth source, batched delivery). The source presents one frame per interval.
+        if (tick - lastBurstTick >= deliveryBatchTicks || tick == 0) {
+            while (lastDeliveredTs + interval <= now) {
+                lastDeliveredTs += interval;
+                buffer.push_back(lastDeliveredTs);
+            }
+            lastBurstTick = tick;
+        }
+        // Compute the playout target through the SAME composition the encoder thread uses, so a
+        // regression in the live-recovery delay decision (the realized-delay collapse) shows up here
+        // as a collapsed realized delay, not only in the isolated helper test. With the delay applied
+        // this equals now-contentDelay; if the delay is wrongly suppressed it jumps to ~now (live).
+        const int64_t target = policy::GetWgcActiveDelaySelectionTargetQpc(
+            /*scheduledSampleQpc=*/now, /*fallbackTargetQpc=*/now - contentDelay,
+            /*targetIntervalTicks=*/interval, /*recordingOutputLive=*/true, /*applyLiveDelay=*/true,
+            liveRecoveryLatched, uniformCadence, /*contentDelayQpc=*/contentDelay);
+        bool staleDroppedThisTick = false;
+        // monotonic obsolete-drop (mirrors media_main's pre-pace loop)
+        while (!buffer.empty() && buffer.front() <= lastEmitted) {
+            buffer.pop_front();
+        }
+        while (buffer.size() > 1 &&
+               policy::ShouldDropWgcFrontForNearerPlayout(buffer[0], buffer[1], target, leadTol)) {
+            buffer.pop_front();
+            ++s.staleDrops;
+            staleDroppedThisTick = true;
+        }
+        bool held = true;
+        if (!buffer.empty()) {
+            auto d = policy::DecideWgcNearestPlayout(buffer.front(), target, leadTol, lastEmitted);
+            if (d.emit) {
+                const int64_t ts = buffer.front();
+                buffer.pop_front();
+                lastEmitted = ts;
+                ++s.emits;
+                held = false;
+                const int64_t realized = now - ts;
+                s.maxRealizedDelay = std::max(s.maxRealizedDelay, realized);
+                s.minRealizedDelay = std::min(s.minRealizedDelay, realized);
+            }
+        }
+        if (held) {
+            ++s.holds;
+            ++holdRun;
+            s.longestHoldRun = std::max(s.longestHoldRun, holdRun);
+            if (staleDroppedThisTick) {
+                ++s.dropDupSameTickViolations;  // never drop fresh content AND repeat in one tick
+            }
+        } else {
+            holdRun = 0;
+        }
+    }
+    return s;
+}
+}  // namespace
+
+TEST(CapturePipelinePolicyTest, WgcNearestPlayoutAbsorbsDeliveryJitterWithinBudget) {
+    // Smooth source (1 frame/interval) delivered in late batches whose gap (3 ticks) is WITHIN the
+    // 4-frame content-delay budget. The fixed-latency jitter buffer must reconstruct fully smooth
+    // output: one emit per tick, zero holds, and the realized delay pinned at the content delay
+    // (no rubber-band). The old oldest-first+bulk-trim model churned drops/dups here.
+    auto s = RunNearestPlayout(/*ticks=*/600, /*interval=*/100, /*contentDelay=*/400,
+                               /*deliveryBatchTicks=*/3, /*startupFill=*/5);
+    EXPECT_EQ(s.holds, 0);
+    EXPECT_EQ(s.emits, 600);
+    EXPECT_EQ(s.dropDupSameTickViolations, 0);
+    // Realized delay stays tight around the 400-tick target (no 0..manyX rubber-band).
+    EXPECT_GE(s.minRealizedDelay, 400 - 100);
+    EXPECT_LE(s.maxRealizedDelay, 400 + 100);
+}
+
+TEST(CapturePipelinePolicyTest, WgcNearestPlayoutEvenHoldsAndStableDelayUnderGapBeyondBudget) {
+    // Delivery gap (8 ticks) EXCEEDS the 4-frame budget, so some holds are unavoidable. The fix's
+    // guarantees under that condition: (1) the realized delay never rubber-bands far past the target
+    // even when a stale backlog arrives (audio-passed frames are dropped, not replayed); (2) a tick
+    // never both drops fresh content and repeats (no drop+dup churn); (3) holds are bounded by the
+    // delivery gap, not amplified into longer clusters.
+    auto s = RunNearestPlayout(/*ticks=*/800, /*interval=*/100, /*contentDelay=*/400,
+                               /*deliveryBatchTicks=*/8, /*startupFill=*/5);
+    EXPECT_EQ(s.dropDupSameTickViolations, 0);
+    EXPECT_GT(s.emits, 0);
+    // Bounded realized delay: even the worst stale emit stays within a few frames of the target
+    // instead of the hundreds-of-ms rubber-band the oldest-first model produced.
+    EXPECT_LE(s.maxRealizedDelay, 400 + 4 * 100);
+    // Hold clusters cannot exceed the delivery gap (no extra amplification).
+    EXPECT_LE(s.longestHoldRun, 8);
+}
+
+TEST(CapturePipelinePolicyTest, WgcActiveDelaySelectionTargetHoldsDelayThroughLiveRecoveryOnUniformPath) {
+    // Regression for 20260626_050554: a perpetually-below-output VRR source latched WGC live-recovery
+    // for the rest of the recording, and the selection target dropped the content delay during
+    // live-recovery -> realized delay collapsed to ~0 and stayed there (video ran ~31.5 ms ahead of
+    // the loopback audio it should align with). The flag (ShouldApplyWgcSelectionDelay) said "delay
+    // applied" while the target silently went near-live. GetWgcActiveDelaySelectionTargetQpc must keep
+    // the two in agreement.
+    const int64_t scheduled = 2000, fallback = 1900, interval = 100, contentDelay = 400;
+    // Uniform-cadence path: the content delay is HELD whether or not live-recovery is active.
+    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, /*live=*/true,
+                                                         /*applyLiveDelay=*/true, /*liveRecovery=*/true,
+                                                         /*uniformCadence=*/true, contentDelay),
+              scheduled - contentDelay);  // 1600 -- would have been 2000 (collapsed) before the fix
+    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true, true,
+                                                         /*liveRecovery=*/false, /*uniformCadence=*/true,
+                                                         contentDelay),
+              scheduled - contentDelay);
+    // Legacy reservoir-target path: live-recovery still legitimately yields to near-live catch-up.
+    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true, true,
+                                                         /*liveRecovery=*/true, /*uniformCadence=*/false,
+                                                         contentDelay),
+              scheduled);
+    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true, true,
+                                                         /*liveRecovery=*/false, /*uniformCadence=*/false,
+                                                         contentDelay),
+              scheduled - contentDelay);
+    // applyLiveDelay false, or not live, never applies the delay regardless of path.
+    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true,
+                                                         /*applyLiveDelay=*/false, true, true, contentDelay),
+              scheduled);
+    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, /*live=*/false, true,
+                                                         true, true, contentDelay),
+              scheduled);
+}
+
+TEST(CapturePipelinePolicyTest, WgcNearestPlayoutPinsDelayThroughLatchedLiveRecovery) {
+    // End-to-end: a below-output VRR source keeps live-recovery LATCHED for the whole run (the real
+    // steady state). On the uniform-cadence path the realized content delay must stay pinned near the
+    // target -- it must NOT collapse toward zero. Before the fix the target lost its delay while
+    // live-recovery was active, so the playout fast-forwarded to live content and the realized delay
+    // dropped to ~0 (minRealizedDelay near 0).
+    auto fixed = RunNearestPlayout(/*ticks=*/600, /*interval=*/100, /*contentDelay=*/400,
+                                   /*deliveryBatchTicks=*/2, /*startupFill=*/8,
+                                   /*liveRecoveryLatched=*/true, /*uniformCadence=*/true);
+    EXPECT_GE(fixed.minRealizedDelay, 400 - 2 * 100);  // pinned: never collapses to ~0
+    EXPECT_LE(fixed.maxRealizedDelay, 400 + 2 * 100);
+
+    // The legacy path intentionally yields to live-recovery: the delay collapses toward live. This
+    // asserts the simulation actually discriminates the two paths (so the pin above is meaningful).
+    auto legacy = RunNearestPlayout(/*ticks=*/600, /*interval=*/100, /*contentDelay=*/400,
+                                    /*deliveryBatchTicks=*/2, /*startupFill=*/8,
+                                    /*liveRecoveryLatched=*/true, /*uniformCadence=*/false);
+    EXPECT_LT(legacy.minRealizedDelay, fixed.minRealizedDelay);
 }
 
 TEST(CapturePipelinePolicyTest, WgcSingleFreshHoldRequiresFragileSourceConditions) {
