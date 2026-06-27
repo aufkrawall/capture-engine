@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "../common/wgc_pool_lease.h"
 
 // Forward declarations to avoid including WinRT headers in public interface
 struct ID3D11Texture2D;
@@ -24,6 +25,9 @@ struct WGCCapturedFrame {
     int32_t captureLeft = 0;
     int32_t captureTop = 0;
     bool duplicateSourceTimestamp = false;
+    uint32_t poolSlot = std::numeric_limits<uint32_t>::max();
+    uint64_t poolGeneration = 0;
+    WgcPoolSlotLease poolLease;
 };
 
 // Windows Graphics Capture implementation
@@ -96,7 +100,8 @@ public:
     // OBS-style direct callback: frames processed directly in WinRT callback
     // Callback receives: texture, width, height, QPC timestamp, HDR flag, capture origin
     void SetDirectFrameCallback(
-        std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, int32_t, int32_t)>
+        std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, int32_t, int32_t,
+                           WgcPoolSlotLease&&)>
             callback);
 
     // Get count of frames processed via direct callback
@@ -135,12 +140,24 @@ public:
     uint32_t GetSplitDeviceFlushSkippedCount() const;
     uint32_t GetPoolSlotFastRewriteCount() const;
     int64_t GetLastPoolSlotRewriteUs() const;
+    uint32_t GetPoolSlotLeasedMaxCount() const;
+    uint32_t GetPoolSlotFreeMinCount() const;
+    uint32_t GetPoolSlotOverwritePreventedCount() const;
+    uint32_t GetPoolSaturatedDropCount() const;
+    uint32_t GetPoolLeaseMismatchCount() const;
     int64_t GetCallbackGapAvgUs() const;
     int64_t GetCallbackGapMaxUs() const;
     int64_t GetCallbackProcessAvgUs() const;
     int64_t GetCallbackProcessMaxUs() const;
     uint32_t GetCallbackDrainMaxCount() const;
     bool IsUsingDedicatedCaptureDevice() const;
+    uint32_t GetTexturePoolSlotCount() const;
+    uint32_t GetSourceFramePoolBufferCount() const;
+    uint32_t GetSmoothnessBudgetSurfaceCount() const;
+    uint32_t GetSmoothnessSyncFrameCount() const;
+    uint32_t GetSmoothnessSafetySlotCount() const;
+    uint32_t GetSmoothnessRetainedFrameCount() const;
+    uint64_t GetSmoothnessEstimatedVramBytes() const;
 
     // Throttle capture rate to avoid wasting GPU bandwidth on excess frames.
     // Set to target recording FPS. 0 disables throttle.
@@ -175,6 +192,8 @@ public:
     void SetSkipSplitDeviceFlush(bool enabled);
     void SetSameDeviceCapture(bool enabled);
     void SetRequireHighPrecisionCapture(bool enabled);
+    void SetSmoothnessBufferBudget(bool enabled, uint32_t outputFps, uint32_t maxMs, uint32_t vramBudgetMb,
+                                   uint32_t syncDelayFrames = 0);
 
     // Set GPU thread priority for the WGC capture D3D11 device.
     // Passes through to IDXGIDevice::SetGPUThreadPriority.

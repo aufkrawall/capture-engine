@@ -7,8 +7,10 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <mutex>
 #include <vector>
+#include "wgc_pool_lease.h"
 
 // Frame data that can represent either inject or framegrab mode
 // Non-copyable to prevent accidental texture double-release.
@@ -41,6 +43,11 @@ struct QueuedFrame {
             other.frameIndex = 0;
             textureIndex = other.textureIndex;
             other.textureIndex = -1;
+            wgcPoolSlot = other.wgcPoolSlot;
+            other.wgcPoolSlot = std::numeric_limits<uint32_t>::max();
+            wgcPoolGeneration = other.wgcPoolGeneration;
+            other.wgcPoolGeneration = 0;
+            wgcPoolLease = std::move(other.wgcPoolLease);
             enqueueQpc = other.enqueueQpc;
             other.enqueueQpc = 0;
             deferCount = other.deferCount;
@@ -86,6 +93,9 @@ struct QueuedFrame {
     uint32_t ringIndex = 0;  // Index in the SharedMemory ring buffer
     uint32_t frameIndex = 0;
     int32_t textureIndex = -1;
+    uint32_t wgcPoolSlot = std::numeric_limits<uint32_t>::max();
+    uint64_t wgcPoolGeneration = 0;
+    WgcPoolSlotLease wgcPoolLease;
     int64_t enqueueQpc = 0;
     uint32_t deferCount = 0;
     uint32_t format = 0;  // DXGI_FORMAT or API-specific format from shared memory

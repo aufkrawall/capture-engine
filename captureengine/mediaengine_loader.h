@@ -18,6 +18,7 @@ typedef void (*DLL_Log_t)(const char* fmt, ...);
 typedef bool (*MediaEngine_Init_t)(const AppConfig* config);
 typedef void (*MediaEngine_ReloadConfig_t)(const AppConfig* config);
 typedef void (*MediaEngine_SetActiveScreenGrab_t)(bool activeScreenGrab);
+typedef void (*MediaEngine_SetWgcStartupExtraDelayQpc_t)(int64_t delayQpc);
 typedef bool (*MediaEngine_ProcessFrame_t)(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
                                            int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
                                            uint32_t width, uint32_t height, uint32_t format, bool isHDR, bool isShmem,
@@ -53,6 +54,7 @@ extern DLL_Log_t DLL_Log;
 extern MediaEngine_Init_t MediaEngine_Init;
 extern MediaEngine_ReloadConfig_t MediaEngine_ReloadConfig;
 extern MediaEngine_SetActiveScreenGrab_t MediaEngine_SetActiveScreenGrab;
+extern MediaEngine_SetWgcStartupExtraDelayQpc_t MediaEngine_SetWgcStartupExtraDelayQpc;
 extern MediaEngine_ProcessFrame_t MediaEngine_ProcessFrame;
 extern MediaEngine_RepeatLastFrame_t MediaEngine_RepeatLastFrame;
 extern MediaEngine_RepeatLastFrameWithTimeline_t MediaEngine_RepeatLastFrameWithTimeline;

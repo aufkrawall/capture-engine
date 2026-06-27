@@ -57,8 +57,8 @@ public:
         std::unique_ptr<AudioEncoder> encoder;        // Owned encoder (if first source for this track)
         AudioEncoder* sharedEncoderPtr = nullptr;     // Always points to the encoder to use
         std::unique_ptr<AudioRingBuffer> ringBuffer;  // Pull Model Buffer (Writer=Capture, Reader=Encoder)
-        size_t fullRingBufferCapacityFloats = 0;      // Target capacity; app sources start small and grow on first capture
-        std::unique_ptr<AudioResampler> resampler;    // Resampler for this source (to standard format)
+        size_t fullRingBufferCapacityFloats = 0;  // Target capacity; app sources start small and grow on first capture
+        std::unique_ptr<AudioResampler> resampler;  // Resampler for this source (to standard format)
         int mixChannels = 2;
         uint32_t mixChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
 
@@ -112,8 +112,8 @@ public:
         uint64_t lastRetainedTrimWarnTick = 0;        // Rate-limit explicit retained-audio warnings
         uint64_t lastExtremeDriftWarnTick = 0;        // Rate-limit chronic large-drift diagnostics
         uint64_t lastPacketTimelineAdjustWarnTick = 0;
-        uint64_t lastAppPlaceDiagTick = 0;            // Throttle app-source placement-divergence diagnostics
-        uint64_t lastAppConsumeDiagTick = 0;          // Throttle app-source consume/drain diagnostics
+        uint64_t lastAppPlaceDiagTick = 0;    // Throttle app-source placement-divergence diagnostics
+        uint64_t lastAppConsumeDiagTick = 0;  // Throttle app-source consume/drain diagnostics
         // App-audio latency observability: the ring backlog at consume time IS the audio-behind-video
         // delay. Sampled every pull so the recording-wide distribution (and any elevated/variable
         // latency) is obvious in the logs instead of needing manual reconstruction.
@@ -336,6 +336,7 @@ public:
     std::atomic<int64_t> videoElapsedMs;                       // Elapsed video time in ms for audio clock sync
     std::atomic<int64_t> recordingStartSystemQPCMs{0};         // Start time in System QPC MS (for Audio Alignment)
     std::atomic<int64_t> recordingStartSystemQpc100ns{0};      // Start time in 100-ns QPC units for packet stitching
+    std::atomic<int64_t> wgcStartupExtraDelayQpc{0};           // WGC smoothness delay for first-frame audio anchor
     SourceTimelineState injectTimelineState;                   // Source-frame QPC for inject-relative timing
     SourceTimelineState d3d11TimelineState;                    // Source-frame QPC for WGC-relative timing
 
@@ -490,9 +491,8 @@ public:
                     true, isAppAudioSource, src.bootstrapComplete, optionalUnstarted, true);
                 const bool strictSource = src.sourceType != AudioConfig::Microphone;
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
-                const bool sparseStartedSourceMaySilence =
-                    ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(sparseStartedSourceCanSilence,
-                                                                             bufferedTimelineSamples);
+                const bool sparseStartedSourceMaySilence = ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
+                    sparseStartedSourceCanSilence, bufferedTimelineSamples);
                 if (ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, strictSource, optionalUnstarted,
                                                                   sparseStartedSourceMaySilence, requestedSamples,
                                                                   bufferedTimelineSamples)) {
@@ -799,9 +799,8 @@ public:
         this->config = *config;
         trackAudioFormats = ResolveTrackAudioFormats(*config);
         DLL_Log("[AVSyncAuto] engine_config: resolvedRenderLatencyMs=%.3f confidence=%s reason=%s usedAudioProbe=%d",
-                static_cast<double>(this->config.avSyncResolvedRenderLatencyMs),
-                this->config.avSyncConfidence.c_str(), this->config.avSyncReason.c_str(),
-                this->config.avSyncUsedAudioProbe ? 1 : 0);
+                static_cast<double>(this->config.avSyncResolvedRenderLatencyMs), this->config.avSyncConfidence.c_str(),
+                this->config.avSyncReason.c_str(), this->config.avSyncUsedAudioProbe ? 1 : 0);
 
         // Setup Video (Alloc Only) - skip for audio-only
         if (audioOnly) {
@@ -1156,6 +1155,7 @@ public:
                                                  // to prevent stale timestamps
             recordingStartSystemQPCMs.store(0);  // CRITICAL: Reset QPC start time for new recording
             recordingStartSystemQpc100ns.store(0);
+            wgcStartupExtraDelayQpc.store(0, std::memory_order_release);
             injectTimelineState.Reset();
             d3d11TimelineState.Reset();
 
@@ -1436,10 +1436,11 @@ public:
             injectTimelineState.Reset();
             d3d11TimelineState.Reset();
             audioOnly = false;
-            DLL_Log("[AVSyncAuto] stop_summary: audioOnly=1 resolvedRenderLatencyMs=%.3f confidence=%s reason=%s "
-                    "usedAudioProbe=%d",
-                    static_cast<double>(config.avSyncResolvedRenderLatencyMs), config.avSyncConfidence.c_str(),
-                    config.avSyncReason.c_str(), config.avSyncUsedAudioProbe ? 1 : 0);
+            DLL_Log(
+                "[AVSyncAuto] stop_summary: audioOnly=1 resolvedRenderLatencyMs=%.3f confidence=%s reason=%s "
+                "usedAudioProbe=%d",
+                static_cast<double>(config.avSyncResolvedRenderLatencyMs), config.avSyncConfidence.c_str(),
+                config.avSyncReason.c_str(), config.avSyncUsedAudioProbe ? 1 : 0);
             DLL_Log("[STOP SUMMARY] Audio-only recording finalized");
             return;
         }
@@ -1447,10 +1448,9 @@ public:
         int64_t endUs = 0;
         constexpr int kStopSampleRate = 48000;
         const int64_t expectedVideoUsForStop = videoEnc ? videoEnc->GetExpectedFinalDurationUs() : 0;
-        const bool finalCfrStopPending =
-            ce::audio::ShouldDrainStoppedCaptureQueuesBeforeFinalAudioPull(audioRunning.load(), audioOnly,
-                                                                           expectedVideoUsForStop) &&
-            IsCfrRecording();
+        const bool finalCfrStopPending = ce::audio::ShouldDrainStoppedCaptureQueuesBeforeFinalAudioPull(
+                                             audioRunning.load(), audioOnly, expectedVideoUsForStop) &&
+                                         IsCfrRecording();
         if (finalCfrStopPending) {
             audioFinalizingCfrStop.store(true, std::memory_order_release);
             DLL_Log("[StopAudio] Final CFR stop pending: targetUs=%lld", expectedVideoUsForStop);
@@ -1599,7 +1599,8 @@ public:
                 const uint64_t n = s.appLatencySampleCount;
                 const double avgMs = static_cast<double>(s.appLatencySumMs) / static_cast<double>(n);
                 const double elevatedPct =
-                    100.0 * static_cast<double>(s.appLatencyBuckets[2] + s.appLatencyBuckets[3] + s.appLatencyBuckets[4]) /
+                    100.0 *
+                    static_cast<double>(s.appLatencyBuckets[2] + s.appLatencyBuckets[3] + s.appLatencyBuckets[4]) /
                     static_cast<double>(n);
                 DLL_Log(
                     "[STOP AUDIO LATENCY] Source %zu track=%d appAudioDelay avg=%.0fms max=%ums "
@@ -1703,8 +1704,7 @@ public:
                     "[AVSyncAuto] stop_audio_source: src=%zu track=%d codec=%s encodedSamples=%llu "
                     "captureLatencyMs=%.3f encoderReady=%d streamIndex=%d confidence=%s reason=%s",
                     i, src.track, src.config.codec.c_str(), (unsigned long long)encodedSamplesPerSource[i],
-                    static_cast<double>(src.config.captureLatencyMs),
-                    (src.encoder && src.encoder->IsReady()) ? 1 : 0,
+                    static_cast<double>(src.config.captureLatencyMs), (src.encoder && src.encoder->IsReady()) ? 1 : 0,
                     src.encoder ? src.encoder->GetStreamIndex() : -1, config.avSyncConfidence.c_str(),
                     config.avSyncReason.c_str());
             }
@@ -1958,7 +1958,17 @@ public:
         return static_cast<int64_t>(std::llround((maxLatencyMs / 1000.0) * static_cast<double>(qpcFreq)));
     }
 
-    // Direct D3D11 texture processing for screengrab mode (zero-copy)
+    void SetWgcStartupExtraDelayQpc(int64_t delayQpc) {
+        const int64_t clampedDelayQpc = std::max<int64_t>(0, delayQpc);
+        wgcStartupExtraDelayQpc.store(clampedDelayQpc, std::memory_order_release);
+        if (qpcFreq > 0 || clampedDelayQpc > 0) {
+            const double delayMs =
+                qpcFreq > 0 ? (static_cast<double>(clampedDelayQpc) * 1000.0) / static_cast<double>(qpcFreq) : 0.0;
+            DLL_Log("[AVSyncApply] wgc_start_extra_delay: smoothExtraDelayMs=%.3f smoothExtraDelayQpc=%lld", delayMs,
+                    clampedDelayQpc);
+        }
+    }
+
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
     bool ProcessFrameD3D11(void* texture, int64_t timestampQPC, uint32_t width, uint32_t height, bool isHDR,
                            int32_t captureLeft, int32_t captureTop, int64_t timelineElapsedUs) {
@@ -1974,8 +1984,21 @@ public:
 
             int64_t anchorQPC = timestampQPC;
             if (IsWgcCfrRecording()) {
-                const double startupDelayMs = GetMaxAudioCaptureLatencyMs();
-                const int64_t startupDelayQpc = GetMaxAudioCaptureLatencyQpc();
+                const double renderDelayMs = GetMaxAudioCaptureLatencyMs();
+                const int64_t renderDelayQpc = GetMaxAudioCaptureLatencyQpc();
+                const int64_t smoothExtraDelayQpc =
+                    std::max<int64_t>(0, wgcStartupExtraDelayQpc.load(std::memory_order_acquire));
+                const bool delayWouldOverflow =
+                    renderDelayQpc > 0 && smoothExtraDelayQpc > 0 &&
+                    renderDelayQpc > (std::numeric_limits<int64_t>::max() - smoothExtraDelayQpc);
+                const int64_t startupDelayQpc =
+                    delayWouldOverflow ? renderDelayQpc : (renderDelayQpc + smoothExtraDelayQpc);
+                const double smoothExtraDelayMs =
+                    qpcFreq > 0 ? (static_cast<double>(smoothExtraDelayQpc) * 1000.0) / static_cast<double>(qpcFreq)
+                                : 0.0;
+                const double startupDelayMs =
+                    qpcFreq > 0 ? (static_cast<double>(startupDelayQpc) * 1000.0) / static_cast<double>(qpcFreq)
+                                : renderDelayMs;
                 anchorQPC = ce::capture_policy::GetWgcStartupAudioAnchorQpc(timestampQPC, startupDelayQpc);
                 LARGE_INTEGER qpcNow;
                 QueryPerformanceCounter(&qpcNow);
@@ -1986,15 +2009,15 @@ public:
                     (qpcFreq > 0 && anchorQPC > timestampQPC) ? ((anchorQPC - timestampQPC) * 1000000) / qpcFreq : 0;
                 DLL_Log(
                     "MediaEngine: WGC CFR startup anchor selected from first accepted video frame plus content delay "
-                    "(videoQPC=%lld anchorQPC=%lld nowQPC=%lld frameAge=%lldus startupDelta=%lldus delayMs=%.3f "
-                    "confidence=%s reason=%s)",
-                    timestampQPC, anchorQPC, nowQPC, frameAgeUs, startupDeltaUs, startupDelayMs,
-                    config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
+                    "(videoQPC=%lld anchorQPC=%lld nowQPC=%lld frameAge=%lldus startupDelta=%lldus "
+                    "delayMs=%.3f renderDelayMs=%.3f smoothExtraDelayMs=%.3f confidence=%s reason=%s)",
+                    timestampQPC, anchorQPC, nowQPC, frameAgeUs, startupDeltaUs, startupDelayMs, renderDelayMs,
+                    smoothExtraDelayMs, config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
                 DLL_Log(
                     "[AVSyncApply] wgc_start_anchor: videoQpc=%lld audioAnchorQpc=%lld delayUs=%lld delayMs=%.3f "
-                    "confidence=%s reason=%s",
-                    timestampQPC, anchorQPC, startupDeltaUs, startupDelayMs, config.avSyncConfidence.c_str(),
-                    config.avSyncReason.c_str());
+                    "renderDelayMs=%.3f smoothExtraDelayMs=%.3f confidence=%s reason=%s",
+                    timestampQPC, anchorQPC, startupDeltaUs, startupDelayMs, renderDelayMs, smoothExtraDelayMs,
+                    config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
             }
 
             const int64_t anchorMs = (qpcFreq > 0 && anchorQPC > 0) ? (anchorQPC * 1000) / qpcFreq : debugTimestamp;
@@ -2220,10 +2243,10 @@ public:
         const int64_t wgcSelectedContentLagMs =
             isWgcCfrRecording ? ce::audio::ComputeWgcSelectedContentLagMs(wgcSelectionBiasUs) : 0;
         const int64_t wgcVisualContentLagMs =
-            isWgcCfrRecording ? ce::audio::ComputeWgcVisualContentLagMs(timelineShortfallMs, wgcSelectedContentLeadMs,
-                                                                        wgcSelectedContentLagMs,
-                                                                        kWgcVisualSyncMaxBufferedLagMs)
-                              : 0;
+            isWgcCfrRecording
+                ? ce::audio::ComputeWgcVisualContentLagMs(timelineShortfallMs, wgcSelectedContentLeadMs,
+                                                          wgcSelectedContentLagMs, kWgcVisualSyncMaxBufferedLagMs)
+                : 0;
         const int64_t baseEffectiveWgcTargetBufferLagMs =
             isWgcCfrRecording ? ce::audio::ComputeWgcCfrTargetBufferLagMs(
                                     wgcAudioLagTargets, wgcSteadyStateBufferedAudioLagMs,
@@ -2447,9 +2470,8 @@ public:
                 const bool sparseStartedSourceCanSilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
                     isCfrRecording, isAppAudioSource, src.bootstrapComplete, optionalUnstarted, finalStopDrain);
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
-                const bool sparseStartedSourceMaySilence =
-                    ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(sparseStartedSourceCanSilence,
-                                                                             bufferedTimelineSamples);
+                const bool sparseStartedSourceMaySilence = ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
+                    sparseStartedSourceCanSilence, bufferedTimelineSamples);
                 if (!trackLargeBacklogDrain &&
                     ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(isCfrRecording, forceDrain, optionalUnstarted,
                                                                       sparseStartedSourceMaySilence, samplesToEncode,
@@ -2542,9 +2564,9 @@ public:
                                           kBaseTargetLatencySamples + (effectiveWgcDriftLagMs * SAMPLE_RATE / 1000));
                     // Drain band: a CFR app-audio source whose backlog sits meaningfully above the live
                     // target gets the higher pitch cap so the tier1 controller can pull it back down.
-                    const bool appAudioDrainBand =
-                        isCfrRecording && src.sourceType == AudioConfig::AppAudio &&
-                        static_cast<int64_t>(rbAvailable) > expectedLeadSamplesForCorrection + kAppAudioDrainSlackSamples;
+                    const bool appAudioDrainBand = isCfrRecording && src.sourceType == AudioConfig::AppAudio &&
+                                                   static_cast<int64_t>(rbAvailable) >
+                                                       expectedLeadSamplesForCorrection + kAppAudioDrainSlackSamples;
                     const double maxCompensationPercent =
                         appAudioDrainBand ? kAppAudioDrainMaxPitchPercent
                                           : (isCfrRecording ? kTier1MaxPitchPercent : kDefaultMaxCompensationPercent);
@@ -2713,9 +2735,8 @@ public:
                             // HYBRID drain: a CFR app-audio source with a lingering post-stall backlog above the
                             // live target may use the higher drain pitch cap and bypass the WGC positive-drift
                             // suppression below, so the controller pulls its latency back toward live.
-                            const bool appAudioDrain =
-                                isCfrRecording && src.sourceType == AudioConfig::AppAudio &&
-                                rbLevel > expectedLead + kAppAudioDrainSlackSamples;
+                            const bool appAudioDrain = isCfrRecording && src.sourceType == AudioConfig::AppAudio &&
+                                                       rbLevel > expectedLead + kAppAudioDrainSlackSamples;
 
                             // Drift sanity check: detect extreme drift that indicates measurement error
                             if (std::abs(trueDrift) > SAMPLE_RATE * 2) {  // >2 seconds
@@ -2768,8 +2789,9 @@ public:
                                             src.targetRateSaturated = tier1Delta != 0 &&
                                                                       std::abs(tier1Delta) >= maxCompensationDelta &&
                                                                       std::abs(trueDrift) > maxCompensationDelta;
-                                            // appAudioDrain deliberately bypasses the WGC positive-drift suppression so a
-                                            // backlogged app source drains toward live; everything else keeps the policy.
+                                            // appAudioDrain deliberately bypasses the WGC positive-drift suppression so
+                                            // a backlogged app source drains toward live; everything else keeps the
+                                            // policy.
                                             if (isWgcCfrRecording && tier1Delta > 0 && !appAudioDrain) {
                                                 const int64_t positiveCompensationHysteresisSamples =
                                                     ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(
@@ -2907,8 +2929,8 @@ public:
                         // and fades the seam (CaptureDropFadeAnchor). One discontinuity after a real stall, never
                         // a dead track. Below the threshold the no-trim policy is preserved untouched.
                         const int64_t catastrophicResyncTrim = ce::audio::ComputeCatastrophicBacklogResyncTrim(
-                            isCfrRecording, src.sourceType == AudioConfig::AppAudio,
-                            static_cast<int64_t>(rbAvailable), targetLatencySamples, kCatastrophicAppBacklogSamples,
+                            isCfrRecording, src.sourceType == AudioConfig::AppAudio, static_cast<int64_t>(rbAvailable),
+                            targetLatencySamples, kCatastrophicAppBacklogSamples,
                             SAMPLE_RATE / 10 /* keep >= 100ms live cushion */);
                         if (catastrophicResyncTrim > 0) {
                             const int64_t backlogBefore = static_cast<int64_t>(rbAvailable);
@@ -3164,8 +3186,7 @@ public:
                 // though data exists. syncReady=0 or a stuck swr compensation are the suspects.
                 if (src.sourceType == AudioConfig::AppAudio) {
                     const uint64_t nowConsumeTick = GetTickCount64();
-                    const size_t rbAvailSamples =
-                        src.ringBuffer ? src.ringBuffer->GetAvailable() / CHANNELS : 0;
+                    const size_t rbAvailSamples = src.ringBuffer ? src.ringBuffer->GetAvailable() / CHANNELS : 0;
                     const bool starvedWithRingData = (realCopiedSamples == 0 && rbAvailSamples > 0);
 
                     // Latency observability: the ring backlog at consume time IS the audio-behind-video
@@ -3747,9 +3768,8 @@ public:
         this->config = *newConfig;
         trackAudioFormats = ResolveTrackAudioFormats(*newConfig);
         DLL_Log("[AVSyncAuto] engine_reload: resolvedRenderLatencyMs=%.3f confidence=%s reason=%s usedAudioProbe=%d",
-                static_cast<double>(this->config.avSyncResolvedRenderLatencyMs),
-                this->config.avSyncConfidence.c_str(), this->config.avSyncReason.c_str(),
-                this->config.avSyncUsedAudioProbe ? 1 : 0);
+                static_cast<double>(this->config.avSyncResolvedRenderLatencyMs), this->config.avSyncConfidence.c_str(),
+                this->config.avSyncReason.c_str(), this->config.avSyncUsedAudioProbe ? 1 : 0);
 
         // If recording, we can't fully re-init, but we can log a warning.
         if (recording) {
@@ -3950,16 +3970,16 @@ private:
         // captured audio (see AudioLoop). System/mic sources are always active, so
         // they keep full capacity immediately.
         constexpr size_t kAppAudioInitialRingBufferSeconds = 1;
-        const size_t initialCapacity =
-            (source.appCapture != nullptr)
-                ? std::min(capacity, static_cast<size_t>(kMixerSampleRate) * kAppAudioInitialRingBufferSeconds * channels)
-                : capacity;
+        const size_t initialCapacity = (source.appCapture != nullptr)
+                                           ? std::min(capacity, static_cast<size_t>(kMixerSampleRate) *
+                                                                    kAppAudioInitialRingBufferSeconds * channels)
+                                           : capacity;
         source.ringBuffer = std::make_unique<AudioRingBuffer>(initialCapacity);
         DLL_Log(
             "MediaEngine::Init RingBuffer created for source %zu. Cap=%zu floats (initial, full=%zu floats/%zus), "
             "rate=%d channels=%d mask=0x%x deferred=%d",
-            sourceIdx, initialCapacity, capacity, ringBufferSeconds, kMixerSampleRate, channels,
-            source.mixChannelMask, initialCapacity < capacity ? 1 : 0);
+            sourceIdx, initialCapacity, capacity, ringBufferSeconds, kMixerSampleRate, channels, source.mixChannelMask,
+            initialCapacity < capacity ? 1 : 0);
 
         source.syncResampler = std::make_unique<AudioResampler>();
         AudioResampler::InputFormat syncInFmt;
@@ -4679,6 +4699,12 @@ MEDIAENGINE_API void MediaEngine_SetActiveScreenGrab(bool activeScreenGrab) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine)
         g_Engine->SetActiveScreenGrab(activeScreenGrab);
+}
+
+MEDIAENGINE_API void MediaEngine_SetWgcStartupExtraDelayQpc(int64_t delayQpc) {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
+    if (g_Engine)
+        g_Engine->SetWgcStartupExtraDelayQpc(delayQpc);
 }
 
 MEDIAENGINE_API void MediaEngine_SetAudioOnly(bool audioOnly) {

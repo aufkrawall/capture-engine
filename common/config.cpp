@@ -338,6 +338,16 @@ wgc_same_device_capture=true
 ; CFR cadence over per-tick delay-reservoir defense so a GPU-bound under-delivering source
 ; does not produce abnormal judder; the realized content delay floats gracefully.
 ;wgc_active_delay_uniform_cadence=true
+; wgc_smoothness_buffer_enabled=true: WGC CFR may add bounded startup playout latency
+; when enough source reserve is available, so VRR/DWM delivery dips can be absorbed without
+; changing audio/video duration or using video-only sync drift.
+;wgc_smoothness_buffer_enabled=true
+; wgc_smoothness_buffer_max_ms - maximum extra WGC CFR smoothness reservoir target.
+; Actual retained frames are capped by source reserve and the VRAM budget below.
+;wgc_smoothness_buffer_max_ms=250
+; wgc_smoothness_buffer_vram_budget_mb - approximate WGC frame-pool + retained-copy
+; budget for the smoothness reservoir. Raise only if there is enough VRAM headroom.
+;wgc_smoothness_buffer_vram_budget_mb=2048
 
 ; audio_capture_latency_ms - Render-endpoint (Domain 1) A/V sync offset (ms): how late the
 ; system loopback AND every app process-loopback source land vs the video. CE corrects this by
@@ -780,8 +790,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     }
 
     if (!overrideSection.empty()) {
-        LogInfo("Config: applying per-process override section [%s] for process '%s'",
-                overrideSection.c_str(), currentProcessName.c_str());
+        LogInfo("Config: applying per-process override section [%s] for process '%s'", overrideSection.c_str(),
+                currentProcessName.c_str());
     } else if (!currentProcessName.empty()) {
         LogDebug("Config: no [App.N] override section matched process '%s'", currentProcessName.c_str());
     }
@@ -867,6 +877,11 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.wgcSkipSplitDeviceFlush = GetBool("General", "wgc_skip_split_device_flush", false);
     config.wgcSameDeviceCapture = GetBool("General", "wgc_same_device_capture", false);
     config.wgcActiveDelayUniformCadence = GetBool("General", "wgc_active_delay_uniform_cadence", true);
+    config.wgcSmoothnessBufferEnabled = GetBool("General", "wgc_smoothness_buffer_enabled", true);
+    config.wgcSmoothnessBufferMaxMs =
+        static_cast<uint32_t>(std::max(0, GetInt("General", "wgc_smoothness_buffer_max_ms", 250)));
+    config.wgcSmoothnessBufferVramBudgetMb =
+        static_cast<uint32_t>(std::max(0, GetInt("General", "wgc_smoothness_buffer_vram_budget_mb", 2048)));
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
     config.audioCaptureLatencyMs = GetFloat("General", "audio_capture_latency_ms", 0.0f);
     config.micCaptureLatencyMs = GetFloat("General", "mic_capture_latency_ms", 0.0f);

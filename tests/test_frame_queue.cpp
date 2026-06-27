@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <thread>
 #include "../common/frame_queue.h"
 
@@ -242,4 +243,103 @@ TEST(FrameQueueHardeningTest, DestructorReleasesRemainingTextures) {
     }
 
     EXPECT_EQ(texture.ReleaseCallCount(), 1u);
+}
+
+TEST(FrameQueueHardeningTest, WgcPoolLeaseBlocksReuseUntilReleased) {
+    auto leaseState = std::make_shared<WgcPoolLeaseState>();
+    leaseState->Init(/*count=*/1, /*gen=*/77);
+
+    ASSERT_TRUE(leaseState->TryAcquire(0));
+    {
+        WgcPoolSlotLease lease(leaseState, 0, 77);
+        EXPECT_FALSE(leaseState->TryAcquire(0));
+        EXPECT_EQ(leaseState->leasedCurrent.load(std::memory_order_relaxed), 1u);
+        EXPECT_EQ(leaseState->leasedMax.load(std::memory_order_relaxed), 1u);
+        EXPECT_EQ(leaseState->freeMin.load(std::memory_order_relaxed), 0u);
+    }
+
+    EXPECT_EQ(leaseState->leasedCurrent.load(std::memory_order_relaxed), 0u);
+    EXPECT_TRUE(leaseState->TryAcquire(0));
+    WgcPoolSlotLease reacquired(leaseState, 0, 77);
+}
+
+TEST(FrameQueueHardeningTest, DroppingQueuedWgcFrameReleasesPoolLease) {
+    auto leaseState = std::make_shared<WgcPoolLeaseState>();
+    leaseState->Init(/*count=*/2, /*gen=*/11);
+    FrameQueue queue(1);
+
+    QueuedFrame first;
+    ASSERT_TRUE(leaseState->TryAcquire(0));
+    first.wgcPoolSlot = 0;
+    first.wgcPoolGeneration = 11;
+    first.wgcPoolLease = WgcPoolSlotLease(leaseState, 0, 11);
+    EXPECT_TRUE(queue.Push(std::move(first), false));
+    EXPECT_EQ(leaseState->leasedCurrent.load(std::memory_order_relaxed), 1u);
+
+    QueuedFrame second;
+    ASSERT_TRUE(leaseState->TryAcquire(1));
+    second.wgcPoolSlot = 1;
+    second.wgcPoolGeneration = 11;
+    second.wgcPoolLease = WgcPoolSlotLease(leaseState, 1, 11);
+    EXPECT_TRUE(queue.Push(std::move(second), false));
+
+    EXPECT_EQ(leaseState->slotLeases[0].load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(leaseState->slotLeases[1].load(std::memory_order_relaxed), 1u);
+    EXPECT_EQ(leaseState->leasedCurrent.load(std::memory_order_relaxed), 1u);
+
+    QueuedFrame out;
+    ASSERT_TRUE(queue.Pop(out, 0));
+    EXPECT_EQ(out.wgcPoolSlot, 1u);
+    out.wgcPoolLease.Reset();
+    EXPECT_EQ(leaseState->leasedCurrent.load(std::memory_order_relaxed), 0u);
+}
+
+TEST(FrameQueueHardeningTest, ClearingQueuedWgcFramesReleasesPoolLeases) {
+    auto leaseState = std::make_shared<WgcPoolLeaseState>();
+    leaseState->Init(/*count=*/2, /*gen=*/13);
+    FrameQueue queue(2);
+
+    for (uint32_t slot = 0; slot < 2; ++slot) {
+        QueuedFrame frame;
+        ASSERT_TRUE(leaseState->TryAcquire(slot));
+        frame.wgcPoolSlot = slot;
+        frame.wgcPoolGeneration = 13;
+        frame.wgcPoolLease = WgcPoolSlotLease(leaseState, slot, 13);
+        EXPECT_TRUE(queue.Push(std::move(frame), false));
+    }
+    EXPECT_EQ(leaseState->leasedCurrent.load(std::memory_order_relaxed), 2u);
+
+    queue.Clear();
+
+    EXPECT_EQ(leaseState->leasedCurrent.load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(leaseState->slotLeases[0].load(std::memory_order_relaxed), 0u);
+    EXPECT_EQ(leaseState->slotLeases[1].load(std::memory_order_relaxed), 0u);
+}
+
+TEST(FrameQueueHardeningTest, InjectLineageSurvivesQueuedFrameMove) {
+    QueuedFrame source;
+    source.isInjectMode = true;
+    source.sharedHandle = reinterpret_cast<HANDLE>(0x1234);
+    source.fenceHandle = reinterpret_cast<HANDLE>(0x5678);
+    source.fenceValue = 99;
+    source.ringIndex = 3;
+    source.frameIndex = 44;
+    source.textureIndex = 2;
+    source.deferCount = 2;
+
+    QueuedFrame moved;
+    moved = std::move(source);
+
+    EXPECT_TRUE(moved.isInjectMode);
+    EXPECT_EQ(moved.sharedHandle, reinterpret_cast<HANDLE>(0x1234));
+    EXPECT_EQ(moved.fenceHandle, reinterpret_cast<HANDLE>(0x5678));
+    EXPECT_EQ(moved.fenceValue, 99u);
+    EXPECT_EQ(moved.ringIndex, 3u);
+    EXPECT_EQ(moved.frameIndex, 44u);
+    EXPECT_EQ(moved.textureIndex, 2);
+    EXPECT_EQ(moved.deferCount, 2u);
+    EXPECT_FALSE(source.isInjectMode);
+    EXPECT_EQ(source.sharedHandle, nullptr);
+    EXPECT_EQ(source.fenceHandle, nullptr);
+    EXPECT_EQ(source.textureIndex, -1);
 }

@@ -313,6 +313,9 @@ struct AppConfig {
     // per-tick perturbs the otherwise-clean cadence into abnormal judder. When true the
     // realized content delay is allowed to float gracefully (track lengths/PTS unchanged).
     bool wgcActiveDelayUniformCadence = true;
+    bool wgcSmoothnessBufferEnabled = true;
+    uint32_t wgcSmoothnessBufferMaxMs = 250;
+    uint32_t wgcSmoothnessBufferVramBudgetMb = 2048;
     std::string logFilePath;  // Path to captureengine.log
 
     std::string crashDumpDir;  // Directory for crash dumps

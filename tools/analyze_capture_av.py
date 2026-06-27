@@ -138,6 +138,7 @@ CADENCE_MODE_MISMATCH_RE = re.compile(r"ModeMis=(\d+)/(\d+)")
 CADENCE_SOURCE_BACKTRACK_RE = re.compile(r"SrcBack=(\d+)/(\d+)")
 WGC_SUMMARY_LIVE_REBASE_RE = re.compile(r"\bLiveRebase=\d+/(\d+)")
 WGC_STARTUP_FRAME_AGE_RE = re.compile(r"WGC startup sync post-delay barrier satisfied:.*frameAge=(\d+)us")
+WGC_LIVE_START_QPC_RE = re.compile(r"\bliveStartQpc=(\d+)")
 PRESENT_HEARTBEAT_GAP_RE = re.compile(r"DetourPresent: heartbeat #\d+ gap=([0-9.]+)ms", re.IGNORECASE)
 WGC_SOURCE_STARVED_RE = re.compile(
     r"\[WGC CFR\] Source-starved episode: duration=(\d+)ms out=(\d+) dup=(\d+) minIn=(\d+) minDel=(\d+) "
@@ -165,6 +166,16 @@ WGC_SMOOTHNESS_EXTRA_RE = re.compile(
     r"syncDelaySourceLimitedHolds=(\d+) syncDelayPolicyHolds=(\d+) "
     r"startupReserveFrames=(\d+) startupReserveSpan=(-?\d+)us startupDelayTarget=(-?\d+)us "
     r"startupReserveSelected=(\d+) startupReserveReason=([A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
+WGC_SMOOTHNESS_BUFFER_RE = re.compile(
+    r"smoothBuf=(\d+) smoothTargetMs=(\d+) smoothFrames=(\d+)/(\d+)/(\d+) "
+    r"smoothDelay=([0-9.]+)ms smoothPoolSlots=(\d+)"
+    r"(?: sourceFramePoolBuffers=(\d+) budgetSurfaces=(\d+) syncFrames=(\d+) safetySlots=(\d+) "
+    r"leasedMax=(\d+) freeMin=(\d+) poolSaturatedDrops=(\d+) overwritePrevented=(\d+) "
+    r"leaseMismatches=(\d+))?"
+    r"(?: smoothVramMB=([0-9.]+))? "
+    r"smoothCapLimited=(\d+)(?: smoothReason=([A-Za-z0-9_-]+))?",
     re.IGNORECASE,
 )
 WGC_DELAY_REALIZATION_RE = re.compile(
@@ -1134,6 +1145,7 @@ def parse_wgc_perf_line(line):
     km_fail_match = re.search(r"KMFail:\s*(\d+)/(\d+)", line)
     flush_match = re.search(r"Flush:\s*(\d+)/(\d+)", line)
     return {
+        "pool_lease_evidence": bool(re.search(r"PoolLease:", line)),
         "input": find_int(r"Input:\s*(\d+)"),
         "queued": find_int(r"Queued:\s*(\d+)"),
         "duplicate": find_int(r"Dup:\s*(\d+)"),
@@ -1157,6 +1169,17 @@ def parse_wgc_perf_line(line):
         "keyed_release_fail": parse_int(km_fail_match.group(2)) if km_fail_match else 0,
         "flush_count": parse_int(flush_match.group(1)) if flush_match else 0,
         "flush_skipped": parse_int(flush_match.group(2)) if flush_match else 0,
+        "pool_lease_max": find_int(r"PoolLease:\s*max=(\d+)"),
+        "pool_free_min": find_int(r"freeMin=(\d+)"),
+        "pool_saturated_drops": find_int(r"satDrop=(\d+)"),
+        "pool_overwrite_prevented": find_int(r"overwritePrevented=(\d+)"),
+        "pool_lease_mismatch": find_int(r"mismatch=(\d+)"),
+        "source_frame_pool_buffers": find_int(r"sourceFramePoolBuffers=(\d+)"),
+        "copy_pool_slots": find_int(r"copyPoolSlots=(\d+)"),
+        "budget_surfaces": find_int(r"budgetSurfaces=(\d+)"),
+        "sync_frames": find_int(r"syncFrames=(\d+)"),
+        "extra_frames": find_int(r"extraFrames=(\d+)"),
+        "safety_slots": find_int(r"safetySlots=(\d+)"),
     }
 
 
@@ -1195,6 +1218,77 @@ def parse_attribution_payload(payload):
     return values
 
 
+def parse_recording_window_spec(spec):
+    if not spec:
+        return None
+    match = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]+)?)\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*", spec)
+    if not match:
+        raise ValueError("recording window must use START:END seconds, for example 25:45")
+    start_s = parse_float(match.group(1))
+    end_s = parse_float(match.group(2))
+    if end_s <= start_s:
+        raise ValueError("recording window END must be greater than START")
+    return start_s, end_s
+
+
+def parse_live_start_qpc(media_text):
+    match = WGC_LIVE_START_QPC_RE.search(media_text)
+    return parse_int(match.group(1), 0) if match else 0
+
+
+def choose_perf_qpc_us_from_live_start(live_start_qpc, perf_summaries):
+    if live_start_qpc <= 0:
+        return 0
+    perf_min = min((item.get("min_qpc_us", 0) for item in perf_summaries if item.get("min_qpc_us", 0) > 0), default=0)
+    perf_max = max((item.get("max_qpc_us", 0) for item in perf_summaries), default=0)
+    if perf_min <= 0 or perf_max <= 0:
+        return live_start_qpc
+
+    best_value = live_start_qpc
+    best_distance = None
+    for divisor in (1, 10, 1000, 1000000):
+        candidate = live_start_qpc // divisor
+        if perf_min <= candidate <= perf_max:
+            return candidate
+        distance = min(abs(candidate - perf_min), abs(candidate - perf_max))
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best_value = candidate
+    return best_value
+
+
+def build_recording_window_info(media_text, recording_window_spec, perf_summaries):
+    parsed = parse_recording_window_spec(recording_window_spec)
+    if not parsed:
+        return None
+    live_start_qpc = parse_live_start_qpc(media_text)
+    live_start_qpc_us = choose_perf_qpc_us_from_live_start(live_start_qpc, perf_summaries)
+    start_s, end_s = parsed
+    if live_start_qpc_us <= 0:
+        return {
+            "spec": recording_window_spec,
+            "start_s": start_s,
+            "end_s": end_s,
+            "live_start_qpc": live_start_qpc,
+            "live_start_qpc_us": 0,
+            "start_qpc_us": 0,
+            "end_qpc_us": 0,
+            "active": False,
+            "reason": "missing_live_start_qpc",
+        }
+    return {
+        "spec": recording_window_spec,
+        "start_s": start_s,
+        "end_s": end_s,
+        "live_start_qpc": live_start_qpc,
+        "live_start_qpc_us": live_start_qpc_us,
+        "start_qpc_us": live_start_qpc_us + int(round(start_s * 1000000.0)),
+        "end_qpc_us": live_start_qpc_us + int(round(end_s * 1000000.0)),
+        "active": True,
+        "reason": "ok",
+    }
+
+
 def update_wgc_smoothness_item_from_line(item, line):
     smoothness_extra = WGC_SMOOTHNESS_EXTRA_RE.search(line)
     if smoothness_extra:
@@ -1207,6 +1301,33 @@ def update_wgc_smoothness_item_from_line(item, line):
                 "startup_delay_target_us": parse_int(smoothness_extra.group(5)),
                 "startup_reserve_selected": parse_int(smoothness_extra.group(6)),
                 "startup_reserve_reason": smoothness_extra.group(7),
+            }
+        )
+
+    smoothness_buffer = WGC_SMOOTHNESS_BUFFER_RE.search(line)
+    if smoothness_buffer:
+        item.update(
+            {
+                "smoothness_buffer_enabled": parse_int(smoothness_buffer.group(1)),
+                "smoothness_buffer_target_ms": parse_int(smoothness_buffer.group(2)),
+                "smoothness_buffer_actual_frames": parse_int(smoothness_buffer.group(3)),
+                "smoothness_buffer_retained_frames": parse_int(smoothness_buffer.group(4)),
+                "smoothness_buffer_desired_frames": parse_int(smoothness_buffer.group(5)),
+                "smoothness_buffer_delay_ms": parse_float(smoothness_buffer.group(6)),
+                "smoothness_buffer_pool_slots": parse_int(smoothness_buffer.group(7)),
+                "pool_lifetime_evidence": 1 if smoothness_buffer.group(8) is not None else 0,
+                "smoothness_source_frame_pool_buffers": parse_int(smoothness_buffer.group(8)),
+                "smoothness_budget_surfaces": parse_int(smoothness_buffer.group(9)),
+                "smoothness_sync_frames": parse_int(smoothness_buffer.group(10)),
+                "smoothness_safety_slots": parse_int(smoothness_buffer.group(11)),
+                "pool_lease_max": parse_int(smoothness_buffer.group(12)),
+                "pool_free_min": parse_int(smoothness_buffer.group(13)),
+                "pool_saturated_drops": parse_int(smoothness_buffer.group(14)),
+                "pool_overwrite_prevented": parse_int(smoothness_buffer.group(15)),
+                "pool_lease_mismatches": parse_int(smoothness_buffer.group(16)),
+                "smoothness_buffer_vram_mb": parse_float(smoothness_buffer.group(17) or "0"),
+                "smoothness_buffer_cap_limited": parse_int(smoothness_buffer.group(18)),
+                "smoothness_buffer_reason": smoothness_buffer.group(19) or "",
             }
         )
 
@@ -1711,8 +1832,11 @@ def parse_hook_triage(session_dir):
     }
 
 
-def parse_perf_csvs(session_dir):
+def parse_perf_csvs(session_dir, recording_window=None):
     summaries = []
+    window_bounds = None
+    if recording_window and recording_window.get("active"):
+        window_bounds = (recording_window["start_qpc_us"], recording_window["end_qpc_us"])
     for path in sorted(session_dir.glob("perf_metrics_*.csv")):
         try:
             with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
@@ -1727,11 +1851,22 @@ def parse_perf_csvs(session_dir):
         max_present_call_us = 0
         max_mux_kb = 0
         overload_rows = 0
+        min_qpc_us = 0
+        max_qpc_us = 0
+        rows_in_window = 0
         for row in rows:
             qpc = parse_int(row.get("qpc_us"), 0)
-            if "qpc_delta_us" in row and row.get("qpc_delta_us") not in (None, ""):
+            if qpc > 0:
+                min_qpc_us = qpc if min_qpc_us == 0 else min(min_qpc_us, qpc)
+                max_qpc_us = max(max_qpc_us, qpc)
+            if window_bounds and (qpc < window_bounds[0] or qpc > window_bounds[1]):
+                continue
+            rows_in_window += 1
+            if previous_qpc is None:
+                delta = 0
+            elif "qpc_delta_us" in row and row.get("qpc_delta_us") not in (None, ""):
                 delta = parse_int(row.get("qpc_delta_us"), 0)
-            elif previous_qpc and qpc > previous_qpc:
+            elif qpc > previous_qpc:
                 delta = qpc - previous_qpc
             else:
                 delta = 0
@@ -1762,7 +1897,12 @@ def parse_perf_csvs(session_dir):
         summaries.append(
             {
                 "path": str(path),
-                "rows": len(rows),
+                "rows": rows_in_window if window_bounds else len(rows),
+                "rows_total": len(rows),
+                "min_qpc_us": min_qpc_us,
+                "max_qpc_us": max_qpc_us,
+                "window_start_qpc_us": window_bounds[0] if window_bounds else 0,
+                "window_end_qpc_us": window_bounds[1] if window_bounds else 0,
                 "max_qpc_delta_us": max_qpc_delta_us,
                 "large_qpc_gaps": large_gaps[:20],
                 "max_total_us": max_total_us,
@@ -1891,6 +2031,21 @@ def parse_hex_flags(value):
         return 0
 
 
+def parse_numeric_prefix_int(value, default=0):
+    match = re.match(r"\s*(-?\d+)", str(value or ""))
+    return parse_int(match.group(1), default) if match else default
+
+
+def attribution_has_capacity_pressure(item):
+    if item.get("fault_hint") != "ce_capacity_pressure":
+        return False
+    if parse_hex_flags(item.get("overload")) & 0x3:
+        return True
+    if parse_numeric_prefix_int(item.get("muxBp"), 0) > 0 or parse_numeric_prefix_int(item.get("waitMax"), 0) > 0:
+        return True
+    return False
+
+
 def parse_ms_ratio_value(value):
     text = str(value or "").strip().rstrip(",")
     if text.endswith("ms"):
@@ -1907,11 +2062,8 @@ def has_wgc_encoder_overload_policy_fault(media_evidence, log_summary):
     counts = log_summary["counts"]
     overload_seen = log_summary.get("saw_encoder_overload") or log_summary.get("saw_mux_overload")
     overload_seen = overload_seen or any(item["overload_flags"] != 0 for item in media_evidence["wgc_perf"])
-    overload_seen = overload_seen or any(
-        item.get("fault_hint") == "ce_capacity_pressure" for item in media_evidence["wgc_attribution"]
-    )
-    overload_seen = overload_seen or any(item.get("encoder_limited_drops", 0) > 0
-                                         for item in media_evidence["wgc_smoothness_summary"])
+    overload_seen = overload_seen or any(attribution_has_capacity_pressure(item)
+                                         for item in media_evidence["wgc_attribution"])
     if not overload_seen:
         return False
 
@@ -1966,11 +2118,8 @@ def has_wgc_encoder_limited_judder(media_evidence, log_summary):
     counts = log_summary["counts"]
     overload_seen = log_summary.get("saw_encoder_overload") or log_summary.get("saw_mux_overload")
     overload_seen = overload_seen or any(item["overload_flags"] != 0 for item in media_evidence["wgc_perf"])
-    overload_seen = overload_seen or any(
-        item.get("fault_hint") == "ce_capacity_pressure" for item in media_evidence["wgc_attribution"]
-    )
-    overload_seen = overload_seen or any(item.get("encoder_limited_drops", 0) > 0
-                                         for item in media_evidence["wgc_smoothness_summary"])
+    overload_seen = overload_seen or any(attribution_has_capacity_pressure(item)
+                                         for item in media_evidence["wgc_attribution"])
     if not overload_seen:
         return False
 
@@ -2007,10 +2156,12 @@ def has_wgc_av_sync_delay_realization_risk(media_evidence):
         sync_delay_holds = item.get("sync_delay_holds", 0)
         startup_delay_ms = item.get("startup_delay_ms", 0.0)
         effective_delay_ms = item.get("effective_delay_ms", 0.0)
+        smoothness_delay_ms = item.get("smoothness_buffer_delay_ms", 0.0)
+        expected_effective_delay_ms = requested_delay_ms + smoothness_delay_ms
 
         if startup_delay_ms > 0.0 and abs(startup_delay_ms - requested_delay_ms) > 5.0:
             return True
-        if effective_delay_ms > 0.0 and abs(effective_delay_ms - requested_delay_ms) > 5.0:
+        if effective_delay_ms > 0.0 and abs(effective_delay_ms - expected_effective_delay_ms) > 5.0:
             return True
 
         # Old builds did not log startup/effective delay. If they had to build an active
@@ -2025,12 +2176,14 @@ def wgc_active_delay_matches_request(item):
     requested_delay_ms = item.get("av_delay_ms", 0.0)
     startup_delay_ms = item.get("startup_delay_ms", 0.0)
     effective_delay_ms = item.get("effective_delay_ms", 0.0)
+    smoothness_delay_ms = item.get("smoothness_buffer_delay_ms", 0.0)
+    expected_effective_delay_ms = requested_delay_ms + smoothness_delay_ms
     return (
         requested_delay_ms > 0.0
         and startup_delay_ms > 0.0
         and effective_delay_ms > 0.0
         and abs(startup_delay_ms - requested_delay_ms) <= 5.0
-        and abs(effective_delay_ms - requested_delay_ms) <= 5.0
+        and abs(effective_delay_ms - expected_effective_delay_ms) <= 5.0
     )
 
 
@@ -2331,6 +2484,32 @@ def has_wgc_smoothness_evidence_incomplete(media_evidence):
     )
 
 
+def has_wgc_pool_slot_lifetime_fault(media_evidence):
+    return any(item.get("pool_lease_mismatch", 0) > 0 for item in media_evidence["wgc_perf"]) or any(
+        item.get("pool_lease_mismatches", 0) > 0 for item in media_evidence["wgc_smoothness_summary"]
+    )
+
+
+def has_wgc_pool_saturated_safe_drop(media_evidence):
+    return any(item.get("pool_saturated_drops", 0) > 0 for item in media_evidence["wgc_perf"]) or any(
+        item.get("pool_saturated_drops", 0) > 0 for item in media_evidence["wgc_smoothness_summary"]
+    )
+
+
+def has_wgc_pool_evidence_missing(media_evidence):
+    summary_needs_pool_evidence = any(
+        item.get("smoothness_buffer_enabled", 0) > 0
+        or item.get("smoothness_buffer_retained_frames", 0) > 0
+        or item.get("smoothness_buffer_pool_slots", 0) > 0
+        for item in media_evidence["wgc_smoothness_summary"]
+    )
+    summary_has_pool_evidence = any(
+        item.get("pool_lifetime_evidence", 0) > 0 for item in media_evidence["wgc_smoothness_summary"]
+    )
+    perf_has_pool_evidence = any(item.get("pool_lease_evidence", False) for item in media_evidence["wgc_perf"])
+    return summary_needs_pool_evidence and not (summary_has_pool_evidence or perf_has_pool_evidence)
+
+
 def has_wgc_repeat_with_safe_candidate(media_evidence):
     has_soft_safe_evidence = any(
         "delay_repeat_soft_safe_candidate" in item for item in media_evidence["wgc_smoothness_summary"]
@@ -2440,13 +2619,15 @@ def summarize_started_app_source_health(media_evidence, log_summary):
     }
 
 
-def classify_session_triage(session_dir, capture_path=None):
+def classify_session_triage(session_dir, capture_path=None, recording_window=None):
     media_log = session_dir / "media.log"
     media_text = read_text_if_exists(media_log)
     log_summary = analyze_log(media_log) if media_text else None
     media_evidence = parse_media_triage(media_text)
     hook_evidence = parse_hook_triage(session_dir)
-    perf_summaries = parse_perf_csvs(session_dir)
+    perf_summaries_all = parse_perf_csvs(session_dir)
+    recording_window_info = build_recording_window_info(media_text, recording_window, perf_summaries_all)
+    perf_summaries = parse_perf_csvs(session_dir, recording_window_info) if recording_window_info else perf_summaries_all
     manifest = parse_session_manifest(session_dir)
     wgc_source_limits = summarize_wgc_source_limits(media_evidence)
     inject_pacing = summarize_inject_pacing(media_evidence)
@@ -2454,7 +2635,14 @@ def classify_session_triage(session_dir, capture_path=None):
     started_app_source_health = summarize_started_app_source_health(media_evidence, log_summary)
 
     verdicts = []
-    max_present_gap_ms = max((item["gap_ms"] for item in hook_evidence["present_gaps"]), default=0.0)
+    if recording_window_info:
+        max_present_gap_ms = max((item["max_qpc_delta_us"] for item in perf_summaries), default=0) / 1000.0
+        present_gap_evidence = []
+        for item in perf_summaries:
+            present_gap_evidence.extend(item["large_qpc_gaps"])
+    else:
+        max_present_gap_ms = max((item["gap_ms"] for item in hook_evidence["present_gaps"]), default=0.0)
+        present_gap_evidence = hook_evidence["present_gaps"][:20]
     if max_present_gap_ms >= 100.0:
         verdicts.append("source_present_gap")
     if has_source_starvation(media_evidence):
@@ -2539,6 +2727,15 @@ def classify_session_triage(session_dir, capture_path=None):
     wgc_smoothness_evidence_incomplete = has_wgc_smoothness_evidence_incomplete(media_evidence)
     if wgc_smoothness_evidence_incomplete:
         verdicts.append("wgc_smoothness_evidence_incomplete")
+    wgc_pool_slot_lifetime_fault = has_wgc_pool_slot_lifetime_fault(media_evidence)
+    if wgc_pool_slot_lifetime_fault:
+        verdicts.append("wgc_pool_slot_lifetime_fault")
+    wgc_pool_saturated_safe_drop = has_wgc_pool_saturated_safe_drop(media_evidence)
+    if wgc_pool_saturated_safe_drop:
+        verdicts.append("wgc_pool_saturated_safe_drop")
+    wgc_pool_evidence_missing = has_wgc_pool_evidence_missing(media_evidence)
+    if wgc_pool_evidence_missing:
+        verdicts.append("wgc_pool_evidence_missing")
     wgc_repeat_with_safe_candidate = has_wgc_repeat_with_safe_candidate(media_evidence)
     if wgc_repeat_with_safe_candidate:
         verdicts.append("wgc_repeat_despite_safe_candidate")
@@ -2601,6 +2798,7 @@ def classify_session_triage(session_dir, capture_path=None):
         or wgc_sync_delay_policy_fault
         or wgc_cfr_smoothness_not_maximal
         or wgc_smoothness_evidence_incomplete
+        or wgc_pool_slot_lifetime_fault
         or wgc_repeat_with_safe_candidate
         or wgc_post_stall_recovery_fault
     ):
@@ -2622,6 +2820,7 @@ def classify_session_triage(session_dir, capture_path=None):
         "schema": "ce-session-av-triage-v1",
         "session_dir": str(session_dir),
         "capture": str(capture_path) if capture_path else None,
+        "recording_window": recording_window_info,
         "manifest": manifest,
         "paths": {
             "media_log": str(media_log) if media_log.exists() else None,
@@ -2644,6 +2843,9 @@ def classify_session_triage(session_dir, capture_path=None):
             "wgc_cfr_smoothness_not_maximal": wgc_cfr_smoothness_not_maximal,
             "wgc_source_limited_smoothness_ceiling": wgc_source_limited_smoothness_ceiling,
             "wgc_smoothness_evidence_incomplete": wgc_smoothness_evidence_incomplete,
+            "wgc_pool_slot_lifetime_fault": wgc_pool_slot_lifetime_fault,
+            "wgc_pool_saturated_safe_drop": wgc_pool_saturated_safe_drop,
+            "wgc_pool_evidence_missing": wgc_pool_evidence_missing,
             "wgc_repeat_with_safe_candidate": wgc_repeat_with_safe_candidate,
             "wgc_post_stall_recovery_fault": wgc_post_stall_recovery_fault,
             "wgc_sync_delay_reserve_pressure": wgc_sync_delay_reserve_pressure,
@@ -2656,7 +2858,8 @@ def classify_session_triage(session_dir, capture_path=None):
         },
         "evidence": {
             "max_present_gap_ms": max_present_gap_ms,
-            "present_gaps": hook_evidence["present_gaps"][:20],
+            "present_gap_source": "perf_recording_window" if recording_window_info else "hook_logs",
+            "present_gaps": present_gap_evidence[:20],
             "present_stalled_lines": hook_evidence["present_stalled_lines"][:20],
             "external_overlay_lines": hook_evidence["external_overlay_lines"],
             "crash_events": hook_evidence["crash_events"],
@@ -2674,6 +2877,24 @@ def classify_session_triage(session_dir, capture_path=None):
                 "max_callback_gap_us": max((item["cb_gap_max_us"] for item in media_evidence["wgc_perf"]), default=0),
                 "max_copy_us": max((item["copy_us"] for item in media_evidence["wgc_perf"]), default=0),
                 "max_fence_us": max((item["fence_us"] for item in media_evidence["wgc_perf"]), default=0),
+                "max_pool_lease": max((item.get("pool_lease_max", 0) for item in media_evidence["wgc_perf"]), default=0),
+                "min_pool_free": min(
+                    (item.get("pool_free_min", 0) for item in media_evidence["wgc_perf"]
+                     if item.get("pool_lease_evidence", False)),
+                    default=0,
+                ),
+                "pool_saturated_drops": sum(
+                    item.get("pool_saturated_drops", 0) for item in media_evidence["wgc_perf"]
+                ),
+                "pool_overwrite_prevented": sum(
+                    item.get("pool_overwrite_prevented", 0) for item in media_evidence["wgc_perf"]
+                ),
+                "pool_lease_mismatch": max(
+                    (item.get("pool_lease_mismatch", 0) for item in media_evidence["wgc_perf"]), default=0
+                ),
+                "has_pool_lease_evidence": any(
+                    item.get("pool_lease_evidence", False) for item in media_evidence["wgc_perf"]
+                ),
             },
             "perf_csv": perf_summaries,
             "audio_fault_counts": audio_fault_counts,
@@ -2702,6 +2923,19 @@ def print_triage_report(report):
     print(f"  session_dir={report['session_dir']}")
     if report.get("capture"):
         print(f"  capture={report['capture']}")
+    if report.get("recording_window"):
+        window = report["recording_window"]
+        print(
+            "  recording_window={spec} active={active} live_start_qpc={live} qpc_us={start}:{end} "
+            "reason={reason}".format(
+                spec=window.get("spec", ""),
+                active=int(bool(window.get("active"))),
+                live=window.get("live_start_qpc", 0),
+                start=window.get("start_qpc_us", 0),
+                end=window.get("end_qpc_us", 0),
+                reason=window.get("reason", ""),
+            )
+        )
     print(f"  verdicts={','.join(report['verdicts'])}")
     print(
         "  faults encoder_or_mux={enc} audio={audio} visual={visual}".format(
@@ -2711,7 +2945,11 @@ def print_triage_report(report):
         )
     )
     evidence = report["evidence"]
-    print(f"  max_present_gap_ms={evidence['max_present_gap_ms']:.3f}")
+    print(
+        "  max_present_gap_ms={gap:.3f} source={source}".format(
+            gap=evidence["max_present_gap_ms"], source=evidence.get("present_gap_source", "hook_logs")
+        )
+    )
     wgc_source_limits = evidence["wgc_source_limits"]
     print(
         "  wgc_source_starved_episodes={detail} summary_episodes={summary} "
@@ -3065,6 +3303,136 @@ def self_test():
         assert "source_present_gap" in report["verdicts"]
         assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
 
+        smooth_buffer_item = {}
+        update_wgc_smoothness_item_from_line(
+            smooth_buffer_item,
+            "[WGC CFR SMOOTHNESS SUMMARY] smoothBuf=1 smoothTargetMs=250 smoothFrames=16/16/30 "
+            "smoothDelay=133.3ms smoothPoolSlots=20 smoothVramMB=2025.0 smoothCapLimited=1 "
+            "smoothReason=vram_cap_limited",
+        )
+        assert smooth_buffer_item["smoothness_buffer_reason"] == "vram_cap_limited"
+        assert smooth_buffer_item["smoothness_buffer_vram_mb"] == 2025.0
+
+        smooth_buffer_with_pool_item = {}
+        update_wgc_smoothness_item_from_line(
+            smooth_buffer_with_pool_item,
+            "[WGC CFR SMOOTHNESS SUMMARY] smoothBuf=1 smoothTargetMs=250 smoothFrames=16/16/30 "
+            "smoothDelay=133.3ms smoothPoolSlots=24 sourceFramePoolBuffers=8 budgetSurfaces=32 "
+            "syncFrames=4 safetySlots=4 leasedMax=22 freeMin=2 poolSaturatedDrops=0 "
+            "overwritePrevented=9 leaseMismatches=0 smoothVramMB=2025.0 smoothCapLimited=1 "
+            "smoothReason=vram_cap_limited",
+        )
+        assert smooth_buffer_with_pool_item["pool_lifetime_evidence"] == 1
+        assert smooth_buffer_with_pool_item["smoothness_source_frame_pool_buffers"] == 8
+        assert smooth_buffer_with_pool_item["smoothness_buffer_pool_slots"] == 24
+        assert smooth_buffer_with_pool_item["smoothness_budget_surfaces"] == 32
+        assert smooth_buffer_with_pool_item["pool_lease_max"] == 22
+        assert smooth_buffer_with_pool_item["pool_overwrite_prevented"] == 9
+
+        wgc_pool_safe_drop = make_session(
+            "wgc_pool_safe_drop",
+            media=(
+                "[WGC Perf] Input: 120 | Queued: 118 | DropFull: 0 | DropPace: 0 | DropThrottle: 0 | "
+                "DropStale: 0 (DupTs=0 OOO=0) | DropCursor: 0 | DropPool: 2 | HostQ: 20 | EncQ: 22 | Dup: 2 | "
+                "Late: 0 | SrcAvg: 8333us | JitAvg: 200us | JitMax: 900us | Src->Copy: 40/80us | Deliv: 118 | "
+                "MinIn250/500: 118/119 | MinDel250/500: 118/119 | FreshMiss: 0pm | BufAvg: 900pm | BufMin: 4 | "
+                "NoFresh: 0 | NoReserve: 0 | SchedSelAvg: 0us SchedSelBias: 0us | WgcSelAvg: 0us WgcSelBias: 0us | "
+                "CbGap: 8333/9000us CbProc: 50/90us CbDrainMax: 0 | Copy: 50us | "
+                "SlotAge: 8200us FastSlot: 0 | PoolLease: max=24 freeMin=0 satDrop=2 overwritePrevented=24 "
+                "mismatch=0 sourceFramePoolBuffers=8 copyPoolSlots=24 budgetSurfaces=32 syncFrames=4 "
+                "extraFrames=16 safetySlots=4 | KMFail: 0/0 | Flush: 0/0 | Dedicated: 1 | Encode: 300us | "
+                "Fence: 0us | Throttle: 120 | Mux: 0KB | Overload: 0x0\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=0 "
+                "phaseErrorMax=0us shortfallMax=0.0ms staleDebtDrops=0 liveRebase=0/0 tooNewRepeats=0 "
+                "syncDelayHolds=0 tooNewLeadMax=0us avDelay=33.3ms startupDelay=166.6ms "
+                "scheduleOffset=0us effectiveDelay=166.6ms lowSourceBypass=0 modeMismatch=0 "
+                "sourceBacktrack=0 syncDelaySourceLimitedHolds=0 syncDelayPolicyHolds=0 "
+                "startupReserveFrames=24 startupReserveSpan=166000us startupDelayTarget=166600us "
+                "startupReserveSelected=1 startupReserveReason=selected smoothBuf=1 smoothTargetMs=250 "
+                "smoothFrames=16/16/30 smoothDelay=133.3ms smoothPoolSlots=24 sourceFramePoolBuffers=8 "
+                "budgetSurfaces=32 syncFrames=4 safetySlots=4 leasedMax=24 freeMin=0 "
+                "poolSaturatedDrops=2 overwritePrevented=24 leaseMismatches=0 smoothVramMB=2025.0 "
+                "smoothCapLimited=1 smoothReason=vram_cap_limited\n"
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 "
+                "us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) "
+                "backpressure=0 peakMux=0KB peakPkts=0\n"
+            ),
+        )
+        report = classify_session_triage(wgc_pool_safe_drop)
+        assert "wgc_pool_saturated_safe_drop" in report["verdicts"]
+        assert "wgc_pool_slot_lifetime_fault" not in report["verdicts"]
+        assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
+        assert report["faults"]["wgc_pool_saturated_safe_drop"]
+        assert not report["faults"]["wgc_pool_slot_lifetime_fault"]
+
+        wgc_pool_lifetime_fault = make_session(
+            "wgc_pool_lifetime_fault",
+            media=(
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=0 "
+                "phaseErrorMax=0us shortfallMax=0.0ms staleDebtDrops=0 liveRebase=0/0 tooNewRepeats=0 "
+                "syncDelayHolds=0 tooNewLeadMax=0us avDelay=33.3ms startupDelay=166.6ms "
+                "scheduleOffset=0us effectiveDelay=166.6ms lowSourceBypass=0 modeMismatch=0 "
+                "sourceBacktrack=0 syncDelaySourceLimitedHolds=0 syncDelayPolicyHolds=0 "
+                "startupReserveFrames=24 startupReserveSpan=166000us startupDelayTarget=166600us "
+                "startupReserveSelected=1 startupReserveReason=selected smoothBuf=1 smoothTargetMs=250 "
+                "smoothFrames=16/16/30 smoothDelay=133.3ms smoothPoolSlots=24 sourceFramePoolBuffers=8 "
+                "budgetSurfaces=32 syncFrames=4 safetySlots=4 leasedMax=20 freeMin=4 "
+                "poolSaturatedDrops=0 overwritePrevented=0 leaseMismatches=1 smoothVramMB=2025.0 "
+                "smoothCapLimited=1 smoothReason=vram_cap_limited\n"
+            ),
+        )
+        report = classify_session_triage(wgc_pool_lifetime_fault)
+        assert "wgc_pool_slot_lifetime_fault" in report["verdicts"]
+        assert "ce_visual_timeline_fault" in report["verdicts"]
+        assert report["faults"]["wgc_pool_slot_lifetime_fault"]
+
+        wgc_pool_evidence_missing = make_session(
+            "wgc_pool_evidence_missing",
+            media=(
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=0 "
+                "phaseErrorMax=0us shortfallMax=0.0ms staleDebtDrops=0 liveRebase=0/0 tooNewRepeats=0 "
+                "syncDelayHolds=0 tooNewLeadMax=0us avDelay=33.3ms startupDelay=166.6ms "
+                "scheduleOffset=0us effectiveDelay=166.6ms lowSourceBypass=0 modeMismatch=0 "
+                "sourceBacktrack=0 syncDelaySourceLimitedHolds=0 syncDelayPolicyHolds=0 "
+                "startupReserveFrames=20 startupReserveSpan=166000us startupDelayTarget=166600us "
+                "startupReserveSelected=1 startupReserveReason=selected delayReservoirLowWaterFrames=4 "
+                "delayReservoirTargetFrames=5 delayReservoirLowWaterTicks=0 realizedDelayAvg=166600us "
+                "realizedDelayMin=165000us realizedDelayMax=168000us delayResidualAvg=0/1000us "
+                "delayResidualMax=2000us delayResidualP95=1000us delayResidualLateMax=1000us "
+                "delayResidualEarlyMax=1000us smoothBuf=1 smoothTargetMs=250 "
+                "smoothFrames=16/16/30 smoothDelay=133.3ms smoothPoolSlots=20 smoothVramMB=2025.0 "
+                "smoothCapLimited=1 smoothReason=vram_cap_limited\n"
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 "
+                "us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) "
+                "backpressure=0 peakMux=0KB peakPkts=0\n"
+            ),
+        )
+        report = classify_session_triage(wgc_pool_evidence_missing)
+        assert "wgc_pool_evidence_missing" in report["verdicts"]
+        assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
+
+        source_gap_windowed = make_session(
+            "source_gap_windowed",
+            media=(
+                "[AVSyncApply] wgc_schedule_anchor: videoQpc=9700000 audioAnchorQpc=9700000 "
+                "liveStartQpc=10000000 requestedDelayUs=0 startupDelayUs=0 scheduleOffsetUs=0\n"
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 "
+                "us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) "
+                "backpressure=0 peakMux=0KB peakPkts=0\n"
+            ),
+            hook="DetourPresent: heartbeat #1 gap=299ms presentOwner=0x0000 depth=0 slFG=0 tid=0x1234\n",
+            perf=(
+                "frame,qpc_us,total_us,capture_us,present_call_us,mux_queue_kb,overload_flags,api,qpc_delta_us\n"
+                "1,25990000,100,20,40,0,0,DX12,0\n"
+                "2,26000000,100,20,40,0,0,DX12,10000\n"
+                "3,26010000,100,20,40,0,0,DX12,10000\n"
+            ),
+        )
+        report = classify_session_triage(source_gap_windowed, recording_window="25:45")
+        assert "source_present_gap" not in report["verdicts"]
+        assert report["evidence"]["present_gap_source"] == "perf_recording_window"
+        assert report["evidence"]["max_present_gap_ms"] <= 11.0
+
         wgc_starved = make_session(
             "wgc_starved",
             media=(
@@ -3079,6 +3447,29 @@ def self_test():
         assert report["evidence"]["wgc_source_limits"]["detail_episode_count"] == 1
         assert report["evidence"]["wgc_source_limits"]["summary_starved_episodes"] == 319
         assert report["evidence"]["wgc_source_limits"]["summary_source_limited_repeats"] == 151
+
+        wgc_false_capacity_label = make_session(
+            "wgc_false_capacity_label",
+            media=(
+                "[WGC CFR ATTRIBUTION] fault_hint=ce_capacity_pressure qpc=1..2 duration=922ms out=110 dup=12 "
+                "minIn=84 minDel=84 freshMiss=1000pm minBuf=1 cbGapMax=110189us encEmaMax=0.31ms "
+                "muxBp=0 waitMax=0us muxMax=0KB overload=0x0 copyMax=1us copyHealth=ok fenceMax=0us "
+                "fenceHealth=ok\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=4 maxDropTicks=1 cadenceEvents=1 "
+                "phaseErrorMax=0us shortfallMax=50.0ms staleDebtDrops=0 liveRebase=0/4 tooNewRepeats=0 "
+                "syncDelayHolds=0 tooNewLeadMax=0us avDelay=29.4ms startupDelay=29.4ms "
+                "scheduleOffset=0us effectiveDelay=29.4ms lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=0 syncDelayPolicyHolds=0 startupReserveFrames=4 "
+                "startupReserveSpan=29000us startupDelayTarget=29400us startupReserveSelected=1 "
+                "startupReserveReason=selected\n"
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 "
+                "us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) "
+                "backpressure=0 peakMux=0KB peakPkts=0\n"
+            ),
+        )
+        report = classify_session_triage(wgc_false_capacity_label)
+        assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
+        assert "wgc_encoder_limited_judder" not in report["verdicts"]
 
         inject_pacer = make_session(
             "inject_pacer",
@@ -4431,6 +4822,10 @@ def main():
     parser.add_argument("capture", nargs="?", type=Path, help="Capture file to analyze")
     parser.add_argument("--capture", dest="capture_option", type=Path, help="Capture file to attach to session triage")
     parser.add_argument("--session-dir", type=Path, help="Analyze a CE logs session for stutter attribution")
+    parser.add_argument(
+        "--recording-window",
+        help="Restrict session perf/present-gap triage to live recording seconds START:END, for example 25:45",
+    )
     parser.add_argument("--json-out", type=Path, help="Write JSON report")
     parser.add_argument("--log", type=Path, help="Optional media.log to summarize alongside the capture")
     parser.add_argument("--ffprobe", type=Path, default=Path("ffprobe"), help="Path to ffprobe executable")
@@ -4541,7 +4936,10 @@ def main():
             fail(f"session dir not found: {args.session_dir}")
         if effective_capture and not effective_capture.exists():
             fail(f"capture file not found: {effective_capture}")
-        report = classify_session_triage(args.session_dir, effective_capture)
+        try:
+            report = classify_session_triage(args.session_dir, effective_capture, args.recording_window)
+        except ValueError as exc:
+            fail(str(exc))
         print_triage_report(report)
         if args.json_out:
             args.json_out.parent.mkdir(parents=True, exist_ok=True)

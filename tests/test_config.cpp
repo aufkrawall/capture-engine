@@ -82,6 +82,9 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.captureMethod, "auto");
     EXPECT_FALSE(config.wgcSkipSplitDeviceFlush);
     EXPECT_TRUE(config.wgcSameDeviceCapture);
+    EXPECT_TRUE(config.wgcSmoothnessBufferEnabled);
+    EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 250u);
+    EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 2048u);
     EXPECT_EQ(config.video.profile, "auto");
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_FALSE(config.graphics.forceMipBiasClamp);
@@ -95,6 +98,9 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("capture_method=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_skip_split_device_flush=false"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_same_device_capture=true"), std::string::npos);
+    EXPECT_NE(generatedText.find("wgc_smoothness_buffer_enabled=true"), std::string::npos);
+    EXPECT_NE(generatedText.find("wgc_smoothness_buffer_max_ms=250"), std::string::npos);
+    EXPECT_NE(generatedText.find("wgc_smoothness_buffer_vram_budget_mb=2048"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("; backbuffer_count, affecting vsync"), std::string::npos);
@@ -173,13 +179,19 @@ TEST_F(ConfigTest, ParseWgcExperimentalFlags) {
     WriteConfig(
         "[General]\n"
         "wgc_skip_split_device_flush=true\n"
-        "wgc_same_device_capture=true\n");
+        "wgc_same_device_capture=true\n"
+        "wgc_smoothness_buffer_enabled=false\n"
+        "wgc_smoothness_buffer_max_ms=125\n"
+        "wgc_smoothness_buffer_vram_budget_mb=512\n");
 
     AppConfig config;
     LoadConfig(tempConfigFile, config);
 
     EXPECT_TRUE(config.wgcSkipSplitDeviceFlush);
     EXPECT_TRUE(config.wgcSameDeviceCapture);
+    EXPECT_FALSE(config.wgcSmoothnessBufferEnabled);
+    EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 125u);
+    EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 512u);
 }
 
 TEST_F(ConfigTest, LegacyWgcAliasesNormalizeToWgc) {

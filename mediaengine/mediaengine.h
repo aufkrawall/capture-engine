@@ -28,6 +28,11 @@ MEDIAENGINE_API void MediaEngine_ReloadConfig(const AppConfig* config);
 // current recording session. true = WGC/screen-grab, false = inject.
 MEDIAENGINE_API void MediaEngine_SetActiveScreenGrab(bool activeScreenGrab);
 
+// Extra WGC startup playout delay selected by captureengine for the first
+// accepted WGC frame. This is added to the normal render-loopback delay only
+// for the first-frame audio anchor.
+MEDIAENGINE_API void MediaEngine_SetWgcStartupExtraDelayQpc(int64_t delayQpc);
+
 // Enable audio-only recording mode (no video capture/encoding).
 // Must be called before MediaEngine_Init to take effect.
 MEDIAENGINE_API void MediaEngine_SetAudioOnly(bool audioOnly);

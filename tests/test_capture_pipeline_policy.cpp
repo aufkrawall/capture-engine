@@ -420,6 +420,7 @@ TEST(CapturePipelinePolicyTest, WgcStartupBarrierDelaysUntilFutureFreshFrame) {
     EXPECT_EQ(policy::GetWgcStartupBarrierQpc(1000, 100), 1100);
     EXPECT_EQ(policy::GetWgcStartupBarrierQpc(1000, 0), 1000);
     EXPECT_EQ(policy::GetWgcStartupAudioAnchorQpc(1000, 35), 1035);
+    EXPECT_EQ(policy::GetWgcStartupAudioAnchorQpc(1000, 35 + 133), 1168);
     EXPECT_EQ(policy::GetWgcStartupAudioAnchorQpc(1000, 0), 1000);
     EXPECT_EQ(policy::GetWgcStartupAudioAnchorQpc(0, 35), 0);
     EXPECT_FALSE(policy::IsWgcFramePastStartupBarrier(1099, 1100));
@@ -458,8 +459,8 @@ TEST(CapturePipelinePolicyTest, WgcSyncDelayHoldAttributionSeparatesSourceLimite
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelaySourceRecoveryClassifiesSevereStalls) {
-    EXPECT_TRUE(policy::IsWgcSevereSourceStallForActiveDelay(120, 120, 120, policy::kWgcDeepUnderfeedEmptyTickPermille,
-                                                             8));
+    EXPECT_TRUE(
+        policy::IsWgcSevereSourceStallForActiveDelay(120, 120, 120, policy::kWgcDeepUnderfeedEmptyTickPermille, 8));
     EXPECT_TRUE(policy::IsWgcSevereSourceStallForActiveDelay(120, 120, 8, 20, 0));
     EXPECT_TRUE(policy::IsWgcSevereSourceStallForActiveDelay(120, 8, 120, 20, 0));
     EXPECT_FALSE(policy::IsWgcSevereSourceStallForActiveDelay(120, 120, 8, 20, 4));
@@ -820,22 +821,22 @@ TEST(CapturePipelinePolicyTest, WgcUniformCadenceSuppressesReserveDefenseOlderFr
     // Exact scenario that perturbed cadence under the GPU-bound Strange Brigade run: a healthy
     // reserve (not under pressure) where the earlier frame is within bias of the closest-to-target
     // frame, so the legacy reserve defense would drag selection to the older frame.
-    EXPECT_TRUE(policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, false, false,
-                                                                          false, false));
+    EXPECT_TRUE(
+        policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, false, false, false, false));
 
     // With reserve defense enabled (uniformCadenceMode = false) the composed policy still prefers
     // the older reserve-building frame, matching the legacy behavior.
     EXPECT_TRUE(policy::ShouldPreferEarlierFreshWgcFrameForReserveDefense(1000, 1040, 1020, 100, false, false, false,
-                                                                         false, /*uniformCadenceMode=*/false));
+                                                                          false, /*uniformCadenceMode=*/false));
 
     // In uniform-cadence mode the perturbation is suppressed: the selector keeps the
     // closest-to-target frame and lets the realized delay float (the fix for the abnormal judder).
     EXPECT_FALSE(policy::ShouldPreferEarlierFreshWgcFrameForReserveDefense(1000, 1040, 1020, 100, false, false, false,
-                                                                          false, /*uniformCadenceMode=*/true));
+                                                                           false, /*uniformCadenceMode=*/true));
 
     // Uniform-cadence mode never re-introduces an older pick even under reserve pressure / low source.
     EXPECT_FALSE(policy::ShouldPreferEarlierFreshWgcFrameForReserveDefense(1000, 1040, 1020, 100, true, true, true,
-                                                                          false, /*uniformCadenceMode=*/true));
+                                                                           false, /*uniformCadenceMode=*/true));
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelayPaceFloorMatchesReservoirDelayFrames) {
@@ -893,9 +894,9 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayPaceMaxDepthBoundsRealizedDelay) {
     // the current credit is below 1 (source now at/below output). Before the setpoint cap this case
     // produced zero drops and the realized content delay stayed stuck ~20 frames deep.
     auto inflated = policy::DecideWgcActiveDelayPace(/*credit=*/0.9, /*buffered=*/20, /*floor=*/4, /*maxDepth=*/6);
-    EXPECT_EQ(inflated.capDrops, 14u);            // 20 -> 6
-    EXPECT_EQ(inflated.dropBeforeAdvance, 14u);   // all from the cap, none credit-driven
-    EXPECT_FALSE(inflated.advance);               // credit 0.9 < 1 after the cap, so just trim+hold
+    EXPECT_EQ(inflated.capDrops, 14u);           // 20 -> 6
+    EXPECT_EQ(inflated.dropBeforeAdvance, 14u);  // all from the cap, none credit-driven
+    EXPECT_FALSE(inflated.advance);              // credit 0.9 < 1 after the cap, so just trim+hold
     EXPECT_DOUBLE_EQ(inflated.creditConsumed, 0.0);
 
     // The cap never trims into the delay floor: at exactly the cap there is nothing to trim.
@@ -947,7 +948,8 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutDropsAlreadyPastFramesForCloser
     EXPECT_TRUE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/900, /*next=*/target + leadTol, target, leadTol));
     // The successor is in the future beyond tolerance -> keep the front (it is the slot frame) and
     // hold the future frame as reserve.
-    EXPECT_FALSE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/980, /*next=*/target + leadTol + 1, target, leadTol));
+    EXPECT_FALSE(
+        policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/980, /*next=*/target + leadTol + 1, target, leadTol));
     // Non-monotonic / duplicate successor is never advanced past.
     EXPECT_FALSE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/900, /*next=*/900, target, leadTol));
     EXPECT_FALSE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/900, /*next=*/880, target, leadTol));
@@ -986,8 +988,7 @@ struct PlayoutStats {
     int dropDupSameTickViolations = 0;  // a tick must never both stale-drop AND hold (churn signature)
 };
 PlayoutStats RunNearestPlayout(int ticks, int64_t interval, int64_t contentDelay, int deliveryBatchTicks,
-                               int64_t startupFill, bool liveRecoveryLatched = false,
-                               bool uniformCadence = true) {
+                               int64_t startupFill, bool liveRecoveryLatched = false, bool uniformCadence = true) {
     PlayoutStats s;
     std::deque<int64_t> buffer;  // frame source timestamps, oldest first
     const int64_t leadTol = policy::GetWgcActiveDelayResidualToleranceQpc(interval);
@@ -1024,8 +1025,7 @@ PlayoutStats RunNearestPlayout(int ticks, int64_t interval, int64_t contentDelay
         while (!buffer.empty() && buffer.front() <= lastEmitted) {
             buffer.pop_front();
         }
-        while (buffer.size() > 1 &&
-               policy::ShouldDropWgcFrontForNearerPlayout(buffer[0], buffer[1], target, leadTol)) {
+        while (buffer.size() > 1 && policy::ShouldDropWgcFrontForNearerPlayout(buffer[0], buffer[1], target, leadTol)) {
             buffer.pop_front();
             ++s.staleDrops;
             staleDroppedThisTick = true;
@@ -1091,6 +1091,81 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutEvenHoldsAndStableDelayUnderGap
     EXPECT_LE(s.longestHoldRun, 8);
 }
 
+TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferBudgetCapsRetainedFrames) {
+    const uint32_t desired = policy::GetWgcSmoothnessDesiredFrames(/*outputFps=*/120, /*maxSmoothnessMs=*/250);
+    EXPECT_EQ(desired, 30u);
+
+    // 4K FP16 is 8 bytes/pixel. The default 2GB budget covers the source WGC
+    // frame-pool buffers plus CE copy-pool slots; extra smoothness slots are
+    // reduced before sync-delay and safety slots.
+    const auto budget = policy::ComputeWgcSmoothnessSurfaceBudget(
+        /*outputFps=*/120, /*maxSmoothnessMs=*/250, /*width=*/3840, /*height=*/2160,
+        /*bytesPerPixel=*/8, /*budgetMb=*/2048,
+        policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
+    EXPECT_EQ(budget.budgetSurfaceCount, 32u);
+    EXPECT_EQ(budget.sourceFramePoolBuffers, 8u);
+    EXPECT_EQ(budget.copyPoolSlots, 24u);
+    EXPECT_EQ(budget.syncDelayFrames, 4u);
+    EXPECT_EQ(budget.safetySlots, 4u);
+    EXPECT_EQ(budget.retainedExtraFrames, 16u);
+    EXPECT_LT(budget.retainedExtraFrames, desired);
+    EXPECT_TRUE(budget.capLimited);
+}
+
+TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferAllowsFullTargetWhenBudgetAllows) {
+    const auto budget = policy::ComputeWgcSmoothnessSurfaceBudget(
+        /*outputFps=*/120, /*maxSmoothnessMs=*/250, /*width=*/1920, /*height=*/1080,
+        /*bytesPerPixel=*/4, /*budgetMb=*/2048,
+        policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
+    EXPECT_EQ(budget.retainedExtraFrames, 30u);
+    EXPECT_EQ(budget.sourceFramePoolBuffers, 8u);
+    EXPECT_EQ(budget.copyPoolSlots, 38u);
+    EXPECT_FALSE(budget.capLimited);
+}
+
+TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferInactiveDelayDoesNotReserveExtraSlots) {
+    const auto budget = policy::ComputeWgcSmoothnessSurfaceBudget(
+        /*outputFps=*/0, /*maxSmoothnessMs=*/0, /*width=*/3840, /*height=*/2160,
+        /*bytesPerPixel=*/8, /*budgetMb=*/2048, /*syncDelayFrames=*/0);
+    EXPECT_EQ(budget.desiredExtraFrames, 0u);
+    EXPECT_EQ(budget.retainedExtraFrames, 0u);
+    EXPECT_EQ(budget.sourceFramePoolBuffers, 8u);
+    EXPECT_EQ(budget.copyPoolSlots, 8u);
+    EXPECT_FALSE(budget.capLimited);
+}
+
+TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferRequiresActiveSyncDelay) {
+    EXPECT_TRUE(policy::ShouldUseWgcSmoothnessBuffer(/*enabled=*/true, /*useVfr=*/false,
+                                                     /*avContentDelayActive=*/true, /*targetIntervalTicks=*/100));
+    EXPECT_FALSE(policy::ShouldUseWgcSmoothnessBuffer(/*enabled=*/true, /*useVfr=*/false,
+                                                      /*avContentDelayActive=*/false, /*targetIntervalTicks=*/100));
+    EXPECT_FALSE(policy::ShouldUseWgcSmoothnessBuffer(/*enabled=*/false, /*useVfr=*/false,
+                                                      /*avContentDelayActive=*/true, /*targetIntervalTicks=*/100));
+    EXPECT_FALSE(policy::ShouldUseWgcSmoothnessBuffer(/*enabled=*/true, /*useVfr=*/true,
+                                                      /*avContentDelayActive=*/true, /*targetIntervalTicks=*/100));
+    EXPECT_FALSE(policy::ShouldUseWgcSmoothnessBuffer(/*enabled=*/true, /*useVfr=*/false,
+                                                      /*avContentDelayActive=*/true, /*targetIntervalTicks=*/0));
+}
+
+TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferDoesNotGrowWithoutBudgetOrSourceFrames) {
+    EXPECT_EQ(policy::GetWgcSmoothnessRetainedFrames(/*outputFps=*/120, /*maxSmoothnessMs=*/250,
+                                                     /*width=*/3840, /*height=*/2160, /*bytesPerPixel=*/8,
+                                                     /*budgetMb=*/0),
+              0u);
+
+    EXPECT_FALSE(policy::ShouldArmWgcSmoothnessBufferForSourceRate(
+        /*outputFps=*/120, /*recentInputMin250Fps=*/110, /*recentInputMin500Fps=*/111));
+    EXPECT_TRUE(policy::ShouldArmWgcSmoothnessBufferForSourceRate(
+        /*outputFps=*/120, /*recentInputMin250Fps=*/118, /*recentInputMin500Fps=*/118));
+    EXPECT_FALSE(policy::ShouldArmWgcSmoothnessBufferForSourceRate(
+        /*outputFps=*/120, /*recentInputMin250Fps=*/0, /*recentInputMin500Fps=*/0));
+
+    auto underTarget = RunNearestPlayout(/*ticks=*/240, /*interval=*/100, /*contentDelay=*/400,
+                                         /*deliveryBatchTicks=*/12, /*startupFill=*/5);
+    EXPECT_GT(underTarget.holds, 0);
+    EXPECT_LE(underTarget.maxRealizedDelay, 400 + 12 * 100);
+}
+
 TEST(CapturePipelinePolicyTest, WgcActiveDelaySelectionTargetHoldsDelayThroughLiveRecoveryOnUniformPath) {
     // Regression for 20260626_050554: a perpetually-below-output VRR source latched WGC live-recovery
     // for the rest of the recording, and the selection target dropped the content delay during
@@ -1101,28 +1176,28 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelaySelectionTargetHoldsDelayThroughLi
     const int64_t scheduled = 2000, fallback = 1900, interval = 100, contentDelay = 400;
     // Uniform-cadence path: the content delay is HELD whether or not live-recovery is active.
     EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, /*live=*/true,
-                                                         /*applyLiveDelay=*/true, /*liveRecovery=*/true,
-                                                         /*uniformCadence=*/true, contentDelay),
+                                                          /*applyLiveDelay=*/true, /*liveRecovery=*/true,
+                                                          /*uniformCadence=*/true, contentDelay),
               scheduled - contentDelay);  // 1600 -- would have been 2000 (collapsed) before the fix
-    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true, true,
-                                                         /*liveRecovery=*/false, /*uniformCadence=*/true,
-                                                         contentDelay),
-              scheduled - contentDelay);
+    EXPECT_EQ(
+        policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true, true,
+                                                    /*liveRecovery=*/false, /*uniformCadence=*/true, contentDelay),
+        scheduled - contentDelay);
     // Legacy reservoir-target path: live-recovery still legitimately yields to near-live catch-up.
-    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true, true,
-                                                         /*liveRecovery=*/true, /*uniformCadence=*/false,
-                                                         contentDelay),
-              scheduled);
-    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true, true,
-                                                         /*liveRecovery=*/false, /*uniformCadence=*/false,
-                                                         contentDelay),
-              scheduled - contentDelay);
+    EXPECT_EQ(
+        policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true, true,
+                                                    /*liveRecovery=*/true, /*uniformCadence=*/false, contentDelay),
+        scheduled);
+    EXPECT_EQ(
+        policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true, true,
+                                                    /*liveRecovery=*/false, /*uniformCadence=*/false, contentDelay),
+        scheduled - contentDelay);
     // applyLiveDelay false, or not live, never applies the delay regardless of path.
     EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, true,
-                                                         /*applyLiveDelay=*/false, true, true, contentDelay),
+                                                          /*applyLiveDelay=*/false, true, true, contentDelay),
               scheduled);
-    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, /*live=*/false, true,
-                                                         true, true, contentDelay),
+    EXPECT_EQ(policy::GetWgcActiveDelaySelectionTargetQpc(scheduled, fallback, interval, /*live=*/false, true, true,
+                                                          true, contentDelay),
               scheduled);
 }
 
@@ -1360,63 +1435,60 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayScoresRelaxedCandidateReasons) {
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelaySoftLateTargetProtectsHealthyWindows) {
-    auto score = policy::ScoreWgcActiveDelayRelaxedCandidate(
-        109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
-        policy::WgcActiveDelayWindowClass::kHealthy, policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
+    auto score = policy::ScoreWgcActiveDelayRelaxedCandidate(109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
+                                                             policy::WgcActiveDelayWindowClass::kHealthy,
+                                                             policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom);
     EXPECT_FALSE(score.Accepted());
 
-    score = policy::ScoreWgcActiveDelayRelaxedCandidate(
-        106000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
-        policy::WgcActiveDelayWindowClass::kRecoverableUnderfill,
-        policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(106000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
+                                                        policy::WgcActiveDelayWindowClass::kRecoverableUnderfill,
+                                                        policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
     EXPECT_TRUE(score.Accepted());
 
-    score = policy::ScoreWgcActiveDelayRelaxedCandidate(
-        109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 0,
-        policy::WgcActiveDelayWindowClass::kRecoverableUnderfill,
-        policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 0,
+                                                        policy::WgcActiveDelayWindowClass::kRecoverableUnderfill,
+                                                        policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom);
     EXPECT_FALSE(score.Accepted());
 
-    score = policy::ScoreWgcActiveDelayRelaxedCandidate(
-        109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 0,
-        policy::WgcActiveDelayWindowClass::kPostStallRecovery,
-        policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 0,
+                                                        policy::WgcActiveDelayWindowClass::kPostStallRecovery,
+                                                        policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom);
     EXPECT_FALSE(score.Accepted());
 
-    score = policy::ScoreWgcActiveDelayRelaxedCandidate(
-        109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
-        policy::WgcActiveDelayWindowClass::kSourceLimited, policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
+                                                        policy::WgcActiveDelayWindowClass::kSourceLimited,
+                                                        policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
     EXPECT_TRUE(score.Accepted());
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelayRepeatRescueScoresSafeFramesBeforeRepeat) {
     const uint32_t softLateTargetUs = policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000);
 
-    auto score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
-        106000, 105000, 90000, 100000, 8333, 1000000, 1, 0, 0, 0,
-        policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
+    auto score =
+        policy::ScoreWgcActiveDelayRepeatRescueCandidate(106000, 105000, 90000, 100000, 8333, 1000000, 1, 0, 0, 0,
+                                                         policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kAcceptBetterTarget);
     EXPECT_TRUE(score.Accepted());
 
-    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
-        106000, 106000, 100000, 100000, 8333, 1000000, 0, 0, 0, 0,
-        policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
+    score =
+        policy::ScoreWgcActiveDelayRepeatRescueCandidate(106000, 106000, 100000, 100000, 8333, 1000000, 0, 0, 0, 0,
+                                                         policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kAcceptSoftRepeatAvoidance);
     EXPECT_TRUE(score.Accepted());
     EXPECT_STREQ(policy::WgcActiveDelayRelaxedDecisionToString(score.decision), "soft_repeat_avoidance");
 
-    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
-        106000, 111000, 90000, 100000, 8333, 1000000, 1, 0, 0, 0,
-        policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
+    score =
+        policy::ScoreWgcActiveDelayRepeatRescueCandidate(106000, 111000, 90000, 100000, 8333, 1000000, 1, 0, 0, 0,
+                                                         policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectSyncRisk);
     EXPECT_FALSE(score.Accepted());
 
-    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
-        109000, 109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
-        policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
+    score =
+        policy::ScoreWgcActiveDelayRepeatRescueCandidate(109000, 109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
+                                                         policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom);
     EXPECT_FALSE(score.Accepted());
 
@@ -1432,21 +1504,21 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayRepeatRescueScoresSafeFramesBefore
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom);
     EXPECT_FALSE(score.Accepted());
 
-    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
-        109000, 109000, 108000, 100000, 8333, 1000000, 0, 0, 0, 0,
-        policy::WgcActiveDelayWindowClass::kSourceLimited, softLateTargetUs);
+    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(109000, 109000, 108000, 100000, 8333, 1000000, 0, 0, 0, 0,
+                                                             policy::WgcActiveDelayWindowClass::kSourceLimited,
+                                                             softLateTargetUs);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectRepeatCost);
     EXPECT_FALSE(score.Accepted());
 
-    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
-        106000, 106000, 100000, 100000, 8333, 1000000, 0, 0, 0, 0,
-        policy::WgcActiveDelayWindowClass::kSourceLimited, softLateTargetUs);
+    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(106000, 106000, 100000, 100000, 8333, 1000000, 0, 0, 0, 0,
+                                                             policy::WgcActiveDelayWindowClass::kSourceLimited,
+                                                             softLateTargetUs);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectRepeatCost);
     EXPECT_FALSE(score.Accepted());
 
-    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
-        109000, 109000, 108000, 100000, 8333, 1000000, 2, 0, 0, 0,
-        policy::WgcActiveDelayWindowClass::kSourceLimited, softLateTargetUs);
+    score = policy::ScoreWgcActiveDelayRepeatRescueCandidate(109000, 109000, 108000, 100000, 8333, 1000000, 2, 0, 0, 0,
+                                                             policy::WgcActiveDelayWindowClass::kSourceLimited,
+                                                             softLateTargetUs);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kAcceptRepeatCluster);
     EXPECT_TRUE(score.Accepted());
 }
@@ -1457,12 +1529,12 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayFinalSelectionChecksPredictedAndRa
     EXPECT_FALSE(policy::IsWgcActiveDelayFinalSelectionWithinHardLimit(108000, 111000, 100000, 8333, 1000000));
     EXPECT_TRUE(policy::IsWgcActiveDelayFinalSelectionWithinHardLimit(108000, 0, 100000, 8333, 1000000));
     EXPECT_EQ(policy::GetWgcActiveDelayFinalSelectionLateResidualUs(106000, 105000, 100000, 1000000), 6000u);
-    EXPECT_TRUE(policy::IsWgcActiveDelayFinalSelectionWithinSoftLateTarget(106000, 105000, 100000, 8333, 1000000,
-                                                                           6249));
-    EXPECT_FALSE(policy::IsWgcActiveDelayFinalSelectionWithinSoftLateTarget(109000, 105000, 100000, 8333, 1000000,
-                                                                            6249));
-    EXPECT_FALSE(policy::IsWgcActiveDelayFinalSelectionWithinSoftLateTarget(111000, 105000, 100000, 8333, 1000000,
-                                                                            6249));
+    EXPECT_TRUE(
+        policy::IsWgcActiveDelayFinalSelectionWithinSoftLateTarget(106000, 105000, 100000, 8333, 1000000, 6249));
+    EXPECT_FALSE(
+        policy::IsWgcActiveDelayFinalSelectionWithinSoftLateTarget(109000, 105000, 100000, 8333, 1000000, 6249));
+    EXPECT_FALSE(
+        policy::IsWgcActiveDelayFinalSelectionWithinSoftLateTarget(111000, 105000, 100000, 8333, 1000000, 6249));
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelayRelaxedCandidateAccountsForRepeatClusterCost) {

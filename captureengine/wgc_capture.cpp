@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <chrono>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -326,11 +327,12 @@ public:
     static constexpr size_t kMaxPendingFrames = 48;
 
     // Texture pool for zero-copy pipeline: each frame gets its own texture
-    // so the encoder can consume frame N while frame N+1 is being copied.
-    static constexpr int TEXTURE_POOL_SIZE = 12;                   // Enough for 120fps + short encoder/callback spikes
-    ID3D11Texture2D* texturePool_[TEXTURE_POOL_SIZE] = {};         // Encoder-device textures
-    ID3D11Texture2D* captureTexturePool_[TEXTURE_POOL_SIZE] = {};  // Capture-device views when split
-    IDXGIKeyedMutex* captureTextureMutexPool_[TEXTURE_POOL_SIZE] = {};
+    // so the encoder can consume frame N while frame N+1 is being copied. The
+    // size is budgeted at capture start; VRR/CFR smoothness needs more than the
+    // old fixed 12 slots at high refresh, but must stay bounded by VRAM.
+    std::vector<ID3D11Texture2D*> texturePool_;         // Encoder-device textures
+    std::vector<ID3D11Texture2D*> captureTexturePool_;  // Capture-device views when split
+    std::vector<IDXGIKeyedMutex*> captureTextureMutexPool_;
     int32_t poolWidth_ = 0;
     int32_t poolHeight_ = 0;
     std::atomic<uint32_t> poolWriteIndex_{0};
@@ -371,7 +373,7 @@ public:
     // This eliminates the data race between the WinRT callback thread (reader)
     // and the main thread (writer during start/stop recording).
     using DirectFrameCallbackFn = void (*)(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, int32_t,
-                                           int32_t);
+                                           int32_t, WgcPoolSlotLease&&);
     std::atomic<DirectFrameCallbackFn> frameCallback_{nullptr};
     std::atomic<uint32_t> callbackFrameCount_{0};
     std::atomic<uint32_t> inputFrameCount_{0};
@@ -412,7 +414,7 @@ public:
     std::atomic<uint32_t> splitDeviceFlushSkippedCount_{0};
     std::atomic<uint32_t> poolSlotFastRewriteCount_{0};
     std::atomic<int64_t> lastPoolSlotRewriteUs_{0};
-    std::atomic<int64_t> poolSlotLastWriteQpc_[TEXTURE_POOL_SIZE] = {};
+    std::vector<int64_t> poolSlotLastWriteQpc_;
     bool dirtyRegionModeEnabled_ = false;
     HCURSOR lastCursorHandle_ = nullptr;
     POINT lastCursorScreenPos_ = {};
@@ -456,6 +458,22 @@ public:
     std::atomic<bool> resetNeeded_{false};
     bool skipSplitDeviceFlush_ = false;
     bool sameDeviceCapture_ = false;
+    bool smoothnessBufferEnabled_ = true;
+    uint32_t smoothnessOutputFps_ = 0;
+    uint32_t smoothnessMaxMs_ = ce::capture_policy::kWgcSmoothnessBufferDefaultMaxMs;
+    uint32_t smoothnessVramBudgetMb_ = ce::capture_policy::kWgcSmoothnessBufferDefaultVramBudgetMb;
+    uint32_t smoothnessSyncDelayFrames_ = 0;
+    uint32_t smoothnessRetainedFrames_ = 0;
+    uint32_t sourceFramePoolBufferCount_ = ce::capture_policy::kWgcSmoothnessSourceFramePoolMinBuffers;
+    uint32_t smoothnessBudgetSurfaceCount_ = 0;
+    uint32_t smoothnessSafetySlots_ = ce::capture_policy::kWgcSmoothnessBufferPoolSafetyFrames;
+    uint32_t texturePoolSlotCount_ = ce::capture_policy::kWgcSmoothnessBufferMinPoolFrames;
+    uint64_t smoothnessEstimatedVramBytes_ = 0;
+    bool smoothnessBudgetExhausted_ = false;
+    std::shared_ptr<WgcPoolLeaseState> poolLeaseState_;
+    uint64_t poolGeneration_ = 0;
+    std::atomic<uint32_t> poolSlotOverwritePreventedCount_{0};
+    std::atomic<uint32_t> poolSaturatedDropCount_{0};
     std::mutex resetReasonMutex_;
     std::string resetReason_;
     winrt::event_token itemClosedToken_{};
@@ -541,19 +559,71 @@ public:
         }
     }
 
-    void ReleaseTexturePool() {
-        for (int i = 0; i < TEXTURE_POOL_SIZE; ++i) {
-            SafeRelease(captureTextureMutexPool_[i]);
-            SafeRelease(captureTexturePool_[i]);
-            SafeRelease(texturePool_[i]);
+    uint32_t BytesPerPixelForFormat(DXGI_FORMAT format) const {
+        switch (format) {
+            case DXGI_FORMAT_R16G16B16A16_FLOAT:
+                return 8;
+            case DXGI_FORMAT_R10G10B10A2_UNORM:
+            case DXGI_FORMAT_B8G8R8A8_UNORM:
+            default:
+                return 4;
         }
+    }
+
+    ce::capture_policy::WgcSmoothnessSurfaceBudget ComputeTexturePoolBudget(uint32_t width, uint32_t height,
+                                                                            DXGI_FORMAT format) const {
+        return ce::capture_policy::ComputeWgcSmoothnessSurfaceBudget(
+            smoothnessBufferEnabled_ ? smoothnessOutputFps_ : 0u, smoothnessBufferEnabled_ ? smoothnessMaxMs_ : 0u,
+            width, height, BytesPerPixelForFormat(format), smoothnessVramBudgetMb_, smoothnessSyncDelayFrames_);
+    }
+
+    void UpdateSmoothnessBudget(uint32_t width, uint32_t height, DXGI_FORMAT format, bool logBudget) {
+        const auto budget = ComputeTexturePoolBudget(width, height, format);
+        smoothnessRetainedFrames_ = smoothnessBufferEnabled_ ? budget.retainedExtraFrames : 0u;
+        sourceFramePoolBufferCount_ = budget.sourceFramePoolBuffers;
+        smoothnessBudgetSurfaceCount_ = budget.budgetSurfaceCount;
+        smoothnessSafetySlots_ = budget.safetySlots;
+        smoothnessEstimatedVramBytes_ = budget.estimatedBytes;
+        smoothnessBudgetExhausted_ = budget.budgetExhausted;
+        texturePoolSlotCount_ = budget.copyPoolSlots;
+        if (logBudget) {
+            const uint32_t desiredFrames = smoothnessBufferEnabled_ ? ce::capture_policy::GetWgcSmoothnessDesiredFrames(
+                                                                          smoothnessOutputFps_, smoothnessMaxMs_)
+                                                                    : 0;
+            LogInfo(
+                "[WGC] Smoothness buffer budget: enabled=%d targetMs=%u outputFps=%u desiredFrames=%u "
+                "retainedFrames=%u sourceFramePoolBuffers=%u copyPoolSlots=%u budgetSurfaces=%u syncFrames=%u "
+                "extraFrames=%u safetySlots=%u fmt=%d %ux%u bpp=%u budget=%uMB estimated=%lluMB capLimited=%d "
+                "budgetExhausted=%d",
+                smoothnessBufferEnabled_ ? 1 : 0, smoothnessMaxMs_, smoothnessOutputFps_, desiredFrames,
+                smoothnessRetainedFrames_, sourceFramePoolBufferCount_, texturePoolSlotCount_,
+                smoothnessBudgetSurfaceCount_, smoothnessSyncDelayFrames_, smoothnessRetainedFrames_,
+                smoothnessSafetySlots_, format, width, height, BytesPerPixelForFormat(format), smoothnessVramBudgetMb_,
+                static_cast<unsigned long long>((smoothnessEstimatedVramBytes_ + 1024ull * 1024ull - 1ull) /
+                                                (1024ull * 1024ull)),
+                budget.capLimited ? 1 : 0, budget.budgetExhausted ? 1 : 0);
+        }
+    }
+
+    void ReleaseTexturePool() {
+        for (auto* mutex : captureTextureMutexPool_) {
+            SafeRelease(mutex);
+        }
+        for (auto* texture : captureTexturePool_) {
+            SafeRelease(texture);
+        }
+        for (auto* texture : texturePool_) {
+            SafeRelease(texture);
+        }
+        texturePool_.clear();
+        captureTexturePool_.clear();
+        captureTextureMutexPool_.clear();
+        poolSlotLastWriteQpc_.clear();
+        poolLeaseState_.reset();
         poolWidth_ = 0;
         poolHeight_ = 0;
         poolFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
         poolWriteIndex_.store(0, std::memory_order_relaxed);
-        for (int i = 0; i < TEXTURE_POOL_SIZE; ++i) {
-            poolSlotLastWriteQpc_[i].store(0, std::memory_order_relaxed);
-        }
     }
 
     void EnableMultithreadProtection(ID3D11Device* device, const char* label) {
@@ -643,6 +713,13 @@ public:
         return true;
     }
 
+    void ReleaseCapturedFrame(WGCCapturedFrame& frame) {
+        SafeRelease(frame.texture);
+        frame.poolLease.Reset();
+        frame.poolSlot = std::numeric_limits<uint32_t>::max();
+        frame.poolGeneration = 0;
+    }
+
     void ResetStats() {
         resetNeeded_.store(false, std::memory_order_relaxed);
         {
@@ -682,9 +759,16 @@ public:
         splitDeviceFlushSkippedCount_.store(0, std::memory_order_relaxed);
         poolSlotFastRewriteCount_.store(0, std::memory_order_relaxed);
         lastPoolSlotRewriteUs_.store(0, std::memory_order_relaxed);
-        for (int i = 0; i < TEXTURE_POOL_SIZE; ++i) {
-            poolSlotLastWriteQpc_[i].store(0, std::memory_order_relaxed);
+        poolSlotOverwritePreventedCount_.store(0, std::memory_order_relaxed);
+        poolSaturatedDropCount_.store(0, std::memory_order_relaxed);
+        if (poolLeaseState_) {
+            const uint32_t current = poolLeaseState_->leasedCurrent.load(std::memory_order_relaxed);
+            poolLeaseState_->leasedMax.store(current, std::memory_order_relaxed);
+            poolLeaseState_->freeMin.store(current >= poolLeaseState_->slotCount ? 0u : poolLeaseState_->slotCount - current,
+                                           std::memory_order_relaxed);
+            poolLeaseState_->releaseMismatchCount.store(0, std::memory_order_relaxed);
         }
+        std::fill(poolSlotLastWriteQpc_.begin(), poolSlotLastWriteQpc_.end(), 0);
         lastCopyUs_.store(0, std::memory_order_relaxed);
         lastDeliveredSourceQpc_.store(0, std::memory_order_relaxed);
         lastObservedRawSourceQpc_.store(0, std::memory_order_relaxed);
@@ -707,7 +791,7 @@ public:
         while (!pendingFrames_.empty()) {
             WGCCapturedFrame stale = std::move(pendingFrames_.front());
             pendingFrames_.pop_front();
-            SafeRelease(stale.texture);
+            ReleaseCapturedFrame(stale);
         }
     }
 
@@ -715,7 +799,7 @@ public:
         while (!pendingFrames_.empty()) {
             WGCCapturedFrame stale = std::move(pendingFrames_.front());
             pendingFrames_.pop_front();
-            SafeRelease(stale.texture);
+            ReleaseCapturedFrame(stale);
         }
     }
 
@@ -729,7 +813,7 @@ public:
             WGCCapturedFrame& lastPending = pendingFrames_.back();
             const int64_t lastKey = lastPending.rawTimestamp > 0 ? lastPending.rawTimestamp : lastPending.timestamp;
             if (frameKey > 0 && lastKey > 0 && frameKey == lastKey) {
-                SafeRelease(lastPending.texture);
+                ReleaseCapturedFrame(lastPending);
                 lastPending = std::move(frame);
                 return;
             }
@@ -739,7 +823,7 @@ public:
         while (pendingFrames_.size() > kMaxPendingFrames) {
             WGCCapturedFrame stale = std::move(pendingFrames_.front());
             pendingFrames_.pop_front();
-            SafeRelease(stale.texture);
+            ReleaseCapturedFrame(stale);
         }
     }
 
@@ -1217,22 +1301,30 @@ public:
             captureDxgiFormat_ = DXGI_FORMAT_R10G10B10A2_UNORM;
         }
 
-        LogInfo("[WGC] Output probe: bpc=%u colorSpace=%d hdr=%s highPrecision=%s requireHighPrecision=%s "
-                "captureFormat=%s",
-                outputBitsPerColor_, (int)outputColorSpace_, captureIsHDR_ ? "YES" : "NO",
-                useHighPrecisionCapture_ ? "YES" : "NO", requireHighPrecisionCapture_ ? "YES" : "NO",
-                DescribeCaptureFormat());
+        LogInfo(
+            "[WGC] Output probe: bpc=%u colorSpace=%d hdr=%s highPrecision=%s requireHighPrecision=%s "
+            "captureFormat=%s",
+            outputBitsPerColor_, (int)outputColorSpace_, captureIsHDR_ ? "YES" : "NO",
+            useHighPrecisionCapture_ ? "YES" : "NO", requireHighPrecisionCapture_ ? "YES" : "NO",
+            DescribeCaptureFormat());
     }
 
     bool EnsureTexturePool(uint32_t width, uint32_t height, DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM) {
         const bool splitDevicePool =
             usingDedicatedCaptureDevice_ && encoderDevice_ && d3dDevice_ && encoderDevice_ != d3dDevice_;
+        UpdateSmoothnessBudget(width, height, format, false);
+        const uint32_t desiredSlots = std::max<uint32_t>(1u, texturePoolSlotCount_);
         if (poolWidth_ == (int32_t)width && poolHeight_ == (int32_t)height && poolFormat_ == format &&
-            texturePool_[0] && (!splitDevicePool || captureTexturePool_[0])) {
+            texturePool_.size() == desiredSlots && !texturePool_.empty() && texturePool_[0] &&
+            (!splitDevicePool || (!captureTexturePool_.empty() && captureTexturePool_[0]))) {
             return true;
         }
 
         ReleaseTexturePool();
+        texturePool_.assign(desiredSlots, nullptr);
+        captureTexturePool_.assign(desiredSlots, nullptr);
+        captureTextureMutexPool_.assign(desiredSlots, nullptr);
+        poolSlotLastWriteQpc_.assign(desiredSlots, 0);
 
         D3D11_TEXTURE2D_DESC copyDesc = {};
         copyDesc.Width = width;
@@ -1247,7 +1339,7 @@ public:
         copyDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
         copyDesc.MiscFlags = splitDevicePool ? D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX : 0;
 
-        for (int i = 0; i < TEXTURE_POOL_SIZE; i++) {
+        for (uint32_t i = 0; i < desiredSlots; i++) {
             HRESULT hr =
                 (splitDevicePool ? encoderDevice_ : d3dDevice_)->CreateTexture2D(&copyDesc, nullptr, &texturePool_[i]);
             if (FAILED(hr)) {
@@ -1296,27 +1388,55 @@ public:
         poolWidth_ = width;
         poolHeight_ = height;
         poolFormat_ = format;
-        LogInfo("[WGC] Texture pool created: %dx%d fmt=%d x%d (%s)", width, height, format, TEXTURE_POOL_SIZE,
-                splitDevicePool ? "dedicated capture device" : "shared device");
+        poolGeneration_++;
+        auto leaseState = std::make_shared<WgcPoolLeaseState>();
+        leaseState->Init(desiredSlots, poolGeneration_);
+        poolLeaseState_ = std::move(leaseState);
+        poolWriteIndex_.store(0, std::memory_order_relaxed);
+
+        LogInfo(
+            "[WGC] Texture pool created: %dx%d fmt=%d sourceFramePoolBuffers=%u copyPoolSlots=%u budgetSurfaces=%u "
+            "syncFrames=%u extraFrames=%u safetySlots=%u estimatedSmooth=%lluMB generation=%llu (%s)",
+            width, height, format, sourceFramePoolBufferCount_, desiredSlots, smoothnessBudgetSurfaceCount_,
+            smoothnessSyncDelayFrames_, smoothnessRetainedFrames_, smoothnessSafetySlots_,
+            static_cast<unsigned long long>((smoothnessEstimatedVramBytes_ + 1024ull * 1024ull - 1ull) /
+                                            (1024ull * 1024ull)),
+            static_cast<unsigned long long>(poolGeneration_),
+            splitDevicePool ? "dedicated capture device" : "shared device");
         return true;
     }
 
     bool CopyFrameToPool(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc, int64_t sourceFrameQpc,
-                         int64_t rawSourceFrameQpc, ID3D11Texture2D** out, int64_t& copyCompleteQpc) {
+                         int64_t rawSourceFrameQpc, ID3D11Texture2D** out, int64_t& copyCompleteQpc,
+                         WgcPoolSlotLease& outLease, uint32_t& outSlot, uint64_t& outGeneration) {
         if (!sourceTexture || !out) {
             return false;
         }
 
         *out = nullptr;
         copyCompleteQpc = 0;
+        outLease.Reset();
+        outSlot = std::numeric_limits<uint32_t>::max();
+        outGeneration = 0;
 
         if (!EnsureTexturePool(sourceDesc.Width, sourceDesc.Height, sourceDesc.Format)) {
             return false;
         }
 
-        const uint32_t startIndex = poolWriteIndex_.fetch_add(1, std::memory_order_relaxed) % TEXTURE_POOL_SIZE;
-        for (int attempt = 0; attempt < TEXTURE_POOL_SIZE; ++attempt) {
-            const uint32_t idx = (startIndex + attempt) % TEXTURE_POOL_SIZE;
+        const uint32_t poolSize = static_cast<uint32_t>(texturePool_.size());
+        if (poolSize == 0) {
+            return false;
+        }
+        const uint32_t startIndex = poolWriteIndex_.fetch_add(1, std::memory_order_relaxed) % poolSize;
+        const auto leaseState = poolLeaseState_;
+        const uint64_t poolGeneration = poolGeneration_;
+        for (uint32_t attempt = 0; attempt < poolSize; ++attempt) {
+            const uint32_t idx = (startIndex + attempt) % poolSize;
+            if (!leaseState || !leaseState->TryAcquire(idx)) {
+                poolSlotOverwritePreventedCount_.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            WgcPoolSlotLease slotLease(leaseState, idx, poolGeneration);
             ID3D11Texture2D* copyTarget = captureTexturePool_[idx] ? captureTexturePool_[idx] : texturePool_[idx];
             IDXGIKeyedMutex* writeMutex = captureTextureMutexPool_[idx];
             bool mutexAcquired = false;
@@ -1325,6 +1445,7 @@ public:
                 const HRESULT kmHr = writeMutex->AcquireSync(0, 0);
                 if (kmHr != S_OK) {
                     keyedMutexAcquireFailCount_.fetch_add(1, std::memory_order_relaxed);
+                    slotLease.Reset();
                     continue;
                 }
                 mutexAcquired = true;
@@ -1347,6 +1468,7 @@ public:
                     keyedMutexReleaseFailCount_.fetch_add(1, std::memory_order_relaxed);
                     LogWarn("[WGC] Shared texture ReleaseSync failed for slot %u: 0x%08lX", idx,
                             (unsigned long)releaseHr);
+                    slotLease.Reset();
                     continue;
                 }
             }
@@ -1357,8 +1479,8 @@ public:
             if (qpcFreq_ > 0) {
                 copyUs = ((copyEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq_;
             }
-            const int64_t previousSlotWriteQpc =
-                poolSlotLastWriteQpc_[idx].exchange(copyEnd.QuadPart, std::memory_order_relaxed);
+            const int64_t previousSlotWriteQpc = poolSlotLastWriteQpc_[idx];
+            poolSlotLastWriteQpc_[idx] = copyEnd.QuadPart;
             if (previousSlotWriteQpc > 0 && copyEnd.QuadPart > previousSlotWriteQpc && qpcFreq_ > 0) {
                 const int64_t slotRewriteUs = ((copyEnd.QuadPart - previousSlotWriteQpc) * 1000000) / qpcFreq_;
                 lastPoolSlotRewriteUs_.store(slotRewriteUs, std::memory_order_relaxed);
@@ -1389,15 +1511,36 @@ public:
 
             texturePool_[idx]->AddRef();
             *out = texturePool_[idx];
+            outLease = std::move(slotLease);
+            outSlot = idx;
+            outGeneration = poolGeneration;
             copyCompleteQpc = copyEnd.QuadPart;
+            static std::atomic<uint32_t> copiedLogCount{0};
+            const uint32_t copiedLog = copiedLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (copiedLog <= 8 || (copiedLog % 1000u) == 0u) {
+                LogInfo(
+                    "[WGC] Pool frame copied: slot=%u generation=%llu copyUs=%lld sourceQpc=%lld rawQpc=%lld "
+                    "leasedMax=%u freeMin=%u",
+                    idx, static_cast<unsigned long long>(poolGeneration), static_cast<long long>(copyUs),
+                    static_cast<long long>(sourceFrameQpc), static_cast<long long>(rawSourceFrameQpc),
+                    leaseState ? leaseState->leasedMax.load(std::memory_order_relaxed) : 0u,
+                    leaseState ? leaseState->freeMin.load(std::memory_order_relaxed) : 0u);
+            }
             return true;
         }
 
         skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
         poolDropCount_.fetch_add(1, std::memory_order_relaxed);
+        poolSaturatedDropCount_.fetch_add(1, std::memory_order_relaxed);
         static std::atomic<int> contentionLogCount{0};
         if (contentionLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-            LogWarn("[WGC] Shared texture pool saturated; dropping frame");
+            LogWarn(
+                "[WGC] Texture pool saturated: safely dropped WGC frame instead of overwriting a live slot "
+                "(copyPoolSlots=%u generation=%llu leasedMax=%u freeMin=%u overwritePrevented=%u frameQpc=%lld)",
+                poolSize, static_cast<unsigned long long>(poolGeneration),
+                leaseState ? leaseState->leasedMax.load(std::memory_order_relaxed) : 0u,
+                leaseState ? leaseState->freeMin.load(std::memory_order_relaxed) : 0u,
+                poolSlotOverwritePreventedCount_.load(std::memory_order_relaxed), (long long)sourceFrameQpc);
         }
         return false;
     }
@@ -1500,8 +1643,11 @@ public:
 
                 ID3D11Texture2D* copiedTexture = nullptr;
                 int64_t copyCompleteQpc = 0;
+                WgcPoolSlotLease poolLease;
+                uint32_t poolSlot = std::numeric_limits<uint32_t>::max();
+                uint64_t poolGeneration = 0;
                 if (CopyFrameToPool(texture, desc, sourceFrameQpc, rawSourceFrameQpc, &copiedTexture,
-                                    copyCompleteQpc)) {
+                                    copyCompleteQpc, poolLease, poolSlot, poolGeneration)) {
                     const int64_t deliveredTimestamp = sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc;
                     if (sourceFrameQpc > 0 && !duplicateSourceTimestamp) {
                         lastDeliveredSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
@@ -1523,11 +1669,14 @@ public:
                         outputFrame->captureLeft = captureLeft;
                         outputFrame->captureTop = captureTop;
                         outputFrame->duplicateSourceTimestamp = duplicateSourceTimestamp;
+                        outputFrame->poolSlot = poolSlot;
+                        outputFrame->poolGeneration = poolGeneration;
+                        outputFrame->poolLease = std::move(poolLease);
                     } else {
                         auto cb = frameCallback_.load(std::memory_order_acquire);
                         if (cb) {
                             cb(copiedTexture, desc.Width, desc.Height, deliveredTimestamp, rawSourceFrameQpc,
-                               captureIsHDR_, duplicateSourceTimestamp, captureLeft, captureTop);
+                               captureIsHDR_, duplicateSourceTimestamp, captureLeft, captureTop, std::move(poolLease));
                         } else {
                             SafeRelease(copiedTexture);
                         }
@@ -1767,6 +1916,7 @@ public:
         frameWidth_ = width;
         frameHeight_ = height;
         UpdateCaptureFormatSelection();
+        UpdateSmoothnessBudget(width, height, captureDxgiFormat_, true);
         const DXGI_FORMAT requestedDxgiFormat = captureDxgiFormat_;
         const bool requestedHighPrecision = useHighPrecisionCapture_;
         const bool highPrecisionRequired = requireHighPrecisionCapture_ || captureIsHDR_;
@@ -1776,11 +1926,13 @@ public:
         // CRITICAL: Must use CreateFreeThreaded (not Create) because we have no
         // message pump! Create() requires a DispatcherQueue pumping messages for
         // callbacks to fire. CreateFreeThreaded() uses an internal worker thread
-        // for callbacks. Use 12 buffers to give the CFR selector more headroom
-        // during high-Hz bursts and brief encoder catchup pressure.
+        // for callbacks. WGC source buffers are budgeted separately from CE copy
+        // slots so delivery bursts and encoder texture lifetime do not fight over
+        // one unbounded pool.
         auto tryCreateFramePool = [&](winrt::DirectXPixelFormat format) -> bool {
             try {
-                framePool_ = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(winrtDevice_, format, 12, size);
+                framePool_ = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(
+                    winrtDevice_, format, static_cast<int32_t>(sourceFramePoolBufferCount_), size);
                 return framePool_ != nullptr;
             } catch (const winrt::hresult_error& e) {
                 if (format == capturePixelFormat_) {
@@ -1800,6 +1952,7 @@ public:
                 attemptedFp16Fallback = true;
                 capturePixelFormat_ = winrt::DirectXPixelFormat::R16G16B16A16Float;
                 captureDxgiFormat_ = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                UpdateSmoothnessBudget(width, height, captureDxgiFormat_, true);
                 // useHighPrecisionCapture_ stays true
             } else if (highPrecisionRequired) {
                 LogError("[WGC] Failed to create required high-precision frame pool for format=%s",
@@ -1810,19 +1963,19 @@ public:
                 capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
                 captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
                 useHighPrecisionCapture_ = false;
+                UpdateSmoothnessBudget(width, height, captureDxgiFormat_, true);
             }
 
             if (!tryCreateFramePool(capturePixelFormat_)) {
                 if (capturePixelFormat_ != winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized) {
-                    if (!ce::capture_policy::ShouldAllowBgra8WgcFallback(requireHighPrecisionCapture_,
-                                                                         captureIsHDR_)) {
+                    if (!ce::capture_policy::ShouldAllowBgra8WgcFallback(requireHighPrecisionCapture_, captureIsHDR_)) {
                         LogError(
                             "[WGC] Required high-precision frame pool failed after fallback attempts "
                             "(requested=%s finalAttempt=%s)",
                             requestedDxgiFormat == DXGI_FORMAT_R16G16B16A16_FLOAT
                                 ? "R16G16B16A16_FLOAT"
                                 : (requestedDxgiFormat == DXGI_FORMAT_R10G10B10A2_UNORM ? "R10G10B10A2_UNORM"
-                                                                                         : "B8G8R8A8_UNORM"),
+                                                                                        : "B8G8R8A8_UNORM"),
                             DescribeCaptureFormat());
                         return false;
                     }
@@ -1830,6 +1983,7 @@ public:
                     capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
                     captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
                     useHighPrecisionCapture_ = false;
+                    UpdateSmoothnessBudget(width, height, captureDxgiFormat_, true);
                     if (!tryCreateFramePool(capturePixelFormat_)) {
                         LogError("[WGC] Failed to create frame pool in all capture formats");
                         return false;
@@ -1999,7 +2153,7 @@ public:
             if (maxFrames > 0 && frames.size() > maxFrames) {
                 WGCCapturedFrame stale = std::move(frames.front());
                 frames.erase(frames.begin());
-                SafeRelease(stale.texture);
+                ReleaseCapturedFrame(stale);
             }
         }
 
@@ -2310,7 +2464,8 @@ HANDLE WGCCapture::GetFrameArrivedEvent() const {
 }
 
 void WGCCapture::SetDirectFrameCallback(
-    std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, int32_t, int32_t)>
+    std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, int32_t, int32_t,
+                       WgcPoolSlotLease&&)>
         callback) {
 #if HAS_WGC
     if (impl_) {
@@ -2318,7 +2473,9 @@ void WGCCapture::SetDirectFrameCallback(
         // Only static/free functions are ever passed (QueueWgcFrame or nullptr).
         Impl::DirectFrameCallbackFn rawPtr = nullptr;
         if (callback) {
-            rawPtr = *callback.target<Impl::DirectFrameCallbackFn>();
+            if (auto target = callback.target<Impl::DirectFrameCallbackFn>()) {
+                rawPtr = *target;
+            }
         }
         impl_->frameCallback_.store(rawPtr, std::memory_order_release);
     }
@@ -2541,6 +2698,47 @@ int64_t WGCCapture::GetLastPoolSlotRewriteUs() const {
 #endif
 }
 
+uint32_t WGCCapture::GetPoolSlotLeasedMaxCount() const {
+#if HAS_WGC
+    return (impl_ && impl_->poolLeaseState_) ? impl_->poolLeaseState_->leasedMax.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetPoolSlotFreeMinCount() const {
+#if HAS_WGC
+    return (impl_ && impl_->poolLeaseState_) ? impl_->poolLeaseState_->freeMin.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetPoolSlotOverwritePreventedCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->poolSlotOverwritePreventedCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetPoolSaturatedDropCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->poolSaturatedDropCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetPoolLeaseMismatchCount() const {
+#if HAS_WGC
+    return (impl_ && impl_->poolLeaseState_) ? impl_->poolLeaseState_->releaseMismatchCount.load(std::memory_order_relaxed)
+                                             : 0;
+#else
+    return 0;
+#endif
+}
+
 int64_t WGCCapture::GetCallbackGapAvgUs() const {
 #if HAS_WGC
     return impl_ ? impl_->callbackGapAvgUs_.load(std::memory_order_relaxed) : 0;
@@ -2586,6 +2784,62 @@ bool WGCCapture::IsUsingDedicatedCaptureDevice() const {
     return impl_ ? impl_->usingDedicatedCaptureDevice_ : false;
 #else
     return false;
+#endif
+}
+
+uint32_t WGCCapture::GetTexturePoolSlotCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->texturePoolSlotCount_ : ce::capture_policy::kWgcSmoothnessBufferMinPoolFrames;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetSourceFramePoolBufferCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->sourceFramePoolBufferCount_ : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetSmoothnessBudgetSurfaceCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->smoothnessBudgetSurfaceCount_ : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetSmoothnessSyncFrameCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->smoothnessSyncDelayFrames_ : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetSmoothnessSafetySlotCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->smoothnessSafetySlots_ : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetSmoothnessRetainedFrameCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->smoothnessRetainedFrames_ : 0;
+#else
+    return 0;
+#endif
+}
+
+uint64_t WGCCapture::GetSmoothnessEstimatedVramBytes() const {
+#if HAS_WGC
+    return impl_ ? impl_->smoothnessEstimatedVramBytes_ : 0;
+#else
+    return 0;
 #endif
 }
 
@@ -2733,6 +2987,10 @@ void WGCCapture::ForceReset() {
         HMONITOR targetMonitor = impl_->targetMonitor_;
         const bool wasWindowCapture = targetWindow != nullptr;
         const bool wasMonitorCapture = targetMonitor != nullptr && targetWindow == nullptr;
+        const bool smoothnessBufferEnabled = impl_->smoothnessBufferEnabled_;
+        const uint32_t smoothnessOutputFps = impl_->smoothnessOutputFps_;
+        const uint32_t smoothnessMaxMs = impl_->smoothnessMaxMs_;
+        const uint32_t smoothnessVramBudgetMb = impl_->smoothnessVramBudgetMb_;
 
         // Clear the active direct-frame callback before tearing down
         impl_->frameCallback_.store(nullptr, std::memory_order_release);
@@ -2764,6 +3022,10 @@ void WGCCapture::ForceReset() {
 
         impl_.reset();
         impl_ = std::make_unique<Impl>();
+        impl_->smoothnessBufferEnabled_ = smoothnessBufferEnabled;
+        impl_->smoothnessOutputFps_ = smoothnessOutputFps;
+        impl_->smoothnessMaxMs_ = smoothnessMaxMs;
+        impl_->smoothnessVramBudgetMb_ = smoothnessVramBudgetMb;
         if (!impl_->InitializeDevices(device_)) {
             LogError("[WGC] ForceReset failed to reinitialize capture devices");
             return;
@@ -2833,5 +3095,28 @@ void WGCCapture::SetRequireHighPrecisionCapture(bool enabled) {
     }
 #else
     (void)enabled;
+#endif
+}
+
+void WGCCapture::SetSmoothnessBufferBudget(bool enabled, uint32_t outputFps, uint32_t maxMs, uint32_t vramBudgetMb,
+                                           uint32_t syncDelayFrames) {
+#if HAS_WGC
+    if (impl_) {
+        impl_->smoothnessBufferEnabled_ = enabled;
+        impl_->smoothnessOutputFps_ = outputFps;
+        impl_->smoothnessMaxMs_ = maxMs;
+        impl_->smoothnessVramBudgetMb_ = vramBudgetMb;
+        impl_->smoothnessSyncDelayFrames_ =
+            (enabled && syncDelayFrames == 0) ? ce::capture_policy::GetWgcEstimatedSyncDelayFramesForBudget(outputFps)
+                                              : syncDelayFrames;
+        LogInfo("[WGC] Smoothness buffer config: enabled=%d outputFps=%u maxMs=%u budget=%uMB syncFrames=%u",
+                enabled ? 1 : 0, outputFps, maxMs, vramBudgetMb, impl_->smoothnessSyncDelayFrames_);
+    }
+#else
+    (void)enabled;
+    (void)outputFps;
+    (void)maxMs;
+    (void)vramBudgetMb;
+    (void)syncDelayFrames;
 #endif
 }
