@@ -36,7 +36,7 @@ struct WgcAudioLagTargets {
 };
 
 inline bool ShouldDeferAudioPullUntilQuantum(int64_t pendingSamples, bool trackStartupSettled, bool forceDrain,
-                                              int64_t quantumSamples = kDefaultAudioPullQuantumSamples) {
+                                             int64_t quantumSamples = kDefaultAudioPullQuantumSamples) {
     if (forceDrain || !trackStartupSettled) {
         return false;
     }
@@ -371,9 +371,8 @@ inline int64_t ComputeSamplesToDurationUs(int64_t samples, int sampleRate) {
     constexpr int64_t kMicrosecondsPerSecond = 1000000;
     const bool negative = samples < 0;
     const int64_t absSamples = negative ? -samples : samples;
-    const int64_t durationUs =
-        ((absSamples * kMicrosecondsPerSecond) + (static_cast<int64_t>(sampleRate) / 2)) /
-        static_cast<int64_t>(sampleRate);
+    const int64_t durationUs = ((absSamples * kMicrosecondsPerSecond) + (static_cast<int64_t>(sampleRate) / 2)) /
+                               static_cast<int64_t>(sampleRate);
     return negative ? -durationUs : durationUs;
 }
 
@@ -390,8 +389,7 @@ inline size_t ComputeAudioPlaneOffsetBytes(int planeIndex, int64_t samplesPerPla
         return 0;
     }
 
-    return static_cast<size_t>(planeIndex) * static_cast<size_t>(samplesPerPlane) *
-           static_cast<size_t>(bytesPerSample);
+    return static_cast<size_t>(planeIndex) * static_cast<size_t>(samplesPerPlane) * static_cast<size_t>(bytesPerSample);
 }
 
 inline PacketEndClamp ClampPacketDurationToTargetSamples(int64_t packetPtsSamples, int64_t packetDurationSamples,
@@ -500,9 +498,9 @@ inline int32_t ComputeTier1CompensationDelta(int64_t trueDriftSamples, int64_t c
         std::clamp(trueDriftSamples, static_cast<int64_t>(-maxDelta), static_cast<int64_t>(maxDelta)));
 }
 
-inline int32_t ComputeTier1CompensationDeltaWithDeadband(
-    int64_t trueDriftSamples, int64_t compensationWindowSamples, double maxPitchPercent = 0.5,
-    int64_t deadbandSamples = kDefaultAudioPullQuantumSamples) {
+inline int32_t ComputeTier1CompensationDeltaWithDeadband(int64_t trueDriftSamples, int64_t compensationWindowSamples,
+                                                         double maxPitchPercent = 0.5,
+                                                         int64_t deadbandSamples = kDefaultAudioPullQuantumSamples) {
     const int64_t boundedDeadband = std::max<int64_t>(0, deadbandSamples);
     if (std::abs(trueDriftSamples) <= boundedDeadband) {
         return 0;
@@ -522,9 +520,9 @@ inline bool ShouldActivateTier2Trim(int64_t trueDriftSamples, int sampleRate, in
 }
 
 inline bool ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(bool isCfrRecording, bool forceDrain,
-                                                                       int64_t timelineShortfallMs,
-                                                                       bool encoderBottlenecked,
-                                                                       int64_t minShortfallMs = 100) {
+                                                                        int64_t timelineShortfallMs,
+                                                                        bool encoderBottlenecked,
+                                                                        int64_t minShortfallMs = 100) {
     if (!isCfrRecording || forceDrain) {
         return false;
     }
@@ -536,21 +534,20 @@ inline bool ShouldSuppressWgcPositiveDriftCorrectionDuringLiveShortfall(bool isW
                                                                         int64_t timelineShortfallMs,
                                                                         bool encoderBottlenecked,
                                                                         int64_t minShortfallMs = 100) {
-    return ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(isWgcCfrRecording, forceDrain,
-                                                                       timelineShortfallMs, encoderBottlenecked,
-                                                                       minShortfallMs);
+    return ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(
+        isWgcCfrRecording, forceDrain, timelineShortfallMs, encoderBottlenecked, minShortfallMs);
 }
 
-inline bool ShouldAllowCfrSourceClockDriftCompensation(bool isCfrRecording, bool forceDrain,
-                                                       bool trackStartupSettled, bool startupTimelineProtected,
-                                                       bool encoderBottlenecked, int64_t timelineShortfallMs,
-                                                       bool coverageLossActive, int64_t minShortfallMs = 100) {
+inline bool ShouldAllowCfrSourceClockDriftCompensation(bool isCfrRecording, bool forceDrain, bool trackStartupSettled,
+                                                       bool startupTimelineProtected, bool encoderBottlenecked,
+                                                       int64_t timelineShortfallMs, bool coverageLossActive,
+                                                       int64_t minShortfallMs = 100) {
     if (!isCfrRecording || forceDrain || !trackStartupSettled || startupTimelineProtected || coverageLossActive) {
         return false;
     }
 
-    return !ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(
-        isCfrRecording, forceDrain, timelineShortfallMs, encoderBottlenecked, minShortfallMs);
+    return !ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(isCfrRecording, forceDrain, timelineShortfallMs,
+                                                                        encoderBottlenecked, minShortfallMs);
 }
 
 inline int64_t ComputeRuntimeOverflowCapSamples(bool isCfrContinuityProtected, int64_t targetLatencySamples,
@@ -592,8 +589,8 @@ inline int64_t ComputeCatastrophicBacklogResyncTrim(bool isCfrRecording, bool is
     if (rbAvailableSamples <= std::max<int64_t>(0, catastrophicThresholdSamples)) {
         return 0;
     }
-    const int64_t keepSamples = std::max<int64_t>(std::max<int64_t>(0, minKeepSamples),
-                                                  std::max<int64_t>(0, targetLatencySamples));
+    const int64_t keepSamples =
+        std::max<int64_t>(std::max<int64_t>(0, minKeepSamples), std::max<int64_t>(0, targetLatencySamples));
     const int64_t trimSamples = rbAvailableSamples - keepSamples;
     return trimSamples > 0 ? trimSamples : 0;
 }
@@ -613,9 +610,8 @@ inline bool ShouldSuppressBufferDeferForCatchup(int64_t samplesToEncode, int64_t
 
 inline int64_t ComputeAudioSamplesAllowedBeforeEnd(int64_t targetSamples, int64_t encodedSamples,
                                                    int64_t queuedSamples) {
-    return std::max<int64_t>(
-        0, std::max<int64_t>(0, targetSamples) - std::max<int64_t>(0, encodedSamples) -
-               std::max<int64_t>(0, queuedSamples));
+    return std::max<int64_t>(0, std::max<int64_t>(0, targetSamples) - std::max<int64_t>(0, encodedSamples) -
+                                    std::max<int64_t>(0, queuedSamples));
 }
 
 inline int64_t ComputeTier2TrimBudget(int64_t trueDriftSamples, int sampleRate, int64_t baseQuantumSamples,
@@ -743,9 +739,8 @@ inline bool ShouldDrainStoppedCaptureQueuesBeforeFinalAudioPull(bool audioThread
     return audioThreadRunning && !audioOnlyRecording && videoTargetDurationUs > 0;
 }
 
-inline bool ShouldDeferCfrAudioPullForSourceBuffer(bool isCfrRecording, bool forceDrain,
-                                                   bool optionalUnstartedSource, bool sparseStartedSourceMaySilence,
-                                                   int64_t requestedSamples,
+inline bool ShouldDeferCfrAudioPullForSourceBuffer(bool isCfrRecording, bool forceDrain, bool optionalUnstartedSource,
+                                                   bool sparseStartedSourceMaySilence, int64_t requestedSamples,
                                                    size_t bufferedTimelineSamples) {
     if (!isCfrRecording || forceDrain || optionalUnstartedSource || sparseStartedSourceMaySilence ||
         requestedSamples <= 0) {
@@ -755,9 +750,8 @@ inline bool ShouldDeferCfrAudioPullForSourceBuffer(bool isCfrRecording, bool for
     return bufferedTimelineSamples < static_cast<size_t>(requestedSamples);
 }
 
-inline bool ShouldWaitForFinalCfrSourceCatchup(bool isCfrRecording, bool strictSource,
-                                               bool optionalUnstartedSource, bool sparseStartedSourceMaySilence,
-                                               int64_t requestedSamples,
+inline bool ShouldWaitForFinalCfrSourceCatchup(bool isCfrRecording, bool strictSource, bool optionalUnstartedSource,
+                                               bool sparseStartedSourceMaySilence, int64_t requestedSamples,
                                                size_t bufferedTimelineSamples) {
     if (!isCfrRecording || !strictSource || optionalUnstartedSource || sparseStartedSourceMaySilence ||
         requestedSamples <= 0) {
@@ -770,8 +764,7 @@ inline bool ShouldWaitForFinalCfrSourceCatchup(bool isCfrRecording, bool strictS
 inline bool ShouldTreatSparseStartedSourceAsSilence(bool isCfrRecording, bool isAppAudioSource,
                                                     bool sourceBootstrapComplete, bool optionalUnstartedSource,
                                                     bool finalStopDrain = false) {
-    return isCfrRecording && isAppAudioSource && sourceBootstrapComplete && !optionalUnstartedSource &&
-           !finalStopDrain;
+    return isCfrRecording && isAppAudioSource && sourceBootstrapComplete && !optionalUnstartedSource && !finalStopDrain;
 }
 
 inline bool ShouldTreatStartedAppSourceShortfallAsSilence(bool sparseStartedSourceMaySilence,
@@ -835,7 +828,7 @@ inline int64_t ComputeSharedStartupFirstPacketRebaseOffset(int64_t earliestPacke
                                                            int64_t cappedStartupGapSamples,
                                                            int64_t rebaseThresholdSamples) {
     return ComputeStartupFirstPacketRebaseOffset(earliestPacketStartSamples, true, cappedStartupGapSamples,
-                                                rebaseThresholdSamples);
+                                                 rebaseThresholdSamples);
 }
 
 inline int64_t ApplyStartupPacketTimelineRebaseOffset(int64_t packetStartSamples, int64_t startupRebasedGapSamples) {
@@ -846,6 +839,10 @@ inline int64_t ApplyStartupPacketTimelineRebaseOffset(int64_t packetStartSamples
     }
 
     return std::max<int64_t>(0, clampedPacketStartSamples - clampedRebasedGapSamples);
+}
+
+inline bool ShouldPreservePendingAudioPacketsForStartupSync(bool isWgcCfrRecording, int64_t wgcStartupExtraDelayQpc) {
+    return isWgcCfrRecording && wgcStartupExtraDelayQpc > 0;
 }
 
 inline PacketTimelineAdjustment ComputeStartupAwarePacketTimelineAdjustment(

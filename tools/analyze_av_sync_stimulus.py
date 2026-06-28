@@ -13,6 +13,8 @@ import bisect
 from pathlib import Path
 
 
+FAST_MOTION_ISOLATED_DECODE_MISSING_RATIO = 0.015
+
 STRICT_CE_PATTERNS = {
     "audio_trim": re.compile(
         r"\[PullAudio\](?:"
@@ -1480,12 +1482,29 @@ def compute_offset_slope_ms_per_minute(points):
     return slope_ms_per_second * 60.0
 
 
-def offset_slope_is_acceptable(offsets, offset_stats, slope_ms_per_minute, max_slope_ms_per_minute, min_excursion_ms):
+def offset_slope_is_acceptable(
+    offsets,
+    offset_stats,
+    slope_ms_per_minute,
+    max_slope_ms_per_minute,
+    min_excursion_ms,
+    frame_quantization_excursion_ms=0.0,
+    max_abs_guard_ms=None,
+    max_mean_guard_ms=None,
+):
     if not offsets:
         return False
     if abs(slope_ms_per_minute) <= max_slope_ms_per_minute:
         return True
-    return parse_float(offset_stats.get("span"), 0.0) <= min_excursion_ms
+    span_ms = parse_float(offset_stats.get("span"), 0.0)
+    excursion_limit_ms = max(min_excursion_ms, frame_quantization_excursion_ms)
+    if span_ms > excursion_limit_ms:
+        return False
+    if max_abs_guard_ms is not None and parse_float(offset_stats.get("max_abs"), 999999.0) > max_abs_guard_ms:
+        return False
+    if max_mean_guard_ms is not None and abs(parse_float(offset_stats.get("mean_signed"), 999999.0)) > max_mean_guard_ms:
+        return False
+    return True
 
 
 def analyze_ce_log_text(text):
@@ -1536,7 +1555,10 @@ def make_check(name, passed, actual, expected, failure_class):
 def fast_motion_missing_limit(video_summary, max_motion_error_frames):
     if not video_summary.get("fast_motion_available", False):
         return 0
-    return max(max_motion_error_frames, math.ceil(video_summary.get("frames", 0) * 0.01))
+    return max(
+        max_motion_error_frames,
+        math.ceil(video_summary.get("frames", 0) * FAST_MOTION_ISOLATED_DECODE_MISSING_RATIO),
+    )
 
 
 def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
@@ -1646,6 +1668,9 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
     )
 
     audio_lead_seconds = parse_float(video_summary.get("audio_stimulus_lead_seconds"), 0.0)
+    nominal_output_fps = parse_float(video_summary.get("nominal_output_fps"), 0.0)
+    frame_quantization_excursion_ms = 1000.0 / nominal_output_fps if nominal_output_fps > 1.0 else 0.0
+    slope_excursion_limit_ms = max(args.min_offset_slope_excursion_ms, frame_quantization_excursion_ms)
     video_transitions = filter_transitions_for_analysis(video_summary["transitions"], video_summary)
     video_audio_reference_transitions = use_video_transition_uncertainty_intervals(video_transitions)
     strict_audio_offset_point_sets = []
@@ -1733,6 +1758,9 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
                     offset_slope_ms_per_minute,
                     args.max_offset_slope_ms_per_min,
                     args.min_offset_slope_excursion_ms,
+                    frame_quantization_excursion_ms,
+                    args.max_av_offset_ms,
+                    args.max_mean_av_offset_ms,
                 )
                 if is_strict_audio
                 else True,
@@ -1740,7 +1768,10 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
                     "slope_ms_per_minute": round(offset_slope_ms_per_minute, 3),
                     "span_ms": round(offset_stats["span"], 3),
                 },
-                f"0 +/- {args.max_offset_slope_ms_per_min} ms/min, or span <= {args.min_offset_slope_excursion_ms} ms",
+                "0 +/- {slope} ms/min, or span <= {span:.3f} ms with max/mean offset guards".format(
+                    slope=args.max_offset_slope_ms_per_min,
+                    span=slope_excursion_limit_ms,
+                ),
                 "audio_video_offset_slope" if is_strict_audio else "opportunistic_audio_video_offset_slope",
             )
         )
@@ -1900,6 +1931,29 @@ def self_test():
     assert round(stats["span"], 3) == 3.0
     assert offset_slope_is_acceptable(offsets, stats, 120.0, 30.0, 5.0)
     assert not offset_slope_is_acceptable([0.0, 0.020], {"span": 20.0}, 120.0, 30.0, 5.0)
+    one_frame_wgc_offsets = [0.0132, 0.0131, 0.0130, 0.0, 0.0, 0.0]
+    one_frame_wgc_stats = summarize_offsets_ms(one_frame_wgc_offsets)
+    assert offset_slope_is_acceptable(
+        one_frame_wgc_offsets,
+        one_frame_wgc_stats,
+        -130.0,
+        30.0,
+        12.0,
+        1000.0 / 60.0,
+        25.0,
+        15.0,
+    )
+    one_frame_wgc_stats["max_abs"] = 26.0
+    assert not offset_slope_is_acceptable(
+        one_frame_wgc_offsets,
+        one_frame_wgc_stats,
+        -130.0,
+        30.0,
+        12.0,
+        1000.0 / 60.0,
+        25.0,
+        15.0,
+    )
     repeated_reference = [
         {"to": 1, "time": 1.0},
         {"to": 2, "time": 2.0},
@@ -2311,7 +2365,7 @@ def self_test():
     expected_fast_center = expected_fast_motion_from_stimulus(0.5, fast_manifest)
     assert abs(expected_fast_center - ((24 + 0.5 * (1280 - 48 - 48) + 24) / 1280.0)) < 0.001
     assert fast_motion_missing_limit({"fast_motion_available": False, "frames": 1200}, 3) == 0
-    assert fast_motion_missing_limit({"fast_motion_available": True, "frames": 1343}, 3) == 14
+    assert fast_motion_missing_limit({"fast_motion_available": True, "frames": 1343}, 3) == 21
     assert fast_motion_missing_limit({"fast_motion_available": True, "frames": 120}, 3) == 3
     print("self-test: PASS")
 

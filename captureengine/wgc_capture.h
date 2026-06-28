@@ -99,10 +99,9 @@ public:
 
     // OBS-style direct callback: frames processed directly in WinRT callback
     // Callback receives: texture, width, height, QPC timestamp, HDR flag, capture origin
-    void SetDirectFrameCallback(
-        std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, int32_t, int32_t,
-                           WgcPoolSlotLease&&)>
-            callback);
+    void SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool,
+                                                   int32_t, int32_t, WgcPoolSlotLease&&)>
+                                    callback);
 
     // Get count of frames processed via direct callback
     uint32_t GetCallbackFrameCount() const;
@@ -157,7 +156,24 @@ public:
     uint32_t GetSmoothnessSyncFrameCount() const;
     uint32_t GetSmoothnessSafetySlotCount() const;
     uint32_t GetSmoothnessRetainedFrameCount() const;
+    uint32_t GetSmoothnessRetainedFrameCap() const;
+    uint32_t GetSmoothnessReservedFreeSlotCount() const;
     uint64_t GetSmoothnessEstimatedVramBytes() const;
+    uint32_t GetIngressAcceptedCount() const;
+    uint32_t GetIngressDecimatedCount() const;
+    uint32_t GetIngressAcceptedLowWaterCount() const;
+    uint32_t GetIngressAcceptedRecoveryCount() const;
+    uint32_t GetIngressAcceptedSourceBelowCount() const;
+    uint32_t GetIngressAcceptedHealthyCount() const;
+    uint32_t GetIngressDecimatedSoftReserveCount() const;
+    uint32_t GetIngressDecimatedHardReserveCount() const;
+    uint32_t GetIngressDecimatedCreditCount() const;
+    uint32_t GetIngressSoftReservePressureCount() const;
+    uint32_t GetIngressHardReservePressureCount() const;
+    uint32_t GetIngressRetainedFrameCount() const;
+    uint32_t GetIngressRetainedFrameCap() const;
+    uint32_t GetIngressLowWaterFrameCount() const;
+    uint32_t GetIngressAdmissionReasonCode() const;
 
     // Throttle capture rate to avoid wasting GPU bandwidth on excess frames.
     // Set to target recording FPS. 0 disables throttle.
@@ -194,6 +210,8 @@ public:
     void SetRequireHighPrecisionCapture(bool enabled);
     void SetSmoothnessBufferBudget(bool enabled, uint32_t outputFps, uint32_t maxMs, uint32_t vramBudgetMb,
                                    uint32_t syncDelayFrames = 0);
+    void SetRetainedFramePressure(uint32_t retainedFrames, uint32_t retainedFrameCap, uint32_t lowWaterFrames,
+                                  bool recovering);
 
     // Set GPU thread priority for the WGC capture D3D11 device.
     // Passes through to IDXGIDevice::SetGPUThreadPriority.

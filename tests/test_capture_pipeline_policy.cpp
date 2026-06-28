@@ -1100,14 +1100,17 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferBudgetCapsRetainedFrames) {
     // reduced before sync-delay and safety slots.
     const auto budget = policy::ComputeWgcSmoothnessSurfaceBudget(
         /*outputFps=*/120, /*maxSmoothnessMs=*/250, /*width=*/3840, /*height=*/2160,
-        /*bytesPerPixel=*/8, /*budgetMb=*/2048,
-        policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
+        /*bytesPerPixel=*/8, /*budgetMb=*/2048, policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
     EXPECT_EQ(budget.budgetSurfaceCount, 32u);
     EXPECT_EQ(budget.sourceFramePoolBuffers, 8u);
     EXPECT_EQ(budget.copyPoolSlots, 24u);
     EXPECT_EQ(budget.syncDelayFrames, 4u);
     EXPECT_EQ(budget.safetySlots, 4u);
-    EXPECT_EQ(budget.retainedExtraFrames, 16u);
+    EXPECT_EQ(budget.inFlightEncodeSlots, 1u);
+    EXPECT_EQ(budget.selectedFrameSlackSlots, 1u);
+    EXPECT_EQ(budget.reservedFreeCopySlots, 6u);
+    EXPECT_EQ(budget.retainedFrameCap, 18u);
+    EXPECT_EQ(budget.retainedExtraFrames, 13u);
     EXPECT_LT(budget.retainedExtraFrames, desired);
     EXPECT_TRUE(budget.capLimited);
 }
@@ -1115,11 +1118,11 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferBudgetCapsRetainedFrames) {
 TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferAllowsFullTargetWhenBudgetAllows) {
     const auto budget = policy::ComputeWgcSmoothnessSurfaceBudget(
         /*outputFps=*/120, /*maxSmoothnessMs=*/250, /*width=*/1920, /*height=*/1080,
-        /*bytesPerPixel=*/4, /*budgetMb=*/2048,
-        policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
+        /*bytesPerPixel=*/4, /*budgetMb=*/2048, policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
     EXPECT_EQ(budget.retainedExtraFrames, 30u);
     EXPECT_EQ(budget.sourceFramePoolBuffers, 8u);
-    EXPECT_EQ(budget.copyPoolSlots, 38u);
+    EXPECT_EQ(budget.copyPoolSlots, 41u);
+    EXPECT_EQ(budget.retainedFrameCap, 35u);
     EXPECT_FALSE(budget.capLimited);
 }
 
@@ -1131,7 +1134,134 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferInactiveDelayDoesNotReserveEx
     EXPECT_EQ(budget.retainedExtraFrames, 0u);
     EXPECT_EQ(budget.sourceFramePoolBuffers, 8u);
     EXPECT_EQ(budget.copyPoolSlots, 8u);
+    EXPECT_EQ(budget.retainedFrameCap, 2u);
     EXPECT_FALSE(budget.capLimited);
+}
+
+TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferInactiveExtraStillReservesSyncDelay) {
+    const auto budget = policy::ComputeWgcSmoothnessSurfaceBudget(
+        /*outputFps=*/0, /*maxSmoothnessMs=*/0, /*width=*/3840, /*height=*/2160,
+        /*bytesPerPixel=*/8, /*budgetMb=*/2048, /*syncDelayFrames=*/4);
+    EXPECT_EQ(budget.desiredExtraFrames, 0u);
+    EXPECT_EQ(budget.retainedExtraFrames, 0u);
+    EXPECT_EQ(budget.sourceFramePoolBuffers, 8u);
+    EXPECT_EQ(budget.copyPoolSlots, 11u);
+    EXPECT_EQ(budget.retainedFrameCap, 5u);
+    EXPECT_FALSE(budget.capLimited);
+}
+
+TEST(CapturePipelinePolicyTest, WgcIngressAdmissionDecimatesOnlyWhenReservoirIsHigh) {
+    const auto decision = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/17, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
+        /*admissionCreditFrames=*/0.25, /*freeCopySlots=*/7, /*reservedFreeCopySlots=*/6);
+    EXPECT_FALSE(decision.accept);
+    EXPECT_TRUE(decision.decimated);
+    EXPECT_FALSE(decision.softReservePressure);
+    EXPECT_STREQ(decision.reason, "wgc_ingress_decimated_credit");
+}
+
+TEST(CapturePipelinePolicyTest, WgcIngressAdmissionAcceptsHighReservoirWhenCreditAllows) {
+    const auto decision = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/17, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
+        /*admissionCreditFrames=*/1.0, /*freeCopySlots=*/7, /*reservedFreeCopySlots=*/6);
+    EXPECT_TRUE(decision.accept);
+    EXPECT_FALSE(decision.decimated);
+    EXPECT_STREQ(decision.reason, "credit");
+}
+
+TEST(CapturePipelinePolicyTest, WgcIngressAdmissionHonorsReservedFreeSlotsBeforeCredit) {
+    const auto decision = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/1, /*retainedFrameCap=*/2, /*lowWaterFrames=*/0, /*recovering=*/false,
+        /*outputFps=*/60, /*recentInputMin250Fps=*/120, /*recentInputMin500Fps=*/120,
+        /*admissionCreditFrames=*/2.0, /*freeCopySlots=*/6, /*reservedFreeCopySlots=*/6);
+    EXPECT_FALSE(decision.accept);
+    EXPECT_TRUE(decision.decimated);
+    EXPECT_TRUE(decision.softReservePressure);
+    EXPECT_STREQ(decision.reason, "wgc_ingress_decimated_soft_reserve");
+}
+
+TEST(CapturePipelinePolicyTest, WgcIngressAdmissionZeroLowWaterDoesNotBypassReservedSlots) {
+    const auto decision = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/0, /*retainedFrameCap=*/2, /*lowWaterFrames=*/0, /*recovering=*/false,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
+        /*admissionCreditFrames=*/2.0, /*freeCopySlots=*/6, /*reservedFreeCopySlots=*/6);
+    EXPECT_FALSE(decision.accept);
+    EXPECT_TRUE(decision.decimated);
+    EXPECT_TRUE(decision.softReservePressure);
+    EXPECT_STREQ(decision.reason, "wgc_ingress_decimated_soft_reserve");
+}
+
+TEST(CapturePipelinePolicyTest, WgcIngressAdmissionAcceptsLowWaterAndRecovery) {
+    auto lowWater = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/5, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
+        /*admissionCreditFrames=*/0.0, /*freeCopySlots=*/7, /*reservedFreeCopySlots=*/6);
+    EXPECT_TRUE(lowWater.accept);
+    EXPECT_FALSE(lowWater.decimated);
+    EXPECT_STREQ(lowWater.reason, "low_water");
+
+    auto recovery = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/18, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/true,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
+        /*admissionCreditFrames=*/0.0, /*freeCopySlots=*/7, /*reservedFreeCopySlots=*/6);
+    EXPECT_TRUE(recovery.accept);
+    EXPECT_FALSE(recovery.decimated);
+    EXPECT_STREQ(recovery.reason, "recovery");
+}
+
+TEST(CapturePipelinePolicyTest, WgcIngressAdmissionSoftReserveDoesNotBeatLowWaterAndRecovery) {
+    auto lowWater = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/5, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
+        /*admissionCreditFrames=*/0.0, /*freeCopySlots=*/6, /*reservedFreeCopySlots=*/6);
+    EXPECT_TRUE(lowWater.accept);
+    EXPECT_FALSE(lowWater.decimated);
+    EXPECT_TRUE(lowWater.softReservePressure);
+    EXPECT_STREQ(lowWater.reason, "low_water");
+
+    auto recovery = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/18, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/true,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
+        /*admissionCreditFrames=*/0.0, /*freeCopySlots=*/6, /*reservedFreeCopySlots=*/6);
+    EXPECT_TRUE(recovery.accept);
+    EXPECT_FALSE(recovery.decimated);
+    EXPECT_TRUE(recovery.softReservePressure);
+    EXPECT_STREQ(recovery.reason, "recovery");
+}
+
+TEST(CapturePipelinePolicyTest, WgcIngressAdmissionDoesNotDecimateBelowTargetSourceWithHeadroom) {
+    const auto decision = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/18, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/108, /*recentInputMin500Fps=*/109,
+        /*admissionCreditFrames=*/0.0, /*freeCopySlots=*/7, /*reservedFreeCopySlots=*/6);
+    EXPECT_TRUE(decision.accept);
+    EXPECT_FALSE(decision.decimated);
+    EXPECT_STREQ(decision.reason, "source_below_cfr_target");
+}
+
+TEST(CapturePipelinePolicyTest, WgcIngressAdmissionSoftReserveDoesNotBeatBelowTargetSource) {
+    const auto decision = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/18, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/108, /*recentInputMin500Fps=*/109,
+        /*admissionCreditFrames=*/0.0, /*freeCopySlots=*/6, /*reservedFreeCopySlots=*/6);
+    EXPECT_TRUE(decision.accept);
+    EXPECT_FALSE(decision.decimated);
+    EXPECT_TRUE(decision.softReservePressure);
+    EXPECT_STREQ(decision.reason, "source_below_cfr_target");
+}
+
+TEST(CapturePipelinePolicyTest, WgcIngressAdmissionHardReserveIsFaultEvidenceForImportantFrames) {
+    const auto decision = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/18, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/108, /*recentInputMin500Fps=*/109,
+        /*admissionCreditFrames=*/0.0, /*freeCopySlots=*/0, /*reservedFreeCopySlots=*/6);
+    EXPECT_TRUE(decision.accept);
+    EXPECT_FALSE(decision.decimated);
+    EXPECT_TRUE(decision.hardReservePressure);
+    EXPECT_TRUE(decision.softReservePressure);
+    EXPECT_STREQ(decision.reason, "source_below_cfr_target");
 }
 
 TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferRequiresActiveSyncDelay) {

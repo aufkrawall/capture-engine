@@ -278,6 +278,30 @@ constexpr double kEncodeEmaAlpha = 0.10;
 constexpr double kBottleneckEnterRatio = 0.95;  // smoothedEncodeMs > 95% of frame interval → enter
 constexpr double kBottleneckExitRatio = 0.75;   // smoothedEncodeMs < 75% of frame interval → exit
 
+const char* WgcIngressAdmissionReasonName(uint32_t code) {
+    switch (code) {
+        case 1:
+            return "low_water";
+        case 2:
+            return "recovery";
+        case 3:
+            return "source_below_cfr_target";
+        case 4:
+            return "credit";
+        case 5:
+            return "healthy";
+        case 6:
+            return "wgc_ingress_decimated_soft_reserve";
+        case 7:
+            return "wgc_ingress_decimated_hard_reserve";
+        case 8:
+            return "wgc_ingress_decimated_credit";
+        case 0:
+        default:
+            return "uncapped";
+    }
+}
+
 // Update g_IsEncoderBottlenecked with hysteresis to prevent rapid toggling.
 // During startup we still learn the encode-time EMA, but we keep the
 // bottleneck flag cleared so one-time encoder priming doesn't raise false
@@ -894,15 +918,12 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     const uint32_t outputFps = static_cast<uint32_t>(std::max(0, config.video.fps));
     const bool hasWgcContentDelayBudget = maxAudioCaptureLatencyMs > 0.0f;
     const uint32_t syncDelayFramesForBudget =
-        hasWgcContentDelayBudget
-            ? ce::capture_policy::GetWgcEstimatedSyncDelayFramesForBudget(
-                  outputFps, static_cast<uint32_t>(std::ceil(maxAudioCaptureLatencyMs)))
-            : 0u;
-    g_WgcCap->SetSmoothnessBufferBudget(config.wgcSmoothnessBufferEnabled && !config.video.useVFR &&
-                                            hasWgcContentDelayBudget,
-                                        outputFps,
-                                        config.wgcSmoothnessBufferMaxMs, config.wgcSmoothnessBufferVramBudgetMb,
-                                        syncDelayFramesForBudget);
+        hasWgcContentDelayBudget ? ce::capture_policy::GetWgcEstimatedSyncDelayFramesForBudget(
+                                       outputFps, static_cast<uint32_t>(std::ceil(maxAudioCaptureLatencyMs)))
+                                 : 0u;
+    g_WgcCap->SetSmoothnessBufferBudget(
+        config.wgcSmoothnessBufferEnabled && !config.video.useVFR && hasWgcContentDelayBudget, outputFps,
+        config.wgcSmoothnessBufferMaxMs, config.wgcSmoothnessBufferVramBudgetMb, syncDelayFramesForBudget);
     if (config.video.useVFR) {
         g_WgcCap->SetDirectFrameCallback(QueueWgcFrame);
     } else {
@@ -1602,6 +1623,17 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
     uint32_t lastPoolSlotFastRewriteCount = 0;
     uint32_t lastPoolSaturatedDropCount = 0;
     uint32_t lastPoolOverwritePreventedCount = 0;
+    uint32_t lastIngressAcceptedCount = 0;
+    uint32_t lastIngressDecimatedCount = 0;
+    uint32_t lastIngressAcceptedLowWaterCount = 0;
+    uint32_t lastIngressAcceptedRecoveryCount = 0;
+    uint32_t lastIngressAcceptedSourceBelowCount = 0;
+    uint32_t lastIngressAcceptedHealthyCount = 0;
+    uint32_t lastIngressDecimatedSoftReserveCount = 0;
+    uint32_t lastIngressDecimatedHardReserveCount = 0;
+    uint32_t lastIngressDecimatedCreditCount = 0;
+    uint32_t lastIngressSoftReservePressureCount = 0;
+    uint32_t lastIngressHardReservePressureCount = 0;
     uint32_t lastDuplicateCount = 0;
     uint32_t lastLateCount = 0;
     bool sessionPrimed = false;
@@ -1628,6 +1660,17 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastPoolSlotFastRewriteCount = 0;
             lastPoolSaturatedDropCount = 0;
             lastPoolOverwritePreventedCount = 0;
+            lastIngressAcceptedCount = 0;
+            lastIngressDecimatedCount = 0;
+            lastIngressAcceptedLowWaterCount = 0;
+            lastIngressAcceptedRecoveryCount = 0;
+            lastIngressAcceptedSourceBelowCount = 0;
+            lastIngressAcceptedHealthyCount = 0;
+            lastIngressDecimatedSoftReserveCount = 0;
+            lastIngressDecimatedHardReserveCount = 0;
+            lastIngressDecimatedCreditCount = 0;
+            lastIngressSoftReservePressureCount = 0;
+            lastIngressHardReservePressureCount = 0;
             lastDuplicateCount = 0;
             lastLateCount = 0;
             lastDiagTime = 0;
@@ -1652,6 +1695,17 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastPoolSlotFastRewriteCount = g_WgcCap->GetPoolSlotFastRewriteCount();
             lastPoolSaturatedDropCount = g_WgcCap->GetPoolSaturatedDropCount();
             lastPoolOverwritePreventedCount = g_WgcCap->GetPoolSlotOverwritePreventedCount();
+            lastIngressAcceptedCount = g_WgcCap->GetIngressAcceptedCount();
+            lastIngressDecimatedCount = g_WgcCap->GetIngressDecimatedCount();
+            lastIngressAcceptedLowWaterCount = g_WgcCap->GetIngressAcceptedLowWaterCount();
+            lastIngressAcceptedRecoveryCount = g_WgcCap->GetIngressAcceptedRecoveryCount();
+            lastIngressAcceptedSourceBelowCount = g_WgcCap->GetIngressAcceptedSourceBelowCount();
+            lastIngressAcceptedHealthyCount = g_WgcCap->GetIngressAcceptedHealthyCount();
+            lastIngressDecimatedSoftReserveCount = g_WgcCap->GetIngressDecimatedSoftReserveCount();
+            lastIngressDecimatedHardReserveCount = g_WgcCap->GetIngressDecimatedHardReserveCount();
+            lastIngressDecimatedCreditCount = g_WgcCap->GetIngressDecimatedCreditCount();
+            lastIngressSoftReservePressureCount = g_WgcCap->GetIngressSoftReservePressureCount();
+            lastIngressHardReservePressureCount = g_WgcCap->GetIngressHardReservePressureCount();
             if (g_pSharedMem) {
                 lastDuplicateCount = g_pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
                 lastLateCount = g_pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
@@ -1680,6 +1734,17 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             uint32_t currentPoolSlotFastRewriteCount = g_WgcCap->GetPoolSlotFastRewriteCount();
             uint32_t currentPoolSaturatedDropCount = g_WgcCap->GetPoolSaturatedDropCount();
             uint32_t currentPoolOverwritePreventedCount = g_WgcCap->GetPoolSlotOverwritePreventedCount();
+            uint32_t currentIngressAcceptedCount = g_WgcCap->GetIngressAcceptedCount();
+            uint32_t currentIngressDecimatedCount = g_WgcCap->GetIngressDecimatedCount();
+            uint32_t currentIngressAcceptedLowWaterCount = g_WgcCap->GetIngressAcceptedLowWaterCount();
+            uint32_t currentIngressAcceptedRecoveryCount = g_WgcCap->GetIngressAcceptedRecoveryCount();
+            uint32_t currentIngressAcceptedSourceBelowCount = g_WgcCap->GetIngressAcceptedSourceBelowCount();
+            uint32_t currentIngressAcceptedHealthyCount = g_WgcCap->GetIngressAcceptedHealthyCount();
+            uint32_t currentIngressDecimatedSoftReserveCount = g_WgcCap->GetIngressDecimatedSoftReserveCount();
+            uint32_t currentIngressDecimatedHardReserveCount = g_WgcCap->GetIngressDecimatedHardReserveCount();
+            uint32_t currentIngressDecimatedCreditCount = g_WgcCap->GetIngressDecimatedCreditCount();
+            uint32_t currentIngressSoftReservePressureCount = g_WgcCap->GetIngressSoftReservePressureCount();
+            uint32_t currentIngressHardReservePressureCount = g_WgcCap->GetIngressHardReservePressureCount();
             uint32_t inputFrames = currentInputCount - lastInputCount;
             uint32_t deliveredFrames = currentCount - lastCallbackCount;
             uint32_t hostDropDelta =
@@ -1698,6 +1763,24 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             uint32_t poolSlotFastRewriteDelta = currentPoolSlotFastRewriteCount - lastPoolSlotFastRewriteCount;
             uint32_t poolSaturatedDropDelta = currentPoolSaturatedDropCount - lastPoolSaturatedDropCount;
             uint32_t poolOverwritePreventedDelta = currentPoolOverwritePreventedCount - lastPoolOverwritePreventedCount;
+            uint32_t ingressAcceptedDelta = currentIngressAcceptedCount - lastIngressAcceptedCount;
+            uint32_t ingressDecimatedDelta = currentIngressDecimatedCount - lastIngressDecimatedCount;
+            uint32_t ingressAcceptedLowWaterDelta =
+                currentIngressAcceptedLowWaterCount - lastIngressAcceptedLowWaterCount;
+            uint32_t ingressAcceptedRecoveryDelta =
+                currentIngressAcceptedRecoveryCount - lastIngressAcceptedRecoveryCount;
+            uint32_t ingressAcceptedSourceBelowDelta =
+                currentIngressAcceptedSourceBelowCount - lastIngressAcceptedSourceBelowCount;
+            uint32_t ingressAcceptedHealthyDelta = currentIngressAcceptedHealthyCount - lastIngressAcceptedHealthyCount;
+            uint32_t ingressDecimatedSoftReserveDelta =
+                currentIngressDecimatedSoftReserveCount - lastIngressDecimatedSoftReserveCount;
+            uint32_t ingressDecimatedHardReserveDelta =
+                currentIngressDecimatedHardReserveCount - lastIngressDecimatedHardReserveCount;
+            uint32_t ingressDecimatedCreditDelta = currentIngressDecimatedCreditCount - lastIngressDecimatedCreditCount;
+            uint32_t ingressSoftReservePressureDelta =
+                currentIngressSoftReservePressureCount - lastIngressSoftReservePressureCount;
+            uint32_t ingressHardReservePressureDelta =
+                currentIngressHardReservePressureCount - lastIngressHardReservePressureCount;
             uint32_t queuedFrames = deliveredFrames >= hostDropDelta ? (deliveredFrames - hostDropDelta) : 0;
             int64_t copyUs = g_WgcCap->GetLastCopyTimeUs();
             int64_t srcIntervalAvgUs = g_WgcCap->GetSourceIntervalAvgUs();
@@ -1775,8 +1858,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
 
             LogInfo(
                 "[WGC Perf] Input: %u | Queued: %u | DropFull: %u | DropPace: %u | DropThrottle: %u | "
-                "DropStale: %u (DupTs=%u OOO=%u) | DropCursor: %u | DropPool: %u | HostQ: %u | EncQ: %u | Dup: %u | "
-                "Late: %u | "
+                "DropStale: %u (DupTs=%u OOO=%u) | DropCursor: %u | DropPool: %u | DropIngress: %u | "
+                "HostQ: %u | EncQ: %u | Dup: %u | Late: %u | "
                 "SrcAvg: %lldus | JitAvg: %lldus | JitMax: %lldus | Src->Copy: %lld/%lldus | Deliv: %u | "
                 "MinIn250/500: %u/%u | MinDel250/500: %u/%u | FreshMiss: %upm | BufAvg: %upm | BufMin: %u | "
                 "NoFresh: %u | NoReserve: %u | SchedSelAvg: %uus "
@@ -1784,10 +1867,14 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 "CbProc: %lld/%lldus CbDrainMax: %u | Copy: %lldus | "
                 "SlotAge: %lldus FastSlot: %u | PoolLease: max=%u freeMin=%u satDrop=%u overwritePrevented=%u "
                 "mismatch=%u sourceFramePoolBuffers=%u copyPoolSlots=%u budgetSurfaces=%u syncFrames=%u "
-                "extraFrames=%u safetySlots=%u | KMFail: %u/%u | Flush: %u/%u | "
+                "extraFrames=%u retainedCap=%u reservedFree=%u safetySlots=%u | "
+                "Ingress: accepted=%u decimated=%u retained=%u/%u lowWater=%u reason=%s "
+                "accLow=%u accRec=%u accSrcBelow=%u accHealthy=%u "
+                "decSoft=%u decHard=%u decCredit=%u softPress=%u hardPress=%u | "
+                "KMFail: %u/%u | Flush: %u/%u | "
                 "Dedicated: %d | Encode: %lldus | Fence: %lldus | Throttle: %u | Mux: %uKB | Overload: 0x%X",
                 inputFrames, queuedFrames, hostDropDelta, pacingSkipDelta, throttleSkipDelta, staleSkipDelta,
-                staleDuplicateTsDelta, staleOutOfOrderTsDelta, cursorSkipDelta, poolDropDelta,
+                staleDuplicateTsDelta, staleOutOfOrderTsDelta, cursorSkipDelta, poolDropDelta, ingressDecimatedDelta,
                 static_cast<uint32_t>(g_FrameQueue.Size()), encoderQueueDepth, dupDelta, lateDelta, srcIntervalAvgUs,
                 srcJitterAvgUs, srcJitterMaxUs, srcToCopyAvgUs, srcToCopyMaxUs, deliveredRatePerSec, inputMin250Fps,
                 inputMin500Fps, deliveredMin250Fps, deliveredMin500Fps, queueEmptyPermille, bufferedAtTickAvgPermille,
@@ -1798,8 +1885,15 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 poolOverwritePreventedDelta, g_WgcCap->GetPoolLeaseMismatchCount(),
                 g_WgcCap->GetSourceFramePoolBufferCount(), g_WgcCap->GetTexturePoolSlotCount(),
                 g_WgcCap->GetSmoothnessBudgetSurfaceCount(), g_WgcCap->GetSmoothnessSyncFrameCount(),
-                g_WgcCap->GetSmoothnessRetainedFrameCount(), g_WgcCap->GetSmoothnessSafetySlotCount(),
-                keyedAcquireFailDelta, keyedReleaseFailDelta, splitFlushDelta, splitFlushSkippedDelta,
+                g_WgcCap->GetSmoothnessRetainedFrameCount(), g_WgcCap->GetSmoothnessRetainedFrameCap(),
+                g_WgcCap->GetSmoothnessReservedFreeSlotCount(), g_WgcCap->GetSmoothnessSafetySlotCount(),
+                ingressAcceptedDelta, ingressDecimatedDelta, g_WgcCap->GetIngressRetainedFrameCount(),
+                g_WgcCap->GetIngressRetainedFrameCap(), g_WgcCap->GetIngressLowWaterFrameCount(),
+                WgcIngressAdmissionReasonName(g_WgcCap->GetIngressAdmissionReasonCode()), ingressAcceptedLowWaterDelta,
+                ingressAcceptedRecoveryDelta, ingressAcceptedSourceBelowDelta, ingressAcceptedHealthyDelta,
+                ingressDecimatedSoftReserveDelta, ingressDecimatedHardReserveDelta, ingressDecimatedCreditDelta,
+                ingressSoftReservePressureDelta, ingressHardReservePressureDelta, keyedAcquireFailDelta,
+                keyedReleaseFailDelta, splitFlushDelta, splitFlushSkippedDelta,
                 g_WgcCap->IsUsingDedicatedCaptureDevice() ? 1 : 0, encodeUs, fenceUs, throttleTargetFps,
                 (muxQueueBytes + 1023u) / 1024u, overloadFlags);
 
@@ -1820,6 +1914,17 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastPoolSlotFastRewriteCount = currentPoolSlotFastRewriteCount;
             lastPoolSaturatedDropCount = currentPoolSaturatedDropCount;
             lastPoolOverwritePreventedCount = currentPoolOverwritePreventedCount;
+            lastIngressAcceptedCount = currentIngressAcceptedCount;
+            lastIngressDecimatedCount = currentIngressDecimatedCount;
+            lastIngressAcceptedLowWaterCount = currentIngressAcceptedLowWaterCount;
+            lastIngressAcceptedRecoveryCount = currentIngressAcceptedRecoveryCount;
+            lastIngressAcceptedSourceBelowCount = currentIngressAcceptedSourceBelowCount;
+            lastIngressAcceptedHealthyCount = currentIngressAcceptedHealthyCount;
+            lastIngressDecimatedSoftReserveCount = currentIngressDecimatedSoftReserveCount;
+            lastIngressDecimatedHardReserveCount = currentIngressDecimatedHardReserveCount;
+            lastIngressDecimatedCreditCount = currentIngressDecimatedCreditCount;
+            lastIngressSoftReservePressureCount = currentIngressSoftReservePressureCount;
+            lastIngressHardReservePressureCount = currentIngressHardReservePressureCount;
             lastDiagTime = now;
         }
     }
@@ -1998,6 +2103,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t wgcSmoothnessRetainedFrames = 0;
     uint32_t wgcSmoothnessActualFrames = 0;
     uint32_t wgcSmoothnessPoolSlots = 0;
+    uint32_t wgcSmoothnessRetainedFrameCap = 0;
+    uint32_t wgcSmoothnessReservedFreeSlots = 0;
     uint64_t wgcSmoothnessEstimatedVramBytes = 0;
     bool wgcSmoothnessCapLimited = false;
     std::string wgcSmoothnessBufferReason = "not-run";
@@ -2067,6 +2174,9 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint64_t wgcDelayPaceCapTrimTotal = 0;
     uint32_t wgcDelayPaceCapTrimWindow = 0;
     DWORD wgcDelayPaceCapTrimLastLogTick = 0;
+    uint64_t wgcRetainedCapTrimTotal = 0;
+    uint32_t wgcRetainedCapTrimWindow = 0;
+    DWORD wgcRetainedCapTrimLastLogTick = 0;
     uint64_t wgcDelayOlderFrameAvoidedRepeatTotal = 0;
     uint32_t wgcDelayOlderFrameAvoidedRepeatWindow = 0;
     uint64_t wgcDelaySourceLimitedRepeatTotal = 0;
@@ -2129,6 +2239,21 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t wgcDelayRepeatClusterPressureMaxTicks = 0;
     uint64_t wgcSourceRepeatLowerBoundTotal = 0;
     uint32_t wgcSourceRepeatLowerBoundWindow = 0;
+    constexpr size_t kWgcRollingSourceWindowSlots = 5;
+    std::array<uint32_t, kWgcRollingSourceWindowSlots> wgcRollingSourceAcceptedSlots{};
+    std::array<uint32_t, kWgcRollingSourceWindowSlots> wgcRollingSourceCfrTickSlots{};
+    size_t wgcRollingSourceSlotIndex = 0;
+    size_t wgcRollingSourceSlotCount = 0;
+    uint32_t wgcRollingSourceAcceptedSum = 0;
+    uint32_t wgcRollingSourceCfrTickSum = 0;
+    uint32_t wgcRollingSourceAcceptedWindow = 0;
+    uint32_t wgcRollingSourceCfrTicksWindow = 0;
+    uint32_t wgcRollingSourceDeficitFrames = 0;
+    uint32_t wgcRollingSourceSurplusFrames = 0;
+    uint64_t wgcRollingSourceAcceptedTotal = 0;
+    uint64_t wgcRollingSourceCfrTickTotal = 0;
+    uint32_t wgcRollingSourceLastIngressAccepted = 0;
+    bool wgcRollingSourceWindowPrimed = false;
     uint64_t wgcExcessRepeatTotal = 0;
     uint32_t wgcExcessRepeatWindow = 0;
     uint64_t wgcPolicyAddedRepeatTotal = 0;
@@ -2215,6 +2340,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     int64_t wgcAvSyncScheduleOffsetQpc = 0;
     int64_t wgcAvSyncStartupAudioAnchorQpc = 0;
     int64_t wgcAvSyncStartupVideoQpc = 0;
+    int64_t wgcAvSyncStartupEffectiveDelayQpc = 0;
     int64_t wgcStartupReserveWaitStartQpc = 0;
     uint32_t wgcStartupReserveWaitCount = 0;
     int64_t wgcStartupReserveWaitInitialSpanUs = 0;
@@ -2478,11 +2604,14 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcAvSyncScheduleOffsetQpc = 0;
             wgcAvSyncStartupAudioAnchorQpc = 0;
             wgcAvSyncStartupVideoQpc = 0;
+            wgcAvSyncStartupEffectiveDelayQpc = 0;
             wgcSmoothnessActiveDelayQpc = 0;
             wgcSmoothnessDesiredFrames = 0;
             wgcSmoothnessRetainedFrames = 0;
             wgcSmoothnessActualFrames = 0;
             wgcSmoothnessPoolSlots = 0;
+            wgcSmoothnessRetainedFrameCap = 0;
+            wgcSmoothnessReservedFreeSlots = 0;
             wgcSmoothnessEstimatedVramBytes = 0;
             wgcSmoothnessCapLimited = false;
             wgcSmoothnessBufferReason = "not-run";
@@ -2629,6 +2758,84 @@ void EncoderThreadFunc(const AppConfig& config) {
     };
     const auto getWgcDelayReservoirTargetFrames = [&]() -> uint32_t {
         return getWgcDelayReservoirTargetFramesForDelay(getWgcEffectiveContentDelayQpc());
+    };
+    const auto getWgcRetainedFrameCap = [&]() -> uint32_t {
+        if (!g_WgcCap) {
+            return 0u;
+        }
+        return g_WgcCap->GetSmoothnessRetainedFrameCap();
+    };
+    const auto updateWgcIngressPressure = [&](const char*) {
+        if (!g_WgcCap) {
+            return;
+        }
+        const uint32_t retainedCap = getWgcRetainedFrameCap();
+        const uint32_t retainedFrames = SaturatingToUint32(
+            static_cast<uint64_t>(bufferedWgcFrames.size()) +
+            static_cast<uint64_t>(std::min<size_t>(g_FrameQueue.Size(), static_cast<size_t>(UINT32_MAX))));
+        const uint32_t lowWaterFrames = getWgcDelayReservoirLowWaterFrames();
+        const bool delayReservoirActive = lowWaterFrames > 0;
+        const bool recovering = delayReservoirActive && (wgcLowSourceModeActive || wgcLiveRecoveryModeActive ||
+                                                         (wgcActiveDelaySourceRecoveryUntilTick > GetTickCount64()) ||
+                                                         retainedFrames <= lowWaterFrames);
+        g_WgcCap->SetRetainedFramePressure(retainedFrames, retainedCap, lowWaterFrames, recovering);
+    };
+    const auto trimBufferedWgcToRetainedCap = [&](const char* reason) {
+        const uint32_t retainedCap = getWgcRetainedFrameCap();
+        if (retainedCap == 0) {
+            updateWgcIngressPressure(reason);
+            return 0u;
+        }
+        uint32_t trimmed = 0;
+        while (bufferedWgcFrames.size() > retainedCap) {
+            QueuedFrame surplus = std::move(bufferedWgcFrames.back());
+            bufferedWgcFrames.pop_back();
+            ReleaseQueuedFrameTexture(surplus);
+            ++trimmed;
+        }
+        if (trimmed > 0) {
+            wgcRetainedCapTrimTotal += trimmed;
+            wgcRetainedCapTrimWindow += trimmed;
+            const DWORD nowTick = GetTickCount();
+            if (trimmed >= 3 || nowTick - wgcRetainedCapTrimLastLogTick >= 1000) {
+                LogInfo(
+                    "[WGC CFR] retained reservoir capped: trimmedNewest=%u reason=%s retained=%zu cap=%u "
+                    "reservedFree=%u poolSlots=%u (pool safety protected; surplus source frames become planned CFR "
+                    "decimation/repeats, audio/PTS unchanged)",
+                    trimmed, reason ? reason : "unknown", bufferedWgcFrames.size(), retainedCap,
+                    g_WgcCap ? g_WgcCap->GetSmoothnessReservedFreeSlotCount() : 0u,
+                    g_WgcCap ? g_WgcCap->GetTexturePoolSlotCount() : 0u);
+                wgcRetainedCapTrimLastLogTick = nowTick;
+            }
+        }
+        updateWgcIngressPressure(reason);
+        return trimmed;
+    };
+    const auto trimBufferedWgcStartupWaitToRetainedCap = [&](const char* reason) {
+        const uint32_t retainedCap = getWgcRetainedFrameCap();
+        if (retainedCap == 0) {
+            updateWgcIngressPressure(reason);
+            return 0u;
+        }
+        uint32_t trimmed = 0;
+        while (bufferedWgcFrames.size() > retainedCap) {
+            QueuedFrame surplus = std::move(bufferedWgcFrames.front());
+            bufferedWgcFrames.pop_front();
+            ReleaseQueuedFrameTexture(surplus);
+            ++trimmed;
+        }
+        if (trimmed > 0) {
+            wgcRetainedCapTrimTotal += trimmed;
+            wgcRetainedCapTrimWindow += trimmed;
+            LogInfo(
+                "[WGC CFR] startup wait retained reservoir capped: trimmedOldest=%u reason=%s retained=%zu cap=%u "
+                "reservedFree=%u poolSlots=%u",
+                trimmed, reason ? reason : "startup-wait", bufferedWgcFrames.size(), retainedCap,
+                g_WgcCap ? g_WgcCap->GetSmoothnessReservedFreeSlotCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetTexturePoolSlotCount() : 0u);
+        }
+        updateWgcIngressPressure(reason);
+        return trimmed;
     };
     const auto recordWgcDelayResidualSample =
         [&](int64_t signedResidualUs, uint64_t& samples, uint64_t& absAccumUs, int64_t& signedAccumUs,
@@ -4458,6 +4665,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     pruneStaleWgcVisualDebt(visualDebtPolicyQpc, "live-buffer",
                                             g_HasLastFrame && !g_LastFrame.isInjectMode);
                 }
+                trimBufferedWgcToRetainedCap(recordingOutputLive ? "live-buffer" : "warmup-buffer");
 
                 // Track frame arrival rate for pacing telemetry only.
                 if (sampleWgcCadenceTick) {
@@ -4990,6 +5198,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         popped = true;
                     }
                 }
+                updateWgcIngressPressure(popped ? "post-select" : "post-hold");
             } else {
                 // VFR: keep the existing lowest-latency newest-frame sampling.
                 QueuedFrame temp;
@@ -5461,6 +5670,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         const int64_t delayTicks =
                             ce::capture_policy::GetWgcCfrStartupPreLiveDelayTicks(targetIntervalTicks) +
                             smoothnessStartupDelayTicks;
+                        updateWgcIngressPressure("startup-pre-live-delay");
                         if (hTimer && delayTicks > 0 && qpcFreq.QuadPart > 0) {
                             const int64_t delay100ns = (delayTicks * 10000000) / qpcFreq.QuadPart;
                             LARGE_INTEGER dueTime;
@@ -5484,6 +5694,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                             bufferedFlushed = bufferedWgcFrames.size();
                             ClearBufferedWgcFrames();
                         }
+                        updateWgcIngressPressure("startup-post-delay-flush");
 
                         LARGE_INTEGER barrierNow;
                         QueryPerformanceCounter(&barrierNow);
@@ -5616,6 +5827,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const uint32_t smoothnessPoolSlots =
                         g_WgcCap ? g_WgcCap->GetTexturePoolSlotCount()
                                  : ce::capture_policy::GetWgcSmoothnessPoolFrameCount(smoothnessRetainedFrames);
+                    const uint32_t smoothnessRetainedFrameCap =
+                        g_WgcCap ? g_WgcCap->GetSmoothnessRetainedFrameCap() : smoothnessPoolSlots;
+                    const uint32_t smoothnessReservedFreeSlots =
+                        g_WgcCap ? g_WgcCap->GetSmoothnessReservedFreeSlotCount()
+                                 : ce::capture_policy::kWgcSmoothnessBufferPoolSafetyFrames;
                     const uint64_t smoothnessEstimatedVramBytes =
                         g_WgcCap ? g_WgcCap->GetSmoothnessEstimatedVramBytes() : 0ull;
                     const bool smoothnessCapLimited =
@@ -5627,6 +5843,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     wgcSmoothnessDesiredFrames = smoothnessDesiredFrames;
                     wgcSmoothnessRetainedFrames = smoothnessRetainedFrames;
                     wgcSmoothnessPoolSlots = smoothnessPoolSlots;
+                    wgcSmoothnessRetainedFrameCap = smoothnessRetainedFrameCap;
+                    wgcSmoothnessReservedFreeSlots = smoothnessReservedFreeSlots;
                     wgcSmoothnessEstimatedVramBytes = smoothnessEstimatedVramBytes;
                     wgcSmoothnessCapLimited = smoothnessCapLimited;
                     wgcSmoothnessBufferReason = getWgcSmoothnessBufferReason();
@@ -5699,6 +5917,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                     bufferedWgcFrames.push_back(std::move(candidate.frame));
                                 }
                             }
+                            trimBufferedWgcStartupWaitToRetainedCap("startup-wait");
                             wgcStartupReserveReason =
                                 startupReserveBelowLowWater ? "waiting_low_water" : "waiting_span";
                             if (wgcStartupReserveWaitCount <= 3 || (wgcStartupReserveWaitCount % 30u) == 0u) {
@@ -5755,6 +5974,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                                   (wgcSmoothnessActiveDelayQpc + targetIntervalTicks / 2) / targetIntervalTicks))
                             : 0u;
 
+                    uint32_t startupRetainedCapTrimmed = 0;
+                    size_t startupKeptReserveFrames = 0;
                     for (size_t i = 0; i < startupCandidates.size(); ++i) {
                         if (i < selectedStartupIndex) {
                             ReleaseQueuedFrameTexture(startupCandidates[i].frame);
@@ -5762,12 +5983,24 @@ void EncoderThreadFunc(const AppConfig& config) {
                         } else if (i == selectedStartupIndex) {
                             frame = std::move(startupCandidates[i].frame);
                         } else if (startupReserveSelection.usedDelayReserve || startupPartialReserveFallback) {
-                            bufferedWgcFrames.push_back(std::move(startupCandidates[i].frame));
+                            if (smoothnessRetainedFrameCap == 0 ||
+                                startupKeptReserveFrames < smoothnessRetainedFrameCap) {
+                                bufferedWgcFrames.push_back(std::move(startupCandidates[i].frame));
+                                ++startupKeptReserveFrames;
+                            } else {
+                                ReleaseQueuedFrameTexture(startupCandidates[i].frame);
+                                ++startupRetainedCapTrimmed;
+                            }
                         } else {
                             ReleaseQueuedFrameTexture(startupCandidates[i].frame);
                             ++startupDiscardedOlder;
                         }
                     }
+                    if (startupRetainedCapTrimmed > 0) {
+                        wgcRetainedCapTrimTotal += startupRetainedCapTrimmed;
+                        wgcRetainedCapTrimWindow += startupRetainedCapTrimmed;
+                    }
+                    updateWgcIngressPressure("startup-selected");
 
                     LARGE_INTEGER anchorNow;
                     QueryPerformanceCounter(&anchorNow);
@@ -5798,8 +6031,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                         "startupReserveSpanGrowthUs=%lld startupReserveWaitFreshened=%u "
                         "startupSelectedIndex=%zu startupSelectedDelayUs=%lld startupFallback=%d "
                         "startupPartialReserveFallback=%d smoothDesiredFrames=%u smoothRetainedFrames=%u "
-                        "smoothActualFrames=%u smoothDelayUs=%lld smoothPoolSlots=%u smoothCapLimited=%d "
-                        "startupEffectiveDelayUs=%lld smoothReason=%s",
+                        "smoothActualFrames=%u smoothDelayUs=%lld smoothPoolSlots=%u retainedCap=%u "
+                        "reservedFreeSlots=%u retainedCapTrimmed=%u smoothCapLimited=%d startupEffectiveDelayUs=%lld "
+                        "smoothReason=%s",
                         static_cast<long long>(wgcStartupBarrierQpc), static_cast<long long>(frame.timestamp),
                         static_cast<long long>(startDeltaUs), static_cast<long long>(frameAgeUs),
                         wgcStartupBarrierDroppedFrames, wgcStartupPreLiveDelayDroppedFrames, startupFreshened,
@@ -5815,6 +6049,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         startupReserveFallback ? 1 : 0, startupPartialReserveFallback ? 1 : 0, smoothnessDesiredFrames,
                         smoothnessRetainedFrames, wgcSmoothnessActualFrames,
                         static_cast<long long>(qpcDeltaToUs(wgcSmoothnessActiveDelayQpc)), smoothnessPoolSlots,
+                        smoothnessRetainedFrameCap, smoothnessReservedFreeSlots, startupRetainedCapTrimmed,
                         smoothnessCapLimited ? 1 : 0,
                         static_cast<long long>(qpcDeltaToUs(getWgcEffectiveContentDelayQpc())),
                         wgcSmoothnessBufferReason.c_str());
@@ -5875,6 +6110,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcDelayUniformCadenceWindow = 0;
                 wgcDelayPaceCapTrimTotal = 0;
                 wgcDelayPaceCapTrimWindow = 0;
+                wgcRetainedCapTrimTotal = 0;
+                wgcRetainedCapTrimWindow = 0;
                 wgcDelayOlderFrameAvoidedRepeatTotal = 0;
                 wgcDelayOlderFrameAvoidedRepeatWindow = 0;
                 wgcDelaySourceLimitedRepeatTotal = 0;
@@ -7124,40 +7361,40 @@ void EncoderThreadFunc(const AppConfig& config) {
                                 startupVideoQpc = frameToProcess->timestamp;
                             }
                             const int64_t startupEffectiveDelayQpc = getWgcEffectiveContentDelayQpc();
-                            const int64_t startupAudioAnchorQpc =
-                                ce::capture_policy::GetWgcStartupAudioAnchorQpc(startupVideoQpc,
-                                                                                startupEffectiveDelayQpc);
+                            const int64_t startupAudioAnchorDelayQpc = avContentDelayQpc;
+                            const int64_t startupAudioAnchorQpc = ce::capture_policy::GetWgcStartupAudioAnchorQpc(
+                                startupVideoQpc, startupAudioAnchorDelayQpc);
                             if (startupVideoQpc > 0 && startupAudioAnchorQpc > 0) {
                                 wgcAvSyncStartupVideoQpc = startupVideoQpc;
                                 wgcAvSyncStartupAudioAnchorQpc = startupAudioAnchorQpc;
+                                wgcAvSyncStartupEffectiveDelayQpc = startupEffectiveDelayQpc;
                                 wgcAvSyncScheduleOffsetQpc = liveStartQpc.QuadPart - startupAudioAnchorQpc;
                                 const int64_t requestedDelayUs =
-                                    qpcFreq.QuadPart > 0
-                                        ? (startupEffectiveDelayQpc * 1000000) / qpcFreq.QuadPart
-                                        : 0;
+                                    qpcFreq.QuadPart > 0 ? (startupEffectiveDelayQpc * 1000000) / qpcFreq.QuadPart : 0;
+                                const int64_t audioAnchorDelayUs =
+                                    qpcFreq.QuadPart > 0 ? (startupAudioAnchorDelayQpc * 1000000) / qpcFreq.QuadPart
+                                                         : 0;
                                 const int64_t renderDelayUs =
                                     qpcFreq.QuadPart > 0 ? (avContentDelayQpc * 1000000) / qpcFreq.QuadPart : 0;
                                 const int64_t smoothExtraDelayUs =
-                                    qpcFreq.QuadPart > 0
-                                        ? (wgcSmoothnessActiveDelayQpc * 1000000) / qpcFreq.QuadPart
-                                        : 0;
-                                const int64_t startupDelayUs =
-                                    qpcFreq.QuadPart > 0
-                                        ? ((startupAudioAnchorQpc - startupVideoQpc) * 1000000) / qpcFreq.QuadPart
-                                        : 0;
+                                    qpcFreq.QuadPart > 0 ? (wgcSmoothnessActiveDelayQpc * 1000000) / qpcFreq.QuadPart
+                                                         : 0;
+                                const int64_t startupDelayUs = requestedDelayUs;
                                 const int64_t scheduleOffsetUs =
                                     qpcFreq.QuadPart > 0 ? (wgcAvSyncScheduleOffsetQpc * 1000000) / qpcFreq.QuadPart
                                                          : 0;
                                 LogInfo(
                                     "[AVSyncApply] wgc_schedule_anchor: videoQpc=%lld audioAnchorQpc=%lld "
                                     "liveStartQpc=%lld requestedDelayUs=%lld startupDelayUs=%lld "
-                                    "scheduleOffsetUs=%lld selectionOffsetUs=0 renderDelayUs=%lld "
+                                    "scheduleOffsetUs=%lld selectionOffsetUs=0 audioAnchorDelayUs=%lld "
+                                    "renderDelayUs=%lld "
                                     "smoothExtraDelayUs=%lld confidence=%s reason=%s",
                                     static_cast<long long>(startupVideoQpc),
                                     static_cast<long long>(startupAudioAnchorQpc),
                                     static_cast<long long>(liveStartQpc.QuadPart),
                                     static_cast<long long>(requestedDelayUs), static_cast<long long>(startupDelayUs),
-                                    static_cast<long long>(scheduleOffsetUs), static_cast<long long>(renderDelayUs),
+                                    static_cast<long long>(scheduleOffsetUs),
+                                    static_cast<long long>(audioAnchorDelayUs), static_cast<long long>(renderDelayUs),
                                     static_cast<long long>(smoothExtraDelayUs), config.avSyncConfidence.c_str(),
                                     config.avSyncReason.c_str());
                             }
@@ -7409,6 +7646,52 @@ void EncoderThreadFunc(const AppConfig& config) {
                                            dupTimer, dupDrain, oldestBufferedFrameAgeUs, shortfallDurationMs,
                                            sustainableOutputFps);
 
+            if (useScreenGrab && recordingOutputLive && g_WgcCap) {
+                const uint32_t currentIngressAccepted = g_WgcCap->GetIngressAcceptedCount();
+                if (!wgcRollingSourceWindowPrimed || currentIngressAccepted < wgcRollingSourceLastIngressAccepted) {
+                    wgcRollingSourceLastIngressAccepted = currentIngressAccepted;
+                    wgcRollingSourceAcceptedSlots.fill(0);
+                    wgcRollingSourceCfrTickSlots.fill(0);
+                    wgcRollingSourceSlotIndex = 0;
+                    wgcRollingSourceSlotCount = 0;
+                    wgcRollingSourceAcceptedSum = 0;
+                    wgcRollingSourceCfrTickSum = 0;
+                    wgcRollingSourceWindowPrimed = true;
+                }
+                wgcRollingSourceAcceptedWindow = currentIngressAccepted - wgcRollingSourceLastIngressAccepted;
+                wgcRollingSourceLastIngressAccepted = currentIngressAccepted;
+                wgcRollingSourceCfrTicksWindow = cadenceCounters.liveTickEmitCount;
+
+                wgcRollingSourceAcceptedSum -= wgcRollingSourceAcceptedSlots[wgcRollingSourceSlotIndex];
+                wgcRollingSourceCfrTickSum -= wgcRollingSourceCfrTickSlots[wgcRollingSourceSlotIndex];
+                wgcRollingSourceAcceptedSlots[wgcRollingSourceSlotIndex] = wgcRollingSourceAcceptedWindow;
+                wgcRollingSourceCfrTickSlots[wgcRollingSourceSlotIndex] = wgcRollingSourceCfrTicksWindow;
+                wgcRollingSourceAcceptedSum += wgcRollingSourceAcceptedWindow;
+                wgcRollingSourceCfrTickSum += wgcRollingSourceCfrTicksWindow;
+                wgcRollingSourceSlotIndex = (wgcRollingSourceSlotIndex + 1u) % kWgcRollingSourceWindowSlots;
+                wgcRollingSourceSlotCount = std::min(wgcRollingSourceSlotCount + 1u, kWgcRollingSourceWindowSlots);
+                wgcRollingSourceAcceptedTotal += wgcRollingSourceAcceptedWindow;
+                wgcRollingSourceCfrTickTotal += wgcRollingSourceCfrTicksWindow;
+                wgcRollingSourceDeficitFrames = wgcRollingSourceCfrTickSum > wgcRollingSourceAcceptedSum
+                                                    ? (wgcRollingSourceCfrTickSum - wgcRollingSourceAcceptedSum)
+                                                    : 0u;
+                wgcRollingSourceSurplusFrames = wgcRollingSourceAcceptedSum > wgcRollingSourceCfrTickSum
+                                                    ? (wgcRollingSourceAcceptedSum - wgcRollingSourceCfrTickSum)
+                                                    : 0u;
+            } else {
+                wgcRollingSourceWindowPrimed = false;
+                wgcRollingSourceAcceptedWindow = 0;
+                wgcRollingSourceCfrTicksWindow = 0;
+                wgcRollingSourceDeficitFrames = 0;
+                wgcRollingSourceSurplusFrames = 0;
+                wgcRollingSourceAcceptedSum = 0;
+                wgcRollingSourceCfrTickSum = 0;
+                wgcRollingSourceSlotIndex = 0;
+                wgcRollingSourceSlotCount = 0;
+                wgcRollingSourceAcceptedSlots.fill(0);
+                wgcRollingSourceCfrTickSlots.fill(0);
+            }
+
             LogInfo(
                 "[Cadence Health] Phase=%s | AgeAvg=%uus AgeMax=%uus | SelAvg=%uus SelMax=%uus SelBias=%dus "
                 "EarlyMax=%uus LateMax=%uus | WgcSelAvg=%uus WgcSelMax=%uus WgcSelBias=%dus WgcEarly=%uus WgcLate=%uus "
@@ -7417,7 +7700,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "DupStreak=%u/%u | DupSrc=%u "
                 "DupDef=%u "
                 "DupTimer=%u DupDrain=%u InjectDefReQ=%u InjectDefDrop=%u | TickEmit=%u TickUnique=%u TickDup=%u "
-                "TickMiss=%u | "
+                "TickMiss=%u SourceWin=%u/%u SourceRoll=%u/%u SourceDef=%u SourceSur=%u | "
                 "HoldHist=%u/%u/%u/%u/%u/%u | LiveWall=%lluus LiveTicks=%llu Shortfall=%u/%.1fms FreshMiss=%upm "
                 "BufAvg=%upm BufMin=%u BufNow=%zu NoFresh=%u NoReserve=%u DelayRes=%u/%u LowTicks=%u "
                 "DelayResidualAvg=%d/%uus DelayResidualMax=%uus DelayResidualP95=%uus DelayResidualLateMax=%uus "
@@ -7453,9 +7736,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                 dupDeferred - lastDuplicateReasonDeferred, dupTimer - lastDuplicateReasonTimerRebase,
                 dupDrain - lastDuplicateReasonDrain, injectDeferredRequeuedThisWindow, injectDeferredDroppedThisWindow,
                 cadenceCounters.liveTickEmitCount, cadenceCounters.liveTickUniqueCount,
-                cadenceCounters.liveTickDuplicateCount, cadenceCounters.liveTickMissCount, cadenceCounters.holdHist[0],
-                cadenceCounters.holdHist[1], cadenceCounters.holdHist[2], cadenceCounters.holdHist[3],
-                cadenceCounters.holdHist[4], cadenceCounters.holdHist[5],
+                cadenceCounters.liveTickDuplicateCount, cadenceCounters.liveTickMissCount,
+                wgcRollingSourceAcceptedWindow, wgcRollingSourceCfrTicksWindow, wgcRollingSourceAcceptedSum,
+                wgcRollingSourceCfrTickSum, wgcRollingSourceDeficitFrames, wgcRollingSourceSurplusFrames,
+                cadenceCounters.holdHist[0], cadenceCounters.holdHist[1], cadenceCounters.holdHist[2],
+                cadenceCounters.holdHist[3], cadenceCounters.holdHist[4], cadenceCounters.holdHist[5],
                 static_cast<unsigned long long>(liveWallElapsedUs), static_cast<unsigned long long>(liveTicksOutput),
                 outputShortfallTicks, shortfallDurationMs, wgcNoFreshTickPermille, bufferedAtTickAvgPermille,
                 bufferedAtTickMinValue, bufferedWgcFrames.size(), wgcNoFreshTickCount, wgcNoReserveTickCount,
@@ -7521,8 +7806,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                     "rawResidualWin=%d/%uus rawResidualWinP95=%uus rawMinusPredicted=%dus/%uus "
                     "postRejectSync=%u postRejectRescue=%u lowerBoundRepeat=%u excessRepeat=%u "
                     "policyAddedRepeat=%u excessRepeatCluster=%u/%u "
-                    "sourceDeficit=%u sourceSurplus=%u smoothBufMs=%.1f smoothFrames=%u/%u/%u "
-                    "smoothSlots=%u smoothVramMB=%.1f smoothCap=%d smoothReason=%s "
+                    "sourceWindow=%u/%u sourceRolling=%u/%u sourceDeficit=%u sourceSurplus=%u "
+                    "smoothBufMs=%.1f smoothFrames=%u/%u/%u "
+                    "smoothSlots=%u retainedCap=%u reservedFreeSlots=%u retainedCapTrim=%u "
+                    "smoothVramMB=%.1f smoothCap=%d smoothReason=%s "
                     "repeatsAvoided=%u repeatsUnavoidable=%u "
                     "reservoir=%u/%u lowTicks=%u "
                     "delayRelaxed=%u delayRelaxedRejectSync=%u repeatClusterPressure=%u/%u "
@@ -7548,10 +7835,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                     rawResidualWindowP95Us, rawMinusPredictedAvgUs, wgcDelayRawMinusPredictedAbsMaxUs,
                     wgcDelayPostSelectionRejectedSyncRiskWindow, wgcDelayPostSelectionRescuedSyncRiskWindow,
                     wgcSourceRepeatLowerBoundWindow, wgcExcessRepeatWindow, wgcPolicyAddedRepeatWindow,
-                    wgcExcessRepeatClusterWindow, wgcExcessRepeatClusterWindowMaxTicks, wgcSourceRepeatLowerBoundWindow,
-                    SaturatingToUint32(static_cast<uint64_t>(bufferedWgcFrames.size())), wgcSmoothnessActiveDelayMs,
+                    wgcExcessRepeatClusterWindow, wgcExcessRepeatClusterWindowMaxTicks, wgcRollingSourceAcceptedWindow,
+                    wgcRollingSourceCfrTicksWindow, wgcRollingSourceAcceptedSum, wgcRollingSourceCfrTickSum,
+                    wgcRollingSourceDeficitFrames, wgcRollingSourceSurplusFrames, wgcSmoothnessActiveDelayMs,
                     wgcSmoothnessActualFrames, wgcSmoothnessRetainedFrames, wgcSmoothnessDesiredFrames,
-                    wgcSmoothnessPoolSlots, wgcSmoothnessEstimatedVramMb, wgcSmoothnessCapLimited ? 1 : 0,
+                    wgcSmoothnessPoolSlots, wgcSmoothnessRetainedFrameCap, wgcSmoothnessReservedFreeSlots,
+                    wgcRetainedCapTrimWindow, wgcSmoothnessEstimatedVramMb, wgcSmoothnessCapLimited ? 1 : 0,
                     getWgcSmoothnessBufferReason(), wgcSmoothnessRepeatsAvoidedWindow, wgcSourceRepeatLowerBoundWindow,
                     delayReservoirLowWaterFrames, delayReservoirTargetFrames, wgcDelayReservoirLowWaterTickCount,
                     wgcDelayRelaxedSelectionWindowCount, wgcDelayRelaxedRejectedSyncRiskWindow,
@@ -7724,6 +8013,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcDelayNearCapAcceptedWindow = 0;
             wgcDelayUniformCadenceWindow = 0;
             wgcDelayPaceCapTrimWindow = 0;
+            wgcRetainedCapTrimWindow = 0;
             wgcDelayOlderFrameAvoidedRepeatWindow = 0;
             wgcDelaySourceLimitedRepeatWindow = 0;
             wgcDelayRepeatRescueAttemptWindow = 0;
@@ -7902,8 +8192,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(wgcEncoderLimitedSourceDropTotal), wgcEncoderLimitedSourceDropMaxTicks,
                 static_cast<unsigned long long>(wgcPostStopFrameDropTotal), wgcPostStopFrameDropMaxUs);
             const int64_t wgcAvSyncStartupDelayUs =
-                qpcFreq.QuadPart > 0 && wgcAvSyncStartupAudioAnchorQpc > wgcAvSyncStartupVideoQpc
-                    ? ((wgcAvSyncStartupAudioAnchorQpc - wgcAvSyncStartupVideoQpc) * 1000000) / qpcFreq.QuadPart
+                qpcFreq.QuadPart > 0 && wgcAvSyncStartupEffectiveDelayQpc > 0
+                    ? (wgcAvSyncStartupEffectiveDelayQpc * 1000000) / qpcFreq.QuadPart
                     : 0;
             const int64_t wgcAvSyncScheduleOffsetUs =
                 qpcFreq.QuadPart > 0 ? (wgcAvSyncScheduleOffsetQpc * 1000000) / qpcFreq.QuadPart : 0;
@@ -7948,8 +8238,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "startupReserveFrames=%u startupReserveSpan=%lldus startupDelayTarget=%lldus "
                 "startupReserveSelected=%d startupReserveReason=%s smoothBuf=%d smoothTargetMs=%u "
                 "smoothFrames=%u/%u/%u smoothDelay=%.1fms smoothPoolSlots=%u sourceFramePoolBuffers=%u "
-                "budgetSurfaces=%u syncFrames=%u safetySlots=%u leasedMax=%u freeMin=%u poolSaturatedDrops=%u "
-                "overwritePrevented=%u leaseMismatches=%u smoothVramMB=%.1f smoothCapLimited=%d smoothReason=%s",
+                "budgetSurfaces=%u syncFrames=%u extraFrames=%u retainedCap=%u reservedFreeSlots=%u safetySlots=%u "
+                "retainedCapTrim=%llu ingressAccepted=%u ingressDecimated=%u ingressRetained=%u/%u "
+                "ingressLowWater=%u leasedMax=%u freeMin=%u poolSaturatedDrops=%u overwritePrevented=%u "
+                "leaseMismatches=%u smoothVramMB=%.1f smoothCapLimited=%d smoothReason=%s",
                 static_cast<unsigned long long>(wgcEncoderLimitedSourceDropTotal), wgcEncoderLimitedSourceDropMaxTicks,
                 static_cast<unsigned long long>(wgcEncoderLimitedCadenceEventCount),
                 captureSessionSummary.maxWgcContentPhaseErrorUs, captureSessionSummary.maxShortfallDurationMs,
@@ -7973,7 +8265,16 @@ void EncoderThreadFunc(const AppConfig& config) {
                 g_WgcCap ? g_WgcCap->GetSourceFramePoolBufferCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetSmoothnessBudgetSurfaceCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetSmoothnessSyncFrameCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetSmoothnessRetainedFrameCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetSmoothnessRetainedFrameCap() : wgcSmoothnessRetainedFrameCap,
+                g_WgcCap ? g_WgcCap->GetSmoothnessReservedFreeSlotCount() : wgcSmoothnessReservedFreeSlots,
                 g_WgcCap ? g_WgcCap->GetSmoothnessSafetySlotCount() : 0u,
+                static_cast<unsigned long long>(wgcRetainedCapTrimTotal),
+                g_WgcCap ? g_WgcCap->GetIngressAcceptedCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressDecimatedCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressRetainedFrameCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressRetainedFrameCap() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressLowWaterFrameCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetPoolSlotLeasedMaxCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetPoolSlotFreeMinCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetPoolSaturatedDropCount() : 0u,
@@ -7981,6 +8282,34 @@ void EncoderThreadFunc(const AppConfig& config) {
                 g_WgcCap ? g_WgcCap->GetPoolLeaseMismatchCount() : 0u,
                 static_cast<double>(wgcSmoothnessEstimatedVramBytes) / (1024.0 * 1024.0),
                 wgcSmoothnessCapLimited ? 1 : 0, wgcSmoothnessBufferReason.c_str());
+            LogInfo(
+                "[WGC CFR SMOOTHNESS INGRESS] accepted=%u decimated=%u retained=%u/%u lowWater=%u "
+                "accLowWater=%u accRecovery=%u accSourceBelow=%u accHealthy=%u "
+                "decSoftReserve=%u decHardReserve=%u decCredit=%u "
+                "softReservePressure=%u hardReservePressure=%u lastReason=%s",
+                g_WgcCap ? g_WgcCap->GetIngressAcceptedCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressDecimatedCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressRetainedFrameCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressRetainedFrameCap() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressLowWaterFrameCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressAcceptedLowWaterCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressAcceptedRecoveryCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressAcceptedSourceBelowCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressAcceptedHealthyCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressDecimatedSoftReserveCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressDecimatedHardReserveCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressDecimatedCreditCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressSoftReservePressureCount() : 0u,
+                g_WgcCap ? g_WgcCap->GetIngressHardReservePressureCount() : 0u,
+                g_WgcCap ? WgcIngressAdmissionReasonName(g_WgcCap->GetIngressAdmissionReasonCode()) : "none");
+            LogInfo(
+                "[WGC CFR SMOOTHNESS SOURCE] acceptedTotal=%llu cfrTicksTotal=%llu "
+                "rollingAccepted=%u rollingCfrTicks=%u rollingDeficit=%u rollingSurplus=%u "
+                "lastWindowAccepted=%u lastWindowCfrTicks=%u windowSlots=%zu",
+                static_cast<unsigned long long>(wgcRollingSourceAcceptedTotal),
+                static_cast<unsigned long long>(wgcRollingSourceCfrTickTotal), wgcRollingSourceAcceptedSum,
+                wgcRollingSourceCfrTickSum, wgcRollingSourceDeficitFrames, wgcRollingSourceSurplusFrames,
+                wgcRollingSourceAcceptedWindow, wgcRollingSourceCfrTicksWindow, wgcRollingSourceSlotCount);
             LogInfo(
                 "[WGC CFR SMOOTHNESS DELAY] delayReservoirLowWaterFrames=%u delayReservoirTargetFrames=%u "
                 "delayReservoirLowWaterTicks=%llu realizedDelayAvg=%uus realizedDelayMin=%uus "

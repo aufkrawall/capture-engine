@@ -10,6 +10,7 @@
 #include <dxgi1_6.h>
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -85,6 +86,49 @@ using namespace Windows::Graphics::DirectX::Direct3D11;
 }  // namespace winrt
 
 namespace {
+enum WgcIngressAdmissionReasonCode : uint32_t {
+    kWgcIngressReasonUncapped = 0,
+    kWgcIngressReasonLowWater = 1,
+    kWgcIngressReasonRecovery = 2,
+    kWgcIngressReasonSourceBelowTarget = 3,
+    kWgcIngressReasonCredit = 4,
+    kWgcIngressReasonHealthy = 5,
+    kWgcIngressReasonDecimatedSoftReserve = 6,
+    kWgcIngressReasonDecimatedHardReserve = 7,
+    kWgcIngressReasonDecimatedCredit = 8,
+};
+
+uint32_t WgcIngressReasonCodeFromText(const char* reason) {
+    if (!reason) {
+        return kWgcIngressReasonUncapped;
+    }
+    if (strcmp(reason, "low_water") == 0) {
+        return kWgcIngressReasonLowWater;
+    }
+    if (strcmp(reason, "recovery") == 0) {
+        return kWgcIngressReasonRecovery;
+    }
+    if (strcmp(reason, "source_below_cfr_target") == 0) {
+        return kWgcIngressReasonSourceBelowTarget;
+    }
+    if (strcmp(reason, "credit") == 0) {
+        return kWgcIngressReasonCredit;
+    }
+    if (strcmp(reason, "healthy") == 0) {
+        return kWgcIngressReasonHealthy;
+    }
+    if (strcmp(reason, "wgc_ingress_decimated_soft_reserve") == 0 || strcmp(reason, "wgc_ingress_decimated") == 0) {
+        return kWgcIngressReasonDecimatedSoftReserve;
+    }
+    if (strcmp(reason, "wgc_ingress_decimated_hard_reserve") == 0) {
+        return kWgcIngressReasonDecimatedHardReserve;
+    }
+    if (strcmp(reason, "wgc_ingress_decimated_credit") == 0) {
+        return kWgcIngressReasonDecimatedCredit;
+    }
+    return kWgcIngressReasonUncapped;
+}
+
 template <typename T>
 void SafeRelease(T*& ptr) {
     if (ptr) {
@@ -464,9 +508,11 @@ public:
     uint32_t smoothnessVramBudgetMb_ = ce::capture_policy::kWgcSmoothnessBufferDefaultVramBudgetMb;
     uint32_t smoothnessSyncDelayFrames_ = 0;
     uint32_t smoothnessRetainedFrames_ = 0;
+    uint32_t smoothnessRetainedFrameCap_ = 0;
     uint32_t sourceFramePoolBufferCount_ = ce::capture_policy::kWgcSmoothnessSourceFramePoolMinBuffers;
     uint32_t smoothnessBudgetSurfaceCount_ = 0;
     uint32_t smoothnessSafetySlots_ = ce::capture_policy::kWgcSmoothnessBufferPoolSafetyFrames;
+    uint32_t smoothnessReservedFreeSlots_ = ce::capture_policy::GetWgcSmoothnessReservedFreeCopySlots();
     uint32_t texturePoolSlotCount_ = ce::capture_policy::kWgcSmoothnessBufferMinPoolFrames;
     uint64_t smoothnessEstimatedVramBytes_ = 0;
     bool smoothnessBudgetExhausted_ = false;
@@ -474,6 +520,25 @@ public:
     uint64_t poolGeneration_ = 0;
     std::atomic<uint32_t> poolSlotOverwritePreventedCount_{0};
     std::atomic<uint32_t> poolSaturatedDropCount_{0};
+    std::atomic<uint32_t> ingressAcceptedCount_{0};
+    std::atomic<uint32_t> ingressDecimatedCount_{0};
+    std::atomic<uint32_t> ingressAcceptedLowWaterCount_{0};
+    std::atomic<uint32_t> ingressAcceptedRecoveryCount_{0};
+    std::atomic<uint32_t> ingressAcceptedSourceBelowCount_{0};
+    std::atomic<uint32_t> ingressAcceptedHealthyCount_{0};
+    std::atomic<uint32_t> ingressDecimatedSoftReserveCount_{0};
+    std::atomic<uint32_t> ingressDecimatedHardReserveCount_{0};
+    std::atomic<uint32_t> ingressDecimatedCreditCount_{0};
+    std::atomic<uint32_t> ingressSoftReservePressureCount_{0};
+    std::atomic<uint32_t> ingressHardReservePressureCount_{0};
+    std::atomic<uint32_t> ingressRetainedFrames_{0};
+    std::atomic<uint32_t> ingressRetainedFrameCap_{0};
+    std::atomic<uint32_t> ingressLowWaterFrames_{0};
+    std::atomic<bool> ingressRecovering_{false};
+    std::atomic<uint32_t> ingressLastReason_{0};
+    std::mutex ingressAdmissionMutex_;
+    int64_t ingressCreditLastQpc_ = 0;
+    double ingressCreditFrames_ = 1.0;
     std::mutex resetReasonMutex_;
     std::string resetReason_;
     winrt::event_token itemClosedToken_{};
@@ -580,12 +645,15 @@ public:
     void UpdateSmoothnessBudget(uint32_t width, uint32_t height, DXGI_FORMAT format, bool logBudget) {
         const auto budget = ComputeTexturePoolBudget(width, height, format);
         smoothnessRetainedFrames_ = smoothnessBufferEnabled_ ? budget.retainedExtraFrames : 0u;
+        smoothnessRetainedFrameCap_ = budget.retainedFrameCap;
         sourceFramePoolBufferCount_ = budget.sourceFramePoolBuffers;
         smoothnessBudgetSurfaceCount_ = budget.budgetSurfaceCount;
         smoothnessSafetySlots_ = budget.safetySlots;
+        smoothnessReservedFreeSlots_ = budget.reservedFreeCopySlots;
         smoothnessEstimatedVramBytes_ = budget.estimatedBytes;
         smoothnessBudgetExhausted_ = budget.budgetExhausted;
         texturePoolSlotCount_ = budget.copyPoolSlots;
+        ingressRetainedFrameCap_.store(smoothnessRetainedFrameCap_, std::memory_order_relaxed);
         if (logBudget) {
             const uint32_t desiredFrames = smoothnessBufferEnabled_ ? ce::capture_policy::GetWgcSmoothnessDesiredFrames(
                                                                           smoothnessOutputFps_, smoothnessMaxMs_)
@@ -593,12 +661,13 @@ public:
             LogInfo(
                 "[WGC] Smoothness buffer budget: enabled=%d targetMs=%u outputFps=%u desiredFrames=%u "
                 "retainedFrames=%u sourceFramePoolBuffers=%u copyPoolSlots=%u budgetSurfaces=%u syncFrames=%u "
-                "extraFrames=%u safetySlots=%u fmt=%d %ux%u bpp=%u budget=%uMB estimated=%lluMB capLimited=%d "
-                "budgetExhausted=%d",
+                "extraFrames=%u retainedCap=%u reservedFreeSlots=%u safetySlots=%u fmt=%d %ux%u bpp=%u budget=%uMB "
+                "estimated=%lluMB capLimited=%d budgetExhausted=%d",
                 smoothnessBufferEnabled_ ? 1 : 0, smoothnessMaxMs_, smoothnessOutputFps_, desiredFrames,
                 smoothnessRetainedFrames_, sourceFramePoolBufferCount_, texturePoolSlotCount_,
                 smoothnessBudgetSurfaceCount_, smoothnessSyncDelayFrames_, smoothnessRetainedFrames_,
-                smoothnessSafetySlots_, format, width, height, BytesPerPixelForFormat(format), smoothnessVramBudgetMb_,
+                smoothnessRetainedFrameCap_, smoothnessReservedFreeSlots_, smoothnessSafetySlots_, format, width,
+                height, BytesPerPixelForFormat(format), smoothnessVramBudgetMb_,
                 static_cast<unsigned long long>((smoothnessEstimatedVramBytes_ + 1024ull * 1024ull - 1ull) /
                                                 (1024ull * 1024ull)),
                 budget.capLimited ? 1 : 0, budget.budgetExhausted ? 1 : 0);
@@ -761,11 +830,33 @@ public:
         lastPoolSlotRewriteUs_.store(0, std::memory_order_relaxed);
         poolSlotOverwritePreventedCount_.store(0, std::memory_order_relaxed);
         poolSaturatedDropCount_.store(0, std::memory_order_relaxed);
+        ingressAcceptedCount_.store(0, std::memory_order_relaxed);
+        ingressDecimatedCount_.store(0, std::memory_order_relaxed);
+        ingressAcceptedLowWaterCount_.store(0, std::memory_order_relaxed);
+        ingressAcceptedRecoveryCount_.store(0, std::memory_order_relaxed);
+        ingressAcceptedSourceBelowCount_.store(0, std::memory_order_relaxed);
+        ingressAcceptedHealthyCount_.store(0, std::memory_order_relaxed);
+        ingressDecimatedSoftReserveCount_.store(0, std::memory_order_relaxed);
+        ingressDecimatedHardReserveCount_.store(0, std::memory_order_relaxed);
+        ingressDecimatedCreditCount_.store(0, std::memory_order_relaxed);
+        ingressSoftReservePressureCount_.store(0, std::memory_order_relaxed);
+        ingressHardReservePressureCount_.store(0, std::memory_order_relaxed);
+        ingressRetainedFrames_.store(0, std::memory_order_relaxed);
+        ingressRetainedFrameCap_.store(smoothnessRetainedFrameCap_, std::memory_order_relaxed);
+        ingressLowWaterFrames_.store(0, std::memory_order_relaxed);
+        ingressRecovering_.store(false, std::memory_order_relaxed);
+        ingressLastReason_.store(kWgcIngressReasonUncapped, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> ingressLock(ingressAdmissionMutex_);
+            ingressCreditLastQpc_ = 0;
+            ingressCreditFrames_ = 1.0;
+        }
         if (poolLeaseState_) {
             const uint32_t current = poolLeaseState_->leasedCurrent.load(std::memory_order_relaxed);
             poolLeaseState_->leasedMax.store(current, std::memory_order_relaxed);
-            poolLeaseState_->freeMin.store(current >= poolLeaseState_->slotCount ? 0u : poolLeaseState_->slotCount - current,
-                                           std::memory_order_relaxed);
+            poolLeaseState_->freeMin.store(
+                current >= poolLeaseState_->slotCount ? 0u : poolLeaseState_->slotCount - current,
+                std::memory_order_relaxed);
             poolLeaseState_->releaseMismatchCount.store(0, std::memory_order_relaxed);
         }
         std::fill(poolSlotLastWriteQpc_.begin(), poolSlotLastWriteQpc_.end(), 0);
@@ -1396,14 +1487,119 @@ public:
 
         LogInfo(
             "[WGC] Texture pool created: %dx%d fmt=%d sourceFramePoolBuffers=%u copyPoolSlots=%u budgetSurfaces=%u "
-            "syncFrames=%u extraFrames=%u safetySlots=%u estimatedSmooth=%lluMB generation=%llu (%s)",
+            "syncFrames=%u extraFrames=%u retainedCap=%u reservedFreeSlots=%u safetySlots=%u estimatedSmooth=%lluMB "
+            "generation=%llu (%s)",
             width, height, format, sourceFramePoolBufferCount_, desiredSlots, smoothnessBudgetSurfaceCount_,
-            smoothnessSyncDelayFrames_, smoothnessRetainedFrames_, smoothnessSafetySlots_,
+            smoothnessSyncDelayFrames_, smoothnessRetainedFrames_, smoothnessRetainedFrameCap_,
+            smoothnessReservedFreeSlots_, smoothnessSafetySlots_,
             static_cast<unsigned long long>((smoothnessEstimatedVramBytes_ + 1024ull * 1024ull - 1ull) /
                                             (1024ull * 1024ull)),
             static_cast<unsigned long long>(poolGeneration_),
             splitDevicePool ? "dedicated capture device" : "shared device");
         return true;
+    }
+
+    bool ShouldAdmitFrameToPool(int64_t sourceFrameQpc, int64_t rawSourceFrameQpc, uint32_t poolSize,
+                                const std::shared_ptr<WgcPoolLeaseState>& leaseState) {
+        const int64_t timingQpc = rawSourceFrameQpc > 0 ? rawSourceFrameQpc : sourceFrameQpc;
+        const uint32_t retainedFrames = ingressRetainedFrames_.load(std::memory_order_relaxed);
+        uint32_t retainedFrameCap = ingressRetainedFrameCap_.load(std::memory_order_relaxed);
+        if (retainedFrameCap == 0) {
+            retainedFrameCap = smoothnessRetainedFrameCap_;
+        }
+        const uint32_t lowWaterFrames = ingressLowWaterFrames_.load(std::memory_order_relaxed);
+        const bool recovering = ingressRecovering_.load(std::memory_order_relaxed);
+        const uint32_t leasedCurrent = leaseState ? leaseState->leasedCurrent.load(std::memory_order_relaxed) : 0u;
+        const uint32_t pressureRetainedFrames = std::max(retainedFrames, leasedCurrent);
+        const uint32_t freeCopySlots = poolSize > leasedCurrent ? (poolSize - leasedCurrent) : 0u;
+        const uint32_t outputFps = smoothnessOutputFps_;
+        const uint32_t inputMin250Fps = inputMin250Fps_.load(std::memory_order_relaxed);
+        const uint32_t inputMin500Fps = inputMin500Fps_.load(std::memory_order_relaxed);
+
+        ce::capture_policy::WgcIngressAdmissionDecision decision{};
+        uint32_t reasonCode = kWgcIngressReasonUncapped;
+        {
+            std::lock_guard<std::mutex> lock(ingressAdmissionMutex_);
+            if (timingQpc > 0 && qpcFreq_ > 0 && outputFps > 0) {
+                if (ingressCreditLastQpc_ > 0 && timingQpc > ingressCreditLastQpc_) {
+                    const double elapsedFrames =
+                        (static_cast<double>(timingQpc - ingressCreditLastQpc_) * static_cast<double>(outputFps)) /
+                        static_cast<double>(qpcFreq_);
+                    ingressCreditFrames_ = std::min(2.0, ingressCreditFrames_ + std::max(0.0, elapsedFrames));
+                } else if (ingressCreditLastQpc_ == 0 || timingQpc < ingressCreditLastQpc_) {
+                    ingressCreditFrames_ = std::max(ingressCreditFrames_, 1.0);
+                }
+                ingressCreditLastQpc_ = timingQpc;
+            } else {
+                ingressCreditFrames_ = std::max(ingressCreditFrames_, 1.0);
+            }
+
+            decision = ce::capture_policy::DecideWgcIngressAdmission(
+                pressureRetainedFrames, retainedFrameCap, lowWaterFrames, recovering, outputFps, inputMin250Fps,
+                inputMin500Fps, ingressCreditFrames_, freeCopySlots, smoothnessReservedFreeSlots_);
+            reasonCode = WgcIngressReasonCodeFromText(decision.reason);
+            if (decision.accept && outputFps > 0 &&
+                !ce::capture_policy::IsWgcIngressSourceBelowCfrTarget(outputFps, inputMin250Fps, inputMin500Fps)) {
+                ingressCreditFrames_ = std::max(0.0, ingressCreditFrames_ - 1.0);
+            }
+        }
+
+        ingressLastReason_.store(reasonCode, std::memory_order_relaxed);
+        if (decision.softReservePressure) {
+            ingressSoftReservePressureCount_.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (decision.hardReservePressure) {
+            ingressHardReservePressureCount_.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (decision.accept) {
+            ingressAcceptedCount_.fetch_add(1, std::memory_order_relaxed);
+            switch (reasonCode) {
+                case kWgcIngressReasonLowWater:
+                    ingressAcceptedLowWaterCount_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                case kWgcIngressReasonRecovery:
+                    ingressAcceptedRecoveryCount_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                case kWgcIngressReasonSourceBelowTarget:
+                    ingressAcceptedSourceBelowCount_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                case kWgcIngressReasonCredit:
+                case kWgcIngressReasonHealthy:
+                case kWgcIngressReasonUncapped:
+                default:
+                    ingressAcceptedHealthyCount_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+            }
+            return true;
+        }
+
+        skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+        ingressDecimatedCount_.fetch_add(1, std::memory_order_relaxed);
+        switch (reasonCode) {
+            case kWgcIngressReasonDecimatedHardReserve:
+                ingressDecimatedHardReserveCount_.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case kWgcIngressReasonDecimatedCredit:
+                ingressDecimatedCreditCount_.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case kWgcIngressReasonDecimatedSoftReserve:
+            default:
+                ingressDecimatedSoftReserveCount_.fetch_add(1, std::memory_order_relaxed);
+                break;
+        }
+        static std::atomic<uint32_t> decimatedLogCount{0};
+        const uint32_t logCount = decimatedLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (logCount <= 8 || (logCount % 1000u) == 0u) {
+            LogInfo(
+                "[WGC] Ingress decimated WGC frame before copy: retained=%u pressure=%u/%u lowWater=%u leased=%u "
+                "free=%u reservedFree=%u softReservePressure=%d hardReservePressure=%d "
+                "inputMin=%u/%u outputFps=%u frameQpc=%lld reason=%s",
+                retainedFrames, pressureRetainedFrames, retainedFrameCap, lowWaterFrames, leasedCurrent, freeCopySlots,
+                smoothnessReservedFreeSlots_, decision.softReservePressure ? 1 : 0,
+                decision.hardReservePressure ? 1 : 0, inputMin250Fps, inputMin500Fps, outputFps,
+                static_cast<long long>(sourceFrameQpc), decision.reason);
+        }
+        return false;
     }
 
     bool CopyFrameToPool(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc, int64_t sourceFrameQpc,
@@ -1427,8 +1623,12 @@ public:
         if (poolSize == 0) {
             return false;
         }
-        const uint32_t startIndex = poolWriteIndex_.fetch_add(1, std::memory_order_relaxed) % poolSize;
         const auto leaseState = poolLeaseState_;
+        if (!ShouldAdmitFrameToPool(sourceFrameQpc, rawSourceFrameQpc, poolSize, leaseState)) {
+            return false;
+        }
+
+        const uint32_t startIndex = poolWriteIndex_.fetch_add(1, std::memory_order_relaxed) % poolSize;
         const uint64_t poolGeneration = poolGeneration_;
         for (uint32_t attempt = 0; attempt < poolSize; ++attempt) {
             const uint32_t idx = (startIndex + attempt) % poolSize;
@@ -1646,8 +1846,8 @@ public:
                 WgcPoolSlotLease poolLease;
                 uint32_t poolSlot = std::numeric_limits<uint32_t>::max();
                 uint64_t poolGeneration = 0;
-                if (CopyFrameToPool(texture, desc, sourceFrameQpc, rawSourceFrameQpc, &copiedTexture,
-                                    copyCompleteQpc, poolLease, poolSlot, poolGeneration)) {
+                if (CopyFrameToPool(texture, desc, sourceFrameQpc, rawSourceFrameQpc, &copiedTexture, copyCompleteQpc,
+                                    poolLease, poolSlot, poolGeneration)) {
                     const int64_t deliveredTimestamp = sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc;
                     if (sourceFrameQpc > 0 && !duplicateSourceTimestamp) {
                         lastDeliveredSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
@@ -2463,10 +2663,9 @@ HANDLE WGCCapture::GetFrameArrivedEvent() const {
 #endif
 }
 
-void WGCCapture::SetDirectFrameCallback(
-    std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, int32_t, int32_t,
-                       WgcPoolSlotLease&&)>
-        callback) {
+void WGCCapture::SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool,
+                                                           bool, int32_t, int32_t, WgcPoolSlotLease&&)>
+                                            callback) {
 #if HAS_WGC
     if (impl_) {
         // Extract the raw function pointer from std::function.
@@ -2732,8 +2931,9 @@ uint32_t WGCCapture::GetPoolSaturatedDropCount() const {
 
 uint32_t WGCCapture::GetPoolLeaseMismatchCount() const {
 #if HAS_WGC
-    return (impl_ && impl_->poolLeaseState_) ? impl_->poolLeaseState_->releaseMismatchCount.load(std::memory_order_relaxed)
-                                             : 0;
+    return (impl_ && impl_->poolLeaseState_)
+               ? impl_->poolLeaseState_->releaseMismatchCount.load(std::memory_order_relaxed)
+               : 0;
 #else
     return 0;
 #endif
@@ -2835,9 +3035,145 @@ uint32_t WGCCapture::GetSmoothnessRetainedFrameCount() const {
 #endif
 }
 
+uint32_t WGCCapture::GetSmoothnessRetainedFrameCap() const {
+#if HAS_WGC
+    return impl_ ? impl_->smoothnessRetainedFrameCap_ : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetSmoothnessReservedFreeSlotCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->smoothnessReservedFreeSlots_ : 0;
+#else
+    return 0;
+#endif
+}
+
 uint64_t WGCCapture::GetSmoothnessEstimatedVramBytes() const {
 #if HAS_WGC
     return impl_ ? impl_->smoothnessEstimatedVramBytes_ : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressAcceptedCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressAcceptedCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressDecimatedCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressDecimatedCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressAcceptedLowWaterCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressAcceptedLowWaterCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressAcceptedRecoveryCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressAcceptedRecoveryCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressAcceptedSourceBelowCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressAcceptedSourceBelowCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressAcceptedHealthyCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressAcceptedHealthyCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressDecimatedSoftReserveCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressDecimatedSoftReserveCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressDecimatedHardReserveCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressDecimatedHardReserveCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressDecimatedCreditCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressDecimatedCreditCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressSoftReservePressureCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressSoftReservePressureCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressHardReservePressureCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressHardReservePressureCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressRetainedFrameCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressRetainedFrames_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressRetainedFrameCap() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressRetainedFrameCap_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressLowWaterFrameCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressLowWaterFrames_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressAdmissionReasonCode() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressLastReason_.load(std::memory_order_relaxed) : 0;
 #else
     return 0;
 #endif
@@ -3106,9 +3442,9 @@ void WGCCapture::SetSmoothnessBufferBudget(bool enabled, uint32_t outputFps, uin
         impl_->smoothnessOutputFps_ = outputFps;
         impl_->smoothnessMaxMs_ = maxMs;
         impl_->smoothnessVramBudgetMb_ = vramBudgetMb;
-        impl_->smoothnessSyncDelayFrames_ =
-            (enabled && syncDelayFrames == 0) ? ce::capture_policy::GetWgcEstimatedSyncDelayFramesForBudget(outputFps)
-                                              : syncDelayFrames;
+        impl_->smoothnessSyncDelayFrames_ = (enabled && syncDelayFrames == 0)
+                                                ? ce::capture_policy::GetWgcEstimatedSyncDelayFramesForBudget(outputFps)
+                                                : syncDelayFrames;
         LogInfo("[WGC] Smoothness buffer config: enabled=%d outputFps=%u maxMs=%u budget=%uMB syncFrames=%u",
                 enabled ? 1 : 0, outputFps, maxMs, vramBudgetMb, impl_->smoothnessSyncDelayFrames_);
     }
@@ -3118,5 +3454,23 @@ void WGCCapture::SetSmoothnessBufferBudget(bool enabled, uint32_t outputFps, uin
     (void)maxMs;
     (void)vramBudgetMb;
     (void)syncDelayFrames;
+#endif
+}
+
+void WGCCapture::SetRetainedFramePressure(uint32_t retainedFrames, uint32_t retainedFrameCap, uint32_t lowWaterFrames,
+                                          bool recovering) {
+#if HAS_WGC
+    if (impl_) {
+        const uint32_t effectiveCap = retainedFrameCap > 0 ? retainedFrameCap : impl_->smoothnessRetainedFrameCap_;
+        impl_->ingressRetainedFrames_.store(retainedFrames, std::memory_order_relaxed);
+        impl_->ingressRetainedFrameCap_.store(effectiveCap, std::memory_order_relaxed);
+        impl_->ingressLowWaterFrames_.store(lowWaterFrames, std::memory_order_relaxed);
+        impl_->ingressRecovering_.store(recovering, std::memory_order_relaxed);
+    }
+#else
+    (void)retainedFrames;
+    (void)retainedFrameCap;
+    (void)lowWaterFrames;
+    (void)recovering;
 #endif
 }

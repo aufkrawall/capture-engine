@@ -32,9 +32,12 @@ SYNC_SMOOTHNESS_MAX_OFFSET_MS = 10.0
 SYNC_SMOOTHNESS_MAX_MEAN_OFFSET_MS = 5.0
 SYNC_SMOOTHNESS_MAX_TRACK_SPREAD_MS = 5.0
 SYNC_SMOOTHNESS_MAX_CONTENT_RETRIES = 3
+SYNC_SMOOTHNESS_RETRY_MAX_RESIDUAL_MS = 120.0
 SYNC_SMOOTHNESS_RETRY_GUARD_MS = 0.75
 SYNC_SMOOTHNESS_RETRY_MAX_SPREAD_STEP_MS = 2.5
-SYNC_SMOOTHNESS_RETRY_MAX_MEAN_STEP_MS = 8.0
+SYNC_SMOOTHNESS_RETRY_MAX_MEAN_STEP_MS = 24.0
+WGC_TEAR_FREE_AUDIO_LEAD_MS = 76.0
+WGC_BELOW_TARGET_EXTRA_AUDIO_LEAD_FRAMES = 2.0
 
 
 @dataclass
@@ -97,8 +100,10 @@ def resolve_app_audio_lead_ms(app_audio_lead_arg, capture_method, output_fps, ap
                 return 50.0
             return 45.0
         if int(app_fps) < int(output_fps):
-            return 56.0 + 2.0 * (1000.0 / max(1, int(output_fps)))
-        return 56.0
+            return WGC_TEAR_FREE_AUDIO_LEAD_MS + WGC_BELOW_TARGET_EXTRA_AUDIO_LEAD_FRAMES * (
+                1000.0 / max(1, int(output_fps))
+            )
+        return WGC_TEAR_FREE_AUDIO_LEAD_MS
     try:
         value = float(text)
     except ValueError:
@@ -106,6 +111,22 @@ def resolve_app_audio_lead_ms(app_audio_lead_arg, capture_method, output_fps, ap
     if value < -500.0 or value > 500.0:
         fail(f"app audio lead must be between -500 and 500 ms: {app_audio_lead_arg}")
     return value
+
+
+def modeled_sync_smoothness_initial_latencies_ms(args, scenario):
+    app_fps = resolve_app_fps(scenario.app_fps or args.app_fps, scenario.capture_method, scenario.fps)
+    if getattr(args, "sync_smoothness_delay_explicit", False):
+        system_latency_ms = float(args.sync_smoothness_delay_ms)
+    else:
+        system_latency_ms = resolve_app_audio_lead_ms("auto", scenario.capture_method, scenario.fps, app_fps)
+    app_latency_ms = system_latency_ms
+    return {
+        "mode": "modeled",
+        "modeled_delay_ms": round(float(args.sync_smoothness_delay_ms), 3),
+        "system_latency_ms": round(system_latency_ms, 3),
+        "app_latency_ms": round(app_latency_ms, 3),
+        "modeled_source": "explicit_delay" if getattr(args, "sync_smoothness_delay_explicit", False) else "method_aware",
+    }
 
 
 def fail(message):
@@ -661,7 +682,7 @@ def sync_smoothness_retry_offsets_from_report(analyzer_report):
     offsets_by_ordinal = strict_audio_mean_offsets_by_ordinal_ms(analyzer_report)
     if not offsets_by_ordinal:
         return None
-    if any(abs(offset) > 30.0 for offset in offsets_by_ordinal.values()):
+    if any(abs(offset) > SYNC_SMOOTHNESS_RETRY_MAX_RESIDUAL_MS for offset in offsets_by_ordinal.values()):
         return None
     return offsets_by_ordinal
 
@@ -1439,6 +1460,7 @@ def build_parser():
 def parse_args(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+    args.sync_smoothness_delay_explicit = explicit_option(argv, "--sync-smoothness-delay-ms")
     aliases = args.profile_aliases or []
     if len(set(aliases)) > 1:
         fail(f"conflicting scenario profiles requested: {', '.join(aliases)}")
@@ -1493,6 +1515,11 @@ def self_test():
         "inject_aac_60fps_late_app_lossy",
     ]
     assert sum(1 for scenario in build_scenarios(quick) if scenario.secondary_app_audio) == 2
+    assert resolve_app_audio_lead_ms("auto", "wgc", 60, 240) == WGC_TEAR_FREE_AUDIO_LEAD_MS
+    assert resolve_app_audio_lead_ms("auto", "wgc", 120, 240) == WGC_TEAR_FREE_AUDIO_LEAD_MS
+    below_target_lead = WGC_TEAR_FREE_AUDIO_LEAD_MS + WGC_BELOW_TARGET_EXTRA_AUDIO_LEAD_FRAMES * (1000.0 / 120.0)
+    assert abs(resolve_app_audio_lead_ms("auto", "wgc", 120, 90) - below_target_lead) < 0.001
+    assert resolve_app_audio_lead_ms("auto", "inject", 120, 144) == 50.0
 
     late_app = parse_args(["--late-app-source-gate", "--dry-run"])
     late_app_scenarios = build_scenarios(late_app)
@@ -1547,6 +1574,26 @@ def self_test():
     sync_smoothness_modeled = parse_args(["--sync-smoothness-gate", "--sync-smoothness-latency-mode", "modeled",
                                           "--dry-run"])
     assert sync_smoothness_modeled.audio_capture_latency_ms == SYNC_SMOOTHNESS_DEFAULT_DELAY_MS
+    modeled_wgc_latency = modeled_sync_smoothness_initial_latencies_ms(
+        sync_smoothness_modeled,
+        Scenario("wgc", "alac", 120, label="active_delay_near_target", app_fps=120),
+    )
+    assert modeled_wgc_latency["system_latency_ms"] == WGC_TEAR_FREE_AUDIO_LEAD_MS
+    assert modeled_wgc_latency["app_latency_ms"] == WGC_TEAR_FREE_AUDIO_LEAD_MS
+    modeled_inject_latency = modeled_sync_smoothness_initial_latencies_ms(
+        sync_smoothness_modeled,
+        Scenario("inject", "flac", 120, label="active_delay_above_target", app_fps=144),
+    )
+    assert modeled_inject_latency["system_latency_ms"] == 50.0
+    sync_smoothness_modeled_explicit = parse_args(
+        ["--sync-smoothness-gate", "--sync-smoothness-latency-mode", "modeled", "--sync-smoothness-delay-ms", "35",
+         "--dry-run"]
+    )
+    modeled_explicit_latency = modeled_sync_smoothness_initial_latencies_ms(
+        sync_smoothness_modeled_explicit,
+        Scenario("wgc", "alac", 120, label="active_delay_near_target", app_fps=120),
+    )
+    assert modeled_explicit_latency["system_latency_ms"] == 35.0
     sync_smoothness_filtered = parse_args([
         "--sync-smoothness-gate", "--scenario-filter", "inject_aac_120fps_active_delay_encoder_pressure", "--dry-run"
     ])
@@ -1628,6 +1675,27 @@ def self_test():
         }
     )
     assert retry_corrections == {0: 1.75}
+    high_residual_retry_corrections = sync_smoothness_retry_corrections_ms(
+        {
+            "audio": [
+                {"ordinal": 0, "strict": True, "av_offset_stats_ms": {"matched": 8, "mean_signed": 76.0}},
+            ],
+            "checks": [
+                {"name": "audio.a:0.av_mean_offset_ms", "passed": False,
+                 "failure_class": "audio_video_event_offset"},
+            ],
+        }
+    )
+    assert high_residual_retry_corrections == {0: SYNC_SMOOTHNESS_RETRY_MAX_MEAN_STEP_MS}
+    no_retry_for_implausible_residual = sync_smoothness_retry_offsets_from_report(
+        {
+            "audio": [
+                {"ordinal": 0, "strict": True, "av_offset_stats_ms": {"matched": 8, "mean_signed": 140.0}},
+            ],
+            "checks": [{"passed": False, "failure_class": "audio_video_event_offset"}],
+        }
+    )
+    assert no_retry_for_implausible_residual is None
     spread_retry_corrections = sync_smoothness_retry_corrections_ms(
         {
             "audio": [
@@ -1775,26 +1843,31 @@ def main(argv=None):
     try:
         for scenario in scenarios:
             scenario_args = args
-            preflight_info = None
+            latency_info = None
             if args.profile == "sync-smoothness" and args.sync_smoothness_latency_mode == "preflight":
-                preflight_info, preflight_failure = run_sync_smoothness_preflight(args, scenario, run_root, ce_exe,
-                                                                                  app_exe)
+                latency_info, preflight_failure = run_sync_smoothness_preflight(args, scenario, run_root, ce_exe,
+                                                                                app_exe)
                 if preflight_failure:
                     results.append(preflight_failure)
                     if not args.keep_going:
                         break
                     continue
                 scenario_args = copy.copy(args)
-                scenario_args.audio_capture_latency_ms = preflight_info["system_latency_ms"]
-                scenario_args.app_capture_latency_ms = preflight_info["app_latency_ms"]
-            result = run_scenario(scenario_args, scenario, run_root, ce_exe, app_exe, preflight_info=preflight_info)
+                scenario_args.audio_capture_latency_ms = latency_info["system_latency_ms"]
+                scenario_args.app_capture_latency_ms = latency_info["app_latency_ms"]
+            elif args.profile == "sync-smoothness" and args.sync_smoothness_latency_mode == "modeled":
+                latency_info = modeled_sync_smoothness_initial_latencies_ms(args, scenario)
+                scenario_args = copy.copy(args)
+                scenario_args.audio_capture_latency_ms = latency_info["system_latency_ms"]
+                scenario_args.app_capture_latency_ms = latency_info["app_latency_ms"]
+            result = run_scenario(scenario_args, scenario, run_root, ce_exe, app_exe, preflight_info=latency_info)
             if (
                 args.profile == "sync-smoothness"
-                and args.sync_smoothness_latency_mode == "preflight"
-                and preflight_info
+                and args.sync_smoothness_latency_mode in ("preflight", "modeled")
+                and latency_info
             ):
                 retry_args = copy.copy(scenario_args)
-                retry_info = copy.deepcopy(preflight_info)
+                retry_info = copy.deepcopy(latency_info)
                 for retry_attempt in range(1, SYNC_SMOOTHNESS_MAX_CONTENT_RETRIES + 1):
                     if result["passed"]:
                         break

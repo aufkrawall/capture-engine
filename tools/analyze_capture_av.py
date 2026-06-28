@@ -3,6 +3,7 @@
 import argparse
 import collections
 import csv
+import datetime
 import json
 import math
 import os
@@ -169,13 +170,43 @@ WGC_SMOOTHNESS_EXTRA_RE = re.compile(
     re.IGNORECASE,
 )
 WGC_SMOOTHNESS_BUFFER_RE = re.compile(
-    r"smoothBuf=(\d+) smoothTargetMs=(\d+) smoothFrames=(\d+)/(\d+)/(\d+) "
-    r"smoothDelay=([0-9.]+)ms smoothPoolSlots=(\d+)"
-    r"(?: sourceFramePoolBuffers=(\d+) budgetSurfaces=(\d+) syncFrames=(\d+) safetySlots=(\d+) "
-    r"leasedMax=(\d+) freeMin=(\d+) poolSaturatedDrops=(\d+) overwritePrevented=(\d+) "
-    r"leaseMismatches=(\d+))?"
-    r"(?: smoothVramMB=([0-9.]+))? "
-    r"smoothCapLimited=(\d+)(?: smoothReason=([A-Za-z0-9_-]+))?",
+    r"smoothBuf=(?P<enabled>\d+) smoothTargetMs=(?P<target_ms>\d+) "
+    r"smoothFrames=(?P<actual_frames>\d+)/(?P<retained_frames>\d+)/(?P<desired_frames>\d+) "
+    r"smoothDelay=(?P<delay_ms>[0-9.]+)ms smoothPoolSlots=(?P<pool_slots>\d+)"
+    r"(?: sourceFramePoolBuffers=(?P<source_buffers>\d+) budgetSurfaces=(?P<budget_surfaces>\d+) "
+    r"syncFrames=(?P<sync_frames>\d+) "
+    r"(?:(?:extraFrames=(?P<extra_frames>\d+) )?"
+    r"(?:retainedCap=(?P<retained_cap>\d+) )?"
+    r"(?:reservedFreeSlots=(?P<reserved_free_slots>\d+) )?)?"
+    r"safetySlots=(?P<safety_slots>\d+) "
+    r"(?:(?:retainedCapTrim=(?P<retained_cap_trim>\d+) "
+    r"ingressAccepted=(?P<ingress_accepted>\d+) ingressDecimated=(?P<ingress_decimated>\d+) "
+    r"ingressRetained=(?P<ingress_retained>\d+)/(?P<ingress_cap>\d+) "
+    r"ingressLowWater=(?P<ingress_low_water>\d+) )?)"
+    r"leasedMax=(?P<leased_max>\d+) freeMin=(?P<free_min>\d+) "
+    r"poolSaturatedDrops=(?P<pool_saturated_drops>\d+) "
+    r"overwritePrevented=(?P<overwrite_prevented>\d+) "
+    r"leaseMismatches=(?P<lease_mismatches>\d+))?"
+    r"(?: smoothVramMB=(?P<vram_mb>[0-9.]+))? "
+    r"smoothCapLimited=(?P<cap_limited>\d+)(?: smoothReason=(?P<reason>[A-Za-z0-9_-]+))?",
+    re.IGNORECASE,
+)
+WGC_SMOOTHNESS_INGRESS_RE = re.compile(
+    r"\[WGC CFR SMOOTHNESS INGRESS\].*accepted=(?P<accepted>\d+) decimated=(?P<decimated>\d+) "
+    r"retained=(?P<retained>\d+)/(?P<cap>\d+) lowWater=(?P<low_water>\d+) "
+    r"accLowWater=(?P<acc_low_water>\d+) accRecovery=(?P<acc_recovery>\d+) "
+    r"accSourceBelow=(?P<acc_source_below>\d+) accHealthy=(?P<acc_healthy>\d+) "
+    r"decSoftReserve=(?P<dec_soft_reserve>\d+) decHardReserve=(?P<dec_hard_reserve>\d+) "
+    r"decCredit=(?P<dec_credit>\d+) softReservePressure=(?P<soft_pressure>\d+) "
+    r"hardReservePressure=(?P<hard_pressure>\d+) lastReason=(?P<last_reason>[A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
+WGC_SMOOTHNESS_SOURCE_RE = re.compile(
+    r"\[WGC CFR SMOOTHNESS SOURCE\].*acceptedTotal=(?P<accepted_total>\d+) "
+    r"cfrTicksTotal=(?P<cfr_ticks_total>\d+) rollingAccepted=(?P<rolling_accepted>\d+) "
+    r"rollingCfrTicks=(?P<rolling_cfr_ticks>\d+) rollingDeficit=(?P<rolling_deficit>\d+) "
+    r"rollingSurplus=(?P<rolling_surplus>\d+) lastWindowAccepted=(?P<last_window_accepted>\d+) "
+    r"lastWindowCfrTicks=(?P<last_window_cfr_ticks>\d+) windowSlots=(?P<window_slots>\d+)",
     re.IGNORECASE,
 )
 WGC_DELAY_REALIZATION_RE = re.compile(
@@ -255,7 +286,13 @@ FINAL_METADATA_RE = re.compile(
     re.IGNORECASE,
 )
 POST_MUX_AUDIO_MISMATCH_RE = re.compile(r"Post-mux audio duration mismatch .*maxDelta=(\d+)", re.IGNORECASE)
+POST_MUX_AUDIO_PRIMING_RE = re.compile(
+    r"Post-mux audio codec priming evidence .*maxDelta=(\d+) "
+    r"primingTolerance=(\d+) roundingTolerance=(\d+)",
+    re.IGNORECASE,
+)
 PACKET_MISMATCH_RE = re.compile(r"Packet-level A/V duration mismatch", re.IGNORECASE)
+LOG_LINE_TIMESTAMP_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3,6})\]")
 STOP_AUDIO_TRACK_RE = re.compile(
     r"\[STOP AUDIO TRACK\] Track (\d+): encoded=(\d+) expected=(\d+) diff=([+-]?\d+) "
     r"\(([+-]?[0-9.]+) ms\).*sources=\[([^\]]*)\]",
@@ -930,6 +967,10 @@ def analyze_log(log_path):
     if not log_path:
         return None
     text = log_path.read_text(encoding="utf-8", errors="replace")
+    return analyze_log_text(text)
+
+
+def analyze_log_text(text):
     lines = text.splitlines()
     counts = {name: len(pattern.findall(text)) for name, pattern in LOG_PATTERNS.items()}
     counts["audio_late_app_source_backlog"] = count_unjoined_late_app_source_backlog(text)
@@ -1148,6 +1189,7 @@ def parse_wgc_perf_line(line):
         "pool_lease_evidence": bool(re.search(r"PoolLease:", line)),
         "input": find_int(r"Input:\s*(\d+)"),
         "queued": find_int(r"Queued:\s*(\d+)"),
+        "drop_ingress": find_int(r"DropIngress:\s*(\d+)"),
         "duplicate": find_int(r"Dup:\s*(\d+)"),
         "late": find_int(r"Late:\s*(\d+)"),
         "min_in_250": parse_int(min_in_match.group(1)) if min_in_match else 0,
@@ -1179,7 +1221,26 @@ def parse_wgc_perf_line(line):
         "budget_surfaces": find_int(r"budgetSurfaces=(\d+)"),
         "sync_frames": find_int(r"syncFrames=(\d+)"),
         "extra_frames": find_int(r"extraFrames=(\d+)"),
+        "retained_cap": find_int(r"retainedCap=(\d+)"),
+        "reserved_free_slots": find_int(r"reservedFree=(\d+)"),
         "safety_slots": find_int(r"safetySlots=(\d+)"),
+        "ingress_accepted": find_int(r"Ingress:\s*accepted=(\d+)"),
+        "ingress_decimated": find_int(r"decimated=(\d+)"),
+        "ingress_retained": find_int(r"retained=(\d+)/\d+"),
+        "ingress_retained_cap": find_int(r"retained=\d+/(\d+)"),
+        "ingress_low_water": find_int(r"lowWater=(\d+)"),
+        "ingress_accepted_low_water": find_int(r"accLow=(\d+)"),
+        "ingress_accepted_recovery": find_int(r"accRec=(\d+)"),
+        "ingress_accepted_source_below": find_int(r"accSrcBelow=(\d+)"),
+        "ingress_accepted_healthy": find_int(r"accHealthy=(\d+)"),
+        "ingress_decimated_soft_reserve": find_int(r"decSoft=(\d+)"),
+        "ingress_decimated_hard_reserve": find_int(r"decHard=(\d+)"),
+        "ingress_decimated_credit": find_int(r"decCredit=(\d+)"),
+        "ingress_soft_reserve_pressure": find_int(r"softPress=(\d+)"),
+        "ingress_hard_reserve_pressure": find_int(r"hardPress=(\d+)"),
+        "ingress_reason": (re.search(r"reason=([A-Za-z0-9_-]+)", line).group(1)
+                           if re.search(r"reason=([A-Za-z0-9_-]+)", line)
+                           else ""),
     }
 
 
@@ -1236,6 +1297,28 @@ def parse_live_start_qpc(media_text):
     return parse_int(match.group(1), 0) if match else 0
 
 
+def parse_log_timestamp_us(line):
+    match = LOG_LINE_TIMESTAMP_RE.match(line)
+    if not match:
+        return 0
+    timestamp = match.group(1)
+    try:
+        parsed = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f")
+    except ValueError:
+        return 0
+    epoch = datetime.datetime(parsed.year, parsed.month, parsed.day)
+    return int(round((parsed - epoch).total_seconds() * 1000000.0))
+
+
+def parse_live_start_wall_us(media_text):
+    for line in media_text.splitlines():
+        if "[A/V START] Shared startup anchor selected" in line or "[EncoderThread] Recording live" in line:
+            timestamp_us = parse_log_timestamp_us(line)
+            if timestamp_us > 0:
+                return timestamp_us
+    return 0
+
+
 def choose_perf_qpc_us_from_live_start(live_start_qpc, perf_summaries):
     if live_start_qpc <= 0:
         return 0
@@ -1263,7 +1346,10 @@ def build_recording_window_info(media_text, recording_window_spec, perf_summarie
         return None
     live_start_qpc = parse_live_start_qpc(media_text)
     live_start_qpc_us = choose_perf_qpc_us_from_live_start(live_start_qpc, perf_summaries)
+    live_start_wall_us = parse_live_start_wall_us(media_text)
     start_s, end_s = parsed
+    start_offset_us = int(round(start_s * 1000000.0))
+    end_offset_us = int(round(end_s * 1000000.0))
     if live_start_qpc_us <= 0:
         return {
             "spec": recording_window_spec,
@@ -1273,6 +1359,9 @@ def build_recording_window_info(media_text, recording_window_spec, perf_summarie
             "live_start_qpc_us": 0,
             "start_qpc_us": 0,
             "end_qpc_us": 0,
+            "live_start_wall_us": live_start_wall_us,
+            "start_wall_us": live_start_wall_us + start_offset_us if live_start_wall_us > 0 else 0,
+            "end_wall_us": live_start_wall_us + end_offset_us if live_start_wall_us > 0 else 0,
             "active": False,
             "reason": "missing_live_start_qpc",
         }
@@ -1282,11 +1371,46 @@ def build_recording_window_info(media_text, recording_window_spec, perf_summarie
         "end_s": end_s,
         "live_start_qpc": live_start_qpc,
         "live_start_qpc_us": live_start_qpc_us,
-        "start_qpc_us": live_start_qpc_us + int(round(start_s * 1000000.0)),
-        "end_qpc_us": live_start_qpc_us + int(round(end_s * 1000000.0)),
+        "start_qpc_us": live_start_qpc_us + start_offset_us,
+        "end_qpc_us": live_start_qpc_us + end_offset_us,
+        "live_start_wall_us": live_start_wall_us,
+        "start_wall_us": live_start_wall_us + start_offset_us if live_start_wall_us > 0 else 0,
+        "end_wall_us": live_start_wall_us + end_offset_us if live_start_wall_us > 0 else 0,
         "active": True,
         "reason": "ok",
     }
+
+
+def filter_media_text_for_recording_window(media_text, recording_window_info):
+    if not recording_window_info or not recording_window_info.get("active"):
+        return media_text
+    start_wall_us = recording_window_info.get("start_wall_us", 0)
+    end_wall_us = recording_window_info.get("end_wall_us", 0)
+    if start_wall_us <= 0 or end_wall_us <= start_wall_us:
+        return media_text
+
+    windowed_lines = []
+    for line in media_text.splitlines():
+        timestamp_us = parse_log_timestamp_us(line)
+        if timestamp_us > 0 and start_wall_us <= timestamp_us < end_wall_us:
+            windowed_lines.append(line)
+    return "\n".join(windowed_lines)
+
+
+def merge_window_media_evidence(window_evidence, full_evidence):
+    merged = dict(window_evidence)
+    for key in (
+        "wgc_summary",
+        "wgc_smoothness_summary",
+        "inject_summary",
+        "inject_source_summary",
+        "final_packet_timelines",
+        "final_metadata",
+        "post_mux_audio_mismatch_delta_us",
+        "post_mux_audio_priming",
+    ):
+        merged[key] = full_evidence.get(key, [])
+    return merged
 
 
 def update_wgc_smoothness_item_from_line(item, line):
@@ -1306,28 +1430,78 @@ def update_wgc_smoothness_item_from_line(item, line):
 
     smoothness_buffer = WGC_SMOOTHNESS_BUFFER_RE.search(line)
     if smoothness_buffer:
+        groups = smoothness_buffer.groupdict()
         item.update(
             {
-                "smoothness_buffer_enabled": parse_int(smoothness_buffer.group(1)),
-                "smoothness_buffer_target_ms": parse_int(smoothness_buffer.group(2)),
-                "smoothness_buffer_actual_frames": parse_int(smoothness_buffer.group(3)),
-                "smoothness_buffer_retained_frames": parse_int(smoothness_buffer.group(4)),
-                "smoothness_buffer_desired_frames": parse_int(smoothness_buffer.group(5)),
-                "smoothness_buffer_delay_ms": parse_float(smoothness_buffer.group(6)),
-                "smoothness_buffer_pool_slots": parse_int(smoothness_buffer.group(7)),
-                "pool_lifetime_evidence": 1 if smoothness_buffer.group(8) is not None else 0,
-                "smoothness_source_frame_pool_buffers": parse_int(smoothness_buffer.group(8)),
-                "smoothness_budget_surfaces": parse_int(smoothness_buffer.group(9)),
-                "smoothness_sync_frames": parse_int(smoothness_buffer.group(10)),
-                "smoothness_safety_slots": parse_int(smoothness_buffer.group(11)),
-                "pool_lease_max": parse_int(smoothness_buffer.group(12)),
-                "pool_free_min": parse_int(smoothness_buffer.group(13)),
-                "pool_saturated_drops": parse_int(smoothness_buffer.group(14)),
-                "pool_overwrite_prevented": parse_int(smoothness_buffer.group(15)),
-                "pool_lease_mismatches": parse_int(smoothness_buffer.group(16)),
-                "smoothness_buffer_vram_mb": parse_float(smoothness_buffer.group(17) or "0"),
-                "smoothness_buffer_cap_limited": parse_int(smoothness_buffer.group(18)),
-                "smoothness_buffer_reason": smoothness_buffer.group(19) or "",
+                "smoothness_buffer_enabled": parse_int(groups.get("enabled")),
+                "smoothness_buffer_target_ms": parse_int(groups.get("target_ms")),
+                "smoothness_buffer_actual_frames": parse_int(groups.get("actual_frames")),
+                "smoothness_buffer_retained_frames": parse_int(groups.get("retained_frames")),
+                "smoothness_buffer_desired_frames": parse_int(groups.get("desired_frames")),
+                "smoothness_buffer_delay_ms": parse_float(groups.get("delay_ms")),
+                "smoothness_buffer_pool_slots": parse_int(groups.get("pool_slots")),
+                "pool_lifetime_evidence": 1 if groups.get("source_buffers") is not None else 0,
+                "smoothness_source_frame_pool_buffers": parse_int(groups.get("source_buffers")),
+                "smoothness_budget_surfaces": parse_int(groups.get("budget_surfaces")),
+                "smoothness_sync_frames": parse_int(groups.get("sync_frames")),
+                "smoothness_extra_frames": parse_int(groups.get("extra_frames")),
+                "smoothness_retained_frame_cap": parse_int(groups.get("retained_cap")),
+                "smoothness_reserved_free_slots": parse_int(groups.get("reserved_free_slots")),
+                "smoothness_safety_slots": parse_int(groups.get("safety_slots")),
+                "smoothness_retained_cap_trim": parse_int(groups.get("retained_cap_trim")),
+                "wgc_ingress_accepted": parse_int(groups.get("ingress_accepted")),
+                "wgc_ingress_decimated": parse_int(groups.get("ingress_decimated")),
+                "wgc_ingress_retained_frames": parse_int(groups.get("ingress_retained")),
+                "wgc_ingress_retained_cap": parse_int(groups.get("ingress_cap")),
+                "wgc_ingress_low_water": parse_int(groups.get("ingress_low_water")),
+                "pool_lease_max": parse_int(groups.get("leased_max")),
+                "pool_free_min": parse_int(groups.get("free_min")),
+                "pool_saturated_drops": parse_int(groups.get("pool_saturated_drops")),
+                "pool_overwrite_prevented": parse_int(groups.get("overwrite_prevented")),
+                "pool_lease_mismatches": parse_int(groups.get("lease_mismatches")),
+                "smoothness_buffer_vram_mb": parse_float(groups.get("vram_mb") or "0"),
+                "smoothness_buffer_cap_limited": parse_int(groups.get("cap_limited")),
+                "smoothness_buffer_reason": groups.get("reason") or "",
+            }
+        )
+
+    ingress = WGC_SMOOTHNESS_INGRESS_RE.search(line)
+    if ingress:
+        groups = ingress.groupdict()
+        item.update(
+            {
+                "wgc_ingress_accepted": parse_int(groups.get("accepted")),
+                "wgc_ingress_decimated": parse_int(groups.get("decimated")),
+                "wgc_ingress_retained_frames": parse_int(groups.get("retained")),
+                "wgc_ingress_retained_cap": parse_int(groups.get("cap")),
+                "wgc_ingress_low_water": parse_int(groups.get("low_water")),
+                "wgc_ingress_accepted_low_water": parse_int(groups.get("acc_low_water")),
+                "wgc_ingress_accepted_recovery": parse_int(groups.get("acc_recovery")),
+                "wgc_ingress_accepted_source_below": parse_int(groups.get("acc_source_below")),
+                "wgc_ingress_accepted_healthy": parse_int(groups.get("acc_healthy")),
+                "wgc_ingress_decimated_soft_reserve": parse_int(groups.get("dec_soft_reserve")),
+                "wgc_ingress_decimated_hard_reserve": parse_int(groups.get("dec_hard_reserve")),
+                "wgc_ingress_decimated_credit": parse_int(groups.get("dec_credit")),
+                "wgc_ingress_soft_reserve_pressure": parse_int(groups.get("soft_pressure")),
+                "wgc_ingress_hard_reserve_pressure": parse_int(groups.get("hard_pressure")),
+                "wgc_ingress_last_reason": groups.get("last_reason") or "",
+            }
+        )
+
+    source = WGC_SMOOTHNESS_SOURCE_RE.search(line)
+    if source:
+        groups = source.groupdict()
+        item.update(
+            {
+                "wgc_source_accepted_total": parse_int(groups.get("accepted_total")),
+                "wgc_source_cfr_ticks_total": parse_int(groups.get("cfr_ticks_total")),
+                "wgc_source_rolling_accepted": parse_int(groups.get("rolling_accepted")),
+                "wgc_source_rolling_cfr_ticks": parse_int(groups.get("rolling_cfr_ticks")),
+                "wgc_source_rolling_deficit": parse_int(groups.get("rolling_deficit")),
+                "wgc_source_rolling_surplus": parse_int(groups.get("rolling_surplus")),
+                "wgc_source_last_window_accepted": parse_int(groups.get("last_window_accepted")),
+                "wgc_source_last_window_cfr_ticks": parse_int(groups.get("last_window_cfr_ticks")),
+                "wgc_source_window_slots": parse_int(groups.get("window_slots")),
             }
         )
 
@@ -1473,6 +1647,7 @@ def parse_media_triage(media_text):
     final_packet_timelines = []
     final_metadata = []
     post_mux_audio_mismatches = []
+    post_mux_audio_priming = []
     stop_audio_tracks = []
     stop_audio_sources = []
     zero_drift_warnings = []
@@ -1736,6 +1911,16 @@ def parse_media_triage(media_text):
         post_mux_match = POST_MUX_AUDIO_MISMATCH_RE.search(line)
         if post_mux_match:
             post_mux_audio_mismatches.append(parse_int(post_mux_match.group(1)))
+        post_mux_priming_match = POST_MUX_AUDIO_PRIMING_RE.search(line)
+        if post_mux_priming_match:
+            post_mux_audio_priming.append(
+                {
+                    "max_delta_us": parse_int(post_mux_priming_match.group(1)),
+                    "priming_tolerance_us": parse_int(post_mux_priming_match.group(2)),
+                    "rounding_tolerance_us": parse_int(post_mux_priming_match.group(3)),
+                    "line": line,
+                }
+            )
         stop_track_match = STOP_AUDIO_TRACK_RE.search(line)
         if stop_track_match:
             sources = [
@@ -1798,6 +1983,7 @@ def parse_media_triage(media_text):
         "final_packet_timelines": final_packet_timelines,
         "final_metadata": final_metadata,
         "post_mux_audio_mismatch_delta_us": post_mux_audio_mismatches,
+        "post_mux_audio_priming": post_mux_audio_priming,
         "stop_audio_tracks": stop_audio_tracks,
         "stop_audio_sources": stop_audio_sources,
         "zero_drift_warnings": zero_drift_warnings,
@@ -2000,16 +2186,28 @@ def has_inject_capture_pacer_limit(inject_pacing):
     return True
 
 
-def has_encoder_or_mux_backpressure(media_evidence, perf_summaries):
+def has_encoder_or_mux_backpressure(media_evidence, perf_summaries, windowed=False):
     if any(item.get("encoder_overload") or item.get("mux_overload") or item.get("backpressure")
            for item in media_evidence["final_metadata"]):
         return True
     if any(item["overload_rows"] > 0 for item in perf_summaries):
         return True
+    if windowed:
+        return False
     for item in media_evidence["wgc_perf"]:
         if item["overload_flags"] != 0:
             return True
     return False
+
+
+def is_post_mux_delta_codec_priming(media_evidence, delta_us):
+    if delta_us <= 1:
+        return True
+    return any(
+        delta_us <= item.get("priming_tolerance_us", 0) + item.get("rounding_tolerance_us", 0)
+        and item.get("max_delta_us", 0) <= item.get("priming_tolerance_us", 0) + item.get("rounding_tolerance_us", 0)
+        for item in media_evidence.get("post_mux_audio_priming", [])
+    )
 
 
 def has_exact_final_mux_evidence(media_evidence):
@@ -2020,7 +2218,10 @@ def has_exact_final_mux_evidence(media_evidence):
     final_metadata_clean = bool(media_evidence["final_metadata"]) and all(
         item["max_delta_us"] <= 1 for item in media_evidence["final_metadata"]
     )
-    no_post_mux_strict_mismatch = all(delta <= 1 for delta in media_evidence["post_mux_audio_mismatch_delta_us"])
+    no_post_mux_strict_mismatch = all(
+        is_post_mux_delta_codec_priming(media_evidence, delta)
+        for delta in media_evidence["post_mux_audio_mismatch_delta_us"]
+    )
     return (final_packets_clean or final_metadata_clean) and no_post_mux_strict_mismatch
 
 
@@ -2055,12 +2256,14 @@ def parse_ms_ratio_value(value):
     return parse_float(text)
 
 
-def has_wgc_encoder_overload_policy_fault(media_evidence, log_summary):
+def has_wgc_encoder_overload_policy_fault(media_evidence, log_summary, capacity_pressure_proven=None):
     if not log_summary:
         return False
 
     counts = log_summary["counts"]
-    overload_seen = log_summary.get("saw_encoder_overload") or log_summary.get("saw_mux_overload")
+    if capacity_pressure_proven is False:
+        return False
+    overload_seen = capacity_pressure_proven is True or log_summary.get("saw_encoder_overload") or log_summary.get("saw_mux_overload")
     overload_seen = overload_seen or any(item["overload_flags"] != 0 for item in media_evidence["wgc_perf"])
     overload_seen = overload_seen or any(attribution_has_capacity_pressure(item)
                                          for item in media_evidence["wgc_attribution"])
@@ -2111,12 +2314,14 @@ def has_wgc_encoder_overload_policy_fault(media_evidence, log_summary):
     )
 
 
-def has_wgc_encoder_limited_judder(media_evidence, log_summary):
+def has_wgc_encoder_limited_judder(media_evidence, log_summary, capacity_pressure_proven=None):
     if not log_summary:
         return False
 
     counts = log_summary["counts"]
-    overload_seen = log_summary.get("saw_encoder_overload") or log_summary.get("saw_mux_overload")
+    if capacity_pressure_proven is False:
+        return False
+    overload_seen = capacity_pressure_proven is True or log_summary.get("saw_encoder_overload") or log_summary.get("saw_mux_overload")
     overload_seen = overload_seen or any(item["overload_flags"] != 0 for item in media_evidence["wgc_perf"])
     overload_seen = overload_seen or any(attribution_has_capacity_pressure(item)
                                          for item in media_evidence["wgc_attribution"])
@@ -2159,7 +2364,7 @@ def has_wgc_av_sync_delay_realization_risk(media_evidence):
         smoothness_delay_ms = item.get("smoothness_buffer_delay_ms", 0.0)
         expected_effective_delay_ms = requested_delay_ms + smoothness_delay_ms
 
-        if startup_delay_ms > 0.0 and abs(startup_delay_ms - requested_delay_ms) > 5.0:
+        if startup_delay_ms > 0.0 and abs(startup_delay_ms - expected_effective_delay_ms) > 5.0:
             return True
         if effective_delay_ms > 0.0 and abs(effective_delay_ms - expected_effective_delay_ms) > 5.0:
             return True
@@ -2182,7 +2387,7 @@ def wgc_active_delay_matches_request(item):
         requested_delay_ms > 0.0
         and startup_delay_ms > 0.0
         and effective_delay_ms > 0.0
-        and abs(startup_delay_ms - requested_delay_ms) <= 5.0
+        and abs(startup_delay_ms - expected_effective_delay_ms) <= 5.0
         and abs(effective_delay_ms - expected_effective_delay_ms) <= 5.0
     )
 
@@ -2496,6 +2701,21 @@ def has_wgc_pool_saturated_safe_drop(media_evidence):
     )
 
 
+def has_wgc_ingress_decimated(media_evidence):
+    return any(
+        item.get("drop_ingress", 0) > 0 or item.get("ingress_decimated", 0) > 0
+        for item in media_evidence["wgc_perf"]
+    ) or any(item.get("wgc_ingress_decimated", 0) > 0 for item in media_evidence["wgc_smoothness_summary"])
+
+
+def has_wgc_copy_pool_pressure(media_evidence):
+    return (
+        has_wgc_pool_saturated_safe_drop(media_evidence)
+        or has_wgc_ingress_decimated(media_evidence)
+        or any(item.get("smoothness_retained_cap_trim", 0) > 0 for item in media_evidence["wgc_smoothness_summary"])
+    )
+
+
 def has_wgc_pool_evidence_missing(media_evidence):
     summary_needs_pool_evidence = any(
         item.get("smoothness_buffer_enabled", 0) > 0
@@ -2622,11 +2842,18 @@ def summarize_started_app_source_health(media_evidence, log_summary):
 def classify_session_triage(session_dir, capture_path=None, recording_window=None):
     media_log = session_dir / "media.log"
     media_text = read_text_if_exists(media_log)
-    log_summary = analyze_log(media_log) if media_text else None
-    media_evidence = parse_media_triage(media_text)
+    full_log_summary = analyze_log(media_log) if media_text else None
+    full_media_evidence = parse_media_triage(media_text)
     hook_evidence = parse_hook_triage(session_dir)
     perf_summaries_all = parse_perf_csvs(session_dir)
     recording_window_info = build_recording_window_info(media_text, recording_window, perf_summaries_all)
+    if media_text and recording_window_info and recording_window_info.get("active"):
+        windowed_media_text = filter_media_text_for_recording_window(media_text, recording_window_info)
+        log_summary = analyze_log_text(windowed_media_text)
+        media_evidence = merge_window_media_evidence(parse_media_triage(windowed_media_text), full_media_evidence)
+    else:
+        log_summary = full_log_summary
+        media_evidence = full_media_evidence
     perf_summaries = parse_perf_csvs(session_dir, recording_window_info) if recording_window_info else perf_summaries_all
     manifest = parse_session_manifest(session_dir)
     wgc_source_limits = summarize_wgc_source_limits(media_evidence)
@@ -2685,16 +2912,23 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     strict_mux_fault_counts = dict(mux_fault_counts)
     if late_writer_finalize_recovered:
         strict_mux_fault_counts["writer_finalize_timeout"] = 0
-    if (
-        has_encoder_or_mux_backpressure(media_evidence, perf_summaries)
-        or any(strict_mux_fault_counts.values())
-        or writer_sync_after_timeout
-    ):
+    strict_writer_failure = writer_sync_after_timeout or strict_mux_fault_counts.get("writer_finalize_timeout", 0) > 0
+    windowed_capacity_context = recording_window_info is not None
+    encoder_or_mux_backpressure = (
+        has_encoder_or_mux_backpressure(media_evidence, perf_summaries, windowed=windowed_capacity_context)
+        or strict_writer_failure
+    )
+    if encoder_or_mux_backpressure:
         verdicts.append("ce_encoder_or_mux_backpressure")
-    wgc_encoder_overload_policy_fault = has_wgc_encoder_overload_policy_fault(media_evidence, log_summary)
+    capacity_pressure_for_wgc_overload = encoder_or_mux_backpressure if windowed_capacity_context else None
+    wgc_encoder_overload_policy_fault = has_wgc_encoder_overload_policy_fault(
+        media_evidence, log_summary, capacity_pressure_for_wgc_overload
+    )
     if wgc_encoder_overload_policy_fault:
         verdicts.append("wgc_encoder_overload_policy_fault")
-    wgc_encoder_limited_judder = has_wgc_encoder_limited_judder(media_evidence, log_summary)
+    wgc_encoder_limited_judder = has_wgc_encoder_limited_judder(
+        media_evidence, log_summary, capacity_pressure_for_wgc_overload
+    )
     if wgc_encoder_limited_judder:
         verdicts.append("wgc_encoder_limited_judder")
     wgc_av_sync_delay_risk = has_wgc_av_sync_delay_realization_risk(media_evidence)
@@ -2733,6 +2967,12 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     wgc_pool_saturated_safe_drop = has_wgc_pool_saturated_safe_drop(media_evidence)
     if wgc_pool_saturated_safe_drop:
         verdicts.append("wgc_pool_saturated_safe_drop")
+    wgc_ingress_decimated = has_wgc_ingress_decimated(media_evidence)
+    if wgc_ingress_decimated:
+        verdicts.append("wgc_ingress_decimated")
+    wgc_copy_pool_pressure = has_wgc_copy_pool_pressure(media_evidence)
+    if wgc_copy_pool_pressure:
+        verdicts.append("wgc_copy_pool_pressure")
     wgc_pool_evidence_missing = has_wgc_pool_evidence_missing(media_evidence)
     if wgc_pool_evidence_missing:
         verdicts.append("wgc_pool_evidence_missing")
@@ -2767,7 +3007,8 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     elif post_mux_probe_timeout:
         verdicts.append("post_mux_probe_timeout")
     post_mux_strict_mismatches = [
-        delta for delta in media_evidence["post_mux_audio_mismatch_delta_us"] if delta > 1
+        delta for delta in media_evidence["post_mux_audio_mismatch_delta_us"]
+        if not is_post_mux_delta_codec_priming(media_evidence, delta)
     ]
     final_packet_strict = [
         item for item in media_evidence["final_packet_timelines"]
@@ -2799,6 +3040,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
         or wgc_cfr_smoothness_not_maximal
         or wgc_smoothness_evidence_incomplete
         or wgc_pool_slot_lifetime_fault
+        or wgc_pool_saturated_safe_drop
         or wgc_repeat_with_safe_candidate
         or wgc_post_stall_recovery_fault
     ):
@@ -2812,8 +3054,10 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
 
     rounding_evidence = {
         "post_mux_audio_mismatch_delta_us": media_evidence["post_mux_audio_mismatch_delta_us"],
+        "post_mux_audio_priming": media_evidence["post_mux_audio_priming"],
         "post_mux_one_us_or_less_is_info": all(
-            delta <= 1 for delta in media_evidence["post_mux_audio_mismatch_delta_us"]
+            is_post_mux_delta_codec_priming(media_evidence, delta)
+            for delta in media_evidence["post_mux_audio_mismatch_delta_us"]
         ),
     }
     report = {
@@ -2845,6 +3089,8 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "wgc_smoothness_evidence_incomplete": wgc_smoothness_evidence_incomplete,
             "wgc_pool_slot_lifetime_fault": wgc_pool_slot_lifetime_fault,
             "wgc_pool_saturated_safe_drop": wgc_pool_saturated_safe_drop,
+            "wgc_ingress_decimated": wgc_ingress_decimated,
+            "wgc_copy_pool_pressure": wgc_copy_pool_pressure,
             "wgc_pool_evidence_missing": wgc_pool_evidence_missing,
             "wgc_repeat_with_safe_candidate": wgc_repeat_with_safe_candidate,
             "wgc_post_stall_recovery_fault": wgc_post_stall_recovery_fault,
@@ -2885,6 +3131,35 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
                 ),
                 "pool_saturated_drops": sum(
                     item.get("pool_saturated_drops", 0) for item in media_evidence["wgc_perf"]
+                ),
+                "ingress_decimated": sum(
+                    item.get("drop_ingress", 0) + item.get("ingress_decimated", 0)
+                    for item in media_evidence["wgc_perf"]
+                ),
+                "ingress_accepted": sum(item.get("ingress_accepted", 0) for item in media_evidence["wgc_perf"]),
+                "ingress_accepted_low_water": sum(
+                    item.get("ingress_accepted_low_water", 0) for item in media_evidence["wgc_perf"]
+                ),
+                "ingress_accepted_recovery": sum(
+                    item.get("ingress_accepted_recovery", 0) for item in media_evidence["wgc_perf"]
+                ),
+                "ingress_accepted_source_below": sum(
+                    item.get("ingress_accepted_source_below", 0) for item in media_evidence["wgc_perf"]
+                ),
+                "ingress_decimated_soft_reserve": sum(
+                    item.get("ingress_decimated_soft_reserve", 0) for item in media_evidence["wgc_perf"]
+                ),
+                "ingress_decimated_hard_reserve": sum(
+                    item.get("ingress_decimated_hard_reserve", 0) for item in media_evidence["wgc_perf"]
+                ),
+                "ingress_decimated_credit": sum(
+                    item.get("ingress_decimated_credit", 0) for item in media_evidence["wgc_perf"]
+                ),
+                "ingress_soft_reserve_pressure": sum(
+                    item.get("ingress_soft_reserve_pressure", 0) for item in media_evidence["wgc_perf"]
+                ),
+                "ingress_hard_reserve_pressure": sum(
+                    item.get("ingress_hard_reserve_pressure", 0) for item in media_evidence["wgc_perf"]
                 ),
                 "pool_overwrite_prevented": sum(
                     item.get("pool_overwrite_prevented", 0) for item in media_evidence["wgc_perf"]
@@ -3360,10 +3635,103 @@ def self_test():
         )
         report = classify_session_triage(wgc_pool_safe_drop)
         assert "wgc_pool_saturated_safe_drop" in report["verdicts"]
+        assert "wgc_copy_pool_pressure" in report["verdicts"]
         assert "wgc_pool_slot_lifetime_fault" not in report["verdicts"]
         assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
+        assert "ce_visual_timeline_fault" in report["verdicts"]
         assert report["faults"]["wgc_pool_saturated_safe_drop"]
         assert not report["faults"]["wgc_pool_slot_lifetime_fault"]
+
+        wgc_ingress_decimated = make_session(
+            "wgc_ingress_decimated",
+            media=(
+                "[WGC Perf] Input: 144 | Queued: 120 | DropFull: 0 | DropPace: 0 | DropThrottle: 0 | "
+                "DropStale: 0 (DupTs=0 OOO=0) | DropCursor: 0 | DropPool: 0 | DropIngress: 24 | "
+                "HostQ: 18 | EncQ: 1 | Dup: 0 | Late: 0 | SrcAvg: 6944us | JitAvg: 100us | JitMax: 500us | "
+                "Src->Copy: 40/80us | Deliv: 120 | MinIn250/500: 144/144 | MinDel250/500: 120/120 | "
+                "FreshMiss: 0pm | BufAvg: 900pm | BufMin: 18 | NoFresh: 0 | NoReserve: 0 | "
+                "SchedSelAvg: 0us SchedSelBias: 0us | WgcSelAvg: 0us WgcSelBias: 0us | "
+                "CbGap: 6944/7100us CbProc: 50/90us CbDrainMax: 0 | Copy: 50us | "
+                "SlotAge: 8200us FastSlot: 0 | PoolLease: max=20 freeMin=4 satDrop=0 overwritePrevented=0 "
+                "mismatch=0 sourceFramePoolBuffers=8 copyPoolSlots=24 budgetSurfaces=32 syncFrames=4 "
+                "extraFrames=13 retainedCap=18 reservedFree=6 safetySlots=4 | "
+                "Ingress: accepted=120 decimated=24 retained=18/18 lowWater=17 reason=wgc_ingress_decimated | "
+                "KMFail: 0/0 | Flush: 0/0 | Dedicated: 1 | Encode: 300us | Fence: 0us | Throttle: 0 | "
+                "Mux: 0KB | Overload: 0x0\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=0 "
+                "phaseErrorMax=0us shortfallMax=0.0ms staleDebtDrops=0 liveRebase=0/0 tooNewRepeats=0 "
+                "syncDelayHolds=0 tooNewLeadMax=0us avDelay=33.3ms startupDelay=141.6ms "
+                "scheduleOffset=0us effectiveDelay=141.6ms lowSourceBypass=0 modeMismatch=0 "
+                "sourceBacktrack=0 syncDelaySourceLimitedHolds=0 syncDelayPolicyHolds=0 "
+                "startupReserveFrames=18 startupReserveSpan=141000us startupDelayTarget=141600us "
+                "startupReserveSelected=1 startupReserveReason=selected smoothBuf=1 smoothTargetMs=250 "
+                "smoothFrames=13/13/30 smoothDelay=108.3ms smoothPoolSlots=24 sourceFramePoolBuffers=8 "
+                "budgetSurfaces=32 syncFrames=4 extraFrames=13 retainedCap=18 reservedFreeSlots=6 safetySlots=4 "
+                "retainedCapTrim=0 ingressAccepted=120 ingressDecimated=24 ingressRetained=18/18 "
+                "ingressLowWater=17 leasedMax=20 freeMin=4 poolSaturatedDrops=0 overwritePrevented=0 "
+                "leaseMismatches=0 smoothVramMB=2025.0 smoothCapLimited=1 smoothReason=vram_cap_limited\n"
+                "[WGC CFR SMOOTHNESS DELAY] delayReservoirLowWaterFrames=17 delayReservoirTargetFrames=18 "
+                "delayReservoirLowWaterTicks=0 realizedDelayAvg=141600us realizedDelayMin=141000us "
+                "realizedDelayMax=142000us delayResidualAvg=0/1000us delayResidualMax=2000us "
+                "delayResidualP95=1000us delayResidualLateMax=1000us delayResidualEarlyMax=1000us "
+                "rawResidualAvg=0/1000us rawResidualMax=2000us rawResidualP95=1000us "
+                "rawResidualLateMax=1000us rawResidualEarlyMax=1000us predictedResidualAvg=0/1000us "
+                "predictedResidualP95=1000us predictedResidualLateMax=1000us rawMinusPredictedAvg=0/0us "
+                "rawMinusPredictedMax=0us\n"
+                "[VideoEncoder] Final packet timeline: target=1000 us videoEnd=1000 us audioMinEnd=1000 us "
+                "audioMaxEnd=1000 us maxPacketDelta=0 us audioPastTarget=0\n"
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 "
+                "us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) "
+                "backpressure=0 peakMux=0KB peakPkts=0\n"
+            ),
+        )
+        report = classify_session_triage(wgc_ingress_decimated)
+        assert "wgc_ingress_decimated" in report["verdicts"]
+        assert "wgc_copy_pool_pressure" in report["verdicts"]
+        assert "wgc_pool_saturated_safe_drop" not in report["verdicts"]
+        assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
+        assert not report["faults"]["visual_timeline"]
+
+        wgc_094302_pool_pressure = make_session(
+            "wgc_094302_pool_pressure",
+            media=(
+                "[WGC Perf] Input: 120 | Queued: 84 | DropFull: 0 | DropPace: 0 | DropThrottle: 0 | "
+                "DropStale: 0 (DupTs=0 OOO=0) | DropCursor: 0 | DropPool: 36 | HostQ: 24 | EncQ: 1 | "
+                "Dup: 65 | Late: 0 | SrcAvg: 8333us | JitAvg: 500us | JitMax: 1200us | Src->Copy: 40/80us | "
+                "Deliv: 84 | MinIn250/500: 120/120 | MinDel250/500: 84/84 | FreshMiss: 0pm | BufAvg: 900pm | "
+                "BufMin: 0 | NoFresh: 0 | NoReserve: 0 | SchedSelAvg: 0us SchedSelBias: 0us | "
+                "WgcSelAvg: 0us WgcSelBias: 0us | CbGap: 8333/9000us CbProc: 50/90us CbDrainMax: 0 | "
+                "Copy: 50us | SlotAge: 8200us FastSlot: 0 | PoolLease: max=24 freeMin=0 satDrop=36 "
+                "overwritePrevented=4000 mismatch=0 sourceFramePoolBuffers=8 copyPoolSlots=24 budgetSurfaces=32 "
+                "syncFrames=4 extraFrames=16 safetySlots=4 | KMFail: 0/0 | Flush: 0/0 | Dedicated: 1 | "
+                "Encode: 300us | Fence: 0us | Throttle: 0 | Mux: 0KB | Overload: 0x0\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=1 "
+                "phaseErrorMax=0us shortfallMax=0.0ms staleDebtDrops=0 liveRebase=0/0 tooNewRepeats=0 "
+                "syncDelayHolds=0 tooNewLeadMax=0us avDelay=31.2ms startupDelay=163.5ms "
+                "scheduleOffset=102699us effectiveDelay=163.5ms lowSourceBypass=0 modeMismatch=0 "
+                "sourceBacktrack=0 syncDelaySourceLimitedHolds=0 syncDelayPolicyHolds=0 "
+                "startupReserveFrames=24 startupReserveSpan=163489us startupDelayTarget=163489us "
+                "startupReserveSelected=1 startupReserveReason=selected smoothBuf=1 smoothTargetMs=250 "
+                "smoothFrames=16/16/30 smoothDelay=132.3ms smoothPoolSlots=24 sourceFramePoolBuffers=8 "
+                "budgetSurfaces=32 syncFrames=4 safetySlots=4 leasedMax=24 freeMin=0 poolSaturatedDrops=766 "
+                "overwritePrevented=117761 leaseMismatches=0 smoothVramMB=2025.0 smoothCapLimited=1 "
+                "smoothReason=vram_cap_limited\n"
+                "[VideoEncoder] Final packet timeline: target=111108333 us videoEnd=111108333 us "
+                "audioMinEnd=111108333 us audioMaxEnd=111108333 us maxPacketDelta=0 us audioPastTarget=0\n"
+                "[VideoEncoder] Final metadata durations: target=111108333 us video=111108333 us "
+                "audioMin=111108333 us audioMax=111108333 us maxDelta=0 us streams(v=1 a=2) "
+                "overload(encoder=0 mux=0) backpressure=0 peakMux=0KB peakPkts=0\n"
+                "[VideoEncoder] Post-mux audio duration mismatch maxDelta=21333\n"
+                "[VideoEncoder] Post-mux audio codec priming evidence (target=111108333 audioMinEnd=111129666 "
+                "audioMaxEnd=111129666 maxDelta=21333 primingTolerance=21355 roundingTolerance=21)\n"
+            ),
+        )
+        report = classify_session_triage(wgc_094302_pool_pressure)
+        assert "wgc_pool_saturated_safe_drop" in report["verdicts"]
+        assert "wgc_copy_pool_pressure" in report["verdicts"]
+        assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
+        assert "ce_audio_timeline_fault" not in report["verdicts"]
+        assert report["evidence"]["rounding_evidence"]["post_mux_one_us_or_less_is_info"]
 
         wgc_pool_lifetime_fault = make_session(
             "wgc_pool_lifetime_fault",
@@ -3432,6 +3800,41 @@ def self_test():
         assert "source_present_gap" not in report["verdicts"]
         assert report["evidence"]["present_gap_source"] == "perf_recording_window"
         assert report["evidence"]["max_present_gap_ms"] <= 11.0
+
+        window_audio_noise = make_session(
+            "window_audio_noise",
+            media=(
+                "[2026-01-01 00:00:00.000] [INFO] [EncoderThread] Recording live "
+                "(WGC, hiddenFrames=0, bufferedInject=0)\n"
+                "[2026-01-01 00:00:00.100] [INFO] [AVSyncApply] wgc_schedule_anchor: "
+                "videoQpc=99900000 audioAnchorQpc=100000000 liveStartQpc=100000000 "
+                "requestedDelayUs=1000 startupDelayUs=1000 scheduleOffsetUs=0 "
+                "selectionOffsetUs=0 renderDelayUs=1000 smoothExtraDelayUs=0 confidence=high reason=test\n"
+                "[2026-01-01 00:00:02.500] [INFO] [Media] [WGC CFR] Source-starved episode: "
+                "duration=120ms out=14 dup=12 minIn=60 minDel=120 freshMiss=1000pm minBuf=0\n"
+                "[2026-01-01 00:00:05.500] [INFO] [Media] [PullAudio] WARNING: Source underrun - "
+                "src 4 padding 400 samples with silence (available=0 needed=400 forceDrain=0)\n"
+                "[2026-01-01 00:00:05.600] [INFO] [Media] [A/V ZERO DRIFT WARNING] Track 1 "
+                "residual_samples=-480 residual_us=-10000 target_samples=4800 cursor_samples=4320\n"
+                "[2026-01-01 00:00:06.000] [INFO] [Media] [VideoEncoder] Final packet timeline: "
+                "target=6000000 us videoEnd=6000000 us audioMinEnd=6000000 us audioMaxEnd=6000000 us "
+                "maxPacketDelta=0 us streams(v=1 a=1) audioPastTarget=0\n"
+                "[2026-01-01 00:00:06.000] [INFO] [Media] [VideoEncoder] Final metadata durations: "
+                "target=6000000 us video=6000000 us audioMin=6000000 us audioMax=6000000 us "
+                "maxDelta=0 us streams(v=1 a=1) overload(encoder=0 mux=0) backpressure=0\n"
+            ),
+            perf=(
+                "frame,qpc_us,total_us,capture_us,present_call_us,mux_queue_kb,overload_flags,api\n"
+                "1,102000000,100,20,40,0,0,DX12\n"
+                "2,103000000,100,20,40,0,0,DX12\n"
+            ),
+        )
+        report = classify_session_triage(window_audio_noise, recording_window="2:4")
+        assert report["evidence"]["recording_window"]["active"]
+        assert "wgc_source_starvation" in report["verdicts"]
+        assert "started_app_source_underrun" not in report["verdicts"]
+        assert "ce_audio_timeline_fault" not in report["verdicts"]
+        assert report["evidence"]["final_packet_timelines"][0]["max_packet_delta_us"] == 0
 
         wgc_starved = make_session(
             "wgc_starved",

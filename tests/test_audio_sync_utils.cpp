@@ -230,20 +230,20 @@ TEST(AudioSyncUtilsTest, CfrTier1CompensationDeadbandIgnoresSmallBufferWobble) {
     constexpr double kCfrMaxPitchPercent = 0.05;
     constexpr int64_t kDeadbandSamples = 48000 / 12;
 
-    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(
-                  -240, kTenSecondWindowSamples, kCfrMaxPitchPercent, kDeadbandSamples),
+    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(-240, kTenSecondWindowSamples, kCfrMaxPitchPercent,
+                                                                   kDeadbandSamples),
               0);
-    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(
-                  240, kTenSecondWindowSamples, kCfrMaxPitchPercent, kDeadbandSamples),
+    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(240, kTenSecondWindowSamples, kCfrMaxPitchPercent,
+                                                                   kDeadbandSamples),
               0);
-    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(
-                  -3098, kTenSecondWindowSamples, kCfrMaxPitchPercent, kDeadbandSamples),
+    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(-3098, kTenSecondWindowSamples, kCfrMaxPitchPercent,
+                                                                   kDeadbandSamples),
               0);
-    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(
-                  -4800, kTenSecondWindowSamples, kCfrMaxPitchPercent, kDeadbandSamples),
+    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(-4800, kTenSecondWindowSamples, kCfrMaxPitchPercent,
+                                                                   kDeadbandSamples),
               -240);
-    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(
-                  4800, kTenSecondWindowSamples, kCfrMaxPitchPercent, kDeadbandSamples),
+    EXPECT_EQ(ce::audio::ComputeTier1CompensationDeltaWithDeadband(4800, kTenSecondWindowSamples, kCfrMaxPitchPercent,
+                                                                   kDeadbandSamples),
               240);
 }
 
@@ -430,8 +430,8 @@ TEST(AudioSyncUtilsTest, AppAudioPacketStitchingDoesNotAdvanceToEncodedCursor) {
 }
 
 TEST(AudioSyncUtilsTest, LateAppSourceFirstPacketJoinsCurrentTrackCursor) {
-    const auto join = ce::audio::ComputeLateAppSourceJoin(
-        true, true, false, 48000 * 7, 48000 * 7 + 960, 48000 / 2, 480);
+    const auto join =
+        ce::audio::ComputeLateAppSourceJoin(true, true, false, 48000 * 7, 48000 * 7 + 960, 48000 / 2, 480);
 
     EXPECT_TRUE(join.joinLive);
     EXPECT_EQ(join.joinCursorSamples, 48000 * 7 + 960);
@@ -449,14 +449,12 @@ TEST(AudioSyncUtilsTest, LateAppSourceCanPreserveSmallFadeCushion) {
 }
 
 TEST(AudioSyncUtilsTest, LateAppSourceJoinLeavesStartupAndNonAppSourcesUnchanged) {
-    EXPECT_FALSE(ce::audio::ComputeLateAppSourceJoin(false, true, false, 48000 * 7, 48000 * 7, 48000 / 2, 480)
-                     .joinLive);
-    EXPECT_FALSE(ce::audio::ComputeLateAppSourceJoin(true, false, false, 48000 * 7, 48000 * 7, 48000 / 2, 480)
-                     .joinLive);
-    EXPECT_FALSE(ce::audio::ComputeLateAppSourceJoin(true, true, true, 48000 * 7, 48000 * 7, 48000 / 2, 480)
-                     .joinLive);
     EXPECT_FALSE(
-        ce::audio::ComputeLateAppSourceJoin(true, true, false, 1200, 1200, 48000 / 2, 480).joinLive);
+        ce::audio::ComputeLateAppSourceJoin(false, true, false, 48000 * 7, 48000 * 7, 48000 / 2, 480).joinLive);
+    EXPECT_FALSE(
+        ce::audio::ComputeLateAppSourceJoin(true, false, false, 48000 * 7, 48000 * 7, 48000 / 2, 480).joinLive);
+    EXPECT_FALSE(ce::audio::ComputeLateAppSourceJoin(true, true, true, 48000 * 7, 48000 * 7, 48000 / 2, 480).joinLive);
+    EXPECT_FALSE(ce::audio::ComputeLateAppSourceJoin(true, true, false, 1200, 1200, 48000 / 2, 480).joinLive);
 }
 
 TEST(AudioSyncUtilsTest, StopDrainRunsOnlyForVideoAudioSessions) {
@@ -536,8 +534,7 @@ TEST(AudioSyncUtilsTest, TimelineGapClampLeavesInRangeGapsUntouched) {
 TEST(AudioSyncUtilsTest, TimelineGapClampBoundsOversizedGapToRingCapacity) {
     const int64_t ringCapacitySamples = 48000 * 30;
     // The crash value: ~2 trillion samples (~497 days) -> clamped to ring capacity.
-    EXPECT_EQ(ce::audio::ClampTimelineGapSamplesToCapacity(2061584303294LL, ringCapacitySamples),
-              ringCapacitySamples);
+    EXPECT_EQ(ce::audio::ClampTimelineGapSamplesToCapacity(2061584303294LL, ringCapacitySamples), ringCapacitySamples);
 }
 
 TEST(AudioSyncUtilsTest, TimelineGapClampHandlesDegenerateInputs) {
@@ -581,8 +578,7 @@ TEST(AudioSyncUtilsTest, StartupFirstPacketRebaseOffsetOnlyAppliesAfterSyncPendi
 TEST(AudioSyncUtilsTest, SharedStartupRebasePreservesInterSourceFirstPacketDelta) {
     const int64_t earlySourceStart = 8804;
     const int64_t lateSourceStart = 9855;
-    const int64_t sharedOffset =
-        ce::audio::ComputeSharedStartupFirstPacketRebaseOffset(earlySourceStart, 480, 2400);
+    const int64_t sharedOffset = ce::audio::ComputeSharedStartupFirstPacketRebaseOffset(earlySourceStart, 480, 2400);
 
     const int64_t rebasedEarly = ce::audio::ApplyStartupPacketTimelineRebaseOffset(earlySourceStart, sharedOffset);
     const int64_t rebasedLate = ce::audio::ApplyStartupPacketTimelineRebaseOffset(lateSourceStart, sharedOffset);
@@ -598,6 +594,12 @@ TEST(AudioSyncUtilsTest, StartupPacketTimelineRebaseOffsetKeepsLaterPacketsConti
     EXPECT_EQ(ce::audio::ApplyStartupPacketTimelineRebaseOffset(10747, 10267), 480);
     EXPECT_EQ(ce::audio::ApplyStartupPacketTimelineRebaseOffset(11227, 10267), 960);
     EXPECT_EQ(ce::audio::ApplyStartupPacketTimelineRebaseOffset(400, 10267), 0);
+}
+
+TEST(AudioSyncUtilsTest, WgcStartupSmoothnessPreservesPendingAudioPackets) {
+    EXPECT_TRUE(ce::audio::ShouldPreservePendingAudioPacketsForStartupSync(true, 1200));
+    EXPECT_FALSE(ce::audio::ShouldPreservePendingAudioPacketsForStartupSync(true, 0));
+    EXPECT_FALSE(ce::audio::ShouldPreservePendingAudioPacketsForStartupSync(false, 1200));
 }
 
 // --- Encoder bottleneck gating tests ---
@@ -677,28 +679,23 @@ TEST(AudioSyncUtilsTest, SoftKneeLimiterHandlesEmptyAndNull) {
 
 TEST(AudioSyncUtilsTest, AppAudioTrackIdentityIsCaseInsensitivePerProcessAndTrack) {
     // Same process (any case) + same track => identical key (would be deduped).
-    EXPECT_EQ(ce::audio::AppAudioTrackIdentity("Game.exe", 0, 1),
-              ce::audio::AppAudioTrackIdentity("game.EXE", 0, 1));
+    EXPECT_EQ(ce::audio::AppAudioTrackIdentity("Game.exe", 0, 1), ce::audio::AppAudioTrackIdentity("game.EXE", 0, 1));
     // Different track => different key (legitimately fans out to multiple tracks).
-    EXPECT_NE(ce::audio::AppAudioTrackIdentity("game.exe", 0, 1),
-              ce::audio::AppAudioTrackIdentity("game.exe", 0, 2));
+    EXPECT_NE(ce::audio::AppAudioTrackIdentity("game.exe", 0, 1), ce::audio::AppAudioTrackIdentity("game.exe", 0, 2));
     // Different process => different key.
-    EXPECT_NE(ce::audio::AppAudioTrackIdentity("a.exe", 0, 1),
-              ce::audio::AppAudioTrackIdentity("b.exe", 0, 1));
+    EXPECT_NE(ce::audio::AppAudioTrackIdentity("a.exe", 0, 1), ce::audio::AppAudioTrackIdentity("b.exe", 0, 1));
     // Falls back to PID when no name is set.
-    EXPECT_EQ(ce::audio::AppAudioTrackIdentity("", 1234, 1),
-              ce::audio::AppAudioTrackIdentity("", 1234, 1));
-    EXPECT_NE(ce::audio::AppAudioTrackIdentity("", 1234, 1),
-              ce::audio::AppAudioTrackIdentity("", 5678, 1));
+    EXPECT_EQ(ce::audio::AppAudioTrackIdentity("", 1234, 1), ce::audio::AppAudioTrackIdentity("", 1234, 1));
+    EXPECT_NE(ce::audio::AppAudioTrackIdentity("", 1234, 1), ce::audio::AppAudioTrackIdentity("", 5678, 1));
 }
 
 // --- Catastrophic backlog resync (read-stall recovery: alt-tab / DPC / encoder overload) ---
 
 TEST(AudioSyncUtilsTest, CatastrophicResyncOnlyAppliesToCfrAppAudio) {
     const int64_t rate = 48000;
-    const int64_t threshold = rate * 2;       // 2s
-    const int64_t bigBacklog = rate * 10;     // 10s backlog
-    const int64_t target = rate / 10;         // 100ms
+    const int64_t threshold = rate * 2;    // 2s
+    const int64_t bigBacklog = rate * 10;  // 10s backlog
+    const int64_t target = rate / 10;      // 100ms
     const int64_t keep = rate / 10;
     // Non-CFR: never resync here (non-CFR has its own overflow handling).
     EXPECT_EQ(ce::audio::ComputeCatastrophicBacklogResyncTrim(false, true, bigBacklog, target, threshold, keep), 0);
@@ -742,7 +739,7 @@ TEST(AudioSyncUtilsTest, SuppressBufferDeferOnlyWhenCatastrophicallyBehind) {
     const int64_t maxGap = rate * 2;  // 2s catch-up threshold
     // Healthy/normal pull (small chunk) -> keep the buffer-wait defer protection.
     EXPECT_FALSE(ce::audio::ShouldSuppressBufferDeferForCatchup(240, maxGap, false));
-    EXPECT_FALSE(ce::audio::ShouldSuppressBufferDeferForCatchup(rate, maxGap, false));   // 1s behind
+    EXPECT_FALSE(ce::audio::ShouldSuppressBufferDeferForCatchup(rate, maxGap, false));    // 1s behind
     EXPECT_FALSE(ce::audio::ShouldSuppressBufferDeferForCatchup(maxGap, maxGap, false));  // exactly 2s: not yet
     // More than 2s behind (a real read-stall left the track behind) -> suppress defer, force progress.
     EXPECT_TRUE(ce::audio::ShouldSuppressBufferDeferForCatchup(maxGap + 1, maxGap, false));
@@ -766,9 +763,9 @@ TEST(AudioSyncUtilsTest, SuppressBufferDeferNeverFiresDuringInitialStartupCatchu
 // and pins the fix: it FAILS on the pre-fix logic (would defer -> freeze) and passes post-fix.
 TEST(AudioSyncUtilsTest, MultiAppCatchupDoesNotFreezeOnUnderBufferedLiveSource) {
     const int64_t rate = 48000;
-    const int64_t maxGap = rate * 2;            // 2s warp threshold (MAX_GAP_SAMPLES)
-    const int64_t warpChunk = rate / 2;         // 0.5s clamped pull chunk (MAX_SILENCE_CHUNK)
-    const int64_t liveSourceBuffered = rate / 10;  // a co-mixed app keeping up at the live edge (~100ms)
+    const int64_t maxGap = rate * 2;                // 2s warp threshold (MAX_GAP_SAMPLES)
+    const int64_t warpChunk = rate / 2;             // 0.5s clamped pull chunk (MAX_SILENCE_CHUNK)
+    const int64_t liveSourceBuffered = rate / 10;   // a co-mixed app keeping up at the live edge (~100ms)
     const int64_t trackBehindSamples = rate * 100;  // track 100s behind after a sustained stall
 
     // Pre-fix root cause: the buffer-wait defer ALONE would freeze the track, because the live source
@@ -782,8 +779,8 @@ TEST(AudioSyncUtilsTest, MultiAppCatchupDoesNotFreezeOnUnderBufferedLiveSource) 
     const bool suppress = ce::audio::ShouldSuppressBufferDeferForCatchup(trackBehindSamples, maxGap, false);
     EXPECT_TRUE(suppress);
     const bool wouldDeferAndFreeze =
-        !suppress && ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(
-                         true, false, false, false, warpChunk, static_cast<size_t>(liveSourceBuffered));
+        !suppress && ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(true, false, false, false, warpChunk,
+                                                                       static_cast<size_t>(liveSourceBuffered));
     EXPECT_FALSE(wouldDeferAndFreeze);  // the track must catch up, never freeze into permanent silence
 
     // And the normal (not-behind) path still keeps the buffer-wait protection: a healthy track that is
@@ -830,6 +827,6 @@ TEST(AudioSyncUtilsTest, WgcSelectedContentLeadLagSplitsSignedBias) {
 TEST(AudioSyncUtilsTest, WgcVisualContentLagClampsToRange) {
     // shortfall + lag - lead, clamped to [0, max].
     EXPECT_EQ(ce::audio::ComputeWgcVisualContentLagMs(50, 0, 30, 4000), 80);
-    EXPECT_EQ(ce::audio::ComputeWgcVisualContentLagMs(50, 70, 0, 4000), 0);   // lead exceeds shortfall -> floored at 0
+    EXPECT_EQ(ce::audio::ComputeWgcVisualContentLagMs(50, 70, 0, 4000), 0);  // lead exceeds shortfall -> floored at 0
     EXPECT_EQ(ce::audio::ComputeWgcVisualContentLagMs(10000, 0, 0, 4000), 4000);  // capped at max
 }

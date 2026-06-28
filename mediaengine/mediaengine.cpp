@@ -336,9 +336,10 @@ public:
     std::atomic<int64_t> videoElapsedMs;                       // Elapsed video time in ms for audio clock sync
     std::atomic<int64_t> recordingStartSystemQPCMs{0};         // Start time in System QPC MS (for Audio Alignment)
     std::atomic<int64_t> recordingStartSystemQpc100ns{0};      // Start time in 100-ns QPC units for packet stitching
-    std::atomic<int64_t> wgcStartupExtraDelayQpc{0};           // WGC smoothness delay for first-frame audio anchor
-    SourceTimelineState injectTimelineState;                   // Source-frame QPC for inject-relative timing
-    SourceTimelineState d3d11TimelineState;                    // Source-frame QPC for WGC-relative timing
+    std::atomic<int64_t> wgcStartupExtraDelayQpc{0};           // WGC smoothness delay used for startup preservation
+    std::atomic<bool> preservePendingStartupAudioPackets{false};
+    SourceTimelineState injectTimelineState;  // Source-frame QPC for inject-relative timing
+    SourceTimelineState d3d11TimelineState;   // Source-frame QPC for WGC-relative timing
 
     // Get current video elapsed time for audio clock compensation
     int64_t GetVideoElapsedMs() const {
@@ -582,17 +583,22 @@ public:
         DLL_Log("[StopAudio] Capture stop-drain completed: preservedPackets=%zu", pendingPackets);
     }
 
-    void SyncAudioToFirstVideoFrame(int64_t startQpcMs, int64_t startQpc100ns) {
+    void SyncAudioToFirstVideoFrame(int64_t startQpcMs, int64_t startQpc100ns, bool preservePendingPackets = false) {
         recordingStartSystemQPCMs.store(startQpcMs, std::memory_order_release);
         recordingStartSystemQpc100ns.store(startQpc100ns, std::memory_order_release);
-        DLL_Log("[A/V START] Shared startup anchor selected: startMs=%lld startQpc100ns=%lld sources=%zu delta=0us",
-                startQpcMs, startQpc100ns, audioSources.size());
+        DLL_Log(
+            "[A/V START] Shared startup anchor selected: startMs=%lld startQpc100ns=%lld sources=%zu delta=0us "
+            "preservePending=%d",
+            startQpcMs, startQpc100ns, audioSources.size(), preservePendingPackets ? 1 : 0);
 
-        // Discard anything captured before the first video frame so audio starts on
-        // the same timeline anchor as video, even if packets were still queued in
-        // the capture objects.
+        // Discard anything captured before the first video frame for the normal
+        // low-latency start. WGC CFR smoothness startup is the exception: the
+        // selected video frame is deliberately older, so queued post-anchor audio
+        // is the content that matches that frame and must be preserved.
         audioSyncPending.store(true);
-        DiscardPendingAudioPackets();
+        if (!preservePendingPackets) {
+            DiscardPendingAudioPackets();
+        }
         for (auto& src : audioSources) {
             if (src.sharedEncoderPtr) {
                 src.sharedEncoderPtr->SetRecordingStart(0);
@@ -667,6 +673,7 @@ public:
                 startQpcMs, src.timelineValid ? 1 : 0, static_cast<double>(src.config.captureLatencyMs));
         }
         audioSyncPending.store(false);
+        preservePendingStartupAudioPackets.store(false, std::memory_order_release);
     }
 
     // Pull Model: source counters are diagnostic/source-local; each exported
@@ -1134,6 +1141,7 @@ public:
         // available The stream index will be set after first frame in ProcessFrame
         timingModeFrozenForSession = true;
         sessionUseVfr = config.video.useVFR;
+        const bool preserveWgcStartupQueues = IsWgcCfrRecording();
 
         // Start Audio Capture and Processing Thread
         if (!audioSources.empty()) {
@@ -1147,6 +1155,12 @@ public:
             audioFinalizingCfrStop.store(false, std::memory_order_release);
             audioStopDrainRequested.store(false, std::memory_order_release);
             audioStopDrainComplete.store(false, std::memory_order_release);
+            preservePendingStartupAudioPackets.store(preserveWgcStartupQueues, std::memory_order_release);
+            if (preserveWgcStartupQueues) {
+                DLL_Log(
+                    "[A/V START] WGC CFR startup queue preservation armed until first video anchor "
+                    "(bounded by capture queue depth; pre-anchor packets are filtered by QPC)");
+            }
 
             // CRITICAL: Reset video clock for new recording to prevent stale
             // timestamps
@@ -1961,6 +1975,9 @@ public:
     void SetWgcStartupExtraDelayQpc(int64_t delayQpc) {
         const int64_t clampedDelayQpc = std::max<int64_t>(0, delayQpc);
         wgcStartupExtraDelayQpc.store(clampedDelayQpc, std::memory_order_release);
+        if (clampedDelayQpc > 0 && IsWgcCfrRecording()) {
+            preservePendingStartupAudioPackets.store(true, std::memory_order_release);
+        }
         if (qpcFreq > 0 || clampedDelayQpc > 0) {
             const double delayMs =
                 qpcFreq > 0 ? (static_cast<double>(clampedDelayQpc) * 1000.0) / static_cast<double>(qpcFreq) : 0.0;
@@ -1999,25 +2016,30 @@ public:
                 const double startupDelayMs =
                     qpcFreq > 0 ? (static_cast<double>(startupDelayQpc) * 1000.0) / static_cast<double>(qpcFreq)
                                 : renderDelayMs;
-                anchorQPC = ce::capture_policy::GetWgcStartupAudioAnchorQpc(timestampQPC, startupDelayQpc);
+                anchorQPC = ce::capture_policy::GetWgcStartupAudioAnchorQpc(timestampQPC, renderDelayQpc);
                 LARGE_INTEGER qpcNow;
                 QueryPerformanceCounter(&qpcNow);
                 const int64_t nowQPC = qpcNow.QuadPart;
                 const int64_t frameAgeUs =
                     (qpcFreq > 0 && nowQPC > timestampQPC) ? ((nowQPC - timestampQPC) * 1000000) / qpcFreq : 0;
-                const int64_t startupDeltaUs =
+                const int64_t audioAnchorDelayUs =
                     (qpcFreq > 0 && anchorQPC > timestampQPC) ? ((anchorQPC - timestampQPC) * 1000000) / qpcFreq : 0;
+                const int64_t startupContentDelayUs =
+                    qpcFreq > 0 ? (startupDelayQpc * 1000000) / qpcFreq : audioAnchorDelayUs;
                 DLL_Log(
-                    "MediaEngine: WGC CFR startup anchor selected from first accepted video frame plus content delay "
-                    "(videoQPC=%lld anchorQPC=%lld nowQPC=%lld frameAge=%lldus startupDelta=%lldus "
-                    "delayMs=%.3f renderDelayMs=%.3f smoothExtraDelayMs=%.3f confidence=%s reason=%s)",
-                    timestampQPC, anchorQPC, nowQPC, frameAgeUs, startupDeltaUs, startupDelayMs, renderDelayMs,
+                    "MediaEngine: WGC CFR startup anchor selected from first accepted video frame plus render delay "
+                    "(videoQPC=%lld anchorQPC=%lld nowQPC=%lld frameAge=%lldus startupContentDelay=%lldus "
+                    "audioAnchorDelay=%lldus contentDelayMs=%.3f renderDelayMs=%.3f smoothExtraDelayMs=%.3f "
+                    "confidence=%s reason=%s)",
+                    timestampQPC, anchorQPC, nowQPC, frameAgeUs, startupContentDelayUs, audioAnchorDelayUs,
+                    startupDelayMs, renderDelayMs, smoothExtraDelayMs, config.avSyncConfidence.c_str(),
+                    config.avSyncReason.c_str());
+                DLL_Log(
+                    "[AVSyncApply] wgc_start_anchor: videoQpc=%lld audioAnchorQpc=%lld audioAnchorDelayUs=%lld "
+                    "startupContentDelayUs=%lld contentDelayMs=%.3f renderDelayMs=%.3f smoothExtraDelayMs=%.3f "
+                    "confidence=%s reason=%s",
+                    timestampQPC, anchorQPC, audioAnchorDelayUs, startupContentDelayUs, startupDelayMs, renderDelayMs,
                     smoothExtraDelayMs, config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
-                DLL_Log(
-                    "[AVSyncApply] wgc_start_anchor: videoQpc=%lld audioAnchorQpc=%lld delayUs=%lld delayMs=%.3f "
-                    "renderDelayMs=%.3f smoothExtraDelayMs=%.3f confidence=%s reason=%s",
-                    timestampQPC, anchorQPC, startupDeltaUs, startupDelayMs, renderDelayMs, smoothExtraDelayMs,
-                    config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
             }
 
             const int64_t anchorMs = (qpcFreq > 0 && anchorQPC > 0) ? (anchorQPC * 1000) / qpcFreq : debugTimestamp;
@@ -2035,7 +2057,9 @@ public:
             // Reset elapsed clock for audio sync
             videoElapsedMs.store(0);
 
-            SyncAudioToFirstVideoFrame(anchorMs, startQpc100ns);
+            const bool preservePendingPackets = ce::audio::ShouldPreservePendingAudioPacketsForStartupSync(
+                IsWgcCfrRecording(), wgcStartupExtraDelayQpc.load(std::memory_order_acquire));
+            SyncAudioToFirstVideoFrame(anchorMs, startQpc100ns, preservePendingPackets);
         }
 
         int64_t realElapsedUs = 0;
@@ -4158,6 +4182,17 @@ private:
         };
 
         while (audioRunning) {
+            if (audioSyncPending.load(std::memory_order_acquire) &&
+                preservePendingStartupAudioPackets.load(std::memory_order_acquire)) {
+                std::unique_lock<std::mutex> lock(audioDrainMutex);
+                audioDrainCv.wait_for(lock, std::chrono::milliseconds(5), [this]() {
+                    return !audioRunning.load(std::memory_order_acquire) ||
+                           !audioSyncPending.load(std::memory_order_acquire) ||
+                           audioStopDrainRequested.load(std::memory_order_acquire);
+                });
+                continue;
+            }
+
             bool gotAnyPacket = false;
             auto now = std::chrono::steady_clock::now();
 
