@@ -133,6 +133,7 @@ public:
     uint32_t GetCursorOnlySkipCount() const;
     uint32_t GetPoolDropCount() const;
     uint32_t GetNormalizedDuplicateTimestampCount() const;
+    uint32_t GetDuplicateTimestampSkipCount() const;
     uint32_t GetKeyedMutexAcquireFailCount() const;
     uint32_t GetKeyedMutexReleaseFailCount() const;
     uint32_t GetSplitDeviceFlushCount() const;

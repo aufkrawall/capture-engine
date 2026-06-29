@@ -89,6 +89,130 @@ static std::atomic<uint32_t> g_InjectCadenceDroppedFrames{0};
 static std::atomic<uint32_t> g_WgcAdaptiveTargetFps{0};
 static std::atomic<uint64_t> g_ActivePathMismatchFramesDiscarded{0};
 
+struct WgcRuntimeLogSnapshot {
+    std::atomic<bool> hasPoolEvidence{false};
+    std::atomic<uint32_t> sourceFramePoolBuffers{0};
+    std::atomic<uint32_t> copyPoolSlots{0};
+    std::atomic<uint32_t> budgetSurfaces{0};
+    std::atomic<uint32_t> syncFrames{0};
+    std::atomic<uint32_t> extraFrames{0};
+    std::atomic<uint32_t> retainedCap{0};
+    std::atomic<uint32_t> reservedFreeSlots{0};
+    std::atomic<uint32_t> safetySlots{0};
+    std::atomic<uint32_t> sourceFormat{0};
+    std::atomic<uint32_t> retainedFormat{0};
+    std::atomic<uint32_t> compactRetained{0};
+    std::atomic<uint64_t> estimatedVramBytes{0};
+    std::atomic<uint64_t> sourceBudgetBytes{0};
+    std::atomic<uint64_t> copyBudgetBytes{0};
+    std::atomic<uint64_t> sourceSurfaceBytes{0};
+    std::atomic<uint64_t> copySurfaceBytes{0};
+    std::atomic<int64_t> lastConvertUs{0};
+    std::atomic<uint32_t> poolLeasedMax{0};
+    std::atomic<uint32_t> poolFreeMin{UINT32_MAX};
+    std::atomic<uint32_t> poolSaturatedDrops{0};
+    std::atomic<uint32_t> poolOverwritePrevented{0};
+    std::atomic<uint32_t> poolLeaseMismatches{0};
+    std::atomic<uint32_t> duplicateTimestampsSeen{0};
+    std::atomic<uint32_t> duplicateTimestampsSkipped{0};
+
+    void Reset() {
+        hasPoolEvidence.store(false, std::memory_order_relaxed);
+        sourceFramePoolBuffers.store(0, std::memory_order_relaxed);
+        copyPoolSlots.store(0, std::memory_order_relaxed);
+        budgetSurfaces.store(0, std::memory_order_relaxed);
+        syncFrames.store(0, std::memory_order_relaxed);
+        extraFrames.store(0, std::memory_order_relaxed);
+        retainedCap.store(0, std::memory_order_relaxed);
+        reservedFreeSlots.store(0, std::memory_order_relaxed);
+        safetySlots.store(0, std::memory_order_relaxed);
+        sourceFormat.store(0, std::memory_order_relaxed);
+        retainedFormat.store(0, std::memory_order_relaxed);
+        compactRetained.store(0, std::memory_order_relaxed);
+        estimatedVramBytes.store(0, std::memory_order_relaxed);
+        sourceBudgetBytes.store(0, std::memory_order_relaxed);
+        copyBudgetBytes.store(0, std::memory_order_relaxed);
+        sourceSurfaceBytes.store(0, std::memory_order_relaxed);
+        copySurfaceBytes.store(0, std::memory_order_relaxed);
+        lastConvertUs.store(0, std::memory_order_relaxed);
+        poolLeasedMax.store(0, std::memory_order_relaxed);
+        poolFreeMin.store(UINT32_MAX, std::memory_order_relaxed);
+        poolSaturatedDrops.store(0, std::memory_order_relaxed);
+        poolOverwritePrevented.store(0, std::memory_order_relaxed);
+        poolLeaseMismatches.store(0, std::memory_order_relaxed);
+        duplicateTimestampsSeen.store(0, std::memory_order_relaxed);
+        duplicateTimestampsSkipped.store(0, std::memory_order_relaxed);
+    }
+};
+
+static WgcRuntimeLogSnapshot g_WgcRuntimeLogSnapshot;
+
+static void AtomicMax(std::atomic<uint32_t>& target, uint32_t value) {
+    uint32_t current = target.load(std::memory_order_relaxed);
+    while (value > current && !target.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
+    }
+}
+
+static void AtomicMin(std::atomic<uint32_t>& target, uint32_t value) {
+    uint32_t current = target.load(std::memory_order_relaxed);
+    while (value < current && !target.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
+    }
+}
+
+static void SnapshotWgcRuntimeLogState(const WGCCapture* cap) {
+    if (!cap) {
+        return;
+    }
+
+    AtomicMax(g_WgcRuntimeLogSnapshot.duplicateTimestampsSeen, cap->GetNormalizedDuplicateTimestampCount());
+    AtomicMax(g_WgcRuntimeLogSnapshot.duplicateTimestampsSkipped, cap->GetDuplicateTimestampSkipCount());
+
+    const uint32_t leasedMax = cap->GetPoolSlotLeasedMaxCount();
+    const uint32_t freeMin = cap->GetPoolSlotFreeMinCount();
+    if (leasedMax == 0 && freeMin == 0) {
+        return;
+    }
+
+    g_WgcRuntimeLogSnapshot.sourceFramePoolBuffers.store(cap->GetSourceFramePoolBufferCount(),
+                                                        std::memory_order_relaxed);
+    g_WgcRuntimeLogSnapshot.copyPoolSlots.store(cap->GetTexturePoolSlotCount(), std::memory_order_relaxed);
+    g_WgcRuntimeLogSnapshot.budgetSurfaces.store(cap->GetSmoothnessBudgetSurfaceCount(), std::memory_order_relaxed);
+    g_WgcRuntimeLogSnapshot.syncFrames.store(cap->GetSmoothnessSyncFrameCount(), std::memory_order_relaxed);
+    g_WgcRuntimeLogSnapshot.extraFrames.store(cap->GetSmoothnessRetainedFrameCount(), std::memory_order_relaxed);
+    g_WgcRuntimeLogSnapshot.retainedCap.store(cap->GetSmoothnessRetainedFrameCap(), std::memory_order_relaxed);
+    g_WgcRuntimeLogSnapshot.reservedFreeSlots.store(cap->GetSmoothnessReservedFreeSlotCount(),
+                                                   std::memory_order_relaxed);
+    g_WgcRuntimeLogSnapshot.safetySlots.store(cap->GetSmoothnessSafetySlotCount(), std::memory_order_relaxed);
+    g_WgcRuntimeLogSnapshot.sourceFormat.store(cap->GetSmoothnessSourceDxgiFormat(), std::memory_order_relaxed);
+    g_WgcRuntimeLogSnapshot.retainedFormat.store(cap->GetSmoothnessCopyDxgiFormat(), std::memory_order_relaxed);
+    const bool compact = cap->IsCompactRetainedCopyActive();
+    g_WgcRuntimeLogSnapshot.compactRetained.store(compact ? 1u : 0u, std::memory_order_relaxed);
+    g_WgcRuntimeLogSnapshot.estimatedVramBytes.store(cap->GetSmoothnessEstimatedVramBytes(),
+                                                    std::memory_order_relaxed);
+    g_WgcRuntimeLogSnapshot.sourceBudgetBytes.store(cap->GetSmoothnessSourceEstimatedVramBytes(),
+                                                   std::memory_order_relaxed);
+    g_WgcRuntimeLogSnapshot.copyBudgetBytes.store(cap->GetSmoothnessCopyEstimatedVramBytes(),
+                                                 std::memory_order_relaxed);
+    g_WgcRuntimeLogSnapshot.sourceSurfaceBytes.store(cap->GetSmoothnessSourceBytesPerSurface(),
+                                                    std::memory_order_relaxed);
+    g_WgcRuntimeLogSnapshot.copySurfaceBytes.store(cap->GetSmoothnessCopyBytesPerSurface(),
+                                                  std::memory_order_relaxed);
+    const int64_t convertUs = cap->GetLastPoolConvertTimeUs();
+    if (compact) {
+        if (convertUs > 0) {
+            g_WgcRuntimeLogSnapshot.lastConvertUs.store(convertUs, std::memory_order_relaxed);
+        }
+    } else {
+        g_WgcRuntimeLogSnapshot.lastConvertUs.store(0, std::memory_order_relaxed);
+    }
+    AtomicMax(g_WgcRuntimeLogSnapshot.poolLeasedMax, leasedMax);
+    AtomicMin(g_WgcRuntimeLogSnapshot.poolFreeMin, freeMin);
+    AtomicMax(g_WgcRuntimeLogSnapshot.poolSaturatedDrops, cap->GetPoolSaturatedDropCount());
+    AtomicMax(g_WgcRuntimeLogSnapshot.poolOverwritePrevented, cap->GetPoolSlotOverwritePreventedCount());
+    AtomicMax(g_WgcRuntimeLogSnapshot.poolLeaseMismatches, cap->GetPoolLeaseMismatchCount());
+    g_WgcRuntimeLogSnapshot.hasPoolEvidence.store(true, std::memory_order_release);
+}
+
 struct WgcRetargetRequest {
     HWND window = NULL;
     HMONITOR monitor = NULL;
@@ -759,6 +883,8 @@ static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t hei
         return;
     }
 
+    SnapshotWgcRuntimeLogState(g_WgcCap.get());
+
     QueuedFrame qf;
     qf.isInjectMode = false;
     qf.texture = texture;
@@ -798,6 +924,8 @@ static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t hei
 }
 
 static QueuedFrame MakeQueuedWgcFrame(WGCCapturedFrame&& frame) {
+    SnapshotWgcRuntimeLogState(g_WgcCap.get());
+
     QueuedFrame qf;
     qf.isInjectMode = false;
     qf.texture = frame.texture;
@@ -893,6 +1021,8 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
         return false;
     }
 
+    g_WgcRuntimeLogSnapshot.Reset();
+
     if (g_WgcCaptureThread.joinable()) {
         LogWarn("[Media] Cleaning up stale WGC capture thread before restart");
         g_WgcCaptureShutdown = true;
@@ -962,6 +1092,7 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
         g_WgcCap->SetDirectFrameCallback(nullptr);
         return false;
     }
+    SnapshotWgcRuntimeLogState(g_WgcCap.get());
 
     // Tell the encoder whether the capture source runs at >8 bpc so that
     // bit_depth=auto resolves to 10-bit even when the WGC frame pool fell
@@ -1614,6 +1745,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
     uint32_t lastStaleSkipCount = 0;
     uint32_t lastStaleDuplicateTsCount = 0;
     uint32_t lastStaleOutOfOrderTsCount = 0;
+    uint32_t lastNormalizedDuplicateTsCount = 0;
+    uint32_t lastDuplicateTsSkipCount = 0;
     uint32_t lastCursorSkipCount = 0;
     uint32_t lastPoolDropCount = 0;
     uint32_t lastKeyedAcquireFailCount = 0;
@@ -1651,6 +1784,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastStaleSkipCount = 0;
             lastStaleDuplicateTsCount = 0;
             lastStaleOutOfOrderTsCount = 0;
+            lastNormalizedDuplicateTsCount = 0;
+            lastDuplicateTsSkipCount = 0;
             lastCursorSkipCount = 0;
             lastPoolDropCount = 0;
             lastKeyedAcquireFailCount = 0;
@@ -1686,6 +1821,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastStaleSkipCount = g_WgcCap->GetStaleSkipCount();
             lastStaleDuplicateTsCount = g_WgcCap->GetStaleDuplicateTimestampCount();
             lastStaleOutOfOrderTsCount = g_WgcCap->GetStaleOutOfOrderTimestampCount();
+            lastNormalizedDuplicateTsCount = g_WgcCap->GetNormalizedDuplicateTimestampCount();
+            lastDuplicateTsSkipCount = g_WgcCap->GetDuplicateTimestampSkipCount();
             lastCursorSkipCount = g_WgcCap->GetCursorOnlySkipCount();
             lastPoolDropCount = g_WgcCap->GetPoolDropCount();
             lastKeyedAcquireFailCount = g_WgcCap->GetKeyedMutexAcquireFailCount();
@@ -1706,6 +1843,7 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastIngressDecimatedCreditCount = g_WgcCap->GetIngressDecimatedCreditCount();
             lastIngressSoftReservePressureCount = g_WgcCap->GetIngressSoftReservePressureCount();
             lastIngressHardReservePressureCount = g_WgcCap->GetIngressHardReservePressureCount();
+            SnapshotWgcRuntimeLogState(g_WgcCap.get());
             if (g_pSharedMem) {
                 lastDuplicateCount = g_pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
                 lastLateCount = g_pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
@@ -1725,6 +1863,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             uint32_t currentStaleSkipCount = g_WgcCap->GetStaleSkipCount();
             uint32_t currentStaleDuplicateTsCount = g_WgcCap->GetStaleDuplicateTimestampCount();
             uint32_t currentStaleOutOfOrderTsCount = g_WgcCap->GetStaleOutOfOrderTimestampCount();
+            uint32_t currentNormalizedDuplicateTsCount = g_WgcCap->GetNormalizedDuplicateTimestampCount();
+            uint32_t currentDuplicateTsSkipCount = g_WgcCap->GetDuplicateTimestampSkipCount();
             uint32_t currentCursorSkipCount = g_WgcCap->GetCursorOnlySkipCount();
             uint32_t currentPoolDropCount = g_WgcCap->GetPoolDropCount();
             uint32_t currentKeyedAcquireFailCount = g_WgcCap->GetKeyedMutexAcquireFailCount();
@@ -1754,6 +1894,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             uint32_t staleSkipDelta = currentStaleSkipCount - lastStaleSkipCount;
             uint32_t staleDuplicateTsDelta = currentStaleDuplicateTsCount - lastStaleDuplicateTsCount;
             uint32_t staleOutOfOrderTsDelta = currentStaleOutOfOrderTsCount - lastStaleOutOfOrderTsCount;
+            uint32_t normalizedDuplicateTsDelta = currentNormalizedDuplicateTsCount - lastNormalizedDuplicateTsCount;
+            uint32_t duplicateTsSkipDelta = currentDuplicateTsSkipCount - lastDuplicateTsSkipCount;
             uint32_t cursorSkipDelta = currentCursorSkipCount - lastCursorSkipCount;
             uint32_t poolDropDelta = currentPoolDropCount - lastPoolDropCount;
             uint32_t keyedAcquireFailDelta = currentKeyedAcquireFailCount - lastKeyedAcquireFailCount;
@@ -1856,9 +1998,11 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 g_pSharedMem->runtimeState.wgcInputMin500Fps.store(inputMin500Fps, std::memory_order_relaxed);
             }
 
+            SnapshotWgcRuntimeLogState(g_WgcCap.get());
             LogInfo(
                 "[WGC Perf] Input: %u | Queued: %u | DropFull: %u | DropPace: %u | DropThrottle: %u | "
-                "DropStale: %u (DupTs=%u OOO=%u) | DropCursor: %u | DropPool: %u | DropIngress: %u | "
+                "DropStale: %u (DupTs=%u OOO=%u) | SrcDupTs: seen=%u skip=%u | DropCursor: %u | "
+                "DropPool: %u | DropIngress: %u | "
                 "HostQ: %u | EncQ: %u | Dup: %u | Late: %u | "
                 "SrcAvg: %lldus | JitAvg: %lldus | JitMax: %lldus | Src->Copy: %lld/%lldus | Deliv: %u | "
                 "MinIn250/500: %u/%u | MinDel250/500: %u/%u | FreshMiss: %upm | BufAvg: %upm | BufMin: %u | "
@@ -1876,13 +2020,14 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 "KMFail: %u/%u | Flush: %u/%u | "
                 "Dedicated: %d | Encode: %lldus | Fence: %lldus | Throttle: %u | Mux: %uKB | Overload: 0x%X",
                 inputFrames, queuedFrames, hostDropDelta, pacingSkipDelta, throttleSkipDelta, staleSkipDelta,
-                staleDuplicateTsDelta, staleOutOfOrderTsDelta, cursorSkipDelta, poolDropDelta, ingressDecimatedDelta,
-                static_cast<uint32_t>(g_FrameQueue.Size()), encoderQueueDepth, dupDelta, lateDelta, srcIntervalAvgUs,
-                srcJitterAvgUs, srcJitterMaxUs, srcToCopyAvgUs, srcToCopyMaxUs, deliveredRatePerSec, inputMin250Fps,
-                inputMin500Fps, deliveredMin250Fps, deliveredMin500Fps, queueEmptyPermille, bufferedAtTickAvgPermille,
-                bufferedAtTickMin, starvedTicks, singleFrameTicks, cadenceSelAvgUs, cadenceSelBiasUs, wgcSelAvgUs,
-                wgcSelBiasUs, callbackGapAvgUs, callbackGapMaxUs, callbackProcessAvgUs, callbackProcessMaxUs,
-                callbackDrainMax, copyUs, poolSlotRewriteUs, poolSlotFastRewriteDelta,
+                staleDuplicateTsDelta, staleOutOfOrderTsDelta, normalizedDuplicateTsDelta, duplicateTsSkipDelta,
+                cursorSkipDelta, poolDropDelta, ingressDecimatedDelta, static_cast<uint32_t>(g_FrameQueue.Size()),
+                encoderQueueDepth, dupDelta, lateDelta, srcIntervalAvgUs, srcJitterAvgUs, srcJitterMaxUs,
+                srcToCopyAvgUs, srcToCopyMaxUs, deliveredRatePerSec, inputMin250Fps, inputMin500Fps,
+                deliveredMin250Fps, deliveredMin500Fps, queueEmptyPermille, bufferedAtTickAvgPermille, bufferedAtTickMin,
+                starvedTicks, singleFrameTicks, cadenceSelAvgUs, cadenceSelBiasUs, wgcSelAvgUs, wgcSelBiasUs,
+                callbackGapAvgUs, callbackGapMaxUs, callbackProcessAvgUs, callbackProcessMaxUs, callbackDrainMax,
+                copyUs, poolSlotRewriteUs, poolSlotFastRewriteDelta,
                 g_WgcCap->GetPoolSlotLeasedMaxCount(), g_WgcCap->GetPoolSlotFreeMinCount(), poolSaturatedDropDelta,
                 poolOverwritePreventedDelta, g_WgcCap->GetPoolLeaseMismatchCount(),
                 g_WgcCap->GetSourceFramePoolBufferCount(), g_WgcCap->GetTexturePoolSlotCount(),
@@ -1914,6 +2059,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastStaleSkipCount = currentStaleSkipCount;
             lastStaleDuplicateTsCount = currentStaleDuplicateTsCount;
             lastStaleOutOfOrderTsCount = currentStaleOutOfOrderTsCount;
+            lastNormalizedDuplicateTsCount = currentNormalizedDuplicateTsCount;
+            lastDuplicateTsSkipCount = currentDuplicateTsSkipCount;
             lastCursorSkipCount = currentCursorSkipCount;
             lastPoolDropCount = currentPoolDropCount;
             lastKeyedAcquireFailCount = currentKeyedAcquireFailCount;
@@ -2050,6 +2197,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t encCycleMaxMs = 0;
     uint32_t encodeSpikeCountThisSecond = 0;
     uint32_t dupTimestampCount = 0;
+    uint32_t lastWgcDuplicateTimestampSkipCountForCadence = 0;
     uint32_t lastDuplicateReasonNoSource = 0;
     uint32_t lastDuplicateReasonDeferred = 0;
     uint32_t lastDuplicateReasonTimerRebase = 0;
@@ -2178,6 +2326,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     // fix be confirmed from logs and distinguishes it from per-tick reserve defense.
     uint64_t wgcDelayUniformCadenceTotal = 0;
     uint32_t wgcDelayUniformCadenceWindow = 0;
+    uint64_t wgcDelayUniformHoldTotal = 0;
+    uint32_t wgcDelayUniformHoldWindow = 0;
     // Reservoir depth-cap trims: surplus oldest frames the uniform-cadence pacer dropped to keep the
     // realized content delay from inflating when a VRR source transiently delivered above output.
     uint64_t wgcDelayPaceCapTrimTotal = 0;
@@ -5263,6 +5413,39 @@ void EncoderThreadFunc(const AppConfig& config) {
                                     wgcDelayRealizationRecordedThisTick =
                                         recordWgcDelayRealization(residualUs, residualUs);
                                 }
+                            } else if (playout.hold) {
+                                ++wgcDelayUniformHoldWindow;
+                                ++wgcDelayUniformHoldTotal;
+                                ++wgcRepeatPolicyHoldCount;
+                                ++wgcRepeatPolicyHoldTotal;
+                                ++wgcSyncDelayHoldCount;
+                                ++wgcSyncDelayHoldTotal;
+                                ++wgcSyncDelaySourceLimitedHoldCount;
+                                ++wgcSyncDelaySourceLimitedHoldTotal;
+                                ++wgcSourceRepeatLowerBoundWindow;
+                                ++wgcSourceRepeatLowerBoundTotal;
+                                ++wgcDelaySourceLimitedRepeatWindow;
+                                ++wgcDelaySourceLimitedRepeatTotal;
+                                ++wgcDelayWindowSourceLimitedRepeatWindow;
+                                ++wgcDelayWindowSourceLimitedRepeatTotal;
+
+                                const uint32_t reserveDepth = SaturatingToUint32(bufferedWgcFrames.size());
+                                wgcDelayRepeatReserveDepthWindowMax =
+                                    std::max(wgcDelayRepeatReserveDepthWindowMax, reserveDepth);
+                                wgcDelayRepeatReserveDepthMax = std::max(wgcDelayRepeatReserveDepthMax, reserveDepth);
+                                uint32_t reserveSpanUs = 0;
+                                if (bufferedWgcFrames.size() >= 2 && qpcFreq.QuadPart > 0) {
+                                    const int64_t firstQpc = GetFrameSelectionTimestamp(bufferedWgcFrames.front());
+                                    const int64_t lastQpc = GetFrameSelectionTimestamp(bufferedWgcFrames.back());
+                                    if (firstQpc > 0 && lastQpc > firstQpc) {
+                                        reserveSpanUs = SaturatingToUint32(static_cast<uint64_t>(
+                                            (lastQpc - firstQpc) * 1000000 / qpcFreq.QuadPart));
+                                    }
+                                }
+                                wgcDelayRepeatReserveSpanWindowMaxUs =
+                                    std::max(wgcDelayRepeatReserveSpanWindowMaxUs, reserveSpanUs);
+                                wgcDelayRepeatReserveSpanMaxUs =
+                                    std::max(wgcDelayRepeatReserveSpanMaxUs, reserveSpanUs);
                             }
                             // playout.hold -> leave the buffer intact; the encoder repeats the last
                             // emitted frame (an even source-limited / delivery-gap repeat).
@@ -6156,6 +6339,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 smoothedEncCycleMs = 0.0;
                 encCycleMaxMs = 0;
                 dupTimestampCount = 0;
+                lastWgcDuplicateTimestampSkipCountForCadence =
+                    g_WgcCap ? g_WgcCap->GetDuplicateTimestampSkipCount() : 0u;
                 wgcRecentDeliveredFps = 0;
                 wgcRecentDeliveredMin250Fps = 0;
                 wgcRecentDeliveredMin500Fps = 0;
@@ -6190,6 +6375,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcDelayNearCapAcceptedWindow = 0;
                 wgcDelayUniformCadenceTotal = 0;
                 wgcDelayUniformCadenceWindow = 0;
+                wgcDelayUniformHoldTotal = 0;
+                wgcDelayUniformHoldWindow = 0;
                 wgcDelayPaceCapTrimTotal = 0;
                 wgcDelayPaceCapTrimWindow = 0;
                 wgcRetainedCapTrimTotal = 0;
@@ -7720,8 +7907,14 @@ void EncoderThreadFunc(const AppConfig& config) {
                 activeInputPredictor.IsCalibrated()
                     ? static_cast<uint32_t>(activeInputPredictor.GetJitterUs(qpcFreq.QuadPart))
                     : 0u;
-            const uint32_t dupTsPerSec =
-                g_WgcCap ? g_WgcCap->GetNormalizedDuplicateTimestampCount() : dupTimestampCount;
+            const uint32_t dupTsPerSec = dupTimestampCount;
+            const uint32_t currentWgcDuplicateTimestampSkipCount =
+                g_WgcCap ? g_WgcCap->GetDuplicateTimestampSkipCount() : lastWgcDuplicateTimestampSkipCountForCadence;
+            const uint32_t dupTsSkippedPerSec =
+                currentWgcDuplicateTimestampSkipCount >= lastWgcDuplicateTimestampSkipCountForCadence
+                    ? currentWgcDuplicateTimestampSkipCount - lastWgcDuplicateTimestampSkipCountForCadence
+                    : currentWgcDuplicateTimestampSkipCount;
+            lastWgcDuplicateTimestampSkipCountForCadence = currentWgcDuplicateTimestampSkipCount;
             dupTimestampCount = 0;
             encCycleMaxMs = 0;
 
@@ -7802,8 +7995,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "EncLowBypass=%u/%llu ModeMis=%u/%llu SrcBack=%u/%llu | "
                 "InvalidMeta=%u InvalidHandle=%u | PktClamp=%u NegPTS=%u NonMonoPTS=%u | WgcThr=%u Adj=%u | Over=0x%X "
                 "MuxQ=%uKB/%u MuxBp=%u Wait=%uus Max=%uus | EncEma=%.2fms Budget=%upm Sust=%.1ffps TooSlow=%d "
-                "Bottleneck=%d | LowSrc=%d Recover=%d Cause=S%d/D%d/E%d | SrcFps=%.2f SrcJitter=%uus DupTs=%u "
-                "EncCycle=%.2fms EncSpike=%u",
+                "Bottleneck=%d | LowSrc=%d Recover=%d Cause=S%d/D%d/E%d | SrcFps=%.2f SrcJitter=%uus "
+                "DupTs=%u DupTsSkip=%u EncCycle=%.2fms EncSpike=%u",
                 CapturePipelinePhaseToString(state.capturePhase.load(std::memory_order_relaxed)), avgFrameAgeUs,
                 cadenceCounters.frameAgeMaxUs, avgSelectionErrorUs, cadenceCounters.outputScheduleErrorMaxUs,
                 avgSignedSelectionErrorUs, cadenceCounters.outputScheduleEarlyMaxUs,
@@ -7858,7 +8051,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0, wgcLowSourceModeActive ? 1 : 0,
                 wgcLiveRecoveryModeActive ? 1 : 0, wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
                 wgcEncoderRecoveryLimitedCurrent ? 1 : 0, srcFpsX100Val / 100.0, srcJitterUsVal, dupTsPerSec,
-                smoothedEncCycleMs, encodeSpikeCountThisSecond);
+                dupTsSkippedPerSec, smoothedEncCycleMs, encodeSpikeCountThisSecond);
 
             const bool wgcEncoderLimitedSmoothnessActive = isWgcEncoderLimitedSmoothnessMode();
             if (useScreenGrab && recordingOutputLive &&
@@ -7901,7 +8094,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     "sourceLimitRepeat=%u repeatRescue=%u/%u repeatPromote=%u/%u repeatPromoteSoft=%u "
                     "repeatSafeAfter=%u repeatSafe=%u/%u repeatSoftSafe=%u/%u repeatClass=%u/%u/%u "
                     "repeatReserve=%u/%uus hardOnly=%u syncProtected=%u nearCap=%u oldestSoftSafe=%uus "
-                    "uniformCadence=%u delayPaceCapTrim=%u sourceRecovery=%u/%llu cause=S%d/D%d/E%d",
+                    "uniformCadence=%u uniformHold=%u delayPaceCapTrim=%u sourceRecovery=%u/%llu "
+                    "cause=S%d/D%d/E%d",
                     cadenceMode, outputShortfallTicks, shortfallDurationMs, avgSignedWgcSelectionErrorUs,
                     wgcSelectionErrorMaxUs, wgcLiveSchedulerRebaseThisWindow, wgcEncoderLimitedSourceDropThisWindow,
                     static_cast<unsigned long long>(wgcEncoderLimitedSourceDropTotal), wgcRepeatPolicyHoldCount,
@@ -7941,8 +8135,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     wgcDelayWindowSourceLimitedRepeatWindow, wgcDelayRepeatReserveDepthWindowMax,
                     wgcDelayRepeatReserveSpanWindowMaxUs, wgcDelayRepeatHardOnlyCandidateWindow,
                     wgcDelaySyncProtectedRepeatWindow, wgcDelayNearCapAcceptedWindow,
-                    wgcDelayOldestSoftSafeAgeWindowMaxUs, wgcDelayUniformCadenceWindow, wgcDelayPaceCapTrimWindow,
-                    wgcSyncDelaySourceRecoveryHoldCount,
+                    wgcDelayOldestSoftSafeAgeWindowMaxUs, wgcDelayUniformCadenceWindow, wgcDelayUniformHoldWindow,
+                    wgcDelayPaceCapTrimWindow, wgcSyncDelaySourceRecoveryHoldCount,
                     static_cast<unsigned long long>(wgcSyncDelaySourceRecoveryHoldTotal),
                     wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
                     wgcEncoderRecoveryLimitedCurrent ? 1 : 0);
@@ -8095,6 +8289,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcDelaySoftLateAcceptedWindow = 0;
             wgcDelayNearCapAcceptedWindow = 0;
             wgcDelayUniformCadenceWindow = 0;
+            wgcDelayUniformHoldWindow = 0;
             wgcDelayPaceCapTrimWindow = 0;
             wgcRetainedCapTrimWindow = 0;
             wgcDelayOlderFrameAvoidedRepeatWindow = 0;
@@ -8321,6 +8516,93 @@ void EncoderThreadFunc(const AppConfig& config) {
                 SaturatingToUint32(liveTicksOutput), SaturatingToUint32(wgcCombinedExcessRepeatTotal),
                 SaturatingToUint32(wgcPolicyAddedRepeatTotal), wgcExcessRepeatClusterMaxTicks,
                 SaturatingToUint32(wgcDelayPostSelectionRejectedSyncRiskTotal));
+            SnapshotWgcRuntimeLogState(g_WgcCap.get());
+            const bool wgcLogSnapshotHasPool =
+                g_WgcRuntimeLogSnapshot.hasPoolEvidence.load(std::memory_order_acquire);
+            const uint32_t wgcSummarySourceFramePoolBuffers =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.sourceFramePoolBuffers.load(std::memory_order_relaxed)
+                                      : (g_WgcCap ? g_WgcCap->GetSourceFramePoolBufferCount() : 0u);
+            const uint32_t wgcSummaryBudgetSurfaces =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.budgetSurfaces.load(std::memory_order_relaxed)
+                                      : (g_WgcCap ? g_WgcCap->GetSmoothnessBudgetSurfaceCount() : 0u);
+            const uint32_t wgcSummarySyncFrames =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.syncFrames.load(std::memory_order_relaxed)
+                                      : (g_WgcCap ? g_WgcCap->GetSmoothnessSyncFrameCount() : 0u);
+            const uint32_t wgcSummaryExtraFrames =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.extraFrames.load(std::memory_order_relaxed)
+                                      : (g_WgcCap ? g_WgcCap->GetSmoothnessRetainedFrameCount() : 0u);
+            const uint32_t wgcSummaryRetainedCap =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.retainedCap.load(std::memory_order_relaxed)
+                                      : (g_WgcCap ? g_WgcCap->GetSmoothnessRetainedFrameCap()
+                                                  : wgcSmoothnessRetainedFrameCap);
+            const uint32_t wgcSummaryReservedFreeSlots =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.reservedFreeSlots.load(std::memory_order_relaxed)
+                                      : (g_WgcCap ? g_WgcCap->GetSmoothnessReservedFreeSlotCount()
+                                                  : wgcSmoothnessReservedFreeSlots);
+            const uint32_t wgcSummarySafetySlots =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.safetySlots.load(std::memory_order_relaxed)
+                                      : (g_WgcCap ? g_WgcCap->GetSmoothnessSafetySlotCount() : 0u);
+            const uint32_t wgcSummaryPoolLeasedMax =
+                wgcLogSnapshotHasPool
+                    ? std::max(g_WgcRuntimeLogSnapshot.poolLeasedMax.load(std::memory_order_relaxed),
+                               g_WgcCap ? g_WgcCap->GetPoolSlotLeasedMaxCount() : 0u)
+                    : (g_WgcCap ? g_WgcCap->GetPoolSlotLeasedMaxCount() : 0u);
+            const uint32_t wgcSnapshotFreeMin =
+                g_WgcRuntimeLogSnapshot.poolFreeMin.load(std::memory_order_relaxed);
+            const uint32_t wgcCurrentFreeMin = g_WgcCap ? g_WgcCap->GetPoolSlotFreeMinCount() : 0u;
+            const uint32_t wgcSummaryPoolFreeMin =
+                (wgcLogSnapshotHasPool && wgcSnapshotFreeMin != UINT32_MAX)
+                    ? (wgcCurrentFreeMin > 0 ? std::min(wgcSnapshotFreeMin, wgcCurrentFreeMin) : wgcSnapshotFreeMin)
+                    : wgcCurrentFreeMin;
+            const uint32_t wgcSummaryPoolSaturatedDrops =
+                wgcLogSnapshotHasPool
+                    ? std::max(g_WgcRuntimeLogSnapshot.poolSaturatedDrops.load(std::memory_order_relaxed),
+                               g_WgcCap ? g_WgcCap->GetPoolSaturatedDropCount() : 0u)
+                    : (g_WgcCap ? g_WgcCap->GetPoolSaturatedDropCount() : 0u);
+            const uint32_t wgcSummaryOverwritePrevented =
+                wgcLogSnapshotHasPool
+                    ? std::max(g_WgcRuntimeLogSnapshot.poolOverwritePrevented.load(std::memory_order_relaxed),
+                               g_WgcCap ? g_WgcCap->GetPoolSlotOverwritePreventedCount() : 0u)
+                    : (g_WgcCap ? g_WgcCap->GetPoolSlotOverwritePreventedCount() : 0u);
+            const uint32_t wgcSummaryLeaseMismatches =
+                wgcLogSnapshotHasPool
+                    ? std::max(g_WgcRuntimeLogSnapshot.poolLeaseMismatches.load(std::memory_order_relaxed),
+                               g_WgcCap ? g_WgcCap->GetPoolLeaseMismatchCount() : 0u)
+                    : (g_WgcCap ? g_WgcCap->GetPoolLeaseMismatchCount() : 0u);
+            const uint64_t wgcSummarySmoothVramBytes =
+                wgcLogSnapshotHasPool && g_WgcRuntimeLogSnapshot.estimatedVramBytes.load(std::memory_order_relaxed) > 0
+                    ? g_WgcRuntimeLogSnapshot.estimatedVramBytes.load(std::memory_order_relaxed)
+                    : wgcSmoothnessEstimatedVramBytes;
+            const uint32_t wgcSummarySourceFormat =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.sourceFormat.load(std::memory_order_relaxed)
+                                      : (g_WgcCap ? g_WgcCap->GetSmoothnessSourceDxgiFormat() : 0u);
+            const uint32_t wgcSummaryRetainedFormat =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.retainedFormat.load(std::memory_order_relaxed)
+                                      : (g_WgcCap ? g_WgcCap->GetSmoothnessCopyDxgiFormat() : 0u);
+            const uint32_t wgcSummaryCompactRetained =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.compactRetained.load(std::memory_order_relaxed)
+                                      : (g_WgcCap && g_WgcCap->IsCompactRetainedCopyActive() ? 1u : 0u);
+            const uint64_t wgcSummarySourceBudgetBytes =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.sourceBudgetBytes.load(std::memory_order_relaxed)
+                                      : (g_WgcCap ? g_WgcCap->GetSmoothnessSourceEstimatedVramBytes() : 0ull);
+            const uint64_t wgcSummaryCopyBudgetBytes =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.copyBudgetBytes.load(std::memory_order_relaxed)
+                                      : (g_WgcCap ? g_WgcCap->GetSmoothnessCopyEstimatedVramBytes() : 0ull);
+            const uint64_t wgcSummarySourceSurfaceBytes =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.sourceSurfaceBytes.load(std::memory_order_relaxed)
+                                      : (g_WgcCap ? g_WgcCap->GetSmoothnessSourceBytesPerSurface() : 0ull);
+            const uint64_t wgcSummaryCopySurfaceBytes =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.copySurfaceBytes.load(std::memory_order_relaxed)
+                                      : (g_WgcCap ? g_WgcCap->GetSmoothnessCopyBytesPerSurface() : 0ull);
+            const int64_t wgcSummaryConvertUs =
+                wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.lastConvertUs.load(std::memory_order_relaxed)
+                                      : (g_WgcCap ? g_WgcCap->GetLastPoolConvertTimeUs() : 0);
+            const uint32_t wgcSummaryDuplicateTimestampsSeen =
+                std::max(g_WgcRuntimeLogSnapshot.duplicateTimestampsSeen.load(std::memory_order_relaxed),
+                         g_WgcCap ? g_WgcCap->GetNormalizedDuplicateTimestampCount() : 0u);
+            const uint32_t wgcSummaryDuplicateTimestampsSkipped =
+                std::max(g_WgcRuntimeLogSnapshot.duplicateTimestampsSkipped.load(std::memory_order_relaxed),
+                         g_WgcCap ? g_WgcCap->GetDuplicateTimestampSkipCount() : 0u);
             LogInfo(
                 "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=%llu maxDropTicks=%u cadenceEvents=%llu "
                 "phaseErrorMax=%uus shortfallMax=%.1fms staleDebtDrops=%llu liveRebase=%llu/%u "
@@ -8356,44 +8638,26 @@ void EncoderThreadFunc(const AppConfig& config) {
                 config.wgcSmoothnessBufferEnabled ? 1 : 0, config.wgcSmoothnessBufferMaxMs, wgcSmoothnessActualFrames,
                 wgcSmoothnessRetainedFrames, wgcSmoothnessDesiredFrames,
                 static_cast<double>(qpcToUs(wgcSmoothnessActiveDelayQpc)) / 1000.0, wgcSmoothnessPoolSlots,
-                g_WgcCap ? g_WgcCap->GetSourceFramePoolBufferCount() : 0u,
-                g_WgcCap ? g_WgcCap->GetSmoothnessBudgetSurfaceCount() : 0u,
-                g_WgcCap ? g_WgcCap->GetSmoothnessSyncFrameCount() : 0u,
-                g_WgcCap ? g_WgcCap->GetSmoothnessRetainedFrameCount() : 0u,
-                g_WgcCap ? g_WgcCap->GetSmoothnessRetainedFrameCap() : wgcSmoothnessRetainedFrameCap,
-                g_WgcCap ? g_WgcCap->GetSmoothnessReservedFreeSlotCount() : wgcSmoothnessReservedFreeSlots,
-                g_WgcCap ? g_WgcCap->GetSmoothnessSafetySlotCount() : 0u,
+                wgcSummarySourceFramePoolBuffers, wgcSummaryBudgetSurfaces, wgcSummarySyncFrames,
+                wgcSummaryExtraFrames, wgcSummaryRetainedCap, wgcSummaryReservedFreeSlots, wgcSummarySafetySlots,
                 static_cast<unsigned long long>(wgcRetainedCapTrimTotal),
                 g_WgcCap ? g_WgcCap->GetIngressAcceptedCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetIngressDecimatedCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetIngressRetainedFrameCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetIngressRetainedFrameCap() : 0u,
                 g_WgcCap ? g_WgcCap->GetIngressLowWaterFrameCount() : 0u,
-                g_WgcCap ? g_WgcCap->GetPoolSlotLeasedMaxCount() : 0u,
-                g_WgcCap ? g_WgcCap->GetPoolSlotFreeMinCount() : 0u,
-                g_WgcCap ? g_WgcCap->GetPoolSaturatedDropCount() : 0u,
-                g_WgcCap ? g_WgcCap->GetPoolSlotOverwritePreventedCount() : 0u,
-                g_WgcCap ? g_WgcCap->GetPoolLeaseMismatchCount() : 0u,
-                static_cast<double>(wgcSmoothnessEstimatedVramBytes) / (1024.0 * 1024.0),
+                wgcSummaryPoolLeasedMax, wgcSummaryPoolFreeMin, wgcSummaryPoolSaturatedDrops,
+                wgcSummaryOverwritePrevented, wgcSummaryLeaseMismatches,
+                static_cast<double>(wgcSummarySmoothVramBytes) / (1024.0 * 1024.0),
                 wgcSmoothnessCapLimited ? 1 : 0, wgcSmoothnessBufferReason.c_str(),
-                g_WgcCap ? g_WgcCap->GetSmoothnessSourceDxgiFormat() : 0u,
-                g_WgcCap ? g_WgcCap->GetSmoothnessCopyDxgiFormat() : 0u,
-                g_WgcCap && g_WgcCap->IsCompactRetainedCopyActive() ? 1 : 0,
-                static_cast<double>(g_WgcCap ? g_WgcCap->GetSmoothnessSourceEstimatedVramBytes() : 0ull) /
-                    (1024.0 * 1024.0),
-                static_cast<double>(g_WgcCap ? g_WgcCap->GetSmoothnessCopyEstimatedVramBytes() : 0ull) /
-                    (1024.0 * 1024.0),
-                static_cast<double>(g_WgcCap ? g_WgcCap->GetSmoothnessSourceBytesPerSurface() : 0ull) /
-                    (1024.0 * 1024.0),
-                static_cast<double>(g_WgcCap ? g_WgcCap->GetSmoothnessCopyBytesPerSurface() : 0ull) /
-                    (1024.0 * 1024.0),
-                static_cast<long long>(g_WgcCap ? g_WgcCap->GetLastPoolConvertTimeUs() : 0));
-            const uint32_t wgcSummaryPoolFreeMin = g_WgcCap ? g_WgcCap->GetPoolSlotFreeMinCount() : 0u;
-            const uint32_t wgcSummaryPoolSaturatedDrops = g_WgcCap ? g_WgcCap->GetPoolSaturatedDropCount() : 0u;
+                wgcSummarySourceFormat, wgcSummaryRetainedFormat, wgcSummaryCompactRetained,
+                static_cast<double>(wgcSummarySourceBudgetBytes) / (1024.0 * 1024.0),
+                static_cast<double>(wgcSummaryCopyBudgetBytes) / (1024.0 * 1024.0),
+                static_cast<double>(wgcSummarySourceSurfaceBytes) / (1024.0 * 1024.0),
+                static_cast<double>(wgcSummaryCopySurfaceBytes) / (1024.0 * 1024.0),
+                static_cast<long long>(wgcSummaryConvertUs));
             const uint32_t wgcSummaryIngressHard = g_WgcCap ? g_WgcCap->GetIngressHardReservePressureCount() : 0u;
             const uint32_t wgcSummaryIngressSoft = g_WgcCap ? g_WgcCap->GetIngressSoftReservePressureCount() : 0u;
-            const uint32_t wgcSummaryOverwritePrevented =
-                g_WgcCap ? g_WgcCap->GetPoolSlotOverwritePreventedCount() : 0u;
             const uint32_t wgcSummaryOverloadFlags =
                 g_pSharedMem ? g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed) : 0u;
             const uint32_t wgcSummaryMuxBackpressure =
@@ -8415,24 +8679,24 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "[WGC CFR QUALITY] duplicatePct=%.1f duplicates=%llu/%llu worst1sUnique=%u worst1sRepeats=%u "
                 "worst1sEmit=%u limiter=%s sourceLimitedRepeats=%llu poolPressure=%d freeMin=%u "
                 "poolSaturatedDrops=%u ingressHard=%u ingressSoft=%u overwritePrevented=%u "
-                "encoderOverload=0x%X muxBackpressure=%u compactRetained=%d sourceFmt=%u retainedFmt=%u "
-                "convertUs=%lld finalAvSync=exported_tracks_authoritative",
+                "dupTsSeen=%u dupTsSkipped=%u encoderOverload=0x%X muxBackpressure=%u "
+                "compactRetained=%d sourceFmt=%u retainedFmt=%u convertUs=%lld "
+                "finalAvSync=exported_tracks_authoritative",
                 static_cast<double>(duplicatePermille) / 10.0,
                 static_cast<unsigned long long>(captureSessionSummary.duplicateTicks),
                 static_cast<unsigned long long>(liveTicksOutput), captureSessionSummary.worstOneSecondUniqueCount,
                 captureSessionSummary.worstOneSecondRepeatCount, captureSessionSummary.worstOneSecondEmitCount,
                 wgcSummaryLimiter, static_cast<unsigned long long>(captureSessionSummary.duplicateNoSourceTicks),
                 wgcSummaryPoolPressure ? 1 : 0, wgcSummaryPoolFreeMin, wgcSummaryPoolSaturatedDrops,
-                wgcSummaryIngressHard, wgcSummaryIngressSoft, wgcSummaryOverwritePrevented, wgcSummaryOverloadFlags,
-                wgcSummaryMuxBackpressure, g_WgcCap && g_WgcCap->IsCompactRetainedCopyActive() ? 1 : 0,
-                g_WgcCap ? g_WgcCap->GetSmoothnessSourceDxgiFormat() : 0u,
-                g_WgcCap ? g_WgcCap->GetSmoothnessCopyDxgiFormat() : 0u,
-                static_cast<long long>(g_WgcCap ? g_WgcCap->GetLastPoolConvertTimeUs() : 0));
+                wgcSummaryIngressHard, wgcSummaryIngressSoft, wgcSummaryOverwritePrevented,
+                wgcSummaryDuplicateTimestampsSeen, wgcSummaryDuplicateTimestampsSkipped, wgcSummaryOverloadFlags,
+                wgcSummaryMuxBackpressure, wgcSummaryCompactRetained, wgcSummarySourceFormat, wgcSummaryRetainedFormat,
+                static_cast<long long>(wgcSummaryConvertUs));
             LogInfo(
                 "[WGC CFR SMOOTHNESS INGRESS] accepted=%u decimated=%u retained=%u/%u lowWater=%u "
                 "accLowWater=%u accRecovery=%u accSourceBelow=%u accHealthy=%u "
                 "decSoftReserve=%u decHardReserve=%u decCredit=%u "
-                "softReservePressure=%u hardReservePressure=%u lastReason=%s",
+                "softReservePressure=%u hardReservePressure=%u dupTsSeen=%u dupTsSkipped=%u lastReason=%s",
                 g_WgcCap ? g_WgcCap->GetIngressAcceptedCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetIngressDecimatedCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetIngressRetainedFrameCount() : 0u,
@@ -8447,6 +8711,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 g_WgcCap ? g_WgcCap->GetIngressDecimatedCreditCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetIngressSoftReservePressureCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetIngressHardReservePressureCount() : 0u,
+                wgcSummaryDuplicateTimestampsSeen, wgcSummaryDuplicateTimestampsSkipped,
                 g_WgcCap ? WgcIngressAdmissionReasonName(g_WgcCap->GetIngressAdmissionReasonCode()) : "none");
             LogInfo(
                 "[WGC CFR SMOOTHNESS SOURCE] acceptedTotal=%llu cfrTicksTotal=%llu "
@@ -8492,7 +8757,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "delaySourceRecoveryHolds=%llu delaySourceRecoveryTicks=%llu "
                 "delayNearCapAccepted=%llu delayHardOnlyCandidates=%llu "
                 "delaySyncProtectedRepeats=%llu delayOldestSoftSafeAgeMax=%uus delayUniformCadence=%llu "
-                "delayPaceCapTrim=%llu",
+                "delayUniformHold=%llu delayPaceCapTrim=%llu",
                 static_cast<unsigned long long>(wgcDelayRelaxedSelectionCount), wgcDelayRelaxedSelectionMaxUs,
                 static_cast<unsigned long long>(wgcDelayRelaxedRejectedSyncRiskTotal),
                 static_cast<unsigned long long>(wgcDelayRepeatClusterPressureTotal),
@@ -8533,6 +8798,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(wgcDelayRepeatHardOnlyCandidateTotal),
                 static_cast<unsigned long long>(wgcDelaySyncProtectedRepeatTotal), wgcDelayOldestSoftSafeAgeMaxUs,
                 static_cast<unsigned long long>(wgcDelayUniformCadenceTotal),
+                static_cast<unsigned long long>(wgcDelayUniformHoldTotal),
                 static_cast<unsigned long long>(wgcDelayPaceCapTrimTotal));
             LogInfo(
                 "[WGC CFR SMOOTHNESS VERDICT] delayPostSelectionRejectedSync=%llu "

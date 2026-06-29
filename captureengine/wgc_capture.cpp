@@ -527,6 +527,7 @@ public:
     // QPC frequency cached for timestamp conversion
     int64_t qpcFreq_ = 0;
     std::atomic<int64_t> lastDeliveredSourceQpc_{0};
+    std::atomic<int64_t> lastDeliveredRawSourceQpc_{0};
     std::atomic<int64_t> lastObservedRawSourceQpc_{0};
     std::atomic<int64_t> lastAssignedSourceQpc_{0};
 
@@ -569,6 +570,7 @@ public:
     std::atomic<uint32_t> staleDuplicateTimestampCount_{0};
     std::atomic<uint32_t> staleOutOfOrderTimestampCount_{0};
     std::atomic<uint32_t> normalizedDuplicateTimestampCount_{0};
+    std::atomic<uint32_t> duplicateTimestampSkipCount_{0};
     std::atomic<uint32_t> cursorOnlySkipCount_{0};
     std::atomic<uint32_t> poolDropCount_{0};
     std::atomic<uint32_t> keyedMutexAcquireFailCount_{0};
@@ -1245,6 +1247,7 @@ public:
         staleDuplicateTimestampCount_.store(0, std::memory_order_relaxed);
         staleOutOfOrderTimestampCount_.store(0, std::memory_order_relaxed);
         normalizedDuplicateTimestampCount_.store(0, std::memory_order_relaxed);
+        duplicateTimestampSkipCount_.store(0, std::memory_order_relaxed);
         cursorOnlySkipCount_.store(0, std::memory_order_relaxed);
         poolDropCount_.store(0, std::memory_order_relaxed);
         keyedMutexAcquireFailCount_.store(0, std::memory_order_relaxed);
@@ -1288,6 +1291,7 @@ public:
         lastCopyUs_.store(0, std::memory_order_relaxed);
         lastPoolConvertUs_.store(0, std::memory_order_relaxed);
         lastDeliveredSourceQpc_.store(0, std::memory_order_relaxed);
+        lastDeliveredRawSourceQpc_.store(0, std::memory_order_relaxed);
         lastObservedRawSourceQpc_.store(0, std::memory_order_relaxed);
         lastAssignedSourceQpc_.store(0, std::memory_order_relaxed);
         lastObservedSourceQpc_ = 0;
@@ -2263,6 +2267,19 @@ public:
 
         bool duplicateSourceTimestamp = false;
         const int64_t sourceFrameQpc = NormalizeSourceFrameQpc(rawSourceFrameQpc, &duplicateSourceTimestamp);
+        const int64_t lastDeliveredRawSourceQpc = lastDeliveredRawSourceQpc_.load(std::memory_order_relaxed);
+        if (ce::capture_policy::ShouldSkipDeliveredDuplicateWgcSourceTimestamp(
+                duplicateSourceTimestamp, rawSourceFrameQpc, lastDeliveredRawSourceQpc, targetIntervalQPC_ > 0)) {
+            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            duplicateTimestampSkipCount_.fetch_add(1, std::memory_order_relaxed);
+            static std::atomic<uint32_t> duplicateSkipLogCount{0};
+            if (duplicateSkipLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+                LogInfo("[WGC] Skipped duplicate source timestamp before copy rawQpc=%lld deliveredRawQpc=%lld",
+                        static_cast<long long>(rawSourceFrameQpc), static_cast<long long>(lastDeliveredRawSourceQpc));
+            }
+            winrtFrame.Close();
+            return false;
+        }
         if (!duplicateSourceTimestamp && targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && sourceFrameQpc > 0 &&
             sourceFrameQpc < nextCaptureQPC_) {
             skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
@@ -2335,8 +2352,11 @@ public:
                 if (CopyFrameToPool(texture, desc, sourceFrameQpc, rawSourceFrameQpc, &copiedTexture, copyCompleteQpc,
                                     poolLease, poolSlot, poolGeneration)) {
                     const int64_t deliveredTimestamp = sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc;
-                    if (sourceFrameQpc > 0 && !duplicateSourceTimestamp) {
+                    if (sourceFrameQpc > 0) {
                         lastDeliveredSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
+                    }
+                    if (rawSourceFrameQpc > 0) {
+                        lastDeliveredRawSourceQpc_.store(rawSourceFrameQpc, std::memory_order_relaxed);
                     }
                     RecordDeliveredFrameEvent();
                     RequestHDRRecheckIfDue();
@@ -3330,6 +3350,14 @@ uint32_t WGCCapture::GetPoolDropCount() const {
 uint32_t WGCCapture::GetNormalizedDuplicateTimestampCount() const {
 #if HAS_WGC
     return impl_ ? impl_->normalizedDuplicateTimestampCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetDuplicateTimestampSkipCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->duplicateTimestampSkipCount_.load(std::memory_order_relaxed) : 0;
 #else
     return 0;
 #endif

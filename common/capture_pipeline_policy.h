@@ -2583,6 +2583,15 @@ inline bool ShouldDropWgcFrontForNearerPlayout(int64_t frontTimestampQpc, int64_
     return nextTimestampQpc <= playoutTargetQpc + leadToleranceQpc;
 }
 
+inline bool ShouldSkipDeliveredDuplicateWgcSourceTimestamp(bool duplicateSourceTimestamp, int64_t rawSourceFrameQpc,
+                                                           int64_t lastDeliveredRawSourceQpc,
+                                                           bool cfrCaptureActive) {
+    if (!cfrCaptureActive || !duplicateSourceTimestamp || rawSourceFrameQpc <= 0 || lastDeliveredRawSourceQpc <= 0) {
+        return false;
+    }
+    return rawSourceFrameQpc == lastDeliveredRawSourceQpc;
+}
+
 struct WgcNearestPlayoutDecision {
     bool emit = false;  // pop and emit the (post-stale-drop) front frame for this slot
     bool hold = false;  // repeat the previous frame: the slot frame has not been delivered yet

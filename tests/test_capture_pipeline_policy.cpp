@@ -1012,6 +1012,25 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutDropsAlreadyPastFramesForCloser
     EXPECT_FALSE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/900, /*next=*/880, target, leadTol));
 }
 
+TEST(CapturePipelinePolicyTest, WgcDuplicateSourceTimestampSkipRequiresPriorDelivery) {
+    EXPECT_FALSE(policy::ShouldSkipDeliveredDuplicateWgcSourceTimestamp(
+        /*duplicateSourceTimestamp=*/false, /*rawSourceFrameQpc=*/1000, /*lastDeliveredRawSourceQpc=*/1000,
+        /*cfrCaptureActive=*/true));
+    EXPECT_FALSE(policy::ShouldSkipDeliveredDuplicateWgcSourceTimestamp(
+        /*duplicateSourceTimestamp=*/true, /*rawSourceFrameQpc=*/1000, /*lastDeliveredRawSourceQpc=*/0,
+        /*cfrCaptureActive=*/true));
+    EXPECT_FALSE(policy::ShouldSkipDeliveredDuplicateWgcSourceTimestamp(
+        /*duplicateSourceTimestamp=*/true, /*rawSourceFrameQpc=*/1000, /*lastDeliveredRawSourceQpc=*/999,
+        /*cfrCaptureActive=*/true));
+    EXPECT_FALSE(policy::ShouldSkipDeliveredDuplicateWgcSourceTimestamp(
+        /*duplicateSourceTimestamp=*/true, /*rawSourceFrameQpc=*/1000, /*lastDeliveredRawSourceQpc=*/1000,
+        /*cfrCaptureActive=*/false));
+
+    EXPECT_TRUE(policy::ShouldSkipDeliveredDuplicateWgcSourceTimestamp(
+        /*duplicateSourceTimestamp=*/true, /*rawSourceFrameQpc=*/1000, /*lastDeliveredRawSourceQpc=*/1000,
+        /*cfrCaptureActive=*/true));
+}
+
 TEST(CapturePipelinePolicyTest, WgcNearestPlayoutEmitHoldDecision) {
     const int64_t target = 1000;
     const int64_t leadTol = policy::GetWgcActiveDelayResidualToleranceQpc(100);  // 60

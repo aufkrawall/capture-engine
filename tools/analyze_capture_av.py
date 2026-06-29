@@ -198,7 +198,9 @@ WGC_SMOOTHNESS_INGRESS_RE = re.compile(
     r"accSourceBelow=(?P<acc_source_below>\d+) accHealthy=(?P<acc_healthy>\d+) "
     r"decSoftReserve=(?P<dec_soft_reserve>\d+) decHardReserve=(?P<dec_hard_reserve>\d+) "
     r"decCredit=(?P<dec_credit>\d+) softReservePressure=(?P<soft_pressure>\d+) "
-    r"hardReservePressure=(?P<hard_pressure>\d+) lastReason=(?P<last_reason>[A-Za-z0-9_-]+)",
+    r"hardReservePressure=(?P<hard_pressure>\d+) "
+    r"(?:(?:dupTsSeen=(?P<dup_ts_seen>\d+) dupTsSkipped=(?P<dup_ts_skipped>\d+) )?)"
+    r"lastReason=(?P<last_reason>[A-Za-z0-9_-]+)",
     re.IGNORECASE,
 )
 WGC_SMOOTHNESS_SOURCE_RE = re.compile(
@@ -1200,6 +1202,8 @@ def parse_wgc_perf_line(line):
         "input": find_int(r"Input:\s*(\d+)"),
         "queued": find_int(r"Queued:\s*(\d+)"),
         "drop_ingress": find_int(r"DropIngress:\s*(\d+)"),
+        "duplicate_timestamps_seen": find_int(r"SrcDupTs:\s*seen=(\d+)"),
+        "duplicate_timestamps_skipped": find_int(r"SrcDupTs:\s*seen=\d+\s*skip=(\d+)"),
         "duplicate": find_int(r"Dup:\s*(\d+)"),
         "late": find_int(r"Late:\s*(\d+)"),
         "min_in_250": parse_int(min_in_match.group(1)) if min_in_match else 0,
@@ -1282,6 +1286,8 @@ def parse_wgc_quality_line(line):
         "ingress_hard": parse_int(values.get("ingressHard"), 0),
         "ingress_soft": parse_int(values.get("ingressSoft"), 0),
         "overwrite_prevented": parse_int(values.get("overwritePrevented"), 0),
+        "duplicate_timestamps_seen": parse_int(values.get("dupTsSeen"), 0),
+        "duplicate_timestamps_skipped": parse_int(values.get("dupTsSkipped"), 0),
         "encoder_overload": values.get("encoderOverload", "0x0"),
         "mux_backpressure": parse_int(values.get("muxBackpressure"), 0),
         "compact_retained": parse_int(values.get("compactRetained"), 0),
@@ -1535,6 +1541,8 @@ def update_wgc_smoothness_item_from_line(item, line):
                 "wgc_ingress_decimated_credit": parse_int(groups.get("dec_credit")),
                 "wgc_ingress_soft_reserve_pressure": parse_int(groups.get("soft_pressure")),
                 "wgc_ingress_hard_reserve_pressure": parse_int(groups.get("hard_pressure")),
+                "wgc_duplicate_timestamps_seen": parse_int(groups.get("dup_ts_seen")),
+                "wgc_duplicate_timestamps_skipped": parse_int(groups.get("dup_ts_skipped")),
                 "wgc_ingress_last_reason": groups.get("last_reason") or "",
             }
         )
@@ -3178,16 +3186,35 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
         item for item in media_evidence["final_packet_timelines"]
         if item["max_packet_delta_us"] > 1000 or item["audio_past_target"] > 0
     ]
+    exported_av_sync_ok = has_exact_final_mux_evidence(media_evidence)
     if stop_audio_shortfalls["multi_source_short_count"] > 0:
         verdicts.append("multi_app_audio_track_stall")
-    if (
-        any(strict_audio_fault_counts.values())
+    timeline_audio_fault_counts = dict(strict_audio_fault_counts)
+    if exported_av_sync_ok:
+        for source_health_event in (
+            "audio_underrun",
+            "audio_source_padding_summary",
+            "audio_late_app_source_backlog",
+            "audio_app_source_gap_silence",
+        ):
+            timeline_audio_fault_counts[source_health_event] = 0
+    strict_audio_timeline_fault = (
+        any(timeline_audio_fault_counts.values())
         or post_mux_strict_mismatches
         or final_packet_strict
         or media_evidence["zero_drift_warnings"]
         or stop_audio_shortfalls["short_count"] > 0
-        or "late_app_source_backlog" in verdicts
+    )
+    source_audio_health_fault = (
+        "late_app_source_backlog" in verdicts
         or "started_app_source_underrun" in verdicts
+    )
+    if (
+        strict_audio_timeline_fault
+        or (
+            source_audio_health_fault
+            and not exported_av_sync_ok
+        )
     ):
         verdicts.append("ce_audio_timeline_fault")
     if (
@@ -3225,7 +3252,6 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             for delta in media_evidence["post_mux_audio_mismatch_delta_us"]
         ),
     }
-    exported_av_sync_ok = has_exact_final_mux_evidence(media_evidence)
     report = {
         "schema": "ce-session-av-triage-v1",
         "session_dir": str(session_dir),
@@ -3336,6 +3362,12 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
                 "ingress_hard_reserve_pressure": sum(
                     item.get("ingress_hard_reserve_pressure", 0) for item in media_evidence["wgc_perf"]
                 ),
+                "duplicate_timestamps_seen": sum(
+                    item.get("duplicate_timestamps_seen", 0) for item in media_evidence["wgc_perf"]
+                ),
+                "duplicate_timestamps_skipped": sum(
+                    item.get("duplicate_timestamps_skipped", 0) for item in media_evidence["wgc_perf"]
+                ),
                 "pool_overwrite_prevented": sum(
                     item.get("pool_overwrite_prevented", 0) for item in media_evidence["wgc_perf"]
                 ),
@@ -3428,7 +3460,8 @@ def print_triage_report(report):
         print(
             "  wgc_quality dup={dup}/{live} ({dup_pct:.1f}%) worst1s={unique}/{repeats}/{emit} "
             "limiter={limiter} pool_pressure={pool} free_min={free_min} sat_drop={sat_drop} "
-            "ingress_hard={hard} ingress_soft={soft} compact_retained={compact} "
+            "ingress_hard={hard} ingress_soft={soft} dup_ts={dup_ts_seen}/{dup_ts_skipped} "
+            "compact_retained={compact} "
             "fmt={source_fmt}->{retained_fmt} convert_us={convert_us} final_av_sync={final_sync}".format(
                 dup=quality["duplicates"],
                 live=quality["live"],
@@ -3442,6 +3475,8 @@ def print_triage_report(report):
                 sat_drop=quality["pool_saturated_drops"],
                 hard=quality["ingress_hard"],
                 soft=quality["ingress_soft"],
+                dup_ts_seen=quality["duplicate_timestamps_seen"],
+                dup_ts_skipped=quality["duplicate_timestamps_skipped"],
                 compact=quality["compact_retained"],
                 source_fmt=quality["source_format"],
                 retained_fmt=quality["retained_format"],
@@ -3965,8 +4000,9 @@ def self_test():
                 "[WGC CFR QUALITY] duplicatePct=19.4 duplicates=1399/7203 worst1sUnique=71 "
                 "worst1sRepeats=49 worst1sEmit=120 limiter=wgc_pool_pressure sourceLimitedRepeats=1399 "
                 "poolPressure=1 freeMin=0 poolSaturatedDrops=6 ingressHard=103 ingressSoft=500 "
-                "overwritePrevented=136402 encoderOverload=0x0 muxBackpressure=0 compactRetained=1 "
-                "sourceFmt=10 retainedFmt=24 convertUs=620 finalAvSync=exported_tracks_authoritative\n"
+                "overwritePrevented=136402 dupTsSeen=492 dupTsSkipped=489 encoderOverload=0x0 "
+                "muxBackpressure=0 compactRetained=1 sourceFmt=10 retainedFmt=24 convertUs=620 "
+                "finalAvSync=exported_tracks_authoritative\n"
                 "[VideoEncoder] Final packet timeline: target=60000000 us videoEnd=60000000 us "
                 "audioMinEnd=60000000 us audioMaxEnd=60000000 us maxPacketDelta=0 us "
                 "streams(v=1 a=3) audioPastTarget=0\n"
@@ -3983,6 +4019,8 @@ def self_test():
         assert quality["compact_retained"] == 1
         assert quality["source_format"] == 10
         assert quality["retained_format"] == 24
+        assert quality["duplicate_timestamps_seen"] == 492
+        assert quality["duplicate_timestamps_skipped"] == 489
         assert report["evidence"]["exported_av_sync_ok"]
         assert "ce_audio_timeline_fault" not in report["verdicts"]
 
@@ -5450,6 +5488,26 @@ def self_test():
         assert "started_app_source_underrun" in report["verdicts"]
         assert "ce_audio_timeline_fault" in report["verdicts"]
         assert report["faults"]["late_app_source_backlog"]
+
+        exported_sync_with_app_underrun = make_session(
+            "exported_sync_with_app_underrun",
+            media=(
+                "[PullAudio] WARNING: Source underrun - src 9 padding 480 samples with silence "
+                "(available=0 needed=480 forceDrain=0)\n"
+                "[PullAudio] App source gap silence - src 9 added 480 samples to track 1\n"
+                "[STOP AUDIO] Source 9: track=1 encoded=48000 trim=cov:0 latTotal:0 liveUncat:0 "
+                "pad:480 qgap:0 qjoin:0 qjoinKeep:0 ringPeak=1200 ringUnderruns=1 process=game.exe\n"
+                "[VideoEncoder] Final packet timeline: target=60000000 us videoEnd=60000000 us "
+                "audioMinEnd=60000000 us audioMaxEnd=60000000 us maxPacketDelta=0 us audioPastTarget=0\n"
+                "[VideoEncoder] Final metadata durations: target=60000000 us video=60000000 us "
+                "audioMin=60000000 us audioMax=60000000 us maxDelta=0 us streams(v=1 a=3) "
+                "overload(encoder=0 mux=0) backpressure=0\n"
+            ),
+        )
+        report = classify_session_triage(exported_sync_with_app_underrun)
+        assert "started_app_source_underrun" in report["verdicts"]
+        assert "ce_audio_timeline_fault" not in report["verdicts"]
+        assert report["evidence"]["exported_av_sync_ok"]
 
         late_app_live_join = make_session(
             "late_app_live_join",
