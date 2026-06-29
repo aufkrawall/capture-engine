@@ -304,6 +304,10 @@ STOP_AUDIO_SOURCE_RE = re.compile(
     r"(?: process=([^\s]+))?",
     re.IGNORECASE,
 )
+STOP_AUDIO_LATENCY_RE = re.compile(
+    r"\[STOP AUDIO LATENCY\] Source (\d+) track=(\d+) appAudioDelay avg=([0-9.]+)ms max=(\d+)ms",
+    re.IGNORECASE,
+)
 ZERO_DRIFT_WARNING_RE = re.compile(
     r"\[A/V ZERO DRIFT WARNING\] Track (\d+) residual_samples=([+-]?\d+) residual_us=([+-]?\d+) "
     r"target_samples=(\d+) cursor_samples=(\d+)",
@@ -423,6 +427,11 @@ def parse_int(value, default=0):
 def parse_named_int_field(line, name, default=None):
     match = re.search(r"\b" + re.escape(name) + r"=(-?\d+)", line)
     return parse_int(match.group(1)) if match else default
+
+
+def parse_named_float_field(line, name, default=None):
+    match = re.search(r"\b" + re.escape(name) + r"=(-?[0-9.]+)", line)
+    return parse_float(match.group(1)) if match else default
 
 
 def parse_ratio(text):
@@ -1300,12 +1309,12 @@ def parse_live_start_qpc(media_text):
 def parse_log_timestamp_us(line):
     match = LOG_LINE_TIMESTAMP_RE.match(line)
     if not match:
-        return 0
+        return -1
     timestamp = match.group(1)
     try:
         parsed = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f")
     except ValueError:
-        return 0
+        return -1
     epoch = datetime.datetime(parsed.year, parsed.month, parsed.day)
     return int(round((parsed - epoch).total_seconds() * 1000000.0))
 
@@ -1314,9 +1323,9 @@ def parse_live_start_wall_us(media_text):
     for line in media_text.splitlines():
         if "[A/V START] Shared startup anchor selected" in line or "[EncoderThread] Recording live" in line:
             timestamp_us = parse_log_timestamp_us(line)
-            if timestamp_us > 0:
+            if timestamp_us >= 0:
                 return timestamp_us
-    return 0
+    return -1
 
 
 def choose_perf_qpc_us_from_live_start(live_start_qpc, perf_summaries):
@@ -1360,8 +1369,8 @@ def build_recording_window_info(media_text, recording_window_spec, perf_summarie
             "start_qpc_us": 0,
             "end_qpc_us": 0,
             "live_start_wall_us": live_start_wall_us,
-            "start_wall_us": live_start_wall_us + start_offset_us if live_start_wall_us > 0 else 0,
-            "end_wall_us": live_start_wall_us + end_offset_us if live_start_wall_us > 0 else 0,
+            "start_wall_us": live_start_wall_us + start_offset_us if live_start_wall_us >= 0 else -1,
+            "end_wall_us": live_start_wall_us + end_offset_us if live_start_wall_us >= 0 else -1,
             "active": False,
             "reason": "missing_live_start_qpc",
         }
@@ -1374,8 +1383,8 @@ def build_recording_window_info(media_text, recording_window_spec, perf_summarie
         "start_qpc_us": live_start_qpc_us + start_offset_us,
         "end_qpc_us": live_start_qpc_us + end_offset_us,
         "live_start_wall_us": live_start_wall_us,
-        "start_wall_us": live_start_wall_us + start_offset_us if live_start_wall_us > 0 else 0,
-        "end_wall_us": live_start_wall_us + end_offset_us if live_start_wall_us > 0 else 0,
+        "start_wall_us": live_start_wall_us + start_offset_us if live_start_wall_us >= 0 else -1,
+        "end_wall_us": live_start_wall_us + end_offset_us if live_start_wall_us >= 0 else -1,
         "active": True,
         "reason": "ok",
     }
@@ -1386,13 +1395,13 @@ def filter_media_text_for_recording_window(media_text, recording_window_info):
         return media_text
     start_wall_us = recording_window_info.get("start_wall_us", 0)
     end_wall_us = recording_window_info.get("end_wall_us", 0)
-    if start_wall_us <= 0 or end_wall_us <= start_wall_us:
+    if start_wall_us < 0 or end_wall_us <= start_wall_us:
         return media_text
 
     windowed_lines = []
     for line in media_text.splitlines():
         timestamp_us = parse_log_timestamp_us(line)
-        if timestamp_us > 0 and start_wall_us <= timestamp_us < end_wall_us:
+        if timestamp_us >= 0 and start_wall_us <= timestamp_us < end_wall_us:
             windowed_lines.append(line)
     return "\n".join(windowed_lines)
 
@@ -1408,6 +1417,7 @@ def merge_window_media_evidence(window_evidence, full_evidence):
         "final_metadata",
         "post_mux_audio_mismatch_delta_us",
         "post_mux_audio_priming",
+        "stop_app_audio_latency",
     ):
         merged[key] = full_evidence.get(key, [])
     return merged
@@ -1650,6 +1660,7 @@ def parse_media_triage(media_text):
     post_mux_audio_priming = []
     stop_audio_tracks = []
     stop_audio_sources = []
+    stop_app_audio_latency = []
     zero_drift_warnings = []
     packet_mismatch_warnings = 0
     for line in media_text.splitlines():
@@ -1956,6 +1967,34 @@ def parse_media_triage(media_text):
                     "line": line,
                 }
             )
+        stop_latency_match = STOP_AUDIO_LATENCY_RE.search(line)
+        if stop_latency_match:
+            drain_match = re.search(r"(?:drainObservations|drainingSamples)=(\d+)/(\d+)", line)
+            queue_match = re.search(r"queueOverrun=(\d+)/(\d+)", line)
+            trim_match = re.search(r"trims\(lat=(\d+) normal=(\d+) cat=(\d+)/(\d+)\)", line)
+            stop_app_audio_latency.append(
+                {
+                    "source": parse_int(stop_latency_match.group(1)),
+                    "track": parse_int(stop_latency_match.group(2)),
+                    "avg_ms": parse_float(stop_latency_match.group(3)),
+                    "max_ms": parse_int(stop_latency_match.group(4)),
+                    "target_avg_ms": parse_named_float_field(line, "targetAvg"),
+                    "excess_avg_ms": parse_named_float_field(line, "excessAvg"),
+                    "excess_max_ms": parse_named_int_field(line, "excessMax"),
+                    "drain_observations": parse_int(drain_match.group(1)) if drain_match else 0,
+                    "observation_count": parse_int(drain_match.group(2)) if drain_match else 0,
+                    "transitions": parse_named_int_field(line, "transitions", 0),
+                    "max_comp_percent": parse_named_float_field(line, "maxComp", 0.0),
+                    "queue_overrun_packets": parse_int(queue_match.group(1)) if queue_match else 0,
+                    "queue_overrun_frames": parse_int(queue_match.group(2)) if queue_match else 0,
+                    "underruns": parse_named_int_field(line, "underruns", 0),
+                    "latency_trim_samples": parse_int(trim_match.group(1)) if trim_match else 0,
+                    "normal_trim_samples": parse_int(trim_match.group(2)) if trim_match else 0,
+                    "catastrophic_resync_events": parse_int(trim_match.group(3)) if trim_match else 0,
+                    "catastrophic_resync_samples": parse_int(trim_match.group(4)) if trim_match else 0,
+                    "line": line,
+                }
+            )
         zero_drift_match = ZERO_DRIFT_WARNING_RE.search(line)
         if zero_drift_match:
             zero_drift_warnings.append(
@@ -1986,6 +2025,7 @@ def parse_media_triage(media_text):
         "post_mux_audio_priming": post_mux_audio_priming,
         "stop_audio_tracks": stop_audio_tracks,
         "stop_audio_sources": stop_audio_sources,
+        "stop_app_audio_latency": stop_app_audio_latency,
         "zero_drift_warnings": zero_drift_warnings,
         "packet_mismatch_warnings": packet_mismatch_warnings,
     }
@@ -2839,6 +2879,44 @@ def summarize_started_app_source_health(media_evidence, log_summary):
     }
 
 
+def summarize_app_audio_latency(media_evidence, log_summary):
+    warning_count = log_summary["counts"].get("audio_app_latency_elevated", 0) if log_summary else 0
+    sources = media_evidence.get("stop_app_audio_latency", [])
+    elevated_sources = []
+    for item in sources:
+        excess_avg = item.get("excess_avg_ms")
+        excess_max = item.get("excess_max_ms")
+        if excess_avg is not None and excess_max is not None:
+            elevated = excess_avg >= 40.0 or excess_max >= 80
+        else:
+            elevated = item.get("avg_ms", 0.0) >= 250.0 or item.get("max_ms", 0) >= 300
+        if elevated:
+            elevated_sources.append(item)
+
+    return {
+        "warning_count": warning_count,
+        "source_count": len(sources),
+        "elevated_source_count": len(elevated_sources),
+        "worst_avg_ms": max((item.get("avg_ms", 0.0) for item in sources), default=0.0),
+        "worst_max_ms": max((item.get("max_ms", 0) for item in sources), default=0),
+        "worst_excess_avg_ms": max(
+            (item.get("excess_avg_ms") for item in sources if item.get("excess_avg_ms") is not None),
+            default=0.0,
+        ),
+        "worst_excess_max_ms": max(
+            (item.get("excess_max_ms") for item in sources if item.get("excess_max_ms") is not None),
+            default=0,
+        ),
+        "max_comp_percent": max((item.get("max_comp_percent", 0.0) for item in sources), default=0.0),
+        "queue_overrun_packets": sum(item.get("queue_overrun_packets", 0) for item in sources),
+        "queue_overrun_frames": sum(item.get("queue_overrun_frames", 0) for item in sources),
+        "underruns": sum(item.get("underruns", 0) for item in sources),
+        "catastrophic_resync_events": sum(item.get("catastrophic_resync_events", 0) for item in sources),
+        "sources": sources,
+        "elevated_sources": elevated_sources,
+    }
+
+
 def classify_session_triage(session_dir, capture_path=None, recording_window=None):
     media_log = session_dir / "media.log"
     media_text = read_text_if_exists(media_log)
@@ -2860,6 +2938,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     inject_pacing = summarize_inject_pacing(media_evidence)
     stop_audio_shortfalls = summarize_stop_audio_shortfalls(media_evidence)
     started_app_source_health = summarize_started_app_source_health(media_evidence, log_summary)
+    app_audio_latency = summarize_app_audio_latency(media_evidence, log_summary)
 
     verdicts = []
     if recording_window_info:
@@ -3002,6 +3081,8 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             verdicts.append("sparse_app_source_silence")
         else:
             verdicts.append("started_app_source_underrun")
+    if app_audio_latency["warning_count"] > 0 or app_audio_latency["elevated_source_count"] > 0:
+        verdicts.append("audio_app_latency_elevated")
     if post_mux_probe_hang:
         verdicts.append("post_mux_probe_hang")
     elif post_mux_probe_timeout:
@@ -3098,11 +3179,13 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "late_app_source_backlog": "late_app_source_backlog" in verdicts,
             "started_app_source_underrun": "started_app_source_underrun" in verdicts,
             "sparse_app_source_silence": "sparse_app_source_silence" in verdicts,
+            "audio_app_latency_elevated": "audio_app_latency_elevated" in verdicts,
             "post_mux_probe_hang": post_mux_probe_hang,
             "post_mux_probe_timeout": post_mux_probe_timeout,
             "ce_process_crash": bool(hook_evidence["crash_events"]),
         },
         "evidence": {
+            "recording_window": recording_window_info,
             "max_present_gap_ms": max_present_gap_ms,
             "present_gap_source": "perf_recording_window" if recording_window_info else "hook_logs",
             "present_gaps": present_gap_evidence[:20],
@@ -3183,6 +3266,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "stop_audio_tracks": media_evidence["stop_audio_tracks"],
             "stop_audio_sources": media_evidence["stop_audio_sources"],
             "started_app_source_health": started_app_source_health,
+            "app_audio_latency": app_audio_latency,
             "zero_drift_warnings": media_evidence["zero_drift_warnings"],
             "stop_audio_shortfalls": stop_audio_shortfalls,
             "final_packet_timelines": media_evidence["final_packet_timelines"],
@@ -3264,6 +3348,28 @@ def print_triage_report(report):
                 gap=app_health["app_gap_silence_count"],
                 sparse=len(app_health["sparse_silence_sources"]),
                 active=len(app_health["active_underrun_sources"]),
+            )
+        )
+    app_latency = evidence["app_audio_latency"]
+    if app_latency["warning_count"] or app_latency["source_count"]:
+        print(
+            "  app_audio_latency warnings={warnings} sources={sources} elevated={elevated} "
+            "worst_delay_avg={avg:.1f}ms worst_delay_max={max_ms}ms "
+            "worst_excess_avg={excess_avg:.1f}ms worst_excess_max={excess_max}ms "
+            "max_comp={comp:.4f}% queue_overrun={queue_packets}/{queue_frames} "
+            "underruns={underruns} catastrophic={cat_events}".format(
+                warnings=app_latency["warning_count"],
+                sources=app_latency["source_count"],
+                elevated=app_latency["elevated_source_count"],
+                avg=app_latency["worst_avg_ms"],
+                max_ms=app_latency["worst_max_ms"],
+                excess_avg=app_latency["worst_excess_avg_ms"],
+                excess_max=app_latency["worst_excess_max_ms"],
+                comp=app_latency["max_comp_percent"],
+                queue_packets=app_latency["queue_overrun_packets"],
+                queue_frames=app_latency["queue_overrun_frames"],
+                underruns=app_latency["underruns"],
+                cat_events=app_latency["catastrophic_resync_events"],
             )
         )
     if report["evidence"]["crash_events"]:
@@ -5171,6 +5277,47 @@ def self_test():
         assert report["evidence"]["audio_fault_counts"]["audio_underrun"] == 1
         assert report["evidence"]["strict_audio_fault_counts"]["audio_underrun"] == 0
         assert len(report["evidence"]["started_app_source_health"]["sparse_silence_sources"]) == 1
+
+        app_latency_new_summary = make_session(
+            "app_latency_new_summary",
+            media=(
+                "[STOP AUDIO LATENCY] Source 5 track=1 appAudioDelay avg=226ms max=332ms "
+                "targetAvg=141ms excessAvg=85ms excessMax=191ms "
+                "buckets(<50/50-150/150-300/300-600/>600ms)=0%/0%/100%/0%/0% "
+                ">=150ms=100% drainObservations=60/120 transitions=2 maxComp=0.5000% "
+                "queueOverrun=0/0 underruns=0 trims(lat=0 normal=0 cat=0/0). "
+                "Lower/more-uniform excess is better; high excess means audio content ran behind video.\n"
+                "[VideoEncoder] Final packet timeline: target=51441667 us videoEnd=51441667 us "
+                "audioMinEnd=51441667 us audioMaxEnd=51441667 us maxPacketDelta=0 us "
+                "streams(v=1 a=3) audioPastTarget=0\n"
+            ),
+        )
+        report = classify_session_triage(app_latency_new_summary)
+        assert "audio_app_latency_elevated" in report["verdicts"]
+        assert "ce_audio_timeline_fault" not in report["verdicts"]
+        assert report["faults"]["audio_app_latency_elevated"]
+        assert report["evidence"]["app_audio_latency"]["elevated_source_count"] == 1
+        assert report["evidence"]["app_audio_latency"]["worst_excess_avg_ms"] == 85.0
+
+        app_latency_old_fallback = make_session(
+            "app_latency_old_fallback",
+            media=(
+                "[AppLatency] WARNING: app audio src=6 track=2 is 351ms behind video "
+                "(rbAvail=16874 samples, draining=0). Read-stall backlog; should drain toward live.\n"
+                "[STOP AUDIO LATENCY] Source 6 track=2 appAudioDelay avg=329ms max=527ms "
+                "buckets(<50/50-150/150-300/300-600/>600ms)=0%/0%/0%/100%/0% "
+                ">=150ms=100% drainingSamples=0/100. Lower/more-uniform is better; high 300-600ms "
+                "means audio ran noticeably behind video.\n"
+                "[VideoEncoder] Final packet timeline: target=51441667 us videoEnd=51441667 us "
+                "audioMinEnd=51441667 us audioMaxEnd=51441667 us maxPacketDelta=0 us "
+                "streams(v=1 a=3) audioPastTarget=0\n"
+            ),
+        )
+        report = classify_session_triage(app_latency_old_fallback)
+        assert "audio_app_latency_elevated" in report["verdicts"]
+        assert "ce_audio_timeline_fault" not in report["verdicts"]
+        assert report["evidence"]["app_audio_latency"]["warning_count"] == 1
+        assert report["evidence"]["app_audio_latency"]["elevated_source_count"] == 1
 
         crash_session = make_session(
             "crash_session",

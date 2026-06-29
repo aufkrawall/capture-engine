@@ -72,6 +72,14 @@ public:
 
     size_t PendingPacketCount();
 
+    uint64_t GetQueueOverrunPacketCount() const {
+        return queueOverrunPackets.load(std::memory_order_relaxed);
+    }
+
+    uint64_t GetQueueOverrunFrameCount() const {
+        return queueOverrunFrames.load(std::memory_order_relaxed);
+    }
+
     void SetRequestedFormat(int sampleRate, int channels, uint32_t channelMask);
 
     /**
@@ -183,6 +191,8 @@ private:
     // Packet queue
     std::mutex queueMutex;
     std::deque<AudioPacket> packetQueue;
+    std::atomic<uint64_t> queueOverrunPackets{0};
+    std::atomic<uint64_t> queueOverrunFrames{0};
 
     std::mutex startMutex;
     std::future<bool> pendingStartFuture;

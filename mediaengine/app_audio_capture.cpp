@@ -363,6 +363,8 @@ bool AppAudioCapture::StartCaptureThreadForCurrentClient() {
         std::lock_guard<std::mutex> lock(queueMutex);
         packetQueue.clear();
     }
+    queueOverrunPackets.store(0, std::memory_order_relaxed);
+    queueOverrunFrames.store(0, std::memory_order_relaxed);
 
     if (captureThread.joinable()) {
         captureThread.join();
@@ -943,10 +945,14 @@ void AppAudioCapture::CaptureLoop() {
                 std::lock_guard<std::mutex> lock(queueMutex);
                 if (packetQueue.size() >= kMaxQueuedPackets) {
                     const AudioPacket& droppedPacket = packetQueue.front();
+                    uint64_t droppedFrames = 0;
                     if (droppedPacket.blockAlign > 0) {
-                        queueDropFrames += droppedPacket.data.size() / static_cast<size_t>(droppedPacket.blockAlign);
+                        droppedFrames = droppedPacket.data.size() / static_cast<size_t>(droppedPacket.blockAlign);
+                        queueDropFrames += droppedFrames;
                     }
                     queueDropPackets++;
+                    queueOverrunPackets.fetch_add(1, std::memory_order_relaxed);
+                    queueOverrunFrames.fetch_add(droppedFrames, std::memory_order_relaxed);
                     packetQueue.pop_front();
 
                     const uint64_t nowTick = GetTickCount64();

@@ -247,6 +247,65 @@ TEST(AudioSyncUtilsTest, CfrTier1CompensationDeadbandIgnoresSmallBufferWobble) {
               240);
 }
 
+TEST(AudioSyncUtilsTest, CfrAppAudioBacklogDrainIgnoresSmallExcess) {
+    constexpr int64_t kRate = 48000;
+    constexpr int64_t kTarget = kRate * 140 / 1000;
+    constexpr int64_t kSlack = kRate * 20 / 1000;
+    constexpr int64_t kDeadband = kRate * 10 / 1000;
+    const auto decision = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
+        true, true, false, true, false, kTarget + (kRate * 15 / 1000), kTarget, kRate / 64, kRate * 10, 0.5,
+        kSlack, kDeadband);
+
+    EXPECT_FALSE(decision.active);
+    EXPECT_EQ(decision.reason, ce::audio::CfrAppAudioBacklogDrainReason::WithinSlack);
+    EXPECT_EQ(decision.compensationDelta, 0);
+}
+
+TEST(AudioSyncUtilsTest, CfrAppAudioBacklogDrainUsesAppPitchCapForElevatedExcess) {
+    constexpr int64_t kRate = 48000;
+    constexpr int64_t kTarget = kRate * 140 / 1000;
+    constexpr int64_t kSlack = kRate * 20 / 1000;
+    constexpr int64_t kDeadband = kRate * 10 / 1000;
+    constexpr int64_t kTenSecondWindowSamples = kRate * 10;
+    const auto decision = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
+        true, true, false, true, false, kTarget + (kRate * 85 / 1000), kTarget, kRate / 64,
+        kTenSecondWindowSamples, 0.5, kSlack, kDeadband);
+
+    EXPECT_TRUE(decision.active);
+    EXPECT_EQ(decision.reason, ce::audio::CfrAppAudioBacklogDrainReason::Active);
+    EXPECT_GT(decision.compensationDelta, 0);
+    EXPECT_LE(decision.compensationDelta, ce::audio::ComputeTier1CompensationDelta(kTenSecondWindowSamples, kTenSecondWindowSamples, 0.5));
+}
+
+TEST(AudioSyncUtilsTest, CfrAppAudioBacklogDrainRequiresEligibleAppCfrState) {
+    constexpr int64_t kRate = 48000;
+    constexpr int64_t kTarget = kRate * 140 / 1000;
+    constexpr int64_t kBacklog = kTarget + (kRate * 85 / 1000);
+    constexpr int64_t kSlack = kRate * 20 / 1000;
+    constexpr int64_t kDeadband = kRate * 10 / 1000;
+
+    EXPECT_EQ(ce::audio::ComputeCfrAppAudioBacklogDrainDecision(false, true, false, true, false, kBacklog, kTarget,
+                                                                kRate / 64, kRate * 10, 0.5, kSlack, kDeadband)
+                  .reason,
+              ce::audio::CfrAppAudioBacklogDrainReason::NotCfr);
+    EXPECT_EQ(ce::audio::ComputeCfrAppAudioBacklogDrainDecision(true, false, false, true, false, kBacklog, kTarget,
+                                                                kRate / 64, kRate * 10, 0.5, kSlack, kDeadband)
+                  .reason,
+              ce::audio::CfrAppAudioBacklogDrainReason::NotAppAudio);
+    EXPECT_EQ(ce::audio::ComputeCfrAppAudioBacklogDrainDecision(true, true, true, true, false, kBacklog, kTarget,
+                                                                kRate / 64, kRate * 10, 0.5, kSlack, kDeadband)
+                  .reason,
+              ce::audio::CfrAppAudioBacklogDrainReason::ForceDrain);
+    EXPECT_EQ(ce::audio::ComputeCfrAppAudioBacklogDrainDecision(true, true, false, false, false, kBacklog, kTarget,
+                                                                kRate / 64, kRate * 10, 0.5, kSlack, kDeadband)
+                  .reason,
+              ce::audio::CfrAppAudioBacklogDrainReason::StartupNotSettled);
+    EXPECT_EQ(ce::audio::ComputeCfrAppAudioBacklogDrainDecision(true, true, false, true, true, kBacklog, kTarget,
+                                                                kRate / 64, kRate * 10, 0.5, kSlack, kDeadband)
+                  .reason,
+              ce::audio::CfrAppAudioBacklogDrainReason::StartupTimelineProtected);
+}
+
 TEST(AudioSyncUtilsTest, Tier2TrimOnlyActivatesForPositiveLead) {
     EXPECT_TRUE(ce::audio::ShouldActivateTier2Trim(1200, 48000, 20));
     EXPECT_FALSE(ce::audio::ShouldActivateTier2Trim(-1200, 48000, 20));

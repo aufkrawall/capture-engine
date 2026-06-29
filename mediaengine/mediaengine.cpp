@@ -121,8 +121,21 @@ public:
         uint64_t appLatencySampleCount = 0;
         uint64_t appLatencySumMs = 0;
         uint32_t appLatencyMaxMs = 0;
-        uint32_t appLatencyDrainingSamples = 0;       // samples observed while actively draining
+        uint64_t appLatencyTargetSumMs = 0;
+        uint64_t appLatencyExcessSumMs = 0;
+        uint32_t appLatencyExcessMaxMs = 0;
+        uint32_t appLatencyDrainingSamples = 0;       // observations while backlog drain was active
+        uint64_t appLatencyDrainTransitions = 0;
+        uint32_t appLatencyMaxAbsCompDelta = 0;
         uint64_t lastAppLatencyWarnTick = 0;          // throttle the elevated-latency warning
+        bool appLatencyWarnActive = false;
+        bool appAudioBacklogDrainInitialized = false;
+        bool appAudioBacklogDrainActive = false;
+        uint32_t appAudioBacklogDrainReason =
+            static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::WithinSlack);
+        int64_t appAudioBacklogTargetSamples = 0;
+        int64_t appAudioBacklogExcessSamples = 0;
+        int32_t appAudioBacklogCompensationDelta = 0;
         uint64_t catastrophicResyncSamples = 0;       // Stale samples dropped resyncing to live after a read-stall
         uint32_t catastrophicResyncEvents = 0;        // Number of catastrophic backlog resyncs (alt-tab/DPC/overload)
         uint64_t lastCatastrophicResyncTick = 0;      // Throttle catastrophic resync logging
@@ -656,6 +669,34 @@ public:
             src.pendingTier2TrimEvents = 0;
             src.pendingCoverageLossTrimSamples = 0;
             src.pendingCoverageLossTrimEvents = 0;
+            src.lastAppPlaceDiagTick = 0;
+            src.lastAppConsumeDiagTick = 0;
+            src.appLatencyBuckets[0] = 0;
+            src.appLatencyBuckets[1] = 0;
+            src.appLatencyBuckets[2] = 0;
+            src.appLatencyBuckets[3] = 0;
+            src.appLatencyBuckets[4] = 0;
+            src.appLatencySampleCount = 0;
+            src.appLatencySumMs = 0;
+            src.appLatencyMaxMs = 0;
+            src.appLatencyTargetSumMs = 0;
+            src.appLatencyExcessSumMs = 0;
+            src.appLatencyExcessMaxMs = 0;
+            src.appLatencyDrainingSamples = 0;
+            src.appLatencyDrainTransitions = 0;
+            src.appLatencyMaxAbsCompDelta = 0;
+            src.lastAppLatencyWarnTick = 0;
+            src.appLatencyWarnActive = false;
+            src.appAudioBacklogDrainInitialized = false;
+            src.appAudioBacklogDrainActive = false;
+            src.appAudioBacklogDrainReason =
+                static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::WithinSlack);
+            src.appAudioBacklogTargetSamples = 0;
+            src.appAudioBacklogExcessSamples = 0;
+            src.appAudioBacklogCompensationDelta = 0;
+            src.catastrophicResyncSamples = 0;
+            src.catastrophicResyncEvents = 0;
+            src.lastCatastrophicResyncTick = 0;
             src.lastRetainedTrimWarnTick = 0;
             src.lastPacketTimelineAdjustWarnTick = 0;
             src.wgcCoverageLossTrimAccumulator = 0.0;
@@ -1274,6 +1315,34 @@ public:
                 src.pendingTier2TrimEvents = 0;
                 src.pendingCoverageLossTrimSamples = 0;
                 src.pendingCoverageLossTrimEvents = 0;
+                src.lastAppPlaceDiagTick = 0;
+                src.lastAppConsumeDiagTick = 0;
+                src.appLatencyBuckets[0] = 0;
+                src.appLatencyBuckets[1] = 0;
+                src.appLatencyBuckets[2] = 0;
+                src.appLatencyBuckets[3] = 0;
+                src.appLatencyBuckets[4] = 0;
+                src.appLatencySampleCount = 0;
+                src.appLatencySumMs = 0;
+                src.appLatencyMaxMs = 0;
+                src.appLatencyTargetSumMs = 0;
+                src.appLatencyExcessSumMs = 0;
+                src.appLatencyExcessMaxMs = 0;
+                src.appLatencyDrainingSamples = 0;
+                src.appLatencyDrainTransitions = 0;
+                src.appLatencyMaxAbsCompDelta = 0;
+                src.lastAppLatencyWarnTick = 0;
+                src.appLatencyWarnActive = false;
+                src.appAudioBacklogDrainInitialized = false;
+                src.appAudioBacklogDrainActive = false;
+                src.appAudioBacklogDrainReason =
+                    static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::WithinSlack);
+                src.appAudioBacklogTargetSamples = 0;
+                src.appAudioBacklogExcessSamples = 0;
+                src.appAudioBacklogCompensationDelta = 0;
+                src.catastrophicResyncSamples = 0;
+                src.catastrophicResyncEvents = 0;
+                src.lastCatastrophicResyncTick = 0;
                 src.lastRetainedTrimWarnTick = 0;
                 src.lastPacketTimelineAdjustWarnTick = 0;
                 src.wgcCoverageLossTrimAccumulator = 0.0;
@@ -1612,19 +1681,41 @@ public:
                 }
                 const uint64_t n = s.appLatencySampleCount;
                 const double avgMs = static_cast<double>(s.appLatencySumMs) / static_cast<double>(n);
+                const double targetAvgMs = static_cast<double>(s.appLatencyTargetSumMs) / static_cast<double>(n);
+                const double excessAvgMs = static_cast<double>(s.appLatencyExcessSumMs) / static_cast<double>(n);
+                const double maxCompPercent =
+                    static_cast<double>(s.appLatencyMaxAbsCompDelta) * 100.0 /
+                    (static_cast<double>(kStopSampleRate) * 10.0);
                 const double elevatedPct =
                     100.0 *
                     static_cast<double>(s.appLatencyBuckets[2] + s.appLatencyBuckets[3] + s.appLatencyBuckets[4]) /
                     static_cast<double>(n);
+                const uint64_t queueOverrunPackets =
+                    s.appCapture ? s.appCapture->GetQueueOverrunPacketCount() : 0;
+                const uint64_t queueOverrunFrames =
+                    s.appCapture ? s.appCapture->GetQueueOverrunFrameCount() : 0;
                 DLL_Log(
                     "[STOP AUDIO LATENCY] Source %zu track=%d appAudioDelay avg=%.0fms max=%ums "
+                    "targetAvg=%.0fms excessAvg=%.0fms excessMax=%ums "
                     "buckets(<50/50-150/150-300/300-600/>600ms)=%.0f%%/%.0f%%/%.0f%%/%.0f%%/%.0f%% "
-                    ">=150ms=%.0f%% drainingSamples=%u/%llu. Lower/more-uniform is better; high 300-600ms "
-                    "means audio ran noticeably behind video.",
-                    i, s.track, avgMs, s.appLatencyMaxMs, 100.0 * s.appLatencyBuckets[0] / n,
+                    ">=150ms=%.0f%% drainObservations=%u/%llu transitions=%llu maxComp=%.4f%% "
+                    "queueOverrun=%llu/%llu underruns=%u trims(lat=%llu normal=%llu cat=%u/%llu). "
+                    "Lower/more-uniform excess is better; high excess means audio content ran behind video.",
+                    i, s.track, avgMs, s.appLatencyMaxMs, targetAvgMs, excessAvgMs, s.appLatencyExcessMaxMs,
+                    100.0 * s.appLatencyBuckets[0] / n,
                     100.0 * s.appLatencyBuckets[1] / n, 100.0 * s.appLatencyBuckets[2] / n,
                     100.0 * s.appLatencyBuckets[3] / n, 100.0 * s.appLatencyBuckets[4] / n, elevatedPct,
-                    s.appLatencyDrainingSamples, static_cast<unsigned long long>(n));
+                    s.appLatencyDrainingSamples, static_cast<unsigned long long>(n),
+                    static_cast<unsigned long long>(s.appLatencyDrainTransitions), maxCompPercent,
+                    static_cast<unsigned long long>(queueOverrunPackets),
+                    static_cast<unsigned long long>(queueOverrunFrames), s.ringBufferUnderrunCount,
+                    static_cast<unsigned long long>(s.latencyTrimSamples),
+                    static_cast<unsigned long long>(
+                        s.latencyTrimSamples >= s.catastrophicResyncSamples
+                            ? s.latencyTrimSamples - s.catastrophicResyncSamples
+                            : 0),
+                    s.catastrophicResyncEvents,
+                    static_cast<unsigned long long>(s.catastrophicResyncSamples));
             }
             DLL_Log("[StopAudio] Video: expectedDuration=%lld ms (%lld samples)", expectedVideoMs,
                     expectedVideoSamples);
@@ -1691,15 +1782,22 @@ public:
                 const double ratePpm = ce::audio::ComputeClockMismatchPpm(src.currentRateDelta, kStopSampleRate);
                 const uint64_t categorizedLatencyTrim =
                     std::min(src.latencyTrimSamples, src.bootstrapTrimSamples + src.retainedNewestTrimSamples +
-                                                         src.coverageLossTrimSamples + src.tier2TrimSamples);
+                                                         src.coverageLossTrimSamples + src.tier2TrimSamples +
+                                                         src.catastrophicResyncSamples);
                 const uint64_t uncategorizedLatencyTrim = src.latencyTrimSamples - categorizedLatencyTrim;
+                const uint64_t normalLatencyTrim =
+                    src.latencyTrimSamples >= src.catastrophicResyncSamples
+                        ? src.latencyTrimSamples - src.catastrophicResyncSamples
+                        : 0;
                 DLL_Log(
                     "[STOP AUDIO] Source %zu: track=%d encoded=%llu trim=cov:%llu latTotal:%llu liveUncat:%llu "
-                    "pad:%llu qgap:%llu qjoin:%llu qjoinKeep:%llu "
+                    "cat:%llu normal:%llu pad:%llu qgap:%llu qjoin:%llu qjoinKeep:%llu "
                     "ringPeak=%zu ringUnderruns=%u process=%s",
                     i, src.track, (unsigned long long)encodedSamplesPerSource[i],
                     (unsigned long long)src.coverageLossTrimSamples, (unsigned long long)src.latencyTrimSamples,
-                    (unsigned long long)uncategorizedLatencyTrim, (unsigned long long)src.underrunPadSamples,
+                    (unsigned long long)uncategorizedLatencyTrim,
+                    (unsigned long long)src.catastrophicResyncSamples, (unsigned long long)normalLatencyTrim,
+                    (unsigned long long)src.underrunPadSamples,
                     (unsigned long long)src.packetTimelineGapSamples,
                     (unsigned long long)src.lateAppJoinSuppressedGapSamples,
                     (unsigned long long)src.lateAppJoinPreservedGapSamples, src.ringBufferPeakSamples,
@@ -1707,11 +1805,13 @@ public:
                 DLL_Log(
                     "[STOP AUDIO DETAIL] Source %zu: ratePpm=%+.2f compDelta=%d sat=%d trimRate(latTotal=%.1f/min "
                     "boot=%.1f/min cov=%.1f/min tier2=%.1f/min retain=%.1f/min) totals(boot=%llu tier2=%llu "
-                    "retain=%llu liveUncat=%llu post=%llu overlap=%llu ovf=%llu)",
+                    "retain=%llu cat=%llu catEvents=%u liveUncat=%llu post=%llu overlap=%llu ovf=%llu)",
                     i, ratePpm, src.currentRateDelta, src.targetRateSaturated ? 1 : 0, latencyTrimPerMinute,
                     bootstrapTrimPerMinute, coverageTrimPerMinute, tier2TrimPerMinute, retainedTrimPerMinute,
                     (unsigned long long)src.bootstrapTrimSamples, (unsigned long long)src.tier2TrimSamples,
-                    (unsigned long long)src.retainedNewestTrimSamples, (unsigned long long)uncategorizedLatencyTrim,
+                    (unsigned long long)src.retainedNewestTrimSamples,
+                    (unsigned long long)src.catastrophicResyncSamples, src.catastrophicResyncEvents,
+                    (unsigned long long)uncategorizedLatencyTrim,
                     (unsigned long long)src.postResampleTrimSamples,
                     (unsigned long long)src.packetTimelineOverlapSamples, (unsigned long long)src.overflowDropSamples);
                 DLL_Log(
@@ -1788,6 +1888,34 @@ public:
             src.pendingTier2TrimEvents = 0;
             src.pendingCoverageLossTrimSamples = 0;
             src.pendingCoverageLossTrimEvents = 0;
+            src.lastAppPlaceDiagTick = 0;
+            src.lastAppConsumeDiagTick = 0;
+            src.appLatencyBuckets[0] = 0;
+            src.appLatencyBuckets[1] = 0;
+            src.appLatencyBuckets[2] = 0;
+            src.appLatencyBuckets[3] = 0;
+            src.appLatencyBuckets[4] = 0;
+            src.appLatencySampleCount = 0;
+            src.appLatencySumMs = 0;
+            src.appLatencyMaxMs = 0;
+            src.appLatencyTargetSumMs = 0;
+            src.appLatencyExcessSumMs = 0;
+            src.appLatencyExcessMaxMs = 0;
+            src.appLatencyDrainingSamples = 0;
+            src.appLatencyDrainTransitions = 0;
+            src.appLatencyMaxAbsCompDelta = 0;
+            src.lastAppLatencyWarnTick = 0;
+            src.appLatencyWarnActive = false;
+            src.appAudioBacklogDrainInitialized = false;
+            src.appAudioBacklogDrainActive = false;
+            src.appAudioBacklogDrainReason =
+                static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::WithinSlack);
+            src.appAudioBacklogTargetSamples = 0;
+            src.appAudioBacklogExcessSamples = 0;
+            src.appAudioBacklogCompensationDelta = 0;
+            src.catastrophicResyncSamples = 0;
+            src.catastrophicResyncEvents = 0;
+            src.lastCatastrophicResyncTick = 0;
             src.lastRetainedTrimWarnTick = 0;
             src.lastPacketTimelineAdjustWarnTick = 0;
             src.wgcCoverageLossTrimAccumulator = 0.0;
@@ -2136,19 +2264,14 @@ public:
         constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = true;
         constexpr double kDefaultMaxCompensationPercent = 1.0;
         constexpr double kTier1MaxPitchPercent = 0.05;  // Keep WGC source-clock correction below audible pitch shift.
-        // HYBRID app-audio latency drain. A read-stall (alt-tab/DPC/encoder) leaves an app source's
-        // ring backlog lingering at 300-600ms (observed), which is real audio-behind-video latency
-        // that swings audibly. The tuned WGC tier1 policy deliberately suppresses drain compensation
-        // to protect smoothness, so this gives a CFR APP-AUDIO source in the drain band a modestly
-        // higher pitch cap to pull that backlog back toward the live target - keeping latency low and
-        // CONSISTENT. Strictly scoped: system/mic, video, and every clean (no-stall) run keep the
-        // 0.05% policy untouched, and the existing paced-trim / catastrophic resync stay the upper
-        // drop caps. 0.5% over ~tens of seconds targets inaudibility; raise if drain is too slow.
+        // CFR app-audio latency drain. Process-loopback sources can sit well above the video-derived
+        // live target during WGC/source-limited runs even when packet durations end exactly aligned.
+        // Drain that content backlog through resampler compensation only: no trims/drops for normal
+        // sub-second excess, and no changes to system/mic or WGC video scheduling.
         constexpr double kAppAudioDrainMaxPitchPercent = 0.5;
-        // 100ms hysteresis above the target: healthy steady state sits <50ms (observed bimodal: <50ms
-        // or >150ms), so the drain only engages on genuinely elevated post-stall backlog and never in
-        // normal/clean operation. The matrix-green check confirms clean runs do not enter the band.
-        constexpr int64_t kAppAudioDrainSlackSamples = SAMPLE_RATE / 10;
+        constexpr int64_t kAppAudioDrainSlackSamples = SAMPLE_RATE / 50;     // 20ms above target
+        constexpr int64_t kAppAudioDrainDeadbandSamples = SAMPLE_RATE / 100; // 10ms compensation deadband
+        constexpr int64_t kAppAudioLatencyWarnExcessSamples = SAMPLE_RATE / 20; // 50ms above target
         constexpr int64_t kTier2DriftThresholdMs = 20;
         constexpr int64_t kWgcEncoderShortfallBufferedLagMaxMs = 4000;
         constexpr uint32_t kWgcEncoderHealthyDeliveryMarginFps = 4;
@@ -2586,14 +2709,17 @@ public:
                     const int64_t expectedLeadSamplesForCorrection =
                         std::max<int64_t>(targetLatencySamples,
                                           kBaseTargetLatencySamples + (effectiveWgcDriftLagMs * SAMPLE_RATE / 1000));
-                    // Drain band: a CFR app-audio source whose backlog sits meaningfully above the live
-                    // target gets the higher pitch cap so the tier1 controller can pull it back down.
-                    const bool appAudioDrainBand = isCfrRecording && src.sourceType == AudioConfig::AppAudio &&
-                                                   static_cast<int64_t>(rbAvailable) >
-                                                       expectedLeadSamplesForCorrection + kAppAudioDrainSlackSamples;
+                    const auto appAudioDrainBudgetDecision =
+                        ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
+                            isCfrRecording, src.sourceType == AudioConfig::AppAudio, forceDrain, trackStartupSettled,
+                            startupTimelineProtected, static_cast<int64_t>(rbAvailable),
+                            expectedLeadSamplesForCorrection, kMinCompensationBufferSamples,
+                            static_cast<int64_t>(SAMPLE_RATE) * 10, kAppAudioDrainMaxPitchPercent,
+                            kAppAudioDrainSlackSamples, kAppAudioDrainDeadbandSamples);
                     const double maxCompensationPercent =
-                        appAudioDrainBand ? kAppAudioDrainMaxPitchPercent
-                                          : (isCfrRecording ? kTier1MaxPitchPercent : kDefaultMaxCompensationPercent);
+                        appAudioDrainBudgetDecision.active
+                            ? kAppAudioDrainMaxPitchPercent
+                            : (isCfrRecording ? kTier1MaxPitchPercent : kDefaultMaxCompensationPercent);
                     src.syncResampler->SetMaxCompensationPercent(maxCompensationPercent);
                     const bool allowWgcCoverageLossTrim =
                         isWgcCfrRecording && wgcCoverageLossActive && !kWgcPreferVideoRepeatsOverAudioCuts &&
@@ -2749,18 +2875,64 @@ public:
                     }
 
                     // Non-CFR modes may still use legacy drift correction. CFR
-                    // allows only tiny source-clock correction after startup; it
-                    // must not chase encoder debt, WGC coverage loss, or drain.
+                    // allows only tiny source-clock correction after startup. CFR app-audio backlog drain is
+                    // the explicit exception: it pulls process-loopback content back toward the live target.
                     {
                         const int64_t rbLevel = static_cast<int64_t>(rbAvailable);
                         if (rbLevel >= kMinCompensationBufferSamples) {
                             const int64_t expectedLead = expectedLeadSamplesForCorrection;
                             const int64_t trueDrift = rbLevel - expectedLead;
-                            // HYBRID drain: a CFR app-audio source with a lingering post-stall backlog above the
-                            // live target may use the higher drain pitch cap and bypass the WGC positive-drift
-                            // suppression below, so the controller pulls its latency back toward live.
-                            const bool appAudioDrain = isCfrRecording && src.sourceType == AudioConfig::AppAudio &&
-                                                       rbLevel > expectedLead + kAppAudioDrainSlackSamples;
+                            const auto appAudioDrainDecision =
+                                ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
+                                    isCfrRecording, src.sourceType == AudioConfig::AppAudio, forceDrain,
+                                    trackStartupSettled, startupTimelineProtected, rbLevel, expectedLead,
+                                    kMinCompensationBufferSamples, static_cast<int64_t>(SAMPLE_RATE) * 10,
+                                    kAppAudioDrainMaxPitchPercent, kAppAudioDrainSlackSamples,
+                                    kAppAudioDrainDeadbandSamples);
+                            const double activeMaxCompensationPercent =
+                                appAudioDrainDecision.active
+                                    ? kAppAudioDrainMaxPitchPercent
+                                    : (isCfrRecording ? kTier1MaxPitchPercent : kDefaultMaxCompensationPercent);
+                            src.syncResampler->SetMaxCompensationPercent(activeMaxCompensationPercent);
+
+                            if (src.sourceType == AudioConfig::AppAudio) {
+                                const uint32_t newReason =
+                                    static_cast<uint32_t>(appAudioDrainDecision.reason);
+                                const bool stateChanged =
+                                    !src.appAudioBacklogDrainInitialized ||
+                                    src.appAudioBacklogDrainActive != appAudioDrainDecision.active ||
+                                    src.appAudioBacklogDrainReason != newReason;
+                                src.appAudioBacklogTargetSamples = appAudioDrainDecision.targetLeadSamples;
+                                src.appAudioBacklogExcessSamples = appAudioDrainDecision.excessSamples;
+                                src.appAudioBacklogCompensationDelta = appAudioDrainDecision.compensationDelta;
+                                if (stateChanged) {
+                                    if (src.appAudioBacklogDrainInitialized || appAudioDrainDecision.active) {
+                                        const double compPct =
+                                            static_cast<double>(appAudioDrainDecision.compensationDelta) * 100.0 /
+                                            (static_cast<double>(SAMPLE_RATE) * 10.0);
+                                        DLL_Log(
+                                            "[AppDrain] state src=%zu track=%d active=%d reason=%s delayMs=%lld "
+                                            "targetMs=%lld excessMs=%lld rb=%lld target=%lld delta=%d comp=%.4f%% "
+                                            "forceDrain=%d startupSettled=%d startupProtected=%d",
+                                            srcIdx, src.track, appAudioDrainDecision.active ? 1 : 0,
+                                            ce::audio::CfrAppAudioBacklogDrainReasonName(
+                                                appAudioDrainDecision.reason),
+                                            (long long)(appAudioDrainDecision.backlogSamples * 1000 / SAMPLE_RATE),
+                                            (long long)(appAudioDrainDecision.targetLeadSamples * 1000 / SAMPLE_RATE),
+                                            (long long)(appAudioDrainDecision.excessSamples * 1000 / SAMPLE_RATE),
+                                            (long long)appAudioDrainDecision.backlogSamples,
+                                            (long long)appAudioDrainDecision.targetLeadSamples,
+                                            appAudioDrainDecision.compensationDelta, compPct, forceDrain ? 1 : 0,
+                                            trackStartupSettled ? 1 : 0, startupTimelineProtected ? 1 : 0);
+                                    }
+                                    if (src.appAudioBacklogDrainInitialized) {
+                                        src.appLatencyDrainTransitions++;
+                                    }
+                                }
+                                src.appAudioBacklogDrainInitialized = true;
+                                src.appAudioBacklogDrainActive = appAudioDrainDecision.active;
+                                src.appAudioBacklogDrainReason = newReason;
+                            }
 
                             // Drift sanity check: detect extreme drift that indicates measurement error
                             if (std::abs(trueDrift) > SAMPLE_RATE * 2) {  // >2 seconds
@@ -2798,44 +2970,49 @@ public:
                                     int32_t tier1Delta = 0;
 
                                     if (isCfrRecording) {
-                                        const bool allowCfrSourceClockCorrection =
-                                            ce::audio::ShouldAllowCfrSourceClockDriftCompensation(
-                                                isCfrRecording, forceDrain, trackStartupSettled,
-                                                startupTimelineProtected, wgcEncoderBottlenecked, timelineShortfallMs,
-                                                wgcCoverageLossActive);
-                                        if (allowCfrSourceClockCorrection) {
-                                            tier1Delta = ce::audio::ComputeTier1CompensationDeltaWithDeadband(
-                                                trueDrift, static_cast<int64_t>(SAMPLE_RATE) * 10,
-                                                appAudioDrain ? kAppAudioDrainMaxPitchPercent : kTier1MaxPitchPercent,
-                                                SAMPLE_RATE / 12);
+                                        if (appAudioDrainDecision.active) {
+                                            tier1Delta = appAudioDrainDecision.compensationDelta;
                                             const int32_t maxCompensationDelta =
                                                 src.syncResampler->GetMaxCompensationDelta();
-                                            src.targetRateSaturated = tier1Delta != 0 &&
-                                                                      std::abs(tier1Delta) >= maxCompensationDelta &&
-                                                                      std::abs(trueDrift) > maxCompensationDelta;
-                                            // appAudioDrain deliberately bypasses the WGC positive-drift suppression so
-                                            // a backlogged app source drains toward live; everything else keeps the
-                                            // policy.
-                                            if (isWgcCfrRecording && tier1Delta > 0 && !appAudioDrain) {
-                                                const int64_t positiveCompensationHysteresisSamples =
-                                                    ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(
-                                                        targetLatencySamples, kWgcCfrLeadWarningSamples);
-                                                const bool allowSteadyStatePositiveCompensation =
-                                                    ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(
-                                                        trackStartupSettled, videoPipelineLagMs, rbLevel,
-                                                        targetLatencySamples, kWgcCfrLeadWarningSamples);
-                                                if (ce::audio::ShouldClearWgcPositiveDriftCompensation(
-                                                        allowSteadyStatePositiveCompensation, rbLevel, expectedLead,
-                                                        positiveCompensationHysteresisSamples)) {
-                                                    tier1Delta = 0;
-                                                } else {
-                                                    tier1Delta =
-                                                        static_cast<int32_t>(ce::audio::ClampWgcPositiveDriftCorrection(
-                                                            tier1Delta, positiveCompensationHysteresisSamples));
-                                                }
-                                            }
+                                            src.targetRateSaturated =
+                                                tier1Delta != 0 && std::abs(tier1Delta) >= maxCompensationDelta &&
+                                                appAudioDrainDecision.excessSamples > maxCompensationDelta;
                                         } else {
-                                            src.targetRateSaturated = false;
+                                            const bool allowCfrSourceClockCorrection =
+                                                ce::audio::ShouldAllowCfrSourceClockDriftCompensation(
+                                                    isCfrRecording, forceDrain, trackStartupSettled,
+                                                    startupTimelineProtected, wgcEncoderBottlenecked,
+                                                    timelineShortfallMs, wgcCoverageLossActive);
+                                            if (allowCfrSourceClockCorrection) {
+                                                tier1Delta = ce::audio::ComputeTier1CompensationDeltaWithDeadband(
+                                                    trueDrift, static_cast<int64_t>(SAMPLE_RATE) * 10,
+                                                    kTier1MaxPitchPercent, SAMPLE_RATE / 12);
+                                                const int32_t maxCompensationDelta =
+                                                    src.syncResampler->GetMaxCompensationDelta();
+                                                src.targetRateSaturated =
+                                                    tier1Delta != 0 && std::abs(tier1Delta) >= maxCompensationDelta &&
+                                                    std::abs(trueDrift) > maxCompensationDelta;
+                                                if (isWgcCfrRecording && tier1Delta > 0) {
+                                                    const int64_t positiveCompensationHysteresisSamples =
+                                                        ce::audio::ComputeWgcPositiveCompensationHysteresisSamples(
+                                                            targetLatencySamples, kWgcCfrLeadWarningSamples);
+                                                    const bool allowSteadyStatePositiveCompensation =
+                                                        ce::audio::ShouldAllowWgcSteadyStateDriftCompensation(
+                                                            trackStartupSettled, videoPipelineLagMs, rbLevel,
+                                                            targetLatencySamples, kWgcCfrLeadWarningSamples);
+                                                    if (ce::audio::ShouldClearWgcPositiveDriftCompensation(
+                                                            allowSteadyStatePositiveCompensation, rbLevel, expectedLead,
+                                                            positiveCompensationHysteresisSamples)) {
+                                                        tier1Delta = 0;
+                                                    } else {
+                                                        tier1Delta = static_cast<int32_t>(
+                                                            ce::audio::ClampWgcPositiveDriftCorrection(
+                                                                tier1Delta, positiveCompensationHysteresisSamples));
+                                                    }
+                                                }
+                                            } else {
+                                                src.targetRateSaturated = false;
+                                            }
                                         }
                                     } else {
                                         const int32_t maxDelta = src.syncResampler->GetMaxCompensationDelta();
@@ -2853,6 +3030,12 @@ public:
                                                    static_cast<int64_t>(src.currentRateDelta) + kMaxRateChange));
 
                                     src.currentRateDelta = newDelta;
+                                    if (src.sourceType == AudioConfig::AppAudio) {
+                                        src.appLatencyMaxAbsCompDelta = std::max<uint32_t>(
+                                            src.appLatencyMaxAbsCompDelta,
+                                            static_cast<uint32_t>(std::abs(src.currentRateDelta)));
+                                        src.appAudioBacklogCompensationDelta = newDelta;
+                                    }
 
                                     if (newDelta != 0 || src.rateCompActive) {
                                         int ret = swr_set_compensation(src.syncResampler->GetSwrContext(), -newDelta,
@@ -3212,6 +3395,23 @@ public:
                     const uint64_t nowConsumeTick = GetTickCount64();
                     const size_t rbAvailSamples = src.ringBuffer ? src.ringBuffer->GetAvailable() / CHANNELS : 0;
                     const bool starvedWithRingData = (realCopiedSamples == 0 && rbAvailSamples > 0);
+                    const int64_t appTargetSamples = std::max<int64_t>(
+                        targetLatencySamples, kBaseTargetLatencySamples + (effectiveWgcDriftLagMs * SAMPLE_RATE / 1000));
+                    const int64_t appExcessSamples =
+                        std::max<int64_t>(0, static_cast<int64_t>(rbAvailSamples) - appTargetSamples);
+                    const uint32_t appTargetMs =
+                        static_cast<uint32_t>(std::max<int64_t>(0, appTargetSamples) * 1000 / SAMPLE_RATE);
+                    const uint32_t appExcessMs =
+                        static_cast<uint32_t>(appExcessSamples * 1000 / SAMPLE_RATE);
+                    const double appCompPct =
+                        static_cast<double>(src.currentRateDelta) * 100.0 /
+                        (static_cast<double>(SAMPLE_RATE) * 10.0);
+                    const auto appDrainReason =
+                        static_cast<ce::audio::CfrAppAudioBacklogDrainReason>(src.appAudioBacklogDrainReason);
+                    src.appAudioBacklogTargetSamples = appTargetSamples;
+                    src.appAudioBacklogExcessSamples = appExcessSamples;
+                    src.appLatencyMaxAbsCompDelta = std::max<uint32_t>(
+                        src.appLatencyMaxAbsCompDelta, static_cast<uint32_t>(std::abs(src.currentRateDelta)));
 
                     // Latency observability: the ring backlog at consume time IS the audio-behind-video
                     // delay (buffered audio waiting to be emitted). Sample it EVERY pull so the
@@ -3227,31 +3427,83 @@ public:
                     src.appLatencyBuckets[latBucket]++;
                     src.appLatencySampleCount++;
                     src.appLatencySumMs += appDelayMs;
+                    src.appLatencyTargetSumMs += appTargetMs;
+                    src.appLatencyExcessSumMs += appExcessMs;
                     if (appDelayMs > src.appLatencyMaxMs) {
                         src.appLatencyMaxMs = appDelayMs;
                     }
-                    if (src.rateCompActive) {
+                    if (appExcessMs > src.appLatencyExcessMaxMs) {
+                        src.appLatencyExcessMaxMs = appExcessMs;
+                    }
+                    if (src.appAudioBacklogDrainActive) {
                         src.appLatencyDrainingSamples++;
                     }
 
                     // Flag clearly-elevated latency loudly WHILE it happens (the signal that was missing).
                     // Post-fix the drain should keep this rare; frequent firing means latency is not draining.
                     constexpr uint32_t kAppLatencyWarnMs = 250;
-                    if (appDelayMs >= kAppLatencyWarnMs && nowConsumeTick - src.lastAppLatencyWarnTick >= 5000) {
+                    const bool appLatencyElevated =
+                        appExcessSamples >= kAppAudioLatencyWarnExcessSamples || appDelayMs >= kAppLatencyWarnMs;
+                    const bool appLatencyWarnChanged = appLatencyElevated != src.appLatencyWarnActive;
+                    if (appLatencyWarnChanged) {
+                        const size_t pendingPackets = src.appCapture ? src.appCapture->PendingPacketCount() : 0;
+                        const uint64_t queueOverrunPackets =
+                            src.appCapture ? src.appCapture->GetQueueOverrunPacketCount() : 0;
+                        const uint64_t queueOverrunFrames =
+                            src.appCapture ? src.appCapture->GetQueueOverrunFrameCount() : 0;
                         DLL_Log(
-                            "[AppLatency] WARNING: app audio src=%zu track=%d is %ums behind video "
-                            "(rbAvail=%zu samples, draining=%d). Read-stall backlog; should drain toward live.",
-                            srcIdx, track, appDelayMs, rbAvailSamples, src.rateCompActive ? 1 : 0);
+                            "[AppLatency] state src=%zu track=%d elevated=%d delayMs=%u targetMs=%u excessMs=%u "
+                            "drain=%d reason=%s compDelta=%d comp=%.4f%% rbAvail=%zu queuePending=%zu "
+                            "queueOverrun=%llu/%llu underruns=%u",
+                            srcIdx, track, appLatencyElevated ? 1 : 0, appDelayMs, appTargetMs, appExcessMs,
+                            src.appAudioBacklogDrainActive ? 1 : 0,
+                            ce::audio::CfrAppAudioBacklogDrainReasonName(appDrainReason), src.currentRateDelta,
+                            appCompPct, rbAvailSamples, pendingPackets,
+                            static_cast<unsigned long long>(queueOverrunPackets),
+                            static_cast<unsigned long long>(queueOverrunFrames), src.ringBufferUnderrunCount);
+                        src.appLatencyWarnActive = appLatencyElevated;
+                    }
+                    if (appLatencyElevated && nowConsumeTick - src.lastAppLatencyWarnTick >= 5000) {
+                        const size_t pendingPackets = src.appCapture ? src.appCapture->PendingPacketCount() : 0;
+                        const uint64_t queueOverrunPackets =
+                            src.appCapture ? src.appCapture->GetQueueOverrunPacketCount() : 0;
+                        const uint64_t queueOverrunFrames =
+                            src.appCapture ? src.appCapture->GetQueueOverrunFrameCount() : 0;
+                        DLL_Log(
+                            "[AppLatency] WARNING: app audio src=%zu track=%d delayMs=%u targetMs=%u excessMs=%u "
+                            "rbAvail=%zu drain=%d reason=%s compDelta=%d comp=%.4f%% rateCompActive=%d "
+                            "underruns=%u queuePending=%zu queueOverrun=%llu/%llu. Content backlog should drain "
+                            "toward the video target without trims.",
+                            srcIdx, track, appDelayMs, appTargetMs, appExcessMs, rbAvailSamples,
+                            src.appAudioBacklogDrainActive ? 1 : 0,
+                            ce::audio::CfrAppAudioBacklogDrainReasonName(appDrainReason), src.currentRateDelta,
+                            appCompPct, src.rateCompActive ? 1 : 0, src.ringBufferUnderrunCount, pendingPackets,
+                            static_cast<unsigned long long>(queueOverrunPackets),
+                            static_cast<unsigned long long>(queueOverrunFrames));
                         src.lastAppLatencyWarnTick = nowConsumeTick;
                     }
 
                     if (nowConsumeTick - src.lastAppConsumeDiagTick >= 1000) {
+                        const size_t pendingPackets = src.appCapture ? src.appCapture->PendingPacketCount() : 0;
+                        const uint64_t queueOverrunPackets =
+                            src.appCapture ? src.appCapture->GetQueueOverrunPacketCount() : 0;
+                        const uint64_t queueOverrunFrames =
+                            src.appCapture ? src.appCapture->GetQueueOverrunFrameCount() : 0;
                         DLL_Log(
-                            "[AppDiag] consume src=%zu track=%d delayMs=%u realCopied=%zu postResampleBuf=%zu "
-                            "rbAvail=%zu syncReady=%d rateCompActive=%d underruns=%u%s",
-                            srcIdx, track, appDelayMs, realCopiedSamples, src.postResampleBuffer.size() / CHANNELS,
-                            rbAvailSamples, (src.syncResampler && src.syncResampler->IsReady()) ? 1 : 0,
-                            src.rateCompActive ? 1 : 0, src.ringBufferUnderrunCount,
+                            "[AppDiag] consume src=%zu track=%d delayMs=%u targetMs=%u excessMs=%u "
+                            "realCopied=%zu postResampleBuf=%zu rbAvail=%zu syncReady=%d drain=%d reason=%s "
+                            "compDelta=%d comp=%.4f%% rateCompActive=%d underruns=%u queuePending=%zu "
+                            "queueOverrun=%llu/%llu trims(lat=%llu cat=%u/%llu)%s",
+                            srcIdx, track, appDelayMs, appTargetMs, appExcessMs, realCopiedSamples,
+                            src.postResampleBuffer.size() / CHANNELS, rbAvailSamples,
+                            (src.syncResampler && src.syncResampler->IsReady()) ? 1 : 0,
+                            src.appAudioBacklogDrainActive ? 1 : 0,
+                            ce::audio::CfrAppAudioBacklogDrainReasonName(appDrainReason), src.currentRateDelta,
+                            appCompPct, src.rateCompActive ? 1 : 0, src.ringBufferUnderrunCount, pendingPackets,
+                            static_cast<unsigned long long>(queueOverrunPackets),
+                            static_cast<unsigned long long>(queueOverrunFrames),
+                            static_cast<unsigned long long>(src.latencyTrimSamples), src.catastrophicResyncEvents,
+                            static_cast<unsigned long long>(src.catastrophicResyncSamples),
                             starvedWithRingData ? " STARVED_WITH_RING_DATA" : "");
                         src.lastAppConsumeDiagTick = nowConsumeTick;
                     }
@@ -3649,11 +3901,12 @@ public:
                             ce::audio::ComputeSamplesPerMinute(src.pendingLatencyTrimSamples, 10000000ll) * 6.0;
                         const uint64_t categorizedLatencyTrim =
                             std::min(src.latencyTrimSamples, src.bootstrapTrimSamples + src.retainedNewestTrimSamples +
-                                                                 src.coverageLossTrimSamples + src.tier2TrimSamples);
+                                                                 src.coverageLossTrimSamples + src.tier2TrimSamples +
+                                                                 src.catastrophicResyncSamples);
                         const uint64_t uncategorizedLatencyTrim = src.latencyTrimSamples - categorizedLatencyTrim;
                         DLL_Log(
                             "[PullAudio] Latency trim aggregate summary - src=%zu events=%u samples=%llu "
-                            "total=%llu bootstrap=%llu retained=%llu coverage=%llu tier2=%llu "
+                            "total=%llu bootstrap=%llu retained=%llu coverage=%llu tier2=%llu cat=%llu "
                             "uncategorizedLive=%llu rate=%.1f/min target=%lld pipelineLag=%lldms",
                             srcIdx, src.pendingLatencyTrimEvents,
                             static_cast<unsigned long long>(src.pendingLatencyTrimSamples),
@@ -3662,6 +3915,7 @@ public:
                             static_cast<unsigned long long>(src.retainedNewestTrimSamples),
                             static_cast<unsigned long long>(src.coverageLossTrimSamples),
                             static_cast<unsigned long long>(src.tier2TrimSamples),
+                            static_cast<unsigned long long>(src.catastrophicResyncSamples),
                             static_cast<unsigned long long>(uncategorizedLatencyTrim), trimRatePerMinute,
                             targetBufferedSamples, pipelineLagMs);
                         src.pendingLatencyTrimEvents = 0;

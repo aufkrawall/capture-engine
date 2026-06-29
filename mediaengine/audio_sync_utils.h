@@ -511,6 +511,95 @@ inline int32_t ComputeTier1CompensationDeltaWithDeadband(int64_t trueDriftSample
     return ComputeTier1CompensationDelta(adjustedDrift, compensationWindowSamples, maxPitchPercent);
 }
 
+enum class CfrAppAudioBacklogDrainReason : uint8_t {
+    Active = 0,
+    NotCfr,
+    NotAppAudio,
+    ForceDrain,
+    StartupNotSettled,
+    StartupTimelineProtected,
+    BufferBelowMinimum,
+    WithinSlack,
+};
+
+struct CfrAppAudioBacklogDrainDecision {
+    bool active = false;
+    int64_t targetLeadSamples = 0;
+    int64_t backlogSamples = 0;
+    int64_t excessSamples = 0;
+    int32_t compensationDelta = 0;
+    CfrAppAudioBacklogDrainReason reason = CfrAppAudioBacklogDrainReason::WithinSlack;
+};
+
+inline const char* CfrAppAudioBacklogDrainReasonName(CfrAppAudioBacklogDrainReason reason) {
+    switch (reason) {
+    case CfrAppAudioBacklogDrainReason::Active:
+        return "active";
+    case CfrAppAudioBacklogDrainReason::NotCfr:
+        return "not_cfr";
+    case CfrAppAudioBacklogDrainReason::NotAppAudio:
+        return "not_app_audio";
+    case CfrAppAudioBacklogDrainReason::ForceDrain:
+        return "force_drain";
+    case CfrAppAudioBacklogDrainReason::StartupNotSettled:
+        return "startup_not_settled";
+    case CfrAppAudioBacklogDrainReason::StartupTimelineProtected:
+        return "startup_timeline_protected";
+    case CfrAppAudioBacklogDrainReason::BufferBelowMinimum:
+        return "buffer_below_minimum";
+    case CfrAppAudioBacklogDrainReason::WithinSlack:
+        return "within_slack";
+    }
+    return "unknown";
+}
+
+inline CfrAppAudioBacklogDrainDecision ComputeCfrAppAudioBacklogDrainDecision(
+    bool isCfrRecording, bool isAppAudioSource, bool forceDrain, bool trackStartupSettled,
+    bool startupTimelineProtected, int64_t rbAvailableSamples, int64_t targetLeadSamples,
+    int64_t minCompensationBufferSamples, int64_t compensationWindowSamples, double maxPitchPercent,
+    int64_t activationSlackSamples, int64_t compensationDeadbandSamples) {
+    CfrAppAudioBacklogDrainDecision decision;
+    decision.targetLeadSamples = std::max<int64_t>(0, targetLeadSamples);
+    decision.backlogSamples = std::max<int64_t>(0, rbAvailableSamples);
+    decision.excessSamples = std::max<int64_t>(0, decision.backlogSamples - decision.targetLeadSamples);
+
+    if (!isCfrRecording) {
+        decision.reason = CfrAppAudioBacklogDrainReason::NotCfr;
+        return decision;
+    }
+    if (!isAppAudioSource) {
+        decision.reason = CfrAppAudioBacklogDrainReason::NotAppAudio;
+        return decision;
+    }
+    if (forceDrain) {
+        decision.reason = CfrAppAudioBacklogDrainReason::ForceDrain;
+        return decision;
+    }
+    if (!trackStartupSettled) {
+        decision.reason = CfrAppAudioBacklogDrainReason::StartupNotSettled;
+        return decision;
+    }
+    if (startupTimelineProtected) {
+        decision.reason = CfrAppAudioBacklogDrainReason::StartupTimelineProtected;
+        return decision;
+    }
+    if (decision.backlogSamples < std::max<int64_t>(0, minCompensationBufferSamples)) {
+        decision.reason = CfrAppAudioBacklogDrainReason::BufferBelowMinimum;
+        return decision;
+    }
+    if (decision.excessSamples <= std::max<int64_t>(0, activationSlackSamples)) {
+        decision.reason = CfrAppAudioBacklogDrainReason::WithinSlack;
+        return decision;
+    }
+
+    decision.compensationDelta = ComputeTier1CompensationDeltaWithDeadband(
+        decision.excessSamples, compensationWindowSamples, maxPitchPercent, compensationDeadbandSamples);
+    decision.active = decision.compensationDelta > 0;
+    decision.reason = decision.active ? CfrAppAudioBacklogDrainReason::Active
+                                      : CfrAppAudioBacklogDrainReason::WithinSlack;
+    return decision;
+}
+
 inline bool ShouldActivateTier2Trim(int64_t trueDriftSamples, int sampleRate, int64_t thresholdMs = 20) {
     if (sampleRate <= 0) {
         return false;
