@@ -555,6 +555,27 @@ TEST(AudioSyncUtilsTest, StartedSparseAppAudioSourcesMayContributeSilence) {
     EXPECT_FALSE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(false, 0));
 }
 
+TEST(AudioSyncUtilsTest, StartedSparseAppAudioPartialShortfallSilencesOnlyLargeLivePulls) {
+    constexpr int64_t thresholdSamples = ce::audio::kDefaultAudioPullQuantumSamples * 4;
+
+    EXPECT_TRUE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
+        /*sparseStartedSourceMaySilence*/ true, /*bufferedTimelineSamples*/ 0,
+        /*requestedSamples*/ ce::audio::kDefaultAudioPullQuantumSamples, thresholdSamples));
+    EXPECT_FALSE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
+        /*sparseStartedSourceMaySilence*/ true, /*bufferedTimelineSamples*/ 320, /*requestedSamples*/ 400,
+        thresholdSamples));
+    EXPECT_TRUE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
+        /*sparseStartedSourceMaySilence*/ true, /*bufferedTimelineSamples*/ 320, /*requestedSamples*/ 13600,
+        thresholdSamples));
+
+    const bool sparsePartialLargePullMaySilence = ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
+        /*sparseStartedSourceMaySilence*/ true, /*bufferedTimelineSamples*/ 320, /*requestedSamples*/ 13600,
+        thresholdSamples);
+    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(
+        /*isCfrRecording*/ true, /*forceDrain*/ false, /*optionalUnstartedSource*/ false,
+        sparsePartialLargePullMaySilence, /*requestedSamples*/ 13600, /*bufferedTimelineSamples*/ 320));
+}
+
 TEST(AudioSyncUtilsTest, LateFirstPacketOverlapsAlreadyEncodedSilence) {
     const int64_t writeCursor = ce::audio::ResolveSourceTimelineWriteCursor(0, 24000);
     const auto adjustment = ce::audio::ComputePacketTimelineAdjustment(18000, writeCursor, 48);

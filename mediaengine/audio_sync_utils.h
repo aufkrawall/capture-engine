@@ -857,8 +857,20 @@ inline bool ShouldTreatSparseStartedSourceAsSilence(bool isCfrRecording, bool is
 }
 
 inline bool ShouldTreatStartedAppSourceShortfallAsSilence(bool sparseStartedSourceMaySilence,
-                                                          size_t bufferedTimelineSamples) {
-    return sparseStartedSourceMaySilence && bufferedTimelineSamples == 0;
+                                                          size_t bufferedTimelineSamples,
+                                                          int64_t requestedSamples = 0,
+                                                          int64_t partialSilenceThresholdSamples = 0) {
+    if (!sparseStartedSourceMaySilence) {
+        return false;
+    }
+    if (bufferedTimelineSamples == 0) {
+        return true;
+    }
+    if (requestedSamples <= 0 || partialSilenceThresholdSamples <= 0 ||
+        requestedSamples <= partialSilenceThresholdSamples) {
+        return false;
+    }
+    return bufferedTimelineSamples < static_cast<size_t>(requestedSamples);
 }
 
 inline PacketTimelineAdjustment ComputePacketTimelineAdjustment(int64_t packetStartSamples,

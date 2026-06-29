@@ -2909,9 +2909,10 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
             ++windowHistogram[histogramBin];
         };
-    const auto recordWgcDelayRealization = [&](int64_t predictedSignedResidualUs, int64_t rawSignedResidualUs) {
+    const auto recordWgcDelayRealization = [&](int64_t predictedSignedResidualUs,
+                                               int64_t rawSignedResidualUs) -> bool {
         if (!isWgcEffectiveContentDelayActive() || qpcFreq.QuadPart <= 0) {
-            return;
+            return false;
         }
         const int64_t requestedDelayUs = qpcToUs(getWgcEffectiveContentDelayQpc());
         const int64_t realizedDelaySignedUs = requestedDelayUs - predictedSignedResidualUs;
@@ -2944,6 +2945,7 @@ void EncoderThreadFunc(const AppConfig& config) {
         wgcDelayRawMinusPredictedWindowSignedAccumUs += rawMinusPredictedUs;
         wgcDelayRawMinusPredictedWindowAbsMaxUs =
             std::max(wgcDelayRawMinusPredictedWindowAbsMaxUs, rawMinusPredictedAbsUs);
+        return true;
     };
     const auto wgcDelayResidualHistogramP95Us = [](const std::array<uint32_t, 256>& histogram,
                                                    uint64_t samples) -> uint32_t {
@@ -3575,6 +3577,7 @@ void EncoderThreadFunc(const AppConfig& config) {
         bool wgcFreshAvailableAtTickStart = false;
         bool wgcReserveAvailableAtTickStart = false;
         bool wgcSelectionDelayAppliedThisTick = false;
+        bool wgcDelayRealizationRecordedThisTick = false;
         auto tryPopBufferedWgcFrameForTarget = [&](int64_t selectionTargetQpc, int64_t liveSelectionTargetQpc,
                                                    int64_t liveNowQpc, bool selectionDelayApplied,
                                                    QueuedFrame* selectedFrame,
@@ -5236,7 +5239,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                                         ((gridReferenceQpc - frame.timestamp) * 1000000) / qpcFreq.QuadPart;
                                     const int64_t residualUs =
                                         qpcToUs(getWgcEffectiveContentDelayQpc()) - realizedDelayUs;
-                                    recordWgcDelayRealization(residualUs, residualUs);
+                                    wgcDelayRealizationRecordedThisTick =
+                                        recordWgcDelayRealization(residualUs, residualUs);
                                 }
                             }
                             // playout.hold -> leave the buffer intact; the encoder repeats the last
@@ -7354,7 +7358,8 @@ void EncoderThreadFunc(const AppConfig& config) {
 
             if (encodeSucceeded) {
                 if (selectionMetricTargetQpc > 0 && frameToProcess && !frameToProcess->isInjectMode &&
-                    wgcSelectionDelayAppliedThisTick && scheduledLiveCfrTick) {
+                    wgcSelectionDelayAppliedThisTick && scheduledLiveCfrTick &&
+                    !wgcDelayRealizationRecordedThisTick) {
                     recordWgcDelayRealization(signedSelectionErrorUs, signedRawSelectionErrorUs);
                 }
 

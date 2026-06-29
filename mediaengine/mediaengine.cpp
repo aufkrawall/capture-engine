@@ -2617,8 +2617,11 @@ public:
                 const bool sparseStartedSourceCanSilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
                     isCfrRecording, isAppAudioSource, src.bootstrapComplete, optionalUnstarted, finalStopDrain);
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
+                constexpr int64_t kSparseStartedPartialSilenceThresholdSamples =
+                    ce::audio::kDefaultAudioPullQuantumSamples * 4;
                 const bool sparseStartedSourceMaySilence = ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
-                    sparseStartedSourceCanSilence, bufferedTimelineSamples);
+                    sparseStartedSourceCanSilence, bufferedTimelineSamples, samplesToEncode,
+                    kSparseStartedPartialSilenceThresholdSamples);
                 if (!trackLargeBacklogDrain &&
                     ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(isCfrRecording, forceDrain, optionalUnstarted,
                                                                       sparseStartedSourceMaySilence, samplesToEncode,
@@ -2638,7 +2641,8 @@ public:
                     dropLogCounter++ % 500 == 0) {
                     DLL_Log(
                         "[PullAudio] App source gap silence: track=%d src=%zu buffered=%zu requested=%lld "
-                        "target=%lldms encoded=%lld. Source contributes silence for missing range.",
+                        "target=%lldms encoded=%lld. Source contributes available samples plus silence for missing "
+                        "range.",
                         track, srcIdx, bufferedTimelineSamples, samplesToEncode, trackAudioTargetMs,
                         trackCursorSamples);
                 }
