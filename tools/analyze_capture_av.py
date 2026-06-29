@@ -264,6 +264,7 @@ WGC_SMOOTHNESS_LOWER_BOUND_RE = re.compile(
     re.IGNORECASE,
 )
 WGC_PERF_RE = re.compile(r"\[WGC Perf\].*", re.IGNORECASE)
+WGC_QUALITY_RE = re.compile(r"\[WGC CFR QUALITY\]\s*(.*)", re.IGNORECASE)
 INJECT_PERF_RE = re.compile(r"\[Inject Perf\].*", re.IGNORECASE)
 INJECT_CFR_SUMMARY_RE = re.compile(
     r"\[Inject CFR SUMMARY\].*Live=(\d+) Dup=(\d+) DupPct=([0-9.]+)% "
@@ -1233,6 +1234,14 @@ def parse_wgc_perf_line(line):
         "retained_cap": find_int(r"retainedCap=(\d+)"),
         "reserved_free_slots": find_int(r"reservedFree=(\d+)"),
         "safety_slots": find_int(r"safetySlots=(\d+)"),
+        "source_format": find_int(r"sourceFmt=(\d+)"),
+        "copy_format": find_int(r"copyFmt=(\d+)"),
+        "compact_retained": find_int(r"compactRetained=(\d+)"),
+        "source_budget_mb": parse_named_float_field(line, "sourceBudgetMB", 0.0),
+        "copy_budget_mb": parse_named_float_field(line, "copyBudgetMB", 0.0),
+        "source_surface_mb": parse_named_float_field(line, "sourceSurfaceMB", 0.0),
+        "copy_surface_mb": parse_named_float_field(line, "copySurfaceMB", 0.0),
+        "convert_us": parse_named_int_field(line, "convertUs", 0),
         "ingress_accepted": find_int(r"Ingress:\s*accepted=(\d+)"),
         "ingress_decimated": find_int(r"decimated=(\d+)"),
         "ingress_retained": find_int(r"retained=(\d+)/\d+"),
@@ -1250,6 +1259,37 @@ def parse_wgc_perf_line(line):
         "ingress_reason": (re.search(r"reason=([A-Za-z0-9_-]+)", line).group(1)
                            if re.search(r"reason=([A-Za-z0-9_-]+)", line)
                            else ""),
+    }
+
+
+def parse_wgc_quality_line(line):
+    payload_match = WGC_QUALITY_RE.search(line)
+    payload = payload_match.group(1) if payload_match else line
+    values = parse_attribution_payload(payload)
+    duplicate_counts = values.get("duplicates", "0/0").split("/", 1)
+    return {
+        "duplicate_pct": parse_float(values.get("duplicatePct"), 0.0),
+        "duplicates": parse_int(duplicate_counts[0] if duplicate_counts else 0),
+        "live": parse_int(duplicate_counts[1] if len(duplicate_counts) > 1 else 0),
+        "worst_1s_unique": parse_int(values.get("worst1sUnique"), 0),
+        "worst_1s_repeats": parse_int(values.get("worst1sRepeats"), 0),
+        "worst_1s_emit": parse_int(values.get("worst1sEmit"), 0),
+        "limiter": values.get("limiter", ""),
+        "source_limited_repeats": parse_int(values.get("sourceLimitedRepeats"), 0),
+        "pool_pressure": parse_int(values.get("poolPressure"), 0),
+        "free_min": parse_int(values.get("freeMin"), 0),
+        "pool_saturated_drops": parse_int(values.get("poolSaturatedDrops"), 0),
+        "ingress_hard": parse_int(values.get("ingressHard"), 0),
+        "ingress_soft": parse_int(values.get("ingressSoft"), 0),
+        "overwrite_prevented": parse_int(values.get("overwritePrevented"), 0),
+        "encoder_overload": values.get("encoderOverload", "0x0"),
+        "mux_backpressure": parse_int(values.get("muxBackpressure"), 0),
+        "compact_retained": parse_int(values.get("compactRetained"), 0),
+        "source_format": parse_int(values.get("sourceFmt"), 0),
+        "retained_format": parse_int(values.get("retainedFmt"), 0),
+        "convert_us": parse_int(values.get("convertUs"), 0),
+        "final_av_sync": values.get("finalAvSync", ""),
+        "line": line,
     }
 
 
@@ -1410,6 +1450,7 @@ def merge_window_media_evidence(window_evidence, full_evidence):
     merged = dict(window_evidence)
     for key in (
         "wgc_summary",
+        "wgc_quality",
         "wgc_smoothness_summary",
         "inject_summary",
         "inject_source_summary",
@@ -1645,12 +1686,28 @@ def update_wgc_smoothness_item_from_line(item, line):
     elif saw_lower_bound_tail:
         item["wgc_smoothness_evidence_incomplete"] = 1
 
+    retained_fields = {
+        "sourceFmt": ("source_format", parse_named_int_field),
+        "retainedFmt": ("retained_format", parse_named_int_field),
+        "compactRetained": ("compact_retained", parse_named_int_field),
+        "sourceBudgetMB": ("source_budget_mb", parse_named_float_field),
+        "copyBudgetMB": ("copy_budget_mb", parse_named_float_field),
+        "sourceSurfaceMB": ("source_surface_mb", parse_named_float_field),
+        "copySurfaceMB": ("copy_surface_mb", parse_named_float_field),
+        "convertUs": ("convert_us", parse_named_int_field),
+    }
+    for field_name, (key, parser) in retained_fields.items():
+        value = parser(line, field_name)
+        if value is not None:
+            item[key] = value
+
 
 def parse_media_triage(media_text):
     source_starved = []
     attribution = []
     wgc_perf = []
     wgc_summary = []
+    wgc_quality = []
     wgc_cadence_events = []
     wgc_smoothness_summary = []
     inject_perf = []
@@ -1685,6 +1742,8 @@ def parse_media_triage(media_text):
             attribution.append(parse_attribution_payload(attribution_match.group(1)))
         if WGC_PERF_RE.search(line):
             wgc_perf.append(parse_wgc_perf_line(line))
+        if WGC_QUALITY_RE.search(line):
+            wgc_quality.append(parse_wgc_quality_line(line))
         cadence_event_match = WGC_CADENCE_EVENT_RE.search(line)
         if cadence_event_match:
             event = parse_attribution_payload(cadence_event_match.group(2))
@@ -2016,6 +2075,7 @@ def parse_media_triage(media_text):
         "wgc_attribution": attribution,
         "wgc_perf": wgc_perf,
         "wgc_summary": wgc_summary,
+        "wgc_quality": wgc_quality,
         "wgc_cadence_events": wgc_cadence_events,
         "wgc_smoothness_summary": wgc_smoothness_summary,
         "inject_perf": inject_perf,
@@ -3165,6 +3225,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             for delta in media_evidence["post_mux_audio_mismatch_delta_us"]
         ),
     }
+    exported_av_sync_ok = has_exact_final_mux_evidence(media_evidence)
     report = {
         "schema": "ce-session-av-triage-v1",
         "session_dir": str(session_dir),
@@ -3223,6 +3284,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "inject_pacing": inject_pacing,
             "wgc_attribution": media_evidence["wgc_attribution"],
             "wgc_summary": media_evidence["wgc_summary"],
+            "wgc_quality": media_evidence["wgc_quality"],
             "wgc_cadence_events": media_evidence["wgc_cadence_events"][:20],
             "wgc_smoothness_summary": media_evidence["wgc_smoothness_summary"],
             "wgc_perf_worst": {
@@ -3231,7 +3293,11 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
                 "min_delivered_250_fps": min((item["min_del_250"] for item in media_evidence["wgc_perf"] if item["min_del_250"] > 0), default=0),
                 "max_callback_gap_us": max((item["cb_gap_max_us"] for item in media_evidence["wgc_perf"]), default=0),
                 "max_copy_us": max((item["copy_us"] for item in media_evidence["wgc_perf"]), default=0),
+                "max_convert_us": max((item.get("convert_us", 0) for item in media_evidence["wgc_perf"]), default=0),
                 "max_fence_us": max((item["fence_us"] for item in media_evidence["wgc_perf"]), default=0),
+                "compact_retained_active": any(item.get("compact_retained", 0) for item in media_evidence["wgc_perf"]),
+                "source_format": max((item.get("source_format", 0) for item in media_evidence["wgc_perf"]), default=0),
+                "copy_format": max((item.get("copy_format", 0) for item in media_evidence["wgc_perf"]), default=0),
                 "max_pool_lease": max((item.get("pool_lease_max", 0) for item in media_evidence["wgc_perf"]), default=0),
                 "min_pool_free": min(
                     (item.get("pool_free_min", 0) for item in media_evidence["wgc_perf"]
@@ -3295,6 +3361,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "app_audio_latency": app_audio_latency,
             "zero_drift_warnings": media_evidence["zero_drift_warnings"],
             "stop_audio_shortfalls": stop_audio_shortfalls,
+            "exported_av_sync_ok": exported_av_sync_ok,
             "final_packet_timelines": media_evidence["final_packet_timelines"],
             "final_metadata": media_evidence["final_metadata"],
             "rounding_evidence": rounding_evidence,
@@ -3330,6 +3397,7 @@ def print_triage_report(report):
         )
     )
     evidence = report["evidence"]
+    print(f"  exported_av_sync_ok={int(evidence.get('exported_av_sync_ok', False))}")
     print(
         "  max_present_gap_ms={gap:.3f} source={source}".format(
             gap=evidence["max_present_gap_ms"], source=evidence.get("present_gap_source", "hook_logs")
@@ -3355,6 +3423,32 @@ def print_triage_report(report):
             perf_count=len(evidence["perf_csv"]),
         )
     )
+    if evidence["wgc_quality"]:
+        quality = evidence["wgc_quality"][-1]
+        print(
+            "  wgc_quality dup={dup}/{live} ({dup_pct:.1f}%) worst1s={unique}/{repeats}/{emit} "
+            "limiter={limiter} pool_pressure={pool} free_min={free_min} sat_drop={sat_drop} "
+            "ingress_hard={hard} ingress_soft={soft} compact_retained={compact} "
+            "fmt={source_fmt}->{retained_fmt} convert_us={convert_us} final_av_sync={final_sync}".format(
+                dup=quality["duplicates"],
+                live=quality["live"],
+                dup_pct=quality["duplicate_pct"],
+                unique=quality["worst_1s_unique"],
+                repeats=quality["worst_1s_repeats"],
+                emit=quality["worst_1s_emit"],
+                limiter=quality["limiter"],
+                pool=quality["pool_pressure"],
+                free_min=quality["free_min"],
+                sat_drop=quality["pool_saturated_drops"],
+                hard=quality["ingress_hard"],
+                soft=quality["ingress_soft"],
+                compact=quality["compact_retained"],
+                source_fmt=quality["source_format"],
+                retained_fmt=quality["retained_format"],
+                convert_us=quality["convert_us"],
+                final_sync=quality["final_av_sync"],
+            )
+        )
     stop_shortfalls = evidence["stop_audio_shortfalls"]
     if stop_shortfalls["short_count"]:
         print(
@@ -3864,6 +3958,33 @@ def self_test():
         assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
         assert "ce_audio_timeline_fault" not in report["verdicts"]
         assert report["evidence"]["rounding_evidence"]["post_mux_one_us_or_less_is_info"]
+
+        wgc_quality_summary = make_session(
+            "wgc_quality_summary",
+            media=(
+                "[WGC CFR QUALITY] duplicatePct=19.4 duplicates=1399/7203 worst1sUnique=71 "
+                "worst1sRepeats=49 worst1sEmit=120 limiter=wgc_pool_pressure sourceLimitedRepeats=1399 "
+                "poolPressure=1 freeMin=0 poolSaturatedDrops=6 ingressHard=103 ingressSoft=500 "
+                "overwritePrevented=136402 encoderOverload=0x0 muxBackpressure=0 compactRetained=1 "
+                "sourceFmt=10 retainedFmt=24 convertUs=620 finalAvSync=exported_tracks_authoritative\n"
+                "[VideoEncoder] Final packet timeline: target=60000000 us videoEnd=60000000 us "
+                "audioMinEnd=60000000 us audioMaxEnd=60000000 us maxPacketDelta=0 us "
+                "streams(v=1 a=3) audioPastTarget=0\n"
+                "[VideoEncoder] Final metadata durations: target=60000000 us video=60000000 us "
+                "audioMin=60000000 us audioMax=60000000 us maxDelta=0 us streams(v=1 a=3) "
+                "overload(encoder=0 mux=0) backpressure=0\n"
+            ),
+        )
+        report = classify_session_triage(wgc_quality_summary)
+        quality = report["evidence"]["wgc_quality"][0]
+        assert quality["limiter"] == "wgc_pool_pressure"
+        assert quality["worst_1s_unique"] == 71
+        assert quality["worst_1s_repeats"] == 49
+        assert quality["compact_retained"] == 1
+        assert quality["source_format"] == 10
+        assert quality["retained_format"] == 24
+        assert report["evidence"]["exported_av_sync_ok"]
+        assert "ce_audio_timeline_fault" not in report["verdicts"]
 
         wgc_pool_lifetime_fault = make_session(
             "wgc_pool_lifetime_fault",
@@ -5267,6 +5388,7 @@ def self_test():
         assert "sparse_app_source_silence" in long_run_report["verdicts"]
         assert "ce_visual_timeline_fault" in long_run_report["verdicts"]
         assert "ce_audio_timeline_fault" not in long_run_report["verdicts"]
+        assert long_run_report["evidence"]["exported_av_sync_ok"]
 
         wgc_sync_delay_policy_fault = make_session(
             "wgc_sync_delay_policy_fault",

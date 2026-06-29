@@ -63,6 +63,7 @@ constexpr uint32_t kWgcSmoothnessBufferPoolInFlightFrames = 1;
 constexpr uint32_t kWgcSmoothnessBufferPoolSelectedSlackFrames = 1;
 constexpr uint32_t kWgcSmoothnessSourceFramePoolDefaultBuffers = 8;
 constexpr uint32_t kWgcSmoothnessSourceFramePoolMinBuffers = 3;
+constexpr uint32_t kWgcSmoothnessSourceFramePoolCompactHighFpsMaxBuffers = 16;
 constexpr uint32_t kWgcSmoothnessEstimatedSyncDelayMs = 33;
 constexpr uint32_t kWgcSmoothnessBufferMinPoolFrames = 8;
 constexpr uint32_t kWgcSmoothnessBufferMaxPoolFrames = 64;
@@ -1707,7 +1708,13 @@ struct WgcSmoothnessSurfaceBudget {
     uint32_t reservedFreeCopySlots = kWgcSmoothnessBufferPoolSafetyFrames + kWgcSmoothnessBufferPoolInFlightFrames +
                                      kWgcSmoothnessBufferPoolSelectedSlackFrames;
     uint32_t budgetSurfaceCount = 0;
+    uint32_t budgetCopySurfaceCount = 0;
+    uint64_t sourceBytesPerSurface = 0;
+    uint64_t copyBytesPerSurface = 0;
+    uint64_t sourceEstimatedBytes = 0;
+    uint64_t copyEstimatedBytes = 0;
     uint64_t estimatedBytes = 0;
+    bool splitByteBudget = false;
     bool capLimited = false;
     bool budgetExhausted = false;
 };
@@ -1728,43 +1735,97 @@ inline uint32_t GetWgcSmoothnessExtraFramesForRetainedCap(uint32_t retainedFrame
     return retainedFrameCap > requiredDelayFrames ? (retainedFrameCap - requiredDelayFrames) : 0u;
 }
 
+inline uint32_t GetWgcSmoothnessPreferredSourceFramePoolBuffers(uint32_t outputFps, bool compactCopySurfaces) {
+    if (!compactCopySurfaces || outputFps < 100) {
+        return kWgcSmoothnessSourceFramePoolDefaultBuffers;
+    }
+
+    const uint32_t fpsScaled = std::max<uint32_t>(kWgcSmoothnessSourceFramePoolDefaultBuffers, (outputFps + 9u) / 10u);
+    return std::min<uint32_t>(fpsScaled, kWgcSmoothnessSourceFramePoolCompactHighFpsMaxBuffers);
+}
+
 inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(uint32_t outputFps, uint32_t maxSmoothnessMs,
                                                                     uint32_t width, uint32_t height,
-                                                                    uint32_t bytesPerPixel, uint32_t budgetMb,
+                                                                    uint32_t sourceBytesPerPixel,
+                                                                    uint32_t copyBytesPerPixel, uint32_t budgetMb,
                                                                     uint32_t syncDelayFrames) {
     WgcSmoothnessSurfaceBudget result{};
     result.desiredExtraFrames = GetWgcSmoothnessDesiredFrames(outputFps, maxSmoothnessMs);
     result.syncDelayFrames = syncDelayFrames;
     result.reservedFreeCopySlots = GetWgcSmoothnessReservedFreeCopySlots(result.safetySlots, result.inFlightEncodeSlots,
                                                                          result.selectedFrameSlackSlots);
+    result.splitByteBudget = sourceBytesPerPixel != copyBytesPerPixel;
 
-    const uint64_t bytesPerSurface = EstimateWgcSurfaceBytes(width, height, bytesPerPixel);
-    result.budgetSurfaceCount = GetWgcSmoothnessBudgetedSurfaceCount(width, height, bytesPerPixel, budgetMb);
-    if (bytesPerSurface == 0 || result.budgetSurfaceCount == 0) {
+    const uint64_t sourceBytesPerSurface = EstimateWgcSurfaceBytes(width, height, sourceBytesPerPixel);
+    const uint64_t copyBytesPerSurface = EstimateWgcSurfaceBytes(width, height, copyBytesPerPixel);
+    result.sourceBytesPerSurface = sourceBytesPerSurface;
+    result.copyBytesPerSurface = copyBytesPerSurface;
+    result.budgetSurfaceCount = GetWgcSmoothnessBudgetedSurfaceCount(width, height, sourceBytesPerPixel, budgetMb);
+    result.budgetCopySurfaceCount = GetWgcSmoothnessBudgetedSurfaceCount(width, height, copyBytesPerPixel, budgetMb);
+    if (sourceBytesPerSurface == 0 || copyBytesPerSurface == 0 || result.budgetSurfaceCount == 0 ||
+        result.budgetCopySurfaceCount == 0) {
         result.sourceFramePoolBuffers = kWgcSmoothnessSourceFramePoolMinBuffers;
         result.copyPoolSlots = kWgcSmoothnessBufferMinPoolFrames;
         result.retainedFrameCap = GetWgcSmoothnessRetainedFrameCap(result.copyPoolSlots, result.reservedFreeCopySlots);
         result.budgetExhausted = true;
         result.capLimited = result.desiredExtraFrames > 0;
-        result.estimatedBytes =
-            bytesPerSurface * static_cast<uint64_t>(result.sourceFramePoolBuffers + result.copyPoolSlots);
+        result.sourceEstimatedBytes = sourceBytesPerSurface * static_cast<uint64_t>(result.sourceFramePoolBuffers);
+        result.copyEstimatedBytes = copyBytesPerSurface * static_cast<uint64_t>(result.copyPoolSlots);
+        result.estimatedBytes = result.sourceEstimatedBytes + result.copyEstimatedBytes;
         return result;
     }
 
-    uint32_t remainingSurfaces = result.budgetSurfaceCount;
-    if (remainingSurfaces >= kWgcSmoothnessSourceFramePoolDefaultBuffers + kWgcSmoothnessBufferMinPoolFrames) {
-        result.sourceFramePoolBuffers = kWgcSmoothnessSourceFramePoolDefaultBuffers;
-    } else if (remainingSurfaces > kWgcSmoothnessBufferMinPoolFrames) {
-        result.sourceFramePoolBuffers = std::max<uint32_t>(kWgcSmoothnessSourceFramePoolMinBuffers,
-                                                           remainingSurfaces - kWgcSmoothnessBufferMinPoolFrames);
+    uint32_t maxBudgetedCopySlots = 0;
+    if (!result.splitByteBudget) {
+        uint32_t remainingSurfaces = result.budgetSurfaceCount;
+        if (remainingSurfaces >= kWgcSmoothnessSourceFramePoolDefaultBuffers + kWgcSmoothnessBufferMinPoolFrames) {
+            result.sourceFramePoolBuffers = kWgcSmoothnessSourceFramePoolDefaultBuffers;
+        } else if (remainingSurfaces > kWgcSmoothnessBufferMinPoolFrames) {
+            result.sourceFramePoolBuffers = std::max<uint32_t>(kWgcSmoothnessSourceFramePoolMinBuffers,
+                                                               remainingSurfaces - kWgcSmoothnessBufferMinPoolFrames);
+        } else {
+            result.sourceFramePoolBuffers = std::max<uint32_t>(
+                1u, std::min<uint32_t>(kWgcSmoothnessSourceFramePoolMinBuffers, remainingSurfaces / 2u));
+        }
+        result.sourceFramePoolBuffers = std::min(result.sourceFramePoolBuffers, remainingSurfaces);
+        remainingSurfaces -= result.sourceFramePoolBuffers;
+        maxBudgetedCopySlots = std::min<uint32_t>(remainingSurfaces, kWgcSmoothnessBufferMaxPoolFrames);
     } else {
-        result.sourceFramePoolBuffers =
-            std::max<uint32_t>(1u, std::min<uint32_t>(kWgcSmoothnessSourceFramePoolMinBuffers, remainingSurfaces / 2u));
-    }
-    result.sourceFramePoolBuffers = std::min(result.sourceFramePoolBuffers, remainingSurfaces);
-    remainingSurfaces -= result.sourceFramePoolBuffers;
+        const uint64_t budgetBytes = static_cast<uint64_t>(budgetMb) * 1024ull * 1024ull;
+        const uint32_t preferredSourceBuffers =
+            GetWgcSmoothnessPreferredSourceFramePoolBuffers(outputFps, copyBytesPerPixel < sourceBytesPerPixel);
+        const auto copySlotsForSourceBuffers = [&](uint32_t sourceBuffers) -> uint32_t {
+            const uint64_t sourceBytes = sourceBytesPerSurface * static_cast<uint64_t>(sourceBuffers);
+            if (sourceBytes >= budgetBytes) {
+                return 0;
+            }
+            const uint64_t copySlots = (budgetBytes - sourceBytes) / copyBytesPerSurface;
+            return copySlots > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(copySlots);
+        };
 
-    const uint32_t maxBudgetedCopySlots = std::min<uint32_t>(remainingSurfaces, kWgcSmoothnessBufferMaxPoolFrames);
+        uint32_t selectedSourceBuffers = 0;
+        for (uint32_t candidate = preferredSourceBuffers; candidate >= kWgcSmoothnessSourceFramePoolMinBuffers;
+             --candidate) {
+            if (copySlotsForSourceBuffers(candidate) >= kWgcSmoothnessBufferMinPoolFrames) {
+                selectedSourceBuffers = candidate;
+                break;
+            }
+            if (candidate == kWgcSmoothnessSourceFramePoolMinBuffers) {
+                break;
+            }
+        }
+        if (selectedSourceBuffers == 0) {
+            const uint32_t maxSourceByBudget = static_cast<uint32_t>(
+                std::min<uint64_t>(preferredSourceBuffers, budgetBytes / sourceBytesPerSurface));
+            selectedSourceBuffers = std::max<uint32_t>(1u, std::min<uint32_t>(maxSourceByBudget, preferredSourceBuffers));
+        }
+
+        result.sourceFramePoolBuffers = selectedSourceBuffers;
+        maxBudgetedCopySlots =
+            std::min<uint32_t>(copySlotsForSourceBuffers(result.sourceFramePoolBuffers),
+                               kWgcSmoothnessBufferMaxPoolFrames);
+    }
+
     uint32_t copySlots = maxBudgetedCopySlots;
     if (result.desiredExtraFrames > 0) {
         result.retainedFrameCap = GetWgcSmoothnessRetainedFrameCap(copySlots, result.reservedFreeCopySlots);
@@ -1789,9 +1850,18 @@ inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(uint32_t out
     const uint32_t minimumProtectedCopySlots =
         result.reservedFreeCopySlots + result.syncDelayFrames + kWgcDelayReservoirTargetExtraFrames;
     result.budgetExhausted = result.desiredExtraFrames > 0 && result.copyPoolSlots < minimumProtectedCopySlots;
-    result.estimatedBytes =
-        bytesPerSurface * static_cast<uint64_t>(result.sourceFramePoolBuffers + result.copyPoolSlots);
+    result.sourceEstimatedBytes = sourceBytesPerSurface * static_cast<uint64_t>(result.sourceFramePoolBuffers);
+    result.copyEstimatedBytes = copyBytesPerSurface * static_cast<uint64_t>(result.copyPoolSlots);
+    result.estimatedBytes = result.sourceEstimatedBytes + result.copyEstimatedBytes;
     return result;
+}
+
+inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(uint32_t outputFps, uint32_t maxSmoothnessMs,
+                                                                    uint32_t width, uint32_t height,
+                                                                    uint32_t bytesPerPixel, uint32_t budgetMb,
+                                                                    uint32_t syncDelayFrames) {
+    return ComputeWgcSmoothnessSurfaceBudget(outputFps, maxSmoothnessMs, width, height, bytesPerPixel, bytesPerPixel,
+                                             budgetMb, syncDelayFrames);
 }
 
 inline uint32_t GetWgcSmoothnessRetainedFrames(uint32_t outputFps, uint32_t maxSmoothnessMs, uint32_t width,
@@ -1842,6 +1912,13 @@ inline WgcIngressAdmissionDecision DecideWgcIngressAdmission(uint32_t retainedFr
     }
     decision.hardReservePressure = freeCopySlots == 0;
     decision.softReservePressure = reservedFreeCopySlots > 0 && freeCopySlots <= reservedFreeCopySlots;
+
+    if (decision.hardReservePressure) {
+        decision.accept = false;
+        decision.decimated = true;
+        decision.reason = "wgc_ingress_decimated_hard_reserve";
+        return decision;
+    }
 
     if (lowWaterFrames > 0 && retainedFrames <= lowWaterFrames) {
         decision.reason = "low_water";

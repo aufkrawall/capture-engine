@@ -1172,6 +1172,49 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferBudgetCapsRetainedFrames) {
     EXPECT_TRUE(budget.capLimited);
 }
 
+TEST(CapturePipelinePolicyTest, WgcSmoothnessSplitBudgetCompactsSdrFp16RetainedCopies) {
+    const auto budget = policy::ComputeWgcSmoothnessSurfaceBudget(
+        /*outputFps=*/120, /*maxSmoothnessMs=*/250, /*width=*/3840, /*height=*/2160,
+        /*sourceBytesPerPixel=*/8, /*copyBytesPerPixel=*/4, /*budgetMb=*/2048,
+        policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
+    EXPECT_TRUE(budget.splitByteBudget);
+    EXPECT_EQ(budget.sourceFramePoolBuffers, 12u);
+    EXPECT_EQ(budget.copyPoolSlots, 40u);
+    EXPECT_EQ(budget.retainedFrameCap, 34u);
+    EXPECT_EQ(budget.retainedExtraFrames, 29u);
+    EXPECT_TRUE(budget.capLimited);
+    EXPECT_LE(budget.estimatedBytes, 2048ull * 1024ull * 1024ull);
+    EXPECT_EQ(budget.sourceEstimatedBytes,
+              policy::EstimateWgcSurfaceBytes(/*width=*/3840, /*height=*/2160, /*bytesPerPixel=*/8) * 12ull);
+    EXPECT_EQ(budget.copyEstimatedBytes,
+              policy::EstimateWgcSurfaceBytes(/*width=*/3840, /*height=*/2160, /*bytesPerPixel=*/4) * 40ull);
+}
+
+TEST(CapturePipelinePolicyTest, WgcSmoothnessHdrFp16RemainsHomogeneousAndBudgetCapped) {
+    const auto budget = policy::ComputeWgcSmoothnessSurfaceBudget(
+        /*outputFps=*/120, /*maxSmoothnessMs=*/250, /*width=*/3840, /*height=*/2160,
+        /*sourceBytesPerPixel=*/8, /*copyBytesPerPixel=*/8, /*budgetMb=*/2048,
+        policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
+    EXPECT_FALSE(budget.splitByteBudget);
+    EXPECT_EQ(budget.sourceFramePoolBuffers, 8u);
+    EXPECT_EQ(budget.copyPoolSlots, 24u);
+    EXPECT_EQ(budget.retainedExtraFrames, 13u);
+    EXPECT_TRUE(budget.capLimited);
+    EXPECT_LE(budget.estimatedBytes, 2048ull * 1024ull * 1024ull);
+}
+
+TEST(CapturePipelinePolicyTest, WgcSmoothnessSplitBudgetPreservesLowBudgetSafety) {
+    const auto budget = policy::ComputeWgcSmoothnessSurfaceBudget(
+        /*outputFps=*/120, /*maxSmoothnessMs=*/250, /*width=*/3840, /*height=*/2160,
+        /*sourceBytesPerPixel=*/8, /*copyBytesPerPixel=*/4, /*budgetMb=*/512,
+        policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
+    EXPECT_TRUE(budget.splitByteBudget);
+    EXPECT_GE(budget.sourceFramePoolBuffers, policy::kWgcSmoothnessSourceFramePoolMinBuffers);
+    EXPECT_GE(budget.copyPoolSlots, policy::kWgcSmoothnessBufferMinPoolFrames);
+    EXPECT_TRUE(budget.capLimited);
+    EXPECT_LE(budget.estimatedBytes, 512ull * 1024ull * 1024ull);
+}
+
 TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferAllowsFullTargetWhenBudgetAllows) {
     const auto budget = policy::ComputeWgcSmoothnessSurfaceBudget(
         /*outputFps=*/120, /*maxSmoothnessMs=*/250, /*width=*/1920, /*height=*/1080,
@@ -1314,11 +1357,31 @@ TEST(CapturePipelinePolicyTest, WgcIngressAdmissionHardReserveIsFaultEvidenceFor
         /*retainedFrames=*/18, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
         /*outputFps=*/120, /*recentInputMin250Fps=*/108, /*recentInputMin500Fps=*/109,
         /*admissionCreditFrames=*/0.0, /*freeCopySlots=*/0, /*reservedFreeCopySlots=*/6);
-    EXPECT_TRUE(decision.accept);
-    EXPECT_FALSE(decision.decimated);
+    EXPECT_FALSE(decision.accept);
+    EXPECT_TRUE(decision.decimated);
     EXPECT_TRUE(decision.hardReservePressure);
     EXPECT_TRUE(decision.softReservePressure);
-    EXPECT_STREQ(decision.reason, "source_below_cfr_target");
+    EXPECT_STREQ(decision.reason, "wgc_ingress_decimated_hard_reserve");
+}
+
+TEST(CapturePipelinePolicyTest, WgcIngressAdmissionHardReserveSkipsBeforeLowWaterOrRecovery) {
+    auto lowWater = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/2, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
+        /*admissionCreditFrames=*/1.0, /*freeCopySlots=*/0, /*reservedFreeCopySlots=*/6);
+    EXPECT_FALSE(lowWater.accept);
+    EXPECT_TRUE(lowWater.decimated);
+    EXPECT_TRUE(lowWater.hardReservePressure);
+    EXPECT_STREQ(lowWater.reason, "wgc_ingress_decimated_hard_reserve");
+
+    auto recovery = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/18, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/true,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
+        /*admissionCreditFrames=*/1.0, /*freeCopySlots=*/0, /*reservedFreeCopySlots=*/6);
+    EXPECT_FALSE(recovery.accept);
+    EXPECT_TRUE(recovery.decimated);
+    EXPECT_TRUE(recovery.hardReservePressure);
+    EXPECT_STREQ(recovery.reason, "wgc_ingress_decimated_hard_reserve");
 }
 
 TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferRequiresActiveSyncDelay) {

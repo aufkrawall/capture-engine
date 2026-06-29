@@ -6,6 +6,7 @@
 #include <avrt.h>
 #include <d3d11.h>
 #include <d3d11_4.h>
+#include <d3dcompiler.h>
 #include <dxgi.h>
 #include <dxgi1_6.h>
 #include <algorithm>
@@ -21,6 +22,7 @@
 #include "../common/logging.h"
 #include "../common/rate_window_utils.h"
 #include "../common/thread_power_throttling_compat.h"
+#include "../mediaengine/video_format_policy.h"
 #include "mediaengine_loader.h"
 
 #ifdef _MSC_VER
@@ -153,6 +155,122 @@ inline void UpdateSmoothedAtomicUs(std::atomic<int64_t>& target, int64_t sampleU
     const int64_t next = current == 0 ? sampleUs : ((current * 7) + sampleUs) / 8;
     target.store(next, std::memory_order_relaxed);
 }
+
+const char* DxgiFormatName(DXGI_FORMAT format) {
+    switch (format) {
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+            return "R16G16B16A16_FLOAT";
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+            return "R10G10B10A2_UNORM";
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+            return "B8G8R8A8_UNORM";
+        case DXGI_FORMAT_R8G8B8A8_UNORM:
+            return "R8G8B8A8_UNORM";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+struct D3D11ContextStateGuard {
+    explicit D3D11ContextStateGuard(ID3D11DeviceContext* context) : context_(context) {
+        if (!context_) {
+            return;
+        }
+        context_->AddRef();
+        context_->OMGetRenderTargets(1, &rtv_, &dsv_);
+        viewportCount_ = 1;
+        context_->RSGetViewports(&viewportCount_, &viewport_);
+        context_->VSGetShader(&vs_, nullptr, nullptr);
+        context_->PSGetShader(&ps_, nullptr, nullptr);
+        context_->PSGetShaderResources(0, 1, &srv_);
+        context_->PSGetSamplers(0, 1, &sampler_);
+        context_->PSGetConstantBuffers(0, 1, &constantBuffer_);
+        context_->IAGetPrimitiveTopology(&topology_);
+        context_->IAGetInputLayout(&inputLayout_);
+    }
+
+    ~D3D11ContextStateGuard() {
+        if (!context_) {
+            return;
+        }
+        context_->OMSetRenderTargets(1, &rtv_, dsv_);
+        if (viewportCount_ > 0) {
+            context_->RSSetViewports(viewportCount_, &viewport_);
+        }
+        context_->VSSetShader(vs_, nullptr, 0);
+        context_->PSSetShader(ps_, nullptr, 0);
+        context_->PSSetShaderResources(0, 1, &srv_);
+        context_->PSSetSamplers(0, 1, &sampler_);
+        context_->PSSetConstantBuffers(0, 1, &constantBuffer_);
+        context_->IASetPrimitiveTopology(topology_);
+        context_->IASetInputLayout(inputLayout_);
+
+        SafeRelease(inputLayout_);
+        SafeRelease(constantBuffer_);
+        SafeRelease(sampler_);
+        SafeRelease(srv_);
+        SafeRelease(ps_);
+        SafeRelease(vs_);
+        SafeRelease(dsv_);
+        SafeRelease(rtv_);
+        SafeRelease(context_);
+    }
+
+    ID3D11DeviceContext* context_ = nullptr;
+    ID3D11RenderTargetView* rtv_ = nullptr;
+    ID3D11DepthStencilView* dsv_ = nullptr;
+    UINT viewportCount_ = 0;
+    D3D11_VIEWPORT viewport_ = {};
+    ID3D11VertexShader* vs_ = nullptr;
+    ID3D11PixelShader* ps_ = nullptr;
+    ID3D11ShaderResourceView* srv_ = nullptr;
+    ID3D11SamplerState* sampler_ = nullptr;
+    ID3D11Buffer* constantBuffer_ = nullptr;
+    D3D11_PRIMITIVE_TOPOLOGY topology_ = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+    ID3D11InputLayout* inputLayout_ = nullptr;
+};
+
+static const char* WGC_POOL_COPY_SHADER_SRC = R"(
+Texture2D texIn : register(t0);
+SamplerState sam : register(s0);
+
+cbuffer CopyCB : register(b0)
+{
+    uint colorTransform;
+    uint _pad0;
+    uint _pad1;
+    uint _pad2;
+};
+
+struct VS_OUT {
+    float4 pos : SV_POSITION;
+    float2 uv  : TEXCOORD;
+};
+
+VS_OUT VS_Main(uint id : SV_VertexID) {
+    VS_OUT o;
+    o.uv  = float2((id == 1) ? 2.0f : 0.0f, (id == 2) ? 2.0f : 0.0f);
+    o.pos = float4(o.uv.x * 2.0f - 1.0f, 1.0f - o.uv.y * 2.0f, 0.0f, 1.0f);
+    return o;
+}
+
+float3 LinearToSRGB(float3 c)
+{
+    float3 lo = c * 12.92;
+    float3 hi = 1.055 * pow(max(c, 0.0), 1.0 / 2.4) - 0.055;
+    return float3(c.r < 0.0031308 ? lo.r : hi.r,
+                  c.g < 0.0031308 ? lo.g : hi.g,
+                  c.b < 0.0031308 ? lo.b : hi.b);
+}
+
+float4 PS_Main(VS_OUT input) : SV_TARGET {
+    float4 c = texIn.Sample(sam, input.uv);
+    if (colorTransform != 0) {
+        c.rgb = LinearToSRGB(saturate(c.rgb));
+    }
+    return c;
+}
+)";
 
 void DisableCurrentWgcCallbackThreadPowerThrottling() {
     THREAD_POWER_THROTTLING_STATE throttlingState = {};
@@ -377,6 +495,7 @@ public:
     std::vector<ID3D11Texture2D*> texturePool_;         // Encoder-device textures
     std::vector<ID3D11Texture2D*> captureTexturePool_;  // Capture-device views when split
     std::vector<IDXGIKeyedMutex*> captureTextureMutexPool_;
+    std::vector<ID3D11RenderTargetView*> poolRenderTargetViews_;
     int32_t poolWidth_ = 0;
     int32_t poolHeight_ = 0;
     std::atomic<uint32_t> poolWriteIndex_{0};
@@ -488,7 +607,25 @@ public:
     ce::rate_window::SlidingRateWindow<> deliveredRateWindow_;
     ce::rate_window::SlidingRateWindow<> inputRateWindow_;
 
+    DXGI_FORMAT poolSourceFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
     DXGI_FORMAT poolFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+    DXGI_FORMAT smoothnessSourceFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+    DXGI_FORMAT smoothnessCopyFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+    uint64_t smoothnessSourceBytesPerSurface_ = 0;
+    uint64_t smoothnessCopyBytesPerSurface_ = 0;
+    uint64_t smoothnessSourceEstimatedVramBytes_ = 0;
+    uint64_t smoothnessCopyEstimatedVramBytes_ = 0;
+    bool compactRetainedCopyActive_ = false;
+    ID3D11VertexShader* poolCopyVS_ = nullptr;
+    ID3D11PixelShader* poolCopyPS_ = nullptr;
+    ID3D11SamplerState* poolCopySampler_ = nullptr;
+    ID3D11Buffer* poolCopyCB_ = nullptr;
+    ID3D11Texture2D* poolCopyStagingTexture_ = nullptr;
+    ID3D11ShaderResourceView* poolCopyStagingSrv_ = nullptr;
+    uint32_t poolCopyStagingWidth_ = 0;
+    uint32_t poolCopyStagingHeight_ = 0;
+    DXGI_FORMAT poolCopyStagingFormat_ = DXGI_FORMAT_UNKNOWN;
+    std::atomic<int64_t> lastPoolConvertUs_{0};
     winrt::DirectXPixelFormat capturePixelFormat_ = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
     DXGI_FORMAT captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
     HWND targetWindow_ = nullptr;
@@ -635,14 +772,287 @@ public:
         }
     }
 
-    ce::capture_policy::WgcSmoothnessSurfaceBudget ComputeTexturePoolBudget(uint32_t width, uint32_t height,
-                                                                            DXGI_FORMAT format) const {
-        return ce::capture_policy::ComputeWgcSmoothnessSurfaceBudget(
-            smoothnessBufferEnabled_ ? smoothnessOutputFps_ : 0u, smoothnessBufferEnabled_ ? smoothnessMaxMs_ : 0u,
-            width, height, BytesPerPixelForFormat(format), smoothnessVramBudgetMb_, smoothnessSyncDelayFrames_);
+    DXGI_FORMAT GetRetainedPoolFormat(DXGI_FORMAT sourceFormat) const {
+        if (ce::video_format::ShouldApplySdrLinearToSrgbBeforeRgb10(sourceFormat, captureIsHDR_)) {
+            return DXGI_FORMAT_R10G10B10A2_UNORM;
+        }
+        return sourceFormat;
     }
 
+    bool IsCompactRetainedCopy(DXGI_FORMAT sourceFormat, DXGI_FORMAT retainedFormat) const {
+        return retainedFormat != sourceFormat;
+    }
+
+    void ReleasePoolConversionResources() {
+        for (auto* rtv : poolRenderTargetViews_) {
+            SafeRelease(rtv);
+        }
+        poolRenderTargetViews_.clear();
+        SafeRelease(poolCopyStagingSrv_);
+        SafeRelease(poolCopyStagingTexture_);
+        poolCopyStagingWidth_ = 0;
+        poolCopyStagingHeight_ = 0;
+        poolCopyStagingFormat_ = DXGI_FORMAT_UNKNOWN;
+        SafeRelease(poolCopyCB_);
+        SafeRelease(poolCopySampler_);
+        SafeRelease(poolCopyPS_);
+        SafeRelease(poolCopyVS_);
+        lastPoolConvertUs_.store(0, std::memory_order_relaxed);
+    }
+
+    bool EnsurePoolCopyShader() {
+        if (poolCopyVS_ && poolCopyPS_ && poolCopySampler_ && poolCopyCB_) {
+            return true;
+        }
+        if (!d3dDevice_) {
+            return false;
+        }
+
+        HMODULE d3dCompiler = LoadLibraryW(L"d3dcompiler_47.dll");
+        if (!d3dCompiler) {
+            LogError("[WGC] Failed to load d3dcompiler_47.dll for retained-copy conversion");
+            return false;
+        }
+
+        typedef HRESULT(WINAPI * PFN_D3DCompile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*,
+                                                 LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+        auto d3dCompile = reinterpret_cast<PFN_D3DCompile>(GetProcAddress(d3dCompiler, "D3DCompile"));
+        if (!d3dCompile) {
+            LogError("[WGC] Failed to resolve D3DCompile for retained-copy conversion");
+            FreeLibrary(d3dCompiler);
+            return false;
+        }
+
+        ID3DBlob* vsBlob = nullptr;
+        ID3DBlob* psBlob = nullptr;
+        ID3DBlob* errBlob = nullptr;
+        HRESULT hr = d3dCompile(WGC_POOL_COPY_SHADER_SRC, strlen(WGC_POOL_COPY_SHADER_SRC), nullptr, nullptr, nullptr,
+                                "VS_Main", "vs_4_0", 0, 0, &vsBlob, &errBlob);
+        if (FAILED(hr)) {
+            if (errBlob) {
+                LogError("[WGC] Retained-copy VS compile failed: %s", static_cast<const char*>(errBlob->GetBufferPointer()));
+                errBlob->Release();
+            }
+            FreeLibrary(d3dCompiler);
+            return false;
+        }
+        SafeRelease(errBlob);
+
+        hr = d3dCompile(WGC_POOL_COPY_SHADER_SRC, strlen(WGC_POOL_COPY_SHADER_SRC), nullptr, nullptr, nullptr,
+                        "PS_Main", "ps_4_0", 0, 0, &psBlob, &errBlob);
+        if (FAILED(hr)) {
+            if (errBlob) {
+                LogError("[WGC] Retained-copy PS compile failed: %s", static_cast<const char*>(errBlob->GetBufferPointer()));
+                errBlob->Release();
+            }
+            SafeRelease(vsBlob);
+            FreeLibrary(d3dCompiler);
+            return false;
+        }
+        SafeRelease(errBlob);
+
+        hr = d3dDevice_->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &poolCopyVS_);
+        SafeRelease(vsBlob);
+        if (FAILED(hr)) {
+            LogError("[WGC] Retained-copy CreateVertexShader failed: 0x%08lX", (unsigned long)hr);
+            SafeRelease(psBlob);
+            FreeLibrary(d3dCompiler);
+            return false;
+        }
+
+        hr = d3dDevice_->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &poolCopyPS_);
+        SafeRelease(psBlob);
+        if (FAILED(hr)) {
+            LogError("[WGC] Retained-copy CreatePixelShader failed: 0x%08lX", (unsigned long)hr);
+            SafeRelease(poolCopyVS_);
+            FreeLibrary(d3dCompiler);
+            return false;
+        }
+        FreeLibrary(d3dCompiler);
+
+        D3D11_SAMPLER_DESC samplerDesc = {};
+        samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+        samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+        samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+        samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        hr = d3dDevice_->CreateSamplerState(&samplerDesc, &poolCopySampler_);
+        if (FAILED(hr)) {
+            LogError("[WGC] Retained-copy CreateSamplerState failed: 0x%08lX", (unsigned long)hr);
+            SafeRelease(poolCopyPS_);
+            SafeRelease(poolCopyVS_);
+            return false;
+        }
+
+        D3D11_BUFFER_DESC cbDesc = {};
+        cbDesc.ByteWidth = 16;
+        cbDesc.Usage = D3D11_USAGE_DYNAMIC;
+        cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        hr = d3dDevice_->CreateBuffer(&cbDesc, nullptr, &poolCopyCB_);
+        if (FAILED(hr)) {
+            LogError("[WGC] Retained-copy CreateBuffer failed: 0x%08lX", (unsigned long)hr);
+            SafeRelease(poolCopySampler_);
+            SafeRelease(poolCopyPS_);
+            SafeRelease(poolCopyVS_);
+            return false;
+        }
+
+        LogInfo("[WGC] Retained-copy conversion shader created");
+        return true;
+    }
+
+    bool CreatePoolCopySourceSrv(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc,
+                                 DXGI_FORMAT inputSrvFormat, ID3D11ShaderResourceView** outSrv,
+                                 bool* usedStaging) {
+        if (!sourceTexture || !outSrv) {
+            return false;
+        }
+        *outSrv = nullptr;
+        if (usedStaging) {
+            *usedStaging = false;
+        }
+
+        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+        srvDesc.Format = inputSrvFormat;
+        srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MipLevels = 1;
+
+        HRESULT hr = d3dDevice_->CreateShaderResourceView(sourceTexture, &srvDesc, outSrv);
+        if (SUCCEEDED(hr) && *outSrv) {
+            return true;
+        }
+
+        static std::atomic<uint32_t> directSrvFailLogCount{0};
+        const uint32_t failLog = directSrvFailLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (failLog <= 4) {
+            LogInfo(
+                "[WGC] Direct WGC source SRV unavailable for retained-copy conversion; using reusable staging "
+                "(srcFmt=%s srvFmt=%s bind=0x%X misc=0x%X hr=0x%08lX)",
+                DxgiFormatName(sourceDesc.Format), DxgiFormatName(inputSrvFormat), sourceDesc.BindFlags,
+                sourceDesc.MiscFlags, (unsigned long)hr);
+        }
+
+        if (!poolCopyStagingTexture_ || poolCopyStagingWidth_ != sourceDesc.Width ||
+            poolCopyStagingHeight_ != sourceDesc.Height || poolCopyStagingFormat_ != sourceDesc.Format) {
+            SafeRelease(poolCopyStagingSrv_);
+            SafeRelease(poolCopyStagingTexture_);
+
+            D3D11_TEXTURE2D_DESC stagingDesc = {};
+            stagingDesc.Width = sourceDesc.Width;
+            stagingDesc.Height = sourceDesc.Height;
+            stagingDesc.MipLevels = 1;
+            stagingDesc.ArraySize = 1;
+            stagingDesc.Format = sourceDesc.Format;
+            stagingDesc.SampleDesc.Count = 1;
+            stagingDesc.Usage = D3D11_USAGE_DEFAULT;
+            stagingDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            hr = d3dDevice_->CreateTexture2D(&stagingDesc, nullptr, &poolCopyStagingTexture_);
+            if (FAILED(hr) || !poolCopyStagingTexture_) {
+                LogError("[WGC] Failed to create retained-copy source staging texture: 0x%08lX", (unsigned long)hr);
+                return false;
+            }
+
+            hr = d3dDevice_->CreateShaderResourceView(poolCopyStagingTexture_, &srvDesc, &poolCopyStagingSrv_);
+            if (FAILED(hr) || !poolCopyStagingSrv_) {
+                LogError("[WGC] Failed to create retained-copy source staging SRV: 0x%08lX", (unsigned long)hr);
+                SafeRelease(poolCopyStagingTexture_);
+                return false;
+            }
+
+            poolCopyStagingWidth_ = sourceDesc.Width;
+            poolCopyStagingHeight_ = sourceDesc.Height;
+            poolCopyStagingFormat_ = sourceDesc.Format;
+            LogInfo("[WGC] Retained-copy source staging created: %ux%u fmt=%s bytes=%lluMB", sourceDesc.Width,
+                    sourceDesc.Height, DxgiFormatName(sourceDesc.Format),
+                    static_cast<unsigned long long>(
+                        (ce::capture_policy::EstimateWgcSurfaceBytes(sourceDesc.Width, sourceDesc.Height,
+                                                                     BytesPerPixelForFormat(sourceDesc.Format)) +
+                         1024ull * 1024ull - 1ull) /
+                        (1024ull * 1024ull)));
+        }
+
+        d3dContext_->CopyResource(poolCopyStagingTexture_, sourceTexture);
+        poolCopyStagingSrv_->AddRef();
+        *outSrv = poolCopyStagingSrv_;
+        if (usedStaging) {
+            *usedStaging = true;
+        }
+        return true;
+    }
+
+    bool RenderFrameToPoolSlot(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc,
+                               ID3D11RenderTargetView* targetRtv, bool linearToSrgb, bool* usedStaging) {
+        if (!sourceTexture || !targetRtv || !d3dContext_ || !d3dDevice_) {
+            return false;
+        }
+        if (!EnsurePoolCopyShader()) {
+            return false;
+        }
+
+        const DXGI_FORMAT inputSrvFormat = ce::video_format::GetRgbShaderResourceViewFormat(sourceDesc.Format);
+        if (inputSrvFormat == DXGI_FORMAT_UNKNOWN) {
+            LogError("[WGC] Unsupported retained-copy source format for shader conversion: %s",
+                     DxgiFormatName(sourceDesc.Format));
+            return false;
+        }
+
+        ID3D11ShaderResourceView* sourceSrv = nullptr;
+        bool staging = false;
+        if (!CreatePoolCopySourceSrv(sourceTexture, sourceDesc, inputSrvFormat, &sourceSrv, &staging)) {
+            return false;
+        }
+        if (usedStaging) {
+            *usedStaging = staging;
+        }
+
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
+        HRESULT hr = d3dContext_->Map(poolCopyCB_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (FAILED(hr) || !mapped.pData) {
+            LogError("[WGC] Failed to map retained-copy constant buffer: 0x%08lX", (unsigned long)hr);
+            SafeRelease(sourceSrv);
+            return false;
+        }
+        uint32_t* cbData = static_cast<uint32_t*>(mapped.pData);
+        cbData[0] = linearToSrgb ? 1u : 0u;
+        cbData[1] = 0;
+        cbData[2] = 0;
+        cbData[3] = 0;
+        d3dContext_->Unmap(poolCopyCB_, 0);
+
+        D3D11ContextStateGuard stateGuard(d3dContext_);
+        D3D11_VIEWPORT viewport = {};
+        viewport.Width = static_cast<float>(sourceDesc.Width);
+        viewport.Height = static_cast<float>(sourceDesc.Height);
+        viewport.MaxDepth = 1.0f;
+        d3dContext_->RSSetViewports(1, &viewport);
+        d3dContext_->OMSetRenderTargets(1, &targetRtv, nullptr);
+        d3dContext_->VSSetShader(poolCopyVS_, nullptr, 0);
+        d3dContext_->PSSetShader(poolCopyPS_, nullptr, 0);
+        d3dContext_->PSSetShaderResources(0, 1, &sourceSrv);
+        d3dContext_->PSSetSamplers(0, 1, &poolCopySampler_);
+        d3dContext_->PSSetConstantBuffers(0, 1, &poolCopyCB_);
+        d3dContext_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        d3dContext_->IASetInputLayout(nullptr);
+        d3dContext_->Draw(3, 0);
+
+        ID3D11RenderTargetView* nullRtv = nullptr;
+        ID3D11ShaderResourceView* nullSrv = nullptr;
+        d3dContext_->OMSetRenderTargets(1, &nullRtv, nullptr);
+        d3dContext_->PSSetShaderResources(0, 1, &nullSrv);
+        SafeRelease(sourceSrv);
+        return true;
+    }
+
+    ce::capture_policy::WgcSmoothnessSurfaceBudget ComputeTexturePoolBudget(uint32_t width, uint32_t height,
+                                                                            DXGI_FORMAT format) const {
+        const DXGI_FORMAT retainedFormat = GetRetainedPoolFormat(format);
+        return ce::capture_policy::ComputeWgcSmoothnessSurfaceBudget(
+            smoothnessBufferEnabled_ ? smoothnessOutputFps_ : 0u, smoothnessBufferEnabled_ ? smoothnessMaxMs_ : 0u,
+            width, height, BytesPerPixelForFormat(format), BytesPerPixelForFormat(retainedFormat),
+            smoothnessVramBudgetMb_, smoothnessSyncDelayFrames_);
+    }
     void UpdateSmoothnessBudget(uint32_t width, uint32_t height, DXGI_FORMAT format, bool logBudget) {
+        const DXGI_FORMAT retainedFormat = GetRetainedPoolFormat(format);
         const auto budget = ComputeTexturePoolBudget(width, height, format);
         smoothnessRetainedFrames_ = smoothnessBufferEnabled_ ? budget.retainedExtraFrames : 0u;
         smoothnessRetainedFrameCap_ = budget.retainedFrameCap;
@@ -650,9 +1060,16 @@ public:
         smoothnessBudgetSurfaceCount_ = budget.budgetSurfaceCount;
         smoothnessSafetySlots_ = budget.safetySlots;
         smoothnessReservedFreeSlots_ = budget.reservedFreeCopySlots;
+        smoothnessSourceFormat_ = format;
+        smoothnessCopyFormat_ = retainedFormat;
+        smoothnessSourceBytesPerSurface_ = budget.sourceBytesPerSurface;
+        smoothnessCopyBytesPerSurface_ = budget.copyBytesPerSurface;
+        smoothnessSourceEstimatedVramBytes_ = budget.sourceEstimatedBytes;
+        smoothnessCopyEstimatedVramBytes_ = budget.copyEstimatedBytes;
         smoothnessEstimatedVramBytes_ = budget.estimatedBytes;
         smoothnessBudgetExhausted_ = budget.budgetExhausted;
         texturePoolSlotCount_ = budget.copyPoolSlots;
+        compactRetainedCopyActive_ = IsCompactRetainedCopy(format, retainedFormat);
         ingressRetainedFrameCap_.store(smoothnessRetainedFrameCap_, std::memory_order_relaxed);
         if (logBudget) {
             const uint32_t desiredFrames = smoothnessBufferEnabled_ ? ce::capture_policy::GetWgcSmoothnessDesiredFrames(
@@ -662,19 +1079,25 @@ public:
                 "[WGC] Smoothness buffer budget: enabled=%d targetMs=%u outputFps=%u desiredFrames=%u "
                 "retainedFrames=%u sourceFramePoolBuffers=%u copyPoolSlots=%u budgetSurfaces=%u syncFrames=%u "
                 "extraFrames=%u retainedCap=%u reservedFreeSlots=%u safetySlots=%u fmt=%d %ux%u bpp=%u budget=%uMB "
-                "estimated=%lluMB capLimited=%d budgetExhausted=%d",
+                "sourceFmt=%s retainedFmt=%s compactRetained=%d sourceSurfaceMB=%.1f copySurfaceMB=%.1f "
+                "sourceBudgetMB=%.1f copyBudgetMB=%.1f estimated=%lluMB capLimited=%d budgetExhausted=%d",
                 smoothnessBufferEnabled_ ? 1 : 0, smoothnessMaxMs_, smoothnessOutputFps_, desiredFrames,
                 smoothnessRetainedFrames_, sourceFramePoolBufferCount_, texturePoolSlotCount_,
                 smoothnessBudgetSurfaceCount_, smoothnessSyncDelayFrames_, smoothnessRetainedFrames_,
                 smoothnessRetainedFrameCap_, smoothnessReservedFreeSlots_, smoothnessSafetySlots_, format, width,
-                height, BytesPerPixelForFormat(format), smoothnessVramBudgetMb_,
+                height, BytesPerPixelForFormat(format), smoothnessVramBudgetMb_, DxgiFormatName(format),
+                DxgiFormatName(retainedFormat), compactRetainedCopyActive_ ? 1 : 0,
+                static_cast<double>(smoothnessSourceBytesPerSurface_) / (1024.0 * 1024.0),
+                static_cast<double>(smoothnessCopyBytesPerSurface_) / (1024.0 * 1024.0),
+                static_cast<double>(smoothnessSourceEstimatedVramBytes_) / (1024.0 * 1024.0),
+                static_cast<double>(smoothnessCopyEstimatedVramBytes_) / (1024.0 * 1024.0),
                 static_cast<unsigned long long>((smoothnessEstimatedVramBytes_ + 1024ull * 1024ull - 1ull) /
                                                 (1024ull * 1024ull)),
                 budget.capLimited ? 1 : 0, budget.budgetExhausted ? 1 : 0);
         }
     }
-
     void ReleaseTexturePool() {
+        ReleasePoolConversionResources();
         for (auto* mutex : captureTextureMutexPool_) {
             SafeRelease(mutex);
         }
@@ -691,7 +1114,9 @@ public:
         poolLeaseState_.reset();
         poolWidth_ = 0;
         poolHeight_ = 0;
+        poolSourceFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
         poolFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
+        compactRetainedCopyActive_ = false;
         poolWriteIndex_.store(0, std::memory_order_relaxed);
     }
 
@@ -861,6 +1286,7 @@ public:
         }
         std::fill(poolSlotLastWriteQpc_.begin(), poolSlotLastWriteQpc_.end(), 0);
         lastCopyUs_.store(0, std::memory_order_relaxed);
+        lastPoolConvertUs_.store(0, std::memory_order_relaxed);
         lastDeliveredSourceQpc_.store(0, std::memory_order_relaxed);
         lastObservedRawSourceQpc_.store(0, std::memory_order_relaxed);
         lastAssignedSourceQpc_.store(0, std::memory_order_relaxed);
@@ -1400,14 +1826,19 @@ public:
             DescribeCaptureFormat());
     }
 
-    bool EnsureTexturePool(uint32_t width, uint32_t height, DXGI_FORMAT format = DXGI_FORMAT_B8G8R8A8_UNORM) {
+    bool EnsureTexturePool(uint32_t width, uint32_t height,
+                           DXGI_FORMAT sourceFormat = DXGI_FORMAT_B8G8R8A8_UNORM) {
         const bool splitDevicePool =
             usingDedicatedCaptureDevice_ && encoderDevice_ && d3dDevice_ && encoderDevice_ != d3dDevice_;
-        UpdateSmoothnessBudget(width, height, format, false);
+        const DXGI_FORMAT retainedFormat = GetRetainedPoolFormat(sourceFormat);
+        const bool compactRetainedCopy = IsCompactRetainedCopy(sourceFormat, retainedFormat);
+        UpdateSmoothnessBudget(width, height, sourceFormat, false);
         const uint32_t desiredSlots = std::max<uint32_t>(1u, texturePoolSlotCount_);
-        if (poolWidth_ == (int32_t)width && poolHeight_ == (int32_t)height && poolFormat_ == format &&
+        if (poolWidth_ == (int32_t)width && poolHeight_ == (int32_t)height && poolSourceFormat_ == sourceFormat &&
+            poolFormat_ == retainedFormat &&
             texturePool_.size() == desiredSlots && !texturePool_.empty() && texturePool_[0] &&
-            (!splitDevicePool || (!captureTexturePool_.empty() && captureTexturePool_[0]))) {
+            (!splitDevicePool || (!captureTexturePool_.empty() && captureTexturePool_[0])) &&
+            (!compactRetainedCopy || (!poolRenderTargetViews_.empty() && poolRenderTargetViews_[0]))) {
             return true;
         }
 
@@ -1415,6 +1846,7 @@ public:
         texturePool_.assign(desiredSlots, nullptr);
         captureTexturePool_.assign(desiredSlots, nullptr);
         captureTextureMutexPool_.assign(desiredSlots, nullptr);
+        poolRenderTargetViews_.assign(desiredSlots, nullptr);
         poolSlotLastWriteQpc_.assign(desiredSlots, 0);
 
         D3D11_TEXTURE2D_DESC copyDesc = {};
@@ -1422,7 +1854,7 @@ public:
         copyDesc.Height = height;
         copyDesc.MipLevels = 1;
         copyDesc.ArraySize = 1;
-        copyDesc.Format = format;  // Match WGC source format
+        copyDesc.Format = retainedFormat;
         copyDesc.SampleDesc.Count = 1;
         copyDesc.Usage = D3D11_USAGE_DEFAULT;
         // CRITICAL: VP input view requires RENDER_TARGET bind flag
@@ -1474,11 +1906,23 @@ public:
                     return false;
                 }
             }
+
+            if (compactRetainedCopy) {
+                ID3D11Texture2D* renderTarget = captureTexturePool_[i] ? captureTexturePool_[i] : texturePool_[i];
+                hr = d3dDevice_->CreateRenderTargetView(renderTarget, nullptr, &poolRenderTargetViews_[i]);
+                if (FAILED(hr) || !poolRenderTargetViews_[i]) {
+                    LogError("[WGC] Failed to create retained-copy RTV for pool[%u] fmt=%s: 0x%08lX", i,
+                             DxgiFormatName(retainedFormat), (unsigned long)hr);
+                    ReleaseTexturePool();
+                    return false;
+                }
+            }
         }
 
         poolWidth_ = width;
         poolHeight_ = height;
-        poolFormat_ = format;
+        poolSourceFormat_ = sourceFormat;
+        poolFormat_ = retainedFormat;
         poolGeneration_++;
         auto leaseState = std::make_shared<WgcPoolLeaseState>();
         leaseState->Init(desiredSlots, poolGeneration_);
@@ -1486,14 +1930,20 @@ public:
         poolWriteIndex_.store(0, std::memory_order_relaxed);
 
         LogInfo(
-            "[WGC] Texture pool created: %dx%d fmt=%d sourceFramePoolBuffers=%u copyPoolSlots=%u budgetSurfaces=%u "
+            "[WGC] Texture pool created: %dx%d sourceFmt=%s retainedFmt=%s compactRetained=%d "
+            "sourceFramePoolBuffers=%u copyPoolSlots=%u budgetSurfaces=%u "
             "syncFrames=%u extraFrames=%u retainedCap=%u reservedFreeSlots=%u safetySlots=%u estimatedSmooth=%lluMB "
+            "sourceBudget=%.1fMB copyBudget=%.1fMB convertLast=%lldus "
             "generation=%llu (%s)",
-            width, height, format, sourceFramePoolBufferCount_, desiredSlots, smoothnessBudgetSurfaceCount_,
+            width, height, DxgiFormatName(sourceFormat), DxgiFormatName(retainedFormat),
+            compactRetainedCopy ? 1 : 0, sourceFramePoolBufferCount_, desiredSlots, smoothnessBudgetSurfaceCount_,
             smoothnessSyncDelayFrames_, smoothnessRetainedFrames_, smoothnessRetainedFrameCap_,
             smoothnessReservedFreeSlots_, smoothnessSafetySlots_,
             static_cast<unsigned long long>((smoothnessEstimatedVramBytes_ + 1024ull * 1024ull - 1ull) /
                                             (1024ull * 1024ull)),
+            static_cast<double>(smoothnessSourceEstimatedVramBytes_) / (1024.0 * 1024.0),
+            static_cast<double>(smoothnessCopyEstimatedVramBytes_) / (1024.0 * 1024.0),
+            static_cast<long long>(lastPoolConvertUs_.load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(poolGeneration_),
             splitDevicePool ? "dedicated capture device" : "shared device");
         return true;
@@ -1655,7 +2105,19 @@ public:
             LARGE_INTEGER copyEnd = {};
             QueryPerformanceCounter(&copyStart);
 
-            d3dContext_->CopyResource(copyTarget, sourceTexture);
+            const bool compactRetainedCopy = IsCompactRetainedCopy(sourceDesc.Format, poolFormat_);
+            bool usedConversionStaging = false;
+            bool copySucceeded = true;
+            if (compactRetainedCopy) {
+                const bool linearToSrgb =
+                    ce::video_format::ShouldApplySdrLinearToSrgbBeforeRgb10(sourceDesc.Format, captureIsHDR_);
+                ID3D11RenderTargetView* targetRtv =
+                    idx < poolRenderTargetViews_.size() ? poolRenderTargetViews_[idx] : nullptr;
+                copySucceeded =
+                    RenderFrameToPoolSlot(sourceTexture, sourceDesc, targetRtv, linearToSrgb, &usedConversionStaging);
+            } else {
+                d3dContext_->CopyResource(copyTarget, sourceTexture);
+            }
             if (mutexAcquired) {
                 if (skipSplitDeviceFlush_) {
                     splitDeviceFlushSkippedCount_.fetch_add(1, std::memory_order_relaxed);
@@ -1673,11 +2135,32 @@ public:
                 }
             }
 
+            if (!copySucceeded) {
+                skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+                poolDropCount_.fetch_add(1, std::memory_order_relaxed);
+                slotLease.Reset();
+                static std::atomic<uint32_t> conversionFailLogCount{0};
+                const uint32_t failLog = conversionFailLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (failLog <= 4) {
+                    LogWarn(
+                        "[WGC] Retained-copy conversion failed; dropped WGC frame "
+                        "(sourceFmt=%s retainedFmt=%s slot=%u generation=%llu frameQpc=%lld)",
+                        DxgiFormatName(sourceDesc.Format), DxgiFormatName(poolFormat_), idx,
+                        static_cast<unsigned long long>(poolGeneration), static_cast<long long>(sourceFrameQpc));
+                }
+                return false;
+            }
+
             QueryPerformanceCounter(&copyEnd);
 
             int64_t copyUs = 0;
             if (qpcFreq_ > 0) {
                 copyUs = ((copyEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq_;
+            }
+            if (compactRetainedCopy) {
+                lastPoolConvertUs_.store(copyUs, std::memory_order_relaxed);
+            } else {
+                lastPoolConvertUs_.store(0, std::memory_order_relaxed);
             }
             const int64_t previousSlotWriteQpc = poolSlotLastWriteQpc_[idx];
             poolSlotLastWriteQpc_[idx] = copyEnd.QuadPart;
@@ -1720,9 +2203,12 @@ public:
             if (copiedLog <= 8 || (copiedLog % 1000u) == 0u) {
                 LogInfo(
                     "[WGC] Pool frame copied: slot=%u generation=%llu copyUs=%lld sourceQpc=%lld rawQpc=%lld "
-                    "leasedMax=%u freeMin=%u",
+                    "sourceFmt=%s retainedFmt=%s compactRetained=%d staging=%d convertUs=%lld leasedMax=%u freeMin=%u",
                     idx, static_cast<unsigned long long>(poolGeneration), static_cast<long long>(copyUs),
                     static_cast<long long>(sourceFrameQpc), static_cast<long long>(rawSourceFrameQpc),
+                    DxgiFormatName(sourceDesc.Format), DxgiFormatName(poolFormat_), compactRetainedCopy ? 1 : 0,
+                    usedConversionStaging ? 1 : 0,
+                    static_cast<long long>(lastPoolConvertUs_.load(std::memory_order_relaxed)),
                     leaseState ? leaseState->leasedMax.load(std::memory_order_relaxed) : 0u,
                     leaseState ? leaseState->freeMin.load(std::memory_order_relaxed) : 0u);
             }
@@ -3054,6 +3540,70 @@ uint32_t WGCCapture::GetSmoothnessReservedFreeSlotCount() const {
 uint64_t WGCCapture::GetSmoothnessEstimatedVramBytes() const {
 #if HAS_WGC
     return impl_ ? impl_->smoothnessEstimatedVramBytes_ : 0;
+#else
+    return 0;
+#endif
+}
+
+uint64_t WGCCapture::GetSmoothnessSourceEstimatedVramBytes() const {
+#if HAS_WGC
+    return impl_ ? impl_->smoothnessSourceEstimatedVramBytes_ : 0;
+#else
+    return 0;
+#endif
+}
+
+uint64_t WGCCapture::GetSmoothnessCopyEstimatedVramBytes() const {
+#if HAS_WGC
+    return impl_ ? impl_->smoothnessCopyEstimatedVramBytes_ : 0;
+#else
+    return 0;
+#endif
+}
+
+uint64_t WGCCapture::GetSmoothnessSourceBytesPerSurface() const {
+#if HAS_WGC
+    return impl_ ? impl_->smoothnessSourceBytesPerSurface_ : 0;
+#else
+    return 0;
+#endif
+}
+
+uint64_t WGCCapture::GetSmoothnessCopyBytesPerSurface() const {
+#if HAS_WGC
+    return impl_ ? impl_->smoothnessCopyBytesPerSurface_ : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetSmoothnessSourceDxgiFormat() const {
+#if HAS_WGC
+    return impl_ ? static_cast<uint32_t>(impl_->smoothnessSourceFormat_) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetSmoothnessCopyDxgiFormat() const {
+#if HAS_WGC
+    return impl_ ? static_cast<uint32_t>(impl_->smoothnessCopyFormat_) : 0;
+#else
+    return 0;
+#endif
+}
+
+bool WGCCapture::IsCompactRetainedCopyActive() const {
+#if HAS_WGC
+    return impl_ ? impl_->compactRetainedCopyActive_ : false;
+#else
+    return false;
+#endif
+}
+
+int64_t WGCCapture::GetLastPoolConvertTimeUs() const {
+#if HAS_WGC
+    return impl_ ? impl_->lastPoolConvertUs_.load(std::memory_order_relaxed) : 0;
 #else
     return 0;
 #endif

@@ -159,6 +159,14 @@ public:
     uint32_t GetSmoothnessRetainedFrameCap() const;
     uint32_t GetSmoothnessReservedFreeSlotCount() const;
     uint64_t GetSmoothnessEstimatedVramBytes() const;
+    uint64_t GetSmoothnessSourceEstimatedVramBytes() const;
+    uint64_t GetSmoothnessCopyEstimatedVramBytes() const;
+    uint64_t GetSmoothnessSourceBytesPerSurface() const;
+    uint64_t GetSmoothnessCopyBytesPerSurface() const;
+    uint32_t GetSmoothnessSourceDxgiFormat() const;
+    uint32_t GetSmoothnessCopyDxgiFormat() const;
+    bool IsCompactRetainedCopyActive() const;
+    int64_t GetLastPoolConvertTimeUs() const;
     uint32_t GetIngressAcceptedCount() const;
     uint32_t GetIngressDecimatedCount() const;
     uint32_t GetIngressAcceptedLowWaterCount() const;

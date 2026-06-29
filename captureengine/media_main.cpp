@@ -1867,7 +1867,9 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 "CbProc: %lld/%lldus CbDrainMax: %u | Copy: %lldus | "
                 "SlotAge: %lldus FastSlot: %u | PoolLease: max=%u freeMin=%u satDrop=%u overwritePrevented=%u "
                 "mismatch=%u sourceFramePoolBuffers=%u copyPoolSlots=%u budgetSurfaces=%u syncFrames=%u "
-                "extraFrames=%u retainedCap=%u reservedFree=%u safetySlots=%u | "
+                "extraFrames=%u retainedCap=%u reservedFree=%u safetySlots=%u "
+                "sourceFmt=%u copyFmt=%u compactRetained=%d sourceBudgetMB=%.1f copyBudgetMB=%.1f "
+                "sourceSurfaceMB=%.1f copySurfaceMB=%.1f convertUs=%lld | "
                 "Ingress: accepted=%u decimated=%u retained=%u/%u lowWater=%u reason=%s "
                 "accLow=%u accRec=%u accSrcBelow=%u accHealthy=%u "
                 "decSoft=%u decHard=%u decCredit=%u softPress=%u hardPress=%u | "
@@ -1887,6 +1889,13 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 g_WgcCap->GetSmoothnessBudgetSurfaceCount(), g_WgcCap->GetSmoothnessSyncFrameCount(),
                 g_WgcCap->GetSmoothnessRetainedFrameCount(), g_WgcCap->GetSmoothnessRetainedFrameCap(),
                 g_WgcCap->GetSmoothnessReservedFreeSlotCount(), g_WgcCap->GetSmoothnessSafetySlotCount(),
+                g_WgcCap->GetSmoothnessSourceDxgiFormat(), g_WgcCap->GetSmoothnessCopyDxgiFormat(),
+                g_WgcCap->IsCompactRetainedCopyActive() ? 1 : 0,
+                static_cast<double>(g_WgcCap->GetSmoothnessSourceEstimatedVramBytes()) / (1024.0 * 1024.0),
+                static_cast<double>(g_WgcCap->GetSmoothnessCopyEstimatedVramBytes()) / (1024.0 * 1024.0),
+                static_cast<double>(g_WgcCap->GetSmoothnessSourceBytesPerSurface()) / (1024.0 * 1024.0),
+                static_cast<double>(g_WgcCap->GetSmoothnessCopyBytesPerSurface()) / (1024.0 * 1024.0),
+                static_cast<long long>(g_WgcCap->GetLastPoolConvertTimeUs()),
                 ingressAcceptedDelta, ingressDecimatedDelta, g_WgcCap->GetIngressRetainedFrameCount(),
                 g_WgcCap->GetIngressRetainedFrameCap(), g_WgcCap->GetIngressLowWaterFrameCount(),
                 WgcIngressAdmissionReasonName(g_WgcCap->GetIngressAdmissionReasonCode()), ingressAcceptedLowWaterDelta,
@@ -2401,6 +2410,9 @@ void EncoderThreadFunc(const AppConfig& config) {
         uint32_t worstSelectionErrorUs = 0;
         uint32_t worstWgcSelectionErrorUs = 0;
         uint32_t worstOldestBufferedFrameAgeUs = 0;
+        uint32_t worstOneSecondEmitCount = 0;
+        uint32_t worstOneSecondUniqueCount = 0;
+        uint32_t worstOneSecondRepeatCount = 0;
         uint32_t lowSourceImmediateExits = 0;
         double maxShortfallDurationMs = 0.0;
         double maxEncodeEmaMs = 0.0;
@@ -2426,6 +2438,15 @@ void EncoderThreadFunc(const AppConfig& config) {
             uint32_t dupDeferred, uint32_t dupTimer, uint32_t dupDrain, uint32_t oldestBufferedFrameAgeUs,
             double shortfallDurationMs, double sustainableOutputFps) {
             captureSessionSummary.duplicateTicks += cadenceCounters.liveTickDuplicateCount;
+            if (cadenceCounters.liveTickEmitCount > 0 &&
+                (cadenceCounters.liveTickDuplicateCount > captureSessionSummary.worstOneSecondRepeatCount ||
+                 (cadenceCounters.liveTickDuplicateCount == captureSessionSummary.worstOneSecondRepeatCount &&
+                  (captureSessionSummary.worstOneSecondEmitCount == 0 ||
+                   cadenceCounters.liveTickUniqueCount < captureSessionSummary.worstOneSecondUniqueCount)))) {
+                captureSessionSummary.worstOneSecondEmitCount = cadenceCounters.liveTickEmitCount;
+                captureSessionSummary.worstOneSecondUniqueCount = cadenceCounters.liveTickUniqueCount;
+                captureSessionSummary.worstOneSecondRepeatCount = cadenceCounters.liveTickDuplicateCount;
+            }
             captureSessionSummary.duplicateNoSourceTicks += dupNoSource - lastDuplicateReasonNoSource;
             captureSessionSummary.duplicateDeferredTicks += dupDeferred - lastDuplicateReasonDeferred;
             captureSessionSummary.duplicateTimerTicks += dupTimer - lastDuplicateReasonTimerRebase;
@@ -8312,7 +8333,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "budgetSurfaces=%u syncFrames=%u extraFrames=%u retainedCap=%u reservedFreeSlots=%u safetySlots=%u "
                 "retainedCapTrim=%llu ingressAccepted=%u ingressDecimated=%u ingressRetained=%u/%u "
                 "ingressLowWater=%u leasedMax=%u freeMin=%u poolSaturatedDrops=%u overwritePrevented=%u "
-                "leaseMismatches=%u smoothVramMB=%.1f smoothCapLimited=%d smoothReason=%s",
+                "leaseMismatches=%u smoothVramMB=%.1f smoothCapLimited=%d smoothReason=%s "
+                "sourceFmt=%u retainedFmt=%u compactRetained=%d sourceBudgetMB=%.1f copyBudgetMB=%.1f "
+                "sourceSurfaceMB=%.1f copySurfaceMB=%.1f convertUs=%lld",
                 static_cast<unsigned long long>(wgcEncoderLimitedSourceDropTotal), wgcEncoderLimitedSourceDropMaxTicks,
                 static_cast<unsigned long long>(wgcEncoderLimitedCadenceEventCount),
                 captureSessionSummary.maxWgcContentPhaseErrorUs, captureSessionSummary.maxShortfallDurationMs,
@@ -8352,7 +8375,59 @@ void EncoderThreadFunc(const AppConfig& config) {
                 g_WgcCap ? g_WgcCap->GetPoolSlotOverwritePreventedCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetPoolLeaseMismatchCount() : 0u,
                 static_cast<double>(wgcSmoothnessEstimatedVramBytes) / (1024.0 * 1024.0),
-                wgcSmoothnessCapLimited ? 1 : 0, wgcSmoothnessBufferReason.c_str());
+                wgcSmoothnessCapLimited ? 1 : 0, wgcSmoothnessBufferReason.c_str(),
+                g_WgcCap ? g_WgcCap->GetSmoothnessSourceDxgiFormat() : 0u,
+                g_WgcCap ? g_WgcCap->GetSmoothnessCopyDxgiFormat() : 0u,
+                g_WgcCap && g_WgcCap->IsCompactRetainedCopyActive() ? 1 : 0,
+                static_cast<double>(g_WgcCap ? g_WgcCap->GetSmoothnessSourceEstimatedVramBytes() : 0ull) /
+                    (1024.0 * 1024.0),
+                static_cast<double>(g_WgcCap ? g_WgcCap->GetSmoothnessCopyEstimatedVramBytes() : 0ull) /
+                    (1024.0 * 1024.0),
+                static_cast<double>(g_WgcCap ? g_WgcCap->GetSmoothnessSourceBytesPerSurface() : 0ull) /
+                    (1024.0 * 1024.0),
+                static_cast<double>(g_WgcCap ? g_WgcCap->GetSmoothnessCopyBytesPerSurface() : 0ull) /
+                    (1024.0 * 1024.0),
+                static_cast<long long>(g_WgcCap ? g_WgcCap->GetLastPoolConvertTimeUs() : 0));
+            const uint32_t wgcSummaryPoolFreeMin = g_WgcCap ? g_WgcCap->GetPoolSlotFreeMinCount() : 0u;
+            const uint32_t wgcSummaryPoolSaturatedDrops = g_WgcCap ? g_WgcCap->GetPoolSaturatedDropCount() : 0u;
+            const uint32_t wgcSummaryIngressHard = g_WgcCap ? g_WgcCap->GetIngressHardReservePressureCount() : 0u;
+            const uint32_t wgcSummaryIngressSoft = g_WgcCap ? g_WgcCap->GetIngressSoftReservePressureCount() : 0u;
+            const uint32_t wgcSummaryOverwritePrevented =
+                g_WgcCap ? g_WgcCap->GetPoolSlotOverwritePreventedCount() : 0u;
+            const uint32_t wgcSummaryOverloadFlags =
+                g_pSharedMem ? g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed) : 0u;
+            const uint32_t wgcSummaryMuxBackpressure =
+                g_pSharedMem ? g_pSharedMem->runtimeState.muxBackpressureCount.load(std::memory_order_relaxed) : 0u;
+            const bool wgcSummaryPoolPressure = wgcSummaryPoolSaturatedDrops > 0 || wgcSummaryIngressHard > 0 ||
+                                                wgcSummaryIngressSoft > 0 || wgcSummaryPoolFreeMin == 0;
+            const bool wgcSummaryEncoderMuxPressure =
+                wgcSummaryOverloadFlags != 0 || wgcSummaryMuxBackpressure > 0 ||
+                (captureSessionSummary.minEncoderSustainFps != std::numeric_limits<double>::max() &&
+                 captureSessionSummary.minEncoderSustainFps > 0.0 &&
+                 captureSessionSummary.minEncoderSustainFps + 0.5 < static_cast<double>(config.video.fps));
+            const char* wgcSummaryLimiter = wgcSummaryEncoderMuxPressure ? "encoder_or_mux"
+                                               : wgcSummaryPoolPressure  ? "wgc_pool_pressure"
+                                               : captureSessionSummary.duplicateNoSourceTicks > 0
+                                                   ? "source_limited"
+                                                   : captureSessionSummary.duplicateTicks > 0 ? "source_cadence_or_vrr"
+                                                                                              : "none";
+            LogInfo(
+                "[WGC CFR QUALITY] duplicatePct=%.1f duplicates=%llu/%llu worst1sUnique=%u worst1sRepeats=%u "
+                "worst1sEmit=%u limiter=%s sourceLimitedRepeats=%llu poolPressure=%d freeMin=%u "
+                "poolSaturatedDrops=%u ingressHard=%u ingressSoft=%u overwritePrevented=%u "
+                "encoderOverload=0x%X muxBackpressure=%u compactRetained=%d sourceFmt=%u retainedFmt=%u "
+                "convertUs=%lld finalAvSync=exported_tracks_authoritative",
+                static_cast<double>(duplicatePermille) / 10.0,
+                static_cast<unsigned long long>(captureSessionSummary.duplicateTicks),
+                static_cast<unsigned long long>(liveTicksOutput), captureSessionSummary.worstOneSecondUniqueCount,
+                captureSessionSummary.worstOneSecondRepeatCount, captureSessionSummary.worstOneSecondEmitCount,
+                wgcSummaryLimiter, static_cast<unsigned long long>(captureSessionSummary.duplicateNoSourceTicks),
+                wgcSummaryPoolPressure ? 1 : 0, wgcSummaryPoolFreeMin, wgcSummaryPoolSaturatedDrops,
+                wgcSummaryIngressHard, wgcSummaryIngressSoft, wgcSummaryOverwritePrevented, wgcSummaryOverloadFlags,
+                wgcSummaryMuxBackpressure, g_WgcCap && g_WgcCap->IsCompactRetainedCopyActive() ? 1 : 0,
+                g_WgcCap ? g_WgcCap->GetSmoothnessSourceDxgiFormat() : 0u,
+                g_WgcCap ? g_WgcCap->GetSmoothnessCopyDxgiFormat() : 0u,
+                static_cast<long long>(g_WgcCap ? g_WgcCap->GetLastPoolConvertTimeUs() : 0));
             LogInfo(
                 "[WGC CFR SMOOTHNESS INGRESS] accepted=%u decimated=%u retained=%u/%u lowWater=%u "
                 "accLowWater=%u accRecovery=%u accSourceBelow=%u accHealthy=%u "
