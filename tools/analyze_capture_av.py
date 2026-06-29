@@ -181,6 +181,8 @@ WGC_SMOOTHNESS_BUFFER_RE = re.compile(
     r"safetySlots=(?P<safety_slots>\d+) "
     r"(?:(?:retainedCapTrim=(?P<retained_cap_trim>\d+) "
     r"ingressAccepted=(?P<ingress_accepted>\d+) ingressDecimated=(?P<ingress_decimated>\d+) "
+    r"(?:(?:ingressPlaySoft=(?P<ingress_play_soft>\d+) "
+    r"ingressPlayCredit=(?P<ingress_play_credit>\d+) )?)"
     r"ingressRetained=(?P<ingress_retained>\d+)/(?P<ingress_cap>\d+) "
     r"ingressLowWater=(?P<ingress_low_water>\d+) )?)"
     r"leasedMax=(?P<leased_max>\d+) freeMin=(?P<free_min>\d+) "
@@ -196,6 +198,7 @@ WGC_SMOOTHNESS_INGRESS_RE = re.compile(
     r"retained=(?P<retained>\d+)/(?P<cap>\d+) lowWater=(?P<low_water>\d+) "
     r"accLowWater=(?P<acc_low_water>\d+) accRecovery=(?P<acc_recovery>\d+) "
     r"accSourceBelow=(?P<acc_source_below>\d+) accHealthy=(?P<acc_healthy>\d+) "
+    r"(?:(?:accPlaySoft=(?P<acc_play_soft>\d+) accPlayCredit=(?P<acc_play_credit>\d+) )?)"
     r"decSoftReserve=(?P<dec_soft_reserve>\d+) decHardReserve=(?P<dec_hard_reserve>\d+) "
     r"decCredit=(?P<dec_credit>\d+) softReservePressure=(?P<soft_pressure>\d+) "
     r"hardReservePressure=(?P<hard_pressure>\d+) "
@@ -1255,6 +1258,8 @@ def parse_wgc_perf_line(line):
         "ingress_accepted_recovery": find_int(r"accRec=(\d+)"),
         "ingress_accepted_source_below": find_int(r"accSrcBelow=(\d+)"),
         "ingress_accepted_healthy": find_int(r"accHealthy=(\d+)"),
+        "ingress_accepted_playout_soft": find_int(r"accPlaySoft=(\d+)"),
+        "ingress_accepted_playout_credit": find_int(r"accPlayCredit=(\d+)"),
         "ingress_decimated_soft_reserve": find_int(r"decSoft=(\d+)"),
         "ingress_decimated_hard_reserve": find_int(r"decHard=(\d+)"),
         "ingress_decimated_credit": find_int(r"decCredit=(\d+)"),
@@ -1285,6 +1290,9 @@ def parse_wgc_quality_line(line):
         "pool_saturated_drops": parse_int(values.get("poolSaturatedDrops"), 0),
         "ingress_hard": parse_int(values.get("ingressHard"), 0),
         "ingress_soft": parse_int(values.get("ingressSoft"), 0),
+        "ingress_decimated": parse_int(values.get("ingressDecimated"), 0),
+        "ingress_accepted_playout_soft": parse_int(values.get("ingressPlaySoft"), 0),
+        "ingress_accepted_playout_credit": parse_int(values.get("ingressPlayCredit"), 0),
         "overwrite_prevented": parse_int(values.get("overwritePrevented"), 0),
         "duplicate_timestamps_seen": parse_int(values.get("dupTsSeen"), 0),
         "duplicate_timestamps_skipped": parse_int(values.get("dupTsSkipped"), 0),
@@ -1508,6 +1516,8 @@ def update_wgc_smoothness_item_from_line(item, line):
                 "smoothness_retained_cap_trim": parse_int(groups.get("retained_cap_trim")),
                 "wgc_ingress_accepted": parse_int(groups.get("ingress_accepted")),
                 "wgc_ingress_decimated": parse_int(groups.get("ingress_decimated")),
+                "wgc_ingress_accepted_playout_soft": parse_int(groups.get("ingress_play_soft")),
+                "wgc_ingress_accepted_playout_credit": parse_int(groups.get("ingress_play_credit")),
                 "wgc_ingress_retained_frames": parse_int(groups.get("ingress_retained")),
                 "wgc_ingress_retained_cap": parse_int(groups.get("ingress_cap")),
                 "wgc_ingress_low_water": parse_int(groups.get("ingress_low_water")),
@@ -1536,6 +1546,8 @@ def update_wgc_smoothness_item_from_line(item, line):
                 "wgc_ingress_accepted_recovery": parse_int(groups.get("acc_recovery")),
                 "wgc_ingress_accepted_source_below": parse_int(groups.get("acc_source_below")),
                 "wgc_ingress_accepted_healthy": parse_int(groups.get("acc_healthy")),
+                "wgc_ingress_accepted_playout_soft": parse_int(groups.get("acc_play_soft")),
+                "wgc_ingress_accepted_playout_credit": parse_int(groups.get("acc_play_credit")),
                 "wgc_ingress_decimated_soft_reserve": parse_int(groups.get("dec_soft_reserve")),
                 "wgc_ingress_decimated_hard_reserve": parse_int(groups.get("dec_hard_reserve")),
                 "wgc_ingress_decimated_credit": parse_int(groups.get("dec_credit")),
@@ -1661,6 +1673,9 @@ def update_wgc_smoothness_item_from_line(item, line):
         "delayHardOnlyCandidates": "delay_hard_only_candidates",
         "delaySyncProtectedRepeats": "delay_sync_protected_repeats",
         "delayOldestSoftSafeAgeMax": "delay_oldest_soft_safe_age_max_us",
+        "delayUniformCadence": "delay_uniform_cadence",
+        "delayUniformHold": "delay_uniform_hold",
+        "delayPaceCapTrim": "delay_pace_cap_trim",
     }
     for field_name, key in repeat_named_fields.items():
         value = parse_named_int_field(line, field_name)
@@ -1673,6 +1688,7 @@ def update_wgc_smoothness_item_from_line(item, line):
         "sourceRepeatLowerBound": "source_repeat_lower_bound",
         "syncSourceRepeatLowerBound": "sync_source_repeat_lower_bound",
         "deliveryRepeatLowerBound": "delivery_repeat_lower_bound",
+        "policyNoSourceRepeats": "policy_no_source_repeats",
         "excessRepeats": "excess_repeats",
         "policyAddedRepeats": "policy_added_repeats",
         "excessRepeatClusters": "excess_repeat_clusters",
@@ -2833,6 +2849,20 @@ def has_wgc_ingress_decimated(media_evidence):
     ) or any(item.get("wgc_ingress_decimated", 0) > 0 for item in media_evidence["wgc_smoothness_summary"])
 
 
+def has_wgc_uniform_playout_ingress_double_decimation(media_evidence):
+    for item in media_evidence["wgc_smoothness_summary"]:
+        if item.get("delay_uniform_hold", 0) <= 0:
+            continue
+        if item.get("wgc_ingress_decimated", 0) <= 0:
+            continue
+        accepted = item.get("wgc_source_rolling_accepted", 0)
+        cfr_ticks = item.get("wgc_source_rolling_cfr_ticks", 0)
+        surplus = item.get("wgc_source_rolling_surplus", 0)
+        if (accepted > 0 and cfr_ticks > 0 and accepted >= cfr_ticks) or surplus > 0:
+            return True
+    return False
+
+
 def has_wgc_copy_pool_pressure(media_evidence):
     return (
         has_wgc_pool_saturated_safe_drop(media_evidence)
@@ -3140,6 +3170,9 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     wgc_ingress_decimated = has_wgc_ingress_decimated(media_evidence)
     if wgc_ingress_decimated:
         verdicts.append("wgc_ingress_decimated")
+    wgc_uniform_playout_ingress_double_decimation = has_wgc_uniform_playout_ingress_double_decimation(media_evidence)
+    if wgc_uniform_playout_ingress_double_decimation:
+        verdicts.append("wgc_uniform_playout_ingress_double_decimation")
     wgc_copy_pool_pressure = has_wgc_copy_pool_pressure(media_evidence)
     if wgc_copy_pool_pressure:
         verdicts.append("wgc_copy_pool_pressure")
@@ -3232,6 +3265,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
         or wgc_smoothness_evidence_incomplete
         or wgc_pool_slot_lifetime_fault
         or wgc_pool_saturated_safe_drop
+        or wgc_uniform_playout_ingress_double_decimation
         or wgc_framepool_pressure
         or wgc_repeat_with_safe_candidate
         or wgc_post_stall_recovery_fault
@@ -3284,6 +3318,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "wgc_delivery_gap": wgc_delivery_gap,
             "wgc_framepool_pressure": wgc_framepool_pressure,
             "wgc_ingress_decimated": wgc_ingress_decimated,
+            "wgc_uniform_playout_ingress_double_decimation": wgc_uniform_playout_ingress_double_decimation,
             "wgc_copy_pool_pressure": wgc_copy_pool_pressure,
             "wgc_pool_evidence_missing": wgc_pool_evidence_missing,
             "wgc_repeat_with_safe_candidate": wgc_repeat_with_safe_candidate,
@@ -3460,7 +3495,8 @@ def print_triage_report(report):
         print(
             "  wgc_quality dup={dup}/{live} ({dup_pct:.1f}%) worst1s={unique}/{repeats}/{emit} "
             "limiter={limiter} pool_pressure={pool} free_min={free_min} sat_drop={sat_drop} "
-            "ingress_hard={hard} ingress_soft={soft} dup_ts={dup_ts_seen}/{dup_ts_skipped} "
+            "ingress_hard={hard} ingress_soft={soft} ingress_dec={ingress_dec} "
+            "playout_acc={play_soft}/{play_credit} dup_ts={dup_ts_seen}/{dup_ts_skipped} "
             "compact_retained={compact} "
             "fmt={source_fmt}->{retained_fmt} convert_us={convert_us} final_av_sync={final_sync}".format(
                 dup=quality["duplicates"],
@@ -3475,6 +3511,9 @@ def print_triage_report(report):
                 sat_drop=quality["pool_saturated_drops"],
                 hard=quality["ingress_hard"],
                 soft=quality["ingress_soft"],
+                ingress_dec=quality.get("ingress_decimated", 0),
+                play_soft=quality.get("ingress_accepted_playout_soft", 0),
+                play_credit=quality.get("ingress_accepted_playout_credit", 0),
                 dup_ts_seen=quality["duplicate_timestamps_seen"],
                 dup_ts_skipped=quality["duplicate_timestamps_skipped"],
                 compact=quality["compact_retained"],

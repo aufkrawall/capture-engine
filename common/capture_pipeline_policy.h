@@ -1899,12 +1899,33 @@ inline bool IsWgcIngressSourceBelowCfrTarget(uint32_t outputFps, uint32_t recent
     return recentInputMin250Fps + fpsMargin < outputFps && recentInputMin500Fps + fpsMargin < outputFps;
 }
 
+inline bool IsWgcIngressSourceAtOrAboveCfrTarget(uint32_t outputFps, uint32_t recentInputMin250Fps,
+                                                 uint32_t recentInputMin500Fps) {
+    if (outputFps == 0) {
+        return false;
+    }
+
+    const bool has250 = recentInputMin250Fps > 0;
+    const bool has500 = recentInputMin500Fps > 0;
+    if (!has250 && !has500) {
+        return false;
+    }
+    if (has250 && recentInputMin250Fps < outputFps) {
+        return false;
+    }
+    if (has500 && recentInputMin500Fps < outputFps) {
+        return false;
+    }
+    return true;
+}
+
 inline WgcIngressAdmissionDecision DecideWgcIngressAdmission(uint32_t retainedFrames, uint32_t retainedFrameCap,
                                                              uint32_t lowWaterFrames, bool recovering,
                                                              uint32_t outputFps, uint32_t recentInputMin250Fps,
                                                              uint32_t recentInputMin500Fps,
                                                              double admissionCreditFrames, uint32_t freeCopySlots,
-                                                             uint32_t reservedFreeCopySlots) {
+                                                             uint32_t reservedFreeCopySlots,
+                                                             bool uniformPlayoutOwnsSurplus = false) {
     WgcIngressAdmissionDecision decision{};
     if (retainedFrameCap == 0) {
         decision.reason = "uncapped";
@@ -1933,7 +1954,14 @@ inline WgcIngressAdmissionDecision DecideWgcIngressAdmission(uint32_t retainedFr
         return decision;
     }
 
+    const bool playoutShouldOwnSurplus =
+        uniformPlayoutOwnsSurplus &&
+        IsWgcIngressSourceAtOrAboveCfrTarget(outputFps, recentInputMin250Fps, recentInputMin500Fps);
     if (decision.softReservePressure) {
+        if (playoutShouldOwnSurplus) {
+            decision.reason = "uniform_playout_soft_reserve";
+            return decision;
+        }
         decision.accept = false;
         decision.decimated = true;
         decision.reason =
@@ -1943,6 +1971,10 @@ inline WgcIngressAdmissionDecision DecideWgcIngressAdmission(uint32_t retainedFr
 
     const bool retainedHigh = retainedFrames >= (retainedFrameCap - 1u);
     if (retainedHigh && admissionCreditFrames < 1.0) {
+        if (playoutShouldOwnSurplus) {
+            decision.reason = "uniform_playout_credit";
+            return decision;
+        }
         decision.accept = false;
         decision.decimated = true;
         decision.reason = "wgc_ingress_decimated_credit";

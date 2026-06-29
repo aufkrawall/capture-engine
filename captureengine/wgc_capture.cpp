@@ -98,6 +98,8 @@ enum WgcIngressAdmissionReasonCode : uint32_t {
     kWgcIngressReasonDecimatedSoftReserve = 6,
     kWgcIngressReasonDecimatedHardReserve = 7,
     kWgcIngressReasonDecimatedCredit = 8,
+    kWgcIngressReasonUniformPlayoutSoftReserve = 9,
+    kWgcIngressReasonUniformPlayoutCredit = 10,
 };
 
 uint32_t WgcIngressReasonCodeFromText(const char* reason) {
@@ -118,6 +120,12 @@ uint32_t WgcIngressReasonCodeFromText(const char* reason) {
     }
     if (strcmp(reason, "healthy") == 0) {
         return kWgcIngressReasonHealthy;
+    }
+    if (strcmp(reason, "uniform_playout_soft_reserve") == 0) {
+        return kWgcIngressReasonUniformPlayoutSoftReserve;
+    }
+    if (strcmp(reason, "uniform_playout_credit") == 0) {
+        return kWgcIngressReasonUniformPlayoutCredit;
     }
     if (strcmp(reason, "wgc_ingress_decimated_soft_reserve") == 0 || strcmp(reason, "wgc_ingress_decimated") == 0) {
         return kWgcIngressReasonDecimatedSoftReserve;
@@ -665,6 +673,8 @@ public:
     std::atomic<uint32_t> ingressAcceptedRecoveryCount_{0};
     std::atomic<uint32_t> ingressAcceptedSourceBelowCount_{0};
     std::atomic<uint32_t> ingressAcceptedHealthyCount_{0};
+    std::atomic<uint32_t> ingressAcceptedUniformPlayoutSoftReserveCount_{0};
+    std::atomic<uint32_t> ingressAcceptedUniformPlayoutCreditCount_{0};
     std::atomic<uint32_t> ingressDecimatedSoftReserveCount_{0};
     std::atomic<uint32_t> ingressDecimatedHardReserveCount_{0};
     std::atomic<uint32_t> ingressDecimatedCreditCount_{0};
@@ -674,6 +684,7 @@ public:
     std::atomic<uint32_t> ingressRetainedFrameCap_{0};
     std::atomic<uint32_t> ingressLowWaterFrames_{0};
     std::atomic<bool> ingressRecovering_{false};
+    std::atomic<bool> ingressUniformPlayoutOwnsSurplus_{false};
     std::atomic<uint32_t> ingressLastReason_{0};
     std::mutex ingressAdmissionMutex_;
     int64_t ingressCreditLastQpc_ = 0;
@@ -1264,6 +1275,8 @@ public:
         ingressAcceptedRecoveryCount_.store(0, std::memory_order_relaxed);
         ingressAcceptedSourceBelowCount_.store(0, std::memory_order_relaxed);
         ingressAcceptedHealthyCount_.store(0, std::memory_order_relaxed);
+        ingressAcceptedUniformPlayoutSoftReserveCount_.store(0, std::memory_order_relaxed);
+        ingressAcceptedUniformPlayoutCreditCount_.store(0, std::memory_order_relaxed);
         ingressDecimatedSoftReserveCount_.store(0, std::memory_order_relaxed);
         ingressDecimatedHardReserveCount_.store(0, std::memory_order_relaxed);
         ingressDecimatedCreditCount_.store(0, std::memory_order_relaxed);
@@ -1273,6 +1286,7 @@ public:
         ingressRetainedFrameCap_.store(smoothnessRetainedFrameCap_, std::memory_order_relaxed);
         ingressLowWaterFrames_.store(0, std::memory_order_relaxed);
         ingressRecovering_.store(false, std::memory_order_relaxed);
+        ingressUniformPlayoutOwnsSurplus_.store(false, std::memory_order_relaxed);
         ingressLastReason_.store(kWgcIngressReasonUncapped, std::memory_order_relaxed);
         {
             std::lock_guard<std::mutex> ingressLock(ingressAdmissionMutex_);
@@ -1969,6 +1983,8 @@ public:
         const uint32_t outputFps = smoothnessOutputFps_;
         const uint32_t inputMin250Fps = inputMin250Fps_.load(std::memory_order_relaxed);
         const uint32_t inputMin500Fps = inputMin500Fps_.load(std::memory_order_relaxed);
+        const bool uniformPlayoutOwnsSurplus =
+            ingressUniformPlayoutOwnsSurplus_.load(std::memory_order_relaxed);
 
         ce::capture_policy::WgcIngressAdmissionDecision decision{};
         uint32_t reasonCode = kWgcIngressReasonUncapped;
@@ -1990,7 +2006,8 @@ public:
 
             decision = ce::capture_policy::DecideWgcIngressAdmission(
                 pressureRetainedFrames, retainedFrameCap, lowWaterFrames, recovering, outputFps, inputMin250Fps,
-                inputMin500Fps, ingressCreditFrames_, freeCopySlots, smoothnessReservedFreeSlots_);
+                inputMin500Fps, ingressCreditFrames_, freeCopySlots, smoothnessReservedFreeSlots_,
+                uniformPlayoutOwnsSurplus);
             reasonCode = WgcIngressReasonCodeFromText(decision.reason);
             if (decision.accept && outputFps > 0 &&
                 !ce::capture_policy::IsWgcIngressSourceBelowCfrTarget(outputFps, inputMin250Fps, inputMin500Fps)) {
@@ -2016,6 +2033,12 @@ public:
                     break;
                 case kWgcIngressReasonSourceBelowTarget:
                     ingressAcceptedSourceBelowCount_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                case kWgcIngressReasonUniformPlayoutSoftReserve:
+                    ingressAcceptedUniformPlayoutSoftReserveCount_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                case kWgcIngressReasonUniformPlayoutCredit:
+                    ingressAcceptedUniformPlayoutCreditCount_.fetch_add(1, std::memory_order_relaxed);
                     break;
                 case kWgcIngressReasonCredit:
                 case kWgcIngressReasonHealthy:
@@ -3685,6 +3708,22 @@ uint32_t WGCCapture::GetIngressAcceptedHealthyCount() const {
 #endif
 }
 
+uint32_t WGCCapture::GetIngressAcceptedUniformPlayoutSoftReserveCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressAcceptedUniformPlayoutSoftReserveCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetIngressAcceptedUniformPlayoutCreditCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->ingressAcceptedUniformPlayoutCreditCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
 uint32_t WGCCapture::GetIngressDecimatedSoftReserveCount() const {
 #if HAS_WGC
     return impl_ ? impl_->ingressDecimatedSoftReserveCount_.load(std::memory_order_relaxed) : 0;
@@ -4036,7 +4075,7 @@ void WGCCapture::SetSmoothnessBufferBudget(bool enabled, uint32_t outputFps, uin
 }
 
 void WGCCapture::SetRetainedFramePressure(uint32_t retainedFrames, uint32_t retainedFrameCap, uint32_t lowWaterFrames,
-                                          bool recovering) {
+                                          bool recovering, bool uniformPlayoutOwnsSurplus) {
 #if HAS_WGC
     if (impl_) {
         const uint32_t effectiveCap = retainedFrameCap > 0 ? retainedFrameCap : impl_->smoothnessRetainedFrameCap_;
@@ -4044,11 +4083,13 @@ void WGCCapture::SetRetainedFramePressure(uint32_t retainedFrames, uint32_t reta
         impl_->ingressRetainedFrameCap_.store(effectiveCap, std::memory_order_relaxed);
         impl_->ingressLowWaterFrames_.store(lowWaterFrames, std::memory_order_relaxed);
         impl_->ingressRecovering_.store(recovering, std::memory_order_relaxed);
+        impl_->ingressUniformPlayoutOwnsSurplus_.store(uniformPlayoutOwnsSurplus, std::memory_order_relaxed);
     }
 #else
     (void)retainedFrames;
     (void)retainedFrameCap;
     (void)lowWaterFrames;
     (void)recovering;
+    (void)uniformPlayoutOwnsSurplus;
 #endif
 }

@@ -174,6 +174,8 @@ public:
     uint32_t GetIngressAcceptedRecoveryCount() const;
     uint32_t GetIngressAcceptedSourceBelowCount() const;
     uint32_t GetIngressAcceptedHealthyCount() const;
+    uint32_t GetIngressAcceptedUniformPlayoutSoftReserveCount() const;
+    uint32_t GetIngressAcceptedUniformPlayoutCreditCount() const;
     uint32_t GetIngressDecimatedSoftReserveCount() const;
     uint32_t GetIngressDecimatedHardReserveCount() const;
     uint32_t GetIngressDecimatedCreditCount() const;
@@ -220,7 +222,7 @@ public:
     void SetSmoothnessBufferBudget(bool enabled, uint32_t outputFps, uint32_t maxMs, uint32_t vramBudgetMb,
                                    uint32_t syncDelayFrames = 0);
     void SetRetainedFramePressure(uint32_t retainedFrames, uint32_t retainedFrameCap, uint32_t lowWaterFrames,
-                                  bool recovering);
+                                  bool recovering, bool uniformPlayoutOwnsSurplus);
 
     // Set GPU thread priority for the WGC capture D3D11 device.
     // Passes through to IDXGIDevice::SetGPUThreadPriority.

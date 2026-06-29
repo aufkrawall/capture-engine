@@ -1133,6 +1133,67 @@ PlayoutStats RunNearestPlayout(int ticks, int64_t interval, int64_t contentDelay
     }
     return s;
 }
+
+PlayoutStats RunNearestPlayoutResample(int ticks, int64_t outputInterval, int64_t sourceInterval,
+                                       int64_t contentDelay, int deliveryBatchTicks, int64_t startupFill) {
+    PlayoutStats s;
+    std::deque<int64_t> buffer;
+    const int64_t leadTol = policy::GetWgcActiveDelayResidualToleranceQpc(outputInterval);
+    int64_t lastEmitted = 0;
+    int64_t lastDeliveredTs = -sourceInterval;
+    int64_t lastBurstTick = 0;
+    int holdRun = 0;
+    for (int64_t i = 0; i < startupFill; ++i) {
+        lastDeliveredTs += sourceInterval;
+        buffer.push_back(lastDeliveredTs);
+    }
+    for (int tick = 0; tick < ticks; ++tick) {
+        const int64_t now = startupFill * sourceInterval + static_cast<int64_t>(tick) * outputInterval;
+        if (tick - lastBurstTick >= deliveryBatchTicks || tick == 0) {
+            while (lastDeliveredTs + sourceInterval <= now) {
+                lastDeliveredTs += sourceInterval;
+                buffer.push_back(lastDeliveredTs);
+            }
+            lastBurstTick = tick;
+        }
+        const int64_t target = now - contentDelay;
+        bool staleDroppedThisTick = false;
+        while (!buffer.empty() && buffer.front() <= lastEmitted) {
+            buffer.pop_front();
+        }
+        while (buffer.size() > 1 &&
+               policy::ShouldDropWgcFrontForNearerPlayout(buffer[0], buffer[1], target, leadTol)) {
+            buffer.pop_front();
+            ++s.staleDrops;
+            staleDroppedThisTick = true;
+        }
+        bool held = true;
+        if (!buffer.empty()) {
+            auto d = policy::DecideWgcNearestPlayout(buffer.front(), target, leadTol, lastEmitted);
+            if (d.emit) {
+                const int64_t ts = buffer.front();
+                buffer.pop_front();
+                lastEmitted = ts;
+                ++s.emits;
+                held = false;
+                const int64_t realized = now - ts;
+                s.maxRealizedDelay = std::max(s.maxRealizedDelay, realized);
+                s.minRealizedDelay = std::min(s.minRealizedDelay, realized);
+            }
+        }
+        if (held) {
+            ++s.holds;
+            ++holdRun;
+            s.longestHoldRun = std::max(s.longestHoldRun, holdRun);
+            if (staleDroppedThisTick) {
+                ++s.dropDupSameTickViolations;
+            }
+        } else {
+            holdRun = 0;
+        }
+    }
+    return s;
+}
 }  // namespace
 
 TEST(CapturePipelinePolicyTest, WgcNearestPlayoutAbsorbsDeliveryJitterWithinBudget) {
@@ -1165,6 +1226,20 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutEvenHoldsAndStableDelayUnderGap
     EXPECT_LE(s.maxRealizedDelay, 400 + 4 * 100);
     // Hold clusters cannot exceed the delivery gap (no extra amplification).
     EXPECT_LE(s.longestHoldRun, 8);
+}
+
+TEST(CapturePipelinePolicyTest, WgcNearestPlayoutDropsSurplus144HzFor120FpsWithoutRepeats) {
+    // Model a fixed-rate source above the CFR target: source interval 100, output interval 120
+    // is the same ratio as 144 Hz input to 120 fps output. The playout layer should consume this
+    // as planned surplus drops, not CFR repeats.
+    auto s = RunNearestPlayoutResample(/*ticks=*/1200, /*outputInterval=*/120, /*sourceInterval=*/100,
+                                       /*contentDelay=*/3000, /*deliveryBatchTicks=*/3, /*startupFill=*/35);
+    EXPECT_EQ(s.holds, 0);
+    EXPECT_EQ(s.emits, 1200);
+    EXPECT_GT(s.staleDrops, 0);
+    EXPECT_EQ(s.dropDupSameTickViolations, 0);
+    EXPECT_GE(s.minRealizedDelay, 3000 - 120);
+    EXPECT_LE(s.maxRealizedDelay, 3000 + 120);
 }
 
 TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferBudgetCapsRetainedFrames) {
@@ -1288,6 +1363,49 @@ TEST(CapturePipelinePolicyTest, WgcIngressAdmissionAcceptsHighReservoirWhenCredi
     EXPECT_TRUE(decision.accept);
     EXPECT_FALSE(decision.decimated);
     EXPECT_STREQ(decision.reason, "credit");
+}
+
+TEST(CapturePipelinePolicyTest, WgcIngressAdmissionLetsUniformPlayoutOwnAboveTargetSurplus) {
+    auto creditPressure = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/17, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
+        /*admissionCreditFrames=*/0.25, /*freeCopySlots=*/7, /*reservedFreeCopySlots=*/6,
+        /*uniformPlayoutOwnsSurplus=*/true);
+    EXPECT_TRUE(creditPressure.accept);
+    EXPECT_FALSE(creditPressure.decimated);
+    EXPECT_FALSE(creditPressure.softReservePressure);
+    EXPECT_STREQ(creditPressure.reason, "uniform_playout_credit");
+
+    auto softReservePressure = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/18, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
+        /*admissionCreditFrames=*/2.0, /*freeCopySlots=*/6, /*reservedFreeCopySlots=*/6,
+        /*uniformPlayoutOwnsSurplus=*/true);
+    EXPECT_TRUE(softReservePressure.accept);
+    EXPECT_FALSE(softReservePressure.decimated);
+    EXPECT_TRUE(softReservePressure.softReservePressure);
+    EXPECT_STREQ(softReservePressure.reason, "uniform_playout_soft_reserve");
+}
+
+TEST(CapturePipelinePolicyTest, WgcIngressAdmissionUniformPlayoutStillProtectsHardPoolAndBelowTargetSource) {
+    auto hardPressure = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/18, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
+        /*admissionCreditFrames=*/2.0, /*freeCopySlots=*/0, /*reservedFreeCopySlots=*/6,
+        /*uniformPlayoutOwnsSurplus=*/true);
+    EXPECT_FALSE(hardPressure.accept);
+    EXPECT_TRUE(hardPressure.decimated);
+    EXPECT_TRUE(hardPressure.hardReservePressure);
+    EXPECT_STREQ(hardPressure.reason, "wgc_ingress_decimated_hard_reserve");
+
+    auto belowTarget = policy::DecideWgcIngressAdmission(
+        /*retainedFrames=*/17, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
+        /*outputFps=*/120, /*recentInputMin250Fps=*/118, /*recentInputMin500Fps=*/144,
+        /*admissionCreditFrames=*/0.25, /*freeCopySlots=*/7, /*reservedFreeCopySlots=*/6,
+        /*uniformPlayoutOwnsSurplus=*/true);
+    EXPECT_FALSE(belowTarget.accept);
+    EXPECT_TRUE(belowTarget.decimated);
+    EXPECT_STREQ(belowTarget.reason, "wgc_ingress_decimated_credit");
 }
 
 TEST(CapturePipelinePolicyTest, WgcIngressAdmissionHonorsReservedFreeSlotsBeforeCredit) {
