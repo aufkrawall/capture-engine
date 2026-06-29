@@ -1622,6 +1622,8 @@ def update_wgc_smoothness_item_from_line(item, line):
         "delayPostSelectionRejectedSync": "delay_post_selection_rejected_sync",
         "delayPostSelectionRescuedSync": "delay_post_selection_rescued_sync",
         "sourceRepeatLowerBound": "source_repeat_lower_bound",
+        "syncSourceRepeatLowerBound": "sync_source_repeat_lower_bound",
+        "deliveryRepeatLowerBound": "delivery_repeat_lower_bound",
         "excessRepeats": "excess_repeats",
         "policyAddedRepeats": "policy_added_repeats",
         "excessRepeatClusters": "excess_repeat_clusters",
@@ -2285,6 +2287,21 @@ def attribution_has_capacity_pressure(item):
     if parse_numeric_prefix_int(item.get("muxBp"), 0) > 0 or parse_numeric_prefix_int(item.get("waitMax"), 0) > 0:
         return True
     return False
+
+
+def has_wgc_delivery_gap(media_evidence):
+    return any(item.get("fault_hint") == "wgc_delivery_gap" for item in media_evidence["wgc_attribution"])
+
+
+def has_wgc_framepool_pressure_attribution(media_evidence):
+    pressure_hints = {"wgc_framepool_pressure", "wgc_framepool_overflow_suspected"}
+    return any(
+        item.get("fault_hint") in pressure_hints
+        or parse_numeric_prefix_int(item.get("poolSat"), 0) > 0
+        or parse_numeric_prefix_int(item.get("overwritePrevented"), 0) > 0
+        or parse_numeric_prefix_int(item.get("ingressDecimated"), 0) > 0
+        for item in media_evidence["wgc_attribution"]
+    )
 
 
 def parse_ms_ratio_value(value):
@@ -2953,6 +2970,12 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
         verdicts.append("source_present_gap")
     if has_source_starvation(media_evidence):
         verdicts.append("wgc_source_starvation")
+    wgc_delivery_gap = has_wgc_delivery_gap(media_evidence)
+    if wgc_delivery_gap:
+        verdicts.append("wgc_delivery_gap")
+    wgc_framepool_pressure = has_wgc_framepool_pressure_attribution(media_evidence)
+    if wgc_framepool_pressure:
+        verdicts.append("wgc_framepool_pressure")
     if has_inject_capture_pacer_limit(inject_pacing):
         verdicts.append("ce_capture_pacer_limited")
 
@@ -3122,6 +3145,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
         or wgc_smoothness_evidence_incomplete
         or wgc_pool_slot_lifetime_fault
         or wgc_pool_saturated_safe_drop
+        or wgc_framepool_pressure
         or wgc_repeat_with_safe_candidate
         or wgc_post_stall_recovery_fault
     ):
@@ -3170,6 +3194,8 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "wgc_smoothness_evidence_incomplete": wgc_smoothness_evidence_incomplete,
             "wgc_pool_slot_lifetime_fault": wgc_pool_slot_lifetime_fault,
             "wgc_pool_saturated_safe_drop": wgc_pool_saturated_safe_drop,
+            "wgc_delivery_gap": wgc_delivery_gap,
+            "wgc_framepool_pressure": wgc_framepool_pressure,
             "wgc_ingress_decimated": wgc_ingress_decimated,
             "wgc_copy_pool_pressure": wgc_copy_pool_pressure,
             "wgc_pool_evidence_missing": wgc_pool_evidence_missing,
@@ -3979,6 +4005,73 @@ def self_test():
         report = classify_session_triage(wgc_false_capacity_label)
         assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
         assert "wgc_encoder_limited_judder" not in report["verdicts"]
+
+        wgc_delivery_gap = make_session(
+            "wgc_delivery_gap",
+            media=(
+                "[WGC CFR ATTRIBUTION] fault_hint=wgc_delivery_gap qpc=1..2 duration=250ms out=30 dup=12 "
+                "minIn=120 minDel=84 freshMiss=400pm minBuf=2 cbGapMax=48000us encEmaMax=0.31ms "
+                "muxBp=0 waitMax=0us muxMax=0KB overload=0x0 copyMax=1us copyHealth=ok fenceMax=0us "
+                "fenceHealth=ok poolSat=0 overwritePrevented=0 ingressDecimated=0\n"
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 "
+                "us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) "
+                "backpressure=0 peakMux=0KB peakPkts=0\n"
+            ),
+        )
+        report = classify_session_triage(wgc_delivery_gap)
+        assert "wgc_delivery_gap" in report["verdicts"]
+        assert "wgc_framepool_pressure" not in report["verdicts"]
+        assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
+        assert "ce_visual_timeline_fault" not in report["verdicts"]
+
+        wgc_framepool_pressure = make_session(
+            "wgc_framepool_pressure",
+            media=(
+                "[WGC CFR ATTRIBUTION] fault_hint=wgc_framepool_pressure qpc=1..2 duration=250ms out=30 dup=12 "
+                "minIn=120 minDel=84 freshMiss=400pm minBuf=2 cbGapMax=48000us encEmaMax=0.31ms "
+                "muxBp=0 waitMax=0us muxMax=0KB overload=0x0 copyMax=1us copyHealth=ok fenceMax=0us "
+                "fenceHealth=ok poolSat=1 overwritePrevented=0 ingressDecimated=0\n"
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 "
+                "us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) "
+                "backpressure=0 peakMux=0KB peakPkts=0\n"
+            ),
+        )
+        report = classify_session_triage(wgc_framepool_pressure)
+        assert "wgc_framepool_pressure" in report["verdicts"]
+        assert "ce_visual_timeline_fault" in report["verdicts"]
+        assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
+
+        wgc_delivery_limited_lower_bound = make_session(
+            "wgc_delivery_limited_lower_bound",
+            media=(
+                "[WGC CFR SUMMARY] Live=1000 Dup=120 DupPct=12.0% NoFresh=120pm NoReserve=0pm "
+                "DupReason(src=120 def=0 timer=0 drain=0) SourceLimitedRepeats=120 StarvedEpisodes=0 "
+                "longest=0ms longestDup=0 worstIn=120 worstDel=84\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=0 "
+                "phaseErrorMax=0us shortfallMax=0.0ms staleDebtDrops=0 liveRebase=0/0 tooNewRepeats=0 "
+                "syncDelayHolds=0 tooNewLeadMax=0us avDelay=0.0ms startupDelay=0.0ms "
+                "scheduleOffset=0us effectiveDelay=0.0ms lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=0 syncDelayPolicyHolds=0 startupReserveFrames=0 "
+                "startupReserveSpan=0us startupDelayTarget=0us startupReserveSelected=0 "
+                "startupReserveReason=inactive\n"
+                "[WGC CFR SMOOTHNESS VERDICT] delayPostSelectionRejectedSync=0 "
+                "delayPostSelectionRescuedSync=0 sourceRepeatLowerBound=120 excessRepeats=0 "
+                "policyAddedRepeats=0 excessRepeatClusters=0 excessRepeatClusterMax=0 "
+                "smoothnessNotMaximal=0 mixedPolicyFault=0 syncSourceRepeatLowerBound=0 "
+                "deliveryRepeatLowerBound=120\n"
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 "
+                "us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) "
+                "backpressure=0 peakMux=0KB peakPkts=0\n"
+            ),
+        )
+        report = classify_session_triage(wgc_delivery_limited_lower_bound)
+        smoothness = report["evidence"]["wgc_smoothness_summary"][0]
+        assert smoothness["source_repeat_lower_bound"] == 120
+        assert smoothness["sync_source_repeat_lower_bound"] == 0
+        assert smoothness["delivery_repeat_lower_bound"] == 120
+        assert smoothness["policy_added_repeats"] == 0
+        assert "wgc_cfr_smoothness_not_maximal" not in report["verdicts"]
+        assert "ce_visual_timeline_fault" not in report["verdicts"]
 
         inject_pacer = make_session(
             "inject_pacer",

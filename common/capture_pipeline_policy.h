@@ -640,6 +640,28 @@ inline int64_t GetWgcCfrStartupPreLiveDelayTicks(int64_t targetIntervalTicks) {
     return targetIntervalTicks > 0 ? (targetIntervalTicks * 24) : 0;
 }
 
+inline bool ShouldAttemptWgcStartupSmoothnessBuffer(bool enabled, bool useVfr, bool avContentDelayActive,
+                                                    int64_t targetIntervalTicks, uint32_t retainedExtraFrames) {
+    return enabled && !useVfr && avContentDelayActive && targetIntervalTicks > 0 && retainedExtraFrames > 0;
+}
+
+inline int64_t GetWgcStartupSmoothnessTargetDelayQpc(uint32_t retainedExtraFrames, int64_t targetIntervalTicks) {
+    if (retainedExtraFrames == 0 || targetIntervalTicks <= 0) {
+        return 0;
+    }
+    const uint64_t targetDelay = static_cast<uint64_t>(retainedExtraFrames) * static_cast<uint64_t>(targetIntervalTicks);
+    return targetDelay > static_cast<uint64_t>(INT64_MAX) ? INT64_MAX : static_cast<int64_t>(targetDelay);
+}
+
+inline int64_t SelectWgcStartupSmoothnessExtraDelayQpc(int64_t actualStartupDelayQpc, int64_t avContentDelayQpc,
+                                                       int64_t smoothnessTargetDelayQpc) {
+    if (actualStartupDelayQpc <= avContentDelayQpc || smoothnessTargetDelayQpc <= 0) {
+        return 0;
+    }
+
+    return std::clamp<int64_t>(actualStartupDelayQpc - avContentDelayQpc, 0, smoothnessTargetDelayQpc);
+}
+
 inline int64_t GetWgcStartupBarrierQpc(int64_t nowQpc, int64_t targetIntervalTicks) {
     if (nowQpc <= 0 || targetIntervalTicks <= 0) {
         return nowQpc;

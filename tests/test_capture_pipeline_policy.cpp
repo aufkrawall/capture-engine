@@ -428,6 +428,63 @@ TEST(CapturePipelinePolicyTest, WgcStartupBarrierDelaysUntilFutureFreshFrame) {
     EXPECT_TRUE(policy::IsWgcFramePastStartupBarrier(1200, 1100));
 }
 
+TEST(CapturePipelinePolicyTest, WgcStartupSmoothnessAttemptUsesBudgetNotEarlySourceRate) {
+    EXPECT_FALSE(policy::ShouldArmWgcSmoothnessBufferForSourceRate(
+        /*outputFps=*/120, /*recentInputMin250Fps=*/4, /*recentInputMin500Fps=*/4));
+    EXPECT_TRUE(policy::ShouldAttemptWgcStartupSmoothnessBuffer(
+        /*enabled=*/true, /*useVfr=*/false, /*avContentDelayActive=*/true,
+        /*targetIntervalTicks=*/100, /*retainedExtraFrames=*/13));
+}
+
+TEST(CapturePipelinePolicyTest, WgcStartupSmoothnessAttemptRequiresCfrAvDelayAndBudget) {
+    EXPECT_TRUE(policy::ShouldAttemptWgcStartupSmoothnessBuffer(true, false, true, 100, 1));
+    EXPECT_FALSE(policy::ShouldAttemptWgcStartupSmoothnessBuffer(false, false, true, 100, 1));
+    EXPECT_FALSE(policy::ShouldAttemptWgcStartupSmoothnessBuffer(true, true, true, 100, 1));
+    EXPECT_FALSE(policy::ShouldAttemptWgcStartupSmoothnessBuffer(true, false, false, 100, 1));
+    EXPECT_FALSE(policy::ShouldAttemptWgcStartupSmoothnessBuffer(true, false, true, 0, 1));
+    EXPECT_FALSE(policy::ShouldAttemptWgcStartupSmoothnessBuffer(true, false, true, 100, 0));
+}
+
+TEST(CapturePipelinePolicyTest, WgcStartupSmoothnessDelayUsesActualReserveAndBudget) {
+    EXPECT_EQ(policy::GetWgcStartupSmoothnessTargetDelayQpc(/*retainedExtraFrames=*/13,
+                                                            /*targetIntervalTicks=*/100),
+              1300);
+    EXPECT_EQ(policy::GetWgcStartupSmoothnessTargetDelayQpc(/*retainedExtraFrames=*/0,
+                                                            /*targetIntervalTicks=*/100),
+              0);
+    EXPECT_EQ(policy::GetWgcStartupSmoothnessTargetDelayQpc(/*retainedExtraFrames=*/13,
+                                                            /*targetIntervalTicks=*/0),
+              0);
+
+    EXPECT_EQ(policy::SelectWgcStartupSmoothnessExtraDelayQpc(/*actualStartupDelayQpc=*/900,
+                                                              /*avContentDelayQpc=*/400,
+                                                              /*smoothnessTargetDelayQpc=*/1300),
+              500);
+    EXPECT_EQ(policy::SelectWgcStartupSmoothnessExtraDelayQpc(/*actualStartupDelayQpc=*/2400,
+                                                              /*avContentDelayQpc=*/400,
+                                                              /*smoothnessTargetDelayQpc=*/1300),
+              1300);
+    EXPECT_EQ(policy::SelectWgcStartupSmoothnessExtraDelayQpc(/*actualStartupDelayQpc=*/300,
+                                                              /*avContentDelayQpc=*/400,
+                                                              /*smoothnessTargetDelayQpc=*/1300),
+              0);
+    EXPECT_EQ(policy::SelectWgcStartupSmoothnessExtraDelayQpc(/*actualStartupDelayQpc=*/900,
+                                                              /*avContentDelayQpc=*/400,
+                                                              /*smoothnessTargetDelayQpc=*/0),
+              0);
+}
+
+TEST(CapturePipelinePolicyTest, WgcPreLiveStartupDelayExcludesSmoothnessReservoir) {
+    const int64_t targetIntervalTicks = 100;
+    const int64_t preLiveDelayTicks = policy::GetWgcCfrStartupPreLiveDelayTicks(targetIntervalTicks);
+    const int64_t smoothnessTargetDelayTicks =
+        policy::GetWgcStartupSmoothnessTargetDelayQpc(/*retainedExtraFrames=*/13, targetIntervalTicks);
+
+    EXPECT_EQ(preLiveDelayTicks, 2400);
+    EXPECT_EQ(smoothnessTargetDelayTicks, 1300);
+    EXPECT_EQ(policy::GetWgcCfrStartupPreLiveDelayTicks(targetIntervalTicks), preLiveDelayTicks);
+}
+
 TEST(CapturePipelinePolicyTest, WgcStartupReserveSelectionUsesDelayedCandidateWhenSpanExists) {
     const int64_t candidates[] = {1000, 1100, 1200, 1300, 1400};
     const auto selection = policy::SelectWgcStartupReserveCandidate(candidates, 5, 300, 50);

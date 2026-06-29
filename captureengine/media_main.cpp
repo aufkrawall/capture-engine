@@ -2365,6 +2365,9 @@ void EncoderThreadFunc(const AppConfig& config) {
         uint32_t maxMuxBackpressureWaitUs = 0;
         uint32_t maxMuxQueueKb = 0;
         uint32_t peakOverloadFlags = 0;
+        uint32_t startPoolSaturatedDrops = 0;
+        uint32_t startPoolOverwritePrevented = 0;
+        uint32_t startIngressDecimated = 0;
         double maxEncodeEmaMs = 0.0;
 
         void Reset() {
@@ -2538,10 +2541,24 @@ void EncoderThreadFunc(const AppConfig& config) {
         const bool sourceBelowCfrTarget = minInputFps > 0 && minInputFps < targetOutputFps;
         const bool deliveredBelowCfrTarget = minDeliveredFps > 0 && minDeliveredFps < targetOutputFps;
         const bool callbackDeliveryGap = wgcStarvedEpisode.maxCallbackGapUs > frameBudgetUs * 2u;
-        const char* faultHint = capacityPressure                                   ? "ce_capacity_pressure"
-                                : sourceBelowCfrTarget                             ? "source_below_cfr_target"
-                                : (deliveredBelowCfrTarget || callbackDeliveryGap) ? "wgc_framepool_overflow_suspected"
-                                                                                   : "source_starved";
+        uint32_t poolSaturatedDrops = 0;
+        uint32_t poolOverwritePrevented = 0;
+        uint32_t ingressDecimated = 0;
+        if (g_WgcCap) {
+            const uint32_t currentPoolSaturatedDrops = g_WgcCap->GetPoolSaturatedDropCount();
+            const uint32_t currentPoolOverwritePrevented = g_WgcCap->GetPoolSlotOverwritePreventedCount();
+            const uint32_t currentIngressDecimated = g_WgcCap->GetIngressDecimatedCount();
+            poolSaturatedDrops = currentPoolSaturatedDrops - wgcStarvedEpisode.startPoolSaturatedDrops;
+            poolOverwritePrevented = currentPoolOverwritePrevented - wgcStarvedEpisode.startPoolOverwritePrevented;
+            ingressDecimated = currentIngressDecimated - wgcStarvedEpisode.startIngressDecimated;
+        }
+        const bool wgcFramepoolPressure = poolSaturatedDrops > 0 || poolOverwritePrevented > 0 || ingressDecimated > 0;
+        const bool wgcDeliveryGap = deliveredBelowCfrTarget || callbackDeliveryGap;
+        const char* faultHint = capacityPressure     ? "ce_capacity_pressure"
+                                : wgcFramepoolPressure ? "wgc_framepool_pressure"
+                                : sourceBelowCfrTarget ? "source_below_cfr_target"
+                                : wgcDeliveryGap       ? "wgc_delivery_gap"
+                                                       : "source_starved";
         const bool copySlow = wgcStarvedEpisode.maxCopyUs > frameBudgetUs;
         const bool fenceSlow = wgcStarvedEpisode.maxFenceUs > frameBudgetUs;
         if (durationMs >= captureSessionSummary.longestStarvedEpisodeMs) {
@@ -2563,7 +2580,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "[WGC CFR ATTRIBUTION] fault_hint=%s qpc=%lld..%lld duration=%llums out=%llu dup=%llu "
                 "minIn=%u minDel=%u freshMiss=%upm minBuf=%u cbGapMax=%uus encEmaMax=%.2fms "
                 "muxBp=%u waitMax=%uus muxMax=%uKB overload=0x%X copyMax=%uus copyHealth=%s "
-                "fenceMax=%uus fenceHealth=%s",
+                "fenceMax=%uus fenceHealth=%s poolSat=%u overwritePrevented=%u ingressDecimated=%u",
                 faultHint, static_cast<long long>(wgcStarvedEpisode.startQpc), static_cast<long long>(endQpc.QuadPart),
                 static_cast<unsigned long long>(durationMs), static_cast<unsigned long long>(outputTicks),
                 static_cast<unsigned long long>(duplicateTicks), minInputFps, minDeliveredFps,
@@ -2571,7 +2588,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcStarvedEpisode.maxEncodeEmaMs, wgcStarvedEpisode.maxMuxBackpressureCount,
                 wgcStarvedEpisode.maxMuxBackpressureWaitUs, wgcStarvedEpisode.maxMuxQueueKb,
                 wgcStarvedEpisode.peakOverloadFlags, wgcStarvedEpisode.maxCopyUs, copySlow ? "slow" : "ok",
-                wgcStarvedEpisode.maxFenceUs, fenceSlow ? "slow" : "ok");
+                wgcStarvedEpisode.maxFenceUs, fenceSlow ? "slow" : "ok", poolSaturatedDrops, poolOverwritePrevented,
+                ingressDecimated);
         }
         wgcStarvedEpisode.Reset();
     };
@@ -2716,7 +2734,23 @@ void EncoderThreadFunc(const AppConfig& config) {
     const auto getWgcSmoothnessOutputFps = [&]() -> uint32_t {
         return config.video.fps > 0 ? static_cast<uint32_t>(config.video.fps) : 0u;
     };
-    const auto shouldArmWgcSmoothnessBufferNow = [&]() -> bool {
+    const auto shouldUseWgcSmoothnessBaseConfig = [&]() -> bool {
+        return ce::capture_policy::ShouldUseWgcSmoothnessBuffer(config.wgcSmoothnessBufferEnabled,
+                                                                config.video.useVFR, avContentDelayActive,
+                                                                targetIntervalTicks);
+    };
+    const auto getWgcSmoothnessDesiredFramesForConfig = [&]() -> uint32_t {
+        if (!shouldUseWgcSmoothnessBaseConfig()) {
+            return 0u;
+        }
+        return ce::capture_policy::GetWgcSmoothnessDesiredFrames(getWgcSmoothnessOutputFps(),
+                                                                 config.wgcSmoothnessBufferMaxMs);
+    };
+    const auto getWgcSmoothnessRetainedFramesBudget = [&]() -> uint32_t {
+        const uint32_t desiredFrames = getWgcSmoothnessDesiredFramesForConfig();
+        return (g_WgcCap && desiredFrames > 0) ? g_WgcCap->GetSmoothnessRetainedFrameCount() : 0u;
+    };
+    const auto isWgcSmoothnessSourceRateEligibleNow = [&]() -> bool {
         if (!ce::capture_policy::ShouldUseWgcSmoothnessBuffer(config.wgcSmoothnessBufferEnabled, config.video.useVFR,
                                                               avContentDelayActive, targetIntervalTicks)) {
             return false;
@@ -2725,6 +2759,11 @@ void EncoderThreadFunc(const AppConfig& config) {
         const uint32_t inputMin500Fps = g_WgcCap ? g_WgcCap->GetInputMin500Fps() : wgcRecentInputMin500Fps;
         return ce::capture_policy::ShouldArmWgcSmoothnessBufferForSourceRate(getWgcSmoothnessOutputFps(),
                                                                              inputMin250Fps, inputMin500Fps);
+    };
+    const auto shouldAttemptWgcStartupSmoothnessBufferNow = [&]() -> bool {
+        return ce::capture_policy::ShouldAttemptWgcStartupSmoothnessBuffer(
+            config.wgcSmoothnessBufferEnabled, config.video.useVFR, avContentDelayActive, targetIntervalTicks,
+            getWgcSmoothnessRetainedFramesBudget());
     };
     const auto getWgcSmoothnessBufferReason = [&]() -> const char* {
         if (!config.wgcSmoothnessBufferEnabled) {
@@ -2739,13 +2778,18 @@ void EncoderThreadFunc(const AppConfig& config) {
         if (targetIntervalTicks <= 0) {
             return "invalid_target";
         }
-        const uint32_t inputMin250Fps = g_WgcCap ? g_WgcCap->GetInputMin250Fps() : wgcRecentInputMin250Fps;
-        const uint32_t inputMin500Fps = g_WgcCap ? g_WgcCap->GetInputMin500Fps() : wgcRecentInputMin500Fps;
-        if (!ce::capture_policy::ShouldArmWgcSmoothnessBufferForSourceRate(getWgcSmoothnessOutputFps(), inputMin250Fps,
-                                                                           inputMin500Fps)) {
-            return "source_below_cfr_target";
+        const uint32_t desiredFrames = getWgcSmoothnessDesiredFramesForConfig();
+        if (desiredFrames == 0) {
+            return "target_zero";
         }
-        return "armed";
+        const uint32_t retainedFrames = getWgcSmoothnessRetainedFramesBudget();
+        if (retainedFrames == 0) {
+            return "vram_budget_exhausted";
+        }
+        if (!isWgcSmoothnessSourceRateEligibleNow()) {
+            return "startup_attempt_source_rate_low";
+        }
+        return "startup_attempt";
     };
     const auto getWgcDelayReservoirLowWaterFramesForDelay = [&](int64_t delayQpc) -> uint32_t {
         return ce::capture_policy::GetWgcDelayReservoirLowWaterFrames(delayQpc, targetIntervalTicks);
@@ -4871,6 +4915,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                         wgcStarvedEpisode.startQpc = episodeStartQpc.QuadPart;
                         wgcStarvedEpisode.startLiveTicks = liveTicksOutput;
                         wgcStarvedEpisode.startDuplicateTicks = captureSessionSummary.duplicateTicks;
+                        if (g_WgcCap) {
+                            wgcStarvedEpisode.startPoolSaturatedDrops = g_WgcCap->GetPoolSaturatedDropCount();
+                            wgcStarvedEpisode.startPoolOverwritePrevented =
+                                g_WgcCap->GetPoolSlotOverwritePreventedCount();
+                            wgcStarvedEpisode.startIngressDecimated = g_WgcCap->GetIngressDecimatedCount();
+                        }
                     }
                     wgcStarvedEpisode.minInputFps = std::min(wgcStarvedEpisode.minInputFps, wgcRecentInputMin250Fps);
                     wgcStarvedEpisode.minDeliveredFps =
@@ -5660,16 +5710,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                             DiscardQueuedFrame(frame);
                         }
 
-                        const uint32_t smoothnessStartupRetainedFrames =
-                            (g_WgcCap && shouldArmWgcSmoothnessBufferNow())
-                                ? g_WgcCap->GetSmoothnessRetainedFrameCount()
-                                : 0u;
-                        const int64_t smoothnessStartupDelayTicks =
-                            static_cast<int64_t>(smoothnessStartupRetainedFrames) *
-                            std::max<int64_t>(targetIntervalTicks, 0);
+                        const uint32_t smoothnessStartupDesiredFrames = getWgcSmoothnessDesiredFramesForConfig();
+                        const uint32_t smoothnessStartupRetainedFrames = getWgcSmoothnessRetainedFramesBudget();
+                        const bool smoothnessStartupAttempt = shouldAttemptWgcStartupSmoothnessBufferNow();
                         const int64_t delayTicks =
-                            ce::capture_policy::GetWgcCfrStartupPreLiveDelayTicks(targetIntervalTicks) +
-                            smoothnessStartupDelayTicks;
+                            ce::capture_policy::GetWgcCfrStartupPreLiveDelayTicks(targetIntervalTicks);
                         updateWgcIngressPressure("startup-pre-live-delay");
                         if (hTimer && delayTicks > 0 && qpcFreq.QuadPart > 0) {
                             const int64_t delay100ns = (delayTicks * 10000000) / qpcFreq.QuadPart;
@@ -5706,10 +5751,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                         LogInfo(
                             "[EncoderThread] WGC startup pre-live delay complete: anchorQpc=%lld now=%lld "
                             "oneFrame=%lld delayTicks=%lld hiddenFrames=%u discarded=%u queueFlushed=%zu "
-                            "bufferedFlushed=%zu smoothnessRetainedFrames=%u smoothReason=%s warmupMs=%llu",
+                            "bufferedFlushed=%zu smoothAttempt=%d smoothDesiredFrames=%u "
+                            "smoothnessRetainedFrames=%u smoothPreLiveDelayTicks=0 smoothReason=%s warmupMs=%llu",
                             static_cast<long long>(wgcStartupBarrierQpc), static_cast<long long>(barrierNow.QuadPart),
                             static_cast<long long>(targetIntervalTicks), static_cast<long long>(delayTicks),
                             hiddenStartupFrames, wgcStartupPreLiveDelayDroppedFrames, queueFlushed, bufferedFlushed,
+                            smoothnessStartupAttempt ? 1 : 0, smoothnessStartupDesiredFrames,
                             smoothnessStartupRetainedFrames, getWgcSmoothnessBufferReason(),
                             static_cast<unsigned long long>(warmupElapsedWithDelayMs64));
                         continue;
@@ -5817,13 +5864,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                         }
                     }
 
-                    const uint32_t smoothnessDesiredFrames =
-                        shouldArmWgcSmoothnessBufferNow()
-                            ? ce::capture_policy::GetWgcSmoothnessDesiredFrames(getWgcSmoothnessOutputFps(),
-                                                                                config.wgcSmoothnessBufferMaxMs)
-                            : 0u;
+                    const uint32_t smoothnessDesiredFrames = getWgcSmoothnessDesiredFramesForConfig();
                     const uint32_t smoothnessRetainedFrames =
                         (g_WgcCap && smoothnessDesiredFrames > 0) ? g_WgcCap->GetSmoothnessRetainedFrameCount() : 0u;
+                    const bool smoothnessStartupAttempted =
+                        ce::capture_policy::ShouldAttemptWgcStartupSmoothnessBuffer(
+                            config.wgcSmoothnessBufferEnabled, config.video.useVFR, avContentDelayActive,
+                            targetIntervalTicks, smoothnessRetainedFrames);
                     const uint32_t smoothnessPoolSlots =
                         g_WgcCap ? g_WgcCap->GetTexturePoolSlotCount()
                                  : ce::capture_policy::GetWgcSmoothnessPoolFrameCount(smoothnessRetainedFrames);
@@ -5837,7 +5884,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const bool smoothnessCapLimited =
                         smoothnessDesiredFrames > 0 && smoothnessRetainedFrames < smoothnessDesiredFrames;
                     const int64_t smoothnessTargetDelayQpc =
-                        static_cast<int64_t>(smoothnessRetainedFrames) * std::max<int64_t>(targetIntervalTicks, 0);
+                        smoothnessStartupAttempted
+                            ? ce::capture_policy::GetWgcStartupSmoothnessTargetDelayQpc(smoothnessRetainedFrames,
+                                                                                        targetIntervalTicks)
+                            : 0;
                     const int64_t startupContentDelayTargetQpc =
                         avContentDelayQpc + std::max<int64_t>(0, smoothnessTargetDelayQpc);
                     wgcSmoothnessDesiredFrames = smoothnessDesiredFrames;
@@ -5924,7 +5974,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                                 LogInfo(
                                     "[EncoderThread] WGC startup delay-reserve wait: reason=%s candidates=%zu "
                                     "newer=%zu lowWater=%u target=%u span=%lldus initialSpan=%lldus "
-                                    "freshened=%u waited=%lldus budget=%lldus smoothFrames=%u/%u capLimited=%d",
+                                    "freshened=%u waited=%lldus budget=%lldus smoothAttempt=%d "
+                                    "smoothFrames=%u/%u capLimited=%d",
                                     wgcStartupReserveReason.c_str(), startupCandidates.size(),
                                     newerStartupReserveFrames,
                                     getWgcDelayReservoirLowWaterFramesForDelay(startupContentDelayTargetQpc),
@@ -5933,7 +5984,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                                     static_cast<long long>(wgcStartupReserveWaitInitialSpanUs),
                                     wgcStartupReserveWaitFreshenedMax,
                                     static_cast<long long>(qpcToUs(waitNow.QuadPart - wgcStartupReserveWaitStartQpc)),
-                                    static_cast<long long>(qpcToUs(waitBudgetQpc)), smoothnessRetainedFrames,
+                                    static_cast<long long>(qpcToUs(waitBudgetQpc)),
+                                    smoothnessStartupAttempted ? 1 : 0, smoothnessRetainedFrames,
                                     smoothnessDesiredFrames, smoothnessCapLimited ? 1 : 0);
                             }
                             continue;
@@ -5967,7 +6019,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                               ? latestStartupSelectionQpc - selectedStartupSelectionQpc
                                                               : 0;
                     wgcSmoothnessActiveDelayQpc =
-                        std::clamp<int64_t>(actualStartupDelayQpc - avContentDelayQpc, 0, smoothnessTargetDelayQpc);
+                        ce::capture_policy::SelectWgcStartupSmoothnessExtraDelayQpc(
+                            actualStartupDelayQpc, avContentDelayQpc, smoothnessTargetDelayQpc);
                     wgcSmoothnessActualFrames =
                         targetIntervalTicks > 0
                             ? SaturatingToUint32(static_cast<uint64_t>(
@@ -6020,6 +6073,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                         anchorNow.QuadPart >= frame.timestamp
                             ? ((anchorNow.QuadPart - frame.timestamp) * 1000000) / qpcFreq.QuadPart
                             : 0;
+                    const bool startupSmoothnessUnderfed =
+                        smoothnessStartupAttempted && wgcSmoothnessActiveDelayQpc < smoothnessTargetDelayQpc;
                     LogInfo(
                         "[EncoderThread] WGC startup sync post-delay barrier satisfied: anchorQpc=%lld "
                         "firstFrameQpc=%lld delta=%lldus frameAge=%lldus droppedPostDelay=%u "
@@ -6030,10 +6085,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                         "startupReserveWaitedUs=%lld startupReserveInitialSpanUs=%lld "
                         "startupReserveSpanGrowthUs=%lld startupReserveWaitFreshened=%u "
                         "startupSelectedIndex=%zu startupSelectedDelayUs=%lld startupFallback=%d "
-                        "startupPartialReserveFallback=%d smoothDesiredFrames=%u smoothRetainedFrames=%u "
-                        "smoothActualFrames=%u smoothDelayUs=%lld smoothPoolSlots=%u retainedCap=%u "
-                        "reservedFreeSlots=%u retainedCapTrimmed=%u smoothCapLimited=%d startupEffectiveDelayUs=%lld "
-                        "smoothReason=%s",
+                        "startupPartialReserveFallback=%d smoothAttempt=%d smoothDesiredFrames=%u "
+                        "smoothRetainedFrames=%u smoothActualFrames=%u smoothTargetDelayUs=%lld "
+                        "smoothDelayUs=%lld smoothStartupUnderfed=%d smoothPoolSlots=%u retainedCap=%u "
+                        "reservedFreeSlots=%u retainedCapTrimmed=%u smoothCapLimited=%d "
+                        "startupEffectiveDelayUs=%lld smoothReason=%s",
                         static_cast<long long>(wgcStartupBarrierQpc), static_cast<long long>(frame.timestamp),
                         static_cast<long long>(startDeltaUs), static_cast<long long>(frameAgeUs),
                         wgcStartupBarrierDroppedFrames, wgcStartupPreLiveDelayDroppedFrames, startupFreshened,
@@ -6046,11 +6102,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                         static_cast<long long>(wgcStartupReserveWaitInitialSpanUs),
                         static_cast<long long>(startupReserveSpanGrowthUs), wgcStartupReserveWaitFreshenedMax,
                         selectedStartupIndex, static_cast<long long>(startupSelectedDelayUs),
-                        startupReserveFallback ? 1 : 0, startupPartialReserveFallback ? 1 : 0, smoothnessDesiredFrames,
-                        smoothnessRetainedFrames, wgcSmoothnessActualFrames,
-                        static_cast<long long>(qpcDeltaToUs(wgcSmoothnessActiveDelayQpc)), smoothnessPoolSlots,
-                        smoothnessRetainedFrameCap, smoothnessReservedFreeSlots, startupRetainedCapTrimmed,
-                        smoothnessCapLimited ? 1 : 0,
+                        startupReserveFallback ? 1 : 0, startupPartialReserveFallback ? 1 : 0,
+                        smoothnessStartupAttempted ? 1 : 0, smoothnessDesiredFrames, smoothnessRetainedFrames,
+                        wgcSmoothnessActualFrames, static_cast<long long>(qpcDeltaToUs(smoothnessTargetDelayQpc)),
+                        static_cast<long long>(qpcDeltaToUs(wgcSmoothnessActiveDelayQpc)),
+                        startupSmoothnessUnderfed ? 1 : 0, smoothnessPoolSlots, smoothnessRetainedFrameCap,
+                        smoothnessReservedFreeSlots, startupRetainedCapTrimmed, smoothnessCapLimited ? 1 : 0,
                         static_cast<long long>(qpcDeltaToUs(getWgcEffectiveContentDelayQpc())),
                         wgcSmoothnessBufferReason.c_str());
                 }
@@ -8225,8 +8282,17 @@ void EncoderThreadFunc(const AppConfig& config) {
             const bool wgcActiveDelayMixedPolicyFault = ce::capture_policy::IsWgcActiveDelayMixedPolicyPressureFault(
                 SaturatingToUint32(wgcSyncDelaySourceLimitedHoldTotal), SaturatingToUint32(wgcSyncDelayPolicyHoldTotal),
                 SaturatingToUint32(wgcSyncDelayHoldTotal));
+            const uint64_t wgcDeliveryRepeatLowerBoundTotal = captureSessionSummary.duplicateNoSourceTicks;
+            const uint64_t wgcCombinedSourceRepeatLowerBoundTotal =
+                std::max(wgcSourceRepeatLowerBoundTotal, wgcDeliveryRepeatLowerBoundTotal);
+            const uint64_t wgcDuplicateRepeatExcessTotal =
+                captureSessionSummary.duplicateTicks > wgcCombinedSourceRepeatLowerBoundTotal
+                    ? (captureSessionSummary.duplicateTicks - wgcCombinedSourceRepeatLowerBoundTotal)
+                    : 0ull;
+            const uint64_t wgcCombinedExcessRepeatTotal =
+                std::max(wgcExcessRepeatTotal, wgcDuplicateRepeatExcessTotal);
             const bool wgcCfrSmoothnessNotMaximal = ce::capture_policy::IsWgcCfrSmoothnessNotMaximal(
-                SaturatingToUint32(liveTicksOutput), SaturatingToUint32(wgcExcessRepeatTotal),
+                SaturatingToUint32(liveTicksOutput), SaturatingToUint32(wgcCombinedExcessRepeatTotal),
                 SaturatingToUint32(wgcPolicyAddedRepeatTotal), wgcExcessRepeatClusterMaxTicks,
                 SaturatingToUint32(wgcDelayPostSelectionRejectedSyncRiskTotal));
             LogInfo(
@@ -8392,14 +8458,17 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "[WGC CFR SMOOTHNESS VERDICT] delayPostSelectionRejectedSync=%llu "
                 "delayPostSelectionRescuedSync=%llu sourceRepeatLowerBound=%llu excessRepeats=%llu "
                 "policyAddedRepeats=%llu excessRepeatClusters=%llu excessRepeatClusterMax=%u "
-                "smoothnessNotMaximal=%d mixedPolicyFault=%d",
+                "smoothnessNotMaximal=%d mixedPolicyFault=%d syncSourceRepeatLowerBound=%llu "
+                "deliveryRepeatLowerBound=%llu",
                 static_cast<unsigned long long>(wgcDelayPostSelectionRejectedSyncRiskTotal),
                 static_cast<unsigned long long>(wgcDelayPostSelectionRescuedSyncRiskTotal),
-                static_cast<unsigned long long>(wgcSourceRepeatLowerBoundTotal),
-                static_cast<unsigned long long>(wgcExcessRepeatTotal),
+                static_cast<unsigned long long>(wgcCombinedSourceRepeatLowerBoundTotal),
+                static_cast<unsigned long long>(wgcCombinedExcessRepeatTotal),
                 static_cast<unsigned long long>(wgcPolicyAddedRepeatTotal),
                 static_cast<unsigned long long>(wgcExcessRepeatClusterTotal), wgcExcessRepeatClusterMaxTicks,
-                wgcCfrSmoothnessNotMaximal ? 1 : 0, wgcActiveDelayMixedPolicyFault ? 1 : 0);
+                wgcCfrSmoothnessNotMaximal ? 1 : 0, wgcActiveDelayMixedPolicyFault ? 1 : 0,
+                static_cast<unsigned long long>(wgcSourceRepeatLowerBoundTotal),
+                static_cast<unsigned long long>(wgcDeliveryRepeatLowerBoundTotal));
         } else {
             LogInfo(
                 "[Inject CFR SUMMARY] Live=%llu Dup=%llu DupPct=%.1f%% DupReason(src=%llu def=%llu timer=%llu "
