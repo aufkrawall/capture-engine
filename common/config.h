@@ -316,6 +316,14 @@ struct AppConfig {
     bool wgcSmoothnessBufferEnabled = true;
     uint32_t wgcSmoothnessBufferMaxMs = 300;
     uint32_t wgcSmoothnessBufferVramBudgetMb = 3000;
+    // WGC smoothness floor: a baseline jitter-buffer delay engaged even when there is no
+    // audio-latency content delay (video-only capture / low-confidence loopback probe), so WGC
+    // never falls back to maximally-jitter-exposed near-live selection. "auto" (default) derives
+    // the depth from measured startup WGC delivery jitter; an explicit value (ms) overrides; 0
+    // disables the floor and reproduces the prior behavior exactly. Sync-neutral by construction
+    // (never moves the audio anchor) and held fixed for the session. See capture_pipeline_policy.h.
+    bool wgcSmoothnessFloorAuto = true;
+    uint32_t wgcSmoothnessFloorMs = 0;  // explicit floor (ms); used only when wgcSmoothnessFloorAuto is false
     bool wgcPreferCompact10bitPool = true;
     std::string logFilePath;  // Path to captureengine.log
 

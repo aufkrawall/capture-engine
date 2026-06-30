@@ -909,6 +909,20 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         static_cast<uint32_t>(std::max(0, GetInt("General", "wgc_smoothness_buffer_max_ms", 300)));
     config.wgcSmoothnessBufferVramBudgetMb =
         static_cast<uint32_t>(std::max(0, GetInt("General", "wgc_smoothness_buffer_vram_budget_mb", 3000)));
+    {
+        // wgc_smoothness_floor_ms: "auto" (default) -> derive from measured startup delivery jitter;
+        // "0" -> disabled (exact prior behavior); "N" -> explicit floor in ms. Robust to case/spacing.
+        std::string floorRaw = Trim(GetStr("General", "wgc_smoothness_floor_ms", "auto"));
+        std::transform(floorRaw.begin(), floorRaw.end(), floorRaw.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (floorRaw.empty() || floorRaw == "auto") {
+            config.wgcSmoothnessFloorAuto = true;
+            config.wgcSmoothnessFloorMs = 0;
+        } else {
+            config.wgcSmoothnessFloorAuto = false;
+            config.wgcSmoothnessFloorMs = static_cast<uint32_t>(std::max(0, atoi(floorRaw.c_str())));
+        }
+    }
     config.wgcPreferCompact10bitPool = GetBool("General", "wgc_prefer_compact_10bit_pool", true);
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
     config.audioCaptureLatencyMs = GetFloat("General", "audio_capture_latency_ms", 0.0f);

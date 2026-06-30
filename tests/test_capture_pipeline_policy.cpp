@@ -1578,6 +1578,106 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferRequiresActiveSyncDelay) {
                                                       /*avContentDelayActive=*/true, /*targetIntervalTicks=*/0));
 }
 
+TEST(CapturePipelinePolicyTest, WgcSmoothnessDelayDesiredArmsForFloorWithoutAudioLatency) {
+    // Floor is the whole point: arm the smoothness machinery even when there is no audio-latency
+    // content delay (video-only / low-confidence probe). With the floor configured, the existing
+    // gates (fed WgcSmoothnessDelayDesired as their avContentDelayActive argument) must arm.
+    EXPECT_TRUE(policy::WgcSmoothnessDelayDesired(/*avContentDelayActive=*/false,
+                                                  /*smoothnessFloorConfigured=*/true));
+    EXPECT_TRUE(policy::WgcSmoothnessDelayDesired(/*avContentDelayActive=*/true,
+                                                  /*smoothnessFloorConfigured=*/false));
+    // Escape hatch: floor off AND no audio latency -> not desired (exact current behavior).
+    EXPECT_FALSE(policy::WgcSmoothnessDelayDesired(/*avContentDelayActive=*/false,
+                                                   /*smoothnessFloorConfigured=*/false));
+
+    const bool floorDesired = policy::WgcSmoothnessDelayDesired(false, true);
+    EXPECT_TRUE(policy::ShouldUseWgcSmoothnessBuffer(/*enabled=*/true, /*useVfr=*/false,
+                                                     /*avContentDelayActive=*/floorDesired,
+                                                     /*targetIntervalTicks=*/100));
+    EXPECT_TRUE(policy::ShouldAttemptWgcStartupSmoothnessBuffer(/*enabled=*/true, /*useVfr=*/false,
+                                                                /*avContentDelayActive=*/floorDesired,
+                                                                /*targetIntervalTicks=*/100,
+                                                                /*retainedExtraFrames=*/1));
+    // Floor off + no audio latency -> gates stay closed (regression escape hatch).
+    const bool floorOff = policy::WgcSmoothnessDelayDesired(false, false);
+    EXPECT_FALSE(policy::ShouldUseWgcSmoothnessBuffer(true, false, floorOff, 100));
+}
+
+TEST(CapturePipelinePolicyTest, WgcSmoothnessFloorDerivationIsClampedAndMonotonic) {
+    constexpr int64_t kQpcFreq = 10000000;     // 10 MHz QPC
+    constexpr int64_t kInterval120 = 83333;    // ~8.333 ms at 120 fps
+    constexpr uint32_t kMaxMs = 300;
+    constexpr uint32_t kReservoirFrames = 30;  // ~250 ms buildable reservoir
+
+    // No measured jitter -> falls back to the structural minimum (kWgcSmoothnessFloorMinFrames).
+    policy::WgcSmoothnessFloorJitter none{};
+    const int64_t floorNone =
+        policy::DeriveWgcSmoothnessFloorDelayQpc(none, kInterval120, kQpcFreq, kMaxMs, kReservoirFrames);
+    EXPECT_EQ(floorNone, kInterval120 * policy::kWgcSmoothnessFloorMinFrames);
+
+    // Moderate delivery burst (~50 ms gaps) -> floor absorbs the excess beyond one frame interval.
+    policy::WgcSmoothnessFloorJitter moderate{};
+    moderate.deliveryGapMaxUs = 50000;  // 50 ms
+    const int64_t floorModerate =
+        policy::DeriveWgcSmoothnessFloorDelayQpc(moderate, kInterval120, kQpcFreq, kMaxMs, kReservoirFrames);
+    EXPECT_GT(floorModerate, floorNone);
+
+    // Larger burst -> larger floor (monotonic) until clamped.
+    policy::WgcSmoothnessFloorJitter heavy{};
+    heavy.deliveryGapMaxUs = 170000;  // 170 ms
+    const int64_t floorHeavy =
+        policy::DeriveWgcSmoothnessFloorDelayQpc(heavy, kInterval120, kQpcFreq, kMaxMs, kReservoirFrames);
+    EXPECT_GT(floorHeavy, floorModerate);
+
+    // Extreme jitter must clamp to the smaller of maxMs and the buildable reservoir.
+    policy::WgcSmoothnessFloorJitter extreme{};
+    extreme.deliveryGapMaxUs = 5000000;  // 5 s (absurd outlier)
+    const int64_t floorExtreme =
+        policy::DeriveWgcSmoothnessFloorDelayQpc(extreme, kInterval120, kQpcFreq, kMaxMs, kReservoirFrames);
+    const int64_t capQpc =
+        policy::GetWgcSmoothnessFloorCapQpc(kInterval120, kQpcFreq, kMaxMs, kReservoirFrames);
+    EXPECT_EQ(floorExtreme, capQpc);
+    EXPECT_LE(capQpc, kInterval120 * kReservoirFrames);
+    EXPECT_LE(capQpc, (kQpcFreq * kMaxMs) / 1000);
+
+    // No reservoir capacity -> floor cannot be realized (0), regardless of measured jitter.
+    EXPECT_EQ(policy::DeriveWgcSmoothnessFloorDelayQpc(heavy, kInterval120, kQpcFreq, kMaxMs, /*reservoir=*/0), 0);
+    EXPECT_EQ(policy::GetWgcSmoothnessFloorCapQpc(kInterval120, kQpcFreq, kMaxMs, /*reservoir=*/0), 0);
+}
+
+TEST(CapturePipelinePolicyTest, WgcSmoothnessFloorIsSyncNeutralAcrossDelays) {
+    // Invariant #1: the smoothness extra delay S (whether from the audio-latency reservoir or the
+    // new floor) is sync-neutral by construction. The audio anchor delay tracks ONLY the true audio
+    // latency L (GetWgcStartupAudioAnchorQpc(videoQpc, L)); S is realized purely as the startup video
+    // frame being older with a correspondingly later live-start. For every PTS tick the selected
+    // video content time must equal the audio real-sound time, INDEPENDENT of S. This is what keeps
+    // a video-only floor (L=0, S>0) from drifting audio and from reintroducing ghost-image judder.
+    const int64_t startupVideoQpc = 1000000;
+    const int64_t interval = 83333;  // ~120 fps at 10 MHz QPC
+    for (int64_t L : {0, 350000, 720000}) {          // 0 / 35 ms / 72 ms audio latency
+        for (int64_t S : {0, 166666, 500000}) {      // 0 / 2 frames / ~60 ms smoothness extra
+            if (L + S <= 0) {
+                continue;  // no delay desired -> active-delay path not engaged (legacy near-live)
+            }
+            // The audio anchor must depend on L only, never on S.
+            const int64_t audioAnchor = policy::GetWgcStartupAudioAnchorQpc(startupVideoQpc, L);
+            EXPECT_EQ(audioAnchor, L > 0 ? startupVideoQpc + L : startupVideoQpc);
+
+            // The startup frame is (L+S) old at live-start (symmetric application of the delay).
+            const int64_t liveStart = startupVideoQpc + L + S;
+            for (int64_t p = 0; p < 5; ++p) {
+                const int64_t gridTick = liveStart + p * interval;
+                const int64_t selectionTarget = policy::GetWgcSelectionTargetQpc(
+                    gridTick, /*fallback=*/0, interval, /*recordingOutputLive=*/true,
+                    /*extraSelectionDelayQpc=*/L + S);
+                const int64_t audioRealSoundTime = audioAnchor + p * interval - L;
+                EXPECT_EQ(selectionTarget, audioRealSoundTime)
+                    << "L=" << L << " S=" << S << " p=" << p;
+            }
+        }
+    }
+}
+
 TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferDoesNotGrowWithoutBudgetOrSourceFrames) {
     EXPECT_EQ(policy::GetWgcSmoothnessRetainedFrames(/*outputFps=*/120, /*maxSmoothnessMs=*/250,
                                                      /*width=*/3840, /*height=*/2160, /*bytesPerPixel=*/8,

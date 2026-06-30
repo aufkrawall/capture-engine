@@ -26,6 +26,16 @@ wgc_same_device_capture=true
 ; CFR cadence over per-tick delay-reservoir defense so a GPU-bound under-delivering source
 ; does not produce abnormal judder; the realized content delay floats gracefully.
 ;wgc_active_delay_uniform_cadence=true
+; wgc_smoothness_floor_ms - baseline WGC jitter-buffer depth used even when there is NO
+; audio-latency content delay (video-only capture, or a low-confidence loopback-latency probe),
+; where WGC would otherwise run near-live and be maximally exposed to bursty DWM frame delivery
+; under GPU load. "auto" (default) derives the depth from measured startup WGC delivery jitter;
+; an explicit value in ms overrides; "0" disables the floor (reproduces prior behavior exactly).
+; The floor adds a little capture latency and VRAM (bounded by wgc_smoothness_buffer_max_ms and
+; the VRAM budget). It is sync-neutral by construction (audio stays byte-exact; the audio anchor
+; is never moved) and is held fixed for the session, so it cannot cause "ghost image" judder. It
+; is a no-op when recording with audio, where a deeper buffer is already armed.
+;wgc_smoothness_floor_ms=auto
 
 [Injection]
 ; Entry format: process:window:mode

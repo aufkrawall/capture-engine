@@ -228,6 +228,14 @@ WGC_DELAY_REALIZATION_RE = re.compile(
     r"delayResidualEarlyMax=(\d+)us",
     re.IGNORECASE,
 )
+WGC_SMOOTHNESS_FLOOR_RE = re.compile(
+    r"\[WGC CFR SMOOTHNESS FLOOR\] smoothFloorSource=(\w+) smoothFloorConfigured=(\d+) "
+    r"smoothFloorMs=(\d+) smoothFloorRequestedUs=([+-]?\d+) smoothFloorDelayUs=([+-]?\d+) "
+    r"smoothFloorClampedBy=(\w+) smoothFloorRealizedTargetUs=([+-]?\d+) "
+    r"measuredDeliveryGapUs\(avg/max\)=(\d+)/(\d+) measuredSourceJitterUs\(avg/max\)=(\d+)/(\d+) "
+    r"realizedDelay\(min/avg/max\)Us=(\d+)/(\d+)/(\d+) residualLateMaxUs=(\d+) avContentDelayActive=(\d+)",
+    re.IGNORECASE,
+)
 WGC_DELAY_RAW_RESIDUAL_RE = re.compile(
     r"rawResidualAvg=([+-]?\d+)/(\d+)us rawResidualMax=(\d+)us rawResidualP95=(\d+)us "
     r"rawResidualLateMax=(\d+)us rawResidualEarlyMax=(\d+)us "
@@ -1608,6 +1616,29 @@ def update_wgc_smoothness_item_from_line(item, line):
                 "delay_residual_p95_us": parse_int(delay_realization.group(10)),
                 "delay_residual_late_max_us": parse_int(delay_realization.group(11)),
                 "delay_residual_early_max_us": parse_int(delay_realization.group(12)),
+            }
+        )
+
+    floor = WGC_SMOOTHNESS_FLOOR_RE.search(line)
+    if floor:
+        item.update(
+            {
+                "smooth_floor_source": floor.group(1),
+                "smooth_floor_configured": parse_int(floor.group(2)),
+                "smooth_floor_ms": parse_int(floor.group(3)),
+                "smooth_floor_requested_us": parse_int(floor.group(4)),
+                "smooth_floor_delay_us": parse_int(floor.group(5)),
+                "smooth_floor_clamped_by": floor.group(6),
+                "smooth_floor_realized_target_us": parse_int(floor.group(7)),
+                "smooth_floor_delivery_gap_avg_us": parse_int(floor.group(8)),
+                "smooth_floor_delivery_gap_max_us": parse_int(floor.group(9)),
+                "smooth_floor_source_jitter_avg_us": parse_int(floor.group(10)),
+                "smooth_floor_source_jitter_max_us": parse_int(floor.group(11)),
+                "smooth_floor_realized_min_us": parse_int(floor.group(12)),
+                "smooth_floor_realized_avg_us": parse_int(floor.group(13)),
+                "smooth_floor_realized_max_us": parse_int(floor.group(14)),
+                "smooth_floor_residual_late_max_us": parse_int(floor.group(15)),
+                "smooth_floor_av_content_delay_active": parse_int(floor.group(16)),
             }
         )
 
@@ -3983,6 +4014,24 @@ def self_test():
         assert smooth_buffer_with_pool_item["smoothness_budget_surfaces"] == 32
         assert smooth_buffer_with_pool_item["pool_lease_max"] == 22
         assert smooth_buffer_with_pool_item["pool_overwrite_prevented"] == 9
+
+        # Smoothness FLOOR line (video-only / low-confidence path): parsed into the same item for
+        # triage visibility. Additive only -- no failure gate depends on it.
+        smooth_floor_item = {}
+        update_wgc_smoothness_item_from_line(
+            smooth_floor_item,
+            "[WGC CFR SMOOTHNESS FLOOR] smoothFloorSource=auto smoothFloorConfigured=1 smoothFloorMs=0 "
+            "smoothFloorRequestedUs=42000 smoothFloorDelayUs=42000 smoothFloorClampedBy=none "
+            "smoothFloorRealizedTargetUs=42000 measuredDeliveryGapUs(avg/max)=9000/50000 "
+            "measuredSourceJitterUs(avg/max)=800/1200 realizedDelay(min/avg/max)Us=38000/41000/44000 "
+            "residualLateMaxUs=3000 avContentDelayActive=0",
+        )
+        assert smooth_floor_item["smooth_floor_source"] == "auto"
+        assert smooth_floor_item["smooth_floor_delay_us"] == 42000
+        assert smooth_floor_item["smooth_floor_clamped_by"] == "none"
+        assert smooth_floor_item["smooth_floor_delivery_gap_max_us"] == 50000
+        assert smooth_floor_item["smooth_floor_realized_min_us"] == 38000
+        assert smooth_floor_item["smooth_floor_av_content_delay_active"] == 0
 
         wgc_pool_safe_drop = make_session(
             "wgc_pool_safe_drop",

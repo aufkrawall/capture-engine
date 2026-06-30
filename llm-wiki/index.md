@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-06-30 (updated: WGC uniform playout repeat rescue/attribution)
+Last cross-checked: 2026-06-30 (updated: always-on WGC smoothness floor / baseline jitter buffer decoupled from audio latency)
 
 Primary sources:
 - `AGENTS.md`

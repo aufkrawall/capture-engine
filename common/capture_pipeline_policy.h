@@ -70,6 +70,18 @@ constexpr uint32_t kWgcSmoothnessEstimatedSyncDelayMs = 33;
 constexpr uint32_t kWgcSmoothnessBufferMinPoolFrames = 8;
 constexpr uint32_t kWgcSmoothnessBufferMaxPoolFrames = 64;
 constexpr uint32_t kWgcSmoothnessBufferPoolHeadroomSlots = 8;
+// WGC smoothness FLOOR: a baseline jitter-buffer delay that engages the active-delay
+// smoothness machinery (nearest-target playout + reservoir) even when there is NO
+// audio-latency content delay -- i.e. video-only capture, or a low-confidence loopback
+// latency probe, where WGC otherwise runs near-live and is maximally exposed to bursty
+// DWM->frame-pool delivery under GPU load. The floor is auto-derived from measured startup
+// WGC delivery jitter, then HELD FIXED for the session (never retimed live), so it cannot
+// reintroduce the realized-delay-collapse / "ghost image" judder family. It is applied
+// symmetrically (older startup video + correspondingly later live-start), so it is
+// sync-neutral by construction and NEVER moves the audio anchor (audio stays byte-exact).
+// kWgcSmoothnessFloorMinFrames is the minimum depth (frames) the floor engages with so the
+// nearest-target playout has room to absorb at least one delivery hiccup.
+constexpr uint32_t kWgcSmoothnessFloorMinFrames = 2;
 // Jitter headroom (frames) above the active-delay reservoir target before the uniform-cadence pacer
 // trims the oldest surplus. Bounds the realized content delay so a VRR / GPU-bound source whose
 // present rate transiently rises above the CFR output rate cannot inflate the reservoir without
@@ -1677,6 +1689,83 @@ inline uint32_t GetWgcSmoothnessDesiredFrames(uint32_t outputFps, uint32_t maxSm
 inline bool ShouldUseWgcSmoothnessBuffer(bool enabled, bool useVfr, bool avContentDelayActive,
                                          int64_t targetIntervalTicks) {
     return enabled && !useVfr && avContentDelayActive && targetIntervalTicks > 0;
+}
+
+// Measured startup WGC delivery jitter used to auto-derive a smoothness floor. All fields are
+// microseconds. Delivery-gap fields describe the wall-clock spacing of FrameArrived callbacks
+// (DWM -> capture frame pool burstiness); source-jitter fields describe the spacing of the
+// game's own presents. Avg fields are for logging only; the derivation uses the max fields.
+struct WgcSmoothnessFloorJitter {
+    uint32_t deliveryGapAvgUs = 0;
+    uint32_t deliveryGapMaxUs = 0;
+    uint32_t sourceJitterAvgUs = 0;
+    uint32_t sourceJitterMaxUs = 0;
+};
+
+// True when a smoothness reservoir/delay should be armed: either an audio-latency content delay
+// is active, or a smoothness floor is configured (auto, or an explicit value > 0). This lets the
+// existing smoothness gates arm the buffer for video-only / low-confidence-probe captures, where
+// avContentDelayActive is false but a baseline jitter buffer is still wanted.
+inline bool WgcSmoothnessDelayDesired(bool avContentDelayActive, bool smoothnessFloorConfigured) {
+    return avContentDelayActive || smoothnessFloorConfigured;
+}
+
+// Upper bound (QPC) for a smoothness floor delay: the smaller of the configured max smoothness
+// window and the buildable retained reservoir (so the floor can never target a delay the pool
+// cannot hold). Returns 0 when no reservoir capacity is available.
+inline int64_t GetWgcSmoothnessFloorCapQpc(int64_t targetIntervalTicks, int64_t qpcTicksPerSecond,
+                                           uint32_t maxSmoothnessMs, uint32_t maxReservoirFrames) {
+    if (targetIntervalTicks <= 0 || maxReservoirFrames == 0) {
+        return 0;
+    }
+    int64_t capQpc = targetIntervalTicks * static_cast<int64_t>(maxReservoirFrames);
+    if (maxSmoothnessMs > 0 && qpcTicksPerSecond > 0) {
+        const int64_t maxMsQpc = (qpcTicksPerSecond * static_cast<int64_t>(maxSmoothnessMs)) / 1000;
+        if (maxMsQpc > 0) {
+            capQpc = std::min(capQpc, maxMsQpc);
+        }
+    }
+    return capQpc > 0 ? capQpc : 0;
+}
+
+// Clamp an arbitrary requested floor delay (QPC) to [minFloorFrames, cap]. Returns 0 when no
+// reservoir capacity exists (cap == 0), i.e. the floor cannot be realized.
+inline int64_t ClampWgcSmoothnessFloorDelayQpc(int64_t requestedFloorQpc, int64_t targetIntervalTicks,
+                                               int64_t qpcTicksPerSecond, uint32_t maxSmoothnessMs,
+                                               uint32_t maxReservoirFrames,
+                                               uint32_t minFloorFrames = kWgcSmoothnessFloorMinFrames) {
+    const int64_t capQpc =
+        GetWgcSmoothnessFloorCapQpc(targetIntervalTicks, qpcTicksPerSecond, maxSmoothnessMs, maxReservoirFrames);
+    if (capQpc <= 0 || targetIntervalTicks <= 0) {
+        return 0;
+    }
+    const int64_t minFloorQpc =
+        std::min(capQpc, targetIntervalTicks * static_cast<int64_t>(std::max<uint32_t>(1u, minFloorFrames)));
+    return std::clamp(requestedFloorQpc, minFloorQpc, capQpc);
+}
+
+// Auto-derive a smoothness floor delay (QPC) from measured startup WGC delivery jitter. It sizes
+// the floor to absorb the worst observed delivery burst beyond one frame interval (and the worst
+// source-present jitter), with a structural minimum of kWgcSmoothnessFloorMinFrames, clamped to
+// the configured max smoothness window and the buildable reservoir. There is NO device-specific
+// hardcoded value: the magnitude is measured, then only clamped by config/budget. When no jitter
+// has been observed yet the floor falls back to the structural minimum so the active-delay
+// machinery still engages with a small buffer.
+inline int64_t DeriveWgcSmoothnessFloorDelayQpc(const WgcSmoothnessFloorJitter& jitter, int64_t targetIntervalTicks,
+                                                int64_t qpcTicksPerSecond, uint32_t maxSmoothnessMs,
+                                                uint32_t maxReservoirFrames,
+                                                uint32_t minFloorFrames = kWgcSmoothnessFloorMinFrames) {
+    if (targetIntervalTicks <= 0 || qpcTicksPerSecond <= 0) {
+        return 0;
+    }
+    const int64_t frameIntervalUs = (targetIntervalTicks * 1000000) / qpcTicksPerSecond;
+    const int64_t deliveryExcessUs = static_cast<int64_t>(jitter.deliveryGapMaxUs) > frameIntervalUs
+                                         ? (static_cast<int64_t>(jitter.deliveryGapMaxUs) - frameIntervalUs)
+                                         : 0;
+    const int64_t jitterUs = std::max<int64_t>(deliveryExcessUs, static_cast<int64_t>(jitter.sourceJitterMaxUs));
+    const int64_t requestedFloorQpc = jitterUs > 0 ? (qpcTicksPerSecond * jitterUs) / 1000000 : 0;
+    return ClampWgcSmoothnessFloorDelayQpc(requestedFloorQpc, targetIntervalTicks, qpcTicksPerSecond, maxSmoothnessMs,
+                                           maxReservoirFrames, minFloorFrames);
 }
 
 inline bool ShouldArmWgcSmoothnessBufferForSourceRate(uint32_t outputFps, uint32_t recentInputMin250Fps,

@@ -1052,13 +1052,22 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     }
     const uint32_t outputFps = static_cast<uint32_t>(std::max(0, config.video.fps));
     const bool hasWgcContentDelayBudget = maxAudioCaptureLatencyMs > 0.0f;
+    // Smoothness FLOOR: when configured (auto or explicit > 0) the reservoir/copy-pool budget must
+    // be allocated even with no audio-latency content delay, otherwise a video-only / low-confidence
+    // capture would have no buffer to engage the active-delay jitter-absorbing playout. The floor
+    // delay itself is realized within the retained-extra reservoir (not the sync-delay frames), so
+    // syncDelayFramesForBudget stays audio-latency-driven (0 here when there is no audio latency).
+    const bool wgcSmoothnessFloorBudgetDesired =
+        config.wgcSmoothnessBufferEnabled && !config.video.useVFR &&
+        (config.wgcSmoothnessFloorAuto || config.wgcSmoothnessFloorMs > 0);
     const uint32_t syncDelayFramesForBudget =
         hasWgcContentDelayBudget ? ce::capture_policy::GetWgcEstimatedSyncDelayFramesForBudget(
                                        outputFps, static_cast<uint32_t>(std::ceil(maxAudioCaptureLatencyMs)))
                                  : 0u;
     g_WgcCap->SetSmoothnessBufferBudget(
-        config.wgcSmoothnessBufferEnabled && !config.video.useVFR && hasWgcContentDelayBudget, outputFps,
-        config.wgcSmoothnessBufferMaxMs, config.wgcSmoothnessBufferVramBudgetMb, syncDelayFramesForBudget);
+        config.wgcSmoothnessBufferEnabled && !config.video.useVFR &&
+            (hasWgcContentDelayBudget || wgcSmoothnessFloorBudgetDesired),
+        outputFps, config.wgcSmoothnessBufferMaxMs, config.wgcSmoothnessBufferVramBudgetMb, syncDelayFramesForBudget);
     if (config.video.useVFR) {
         g_WgcCap->SetDirectFrameCallback(QueueWgcFrame);
     } else {
@@ -2467,6 +2476,12 @@ void EncoderThreadFunc(const AppConfig& config) {
     bool wgcStartupSelectedByDelayReserve = false;
     std::string wgcStartupReserveReason = "not-run";
     int64_t wgcSmoothnessActiveDelayQpc = 0;
+    // Smoothness FLOOR diagnostics/state (resolved once at startup, then fixed for the session).
+    int64_t wgcSmoothnessFloorDelayQpc = 0;     // resolved floor delay target (QPC); 0 = floor inactive
+    int64_t wgcSmoothnessFloorRequestedQpc = 0;  // pre-clamp requested floor (QPC), for logging
+    const char* wgcSmoothnessFloorSource = "off";  // off | auto | config
+    const char* wgcSmoothnessFloorClampedBy = "none";  // none | min | max_ms | reservoir
+    ce::capture_policy::WgcSmoothnessFloorJitter wgcSmoothnessFloorJitter{};  // measured jitter used for auto
     uint32_t wgcSmoothnessDesiredFrames = 0;
     uint32_t wgcSmoothnessRetainedFrames = 0;
     uint32_t wgcSmoothnessActualFrames = 0;
@@ -3009,6 +3024,11 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcAvSyncStartupVideoQpc = 0;
             wgcAvSyncStartupEffectiveDelayQpc = 0;
             wgcSmoothnessActiveDelayQpc = 0;
+            wgcSmoothnessFloorDelayQpc = 0;
+            wgcSmoothnessFloorRequestedQpc = 0;
+            wgcSmoothnessFloorSource = "off";
+            wgcSmoothnessFloorClampedBy = "none";
+            wgcSmoothnessFloorJitter = ce::capture_policy::WgcSmoothnessFloorJitter{};
             wgcSmoothnessDesiredFrames = 0;
             wgcSmoothnessRetainedFrames = 0;
             wgcSmoothnessActualFrames = 0;
@@ -3066,6 +3086,17 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                 static_cast<double>(qpcFreq.QuadPart)))
             : 0;
     const bool avContentDelayActive = avContentDelayQpc > 0;
+    // Smoothness FLOOR (WGC only): engage the active-delay jitter-absorbing playout even when there
+    // is no audio-latency content delay. Configured = auto or explicit > 0; only meaningful for the
+    // WGC (screen-grab) path. wgcSmoothnessDelayDesired drives the smoothness arming gates below in
+    // place of avContentDelayActive, so the buffer arms for video-only / low-confidence captures.
+    // The resolved floor magnitude (wgcSmoothnessFloorDelayQpc) is derived once at the startup
+    // barrier from measured delivery jitter; here we only know whether it is configured.
+    const bool wgcSmoothnessFloorConfigured =
+        IsActiveScreenGrab() && config.wgcSmoothnessBufferEnabled && !config.video.useVFR &&
+        (config.wgcSmoothnessFloorAuto || config.wgcSmoothnessFloorMs > 0);
+    const bool wgcSmoothnessDelayDesired =
+        ce::capture_policy::WgcSmoothnessDelayDesired(avContentDelayActive, wgcSmoothnessFloorConfigured);
     // Inject path has no selection target; it pops the oldest buffered frame above a reserve,
     // so delaying inject video content = retaining this many extra frames (the oldest popped
     // frame becomes ~L old). Rounded up to whole frames.
@@ -3120,8 +3151,10 @@ void EncoderThreadFunc(const AppConfig& config) {
         return config.video.fps > 0 ? static_cast<uint32_t>(config.video.fps) : 0u;
     };
     const auto shouldUseWgcSmoothnessBaseConfig = [&]() -> bool {
+        // Pass wgcSmoothnessDelayDesired (audio-latency delay OR configured floor) so the buffer
+        // arms for video-only / low-confidence captures too, not only when audio latency is present.
         return ce::capture_policy::ShouldUseWgcSmoothnessBuffer(config.wgcSmoothnessBufferEnabled,
-                                                                config.video.useVFR, avContentDelayActive,
+                                                                config.video.useVFR, wgcSmoothnessDelayDesired,
                                                                 targetIntervalTicks);
     };
     const auto getWgcSmoothnessDesiredFramesForConfig = [&]() -> uint32_t {
@@ -3137,7 +3170,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     };
     const auto isWgcSmoothnessSourceRateEligibleNow = [&]() -> bool {
         if (!ce::capture_policy::ShouldUseWgcSmoothnessBuffer(config.wgcSmoothnessBufferEnabled, config.video.useVFR,
-                                                              avContentDelayActive, targetIntervalTicks)) {
+                                                              wgcSmoothnessDelayDesired, targetIntervalTicks)) {
             return false;
         }
         const uint32_t inputMin250Fps = g_WgcCap ? g_WgcCap->GetInputMin250Fps() : wgcRecentInputMin250Fps;
@@ -3147,7 +3180,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     };
     const auto shouldAttemptWgcStartupSmoothnessBufferNow = [&]() -> bool {
         return ce::capture_policy::ShouldAttemptWgcStartupSmoothnessBuffer(
-            config.wgcSmoothnessBufferEnabled, config.video.useVFR, avContentDelayActive, targetIntervalTicks,
+            config.wgcSmoothnessBufferEnabled, config.video.useVFR, wgcSmoothnessDelayDesired, targetIntervalTicks,
             getWgcSmoothnessRetainedFramesBudget());
     };
     const auto getWgcSmoothnessBufferReason = [&]() -> const char* {
@@ -3157,7 +3190,7 @@ void EncoderThreadFunc(const AppConfig& config) {
         if (config.video.useVFR) {
             return "vfr";
         }
-        if (!avContentDelayActive) {
+        if (!wgcSmoothnessDelayDesired) {
             return "sync_delay_inactive";
         }
         if (targetIntervalTicks <= 0) {
@@ -6784,7 +6817,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         (g_WgcCap && smoothnessDesiredFrames > 0) ? g_WgcCap->GetSmoothnessRetainedFrameCount() : 0u;
                     const bool smoothnessStartupAttempted =
                         ce::capture_policy::ShouldAttemptWgcStartupSmoothnessBuffer(
-                            config.wgcSmoothnessBufferEnabled, config.video.useVFR, avContentDelayActive,
+                            config.wgcSmoothnessBufferEnabled, config.video.useVFR, wgcSmoothnessDelayDesired,
                             targetIntervalTicks, smoothnessRetainedFrames);
                     const uint32_t smoothnessPoolSlots =
                         g_WgcCap ? g_WgcCap->GetTexturePoolSlotCount()
@@ -6798,11 +6831,68 @@ void EncoderThreadFunc(const AppConfig& config) {
                         g_WgcCap ? g_WgcCap->GetSmoothnessEstimatedVramBytes() : 0ull;
                     const bool smoothnessCapLimited =
                         smoothnessDesiredFrames > 0 && smoothnessRetainedFrames < smoothnessDesiredFrames;
-                    const int64_t smoothnessTargetDelayQpc =
+                    // Full buildable reservoir target (audio-latency path uses this unchanged).
+                    const int64_t smoothnessReservoirTargetDelayQpc =
                         smoothnessStartupAttempted
                             ? ce::capture_policy::GetWgcStartupSmoothnessTargetDelayQpc(smoothnessRetainedFrames,
                                                                                         targetIntervalTicks)
                             : 0;
+                    // Resolve the smoothness FLOOR once, here at the startup barrier, from measured pre-live
+                    // WGC delivery jitter (auto) or the explicit config value, clamped to the buildable
+                    // reservoir. It is then HELD FIXED for the session. For the audio-latency path
+                    // (avContentDelayActive) the floor is a deliberate no-op: the reservoir target already
+                    // dominates, so the validated with-audio behavior is unchanged.
+                    if (wgcSmoothnessFloorConfigured && smoothnessStartupAttempted &&
+                        smoothnessReservoirTargetDelayQpc > 0) {
+                        if (g_WgcCap) {
+                            wgcSmoothnessFloorJitter.deliveryGapAvgUs = SaturatingToUint32(g_WgcCap->GetCallbackGapAvgUs());
+                            wgcSmoothnessFloorJitter.deliveryGapMaxUs = SaturatingToUint32(g_WgcCap->GetCallbackGapMaxUs());
+                            wgcSmoothnessFloorJitter.sourceJitterAvgUs =
+                                SaturatingToUint32(g_WgcCap->GetSourceJitterAvgUs());
+                            wgcSmoothnessFloorJitter.sourceJitterMaxUs =
+                                SaturatingToUint32(g_WgcCap->GetSourceJitterMaxUs());
+                        }
+                        if (config.wgcSmoothnessFloorAuto) {
+                            wgcSmoothnessFloorSource = "auto";
+                            wgcSmoothnessFloorRequestedQpc = ce::capture_policy::DeriveWgcSmoothnessFloorDelayQpc(
+                                wgcSmoothnessFloorJitter, targetIntervalTicks, qpcFreq.QuadPart,
+                                config.wgcSmoothnessBufferMaxMs, smoothnessRetainedFrames);
+                            wgcSmoothnessFloorDelayQpc = wgcSmoothnessFloorRequestedQpc;
+                        } else {
+                            wgcSmoothnessFloorSource = "config";
+                            wgcSmoothnessFloorRequestedQpc =
+                                qpcFreq.QuadPart > 0 ? (qpcFreq.QuadPart * static_cast<int64_t>(
+                                                                               config.wgcSmoothnessFloorMs)) /
+                                                           1000
+                                                     : 0;
+                            wgcSmoothnessFloorDelayQpc = ce::capture_policy::ClampWgcSmoothnessFloorDelayQpc(
+                                wgcSmoothnessFloorRequestedQpc, targetIntervalTicks, qpcFreq.QuadPart,
+                                config.wgcSmoothnessBufferMaxMs, smoothnessRetainedFrames);
+                        }
+                        const int64_t floorCapQpc = ce::capture_policy::GetWgcSmoothnessFloorCapQpc(
+                            targetIntervalTicks, qpcFreq.QuadPart, config.wgcSmoothnessBufferMaxMs,
+                            smoothnessRetainedFrames);
+                        const int64_t floorMinQpc =
+                            targetIntervalTicks * static_cast<int64_t>(ce::capture_policy::kWgcSmoothnessFloorMinFrames);
+                        if (wgcSmoothnessFloorRequestedQpc >= floorCapQpc && floorCapQpc > 0) {
+                            const int64_t maxMsQpc =
+                                config.wgcSmoothnessBufferMaxMs > 0 && qpcFreq.QuadPart > 0
+                                    ? (qpcFreq.QuadPart * static_cast<int64_t>(config.wgcSmoothnessBufferMaxMs)) / 1000
+                                    : INT64_MAX;
+                            wgcSmoothnessFloorClampedBy = (maxMsQpc <= floorCapQpc) ? "max_ms" : "reservoir";
+                        } else if (wgcSmoothnessFloorRequestedQpc < floorMinQpc) {
+                            wgcSmoothnessFloorClampedBy = "min";
+                        } else {
+                            wgcSmoothnessFloorClampedBy = "none";
+                        }
+                    }
+                    // L>0: keep the full reservoir target (unchanged). L==0 floor: target ONLY the floor depth
+                    // (a smaller, jitter-sized buffer) rather than the full reservoir, trading less latency for
+                    // adequate jitter absorption. The floor is <= the reservoir by construction (clamped above).
+                    const int64_t smoothnessTargetDelayQpc =
+                        avContentDelayActive
+                            ? smoothnessReservoirTargetDelayQpc
+                            : std::min(wgcSmoothnessFloorDelayQpc, smoothnessReservoirTargetDelayQpc);
                     const int64_t startupContentDelayTargetQpc =
                         avContentDelayQpc + std::max<int64_t>(0, smoothnessTargetDelayQpc);
                     wgcSmoothnessDesiredFrames = smoothnessDesiredFrames;
@@ -6817,6 +6907,32 @@ void EncoderThreadFunc(const AppConfig& config) {
                         wgcSmoothnessBufferReason = "vram_budget_exhausted";
                     } else if (smoothnessCapLimited) {
                         wgcSmoothnessBufferReason = "vram_cap_limited";
+                    }
+
+                    // One-time smoothness-FLOOR decision log. Makes the auto-derivation auditable: what
+                    // delivery/source jitter was measured, what floor it produced, how it was clamped, and the
+                    // resulting effective target. A no-op note is logged for the with-audio path so it is clear
+                    // the validated behavior is unchanged there.
+                    if (wgcSmoothnessFloorConfigured) {
+                        const char* floorNote = avContentDelayActive
+                                                    ? "no-op: audio-latency reservoir target dominates"
+                                                    : (smoothnessReservoirTargetDelayQpc > 0
+                                                           ? "active: video-only/low-confidence jitter buffer"
+                                                           : "inactive: no reservoir capacity");
+                        LogInfo(
+                            "[AVSyncApply] wgc_smoothness_floor: source=%s auto=%d configuredMs=%u "
+                            "deliveryGapUs(avg/max)=%u/%u sourceJitterUs(avg/max)=%u/%u requestedUs=%lld "
+                            "derivedUs=%lld clampedBy=%s reservoirTargetUs=%lld effectiveTargetUs=%lld "
+                            "avContentDelayUs=%lld note=\"%s\"",
+                            wgcSmoothnessFloorSource, config.wgcSmoothnessFloorAuto ? 1 : 0,
+                            config.wgcSmoothnessFloorMs, wgcSmoothnessFloorJitter.deliveryGapAvgUs,
+                            wgcSmoothnessFloorJitter.deliveryGapMaxUs,
+                            wgcSmoothnessFloorJitter.sourceJitterAvgUs, wgcSmoothnessFloorJitter.sourceJitterMaxUs,
+                            static_cast<long long>(qpcToUs(wgcSmoothnessFloorRequestedQpc)),
+                            static_cast<long long>(qpcToUs(wgcSmoothnessFloorDelayQpc)), wgcSmoothnessFloorClampedBy,
+                            static_cast<long long>(qpcToUs(smoothnessReservoirTargetDelayQpc)),
+                            static_cast<long long>(qpcToUs(smoothnessTargetDelayQpc)),
+                            static_cast<long long>(qpcToUs(avContentDelayQpc)), floorNote);
                     }
 
                     const int64_t startupReserveToleranceQpc =
@@ -8336,7 +8452,14 @@ void EncoderThreadFunc(const AppConfig& config) {
                         LARGE_INTEGER afterInit;
                         QueryPerformanceCounter(&afterInit);
                         liveStartQpc = afterInit;
-                        if (useScreenGrab && avContentDelayActive && frameToProcess && !frameToProcess->isInjectMode) {
+                        // Publish the shared startup anchor whenever an effective video delay exists -- the
+                        // audio-latency delay OR a realized smoothness floor (video-only / low-confidence
+                        // path). The audio anchor delay stays = avContentDelayQpc (true latency, 0 for the
+                        // floor case): the extra smoothness/floor delay S is absorbed purely by the later
+                        // live-start (scheduleOffset), so audio stays byte-exact and the floor is
+                        // sync-neutral by construction (no ghost-image judder).
+                        if (useScreenGrab && isWgcEffectiveContentDelayActive() && frameToProcess &&
+                            !frameToProcess->isInjectMode) {
                             int64_t startupVideoQpc = GetFrameSelectionTimestamp(*frameToProcess);
                             if (startupVideoQpc <= 0) {
                                 startupVideoQpc = frameToProcess->timestamp;
@@ -8867,6 +8990,31 @@ void EncoderThreadFunc(const AppConfig& config) {
                     static_cast<unsigned long long>(wgcSyncDelaySourceRecoveryHoldTotal),
                     wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
                     wgcEncoderRecoveryLimitedCurrent ? 1 : 0);
+                // Compact per-window jitter-budget view: is the (audio-latency OR floor) buffer absorbing
+                // bursty WGC delivery, or is jitter overflowing it into even repeats? bufNow staying at/above
+                // the reservoir low-water with bounded windowResidualLate means absorbed; bufNow draining to
+                // 0 with uniformHold repeats means the delivery burst exceeded the buffer depth (overflow ->
+                // even repeats, NOT a sync fault). Source-limited repeats are attributed separately.
+                if (isWgcEffectiveContentDelayActive()) {
+                    const int64_t jbDeliveryGapAvgUs = g_WgcCap ? g_WgcCap->GetCallbackGapAvgUs() : 0;
+                    const int64_t jbDeliveryGapMaxUs = g_WgcCap ? g_WgcCap->GetCallbackGapMaxUs() : 0;
+                    const int64_t jbSourceJitterAvgUs = g_WgcCap ? g_WgcCap->GetSourceJitterAvgUs() : 0;
+                    const int64_t jbSourceJitterMaxUs = g_WgcCap ? g_WgcCap->GetSourceJitterMaxUs() : 0;
+                    const bool jbAbsorbing = bufferedWgcFrames.size() >= delayReservoirLowWaterFrames;
+                    LogInfo(
+                        "[WGC CFR JITTER BUDGET] floorSource=%s effectiveDelayUs=%lld floorTargetUs=%lld "
+                        "bufNow=%zu reservoir=%u/%u deliveryGapUs(avg/max)=%lld/%lld "
+                        "sourceJitterUs(avg/max)=%lld/%lld windowResidualLateMaxUs=%u windowResidualP95Us=%u "
+                        "uniformHoldRepeats=%u sourceLimitedRepeats=%u paceCapTrim=%u absorbing=%d",
+                        avContentDelayActive ? "audio" : wgcSmoothnessFloorSource,
+                        static_cast<long long>(wgcWindowEffectiveDelayUs),
+                        static_cast<long long>(qpcToUs(wgcSmoothnessFloorDelayQpc)), bufferedWgcFrames.size(),
+                        delayReservoirLowWaterFrames, delayReservoirTargetFrames,
+                        static_cast<long long>(jbDeliveryGapAvgUs), static_cast<long long>(jbDeliveryGapMaxUs),
+                        static_cast<long long>(jbSourceJitterAvgUs), static_cast<long long>(jbSourceJitterMaxUs),
+                        wgcDelayResidualLateMaxUs, delayResidualWindowP95Us, wgcDelayUniformHoldWindow,
+                        wgcDelaySourceLimitedRepeatWindow, wgcDelayPaceCapTrimWindow, jbAbsorbing ? 1 : 0);
+                }
             }
 
             static uint64_t s_lastWgcCapacityWarnTick = 0;
@@ -9515,6 +9663,25 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                              ? wgcDelayRawMinusPredictedAvgSignedUs
                                                              : -wgcDelayRawMinusPredictedAvgSignedUs)),
                 wgcDelayRawMinusPredictedAbsMaxUs);
+            // Smoothness FLOOR rollup: ties the resolved floor to its realized result so a soak run is
+            // conclusive. With the floor active and working, realizedDelay(min/avg/max) should sit near
+            // smoothFloorRealizedTargetUs with a bounded residualLateMax (jitter absorbed); a collapsed
+            // realizedDelayMin with a large residualLateMax means jitter exceeded the floor budget
+            // (overflow -> even repeats), NOT a sync/ghost-judder fault (audio anchor never moved).
+            LogInfo(
+                "[WGC CFR SMOOTHNESS FLOOR] smoothFloorSource=%s smoothFloorConfigured=%d smoothFloorMs=%u "
+                "smoothFloorRequestedUs=%lld smoothFloorDelayUs=%lld smoothFloorClampedBy=%s "
+                "smoothFloorRealizedTargetUs=%lld measuredDeliveryGapUs(avg/max)=%u/%u "
+                "measuredSourceJitterUs(avg/max)=%u/%u realizedDelay(min/avg/max)Us=%u/%u/%u "
+                "residualLateMaxUs=%u avContentDelayActive=%d",
+                wgcSmoothnessFloorSource, wgcSmoothnessFloorConfigured ? 1 : 0, config.wgcSmoothnessFloorMs,
+                static_cast<long long>(qpcToUs(wgcSmoothnessFloorRequestedQpc)),
+                static_cast<long long>(qpcToUs(wgcSmoothnessFloorDelayQpc)), wgcSmoothnessFloorClampedBy,
+                static_cast<long long>(qpcToUs(avContentDelayActive ? 0 : wgcSmoothnessFloorDelayQpc)),
+                wgcSmoothnessFloorJitter.deliveryGapAvgUs, wgcSmoothnessFloorJitter.deliveryGapMaxUs,
+                wgcSmoothnessFloorJitter.sourceJitterAvgUs, wgcSmoothnessFloorJitter.sourceJitterMaxUs,
+                wgcDelayRealizedMinFinalUs, wgcDelayRealizedAvgUs, wgcDelayRealizedMaxUs, wgcDelayResidualLateMaxUs,
+                avContentDelayActive ? 1 : 0);
             LogInfo(
                 "[WGC CFR SMOOTHNESS REPEAT] delayResidualRelaxedSelections=%llu delayResidualRelaxedMax=%uus "
                 "delayResidualRelaxedRejectedSync=%llu delayRepeatClusterPressure=%llu "

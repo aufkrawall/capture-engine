@@ -237,7 +237,8 @@ def restore_config(snapshot):
 
 
 def write_scenario_config(scenario, output_dir, include_microphone, include_mixed_track, video_encoder,
-                          audio_capture_latency_ms=0.0, app_capture_latency_ms=None):
+                          audio_capture_latency_ms=0.0, app_capture_latency_ms=None,
+                          wgc_smoothness_floor_ms=None):
     CAPTURE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -267,12 +268,18 @@ enabled=true
 process={SECONDARY_PROCESS_NAME}
 track=2
 """
+    # Smoothness floor override: when set, exercises the WGC baseline jitter buffer (use with
+    # audio_capture_latency_ms=0 to validate the video-only / low-confidence floor path: the realized
+    # delay should pin near the floor and A/V sync must stay clean). Omitted -> product default (auto).
+    smoothness_floor_line = (
+        f"wgc_smoothness_floor_ms={wgc_smoothness_floor_ms}\n" if wgc_smoothness_floor_ms is not None else ""
+    )
     text = f"""[General]
 log_level=trace
 capture_method={scenario.capture_method}
 audio_capture_latency_ms={audio_capture_latency_ms}
 audio_latency_autodetect=false
-wgc_window_detection=(
+{smoothness_floor_line}wgc_window_detection=(
 {PROCESS_NAME}
 )
 
@@ -797,7 +804,8 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe, preflight_info=None)
     remove_stale_app_artifacts()
     secondary_app_exe = prepare_secondary_app_alias(app_exe) if scenario.secondary_app_audio else None
     write_scenario_config(scenario, captures_dir, args.include_microphone, args.include_mixed_track,
-                          args.video_encoder, args.audio_capture_latency_ms, args.app_capture_latency_ms)
+                          args.video_encoder, args.audio_capture_latency_ms, args.app_capture_latency_ms,
+                          getattr(args, "wgc_smoothness_floor_ms", None))
 
     delay_ms = args.delay_ms
     scenario_duration_sec = scenario.duration_sec if scenario.duration_sec is not None else args.duration_sec
@@ -1400,6 +1408,15 @@ def build_parser():
         help="CE-side loopback audio capture latency compensation written to the scenario config "
         "(General/audio_capture_latency_ms). Use with --raw-offset-gate to validate the fix: 0 measures "
         "the raw capture differential, the measured value drives it toward 0.",
+    )
+    parser.add_argument(
+        "--wgc-smoothness-floor-ms",
+        default=None,
+        help="Override [General] wgc_smoothness_floor_ms in the scenario config (\"auto\", \"0\", or an "
+        "explicit ms value). Pair with --audio-capture-latency-ms 0 to validate the WGC baseline "
+        "jitter-buffer floor (video-only / low-confidence path): the realized delay should pin near the "
+        "floor and A/V sync must stay clean (no realized-delay rubber-band, no ghost-image judder). "
+        "Omitted leaves the product default (auto).",
     )
     parser.add_argument(
         "--sync-smoothness-delay-ms",
