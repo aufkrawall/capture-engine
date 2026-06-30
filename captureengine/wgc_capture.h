@@ -219,6 +219,7 @@ public:
     // Experimental WGC performance controls. Defaults preserve legacy behavior.
     void SetSkipSplitDeviceFlush(bool enabled);
     void SetSameDeviceCapture(bool enabled);
+    void SetPreferCompact10bitPool(bool enabled);
     void SetRequireHighPrecisionCapture(bool enabled);
     void SetSmoothnessBufferBudget(bool enabled, uint32_t outputFps, uint32_t maxMs, uint32_t vramBudgetMb,
                                    uint32_t syncDelayFrames = 0);

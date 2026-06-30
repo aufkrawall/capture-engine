@@ -1041,6 +1041,7 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     g_WgcCap->SetCaptureCursor(config.video.captureCursor);
     g_WgcCap->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
     g_WgcCap->SetSameDeviceCapture(config.wgcSameDeviceCapture);
+    g_WgcCap->SetPreferCompact10bitPool(config.wgcPreferCompact10bitPool);
     g_WgcCap->SetRequireHighPrecisionCapture(IsExplicitTenBitVideo(config.video));
     const uint32_t initialWgcTargetFps = GetInitialWgcCfrTargetFps(config.video);
     float maxAudioCaptureLatencyMs = 0.0f;
@@ -9896,6 +9897,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
         g_WgcCap->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
         g_WgcCap->SetSameDeviceCapture(config.wgcSameDeviceCapture);
+        g_WgcCap->SetPreferCompact10bitPool(config.wgcPreferCompact10bitPool);
     };
 
     if (IsPreferredScreenGrab() || isAutoCaptureConfig()) {

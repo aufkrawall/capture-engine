@@ -649,6 +649,7 @@ public:
     std::atomic<bool> resetNeeded_{false};
     bool skipSplitDeviceFlush_ = false;
     bool sameDeviceCapture_ = false;
+    bool preferCompact10bitPool_ = true;
     bool smoothnessBufferEnabled_ = true;
     uint32_t smoothnessOutputFps_ = 0;
     uint32_t smoothnessMaxMs_ = ce::capture_policy::kWgcSmoothnessBufferDefaultMaxMs;
@@ -2697,6 +2698,42 @@ public:
                 }
                 if (!r10RetrySucceeded) {
                     sourceFramePoolBufferCount_ = initialBufferCount;
+
+                    if (preferCompact10bitPool_) {
+                        // Try BGRA8 as a compact pool format (4bpp instead of FP16's 8bpp),
+                        // halving VRAM per source surface. The retained copy stays R10
+                        // via shader conversion, and encoding stays 10-bit P010.
+                        LogInfo(
+                            "[WGC] R10 frame pool failed with all buffer counts (%u..%u), "
+                            "trying compact BGRA8 pool (wgc_prefer_compact_10bit_pool=true)",
+                            ce::capture_policy::kWgcSmoothnessSourceFramePoolMinBuffers, initialBufferCount);
+                        const winrt::DirectXPixelFormat bgraFormat =
+                            winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
+                        const DXGI_FORMAT bgraDxgi = DXGI_FORMAT_B8G8R8A8_UNORM;
+                        if (tryCreateFramePool(bgraFormat)) {
+                            LogInfo("[WGC] Compact BGRA8 frame pool created successfully. "
+                                    "Retained format remains R10 via shader conversion, "
+                                    "encoding stays 10-bit P010. VRAM saved: ~%.0fMB per source surface.",
+                                    static_cast<double>(BytesPerPixelForFormat(DXGI_FORMAT_R16G16B16A16_FLOAT) -
+                                                        BytesPerPixelForFormat(bgraDxgi)) *
+                                        static_cast<double>(width) * static_cast<double>(height) /
+                                        (1024.0 * 1024.0));
+                            attemptedFp16Fallback = false;
+                            capturePixelFormat_ = bgraFormat;
+                            captureDxgiFormat_ = bgraDxgi;
+                            // Keep useHighPrecisionCapture_=true so retained format
+                            // stays R10 and encoding stays 10-bit P010.
+                        } else {
+                            LogInfo("[WGC] Compact BGRA8 pool also failed, falling back to FP16.");
+                            goto fallback_to_fp16;
+                        }
+                    } else {
+                        goto fallback_to_fp16;
+                    }
+                }
+                // Successful path landed in BGRA8 or R10 — continue.
+                if (false) {
+                fallback_to_fp16:;
                     LogWarn(
                         "[WGC] R10 frame pool failed with all buffer counts (%u..%u), falling back to FP16. "
                         "FP16 at 2x VRAM cost per source surface preserves 10-bit precision losslessly "
@@ -4085,6 +4122,16 @@ void WGCCapture::SetSameDeviceCapture(bool enabled) {
         if (changed && impl_->d3dDevice_) {
             impl_->FlagResetNeeded("same-device capture option changed");
         }
+    }
+#else
+    (void)enabled;
+#endif
+}
+
+void WGCCapture::SetPreferCompact10bitPool(bool enabled) {
+#if HAS_WGC
+    if (impl_) {
+        impl_->preferCompact10bitPool_ = enabled;
     }
 #else
     (void)enabled;
