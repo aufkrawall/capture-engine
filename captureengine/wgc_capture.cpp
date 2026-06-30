@@ -2297,14 +2297,20 @@ public:
         bool duplicateSourceTimestamp = false;
         const int64_t sourceFrameQpc = NormalizeSourceFrameQpc(rawSourceFrameQpc, &duplicateSourceTimestamp);
         const int64_t lastDeliveredRawSourceQpc = lastDeliveredRawSourceQpc_.load(std::memory_order_relaxed);
-        if (ce::capture_policy::ShouldSkipDeliveredDuplicateWgcSourceTimestamp(
+        if (duplicateSourceTimestamp ||
+            ce::capture_policy::ShouldSkipDeliveredDuplicateWgcSourceTimestamp(
                 duplicateSourceTimestamp, rawSourceFrameQpc, lastDeliveredRawSourceQpc, targetIntervalQPC_ > 0)) {
             skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
             duplicateTimestampSkipCount_.fetch_add(1, std::memory_order_relaxed);
             static std::atomic<uint32_t> duplicateSkipLogCount{0};
             if (duplicateSkipLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-                LogInfo("[WGC] Skipped duplicate source timestamp before copy rawQpc=%lld deliveredRawQpc=%lld",
-                        static_cast<long long>(rawSourceFrameQpc), static_cast<long long>(lastDeliveredRawSourceQpc));
+                const int64_t lastDeliveredSourceQpc = lastDeliveredSourceQpc_.load(std::memory_order_relaxed);
+                LogInfo(
+                    "[WGC] Skipped duplicate/out-of-order source frame before copy: "
+                    "rawQpc=%lld dupTs=%d lastDeliveredRawQpc=%lld lastDeliveredNormQpc=%lld",
+                    static_cast<long long>(rawSourceFrameQpc), duplicateSourceTimestamp ? 1 : 0,
+                    static_cast<long long>(lastDeliveredRawSourceQpc),
+                    static_cast<long long>(lastDeliveredSourceQpc));
             }
             winrtFrame.Close();
             return false;
