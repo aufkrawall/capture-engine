@@ -1294,15 +1294,15 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessSplitBudgetCompactsSdrFp16RetainedC
         policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
     EXPECT_TRUE(budget.splitByteBudget);
     EXPECT_EQ(budget.sourceFramePoolBuffers, 11u);
-    EXPECT_EQ(budget.copyPoolSlots, 41u);
-    EXPECT_EQ(budget.retainedFrameCap, 35u);
+    EXPECT_EQ(budget.copyPoolSlots, 42u);
+    EXPECT_EQ(budget.retainedFrameCap, 36u);
     EXPECT_EQ(budget.retainedExtraFrames, 30u);
     EXPECT_FALSE(budget.capLimited);
     EXPECT_LE(budget.estimatedBytes, 2048ull * 1024ull * 1024ull);
     EXPECT_EQ(budget.sourceEstimatedBytes,
               policy::EstimateWgcSurfaceBytes(/*width=*/3840, /*height=*/2160, /*bytesPerPixel=*/8) * 11ull);
     EXPECT_EQ(budget.copyEstimatedBytes,
-              policy::EstimateWgcSurfaceBytes(/*width=*/3840, /*height=*/2160, /*bytesPerPixel=*/4) * 41ull);
+              policy::EstimateWgcSurfaceBytes(/*width=*/3840, /*height=*/2160, /*bytesPerPixel=*/4) * 42ull);
 }
 
 TEST(CapturePipelinePolicyTest, WgcSmoothnessHdrFp16RemainsHomogeneousAndBudgetCapped) {
@@ -1336,8 +1336,8 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferAllowsFullTargetWhenBudgetAll
         /*bytesPerPixel=*/4, /*budgetMb=*/2048, policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
     EXPECT_EQ(budget.retainedExtraFrames, 30u);
     EXPECT_EQ(budget.sourceFramePoolBuffers, 8u);
-    EXPECT_EQ(budget.copyPoolSlots, 41u);
-    EXPECT_EQ(budget.retainedFrameCap, 35u);
+    EXPECT_EQ(budget.copyPoolSlots, 49u);
+    EXPECT_EQ(budget.retainedFrameCap, 43u);
     EXPECT_FALSE(budget.capLimited);
 }
 

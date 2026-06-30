@@ -69,6 +69,7 @@ constexpr uint32_t kWgcSmoothnessSourceFramePoolCompactHighFpsMaxBuffers = 16;
 constexpr uint32_t kWgcSmoothnessEstimatedSyncDelayMs = 33;
 constexpr uint32_t kWgcSmoothnessBufferMinPoolFrames = 8;
 constexpr uint32_t kWgcSmoothnessBufferMaxPoolFrames = 64;
+constexpr uint32_t kWgcSmoothnessBufferPoolHeadroomSlots = 8;
 // Jitter headroom (frames) above the active-delay reservoir target before the uniform-cadence pacer
 // trims the oldest surplus. Bounds the realized content delay so a VRR / GPU-bound source whose
 // present rate transiently rises above the CFR output rate cannot inflate the reservoir without
@@ -1881,7 +1882,7 @@ inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(uint32_t out
         const uint32_t desiredCopySlots = std::max<uint32_t>(
             kWgcSmoothnessBufferMinPoolFrames, result.reservedFreeCopySlots + result.syncDelayFrames +
                                                    kWgcDelayReservoirTargetExtraFrames + result.retainedExtraFrames);
-        copySlots = std::min<uint32_t>(copySlots, desiredCopySlots);
+        copySlots = std::min<uint32_t>(copySlots, desiredCopySlots + kWgcSmoothnessBufferPoolHeadroomSlots);
         result.retainedFrameCap = GetWgcSmoothnessRetainedFrameCap(copySlots, result.reservedFreeCopySlots);
     } else {
         result.retainedExtraFrames = 0;
