@@ -84,7 +84,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_TRUE(config.wgcSameDeviceCapture);
     EXPECT_TRUE(config.wgcSmoothnessBufferEnabled);
     EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 250u);
-    EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 2048u);
+    EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 3000u);
     EXPECT_EQ(config.video.profile, "auto");
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_FALSE(config.graphics.forceMipBiasClamp);
@@ -100,7 +100,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("wgc_same_device_capture=true"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_enabled=true"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_max_ms=250"), std::string::npos);
-    EXPECT_NE(generatedText.find("wgc_smoothness_buffer_vram_budget_mb=2048"), std::string::npos);
+    EXPECT_NE(generatedText.find("wgc_smoothness_buffer_vram_budget_mb=3000"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("; backbuffer_count, affecting vsync"), std::string::npos);

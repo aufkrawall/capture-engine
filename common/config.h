@@ -315,7 +315,7 @@ struct AppConfig {
     bool wgcActiveDelayUniformCadence = true;
     bool wgcSmoothnessBufferEnabled = true;
     uint32_t wgcSmoothnessBufferMaxMs = 250;
-    uint32_t wgcSmoothnessBufferVramBudgetMb = 2048;
+    uint32_t wgcSmoothnessBufferVramBudgetMb = 3000;
     std::string logFilePath;  // Path to captureengine.log
 
     std::string crashDumpDir;  // Directory for crash dumps

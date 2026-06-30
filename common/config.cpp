@@ -347,7 +347,7 @@ wgc_same_device_capture=true
 ;wgc_smoothness_buffer_max_ms=250
 ; wgc_smoothness_buffer_vram_budget_mb - approximate WGC frame-pool + retained-copy
 ; budget for the smoothness reservoir. Raise only if there is enough VRAM headroom.
-;wgc_smoothness_buffer_vram_budget_mb=2048
+;wgc_smoothness_buffer_vram_budget_mb=3000
 
 ; audio_capture_latency_ms - Render-endpoint (Domain 1) A/V sync offset (ms): how late the
 ; system loopback AND every app process-loopback source land vs the video. CE corrects this by
@@ -881,7 +881,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.wgcSmoothnessBufferMaxMs =
         static_cast<uint32_t>(std::max(0, GetInt("General", "wgc_smoothness_buffer_max_ms", 250)));
     config.wgcSmoothnessBufferVramBudgetMb =
-        static_cast<uint32_t>(std::max(0, GetInt("General", "wgc_smoothness_buffer_vram_budget_mb", 2048)));
+        static_cast<uint32_t>(std::max(0, GetInt("General", "wgc_smoothness_buffer_vram_budget_mb", 3000)));
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
     config.audioCaptureLatencyMs = GetFloat("General", "audio_capture_latency_ms", 0.0f);
     config.micCaptureLatencyMs = GetFloat("General", "mic_capture_latency_ms", 0.0f);
