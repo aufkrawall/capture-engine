@@ -362,7 +362,7 @@ wgc_same_device_capture=true
 ;wgc_smoothness_buffer_enabled=true
 ; wgc_smoothness_buffer_max_ms - maximum extra WGC CFR smoothness reservoir target.
 ; Actual retained frames are capped by source reserve and the VRAM budget below.
-;wgc_smoothness_buffer_max_ms=250
+;wgc_smoothness_buffer_max_ms=300
 ; wgc_smoothness_buffer_vram_budget_mb - approximate WGC frame-pool + retained-copy
 ; budget for the smoothness reservoir. Raise only if there is enough VRAM headroom.
 ;wgc_smoothness_buffer_vram_budget_mb=3000
@@ -906,7 +906,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.wgcActiveDelayUniformCadence = GetBool("General", "wgc_active_delay_uniform_cadence", true);
     config.wgcSmoothnessBufferEnabled = GetBool("General", "wgc_smoothness_buffer_enabled", true);
     config.wgcSmoothnessBufferMaxMs =
-        static_cast<uint32_t>(std::max(0, GetInt("General", "wgc_smoothness_buffer_max_ms", 250)));
+        static_cast<uint32_t>(std::max(0, GetInt("General", "wgc_smoothness_buffer_max_ms", 300)));
     config.wgcSmoothnessBufferVramBudgetMb =
         static_cast<uint32_t>(std::max(0, GetInt("General", "wgc_smoothness_buffer_vram_budget_mb", 3000)));
     config.wgcPreferCompact10bitPool = GetBool("General", "wgc_prefer_compact_10bit_pool", true);

@@ -83,7 +83,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_FALSE(config.wgcSkipSplitDeviceFlush);
     EXPECT_TRUE(config.wgcSameDeviceCapture);
     EXPECT_TRUE(config.wgcSmoothnessBufferEnabled);
-    EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 250u);
+    EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 300u);
     EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 3000u);
     EXPECT_EQ(config.processPriority, "high");
     EXPECT_EQ(config.video.gpuPriority, 7);
@@ -102,7 +102,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("wgc_skip_split_device_flush=false"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_same_device_capture=true"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_enabled=true"), std::string::npos);
-    EXPECT_NE(generatedText.find("wgc_smoothness_buffer_max_ms=250"), std::string::npos);
+    EXPECT_NE(generatedText.find("wgc_smoothness_buffer_max_ms=300"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_vram_budget_mb=3000"), std::string::npos);
     EXPECT_NE(generatedText.find("gpu_scheduling_priority=off"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);

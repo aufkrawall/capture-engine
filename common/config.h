@@ -314,7 +314,7 @@ struct AppConfig {
     // realized content delay is allowed to float gracefully (track lengths/PTS unchanged).
     bool wgcActiveDelayUniformCadence = true;
     bool wgcSmoothnessBufferEnabled = true;
-    uint32_t wgcSmoothnessBufferMaxMs = 250;
+    uint32_t wgcSmoothnessBufferMaxMs = 300;
     uint32_t wgcSmoothnessBufferVramBudgetMb = 3000;
     bool wgcPreferCompact10bitPool = true;
     std::string logFilePath;  // Path to captureengine.log
