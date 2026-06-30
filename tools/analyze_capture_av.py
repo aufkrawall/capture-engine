@@ -152,7 +152,7 @@ WGC_SUMMARY_RE = re.compile(
     r"\[WGC CFR SUMMARY\].*Live=(\d+) Dup=(\d+) DupPct=([0-9.]+)% "
     r".*DupReason\(src=(\d+) def=(\d+) timer=(\d+) drain=(\d+)\).*"
     r"SourceLimitedRepeats=(\d+) StarvedEpisodes=(\d+) longest=(\d+)ms "
-    r"longestDup=(\d+) worstIn=(\d+) worstDel=(\d+)",
+    r"longestDup=(\d+)(?: longestContiguousDup=(\d+) \((\d+)ms\))? worstIn=(\d+) worstDel=(\d+)",
     re.IGNORECASE,
 )
 WGC_SMOOTHNESS_SUMMARY_RE = re.compile(
@@ -1850,8 +1850,13 @@ def parse_media_triage(media_text):
                     "starved_episodes": parse_int(summary_match.group(9)),
                     "longest_ms": parse_int(summary_match.group(10)),
                     "longest_dup_ticks": parse_int(summary_match.group(11)),
-                    "worst_input_fps": parse_int(summary_match.group(12)),
-                    "worst_delivered_fps": parse_int(summary_match.group(13)),
+                    # True contiguous freeze (held-frame run); falls back to 0 on older logs that
+                    # predate the metric. longest_ms/longest_dup above are episode-scoped and overstate
+                    # a freeze, so prefer this for the real worst-case held-frame duration.
+                    "longest_contiguous_dup_ticks": parse_int(summary_match.group(12)),
+                    "longest_contiguous_dup_ms": parse_int(summary_match.group(13)),
+                    "worst_input_fps": parse_int(summary_match.group(14)),
+                    "worst_delivered_fps": parse_int(summary_match.group(15)),
                     "line": line,
                 }
             )
@@ -2311,6 +2316,12 @@ def summarize_wgc_source_limits(media_evidence):
         "summary_source_limited_pct": (source_limited_repeats * 100.0 / live_ticks) if live_ticks else 0.0,
         "summary_longest_ms": max((row["longest_ms"] for row in summary_rows), default=0),
         "summary_longest_dup_ticks": max((row["longest_dup_ticks"] for row in summary_rows), default=0),
+        "summary_longest_contiguous_dup_ticks": max(
+            (row.get("longest_contiguous_dup_ticks", 0) for row in summary_rows), default=0
+        ),
+        "summary_longest_contiguous_dup_ms": max(
+            (row.get("longest_contiguous_dup_ms", 0) for row in summary_rows), default=0
+        ),
         "summary_worst_input_fps": min(
             (row["worst_input_fps"] for row in summary_rows if row["worst_input_fps"] > 0),
             default=0,
@@ -3570,7 +3581,8 @@ def print_triage_report(report):
     print(
         "  wgc_source_starved_episodes={detail} summary_episodes={summary} "
         "source_limited_repeats={repeats} dup={dup}/{live} ({dup_pct:.1f}%) "
-        "source_limited_pct={src_pct:.1f}% longest_ms={longest} longest_dup={longest_dup} "
+        "source_limited_pct={src_pct:.1f}% worst_contiguous_freeze={contig_dup}f/{contig_ms}ms "
+        "longest_episode={longest}ms episode_dups={longest_dup} "
         "worst_fps={worst_in}/{worst_del} perf_csv={perf_count}".format(
             detail=wgc_source_limits["detail_episode_count"],
             summary=wgc_source_limits["summary_starved_episodes"],
@@ -3579,6 +3591,8 @@ def print_triage_report(report):
             live=wgc_source_limits["summary_live"],
             dup_pct=wgc_source_limits["summary_duplicate_pct"],
             src_pct=wgc_source_limits["summary_source_limited_pct"],
+            contig_dup=wgc_source_limits["summary_longest_contiguous_dup_ticks"],
+            contig_ms=wgc_source_limits["summary_longest_contiguous_dup_ms"],
             longest=wgc_source_limits["summary_longest_ms"],
             longest_dup=wgc_source_limits["summary_longest_dup_ticks"],
             worst_in=wgc_source_limits["summary_worst_input_fps"],
@@ -4032,6 +4046,31 @@ def self_test():
         assert smooth_floor_item["smooth_floor_delivery_gap_max_us"] == 50000
         assert smooth_floor_item["smooth_floor_realized_min_us"] == 38000
         assert smooth_floor_item["smooth_floor_av_content_delay_active"] == 0
+
+        # WGC SUMMARY: new longestContiguousDup field parses, and worstIn/worstDel stay correct after
+        # the group renumbering. This is the true visible-freeze metric (episode metrics overstate it).
+        new_summary = WGC_SUMMARY_RE.search(
+            "[WGC CFR SUMMARY] Live=23460 Dup=3083 DupPct=13.1% NoFresh=179pm NoReserve=206pm "
+            "DupReason(src=3072 def=0 timer=11 drain=0) SourceLimitedRepeats=3072 StarvedEpisodes=1451 "
+            "longest=4110ms longestDup=292 longestContiguousDup=115 (958ms) worstIn=4 worstDel=4"
+        )
+        assert new_summary is not None
+        assert parse_int(new_summary.group(10)) == 4110  # episode ms (overstates freeze)
+        assert parse_int(new_summary.group(11)) == 292  # episode dups (overstates freeze)
+        assert parse_int(new_summary.group(12)) == 115  # true contiguous freeze frames
+        assert parse_int(new_summary.group(13)) == 958  # true contiguous freeze ms
+        assert parse_int(new_summary.group(14)) == 4  # worstIn still correct
+        assert parse_int(new_summary.group(15)) == 4  # worstDel still correct
+        # Backward-compat: older logs without the field still parse; contiguous defaults to 0.
+        old_summary = WGC_SUMMARY_RE.search(
+            "[WGC CFR SUMMARY] Live=1000 Dup=120 DupPct=12.0% NoFresh=120pm NoReserve=0pm "
+            "DupReason(src=120 def=0 timer=0 drain=0) SourceLimitedRepeats=120 StarvedEpisodes=5 "
+            "longest=400ms longestDup=40 worstIn=84 worstDel=84"
+        )
+        assert old_summary is not None
+        assert parse_int(old_summary.group(12)) == 0  # absent -> 0
+        assert parse_int(old_summary.group(14)) == 84  # worstIn still correct on old format
+        assert parse_int(old_summary.group(15)) == 84
 
         wgc_pool_safe_drop = make_session(
             "wgc_pool_safe_drop",

@@ -2481,6 +2481,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     int64_t wgcSmoothnessFloorRequestedQpc = 0;  // pre-clamp requested floor (QPC), for logging
     const char* wgcSmoothnessFloorSource = "off";  // off | auto | config
     const char* wgcSmoothnessFloorClampedBy = "none";  // none | min | max_ms | reservoir
+    bool wgcSmoothnessFloorLogged = false;  // latch: the one-time floor decision log fires once per recording
     ce::capture_policy::WgcSmoothnessFloorJitter wgcSmoothnessFloorJitter{};  // measured jitter used for auto
     uint32_t wgcSmoothnessDesiredFrames = 0;
     uint32_t wgcSmoothnessRetainedFrames = 0;
@@ -2778,6 +2779,13 @@ void EncoderThreadFunc(const AppConfig& config) {
         uint64_t longestStarvedEpisodeMs = 0;
         uint64_t longestStarvedEpisodeOutputTicks = 0;
         uint64_t longestStarvedEpisodeDuplicateTicks = 0;
+        // Longest CONTIGUOUS duplicate (held-frame) run for the whole session -- the true visible
+        // freeze duration. Unlike the per-window cadence DupStreak, this survives the per-second
+        // cadence reset, so a freeze that crosses a window boundary is not split/undercounted.
+        // (longestStarvedEpisode* above measure a below-target *episode* and dups *within* it, which
+        // overstate a freeze because the source still delivers new frames during the episode.)
+        uint64_t longestContiguousDupTicks = 0;
+        uint32_t currentContiguousDupTicks = 0;  // running counter (per-tick), reset on any fresh frame
         uint32_t longestStarvedEpisodeMinInputFps = std::numeric_limits<uint32_t>::max();
         uint32_t longestStarvedEpisodeMinDeliveredFps = std::numeric_limits<uint32_t>::max();
         uint32_t worstFreshMissPermille = 0;
@@ -3028,6 +3036,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcSmoothnessFloorRequestedQpc = 0;
             wgcSmoothnessFloorSource = "off";
             wgcSmoothnessFloorClampedBy = "none";
+            wgcSmoothnessFloorLogged = false;
             wgcSmoothnessFloorJitter = ce::capture_policy::WgcSmoothnessFloorJitter{};
             wgcSmoothnessDesiredFrames = 0;
             wgcSmoothnessRetainedFrames = 0;
@@ -6913,7 +6922,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                     // delivery/source jitter was measured, what floor it produced, how it was clamped, and the
                     // resulting effective target. A no-op note is logged for the with-audio path so it is clear
                     // the validated behavior is unchanged there.
-                    if (wgcSmoothnessFloorConfigured) {
+                    if (wgcSmoothnessFloorConfigured && !wgcSmoothnessFloorLogged) {
+                        // Log once per recording. This block re-runs every startup-barrier re-evaluation
+                        // (~once per delivered frame during the reserve wait); the derived floor is stable
+                        // across those iterations, so a single line is sufficient and avoids log spam.
+                        wgcSmoothnessFloorLogged = true;
                         const char* floorNote = avContentDelayActive
                                                     ? "no-op: audio-latency reservoir target dominates"
                                                     : (smoothnessReservoirTargetDelayQpc > 0
@@ -7526,6 +7539,12 @@ void EncoderThreadFunc(const AppConfig& config) {
             cadenceCounters.consecutiveDuplicateFrames++;
             cadenceCounters.maxConsecutiveDuplicateFrames =
                 std::max(cadenceCounters.maxConsecutiveDuplicateFrames, cadenceCounters.consecutiveDuplicateFrames);
+            // Session-wide contiguous run: survives the per-window cadence reset so a >1s freeze is
+            // measured as one run (the real visible-freeze metric), not split per logging window.
+            ++captureSessionSummary.currentContiguousDupTicks;
+            captureSessionSummary.longestContiguousDupTicks =
+                std::max(captureSessionSummary.longestContiguousDupTicks,
+                         static_cast<uint64_t>(captureSessionSummary.currentContiguousDupTicks));
             const bool duplicateFromSourceGap = !duplicateFromDrainReason && !duplicateFromDeferredReason &&
                                                 !duplicateFromTimerRebaseReason && !duplicateFromCatchupReason;
             if (g_pSharedMem) {
@@ -7812,6 +7831,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                 frameCreditAccumulator -= 1.0;
                                 cadenceCounters.consecutiveDeferredFrames = 0;
                                 cadenceCounters.consecutiveDuplicateFrames = 0;
+                                captureSessionSummary.currentContiguousDupTicks = 0;
                                 cadenceCounters.liveTickEmitCount++;
                                 cadenceCounters.liveTickUniqueCount++;
                                 cadenceCounters.CommitHoldRun();
@@ -8004,6 +8024,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                             }
 
                             cadenceCounters.consecutiveDuplicateFrames = 0;
+                            captureSessionSummary.currentContiguousDupTicks = 0;
                             cadenceCounters.liveTickEmitCount++;
                             cadenceCounters.liveTickUniqueCount++;
                             cadenceCounters.CommitHoldRun();
@@ -8435,6 +8456,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                     duplicateFromDrain, duplicateFromDeferred, duplicateFromTimerRebase);
                 } else {
                     cadenceCounters.consecutiveDuplicateFrames = 0;
+                    captureSessionSummary.currentContiguousDupTicks = 0;
                 }
                 cadenceCounters.liveTickEmitCount += (consumesCfrTick && isLivePhase) ? 1u : 0u;
                 if (consumesCfrTick && isLivePhase) {
@@ -9298,7 +9320,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             LogInfo(
                 "[WGC CFR SUMMARY] Live=%llu Dup=%llu DupPct=%.1f%% NoFresh=%llupm NoReserve=%llupm DupReason(src=%llu "
                 "def=%llu timer=%llu drain=%llu) SourceLimitedRepeats=%llu StarvedEpisodes=%llu longest=%llums "
-                "longestDup=%llu worstIn=%u "
+                "longestDup=%llu longestContiguousDup=%llu (%llums) worstIn=%u "
                 "worstDel=%u",
                 static_cast<unsigned long long>(liveTicksOutput),
                 static_cast<unsigned long long>(captureSessionSummary.duplicateTicks),
@@ -9312,6 +9334,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(captureSessionSummary.starvedEpisodes),
                 static_cast<unsigned long long>(captureSessionSummary.longestStarvedEpisodeMs),
                 static_cast<unsigned long long>(captureSessionSummary.longestStarvedEpisodeDuplicateTicks),
+                static_cast<unsigned long long>(captureSessionSummary.longestContiguousDupTicks),
+                static_cast<unsigned long long>(static_cast<double>(captureSessionSummary.longestContiguousDupTicks) *
+                                                frameIntervalMs),
                 captureSessionSummary.longestStarvedEpisodeMinInputFps == std::numeric_limits<uint32_t>::max()
                     ? 0u
                     : captureSessionSummary.longestStarvedEpisodeMinInputFps,
