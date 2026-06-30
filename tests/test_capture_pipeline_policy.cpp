@@ -1910,6 +1910,31 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayRepeatRescueScoresSafeFramesBefore
     EXPECT_TRUE(score.Accepted());
 }
 
+TEST(CapturePipelinePolicyTest, WgcNearestPlayoutRepeatRescueCanUseSyncSafeFutureFrame) {
+    const int64_t target = 100000;
+    const int64_t interval = 8333;
+    const int64_t qpcPerSecond = 1000000;
+    const int64_t leadTol = policy::GetWgcActiveDelayResidualToleranceQpc(interval);
+    const int64_t candidate = target + leadTol + 500;
+
+    const auto playout = policy::DecideWgcNearestPlayout(candidate, target, leadTol, 90000);
+    EXPECT_FALSE(playout.emit);
+    EXPECT_TRUE(playout.hold);
+
+    const uint32_t softLateTargetUs = policy::GetWgcActiveDelaySoftLateTargetUs(interval, qpcPerSecond);
+    const auto rescueScore = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
+        candidate, candidate, target - interval, target, interval, qpcPerSecond, /*repeatClusterTicks=*/1, 0, 0, 0,
+        policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
+    EXPECT_TRUE(rescueScore.Accepted());
+    EXPECT_EQ(rescueScore.decision, policy::WgcActiveDelayRelaxedDecision::kAcceptBetterTarget);
+
+    const auto unsafeRescue = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
+        target + 12000, target + 12000, target - interval, target, interval, qpcPerSecond,
+        /*repeatClusterTicks=*/1, 0, 0, 0, policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
+    EXPECT_FALSE(unsafeRescue.Accepted());
+    EXPECT_EQ(unsafeRescue.decision, policy::WgcActiveDelayRelaxedDecision::kRejectSyncRisk);
+}
+
 TEST(CapturePipelinePolicyTest, WgcActiveDelayFinalSelectionChecksPredictedAndRawTimestamps) {
     EXPECT_TRUE(policy::IsWgcActiveDelayFinalSelectionWithinHardLimit(109000, 108000, 100000, 8333, 1000000));
     EXPECT_FALSE(policy::IsWgcActiveDelayFinalSelectionWithinHardLimit(111000, 108000, 100000, 8333, 1000000));
@@ -1968,6 +1993,7 @@ TEST(CapturePipelinePolicyTest, WgcCfrSmoothnessFaultUsesExcessRepeatsAndCluster
     EXPECT_FALSE(policy::IsWgcCfrSmoothnessNotMaximal(1200, 40, 20, 4, 0));
     EXPECT_TRUE(policy::IsWgcCfrSmoothnessNotMaximal(1200, 121, 0, 4, 0));
     EXPECT_TRUE(policy::IsWgcCfrSmoothnessNotMaximal(1200, 40, 120, 4, 0));
+    EXPECT_TRUE(policy::IsWgcCfrSmoothnessNotMaximal(7000, 40, 82, 4, 0));
     EXPECT_TRUE(policy::IsWgcCfrSmoothnessNotMaximal(1200, 40, 0, 24, 0));
     EXPECT_TRUE(policy::IsWgcCfrSmoothnessNotMaximal(1200, 0, 0, 0, 1));
 }

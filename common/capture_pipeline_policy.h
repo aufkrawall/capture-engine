@@ -54,6 +54,8 @@ constexpr uint32_t kWgcActiveDelayRecoverableJitterPermille = 1000;
 constexpr uint32_t kWgcActiveDelaySourceLimitedJitterPermille = 2000;
 constexpr uint32_t kWgcCfrSmoothnessExcessRepeatFaultMinCount = 120;
 constexpr uint32_t kWgcCfrSmoothnessExcessRepeatFaultPermille = 50;
+constexpr uint32_t kWgcCfrSmoothnessPolicyRepeatNoticeMinCount = 24;
+constexpr uint32_t kWgcCfrSmoothnessPolicyRepeatNoticePermille = 5;
 constexpr uint32_t kWgcCfrSmoothnessExcessRepeatClusterFaultTicks = 24;
 constexpr uint32_t kWgcDelayReservoirTargetExtraFrames = 1;
 constexpr uint32_t kWgcSmoothnessBufferDefaultMaxMs = 250;
@@ -2352,6 +2354,13 @@ inline bool IsWgcCfrSmoothnessNotMaximal(uint32_t totalOutputTicks, uint32_t exc
     }
     if (policyAddedRepeats >= kWgcCfrSmoothnessExcessRepeatFaultMinCount) {
         return true;
+    }
+    if (totalOutputTicks > 0 && policyAddedRepeats >= kWgcCfrSmoothnessPolicyRepeatNoticeMinCount) {
+        const uint64_t policyPermille =
+            (static_cast<uint64_t>(policyAddedRepeats) * 1000ull) / static_cast<uint64_t>(totalOutputTicks);
+        if (policyPermille >= kWgcCfrSmoothnessPolicyRepeatNoticePermille) {
+            return true;
+        }
     }
     if (totalOutputTicks == 0 || excessRepeats < kWgcCfrSmoothnessExcessRepeatFaultMinCount) {
         return false;

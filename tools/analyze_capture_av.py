@@ -172,7 +172,10 @@ WGC_SMOOTHNESS_EXTRA_RE = re.compile(
 WGC_SMOOTHNESS_BUFFER_RE = re.compile(
     r"smoothBuf=(?P<enabled>\d+) smoothTargetMs=(?P<target_ms>\d+) "
     r"smoothFrames=(?P<actual_frames>\d+)/(?P<retained_frames>\d+)/(?P<desired_frames>\d+) "
-    r"smoothDelay=(?P<delay_ms>[0-9.]+)ms smoothPoolSlots=(?P<pool_slots>\d+)"
+    r"smoothDelay=(?P<delay_ms>[0-9.]+)ms "
+    r"(?:(?:smoothTargetDelay=\d+us smoothActualDelay=\d+us "
+    r"smoothDelayDeficit=\d+us startupDelayDeficit=\d+us )?)"
+    r"smoothPoolSlots=(?P<pool_slots>\d+)"
     r"(?: sourceFramePoolBuffers=(?P<source_buffers>\d+) budgetSurfaces=(?P<budget_surfaces>\d+) "
     r"syncFrames=(?P<sync_frames>\d+) "
     r"(?:(?:extraFrames=(?P<extra_frames>\d+) )?"
@@ -330,6 +333,8 @@ LATE_APP_PRIMED_SRC_RE = re.compile(
 WGC_ACTIVE_DELAY_POLICY_HOLD_FAULT_MIN_COUNT = 120
 WGC_ACTIVE_DELAY_POLICY_HOLD_FAULT_PERMILLE = 250
 WGC_CFR_SMOOTHNESS_EXCESS_REPEAT_FAULT_MIN_COUNT = 120
+WGC_CFR_SMOOTHNESS_POLICY_REPEAT_NOTICE_MIN_COUNT = 24
+WGC_CFR_SMOOTHNESS_POLICY_REPEAT_NOTICE_PERMILLE = 5
 WGC_CFR_SMOOTHNESS_EXCESS_REPEAT_CLUSTER_FAULT_TICKS = 24
 WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT = 10
 WGC_AUDIO_LATE_RISK_P95_US = 7000
@@ -1294,6 +1299,11 @@ def parse_wgc_quality_line(line):
         "ingress_accepted_playout_soft": parse_int(values.get("ingressPlaySoft"), 0),
         "ingress_accepted_playout_credit": parse_int(values.get("ingressPlayCredit"), 0),
         "overwrite_prevented": parse_int(values.get("overwritePrevented"), 0),
+        "sync_protected_repeats": parse_int(values.get("syncProtectedRepeats"), 0),
+        "policy_added_repeats": parse_int(values.get("policyAddedRepeats"), 0),
+        "excess_repeats": parse_int(values.get("excessRepeats"), 0),
+        "smooth_delay_deficit_us": parse_int(values.get("smoothDelayDeficitUs"), 0),
+        "startup_delay_deficit_us": parse_int(values.get("startupDelayDeficitUs"), 0),
         "duplicate_timestamps_seen": parse_int(values.get("dupTsSeen"), 0),
         "duplicate_timestamps_skipped": parse_int(values.get("dupTsSkipped"), 0),
         "encoder_overload": values.get("encoderOverload", "0x0"),
@@ -1710,6 +1720,18 @@ def update_wgc_smoothness_item_from_line(item, line):
     elif saw_lower_bound_tail:
         item["wgc_smoothness_evidence_incomplete"] = 1
 
+    smooth_delay_fields = {
+        "smoothTargetDelay": "smooth_target_delay_us",
+        "smoothActualDelay": "smooth_actual_delay_us",
+        "smoothDelayDeficit": "smooth_delay_deficit_us",
+        "startupDelayDeficit": "startup_delay_deficit_us",
+        "syncProtectedRepeats": "delay_sync_protected_repeats",
+    }
+    for field_name, key in smooth_delay_fields.items():
+        value = parse_named_int_field(line, field_name)
+        if value is not None:
+            item[key] = value
+
     retained_fields = {
         "sourceFmt": ("source_format", parse_named_int_field),
         "retainedFmt": ("retained_format", parse_named_int_field),
@@ -1808,6 +1830,7 @@ def parse_media_triage(media_text):
             wgc_smoothness_summary.append(
                 {
                     "encoder_limited_drops": parse_int(smoothness_match.group(1)),
+                    "live": wgc_summary[-1]["live"] if wgc_summary else 0,
                     "max_drop_ticks": parse_int(smoothness_match.group(2)),
                     "cadence_events": parse_int(smoothness_match.group(3)),
                     "phase_error_max_us": parse_int(smoothness_match.group(4)),
@@ -2774,6 +2797,13 @@ def has_wgc_cfr_smoothness_not_maximal(media_evidence):
             return True
         if item.get("policy_added_repeats", 0) >= WGC_CFR_SMOOTHNESS_EXCESS_REPEAT_FAULT_MIN_COUNT:
             return True
+        if (
+            item.get("policy_added_repeats", 0) >= WGC_CFR_SMOOTHNESS_POLICY_REPEAT_NOTICE_MIN_COUNT
+            and item.get("live", 0) > 0
+            and (item.get("policy_added_repeats", 0) * 1000) // item.get("live", 1)
+            >= WGC_CFR_SMOOTHNESS_POLICY_REPEAT_NOTICE_PERMILLE
+        ):
+            return True
         if item.get("excess_repeats", 0) >= WGC_CFR_SMOOTHNESS_EXCESS_REPEAT_FAULT_MIN_COUNT:
             return True
         if item.get("excess_repeat_cluster_max_ticks", 0) >= WGC_CFR_SMOOTHNESS_EXCESS_REPEAT_CLUSTER_FAULT_TICKS:
@@ -3496,7 +3526,10 @@ def print_triage_report(report):
             "  wgc_quality dup={dup}/{live} ({dup_pct:.1f}%) worst1s={unique}/{repeats}/{emit} "
             "limiter={limiter} pool_pressure={pool} free_min={free_min} sat_drop={sat_drop} "
             "ingress_hard={hard} ingress_soft={soft} ingress_dec={ingress_dec} "
-            "playout_acc={play_soft}/{play_credit} dup_ts={dup_ts_seen}/{dup_ts_skipped} "
+            "playout_acc={play_soft}/{play_credit} sync_protected={sync_protected} "
+            "policy_added={policy_added} excess={excess} "
+            "smooth_deficit={smooth_deficit:.3f}ms startup_deficit={startup_deficit:.3f}ms "
+            "dup_ts={dup_ts_seen}/{dup_ts_skipped} "
             "compact_retained={compact} "
             "fmt={source_fmt}->{retained_fmt} convert_us={convert_us} final_av_sync={final_sync}".format(
                 dup=quality["duplicates"],
@@ -3514,6 +3547,11 @@ def print_triage_report(report):
                 ingress_dec=quality.get("ingress_decimated", 0),
                 play_soft=quality.get("ingress_accepted_playout_soft", 0),
                 play_credit=quality.get("ingress_accepted_playout_credit", 0),
+                sync_protected=quality.get("sync_protected_repeats", 0),
+                policy_added=quality.get("policy_added_repeats", 0),
+                excess=quality.get("excess_repeats", 0),
+                smooth_deficit=quality.get("smooth_delay_deficit_us", 0) / 1000.0,
+                startup_deficit=quality.get("startup_delay_deficit_us", 0) / 1000.0,
                 dup_ts_seen=quality["duplicate_timestamps_seen"],
                 dup_ts_skipped=quality["duplicate_timestamps_skipped"],
                 compact=quality["compact_retained"],
@@ -3593,6 +3631,8 @@ def print_triage_report(report):
         if worst_sync_delay.get("av_delay_ms", 0.0) > 0.0:
             print(
                 "  wgc_av_delay requested={requested:.3f}ms startup={startup:.3f}ms effective={effective:.3f}ms "
+                "smooth_target={smooth_target:.3f}ms smooth_actual={smooth_actual:.3f}ms "
+                "smooth_deficit={smooth_deficit:.3f}ms startup_deficit={startup_deficit:.3f}ms "
                 "sync_holds={holds} source_holds={source_holds} policy_holds={policy_holds} "
                 "too_new_lead_us={lead} schedule_offset_us={offset} reserve={reserve_frames}/{reserve_span}us "
                 "selected={reserve_selected} reason={reserve_reason} realized_avg={realized_avg:.3f}ms "
@@ -3627,6 +3667,10 @@ def print_triage_report(report):
                     requested=worst_sync_delay.get("av_delay_ms", 0.0),
                     startup=worst_sync_delay.get("startup_delay_ms", 0.0),
                     effective=worst_sync_delay.get("effective_delay_ms", 0.0),
+                    smooth_target=worst_sync_delay.get("smooth_target_delay_us", 0) / 1000.0,
+                    smooth_actual=worst_sync_delay.get("smooth_actual_delay_us", 0) / 1000.0,
+                    smooth_deficit=worst_sync_delay.get("smooth_delay_deficit_us", 0) / 1000.0,
+                    startup_deficit=worst_sync_delay.get("startup_delay_deficit_us", 0) / 1000.0,
                     holds=worst_sync_delay.get("sync_delay_holds", 0),
                     source_holds=worst_sync_delay.get("sync_delay_source_limited_holds", 0),
                     policy_holds=worst_sync_delay.get("sync_delay_policy_holds", 0),
@@ -5142,6 +5186,29 @@ def self_test():
         assert "wgc_sync_delay_reserve_pressure" in lower_bound_report["verdicts"]
         assert "wgc_cfr_smoothness_not_maximal" not in lower_bound_report["verdicts"]
         assert "ce_visual_timeline_fault" not in lower_bound_report["verdicts"]
+
+        wgc_small_policy_repeat_not_optimal = make_session(
+            "wgc_small_policy_repeat_not_optimal",
+            media=(
+                "[WGC CFR SUMMARY] Live=7000 Dup=320 DupPct=4.6% NoFresh=45pm NoReserve=20pm "
+                "DupReason(src=238 def=0 timer=0 drain=0) SourceLimitedRepeats=238 StarvedEpisodes=8 "
+                "longest=120ms longestDup=9 worstIn=102 worstDel=102\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=25 "
+                "phaseErrorMax=6000us shortfallMax=0.0ms staleDebtDrops=0 liveRebase=0/0 "
+                "tooNewRepeats=320 syncDelayHolds=320 tooNewLeadMax=7000us avDelay=30.0ms "
+                "startupDelay=230.0ms scheduleOffset=0us effectiveDelay=230.0ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=238 syncDelayPolicyHolds=82 startupReserveFrames=24 "
+                "startupReserveSpan=200000us startupDelayTarget=270000us startupReserveSelected=0 "
+                "startupReserveReason=partial_span_timeout\n"
+                "[WGC CFR SMOOTHNESS VERDICT] delayPostSelectionRejectedSync=0 "
+                "delayPostSelectionRescuedSync=0 sourceRepeatLowerBound=238 excessRepeats=82 "
+                "policyAddedRepeats=82 excessRepeatClusters=0 excessRepeatClusterMax=4 "
+                "smoothnessNotMaximal=0 mixedPolicyFault=0\n"
+            ),
+        )
+        small_policy_report = classify_session_triage(wgc_small_policy_repeat_not_optimal)
+        assert "wgc_cfr_smoothness_not_maximal" in small_policy_report["verdicts"]
 
         wgc_post_stall_recovery_repeat = make_session(
             "wgc_post_stall_recovery_repeat",

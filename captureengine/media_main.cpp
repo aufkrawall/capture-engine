@@ -5374,6 +5374,351 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                              : 0;
                         const int64_t playoutLeadToleranceQpc =
                             ce::capture_policy::GetWgcActiveDelayResidualToleranceQpc(targetIntervalTicks);
+                        const uint32_t uniformActiveDelaySoftLateTargetUs =
+                            ce::capture_policy::GetWgcActiveDelaySoftLateTargetUs(targetIntervalTicks,
+                                                                                  qpcFreq.QuadPart);
+                        const bool uniformDeepUnderfeed = ce::capture_policy::IsWgcDeepUnderfeed(
+                            outputFps, wgcRecentDeliveredMin250Fps, wgcRecentInputMin250Fps, wgcNoFreshTickPermille);
+                        ce::capture_policy::WgcAdaptiveTelemetry uniformActiveDelayTelemetry{};
+                        uniformActiveDelayTelemetry.outputFps = outputFps;
+                        uniformActiveDelayTelemetry.recentDeliveredFps = wgcRecentDeliveredFps;
+                        uniformActiveDelayTelemetry.recentDeliveredMin250Fps = wgcRecentDeliveredMin250Fps;
+                        uniformActiveDelayTelemetry.recentDeliveredMin500Fps = wgcRecentDeliveredMin500Fps;
+                        uniformActiveDelayTelemetry.recentInputMin250Fps = wgcRecentInputMin250Fps;
+                        uniformActiveDelayTelemetry.recentInputMin500Fps = wgcRecentInputMin500Fps;
+                        const uint32_t uniformWgcSourceJitterAvgUs =
+                            g_WgcCap ? SaturatingToUint32(g_WgcCap->GetSourceJitterAvgUs()) : 0u;
+                        const uint32_t uniformWgcPredictorJitterUs =
+                            wgcInputPredictor.IsCalibrated()
+                                ? SaturatingToUint32(
+                                      static_cast<uint64_t>(wgcInputPredictor.GetJitterUs(qpcFreq.QuadPart)))
+                                : 0u;
+                        uniformActiveDelayTelemetry.averageJitterUs =
+                            std::max(uniformWgcSourceJitterAvgUs, uniformWgcPredictorJitterUs);
+                        uniformActiveDelayTelemetry.emptyTickPermille = wgcNoFreshTickPermille;
+                        uniformActiveDelayTelemetry.bufferedWgcFrames =
+                            static_cast<uint32_t>(std::min<size_t>(bufferedWgcFrames.size(),
+                                                                   static_cast<size_t>(UINT32_MAX)));
+                        const auto uniformRepeatClusterTicks = [&]() -> uint32_t {
+                            return std::max<uint32_t>(
+                                cadenceCounters.consecutiveDuplicateFrames,
+                                cadenceCounters.holdTicksRunning > 1 ? (cadenceCounters.holdTicksRunning - 1) : 0);
+                        };
+                        const auto uniformDelayResidualAvgAbsUs = [&]() -> uint32_t {
+                            if (wgcDelayResidualWindowSamples > 0) {
+                                return SaturatingToUint32(wgcDelayResidualWindowAbsAccumUs /
+                                                          wgcDelayResidualWindowSamples);
+                            }
+                            return wgcDelayResidualSamples > 0
+                                       ? SaturatingToUint32(wgcDelayResidualAbsAccumUs / wgcDelayResidualSamples)
+                                       : 0u;
+                        };
+                        const auto uniformRawDelayResidualAvgAbsUs = [&]() -> uint32_t {
+                            if (wgcDelayRawResidualWindowSamples > 0) {
+                                return SaturatingToUint32(wgcDelayRawResidualWindowAbsAccumUs /
+                                                          wgcDelayRawResidualWindowSamples);
+                            }
+                            return wgcDelayRawResidualSamples > 0
+                                       ? SaturatingToUint32(wgcDelayRawResidualAbsAccumUs /
+                                                           wgcDelayRawResidualSamples)
+                                       : 0u;
+                        };
+                        const auto uniformDelayResidualP95Us = [&]() -> uint32_t {
+                            const uint32_t windowP95 = wgcDelayResidualWindowP95Us();
+                            return windowP95 > 0 ? windowP95 : wgcDelayResidualP95Us();
+                        };
+                        const auto uniformRawDelayResidualP95Us = [&]() -> uint32_t {
+                            const uint32_t windowP95 = wgcDelayRawResidualWindowP95Us();
+                            return windowP95 > 0 ? windowP95 : wgcDelayRawResidualP95Us();
+                        };
+                        const auto uniformDelayResidualLateMaxUs = [&]() -> uint32_t {
+                            return wgcDelayResidualWindowLateMaxUs > 0 ? wgcDelayResidualWindowLateMaxUs
+                                                                       : wgcDelayResidualLateMaxUs;
+                        };
+                        const auto uniformRawDelayResidualLateMaxUs = [&]() -> uint32_t {
+                            return wgcDelayRawResidualWindowLateMaxUs > 0 ? wgcDelayRawResidualWindowLateMaxUs
+                                                                          : wgcDelayRawResidualLateMaxUs;
+                        };
+                        const auto uniformCombinedDelayResidualAvgAbsUs = [&]() -> uint32_t {
+                            return std::max(uniformDelayResidualAvgAbsUs(), uniformRawDelayResidualAvgAbsUs());
+                        };
+                        const auto uniformCombinedDelayResidualP95Us = [&]() -> uint32_t {
+                            return std::max(uniformDelayResidualP95Us(), uniformRawDelayResidualP95Us());
+                        };
+                        const auto uniformCombinedDelayResidualLateMaxUs = [&]() -> uint32_t {
+                            return std::max(uniformDelayResidualLateMaxUs(), uniformRawDelayResidualLateMaxUs());
+                        };
+                        const auto uniformCandidateHardSafeForTarget =
+                            [&](const QueuedFrame& candidate, int64_t targetQpc) -> bool {
+                            if (targetQpc <= 0 || targetIntervalTicks <= 0 || candidate.timestamp <= 0 ||
+                                candidate.timestamp <= lastEmittedWgcSourceQpc) {
+                                return false;
+                            }
+                            return ce::capture_policy::IsWgcActiveDelayFinalSelectionWithinHardLimit(
+                                GetFrameSelectionTimestamp(candidate), getWgcRawSelectionTimestamp(candidate),
+                                targetQpc, targetIntervalTicks, qpcFreq.QuadPart);
+                        };
+                        const auto uniformCandidateSoftSafeForTarget =
+                            [&](const QueuedFrame& candidate, int64_t targetQpc) -> bool {
+                            if (!uniformCandidateHardSafeForTarget(candidate, targetQpc)) {
+                                return false;
+                            }
+                            return ce::capture_policy::IsWgcActiveDelayFinalSelectionWithinSoftLateTarget(
+                                GetFrameSelectionTimestamp(candidate), getWgcRawSelectionTimestamp(candidate),
+                                targetQpc, targetIntervalTicks, qpcFreq.QuadPart,
+                                uniformActiveDelaySoftLateTargetUs);
+                        };
+                        const auto uniformHasHardSafeCandidateForTarget = [&](int64_t targetQpc) -> bool {
+                            for (const QueuedFrame& candidate : bufferedWgcFrames) {
+                                if (uniformCandidateHardSafeForTarget(candidate, targetQpc)) {
+                                    return true;
+                                }
+                            }
+                            return false;
+                        };
+                        const auto uniformHasSoftSafeCandidateForTarget = [&](int64_t targetQpc) -> bool {
+                            for (const QueuedFrame& candidate : bufferedWgcFrames) {
+                                if (uniformCandidateSoftSafeForTarget(candidate, targetQpc)) {
+                                    return true;
+                                }
+                            }
+                            return false;
+                        };
+                        const auto uniformRepeatReserveSpanUs = [&]() -> uint32_t {
+                            if (bufferedWgcFrames.size() < 2 || qpcFreq.QuadPart <= 0) {
+                                return 0u;
+                            }
+                            const int64_t firstQpc = GetFrameSelectionTimestamp(bufferedWgcFrames.front());
+                            const int64_t lastQpc = GetFrameSelectionTimestamp(bufferedWgcFrames.back());
+                            if (firstQpc <= 0 || lastQpc <= firstQpc) {
+                                return 0u;
+                            }
+                            return SaturatingToUint32(
+                                static_cast<uint64_t>((lastQpc - firstQpc) * 1000000 / qpcFreq.QuadPart));
+                        };
+                        const auto uniformOldestSoftSafeAgeUs = [&](int64_t targetQpc) -> uint32_t {
+                            if (selectionNowQpc.QuadPart <= 0 || qpcFreq.QuadPart <= 0) {
+                                return 0u;
+                            }
+                            uint32_t oldestAgeUs = 0;
+                            for (const QueuedFrame& candidate : bufferedWgcFrames) {
+                                if (!uniformCandidateSoftSafeForTarget(candidate, targetQpc)) {
+                                    continue;
+                                }
+                                const int64_t selectionTimestamp = GetFrameSelectionTimestamp(candidate);
+                                if (selectionTimestamp <= 0 || selectionNowQpc.QuadPart <= selectionTimestamp) {
+                                    continue;
+                                }
+                                oldestAgeUs = std::max(
+                                    oldestAgeUs,
+                                    SaturatingToUint32(static_cast<uint64_t>(
+                                        (selectionNowQpc.QuadPart - selectionTimestamp) * 1000000 /
+                                        qpcFreq.QuadPart)));
+                            }
+                            return oldestAgeUs;
+                        };
+                        const auto uniformActiveDelayWindowClassFor = [&](bool hardSafeCandidateAvailable) {
+                            const bool activeDelaySourceRecovery =
+                                wgcActiveDelaySourceRecoveryUntilTick > GetTickCount64();
+                            return ce::capture_policy::ClassifyWgcActiveDelayWindow(
+                                uniformActiveDelayTelemetry, wgcLowSourceModeActive, wgcLiveRecoveryModeActive,
+                                wgcSourceStarvedCurrent, uniformDeepUnderfeed, activeDelaySourceRecovery,
+                                hardSafeCandidateAvailable);
+                        };
+                        const auto uniformSyncDelayHoldSourceLimited = [&](bool softSafeCandidateAvailable) -> bool {
+                            if (!softSafeCandidateAvailable) {
+                                return true;
+                            }
+                            const bool activeDelaySourceRecovery =
+                                wgcActiveDelaySourceRecoveryUntilTick > GetTickCount64();
+                            const bool sourceRecoveryWithoutSafeFrame =
+                                activeDelaySourceRecovery && !softSafeCandidateAvailable;
+                            return ce::capture_policy::IsWgcSyncDelayHoldSourceLimited(
+                                outputFps, wgcRecentDeliveredMin250Fps, wgcRecentInputMin250Fps,
+                                wgcNoFreshTickPermille, wgcSourceStarvedCurrent, wgcLowSourceModeActive,
+                                uniformDeepUnderfeed, sourceRecoveryWithoutSafeFrame);
+                        };
+                        const auto recordUniformRepeatDiagnostics =
+                            [&](bool hardSafeCandidateAvailable, bool softSafeCandidateAvailable) {
+                            ++wgcDelayUniformHoldWindow;
+                            ++wgcDelayUniformHoldTotal;
+                            const uint32_t repeatClusterTicks = uniformRepeatClusterTicks();
+                            if (repeatClusterTicks > 0) {
+                                ++wgcDelayRepeatClusterPressureWindow;
+                                ++wgcDelayRepeatClusterPressureTotal;
+                                wgcDelayRepeatClusterPressureWindowMaxTicks =
+                                    std::max(wgcDelayRepeatClusterPressureWindowMaxTicks, repeatClusterTicks);
+                                wgcDelayRepeatClusterPressureMaxTicks =
+                                    std::max(wgcDelayRepeatClusterPressureMaxTicks, repeatClusterTicks);
+                            }
+                            ++wgcRepeatPolicyHoldCount;
+                            ++wgcRepeatPolicyHoldTotal;
+                            ++wgcSyncDelayHoldCount;
+                            ++wgcSyncDelayHoldTotal;
+
+                            const auto repeatWindowClass =
+                                uniformActiveDelayWindowClassFor(hardSafeCandidateAvailable);
+                            switch (repeatWindowClass) {
+                                case ce::capture_policy::WgcActiveDelayWindowClass::kHealthy:
+                                    ++wgcDelayWindowHealthyRepeatWindow;
+                                    ++wgcDelayWindowHealthyRepeatTotal;
+                                    break;
+                                case ce::capture_policy::WgcActiveDelayWindowClass::kRecoverableUnderfill:
+                                    ++wgcDelayWindowRecoverableRepeatWindow;
+                                    ++wgcDelayWindowRecoverableRepeatTotal;
+                                    break;
+                                case ce::capture_policy::WgcActiveDelayWindowClass::kSourceLimited:
+                                    ++wgcDelayWindowSourceLimitedRepeatWindow;
+                                    ++wgcDelayWindowSourceLimitedRepeatTotal;
+                                    break;
+                                case ce::capture_policy::WgcActiveDelayWindowClass::kHardSourceStall:
+                                    ++wgcDelayWindowSourceLimitedRepeatWindow;
+                                    ++wgcDelayWindowSourceLimitedRepeatTotal;
+                                    ++wgcDelayWindowHardStallRepeatWindow;
+                                    ++wgcDelayWindowHardStallRepeatTotal;
+                                    break;
+                                case ce::capture_policy::WgcActiveDelayWindowClass::kPostStallRecovery:
+                                    ++wgcDelayWindowRecoverableRepeatWindow;
+                                    ++wgcDelayWindowRecoverableRepeatTotal;
+                                    ++wgcDelayWindowPostStallRepeatWindow;
+                                    ++wgcDelayWindowPostStallRepeatTotal;
+                                    break;
+                            }
+                            if (hardSafeCandidateAvailable) {
+                                ++wgcDelayRepeatWithSafeCandidateWindow;
+                                ++wgcDelayRepeatWithSafeCandidateTotal;
+                            } else {
+                                ++wgcDelayRepeatWithoutSafeCandidateWindow;
+                                ++wgcDelayRepeatWithoutSafeCandidateTotal;
+                            }
+                            if (softSafeCandidateAvailable) {
+                                ++wgcDelayRepeatWithSoftSafeCandidateWindow;
+                                ++wgcDelayRepeatWithSoftSafeCandidateTotal;
+                                const uint32_t oldestSoftSafeAgeUs = uniformOldestSoftSafeAgeUs(playoutTargetQpc);
+                                wgcDelayOldestSoftSafeAgeWindowMaxUs =
+                                    std::max(wgcDelayOldestSoftSafeAgeWindowMaxUs, oldestSoftSafeAgeUs);
+                                wgcDelayOldestSoftSafeAgeMaxUs =
+                                    std::max(wgcDelayOldestSoftSafeAgeMaxUs, oldestSoftSafeAgeUs);
+                            } else {
+                                ++wgcDelayRepeatWithoutSoftSafeCandidateWindow;
+                                ++wgcDelayRepeatWithoutSoftSafeCandidateTotal;
+                                ++wgcDelaySyncProtectedRepeatWindow;
+                                ++wgcDelaySyncProtectedRepeatTotal;
+                                if (hardSafeCandidateAvailable) {
+                                    ++wgcDelayRepeatHardOnlyCandidateWindow;
+                                    ++wgcDelayRepeatHardOnlyCandidateTotal;
+                                }
+                            }
+
+                            const uint64_t nowTick = GetTickCount64();
+                            if (!wgcActiveDelayRepeatClassKnown || repeatWindowClass != wgcActiveDelayLastRepeatClass) {
+                                if (!wgcActiveDelayRepeatClassKnown ||
+                                    nowTick - wgcActiveDelayLastRepeatClassLogTick >= 500) {
+                                    LogInfo(
+                                        "[WGC CFR] Uniform active-delay repeat state=%s hardSafe=%d softSafe=%d "
+                                        "srcStarved=%d lowSource=%d deepUnderfeed=%d recoveryActive=%d buffered=%zu "
+                                        "span=%uus residualP95=%uus rawP95=%uus softTarget=%uus",
+                                        ce::capture_policy::WgcActiveDelayWindowClassToString(repeatWindowClass),
+                                        hardSafeCandidateAvailable ? 1 : 0, softSafeCandidateAvailable ? 1 : 0,
+                                        wgcSourceStarvedCurrent ? 1 : 0, wgcLowSourceModeActive ? 1 : 0,
+                                        uniformDeepUnderfeed ? 1 : 0,
+                                        wgcActiveDelaySourceRecoveryUntilTick > nowTick ? 1 : 0,
+                                        bufferedWgcFrames.size(), uniformRepeatReserveSpanUs(),
+                                        uniformCombinedDelayResidualP95Us(), uniformRawDelayResidualP95Us(),
+                                        uniformActiveDelaySoftLateTargetUs);
+                                    wgcActiveDelayLastRepeatClassLogTick = nowTick;
+                                }
+                                wgcActiveDelayRepeatClassKnown = true;
+                                wgcActiveDelayLastRepeatClass = repeatWindowClass;
+                            }
+
+                            const bool syncDelayHoldSourceLimited =
+                                uniformSyncDelayHoldSourceLimited(softSafeCandidateAvailable);
+                            if (syncDelayHoldSourceLimited) {
+                                ++wgcSyncDelaySourceLimitedHoldCount;
+                                ++wgcSyncDelaySourceLimitedHoldTotal;
+                                ++wgcSourceRepeatLowerBoundWindow;
+                                ++wgcSourceRepeatLowerBoundTotal;
+                                ++wgcDelaySourceLimitedRepeatWindow;
+                                ++wgcDelaySourceLimitedRepeatTotal;
+                                const bool activeDelaySourceRecovery =
+                                    wgcActiveDelaySourceRecoveryUntilTick > nowTick;
+                                if (activeDelaySourceRecovery && !wgcSourceStarvedCurrent && !wgcLowSourceModeActive &&
+                                    !uniformDeepUnderfeed) {
+                                    ++wgcSyncDelaySourceRecoveryHoldCount;
+                                    ++wgcSyncDelaySourceRecoveryHoldTotal;
+                                }
+                            } else {
+                                ++wgcSyncDelayPolicyHoldCount;
+                                ++wgcSyncDelayPolicyHoldTotal;
+                                ++wgcExcessRepeatWindow;
+                                ++wgcExcessRepeatTotal;
+                                ++wgcPolicyAddedRepeatWindow;
+                                ++wgcPolicyAddedRepeatTotal;
+                                if (repeatClusterTicks > 0) {
+                                    ++wgcExcessRepeatClusterWindow;
+                                    ++wgcExcessRepeatClusterTotal;
+                                    wgcExcessRepeatClusterWindowMaxTicks =
+                                        std::max(wgcExcessRepeatClusterWindowMaxTicks, repeatClusterTicks);
+                                    wgcExcessRepeatClusterMaxTicks =
+                                        std::max(wgcExcessRepeatClusterMaxTicks, repeatClusterTicks);
+                                }
+                            }
+
+                            const uint32_t reserveDepth = SaturatingToUint32(bufferedWgcFrames.size());
+                            wgcDelayRepeatReserveDepthWindowMax =
+                                std::max(wgcDelayRepeatReserveDepthWindowMax, reserveDepth);
+                            wgcDelayRepeatReserveDepthMax = std::max(wgcDelayRepeatReserveDepthMax, reserveDepth);
+                            const uint32_t reserveSpanUs = uniformRepeatReserveSpanUs();
+                            wgcDelayRepeatReserveSpanWindowMaxUs =
+                                std::max(wgcDelayRepeatReserveSpanWindowMaxUs, reserveSpanUs);
+                            wgcDelayRepeatReserveSpanMaxUs =
+                                std::max(wgcDelayRepeatReserveSpanMaxUs, reserveSpanUs);
+                        };
+                        const auto recordUniformWgcDelayRealizationForFrame = [&](const QueuedFrame& selectedFrame) {
+                            const int64_t gridReferenceQpc =
+                                scheduledSampleQpc > 0 ? scheduledSampleQpc : selectionNowQpc.QuadPart;
+                            if (qpcFreq.QuadPart <= 0 || selectedFrame.timestamp <= 0 || gridReferenceQpc <= 0) {
+                                return false;
+                            }
+                            const int64_t requestedDelayUs = qpcToUs(getWgcEffectiveContentDelayQpc());
+                            const int64_t predictedRealizedDelayUs =
+                                ((gridReferenceQpc - selectedFrame.timestamp) * 1000000) / qpcFreq.QuadPart;
+                            const int64_t predictedResidualUs = requestedDelayUs - predictedRealizedDelayUs;
+                            const int64_t rawSelectionQpc = getWgcRawSelectionTimestamp(selectedFrame);
+                            int64_t rawResidualUs = predictedResidualUs;
+                            if (rawSelectionQpc > 0) {
+                                const int64_t rawRealizedDelayUs =
+                                    ((gridReferenceQpc - rawSelectionQpc) * 1000000) / qpcFreq.QuadPart;
+                                rawResidualUs = requestedDelayUs - rawRealizedDelayUs;
+                            }
+                            return recordWgcDelayRealization(predictedResidualUs, rawResidualUs);
+                        };
+                        const auto recordUniformRepeatRescueRejection =
+                            [&](const ce::capture_policy::WgcActiveDelayRelaxedCandidateScore& rescueScore,
+                                ce::capture_policy::WgcActiveDelayWindowClass rescueWindowClass) {
+                            switch (rescueScore.decision) {
+                                case ce::capture_policy::WgcActiveDelayRelaxedDecision::kRejectSyncRisk:
+                                    ++wgcDelayRepeatRescueRejectedSyncWindow;
+                                    ++wgcDelayRepeatRescueRejectedSyncTotal;
+                                    break;
+                                case ce::capture_policy::WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom:
+                                    ++wgcDelayRepeatRescueRejectedHeadroomWindow;
+                                    ++wgcDelayRepeatRescueRejectedHeadroomTotal;
+                                    if (!ce::capture_policy::IsWgcActiveDelaySourceLimitedClass(rescueWindowClass) &&
+                                        rescueScore.candidateLateResidualUs > uniformActiveDelaySoftLateTargetUs) {
+                                        ++wgcDelayRepeatPromotionRejectedSoftWindow;
+                                        ++wgcDelayRepeatPromotionRejectedSoftTotal;
+                                    }
+                                    break;
+                                case ce::capture_policy::WgcActiveDelayRelaxedDecision::kRejectRepeatCost:
+                                    ++wgcDelayRepeatRescueRejectedCostWindow;
+                                    ++wgcDelayRepeatRescueRejectedCostTotal;
+                                    break;
+                                default:
+                                    break;
+                            }
+                        };
                         if (!bufferedWgcFrames.empty()) {
                             uint32_t playoutStaleDrops = 0;
                             while (bufferedWgcFrames.size() > 1 && playoutTargetQpc > 0 &&
@@ -5411,11 +5756,64 @@ void EncoderThreadFunc(const AppConfig& config) {
                                           bufferedWgcFrames.front().timestamp, playoutTargetQpc,
                                           playoutLeadToleranceQpc, lastEmittedWgcSourceQpc)
                                     : ce::capture_policy::WgcNearestPlayoutDecision{/*emit=*/true, /*hold=*/false};
-                            if (playout.emit && !bufferedWgcFrames.empty()) {
+                            bool uniformRepeatRescueAccepted = false;
+                            ce::capture_policy::WgcActiveDelayRelaxedCandidateScore uniformRepeatRescueScore{};
+                            ce::capture_policy::WgcActiveDelayWindowClass uniformRepeatRescueClass =
+                                ce::capture_policy::WgcActiveDelayWindowClass::kSourceLimited;
+                            if (playout.hold && playoutTargetQpc > 0 && !bufferedWgcFrames.empty() && g_HasLastFrame &&
+                                !g_LastFrame.isInjectMode) {
+                                ++wgcDelayRepeatRescueAttemptWindow;
+                                ++wgcDelayRepeatRescueAttemptTotal;
+                                ++wgcDelayRepeatPromotionAttemptWindow;
+                                ++wgcDelayRepeatPromotionAttemptTotal;
+                                const QueuedFrame& rescueCandidate = bufferedWgcFrames.front();
+                                const int64_t repeatSelectionTimestamp = GetFrameSelectionTimestamp(g_LastFrame);
+                                uniformRepeatRescueClass = uniformActiveDelayWindowClassFor(true);
+                                uniformRepeatRescueScore =
+                                    ce::capture_policy::ScoreWgcActiveDelayRepeatRescueCandidate(
+                                        GetFrameSelectionTimestamp(rescueCandidate),
+                                        getWgcRawSelectionTimestamp(rescueCandidate), repeatSelectionTimestamp,
+                                        playoutTargetQpc, targetIntervalTicks, qpcFreq.QuadPart,
+                                        uniformRepeatClusterTicks(), uniformCombinedDelayResidualAvgAbsUs(),
+                                        uniformCombinedDelayResidualP95Us(),
+                                        uniformCombinedDelayResidualLateMaxUs(), uniformRepeatRescueClass,
+                                        uniformActiveDelaySoftLateTargetUs);
+                                uniformRepeatRescueAccepted = uniformRepeatRescueScore.Accepted();
+                                if (uniformRepeatRescueAccepted) {
+                                    ++wgcDelayRepeatRescueSuccessWindow;
+                                    ++wgcDelayRepeatRescueSuccessTotal;
+                                    ++wgcDelayRepeatPromotedBeforeRepeatWindow;
+                                    ++wgcDelayRepeatPromotedBeforeRepeatTotal;
+                                    ++wgcDelayRepeatSafeAfterPromotionWindow;
+                                    ++wgcDelayRepeatSafeAfterPromotionTotal;
+                                    ++wgcDelayOlderFrameAvoidedRepeatWindow;
+                                    ++wgcDelayOlderFrameAvoidedRepeatTotal;
+                                    if (uniformRepeatRescueScore.candidateLateResidualUs >
+                                        uniformActiveDelaySoftLateTargetUs) {
+                                        ++wgcDelayNearCapAcceptedWindow;
+                                        ++wgcDelayNearCapAcceptedTotal;
+                                    }
+                                    if (!ce::capture_policy::IsWgcActiveDelaySourceLimitedClass(
+                                            uniformRepeatRescueClass) &&
+                                        uniformRepeatRescueScore.candidateLateResidualUs >
+                                            uniformActiveDelaySoftLateTargetUs) {
+                                        ++wgcDelaySoftLateAcceptedWindow;
+                                        ++wgcDelaySoftLateAcceptedTotal;
+                                    }
+                                } else {
+                                    recordUniformRepeatRescueRejection(uniformRepeatRescueScore,
+                                                                      uniformRepeatRescueClass);
+                                }
+                            }
+                            if ((playout.emit || uniformRepeatRescueAccepted) && !bufferedWgcFrames.empty()) {
                                 frame = std::move(bufferedWgcFrames.front());
                                 bufferedWgcFrames.pop_front();
                                 popped = true;
-                                ++wgcSelectFreshCount;
+                                if (frame.duplicateSourceTimestamp) {
+                                    ++wgcSelectDuplicateSourceCount;
+                                } else {
+                                    ++wgcSelectFreshCount;
+                                }
                                 ++wgcDelayUniformCadenceWindow;
                                 ++wgcDelayUniformCadenceTotal;
                                 // Measure the realized content delay against the GRID playout reference
@@ -5430,95 +5828,96 @@ void EncoderThreadFunc(const AppConfig& config) {
                                 // wgc_active_delay_realized_delay_unstable even though the content placed
                                 // in each slot was grid-correct. Thread-wake jitter is reported
                                 // separately as SchedSel/SelMax; this counter must stay content-honest.
-                                const int64_t gridReferenceQpc =
-                                    scheduledSampleQpc > 0 ? scheduledSampleQpc : selectionNowQpc.QuadPart;
-                                if (qpcFreq.QuadPart > 0 && frame.timestamp > 0 && gridReferenceQpc > frame.timestamp) {
-                                    const int64_t realizedDelayUs =
-                                        ((gridReferenceQpc - frame.timestamp) * 1000000) / qpcFreq.QuadPart;
-                                    const int64_t residualUs =
-                                        qpcToUs(getWgcEffectiveContentDelayQpc()) - realizedDelayUs;
-                                    wgcDelayRealizationRecordedThisTick =
-                                        recordWgcDelayRealization(residualUs, residualUs);
+                                wgcDelayRealizationRecordedThisTick =
+                                    recordUniformWgcDelayRealizationForFrame(frame);
+                                if (uniformRepeatRescueAccepted) {
+                                    static uint32_t s_uniformRepeatRescueLogCount = 0;
+                                    if (s_uniformRepeatRescueLogCount < 5) {
+                                        ++s_uniformRepeatRescueLogCount;
+                                        const int64_t candidateLeadUs =
+                                            qpcFreq.QuadPart > 0
+                                                ? ((GetFrameSelectionTimestamp(frame) - playoutTargetQpc) * 1000000) /
+                                                      qpcFreq.QuadPart
+                                                : 0;
+                                        const int64_t candidateDamageUs =
+                                            qpcFreq.QuadPart > 0
+                                                ? (uniformRepeatRescueScore.candidateDamageQpc * 1000000) /
+                                                      qpcFreq.QuadPart
+                                                : 0;
+                                        const int64_t repeatDamageUs =
+                                            qpcFreq.QuadPart > 0
+                                                ? (uniformRepeatRescueScore.repeatDamageQpc * 1000000) /
+                                                      qpcFreq.QuadPart
+                                                : 0;
+                                        LogInfo(
+                                            "[WGC CFR] Uniform playout rescued repeat with sync-safe frame: "
+                                            "decision=%s lead=%lldus lateResidual=%uus candidateDamage=%lldus "
+                                            "repeatDamage=%lldus buffered=%zu class=%s softTarget=%uus",
+                                            ce::capture_policy::WgcActiveDelayRelaxedDecisionToString(
+                                                uniformRepeatRescueScore.decision),
+                                            static_cast<long long>(candidateLeadUs),
+                                            uniformRepeatRescueScore.candidateLateResidualUs,
+                                            static_cast<long long>(candidateDamageUs),
+                                            static_cast<long long>(repeatDamageUs), bufferedWgcFrames.size(),
+                                            ce::capture_policy::WgcActiveDelayWindowClassToString(
+                                                uniformRepeatRescueClass),
+                                            uniformActiveDelaySoftLateTargetUs);
+                                    }
                                 }
                             } else if (playout.hold) {
-                                ++wgcDelayUniformHoldWindow;
-                                ++wgcDelayUniformHoldTotal;
-                                ++wgcRepeatPolicyHoldCount;
-                                ++wgcRepeatPolicyHoldTotal;
-                                ++wgcSyncDelayHoldCount;
-                                ++wgcSyncDelayHoldTotal;
+                                const bool uniformHardSafeCandidate =
+                                    uniformHasHardSafeCandidateForTarget(playoutTargetQpc);
+                                const bool uniformSoftSafeCandidate =
+                                    uniformHasSoftSafeCandidateForTarget(playoutTargetQpc);
+                                recordUniformRepeatDiagnostics(uniformHardSafeCandidate, uniformSoftSafeCandidate);
+                                const bool uniformHoldSourceLimited =
+                                    uniformSyncDelayHoldSourceLimited(uniformSoftSafeCandidate);
                                 const bool uniformHoldSourceAtOrAboveCfr =
                                     g_WgcCap && ce::capture_policy::IsWgcIngressSourceAtOrAboveCfrTarget(
                                                     outputFps, wgcRecentInputMin250Fps, wgcRecentInputMin500Fps);
-                                const bool uniformHoldDeepUnderfeed = ce::capture_policy::IsWgcDeepUnderfeed(
-                                    outputFps, wgcRecentDeliveredMin250Fps, wgcRecentInputMin250Fps,
-                                    wgcNoFreshTickPermille);
-                                const bool uniformHoldSourceLimited =
-                                    !uniformHoldSourceAtOrAboveCfr || wgcSourceStarvedCurrent ||
-                                    wgcLowSourceModeActive || uniformHoldDeepUnderfeed;
-                                if (uniformHoldSourceLimited) {
-                                    ++wgcSyncDelaySourceLimitedHoldCount;
-                                    ++wgcSyncDelaySourceLimitedHoldTotal;
-                                    ++wgcSourceRepeatLowerBoundWindow;
-                                    ++wgcSourceRepeatLowerBoundTotal;
-                                    ++wgcDelaySourceLimitedRepeatWindow;
-                                    ++wgcDelaySourceLimitedRepeatTotal;
-                                    ++wgcDelayWindowSourceLimitedRepeatWindow;
-                                    ++wgcDelayWindowSourceLimitedRepeatTotal;
-                                } else {
-                                    ++wgcSyncDelayPolicyHoldCount;
-                                    ++wgcSyncDelayPolicyHoldTotal;
-                                    ++wgcExcessRepeatWindow;
-                                    ++wgcExcessRepeatTotal;
-                                    ++wgcPolicyAddedRepeatWindow;
-                                    ++wgcPolicyAddedRepeatTotal;
-                                    const uint32_t uniformRepeatClusterTicks = std::max<uint32_t>(
-                                        cadenceCounters.consecutiveDuplicateFrames,
-                                        cadenceCounters.holdTicksRunning > 1 ? (cadenceCounters.holdTicksRunning - 1)
-                                                                             : 0);
-                                    if (uniformRepeatClusterTicks > 0) {
-                                        ++wgcExcessRepeatClusterWindow;
-                                        ++wgcExcessRepeatClusterTotal;
-                                        wgcExcessRepeatClusterWindowMaxTicks =
-                                            std::max(wgcExcessRepeatClusterWindowMaxTicks, uniformRepeatClusterTicks);
-                                        wgcExcessRepeatClusterMaxTicks =
-                                            std::max(wgcExcessRepeatClusterMaxTicks, uniformRepeatClusterTicks);
-                                    }
-                                    ++wgcDelayWindowHealthyRepeatWindow;
-                                    ++wgcDelayWindowHealthyRepeatTotal;
+                                if (!uniformHoldSourceLimited) {
                                     static uint32_t s_uniformPolicyHoldLogCount = 0;
                                     if (s_uniformPolicyHoldLogCount < 5) {
                                         ++s_uniformPolicyHoldLogCount;
                                         LogWarn(
                                             "[WGC CFR] Uniform playout held while source was at/above CFR target: "
-                                            "inputMin=%u/%u outputFps=%u buffered=%zu retained=%u/%u "
-                                            "dropIngress=%u (policy repeat; not source-limited)",
+                                            "inputMin=%u/%u outputFps=%u buffered=%zu hardSafe=%d softSafe=%d "
+                                            "retained=%u/%u dropIngress=%u (policy repeat; not source-limited)",
                                             g_WgcCap ? g_WgcCap->GetInputMin250Fps() : 0u,
                                             g_WgcCap ? g_WgcCap->GetInputMin500Fps() : 0u, outputFps,
-                                            bufferedWgcFrames.size(),
+                                            bufferedWgcFrames.size(), uniformHardSafeCandidate ? 1 : 0,
+                                            uniformSoftSafeCandidate ? 1 : 0,
+                                            g_WgcCap ? g_WgcCap->GetIngressRetainedFrameCount() : 0u,
+                                            g_WgcCap ? g_WgcCap->GetIngressRetainedFrameCap() : 0u,
+                                            g_WgcCap ? g_WgcCap->GetIngressDecimatedCount() : 0u);
+                                    }
+                                } else if (uniformHoldSourceAtOrAboveCfr && !uniformSoftSafeCandidate) {
+                                    static uint32_t s_uniformSyncProtectedHighSourceLogCount = 0;
+                                    if (s_uniformSyncProtectedHighSourceLogCount < 5) {
+                                        ++s_uniformSyncProtectedHighSourceLogCount;
+                                        int64_t leadUs = 0;
+                                        if (!bufferedWgcFrames.empty() && qpcFreq.QuadPart > 0 &&
+                                            GetFrameSelectionTimestamp(bufferedWgcFrames.front()) > playoutTargetQpc) {
+                                            leadUs = ((GetFrameSelectionTimestamp(bufferedWgcFrames.front()) -
+                                                       playoutTargetQpc) *
+                                                      1000000) /
+                                                     qpcFreq.QuadPart;
+                                        }
+                                        LogInfo(
+                                            "[WGC CFR] Uniform playout sync-protected repeat while source was "
+                                            "at/above CFR target: lead=%lldus inputMin=%u/%u outputFps=%u "
+                                            "buffered=%zu hardSafe=%d softSafe=%d span=%uus retained=%u/%u "
+                                            "dropIngress=%u (no sync-safe frame for this slot; CFR/audio held)",
+                                            static_cast<long long>(leadUs),
+                                            g_WgcCap ? g_WgcCap->GetInputMin250Fps() : 0u,
+                                            g_WgcCap ? g_WgcCap->GetInputMin500Fps() : 0u, outputFps,
+                                            bufferedWgcFrames.size(), uniformHardSafeCandidate ? 1 : 0,
+                                            uniformSoftSafeCandidate ? 1 : 0, uniformRepeatReserveSpanUs(),
                                             g_WgcCap ? g_WgcCap->GetIngressRetainedFrameCount() : 0u,
                                             g_WgcCap ? g_WgcCap->GetIngressRetainedFrameCap() : 0u,
                                             g_WgcCap ? g_WgcCap->GetIngressDecimatedCount() : 0u);
                                     }
                                 }
-
-                                const uint32_t reserveDepth = SaturatingToUint32(bufferedWgcFrames.size());
-                                wgcDelayRepeatReserveDepthWindowMax =
-                                    std::max(wgcDelayRepeatReserveDepthWindowMax, reserveDepth);
-                                wgcDelayRepeatReserveDepthMax = std::max(wgcDelayRepeatReserveDepthMax, reserveDepth);
-                                uint32_t reserveSpanUs = 0;
-                                if (bufferedWgcFrames.size() >= 2 && qpcFreq.QuadPart > 0) {
-                                    const int64_t firstQpc = GetFrameSelectionTimestamp(bufferedWgcFrames.front());
-                                    const int64_t lastQpc = GetFrameSelectionTimestamp(bufferedWgcFrames.back());
-                                    if (firstQpc > 0 && lastQpc > firstQpc) {
-                                        reserveSpanUs = SaturatingToUint32(static_cast<uint64_t>(
-                                            (lastQpc - firstQpc) * 1000000 / qpcFreq.QuadPart));
-                                    }
-                                }
-                                wgcDelayRepeatReserveSpanWindowMaxUs =
-                                    std::max(wgcDelayRepeatReserveSpanWindowMaxUs, reserveSpanUs);
-                                wgcDelayRepeatReserveSpanMaxUs =
-                                    std::max(wgcDelayRepeatReserveSpanMaxUs, reserveSpanUs);
                             }
                             // playout.hold -> leave the buffer intact; the encoder repeats the last
                             // emitted frame (an even source-limited / delivery-gap repeat).
@@ -8679,6 +9078,15 @@ void EncoderThreadFunc(const AppConfig& config) {
             const uint32_t wgcSummaryDuplicateTimestampsSkipped =
                 std::max(g_WgcRuntimeLogSnapshot.duplicateTimestampsSkipped.load(std::memory_order_relaxed),
                          g_WgcCap ? g_WgcCap->GetDuplicateTimestampSkipCount() : 0u);
+            const int64_t wgcSummarySmoothTargetDelayUs = qpcToUs(
+                ce::capture_policy::GetWgcStartupSmoothnessTargetDelayQpc(wgcSmoothnessRetainedFrames,
+                                                                           targetIntervalTicks));
+            const int64_t wgcSummarySmoothActualDelayUs = qpcToUs(wgcSmoothnessActiveDelayQpc);
+            const int64_t wgcSummarySmoothDelayDeficitUs =
+                std::max<int64_t>(0, wgcSummarySmoothTargetDelayUs - wgcSummarySmoothActualDelayUs);
+            const int64_t wgcSummaryEffectiveDelayUs = qpcToUs(getWgcEffectiveContentDelayQpc());
+            const int64_t wgcSummaryStartupDelayDeficitUs =
+                std::max<int64_t>(0, wgcStartupDelayTargetUs - wgcSummaryEffectiveDelayUs);
             LogInfo(
                 "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=%llu maxDropTicks=%u cadenceEvents=%llu "
                 "phaseErrorMax=%uus shortfallMax=%.1fms staleDebtDrops=%llu liveRebase=%llu/%u "
@@ -8714,7 +9122,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcStartupSelectedByDelayReserve ? 1 : 0, wgcStartupReserveReason.c_str(),
                 config.wgcSmoothnessBufferEnabled ? 1 : 0, config.wgcSmoothnessBufferMaxMs, wgcSmoothnessActualFrames,
                 wgcSmoothnessRetainedFrames, wgcSmoothnessDesiredFrames,
-                static_cast<double>(qpcToUs(wgcSmoothnessActiveDelayQpc)) / 1000.0, wgcSmoothnessPoolSlots,
+                static_cast<double>(wgcSummarySmoothActualDelayUs) / 1000.0, wgcSmoothnessPoolSlots,
                 wgcSummarySourceFramePoolBuffers, wgcSummaryBudgetSurfaces, wgcSummarySyncFrames,
                 wgcSummaryExtraFrames, wgcSummaryRetainedCap, wgcSummaryReservedFreeSlots, wgcSummarySafetySlots,
                 static_cast<unsigned long long>(wgcRetainedCapTrimTotal),
@@ -8735,6 +9143,16 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<double>(wgcSummarySourceSurfaceBytes) / (1024.0 * 1024.0),
                 static_cast<double>(wgcSummaryCopySurfaceBytes) / (1024.0 * 1024.0),
                 static_cast<long long>(wgcSummaryConvertUs));
+            LogInfo(
+                "[WGC CFR SMOOTHNESS BUFFER] smoothTargetDelay=%lldus smoothActualDelay=%lldus "
+                "smoothDelayDeficit=%lldus startupDelayTarget=%lldus effectiveDelay=%lldus "
+                "startupDelayDeficit=%lldus finalAvSync=exported_tracks_authoritative",
+                static_cast<long long>(wgcSummarySmoothTargetDelayUs),
+                static_cast<long long>(wgcSummarySmoothActualDelayUs),
+                static_cast<long long>(wgcSummarySmoothDelayDeficitUs),
+                static_cast<long long>(wgcStartupDelayTargetUs),
+                static_cast<long long>(wgcSummaryEffectiveDelayUs),
+                static_cast<long long>(wgcSummaryStartupDelayDeficitUs));
             const uint32_t wgcSummaryIngressHard = g_WgcCap ? g_WgcCap->GetIngressHardReservePressureCount() : 0u;
             const uint32_t wgcSummaryIngressSoft = g_WgcCap ? g_WgcCap->GetIngressSoftReservePressureCount() : 0u;
             const uint32_t wgcSummaryIngressDecimated =
@@ -8761,6 +9179,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "worst1sEmit=%u limiter=%s sourceLimitedRepeats=%llu poolPressure=%d freeMin=%u "
                 "poolSaturatedDrops=%u ingressHard=%u ingressSoft=%u ingressDecimated=%u "
                 "ingressPlaySoft=%u ingressPlayCredit=%u overwritePrevented=%u "
+                "syncProtectedRepeats=%llu policyAddedRepeats=%llu excessRepeats=%llu "
+                "smoothDelayDeficitUs=%lld startupDelayDeficitUs=%lld "
                 "dupTsSeen=%u dupTsSkipped=%u encoderOverload=0x%X muxBackpressure=%u "
                 "compactRetained=%d sourceFmt=%u retainedFmt=%u convertUs=%lld "
                 "finalAvSync=exported_tracks_authoritative",
@@ -8774,6 +9194,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                 g_WgcCap ? g_WgcCap->GetIngressAcceptedUniformPlayoutSoftReserveCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetIngressAcceptedUniformPlayoutCreditCount() : 0u,
                 wgcSummaryOverwritePrevented,
+                static_cast<unsigned long long>(wgcDelaySyncProtectedRepeatTotal),
+                static_cast<unsigned long long>(wgcPolicyAddedRepeatTotal),
+                static_cast<unsigned long long>(wgcCombinedExcessRepeatTotal),
+                static_cast<long long>(wgcSummarySmoothDelayDeficitUs),
+                static_cast<long long>(wgcSummaryStartupDelayDeficitUs),
                 wgcSummaryDuplicateTimestampsSeen, wgcSummaryDuplicateTimestampsSkipped, wgcSummaryOverloadFlags,
                 wgcSummaryMuxBackpressure, wgcSummaryCompactRetained, wgcSummarySourceFormat, wgcSummaryRetainedFormat,
                 static_cast<long long>(wgcSummaryConvertUs));
