@@ -3434,6 +3434,19 @@ int64_t WGCCapture::GetLastPoolSlotRewriteUs() const {
 #endif
 }
 
+uint32_t WGCCapture::GetPoolSlotFreeCurrentCount() const {
+#if HAS_WGC
+    if (!impl_ || !impl_->poolLeaseState_) {
+        return 0;
+    }
+    const uint32_t slotCount = impl_->poolLeaseState_->slotCount;
+    const uint32_t leased = impl_->poolLeaseState_->leasedCurrent.load(std::memory_order_relaxed);
+    return slotCount > leased ? (slotCount - leased) : 0u;
+#else
+    return 0;
+#endif
+}
+
 uint32_t WGCCapture::GetPoolSlotLeasedMaxCount() const {
 #if HAS_WGC
     return (impl_ && impl_->poolLeaseState_) ? impl_->poolLeaseState_->leasedMax.load(std::memory_order_relaxed) : 0;

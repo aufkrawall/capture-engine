@@ -188,7 +188,10 @@ WGC_SMOOTHNESS_BUFFER_RE = re.compile(
     r"ingressPlayCredit=(?P<ingress_play_credit>\d+) )?)"
     r"ingressRetained=(?P<ingress_retained>\d+)/(?P<ingress_cap>\d+) "
     r"ingressLowWater=(?P<ingress_low_water>\d+) )?)"
-    r"leasedMax=(?P<leased_max>\d+) freeMin=(?P<free_min>\d+) "
+    r"leasedMax=(?P<leased_max>\d+) "
+    r"(?:(?:freeNow=(?P<free_now>\d+) )?)"
+    r"freeMin=(?P<free_min>\d+) "
+    r"(?:(?:poolPressureTrim=(?P<pool_pressure_trim>\d+) )?)"
     r"poolSaturatedDrops=(?P<pool_saturated_drops>\d+) "
     r"overwritePrevented=(?P<overwrite_prevented>\d+) "
     r"leaseMismatches=(?P<lease_mismatches>\d+))?"
@@ -1296,6 +1299,7 @@ def parse_wgc_quality_line(line):
         "ingress_hard": parse_int(values.get("ingressHard"), 0),
         "ingress_soft": parse_int(values.get("ingressSoft"), 0),
         "ingress_decimated": parse_int(values.get("ingressDecimated"), 0),
+        "pool_pressure_trim": parse_int(values.get("poolPressureTrim"), 0),
         "ingress_accepted_playout_soft": parse_int(values.get("ingressPlaySoft"), 0),
         "ingress_accepted_playout_credit": parse_int(values.get("ingressPlayCredit"), 0),
         "overwrite_prevented": parse_int(values.get("overwritePrevented"), 0),
@@ -1532,7 +1536,9 @@ def update_wgc_smoothness_item_from_line(item, line):
                 "wgc_ingress_retained_cap": parse_int(groups.get("ingress_cap")),
                 "wgc_ingress_low_water": parse_int(groups.get("ingress_low_water")),
                 "pool_lease_max": parse_int(groups.get("leased_max")),
+                "pool_free_now": parse_int(groups.get("free_now")),
                 "pool_free_min": parse_int(groups.get("free_min")),
+                "pool_pressure_trim": parse_int(groups.get("pool_pressure_trim")),
                 "pool_saturated_drops": parse_int(groups.get("pool_saturated_drops")),
                 "pool_overwrite_prevented": parse_int(groups.get("overwrite_prevented")),
                 "pool_lease_mismatches": parse_int(groups.get("lease_mismatches")),
@@ -2743,7 +2749,7 @@ def has_wgc_audio_late_risk(media_evidence):
         # that region, because that can make audio feel late despite exact mux/audio
         # durations.
         accepted_relaxed_frames = soft_late_accepted + near_cap_accepted
-        if accepted_relaxed_frames <= 0:
+        if accepted_relaxed_frames < WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT:
             continue
         if source_limited_ceiling and soft_late_accepted == 0:
             continue
@@ -2809,6 +2815,29 @@ def has_wgc_cfr_smoothness_not_maximal(media_evidence):
         if item.get("excess_repeat_cluster_max_ticks", 0) >= WGC_CFR_SMOOTHNESS_EXCESS_REPEAT_CLUSTER_FAULT_TICKS:
             return True
     return False
+
+
+def has_wgc_startup_smoothness_underfilled(media_evidence):
+    for item in media_evidence["wgc_smoothness_summary"]:
+        smoothness_attempted = (
+            item.get("smooth_target_delay_us", 0) > 0
+            or item.get("smoothness_buffer_retained_frames", 0) > 0
+            or item.get("smoothness_buffer_desired_frames", 0) > 0
+        )
+        if not smoothness_attempted:
+            continue
+        if item.get("smooth_delay_deficit_us", 0) >= 8000:
+            return True
+        if item.get("startup_delay_deficit_us", 0) >= 8000:
+            return True
+        reason = item.get("startup_reserve_reason", "")
+        if reason in ("partial_span_timeout", "reserve_timeout", "low_water_timeout"):
+            return True
+    return any(
+        quality.get("smooth_delay_deficit_us", 0) >= 8000
+        or quality.get("startup_delay_deficit_us", 0) >= 8000
+        for quality in media_evidence["wgc_quality"]
+    )
 
 
 def wgc_realized_delay_spread_us(item):
@@ -3182,6 +3211,9 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     wgc_cfr_smoothness_not_maximal = has_wgc_cfr_smoothness_not_maximal(media_evidence)
     if wgc_cfr_smoothness_not_maximal:
         verdicts.append("wgc_cfr_smoothness_not_maximal")
+    wgc_startup_smoothness_underfilled = has_wgc_startup_smoothness_underfilled(media_evidence)
+    if wgc_startup_smoothness_underfilled:
+        verdicts.append("wgc_startup_smoothness_underfilled")
     wgc_active_delay_realized_delay_unstable = has_wgc_active_delay_realized_delay_unstable(media_evidence)
     if wgc_active_delay_realized_delay_unstable:
         verdicts.append("wgc_active_delay_realized_delay_unstable")
@@ -3220,6 +3252,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
         wgc_sync_delay_reserve_pressure
         and not wgc_sync_delay_policy_fault
         and not wgc_cfr_smoothness_not_maximal
+        and not wgc_startup_smoothness_underfilled
         and not wgc_av_sync_delay_risk
         and not wgc_av_sync_delay_residual_fault
         and not wgc_audio_late_risk
@@ -3292,6 +3325,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
         or wgc_active_delay_post_selection_reject
         or wgc_sync_delay_policy_fault
         or wgc_cfr_smoothness_not_maximal
+        or wgc_startup_smoothness_underfilled
         or wgc_smoothness_evidence_incomplete
         or wgc_pool_slot_lifetime_fault
         or wgc_pool_saturated_safe_drop
@@ -3341,6 +3375,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "wgc_active_delay_post_selection_reject": wgc_active_delay_post_selection_reject,
             "wgc_sync_delay_policy_fault": wgc_sync_delay_policy_fault,
             "wgc_cfr_smoothness_not_maximal": wgc_cfr_smoothness_not_maximal,
+            "wgc_startup_smoothness_underfilled": wgc_startup_smoothness_underfilled,
             "wgc_source_limited_smoothness_ceiling": wgc_source_limited_smoothness_ceiling,
             "wgc_smoothness_evidence_incomplete": wgc_smoothness_evidence_incomplete,
             "wgc_pool_slot_lifetime_fault": wgc_pool_slot_lifetime_fault,
@@ -3526,7 +3561,7 @@ def print_triage_report(report):
             "  wgc_quality dup={dup}/{live} ({dup_pct:.1f}%) worst1s={unique}/{repeats}/{emit} "
             "limiter={limiter} pool_pressure={pool} free_min={free_min} sat_drop={sat_drop} "
             "ingress_hard={hard} ingress_soft={soft} ingress_dec={ingress_dec} "
-            "playout_acc={play_soft}/{play_credit} sync_protected={sync_protected} "
+            "pool_trim={pool_trim} playout_acc={play_soft}/{play_credit} sync_protected={sync_protected} "
             "policy_added={policy_added} excess={excess} "
             "smooth_deficit={smooth_deficit:.3f}ms startup_deficit={startup_deficit:.3f}ms "
             "dup_ts={dup_ts_seen}/{dup_ts_skipped} "
@@ -3545,6 +3580,7 @@ def print_triage_report(report):
                 hard=quality["ingress_hard"],
                 soft=quality["ingress_soft"],
                 ingress_dec=quality.get("ingress_decimated", 0),
+                pool_trim=quality.get("pool_pressure_trim", 0),
                 play_soft=quality.get("ingress_accepted_playout_soft", 0),
                 play_credit=quality.get("ingress_accepted_playout_credit", 0),
                 sync_protected=quality.get("sync_protected_repeats", 0),

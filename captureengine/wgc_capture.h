@@ -140,6 +140,7 @@ public:
     uint32_t GetSplitDeviceFlushSkippedCount() const;
     uint32_t GetPoolSlotFastRewriteCount() const;
     int64_t GetLastPoolSlotRewriteUs() const;
+    uint32_t GetPoolSlotFreeCurrentCount() const;
     uint32_t GetPoolSlotLeasedMaxCount() const;
     uint32_t GetPoolSlotFreeMinCount() const;
     uint32_t GetPoolSlotOverwritePreventedCount() const;

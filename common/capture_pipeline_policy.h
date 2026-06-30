@@ -656,6 +656,31 @@ inline int64_t GetWgcStartupSmoothnessTargetDelayQpc(uint32_t retainedExtraFrame
     return targetDelay > static_cast<uint64_t>(INT64_MAX) ? INT64_MAX : static_cast<int64_t>(targetDelay);
 }
 
+inline int64_t GetWgcStartupReserveWaitBudgetQpc(int64_t startupContentDelayTargetQpc, int64_t targetIntervalTicks,
+                                                 int64_t smoothnessTargetDelayQpc,
+                                                 bool smoothnessStartupAttempted) {
+    if (startupContentDelayTargetQpc <= 0 || targetIntervalTicks <= 0) {
+        return 0;
+    }
+
+    const auto saturatingAdd = [](int64_t lhs, int64_t rhs) -> int64_t {
+        return lhs > INT64_MAX - rhs ? INT64_MAX : lhs + rhs;
+    };
+    const auto saturatingMul = [](int64_t lhs, int64_t rhs) -> int64_t {
+        return rhs > 0 && lhs > INT64_MAX / rhs ? INT64_MAX : lhs * rhs;
+    };
+
+    const int64_t baseBudget = saturatingAdd(startupContentDelayTargetQpc, saturatingMul(targetIntervalTicks, 2));
+    if (!smoothnessStartupAttempted || smoothnessTargetDelayQpc <= 0) {
+        return baseBudget;
+    }
+
+    const int64_t smoothnessSlack =
+        saturatingAdd(smoothnessTargetDelayQpc, saturatingMul(targetIntervalTicks, 4));
+    const int64_t smoothnessBudget = saturatingAdd(startupContentDelayTargetQpc, smoothnessSlack);
+    return std::max(baseBudget, smoothnessBudget);
+}
+
 inline int64_t SelectWgcStartupSmoothnessExtraDelayQpc(int64_t actualStartupDelayQpc, int64_t avContentDelayQpc,
                                                        int64_t smoothnessTargetDelayQpc) {
     if (actualStartupDelayQpc <= avContentDelayQpc || smoothnessTargetDelayQpc <= 0) {
@@ -1881,6 +1906,17 @@ inline uint32_t GetWgcSmoothnessRetainedFrames(uint32_t outputFps, uint32_t maxS
 inline uint32_t GetWgcSmoothnessPoolFrameCount(uint32_t retainedFrames) {
     const uint32_t desiredPool = retainedFrames + kWgcSmoothnessBufferPoolSafetyFrames;
     return std::clamp(desiredPool, kWgcSmoothnessBufferMinPoolFrames, kWgcSmoothnessBufferMaxPoolFrames);
+}
+
+inline uint32_t GetWgcPoolPressureRetainedTrimTarget(uint32_t currentFreeCopySlots, uint32_t reservedFreeCopySlots,
+                                                     uint32_t delayReservoirTargetFrames,
+                                                     uint32_t retainedFrameCap) {
+    if (reservedFreeCopySlots == 0 || currentFreeCopySlots > reservedFreeCopySlots || retainedFrameCap == 0 ||
+        delayReservoirTargetFrames == 0) {
+        return retainedFrameCap;
+    }
+
+    return std::min(retainedFrameCap, std::max<uint32_t>(1u, delayReservoirTargetFrames));
 }
 
 struct WgcIngressAdmissionDecision {

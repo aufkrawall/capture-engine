@@ -474,6 +474,24 @@ TEST(CapturePipelinePolicyTest, WgcStartupSmoothnessDelayUsesActualReserveAndBud
               0);
 }
 
+TEST(CapturePipelinePolicyTest, WgcStartupReserveWaitBudgetExtendsForSmoothnessReservoir) {
+    EXPECT_EQ(policy::GetWgcStartupReserveWaitBudgetQpc(/*startupContentDelayTargetQpc=*/2700,
+                                                        /*targetIntervalTicks=*/100,
+                                                        /*smoothnessTargetDelayQpc=*/2400,
+                                                        /*smoothnessStartupAttempted=*/true),
+              5500);
+    EXPECT_EQ(policy::GetWgcStartupReserveWaitBudgetQpc(/*startupContentDelayTargetQpc=*/2700,
+                                                        /*targetIntervalTicks=*/100,
+                                                        /*smoothnessTargetDelayQpc=*/0,
+                                                        /*smoothnessStartupAttempted=*/false),
+              2900);
+    EXPECT_EQ(policy::GetWgcStartupReserveWaitBudgetQpc(/*startupContentDelayTargetQpc=*/0,
+                                                        /*targetIntervalTicks=*/100,
+                                                        /*smoothnessTargetDelayQpc=*/2400,
+                                                        /*smoothnessStartupAttempted=*/true),
+              0);
+}
+
 TEST(CapturePipelinePolicyTest, WgcPreLiveStartupDelayExcludesSmoothnessReservoir) {
     const int64_t targetIntervalTicks = 100;
     const int64_t preLiveDelayTicks = policy::GetWgcCfrStartupPreLiveDelayTicks(targetIntervalTicks);
@@ -1446,6 +1464,29 @@ TEST(CapturePipelinePolicyTest, WgcIngressAdmissionAcceptsLowWaterAndRecovery) {
     EXPECT_TRUE(recovery.accept);
     EXPECT_FALSE(recovery.decimated);
     EXPECT_STREQ(recovery.reason, "recovery");
+}
+
+TEST(CapturePipelinePolicyTest, WgcPoolPressureTrimKeepsDelayTargetButProtectsFreeSlots) {
+    EXPECT_EQ(policy::GetWgcPoolPressureRetainedTrimTarget(/*currentFreeCopySlots=*/0,
+                                                           /*reservedFreeCopySlots=*/6,
+                                                           /*delayReservoirTargetFrames=*/30,
+                                                           /*retainedFrameCap=*/34),
+              30u);
+    EXPECT_EQ(policy::GetWgcPoolPressureRetainedTrimTarget(/*currentFreeCopySlots=*/6,
+                                                           /*reservedFreeCopySlots=*/6,
+                                                           /*delayReservoirTargetFrames=*/30,
+                                                           /*retainedFrameCap=*/34),
+              30u);
+    EXPECT_EQ(policy::GetWgcPoolPressureRetainedTrimTarget(/*currentFreeCopySlots=*/7,
+                                                           /*reservedFreeCopySlots=*/6,
+                                                           /*delayReservoirTargetFrames=*/30,
+                                                           /*retainedFrameCap=*/34),
+              34u);
+    EXPECT_EQ(policy::GetWgcPoolPressureRetainedTrimTarget(/*currentFreeCopySlots=*/0,
+                                                           /*reservedFreeCopySlots=*/6,
+                                                           /*delayReservoirTargetFrames=*/0,
+                                                           /*retainedFrameCap=*/34),
+              34u);
 }
 
 TEST(CapturePipelinePolicyTest, WgcIngressAdmissionSoftReserveDoesNotBeatLowWaterAndRecovery) {
