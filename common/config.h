@@ -322,9 +322,9 @@ struct AppConfig {
     std::string crashDumpDir;  // Directory for crash dumps
 
     // Performance (Priority Settings)
-    std::string processPriority;    // idle, below_normal, normal, above_normal,
-                                    // high, realtime
-    std::string copyQueuePriority;  // low, normal, high (D3D12 COPY queue)
+    std::string processPriority;        // idle, below_normal, normal, above_normal, high, realtime
+    std::string gpuSchedulingPriority;  // off, idle, below_normal, normal, above_normal, high, realtime
+    std::string copyQueuePriority;      // low, normal, high (D3D12 overlay DIRECT queue priority)
     int fenceWaitMode = 1;          // 0=always, 1=first_only, 2=never (debug)
     bool useGameQueue = false;      // Use game's command queue for capture (reduces GPU contention)
     std::vector<WhitelistEntry> gameWhitelist;

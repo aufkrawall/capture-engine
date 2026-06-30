@@ -57,6 +57,24 @@ static std::string NormalizePseudoOverlayProcessList(const std::string& raw) {
     return normalized;
 }
 
+static std::string NormalizePriorityString(const std::string& val, const char* fallback, bool allowOff) {
+    std::string normalized = Trim(val);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    std::replace(normalized.begin(), normalized.end(), '-', '_');
+
+    if (allowOff &&
+        (normalized == "off" || normalized == "none" || normalized == "disabled" || normalized == "disable")) {
+        return "off";
+    }
+    if (normalized == "idle" || normalized == "below_normal" || normalized == "normal" ||
+        normalized == "above_normal" || normalized == "high" || normalized == "realtime") {
+        return normalized;
+    }
+
+    return fallback;
+}
+
 std::string NormalizeCaptureMethod(const std::string& val) {
     std::string normalized = Trim(val);
     std::transform(normalized.begin(), normalized.end(), normalized.begin(),
@@ -597,8 +615,13 @@ track=2,3
 ;track=21
 
 [Performance]
+; process_priority controls only the media process CPU priority. Values: idle, below_normal, normal, above_normal, high, realtime
 process_priority=high
+; gpu_priority controls IDXGIDevice::SetGPUThreadPriority on CE D3D11 devices. Values: -7..7, 0 = adaptive
 gpu_priority=7
+; gpu_scheduling_priority is an OBS-style D3DKMT process GPU scheduling class for the media process only.
+; Values: off, idle, below_normal, normal, above_normal, high, realtime. high/realtime can require elevation.
+gpu_scheduling_priority=off
 
 [FpsLimiter]
 ; capture_sync_enabled, limits game fps to video fps - Values: true, false
@@ -893,8 +916,11 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.audioLatencyAutodetect = GetBool("General", "audio_latency_autodetect", true);
 
     // Performance (Priority Settings)
-    config.processPriority = GetStr("Performance", "process_priority", "above_normal");
+    config.processPriority = NormalizePriorityString(GetStr("Performance", "process_priority", "above_normal"),
+                                                     "above_normal", false);
     config.video.gpuPriority = GetInt("Performance", "gpu_priority", 0);
+    config.gpuSchedulingPriority =
+        NormalizePriorityString(GetStr("Performance", "gpu_scheduling_priority", "off"), "off", true);
     config.copyQueuePriority = GetStr("Performance", "copy_queue_priority", "normal");
 
     // Fence synchronization settings (hardcoded to optimal values)

@@ -1348,6 +1348,38 @@ static void WaitUntilQpcTarget(HANDLE timer, int64_t targetQpc, int64_t qpcFrequ
     }
 }
 
+static const char* Win32PriorityClassName(DWORD priorityClass) {
+    switch (priorityClass) {
+        case IDLE_PRIORITY_CLASS:
+            return "idle";
+        case BELOW_NORMAL_PRIORITY_CLASS:
+            return "below_normal";
+        case NORMAL_PRIORITY_CLASS:
+            return "normal";
+        case ABOVE_NORMAL_PRIORITY_CLASS:
+            return "above_normal";
+        case HIGH_PRIORITY_CLASS:
+            return "high";
+        case REALTIME_PRIORITY_CLASS:
+            return "realtime";
+        default:
+            return "unknown";
+    }
+}
+
+static bool IsCurrentProcessElevatedForPriorityLog() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return false;
+    }
+
+    TOKEN_ELEVATION elevation = {};
+    DWORD returned = 0;
+    const BOOL ok = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &returned);
+    CloseHandle(token);
+    return ok && elevation.TokenIsElevated != 0;
+}
+
 static void ApplyMediaProcessPriority(const AppConfig& config) {
     DWORD priorityClass = NORMAL_PRIORITY_CLASS;
     if (config.processPriority == "idle")
@@ -1358,7 +1390,147 @@ static void ApplyMediaProcessPriority(const AppConfig& config) {
         priorityClass = ABOVE_NORMAL_PRIORITY_CLASS;
     else if (config.processPriority == "high")
         priorityClass = HIGH_PRIORITY_CLASS;
-    SetPriorityClass(GetCurrentProcess(), priorityClass);
+    else if (config.processPriority == "realtime")
+        priorityClass = REALTIME_PRIORITY_CLASS;
+
+    const DWORD currentClass = GetPriorityClass(GetCurrentProcess());
+    if (currentClass == priorityClass) {
+        return;
+    }
+
+    if (SetPriorityClass(GetCurrentProcess(), priorityClass)) {
+        LogInfo("[Media] CPU process priority set to %s", Win32PriorityClassName(priorityClass));
+    } else {
+        LogWarn("[Media] Failed to set CPU process priority to %s: gle=%lu",
+                Win32PriorityClassName(priorityClass), GetLastError());
+    }
+}
+
+static const char* D3dkmtSchedulingPriorityClassName(int priorityClass) {
+    switch (priorityClass) {
+        case 0:
+            return "idle";
+        case 1:
+            return "below_normal";
+        case 2:
+            return "normal";
+        case 3:
+            return "above_normal";
+        case 4:
+            return "high";
+        case 5:
+            return "realtime";
+        default:
+            return "unknown";
+    }
+}
+
+static bool ResolveD3dkmtSchedulingPriorityClass(const std::string& value, int& priorityClass) {
+    if (value == "idle") {
+        priorityClass = 0;
+    } else if (value == "below_normal") {
+        priorityClass = 1;
+    } else if (value == "normal") {
+        priorityClass = 2;
+    } else if (value == "above_normal") {
+        priorityClass = 3;
+    } else if (value == "high") {
+        priorityClass = 4;
+    } else if (value == "realtime") {
+        priorityClass = 5;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static void ApplyMediaGpuSchedulingPriority(const AppConfig& config) {
+    using D3dkmtSetProcessSchedulingPriorityClassFn = LONG(WINAPI*)(HANDLE, int);
+    using D3dkmtGetProcessSchedulingPriorityClassFn = LONG(WINAPI*)(HANDLE, int*);
+
+    static bool s_loggedDisabled = false;
+    static bool s_appliedNonDefault = false;
+    static std::string s_lastRequest;
+
+    const bool disabled = config.gpuSchedulingPriority == "off";
+    int requestedClass = 2;
+    if (disabled) {
+        if (!s_appliedNonDefault) {
+            if (!s_loggedDisabled) {
+                LogInfo("[Media] GPU scheduling priority class disabled (gpu_scheduling_priority=off)");
+                s_loggedDisabled = true;
+            }
+            return;
+        }
+    } else if (!ResolveD3dkmtSchedulingPriorityClass(config.gpuSchedulingPriority, requestedClass)) {
+        LogWarn("[Media] Ignoring invalid GPU scheduling priority class '%s'", config.gpuSchedulingPriority.c_str());
+        return;
+    }
+
+    HMODULE gdi32 = GetModuleHandleA("gdi32.dll");
+    if (!gdi32) {
+        gdi32 = LoadLibraryA("gdi32.dll");
+    }
+    if (!gdi32) {
+        LogWarn("[Media] GPU scheduling priority class unavailable: failed to load gdi32.dll");
+        return;
+    }
+
+    auto setPriority = reinterpret_cast<D3dkmtSetProcessSchedulingPriorityClassFn>(
+        GetProcAddress(gdi32, "D3DKMTSetProcessSchedulingPriorityClass"));
+    auto getPriority = reinterpret_cast<D3dkmtGetProcessSchedulingPriorityClassFn>(
+        GetProcAddress(gdi32, "D3DKMTGetProcessSchedulingPriorityClass"));
+    if (!setPriority) {
+        LogWarn("[Media] GPU scheduling priority class unavailable: D3DKMTSetProcessSchedulingPriorityClass missing");
+        return;
+    }
+
+    int currentClass = -1;
+    LONG getStatus = 0;
+    const bool haveCurrent = getPriority && ((getStatus = getPriority(GetCurrentProcess(), &currentClass)) >= 0);
+    const char* requestText = disabled ? "off(reset_to_normal)" : config.gpuSchedulingPriority.c_str();
+    if (haveCurrent && currentClass == requestedClass && s_lastRequest == requestText) {
+        return;
+    }
+
+    const LONG status = setPriority(GetCurrentProcess(), requestedClass);
+    const bool elevated = IsCurrentProcessElevatedForPriorityLog();
+    if (status < 0) {
+        if (haveCurrent) {
+            LogWarn(
+                "[Media] Failed to set GPU scheduling priority class to %s (config=%s current=%s elevated=%d): "
+                "ntstatus=0x%08lX",
+                D3dkmtSchedulingPriorityClassName(requestedClass), requestText,
+                D3dkmtSchedulingPriorityClassName(currentClass), elevated ? 1 : 0, (unsigned long)status);
+        } else {
+            LogWarn(
+                "[Media] Failed to set GPU scheduling priority class to %s (config=%s current=unknown "
+                "getStatus=0x%08lX elevated=%d): ntstatus=0x%08lX",
+                D3dkmtSchedulingPriorityClassName(requestedClass), requestText, (unsigned long)getStatus,
+                elevated ? 1 : 0, (unsigned long)status);
+        }
+        return;
+    }
+
+    s_lastRequest = requestText;
+    s_loggedDisabled = disabled;
+    s_appliedNonDefault = requestedClass != 2;
+    if (haveCurrent) {
+        LogInfo("[Media] GPU scheduling priority class set to %s (config=%s previous=%s elevated=%d)",
+                D3dkmtSchedulingPriorityClassName(requestedClass), requestText,
+                D3dkmtSchedulingPriorityClassName(currentClass), elevated ? 1 : 0);
+    } else {
+        LogInfo(
+            "[Media] GPU scheduling priority class set to %s (config=%s previous=unknown getStatus=0x%08lX "
+            "elevated=%d)",
+            D3dkmtSchedulingPriorityClassName(requestedClass), requestText, (unsigned long)getStatus,
+            elevated ? 1 : 0);
+    }
+}
+
+static void ApplyMediaPrioritySettings(const AppConfig& config) {
+    ApplyMediaProcessPriority(config);
+    ApplyMediaGpuSchedulingPriority(config);
 }
 
 // =================================================================================================
@@ -9761,7 +9933,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         return true;
     };
 
-    ApplyMediaProcessPriority(config);
+    ApplyMediaPrioritySettings(config);
 
     ProcessIPCServer ipc(ProcessMode::Media);
     if (!ipc.Init()) {
@@ -10053,7 +10225,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         activeConfigSourcePid = sourcePid;
         activeConfigProcessName = processName;
 
-        ApplyMediaProcessPriority(config);
+        ApplyMediaPrioritySettings(config);
         if (g_WgcCap) {
             applyWgcOptions();
             g_WgcCap->SetCaptureCursor(config.video.captureCursor);

@@ -1,97 +1,110 @@
 # Performance Priority Settings
 
-Last cross-checked: 2026-05-13 (added: default `process_priority=above_normal`, `copy_queue_priority` dead code fix)
+Last cross-checked: 2026-06-30 (OBS-style D3DKMT media GPU scheduling priority added; D3D12 COPY queue / HAGS claims corrected)
 
 ## Overview
 
-The `[Performance]` section in config.ini controls three priority mechanisms for the capture engine's CPU and GPU scheduling. Each targets a different subsystem.
+The `[Performance]` section controls three independent priority mechanisms plus one legacy-named D3D12 overlay queue setting. They are not interchangeable:
 
----
+- `process_priority`: media process CPU priority via `SetPriorityClass`.
+- `gpu_priority`: D3D11 device GPU thread priority via `IDXGIDevice::SetGPUThreadPriority`.
+- `gpu_scheduling_priority`: media process GPU scheduling class via `D3DKMTSetProcessSchedulingPriorityClass` resolved from `gdi32.dll`.
+- `copy_queue_priority`: D3D12 overlay DIRECT queue priority. Despite the name, it is not a COPY queue and no D3D12 COPY queue is currently created by CE.
 
-## 1. `process_priority` (CPU Process Priority)
+## `process_priority` (CPU Process Priority)
 
 **Config:** `[Performance] process_priority`
-**Default:** `above_normal` (changed from `normal` on 2026-05-13)
+**Generated default:** `high`
+**Parser fallback for missing/invalid values:** `above_normal`
 **Values:** `idle`, `below_normal`, `normal`, `above_normal`, `high`, `realtime`
 
-**Scope:** Only affects the **Media** (video capture/encoding) sub-process. Other sub-processes (Controller, Inject, Logger, Sensors) do not read this setting.
+**Scope:** Media subprocess only. Controller, Inject, Logger, Sensors, and the injected game process do not read this setting.
 
-**Mechanism:** `ApplyMediaProcessPriority()` at `media_main.cpp:974` maps string values to `SetPriorityClass()` constants. Called at startup (line 4948) and on config reload (line 5220).
+**Mechanism:** `ApplyMediaProcessPriority()` maps normalized config strings to Win32 priority classes and applies them through `SetPriorityClass(GetCurrentProcess(), ...)`. `realtime` is now implemented; use it only as an explicit diagnostic because it can starve unrelated work.
 
-**Rationale for `above_normal` default:** Windows 11 favors foreground/in-focus windows for CPU scheduling. The Media process runs as a background process and can get starved when the game is CPU-heavy. `ABOVE_NORMAL_PRIORITY_CLASS` provides a modest scheduling boost without significantly impacting game performance.
+**Source anchors:**
+- `common/config.h` (`AppConfig::processPriority`)
+- `common/config.cpp` (`NormalizePriorityString`, default config generation, `[Performance]` parsing)
+- `captureengine/config.ini.template` (`[Performance]` comments/default)
+- `captureengine/media_main.cpp` (`ApplyMediaProcessPriority`, `ApplyMediaPrioritySettings`)
+- `tests/test_config.cpp` (`ParsePerformancePriorityValues`, invalid fallback test)
 
-**Note:** `"realtime"` is listed in the config template comment but **not handled** in the code — it falls through to `NORMAL_PRIORITY_CLASS`. Only the Limiter process uses `REALTIME_PRIORITY_CLASS` (hardcoded).
-
-**Primary sources:**
-- `common/config.h:296` (AppConfig field)
-- `common/config.cpp:498-499` (embedded template)
-- `common/config.cpp:756` (parsing with default)
-- `captureengine/media_main.cpp:974-985` (ApplyMediaProcessPriority)
-- `captureengine/media_main.cpp:4948,5220` (call sites)
-- `captureengine/config.ini.template:55-56` (user-facing template)
-- `captureengine/limiter_main.cpp:229` (hardcoded REALTIME_PRIORITY_CLASS for Limiter)
-
----
-
-## 2. `gpu_priority` (Encoder GPU Thread Priority)
+## `gpu_priority` (D3D11 GPU Thread Priority)
 
 **Config:** `[Performance] gpu_priority`
-**Default:** `0` (auto/adaptive)
-**Values:** Integer -7 to 7
+**Generated default:** `7`
+**Parser fallback:** `0` when absent
+**Values:** integer `-7..7`; `0` means adaptive/neutral unless encoder pressure triggers a temporary raise.
 
-**Mechanism:** Controls the GPU thread priority (via `IDXGIDevice::SetGPUThreadPriority`) for the encoder's D3D11 device. Two modes:
+**Scope:** CE D3D11 devices, not the whole Windows process. It affects the encoder D3D11 device and WGC capture D3D11 device. With `wgc_same_device_capture=true`, WGC uses the encoder/media D3D11 device. With dedicated WGC capture, `WGCCapture::SetGpuPriority()` applies it to the dedicated capture device.
 
-- **Default (0):** Adaptive. The encoder monitors encode time pressure. Raises to `+1` after 2 seconds of sustained pressure >75% of frame budget. Restores to `0` after 5 seconds of sustained recovery <50% of budget.
-- **Non-zero:** Fixed. Set directly as the encoder GPU thread priority.
+**Mechanism:** `IDXGIDevice::SetGPUThreadPriority(priority)` on the relevant D3D11/DXGI device. This is the second half of OBS's GPU-priority workaround, and CE already had it before the D3DKMT process scheduling class was added.
 
-**Relevant diagnostics:** `SchedSelAvg`, `SchedSelBias`, `WgcFrameLead`, encoder overload flags.
+**Limits:** This can prioritize CE's D3D11 work after WGC frames arrive, but it cannot force DWM/WGC to deliver frames on time. In `installed/captureengine/logs/sbwgc`, warmed WGC copy/convert was about 15 us while callback/source gaps reached tens to 100 ms, so the observed roughness was mostly upstream WGC delivery, not CE copy/encode priority.
 
-**Scope:** Affects **both** the encoder D3D11 device (`video_encoder.cpp`) and the WGC capture D3D11 device (`wgc_capture.cpp`). On the shared-device path (`sameDeviceCapture=true`), both refer to the same device — the encoder's priority covers it. On the dedicated-device path (`sameDeviceCapture=false`), `SetGpuPriority()` is applied independently to the dedicated capture device via `WGCCapture::SetGpuPriority()`.
+**Source anchors:**
+- `common/config.h` (`VideoConfig::gpuPriority`)
+- `common/config.cpp` (`[Performance] gpu_priority` parsing)
+- `mediaengine/video_encoder.cpp` (`ApplyGpuThreadPriority`, adaptive pressure handling, init application)
+- `captureengine/wgc_capture.cpp` (`WGCCapture::SetGpuPriority`)
+- `captureengine/media_main.cpp` (`StartWgcRecordingCapture` call)
 
-**Primary sources:**
-- `common/config.h:69` (VideoConfig field)
-- `common/config.cpp:500-501` (embedded template)
-- `common/config.cpp:757` (parsing)
-- `mediaengine/video_encoder.cpp:782-804` (ApplyGpuThreadPriority on encoder device)
-- `mediaengine/video_encoder.cpp:806-838` (UpdateAdaptiveGpuThreadPriority)
-- `mediaengine/video_encoder.cpp:855,1739` (init call)
-- `mediaengine/video_encoder.h:165-168` (tracking fields)
-- `captureengine/wgc_capture.h:180` (SetGpuPriority declaration)
-- `captureengine/wgc_capture.cpp:2592-2621` (SetGpuPriority implementation)
-- `captureengine/media_main.cpp:738` (call site in StartWgcRecordingCapture)
+## `gpu_scheduling_priority` (D3DKMT Process GPU Scheduling Class)
 
----
+**Config:** `[Performance] gpu_scheduling_priority`
+**Default:** `off`
+**Values:** `off`, `idle`, `below_normal`, `normal`, `above_normal`, `high`, `realtime`
 
-## 3. `copy_queue_priority` (D3D12 Overlay Command Queue Priority)
+**Scope:** Media subprocess only. This is intentionally not applied in the injected game process; raising the game's process scheduling class would make capture compete against an even-higher-priority game and defeat the purpose.
+
+**Mechanism:** `ApplyMediaGpuSchedulingPriority()` resolves `D3DKMTSetProcessSchedulingPriorityClass` and `D3DKMTGetProcessSchedulingPriorityClass` dynamically from `gdi32.dll`, then requests the configured D3DKMT scheduling class for `GetCurrentProcess()`. It logs requested/current class, elevation state, and NTSTATUS. Failure is non-fatal.
+
+**OBS relationship:** OBS uses the same family of workaround: process GPU scheduling class via D3DKMT plus `IDXGIDevice::SetGPUThreadPriority` on its D3D11 device. CE now has both pieces, but keeps the process scheduling class opt-in and defaults it to `off`.
+
+**Admin/elevation:** `high`/`realtime` may fail without elevation depending on OS/driver policy. CE logs `elevated=0/1` and the NTSTATUS so test captures can distinguish "unsupported/denied" from "applied".
+
+**WGC expectation:** This may help WGC if CE's own D3D11 copy/convert/encode work is losing GPU scheduling. It will not directly prioritize the Windows/DWM/WGC producer path that delivers `Direct3D11CaptureFrame` objects to CE.
+
+**Source anchors:**
+- `common/config.h` (`AppConfig::gpuSchedulingPriority`)
+- `common/config.cpp` (`gpu_scheduling_priority` generation/parsing)
+- `captureengine/config.ini.template` (`[Performance] gpu_scheduling_priority`)
+- `captureengine/media_main.cpp` (`ApplyMediaGpuSchedulingPriority`, dynamic D3DKMT lookup)
+- `tests/test_config.cpp` (default, parse, invalid fallback coverage)
+
+## `copy_queue_priority` (D3D12 Overlay Queue Priority)
 
 **Config:** `[Performance] copy_queue_priority`
 **Default:** `normal`
 **Values:** `low`, `normal`, `high`
 
-**Mechanism:** Controls the D3D12 command queue priority for the overlay's dedicated DIRECT command queue (created in `InitOverlaySync()`).
+**Mechanism:** Parsed into shared memory as `low=0`, `normal=1`, `high=2`; consumed by `InitOverlaySync()` when creating the overlay's dedicated D3D12 command queue. `high` sets `D3D12_COMMAND_QUEUE_PRIORITY_HIGH`.
 
-**Data flow:**
-1. Config parsed at `config.cpp:758` → `AppConfig::copyQueuePriority`
-2. Written to shared memory at `inject_main.cpp:163-168` (init) and `ipc.cpp:128-133` (runtime update): `low=0`, `normal=1`, `high=2`
-3. Consumed at `dx12_hook.cpp:6589-6595` in `InitOverlaySync()`: when value == `2` (`high`), sets `queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_HIGH`.
+**Important correction:** This queue is `D3D12_COMMAND_LIST_TYPE_DIRECT`, not `D3D12_COMMAND_LIST_TYPE_COPY`. `low` and `normal` are effectively equivalent for the current code. The name is retained for compatibility with existing configs.
 
-**Note:** For DIRECT-type queues, D3D12 only supports `NORMAL` (0) and `HIGH` (100). Therefore `low` and `normal` are equivalent — this is a D3D12 API constraint. The config name retains "copy_queue" for backward compatibility; the overlay queue is a DIRECT queue, not a COPY queue. No COPY-type command queues are currently created anywhere in the codebase.
+**Source anchors:**
+- `common/config.h` (`AppConfig::copyQueuePriority`)
+- `common/config.cpp` (`copy_queue_priority` parsing)
+- `common/shared_defs.h` (`copyQueuePriority_`)
+- `captureengine/inject_main.cpp`, `captureengine/ipc.cpp` (shared-memory propagation)
+- `hook/apis/dx12_hook.cpp` (`InitOverlaySync` queue creation)
 
-**Stale-risk:** The consumption code in `dx12_hook.cpp:6589-6595` was added on 2026-05-13 (dead code fix). Previously the config value was parsed and propagated to shared memory but never read — it had no effect.
+## D3D12 COPY Queue / HAGS Findings
 
-**Primary sources:**
-- `common/config.h:298` (AppConfig field)
-- `common/config.cpp:502-503` (embedded template)
-- `common/config.cpp:758` (parsing)
-- `common/shared_defs.h:595,686-690` (shared memory atomics)
-- `captureengine/inject_main.cpp:163-168,349-354` (shmem writes)
-- `captureengine/ipc.cpp:128-133` (IPC shmem write)
-- `hook/apis/dx12_hook.cpp:6586-6595` (consumption in InitOverlaySync)
+Current code creates no D3D12 COPY queues. DX12 inject capture uses D3D12 resources but records a DIRECT command list and submits the capture copy to the game's command queue (`SharedCaptureD3D12::CaptureFrame`). WGC is based on `Direct3D11CaptureFramePool` and obtains `ID3D11Texture2D` surfaces from WinRT, then copies/converts via the D3D11 immediate context.
 
----
+D3D12 COPY queues remain plausible for a DX12 inject-only experiment, but not a guaranteed fix:
+
+- D3D12 exposes direct/compute/copy queue types, but cross-queue ordering is explicit; CE would need correct fences/resource-state ownership and must avoid stalling Present.
+- A COPY queue does not guarantee independent hardware bandwidth or favorable scheduling under saturation on every driver/GPU.
+- If the game/present path has to wait for capture-copy completion, the added synchronization can erase the benefit or regress smoothness.
+
+For WGC, a D3D12 COPY queue rewrite has lower probability and higher risk. WGC delivers D3D11/WinRT surfaces; bridging to D3D12 would require share-handle/import feasibility and would not fix late DWM/WGC frame delivery. The `sbwgc` evidence showed copy health was OK while callback/source gaps dominated.
+
+HAGS should be treated as an environment variable to log/A-B, not as a magic scheduling guarantee. It changes Windows GPU scheduling architecture, but it does not reserve a capture lane for CE.
 
 ## Open Questions / Stale-risk
 
-- `"realtime"` for `process_priority` is documented but not implemented in `ApplyMediaProcessPriority()`.
-- `copy_queue_priority` name is misleading — it controls a DIRECT queue, not a COPY queue. Renaming would break existing configs.
-- No COPY-type command queues are created anywhere, despite the config name.
+- Runtime validation needed: compare `gpu_scheduling_priority=off` vs `high` under the same 100% GPU WGC and inject scenarios. Log must show whether the D3DKMT call succeeded.
+- If `high` helps but fails unelevated, document the exact NTSTATUS and whether CE should surface an elevation hint.
+- A DX12 inject COPY-queue prototype should be proof-first and config-gated, with per-frame telemetry for submit delay, copy fence age, slot-busy drops, and Present/ECL timing before considering a larger rewrite.

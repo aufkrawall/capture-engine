@@ -258,8 +258,13 @@ track=2,3
 ;track=21
 
 [Performance]
+; process_priority controls only the media process CPU priority. Values: idle, below_normal, normal, above_normal, high, realtime
 process_priority=high
+; gpu_priority controls IDXGIDevice::SetGPUThreadPriority on CE D3D11 devices. Values: -7..7, 0 = adaptive
 gpu_priority=7
+; gpu_scheduling_priority is an OBS-style D3DKMT process GPU scheduling class for the media process only.
+; Values: off, idle, below_normal, normal, above_normal, high, realtime. high/realtime can require elevation.
+gpu_scheduling_priority=off
 
 [FpsLimiter]
 ; capture_sync_enabled, limits game fps to video fps - Values: true, false

@@ -77,7 +77,9 @@ Added `kWgcSmoothnessBufferPoolHeadroomSlots=8` (8 extra copy pool slots beyond 
 
 ### Inherent CFR Limitation
 
-At ~140fps source → 120fps CFR output, ~10-15% repeats are the theoretical minimum regardless of capture path (WGC or inject). These come from the timing jitter of converting a variable VRR signal to fixed CFR — some frames inevitably fall between output slots. The system now achieves this minimum during surplus periods (confirmed with GPU not at 100%). Under 100% GPU load, WGC delivery jitter adds ~5% more repeats. The inject capture path (no DWM intermediary) achieves the 10-15% minimum even at 100% GPU load. No further improvements are possible without changing the capture method (e.g., D3D12 COPY queues via HAGS to eliminate GPU contention — future work, see `performance-priority.md`).
+At ~140fps source -> 120fps CFR output, ~10-15% repeats are the theoretical minimum regardless of capture path (WGC or inject). These come from the timing jitter of converting a variable VRR signal to fixed CFR; some frames inevitably fall between output slots. The system now achieves this minimum during surplus periods (confirmed with GPU not at 100%). Under 100% GPU load, WGC can add visible repeat clusters when DWM/WGC delivery becomes bursty or gappy even though the game presents smoothly. The inject capture path (no DWM intermediary) is less exposed to that WGC delivery layer.
+
+Do not treat D3D12 COPY queues or HAGS as a proven WGC fix. Current WGC receives `Direct3D11CaptureFrame` / `ID3D11Texture2D` surfaces and the bad `sbwgc` run showed CE copy/convert/encode health was OK while WGC callback/source gaps dominated. A D3D12 COPY queue may be worth a proof-first DX12 inject experiment, but WGC would first need share/import feasibility proof and evidence that CE copy work, not upstream delivery, is the limiter. See `performance-priority.md`.
 
 ## Config Flags
 
@@ -145,6 +147,8 @@ The callback thread performs one-time QoS setup through MMCSS and disables threa
 ## Encoder Pressure Policy
 
 The encoder D3D11 device no longer raises GPU thread priority merely because a capture is 10-bit. If `gpu_priority` is explicitly configured, that value is still applied. With the default neutral priority, the encoder raises to `+1` only after sustained encode time reaches 75% of the frame budget, then restores neutral after sustained recovery below 50%. This keeps the game and capture from competing unnecessarily when encode is already healthy.
+
+`[Performance] gpu_scheduling_priority` is a separate OBS-style D3DKMT process GPU scheduling class for the media process. It is opt-in (`off` by default) and logs success/failure/elevation. It may help WGC only when CE-owned D3D11 copy/convert/encode work is being scheduled too late; it cannot directly prioritize the DWM/WGC producer that delivers frames to CE.
 
 ## Validation Notes
 

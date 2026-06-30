@@ -85,6 +85,9 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_TRUE(config.wgcSmoothnessBufferEnabled);
     EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 250u);
     EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 3000u);
+    EXPECT_EQ(config.processPriority, "high");
+    EXPECT_EQ(config.video.gpuPriority, 7);
+    EXPECT_EQ(config.gpuSchedulingPriority, "off");
     EXPECT_EQ(config.video.profile, "auto");
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_FALSE(config.graphics.forceMipBiasClamp);
@@ -101,6 +104,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_enabled=true"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_max_ms=250"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_vram_budget_mb=3000"), std::string::npos);
+    EXPECT_NE(generatedText.find("gpu_scheduling_priority=off"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("; backbuffer_count, affecting vsync"), std::string::npos);
@@ -138,6 +142,36 @@ TEST_F(ConfigTest, ParseValues) {
     EXPECT_EQ(config.video.encoder, "av1_nvenc");
     EXPECT_EQ(config.video.fps, 60);
     EXPECT_EQ(config.video.bitrate, "50Mbps");
+}
+
+TEST_F(ConfigTest, ParsePerformancePriorityValues) {
+    WriteConfig(
+        "[Performance]\n"
+        "process_priority=realtime\n"
+        "gpu_priority=5\n"
+        "gpu_scheduling_priority=high\n"
+        "copy_queue_priority=high\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.processPriority, "realtime");
+    EXPECT_EQ(config.video.gpuPriority, 5);
+    EXPECT_EQ(config.gpuSchedulingPriority, "high");
+    EXPECT_EQ(config.copyQueuePriority, "high");
+}
+
+TEST_F(ConfigTest, InvalidPerformancePriorityValuesFallBackConservatively) {
+    WriteConfig(
+        "[Performance]\n"
+        "process_priority=definitely_not_valid\n"
+        "gpu_scheduling_priority=also_invalid\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.processPriority, "above_normal");
+    EXPECT_EQ(config.gpuSchedulingPriority, "off");
 }
 
 TEST_F(ConfigTest, ParseLogLevelValues) {
