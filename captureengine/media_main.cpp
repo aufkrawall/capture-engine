@@ -702,7 +702,8 @@ bool IsWindowFullscreenLike(HWND hwnd) {
         return false;
     }
 
-    MONITORINFO monitorInfo = {sizeof(monitorInfo)};
+    MONITORINFO monitorInfo = {};
+    monitorInfo.cbSize = sizeof(monitorInfo);
     if (!GetMonitorInfo(monitor, &monitorInfo)) {
         return false;
     }
@@ -7547,8 +7548,6 @@ void EncoderThreadFunc(const AppConfig& config) {
             captureSessionSummary.longestContiguousDupTicks =
                 std::max(captureSessionSummary.longestContiguousDupTicks,
                          static_cast<uint64_t>(captureSessionSummary.currentContiguousDupTicks));
-            const bool duplicateFromSourceGap = !duplicateFromDrainReason && !duplicateFromDeferredReason &&
-                                                !duplicateFromTimerRebaseReason && !duplicateFromCatchupReason;
             if (g_pSharedMem) {
                 g_pSharedMem->runtimeState.duplicateFrames.fetch_add(1, std::memory_order_relaxed);
                 if (duplicateFromDrainReason) {
@@ -8110,8 +8109,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             LARGE_INTEGER repeatStartEnc, repeatEndEnc;
             QueryPerformanceCounter(&repeatStartEnc);
             const bool duplicateFromDrain = isDrainPhase;
-            bool duplicateFromDeferred = false;
-            const bool duplicateFromTimerRebase = encoderLateTickCount >= 2;
+            bool repeatDuplicateFromDeferred = false;
+            const bool repeatDuplicateFromTimerRebase = encoderLateTickCount >= 2;
             const InjectFrameLineage duplicateLineage =
                 g_HasLastFrame ? MakeInjectFrameLineage(g_LastFrame) : InjectFrameLineage{};
             bool encodeSucceeded = repeatLastFrameForScheduledQpc(scheduledSampleQpc);
@@ -8140,7 +8139,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
                 cadenceCounters.consecutiveDeferredFrames = 0;
                 if (useScreenGrab) {
-                    if (duplicateFromTimerRebase) {
+                    if (repeatDuplicateFromTimerRebase) {
                         ++wgcRepeatTimerLateCount;
                     } else if (!frameToProcess && !wantsTrueRepeatLastFrame) {
                         ++wgcRepeatNoFreshCount;
@@ -8149,7 +8148,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                 }
                 recordDuplicate(nullptr, duplicateLineage.IsValid() ? &duplicateLineage : nullptr, duplicateFromDrain,
-                                duplicateFromDeferred, duplicateFromTimerRebase);
+                                repeatDuplicateFromDeferred, repeatDuplicateFromTimerRebase);
                 cadenceCounters.liveTickEmitCount++;
                 cadenceCounters.liveTickDuplicateCount++;
                 cadenceCounters.holdTicksRunning++;
@@ -8932,7 +8931,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 const uint32_t wgcPoolFreeMin = g_WgcCap ? g_WgcCap->GetPoolSlotFreeMinCount() : 0u;
                 const int64_t wgcWindowSmoothTargetUs = qpcToUs(
                     ce::capture_policy::GetWgcStartupSmoothnessTargetDelayQpc(wgcSmoothnessRetainedFrames,
-                                                                               targetIntervalTicks));
+                                                                               targetIntervalTicks,
+                                                                               getWgcSmoothnessOutputFps(),
+                                                                               config.wgcSmoothnessBufferMaxMs));
                 const int64_t wgcWindowSmoothActualUs = qpcToUs(wgcSmoothnessActiveDelayQpc);
                 const int64_t wgcWindowSmoothDeficitUs =
                     std::max<int64_t>(0, wgcWindowSmoothTargetUs - wgcWindowSmoothActualUs);
@@ -9083,16 +9084,50 @@ void EncoderThreadFunc(const AppConfig& config) {
                     (wgcNoFreshTickPermille >= ce::capture_policy::kWgcDeepUnderfeedEmptyTickPermille &&
                      wgcRecentInputMin250Fps + ce::capture_policy::kWgcRecoverySourceMarginFps < outputFps);
                 if (sourceStarvedPressure && (nowTick - s_lastWgcSourceLimitedInfoTick) >= 5000) {
+                    const int64_t wgcInfoCallbackGapAvgUs = g_WgcCap ? g_WgcCap->GetCallbackGapAvgUs() : 0;
+                    const int64_t wgcInfoCallbackGapMaxUs = g_WgcCap ? g_WgcCap->GetCallbackGapMaxUs() : 0;
+                    const int64_t wgcInfoSourceJitterAvgUs = g_WgcCap ? g_WgcCap->GetSourceJitterAvgUs() : 0;
+                    const int64_t wgcInfoSourceJitterMaxUs = g_WgcCap ? g_WgcCap->GetSourceJitterMaxUs() : 0;
+                    const uint32_t wgcInfoPoolFreeMin = g_WgcCap ? g_WgcCap->GetPoolSlotFreeMinCount() : 0u;
+                    const uint32_t wgcInfoPoolSaturatedDrops = g_WgcCap ? g_WgcCap->GetPoolSaturatedDropCount() : 0u;
+                    const uint32_t wgcInfoIngressHard =
+                        g_WgcCap ? g_WgcCap->GetIngressHardReservePressureCount() : 0u;
+                    const uint32_t wgcInfoIngressSoft =
+                        g_WgcCap ? g_WgcCap->GetIngressSoftReservePressureCount() : 0u;
+                    const uint32_t wgcInfoIngressDecimated = g_WgcCap ? g_WgcCap->GetIngressDecimatedCount() : 0u;
+                    const bool wgcInfoPoolPressure = wgcInfoPoolSaturatedDrops > 0 || wgcInfoIngressHard > 0 ||
+                                                     wgcInfoIngressDecimated > 0 || wgcInfoPoolFreeMin == 0;
+                    const bool wgcInfoCleanCe =
+                        !encoderPressure && !muxPressure && !wgcInfoPoolPressure &&
+                        wgcExcessRepeatWindow == 0 && wgcPolicyAddedRepeatWindow == 0 &&
+                        wgcDelayPostSelectionRejectedSyncRiskWindow == 0;
+                    const char* wgcInfoCoverageReason =
+                        wgcSchedulerLimitedCurrent       ? "wgc_delivery_gap"
+                        : wgcSourceStarvedCurrent       ? "source_or_delivery_underfeed"
+                        : wgcRecentDeliveredMin250Fps + ce::capture_policy::kWgcRecoverySourceMarginFps < outputFps
+                            ? "delivered_below_cfr_target"
+                            : "no_fresh_source_for_cfr_slots";
                     LogInfo(
-                        "[WGC CFR] Source-limited CFR repeats: target=%ufps input=%u/%u delivered=%u/%u freshMiss=%upm "
-                        "buffered=%u oldest=%.1fms shortfall=%u/%.1fms duplicates=%u cause=S%d/D%d/E%d "
-                        "encoderPressure=%d muxPressure=%d overlayEncoderWarn=%d",
-                        outputFps, wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcRecentDeliveredMin250Fps,
-                        wgcRecentDeliveredMin500Fps, wgcNoFreshTickPermille, bufferedAtTickMinValue,
-                        oldestBufferedFrameAgeMs, outputShortfallTicks, shortfallDurationMs,
-                        cadenceCounters.liveTickDuplicateCount, wgcSourceStarvedCurrent ? 1 : 0,
+                        "[WGC CFR] CFR source-coverage repeats: reason=%s target=%ufps input=%u/%u "
+                        "delivered=%u/%u freshMiss=%upm buffered=%u oldest=%.1fms shortfall=%u/%.1fms "
+                        "duplicates=%u lowerBound=%u excess=%u policyAdded=%u cleanCE=%d cause=S%d/D%d/E%d "
+                        "encoderPressure=%d muxPressure=%d poolPressure=%d poolFreeMin=%u poolSat=%u "
+                        "ingressHard=%u ingressSoft=%u ingressDec=%u callbackGapUs(avg/max)=%lld/%lld "
+                        "sourceJitterUs(avg/max)=%lld/%lld overlayEncoderWarn=%d "
+                        "note=cfr_repeats_mean_no_sync_safe_fresh_source_for_some_slots",
+                        wgcInfoCoverageReason, outputFps, wgcRecentInputMin250Fps, wgcRecentInputMin500Fps,
+                        wgcRecentDeliveredMin250Fps, wgcRecentDeliveredMin500Fps, wgcNoFreshTickPermille,
+                        bufferedAtTickMinValue, oldestBufferedFrameAgeMs, outputShortfallTicks,
+                        shortfallDurationMs, cadenceCounters.liveTickDuplicateCount, wgcSourceRepeatLowerBoundWindow,
+                        wgcExcessRepeatWindow, wgcPolicyAddedRepeatWindow, wgcInfoCleanCe ? 1 : 0,
+                        wgcSourceStarvedCurrent ? 1 : 0,
                         wgcSchedulerLimitedCurrent ? 1 : 0, wgcEncoderRecoveryLimitedCurrent ? 1 : 0,
-                        encoderPressure ? 1 : 0, muxPressure ? 1 : 0,
+                        encoderPressure ? 1 : 0, muxPressure ? 1 : 0, wgcInfoPoolPressure ? 1 : 0,
+                        wgcInfoPoolFreeMin, wgcInfoPoolSaturatedDrops, wgcInfoIngressHard, wgcInfoIngressSoft,
+                        wgcInfoIngressDecimated, static_cast<long long>(wgcInfoCallbackGapAvgUs),
+                        static_cast<long long>(wgcInfoCallbackGapMaxUs),
+                        static_cast<long long>(wgcInfoSourceJitterAvgUs),
+                        static_cast<long long>(wgcInfoSourceJitterMaxUs),
                         ce::capture_policy::SelectWgcOverlayWarningKind(overloadFlags, wgcCaptureHealthFlags) ==
                                 ce::capture_policy::kOverlayWarningEncoderOverload
                             ? 1
@@ -9504,6 +9539,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             const int64_t wgcSummaryConvertUs =
                 wgcLogSnapshotHasPool ? g_WgcRuntimeLogSnapshot.lastConvertUs.load(std::memory_order_relaxed)
                                       : (g_WgcCap ? g_WgcCap->GetLastPoolConvertTimeUs() : 0);
+            const uint32_t wgcSummaryOutputFps = getWgcSmoothnessOutputFps();
             const uint32_t wgcSummaryDuplicateTimestampsSeen =
                 std::max(g_WgcRuntimeLogSnapshot.duplicateTimestampsSeen.load(std::memory_order_relaxed),
                          g_WgcCap ? g_WgcCap->GetNormalizedDuplicateTimestampCount() : 0u);
@@ -9512,7 +9548,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                          g_WgcCap ? g_WgcCap->GetDuplicateTimestampSkipCount() : 0u);
             const int64_t wgcSummarySmoothTargetDelayUs = qpcToUs(
                 ce::capture_policy::GetWgcStartupSmoothnessTargetDelayQpc(wgcSmoothnessRetainedFrames,
-                                                                           targetIntervalTicks));
+                                                                           targetIntervalTicks,
+                                                                           wgcSummaryOutputFps,
+                                                                           config.wgcSmoothnessBufferMaxMs));
             const int64_t wgcSummarySmoothActualDelayUs = qpcToUs(wgcSmoothnessActiveDelayQpc);
             const int64_t wgcSummarySmoothDelayDeficitUs =
                 std::max<int64_t>(0, wgcSummarySmoothTargetDelayUs - wgcSummarySmoothActualDelayUs);
@@ -9608,6 +9646,33 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                    ? "source_limited"
                                                    : captureSessionSummary.duplicateTicks > 0 ? "source_cadence_or_vrr"
                                                                                               : "none";
+            const bool wgcSummaryCleanEncoderMux = !wgcSummaryEncoderMuxPressure && wgcSummaryOverloadFlags == 0 &&
+                                                   wgcSummaryMuxBackpressure == 0;
+            const bool wgcSummaryCleanPool = !wgcSummaryPoolPressure;
+            const bool wgcSummaryCleanSelection =
+                wgcCombinedExcessRepeatTotal == 0 && wgcPolicyAddedRepeatTotal == 0 &&
+                wgcDelayPostSelectionRejectedSyncRiskTotal == 0 && !wgcCfrSmoothnessNotMaximal &&
+                !wgcActiveDelayMixedPolicyFault && wgcCapacityPressureModeMismatchTotal == 0 &&
+                wgcSelectedSourceBacktrackTotal == 0;
+            const bool wgcSummaryCoverageHoles =
+                captureSessionSummary.duplicateNoSourceTicks > 0 || wgcCombinedSourceRepeatLowerBoundTotal > 0 ||
+                wgcSourceRepeatLowerBoundTotal > 0 || wgcDeliveryRepeatLowerBoundTotal > 0;
+            const bool wgcSummarySourceCoverageBestEffort =
+                wgcSummaryCoverageHoles && wgcSummaryCleanEncoderMux && wgcSummaryCleanPool &&
+                wgcSummaryCleanSelection;
+            const char* wgcSummaryCoverage =
+                wgcSummaryCoverageHoles ? "limited"
+                                        : (captureSessionSummary.duplicateTicks > 0 ? "cadence_or_vrr" : "full");
+            const char* wgcSummaryCoverageReason =
+                (wgcSourceRepeatLowerBoundTotal > 0 && wgcDeliveryRepeatLowerBoundTotal > 0)
+                    ? "source_and_delivery_holes"
+                    : (wgcDeliveryRepeatLowerBoundTotal > 0)
+                          ? "delivery_holes"
+                          : (wgcSourceRepeatLowerBoundTotal > 0)
+                                ? "source_holes"
+                                : (captureSessionSummary.duplicateNoSourceTicks > 0)
+                                      ? "no_fresh_source_for_cfr_slots"
+                                      : (captureSessionSummary.duplicateTicks > 0 ? "cadence_or_vrr" : "none");
             LogInfo(
                 "[WGC CFR QUALITY] duplicatePct=%.1f duplicates=%llu/%llu worst1sUnique=%u worst1sRepeats=%u "
                 "worst1sEmit=%u limiter=%s sourceLimitedRepeats=%llu poolPressure=%d freeMin=%u "
@@ -9638,6 +9703,26 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcSummaryDuplicateTimestampsSeen, wgcSummaryDuplicateTimestampsSkipped, wgcSummaryOverloadFlags,
                 wgcSummaryMuxBackpressure, wgcSummaryCompactRetained, wgcSummarySourceFormat, wgcSummaryRetainedFormat,
                 static_cast<long long>(wgcSummaryConvertUs));
+            LogInfo(
+                "[WGC CFR SOURCE COVERAGE] coverage=%s reason=%s bestEffort=%d outputFps=%u "
+                "duplicates=%llu/%llu sourceLimitedRepeats=%llu sourceRepeatLowerBound=%llu "
+                "syncSourceRepeatLowerBound=%llu deliveryRepeatLowerBound=%llu excessRepeats=%llu "
+                "policyAddedRepeats=%llu policyNoSourceRepeats=%llu cleanEncoderMux=%d cleanPool=%d "
+                "cleanSelection=%d encoderOverload=0x%X muxBackpressure=%u poolPressure=%d "
+                "poolFreeMin=%u finalAvSync=exported_tracks_authoritative "
+                "note=surplus_source_frames_are_dropped_when_available_repeats_mean_cfr_coverage_holes",
+                wgcSummaryCoverage, wgcSummaryCoverageReason, wgcSummarySourceCoverageBestEffort ? 1 : 0,
+                wgcSummaryOutputFps, static_cast<unsigned long long>(captureSessionSummary.duplicateTicks),
+                static_cast<unsigned long long>(liveTicksOutput),
+                static_cast<unsigned long long>(captureSessionSummary.duplicateNoSourceTicks),
+                static_cast<unsigned long long>(wgcCombinedSourceRepeatLowerBoundTotal),
+                static_cast<unsigned long long>(wgcSourceRepeatLowerBoundTotal),
+                static_cast<unsigned long long>(wgcDeliveryRepeatLowerBoundTotal),
+                static_cast<unsigned long long>(wgcCombinedExcessRepeatTotal),
+                static_cast<unsigned long long>(wgcPolicyAddedRepeatTotal),
+                static_cast<unsigned long long>(wgcPolicyNoSourceRepeats), wgcSummaryCleanEncoderMux ? 1 : 0,
+                wgcSummaryCleanPool ? 1 : 0, wgcSummaryCleanSelection ? 1 : 0, wgcSummaryOverloadFlags,
+                wgcSummaryMuxBackpressure, wgcSummaryPoolPressure ? 1 : 0, wgcSummaryPoolFreeMin);
             LogInfo(
                 "[WGC CFR SMOOTHNESS INGRESS] accepted=%u decimated=%u retained=%u/%u lowWater=%u "
                 "accLowWater=%u accRecovery=%u accSourceBelow=%u accHealthy=%u "
@@ -10337,26 +10422,6 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         if (!d3dContext) {
             d3dDevice->GetImmediateContext(&d3dContext);
         }
-        return true;
-    };
-    auto ensureWgcStandby = [&]() -> bool {
-        if (g_WgcCap) {
-            applyWgcOptions();
-            g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-            g_WgcCap->SetThrottleFlag(nullptr);
-            return true;
-        }
-        if (!ensureWgcDevice()) {
-            return false;
-        }
-        g_WgcCap = std::make_unique<WGCCapture>();
-        applyWgcOptions();
-        if (!g_WgcCap->Init(d3dDevice)) {
-            g_WgcCap.reset();
-            return false;
-        }
-        g_WgcCap->SetCaptureCursor(config.video.captureCursor);
-        g_WgcCap->SetThrottleFlag(nullptr);
         return true;
     };
     auto releaseIdleWgcResources = [&]() {

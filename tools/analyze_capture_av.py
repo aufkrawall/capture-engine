@@ -284,6 +284,7 @@ WGC_SMOOTHNESS_LOWER_BOUND_RE = re.compile(
 )
 WGC_PERF_RE = re.compile(r"\[WGC Perf\].*", re.IGNORECASE)
 WGC_QUALITY_RE = re.compile(r"\[WGC CFR QUALITY\]\s*(.*)", re.IGNORECASE)
+WGC_SOURCE_COVERAGE_RE = re.compile(r"\[WGC CFR SOURCE COVERAGE\]\s*(.*)", re.IGNORECASE)
 INJECT_PERF_RE = re.compile(r"\[Inject Perf\].*", re.IGNORECASE)
 INJECT_CFR_SUMMARY_RE = re.compile(
     r"\[Inject CFR SUMMARY\].*Live=(\d+) Dup=(\d+) DupPct=([0-9.]+)% "
@@ -1329,6 +1330,38 @@ def parse_wgc_quality_line(line):
     }
 
 
+def parse_wgc_source_coverage_line(line):
+    payload_match = WGC_SOURCE_COVERAGE_RE.search(line)
+    payload = payload_match.group(1) if payload_match else line
+    values = parse_attribution_payload(payload)
+    duplicate_counts = values.get("duplicates", "0/0").split("/", 1)
+    return {
+        "coverage": values.get("coverage", ""),
+        "reason": values.get("reason", ""),
+        "best_effort": parse_int(values.get("bestEffort"), 0),
+        "output_fps": parse_int(values.get("outputFps"), 0),
+        "duplicates": parse_int(duplicate_counts[0] if duplicate_counts else 0),
+        "live": parse_int(duplicate_counts[1] if len(duplicate_counts) > 1 else 0),
+        "source_limited_repeats": parse_int(values.get("sourceLimitedRepeats"), 0),
+        "source_repeat_lower_bound": parse_int(values.get("sourceRepeatLowerBound"), 0),
+        "sync_source_repeat_lower_bound": parse_int(values.get("syncSourceRepeatLowerBound"), 0),
+        "delivery_repeat_lower_bound": parse_int(values.get("deliveryRepeatLowerBound"), 0),
+        "excess_repeats": parse_int(values.get("excessRepeats"), 0),
+        "policy_added_repeats": parse_int(values.get("policyAddedRepeats"), 0),
+        "policy_no_source_repeats": parse_int(values.get("policyNoSourceRepeats"), 0),
+        "clean_encoder_mux": parse_int(values.get("cleanEncoderMux"), 0),
+        "clean_pool": parse_int(values.get("cleanPool"), 0),
+        "clean_selection": parse_int(values.get("cleanSelection"), 0),
+        "encoder_overload": values.get("encoderOverload", "0x0"),
+        "mux_backpressure": parse_int(values.get("muxBackpressure"), 0),
+        "pool_pressure": parse_int(values.get("poolPressure"), 0),
+        "pool_free_min": parse_int(values.get("poolFreeMin"), 0),
+        "final_av_sync": values.get("finalAvSync", ""),
+        "note": values.get("note", ""),
+        "line": line,
+    }
+
+
 def parse_inject_perf_line(line):
     def find_int(pattern, default=0):
         match = re.search(pattern, line)
@@ -1791,6 +1824,7 @@ def parse_media_triage(media_text):
     wgc_perf = []
     wgc_summary = []
     wgc_quality = []
+    wgc_source_coverage = []
     wgc_cadence_events = []
     wgc_smoothness_summary = []
     inject_perf = []
@@ -1827,6 +1861,8 @@ def parse_media_triage(media_text):
             wgc_perf.append(parse_wgc_perf_line(line))
         if WGC_QUALITY_RE.search(line):
             wgc_quality.append(parse_wgc_quality_line(line))
+        if WGC_SOURCE_COVERAGE_RE.search(line):
+            wgc_source_coverage.append(parse_wgc_source_coverage_line(line))
         cadence_event_match = WGC_CADENCE_EVENT_RE.search(line)
         if cadence_event_match:
             event = parse_attribution_payload(cadence_event_match.group(2))
@@ -2165,6 +2201,7 @@ def parse_media_triage(media_text):
         "wgc_perf": wgc_perf,
         "wgc_summary": wgc_summary,
         "wgc_quality": wgc_quality,
+        "wgc_source_coverage": wgc_source_coverage,
         "wgc_cadence_events": wgc_cadence_events,
         "wgc_smoothness_summary": wgc_smoothness_summary,
         "inject_perf": inject_perf,
@@ -2924,6 +2961,18 @@ def has_wgc_source_limited_smoothness_ceiling(media_evidence):
     )
 
 
+def has_wgc_source_coverage_best_effort(media_evidence):
+    return any(
+        item.get("best_effort", 0) > 0
+        and item.get("excess_repeats", 0) == 0
+        and item.get("policy_added_repeats", 0) == 0
+        and item.get("clean_encoder_mux", 0) > 0
+        and item.get("clean_pool", 0) > 0
+        and item.get("clean_selection", 0) > 0
+        for item in media_evidence["wgc_source_coverage"]
+    )
+
+
 def has_wgc_smoothness_evidence_incomplete(media_evidence):
     return any(
         item.get("wgc_smoothness_evidence_incomplete", 0) > 0
@@ -3262,6 +3311,9 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     wgc_source_limited_smoothness_ceiling = has_wgc_source_limited_smoothness_ceiling(media_evidence)
     if wgc_source_limited_smoothness_ceiling:
         verdicts.append("wgc_source_limited_smoothness_ceiling")
+    wgc_source_coverage_best_effort = has_wgc_source_coverage_best_effort(media_evidence)
+    if wgc_source_coverage_best_effort:
+        verdicts.append("wgc_source_coverage_best_effort")
     wgc_smoothness_evidence_incomplete = has_wgc_smoothness_evidence_incomplete(media_evidence)
     if wgc_smoothness_evidence_incomplete:
         verdicts.append("wgc_smoothness_evidence_incomplete")
@@ -3419,6 +3471,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "wgc_cfr_smoothness_not_maximal": wgc_cfr_smoothness_not_maximal,
             "wgc_startup_smoothness_underfilled": wgc_startup_smoothness_underfilled,
             "wgc_source_limited_smoothness_ceiling": wgc_source_limited_smoothness_ceiling,
+            "wgc_source_coverage_best_effort": wgc_source_coverage_best_effort,
             "wgc_smoothness_evidence_incomplete": wgc_smoothness_evidence_incomplete,
             "wgc_pool_slot_lifetime_fault": wgc_pool_slot_lifetime_fault,
             "wgc_pool_saturated_safe_drop": wgc_pool_saturated_safe_drop,
@@ -3453,6 +3506,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "wgc_attribution": media_evidence["wgc_attribution"],
             "wgc_summary": media_evidence["wgc_summary"],
             "wgc_quality": media_evidence["wgc_quality"],
+            "wgc_source_coverage": media_evidence["wgc_source_coverage"],
             "wgc_cadence_events": media_evidence["wgc_cadence_events"][:20],
             "wgc_smoothness_summary": media_evidence["wgc_smoothness_summary"],
             "wgc_perf_worst": {
@@ -3640,6 +3694,35 @@ def print_triage_report(report):
                 retained_fmt=quality["retained_format"],
                 convert_us=quality["convert_us"],
                 final_sync=quality["final_av_sync"],
+            )
+        )
+    if evidence["wgc_source_coverage"]:
+        coverage = evidence["wgc_source_coverage"][-1]
+        print(
+            "  wgc_source_coverage coverage={coverage} reason={reason} best_effort={best_effort} "
+            "dup={dup}/{live} output_fps={output_fps} lower_bound={lower_bound} "
+            "sync_lower={sync_lower} delivery_lower={delivery_lower} excess={excess} "
+            "policy_added={policy_added} clean={clean_encoder}/{clean_pool}/{clean_selection} "
+            "encoderOverload={encoder} muxBackpressure={mux} poolPressure={pool} "
+            "final_av_sync={final_sync}".format(
+                coverage=coverage.get("coverage", ""),
+                reason=coverage.get("reason", ""),
+                best_effort=coverage.get("best_effort", 0),
+                dup=coverage.get("duplicates", 0),
+                live=coverage.get("live", 0),
+                output_fps=coverage.get("output_fps", 0),
+                lower_bound=coverage.get("source_repeat_lower_bound", 0),
+                sync_lower=coverage.get("sync_source_repeat_lower_bound", 0),
+                delivery_lower=coverage.get("delivery_repeat_lower_bound", 0),
+                excess=coverage.get("excess_repeats", 0),
+                policy_added=coverage.get("policy_added_repeats", 0),
+                clean_encoder=coverage.get("clean_encoder_mux", 0),
+                clean_pool=coverage.get("clean_pool", 0),
+                clean_selection=coverage.get("clean_selection", 0),
+                encoder=coverage.get("encoder_overload", "0x0"),
+                mux=coverage.get("mux_backpressure", 0),
+                pool=coverage.get("pool_pressure", 0),
+                final_sync=coverage.get("final_av_sync", ""),
             )
         )
     stop_shortfalls = evidence["stop_audio_shortfalls"]
@@ -4230,6 +4313,33 @@ def self_test():
         assert quality["duplicate_timestamps_skipped"] == 489
         assert report["evidence"]["exported_av_sync_ok"]
         assert "ce_audio_timeline_fault" not in report["verdicts"]
+
+        wgc_source_coverage_best_effort = make_session(
+            "wgc_source_coverage_best_effort",
+            media=(
+                "[WGC CFR SOURCE COVERAGE] coverage=limited reason=delivery_holes bestEffort=1 "
+                "outputFps=120 duplicates=2976/16409 sourceLimitedRepeats=2976 "
+                "sourceRepeatLowerBound=2976 syncSourceRepeatLowerBound=0 deliveryRepeatLowerBound=2976 "
+                "excessRepeats=0 policyAddedRepeats=0 policyNoSourceRepeats=0 cleanEncoderMux=1 "
+                "cleanPool=1 cleanSelection=1 encoderOverload=0x0 muxBackpressure=0 poolPressure=0 "
+                "poolFreeMin=51 finalAvSync=exported_tracks_authoritative "
+                "note=surplus_source_frames_are_dropped_when_available_repeats_mean_cfr_coverage_holes\n"
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 "
+                "us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) "
+                "backpressure=0 peakMux=0KB peakPkts=0\n"
+            ),
+        )
+        report = classify_session_triage(wgc_source_coverage_best_effort)
+        coverage = report["evidence"]["wgc_source_coverage"][0]
+        assert coverage["coverage"] == "limited"
+        assert coverage["reason"] == "delivery_holes"
+        assert coverage["best_effort"] == 1
+        assert coverage["source_repeat_lower_bound"] == 2976
+        assert coverage["delivery_repeat_lower_bound"] == 2976
+        assert coverage["excess_repeats"] == 0
+        assert "wgc_source_coverage_best_effort" in report["verdicts"]
+        assert "ce_audio_timeline_fault" not in report["verdicts"]
+        assert "ce_visual_timeline_fault" not in report["verdicts"]
 
         wgc_pool_lifetime_fault = make_session(
             "wgc_pool_lifetime_fault",
