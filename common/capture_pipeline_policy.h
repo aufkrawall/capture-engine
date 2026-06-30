@@ -70,6 +70,11 @@ constexpr uint32_t kWgcSmoothnessEstimatedSyncDelayMs = 33;
 constexpr uint32_t kWgcSmoothnessBufferMinPoolFrames = 8;
 constexpr uint32_t kWgcSmoothnessBufferMaxPoolFrames = 64;
 constexpr uint32_t kWgcSmoothnessBufferPoolHeadroomSlots = 8;
+// The retained WGC reservoir stores source frames, not output CFR slots. Size the
+// millisecond smoothness budget for the normal source-above-output case
+// (e.g. 140/144 Hz VRR into 120 fps CFR), otherwise a "300 ms" reservoir is only
+// about 250 ms of 144 Hz source history.
+constexpr uint32_t kWgcSmoothnessBufferSourceRatePermille = 1250;
 // WGC smoothness FLOOR: a baseline jitter-buffer delay that engages the active-delay
 // smoothness machinery (nearest-target playout + reservoir) even when there is NO
 // audio-latency content delay -- i.e. video-only capture, or a low-confidence loopback
@@ -656,16 +661,31 @@ inline int64_t GetWgcCfrStartupPreLiveDelayTicks(int64_t targetIntervalTicks) {
     return targetIntervalTicks > 0 ? (targetIntervalTicks * 24) : 0;
 }
 
+inline uint32_t GetWgcFrameCountForDurationMs(uint32_t fps, uint32_t durationMs) {
+    if (fps == 0 || durationMs == 0) {
+        return 0;
+    }
+    const uint64_t frames =
+        (static_cast<uint64_t>(fps) * static_cast<uint64_t>(durationMs) + 999ull) / 1000ull;
+    return frames > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(frames);
+}
+
 inline bool ShouldAttemptWgcStartupSmoothnessBuffer(bool enabled, bool useVfr, bool avContentDelayActive,
                                                     int64_t targetIntervalTicks, uint32_t retainedExtraFrames) {
     return enabled && !useVfr && avContentDelayActive && targetIntervalTicks > 0 && retainedExtraFrames > 0;
 }
 
-inline int64_t GetWgcStartupSmoothnessTargetDelayQpc(uint32_t retainedExtraFrames, int64_t targetIntervalTicks) {
+inline int64_t GetWgcStartupSmoothnessTargetDelayQpc(uint32_t retainedExtraFrames, int64_t targetIntervalTicks,
+                                                     uint32_t outputFps = 0, uint32_t maxSmoothnessMs = 0) {
     if (retainedExtraFrames == 0 || targetIntervalTicks <= 0) {
         return 0;
     }
-    const uint64_t targetDelay = static_cast<uint64_t>(retainedExtraFrames) * static_cast<uint64_t>(targetIntervalTicks);
+    uint32_t targetFrames = retainedExtraFrames;
+    const uint32_t configuredDelayFrames = GetWgcFrameCountForDurationMs(outputFps, maxSmoothnessMs);
+    if (configuredDelayFrames > 0) {
+        targetFrames = std::min(targetFrames, configuredDelayFrames);
+    }
+    const uint64_t targetDelay = static_cast<uint64_t>(targetFrames) * static_cast<uint64_t>(targetIntervalTicks);
     return targetDelay > static_cast<uint64_t>(INT64_MAX) ? INT64_MAX : static_cast<int64_t>(targetDelay);
 }
 
@@ -1677,13 +1697,25 @@ inline uint32_t GetWgcDelayReservoirTargetFrames(int64_t contentDelayQpc, int64_
     return delayFrames + extraFrames;
 }
 
+inline uint32_t GetWgcSmoothnessBudgetFps(
+    uint32_t outputFps, uint32_t sourceRatePermille = kWgcSmoothnessBufferSourceRatePermille) {
+    if (outputFps == 0) {
+        return 0;
+    }
+    if (sourceRatePermille <= 1000u) {
+        return outputFps;
+    }
+    const uint64_t scaled =
+        (static_cast<uint64_t>(outputFps) * static_cast<uint64_t>(sourceRatePermille) + 999ull) / 1000ull;
+    return scaled > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(scaled);
+}
+
 inline uint32_t GetWgcSmoothnessDesiredFrames(uint32_t outputFps, uint32_t maxSmoothnessMs) {
     if (outputFps == 0 || maxSmoothnessMs == 0) {
         return 0;
     }
-    const uint64_t desired =
-        (static_cast<uint64_t>(outputFps) * static_cast<uint64_t>(maxSmoothnessMs) + 999ull) / 1000ull;
-    return desired > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(desired);
+    const uint32_t budgetFps = GetWgcSmoothnessBudgetFps(outputFps);
+    return GetWgcFrameCountForDurationMs(budgetFps, maxSmoothnessMs);
 }
 
 inline bool ShouldUseWgcSmoothnessBuffer(bool enabled, bool useVfr, bool avContentDelayActive,

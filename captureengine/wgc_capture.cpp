@@ -1086,6 +1086,8 @@ public:
         compactRetainedCopyActive_ = IsCompactRetainedCopy(format, retainedFormat);
         ingressRetainedFrameCap_.store(smoothnessRetainedFrameCap_, std::memory_order_relaxed);
         if (logBudget) {
+            const uint32_t budgetFps =
+                smoothnessBufferEnabled_ ? ce::capture_policy::GetWgcSmoothnessBudgetFps(smoothnessOutputFps_) : 0;
             const uint32_t desiredFrames = smoothnessBufferEnabled_ ? ce::capture_policy::GetWgcSmoothnessDesiredFrames(
                                                                            smoothnessOutputFps_, smoothnessMaxMs_)
                                                                      : 0;
@@ -1093,13 +1095,13 @@ public:
                 desiredFrames > smoothnessRetainedFrames_ ? desiredFrames - smoothnessRetainedFrames_ : 0;
             const uint64_t capShortfallBytes = capShortfall * smoothnessCopyBytesPerSurface_;
             LogInfo(
-                "[WGC] Smoothness buffer budget: enabled=%d targetMs=%u outputFps=%u desiredFrames=%u "
+                "[WGC] Smoothness buffer budget: enabled=%d targetMs=%u outputFps=%u budgetFps=%u desiredFrames=%u "
                 "retainedFrames=%u sourceFramePoolBuffers=%u copyPoolSlots=%u budgetSurfaces=%u syncFrames=%u "
                 "extraFrames=%u retainedCap=%u reservedFreeSlots=%u safetySlots=%u fmt=%d %ux%u bpp=%u budget=%uMB "
                 "sourceFmt=%s retainedFmt=%s compactRetained=%d sourceSurfaceMB=%.1f copySurfaceMB=%.1f "
                 "sourceBudgetMB=%.1f copyBudgetMB=%.1f estimated=%lluMB capLimited=%d capShortfall=%u "
                 "capShortfallMB=%.0f budgetExhausted=%d",
-                smoothnessBufferEnabled_ ? 1 : 0, smoothnessMaxMs_, smoothnessOutputFps_, desiredFrames,
+                smoothnessBufferEnabled_ ? 1 : 0, smoothnessMaxMs_, smoothnessOutputFps_, budgetFps, desiredFrames,
                 smoothnessRetainedFrames_, sourceFramePoolBufferCount_, texturePoolSlotCount_,
                 smoothnessBudgetSurfaceCount_, smoothnessSyncDelayFrames_, smoothnessRetainedFrames_,
                 smoothnessRetainedFrameCap_, smoothnessReservedFreeSlots_, smoothnessSafetySlots_, format, width,

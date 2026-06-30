@@ -449,6 +449,11 @@ TEST(CapturePipelinePolicyTest, WgcStartupSmoothnessDelayUsesActualReserveAndBud
     EXPECT_EQ(policy::GetWgcStartupSmoothnessTargetDelayQpc(/*retainedExtraFrames=*/13,
                                                             /*targetIntervalTicks=*/100),
               1300);
+    EXPECT_EQ(policy::GetWgcFrameCountForDurationMs(/*fps=*/120, /*durationMs=*/300), 36u);
+    EXPECT_EQ(policy::GetWgcStartupSmoothnessTargetDelayQpc(/*retainedExtraFrames=*/45,
+                                                            /*targetIntervalTicks=*/100, /*outputFps=*/120,
+                                                            /*maxSmoothnessMs=*/300),
+              3600);
     EXPECT_EQ(policy::GetWgcStartupSmoothnessTargetDelayQpc(/*retainedExtraFrames=*/0,
                                                             /*targetIntervalTicks=*/100),
               0);
@@ -1262,7 +1267,7 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutDropsSurplus144HzFor120FpsWitho
 
 TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferBudgetCapsRetainedFrames) {
     const uint32_t desired = policy::GetWgcSmoothnessDesiredFrames(/*outputFps=*/120, /*maxSmoothnessMs=*/250);
-    EXPECT_EQ(desired, 30u);
+    EXPECT_EQ(desired, 38u);
 
     // 4K FP16 is 8 bytes/pixel. The default 2GB budget covers the source WGC
     // frame-pool buffers plus CE copy-pool slots; extra smoothness slots are
@@ -1273,36 +1278,54 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferBudgetCapsRetainedFrames) {
     EXPECT_EQ(budget.budgetSurfaceCount, 32u);
     EXPECT_EQ(budget.sourceFramePoolBuffers, 8u);
     EXPECT_EQ(budget.copyPoolSlots, 24u);
-    EXPECT_EQ(budget.syncDelayFrames, 4u);
+    EXPECT_EQ(budget.syncDelayFrames, 5u);
     EXPECT_EQ(budget.safetySlots, 4u);
     EXPECT_EQ(budget.inFlightEncodeSlots, 1u);
     EXPECT_EQ(budget.selectedFrameSlackSlots, 1u);
     EXPECT_EQ(budget.reservedFreeCopySlots, 6u);
     EXPECT_EQ(budget.retainedFrameCap, 18u);
-    EXPECT_EQ(budget.retainedExtraFrames, 13u);
+    EXPECT_EQ(budget.retainedExtraFrames, 12u);
     EXPECT_LT(budget.retainedExtraFrames, desired);
     EXPECT_TRUE(budget.capLimited);
 }
 
 TEST(CapturePipelinePolicyTest, WgcSmoothnessSplitBudgetCompactsSdrFp16RetainedCopies) {
     // With the improved split-budget algorithm, the split that maximizes retained
-    // frames is selected. 11 source buffers (instead of 12) leaves budget for 42
-    // copy slots -> retainedCap=36 -> extraCapacity=31 -> retained=30 (full target).
+    // frames is selected. The retained WGC reservoir stores source frames, so the
+    // 250 ms target is sized for 125% source-rate headroom: 38 retained frames.
     const auto budget = policy::ComputeWgcSmoothnessSurfaceBudget(
         /*outputFps=*/120, /*maxSmoothnessMs=*/250, /*width=*/3840, /*height=*/2160,
         /*sourceBytesPerPixel=*/8, /*copyBytesPerPixel=*/4, /*budgetMb=*/2048,
         policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
     EXPECT_TRUE(budget.splitByteBudget);
-    EXPECT_EQ(budget.sourceFramePoolBuffers, 11u);
-    EXPECT_EQ(budget.copyPoolSlots, 42u);
-    EXPECT_EQ(budget.retainedFrameCap, 36u);
-    EXPECT_EQ(budget.retainedExtraFrames, 30u);
+    EXPECT_EQ(budget.sourceFramePoolBuffers, 7u);
+    EXPECT_EQ(budget.copyPoolSlots, 50u);
+    EXPECT_EQ(budget.retainedFrameCap, 44u);
+    EXPECT_EQ(budget.retainedExtraFrames, 38u);
     EXPECT_FALSE(budget.capLimited);
     EXPECT_LE(budget.estimatedBytes, 2048ull * 1024ull * 1024ull);
     EXPECT_EQ(budget.sourceEstimatedBytes,
-              policy::EstimateWgcSurfaceBytes(/*width=*/3840, /*height=*/2160, /*bytesPerPixel=*/8) * 11ull);
+              policy::EstimateWgcSurfaceBytes(/*width=*/3840, /*height=*/2160, /*bytesPerPixel=*/8) * 7ull);
     EXPECT_EQ(budget.copyEstimatedBytes,
-              policy::EstimateWgcSurfaceBytes(/*width=*/3840, /*height=*/2160, /*bytesPerPixel=*/4) * 42ull);
+              policy::EstimateWgcSurfaceBytes(/*width=*/3840, /*height=*/2160, /*bytesPerPixel=*/4) * 50ull);
+}
+
+TEST(CapturePipelinePolicyTest, WgcSmoothnessDefaultBudgetCoversVrrSourceAboveOutput) {
+    EXPECT_EQ(policy::GetWgcSmoothnessBudgetFps(/*outputFps=*/120), 150u);
+    EXPECT_EQ(policy::GetWgcSmoothnessDesiredFrames(/*outputFps=*/120, /*maxSmoothnessMs=*/300), 45u);
+    EXPECT_EQ(policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120), 5u);
+
+    const auto budget = policy::ComputeWgcSmoothnessSurfaceBudget(
+        /*outputFps=*/120, /*maxSmoothnessMs=*/300, /*width=*/3840, /*height=*/2160,
+        /*sourceBytesPerPixel=*/8, /*copyBytesPerPixel=*/4, /*budgetMb=*/3000,
+        policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
+    EXPECT_TRUE(budget.splitByteBudget);
+    EXPECT_EQ(budget.sourceFramePoolBuffers, 12u);
+    EXPECT_EQ(budget.copyPoolSlots, 64u);
+    EXPECT_EQ(budget.retainedFrameCap, 58u);
+    EXPECT_EQ(budget.retainedExtraFrames, 45u);
+    EXPECT_FALSE(budget.capLimited);
+    EXPECT_LE(budget.estimatedBytes, 3000ull * 1024ull * 1024ull);
 }
 
 TEST(CapturePipelinePolicyTest, WgcSmoothnessHdrFp16RemainsHomogeneousAndBudgetCapped) {
@@ -1313,7 +1336,7 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessHdrFp16RemainsHomogeneousAndBudgetC
     EXPECT_FALSE(budget.splitByteBudget);
     EXPECT_EQ(budget.sourceFramePoolBuffers, 8u);
     EXPECT_EQ(budget.copyPoolSlots, 24u);
-    EXPECT_EQ(budget.retainedExtraFrames, 13u);
+    EXPECT_EQ(budget.retainedExtraFrames, 12u);
     EXPECT_TRUE(budget.capLimited);
     EXPECT_LE(budget.estimatedBytes, 2048ull * 1024ull * 1024ull);
 }
@@ -1334,10 +1357,10 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferAllowsFullTargetWhenBudgetAll
     const auto budget = policy::ComputeWgcSmoothnessSurfaceBudget(
         /*outputFps=*/120, /*maxSmoothnessMs=*/250, /*width=*/1920, /*height=*/1080,
         /*bytesPerPixel=*/4, /*budgetMb=*/2048, policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
-    EXPECT_EQ(budget.retainedExtraFrames, 30u);
+    EXPECT_EQ(budget.retainedExtraFrames, 38u);
     EXPECT_EQ(budget.sourceFramePoolBuffers, 8u);
-    EXPECT_EQ(budget.copyPoolSlots, 49u);
-    EXPECT_EQ(budget.retainedFrameCap, 43u);
+    EXPECT_EQ(budget.copyPoolSlots, 58u);
+    EXPECT_EQ(budget.retainedFrameCap, 52u);
     EXPECT_FALSE(budget.capLimited);
 }
 

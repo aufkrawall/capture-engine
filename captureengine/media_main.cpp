@@ -6844,7 +6844,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const int64_t smoothnessReservoirTargetDelayQpc =
                         smoothnessStartupAttempted
                             ? ce::capture_policy::GetWgcStartupSmoothnessTargetDelayQpc(smoothnessRetainedFrames,
-                                                                                        targetIntervalTicks)
+                                                                                        targetIntervalTicks,
+                                                                                        getWgcSmoothnessOutputFps(),
+                                                                                        config.wgcSmoothnessBufferMaxMs)
                             : 0;
                     // Resolve the smoothness FLOOR once, here at the startup barrier, from measured pre-live
                     // WGC delivery jitter (auto) or the explicit config value, clamped to the buildable
