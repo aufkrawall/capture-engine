@@ -1,7 +1,7 @@
 # CFR Capture Sync
 
-Last cross-checked: 2026-06-30 (WGC startup smoothness reserve fill and copy-pool pressure trim)
-Stale-risk: medium
+Last cross-checked: 2026-06-30 (WGC timer rebase threshold reduced to 18 ticks)
+Stale-risk: low
 
 Primary sources:
 - `common/capture_pipeline_policy.h`
