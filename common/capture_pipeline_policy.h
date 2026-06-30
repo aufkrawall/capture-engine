@@ -215,7 +215,7 @@ inline uint32_t GetCfrTimerRebaseThresholdTicks(bool useScreenGrab, bool useVFR,
     }
 
     if (useScreenGrab) {
-        return 10000u;
+        return kCfrShortfallForceCatchupThresholdTicks;
     }
 
     return kCfrShortfallForceCatchupThresholdTicks;

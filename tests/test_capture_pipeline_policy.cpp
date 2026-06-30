@@ -2113,7 +2113,8 @@ TEST(CapturePipelinePolicyTest, TimerRebaseDebtIsPreservedForAllCfrPaths) {
 TEST(CapturePipelinePolicyTest, TimerRebaseThresholdKeepsInjectCfrFromSmallCatchupBursts) {
     EXPECT_EQ(policy::GetCfrTimerRebaseThresholdTicks(false, false, true),
               policy::kCfrShortfallForceCatchupThresholdTicks);
-    EXPECT_EQ(policy::GetCfrTimerRebaseThresholdTicks(true, false, true), 10000u);
+    EXPECT_EQ(policy::GetCfrTimerRebaseThresholdTicks(true, false, true),
+              policy::kCfrShortfallForceCatchupThresholdTicks);
     EXPECT_EQ(policy::GetCfrTimerRebaseThresholdTicks(false, true, true), policy::kCfrShortfallCatchupThresholdTicks);
     EXPECT_EQ(policy::GetCfrTimerRebaseThresholdTicks(false, false, false), policy::kCfrShortfallCatchupThresholdTicks);
 }
