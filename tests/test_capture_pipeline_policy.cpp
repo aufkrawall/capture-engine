@@ -1763,9 +1763,9 @@ TEST(CapturePipelinePolicyTest, WgcCfrRejectsFramesTooNewForSlot) {
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelayUsesStrictResidualTolerance) {
-    EXPECT_EQ(policy::GetWgcActiveDelayResidualToleranceQpc(100), 60);
-    EXPECT_FALSE(policy::IsWgcFrameTooNewForActiveDelaySlot(1060, 1000, 100));
-    EXPECT_TRUE(policy::IsWgcFrameTooNewForActiveDelaySlot(1061, 1000, 100));
+    EXPECT_EQ(policy::GetWgcActiveDelayResidualToleranceQpc(100), 90);
+    EXPECT_FALSE(policy::IsWgcFrameTooNewForActiveDelaySlot(1090, 1000, 100));
+    EXPECT_TRUE(policy::IsWgcFrameTooNewForActiveDelaySlot(1091, 1000, 100));
 
     EXPECT_EQ(policy::GetWgcActiveDelayResidualHardLimitQpc(8333, 1000000), 10000);
     EXPECT_FALSE(policy::IsWgcFrameTooNewForActiveDelayHardLimit(110000, 100000, 8333, 1000000));
@@ -1836,27 +1836,27 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayClassifiesUnstableFpsWindows) {
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelayRelaxedCandidateMustBeatRepeatWithinHardLimit) {
-    EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1060, 900, 1000, 100, 1000000));
-    EXPECT_TRUE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1061, 900, 1000, 100, 1000000));
-    EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1061, 1040, 1000, 100, 1000000));
+    EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1090, 900, 1000, 100, 1000000));
+    EXPECT_TRUE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1095, 900, 1000, 100, 1000000));
+    EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1095, 1040, 1000, 100, 1000000));
     EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(110001, 80000, 100000, 8333, 1000000));
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelayScoresRelaxedCandidateReasons) {
-    auto score = policy::ScoreWgcActiveDelayRelaxedCandidate(1061, 900, 1000, 100, 1000000);
+    auto score = policy::ScoreWgcActiveDelayRelaxedCandidate(1095, 900, 1000, 100, 1000000);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kAcceptBetterTarget);
     EXPECT_TRUE(score.Accepted());
     EXPECT_STREQ(policy::WgcActiveDelayRelaxedDecisionToString(score.decision), "better_target");
 
-    score = policy::ScoreWgcActiveDelayRelaxedCandidate(1070, 1060, 1000, 100, 1000000, 1, 4000, 9000, 9000);
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(1100, 1090, 1000, 100, 1000000, 1, 4000, 9000, 9000);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kAcceptRepeatCluster);
     EXPECT_TRUE(score.Accepted());
 
-    score = policy::ScoreWgcActiveDelayRelaxedCandidate(1070, 1060, 1000, 100, 1000000, 0);
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(1100, 1090, 1000, 100, 1000000, 0);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectRepeatCost);
     EXPECT_FALSE(score.Accepted());
 
-    score = policy::ScoreWgcActiveDelayRelaxedCandidate(1070, 1060, 1000, 100, 1000000, 1, 6000, 9000, 9000);
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(1100, 1090, 1000, 100, 1000000, 1, 6000, 9000, 9000);
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom);
     EXPECT_FALSE(score.Accepted());
 
@@ -1872,9 +1872,9 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelaySoftLateTargetProtectsHealthyWindo
     EXPECT_EQ(score.decision, policy::WgcActiveDelayRelaxedDecision::kRejectResidualHeadroom);
     EXPECT_FALSE(score.Accepted());
 
-    score = policy::ScoreWgcActiveDelayRelaxedCandidate(106000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
-                                                        policy::WgcActiveDelayWindowClass::kRecoverableUnderfill,
-                                                        policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
+    score = policy::ScoreWgcActiveDelayRelaxedCandidate(108000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
+                                                         policy::WgcActiveDelayWindowClass::kSourceLimited,
+                                                         policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
     EXPECT_TRUE(score.Accepted());
 
     score = policy::ScoreWgcActiveDelayRelaxedCandidate(109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 0,
@@ -1959,7 +1959,7 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutRepeatRescueCanUseSyncSafeFutur
     const int64_t interval = 8333;
     const int64_t qpcPerSecond = 1000000;
     const int64_t leadTol = policy::GetWgcActiveDelayResidualToleranceQpc(interval);
-    const int64_t candidate = target + leadTol + 500;
+    const int64_t candidate = target + leadTol + 5;
 
     const auto playout = policy::DecideWgcNearestPlayout(candidate, target, leadTol, 90000);
     EXPECT_FALSE(playout.emit);
@@ -1968,7 +1968,7 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutRepeatRescueCanUseSyncSafeFutur
     const uint32_t softLateTargetUs = policy::GetWgcActiveDelaySoftLateTargetUs(interval, qpcPerSecond);
     const auto rescueScore = policy::ScoreWgcActiveDelayRepeatRescueCandidate(
         candidate, candidate, target - interval, target, interval, qpcPerSecond, /*repeatClusterTicks=*/1, 0, 0, 0,
-        policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
+        policy::WgcActiveDelayWindowClass::kSourceLimited, softLateTargetUs);
     EXPECT_TRUE(rescueScore.Accepted());
     EXPECT_EQ(rescueScore.decision, policy::WgcActiveDelayRelaxedDecision::kAcceptBetterTarget);
 
@@ -1998,8 +1998,8 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelayRelaxedCandidateAccountsForRepeatC
     EXPECT_EQ(policy::GetWgcActiveDelayRepeatClusterPenaltyQpc(1, 100), 25);
     EXPECT_EQ(policy::GetWgcActiveDelayRepeatClusterPenaltyQpc(20, 100), 100);
 
-    EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1070, 1060, 1000, 100, 1000000, 0));
-    EXPECT_TRUE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1070, 1060, 1000, 100, 1000000, 1));
+    EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1100, 1090, 1000, 100, 1000000, 0));
+    EXPECT_TRUE(policy::IsWgcActiveDelayRelaxedCandidateUseful(1100, 1090, 1000, 100, 1000000, 1));
     EXPECT_FALSE(policy::IsWgcActiveDelayRelaxedCandidateUseful(110001, 109000, 100000, 8333, 1000000, 4));
 }
 
