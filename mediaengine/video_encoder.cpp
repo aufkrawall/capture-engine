@@ -1,6 +1,7 @@
 #include "video_encoder.h"
 #include "../common/capture_pipeline_policy.h"
 #include "../common/frame_timing_utils.h"
+#include "../common/path_utils.h"
 #include "../common/raii_helpers.h"
 #include "../common/shared_defs.h"
 #include "audio_time_utils.h"  // For ce::audio::ParseSampleRateOr
@@ -967,6 +968,19 @@ static fs::path ResolveFallbackDir(const fs::path& exeDir) {
     return fallbackDir;
 }
 
+static fs::path ResolveOutputDirectoryMappedDrive(const fs::path& outDir) {
+    const ce::path::MappedDriveResolution resolution = ce::path::ResolveMappedDrivePath(outDir);
+    if (resolution.changed) {
+        DLL_Log("[VideoEncoder] Resolved mapped output directory: %s -> %s (source=%s drive=%c: liveStatus=0x%08lX "
+                "registryStatus=0x%08lX)",
+                outDir.string().c_str(), resolution.path.string().c_str(),
+                ce::path::MappedDriveResolutionSourceName(resolution.source), static_cast<char>(resolution.driveLetter),
+                resolution.liveMappingStatus, resolution.registryStatus);
+        return resolution.path;
+    }
+    return outDir;
+}
+
 static std::string GenerateOutputFilename(const VideoConfig& config) {
     const fs::path exeDir = GetExecutableDirectory();
     const fs::path capturesDir = ResolveFallbackDir(exeDir);
@@ -976,6 +990,7 @@ static std::string GenerateOutputFilename(const VideoConfig& config) {
     if (!config.outputDir.empty() && outDir.is_relative()) {
         outDir = exeDir / outDir;
     }
+    outDir = ResolveOutputDirectoryMappedDrive(outDir);
 
     bool useFallback = false;
 

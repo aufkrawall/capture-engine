@@ -57,11 +57,11 @@ The `[Performance]` section controls three independent priority mechanisms plus 
 
 **Scope:** Media subprocess only. This is intentionally not applied in the injected game process; raising the game's process scheduling class would make capture compete against an even-higher-priority game and defeat the purpose.
 
-**Mechanism:** `ApplyMediaGpuSchedulingPriority()` resolves `D3DKMTSetProcessSchedulingPriorityClass` and `D3DKMTGetProcessSchedulingPriorityClass` dynamically from `gdi32.dll`, then requests the configured D3DKMT scheduling class for `GetCurrentProcess()`. It logs requested/current class, elevation state, and NTSTATUS. Failure is non-fatal.
+**Mechanism:** `ApplyMediaGpuSchedulingPriority()` resolves `D3DKMTSetProcessSchedulingPriorityClass` and `D3DKMTGetProcessSchedulingPriorityClass` dynamically from `gdi32.dll`, then requests the configured D3DKMT scheduling class for `GetCurrentProcess()`. After a successful set call, CE re-queries the class and logs `verified=1` only when readback matches the requested class. Failure or readback mismatch is non-fatal but logged with requested/current/previous class, elevation state, set NTSTATUS, and readback status.
 
 **OBS relationship:** OBS uses the same family of workaround: process GPU scheduling class via D3DKMT plus `IDXGIDevice::SetGPUThreadPriority` on its D3D11 device. CE now has both pieces, but keeps the process scheduling class opt-in and defaults it to `off`.
 
-**Admin/elevation:** `high`/`realtime` may fail without elevation depending on OS/driver policy. CE logs `elevated=0/1` and the NTSTATUS so test captures can distinguish "unsupported/denied" from "applied".
+**Admin/elevation:** `high`/`realtime` may fail without elevation depending on OS/driver policy. On the developer machine, direct probing showed `high` and `realtime` can be set and read back from a non-elevated process, but runtime logs should still be judged by `verified=1` rather than by the set-call status alone.
 
 **WGC expectation:** This may help WGC if CE's own D3D11 copy/convert/encode work is losing GPU scheduling. It will not directly prioritize the Windows/DWM/WGC producer path that delivers `Direct3D11CaptureFrame` objects to CE.
 
@@ -105,6 +105,6 @@ HAGS should be treated as an environment variable to log/A-B, not as a magic sch
 
 ## Open Questions / Stale-risk
 
-- Runtime validation needed: compare `gpu_scheduling_priority=off` vs `high` under the same 100% GPU WGC and inject scenarios. Log must show whether the D3DKMT call succeeded.
+- Runtime validation needed: compare `gpu_scheduling_priority=off` vs `high` under the same 100% GPU WGC and inject scenarios. Log must show `verified=1` for the D3DKMT class request before attributing any result to it.
 - If `high` helps but fails unelevated, document the exact NTSTATUS and whether CE should surface an elevation hint.
 - A DX12 inject COPY-queue prototype should be proof-first and config-gated, with per-frame telemetry for submit delay, copy fence age, slot-busy drops, and Present/ECL timing before considering a larger rewrite.

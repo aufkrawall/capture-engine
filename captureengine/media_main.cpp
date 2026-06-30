@@ -1486,7 +1486,7 @@ static void ApplyMediaGpuSchedulingPriority(const AppConfig& config) {
     }
 
     int currentClass = -1;
-    LONG getStatus = 0;
+    LONG getStatus = getPriority ? 0 : static_cast<LONG>(ERROR_PROC_NOT_FOUND);
     const bool haveCurrent = getPriority && ((getStatus = getPriority(GetCurrentProcess(), &currentClass)) >= 0);
     const char* requestText = disabled ? "off(reset_to_normal)" : config.gpuSchedulingPriority.c_str();
     if (haveCurrent && currentClass == requestedClass && s_lastRequest == requestText) {
@@ -1512,19 +1512,33 @@ static void ApplyMediaGpuSchedulingPriority(const AppConfig& config) {
         return;
     }
 
+    int verifiedClass = -1;
+    LONG verifyStatus = getPriority ? 0 : static_cast<LONG>(ERROR_PROC_NOT_FOUND);
+    const bool haveVerified = getPriority && ((verifyStatus = getPriority(GetCurrentProcess(), &verifiedClass)) >= 0);
+    const bool verified = haveVerified && verifiedClass == requestedClass;
     s_lastRequest = requestText;
     s_loggedDisabled = disabled;
     s_appliedNonDefault = requestedClass != 2;
-    if (haveCurrent) {
-        LogInfo("[Media] GPU scheduling priority class set to %s (config=%s previous=%s elevated=%d)",
+    if (verified) {
+        LogInfo("[Media] GPU scheduling priority class set to %s (config=%s previous=%s current=%s verified=1 "
+                "elevated=%d ntstatus=0x%08lX)",
                 D3dkmtSchedulingPriorityClassName(requestedClass), requestText,
-                D3dkmtSchedulingPriorityClassName(currentClass), elevated ? 1 : 0);
+                haveCurrent ? D3dkmtSchedulingPriorityClassName(currentClass) : "unknown",
+                D3dkmtSchedulingPriorityClassName(verifiedClass), elevated ? 1 : 0, (unsigned long)status);
+    } else if (haveVerified) {
+        LogWarn("[Media] GPU scheduling priority class set call returned success but readback mismatch (config=%s "
+                "requested=%s previous=%s current=%s verified=0 elevated=%d ntstatus=0x%08lX)",
+                requestText, D3dkmtSchedulingPriorityClassName(requestedClass),
+                haveCurrent ? D3dkmtSchedulingPriorityClassName(currentClass) : "unknown",
+                D3dkmtSchedulingPriorityClassName(verifiedClass), elevated ? 1 : 0, (unsigned long)status);
     } else {
         LogInfo(
-            "[Media] GPU scheduling priority class set to %s (config=%s previous=unknown getStatus=0x%08lX "
-            "elevated=%d)",
-            D3dkmtSchedulingPriorityClassName(requestedClass), requestText, (unsigned long)getStatus,
-            elevated ? 1 : 0);
+            "[Media] GPU scheduling priority class set call returned success but readback unavailable (config=%s "
+            "requested=%s previous=%s getStatus=0x%08lX verifyStatus=0x%08lX verified=unknown elevated=%d "
+            "ntstatus=0x%08lX)",
+            requestText, D3dkmtSchedulingPriorityClassName(requestedClass),
+            haveCurrent ? D3dkmtSchedulingPriorityClassName(currentClass) : "unknown", (unsigned long)getStatus,
+            (unsigned long)verifyStatus, elevated ? 1 : 0, (unsigned long)status);
     }
 }
 

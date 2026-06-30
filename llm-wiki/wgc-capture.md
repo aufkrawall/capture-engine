@@ -148,7 +148,7 @@ The callback thread performs one-time QoS setup through MMCSS and disables threa
 
 The encoder D3D11 device no longer raises GPU thread priority merely because a capture is 10-bit. If `gpu_priority` is explicitly configured, that value is still applied. With the default neutral priority, the encoder raises to `+1` only after sustained encode time reaches 75% of the frame budget, then restores neutral after sustained recovery below 50%. This keeps the game and capture from competing unnecessarily when encode is already healthy.
 
-`[Performance] gpu_scheduling_priority` is a separate OBS-style D3DKMT process GPU scheduling class for the media process. It is opt-in (`off` by default) and logs success/failure/elevation. It may help WGC only when CE-owned D3D11 copy/convert/encode work is being scheduled too late; it cannot directly prioritize the DWM/WGC producer that delivers frames to CE.
+`[Performance] gpu_scheduling_priority` is a separate OBS-style D3DKMT process GPU scheduling class for the media process. It is opt-in (`off` by default) and logs set status, readback verification (`verified=1` when current class matches the request), and elevation state. It may help WGC only when CE-owned D3D11 copy/convert/encode work is being scheduled too late; it cannot directly prioritize the DWM/WGC producer that delivers frames to CE.
 
 ## Validation Notes
 

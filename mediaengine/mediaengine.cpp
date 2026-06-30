@@ -1,6 +1,7 @@
 #include "mediaengine.h"
 #include "../common/capture_pipeline_policy.h"
 #include "../common/logging.h"
+#include "../common/path_utils.h"
 #include "../common/shared_defs.h"
 #include "app_audio_capture.h"
 #include "audio_capture.h"
@@ -19,6 +20,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include "../common/frame_timing_utils.h"
@@ -809,11 +811,26 @@ public:
     }
 
     void InitAudioOnlyMuxer(const AppConfig* config) {
-        std::string outDir = config->video.outputDir;
-        if (outDir.empty()) {
-            outDir = ".";
+        namespace fs = std::filesystem;
+
+        fs::path outDir = config->video.outputDir.empty() ? fs::path(".") : fs::path(config->video.outputDir);
+        const ce::path::MappedDriveResolution resolution = ce::path::ResolveMappedDrivePath(outDir);
+        if (resolution.changed) {
+            DLL_Log("MediaEngine: Resolved mapped audio-only output directory: %s -> %s (source=%s drive=%c: "
+                    "liveStatus=0x%08lX registryStatus=0x%08lX)",
+                    outDir.string().c_str(), resolution.path.string().c_str(),
+                    ce::path::MappedDriveResolutionSourceName(resolution.source),
+                    static_cast<char>(resolution.driveLetter),
+                    resolution.liveMappingStatus, resolution.registryStatus);
+            outDir = resolution.path;
         }
-        audioOnlyFilename = outDir + "\\capture_audio_" + std::to_string(GetTickCount64()) + ".mka";
+        std::error_code ec;
+        fs::create_directories(outDir, ec);
+        if (ec) {
+            DLL_Log("MediaEngine: Failed to create audio-only output directory: %s (Error: %d)", outDir.string().c_str(),
+                    ec.value());
+        }
+        audioOnlyFilename = (outDir / ("capture_audio_" + std::to_string(GetTickCount64()) + ".mka")).string();
         if (avformat_alloc_output_context2(&audioOnlyFmtCtx, nullptr, "matroska", audioOnlyFilename.c_str()) < 0) {
             DLL_Log("MediaEngine: Failed to create audio-only muxer");
             audioOnlyFmtCtx = nullptr;
