@@ -1086,14 +1086,18 @@ public:
         ingressRetainedFrameCap_.store(smoothnessRetainedFrameCap_, std::memory_order_relaxed);
         if (logBudget) {
             const uint32_t desiredFrames = smoothnessBufferEnabled_ ? ce::capture_policy::GetWgcSmoothnessDesiredFrames(
-                                                                          smoothnessOutputFps_, smoothnessMaxMs_)
-                                                                    : 0;
+                                                                           smoothnessOutputFps_, smoothnessMaxMs_)
+                                                                     : 0;
+            const uint32_t capShortfall =
+                desiredFrames > smoothnessRetainedFrames_ ? desiredFrames - smoothnessRetainedFrames_ : 0;
+            const uint64_t capShortfallBytes = capShortfall * smoothnessCopyBytesPerSurface_;
             LogInfo(
                 "[WGC] Smoothness buffer budget: enabled=%d targetMs=%u outputFps=%u desiredFrames=%u "
                 "retainedFrames=%u sourceFramePoolBuffers=%u copyPoolSlots=%u budgetSurfaces=%u syncFrames=%u "
                 "extraFrames=%u retainedCap=%u reservedFreeSlots=%u safetySlots=%u fmt=%d %ux%u bpp=%u budget=%uMB "
                 "sourceFmt=%s retainedFmt=%s compactRetained=%d sourceSurfaceMB=%.1f copySurfaceMB=%.1f "
-                "sourceBudgetMB=%.1f copyBudgetMB=%.1f estimated=%lluMB capLimited=%d budgetExhausted=%d",
+                "sourceBudgetMB=%.1f copyBudgetMB=%.1f estimated=%lluMB capLimited=%d capShortfall=%u "
+                "capShortfallMB=%.0f budgetExhausted=%d",
                 smoothnessBufferEnabled_ ? 1 : 0, smoothnessMaxMs_, smoothnessOutputFps_, desiredFrames,
                 smoothnessRetainedFrames_, sourceFramePoolBufferCount_, texturePoolSlotCount_,
                 smoothnessBudgetSurfaceCount_, smoothnessSyncDelayFrames_, smoothnessRetainedFrames_,
@@ -1106,7 +1110,8 @@ public:
                 static_cast<double>(smoothnessCopyEstimatedVramBytes_) / (1024.0 * 1024.0),
                 static_cast<unsigned long long>((smoothnessEstimatedVramBytes_ + 1024ull * 1024ull - 1ull) /
                                                 (1024ull * 1024ull)),
-                budget.capLimited ? 1 : 0, budget.budgetExhausted ? 1 : 0);
+                budget.capLimited ? 1 : 0, capShortfall,
+                static_cast<double>(capShortfallBytes) / (1024.0 * 1024.0), budget.budgetExhausted ? 1 : 0);
         }
     }
     void ReleaseTexturePool() {
@@ -2675,14 +2680,50 @@ public:
 
         if (!tryCreateFramePool(capturePixelFormat_)) {
             if (!captureIsHDR_ && capturePixelFormat_ == winrt::DirectXPixelFormat::R10G10B10A2UIntNormalized) {
-                // SDR 10-bpc: try FP16 to preserve full 10-bit precision in the
-                // captured texture. Explicit 10-bit recording must never fall
-                // to BGRA8 silently.
-                attemptedFp16Fallback = true;
-                capturePixelFormat_ = winrt::DirectXPixelFormat::R16G16B16A16Float;
-                captureDxgiFormat_ = DXGI_FORMAT_R16G16B16A16_FLOAT;
-                UpdateSmoothnessBudget(width, height, captureDxgiFormat_, true);
-                // useHighPrecisionCapture_ stays true
+                const uint32_t initialBufferCount = sourceFramePoolBufferCount_;
+                bool r10RetrySucceeded = false;
+                for (uint32_t candidate = initialBufferCount > ce::capture_policy::kWgcSmoothnessSourceFramePoolMinBuffers
+                                              ? initialBufferCount - 1
+                                              : ce::capture_policy::kWgcSmoothnessSourceFramePoolMinBuffers;
+                     candidate >= ce::capture_policy::kWgcSmoothnessSourceFramePoolMinBuffers && !r10RetrySucceeded;
+                     --candidate) {
+                    LogInfo("[WGC] R10 pool retry: bufferCount=%u (original=%u)", candidate, initialBufferCount);
+                    sourceFramePoolBufferCount_ = candidate;
+                    if (tryCreateFramePool(capturePixelFormat_)) {
+                        r10RetrySucceeded = true;
+                        LogInfo("[WGC] R10 frame pool created with reduced bufferCount=%u", candidate);
+                        break;
+                    }
+                }
+                if (!r10RetrySucceeded) {
+                    sourceFramePoolBufferCount_ = initialBufferCount;
+                    LogWarn(
+                        "[WGC] R10 frame pool failed with all buffer counts (%u..%u), falling back to FP16. "
+                        "FP16 at 2x VRAM cost per source surface preserves 10-bit precision losslessly "
+                        "via shader conversion to R10 for retained copies.",
+                        ce::capture_policy::kWgcSmoothnessSourceFramePoolMinBuffers, initialBufferCount);
+                    // SDR 10-bpc: try FP16 to preserve full 10-bit precision in the
+                    // captured texture. Explicit 10-bit recording must never fall
+                    // to BGRA8 silently.
+                    attemptedFp16Fallback = true;
+                    capturePixelFormat_ = winrt::DirectXPixelFormat::R16G16B16A16Float;
+                    captureDxgiFormat_ = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                    UpdateSmoothnessBudget(width, height, captureDxgiFormat_, true);
+                    if (smoothnessRetainedFrames_ > 0 &&
+                        smoothnessRetainedFrames_ < ce::capture_policy::GetWgcSmoothnessDesiredFrames(
+                                                         smoothnessOutputFps_, smoothnessMaxMs_)) {
+                        const uint32_t desiredFrames = ce::capture_policy::GetWgcSmoothnessDesiredFrames(
+                            smoothnessOutputFps_, smoothnessMaxMs_);
+                        const uint32_t shortfall = desiredFrames - smoothnessRetainedFrames_;
+                        const uint64_t neededBytes = static_cast<uint64_t>(shortfall) * smoothnessCopyBytesPerSurface_;
+                        LogWarn(
+                            "[WGC] FP16 pool cap-limited: shortfall=%u/%u frames (need ~%.0fMB more "
+                            "copy VRAM or reduce source buffers). "
+                            "Expected smoothness degraded: reservoir may starve under source dips.",
+                            shortfall, desiredFrames, static_cast<double>(neededBytes) / (1024.0 * 1024.0));
+                    }
+                    // useHighPrecisionCapture_ stays true
+                }
             } else if (highPrecisionRequired) {
                 LogError("[WGC] Failed to create required high-precision frame pool for format=%s",
                          DescribeCaptureFormat());

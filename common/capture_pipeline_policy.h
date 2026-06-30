@@ -1831,15 +1831,34 @@ inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(uint32_t out
         };
 
         uint32_t selectedSourceBuffers = 0;
+        uint32_t firstValidSourceBuffers = 0;
+        uint32_t bestRetainedFrames = 0;
         for (uint32_t candidate = preferredSourceBuffers; candidate >= kWgcSmoothnessSourceFramePoolMinBuffers;
              --candidate) {
-            if (copySlotsForSourceBuffers(candidate) >= kWgcSmoothnessBufferMinPoolFrames) {
-                selectedSourceBuffers = candidate;
-                break;
+            const uint32_t rawCopySlots = copySlotsForSourceBuffers(candidate);
+            if (rawCopySlots >= kWgcSmoothnessBufferMinPoolFrames) {
+                if (firstValidSourceBuffers == 0) {
+                    firstValidSourceBuffers = candidate;
+                }
+                const uint32_t cappedCopySlots =
+                    std::min<uint32_t>(rawCopySlots, kWgcSmoothnessBufferMaxPoolFrames);
+                const uint32_t retainedCap =
+                    GetWgcSmoothnessRetainedFrameCap(cappedCopySlots, result.reservedFreeCopySlots);
+                const uint32_t extraCapacity =
+                    GetWgcSmoothnessExtraFramesForRetainedCap(retainedCap, syncDelayFrames);
+                const uint32_t retainedForCandidate =
+                    std::min(result.desiredExtraFrames, extraCapacity);
+                if (retainedForCandidate > bestRetainedFrames) {
+                    bestRetainedFrames = retainedForCandidate;
+                    selectedSourceBuffers = candidate;
+                }
             }
             if (candidate == kWgcSmoothnessSourceFramePoolMinBuffers) {
                 break;
             }
+        }
+        if (selectedSourceBuffers == 0) {
+            selectedSourceBuffers = firstValidSourceBuffers;
         }
         if (selectedSourceBuffers == 0) {
             const uint32_t maxSourceByBudget = static_cast<uint32_t>(
