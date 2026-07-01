@@ -9,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -1165,6 +1166,80 @@ static HWND GetMainWindowForProcess(DWORD pid) {
     WindowSearch search = {pid, NULL};
     EnumWindows(EnumWindowsCallback, (LPARAM)&search);
     return search.hwnd;
+}
+
+struct ForegroundWgcWindowCandidate {
+    HWND hwnd = NULL;
+    DWORD pid = 0;
+    std::string processName;
+    bool usable = false;
+    bool fullscreenLike = false;
+};
+
+static std::string ToLowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+static bool IsIgnoredForegroundWgcClass(HWND hwnd) {
+    char className[128] = {};
+    if (GetClassNameA(hwnd, className, static_cast<int>(sizeof(className))) <= 0) {
+        return false;
+    }
+
+    const std::string lowerClass = ToLowerAscii(className);
+    return lowerClass == "progman" || lowerClass == "workerw" || lowerClass == "shell_traywnd";
+}
+
+static bool IsIgnoredForegroundWgcProcess(const std::string& processName) {
+    const std::string lowerName = ToLowerAscii(processName);
+    return lowerName.empty() || lowerName == "unknown" || lowerName == "explorer.exe" ||
+           lowerName == "applicationframehost.exe" || lowerName == "shellexperiencehost.exe" ||
+           lowerName == "searchhost.exe" || lowerName == "startmenuexperiencehost.exe" ||
+           lowerName == "textinputhost.exe" || lowerName == "captureengine.exe";
+}
+
+static ForegroundWgcWindowCandidate GetForegroundWgcWindowCandidate() {
+    ForegroundWgcWindowCandidate candidate;
+    HWND hwnd = GetForegroundWindow();
+    if (!hwnd) {
+        return candidate;
+    }
+
+    HWND root = GetAncestor(hwnd, GA_ROOT);
+    if (root) {
+        hwnd = root;
+    }
+
+    if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd) || hwnd == GetDesktopWindow() ||
+        GetWindow(hwnd, GW_OWNER) != 0) {
+        return candidate;
+    }
+
+    const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+    const LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+    if ((style & WS_CHILD) || (exStyle & WS_EX_TOOLWINDOW) || IsIgnoredForegroundWgcClass(hwnd)) {
+        return candidate;
+    }
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == 0 || pid == GetCurrentProcessId()) {
+        return candidate;
+    }
+
+    std::string processName = GetProcessNameFromPID(pid);
+    if (IsIgnoredForegroundWgcProcess(processName)) {
+        return candidate;
+    }
+
+    candidate.hwnd = hwnd;
+    candidate.pid = pid;
+    candidate.processName = processName;
+    candidate.usable = true;
+    candidate.fullscreenLike = IsWindowFullscreenLike(hwnd);
+    return candidate;
 }
 
 static bool MatchesProcessEntry(const WhitelistEntry& entry, const std::string& lowerProcessName) {
@@ -10746,6 +10821,28 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                             processName.empty() ? "target" : processName.c_str());
                     return;
                 }
+            }
+
+            ForegroundWgcWindowCandidate foregroundCandidate = GetForegroundWgcWindowCandidate();
+            if (ce::capture_policy::ShouldPreferForegroundFullscreenWindowForAutoWgc(
+                    isAutoCaptureConfig(), isExplicitInjectConfig(), injectWhitelisted, sourcePid != 0,
+                    !config.wgcWindowTitles.empty(), foregroundCandidate.usable, foregroundCandidate.fullscreenLike)) {
+                if (primeWgcWindowTarget(foregroundCandidate.hwnd, false)) {
+                    LogInfo("[Media] Auto mode: no source PID; foreground fullscreen WGC window capture selected "
+                            "(pid=%lu process=%s hwnd=0x%p)",
+                            static_cast<unsigned long>(foregroundCandidate.pid), foregroundCandidate.processName.c_str(),
+                            foregroundCandidate.hwnd);
+                    return;
+                }
+                LogWarn("[Media] Auto mode: foreground fullscreen WGC window init failed "
+                        "(pid=%lu process=%s hwnd=0x%p); falling back to monitor capture",
+                        static_cast<unsigned long>(foregroundCandidate.pid), foregroundCandidate.processName.c_str(),
+                        foregroundCandidate.hwnd);
+            } else if (sourcePid == 0) {
+                LogInfo("[Media] Auto mode: foreground WGC window candidate not used "
+                        "(usable=%d fullscreenLike=%d configuredWindow=%d)",
+                        foregroundCandidate.usable ? 1 : 0, foregroundCandidate.fullscreenLike ? 1 : 0,
+                        config.wgcWindowTitles.empty() ? 0 : 1);
             }
 
             if (primeWgcMonitorTarget()) {

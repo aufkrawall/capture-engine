@@ -11,6 +11,8 @@
 #include <dxgi1_6.h>
 #include <algorithm>
 #include <chrono>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <memory>
@@ -44,9 +46,11 @@ static std::atomic<int32_t> g_WgcInflightCallbacks{0};
 #define HAS_WGC 1
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Graphics.h>
 #include <winrt/Windows.Graphics.Capture.h>
 #include <winrt/Windows.Graphics.DirectX.Direct3D11.h>
 #include <winrt/Windows.Graphics.DirectX.h>
+#include <winrt/Windows.UI.h>
 
 // Manual definition of IDirect3DDxgiInterfaceAccess since SDK header may be
 // missing This interface allows extracting the DXGI interface from a WinRT
@@ -177,6 +181,118 @@ const char* DxgiFormatName(DXGI_FORMAT format) {
         default:
             return "UNKNOWN";
     }
+}
+
+enum class WgcItemCreationMethod {
+    kNone,
+    kWindowId,
+    kInteropWindow,
+    kInteropMonitor,
+};
+
+const char* WgcItemCreationMethodName(WgcItemCreationMethod method) {
+    switch (method) {
+        case WgcItemCreationMethod::kWindowId:
+            return "WindowId";
+        case WgcItemCreationMethod::kInteropWindow:
+            return "InteropWindow";
+        case WgcItemCreationMethod::kInteropMonitor:
+            return "InteropMonitor";
+        default:
+            return "None";
+    }
+}
+
+enum class WgcItemSourcePreference {
+    kAuto,
+    kInteropOnly,
+};
+
+std::string LowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+WgcItemSourcePreference GetWgcItemSourcePreference() {
+    const char* env = std::getenv("CE_WGC_ITEM_SOURCE");
+    if (!env || !*env) {
+        return WgcItemSourcePreference::kAuto;
+    }
+
+    const std::string value = LowerAscii(env);
+    if (value == "interop" || value == "legacy") {
+        return WgcItemSourcePreference::kInteropOnly;
+    }
+    return WgcItemSourcePreference::kAuto;
+}
+
+bool ShouldKeepWgcBorderByDiagnosticEnv() {
+    const char* env = std::getenv("CE_WGC_BORDER_MODE");
+    if (!env || !*env) {
+        return false;
+    }
+
+    const std::string value = LowerAscii(env);
+    return value == "keep" || value == "default" || value == "system" || value == "unchanged";
+}
+
+using GetWindowIdFromWindowFn = HRESULT(WINAPI*)(HWND hwnd, winrt::Windows::UI::WindowId* id);
+
+GetWindowIdFromWindowFn ResolveGetWindowIdFromWindow() {
+    static GetWindowIdFromWindowFn fn = []() -> GetWindowIdFromWindowFn {
+        const wchar_t* modules[] = {L"KernelBase.dll", L"Windows.UI.dll", L"user32.dll"};
+        for (const wchar_t* moduleName : modules) {
+            HMODULE module = GetModuleHandleW(moduleName);
+            if (!module) {
+                module = LoadLibraryW(moduleName);
+            }
+            if (!module) {
+                continue;
+            }
+
+            auto* proc = reinterpret_cast<GetWindowIdFromWindowFn>(GetProcAddress(module, "GetWindowIdFromWindow"));
+            if (proc) {
+                LogInfo("[WGC] GetWindowIdFromWindow resolved from %ls", moduleName);
+                return proc;
+            }
+        }
+        LogInfo("[WGC] GetWindowIdFromWindow not available; using legacy interop item creation");
+        return nullptr;
+    }();
+    return fn;
+}
+
+bool TryCreateCaptureItemFromWindowId(HWND hwnd, winrt::GraphicsCaptureItem& item, uint64_t& windowIdValue,
+                                      HRESULT& helperHr, HRESULT& createHr) {
+    item = nullptr;
+    windowIdValue = 0;
+    helperHr = HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
+    createHr = E_FAIL;
+
+    GetWindowIdFromWindowFn getWindowId = ResolveGetWindowIdFromWindow();
+    if (!getWindowId) {
+        return false;
+    }
+
+    winrt::Windows::UI::WindowId windowId{};
+    helperHr = getWindowId(hwnd, &windowId);
+    windowIdValue = windowId.Value;
+    if (FAILED(helperHr) || windowId.Value == 0) {
+        return false;
+    }
+
+    try {
+        item = winrt::GraphicsCaptureItem::TryCreateFromWindowId(windowId);
+        createHr = item ? S_OK : S_FALSE;
+    } catch (winrt::hresult_error const& e) {
+        createHr = static_cast<HRESULT>(e.code().value);
+        item = nullptr;
+    } catch (...) {
+        createHr = E_FAIL;
+        item = nullptr;
+    }
+    return item != nullptr;
 }
 
 struct D3D11ContextStateGuard {
@@ -626,6 +742,8 @@ public:
     DXGI_FORMAT captureDxgiFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
     HWND targetWindow_ = nullptr;
     HMONITOR targetMonitor_ = nullptr;
+    WgcItemCreationMethod itemCreationMethod_ = WgcItemCreationMethod::kNone;
+    uint64_t itemCreationIdValue_ = 0;
     bool useHighPrecisionCapture_ = false;
     bool requireHighPrecisionCapture_ = false;
     bool captureIsHDR_ = false;
@@ -2424,10 +2542,43 @@ public:
         });
         targetMonitor_ = hmon;
         targetWindow_ = nullptr;
+        itemCreationMethod_ = WgcItemCreationMethod::kInteropMonitor;
+        itemCreationIdValue_ = 0;
+        LogInfo("[WGC] Capture item created: target=monitor method=%s hmon=0x%p size=%dx%d",
+                WgcItemCreationMethodName(itemCreationMethod_), hmon, item_.Size().Width, item_.Size().Height);
         return true;
     }
 
     bool CreateForWindow(HWND hwnd) {
+        if (GetWgcItemSourcePreference() != WgcItemSourcePreference::kInteropOnly) {
+            winrt::GraphicsCaptureItem item{nullptr};
+            uint64_t windowIdValue = 0;
+            HRESULT helperHr = E_FAIL;
+            HRESULT createHr = E_FAIL;
+            if (TryCreateCaptureItemFromWindowId(hwnd, item, windowIdValue, helperHr, createHr)) {
+                item_ = item;
+                itemClosedToken_ = item_.Closed([this](auto&&, auto&&) {
+                    LogWarn("[WGC] Window capture item closed by OS");
+                    FlagResetNeeded("window capture item closed");
+                });
+                targetWindow_ = hwnd;
+                targetMonitor_ = nullptr;
+                itemCreationMethod_ = WgcItemCreationMethod::kWindowId;
+                itemCreationIdValue_ = windowIdValue;
+                LogInfo("[WGC] Capture item created: target=window method=%s hwnd=0x%p windowId=0x%llx size=%dx%d",
+                        WgcItemCreationMethodName(itemCreationMethod_), hwnd,
+                        static_cast<unsigned long long>(itemCreationIdValue_), item_.Size().Width, item_.Size().Height);
+                return true;
+            }
+
+            LogInfo("[WGC] WindowId capture item creation unavailable/failed for hwnd=0x%p "
+                    "(helper=0x%08lX create=0x%08lX id=0x%llx); falling back to interop",
+                    hwnd, static_cast<unsigned long>(helperHr), static_cast<unsigned long>(createHr),
+                    static_cast<unsigned long long>(windowIdValue));
+        } else {
+            LogInfo("[WGC] WindowId capture item creation skipped by CE_WGC_ITEM_SOURCE=interop");
+        }
+
         winrt::com_ptr<IGraphicsCaptureItemInterop> interopFactory;
         winrt::hstring className = L"Windows.Graphics.Capture.GraphicsCaptureItem";
         HRESULT factoryHr = RoGetActivationFactory(reinterpret_cast<HSTRING>(winrt::get_abi(className)),
@@ -2453,6 +2604,10 @@ public:
         });
         targetWindow_ = hwnd;
         targetMonitor_ = nullptr;
+        itemCreationMethod_ = WgcItemCreationMethod::kInteropWindow;
+        itemCreationIdValue_ = 0;
+        LogInfo("[WGC] Capture item created: target=window method=%s hwnd=0x%p size=%dx%d",
+                WgcItemCreationMethodName(itemCreationMethod_), hwnd, item_.Size().Width, item_.Size().Height);
         return true;
     }
 
@@ -2667,7 +2822,9 @@ public:
         // Try to request borderless access and enable border removal (like OBS)
         borderlessCapture_ = false;
         if (session_) {
-            if (EnsureBorderlessAccessRequested()) {
+            if (ShouldKeepWgcBorderByDiagnosticEnv()) {
+                LogInfo("[WGC] Border removal skipped by CE_WGC_BORDER_MODE diagnostic override");
+            } else if (EnsureBorderlessAccessRequested()) {
                 try {
                     session_.IsBorderRequired(false);
                     borderlessCapture_ = true;
@@ -2703,6 +2860,14 @@ public:
             // Not available on older Windows versions
             LogInfo("[WGC] IsCursorCaptureEnabled not available");
         }
+
+        LogInfo(
+            "[WGC] Capture session diagnostics: target=%s method=%s hwnd=0x%p hmon=0x%p itemId=0x%llx "
+            "framePool=CreateFreeThreaded sourceBuffers=%u borderless=%d nativeCursorRequested=%d "
+            "producerTargetFps=%u localThrottleFps=%u",
+            targetWindow_ ? "window" : "monitor", WgcItemCreationMethodName(itemCreationMethod_), targetWindow_,
+            targetMonitor_, static_cast<unsigned long long>(itemCreationIdValue_), sourceFramePoolBufferCount_,
+            borderlessCapture_ ? 1 : 0, captureCursor ? 1 : 0, producerTargetFps_, targetFps_);
 
         // Ask WGC to wake no faster than the requested producer cadence so
         // cursor movement cannot drive compositor work far above useful capture FPS.

@@ -993,6 +993,14 @@ inline bool ShouldUseNativeWgcCursorCapture(bool /*recordingCursorRequested*/) {
     return false;
 }
 
+inline bool ShouldPreferForegroundFullscreenWindowForAutoWgc(bool autoCaptureConfig, bool explicitInjectConfig,
+                                                             bool injectWhitelisted, bool hasSourcePid,
+                                                             bool hasConfiguredWgcWindow, bool foregroundUsable,
+                                                             bool foregroundFullscreenLike) {
+    return autoCaptureConfig && !explicitInjectConfig && !injectWhitelisted && !hasSourcePid &&
+           !hasConfiguredWgcWindow && foregroundUsable && foregroundFullscreenLike;
+}
+
 enum class HeldModeTransition : uint8_t {
     kNone = 0,
     kEntered,
