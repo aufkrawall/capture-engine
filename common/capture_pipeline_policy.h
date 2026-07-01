@@ -724,6 +724,44 @@ inline int64_t SelectWgcStartupSmoothnessExtraDelayQpc(int64_t actualStartupDela
     return std::clamp<int64_t>(actualStartupDelayQpc - avContentDelayQpc, 0, smoothnessTargetDelayQpc);
 }
 
+// Resolve the FINAL locked WGC smoothness extra read-delay from the startup-barrier candidate.
+//
+// Root-cause guard for startup-timing-dependent WGC judder: when the startup reserve fill is
+// UNDERFED (the buildable smoothness reservoir target is never reached because the source delivers
+// at/below the CFR target -- the common case for WGC-capturing a VRR game whose frame delivery is
+// bursty around the capture rate), the accidental buffer pile-up at the barrier must NOT become the
+// permanent active read delay. The pile-up depth is non-deterministic (how bursty delivery happened
+// to be during the sub-second startup wait), and a DEEPER accidental lock permanently starves the
+// fresh-frame headroom that the repeat-rescue needs: the read target sits older than the source can
+// sustainably keep buffered, so every micro-lull becomes a "too-new" hold and the holds cluster into
+// multi-frame freezes for the WHOLE session. Two runs under identical conditions then randomly land
+// smooth (shallow lock) or juddery (deep lock).
+//
+// In the underfed case, pin the extra delay to the measured jitter FLOOR (sized from real observed
+// delivery/source jitter, not an accidental snapshot) whenever that is SHALLOWER than the pile-up.
+// This is monotonically safe for smoothness: a shallower read delay only ADDS fresh-frame headroom,
+// which is exactly what lets the rescue advance instead of clustering. It never INCREASES the delay
+// (so it cannot introduce latency the pile-up did not already have), and it is sync-neutral because
+// the extra delay is absorbed by the live-start schedule offset while audio stays anchored to the
+// true content latency (avContentDelay), so the file's A/V offset is unchanged.
+//
+// The cap is gated on the source delivering AT/ABOVE the CFR target: that is the regime where a
+// shallow read delay is unambiguously correct (the source has enough unique frames; the failure is
+// purely lack of fresh-frame headroom for the rescue). When the source runs BELOW the CFR target
+// (e.g. a GPU-bound VRR source whose WGC delivery drops into sub-target lulls), the deep reservoir is
+// genuinely needed to absorb the lulls, so the pile-up is preserved and the cap does not apply.
+//
+// When the reservoir target WAS reached (not underfed), the source is below CFR, or no jitter floor is
+// available, the validated pile-up behavior is returned unchanged.
+inline int64_t ResolveWgcStartupSmoothnessActiveDelayQpc(int64_t pileupExtraDelayQpc, int64_t jitterFloorDelayQpc,
+                                                         bool startupUnderfed, bool sourceAtOrAboveCfrTarget) {
+    if (!startupUnderfed || !sourceAtOrAboveCfrTarget || jitterFloorDelayQpc <= 0) {
+        return pileupExtraDelayQpc;
+    }
+    // Cap DOWN to the measured jitter floor; never increase a shallow pile-up.
+    return std::min(pileupExtraDelayQpc, jitterFloorDelayQpc);
+}
+
 inline int64_t GetWgcStartupBarrierQpc(int64_t nowQpc, int64_t targetIntervalTicks) {
     if (nowQpc <= 0 || targetIntervalTicks <= 0) {
         return nowQpc;

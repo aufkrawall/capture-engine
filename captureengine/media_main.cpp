@@ -7307,9 +7307,33 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const int64_t actualStartupDelayQpc = latestStartupSelectionQpc > selectedStartupSelectionQpc
                                                               ? latestStartupSelectionQpc - selectedStartupSelectionQpc
                                                               : 0;
-                    wgcSmoothnessActiveDelayQpc =
+                    const int64_t pileupSmoothnessActiveDelayQpc =
                         ce::capture_policy::SelectWgcStartupSmoothnessExtraDelayQpc(
                             actualStartupDelayQpc, avContentDelayQpc, smoothnessTargetDelayQpc);
+                    // When the reserve fill is UNDERFED (buildable reservoir target never reached) AND the
+                    // source is delivering at/above the CFR target, do not let the non-deterministic startup
+                    // buffer pile-up set the permanent read delay: a deep accidental lock starves fresh-frame
+                    // headroom and clusters "too-new" repeat holds for the whole session (startup-timing-
+                    // dependent judder). Pin to the measured jitter floor when that is shallower. Sync-neutral:
+                    // the extra delay is absorbed by the live-start schedule offset; audio stays anchored to
+                    // avContentDelay. Sources BELOW the CFR target keep the deep reservoir (lull absorption).
+                    const bool startupSourceAtOrAboveCfr =
+                        g_WgcCap && ce::capture_policy::IsWgcIngressSourceAtOrAboveCfrTarget(
+                                        std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps)),
+                                        g_WgcCap->GetInputMin250Fps(), g_WgcCap->GetInputMin500Fps());
+                    wgcSmoothnessActiveDelayQpc = ce::capture_policy::ResolveWgcStartupSmoothnessActiveDelayQpc(
+                        pileupSmoothnessActiveDelayQpc, wgcSmoothnessFloorDelayQpc, startupPartialReserveFallback,
+                        startupSourceAtOrAboveCfr);
+                    if (wgcSmoothnessActiveDelayQpc < pileupSmoothnessActiveDelayQpc) {
+                        LogInfo(
+                            "[EncoderThread] WGC startup underfed active-delay capped to measured jitter floor: "
+                            "pileupUs=%lld cappedUs=%lld floorUs=%lld reason=%s (avoids startup-timing-dependent "
+                            "deep-lock repeat clustering; sync-neutral)",
+                            static_cast<long long>(qpcDeltaToUs(pileupSmoothnessActiveDelayQpc)),
+                            static_cast<long long>(qpcDeltaToUs(wgcSmoothnessActiveDelayQpc)),
+                            static_cast<long long>(qpcDeltaToUs(wgcSmoothnessFloorDelayQpc)),
+                            wgcStartupReserveReason.c_str());
+                    }
                     wgcSmoothnessActualFrames =
                         targetIntervalTicks > 0
                             ? SaturatingToUint32(static_cast<uint64_t>(

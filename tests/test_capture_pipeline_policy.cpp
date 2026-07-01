@@ -479,6 +479,45 @@ TEST(CapturePipelinePolicyTest, WgcStartupSmoothnessDelayUsesActualReserveAndBud
               0);
 }
 
+TEST(CapturePipelinePolicyTest, WgcStartupActiveDelayCapsUnderfedPileupToJitterFloor) {
+    // Underfed startup + source at/above CFR + a deep accidental pile-up: cap DOWN to the measured
+    // jitter floor so the read delay keeps fresh-frame headroom (prevents startup-timing-dependent
+    // deep-lock repeat clustering). Mirrors the Fortnite regression (pile-up ~222ms, floor ~16ms).
+    EXPECT_EQ(policy::ResolveWgcStartupSmoothnessActiveDelayQpc(/*pileupExtraDelayQpc=*/2220000,
+                                                               /*jitterFloorDelayQpc=*/160000,
+                                                               /*startupUnderfed=*/true,
+                                                               /*sourceAtOrAboveCfrTarget=*/true),
+              160000);
+
+    // Never INCREASE a shallow pile-up: floor deeper than pile-up -> keep pile-up.
+    EXPECT_EQ(policy::ResolveWgcStartupSmoothnessActiveDelayQpc(/*pileupExtraDelayQpc=*/100000,
+                                                               /*jitterFloorDelayQpc=*/160000,
+                                                               /*startupUnderfed=*/true,
+                                                               /*sourceAtOrAboveCfrTarget=*/true),
+              100000);
+
+    // Source BELOW the CFR target: preserve the deep reservoir (iter-6 lull absorption), no cap.
+    EXPECT_EQ(policy::ResolveWgcStartupSmoothnessActiveDelayQpc(/*pileupExtraDelayQpc=*/2220000,
+                                                               /*jitterFloorDelayQpc=*/160000,
+                                                               /*startupUnderfed=*/true,
+                                                               /*sourceAtOrAboveCfrTarget=*/false),
+              2220000);
+
+    // Reservoir target reached (not underfed): validated pile-up behavior unchanged.
+    EXPECT_EQ(policy::ResolveWgcStartupSmoothnessActiveDelayQpc(/*pileupExtraDelayQpc=*/2220000,
+                                                               /*jitterFloorDelayQpc=*/160000,
+                                                               /*startupUnderfed=*/false,
+                                                               /*sourceAtOrAboveCfrTarget=*/true),
+              2220000);
+
+    // No measured floor available: no cap.
+    EXPECT_EQ(policy::ResolveWgcStartupSmoothnessActiveDelayQpc(/*pileupExtraDelayQpc=*/2220000,
+                                                               /*jitterFloorDelayQpc=*/0,
+                                                               /*startupUnderfed=*/true,
+                                                               /*sourceAtOrAboveCfrTarget=*/true),
+              2220000);
+}
+
 TEST(CapturePipelinePolicyTest, WgcStartupReserveWaitBudgetExtendsForSmoothnessReservoir) {
     EXPECT_EQ(policy::GetWgcStartupReserveWaitBudgetQpc(/*startupContentDelayTargetQpc=*/2700,
                                                         /*targetIntervalTicks=*/100,
