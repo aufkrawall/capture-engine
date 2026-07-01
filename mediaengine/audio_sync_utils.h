@@ -742,6 +742,16 @@ inline bool IsTrackAudioStartupSettled(bool trackBootstrapComplete, bool allSour
     return trackBootstrapComplete || allSourcesPrimed;
 }
 
+inline bool ShouldRememberPreStartPacketForAppBootstrap(bool isAppAudioSource, bool firstSourcePacket,
+                                                        int64_t packetTimestampMs, int64_t recordingStartQpcMs,
+                                                        int64_t preStartToleranceMs = 5) {
+    if (!isAppAudioSource || !firstSourcePacket || recordingStartQpcMs == 0) {
+        return false;
+    }
+
+    return packetTimestampMs < (recordingStartQpcMs - std::max<int64_t>(0, preStartToleranceMs));
+}
+
 inline bool IsOptionalUnstartedAppAudioSource(bool isAppAudioSource, bool sourceTimelineValid,
                                               bool sawPreStartPackets = false) {
     return isAppAudioSource && !sourceTimelineValid && !sawPreStartPackets;

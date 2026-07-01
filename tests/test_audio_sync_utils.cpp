@@ -488,6 +488,35 @@ TEST(AudioSyncUtilsTest, AppAudioPacketStitchingDoesNotAdvanceToEncodedCursor) {
     EXPECT_TRUE(ce::audio::ShouldAdvancePacketTimelineToEncodedCursor(false));
 }
 
+TEST(AudioSyncUtilsTest, PreStartAppAudioEvidenceBlocksOptionalStartupUntilPrimed) {
+    EXPECT_TRUE(ce::audio::ShouldRememberPreStartPacketForAppBootstrap(
+        /*isAppAudioSource*/ true, /*firstSourcePacket*/ true, /*packetTimestampMs*/ 990,
+        /*recordingStartQpcMs*/ 1000));
+    EXPECT_FALSE(ce::audio::ShouldRememberPreStartPacketForAppBootstrap(
+        /*isAppAudioSource*/ false, /*firstSourcePacket*/ true, /*packetTimestampMs*/ 990,
+        /*recordingStartQpcMs*/ 1000));
+    EXPECT_FALSE(ce::audio::ShouldRememberPreStartPacketForAppBootstrap(
+        /*isAppAudioSource*/ true, /*firstSourcePacket*/ false, /*packetTimestampMs*/ 990,
+        /*recordingStartQpcMs*/ 1000));
+    EXPECT_FALSE(ce::audio::ShouldRememberPreStartPacketForAppBootstrap(
+        /*isAppAudioSource*/ true, /*firstSourcePacket*/ true, /*packetTimestampMs*/ 996,
+        /*recordingStartQpcMs*/ 1000));
+
+    EXPECT_FALSE(ce::audio::IsOptionalUnstartedAppAudioSource(
+        /*isAppAudioSource*/ true, /*sourceTimelineValid*/ false, /*sawPreStartPackets*/ true));
+    EXPECT_FALSE(ce::audio::IsSourceStartupPrimed(
+        /*sourceIsPrimed*/ false, /*sourceTimelineValid*/ false, /*isAppAudioSource*/ true,
+        /*sawPreStartPackets*/ true));
+    EXPECT_FALSE(ce::audio::IsSourceBootstrapReady(
+        /*sourceBootstrapComplete*/ false, /*sourceTimelineValid*/ false, /*sourceIsPrimed*/ false,
+        /*isAppAudioSource*/ true, /*bufferedRealSamples*/ 0, /*requiredRealSamples*/ 1200,
+        /*sawPreStartPackets*/ true));
+    EXPECT_TRUE(ce::audio::IsSourceBootstrapReady(
+        /*sourceBootstrapComplete*/ false, /*sourceTimelineValid*/ true, /*sourceIsPrimed*/ true,
+        /*isAppAudioSource*/ true, /*bufferedRealSamples*/ 0, /*requiredRealSamples*/ 1200,
+        /*sawPreStartPackets*/ true));
+}
+
 TEST(AudioSyncUtilsTest, LateAppSourceFirstPacketJoinsCurrentTrackCursor) {
     const auto join =
         ce::audio::ComputeLateAppSourceJoin(true, true, false, 48000 * 7, 48000 * 7 + 960, 48000 / 2, 480);

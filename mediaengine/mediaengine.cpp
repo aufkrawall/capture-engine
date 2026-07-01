@@ -100,7 +100,7 @@ public:
         bool isPrimed = false;                     // True after source has buffered a startup safety cushion
         bool bootstrapComplete = false;            // True after startup backlog is settled and live sync may engage
         bool pendingUnderrunRecoveryFade = false;  // Arm fade-in when real audio resumes after padded silence
-        bool sawSyncPendingPackets = false;        // Audio arrived while sync gate was closed before first video frame
+        bool sawSyncPendingPackets = false;        // App audio arrived before its post-anchor timeline opened
         bool startupRealAudioSeen = false;         // Real audio has been emitted for this source since sync reset
         bool pendingStartupJoinFade = false;       // Fade in real audio when a late source joins after startup silence
         uint64_t pendingRetainedTrimSamples = 0;   // Aggregated ring-headroom trims since the last periodic log
@@ -4558,9 +4558,17 @@ private:
                     }
                     int64_t startQPC = recordingStartSystemQPCMs.load(std::memory_order_acquire);
                     if (startQPC != 0 && sourceTimestamps[srcIdx] == 0 && packet.timestamp < (startQPC - 5)) {
+                        const bool rememberPreStartPacket = ce::audio::ShouldRememberPreStartPacketForAppBootstrap(
+                            src.sourceType == AudioConfig::AppAudio, sourceTimestamps[srcIdx] == 0, packet.timestamp,
+                            startQPC);
+                        if (rememberPreStartPacket) {
+                            src.sawSyncPendingPackets = true;
+                        }
                         if (!sourceLoggedPreStartDrop[srcIdx]) {
-                            DLL_Log("[AudioLoop] Discarding pre-start packet src=%d packet=%lld start=%lld",
-                                    (int)srcIdx, packet.timestamp, startQPC);
+                            DLL_Log(
+                                "[AudioLoop] Discarding pre-start packet src=%d packet=%lld start=%lld "
+                                "appStartupEvidence=%d",
+                                (int)srcIdx, packet.timestamp, startQPC, rememberPreStartPacket ? 1 : 0);
                             sourceLoggedPreStartDrop[srcIdx] = true;
                         }
                         continue;
