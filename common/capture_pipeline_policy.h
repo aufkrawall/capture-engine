@@ -972,6 +972,28 @@ inline bool ShouldUseWgcMaxRateForDelayReservoirRecovery(const WgcAdaptiveTeleme
     return true;
 }
 
+inline bool ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(const WgcAdaptiveTelemetry& telemetry,
+                                                             bool delayReservoirBelowLowWater,
+                                                             bool producerCapped) {
+    if (!producerCapped || !delayReservoirBelowLowWater || telemetry.outputFps == 0) {
+        return false;
+    }
+
+    const bool inputBelowOutput =
+        telemetry.recentInputMin250Fps > 0 &&
+        telemetry.recentInputMin250Fps + kWgcRecoverySourceMarginFps < telemetry.outputFps;
+    const bool deliveredBelowOutput =
+        telemetry.recentDeliveredMin250Fps > 0 &&
+        telemetry.recentDeliveredMin250Fps + kWgcRecoverySourceMarginFps < telemetry.outputFps;
+    return inputBelowOutput || deliveredBelowOutput ||
+           telemetry.emptyTickPermille >= kWgcLowSourceEmptyTickPermille;
+}
+
+inline bool ShouldUseWgcMaxRateForStartupReserveWait(bool reserveMissing, bool waitBudgetRemaining,
+                                                     bool producerCapped) {
+    return reserveMissing && waitBudgetRemaining && producerCapped;
+}
+
 inline bool ShouldRestoreWgcOvercaptureCap(const WgcAdaptiveTelemetry& telemetry, uint32_t noFreshTickPermille,
                                            uint64_t stableDurationMs,
                                            uint64_t requiredStableMs = kWgcCfrOvercaptureStableRestoreMs) {
@@ -2871,12 +2893,13 @@ inline WgcNearestPlayoutDecision DecideWgcNearestPlayout(int64_t frontTimestampQ
 //
 // When (and only when) even the oldest reserve frame is too-new for the slot, raise the slot target
 // just enough to age that oldest frame in, so playout resumes at the SOURCE rate against the deepest
-// (max-delay) reserve frame. Emitting the OLDEST frame (not a near-live one) keeps video BEHIND audio at
-// the reservoir delay, so the A/V content offset is preserved and can never invert. This is a strict
-// no-op in healthy cadence: the oldest reserve frame is normally OLDER than the slot (it never trips the
-// too-new boundary), so the grid target stays authoritative and the realized delay is unchanged. The
-// too-new boundary (kWgcCfrSelectionMaxLeadTicks) sits well beyond source delivery jitter, so normal
-// bursty delivery cannot toggle the floor -- it engages only on a genuine sustained grid drift.
+// reserve frame. The caller must first verify that the oldest frame is still old enough to preserve the
+// active content delay; otherwise a source-underfilled reservoir would be mistaken for encoder-grid
+// drift and the realized A/V delay would collapse toward live. This helper is a strict no-op in healthy
+// cadence: the oldest reserve frame is normally OLDER than the slot (it never trips the too-new
+// boundary), so the grid target stays authoritative and the realized delay is unchanged. The too-new
+// boundary (kWgcCfrSelectionMaxLeadTicks) sits well beyond source delivery jitter, so normal bursty
+// delivery cannot toggle the floor -- it engages only on a genuine sustained grid drift.
 inline int64_t ApplyWgcUniformPlayoutAntiFreezeFloor(int64_t playoutTargetQpc, int64_t oldestBufferedSlotQpc,
                                                      int64_t targetIntervalTicks,
                                                      uint32_t maxLeadTicks = kWgcCfrSelectionMaxLeadTicks) {
@@ -2892,6 +2915,18 @@ inline int64_t ApplyWgcUniformPlayoutAntiFreezeFloor(int64_t playoutTargetQpc, i
     // the target (std::max) so a mis-ordered caller cannot collapse the delay.
     const int64_t agedInTargetQpc = oldestBufferedSlotQpc - GetWgcActiveDelayResidualToleranceQpc(targetIntervalTicks);
     return std::max(playoutTargetQpc, agedInTargetQpc);
+}
+
+inline bool IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(int64_t oldestBufferedAgeQpc, int64_t contentDelayQpc,
+                                                       int64_t targetIntervalTicks) {
+    if (contentDelayQpc <= 0) {
+        return true;
+    }
+    if (oldestBufferedAgeQpc <= 0 || targetIntervalTicks <= 0) {
+        return false;
+    }
+    const int64_t residualToleranceQpc = GetWgcActiveDelayResidualToleranceQpc(targetIntervalTicks);
+    return oldestBufferedAgeQpc + residualToleranceQpc >= contentDelayQpc;
 }
 
 inline bool ShouldAllowSingleFreshWgcHold(bool reservePressureActive, bool lowSourceMode, uint32_t recentInputMin250Fps,

@@ -637,6 +637,46 @@ TEST(CapturePipelinePolicyTest, WgcDelayReservoirRecoveryRequiresHealthySource) 
     EXPECT_FALSE(policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(telemetry, true, false, false));
 }
 
+TEST(CapturePipelinePolicyTest, WgcCappedActiveDelayUnderfeedUsesMaxRateRecovery) {
+    policy::WgcAdaptiveTelemetry telemetry{};
+    telemetry.outputFps = 120;
+    telemetry.recentDeliveredMin250Fps = 122;
+    telemetry.recentInputMin250Fps = 122;
+    telemetry.emptyTickPermille = 20;
+
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
+        telemetry, /*delayReservoirBelowLowWater=*/true, /*producerCapped=*/true));
+
+    telemetry.recentInputMin250Fps = 115;
+    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
+        telemetry, /*delayReservoirBelowLowWater=*/true, /*producerCapped=*/true));
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
+        telemetry, /*delayReservoirBelowLowWater=*/false, /*producerCapped=*/true));
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
+        telemetry, /*delayReservoirBelowLowWater=*/true, /*producerCapped=*/false));
+
+    telemetry.recentInputMin250Fps = 122;
+    telemetry.recentDeliveredMin250Fps = 115;
+    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
+        telemetry, /*delayReservoirBelowLowWater=*/true, /*producerCapped=*/true));
+
+    telemetry.recentDeliveredMin250Fps = 122;
+    telemetry.emptyTickPermille = policy::kWgcLowSourceEmptyTickPermille;
+    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
+        telemetry, /*delayReservoirBelowLowWater=*/true, /*producerCapped=*/true));
+}
+
+TEST(CapturePipelinePolicyTest, WgcStartupReserveWaitCanUseMaxRateRecovery) {
+    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForStartupReserveWait(
+        /*reserveMissing=*/true, /*waitBudgetRemaining=*/true, /*producerCapped=*/true));
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForStartupReserveWait(
+        /*reserveMissing=*/false, /*waitBudgetRemaining=*/true, /*producerCapped=*/true));
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForStartupReserveWait(
+        /*reserveMissing=*/true, /*waitBudgetRemaining=*/false, /*producerCapped=*/true));
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForStartupReserveWait(
+        /*reserveMissing=*/true, /*waitBudgetRemaining=*/true, /*producerCapped=*/false));
+}
+
 TEST(CapturePipelinePolicyTest, WgcOvercaptureRestoresOnlyAfterStableFreshSource) {
     policy::WgcAdaptiveTelemetry telemetry{};
     telemetry.outputFps = 120;
@@ -1381,6 +1421,23 @@ TEST(CapturePipelinePolicyTest, WgcUniformPlayoutAntiFreezeFloorRaisesOnlyWhenRe
     EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(0, 1600, interval), 0);
     EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(1000, 0, interval), 1000);
     EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(1000, 1600, 0), 1000);
+}
+
+TEST(CapturePipelinePolicyTest, WgcUniformPlayoutAntiFreezeFloorRequiresSyncSafeOldestFrame) {
+    const int64_t interval = 100;
+    const int64_t contentDelay = 1000;
+    const int64_t tol = policy::GetWgcActiveDelayResidualToleranceQpc(interval);
+
+    EXPECT_TRUE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(
+        contentDelay - tol, contentDelay, interval));
+    EXPECT_TRUE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(
+        contentDelay, contentDelay, interval));
+    EXPECT_FALSE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(
+        contentDelay - tol - 1, contentDelay, interval));
+    EXPECT_FALSE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(
+        /*oldestBufferedAgeQpc=*/0, contentDelay, interval));
+    EXPECT_TRUE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(
+        /*oldestBufferedAgeQpc=*/0, /*contentDelayQpc=*/0, interval));
 }
 
 TEST(CapturePipelinePolicyTest, WgcUniformPlayoutFreezesUnderGridDriftWithoutAntiFreezeFloor) {

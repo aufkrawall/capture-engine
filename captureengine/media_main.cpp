@@ -2628,6 +2628,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     int64_t wgcStartupDelayTargetUs = 0;
     bool wgcStartupSelectedByDelayReserve = false;
     std::string wgcStartupReserveReason = "not-run";
+    bool wgcStartupReserveMaxRateUsed = false;
+    uint32_t wgcStartupReserveMaxRateCount = 0;
     int64_t wgcSmoothnessActiveDelayQpc = 0;
     // Smoothness FLOOR diagnostics/state (resolved once at startup, then fixed for the session).
     int64_t wgcSmoothnessFloorDelayQpc = 0;     // resolved floor delay target (QPC); 0 = floor inactive
@@ -2714,9 +2716,10 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t wgcDelayPaceCapTrimWindow = 0;
     DWORD wgcDelayPaceCapTrimLastLogTick = 0;
     // Uniform-playout anti-freeze floor engagements: the encoder grid drifted so far behind wall-clock
-    // that even the oldest buffered frame was too-new for the slot, so the target was raised to resume
-    // playout at the source rate instead of freezing on a repeated frame. Non-zero => encoder overload.
+    // that even the oldest buffered frame was too-new for the slot, and the oldest frame was old enough
+    // to preserve the active content delay, so the target was raised to resume playout.
     uint64_t wgcUniformAntiFreezeFloorTotal = 0;
+    uint64_t wgcUniformAntiFreezeFloorSkippedSyncTotal = 0;
     uint64_t wgcRetainedCapTrimTotal = 0;
     uint32_t wgcRetainedCapTrimWindow = 0;
     DWORD wgcRetainedCapTrimLastLogTick = 0;
@@ -5638,11 +5641,16 @@ void EncoderThreadFunc(const AppConfig& config) {
                         ce::capture_policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(
                             adaptiveTelemetry, delayReservoirBelowLowWater, wgcLowSourceModeActive,
                             wgcLiveRecoveryModeActive);
+                    const bool cappedActiveDelayUnderfeedRecovery =
+                        ce::capture_policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
+                            adaptiveTelemetry, delayReservoirBelowLowWater, currentTargetFps > 0);
                     const bool sourceCadenceMaxRateRecovery =
                         !isWgcEffectiveContentDelayActive() && ce::capture_policy::ShouldUseWgcMaxRateForRecovery(
                                                                    adaptiveTelemetry, wgcNoFreshTickPermille,
                                                                    wgcLowSourceModeActive, wgcLiveRecoveryModeActive);
-                    const bool maxRateRecovery = delayReservoirMaxRateRecovery || sourceCadenceMaxRateRecovery;
+                    const bool maxRateRecovery = delayReservoirMaxRateRecovery ||
+                                                 cappedActiveDelayUnderfeedRecovery ||
+                                                 sourceCadenceMaxRateRecovery;
                     if (maxRateRecovery) {
                         desiredTargetFps = 0;
                         desiredThrottleMode = WgcAdaptiveThrottleMode::kOff;
@@ -5692,14 +5700,15 @@ void EncoderThreadFunc(const AppConfig& config) {
                             ++wgcAdaptiveThrottleAdjustments;
                             LogInfo(
                                 "[WGC CFR] Adaptive capture rate %s: target=%u output=%u src=%u/%u noFresh=%upm "
-                                "lowSrc=%d recover=%d delayReservoirLow=%d reservoir=%u/%u queue=%u jitter=%uus "
-                                "copy=%lldus poolDrop=%u",
+                                "lowSrc=%d recover=%d delayReservoirLow=%d cappedUnderfeed=%d reservoir=%u/%u "
+                                "queue=%u jitter=%uus copy=%lldus poolDrop=%u",
                                 desiredTargetFps == 0 ? "max-rate recovery" : "overcapture cap", desiredTargetFps,
                                 outputFps, wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
                                 wgcLowSourceModeActive ? 1 : 0, wgcLiveRecoveryModeActive ? 1 : 0,
-                                delayReservoirBelowLowWater ? 1 : 0, queueDepth, getWgcDelayReservoirTargetFrames(),
-                                queueDepth, averageJitterUs, static_cast<long long>(g_WgcCap->GetLastCopyTimeUs()),
-                                poolDropCount);
+                                delayReservoirBelowLowWater ? 1 : 0,
+                                cappedActiveDelayUnderfeedRecovery ? 1 : 0, queueDepth,
+                                getWgcDelayReservoirTargetFrames(), queueDepth, averageJitterUs,
+                                static_cast<long long>(g_WgcCap->GetLastCopyTimeUs()), poolDropCount);
                         }
                     }
                 }
@@ -5803,6 +5812,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         // path maintains the delay through low-source/recovery rather than clamping
                         // toward live, which would re-collapse the realized delay -- the other half of
                         // the rubber-band).
+                        const int64_t effectiveContentDelayQpc = getWgcEffectiveContentDelayQpc();
                         int64_t playoutTargetQpc = (encoderGridStartQpc > 0 && targetIntervalTicks > 0)
                                                        ? computeDelayedWgcSelectionTargetQpc()
                                                        : 0;
@@ -5811,38 +5821,59 @@ void EncoderThreadFunc(const AppConfig& config) {
                         // Anti-freeze floor: if the encoder grid has drifted so far behind wall-clock
                         // that even the OLDEST buffered frame is "too new" for this slot, the grid target
                         // would hold/repeat every tick while fresh frames pile up and drop stale -- a
-                        // multi-second hard freeze. Raise the slot target just enough to age the oldest
-                        // (deepest / max-delay) frame in so playout resumes at the source rate. No-op in
-                        // healthy cadence (oldest reserve frame is older than the slot). Only VIDEO source
-                        // selection changes; the CFR video PTS grid and audio timeline are untouched and
-                        // the emitted oldest frame keeps video behind audio (A/V offset preserved).
+                        // multi-second hard freeze. Only raise the slot target when the oldest frame is
+                        // still old enough to preserve the active content delay. Otherwise this is an
+                        // underfilled WGC reserve, not encoder-grid drift, and advancing toward near-live
+                        // would trade the freeze for a visible A/V-delay collapse.
                         if (!bufferedWgcFrames.empty()) {
                             const int64_t oldestBufferedSlotQpc = bufferedWgcFrames.front().timestamp;
+                            const int64_t oldestBufferedAgeQpc =
+                                selectionNowQpc.QuadPart > oldestBufferedSlotQpc
+                                    ? (selectionNowQpc.QuadPart - oldestBufferedSlotQpc)
+                                    : 0;
                             const int64_t antiFreezeTargetQpc =
                                 ce::capture_policy::ApplyWgcUniformPlayoutAntiFreezeFloor(
                                     playoutTargetQpc, oldestBufferedSlotQpc, targetIntervalTicks);
-                            if (antiFreezeTargetQpc > playoutTargetQpc) {
+                            const bool antiFreezeSyncSafe =
+                                ce::capture_policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(
+                                    oldestBufferedAgeQpc, effectiveContentDelayQpc, targetIntervalTicks);
+                            if (antiFreezeTargetQpc > playoutTargetQpc && antiFreezeSyncSafe) {
                                 ++wgcUniformAntiFreezeFloorTotal;
                                 static uint64_t s_lastAntiFreezeLogTick = 0;
                                 const uint64_t nowAntiFreezeTick = GetTickCount64();
                                 if (nowAntiFreezeTick - s_lastAntiFreezeLogTick >= 1000) {
                                     s_lastAntiFreezeLogTick = nowAntiFreezeTick;
                                     const int64_t driftUs = qpcToUs(antiFreezeTargetQpc - playoutTargetQpc);
-                                    const int64_t oldestAgeUs =
-                                        selectionNowQpc.QuadPart > oldestBufferedSlotQpc
-                                            ? qpcToUs(selectionNowQpc.QuadPart - oldestBufferedSlotQpc)
-                                            : 0;
+                                    const int64_t oldestAgeUs = qpcToUs(oldestBufferedAgeQpc);
+                                    const int64_t effectiveDelayUs = qpcToUs(effectiveContentDelayQpc);
                                     LogWarn(
                                         "[WGC CFR] Uniform playout anti-freeze floor engaged: grid target drifted "
                                         "%lldus behind the reserve (even the oldest buffered frame was too-new for "
-                                        "the slot); advancing to the oldest max-delay frame to resume playout at "
-                                        "the source rate. buffered=%zu oldestAge=%lldus total=%llu (encoder-overload "
-                                        "grid drift, NOT a source hitch; A/V PTS unchanged, video stays behind audio)",
+                                        "the slot); advancing to the oldest sync-safe frame to resume playout. "
+                                        "buffered=%zu oldestAge=%lldus effectiveDelay=%lldus total=%llu "
+                                        "(A/V PTS unchanged)",
                                         static_cast<long long>(driftUs), bufferedWgcFrames.size(),
-                                        static_cast<long long>(oldestAgeUs),
+                                        static_cast<long long>(oldestAgeUs), static_cast<long long>(effectiveDelayUs),
                                         static_cast<unsigned long long>(wgcUniformAntiFreezeFloorTotal));
                                 }
                                 playoutTargetQpc = antiFreezeTargetQpc;
+                            } else if (antiFreezeTargetQpc > playoutTargetQpc) {
+                                ++wgcUniformAntiFreezeFloorSkippedSyncTotal;
+                                static uint64_t s_lastAntiFreezeSkippedLogTick = 0;
+                                const uint64_t nowAntiFreezeSkippedTick = GetTickCount64();
+                                if (nowAntiFreezeSkippedTick - s_lastAntiFreezeSkippedLogTick >= 1000) {
+                                    s_lastAntiFreezeSkippedLogTick = nowAntiFreezeSkippedTick;
+                                    const int64_t driftUs = qpcToUs(antiFreezeTargetQpc - playoutTargetQpc);
+                                    const int64_t oldestAgeUs = qpcToUs(oldestBufferedAgeQpc);
+                                    const int64_t effectiveDelayUs = qpcToUs(effectiveContentDelayQpc);
+                                    LogInfo(
+                                        "[WGC CFR] Uniform playout anti-freeze floor skipped to preserve content "
+                                        "delay: drift=%lldus buffered=%zu oldestAge=%lldus effectiveDelay=%lldus "
+                                        "skipped=%llu (reserve underfilled; waiting for sync-safe WGC content)",
+                                        static_cast<long long>(driftUs), bufferedWgcFrames.size(),
+                                        static_cast<long long>(oldestAgeUs), static_cast<long long>(effectiveDelayUs),
+                                        static_cast<unsigned long long>(wgcUniformAntiFreezeFloorSkippedSyncTotal));
+                                }
                             }
                         }
                         const uint32_t uniformActiveDelaySoftLateTargetUs =
@@ -7202,6 +7233,22 @@ void EncoderThreadFunc(const AppConfig& config) {
                         const bool waitBudgetRemaining =
                             waitNow.QuadPart - wgcStartupReserveWaitStartQpc < waitBudgetQpc;
                         if (waitBudgetRemaining) {
+                            const bool useStartupReserveMaxRate =
+                                ce::capture_policy::ShouldUseWgcMaxRateForStartupReserveWait(
+                                    startupReserveMissing, waitBudgetRemaining,
+                                    g_WgcCap && g_WgcCap->GetProducerTargetFps() > 0);
+                            if (useStartupReserveMaxRate) {
+                                g_WgcCap->SetProducerTargetFps(0);
+                                g_WgcAdaptiveTargetFps.store(0, std::memory_order_relaxed);
+                                wgcStartupReserveMaxRateUsed = true;
+                                ++wgcStartupReserveMaxRateCount;
+                                LogInfo(
+                                    "[EncoderThread] WGC startup delay-reserve refill switched producer to max-rate: "
+                                    "reason=%s candidates=%zu span=%lldus target=%lldus",
+                                    startupReserveBelowLowWater ? "low_water" : "span", startupCandidates.size(),
+                                    static_cast<long long>(wgcStartupReserveSpanUs),
+                                    static_cast<long long>(qpcDeltaToUs(startupContentDelayTargetQpc)));
+                            }
                             ++wgcStartupReserveWaitCount;
                             for (auto& candidate : startupCandidates) {
                                 if (candidate.frame.texture || candidate.frame.sharedHandle ||
@@ -9550,7 +9597,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             LogInfo(
                 "[WGC CFR SUMMARY] Live=%llu Dup=%llu DupPct=%.1f%% NoFresh=%llupm NoReserve=%llupm DupReason(src=%llu "
                 "def=%llu timer=%llu drain=%llu) SourceLimitedRepeats=%llu StarvedEpisodes=%llu AntiFreezeFloor=%llu "
-                "longest=%llums longestDup=%llu longestContiguousDup=%llu (%llums) worstIn=%u "
+                "AntiFreezeFloorSkippedSync=%llu longest=%llums longestDup=%llu longestContiguousDup=%llu (%llums) "
+                "worstIn=%u "
                 "worstDel=%u",
                 static_cast<unsigned long long>(liveTicksOutput),
                 static_cast<unsigned long long>(captureSessionSummary.duplicateTicks),
@@ -9563,6 +9611,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(captureSessionSummary.duplicateNoSourceTicks),
                 static_cast<unsigned long long>(captureSessionSummary.starvedEpisodes),
                 static_cast<unsigned long long>(wgcUniformAntiFreezeFloorTotal),
+                static_cast<unsigned long long>(wgcUniformAntiFreezeFloorSkippedSyncTotal),
                 static_cast<unsigned long long>(captureSessionSummary.longestStarvedEpisodeMs),
                 static_cast<unsigned long long>(captureSessionSummary.longestStarvedEpisodeDuplicateTicks),
                 static_cast<unsigned long long>(captureSessionSummary.longestContiguousDupTicks),
@@ -9758,7 +9807,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "scheduleOffset=%lldus effectiveDelay=%.1fms lowSourceBypass=%llu modeMismatch=%llu "
                 "sourceBacktrack=%llu syncDelaySourceLimitedHolds=%llu syncDelayPolicyHolds=%llu "
                 "startupReserveFrames=%u startupReserveSpan=%lldus startupDelayTarget=%lldus "
-                "startupReserveSelected=%d startupReserveReason=%s smoothBuf=%d smoothTargetMs=%u "
+                "startupReserveSelected=%d startupReserveReason=%s startupMaxRate=%d/%u "
+                "smoothBuf=%d smoothTargetMs=%u "
                 "smoothFrames=%u/%u/%u smoothDelay=%.1fms smoothPoolSlots=%u sourceFramePoolBuffers=%u "
                 "budgetSurfaces=%u syncFrames=%u extraFrames=%u retainedCap=%u reservedFreeSlots=%u safetySlots=%u "
                 "retainedCapTrim=%llu ingressAccepted=%u ingressDecimated=%u ingressPlaySoft=%u "
@@ -9785,6 +9835,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(wgcSyncDelayPolicyHoldTotal), wgcStartupReserveFrames,
                 static_cast<long long>(wgcStartupReserveSpanUs), static_cast<long long>(wgcStartupDelayTargetUs),
                 wgcStartupSelectedByDelayReserve ? 1 : 0, wgcStartupReserveReason.c_str(),
+                wgcStartupReserveMaxRateUsed ? 1 : 0, wgcStartupReserveMaxRateCount,
                 config.wgcSmoothnessBufferEnabled ? 1 : 0, config.wgcSmoothnessBufferMaxMs, wgcSmoothnessActualFrames,
                 wgcSmoothnessRetainedFrames, wgcSmoothnessDesiredFrames,
                 static_cast<double>(wgcSummarySmoothActualDelayUs) / 1000.0, wgcSmoothnessPoolSlots,
