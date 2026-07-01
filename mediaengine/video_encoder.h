@@ -166,12 +166,12 @@ private:
     int outputWidth = 0;  // Encoded output dimensions (after scaling)
     int outputHeight = 0;
     bool scalingEnabled = false;                     // True if input != output dimensions
-    bool captureCursor = true;                       // Capture mouse cursor in recording (WGC native)
+    bool captureCursor = true;                       // Include mouse cursor in recording
     int gpuPriority = 0;                             // GPU priority for encoder (-7 to 7)
     int currentGpuThreadPriority = 0;
     uint64_t gpuPriorityPressureSinceMs = 0;
     uint64_t gpuPriorityHealthySinceMs = 0;
-    std::unique_ptr<CursorRenderer> cursorRenderer;  // GPU cursor compositing (for inject mode)
+    std::unique_ptr<CursorRenderer> cursorRenderer;  // GPU cursor compositing
     std::string outputFilename;
 
     // Audio stream support (deferred creation after video stream)
@@ -249,6 +249,15 @@ private:
     // conversion/compositing. Repeating this texture produces a true duplicate
     // even when source shared-handle slots have already been reused.
     ID3D11Texture2D* repeatFrameTexture = nullptr;
+    ID3D11Texture2D* repeatSourceFrameTexture = nullptr;
+    bool repeatSourceNeedsCursorRecompose = false;
+    uint32_t repeatSourceFrameWidth = 0;
+    uint32_t repeatSourceFrameHeight = 0;
+    bool repeatSourceFrameIsHDR = false;
+    int repeatSourceCaptureOriginX = 0;
+    int repeatSourceCaptureOriginY = 0;
+    bool repeatSourceCacheFailureLogged = false;
+    bool repeatCursorRecomposeFallbackLogged = false;
 
     // Cached last encoded video packet for zero-cost frame repeats.
     // When RepeatLastFrame has a valid cache, it resubmits the cached encoded
@@ -259,6 +268,10 @@ private:
 
     void CacheRepeatPacket(const AVPacket* pkt);
     void InvalidateRepeatPacketCache();
+    bool CacheRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture, uint32_t frameWidth, uint32_t frameHeight,
+                                       bool isHDR, int captureOriginX, int captureOriginY);
+    void InvalidateRepeatSourceFrameTexture();
+    bool PopulateD3D11FrameFromRepeatSource(AVFrame* d3d11Frame);
 
     int64_t lastLogFrameCount = 0;  // Last frame count when we logged FPS
     bool needsCounterReset = true;  // Signals start of new recording
@@ -398,9 +411,11 @@ private:
     void CleanupVideoProcessor();
     AVPixelFormat GetActiveD3D11SwFormat() const;
     bool PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3D11Texture2D* dstTexture, bool overlayCursor,
-                                      int captureOriginX = 0, int captureOriginY = 0);
+                                      int captureOriginX = 0, int captureOriginY = 0,
+                                      bool allowCursorHandleVisibilityFallback = false);
     bool ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool cursorVisible = false,
-                           int cursorX = 0, int cursorY = 0, bool allowDirectInputView = true);
+                           int cursorX = 0, int cursorY = 0, bool allowDirectInputView = true,
+                           int captureOriginX = 0, int captureOriginY = 0);
     bool CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture);
     bool EnsureSwapRBShader();
     ID3D11Texture2D* RenderFullscreenCopy(ID3D11Texture2D* input, uint32_t w, uint32_t h, DXGI_FORMAT inputSrvFormat,

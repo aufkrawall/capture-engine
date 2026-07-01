@@ -72,7 +72,7 @@ struct VideoConfig {
     int bFrames;
     std::string bRefMode;
     std::string customOptions;
-    bool captureCursor = true;  // Capture mouse cursor in recording (WGC native)
+    bool captureCursor = true;  // Include mouse cursor in recording
 
     // NVENC-specific settings
     int qp = 23;  // Quality value used for NVENC CQ/CQP modes (valid range depends on codec/mode)

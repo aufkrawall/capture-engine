@@ -339,24 +339,6 @@ struct IGraphicsCaptureSession5Abi : ::IInspectable {
     virtual HRESULT STDMETHODCALLTYPE put_MinUpdateInterval(int64_t value) = 0;
 };
 
-static const GUID IID_IGraphicsCaptureSession4Abi = {
-    0xAE99813C, 0xC257, 0x5759, {0x8E, 0xD0, 0x66, 0x8C, 0x9B, 0x55, 0x7E, 0xD4}};
-
-struct IGraphicsCaptureSession4Abi : ::IInspectable {
-    virtual HRESULT STDMETHODCALLTYPE get_DirtyRegionMode(int32_t* value) = 0;
-    virtual HRESULT STDMETHODCALLTYPE put_DirtyRegionMode(int32_t value) = 0;
-};
-
-static const GUID IID_IDirect3D11CaptureFrame2Abi = {
-    0x37869CFA, 0x2B48, 0x5EBF, {0x9A, 0xFB, 0xDF, 0xFD, 0x80, 0x5D, 0xEF, 0xDB}};
-
-struct IDirect3D11CaptureFrame2Abi : ::IInspectable {
-    virtual HRESULT STDMETHODCALLTYPE get_DirtyRegions(void** value) = 0;
-    virtual HRESULT STDMETHODCALLTYPE get_DirtyRegionMode(int32_t* value) = 0;
-};
-
-constexpr int32_t kGraphicsCaptureDirtyRegionModeReportOnly = 0;
-
 template <typename T>
 bool TryQueryComInterface(const T& object, const GUID& iid, void** result) {
     if (!result) {
@@ -600,16 +582,6 @@ public:
     std::atomic<uint32_t> poolSlotFastRewriteCount_{0};
     std::atomic<int64_t> lastPoolSlotRewriteUs_{0};
     std::vector<int64_t> poolSlotLastWriteQpc_;
-    bool dirtyRegionModeEnabled_ = false;
-    bool dirtyRegionModeRequested_ = false;
-    int32_t dirtyRegionMode_ = -1;
-    HCURSOR lastCursorHandle_ = nullptr;
-    POINT lastCursorScreenPos_ = {};
-    bool lastCursorScreenPosValid_ = false;
-    int32_t lastCursorWidth_ = 64;
-    int32_t lastCursorHeight_ = 64;
-    int32_t lastCursorHotspotX_ = 0;
-    int32_t lastCursorHotspotY_ = 0;
 
     // External throttle flag (e.g., encoder bottlenecked)
     const std::atomic<bool>* throttleFlag_ = nullptr;
@@ -1344,7 +1316,6 @@ public:
         lastCapturedQPC_ = 0;
         nextCaptureQPC_ = 0;
         ApplyProducerInterval();
-        lastCursorScreenPosValid_ = false;
         std::lock_guard<std::mutex> lock(frameMutex_);
         while (!pendingFrames_.empty()) {
             WGCCapturedFrame stale = std::move(pendingFrames_.front());
@@ -1515,38 +1486,6 @@ public:
         }
     }
 
-    void ConfigureDirtyRegionMode() {
-        dirtyRegionModeEnabled_ = false;
-        dirtyRegionModeRequested_ = false;
-        dirtyRegionMode_ = -1;
-        if (!session_) {
-            return;
-        }
-
-        IGraphicsCaptureSession4Abi* session4 = nullptr;
-        if (!TryQueryComInterface(session_, IID_IGraphicsCaptureSession4Abi, reinterpret_cast<void**>(&session4)) ||
-            !session4) {
-            LogInfo("[WGC] Dirty-region metadata not available (older WinRT projection/runtime)");
-            return;
-        }
-
-        const HRESULT setHr = session4->put_DirtyRegionMode(kGraphicsCaptureDirtyRegionModeReportOnly);
-        int32_t mode = -1;
-        const HRESULT getHr = session4->get_DirtyRegionMode(&mode);
-        session4->Release();
-
-        dirtyRegionModeRequested_ = SUCCEEDED(setHr);
-        dirtyRegionMode_ = SUCCEEDED(getHr) ? mode : -1;
-        dirtyRegionModeEnabled_ =
-            dirtyRegionModeRequested_ && dirtyRegionMode_ == kGraphicsCaptureDirtyRegionModeReportOnly;
-        if (dirtyRegionModeEnabled_) {
-            LogInfo("[WGC] Dirty-region metadata enabled (mode=ReportOnly)");
-        } else {
-            LogInfo("[WGC] Dirty-region metadata disabled (setHR=0x%08lX getHR=0x%08lX mode=%d)",
-                    static_cast<unsigned long>(setHr), static_cast<unsigned long>(getHr), dirtyRegionMode_);
-        }
-    }
-
     int64_t GetFrameSourceQpc(const winrt::Direct3D11CaptureFrame& frame) const {
         const auto systemRelativeTime = frame.SystemRelativeTime();
         return HundredNanosecondsToQpcTicks(systemRelativeTime.count(), qpcFreq_);
@@ -1602,182 +1541,6 @@ public:
             lastAssignedSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
         }
         return sourceFrameQpc;
-    }
-
-    bool RefreshCursorMetrics(HCURSOR cursorHandle) {
-        if (!cursorHandle) {
-            return false;
-        }
-
-        if (lastCursorHandle_ == cursorHandle) {
-            return true;
-        }
-
-        lastCursorHandle_ = cursorHandle;
-        lastCursorWidth_ = 64;
-        lastCursorHeight_ = 64;
-        lastCursorHotspotX_ = 0;
-        lastCursorHotspotY_ = 0;
-
-        HICON icon = CopyIcon(cursorHandle);
-        if (!icon) {
-            return false;
-        }
-
-        ICONINFO iconInfo = {};
-        if (!GetIconInfo(icon, &iconInfo)) {
-            DestroyIcon(icon);
-            return false;
-        }
-
-        BITMAP bitmap = {};
-        if (iconInfo.hbmColor && GetObject(iconInfo.hbmColor, sizeof(bitmap), &bitmap) == sizeof(bitmap)) {
-            lastCursorWidth_ = std::max<LONG>(1, bitmap.bmWidth);
-            lastCursorHeight_ = std::max<LONG>(1, std::abs(bitmap.bmHeight));
-        } else if (iconInfo.hbmMask && GetObject(iconInfo.hbmMask, sizeof(bitmap), &bitmap) == sizeof(bitmap)) {
-            lastCursorWidth_ = std::max<LONG>(1, bitmap.bmWidth);
-            lastCursorHeight_ = std::max<LONG>(1, std::abs(bitmap.bmHeight) / 2);
-        }
-
-        lastCursorHotspotX_ = static_cast<int32_t>(iconInfo.xHotspot);
-        lastCursorHotspotY_ = static_cast<int32_t>(iconInfo.yHotspot);
-
-        if (iconInfo.hbmColor) {
-            DeleteObject(iconInfo.hbmColor);
-        }
-        if (iconInfo.hbmMask) {
-            DeleteObject(iconInfo.hbmMask);
-        }
-        DestroyIcon(icon);
-        return true;
-    }
-
-    static RECT ClampRectToFrame(RECT rect, uint32_t frameWidth, uint32_t frameHeight) {
-        rect.left = std::clamp<LONG>(rect.left, 0, static_cast<LONG>(frameWidth));
-        rect.top = std::clamp<LONG>(rect.top, 0, static_cast<LONG>(frameHeight));
-        rect.right = std::clamp<LONG>(rect.right, 0, static_cast<LONG>(frameWidth));
-        rect.bottom = std::clamp<LONG>(rect.bottom, 0, static_cast<LONG>(frameHeight));
-        if (rect.right < rect.left) {
-            rect.right = rect.left;
-        }
-        if (rect.bottom < rect.top) {
-            rect.bottom = rect.top;
-        }
-        return rect;
-    }
-
-    RECT BuildCursorRectForScreenPoint(const POINT& screenPos, int32_t captureLeft, int32_t captureTop,
-                                       uint32_t frameWidth, uint32_t frameHeight, LONG padding) const {
-        RECT rect = {};
-        rect.left = static_cast<LONG>(screenPos.x - captureLeft - lastCursorHotspotX_ - padding);
-        rect.top = static_cast<LONG>(screenPos.y - captureTop - lastCursorHotspotY_ - padding);
-        rect.right = rect.left + lastCursorWidth_ + padding * 2;
-        rect.bottom = rect.top + lastCursorHeight_ + padding * 2;
-        return ClampRectToFrame(rect, frameWidth, frameHeight);
-    }
-
-    static bool RectContainsRect(const RECT& outer, const RECT& inner) {
-        return inner.left >= outer.left && inner.top >= outer.top && inner.right <= outer.right &&
-               inner.bottom <= outer.bottom;
-    }
-
-    bool ShouldSkipCursorOnlyDirtyFrame(const winrt::Direct3D11CaptureFrame& frame, uint32_t frameWidth,
-                                        uint32_t frameHeight, int64_t sourceFrameQpc) {
-        if (!dirtyRegionModeEnabled_) {
-            return false;
-        }
-
-        IDirect3D11CaptureFrame2Abi* frame2 = nullptr;
-        if (!TryQueryComInterface(frame, IID_IDirect3D11CaptureFrame2Abi, reinterpret_cast<void**>(&frame2)) ||
-            !frame2) {
-            return false;
-        }
-
-        int32_t frameDirtyRegionMode = -1;
-        const HRESULT dirtyRegionModeHr = frame2->get_DirtyRegionMode(&frameDirtyRegionMode);
-        if (FAILED(dirtyRegionModeHr) || frameDirtyRegionMode != kGraphicsCaptureDirtyRegionModeReportOnly) {
-            frame2->Release();
-            return false;
-        }
-
-        void* dirtyRegionsAbi = nullptr;
-        const HRESULT dirtyRegionsHr = frame2->get_DirtyRegions(&dirtyRegionsAbi);
-        frame2->Release();
-        if (FAILED(dirtyRegionsHr) || !dirtyRegionsAbi) {
-            return false;
-        }
-
-        winrt::Windows::Foundation::Collections::IVectorView<winrt::Windows::Graphics::RectInt32> dirtyRegions{
-            dirtyRegionsAbi, winrt::take_ownership_from_abi};
-        if (!dirtyRegions) {
-            return false;
-        }
-
-        const uint32_t dirtyRegionCount = dirtyRegions.Size();
-        if (dirtyRegionCount == 0 || dirtyRegionCount > 8) {
-            return false;
-        }
-
-        int32_t captureLeft = 0;
-        int32_t captureTop = 0;
-        if (!GetCaptureOrigin(captureLeft, captureTop)) {
-            return false;
-        }
-
-        CURSORINFO cursorInfo = {};
-        cursorInfo.cbSize = sizeof(CURSORINFO);
-        if (!GetCursorInfo(&cursorInfo) || !cursorInfo.hCursor) {
-            lastCursorScreenPosValid_ = false;
-            return false;
-        }
-
-        RefreshCursorMetrics(cursorInfo.hCursor);
-
-        constexpr LONG kCursorPaddingPx = 48;
-        RECT currentCursorRect = BuildCursorRectForScreenPoint(cursorInfo.ptScreenPos, captureLeft, captureTop,
-                                                               frameWidth, frameHeight, kCursorPaddingPx);
-        RECT previousCursorRect = currentCursorRect;
-        if (lastCursorScreenPosValid_) {
-            previousCursorRect = BuildCursorRectForScreenPoint(lastCursorScreenPos_, captureLeft, captureTop,
-                                                               frameWidth, frameHeight, kCursorPaddingPx);
-        }
-
-        const int64_t expandedCursorArea =
-            static_cast<int64_t>(std::max<LONG>(1, currentCursorRect.right - currentCursorRect.left)) *
-            static_cast<int64_t>(std::max<LONG>(1, currentCursorRect.bottom - currentCursorRect.top));
-        const int64_t maxDirtyArea = expandedCursorArea * 3;
-
-        int64_t dirtyArea = 0;
-        bool cursorOnly = true;
-        for (uint32_t i = 0; i < dirtyRegionCount; ++i) {
-            const auto dirtyRegion = dirtyRegions.GetAt(i);
-            RECT dirtyRect = {dirtyRegion.X, dirtyRegion.Y, dirtyRegion.X + dirtyRegion.Width,
-                              dirtyRegion.Y + dirtyRegion.Height};
-            dirtyRect = ClampRectToFrame(dirtyRect, frameWidth, frameHeight);
-
-            const int64_t regionArea = static_cast<int64_t>(std::max<LONG>(0, dirtyRect.right - dirtyRect.left)) *
-                                       static_cast<int64_t>(std::max<LONG>(0, dirtyRect.bottom - dirtyRect.top));
-            dirtyArea += regionArea;
-            if (dirtyArea > maxDirtyArea) {
-                cursorOnly = false;
-                break;
-            }
-
-            if (!RectContainsRect(currentCursorRect, dirtyRect) && !RectContainsRect(previousCursorRect, dirtyRect)) {
-                cursorOnly = false;
-                break;
-            }
-        }
-
-        lastCursorScreenPos_ = cursorInfo.ptScreenPos;
-        lastCursorScreenPosValid_ = true;
-        if (!cursorOnly) {
-            return false;
-        }
-
-        const int64_t lastDeliveredSourceQpc = lastDeliveredSourceQpc_.load(std::memory_order_relaxed);
-        return ce::capture_policy::ShouldSkipRedundantCursorOnlyWgcFrame(producerTargetFps_, qpcFreq_, sourceFrameQpc,
-                                                                         lastDeliveredSourceQpc);
     }
 
     HMONITOR ResolveTargetMonitor() const {
@@ -2441,15 +2204,6 @@ public:
                     LogInfo("[WGC] Source format: fmt=%d %ux%u", desc.Format, desc.Width, desc.Height);
                 }
 
-                if (ShouldSkipCursorOnlyDirtyFrame(winrtFrame, desc.Width, desc.Height, sourceFrameQpc)) {
-                    skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-                    cursorOnlySkipCount_.fetch_add(1, std::memory_order_relaxed);
-                    texture->Release();
-                    access->Release();
-                    winrtFrame.Close();
-                    return false;
-                }
-
                 ID3D11Texture2D* copiedTexture = nullptr;
                 int64_t copyCompleteQpc = 0;
                 WgcPoolSlotLease poolLease;
@@ -2937,7 +2691,9 @@ public:
             }
         }
 
-        // Configure cursor capture
+        // Configure native WGC cursor capture. WGC recording normally keeps
+        // this disabled and composites the cursor in the encoder so the live
+        // cursor can remain in the hardware plane.
         try {
             if (session_) {
                 session_.IsCursorCaptureEnabled(captureCursor);
@@ -2946,10 +2702,6 @@ public:
         } catch (...) {
             // Not available on older Windows versions
             LogInfo("[WGC] IsCursorCaptureEnabled not available");
-        }
-
-        if (captureCursor) {
-            ConfigureDirtyRegionMode();
         }
 
         // Ask WGC to wake no faster than the requested producer cadence so
@@ -2996,9 +2748,6 @@ public:
         ReleasePendingFramesLocked();
         ReleaseTexturePool();
         borderlessCapture_ = false;
-        dirtyRegionModeEnabled_ = false;
-        dirtyRegionModeRequested_ = false;
-        dirtyRegionMode_ = -1;
         frameWidth_ = 0;
         frameHeight_ = 0;
 

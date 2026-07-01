@@ -559,17 +559,9 @@ TEST(CapturePipelinePolicyTest, WgcCfrSourceCaptureDefaultsToSteadyHeadroomCap) 
     EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(143, 1250), 179u);
 }
 
-TEST(CapturePipelinePolicyTest, WgcCursorOnlySuppressionOnlyDropsAboveProducerCadence) {
-    constexpr int64_t qpcFreq = 10000000;
-    EXPECT_FALSE(policy::ShouldSkipRedundantCursorOnlyWgcFrame(0, qpcFreq, 1100, 1000));
-    EXPECT_FALSE(policy::ShouldSkipRedundantCursorOnlyWgcFrame(150, qpcFreq, 0, 1000));
-    EXPECT_FALSE(policy::ShouldSkipRedundantCursorOnlyWgcFrame(150, qpcFreq, 1100, 0));
-    EXPECT_FALSE(policy::ShouldSkipRedundantCursorOnlyWgcFrame(150, qpcFreq, 1000, 1000));
-
-    const int64_t interval150 = qpcFreq / 150;
-    EXPECT_TRUE(policy::ShouldSkipRedundantCursorOnlyWgcFrame(150, qpcFreq, 1000 + interval150 - 1, 1000));
-    EXPECT_FALSE(policy::ShouldSkipRedundantCursorOnlyWgcFrame(150, qpcFreq, 1000 + interval150, 1000));
-    EXPECT_FALSE(policy::ShouldSkipRedundantCursorOnlyWgcFrame(150, qpcFreq, 1000 + interval150 + 1, 1000));
+TEST(CapturePipelinePolicyTest, WgcRecordingAvoidsNativeCursorCapture) {
+    EXPECT_FALSE(policy::ShouldUseNativeWgcCursorCapture(false));
+    EXPECT_FALSE(policy::ShouldUseNativeWgcCursorCapture(true));
 }
 
 TEST(CapturePipelinePolicyTest, WgcOvercaptureSwitchesToMaxRateDuringRecovery) {

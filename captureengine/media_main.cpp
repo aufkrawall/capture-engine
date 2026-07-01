@@ -1039,7 +1039,10 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
         g_WgcCap->StopCapture();
     }
 
-    g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+    g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
+    if (config.video.captureCursor) {
+        LogInfo("[Media] WGC cursor capture: native WGC cursor disabled; encoder-side cursor composition enabled");
+    }
     g_WgcCap->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
     g_WgcCap->SetSameDeviceCapture(config.wgcSameDeviceCapture);
     g_WgcCap->SetPreferCompact10bitPool(config.wgcPreferCompact10bitPool);
@@ -10503,7 +10506,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         ApplyMediaPrioritySettings(config);
         if (g_WgcCap) {
             applyWgcOptions();
-            g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+            g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
         }
         if (mediaEngineReady) {
             MediaEngine_SetLogCallback(IsDebugLoggingEnabled(config.logLevel) ? MediaLogCallback : nullptr);
@@ -10550,7 +10553,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
         if (targetMonitor == NULL && currentCapturedWindow == NULL && !currentTargetPrefersInject && g_WgcCap) {
             applyWgcOptions();
-            g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+            g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
             g_WgcCap->SetThrottleFlag(nullptr);
             SetPreferredScreenGrab(true);
             return true;
@@ -10578,7 +10581,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return false;
         }
 
-        g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+        g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
         g_WgcCap->SetThrottleFlag(nullptr);
         SetPreferredScreenGrab(true);
         currentCapturedWindow = NULL;
@@ -10597,7 +10600,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
         if (currentCapturedWindow == targetWindow && g_WgcCap && !currentTargetPrefersInject) {
             applyWgcOptions();
-            g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+            g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
             g_WgcCap->SetThrottleFlag(nullptr);
             SetPreferredScreenGrab(true);
             return true;
@@ -10612,7 +10615,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         g_WgcCap = std::make_unique<WGCCapture>();
         applyWgcOptions();
         if (g_WgcCap->InitForWindow(d3dDevice, targetWindow)) {
-            g_WgcCap->SetCaptureCursor(config.video.captureCursor);
+            g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
             g_WgcCap->SetThrottleFlag(nullptr);
             SetPreferredScreenGrab(true);
             currentCapturedWindow = targetWindow;

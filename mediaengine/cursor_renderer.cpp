@@ -449,14 +449,15 @@ bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32
     return true;
 }
 
-bool CursorRenderer::UpdateCursorTexture() {
+bool CursorRenderer::UpdateCursorTexture(bool allowHandleVisibilityFallback) {
     CURSORINFO ci = {sizeof(CURSORINFO)};
     if (!GetCursorInfo(&ci)) {
         return false;
     }
 
     // Check if cursor is hidden
-    if (!(ci.flags & CURSOR_SHOWING)) {
+    const bool cursorVisible = (ci.flags & CURSOR_SHOWING) || (allowHandleVisibilityFallback && ci.hCursor);
+    if (!cursorVisible) {
         return false;
     }
 
@@ -535,7 +536,8 @@ bool CursorRenderer::UpdateCursorTexture() {
 }
 
 bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int frameWidth, int frameHeight,
-                                        int captureOriginX, int captureOriginY) {
+                                        int captureOriginX, int captureOriginY,
+                                        bool allowHandleVisibilityFallback) {
     if (!resourcesCreated || !device || !context) {
         return false;
     }
@@ -546,12 +548,13 @@ bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int fram
         return false;
     }
 
-    if (!(ci.flags & CURSOR_SHOWING)) {
+    const bool cursorVisible = (ci.flags & CURSOR_SHOWING) || (allowHandleVisibilityFallback && ci.hCursor);
+    if (!cursorVisible) {
         return false;  // Cursor hidden - zero overhead path
     }
 
     // Update cursor texture if needed
-    if (!UpdateCursorTexture()) {
+    if (!UpdateCursorTexture(allowHandleVisibilityFallback)) {
         return false;
     }
 

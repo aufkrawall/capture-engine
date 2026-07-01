@@ -986,15 +986,11 @@ inline bool ShouldRestoreWgcOvercaptureCap(const WgcAdaptiveTelemetry& telemetry
            noFreshTickPermille <= kWgcLowSourceExitEmptyTickPermille;
 }
 
-inline bool ShouldSkipRedundantCursorOnlyWgcFrame(uint32_t producerTargetFps, int64_t qpcFreq, int64_t sourceFrameQpc,
-                                                  int64_t lastDeliveredSourceFrameQpc) {
-    if (producerTargetFps == 0 || qpcFreq <= 0 || sourceFrameQpc <= 0 || lastDeliveredSourceFrameQpc <= 0 ||
-        sourceFrameQpc <= lastDeliveredSourceFrameQpc) {
-        return false;
-    }
-
-    const int64_t producerIntervalQpc = std::max<int64_t>(1, qpcFreq / static_cast<int64_t>(producerTargetFps));
-    return (sourceFrameQpc - lastDeliveredSourceFrameQpc) < producerIntervalQpc;
+inline bool ShouldUseNativeWgcCursorCapture(bool /*recordingCursorRequested*/) {
+    // Native WGC cursor capture can force the live cursor out of the hardware
+    // plane and perturb flip-model/VRR promotion. Keep the user's cursor in the
+    // recording by compositing it in the encoder instead.
+    return false;
 }
 
 enum class HeldModeTransition : uint8_t {

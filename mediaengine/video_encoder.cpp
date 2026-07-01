@@ -1503,7 +1503,8 @@ AVPixelFormat VideoEncoder::GetActiveD3D11SwFormat() const {
 }
 
 bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3D11Texture2D* dstTexture,
-                                                bool overlayCursor, int captureOriginX, int captureOriginY) {
+                                                bool overlayCursor, int captureOriginX, int captureOriginY,
+                                                bool allowCursorHandleVisibilityFallback) {
     if (!srcTexture || !dstTexture || !d3d11Device || !d3d11Context) {
         return false;
     }
@@ -1597,7 +1598,7 @@ bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3
             }
         } else {
             cursorRenderer->CompositeOntoFrame(normalizedTexture, (int)dstDesc.Width, (int)dstDesc.Height,
-                                               captureOriginX, captureOriginY);
+                                               captureOriginX, captureOriginY, allowCursorHandleVisibilityFallback);
         }
     }
 
@@ -1648,6 +1649,139 @@ bool VideoEncoder::CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture) {
 
     D3D11ScopedLock lock;
     d3d11Context->CopyResource(repeatFrameTexture, sourceTexture);
+    return true;
+}
+
+void VideoEncoder::InvalidateRepeatSourceFrameTexture() {
+    if (repeatSourceFrameTexture) {
+        repeatSourceFrameTexture->Release();
+        repeatSourceFrameTexture = nullptr;
+    }
+    repeatSourceNeedsCursorRecompose = false;
+    repeatSourceFrameWidth = 0;
+    repeatSourceFrameHeight = 0;
+    repeatSourceFrameIsHDR = false;
+    repeatSourceCaptureOriginX = 0;
+    repeatSourceCaptureOriginY = 0;
+}
+
+bool VideoEncoder::CacheRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture, uint32_t frameWidth,
+                                                 uint32_t frameHeight, bool isHDR, int captureOriginX,
+                                                 int captureOriginY) {
+    if (!sourceTexture || !d3d11Device || !d3d11Context) {
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC srcDesc = {};
+    sourceTexture->GetDesc(&srcDesc);
+
+    D3D11_TEXTURE2D_DESC cacheDesc = srcDesc;
+    cacheDesc.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
+    cacheDesc.MiscFlags = 0;
+    cacheDesc.CPUAccessFlags = 0;
+    cacheDesc.Usage = D3D11_USAGE_DEFAULT;
+
+    bool needsRecreate = true;
+    if (repeatSourceFrameTexture) {
+        D3D11_TEXTURE2D_DESC existingDesc = {};
+        repeatSourceFrameTexture->GetDesc(&existingDesc);
+        needsRecreate = existingDesc.Width != cacheDesc.Width || existingDesc.Height != cacheDesc.Height ||
+                        existingDesc.Format != cacheDesc.Format || existingDesc.BindFlags != cacheDesc.BindFlags ||
+                        existingDesc.ArraySize != cacheDesc.ArraySize ||
+                        existingDesc.MipLevels != cacheDesc.MipLevels ||
+                        existingDesc.SampleDesc.Count != cacheDesc.SampleDesc.Count ||
+                        existingDesc.SampleDesc.Quality != cacheDesc.SampleDesc.Quality;
+    }
+
+    if (needsRecreate) {
+        InvalidateRepeatSourceFrameTexture();
+        HRESULT hr = d3d11Device->CreateTexture2D(&cacheDesc, nullptr, &repeatSourceFrameTexture);
+        if (FAILED(hr)) {
+            if (!repeatSourceCacheFailureLogged) {
+                DLL_Log("[VideoEncoder] Failed to create cursor-aware repeat source texture: HR=%x fmt=%d %ux%u", hr,
+                        cacheDesc.Format, cacheDesc.Width, cacheDesc.Height);
+                repeatSourceCacheFailureLogged = true;
+            }
+            return false;
+        }
+    }
+
+    {
+        D3D11ScopedLock lock;
+        d3d11Context->CopyResource(repeatSourceFrameTexture, sourceTexture);
+    }
+
+    repeatSourceNeedsCursorRecompose = true;
+    repeatSourceFrameWidth = frameWidth;
+    repeatSourceFrameHeight = frameHeight;
+    repeatSourceFrameIsHDR = isHDR;
+    repeatSourceCaptureOriginX = captureOriginX;
+    repeatSourceCaptureOriginY = captureOriginY;
+    return true;
+}
+
+bool VideoEncoder::PopulateD3D11FrameFromRepeatSource(AVFrame* d3d11Frame) {
+    if (!d3d11Frame || !repeatSourceFrameTexture || !repeatSourceNeedsCursorRecompose) {
+        return false;
+    }
+
+    const AVPixelFormat activeSwFormat = GetActiveD3D11SwFormat();
+    const bool useDirectRgbPath = IsDirectRgbD3D11SwFormat(activeSwFormat);
+
+    if (!useDirectRgbPath && captureCursor && !videoProcessorInit) {
+        if (!InitVideoProcessor()) {
+            return false;
+        }
+    }
+
+    if (useDirectRgbPath) {
+        const int frameRet = av_hwframe_get_buffer(d3d11FramesCtx, d3d11Frame, 0);
+        if (frameRet < 0 || !d3d11Frame->data[0]) {
+            DLL_Log("[VideoEncoder] RepeatLastFrame failed to allocate direct RGB repeat frame: %d", frameRet);
+            return false;
+        }
+
+        return PrepareD3D11TextureForEncode(
+            repeatSourceFrameTexture, reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]), captureCursor,
+            repeatSourceCaptureOriginX, repeatSourceCaptureOriginY, true);
+    }
+
+    ID3D11Texture2D* nv12Tex = nullptr;
+    bool cursorVisible = false;
+    int cursorX = 0;
+    int cursorY = 0;
+    if (captureCursor && vpSupportsOverlay && cursorRenderer) {
+        CURSORINFO ci = {sizeof(CURSORINFO)};
+        if (GetCursorInfo(&ci)) {
+            if (encodeFrameCounter % 100 == 1) {
+                DLL_Log("[Cursor] WGC repeat frame %d: flags=%d hCursor=%p pos=(%d,%d) origin=(%d,%d)",
+                        encodeFrameCounter, ci.flags, (void*)ci.hCursor, ci.ptScreenPos.x, ci.ptScreenPos.y,
+                        repeatSourceCaptureOriginX, repeatSourceCaptureOriginY);
+            }
+
+            if (ci.hCursor) {
+                cursorVisible = true;
+                cursorX = ci.ptScreenPos.x;
+                cursorY = ci.ptScreenPos.y;
+                activeCursor = GetCursorCacheEntry(ci.hCursor);
+            }
+        }
+    }
+
+    if (!ConvertBGRAtoNV12(repeatSourceFrameTexture, &nv12Tex, cursorVisible, cursorX, cursorY, false,
+                           repeatSourceCaptureOriginX, repeatSourceCaptureOriginY)) {
+        return false;
+    }
+
+    d3d11Frame->width = scalingEnabled ? outputWidth : width;
+    d3d11Frame->height = scalingEnabled ? outputHeight : height;
+    d3d11Frame->buf[0] = av_buffer_create(reinterpret_cast<uint8_t*>(nv12Tex), 0, FreeD3D11Tex, NULL, 0);
+    if (!d3d11Frame->buf[0]) {
+        FreeD3D11Tex(NULL, reinterpret_cast<uint8_t*>(nv12Tex));
+        return false;
+    }
+    d3d11Frame->data[0] = reinterpret_cast<uint8_t*>(nv12Tex);
+    d3d11Frame->data[1] = 0;
     return true;
 }
 
@@ -2459,6 +2593,8 @@ void VideoEncoder::BeginDeferredRecording() {
         repeatFrameTexture->Release();
         repeatFrameTexture = nullptr;
     }
+    InvalidateRepeatSourceFrameTexture();
+    InvalidateRepeatPacketCache();
 
     audioPacketCount = 0;
     videoPacketCount = 0;
@@ -4045,6 +4181,13 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         }
     }
 
+    const bool recomposeCursorForRepeats = captureCursor && cursorRenderer && (useDirectRgbPath || vpSupportsOverlay);
+    if (recomposeCursorForRepeats) {
+        InvalidateRepeatPacketCache();
+    } else if (repeatSourceNeedsCursorRecompose) {
+        InvalidateRepeatSourceFrameTexture();
+    }
+
     auto beforeConvert = PerfTimer::now();
     AVFrame* d3d11Frame = av_frame_alloc();
     if (!d3d11Frame) {
@@ -4064,19 +4207,42 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             return false;
         }
 
-        if (!PrepareD3D11TextureForEncode(bgraTexture, (ID3D11Texture2D*)d3d11Frame->data[0], false, captureLeft,
-                                          captureTop)) {
+        if (!PrepareD3D11TextureForEncode(bgraTexture, (ID3D11Texture2D*)d3d11Frame->data[0], captureCursor,
+                                          captureLeft, captureTop, true)) {
             DLL_Log("[VideoEncoder] Frame %d: Direct D3D11 RGB preparation failed", encodeFrameCounter);
             av_frame_free(&d3d11Frame);
             return false;
         }
     } else {
-        // Convert captured RGB -> NV12/P010 using Video Processor. In WGC mode the
-        // cursor is supplied by Windows via native cursor capture when enabled.
+        // Convert captured RGB -> NV12/P010 using Video Processor. WGC keeps
+        // native cursor capture disabled so Windows can retain the hardware
+        // cursor plane; when requested, draw a cursor copy into the encoded
+        // frame here.
         ID3D11Texture2D* nv12Tex = nullptr;
+        bool cursorVisible = false;
+        int cursorX = 0;
+        int cursorY = 0;
+        if (captureCursor && vpSupportsOverlay && cursorRenderer) {
+            CURSORINFO ci = {sizeof(CURSORINFO)};
+            if (GetCursorInfo(&ci)) {
+                if (encodeFrameCounter % 100 == 1) {
+                    DLL_Log("[Cursor] WGC frame %d: flags=%d hCursor=%p pos=(%d,%d) origin=(%d,%d)",
+                            encodeFrameCounter, ci.flags, (void*)ci.hCursor, ci.ptScreenPos.x, ci.ptScreenPos.y,
+                            captureLeft, captureTop);
+                }
+
+                if (ci.hCursor) {
+                    cursorVisible = true;
+                    cursorX = ci.ptScreenPos.x;
+                    cursorY = ci.ptScreenPos.y;
+                    activeCursor = GetCursorCacheEntry(ci.hCursor);
+                }
+            }
+        }
 
         // Scoped Lock for D3D11 Immediate Context (protects Blt/CopyResource)
-        bool convertSuccess = ConvertBGRAtoNV12(bgraTexture, &nv12Tex, false, 0, 0, false);
+        bool convertSuccess =
+            ConvertBGRAtoNV12(bgraTexture, &nv12Tex, cursorVisible, cursorX, cursorY, false, captureLeft, captureTop);
 
         if (!convertSuccess) {
             DLL_Log("[VideoEncoder] Frame %d: GPU color conversion failed", encodeFrameCounter);
@@ -4141,7 +4307,9 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
                 pkt->duration = 1;
             }
 
-            CacheRepeatPacket(pkt);
+            if (!recomposeCursorForRepeats) {
+                CacheRepeatPacket(pkt);
+            }
             if (onPacket)
                 onPacket(pkt);
             av_packet_unref(pkt);
@@ -4186,6 +4354,10 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             lastAssignedVideoPts = d3d11Frame->pts;
             outputFrameCount++;
             CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+            if (recomposeCursorForRepeats &&
+                !CacheRepeatSourceFrameTexture(bgraTexture, frameWidth, frameHeight, isHDR, captureLeft, captureTop)) {
+                repeatSourceNeedsCursorRecompose = false;
+            }
         }
     }
 
@@ -4247,7 +4419,8 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
 
     lastFrameDeferred.store(false, std::memory_order_relaxed);
 
-    if (!repeatFrameTexture) {
+    const bool recomposeCursorForRepeat = repeatSourceNeedsCursorRecompose && repeatSourceFrameTexture;
+    if (!repeatFrameTexture && !recomposeCursorForRepeat) {
         DLL_Log("[VideoEncoder] RepeatLastFrame requested without cached frame");
         return false;
     }
@@ -4305,7 +4478,8 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     // AV1 is intentionally excluded: replaying cached AV1 packets can produce
     // invalid repeated-frame header OBUs in the output stream, so AV1 repeats
     // must go through the cached-texture re-encode path below.
-    if (cachedRepeatPacket_ && !savedConfig.useVFR && ce::video::SupportsEncodedPacketRepeat(savedConfig.encoder)) {
+    if (!recomposeCursorForRepeat && cachedRepeatPacket_ && !savedConfig.useVFR &&
+        ce::video::SupportsEncodedPacketRepeat(savedConfig.encoder)) {
         const int64_t targetPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, savedConfig.fps, startPts,
                                                         lastAssignedVideoPts, useExplicitCfrTimeline);
 
@@ -4336,27 +4510,55 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     // SLOW PATH: Full NVENC re-encode of cached texture
     auto frameStart = PerfTimer::now();
 
-    AVFrame* d3d11Frame = av_frame_alloc();
+    auto allocateD3D11RepeatFrame = [&]() -> AVFrame* {
+        AVFrame* frame = av_frame_alloc();
+        if (!frame) {
+            return nullptr;
+        }
+        frame->format = AV_PIX_FMT_D3D11;
+        frame->width = codecCtx->width;
+        frame->height = codecCtx->height;
+        frame->hw_frames_ctx = av_buffer_ref(d3d11FramesCtx);
+        return frame;
+    };
+
+    AVFrame* d3d11Frame = allocateD3D11RepeatFrame();
     if (!d3d11Frame) {
         return false;
     }
 
-    d3d11Frame->format = AV_PIX_FMT_D3D11;
-    d3d11Frame->width = codecCtx->width;
-    d3d11Frame->height = codecCtx->height;
-    d3d11Frame->hw_frames_ctx = av_buffer_ref(d3d11FramesCtx);
-
     auto beforeConvert = PerfTimer::now();
-    const int frameRet = av_hwframe_get_buffer(d3d11FramesCtx, d3d11Frame, 0);
-    if (frameRet < 0 || !d3d11Frame->data[0]) {
-        DLL_Log("[VideoEncoder] RepeatLastFrame failed to allocate D3D11 HW frame: %d", frameRet);
-        av_frame_free(&d3d11Frame);
-        return false;
+    bool populatedFromRepeatSource = false;
+    if (recomposeCursorForRepeat) {
+        populatedFromRepeatSource = PopulateD3D11FrameFromRepeatSource(d3d11Frame);
+        if (!populatedFromRepeatSource) {
+            if (!repeatCursorRecomposeFallbackLogged) {
+                DLL_Log("[VideoEncoder] Cursor-aware repeat recompose failed; falling back to cached duplicate frame");
+                repeatCursorRecomposeFallbackLogged = true;
+            }
+            av_frame_free(&d3d11Frame);
+            if (!repeatFrameTexture) {
+                return false;
+            }
+            d3d11Frame = allocateD3D11RepeatFrame();
+            if (!d3d11Frame) {
+                return false;
+            }
+        }
     }
 
-    {
-        D3D11ScopedLock lock;
-        d3d11Context->CopyResource(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]), repeatFrameTexture);
+    if (!populatedFromRepeatSource) {
+        const int frameRet = av_hwframe_get_buffer(d3d11FramesCtx, d3d11Frame, 0);
+        if (frameRet < 0 || !d3d11Frame->data[0]) {
+            DLL_Log("[VideoEncoder] RepeatLastFrame failed to allocate D3D11 HW frame: %d", frameRet);
+            av_frame_free(&d3d11Frame);
+            return false;
+        }
+
+        {
+            D3D11ScopedLock lock;
+            d3d11Context->CopyResource(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]), repeatFrameTexture);
+        }
     }
 
     auto afterConvert = PerfTimer::now();
@@ -4389,7 +4591,7 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
             pkt->stream_index = stream->index;
             pkt->duration = savedConfig.useVFR ? (1000000 / std::max(savedConfig.fps, 1)) : 1;
             // Cache packet for fast-path repeats in CFR mode only (VFR timing is variable)
-            if (!savedConfig.useVFR) {
+            if (!savedConfig.useVFR && !recomposeCursorForRepeat) {
                 CacheRepeatPacket(pkt);
             }
             if (onPacket) {
@@ -4447,6 +4649,9 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
 
     g_framesEncoded++;
     outputFrameCount++;
+    if (populatedFromRepeatSource) {
+        CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+    }
     g_totalFenceWait += stats.fenceWaitMs;
     g_totalColorConvert += stats.colorConvertMs;
     g_totalEncode += stats.encodeMs;
@@ -4526,6 +4731,7 @@ void VideoEncoder::CleanupResources() {
         repeatFrameTexture->Release();
         repeatFrameTexture = nullptr;
     }
+    InvalidateRepeatSourceFrameTexture();
     cachedFenceHandle = nullptr;
     cachedSourcePid = 0;
 
@@ -5174,7 +5380,8 @@ bool VideoEncoder::InitVideoProcessor() {
 }
 
 bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool cursorVisible,
-                                     int cursorX, int cursorY, bool allowDirectInputView) {
+                                     int cursorX, int cursorY, bool allowDirectInputView, int captureOriginX,
+                                     int captureOriginY) {
     if (!videoProcessorInit) {
         if (!InitVideoProcessor())
             return false;
@@ -5501,9 +5708,10 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         int scaledWidth = (int)activeCursor->width;
         int scaledHeight = (int)activeCursor->height;
 
-        // Cursor position is already in physical pixels
-        int physicalX = cursorX;
-        int physicalY = cursorY;
+        // Cursor position is in physical screen pixels; convert to frame-local
+        // coordinates for WGC/window captures.
+        int physicalX = cursorX - captureOriginX;
+        int physicalY = cursorY - captureOriginY;
 
         // Apply hotspot offset (already pre-scaled in cache entry)
         int hotspotXScaled = activeCursor->hotspotX;
@@ -6416,7 +6624,8 @@ int64_t VideoEncoder::GetLastFrameFenceWaitUs() const {
 }
 
 bool VideoEncoder::CanRepeatLastFrame() const {
-    return recordingRequested && repeatFrameTexture != nullptr;
+    return recordingRequested && (repeatFrameTexture != nullptr ||
+                                  (repeatSourceNeedsCursorRecompose && repeatSourceFrameTexture != nullptr));
 }
 
 bool VideoEncoder::WasLastFrameDeferred() const {
