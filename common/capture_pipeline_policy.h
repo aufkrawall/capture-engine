@@ -112,10 +112,11 @@ constexpr uint32_t kWgcRecoveryEnterShortfallTicks = 3;
 constexpr uint32_t kWgcRecoveryEnterHoldMs = 120;
 constexpr uint32_t kWgcRecoveryExitHoldMs = 450;
 constexpr double kWgcAudioLeadCatchupThresholdMs = 40.0;
-// 0 means "uncapped": WGC CFR needs source candidates on both sides of the
-// output grid for zero-latency selection. A modest 1.25x cap leaves too little
-// phase margin and can turn normal callback jitter into visible CFR repeats.
-constexpr uint32_t kWgcCfrOvercaptureHeadroomPermille = 0;
+// Steady WGC CFR asks the compositor for modest source headroom instead of an
+// unlimited producer rate. Max-rate is still used temporarily by the adaptive
+// recovery path when source/reservoir telemetry shows that the cap is hurting
+// smoothness.
+constexpr uint32_t kWgcCfrOvercaptureHeadroomPermille = 1250;
 constexpr uint32_t kWgcCfrOvercaptureStableRestoreMs = 2000;
 constexpr double kEncoderGpuPriorityRaiseBudgetRatio = 0.75;
 constexpr double kEncoderGpuPriorityRestoreBudgetRatio = 0.50;
@@ -983,6 +984,17 @@ inline bool ShouldRestoreWgcOvercaptureCap(const WgcAdaptiveTelemetry& telemetry
            telemetry.recentInputMin250Fps >= telemetry.outputFps &&
            telemetry.recentInputMin500Fps >= telemetry.outputFps &&
            noFreshTickPermille <= kWgcLowSourceExitEmptyTickPermille;
+}
+
+inline bool ShouldSkipRedundantCursorOnlyWgcFrame(uint32_t producerTargetFps, int64_t qpcFreq, int64_t sourceFrameQpc,
+                                                  int64_t lastDeliveredSourceFrameQpc) {
+    if (producerTargetFps == 0 || qpcFreq <= 0 || sourceFrameQpc <= 0 || lastDeliveredSourceFrameQpc <= 0 ||
+        sourceFrameQpc <= lastDeliveredSourceFrameQpc) {
+        return false;
+    }
+
+    const int64_t producerIntervalQpc = std::max<int64_t>(1, qpcFreq / static_cast<int64_t>(producerTargetFps));
+    return (sourceFrameQpc - lastDeliveredSourceFrameQpc) < producerIntervalQpc;
 }
 
 enum class HeldModeTransition : uint8_t {

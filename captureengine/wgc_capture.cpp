@@ -339,6 +339,14 @@ struct IGraphicsCaptureSession5Abi : ::IInspectable {
     virtual HRESULT STDMETHODCALLTYPE put_MinUpdateInterval(int64_t value) = 0;
 };
 
+static const GUID IID_IGraphicsCaptureSession4Abi = {
+    0xAE99813C, 0xC257, 0x5759, {0x8E, 0xD0, 0x66, 0x8C, 0x9B, 0x55, 0x7E, 0xD4}};
+
+struct IGraphicsCaptureSession4Abi : ::IInspectable {
+    virtual HRESULT STDMETHODCALLTYPE get_DirtyRegionMode(int32_t* value) = 0;
+    virtual HRESULT STDMETHODCALLTYPE put_DirtyRegionMode(int32_t value) = 0;
+};
+
 static const GUID IID_IDirect3D11CaptureFrame2Abi = {
     0x37869CFA, 0x2B48, 0x5EBF, {0x9A, 0xFB, 0xDF, 0xFD, 0x80, 0x5D, 0xEF, 0xDB}};
 
@@ -346,6 +354,8 @@ struct IDirect3D11CaptureFrame2Abi : ::IInspectable {
     virtual HRESULT STDMETHODCALLTYPE get_DirtyRegions(void** value) = 0;
     virtual HRESULT STDMETHODCALLTYPE get_DirtyRegionMode(int32_t* value) = 0;
 };
+
+constexpr int32_t kGraphicsCaptureDirtyRegionModeReportOnly = 0;
 
 template <typename T>
 bool TryQueryComInterface(const T& object, const GUID& iid, void** result) {
@@ -571,6 +581,8 @@ public:
     int64_t targetIntervalQPC_ = 0;  // Minimum QPC ticks between captured frames (0 = no throttle)
     int64_t lastCapturedQPC_ = 0;    // QPC of last frame we actually copied
     int64_t nextCaptureQPC_ = 0;     // Next QPC deadline that is allowed to perform a GPU copy
+    uint32_t producerTargetFps_ = 0;  // WGC MinUpdateInterval target (0 = max-rate)
+    int64_t producerIntervalQPC_ = 0;
     std::atomic<uint32_t> skippedFrameCount_{0};
     std::atomic<uint32_t> pacingSkipCount_{0};
     std::atomic<uint32_t> throttleSkipCount_{0};
@@ -589,6 +601,8 @@ public:
     std::atomic<int64_t> lastPoolSlotRewriteUs_{0};
     std::vector<int64_t> poolSlotLastWriteQpc_;
     bool dirtyRegionModeEnabled_ = false;
+    bool dirtyRegionModeRequested_ = false;
+    int32_t dirtyRegionMode_ = -1;
     HCURSOR lastCursorHandle_ = nullptr;
     POINT lastCursorScreenPos_ = {};
     bool lastCursorScreenPosValid_ = false;
@@ -1329,6 +1343,7 @@ public:
         inputRateWindow_.Reset();
         lastCapturedQPC_ = 0;
         nextCaptureQPC_ = 0;
+        ApplyProducerInterval();
         lastCursorScreenPosValid_ = false;
         std::lock_guard<std::mutex> lock(frameMutex_);
         while (!pendingFrames_.empty()) {
@@ -1457,6 +1472,14 @@ public:
         nextCaptureQPC_ = 0;
     }
 
+    void ApplyProducerInterval() {
+        if (producerTargetFps_ > 0 && qpcFreq_ > 0) {
+            producerIntervalQPC_ = std::max<int64_t>(1, qpcFreq_ / static_cast<int64_t>(producerTargetFps_));
+        } else {
+            producerIntervalQPC_ = 0;
+        }
+    }
+
     void ApplyMinUpdateInterval() {
         if (!session_) {
             return;
@@ -1464,7 +1487,8 @@ public:
 
         try {
             const int64_t interval100ns =
-                targetFps_ > 0 ? std::max<int64_t>(1, 10000000ll / static_cast<int64_t>(targetFps_)) : 0;
+                producerTargetFps_ > 0 ? std::max<int64_t>(1, 10000000ll / static_cast<int64_t>(producerTargetFps_))
+                                       : 0;
 
             IGraphicsCaptureSession5Abi* session5 = nullptr;
             if (!TryQueryComInterface(session_, IID_IGraphicsCaptureSession5Abi, reinterpret_cast<void**>(&session5)) ||
@@ -1480,14 +1504,46 @@ public:
                 return;
             }
 
-            if (targetFps_ > 0) {
+            if (producerTargetFps_ > 0) {
                 LogInfo("[WGC] MinUpdateInterval set to %lld (100ns) for %u fps target", (long long)interval100ns,
-                        targetFps_);
+                        producerTargetFps_);
             } else {
                 LogInfo("[WGC] MinUpdateInterval set to 0 (max rate)");
             }
         } catch (...) {
             LogInfo("[WGC] MinUpdateInterval not available (older WinRT projection/runtime)");
+        }
+    }
+
+    void ConfigureDirtyRegionMode() {
+        dirtyRegionModeEnabled_ = false;
+        dirtyRegionModeRequested_ = false;
+        dirtyRegionMode_ = -1;
+        if (!session_) {
+            return;
+        }
+
+        IGraphicsCaptureSession4Abi* session4 = nullptr;
+        if (!TryQueryComInterface(session_, IID_IGraphicsCaptureSession4Abi, reinterpret_cast<void**>(&session4)) ||
+            !session4) {
+            LogInfo("[WGC] Dirty-region metadata not available (older WinRT projection/runtime)");
+            return;
+        }
+
+        const HRESULT setHr = session4->put_DirtyRegionMode(kGraphicsCaptureDirtyRegionModeReportOnly);
+        int32_t mode = -1;
+        const HRESULT getHr = session4->get_DirtyRegionMode(&mode);
+        session4->Release();
+
+        dirtyRegionModeRequested_ = SUCCEEDED(setHr);
+        dirtyRegionMode_ = SUCCEEDED(getHr) ? mode : -1;
+        dirtyRegionModeEnabled_ =
+            dirtyRegionModeRequested_ && dirtyRegionMode_ == kGraphicsCaptureDirtyRegionModeReportOnly;
+        if (dirtyRegionModeEnabled_) {
+            LogInfo("[WGC] Dirty-region metadata enabled (mode=ReportOnly)");
+        } else {
+            LogInfo("[WGC] Dirty-region metadata disabled (setHR=0x%08lX getHR=0x%08lX mode=%d)",
+                    static_cast<unsigned long>(setHr), static_cast<unsigned long>(getHr), dirtyRegionMode_);
         }
     }
 
@@ -1626,7 +1682,7 @@ public:
     }
 
     bool ShouldSkipCursorOnlyDirtyFrame(const winrt::Direct3D11CaptureFrame& frame, uint32_t frameWidth,
-                                        uint32_t frameHeight) {
+                                        uint32_t frameHeight, int64_t sourceFrameQpc) {
         if (!dirtyRegionModeEnabled_) {
             return false;
         }
@@ -1634,6 +1690,13 @@ public:
         IDirect3D11CaptureFrame2Abi* frame2 = nullptr;
         if (!TryQueryComInterface(frame, IID_IDirect3D11CaptureFrame2Abi, reinterpret_cast<void**>(&frame2)) ||
             !frame2) {
+            return false;
+        }
+
+        int32_t frameDirtyRegionMode = -1;
+        const HRESULT dirtyRegionModeHr = frame2->get_DirtyRegionMode(&frameDirtyRegionMode);
+        if (FAILED(dirtyRegionModeHr) || frameDirtyRegionMode != kGraphicsCaptureDirtyRegionModeReportOnly) {
+            frame2->Release();
             return false;
         }
 
@@ -1708,7 +1771,13 @@ public:
 
         lastCursorScreenPos_ = cursorInfo.ptScreenPos;
         lastCursorScreenPosValid_ = true;
-        return cursorOnly;
+        if (!cursorOnly) {
+            return false;
+        }
+
+        const int64_t lastDeliveredSourceQpc = lastDeliveredSourceQpc_.load(std::memory_order_relaxed);
+        return ce::capture_policy::ShouldSkipRedundantCursorOnlyWgcFrame(producerTargetFps_, qpcFreq_, sourceFrameQpc,
+                                                                         lastDeliveredSourceQpc);
     }
 
     HMONITOR ResolveTargetMonitor() const {
@@ -2372,7 +2441,7 @@ public:
                     LogInfo("[WGC] Source format: fmt=%d %ux%u", desc.Format, desc.Width, desc.Height);
                 }
 
-                if (ShouldSkipCursorOnlyDirtyFrame(winrtFrame, desc.Width, desc.Height)) {
+                if (ShouldSkipCursorOnlyDirtyFrame(winrtFrame, desc.Width, desc.Height, sourceFrameQpc)) {
                     skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
                     cursorOnlySkipCount_.fetch_add(1, std::memory_order_relaxed);
                     texture->Release();
@@ -2648,9 +2717,14 @@ public:
         QueryPerformanceFrequency(&freq);
         qpcFreq_ = freq.QuadPart;
         ApplyFrameThrottleInterval();
+        ApplyProducerInterval();
         if (targetFps_ > 0 && targetIntervalQPC_ > 0) {
             LogInfo("[WGC] Frame throttle active at %u fps (interval=%lld QPC ticks)", targetFps_,
                     (long long)targetIntervalQPC_);
+        }
+        if (producerTargetFps_ > 0 && producerIntervalQPC_ > 0) {
+            LogInfo("[WGC] Producer cadence target active at %u fps (interval=%lld QPC ticks)", producerTargetFps_,
+                    (long long)producerIntervalQPC_);
         }
 
         auto size = item_.Size();
@@ -2874,8 +2948,12 @@ public:
             LogInfo("[WGC] IsCursorCaptureEnabled not available");
         }
 
-        // Ask WGC to wake no faster than the requested recording cadence so
-        // cursor movement cannot drive compositor work far above output FPS.
+        if (captureCursor) {
+            ConfigureDirtyRegionMode();
+        }
+
+        // Ask WGC to wake no faster than the requested producer cadence so
+        // cursor movement cannot drive compositor work far above useful capture FPS.
         ApplyMinUpdateInterval();
 
         session_.StartCapture();
@@ -2918,6 +2996,9 @@ public:
         ReleasePendingFramesLocked();
         ReleaseTexturePool();
         borderlessCapture_ = false;
+        dirtyRegionModeEnabled_ = false;
+        dirtyRegionModeRequested_ = false;
+        dirtyRegionMode_ = -1;
         frameWidth_ = 0;
         frameHeight_ = 0;
 
@@ -3934,7 +4015,9 @@ void WGCCapture::SetTargetFps(uint32_t fps) {
 #if HAS_WGC
     if (impl_) {
         impl_->targetFps_ = fps;
+        impl_->producerTargetFps_ = fps;
         impl_->ApplyFrameThrottleInterval();
+        impl_->ApplyProducerInterval();
         impl_->ApplyMinUpdateInterval();
 
         if (fps > 0) {
@@ -3954,6 +4037,35 @@ void WGCCapture::SetTargetFps(uint32_t fps) {
 uint32_t WGCCapture::GetTargetFps() const {
 #if HAS_WGC
     return impl_ ? impl_->targetFps_ : 0;
+#else
+    return 0;
+#endif
+}
+
+void WGCCapture::SetProducerTargetFps(uint32_t fps) {
+#if HAS_WGC
+    if (impl_) {
+        impl_->producerTargetFps_ = fps;
+        impl_->ApplyProducerInterval();
+        impl_->ApplyMinUpdateInterval();
+
+        if (fps > 0) {
+            if (impl_->producerIntervalQPC_ > 0) {
+                LogInfo("[WGC] Producer cadence target set to %u fps (interval=%lld QPC ticks)", fps,
+                        static_cast<long long>(impl_->producerIntervalQPC_));
+            } else {
+                LogInfo("[WGC] Producer cadence target armed for %u fps (pending capture start)", fps);
+            }
+        } else {
+            LogInfo("[WGC] Producer cadence target disabled (max rate)");
+        }
+    }
+#endif
+}
+
+uint32_t WGCCapture::GetProducerTargetFps() const {
+#if HAS_WGC
+    return impl_ ? impl_->producerTargetFps_ : 0;
 #else
     return 0;
 #endif

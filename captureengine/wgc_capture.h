@@ -187,10 +187,15 @@ public:
     uint32_t GetIngressLowWaterFrameCount() const;
     uint32_t GetIngressAdmissionReasonCode() const;
 
-    // Throttle capture rate to avoid wasting GPU bandwidth on excess frames.
-    // Set to target recording FPS. 0 disables throttle.
+    // Throttle local copies to avoid wasting GPU bandwidth on excess frames.
+    // Set to target recording FPS. 0 disables local copy throttle.
     void SetTargetFps(uint32_t fps);
     uint32_t GetTargetFps() const;
+
+    // Ask WGC/DWM to produce frames no faster than this cadence. 0 requests max-rate.
+    // This does not enable the local copy throttle.
+    void SetProducerTargetFps(uint32_t fps);
+    uint32_t GetProducerTargetFps() const;
 
     // Get count of frames skipped by throttle (for profiling)
     uint32_t GetSkippedFrameCount() const;

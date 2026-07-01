@@ -1077,10 +1077,12 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     g_WgcCap->ResetStats();
     g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
     g_WgcAdaptiveTargetFps.store(initialWgcTargetFps, std::memory_order_relaxed);
-    // CFR WGC keeps source capture uncapped by default. The encoder thread
-    // down-samples to CFR ticks, and extra candidates are important for
-    // zero-latency phase selection under compositor/callback jitter.
-    g_WgcCap->SetTargetFps(initialWgcTargetFps);
+    // CFR WGC asks the compositor for bounded steady-state source headroom, and
+    // the adaptive policy temporarily returns to max-rate only during measured
+    // source/reservoir recovery. Keep the local copy throttle disabled so the
+    // producer governor does not become a second frame-drop policy.
+    g_WgcCap->SetTargetFps(0);
+    g_WgcCap->SetProducerTargetFps(initialWgcTargetFps);
 
     // For CFR recording, disable the encoder-bottleneck throttle at the WGC
     // callback level.  The throttle is all-or-nothing (bang-bang) and its slow
@@ -2165,7 +2167,7 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             int32_t cadenceSelBiasUs = 0;
             uint32_t wgcSelAvgUs = 0;
             int32_t wgcSelBiasUs = 0;
-            uint32_t throttleTargetFps = g_WgcCap->GetTargetFps();
+            uint32_t throttleTargetFps = g_WgcCap->GetProducerTargetFps();
             const uint32_t deliveredRatePerSec = g_WgcCap->GetDeliveredRatePerSec();
             const uint32_t deliveredMin250Fps = g_WgcCap->GetDeliveredMin250Fps();
             const uint32_t deliveredMin500Fps = g_WgcCap->GetDeliveredMin500Fps();
@@ -5443,7 +5445,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
 
                 if (g_WgcCap && recordingOutputLive && g_Recording && targetIntervalTicks > 0) {
-                    const uint32_t currentTargetFps = g_WgcCap->GetTargetFps();
+                    const uint32_t currentTargetFps = g_WgcCap->GetProducerTargetFps();
                     const uint32_t overcaptureTargetFps = ce::capture_policy::GetWgcCfrOvercaptureTargetFps(outputFps);
                     uint32_t desiredTargetFps = overcaptureTargetFps;
                     WgcAdaptiveThrottleMode desiredThrottleMode = overcaptureTargetFps > outputFps
@@ -5530,7 +5532,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                             wgcAdaptiveThrottlePendingSinceTick > 0 &&
                             (wgcPolicyNowTick - wgcAdaptiveThrottlePendingSinceTick) >= requiredHoldMs;
                         if (holdElapsed) {
-                            g_WgcCap->SetTargetFps(desiredTargetFps);
+                            g_WgcCap->SetProducerTargetFps(desiredTargetFps);
                             g_WgcAdaptiveTargetFps.store(desiredTargetFps, std::memory_order_relaxed);
                             wgcAdaptiveThrottleMode = desiredThrottleMode;
                             ++wgcAdaptiveThrottleAdjustments;
