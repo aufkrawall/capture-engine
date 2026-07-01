@@ -496,6 +496,20 @@ bool RectNearlyMatches(const RECT& lhs, const RECT& rhs, LONG tolerance) {
            absDiff(lhs.right, rhs.right) <= tolerance && absDiff(lhs.bottom, rhs.bottom) <= tolerance;
 }
 
+LONG RectWidth(const RECT& rect) {
+    return std::max<LONG>(0, rect.right - rect.left);
+}
+
+LONG RectHeight(const RECT& rect) {
+    return std::max<LONG>(0, rect.bottom - rect.top);
+}
+
+bool SizeNearlyMatchesRect(uint32_t width, uint32_t height, const RECT& rect, LONG tolerance) {
+    auto absDiff = [](int64_t a, int64_t b) -> int64_t { return (a >= b) ? (a - b) : (b - a); };
+    return absDiff(static_cast<int64_t>(width), static_cast<int64_t>(RectWidth(rect))) <= tolerance &&
+           absDiff(static_cast<int64_t>(height), static_cast<int64_t>(RectHeight(rect))) <= tolerance;
+}
+
 bool IsFullscreenLikeWindow(HWND hwnd) {
     if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
         return false;
@@ -1676,22 +1690,8 @@ public:
         top = 0;
 
         if (targetWindow_) {
-            if (borderlessCapture_) {
-                POINT clientTopLeft = {0, 0};
-                if (ClientToScreen(targetWindow_, &clientTopLeft)) {
-                    left = clientTopLeft.x;
-                    top = clientTopLeft.y;
-                    return true;
-                }
-            }
-
-            RECT windowRect = {};
-            if (GetWindowRect(targetWindow_, &windowRect)) {
-                left = windowRect.left;
-                top = windowRect.top;
-                return true;
-            }
-            return false;
+            const char* originMode = ResolveWindowCaptureOrigin(left, top);
+            return originMode != nullptr;
         }
 
         MONITORINFO monitorInfo = {};
@@ -1704,6 +1704,48 @@ public:
         }
 
         return false;
+    }
+
+    const char* ResolveWindowCaptureOrigin(int32_t& left, int32_t& top) const {
+        left = 0;
+        top = 0;
+        if (!targetWindow_ || !IsWindow(targetWindow_)) {
+            return nullptr;
+        }
+
+        RECT windowRect = {};
+        RECT clientRect = {};
+        const bool haveWindowRect = GetWindowRect(targetWindow_, &windowRect) != FALSE;
+        const bool haveClientRect = GetWindowClientRectInScreen(targetWindow_, clientRect);
+        constexpr LONG kOriginSizeTolerancePx = 8;
+
+        if (frameWidth_ > 0 && frameHeight_ > 0) {
+            if (haveClientRect && SizeNearlyMatchesRect(frameWidth_, frameHeight_, clientRect, kOriginSizeTolerancePx)) {
+                left = clientRect.left;
+                top = clientRect.top;
+                return "client-size-match";
+            }
+
+            if (haveWindowRect && SizeNearlyMatchesRect(frameWidth_, frameHeight_, windowRect, kOriginSizeTolerancePx)) {
+                left = windowRect.left;
+                top = windowRect.top;
+                return "window-size-match";
+            }
+        }
+
+        if (haveWindowRect) {
+            left = windowRect.left;
+            top = windowRect.top;
+            return "window-fallback";
+        }
+
+        if (haveClientRect) {
+            left = clientRect.left;
+            top = clientRect.top;
+            return "client-fallback";
+        }
+
+        return nullptr;
     }
 
     bool QueryOutputDesc1ForMonitor(HMONITOR monitor, DXGI_OUTPUT_DESC1& desc1) {
@@ -2868,6 +2910,18 @@ public:
             targetWindow_ ? "window" : "monitor", WgcItemCreationMethodName(itemCreationMethod_), targetWindow_,
             targetMonitor_, static_cast<unsigned long long>(itemCreationIdValue_), sourceFramePoolBufferCount_,
             borderlessCapture_ ? 1 : 0, captureCursor ? 1 : 0, producerTargetFps_, targetFps_);
+
+        int32_t originLeft = 0;
+        int32_t originTop = 0;
+        const char* originMode = nullptr;
+        if (targetWindow_) {
+            originMode = ResolveWindowCaptureOrigin(originLeft, originTop);
+        } else if (GetCaptureOrigin(originLeft, originTop)) {
+            originMode = "monitor";
+        }
+        LogInfo("[WGC] Capture origin diagnostics: target=%s originMode=%s origin=(%d,%d) itemSize=%ux%u",
+                targetWindow_ ? "window" : "monitor", originMode ? originMode : "unresolved", originLeft, originTop,
+                frameWidth_, frameHeight_);
 
         // Ask WGC to wake no faster than the requested producer cadence so
         // cursor movement cannot drive compositor work far above useful capture FPS.

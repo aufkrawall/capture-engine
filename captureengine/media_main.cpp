@@ -1044,6 +1044,18 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     if (config.video.captureCursor) {
         LogInfo("[Media] WGC cursor capture: native WGC cursor disabled; encoder-side cursor composition enabled");
     }
+    HWND activeWgcWindow = NULL;
+    HMONITOR activeWgcMonitor = NULL;
+    g_WgcCap->GetTargetIdentity(&activeWgcWindow, &activeWgcMonitor);
+    int32_t activeCaptureLeft = 0;
+    int32_t activeCaptureTop = 0;
+    const bool haveCaptureOrigin = g_WgcCap->GetCaptureOrigin(activeCaptureLeft, activeCaptureTop);
+    LogInfo("[Media] WGC recording target: target=%s hwnd=0x%p hmon=0x%p originOk=%d origin=(%d,%d) "
+            "captureCursor=%d nativeWgcCursor=%d encoderCursor=%d",
+            activeWgcWindow ? "window" : "monitor", activeWgcWindow, activeWgcMonitor, haveCaptureOrigin ? 1 : 0,
+            activeCaptureLeft, activeCaptureTop, config.video.captureCursor ? 1 : 0,
+            ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor) ? 1 : 0,
+            config.video.captureCursor ? 1 : 0);
     g_WgcCap->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
     g_WgcCap->SetSameDeviceCapture(config.wgcSameDeviceCapture);
     g_WgcCap->SetPreferCompact10bitPool(config.wgcPreferCompact10bitPool);
@@ -1274,21 +1286,43 @@ static bool MatchesProcessEntries(const std::vector<WhitelistEntry>& entries, co
     return false;
 }
 
+static int64_t RectArea(const RECT& rect) {
+    const int64_t width = std::max<LONG>(0, rect.right - rect.left);
+    const int64_t height = std::max<LONG>(0, rect.bottom - rect.top);
+    return width * height;
+}
+
 static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets) {
     struct WgcSearchContext {
         const std::vector<WhitelistEntry>* targets;
         HWND result;
+        HWND foregroundRoot;
         int checked;
+        int matched;
+        int bestScore;
     };
 
-    WgcSearchContext ctx = {&targets, NULL, 0};
+    HWND foregroundRoot = GetForegroundWindow();
+    if (foregroundRoot) {
+        HWND root = GetAncestor(foregroundRoot, GA_ROOT);
+        if (root) {
+            foregroundRoot = root;
+        }
+    }
+
+    WgcSearchContext ctx = {&targets, NULL, foregroundRoot, 0, 0, std::numeric_limits<int>::min()};
     EnumWindows(
         [](HWND hwnd, LPARAM lParam) -> BOOL {
             WgcSearchContext* context = (WgcSearchContext*)lParam;
-            if (!IsWindowVisible(hwnd)) {
+            if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) {
                 return TRUE;
             }
             if (GetWindow(hwnd, GW_OWNER) != 0) {
+                return TRUE;
+            }
+            const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+            const LONG_PTR exStyle = GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+            if ((style & WS_CHILD) || (exStyle & WS_EX_TOOLWINDOW)) {
                 return TRUE;
             }
 
@@ -1327,6 +1361,8 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets) {
             for (const auto& entry : *context->targets) {
                 MatchMode mode = entry.mode;
                 bool matched = false;
+                bool matchedByTitleOrClass = false;
+                bool matchedByProcess = false;
 
                 if (entry.HasWindow()) {
                     std::string winLower = entry.windowName;
@@ -1340,20 +1376,56 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets) {
                             matched = classStr.find(winLower) != std::string::npos;
                         }
                     }
+                    matchedByTitleOrClass = matched;
                 }
 
                 if (!matched && MatchesProcessEntry(entry, procName)) {
                     matched = true;
+                    matchedByProcess = true;
                 }
 
                 if (matched) {
-                    context->result = hwnd;
-                    return FALSE;
+                    RECT windowRect = {};
+                    RECT clientRect = {};
+                    const bool haveWindowRect = GetWindowRect(hwnd, &windowRect) != FALSE;
+                    const bool haveClientRect = GetWindowClientRectInScreen(hwnd, clientRect);
+                    const int64_t area = std::max(haveWindowRect ? RectArea(windowRect) : 0,
+                                                  haveClientRect ? RectArea(clientRect) : 0);
+                    int score = 1000;
+                    if (context->foregroundRoot && hwnd == context->foregroundRoot) {
+                        score += 100000;
+                    }
+                    if (IsWindowFullscreenLike(hwnd)) {
+                        score += 50000;
+                    }
+                    if (matchedByTitleOrClass) {
+                        score += 5000;
+                    }
+                    if (matchedByProcess) {
+                        score += 2000;
+                    }
+                    score += static_cast<int>(std::min<int64_t>(area / 1000, 40000));
+
+                    ++context->matched;
+                    if (!context->result || score > context->bestScore) {
+                        context->result = hwnd;
+                        context->bestScore = score;
+                    }
+                    break;
                 }
             }
             return TRUE;
         },
         (LPARAM)&ctx);
+
+    if (ctx.result) {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(ctx.result, &pid);
+        LogDebug("[Media] WGC window detection selected hwnd=0x%p pid=%lu fullscreenLike=%d score=%d "
+                 "(matched=%d checked=%d foreground=%d)",
+                 ctx.result, static_cast<unsigned long>(pid), IsWindowFullscreenLike(ctx.result) ? 1 : 0, ctx.bestScore,
+                 ctx.matched, ctx.checked, (ctx.foregroundRoot && ctx.result == ctx.foregroundRoot) ? 1 : 0);
+    }
 
     return ctx.result;
 }
@@ -10664,7 +10736,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         return true;
     };
 
-    auto primeWgcWindowTarget = [&](HWND targetWindow, bool logPrimed) -> bool {
+    auto primeWgcWindowTarget = [&](HWND targetWindow, bool logPrimed, bool allowMonitorFallback = true) -> bool {
         if (isExplicitInjectConfig()) {
             return false;
         }
@@ -10701,7 +10773,15 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return true;
         }
 
-        LogError("[Media] Failed to init WGC for found window.");
+        LogError("[Media] Failed to init WGC for found window 0x%p.", targetWindow);
+        g_WgcCap.reset();
+        currentCapturedWindow = NULL;
+        currentTargetPrefersInject = false;
+        if (!allowMonitorFallback) {
+            return false;
+        }
+
+        LogWarn("[Media] Falling back to WGC monitor capture after window init failure");
         if (!primeWgcMonitorTarget()) {
             setWgcPreferenceAfterFailure();
             clearCurrentWgcTarget();
@@ -10776,8 +10856,14 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 if (markInjectPreferredTarget(matchedWindow, sourcePid, "WGC title match")) {
                     return;
                 }
-                primeWgcWindowTarget(matchedWindow, false);
-                return;
+                if (primeWgcWindowTarget(matchedWindow, false, false)) {
+                    LogInfo("[Media] WGC window detection matched configured target; WGC window capture selected "
+                            "(hwnd=0x%p)",
+                            matchedWindow);
+                    return;
+                }
+                LogWarn("[Media] WGC configured window target 0x%p failed to initialize; continuing fallback selection",
+                        matchedWindow);
             }
         }
 
@@ -10793,7 +10879,14 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             HWND hGameWindow = GetMainWindowForProcess(sourcePid);
             if (hGameWindow) {
                 LogInfo("[Media] Overlay-only hook target %s; WGC capture selected", processName.c_str());
-                primeWgcWindowTarget(hGameWindow, false);
+                if (!primeWgcWindowTarget(hGameWindow, false, false)) {
+                    LogWarn("[Media] Overlay-only WGC window target 0x%p failed to initialize; falling back to monitor",
+                            hGameWindow);
+                    if (!primeWgcMonitorTarget()) {
+                        setWgcPreferenceAfterFailure();
+                        clearCurrentWgcTarget();
+                    }
+                }
             } else if (!primeWgcMonitorTarget()) {
                 setWgcPreferenceAfterFailure();
                 clearCurrentWgcTarget();
@@ -10816,7 +10909,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         if (isAutoCaptureConfig()) {
             if (sourcePid != 0) {
                 HWND hGameWindow = GetMainWindowForProcess(sourcePid);
-                if (hGameWindow && primeWgcWindowTarget(hGameWindow, false)) {
+                if (hGameWindow && primeWgcWindowTarget(hGameWindow, false, false)) {
                     LogInfo("[Media] Auto mode: %s is not on the inject whitelist; WGC window capture selected",
                             processName.empty() ? "target" : processName.c_str());
                     return;
@@ -10824,10 +10917,11 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             }
 
             ForegroundWgcWindowCandidate foregroundCandidate = GetForegroundWgcWindowCandidate();
+            const bool matchedConfiguredWgcWindow = false;
             if (ce::capture_policy::ShouldPreferForegroundFullscreenWindowForAutoWgc(
                     isAutoCaptureConfig(), isExplicitInjectConfig(), injectWhitelisted, sourcePid != 0,
-                    !config.wgcWindowTitles.empty(), foregroundCandidate.usable, foregroundCandidate.fullscreenLike)) {
-                if (primeWgcWindowTarget(foregroundCandidate.hwnd, false)) {
+                    matchedConfiguredWgcWindow, foregroundCandidate.usable, foregroundCandidate.fullscreenLike)) {
+                if (primeWgcWindowTarget(foregroundCandidate.hwnd, false, false)) {
                     LogInfo("[Media] Auto mode: no source PID; foreground fullscreen WGC window capture selected "
                             "(pid=%lu process=%s hwnd=0x%p)",
                             static_cast<unsigned long>(foregroundCandidate.pid), foregroundCandidate.processName.c_str(),
@@ -10840,9 +10934,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                         foregroundCandidate.hwnd);
             } else if (sourcePid == 0) {
                 LogInfo("[Media] Auto mode: foreground WGC window candidate not used "
-                        "(usable=%d fullscreenLike=%d configuredWindow=%d)",
+                        "(usable=%d fullscreenLike=%d matchedConfiguredWindow=%d configuredEntries=%zu)",
                         foregroundCandidate.usable ? 1 : 0, foregroundCandidate.fullscreenLike ? 1 : 0,
-                        config.wgcWindowTitles.empty() ? 0 : 1);
+                        matchedConfiguredWgcWindow ? 1 : 0, config.wgcWindowTitles.size());
             }
 
             if (primeWgcMonitorTarget()) {
@@ -10872,7 +10966,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 if (matchedWindow) {
                     uint32_t sourcePid = g_pSharedMem->GetSourcePid();
                     if (!markInjectPreferredTarget(matchedWindow, sourcePid, "Early WGC scan")) {
-                        primeWgcWindowTarget(matchedWindow, false);
+                        if (!primeWgcWindowTarget(matchedWindow, false, false)) {
+                            LogWarn("[Media] Early WGC window scan matched 0x%p but window init failed", matchedWindow);
+                        }
                     }
                 }
             }
@@ -11006,9 +11102,12 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     if (markInjectPreferredTarget(foundWindow, g_pSharedMem->GetSourcePid(), "WGC trigger")) {
                         continue;
                     }
-                    if (!primeWgcWindowTarget(foundWindow, foundWindow != currentCapturedWindow) &&
-                        !ensureWgcDevice()) {
-                        LogWarn("[Media] WGC trigger ignored: D3D11 device unavailable");
+                    if (!primeWgcWindowTarget(foundWindow, foundWindow != currentCapturedWindow, false)) {
+                        LogWarn("[Media] WGC trigger window 0x%p failed to initialize; falling back to monitor target",
+                                foundWindow);
+                        if (!primeWgcMonitorTarget()) {
+                            LogWarn("[Media] WGC trigger ignored: D3D11 device unavailable");
+                        }
                     }
                 } else if (!foundWindow && currentCapturedWindow != NULL) {
                     if (!IsWindow(currentCapturedWindow)) {
@@ -11057,8 +11156,12 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     HWND matchedWindow =
                         config.wgcWindowTitles.empty() ? NULL : FindMatchingWgcWindow(config.wgcWindowTitles);
                     if (matchedWindow) {
-                        primeWgcWindowTarget(matchedWindow, false);
-                        continue;
+                        if (primeWgcWindowTarget(matchedWindow, false, false)) {
+                            continue;
+                        }
+                        LogWarn("[Media] WGC configured window target 0x%p failed during pre-record scan; "
+                                "continuing fallback selection",
+                                matchedWindow);
                     }
 
                     if (!ensureWgcDevice()) {
@@ -11075,10 +11178,13 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                                 "Switching WGC to window mode.",
                                 hGameWindow);
 
-                            if (primeWgcWindowTarget(hGameWindow, false)) {
+                            if (primeWgcWindowTarget(hGameWindow, false, false)) {
                                 LogInfo("[Media] WGC window target primed for PID %u", currentSourcePid);
+                            } else if (primeWgcMonitorTarget()) {
+                                LogWarn("[Media] Failed to init WGC for window - falling back to monitor capture");
                             } else {
-                                LogError("[Media] Failed to init WGC for window - falling back to Monitor");
+                                LogError("[Media] Failed to init WGC for window or monitor");
+                                setWgcPreferenceAfterFailure();
                             }
                         } else {
                             LogInfo(
@@ -11097,7 +11203,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     LogInfo("[Media] Injection whitelist matched %s; using inject capture", procName.c_str());
                 } else if (!g_Recording && isAutoCaptureConfig()) {
                     HWND hGameWindow = GetMainWindowForProcess(currentSourcePid);
-                    if (hGameWindow && primeWgcWindowTarget(hGameWindow, false)) {
+                    if (hGameWindow && primeWgcWindowTarget(hGameWindow, false, false)) {
                         LogInfo("[Media] Auto mode: %s is not on the inject whitelist; WGC window capture selected",
                                 procName.c_str());
                     } else if (primeWgcMonitorTarget()) {

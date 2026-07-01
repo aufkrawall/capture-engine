@@ -564,35 +564,35 @@ TEST(CapturePipelinePolicyTest, WgcRecordingAvoidsNativeCursorCapture) {
     EXPECT_FALSE(policy::ShouldUseNativeWgcCursorCapture(true));
 }
 
-TEST(CapturePipelinePolicyTest, AutoWgcUsesForegroundFullscreenWindowOnlyWhenNoSourcePid) {
+TEST(CapturePipelinePolicyTest, AutoWgcUsesForegroundFullscreenWindowOnlyWhenNoSourcePidAndNoMatchedWindow) {
     EXPECT_TRUE(policy::ShouldPreferForegroundFullscreenWindowForAutoWgc(
         /*autoCaptureConfig=*/true, /*explicitInjectConfig=*/false, /*injectWhitelisted=*/false,
-        /*hasSourcePid=*/false, /*hasConfiguredWgcWindow=*/false, /*foregroundUsable=*/true,
+        /*hasSourcePid=*/false, /*hasMatchedConfiguredWgcWindow=*/false, /*foregroundUsable=*/true,
         /*foregroundFullscreenLike=*/true));
 
     EXPECT_FALSE(policy::ShouldPreferForegroundFullscreenWindowForAutoWgc(
         /*autoCaptureConfig=*/false, /*explicitInjectConfig=*/false, /*injectWhitelisted=*/false,
-        /*hasSourcePid=*/false, /*hasConfiguredWgcWindow=*/false, /*foregroundUsable=*/true,
+        /*hasSourcePid=*/false, /*hasMatchedConfiguredWgcWindow=*/false, /*foregroundUsable=*/true,
         /*foregroundFullscreenLike=*/true));
     EXPECT_FALSE(policy::ShouldPreferForegroundFullscreenWindowForAutoWgc(
         /*autoCaptureConfig=*/true, /*explicitInjectConfig=*/true, /*injectWhitelisted=*/false,
-        /*hasSourcePid=*/false, /*hasConfiguredWgcWindow=*/false, /*foregroundUsable=*/true,
+        /*hasSourcePid=*/false, /*hasMatchedConfiguredWgcWindow=*/false, /*foregroundUsable=*/true,
         /*foregroundFullscreenLike=*/true));
     EXPECT_FALSE(policy::ShouldPreferForegroundFullscreenWindowForAutoWgc(
         /*autoCaptureConfig=*/true, /*explicitInjectConfig=*/false, /*injectWhitelisted=*/true,
-        /*hasSourcePid=*/false, /*hasConfiguredWgcWindow=*/false, /*foregroundUsable=*/true,
+        /*hasSourcePid=*/false, /*hasMatchedConfiguredWgcWindow=*/false, /*foregroundUsable=*/true,
         /*foregroundFullscreenLike=*/true));
     EXPECT_FALSE(policy::ShouldPreferForegroundFullscreenWindowForAutoWgc(
         /*autoCaptureConfig=*/true, /*explicitInjectConfig=*/false, /*injectWhitelisted=*/false,
-        /*hasSourcePid=*/true, /*hasConfiguredWgcWindow=*/false, /*foregroundUsable=*/true,
+        /*hasSourcePid=*/true, /*hasMatchedConfiguredWgcWindow=*/false, /*foregroundUsable=*/true,
         /*foregroundFullscreenLike=*/true));
     EXPECT_FALSE(policy::ShouldPreferForegroundFullscreenWindowForAutoWgc(
         /*autoCaptureConfig=*/true, /*explicitInjectConfig=*/false, /*injectWhitelisted=*/false,
-        /*hasSourcePid=*/false, /*hasConfiguredWgcWindow=*/true, /*foregroundUsable=*/true,
+        /*hasSourcePid=*/false, /*hasMatchedConfiguredWgcWindow=*/true, /*foregroundUsable=*/true,
         /*foregroundFullscreenLike=*/true));
     EXPECT_FALSE(policy::ShouldPreferForegroundFullscreenWindowForAutoWgc(
         /*autoCaptureConfig=*/true, /*explicitInjectConfig=*/false, /*injectWhitelisted=*/false,
-        /*hasSourcePid=*/false, /*hasConfiguredWgcWindow=*/false, /*foregroundUsable=*/true,
+        /*hasSourcePid=*/false, /*hasMatchedConfiguredWgcWindow=*/false, /*foregroundUsable=*/true,
         /*foregroundFullscreenLike=*/false));
 }
 
