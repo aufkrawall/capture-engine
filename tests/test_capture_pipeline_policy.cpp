@@ -1255,6 +1255,80 @@ PlayoutStats RunNearestPlayoutResample(int ticks, int64_t outputInterval, int64_
     }
     return s;
 }
+
+// Encoder-overload grid drift: the CFR encoder grid runs slower than wall-clock (it cannot sustain the
+// output rate) so the grid-anchored playout target sits a fixed `gridLag` behind the real-time frame
+// timestamps, on top of the content delay. A bounded reservoir keeps only the newest `reservoirFrames`
+// frames -- older fresh frames pile up and drop as stale. When gridLag+contentDelay exceeds the reservoir
+// span the target falls below the ENTIRE reserve, so without the anti-freeze floor every tick holds and
+// the video freezes while fresh frames keep arriving. The reservoir is pre-filled so there is no
+// unrealistic negative-time warmup transient. Realized delay is measured against the grid/audio slot
+// (gridNow - emittedTs): positive => video is BEHIND the co-timed audio (correct), negative => ahead.
+struct GridDriftStats {
+    int emits = 0;
+    int holds = 0;
+    int longestHoldRun = 0;
+    int backwardEmits = 0;      // monotonicity violations (must be 0)
+    int aheadOfAudioEmits = 0;  // emitted frame newer than the grid/audio slot (must be 0)
+    int64_t maxRealizedDelay = 0;
+    int64_t minRealizedDelay = INT64_MAX;
+};
+GridDriftStats RunGridDriftPlayout(int ticks, int64_t interval, int64_t contentDelay, int64_t gridLag,
+                                   int reservoirFrames, bool applyAntiFreezeFloor) {
+    GridDriftStats s;
+    const int64_t leadTol = policy::GetWgcActiveDelayResidualToleranceQpc(interval);
+    const int64_t timeBase = 100000;  // keep wall/grid clocks positive throughout
+    std::deque<int64_t> buffer;       // source (wall-clock) timestamps, oldest first
+    for (int i = reservoirFrames - 1; i >= 0; --i) {
+        buffer.push_back(timeBase - static_cast<int64_t>(i) * interval);  // pre-fill a full reserve
+    }
+    int64_t lastEmitted = timeBase - static_cast<int64_t>(reservoirFrames) * interval;
+    int holdRun = 0;
+    for (int tick = 1; tick <= ticks; ++tick) {
+        const int64_t wallNow = timeBase + static_cast<int64_t>(tick) * interval;  // real time
+        const int64_t gridNow = wallNow - gridLag;                                 // grid lags wall-clock
+        buffer.push_back(wallNow);                                                 // one fresh frame/tick
+        while (static_cast<int>(buffer.size()) > reservoirFrames) {
+            buffer.pop_front();  // bounded reservoir: piled-up fresh frames drop as stale
+        }
+        int64_t target = gridNow - contentDelay;
+        if (applyAntiFreezeFloor && !buffer.empty()) {
+            target = policy::ApplyWgcUniformPlayoutAntiFreezeFloor(target, buffer.front(), interval);
+        }
+        while (buffer.size() > 1 &&
+               policy::ShouldDropWgcFrontForNearerPlayout(buffer[0], buffer[1], target, leadTol)) {
+            buffer.pop_front();
+        }
+        bool held = true;
+        if (!buffer.empty()) {
+            auto d = policy::DecideWgcNearestPlayout(buffer.front(), target, leadTol, lastEmitted);
+            if (d.emit) {
+                const int64_t ts = buffer.front();
+                buffer.pop_front();
+                if (ts <= lastEmitted) {
+                    ++s.backwardEmits;
+                }
+                lastEmitted = ts;
+                ++s.emits;
+                held = false;
+                const int64_t realized = gridNow - ts;  // >0 => video behind the audio/grid slot
+                if (realized < 0) {
+                    ++s.aheadOfAudioEmits;
+                }
+                s.maxRealizedDelay = std::max(s.maxRealizedDelay, realized);
+                s.minRealizedDelay = std::min(s.minRealizedDelay, realized);
+            }
+        }
+        if (held) {
+            ++s.holds;
+            ++holdRun;
+            s.longestHoldRun = std::max(s.longestHoldRun, holdRun);
+        } else {
+            holdRun = 0;
+        }
+    }
+    return s;
+}
 }  // namespace
 
 TEST(CapturePipelinePolicyTest, WgcNearestPlayoutAbsorbsDeliveryJitterWithinBudget) {
@@ -1287,6 +1361,55 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutEvenHoldsAndStableDelayUnderGap
     EXPECT_LE(s.maxRealizedDelay, 400 + 4 * 100);
     // Hold clusters cannot exceed the delivery gap (no extra amplification).
     EXPECT_LE(s.longestHoldRun, 8);
+}
+
+TEST(CapturePipelinePolicyTest, WgcUniformPlayoutAntiFreezeFloorRaisesOnlyWhenReserveIsTooNew) {
+    const int64_t interval = 100;
+    const int64_t tol = policy::GetWgcActiveDelayResidualToleranceQpc(interval);  // 90
+    // Oldest reserve frame OLDER than the slot -> healthy, no-op.
+    EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(/*target=*/1000, /*oldest=*/700, interval), 1000);
+    // Oldest within the too-new lead window (<= 3 intervals ahead) -> still aged-in, no-op.
+    EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(1000, 1300, interval), 1000);
+    // Oldest BEYOND the lead window (whole reserve is too-new = the freeze condition) -> raise the slot
+    // target so the oldest lands exactly on the emit boundary (oldest - tolerance), never further.
+    EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(1000, 1600, interval), 1600 - tol);
+    // The raised target makes DecideWgcNearestPlayout emit the previously-frozen oldest frame.
+    const int64_t raised = policy::ApplyWgcUniformPlayoutAntiFreezeFloor(1000, 1600, interval);
+    EXPECT_TRUE(policy::DecideWgcNearestPlayout(/*front=*/1600, raised, tol, /*lastEmitted=*/1500).emit);
+    // Never lowers the target; guards invalid inputs.
+    EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(2000, 1600, interval), 2000);
+    EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(0, 1600, interval), 0);
+    EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(1000, 0, interval), 1000);
+    EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(1000, 1600, 0), 1000);
+}
+
+TEST(CapturePipelinePolicyTest, WgcUniformPlayoutFreezesUnderGridDriftWithoutAntiFreezeFloor) {
+    // Regression for the 20.9 s hard freeze (build 0.1.4402, 4K120 AV1 NVENC): once the encoder grid had
+    // drifted behind wall-clock far enough that the grid-anchored target sat below the ENTIRE reserve,
+    // every tick held while fresh frames kept arriving. Pre-fix (no floor) => a freeze spanning nearly
+    // the whole run despite a continuously full buffer.
+    const int reservoirFrames = 14;
+    auto s = RunGridDriftPlayout(/*ticks=*/500, /*interval=*/100, /*contentDelay=*/800, /*gridLag=*/1000,
+                                 reservoirFrames, /*applyAntiFreezeFloor=*/false);
+    EXPECT_GE(s.longestHoldRun, 480);  // essentially frozen for the whole run
+    EXPECT_LE(s.emits, 10);
+}
+
+TEST(CapturePipelinePolicyTest, WgcUniformPlayoutAntiFreezeFloorResumesPlayoutBehindAudio) {
+    const int reservoirFrames = 14;
+    const int64_t interval = 100;
+    auto s = RunGridDriftPlayout(/*ticks=*/500, interval, /*contentDelay=*/800, /*gridLag=*/1000,
+                                 reservoirFrames, /*applyAntiFreezeFloor=*/true);
+    // Freeze released: playout resumes at the source rate (one emit per tick after warmup).
+    EXPECT_GE(s.emits, 490);
+    EXPECT_LE(s.longestHoldRun, 2);
+    // Never backwards, and video content is NEVER newer than the co-timed audio/grid slot: the floor
+    // emits the OLDEST (deepest) reserve frame, so video stays behind audio -> A/V offset preserved.
+    EXPECT_EQ(s.backwardEmits, 0);
+    EXPECT_EQ(s.aheadOfAudioEmits, 0);
+    EXPECT_GE(s.minRealizedDelay, 0);
+    // Realized delay stays bounded within the reservoir depth (no unbounded lag, no rubber-band).
+    EXPECT_LE(s.maxRealizedDelay, reservoirFrames * interval);
 }
 
 TEST(CapturePipelinePolicyTest, WgcNearestPlayoutDropsSurplus144HzFor120FpsWithoutRepeats) {

@@ -2713,6 +2713,10 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint64_t wgcDelayPaceCapTrimTotal = 0;
     uint32_t wgcDelayPaceCapTrimWindow = 0;
     DWORD wgcDelayPaceCapTrimLastLogTick = 0;
+    // Uniform-playout anti-freeze floor engagements: the encoder grid drifted so far behind wall-clock
+    // that even the oldest buffered frame was too-new for the slot, so the target was raised to resume
+    // playout at the source rate instead of freezing on a repeated frame. Non-zero => encoder overload.
+    uint64_t wgcUniformAntiFreezeFloorTotal = 0;
     uint64_t wgcRetainedCapTrimTotal = 0;
     uint32_t wgcRetainedCapTrimWindow = 0;
     DWORD wgcRetainedCapTrimLastLogTick = 0;
@@ -5795,15 +5799,52 @@ void EncoderThreadFunc(const AppConfig& config) {
                             ReleaseQueuedFrameTexture(stale);
                             ++wgcDropObsoleteCount;
                         }
-                        // Grid-anchored content-delay target (UNCLAMPED: the uniform-cadence path
-                        // maintains the delay through low-source/recovery rather than clamping toward
-                        // live, which would re-collapse the realized delay -- the other half of the
-                        // rubber-band).
-                        const int64_t playoutTargetQpc = (encoderGridStartQpc > 0 && targetIntervalTicks > 0)
-                                                             ? computeDelayedWgcSelectionTargetQpc()
-                                                             : 0;
+                        // Grid-anchored content-delay target (UNCLAMPED toward live: the uniform-cadence
+                        // path maintains the delay through low-source/recovery rather than clamping
+                        // toward live, which would re-collapse the realized delay -- the other half of
+                        // the rubber-band).
+                        int64_t playoutTargetQpc = (encoderGridStartQpc > 0 && targetIntervalTicks > 0)
+                                                       ? computeDelayedWgcSelectionTargetQpc()
+                                                       : 0;
                         const int64_t playoutLeadToleranceQpc =
                             ce::capture_policy::GetWgcActiveDelayResidualToleranceQpc(targetIntervalTicks);
+                        // Anti-freeze floor: if the encoder grid has drifted so far behind wall-clock
+                        // that even the OLDEST buffered frame is "too new" for this slot, the grid target
+                        // would hold/repeat every tick while fresh frames pile up and drop stale -- a
+                        // multi-second hard freeze. Raise the slot target just enough to age the oldest
+                        // (deepest / max-delay) frame in so playout resumes at the source rate. No-op in
+                        // healthy cadence (oldest reserve frame is older than the slot). Only VIDEO source
+                        // selection changes; the CFR video PTS grid and audio timeline are untouched and
+                        // the emitted oldest frame keeps video behind audio (A/V offset preserved).
+                        if (!bufferedWgcFrames.empty()) {
+                            const int64_t oldestBufferedSlotQpc = bufferedWgcFrames.front().timestamp;
+                            const int64_t antiFreezeTargetQpc =
+                                ce::capture_policy::ApplyWgcUniformPlayoutAntiFreezeFloor(
+                                    playoutTargetQpc, oldestBufferedSlotQpc, targetIntervalTicks);
+                            if (antiFreezeTargetQpc > playoutTargetQpc) {
+                                ++wgcUniformAntiFreezeFloorTotal;
+                                static uint64_t s_lastAntiFreezeLogTick = 0;
+                                const uint64_t nowAntiFreezeTick = GetTickCount64();
+                                if (nowAntiFreezeTick - s_lastAntiFreezeLogTick >= 1000) {
+                                    s_lastAntiFreezeLogTick = nowAntiFreezeTick;
+                                    const int64_t driftUs = qpcToUs(antiFreezeTargetQpc - playoutTargetQpc);
+                                    const int64_t oldestAgeUs =
+                                        selectionNowQpc.QuadPart > oldestBufferedSlotQpc
+                                            ? qpcToUs(selectionNowQpc.QuadPart - oldestBufferedSlotQpc)
+                                            : 0;
+                                    LogWarn(
+                                        "[WGC CFR] Uniform playout anti-freeze floor engaged: grid target drifted "
+                                        "%lldus behind the reserve (even the oldest buffered frame was too-new for "
+                                        "the slot); advancing to the oldest max-delay frame to resume playout at "
+                                        "the source rate. buffered=%zu oldestAge=%lldus total=%llu (encoder-overload "
+                                        "grid drift, NOT a source hitch; A/V PTS unchanged, video stays behind audio)",
+                                        static_cast<long long>(driftUs), bufferedWgcFrames.size(),
+                                        static_cast<long long>(oldestAgeUs),
+                                        static_cast<unsigned long long>(wgcUniformAntiFreezeFloorTotal));
+                                }
+                                playoutTargetQpc = antiFreezeTargetQpc;
+                            }
+                        }
                         const uint32_t uniformActiveDelaySoftLateTargetUs =
                             ce::capture_policy::GetWgcActiveDelaySoftLateTargetUs(targetIntervalTicks,
                                                                                   qpcFreq.QuadPart);
@@ -9508,8 +9549,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     : 0ull;
             LogInfo(
                 "[WGC CFR SUMMARY] Live=%llu Dup=%llu DupPct=%.1f%% NoFresh=%llupm NoReserve=%llupm DupReason(src=%llu "
-                "def=%llu timer=%llu drain=%llu) SourceLimitedRepeats=%llu StarvedEpisodes=%llu longest=%llums "
-                "longestDup=%llu longestContiguousDup=%llu (%llums) worstIn=%u "
+                "def=%llu timer=%llu drain=%llu) SourceLimitedRepeats=%llu StarvedEpisodes=%llu AntiFreezeFloor=%llu "
+                "longest=%llums longestDup=%llu longestContiguousDup=%llu (%llums) worstIn=%u "
                 "worstDel=%u",
                 static_cast<unsigned long long>(liveTicksOutput),
                 static_cast<unsigned long long>(captureSessionSummary.duplicateTicks),
@@ -9521,6 +9562,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(captureSessionSummary.duplicateDrainTicks),
                 static_cast<unsigned long long>(captureSessionSummary.duplicateNoSourceTicks),
                 static_cast<unsigned long long>(captureSessionSummary.starvedEpisodes),
+                static_cast<unsigned long long>(wgcUniformAntiFreezeFloorTotal),
                 static_cast<unsigned long long>(captureSessionSummary.longestStarvedEpisodeMs),
                 static_cast<unsigned long long>(captureSessionSummary.longestStarvedEpisodeDuplicateTicks),
                 static_cast<unsigned long long>(captureSessionSummary.longestContiguousDupTicks),
