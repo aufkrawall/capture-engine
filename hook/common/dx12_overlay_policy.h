@@ -3064,6 +3064,42 @@ inline bool ShouldRetainStreamlineStartupActivationSwapchainFromNormalRoute(bool
            (startupActivationPending || postSLActiveButUnconfirmed);
 }
 
+// Startup-transport bypass / overlayless handoff retains (the "startup normal-route bypass",
+// "startup-handoff normal-route bypass", and "app-thread post-FSR startup-handoff overlayless SL route"
+// present paths). Retention exists ONLY for PostSL STARTUP recovery: the single release fires at "PostSL
+// confirmed rendering", and the retained slot is never even consulted after confirmation
+// (ShouldPreferRetainedStreamlineStartupActivationSwapchain requires pending/unconfirmed). A retain AFTER
+// confirmation is therefore a pure COM-reference LEAK that pins the swapchain — and with it the HWND
+// association DXGI checks on the next CreateSwapChainForHwnd. GTA FSR->DLSS apply (session
+// 20260702_092933): bypass retains generations 3-11 landed after confirmation, CE's leaked reference kept
+// AMD's old FI real swapchain alive, the game's replacement swapchain create failed E_ACCESSDENIED, and
+// GTA null-dereferenced the missing swapchain. These transport paths must stop retaining at confirmation.
+inline bool ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(bool isD3D12SwapChain,
+                                                                                 bool postSLConfirmedRendering) {
+    return isD3D12SwapChain && !postSLConfirmedRendering;
+}
+
+// How the CreateSwapChainForHwnd E_ACCESSDENIED recovery runs. E_ACCESSDENIED means the HWND still has a
+// live swapchain — possibly pinned by CE's OWN references (the retained startup-activation swapchain).
+// For CE/game-owned creates the full overlay cleanup + retry is correct. For runtime-managed creates
+// (Streamline/FFX handoff, third-party overlay in the call chain) CE used to pass the error through
+// untouched ("don't disturb the runtime's handoff state machine") — but a failed runtime create is FATAL
+// to the game (GTA dereferences the null swapchain and crashes, session 20260702_092933), so blind
+// pass-through is never acceptable: first do the MINIMAL CE-owned unpin (release the retained
+// startup-activation swapchain, no overlay teardown / GPU flush) and retry; escalate to the full cleanup
+// only if the HWND stays pinned (a disturbed handoff beats a guaranteed crash).
+enum class CreateSwapchainAccessDeniedRecovery {
+    kFullOverlayCleanupAndRetry,     // CE/game-owned create: existing full cleanup + retry
+    kMinimalCEReleaseThenEscalate,   // runtime-managed create: minimal CE unpin + retry, escalate if still denied
+};
+
+inline CreateSwapchainAccessDeniedRecovery ChooseCreateSwapchainAccessDeniedRecovery(
+    bool passThroughForRuntimeManagedFG, bool callerFromThirdPartyOverlay) {
+    return (passThroughForRuntimeManagedFG || callerFromThirdPartyOverlay)
+               ? CreateSwapchainAccessDeniedRecovery::kMinimalCEReleaseThenEscalate
+               : CreateSwapchainAccessDeniedRecovery::kFullOverlayCleanupAndRetry;
+}
+
 inline bool ShouldPreferRetainedStreamlineStartupActivationSwapchain(bool retainedSwapchainAvailable,
                                                                      bool startupActivationPending,
                                                                      bool postSLActiveButUnconfirmed) {

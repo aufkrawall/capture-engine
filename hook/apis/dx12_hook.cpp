@@ -9182,13 +9182,62 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
                 ? "third-party overlay caller"
                 : ((callerFromFFXFGModule || ffxFrameGenerationInStack) ? "authoritative FFX takeover"
                                                                         : "Streamline active");
-        if (passThroughForRuntimeManagedFG || callerFromThirdPartyOverlay) {
+        if (ce::dx12_overlay_policy::ChooseCreateSwapchainAccessDeniedRecovery(passThroughForRuntimeManagedFG,
+                                                                              callerFromThirdPartyOverlay) ==
+            ce::dx12_overlay_policy::CreateSwapchainAccessDeniedRecovery::kMinimalCEReleaseThenEscalate) {
+            // See the INLINE variant: a failed runtime-managed create is fatal to the game (null swapchain
+            // deref, session 20260702_092933). Minimal CE unpin (retained startup-activation swapchain) +
+            // retry first; full overlay cleanup only as the last resort before returning the error.
             HookLogImportant(
-                "DeepHook: E_ACCESSDENIED for HWND=%p — %s, passing through without CE cleanup "
-                "(slFG=%d startupPending=%d callerFFX=%d stackFFX=%d module=%s)",
+                "DeepHook: E_ACCESSDENIED for HWND=%p — %s, minimal CE unpin + retry "
+                "(slFG=%d startupPending=%d callerFFX=%d stackFFX=%d retained=%d module=%s)",
                 hWnd, passThroughReason, streamlineFGRunning ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
                 callerFromFFXFGModule ? 1 : 0, ffxFrameGenerationInStack ? 1 : 0,
+                HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0,
                 callerModulePath[0] ? callerModulePath : "unknown");
+            ReleaseStreamlineStartupActivationSwapchain("DeepHook: E_ACCESSDENIED runtime-managed minimal recovery");
+            for (int attempt = 1; attempt <= 5 && hr == E_ACCESSDENIED; ++attempt) {
+                Sleep(20);
+                hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
+                if (SUCCEEDED(hr)) {
+                    HookLogImportant(
+                        "DeepHook: runtime-managed minimal-recovery retry %d succeeded hr=0x%08X sc=%p", attempt, hr,
+                        (ppSC && *ppSC) ? (void*)*ppSC : nullptr);
+                }
+            }
+            if (hr == E_ACCESSDENIED) {
+                HookLogImportant(
+                    "DeepHook: runtime-managed minimal recovery still E_ACCESSDENIED — escalating to full overlay "
+                    "cleanup for HWND=%p",
+                    hWnd);
+                {
+                    std::lock_guard<std::recursive_mutex> overlayLock(g_OverlayMutex);
+                    g_LastSwapChain = nullptr;
+                    CleanupOverlay();
+                    CleanupRTVs();
+                    g_State.overlayInit = false;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
+                    s_hwndSwapchainMap.erase(hWnd);
+                }
+                if (ppSC && *ppSC) {
+                    ForgetSwapchainFromTracking(static_cast<IDXGISwapChain*>(*ppSC));
+                }
+                for (int attempt = 1; attempt <= 10 && hr == E_ACCESSDENIED; ++attempt) {
+                    Sleep(20);
+                    hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
+                    if (SUCCEEDED(hr)) {
+                        HookLogImportant("DeepHook: escalated full-cleanup retry %d succeeded hr=0x%08X", attempt, hr);
+                    }
+                }
+            }
+            if (hr == E_ACCESSDENIED) {
+                HookLogImportant(
+                    "DeepHook: E_ACCESSDENIED persists after CE unpin + full cleanup — returning the error to the "
+                    "caller (HWND=%p)",
+                    hWnd);
+            }
         } else {
             HookLogImportant(
                 "DeepHook: E_ACCESSDENIED for HWND=%p — cleaning up overlay refs "
@@ -9370,6 +9419,14 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
             deferredStreamlineHandoffQueue, g_OriginalGameQueue,
             ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
             g_FGCompat.IsFSRFGApiActive() ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, IsStreamlineLoaded() ? 1 : 0);
+        // MAKE-BEFORE-BREAK for the runtime's replacement swapchain: the retained startup-activation
+        // swapchain is an AddRef'd COM reference to the OLD (pre-handoff) chain. Holding it across this
+        // create pins the old chain's HWND association, so DXGI fails the runtime's replacement create
+        // with E_ACCESSDENIED and the game crashes dereferencing the null swapchain (GTA FSR->DLSS apply,
+        // session 20260702_092933). Its purpose — PostSL startup recovery on the OLD chain — is moot once
+        // the runtime replaces the swapchain, so release it BEFORE forwarding the create.
+        ReleaseStreamlineStartupActivationSwapchain(
+            "CreateSwapChainForHwnd INLINE: pre post-FSR Streamline runtime swapchain create");
     }
 
     HRESULT hr = s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
@@ -9392,13 +9449,70 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
                 ? "third-party overlay caller"
                 : ((callerFromFFXFGModule || ffxFrameGenerationInStack) ? "authoritative FFX takeover"
                                                                         : "Streamline active");
-        if (passThroughForRuntimeManagedFG || callerFromThirdPartyOverlay) {
+        if (ce::dx12_overlay_policy::ChooseCreateSwapchainAccessDeniedRecovery(passThroughForRuntimeManagedFG,
+                                                                              callerFromThirdPartyOverlay) ==
+            ce::dx12_overlay_policy::CreateSwapchainAccessDeniedRecovery::kMinimalCEReleaseThenEscalate) {
+            // A failed runtime-managed create is FATAL to the game — GTA dereferences the null swapchain
+            // and crashes (session 20260702_092933) — so the old blind pass-through is not acceptable.
+            // Recover with the MINIMAL CE-owned unpin first: drop the retained startup-activation
+            // swapchain reference (an AddRef'd COM ref that pins the old chain's HWND association) and
+            // retry, WITHOUT the full overlay teardown / GPU flush that could disturb the runtime's own
+            // handoff state machine. Escalate to the full cleanup only if the HWND stays pinned — a
+            // disturbed handoff beats a guaranteed crash.
             HookLogImportant(
-                "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED for HWND=%p — %s, passing through without CE cleanup "
-                "(slFG=%d startupPending=%d callerFFX=%d stackFFX=%d module=%s)",
+                "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED for HWND=%p — %s, minimal CE unpin + retry "
+                "(slFG=%d startupPending=%d callerFFX=%d stackFFX=%d retained=%d module=%s)",
                 hWnd, passThroughReason, streamlineFGRunning ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
                 callerFromFFXFGModule ? 1 : 0, ffxFrameGenerationInStack ? 1 : 0,
+                HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0,
                 callerModulePath[0] ? callerModulePath : "unknown");
+            ReleaseStreamlineStartupActivationSwapchain(
+                "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED runtime-managed minimal recovery");
+            for (int attempt = 1; attempt <= 5 && hr == E_ACCESSDENIED; ++attempt) {
+                Sleep(20);
+                hr = s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
+                if (SUCCEEDED(hr)) {
+                    HookLogImportant(
+                        "CreateSwapChainForHwnd INLINE: runtime-managed minimal-recovery retry %d succeeded "
+                        "hr=0x%08X sc=%p",
+                        attempt, hr, (ppSC && *ppSC) ? (void*)*ppSC : nullptr);
+                }
+            }
+            if (hr == E_ACCESSDENIED) {
+                HookLogImportant(
+                    "CreateSwapChainForHwnd INLINE: runtime-managed minimal recovery still E_ACCESSDENIED — "
+                    "escalating to full overlay cleanup for HWND=%p",
+                    hWnd);
+                {
+                    std::lock_guard<std::recursive_mutex> overlayLock(g_OverlayMutex);
+                    g_LastSwapChain = nullptr;
+                    CleanupOverlay();
+                    CleanupRTVs();
+                    g_State.overlayInit = false;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
+                    s_hwndSwapchainMap.erase(hWnd);
+                }
+                if (ppSC && *ppSC) {
+                    ForgetSwapchainFromTracking(static_cast<IDXGISwapChain*>(*ppSC));
+                }
+                for (int attempt = 1; attempt <= 10 && hr == E_ACCESSDENIED; ++attempt) {
+                    Sleep(20);
+                    hr = s_oCreateSCForHwndInline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
+                    if (SUCCEEDED(hr)) {
+                        HookLogImportant(
+                            "CreateSwapChainForHwnd INLINE: escalated full-cleanup retry %d succeeded hr=0x%08X",
+                            attempt, hr);
+                    }
+                }
+            }
+            if (hr == E_ACCESSDENIED) {
+                HookLogImportant(
+                    "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED persists after CE unpin + full cleanup — "
+                    "returning the error to the caller (HWND=%p)",
+                    hWnd);
+            }
         } else {
             HookLogImportant(
                 "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED for HWND=%p — "

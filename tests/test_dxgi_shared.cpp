@@ -4567,6 +4567,90 @@ TEST(DXGISharedTest, CreateSwapchainAccessDeniedPassThroughRequiresRuntimeOwners
                                                                                                     false, true));
 }
 
+// ---------------------------------------------------------------------------
+// GTA FSR->DLSS apply crash (session 20260702_092933): the startup-transport bypass paths kept RE-RETAINING
+// the startup-activation swapchain AFTER PostSL confirmed rendering (generations 3-11), but the only
+// release fires AT confirmation — so the last retained COM reference leaked, pinned AMD's old FI real
+// swapchain (and its HWND association), the game's replacement CreateSwapChainForHwnd failed
+// E_ACCESSDENIED, and GTA null-dereferenced the missing swapchain. Retention exists ONLY for PostSL
+// startup recovery and the retained slot is never consulted after confirmation
+// (ShouldPreferRetainedStreamlineStartupActivationSwapchain requires pending/unconfirmed), so transport
+// retains must stop at confirmation.
+// ---------------------------------------------------------------------------
+TEST(DXGISharedTest, StartupTransportRetainStopsAtPostSLConfirmation) {
+    using ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport;
+    // Pre-confirmation D3D12 transport presents may retain (startup recovery anchor).
+    EXPECT_TRUE(ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(true, false));
+    // AFTER confirmation the retain is a pure leak (release already fired, slot never consulted again).
+    EXPECT_FALSE(ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(true, true));
+    // Non-D3D12 swapchains never participate.
+    EXPECT_FALSE(ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(false, false));
+    EXPECT_FALSE(ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(false, true));
+}
+
+// The retained slot is only ever PREFERRED while startup is pending/unconfirmed — proving that a retain
+// after confirmation has no consumer (the leak gated above had zero recovery value).
+TEST(DXGISharedTest, RetainedActivationSwapchainNeverPreferredAfterConfirmation) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreferRetainedStreamlineStartupActivationSwapchain(
+        /*retainedSwapchainAvailable=*/true, /*startupActivationPending=*/false,
+        /*postSLActiveButUnconfirmed=*/false));
+}
+
+// ---------------------------------------------------------------------------
+// A failed runtime-managed swapchain create is FATAL to the game (GTA dereferences the null swapchain,
+// session 20260702_092933), so E_ACCESSDENIED must never be blindly passed through: runtime-managed /
+// third-party-caller creates get the MINIMAL CE unpin (release retained activation swapchain, no overlay
+// teardown) + retry with full-cleanup escalation; only CE/game-owned creates keep the direct full cleanup.
+// ---------------------------------------------------------------------------
+TEST(DXGISharedTest, CreateSwapchainAccessDeniedRuntimeManagedGetsMinimalReleaseNotBlindPassThrough) {
+    using ce::dx12_overlay_policy::ChooseCreateSwapchainAccessDeniedRecovery;
+    using ce::dx12_overlay_policy::CreateSwapchainAccessDeniedRecovery;
+    EXPECT_EQ(ChooseCreateSwapchainAccessDeniedRecovery(/*passThroughForRuntimeManagedFG=*/true,
+                                                        /*callerFromThirdPartyOverlay=*/false),
+              CreateSwapchainAccessDeniedRecovery::kMinimalCEReleaseThenEscalate);
+    EXPECT_EQ(ChooseCreateSwapchainAccessDeniedRecovery(false, true),
+              CreateSwapchainAccessDeniedRecovery::kMinimalCEReleaseThenEscalate);
+    EXPECT_EQ(ChooseCreateSwapchainAccessDeniedRecovery(true, true),
+              CreateSwapchainAccessDeniedRecovery::kMinimalCEReleaseThenEscalate);
+    EXPECT_EQ(ChooseCreateSwapchainAccessDeniedRecovery(false, false),
+              CreateSwapchainAccessDeniedRecovery::kFullOverlayCleanupAndRetry);
+}
+
+// Source invariants for the leak fix: every startup-transport retain call site must be gated by the
+// confirmation policy, the runtime-handoff create releases the retained swapchain BEFORE forwarding, and
+// no "passing through without CE cleanup" arm remains for E_ACCESSDENIED.
+TEST(DXGISharedSourceTest, StartupTransportRetainSitesGatedAndHandoffReleasesRetainedSwapchain) {
+    namespace fs = std::filesystem;
+    auto readFile = [](const fs::path& p) {
+        EXPECT_TRUE(fs::exists(p)) << p.string();
+        std::ifstream stream(p, std::ios::binary);
+        EXPECT_TRUE(stream.good()) << p.string();
+        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    };
+
+    const std::string shared = readFile(fs::current_path() / "hook" / "common" / "dxgi_shared.cpp");
+    ASSERT_FALSE(shared.empty());
+    // Every transport retain (bypass/overlayless-handoff sources) is gated by the confirmation policy:
+    // count gate occurrences >= count of transport retain sources.
+    size_t gates = 0;
+    for (size_t pos = shared.find("ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport");
+         pos != std::string::npos;
+         pos = shared.find("ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport", pos + 1)) {
+        ++gates;
+    }
+    EXPECT_GE(gates, 6u) << "all six startup-transport retain sites must consult the confirmation gate";
+
+    const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+    ASSERT_FALSE(dx12.empty());
+    // The post-FSR runtime-handoff create releases CE's retained activation swapchain BEFORE forwarding.
+    EXPECT_NE(dx12.find("pre post-FSR Streamline runtime swapchain create"), std::string::npos)
+        << "runtime-handoff create must release the retained activation swapchain before forwarding";
+    // No blind pass-through remains: both E_ACCESSDENIED arms recover instead.
+    EXPECT_EQ(dx12.find("passing through without CE cleanup"), std::string::npos)
+        << "E_ACCESSDENIED must never be blindly passed through (fatal null-swapchain deref in the game)";
+    EXPECT_NE(dx12.find("E_ACCESSDENIED runtime-managed minimal recovery"), std::string::npos);
+}
+
 TEST(DXGISharedTest, PostSLRenderingDeferredDuringStartupTransitionWindowUntilConfirmed) {
     // During startup transition window with no confirmed rendering - defer
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferPostSLRenderingDuringStartupTransitionWindow(true, false, false));

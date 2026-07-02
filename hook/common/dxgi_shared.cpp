@@ -2029,8 +2029,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                         postSLConfirmedButStartupSettling ? 1 : 0, (void*)presentBypass, presentOwner,
                         presentDepthVal, currentThreadId);
                 }
-                DX12_RetainStreamlineStartupActivationSwapchain(
-                    pSwapChain, "DetourPresent: startup-handoff normal-route bypass");
+                if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
+                        api == APIType::D3D12, postSLConfirmedRendering)) {
+                    DX12_RetainStreamlineStartupActivationSwapchain(
+                        pSwapChain, "DetourPresent: startup-handoff normal-route bypass");
+                }
                 MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(
                     pSwapChain, api == APIType::D3D12, streamlineFGRunning, postSLConfirmedRendering, hadFSRFGPhase,
                     "startupHandoffNormalRoute");
@@ -2158,8 +2161,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                         postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
                         (void*)presentBypass, presentOwner, presentDepthVal, currentThreadId);
                 }
-                DX12_RetainStreamlineStartupActivationSwapchain(
-                    pSwapChain, "DetourPresent: startup normal-route bypass");
+                if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
+                        api == APIType::D3D12, postSLConfirmedRendering)) {
+                    DX12_RetainStreamlineStartupActivationSwapchain(
+                        pSwapChain, "DetourPresent: startup normal-route bypass");
+                }
                 MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(
                     pSwapChain, api == APIType::D3D12, streamlineFGRunning, postSLConfirmedRendering, hadFSRFGPhase,
                     "keepStartupNormalRoute");
@@ -2560,8 +2566,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                     safePostFSRBootstrapPath ? 1 : 0, postSLConfirmedRendering ? 1 : 0, (void*)oPresent,
                     presentOwner, presentDepthVal, currentThreadId);
             }
-            DX12_RetainStreamlineStartupActivationSwapchain(
-                pSwapChain, "DetourPresent: app-thread post-FSR startup-handoff overlayless SL route");
+            if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
+                    api == APIType::D3D12, postSLConfirmedRendering)) {
+                DX12_RetainStreamlineStartupActivationSwapchain(
+                    pSwapChain, "DetourPresent: app-thread post-FSR startup-handoff overlayless SL route");
+            }
             if (g_IPC) {
                 g_SharedFpsLimiter.SetIPCClient(g_IPC);
                 g_SharedFpsLimiter.Apply(true);
@@ -3083,8 +3092,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                         postSLConfirmedButStartupSettling ? 1 : 0, (void*)present1Bypass, presentOwner,
                         presentDepthVal, currentThreadId);
                 }
-                DX12_RetainStreamlineStartupActivationSwapchain(
-                    pSwapChain, "DetourPresent1: startup-handoff normal-route bypass");
+                if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
+                        api == APIType::D3D12, postSLConfirmedRendering)) {
+                    DX12_RetainStreamlineStartupActivationSwapchain(
+                        pSwapChain, "DetourPresent1: startup-handoff normal-route bypass");
+                }
                 return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
             }
         } else if (runtimeOwnedSwapchainActive) {
@@ -3202,8 +3214,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                         postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
                         (void*)present1Bypass, presentOwner, presentDepthVal, currentThreadId);
                 }
-                DX12_RetainStreamlineStartupActivationSwapchain(
-                    pSwapChain, "DetourPresent1: startup normal-route bypass");
+                if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
+                        api == APIType::D3D12, postSLConfirmedRendering)) {
+                    DX12_RetainStreamlineStartupActivationSwapchain(
+                        pSwapChain, "DetourPresent1: startup normal-route bypass");
+                }
                 return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
             }
         } else if (runtimeOwnedSwapchainActive && callerFromStreamlineModule) {
@@ -3491,8 +3506,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     safePostFSRBootstrapPath ? 1 : 0, postSLConfirmedRendering ? 1 : 0, (void*)oPresent1,
                     presentOwner, presentDepthVal, currentThreadId);
             }
-            DX12_RetainStreamlineStartupActivationSwapchain(
-                pSwapChain, "DetourPresent1: app-thread post-FSR startup-handoff overlayless SL route");
+            if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
+                    api == APIType::D3D12, postSLConfirmedRendering)) {
+                DX12_RetainStreamlineStartupActivationSwapchain(
+                    pSwapChain, "DetourPresent1: app-thread post-FSR startup-handoff overlayless SL route");
+            }
             if (g_IPC) {
                 g_SharedFpsLimiter.SetIPCClient(g_IPC);
                 g_SharedFpsLimiter.Apply(true);
