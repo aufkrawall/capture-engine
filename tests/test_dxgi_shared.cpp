@@ -3088,23 +3088,45 @@ TEST(DXGISharedTest, SwapchainChangeGuardCatchesRecentStreamlineTeardownOnRuntim
 
 TEST(DXGISharedTest, InactiveRuntimeOwnedSwapchainInitWaitsForCommandQueueToSettle) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true,
-                                                                                             true, false));
+                                                                                             true, false, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true,
-                                                                                             false, false));
+                                                                                             false, false, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true,
-                                                                                             true, false));
+                                                                                             true, false, false));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, false, true,
-                                                                                              true, false));
+                                                                                              true, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(true, false, true, true,
-                                                                                              true, false));
+                                                                                              true, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, true, true, true,
-                                                                                              true, false));
+                                                                                              true, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(false, false, true, true,
-                                                                                              true, true));
+                                                                                              true, true, false));
 
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
-        false, false, true, true, true, false));
+        false, false, true, true, true, false, false));
+}
+
+// ---------------------------------------------------------------------------
+// Test app session 20260702_142655: suspending FSR FG (no-callback mode) blanked the overlay for the WHOLE
+// suspension. The retained no-callback suspension keeps AMD's FI swapchain + runtime-owned queue latched
+// while the app renders on origGame, so the "command traffic settles onto the live swapchain queue"
+// condition can structurally NEVER be met — the settle-defer stranded overlay init until resume. The
+// suspension exemption already approves normal overlay rendering on the runtime-owned swapchain queue
+// (AMD not interpolating → backbuffer submit safe; queue routing picks scQueue), so init must proceed.
+// ---------------------------------------------------------------------------
+TEST(DXGISharedTest, RetainedNoCallbackFSRSuspensionInitIsNotDeferredByQueueSettle) {
+    // The exact failing state: FG inactive, runtime owns, cmdQ != scQ, retained no-callback suspension.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
+        /*actualFGActive=*/false, /*streamlineFGRunning=*/false, /*runtimeOwnsSwapchain=*/true,
+        /*hasSwapchainQueue=*/true, /*hasCommandQueue=*/true, /*commandQueueMatchesSwapchainQueue=*/false,
+        /*retainedNoCallbackFSRSuspension=*/true));
+    // Null command queue during the suspension: same exemption (the render targets scQueue anyway).
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
+        false, false, true, true, /*hasCommandQueue=*/false, false, true));
+    // The exemption changes nothing outside the suspension (Talos post-FG settle crash path stays guarded).
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
+        false, false, true, true, true, false, /*retainedNoCallbackFSRSuspension=*/false));
 }
 
 TEST(DXGISharedTest, D3D12InjectionProbeDoesNotAddFixedStartupDelay) {
@@ -4614,6 +4636,44 @@ TEST(DXGISharedTest, CreateSwapchainAccessDeniedRuntimeManagedGetsMinimalRelease
               CreateSwapchainAccessDeniedRecovery::kMinimalCEReleaseThenEscalate);
     EXPECT_EQ(ChooseCreateSwapchainAccessDeniedRecovery(false, false),
               CreateSwapchainAccessDeniedRecovery::kFullOverlayCleanupAndRetry);
+}
+
+// ---------------------------------------------------------------------------
+// perf_metrics CSV present-row dedup (sessions 20260702_094955/140811: ~50% zero-delta qpc row pairs —
+// the outer DetourPresent catch-all row AND the inner per-API ProcessFrame row were both written for the
+// same present, so present-rate analysis from the CSV counted frames twice). The outer present hooks must
+// open a PerfLogger present-row scope before dispatching and skip their catch-all row when an inner row
+// was logged.
+// ---------------------------------------------------------------------------
+TEST(DXGISharedSourceTest, PresentPerfRowIsDedupedAcrossOuterAndInnerLoggers) {
+    namespace fs = std::filesystem;
+    auto readFile = [](const fs::path& p) {
+        EXPECT_TRUE(fs::exists(p)) << p.string();
+        std::ifstream stream(p, std::ios::binary);
+        EXPECT_TRUE(stream.good()) << p.string();
+        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    };
+
+    const std::string shared = readFile(fs::current_path() / "hook" / "common" / "dxgi_shared.cpp");
+    ASSERT_FALSE(shared.empty());
+    const size_t beginScope = shared.find("PerfLogger::BeginPresentRowScope()");
+    ASSERT_NE(beginScope, std::string::npos) << "DetourPresent must open the present-row scope";
+    const size_t guardCheck = shared.find("!PerfLogger::InnerRowLoggedInPresentRowScope()");
+    ASSERT_NE(guardCheck, std::string::npos)
+        << "DetourPresent's catch-all row must be skipped when an inner row was logged";
+
+    const std::string wrap = readFile(fs::current_path() / "hook" / "wrappers" / "dxgi_swapchain_wrap.cpp");
+    ASSERT_FALSE(wrap.empty());
+    EXPECT_NE(wrap.find("PerfLogger::BeginPresentRowScope()"), std::string::npos);
+    EXPECT_NE(wrap.find("!PerfLogger::InnerRowLoggedInPresentRowScope()"), std::string::npos);
+
+    const std::string logger = readFile(fs::current_path() / "hook" / "common" / "perf_logger.cpp");
+    ASSERT_FALSE(logger.empty());
+    // Every logged row marks the scope (inner rows win; outer catch-alls defer).
+    const size_t logFrame = logger.find("void PerfLogger::LogFrame(");
+    ASSERT_NE(logFrame, std::string::npos);
+    const size_t marks = logger.find("t_frameRowLoggedInPresentScope = true;", logFrame);
+    ASSERT_NE(marks, std::string::npos);
 }
 
 // Source invariants for the leak fix: every startup-transport retain call site must be gated by the

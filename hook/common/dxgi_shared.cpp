@@ -2590,12 +2590,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
 
     // Initialize performance metrics for CSV logging early so the scope guard
     // captures total frame time even if HandleDX11/12ProcessFrame or the FPS
-    // limiter takes non-trivial time.
+    // limiter takes non-trivial time. This is the OUTER catch-all row: when the
+    // dispatched work logs its own richer per-API ProcessFrame row (overlay/
+    // capture breakdown), this row is SKIPPED — otherwise every such present
+    // wrote TWO CSV rows (~50% zero-delta qpc pairs, sessions 20260702_094955/
+    // 140811) and present-rate analysis from the CSV counted frames twice.
     const int64_t perfMetricsQpcUs = PerfLogger::GetQpcUs();
     static uint64_t s_perfFrameNum = 0;
     ++s_perfFrameNum;
+    PerfLogger::BeginPresentRowScope();
     auto perfGuard = ce::make_scope_guard([&]() {
-        if (PerfLogger::Get().IsEnabled()) {
+        if (PerfLogger::Get().IsEnabled() && !PerfLogger::InnerRowLoggedInPresentRowScope()) {
             FrameMetrics perfMetrics;
             perfMetrics.qpcUs = perfMetricsQpcUs;
             perfMetrics.totalUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - perfMetricsQpcUs);

@@ -499,9 +499,28 @@ static void LogOverlayCoverageSummary(const char* edge) {
 }
 
 static void NoteDX12OverlayRendered(DX12OverlayRenderRoute route) {
-    g_OverlayCoverageDrawCount.fetch_add(1, std::memory_order_acq_rel);
-    g_LastDX12OverlayRenderRoute.store(static_cast<uint32_t>(route), std::memory_order_release);
+    const uint64_t drawsBefore = g_OverlayCoverageDrawCount.fetch_add(1, std::memory_order_acq_rel);
+    const uint32_t previousRoute =
+        g_LastDX12OverlayRenderRoute.exchange(static_cast<uint32_t>(route), std::memory_order_acq_rel);
     g_LastDX12OverlayRenderTickMs.store(GetTickCount64(), std::memory_order_release);
+    // [OVERLAY DOUBLE-DRAW] detector: a draw already happened since the last ACCOUNTED present
+    // (drawsBefore > lastSeen) and it came from a DIFFERENT route — i.e. two overlay routes rendered
+    // within the same present window. One route re-drawing is benign; two different routes can show the
+    // overlay TWICE on screen (e.g. the FFX UI-composite prework and PostSL backbuffer rendering were both
+    // live for ~3.5s during the GTA FSR->DLSS pre-apply window, session 20260702_092933). Diagnostic only —
+    // makes route-arbitration overlaps attributable from one run; visible flicker/dimming correlates here.
+    const uint64_t lastAccountedDraws = g_OverlayCoverageLastSeenDrawCount.load(std::memory_order_acquire);
+    if (drawsBefore > lastAccountedDraws && previousRoute != static_cast<uint32_t>(route)) {
+        static std::atomic<int> s_doubleDrawLogCount{0};
+        const int n = s_doubleDrawLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (n < 20 || (n % 300) == 0) {
+            HookLogImportant(
+                "[OVERLAY DOUBLE-DRAW] two overlay routes rendered in the same present window: %s then %s "
+                "(pendingDraws=%llu log=%d)",
+                DX12OverlayRenderRouteName(previousRoute), DX12OverlayRenderRouteName(static_cast<uint32_t>(route)),
+                static_cast<unsigned long long>(drawsBefore + 1 - lastAccountedDraws), n + 1);
+        }
+    }
 }
 
 static void LogDX12OverlayVisibilityGap(const char* context, const char* reason, ULONGLONG warnAfterMs = 250) {
@@ -16230,11 +16249,24 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 g_PostSLLastWorkingQueue != nullptr &&
                 GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
             int slOffSwapchainGrace = g_SLOffSwapchainReinitGrace.load(std::memory_order_acquire);
+            // Retained no-callback FSR suspension: AMD keeps the FI swapchain + queue latched while the
+            // app renders on origGame, so the queue-settle condition below can never be met — the policy
+            // exempts it so the overlay re-inits and draws on the runtime-owned swapchain queue (the
+            // suspension-approved backbuffer route; test app session 20260702_142655 was blank the whole
+            // suspension without this).
+            const bool retainedNoCallbackFSRSuspension =
+                g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) &&
+                g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
             if (ce::dx12_overlay_policy::ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(
                     actualFGActive, streamlineFGRunning, g_FGRuntimeOwnsSwapchain, currentSwapchainQueue != nullptr,
                     currentCommandQueue != nullptr,
-                    currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue) &&
+                    currentCommandQueue != nullptr && currentCommandQueue == currentSwapchainQueue,
+                    retainedNoCallbackFSRSuspension) &&
                 !ShouldReinitOverlayDuringDormantProtectedOfficialFFXStartup()) {
+                // Attribute these presents as gated so a blank window here shows up as an
+                // [OVERLAY COVERAGE] uncovered streak instead of hiding behind coverage inheritance
+                // (session 20260702_142655 had ZERO streaks logged while the overlay was invisible).
+                NoteDX12OverlayCoverageGate("runtime-owned-init-queue-settle-defer");
                 static std::atomic<int> s_runtimeOwnedInactiveInitDeferLogCount{0};
                 int logCount = s_runtimeOwnedInactiveInitDeferLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 20 || (logCount % 120) == 0) {
@@ -16264,6 +16296,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 // runtimeOwns=0, FSR dormant); the overlay submits on origGame, not on g_CommandQueue, so a
                 // fresh rebuild here is safe. The moment the runtime takes over, the predicate is false and
                 // this defer resumes.
+                // Attribute as gated so any blank window here is a visible [OVERLAY COVERAGE] streak.
+                NoteDX12OverlayCoverageGate("sl-teardown-queue-settle-defer");
                 static std::atomic<int> s_recentSLTeardownInitDeferLogCount{0};
                 int logCount = s_recentSLTeardownInitDeferLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 20 || (logCount % 120) == 0) {

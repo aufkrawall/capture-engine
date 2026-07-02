@@ -97,6 +97,15 @@ public:
         return frameCount_.load(std::memory_order_relaxed);
     }
 
+    // Present-row dedup (session 20260702_094955/140811: perf CSV recorded TWO rows per present on paths
+    // where an inner per-API ProcessFrame row nests inside the outer DetourPresent/wrapper catch-all row —
+    // ~50% zero-delta qpc pairs that skew any present-rate analysis). The OUTER present hook calls
+    // BeginPresentRowScope() before dispatching; every LogFrame marks the scope; the outer catch-all row is
+    // then written only when NO inner row was logged for this present. Thread-local — presents dispatch
+    // their inner work synchronously on the same thread.
+    static void BeginPresentRowScope();
+    static bool InnerRowLoggedInPresentRowScope();
+
     static int64_t GetQpcUs();
     static int64_t GetQpcFrequency();
 

@@ -1027,8 +1027,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         strncpy(perfMetrics.api, DetectWrappedSwapchainApi(m_pDevice, m_IsD3D12), sizeof(perfMetrics.api) - 1);
         perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
     }
+    // Outermost present row: skip when the forwarded present logged an inner row (DetourPresent catch-all
+    // or a per-API ProcessFrame row) so a present never writes two CSV rows (present-rate dedup).
+    if (perfLoggingEnabled) {
+        PerfLogger::BeginPresentRowScope();
+    }
     auto perfGuard = ::ce::make_scope_guard([&] {
-        if (perfLoggingEnabled) {
+        if (perfLoggingEnabled && !PerfLogger::InnerRowLoggedInPresentRowScope()) {
             perfMetrics.totalUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - perfMetrics.qpcUs);
             PerfLogger::Get().LogFrame(perfMetrics);
         }

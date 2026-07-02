@@ -1746,12 +1746,26 @@ inline bool ShouldGuardSwapchainReinitAfterChange(bool fgCurrentlyActive, bool f
 inline bool ShouldDeferInactiveRuntimeOwnedSwapchainOverlayInit(bool actualFGActive, bool streamlineFGRunning,
                                                                 bool runtimeOwnsSwapchain, bool hasSwapchainQueue,
                                                                 bool hasCommandQueue,
-                                                                bool commandQueueMatchesSwapchainQueue) {
+                                                                bool commandQueueMatchesSwapchainQueue,
+                                                                bool retainedNoCallbackFSRSuspension) {
     if (actualFGActive || streamlineFGRunning) {
         return false;
     }
 
     if (!runtimeOwnsSwapchain || !hasSwapchainQueue) {
+        return false;
+    }
+
+    // RETAINED NO-CALLBACK FSR SUSPENSION (test app session 20260702_142655: overlay INVISIBLE for the
+    // WHOLE suspension): AMD keeps the FI swapchain and its runtime-owned queue latched while the app
+    // renders on origGame, so "command traffic settles onto the live swapchain queue" can structurally
+    // NEVER happen — this defer stranded the overlay blank until resume (every suspended present logged
+    // "Deferring inactive runtime-owned swapchain overlay init until queue settles" with cmdQ=origGame,
+    // scQ=AMD's FG queue). The suspension exemption has already approved normal overlay rendering ON the
+    // runtime-owned swapchain queue (AMD is not interpolating, so the backbuffer submit is the
+    // documented-safe route, and the ProcessFrame queue routing picks scQueue for exactly this state), so
+    // overlay init must proceed instead of waiting for a settle that cannot occur.
+    if (retainedNoCallbackFSRSuspension) {
         return false;
     }
 

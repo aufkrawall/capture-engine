@@ -86,7 +86,20 @@ void PerfLogger::Shutdown() {
     }
 }
 
+// Present-row dedup scope (see header): marks that a frame row was logged on this thread since the outer
+// present hook opened its scope. Thread-local, no synchronization needed.
+static thread_local bool t_frameRowLoggedInPresentScope = false;
+
+void PerfLogger::BeginPresentRowScope() {
+    t_frameRowLoggedInPresentScope = false;
+}
+
+bool PerfLogger::InnerRowLoggedInPresentRowScope() {
+    return t_frameRowLoggedInPresentScope;
+}
+
 void PerfLogger::LogFrame(const FrameMetrics& metrics) {
+    t_frameRowLoggedInPresentScope = true;
     std::lock_guard<std::mutex> lock(fileMutex_);
     if (!file_)
         return;
