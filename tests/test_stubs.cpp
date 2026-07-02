@@ -57,6 +57,14 @@ bool DX12_CompositeOverlayOntoCachedFFXUiResource() { return false; }
 void DX12_ProcessFrameMinimal(IDXGISwapChain*) {}
 bool DX12_ShouldCacheFFXUiResourceForBundle() { return false; }
 bool DX12_IsFFXUiResourceCachedForBundle() { return false; }
+// FFX proxy-swapchain Present hook (game-thread composite driver): tests exercise DetourPresent's fallback
+// arm, so the proxy driver reports not-driving here.
+bool DX12_IsFFXProxyPresentHookDriving() { return false; }
+bool DX12_IsFFXProxyPresentHookInstalled() { return false; }
+bool DX12_IsCurrentThreadInsideFFXProxyPresentPrework() { return false; }
+bool DX12_TryInstallFFXProxyPresentHook(void*, void*, const char*) { return false; }
+void DX12_RemoveFFXProxyPresentHook(const char*) {}
+void DX12_LogFFXProxyPresentHookFreezeDiagnostics(const char*) {}
 
 // DX12_SetCommandQueue is extern "C" in the header
 extern "C" void DX12_SetCommandQueue(ID3D12CommandQueue*) {}

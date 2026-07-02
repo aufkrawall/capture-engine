@@ -5685,10 +5685,15 @@ TEST(DXGISharedSourceTest, FFXUiCompositeClearsSubstituteTargetTransparent) {
 // ---------------------------------------------------------------------------
 // GTA registers a 1x1 placeholder UI resource EVERY frame; after the one-shot ffxConfigure VEH disarms, those
 // calls reach AMD directly and override CE's substitute, so AMD composites the empty 1x1 and the overlay is
-// invisible (session 20260624_004915). CE must RE-ASSERT its substitute each present (after the composite,
-// before Present), and stop when the substitute is released. Verify the wiring across the two hook TUs.
+// invisible (session 20260624_004915). CE must RE-ASSERT its substitute each GAME present — but ONLY from
+// the FFX proxy-present prework on the GAME thread. Session 20260701_213656 froze GTA permanently on the
+// first FSR-FG frame because the re-assert ran from DetourPresent on AMD's PRESENTER thread: the forwarded
+// ffxConfigure(RegisterUiResource) takes AMD's swapchain criticalSection, which AMD's Present holds on the
+// game thread while fence-spinning without timeout — a permanent lock cycle. Verify the wiring across the
+// two hook TUs: composite wrapper does NOT re-assert; the proxy prework composites THEN re-asserts; the
+// re-assert hard-refuses outside the prework; teardown still clears the stored desc.
 // ---------------------------------------------------------------------------
-TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceIsReRegisteredEachPresent) {
+TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceReassertOnlyFromProxyPrework) {
     namespace fs = std::filesystem;
     auto readFile = [](const fs::path& p) {
         EXPECT_TRUE(fs::exists(p)) << p.string();
@@ -5699,14 +5704,24 @@ TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceIsReRegisteredEachPrese
 
     const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
     ASSERT_FALSE(dx12.empty());
-    // The per-present composite wrapper re-asserts the substitute after drawing the overlay onto it.
+    // DEADLOCK BOUNDARY: the composite wrapper is reachable from AMD's presenter thread (DetourPresent
+    // fallback driver) and must NOT call the re-assert.
     const size_t wrapper = dx12.find("bool DX12_CompositeOverlayOntoCachedFFXUiResource()");
     ASSERT_NE(wrapper, std::string::npos);
     const size_t wrapperEnd = dx12.find("\n}", wrapper);
     ASSERT_NE(wrapperEnd, std::string::npos);
-    const size_t reReg = dx12.find("FFXHook_ReRegisterSubstituteUiResource()", wrapper);
-    ASSERT_NE(reReg, std::string::npos);
-    EXPECT_LT(reReg, wrapperEnd);
+    const size_t reRegInWrapper = dx12.find("FFXHook_ReRegisterSubstituteUiResource()", wrapper);
+    EXPECT_TRUE(reRegInWrapper == std::string::npos || reRegInWrapper > wrapperEnd)
+        << "the composite wrapper must never re-assert (presenter-thread deadlock, session 20260701_213656)";
+    // The proxy-present prework (game thread) composites FIRST, then re-asserts, inside the prework guard.
+    const size_t prework = dx12.find("void DX12_RunFFXProxyPrePresentWork(");
+    ASSERT_NE(prework, std::string::npos);
+    const size_t preworkComposite = dx12.find("DX12_CompositeOverlayOntoCachedFFXUiResource()", prework);
+    ASSERT_NE(preworkComposite, std::string::npos);
+    const size_t preworkReReg = dx12.find("FFXHook_ReRegisterSubstituteUiResource()", prework);
+    ASSERT_NE(preworkReReg, std::string::npos);
+    EXPECT_LT(preworkComposite, preworkReReg)
+        << "prework must draw the overlay onto the substitute BEFORE re-asserting its registration";
     // The re-registration is cleared when the substitute is released (dangling-desc safety).
     EXPECT_NE(dx12.find("FFXHook_ClearSubstituteUiReRegistration()"), std::string::npos);
 
@@ -5719,4 +5734,14 @@ TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceIsReRegisteredEachPrese
     ASSERT_NE(store, std::string::npos);
     // The re-register call forwards to the REAL ffxConfigure (g_SubstReRegConfigure), not CE's hook.
     EXPECT_NE(ffx.find("g_SubstReRegConfigure(g_SubstReRegContext"), std::string::npos);
+    // The re-assert consults the driver policy and refuses outside the proxy-present prework.
+    const size_t reRegFn = ffx.find("void FFXHook_ReRegisterSubstituteUiResource()");
+    ASSERT_NE(reRegFn, std::string::npos);
+    const size_t guard = ffx.find("MayReassertSubstituteUiResource", reRegFn);
+    const size_t forward = ffx.find("g_SubstReRegConfigure(g_SubstReRegContext", reRegFn);
+    ASSERT_NE(guard, std::string::npos);
+    ASSERT_NE(forward, std::string::npos);
+    EXPECT_LT(guard, forward) << "the prework-context guard must run BEFORE the ffxConfigure forward";
+    // The proxy hook is captured from ffxConfigure(FrameGeneration).swapChain (GTA passes the proxy there).
+    EXPECT_NE(ffx.find("DX12_TryInstallFFXProxyPresentHook(localConfig.swapChain"), std::string::npos);
 }

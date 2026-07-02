@@ -469,6 +469,54 @@ inline NoCallbackFSRFGOverlayRoute ChooseNoCallbackFSRFGOverlayRoute(bool runtim
     return NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer;
 }
 
+// Who drives the per-present FFX UI-resource composite (and the substitute UI-resource re-registration)
+// during no-callback FSR FG.
+enum class FFXUiCompositeDriver {
+    // CE's vtable hook on the game-facing FFX FrameInterpolation PROXY swapchain Present — runs on the
+    // GAME's present thread BEFORE AMD's Present executes. The only driver allowed to re-assert the
+    // substitute UI resource (see MayReassertSubstituteUiResource).
+    kProxyPresentPrework,
+    // DetourPresent on AMD's INTERNAL real swapchain — runs on AMD's presenter thread. Composite-only
+    // fallback for the window before the proxy hook is installed (or when it could not be installed).
+    kRealPresentFallback,
+};
+
+inline FFXUiCompositeDriver ChooseFFXUiCompositeDriver(bool proxyPresentHookDriving) {
+    return proxyPresentHookDriving ? FFXUiCompositeDriver::kProxyPresentPrework
+                                   : FFXUiCompositeDriver::kRealPresentFallback;
+}
+
+// DEADLOCK BOUNDARY (session 20260701_213656 — GTA froze permanently on the FIRST FSR-FG frame):
+// Re-asserting CE's substitute calls AMD's ffxConfigure(RegisterUiResource), and AMD's
+// FrameInterpolationSwapChainDX12::registerUiResource takes the swapchain criticalSection. AMD's Present
+// (game thread) HOLDS that criticalSection while spin-waiting WITHOUT TIMEOUT on compositionFenceCPU,
+// which only advances once AMD's presenter thread completes the real present. DetourPresent for the real
+// swapchain runs ON that presenter thread, so calling the re-assert from there closes the cycle:
+//   game thread: Present -> EnterCS -> spin on compositionFenceCPU (holds CS forever)
+//   presenter thread: real Present -> CE DetourPresent -> re-assert -> registerUiResource -> EnterCS (blocked)
+// The re-assert is therefore ONLY legal from the proxy-present prework (game thread, BEFORE AMD's Present
+// enters the CS) — the same thread + lock order as the game's own per-frame RegisterUiResource calls.
+inline bool MayReassertSubstituteUiResource(FFXUiCompositeDriver driver) {
+    return driver == FFXUiCompositeDriver::kProxyPresentPrework;
+}
+
+// Whether the swapchain handed to CE in ffxConfigure(FrameGeneration).swapChain is the game-facing FFX
+// FrameInterpolation PROXY whose Present vtable entry CE may hook for the game-thread composite driver.
+// The proxy's Present implementation lives inside the FFX runtime module (amd_fidelityfx_dx12.dll et al);
+// a real DXGI swapchain resolves into dxgi.dll and an sl_interposer/CE-wrapped chain into those modules —
+// none of which are the proxy, so hooking them would run the prework on the WRONG thread (the deadlock
+// this driver exists to prevent) or double-hook CE's own detour.
+inline bool ShouldInstallFFXProxyPresentHook(bool presentEntryInFFXRuntimeModule, bool presentEntryIsCEDetour,
+                                             bool alreadyInstalledOnThisVtableEntry) {
+    if (alreadyInstalledOnThisVtableEntry) {
+        return false;  // idempotent: the class vtable entry is already routed to CE
+    }
+    if (presentEntryIsCEDetour) {
+        return false;  // never stack CE hooks (also covers re-entry after install)
+    }
+    return presentEntryInFFXRuntimeModule;
+}
+
 // Which texture the overlay is drawn onto under no-callback FSR FG UI-resource composition.
 enum class FFXUiOverlayTarget {
     kCompositeOntoGameTexture,      // game registered a usable, ~backbuffer-sized UI texture — blend overlay on top

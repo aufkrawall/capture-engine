@@ -111,9 +111,26 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
 // OWN fenced queue (g_FFXUiCompositeQueue), never AMD's runtime present queue or the game queue, and CPU-waits
 // for completion, so AMD composites it post-interpolation without wedging.
 bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResource, uint32_t ffxState, uint32_t flags);
-// Drive the composite from DetourPresent's no-callback FSR FG branch using the cached (CE-substituted or game)
-// UI texture. The per-present overlay refresh under active no-callback FSR FG. Returns true if composited.
+// Drive the composite using the cached (CE-substituted or game) UI texture. The per-present overlay refresh
+// under active no-callback FSR FG. Primary driver: the FFX proxy-present prework (game thread, before AMD's
+// Present). Fallback driver: DetourPresent's no-callback branch (AMD's presenter thread — composite only,
+// NEVER the substitute re-assert; see the deadlock boundary in dx12_overlay_policy.h). Returns true if composited.
 bool DX12_CompositeOverlayOntoCachedFFXUiResource();
+// --- FFX proxy-swapchain Present hook (game-thread composite driver) ---
+// Install CE's vtable hook on the game-facing FFX FrameInterpolation proxy swapchain (from
+// ffxConfigure(FrameGeneration).swapChain). ffxRuntimeAnchor is any address inside the FFX runtime module
+// (e.g. the forwarded ffxConfigure target) used to verify the Present entry actually resolves into that
+// module before patching. Idempotent; returns true when the hook is (already) installed.
+bool DX12_TryInstallFFXProxyPresentHook(void* swapChain, void* ffxRuntimeAnchor, const char* source);
+void DX12_RemoveFFXProxyPresentHook(const char* reason);
+bool DX12_IsFFXProxyPresentHookInstalled();
+// True while the proxy-present prework is the live composite driver (hook installed + game presenting
+// through it). DetourPresent's kSkipBundleCovers arm skips its fallback composite while this is true.
+bool DX12_IsFFXProxyPresentHookDriving();
+// True only on a thread currently inside the proxy-present prework — the ONLY context allowed to call
+// FFXHook_ReRegisterSubstituteUiResource (deadlock boundary; see dx12_overlay_policy.h).
+bool DX12_IsCurrentThreadInsideFFXProxyPresentPrework();
+void DX12_LogFFXProxyPresentHookFreezeDiagnostics(const char* reason);
 bool DX12_IsFFXUiResourceCompositionActive();
 // Cache the UI texture for the per-present composite. Gated to no-callback FSR FG only.
 bool DX12_ShouldCacheFFXUiResourceForBundle();

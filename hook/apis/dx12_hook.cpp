@@ -5411,6 +5411,8 @@ static void DumpFFXUiCompositeTimeline(const char* reason) {
                      static_cast<unsigned long long>(cfgFrame));
 }
 
+void DX12_LogFFXProxyPresentHookFreezeDiagnostics(const char* reason);  // defined with the proxy hook below
+
 // Called from DX12_LogOverlayGpuBreadcrumbs (via the freeze watchdog) to log the CE composite fence
 // completion state + dump the timeline ring buffer. This is the key diagnostic that distinguishes
 // "CE's Signal completed → AMD wedged after the Signal" from "CE's Signal never completed → wedge
@@ -5429,6 +5431,11 @@ void DX12_LogFFXUiCompositeFreezeDiagnostics(const char* reason) {
         compositionActive ? 1 : 0, static_cast<unsigned long long>(lastTickMs),
         static_cast<unsigned long long>(GetTickCount64()));
     DumpFFXUiCompositeTimeline(reason);
+    // Proxy-present driver + re-assert bracket state (defined later in this file / ffx_hook.cpp): shows in
+    // one freeze dump whether the game-thread driver was live and whether a substitute re-assert was
+    // in-flight (the historical presenter-thread deadlock signature).
+    DX12_LogFFXProxyPresentHookFreezeDiagnostics(reason);
+    FFXHook_LogSubstituteReRegFreezeDiagnostics(reason);
 }
 
 bool DX12_IsFFXUiResourceCompositionActive() {
@@ -6064,12 +6071,291 @@ bool DX12_CompositeOverlayOntoCachedFFXUiResource() {
             composited = DX12_CompositeOverlayOntoFFXUiResource(uiTexture, ffxState, flags);
         }
     }
-    // Re-assert CE's substituted UI resource AFTER drawing the overlay onto it, so AMD composites CE's
-    // substitute (with the overlay) for the upcoming present instead of GTA's per-frame 1x1 placeholder.
-    // No-op for the test app's game-tex path (never stored) and when no-callback FSR FG is inactive. Done
-    // outside g_FFXUiCompositeMutex (it reads its own stored desc, not the composite resources).
-    FFXHook_ReRegisterSubstituteUiResource();
+    // NOTE: the substitute UI-resource re-assert is deliberately NOT called here anymore. This function is
+    // reachable from DetourPresent on AMD's PRESENTER thread (the real-swapchain fallback driver), and the
+    // re-assert's ffxConfigure(RegisterUiResource) takes AMD's FrameInterpolationSwapchain criticalSection —
+    // which AMD's Present holds on the GAME thread while spin-waiting (no timeout) on compositionFenceCPU
+    // that only the presenter thread can advance. Calling it from here deadlocked GTA permanently on the
+    // first FSR-FG frame (session 20260701_213656 freeze dump: presenter thread blocked in
+    // RtlEnterCriticalSection under CE's DetourPresent, game thread spinning in amd_fidelityfx ffxQuery).
+    // The re-assert now runs ONLY from the FFX proxy-present prework (game thread, before AMD's Present).
     return composited;
+}
+
+// ---- FFX proxy-swapchain Present hook (game-thread composite driver) -----------------------------------
+// Under native no-callback FSR FG the game presents to AMD's game-facing FrameInterpolation PROXY swapchain
+// (an FFX-runtime object the game got from ffxCreateContext). AMD's proxy Present enters its swapchain
+// criticalSection and spin-waits (no timeout) on compositionFenceCPU while HOLDING it; the real DXGI
+// swapchain is presented later by AMD's dedicated presenter thread — which is where CE's DetourPresent
+// used to run the composite + substitute re-assert. Any blocking CE work there stalls AMD's pacing, and the
+// re-assert (registerUiResource takes the same criticalSection) closes a permanent deadlock cycle with the
+// game thread (session 20260701_213656). This driver moves the per-frame overlay work to the GAME thread by
+// vtable-hooking the PROXY's Present/Present1 (class vtable inside the FFX runtime module): composite CE's
+// overlay onto the cached/substituted UI texture, re-assert the substitute registration (same thread + lock
+// order as the game's own per-frame RegisterUiResource), then forward to AMD's Present — which snapshots
+// the registered UI resource under its criticalSection (copyUiResource per present with internal double
+// buffering), so the prework lands exactly between the game's 1x1 re-registration and AMD's consumption.
+// The proxy pointer arrives generically in ffxConfigure(FrameGeneration).swapChain (GTA passes it in the
+// startup-arming AND enabled configures the one-shot VEH intercepts; the test app passes it too).
+typedef HRESULT(STDMETHODCALLTYPE* PFN_FFXProxyPresent)(IDXGISwapChain*, UINT, UINT);
+typedef HRESULT(STDMETHODCALLTYPE* PFN_FFXProxyPresent1)(IDXGISwapChain*, UINT, UINT,
+                                                         const DXGI_PRESENT_PARAMETERS*);
+static std::mutex g_FFXProxyPresentHookMutex;
+static void* g_FFXProxySwapchain = nullptr;             // game-facing proxy object (identity/diagnostics only)
+static void** g_FFXProxyPresentVtableEntry = nullptr;   // &vtable[8] patched (class vtable in the FFX module)
+static void** g_FFXProxyPresent1VtableEntry = nullptr;  // &vtable[22] patched (nullptr if slot unavailable)
+static PFN_FFXProxyPresent g_FFXProxyPresentOriginal = nullptr;
+static PFN_FFXProxyPresent1 g_FFXProxyPresent1Original = nullptr;
+static std::atomic<bool> g_FFXProxyPresentHookInstalled{false};
+static std::atomic<uint64_t> g_FFXProxyPresentHookInstallQpc{0};
+static std::atomic<uint64_t> g_FFXProxyPreworkCount{0};
+static std::atomic<uint64_t> g_FFXProxyPreworkLastQpc{0};
+static std::atomic<uint32_t> g_FFXProxyPreworkLastTid{0};
+// Set while the current thread is inside the proxy-present prework — the ONLY context allowed to call the
+// substitute re-assert (FFXHook_ReRegisterSubstituteUiResource hard-refuses without it; deadlock boundary).
+static thread_local bool t_InsideFFXProxyPresentPrework = false;
+
+bool DX12_IsFFXProxyPresentHookInstalled() {
+    return g_FFXProxyPresentHookInstalled.load(std::memory_order_acquire);
+}
+
+bool DX12_IsCurrentThreadInsideFFXProxyPresentPrework() {
+    return t_InsideFFXProxyPresentPrework;
+}
+
+// True while the proxy-present prework is the LIVE composite driver: hook installed AND the game is
+// actually presenting through the hooked proxy (prework observed recently, or the hook was installed
+// moments ago and the first proxy present is still on its way). DetourPresent's kSkipBundleCovers arm
+// consults this so the presenter-thread fallback composite resumes — visibly, loudly — if the proxy hook
+// ever goes quiet (wrong object hooked / game bypasses the proxy), instead of silently blanking the overlay.
+bool DX12_IsFFXProxyPresentHookDriving() {
+    if (!g_FFXProxyPresentHookInstalled.load(std::memory_order_acquire)) {
+        return false;
+    }
+    LARGE_INTEGER now, freq;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    const uint64_t lastPrework = g_FFXProxyPreworkLastQpc.load(std::memory_order_acquire);
+    const uint64_t reference = lastPrework ? lastPrework : g_FFXProxyPresentHookInstallQpc.load(std::memory_order_acquire);
+    if (!reference || freq.QuadPart <= 0) {
+        return true;  // no baseline yet — trust the fresh install
+    }
+    const double ageMs = static_cast<double>(now.QuadPart - reference) * 1000.0 / static_cast<double>(freq.QuadPart);
+    return ageMs < 1000.0;
+}
+
+// Per-present prework on the GAME thread, before AMD's proxy Present runs. Mirrors DetourPresent's
+// composite-route decision so both drivers can never disagree about WHEN the composite should run — only
+// WHERE it runs differs.
+static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* entryPoint) {
+    if (!DX12_IsNativeFSRInternalNoCallbackCompositionActive()) {
+        return;
+    }
+    const bool runtimeOwnsSwapchain =
+        DXGIShared::DoesFGRuntimeOwnSwapchain() || HookHasRuntimeOwnedNativeFGPresentPath();
+    const auto route = ce::dx12_overlay_policy::ChooseNoCallbackFSRFGOverlayRoute(
+        runtimeOwnsSwapchain, DX12_IsLiveSwapchainQueueOriginalGameQueue(), DX12_IsNativeFSRFGSuspendedDisablePending(),
+        DX12_IsFFXUiResourceCachedForBundle(), /*bundleOverlayActivelyFiring=*/false);
+    if (route != ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute::kSkipBundleCovers) {
+        return;
+    }
+
+    t_InsideFFXProxyPresentPrework = true;
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    g_FFXProxyPreworkLastQpc.store(static_cast<uint64_t>(qpc.QuadPart), std::memory_order_release);
+    g_FFXProxyPreworkLastTid.store(GetCurrentThreadId(), std::memory_order_release);
+    const uint64_t preworkNum = g_FFXProxyPreworkCount.fetch_add(1, std::memory_order_relaxed) + 1;
+
+    // Composite first (draw CE's overlay onto the cached/substituted UI texture on CE's own fenced queue,
+    // CPU-waited < 1ms), THEN re-assert the substitute registration so AMD's upcoming Present snapshots a
+    // fully-written texture. Both are game-thread-safe here: AMD's criticalSection is NOT held by this
+    // thread yet (Present enters it after we forward), so the re-assert contends at most briefly with the
+    // presenter thread — the exact lock order of the game's own per-frame RegisterUiResource.
+    const bool composited = DX12_CompositeOverlayOntoCachedFFXUiResource();
+    FFXHook_ReRegisterSubstituteUiResource();
+    t_InsideFFXProxyPresentPrework = false;
+
+    static std::atomic<int> s_preworkLog{0};
+    const int n = s_preworkLog.fetch_add(1, std::memory_order_relaxed);
+    if (n < 10 || (n % 600) == 0) {
+        HookLogImportant(
+            "DX12: FFX proxy-present prework #%llu via %s (proxy=%p tid=0x%04X composited=%d) — composite + "
+            "substitute re-assert on the GAME thread before AMD's Present (log=%d)",
+            static_cast<unsigned long long>(preworkNum), entryPoint ? entryPoint : "Present", (void*)proxy,
+            GetCurrentThreadId(), composited ? 1 : 0, n + 1);
+    }
+}
+
+static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self, UINT SyncInterval, UINT Flags) {
+    PFN_FFXProxyPresent original = g_FFXProxyPresentOriginal;
+    if (!original) {
+        return DXGI_ERROR_INVALID_CALL;  // unreachable: original is stored before the vtable entry is patched
+    }
+    DX12_RunFFXProxyPrePresentWork(self, "Present");
+    return original(self, SyncInterval, Flags);
+}
+
+static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent1(IDXGISwapChain* self, UINT SyncInterval, UINT Flags,
+                                                             const DXGI_PRESENT_PARAMETERS* pParams) {
+    PFN_FFXProxyPresent1 original = g_FFXProxyPresent1Original;
+    if (!original) {
+        return DXGI_ERROR_INVALID_CALL;
+    }
+    DX12_RunFFXProxyPrePresentWork(self, "Present1");
+    return original(self, SyncInterval, Flags, pParams);
+}
+
+// Resolve the module owning an address (no refcount change). Returns nullptr when unresolvable.
+static HMODULE ModuleFromAddress(const void* address) {
+    HMODULE module = nullptr;
+    if (!address ||
+        !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(address), &module)) {
+        return nullptr;
+    }
+    return module;
+}
+
+static void DX12_RemoveFFXProxyPresentHookLocked(const char* reason);  // defined below
+
+bool DX12_TryInstallFFXProxyPresentHook(void* swapChain, void* ffxRuntimeAnchor, const char* source) {
+    if (!swapChain || !ffxRuntimeAnchor) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_FFXProxyPresentHookMutex);
+    if (!IsReadableSwapchainPointer(swapChain) || !IsReadableSwapchainPointer(*(void***)swapChain)) {
+        static std::atomic<int> s_unreadableLog{0};
+        if (s_unreadableLog.fetch_add(1, std::memory_order_relaxed) < 10) {
+            HookLogImportant("DX12: FFX proxy-present hook skipped — unreadable swapchain %p (source=%s)", swapChain,
+                             source ? source : "?");
+        }
+        return false;
+    }
+    void** vtable = *reinterpret_cast<void***>(swapChain);
+    if (!IsReadableSwapchainPointer(&vtable[8])) {
+        return false;
+    }
+    void* presentEntry = vtable[8];
+    const HMODULE ffxModule = ModuleFromAddress(ffxRuntimeAnchor);
+    const HMODULE presentModule = ModuleFromAddress(presentEntry);
+    const HMODULE ceModule = ModuleFromAddress(reinterpret_cast<const void*>(&DX12_TryInstallFFXProxyPresentHook));
+    const bool presentEntryInFFXRuntimeModule = ffxModule != nullptr && presentModule == ffxModule;
+    const bool presentEntryIsCEDetour = presentModule != nullptr && presentModule == ceModule;
+    // "Already installed" requires the tracked ENTRY ADDRESS *and* the live entry VALUE to match CE's
+    // detour: an FFX module unload+reload at the same base leaves the address equal but the fresh vtable
+    // unpatched — that must be treated as a new install, not silently trusted.
+    const bool alreadyInstalledOnThisVtableEntry = g_FFXProxyPresentHookInstalled.load(std::memory_order_acquire) &&
+                                                   g_FFXProxyPresentVtableEntry == &vtable[8] &&
+                                                   presentEntry == reinterpret_cast<void*>(&DX12_FFXProxyDetourPresent);
+    if (alreadyInstalledOnThisVtableEntry) {
+        // Same class vtable already routed to CE (e.g. FG re-enable with a fresh proxy of the same class):
+        // just refresh the tracked object identity for diagnostics.
+        if (g_FFXProxySwapchain != swapChain) {
+            HookLogImportant("DX12: FFX proxy-present hook retained across proxy object change (old=%p new=%p source=%s)",
+                             g_FFXProxySwapchain, swapChain, source ? source : "?");
+            g_FFXProxySwapchain = swapChain;
+        }
+        return true;
+    }
+    if (!ce::dx12_overlay_policy::ShouldInstallFFXProxyPresentHook(presentEntryInFFXRuntimeModule,
+                                                                   presentEntryIsCEDetour, false)) {
+        static std::atomic<int> s_rejectLog{0};
+        const int n = s_rejectLog.fetch_add(1, std::memory_order_relaxed);
+        if (n < 20 || (n % 300) == 0) {
+            HookLogImportant(
+                "DX12: FFX proxy-present hook NOT installed — Present entry %p not in the FFX runtime module "
+                "(sc=%p presentModule=%p ffxModule=%p ceDetour=%d source=%s log=%d); composite stays on the "
+                "real-present fallback driver (no substitute re-assert there — deadlock boundary)",
+                presentEntry, swapChain, (void*)presentModule, (void*)ffxModule, presentEntryIsCEDetour ? 1 : 0,
+                source ? source : "?", n + 1);
+        }
+        return false;
+    }
+    if (g_FFXProxyPresentHookInstalled.load(std::memory_order_acquire)) {
+        // Different class vtable (new FFX runtime module / different proxy class): unhook the old entries
+        // first so exactly one proxy vtable is ever patched.
+        DX12_RemoveFFXProxyPresentHookLocked("new proxy class vtable");
+    }
+    void* originalPresent = nullptr;
+    const VTableHook::Status status =
+        VTableHook::Create(&vtable[8], reinterpret_cast<void*>(&DX12_FFXProxyDetourPresent), &originalPresent);
+    if (status != VTableHook::Success || !originalPresent) {
+        HookLogImportant("DX12: FFX proxy-present vtable hook FAILED (%s) for sc=%p entry=%p source=%s",
+                         VTableHook::StatusToString(status), swapChain, (void*)&vtable[8], source ? source : "?");
+        return false;
+    }
+    g_FFXProxyPresentOriginal = reinterpret_cast<PFN_FFXProxyPresent>(originalPresent);
+    g_FFXProxyPresentVtableEntry = &vtable[8];
+    // Present1 (IDXGISwapChain1 slot 22) — hook when the slot exists and also resolves into the FFX module.
+    g_FFXProxyPresent1VtableEntry = nullptr;
+    g_FFXProxyPresent1Original = nullptr;
+    if (IsReadableSwapchainPointer(&vtable[22]) && ModuleFromAddress(vtable[22]) == ffxModule) {
+        void* originalPresent1 = nullptr;
+        if (VTableHook::Create(&vtable[22], reinterpret_cast<void*>(&DX12_FFXProxyDetourPresent1),
+                               &originalPresent1) == VTableHook::Success &&
+            originalPresent1) {
+            g_FFXProxyPresent1Original = reinterpret_cast<PFN_FFXProxyPresent1>(originalPresent1);
+            g_FFXProxyPresent1VtableEntry = &vtable[22];
+        }
+    }
+    g_FFXProxySwapchain = swapChain;
+    LARGE_INTEGER qpc;
+    QueryPerformanceCounter(&qpc);
+    g_FFXProxyPresentHookInstallQpc.store(static_cast<uint64_t>(qpc.QuadPart), std::memory_order_release);
+    g_FFXProxyPreworkLastQpc.store(0, std::memory_order_release);
+    g_FFXProxyPreworkCount.store(0, std::memory_order_relaxed);
+    g_FFXProxyPresentHookInstalled.store(true, std::memory_order_release);
+    HookLogImportant(
+        "DX12: FFX proxy-present hook INSTALLED (proxy=%p vtable[8]=%p->%p present1Hooked=%d ffxModule=%p "
+        "source=%s) — composite + substitute re-assert now run on the GAME thread before AMD's Present; "
+        "AMD's presenter thread stays untouched",
+        swapChain, (void*)&vtable[8], originalPresent, g_FFXProxyPresent1VtableEntry ? 1 : 0, (void*)ffxModule,
+        source ? source : "?");
+    return true;
+}
+
+// Caller holds g_FFXProxyPresentHookMutex. Restores the patched class-vtable entries when they are still
+// readable and still point at CE's detours (the FFX module may already be unloaded at teardown — then the
+// vtable memory is gone with it and there is nothing to restore).
+static void DX12_RemoveFFXProxyPresentHookLocked(const char* reason) {
+    if (!g_FFXProxyPresentHookInstalled.load(std::memory_order_acquire)) {
+        return;
+    }
+    g_FFXProxyPresentHookInstalled.store(false, std::memory_order_release);
+    if (g_FFXProxyPresentVtableEntry && IsReadableSwapchainPointer(g_FFXProxyPresentVtableEntry) &&
+        *g_FFXProxyPresentVtableEntry == reinterpret_cast<void*>(&DX12_FFXProxyDetourPresent)) {
+        VTableHook::Remove(g_FFXProxyPresentVtableEntry, reinterpret_cast<void*>(g_FFXProxyPresentOriginal));
+    }
+    if (g_FFXProxyPresent1VtableEntry && IsReadableSwapchainPointer(g_FFXProxyPresent1VtableEntry) &&
+        *g_FFXProxyPresent1VtableEntry == reinterpret_cast<void*>(&DX12_FFXProxyDetourPresent1)) {
+        VTableHook::Remove(g_FFXProxyPresent1VtableEntry, reinterpret_cast<void*>(g_FFXProxyPresent1Original));
+    }
+    HookLogImportant("DX12: FFX proxy-present hook removed (%s) (proxy=%p preworks=%llu)", reason ? reason : "?",
+                     g_FFXProxySwapchain, static_cast<unsigned long long>(g_FFXProxyPreworkCount.load()));
+    g_FFXProxySwapchain = nullptr;
+    g_FFXProxyPresentVtableEntry = nullptr;
+    g_FFXProxyPresent1VtableEntry = nullptr;
+    g_FFXProxyPresentOriginal = nullptr;
+    g_FFXProxyPresent1Original = nullptr;
+}
+
+void DX12_RemoveFFXProxyPresentHook(const char* reason) {
+    std::lock_guard<std::mutex> lock(g_FFXProxyPresentHookMutex);
+    DX12_RemoveFFXProxyPresentHookLocked(reason);
+}
+
+// Freeze-dump snapshot of the proxy-present driver state (extends the ffx-ui-composite freeze diag).
+void DX12_LogFFXProxyPresentHookFreezeDiagnostics(const char* reason) {
+    HookLogImportant(
+        "DX12: [ffx-proxy-present-freeze-diag] %s — installed=%d driving=%d proxy=%p preworks=%llu "
+        "lastPreworkQpc=%llu lastPreworkTid=0x%04X installQpc=%llu",
+        reason ? reason : "freeze", g_FFXProxyPresentHookInstalled.load(std::memory_order_acquire) ? 1 : 0,
+        DX12_IsFFXProxyPresentHookDriving() ? 1 : 0, g_FFXProxySwapchain,
+        static_cast<unsigned long long>(g_FFXProxyPreworkCount.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_FFXProxyPreworkLastQpc.load(std::memory_order_acquire)),
+        g_FFXProxyPreworkLastTid.load(std::memory_order_acquire),
+        static_cast<unsigned long long>(g_FFXProxyPresentHookInstallQpc.load(std::memory_order_acquire)));
 }
 
 static bool UpdateHeuristicFSRFGState(bool active, const char* source) {

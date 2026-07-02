@@ -2717,12 +2717,29 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                         runtimeOwnsSwapchain, liveSwapchainQueueIsOriginalGameQueue, fsrFGDisabledSuspendPending,
                         DX12_IsFFXUiResourceCachedForBundle(), /*bundleOverlayActivelyFiring=*/false);
                 if (noCallbackRoute == ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute::kSkipBundleCovers) {
-                    // The overlay rides AMD's UI-resource composition: draw it onto the registered/CE-substituted
-                    // UI texture on CE's OWN fenced queue (never AMD's present queue), and AMD composites it
-                    // post-interpolation. This keeps AMD's pacing-critical present queue undisturbed (submitting
-                    // overlay work there null-derefs AMD inside ffxQuery / freezes GTA ~900 frames). The composite
-                    // CPU-waits for its fence before this present forwards, so AMD reads a fully-written texture.
-                    DX12_CompositeOverlayOntoCachedFFXUiResource();
+                    // The overlay rides AMD's UI-resource composition. PRIMARY driver: the FFX proxy-present
+                    // prework already composited (and re-asserted the substitute registration) on the GAME
+                    // thread before AMD's proxy Present ran. This present arrives on AMD's PRESENTER thread
+                    // for AMD's internal real swapchain and must then stay hands-off: blocking CE work here
+                    // stalls AMD's pacing-critical presenter, and the substitute re-assert from this thread
+                    // deadlocks the game permanently (session 20260701_213656 freeze dump: AMD's Present holds
+                    // its swapchain criticalSection on the game thread while fence-spinning without timeout;
+                    // registerUiResource from the presenter thread closes the cycle). FALLBACK driver: while
+                    // the proxy hook is not live (not installed / game not presenting through it), drive the
+                    // composite from here on CE's OWN fenced queue — WITHOUT the re-assert (it hard-refuses
+                    // outside the prework) — so the overlay is never silently blank.
+                    static std::atomic<bool> s_proxyDrivingEdge{false};
+                    const bool proxyDriving = DX12_IsFFXProxyPresentHookDriving();
+                    if (s_proxyDrivingEdge.exchange(proxyDriving, std::memory_order_relaxed) != proxyDriving) {
+                        HookLogImportant(
+                            "DetourPresent: no-callback FSR FG composite driver is now %s",
+                            proxyDriving
+                                ? "the proxy-present prework (game thread) — presenter-thread present is passthrough"
+                                : "the DetourPresent fallback (presenter thread, composite only, no re-assert)");
+                    }
+                    if (!proxyDriving) {
+                        DX12_CompositeOverlayOntoCachedFFXUiResource();
+                    }
                 } else if (amdActivelyInterpolatingOnFGQueue) {
                     // DEFENSIVE GUARD RAIL: the backbuffer submit is forbidden ONLY while AMD is actively
                     // interpolating on its own FG queue. The route selector never produces kMinimalBackbuffer in

@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-01 (updated: WGC scored per-window detection, matched configured-window gating, target-origin diagnostics, producer-only cadence cap, hardware-cursor-preserving WGC cursor policy with encoder-side cursor composition, source-rate smoothness reservoir sizing, millisecond-capped smoothness diagnostics, and source-coverage best-effort logging)
+Last cross-checked: 2026-07-02 (updated: GTA no-callback FSR-FG first-frame permanent freeze fixed — presenter-thread ffxConfigure deadlock with AMD's CS-held fence-spin; new FFX proxy-present prework driver runs composite + substitute re-assert on the game thread; see frame-generation/guardrails.md and log/recent.md. Earlier: WGC scored per-window detection, matched configured-window gating, target-origin diagnostics, producer-only cadence cap, hardware-cursor-preserving WGC cursor policy with encoder-side cursor composition, source-rate smoothness reservoir sizing, millisecond-capped smoothness diagnostics, and source-coverage best-effort logging)
 
 Primary sources:
 - `AGENTS.md`

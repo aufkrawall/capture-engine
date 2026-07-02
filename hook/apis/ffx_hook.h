@@ -129,9 +129,14 @@ inline bool IsEntryBreakpointHit(const void* exceptionAddress, uintptr_t instruc
 void FFXHook_ResetVehDisarmAndRearm();
 
 // Re-assert CE's substituted UI resource (no-callback FSR FG, GTA 1x1 placeholder case) so AMD composites
-// CE's substitute instead of GTA's per-frame 1x1. Called once per present after the composite, before the
-// real Present (from DX12_CompositeOverlayOntoCachedFFXUiResource). No-op for the game-tex path and when
-// no-callback FSR FG is inactive.
+// CE's substitute instead of GTA's per-frame 1x1. Called once per game present from the FFX proxy-present
+// prework (game thread) after the composite, BEFORE AMD's proxy Present. Hard-refuses to run outside that
+// prework context: the forwarded ffxConfigure(RegisterUiResource) takes AMD's swapchain criticalSection,
+// which AMD's Present holds on the game thread while fence-spinning — calling it from AMD's presenter
+// thread (the old DetourPresent-driven path) deadlocked GTA permanently (session 20260701_213656). No-op
+// for the game-tex path and when no-callback FSR FG is inactive.
 void FFXHook_ReRegisterSubstituteUiResource();
 // Stop re-registering when CE's substitute texture is released. Called from ReleaseFFXUiCompositeInfra.
 void FFXHook_ClearSubstituteUiReRegistration();
+// Freeze-dump snapshot of the re-assert in-flight bracket (deadlock signature diagnostics).
+void FFXHook_LogSubstituteReRegFreezeDiagnostics(const char* reason);
