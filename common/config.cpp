@@ -84,8 +84,13 @@ std::string NormalizeCaptureMethod(const std::string& val) {
         return "inject";
     }
 
-    if (normalized == "wgc" || normalized == "screengrab" || normalized == "framegrab" || normalized == "desktop_dup") {
+    if (normalized == "wgc" || normalized == "screengrab" || normalized == "framegrab") {
         return "wgc";
+    }
+
+    if (normalized == "dxgi_dup" || normalized == "desktop_dup" || normalized == "duplication" ||
+        normalized == "dxgi_duplication") {
+        return "dxgi_dup";
     }
 
     return "auto";
@@ -97,6 +102,15 @@ bool IsInjectCaptureMethod(const std::string& val) {
 
 bool IsWgcCaptureMethod(const std::string& val) {
     return NormalizeCaptureMethod(val) == "wgc";
+}
+
+bool IsDxgiDupCaptureMethod(const std::string& val) {
+    return NormalizeCaptureMethod(val) == "dxgi_dup";
+}
+
+bool IsScreenGrabCaptureMethod(const std::string& val) {
+    const std::string normalized = NormalizeCaptureMethod(val);
+    return normalized == "wgc" || normalized == "dxgi_dup";
 }
 
 bool IsAutoCaptureMethod(const std::string& val) {

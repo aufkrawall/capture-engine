@@ -229,7 +229,7 @@ TEST_F(ConfigTest, ParseWgcExperimentalFlags) {
 }
 
 TEST_F(ConfigTest, LegacyWgcAliasesNormalizeToWgc) {
-    const char* aliases[] = {"screengrab", "framegrab", "desktop_dup"};
+    const char* aliases[] = {"screengrab", "framegrab"};
 
     for (const char* alias : aliases) {
         WriteConfig(std::string("[General]\n") + "capture_method=" + alias + "\n");
@@ -239,6 +239,40 @@ TEST_F(ConfigTest, LegacyWgcAliasesNormalizeToWgc) {
 
         EXPECT_EQ(config.captureMethod, "wgc") << alias;
     }
+}
+
+TEST_F(ConfigTest, DxgiDupAliasesNormalizeToDxgiDup) {
+    const char* aliases[] = {"dxgi_dup", "desktop_dup", "duplication", "dxgi_duplication", "DXGI_DUP"};
+
+    for (const char* alias : aliases) {
+        WriteConfig(std::string("[General]\n") + "capture_method=" + alias + "\n");
+
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+
+        EXPECT_EQ(config.captureMethod, "dxgi_dup") << alias;
+    }
+}
+
+TEST_F(ConfigTest, CaptureMethodPredicateFamilies) {
+    EXPECT_TRUE(IsDxgiDupCaptureMethod("dxgi_dup"));
+    EXPECT_TRUE(IsDxgiDupCaptureMethod("desktop_dup"));
+    EXPECT_FALSE(IsDxgiDupCaptureMethod("wgc"));
+    EXPECT_FALSE(IsDxgiDupCaptureMethod("inject"));
+    EXPECT_FALSE(IsDxgiDupCaptureMethod("auto"));
+
+    // Screen-grab family = any non-inject desktop/window grab method.
+    EXPECT_TRUE(IsScreenGrabCaptureMethod("wgc"));
+    EXPECT_TRUE(IsScreenGrabCaptureMethod("screengrab"));
+    EXPECT_TRUE(IsScreenGrabCaptureMethod("dxgi_dup"));
+    EXPECT_TRUE(IsScreenGrabCaptureMethod("desktop_dup"));
+    EXPECT_FALSE(IsScreenGrabCaptureMethod("inject"));
+    EXPECT_FALSE(IsScreenGrabCaptureMethod("auto"));
+
+    // dxgi_dup must not be mistaken for wgc or auto.
+    EXPECT_FALSE(IsWgcCaptureMethod("dxgi_dup"));
+    EXPECT_FALSE(IsAutoCaptureMethod("dxgi_dup"));
+    EXPECT_FALSE(IsInjectCaptureMethod("dxgi_dup"));
 }
 
 TEST_F(ConfigTest, ParseOverlayInclusionOptions) {

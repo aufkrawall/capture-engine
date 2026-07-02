@@ -1061,6 +1061,50 @@ inline bool ShouldPreferForegroundFullscreenWindowForAutoWgc(bool autoCaptureCon
            !hasMatchedConfiguredWgcWindow && foregroundUsable && foregroundFullscreenLike;
 }
 
+// Backend priority for MONITOR-scope (desktop) capture targets.
+// Auto priority is: inject (whitelisted game) > WGC window capture (configured window,
+// source-PID window, foreground fullscreen window) > DXGI Desktop Duplication for the
+// remaining pure desktop/monitor fallback. Duplication reads the composed desktop
+// surface directly instead of standing up a WGC monitor item, so it is the preferred
+// desktop-recording path when no window-scoped target exists. WGC monitor capture
+// remains the fallback when duplication is unavailable (rotated output, cross-adapter
+// output, protected content, unsupported format for the requested bit depth, or API
+// failure). Explicit capture_method=wgc keeps WGC monitor capture; explicit
+// capture_method=dxgi_dup always prefers duplication.
+inline bool ShouldPreferDxgiDuplicationForMonitorCapture(bool explicitDxgiDupConfig, bool explicitWgcConfig,
+                                                         bool autoCaptureConfig) {
+    if (explicitDxgiDupConfig) {
+        return true;
+    }
+    if (explicitWgcConfig) {
+        return false;
+    }
+    return autoCaptureConfig;
+}
+
+// DXGI duplication delivers the desktop surface in its native format (no server-side
+// conversion like the WGC frame pool). BGRA8 delivery is acceptable only when high
+// precision is not required; HDR desktops must deliver FP16 and explicit 10-bit
+// requests must deliver R10G10B10A2 or FP16, otherwise duplication must fail loudly
+// so the caller can fall back to WGC monitor capture (which can request a
+// high-precision pool independent of the composed surface format).
+inline bool IsAcceptableDxgiDuplicationFormat(uint32_t dxgiFormat, bool requireHighPrecision, bool outputIsHdr) {
+    constexpr uint32_t kFormatR16G16B16A16Float = 10;  // DXGI_FORMAT_R16G16B16A16_FLOAT
+    constexpr uint32_t kFormatR10G10B10A2Unorm = 24;   // DXGI_FORMAT_R10G10B10A2_UNORM
+    constexpr uint32_t kFormatB8G8R8A8Unorm = 87;      // DXGI_FORMAT_B8G8R8A8_UNORM
+    if (dxgiFormat == kFormatR16G16B16A16Float) {
+        return true;
+    }
+    if (dxgiFormat == kFormatR10G10B10A2Unorm) {
+        // A 10-bit surface cannot represent an HDR (PQ/scRGB) desktop for our pipeline.
+        return !outputIsHdr;
+    }
+    if (dxgiFormat == kFormatB8G8R8A8Unorm) {
+        return !requireHighPrecision && !outputIsHdr;
+    }
+    return false;
+}
+
 enum class HeldModeTransition : uint8_t {
     kNone = 0,
     kEntered,
@@ -1969,11 +2013,15 @@ inline uint32_t GetWgcSmoothnessPreferredSourceFramePoolBuffers(uint32_t outputF
     return std::min<uint32_t>(fpsScaled, kWgcSmoothnessSourceFramePoolCompactHighFpsMaxBuffers);
 }
 
+// requiresSourceFramePool=false is the DXGI Desktop Duplication shape: the OS
+// owns the single desktop image (no consumer-owned WGC source frame pool), so
+// the entire VRAM budget funds retained copy slots instead of splitting it.
 inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(uint32_t outputFps, uint32_t maxSmoothnessMs,
                                                                     uint32_t width, uint32_t height,
                                                                     uint32_t sourceBytesPerPixel,
                                                                     uint32_t copyBytesPerPixel, uint32_t budgetMb,
-                                                                    uint32_t syncDelayFrames) {
+                                                                    uint32_t syncDelayFrames,
+                                                                    bool requiresSourceFramePool = true) {
     WgcSmoothnessSurfaceBudget result{};
     result.desiredExtraFrames = GetWgcSmoothnessDesiredFrames(outputFps, maxSmoothnessMs);
     result.syncDelayFrames = syncDelayFrames;
@@ -1989,7 +2037,7 @@ inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(uint32_t out
     result.budgetCopySurfaceCount = GetWgcSmoothnessBudgetedSurfaceCount(width, height, copyBytesPerPixel, budgetMb);
     if (sourceBytesPerSurface == 0 || copyBytesPerSurface == 0 || result.budgetSurfaceCount == 0 ||
         result.budgetCopySurfaceCount == 0) {
-        result.sourceFramePoolBuffers = kWgcSmoothnessSourceFramePoolMinBuffers;
+        result.sourceFramePoolBuffers = requiresSourceFramePool ? kWgcSmoothnessSourceFramePoolMinBuffers : 0u;
         result.copyPoolSlots = kWgcSmoothnessBufferMinPoolFrames;
         result.retainedFrameCap = GetWgcSmoothnessRetainedFrameCap(result.copyPoolSlots, result.reservedFreeCopySlots);
         result.budgetExhausted = true;
@@ -2001,7 +2049,13 @@ inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(uint32_t out
     }
 
     uint32_t maxBudgetedCopySlots = 0;
-    if (!result.splitByteBudget) {
+    if (!requiresSourceFramePool) {
+        result.sourceFramePoolBuffers = 0;
+        const uint64_t budgetBytes = static_cast<uint64_t>(budgetMb) * 1024ull * 1024ull;
+        const uint64_t rawCopySlots = budgetBytes / copyBytesPerSurface;
+        maxBudgetedCopySlots = static_cast<uint32_t>(
+            std::min<uint64_t>(rawCopySlots, static_cast<uint64_t>(kWgcSmoothnessBufferMaxPoolFrames)));
+    } else if (!result.splitByteBudget) {
         uint32_t remainingSurfaces = result.budgetSurfaceCount;
         if (remainingSurfaces >= kWgcSmoothnessSourceFramePoolDefaultBuffers + kWgcSmoothnessBufferMinPoolFrames) {
             result.sourceFramePoolBuffers = kWgcSmoothnessSourceFramePoolDefaultBuffers;

@@ -25,6 +25,7 @@
 #include "../common/rate_window_utils.h"
 #include "../common/thread_power_throttling_compat.h"
 #include "../mediaengine/video_format_policy.h"
+#include "dxgi_dup_capture.h"
 #include "mediaengine_loader.h"
 
 #ifdef _MSC_VER
@@ -188,6 +189,7 @@ enum class WgcItemCreationMethod {
     kWindowId,
     kInteropWindow,
     kInteropMonitor,
+    kDxgiDuplication,
 };
 
 const char* WgcItemCreationMethodName(WgcItemCreationMethod method) {
@@ -198,6 +200,8 @@ const char* WgcItemCreationMethodName(WgcItemCreationMethod method) {
             return "InteropWindow";
         case WgcItemCreationMethod::kInteropMonitor:
             return "InteropMonitor";
+        case WgcItemCreationMethod::kDxgiDuplication:
+            return "DxgiDuplication";
         default:
             return "None";
     }
@@ -758,6 +762,14 @@ public:
     HMONITOR targetMonitor_ = nullptr;
     WgcItemCreationMethod itemCreationMethod_ = WgcItemCreationMethod::kNone;
     uint64_t itemCreationIdValue_ = 0;
+    // DXGI Desktop Duplication backend: an alternative monitor-scope frame
+    // source behind the same pool/ingress/CFR engine. When the preference is
+    // set, StartCapture tries duplication first and falls back to a WGC
+    // monitor item in place so recording start never fails on a dup-only
+    // problem (rotated/cross-adapter output, format policy, API loss).
+    std::unique_ptr<DxgiDuplicationSource> dupSource_;
+    bool useDuplicationBackend_ = false;
+    std::string dupInitFailureReason_;
     bool useHighPrecisionCapture_ = false;
     bool requireHighPrecisionCapture_ = false;
     bool captureIsHDR_ = false;
@@ -1178,10 +1190,14 @@ public:
     ce::capture_policy::WgcSmoothnessSurfaceBudget ComputeTexturePoolBudget(uint32_t width, uint32_t height,
                                                                             DXGI_FORMAT format) const {
         const DXGI_FORMAT retainedFormat = GetRetainedPoolFormat(format);
+        // The duplication backend has no consumer-owned source frame pool (the
+        // OS holds the desktop image), so its entire VRAM budget funds retained
+        // copy slots for the smoothness reservoir.
+        const bool requiresSourceFramePool = !useDuplicationBackend_;
         return ce::capture_policy::ComputeWgcSmoothnessSurfaceBudget(
             smoothnessBufferEnabled_ ? smoothnessOutputFps_ : 0u, smoothnessBufferEnabled_ ? smoothnessMaxMs_ : 0u,
             width, height, BytesPerPixelForFormat(format), BytesPerPixelForFormat(retainedFormat),
-            smoothnessVramBudgetMb_, smoothnessSyncDelayFrames_);
+            smoothnessVramBudgetMb_, smoothnessSyncDelayFrames_, requiresSourceFramePool);
     }
     void UpdateSmoothnessBudget(uint32_t width, uint32_t height, DXGI_FORMAT format, bool logBudget) {
         const DXGI_FORMAT retainedFormat = GetRetainedPoolFormat(format);
@@ -2258,6 +2274,148 @@ public:
         return false;
     }
 
+    // Shared source-agnostic frame admission (timestamp ordering, duplicate
+    // normalization, pacing, external throttle, staleness). Used by both the
+    // WGC frame-pool path and the DXGI duplication path so every skip counter
+    // and cadence policy behaves identically for both backends.
+    struct SourceFramePreflight {
+        int64_t rawSourceFrameQpc = 0;
+        int64_t sourceFrameQpc = 0;
+        bool duplicateSourceTimestamp = false;
+        bool accepted = false;
+    };
+
+    SourceFramePreflight PreflightSourceFrame(int64_t rawSourceFrameQpc) {
+        SourceFramePreflight pre;
+        pre.rawSourceFrameQpc = rawSourceFrameQpc;
+
+        inputFrameCount_.fetch_add(1, std::memory_order_relaxed);
+        RecordInputFrameEvent();
+
+        if (IsOutOfOrderRawSourceFrameQpc(rawSourceFrameQpc)) {
+            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            staleSkipCount_.fetch_add(1, std::memory_order_relaxed);
+            staleOutOfOrderTimestampCount_.fetch_add(1, std::memory_order_relaxed);
+            return pre;
+        }
+
+        pre.sourceFrameQpc = NormalizeSourceFrameQpc(rawSourceFrameQpc, &pre.duplicateSourceTimestamp);
+        const int64_t lastDeliveredRawSourceQpc = lastDeliveredRawSourceQpc_.load(std::memory_order_relaxed);
+        if (pre.duplicateSourceTimestamp ||
+            ce::capture_policy::ShouldSkipDeliveredDuplicateWgcSourceTimestamp(
+                pre.duplicateSourceTimestamp, rawSourceFrameQpc, lastDeliveredRawSourceQpc, targetIntervalQPC_ > 0)) {
+            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            duplicateTimestampSkipCount_.fetch_add(1, std::memory_order_relaxed);
+            static std::atomic<uint32_t> duplicateSkipLogCount{0};
+            if (duplicateSkipLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+                const int64_t lastDeliveredSourceQpc = lastDeliveredSourceQpc_.load(std::memory_order_relaxed);
+                LogInfo(
+                    "[WGC] Skipped duplicate/out-of-order source frame before copy: "
+                    "rawQpc=%lld dupTs=%d lastDeliveredRawQpc=%lld lastDeliveredNormQpc=%lld",
+                    static_cast<long long>(rawSourceFrameQpc), pre.duplicateSourceTimestamp ? 1 : 0,
+                    static_cast<long long>(lastDeliveredRawSourceQpc),
+                    static_cast<long long>(lastDeliveredSourceQpc));
+            }
+            return pre;
+        }
+        if (!pre.duplicateSourceTimestamp && targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 &&
+            pre.sourceFrameQpc > 0 && pre.sourceFrameQpc < nextCaptureQPC_) {
+            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            pacingSkipCount_.fetch_add(1, std::memory_order_relaxed);
+            return pre;
+        }
+
+        if (throttleFlag_ && throttleFlag_->load(std::memory_order_relaxed)) {
+            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            throttleSkipCount_.fetch_add(1, std::memory_order_relaxed);
+            return pre;
+        }
+
+        if (!pre.duplicateSourceTimestamp && IsStaleSourceFrameQpc(pre.sourceFrameQpc)) {
+            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
+            staleSkipCount_.fetch_add(1, std::memory_order_relaxed);
+            const int64_t lastDeliveredSourceQpc = lastDeliveredSourceQpc_.load(std::memory_order_relaxed);
+            if (pre.sourceFrameQpc == lastDeliveredSourceQpc) {
+                staleDuplicateTimestampCount_.fetch_add(1, std::memory_order_relaxed);
+            } else if (pre.sourceFrameQpc < lastDeliveredSourceQpc) {
+                staleOutOfOrderTimestampCount_.fetch_add(1, std::memory_order_relaxed);
+            }
+            return pre;
+        }
+
+        pre.accepted = true;
+        return pre;
+    }
+
+    // Shared pool copy + delivery for an admitted source texture. The texture
+    // only needs to stay valid for the duration of this call (the GPU copy is
+    // submitted synchronously), which is exactly the DXGI duplication
+    // Acquire/Release contract as well as the WinRT surface lifetime.
+    bool DeliverSourceTexture(ID3D11Texture2D* texture, const D3D11_TEXTURE2D_DESC& desc,
+                              const SourceFramePreflight& pre, WGCCapturedFrame* outputFrame) {
+        if (frameWidth_ != 0 && frameHeight_ != 0 && (desc.Width != frameWidth_ || desc.Height != frameHeight_)) {
+            LogWarn("[WGC] Source size changed from %ux%u to %ux%u", frameWidth_, frameHeight_, desc.Width,
+                    desc.Height);
+            FlagResetNeeded("capture size changed");
+            return false;
+        }
+
+        if (!formatDetected_) {
+            formatDetected_ = true;
+            LogInfo("[WGC] Source format: fmt=%d %ux%u", desc.Format, desc.Width, desc.Height);
+        }
+
+        ID3D11Texture2D* copiedTexture = nullptr;
+        int64_t copyCompleteQpc = 0;
+        WgcPoolSlotLease poolLease;
+        uint32_t poolSlot = std::numeric_limits<uint32_t>::max();
+        uint64_t poolGeneration = 0;
+        if (!CopyFrameToPool(texture, desc, pre.sourceFrameQpc, pre.rawSourceFrameQpc, &copiedTexture, copyCompleteQpc,
+                             poolLease, poolSlot, poolGeneration)) {
+            return false;
+        }
+
+        const int64_t deliveredTimestamp = pre.sourceFrameQpc > 0 ? pre.sourceFrameQpc : copyCompleteQpc;
+        if (pre.sourceFrameQpc > 0) {
+            lastDeliveredSourceQpc_.store(pre.sourceFrameQpc, std::memory_order_relaxed);
+        }
+        if (pre.rawSourceFrameQpc > 0) {
+            lastDeliveredRawSourceQpc_.store(pre.rawSourceFrameQpc, std::memory_order_relaxed);
+        }
+        RecordDeliveredFrameEvent();
+        RequestHDRRecheckIfDue();
+
+        int32_t captureLeft = 0;
+        int32_t captureTop = 0;
+        GetCaptureOrigin(captureLeft, captureTop);
+
+        if (outputFrame) {
+            outputFrame->texture = copiedTexture;
+            outputFrame->width = desc.Width;
+            outputFrame->height = desc.Height;
+            outputFrame->timestamp = deliveredTimestamp;
+            outputFrame->rawTimestamp = pre.rawSourceFrameQpc;
+            outputFrame->isHDR = captureIsHDR_;
+            outputFrame->captureLeft = captureLeft;
+            outputFrame->captureTop = captureTop;
+            outputFrame->duplicateSourceTimestamp = pre.duplicateSourceTimestamp;
+            outputFrame->poolSlot = poolSlot;
+            outputFrame->poolGeneration = poolGeneration;
+            outputFrame->poolLease = std::move(poolLease);
+        } else {
+            auto cb = frameCallback_.load(std::memory_order_acquire);
+            if (cb) {
+                cb(copiedTexture, desc.Width, desc.Height, deliveredTimestamp, pre.rawSourceFrameQpc, captureIsHDR_,
+                   pre.duplicateSourceTimestamp, captureLeft, captureTop, std::move(poolLease));
+            } else {
+                SafeRelease(copiedTexture);
+            }
+        }
+
+        callbackFrameCount_.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
     bool ProcessCapturedFrame(winrt::Direct3D11CaptureFrame winrtFrame, WGCCapturedFrame* outputFrame) {
         if (!winrtFrame) {
             return false;
@@ -2276,63 +2434,8 @@ public:
             }
         }
 
-        inputFrameCount_.fetch_add(1, std::memory_order_relaxed);
-        RecordInputFrameEvent();
-
-        const int64_t rawSourceFrameQpc = GetFrameSourceQpc(winrtFrame);
-        if (IsOutOfOrderRawSourceFrameQpc(rawSourceFrameQpc)) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            staleSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            staleOutOfOrderTimestampCount_.fetch_add(1, std::memory_order_relaxed);
-            winrtFrame.Close();
-            return false;
-        }
-
-        bool duplicateSourceTimestamp = false;
-        const int64_t sourceFrameQpc = NormalizeSourceFrameQpc(rawSourceFrameQpc, &duplicateSourceTimestamp);
-        const int64_t lastDeliveredRawSourceQpc = lastDeliveredRawSourceQpc_.load(std::memory_order_relaxed);
-        if (duplicateSourceTimestamp ||
-            ce::capture_policy::ShouldSkipDeliveredDuplicateWgcSourceTimestamp(
-                duplicateSourceTimestamp, rawSourceFrameQpc, lastDeliveredRawSourceQpc, targetIntervalQPC_ > 0)) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            duplicateTimestampSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            static std::atomic<uint32_t> duplicateSkipLogCount{0};
-            if (duplicateSkipLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-                const int64_t lastDeliveredSourceQpc = lastDeliveredSourceQpc_.load(std::memory_order_relaxed);
-                LogInfo(
-                    "[WGC] Skipped duplicate/out-of-order source frame before copy: "
-                    "rawQpc=%lld dupTs=%d lastDeliveredRawQpc=%lld lastDeliveredNormQpc=%lld",
-                    static_cast<long long>(rawSourceFrameQpc), duplicateSourceTimestamp ? 1 : 0,
-                    static_cast<long long>(lastDeliveredRawSourceQpc),
-                    static_cast<long long>(lastDeliveredSourceQpc));
-            }
-            winrtFrame.Close();
-            return false;
-        }
-        if (!duplicateSourceTimestamp && targetIntervalQPC_ > 0 && nextCaptureQPC_ > 0 && sourceFrameQpc > 0 &&
-            sourceFrameQpc < nextCaptureQPC_) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            pacingSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            winrtFrame.Close();
-            return false;
-        }
-
-        if (throttleFlag_ && throttleFlag_->load(std::memory_order_relaxed)) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            throttleSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            winrtFrame.Close();
-            return false;
-        }
-
-        if (!duplicateSourceTimestamp && IsStaleSourceFrameQpc(sourceFrameQpc)) {
-            skippedFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            staleSkipCount_.fetch_add(1, std::memory_order_relaxed);
-            const int64_t lastDeliveredSourceQpc = lastDeliveredSourceQpc_.load(std::memory_order_relaxed);
-            if (sourceFrameQpc == lastDeliveredSourceQpc) {
-                staleDuplicateTimestampCount_.fetch_add(1, std::memory_order_relaxed);
-            } else if (sourceFrameQpc < lastDeliveredSourceQpc) {
-                staleOutOfOrderTimestampCount_.fetch_add(1, std::memory_order_relaxed);
-            }
+        const SourceFramePreflight pre = PreflightSourceFrame(GetFrameSourceQpc(winrtFrame));
+        if (!pre.accepted) {
             winrtFrame.Close();
             return false;
         }
@@ -2347,70 +2450,7 @@ public:
             if (SUCCEEDED(access->GetInterface(__uuidof(ID3D11Texture2D), (void**)&texture)) && texture) {
                 D3D11_TEXTURE2D_DESC desc;
                 texture->GetDesc(&desc);
-
-                if (frameWidth_ != 0 && frameHeight_ != 0 &&
-                    (desc.Width != frameWidth_ || desc.Height != frameHeight_)) {
-                    LogWarn("[WGC] Source size changed from %ux%u to %ux%u", frameWidth_, frameHeight_, desc.Width,
-                            desc.Height);
-                    FlagResetNeeded("capture size changed");
-                    texture->Release();
-                    access->Release();
-                    winrtFrame.Close();
-                    return false;
-                }
-
-                if (!formatDetected_) {
-                    formatDetected_ = true;
-                    LogInfo("[WGC] Source format: fmt=%d %ux%u", desc.Format, desc.Width, desc.Height);
-                }
-
-                ID3D11Texture2D* copiedTexture = nullptr;
-                int64_t copyCompleteQpc = 0;
-                WgcPoolSlotLease poolLease;
-                uint32_t poolSlot = std::numeric_limits<uint32_t>::max();
-                uint64_t poolGeneration = 0;
-                if (CopyFrameToPool(texture, desc, sourceFrameQpc, rawSourceFrameQpc, &copiedTexture, copyCompleteQpc,
-                                    poolLease, poolSlot, poolGeneration)) {
-                    const int64_t deliveredTimestamp = sourceFrameQpc > 0 ? sourceFrameQpc : copyCompleteQpc;
-                    if (sourceFrameQpc > 0) {
-                        lastDeliveredSourceQpc_.store(sourceFrameQpc, std::memory_order_relaxed);
-                    }
-                    if (rawSourceFrameQpc > 0) {
-                        lastDeliveredRawSourceQpc_.store(rawSourceFrameQpc, std::memory_order_relaxed);
-                    }
-                    RecordDeliveredFrameEvent();
-                    RequestHDRRecheckIfDue();
-
-                    int32_t captureLeft = 0;
-                    int32_t captureTop = 0;
-                    GetCaptureOrigin(captureLeft, captureTop);
-
-                    if (outputFrame) {
-                        outputFrame->texture = copiedTexture;
-                        outputFrame->width = desc.Width;
-                        outputFrame->height = desc.Height;
-                        outputFrame->timestamp = deliveredTimestamp;
-                        outputFrame->rawTimestamp = rawSourceFrameQpc;
-                        outputFrame->isHDR = captureIsHDR_;
-                        outputFrame->captureLeft = captureLeft;
-                        outputFrame->captureTop = captureTop;
-                        outputFrame->duplicateSourceTimestamp = duplicateSourceTimestamp;
-                        outputFrame->poolSlot = poolSlot;
-                        outputFrame->poolGeneration = poolGeneration;
-                        outputFrame->poolLease = std::move(poolLease);
-                    } else {
-                        auto cb = frameCallback_.load(std::memory_order_acquire);
-                        if (cb) {
-                            cb(copiedTexture, desc.Width, desc.Height, deliveredTimestamp, rawSourceFrameQpc,
-                               captureIsHDR_, duplicateSourceTimestamp, captureLeft, captureTop, std::move(poolLease));
-                        } else {
-                            SafeRelease(copiedTexture);
-                        }
-                    }
-
-                    callbackFrameCount_.fetch_add(1, std::memory_order_relaxed);
-                    success = true;
-                }
+                success = DeliverSourceTexture(texture, desc, pre, outputFrame);
                 texture->Release();
             }
             access->Release();
@@ -2418,6 +2458,69 @@ public:
 
         winrtFrame.Close();
         return success;
+    }
+
+    // DXGI duplication sink: mirrors OnFrameArrived's locking, instrumentation,
+    // and pull/callback dual-mode dispatch for the duplication capture thread.
+    void OnDuplicationFrame(ID3D11Texture2D* texture, const D3D11_TEXTURE2D_DESC& desc, int64_t rawSourceQpc) {
+        LARGE_INTEGER callbackStart = {};
+        QueryPerformanceCounter(&callbackStart);
+        const int64_t previousCallbackStart =
+            lastCallbackStartQpc_.exchange(callbackStart.QuadPart, std::memory_order_relaxed);
+        if (previousCallbackStart > 0 && callbackStart.QuadPart > previousCallbackStart && qpcFreq_ > 0) {
+            const int64_t gapUs = ((callbackStart.QuadPart - previousCallbackStart) * 1000000) / qpcFreq_;
+            UpdateSmoothedAtomicUs(callbackGapAvgUs_, gapUs);
+            UpdateAtomicMax(callbackGapMaxUs_, gapUs);
+        }
+
+        auto recordCallbackProcess = [&]() {
+            LARGE_INTEGER callbackEnd = {};
+            QueryPerformanceCounter(&callbackEnd);
+            if (callbackEnd.QuadPart > callbackStart.QuadPart && qpcFreq_ > 0) {
+                const int64_t processUs = ((callbackEnd.QuadPart - callbackStart.QuadPart) * 1000000) / qpcFreq_;
+                UpdateSmoothedAtomicUs(callbackProcessAvgUs_, processUs);
+                UpdateAtomicMax(callbackProcessMaxUs_, processUs);
+            }
+            UpdateAtomicMax(callbackDrainMaxCount_, 1u);
+        };
+
+        if (!alive_.load(std::memory_order_acquire) || NeedsReset()) {
+            recordCallbackProcess();
+            return;
+        }
+
+        bool processed = false;
+        if (!frameCallback_.load(std::memory_order_acquire)) {
+            // Pull mode: enqueue into the internal bounded queue like WGC.
+            WGCCapturedFrame frame{};
+            {
+                std::lock_guard<std::mutex> processLock(frameProcessingMutex_);
+                const SourceFramePreflight pre = PreflightSourceFrame(rawSourceQpc);
+                if (pre.accepted) {
+                    processed = DeliverSourceTexture(texture, desc, pre, &frame) && frame.texture;
+                }
+            }
+            if (processed) {
+                std::lock_guard<std::mutex> lock(frameMutex_);
+                EnqueueFrameInternal(std::move(frame));
+            }
+        } else {
+            std::lock_guard<std::mutex> drainLock(callbackDrainMutex_);
+            if (!alive_.load(std::memory_order_acquire)) {
+                recordCallbackProcess();
+                return;
+            }
+            std::lock_guard<std::mutex> processLock(frameProcessingMutex_);
+            const SourceFramePreflight pre = PreflightSourceFrame(rawSourceQpc);
+            if (pre.accepted) {
+                processed = DeliverSourceTexture(texture, desc, pre, nullptr);
+            }
+        }
+
+        if (processed && frameArrivedEvent_) {
+            SetEvent(frameArrivedEvent_);
+        }
+        recordCallbackProcess();
     }
 
     void OnFrameArrived(winrt::Direct3D11CaptureFramePool const& sender, winrt::IInspectable const&) {
@@ -2584,6 +2687,7 @@ public:
         });
         targetMonitor_ = hmon;
         targetWindow_ = nullptr;
+        useDuplicationBackend_ = false;
         itemCreationMethod_ = WgcItemCreationMethod::kInteropMonitor;
         itemCreationIdValue_ = 0;
         LogInfo("[WGC] Capture item created: target=monitor method=%s hmon=0x%p size=%dx%d",
@@ -2605,6 +2709,7 @@ public:
                 });
                 targetWindow_ = hwnd;
                 targetMonitor_ = nullptr;
+                useDuplicationBackend_ = false;
                 itemCreationMethod_ = WgcItemCreationMethod::kWindowId;
                 itemCreationIdValue_ = windowIdValue;
                 LogInfo("[WGC] Capture item created: target=window method=%s hwnd=0x%p windowId=0x%llx size=%dx%d",
@@ -2646,6 +2751,7 @@ public:
         });
         targetWindow_ = hwnd;
         targetMonitor_ = nullptr;
+        useDuplicationBackend_ = false;
         itemCreationMethod_ = WgcItemCreationMethod::kInteropWindow;
         itemCreationIdValue_ = 0;
         LogInfo("[WGC] Capture item created: target=window method=%s hwnd=0x%p size=%dx%d",
@@ -2653,7 +2759,176 @@ public:
         return true;
     }
 
+    // Prepare a DXGI Desktop Duplication monitor target. Only light
+    // availability validation happens here (adapter/output match, rotation);
+    // the duplication object itself is created at StartCapture so an idle
+    // primed target does not keep system-wide desktop duplication active
+    // (which would suppress MPO/DirectFlip between recordings).
+    bool CreateForMonitorDuplication(HMONITOR hmon) {
+        if (!d3dDevice_) {
+            LogError("[WGC] Duplication target rejected: no capture D3D11 device");
+            return false;
+        }
+        if (!hmon) {
+            hmon = MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
+        }
+
+        IDXGIDevice* dxgiDevice = nullptr;
+        IDXGIAdapter* adapter = nullptr;
+        HRESULT hr = d3dDevice_->QueryInterface(IID_PPV_ARGS(&dxgiDevice));
+        if (SUCCEEDED(hr) && dxgiDevice) {
+            hr = dxgiDevice->GetAdapter(&adapter);
+        }
+        SafeRelease(dxgiDevice);
+        if (FAILED(hr) || !adapter) {
+            LogWarn("[WGC] Duplication target rejected: cannot resolve capture adapter (0x%08lX)",
+                    static_cast<unsigned long>(hr));
+            return false;
+        }
+
+        bool outputFound = false;
+        bool rotationOk = true;
+        DXGI_MODE_ROTATION rotation = DXGI_MODE_ROTATION_IDENTITY;
+        for (UINT i = 0;; ++i) {
+            IDXGIOutput* output = nullptr;
+            if (adapter->EnumOutputs(i, &output) == DXGI_ERROR_NOT_FOUND) {
+                break;
+            }
+            if (!output) {
+                continue;
+            }
+            DXGI_OUTPUT_DESC desc = {};
+            if (SUCCEEDED(output->GetDesc(&desc)) && desc.Monitor == hmon) {
+                outputFound = true;
+                rotation = desc.Rotation;
+                rotationOk =
+                    desc.Rotation == DXGI_MODE_ROTATION_IDENTITY || desc.Rotation == DXGI_MODE_ROTATION_UNSPECIFIED;
+                SafeRelease(output);
+                break;
+            }
+            SafeRelease(output);
+        }
+        SafeRelease(adapter);
+
+        if (!outputFound) {
+            LogWarn("[WGC] Duplication target rejected: monitor 0x%p not on capture adapter (cross-adapter output)",
+                    hmon);
+            return false;
+        }
+        if (!rotationOk) {
+            LogWarn("[WGC] Duplication target rejected: monitor 0x%p output rotation=%d unsupported by duplication",
+                    hmon, static_cast<int>(rotation));
+            return false;
+        }
+
+        item_ = nullptr;
+        targetMonitor_ = hmon;
+        targetWindow_ = nullptr;
+        useDuplicationBackend_ = true;
+        dupInitFailureReason_.clear();
+        itemCreationMethod_ = WgcItemCreationMethod::kDxgiDuplication;
+        itemCreationIdValue_ = 0;
+        LogInfo("[WGC] Capture item created: target=monitor method=%s hmon=0x%p (duplication deferred to start)",
+                WgcItemCreationMethodName(itemCreationMethod_), hmon);
+        return true;
+    }
+
+    bool StartDuplicationCapture(uint32_t& width, uint32_t& height) {
+        resetNeeded_.store(false, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lock(resetReasonMutex_);
+            resetReason_.clear();
+        }
+
+        LARGE_INTEGER freq;
+        QueryPerformanceFrequency(&freq);
+        qpcFreq_ = freq.QuadPart;
+        ApplyFrameThrottleInterval();
+        ApplyProducerInterval();
+        if (targetFps_ > 0 && targetIntervalQPC_ > 0) {
+            LogInfo("[WGC] Frame throttle active at %u fps (interval=%lld QPC ticks)", targetFps_,
+                    (long long)targetIntervalQPC_);
+        }
+        if (producerTargetFps_ > 0) {
+            LogInfo(
+                "[WGC] Producer cadence target %u fps requested; DXGI duplication has no producer cadence "
+                "control (frames arrive at desktop update rate, surplus is decimated by ingress policy)",
+                producerTargetFps_);
+        }
+
+        // Probe the monitor for HDR/bit-depth so the format policy, retained
+        // pool conversion, and encoder 10-bit resolution behave exactly like
+        // the WGC backend.
+        UpdateCaptureFormatSelection();
+
+        dupSource_ = std::make_unique<DxgiDuplicationSource>();
+        std::string failureReason;
+        if (!dupSource_->Init(d3dDevice_, targetMonitor_, requireHighPrecisionCapture_, captureIsHDR_,
+                              &failureReason)) {
+            dupInitFailureReason_ = failureReason;
+            dupSource_.reset();
+            return false;
+        }
+
+        width = dupSource_->GetWidth();
+        height = dupSource_->GetHeight();
+        frameWidth_ = width;
+        frameHeight_ = height;
+        targetMonitor_ = dupSource_->GetMonitor();
+        // Track the actual desktop surface format for pool sizing/telemetry.
+        captureDxgiFormat_ = dupSource_->GetFormat();
+        UpdateSmoothnessBudget(width, height, captureDxgiFormat_, true);
+
+        if (!frameArrivedEvent_) {
+            frameArrivedEvent_ = CreateEvent(NULL, FALSE, FALSE, NULL);  // Auto-reset
+        }
+
+        DxgiDuplicationFrameSink sink;
+        sink.onFrame = [this](ID3D11Texture2D* texture, const D3D11_TEXTURE2D_DESC& desc, int64_t rawSourceQpc,
+                              uint32_t /*accumulatedFrames*/) { OnDuplicationFrame(texture, desc, rawSourceQpc); };
+        sink.onCursorOnlyUpdate = [this]() { cursorOnlySkipCount_.fetch_add(1, std::memory_order_relaxed); };
+        sink.onResetNeeded = [this](const char* reason) { FlagResetNeeded(reason); };
+        if (!dupSource_->Start(std::move(sink))) {
+            dupInitFailureReason_ = "duplication capture thread start failed";
+            dupSource_.reset();
+            return false;
+        }
+
+        LogInfo(
+            "[WGC] Capture session diagnostics: target=monitor method=%s hwnd=0x0 hmon=0x%p itemId=0x0 "
+            "framePool=DxgiDuplication sourceBuffers=0 borderless=1 nativeCursorRequested=0 "
+            "producerTargetFps=%u localThrottleFps=%u format=%s",
+            WgcItemCreationMethodName(itemCreationMethod_), targetMonitor_, producerTargetFps_, targetFps_,
+            DescribeCaptureFormat());
+
+        int32_t originLeft = 0;
+        int32_t originTop = 0;
+        const bool originOk = GetCaptureOrigin(originLeft, originTop);
+        LogInfo("[WGC] Capture origin diagnostics: target=monitor originMode=%s origin=(%d,%d) itemSize=%ux%u",
+                originOk ? "monitor" : "unresolved", originLeft, originTop, frameWidth_, frameHeight_);
+
+        LogInfo("[WGC] Capture session started (DXGI duplication): %dx%d", width, height);
+        return true;
+    }
+
     bool StartCapture(uint32_t& width, uint32_t& height, bool captureCursor) {
+        if (useDuplicationBackend_) {
+            if (StartDuplicationCapture(width, height)) {
+                return true;
+            }
+            LogWarn("[WGC] DXGI duplication backend unavailable (%s); falling back to WGC monitor capture",
+                    dupInitFailureReason_.empty() ? "unknown reason" : dupInitFailureReason_.c_str());
+            useDuplicationBackend_ = false;
+            if (!winrtDevice_ && !CreateWinRTDevice()) {
+                LogError("[WGC] Failed to create WinRT device for duplication fallback");
+                return false;
+            }
+            if (!item_ && !CreateForMonitor(ResolveTargetMonitor())) {
+                LogError("[WGC] Failed to create WGC monitor item for duplication fallback");
+                return false;
+            }
+        }
+
         if (!item_ || !winrtDevice_)
             return false;
 
@@ -2933,6 +3208,14 @@ public:
     }
 
     void StopCapture() {
+        // Stop the DXGI duplication source first when active: Stop() joins the
+        // duplication capture thread, so no sink callbacks can run past this
+        // point (the duplication analogue of the WinRT in-flight wait below).
+        if (dupSource_) {
+            dupSource_->Stop();
+            dupSource_.reset();
+        }
+
         // Stop WinRT session and frame pool first - prevents new callbacks
         if (session_) {
             session_.Close();
@@ -3004,7 +3287,7 @@ public:
     }
 
     size_t DrainPendingFrames(std::vector<WGCCapturedFrame>& frames, size_t maxFrames) {
-        if (!framePool_) {
+        if (!framePool_ && !dupSource_) {
             return 0;
         }
 
@@ -3257,6 +3540,73 @@ bool WGCCapture::InitForMonitor(ID3D11Device* device, void* hmonitor) {
     LogError("[WGC] Not available - WinRT headers not found");
     return false;
 #endif
+}
+
+bool WGCCapture::InitForMonitorDuplication(ID3D11Device* device, void* hmonitor) {
+#if HAS_WGC
+    if (!device) {
+        LogError("[WGC] InitForMonitorDuplication failed: D3D11 device is null");
+        return false;
+    }
+    device_ = device;
+    if (!impl_->InitializeDevices(device_)) {
+        LogError("[WGC] Failed to initialize capture devices for duplication capture");
+        return false;
+    }
+
+    // WinRT stays initialized so StartCapture can fall back to a WGC monitor
+    // item in place if the duplication becomes unavailable at start time.
+    HRESULT hr = RoInitialize(RO_INIT_MULTITHREADED);
+    if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) {
+        LogError("[WGC] RoInitialize failed: 0x%lx", hr);
+        return false;
+    }
+    roInitialized_ = SUCCEEDED(hr);
+
+    if (!impl_->CreateWinRTDevice()) {
+        LogError("[WGC] Failed to create WinRT device");
+        return false;
+    }
+
+    if (!impl_->CreateForMonitorDuplication((HMONITOR)hmonitor)) {
+        return false;
+    }
+
+    initialized_ = true;
+    LogInfo("[WGC] Initialized for monitor 0x%p (DXGI duplication backend)", hmonitor);
+    return true;
+#else
+    (void)device;
+    (void)hmonitor;
+    LogError("[WGC] Not available - WinRT headers not found");
+    return false;
+#endif
+}
+
+bool WGCCapture::IsUsingDesktopDuplication() const {
+#if HAS_WGC
+    return impl_ && impl_->useDuplicationBackend_;
+#else
+    return false;
+#endif
+}
+
+uint64_t WGCCapture::GetDuplicationAcquireTimeoutCount() const {
+#if HAS_WGC
+    if (impl_ && impl_->dupSource_) {
+        return impl_->dupSource_->GetAcquireTimeoutCount();
+    }
+#endif
+    return 0;
+}
+
+uint64_t WGCCapture::GetDuplicationAccumulatedMissedFrameCount() const {
+#if HAS_WGC
+    if (impl_ && impl_->dupSource_) {
+        return impl_->dupSource_->GetAccumulatedMissedFrameCount();
+    }
+#endif
+    return 0;
 }
 
 bool WGCCapture::StartCapture() {
@@ -4119,6 +4469,7 @@ void WGCCapture::ForceReset() {
         HMONITOR targetMonitor = impl_->targetMonitor_;
         const bool wasWindowCapture = targetWindow != nullptr;
         const bool wasMonitorCapture = targetMonitor != nullptr && targetWindow == nullptr;
+        const bool wasDuplicationBackend = impl_->useDuplicationBackend_;
         const bool smoothnessBufferEnabled = impl_->smoothnessBufferEnabled_;
         const uint32_t smoothnessOutputFps = impl_->smoothnessOutputFps_;
         const uint32_t smoothnessMaxMs = impl_->smoothnessMaxMs_;
@@ -4129,6 +4480,12 @@ void WGCCapture::ForceReset() {
 
         // Mark Impl as dead BEFORE destroying - prevents callbacks from accessing freed memory
         impl_->alive_.store(false, std::memory_order_release);
+
+        // Join the duplication capture thread before teardown when active.
+        if (impl_->dupSource_) {
+            impl_->dupSource_->Stop();
+            impl_->dupSource_.reset();
+        }
 
         // Close session first - this stops new callbacks
         if (impl_->session_) {
@@ -4171,6 +4528,13 @@ void WGCCapture::ForceReset() {
             if (wasWindowCapture && targetWindow) {
                 if (!impl_->CreateForWindow(targetWindow)) {
                     LogWarn("[WGC] ForceReset failed to recreate window target");
+                }
+            } else if (wasDuplicationBackend && targetMonitor) {
+                if (!impl_->CreateForMonitorDuplication(targetMonitor)) {
+                    LogWarn("[WGC] ForceReset failed to recreate duplication target; trying WGC monitor item");
+                    if (!impl_->CreateForMonitor(targetMonitor)) {
+                        LogWarn("[WGC] ForceReset failed to recreate monitor target");
+                    }
                 }
             } else if (wasMonitorCapture && targetMonitor) {
                 if (!impl_->CreateForMonitor(targetMonitor)) {
@@ -4231,7 +4595,7 @@ void WGCCapture::SetRequireHighPrecisionCapture(bool enabled) {
     if (impl_) {
         const bool changed = impl_->requireHighPrecisionCapture_ != enabled;
         impl_->requireHighPrecisionCapture_ = enabled;
-        if (changed && impl_->framePool_) {
+        if (changed && (impl_->framePool_ || impl_->dupSource_)) {
             impl_->FlagResetNeeded("high-precision capture requirement changed");
         }
     }

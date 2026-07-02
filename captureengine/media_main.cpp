@@ -1050,10 +1050,11 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     int32_t activeCaptureLeft = 0;
     int32_t activeCaptureTop = 0;
     const bool haveCaptureOrigin = g_WgcCap->GetCaptureOrigin(activeCaptureLeft, activeCaptureTop);
-    LogInfo("[Media] WGC recording target: target=%s hwnd=0x%p hmon=0x%p originOk=%d origin=(%d,%d) "
+    LogInfo("[Media] WGC recording target: target=%s backend=%s hwnd=0x%p hmon=0x%p originOk=%d origin=(%d,%d) "
             "captureCursor=%d nativeWgcCursor=%d encoderCursor=%d",
-            activeWgcWindow ? "window" : "monitor", activeWgcWindow, activeWgcMonitor, haveCaptureOrigin ? 1 : 0,
-            activeCaptureLeft, activeCaptureTop, config.video.captureCursor ? 1 : 0,
+            activeWgcWindow ? "window" : "monitor",
+            g_WgcCap->IsUsingDesktopDuplication() ? "DxgiDuplication" : "WGC", activeWgcWindow, activeWgcMonitor,
+            haveCaptureOrigin ? 1 : 0, activeCaptureLeft, activeCaptureTop, config.video.captureCursor ? 1 : 0,
             ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor) ? 1 : 0,
             config.video.captureCursor ? 1 : 0);
     g_WgcCap->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
@@ -1141,7 +1142,14 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     g_WgcCap->SetGpuPriority(config.video.gpuPriority);
 
     g_WgcCaptureShutdown = false;
-    g_WgcCaptureThread = std::thread(WgcCaptureThreadFunc, std::ref(config));
+    // Recording-lifetime config snapshot: the main thread reassigns `config`
+    // on late hook connects and IPC config reloads (refreshActiveConfig),
+    // which would be a use-after-free race against a by-reference reader on
+    // this thread. Recording settings must not change live mid-session anyway.
+    {
+        auto configSnapshot = std::make_shared<const AppConfig>(config);
+        g_WgcCaptureThread = std::thread([configSnapshot]() { WgcCaptureThreadFunc(*configSnapshot); });
+    }
     SetThreadPriority(reinterpret_cast<HANDLE>(g_WgcCaptureThread.native_handle()), THREAD_PRIORITY_HIGHEST);
     return true;
 }
@@ -2388,7 +2396,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 "accLow=%u accRec=%u accSrcBelow=%u accHealthy=%u accPlaySoft=%u accPlayCredit=%u "
                 "decSoft=%u decHard=%u decCredit=%u softPress=%u hardPress=%u | "
                 "KMFail: %u/%u | Flush: %u/%u | "
-                "Dedicated: %d | Encode: %lldus | Fence: %lldus | Throttle: %u | Mux: %uKB | Overload: 0x%X",
+                "Dedicated: %d | Encode: %lldus | Fence: %lldus | Throttle: %u | Mux: %uKB | Overload: 0x%X | "
+                "Backend: %s DupIdleTimeouts: %llu DupMissed: %llu",
                 inputFrames, queuedFrames, hostDropDelta, pacingSkipDelta, throttleSkipDelta, staleSkipDelta,
                 staleDuplicateTsDelta, staleOutOfOrderTsDelta, normalizedDuplicateTsDelta, duplicateTsSkipDelta,
                 cursorSkipDelta, poolDropDelta, ingressDecimatedDelta, static_cast<uint32_t>(g_FrameQueue.Size()),
@@ -2420,7 +2429,10 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 ingressSoftReservePressureDelta, ingressHardReservePressureDelta, keyedAcquireFailDelta,
                 keyedReleaseFailDelta, splitFlushDelta, splitFlushSkippedDelta,
                 g_WgcCap->IsUsingDedicatedCaptureDevice() ? 1 : 0, encodeUs, fenceUs, throttleTargetFps,
-                (muxQueueBytes + 1023u) / 1024u, overloadFlags);
+                (muxQueueBytes + 1023u) / 1024u, overloadFlags,
+                g_WgcCap->IsUsingDesktopDuplication() ? "DxgiDuplication" : "WGC",
+                static_cast<unsigned long long>(g_WgcCap->GetDuplicationAcquireTimeoutCount()),
+                static_cast<unsigned long long>(g_WgcCap->GetDuplicationAccumulatedMissedFrameCount()));
 
             lastInputCount = currentInputCount;
             lastCallbackCount = currentCount;
@@ -10210,7 +10222,7 @@ void StartRecording(const AppConfig& config) {
     }
 
     bool useScreenGrab = IsPreferredScreenGrab();
-    if (IsWgcCaptureMethod(config.captureMethod)) {
+    if (IsScreenGrabCaptureMethod(config.captureMethod)) {
         useScreenGrab = true;
     } else if (IsInjectCaptureMethod(config.captureMethod)) {
         useScreenGrab = false;
@@ -10274,7 +10286,13 @@ void StartRecording(const AppConfig& config) {
     g_DrainOutstandingCfrTicks.store(false, std::memory_order_release);
     g_CfrDrainStopQpc.store(0, std::memory_order_release);
 
-    g_EncoderThread = std::thread(EncoderThreadFunc, std::ref(config));
+    // Recording-lifetime config snapshot (see StartWgcRecordingCapture): the
+    // main thread may reassign `config` mid-recording; encoder-thread settings
+    // are fixed per session by design, so it reads an owned copy.
+    {
+        auto configSnapshot = std::make_shared<const AppConfig>(config);
+        g_EncoderThread = std::thread([configSnapshot]() { EncoderThreadFunc(*configSnapshot); });
+    }
     SetThreadPriority(reinterpret_cast<HANDLE>(g_EncoderThread.native_handle()), THREAD_PRIORITY_HIGHEST);
 
     if (useScreenGrab && g_WgcCap) {
@@ -10290,7 +10308,8 @@ void StartRecording(const AppConfig& config) {
             timeEndPeriod(1);
             return;
         }
-        LogInfo("[Media] Active recording path: WGC bounded pull-drain CFR (%d fps output)", config.video.fps);
+        LogInfo("[Media] Active recording path: %s bounded pull-drain CFR (%d fps output)",
+                g_WgcCap->IsUsingDesktopDuplication() ? "DXGI-duplication" : "WGC", config.video.fps);
     } else if (!useScreenGrab) {
         if (config.captureMethod == "auto" && g_WgcCap && g_AutoWgcFallbackArmed.load(std::memory_order_acquire)) {
             LogInfo("[Media] Active recording path: inject shared-memory capture (WGC auto-fallback armed)");
@@ -10298,7 +10317,11 @@ void StartRecording(const AppConfig& config) {
             LogInfo("[Media] Active recording path: inject shared-memory capture");
         }
         g_InjectCaptureShutdown = false;
-        g_InjectCaptureThread = std::thread(InjectCaptureThreadFunc, std::ref(config));
+        // Recording-lifetime config snapshot (see StartWgcRecordingCapture).
+        {
+            auto configSnapshot = std::make_shared<const AppConfig>(config);
+            g_InjectCaptureThread = std::thread([configSnapshot]() { InjectCaptureThreadFunc(*configSnapshot); });
+        }
         SetThreadPriority(reinterpret_cast<HANDLE>(g_InjectCaptureThread.native_handle()), THREAD_PRIORITY_HIGHEST);
     }
 
@@ -10521,9 +10544,12 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
     auto isExplicitInjectConfig = [&]() -> bool { return IsInjectCaptureMethod(config.captureMethod); };
     auto isExplicitWgcConfig = [&]() -> bool { return IsWgcCaptureMethod(config.captureMethod); };
+    auto isExplicitDxgiDupConfig = [&]() -> bool { return IsDxgiDupCaptureMethod(config.captureMethod); };
+    // Any explicit non-inject screen-grab family method (wgc or dxgi_dup).
+    auto isExplicitScreenGrabConfig = [&]() -> bool { return IsScreenGrabCaptureMethod(config.captureMethod); };
     auto isAutoCaptureConfig = [&]() -> bool { return IsAutoCaptureMethod(config.captureMethod); };
     auto setWgcPreferenceAfterFailure = [&]() {
-        SetPreferredScreenGrab(isExplicitWgcConfig() || isAutoCaptureConfig());
+        SetPreferredScreenGrab(isExplicitScreenGrabConfig() || isAutoCaptureConfig());
     };
     auto isInjectCaptureTarget = [&](const std::string& processName) -> bool {
         const bool gameWhitelistMatched =
@@ -10545,9 +10571,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         return isInjectCaptureTarget(resolveSourceProcessName(sourcePid, knownName));
     };
 
-    if (isExplicitWgcConfig()) {
+    if (isExplicitScreenGrabConfig()) {
         SetPreferredScreenGrab(true);
-        LogInfo("[Media] Using WGC mode (explicit)");
+        LogInfo("[Media] Using %s mode (explicit)", isExplicitDxgiDupConfig() ? "DXGI duplication" : "WGC");
     }
 
     LogInfo("[Media] Attempting to connect to shared memory...");
@@ -10609,9 +10635,10 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             MediaEngine_SetSharedMem(g_pSharedMem, g_pShmem);
         }
 
-        if (isExplicitWgcConfig()) {
+        if (isExplicitScreenGrabConfig()) {
             SetPreferredScreenGrab(true);
-            LogInfo("[Media] Connected to shared memory - using WGC for capture");
+            LogInfo("[Media] Connected to shared memory - using %s for capture",
+                    isExplicitDxgiDupConfig() ? "DXGI duplication" : "WGC");
         } else {
             SetPreferredScreenGrab(false);
             LogInfo("[Media] Connected to shared memory - using inject mode");
@@ -10785,7 +10812,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     };
 
     auto markInjectPreferredTarget = [&](HWND targetWindow, uint32_t sourcePid, const char* reason) -> bool {
-        if (isExplicitWgcConfig()) {
+        if (isExplicitScreenGrabConfig()) {
             return false;
         }
 
@@ -10815,7 +10842,15 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return false;
         }
 
-        if (targetMonitor == NULL && currentCapturedWindow == NULL && !currentTargetPrefersInject && g_WgcCap) {
+        // Monitor-scope backend priority: DXGI Desktop Duplication is the
+        // preferred pure desktop/monitor capture path (explicit dxgi_dup, or
+        // auto mode where no inject/window target exists). Explicit wgc keeps
+        // the WGC monitor item; duplication failures always fall back to WGC.
+        const bool preferDuplication = ce::capture_policy::ShouldPreferDxgiDuplicationForMonitorCapture(
+            isExplicitDxgiDupConfig(), isExplicitWgcConfig(), isAutoCaptureConfig());
+
+        if (targetMonitor == NULL && currentCapturedWindow == NULL && !currentTargetPrefersInject && g_WgcCap &&
+            g_WgcCap->IsUsingDesktopDuplication() == preferDuplication) {
             applyWgcOptions();
             g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
             g_WgcCap->SetThrottleFlag(nullptr);
@@ -10831,7 +10866,18 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         g_WgcCap = std::make_unique<WGCCapture>();
         applyWgcOptions();
         bool initOk = false;
-        if (targetMonitor) {
+        if (preferDuplication) {
+            initOk = g_WgcCap->InitForMonitorDuplication(d3dDevice, targetMonitor);
+            if (initOk) {
+                LogInfo("[Media] Monitor capture backend selected: DXGI duplication (%s)",
+                        isExplicitDxgiDupConfig() ? "explicit capture_method=dxgi_dup" : "auto desktop fallback");
+            } else {
+                LogWarn("[Media] DXGI duplication monitor target unavailable (monitor=0x%p); "
+                        "falling back to WGC monitor capture",
+                        targetMonitor);
+            }
+        }
+        if (!initOk && targetMonitor) {
             initOk = g_WgcCap->InitForMonitor(d3dDevice, targetMonitor);
             if (!initOk) {
                 LogWarn("[Media] Failed to init WGC for monitor 0x%p, falling back to primary", targetMonitor);
@@ -10968,19 +11014,24 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
 
         if (!config.wgcWindowTitles.empty()) {
-            HWND matchedWindow = FindMatchingWgcWindow(config.wgcWindowTitles);
-            if (matchedWindow) {
-                if (markInjectPreferredTarget(matchedWindow, sourcePid, "WGC title match")) {
-                    return;
-                }
-                if (primeWgcWindowTarget(matchedWindow, false, false)) {
-                    LogInfo("[Media] WGC window detection matched configured target; WGC window capture selected "
-                            "(hwnd=0x%p)",
-                            matchedWindow);
-                    return;
-                }
-                LogWarn("[Media] WGC configured window target 0x%p failed to initialize; continuing fallback selection",
+            if (isExplicitDxgiDupConfig()) {
+                LogInfo("[Media] wgc_window_detection ignored: capture_method=dxgi_dup is monitor-scope only");
+            } else {
+                HWND matchedWindow = FindMatchingWgcWindow(config.wgcWindowTitles);
+                if (matchedWindow) {
+                    if (markInjectPreferredTarget(matchedWindow, sourcePid, "WGC title match")) {
+                        return;
+                    }
+                    if (primeWgcWindowTarget(matchedWindow, false, false)) {
+                        LogInfo("[Media] WGC window detection matched configured target; WGC window capture selected "
+                                "(hwnd=0x%p)",
+                                matchedWindow);
+                        return;
+                    }
+                    LogWarn(
+                        "[Media] WGC configured window target 0x%p failed to initialize; continuing fallback selection",
                         matchedWindow);
+                }
             }
         }
 
@@ -10993,7 +11044,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             }
 
             SetPreferredScreenGrab(true);
-            HWND hGameWindow = GetMainWindowForProcess(sourcePid);
+            HWND hGameWindow = isExplicitDxgiDupConfig() ? NULL : GetMainWindowForProcess(sourcePid);
             if (hGameWindow) {
                 LogInfo("[Media] Overlay-only hook target %s; WGC capture selected", processName.c_str());
                 if (!primeWgcWindowTarget(hGameWindow, false, false)) {
@@ -11011,7 +11062,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return;
         }
 
-        if (isExplicitWgcConfig()) {
+        if (isExplicitScreenGrabConfig()) {
             if (!primeWgcMonitorTarget()) {
                 setWgcPreferenceAfterFailure();
                 clearCurrentWgcTarget();
@@ -11204,8 +11255,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             }
 
             DWORD now = GetTickCount();
-            if (!g_Recording && !isExplicitInjectConfig() && !config.wgcWindowTitles.empty() &&
-                (now - lastWindowScanTime > 1000)) {
+            if (!g_Recording && !isExplicitInjectConfig() && !isExplicitDxgiDupConfig() &&
+                !config.wgcWindowTitles.empty() && (now - lastWindowScanTime > 1000)) {
                 lastWindowScanTime = now;
                 HWND foundWindow = FindMatchingWgcWindow(config.wgcWindowTitles);
 
@@ -11270,8 +11321,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 }
 
                 if (!g_Recording && forceWGC) {
-                    HWND matchedWindow =
-                        config.wgcWindowTitles.empty() ? NULL : FindMatchingWgcWindow(config.wgcWindowTitles);
+                    HWND matchedWindow = (config.wgcWindowTitles.empty() || isExplicitDxgiDupConfig())
+                                             ? NULL
+                                             : FindMatchingWgcWindow(config.wgcWindowTitles);
                     if (matchedWindow) {
                         if (primeWgcWindowTarget(matchedWindow, false, false)) {
                             continue;
@@ -11288,7 +11340,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     } else {
                         SetPreferredScreenGrab(true);
 
-                        HWND hGameWindow = GetMainWindowForProcess(currentSourcePid);
+                        HWND hGameWindow = isExplicitDxgiDupConfig() ? NULL : GetMainWindowForProcess(currentSourcePid);
                         if (hGameWindow) {
                             LogInfo(
                                 "[Media] Overlay-only target: found main window 0x%p. "
@@ -11332,7 +11384,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                         LogWarn("[Media] Auto mode: WGC target unavailable for %s; no inject capture fallback",
                                 procName.c_str());
                     }
-                } else if (!g_Recording && !isExplicitWgcConfig()) {
+                } else if (!g_Recording && !isExplicitScreenGrabConfig()) {
                     SetPreferredScreenGrab(false);
                     LogInfo("[Media] Using Inject Mode (explicit/default)");
                 }

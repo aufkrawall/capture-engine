@@ -6,10 +6,11 @@
 ; log_level - Values: none, trace
 log_level=trace
 
-; capture_method - Values: inject, wgc, auto
-;   inject = injected shared-memory capture only
-;   wgc    = Windows Graphics Capture only (screen or window grab, requires DWM present "fullscreen optimization" for older games)
-;   auto   = WGC, unless application is on inject whitelist
+; capture_method - Values: inject, wgc, dxgi_dup, auto
+;   inject   = injected shared-memory capture only
+;   wgc      = Windows Graphics Capture only (screen or window grab, requires DWM present "fullscreen optimization" for older games)
+;   dxgi_dup = DXGI Desktop Duplication only (monitor/desktop grab; no window scoping; falls back to WGC monitor capture when duplication is unavailable, e.g. rotated or cross-adapter outputs)
+;   auto     = priority order: inject (whitelisted game) > WGC window capture (configured wgc_window_detection match, hooked source window, or foreground fullscreen window) > DXGI Desktop Duplication for the remaining pure desktop/monitor capture > WGC monitor capture as the last fallback
 capture_method=auto
 
 ; wgc_window_detection - Window Capture (WGC) targets. Does not inject or overlay. Favors capturing found window over capturing the entire screen.

@@ -2628,3 +2628,81 @@ TEST(CapturePipelinePolicyTest, EncoderCapacityDiagnosticsQuantifyBudgetAndShort
     EXPECT_FALSE(policy::IsEncoderTooSlowForTargetFps(8.20, 8.333333, 120));
     EXPECT_FALSE(policy::IsEncoderTooSlowForTargetFps(0.0, 8.333333, 120));
 }
+
+TEST(CapturePipelinePolicyTest, DxgiDuplicationPreferredForMonitorScopeDesktopFallback) {
+    // Explicit capture_method=dxgi_dup always prefers duplication.
+    EXPECT_TRUE(policy::ShouldPreferDxgiDuplicationForMonitorCapture(
+        /*explicitDxgiDupConfig=*/true, /*explicitWgcConfig=*/false, /*autoCaptureConfig=*/false));
+
+    // Explicit capture_method=wgc keeps the WGC monitor item.
+    EXPECT_FALSE(policy::ShouldPreferDxgiDuplicationForMonitorCapture(
+        /*explicitDxgiDupConfig=*/false, /*explicitWgcConfig=*/true, /*autoCaptureConfig=*/false));
+
+    // Auto mode: any monitor-scope (pure desktop) fallback prefers duplication.
+    // Inject and WGC window capture take priority upstream of this decision.
+    EXPECT_TRUE(policy::ShouldPreferDxgiDuplicationForMonitorCapture(
+        /*explicitDxgiDupConfig=*/false, /*explicitWgcConfig=*/false, /*autoCaptureConfig=*/true));
+
+    // Explicit inject (neither flag, not auto) never reaches monitor priming,
+    // but the policy must still answer false.
+    EXPECT_FALSE(policy::ShouldPreferDxgiDuplicationForMonitorCapture(
+        /*explicitDxgiDupConfig=*/false, /*explicitWgcConfig=*/false, /*autoCaptureConfig=*/false));
+}
+
+TEST(CapturePipelinePolicyTest, DxgiDuplicationFormatPolicyMatchesBitDepthMandates) {
+    constexpr uint32_t kFp16 = 10;   // DXGI_FORMAT_R16G16B16A16_FLOAT
+    constexpr uint32_t kR10 = 24;    // DXGI_FORMAT_R10G10B10A2_UNORM
+    constexpr uint32_t kBgra8 = 87;  // DXGI_FORMAT_B8G8R8A8_UNORM
+    constexpr uint32_t kNv12 = 103;  // DXGI_FORMAT_NV12 (never a desktop surface)
+
+    // FP16 satisfies every policy (SDR high precision and HDR).
+    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFormat(kFp16, false, false));
+    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFormat(kFp16, true, false));
+    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFormat(kFp16, true, true));
+    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFormat(kFp16, false, true));
+
+    // R10 satisfies SDR high precision but cannot represent an HDR desktop.
+    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFormat(kR10, false, false));
+    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFormat(kR10, true, false));
+    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFormat(kR10, true, true));
+    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFormat(kR10, false, true));
+
+    // BGRA8 is throughput-acceptable only when high precision is not required:
+    // explicit 10-bit must fail loudly so the caller falls back to WGC, which
+    // can request a high-precision pool independent of the composed surface.
+    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFormat(kBgra8, false, false));
+    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFormat(kBgra8, true, false));
+    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFormat(kBgra8, false, true));
+    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFormat(kBgra8, true, true));
+
+    // Unknown formats are always rejected.
+    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFormat(kNv12, false, false));
+}
+
+TEST(CapturePipelinePolicyTest, DuplicationBudgetSpendsSourcePoolShareOnCopySlots) {
+    // WGC shape at 4K FP16 source + R10 retained copy, 3000MB, 120fps/300ms.
+    const auto wgcBudget = policy::ComputeWgcSmoothnessSurfaceBudget(
+        /*outputFps=*/120, /*maxSmoothnessMs=*/300, /*width=*/3840, /*height=*/2160,
+        /*sourceBytesPerPixel=*/8, /*copyBytesPerPixel=*/4, /*budgetMb=*/3000, /*syncDelayFrames=*/4,
+        /*requiresSourceFramePool=*/true);
+    EXPECT_GT(wgcBudget.sourceFramePoolBuffers, 0u);
+
+    // Duplication shape: no consumer-owned source frame pool; the whole budget
+    // funds retained copy slots, so the copy pool must be at least as deep and
+    // the retained reservoir must not shrink versus the WGC split.
+    const auto dupBudget = policy::ComputeWgcSmoothnessSurfaceBudget(
+        /*outputFps=*/120, /*maxSmoothnessMs=*/300, /*width=*/3840, /*height=*/2160,
+        /*sourceBytesPerPixel=*/8, /*copyBytesPerPixel=*/4, /*budgetMb=*/3000, /*syncDelayFrames=*/4,
+        /*requiresSourceFramePool=*/false);
+    EXPECT_EQ(dupBudget.sourceFramePoolBuffers, 0u);
+    EXPECT_GE(dupBudget.copyPoolSlots, wgcBudget.copyPoolSlots);
+    EXPECT_GE(dupBudget.retainedExtraFrames, wgcBudget.retainedExtraFrames);
+    EXPECT_EQ(dupBudget.sourceEstimatedBytes, 0ull);
+    EXPECT_FALSE(dupBudget.budgetExhausted);
+
+    // A tight budget that cap-limits the WGC split must recover reservoir depth
+    // in duplication mode because the source-pool share is reclaimed.
+    const auto tightWgc = policy::ComputeWgcSmoothnessSurfaceBudget(120, 300, 3840, 2160, 8, 4, 1024, 4, true);
+    const auto tightDup = policy::ComputeWgcSmoothnessSurfaceBudget(120, 300, 3840, 2160, 8, 4, 1024, 4, false);
+    EXPECT_GT(tightDup.retainedExtraFrames, tightWgc.retainedExtraFrames);
+}

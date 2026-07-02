@@ -30,8 +30,14 @@ struct WGCCapturedFrame {
     WgcPoolSlotLease poolLease;
 };
 
-// Windows Graphics Capture implementation
-// Supports DirectFlip capture that Desktop Duplication cannot handle
+// Screen-grab capture engine with two frame-source backends:
+// - Windows Graphics Capture (window or monitor items; supports DirectFlip
+//   window content that Desktop Duplication cannot scope to a window)
+// - DXGI Desktop Duplication (monitor scope only; preferred desktop-recording
+//   fallback in auto mode, see InitForMonitorDuplication)
+// Both backends share the same copy pool, slot leases, ingress admission,
+// smoothness reservoir budget, telemetry counters, and CFR scheduling
+// downstream, so smoothness/sync guarantees are identical.
 // Fully out-of-process - no code runs in game, compatible with anti-cheat
 class WGCCapture {
 public:
@@ -55,6 +61,21 @@ public:
 
     // Initialize with monitor handle for specific monitor capture
     bool InitForMonitor(ID3D11Device* device, void* hmonitor);
+
+    // Initialize monitor capture through the DXGI Desktop Duplication backend
+    // (null hmonitor = primary monitor). The duplication feeds the same copy
+    // pool, ingress admission, smoothness reservoir, and CFR machinery as the
+    // WGC backend. If duplication turns out to be unavailable at StartCapture
+    // (format policy, API loss), capture falls back to a WGC monitor item in
+    // place so recording start does not fail on a duplication-only problem.
+    bool InitForMonitorDuplication(ID3D11Device* device, void* hmonitor);
+
+    // True while the DXGI Desktop Duplication backend is the selected source.
+    bool IsUsingDesktopDuplication() const;
+
+    // Duplication-specific diagnostics (0 when the WGC backend is active).
+    uint64_t GetDuplicationAcquireTimeoutCount() const;
+    uint64_t GetDuplicationAccumulatedMissedFrameCount() const;
 
     // Start/stop capture session
     bool StartCapture();

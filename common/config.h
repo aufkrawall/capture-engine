@@ -304,7 +304,7 @@ struct AppConfig {
     // General
     bool debugLogging = true;  // Legacy compatibility view: true when logLevel >= Debug
     LogLevel logLevel = LogLevel::Debug;
-    std::string captureMethod;  // "inject", "wgc", "auto"
+    std::string captureMethod;  // "inject", "wgc", "dxgi_dup", "auto"
     bool wgcSkipSplitDeviceFlush = false;
     bool wgcSameDeviceCapture = false;
     // When an A/V content delay is active, prefer uniform CFR cadence (closest-to-target
@@ -506,12 +506,16 @@ inline LogLevel ParseLogLevelString(const std::string& rawValue, LogLevel defaul
 // app-specific overrides
 void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName = "");
 
-// capture_method accepts canonical values "inject", "wgc", and "auto".
-// Legacy explicit-WGC aliases ("screengrab", "framegrab", "desktop_dup")
-// are normalized to "wgc" when loading config.
+// capture_method accepts canonical values "inject", "wgc", "dxgi_dup", and "auto".
+// Legacy explicit-WGC aliases ("screengrab", "framegrab") normalize to "wgc".
+// DXGI Desktop Duplication aliases ("desktop_dup", "duplication",
+// "dxgi_duplication") normalize to "dxgi_dup".
 std::string NormalizeCaptureMethod(const std::string& val);
 bool IsInjectCaptureMethod(const std::string& val);
 bool IsWgcCaptureMethod(const std::string& val);
+bool IsDxgiDupCaptureMethod(const std::string& val);
+// True for any non-inject desktop/window grab family method (wgc or dxgi_dup).
+bool IsScreenGrabCaptureMethod(const std::string& val);
 bool IsAutoCaptureMethod(const std::string& val);
 
 // Parsing helpers
