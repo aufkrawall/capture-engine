@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <deque>
 #include <utility>
+#include <vector>
 #include "../common/frame_queue.h"
 #include "../common/frame_timing_utils.h"
 
@@ -402,7 +403,10 @@ TEST(FrameTimingUtilsTest, InputFrameRatePredictorCalibratesAndTracksStableCaden
     EXPECT_TRUE(predictor.IsCalibrated());
     EXPECT_NEAR(predictor.GetPredictedFps(kQpcFreq), 60.0, 0.1);
     EXPECT_NEAR(predictor.GetJitterUs(kQpcFreq), 0.0, 0.1);
-    EXPECT_EQ(predictor.GetIdealTimestamp(13550), 14000);
+    // Deviation budget: 3/4 of the source interval, tightened by 3/4 of the output interval.
+    EXPECT_EQ(predictor.GetSmoothingMaxDeviationQpc(0), 750);
+    EXPECT_EQ(predictor.GetSmoothingMaxDeviationQpc(2000), 750);
+    EXPECT_EQ(predictor.GetSmoothingMaxDeviationQpc(800), 600);
 }
 
 TEST(FrameTimingUtilsTest, InputFrameRatePredictorCountsDuplicateTimestampsTowardCalibration) {
@@ -428,12 +432,10 @@ TEST(FrameTimingUtilsTest, InputFrameRatePredictorResetOnTimestampRegressionDrop
     predictor.Update(13000, kQpcFreq);
     predictor.Update(14000, kQpcFreq);
     ASSERT_TRUE(predictor.IsCalibrated());
-    const int64_t previousIdeal = predictor.GetIdealTimestamp(9555);
     const double previousFps = predictor.GetPredictedFps(kQpcFreq);
 
     EXPECT_EQ(predictor.Update(9000, kQpcFreq), 0);
     EXPECT_FALSE(predictor.IsCalibrated());
-    EXPECT_LE(AbsoluteTimestampDistance(predictor.GetIdealTimestamp(9555), previousIdeal), 1);
     EXPECT_DOUBLE_EQ(predictor.GetPredictedFps(kQpcFreq), previousFps);
 }
 
@@ -487,4 +489,149 @@ TEST(FrameTimingUtilsTest, InjectDelayedGridSelectionPinsRealizedDelayUnderAbund
         const int64_t oldestFrameDelay = nowQpc - frames.front().timestamp;
         EXPECT_GT(oldestFrameDelay, realizedDelay);  // the bug behaviour we are guarding against
     }
+}
+
+// --- Monotonic bounded-deviation selection-timestamp smoothing (fortistutter fix) ---------------
+//
+// WGC/DXGI source timestamps are DWM composition times: under VRR / composed presentation a
+// perfectly smooth game present stream arrives QUANTIZED to the composition clock. The fortistutter
+// session (140 fps source into 120 fps CFR, buffer 31-35 frames deep the whole time) showed 22%
+// CFR repeats because the uniform playout was slaved to those raw quantized timestamps: recurring
+// artificial >8.3 ms holes at the fixed-latency read boundary each forced a hold while the
+// surrounding surplus was dropped. These tests pin the smoother contract that removes that noise.
+
+namespace {
+
+// True 140 fps cadence (7142.86 us) quantized UP to a 5 ms composition clock: raw intervals mix
+// 5000/10000 us around the same average. The 10 ms raw gaps are what starved CFR output slots.
+std::vector<int64_t> MakeQuantizedCadence(int64_t startUs, size_t frames, double trueIntervalUs,
+                                          int64_t bucketUs) {
+    std::vector<int64_t> raw;
+    raw.reserve(frames);
+    for (size_t i = 0; i < frames; ++i) {
+        const double trueTs = static_cast<double>(startUs) + trueIntervalUs * static_cast<double>(i);
+        const int64_t quantized = ((static_cast<int64_t>(trueTs) + bucketUs - 1) / bucketUs) * bucketUs;
+        if (!raw.empty() && quantized <= raw.back()) {
+            raw.push_back(raw.back());  // compositor stamp collision (duplicate timestamp)
+        } else {
+            raw.push_back(quantized);
+        }
+    }
+    return raw;
+}
+
+}  // namespace
+
+TEST(FrameTimingUtilsTest, SmoothMonotonicTimestampRemovesCompositorQuantizationNoise) {
+    constexpr int64_t kQpcFreq = 1000000;        // 1 tick == 1 us
+    constexpr int64_t kOutputIntervalUs = 8333;  // 120 fps CFR
+    constexpr double kTrueIntervalUs = 1000000.0 / 140.0;
+
+    InputFrameRatePredictor predictor;
+    const auto raw = MakeQuantizedCadence(1000000, 400, kTrueIntervalUs, 5000);
+
+    std::vector<int64_t> smoothed;
+    smoothed.reserve(raw.size());
+    for (const int64_t ts : raw) {
+        predictor.Update(ts, kQpcFreq);
+        smoothed.push_back(predictor.SmoothMonotonicTimestamp(ts, kOutputIntervalUs));
+    }
+
+    // The raw quantized stream contains >= output-interval gaps (the CFR hold trigger)...
+    int64_t rawGapMax = 0;
+    for (size_t i = 1; i < raw.size(); ++i) {
+        rawGapMax = std::max(rawGapMax, raw[i] - raw[i - 1]);
+    }
+    EXPECT_GE(rawGapMax, 10000);
+
+    // ...but after calibration the smoothed stream must never starve an output slot: every smoothed
+    // gap fits inside one CFR sweep step, so a surplus source can never force a repeat again.
+    int64_t smoothedGapMax = 0;
+    int64_t deviationMax = 0;
+    const size_t warmup = 32;  // interval EMA convergence
+    for (size_t i = 1; i < smoothed.size(); ++i) {
+        EXPECT_GT(smoothed[i], smoothed[i - 1]) << "strict monotonicity violated at " << i;
+        if (i >= warmup) {
+            smoothedGapMax = std::max(smoothedGapMax, smoothed[i] - smoothed[i - 1]);
+            deviationMax = std::max(deviationMax, AbsoluteTimestampDistance(smoothed[i], raw[i]));
+        }
+    }
+    EXPECT_LE(smoothedGapMax, kOutputIntervalUs);
+    // Bounded deviation: the content-time error added by smoothing never exceeds 3/4 of the output
+    // interval (and is further bounded by 3/4 of the source interval), so raw-domain sync checks
+    // and the active-delay hard cap keep their meaning.
+    EXPECT_LE(deviationMax, (kOutputIntervalUs * 3) / 4);
+    EXPECT_EQ(predictor.SmoothingSnapCount(), 0u);
+}
+
+TEST(FrameTimingUtilsTest, SmoothMonotonicTimestampKeepsRealStallsVisible) {
+    constexpr int64_t kQpcFreq = 1000000;
+    constexpr int64_t kOutputIntervalUs = 8333;
+    constexpr int64_t kIntervalUs = 7143;
+
+    InputFrameRatePredictor predictor;
+    int64_t ts = 1000000;
+    int64_t lastSmoothed = 0;
+    for (int i = 0; i < 64; ++i) {
+        predictor.Update(ts, kQpcFreq);
+        lastSmoothed = predictor.SmoothMonotonicTimestamp(ts, kOutputIntervalUs);
+        ts += kIntervalUs;
+    }
+    ASSERT_TRUE(predictor.IsCalibrated());
+    EXPECT_EQ(predictor.SmoothingSnapCount(), 0u);
+
+    // A genuine 100 ms delivery stall must NOT be smeared into earlier content time: the smoother
+    // relocks to the raw post-stall timestamp so the in-gap freeze stays an honest hold.
+    const int64_t stallTs = ts + 100000;
+    predictor.Update(stallTs, kQpcFreq);
+    const int64_t postStall = predictor.SmoothMonotonicTimestamp(stallTs, kOutputIntervalUs);
+    EXPECT_EQ(postStall, stallTs);
+    EXPECT_EQ(predictor.SmoothingSnapCount(), 1u);
+    EXPECT_GT(postStall, lastSmoothed);
+}
+
+TEST(FrameTimingUtilsTest, SmoothMonotonicTimestampStaysStrictlyMonotonicOnDuplicateRawTimestamps) {
+    constexpr int64_t kQpcFreq = 1000000;
+    constexpr int64_t kOutputIntervalUs = 8333;
+    constexpr int64_t kIntervalUs = 7143;
+
+    InputFrameRatePredictor predictor;
+    int64_t ts = 500000;
+    int64_t prevSmoothed = 0;
+    for (int i = 0; i < 32; ++i) {
+        predictor.Update(ts, kQpcFreq);
+        const int64_t smoothed = predictor.SmoothMonotonicTimestamp(ts, kOutputIntervalUs);
+        EXPECT_GT(smoothed, prevSmoothed);
+        prevSmoothed = smoothed;
+        ts += kIntervalUs;
+    }
+
+    // Duplicate raw timestamps (compositor stamp collision) still advance strictly and stay within
+    // the deviation budget of the raw time.
+    const int64_t dupTs = ts;
+    for (int i = 0; i < 3; ++i) {
+        predictor.Update(dupTs, kQpcFreq);
+        const int64_t smoothed = predictor.SmoothMonotonicTimestamp(dupTs, kOutputIntervalUs);
+        EXPECT_GT(smoothed, prevSmoothed);
+        EXPECT_LE(AbsoluteTimestampDistance(smoothed, dupTs),
+                  predictor.GetSmoothingMaxDeviationQpc(kOutputIntervalUs));
+        prevSmoothed = smoothed;
+    }
+}
+
+TEST(FrameTimingUtilsTest, SmoothMonotonicTimestampPassthroughBeforeCalibrationAndAfterReset) {
+    constexpr int64_t kQpcFreq = 1000000;
+    constexpr int64_t kOutputIntervalUs = 8333;
+
+    InputFrameRatePredictor predictor;
+    predictor.Update(1000, kQpcFreq);
+    EXPECT_EQ(predictor.SmoothMonotonicTimestamp(1000, kOutputIntervalUs), 1000);
+    predictor.Update(8000, kQpcFreq);
+    EXPECT_EQ(predictor.SmoothMonotonicTimestamp(8000, kOutputIntervalUs), 8000);
+
+    predictor.Reset();
+    EXPECT_EQ(predictor.SmoothingSnapCount(), 0u);
+    predictor.Update(50000, kQpcFreq);
+    EXPECT_EQ(predictor.SmoothMonotonicTimestamp(50000, kOutputIntervalUs), 50000);
+    EXPECT_EQ(predictor.SmoothMonotonicTimestamp(0, kOutputIntervalUs), 0);
 }

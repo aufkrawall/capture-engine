@@ -2661,6 +2661,15 @@ void EncoderThreadFunc(const AppConfig& config) {
     std::string wgcSmoothnessBufferReason = "not-run";
     uint32_t wgcDelayReservoirLowWaterTickCount = 0;
     uint64_t wgcDelayReservoirLowWaterTickTotal = 0;
+    // WGC selection-timestamp smoothing telemetry (monotonic bounded-deviation
+    // smoother over raw compositor timestamps; see InputFrameRatePredictor::
+    // SmoothMonotonicTimestamp). Deviation = |selection - raw normalized|.
+    uint64_t wgcTsSmoothSamplesWindow = 0;
+    uint64_t wgcTsSmoothDevAccumUsWindow = 0;
+    uint32_t wgcTsSmoothDevMaxUsWindow = 0;
+    uint32_t wgcTsSmoothDevMaxUsTotal = 0;
+    uint32_t wgcTsSmoothSnapCountWindow = 0;
+    uint64_t wgcTsSmoothSnapCountTotal = 0;
     uint64_t wgcDelayResidualSamples = 0;
     uint64_t wgcDelayResidualAbsAccumUs = 0;
     int64_t wgcDelayResidualSignedAccumUs = 0;
@@ -2892,6 +2901,12 @@ void EncoderThreadFunc(const AppConfig& config) {
         ce::capture_policy::WgcActiveDelayWindowClass::kHealthy;
     uint64_t wgcActiveDelayLastRepeatClassLogTick = 0;
     int64_t lastEmittedWgcSourceQpc = 0;
+    // Selection-domain (smoothed) twin of lastEmittedWgcSourceQpc. The uniform
+    // active-delay playout makes its emit/hold/drop decisions in the smoothed
+    // selection-timestamp domain (strictly monotonic by construction), so its
+    // monotonicity guard must compare in the same domain; raw stays in
+    // lastEmittedWgcSourceQpc for the legacy path and sync diagnostics.
+    int64_t lastEmittedWgcSelectionQpc = 0;
     int64_t lastEmittedInjectSourceQpc = 0;
     int64_t lastWarmupWgcSourceQpc = 0;
     int64_t wgcStartupBarrierQpc = 0;
@@ -5309,8 +5324,31 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                         if (!drainedFrame.isInjectMode && drainedFrame.timestamp > 0) {
                             wgcInputPredictor.Update(drainedFrame.timestamp, qpcFreq.QuadPart);
-                            drainedFrame.selectionTimestamp =
-                                wgcInputPredictor.GetIdealTimestamp(drainedFrame.timestamp);
+                            // Monotonic bounded-deviation smoothing of the raw compositor timestamp.
+                            // WGC/DXGI timestamps are DWM composition times and arrive quantized
+                            // under VRR/composed presentation even when the game presents perfectly
+                            // smoothly; a CFR playout slaved to the raw stamps converts a surplus
+                            // source into constant single-tick repeats (fortistutter root cause).
+                            // The raw timestamp stays untouched for sync validation/diagnostics.
+                            drainedFrame.selectionTimestamp = wgcInputPredictor.SmoothMonotonicTimestamp(
+                                drainedFrame.timestamp, targetIntervalTicks);
+                            if (drainedFrame.selectionTimestamp > 0 && qpcFreq.QuadPart > 0) {
+                                const int64_t devQpc =
+                                    AbsoluteTimestampDistance(drainedFrame.selectionTimestamp, drainedFrame.timestamp);
+                                const uint32_t devUs = SaturatingToUint32(
+                                    static_cast<uint64_t>(devQpc) * 1000000ull /
+                                    static_cast<uint64_t>(qpcFreq.QuadPart));
+                                ++wgcTsSmoothSamplesWindow;
+                                wgcTsSmoothDevAccumUsWindow += devUs;
+                                wgcTsSmoothDevMaxUsWindow = std::max(wgcTsSmoothDevMaxUsWindow, devUs);
+                                wgcTsSmoothDevMaxUsTotal = std::max(wgcTsSmoothDevMaxUsTotal, devUs);
+                                const uint64_t snapTotal = wgcInputPredictor.SmoothingSnapCount();
+                                if (snapTotal > wgcTsSmoothSnapCountTotal) {
+                                    wgcTsSmoothSnapCountWindow +=
+                                        static_cast<uint32_t>(snapTotal - wgcTsSmoothSnapCountTotal);
+                                    wgcTsSmoothSnapCountTotal = snapTotal;
+                                }
+                            }
                             static int64_t s_lastWgcSrcQpc = 0;
                             if (drainedFrame.timestamp == s_lastWgcSrcQpc) {
                                 ++dupTimestampCount;
@@ -5812,9 +5850,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                         // realized delay near the target regardless of delivery burstiness. After a true
                         // gap it resumes at the correct delay by dropping the audio-passed backlog
                         // (replaying it would put video behind audio) so the in-gap freeze stays clean.
-                        while (!bufferedWgcFrames.empty() && lastEmittedWgcSourceQpc > 0 &&
-                               bufferedWgcFrames.front().timestamp > 0 &&
-                               bufferedWgcFrames.front().timestamp <= lastEmittedWgcSourceQpc) {
+                        // All uniform-playout decisions run in the SMOOTHED selection-timestamp
+                        // domain (strictly monotonic, quantization noise removed); raw timestamps
+                        // stay available for sync validation, stop boundaries, and diagnostics.
+                        while (!bufferedWgcFrames.empty() && lastEmittedWgcSelectionQpc > 0 &&
+                               GetFrameSelectionTimestamp(bufferedWgcFrames.front()) > 0 &&
+                               GetFrameSelectionTimestamp(bufferedWgcFrames.front()) <= lastEmittedWgcSelectionQpc) {
                             QueuedFrame stale = std::move(bufferedWgcFrames.front());
                             bufferedWgcFrames.pop_front();
                             ReleaseQueuedFrameTexture(stale);
@@ -5838,7 +5879,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         // underfilled WGC reserve, not encoder-grid drift, and advancing toward near-live
                         // would trade the freeze for a visible A/V-delay collapse.
                         if (!bufferedWgcFrames.empty()) {
-                            const int64_t oldestBufferedSlotQpc = bufferedWgcFrames.front().timestamp;
+                            const int64_t oldestBufferedSlotQpc = GetFrameSelectionTimestamp(bufferedWgcFrames.front());
                             const int64_t oldestBufferedAgeQpc =
                                 selectionNowQpc.QuadPart > oldestBufferedSlotQpc
                                     ? (selectionNowQpc.QuadPart - oldestBufferedSlotQpc)
@@ -5965,7 +6006,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         const auto uniformCandidateHardSafeForTarget =
                             [&](const QueuedFrame& candidate, int64_t targetQpc) -> bool {
                             if (targetQpc <= 0 || targetIntervalTicks <= 0 || candidate.timestamp <= 0 ||
-                                candidate.timestamp <= lastEmittedWgcSourceQpc) {
+                                GetFrameSelectionTimestamp(candidate) <= lastEmittedWgcSelectionQpc) {
                                 return false;
                             }
                             return ce::capture_policy::IsWgcActiveDelayFinalSelectionWithinHardLimit(
@@ -6197,7 +6238,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                             }
                             const int64_t requestedDelayUs = qpcToUs(getWgcEffectiveContentDelayQpc());
                             const int64_t predictedRealizedDelayUs =
-                                ((gridReferenceQpc - selectedFrame.timestamp) * 1000000) / qpcFreq.QuadPart;
+                                ((gridReferenceQpc - GetFrameSelectionTimestamp(selectedFrame)) * 1000000) /
+                                qpcFreq.QuadPart;
                             const int64_t predictedResidualUs = requestedDelayUs - predictedRealizedDelayUs;
                             const int64_t rawSelectionQpc = getWgcRawSelectionTimestamp(selectedFrame);
                             int64_t rawResidualUs = predictedResidualUs;
@@ -6237,7 +6279,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                             uint32_t playoutStaleDrops = 0;
                             while (bufferedWgcFrames.size() > 1 && playoutTargetQpc > 0 &&
                                    ce::capture_policy::ShouldDropWgcFrontForNearerPlayout(
-                                       bufferedWgcFrames[0].timestamp, bufferedWgcFrames[1].timestamp, playoutTargetQpc,
+                                       GetFrameSelectionTimestamp(bufferedWgcFrames[0]),
+                                       GetFrameSelectionTimestamp(bufferedWgcFrames[1]), playoutTargetQpc,
                                        playoutLeadToleranceQpc)) {
                                 QueuedFrame staleFront = std::move(bufferedWgcFrames.front());
                                 bufferedWgcFrames.pop_front();
@@ -6267,8 +6310,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                             const auto playout =
                                 playoutTargetQpc > 0
                                     ? ce::capture_policy::DecideWgcNearestPlayout(
-                                          bufferedWgcFrames.front().timestamp, playoutTargetQpc,
-                                          playoutLeadToleranceQpc, lastEmittedWgcSourceQpc)
+                                          GetFrameSelectionTimestamp(bufferedWgcFrames.front()), playoutTargetQpc,
+                                          playoutLeadToleranceQpc, lastEmittedWgcSelectionQpc)
                                     : ce::capture_policy::WgcNearestPlayoutDecision{/*emit=*/true, /*hold=*/false};
                             bool uniformRepeatRescueAccepted = false;
                             ce::capture_policy::WgcActiveDelayRelaxedCandidateScore uniformRepeatRescueScore{};
@@ -7345,6 +7388,20 @@ void EncoderThreadFunc(const AppConfig& config) {
                             static_cast<long long>(qpcDeltaToUs(wgcSmoothnessActiveDelayQpc)),
                             static_cast<long long>(qpcDeltaToUs(wgcSmoothnessFloorDelayQpc)),
                             wgcStartupReserveReason.c_str());
+                    } else if (startupPartialReserveFallback) {
+                        // The fortistutter session showed this decision silently NOT engaging because the
+                        // barrier-time min-window input rate was polluted by pre-live settling gaps
+                        // (MinIn250=104 for a healthy 140 fps source). Log the gate inputs so a dormant
+                        // cap is diagnosable instead of invisible.
+                        LogInfo(
+                            "[EncoderThread] WGC startup underfed active-delay cap NOT engaged: pileupUs=%lld "
+                            "floorUs=%lld sourceAtOrAboveCfr=%d inputMin250=%u inputMin500=%u outputFps=%u "
+                            "reason=%s (deep pile-up lock retained for lull absorption)",
+                            static_cast<long long>(qpcDeltaToUs(pileupSmoothnessActiveDelayQpc)),
+                            static_cast<long long>(qpcDeltaToUs(wgcSmoothnessFloorDelayQpc)),
+                            startupSourceAtOrAboveCfr ? 1 : 0, g_WgcCap ? g_WgcCap->GetInputMin250Fps() : 0u,
+                            g_WgcCap ? g_WgcCap->GetInputMin500Fps() : 0u,
+                            static_cast<uint32_t>(config.video.fps), wgcStartupReserveReason.c_str());
                     }
                     wgcSmoothnessActualFrames =
                         targetIntervalTicks > 0
@@ -7565,6 +7622,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcEncoderLimitedCadenceEventCount = 0;
                 wgcCoverageRepeatAccumulator = 0.0;
                 lastEmittedWgcSourceQpc = 0;
+                lastEmittedWgcSelectionQpc = 0;
                 lastEmittedInjectSourceQpc = 0;
                 pendingLiveInjectReadyFrames = useScreenGrab ? 0
                                                              : ce::capture_policy::GetWarmupInjectKeepCount(
@@ -7749,6 +7807,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (frame.timestamp > 0) {
                     lastEmittedWgcSourceQpc = frame.timestamp;
                 }
+                if (GetFrameSelectionTimestamp(frame) > 0) {
+                    lastEmittedWgcSelectionQpc = GetFrameSelectionTimestamp(frame);
+                }
                 g_LastFrame = std::move(frame);
                 g_HasLastFrame = true;
                 // After move, frame.texture is nullptr - use g_LastFrame for processing
@@ -7761,6 +7822,9 @@ void EncoderThreadFunc(const AppConfig& config) {
             } else {
                 if (!g_LastFrame.isInjectMode && g_LastFrame.timestamp > 0) {
                     lastEmittedWgcSourceQpc = g_LastFrame.timestamp;
+                }
+                if (!g_LastFrame.isInjectMode && GetFrameSelectionTimestamp(g_LastFrame) > 0) {
+                    lastEmittedWgcSelectionQpc = GetFrameSelectionTimestamp(g_LastFrame);
                 }
                 frameToProcess = &g_LastFrame;
                 isDuplicate = true;
@@ -8179,6 +8243,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                             }
                             if (catchupFrame.timestamp > 0) {
                                 lastEmittedWgcSourceQpc = catchupFrame.timestamp;
+                            }
+                            if (GetFrameSelectionTimestamp(catchupFrame) > 0) {
+                                lastEmittedWgcSelectionQpc = GetFrameSelectionTimestamp(catchupFrame);
                             }
                             g_LastFrame = std::move(catchupFrame);
                             g_HasLastFrame = true;
@@ -9129,7 +9196,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "InvalidMeta=%u InvalidHandle=%u | PktClamp=%u NegPTS=%u NonMonoPTS=%u | WgcThr=%u Adj=%u | Over=0x%X "
                 "MuxQ=%uKB/%u MuxBp=%u Wait=%uus Max=%uus | EncEma=%.2fms Budget=%upm Sust=%.1ffps TooSlow=%d "
                 "Bottleneck=%d | LowSrc=%d Recover=%d Cause=S%d/D%d/E%d | SrcFps=%.2f SrcJitter=%uus "
-                "DupTs=%u DupTsSkip=%u EncCycle=%.2fms EncSpike=%u",
+                "DupTs=%u DupTsSkip=%u TsSmoothDev=%u/%u/%uus TsSmoothSnap=%u EncCycle=%.2fms EncSpike=%u",
                 CapturePipelinePhaseToString(state.capturePhase.load(std::memory_order_relaxed)), avgFrameAgeUs,
                 cadenceCounters.frameAgeMaxUs, avgSelectionErrorUs, cadenceCounters.outputScheduleErrorMaxUs,
                 avgSignedSelectionErrorUs, cadenceCounters.outputScheduleEarlyMaxUs,
@@ -9184,7 +9251,16 @@ void EncoderThreadFunc(const AppConfig& config) {
                 g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0, wgcLowSourceModeActive ? 1 : 0,
                 wgcLiveRecoveryModeActive ? 1 : 0, wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
                 wgcEncoderRecoveryLimitedCurrent ? 1 : 0, srcFpsX100Val / 100.0, srcJitterUsVal, dupTsPerSec,
-                dupTsSkippedPerSec, smoothedEncCycleMs, encodeSpikeCountThisSecond);
+                dupTsSkippedPerSec,
+                wgcTsSmoothSamplesWindow > 0
+                    ? SaturatingToUint32(wgcTsSmoothDevAccumUsWindow / wgcTsSmoothSamplesWindow)
+                    : 0u,
+                wgcTsSmoothDevMaxUsWindow, wgcTsSmoothDevMaxUsTotal, wgcTsSmoothSnapCountWindow, smoothedEncCycleMs,
+                encodeSpikeCountThisSecond);
+            wgcTsSmoothSamplesWindow = 0;
+            wgcTsSmoothDevAccumUsWindow = 0;
+            wgcTsSmoothDevMaxUsWindow = 0;
+            wgcTsSmoothSnapCountWindow = 0;
 
             const bool wgcEncoderLimitedSmoothnessActive = isWgcEncoderLimitedSmoothnessMode();
             if (useScreenGrab && recordingOutputLive &&

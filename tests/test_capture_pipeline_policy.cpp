@@ -2,8 +2,10 @@
 
 #include <cstdint>
 #include <deque>
+#include <vector>
 
 #include "../common/capture_pipeline_policy.h"
+#include "../common/frame_timing_utils.h"
 
 namespace policy = ce::capture_policy;
 
@@ -2357,6 +2359,80 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutRepeatRescueCanUseSyncSafeFutur
         /*repeatClusterTicks=*/1, 0, 0, 0, policy::WgcActiveDelayWindowClass::kHealthy, softLateTargetUs);
     EXPECT_FALSE(unsafeRescue.Accepted());
     EXPECT_EQ(unsafeRescue.decision, policy::WgcActiveDelayRelaxedDecision::kRejectSyncRisk);
+}
+
+// End-to-end regression for the fortistutter bug (session 20260702, build 0.1.4427): a healthy
+// 140 fps source into 120 fps CFR produced 22% repeats because the uniform active-delay playout
+// (stale sweep + ShouldDropWgcFrontForNearerPlayout + DecideWgcNearestPlayout, media_main's
+// useInjectParityDelayPacing loop) was slaved to RAW DWM composition timestamps, which arrive
+// quantized under VRR/composed presentation. Recurring >8.3 ms artificial raw gaps starved output
+// slots (hold) while the surrounding surplus was dropped. The SAME playout decisions driven by the
+// monotonic bounded-deviation smoothed selection timestamps consume the surplus with zero repeats.
+TEST(CapturePipelinePolicyTest, WgcUniformPlayoutQuantizedSurplusSourceHoldsOnlyWithRawTimestamps) {
+    constexpr int64_t kQpcFreq = 1000000;        // 1 tick == 1 us
+    constexpr int64_t kOutputIntervalUs = 8333;  // 120 fps CFR
+    constexpr double kTrueIntervalUs = 1000000.0 / 140.0;
+    constexpr int64_t kBucketUs = 5000;  // composition clock granularity
+    const int64_t leadToleranceUs = policy::GetWgcActiveDelayResidualToleranceQpc(kOutputIntervalUs);
+
+    // True 140 fps cadence quantized UP to the composition clock (the fortistutter timestamp shape).
+    std::vector<int64_t> raw;
+    raw.reserve(1200);
+    for (size_t i = 0; i < 1200; ++i) {
+        const double trueTs = 1000000.0 + kTrueIntervalUs * static_cast<double>(i);
+        const int64_t quantized = ((static_cast<int64_t>(trueTs) + kBucketUs - 1) / kBucketUs) * kBucketUs;
+        raw.push_back(!raw.empty() && quantized <= raw.back() ? raw.back() : quantized);
+    }
+
+    InputFrameRatePredictor predictor;
+    std::vector<int64_t> smoothed;
+    smoothed.reserve(raw.size());
+    for (const int64_t ts : raw) {
+        predictor.Update(ts, kQpcFreq);
+        smoothed.push_back(predictor.SmoothMonotonicTimestamp(ts, kOutputIntervalUs));
+    }
+
+    const auto runUniformPlayout = [&](const std::vector<int64_t>& selectionTs) -> int {
+        // Skip the EMA warmup span, then replay the exact playout loop shape: the CFR read target
+        // starts inside delivered content (the real pipeline holds a ~250 ms reservoir here).
+        const size_t warmupFrames = 64;
+        std::deque<int64_t> buffer(selectionTs.begin() + warmupFrames, selectionTs.end());
+        int64_t target = selectionTs[warmupFrames] + leadToleranceUs;
+        int64_t lastEmitted = 0;
+        int holds = 0;
+        // Stop while future frames remain buffered so end-of-stream cannot fake holds.
+        const int64_t lastUsableTarget = selectionTs.back() - 4 * kOutputIntervalUs;
+        for (; target <= lastUsableTarget; target += kOutputIntervalUs) {
+            while (!buffer.empty() && lastEmitted > 0 && buffer.front() <= lastEmitted) {
+                buffer.pop_front();  // stale sweep (already-emitted content)
+            }
+            while (buffer.size() > 1 && policy::ShouldDropWgcFrontForNearerPlayout(buffer[0], buffer[1], target,
+                                                                                   leadToleranceUs)) {
+                buffer.pop_front();  // audio-passed surplus drop
+            }
+            if (buffer.empty()) {
+                ++holds;
+                continue;
+            }
+            const auto playout =
+                policy::DecideWgcNearestPlayout(buffer.front(), target, leadToleranceUs, lastEmitted);
+            if (playout.emit) {
+                lastEmitted = buffer.front();
+                buffer.pop_front();
+            } else {
+                ++holds;
+            }
+        }
+        return holds;
+    };
+
+    const int rawHolds = runUniformPlayout(raw);
+    const int smoothedHolds = runUniformPlayout(smoothed);
+
+    // Before the fix: constant visible stutter manufactured from a healthy surplus source.
+    EXPECT_GT(rawHolds, 10);
+    // After the fix: pure surplus decimation, zero repeats.
+    EXPECT_EQ(smoothedHolds, 0);
 }
 
 TEST(CapturePipelinePolicyTest, WgcActiveDelayFinalSelectionChecksPredictedAndRawTimestamps) {

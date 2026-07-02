@@ -247,9 +247,10 @@ inline int64_t ComputeSourceDrivenElapsedUs(int64_t qpcFreq, int64_t frameTimest
     return state.lastElapsedUs;
 }
 
-// Smooths the input frame delivery rate and snaps raw timestamps to a regular
-// grid.  This prevents irregular frame hold patterns (e.g. 2:1:3:1) caused by
-// jittery WGC delivery or duplicate timestamps.
+// Smooths the input frame delivery rate and reconstructs a locally uniform
+// source cadence from noisy raw timestamps.  This prevents irregular frame
+// hold patterns (e.g. 2:1:3:1) caused by jittery WGC delivery or duplicate
+// timestamps.
 class InputFrameRatePredictor {
 public:
     void Reset() {
@@ -259,6 +260,9 @@ public:
         gridOriginQpc_ = 0;
         frameCount_ = 0;
         jitterEmaUpdates_ = 0;
+        lastSmoothedQpc_ = 0;
+        lastSmoothedRawQpc_ = 0;
+        smoothingSnapCount_ = 0;
     }
 
     // Called each time a new source frame arrives.  Returns the smoothed
@@ -320,18 +324,71 @@ public:
         return static_cast<int64_t>(smoothedIntervalQpc_ + 0.5);
     }
 
-    // Snap a raw QPC timestamp to the nearest position on the predicted
-    // regular grid.  This produces smooth frame timing even when actual
-    // delivery is jittery.
-    int64_t GetIdealTimestamp(int64_t rawQpc) const {
-        if (smoothedIntervalQpc_ < 1.0 || gridOriginQpc_ <= 0 || rawQpc <= 0) {
+    // Maximum per-frame deviation the monotonic smoother may introduce between
+    // the smoothed selection timestamp and the raw source timestamp.  Sized to
+    // cover compositor-clock quantization up to 3/4 of the source interval
+    // (WGC/DXGI timestamps are DWM composition times: under VRR or composed
+    // presentation a perfectly smooth game present stream arrives quantized,
+    // e.g. ~4.2/8.3/12.5 ms interval mixes for a 140 fps game) while keeping
+    // the content-time error of any emitted frame bounded by 3/4 of the CFR
+    // output interval, well inside the active-delay hard sync cap.  Raw
+    // timestamps stay untouched for sync validation and diagnostics.
+    int64_t GetSmoothingMaxDeviationQpc(int64_t outputIntervalQpc) const {
+        if (smoothedIntervalQpc_ < 1.0) {
+            return 0;
+        }
+        const int64_t sourceBoundQpc = static_cast<int64_t>((smoothedIntervalQpc_ * 3.0) / 4.0);
+        if (outputIntervalQpc <= 0) {
+            return sourceBoundQpc;
+        }
+        return std::min<int64_t>(sourceBoundQpc, (outputIntervalQpc * 3) / 4);
+    }
+
+    // Monotonic bounded-deviation timestamp smoothing for CFR source selection.
+    //
+    // A CFR playout slaved to raw compositor timestamps sees recurring
+    // artificial 9-17 ms holes at the fixed-latency read boundary and converts
+    // a surplus source into constant single-tick repeats (observed: 22%
+    // duplicates from a healthy 133-140 fps input into a 120 fps target).
+    // This pulls each raw timestamp toward the predicted uniform grid position
+    // while guaranteeing:
+    //   1. bounded deviation:   |smoothed - raw| <= maxDeviationQpc
+    //   2. strict monotonicity: smoothed(n) > smoothed(n-1)
+    //   3. real gaps pass through un-smeared: a raw jump beyond
+    //      2*interval + maxDeviation snaps to the raw timestamp (a genuine
+    //      stall must stay a visible hold, not become smeared content time)
+    // Quantization noise is zero-mean by construction, so the smoothed stream
+    // advances at the true source rate and a surplus source is consumed as
+    // pure surplus drops again instead of drop+repeat churn.
+    int64_t SmoothMonotonicTimestamp(int64_t rawQpc, int64_t outputIntervalQpc) {
+        if (rawQpc <= 0) {
             return rawQpc;
         }
+        const int64_t maxDeviationQpc = GetSmoothingMaxDeviationQpc(outputIntervalQpc);
+        const int64_t intervalQpc = static_cast<int64_t>(smoothedIntervalQpc_ + 0.5);
+        if (!IsCalibrated() || intervalQpc <= 0 || maxDeviationQpc <= 0 || lastSmoothedQpc_ <= 0 ||
+            lastSmoothedRawQpc_ <= 0 || rawQpc < lastSmoothedRawQpc_) {
+            lastSmoothedQpc_ = std::max(rawQpc, lastSmoothedQpc_ + 1);
+            lastSmoothedRawQpc_ = rawQpc;
+            return lastSmoothedQpc_;
+        }
 
-        const double interval = smoothedIntervalQpc_;
-        const double elapsed = static_cast<double>(rawQpc - gridOriginQpc_);
-        const double gridPosition = round(elapsed / interval) * interval;
-        return gridOriginQpc_ + static_cast<int64_t>(gridPosition + 0.5);
+        const int64_t rawGapQpc = rawQpc - lastSmoothedRawQpc_;
+        if (rawGapQpc > intervalQpc * 2 + maxDeviationQpc) {
+            // Genuine delivery stall / regime change: relock to the raw time so
+            // post-stall content is not shown early by a stale prediction.
+            ++smoothingSnapCount_;
+            lastSmoothedQpc_ = std::max(rawQpc, lastSmoothedQpc_ + 1);
+            lastSmoothedRawQpc_ = rawQpc;
+            return lastSmoothedQpc_;
+        }
+
+        const int64_t predictedQpc = lastSmoothedQpc_ + intervalQpc;
+        int64_t smoothedQpc = std::clamp(predictedQpc, rawQpc - maxDeviationQpc, rawQpc + maxDeviationQpc);
+        smoothedQpc = std::max(smoothedQpc, lastSmoothedQpc_ + 1);
+        lastSmoothedQpc_ = smoothedQpc;
+        lastSmoothedRawQpc_ = rawQpc;
+        return smoothedQpc;
     }
 
     double GetPredictedFps(int64_t qpcFreq) const {
@@ -352,6 +409,11 @@ public:
         return frameCount_ >= 4;
     }
 
+    // Number of stall/regime-change relocks performed by SmoothMonotonicTimestamp.
+    uint64_t SmoothingSnapCount() const {
+        return smoothingSnapCount_;
+    }
+
     double SmoothedIntervalQpc() const {
         return smoothedIntervalQpc_;
     }
@@ -363,4 +425,7 @@ private:
     int64_t gridOriginQpc_ = 0;
     uint32_t frameCount_ = 0;
     uint32_t jitterEmaUpdates_ = 0;
+    int64_t lastSmoothedQpc_ = 0;
+    int64_t lastSmoothedRawQpc_ = 0;
+    uint64_t smoothingSnapCount_ = 0;
 };
