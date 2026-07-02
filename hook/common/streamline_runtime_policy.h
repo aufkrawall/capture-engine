@@ -616,4 +616,34 @@ inline bool ShouldPreserveObserverPolicyOnlyStartupTransitionWindow(bool observe
     return observerOnlyEnabled && observerPolicyOnlyEnabled;
 }
 
+// --- DLSSG activation-health monitor (session 20260702_094955: GTA cold-start DLSS FG reported ON with
+// updateActive=1, but presents stayed at base rate all session and the user saw no fps gain) -------------
+// Track health only for successful GetState queries where the game actually REQUESTS frame generation
+// (options mode != off). OFF-mode samples must not extend a not-interpolating streak.
+inline bool ShouldTrackDLSSGActivationHealthSample(bool getStateSucceeded, bool optionsRequestFrameGenerationOn) {
+    return getStateSucceeded && optionsRequestFrameGenerationOn;
+}
+
+// DLSSGState.numFramesActuallyPresented >= 2 proves generated frames reached presentation. ==1 means only
+// the real frame was presented (no interpolation) — though on hardware flip-metering MFG paths the API-side
+// value can stay 1 while the display shows generated frames, so this is EVIDENCE for a log-side monitor,
+// never an enforcement signal.
+inline bool IsDLSSGInterpolationPresentEvidence(uint32_t numFramesActuallyPresented) {
+    return numFramesActuallyPresented >= 2;
+}
+
+// Deterministic streak warning: first warn after warnAtStreak consecutive non-interpolating ON samples
+// (GTA polls GetState ~per frame, so this lands within a handful of frames of a failed activation), then
+// repeat every repeatEvery samples so a long session stays readable.
+inline bool ShouldWarnDLSSGActiveButNotInterpolating(uint64_t consecutiveNonInterpolatingSamples,
+                                                     uint64_t warnAtStreak, uint64_t repeatEvery) {
+    if (warnAtStreak == 0 || consecutiveNonInterpolatingSamples < warnAtStreak) {
+        return false;
+    }
+    if (consecutiveNonInterpolatingSamples == warnAtStreak) {
+        return true;
+    }
+    return repeatEvery != 0 && ((consecutiveNonInterpolatingSamples - warnAtStreak) % repeatEvery) == 0;
+}
+
 }  // namespace ce::streamline_runtime_policy

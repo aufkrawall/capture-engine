@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -372,6 +373,78 @@ bool g_SuppressedSetOptionsOffDuringStartup = false;
 slViewportHandle g_SuppressedOffViewport = {};
 slDLSSGOptions g_SuppressedOffOptions = {};
 uint32_t g_SuppressedOffViewportKey = 0;
+
+// --- DLSSG activation-health diagnostics (GTA cold-start DLSS FG "active but not interpolating", session
+// 20260702_094955: optionsMode=on, updateActive=1, yet presents stayed at base rate with
+// numFramesActuallyPresented==1 and no fps gain) --------------------------------------------------------
+// sl.dlss_g reports WHY it declines to interpolate in DLSSGState.status (sl_dlss_g.h DLSSGStatus bitflags).
+// DLSSG hard-requires Reflex, and GTA's Reflex is historically flaky even without CE (user report), so
+// eDLSSGStatusFailReflexNotDetectedAtRuntime is the prime suspect — the health monitor pairs the status
+// decode with Reflex call-activity evidence so one run pins the failing precondition.
+constexpr uint32_t kDLSSGStatusFailResolutionTooLow = 1u << 0;
+constexpr uint32_t kDLSSGStatusFailReflexNotDetectedAtRuntime = 1u << 1;
+constexpr uint32_t kDLSSGStatusFailHDRFormatNotSupported = 1u << 2;
+constexpr uint32_t kDLSSGStatusFailCommonConstantsInvalid = 1u << 3;
+constexpr uint32_t kDLSSGStatusFailGetCurrentBackBufferIndex = 1u << 4;
+
+void FormatDLSSGStatusFlags(uint32_t status, char* buffer, size_t bufferSize) {
+    if (!buffer || bufferSize == 0) {
+        return;
+    }
+    if (status == 0) {
+        snprintf(buffer, bufferSize, "ok");
+        return;
+    }
+    buffer[0] = '\0';
+    size_t used = 0;
+    auto append = [&](const char* text) {
+        const int written =
+            snprintf(buffer + used, bufferSize > used ? bufferSize - used : 0, "%s%s", used ? "|" : "", text);
+        if (written > 0) {
+            used += static_cast<size_t>(written);
+        }
+    };
+    if (status & kDLSSGStatusFailResolutionTooLow) {
+        append("resolutionTooLow");
+    }
+    if (status & kDLSSGStatusFailReflexNotDetectedAtRuntime) {
+        append("REFLEX-NOT-DETECTED");
+    }
+    if (status & kDLSSGStatusFailHDRFormatNotSupported) {
+        append("hdrFormatNotSupported");
+    }
+    if (status & kDLSSGStatusFailCommonConstantsInvalid) {
+        append("commonConstantsInvalid");
+    }
+    if (status & kDLSSGStatusFailGetCurrentBackBufferIndex) {
+        append("getCurrentBackBufferIndexFail");
+    }
+    const uint32_t knownMask = kDLSSGStatusFailResolutionTooLow | kDLSSGStatusFailReflexNotDetectedAtRuntime |
+                               kDLSSGStatusFailHDRFormatNotSupported | kDLSSGStatusFailCommonConstantsInvalid |
+                               kDLSSGStatusFailGetCurrentBackBufferIndex;
+    if (status & ~knownMask) {
+        char unknownText[32];
+        snprintf(unknownText, sizeof(unknownText), "unknown(0x%X)", status & ~knownMask);
+        append(unknownText);
+    }
+}
+
+// Reflex call-activity evidence. Written from the Reflex hooks with RELAXED atomics + GetTickCount64 only:
+// the manual Reflex FPS limiter's latency-critical sleep path must not gain locks, logging, or syscalls
+// (GetTickCount64 is a shared-page memory read). Read from the GetState-side health monitor.
+std::atomic<uint64_t> g_ReflexSleepObservedCount{0};
+std::atomic<uint64_t> g_ReflexSleepLastTickMs{0};
+std::atomic<uint64_t> g_ReflexSetOptionsObservedCount{0};
+std::atomic<uint64_t> g_ReflexSetOptionsLastTickMs{0};
+std::atomic<int32_t> g_ReflexLastForwardedMode{-1};
+// Health-monitor state (GetState thread(s) only; relaxed is fine for diagnostics).
+std::atomic<uint64_t> g_DLSSGNotInterpolatingStreak{0};
+std::atomic<uint64_t> g_ReflexSleepCountAtLastHealthLog{0};
+std::atomic<uint32_t> g_DLSSGLastObservedStatus{0};
+// GTA polls slDLSSGGetState roughly per frame, so the first warning lands within a handful of frames of a
+// failed activation and repeats sparsely afterwards (deterministic sample counts, not wall-clock).
+constexpr uint64_t kDLSSGHealthWarnStreak = 8;
+constexpr uint64_t kDLSSGHealthWarnRepeat = 512;
 
 PFN_slGetFeatureFunction g_Original_slGetFeatureFunction = nullptr;
 PFN_slGetPluginFunction g_Original_slGetPluginFunction = nullptr;
@@ -2227,19 +2300,98 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
         static std::atomic<int> s_getStateTraceLogCount{0};
         const int logCount = s_getStateTraceLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 8 || (logCount % 512) == 0) {
+            char statusText[160];
+            FormatDLSSGStatusFlags(state.status, statusText, sizeof(statusText));
             HookLogImportant(
                 "Streamline Hook: slDLSSGGetState observed viewport=%u optionsMode=%s(%u) generated=%u "
-                "capabilityMax=%u presented=%u fence=%p fenceValue=%llu viewportWasActive=%d update=%d "
+                "capabilityMax=%u presented=%u status=0x%X(%s) minWH=%u vsyncOk=%d dynMFG=%d vramMB=%llu "
+                "fence=%p fenceValue=%llu viewportWasActive=%d update=%d "
                 "updateActive=%d clearAll=%d suppressNew=%d fenceEvidence=%d setOptionsHooked=%d "
                 "setOptionsOriginal=%p",
                 viewportKey, GetDLSSGModeName(options->mode), options->mode, options->numFramesToGenerate,
-                capabilityMax, state.numFramesActuallyPresented, state.inputsProcessingCompletionFence,
+                capabilityMax, state.numFramesActuallyPresented, state.status, statusText, state.minWidthOrHeight,
+                static_cast<int>(state.bIsVsyncSupportAvailable), static_cast<int>(state.bIsDynamicMFGSupported),
+                (unsigned long long)(state.estimatedVRAMUsageInBytes / (1024ull * 1024ull)),
+                state.inputsProcessingCompletionFence,
                 (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue, viewportWasActive ? 1 : 0,
                 runtimeEvaluation.update.shouldUpdate ? 1 : 0, runtimeEvaluation.update.active ? 1 : 0,
                 clearAllViewportStatesForDisable ? 1 : 0, suppressNewActivation ? 1 : 0,
                 hasRuntimeFenceEvidence ? 1 : 0, g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
                 reinterpret_cast<void*>(g_Original_slDLSSGSetOptions));
         }
+    }
+
+    // [DLSSG HEALTH] — session 20260702_094955: GTA reported DLSSG ON (optionsMode=on, updateActive=1) but
+    // presents stayed at base rate all session (numFramesActuallyPresented==1, no fps gain). sl.dlss_g
+    // publishes WHY it declines to interpolate in DLSSGState.status; log every status transition, and while
+    // the game requests ON without interpolation evidence, emit a deterministic streak warning that pairs
+    // NVIDIA's status decode with Reflex call-activity evidence (DLSSG hard-requires Reflex, and GTA's
+    // Reflex is historically flaky even without CE).
+    if (result == kSlResultOk) {
+        const uint32_t previousStatus =
+            g_DLSSGLastObservedStatus.exchange(state.status, std::memory_order_relaxed);
+        if (previousStatus != state.status) {
+            char prevText[160];
+            char nowText[160];
+            FormatDLSSGStatusFlags(previousStatus, prevText, sizeof(prevText));
+            FormatDLSSGStatusFlags(state.status, nowText, sizeof(nowText));
+            HookLogImportant(
+                "Streamline Hook: [DLSSG HEALTH] status TRANSITION 0x%X(%s) -> 0x%X(%s) (viewport=%u "
+                "optionsMode=%s presented=%u minWH=%u vsyncOk=%d dynMFG=%d)",
+                previousStatus, prevText, state.status, nowText, viewportKey,
+                options ? GetDLSSGModeName(options->mode) : "n/a", state.numFramesActuallyPresented,
+                state.minWidthOrHeight, static_cast<int>(state.bIsVsyncSupportAvailable),
+                static_cast<int>(state.bIsDynamicMFGSupported));
+        }
+    }
+    const bool optionsRequestOn = options != nullptr && options->mode != 0;
+    if (ce::streamline_runtime_policy::ShouldTrackDLSSGActivationHealthSample(result == kSlResultOk,
+                                                                              optionsRequestOn)) {
+        const bool interpolationEvidence =
+            ce::streamline_runtime_policy::IsDLSSGInterpolationPresentEvidence(state.numFramesActuallyPresented);
+        uint64_t streak = 0;
+        if (interpolationEvidence && state.status == 0) {
+            g_DLSSGNotInterpolatingStreak.store(0, std::memory_order_relaxed);
+        } else {
+            streak = g_DLSSGNotInterpolatingStreak.fetch_add(1, std::memory_order_relaxed) + 1;
+        }
+        if (ce::streamline_runtime_policy::ShouldWarnDLSSGActiveButNotInterpolating(
+                streak, kDLSSGHealthWarnStreak, kDLSSGHealthWarnRepeat)) {
+            const uint64_t nowMs = GetTickCount64();
+            const uint64_t sleepCount = g_ReflexSleepObservedCount.load(std::memory_order_relaxed);
+            const uint64_t sleepCountAtLastLog =
+                g_ReflexSleepCountAtLastHealthLog.exchange(sleepCount, std::memory_order_relaxed);
+            const uint64_t sleepLastMs = g_ReflexSleepLastTickMs.load(std::memory_order_relaxed);
+            const uint64_t reflexOptCount = g_ReflexSetOptionsObservedCount.load(std::memory_order_relaxed);
+            const uint64_t reflexOptLastMs = g_ReflexSetOptionsLastTickMs.load(std::memory_order_relaxed);
+            char statusText[160];
+            FormatDLSSGStatusFlags(state.status, statusText, sizeof(statusText));
+            HookLogImportant(
+                "Streamline Hook: [DLSSG HEALTH] ON but NOT interpolating for %llu consecutive GetState samples — "
+                "status=0x%X(%s) presented=%u generatedReq=%u capabilityMax=%u minWH=%u vsyncOk=%d dynMFG=%d "
+                "vramMB=%llu fence=%p fenceValue=%llu | Reflex evidence: sleepCalls=%llu (+%llu since last warn) "
+                "sleepAge=%llums setOptionsCalls=%llu setOptionsAge=%llums lastMode=%d sleepHooked=%d | "
+                "REFLEX-NOT-DETECTED in status = the game's Reflex pipeline is not running (DLSSG requires it); "
+                "status=ok with presented==1 and dynMFG=1 can be hardware flip metering — correlate with the "
+                "displayed fps",
+                static_cast<unsigned long long>(streak), state.status, statusText, state.numFramesActuallyPresented,
+                options->numFramesToGenerate, capabilityMax, state.minWidthOrHeight,
+                static_cast<int>(state.bIsVsyncSupportAvailable), static_cast<int>(state.bIsDynamicMFGSupported),
+                (unsigned long long)(state.estimatedVRAMUsageInBytes / (1024ull * 1024ull)),
+                state.inputsProcessingCompletionFence,
+                (unsigned long long)state.lastPresentInputsProcessingCompletionFenceValue,
+                static_cast<unsigned long long>(sleepCount),
+                static_cast<unsigned long long>(sleepCount - sleepCountAtLastLog),
+                static_cast<unsigned long long>(sleepLastMs ? (nowMs - sleepLastMs) : 0),
+                static_cast<unsigned long long>(reflexOptCount),
+                static_cast<unsigned long long>(reflexOptLastMs ? (nowMs - reflexOptLastMs) : 0),
+                g_ReflexLastForwardedMode.load(std::memory_order_relaxed),
+                g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0);
+        }
+    } else if (result == kSlResultOk && options != nullptr && options->mode == 0) {
+        // Explicit OFF request: end any pending not-interpolating streak so a later re-enable starts a
+        // fresh, correctly-attributed streak.
+        g_DLSSGNotInterpolatingStreak.store(0, std::memory_order_relaxed);
     }
     if (runtimeEvaluation.update.shouldUpdate) {
         UpdateViewportRuntimeState(viewportKey, runtimeEvaluation.update.active, runtimeEvaluation.update.multiplier,
@@ -2858,6 +3010,11 @@ slResult Hooked_slReflexSleep(const void* frame) {
         return kSlResultErrorInvalidState;
     }
 
+    // DLSSG-health evidence only: relaxed atomics + GetTickCount64 (shared-page read). No locks, no
+    // logging, no syscalls — the manual Reflex FPS limiter's latency path through this hook is unchanged.
+    g_ReflexSleepObservedCount.fetch_add(1, std::memory_order_relaxed);
+    g_ReflexSleepLastTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+
     g_ReflexLimiter.ApplyHybridPacingBeforeNativeSleep();
 
     const slResult result = originalReflexSleep(frame);
@@ -2882,6 +3039,9 @@ slResult Hooked_slReflexSetOptions(const slReflexOptions& options) {
     }
 
     slReflexOptions adjustedOptions = options;
+    g_ReflexSetOptionsObservedCount.fetch_add(1, std::memory_order_relaxed);
+    g_ReflexSetOptionsLastTickMs.store(GetTickCount64(), std::memory_order_relaxed);
+    g_ReflexLastForwardedMode.store(options.mode, std::memory_order_relaxed);
     const uint32_t targetIntervalUs = g_ReflexLimiter.GetTargetIntervalUs();
     const auto frameLimitForwarding = ce::streamline_runtime_policy::ResolveStreamlineReflexFrameLimitForwarding(
         options.frameLimitUs, targetIntervalUs);
