@@ -4338,7 +4338,8 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
     const bool skip = ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         g_FGRuntimeOwnsSwapchain, streamlineFGRunning, runtimeMode, authoritativeFSRActive,
         runtimeOwnedNativeFGPresentPath, ffxStallAllowsNormalOverlay, nativeFSRInternalNoCallbackComposition,
-        DX12_IsFFXUiResourceCachedForBundle());
+        DX12_IsFFXUiResourceCachedForBundle(), DX12_IsLiveSwapchainQueueOriginalGameQueue(),
+        explicitNativeFSROffPending);
     if (!skip) {
         // Normal (non-override) path says don't skip — reset the suppression
         // timer so the next suppression episode gets a fresh 2-second window.
@@ -4380,12 +4381,23 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
             static std::atomic<int> s_internalNoCallbackRouteLogCount{0};
             const int logCount = s_internalNoCallbackRouteLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 300) == 0) {
+                // Attribute WHY the bundle is no longer covering so an FSR-FG suspend/stale-latch backbuffer
+                // fallback is distinguishable in the trace (session 20260703_204119 had the overlay blank the
+                // whole suspension because this branch never ran — the skip decision wrongly relied on the
+                // stale cached-UI-texture latch).
+                const bool uiCached = DX12_IsFFXUiResourceCachedForBundle();
+                const bool liveIsOrigGame = DX12_IsLiveSwapchainQueueOriginalGameQueue();
+                const char* fallbackReason = explicitNativeFSROffPending ? "no-callback FSR suspension"
+                                             : liveIsOrigGame            ? "stale no-callback latch (live queue back on origGame)"
+                                             : !uiCached                 ? "no UI resource registered"
+                                                                         : "no-callback composition";
                 HookLogImportant(
-                    "DX12: Native FSR uses AMD internal no-callback composition; allowing normal overlay rendering "
-                    "on the runtime-owned swapchain queue (runtime=%s apiFSR=%d nativeFGPath=%d runtimeOwns=%d "
-                    "scQueue=%p origGame=%p cmdQ=%p log=%d)",
-                    ce::fg_runtime::GetRuntimeModeName(runtimeMode), authoritativeFSRActive ? 1 : 0,
+                    "DX12: Native FSR no-callback composition — allowing normal/backbuffer overlay rendering "
+                    "(%s) (runtime=%s apiFSR=%d nativeFGPath=%d runtimeOwns=%d explicitNativeOff=%d uiCached=%d "
+                    "liveQueueIsOrigGame=%d scQueue=%p origGame=%p cmdQ=%p log=%d)",
+                    fallbackReason, ce::fg_runtime::GetRuntimeModeName(runtimeMode), authoritativeFSRActive ? 1 : 0,
                     runtimeOwnedNativeFGPresentPath ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0,
+                    explicitNativeFSROffPending ? 1 : 0, uiCached ? 1 : 0, liveIsOrigGame ? 1 : 0,
                     g_SwapchainQueue, g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire),
                     logCount + 1);
             }

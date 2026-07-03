@@ -2504,16 +2504,68 @@ TEST(DXGISharedTest, NativeFSRInternalNoCallbackCompositionUsesNormalOverlayRout
 
 TEST(DXGISharedTest, NativeFSRNoCallbackSkipsRuntimeQueueWhenUiResourceCompositionActive) {
     // No-app-callback native FSR FG via UI-resource composition (bundle path): the overlay is
-    // appended to the game's existing ECL — skip the separate overlay GPU work.
+    // appended to the game's existing ECL — skip the separate overlay GPU work. Live present is still on
+    // AMD's separate FG queue (liveQueueIsOrigGame=false) and FG is NOT suspended, so the bundle covers.
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, /*ffxPresentCallbackFallbackAllowed=*/false,
-        /*nativeFSRInternalNoCallbackComposition=*/true, /*ffxUiResourceCompositionActive=*/true));
+        /*nativeFSRInternalNoCallbackComposition=*/true, /*ffxUiResourceCompositionActive=*/true,
+        /*liveSwapchainQueueIsOriginalGameQueue=*/false, /*fsrFGDisabledSuspendPending=*/false));
 
     // No-app-callback native FSR WITHOUT UI-resource composition (no bundle available):
     // the normal DX12 overlay route renders on the original game queue — do NOT skip.
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
         true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, /*ffxPresentCallbackFallbackAllowed=*/false,
         /*nativeFSRInternalNoCallbackComposition=*/true, /*ffxUiResourceCompositionActive=*/false));
+}
+
+TEST(DXGISharedTest, NativeFSRNoCallbackSuspendResumesBackbufferOverlayEvenWithCachedUiTexture) {
+    // Regression (session 20260703_204119): the overlay went permanently blank after the switch test app
+    // SUSPENDED FSR FG (ffxConfigure frameGenerationEnabled=0 while AMD kept the FfxFrameInterpolationSwapchain).
+    // The cached-UI-texture latch (ffxUiResourceCompositionActive) stays SET across a suspension, so the skip
+    // decision kept returning true (bundle covers) and deferred overlay init forever — while the present-time
+    // router had correctly switched to the backbuffer route (DX12_ProcessFrameMinimal), which needs the overlay
+    // initialized. The skip decision must AGREE with ChooseNoCallbackFSRFGOverlayRoute: during a suspension the
+    // bundle does NOT cover, so do NOT skip.
+    using ce::dx12_overlay_policy::ChooseNoCallbackFSRFGOverlayRoute;
+    using ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute;
+    using ce::dx12_overlay_policy::ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration;
+
+    // ACTIVE no-callback FSR FG: runtime-owned, NOT suspended, live present on AMD's separate FG queue.
+    // The bundle covers → skip the separate work. (Router agrees: kSkipBundleCovers.)
+    EXPECT_TRUE(ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, /*ffxPresentCallbackFallbackAllowed=*/false,
+        /*nativeFSRInternalNoCallbackComposition=*/true, /*ffxUiResourceCompositionActive=*/true,
+        /*liveSwapchainQueueIsOriginalGameQueue=*/false, /*fsrFGDisabledSuspendPending=*/false));
+    EXPECT_EQ(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/false,
+                                                /*fsrFGDisabledSuspendPending=*/false,
+                                                /*uiResourceCachedForBundle=*/true,
+                                                /*bundleOverlayActivelyFiring=*/false),
+              NoCallbackFSRFGOverlayRoute::kSkipBundleCovers);
+
+    // SUSPENDED no-callback FSR FG: runtime still owns the swapchain and the UI texture is still cached, but
+    // AMD stopped interpolating/compositing. The overlay MUST fall back to the backbuffer route → do NOT skip.
+    EXPECT_FALSE(ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        true, false, ce::fg_runtime::RuntimeMode::kOff, false, true, /*ffxPresentCallbackFallbackAllowed=*/false,
+        /*nativeFSRInternalNoCallbackComposition=*/true, /*ffxUiResourceCompositionActive=*/true,
+        /*liveSwapchainQueueIsOriginalGameQueue=*/false, /*fsrFGDisabledSuspendPending=*/true));
+    EXPECT_EQ(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/false,
+                                                /*fsrFGDisabledSuspendPending=*/true,
+                                                /*uiResourceCachedForBundle=*/true,
+                                                /*bundleOverlayActivelyFiring=*/false),
+              NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer);
+
+    // STALE no-callback latch: the game recreated a native swapchain and presents on its own queue again
+    // (live queue == origGame). AMD's FI swapchain is gone → backbuffer route → do NOT skip, even though the
+    // cached-UI-texture latch is still set.
+    EXPECT_FALSE(ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
+        true, false, ce::fg_runtime::RuntimeMode::kFSRFG, true, true, /*ffxPresentCallbackFallbackAllowed=*/false,
+        /*nativeFSRInternalNoCallbackComposition=*/true, /*ffxUiResourceCompositionActive=*/true,
+        /*liveSwapchainQueueIsOriginalGameQueue=*/true, /*fsrFGDisabledSuspendPending=*/false));
+    EXPECT_EQ(ChooseNoCallbackFSRFGOverlayRoute(/*runtimeOwns=*/true, /*liveQueueIsOrigGame=*/true,
+                                                /*fsrFGDisabledSuspendPending=*/false,
+                                                /*uiResourceCachedForBundle=*/true,
+                                                /*bundleOverlayActivelyFiring=*/false),
+              NoCallbackFSRFGOverlayRoute::kMinimalBackbuffer);
 }
 
 TEST(DXGISharedTest, FFXRegisterUiResourceDescTypeMatchesAMDEncoding) {

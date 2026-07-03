@@ -1230,7 +1230,8 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     bool runtimeOwnsSwapchain, bool streamlineFGRunning, fg_runtime::RuntimeMode runtimeMode,
     bool authoritativeFSRActive, bool runtimeOwnedNativeFGPresentPath,
     bool ffxPresentCallbackFallbackAllowed = false, bool nativeFSRInternalNoCallbackComposition = false,
-    bool ffxUiResourceCompositionActive = false) {
+    bool ffxUiResourceCompositionActive = false, bool liveSwapchainQueueIsOriginalGameQueue = false,
+    bool fsrFGDisabledSuspendPending = false) {
     if (streamlineFGRunning) {
         return false;
     }
@@ -1249,24 +1250,26 @@ inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     // register a UI resource (composition not active), fall back to the legacy runtime-queue route so the
     // overlay is at least visible.
     if (nativeFSRInternalNoCallbackComposition) {
-        // No-app-callback native FSR via UI-resource composition (bundle): the overlay is
-        // appended to the game's existing ECL on its own queue — no extra ECL call on AMD's
-        // pacing-critical queue. Skip the separate overlay GPU work because the bundle path
-        // handles it.
-        if (ffxUiResourceCompositionActive) {
-            return true;
-        }
-        // No UI resource was registered (or the VEH one-shot disarmed before intercepting it).
-        // The normal DX12 overlay route (separate ECL on the original game queue) stays live:
-        // the overlay ECL lands on the game's own queue, not the runtime's present queue, so
-        // it does NOT wedge AMD's ffxQuery pacing. The near-passthrough DetourPresent calls
-        // DX12_ProcessFrameMinimal which runs ProcessFrame; the overlay renders there.
-        //
-        // Fall through to the normal-overlay path: return false, allow rendering.
-        // Do NOT reach the callback-only check below (which would return true = skip).
+        // The overlay only RIDES AMD's UI-resource composition bundle while AMD is ACTIVELY compositing that
+        // texture post-interpolation — the exact condition ChooseNoCallbackFSRFGOverlayRoute uses to pick
+        // kSkipBundleCovers (runtime-owned, NOT suspended, live present still on AMD's SEPARATE FG queue).
+        // Skipping the separate overlay GPU work is safe ONLY there. This decision must AGREE with that router,
+        // or the init-gate and the present-time route disagree and the overlay goes blank:
+        //   - During a no-callback SUSPENSION (ffxConfigure frameGenerationEnabled=0 while AMD keeps the
+        //     swapchain but stops interpolating) AMD no longer composites the UI texture. The router falls to
+        //     the (now-safe) backbuffer path (DX12_ProcessFrameMinimal), which needs the main overlay
+        //     initialized — so we must NOT skip here.
+        //   - Under a STALE latch after the game recreated its native swapchain (live queue back on origGame),
+        //     AMD's FI swapchain is gone; same backbuffer fallback applies.
+        // ffxUiResourceCompositionActive is the cached-UI-texture latch (DX12_IsFFXUiResourceCachedForBundle),
+        // which stays SET across a suspension — it alone is NOT proof the bundle is still covering the overlay,
+        // which is why relying on it blanked the overlay after an FSR-FG suspend (session 20260703_204119). The
+        // suspend / stale-queue gates below are what re-enable the draw.
+        const bool bundleActivelyCovers = ffxUiResourceCompositionActive && !fsrFGDisabledSuspendPending &&
+                                          !liveSwapchainQueueIsOriginalGameQueue;
         (void)runtimeOwnsSwapchain;
         (void)ffxPresentCallbackFallbackAllowed;
-        return false;
+        return bundleActivelyCovers;
     }
 
     // Native/runtime-owned FSR is stricter than the generic runtime-owned
