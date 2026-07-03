@@ -915,6 +915,12 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     }
     config.debugLogging = IsDebugLoggingEnabled(config.logLevel);
     config.captureMethod = NormalizeCaptureMethod(GetStr("General", "capture_method", "auto"));
+    {
+        std::string autoFullscreen = Trim(GetStr("General", "auto_fullscreen_capture", "dxgi_dup"));
+        std::transform(autoFullscreen.begin(), autoFullscreen.end(), autoFullscreen.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        config.autoFullscreenPrefersDxgiDup = !(autoFullscreen == "wgc_window" || autoFullscreen == "wgc");
+    }
     config.wgcSkipSplitDeviceFlush = GetBool("General", "wgc_skip_split_device_flush", false);
     config.wgcSameDeviceCapture = GetBool("General", "wgc_same_device_capture", false);
     config.wgcActiveDelayUniformCadence = GetBool("General", "wgc_active_delay_uniform_cadence", true);

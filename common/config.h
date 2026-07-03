@@ -305,6 +305,12 @@ struct AppConfig {
     bool debugLogging = true;  // Legacy compatibility view: true when logLevel >= Debug
     LogLevel logLevel = LogLevel::Debug;
     std::string captureMethod;  // "inject", "wgc", "dxgi_dup", "auto"
+    // auto_fullscreen_capture: backend for UNHOOKED fullscreen-like game
+    // targets in auto mode. true ("dxgi_dup", default) captures the game's
+    // monitor via DXGI duplication so the live hardware cursor plane is
+    // preserved (WGC sessions demote the cursor to DWM-composed rendering);
+    // false ("wgc_window"/"wgc") keeps window-scoped WGC capture.
+    bool autoFullscreenPrefersDxgiDup = true;
     bool wgcSkipSplitDeviceFlush = false;
     bool wgcSameDeviceCapture = false;
     // When an A/V content delay is active, prefer uniform CFR cadence (closest-to-target

@@ -1742,15 +1742,15 @@ bool VideoEncoder::PopulateD3D11FrameFromRepeatSource(AVFrame* d3d11Frame) {
         }
 
         return PrepareD3D11TextureForEncode(
-            repeatSourceFrameTexture, reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]), captureCursor,
-            repeatSourceCaptureOriginX, repeatSourceCaptureOriginY, true);
+            repeatSourceFrameTexture, reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]),
+            CursorCompositionActive(), repeatSourceCaptureOriginX, repeatSourceCaptureOriginY, true);
     }
 
     ID3D11Texture2D* nv12Tex = nullptr;
     bool cursorVisible = false;
     int cursorX = 0;
     int cursorY = 0;
-    if (captureCursor && vpSupportsOverlay && cursorRenderer) {
+    if (CursorCompositionActive() && vpSupportsOverlay && cursorRenderer) {
         CURSORINFO ci = {sizeof(CURSORINFO)};
         if (GetCursorInfo(&ci)) {
             if (encodeFrameCounter % 100 == 1) {
@@ -3775,7 +3775,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     bool cursorVisible = false;
     int cursorX = 0, cursorY = 0;
 
-    if (!useDirectRgbPath && captureCursor && vpSupportsOverlay && cursorRenderer) {
+    if (!useDirectRgbPath && CursorCompositionActive() && vpSupportsOverlay && cursorRenderer) {
         CURSORINFO ci = {sizeof(CURSORINFO)};
         if (GetCursorInfo(&ci)) {
             // Log cursor state periodically (every 100 frames)
@@ -3818,7 +3818,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             return false;
         }
 
-        if (!PrepareD3D11TextureForEncode(bgraTex, (ID3D11Texture2D*)d3d11Frame->data[0], captureCursor, 0, 0)) {
+        if (!PrepareD3D11TextureForEncode(bgraTex, (ID3D11Texture2D*)d3d11Frame->data[0], CursorCompositionActive(), 0,
+                                          0)) {
             DLL_Log("[VideoEncoder] Frame %d: Direct D3D11 RGB preparation failed", encodeFrameCounter);
             bgraTex->Release();
             av_frame_free(&d3d11Frame);
@@ -4181,7 +4182,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         }
     }
 
-    const bool recomposeCursorForRepeats = captureCursor && cursorRenderer && (useDirectRgbPath || vpSupportsOverlay);
+    const bool recomposeCursorForRepeats =
+        CursorCompositionActive() && cursorRenderer && (useDirectRgbPath || vpSupportsOverlay);
     if (recomposeCursorForRepeats) {
         InvalidateRepeatPacketCache();
     } else if (repeatSourceNeedsCursorRecompose) {
@@ -4207,8 +4209,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             return false;
         }
 
-        if (!PrepareD3D11TextureForEncode(bgraTexture, (ID3D11Texture2D*)d3d11Frame->data[0], captureCursor,
-                                          captureLeft, captureTop, true)) {
+        if (!PrepareD3D11TextureForEncode(bgraTexture, (ID3D11Texture2D*)d3d11Frame->data[0],
+                                          CursorCompositionActive(), captureLeft, captureTop, true)) {
             DLL_Log("[VideoEncoder] Frame %d: Direct D3D11 RGB preparation failed", encodeFrameCounter);
             av_frame_free(&d3d11Frame);
             return false;
@@ -4222,7 +4224,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         bool cursorVisible = false;
         int cursorX = 0;
         int cursorY = 0;
-        if (captureCursor && vpSupportsOverlay && cursorRenderer) {
+        if (CursorCompositionActive() && vpSupportsOverlay && cursorRenderer) {
             CURSORINFO ci = {sizeof(CURSORINFO)};
             if (GetCursorInfo(&ci)) {
                 if (encodeFrameCounter % 100 == 1) {

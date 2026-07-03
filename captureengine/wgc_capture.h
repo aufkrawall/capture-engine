@@ -77,6 +77,15 @@ public:
     uint64_t GetDuplicationAcquireTimeoutCount() const;
     uint64_t GetDuplicationAccumulatedMissedFrameCount() const;
 
+    // Duplication cursor-plane state (see DxgiDuplicationSource): when the
+    // cursor is composed into the duplicated frames (software cursor),
+    // encoder-side cursor composition must be suppressed to avoid a double
+    // cursor. Defaults (WGC backend / no session): embedded=false,
+    // separate=true.
+    bool IsDuplicationCursorEmbedded() const;
+    bool IsDuplicationSeparatePointerVisible() const;
+    uint64_t GetDuplicationPointerStateTransitionCount() const;
+
     // Start/stop capture session
     bool StartCapture();
     void StopCapture();

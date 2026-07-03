@@ -1579,12 +1579,26 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessDefaultBudgetCoversVrrSourceAboveOu
         /*sourceBytesPerPixel=*/8, /*copyBytesPerPixel=*/4, /*budgetMb=*/3000,
         policy::GetWgcEstimatedSyncDelayFramesForBudget(/*outputFps=*/120));
     EXPECT_TRUE(budget.splitByteBudget);
-    EXPECT_EQ(budget.sourceFramePoolBuffers, 12u);
+    // Staging-only source pool (compact retained copy converts+releases in the
+    // callback): fps/15 sizing keeps 8 FP16 buffers at 120 fps instead of the
+    // retention-era 12, saving ~253MB at 4K while the full 45-frame retained
+    // reservoir stays intact.
+    EXPECT_EQ(budget.sourceFramePoolBuffers, 8u);
     EXPECT_EQ(budget.copyPoolSlots, 64u);
     EXPECT_EQ(budget.retainedFrameCap, 58u);
     EXPECT_EQ(budget.retainedExtraFrames, 45u);
     EXPECT_FALSE(budget.capLimited);
     EXPECT_LE(budget.estimatedBytes, 3000ull * 1024ull * 1024ull);
+}
+
+TEST(CapturePipelinePolicyTest, WgcCompactSourceStagingPoolIsSizedForBurstsNotRetention) {
+    // Non-compact (retention-relevant) pools keep the default depth.
+    EXPECT_EQ(policy::GetWgcSmoothnessPreferredSourceFramePoolBuffers(120, /*compactCopySurfaces=*/false), 8u);
+    EXPECT_EQ(policy::GetWgcSmoothnessPreferredSourceFramePoolBuffers(60, /*compactCopySurfaces=*/true), 8u);
+    // Compact-active staging: fps/15 with the 8-buffer floor and 12 cap.
+    EXPECT_EQ(policy::GetWgcSmoothnessPreferredSourceFramePoolBuffers(120, /*compactCopySurfaces=*/true), 8u);
+    EXPECT_EQ(policy::GetWgcSmoothnessPreferredSourceFramePoolBuffers(144, /*compactCopySurfaces=*/true), 10u);
+    EXPECT_EQ(policy::GetWgcSmoothnessPreferredSourceFramePoolBuffers(240, /*compactCopySurfaces=*/true), 12u);
 }
 
 TEST(CapturePipelinePolicyTest, WgcSmoothnessHdrFp16RemainsHomogeneousAndBudgetCapped) {
@@ -2725,34 +2739,47 @@ TEST(CapturePipelinePolicyTest, DxgiDuplicationPreferredForMonitorScopeDesktopFa
         /*explicitDxgiDupConfig=*/false, /*explicitWgcConfig=*/false, /*autoCaptureConfig=*/false));
 }
 
-TEST(CapturePipelinePolicyTest, DxgiDuplicationFormatPolicyMatchesBitDepthMandates) {
+TEST(CapturePipelinePolicyTest, DxgiDuplicationContentBitsClassifyDeliveredFormats) {
     constexpr uint32_t kFp16 = 10;   // DXGI_FORMAT_R16G16B16A16_FLOAT
     constexpr uint32_t kR10 = 24;    // DXGI_FORMAT_R10G10B10A2_UNORM
     constexpr uint32_t kBgra8 = 87;  // DXGI_FORMAT_B8G8R8A8_UNORM
     constexpr uint32_t kNv12 = 103;  // DXGI_FORMAT_NV12 (never a desktop surface)
 
-    // FP16 satisfies every policy (SDR high precision and HDR).
-    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFormat(kFp16, false, false));
-    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFormat(kFp16, true, false));
-    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFormat(kFp16, true, true));
-    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFormat(kFp16, false, true));
+    // The delivered duplication format is never a rejection reason: it IS the
+    // full precision the composed desktop possesses. The classifier only feeds
+    // honest sourceContentBits logging (8-bit delivery under explicit 10-bit
+    // output = transparent upconversion, backend stays on duplication and the
+    // hardware cursor is preserved).
+    EXPECT_EQ(policy::GetDxgiDuplicationSourceContentBits(kFp16), 16u);
+    EXPECT_EQ(policy::GetDxgiDuplicationSourceContentBits(kR10), 10u);
+    EXPECT_EQ(policy::GetDxgiDuplicationSourceContentBits(kBgra8), 8u);
+    EXPECT_EQ(policy::GetDxgiDuplicationSourceContentBits(kNv12), 0u);
+}
 
-    // R10 satisfies SDR high precision but cannot represent an HDR desktop.
-    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFormat(kR10, false, false));
-    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFormat(kR10, true, false));
-    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFormat(kR10, true, true));
-    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFormat(kR10, false, true));
+TEST(CapturePipelinePolicyTest, FullscreenAutoTargetPrefersDuplicationForHardwareCursor) {
+    // Unhooked fullscreen game in auto mode with the preference enabled: use
+    // monitor-scope duplication (WGC sessions demote the hardware cursor).
+    EXPECT_TRUE(policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(
+        /*autoCaptureConfig=*/true, /*explicitInjectConfig=*/false, /*injectWhitelisted=*/false,
+        /*targetFullscreenLike=*/true, /*fullscreenPrefersDuplication=*/true));
 
-    // BGRA8 is throughput-acceptable only when high precision is not required:
-    // explicit 10-bit must fail loudly so the caller falls back to WGC, which
-    // can request a high-precision pool independent of the composed surface.
-    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFormat(kBgra8, false, false));
-    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFormat(kBgra8, true, false));
-    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFormat(kBgra8, false, true));
-    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFormat(kBgra8, true, true));
+    // Windowed targets keep WGC window capture (scoped content is the point).
+    EXPECT_FALSE(policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(true, false, false,
+                                                                            /*targetFullscreenLike=*/false, true));
 
-    // Unknown formats are always rejected.
-    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFormat(kNv12, false, false));
+    // Config can force the WGC window path for fullscreen games.
+    EXPECT_FALSE(policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(true, false, false, true,
+                                                                            /*fullscreenPrefersDuplication=*/false));
+
+    // Inject-whitelisted games and explicit inject never reach screen grab.
+    EXPECT_FALSE(policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(true, false,
+                                                                            /*injectWhitelisted=*/true, true, true));
+    EXPECT_FALSE(policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(true, /*explicitInjectConfig=*/true,
+                                                                            false, true, true));
+
+    // Non-auto configs make their own explicit backend choice.
+    EXPECT_FALSE(policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(/*autoCaptureConfig=*/false, false, false,
+                                                                            true, true));
 }
 
 TEST(CapturePipelinePolicyTest, DuplicationBudgetSpendsSourcePoolShareOnCopySlots) {

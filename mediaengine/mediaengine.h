@@ -120,4 +120,9 @@ MEDIAENGINE_API void MediaEngine_UnlockD3D11();
 // bit_depth=auto to choose 10-bit encoding even when the captured texture
 // format fell back to 8-bit (e.g. WGC R10G10B10A2 frame pool unavailable).
 MEDIAENGINE_API void MediaEngine_SetSourcePrefers10Bit(bool prefer10Bit);
+
+// Suppress encoder-side cursor composition while the capture source's frames
+// already contain the cursor (DXGI duplication reporting a software/composed
+// cursor) so the recording does not show a double cursor.
+MEDIAENGINE_API void MediaEngine_SetCursorCompositionSuppressed(bool suppressed);
 }

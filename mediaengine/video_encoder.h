@@ -114,11 +114,26 @@ public:
         sourcePrefers10Bit_.store(prefer, std::memory_order_relaxed);
     }
 
+    // Suppress encoder-side cursor composition while the capture source's
+    // frames already contain the cursor (DXGI duplication with a
+    // software/composed cursor). Lock-free; toggled by the capture layer on
+    // cursor-plane transitions to avoid a double cursor.
+    void SetCursorCompositionSuppressed(bool suppressed) {
+        cursorCompositionSuppressed.store(suppressed, std::memory_order_relaxed);
+    }
+
     // Release encoder-owned D3D11 textures and device after game exits (frees VRAM).
     // Only call when not recording.
     void ReleasePreservedEncoderTextures();
 
 private:
+    // Per-frame cursor draw decision: configured cursor inclusion minus the
+    // runtime embedded-cursor suppression. Capability/init paths must keep
+    // using captureCursor directly (suppression can flip mid-session).
+    bool CursorCompositionActive() const {
+        return captureCursor && !cursorCompositionSuppressed.load(std::memory_order_relaxed);
+    }
+
     void BeginDeferredRecording();
     bool AdoptTextureDevice(ID3D11Texture2D* texture);
     void ReleaseInjectDeviceStateForScreenGrab();
@@ -167,6 +182,13 @@ private:
     int outputHeight = 0;
     bool scalingEnabled = false;                     // True if input != output dimensions
     bool captureCursor = true;                       // Include mouse cursor in recording
+    // Runtime cursor-composition suppression: set while the capture source's
+    // frames already CONTAIN the cursor (DXGI duplication reporting a
+    // software/composed cursor) so encoder-side composition does not draw a
+    // second cursor. Capability setup (VP overlay, cursor renderer) still
+    // follows captureCursor because this state can flip mid-session on
+    // hardware/software cursor-plane transitions.
+    std::atomic<bool> cursorCompositionSuppressed{false};
     int gpuPriority = 0;                             // GPU priority for encoder (-7 to 7)
     int currentGpuThreadPriority = 0;
     uint64_t gpuPriorityPressureSinceMs = 0;

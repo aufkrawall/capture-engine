@@ -260,6 +260,7 @@ public:
         gridOriginQpc_ = 0;
         frameCount_ = 0;
         jitterEmaUpdates_ = 0;
+        consecutiveGapOutlierIntervals_ = 0;
         lastSmoothedQpc_ = 0;
         lastSmoothedRawQpc_ = 0;
         smoothingSnapCount_ = 0;
@@ -308,9 +309,27 @@ public:
         if (frameCount_ < 8) {
             alpha = 0.6;
         } else if (smoothedIntervalQpc_ > 1.0) {
-            double deviation = std::abs(static_cast<double>(rawInterval) - smoothedIntervalQpc_) / smoothedIntervalQpc_;
-            if (deviation > 0.20) {
+            if (static_cast<double>(rawInterval) > smoothedIntervalQpc_ * 3.0) {
+                // Delivery stall/gap outlier: an isolated multi-interval gap
+                // must not inflate the cadence EMA — that would scale the
+                // smoother's stall-snap threshold (2*interval + deviation)
+                // past the very stall it needs to detect, smearing the stall
+                // into earlier content time. A sustained slower cadence (3
+                // consecutive long intervals) is a genuine regime change and
+                // is accepted with fast adaptation.
+                ++consecutiveGapOutlierIntervals_;
+                if (consecutiveGapOutlierIntervals_ < 3) {
+                    return static_cast<int64_t>(smoothedIntervalQpc_ + 0.5);
+                }
+                consecutiveGapOutlierIntervals_ = 0;
                 alpha = 0.5;
+            } else {
+                consecutiveGapOutlierIntervals_ = 0;
+                double deviation =
+                    std::abs(static_cast<double>(rawInterval) - smoothedIntervalQpc_) / smoothedIntervalQpc_;
+                if (deviation > 0.20) {
+                    alpha = 0.5;
+                }
             }
         }
 
@@ -374,6 +393,13 @@ public:
         }
 
         const int64_t rawGapQpc = rawQpc - lastSmoothedRawQpc_;
+        if (rawGapQpc == 0) {
+            // Compositor timestamp collision: content time did not advance, so
+            // the smoothed time must not race a full predicted interval ahead
+            // of the raw stamp. Advance minimally for strict monotonicity.
+            lastSmoothedQpc_ += 1;
+            return lastSmoothedQpc_;
+        }
         if (rawGapQpc > intervalQpc * 2 + maxDeviationQpc) {
             // Genuine delivery stall / regime change: relock to the raw time so
             // post-stall content is not shown early by a stale prediction.
@@ -425,6 +451,7 @@ private:
     int64_t gridOriginQpc_ = 0;
     uint32_t frameCount_ = 0;
     uint32_t jitterEmaUpdates_ = 0;
+    uint32_t consecutiveGapOutlierIntervals_ = 0;
     int64_t lastSmoothedQpc_ = 0;
     int64_t lastSmoothedRawQpc_ = 0;
     uint64_t smoothingSnapCount_ = 0;

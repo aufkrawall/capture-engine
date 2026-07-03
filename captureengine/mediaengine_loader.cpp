@@ -29,6 +29,7 @@ MediaEngine_LockD3D11_t MediaEngine_LockD3D11 = nullptr;
 MediaEngine_UnlockD3D11_t MediaEngine_UnlockD3D11 = nullptr;
 MediaEngine_SetAudioOnly_t MediaEngine_SetAudioOnly = nullptr;
 MediaEngine_SetSourcePrefers10Bit_t MediaEngine_SetSourcePrefers10Bit = nullptr;
+MediaEngine_SetCursorCompositionSuppressed_t MediaEngine_SetCursorCompositionSuppressed = nullptr;
 MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency = nullptr;
 
 static HMODULE g_MediaEngineModule = nullptr;
@@ -125,6 +126,8 @@ bool MediaEngine_Load(const char* exeDir) {
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_LockD3D11", &MediaEngine_LockD3D11);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_UnlockD3D11", &MediaEngine_UnlockD3D11);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetSourcePrefers10Bit", &MediaEngine_SetSourcePrefers10Bit);
+    success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetCursorCompositionSuppressed",
+                       &MediaEngine_SetCursorCompositionSuppressed);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_SetAudioOnly", &MediaEngine_SetAudioOnly);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_MeasureRenderEndpointLatency",
                        &MediaEngine_MeasureRenderEndpointLatency);
@@ -173,6 +176,7 @@ void MediaEngine_Unload() {
     MediaEngine_UnlockD3D11 = nullptr;
     MediaEngine_SetAudioOnly = nullptr;
     MediaEngine_SetSourcePrefers10Bit = nullptr;
+    MediaEngine_SetCursorCompositionSuppressed = nullptr;
     MediaEngine_MeasureRenderEndpointLatency = nullptr;
 
     SetDllDirectoryA(nullptr);

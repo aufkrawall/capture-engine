@@ -65,7 +65,7 @@ constexpr uint32_t kWgcSmoothnessBufferPoolInFlightFrames = 1;
 constexpr uint32_t kWgcSmoothnessBufferPoolSelectedSlackFrames = 1;
 constexpr uint32_t kWgcSmoothnessSourceFramePoolDefaultBuffers = 8;
 constexpr uint32_t kWgcSmoothnessSourceFramePoolMinBuffers = 3;
-constexpr uint32_t kWgcSmoothnessSourceFramePoolCompactHighFpsMaxBuffers = 16;
+constexpr uint32_t kWgcSmoothnessSourceFramePoolCompactHighFpsMaxBuffers = 12;
 constexpr uint32_t kWgcSmoothnessEstimatedSyncDelayMs = 33;
 constexpr uint32_t kWgcSmoothnessBufferMinPoolFrames = 8;
 constexpr uint32_t kWgcSmoothnessBufferMaxPoolFrames = 64;
@@ -1082,27 +1082,45 @@ inline bool ShouldPreferDxgiDuplicationForMonitorCapture(bool explicitDxgiDupCon
     return autoCaptureConfig;
 }
 
-// DXGI duplication delivers the desktop surface in its native format (no server-side
-// conversion like the WGC frame pool). BGRA8 delivery is acceptable only when high
-// precision is not required; HDR desktops must deliver FP16 and explicit 10-bit
-// requests must deliver R10G10B10A2 or FP16, otherwise duplication must fail loudly
-// so the caller can fall back to WGC monitor capture (which can request a
-// high-precision pool independent of the composed surface format).
-inline bool IsAcceptableDxgiDuplicationFormat(uint32_t dxgiFormat, bool requireHighPrecision, bool outputIsHdr) {
+// DXGI duplication delivers the desktop surface in its native composed format (no
+// server-side conversion like the WGC frame pool), which by definition carries the
+// full precision the desktop content possesses. The delivered format is therefore
+// never a reason to reject the duplication backend; it only tells us the true
+// source content precision for honest logging (an 8-bit delivery under an explicit
+// 10-bit request is a transparent upconversion, identical in information content to
+// WGC monitor capture of the same desktop). Returns bits per color channel; 0 for
+// formats the pipeline does not process.
+inline uint32_t GetDxgiDuplicationSourceContentBits(uint32_t dxgiFormat) {
     constexpr uint32_t kFormatR16G16B16A16Float = 10;  // DXGI_FORMAT_R16G16B16A16_FLOAT
     constexpr uint32_t kFormatR10G10B10A2Unorm = 24;   // DXGI_FORMAT_R10G10B10A2_UNORM
     constexpr uint32_t kFormatB8G8R8A8Unorm = 87;      // DXGI_FORMAT_B8G8R8A8_UNORM
     if (dxgiFormat == kFormatR16G16B16A16Float) {
-        return true;
+        return 16;
     }
     if (dxgiFormat == kFormatR10G10B10A2Unorm) {
-        // A 10-bit surface cannot represent an HDR (PQ/scRGB) desktop for our pipeline.
-        return !outputIsHdr;
+        return 10;
     }
     if (dxgiFormat == kFormatB8G8R8A8Unorm) {
-        return !requireHighPrecision && !outputIsHdr;
+        return 8;
     }
-    return false;
+    return 0;
+}
+
+// Auto-mode backend choice for an UNHOOKED fullscreen-like game target (no inject).
+// WGC capture sessions demote the live cursor from the hardware plane to
+// DWM-composed (software) rendering — architectural WGC behavior since 2020,
+// with no public API opt-out (IsCursorCaptureEnabled(false) only masks the
+// cursor out of delivered frames). DXGI duplication never demotes the cursor
+// (its API contract delivers the pointer as separate metadata). For fullscreen
+// games, monitor-scope duplication content is equivalent to window-scope WGC
+// content, so duplication is preferred to preserve the hardware cursor; WGC
+// window capture remains the fallback (cross-adapter/rotated outputs) and the
+// choice for genuinely windowed targets.
+inline bool ShouldPreferDxgiDuplicationForFullscreenAutoTarget(bool autoCaptureConfig, bool explicitInjectConfig,
+                                                               bool injectWhitelisted, bool targetFullscreenLike,
+                                                               bool fullscreenPrefersDuplication) {
+    return autoCaptureConfig && !explicitInjectConfig && !injectWhitelisted && targetFullscreenLike &&
+           fullscreenPrefersDuplication;
 }
 
 enum class HeldModeTransition : uint8_t {
@@ -2009,7 +2027,15 @@ inline uint32_t GetWgcSmoothnessPreferredSourceFramePoolBuffers(uint32_t outputF
         return kWgcSmoothnessSourceFramePoolDefaultBuffers;
     }
 
-    const uint32_t fpsScaled = std::max<uint32_t>(kWgcSmoothnessSourceFramePoolDefaultBuffers, (outputFps + 9u) / 10u);
+    // The source frame pool is STAGING only when the compact retained copy is
+    // active: each delivered frame is converted into the (cheaper) retained
+    // copy pool synchronously in the WGC callback and released, so the pool
+    // depth only needs to cover callback scheduling latency and delivery
+    // bursts, not retention. The previous fps/10 sizing (12 FP16 buffers at
+    // 120 fps = 759 MB staging at 4K) was retention-era; fps/15 keeps ~2
+    // output frames of burst headroom above the historical 8-buffer default
+    // (120 fps -> 8, 144 -> 10, 240 -> 12 capped).
+    const uint32_t fpsScaled = std::max<uint32_t>(kWgcSmoothnessSourceFramePoolDefaultBuffers, (outputFps + 14u) / 15u);
     return std::min<uint32_t>(fpsScaled, kWgcSmoothnessSourceFramePoolCompactHighFpsMaxBuffers);
 }
 

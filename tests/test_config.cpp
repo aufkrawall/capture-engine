@@ -254,6 +254,42 @@ TEST_F(ConfigTest, DxgiDupAliasesNormalizeToDxgiDup) {
     }
 }
 
+TEST_F(ConfigTest, AutoFullscreenCaptureBackendOption) {
+    // Default: duplication preferred for unhooked fullscreen games (hardware
+    // cursor preservation).
+    {
+        WriteConfig("[General]\ncapture_method=auto\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_TRUE(config.autoFullscreenPrefersDxgiDup);
+    }
+    {
+        WriteConfig("[General]\nauto_fullscreen_capture=dxgi_dup\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_TRUE(config.autoFullscreenPrefersDxgiDup);
+    }
+    {
+        WriteConfig("[General]\nauto_fullscreen_capture=wgc_window\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_FALSE(config.autoFullscreenPrefersDxgiDup);
+    }
+    {
+        WriteConfig("[General]\nauto_fullscreen_capture=WGC\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_FALSE(config.autoFullscreenPrefersDxgiDup);
+    }
+    {
+        // Unknown values keep the safe default (duplication).
+        WriteConfig("[General]\nauto_fullscreen_capture=bogus\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_TRUE(config.autoFullscreenPrefersDxgiDup);
+    }
+}
+
 TEST_F(ConfigTest, CaptureMethodPredicateFamilies) {
     EXPECT_TRUE(IsDxgiDupCaptureMethod("dxgi_dup"));
     EXPECT_TRUE(IsDxgiDupCaptureMethod("desktop_dup"));

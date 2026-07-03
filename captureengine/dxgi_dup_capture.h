@@ -57,8 +57,17 @@ public:
     DxgiDuplicationSource& operator=(const DxgiDuplicationSource&) = delete;
 
     // Creates the duplication for the output that owns `monitor` (primary
-    // monitor when null) on `device`'s adapter. `requireHighPrecision` demands
-    // an R10/FP16 desktop surface; `outputIsHdr` additionally demands FP16.
+    // monitor when null) on `device`'s adapter. The format list offered to
+    // DuplicateOutput1 always includes every format the pipeline can process
+    // (FP16/R10, plus BGRA8 for SDR): the OS delivers the desktop's NATIVE
+    // composed format, which by definition is the full precision the desktop
+    // content possesses. `requireHighPrecision`/`outputIsHdr` are used for
+    // logging and the HDR format list, never to reject a working duplication —
+    // an 8-bit delivery under an explicit 10-bit request is an honest
+    // upconversion (logged), not a failure. GROUND TRUTH for the delivered
+    // format is the first acquired frame's texture desc (logged as
+    // sourceContentBits); DXGI_OUTDUPL_DESC.ModeDesc.Format only reflects the
+    // display mode and may understate what the duplication delivers.
     // On failure `failureReason` receives a stable, log-friendly reason string.
     bool Init(ID3D11Device* device, HMONITOR monitor, bool requireHighPrecision, bool outputIsHdr,
               std::string* failureReason);
@@ -106,17 +115,44 @@ public:
         return lastAcquireHr_.load(std::memory_order_relaxed);
     }
 
+    // Cursor plane state, derived from DXGI_OUTDUPL_FRAME_INFO.PointerPosition:
+    // - separate pointer visible  => the live cursor is on the hardware cursor
+    //   plane and is NOT part of the duplicated image (consumer must draw it —
+    //   our encoder-side composition does).
+    // - separate pointer NOT visible while GetCursorInfo says the cursor is
+    //   showing inside this monitor => Windows composes the cursor into the
+    //   desktop image (software cursor); the duplicated frames already CONTAIN
+    //   the cursor and encoder-side composition must be suppressed to avoid a
+    //   double cursor.
+    // This doubles as a live hardware/software-cursor-plane detector for
+    // diagnostics.
+    bool IsSeparatePointerVisible() const {
+        return separatePointerVisible_.load(std::memory_order_relaxed);
+    }
+    bool IsCursorEmbeddedInFrames() const {
+        return cursorEmbeddedInFrames_.load(std::memory_order_relaxed);
+    }
+    uint64_t GetPointerStateTransitionCount() const {
+        return pointerStateTransitions_.load(std::memory_order_relaxed);
+    }
+
 private:
     void CaptureThreadFunc();
     void ReleaseDuplication();
 
+    void UpdatePointerState(bool separatePointerVisible);
+
     ID3D11Device* device_ = nullptr;  // Not owned.
     IDXGIOutputDuplication* duplication_ = nullptr;
     HMONITOR monitor_ = nullptr;
+    RECT monitorRect_ = {};
     uint32_t width_ = 0;
     uint32_t height_ = 0;
     DXGI_FORMAT format_ = DXGI_FORMAT_UNKNOWN;
     bool desktopImageInSystemMemory_ = false;
+    bool requireHighPrecision_ = false;
+    bool outputIsHdr_ = false;
+    bool deliveredFormatLogged_ = false;
 
     std::thread captureThread_;
     std::atomic<bool> shutdown_{false};
@@ -130,4 +166,10 @@ private:
     std::atomic<uint32_t> consecutiveAcquireFailures_{0};
     std::atomic<int32_t> lastAcquireHr_{0};
     std::atomic<uint64_t> deliveredFrameCount_{0};
+    // Safe defaults: assume hardware cursor (separate pointer) until frame
+    // info says otherwise. A wrong initial "not embedded" can only overdraw
+    // the identical cursor shape at the identical position (invisible).
+    std::atomic<bool> separatePointerVisible_{true};
+    std::atomic<bool> cursorEmbeddedInFrames_{false};
+    std::atomic<uint64_t> pointerStateTransitions_{0};
 };

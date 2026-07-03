@@ -800,6 +800,15 @@ public:
         }
     }
 
+    void SetCursorCompositionSuppressedHint(bool suppressed) {
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        if (videoEnc) {
+            DLL_Log("[VideoEncoder] Cursor composition %s (capture frames %s the cursor)",
+                    suppressed ? "suppressed" : "active", suppressed ? "already contain" : "do not contain");
+            videoEnc->SetCursorCompositionSuppressed(suppressed);
+        }
+    }
+
     void SetActiveScreenGrab(bool enabled) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         activeScreenGrab = enabled;
@@ -5236,6 +5245,16 @@ MEDIAENGINE_API void MediaEngine_SetSourcePrefers10Bit(bool prefer10Bit) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine)
         g_Engine->SetSourcePrefers10BitHint(prefer10Bit);
+}
+
+// Suppress encoder-side cursor composition while the capture source's frames
+// already contain the cursor (DXGI duplication reporting a software/composed
+// cursor) so the recording does not show a double cursor. Toggled by the
+// capture layer on hardware/software cursor-plane transitions.
+MEDIAENGINE_API void MediaEngine_SetCursorCompositionSuppressed(bool suppressed) {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
+    if (g_Engine)
+        g_Engine->SetCursorCompositionSuppressedHint(suppressed);
 }
 
 }  // extern "C"

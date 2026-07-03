@@ -150,17 +150,20 @@ bool DxgiDuplicationSource::Init(ID3D11Device* device, HMONITOR monitor, bool re
     IDXGIOutput5* output5 = nullptr;
     HRESULT duplicateHr = E_NOINTERFACE;
     if (SUCCEEDED(matchedOutput->QueryInterface(IID_PPV_ARGS(&output5))) && output5) {
-        // The OS delivers the native composed desktop format if it is in this
-        // list. High-precision requirements exclude BGRA8 so an 8-bit desktop
-        // fails loudly here instead of silently degrading explicit 10-bit.
+        // Offer every format the pipeline can process; the OS delivers the
+        // desktop's NATIVE composed format, which by definition carries the
+        // full precision the desktop content possesses. An 8-bit delivery
+        // under an explicit 10-bit request is an honest upconversion (logged
+        // at first frame), never a reason to lose the duplication backend
+        // (and with it the hardware cursor) to a WGC fallback. HDR desktops
+        // compose in FP16/R10, so BGRA8 stays out of the HDR list to avoid
+        // any tone-mapped SDR conversion path.
         DXGI_FORMAT supportedFormats[3] = {};
         UINT formatCount = 0;
         supportedFormats[formatCount++] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        supportedFormats[formatCount++] = DXGI_FORMAT_R10G10B10A2_UNORM;
         if (!outputIsHdr) {
-            supportedFormats[formatCount++] = DXGI_FORMAT_R10G10B10A2_UNORM;
-            if (!requireHighPrecision) {
-                supportedFormats[formatCount++] = DXGI_FORMAT_B8G8R8A8_UNORM;
-            }
+            supportedFormats[formatCount++] = DXGI_FORMAT_B8G8R8A8_UNORM;
         }
         duplicateHr = output5->DuplicateOutput1(device, 0, formatCount, supportedFormats, &duplication_);
         DupSafeRelease(output5);
@@ -171,7 +174,7 @@ bool DxgiDuplicationSource::Init(ID3D11Device* device, HMONITOR monitor, bool re
         }
     }
 
-    if (!duplication_ && !requireHighPrecision && !outputIsHdr) {
+    if (!duplication_ && !outputIsHdr) {
         // Legacy fallback (pre-1703 or missing IDXGIOutput5): BGRA8 only.
         IDXGIOutput1* output1 = nullptr;
         if (SUCCEEDED(matchedOutput->QueryInterface(IID_PPV_ARGS(&output1))) && output1) {
@@ -211,26 +214,26 @@ bool DxgiDuplicationSource::Init(ID3D11Device* device, HMONITOR monitor, bool re
         return fail(reason);
     }
 
-    if (!ce::capture_policy::IsAcceptableDxgiDuplicationFormat(static_cast<uint32_t>(duplDesc.ModeDesc.Format),
-                                                               requireHighPrecision, outputIsHdr)) {
-        char reason[128];
-        snprintf(reason, sizeof(reason),
-                 "desktop surface format %s violates bit-depth policy (requireHighPrecision=%d hdr=%d)",
-                 DupFormatName(duplDesc.ModeDesc.Format), requireHighPrecision ? 1 : 0, outputIsHdr ? 1 : 0);
-        ReleaseDuplication();
-        return fail(reason);
-    }
-
+    // NOTE: ModeDesc.Format reflects the DISPLAY MODE, not necessarily the
+    // delivered surface format (real session 20260702_194424: ModeDesc said
+    // B8G8R8A8 while DuplicateOutput1 succeeded with an FP16/R10-only list).
+    // The first acquired frame's texture desc is the ground truth and is
+    // logged/validated in the capture loop.
     device_ = device;
     monitor_ = monitor;
+    monitorRect_ = outputDesc.DesktopCoordinates;
+    requireHighPrecision_ = requireHighPrecision;
+    outputIsHdr_ = outputIsHdr;
+    deliveredFormatLogged_ = false;
     width_ = duplDesc.ModeDesc.Width;
     height_ = duplDesc.ModeDesc.Height;
     format_ = duplDesc.ModeDesc.Format;
     desktopImageInSystemMemory_ = duplDesc.DesktopImageInSystemMemory != FALSE;
 
     LogInfo(
-        "[DXGIDup] Duplication created: output=%ls monitor=0x%p size=%ux%u format=%s rotation=%s "
-        "refresh=%u/%u systemMemory=%d requireHighPrecision=%d hdr=%d",
+        "[DXGIDup] Duplication created: output=%ls monitor=0x%p size=%ux%u modeDescFormat=%s rotation=%s "
+        "refresh=%u/%u systemMemory=%d requireHighPrecision=%d hdr=%d "
+        "(delivered frame format is ground truth, logged at first frame)",
         outputDesc.DeviceName, monitor, width_, height_, DupFormatName(format_), DupRotationName(duplDesc.Rotation),
         duplDesc.ModeDesc.RefreshRate.Numerator, duplDesc.ModeDesc.RefreshRate.Denominator,
         desktopImageInSystemMemory_ ? 1 : 0, requireHighPrecision ? 1 : 0, outputIsHdr ? 1 : 0);
@@ -271,6 +274,36 @@ void DxgiDuplicationSource::Stop() {
 
 void DxgiDuplicationSource::ReleaseDuplication() {
     DupSafeRelease(duplication_);
+}
+
+void DxgiDuplicationSource::UpdatePointerState(bool separatePointerVisible) {
+    // Embedded means: the cursor is showing inside this monitor, but the
+    // duplication reports no separate pointer — Windows composes the cursor
+    // into the desktop image (software cursor), so the frames already contain
+    // it and encoder-side composition must be suppressed (double cursor).
+    bool cursorShowingInMonitor = false;
+    CURSORINFO ci = {sizeof(CURSORINFO)};
+    if (GetCursorInfo(&ci)) {
+        cursorShowingInMonitor = (ci.flags & CURSOR_SHOWING) != 0 && PtInRect(&monitorRect_, ci.ptScreenPos) != FALSE;
+    }
+    const bool embedded = cursorShowingInMonitor && !separatePointerVisible;
+
+    const bool prevSeparate = separatePointerVisible_.exchange(separatePointerVisible, std::memory_order_relaxed);
+    const bool prevEmbedded = cursorEmbeddedInFrames_.exchange(embedded, std::memory_order_relaxed);
+    if (prevSeparate != separatePointerVisible || prevEmbedded != embedded) {
+        const uint64_t transitions = pointerStateTransitions_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (transitions <= 16 || (transitions % 100ull) == 0ull) {
+            LogInfo(
+                "[DXGIDup] Cursor plane state changed: separatePointer=%d embedded=%d cursorInMonitor=%d "
+                "(%s) transitions=%llu",
+                separatePointerVisible ? 1 : 0, embedded ? 1 : 0, cursorShowingInMonitor ? 1 : 0,
+                separatePointerVisible
+                    ? "hardware cursor plane active; encoder-side cursor composition draws the cursor"
+                    : (embedded ? "software/composed cursor embedded in frames; encoder-side composition suppressed"
+                                : "cursor hidden or on another monitor"),
+                static_cast<unsigned long long>(transitions));
+        }
+    }
 }
 
 void DxgiDuplicationSource::CaptureThreadFunc() {
@@ -331,6 +364,13 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
 
         consecutiveAcquireFailures_.store(0, std::memory_order_relaxed);
 
+        // Pointer info is refreshed on any desktop update that includes mouse
+        // state (also pointer-only updates). This is the live hardware/software
+        // cursor-plane detector and drives encoder-side cursor suppression.
+        if (frameInfo.LastMouseUpdateTime.QuadPart != 0) {
+            UpdatePointerState(frameInfo.PointerPosition.Visible != FALSE);
+        }
+
         if (frameInfo.ProtectedContentMaskedOut) {
             const uint64_t maskedCount = protectedContentMaskedFrameCount_.fetch_add(1, std::memory_order_relaxed) + 1;
             if (maskedCount <= 3 || (maskedCount % 1000ull) == 0ull) {
@@ -363,6 +403,26 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
         if (resource && SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&texture))) && texture) {
             D3D11_TEXTURE2D_DESC desc = {};
             texture->GetDesc(&desc);
+            if (!deliveredFormatLogged_) {
+                deliveredFormatLogged_ = true;
+                const uint32_t contentBits =
+                    ce::capture_policy::GetDxgiDuplicationSourceContentBits(static_cast<uint32_t>(desc.Format));
+                LogInfo(
+                    "[DXGIDup] First frame delivered: format=%s modeDescFormat=%s sourceContentBits=%u "
+                    "requireHighPrecision=%d hdr=%d",
+                    DupFormatName(desc.Format), DupFormatName(format_), contentBits, requireHighPrecision_ ? 1 : 0,
+                    outputIsHdr_ ? 1 : 0);
+                if (requireHighPrecision_ && contentBits <= 8) {
+                    LogWarn(
+                        "[DXGIDup] Explicit 10-bit output requested but the composed desktop delivers %u-bit "
+                        "content; encoding stays 10-bit (upconversion). This equals the true precision of the "
+                        "desktop image (WGC monitor capture of the same desktop carries no more), and keeps the "
+                        "duplication backend (hardware cursor preserved) instead of falling back to WGC.",
+                        contentBits);
+                }
+                // ModeDesc was only a display-mode hint; track the ground truth.
+                format_ = desc.Format;
+            }
             if (desc.Width != width_ || desc.Height != height_) {
                 LogWarn("[DXGIDup] Desktop size changed from %ux%u to %ux%u", width_, height_, desc.Width,
                         desc.Height);
@@ -395,10 +455,13 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
     }
 
     LogInfo("[DXGIDup] Capture thread exiting (delivered=%llu timeouts=%llu cursorOnly=%llu accumulatedMissed=%llu "
-            "protectedMasked=%llu)",
+            "protectedMasked=%llu separatePointer=%d cursorEmbedded=%d pointerStateTransitions=%llu)",
             static_cast<unsigned long long>(deliveredFrameCount_.load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(acquireTimeoutCount_.load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(cursorOnlyUpdateCount_.load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(accumulatedMissedFrameCount_.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(protectedContentMaskedFrameCount_.load(std::memory_order_relaxed)));
+            static_cast<unsigned long long>(protectedContentMaskedFrameCount_.load(std::memory_order_relaxed)),
+            separatePointerVisible_.load(std::memory_order_relaxed) ? 1 : 0,
+            cursorEmbeddedInFrames_.load(std::memory_order_relaxed) ? 1 : 0,
+            static_cast<unsigned long long>(pointerStateTransitions_.load(std::memory_order_relaxed)));
 }

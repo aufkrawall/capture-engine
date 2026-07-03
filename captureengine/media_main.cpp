@@ -488,6 +488,7 @@ bool MediaVideoConfigEquals(const VideoConfig& lhs, const VideoConfig& rhs) {
 
 bool MediaEngineConfigEquals(const AppConfig& lhs, const AppConfig& rhs) {
     if (lhs.logLevel != rhs.logLevel || lhs.captureMethod != rhs.captureMethod ||
+        lhs.autoFullscreenPrefersDxgiDup != rhs.autoFullscreenPrefersDxgiDup ||
         lhs.wgcSkipSplitDeviceFlush != rhs.wgcSkipSplitDeviceFlush ||
         lhs.wgcSameDeviceCapture != rhs.wgcSameDeviceCapture ||
         lhs.wgcSmoothnessBufferEnabled != rhs.wgcSmoothnessBufferEnabled ||
@@ -998,6 +999,29 @@ static void StopInjectCapturePipeline() {
     ResetInjectFrameRingToLatest("inject pipeline stop");
 }
 
+// Duplication embedded-cursor suppression: while duplicated frames already
+// CONTAIN the cursor (software/composed cursor reported by the dup pointer
+// metadata), encoder-side cursor composition must be suppressed to avoid a
+// double cursor. Polled cheaply on the encoder thread per submitted frame;
+// the state only changes on hardware/software cursor-plane transitions.
+static std::atomic<bool> g_DupCursorSuppressionActive{false};
+
+static void SyncDuplicationCursorSuppression() {
+    bool suppress = false;
+    if (g_WgcCap && g_WgcCap->IsUsingDesktopDuplication()) {
+        suppress = g_WgcCap->IsDuplicationCursorEmbedded();
+    }
+    if (suppress == g_DupCursorSuppressionActive.load(std::memory_order_relaxed)) {
+        return;
+    }
+    g_DupCursorSuppressionActive.store(suppress, std::memory_order_relaxed);
+    if (MediaEngine_SetCursorCompositionSuppressed) {
+        MediaEngine_SetCursorCompositionSuppressed(suppress);
+    }
+    LogInfo("[Media] Encoder cursor composition %s (duplication frames %s the cursor)",
+            suppress ? "suppressed" : "active", suppress ? "already contain" : "do not contain");
+}
+
 static void StopWgcCapturePipeline() {
     if (g_WgcCap) {
         g_WgcCap->SetDirectFrameCallback(nullptr);
@@ -1092,6 +1116,8 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
         g_WgcCap->SetDirectFrameCallback(nullptr);
     }
     g_WgcCap->ResetStats();
+    // Fresh encoder instances start unsuppressed; keep the poll state in sync.
+    g_DupCursorSuppressionActive.store(false, std::memory_order_relaxed);
     g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
     g_WgcAdaptiveTargetFps.store(initialWgcTargetFps, std::memory_order_relaxed);
     // CFR WGC asks the compositor for bounded steady-state source headroom, and
@@ -2397,7 +2423,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 "decSoft=%u decHard=%u decCredit=%u softPress=%u hardPress=%u | "
                 "KMFail: %u/%u | Flush: %u/%u | "
                 "Dedicated: %d | Encode: %lldus | Fence: %lldus | Throttle: %u | Mux: %uKB | Overload: 0x%X | "
-                "Backend: %s DupIdleTimeouts: %llu DupMissed: %llu",
+                "Backend: %s DupIdleTimeouts: %llu DupMissed: %llu DupHwCursor: %d DupCursorEmbedded: %d "
+                "DupPtrTransitions: %llu",
                 inputFrames, queuedFrames, hostDropDelta, pacingSkipDelta, throttleSkipDelta, staleSkipDelta,
                 staleDuplicateTsDelta, staleOutOfOrderTsDelta, normalizedDuplicateTsDelta, duplicateTsSkipDelta,
                 cursorSkipDelta, poolDropDelta, ingressDecimatedDelta, static_cast<uint32_t>(g_FrameQueue.Size()),
@@ -2432,7 +2459,10 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 (muxQueueBytes + 1023u) / 1024u, overloadFlags,
                 g_WgcCap->IsUsingDesktopDuplication() ? "DxgiDuplication" : "WGC",
                 static_cast<unsigned long long>(g_WgcCap->GetDuplicationAcquireTimeoutCount()),
-                static_cast<unsigned long long>(g_WgcCap->GetDuplicationAccumulatedMissedFrameCount()));
+                static_cast<unsigned long long>(g_WgcCap->GetDuplicationAccumulatedMissedFrameCount()),
+                g_WgcCap->IsDuplicationSeparatePointerVisible() ? 1 : 0,
+                g_WgcCap->IsDuplicationCursorEmbedded() ? 1 : 0,
+                static_cast<unsigned long long>(g_WgcCap->GetDuplicationPointerStateTransitionCount()));
 
             lastInputCount = currentInputCount;
             lastCallbackCount = currentCount;
@@ -8285,6 +8315,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                             }
 
                             const int64_t catchupTimelineElapsedUs = computeLiveTimelineElapsedUs(repeatScheduledQpc);
+                            SyncDuplicationCursorSuppression();
                             if (!MediaEngine_ProcessFrameD3D11(g_LastFrame.texture, g_LastFrame.timestamp,
                                                                g_LastFrame.width, g_LastFrame.height, g_LastFrame.isHDR,
                                                                g_LastFrame.captureLeft, g_LastFrame.captureTop,
@@ -8583,6 +8614,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 } else {
                     const int64_t liveTimelineElapsedUs =
                         scheduledLiveCfrTick ? computeLiveTimelineElapsedUs(scheduledSampleQpc) : -1;
+                    SyncDuplicationCursorSuppression();
                     encodeSucceeded = MediaEngine_ProcessFrameD3D11(frameToProcess->texture, frameToProcess->timestamp,
                                                                     frameToProcess->width, frameToProcess->height,
                                                                     frameToProcess->isHDR, frameToProcess->captureLeft,
@@ -10975,6 +11007,47 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         return true;
     };
 
+    // Fullscreen-game duplication priming: capture the MONITOR that hosts the
+    // game window through DXGI duplication so the live hardware cursor plane
+    // is preserved (WGC sessions demote the cursor to DWM-composed rendering;
+    // see wgc-capture.md). Caller falls back to WGC window capture on failure
+    // (cross-adapter or rotated output).
+    auto primeDxgiDupForWindowMonitor = [&](HWND targetWindow, const char* reason) -> bool {
+        if (isExplicitInjectConfig() || !targetWindow) {
+            return false;
+        }
+
+        HMONITOR targetMonitor = MonitorFromWindow(targetWindow, MONITOR_DEFAULTTONEAREST);
+        if (!targetMonitor) {
+            return false;
+        }
+
+        if (!ensureWgcDevice()) {
+            return false;
+        }
+
+        g_WgcCap.reset();
+        g_WgcCap = std::make_unique<WGCCapture>();
+        applyWgcOptions();
+        if (!g_WgcCap->InitForMonitorDuplication(d3dDevice, targetMonitor)) {
+            LogWarn("[Media] DXGI duplication unavailable for fullscreen target's monitor "
+                    "(%s hwnd=0x%p hmon=0x%p); using WGC window capture instead",
+                    reason, targetWindow, targetMonitor);
+            g_WgcCap.reset();
+            return false;
+        }
+
+        g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
+        g_WgcCap->SetThrottleFlag(nullptr);
+        SetPreferredScreenGrab(true);
+        currentCapturedWindow = NULL;
+        currentTargetPrefersInject = false;
+        LogInfo("[Media] Auto mode: fullscreen game target captured via DXGI duplication of its monitor "
+                "(hardware cursor preserved) (%s hwnd=0x%p hmon=0x%p)",
+                reason, targetWindow, targetMonitor);
+        return true;
+    };
+
     auto primeWgcWindowTarget = [&](HWND targetWindow, bool logPrimed, bool allowMonitorFallback = true) -> bool {
         if (isExplicitInjectConfig()) {
             return false;
@@ -11153,6 +11226,13 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         if (isAutoCaptureConfig()) {
             if (sourcePid != 0) {
                 HWND hGameWindow = GetMainWindowForProcess(sourcePid);
+                if (hGameWindow &&
+                    ce::capture_policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(
+                        isAutoCaptureConfig(), isExplicitInjectConfig(), injectWhitelisted,
+                        IsWindowFullscreenLike(hGameWindow), config.autoFullscreenPrefersDxgiDup) &&
+                    primeDxgiDupForWindowMonitor(hGameWindow, "unhooked source window")) {
+                    return;
+                }
                 if (hGameWindow && primeWgcWindowTarget(hGameWindow, false, false)) {
                     LogInfo("[Media] Auto mode: %s is not on the inject whitelist; WGC window capture selected",
                             processName.empty() ? "target" : processName.c_str());
@@ -11165,6 +11245,12 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             if (ce::capture_policy::ShouldPreferForegroundFullscreenWindowForAutoWgc(
                     isAutoCaptureConfig(), isExplicitInjectConfig(), injectWhitelisted, sourcePid != 0,
                     matchedConfiguredWgcWindow, foregroundCandidate.usable, foregroundCandidate.fullscreenLike)) {
+                if (ce::capture_policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(
+                        isAutoCaptureConfig(), isExplicitInjectConfig(), injectWhitelisted,
+                        foregroundCandidate.fullscreenLike, config.autoFullscreenPrefersDxgiDup) &&
+                    primeDxgiDupForWindowMonitor(foregroundCandidate.hwnd, "foreground fullscreen window")) {
+                    return;
+                }
                 if (primeWgcWindowTarget(foregroundCandidate.hwnd, false, false)) {
                     LogInfo("[Media] Auto mode: no source PID; foreground fullscreen WGC window capture selected "
                             "(pid=%lu process=%s hwnd=0x%p)",
@@ -11448,7 +11534,13 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     LogInfo("[Media] Injection whitelist matched %s; using inject capture", procName.c_str());
                 } else if (!g_Recording && isAutoCaptureConfig()) {
                     HWND hGameWindow = GetMainWindowForProcess(currentSourcePid);
-                    if (hGameWindow && primeWgcWindowTarget(hGameWindow, false, false)) {
+                    if (hGameWindow &&
+                        ce::capture_policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(
+                            isAutoCaptureConfig(), isExplicitInjectConfig(), injectWhitelisted,
+                            IsWindowFullscreenLike(hGameWindow), config.autoFullscreenPrefersDxgiDup) &&
+                        primeDxgiDupForWindowMonitor(hGameWindow, "unhooked connected source window")) {
+                        // Selected duplication of the game's monitor.
+                    } else if (hGameWindow && primeWgcWindowTarget(hGameWindow, false, false)) {
                         LogInfo("[Media] Auto mode: %s is not on the inject whitelist; WGC window capture selected",
                                 procName.c_str());
                     } else if (primeWgcMonitorTarget()) {
