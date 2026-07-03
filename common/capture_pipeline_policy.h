@@ -988,6 +988,18 @@ inline bool ShouldUseWgcMaxRateForRecovery(const WgcAdaptiveTelemetry& telemetry
         return false;
     }
 
+    // When the source delivers above the output target on average, per-tick
+    // fresh-frame misses are DWM delivery burstiness, not true source starvation.
+    // Max-rate WGC doesn't fix delivery gaps — DWM still controls the frame
+    // pipeline. Keep the producer throttled to avoid futile max-rate cycling.
+    const bool sourceAboveTarget = telemetry.recentDeliveredMin250Fps > 0 &&
+                                   telemetry.recentDeliveredMin250Fps >= telemetry.outputFps &&
+                                   telemetry.recentInputMin250Fps > 0 &&
+                                   telemetry.recentInputMin250Fps >= telemetry.outputFps;
+    if (sourceAboveTarget) {
+        return false;
+    }
+
     if (lowSourceModeActive || liveRecoveryModeActive) {
         return true;
     }
@@ -1030,6 +1042,16 @@ inline bool ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(const WgcAdaptiveTe
         return false;
     }
 
+    // When the source delivers above the output target on average, empty-tick
+    // permille is delivery burstiness, not underfeed — keep the cap.
+    const bool sourceAboveTarget = telemetry.recentDeliveredMin250Fps > 0 &&
+                                   telemetry.recentDeliveredMin250Fps >= telemetry.outputFps &&
+                                   telemetry.recentInputMin250Fps > 0 &&
+                                   telemetry.recentInputMin250Fps >= telemetry.outputFps;
+    if (sourceAboveTarget) {
+        return false;
+    }
+
     const bool inputBelowOutput =
         telemetry.recentInputMin250Fps > 0 &&
         telemetry.recentInputMin250Fps + kWgcRecoverySourceMarginFps < telemetry.outputFps;
@@ -1050,6 +1072,17 @@ inline bool ShouldRestoreWgcOvercaptureCap(const WgcAdaptiveTelemetry& telemetry
                                            uint64_t requiredStableMs = kWgcCfrOvercaptureStableRestoreMs) {
     if (telemetry.outputFps == 0 || stableDurationMs < requiredStableMs) {
         return false;
+    }
+
+    // When the source delivers above the output target on all recent windows,
+    // per-tick fresh misses are DWM delivery burstiness, not source starvation.
+    // Restore the cap so the producer is throttled to a realistic rate.
+    const bool sourceAboveTarget = telemetry.recentDeliveredMin250Fps >= telemetry.outputFps &&
+                                   telemetry.recentDeliveredMin500Fps >= telemetry.outputFps &&
+                                   telemetry.recentInputMin250Fps >= telemetry.outputFps &&
+                                   telemetry.recentInputMin500Fps >= telemetry.outputFps;
+    if (sourceAboveTarget) {
+        return true;
     }
 
     return telemetry.recentDeliveredMin250Fps >= telemetry.outputFps &&

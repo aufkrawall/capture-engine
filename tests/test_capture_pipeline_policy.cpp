@@ -646,9 +646,13 @@ TEST(CapturePipelinePolicyTest, WgcOvercaptureSwitchesToMaxRateDuringRecovery) {
     telemetry.recentInputMin500Fps = 122;
 
     EXPECT_FALSE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, 20, false, false));
-    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, 20, true, false));
-    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, 20, false, true));
-    EXPECT_TRUE(
+
+    // When source delivers above the output target on average, per-tick fresh
+    // misses and recovery-mode flags are DWM delivery burstiness, not starvation.
+    // Max-rate is futile — DWM still controls the frame pipeline.
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, 20, true, false));
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, 20, false, true));
+    EXPECT_FALSE(
         policy::ShouldUseWgcMaxRateForRecovery(telemetry, policy::kWgcLowSourceEmptyTickPermille, false, false));
 
     telemetry.recentInputMin250Fps = 119;
@@ -703,7 +707,9 @@ TEST(CapturePipelinePolicyTest, WgcCappedActiveDelayUnderfeedUsesMaxRateRecovery
 
     telemetry.recentDeliveredMin250Fps = 122;
     telemetry.emptyTickPermille = policy::kWgcLowSourceEmptyTickPermille;
-    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
+    // Source delivers above target (122 >= 120) — empty-tick permille is delivery
+    // burstiness, not underfeed. Keep the cap.
+    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
         telemetry, /*delayReservoirBelowLowWater=*/true, /*producerCapped=*/true));
 }
 
@@ -733,7 +739,9 @@ TEST(CapturePipelinePolicyTest, WgcOvercaptureRestoresOnlyAfterStableFreshSource
     EXPECT_FALSE(policy::ShouldRestoreWgcOvercaptureCap(telemetry, 20, 2500));
 
     telemetry.recentInputMin250Fps = 122;
-    EXPECT_FALSE(policy::ShouldRestoreWgcOvercaptureCap(telemetry, 80, 2500));
+    // Source delivers above target — per-tick fresh misses are DWM delivery
+    // burstiness, not starvation. Restore the cap.
+    EXPECT_TRUE(policy::ShouldRestoreWgcOvercaptureCap(telemetry, 80, 2500));
 }
 
 TEST(CapturePipelinePolicyTest, AdaptiveEncoderGpuPriorityUsesBudgetHysteresis) {
