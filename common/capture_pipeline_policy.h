@@ -118,6 +118,8 @@ constexpr double kWgcAudioLeadCatchupThresholdMs = 40.0;
 // smoothness.
 constexpr uint32_t kWgcCfrOvercaptureHeadroomPermille = 1250;
 constexpr uint32_t kWgcCfrOvercaptureStableRestoreMs = 2000;
+constexpr uint32_t kWgcAdaptiveCapUnderfeedWaitMs = 3000;
+constexpr uint32_t kWgcAdaptiveCapHeadroomFps = 5;
 constexpr double kEncoderGpuPriorityRaiseBudgetRatio = 0.75;
 constexpr double kEncoderGpuPriorityRestoreBudgetRatio = 0.50;
 constexpr uint32_t kEncoderOverloadFlagEncoder = 1u;
@@ -872,6 +874,17 @@ inline uint32_t GetWgcCfrOvercaptureTargetFps(uint32_t outputFps,
     return static_cast<uint32_t>((static_cast<uint64_t>(outputFps) * headroomPermille + 999ull) / 1000ull);
 }
 
+inline uint32_t ComputeWgcAdaptiveCappedTargetFps(uint32_t outputFps,
+                                                   uint32_t sourceMin250Fps,
+                                                   uint32_t originalOvercaptureFps,
+                                                   uint32_t headroomFps = kWgcAdaptiveCapHeadroomFps) {
+    if (sourceMin250Fps == 0 || outputFps == 0) {
+        return 0;
+    }
+    uint32_t candidate = std::max(outputFps, sourceMin250Fps + headroomFps);
+    return std::min(candidate, originalOvercaptureFps);
+}
+
 inline bool ShouldRaiseAdaptiveEncoderGpuPriority(double encodeMs, double frameIntervalMs,
                                                   double raiseBudgetRatio = kEncoderGpuPriorityRaiseBudgetRatio) {
     return encodeMs > 0.0 && frameIntervalMs > 0.0 && encodeMs >= frameIntervalMs * raiseBudgetRatio;
@@ -1522,7 +1535,8 @@ inline bool ShouldEnterWgcLiveRecoveryMode(const WgcAdaptiveTelemetry& telemetry
 }
 
 inline bool ShouldExitWgcLiveRecoveryMode(const WgcAdaptiveTelemetry& telemetry, uint32_t outputShortfallTicks,
-                                          bool encoderBottlenecked) {
+                                          bool encoderBottlenecked,
+                                          bool stableUnderfeedExit = false) {
     if (telemetry.outputFps == 0) {
         return true;
     }
@@ -1531,16 +1545,38 @@ inline bool ShouldExitWgcLiveRecoveryMode(const WgcAdaptiveTelemetry& telemetry,
         return false;
     }
 
+    // When low-source mode exits via stable underfeed (source consistently below target
+    // but delivering steadily), also exit live-recovery to let the overcapture cap
+    // restore at an adaptive rate matching actual source capability.
+    if (stableUnderfeedExit) {
+        return true;
+    }
+
     return !ShouldEnterWgcLowSourceMode(telemetry) && telemetry.bufferedWgcFrames <= 4;
 }
 
 inline bool ShouldExitWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry, bool encoderTooSlowForTarget = false,
-                                       bool bufferedReserveRecovered = false) {
+                                       bool bufferedReserveRecovered = false,
+                                       uint64_t durationInModeMs = 0) {
     if (telemetry.outputFps == 0) {
         return true;
     }
 
     if (!encoderTooSlowForTarget && bufferedReserveRecovered) {
+        return true;
+    }
+
+    // Stable underfeed exit: if the source has been delivering below target for a long
+    // period without starvation, treat this as the steady state and exit low-source mode
+    // so the overcapture cap can be restored to an adaptive rate matching actual capability.
+    constexpr uint64_t kStableUnderfeedExitMs = 5000;
+    if (durationInModeMs >= kStableUnderfeedExitMs &&
+        telemetry.recentDeliveredMin250Fps > 0 &&
+        telemetry.recentDeliveredMin500Fps > 0 &&
+        telemetry.recentInputMin250Fps > 0 &&
+        telemetry.recentInputMin500Fps > 0 &&
+        telemetry.emptyTickPermille <= kWgcLowSourceExitEmptyTickPermille &&
+        telemetry.bufferedWgcFrames <= 4) {
         return true;
     }
 
