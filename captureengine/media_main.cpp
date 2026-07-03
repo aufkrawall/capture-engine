@@ -5765,7 +5765,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                         if (stableWgcUnderfeed && !inWgcWarmup) {
                             const uint32_t adaptiveCap =
                                 ce::capture_policy::ComputeWgcAdaptiveCappedTargetFps(
-                                    outputFps, wgcRecentInputMin250Fps, overcaptureTargetFps);
+                                    outputFps, wgcRecentInputMin250Fps, overcaptureTargetFps,
+                                    ce::capture_policy::kWgcAdaptiveCapHeadroomFps, wgcRecentDeliveredFps);
                             if (adaptiveCap > 0) {
                                 desiredTargetFps = adaptiveCap;
                                 desiredThrottleMode = WgcAdaptiveThrottleMode::kHeadroom125;

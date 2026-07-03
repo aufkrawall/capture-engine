@@ -877,11 +877,19 @@ inline uint32_t GetWgcCfrOvercaptureTargetFps(uint32_t outputFps,
 inline uint32_t ComputeWgcAdaptiveCappedTargetFps(uint32_t outputFps,
                                                    uint32_t sourceMin250Fps,
                                                    uint32_t originalOvercaptureFps,
-                                                   uint32_t headroomFps = kWgcAdaptiveCapHeadroomFps) {
+                                                   uint32_t headroomFps = kWgcAdaptiveCapHeadroomFps,
+                                                   uint32_t sourceAvgFps = 0) {
     if (sourceMin250Fps == 0 || outputFps == 0) {
         return 0;
     }
-    uint32_t candidate = std::max(outputFps, sourceMin250Fps + headroomFps);
+    // Never cap below the source's actual average delivery rate. Capping below
+    // the source interval (e.g. 120fps MinUpdateInterval with 140fps VRR game)
+    // causes WGC to gate every ~other frame (8.33ms min-interval rejects 7.1ms
+    // input) → effective delivery is HALVED to ~70fps instead of 120fps.
+    const uint32_t effectiveSourceRate =
+        sourceAvgFps > 0 ? std::max(sourceMin250Fps, sourceAvgFps) : sourceMin250Fps;
+    const uint32_t floorFps = std::min(std::max(effectiveSourceRate, outputFps), originalOvercaptureFps);
+    uint32_t candidate = std::max(floorFps, effectiveSourceRate + headroomFps);
     return std::min(candidate, originalOvercaptureFps);
 }
 
