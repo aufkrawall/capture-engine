@@ -2711,21 +2711,23 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 // no-callback latch is stale and the backbuffer route is safe again (FSR->off recovery).
                 const bool liveSwapchainQueueIsOriginalGameQueue = DX12_IsLiveSwapchainQueueOriginalGameQueue();
                 // SUSPEND SIGNAL: native FSR FG explicitly disabled while AMD still owns the swapchain (no-callback
-                // suspension — AMD keeps the swapchain but is NOT interpolating). The crash boundary is the
-                // interpolation pacing path, so the backbuffer submit is safe again during a suspension.
+                // suspension — AMD keeps the swapchain but is NOT interpolating). NOTE (session 20260703_210021):
+                // the backbuffer submit is NOT safe during a suspension after all — AMD stops flushing its
+                // runtime queue while suspended, so CE's overlay GPU-completion fence never signals and this
+                // present stalls ~1s (app → ~1 fps). So the route keeps a runtime-owned suspension on the BUNDLE
+                // (kSkipBundleCovers), same as active FG; the backbuffer is reached only once the game owns its
+                // OWN native swapchain again (liveSwapchainQueueIsOriginalGameQueue). This flag no longer relaxes
+                // the route toward the backbuffer.
                 const bool fsrFGDisabledSuspendPending = DX12_IsNativeFSRFGSuspendedDisablePending();
-                // AMD is ACTIVELY interpolating on its own runtime queue only when runtime-owned, NOT suspended,
-                // and the live queue is AMD's separate FG queue (not origGame). That is the only state where the
-                // backbuffer submit is forbidden.
+                // Defensive guard-rail signal: AMD actively interpolating on its own FG queue (runtime-owned, NOT
+                // suspended, live queue is AMD's separate FG queue). The route never yields kMinimalBackbuffer for
+                // ANY runtime-owned state now, so reaching the backbuffer branch here would be a logic regression.
                 const bool amdActivelyInterpolatingOnFGQueue =
                     runtimeOwnsSwapchain && !fsrFGDisabledSuspendPending && !liveSwapchainQueueIsOriginalGameQueue;
                 // bundleOverlayActivelyFiring is hardwired false: the fenced composite is driven ONLY from the
-                // kSkipBundleCovers arm below, so there is no independent "AMD is compositing the UI resource"
-                // signal apart from active interpolation — which the route decides BEFORE this arg is consulted
-                // (runtimeOwns && !suspend && !origGame). In every state where the route DOES consult firing
-                // (suspension / non-runtime-owned / stale-latch), AMD is NOT cleanly compositing the UI resource,
-                // so the correct + safe choice is the backbuffer route. Passing true would self-sustain the
-                // composite across a suspension (AMD stops compositing there) and blank the overlay.
+                // kSkipBundleCovers arm below, and while AMD owns the swapchain the route selects kSkipBundleCovers
+                // regardless of this arg (active OR suspended). It is consulted only in the non-runtime-owned
+                // escape hatch, where AMD does not own the swapchain and the backbuffer is genuinely safe.
                 const ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute noCallbackRoute =
                     ce::dx12_overlay_policy::ChooseNoCallbackFSRFGOverlayRoute(
                         runtimeOwnsSwapchain, liveSwapchainQueueIsOriginalGameQueue, fsrFGDisabledSuspendPending,

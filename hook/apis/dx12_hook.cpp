@@ -4381,16 +4381,17 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
             static std::atomic<int> s_internalNoCallbackRouteLogCount{0};
             const int logCount = s_internalNoCallbackRouteLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 300) == 0) {
-                // Attribute WHY the bundle is no longer covering so an FSR-FG suspend/stale-latch backbuffer
-                // fallback is distinguishable in the trace (session 20260703_204119 had the overlay blank the
-                // whole suspension because this branch never ran — the skip decision wrongly relied on the
-                // stale cached-UI-texture latch).
+                // This branch (skip=false under no-callback composition) is reached ONLY when the bundle is
+                // truly gone: a STALE latch after the game recreated its own native swapchain (live queue back
+                // on origGame → backbuffer on the game's own queue is safe), or no UI resource was ever cached.
+                // A no-callback SUSPENSION does NOT reach here — it keeps skip=true (the bundle composite draws
+                // on CE's own fenced queue; the backbuffer submit would stall the app to ~1 fps, session
+                // 20260703_210021).
                 const bool uiCached = DX12_IsFFXUiResourceCachedForBundle();
                 const bool liveIsOrigGame = DX12_IsLiveSwapchainQueueOriginalGameQueue();
-                const char* fallbackReason = explicitNativeFSROffPending ? "no-callback FSR suspension"
-                                             : liveIsOrigGame            ? "stale no-callback latch (live queue back on origGame)"
-                                             : !uiCached                 ? "no UI resource registered"
-                                                                         : "no-callback composition";
+                const char* fallbackReason = liveIsOrigGame ? "stale no-callback latch (live queue back on origGame)"
+                                             : !uiCached     ? "no UI resource registered"
+                                                             : "no-callback composition";
                 HookLogImportant(
                     "DX12: Native FSR no-callback composition — allowing normal/backbuffer overlay rendering "
                     "(%s) (runtime=%s apiFSR=%d nativeFGPath=%d runtimeOwns=%d explicitNativeOff=%d uiCached=%d "
