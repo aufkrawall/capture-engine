@@ -2888,6 +2888,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t wgcHeldFreshFrameTickCount = 0;
     uint32_t cfrCatchupTicksExecuted = 0;
     int64_t wgcWarmupUntilQpc = 0;
+    int64_t wgcBiasAccumQpc = 0;
+    uint32_t wgcBiasClampCount = 0;
     uint32_t wgcReserveSpendTickCount = 0;
     uint32_t wgcStaleUniqueFallbackCount = 0;
     uint32_t wgcRepeatNoFreshCount = 0;
@@ -5897,8 +5899,20 @@ void EncoderThreadFunc(const AppConfig& config) {
                             ? clampWgcSelectionTargetQpc(computeDelayedWgcSelectionTargetQpc(),
                                                          selectionNowQpc.QuadPart)
                             : 0;
-                    const int64_t effectiveSelectionTargetQpc =
+                    int64_t effectiveSelectionTargetQpc =
                         wgcSelectionDelayAppliedThisTick ? delayedSelectionTargetQpc : liveSelectionTargetQpc;
+                    if (wgcLowSourceModeActive && !inWgcWarmup && targetIntervalTicks > 0 &&
+                        !bufferedWgcFrames.empty()) {
+                        const int64_t newestQpc = GetFrameSelectionTimestamp(bufferedWgcFrames.back());
+                        if (newestQpc > 0 && effectiveSelectionTargetQpc > newestQpc + targetIntervalTicks) {
+                            const int64_t drift = effectiveSelectionTargetQpc - (newestQpc + targetIntervalTicks);
+                            wgcBiasAccumQpc += drift;
+                            effectiveSelectionTargetQpc = newestQpc + targetIntervalTicks;
+                            ++wgcBiasClampCount;
+                        } else if (wgcBiasAccumQpc > 0) {
+                            wgcBiasAccumQpc = std::max<int64_t>(0, wgcBiasAccumQpc - targetIntervalTicks * 2);
+                        }
+                    }
                     const bool useInjectParityDelayPacing = wgcSelectionDelayAppliedThisTick &&
                                                             isWgcEffectiveContentDelayActive() &&
                                                             config.wgcActiveDelayUniformCadence;
@@ -9787,7 +9801,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             LogInfo(
                 "[WGC CFR SUMMARY] Live=%llu Dup=%llu DupPct=%.1f%% NoFresh=%llupm NoReserve=%llupm DupReason(src=%llu "
                 "def=%llu timer=%llu drain=%llu) SourceLimitedRepeats=%llu StarvedEpisodes=%llu AntiFreezeFloor=%llu "
-                "AntiFreezeFloorSkippedSync=%llu longest=%llums longestDup=%llu longestContiguousDup=%llu (%llums) "
+                "AntiFreezeFloorSkippedSync=%llu BiasClampCount=%llu longest=%llums longestDup=%llu longestContiguousDup=%llu (%llums) "
                 "worstIn=%u "
                 "worstDel=%u",
                 static_cast<unsigned long long>(liveTicksOutput),
@@ -9802,6 +9816,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(captureSessionSummary.starvedEpisodes),
                 static_cast<unsigned long long>(wgcUniformAntiFreezeFloorTotal),
                 static_cast<unsigned long long>(wgcUniformAntiFreezeFloorSkippedSyncTotal),
+                static_cast<unsigned long long>(wgcBiasClampCount),
                 static_cast<unsigned long long>(captureSessionSummary.longestStarvedEpisodeMs),
                 static_cast<unsigned long long>(captureSessionSummary.longestStarvedEpisodeDuplicateTicks),
                 static_cast<unsigned long long>(captureSessionSummary.longestContiguousDupTicks),
