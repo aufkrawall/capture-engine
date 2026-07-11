@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-11 (capture reliability audit plus durable startup-cached FFX export routing, exact owner-queue suspension visibility, protected-breakpoint retirement, and configure-transition dedupe; see wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, frame-generation/guardrails.md, and log/recent.md)
+Last cross-checked: 2026-07-11 (capture reliability audit plus durable startup-cached FFX routing, exact owner-queue suspension visibility, and pre-enable post-FSR Streamline overlay prewarm; see wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, frame-generation/guardrails.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`

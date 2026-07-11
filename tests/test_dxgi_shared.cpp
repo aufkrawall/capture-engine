@@ -5311,6 +5311,23 @@ TEST(DXGISharedTest, WarmDX12OverlayBackendReuseIsDeviceAndFormatScoped) {
     EXPECT_FALSE(CanReuseWarmDX12OverlayBackend(true, true, true, false));
 }
 
+TEST(DXGISharedTest, FreshPostFSRStreamlineHandoffPrewarmsBeforeDLSSActivation) {
+    using ce::dx12_overlay_policy::ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff;
+
+    // The replacement Streamline proxy queue and buffers exist, the retiring FSR route had a fully live overlay,
+    // and DLSS has not been enabled yet: prepare the new swapchain-scoped state before its first generated Present.
+    EXPECT_TRUE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, true, true, false, true, true));
+
+    // Pure-DLSS cold start retains its stricter guards. A non-authoritative/reused queue, already-running DLSS,
+    // no live prior overlay, non-runtime ownership, or a non-DX12 swapchain cannot use this preparation window.
+    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, false, true, false, true, true));
+    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(false, true, true, false, true, true));
+    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, true, false, false, true, true));
+    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, true, true, true, true, true));
+    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, true, true, false, false, true));
+    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, true, true, false, true, false));
+}
+
 TEST(DXGISharedTest, ExplicitEnablePureDLSSColdStartProofShape) {
     using ce::dx12_overlay_policy::HasExplicitEnablePureDLSSColdStartProof;
 

@@ -3657,6 +3657,10 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
 // Rule: When acquiring multiple locks, always acquire in order above.
 //       Use std::lock_guard with std::adopt_lock when using try_lock().
 static std::recursive_mutex g_OverlayMutex;
+
+static bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapChain,
+                                                           ID3D12CommandQueue* swapchainQueue,
+                                                           const char* context);
 static std::recursive_mutex g_DX12CaptureMutex;
 
 static OverlayConfig GetActiveDX12OverlayConfig(SharedMemoryLayout* shm) {
@@ -8395,10 +8399,10 @@ static bool IsDX12Swapchain(IDXGISwapChain* pSwapChain) {
     return true;
 }
 
-static void InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(const char* context,
-                                                                        ID3D12CommandQueue* newSwapchainQueue,
-                                                                        ID3D12CommandQueue* previousSwapchainQueue,
-                                                                        ID3D12CommandQueue* originalGameQueue) {
+static bool InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(const char* context,
+                                                                         ID3D12CommandQueue* newSwapchainQueue,
+                                                                         ID3D12CommandQueue* previousSwapchainQueue,
+                                                                         ID3D12CommandQueue* originalGameQueue) {
     ID3D12CommandQueue* lockedQueue = nullptr;
     ID3D12CommandQueue* lastWorkingQueue = nullptr;
     {
@@ -8453,8 +8457,11 @@ static void InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(const ch
         SetPostSLLastWorkingQueue(nullptr);
     }
 
+    bool overlayWasLive = false;
+    bool overlaySwapchainStateRetired = false;
     if (g_State.overlayInit || g_State.syncInit) {
         std::lock_guard<std::recursive_mutex> overlayLock(g_OverlayMutex);
+        overlayWasLive = g_State.overlayInit && g_State.syncInit && g_OverlayAdapter.IsInitialized();
         const bool preserveLiveOverlayDuringHandoff =
             ce::dx12_overlay_policy::ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
                 s_startupOverlayCompatSettled.load(std::memory_order_acquire),
@@ -8470,16 +8477,23 @@ static void InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(const ch
                 "(source=%s newScQueue=%p prevScQueue=%p origGame=%p)",
                 context ? context : "unknown", newSwapchainQueue, previousSwapchainQueue, originalGameQueue);
         } else {
+            // The adapter is device/format scoped and does not retain swapchain buffers or submit through its
+            // initialization queue. Keep it warm while retiring only the old swapchain-scoped RTV/sync state.
+            // The fresh post-FSR Streamline handoff can then prewarm the replacement state before DLSS is enabled,
+            // rather than rebuilding the backend inside the first generated Present.
+            g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(), std::memory_order_release);
             g_State.overlayInit = false;
             g_State.syncInit = false;
             g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
             CleanupRTVs();
+            overlaySwapchainStateRetired = true;
             HookLogImportant(
-                "DX12: Fresh authoritative Streamline handoff invalidated PostSL swapchain resources "
-                "(source=%s newScQueue=%p prevScQueue=%p)",
-                context ? context : "unknown", newSwapchainQueue, previousSwapchainQueue);
+                "DX12: Fresh authoritative Streamline handoff invalidated PostSL swapchain resources while "
+                "preserving the warm device-scoped backend (source=%s newScQueue=%p prevScQueue=%p live=%d)",
+                context ? context : "unknown", newSwapchainQueue, previousSwapchainQueue, overlayWasLive ? 1 : 0);
         }
     }
+    return overlayWasLive && overlaySwapchainStateRetired;
 }
 
 static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pSwapChain, const char* context,
@@ -8552,8 +8566,16 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
                 DX12_RetainStreamlineStartupActivationSwapchain(pSwapChain,
                                                                 "DX12: fresh authoritative Streamline handoff");
             }
-            InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(context, pQueue, currentSwapchainQueue,
-                                                                        currentOriginalGameQueue);
+            const bool retiredLiveOverlayState = InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(
+                context, pQueue, currentSwapchainQueue, currentOriginalGameQueue);
+            const bool prewarmPostSL =
+                ce::dx12_overlay_policy::ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(
+                    freshAuthoritativeStreamlineHandoff, g_HadFSRFGPhase, DXGIShared::DoesFGRuntimeOwnSwapchain(),
+                    DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), retiredLiveOverlayState,
+                    IsDX12Swapchain(pSwapChain));
+            if (prewarmPostSL) {
+                PrewarmPostSLOverlayForFreshStreamlineHandoff(pSwapChain, pQueue, context);
+            }
             DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(true, std::memory_order_release);
             DXGIShared::ArmStreamlineStartupTransitionWindow();
             StreamlineHook::OnAuthoritativeStreamlineStartupHandoff();
@@ -11593,6 +11615,101 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
         queueDevice->Release();
         queueDevice = nullptr;
     }
+}
+
+static bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapChain,
+                                                           ID3D12CommandQueue* swapchainQueue,
+                                                           const char* context) {
+    if (!swapChain || !swapchainQueue) {
+        return false;
+    }
+
+    DXGI_SWAP_CHAIN_DESC desc = {};
+    const HRESULT descHr = swapChain->GetDesc(&desc);
+    if (FAILED(descHr) || desc.BufferCount == 0 || desc.BufferCount > 8) {
+        HookLogImportant(
+            "DX12: PostSL handoff prewarm refused invalid swapchain description "
+            "(source=%s sc=%p queue=%p hr=0x%08X buffers=%u)",
+            context ? context : "unknown", swapChain, swapchainQueue, (unsigned)descHr, desc.BufferCount);
+        return false;
+    }
+
+    ID3D12Device* queueDevice = nullptr;
+    const HRESULT deviceHr = swapchainQueue->GetDevice(IID_PPV_ARGS(&queueDevice));
+    IDXGISwapChain3* swapChain3 = nullptr;
+    const HRESULT sc3Hr = swapChain->QueryInterface(IID_PPV_ARGS(&swapChain3));
+    if (FAILED(deviceHr) || !queueDevice || FAILED(sc3Hr) || !swapChain3) {
+        HookLogImportant(
+            "DX12: PostSL handoff prewarm missing exact queue/swapchain prerequisites "
+            "(source=%s sc=%p queue=%p deviceHr=0x%08X sc3Hr=0x%08X)",
+            context ? context : "unknown", swapChain, swapchainQueue, (unsigned)deviceHr, (unsigned)sc3Hr);
+        if (swapChain3) {
+            swapChain3->Release();
+        }
+        if (queueDevice) {
+            queueDevice->Release();
+        }
+        return false;
+    }
+
+    const ULONGLONG startedMs = GetTickCount64();
+    bool ready = false;
+    bool overlayInit = false;
+    bool syncInit = false;
+    ID3D12DescriptorHeap* rtvHeap = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> overlayLock(g_OverlayMutex);
+        const HRESULT deviceReason = queueDevice->GetDeviceRemovedReason();
+        if (SUCCEEDED(deviceReason)) {
+            // The adapter owns only device/format-scoped objects. Reuse it even when the Streamline proxy uses a
+            // different queue, then create the new swapchain RTVs and allocator/fence set without recording or
+            // submitting an overlay draw. This completes before slDLSSGSetOptions(ON), so the first generated
+            // Present cannot race a backend shutdown/rebuild.
+            g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(),
+                                                        std::memory_order_release);
+            g_State.cachedWidth = desc.BufferDesc.Width;
+            g_State.cachedHeight = desc.BufferDesc.Height;
+            g_State.format = desc.BufferDesc.Format;
+
+            const bool backendReady =
+                InitImGui(queueDevice, static_cast<int>(desc.BufferCount), desc.BufferDesc.Format, desc.OutputWindow);
+            if (backendReady) {
+                CreateRTVs(queueDevice, swapChain3, static_cast<int>(desc.BufferCount));
+                if (g_State.rtvDescHeap) {
+                    InitOverlaySync(queueDevice, static_cast<int>(desc.BufferCount), swapchainQueue);
+                }
+            }
+            ready = backendReady && g_State.overlayInit && g_State.syncInit && g_State.rtvDescHeap &&
+                    g_State.cmdList && !g_State.allocators.empty();
+            if (!ready && !g_State.rtvDescHeap) {
+                // Make the normal first-PostSL bootstrap retry the complete swapchain-scoped setup. Preserve the
+                // warm adapter if initialization itself succeeded; InitImGui will reuse it on that retry.
+                g_State.overlayInit = false;
+                g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(),
+                                                            std::memory_order_release);
+            }
+            overlayInit = g_State.overlayInit;
+            syncInit = g_State.syncInit;
+            rtvHeap = g_State.rtvDescHeap;
+        } else {
+            HookLogImportant(
+                "DX12: PostSL handoff prewarm refused removed device "
+                "(source=%s device=%p hr=0x%08X)",
+                context ? context : "unknown", queueDevice, (unsigned)deviceReason);
+        }
+    }
+
+    HookLogImportant(
+        "DX12: PostSL handoff prewarm %s before DLSS enable "
+        "(source=%s sc=%p queue=%p device=%p fmt=%d buffers=%u elapsed=%llums init=%d sync=%d rtv=%p)",
+        ready ? "READY" : "INCOMPLETE", context ? context : "unknown", swapChain, swapchainQueue, queueDevice,
+        static_cast<int>(desc.BufferDesc.Format), desc.BufferCount,
+        static_cast<unsigned long long>(GetTickCount64() - startedMs), overlayInit ? 1 : 0, syncInit ? 1 : 0,
+        rtvHeap);
+
+    swapChain3->Release();
+    queueDevice->Release();
+    return ready;
 }
 
 static bool DrainCommandQueue(ID3D12CommandQueue* queue, ID3D12Device* device) {

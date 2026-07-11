@@ -774,6 +774,19 @@ inline bool CanReuseWarmDX12OverlayBackend(bool preserveRequested, bool adapterI
     return preserveRequested && adapterInitialized && deviceMatches && formatMatches;
 }
 
+// A fresh Streamline proxy created after an FSR phase has a short, uniquely safe preparation window: the
+// authoritative proxy queue and buffers already exist, but DLSS FG has not been enabled yet. If the overlay was
+// live on the retiring route, prepare the new swapchain-scoped RTV/synchronization objects in that window so the
+// first PostSL Present only records the overlay draw. This is intentionally limited to the proven post-FSR
+// handoff; cold pure-DLSS startup must retain its stricter initialization guards.
+inline bool ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(bool freshAuthoritativeStreamlineHandoff,
+                                                            bool hadFSRFGPhase, bool runtimeOwnsSwapchain,
+                                                            bool streamlineFGRunning, bool overlayWasLive,
+                                                            bool isDX12Swapchain) {
+    return freshAuthoritativeStreamlineHandoff && hadFSRFGPhase && runtimeOwnsSwapchain && !streamlineFGRunning &&
+           overlayWasLive && isDX12Swapchain;
+}
+
 // PRINCIPLE: a live overlay is never blanked by an FG transition. The
 // FG-transition draw cooldown suppresses the normal-route overlay draw for ~60
 // frames "to let the runtime stabilize", but when the overlay backend is
