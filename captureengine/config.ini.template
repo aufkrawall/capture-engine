@@ -34,10 +34,9 @@ wgc_window_detection=(
 ; WGC performance options. wgc_same_device_capture=true should have lowest overhead.
 wgc_same_device_capture=true
 ;wgc_skip_split_device_flush=false
-; false preserves >8-bit WGC source precision through the FP16 staging pool. true permits a
-; lossy BGRA8 staging pool only for non-explicit/auto bit-depth capture to reduce VRAM;
-; explicit bit_depth=10 never permits the BGRA8 intermediate.
-;wgc_prefer_compact_10bit_pool=false
+; Permit a lower-VRAM but lossy BGRA8 WGC source pool only in auto/non-explicit bit-depth
+; mode. Explicit 10-bit and HDR always preserve the high-precision FP16 source path.
+;wgc_allow_lossy_bgra8_pool=false
 ; wgc_active_delay_uniform_cadence=true: with an active A/V content delay, prefer uniform
 ; CFR cadence over per-tick delay-reservoir defense so a GPU-bound under-delivering source
 ; does not produce abnormal judder; the realized content delay floats gracefully.

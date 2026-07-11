@@ -439,10 +439,11 @@ private:
     AVPixelFormat GetActiveD3D11SwFormat() const;
     bool PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3D11Texture2D* dstTexture, bool overlayCursor,
                                       int captureOriginX = 0, int captureOriginY = 0,
-                                      bool allowCursorHandleVisibilityFallback = false);
+                                      bool allowCursorHandleVisibilityFallback = false,
+                                      uint64_t keyedMutexAcquireKey = 0);
     bool ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool cursorVisible = false,
                            int cursorX = 0, int cursorY = 0, bool allowDirectInputView = true,
-                           int captureOriginX = 0, int captureOriginY = 0);
+                           int captureOriginX = 0, int captureOriginY = 0, uint64_t keyedMutexAcquireKey = 0);
     bool CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture);
     bool EnsureSwapRBShader();
     ID3D11Texture2D* RenderFullscreenCopy(ID3D11Texture2D* input, uint32_t w, uint32_t h, DXGI_FORMAT inputSrvFormat,

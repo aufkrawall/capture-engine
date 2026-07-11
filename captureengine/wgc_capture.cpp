@@ -797,7 +797,7 @@ public:
     std::atomic<bool> resetNeeded_{false};
     bool skipSplitDeviceFlush_ = false;
     bool sameDeviceCapture_ = false;
-    bool preferCompact10bitPool_ = true;
+    bool allowLossyBgra8Pool_ = false;
     bool smoothnessBufferEnabled_ = true;
     uint32_t smoothnessOutputFps_ = 0;
     uint32_t smoothnessMaxMs_ = ce::capture_policy::kWgcSmoothnessBufferDefaultMaxMs;
@@ -1888,13 +1888,18 @@ public:
             usingDedicatedCaptureDevice_ && encoderDevice_ && d3dDevice_ && encoderDevice_ != d3dDevice_;
         const DXGI_FORMAT retainedFormat = GetRetainedPoolFormat(sourceFormat);
         const bool compactRetainedCopy = IsCompactRetainedCopy(sourceFormat, retainedFormat);
+        // Duplication surfaces are presentation-owned resources.  Always
+        // rewrite them through the retained-copy shader so VP/NVENC consume a
+        // canonical CE-owned render target instead of inheriting the desktop
+        // producer dependency through a raw CopyResource.
+        const bool canonicalRetainedCopy = compactRetainedCopy || useDuplicationBackend_;
         UpdateSmoothnessBudget(width, height, sourceFormat, false);
         const uint32_t desiredSlots = std::max<uint32_t>(1u, texturePoolSlotCount_);
         if (poolWidth_ == (int32_t)width && poolHeight_ == (int32_t)height && poolSourceFormat_ == sourceFormat &&
             poolFormat_ == retainedFormat &&
             texturePool_.size() == desiredSlots && !texturePool_.empty() && texturePool_[0] &&
             (!splitDevicePool || (!captureTexturePool_.empty() && captureTexturePool_[0])) &&
-            (!compactRetainedCopy || (!poolRenderTargetViews_.empty() && poolRenderTargetViews_[0]))) {
+            (!canonicalRetainedCopy || (!poolRenderTargetViews_.empty() && poolRenderTargetViews_[0]))) {
             return true;
         }
 
@@ -1963,7 +1968,7 @@ public:
                 }
             }
 
-            if (compactRetainedCopy) {
+            if (canonicalRetainedCopy) {
                 ID3D11Texture2D* renderTarget = captureTexturePool_[i] ? captureTexturePool_[i] : texturePool_[i];
                 hr = d3dDevice_->CreateRenderTargetView(renderTarget, nullptr, &poolRenderTargetViews_[i]);
                 if (FAILED(hr) || !poolRenderTargetViews_[i]) {
@@ -1986,13 +1991,14 @@ public:
         poolWriteIndex_.store(0, std::memory_order_relaxed);
 
         LogInfo(
-            "[WGC] Texture pool created: %dx%d sourceFmt=%s retainedFmt=%s compactRetained=%d "
+            "[WGC] Texture pool created: %dx%d sourceFmt=%s retainedFmt=%s compactRetained=%d dupCanonical=%d "
             "sourceFramePoolBuffers=%u copyPoolSlots=%u budgetSurfaces=%u "
             "syncFrames=%u extraFrames=%u retainedCap=%u reservedFreeSlots=%u safetySlots=%u estimatedSmooth=%lluMB "
             "sourceBudget=%.1fMB copyBudget=%.1fMB convertLast=%lldus "
             "generation=%llu (%s)",
             width, height, DxgiFormatName(sourceFormat), DxgiFormatName(retainedFormat),
-            compactRetainedCopy ? 1 : 0, sourceFramePoolBufferCount_, desiredSlots, smoothnessBudgetSurfaceCount_,
+            compactRetainedCopy ? 1 : 0, useDuplicationBackend_ ? 1 : 0, sourceFramePoolBufferCount_, desiredSlots,
+            smoothnessBudgetSurfaceCount_,
             smoothnessSyncDelayFrames_, smoothnessRetainedFrames_, smoothnessRetainedFrameCap_,
             smoothnessReservedFreeSlots_, smoothnessSafetySlots_,
             static_cast<unsigned long long>((smoothnessEstimatedVramBytes_ + 1024ull * 1024ull - 1ull) /
@@ -2171,9 +2177,10 @@ public:
             QueryPerformanceCounter(&copyStart);
 
             const bool compactRetainedCopy = IsCompactRetainedCopy(sourceDesc.Format, poolFormat_);
+            const bool canonicalRetainedCopy = compactRetainedCopy || useDuplicationBackend_;
             bool usedConversionStaging = false;
             bool copySucceeded = true;
-            if (compactRetainedCopy) {
+            if (canonicalRetainedCopy) {
                 const bool linearToSrgb =
                     ce::video_format::ShouldApplySdrLinearToSrgbBeforeRgb10(sourceDesc.Format, captureIsHDR_);
                 ID3D11RenderTargetView* targetRtv =
@@ -2190,7 +2197,9 @@ public:
                     d3dContext_->Flush();
                     splitDeviceFlushCount_.fetch_add(1, std::memory_order_relaxed);
                 }
-                const HRESULT releaseHr = writeMutex->ReleaseSync(0);
+                // Producer owns key 0 and publishes completed work with key 1.
+                // The encoder consumes key 1 and returns key 0.
+                const HRESULT releaseHr = writeMutex->ReleaseSync(1);
                 if (releaseHr != S_OK) {
                     keyedMutexReleaseFailCount_.fetch_add(1, std::memory_order_relaxed);
                     LogWarn("[WGC] Shared texture ReleaseSync failed for slot %u: 0x%08lX", idx,
@@ -2222,7 +2231,7 @@ public:
             if (qpcFreq_ > 0) {
                 copyUs = ((copyEnd.QuadPart - copyStart.QuadPart) * 1000000) / qpcFreq_;
             }
-            if (compactRetainedCopy) {
+            if (canonicalRetainedCopy) {
                 lastPoolConvertUs_.store(copyUs, std::memory_order_relaxed);
             } else {
                 lastPoolConvertUs_.store(0, std::memory_order_relaxed);
@@ -2268,11 +2277,13 @@ public:
             if (copiedLog <= 8 || (copiedLog % 1000u) == 0u) {
                 LogInfo(
                     "[WGC] Pool frame copied: slot=%u generation=%llu copyUs=%lld sourceQpc=%lld rawQpc=%lld "
-                    "sourceFmt=%s retainedFmt=%s compactRetained=%d staging=%d convertUs=%lld leasedMax=%u freeMin=%u",
+                    "sourceFmt=%s retainedFmt=%s compactRetained=%d dupCanonical=%d staging=%d "
+                    "copyCpuSubmitUs=%lld convertCpuSubmitUs=%lld timingBasis=cpu_wall "
+                    "leasedMax=%u freeMin=%u",
                     idx, static_cast<unsigned long long>(poolGeneration), static_cast<long long>(copyUs),
                     static_cast<long long>(sourceFrameQpc), static_cast<long long>(rawSourceFrameQpc),
                     DxgiFormatName(sourceDesc.Format), DxgiFormatName(poolFormat_), compactRetainedCopy ? 1 : 0,
-                    usedConversionStaging ? 1 : 0,
+                    useDuplicationBackend_ ? 1 : 0, usedConversionStaging ? 1 : 0, static_cast<long long>(copyUs),
                     static_cast<long long>(lastPoolConvertUs_.load(std::memory_order_relaxed)),
                     leaseState ? leaseState->leasedMax.load(std::memory_order_relaxed) : 0u,
                     leaseState ? leaseState->freeMin.load(std::memory_order_relaxed) : 0u);
@@ -3078,13 +3089,13 @@ public:
                 // supports the BGRA8/FP16 family). One attempt is kept above for
                 // future Windows versions; no buffer-count retry ladder.
                 bool resolved = false;
-                if (preferCompact10bitPool_ &&
+                if (allowLossyBgra8Pool_ &&
                     ce::capture_policy::ShouldAllowBgra8WgcFallback(requireHighPrecisionCapture_, captureIsHDR_)) {
                     // BGRA8 as a compact pool format (4bpp instead of FP16's
                     // 8bpp), halving VRAM per source surface. Encoding stays
                     // 10-bit P010 (8-bit source content, transparent upconvert).
                     LogInfo("[WGC] R10 frame pool unsupported by WGC (API-level), "
-                            "trying compact BGRA8 pool (wgc_prefer_compact_10bit_pool=true)");
+                            "trying lossy BGRA8 pool (wgc_allow_lossy_bgra8_pool=true)");
                     const winrt::DirectXPixelFormat bgraFormat = winrt::DirectXPixelFormat::B8G8R8A8UIntNormalized;
                     const DXGI_FORMAT bgraDxgi = DXGI_FORMAT_B8G8R8A8_UNORM;
                     if (tryCreateFramePool(bgraFormat)) {
@@ -3630,6 +3641,11 @@ bool WGCCapture::InitForMonitorDuplication(ID3D11Device* device, void* hmonitor)
         return false;
     }
     device_ = device;
+    // Keep AcquireNextFrame/ReleaseFrame and canonicalization off the encoder
+    // immediate context.  The dedicated device is created on the exact same
+    // adapter and crosses into the encoder only through keyed pool surfaces.
+    impl_->sameDeviceCapture_ = false;
+    LogInfo("[DXGIDup] Dedicated same-adapter capture device required for duplication isolation");
     if (!impl_->InitializeDevices(device_)) {
         LogError("[WGC] Failed to initialize capture devices for duplication capture");
         return false;
@@ -4628,7 +4644,7 @@ void WGCCapture::ForceReset() {
         const uint32_t smoothnessSyncDelayFrames = impl_->smoothnessSyncDelayFrames_;
         const bool skipSplitDeviceFlush = impl_->skipSplitDeviceFlush_;
         const bool sameDeviceCapture = impl_->sameDeviceCapture_;
-        const bool preferCompact10bitPool = impl_->preferCompact10bitPool_;
+        const bool allowLossyBgra8Pool = impl_->allowLossyBgra8Pool_;
         const bool requireHighPrecisionCapture = impl_->requireHighPrecisionCapture_;
         const bool allowDuplicationFallback = impl_->allowDuplicationFallback_;
         const uint32_t targetFps = impl_->targetFps_;
@@ -4652,8 +4668,8 @@ void WGCCapture::ForceReset() {
         impl_->smoothnessVramBudgetMb_ = smoothnessVramBudgetMb;
         impl_->smoothnessSyncDelayFrames_ = smoothnessSyncDelayFrames;
         impl_->skipSplitDeviceFlush_ = skipSplitDeviceFlush;
-        impl_->sameDeviceCapture_ = sameDeviceCapture;
-        impl_->preferCompact10bitPool_ = preferCompact10bitPool;
+        impl_->sameDeviceCapture_ = wasDuplicationBackend ? false : sameDeviceCapture;
+        impl_->allowLossyBgra8Pool_ = allowLossyBgra8Pool;
         impl_->requireHighPrecisionCapture_ = requireHighPrecisionCapture;
         impl_->allowDuplicationFallback_ = allowDuplicationFallback;
         impl_->targetFps_ = targetFps;
@@ -4719,10 +4735,14 @@ void WGCCapture::SetSkipSplitDeviceFlush(bool enabled) {
 void WGCCapture::SetSameDeviceCapture(bool enabled) {
 #if HAS_WGC
     if (impl_) {
-        const bool changed = impl_->sameDeviceCapture_ != enabled;
-        impl_->sameDeviceCapture_ = enabled;
+        const bool effectiveEnabled = impl_->useDuplicationBackend_ ? false : enabled;
+        const bool changed = impl_->sameDeviceCapture_ != effectiveEnabled;
+        impl_->sameDeviceCapture_ = effectiveEnabled;
         if (changed && impl_->d3dDevice_) {
             impl_->FlagResetNeeded("same-device capture option changed");
+        }
+        if (impl_->useDuplicationBackend_ && enabled) {
+            LogInfo("[DXGIDup] Ignoring WGC same-device option; duplication isolation remains dedicated");
         }
     }
 #else
@@ -4730,10 +4750,10 @@ void WGCCapture::SetSameDeviceCapture(bool enabled) {
 #endif
 }
 
-void WGCCapture::SetPreferCompact10bitPool(bool enabled) {
+void WGCCapture::SetAllowLossyBgra8Pool(bool enabled) {
 #if HAS_WGC
     if (impl_) {
-        impl_->preferCompact10bitPool_ = enabled;
+        impl_->allowLossyBgra8Pool_ = enabled;
     }
 #else
     (void)enabled;

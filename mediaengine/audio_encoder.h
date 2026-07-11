@@ -16,6 +16,12 @@ extern "C" {
 
 class AudioEncoder {
 public:
+    struct EncodeResult {
+        int64_t acceptedSamples = 0;
+        int64_t submittedSamples = 0;
+        bool failed = false;
+    };
+
     AudioEncoder();
     ~AudioEncoder();
 
@@ -39,11 +45,11 @@ public:
     // Provide raw PCM data (supports S16, S24, S32, Float from WASAPI)
     // validBitsPerSample: 0 means same as bitsPerSample (from
     // WAVEFORMATEXTENSIBLE) blockAlign: bytes per frame
-    void EncodeSamples(const uint8_t* data, int sizeBytes, int channels, int sampleRate, int bitsPerSample,
-                       int validBitsPerSample, int blockAlign, bool isFloat, uint32_t channelMask,
-                       int64_t timestamp);
-    void EncodeSamples(const uint8_t* data, int sizeBytes, int channels, int sampleRate, int bitsPerSample,
-                       int validBitsPerSample, int blockAlign, bool isFloat, int64_t timestamp);
+    EncodeResult EncodeSamples(const uint8_t* data, int sizeBytes, int channels, int sampleRate, int bitsPerSample,
+                               int validBitsPerSample, int blockAlign, bool isFloat, uint32_t channelMask,
+                               int64_t timestamp);
+    EncodeResult EncodeSamples(const uint8_t* data, int sizeBytes, int channels, int sampleRate, int bitsPerSample,
+                               int validBitsPerSample, int blockAlign, bool isFloat, int64_t timestamp);
 
     void SetStreamIndex(int index);  // Now flushes buffered packets
 

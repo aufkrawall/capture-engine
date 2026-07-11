@@ -506,7 +506,7 @@ public:
                 const bool optionalUnstarted = ce::audio::IsOptionalUnstartedAppAudioSource(
                     isAppAudioSource, src.timelineValid, src.sawSyncPendingPackets);
                 const bool sparseStartedSourceCanSilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
-                    true, isAppAudioSource, src.bootstrapComplete, optionalUnstarted, true);
+                    true, src.timelineValid, src.bootstrapComplete, optionalUnstarted, true);
                 const bool strictSource = src.sourceType != AudioConfig::Microphone;
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
                 const bool sparseStartedSourceMaySilence = ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
@@ -2829,7 +2829,9 @@ public:
                 const bool srcReady = ce::audio::IsSourceBootstrapReady(
                     src.bootstrapComplete, src.timelineValid, src.isPrimed, isAppAudioSource, bufferedRealSamples,
                     requiredBootstrapSamples, src.sawSyncPendingPackets);
-                trackReadyForBootstrap = trackReadyForBootstrap && srcReady;
+                const bool packetlessSilenceReady = ce::audio::ShouldBootstrapPacketlessSourceAsSilence(
+                    isCfrRecording, src.timelineValid, bufferedRealSamples, targetSamples, requiredBootstrapSamples);
+                trackReadyForBootstrap = trackReadyForBootstrap && (srcReady || packetlessSilenceReady);
             }
 
             if (!trackBootstrapComplete[track]) {
@@ -2935,7 +2937,7 @@ public:
                 const bool optionalUnstarted = ce::audio::IsOptionalUnstartedAppAudioSource(
                     isAppAudioSource, src.timelineValid, src.sawSyncPendingPackets);
                 const bool sparseStartedSourceCanSilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
-                    isCfrRecording, isAppAudioSource, src.bootstrapComplete, optionalUnstarted, finalStopDrain);
+                    isCfrRecording, src.timelineValid, src.bootstrapComplete, optionalUnstarted, finalStopDrain);
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
                 constexpr int64_t kSparseStartedPartialSilenceThresholdSamples =
                     ce::audio::kDefaultAudioPullQuantumSamples * 4;
@@ -2960,7 +2962,7 @@ public:
                     bufferedTimelineSamples < static_cast<size_t>(std::max<int64_t>(samplesToEncode, 0)) &&
                     dropLogCounter++ % 500 == 0) {
                     DLL_Log(
-                        "[PullAudio] App source gap silence: track=%d src=%zu buffered=%zu requested=%lld "
+                        "[PullAudio] Timeline source gap silence: track=%d src=%zu buffered=%zu requested=%lld "
                         "target=%lldms encoded=%lld. Source contributes available samples plus silence for missing "
                         "range.",
                         track, srcIdx, bufferedTimelineSamples, samplesToEncode, trackAudioTargetMs,
@@ -4036,10 +4038,22 @@ public:
                 // start
                 int64_t audioChunkTimestampMs = (trackCursorSamples * 1000) / SAMPLE_RATE;
 
-                encoder->EncodeSamples(encodeData.data(), (int)encodeData.size(), CHANNELS, SAMPLE_RATE, 32, 32,
-                                       CHANNELS * 4,
-                                       true,  // float32
-                                       CHANNEL_MASK, audioChunkTimestampMs);
+                const AudioEncoder::EncodeResult encodeResult = encoder->EncodeSamples(
+                    encodeData.data(), (int)encodeData.size(), CHANNELS, SAMPLE_RATE, 32, 32, CHANNELS * 4,
+                    true,  // float32
+                    CHANNEL_MASK, audioChunkTimestampMs);
+                if (encodeResult.failed || encodeResult.acceptedSamples != samplesToEncode) {
+                    DLL_Log(
+                        "[PullAudio] ERROR: Track %d encoder acceptance mismatch: requested=%lld accepted=%lld "
+                        "submitted=%lld failed=%d cursor=%lld target=%lld",
+                        track, static_cast<long long>(samplesToEncode),
+                        static_cast<long long>(encodeResult.acceptedSamples),
+                        static_cast<long long>(encodeResult.submittedSamples), encodeResult.failed ? 1 : 0,
+                        static_cast<long long>(trackCursorSamples), static_cast<long long>(targetSamples));
+                }
+                samplesToEncode = encodeResult.failed
+                                      ? 0
+                                      : std::min<int64_t>(samplesToEncode, encodeResult.acceptedSamples);
 
                 if (srcIndices.size() > 1 && mixLogCounter++ % 5000 == 0) {
                     DLL_Log("[PullAudio] Mixed %d sources for track %d (%lld samples)", activeSources, track,

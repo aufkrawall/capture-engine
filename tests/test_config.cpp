@@ -85,7 +85,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_TRUE(config.wgcSmoothnessBufferEnabled);
     EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 300u);
     EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 3000u);
-    EXPECT_FALSE(config.wgcPreferCompact10bitPool);
+    EXPECT_FALSE(config.wgcAllowLossyBgra8Pool);
     EXPECT_EQ(config.processPriority, "high");
     EXPECT_EQ(config.video.gpuPriority, 7);
     EXPECT_EQ(config.gpuSchedulingPriority, "off");
@@ -105,7 +105,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_enabled=true"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_max_ms=300"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_vram_budget_mb=3000"), std::string::npos);
-    EXPECT_NE(generatedText.find("wgc_prefer_compact_10bit_pool=false"), std::string::npos);
+    EXPECT_NE(generatedText.find("wgc_allow_lossy_bgra8_pool=false"), std::string::npos);
     EXPECT_NE(generatedText.find("gpu_scheduling_priority=off"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
@@ -228,6 +228,30 @@ TEST_F(ConfigTest, ParseWgcExperimentalFlags) {
     EXPECT_FALSE(config.wgcSmoothnessBufferEnabled);
     EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 125u);
     EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 512u);
+}
+
+TEST_F(ConfigTest, ParseCanonicalWgcLossyPoolOption) {
+    WriteConfig("[General]\nwgc_allow_lossy_bgra8_pool=true\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_TRUE(config.wgcAllowLossyBgra8Pool);
+}
+
+TEST_F(ConfigTest, DeprecatedCompactPoolAliasIsUsedOnlyWhenCanonicalOptionIsAbsent) {
+    WriteConfig("[General]\nwgc_prefer_compact_10bit_pool=true\n");
+    AppConfig legacyOnly;
+    LoadConfig(tempConfigFile, legacyOnly);
+    EXPECT_TRUE(legacyOnly.wgcAllowLossyBgra8Pool);
+
+    WriteConfig(
+        "[General]\n"
+        "wgc_prefer_compact_10bit_pool=true\n"
+        "wgc_allow_lossy_bgra8_pool=false\n");
+    AppConfig canonicalWins;
+    LoadConfig(tempConfigFile, canonicalWins);
+    EXPECT_FALSE(canonicalWins.wgcAllowLossyBgra8Pool);
 }
 
 TEST_F(ConfigTest, LegacyWgcAliasesNormalizeToWgc) {

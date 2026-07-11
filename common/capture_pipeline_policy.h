@@ -162,15 +162,15 @@ inline bool ShouldDiscardCfrTimerRebaseDebt(bool useScreenGrab) {
 }
 
 inline bool ShouldDrainOutstandingCfrTicksAtStop(bool useScreenGrab, bool useVFR) {
+    (void)useScreenGrab;
     if (useVFR) {
         return false;
     }
 
-    // WGC has its own live scheduler. If it is behind at stop, draining old
-    // slots with a cached frame creates the frozen video tail that users hear
-    // as audio continuing after the picture stopped. WGC debt must be handled
-    // while live by timestamp rebases and visual drops, not after stop.
-    return !useScreenGrab;
+    // Every accrued CFR tick is part of the immutable output timeline.  A
+    // backend-specific stop path must not silently discard late ticks; it may
+    // repeat the newest captured state to close the contiguous prefix.
+    return true;
 }
 
 inline bool ShouldUseInjectCaptureForAutoTarget(bool explicitInjectCapture, bool autoCapture,
@@ -261,13 +261,8 @@ inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useS
 
 inline bool CanDrainOutstandingWgcTicks(bool queuedWgcFrameAvailable, bool bufferedWgcFrameAvailable, bool hasLastFrame,
                                         bool mediaEngineCanRepeatLastFrame) {
-    (void)queuedWgcFrameAvailable;
-    (void)bufferedWgcFrameAvailable;
-    (void)hasLastFrame;
-    (void)mediaEngineCanRepeatLastFrame;
-    // WGC stop drain is intentionally disabled. A held-frame drain hides live
-    // scheduler debt by appending synthetic visual time after capture stop.
-    return false;
+    return queuedWgcFrameAvailable || bufferedWgcFrameAvailable ||
+           (hasLastFrame && mediaEngineCanRepeatLastFrame);
 }
 
 inline bool CanDrainOutstandingCfrTicks(bool useScreenGrab, bool queuedFrameAvailable, bool bufferedFrameAvailable,
@@ -1843,10 +1838,14 @@ inline uint32_t GetWgcLiveSchedulerRebaseTicksThisLoop(
 
 inline uint32_t GetWgcLiveSchedulerRebaseTicksThisLoopForMode(uint32_t requestedTicks, uint32_t outputShortfallTicks,
                                                               uint32_t excessTicks, bool encoderLimitedSmoothnessMode) {
-    return GetWgcLiveSchedulerRebaseTicksThisLoop(requestedTicks, outputShortfallTicks, excessTicks,
-                                                  encoderLimitedSmoothnessMode
-                                                      ? kWgcEncoderLimitedLiveSchedulerRebaseTicksPerLoop
-                                                      : kWgcMaxLiveSchedulerRebaseTicksPerLoop);
+    (void)requestedTicks;
+    (void)outputShortfallTicks;
+    (void)excessTicks;
+    (void)encoderLimitedSmoothnessMode;
+    // Rebase used to advance the scheduler grid without submitting packets.
+    // That made CFR metadata look current while punching real PTS holes. Keep
+    // visual source pruning separate, but never consume output ticks here.
+    return 0;
 }
 
 inline int64_t GetWgcLiveVisualDebtFloorQpc(int64_t liveNowQpc, int64_t targetIntervalTicks,

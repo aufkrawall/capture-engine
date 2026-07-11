@@ -860,10 +860,22 @@ inline bool ShouldWaitForFinalCfrSourceCatchup(bool isCfrRecording, bool strictS
     return bufferedTimelineSamples < static_cast<size_t>(requestedSamples);
 }
 
-inline bool ShouldTreatSparseStartedSourceAsSilence(bool isCfrRecording, bool isAppAudioSource,
+inline bool ShouldTreatSparseStartedSourceAsSilence(bool isCfrRecording, bool sourceTimelineValid,
                                                     bool sourceBootstrapComplete, bool optionalUnstartedSource,
                                                     bool finalStopDrain = false) {
-    return isCfrRecording && isAppAudioSource && sourceBootstrapComplete && !optionalUnstartedSource && !finalStopDrain;
+    (void)finalStopDrain;
+    // WASAPI loopback and microphone clients may legally produce no packets
+    // while silent.  Once their shared timeline is valid and bootstrap has
+    // completed, the missing interval is silence for every source type, not a
+    // reason to block a co-mixed track indefinitely.
+    return isCfrRecording && sourceTimelineValid && sourceBootstrapComplete && !optionalUnstartedSource;
+}
+
+inline bool ShouldBootstrapPacketlessSourceAsSilence(bool isCfrRecording, bool sourceTimelineValid,
+                                                      size_t bufferedRealSamples, int64_t targetTimelineSamples,
+                                                      size_t requiredRealSamples) {
+    return isCfrRecording && sourceTimelineValid && bufferedRealSamples == 0 && targetTimelineSamples > 0 &&
+           static_cast<uint64_t>(targetTimelineSamples) >= static_cast<uint64_t>(requiredRealSamples);
 }
 
 inline bool ShouldTreatStartedAppSourceShortfallAsSilence(bool sparseStartedSourceMaySilence,

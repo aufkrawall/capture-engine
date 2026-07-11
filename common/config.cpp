@@ -381,10 +381,10 @@ wgc_same_device_capture=true
 ; wgc_smoothness_buffer_vram_budget_mb - approximate WGC frame-pool + retained-copy
 ; budget for the smoothness reservoir. Raise only if there is enough VRAM headroom.
 ;wgc_smoothness_buffer_vram_budget_mb=3000
-; wgc_prefer_compact_10bit_pool=false: preserve >8-bit source precision with an FP16 WGC
+; wgc_allow_lossy_bgra8_pool=false: preserve >8-bit source precision with an FP16 WGC
 ; pool when R10 pools are unavailable. true permits a lossy BGRA8 source pool only for
 ; non-explicit/auto bit-depth capture; explicit bit_depth=10 always requires FP16/R10.
-;wgc_prefer_compact_10bit_pool=false
+;wgc_allow_lossy_bgra8_pool=false
 
 ; audio_capture_latency_ms - Render-endpoint (Domain 1) A/V sync offset (ms): how late the
 ; system loopback AND every app process-loopback source land vs the video. CE corrects this by
@@ -944,7 +944,21 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             config.wgcSmoothnessFloorMs = static_cast<uint32_t>(std::max(0, atoi(floorRaw.c_str())));
         }
     }
-    config.wgcPreferCompact10bitPool = GetBool("General", "wgc_prefer_compact_10bit_pool", false);
+    {
+        const std::string canonical = GetStr("General", "wgc_allow_lossy_bgra8_pool", "");
+        const std::string legacy = GetStr("General", "wgc_prefer_compact_10bit_pool", "");
+        if (!canonical.empty()) {
+            config.wgcAllowLossyBgra8Pool = ParseBool(canonical);
+            if (!legacy.empty()) {
+                LogWarn("[Config] Both wgc_allow_lossy_bgra8_pool and deprecated "
+                        "wgc_prefer_compact_10bit_pool are set; using the canonical option");
+            }
+        } else if (!legacy.empty()) {
+            config.wgcAllowLossyBgra8Pool = ParseBool(legacy);
+            LogWarn("[Config] wgc_prefer_compact_10bit_pool is deprecated; use "
+                    "wgc_allow_lossy_bgra8_pool instead");
+        }
+    }
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
     config.audioCaptureLatencyMs = GetFloat("General", "audio_capture_latency_ms", 0.0f);
     config.micCaptureLatencyMs = GetFloat("General", "mic_capture_latency_ms", 0.0f);

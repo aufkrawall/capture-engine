@@ -233,7 +233,7 @@ static void SnapshotWgcRuntimeLogState(const WGCCapture* cap) {
     g_WgcRuntimeLogSnapshot.copySurfaceBytes.store(cap->GetSmoothnessCopyBytesPerSurface(),
                                                   std::memory_order_relaxed);
     const int64_t convertUs = cap->GetLastPoolConvertTimeUs();
-    if (compact) {
+    if (compact || cap->IsUsingDesktopDuplication()) {
         if (convertUs > 0) {
             g_WgcRuntimeLogSnapshot.lastConvertUs.store(convertUs, std::memory_order_relaxed);
         }
@@ -533,7 +533,7 @@ bool MediaEngineConfigEquals(const AppConfig& lhs, const AppConfig& rhs) {
         lhs.wgcSmoothnessBufferEnabled != rhs.wgcSmoothnessBufferEnabled ||
         lhs.wgcSmoothnessBufferMaxMs != rhs.wgcSmoothnessBufferMaxMs ||
         lhs.wgcSmoothnessBufferVramBudgetMb != rhs.wgcSmoothnessBufferVramBudgetMb ||
-        lhs.wgcPreferCompact10bitPool != rhs.wgcPreferCompact10bitPool ||
+        lhs.wgcAllowLossyBgra8Pool != rhs.wgcAllowLossyBgra8Pool ||
         !MediaVideoConfigEquals(lhs.video, rhs.video) || lhs.audioSources.size() != rhs.audioSources.size()) {
         return false;
     }
@@ -1227,7 +1227,7 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
             config.video.captureCursor ? 1 : 0);
     capture->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
     capture->SetSameDeviceCapture(config.wgcSameDeviceCapture);
-    capture->SetPreferCompact10bitPool(config.wgcPreferCompact10bitPool);
+    capture->SetAllowLossyBgra8Pool(config.wgcAllowLossyBgra8Pool);
     const bool explicitTenBit = IsExplicitTenBitVideo(config.video);
     capture->SetRequireHighPrecisionCapture(explicitTenBit);
     capture->SetAllowDuplicationFallback(ce::capture_policy::ShouldAllowWgcFallbackAfterDxgiFailure(
@@ -2582,7 +2582,7 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 "KMFail: %u/%u | Flush: %u/%u | "
                 "Dedicated: %d | Encode: %lldus | Fence: %lldus | Throttle: %u | Mux: %uKB | Overload: 0x%X | "
                 "Backend: %s DupIdleTimeouts: %llu DupMissed: %llu DupHwCursor: %d DupCursorEmbedded: %d "
-                "DupPtrTransitions: %llu",
+                "DupPtrTransitions: %llu | TimingBasis: Copy/Convert/Encode/Fence=CPU-wall-or-submit",
                 inputFrames, queuedFrames, hostDropDelta, pacingSkipDelta, throttleSkipDelta, staleSkipDelta,
                 staleDuplicateTsDelta, staleOutOfOrderTsDelta, normalizedDuplicateTsDelta, duplicateTsSkipDelta,
                 cursorSkipDelta, poolDropDelta, ingressDecimatedDelta, static_cast<uint32_t>(g_FrameQueue.Size()),
@@ -10489,7 +10489,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "syncProtectedRepeats=%llu policyAddedRepeats=%llu excessRepeats=%llu "
                 "smoothDelayDeficitUs=%lld startupDelayDeficitUs=%lld "
                 "dupTsSeen=%u dupTsSkipped=%u encoderOverload=0x%X muxBackpressure=%u "
-                "compactRetained=%d sourceFmt=%u retainedFmt=%u convertUs=%lld "
+                "compactRetained=%d sourceFmt=%u retainedFmt=%u convertUs=%lld backend=%s timingBasis=cpu_wall "
                 "finalAvSync=exported_tracks_authoritative",
                 static_cast<double>(duplicatePermille) / 10.0,
                 static_cast<unsigned long long>(captureSessionSummary.duplicateTicks),
@@ -10509,7 +10509,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<long long>(wgcSummaryStartupDelayDeficitUs),
                 wgcSummaryDuplicateTimestampsSeen, wgcSummaryDuplicateTimestampsSkipped, wgcSummaryOverloadFlags,
                 wgcSummaryMuxBackpressure, wgcSummaryCompactRetained, wgcSummarySourceFormat, wgcSummaryRetainedFormat,
-                static_cast<long long>(wgcSummaryConvertUs));
+                static_cast<long long>(wgcSummaryConvertUs),
+                g_WgcCap && g_WgcCap->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc");
             LogInfo(
                 "[WGC CFR SOURCE COVERAGE] coverage=%s reason=%s bestEffort=%d outputFps=%u "
                 "duplicates=%llu/%llu sourceLimitedRepeats=%llu sourceRepeatLowerBound=%llu "
@@ -10904,8 +10905,8 @@ void StopRecording() {
     if (drainOutstandingCfrTicks && drainStopQpc > 0) {
         LogInfo("[Media] CFR stop drain armed at QPC=%lld path=%s", drainStopQpc,
                 IsActiveScreenGrab() ? "WGC" : "inject");
-    } else if (wasActiveScreenGrab && !recordingUsesVfr) {
-        LogInfo("[Media] WGC CFR exact-stop: generic stop drain disabled; live scheduler rebases own debt");
+    } else if (wasActiveScreenGrab && recordingUsesVfr) {
+        LogInfo("[Media] WGC VFR exact-stop: no CFR debt to drain");
     }
 
     StopWgcCapturePipeline();
@@ -11184,7 +11185,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
         capture->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
         capture->SetSameDeviceCapture(config.wgcSameDeviceCapture);
-        capture->SetPreferCompact10bitPool(config.wgcPreferCompact10bitPool);
+        capture->SetAllowLossyBgra8Pool(config.wgcAllowLossyBgra8Pool);
     };
 
     if (IsPreferredScreenGrab() || isAutoCaptureConfig()) {

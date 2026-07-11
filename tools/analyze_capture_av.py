@@ -6065,9 +6065,17 @@ def main():
     )
     parser.add_argument(
         "--full-scan",
+        dest="full_scan",
         action="store_true",
-        help="Use ffprobe frame-by-frame scans for exact frame deltas and decoded audio sample totals",
+        help="Use authoritative frame/packet scans (default)",
     )
+    parser.add_argument(
+        "--metadata-only",
+        dest="full_scan",
+        action="store_false",
+        help="Use faster informational stream metadata instead of exact decoded audio sample totals",
+    )
+    parser.set_defaults(full_scan=True)
     parser.add_argument(
         "--decode-check",
         action="store_true",

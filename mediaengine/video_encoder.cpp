@@ -392,37 +392,9 @@ int64_t ComputeTargetVideoPts(int64_t timestampUs, bool useVfr, int fps, int64_t
     }
 
     // Generic CFR/inject mode still owns one explicit encoder call per output
-    // slot here. WGC passes useExplicitCfrTimeline because its caller already
-    // computes the live CFR slot elapsed time and may intentionally skip stale
-    // visual debt without letting fresh frames occupy old timestamps.
+    // slot here. Screen capture passes useExplicitCfrTimeline because its
+    // caller computes the immutable live CFR slot elapsed time.
     return ComputeNextCfrFrameIndex(lastAssignedVideoPts);
-}
-
-void ApplyFinalStreamDurations(AVFormatContext* fmtCtx, int64_t finalDurationUs) {
-    if (!fmtCtx || finalDurationUs <= 0) {
-        return;
-    }
-
-    fmtCtx->duration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, AV_TIME_BASE_Q);
-    const int64_t hours = finalDurationUs / 3600000000LL;
-    const int64_t minutes = (finalDurationUs / 60000000LL) % 60;
-    const int64_t seconds = (finalDurationUs / 1000000LL) % 60;
-    const int64_t nanos = (finalDurationUs % 1000000LL) * 1000LL;
-    char durationTag[64];
-    std::snprintf(durationTag, sizeof(durationTag), "%02lld:%02lld:%02lld.%09lld", (long long)hours,
-                  (long long)minutes, (long long)seconds, (long long)nanos);
-    for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
-        AVStream* stream = fmtCtx->streams[i];
-        if (!HasValidStreamTimeBase(stream)) {
-            continue;
-        }
-
-        const int64_t streamDuration = av_rescale_q(finalDurationUs, AVRational{1, 1000000}, stream->time_base);
-        if (streamDuration > 0) {
-            stream->duration = streamDuration;
-            av_dict_set(&stream->metadata, "DURATION", durationTag, 0);
-        }
-    }
 }
 
 void LogFinalDurationSummary(AVFormatContext* fmtCtx, int64_t finalDurationUs, uint32_t muxBackpressureEvents,
@@ -1230,6 +1202,7 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) const {
     int64_t maxPacketDeltaUs = 0;
     uint32_t videoStreamCount = 0;
     uint64_t videoPacketCount = 0;
+    int64_t maxVideoPtsGapUs = 0;
     uint32_t audioStreamCount = 0;
     uint32_t audioPastTargetCount = 0;
 
@@ -1247,6 +1220,7 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) const {
             ++videoStreamCount;
             videoPacketCount += timeline.packetCount;
             maxVideoEndUs = std::max(maxVideoEndUs, timeline.lastEndUs);
+            maxVideoPtsGapUs = std::max(maxVideoPtsGapUs, timeline.maxForwardStartGapUs);
         } else if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
             ++audioStreamCount;
             if (minAudioEndUs == 0 || timeline.lastEndUs < minAudioEndUs) {
@@ -1274,8 +1248,19 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) const {
         const int64_t expectedPackets = av_rescale_rnd(finalDurationUs, savedConfig.fps, 1000000, AV_ROUND_NEAR_INF);
         const int64_t emittedPackets = static_cast<int64_t>(videoPacketCount);
         const int64_t missingPackets = std::max<int64_t>(0, expectedPackets - emittedPackets);
-        DLL_Log("[VideoEncoder] CFR packet coverage: expected=%lld emitted=%lld missing=%lld complete=%d fps=%d",
-                expectedPackets, emittedPackets, missingPackets, missingPackets == 0 ? 1 : 0, savedConfig.fps);
+        const double maxPtsGapTicks = static_cast<double>(maxVideoPtsGapUs) * savedConfig.fps / 1000000.0;
+        const bool coverageComplete = missingPackets == 0 && maxPtsGapTicks <= 1.01;
+        DLL_Log(
+            "[VideoEncoder] CFR packet coverage: expected=%lld emitted=%lld missing=%lld maxPtsGapUs=%lld "
+            "maxPtsGapTicks=%.3f complete=%d fps=%d",
+            expectedPackets, emittedPackets, missingPackets, maxVideoPtsGapUs, maxPtsGapTicks,
+            coverageComplete ? 1 : 0, savedConfig.fps);
+        if (!coverageComplete) {
+            DLL_Log(
+                "[VideoEncoder] ERROR: CFR artifact failed packet-continuity validation: expected=%lld emitted=%lld "
+                "missing=%lld maxPtsGapTicks=%.3f (required <=1.01)",
+                expectedPackets, emittedPackets, missingPackets, maxPtsGapTicks);
+        }
     }
 
     constexpr int64_t kPacketDurationWarningToleranceUs = 1000;
@@ -1494,7 +1479,8 @@ AVPixelFormat VideoEncoder::GetActiveD3D11SwFormat() const {
 
 bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3D11Texture2D* dstTexture,
                                                 bool overlayCursor, int captureOriginX, int captureOriginY,
-                                                bool allowCursorHandleVisibilityFallback) {
+                                                bool allowCursorHandleVisibilityFallback,
+                                                uint64_t keyedMutexAcquireKey) {
     if (!srcTexture || !dstTexture || !d3d11Device || !d3d11Context) {
         return false;
     }
@@ -1516,7 +1502,7 @@ bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3
 
     srcTexture->QueryInterface(IID_PPV_ARGS(&keyedMutexGuard.mutex));
     if (keyedMutexGuard.mutex) {
-        const HRESULT kmHr = keyedMutexGuard.mutex->AcquireSync(0, 0);
+        const HRESULT kmHr = keyedMutexGuard.mutex->AcquireSync(keyedMutexAcquireKey, 1000);
         if (kmHr != S_OK) {
             DLL_Log("[VideoEncoder] Direct D3D11 encode path could not acquire keyed mutex: HR=%x", kmHr);
             keyedMutexGuard.mutex->Release();
@@ -4202,7 +4188,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         }
 
         if (!PrepareD3D11TextureForEncode(bgraTexture, (ID3D11Texture2D*)d3d11Frame->data[0],
-                                          CursorCompositionActive(), captureLeft, captureTop, true)) {
+                                          CursorCompositionActive(), captureLeft, captureTop, true, 1)) {
             DLL_Log("[VideoEncoder] Frame %d: Direct D3D11 RGB preparation failed", encodeFrameCounter);
             av_frame_free(&d3d11Frame);
             return false;
@@ -4236,7 +4222,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
         // Scoped Lock for D3D11 Immediate Context (protects Blt/CopyResource)
         bool convertSuccess =
-            ConvertBGRAtoNV12(bgraTexture, &nv12Tex, cursorVisible, cursorX, cursorY, false, captureLeft, captureTop);
+            ConvertBGRAtoNV12(bgraTexture, &nv12Tex, cursorVisible, cursorX, cursorY, true, captureLeft, captureTop, 1);
 
         if (!convertSuccess) {
             DLL_Log("[VideoEncoder] Frame %d: GPU color conversion failed", encodeFrameCounter);
@@ -5005,7 +4991,6 @@ void VideoEncoder::Stop() {
             int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
             if (finalDurationUs > 0) {
                 LogPacketTimelineSummary(finalDurationUs);
-                ApplyFinalStreamDurations(fmtCtx, finalDurationUs);
                 LogFinalDurationSummary(fmtCtx, finalDurationUs, muxBackpressureCount.load(std::memory_order_relaxed),
                                         peakQueueBytes.load(std::memory_order_relaxed),
                                         peakQueuePackets.load(std::memory_order_relaxed),
@@ -5391,7 +5376,7 @@ bool VideoEncoder::InitVideoProcessor() {
 
 bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool cursorVisible,
                                      int cursorX, int cursorY, bool allowDirectInputView, int captureOriginX,
-                                     int captureOriginY) {
+                                     int captureOriginY, uint64_t keyedMutexAcquireKey) {
     if (!videoProcessorInit) {
         if (!InitVideoProcessor())
             return false;
@@ -5434,7 +5419,7 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
 
     bgraTexture->QueryInterface(IID_PPV_ARGS(&keyedMutexGuard.mutex));
     if (keyedMutexGuard.mutex) {
-        HRESULT kmHr = keyedMutexGuard.mutex->AcquireSync(0, 0);
+        HRESULT kmHr = keyedMutexGuard.mutex->AcquireSync(keyedMutexAcquireKey, 1000);
         if (kmHr != S_OK) {
             static int kmFailCount = 0;
             if (kmFailCount++ < 5) {
@@ -6814,7 +6799,6 @@ void VideoEncoder::AsyncWriteLoop() {
                 int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
                 if (finalDurationUs > 0) {
                     LogPacketTimelineSummary(finalDurationUs);
-                    ApplyFinalStreamDurations(fmtCtx, finalDurationUs);
                     for (unsigned s = 0; s < fmtCtx->nb_streams; s++) {
                         AVStream* st = fmtCtx->streams[s];
                         int64_t firstPts = st->start_time != AV_NOPTS_VALUE ? st->start_time : 0;
@@ -6837,7 +6821,8 @@ void VideoEncoder::AsyncWriteLoop() {
                                             peakQueuePackets.load(std::memory_order_relaxed),
                                             lastEncoderOverloadTickMs.load(std::memory_order_relaxed) > 0,
                                             lastMuxOverloadTickMs.load(std::memory_order_relaxed) > 0);
-                    DLL_Log("[VideoEncoder] Async Finalize: Container duration set to %lld us", finalDurationUs);
+                    DLL_Log("[VideoEncoder] Async Finalize: packet-derived duration target was %lld us",
+                            finalDurationUs);
                 }
                 av_write_trailer(fmtCtx);
                 if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {

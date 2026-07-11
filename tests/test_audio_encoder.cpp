@@ -89,6 +89,31 @@ TEST_F(AudioEncoderTest, PcmAliasResolvesToTwentyFourBitEncoderByDefault) {
     EXPECT_EQ(encoder.GetCodecContext()->sample_fmt, AV_SAMPLE_FMT_S32);
 }
 
+TEST_F(AudioEncoderTest, PcmAcceptsFinalBatchLongerThanFiveSeconds) {
+    AudioConfig config;
+    config.codec = "pcm";
+    config.sampleRate = "48000";
+    config.outputChannels = 2;
+    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+
+    ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
+    encoder.SetStreamIndex(1);
+    encoder.SetRecordingStart(0);
+
+    constexpr int kSamples = 625600;
+    std::vector<float> samples(static_cast<size_t>(kSamples) * 2u, 0.0f);
+    encoder.SetRecordingEndUs((static_cast<int64_t>(kSamples) * 1000000ll) / 48000ll);
+    const auto result = encoder.EncodeSamples(reinterpret_cast<const uint8_t*>(samples.data()),
+                                              static_cast<int>(samples.size() * sizeof(float)), 2, 48000, 32, 32, 8,
+                                              true, config.outputChannelMask, 0);
+
+    EXPECT_FALSE(result.failed);
+    EXPECT_EQ(result.acceptedSamples, kSamples);
+    EXPECT_EQ(result.submittedSamples, kSamples);
+    EXPECT_EQ(encoder.GetSamplesCount(), kSamples);
+    encoder.Stop();
+}
+
 TEST_F(AudioEncoderTest, PcmBitDepthOverridesSelectConcreteEncoders) {
     AudioConfig config;
     config.codec = "pcm";

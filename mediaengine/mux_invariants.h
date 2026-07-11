@@ -100,6 +100,7 @@ struct PacketTimelineStats {
     int64_t firstStartUs = 0;
     int64_t lastStartUs = 0;
     int64_t lastEndUs = 0;
+    int64_t maxForwardStartGapUs = 0;
 };
 
 inline int64_t ComputePacketEndUs(int64_t packetStartUs, int64_t packetDurationUs) {
@@ -112,9 +113,16 @@ inline void ObservePacketTimeline(PacketTimelineStats& stats, int64_t packetStar
     if (!stats.seen) {
         stats.seen = true;
         stats.firstStartUs = clampedStartUs;
+        stats.lastStartUs = clampedStartUs;
+    } else if (clampedStartUs >= stats.lastStartUs) {
+        stats.maxForwardStartGapUs =
+            std::max(stats.maxForwardStartGapUs, clampedStartUs - stats.lastStartUs);
+        // Packet callbacks can be in decode order when B-frame reordering is
+        // active. Keep the monotonic PTS frontier; a backtrack must not make
+        // the next forward packet look like an artificial multi-tick gap.
+        stats.lastStartUs = clampedStartUs;
     }
     stats.packetCount++;
-    stats.lastStartUs = clampedStartUs;
     stats.lastEndUs = std::max(stats.lastEndUs, packetEndUs);
 }
 

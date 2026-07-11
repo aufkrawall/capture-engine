@@ -561,26 +561,33 @@ void AudioEncoder::ApplyPacketDuration(AVPacket* pkt) {
     }
 }
 
-void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channels, int sampleRate, int bitsPerSample,
-                                 int validBitsPerSample, int blockAlign, bool isFloat, int64_t timestamp) {
-    EncodeSamples(data, sizeBytes, channels, sampleRate, bitsPerSample, validBitsPerSample, blockAlign, isFloat, 0,
-                  timestamp);
+AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channels,
+                                                       int sampleRate, int bitsPerSample, int validBitsPerSample,
+                                                       int blockAlign, bool isFloat, int64_t timestamp) {
+    return EncodeSamples(data, sizeBytes, channels, sampleRate, bitsPerSample, validBitsPerSample, blockAlign, isFloat,
+                         0, timestamp);
 }
 
-void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channels, int sampleRate, int bitsPerSample,
-                                 int validBitsPerSample, int blockAlign, bool isFloat, uint32_t channelMask,
-                                 int64_t timestamp) {
+AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channels,
+                                                       int sampleRate, int bitsPerSample, int validBitsPerSample,
+                                                       int blockAlign, bool isFloat, uint32_t channelMask,
+                                                       int64_t timestamp) {
+    EncodeResult result;
+    int64_t submittedBefore = samplesCount;
     // If encoder was invalidated (reopen failed in Stop), try to reinit
     if (!initDone && !savedConfig.codec.empty()) {
         DLL_Log("[AudioEnc] Attempting reinit after previous failure");
         if (!Init(savedConfig, onPacket)) {
             DLL_Log("[AudioEnc] Reinit failed, cannot encode");
-            return;
+            result.failed = true;
+            return result;
         }
     }
 
-    if (!initDone || !codecCtx || !data || sizeBytes <= 0)
-        return;
+    if (!initDone || !codecCtx || !data || sizeBytes <= 0) {
+        result.failed = true;
+        return result;
+    }
 
     // DEFERRED RESET: SetRecordingStart was called from video thread - apply
     // reset now with logging
@@ -593,7 +600,10 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
             (long long)deferredStartUs, (long long)samplesCount, (long long)resampledSamplesTotal, fifoSize);
 
         recordingStartUs = deferredStartUs;
-        recordingEndUs = 0;
+        // SetRecordingEndUs can race ahead of the first real sample when a
+        // packetless co-mixed source delayed this encoder until stop.  Do not
+        // erase that already-published boundary while applying the deferred
+        // start reset.
         firstTimestamp = -1;
         samplesCount = 0;
         resampledSamplesTotal = 0;
@@ -607,13 +617,14 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
 
         DLL_Log("[AudioEnc] Reset complete - audio will restart from PTS=0");
     }
+    submittedBefore = samplesCount;
 
     // CRITICAL: Discard audio samples that arrive before first video frame
     // This ensures 0ms A/V sync - audio should not be encoded until video starts
     if (recordingStartUs < 0) {
         // Recording start not set yet (waiting for first video frame)
         // Silently discard this audio data
-        return;
+        return result;
     }
 
     // CRITICAL: Discard audio samples that arrive after last video frame
@@ -622,7 +633,7 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
     int64_t timestampUs = timestamp * 1000;
     if (recordingEndUs > 0 && timestampUs > recordingEndUs) {
         // Recording has ended, discard this audio data
-        return;
+        return result;
     }
 
     // Build input format descriptor
@@ -659,7 +670,8 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
 
         if (!resampler->Init(inputFmt, outputFmt)) {
             DLL_Log("[AudioEnc] Failed to init resampler");
-            return;
+            result.failed = true;
+            return result;
         }
 
         currentInputFormat = inputFmt;
@@ -674,16 +686,14 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
 
     if (!resampler->Process(data, sizeBytes, &resampledData, &convertedSamples)) {
         DLL_Log("[AudioEnc] Resample failed");
-        return;
+        result.failed = true;
+        return result;
     }
 
     if (convertedSamples <= 0) {
         AudioResampler::FreeOutputBuffer(resampledData);
-        return;
+        return result;
     }
-
-    // Track cumulative resampler output for drift calculation
-    resampledSamplesTotal += convertedSamples;
 
     // NOTE: Fade-in is applied upstream in PullAndEncodeAudio (mediaengine.cpp)
     // before samples reach this encoder. Applying a second fade here would
@@ -695,11 +705,17 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
     if (codecCtx->sample_rate <= 0) {
         DLL_Log("[AudioEnc] ERROR: sample_rate=%d, codec context invalid, skipping encode", codecCtx->sample_rate);
         AudioResampler::FreeOutputBuffer(resampledData);
-        return;
+        result.failed = true;
+        return result;
     }
-    const int MAX_FIFO_SAMPLES = codecCtx->sample_rate * 5;
-    const int CROSSFADE_SAMPLES = codecCtx->sample_rate / 50;  // 20ms - smoother overflow handling
+    // This call may be the first one for a track that was held behind a
+    // packetless co-mixed source.  Accept the complete batch and let
+    // av_audio_fifo_write grow/drain the FIFO instead of truncating every such
+    // track at the old five-second ceiling.
     int currentFifoSize = av_audio_fifo_size(audioFifo);
+    const int MAX_FIFO_SAMPLES =
+        std::max(codecCtx->sample_rate * 5, currentFifoSize + std::max(convertedSamples, 0));
+    const int CROSSFADE_SAMPLES = codecCtx->sample_rate / 50;  // 20ms - smoother overflow handling
     int samplesToWrite = convertedSamples;
     bool applyingFadeOut = false;
 
@@ -717,7 +733,7 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
                     convertedSamples, (long long)samplesCount, currentFifoSize, (long long)maxSamples);
             }
             AudioResampler::FreeOutputBuffer(resampledData);
-            return;
+            return result;
         }
         if (samplesToWrite > allowedSamples) {
             DLL_Log(
@@ -753,7 +769,8 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
 
         if (samplesToWrite == 0) {
             AudioResampler::FreeOutputBuffer(resampledData);
-            return;
+            result.failed = true;
+            return result;
         }
     } else if (wasDroppingSamples) {
         wasDroppingSamples = false;
@@ -861,7 +878,10 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
 
     if (ret < samplesToWrite) {
         DLL_Log("[AudioEnc] Failed to write to audio FIFO: wrote %d of %d", ret, samplesToWrite);
+        result.failed = true;
     }
+    result.acceptedSamples = std::max(ret, 0);
+    resampledSamplesTotal += result.acceptedSamples;
 
     AudioResampler::FreeOutputBuffer(resampledData);
 
@@ -870,26 +890,10 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
     // counts based on video timeline. This encoder just encodes what it receives.
     // No HARD RESYNC, no warping - just simple PTS = samplesCount.
 
-    if (firstTimestamp < 0 && recordingStartUs > 0) {
+    if (firstTimestamp < 0 && recordingStartUs >= 0) {
         firstTimestamp = timestamp;
-
-        // Simple reset: counters should already be 0 from deferred reset.
-        // Just log and FIFO clear as safety.
-        if (samplesCount != 0 || resampledSamplesTotal != 0) {
-            DLL_Log(
-                "[AudioEnc] First packet safety reset: samplesCount=%lld -> 0, "
-                "resampledTotal=%lld -> 0",
-                (long long)samplesCount, (long long)resampledSamplesTotal);
-            samplesCount = 0;
-            resampledSamplesTotal = 0;
-            if (resampler)
-                resampler->ResetClockTracking();
-            if (audioFifo) {
-                av_audio_fifo_reset(audioFifo);
-            }
-        }
-
-        DLL_Log("[AudioEnc] First audio packet processing (PTS=0)");
+        DLL_Log("[AudioEnc] First audio packet accepted: samples=%lld FIFO=%d PTS=0",
+                static_cast<long long>(result.acceptedSamples), av_audio_fifo_size(audioFifo));
     }
 
     // Track latest packet timestamp for PTS calculation
@@ -931,7 +935,9 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
         ret = av_frame_make_writable(frame);
         if (ret < 0) {
             DLL_Log("[AudioEnc] Failed to make frame writable: %d", ret);
-            return;
+            result.failed = true;
+            result.submittedSamples = samplesCount - submittedBefore;
+            return result;
         }
 
         frame->nb_samples = frame_size;
@@ -940,7 +946,9 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
         ret = av_audio_fifo_read(audioFifo, (void**)frame->data, frame_size);
         if (ret < frame_size) {
             DLL_Log("[AudioEnc] Failed to read from FIFO: got %d, expected %d", ret, frame_size);
-            return;
+            result.failed = true;
+            result.submittedSamples = samplesCount - submittedBefore;
+            return result;
         }
 
         // Set PTS using simple sample counting from 0 (CFR audio)
@@ -965,6 +973,7 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
             char errbuf[256];
             av_strerror(ret, errbuf, sizeof(errbuf));
             DLL_Log("[AudioEnc] avcodec_send_frame failed: %s (code=%d)", errbuf, ret);
+            result.failed = true;
             continue;
         }
         pendingFrameDurations.push_back(frame_size);
@@ -1041,6 +1050,8 @@ void AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channel
             }
         }
     }
+    result.submittedSamples = samplesCount - submittedBefore;
+    return result;
 }
 
 void AudioEncoder::Stop() {

@@ -571,17 +571,25 @@ TEST(AudioSyncUtilsTest, FinalCfrSourceCatchupWaitsOnlyForStrictStartedSources) 
     EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, true, false, false, 0, 0));
 }
 
-TEST(AudioSyncUtilsTest, StartedSparseAppAudioSourcesMayContributeSilence) {
+TEST(AudioSyncUtilsTest, StartedSparseTimelineSourcesMayContributeSilence) {
     EXPECT_TRUE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, true, true, false));
     EXPECT_FALSE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(false, true, true, false));
     EXPECT_FALSE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, false, true, false));
     EXPECT_FALSE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, true, false, false));
     EXPECT_FALSE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, true, true, true));
-    EXPECT_FALSE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, true, true, false, true));
+    EXPECT_TRUE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, true, true, false, true));
 
     EXPECT_TRUE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(true, 0));
     EXPECT_FALSE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(true, 1));
     EXPECT_FALSE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(false, 0));
+}
+
+TEST(AudioSyncUtilsTest, PacketlessTimelineSourceCanBootstrapAsSilence) {
+    EXPECT_TRUE(ce::audio::ShouldBootstrapPacketlessSourceAsSilence(true, true, 0, 1200, 1200));
+    EXPECT_FALSE(ce::audio::ShouldBootstrapPacketlessSourceAsSilence(false, true, 0, 1200, 1200));
+    EXPECT_FALSE(ce::audio::ShouldBootstrapPacketlessSourceAsSilence(true, false, 0, 1200, 1200));
+    EXPECT_FALSE(ce::audio::ShouldBootstrapPacketlessSourceAsSilence(true, true, 1, 1200, 1200));
+    EXPECT_FALSE(ce::audio::ShouldBootstrapPacketlessSourceAsSilence(true, true, 0, 1199, 1200));
 }
 
 TEST(AudioSyncUtilsTest, StartedSparseAppAudioPartialShortfallSilencesOnlyLargeLivePulls) {

@@ -80,6 +80,18 @@ TEST(MuxInvariantTest, PacketTimelineTracksActualPacketEnd) {
     EXPECT_EQ(stats.firstStartUs, 0);
     EXPECT_EQ(stats.lastStartUs, 8333);
     EXPECT_EQ(stats.lastEndUs, 16667);
+    EXPECT_EQ(stats.maxForwardStartGapUs, 8333);
+}
+
+TEST(MuxInvariantTest, PacketTimelineTracksLargestForwardPtsGap) {
+    PacketTimelineStats stats;
+    ObservePacketTimeline(stats, 0, 8333);
+    ObservePacketTimeline(stats, 8333, 8333);
+    ObservePacketTimeline(stats, 33333, 8333);
+    ObservePacketTimeline(stats, 25000, 8333);  // decode-order backtrack must not inflate the gap
+
+    EXPECT_EQ(stats.maxForwardStartGapUs, 25000);
+    EXPECT_EQ(stats.lastStartUs, 33333);
 }
 
 TEST(MuxInvariantTest, PacketTimelineDetectsAudioPastMetadataTarget) {
