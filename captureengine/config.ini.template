@@ -37,6 +37,9 @@ wgc_same_device_capture=true
 ; Permit a lower-VRAM but lossy BGRA8 WGC source pool only in auto/non-explicit bit-depth
 ; mode. Explicit 10-bit and HDR always preserve the high-precision FP16 source path.
 ;wgc_allow_lossy_bgra8_pool=false
+; Diagnostic A/B only. Requests a local-video-memory reservation for the mandatory working set
+; or full prewarmed pool, clamped to the OS-reported reservable amount. Shipped default is off.
+;wgc_video_memory_reservation=off
 ; wgc_active_delay_uniform_cadence=true: with an active A/V content delay, prefer uniform
 ; CFR cadence over per-tick delay-reservoir defense so a GPU-bound under-delivering source
 ; does not produce abnormal judder; the realized content delay floats gracefully.
@@ -288,8 +291,9 @@ process_priority=high
 ; gpu_priority controls IDXGIDevice::SetGPUThreadPriority on CE D3D11 devices. Values: -7..7, 0 = adaptive
 gpu_priority=7
 ; gpu_scheduling_priority is an OBS-style D3DKMT process GPU scheduling class for the media process only.
-; Values: off, idle, below_normal, normal, above_normal, high, realtime. high/realtime can require elevation.
-gpu_scheduling_priority=off
+; auto selects high with HAGS enabled and above_normal otherwise.
+; Values: auto, off, idle, below_normal, normal, above_normal, high, realtime. high/realtime can require elevation.
+gpu_scheduling_priority=auto
 
 [FpsLimiter]
 ; capture_sync_enabled, limits game fps to video fps - Values: true, false

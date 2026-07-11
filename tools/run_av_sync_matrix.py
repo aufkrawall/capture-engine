@@ -4,6 +4,7 @@ import argparse
 import copy
 import json
 import math
+import os
 import re
 import shutil
 import statistics
@@ -61,6 +62,7 @@ class Scenario:
     max_bitrate: str = "200Mbps"
     secondary_app_audio: bool = False
     secondary_app_start_sec: float = 5.0
+    bit_depth: int = 8
 
     @property
     def name(self):
@@ -300,7 +302,7 @@ container=mkv
 output_dir={output_dir}
 vfr=false
 capture_cursor=false
-bit_depth=8
+bit_depth={scenario.bit_depth}
 color_space=bt709
 color_range=limited
 chroma_subsampling=420
@@ -526,6 +528,36 @@ def run_process(command, timeout, secondary_command=None, secondary_delay_sec=0.
     if secondary_started:
         wait_for_process_exit(SECONDARY_PROCESS_NAME, 2.0)
     return return_code, time.monotonic() - start, timed_out
+
+
+def start_cpu_contention_workers(count):
+    workers = []
+    worker_code = (
+        "x=0x123456789abcdef\n"
+        "while True:\n"
+        " x=(x*6364136223846793005+1442695040888963407)&0xffffffffffffffff\n"
+    )
+    for _ in range(max(0, int(count))):
+        workers.append(
+            subprocess.Popen(
+                [sys.executable, "-c", worker_code],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        )
+    return workers
+
+
+def stop_cpu_contention_workers(workers):
+    for worker in workers:
+        if worker.poll() is None:
+            worker.terminate()
+    for worker in workers:
+        try:
+            worker.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            worker.kill()
+            worker.wait(timeout=3)
 
 
 def run_analyzer(command, stdout_path):
@@ -899,12 +931,16 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe, preflight_info=None)
         secondary_launch_delay = delay_ms / 1000.0 + max(0.0, scenario.secondary_app_start_sec)
 
     start_unix = time.time()
-    return_code, elapsed, timed_out = run_process(
-        launch,
-        timeout=scenario_duration_sec + delay_ms / 1000.0 + 30.0,
-        secondary_command=secondary_launch,
-        secondary_delay_sec=secondary_launch_delay,
-    )
+    contention_workers = start_cpu_contention_workers(getattr(args, "contention_workers", 0))
+    try:
+        return_code, elapsed, timed_out = run_process(
+            launch,
+            timeout=scenario_duration_sec + delay_ms / 1000.0 + 30.0,
+            secondary_command=secondary_launch,
+            secondary_delay_sec=secondary_launch_delay,
+        )
+    finally:
+        stop_cpu_contention_workers(contention_workers)
     app_exited = wait_for_process_exit(PROCESS_NAME, args.app_exit_timeout_sec)
     secondary_app_exited = True
     if scenario.secondary_app_audio:
@@ -931,6 +967,8 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe, preflight_info=None)
     )
     analysis_session_dir = log_snapshot_dir if media_log_snapshot else session_dir
     analysis_media_log = media_log_snapshot if media_log_snapshot else media_log
+    media_text = analysis_media_log.read_text(encoding="utf-8", errors="replace") if analysis_media_log.exists() else ""
+    hags_enabled_evidence = bool(re.search(r"hagsEnabled=1\b", media_text, re.IGNORECASE))
 
     result = {
         "scenario": {
@@ -965,6 +1003,9 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe, preflight_info=None)
             "source_stall": source_stall_text if include_source_stall else None,
             "secondary_app_audio": scenario.secondary_app_audio,
             "secondary_app_start_sec": scenario.secondary_app_start_sec if scenario.secondary_app_audio else None,
+            "bit_depth": scenario.bit_depth,
+            "contention_workers": getattr(args, "contention_workers", 0),
+            "hags_enabled_evidence": hags_enabled_evidence,
         },
         "process": {
             "return_code": return_code,
@@ -1016,6 +1057,8 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe, preflight_info=None)
         result["failure"] = "stimulus app log not found"
     elif not analysis_media_log.exists():
         result["failure"] = "CE media log not found"
+    elif args.profile == "contention" and not hags_enabled_evidence:
+        result["failure"] = "HAGS-enabled adapter evidence missing; contention gate requires hagsEnabled=1"
     else:
         # 0-based ffmpeg audio ordinals in strict default: a:0=Track 1 system, a:1=Track 2 app,
         # a:2=Track 4 microphone. With --include-mixed-track, a:2=Track 3 mixed and a:3=Track 4 mic.
@@ -1271,6 +1314,26 @@ def build_scenarios(args):
                      nvenc_preset=preset, bitrate="180Mbps", max_bitrate="260Mbps")
             for preset in ("p5", "p6", "p7")
         ]
+    if args.profile == "contention":
+        scenarios = []
+        for run_index in range(1, 4):
+            for method in SUPPORTED_METHODS:
+                scenarios.append(
+                    Scenario(method, "alac", 120, label=f"hags_p1_4k120_run{run_index}", duration_sec=25,
+                             app_fps=240, width=3840, height=2160, gpu_load=200,
+                             encoder_stress_scene=True, nvenc_preset="p1", bitrate="180Mbps",
+                             max_bitrate="260Mbps", bit_depth=10)
+                )
+            for preset in ("p5", "p6", "p7"):
+                for method in SUPPORTED_METHODS:
+                    scenarios.append(
+                        Scenario(method, "alac", 120,
+                                 label=f"hags_{preset}_4k120_run{run_index}", duration_sec=25,
+                                 app_fps=240, width=3840, height=2160, gpu_load=200,
+                                 encoder_stress_scene=True, nvenc_preset=preset, bitrate="180Mbps",
+                                 max_bitrate="260Mbps", bit_depth=10)
+                    )
+        return scenarios
     if args.profile == "sync-smoothness":
         # This profile is a product-safe stress gate for the video-delay sync model:
         # lead=0 plus a test-only modeled render-loopback latency means WGC/inject must
@@ -1343,7 +1406,7 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Run deterministic A/V sync capture scenarios and analyze them.")
     parser.add_argument(
         "--profile",
-        choices=["quick", "codec-pass", "stress", "wgc-overload", "late-app", "raw-offset", "sync-smoothness",
+        choices=["quick", "codec-pass", "stress", "wgc-overload", "contention", "late-app", "raw-offset", "sync-smoothness",
                  "full", "long-soak", "custom"],
         default="quick",
         help="Scenario profile. Bare runner defaults to the fast zero-drift quick gate.",
@@ -1352,6 +1415,7 @@ def build_parser():
     parser.add_argument("--codec-finalization-pass", dest="profile_aliases", action="append_const", const="codec-pass")
     parser.add_argument("--short-stress", dest="profile_aliases", action="append_const", const="stress")
     parser.add_argument("--wgc-overload-gate", dest="profile_aliases", action="append_const", const="wgc-overload")
+    parser.add_argument("--contention-gate", dest="profile_aliases", action="append_const", const="contention")
     parser.add_argument("--late-app-source-gate", dest="profile_aliases", action="append_const", const="late-app")
     parser.add_argument("--raw-offset-gate", dest="profile_aliases", action="append_const", const="raw-offset")
     parser.add_argument("--sync-smoothness-gate", dest="profile_aliases", action="append_const",
@@ -1375,6 +1439,12 @@ def build_parser():
     parser.add_argument("--fullscreen", type=int, choices=[0, 1], default=1)
     parser.add_argument("--window-chrome", type=int, choices=[0, 1], default=0)
     parser.add_argument("--gpu-load", type=int, default=0)
+    parser.add_argument(
+        "--contention-workers",
+        type=int,
+        default=0,
+        help="Deterministic busy CPU workers active only during each capture scenario.",
+    )
     parser.add_argument("--encoder-stress-scene", action="store_true")
     parser.add_argument("--nvenc-preset", default="p1")
     parser.add_argument("--rate-control", default="VBR")
@@ -1493,6 +1563,10 @@ def parse_args(argv=None):
         args.profile = "custom"
     if args.profile == "wgc-overload":
         args.require_overload = True
+    if args.profile == "contention" and not explicit_option(argv, "--contention-workers"):
+        args.contention_workers = max(1, (os.cpu_count() or 4) // 2)
+    if args.contention_workers < 0:
+        fail("--contention-workers must be non-negative")
     if args.profile == "raw-offset" and not explicit_app_audio_lead(argv):
         # The raw-offset gate measures the true uncalibrated capture differential, so it must
         # not apply the method-aware stimulus lead that the other profiles use to cancel it.
@@ -1540,6 +1614,16 @@ def self_test():
         "inject_aac_60fps_late_app_lossy",
     ]
     assert sum(1 for scenario in build_scenarios(quick) if scenario.secondary_app_audio) == 2
+    contention = parse_args(["--contention-gate", "--dry-run"])
+    contention_scenarios = build_scenarios(contention)
+    assert contention.profile == "contention"
+    assert contention.contention_workers >= 1
+    assert len(contention_scenarios) == 36
+    assert {scenario.capture_method for scenario in contention_scenarios} == set(SUPPORTED_METHODS)
+    assert {scenario.nvenc_preset for scenario in contention_scenarios} == {"p1", "p5", "p6", "p7"}
+    assert all(scenario.width == 3840 and scenario.height == 2160 and scenario.fps == 120
+               and scenario.bit_depth == 10 and scenario.encoder_stress_scene
+               for scenario in contention_scenarios)
     assert resolve_app_audio_lead_ms("auto", "wgc", 60, 240) == WGC_TEAR_FREE_AUDIO_LEAD_MS
     assert resolve_app_audio_lead_ms("auto", "dxgi_dup", 120, 240) == WGC_TEAR_FREE_AUDIO_LEAD_MS
     assert resolve_app_audio_lead_ms("auto", "wgc", 120, 240) == WGC_TEAR_FREE_AUDIO_LEAD_MS

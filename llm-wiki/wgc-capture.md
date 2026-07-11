@@ -1,6 +1,6 @@
 # WGC Capture
 
-Last cross-checked: 2026-07-11 (real-hardware DXGI dedicated-device/canonical handoff validation, black-repeat keyed-mutex root cause and fix, capture reliability audit, source/cursor epochs, and transactional handoff/reset behavior.)
+Last cross-checked: 2026-07-12 (HAGS-on contention hardening, pool prewarm, memory-budget telemetry, and OOM-only fallback.)
 Stale-risk: medium (producer cadence, native-WGC-cursor avoidance, foreground-fullscreen target selection, matched configured-window gating, and WindowId item creation are built/unit-tested where policy is testable; the corrected DXGI keyed-mutex repeat/reclaim lifecycle still needs a fresh real-hardware pixel-level confirmation)
 
 Primary sources:
@@ -37,6 +37,14 @@ Primary sources:
 - `tools/analyze_capture_av.py`
 
 ## Current Summary
+
+### Contention prewarm and video memory (2026-07-12)
+
+The fixed `wgc_smoothness_buffer_vram_budget_mb=3000` default remains deliberate. At 3840x2160/120 with FP16 WGC input and retained R10, policy targets eight FP16 source buffers plus sixty-four R10 retained slots when the cap permits; it does not shrink against physical-VRAM percentages or current OS headroom. Explicit `0` disables optional reservoir allocation, and explicit 10-bit/HDR never falls back to BGRA8.
+
+Once WGC format/dimensions are authoritative, retained-copy shaders/state and the pool are built before callback registration and `StartCapture`. Duplication prewarms from its output hint; a differing first acquired texture rebuilds before publication. Full configured counts are attempted first. Only allocation-exhaustion HRESULTs reduce source buffers or optional retained depth; unsupported format, access, and device-removal failures do not. Mandatory sync, safety, and reserved-free capacity is preserved, and every attempt/final millisecond reduction is logged.
+
+`IDXGIAdapter3::QueryVideoMemoryInfo` logs budget, process usage, reservation, available reservation, estimated pool, and over-budget observations before/after allocation and once per second. OS budget movement alone never resizes a live pool. Diagnostic `wgc_video_memory_reservation=mandatory|full` clamps reservation to the reported amount, verifies readback, and resets it on teardown; shipped/default mode is `off` pending controlled A/B evidence.
 
 ### Lifecycle, retarget, and handoff invariants (2026-07-11)
 
@@ -184,7 +192,7 @@ The callback thread performs one-time QoS setup through MMCSS and disables threa
 
 The encoder D3D11 device no longer raises GPU thread priority merely because a capture is 10-bit. If `gpu_priority` is explicitly configured, that value is still applied. With the default neutral priority, the encoder raises to `+1` only after sustained encode time reaches 75% of the frame budget, then restores neutral after sustained recovery below 50%. This keeps the game and capture from competing unnecessarily when encode is already healthy.
 
-`[Performance] gpu_scheduling_priority` is a separate OBS-style D3DKMT process GPU scheduling class for the media process. It is opt-in (`off` by default) and logs set status, readback verification (`verified=1` when current class matches the request), and elevation state. It may help WGC only when CE-owned D3D11 copy/convert/encode work is being scheduled too late; it cannot directly prioritize the DWM/WGC producer that delivers frames to CE.
+`[Performance] gpu_scheduling_priority` is a separate D3DKMT process GPU scheduling class for the media process. Its default is `auto`: confirmed HAGS-on resolves to HIGH and HAGS-off/unavailable resolves to ABOVE_NORMAL against the actual capture adapter; explicit values, including `off` and diagnostic `realtime`, remain authoritative. Set/readback, adapter, driver, Windows build, WDDM caps, and elevation evidence are logged. It may help WGC only when CE-owned D3D11 copy/convert/encode work is being scheduled too late; it cannot directly prioritize the DWM/WGC producer that delivers frames to CE.
 
 ## Validation Notes
 

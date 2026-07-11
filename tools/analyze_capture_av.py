@@ -290,6 +290,11 @@ WGC_PERF_RE = re.compile(r"\[WGC Perf\].*", re.IGNORECASE)
 WGC_QUALITY_RE = re.compile(r"\[WGC CFR QUALITY\]\s*(.*)", re.IGNORECASE)
 WGC_SOURCE_COVERAGE_RE = re.compile(r"\[WGC CFR SOURCE COVERAGE\]\s*(.*)", re.IGNORECASE)
 INJECT_PERF_RE = re.compile(r"\[Inject Perf\].*", re.IGNORECASE)
+INJECT_CONTENTION_RE = re.compile(
+    r"\[Inject Contention(?: SUMMARY)?\].*CaptureLock=(\d+) CpuLease=(\d+) GpuBusy=(\d+) "
+    r"RingFull=(\d+) EventSignals=(\d+)(?: PubToIngest=(\d+)/(\d+)us)?",
+    re.IGNORECASE,
+)
 INJECT_CFR_SUMMARY_RE = re.compile(
     r"\[Inject CFR SUMMARY\].*Live=(\d+) Dup=(\d+) DupPct=([0-9.]+)% "
     r"DupReason\(src=(\d+) def=(\d+) timer=(\d+) drain=(\d+)\).*"
@@ -1341,6 +1346,10 @@ def parse_wgc_perf_line(line):
         "ingress_reason": (re.search(r"reason=([A-Za-z0-9_-]+)", line).group(1)
                            if re.search(r"reason=([A-Za-z0-9_-]+)", line)
                            else ""),
+        "backend": (re.search(r"Backend:\s*([A-Za-z0-9_-]+)", line).group(1)
+                    if re.search(r"Backend:\s*([A-Za-z0-9_-]+)", line)
+                    else ""),
+        "dup_missed": find_int(r"DupMissed:\s*(\d+)"),
     }
 
 
@@ -1579,6 +1588,7 @@ def merge_window_media_evidence(window_evidence, full_evidence):
         "wgc_smoothness_summary",
         "inject_summary",
         "inject_source_summary",
+        "inject_contention",
         "final_packet_timelines",
         "final_metadata",
         "post_mux_audio_mismatch_delta_us",
@@ -1886,6 +1896,7 @@ def parse_media_triage(media_text):
     inject_perf = []
     inject_summary = []
     inject_source_summary = []
+    inject_contention = []
     final_packet_timelines = []
     final_metadata = []
     post_mux_audio_mismatches = []
@@ -1927,6 +1938,20 @@ def parse_media_triage(media_text):
             wgc_cadence_events.append(event)
         if INJECT_PERF_RE.search(line):
             inject_perf.append(parse_inject_perf_line(line))
+        contention_match = INJECT_CONTENTION_RE.search(line)
+        if contention_match:
+            inject_contention.append(
+                {
+                    "capture_lock": parse_int(contention_match.group(1)),
+                    "cpu_lease": parse_int(contention_match.group(2)),
+                    "gpu_busy": parse_int(contention_match.group(3)),
+                    "ring_full": parse_int(contention_match.group(4)),
+                    "event_signals": parse_int(contention_match.group(5)),
+                    "publication_to_ingest_avg_us": parse_int(contention_match.group(6)),
+                    "publication_to_ingest_max_us": parse_int(contention_match.group(7)),
+                    "line": line,
+                }
+            )
         summary_match = WGC_SUMMARY_RE.search(line)
         if summary_match:
             wgc_summary.append(
@@ -2263,6 +2288,7 @@ def parse_media_triage(media_text):
         "inject_perf": inject_perf,
         "inject_summary": inject_summary,
         "inject_source_summary": inject_source_summary,
+        "inject_contention": inject_contention,
         "final_packet_timelines": final_packet_timelines,
         "final_metadata": final_metadata,
         "post_mux_audio_mismatch_delta_us": post_mux_audio_mismatches,
@@ -3274,6 +3300,16 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
         verdicts.append("source_present_gap")
     if has_source_starvation(media_evidence):
         verdicts.append("wgc_source_starvation")
+        verdicts.append("wgc_upstream_producer_starvation")
+    if any(
+        item.get("backend", "").lower() == "dxgiduplication" and item.get("dup_missed", 0) > 0
+        for item in media_evidence["wgc_perf"]
+    ):
+        verdicts.append("duplication_consumer_starvation")
+    if any(item.get("gpu_busy", 0) > 0 for item in media_evidence["inject_contention"]):
+        verdicts.append("capture_gpu_queue_starvation")
+    if any(item.get("publication_to_ingest_max_us", 0) >= 20000 for item in media_evidence["inject_contention"]):
+        verdicts.append("media_cpu_starvation")
     wgc_delivery_gap = has_wgc_delivery_gap(media_evidence)
     if wgc_delivery_gap:
         verdicts.append("wgc_delivery_gap")
@@ -3326,6 +3362,15 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     )
     if encoder_or_mux_backpressure:
         verdicts.append("ce_encoder_or_mux_backpressure")
+    hardware_encoder_starvation = any(item.get("encoder_overload", 0) for item in media_evidence["final_metadata"])
+    hardware_encoder_starvation = hardware_encoder_starvation or any(
+        item.get("overload_flags", 0) & 0x1 for item in media_evidence["wgc_perf"]
+    )
+    hardware_encoder_starvation = hardware_encoder_starvation or any(
+        item.get("overload_flags", 0) & 0x1 for item in media_evidence["inject_perf"]
+    )
+    if hardware_encoder_starvation:
+        verdicts.append("hardware_encoder_starvation")
     capacity_pressure_for_wgc_overload = encoder_or_mux_backpressure if windowed_capacity_context else None
     wgc_encoder_overload_policy_fault = has_wgc_encoder_overload_policy_fault(
         media_evidence, log_summary, capacity_pressure_for_wgc_overload
@@ -4150,6 +4195,29 @@ def self_test():
         report = classify_session_triage(source_gap)
         assert "source_present_gap" in report["verdicts"]
         assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
+
+        contention_attribution = make_session(
+            "contention_attribution",
+            media=(
+                "[WGC CFR] Source-starved episode: duration=100ms out=12 dup=6 minIn=40 minDel=40 "
+                "freshMiss=500pm minBuf=0\n"
+                "[WGC Perf] Input: 100 | Queued: 90 | MinIn250/500: 80/90 | MinDel250/500: 80/90 | "
+                "FreshMiss: 100pm | Backend: DxgiDuplication DupMissed: 7 | Overload: 0x1\n"
+                "[Inject Contention SUMMARY] CaptureLock=1 CpuLease=2 GpuBusy=3 RingFull=4 EventSignals=50 "
+                "PubToIngest=2000/25000us\n"
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 us "
+                "audioMax=1000 us maxDelta=0 us streams(v=1 a=1) overload(encoder=1 mux=0) backpressure=0\n"
+            ),
+        )
+        contention_report = classify_session_triage(contention_attribution)
+        for verdict in (
+            "wgc_upstream_producer_starvation",
+            "duplication_consumer_starvation",
+            "capture_gpu_queue_starvation",
+            "hardware_encoder_starvation",
+            "media_cpu_starvation",
+        ):
+            assert verdict in contention_report["verdicts"]
 
         smooth_buffer_item = {}
         update_wgc_smoothness_item_from_line(

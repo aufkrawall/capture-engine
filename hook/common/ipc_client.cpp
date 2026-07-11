@@ -1,6 +1,7 @@
 #include "ipc_client.h"
 
-IPCClient::IPCClient() : hMapFile(NULL), pSharedMem(nullptr), hMapShmem(NULL), pShmem(nullptr) {}
+IPCClient::IPCClient()
+    : hMapFile(NULL), pSharedMem(nullptr), hMapShmem(NULL), pShmem(nullptr), hInjectFrameReadyEvent(NULL) {}
 
 IPCClient::~IPCClient() {
     Disconnect();
@@ -101,7 +102,40 @@ ShmemBuffer* IPCClient::GetShmem() {
     return nullptr;
 }
 
+bool IPCClient::SignalInjectFrameReady() {
+    if (!pSharedMem || pSharedMem->GetHostPID() == 0) {
+        return false;
+    }
+    if (!hInjectFrameReadyEvent) {
+        wchar_t eventName[64]{};
+        GenerateInjectFrameReadyEventName(eventName, _countof(eventName), pSharedMem->GetHostPID());
+        hInjectFrameReadyEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, eventName);
+        if (!hInjectFrameReadyEvent) {
+            static std::atomic<uint32_t> openFailureCount{0};
+            const uint32_t failure = openFailureCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (failure <= 4 || failure % 1000u == 0u) {
+                EarlyLog("IPC: Failed to open inject frame-ready event '%ls' (err=%lu count=%u)", eventName,
+                         GetLastError(), failure);
+            }
+            return false;
+        }
+        EarlyLog("IPC: Connected inject frame-ready event for host PID %u", pSharedMem->GetHostPID());
+    }
+    if (!SetEvent(hInjectFrameReadyEvent)) {
+        EarlyLog("IPC: Failed to signal inject frame-ready event (err=%lu)", GetLastError());
+        CloseHandle(hInjectFrameReadyEvent);
+        hInjectFrameReadyEvent = NULL;
+        return false;
+    }
+    pSharedMem->runtimeState.injectFrameReadySignals.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
 void IPCClient::Disconnect() {
+    if (hInjectFrameReadyEvent) {
+        CloseHandle(hInjectFrameReadyEvent);
+        hInjectFrameReadyEvent = NULL;
+    }
     if (pShmem) {
         UnmapViewOfFile(pShmem);
         pShmem = nullptr;

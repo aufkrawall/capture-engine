@@ -61,13 +61,21 @@ public:
         throttlingState.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
         throttlingState.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
         throttlingState.StateMask = 0;
-        SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &throttlingState, sizeof(throttlingState));
+        if (!SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &throttlingState,
+                                  sizeof(throttlingState))) {
+            LogWarn("[DXGIDup] Failed to disable execution-speed throttling (tid=%lu, err=%lu)",
+                    GetCurrentThreadId(), GetLastError());
+        }
 
         DWORD taskIndex = 0;
         mmcssHandle_ = AvSetMmThreadCharacteristicsW(L"Capture", &taskIndex);
         if (mmcssHandle_) {
-            AvSetMmThreadPriority(mmcssHandle_, AVRT_PRIORITY_HIGH);
-            LogInfo("[DXGIDup] Capture thread QoS enabled (tid=%lu, task=Capture)", GetCurrentThreadId());
+            if (AvSetMmThreadPriority(mmcssHandle_, AVRT_PRIORITY_HIGH)) {
+                LogInfo("[DXGIDup] Capture thread QoS enabled (tid=%lu, task=Capture)", GetCurrentThreadId());
+            } else {
+                LogWarn("[DXGIDup] MMCSS priority elevation failed (tid=%lu, err=%lu)", GetCurrentThreadId(),
+                        GetLastError());
+            }
         } else {
             SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
             LogWarn("[DXGIDup] MMCSS unavailable, using THREAD_PRIORITY_HIGHEST (tid=%lu, err=%lu)",

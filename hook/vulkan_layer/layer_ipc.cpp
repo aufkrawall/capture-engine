@@ -331,6 +331,13 @@ void LayerIPC_IncrementWriteIndex(uint64_t timestamp) {
     auto& ring = mem->frameRing;
     // CRITICAL FIX: Use acquire ordering to see consumer's readIndex updates
     uint32_t wIdx = ring.writeIndex.load(std::memory_order_acquire);
+    uint32_t rIdx = ring.readIndex.load(std::memory_order_acquire);
+    if ((uint32_t)(wIdx - rIdx) >= (uint32_t)FRAME_RING_SIZE) {
+        ring.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+        mem->runtimeState.injectProducerMetadataFullDrops.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const bool ringWasEmpty = wIdx == mem->frameRing.ingestIndex.load(std::memory_order_acquire);
 
     uint32_t slot = wIdx % FRAME_RING_SIZE;
     if (slot < FRAME_RING_SIZE) {
@@ -343,6 +350,9 @@ void LayerIPC_IncrementWriteIndex(uint64_t timestamp) {
 
     // Increment write index to signal new frame
     ring.writeIndex.store(wIdx + 1, std::memory_order_release);
+    if (ringWasEmpty) {
+        g_IPCClient.SignalInjectFrameReady();
+    }
 }
 
 // Get pointer to the ShmemBuffer for CPU staging
@@ -384,8 +394,10 @@ void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue, int64_
     // Check if ring buffer has space
     if ((uint32_t)(wIdx - rIdx) >= (uint32_t)FRAME_RING_SIZE) {
         ring.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+        mem->runtimeState.injectProducerMetadataFullDrops.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    const bool ringWasEmpty = wIdx == mem->frameRing.ingestIndex.load(std::memory_order_acquire);
 
     uint32_t slot = wIdx % FRAME_RING_SIZE;
 
@@ -403,6 +415,9 @@ void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue, int64_
     ring.slots[slot].valid.store(1, std::memory_order_release);
 
     ring.writeIndex.store(wIdx + 1, std::memory_order_release);
+    if (ringWasEmpty) {
+        g_IPCClient.SignalInjectFrameReady();
+    }
 }
 
 // IPC Logging implementation

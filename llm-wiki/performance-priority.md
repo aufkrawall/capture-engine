@@ -1,6 +1,6 @@
 # Performance Priority Settings
 
-Last cross-checked: 2026-06-30 (OBS-style D3DKMT media GPU scheduling priority added; D3D12 COPY queue / HAGS claims corrected)
+Last cross-checked: 2026-07-12 (adapter-aware HAGS auto policy, priority readback/persistence, and capture-thread QoS)
 
 ## Overview
 
@@ -15,7 +15,7 @@ The `[Performance]` section controls three independent priority mechanisms plus 
 
 **Config:** `[Performance] process_priority`
 **Generated default:** `high`
-**Parser fallback for missing/invalid values:** `above_normal`
+**Parser fallback:** missing uses `high`; invalid explicit values use `above_normal`
 **Values:** `idle`, `below_normal`, `normal`, `above_normal`, `high`, `realtime`
 
 **Scope:** Media subprocess only. Controller, Inject, Logger, Sensors, and the injected game process do not read this setting.
@@ -33,7 +33,7 @@ The `[Performance]` section controls three independent priority mechanisms plus 
 
 **Config:** `[Performance] gpu_priority`
 **Generated default:** `7`
-**Parser fallback:** `0` when absent
+**Parser fallback:** `7` when absent
 **Values:** integer `-7..7`; `0` means adaptive/neutral unless encoder pressure triggers a temporary raise.
 
 **Scope:** CE D3D11 devices, not the whole Windows process. It affects the encoder D3D11 device and WGC capture D3D11 device. With `wgc_same_device_capture=true`, WGC uses the encoder/media D3D11 device. With dedicated WGC capture, `WGCCapture::SetGpuPriority()` applies it to the dedicated capture device.
@@ -52,14 +52,16 @@ The `[Performance]` section controls three independent priority mechanisms plus 
 ## `gpu_scheduling_priority` (D3DKMT Process GPU Scheduling Class)
 
 **Config:** `[Performance] gpu_scheduling_priority`
-**Default:** `off`
-**Values:** `off`, `idle`, `below_normal`, `normal`, `above_normal`, `high`, `realtime`
+**Default:** `auto`
+**Values:** `auto`, `off`, `idle`, `below_normal`, `normal`, `above_normal`, `high`, `realtime`
 
 **Scope:** Media subprocess only. This is intentionally not applied in the injected game process; raising the game's process scheduling class would make capture compete against an even-higher-priority game and defeat the purpose.
 
 **Mechanism:** `ApplyMediaGpuSchedulingPriority()` resolves `D3DKMTSetProcessSchedulingPriorityClass` and `D3DKMTGetProcessSchedulingPriorityClass` dynamically from `gdi32.dll`, then requests the configured D3DKMT scheduling class for `GetCurrentProcess()`. After a successful set call, CE re-queries the class and logs `verified=1` only when readback matches the requested class. Failure or readback mismatch is non-fatal but logged with requested/current/previous class, elevation state, set NTSTATUS, and readback status.
 
-**OBS relationship:** OBS uses the same family of workaround: process GPU scheduling class via D3DKMT plus `IDXGIDevice::SetGPUThreadPriority` on its D3D11 device. CE now has both pieces, but keeps the process scheduling class opt-in and defaults it to `off`.
+**Automatic policy:** CE queries WDDM 2.7/2.9 scheduling caps by the actual capture-adapter LUID through dynamically resolved D3DKMT calls. Confirmed HAGS-on selects `high`; HAGS-off or unavailable/failed queries select `above_normal`. Adapter identity, driver, Windows build, HAGS support/default/enabled state, query/close status, selected class, and process-class readback are logged. Inject defers resolution until the publisher LUID exists and re-evaluates after adapter changes. Automatic policy never selects `realtime`; explicit values remain authoritative.
+
+The requested D3D11 relative priority is retained and reapplied after WGC shared/dedicated device rebuilds before WGC/duplication starts, with `GetGPUThreadPriority` readback. Encoder threads use Pro Audio MMCSS/high; WGC callback, DXGI acquisition, and inject ingest use Capture MMCSS/high. Execution-speed throttling is disabled, with a checked highest-priority fallback only when MMCSS cannot be established.
 
 **Admin/elevation:** `high`/`realtime` may fail without elevation depending on OS/driver policy. On the developer machine, direct probing showed `high` and `realtime` can be set and read back from a non-elevated process, but runtime logs should still be judged by `verified=1` rather than by the set-call status alone.
 
@@ -101,7 +103,7 @@ D3D12 COPY queues remain plausible for a DX12 inject-only experiment, but not a 
 
 For WGC, a D3D12 COPY queue rewrite has lower probability and higher risk. WGC delivers D3D11/WinRT surfaces; bridging to D3D12 would require share-handle/import feasibility and would not fix late DWM/WGC frame delivery. The `sbwgc` evidence showed copy health was OK while callback/source gaps dominated.
 
-HAGS should be treated as an environment variable to log/A-B, not as a magic scheduling guarantee. It changes Windows GPU scheduling architecture, but it does not reserve a capture lane for CE.
+HAGS remains context, not a guarantee. D3DKMT class and D3D11 relative-priority controls are scheduling hints; they do not reserve GPU engines, memory bandwidth, or compositor delivery. The larger reliability gains come from nonblocking safe slot reuse, event-driven ingest, callback-free prewarm, and CFR-safe overload behavior.
 
 ## Open Questions / Stale-risk
 

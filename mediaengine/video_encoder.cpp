@@ -1134,8 +1134,18 @@ void VideoEncoder::ApplyGpuThreadPriority(int priority, const char* reason) {
     if (SUCCEEDED(d3d11Device->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice)) && dxgiDevice) {
         HRESULT phr = dxgiDevice->SetGPUThreadPriority(priority);
         if (SUCCEEDED(phr)) {
-            currentGpuThreadPriority = priority;
-            DLL_Log("[VideoEncoder] Set GPU Thread Priority to %d (%s)", priority, reason ? reason : "update");
+            INT actual = 0;
+            const HRESULT readbackHr = dxgiDevice->GetGPUThreadPriority(&actual);
+            if (SUCCEEDED(readbackHr) && actual == priority) {
+                currentGpuThreadPriority = priority;
+                DLL_Log("[VideoEncoder] GPU Thread Priority requested=%d actual=%d verified=1 (%s)", priority, actual,
+                        reason ? reason : "update");
+            } else {
+                DLL_Log(
+                    "[VideoEncoder] GPU Thread Priority readback mismatch requested=%d actual=%d setHr=%x "
+                    "readbackHr=%x verified=0 (%s)",
+                    priority, actual, phr, readbackHr, reason ? reason : "update");
+            }
         } else {
             DLL_Log("[VideoEncoder] Failed to set GPU Thread Priority %d (%s): HR=%x", priority,
                     reason ? reason : "update", phr);
@@ -2625,6 +2635,16 @@ void VideoEncoder::BeginDeferredRecording() {
     encodedDurationUs.store(0, std::memory_order_relaxed);
     lastAssignedVideoPts = -1;
     lastFrameDeferred.store(false, std::memory_order_relaxed);
+    encoderSubmitQpcByPts.clear();
+    encoderSendAccumUs = 0;
+    encoderSendCalls = 0;
+    encoderReceiveAccumUs = 0;
+    encoderReceiveCalls = 0;
+    encoderPacketLatencyAccumUs = 0;
+    encoderPacketLatencySamples = 0;
+    encoderPacketLatencyMaxUs = 0;
+    encoderEagainDrainCount = 0;
+    encoderTimingLastLogTick = 0;
     if (repeatFrameTexture) {
         repeatFrameTexture->Release();
         repeatFrameTexture = nullptr;
@@ -3904,7 +3924,12 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     // Helper lambda to drain all available packets
     auto drainPackets = [&]() {
         while (true) {
+            const auto receiveStart = PerfTimer::now();
             int ret = avcodec_receive_packet(codecCtx, pkt);
+            const auto receiveEnd = PerfTimer::now();
+            encoderReceiveAccumUs +=
+                static_cast<uint64_t>(std::max(0.0, PerfTimer::elapsed_ms(receiveStart, receiveEnd) * 1000.0));
+            ++encoderReceiveCalls;
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
                 break;
             if (ret < 0) {
@@ -3915,6 +3940,23 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             }
 
             packetCount++;
+            const int64_t packetKey = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+            const auto submitIt = encoderSubmitQpcByPts.find(packetKey);
+            if (submitIt != encoderSubmitQpcByPts.end()) {
+                LARGE_INTEGER nowQpc = {};
+                LARGE_INTEGER frequency = {};
+                QueryPerformanceCounter(&nowQpc);
+                QueryPerformanceFrequency(&frequency);
+                if (frequency.QuadPart > 0 && nowQpc.QuadPart >= submitIt->second) {
+                    const uint64_t latencyUs = static_cast<uint64_t>(nowQpc.QuadPart - submitIt->second) * 1000000ull /
+                                               static_cast<uint64_t>(frequency.QuadPart);
+                    encoderPacketLatencyAccumUs += latencyUs;
+                    ++encoderPacketLatencySamples;
+                    encoderPacketLatencyMaxUs =
+                        std::max(encoderPacketLatencyMaxUs, SaturatingToUint32(latencyUs));
+                }
+                encoderSubmitQpcByPts.erase(submitIt);
+            }
             pkt->stream_index = stream->index;  // Ensure video stream index
 
             // Duration Logic
@@ -3936,15 +3978,26 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
     auto sendFrame = [&](AVFrame* frame) -> bool {
         drainPackets();
-        int ret = avcodec_send_frame(codecCtx, frame);
+        auto timedSend = [&](AVFrame* sendTarget) {
+            const auto sendStart = PerfTimer::now();
+            const int result = avcodec_send_frame(codecCtx, sendTarget);
+            const auto sendEnd = PerfTimer::now();
+            encoderSendAccumUs +=
+                static_cast<uint64_t>(std::max(0.0, PerfTimer::elapsed_ms(sendStart, sendEnd) * 1000.0));
+            ++encoderSendCalls;
+            return result;
+        };
+        int ret = timedSend(frame);
         int retries = 0;
+        if (ret == AVERROR(EAGAIN))
+            ++encoderEagainDrainCount;
         while (ret == AVERROR(EAGAIN) && retries < 10) {
             if (retries == 0) {
                 lastEncoderOverloadTickMs.store(GetTickCount64(), std::memory_order_relaxed);
                 PublishRuntimeState();
             }
             drainPackets();
-            ret = avcodec_send_frame(codecCtx, frame);
+            ret = timedSend(frame);
             retries++;
         }
         if (ret == AVERROR(EAGAIN)) {
@@ -3957,6 +4010,13 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             DLL_Log("[VideoEncoder] avcodec_send_frame failed: %d (%s)", ret, errbuf);
             return false;
         }
+        if (frame && frame->pts != AV_NOPTS_VALUE) {
+            LARGE_INTEGER submitted = {};
+            QueryPerformanceCounter(&submitted);
+            encoderSubmitQpcByPts[frame->pts] = submitted.QuadPart;
+            while (encoderSubmitQpcByPts.size() > 256)
+                encoderSubmitQpcByPts.erase(encoderSubmitQpcByPts.begin());
+        }
         drainPackets();
         return true;
     };
@@ -3967,6 +4027,28 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
     if (success) {
         success = sendFrame(d3d11Frame);
+    }
+
+    const uint64_t timingNow = GetTickCount64();
+    if (encoderTimingLastLogTick == 0 || timingNow - encoderTimingLastLogTick >= 1000) {
+        const uint64_t sendAvgUs = encoderSendCalls > 0 ? encoderSendAccumUs / encoderSendCalls : 0;
+        const uint64_t receiveAvgUs = encoderReceiveCalls > 0 ? encoderReceiveAccumUs / encoderReceiveCalls : 0;
+        const uint64_t packetLatencyAvgUs =
+            encoderPacketLatencySamples > 0 ? encoderPacketLatencyAccumUs / encoderPacketLatencySamples : 0;
+        DLL_Log("[VideoEncoder Timing] sendAvg=%lluus receiveAvg=%lluus submitToPacket=%llu/%uus "
+                "eagainDrain=%u pendingPts=%zu",
+                static_cast<unsigned long long>(sendAvgUs), static_cast<unsigned long long>(receiveAvgUs),
+                static_cast<unsigned long long>(packetLatencyAvgUs), encoderPacketLatencyMaxUs,
+                encoderEagainDrainCount, encoderSubmitQpcByPts.size());
+        encoderSendAccumUs = 0;
+        encoderSendCalls = 0;
+        encoderReceiveAccumUs = 0;
+        encoderReceiveCalls = 0;
+        encoderPacketLatencyAccumUs = 0;
+        encoderPacketLatencySamples = 0;
+        encoderPacketLatencyMaxUs = 0;
+        encoderEagainDrainCount = 0;
+        encoderTimingLastLogTick = timingNow;
     }
 
     auto afterEncode = PerfTimer::now();
@@ -4861,6 +4943,16 @@ void VideoEncoder::CleanupResources() {
     nonMonotonicPtsCount.store(0, std::memory_order_relaxed);
     lastQueuedVideoPts = AV_NOPTS_VALUE;
     lastAssignedVideoPts = -1;
+    encoderSubmitQpcByPts.clear();
+    encoderSendAccumUs = 0;
+    encoderSendCalls = 0;
+    encoderReceiveAccumUs = 0;
+    encoderReceiveCalls = 0;
+    encoderPacketLatencyAccumUs = 0;
+    encoderPacketLatencySamples = 0;
+    encoderPacketLatencyMaxUs = 0;
+    encoderEagainDrainCount = 0;
+    encoderTimingLastLogTick = 0;
     asyncWriteErrorCount = 0;
     cursorUpdateCounter = 0;
     cachedCursorX = 0;

@@ -12,6 +12,7 @@
 #include <queue>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 #include "../common/config.h"
 #include "../common/shared_defs.h"
@@ -269,6 +270,16 @@ private:
     int64_t lastAssignedVideoPts = -1;  // Last input frame PTS assigned to encoder
     int64_t lastEncodeTimeUs = 0;       // Duration of last frame encoding (pure encode time)
     int64_t lastFenceWaitUs = 0;        // Duration of last fence wait
+    std::unordered_map<int64_t, int64_t> encoderSubmitQpcByPts;
+    uint64_t encoderSendAccumUs = 0;
+    uint64_t encoderSendCalls = 0;
+    uint64_t encoderReceiveAccumUs = 0;
+    uint64_t encoderReceiveCalls = 0;
+    uint64_t encoderPacketLatencyAccumUs = 0;
+    uint64_t encoderPacketLatencySamples = 0;
+    uint32_t encoderPacketLatencyMaxUs = 0;
+    uint32_t encoderEagainDrainCount = 0;
+    uint64_t encoderTimingLastLogTick = 0;
     std::atomic<bool> lastFrameDeferred{false};
     HANDLE fenceEvent = nullptr;
 

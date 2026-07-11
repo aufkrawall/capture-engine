@@ -85,10 +85,11 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_TRUE(config.wgcSmoothnessBufferEnabled);
     EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 300u);
     EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 3000u);
+    EXPECT_EQ(config.wgcVideoMemoryReservation, "off");
     EXPECT_FALSE(config.wgcAllowLossyBgra8Pool);
     EXPECT_EQ(config.processPriority, "high");
     EXPECT_EQ(config.video.gpuPriority, 7);
-    EXPECT_EQ(config.gpuSchedulingPriority, "off");
+    EXPECT_EQ(config.gpuSchedulingPriority, "auto");
     EXPECT_EQ(config.video.profile, "auto");
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_FALSE(config.graphics.forceMipBiasClamp);
@@ -105,8 +106,9 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_enabled=true"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_max_ms=300"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_vram_budget_mb=3000"), std::string::npos);
+    EXPECT_NE(generatedText.find("wgc_video_memory_reservation=off"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_allow_lossy_bgra8_pool=false"), std::string::npos);
-    EXPECT_NE(generatedText.find("gpu_scheduling_priority=off"), std::string::npos);
+    EXPECT_NE(generatedText.find("gpu_scheduling_priority=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("; backbuffer_count, affecting vsync"), std::string::npos);
@@ -218,7 +220,8 @@ TEST_F(ConfigTest, ParseWgcExperimentalFlags) {
         "wgc_same_device_capture=true\n"
         "wgc_smoothness_buffer_enabled=false\n"
         "wgc_smoothness_buffer_max_ms=125\n"
-        "wgc_smoothness_buffer_vram_budget_mb=512\n");
+        "wgc_smoothness_buffer_vram_budget_mb=512\n"
+        "wgc_video_memory_reservation=full\n");
 
     AppConfig config;
     LoadConfig(tempConfigFile, config);
@@ -228,6 +231,25 @@ TEST_F(ConfigTest, ParseWgcExperimentalFlags) {
     EXPECT_FALSE(config.wgcSmoothnessBufferEnabled);
     EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 125u);
     EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 512u);
+    EXPECT_EQ(config.wgcVideoMemoryReservation, "full");
+}
+
+TEST_F(ConfigTest, InvalidWgcVideoMemoryReservationStaysDiagnosticOff) {
+    WriteConfig("[General]\nwgc_video_memory_reservation=aggressive\n");
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.wgcVideoMemoryReservation, "off");
+}
+
+TEST_F(ConfigTest, MissingPerformancePriorityValuesUseShippedDefaults) {
+    WriteConfig("[Performance]\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.processPriority, "high");
+    EXPECT_EQ(config.video.gpuPriority, 7);
+    EXPECT_EQ(config.gpuSchedulingPriority, "auto");
 }
 
 TEST_F(ConfigTest, ParseCanonicalWgcLossyPoolOption) {

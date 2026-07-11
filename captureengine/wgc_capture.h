@@ -271,6 +271,7 @@ public:
     void SetAllowDuplicationFallback(bool enabled);
     void SetSmoothnessBufferBudget(bool enabled, uint32_t outputFps, uint32_t maxMs, uint32_t vramBudgetMb,
                                    uint32_t syncDelayFrames = 0);
+    void SetVideoMemoryReservationMode(const std::string& mode);
     void SetRetainedFramePressure(uint32_t retainedFrames, uint32_t retainedFrameCap, uint32_t lowWaterFrames,
                                   bool recovering, bool uniformPlayoutOwnsSurplus);
 

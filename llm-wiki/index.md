@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-12 (strict true-10-bit DXGI/WGC capture and CFR packet coverage, multi-track physical-audio fan-out/startup backlog control, capture reliability, durable FFX routing, post-FSR Streamline prewarm, all three official Streamline tag/evaluate paths, and event-driven same-queue PostSL takeover; see wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, frame-generation/guardrails.md, and log/recent.md)
+Last cross-checked: 2026-07-12 (HAGS-on capture contention hardening, strict true-10-bit DXGI/WGC capture, multi-track audio, capture reliability, and current Streamline/FG routing; see performance-priority.md, wgc-capture.md, cfr-capture-sync.md, regression-testing-and-logging.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -55,15 +55,15 @@ Primary sources:
 - `pseudo-overlay.md`
   - Controller-side pseudo-overlay for WGC capture: architecture, modes, foreground detection, process_list config parsing, known pitfalls (Trim charset, `;` comment skipping), debug logging, source anchors.
 - `regression-testing-and-logging.md`
-  - Regression coverage expectations, useful test files, logging expectations, and the deterministic `dx12_av_sync_test.exe`/stimulus analyzer/runner workflow for risky runtime changes, including the fast zero-drift quick gate, late app-source gate, fullscreen/topmost tear-free dual-lane stimulus capture, source-stall validation, adaptive WGC p5/p6/p7 high-entropy overload gate, real-session stutter/shutdown triage, scenario-local CE log snapshots, and strict system/app A/V checks.
+  - Regression coverage expectations and deterministic capture runners, including the fast zero-drift gate, overload/long-soak profiles, and HAGS-on 4K120 contention gate. Last verified 2026-07-12.
 - `multi-audio-capture.md`
   - Multi system audio (`[Audio.N]`), multi microphone (`[Microphone.N]`), and app audio capture, including worker-owned WASAPI lifecycle/reactivation, bounded validated packet delivery, no-wait final drain, and audio-only stop-tail preservation. Last verified 2026-07-11. Stale-risk: medium (runtime device matrices remain necessary).
 - `wgc-capture.md`
-  - WGC and DXGI Desktop Duplication backends, including callback epochs, atomic capture ownership, transactional retarget/rollback, first-frame-proven inject handoff, source/cursor epochs, exact-target fallback, shared pool/CFR machinery, and hardware-cursor-aware duplication. Last verified 2026-07-11. Stale-risk: medium (real-hardware multi-monitor/HDR/DirectFlip validation remains necessary).
+  - WGC and DXGI Desktop Duplication backends, including callback epochs, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and hardware-cursor-aware duplication. Last verified 2026-07-12. Stale-risk: medium.
 - `cfr-capture-sync.md`
-  - Shared WGC/inject CFR and A/V invariants, including inject texture-slot leases through synchronous copy, transactional fresh-frame metadata, scheduled encode-failure repeat recovery, source-epoch cache invalidation, exact stop/tail accounting, and deterministic validation. Last verified 2026-07-11. Stale-risk: medium.
+  - Shared WGC/inject CFR and A/V invariants, including event-driven inject transport, combined CPU/GPU slot safety, starvation attribution, repeat recovery, and exact stop/tail accounting. Last verified 2026-07-12. Stale-risk: medium.
 - `performance-priority.md`
-  - `[Performance]` config section: `process_priority` (media CPU), `gpu_priority` (CE D3D11 GPU thread), `gpu_scheduling_priority` (OBS-style D3DKMT media process GPU scheduling class), and `copy_queue_priority` (legacy-named D3D12 overlay DIRECT queue priority, not a COPY queue). Includes HAGS/D3D12 COPY queue findings, source anchors, validation needs, and open questions. Last verified 2026-06-30. Stale-risk: medium.
+  - `[Performance]` priorities, adapter-aware HAGS auto resolution, D3D11 priority persistence/readback, capture/encoder MMCSS QoS, and D3D12 queue constraints. Last verified 2026-07-12. Stale-risk: medium.
 - `recording-output-paths.md`
   - MediaEngine recording output filename/directory behavior, including elevated-process mapped-drive handling by rewriting persistent mapped drive letters to UNC via `WNetGetConnectionW` or `HKCU\Network\<drive>\RemotePath`. Last verified 2026-06-30. Stale-risk: medium.
 - `log.md`

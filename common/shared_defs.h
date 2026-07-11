@@ -41,7 +41,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 27: Added WGC-specific selection-bias telemetry separate from output schedule bias
 // Version 28: Added OverlayConfig::dx12FocusAnalysis (config-gated DX12 focus/mode-switch analysis)
 // Version 29: Expanded hook->host shared texture slots from 8 to 16 for high-rate CFR inject selection
-static constexpr uint32_t SHARED_MEMORY_VERSION = 29;
+// Version 30: Added inject producer contention and frame-ready wake diagnostics
+static constexpr uint32_t SHARED_MEMORY_VERSION = 30;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -111,6 +112,10 @@ inline void GenerateSharedMemName(wchar_t* outName, size_t maxLen, uint32_t pid)
 // Generate shutdown event name for Logger/Sensor processes keyed to controller PID
 inline void GenerateShutdownEventName(wchar_t* outName, size_t maxLen, uint32_t controllerPid) {
     swprintf(outName, maxLen, L"Local\\CE_Shutdown_%08X", controllerPid);
+}
+
+inline void GenerateInjectFrameReadyEventName(wchar_t* outName, size_t maxLen, uint32_t controllerPid) {
+    swprintf(outName, maxLen, L"Local\\CE_InjectFrame_%08X", controllerPid);
 }
 
 // Bounds checking helpers for safe shared memory access
@@ -349,6 +354,15 @@ struct alignas(8) CaptureState {
     std::atomic<uint32_t> injectPacingDrops{0};
     std::atomic<uint32_t> injectCadenceDrops{0};
     std::atomic<uint32_t> injectTrimmedFrames{0};
+    std::atomic<uint32_t> injectProducerCaptureLockDrops{0};
+    std::atomic<uint32_t> injectProducerCpuLeaseBusyDrops{0};
+    std::atomic<uint32_t> injectProducerGpuBusyDrops{0};
+    std::atomic<uint32_t> injectProducerMetadataFullDrops{0};
+    std::atomic<uint32_t> injectFrameReadySignals{0};
+    std::atomic<uint32_t> injectPublicationToIngestAvgUs{0};
+    std::atomic<uint32_t> injectPublicationToIngestMaxUs{0};
+    std::atomic<uint32_t> encoderTimerWakeLateAvgUs{0};
+    std::atomic<uint32_t> encoderTimerWakeLateMaxUs{0};
     std::atomic<uint32_t> deferredFrames{0};
     std::atomic<uint32_t> repeatedDeferredFrames{0};
     std::atomic<uint32_t> consecutiveDeferredFrames{0};
@@ -469,8 +483,15 @@ struct FrameRingBuffer {
     // Producer index - isolated on its own cache line
     alignas(64) std::atomic<uint32_t> writeIndex{0};  // Next slot to write (hook/producer)
 
-    // Consumer index - isolated on its own cache line
-    alignas(64) std::atomic<uint32_t> readIndex{0};  // Next slot to read (engine/consumer)
+    // Lease acknowledgement index - isolated on its own cache line. This can
+    // intentionally trail ingestion while queued frames still reference the
+    // producer textures.
+    alignas(64) std::atomic<uint32_t> readIndex{0};
+
+    // Metadata ingestion index - the next slot the media ingest thread has not
+    // observed yet. Producers use this only for empty->nonempty event
+    // coalescing; texture/ring reuse remains governed by readIndex.
+    alignas(64) std::atomic<uint32_t> ingestIndex{0};
 
     // Dropped frame counter - can share with readIndex (both consumer-side)
     std::atomic<uint32_t> droppedFrames{0};  // Frames dropped due to buffer full
@@ -481,6 +502,9 @@ struct FrameRingBuffer {
     }
     uint32_t load_read_index_acquire() const {
         return readIndex.load(std::memory_order_acquire);
+    }
+    uint32_t load_ingest_index_acquire() const {
+        return ingestIndex.load(std::memory_order_acquire);
     }
     uint32_t load_write_index_relaxed() const {
         return writeIndex.load(std::memory_order_relaxed);
@@ -494,6 +518,9 @@ struct FrameRingBuffer {
     }
     void store_read_index_release(uint32_t idx) {
         readIndex.store(idx, std::memory_order_release);
+    }
+    void store_ingest_index_release(uint32_t idx) {
+        ingestIndex.store(idx, std::memory_order_release);
     }
 };
 

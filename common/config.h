@@ -322,6 +322,8 @@ struct AppConfig {
     bool wgcSmoothnessBufferEnabled = true;
     uint32_t wgcSmoothnessBufferMaxMs = 300;
     uint32_t wgcSmoothnessBufferVramBudgetMb = 3000;
+    // Diagnostic A/B switch only: off, mandatory, or full. Shipped default is off.
+    std::string wgcVideoMemoryReservation = "off";
     // WGC smoothness floor: a baseline jitter-buffer delay engaged even when there is no
     // audio-latency content delay (video-only capture / low-confidence loopback probe), so WGC
     // never falls back to maximally-jitter-exposed near-live selection. "auto" (default) derives
@@ -337,7 +339,7 @@ struct AppConfig {
 
     // Performance (Priority Settings)
     std::string processPriority;        // idle, below_normal, normal, above_normal, high, realtime
-    std::string gpuSchedulingPriority;  // off, idle, below_normal, normal, above_normal, high, realtime
+    std::string gpuSchedulingPriority;  // auto, off, idle, below_normal, normal, above_normal, high, realtime
     std::string copyQueuePriority;      // low, normal, high (D3D12 overlay DIRECT queue priority)
     int fenceWaitMode = 1;          // 0=always, 1=first_only, 2=never (debug)
     bool useGameQueue = false;      // Use game's command queue for capture (reduces GPU contention)

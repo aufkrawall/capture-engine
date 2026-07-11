@@ -33,6 +33,7 @@
 #include "../common/shared_defs.h"
 #include "../common/thread_power_throttling_compat.h"
 #include "mediaengine_loader.h"
+#include "windows_gpu_scheduling.h"
 #include "wgc_capture.h"
 
 #ifdef _MSC_VER
@@ -86,6 +87,8 @@ static std::atomic<bool> g_InjectCaptureRunning{false};
 static std::atomic<bool> g_InjectCaptureShutdown{false};
 static std::atomic<bool> g_InjectSessionReset{true};  // Set true on StartRecording to reset inject session state
 static std::thread g_InjectCaptureThread;
+static HANDLE g_InjectFrameReadyEvent = NULL;
+static HANDLE g_InjectCaptureShutdownEvent = NULL;
 
 // WGC thread specific
 static std::atomic<bool> g_WgcCaptureRunning{false};
@@ -533,6 +536,7 @@ bool MediaEngineConfigEquals(const AppConfig& lhs, const AppConfig& rhs) {
         lhs.wgcSmoothnessBufferEnabled != rhs.wgcSmoothnessBufferEnabled ||
         lhs.wgcSmoothnessBufferMaxMs != rhs.wgcSmoothnessBufferMaxMs ||
         lhs.wgcSmoothnessBufferVramBudgetMb != rhs.wgcSmoothnessBufferVramBudgetMb ||
+        lhs.wgcVideoMemoryReservation != rhs.wgcVideoMemoryReservation ||
         lhs.wgcAllowLossyBgra8Pool != rhs.wgcAllowLossyBgra8Pool ||
         !MediaVideoConfigEquals(lhs.video, rhs.video) || lhs.audioSources.size() != rhs.audioSources.size()) {
         return false;
@@ -608,6 +612,15 @@ void ResetRuntimeDiagnostics(SharedMemoryLayout* sharedMem) {
     state.injectPacingDrops.store(0, std::memory_order_relaxed);
     state.injectCadenceDrops.store(0, std::memory_order_relaxed);
     state.injectTrimmedFrames.store(0, std::memory_order_relaxed);
+    state.injectProducerCaptureLockDrops.store(0, std::memory_order_relaxed);
+    state.injectProducerCpuLeaseBusyDrops.store(0, std::memory_order_relaxed);
+    state.injectProducerGpuBusyDrops.store(0, std::memory_order_relaxed);
+    state.injectProducerMetadataFullDrops.store(0, std::memory_order_relaxed);
+    state.injectFrameReadySignals.store(0, std::memory_order_relaxed);
+    state.injectPublicationToIngestAvgUs.store(0, std::memory_order_relaxed);
+    state.injectPublicationToIngestMaxUs.store(0, std::memory_order_relaxed);
+    state.encoderTimerWakeLateAvgUs.store(0, std::memory_order_relaxed);
+    state.encoderTimerWakeLateMaxUs.store(0, std::memory_order_relaxed);
     state.deferredFrames.store(0, std::memory_order_relaxed);
     state.repeatedDeferredFrames.store(0, std::memory_order_relaxed);
     state.consecutiveDeferredFrames.store(0, std::memory_order_relaxed);
@@ -1105,6 +1118,7 @@ static void ResetInjectFrameRingToLatest(const char* reason) {
     }
 
     ring.readIndex.store(writeIndex, std::memory_order_release);
+    ring.ingestIndex.store(writeIndex, std::memory_order_release);
     LogInfo("[Media] Discarded %u stale inject frame(s) before %s", static_cast<unsigned>(writeIndex - readIndex),
             reason);
 }
@@ -1120,8 +1134,31 @@ static void ResetLastQueuedFrameCache() {
     g_HasLastFrame = false;
 }
 
+static bool EnsureInjectCaptureEvents() {
+    if (!g_InjectCaptureShutdownEvent) {
+        g_InjectCaptureShutdownEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!g_InjectCaptureShutdownEvent) {
+            LogWarn("[Inject Thread] Failed to create shutdown event (err=%lu)", GetLastError());
+        }
+    }
+    if (!g_InjectFrameReadyEvent && g_pSharedMem && g_pSharedMem->GetHostPID() != 0) {
+        wchar_t eventName[64]{};
+        GenerateInjectFrameReadyEventName(eventName, _countof(eventName), g_pSharedMem->GetHostPID());
+        g_InjectFrameReadyEvent = CreateEventW(nullptr, FALSE, FALSE, eventName);
+        if (!g_InjectFrameReadyEvent) {
+            LogWarn("[Inject Thread] Failed to create frame-ready event '%ls' (err=%lu)", eventName, GetLastError());
+        } else {
+            LogInfo("[Inject Thread] Frame-ready event initialized: %ls", eventName);
+        }
+    }
+    return g_InjectFrameReadyEvent && g_InjectCaptureShutdownEvent;
+}
+
 static void StopInjectCapturePipeline() {
     g_InjectCaptureShutdown = true;
+    if (g_InjectCaptureShutdownEvent) {
+        SetEvent(g_InjectCaptureShutdownEvent);
+    }
     JoinThreadWithTimeout(g_InjectCaptureThread, 5000, "inject capture");
     ResetInjectFrameRingToLatest("inject pipeline stop");
 }
@@ -1257,6 +1294,7 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
         config.wgcSmoothnessBufferEnabled && !config.video.useVFR &&
             (hasWgcContentDelayBudget || wgcSmoothnessFloorBudgetDesired),
         outputFps, config.wgcSmoothnessBufferMaxMs, config.wgcSmoothnessBufferVramBudgetMb, syncDelayFramesForBudget);
+    capture->SetVideoMemoryReservationMode(config.wgcVideoMemoryReservation);
     if (config.video.useVFR) {
         capture->SetDirectFrameCallback(QueueWgcFrame);
     } else {
@@ -1274,6 +1312,9 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     // producer governor does not become a second frame-drop policy.
     capture->SetTargetFps(0);
     capture->SetProducerTargetFps(initialWgcTargetFps);
+    // Persist before StartCapture so any device rebuild and the first WGC/DXGI
+    // submissions inherit the configured relative GPU priority.
+    capture->SetGpuPriority(config.video.gpuPriority);
 
     // For CFR recording, disable the encoder-bottleneck throttle at the WGC
     // callback level.  The throttle is all-or-nothing (bang-bang) and its slow
@@ -1313,8 +1354,6 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
         LogWarn("[Media] MediaEngine_SetSourcePrefers10Bit not available (old mediaengine.dll?)");
     }
 
-    capture->SetGpuPriority(config.video.gpuPriority);
-
     g_WgcCaptureShutdown = false;
     // Recording-lifetime config snapshot: the main thread reassigns `config`
     // on late hook connects and IPC config reloads (refreshActiveConfig),
@@ -1324,7 +1363,6 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
         auto configSnapshot = std::make_shared<const AppConfig>(config);
         g_WgcCaptureThread = std::thread([configSnapshot]() { WgcCaptureThreadFunc(*configSnapshot); });
     }
-    SetThreadPriority(reinterpret_cast<HANDLE>(g_WgcCaptureThread.native_handle()), THREAD_PRIORITY_HIGHEST);
     return true;
 }
 
@@ -1621,17 +1659,35 @@ static std::string GetLocalConfigPath() {
 
 class ScopedMmcssTask {
 public:
-    ScopedMmcssTask(const wchar_t* taskName, AVRT_PRIORITY priority) {
+    ScopedMmcssTask(const wchar_t* taskName, AVRT_PRIORITY priority, const char* role) : role_(role) {
         DWORD taskIndex = 0;
         handle_ = AvSetMmThreadCharacteristicsW(taskName, &taskIndex);
         if (handle_) {
-            AvSetMmThreadPriority(handle_, priority);
+            if (!AvSetMmThreadPriority(handle_, priority)) {
+                LogWarn("[%s] AvSetMmThreadPriority failed (tid=%lu err=%lu)", role_, GetCurrentThreadId(),
+                        GetLastError());
+            } else {
+                LogInfo("[%s] Thread QoS enabled (tid=%lu task=%ls priority=%d)", role_, GetCurrentThreadId(), taskName,
+                        static_cast<int>(priority));
+            }
+        } else {
+            const DWORD mmcssError = GetLastError();
+            if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST)) {
+                LogWarn("[%s] MMCSS and THREAD_PRIORITY_HIGHEST setup failed (tid=%lu mmcssErr=%lu priorityErr=%lu)",
+                        role_, GetCurrentThreadId(), mmcssError, GetLastError());
+            } else {
+                LogWarn("[%s] MMCSS setup failed; using THREAD_PRIORITY_HIGHEST (tid=%lu err=%lu)", role_,
+                        GetCurrentThreadId(), mmcssError);
+            }
         }
     }
 
     ~ScopedMmcssTask() {
         if (handle_) {
-            AvRevertMmThreadCharacteristics(handle_);
+            if (!AvRevertMmThreadCharacteristics(handle_)) {
+                LogWarn("[%s] AvRevertMmThreadCharacteristics failed (tid=%lu err=%lu)", role_, GetCurrentThreadId(),
+                        GetLastError());
+            }
         }
     }
 
@@ -1640,14 +1696,18 @@ public:
 
 private:
     HANDLE handle_ = nullptr;
+    const char* role_ = "Thread";
 };
 
-static void DisableCurrentThreadPowerThrottling() {
+static void DisableCurrentThreadPowerThrottling(const char* role) {
     THREAD_POWER_THROTTLING_STATE throttlingState = {};
     throttlingState.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
     throttlingState.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
     throttlingState.StateMask = 0;
-    SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &throttlingState, sizeof(throttlingState));
+    if (!SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &throttlingState, sizeof(throttlingState))) {
+        LogWarn("[%s] Failed to disable execution-speed power throttling (tid=%lu err=%lu)", role,
+                GetCurrentThreadId(), GetLastError());
+    }
 }
 
 static void WaitUntilQpcTarget(HANDLE timer, int64_t targetQpc, int64_t qpcFrequency) {
@@ -1788,15 +1848,21 @@ static bool ResolveD3dkmtSchedulingPriorityClass(const std::string& value, int& 
     return true;
 }
 
-static void ApplyMediaGpuSchedulingPriority(const AppConfig& config) {
+static void ApplyMediaGpuSchedulingPriority(const AppConfig& config, const LUID* adapterLuid = nullptr) {
     using D3dkmtSetProcessSchedulingPriorityClassFn = LONG(WINAPI*)(HANDLE, int);
     using D3dkmtGetProcessSchedulingPriorityClassFn = LONG(WINAPI*)(HANDLE, int*);
 
+    static std::mutex s_priorityMutex;
+    std::lock_guard<std::mutex> priorityLock(s_priorityMutex);
     static bool s_loggedDisabled = false;
+    static bool s_loggedAutoDeferred = false;
     static bool s_appliedNonDefault = false;
     static std::string s_lastRequest;
+    static LUID s_lastEnvironmentLuid{};
+    static bool s_haveLastEnvironmentLuid = false;
 
     const bool disabled = config.gpuSchedulingPriority == "off";
+    const bool automatic = config.gpuSchedulingPriority == "auto";
     int requestedClass = 2;
     if (disabled) {
         if (!s_appliedNonDefault) {
@@ -1806,6 +1872,39 @@ static void ApplyMediaGpuSchedulingPriority(const AppConfig& config) {
             }
             return;
         }
+    } else if (automatic) {
+        if (!adapterLuid) {
+            if (!s_loggedAutoDeferred) {
+                LogInfo("[Media] GPU scheduling priority auto deferred until the capture adapter LUID is known");
+                s_loggedAutoDeferred = true;
+            }
+            return;
+        }
+
+        ce::windows_gpu_scheduling::AdapterSchedulingEnvironment environment{};
+        const bool queried = ce::windows_gpu_scheduling::QueryAdapterSchedulingEnvironment(*adapterLuid, environment);
+        requestedClass = ce::gpu_scheduling::ResolveAutomaticProcessSchedulingPriority(environment.hags);
+        const bool newEnvironment = !s_haveLastEnvironmentLuid ||
+                                    !ce::windows_gpu_scheduling::SameLuid(s_lastEnvironmentLuid, *adapterLuid);
+        if (newEnvironment) {
+            LogInfo(
+                "[Media] GPU scheduling environment: adapter=%ls luid=%s vendor=0x%04X device=0x%04X "
+                "driver=0x%016llX windowsBuild=%u hagsQuery=%d hagsEnabled=%d hagsDefault=%d hagsSupported=%d "
+                "hagsSupport=%s open=0x%08lX caps27=0x%08lX caps29=0x%08lX close=0x%08lX autoClass=%s",
+                environment.description.empty() ? L"unknown" : environment.description.c_str(),
+                ce::windows_gpu_scheduling::FormatLuid(*adapterLuid).c_str(), environment.vendorId,
+                environment.deviceId, static_cast<unsigned long long>(environment.driverVersion),
+                environment.windowsBuild, queried ? 1 : 0, environment.hags.enabled ? 1 : 0,
+                environment.hags.enabledByDefault ? 1 : 0, environment.hags.supported ? 1 : 0,
+                ce::gpu_scheduling::HagsSupportStateName(environment.hags.supportState),
+                static_cast<unsigned long>(environment.openStatus),
+                static_cast<unsigned long>(environment.caps27Status),
+                static_cast<unsigned long>(environment.caps29Status),
+                static_cast<unsigned long>(environment.closeStatus), D3dkmtSchedulingPriorityClassName(requestedClass));
+            s_lastEnvironmentLuid = *adapterLuid;
+            s_haveLastEnvironmentLuid = true;
+        }
+        s_loggedAutoDeferred = false;
     } else if (!ResolveD3dkmtSchedulingPriorityClass(config.gpuSchedulingPriority, requestedClass)) {
         LogWarn("[Media] Ignoring invalid GPU scheduling priority class '%s'", config.gpuSchedulingPriority.c_str());
         return;
@@ -1832,7 +1931,17 @@ static void ApplyMediaGpuSchedulingPriority(const AppConfig& config) {
     int currentClass = -1;
     LONG getStatus = getPriority ? 0 : static_cast<LONG>(ERROR_PROC_NOT_FOUND);
     const bool haveCurrent = getPriority && ((getStatus = getPriority(GetCurrentProcess(), &currentClass)) >= 0);
-    const char* requestText = disabled ? "off(reset_to_normal)" : config.gpuSchedulingPriority.c_str();
+    std::string automaticRequest;
+    const char* requestText = nullptr;
+    if (disabled) {
+        requestText = "off(reset_to_normal)";
+    } else if (automatic) {
+        automaticRequest = std::string("auto(") + D3dkmtSchedulingPriorityClassName(requestedClass) + ")@" +
+                           ce::windows_gpu_scheduling::FormatLuid(*adapterLuid);
+        requestText = automaticRequest.c_str();
+    } else {
+        requestText = config.gpuSchedulingPriority.c_str();
+    }
     if (haveCurrent && currentClass == requestedClass && s_lastRequest == requestText) {
         return;
     }
@@ -1891,15 +2000,39 @@ static void ApplyMediaPrioritySettings(const AppConfig& config) {
     ApplyMediaGpuSchedulingPriority(config);
 }
 
+static bool ApplyMediaGpuSchedulingPriorityForDevice(const AppConfig& config, ID3D11Device* device) {
+    LUID luid{};
+    if (!ce::windows_gpu_scheduling::GetAdapterLuid(device, luid)) {
+        LogWarn("[Media] Could not resolve D3D11 adapter LUID for GPU scheduling priority");
+        return false;
+    }
+    ApplyMediaGpuSchedulingPriority(config, &luid);
+    return true;
+}
+
+static bool ApplyMediaGpuSchedulingPriorityForSharedAdapter(const AppConfig& config) {
+    if (!g_pSharedMem) {
+        return false;
+    }
+    LUID luid{};
+    luid.LowPart = g_pSharedMem->GetLuidLowPart();
+    luid.HighPart = static_cast<LONG>(g_pSharedMem->GetLuidHighPart());
+    if (luid.LowPart == 0 && luid.HighPart == 0) {
+        return false;
+    }
+    ApplyMediaGpuSchedulingPriority(config, &luid);
+    return true;
+}
+
 // =================================================================================================
 // THREAD FUNCTIONS
 // =================================================================================================
 
 void InjectCaptureThreadFunc(const AppConfig& config) {
-    LogInfo(
-        "[Inject Thread] Started (High Priority Polling with adaptive source-side "
-        "Pacing)");
+    LogInfo("[Inject Thread] Started (event-driven ingest with adaptive source-side pacing)");
     g_InjectCaptureRunning = true;
+    DisableCurrentThreadPowerThrottling("Inject Thread");
+    ScopedMmcssTask injectMmcssTask(L"Capture", AVRT_PRIORITY_HIGH, "Inject Thread");
 
     if (!g_pSharedMem) {
         LogError("[Inject Thread] Shared memory not available! Aborting.");
@@ -1907,8 +2040,30 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
         return;
     }
 
+    LUID lastSchedulingLuid{};
+    bool haveSchedulingLuid = false;
+    const auto applySchedulingForCurrentAdapter = [&]() {
+        LUID current{};
+        current.LowPart = g_pSharedMem->GetLuidLowPart();
+        current.HighPart = static_cast<LONG>(g_pSharedMem->GetLuidHighPart());
+        if (current.LowPart == 0 && current.HighPart == 0) {
+            return;
+        }
+        if (!haveSchedulingLuid || !ce::windows_gpu_scheduling::SameLuid(lastSchedulingLuid, current)) {
+            ApplyMediaGpuSchedulingPriority(config, &current);
+            lastSchedulingLuid = current;
+            haveSchedulingLuid = true;
+        }
+    };
+    applySchedulingForCurrentAdapter();
+
     // Local read index tracks what WE have pushed to the FrameQueue
     uint32_t localReadIndex = g_pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
+    g_pSharedMem->frameRing.ingestIndex.store(localReadIndex, std::memory_order_release);
+    auto advanceIngestIndex = [&]() {
+        ++localReadIndex;
+        g_pSharedMem->frameRing.ingestIndex.store(localReadIndex, std::memory_order_release);
+    };
     std::shared_ptr<ce::InjectFrameRingLeaseState> injectRingLeaseState;
     try {
         injectRingLeaseState = std::make_shared<ce::InjectFrameRingLeaseState>(&g_pSharedMem->frameRing);
@@ -1935,7 +2090,6 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     uint32_t pushedCount = 0;
     uint32_t droppedCount = 0;
     uint32_t pacingDroppedCount = 0;
-    uint32_t emptySpinCount = 0;
     uint32_t lastDuplicateCount = 0;
     uint32_t lastLateCount = 0;
     uint32_t lastTrimmedCount = g_InjectBufferedTrimmedFrames.load(std::memory_order_relaxed);
@@ -1943,8 +2097,12 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     uint32_t lastDeferredCount = g_InjectDeferredFrames.load(std::memory_order_relaxed);
     bool earlyTexturesCreated = false;
     bool sharedTexturesCreated = false;
+    uint64_t publicationToIngestAccumUs = 0;
+    uint32_t publicationToIngestSamples = 0;
+    uint32_t publicationToIngestMaxUs = 0;
 
     while (!g_InjectCaptureShutdown && g_Recording) {
+        applySchedulingForCurrentAdapter();
         // Create encoder textures as soon as resolution is available (before frames arrive)
         // This is critical for DXVK where the Vulkan layer waits for encoder KMT textures
         // NOTE: non-static so it resets per thread lifetime (new recording = new thread)
@@ -1975,7 +2133,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
             const uint32_t catchupReadIndex = writeIndex - 1;
             while (localReadIndex != catchupReadIndex) {
                 injectRingLeaseState->Complete(localReadIndex);
-                ++localReadIndex;
+                advanceIngestIndex();
             }
             droppedCount += dropped;
             g_pSharedMem->runtimeState.hostDroppedFrames.fetch_add(dropped, std::memory_order_relaxed);
@@ -1984,8 +2142,6 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
         }
 
         if (writeIndex != localReadIndex) {
-            emptySpinCount = 0;
-
             uint32_t index = localReadIndex % FRAME_RING_SIZE;
             FrameSlot& slot = g_pSharedMem->frameRing.slots[index];
 
@@ -2072,6 +2228,15 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     LARGE_INTEGER enqueueQpc;
                     QueryPerformanceCounter(&enqueueQpc);
                     qf.enqueueQpc = enqueueQpc.QuadPart;
+                    if (slot.timestamp > 0 && enqueueQpc.QuadPart >= slot.timestamp && qpcFreq.QuadPart > 0) {
+                        const uint64_t ingestDelayUs =
+                            static_cast<uint64_t>(enqueueQpc.QuadPart - slot.timestamp) * 1000000ull /
+                            static_cast<uint64_t>(qpcFreq.QuadPart);
+                        publicationToIngestAccumUs += ingestDelayUs;
+                        ++publicationToIngestSamples;
+                        publicationToIngestMaxUs =
+                            std::max(publicationToIngestMaxUs, SaturatingToUint32(ingestDelayUs));
+                    }
 
                     static int64_t s_lastInjectTimestamp = 0;
                     if (s_lastInjectTimestamp > 0) {
@@ -2181,7 +2346,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     }
 
                     if (dropFrame) {
-                        localReadIndex++;
+                        advanceIngestIndex();
                         qf.injectRingLease.Reset();
                         continue;
                     }
@@ -2189,21 +2354,31 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     // Pacing drop: release the ring slot immediately so the producer
                     // does not stall behind frames that will never be encoded.
                     injectRingLeaseState->Complete(localReadIndex);
-                    localReadIndex++;
+                    advanceIngestIndex();
                     continue;
                 }
 
-                localReadIndex++;
+                advanceIngestIndex();
             } else {
                 injectRingLeaseState->Complete(localReadIndex);
-                localReadIndex++;
+                advanceIngestIndex();
             }
         } else {
-            emptySpinCount++;
-            if (emptySpinCount > 1000) {
-                Sleep(1);
+            if (g_InjectFrameReadyEvent && g_InjectCaptureShutdownEvent) {
+                HANDLE waitHandles[] = {g_InjectCaptureShutdownEvent, g_InjectFrameReadyEvent};
+                const DWORD waitResult = WaitForMultipleObjects(_countof(waitHandles), waitHandles, FALSE, INFINITE);
+                if (waitResult == WAIT_OBJECT_0) {
+                    break;
+                }
+                if (waitResult == WAIT_FAILED) {
+                    LogWarn("[Inject Thread] Frame-event wait failed (err=%lu); using bounded shutdown wait",
+                            GetLastError());
+                    WaitForSingleObject(g_InjectCaptureShutdownEvent, 1);
+                }
+            } else if (g_InjectCaptureShutdownEvent) {
+                WaitForSingleObject(g_InjectCaptureShutdownEvent, 1);
             } else {
-                std::this_thread::yield();
+                SwitchToThread();
             }
         }
 
@@ -2266,6 +2441,25 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                 static_cast<uint32_t>(ringWriteIndex - ringReadIndex), dupDelta, lateDelta, trimDelta, cadenceDropDelta,
                 deferredDelta, MediaEngine_GetLastFrameEncodeTimeUs(), MediaEngine_GetLastFrameFenceWaitUs(),
                 (muxQueueBytes + 1023u) / 1024u, overloadFlags);
+            auto& contention = g_pSharedMem->runtimeState;
+            const uint32_t ingestAvgUs = publicationToIngestSamples > 0
+                                             ? SaturatingToUint32(publicationToIngestAccumUs /
+                                                                  publicationToIngestSamples)
+                                             : 0;
+            contention.injectPublicationToIngestAvgUs.store(ingestAvgUs, std::memory_order_relaxed);
+            contention.injectPublicationToIngestMaxUs.store(publicationToIngestMaxUs, std::memory_order_relaxed);
+            LogInfo(
+                "[Inject Contention] CaptureLock=%u CpuLease=%u GpuBusy=%u RingFull=%u EventSignals=%u "
+                "PubToIngest=%u/%uus",
+                contention.injectProducerCaptureLockDrops.load(std::memory_order_relaxed),
+                contention.injectProducerCpuLeaseBusyDrops.load(std::memory_order_relaxed),
+                contention.injectProducerGpuBusyDrops.load(std::memory_order_relaxed),
+                contention.injectProducerMetadataFullDrops.load(std::memory_order_relaxed),
+                contention.injectFrameReadySignals.load(std::memory_order_relaxed), ingestAvgUs,
+                publicationToIngestMaxUs);
+            publicationToIngestAccumUs = 0;
+            publicationToIngestSamples = 0;
+            publicationToIngestMaxUs = 0;
             pushedCount = 0;
             droppedCount = 0;
             pacingDroppedCount = 0;
@@ -2280,6 +2474,8 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
 void WgcCaptureThreadFunc(const AppConfig& config) {
     LogInfo("[WGC CaptureThread] Started (diagnostics logger)");
     g_WgcCaptureRunning = true;
+    DisableCurrentThreadPowerThrottling("WGC CaptureThread");
+    ScopedMmcssTask wgcMmcssTask(L"Capture", AVRT_PRIORITY_HIGH, "WGC CaptureThread");
 
     DWORD lastDiagTime = 0;
     uint32_t lastInputCount = 0;
@@ -2672,8 +2868,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
 void EncoderThreadFunc(const AppConfig& config) {
     LogInfo("[EncoderThread] Started");
 
-    DisableCurrentThreadPowerThrottling();
-    ScopedMmcssTask encoderMmcssTask(L"Pro Audio", AVRT_PRIORITY_HIGH);
+    DisableCurrentThreadPowerThrottling("EncoderThread");
+    ScopedMmcssTask encoderMmcssTask(L"Pro Audio", AVRT_PRIORITY_HIGH, "EncoderThread");
 
     g_FrameQueue.StartRecording();
     SetCapturePipelinePhase(CapturePipelinePhase::kWarmup);
@@ -2694,6 +2890,9 @@ void EncoderThreadFunc(const AppConfig& config) {
 
     double smoothedEncodeMs = 0.0;
     double frameIntervalMs = 1000.0 / config.video.fps;
+    uint64_t encoderWakeLateAccumUs = 0;
+    uint64_t encoderWakeLateSamples = 0;
+    uint32_t encoderWakeLateMaxUs = 0;
     auto ReleaseQueuedFrameTexture = [](QueuedFrame& queuedFrame) {
         if (!queuedFrame.isInjectMode && queuedFrame.texture) {
             queuedFrame.texture->Release();
@@ -4350,6 +4549,19 @@ void EncoderThreadFunc(const AppConfig& config) {
                 cycleStartQpc = now;  // Start measuring encode processing after timer sleep
                 if (!config.video.useVFR && targetIntervalTicks > 0 && now.QuadPart > scheduledSampleQpc) {
                     encoderLateQpc = now.QuadPart - scheduledSampleQpc;
+                    const uint32_t wakeLateUs = SaturatingToUint32(
+                        static_cast<uint64_t>(encoderLateQpc) * 1000000ull /
+                        static_cast<uint64_t>(qpcFreq.QuadPart));
+                    encoderWakeLateAccumUs += wakeLateUs;
+                    ++encoderWakeLateSamples;
+                    encoderWakeLateMaxUs = std::max(encoderWakeLateMaxUs, wakeLateUs);
+                    if (g_pSharedMem) {
+                        g_pSharedMem->runtimeState.encoderTimerWakeLateAvgUs.store(
+                            SaturatingToUint32(encoderWakeLateAccumUs / encoderWakeLateSamples),
+                            std::memory_order_relaxed);
+                        g_pSharedMem->runtimeState.encoderTimerWakeLateMaxUs.store(encoderWakeLateMaxUs,
+                                                                                  std::memory_order_relaxed);
+                    }
                     const uint64_t lateTicks =
                         static_cast<uint64_t>(encoderLateQpc) / static_cast<uint64_t>(targetIntervalTicks);
                     encoderLateTickCount = SaturatingToUint32(lateTicks);
@@ -10713,6 +10925,17 @@ void EncoderThreadFunc(const AppConfig& config) {
                 captureSessionSummary.minEncoderSustainFps == std::numeric_limits<double>::max()
                     ? 0.0
                     : captureSessionSummary.minEncoderSustainFps);
+            if (g_pSharedMem) {
+                const auto& contention = g_pSharedMem->runtimeState;
+                LogInfo(
+                    "[Inject Contention SUMMARY] CaptureLock=%u CpuLease=%u GpuBusy=%u RingFull=%u "
+                    "EventSignals=%u",
+                    contention.injectProducerCaptureLockDrops.load(std::memory_order_relaxed),
+                    contention.injectProducerCpuLeaseBusyDrops.load(std::memory_order_relaxed),
+                    contention.injectProducerGpuBusyDrops.load(std::memory_order_relaxed),
+                    contention.injectProducerMetadataFullDrops.load(std::memory_order_relaxed),
+                    contention.injectFrameReadySignals.load(std::memory_order_relaxed));
+            }
         }
     }
 
@@ -10804,6 +11027,14 @@ void StartRecording(const AppConfig& config) {
         g_pSharedMem->throttleCapture.store(false, std::memory_order_release);
     }
 
+    EnsureInjectCaptureEvents();
+    if (g_InjectCaptureShutdownEvent) {
+        ResetEvent(g_InjectCaptureShutdownEvent);
+    }
+    if (g_InjectFrameReadyEvent) {
+        ResetEvent(g_InjectFrameReadyEvent);
+    }
+
     SetCaptureRequestedState(true);
 
     if (!MediaEngine_StartRecording || !MediaEngine_StartRecording()) {
@@ -10827,7 +11058,6 @@ void StartRecording(const AppConfig& config) {
         auto configSnapshot = std::make_shared<const AppConfig>(config);
         g_EncoderThread = std::thread([configSnapshot]() { EncoderThreadFunc(*configSnapshot); });
     }
-    SetThreadPriority(reinterpret_cast<HANDLE>(g_EncoderThread.native_handle()), THREAD_PRIORITY_HIGHEST);
 
     if (useScreenGrab && g_WgcCap) {
         if (!StartWgcRecordingCapture(config)) {
@@ -10850,13 +11080,14 @@ void StartRecording(const AppConfig& config) {
         } else {
             LogInfo("[Media] Active recording path: inject shared-memory capture");
         }
+        ApplyMediaGpuSchedulingPriorityForSharedAdapter(config);
         g_InjectCaptureShutdown = false;
+        EnsureInjectCaptureEvents();
         // Recording-lifetime config snapshot (see StartWgcRecordingCapture).
         {
             auto configSnapshot = std::make_shared<const AppConfig>(config);
             g_InjectCaptureThread = std::thread([configSnapshot]() { InjectCaptureThreadFunc(*configSnapshot); });
         }
-        SetThreadPriority(reinterpret_cast<HANDLE>(g_InjectCaptureThread.native_handle()), THREAD_PRIORITY_HIGHEST);
     }
 
     LogInfo("[Media] Recording warmup armed");
@@ -11193,6 +11424,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         capture->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
         capture->SetSameDeviceCapture(config.wgcSameDeviceCapture);
         capture->SetAllowLossyBgra8Pool(config.wgcAllowLossyBgra8Pool);
+        capture->SetVideoMemoryReservationMode(config.wgcVideoMemoryReservation);
     };
 
     if (IsPreferredScreenGrab() || isAutoCaptureConfig()) {
@@ -11207,6 +11439,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 return 1;
             }
         } else {
+            ApplyMediaGpuSchedulingPriorityForDevice(config, d3dDevice);
             d3dDevice->GetImmediateContext(&d3dContext);
 
             if (WGCCapture::IsSupported()) {
@@ -11249,6 +11482,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         if (!d3dDevice) {
             return false;
         }
+        ApplyMediaGpuSchedulingPriorityForDevice(config, d3dDevice);
         if (!d3dContext) {
             d3dDevice->GetImmediateContext(&d3dContext);
         }
@@ -11333,6 +11567,11 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         activeConfigProcessName = processName;
 
         ApplyMediaPrioritySettings(config);
+        if (d3dDevice) {
+            ApplyMediaGpuSchedulingPriorityForDevice(config, d3dDevice);
+        } else {
+            ApplyMediaGpuSchedulingPriorityForSharedAdapter(config);
+        }
         if (auto capture = g_WgcCap.Read()) {
             applyWgcOptions(capture.get());
             capture->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
@@ -12290,6 +12529,15 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     g_FrameQueue.Clear();
     ClearStandbyWgcHandoffFrame();
     ResetLastQueuedFrameCache();
+
+    if (g_InjectFrameReadyEvent) {
+        CloseHandle(g_InjectFrameReadyEvent);
+        g_InjectFrameReadyEvent = NULL;
+    }
+    if (g_InjectCaptureShutdownEvent) {
+        CloseHandle(g_InjectCaptureShutdownEvent);
+        g_InjectCaptureShutdownEvent = NULL;
+    }
 
     if (g_pShmem)
         UnmapViewOfFile(g_pShmem);

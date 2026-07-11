@@ -68,17 +68,41 @@ inline bool HasOutstandingCaptureFrameLeases(const SharedMemoryLayout* sharedMem
     return false;
 }
 
-inline int32_t FindAvailableCaptureTextureSlot(const SharedMemoryLayout* sharedMem, int32_t firstTextureIndex,
-                                               uint32_t textureCount = CAPTURE_TEXTURE_COUNT) {
+template <typename GpuReadyPredicate>
+inline int32_t FindAvailableCaptureTextureSlotIf(const SharedMemoryLayout* sharedMem, int32_t firstTextureIndex,
+                                                 uint32_t textureCount, GpuReadyPredicate&& gpuReady,
+                                                 uint32_t* cpuBusyCount = nullptr, uint32_t* gpuBusyCount = nullptr) {
     if (textureCount == 0 || textureCount > static_cast<uint32_t>(SHARED_TEXTURE_SLOT_COUNT))
         return -1;
+    uint32_t cpuBusy = 0;
+    uint32_t gpuBusy = 0;
     const uint32_t first = static_cast<uint32_t>(firstTextureIndex < 0 ? 0 : firstTextureIndex) % textureCount;
     for (uint32_t offset = 0; offset < textureCount; ++offset) {
         const int32_t candidate = static_cast<int32_t>((first + offset) % textureCount);
-        if (!IsCaptureTextureSlotOutstanding(sharedMem, candidate))
-            return candidate;
+        if (IsCaptureTextureSlotOutstanding(sharedMem, candidate)) {
+            ++cpuBusy;
+            continue;
+        }
+        if (!gpuReady(candidate)) {
+            ++gpuBusy;
+            continue;
+        }
+        if (cpuBusyCount)
+            *cpuBusyCount = cpuBusy;
+        if (gpuBusyCount)
+            *gpuBusyCount = gpuBusy;
+        return candidate;
     }
+    if (cpuBusyCount)
+        *cpuBusyCount = cpuBusy;
+    if (gpuBusyCount)
+        *gpuBusyCount = gpuBusy;
     return -1;
+}
+
+inline int32_t FindAvailableCaptureTextureSlot(const SharedMemoryLayout* sharedMem, int32_t firstTextureIndex,
+                                               uint32_t textureCount = CAPTURE_TEXTURE_COUNT) {
+    return FindAvailableCaptureTextureSlotIf(sharedMem, firstTextureIndex, textureCount, [](int32_t) { return true; });
 }
 
 // Pending frame metadata for async capture thread
@@ -229,9 +253,12 @@ public:
     }
 
     // Signal frame ready to IPC ring buffer
-    void SignalFrameReady(SharedMemoryLayout* sharedMem, int textureIndex, int64_t timestamp, uint64_t gpuFenceValue) {
+    bool SignalFrameReady(SharedMemoryLayout* sharedMem, int textureIndex, int64_t timestamp, uint64_t gpuFenceValue,
+                          bool* transitionedFromEmpty = nullptr) {
+        if (transitionedFromEmpty)
+            *transitionedFromEmpty = false;
         if (!sharedMem)
-            return;
+            return false;
 
         auto& ring = sharedMem->frameRing;
         // CRITICAL FIX: Use acquire ordering to see consumer's readIndex updates
@@ -239,8 +266,14 @@ public:
         uint32_t rIdx = ring.readIndex.load(std::memory_order_acquire);
         if ((uint32_t)(wIdx - rIdx) >= (uint32_t)FRAME_RING_SIZE) {
             ring.droppedFrames.fetch_add(1, std::memory_order_relaxed);
-            return;
+            sharedMem->runtimeState.injectProducerMetadataFullDrops.fetch_add(1, std::memory_order_relaxed);
+            return false;
         }
+        // readIndex is a texture-lease acknowledgement and may deliberately
+        // lag after the consumer has ingested all metadata. Event coalescing
+        // must compare against the independent ingest cursor or a refill can
+        // leave the consumer asleep forever.
+        const bool wasEmpty = wIdx == ring.ingestIndex.load(std::memory_order_acquire);
         auto& slot = ring.slots[wIdx % FRAME_RING_SIZE];
 
         // Write frame metadata
@@ -259,6 +292,9 @@ public:
 
         // Publish write index with release semantics to synchronize with reader
         ring.writeIndex.store(wIdx + 1, std::memory_order_release);
+        if (transitionedFromEmpty)
+            *transitionedFromEmpty = wasEmpty;
+        return true;
     }
 
     // Start async capture thread

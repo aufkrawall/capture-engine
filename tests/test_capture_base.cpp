@@ -293,7 +293,9 @@ TEST(CaptureBaseTest, SignalFrameReadyWritesRingAndDropsWhenFull) {
     TestCapture capture;
     SharedMemoryLayout sharedMem;
 
-    capture.SignalFrameReady(&sharedMem, 3, 123456, 99);
+    bool transitionedFromEmpty = false;
+    EXPECT_TRUE(capture.SignalFrameReady(&sharedMem, 3, 123456, 99, &transitionedFromEmpty));
+    EXPECT_TRUE(transitionedFromEmpty);
 
     EXPECT_EQ(sharedMem.frameRing.writeIndex.load(std::memory_order_acquire), 1u);
     EXPECT_EQ(sharedMem.frameRing.readIndex.load(std::memory_order_acquire), 0u);
@@ -308,12 +310,38 @@ TEST(CaptureBaseTest, SignalFrameReadyWritesRingAndDropsWhenFull) {
     EXPECT_EQ(first.valid.load(std::memory_order_acquire), 1u);
 
     for (uint32_t i = 1; i < FRAME_RING_SIZE; ++i) {
-        capture.SignalFrameReady(&sharedMem, static_cast<int>(i % CAPTURE_TEXTURE_COUNT), i * 1000, i);
+        transitionedFromEmpty = true;
+        EXPECT_TRUE(capture.SignalFrameReady(&sharedMem, static_cast<int>(i % CAPTURE_TEXTURE_COUNT), i * 1000, i,
+                                             &transitionedFromEmpty));
+        EXPECT_FALSE(transitionedFromEmpty);
     }
     EXPECT_EQ(sharedMem.frameRing.writeIndex.load(std::memory_order_acquire), FRAME_RING_SIZE);
-    capture.SignalFrameReady(&sharedMem, 0, 999999, 777);
+    transitionedFromEmpty = true;
+    EXPECT_FALSE(capture.SignalFrameReady(&sharedMem, 0, 999999, 777, &transitionedFromEmpty));
+    EXPECT_FALSE(transitionedFromEmpty);
     EXPECT_EQ(sharedMem.frameRing.writeIndex.load(std::memory_order_acquire), FRAME_RING_SIZE);
     EXPECT_EQ(sharedMem.frameRing.droppedFrames.load(std::memory_order_relaxed), 1u);
+    EXPECT_EQ(sharedMem.runtimeState.injectProducerMetadataFullDrops.load(std::memory_order_relaxed), 1u);
+}
+
+TEST(CaptureBaseTest, FrameEventCoalescingUsesIngestCursorNotLeaseAcknowledgement) {
+    TestCapture capture;
+    SharedMemoryLayout sharedMem;
+
+    bool transitionedFromEmpty = false;
+    ASSERT_TRUE(capture.SignalFrameReady(&sharedMem, 0, 100, 1, &transitionedFromEmpty));
+    ASSERT_TRUE(transitionedFromEmpty);
+
+    // Media has ingested metadata slot zero, but intentionally retains its
+    // producer texture lease while the frame waits in the encoder queue.
+    sharedMem.frameRing.ingestIndex.store(1, std::memory_order_release);
+    ASSERT_EQ(sharedMem.frameRing.readIndex.load(std::memory_order_acquire), 0u);
+    ASSERT_NE(sharedMem.frameRing.slots[0].valid.load(std::memory_order_acquire), 0u);
+
+    transitionedFromEmpty = false;
+    EXPECT_TRUE(capture.SignalFrameReady(&sharedMem, 1, 200, 2, &transitionedFromEmpty));
+    EXPECT_TRUE(transitionedFromEmpty)
+        << "a refill after ingestion must wake media even while the previous texture lease remains outstanding";
 }
 
 TEST(CaptureBaseTest, OutstandingTextureSlotScanHonorsValidityAndWraparound) {
@@ -348,6 +376,38 @@ TEST(CaptureBaseTest, OutstandingTextureSlotScanHonorsValidityAndWraparound) {
     ring.readIndex.store(0, std::memory_order_relaxed);
     ring.writeIndex.store(8, std::memory_order_release);
     EXPECT_EQ(FindAvailableCaptureTextureSlot(&sharedMem, 0, 8), -1);
+}
+
+TEST(CaptureBaseTest, CombinedSlotScanSkipsCpuLeasesAndGpuBusySlots) {
+    SharedMemoryLayout sharedMem;
+    auto& ring = sharedMem.frameRing;
+    ring.readIndex.store(0, std::memory_order_relaxed);
+    ring.writeIndex.store(2, std::memory_order_relaxed);
+    ring.slots[0].textureIndex = 2;
+    ring.slots[0].valid.store(1, std::memory_order_release);
+    ring.slots[1].textureIndex = 4;
+    ring.slots[1].valid.store(1, std::memory_order_release);
+
+    std::array<bool, 8> gpuReady = {true, false, true, false, true, true, true, true};
+    uint32_t cpuBusy = 0;
+    uint32_t gpuBusy = 0;
+    EXPECT_EQ(FindAvailableCaptureTextureSlotIf(
+                  &sharedMem, 1, 8, [&](int32_t slot) { return gpuReady[static_cast<size_t>(slot)]; }, &cpuBusy,
+                  &gpuBusy),
+              5);
+    EXPECT_EQ(cpuBusy, 2u);
+    EXPECT_EQ(gpuBusy, 2u);
+}
+
+TEST(CaptureBaseTest, CombinedSlotScanReportsAllBusyWithoutWaiting) {
+    SharedMemoryLayout sharedMem;
+    uint32_t cpuBusy = 0;
+    uint32_t gpuBusy = 0;
+    EXPECT_EQ(FindAvailableCaptureTextureSlotIf(
+                  &sharedMem, 6, 8, [](int32_t) { return false; }, &cpuBusy, &gpuBusy),
+              -1);
+    EXPECT_EQ(cpuBusy, 0u);
+    EXPECT_EQ(gpuBusy, 8u);
 }
 
 TEST(CaptureBaseTest, OutstandingFrameLeaseScanProtectsResourceGeneration) {

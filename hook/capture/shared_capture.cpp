@@ -795,28 +795,33 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
 
     UINT writeIdx = m_WriteIndex.load(std::memory_order_relaxed);
     SharedMemoryLayout* captureSharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-    const int32_t availableSlot = FindAvailableCaptureTextureSlot(captureSharedMem, static_cast<int32_t>(writeIdx),
-                                                                  static_cast<uint32_t>(kSharedTextureCount));
-    if (availableSlot < 0)
+    const UINT64 completedValue = m_Fence->GetCompletedValue();
+    if (completedValue == UINT64_MAX) {
+        EarlyLog("DX12: SharedCapture - Fence reported device removal");
+        m_Active.store(false, std::memory_order_release);
         return false;
+    }
+    uint32_t cpuBusySlots = 0;
+    uint32_t gpuBusySlots = 0;
+    const int32_t availableSlot = FindAvailableCaptureTextureSlotIf(
+        captureSharedMem, static_cast<int32_t>(writeIdx), static_cast<uint32_t>(kSharedTextureCount),
+        [&](int32_t candidate) {
+            const UINT64 requiredValue = m_FenceValues[static_cast<UINT>(candidate)];
+            return requiredValue == 0 || completedValue >= requiredValue;
+        },
+        &cpuBusySlots, &gpuBusySlots);
+    if (availableSlot < 0) {
+        if (captureSharedMem) {
+            if (cpuBusySlots != 0)
+                captureSharedMem->runtimeState.injectProducerCpuLeaseBusyDrops.fetch_add(1,
+                                                                                         std::memory_order_relaxed);
+            if (gpuBusySlots != 0)
+                captureSharedMem->runtimeState.injectProducerGpuBusyDrops.fetch_add(1, std::memory_order_relaxed);
+        }
+        return false;
+    }
     writeIdx = static_cast<UINT>(availableSlot);
     m_WriteIndex.store(writeIdx, std::memory_order_relaxed);
-
-    // SAFETY: Wait for this allocator to be finished by GPU before reusing
-    if (m_FenceValues[writeIdx] > 0) {
-        const UINT64 completedValue = m_Fence->GetCompletedValue();
-        if (completedValue == UINT64_MAX) {
-            EarlyLog("DX12: SharedCapture - Fence reported device removal");
-            m_Active.store(false, std::memory_order_release);
-            return false;
-        }
-        if (completedValue < m_FenceValues[writeIdx]) {
-            // Non-blocking check: If the GPU is still using this slot, drop the
-            // frame. This prevents the game rendering thread from stalling due to
-            // slow capture consumption. We do NOT wait here.
-            return false;
-        }
-    }
 
     // Reset and record copy command
     hr = m_CommandAllocators[writeIdx]->Reset();

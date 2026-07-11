@@ -403,7 +403,10 @@ void DisableCurrentWgcCallbackThreadPowerThrottling() {
     throttlingState.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
     throttlingState.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
     throttlingState.StateMask = 0;
-    SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &throttlingState, sizeof(throttlingState));
+    if (!SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &throttlingState, sizeof(throttlingState))) {
+        LogWarn("[WGC] Failed to disable callback execution-speed throttling (tid=%lu, err=%lu)",
+                GetCurrentThreadId(), GetLastError());
+    }
 }
 
 class WgcCallbackThreadQoS final {
@@ -413,16 +416,24 @@ public:
         DWORD taskIndex = 0;
         mmcssHandle_ = AvSetMmThreadCharacteristicsW(L"Capture", &taskIndex);
         if (mmcssHandle_) {
-            AvSetMmThreadPriority(mmcssHandle_, AVRT_PRIORITY_HIGH);
-            LogInfo("[WGC] Callback thread QoS enabled (tid=%lu, task=Capture)", GetCurrentThreadId());
+            if (AvSetMmThreadPriority(mmcssHandle_, AVRT_PRIORITY_HIGH)) {
+                LogInfo("[WGC] Callback thread QoS enabled (tid=%lu, task=Capture)", GetCurrentThreadId());
+            } else {
+                LogWarn("[WGC] Callback MMCSS priority elevation failed (tid=%lu, err=%lu)", GetCurrentThreadId(),
+                        GetLastError());
+            }
         } else {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
             LogWarn("[WGC] Callback thread QoS setup failed (tid=%lu, err=%lu)", GetCurrentThreadId(), GetLastError());
         }
     }
 
     ~WgcCallbackThreadQoS() {
         if (mmcssHandle_) {
-            AvRevertMmThreadCharacteristics(mmcssHandle_);
+            if (!AvRevertMmThreadCharacteristics(mmcssHandle_)) {
+                LogWarn("[WGC] Failed to revert callback MMCSS registration (tid=%lu, err=%lu)",
+                        GetCurrentThreadId(), GetLastError());
+            }
         }
     }
 
@@ -767,6 +778,13 @@ public:
     ID3D11PixelShader* poolCopyPS_ = nullptr;
     ID3D11SamplerState* poolCopySampler_ = nullptr;
     ID3D11Buffer* poolCopyCB_ = nullptr;
+    ID3D11Query* gpuTimingDisjoint_ = nullptr;
+    ID3D11Query* gpuTimingStart_ = nullptr;
+    ID3D11Query* gpuTimingEnd_ = nullptr;
+    bool gpuTimingPending_ = false;
+    bool gpuTimingActive_ = false;
+    ULONGLONG lastGpuTimingSampleTick_ = 0;
+    int64_t gpuTimingSubmitQpc_ = 0;
     ID3D11Texture2D* poolCopyStagingTexture_ = nullptr;
     ID3D11ShaderResourceView* poolCopyStagingSrv_ = nullptr;
     uint32_t poolCopyStagingWidth_ = 0;
@@ -803,6 +821,7 @@ public:
     uint32_t smoothnessOutputFps_ = 0;
     uint32_t smoothnessMaxMs_ = ce::capture_policy::kWgcSmoothnessBufferDefaultMaxMs;
     uint32_t smoothnessVramBudgetMb_ = ce::capture_policy::kWgcSmoothnessBufferDefaultVramBudgetMb;
+    std::atomic<int> desiredGpuPriority_{0};
     uint32_t smoothnessSyncDelayFrames_ = 0;
     uint32_t smoothnessRetainedFrames_ = 0;
     uint32_t smoothnessRetainedFrameCap_ = 0;
@@ -813,6 +832,16 @@ public:
     uint32_t texturePoolSlotCount_ = ce::capture_policy::kWgcSmoothnessBufferMinPoolFrames;
     uint64_t smoothnessEstimatedVramBytes_ = 0;
     bool smoothnessBudgetExhausted_ = false;
+    uint32_t allocationLimitedPoolSlots_ = 0;
+    uint32_t allocationLimitedSourceBuffers_ = 0;
+    uint32_t allocationLimitWidth_ = 0;
+    uint32_t allocationLimitHeight_ = 0;
+    DXGI_FORMAT allocationLimitSourceFormat_ = DXGI_FORMAT_UNKNOWN;
+    std::atomic<ULONGLONG> lastVideoMemoryLogTick_{0};
+    std::atomic<uint32_t> videoMemoryOverBudgetEpisodes_{0};
+    enum class VideoMemoryReservationMode : uint8_t { kOff, kMandatory, kFull };
+    VideoMemoryReservationMode videoMemoryReservationMode_ = VideoMemoryReservationMode::kOff;
+    uint64_t activeVideoMemoryReservationBytes_ = 0;
     std::shared_ptr<WgcPoolLeaseState> poolLeaseState_;
     uint64_t poolGeneration_ = 0;
     std::atomic<uint32_t> poolSlotOverwritePreventedCount_{0};
@@ -965,6 +994,15 @@ public:
         SafeRelease(poolCopyPS_);
         SafeRelease(poolCopyVS_);
         lastPoolConvertUs_.store(0, std::memory_order_relaxed);
+    }
+
+    void ReleaseGpuTimingResources() {
+        SafeRelease(gpuTimingEnd_);
+        SafeRelease(gpuTimingStart_);
+        SafeRelease(gpuTimingDisjoint_);
+        gpuTimingPending_ = false;
+        gpuTimingActive_ = false;
+        gpuTimingSubmitQpc_ = 0;
     }
 
     bool EnsurePoolCopyShader() {
@@ -1227,7 +1265,9 @@ public:
         const auto budget = ComputeTexturePoolBudget(width, height, format);
         smoothnessRetainedFrames_ = smoothnessBufferEnabled_ ? budget.retainedExtraFrames : 0u;
         smoothnessRetainedFrameCap_ = budget.retainedFrameCap;
-        sourceFramePoolBufferCount_ = budget.sourceFramePoolBuffers;
+        sourceFramePoolBufferCount_ = allocationLimitedSourceBuffers_ != 0
+                                          ? std::min(budget.sourceFramePoolBuffers, allocationLimitedSourceBuffers_)
+                                          : budget.sourceFramePoolBuffers;
         smoothnessBudgetSurfaceCount_ = budget.budgetSurfaceCount;
         smoothnessSafetySlots_ = budget.safetySlots;
         smoothnessReservedFreeSlots_ = budget.reservedFreeCopySlots;
@@ -1298,6 +1338,204 @@ public:
         poolWriteIndex_.store(0, std::memory_order_relaxed);
     }
 
+    bool EnsureGpuTimingQueries() {
+        if (gpuTimingDisjoint_ && gpuTimingStart_ && gpuTimingEnd_)
+            return true;
+        SafeRelease(gpuTimingEnd_);
+        SafeRelease(gpuTimingStart_);
+        SafeRelease(gpuTimingDisjoint_);
+        if (!d3dDevice_)
+            return false;
+        D3D11_QUERY_DESC desc = {D3D11_QUERY_TIMESTAMP_DISJOINT, 0};
+        HRESULT hr = d3dDevice_->CreateQuery(&desc, &gpuTimingDisjoint_);
+        desc.Query = D3D11_QUERY_TIMESTAMP;
+        if (SUCCEEDED(hr))
+            hr = d3dDevice_->CreateQuery(&desc, &gpuTimingStart_);
+        if (SUCCEEDED(hr))
+            hr = d3dDevice_->CreateQuery(&desc, &gpuTimingEnd_);
+        if (FAILED(hr)) {
+            SafeRelease(gpuTimingEnd_);
+            SafeRelease(gpuTimingStart_);
+            SafeRelease(gpuTimingDisjoint_);
+            LogWarn("[WGC] Nonblocking GPU timing query prewarm failed: 0x%08lX", static_cast<unsigned long>(hr));
+            return false;
+        }
+        return true;
+    }
+
+    void PollGpuTimingSample() {
+        if (!gpuTimingPending_ || !d3dContext_)
+            return;
+        D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint = {};
+        const HRESULT disjointHr = d3dContext_->GetData(gpuTimingDisjoint_, &disjoint, sizeof(disjoint),
+                                                        D3D11_ASYNC_GETDATA_DONOTFLUSH);
+        if (disjointHr != S_OK)
+            return;
+        UINT64 start = 0;
+        UINT64 end = 0;
+        const HRESULT startHr =
+            d3dContext_->GetData(gpuTimingStart_, &start, sizeof(start), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+        const HRESULT endHr =
+            d3dContext_->GetData(gpuTimingEnd_, &end, sizeof(end), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+        if (startHr != S_OK || endHr != S_OK)
+            return;
+        LARGE_INTEGER observed = {};
+        QueryPerformanceCounter(&observed);
+        const double executionUs = !disjoint.Disjoint && disjoint.Frequency > 0 && end >= start
+                                       ? static_cast<double>(end - start) * 1000000.0 /
+                                             static_cast<double>(disjoint.Frequency)
+                                       : -1.0;
+        const int64_t observedLatencyUs = qpcFreq_ > 0 && observed.QuadPart >= gpuTimingSubmitQpc_
+                                              ? (observed.QuadPart - gpuTimingSubmitQpc_) * 1000000 / qpcFreq_
+                                              : -1;
+        LogInfo("[WGC GPU Timing] backend=%s execution=%.1fus submitToObserved=%lldus disjoint=%d",
+                useDuplicationBackend_ ? "dxgi_dup" : "wgc", executionUs,
+                static_cast<long long>(observedLatencyUs), disjoint.Disjoint ? 1 : 0);
+        gpuTimingPending_ = false;
+    }
+
+    void BeginGpuTimingSample() {
+        PollGpuTimingSample();
+        const ULONGLONG now = GetTickCount64();
+        if (gpuTimingPending_ || gpuTimingActive_ || !EnsureGpuTimingQueries() ||
+            (lastGpuTimingSampleTick_ != 0 && now - lastGpuTimingSampleTick_ < 1000)) {
+            return;
+        }
+        d3dContext_->Begin(gpuTimingDisjoint_);
+        d3dContext_->End(gpuTimingStart_);
+        gpuTimingActive_ = true;
+        lastGpuTimingSampleTick_ = now;
+    }
+
+    void EndGpuTimingSample() {
+        if (!gpuTimingActive_ || !d3dContext_)
+            return;
+        d3dContext_->End(gpuTimingEnd_);
+        d3dContext_->End(gpuTimingDisjoint_);
+        LARGE_INTEGER submitted = {};
+        QueryPerformanceCounter(&submitted);
+        gpuTimingSubmitQpc_ = submitted.QuadPart;
+        gpuTimingActive_ = false;
+        gpuTimingPending_ = true;
+    }
+
+    void LogVideoMemoryInfo(const char* stage, bool force = false) {
+        if (!d3dDevice_)
+            return;
+        const ULONGLONG now = GetTickCount64();
+        ULONGLONG previous = lastVideoMemoryLogTick_.load(std::memory_order_relaxed);
+        if (!force && previous != 0 && now - previous < 1000)
+            return;
+        if (!lastVideoMemoryLogTick_.compare_exchange_strong(previous, now, std::memory_order_relaxed) &&
+            !force) {
+            return;
+        }
+        if (force)
+            lastVideoMemoryLogTick_.store(now, std::memory_order_relaxed);
+
+        IDXGIDevice* dxgiDevice = nullptr;
+        IDXGIAdapter* adapter = nullptr;
+        IDXGIAdapter3* adapter3 = nullptr;
+        HRESULT hr = d3dDevice_->QueryInterface(IID_PPV_ARGS(&dxgiDevice));
+        if (SUCCEEDED(hr) && dxgiDevice)
+            hr = dxgiDevice->GetAdapter(&adapter);
+        if (SUCCEEDED(hr) && adapter)
+            hr = adapter->QueryInterface(IID_PPV_ARGS(&adapter3));
+        DXGI_QUERY_VIDEO_MEMORY_INFO info = {};
+        if (SUCCEEDED(hr) && adapter3)
+            hr = adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info);
+        if (SUCCEEDED(hr)) {
+            const bool overBudget = info.CurrentUsage > info.Budget;
+            const uint32_t episodes = overBudget
+                                          ? videoMemoryOverBudgetEpisodes_.fetch_add(1, std::memory_order_relaxed) + 1
+                                          : videoMemoryOverBudgetEpisodes_.load(std::memory_order_relaxed);
+            LogInfo(
+                "[WGC] Video memory: stage=%s budget=%.1fMB processUsage=%.1fMB reservation=%.1fMB "
+                "availableReservation=%.1fMB estimatedPool=%.1fMB overBudget=%d episodes=%u",
+                stage ? stage : "periodic", static_cast<double>(info.Budget) / (1024.0 * 1024.0),
+                static_cast<double>(info.CurrentUsage) / (1024.0 * 1024.0),
+                static_cast<double>(info.CurrentReservation) / (1024.0 * 1024.0),
+                static_cast<double>(info.AvailableForReservation) / (1024.0 * 1024.0),
+                static_cast<double>(smoothnessEstimatedVramBytes_) / (1024.0 * 1024.0), overBudget ? 1 : 0,
+                episodes);
+        } else if (force) {
+            LogWarn("[WGC] QueryVideoMemoryInfo failed: stage=%s hr=0x%08lX", stage ? stage : "unknown",
+                    static_cast<unsigned long>(hr));
+        }
+        SafeRelease(adapter3);
+        SafeRelease(adapter);
+        SafeRelease(dxgiDevice);
+    }
+
+    static bool IsAllocationExhaustion(HRESULT hr) {
+        return hr == E_OUTOFMEMORY || hr == HRESULT_FROM_WIN32(ERROR_NOT_ENOUGH_MEMORY) ||
+               hr == HRESULT_FROM_WIN32(ERROR_COMMITMENT_LIMIT);
+    }
+
+    void SetVideoMemoryReservationBytes(uint64_t requestedBytes, const char* stage) {
+        if (!d3dDevice_)
+            return;
+        IDXGIDevice* dxgiDevice = nullptr;
+        IDXGIAdapter* adapter = nullptr;
+        IDXGIAdapter3* adapter3 = nullptr;
+        HRESULT hr = d3dDevice_->QueryInterface(IID_PPV_ARGS(&dxgiDevice));
+        if (SUCCEEDED(hr) && dxgiDevice)
+            hr = dxgiDevice->GetAdapter(&adapter);
+        if (SUCCEEDED(hr) && adapter)
+            hr = adapter->QueryInterface(IID_PPV_ARGS(&adapter3));
+        DXGI_QUERY_VIDEO_MEMORY_INFO before = {};
+        if (SUCCEEDED(hr) && adapter3)
+            hr = adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &before);
+        uint64_t clampedBytes = requestedBytes;
+        if (SUCCEEDED(hr)) {
+            const uint64_t reservable = before.CurrentReservation + before.AvailableForReservation;
+            clampedBytes = std::min(requestedBytes, reservable);
+            hr = adapter3->SetVideoMemoryReservation(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, clampedBytes);
+        }
+        DXGI_QUERY_VIDEO_MEMORY_INFO after = {};
+        const HRESULT readbackHr = SUCCEEDED(hr)
+                                       ? adapter3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &after)
+                                       : hr;
+        if (SUCCEEDED(hr) && SUCCEEDED(readbackHr)) {
+            activeVideoMemoryReservationBytes_ = after.CurrentReservation;
+            LogInfo("[WGC] Video-memory reservation: stage=%s requested=%.1fMB clamped=%.1fMB actual=%.1fMB "
+                    "available=%.1fMB verified=%d",
+                    stage ? stage : "unknown", static_cast<double>(requestedBytes) / (1024.0 * 1024.0),
+                    static_cast<double>(clampedBytes) / (1024.0 * 1024.0),
+                    static_cast<double>(after.CurrentReservation) / (1024.0 * 1024.0),
+                    static_cast<double>(after.AvailableForReservation) / (1024.0 * 1024.0),
+                    after.CurrentReservation >= clampedBytes ? 1 : 0);
+        } else {
+            LogWarn("[WGC] Video-memory reservation failed: stage=%s requested=%.1fMB hr=0x%08lX "
+                    "readbackHr=0x%08lX",
+                    stage ? stage : "unknown", static_cast<double>(requestedBytes) / (1024.0 * 1024.0),
+                    static_cast<unsigned long>(hr), static_cast<unsigned long>(readbackHr));
+        }
+        SafeRelease(adapter3);
+        SafeRelease(adapter);
+        SafeRelease(dxgiDevice);
+    }
+
+    void ApplyConfiguredVideoMemoryReservation() {
+        if (videoMemoryReservationMode_ == VideoMemoryReservationMode::kOff)
+            return;
+        const uint32_t mandatorySlots = std::max<uint32_t>(
+            ce::capture_policy::kWgcSmoothnessBufferMinPoolFrames,
+            smoothnessSyncDelayFrames_ + smoothnessReservedFreeSlots_ + smoothnessSafetySlots_ + 1u);
+        const uint64_t mandatoryBytes = smoothnessSourceEstimatedVramBytes_ +
+                                        static_cast<uint64_t>(mandatorySlots) * smoothnessCopyBytesPerSurface_;
+        const uint64_t fullBytes = smoothnessSourceEstimatedVramBytes_ +
+                                   static_cast<uint64_t>(texturePool_.size()) * smoothnessCopyBytesPerSurface_;
+        const bool full = videoMemoryReservationMode_ == VideoMemoryReservationMode::kFull;
+        SetVideoMemoryReservationBytes(full ? fullBytes : mandatoryBytes, full ? "full" : "mandatory");
+    }
+
+    void ResetVideoMemoryReservation() {
+        if (activeVideoMemoryReservationBytes_ != 0)
+            SetVideoMemoryReservationBytes(0, "teardown");
+        activeVideoMemoryReservationBytes_ = 0;
+    }
+
     void EnableMultithreadProtection(ID3D11Device* device, const char* label) {
         if (!device) {
             return;
@@ -1309,6 +1547,34 @@ public:
             multithread->Release();
             LogInfo("[WGC] D3D11 multithread protection enabled on %s device", label);
         }
+    }
+
+    void ApplyConfiguredGpuPriority(const char* role) {
+        if (!d3dDevice_) {
+            return;
+        }
+        const int requested = std::clamp(desiredGpuPriority_.load(std::memory_order_relaxed), -7, 7);
+        IDXGIDevice* dxgiDevice = nullptr;
+        HRESULT setHr = d3dDevice_->QueryInterface(IID_PPV_ARGS(&dxgiDevice));
+        if (FAILED(setHr) || !dxgiDevice) {
+            LogWarn("[WGC] GPU priority query failed: role=%s requested=%d hr=0x%08lX", role, requested,
+                    static_cast<unsigned long>(setHr));
+            return;
+        }
+        setHr = dxgiDevice->SetGPUThreadPriority(requested);
+        INT actual = 0;
+        const HRESULT readbackHr = SUCCEEDED(setHr) ? dxgiDevice->GetGPUThreadPriority(&actual) : setHr;
+        if (SUCCEEDED(setHr) && SUCCEEDED(readbackHr) && actual == requested) {
+            LogInfo("[WGC] GPU thread priority applied: role=%s requested=%d actual=%d verified=1 dedicated=%d", role,
+                    requested, actual, usingDedicatedCaptureDevice_ ? 1 : 0);
+        } else {
+            LogWarn(
+                "[WGC] GPU thread priority apply/readback failed: role=%s requested=%d actual=%d setHr=0x%08lX "
+                "readbackHr=0x%08lX verified=0 dedicated=%d",
+                role, requested, actual, static_cast<unsigned long>(setHr), static_cast<unsigned long>(readbackHr),
+                usingDedicatedCaptureDevice_ ? 1 : 0);
+        }
+        dxgiDevice->Release();
     }
 
     bool InitializeDevices(ID3D11Device* encoderDevice) {
@@ -1336,6 +1602,7 @@ public:
                 return false;
             }
             EnableMultithreadProtection(d3dDevice_, "same-device capture");
+            ApplyConfiguredGpuPriority("same-device-capture");
             LogInfo("[WGC] Same-device capture enabled; reusing encoder D3D11 device");
             return true;
         }
@@ -1360,6 +1627,7 @@ public:
             if (SUCCEEDED(hr) && d3dDevice_ && d3dContext_) {
                 usingDedicatedCaptureDevice_ = (d3dDevice_ != encoderDevice_);
                 EnableMultithreadProtection(d3dDevice_, "capture");
+                ApplyConfiguredGpuPriority("dedicated-capture");
                 LogInfo("[WGC] Dedicated capture D3D11 device created (FL=0x%x, adapter=%ls)", featureLevel,
                         adapterDesc.Description);
                 return true;
@@ -1382,6 +1650,7 @@ public:
             return false;
         }
         EnableMultithreadProtection(d3dDevice_, "shared capture");
+        ApplyConfiguredGpuPriority("shared-fallback-capture");
         return true;
     }
 
@@ -1895,16 +2164,29 @@ public:
         // canonical CE-owned render target instead of inheriting the desktop
         // producer dependency through a raw CopyResource.
         const bool canonicalRetainedCopy = compactRetainedCopy || useDuplicationBackend_;
+        if (allocationLimitWidth_ != width || allocationLimitHeight_ != height ||
+            allocationLimitSourceFormat_ != sourceFormat) {
+            allocationLimitedPoolSlots_ = 0;
+            allocationLimitWidth_ = width;
+            allocationLimitHeight_ = height;
+            allocationLimitSourceFormat_ = sourceFormat;
+        }
         UpdateSmoothnessBudget(width, height, sourceFormat, false);
-        const uint32_t desiredSlots = std::max<uint32_t>(1u, texturePoolSlotCount_);
+        const uint32_t configuredSlots = std::max<uint32_t>(1u, texturePoolSlotCount_);
+        const uint32_t desiredSlots = allocationLimitedPoolSlots_ != 0
+                                          ? std::min(configuredSlots, allocationLimitedPoolSlots_)
+                                          : configuredSlots;
         if (poolWidth_ == (int32_t)width && poolHeight_ == (int32_t)height && poolSourceFormat_ == sourceFormat &&
             poolFormat_ == retainedFormat &&
             texturePool_.size() == desiredSlots && !texturePool_.empty() && texturePool_[0] &&
             (!splitDevicePool || (!captureTexturePool_.empty() && captureTexturePool_[0])) &&
             (!canonicalRetainedCopy || (!poolRenderTargetViews_.empty() && poolRenderTargetViews_[0]))) {
+            LogVideoMemoryInfo("periodic");
             return true;
         }
 
+        LogVideoMemoryInfo("before-pool-allocation", true);
+        ReleaseGpuTimingResources();
         ReleaseTexturePool();
         texturePool_.assign(desiredSlots, nullptr);
         captureTexturePool_.assign(desiredSlots, nullptr);
@@ -1931,6 +2213,27 @@ public:
             if (FAILED(hr)) {
                 LogError("[WGC] Failed to create texture pool[%d]: 0x%lX", i, (unsigned long)hr);
                 ReleaseTexturePool();
+                const uint32_t mandatorySlots = std::max<uint32_t>(
+                    ce::capture_policy::kWgcSmoothnessBufferMinPoolFrames,
+                    smoothnessSyncDelayFrames_ + smoothnessReservedFreeSlots_ + smoothnessSafetySlots_ + 1u);
+                if (IsAllocationExhaustion(hr) && desiredSlots > mandatorySlots) {
+                    const uint32_t successfulSlots = i;
+                    const uint32_t halvedSlots = std::max<uint32_t>(mandatorySlots, desiredSlots / 2u);
+                    allocationLimitedPoolSlots_ =
+                        std::max<uint32_t>(mandatorySlots,
+                                           std::min<uint32_t>(desiredSlots - 1u,
+                                                              successfulSlots > mandatorySlots ? successfulSlots
+                                                                                               : halvedSlots));
+                    const double reservoirMs = smoothnessOutputFps_ > 0
+                                                   ? 1000.0 * static_cast<double>(allocationLimitedPoolSlots_) /
+                                                         static_cast<double>(smoothnessOutputFps_)
+                                                   : 0.0;
+                    LogWarn(
+                        "[WGC] Pool allocation exhausted: attempted=%u failedIndex=%u; retrying optional "
+                        "reservoir with %u slots (mandatory=%u estimatedDepth=%.1fms)",
+                        desiredSlots, i, allocationLimitedPoolSlots_, mandatorySlots, reservoirMs);
+                    return EnsureTexturePool(width, height, sourceFormat);
+                }
                 return false;
             }
 
@@ -2010,6 +2313,21 @@ public:
             static_cast<long long>(lastPoolConvertUs_.load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(poolGeneration_),
             splitDevicePool ? "dedicated capture device" : "shared device");
+        if (desiredSlots < configuredSlots) {
+            const double configuredMs = smoothnessOutputFps_ > 0
+                                            ? 1000.0 * static_cast<double>(configuredSlots) /
+                                                  static_cast<double>(smoothnessOutputFps_)
+                                            : 0.0;
+            const double allocatedMs = smoothnessOutputFps_ > 0
+                                           ? 1000.0 * static_cast<double>(desiredSlots) /
+                                                 static_cast<double>(smoothnessOutputFps_)
+                                           : 0.0;
+            LogWarn("[WGC] Optional reservoir reduced after memory exhaustion: configured=%u (%.1fms) "
+                    "allocated=%u (%.1fms) reduction=%.1fms",
+                    configuredSlots, configuredMs, desiredSlots, allocatedMs, configuredMs - allocatedMs);
+        }
+        ApplyConfiguredVideoMemoryReservation();
+        LogVideoMemoryInfo("after-pool-allocation", true);
         return true;
     }
 
@@ -2194,6 +2512,7 @@ public:
             LARGE_INTEGER copyStart = {};
             LARGE_INTEGER copyEnd = {};
             QueryPerformanceCounter(&copyStart);
+            BeginGpuTimingSample();
 
             const bool compactRetainedCopy = IsCompactRetainedCopy(sourceDesc.Format, poolFormat_);
             const bool canonicalRetainedCopy = compactRetainedCopy || useDuplicationBackend_;
@@ -2209,6 +2528,7 @@ public:
             } else {
                 d3dContext_->CopyResource(copyTarget, sourceTexture);
             }
+            EndGpuTimingSample();
             if (mutexAcquired) {
                 if (skipSplitDeviceFlush_) {
                     splitDeviceFlushSkippedCount_.fetch_add(1, std::memory_order_relaxed);
@@ -2934,6 +3254,9 @@ public:
     }
 
     bool StartDuplicationCapture(uint32_t& width, uint32_t& height) {
+        allocationLimitedPoolSlots_ = 0;
+        allocationLimitedSourceBuffers_ = 0;
+        allocationLimitSourceFormat_ = DXGI_FORMAT_UNKNOWN;
         resetNeeded_.store(false, std::memory_order_relaxed);
         {
             std::lock_guard<std::mutex> lock(resetReasonMutex_);
@@ -2979,6 +3302,18 @@ public:
         // first callback can allocate it; replace this hint with the proven
         // first-texture format immediately after Start returns.
         UpdateSmoothnessBudget(width, height, captureDxgiFormat_, true);
+        const ULONGLONG prewarmStart = GetTickCount64();
+        EnsureGpuTimingQueries();
+        if (!EnsurePoolCopyShader() || !EnsureTexturePool(width, height, captureDxgiFormat_)) {
+            dupInitFailureReason_ = "duplication retained-pool prewarm failed";
+            dupSource_.reset();
+            return false;
+        }
+        LogInfo("[WGC] Duplication prewarm complete: duration=%llums hintFormat=%s slots=%zu estimatedPool=%lluMB",
+                static_cast<unsigned long long>(GetTickCount64() - prewarmStart),
+                DxgiFormatName(captureDxgiFormat_), texturePool_.size(),
+                static_cast<unsigned long long>((smoothnessEstimatedVramBytes_ + 1024ull * 1024ull - 1ull) /
+                                                (1024ull * 1024ull)));
         if (!frameArrivedEvent_) {
             frameArrivedEvent_ = CreateEvent(NULL, FALSE, FALSE, NULL);  // Auto-reset
         }
@@ -3048,6 +3383,9 @@ public:
         if (!item_ || !winrtDevice_)
             return false;
 
+        allocationLimitedPoolSlots_ = 0;
+        allocationLimitedSourceBuffers_ = 0;
+        allocationLimitSourceFormat_ = DXGI_FORMAT_UNKNOWN;
         resetNeeded_.store(false, std::memory_order_relaxed);
         {
             std::lock_guard<std::mutex> lock(resetReasonMutex_);
@@ -3089,17 +3427,34 @@ public:
         // slots so delivery bursts and encoder texture lifetime do not fight over
         // one unbounded pool.
         auto tryCreateFramePool = [&](winrt::DirectXPixelFormat format) -> bool {
-            try {
-                framePool_ = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(
-                    winrtDevice_, format, static_cast<int32_t>(sourceFramePoolBufferCount_), size);
-                return framePool_ != nullptr;
-            } catch (const winrt::hresult_error& e) {
-                if (format == capturePixelFormat_) {
-                    LogWarn("[WGC] Frame pool creation failed for format=%d: 0x%08X", (int)format,
-                            (unsigned)e.code().value);
+            uint32_t attemptBuffers = sourceFramePoolBufferCount_;
+            for (;;) {
+                try {
+                    LogInfo("[WGC] Frame pool allocation attempt: format=%d sourceBuffers=%u", (int)format,
+                            attemptBuffers);
+                    framePool_ = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(
+                        winrtDevice_, format, static_cast<int32_t>(attemptBuffers), size);
+                    if (framePool_) {
+                        if (attemptBuffers != sourceFramePoolBufferCount_) {
+                            LogWarn("[WGC] Source frame pool reduced after memory exhaustion: configured=%u "
+                                    "allocated=%u",
+                                    sourceFramePoolBufferCount_, attemptBuffers);
+                        }
+                        sourceFramePoolBufferCount_ = attemptBuffers;
+                        allocationLimitedSourceBuffers_ = attemptBuffers;
+                        return true;
+                    }
+                    return false;
+                } catch (const winrt::hresult_error& e) {
+                    const HRESULT failureHr = e.code().value;
+                    LogWarn("[WGC] Frame pool creation failed for format=%d buffers=%u: 0x%08X", (int)format,
+                            attemptBuffers, (unsigned)failureHr);
+                    framePool_ = nullptr;
+                    const uint32_t minimumBuffers = ce::capture_policy::kWgcSmoothnessSourceFramePoolMinBuffers;
+                    if (!IsAllocationExhaustion(failureHr) || attemptBuffers <= minimumBuffers)
+                        return false;
+                    attemptBuffers = std::max<uint32_t>(minimumBuffers, attemptBuffers / 2u);
                 }
-                framePool_ = nullptr;
-                return false;
             }
         };
 
@@ -3213,6 +3568,30 @@ public:
                     attemptedBgraFallback ? 1 : 0);
         }
         LogInfo("[WGC] Frame pool format: %s", DescribeCaptureFormat());
+
+        // Allocate and compile everything whose dimensions and format are now
+        // authoritative before registering the callback or starting WGC. This
+        // keeps first-frame allocation/driver compilation out of the producer
+        // callback during the most contention-sensitive startup interval.
+        const ULONGLONG prewarmStart = GetTickCount64();
+        const DXGI_FORMAT retainedFormat = GetRetainedPoolFormat(captureDxgiFormat_);
+        const bool needsRetainedShader = IsCompactRetainedCopy(captureDxgiFormat_, retainedFormat);
+        EnsureGpuTimingQueries();
+        if ((needsRetainedShader && !EnsurePoolCopyShader()) ||
+            !EnsureTexturePool(width, height, captureDxgiFormat_)) {
+            LogError("[WGC] Capture prewarm failed: sourceFormat=%s retainedFormat=%s shaderRequired=%d",
+                     DxgiFormatName(captureDxgiFormat_), DxgiFormatName(retainedFormat), needsRetainedShader ? 1 : 0);
+            framePool_.Close();
+            framePool_ = nullptr;
+            return false;
+        }
+        LogInfo("[WGC] Capture prewarm complete: duration=%llums sourceFormat=%s retainedFormat=%s "
+                "sourceBuffers=%u copySlots=%zu estimatedPool=%lluMB",
+                static_cast<unsigned long long>(GetTickCount64() - prewarmStart),
+                DxgiFormatName(captureDxgiFormat_), DxgiFormatName(retainedFormat), sourceFramePoolBufferCount_,
+                texturePool_.size(),
+                static_cast<unsigned long long>((smoothnessEstimatedVramBytes_ + 1024ull * 1024ull - 1ull) /
+                                                (1024ull * 1024ull)));
 
         // Create event for frame arrival signaling (OBS-style immediate wake)
         // Auto-reset event ensures we wake once per signal
@@ -3361,6 +3740,7 @@ public:
         std::lock_guard<std::mutex> lock(frameMutex_);
         SafeRelease(latestFrame_);
         ReleasePendingFramesLocked();
+        ResetVideoMemoryReservation();
         ReleaseTexturePool();
         borderlessCapture_ = false;
         frameWidth_ = 0;
@@ -3391,6 +3771,7 @@ public:
                 LogInfo("[WGC] Trimmed capture-device residency");
             }
         }
+        ReleaseGpuTimingResources();
         SafeRelease(d3dContext_);
         if (usingDedicatedCaptureDevice_) {
             SafeRelease(d3dDevice_);
@@ -4481,25 +4862,11 @@ uint32_t WGCCapture::GetIngressAdmissionReasonCode() const {
 
 void WGCCapture::SetGpuPriority(int priority) {
 #if HAS_WGC
-    if (!impl_ || !impl_->d3dDevice_) {
-        LogWarn("[WGC] SetGpuPriority: no capture device available");
+    if (!impl_) {
         return;
     }
-    priority = std::clamp(priority, -7, 7);
-    IDXGIDevice* dxgiDevice = nullptr;
-    HRESULT hr = impl_->d3dDevice_->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
-    if (SUCCEEDED(hr) && dxgiDevice) {
-        hr = dxgiDevice->SetGPUThreadPriority(priority);
-        if (SUCCEEDED(hr)) {
-            LogInfo("[WGC] Set GPU thread priority to %d (dedicated=%d)", priority,
-                    impl_->usingDedicatedCaptureDevice_ ? 1 : 0);
-        } else {
-            LogWarn("[WGC] SetGPUThreadPriority(%d) failed: HR=0x%08lX", priority, (unsigned long)hr);
-        }
-        dxgiDevice->Release();
-    } else {
-        LogWarn("[WGC] SetGpuPriority: failed to query IDXGIDevice (HR=0x%08lX)", (unsigned long)hr);
-    }
+    impl_->desiredGpuPriority_.store(std::clamp(priority, -7, 7), std::memory_order_relaxed);
+    impl_->ApplyConfiguredGpuPriority("runtime-update");
 #else
     (void)priority;
 #endif
@@ -4833,6 +5200,24 @@ void WGCCapture::SetSmoothnessBufferBudget(bool enabled, uint32_t outputFps, uin
     (void)maxMs;
     (void)vramBudgetMb;
     (void)syncDelayFrames;
+#endif
+}
+
+void WGCCapture::SetVideoMemoryReservationMode(const std::string& mode) {
+#if HAS_WGC
+    if (impl_) {
+        Impl::VideoMemoryReservationMode resolved = Impl::VideoMemoryReservationMode::kOff;
+        if (mode == "mandatory")
+            resolved = Impl::VideoMemoryReservationMode::kMandatory;
+        else if (mode == "full")
+            resolved = Impl::VideoMemoryReservationMode::kFull;
+        if (impl_->videoMemoryReservationMode_ != resolved && impl_->activeVideoMemoryReservationBytes_ != 0)
+            impl_->ResetVideoMemoryReservation();
+        impl_->videoMemoryReservationMode_ = resolved;
+        LogInfo("[WGC] Diagnostic video-memory reservation mode: %s", mode.c_str());
+    }
+#else
+    (void)mode;
 #endif
 }
 

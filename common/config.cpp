@@ -67,6 +67,9 @@ static std::string NormalizePriorityString(const std::string& val, const char* f
         (normalized == "off" || normalized == "none" || normalized == "disabled" || normalized == "disable")) {
         return "off";
     }
+    if (allowOff && normalized == "auto") {
+        return "auto";
+    }
     if (normalized == "idle" || normalized == "below_normal" || normalized == "normal" ||
         normalized == "above_normal" || normalized == "high" || normalized == "realtime") {
         return normalized;
@@ -381,6 +384,8 @@ wgc_same_device_capture=true
 ; wgc_smoothness_buffer_vram_budget_mb - approximate WGC frame-pool + retained-copy
 ; budget for the smoothness reservoir. Raise only if there is enough VRAM headroom.
 ;wgc_smoothness_buffer_vram_budget_mb=3000
+; Diagnostic only: off|mandatory|full. Do not ship enabled without controlled A/B evidence.
+;wgc_video_memory_reservation=off
 ; wgc_allow_lossy_bgra8_pool=false: preserve >8-bit source precision with an FP16 WGC
 ; pool when R10 pools are unavailable. true permits a lossy BGRA8 source pool only for
 ; non-explicit/auto bit-depth capture; explicit bit_depth=10 always requires FP16/R10.
@@ -635,8 +640,9 @@ process_priority=high
 ; gpu_priority controls IDXGIDevice::SetGPUThreadPriority on CE D3D11 devices. Values: -7..7, 0 = adaptive
 gpu_priority=7
 ; gpu_scheduling_priority is an OBS-style D3DKMT process GPU scheduling class for the media process only.
-; Values: off, idle, below_normal, normal, above_normal, high, realtime. high/realtime can require elevation.
-gpu_scheduling_priority=off
+; auto selects high with HAGS enabled and above_normal otherwise.
+; Values: auto, off, idle, below_normal, normal, above_normal, high, realtime. high/realtime can require elevation.
+gpu_scheduling_priority=auto
 
 [FpsLimiter]
 ; capture_sync_enabled, limits game fps to video fps - Values: true, false
@@ -923,13 +929,21 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         config.autoFullscreenPrefersDxgiDup = !(autoFullscreen == "wgc_window" || autoFullscreen == "wgc");
     }
     config.wgcSkipSplitDeviceFlush = GetBool("General", "wgc_skip_split_device_flush", false);
-    config.wgcSameDeviceCapture = GetBool("General", "wgc_same_device_capture", false);
+    config.wgcSameDeviceCapture = GetBool("General", "wgc_same_device_capture", true);
     config.wgcActiveDelayUniformCadence = GetBool("General", "wgc_active_delay_uniform_cadence", true);
     config.wgcSmoothnessBufferEnabled = GetBool("General", "wgc_smoothness_buffer_enabled", true);
     config.wgcSmoothnessBufferMaxMs =
         static_cast<uint32_t>(std::max(0, GetInt("General", "wgc_smoothness_buffer_max_ms", 300)));
     config.wgcSmoothnessBufferVramBudgetMb =
         static_cast<uint32_t>(std::max(0, GetInt("General", "wgc_smoothness_buffer_vram_budget_mb", 3000)));
+    config.wgcVideoMemoryReservation = Trim(GetStr("General", "wgc_video_memory_reservation", "off"));
+    std::transform(config.wgcVideoMemoryReservation.begin(), config.wgcVideoMemoryReservation.end(),
+                   config.wgcVideoMemoryReservation.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (config.wgcVideoMemoryReservation != "off" && config.wgcVideoMemoryReservation != "mandatory" &&
+        config.wgcVideoMemoryReservation != "full") {
+        config.wgcVideoMemoryReservation = "off";
+    }
     {
         // wgc_smoothness_floor_ms: "auto" (default) -> derive from measured startup delivery jitter;
         // "0" -> disabled (exact prior behavior); "N" -> explicit floor in ms. Robust to case/spacing.
@@ -965,11 +979,11 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.audioLatencyAutodetect = GetBool("General", "audio_latency_autodetect", true);
 
     // Performance (Priority Settings)
-    config.processPriority = NormalizePriorityString(GetStr("Performance", "process_priority", "above_normal"),
-                                                     "above_normal", false);
-    config.video.gpuPriority = GetInt("Performance", "gpu_priority", 0);
+    config.processPriority =
+        NormalizePriorityString(GetStr("Performance", "process_priority", "high"), "above_normal", false);
+    config.video.gpuPriority = GetInt("Performance", "gpu_priority", 7);
     config.gpuSchedulingPriority =
-        NormalizePriorityString(GetStr("Performance", "gpu_scheduling_priority", "off"), "off", true);
+        NormalizePriorityString(GetStr("Performance", "gpu_scheduling_priority", "auto"), "off", true);
     config.copyQueuePriority = GetStr("Performance", "copy_queue_priority", "normal");
 
     // Fence synchronization settings (hardcoded to optimal values)

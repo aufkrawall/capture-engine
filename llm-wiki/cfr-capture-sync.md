@@ -1,7 +1,15 @@
 # CFR Capture Sync
 
-Last cross-checked: 2026-07-11 (transactional fresh-frame recovery; source-epoch invalidation; CFR packet-coverage validation; DXGI/WGC/inject codec matrix)
+Last cross-checked: 2026-07-12 (event-driven inject ingestion, combined CPU/GPU texture leases, and contention attribution)
 Stale-risk: low
+
+## Inject contention invariants (2026-07-12)
+
+Inject publishers release-publish metadata and signal a controller-PID-named auto-reset event only on an empty-to-nonempty metadata transition. Media drains every visible entry before waiting on frame-ready plus shutdown events, then rechecks after every wake. `FrameRingBuffer::ingestIndex` records metadata observation independently from `readIndex`, which remains the delayed contiguous texture-lease acknowledgement. This distinction is required: using lease acknowledgement for event coalescing can miss a refill wake while previously ingested textures are still queued. Event open/create failure uses a logged bounded shutdown wait, but correctness remains ring-index based.
+
+Every explicit producer path requires both no outstanding media lease and completion of the prior producer GPU operation before reuse. DX12 scans all sixteen fence-tracked slots; native DX11 uses per-slot fences or `DONOTFLUSH` event queries; DX10 skips pending queries; Vulkan combines relay/timeline/fence completion with media leases. No Present path waits. All-busy means a safe source-frame drop and downstream CFR repeat. DXVK/implicit-only paths retain their documented synchronization contract. Shared ABI version 30 carries capture-lock, CPU-lease, GPU-busy, metadata-full, event-signal, and publication-to-ingest diagnostics.
+
+Session triage distinguishes `wgc_upstream_producer_starvation`, `duplication_consumer_starvation`, `capture_gpu_queue_starvation`, `hardware_encoder_starvation`, and `media_cpu_starvation`. HAGS and memory-budget state are contextual evidence, never automatic causal verdicts.
 
 Primary sources:
 - `common/capture_pipeline_policy.h`

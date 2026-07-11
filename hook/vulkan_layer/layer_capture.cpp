@@ -1900,10 +1900,14 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
     ID3D11Fence* relayCompletionFence = state.d3d11IpcFence ? state.d3d11IpcFence : state.d3d11Fence;
     const uint32_t firstSlot = static_cast<uint32_t>(state.captureFrameCounter++ % sharedTextureCount);
     int32_t availableSlot = -1;
+    uint32_t cpuBusySlots = 0;
+    uint32_t gpuBusySlots = 0;
     for (uint32_t offset = 0; offset < sharedTextureCount; ++offset) {
         const uint32_t candidate = (firstSlot + offset) % sharedTextureCount;
-        if (IsCaptureTextureSlotOutstanding(mem, static_cast<int32_t>(candidate)))
+        if (IsCaptureTextureSlotOutstanding(mem, static_cast<int32_t>(candidate))) {
+            ++cpuBusySlots;
             continue;
+        }
         if (doRelay && state.relayCompletionValues[candidate] != 0) {
             const uint64_t completedRelayValue = relayCompletionFence->GetCompletedValue();
             if (completedRelayValue == UINT64_MAX) {
@@ -1911,14 +1915,34 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
                 state.initialized = false;
                 return false;
             }
-            if (completedRelayValue < state.relayCompletionValues[candidate])
+            if (completedRelayValue < state.relayCompletionValues[candidate]) {
+                ++gpuBusySlots;
                 continue;
+            }
+        }
+        const uint32_t candidateFenceIndex = candidate % state.copyFences.size();
+        const VkFence candidateFence = state.copyFences[candidateFenceIndex];
+        const VkResult fenceStatus = disp->fp_vkWaitForFences(device, 1, &candidateFence, VK_TRUE, 0);
+        if (fenceStatus != VK_SUCCESS) {
+            if (fenceStatus == VK_ERROR_DEVICE_LOST) {
+                state.initialized = false;
+                return false;
+            }
+            ++gpuBusySlots;
+            continue;
         }
         availableSlot = static_cast<int32_t>(candidate);
         break;
     }
-    if (availableSlot < 0)
+    if (availableSlot < 0) {
+        if (mem) {
+            if (cpuBusySlots != 0)
+                mem->runtimeState.injectProducerCpuLeaseBusyDrops.fetch_add(1, std::memory_order_relaxed);
+            if (gpuBusySlots != 0)
+                mem->runtimeState.injectProducerGpuBusyDrops.fetch_add(1, std::memory_order_relaxed);
+        }
         return false;
+    }
     const uint32_t slotIndex = static_cast<uint32_t>(availableSlot);
     LARGE_INTEGER sourceQpc = {};
     QueryPerformanceCounter(&sourceQpc);
@@ -1929,15 +1953,8 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
     uint32_t fenceIndex = slotIndex % state.copyFences.size();
     VkFence fence = state.copyFences[fenceIndex];
 
-    // Non-blocking check: if the previous copy for this slot is still in flight,
-    // drop this frame to avoid stalling the present queue (mirrors DX12 behavior)
-    VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, 0);
-    if (waitResult != VK_SUCCESS) {
-        if (waitResult == VK_ERROR_DEVICE_LOST)
-            return false;
-        // VK_TIMEOUT: previous copy still in flight, drop this frame
-        return false;
-    }
+    // The scan above proved both the Vulkan submission and any D3D11 relay
+    // operation for this exact slot complete without waiting on Present.
 
     uint32_t cmdIndex = slotIndex % commandResources->buffers.size();
     VkCommandBuffer cmd = commandResources->buffers[cmdIndex];

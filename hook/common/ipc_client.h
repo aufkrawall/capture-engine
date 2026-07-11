@@ -15,6 +15,7 @@ public:
     }
     ShmemBuffer* GetShmem();  // Returns current mapping or attempts to connect if
                               // metadata exists
+    bool SignalInjectFrameReady();
 
     // Check if host requested capture, including the short hidden startup warmup.
     bool IsCaptureRequested() const {
@@ -31,4 +32,5 @@ private:
 
     HANDLE hMapShmem;
     ShmemBuffer* pShmem;
+    HANDLE hInjectFrameReadyEvent;
 };

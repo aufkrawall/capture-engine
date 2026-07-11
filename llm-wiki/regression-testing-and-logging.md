@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-06-18 (hybrid automatic A/V sync probe, diagnostics, and strict-track analyzer guard)
+Last cross-checked: 2026-07-12 (HAGS contention gate and starvation-attribution evidence)
 
 Primary sources:
 - `AGENTS.md`
@@ -68,6 +68,8 @@ Primary sources:
 - `tests/test_streamline_runtime_policy.cpp`
 
 ## Core Expectations
+- `python tools/run_av_sync_matrix.py --contention-gate` is the long HAGS-on capture-contention profile. It requires `hagsEnabled=1` log evidence; runs DXGI duplication, WGC, and DX12 inject at 4K120 true 10-bit/high-entropy p1/p5/p6/p7 pressure; repeats every combination three times; and starts deterministic CPU contention workers only during each scenario. Dry-run/self-test validates construction but is not hardware acceptance evidence.
+- Contention triage names are `wgc_upstream_producer_starvation`, `duplication_consumer_starvation`, `capture_gpu_queue_starvation`, `hardware_encoder_starvation`, and `media_cpu_starvation`. Interpret HAGS and video-memory budgets as context rather than causal proof.
 - The repo is regression-paranoid. Fixes for one overlay or FG case are expected not to regress another one.
 - When changing risky logic, add or update focused regression tests where feasible.
 - Add enough debug logging to avoid making decisions from insufficient evidence.

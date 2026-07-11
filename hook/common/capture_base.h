@@ -18,9 +18,16 @@ public:
     }
 
     // Signal frame ready - accepts IPCClient for backward compatibility
-    void SignalFrameReady(IPCClient* ipc, int textureIndex, int64_t timestamp, uint64_t gpuFenceValue) {
+    bool SignalFrameReady(IPCClient* ipc, int textureIndex, int64_t timestamp, uint64_t gpuFenceValue) {
         if (ipc && ipc->GetSharedMem()) {
-            CaptureBase::SignalFrameReady(ipc->GetSharedMem(), textureIndex, timestamp, gpuFenceValue);
+            bool transitionedFromEmpty = false;
+            const bool published = CaptureBase::SignalFrameReady(ipc->GetSharedMem(), textureIndex, timestamp,
+                                                                 gpuFenceValue, &transitionedFromEmpty);
+            if (published && transitionedFromEmpty) {
+                ipc->SignalInjectFrameReady();
+            }
+            return published;
         }
+        return false;
     }
 };

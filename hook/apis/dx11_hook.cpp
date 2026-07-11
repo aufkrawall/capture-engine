@@ -3421,6 +3421,7 @@ public:
     ID3D11DeviceContext4* context4 = nullptr;  // Needed for Signal
     bool useFences = false;
     UINT64 fenceValue = 0;
+    UINT64 slotFenceValues[CAPTURE_TEXTURE_COUNT]{};
 
     // Keyed Mutex Support (Proper Fix)
     IDXGIKeyedMutex* keyedMutexes[CAPTURE_TEXTURE_COUNT]{};
@@ -3456,6 +3457,8 @@ public:
 
             g_DeferredRelease.Queue(copyQueries10[i]);
             copyQueries10[i] = nullptr;
+
+            slotFenceValues[i] = 0;
 
             g_DeferredRelease.Queue(dxvkImportedTextures[i]);
             dxvkImportedTextures[i] = nullptr;
@@ -4029,6 +4032,10 @@ public:
     bool CaptureFrame(IDXGISwapChain* swapChain) {
         std::unique_lock<std::recursive_mutex> captureLock(captureMutex, std::try_to_lock);
         if (!captureLock.owns_lock()) {
+            if (g_IPC && g_IPC->GetSharedMem()) {
+                g_IPC->GetSharedMem()->runtimeState.injectProducerCaptureLockDrops.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
             static std::atomic<int> s_contentionLogCount{0};
             if (s_contentionLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
                 HookLog("DX11Capture: Skipping concurrent capture while another Present/cleanup owns resources");
@@ -4109,8 +4116,27 @@ public:
 
             int writeIdx = writeIndex % CAPTURE_TEXTURE_COUNT;
             SharedMemoryLayout* captureSharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-            writeIdx = FindAvailableCaptureTextureSlot(captureSharedMem, writeIdx);
+            uint32_t cpuBusySlots = 0;
+            uint32_t gpuBusySlots = 0;
+            writeIdx = FindAvailableCaptureTextureSlotIf(
+                captureSharedMem, writeIdx, CAPTURE_TEXTURE_COUNT,
+                [&](int32_t candidate) {
+                    ID3D10Query* query = copyQueries10[candidate];
+                    if (!query)
+                        return true;
+                    BOOL complete = FALSE;
+                    return query->GetData(&complete, sizeof(complete), D3D10_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+                },
+                &cpuBusySlots, &gpuBusySlots);
             if (writeIdx < 0) {
+                if (captureSharedMem) {
+                    if (cpuBusySlots != 0)
+                        captureSharedMem->runtimeState.injectProducerCpuLeaseBusyDrops.fetch_add(
+                            1, std::memory_order_relaxed);
+                    if (gpuBusySlots != 0)
+                        captureSharedMem->runtimeState.injectProducerGpuBusyDrops.fetch_add(1,
+                                                                                           std::memory_order_relaxed);
+                }
                 droppedFrames.fetch_add(1, std::memory_order_relaxed);
                 backbuffer10->Release();
                 return false;
@@ -4119,15 +4145,6 @@ public:
             if (frameNum <= 20 || frameNum % 60 == 0) {
                 HookLog("DX10Capture: [%d] Copying to texture %d (writeIndex=%d)", frameNum, writeIdx,
                         writeIndex.load());
-            }
-
-            if (copyQueries10[writeIdx]) {
-                BOOL data = FALSE;
-                HRESULT queryHr = copyQueries10[writeIdx]->GetData(&data, sizeof(data), 0);
-                if (queryHr == S_FALSE) {
-                    // Previous copy to this slot is still pending. We keep the current
-                    // non-blocking behavior and rely on the ring depth to absorb it.
-                }
             }
 
             LARGE_INTEGER qpc;
@@ -4192,8 +4209,37 @@ public:
         // Determine which texture slot to write to
         int writeIdx = writeIndex % CAPTURE_TEXTURE_COUNT;
         SharedMemoryLayout* captureSharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-        writeIdx = FindAvailableCaptureTextureSlot(captureSharedMem, writeIdx);
+        const UINT64 completedFenceValue = (useFences && fence) ? fence->GetCompletedValue() : 0;
+        if (completedFenceValue == UINT64_MAX) {
+            HookLog("DX11Capture: Producer fence reported device removal");
+            backbuffer->Release();
+            return false;
+        }
+        uint32_t cpuBusySlots = 0;
+        uint32_t gpuBusySlots = 0;
+        writeIdx = FindAvailableCaptureTextureSlotIf(
+            captureSharedMem, writeIdx, CAPTURE_TEXTURE_COUNT,
+            [&](int32_t candidate) {
+                if (useFences && fence) {
+                    const UINT64 requiredValue = slotFenceValues[candidate];
+                    return requiredValue == 0 || completedFenceValue >= requiredValue;
+                }
+                ID3D11Query* query = copyQueries[candidate];
+                if (!query)
+                    return true;
+                BOOL complete = FALSE;
+                return context->GetData(query, &complete, sizeof(complete), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK;
+            },
+            &cpuBusySlots, &gpuBusySlots);
         if (writeIdx < 0) {
+            if (captureSharedMem) {
+                if (cpuBusySlots != 0)
+                    captureSharedMem->runtimeState.injectProducerCpuLeaseBusyDrops.fetch_add(
+                        1, std::memory_order_relaxed);
+                if (gpuBusySlots != 0)
+                    captureSharedMem->runtimeState.injectProducerGpuBusyDrops.fetch_add(1,
+                                                                                       std::memory_order_relaxed);
+            }
             droppedFrames.fetch_add(1, std::memory_order_relaxed);
             backbuffer->Release();
             return false;
@@ -4202,19 +4248,6 @@ public:
 
         if (frameNum <= 20 || frameNum % 60 == 0) {
             HookLog("DX11Capture: [%d] Copying to texture %d (writeIndex=%d)", frameNum, writeIdx, writeIndex.load());
-        }
-
-        // Check if this slot is still in use by encoder (non-blocking check)
-        if (copyQueries[writeIdx]) {
-            // Quick check without stall - if not ready, we'll issue the copy anyway
-            // and let the query catch it next frame. The ring buffer depth (8)
-            // provides enough padding that this is usually fine.
-            BOOL data = FALSE;
-            HRESULT hr = context->GetData(copyQueries[writeIdx], &data, sizeof(data), 0);
-            if (hr == S_FALSE) {
-                // Query still pending - frame may be dropped if encoder is slow
-                // But we proceed anyway and let EnqueueFrame handle ring buffer full
-            }
         }
 
         LARGE_INTEGER qpc;
@@ -4250,6 +4283,8 @@ public:
                 if (cachedDevice && FAILED(cachedDevice->GetDeviceRemovedReason())) {
                     return false;
                 }
+            } else {
+                slotFenceValues[writeIdx] = currentFenceValue;
             }
         } else {
             // A legacy shared texture has no explicit cross-process completion

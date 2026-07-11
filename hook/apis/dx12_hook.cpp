@@ -3809,6 +3809,7 @@ static void PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLay
     uint32_t wIdx = shm->frameRing.writeIndex.load(std::memory_order_acquire);
     uint32_t rIdx = shm->frameRing.readIndex.load(std::memory_order_acquire);
     if ((uint32_t)(wIdx - rIdx) < (uint32_t)FRAME_RING_SIZE) {
+        const bool ringWasEmpty = wIdx == shm->frameRing.ingestIndex.load(std::memory_order_acquire);
         FrameSlot& slot = shm->frameRing.slots[wIdx % FRAME_RING_SIZE];
         slot.fenceValue = desc.fenceValue;
         slot.timestamp = desc.presentTime;
@@ -3818,6 +3819,9 @@ static void PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLay
         std::atomic_thread_fence(std::memory_order_release);
         slot.valid.store(1, std::memory_order_release);
         shm->frameRing.writeIndex.store(wIdx + 1, std::memory_order_release);
+        if (ringWasEmpty && g_IPC) {
+            g_IPC->SignalInjectFrameReady();
+        }
         DXGIShared::SetLatestSourceFrameIndex(desc.frameNumber);
         static uint64_t s_lastPublishLineageLogTick = 0;
         uint64_t nowTick = GetTickCount64();
@@ -3829,6 +3833,7 @@ static void PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLay
         }
     } else {
         shm->frameRing.droppedFrames.fetch_add(1, std::memory_order_relaxed);
+        shm->runtimeState.injectProducerMetadataFullDrops.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
