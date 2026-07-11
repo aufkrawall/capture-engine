@@ -5682,6 +5682,48 @@ TEST(DXGISharedSourceTest, StaleFSRQueueClearReceivesWarmResumeFlag) {
 }
 
 // ---------------------------------------------------------------------------
+// FSR-FG SUSPENSION overlay visibility (sessions 20260703_204119 blank /
+// 20260703_210021 1fps stall / 20260703_212441 blank-via-UI-texture). During a
+// runtime-owned no-callback FSR suspension AMD presents its backbuffer in
+// passthrough and does NOT composite the registered UI resource, so the overlay
+// must be drawn onto the PRESENTED BACKBUFFER on the exact game/presentation
+// queue recorded from the FFX swapchain creation descriptor. Queue ordering
+// then provides completion without a foreign queue or per-frame CPU wait.
+// ---------------------------------------------------------------------------
+TEST(DXGISharedSourceTest, SuspendBackbufferOverlayUsesExactOwnerQueueGatedToSuspension) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    // The proxy-present prework must select the backbuffer route ONLY under an explicit suspension.
+    const size_t preworkGate = text.find("if (DX12_IsNativeFSRFGSuspendedDisablePending()) {");
+    ASSERT_NE(preworkGate, std::string::npos);
+    const size_t backbufferCall = text.find("DX12_CompositeOverlayOntoSuspendBackbuffer(proxy)", preworkGate);
+    ASSERT_NE(backbufferCall, std::string::npos);
+    // The suspend branch is tight — the backbuffer call is right under the suspension gate (active FG keeps
+    // the UI-resource composite in the else branch).
+    EXPECT_LT(backbufferCall - preworkGate, static_cast<size_t>(400));
+
+    // The backbuffer composite must use only the exact descriptor-owned queue;
+    // it must not guess a queue or use the foreign dedicated-queue path.
+    const size_t fn = text.find("bool DX12_CompositeOverlayOntoSuspendBackbuffer(");
+    ASSERT_NE(fn, std::string::npos);
+    const size_t fnEnd = text.find("\n}\n", fn);
+    ASSERT_NE(fnEnd, std::string::npos);
+    const std::string body = text.substr(fn, fnEnd - fn);
+    EXPECT_NE(body.find("AcquireNativeFSRSwapchainPresentationQueue(proxy)"), std::string::npos);
+    EXPECT_NE(body.find("request.presentationQueue = gameQueue"), std::string::npos);
+    EXPECT_NE(body.find("SubmitNativeFSROwnerQueueOverlayCommandList"), std::string::npos);
+    EXPECT_NE(body.find("never guessing a swapchain-owner queue"), std::string::npos);
+    EXPECT_EQ(body.find("g_FFXUiCompositeQueue"), std::string::npos);
+    EXPECT_EQ(body.find("WaitForSingleObject"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
 // No-callback FSR FG overlay routing — CRASH REGRESSION (session 20260621_191028,
 // amd_fidelityfx_dx12!ffxQuery null-deref AV). When AMD owns the swapchain
 // (runtime-owned native FSR FG) CE must NEVER submit overlay work on AMD's
@@ -5920,7 +5962,8 @@ TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceReassertOnlyFromProxyPr
     // The proxy-present prework (game thread) composites FIRST, then re-asserts, inside the prework guard.
     const size_t prework = dx12.find("void DX12_RunFFXProxyPrePresentWork(");
     ASSERT_NE(prework, std::string::npos);
-    const size_t preworkComposite = dx12.find("DX12_CompositeOverlayOntoCachedFFXUiResource()", prework);
+    const size_t preworkComposite =
+        dx12.find("DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(proxy)", prework);
     ASSERT_NE(preworkComposite, std::string::npos);
     const size_t preworkReReg = dx12.find("FFXHook_ReRegisterSubstituteUiResource()", prework);
     ASSERT_NE(preworkReReg, std::string::npos);
@@ -5932,20 +5975,78 @@ TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceReassertOnlyFromProxyPr
     const std::string ffx = readFile(fs::current_path() / "hook" / "apis" / "ffx_hook.cpp");
     ASSERT_FALSE(ffx.empty());
     // The substitute register is stored ONLY on the degenerate-substitute path (inside the substitution block).
-    const size_t prepare = ffx.find("DX12_PrepareFFXUiOverlayTarget(uiDesc->uiResource");
+    const size_t prepare = ffx.find("uiTargetSubstituted = DX12_PrepareFFXUiOverlayTarget(");
     ASSERT_NE(prepare, std::string::npos);
     const size_t store = ffx.find("StoreSubstituteUiReRegistration(context, originalConfigure", prepare);
     ASSERT_NE(store, std::string::npos);
     // The re-register call forwards to the REAL ffxConfigure (g_SubstReRegConfigure), not CE's hook.
-    EXPECT_NE(ffx.find("g_SubstReRegConfigure(g_SubstReRegContext"), std::string::npos);
+    EXPECT_NE(ffx.find("const ffxReturnCode_t result = g_SubstReRegConfigure("), std::string::npos);
     // The re-assert consults the driver policy and refuses outside the proxy-present prework.
-    const size_t reRegFn = ffx.find("void FFXHook_ReRegisterSubstituteUiResource()");
+    const size_t reRegFn = ffx.find("FFXSubstituteUiReRegistrationResult FFXHook_ReRegisterSubstituteUiResource()");
     ASSERT_NE(reRegFn, std::string::npos);
     const size_t guard = ffx.find("MayReassertSubstituteUiResource", reRegFn);
-    const size_t forward = ffx.find("g_SubstReRegConfigure(g_SubstReRegContext", reRegFn);
+    const size_t forward = ffx.find("const ffxReturnCode_t result = g_SubstReRegConfigure(", reRegFn);
     ASSERT_NE(guard, std::string::npos);
     ASSERT_NE(forward, std::string::npos);
     EXPECT_LT(guard, forward) << "the prework-context guard must run BEFORE the ffxConfigure forward";
     // The proxy hook is captured from ffxConfigure(FrameGeneration).swapChain (GTA passes the proxy there).
     EXPECT_NE(ffx.find("DX12_TryInstallFFXProxyPresentHook(localConfig.swapChain"), std::string::npos);
+}
+
+TEST(DXGISharedSourceTest, FFXUiRegistrationPublishesOnlyAfterProviderSuccess) {
+    namespace fs = std::filesystem;
+    auto readFile = [](const fs::path& p) {
+        std::ifstream stream(p, std::ios::binary);
+        EXPECT_TRUE(stream.good()) << p.string();
+        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    };
+
+    const std::string ffx = readFile(fs::current_path() / "hook" / "apis" / "ffx_hook.cpp");
+    const size_t forward = ffx.find("const ffxReturnCode_t result = CallFfxConfigureOriginalGuarded");
+    const size_t commit = ffx.find("DX12_CommitFFXUiOverlayTarget(&uiTargetPreparation)", forward);
+    const size_t store = ffx.find("StoreSubstituteUiReRegistration(context, originalConfigure", forward);
+    const size_t discard = ffx.find("DX12_DiscardFFXUiOverlayTarget(&uiTargetPreparation)", forward);
+    ASSERT_NE(forward, std::string::npos);
+    ASSERT_NE(commit, std::string::npos);
+    ASSERT_NE(store, std::string::npos);
+    ASSERT_NE(discard, std::string::npos);
+    EXPECT_LT(forward, commit);
+    EXPECT_LT(commit, store);
+    EXPECT_LT(store, discard);
+
+    const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+    EXPECT_NE(dx12.find("COMMON/PRESENT is legitimately numeric zero"), std::string::npos);
+    EXPECT_NE(dx12.find("g_CEUiSubstituteInitialState == initialState"), std::string::npos);
+    EXPECT_NE(dx12.find("IsResourceOwnedByDevice(g_CEUiSubstituteTexture, device)"), std::string::npos);
+    EXPECT_NE(dx12.find("preparation->sequence < g_FFXUiCommittedPreparationSequence"), std::string::npos);
+}
+
+TEST(DXGISharedSourceTest, FFXOwnerQueueRendererRetainsTargetsAndNeverCpuWaits) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_ffx_suspend_overlay.cpp";
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+
+    EXPECT_NE(text.find("ComPtr<ID3D12Resource> inFlightTarget"), std::string::npos);
+    EXPECT_NE(text.find("slot.inFlightTarget = targetResource"), std::string::npos);
+    EXPECT_NE(text.find("slots[slotIndex].fenceValue > completed"), std::string::npos);
+    EXPECT_NE(text.find("overlay.SetDX12NextUploadSlot(static_cast<int>(slotIndex))"), std::string::npos);
+    EXPECT_EQ(text.find("WaitForSingleObject"), std::string::npos);
+    EXPECT_EQ(text.find("CreateCommandQueue"), std::string::npos);
+}
+
+TEST(DXGISharedSourceTest, FFXProxyPresentRemovalQuiescesAndDrainsEnteredDetours) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+
+    EXPECT_NE(text.find("g_FFXProxyPresentDetoursInFlight.fetch_add"), std::string::npos);
+    EXPECT_NE(text.find("g_FFXProxyPresentQuiescing.store(true"), std::string::npos);
+    EXPECT_NE(text.find("g_FFXProxyPresentDrainCV.wait"), std::string::npos);
+    EXPECT_NE(text.find("DX12_RemoveFFXProxyPresentHook(\"DX12 shutdown\")"), std::string::npos);
+    EXPECT_NE(text.find("if (!lastPrework"), std::string::npos)
+        << "a patched but never-entered proxy must keep the real-present fallback alive";
 }

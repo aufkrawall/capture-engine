@@ -69,7 +69,7 @@ namespace {
 
 std::mutex g_InitMutex;
 std::atomic<bool> g_Initialized{false};
-std::atomic<int> g_ActiveFGContextCount{0};
+std::atomic<int> g_FGContextCount{0};
 std::atomic<bool> g_NoModulesLogged{false};
 std::once_flag g_DynamicHookRegistrationOnce;
 
@@ -110,6 +110,7 @@ static std::atomic<void*> g_FfxConfigureDeferredRearmTarget{nullptr};
 static bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target, const char* moduleName, const char* reason);
 static ffxReturnCode_t CallFfxConfigureOriginalGuarded(PfnFfxConfigure originalConfigure, ffxContext* context,
                                                        const ffxConfigureDescHeader* desc);
+static void ClearSubstituteUiReRegistrationForContext(ffxContext context);
 
 bool IsCommittedReadableCodeAddress(void* address) {
     if (!address) {
@@ -260,13 +261,11 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* context, ffxCreateContextDes
         return 1;  // Error
     }
 
-    // During the Streamline startup window, skip CE-side processing to avoid
-    // interfering with SL's critical initialization (creating a temporary
-    // COMPUTE queue or accessing SL state during DllMain can crash SL with
-    // a null pointer call).
-    if (DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
-        return g_Original_ffxCreateContext(context, desc, memCb);
-    }
+    // Parse the swapchain creation descriptor before forwarding: the output pointer is populated by AMD, while
+    // the exact game/presentation queue is an input. Direct proxy-backbuffer work is legal only on this queue.
+    const auto parsedSwapChainCreate = ce::ffx_api::ParseFrameGenerationSwapChainCreateState(
+        reinterpret_cast<const ce::ffx_api::ApiHeader*>(desc));
+    const bool duringStreamlineStartup = DXGIShared::IsStreamlineStartupTransitionWindowActive();
 
     // Call original first
     ffxReturnCode_t result = g_Original_ffxCreateContext(context, desc, memCb);
@@ -274,26 +273,36 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* context, ffxCreateContextDes
     if (result == FFX_API_RETURN_OK && desc) {
         uint32_t effectId = GetEffectId(desc->type);
 
-        // CRITICAL FIX: Track context type for proper cleanup
+        if (parsedSwapChainCreate.recognized && context && *context && parsedSwapChainCreate.swapChainOutput &&
+            *parsedSwapChainCreate.swapChainOutput && parsedSwapChainCreate.gameQueue) {
+            DX12_RegisterNativeFSRSwapchainPresentationQueue(
+                *context, *parsedSwapChainCreate.swapChainOutput,
+                static_cast<ID3D12CommandQueue*>(parsedSwapChainCreate.gameQueue));
+        }
+
+        // Track successful context creation even during Streamline startup. This is passive bookkeeping only;
+        // skipping it leaks the context count and queue binding when the matching destroy arrives later.
+        bool newlyTrackedContext = false;
         {
             std::lock_guard<std::mutex> lock(g_ContextMapMutex);
-            g_ContextTypeMap[context] = effectId;
+            const auto [it, inserted] = g_ContextTypeMap.emplace(context ? *context : nullptr, effectId);
+            newlyTrackedContext = inserted;
+            if (!inserted) {
+                it->second = effectId;
+            }
         }
 
         // Check if this is a Frame Generation context
-        if (effectId == FFX_API_EFFECT_ID_FRAMEGENERATION || effectId == FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN) {
-            int prevCount = g_ActiveFGContextCount.fetch_add(1, std::memory_order_acq_rel);
+        if (newlyTrackedContext && (effectId == FFX_API_EFFECT_ID_FRAMEGENERATION ||
+                                    effectId == FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN)) {
+            int prevCount = g_FGContextCount.fetch_add(1, std::memory_order_acq_rel);
             HookLog(
                 "FFX Hook: Frame Generation context CREATED (type=0x%llx, "
-                "effectId=0x%x, activeContexts=%d)",
-                (unsigned long long)desc->type, effectId, prevCount + 1);
-
-            // Signal FG activation to the detection system
-            // Only on first context (0 -> 1 transition)
-            if (prevCount == 0) {
-                HookLog("FFX Hook: FSR Frame Generation ACTIVATED (first context created)");
-                g_FGCompat.SetFSRFGActive(true);
-            }
+                "effectId=0x%x, liveContexts=%d, streamlineStartup=%d)",
+                (unsigned long long)desc->type, effectId, prevCount + 1, duringStreamlineStartup ? 1 : 0);
+            // Context creation proves support/lifetime only. Many titles pre-create the FSR contexts while FG
+            // remains disabled; activation begins only after a successful enabled ffxConfigure/callback proof.
+            (void)prevCount;
         }
     }
 
@@ -306,43 +315,47 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
         return 1;  // Error
     }
 
-    // During the Streamline startup window, skip CE-side processing (same as
-    // ffxCreateContext guard) to avoid interfering with SL's initialization.
-    if (DXGIShared::IsStreamlineStartupTransitionWindowActive()) {
-        return g_Original_ffxDestroyContext(context, memCb);
-    }
+    const ffxContext contextHandle = context ? *context : nullptr;
 
-    // CRITICAL FIX: Check if this is an FG context before decrementing
+    // Inspect before forwarding but commit no bookkeeping changes until AMD confirms destruction succeeded.
+    // This preserves callback delegation and queue ownership if the provider rejects the destroy.
     bool isFGContext = false;
     {
         std::lock_guard<std::mutex> lock(g_ContextMapMutex);
-        auto it = g_ContextTypeMap.find(context);
+        auto it = g_ContextTypeMap.find(contextHandle);
         if (it != g_ContextTypeMap.end()) {
             uint32_t effectId = it->second;
             isFGContext = (effectId == FFX_API_EFFECT_ID_FRAMEGENERATION ||
                            effectId == FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN);
-            g_ContextTypeMap.erase(it);
         }
     }
-
-    {
-        std::lock_guard<std::mutex> lock(g_PresentCallbackBridgeMutex);
-        g_PresentCallbackBridgeKeys.erase(reinterpret_cast<void*>(context));
-    }
-    DX12_ClearFFXPresentCallbackBridge(reinterpret_cast<void*>(context));
 
     // Call original
     ffxReturnCode_t result = g_Original_ffxDestroyContext(context, memCb);
 
+    if (result == FFX_API_RETURN_OK) {
+        {
+            std::lock_guard<std::mutex> lock(g_ContextMapMutex);
+            g_ContextTypeMap.erase(contextHandle);
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_PresentCallbackBridgeMutex);
+            g_PresentCallbackBridgeKeys.erase(contextHandle);
+        }
+        DX12_ClearFFXPresentCallbackBridge(contextHandle);
+        DX12_UnregisterNativeFSRSwapchainPresentationQueue(contextHandle, "FFX swapchain context destroyed");
+        ClearSubstituteUiReRegistrationForContext(contextHandle);
+    }
+
     // Only decrement if this was actually an FG context
     if (result == FFX_API_RETURN_OK && isFGContext) {
-        int newCount = g_ActiveFGContextCount.fetch_sub(1, std::memory_order_acq_rel) - 1;
+        int newCount = g_FGContextCount.fetch_sub(1, std::memory_order_acq_rel) - 1;
         if (newCount < 0) {
-            g_ActiveFGContextCount.store(0, std::memory_order_release);
+            g_FGContextCount.store(0, std::memory_order_release);
             newCount = 0;
         }
 
-        HookLog("FFX Hook: FG Context destroyed (activeContexts=%d)", newCount);
+        HookLog("FFX Hook: FG Context destroyed (liveContexts=%d)", newCount);
 
         // Signal FG deactivation when all contexts are destroyed
         if (newCount == 0) {
@@ -383,16 +396,31 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
 // stays within the crash boundary. Only stored for the degenerate-substitute path (the test app re-registers
 // its OWN real texture every frame, so it needs no re-assertion). Cleared when the substitute is released.
 static std::mutex g_SubstReRegMutex;
-static ffxContext* g_SubstReRegContext = nullptr;
+static ffxContext g_SubstReRegContext = nullptr;
 static PfnFfxConfigure g_SubstReRegConfigure = nullptr;
 static ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource g_SubstReRegDesc = {};
 static std::atomic<bool> g_SubstReRegActive{false};
+
+static void ClearSubstituteUiReRegistrationForContext(ffxContext context) {
+    if (!context) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_SubstReRegMutex);
+    if (g_SubstReRegContext != context) {
+        return;
+    }
+    g_SubstReRegActive.store(false, std::memory_order_release);
+    g_SubstReRegContext = nullptr;
+    g_SubstReRegConfigure = nullptr;
+    g_SubstReRegDesc = {};
+    HookLogImportant("FFX Hook: Cleared substitute UI re-registration for destroyed context %p", context);
+}
 
 static void StoreSubstituteUiReRegistration(ffxContext* context, PfnFfxConfigure originalConfigure,
                                             const ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource&
                                                 substitutedDesc) {
     std::lock_guard<std::mutex> lock(g_SubstReRegMutex);
-    g_SubstReRegContext = context;
+    g_SubstReRegContext = context ? *context : nullptr;
     g_SubstReRegConfigure = originalConfigure;
     g_SubstReRegDesc = substitutedDesc;
     g_SubstReRegActive.store(true, std::memory_order_release);
@@ -405,6 +433,7 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         HookLog("FFX Hook: ffxConfigure called but original not set!");
         return 1;  // Error
     }
+    const ffxContext contextHandle = context ? *context : nullptr;
 
     // During the Streamline startup window, skip CE-side processing to avoid
     // accessing DX12 swapchain state (HDR, callback bridges) while SL's
@@ -418,6 +447,9 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     // when the game registers a degenerate 1x1 placeholder). Function-scoped so it outlives the synchronous
     // forward at CallFfxConfigureOriginalGuarded below.
     ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource localUiConfig = {};
+    DX12FFXUiOverlayTargetPreparation uiTargetPreparation = {};
+    bool uiTargetPrepared = false;
+    bool uiTargetSubstituted = false;
     const ffxConfigureDescHeader* descToCall = desc;
     const auto* parsedDesc = reinterpret_cast<const ce::ffx_api::ApiHeader*>(desc);
     const bool recognizedFGConfigure = parsedDesc && parsedDesc->type == ce::ffx_api::kConfigureDescTypeFrameGeneration;
@@ -445,7 +477,7 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         if (ce::dx12_overlay_policy::ShouldInstallFFXPresentCallbackBridgeForConfigure(
                 true, localConfig.frameGenerationEnabled != 0,
                 appPresentCallbackProvided || alreadyBridgedPresentCallbackProvided)) {
-            bridgeKey = GetOrCreatePresentCallbackBridgeKey(context);
+            bridgeKey = GetOrCreatePresentCallbackBridgeKey(contextHandle);
             if (alreadyBridgedPresentCallbackProvided) {
                 retainedAlreadyBridgedPresentCallback = true;
                 if (!localConfig.presentCallbackUserContext) {
@@ -468,7 +500,7 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
             descToCall = reinterpret_cast<const ffxConfigureDescHeader*>(&localConfig);
             installedPresentCallbackBridge = !retainedAlreadyBridgedPresentCallback;
         } else {
-            bridgeKey = GetPresentCallbackBridgeKey(context);
+            bridgeKey = GetPresentCallbackBridgeKey(contextHandle);
             // App->null-callback toggle while FG stays ENABLED: AMD retains CE's bridge and keeps
             // calling it. Do NOT clear the bridge's retained original here — keep CE's bridge installed
             // and delegating to that retained app callback, so the composition is done correctly
@@ -521,13 +553,13 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
             // generated frame). The test app / games that register a usable full-size UI texture forward unchanged
             // and CE blends the overlay onto the game's own texture via the per-present composite.
             ce::ffx_api::Resource ceSubstitute = {};
-            if (DX12_PrepareFFXUiOverlayTarget(uiDesc->uiResource, uiDesc->flags, &ceSubstitute)) {
+            uiTargetSubstituted = DX12_PrepareFFXUiOverlayTarget(
+                uiDesc->uiResource, uiDesc->flags, &ceSubstitute, &uiTargetPreparation);
+            uiTargetPrepared = uiTargetPreparation.target != nullptr;
+            if (uiTargetSubstituted) {
                 localUiConfig = *uiDesc;
                 localUiConfig.uiResource = ceSubstitute;
                 descToCall = reinterpret_cast<const ffxConfigureDescHeader*>(&localUiConfig);
-                // Remember the substituted register so DetourPresent can re-assert it every present (GTA
-                // overrides AMD's UI resource with its 1x1 each frame once the VEH disarms — see above).
-                StoreSubstituteUiReRegistration(context, originalConfigure, localUiConfig);
             }
         } else {
             static std::atomic<int> s_emptyUiResLogCount{0};
@@ -542,6 +574,23 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     DX12_NoteFfxConfigureForward(parsedDesc ? parsedDesc->type : 0);
 
     const ffxReturnCode_t result = CallFfxConfigureOriginalGuarded(originalConfigure, context, descToCall);
+    if (uiTargetPrepared) {
+        if (result == FFX_API_RETURN_OK) {
+            DX12_CommitFFXUiOverlayTarget(&uiTargetPreparation);
+            if (uiTargetSubstituted) {
+                // Publish re-registration only after AMD accepted the substitute. A failed configure must keep
+                // the prior known-good target/descriptor intact.
+                StoreSubstituteUiReRegistration(context, originalConfigure, localUiConfig);
+            } else {
+                ClearSubstituteUiReRegistrationForContext(contextHandle);
+            }
+        } else {
+            HookLogImportant(
+                "FFX Hook: RegisterUiResource rejected (result=%d substitute=%d); preserving prior overlay target",
+                static_cast<int>(result), uiTargetSubstituted ? 1 : 0);
+            DX12_DiscardFFXUiOverlayTarget(&uiTargetPreparation);
+        }
+    }
     if (result != FFX_API_RETURN_OK || !desc) {
         return result;
     }
@@ -1274,10 +1323,10 @@ static std::atomic<uint32_t> g_SubstReRegInFlightTid{0};
 // which only advances when AMD's presenter thread completes the real present. DetourPresent for the real
 // swapchain runs ON that presenter thread — calling this from there closes the cycle and freezes the game
 // permanently. Hence the hard prework-context guard below (policy: MayReassertSubstituteUiResource).
-void FFXHook_ReRegisterSubstituteUiResource() {
+FFXSubstituteUiReRegistrationResult FFXHook_ReRegisterSubstituteUiResource() {
     if (!g_SubstReRegActive.load(std::memory_order_acquire) ||
         !DX12_IsNativeFSRInternalNoCallbackCompositionActive()) {
-        return;
+        return FFXSubstituteUiReRegistrationResult::kNotNeeded;
     }
     const auto driver = ce::dx12_overlay_policy::ChooseFFXUiCompositeDriver(
         DX12_IsCurrentThreadInsideFFXProxyPresentPrework());
@@ -1291,19 +1340,25 @@ void FFXHook_ReRegisterSubstituteUiResource() {
                 "deadlocks from the presenter thread (session 20260701_213656)",
                 GetCurrentThreadId(), n + 1);
         }
-        return;
+        return FFXSubstituteUiReRegistrationResult::kFailed;
     }
     std::lock_guard<std::mutex> lock(g_SubstReRegMutex);
     if (!g_SubstReRegConfigure || !g_SubstReRegContext) {
-        return;
+        return FFXSubstituteUiReRegistrationResult::kFailed;
     }
     LARGE_INTEGER qpc;
     QueryPerformanceCounter(&qpc);
     g_SubstReRegInFlightTid.store(GetCurrentThreadId(), std::memory_order_release);
     g_SubstReRegInFlightQpc.store(static_cast<uint64_t>(qpc.QuadPart), std::memory_order_release);
-    g_SubstReRegConfigure(g_SubstReRegContext, reinterpret_cast<const ffxConfigureDescHeader*>(&g_SubstReRegDesc));
+    const ffxReturnCode_t result = g_SubstReRegConfigure(
+        &g_SubstReRegContext, reinterpret_cast<const ffxConfigureDescHeader*>(&g_SubstReRegDesc));
     g_SubstReRegInFlightQpc.store(0, std::memory_order_release);
     g_SubstReRegInFlightTid.store(0, std::memory_order_release);
+    if (result != FFX_API_RETURN_OK) {
+        HookLogImportant("FFX Hook: substitute UI-resource re-registration FAILED (ctx=%p result=%d)",
+                         (void*)g_SubstReRegContext, static_cast<int>(result));
+        return FFXSubstituteUiReRegistrationResult::kFailed;
+    }
     static std::atomic<int> s_reRegLog{0};
     const int n = s_reRegLog.fetch_add(1, std::memory_order_relaxed);
     if (n < 10 || (n % 600) == 0) {
@@ -1312,6 +1367,7 @@ void FFXHook_ReRegisterSubstituteUiResource() {
             "GTA's per-frame 1x1 (log=%d)",
             g_SubstReRegDesc.uiResource.resource, (void*)g_SubstReRegContext, GetCurrentThreadId(), n + 1);
     }
+    return FFXSubstituteUiReRegistrationResult::kSucceeded;
 }
 
 // Freeze-dump snapshot of the re-assert bracket (paired with DX12_LogFFXProxyPresentHookFreezeDiagnostics).
@@ -1521,7 +1577,17 @@ void Shutdown() {
     g_Original_ffxConfigure = nullptr;
     g_HookedModule = nullptr;
     g_DefaultPresentCallback = nullptr;
-    g_ActiveFGContextCount.store(0, std::memory_order_release);
+    FFXHook_ClearSubstituteUiReRegistration();
+    DX12_UnregisterNativeFSRSwapchainPresentationQueue(nullptr, "FFX hook shutdown");
+    {
+        std::lock_guard<std::mutex> contextLock(g_ContextMapMutex);
+        g_ContextTypeMap.clear();
+    }
+    {
+        std::lock_guard<std::mutex> bridgeLock(g_PresentCallbackBridgeMutex);
+        g_PresentCallbackBridgeKeys.clear();
+    }
+    g_FGContextCount.store(0, std::memory_order_release);
     DX12_ClearNativeFSRStartupConfigureArming("FFX hook shutdown");
     g_FGCompat.SetFSRFGActive(false);
     g_FGCompat.SetFSRFGSupportPresent(false);

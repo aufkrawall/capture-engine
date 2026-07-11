@@ -69,6 +69,51 @@ TEST(FFXApiParsingTest, ConfigureTypeRemainsDistinctFromCreateContextType) {
               ce::ffx_api::MakeEffectSubId(ce::ffx_api::kEffectIdFrameGeneration, 0x01u));
 }
 
+TEST(FFXApiParsingTest, ParsesAllDX12FrameGenerationSwapChainCreationQueues) {
+    void* wrapSwapChain = reinterpret_cast<void*>(0x1100);
+    ce::ffx_api::CreateContextDescFrameGenerationSwapChainWrapDX12 wrap{};
+    wrap.header.type = ce::ffx_api::kCreateContextDescTypeFrameGenerationSwapChainWrapDX12;
+    wrap.swapChain = &wrapSwapChain;
+    wrap.gameQueue = reinterpret_cast<void*>(0x1200);
+
+    const auto parsedWrap = ce::ffx_api::ParseFrameGenerationSwapChainCreateState(&wrap.header);
+    EXPECT_TRUE(parsedWrap.recognized);
+    EXPECT_EQ(parsedWrap.swapChainOutput, &wrapSwapChain);
+    EXPECT_EQ(parsedWrap.gameQueue, wrap.gameQueue);
+
+    void* newSwapChain = nullptr;
+    ce::ffx_api::CreateContextDescFrameGenerationSwapChainNewDX12 createNew{};
+    createNew.header.type = ce::ffx_api::kCreateContextDescTypeFrameGenerationSwapChainNewDX12;
+    createNew.swapChain = &newSwapChain;
+    createNew.gameQueue = reinterpret_cast<void*>(0x2200);
+
+    const auto parsedNew = ce::ffx_api::ParseFrameGenerationSwapChainCreateState(&createNew.header);
+    EXPECT_TRUE(parsedNew.recognized);
+    EXPECT_EQ(parsedNew.swapChainOutput, &newSwapChain);
+    EXPECT_EQ(parsedNew.gameQueue, createNew.gameQueue);
+
+    void* hwndSwapChain = nullptr;
+    ce::ffx_api::CreateContextDescFrameGenerationSwapChainForHwndDX12 createForHwnd{};
+    createForHwnd.header.type = ce::ffx_api::kCreateContextDescTypeFrameGenerationSwapChainForHwndDX12;
+    createForHwnd.swapChain = &hwndSwapChain;
+    createForHwnd.gameQueue = reinterpret_cast<void*>(0x3200);
+
+    const auto parsedForHwnd = ce::ffx_api::ParseFrameGenerationSwapChainCreateState(&createForHwnd.header);
+    EXPECT_TRUE(parsedForHwnd.recognized);
+    EXPECT_EQ(parsedForHwnd.swapChainOutput, &hwndSwapChain);
+    EXPECT_EQ(parsedForHwnd.gameQueue, createForHwnd.gameQueue);
+}
+
+TEST(FFXApiParsingTest, IgnoresNonSwapChainCreateDescriptors) {
+    ce::ffx_api::ApiHeader versionQuery{};
+    versionQuery.type = ce::ffx_api::MakeEffectSubId(ce::ffx_api::kEffectIdFrameGenerationSwapchain, 0x0bu);
+
+    const auto parsed = ce::ffx_api::ParseFrameGenerationSwapChainCreateState(&versionQuery);
+    EXPECT_FALSE(parsed.recognized);
+    EXPECT_EQ(parsed.swapChainOutput, nullptr);
+    EXPECT_EQ(parsed.gameQueue, nullptr);
+}
+
 TEST(FFXApiParsingTest, PresentCallbackParsingExposesRuntimeCompositionSurface) {
     ce::ffx_api::CallbackDescFrameGenerationPresent desc{};
     desc.header.type = ce::ffx_api::kCallbackDescTypeFrameGenerationPresent;

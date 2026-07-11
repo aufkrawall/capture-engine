@@ -97,6 +97,11 @@ bool DX12_HasFFXPresentCallbackBridgeWithOriginal(void* bridgeKey);
 bool DX12_IsFFXPresentCallbackBridgeCallback(ce::ffx_api::PresentCallback callback);
 void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey);
 void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain);
+// Capture the exact queue supplied in an FFX FrameGenerationSwapChain DX12 creation descriptor. The FFX SDK
+// defines this as the game/presentation queue; it is the only queue CE may use for direct proxy-backbuffer work.
+void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapChain,
+                                                      ID3D12CommandQueue* presentationQueue);
+void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const char* reason);
 void DX12_ServiceDeferredECLProbe();
 void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled, bool retainedPresentCallbackBridge = false);
 void DX12_OnNativeFSRPresentCallbackRoutingConfigured(bool enabled, bool bridgeActive, bool appCallbackProvided);
@@ -142,16 +147,32 @@ bool DX12_IsNativeFSRInternalNoCallbackCompositionActive();
 // DetourPresent to detect a STALE no-callback latch on FSR->off and safely fall back to the backbuffer route.
 bool DX12_IsLiveSwapchainQueueOriginalGameQueue();
 // True when native FSR FG is DISABLED/SUSPENDED while AMD still owns the swapchain (no-callback suspension —
-// AMD is not interpolating). DetourPresent relaxes the crash-boundary backbuffer skip during a suspension.
+// AMD is not interpolating). The proxy-present prework uses this to select the exact-owner-queue backbuffer route.
 bool DX12_IsNativeFSRFGSuspendedDisablePending();
 // Minimal-overhead ProcessFrame for no-callback FSR FG (skips policy/lock/heuristic work).
 void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain);
-// Decide + prepare the overlay target for a no-callback FSR FG RegisterUiResource intercept. Updates the
-// composite's cached target texture + clear policy. Returns true iff CE substituted its own backbuffer-sized
-// texture for a degenerate game UI texture (e.g. GTA's 1x1); on true *ceSubstitute (FfxApiResource ABI) is
-// filled and the caller must forward it instead of the game's resource so AMD composites CE's texture.
+struct DX12FFXUiOverlayTargetPreparation {
+    ID3D12Resource* target = nullptr;  // one staged reference; commit or discard consumes it
+    uint32_t state = 0;
+    uint32_t flags = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+    D3D12_RESOURCE_STATES initialState = D3D12_RESOURCE_STATE_COMMON;
+    uint64_t sequence = 0;
+    bool substitute = false;
+    bool clearTransparent = false;
+};
+
+// Stage the target for a no-callback FSR FG RegisterUiResource intercept without changing the live cache.
+// Returns true iff CE should forward a backbuffer-sized substitute for a degenerate game texture. The caller
+// must commit only after AMD accepts the configure, or discard on failure, so rejected configurations cannot
+// replace the last known-good overlay target.
 bool DX12_PrepareFFXUiOverlayTarget(const ce::ffx_api::Resource& gameUi, uint32_t flags,
-                                    ce::ffx_api::Resource* ceSubstitute);
+                                    ce::ffx_api::Resource* ceSubstitute,
+                                    DX12FFXUiOverlayTargetPreparation* preparation);
+void DX12_CommitFFXUiOverlayTarget(DX12FFXUiOverlayTargetPreparation* preparation);
+void DX12_DiscardFFXUiOverlayTarget(DX12FFXUiOverlayTargetPreparation* preparation);
 // Called from Hooked_ffxConfigure right before forwarding the configure to AMD. Stamps a QPC + frame
 // counter so the freeze-watchdog timeline can correlate composite calls with ffxConfigure forwards.
 void DX12_NoteFfxConfigureForward(uint64_t configureType);

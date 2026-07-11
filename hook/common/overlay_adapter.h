@@ -99,6 +99,7 @@ public:
     // DX12-specific: Set render target before RenderOverlay
     void SetDX12RenderTarget(void* cmdList, void* rtvHandle);
     void SetDX12UploadSlotFence(void* fence, uint64_t guardValue);
+    void SetDX12NextUploadSlot(int slot);
     bool PrimeDX12Resources(void* cmdList);
     bool HasPendingDX12Resources() const;
 

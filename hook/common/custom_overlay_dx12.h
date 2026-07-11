@@ -48,6 +48,9 @@ public:
     // DX12-specific: Set render target before rendering
     void SetRenderTarget(ID3D12GraphicsCommandList* cmdList, D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle);
     void SetUploadSlotFence(ID3D12Fence* fence, uint64_t guardValue);
+    // Force the next Render call to use the upload slot associated with an externally owned backbuffer index.
+    // Used by FFX proxy rendering so AMD's buffer-reuse fence and CE's VB/IB slot have identical lifetimes.
+    void SetNextUploadSlot(int slot);
     bool PrimeResources(ID3D12GraphicsCommandList* cmdList);
     bool HasPendingResources() const {
         return !fontUploaded.load(std::memory_order_acquire) && uploadBuffer && fontTexture;
@@ -89,6 +92,7 @@ private:
     uint64_t slotFenceValue[kFramePoolSize] = {};
     uint64_t nextSlotFenceValue = 0;
     std::atomic<int> frameIdx{0};
+    std::atomic<int> nextForcedUploadSlot{-1};
 
     ID3D12GraphicsCommandList* currentCmdList = nullptr;
     D3D12_CPU_DESCRIPTOR_HANDLE currentRTV = {};

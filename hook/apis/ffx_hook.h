@@ -135,7 +135,12 @@ void FFXHook_ResetVehDisarmAndRearm();
 // which AMD's Present holds on the game thread while fence-spinning — calling it from AMD's presenter
 // thread (the old DetourPresent-driven path) deadlocked GTA permanently (session 20260701_213656). No-op
 // for the game-tex path and when no-callback FSR FG is inactive.
-void FFXHook_ReRegisterSubstituteUiResource();
+enum class FFXSubstituteUiReRegistrationResult {
+    kNotNeeded,
+    kSucceeded,
+    kFailed,
+};
+FFXSubstituteUiReRegistrationResult FFXHook_ReRegisterSubstituteUiResource();
 // Stop re-registering when CE's substitute texture is released. Called from ReleaseFFXUiCompositeInfra.
 void FFXHook_ClearSubstituteUiReRegistration();
 // Freeze-dump snapshot of the re-assert in-flight bracket (deadlock signature diagnostics).

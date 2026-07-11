@@ -76,6 +76,46 @@ constexpr StructType kCallbackDescTypeFrameGenerationPresent = MakeEffectSubId(k
 constexpr StructType kCallbackDescTypeFrameGenerationPresentPremulAlpha =
     MakeEffectSubId(kEffectIdFrameGeneration, 0x0du);
 
+// FrameGenerationSwapChain DX12 creation descriptors. These are the three SDK entry points which expose
+// the exact game/presentation queue supplied to AMD. That queue is the only queue authorized to touch the
+// proxy swapchain backbuffers; a CE-created queue is valid for offscreen UI textures but not swapchain images.
+constexpr StructType kCreateContextDescTypeFrameGenerationSwapChainWrapDX12 =
+    MakeEffectSubId(kEffectIdFrameGenerationSwapchain, 0x01u);
+constexpr StructType kCreateContextDescTypeFrameGenerationSwapChainNewDX12 =
+    MakeEffectSubId(kEffectIdFrameGenerationSwapchain, 0x05u);
+constexpr StructType kCreateContextDescTypeFrameGenerationSwapChainForHwndDX12 =
+    MakeEffectSubId(kEffectIdFrameGenerationSwapchain, 0x06u);
+
+struct CreateContextDescFrameGenerationSwapChainWrapDX12 {
+    ApiHeader header;
+    void** swapChain;
+    void* gameQueue;
+};
+
+struct CreateContextDescFrameGenerationSwapChainNewDX12 {
+    ApiHeader header;
+    void** swapChain;
+    void* desc;
+    void* dxgiFactory;
+    void* gameQueue;
+};
+
+struct CreateContextDescFrameGenerationSwapChainForHwndDX12 {
+    ApiHeader header;
+    void** swapChain;
+    void* hwnd;
+    void* desc;
+    void* fullscreenDesc;
+    void* dxgiFactory;
+    void* gameQueue;
+};
+
+struct ParsedFrameGenerationSwapChainCreateState {
+    bool recognized = false;
+    void** swapChainOutput = nullptr;
+    void* gameQueue = nullptr;
+};
+
 struct CallbackDescFrameGenerationPresent {
     ApiHeader header;
     void* device;
@@ -156,6 +196,30 @@ inline ParsedFrameGenerationConfigureState ParseFrameGenerationConfigureState(co
         frameGenerationDesc->frameGenerationEnabled,
         frameGenerationDesc->frameID,
     };
+}
+
+inline ParsedFrameGenerationSwapChainCreateState ParseFrameGenerationSwapChainCreateState(const ApiHeader* desc) {
+    if (!desc) {
+        return {};
+    }
+
+    switch (desc->type) {
+        case kCreateContextDescTypeFrameGenerationSwapChainWrapDX12: {
+            const auto* create = reinterpret_cast<const CreateContextDescFrameGenerationSwapChainWrapDX12*>(desc);
+            return {true, create->swapChain, create->gameQueue};
+        }
+        case kCreateContextDescTypeFrameGenerationSwapChainNewDX12: {
+            const auto* create = reinterpret_cast<const CreateContextDescFrameGenerationSwapChainNewDX12*>(desc);
+            return {true, create->swapChain, create->gameQueue};
+        }
+        case kCreateContextDescTypeFrameGenerationSwapChainForHwndDX12: {
+            const auto* create =
+                reinterpret_cast<const CreateContextDescFrameGenerationSwapChainForHwndDX12*>(desc);
+            return {true, create->swapChain, create->gameQueue};
+        }
+        default:
+            return {};
+    }
 }
 
 inline bool ResolvePresentCallbackUsePremulAlpha(const CallbackDescFrameGenerationPresent* desc) {

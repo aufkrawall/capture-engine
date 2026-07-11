@@ -489,6 +489,10 @@ void DX12Backend::SetUploadSlotFence(ID3D12Fence* fence, uint64_t guardValue) {
     nextSlotFenceValue = guardValue;
 }
 
+void DX12Backend::SetNextUploadSlot(int slot) {
+    nextForcedUploadSlot.store(slot >= 0 && slot < kFramePoolSize ? slot : -1, std::memory_order_release);
+}
+
 bool DX12Backend::PrimeResources(ID3D12GraphicsCommandList* cmdList) {
     DX12_DEBUG_STEP("PrimeResources", "START - initialized=%d, cmdList=%p, pending=%d", initialized ? 1 : 0, cmdList,
                     HasPendingResources() ? 1 : 0);
@@ -741,9 +745,11 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     }
 
     size_t vbSize = vertices.size() * sizeof(DrawVertex);
-    // Advance to the next pool slot for this frame. Use atomic fetch_add so
-    // concurrent calls from different threads each get a unique slot.
-    int slot = frameIdx.fetch_add(1, std::memory_order_relaxed) % kFramePoolSize;
+    // FFX proxy rendering pins the upload slot to the current swapchain-buffer index. Reuse of that index is
+    // AMD's proof that all prior work targeting the replacement buffer completed. Other routes keep the normal
+    // atomic ring so concurrent calls receive distinct slots.
+    const int forcedSlot = nextForcedUploadSlot.exchange(-1, std::memory_order_acq_rel);
+    int slot = forcedSlot >= 0 ? forcedSlot : frameIdx.fetch_add(1, std::memory_order_relaxed) % kFramePoolSize;
     DX12_DEBUG_FRAME(s_RenderCounter, "Using buffer slot %d", slot);
     if (!WaitForSlotGpuComplete(slot)) {
         return;
