@@ -1391,22 +1391,24 @@ TEST(DXGISharedTest, StartupOverlayResumeDefersOnlyForShortRuntimeOwnedQueueHand
 
 TEST(DXGISharedTest, SettledStartupOverlayStaysVisibleAcrossRuntimeInactiveStreamlineHandoff) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
-        true, true, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false, true));
+        true, true, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false, false, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
-        false, true, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false, true));
+        false, true, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
-        true, false, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false, true));
+        true, false, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
-        true, true, true, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false, true));
+        true, true, true, true, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
-        true, true, true, false, ce::fg_runtime::RuntimeMode::kDLSSFG, false, false, true));
+        true, true, true, false, ce::fg_runtime::RuntimeMode::kDLSSFG, false, false, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
-        true, true, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, false, true));
+        true, true, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, true, false, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
-        true, true, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, true, true));
+        true, true, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, true, false, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
-        true, true, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false, false));
+        true, true, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
+        true, true, true, false, ce::fg_runtime::RuntimeMode::kStreamlineNoFG, false, false, false, false));
 }
 
 TEST(DXGISharedTest, LiveStartupOverlayHandoffSkipsResourcePrimingBlank) {

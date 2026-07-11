@@ -6896,7 +6896,8 @@ static bool ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHando
         s_startupOverlayCompatSettled.load(std::memory_order_acquire), g_State.overlayInit && g_State.syncInit,
         g_FGRuntimeOwnsSwapchain, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
         g_FGCompat.GetRuntimeMode(), HookHasExplicitStreamlineSetOptionsActivation(),
-        s_startupOverlayObservedAnyFG.load(std::memory_order_acquire), g_OriginalGameQueue != nullptr);
+        s_startupOverlayObservedAnyFG.load(std::memory_order_acquire), g_HadFSRFGPhase,
+        g_OriginalGameQueue != nullptr);
 }
 
 static void UpdateStartupOverlayCompatibilityState() {
@@ -8468,7 +8469,8 @@ static bool InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(const ch
                 g_State.overlayInit && g_State.syncInit, g_FGRuntimeOwnsSwapchain,
                 DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), g_FGCompat.GetRuntimeMode(),
                 HookHasExplicitStreamlineSetOptionsActivation(),
-                s_startupOverlayObservedAnyFG.load(std::memory_order_acquire), g_OriginalGameQueue != nullptr);
+                s_startupOverlayObservedAnyFG.load(std::memory_order_acquire), g_HadFSRFGPhase,
+                g_OriginalGameQueue != nullptr);
         if (preserveLiveOverlayDuringHandoff) {
             g_State.cachedSwapChain = nullptr;
             g_State.cachedSC3 = nullptr;

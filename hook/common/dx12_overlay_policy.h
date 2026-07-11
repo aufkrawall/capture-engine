@@ -182,15 +182,18 @@ inline bool ShouldDelayAfterStartupOverlayResourcePrime(bool startupOverlayCompa
 inline bool ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
     bool startupCompatAlreadySettled, bool overlayBackendReady, bool runtimeOwnsSwapchain, bool streamlineFGRunning,
     fg_runtime::RuntimeMode runtimeMode, bool explicitSetOptionsActivation, bool observedAnyFrameGenerationActivity,
-    bool hasOriginalGameQueue) {
+    bool hadFSRFGPhase, bool hasOriginalGameQueue) {
     // A third-party startup overlay can create a Streamline-adjacent no-FG
     // swapchain after CE has already rendered stably on the real game swapchain.
     // That is not yet a DLSS-G activation. Keep the existing single-queue
     // overlay path alive until an explicit FG signal appears instead of
-    // blanking the overlay for a speculative runtime-owned handoff.
+    // blanking the overlay for a speculative runtime-owned handoff. FSR history
+    // is authoritative evidence that this is a real FG mode switch: the old
+    // swapchain-scoped RTV/sync state must be retired so the new Streamline
+    // proxy can be prewarmed before DLSS is enabled.
     return startupCompatAlreadySettled && overlayBackendReady && runtimeOwnsSwapchain && !streamlineFGRunning &&
            runtimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG && !explicitSetOptionsActivation &&
-           !observedAnyFrameGenerationActivity && hasOriginalGameQueue;
+           !observedAnyFrameGenerationActivity && !hadFSRFGPhase && hasOriginalGameQueue;
 }
 
 inline bool ShouldIgnoreThirdPartyOverlaySwapchainQueueCapture(bool callerFromThirdPartyOverlay,
