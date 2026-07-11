@@ -3123,7 +3123,16 @@ slResult Hooked_slSetD3DDevice(void* d3dDevice) {
     const slResult result = originalSetD3DDevice(d3dDevice);
     if (result == kSlResultOk) {
         g_StreamlineUsesD3D12.store(isD3D12, std::memory_order_release);
-        if (!isD3D12) {
+        if (isD3D12 && !ShouldKeepPureObserverOnlyStreamlineBehavior()) {
+            // Resource tags are legal immediately after Streamline accepts the device. Some
+            // integrations (Talos) publish their reusable UI tag before resolving any DLSS-G
+            // feature function, so GetState-pointer delivery is too late to cover that tag.
+            ce::dx12_streamline_ui_overlay::BeginPreactivationStandby(2);
+            HookLogImportant(
+                "Streamline Hook: D3D12 device accepted — official UI preactivation standby ready before tags "
+                "(device=%p)",
+                d3dDevice);
+        } else if (!isD3D12) {
             ce::dx12_streamline_ui_overlay::EndPreactivationStandby("Streamline device is not D3D12");
         }
         TryResolveDLSSGFeatureHooks();
@@ -3140,6 +3149,28 @@ slResult Hooked_slSetTagForFrame(const slBaseStructure& frame, const slViewportH
     }
 
     const bool wantsUiBootstrapRecord = ce::dx12_streamline_ui_overlay::OnFrameTag(&frame);
+
+    if (wantsUiBootstrapRecord) {
+        static std::atomic<uint32_t> s_uiTagOpportunityLogCount{0};
+        const uint32_t opportunity =
+            s_uiTagOpportunityLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (opportunity <= 12 || (opportunity % 300) == 0) {
+            HookLogImportant(
+                "Streamline Hook: Official UI tag record opportunity #%u (frame=%p viewport=%u tags=%p "
+                "numTags=%u commandBuffer=%p d3d12=%d)",
+                opportunity, &frame, GetViewportKey(viewport), tags, numTags, commandBuffer,
+                g_StreamlineUsesD3D12.load(std::memory_order_relaxed) ? 1 : 0);
+            const uint32_t loggedTags = tags ? std::min(numTags, 12u) : 0u;
+            for (uint32_t i = 0; i < loggedTags; ++i) {
+                const slResourceTag& tag = tags[i];
+                HookLogImportant(
+                    "Streamline Hook: UI tag opportunity #%u tag[%u] type=%u lifecycle=%d resource=%p "
+                    "extent=(%u,%u %ux%u)",
+                    opportunity, i, tag.type, tag.lifecycle, tag.resource, tag.extent.left, tag.extent.top,
+                    tag.extent.width, tag.extent.height);
+            }
+        }
+    }
 
     // DLSS-G consumes UIColorAndAlpha before its first generated output exists, while PostSL can
     // only run after that output has been produced. Record CE's one-shot activation overlay into

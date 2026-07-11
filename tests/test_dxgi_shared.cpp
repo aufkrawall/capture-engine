@@ -6164,6 +6164,19 @@ TEST(DXGISharedSourceTest, StreamlineGetStateOnlyActivationAdoptsPreTaggedOffici
     EXPECT_LT(lookupStandby, lookupReturn)
         << "standby must arm while the GetState pointer is delivered, before the caller tags activation inputs";
 
+    const size_t setDeviceDeclaration = streamline.find("slResult Hooked_slSetD3DDevice");
+    ASSERT_NE(setDeviceDeclaration, std::string::npos);
+    const size_t setDeviceHook = streamline.find("slResult Hooked_slSetD3DDevice", setDeviceDeclaration + 1);
+    ASSERT_NE(setDeviceHook, std::string::npos);
+    const size_t deviceStandby = streamline.find("BeginPreactivationStandby(2)", setDeviceHook);
+    const size_t deviceFeatureResolve = streamline.find("TryResolveDLSSGFeatureHooks()", setDeviceHook);
+    ASSERT_NE(deviceStandby, std::string::npos);
+    ASSERT_NE(deviceFeatureResolve, std::string::npos);
+    EXPECT_LT(deviceStandby, deviceFeatureResolve)
+        << "standby must exist as soon as D3D12 is accepted; reusable UI tags may precede feature lookup";
+    EXPECT_NE(streamline.find("Official UI tag record opportunity", setDeviceHook), std::string::npos)
+        << "early tag shape/call ordering needs bounded diagnostics when no usable UI record is produced";
+
     const size_t getStateDeclaration = streamline.find("slResult Hooked_slDLSSGGetState");
     ASSERT_NE(getStateDeclaration, std::string::npos);
     const size_t getStateHook =
