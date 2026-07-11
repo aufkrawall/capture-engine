@@ -6110,6 +6110,8 @@ TEST(DXGISharedSourceTest, StreamlineFirstActivationUsesOfficialUiTagWithoutExtr
         readFile(fs::current_path() / "hook" / "apis" / "dx12_streamline_ui_overlay.cpp");
     const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
 
+    EXPECT_NE(streamline.find("RegisterDynamicHookFiltered(\"slSetTag\""), std::string::npos)
+        << "deprecated/global tagging remains used by real integrations such as Talos";
     EXPECT_NE(streamline.find("RegisterDynamicHookFiltered(\"slSetTagForFrame\""), std::string::npos);
     EXPECT_NE(streamline.find("g_StreamlineUsesD3D12.load"), std::string::npos)
         << "D3D11/Vulkan tags must never be interpreted as ID3D12Resource";
@@ -6124,6 +6126,18 @@ TEST(DXGISharedSourceTest, StreamlineFirstActivationUsesOfficialUiTagWithoutExtr
     ASSERT_NE(record, std::string::npos);
     ASSERT_NE(forward, std::string::npos);
     EXPECT_LT(record, forward) << "Streamline's volatile-tag copy must include CE's UI draw";
+
+    const size_t legacySetTagHook = streamline.find("slResult Hooked_slSetTag(");
+    ASSERT_NE(legacySetTagHook, std::string::npos);
+    const size_t legacyRecord = streamline.find("TryRecordOfficialUiTag(\"slSetTag\"", legacySetTagHook);
+    const size_t legacyForward = streamline.find("return originalSetTag(viewport", legacySetTagHook);
+    ASSERT_NE(legacyRecord, std::string::npos);
+    ASSERT_NE(legacyForward, std::string::npos);
+    EXPECT_LT(legacyRecord, legacyForward)
+        << "global tags must receive the same official-UI record before Streamline observes them";
+    EXPECT_NE(streamline.find("g_SLSetTagTarget"), std::string::npos);
+    EXPECT_NE(streamline.find("{\"slSetTag\", &g_SLSetTagTarget"), std::string::npos)
+        << "legacy tag hook state must invalidate safely across Streamline unload/reload";
 
     EXPECT_NE(renderer.find("slot.target = request.uiResource"), std::string::npos);
     EXPECT_NE(renderer.find("queue->Signal(fence.Get(), slot.fenceValue)"), std::string::npos);

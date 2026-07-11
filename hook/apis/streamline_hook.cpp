@@ -331,6 +331,8 @@ struct slReflexOptions : slBaseStructure {
 using PFN_slGetFeatureFunction = slResult (*)(uint32_t feature, const char* functionName, void*& function);
 using PFN_slGetPluginFunction = void* (*)(const char* functionName);
 using PFN_slSetD3DDevice = slResult (*)(void* d3dDevice);
+using PFN_slSetTag = slResult (*)(const slViewportHandle& viewport, const slResourceTag* tags, uint32_t numTags,
+                                  void* commandBuffer);
 using PFN_slSetTagForFrame = slResult (*)(const slBaseStructure& frame, const slViewportHandle& viewport,
                                           const slResourceTag* tags, uint32_t numTags, void* commandBuffer);
 using PFN_slDLSSGSetOptions = slResult (*)(const slViewportHandle& viewport, const slDLSSGOptions& options);
@@ -363,6 +365,7 @@ std::atomic<uint32_t> g_InstalledModuleMask{0};
 std::atomic<void*> g_SLGetFeatureFunctionTarget{nullptr};
 std::atomic<void*> g_SLGetPluginFunctionTarget{nullptr};
 std::atomic<void*> g_SLSetD3DDeviceTarget{nullptr};
+std::atomic<void*> g_SLSetTagTarget{nullptr};
 std::atomic<void*> g_SLSetTagForFrameTarget{nullptr};
 std::atomic<void*> g_DLSSGSetOptionsTarget{nullptr};
 std::atomic<void*> g_DLSSGGetStateTarget{nullptr};
@@ -378,6 +381,7 @@ std::atomic<void*> g_ReflexSetConstantsImportFallbackAttemptedTarget{nullptr};
 std::atomic<bool> g_SLGetFeatureFunctionHooked{false};
 std::atomic<bool> g_SLGetPluginFunctionHooked{false};
 std::atomic<bool> g_SLSetD3DDeviceHooked{false};
+std::atomic<bool> g_SLSetTagHooked{false};
 std::atomic<bool> g_SLSetTagForFrameHooked{false};
 std::atomic<bool> g_DLSSGSetOptionsHooked{false};
 std::atomic<bool> g_DLSSGGetStateHooked{false};
@@ -492,6 +496,7 @@ constexpr uint64_t kDLSSGHealthWarnRepeat = 512;
 PFN_slGetFeatureFunction g_Original_slGetFeatureFunction = nullptr;
 PFN_slGetPluginFunction g_Original_slGetPluginFunction = nullptr;
 PFN_slSetD3DDevice g_Original_slSetD3DDevice = nullptr;
+PFN_slSetTag g_Original_slSetTag = nullptr;
 PFN_slSetTagForFrame g_Original_slSetTagForFrame = nullptr;
 PFN_slDLSSGSetOptions g_Original_slDLSSGSetOptions = nullptr;
 PFN_slDLSSGGetState g_Original_slDLSSGGetState = nullptr;
@@ -502,6 +507,8 @@ PFN_slReflexSetConstants g_Original_slReflexSetConstants = nullptr;
 slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName, void*& function);
 void* Hooked_slGetPluginFunction(const char* functionName);
 slResult Hooked_slSetD3DDevice(void* d3dDevice);
+slResult Hooked_slSetTag(const slViewportHandle& viewport, const slResourceTag* tags, uint32_t numTags,
+                         void* commandBuffer);
 slResult Hooked_slSetTagForFrame(const slBaseStructure& frame, const slViewportHandle& viewport,
                                  const slResourceTag* tags, uint32_t numTags, void* commandBuffer);
 slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& options);
@@ -722,6 +729,15 @@ PFN_slSetD3DDevice GetCallableOriginalSetD3DDevice() {
     auto original = g_Original_slSetD3DDevice;
     return IsSavedStreamlineOriginalCallable("slSetD3DDevice", reinterpret_cast<void*>(original),
                                              g_SLSetD3DDeviceTarget.load(std::memory_order_acquire),
+                                             "core Streamline module")
+               ? original
+               : nullptr;
+}
+
+PFN_slSetTag GetCallableOriginalSetTag() {
+    auto original = g_Original_slSetTag;
+    return IsSavedStreamlineOriginalCallable("slSetTag", reinterpret_cast<void*>(original),
+                                             g_SLSetTagTarget.load(std::memory_order_acquire),
                                              "core Streamline module")
                ? original
                : nullptr;
@@ -1962,6 +1978,9 @@ void RegisterDynamicHooksOnce() {
     IATHook::RegisterDynamicHookFiltered("slSetD3DDevice", reinterpret_cast<void*>(Hooked_slSetD3DDevice),
                                          reinterpret_cast<void**>(&g_Original_slSetD3DDevice),
                                          IsStreamlineCoreDynamicHookModule);
+    IATHook::RegisterDynamicHookFiltered("slSetTag", reinterpret_cast<void*>(Hooked_slSetTag),
+                                         reinterpret_cast<void**>(&g_Original_slSetTag),
+                                         IsStreamlineCoreDynamicHookModule);
     IATHook::RegisterDynamicHookFiltered("slSetTagForFrame", reinterpret_cast<void*>(Hooked_slSetTagForFrame),
                                          reinterpret_cast<void**>(&g_Original_slSetTagForFrame),
                                          IsStreamlineCoreDynamicHookModule);
@@ -2002,6 +2021,7 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
     const auto originalGetPluginFunction =
         reinterpret_cast<PFN_slGetPluginFunction>(GetProcAddress(module, "slGetPluginFunction"));
     const auto originalSetD3DDevice = reinterpret_cast<PFN_slSetD3DDevice>(GetProcAddress(module, "slSetD3DDevice"));
+    const auto originalSetTag = reinterpret_cast<PFN_slSetTag>(GetProcAddress(module, "slSetTag"));
     const auto originalSetTagForFrame =
         reinterpret_cast<PFN_slSetTagForFrame>(GetProcAddress(module, "slSetTagForFrame"));
     const auto originalDLSSGSetOptions =
@@ -2013,7 +2033,7 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
     const auto originalReflexSetConstants =
         reinterpret_cast<PFN_slReflexSetConstants>(GetProcAddress(module, "slReflexSetConstants"));
 
-    if (!originalGetFeatureFunction && !originalGetPluginFunction && !originalSetD3DDevice &&
+    if (!originalGetFeatureFunction && !originalGetPluginFunction && !originalSetD3DDevice && !originalSetTag &&
         !originalSetTagForFrame &&
         !originalDLSSGSetOptions && !originalDLSSGGetState && !originalReflexSleep && !originalReflexSetOptions &&
         !originalReflexSetConstants) {
@@ -2038,6 +2058,7 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
         const bool anyCoreHookTargetWithinModule = targetWithinModule(g_SLGetFeatureFunctionTarget, module) ||
                                                    targetWithinModule(g_SLGetPluginFunctionTarget, module) ||
                                                    targetWithinModule(g_SLSetD3DDeviceTarget, module) ||
+                                                   targetWithinModule(g_SLSetTagTarget, module) ||
                                                    targetWithinModule(g_SLSetTagForFrameTarget, module);
         if (!ce::streamline_runtime_policy::IsInstalledStreamlineModuleMaskStaleForReloadedModule(
                 true, anyCoreHookTargetWithinModule)) {
@@ -2062,6 +2083,8 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
              reinterpret_cast<void* volatile*>(&g_Original_slGetPluginFunction)},
             {"slSetD3DDevice", &g_SLSetD3DDeviceTarget, &g_SLSetD3DDeviceHooked,
              reinterpret_cast<void* volatile*>(&g_Original_slSetD3DDevice)},
+            {"slSetTag", &g_SLSetTagTarget, &g_SLSetTagHooked,
+             reinterpret_cast<void* volatile*>(&g_Original_slSetTag)},
             {"slSetTagForFrame", &g_SLSetTagForFrameTarget, &g_SLSetTagForFrameHooked,
              reinterpret_cast<void* volatile*>(&g_Original_slSetTagForFrame)},
         };
@@ -2128,6 +2151,16 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
                 g_Original_slSetD3DDevice, g_SLSetD3DDeviceHooked, g_SLSetD3DDeviceTarget, "slSetD3DDevice");
         }
 
+        if (shouldHookCoreExports && originalSetTag) {
+            if (!g_Original_slSetTag) {
+                g_Original_slSetTag = originalSetTag;
+            }
+
+            hookedAnything |= InstallInlineHookOnce(
+                reinterpret_cast<void*>(originalSetTag), reinterpret_cast<void*>(Hooked_slSetTag),
+                g_Original_slSetTag, g_SLSetTagHooked, g_SLSetTagTarget, "slSetTag");
+        }
+
         if (shouldHookCoreExports && originalSetTagForFrame) {
             if (!g_Original_slSetTagForFrame) {
                 g_Original_slSetTagForFrame = originalSetTagForFrame;
@@ -2153,6 +2186,10 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
             if (originalSetD3DDevice) {
                 IATHook::PatchIATAllModules(moduleBaseName, "slSetD3DDevice",
                                             reinterpret_cast<void*>(Hooked_slSetD3DDevice), &dummy);
+            }
+            if (originalSetTag) {
+                IATHook::PatchIATAllModules(moduleBaseName, "slSetTag", reinterpret_cast<void*>(Hooked_slSetTag),
+                                            &dummy);
             }
             if (originalSetTagForFrame) {
                 IATHook::PatchIATAllModules(moduleBaseName, "slSetTagForFrame",
@@ -3141,14 +3178,9 @@ slResult Hooked_slSetD3DDevice(void* d3dDevice) {
     return result;
 }
 
-slResult Hooked_slSetTagForFrame(const slBaseStructure& frame, const slViewportHandle& viewport,
-                                 const slResourceTag* tags, uint32_t numTags, void* commandBuffer) {
-    auto originalSetTagForFrame = GetCallableOriginalSetTagForFrame();
-    if (!originalSetTagForFrame) {
-        return kSlResultErrorInvalidState;
-    }
-
-    const bool wantsUiBootstrapRecord = ce::dx12_streamline_ui_overlay::OnFrameTag(&frame);
+void TryRecordOfficialUiTag(const char* tagApi, const void* frameToken, const slViewportHandle& viewport,
+                            const slResourceTag* tags, uint32_t numTags, void* commandBuffer) {
+    const bool wantsUiBootstrapRecord = ce::dx12_streamline_ui_overlay::OnFrameTag(frameToken);
 
     if (wantsUiBootstrapRecord) {
         static std::atomic<uint32_t> s_uiTagOpportunityLogCount{0};
@@ -3156,9 +3188,10 @@ slResult Hooked_slSetTagForFrame(const slBaseStructure& frame, const slViewportH
             s_uiTagOpportunityLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (opportunity <= 12 || (opportunity % 300) == 0) {
             HookLogImportant(
-                "Streamline Hook: Official UI tag record opportunity #%u (frame=%p viewport=%u tags=%p "
+                "Streamline Hook: Official UI tag record opportunity #%u (api=%s frame=%p viewport=%u tags=%p "
                 "numTags=%u commandBuffer=%p d3d12=%d)",
-                opportunity, &frame, GetViewportKey(viewport), tags, numTags, commandBuffer,
+                opportunity, tagApi ? tagApi : "unknown", frameToken, GetViewportKey(viewport), tags, numTags,
+                commandBuffer,
                 g_StreamlineUsesD3D12.load(std::memory_order_relaxed) ? 1 : 0);
             const uint32_t loggedTags = tags ? std::min(numTags, 12u) : 0u;
             for (uint32_t i = 0; i < loggedTags; ++i) {
@@ -3173,9 +3206,9 @@ slResult Hooked_slSetTagForFrame(const slBaseStructure& frame, const slViewportH
     }
 
     // DLSS-G consumes UIColorAndAlpha before its first generated output exists, while PostSL can
-    // only run after that output has been produced. Record CE's one-shot activation overlay into
-    // the official UI layer on the app-provided command list. This introduces no copy, extra
-    // submission, queue, or wait and naturally follows Streamline's own synchronization.
+    // only run after that output has been produced. Record CE's rolling/one-shot overlay into the
+    // official UI layer on the app-provided command list. This introduces no copy, extra submission,
+    // queue, or wait and naturally follows Streamline's own synchronization.
     if (!ShouldKeepPureObserverOnlyStreamlineBehavior() &&
         g_StreamlineUsesD3D12.load(std::memory_order_acquire) && wantsUiBootstrapRecord && tags && commandBuffer) {
         for (uint32_t i = 0; i < numTags; ++i) {
@@ -3212,7 +3245,7 @@ slResult Hooked_slSetTagForFrame(const slBaseStructure& frame, const slViewportH
                 request.width = width;
                 request.height = height;
                 request.hdr = hdr;
-                request.frameToken = &frame;
+                request.frameToken = frameToken;
                 const bool recorded = ce::dx12_streamline_ui_overlay::TryRecordBootstrap(request);
                 initializationQueue->Release();
                 if (recorded) {
@@ -3221,6 +3254,33 @@ slResult Hooked_slSetTagForFrame(const slBaseStructure& frame, const slViewportH
             }
         }
     }
+}
+
+slResult Hooked_slSetTag(const slViewportHandle& viewport, const slResourceTag* tags, uint32_t numTags,
+                         void* commandBuffer) {
+    auto originalSetTag = GetCallableOriginalSetTag();
+    if (!originalSetTag) {
+        return kSlResultErrorInvalidState;
+    }
+
+    // Legacy/global resource tagging has no frame token. A monotonically unique opaque identity
+    // lets the standby state roll across calls without dereferencing or fabricating an SL object.
+    static std::atomic<uintptr_t> s_legacyTagToken{1};
+    const uintptr_t tokenValue = s_legacyTagToken.fetch_add(1, std::memory_order_relaxed);
+    const void* frameToken = reinterpret_cast<const void*>((tokenValue << 1u) | 1u);
+    TryRecordOfficialUiTag("slSetTag", frameToken, viewport, tags, numTags, commandBuffer);
+
+    return originalSetTag(viewport, tags, numTags, commandBuffer);
+}
+
+slResult Hooked_slSetTagForFrame(const slBaseStructure& frame, const slViewportHandle& viewport,
+                                 const slResourceTag* tags, uint32_t numTags, void* commandBuffer) {
+    auto originalSetTagForFrame = GetCallableOriginalSetTagForFrame();
+    if (!originalSetTagForFrame) {
+        return kSlResultErrorInvalidState;
+    }
+
+    TryRecordOfficialUiTag("slSetTagForFrame", &frame, viewport, tags, numTags, commandBuffer);
 
     // Streamline observes the resource only after CE's commands have been appended. For volatile
     // tags this is essential: any copy Streamline records into the same command list includes CE.
@@ -3396,6 +3456,8 @@ void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char
          reinterpret_cast<void* volatile*>(&g_Original_slGetPluginFunction)},
         {"slSetD3DDevice", &g_SLSetD3DDeviceTarget, &g_SLSetD3DDeviceHooked,
          reinterpret_cast<void* volatile*>(&g_Original_slSetD3DDevice)},
+        {"slSetTag", &g_SLSetTagTarget, &g_SLSetTagHooked,
+         reinterpret_cast<void* volatile*>(&g_Original_slSetTag)},
         {"slSetTagForFrame", &g_SLSetTagForFrameTarget, &g_SLSetTagForFrameHooked,
          reinterpret_cast<void* volatile*>(&g_Original_slSetTagForFrame)},
         {"slDLSSGSetOptions", &g_DLSSGSetOptionsTarget, &g_DLSSGSetOptionsHooked,
@@ -3486,13 +3548,14 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
         HookLogImportant(
             "Streamline Hook: Fresh module load inspected %s (%p) "
             "slGetFeatureFunctionHooked=%d slGetPluginFunctionHooked=%d slSetD3DDeviceHooked=%d "
-            "slSetTagForFrameHooked=%d "
+            "slSetTagHooked=%d slSetTagForFrameHooked=%d "
             "dlssgSetOptionsHooked=%d "
             "dlssgGetStateHooked=%d reflexSleepHooked=%d reflexSetOptionsHooked=%d reflexSetConstantsHooked=%d",
             GetModuleBaseName(moduleNameOrPath), module,
             g_SLGetFeatureFunctionHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_SLGetPluginFunctionHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_SLSetD3DDeviceHooked.load(std::memory_order_acquire) ? 1 : 0,
+            g_SLSetTagHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_SLSetTagForFrameHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_DLSSGGetStateHooked.load(std::memory_order_acquire) ? 1 : 0,
