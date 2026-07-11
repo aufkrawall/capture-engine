@@ -12104,6 +12104,14 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     static std::atomic<int> s_postSLSkipFence{0};
     static std::atomic<int> s_postSLSkipOther{0};
 
+    // Snapshot before this callback records anything. If the normal path has
+    // already drawn since the last presented-frame accounting boundary, the
+    // current present is covered and the same-queue startup handoff must not
+    // draw a second overlay on top of it.
+    const bool normalRouteDrawPendingAtEntry =
+        g_OverlayCoverageDrawCount.load(std::memory_order_acquire) !=
+        g_OverlayCoverageLastSeenDrawCount.load(std::memory_order_acquire);
+
     // THREAD SAFETY: During FG, SL may fire Present from multiple threads.
     // Our rendering resources (allocators, command list, descriptor heap) are NOT
     // thread-safe. Use a try-lock to ensure only one thread renders at a time.
@@ -12254,17 +12262,31 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             sqCmdQueue == nullptr || sqCmdQueue == sqOrigQueue, sqSLWrapperQueue != nullptr, sqDeviceRemoved);
     }
 
+    bool syntheticStartupActivatedThisCall = false;
+    bool immediateSameQueueStartupTakeover = false;
     {
+        immediateSameQueueStartupTakeover =
+            sameQueuePureDLSSColdStartSafe && processFrameRecentlySeen && startupActivationPending;
         if (ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(
                 DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire),
                 cachedSLFGActive, g_PostSLOverlayActive.load(std::memory_order_acquire), processFrameRecentlySeen,
-                useTopLevelHandoffWrapperProgress)) {
+                useTopLevelHandoffWrapperProgress, sameQueuePureDLSSColdStartSafe)) {
             if (!g_PostSLSyntheticStartupTakeoverLogged.exchange(true, std::memory_order_acq_rel)) {
-                HookLogImportant(
-                    "DX12: PostSL synthetic startup takeover — ProcessFrame dormant for %llums (cooldown=%d)",
-                    lastProcessFrameTickMs != 0 && nowMs >= lastProcessFrameTickMs ? (nowMs - lastProcessFrameTickMs)
-                                                                                   : 0,
-                    g_PostSLCooldownRemaining.load(std::memory_order_relaxed));
+                if (immediateSameQueueStartupTakeover) {
+                    HookLogImportant(
+                        "DX12: PostSL synthetic startup immediate same-queue takeover — callback proves the "
+                        "Streamline handoff before the ProcessFrame dormant timer (normalDrawPending=%d "
+                        "cooldown=%d)",
+                        normalRouteDrawPendingAtEntry ? 1 : 0,
+                        g_PostSLCooldownRemaining.load(std::memory_order_relaxed));
+                } else {
+                    HookLogImportant(
+                        "DX12: PostSL synthetic startup takeover — ProcessFrame dormant for %llums (cooldown=%d)",
+                        lastProcessFrameTickMs != 0 && nowMs >= lastProcessFrameTickMs
+                            ? (nowMs - lastProcessFrameTickMs)
+                            : 0,
+                        g_PostSLCooldownRemaining.load(std::memory_order_relaxed));
+                }
             }
 
             int cooldownLeft = g_PostSLCooldownRemaining.load(std::memory_order_acquire);
@@ -12404,6 +12426,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             g_PostSLOverlayActive.store(true, std::memory_order_release);
             g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
             if (enterSyntheticStartupActivation) {
+                syntheticStartupActivatedThisCall = true;
                 g_PostSLSyntheticStartupActivatedButUnconfirmed.store(true, std::memory_order_release);
                 g_PostSLSyntheticStartupWrapperProgressCount.store(0, std::memory_order_release);
                 DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(false, std::memory_order_release);
@@ -12430,6 +12453,18 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 s_repeatSyntheticStartupActivationLog++;
             }
         }
+    }
+
+    if (syntheticStartupActivatedThisCall && immediateSameQueueStartupTakeover && normalRouteDrawPendingAtEntry) {
+        // The normal route already covered this exact present. Leave PostSL
+        // active for the next callback, but do not render twice during the
+        // make-before-break boundary. PostSLOverlayRenderGated's scope guard
+        // accounts the pending normal draw on return.
+        NoteDX12OverlayCoverageGate("postsl-same-queue-make-before-break");
+        HookLogImportant(
+            "DX12: PostSL immediate same-queue takeover preserved the current normal-route draw — first PostSL "
+            "draw moves to the next present (no blank, no double draw)");
+        return;
     }
 
     uint32_t lifecycleEpoch = g_PostSLLifecycleEpoch.load(std::memory_order_acquire);

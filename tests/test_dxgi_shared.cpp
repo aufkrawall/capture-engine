@@ -3445,11 +3445,15 @@ TEST(DXGISharedTest, PostSLLastWorkingQueueIgnoresTransientWrapperQueues) {
 TEST(DXGISharedTest, SyntheticPostSLAdvancesDormantStartupOnlyWhenFramePathStopsUnlessWrapperProgressProvesHandoff) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, false, false, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, false, true, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(
+        true, true, false, true, false, /*sameQueuePureDLSSColdStartSafe=*/true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(false, true, false, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, false, false, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, true, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(true, true, false, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldSyntheticPostSLAdvanceDormantStartup(
+        true, false, false, true, false, /*sameQueuePureDLSSColdStartSafe=*/true));
 }
 
 TEST(DXGISharedTest, SyntheticPostSLStartupOnlyUsesRepeatedCallbackCountdownAfterFSRPhase) {
@@ -6200,6 +6204,12 @@ TEST(DXGISharedSourceTest, StreamlineGetStateOnlyActivationAdoptsPreTaggedOffici
         << "standby draws must become visible-output coverage only after an activation edge";
     EXPECT_NE(dx12.find("officialUiCoverage = ce::dx12_streamline_ui_overlay::HasActiveCoverage()"), std::string::npos)
         << "generated presents before PostSL can render must inherit the submitted official-UI overlay";
+    EXPECT_NE(dx12.find("normalRouteDrawPendingAtEntry"), std::string::npos)
+        << "same-queue startup must preserve an already-drawn normal-route present instead of double drawing";
+    EXPECT_NE(dx12.find("postsl-same-queue-make-before-break"), std::string::npos)
+        << "a proven same-queue callback must hand off without a timed uncovered window";
+    EXPECT_NE(dx12.find("PostSL synthetic startup immediate same-queue takeover"), std::string::npos)
+        << "logs must distinguish event-driven immediate takeover from the separate-queue dormant guard";
     const size_t consumeCoverage = dx12.find("ConsumePostSLCoverage()");
     ASSERT_NE(consumeCoverage, std::string::npos);
     EXPECT_NE(dx12.find("NoteDX12OverlayRendered(DX12OverlayRenderRoute::kStreamlineUI)", consumeCoverage),

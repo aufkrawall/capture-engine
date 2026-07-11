@@ -2310,9 +2310,15 @@ inline bool ShouldPreservePostSLLastWorkingQueueForPostFSROffRecovery(bool hadFS
 
 inline bool ShouldSyntheticPostSLAdvanceDormantStartup(bool startupActivationPending, bool streamlineFGRunning,
                                                        bool postSLActive, bool processFrameRecentlySeen,
-                                                       bool useTopLevelHandoffWrapperProgress) {
+                                                       bool useTopLevelHandoffWrapperProgress,
+                                                       bool sameQueuePureDLSSColdStartSafe = false) {
+    // A proven same-queue Streamline callback is the handoff event: PostSL can
+    // take over immediately without waiting for the last ProcessFrame timestamp
+    // to age out. The caller preserves make-before-break when the normal route
+    // already drew in this present. Separate-queue startup retains the dormant
+    // proof because its early ECL is the documented GTA init-hang family.
     return startupActivationPending && streamlineFGRunning && !postSLActive &&
-           (!processFrameRecentlySeen || useTopLevelHandoffWrapperProgress);
+           (!processFrameRecentlySeen || useTopLevelHandoffWrapperProgress || sameQueuePureDLSSColdStartSafe);
 }
 
 inline bool ShouldBootstrapPostSLOverlayState(bool streamlineFGRunning, bool postSLActive, bool overlayInit,
