@@ -60,22 +60,20 @@ public:
 
     // Creates the duplication for the output that owns `monitor` (primary
     // monitor when null) on `device`'s adapter. The format list offered to
-    // DuplicateOutput1 always includes every format the pipeline can process
-    // (FP16/R10, plus BGRA8 for SDR): the OS delivers the desktop's NATIVE
-    // composed format, which by definition is the full precision the desktop
-    // content possesses. `requireHighPrecision`/`outputIsHdr` are used for
-    // logging and the HDR format list, never to reject a working duplication —
-    // an 8-bit delivery under an explicit 10-bit request is an honest
-    // upconversion (logged), not a failure. GROUND TRUTH for the delivered
-    // format is the first acquired frame's texture desc (logged as
-    // sourceContentBits); DXGI_OUTDUPL_DESC.ModeDesc.Format only reflects the
-    // display mode and may understate what the duplication delivers.
+    // DuplicateOutput1 offers only formats which satisfy the requested
+    // precision contract: R10/FP16 for 10-bit SDR and FP16 for HDR. Ground
+    // truth is the first acquired frame's texture desc; ModeDesc.Format only
+    // reflects the display mode and may understate the delivered precision.
     // On failure `failureReason` receives a stable, log-friendly reason string.
     bool Init(ID3D11Device* device, HMONITOR monitor, bool requireHighPrecision, bool outputIsHdr,
               std::string* failureReason);
 
     // Starts the acquisition thread. Sink callbacks fire on that thread.
     bool Start(DxgiDuplicationFrameSink sink);
+
+    // Stable diagnostic populated when Start cannot prove an acceptable first
+    // frame. Valid until the next Start call.
+    std::string GetStartFailureReason() const;
 
     // Stops the acquisition thread and releases the duplication.
     void Stop();
@@ -157,6 +155,12 @@ private:
     bool requireHighPrecision_ = false;
     bool outputIsHdr_ = false;
     bool deliveredFormatLogged_ = false;
+
+    enum class FirstFrameState : uint8_t { Pending, Valid, Invalid };
+    mutable std::mutex firstFrameMutex_;
+    std::condition_variable firstFrameCv_;
+    FirstFrameState firstFrameState_ = FirstFrameState::Pending;
+    std::string firstFrameFailureReason_;
 
     std::thread captureThread_;
     std::atomic<bool> shutdown_{false};

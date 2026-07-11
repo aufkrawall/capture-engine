@@ -1,6 +1,6 @@
 # CFR Capture Sync
 
-Last cross-checked: 2026-07-11 (transactional fresh-frame commit and scheduled encode-failure repeat recovery; inject metadata/texture leases retained through synchronous media copy; source-epoch repeat-cache invalidation; post-mux probe ownership hardened)
+Last cross-checked: 2026-07-11 (transactional fresh-frame recovery; source-epoch invalidation; CFR packet-coverage validation; DXGI/WGC/inject codec matrix)
 Stale-risk: low
 
 Primary sources:
@@ -27,6 +27,7 @@ Primary sources:
 - `testapp/av_sync_stimulus.h`
 - `testapp/dx12_av_sync_test.cpp`
 - `tools/analyze_av_sync_stimulus.py`
+- `tools/analyze_capture_av.py`
 - `tools/run_av_sync_matrix.py`
 - `tests/test_av_sync_stimulus.cpp`
 
@@ -39,6 +40,8 @@ An inject `FrameSlot` is not acknowledged when it is merely copied into the medi
 Fresh-frame state is transactional. The candidate becomes `g_LastFrame` and updates source/cursor lineage only after a successful non-deferred encode. If a scheduled CFR fresh encode fails, CE repeats the prior successful media-engine cache at the same scheduled QPC when available; the failed candidate is released and its metadata never becomes authoritative. If both fresh encode and repeat fail, the tick is reported as a real miss. WGC source-epoch changes explicitly clear every repeat-cache layer, while an inject-to-WGC standby commit keeps the already-published WGC epoch and preserves the prior inject repeat until replacement pixels have actually encoded.
 
 Post-mux probing runs synchronously on the writer/finalizer owner with an FFmpeg interrupt deadline and bounded packet scan. It no longer launches a nested thread that could outlive the media-engine DLL or force unsafe detach/late join behavior.
+
+CFR duration metadata cannot prove that every scheduled tick became a packet: the sparse DXGI failure capture declared about 6.19 seconds at 120 fps but contained only 170 video packets, with PTS gaps up to 48 ticks. Finalization now logs expected/emitted/missing CFR coverage from successfully written video packets after encoder flush, and `tools/analyze_capture_av.py` independently scans file packet PTS, fails any missing tick or gap above 1.01 nominal ticks, and handles reordered codec PTS by sorting before gap analysis. `cfr_packet_coverage_fault` is a strict visual/sync event. The default/codec A/V matrix now includes `dxgi_dup`, `wgc`, and `inject`; the codec finalization pass covers AAC, ALAC, FLAC, Opus, and PCM for every backend.
 
 All CFR capture paths share the same invariant: the CFR media clock is authoritative, and audio follows that timeline without live trims, source drops, wall-clock catch-up, or audible pitch recovery. This applies to WGC and injected shared-memory capture when `Video.useVFR=false`. A very small source-clock drift correction lane is allowed only after startup has settled and the CFR timeline is healthy; current code caps it at `0.05%`, far below the user-accepted `1-2%` inaudible upper bound, and it must not be used to recover video/encoder debt.
 
@@ -69,6 +72,7 @@ Mux finalization and post-mux validation are separate ownership phases. Trailer 
 ## Invariants
 
 - Explicit CFR (`Video.useVFR=false`) disables the wall-clock audio anchor. Wall-clock chasing is a VFR/non-CFR tool, not a CFR sync tool.
+- Every scheduled CFR video tick through the final assigned PTS must have exactly one emitted packet. Declared stream/container duration is not a substitute for packet coverage; missing ticks or multi-tick PTS gaps are strict failures.
 - Settled CFR audio pulls are sample-exact to the current target. Quantum rounding is still allowed for non-CFR/settling paths, but a settled CFR track must not carry a nonzero target/cursor residual.
 - Audio is not sped up, trimmed, or dropped during normal CFR overload recovery. Audio ring pressure and post-resample backlog are warnings; if samples actually overflow/drop/trim, the recording is a validation failure instead of an acceptable recovery path.
 - Track startup is not real-sample-gated. A source that is timeline-valid but currently silent contributes zero samples; late packets are placed by source timestamp/QPC and cannot move the track cursor.

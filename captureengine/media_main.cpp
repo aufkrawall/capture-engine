@@ -533,6 +533,7 @@ bool MediaEngineConfigEquals(const AppConfig& lhs, const AppConfig& rhs) {
         lhs.wgcSmoothnessBufferEnabled != rhs.wgcSmoothnessBufferEnabled ||
         lhs.wgcSmoothnessBufferMaxMs != rhs.wgcSmoothnessBufferMaxMs ||
         lhs.wgcSmoothnessBufferVramBudgetMb != rhs.wgcSmoothnessBufferVramBudgetMb ||
+        lhs.wgcPreferCompact10bitPool != rhs.wgcPreferCompact10bitPool ||
         !MediaVideoConfigEquals(lhs.video, rhs.video) || lhs.audioSources.size() != rhs.audioSources.size()) {
         return false;
     }
@@ -1227,7 +1228,10 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     capture->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
     capture->SetSameDeviceCapture(config.wgcSameDeviceCapture);
     capture->SetPreferCompact10bitPool(config.wgcPreferCompact10bitPool);
-    capture->SetRequireHighPrecisionCapture(IsExplicitTenBitVideo(config.video));
+    const bool explicitTenBit = IsExplicitTenBitVideo(config.video);
+    capture->SetRequireHighPrecisionCapture(explicitTenBit);
+    capture->SetAllowDuplicationFallback(ce::capture_policy::ShouldAllowWgcFallbackAfterDxgiFailure(
+        IsDxgiDupCaptureMethod(config.captureMethod), explicitTenBit));
     const uint32_t initialWgcTargetFps = GetInitialWgcCfrTargetFps(config.video);
     float maxAudioCaptureLatencyMs = 0.0f;
     for (const auto& audioSrc : config.audioSources) {

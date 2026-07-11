@@ -9,7 +9,9 @@ log_level=trace
 ; capture_method - Values: inject, wgc, dxgi_dup, auto
 ;   inject   = injected shared-memory capture only
 ;   wgc      = Windows Graphics Capture only (screen or window grab, requires DWM present "fullscreen optimization" for older games)
-;   dxgi_dup = DXGI Desktop Duplication only (monitor/desktop grab; no window scoping; falls back to WGC monitor capture when duplication is unavailable, e.g. rotated or cross-adapter outputs)
+;   dxgi_dup = DXGI Desktop Duplication only (monitor/desktop grab; no window scoping). With explicit bit_depth=10,
+;              requires a true R10/FP16 duplication surface and fails recording instead of upconverting BGRA8 or
+;              silently switching to WGC. 8-bit capture may fall back to WGC for unavailable/unsupported outputs.
 ;   auto     = priority order: inject (whitelisted game) > configured wgc_window_detection match (WGC window capture) > DXGI Desktop Duplication of the game's monitor for unhooked FULLSCREEN games (see auto_fullscreen_capture) > WGC window capture for windowed targets > DXGI Desktop Duplication for pure desktop/monitor capture > WGC monitor capture as the last fallback
 capture_method=auto
 
@@ -32,6 +34,10 @@ wgc_window_detection=(
 ; WGC performance options. wgc_same_device_capture=true should have lowest overhead.
 wgc_same_device_capture=true
 ;wgc_skip_split_device_flush=false
+; false preserves >8-bit WGC source precision through the FP16 staging pool. true permits a
+; lossy BGRA8 staging pool only for non-explicit/auto bit-depth capture to reduce VRAM;
+; explicit bit_depth=10 never permits the BGRA8 intermediate.
+;wgc_prefer_compact_10bit_pool=false
 ; wgc_active_delay_uniform_cadence=true: with an active A/V content delay, prefer uniform
 ; CFR cadence over per-tick delay-reservoir defense so a GPU-bound under-delivering source
 ; does not produce abnormal judder; the realized content delay floats gracefully.

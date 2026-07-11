@@ -5731,7 +5731,12 @@ TEST(DXGISharedSourceTest, SuspendBackbufferOverlayUsesExactOwnerQueueGatedToSus
     // it must not guess a queue or use the foreign dedicated-queue path.
     const size_t fn = text.find("bool DX12_CompositeOverlayOntoSuspendBackbuffer(");
     ASSERT_NE(fn, std::string::npos);
-    const size_t fnEnd = text.find("\n}\n", fn);
+    size_t fnEnd = text.find("\n}\n", fn);
+    if (fnEnd == std::string::npos) {
+        // Source checkouts use either LF or CRLF depending on Git's Windows
+        // line-ending policy; keep this structural test invariant to both.
+        fnEnd = text.find("\n}\r\n", fn);
+    }
     ASSERT_NE(fnEnd, std::string::npos);
     const std::string body = text.substr(fn, fnEnd - fn);
     EXPECT_NE(body.find("AcquireNativeFSRSwapchainPresentationQueue(proxy)"), std::string::npos);

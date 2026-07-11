@@ -330,7 +330,7 @@ struct AppConfig {
     // (never moves the audio anchor) and held fixed for the session. See capture_pipeline_policy.h.
     bool wgcSmoothnessFloorAuto = true;
     uint32_t wgcSmoothnessFloorMs = 0;  // explicit floor (ms); used only when wgcSmoothnessFloorAuto is false
-    bool wgcPreferCompact10bitPool = true;
+    bool wgcPreferCompact10bitPool = false;
     std::string logFilePath;  // Path to captureengine.log
 
     std::string crashDumpDir;  // Directory for crash dumps

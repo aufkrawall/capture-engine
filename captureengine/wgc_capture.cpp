@@ -780,14 +780,14 @@ public:
     uint64_t itemCreationIdValue_ = 0;
     // DXGI Desktop Duplication backend: an alternative monitor-scope frame
     // source behind the same pool/ingress/CFR engine. When the preference is
-    // set, StartCapture tries duplication first and falls back to a WGC
-    // monitor item in place so recording start never fails on a dup-only
-    // problem (rotated/cross-adapter output, format policy, API loss).
+    // set, StartCapture tries duplication first. Auto/8-bit operation may
+    // fall back to WGC; explicit DXGI + 10-bit operation is strict.
     std::unique_ptr<DxgiDuplicationSource> dupSource_;
     bool useDuplicationBackend_ = false;
     std::string dupInitFailureReason_;
     bool useHighPrecisionCapture_ = false;
     bool requireHighPrecisionCapture_ = false;
+    bool allowDuplicationFallback_ = true;
     // Deferred output rechecks run on the consumer thread while frame delivery
     // reads this flag on the WinRT/duplication callback thread.
     std::atomic<bool> captureIsHDR_{false};
@@ -2943,10 +2943,10 @@ public:
         frameWidth_ = width;
         frameHeight_ = height;
         targetMonitor_ = dupSource_->GetMonitor();
-        // Track the actual desktop surface format for pool sizing/telemetry.
-        captureDxgiFormat_ = dupSource_->GetFormat();
+        // Seed the pool budget from the output-derived selection before the
+        // first callback can allocate it; replace this hint with the proven
+        // first-texture format immediately after Start returns.
         UpdateSmoothnessBudget(width, height, captureDxgiFormat_, true);
-
         if (!frameArrivedEvent_) {
             frameArrivedEvent_ = CreateEvent(NULL, FALSE, FALSE, NULL);  // Auto-reset
         }
@@ -2957,10 +2957,21 @@ public:
         sink.onCursorOnlyUpdate = [this]() { cursorOnlySkipCount_.fetch_add(1, std::memory_order_relaxed); };
         sink.onResetNeeded = [this](const char* reason) { FlagResetNeeded(reason); };
         if (!dupSource_->Start(std::move(sink))) {
-            dupInitFailureReason_ = "duplication capture thread start failed";
+            dupInitFailureReason_ = dupSource_->GetStartFailureReason();
+            if (dupInitFailureReason_.empty()) {
+                dupInitFailureReason_ = "duplication capture thread start failed";
+            }
             dupSource_.reset();
             return false;
         }
+
+        // Init's ModeDesc is only a hint. Start waits for the first acquired
+        // texture, so this is the proven surface format used by pool sizing,
+        // retained-copy selection, and high-precision telemetry.
+        captureDxgiFormat_ = dupSource_->GetFormat();
+        useHighPrecisionCapture_ =
+            ce::capture_policy::GetDxgiDuplicationSourceContentBits(static_cast<uint32_t>(captureDxgiFormat_)) >= 10;
+        UpdateSmoothnessBudget(width, height, captureDxgiFormat_, true);
 
         LogInfo(
             "[WGC] Capture session diagnostics: target=monitor method=%s hwnd=0x0 hmon=0x%p itemId=0x0 "
@@ -2983,6 +2994,11 @@ public:
         if (useDuplicationBackend_) {
             if (StartDuplicationCapture(width, height)) {
                 return true;
+            }
+            if (!allowDuplicationFallback_) {
+                LogError("[WGC] Strict DXGI duplication contract failed (%s); WGC fallback is disabled",
+                         dupInitFailureReason_.empty() ? "unknown reason" : dupInitFailureReason_.c_str());
+                return false;
             }
             LogWarn("[WGC] DXGI duplication backend unavailable (%s); falling back to WGC monitor capture",
                     dupInitFailureReason_.empty() ? "unknown reason" : dupInitFailureReason_.c_str());
@@ -3062,7 +3078,8 @@ public:
                 // supports the BGRA8/FP16 family). One attempt is kept above for
                 // future Windows versions; no buffer-count retry ladder.
                 bool resolved = false;
-                if (preferCompact10bitPool_) {
+                if (preferCompact10bitPool_ &&
+                    ce::capture_policy::ShouldAllowBgra8WgcFallback(requireHighPrecisionCapture_, captureIsHDR_)) {
                     // BGRA8 as a compact pool format (4bpp instead of FP16's
                     // 8bpp), halving VRAM per source surface. Encoding stays
                     // 10-bit P010 (8-bit source content, transparent upconvert).
@@ -3092,8 +3109,8 @@ public:
                         "via shader conversion to R10 for retained copies.");
                     // SDR 10-bpc: FP16 preserves full >8-bit source content
                     // (e.g. a 10-bit game swapchain re-composed into the pool).
-                    // Explicit 10-bit recording must never fall to BGRA8
-                    // silently.
+                    // Explicit 10-bit recording never reaches the compact
+                    // BGRA8 branch above, so this preserves source precision.
                     attemptedFp16Fallback = true;
                     capturePixelFormat_ = winrt::DirectXPixelFormat::R16G16B16A16Float;
                     captureDxgiFormat_ = DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -4613,6 +4630,7 @@ void WGCCapture::ForceReset() {
         const bool sameDeviceCapture = impl_->sameDeviceCapture_;
         const bool preferCompact10bitPool = impl_->preferCompact10bitPool_;
         const bool requireHighPrecisionCapture = impl_->requireHighPrecisionCapture_;
+        const bool allowDuplicationFallback = impl_->allowDuplicationFallback_;
         const uint32_t targetFps = impl_->targetFps_;
         const uint32_t producerTargetFps = impl_->producerTargetFps_;
         const auto* throttleFlag = impl_->throttleFlag_;
@@ -4637,6 +4655,7 @@ void WGCCapture::ForceReset() {
         impl_->sameDeviceCapture_ = sameDeviceCapture;
         impl_->preferCompact10bitPool_ = preferCompact10bitPool;
         impl_->requireHighPrecisionCapture_ = requireHighPrecisionCapture;
+        impl_->allowDuplicationFallback_ = allowDuplicationFallback;
         impl_->targetFps_ = targetFps;
         impl_->producerTargetFps_ = producerTargetFps;
         impl_->throttleFlag_ = throttleFlag;
@@ -4658,8 +4677,12 @@ void WGCCapture::ForceReset() {
                 }
             } else if (wasDuplicationBackend && targetMonitor) {
                 if (!impl_->CreateForMonitorDuplication(targetMonitor)) {
-                    LogWarn("[WGC] ForceReset failed to recreate duplication target; trying WGC monitor item");
-                    if (!impl_->CreateForMonitor(targetMonitor)) {
+                    if (!impl_->allowDuplicationFallback_) {
+                        LogError("[WGC] ForceReset failed to recreate strict duplication target; WGC fallback disabled");
+                    } else {
+                        LogWarn("[WGC] ForceReset failed to recreate duplication target; trying WGC monitor item");
+                    }
+                    if (impl_->allowDuplicationFallback_ && !impl_->CreateForMonitor(targetMonitor)) {
                         LogWarn("[WGC] ForceReset failed to recreate monitor target");
                     }
                 }
@@ -4725,6 +4748,16 @@ void WGCCapture::SetRequireHighPrecisionCapture(bool enabled) {
         if (changed && (impl_->framePool_ || impl_->dupSource_)) {
             impl_->FlagResetNeeded("high-precision capture requirement changed");
         }
+    }
+#else
+    (void)enabled;
+#endif
+}
+
+void WGCCapture::SetAllowDuplicationFallback(bool enabled) {
+#if HAS_WGC
+    if (impl_) {
+        impl_->allowDuplicationFallback_ = enabled;
     }
 #else
     (void)enabled;

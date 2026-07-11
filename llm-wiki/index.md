@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-11 (capture reliability audit plus durable startup-cached FFX routing, exact owner-queue suspension visibility, and pre-enable post-FSR Streamline overlay prewarm with durable FSR-history gating; see wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, frame-generation/guardrails.md, and log/recent.md)
+Last cross-checked: 2026-07-11 (strict true-10-bit DXGI/WGC capture and CFR packet coverage, capture reliability, durable FFX routing, and pre-enable post-FSR Streamline overlay prewarm; see wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, frame-generation/guardrails.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`

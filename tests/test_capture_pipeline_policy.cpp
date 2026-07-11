@@ -2762,15 +2762,25 @@ TEST(CapturePipelinePolicyTest, DxgiDuplicationContentBitsClassifyDeliveredForma
     constexpr uint32_t kBgra8 = 87;  // DXGI_FORMAT_B8G8R8A8_UNORM
     constexpr uint32_t kNv12 = 103;  // DXGI_FORMAT_NV12 (never a desktop surface)
 
-    // The delivered duplication format is never a rejection reason: it IS the
-    // full precision the composed desktop possesses. The classifier only feeds
-    // honest sourceContentBits logging (8-bit delivery under explicit 10-bit
-    // output = transparent upconversion, backend stays on duplication and the
-    // hardware cursor is preserved).
     EXPECT_EQ(policy::GetDxgiDuplicationSourceContentBits(kFp16), 16u);
     EXPECT_EQ(policy::GetDxgiDuplicationSourceContentBits(kR10), 10u);
     EXPECT_EQ(policy::GetDxgiDuplicationSourceContentBits(kBgra8), 8u);
     EXPECT_EQ(policy::GetDxgiDuplicationSourceContentBits(kNv12), 0u);
+
+    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFrameFormat(kR10, true, false));
+    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFrameFormat(kFp16, true, false));
+    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFrameFormat(kBgra8, true, false));
+    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFrameFormat(kBgra8, false, false));
+    EXPECT_TRUE(policy::IsAcceptableDxgiDuplicationFrameFormat(kFp16, true, true));
+    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFrameFormat(kR10, true, true));
+    EXPECT_FALSE(policy::IsAcceptableDxgiDuplicationFrameFormat(kNv12, false, false));
+}
+
+TEST(CapturePipelinePolicyTest, ExplicitTenBitDxgiDoesNotSilentlyFallbackToWgc) {
+    EXPECT_FALSE(policy::ShouldAllowWgcFallbackAfterDxgiFailure(true, true));
+    EXPECT_TRUE(policy::ShouldAllowWgcFallbackAfterDxgiFailure(true, false));
+    EXPECT_TRUE(policy::ShouldAllowWgcFallbackAfterDxgiFailure(false, true));
+    EXPECT_TRUE(policy::ShouldAllowWgcFallbackAfterDxgiFailure(false, false));
 }
 
 TEST(CapturePipelinePolicyTest, FullscreenAutoTargetPrefersDuplicationForHardwareCursor) {

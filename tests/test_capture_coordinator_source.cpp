@@ -50,6 +50,15 @@ TEST(CaptureCoordinatorSourceTest, DuplicationCursorSuppressionIsExplicitlyReset
     EXPECT_NE(source.find("MediaEngine_SetCursorCompositionSuppressed(false)"), std::string::npos);
 }
 
+TEST(CaptureCoordinatorSourceTest, ExplicitTenBitWgcCannotUseCompactBgraIntermediate) {
+    const std::string source = ReadWgcCaptureSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("preferCompact10bitPool_ &&"), std::string::npos);
+    EXPECT_NE(source.find("ShouldAllowBgra8WgcFallback(requireHighPrecisionCapture_, captureIsHDR_)"),
+              std::string::npos);
+}
+
 TEST(CaptureCoordinatorSourceTest, AutoFallbackProvesWgcBeforeStoppingInject) {
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());

@@ -5,6 +5,7 @@
 
 #include <avrt.h>
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <system_error>
 
@@ -17,6 +18,7 @@ namespace {
 // AcquireNextFrame returns immediately when a desktop update is available; the
 // timeout only bounds idle waits (static desktop) and shutdown latency.
 constexpr UINT kAcquireTimeoutMs = 50;
+constexpr uint32_t kFirstFrameProofTimeoutMs = 2000;
 
 // Consecutive unexpected AcquireNextFrame failures (not timeouts, not
 // ACCESS_LOST which resets immediately) tolerated before requesting a reset.
@@ -165,19 +167,20 @@ bool DxgiDuplicationSource::Init(ID3D11Device* device, HMONITOR monitor, bool re
     IDXGIOutput5* output5 = nullptr;
     HRESULT duplicateHr = E_NOINTERFACE;
     if (SUCCEEDED(matchedOutput->QueryInterface(IID_PPV_ARGS(&output5))) && output5) {
-        // Offer every format the pipeline can process; the OS delivers the
-        // desktop's NATIVE composed format, which by definition carries the
-        // full precision the desktop content possesses. An 8-bit delivery
-        // under an explicit 10-bit request is an honest upconversion (logged
-        // at first frame), never a reason to lose the duplication backend
-        // (and with it the hardware cursor) to a WGC fallback. HDR desktops
-        // compose in FP16/R10, so BGRA8 stays out of the HDR list to avoid
-        // any tone-mapped SDR conversion path.
+        // Order matters: use compact R10 directly for 10-bit SDR when the
+        // driver supports it, then accept FP16 for a lossless GPU conversion
+        // to the retained R10/P010 path. HDR requires FP16 so scRGB range is
+        // not clipped. Never offer BGRA8 for an explicit high-precision job.
         DXGI_FORMAT supportedFormats[3] = {};
         UINT formatCount = 0;
-        supportedFormats[formatCount++] = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        supportedFormats[formatCount++] = DXGI_FORMAT_R10G10B10A2_UNORM;
-        if (!outputIsHdr) {
+        if (outputIsHdr) {
+            supportedFormats[formatCount++] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        } else if (requireHighPrecision) {
+            supportedFormats[formatCount++] = DXGI_FORMAT_R10G10B10A2_UNORM;
+            supportedFormats[formatCount++] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        } else {
+            supportedFormats[formatCount++] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            supportedFormats[formatCount++] = DXGI_FORMAT_R10G10B10A2_UNORM;
             supportedFormats[formatCount++] = DXGI_FORMAT_B8G8R8A8_UNORM;
         }
         duplicateHr = output5->DuplicateOutput1(device, 0, formatCount, supportedFormats, &duplication_);
@@ -189,7 +192,7 @@ bool DxgiDuplicationSource::Init(ID3D11Device* device, HMONITOR monitor, bool re
         }
     }
 
-    if (!duplication_ && !outputIsHdr) {
+    if (!duplication_ && !requireHighPrecision && !outputIsHdr) {
         // Legacy fallback (pre-1703 or missing IDXGIOutput5): BGRA8 only.
         IDXGIOutput1* output1 = nullptr;
         if (SUCCEEDED(matchedOutput->QueryInterface(IID_PPV_ARGS(&output1))) && output1) {
@@ -271,6 +274,11 @@ bool DxgiDuplicationSource::Start(DxgiDuplicationFrameSink sink) {
     protectedContentMaskedFrameCount_.store(0, std::memory_order_relaxed);
     consecutiveAcquireFailures_.store(0, std::memory_order_relaxed);
     deliveredFrameCount_.store(0, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(firstFrameMutex_);
+        firstFrameState_ = FirstFrameState::Pending;
+        firstFrameFailureReason_.clear();
+    }
     running_.store(true, std::memory_order_release);
     try {
         captureThread_ = std::thread(&DxgiDuplicationSource::CaptureThreadFunc, this);
@@ -278,22 +286,54 @@ bool DxgiDuplicationSource::Start(DxgiDuplicationFrameSink sink) {
         running_.store(false, std::memory_order_release);
         shutdown_.store(true, std::memory_order_release);
         sink_ = {};
+        {
+            std::lock_guard<std::mutex> lock(firstFrameMutex_);
+            firstFrameFailureReason_ = "failed to create duplication capture thread";
+            firstFrameState_ = FirstFrameState::Invalid;
+        }
         LogError("[DXGIDup] Failed to create capture thread: %s (code=%d)", e.what(), e.code().value());
         return false;
     } catch (...) {
         running_.store(false, std::memory_order_release);
         shutdown_.store(true, std::memory_order_release);
         sink_ = {};
+        {
+            std::lock_guard<std::mutex> lock(firstFrameMutex_);
+            firstFrameFailureReason_ = "failed to create duplication capture thread";
+            firstFrameState_ = FirstFrameState::Invalid;
+        }
         LogError("[DXGIDup] Failed to create capture thread: unknown exception");
         return false;
     }
-    LogInfo("[DXGIDup] Capture thread started (%ux%u %s)", width_, height_, DupFormatName(GetFormat()));
+    std::unique_lock<std::mutex> lock(firstFrameMutex_);
+    const bool proved = firstFrameCv_.wait_for(lock, std::chrono::milliseconds(kFirstFrameProofTimeoutMs), [&] {
+        return firstFrameState_ != FirstFrameState::Pending || !running_.load(std::memory_order_acquire);
+    });
+    if (!proved || firstFrameState_ != FirstFrameState::Valid) {
+        if (!proved && firstFrameFailureReason_.empty()) {
+            firstFrameFailureReason_ = "timed out waiting for first duplication frame format proof";
+        }
+        const std::string reason = firstFrameFailureReason_;
+        lock.unlock();
+        LogError("[DXGIDup] Capture start rejected: %s", reason.empty() ? "capture thread stopped" : reason.c_str());
+        Stop();
+        return false;
+    }
+    lock.unlock();
+    LogInfo("[DXGIDup] Capture thread started with validated first frame (%ux%u %s)", width_, height_,
+            DupFormatName(GetFormat()));
     return true;
+}
+
+std::string DxgiDuplicationSource::GetStartFailureReason() const {
+    std::lock_guard<std::mutex> lock(firstFrameMutex_);
+    return firstFrameFailureReason_;
 }
 
 void DxgiDuplicationSource::Stop() {
     shutdown_.store(true, std::memory_order_release);
     shutdownCv_.notify_all();
+    firstFrameCv_.notify_all();
     if (captureThread_.joinable()) {
         captureThread_.join();
     }
@@ -343,6 +383,14 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
     auto requestReset = [&](const char* reason) {
         if (!resetRequested) {
             resetRequested = true;
+            {
+                std::lock_guard<std::mutex> lock(firstFrameMutex_);
+                if (firstFrameState_ == FirstFrameState::Pending) {
+                    firstFrameState_ = FirstFrameState::Invalid;
+                    firstFrameFailureReason_ = reason;
+                }
+            }
+            firstFrameCv_.notify_all();
             LogWarn("[DXGIDup] Requesting duplication reset: %s (delivered=%llu timeouts=%llu cursorOnly=%llu)", reason,
                     static_cast<unsigned long long>(deliveredFrameCount_.load(std::memory_order_relaxed)),
                     static_cast<unsigned long long>(acquireTimeoutCount_.load(std::memory_order_relaxed)),
@@ -448,25 +496,37 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
         if (resource && SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&texture))) && texture) {
             D3D11_TEXTURE2D_DESC desc = {};
             texture->GetDesc(&desc);
-            if (!deliveredFormatLogged_) {
+            const bool firstDeliveredFrame = !deliveredFormatLogged_;
+            if (firstDeliveredFrame) {
                 deliveredFormatLogged_ = true;
                 const uint32_t contentBits =
                     ce::capture_policy::GetDxgiDuplicationSourceContentBits(static_cast<uint32_t>(desc.Format));
+                const bool acceptable = ce::capture_policy::IsAcceptableDxgiDuplicationFrameFormat(
+                    static_cast<uint32_t>(desc.Format), requireHighPrecision_, outputIsHdr_);
                 LogInfo(
                     "[DXGIDup] First frame delivered: format=%s modeDescFormat=%s sourceContentBits=%u "
-                    "requireHighPrecision=%d hdr=%d",
+                    "requireHighPrecision=%d hdr=%d acceptable=%d",
                     DupFormatName(desc.Format), DupFormatName(GetFormat()), contentBits, requireHighPrecision_ ? 1 : 0,
-                    outputIsHdr_ ? 1 : 0);
-                if (requireHighPrecision_ && contentBits <= 8) {
-                    LogWarn(
-                        "[DXGIDup] Explicit 10-bit output requested but the composed desktop delivers %u-bit "
-                        "content; encoding stays 10-bit (upconversion). This equals the true precision of the "
-                        "desktop image (WGC monitor capture of the same desktop carries no more), and keeps the "
-                        "duplication backend (hardware cursor preserved) instead of falling back to WGC.",
-                        contentBits);
-                }
+                    outputIsHdr_ ? 1 : 0, acceptable ? 1 : 0);
                 // ModeDesc was only a display-mode hint; track the ground truth.
                 format_.store(static_cast<uint32_t>(desc.Format), std::memory_order_release);
+                if (!acceptable) {
+                    char reason[192];
+                    snprintf(reason, sizeof(reason),
+                             "first duplication frame format %s violates the requested %s precision contract",
+                             DupFormatName(desc.Format), outputIsHdr_ ? "HDR FP16" : "10-bit SDR R10/FP16");
+                    {
+                        std::lock_guard<std::mutex> lock(firstFrameMutex_);
+                        firstFrameState_ = FirstFrameState::Invalid;
+                        firstFrameFailureReason_ = reason;
+                    }
+                    firstFrameCv_.notify_all();
+                    texture->Release();
+                    DupSafeRelease(resource);
+                    duplication_->ReleaseFrame();
+                    requestReset(reason);
+                    continue;
+                }
             }
             if (desc.Width != width_ || desc.Height != height_) {
                 LogWarn("[DXGIDup] Desktop size changed from %ux%u to %ux%u", width_, height_, desc.Width, desc.Height);
@@ -475,6 +535,13 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
                 duplication_->ReleaseFrame();
                 requestReset("desktop size changed");
                 continue;
+            }
+            if (firstDeliveredFrame) {
+                {
+                    std::lock_guard<std::mutex> lock(firstFrameMutex_);
+                    firstFrameState_ = FirstFrameState::Valid;
+                }
+                firstFrameCv_.notify_all();
             }
             deliveredFrameCount_.fetch_add(1, std::memory_order_relaxed);
             try {
@@ -518,4 +585,5 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
         cursorEmbeddedInFrames_.load(std::memory_order_relaxed) ? 1 : 0,
         static_cast<unsigned long long>(pointerStateTransitions_.load(std::memory_order_relaxed)));
     running_.store(false, std::memory_order_release);
+    firstFrameCv_.notify_all();
 }

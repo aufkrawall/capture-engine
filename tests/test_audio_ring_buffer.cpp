@@ -232,7 +232,11 @@ TEST(AudioRingBufferTest, CapacityPublicationIsRaceFreeDuringDeferredGrowth) {
         while (!done.load(std::memory_order_acquire)) {
             const size_t capacity = ring.GetCapacity();
             const size_t free = ring.GetFree();
-            if ((capacity != 2 && capacity != 8192) || free > capacity) {
+            // These are separate lock-free API calls, not one transactional
+            // snapshot: growth may publish between them. Each value must be a
+            // complete old or new state; a mixed old-capacity/new-free pair is
+            // valid and must not be compared as if sampled atomically.
+            if ((capacity != 2 && capacity != 8192) || (free != 2 && free != 8192)) {
                 sawInvalidCapacity.store(true, std::memory_order_relaxed);
             }
         }

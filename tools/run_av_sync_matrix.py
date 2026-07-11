@@ -26,7 +26,7 @@ RUN_LOG_DIR_RE = re.compile(r"^\d{8}_\d{6}$")
 PROCESS_NAME = "dx12_av_sync_test.exe"
 SECONDARY_PROCESS_NAME = "dx12_av_sync_late.exe"
 SUPPORTED_CODECS = ["aac", "alac", "flac", "opus", "pcm"]
-SUPPORTED_METHODS = ["wgc", "inject"]
+SUPPORTED_METHODS = ["dxgi_dup", "wgc", "inject"]
 SYNC_SMOOTHNESS_DEFAULT_DELAY_MS = 35.0
 SYNC_SMOOTHNESS_MAX_OFFSET_MS = 10.0
 SYNC_SMOOTHNESS_MAX_MEAN_OFFSET_MS = 5.0
@@ -1213,6 +1213,8 @@ def build_matrix_scenarios(capture_methods, codecs, fps_values):
 def build_scenarios(args):
     if args.profile == "quick":
         return [
+            Scenario("dxgi_dup", "alac", 60, label="quick_lossless_60", duration_sec=12),
+            Scenario("dxgi_dup", "aac", 120, label="quick_lossy_120", duration_sec=12),
             Scenario("wgc", "alac", 60, label="quick_lossless_60", duration_sec=12),
             Scenario("wgc", "aac", 120, label="quick_lossy_120", duration_sec=12),
             Scenario("inject", "alac", 120, label="quick_lossless_120", duration_sec=12),
@@ -1243,7 +1245,11 @@ def build_scenarios(args):
             Scenario("inject", "aac", 60, label="raw_offset_lossy_60", duration_sec=12),
         ]
     if args.profile == "codec-pass":
-        return [Scenario("wgc", codec, 60, label="codec_finalize", duration_sec=10) for codec in SUPPORTED_CODECS]
+        return [
+            Scenario(method, codec, 60, label="codec_finalize", duration_sec=10)
+            for method in SUPPORTED_METHODS
+            for codec in SUPPORTED_CODECS
+        ]
     if args.profile == "stress":
         return [
             Scenario("wgc", "alac", 60, label="duplicate_app_fanout", duration_sec=20, audio_layout="duplicate_app"),
@@ -1353,7 +1359,7 @@ def build_parser():
     parser.add_argument("--full-matrix", dest="profile_aliases", action="append_const", const="full")
     parser.add_argument("--long-soak", dest="profile_aliases", action="append_const", const="long-soak")
     parser.add_argument("--long-soak-minutes", type=float, default=40.0)
-    parser.add_argument("--capture-methods", default="wgc,inject")
+    parser.add_argument("--capture-methods", default="dxgi_dup,wgc,inject")
     parser.add_argument("--codecs", default="aac,alac,flac,opus,pcm")
     parser.add_argument("--fps", default="60,120")
     parser.add_argument(
@@ -1522,8 +1528,10 @@ def parse_args(argv=None):
 def self_test():
     quick = parse_args(["--fast-zero-drift", "--dry-run"])
     quick_names = [scenario.name for scenario in build_scenarios(quick)]
-    assert len(quick_names) == 6
+    assert len(quick_names) == 8
     assert quick_names == [
+        "dxgi_dup_alac_60fps_quick_lossless_60",
+        "dxgi_dup_aac_120fps_quick_lossy_120",
         "wgc_alac_60fps_quick_lossless_60",
         "wgc_aac_120fps_quick_lossy_120",
         "inject_alac_120fps_quick_lossless_120",
@@ -1533,6 +1541,7 @@ def self_test():
     ]
     assert sum(1 for scenario in build_scenarios(quick) if scenario.secondary_app_audio) == 2
     assert resolve_app_audio_lead_ms("auto", "wgc", 60, 240) == WGC_TEAR_FREE_AUDIO_LEAD_MS
+    assert resolve_app_audio_lead_ms("auto", "dxgi_dup", 120, 240) == WGC_TEAR_FREE_AUDIO_LEAD_MS
     assert resolve_app_audio_lead_ms("auto", "wgc", 120, 240) == WGC_TEAR_FREE_AUDIO_LEAD_MS
     below_target_lead = WGC_TEAR_FREE_AUDIO_LEAD_MS + WGC_BELOW_TARGET_EXTRA_AUDIO_LEAD_FRAMES * (1000.0 / 120.0)
     assert abs(resolve_app_audio_lead_ms("auto", "wgc", 120, 90) - below_target_lead) < 0.001
@@ -1740,8 +1749,9 @@ def self_test():
 
     codec_pass = parse_args(["--codec-finalization-pass", "--dry-run"])
     codec_scenarios = build_scenarios(codec_pass)
-    assert [scenario.audio_codec for scenario in codec_scenarios] == SUPPORTED_CODECS
-    assert all(scenario.capture_method == "wgc" and scenario.fps == 60 for scenario in codec_scenarios)
+    assert len(codec_scenarios) == len(SUPPORTED_METHODS) * len(SUPPORTED_CODECS)
+    assert {scenario.capture_method for scenario in codec_scenarios} == set(SUPPORTED_METHODS)
+    assert all(scenario.fps == 60 for scenario in codec_scenarios)
 
     stress = parse_args(["--short-stress", "--dry-run"])
     stress_scenarios = build_scenarios(stress)

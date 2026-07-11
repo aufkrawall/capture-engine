@@ -350,10 +350,11 @@ void CreateDefaultConfig(const std::string& path) {
 ; log_level - Values: none, trace
 log_level=trace
 
-; capture_method - Values: inject, wgc, auto
+; capture_method - Values: inject, wgc, dxgi_dup, auto
 ;   inject = injected shared-memory capture only
 ;   wgc    = Windows Graphics Capture only (screen or window grab, requires DWM present "fullscreen optimization" for older games)
-;   auto   = WGC, unless application is on inject whitelist
+;   dxgi_dup = DXGI Desktop Duplication monitor capture; explicit 10-bit requires a true R10/FP16 source
+;   auto   = inject for whitelisted games, then WGC/DXGI according to target scope
 capture_method=auto
 
 ; wgc_window_detection - Window Capture (WGC) targets. Does not inject or overlay. Favors capturing found window over capturing the entire screen.
@@ -380,10 +381,10 @@ wgc_same_device_capture=true
 ; wgc_smoothness_buffer_vram_budget_mb - approximate WGC frame-pool + retained-copy
 ; budget for the smoothness reservoir. Raise only if there is enough VRAM headroom.
 ;wgc_smoothness_buffer_vram_budget_mb=3000
-; wgc_prefer_compact_10bit_pool=true: when R10 WGC pool is unavailable, use BGRA8 pool
-; instead of FP16 to reduce VRAM (4bpp vs 8bpp). 10-bit output is preserved via
-; BGRA8->R10 shader conversion for retained copies.
-;wgc_prefer_compact_10bit_pool=true
+; wgc_prefer_compact_10bit_pool=false: preserve >8-bit source precision with an FP16 WGC
+; pool when R10 pools are unavailable. true permits a lossy BGRA8 source pool only for
+; non-explicit/auto bit-depth capture; explicit bit_depth=10 always requires FP16/R10.
+;wgc_prefer_compact_10bit_pool=false
 
 ; audio_capture_latency_ms - Render-endpoint (Domain 1) A/V sync offset (ms): how late the
 ; system loopback AND every app process-loopback source land vs the video. CE corrects this by
@@ -943,7 +944,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             config.wgcSmoothnessFloorMs = static_cast<uint32_t>(std::max(0, atoi(floorRaw.c_str())));
         }
     }
-    config.wgcPreferCompact10bitPool = GetBool("General", "wgc_prefer_compact_10bit_pool", true);
+    config.wgcPreferCompact10bitPool = GetBool("General", "wgc_prefer_compact_10bit_pool", false);
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
     config.audioCaptureLatencyMs = GetFloat("General", "audio_capture_latency_ms", 0.0f);
     config.micCaptureLatencyMs = GetFloat("General", "mic_capture_latency_ms", 0.0f);

@@ -1148,14 +1148,9 @@ inline bool ShouldPreferDxgiDuplicationForMonitorCapture(bool explicitDxgiDupCon
     return autoCaptureConfig;
 }
 
-// DXGI duplication delivers the desktop surface in its native composed format (no
-// server-side conversion like the WGC frame pool), which by definition carries the
-// full precision the desktop content possesses. The delivered format is therefore
-// never a reason to reject the duplication backend; it only tells us the true
-// source content precision for honest logging (an 8-bit delivery under an explicit
-// 10-bit request is a transparent upconversion, identical in information content to
-// WGC monitor capture of the same desktop). Returns bits per color channel; 0 for
-// formats the pipeline does not process.
+// Returns bits per color channel for duplication surface formats; 0 for formats
+// the pipeline does not process. The first acquired texture is authoritative:
+// DXGI_OUTDUPL_DESC::ModeDesc.Format is only a display-mode hint.
 inline uint32_t GetDxgiDuplicationSourceContentBits(uint32_t dxgiFormat) {
     constexpr uint32_t kFormatR16G16B16A16Float = 10;  // DXGI_FORMAT_R16G16B16A16_FLOAT
     constexpr uint32_t kFormatR10G10B10A2Unorm = 24;   // DXGI_FORMAT_R10G10B10A2_UNORM
@@ -1170,6 +1165,28 @@ inline uint32_t GetDxgiDuplicationSourceContentBits(uint32_t dxgiFormat) {
         return 8;
     }
     return 0;
+}
+
+inline bool IsAcceptableDxgiDuplicationFrameFormat(uint32_t dxgiFormat, bool requireHighPrecision,
+                                                   bool outputIsHdr) {
+    constexpr uint32_t kFormatR16G16B16A16Float = 10;
+    constexpr uint32_t kFormatR10G10B10A2Unorm = 24;
+    constexpr uint32_t kFormatB8G8R8A8Unorm = 87;
+    if (outputIsHdr) {
+        return dxgiFormat == kFormatR16G16B16A16Float;
+    }
+    if (requireHighPrecision) {
+        return dxgiFormat == kFormatR10G10B10A2Unorm || dxgiFormat == kFormatR16G16B16A16Float;
+    }
+    return dxgiFormat == kFormatB8G8R8A8Unorm || dxgiFormat == kFormatR10G10B10A2Unorm ||
+           dxgiFormat == kFormatR16G16B16A16Float;
+}
+
+// An explicit DXGI + 10-bit request is a strict contract: silently switching
+// backend or upconverting an 8-bit surface would make the configured guarantee
+// unobservable. Auto mode may still use WGC as its compatibility fallback.
+inline bool ShouldAllowWgcFallbackAfterDxgiFailure(bool explicitDxgiConfig, bool explicitTenBit) {
+    return !(explicitDxgiConfig && explicitTenBit);
 }
 
 // Auto-mode backend choice for an UNHOOKED fullscreen-like game target (no inject).

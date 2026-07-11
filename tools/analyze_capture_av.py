@@ -91,6 +91,9 @@ LOG_PATTERNS = {
     "post_mux_probe_hang": re.compile(r"writer_finalize_timeout.*phase=post_mux_probe", re.IGNORECASE),
     "writer_finalize_slow": re.compile(r"\[VideoEncoder\] Stop: WARNING writer_finalize_slow", re.IGNORECASE),
     "writer_sync_finalize": re.compile(r"\[VideoEncoder\] Sync Stop: Finalizing file", re.IGNORECASE),
+    "cfr_packet_coverage_fault": re.compile(
+        r"\[VideoEncoder\] CFR packet coverage:.*missing=[1-9]\d*", re.IGNORECASE
+    ),
 }
 
 STRICT_SYNC_LOG_EVENTS = (
@@ -120,6 +123,7 @@ STRICT_SYNC_LOG_EVENTS = (
     "wgc_stop_hold_repeats",
     "wgc_drain_duplicate_summary",
     "writer_finalize_timeout",
+    "cfr_packet_coverage_fault",
 )
 
 CADENCE_AGEMAX_RE = re.compile(r"AgeMax=(\d+)us")
@@ -378,6 +382,7 @@ TRIAGE_AUDIO_FAULT_EVENTS = {
 }
 
 TRIAGE_VISUAL_FAULT_EVENTS = {
+    "cfr_packet_coverage_fault",
     "wgc_fresh_catchup",
     "wgc_stop_drain_aborted",
     "wgc_stop_hold_repeats",
@@ -655,6 +660,57 @@ def analyze_streams(ffprobe, capture_path):
     if not video_streams:
         fail("capture has no video stream")
     return format_info, video_streams, audio_streams
+
+
+def summarize_cfr_packet_coverage(packet_pts, packet_durations, nominal_fps):
+    packet_count = len(packet_pts)
+    if packet_count == 0 or nominal_fps <= 0.0:
+        return {
+            "packet_count": packet_count,
+            "expected_packets": 0,
+            "missing_packets": 0,
+            "max_gap_ticks": 0.0,
+            "complete": False,
+        }
+    # ffprobe reports packets in decode/mux order; codecs with B-frame
+    # reordering can therefore have non-monotonic PTS in that order.
+    ordered_pts = sorted(packet_pts)
+    frame_duration = 1.0 / nominal_fps
+    last_duration = packet_durations[-1] if packet_durations else 0.0
+    if last_duration <= 0.0:
+        last_duration = frame_duration
+    span = max(0.0, ordered_pts[-1] + last_duration - ordered_pts[0])
+    expected_packets = max(1, int(round(span * nominal_fps)))
+    gaps = [ordered_pts[index] - ordered_pts[index - 1] for index in range(1, packet_count)]
+    max_gap_ticks = (max(gaps) * nominal_fps) if gaps else 1.0
+    missing_packets = max(0, expected_packets - packet_count)
+    complete = missing_packets == 0 and max_gap_ticks <= 1.01
+    return {
+        "packet_count": packet_count,
+        "expected_packets": expected_packets,
+        "missing_packets": missing_packets,
+        "max_gap_ticks": max_gap_ticks,
+        "complete": complete,
+    }
+
+
+def analyze_cfr_packet_coverage(ffprobe, capture_path, nominal_fps):
+    data = run_ffprobe_json(
+        ffprobe,
+        [
+            "-select_streams",
+            "v:0",
+            "-show_packets",
+            "-show_entries",
+            "packet=pts_time,duration_time",
+            str(capture_path),
+        ],
+    )
+    packets = data.get("packets", []) if isinstance(data, dict) else []
+    typed_packets = [packet for packet in packets if isinstance(packet, dict) and "pts_time" in packet]
+    pts = [parse_float(packet.get("pts_time")) for packet in typed_packets]
+    durations = [parse_float(packet.get("duration_time")) for packet in typed_packets]
+    return summarize_cfr_packet_coverage(pts, durations, nominal_fps)
 
 
 def analyze_video_timing(ffprobe, capture_path, read_interval=None, nominal_fps=0.0):
@@ -4057,6 +4113,15 @@ def print_window_summary(name, window):
 
 
 def self_test():
+    complete_coverage = summarize_cfr_packet_coverage([0.0, 1 / 120, 2 / 120], [1 / 120] * 3, 120.0)
+    assert complete_coverage["complete"]
+    assert complete_coverage["expected_packets"] == 3
+    sparse_coverage = summarize_cfr_packet_coverage([0.0, 1 / 120, 6 / 120], [1 / 120] * 3, 120.0)
+    assert not sparse_coverage["complete"]
+    assert sparse_coverage["expected_packets"] == 7
+    assert sparse_coverage["missing_packets"] == 4
+    assert math.isclose(sparse_coverage["max_gap_ticks"], 5.0, abs_tol=1e-9)
+
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
 
@@ -6128,6 +6193,7 @@ def main():
         if args.full_scan
         else analyze_video_stream_metadata(video_stream, format_duration)
     )
+    packet_coverage = analyze_cfr_packet_coverage(args.ffprobe, args.capture, nominal_fps)
     duplicate_runs = None
     if args.framehash:
         duplicate_runs = analyze_video_duplicate_runs(args.ffmpeg, args.capture, args.framehash_width)
@@ -6206,6 +6272,16 @@ def main():
             first_pts=video_timing["first_pts"],
             last_pts=video_timing["last_pts"],
             duration=video_duration,
+        )
+    )
+    print(
+        "  cfr_packet_coverage actual={actual} expected={expected} missing={missing} "
+        "max_gap_ticks={max_gap:.3f} complete={complete}".format(
+            actual=packet_coverage["packet_count"],
+            expected=packet_coverage["expected_packets"],
+            missing=packet_coverage["missing_packets"],
+            max_gap=packet_coverage["max_gap_ticks"],
+            complete="yes" if packet_coverage["complete"] else "no",
         )
     )
     print(
@@ -6361,6 +6437,18 @@ def main():
         video_audio_max_delta,
         log_summary,
     )
+    checks.append(
+        {
+            "name": "cfr_packet_coverage",
+            "passed": packet_coverage["complete"],
+            "actual": "{actual}/{expected} packets max_gap={gap:.3f} ticks".format(
+                actual=packet_coverage["packet_count"],
+                expected=packet_coverage["expected_packets"],
+                gap=packet_coverage["max_gap_ticks"],
+            ),
+            "expected": "all CFR ticks represented; max gap <= 1.01 ticks",
+        }
+    )
     if args.decode_check:
         for result in decode_results:
             checks.append(
@@ -6398,6 +6486,7 @@ def main():
     if mean_frame_delta_error_us is not None:
         print(f"  mean_frame_delta_error_us={mean_frame_delta_error_us:.3f}")
     print(f"  exact_audio_length_match={'yes' if math.isclose(audio_duration_spread, 0.0, abs_tol=1e-6) else 'no'}")
+    print(f"  cfr_packet_coverage={'yes' if packet_coverage['complete'] else 'no'}")
     if tail_results:
         print(f"  audio_tail_marker_spread_ms={audio_tail_marker_spread * 1000.0:.3f}")
     print(

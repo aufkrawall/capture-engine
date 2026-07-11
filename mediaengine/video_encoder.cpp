@@ -1229,6 +1229,7 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) const {
     int64_t maxAudioEndUs = 0;
     int64_t maxPacketDeltaUs = 0;
     uint32_t videoStreamCount = 0;
+    uint64_t videoPacketCount = 0;
     uint32_t audioStreamCount = 0;
     uint32_t audioPastTargetCount = 0;
 
@@ -1244,6 +1245,7 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) const {
 
         if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             ++videoStreamCount;
+            videoPacketCount += timeline.packetCount;
             maxVideoEndUs = std::max(maxVideoEndUs, timeline.lastEndUs);
         } else if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
             ++audioStreamCount;
@@ -1268,6 +1270,13 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) const {
         "audioMaxEnd=%lld us maxPacketDelta=%lld us streams(v=%u a=%u) audioPastTarget=%u",
         finalDurationUs, maxVideoEndUs, minAudioEndUs, maxAudioEndUs, maxPacketDeltaUs, videoStreamCount,
         audioStreamCount, audioPastTargetCount);
+    if (!savedConfig.useVFR && savedConfig.fps > 0 && videoStreamCount > 0) {
+        const int64_t expectedPackets = av_rescale_rnd(finalDurationUs, savedConfig.fps, 1000000, AV_ROUND_NEAR_INF);
+        const int64_t emittedPackets = static_cast<int64_t>(videoPacketCount);
+        const int64_t missingPackets = std::max<int64_t>(0, expectedPackets - emittedPackets);
+        DLL_Log("[VideoEncoder] CFR packet coverage: expected=%lld emitted=%lld missing=%lld complete=%d fps=%d",
+                expectedPackets, emittedPackets, missingPackets, missingPackets == 0 ? 1 : 0, savedConfig.fps);
+    }
 
     constexpr int64_t kPacketDurationWarningToleranceUs = 1000;
     if (audioPastTargetCount > 0 ||
