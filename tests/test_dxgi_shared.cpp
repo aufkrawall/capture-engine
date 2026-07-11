@@ -6114,9 +6114,9 @@ TEST(DXGISharedSourceTest, StreamlineFirstActivationUsesOfficialUiTagWithoutExtr
     EXPECT_NE(streamline.find("g_StreamlineUsesD3D12.load"), std::string::npos)
         << "D3D11/Vulkan tags must never be interpreted as ID3D12Resource";
     EXPECT_NE(streamline.find("wantsUiBootstrapRecord && tags && commandBuffer"), std::string::npos)
-        << "steady-state tag packets must not inspect resources or acquire a queue";
+        << "tag packets without a pending standby/activation record must not inspect resources or acquire a queue";
     EXPECT_NE(renderer.find("g_FrameTagTrackingActive.load"), std::string::npos)
-        << "steady state must leave only one atomic hot-path branch";
+        << "inactive and active steady state must leave only one atomic hot-path branch";
     const size_t setTagHook = streamline.find("slResult Hooked_slSetTagForFrame");
     ASSERT_NE(setTagHook, std::string::npos);
     const size_t record = streamline.find("TryRecordBootstrap(request)", setTagHook);
@@ -6140,4 +6140,60 @@ TEST(DXGISharedSourceTest, StreamlineFirstActivationUsesOfficialUiTagWithoutExtr
     ASSERT_NE(eclAfter, std::string::npos);
     EXPECT_LT(eclBefore, realEcl);
     EXPECT_LT(realEcl, eclAfter);
+}
+
+TEST(DXGISharedSourceTest, StreamlineGetStateOnlyActivationAdoptsPreTaggedOfficialUi) {
+    namespace fs = std::filesystem;
+    auto readFile = [](const fs::path& path) {
+        std::ifstream stream(path, std::ios::binary);
+        EXPECT_TRUE(stream.good()) << path.string();
+        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    };
+
+    const std::string streamline = readFile(fs::current_path() / "hook" / "apis" / "streamline_hook.cpp");
+    const std::string renderer =
+        readFile(fs::current_path() / "hook" / "apis" / "dx12_streamline_ui_overlay.cpp");
+    const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+
+    const size_t getStateLookup = streamline.find("strcmp(functionName, \"slDLSSGGetState\")");
+    ASSERT_NE(getStateLookup, std::string::npos);
+    const size_t lookupStandby = streamline.find("BeginPreactivationStandby(2)", getStateLookup);
+    const size_t lookupReturn = streamline.find("return result;", getStateLookup);
+    ASSERT_NE(lookupStandby, std::string::npos);
+    ASSERT_NE(lookupReturn, std::string::npos);
+    EXPECT_LT(lookupStandby, lookupReturn)
+        << "standby must arm while the GetState pointer is delivered, before the caller tags activation inputs";
+
+    const size_t getStateDeclaration = streamline.find("slResult Hooked_slDLSSGGetState");
+    ASSERT_NE(getStateDeclaration, std::string::npos);
+    const size_t getStateHook =
+        streamline.find("slResult Hooked_slDLSSGGetState", getStateDeclaration + 1);
+    ASSERT_NE(getStateHook, std::string::npos);
+    const size_t callStandby = streamline.find("BeginPreactivationStandby(requestedOutputs)", getStateHook);
+    const size_t callOriginal = streamline.find("originalGetState(viewport, state, options)", getStateHook);
+    ASSERT_NE(callStandby, std::string::npos);
+    ASSERT_NE(callOriginal, std::string::npos);
+    EXPECT_LT(callStandby, callOriginal)
+        << "GetState(options) must not activate DLSS-G before CE has armed the official UI standby";
+
+    EXPECT_NE(renderer.find("BootstrapPhase::kStandbySubmitted"), std::string::npos);
+    EXPECT_NE(renderer.find("BootstrapPhase::kActivationSubmitted"), std::string::npos);
+    EXPECT_NE(renderer.find("adoptedSubmittedStandby"), std::string::npos)
+        << "a GetState OFF-to-ON edge after tagging must adopt the already-submitted UI record";
+    EXPECT_NE(renderer.find("if (g_Phase == BootstrapPhase::kStandbyIdle)"), std::string::npos)
+        << "a frame without a usable UI tag must not prevent standby from trying the next frame";
+    EXPECT_NE(renderer.find("standbySubmission ? 0 : g_MaximumOutputPresents"), std::string::npos)
+        << "standby draws must become visible-output coverage only after an activation edge";
+    EXPECT_NE(dx12.find("officialUiCoverage = ce::dx12_streamline_ui_overlay::HasActiveCoverage()"),
+              std::string::npos)
+        << "generated presents before PostSL can render must inherit the submitted official-UI overlay";
+    const size_t consumeCoverage = dx12.find("ConsumePostSLCoverage()");
+    ASSERT_NE(consumeCoverage, std::string::npos);
+    EXPECT_NE(dx12.find("NoteDX12OverlayRendered(DX12OverlayRenderRoute::kStreamlineUI)", consumeCoverage),
+              std::string::npos)
+        << "standby submissions must be accounted only once an active output consumes their UI coverage";
+    EXPECT_EQ(renderer.find("CopyResource"), std::string::npos);
+    EXPECT_EQ(renderer.find("CreateCommandQueue"), std::string::npos);
+    EXPECT_EQ(renderer.find("queue->ExecuteCommandLists"), std::string::npos);
+    EXPECT_EQ(renderer.find("WaitForSingleObject"), std::string::npos);
 }

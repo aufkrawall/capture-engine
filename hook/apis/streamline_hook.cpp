@@ -2361,6 +2361,17 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
         return kSlResultErrorInvalidState;
     }
 
+    // Newer integrations can configure DLSS-G by passing options directly to GetState, after
+    // slSetTagForFrame has already made the activation input volatile. Keep the latest inactive
+    // DX12 UI tag covered before entering GetState so a late OFF->ON observation can adopt it.
+    if (!ShouldKeepPureObserverOnlyStreamlineBehavior() &&
+        g_StreamlineUsesD3D12.load(std::memory_order_acquire) &&
+        !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
+        const uint32_t requestedOutputs =
+            options ? std::clamp(options->numFramesToGenerate + 1u, 1u, 6u) : 2u;
+        ce::dx12_streamline_ui_overlay::BeginPreactivationStandby(requestedOutputs);
+    }
+
     const slResult result = originalGetState(viewport, state, options);
     RetryResolveReflexFeatureHooksForRuntimeActivity("slDLSSGGetState");
     const uint32_t viewportKey = GetViewportKey(viewport);
@@ -3063,6 +3074,12 @@ slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName,
             const bool hookReady = MaybeHookDLSSGGetState(function, true);
             LogFeatureLookupOutcomeOnce(g_DLSSGGetStateLookupLogged, "slDLSSGGetState", originalFunction, function,
                                         hookReady);
+            // Talos resolves GetState shortly before it starts tagging the activation inputs, but
+            // never resolves/calls SetOptions. Arm standby at pointer delivery, before those tags.
+            if (!ShouldKeepPureObserverOnlyStreamlineBehavior() &&
+                g_StreamlineUsesD3D12.load(std::memory_order_acquire)) {
+                ce::dx12_streamline_ui_overlay::BeginPreactivationStandby(2);
+            }
         }
     }
     // Reflex feature hook — detect game activation of native Reflex
@@ -3106,6 +3123,9 @@ slResult Hooked_slSetD3DDevice(void* d3dDevice) {
     const slResult result = originalSetD3DDevice(d3dDevice);
     if (result == kSlResultOk) {
         g_StreamlineUsesD3D12.store(isD3D12, std::memory_order_release);
+        if (!isD3D12) {
+            ce::dx12_streamline_ui_overlay::EndPreactivationStandby("Streamline device is not D3D12");
+        }
         TryResolveDLSSGFeatureHooks();
         TryResolveReflexFeatureHooks();
     }

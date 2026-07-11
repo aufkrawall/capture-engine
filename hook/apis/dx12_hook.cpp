@@ -12824,6 +12824,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // PostSL can possibly run. Do not blend the same overlay a second time on those output
     // backbuffers. The next frame tag (or the bounded output count) retires this bootstrap.
     if (ce::dx12_streamline_ui_overlay::ConsumePostSLCoverage()) {
+        NoteDX12OverlayRendered(DX12OverlayRenderRoute::kStreamlineUI);
         return;
     }
 
@@ -14575,9 +14576,10 @@ static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain) {
     // they are accounted here on every exit path. Null-swapchain invocations
     // (ECL-hook direct triggers) are not presents and are excluded.
     const bool accountCoverage = pSwapChain != nullptr && !HookOverlayObserverOnlyEnabled();
-    auto overlayCoverageGuard = ce::make_scope_guard([accountCoverage]() {
+    const bool officialUiCoverage = ce::dx12_streamline_ui_overlay::HasActiveCoverage();
+    auto overlayCoverageGuard = ce::make_scope_guard([accountCoverage, officialUiCoverage]() {
         if (accountCoverage) {
-            AccountPresentForOverlayCoverage(false, "PostSL");
+            AccountPresentForOverlayCoverage(officialUiCoverage, "PostSL");
         }
     });
 
@@ -20791,9 +20793,11 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     // counts as uncovered and the blank is measured.
     const bool overlayBackendBoundToCurrentSwapchain = g_State.overlayInit;
     const bool coverageInheritsFGComposedOverlay =
-        overlayBackendBoundToCurrentSwapchain &&
-        (isInterpolatedFrame ||
-         (streamlineFGRunning && DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr));
+        ce::dx12_streamline_ui_overlay::HasActiveCoverage() ||
+        (overlayBackendBoundToCurrentSwapchain &&
+         (isInterpolatedFrame ||
+          (streamlineFGRunning &&
+           DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr)));
     auto overlayCoverageGuard = ce::make_scope_guard([coverageInheritsFGComposedOverlay]() {
         AccountPresentForOverlayCoverage(coverageInheritsFGComposedOverlay, "ProcessFrameExternal");
     });
@@ -22093,14 +22097,10 @@ skip_command_queue_registration:
     const bool hasDeferredOverlay = g_steamDeferredOverlay.pending;
 
     if (original) {
-        const bool streamlineUiBootstrapSubmitted =
-            ce::dx12_streamline_ui_overlay::BeforeExecuteCommandLists(NumCommandLists, ppCommandLists);
-        if (streamlineUiBootstrapSubmitted) {
-            // Account the recorded UI draw before entering a wrapped queue. Its ExecuteCommandLists
-            // implementation may synchronously re-enter Present, and that first output must already
-            // inherit the official-UI coverage proof.
-            NoteDX12OverlayRendered(DX12OverlayRenderRoute::kStreamlineUI);
-        }
+        // Arm coverage before entering a wrapped queue. Its ExecuteCommandLists implementation may
+        // synchronously re-enter Present; the PostSL consumer accounts the official-UI route only
+        // when an output actually inherits it (standby submissions remain invisible while FG is off).
+        (void)ce::dx12_streamline_ui_overlay::BeforeExecuteCommandLists(NumCommandLists, ppCommandLists);
         original(pThis, NumCommandLists, ppCommandLists);
         ce::dx12_streamline_ui_overlay::AfterExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
     }

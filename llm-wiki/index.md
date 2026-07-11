@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-11 (strict true-10-bit DXGI/WGC capture and CFR packet coverage, multi-track physical-audio fan-out/startup backlog control, capture reliability, durable FFX routing, post-FSR Streamline prewarm, and first-DLSS-output official UI coverage; see wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, frame-generation/guardrails.md, and log/recent.md)
+Last cross-checked: 2026-07-12 (strict true-10-bit DXGI/WGC capture and CFR packet coverage, multi-track physical-audio fan-out/startup backlog control, capture reliability, durable FFX routing, post-FSR Streamline prewarm, and preactivation/first-DLSS-output official UI coverage; see wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, frame-generation/guardrails.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`

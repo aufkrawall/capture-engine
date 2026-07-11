@@ -24,9 +24,12 @@ constexpr uint32_t kMaximumCoveragePresents = 6;
 
 enum class BootstrapPhase : uint8_t {
     kInactive,
-    kIdle,
-    kPendingSubmission,
-    kSubmitted,
+    kStandbyIdle,
+    kStandbyPendingSubmission,
+    kStandbySubmitted,
+    kActivationIdle,
+    kActivationPendingSubmission,
+    kActivationSubmitted,
     kFinished,
 };
 
@@ -237,9 +240,11 @@ private:
 
 std::recursive_mutex g_Mutex;
 std::atomic<bool> g_FrameTagTrackingActive{false};
+std::atomic<bool> g_ActiveCoverage{false};
 std::unique_ptr<RendererState> g_Renderer;
 std::vector<std::unique_ptr<RendererState>> g_RetiredRenderers;
 BootstrapPhase g_Phase = BootstrapPhase::kInactive;
+bool g_PreactivationStandbyEnabled = false;
 const void* g_FrameToken = nullptr;
 ID3D12GraphicsCommandList* g_ActivationCommandList = nullptr;
 uint32_t g_MaximumOutputPresents = 1;
@@ -270,22 +275,81 @@ void RetireRenderer(std::unique_ptr<RendererState>& renderer) {
 
 }  // namespace
 
+void BeginPreactivationStandby(uint32_t maximumOutputPresents) {
+    std::lock_guard<std::recursive_mutex> lock(g_Mutex);
+    g_PreactivationStandbyEnabled = true;
+    g_MaximumOutputPresents = std::clamp(maximumOutputPresents, 1u, kMaximumCoveragePresents);
+    if (g_Phase == BootstrapPhase::kInactive || g_Phase == BootstrapPhase::kFinished) {
+        g_Phase = BootstrapPhase::kStandbyIdle;
+        g_FrameToken = nullptr;
+        g_ActivationCommandList = nullptr;
+        g_CoveragePresentsRemaining = 0;
+        g_ActiveCoverage.store(false, std::memory_order_release);
+        g_FrameTagTrackingActive.store(true, std::memory_order_release);
+        HookLogImportant(
+            "DX12: Streamline UI preactivation standby armed (maxCoveredOutputs=%u) — inactive-DLSS UI tags "
+            "will carry the overlay without copies, extra submits, queues, or waits",
+            g_MaximumOutputPresents);
+    }
+}
+
+void EndPreactivationStandby(const char* reason) {
+    std::lock_guard<std::recursive_mutex> lock(g_Mutex);
+    g_PreactivationStandbyEnabled = false;
+    if (g_Phase == BootstrapPhase::kStandbyIdle ||
+        g_Phase == BootstrapPhase::kStandbyPendingSubmission ||
+        g_Phase == BootstrapPhase::kStandbySubmitted) {
+        g_Phase = BootstrapPhase::kInactive;
+        g_FrameToken = nullptr;
+        g_ActivationCommandList = nullptr;
+        g_CoveragePresentsRemaining = 0;
+        g_ActiveCoverage.store(false, std::memory_order_release);
+        g_FrameTagTrackingActive.store(false, std::memory_order_release);
+        HookLogImportant("DX12: Streamline UI preactivation standby disarmed (%s)",
+                         reason ? reason : "Streamline unavailable");
+    }
+}
+
 void BeginActivation(uint32_t maximumOutputPresents) {
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
-    if (g_Phase != BootstrapPhase::kInactive) {
+    if (g_Phase == BootstrapPhase::kActivationIdle ||
+        g_Phase == BootstrapPhase::kActivationPendingSubmission ||
+        g_Phase == BootstrapPhase::kActivationSubmitted) {
         return;
     }
     ++g_ActivationEpoch;
-    g_Phase = BootstrapPhase::kIdle;
-    g_FrameToken = nullptr;
-    g_ActivationCommandList = nullptr;
-    g_CoveragePresentsRemaining = 0;
-    g_MaximumOutputPresents =
-        std::clamp(maximumOutputPresents, 1u, kMaximumCoveragePresents);
+    g_MaximumOutputPresents = std::clamp(maximumOutputPresents, 1u, kMaximumCoveragePresents);
+
+    const bool adoptedSubmittedStandby = g_Phase == BootstrapPhase::kStandbySubmitted;
+    const bool adoptedPendingStandby = g_Phase == BootstrapPhase::kStandbyPendingSubmission;
+    if (adoptedSubmittedStandby) {
+        g_Phase = BootstrapPhase::kActivationSubmitted;
+        g_ActivationCommandList = nullptr;
+        g_CoveragePresentsRemaining = g_MaximumOutputPresents;
+        g_ActiveCoverage.store(true, std::memory_order_release);
+    } else if (adoptedPendingStandby) {
+        g_Phase = BootstrapPhase::kActivationPendingSubmission;
+        g_CoveragePresentsRemaining = 0;
+        g_ActiveCoverage.store(false, std::memory_order_release);
+    } else {
+        g_Phase = BootstrapPhase::kActivationIdle;
+        g_FrameToken = nullptr;
+        g_ActivationCommandList = nullptr;
+        g_CoveragePresentsRemaining = 0;
+        g_ActiveCoverage.store(false, std::memory_order_release);
+    }
     g_FrameTagTrackingActive.store(true, std::memory_order_release);
-    HookLogImportant(
-        "DX12: Streamline UI bootstrap overlay armed for DLSS activation epoch %llu (maxCoveredOutputs=%u)",
-        static_cast<unsigned long long>(g_ActivationEpoch), g_MaximumOutputPresents);
+    if (adoptedSubmittedStandby || adoptedPendingStandby) {
+        HookLogImportant(
+            "DX12: Streamline UI bootstrap adopted %s preactivation standby record for DLSS activation epoch "
+            "%llu (maxCoveredOutputs=%u)",
+            adoptedSubmittedStandby ? "submitted" : "pending", static_cast<unsigned long long>(g_ActivationEpoch),
+            g_MaximumOutputPresents);
+    } else {
+        HookLogImportant(
+            "DX12: Streamline UI bootstrap overlay armed for DLSS activation epoch %llu (maxCoveredOutputs=%u)",
+            static_cast<unsigned long long>(g_ActivationEpoch), g_MaximumOutputPresents);
+    }
 }
 
 void EndActivation(const char* reason) {
@@ -293,12 +357,15 @@ void EndActivation(const char* reason) {
     if (g_Phase == BootstrapPhase::kInactive) {
         return;
     }
-    g_Phase = BootstrapPhase::kInactive;
+    g_Phase = g_PreactivationStandbyEnabled ? BootstrapPhase::kStandbyIdle : BootstrapPhase::kInactive;
     g_FrameToken = nullptr;
     g_ActivationCommandList = nullptr;
     g_CoveragePresentsRemaining = 0;
-    g_FrameTagTrackingActive.store(false, std::memory_order_release);
-    HookLogImportant("DX12: Streamline UI bootstrap overlay disarmed (%s)", reason ? reason : "DLSS off");
+    g_ActiveCoverage.store(false, std::memory_order_release);
+    g_FrameTagTrackingActive.store(g_PreactivationStandbyEnabled, std::memory_order_release);
+    HookLogImportant("DX12: Streamline UI bootstrap overlay %s (%s)",
+                     g_PreactivationStandbyEnabled ? "returned to preactivation standby" : "disarmed",
+                     reason ? reason : "DLSS off");
 }
 
 bool OnFrameTag(const void* frameToken) {
@@ -306,28 +373,53 @@ bool OnFrameTag(const void* frameToken) {
         return false;
     }
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
-    if (g_Phase == BootstrapPhase::kInactive || !frameToken) {
+    if (g_Phase == BootstrapPhase::kInactive || g_Phase == BootstrapPhase::kFinished || !frameToken) {
         return false;
     }
     if (!g_FrameToken) {
         g_FrameToken = frameToken;
-        return g_Phase == BootstrapPhase::kIdle;
+        return g_Phase == BootstrapPhase::kStandbyIdle || g_Phase == BootstrapPhase::kActivationIdle;
     }
     if (g_FrameToken == frameToken) {
-        return g_Phase == BootstrapPhase::kIdle;
+        return g_Phase == BootstrapPhase::kStandbyIdle || g_Phase == BootstrapPhase::kActivationIdle;
     }
+
+    if (g_Phase == BootstrapPhase::kStandbyIdle) {
+        g_FrameToken = frameToken;
+        return true;
+    }
+    if (g_Phase == BootstrapPhase::kStandbySubmitted) {
+        g_FrameToken = frameToken;
+        g_Phase = BootstrapPhase::kStandbyIdle;
+        g_ActivationCommandList = nullptr;
+        return true;
+    }
+    if (g_Phase == BootstrapPhase::kStandbyPendingSubmission) {
+        static std::atomic<int> s_overlappingStandbyTagLogCount{0};
+        const int n = s_overlappingStandbyTagLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (n < 10 || (n % 120) == 0) {
+            HookLogImportant(
+                "DX12: Streamline UI preactivation standby saw a new frame before the prior tag command list "
+                "was submitted (epoch=%llu log=%d) — retaining the prior exact-submission record",
+                static_cast<unsigned long long>(g_ActivationEpoch), n + 1);
+        }
+        return false;
+    }
+
     g_FrameToken = frameToken;
-    if (g_Phase == BootstrapPhase::kIdle) {
+    if (g_Phase == BootstrapPhase::kActivationIdle) {
         g_Phase = BootstrapPhase::kFinished;
+        g_ActiveCoverage.store(false, std::memory_order_release);
         g_FrameTagTrackingActive.store(false, std::memory_order_release);
         HookLogImportant(
             "DX12: Streamline UI bootstrap activation frame ended without a usable full-frame UI tag "
             "(activationEpoch=%llu) — retaining normal PostSL fallback",
             static_cast<unsigned long long>(g_ActivationEpoch));
-    } else if (g_Phase == BootstrapPhase::kSubmitted) {
+    } else if (g_Phase == BootstrapPhase::kActivationSubmitted) {
         g_CoveragePresentsRemaining = 0;
         g_Phase = BootstrapPhase::kFinished;
         g_ActivationCommandList = nullptr;
+        g_ActiveCoverage.store(false, std::memory_order_release);
         g_FrameTagTrackingActive.store(false, std::memory_order_release);
         HookLogImportant(
             "DX12: Streamline UI bootstrap coverage retired at the next frame tag (activationEpoch=%llu)",
@@ -371,7 +463,9 @@ bool TryRecordBootstrap(const RecordRequest& request) {
     }
 
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
-    if (g_Phase != BootstrapPhase::kIdle || g_FrameToken != request.frameToken) {
+    const bool standbyRecord = g_Phase == BootstrapPhase::kStandbyIdle;
+    if ((!standbyRecord && g_Phase != BootstrapPhase::kActivationIdle) ||
+        g_FrameToken != request.frameToken) {
         return false;
     }
     PruneRetiredRenderers();
@@ -393,28 +487,44 @@ bool TryRecordBootstrap(const RecordRequest& request) {
     if (!g_Renderer->Record(resolved, slot)) {
         return false;
     }
-    g_Phase = BootstrapPhase::kPendingSubmission;
+    g_Phase = standbyRecord ? BootstrapPhase::kStandbyPendingSubmission
+                            : BootstrapPhase::kActivationPendingSubmission;
     g_ActivationCommandList = request.commandList;
-    HookLogImportant(
-        "DX12: Recorded inject overlay into Streamline UIColorAndAlpha bootstrap resource (epoch=%llu slot=%zu frame=%p cmd=%p ui=%p %ux%u fmt=%d state=0x%X) — no copy, extra submit, queue, or wait",
-        static_cast<unsigned long long>(g_ActivationEpoch), slot, request.frameToken,
-        request.commandList, request.uiResource, request.width, request.height,
-        static_cast<int>(rtvFormat), static_cast<unsigned>(request.resourceState));
+    static std::atomic<uint64_t> s_standbyRecordLogCount{0};
+    const uint64_t standbyLog = standbyRecord
+                                    ? s_standbyRecordLogCount.fetch_add(1, std::memory_order_relaxed) + 1
+                                    : 0;
+    if (!standbyRecord || standbyLog <= 8 || (standbyLog % 300) == 0) {
+        HookLogImportant(
+            "DX12: Recorded inject overlay into Streamline UIColorAndAlpha %s resource (epoch=%llu slot=%zu "
+            "frame=%p cmd=%p ui=%p %ux%u fmt=%d state=0x%X log=%llu) — no copy, extra submit, queue, or wait",
+            standbyRecord ? "preactivation standby" : "bootstrap",
+            static_cast<unsigned long long>(g_ActivationEpoch), slot, request.frameToken,
+            request.commandList, request.uiResource, request.width, request.height,
+            static_cast<int>(rtvFormat), static_cast<unsigned>(request.resourceState),
+            static_cast<unsigned long long>(standbyLog));
+    }
     return true;
 }
 
 bool BeforeExecuteCommandLists(UINT count, ID3D12CommandList* const* commandLists) {
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
-    if (!g_Renderer || g_Phase != BootstrapPhase::kPendingSubmission ||
+    const bool standbySubmission = g_Phase == BootstrapPhase::kStandbyPendingSubmission;
+    if (!g_Renderer || (!standbySubmission && g_Phase != BootstrapPhase::kActivationPendingSubmission) ||
         !ContainsCommandList(g_ActivationCommandList, count, commandLists)) {
         return false;
     }
-    g_Phase = BootstrapPhase::kSubmitted;
+    g_Phase = standbySubmission ? BootstrapPhase::kStandbySubmitted
+                                : BootstrapPhase::kActivationSubmitted;
     g_ActivationCommandList = nullptr;
-    g_CoveragePresentsRemaining = g_MaximumOutputPresents;
-    HookLogImportant(
-        "DX12: Streamline UI bootstrap overlay command list entering app submission (epoch=%llu coveredOutputs=%u)",
-        static_cast<unsigned long long>(g_ActivationEpoch), g_CoveragePresentsRemaining);
+    g_CoveragePresentsRemaining = standbySubmission ? 0 : g_MaximumOutputPresents;
+    g_ActiveCoverage.store(!standbySubmission, std::memory_order_release);
+    if (!standbySubmission) {
+        HookLogImportant(
+            "DX12: Streamline UI bootstrap overlay command list entering app submission (epoch=%llu "
+            "coveredOutputs=%u)",
+            static_cast<unsigned long long>(g_ActivationEpoch), g_CoveragePresentsRemaining);
+    }
     return true;
 }
 
@@ -432,12 +542,13 @@ void AfterExecuteCommandLists(ID3D12CommandQueue* queue, UINT count,
 
 bool ConsumePostSLCoverage() {
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
-    if (g_Phase != BootstrapPhase::kSubmitted || g_CoveragePresentsRemaining == 0) {
+    if (g_Phase != BootstrapPhase::kActivationSubmitted || g_CoveragePresentsRemaining == 0) {
         return false;
     }
     --g_CoveragePresentsRemaining;
     if (g_CoveragePresentsRemaining == 0) {
         g_Phase = BootstrapPhase::kFinished;
+        g_ActiveCoverage.store(false, std::memory_order_release);
         g_FrameTagTrackingActive.store(false, std::memory_order_release);
     }
     static std::atomic<int> s_logCount{0};
@@ -450,11 +561,17 @@ bool ConsumePostSLCoverage() {
     return true;
 }
 
+bool HasActiveCoverage() {
+    return g_ActiveCoverage.load(std::memory_order_acquire);
+}
+
 void Shutdown(const char* reason) {
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
+    g_PreactivationStandbyEnabled = false;
     g_Phase = BootstrapPhase::kInactive;
     g_ActivationCommandList = nullptr;
     g_CoveragePresentsRemaining = 0;
+    g_ActiveCoverage.store(false, std::memory_order_release);
     g_FrameTagTrackingActive.store(false, std::memory_order_release);
     RetireRenderer(g_Renderer);
     size_t abandoned = 0;
