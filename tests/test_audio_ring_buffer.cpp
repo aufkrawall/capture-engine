@@ -1,4 +1,7 @@
 #include <gtest/gtest.h>
+#include <atomic>
+#include <limits>
+#include <thread>
 #include <vector>
 #include "../mediaengine/audio_ring_buffer.h"
 
@@ -188,4 +191,77 @@ TEST(AudioRingBufferTest, EnsureCapacityRefusesToGrowWhileHoldingBufferedAudio) 
     EXPECT_EQ(ring.Read(output.data(), output.size()), 2u);
     EXPECT_TRUE(ring.EnsureCapacity(16));
     EXPECT_EQ(ring.GetCapacity(), 16u);
+}
+
+TEST(AudioRingBufferTest, ZeroCapacityDropsSafelyAndCanGrowLater) {
+    AudioRingBuffer ring(0);
+    const float input[] = {1.0f, 2.0f};
+    float output[2] = {};
+
+    EXPECT_EQ(ring.Write(input, 2), 0u);
+    EXPECT_EQ(ring.GetAndClearDroppedSamples(), 2u);
+    EXPECT_EQ(ring.WriteRetainNew(input, 2), 0u);
+    EXPECT_EQ(ring.GetAndClearRetainedSamples(), 2u);
+    EXPECT_EQ(ring.Read(output, 2), 0u);
+    EXPECT_EQ(ring.Skip(2), 0u);
+
+    EXPECT_TRUE(ring.EnsureCapacity(4));
+    EXPECT_EQ(ring.Write(input, 2), 2u);
+    EXPECT_EQ(ring.Read(output, 2), 2u);
+    EXPECT_FLOAT_EQ(output[0], 1.0f);
+    EXPECT_FLOAT_EQ(output[1], 2.0f);
+}
+
+TEST(AudioRingBufferTest, CapacityPublicationIsRaceFreeDuringDeferredGrowth) {
+    AudioRingBuffer ring(2);
+    std::atomic<bool> start{false};
+    std::atomic<bool> readerEntered{false};
+    std::atomic<bool> done{false};
+    std::atomic<bool> sawInvalidCapacity{false};
+
+    std::thread reader([&]() {
+        while (!start.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        const size_t initialCapacity = ring.GetCapacity();
+        const size_t initialFree = ring.GetFree();
+        if (initialCapacity != 2 || initialFree > initialCapacity) {
+            sawInvalidCapacity.store(true, std::memory_order_relaxed);
+        }
+        readerEntered.store(true, std::memory_order_release);
+        while (!done.load(std::memory_order_acquire)) {
+            const size_t capacity = ring.GetCapacity();
+            const size_t free = ring.GetFree();
+            if ((capacity != 2 && capacity != 8192) || free > capacity) {
+                sawInvalidCapacity.store(true, std::memory_order_relaxed);
+            }
+        }
+    });
+
+    start.store(true, std::memory_order_release);
+    while (!readerEntered.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(ring.EnsureCapacity(8192));
+    done.store(true, std::memory_order_release);
+    reader.join();
+
+    EXPECT_FALSE(sawInvalidCapacity.load(std::memory_order_relaxed));
+    EXPECT_EQ(ring.GetCapacity(), 8192u);
+    EXPECT_EQ(ring.GetFree(), 8192u);
+}
+
+TEST(AudioRingBufferTest, FailedGrowthPreservesExistingEmptyBuffer) {
+    AudioRingBuffer ring(4);
+
+    EXPECT_FALSE(ring.EnsureCapacity(std::numeric_limits<size_t>::max()));
+    EXPECT_EQ(ring.GetCapacity(), 4u);
+    EXPECT_EQ(ring.GetAvailable(), 0u);
+
+    const float input[] = {1.0f, 2.0f, 3.0f, 4.0f};
+    float output[4] = {};
+    EXPECT_EQ(ring.Write(input, 4), 4u);
+    EXPECT_EQ(ring.Read(output, 4), 4u);
+    EXPECT_FLOAT_EQ(output[0], 1.0f);
+    EXPECT_FLOAT_EQ(output[3], 4.0f);
 }

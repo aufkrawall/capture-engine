@@ -1,11 +1,13 @@
 # CFR Capture Sync
 
-Last cross-checked: 2026-06-30 (WGC timer rebase threshold reduced to 18 ticks; WGC retained reservoir stores source frames with delay target still millisecond-capped; source-coverage diagnostics clarify CFR repeats versus surplus drops)
+Last cross-checked: 2026-07-11 (transactional fresh-frame commit and scheduled encode-failure repeat recovery; inject metadata/texture leases retained through synchronous media copy; source-epoch repeat-cache invalidation; post-mux probe ownership hardened)
 Stale-risk: low
 
 Primary sources:
 - `common/capture_pipeline_policy.h`
 - `common/wgc_pool_lease.h`
+- `common/inject_frame_ring_lease.h`
+- `common/frame_queue.h`
 - `captureengine/media_main.cpp`
 - `mediaengine/mediaengine.cpp`
 - `mediaengine/audio_sync_utils.h`
@@ -16,6 +18,9 @@ Primary sources:
 - `llm-wiki/multi-audio-capture.md`
 - `tests/test_capture_pipeline_policy.cpp`
 - `tests/test_frame_queue.cpp`
+- `tests/test_inject_frame_ring_lease.cpp`
+- `tests/test_video_encoder_source.cpp`
+- `tests/test_capture_coordinator_source.cpp`
 - `tests/test_audio_sync_utils.cpp`
 - `tests/test_audio_time_utils.cpp`
 - `tests/test_mux_invariants.cpp`
@@ -26,6 +31,14 @@ Primary sources:
 - `tests/test_av_sync_stimulus.cpp`
 
 ## Summary
+
+### Frame ownership and failure recovery (2026-07-11)
+
+An inject `FrameSlot` is not acknowledged when it is merely copied into the media queue. Its move-only ring lease remains attached through buffering/defer and is completed only after the synchronous media-engine copy succeeds or the frame is deliberately discarded. Completion clears the physical slot but advances shared `readIndex` only across the longest contiguous completed prefix, so out-of-order encoder selection cannot release an older slot. Every inject producer checks all still-valid ring metadata before writing a texture and drops the new frame if every transport texture is outstanding. This prevents queued frames from silently aliasing newer pixels. D3D12 resource generations likewise remain published until all referencing frames are retired.
+
+Fresh-frame state is transactional. The candidate becomes `g_LastFrame` and updates source/cursor lineage only after a successful non-deferred encode. If a scheduled CFR fresh encode fails, CE repeats the prior successful media-engine cache at the same scheduled QPC when available; the failed candidate is released and its metadata never becomes authoritative. If both fresh encode and repeat fail, the tick is reported as a real miss. WGC source-epoch changes explicitly clear every repeat-cache layer, while an inject-to-WGC standby commit keeps the already-published WGC epoch and preserves the prior inject repeat until replacement pixels have actually encoded.
+
+Post-mux probing runs synchronously on the writer/finalizer owner with an FFmpeg interrupt deadline and bounded packet scan. It no longer launches a nested thread that could outlive the media-engine DLL or force unsafe detach/late join behavior.
 
 All CFR capture paths share the same invariant: the CFR media clock is authoritative, and audio follows that timeline without live trims, source drops, wall-clock catch-up, or audible pitch recovery. This applies to WGC and injected shared-memory capture when `Video.useVFR=false`. A very small source-clock drift correction lane is allowed only after startup has settled and the CFR timeline is healthy; current code caps it at `0.05%`, far below the user-accepted `1-2%` inaudible upper bound, and it must not be used to recover video/encoder debt.
 

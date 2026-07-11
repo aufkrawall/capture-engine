@@ -1,0 +1,161 @@
+#include <gtest/gtest.h>
+
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string>
+
+namespace {
+
+std::string ReadCoordinatorSource() {
+    const std::filesystem::path source =
+        std::filesystem::current_path() / "captureengine" / "media_main.cpp";
+    std::ifstream file(source, std::ios::binary);
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return contents.str();
+}
+
+std::string ReadWgcCaptureSource() {
+    const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "wgc_capture.cpp";
+    std::ifstream file(source, std::ios::binary);
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return contents.str();
+}
+
+}  // namespace
+
+TEST(CaptureCoordinatorSourceTest, WgcRetargetUsesAtomicallyPublishedSharedOwnership) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("AtomicSharedOwner<WGCCapture> g_WgcCap"), std::string::npos);
+    EXPECT_NE(source.find("PublishWgcCapture(std::move(capture), \"window retarget\")"), std::string::npos);
+    EXPECT_NE(source.find("auto retired = g_WgcCap.Exchange"), std::string::npos);
+    EXPECT_NE(source.find("retired.reset()"), std::string::npos);
+    EXPECT_NE(source.find("g_WgcSourceEpoch.fetch_add"), std::string::npos);
+    EXPECT_NE(source.find("g_WgcCap.LockExclusive()"), std::string::npos);
+    EXPECT_NE(source.find("DiscardWgcEpochNotEqual"), std::string::npos);
+    EXPECT_EQ(source.find("g_WgcCap.reset()"), std::string::npos);
+    EXPECT_EQ(source.find("std::make_unique<WGCCapture>()"), std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, DuplicationCursorSuppressionIsExplicitlyReset) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("ResetDuplicationCursorSuppression(\"WGC pipeline stop\")"), std::string::npos);
+    EXPECT_NE(source.find("ResetDuplicationCursorSuppression(\"WGC recording start\")"), std::string::npos);
+    EXPECT_NE(source.find("MediaEngine_SetCursorCompositionSuppressed(false)"), std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, AutoFallbackProvesWgcBeforeStoppingInject) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t fallbackStart = source.find("StartWgcRecordingCapture(config)");
+    const size_t firstFrameProof = source.find("autoWgcHandoff.OnWgcFirstFrame()");
+    ASSERT_NE(fallbackStart, std::string::npos);
+    ASSERT_NE(firstFrameProof, std::string::npos);
+    const size_t activate = source.find("SetActiveScreenGrab(true)", firstFrameProof);
+    const size_t stopInject = source.find("StopInjectCapturePipeline()", firstFrameProof);
+    ASSERT_NE(activate, std::string::npos);
+    ASSERT_NE(stopInject, std::string::npos);
+    EXPECT_LT(activate, stopInject);
+
+    EXPECT_NE(source.find("WGC fallback failed to start; inject capture remains active"), std::string::npos);
+    EXPECT_NE(source.find("g_AutoWgcFallbackArmed.store(fallbackReady"), std::string::npos);
+    EXPECT_NE(source.find("inject remains active pending first-frame "), std::string::npos);
+    EXPECT_NE(source.find("proof"), std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, AutoInjectFallbackNeverDefaultsToAnUnresolvedPrimaryMonitor) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t fallbackBegin = source.find("if (isAutoCaptureConfig() && injectWhitelisted)");
+    const size_t fallbackEnd = source.find("if (!config.wgcWindowTitles.empty())", fallbackBegin);
+    ASSERT_NE(fallbackBegin, std::string::npos);
+    ASSERT_NE(fallbackEnd, std::string::npos);
+    const std::string fallback = source.substr(fallbackBegin, fallbackEnd - fallbackBegin);
+
+    EXPECT_NE(fallback.find("candidate.pid == sourcePid"), std::string::npos);
+    EXPECT_NE(fallback.find("fallbackMonitor && WGCCapture::IsSupported()"), std::string::npos);
+    EXPECT_NE(fallback.find("leaving fallback unarmed instead of capturing an unrelated primary monitor"),
+              std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, WorkerTimeoutNeverDetachesAcrossLiveResources) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_EQ(source.find("thread.detach()"), std::string::npos);
+    EXPECT_NE(source.find("cleanup while the worker is live would race released capture/encoder resources"),
+              std::string::npos);
+    EXPECT_NE(source.find("thread.join();"), std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, WgcFramesCarryProducerEpochInsteadOfSamplingCoordinatorEpoch) {
+    const std::string coordinator = ReadCoordinatorSource();
+    const std::string capture = ReadWgcCaptureSource();
+    ASSERT_FALSE(coordinator.empty());
+    ASSERT_FALSE(capture.empty());
+
+    EXPECT_NE(coordinator.find("replacement->SetSourceEpoch(epoch)"), std::string::npos);
+    EXPECT_EQ(coordinator.find("AdvanceActiveWgcSourceEpoch"), std::string::npos);
+    EXPECT_NE(coordinator.find("Keep the standby capture's publication epoch"), std::string::npos);
+    EXPECT_NE(coordinator.find("qf.wgcSourceEpoch = sourceEpoch"), std::string::npos);
+    EXPECT_NE(coordinator.find("qf.wgcSourceEpoch = frame.sourceEpoch"), std::string::npos);
+    EXPECT_EQ(coordinator.find("qf.wgcSourceEpoch = g_WgcSourceEpoch.load"), std::string::npos);
+    EXPECT_NE(capture.find("outputFrame->sourceEpoch = sourceEpoch"), std::string::npos);
+    EXPECT_NE(capture.find("sourceEpoch_.load(std::memory_order_acquire)"), std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, SourceEpochInvalidatesMediaEngineRepeatPixels) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("MediaEngine_ResetRepeatFrameCache()"), std::string::npos);
+    EXPECT_NE(source.find("ShouldRepeatAfterScheduledFreshEncodeFailure"), std::string::npos);
+    EXPECT_NE(source.find("CFR fresh encode failure recovered with cached duplicate"), std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, FreshFrameMetadataCommitsOnlyAfterSuccessfulEncode) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("frameToProcess = &frame;"), std::string::npos);
+    EXPECT_NE(source.find("const bool attemptedFreshCandidate = popped && frameToProcess == &frame"),
+              std::string::npos);
+    EXPECT_NE(source.find("g_LastFrame = std::move(frame);"), std::string::npos);
+    EXPECT_NE(source.find("preserve g_LastFrame unchanged"), std::string::npos);
+    EXPECT_NE(source.find("frame.injectRingLease.Reset();"), std::string::npos);
+    EXPECT_NE(source.find("Deferred candidates never enter this branch"), std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, ProvenStandbyFrameAndInjectRepeatSurviveHandoffBoundary) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("Keep the standby capture's publication epoch"), std::string::npos);
+    EXPECT_NE(source.find("canPreserveLastFrameAcrossPathHandoff"), std::string::npos);
+    EXPECT_NE(source.find("Observed standby WGC source epoch"), std::string::npos);
+    EXPECT_EQ(source.find("AdvanceActiveWgcSourceEpoch"), std::string::npos);
+    EXPECT_NE(source.find("capture->GetCallbackFrameCount()"), std::string::npos);
+    EXPECT_NE(source.find("config.video.useVFR ? HasStandbyWgcHandoffFrame()"), std::string::npos);
+    EXPECT_NE(source.find("TakeStandbyWgcHandoffFrame(retainedVfrFrame)"), std::string::npos);
+    EXPECT_NE(source.find("SubmitWgcQueuedFrame(std::move(retainedVfrFrame))"), std::string::npos);
+
+    const size_t storeHelper = source.find("static bool StoreStandbyWgcHandoffFrame");
+    const size_t storeRecheck = source.find("!g_RetainStandbyWgcFrameForHandoff.load", storeHelper);
+    ASSERT_NE(storeHelper, std::string::npos);
+    ASSERT_NE(storeRecheck, std::string::npos);
+
+    const size_t firstFrameProof = source.find("autoWgcHandoff.OnWgcFirstFrame()");
+    const size_t disarmRetention = source.find("g_RetainStandbyWgcFrameForHandoff.store(false", firstFrameProof);
+    const size_t takeRetained = source.find("TakeStandbyWgcHandoffFrame(retainedVfrFrame)", firstFrameProof);
+    ASSERT_NE(disarmRetention, std::string::npos);
+    ASSERT_NE(takeRetained, std::string::npos);
+    EXPECT_LT(disarmRetention, takeRetained);
+}

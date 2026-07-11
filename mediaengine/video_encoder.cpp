@@ -5,6 +5,7 @@
 #include "../common/raii_helpers.h"
 #include "../common/shared_defs.h"
 #include "audio_time_utils.h"  // For ce::audio::ParseSampleRateOr
+#include "cursor_geometry.h"
 #include "mediaengine.h"
 #include "mux_invariants.h"
 #include "video_encoder_options.h"
@@ -28,7 +29,6 @@ extern "C" {
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <future>
 #include <functional>
 #include <memory>
 #include <thread>
@@ -167,7 +167,7 @@ int64_t GetStreamDurationUs(const AVStream* stream) {
 }
 
 bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationUs,
-                             const std::shared_ptr<PostMuxProbeControl>& control = nullptr) {
+                             PostMuxProbeControl* control = nullptr) {
     if (filename.empty() || finalDurationUs <= 0) {
         return true;
     }
@@ -180,7 +180,7 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
     }
     if (control) {
         probeCtx->interrupt_callback.callback = PostMuxProbeInterrupt;
-        probeCtx->interrupt_callback.opaque = control.get();
+        probeCtx->interrupt_callback.opaque = control;
     }
     int ret = avformat_open_input(&probeCtx, filename.c_str(), nullptr, nullptr);
     if (ret < 0) {
@@ -213,7 +213,7 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
     av_seek_frame(probeCtx, -1, 0, AVSEEK_FLAG_BACKWARD);
     AVPacket* pkt = av_packet_alloc();
     int packetsRead = 0;
-    while (pkt && packetsRead < kPostMuxProbeMaxPackets && !ShouldCancelPostMuxProbe(control.get())) {
+    while (pkt && packetsRead < kPostMuxProbeMaxPackets && !ShouldCancelPostMuxProbe(control)) {
         ret = av_read_frame(probeCtx, pkt);
         if (ret < 0) {
             break;
@@ -248,7 +248,7 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
     if (pkt) {
         av_packet_free(&pkt);
     }
-    if (ShouldCancelPostMuxProbe(control.get())) {
+    if (ShouldCancelPostMuxProbe(control)) {
         DLL_Log("[VideoEncoder] post_mux_probe_cancelled file='%s' packets=%d", filename.c_str(), packetsRead);
         avformat_close_input(&probeCtx);
         return false;
@@ -331,39 +331,20 @@ void RunPostMuxDurationProbeBounded(const std::string& filename, int64_t finalDu
         return;
     }
 
-    auto control = std::make_shared<PostMuxProbeControl>();
-    control->deadlineTickMs = GetTickCount64() + std::max<uint64_t>(1, timeoutMs);
-    std::promise<bool> probePromise;
-    std::future<bool> probeFuture = probePromise.get_future();
+    PostMuxProbeControl control;
+    control.deadlineTickMs = GetTickCount64() + std::max<uint64_t>(1, timeoutMs);
     const uint64_t startMs = GetTickCount64();
     DLL_Log("[VideoEncoder] post_mux_probe_start file='%s' target=%lld timeout=%llums", filename.c_str(),
             (long long)finalDurationUs, (unsigned long long)timeoutMs);
-    std::thread probeThread([filename, finalDurationUs, control, promise = std::move(probePromise)]() mutable {
-        const bool ok = LogPostMuxDurationProbe(filename, finalDurationUs, control);
-        promise.set_value(ok);
-    });
-
-    const auto waitResult = probeFuture.wait_for(std::chrono::milliseconds(std::max<uint64_t>(1, timeoutMs)));
-    if (waitResult == std::future_status::ready) {
-        const bool ok = probeFuture.get();
-        probeThread.join();
-        DLL_Log("[VideoEncoder] post_mux_probe_complete ok=%d elapsed=%llums", ok ? 1 : 0,
-                (unsigned long long)(GetTickCount64() - startMs));
-        return;
-    }
-
-    control->cancel.store(true, std::memory_order_release);
-    DLL_Log("[VideoEncoder] post_mux_probe_timeout file='%s' elapsed=%llums; cancelling validation probe",
-            filename.c_str(), (unsigned long long)(GetTickCount64() - startMs));
-    if (probeFuture.wait_for(std::chrono::milliseconds(250)) == std::future_status::ready) {
-        (void)probeFuture.get();
-        probeThread.join();
-        DLL_Log("[VideoEncoder] post_mux_probe_cancelled file='%s' elapsed=%llums", filename.c_str(),
-                (unsigned long long)(GetTickCount64() - startMs));
-    } else {
-        probeThread.detach();
-        DLL_Log("[VideoEncoder] post_mux_probe_cancelled file='%s' detached=1", filename.c_str());
-    }
+    // Run on the already-owned writer/finalizer thread. Every potentially
+    // blocking demux operation sees the deadline through interrupt_callback,
+    // and packet inspection has a hard count bound. A nested worker cannot be
+    // abandoned safely because it could continue executing mediaengine/FFmpeg
+    // code after the DLL is unloaded.
+    const bool ok = LogPostMuxDurationProbe(filename, finalDurationUs, &control);
+    const uint64_t elapsedMs = GetTickCount64() - startMs;
+    DLL_Log("[VideoEncoder] post_mux_probe_complete ok=%d timedOut=%d elapsed=%llums", ok ? 1 : 0,
+            ShouldCancelPostMuxProbe(&control) ? 1 : 0, (unsigned long long)elapsedMs);
 }
 
 bool ValidateFormatContextForHeader(const AVFormatContext* fmtCtx) {
@@ -3260,7 +3241,6 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         stats.actualPtsDiff = RoundUsToMs(timestamp - g_lastFramePts);
         stats.expectedPtsDiff = RoundUsToMs(static_cast<int64_t>(expectedFrameMs * 1000.0));
     }
-    g_lastFramePts = timestamp;
 
     auto frameStart = PerfTimer::now();
 
@@ -3588,9 +3568,9 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                     if (handleValid) {
                         // Handle duplicated - try OpenSharedResource1 with the valid handle
                         hr = CallOpenSharedResource1(d3d11Device, dupTexDirect.get(), IID_PPV_ARGS(&bgraTex));
-                        hrNtDirect = hr;
+                        hrNtDup = hr;
                     } else {
-                        hrNtDirect = HRESULT_FROM_WIN32(GetLastError());
+                        hrNtDup = HRESULT_FROM_WIN32(GetLastError());
                         if (encodeFrameCounter < 10)
                             DLL_Log("[VideoEncoder] Frame %d: DuplicateHandle for texture failed: %p",
                                     encodeFrameCounter, sharedHandle);
@@ -3623,41 +3603,39 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                         }
                     }
 
-                    // Retry logic for transient failures (handle not yet published by Vulkan layer)
-                    int retryCount = 0;
-                    const int maxRetries = 3;
-                    HRESULT retryHr = hr;
-                    while (FAILED(retryHr) && retryCount < maxRetries) {
-                        retryCount++;
-                        DLL_Log("[VideoEncoder] Frame %d: OpenSharedResource failed (HR=%x), retry %d/%d...",
-                                encodeFrameCounter, retryHr, retryCount, maxRetries);
-                        Sleep(2);
-
-                        // Retry with duplicated handle first (safe - DuplicateHandle fails gracefully)
-                        ce::HandleGuard dupTexRetry;
-                        if (DuplicateHandle(hProcess.get(), sharedHandle, GetCurrentProcess(), dupTexRetry.addressof(),
-                                            0, FALSE, DUPLICATE_SAME_ACCESS)) {
-                            retryHr = CallOpenSharedResource1(d3d11Device, dupTexRetry.get(), IID_PPV_ARGS(&bgraTex));
-                            if (FAILED(retryHr)) {
-                                retryHr =
-                                    CallOpenSharedResource(d3d11Device, dupTexRetry.get(), IID_PPV_ARGS(&bgraTex));
+                    // WOW64 producers publish a 32-bit handle value in the
+                    // shared ABI. Try its normalized representation once, but
+                    // do not retry either representation after a sleep: ring
+                    // publication already supplies the required ordering.
+                    if (FAILED(hr) && hasSharedAlt) {
+                        ce::HandleGuard dupTexAlt;
+                        if (DuplicateHandle(hProcess.get(), sharedHandleAlt, GetCurrentProcess(),
+                                            dupTexAlt.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+                            hr = CallOpenSharedResource1(d3d11Device, dupTexAlt.get(), IID_PPV_ARGS(&bgraTex));
+                            hrNtAltDup = hr;
+                            if (FAILED(hr)) {
+                                hr = CallOpenSharedResource(d3d11Device, dupTexAlt.get(), IID_PPV_ARGS(&bgraTex));
+                                hrKmtAltDup = hr;
                             }
+                        } else {
+                            hrNtAltDup = HRESULT_FROM_WIN32(GetLastError());
                         }
-                        if (FAILED(retryHr) && hasSharedAlt) {
-                            ce::HandleGuard dupTexAltRetry;
-                            if (DuplicateHandle(hProcess.get(), sharedHandleAlt, GetCurrentProcess(),
-                                                dupTexAltRetry.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-                                retryHr =
-                                    CallOpenSharedResource1(d3d11Device, dupTexAltRetry.get(), IID_PPV_ARGS(&bgraTex));
-                                if (FAILED(retryHr)) {
-                                    retryHr = CallOpenSharedResource(d3d11Device, dupTexAltRetry.get(),
-                                                                     IID_PPV_ARGS(&bgraTex));
-                                }
-                            }
+                        if (FAILED(hr) && !g_HandleFailureCache.ShouldSkipTexture(sharedHandleAlt)) {
+                            hr = CallOpenSharedResource(d3d11Device, sharedHandleAlt, IID_PPV_ARGS(&bgraTex));
+                            hrKmtAltDirect = hr;
                         }
                     }
-                    if (SUCCEEDED(retryHr))
-                        hr = retryHr;
+
+                    // Frame-ring publication uses release/acquire ordering, so
+                    // a published handle cannot become more valid after an
+                    // arbitrary sleep. Immediate retries only stalled the CFR
+                    // encoder by up to 6 ms and repeated the same failing driver
+                    // calls. Defer the frame to the existing bounded lineage
+                    // retry path instead; a later publication/device state can
+                    // then be observed without blocking the real-time thread.
+                    if (FAILED(hr)) {
+                        lastFrameDeferred.store(true, std::memory_order_relaxed);
+                    }
                 }  // end of else (sharedHandle != NULL)
 
                 if (FAILED(hr)) {
@@ -3856,13 +3834,10 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     ApplyFrameColorMetadata(d3d11Frame, codecCtx);
 
     // Calculate relative PTS (start from 0) — timestamp is in microseconds
-    if (startPts < 0) {
-        startPts = timestamp;
-        DLL_Log("[VideoEncoder] Recording started at PTS %lld us", startPts.load());
-    }
-
-    const int64_t targetPts =
-        ComputeTargetVideoPts(timestamp, savedConfig.useVFR, savedConfig.fps, startPts, lastAssignedVideoPts, false);
+    const bool commitsStartPts = startPts.load(std::memory_order_relaxed) < 0;
+    const int64_t effectiveStartPts = commitsStartPts ? timestamp : startPts.load(std::memory_order_relaxed);
+    const int64_t targetPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, savedConfig.fps, effectiveStartPts,
+                                                    lastAssignedVideoPts, false);
 
     // 5. Encode (Direct D3D11 Frame) - with proper packet draining
     AVPacket* pkt = av_packet_alloc();
@@ -3917,6 +3892,10 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             ret = avcodec_send_frame(codecCtx, frame);
             retries++;
         }
+        if (ret == AVERROR(EAGAIN)) {
+            DLL_Log("[VideoEncoder] avcodec_send_frame remained EAGAIN after %d drain attempts", retries);
+            return false;
+        }
         if (ret < 0 && ret != AVERROR(EAGAIN)) {
             char errbuf[AV_ERROR_MAX_STRING_SIZE];
             av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
@@ -3955,6 +3934,11 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         return false;
     }
 
+    if (commitsStartPts) {
+        startPts.store(effectiveStartPts, std::memory_order_relaxed);
+        DLL_Log("[VideoEncoder] Recording started at PTS %lld us", static_cast<long long>(effectiveStartPts));
+    }
+    g_lastFramePts = timestamp;
     lastAssignedVideoPts = d3d11Frame->pts;
 
     // Update global stats
@@ -4155,7 +4139,6 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         stats.actualPtsDiff = RoundUsToMs(pts - g_lastFramePts);
         stats.expectedPtsDiff = RoundUsToMs(static_cast<int64_t>(expectedFrameMs * 1000.0));
     }
-    g_lastFramePts = pts;
 
     const int fpsLogIntervalFrames = (savedConfig.fps > 0) ? savedConfig.fps : 60;
 
@@ -4269,12 +4252,9 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     ApplyFrameColorMetadata(d3d11Frame, codecCtx);
 
     // Calculate PTS — pts is in microseconds
-    if (startPts < 0) {
-        startPts = pts;
-        DLL_Log("[VideoEncoder] Framegrab recording started at PTS %lld us", startPts.load());
-    }
-
-    const int64_t targetPts = ComputeTargetVideoPts(pts, savedConfig.useVFR, savedConfig.fps, startPts,
+    const bool commitsStartPts = startPts.load(std::memory_order_relaxed) < 0;
+    const int64_t effectiveStartPts = commitsStartPts ? pts : startPts.load(std::memory_order_relaxed);
+    const int64_t targetPts = ComputeTargetVideoPts(pts, savedConfig.useVFR, savedConfig.fps, effectiveStartPts,
                                                     lastAssignedVideoPts, useExplicitCfrTimeline);
 
     // Encode
@@ -4331,6 +4311,10 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             ret = avcodec_send_frame(codecCtx, frame);
             retries++;
         }
+        if (ret == AVERROR(EAGAIN)) {
+            DLL_Log("[VideoEncoder] ScreenGrab send_frame remained EAGAIN after %d drain attempts", retries);
+            return false;
+        }
         if (ret < 0 && ret != AVERROR(EAGAIN)) {
             char errbuf[AV_ERROR_MAX_STRING_SIZE];
             av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
@@ -4369,6 +4353,12 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         return false;
     }
 
+    if (commitsStartPts) {
+        startPts.store(effectiveStartPts, std::memory_order_relaxed);
+        DLL_Log("[VideoEncoder] Framegrab recording started at PTS %lld us",
+                static_cast<long long>(effectiveStartPts));
+    }
+    g_lastFramePts = pts;
     auto afterEncode = PerfTimer::now();
     double encodeMs = PerfTimer::elapsed_ms(afterConvert, afterEncode);
     double totalMs = PerfTimer::elapsed_ms(frameStart, afterEncode);
@@ -4470,7 +4460,6 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
         stats.actualPtsDiff = RoundUsToMs(timestamp - g_lastFramePts);
         stats.expectedPtsDiff = RoundUsToMs(static_cast<int64_t>(expectedFrameMs * 1000.0));
     }
-    g_lastFramePts = timestamp;
 
     // FAST PATH: Resubmit cached encoded packet with new PTS instead of
     // re-encoding via NVENC. Eliminates duplicate encode overhead entirely
@@ -4504,6 +4493,7 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
 
             lastEncodeTimeUs = 0;
             lastFenceWaitUs = 0;
+            g_lastFramePts = timestamp;
             return true;
         }
         // Packet allocation failed — fall through to slow path
@@ -4616,6 +4606,10 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
             ret = avcodec_send_frame(codecCtx, frame);
             retries++;
         }
+        if (ret == AVERROR(EAGAIN)) {
+            DLL_Log("[VideoEncoder] RepeatLastFrame send_frame remained EAGAIN after %d drain attempts", retries);
+            return false;
+        }
         if (ret < 0 && ret != AVERROR(EAGAIN)) {
             char errbuf[AV_ERROR_MAX_STRING_SIZE];
             av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
@@ -4647,6 +4641,7 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     lastEncodeTimeUs = static_cast<int64_t>(PerfTimer::elapsed_ms(beforeConvert, afterEncode) * 1000.0);
     lastFenceWaitUs = 0;
 
+    g_lastFramePts = timestamp;
     lastAssignedVideoPts = d3d11Frame->pts;
 
     g_framesEncoded++;
@@ -4886,7 +4881,7 @@ void VideoEncoder::ReleasePreservedEncoderTextures() {
 void VideoEncoder::Stop() {
     bool wasRecording = recordingRequested;
     recordingRequested = false;
-    bool writerStillOwnsMuxer = false;
+    bool writerStillOwnsEncoderResources = false;
 
     if (wasRecording) {
         const uint32_t phase = pSharedMem ? pSharedMem->runtimeState.capturePhase.load(std::memory_order_relaxed)
@@ -4974,19 +4969,23 @@ void VideoEncoder::Stop() {
         } else {
             writerFinalizeTimedOut.store(true, std::memory_order_release);
             const uint32_t timedOutPhase = writerFinalizePhase.load(std::memory_order_relaxed);
-            writerStillOwnsMuxer = fileOpened || timedOutPhase < kWriterPhasePostMuxProbe;
+            // A live writer owns more than fmtCtx: the post-mux probe still
+            // reads outputFilename and will perform CleanupResources on exit.
+            // Never race it with synchronous cleanup merely because the muxer
+            // file was already closed.
+            writerStillOwnsEncoderResources = true;
             DLL_Log(
                 "[VideoEncoder] Stop: ERROR writer_finalize_timeout result=%lu phase=%s elapsed=%llums "
-                "queueBytes=%zu queuePackets=%u writerRetainsMuxer=%d; "
+                "queueBytes=%zu queuePackets=%u writerRetainsEncoderResources=%d; "
                 "skipping synchronous finalize",
                 waitResult, WriterFinalizePhaseName(timedOutPhase),
                 static_cast<unsigned long long>(GetTickCount64() - waitStartMs),
                 currentQueueBytes.load(std::memory_order_relaxed),
-                currentQueuePackets.load(std::memory_order_relaxed), writerStillOwnsMuxer ? 1 : 0);
+                currentQueuePackets.load(std::memory_order_relaxed), writerStillOwnsEncoderResources ? 1 : 0);
         }
     }
 
-    if (writerStillOwnsMuxer) {
+    if (writerStillOwnsEncoderResources) {
         return;
     }
 
@@ -5734,37 +5733,57 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
                     width, height);
         }
 
-        // CLIPPING: VideoProcessorBlt fails with E_INVALIDARG if the destination
-        // rectangle extends outside the target surface. We must clip the cursor
-        // Rect to the frame bounds. If clipped, we should really modify the
-        // Source rect too, but for a cursor, simple clipping (hiding
-        // out-of-bounds parts) is often handled by just clamping the rect? NO, VP
-        // squashes if we clamp dest but not source. However, getting SourceRect
-        // scaling correct is complex. For now, let's clamp DEST rect and verify
-        // if it fixes INVALIDARG. If it looks squashed at edges, we can refine
-        // source clipping later. Squashed is better than dropping frames.
-
         // If resolution scaling is enabled (e.g. 4K -> 1080p), we must scale the
         // cursor coordinates to match the output texture dimensions. The
         // VideoProcessor applies the cursor overlay to the DESTINATION surface.
         if (scalingEnabled) {
-            float scaleX = (float)outputWidth / (float)width;
-            float scaleY = (float)outputHeight / (float)height;
-
-            cursorRect.left = (LONG)(cursorRect.left * scaleX);
-            cursorRect.top = (LONG)(cursorRect.top * scaleY);
-            cursorRect.right = (LONG)(cursorRect.right * scaleX);
-            cursorRect.bottom = (LONG)(cursorRect.bottom * scaleY);
+            ce::cursor_geometry::Rect scaledDestination;
+            const ce::cursor_geometry::Rect unscaledDestination = {
+                cursorRect.left,
+                cursorRect.top,
+                cursorRect.right,
+                cursorRect.bottom,
+            };
+            if (!ce::cursor_geometry::ScaleDestinationRect(unscaledDestination, outputWidth, outputHeight, width,
+                                                           height, &scaledDestination)) {
+                useCursorStream = false;
+            } else {
+                cursorRect = {
+                    scaledDestination.left,
+                    scaledDestination.top,
+                    scaledDestination.right,
+                    scaledDestination.bottom,
+                };
+            }
         }
 
         // Clipping bounds use OUTPUT dimensions when scaling
         int frameW = scalingEnabled ? outputWidth : width;
         int frameH = scalingEnabled ? outputHeight : height;
-        RECT frameRect = {0, 0, frameW, frameH};
-        RECT clippedRect;
-        if (IntersectRect(&clippedRect, &frameRect, &cursorRect)) {
-            // Only draw if visible
-            videoContext->VideoProcessorSetStreamDestRect(videoProcessor, 1, TRUE, &clippedRect);
+        ce::cursor_geometry::ClippedRects clipped;
+        const ce::cursor_geometry::Rect cursorDestination = {
+            cursorRect.left,
+            cursorRect.top,
+            cursorRect.right,
+            cursorRect.bottom,
+        };
+        if (useCursorStream && ce::cursor_geometry::ComputeClippedRects(cursorDestination, scaledWidth, scaledHeight,
+                                                                        frameW, frameH,
+                                                     &clipped)) {
+            const RECT sourceRect = {
+                clipped.source.left,
+                clipped.source.top,
+                clipped.source.right,
+                clipped.source.bottom,
+            };
+            const RECT destinationRect = {
+                clipped.destination.left,
+                clipped.destination.top,
+                clipped.destination.right,
+                clipped.destination.bottom,
+            };
+            videoContext->VideoProcessorSetStreamSourceRect(videoProcessor, 1, TRUE, &sourceRect);
+            videoContext->VideoProcessorSetStreamDestRect(videoProcessor, 1, TRUE, &destinationRect);
             videoContext->VideoProcessorSetStreamAlpha(videoProcessor, 1, TRUE, 1.0f);
 
             streams[1].Enable = TRUE;
@@ -5780,19 +5799,6 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     int bufIdx = currentNV12Buffer;
     hr = videoContext->VideoProcessorBlt(videoProcessor, outputViews[bufIdx], 0, streamCount, streams);
 
-    // GPU flush + retry: under 100% GPU load, the VP engine may be starved on first attempt.
-    // Flush the GPU pipeline to drain pending work, then retry once.
-    if (FAILED(hr)) {
-        ID3D11DeviceContext* immediateCtx = nullptr;
-        d3d11Device->GetImmediateContext(&immediateCtx);
-        if (immediateCtx) {
-            immediateCtx->Flush();
-            Sleep(1);  // Yield to let GPU schedule VP operation
-            hr = videoContext->VideoProcessorBlt(videoProcessor, outputViews[bufIdx], 0, streamCount, streams);
-            immediateCtx->Release();
-        }
-    }
-
     localInputView->Release();
 
     if (FAILED(hr)) {
@@ -5800,12 +5806,13 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         if (bltFailCount++ < 5) {
             D3D11_TEXTURE2D_DESC srcDesc = {};
             bgraTexture->GetDesc(&srcDesc);
+            const HRESULT deviceReason = d3d11Device->GetDeviceRemovedReason();
             DLL_Log(
-                "[VideoProcessor] Blt failed (after retry). HR=%x streams=%u bufIdx=%d "
+                "[VideoProcessor] Blt failed. HR=%x streams=%u bufIdx=%d "
                 "srcFmt=%d srcW=%u srcH=%u srcBind=%x srcMisc=%x "
-                "inputW=%d inputH=%d outputW=%d outputH=%d",
+                "inputW=%d inputH=%d outputW=%d outputH=%d deviceReason=%x",
                 hr, streamCount, bufIdx, srcDesc.Format, srcDesc.Width, srcDesc.Height, srcDesc.BindFlags,
-                srcDesc.MiscFlags, inputWidth, inputHeight, outputWidth, outputHeight);
+                srcDesc.MiscFlags, inputWidth, inputHeight, outputWidth, outputHeight, deviceReason);
         }
         if (needReleaseConverted)
             vpInputTexture->Release();
@@ -6628,6 +6635,22 @@ int64_t VideoEncoder::GetLastFrameFenceWaitUs() const {
 bool VideoEncoder::CanRepeatLastFrame() const {
     return recordingRequested && (repeatFrameTexture != nullptr ||
                                   (repeatSourceNeedsCursorRecompose && repeatSourceFrameTexture != nullptr));
+}
+
+void VideoEncoder::ResetRepeatFrameCache() {
+    const bool hadCachedContent = repeatFrameTexture != nullptr || repeatSourceFrameTexture != nullptr ||
+                                  cachedRepeatPacket_ != nullptr;
+    if (repeatFrameTexture) {
+        repeatFrameTexture->Release();
+        repeatFrameTexture = nullptr;
+    }
+    InvalidateRepeatSourceFrameTexture();
+    InvalidateRepeatPacketCache();
+    repeatSourceCacheFailureLogged = false;
+    repeatCursorRecomposeFallbackLogged = false;
+    if (hadCachedContent) {
+        DLL_Log("[VideoEncoder] Repeat-frame cache invalidated for capture-source transition");
+    }
 }
 
 bool VideoEncoder::WasLastFrameDeferred() const {

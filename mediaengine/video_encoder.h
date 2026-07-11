@@ -79,6 +79,11 @@ public:
     int64_t GetLastFrameEncodeTimeUs() const;  // Get duration of last frame encoding (excluding wait)
     int64_t GetLastFrameFenceWaitUs() const;   // Get duration of last fence wait (GPU wait)
     bool CanRepeatLastFrame() const;
+    // Drop all cached visual content used by RepeatLastFrame. Capture-source
+    // transitions must call this before accepting frames from the new source,
+    // otherwise a transient encode failure can repeat pixels from the retired
+    // window/monitor while advancing the new source's CFR timeline.
+    void ResetRepeatFrameCache();
     bool WasLastFrameDeferred() const;
 
     int AddAudioStream(const AudioConfig& config, AVCodecContext* audioCtx = nullptr, int track = -1);

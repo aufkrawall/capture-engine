@@ -16,6 +16,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <deque>
+#include <exception>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -44,10 +45,10 @@ public:
     MediaEngine()
         : recording(false),
           audioRunning(false),
+          recordingStartTime(),
           firstVideoFrameMs(0),
           lastVideoFrameMs(0),
-          videoElapsedMs(0),
-          recordingStartTime() {}
+          videoElapsedMs(0) {}
     ~MediaEngine() {
         StopRecording();
     }
@@ -326,8 +327,7 @@ public:
     bool audioOnly = false;
     AVFormatContext* audioOnlyFmtCtx = nullptr;
     std::string audioOnlyFilename;
-    std::vector<AudioEncoder*> trackEncoders;              // All unique encoders for audio-only padding
-    std::unordered_map<int, int64_t> trackEncodedSamples;  // per-track sample count for audio-only padding
+    std::vector<AudioEncoder*> trackEncoders;  // All unique encoders for audio-only padding
 
     AppConfig config;
     std::recursive_mutex muxMutex;  // Must be recursive - WritePacket callback from EncodeFrame
@@ -341,6 +341,7 @@ public:
     std::atomic<bool> audioRunning;
     std::atomic<bool> audioSyncPending{false};  // Pause AudioLoop writes during buffer clear
     std::mutex audioDrainMutex;
+    std::mutex audioSourceStopMutex;
     std::condition_variable audioDrainCv;
     std::atomic<bool> audioStopDrainRequested{false};
     std::atomic<bool> audioStopDrainComplete{false};
@@ -447,6 +448,7 @@ public:
     }
 
     size_t StopAudioCaptureSources(bool discardPendingPackets) {
+        std::lock_guard<std::mutex> stopLock(audioSourceStopMutex);
         size_t pendingAfterStop = 0;
         for (auto& src : audioSources) {
             if (src.capture) {
@@ -576,11 +578,7 @@ public:
         return true;
     }
 
-    void DrainStoppedCaptureQueuesBeforeFinalPull(int64_t targetUs) {
-        if (!ce::audio::ShouldDrainStoppedCaptureQueuesBeforeFinalAudioPull(audioRunning.load(), audioOnly, targetUs)) {
-            return;
-        }
-
+    size_t StopCaptureSourcesAndDrainAudioLoop() {
         const size_t pendingPackets = StopAudioCaptureSources(false);
 
         audioStopDrainComplete.store(false, std::memory_order_release);
@@ -595,7 +593,59 @@ public:
         }
 
         audioStopDrainRequested.store(false, std::memory_order_release);
-        DLL_Log("[StopAudio] Capture stop-drain completed: preservedPackets=%zu", pendingPackets);
+        DLL_Log("[StopAudio] Capture stop-drain completed: preservedPackets=%zu audioOnly=%d", pendingPackets,
+                audioOnly ? 1 : 0);
+        return pendingPackets;
+    }
+
+    void AudioThreadEntry() noexcept {
+        bool failed = false;
+        try {
+            AudioLoop();
+        } catch (const std::exception& e) {
+            failed = true;
+            DLL_Log("[AudioLoop] ERROR: Unhandled exception escaped audio worker: %s", e.what());
+        } catch (...) {
+            failed = true;
+            DLL_Log("[AudioLoop] ERROR: Unknown exception escaped audio worker");
+        }
+
+        if (failed) {
+            // No consumer remains after an unexpected worker exit. Stop the
+            // producers and discard their queues instead of allowing them to
+            // grow indefinitely for the rest of the recording.
+            StopAudioCaptureSources(true);
+        }
+        audioRunning.store(false, std::memory_order_release);
+        audioStopDrainComplete.store(true, std::memory_order_release);
+        audioDrainCv.notify_all();
+    }
+
+    bool StartAudioThread() {
+        audioStopDrainComplete.store(false, std::memory_order_release);
+        audioRunning.store(true, std::memory_order_release);
+        try {
+            audioThread = std::thread(&MediaEngine::AudioThreadEntry, this);
+            return true;
+        } catch (const std::exception& e) {
+            DLL_Log("[AudioLoop] ERROR: Failed to create audio worker: %s", e.what());
+        } catch (...) {
+            DLL_Log("[AudioLoop] ERROR: Failed to create audio worker with unknown exception");
+        }
+
+        audioRunning.store(false, std::memory_order_release);
+        audioStopDrainComplete.store(true, std::memory_order_release);
+        audioDrainCv.notify_all();
+        StopAudioCaptureSources(true);
+        return false;
+    }
+
+    void DrainStoppedCaptureQueuesBeforeFinalPull(int64_t targetUs) {
+        if (!ce::audio::ShouldDrainStoppedCaptureQueuesBeforeFinalAudioPull(audioRunning.load(), audioOnly, targetUs)) {
+            return;
+        }
+
+        StopCaptureSourcesAndDrainAudioLoop();
     }
 
     void SyncAudioToFirstVideoFrame(int64_t startQpcMs, int64_t startQpc100ns, bool preservePendingPackets = false) {
@@ -775,6 +825,13 @@ public:
     bool CanRepeatLastFrame() {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         return videoEnc && recording && firstVideoFrameMs != 0 && videoEnc->CanRepeatLastFrame();
+    }
+
+    void ResetRepeatFrameCache() {
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        if (videoEnc) {
+            videoEnc->ResetRepeatFrameCache();
+        }
     }
 
     void ReleaseEncoderTextures() {
@@ -1068,6 +1125,43 @@ public:
         return 0;
     }
 
+    void ResetAudioPullStateForRecording() {
+        encodedSamplesPerSource.assign(audioSources.size(), 0);
+        trackTimelineSamples.clear();
+        trackRealMixedSamples.clear();
+        trackFullSilenceSamples.clear();
+        trackPartialSilenceSamples.clear();
+        trackWasSilent.clear();
+        trackSilentSamples.clear();
+        trackSilentChunks.clear();
+        trackSilenceTransitions.clear();
+        trackLastSilenceLogTick.clear();
+        trackBootstrapComplete.clear();
+        trackFirstPullAfterBootstrap.clear();
+        trackBootstrapWaitLogCounters.clear();
+        cachedTrackToSources.clear();
+        for (size_t i = 0; i < audioSources.size(); ++i) {
+            auto& src = audioSources[i];
+            if (!src.ringBuffer || !src.sharedEncoderPtr) {
+                continue;
+            }
+            cachedTrackToSources[src.track].push_back(i);
+            trackTimelineSamples[src.track] = 0;
+            trackRealMixedSamples[src.track] = 0;
+            trackFullSilenceSamples[src.track] = 0;
+            trackPartialSilenceSamples[src.track] = 0;
+        }
+
+        warpCount = 0;
+        dropLogCounter = 0;
+        driftLogCounter = 0;
+        trackSyncCheckCounters.clear();
+        injectFrameLogCount = 0;
+        screengrabFrameLogCount = 0;
+        silenceLogCounter = 0;
+        mixLogCounter = 0;
+    }
+
     bool StartRecording() {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         if (recording)
@@ -1113,19 +1207,21 @@ public:
             audioFinalizingCfrStop.store(false, std::memory_order_release);
             audioStopDrainRequested.store(false, std::memory_order_release);
             audioStopDrainComplete.store(false, std::memory_order_release);
-            recordingStartSystemQPCMs.store(GetTickCount64());
+            preservePendingStartupAudioPackets.store(false, std::memory_order_release);
+            ResetAudioPullStateForRecording();
 
-            // Reset audio encoder state (normally done by SyncAudioToFirstVideoFrame)
-            for (auto& src : audioSources) {
-                if (src.ringBuffer)
-                    src.ringBuffer->Clear();
-                if (src.syncResampler)
-                    src.syncResampler->Reset();
-                src.syncSamplesOutput = 0;
-                if (src.sharedEncoderPtr) {
-                    src.sharedEncoderPtr->SetRecordingStart(0);
-                }
-            }
+            LARGE_INTEGER audioStartQpc{};
+            QueryPerformanceCounter(&audioStartQpc);
+            const int64_t audioStartQpcMs =
+                qpcFreq > 0 ? (audioStartQpc.QuadPart * 1000) / qpcFreq : static_cast<int64_t>(GetTickCount64());
+            const int64_t audioStartQpc100ns =
+                qpcFreq > 0
+                    ? static_cast<int64_t>(ce::audio::RawQpcToHundredNanoseconds(
+                          static_cast<uint64_t>(audioStartQpc.QuadPart), static_cast<uint64_t>(qpcFreq)))
+                    : 0;
+            SyncAudioToFirstVideoFrame(audioStartQpcMs, audioStartQpc100ns);
+            recordingStartTime = std::chrono::steady_clock::now();
+            recording = true;
 
             int startedCount = 0;
             for (auto& src : audioSources) {
@@ -1165,12 +1261,22 @@ public:
             DLL_Log("[StartAudio] trackEncoders: %zu unique from %d owners (%d shared), %zu sources",
                     trackEncoders.size(), encCount, shmCount, audioSources.size());
             if (startedCount > 0) {
-                audioRunning = true;
-                audioThread = std::thread(&MediaEngine::AudioLoop, this);
+                if (!StartAudioThread()) {
+                    recording = false;
+                    for (auto* encoder : trackEncoders) {
+                        if (encoder) {
+                            encoder->Stop();
+                        }
+                    }
+                    if (audioOnlyFmtCtx) {
+                        av_write_trailer(audioOnlyFmtCtx);
+                        CleanupAudioOnlyMuxer();
+                    }
+                    DLL_Log("MediaEngine: Audio-only recording start failed because the audio worker could not start");
+                    return false;
+                }
             }
 
-            recording = true;
-            recordingStartTime = std::chrono::steady_clock::now();
             DLL_Log("MediaEngine: Audio-only recording started (%d audio source(s))", startedCount);
             return true;
         }
@@ -1240,45 +1346,8 @@ public:
             injectTimelineState.Reset();
             d3d11TimelineState.Reset();
 
-            // PULL MODEL: Reset audio encoding state for new recording
-            encodedSamplesPerSource.clear();
-            encodedSamplesPerSource.resize(audioSources.size(), 0);
-            trackTimelineSamples.clear();
-            trackRealMixedSamples.clear();
-            trackFullSilenceSamples.clear();
-            trackPartialSilenceSamples.clear();
-
-            trackWasSilent.clear();
-            trackSilentSamples.clear();
-            trackSilentChunks.clear();
-            trackSilenceTransitions.clear();
-            trackLastSilenceLogTick.clear();
-            trackBootstrapComplete.clear();
-            trackFirstPullAfterBootstrap.clear();
-            trackBootstrapWaitLogCounters.clear();
-
-            // Build the track→source index map once (used every PullAndEncodeAudio call)
-            cachedTrackToSources.clear();
-            for (size_t i = 0; i < audioSources.size(); i++) {
-                auto& src = audioSources[i];
-                if (src.ringBuffer && src.sharedEncoderPtr) {
-                    cachedTrackToSources[src.track].push_back(i);
-                    trackTimelineSamples[src.track] = 0;
-                    trackRealMixedSamples[src.track] = 0;
-                    trackFullSilenceSamples[src.track] = 0;
-                    trackPartialSilenceSamples[src.track] = 0;
-                }
-            }
-
-            // Reset PullAndEncodeAudio counters for clean per-recording state
-            warpCount = 0;
-            dropLogCounter = 0;
-            driftLogCounter = 0;
-            trackSyncCheckCounters.clear();
-            injectFrameLogCount = 0;
-            screengrabFrameLogCount = 0;
-            silenceLogCounter = 0;
-            mixLogCounter = 0;
+            // PULL MODEL: Reset audio encoding state for new recording.
+            ResetAudioPullStateForRecording();
 
             // PULL MODEL: CRITICAL - Clear ring buffers to start fresh
             for (auto& src : audioSources) {
@@ -1422,8 +1491,9 @@ public:
                     "MediaEngine: %d audio source(s) started (sync pending first "
                     "video frame)",
                     startedCount);
-                audioRunning = true;
-                audioThread = std::thread(&MediaEngine::AudioLoop, this);
+                if (!StartAudioThread()) {
+                    DLL_Log("MediaEngine: Audio worker unavailable; continuing video recording without live audio");
+                }
             }
         }
 
@@ -1438,18 +1508,24 @@ public:
                 std::lock_guard<std::recursive_mutex> lock(muxMutex);
                 if (!recording)
                     return;
-                recording = false;
             }
+            // Stop WASAPI/process-loopback first while AudioLoop is still
+            // alive. Stop(false) performs each source's one-shot final drain;
+            // the CV handshake then proves those committed packets were
+            // consumed before the loop and muxer are torn down.
+            const size_t preservedStopPackets = audioRunning.load(std::memory_order_acquire)
+                                                    ? StopCaptureSourcesAndDrainAudioLoop()
+                                                    : StopAudioCaptureSources(false);
             audioRunning = false;
+            audioDrainCv.notify_all();
             if (audioThread.joinable())
                 audioThread.join();
-            // Stop all capture sources first, then pad tracks to equal length
-            for (auto& src : audioSources) {
-                if (src.capture)
-                    src.capture->Stop();
-                if (src.appCapture)
-                    src.appCapture->Stop();
+            {
+                std::lock_guard<std::recursive_mutex> lock(muxMutex);
+                recording = false;
             }
+            DLL_Log("[StopAudio] Audio-only source tail preserved before loop shutdown: packets=%zu",
+                    preservedStopPackets);
 
             // Pad unique stream encoders to equal length
             std::map<int, AudioEncoder*> streamEnc2;
@@ -1985,27 +2061,12 @@ public:
         // Calculate QPC based timestamp for debugging/Legacy Start Time
         int64_t debugTimestamp = (qpcFreq > 0) ? (timestampQPC * 1000) / qpcFreq : timestampQPC;
 
-        if (this->firstVideoFrameMs == 0) {
-            this->firstVideoFrameMs = debugTimestamp;  // Store QPC-based start for logs
-            this->recordingStartTime = now;
-            const int64_t startQpc100ns =
-                (qpcFreq > 0 && timestampQPC > 0)
-                    ? static_cast<int64_t>(ce::audio::RawQpcToHundredNanoseconds(static_cast<uint64_t>(timestampQPC),
-                                                                                 static_cast<uint64_t>(qpcFreq)))
-                    : 0;
-
-            DLL_Log(
-                "MediaEngine: First inject frame at %lld ms (QPC: %lld) - "
-                "syncing audio (StartQPC: %lld)",
-                debugTimestamp, timestampQPC, debugTimestamp);
-
-            // Use the source frame's QPC as the audio sync anchor rather than when
-            // the media process happened to receive the frame.
-            SyncAudioToFirstVideoFrame(debugTimestamp, startQpc100ns);
-        }
+        const bool commitsFirstVideoFrame = this->firstVideoFrameMs == 0;
 
         const int64_t steadyElapsedUs =
-            std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
+            commitsFirstVideoFrame
+                ? 0
+                : std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
         int64_t realElapsedUs = steadyElapsedUs;
         if (SessionUsesVfr()) {
             realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, injectTimelineState);
@@ -2023,6 +2084,24 @@ public:
         }
         if (!res) {
             return false;
+        }
+
+        if (commitsFirstVideoFrame) {
+            // Commit the media/audio anchor only after the encoder accepted the
+            // first frame. A failed/deferred candidate must not discard audio
+            // or establish a PTS origin for pixels that were never emitted.
+            this->firstVideoFrameMs = debugTimestamp;
+            this->recordingStartTime = now;
+            const int64_t startQpc100ns =
+                (qpcFreq > 0 && timestampQPC > 0)
+                    ? static_cast<int64_t>(ce::audio::RawQpcToHundredNanoseconds(static_cast<uint64_t>(timestampQPC),
+                                                                                 static_cast<uint64_t>(qpcFreq)))
+                    : 0;
+            DLL_Log(
+                "MediaEngine: First successfully encoded inject frame at %lld ms (QPC: %lld) - syncing audio "
+                "(StartQPC: %lld)",
+                debugTimestamp, timestampQPC, debugTimestamp);
+            SyncAudioToFirstVideoFrame(debugTimestamp, startQpc100ns);
         }
 
         const bool cfrRecording = IsCfrRecording();
@@ -2150,10 +2229,12 @@ public:
         auto now = std::chrono::steady_clock::now();
         int64_t debugTimestamp = (qpcFreq > 0) ? (timestampQPC * 1000) / qpcFreq : timestampQPC;
 
-        if (this->firstVideoFrameMs == 0) {
-            this->firstVideoFrameMs = debugTimestamp;
-
-            int64_t anchorQPC = timestampQPC;
+        const bool commitsFirstVideoFrame = this->firstVideoFrameMs == 0;
+        int64_t firstAnchorQpc = timestampQPC;
+        int64_t firstAnchorMs = debugTimestamp;
+        int64_t firstStartQpc100ns = 0;
+        bool firstPreservePendingPackets = false;
+        if (commitsFirstVideoFrame) {
             if (IsWgcCfrRecording()) {
                 const double renderDelayMs = GetMaxAudioCaptureLatencyMs();
                 const int64_t renderDelayQpc = GetMaxAudioCaptureLatencyQpc();
@@ -2170,55 +2251,50 @@ public:
                 const double startupDelayMs =
                     qpcFreq > 0 ? (static_cast<double>(startupDelayQpc) * 1000.0) / static_cast<double>(qpcFreq)
                                 : renderDelayMs;
-                anchorQPC = ce::capture_policy::GetWgcStartupAudioAnchorQpc(timestampQPC, renderDelayQpc);
+                firstAnchorQpc = ce::capture_policy::GetWgcStartupAudioAnchorQpc(timestampQPC, renderDelayQpc);
                 LARGE_INTEGER qpcNow;
                 QueryPerformanceCounter(&qpcNow);
                 const int64_t nowQPC = qpcNow.QuadPart;
                 const int64_t frameAgeUs =
                     (qpcFreq > 0 && nowQPC > timestampQPC) ? ((nowQPC - timestampQPC) * 1000000) / qpcFreq : 0;
                 const int64_t audioAnchorDelayUs =
-                    (qpcFreq > 0 && anchorQPC > timestampQPC) ? ((anchorQPC - timestampQPC) * 1000000) / qpcFreq : 0;
+                    (qpcFreq > 0 && firstAnchorQpc > timestampQPC)
+                        ? ((firstAnchorQpc - timestampQPC) * 1000000) / qpcFreq
+                        : 0;
                 const int64_t startupContentDelayUs =
                     qpcFreq > 0 ? (startupDelayQpc * 1000000) / qpcFreq : audioAnchorDelayUs;
                 DLL_Log(
-                    "MediaEngine: WGC CFR startup anchor selected from first accepted video frame plus render delay "
+                    "MediaEngine: WGC CFR startup anchor candidate from first frame plus render delay "
                     "(videoQPC=%lld anchorQPC=%lld nowQPC=%lld frameAge=%lldus startupContentDelay=%lldus "
                     "audioAnchorDelay=%lldus contentDelayMs=%.3f renderDelayMs=%.3f smoothExtraDelayMs=%.3f "
                     "confidence=%s reason=%s)",
-                    timestampQPC, anchorQPC, nowQPC, frameAgeUs, startupContentDelayUs, audioAnchorDelayUs,
+                    timestampQPC, firstAnchorQpc, nowQPC, frameAgeUs, startupContentDelayUs, audioAnchorDelayUs,
                     startupDelayMs, renderDelayMs, smoothExtraDelayMs, config.avSyncConfidence.c_str(),
                     config.avSyncReason.c_str());
                 DLL_Log(
-                    "[AVSyncApply] wgc_start_anchor: videoQpc=%lld audioAnchorQpc=%lld audioAnchorDelayUs=%lld "
+                    "[AVSyncApply] wgc_start_anchor_candidate: videoQpc=%lld audioAnchorQpc=%lld audioAnchorDelayUs=%lld "
                     "startupContentDelayUs=%lld contentDelayMs=%.3f renderDelayMs=%.3f smoothExtraDelayMs=%.3f "
                     "confidence=%s reason=%s",
-                    timestampQPC, anchorQPC, audioAnchorDelayUs, startupContentDelayUs, startupDelayMs, renderDelayMs,
-                    smoothExtraDelayMs, config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
+                    timestampQPC, firstAnchorQpc, audioAnchorDelayUs, startupContentDelayUs, startupDelayMs,
+                    renderDelayMs, smoothExtraDelayMs, config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
             }
 
-            const int64_t anchorMs = (qpcFreq > 0 && anchorQPC > 0) ? (anchorQPC * 1000) / qpcFreq : debugTimestamp;
-            this->recordingStartTime = now;
-            const int64_t startQpc100ns = (qpcFreq > 0 && anchorQPC > 0)
-                                              ? static_cast<int64_t>(ce::audio::RawQpcToHundredNanoseconds(
-                                                    static_cast<uint64_t>(anchorQPC), static_cast<uint64_t>(qpcFreq)))
-                                              : 0;
-            // Start of recording logic
-            DLL_Log(
-                "MediaEngine: First D3D11 frame at %lld ms (QPC: %lld) "
-                "(StartQPC: %lld)",
-                debugTimestamp, timestampQPC, anchorMs);
-
-            // Reset elapsed clock for audio sync
-            videoElapsedMs.store(0);
-
-            const bool preservePendingPackets = ce::audio::ShouldPreservePendingAudioPacketsForStartupSync(
+            firstAnchorMs =
+                (qpcFreq > 0 && firstAnchorQpc > 0) ? (firstAnchorQpc * 1000) / qpcFreq : debugTimestamp;
+            firstStartQpc100ns =
+                (qpcFreq > 0 && firstAnchorQpc > 0)
+                    ? static_cast<int64_t>(ce::audio::RawQpcToHundredNanoseconds(
+                          static_cast<uint64_t>(firstAnchorQpc), static_cast<uint64_t>(qpcFreq)))
+                    : 0;
+            firstPreservePendingPackets = ce::audio::ShouldPreservePendingAudioPacketsForStartupSync(
                 IsWgcCfrRecording(), wgcStartupExtraDelayQpc.load(std::memory_order_acquire));
-            SyncAudioToFirstVideoFrame(anchorMs, startQpc100ns, preservePendingPackets);
         }
 
         int64_t realElapsedUs = 0;
         const int64_t steadyElapsedUs =
-            std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
+            commitsFirstVideoFrame
+                ? 0
+                : std::chrono::duration_cast<std::chrono::microseconds>(now - this->recordingStartTime).count();
         if (SessionUsesVfr()) {
             realElapsedUs = ComputeSourceDrivenElapsedUs(qpcFreq, timestampQPC, steadyElapsedUs, d3d11TimelineState);
         } else {
@@ -2237,7 +2313,15 @@ public:
             DLL_Log("MediaEngine: D3D11 frame encode failed at ts=%lld", debugTimestamp);
             return false;
         }
-        const int64_t committedElapsedUs = GetCommittedVideoElapsedUs(realElapsedUs);
+        if (commitsFirstVideoFrame) {
+            this->firstVideoFrameMs = debugTimestamp;
+            this->recordingStartTime = now;
+            videoElapsedMs.store(0);
+            DLL_Log(
+                "MediaEngine: First successfully encoded D3D11 frame at %lld ms (QPC: %lld) (StartQPC: %lld)",
+                debugTimestamp, timestampQPC, firstAnchorMs);
+            SyncAudioToFirstVideoFrame(firstAnchorMs, firstStartQpc100ns, firstPreservePendingPackets);
+        }
         // Keep the WGC live timeline anchored to the scheduled CFR wall clock even
         // when the encoder has fallen behind. Audio diagnostics and buffering logic
         // need to see that shortfall rather than the shortened encoded duration.
@@ -2264,6 +2348,217 @@ public:
         return true;
     }
 
+    void AppendSyncResamplerOutput(AudioSource& src, size_t srcIdx, int channels, uint8_t** resampledData,
+                                   int outSamples) {
+        if (outSamples <= 0) {
+            return;
+        }
+
+        const uint64_t syntheticPostSamples = ce::audio::ConsumeSyntheticBufferedSamples(
+            src.startupSyntheticResamplerSamples, static_cast<uint64_t>(outSamples));
+        src.startupSyntheticPostSamples += syntheticPostSamples;
+        if (!resampledData || !resampledData[0]) {
+            DLL_Log("[PullAudio] ERROR: sync resampler returned %d samples without data for src=%zu", outSamples,
+                    srcIdx);
+            return;
+        }
+
+        constexpr int kMixerSampleRate = 48000;
+        float* outFloats = reinterpret_cast<float*>(resampledData[0]);
+        if (src.dropFadeSamplesRemaining > 0) {
+            const int kDropFadeSamples = kMixerSampleRate / 40;
+            const int blendSamples = std::min(src.dropFadeSamplesRemaining, outSamples);
+            const int blendStart = kDropFadeSamples - src.dropFadeSamplesRemaining;
+            for (int sample = 0; sample < blendSamples; ++sample) {
+                const float alpha = static_cast<float>(blendStart + sample + 1) / kDropFadeSamples;
+                for (int channel = 0; channel < channels; ++channel) {
+                    const size_t index = static_cast<size_t>(sample) * channels + channel;
+                    const float anchor = GetDropFadeAnchor(src, channel);
+                    outFloats[index] = anchor + (outFloats[index] - anchor) * alpha;
+                }
+            }
+            if (blendSamples > 0) {
+                src.dropFadeStart.assign(static_cast<size_t>(channels), 0.0f);
+                const size_t base = static_cast<size_t>(blendSamples - 1) * channels;
+                for (int channel = 0; channel < channels; ++channel) {
+                    src.dropFadeStart[static_cast<size_t>(channel)] = outFloats[base + channel];
+                }
+                src.dropFadeStartL = src.dropFadeStart[0];
+                src.dropFadeStartR = channels > 1 ? src.dropFadeStart[1] : src.dropFadeStart[0];
+            }
+            src.dropFadeSamplesRemaining -= blendSamples;
+        }
+
+        if (src.packetBoundaryFadeInSamplesRemaining > 0) {
+            const int blendSamples = std::min(src.packetBoundaryFadeInSamplesRemaining, outSamples);
+            for (int sample = 0; sample < blendSamples; ++sample) {
+                const float alpha = ComputeRaisedCosineFade(
+                    static_cast<size_t>(sample),
+                    static_cast<size_t>(std::max(src.packetBoundaryFadeInSamplesRemaining, 1)));
+                const size_t base = static_cast<size_t>(sample) * channels;
+                for (int channel = 0; channel < channels; ++channel) {
+                    outFloats[base + channel] *= alpha;
+                }
+            }
+            src.packetBoundaryFadeInSamplesRemaining -= blendSamples;
+        }
+
+        if (src.pendingUnderrunRecoveryFade) {
+            src.underrunFadeSamplesRemaining = kMixerSampleRate / 40;
+            src.pendingUnderrunRecoveryFade = false;
+        }
+        if (src.underrunFadeSamplesRemaining > 0) {
+            const int kUnderrunFadeSamples = kMixerSampleRate / 40;
+            const int blendSamples = std::min(src.underrunFadeSamplesRemaining, outSamples);
+            const int blendStart = kUnderrunFadeSamples - src.underrunFadeSamplesRemaining;
+            for (int sample = 0; sample < blendSamples; ++sample) {
+                const float alpha = static_cast<float>(blendStart + sample + 1) / kUnderrunFadeSamples;
+                const size_t base = static_cast<size_t>(sample) * channels;
+                for (int channel = 0; channel < channels; ++channel) {
+                    outFloats[base + channel] *= alpha;
+                }
+            }
+            src.underrunFadeSamplesRemaining -= blendSamples;
+        }
+
+        const int numFloats = outSamples * channels;
+        src.postResampleBuffer.insert(src.postResampleBuffer.end(), outFloats, outFloats + numFloats);
+        src.syncSamplesOutput += outSamples;
+
+        if (dropLogCounter++ % 500 == 0 &&
+            (src.overflowDropSamples > 0 || src.latencyTrimSamples > 0 || src.postResampleTrimSamples > 0)) {
+            const uint64_t categorizedLatencyTrim =
+                std::min(src.latencyTrimSamples, src.bootstrapTrimSamples + src.retainedNewestTrimSamples +
+                                                     src.coverageLossTrimSamples + src.tier2TrimSamples);
+            const uint64_t uncategorizedLatencyTrim = src.latencyTrimSamples - categorizedLatencyTrim;
+            DLL_Log(
+                "[PullAudio] Sample trim stats src=%zu: overflowDropped=%llu latencyTrimTotal=%llu "
+                "bootstrapTrim=%llu retainedTrim=%llu coverageTrim=%llu tier2Trim=%llu "
+                "uncategorizedLiveTrim=%llu postResampleTrim=%llu",
+                srcIdx, static_cast<unsigned long long>(src.overflowDropSamples),
+                static_cast<unsigned long long>(src.latencyTrimSamples),
+                static_cast<unsigned long long>(src.bootstrapTrimSamples),
+                static_cast<unsigned long long>(src.retainedNewestTrimSamples),
+                static_cast<unsigned long long>(src.coverageLossTrimSamples),
+                static_cast<unsigned long long>(src.tier2TrimSamples),
+                static_cast<unsigned long long>(uncategorizedLatencyTrim),
+                static_cast<unsigned long long>(src.postResampleTrimSamples));
+        }
+    }
+
+    bool PumpSourceRingThroughSyncResampler(AudioSource& src, size_t srcIdx, int channels, size_t maxFloats) {
+        if (!src.ringBuffer || !src.syncResampler || !src.syncResampler->IsReady() || channels <= 0) {
+            return false;
+        }
+
+        size_t chunkFloats = std::min(src.ringBuffer->GetAvailable(), maxFloats);
+        chunkFloats -= chunkFloats % static_cast<size_t>(channels);
+        if (chunkFloats == 0) {
+            return false;
+        }
+
+        const size_t bufferedSamples = src.ringBuffer->GetAvailable() / static_cast<size_t>(channels);
+        src.ringBufferPeakSamples = std::max(src.ringBufferPeakSamples, static_cast<uint64_t>(bufferedSamples));
+        std::vector<float> ringData(chunkFloats);
+        const size_t actualRead = src.ringBuffer->Read(ringData.data(), chunkFloats);
+        if (actualRead == 0) {
+            return false;
+        }
+
+        const size_t actualReadSamples = actualRead / static_cast<size_t>(channels);
+        const uint64_t syntheticReadSamples =
+            ce::audio::ConsumeSyntheticBufferedSamples(src.startupSyntheticRingSamples, actualReadSamples);
+        src.startupSyntheticResamplerSamples += syntheticReadSamples;
+
+        uint8_t** resampledData = nullptr;
+        int outSamples = 0;
+        const bool processed = src.syncResampler->Process(reinterpret_cast<uint8_t*>(ringData.data()),
+                                                           static_cast<int>(actualRead * sizeof(float)),
+                                                           &resampledData, &outSamples);
+        if (processed) {
+            AppendSyncResamplerOutput(src, srcIdx, channels, resampledData, outSamples);
+        } else {
+            DLL_Log("[PullAudio] ERROR: sync resampler rejected %zu samples for src=%zu", actualReadSamples,
+                    srcIdx);
+        }
+        AudioResampler::FreeOutputBuffer(resampledData);
+        return true;
+    }
+
+    void FlushAudioOnlyResamplerTails() {
+        constexpr size_t kMaxFlushPasses = 8;
+        constexpr size_t kSyncPumpSamples = 4800;
+        for (size_t srcIdx = 0; srcIdx < audioSources.size(); ++srcIdx) {
+            auto& src = audioSources[srcIdx];
+            const TrackAudioFormat trackFormat = GetTrackAudioFormat(src.track);
+            const int channels = std::clamp(trackFormat.channels, 1, 8);
+
+            size_t captureTailSamples = 0;
+            if (src.resampler && src.resampler->IsReady() && src.ringBuffer) {
+                for (size_t pass = 0; pass < kMaxFlushPasses; ++pass) {
+                    uint8_t** tailData = nullptr;
+                    int tailSamples = 0;
+                    if (!src.resampler->Flush(&tailData, &tailSamples)) {
+                        AudioResampler::FreeOutputBuffer(tailData);
+                        break;
+                    }
+                    if (tailSamples > 0 && tailData && tailData[0]) {
+                        float* tailFloats = reinterpret_cast<float*>(tailData[0]);
+                        if (src.packetBoundaryFadeInSamplesRemaining > 0) {
+                            const size_t fadeSamples =
+                                static_cast<size_t>(src.packetBoundaryFadeInSamplesRemaining);
+                            ApplyPacketBoundaryFadeIn(tailFloats, static_cast<size_t>(tailSamples),
+                                                      static_cast<size_t>(channels), fadeSamples);
+                            src.packetBoundaryFadeInSamplesRemaining =
+                                fadeSamples > static_cast<size_t>(tailSamples)
+                                    ? static_cast<int>(fadeSamples - static_cast<size_t>(tailSamples))
+                                    : 0;
+                        }
+                        const size_t writtenFloats = src.ringBuffer->WriteRetainNew(
+                            tailFloats, static_cast<size_t>(tailSamples) * static_cast<size_t>(channels));
+                        const size_t writtenSamples = writtenFloats / static_cast<size_t>(channels);
+                        src.qpcAlignedWrittenSamples += writtenSamples;
+                        captureTailSamples += writtenSamples;
+                    }
+                    AudioResampler::FreeOutputBuffer(tailData);
+                }
+            }
+
+            size_t syncInputSamples = 0;
+            while (src.ringBuffer && src.ringBuffer->GetAvailable() >= static_cast<size_t>(channels)) {
+                const size_t before = src.ringBuffer->GetAvailable();
+                if (!PumpSourceRingThroughSyncResampler(src, srcIdx, channels,
+                                                        kSyncPumpSamples * static_cast<size_t>(channels))) {
+                    break;
+                }
+                syncInputSamples += (before - src.ringBuffer->GetAvailable()) / static_cast<size_t>(channels);
+            }
+
+            size_t syncTailSamples = 0;
+            if (src.syncResampler && src.syncResampler->IsReady()) {
+                for (size_t pass = 0; pass < kMaxFlushPasses; ++pass) {
+                    uint8_t** tailData = nullptr;
+                    int tailSamples = 0;
+                    if (!src.syncResampler->Flush(&tailData, &tailSamples)) {
+                        AudioResampler::FreeOutputBuffer(tailData);
+                        break;
+                    }
+                    AppendSyncResamplerOutput(src, srcIdx, channels, tailData, tailSamples);
+                    syncTailSamples += static_cast<size_t>(std::max(tailSamples, 0));
+                    AudioResampler::FreeOutputBuffer(tailData);
+                }
+            }
+
+            if (captureTailSamples > 0 || syncTailSamples > 0) {
+                DLL_Log(
+                    "[StopAudio] Flushed audio-only resampler tails: src=%zu track=%d captureTail=%zu "
+                    "syncInput=%zu syncTail=%zu postBuffered=%zu",
+                    srcIdx, src.track, captureTailSamples, syncInputSamples, syncTailSamples,
+                    src.postResampleBuffer.size() / static_cast<size_t>(channels));
+            }
+        }
+    }
+
     // PULL MODEL: Pull audio from RingBuffers and encode against the relative
     // recording timeline that also drives CFR video emission.
     void PullAndEncodeAudio(int64_t videoTimelineUs, bool forceDrain = false) {
@@ -2280,10 +2575,6 @@ public:
         constexpr int64_t kRuntimeMaxDropPerCall = SAMPLE_RATE / 200;           // 5ms
         constexpr int64_t kRuntimeDropFadeSamples = SAMPLE_RATE / 100;          // 10ms
         constexpr int64_t kOverloadAudioPullQuantumSamples = SAMPLE_RATE / 50;  // 20ms
-        constexpr int64_t kPacketTimelineFadeSamples = SAMPLE_RATE / 750;       // ~1.33ms
-        constexpr int64_t kStartupPacketTimelineWindowSamples = (SAMPLE_RATE * 150) / 1000;
-        constexpr int64_t kStartupPacketTimelineSlopSamples = SAMPLE_RATE / 250;          // 4ms
-        constexpr int64_t kStartupPacketOverlapTrimThresholdSamples = SAMPLE_RATE / 200;  // 5ms
         constexpr int64_t kLatencyTrimHysteresisSamples = ce::audio::kDefaultAudioPullQuantumSamples;
         constexpr int64_t kMinCompensationBufferSamples = kBaseTargetLatencySamples / 4;
         constexpr int64_t kWgcCfrLeadWarningSamples = SAMPLE_RATE / 10;  // 100ms
@@ -2306,8 +2597,11 @@ public:
             ce::audio::kDefaultAudioPullQuantumSamples;  // 5ms paced overload trim quantum
         constexpr int64_t kWgcVisualSyncMaxBufferedLagMs = 4000;
 
-        const bool isCfrRecording = IsCfrRecording();
-        const bool isWgcCfrRecording = IsWgcCfrRecording();
+        // Audio-only recording follows its wall-clock timeline. Video CFR
+        // continuity policies (encoder-lag reservoirs, CFR source waits, and
+        // overload trimming) do not apply when there is no video encoder.
+        const bool isCfrRecording = !audioOnly && IsCfrRecording();
+        const bool isWgcCfrRecording = !audioOnly && IsWgcCfrRecording();
         const int64_t wallVideoMs = this->videoElapsedMs.load();
         int64_t encodedVideoMs = 0;
         int64_t audioTargetUs = videoTimelineUs;
@@ -2539,8 +2833,8 @@ public:
             }
 
             if (!trackBootstrapComplete[track]) {
-                constexpr bool forcedBootstrap = false;
-                if (!trackReadyForBootstrap) {
+                const bool forcedBootstrap = forceDrain;
+                if (!trackReadyForBootstrap && !forcedBootstrap) {
                     int& waitLogCounter = trackBootstrapWaitLogCounters[track];
                     if (waitLogCounter++ % 120 == 0) {
                         DLL_Log("[PullAudio] Track %d bootstrap pending - target=%lldms samples=%lld", track,
@@ -4351,15 +4645,11 @@ private:
             DLL_Log("AudioLoop: Track %d sources: [%s]", kv.first, summary.c_str());
         }
 
-        bool needsMixing = false;
         for (auto& kv : trackSourceCount) {
             if (kv.second > 1) {
-                needsMixing = true;
                 DLL_Log("AudioLoop: Track %d has %d sources - REAL mixing enabled", kv.first, kv.second);
             }
         }
-
-        const int MIX_CHUNK_SAMPLES = 480;  // 10ms at 48kHz
         constexpr int64_t kStartupFirstPacketGapCapSamples = 480;
         constexpr int64_t kStartupFirstPacketRebaseThresholdSamples = 2400;
 
@@ -4374,6 +4664,7 @@ private:
         std::vector<int64_t> deferredFirstTimelinePacketStartSamples(audioSources.size(), 0);
         int64_t sharedStartupRebaseOffsetSamples = -1;
         int64_t lastSeenStartQPC = 0;  // Detect recording session changes
+        bool audioOnlyStopTailFinalized = false;
 
         // Per-source A/V equalization: delay each audio source so every source sits at the same
         // (max) capture latency, matching the video content delay. Faster sources (e.g. a
@@ -4417,7 +4708,7 @@ private:
             return src.sourceType != AudioConfig::Microphone;
         };
 
-        auto trySelectSharedStartupRebase = [&]() -> bool {
+        auto trySelectSharedStartupRebase = [&](bool finalStopDrain = false) -> bool {
             if (sharedStartupRebaseOffsetSamples >= 0) {
                 return true;
             }
@@ -4444,8 +4735,13 @@ private:
                 sharedStartupRebaseOffsetSamples = 0;
                 return true;
             }
-            if (readyParticipants < participants) {
+            if (readyParticipants < participants && !finalStopDrain) {
                 return false;
+            }
+            if (readyParticipants < participants) {
+                DLL_Log(
+                    "[AudioLoop] Final stop bypassing absent shared-startup participants: ready=%zu total=%zu",
+                    readyParticipants, participants);
             }
             if (earliestPacketStartSamples == std::numeric_limits<int64_t>::max()) {
                 sharedStartupRebaseOffsetSamples = 0;
@@ -4467,7 +4763,8 @@ private:
 
         while (audioRunning) {
             if (audioSyncPending.load(std::memory_order_acquire) &&
-                preservePendingStartupAudioPackets.load(std::memory_order_acquire)) {
+                preservePendingStartupAudioPackets.load(std::memory_order_acquire) &&
+                !audioStopDrainRequested.load(std::memory_order_acquire)) {
                 std::unique_lock<std::mutex> lock(audioDrainMutex);
                 audioDrainCv.wait_for(lock, std::chrono::milliseconds(5), [this]() {
                     return !audioRunning.load(std::memory_order_acquire) ||
@@ -4535,7 +4832,8 @@ private:
                 bool gotDeferredFirstTimelinePacket = false;
 
                 if (deferredFirstTimelinePacketValid[srcIdx]) {
-                    if (!trySelectSharedStartupRebase()) {
+                    const bool finalStopDrain = audioStopDrainRequested.load(std::memory_order_acquire);
+                    if (!trySelectSharedStartupRebase(finalStopDrain)) {
                         gotAnyPacket = true;
                         continue;
                     }
@@ -4597,7 +4895,7 @@ private:
                         deferredFirstTimelinePackets[srcIdx] = std::move(packet);
                         deferredFirstTimelinePacketValid[srcIdx] = true;
                         gotAnyPacket = true;
-                        trySelectSharedStartupRebase();
+                        trySelectSharedStartupRebase(audioStopDrainRequested.load(std::memory_order_acquire));
                         continue;
                     }
 
@@ -4905,20 +5203,6 @@ private:
                                     const size_t writtenFloats =
                                         src.ringBuffer->WriteRetainNew(writeFloats, writeSamples * targetFmt.channels);
                                     src.qpcAlignedWrittenSamples += writtenFloats / targetFmt.channels;
-                                    // Audio-only: encode resampled float data to encoder
-                                    if (audioOnly && writeSamples > 0 && src.encoder && src.encoder->IsReady()) {
-                                        int sizeBytes = (int)(writeSamples * targetFmt.channels * sizeof(float));
-                                        src.encoder->EncodeSamples(
-                                            (const uint8_t*)writeFloats, sizeBytes, targetFmt.channels,
-                                            targetFmt.sampleRate,
-                                            sizeof(float) * 8,                        // bitsPerSample = 32
-                                            sizeof(float) * 8,                        // validBitsPerSample
-                                            targetFmt.channels * (int)sizeof(float),  // blockAlign
-                                            true,                                     // isFloat
-                                            targetFmt.channelMask, GetTickCount64());
-                                        // Track samples encoded per track for length alignment
-                                        trackEncodedSamples[src.track] += writeSamples;
-                                    }
                                 }
                             } else if (src.ringBuffer && audioSyncPending.load()) {
                                 // The sync gate is still closed, so this packet is
@@ -4942,12 +5226,94 @@ private:
             // PULL MODEL (Phase 2): Legacy audio mixing logic removed
             // ===================================================================
 
+            // Audio-only recording has no video thread to drive the pull model.
+            // Use the same per-track mixer as video recording so every source
+            // sharing a track contributes exactly once and every exported track
+            // advances from one coherent sample cursor.
+            if (audioOnly && recording && !audioStopDrainRequested.load(std::memory_order_acquire)) {
+                const int64_t elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                              std::chrono::steady_clock::now() - recordingStartTime)
+                                              .count();
+                if (elapsedUs > 0) {
+                    PullAndEncodeAudio(elapsedUs);
+                    ++mixCount;
+                }
+            }
+
             if (gotAnyPacket) {
                 audioDrainCv.notify_all();
             }
 
             if (!gotAnyPacket) {
                 if (audioStopDrainRequested.load(std::memory_order_acquire)) {
+                    if (audioOnly && recording && !audioOnlyStopTailFinalized) {
+                        // All capture queues are now empty. Flush both resampler
+                        // layers on their owning audio worker before selecting the
+                        // final shared-track endpoint, then force every track to
+                        // that same sample count.
+                        FlushAudioOnlyResamplerTails();
+
+                        constexpr int64_t kMixerSampleRate = 48000;
+                        const int64_t wallElapsedUs = std::max<int64_t>(
+                            0, std::chrono::duration_cast<std::chrono::microseconds>(
+                                   std::chrono::steady_clock::now() - recordingStartTime)
+                                   .count());
+                        int64_t finalTargetSamples =
+                            ce::audio::ComputeDurationUsToSamples(wallElapsedUs, kMixerSampleRate);
+                        for (const auto& src : audioSources) {
+                            finalTargetSamples = std::max<int64_t>(
+                                finalTargetSamples, static_cast<int64_t>(src.qpcAlignedWrittenSamples));
+                            finalTargetSamples = std::max(finalTargetSamples, src.syncSamplesOutput);
+                        }
+                        for (const auto& track : trackTimelineSamples) {
+                            finalTargetSamples = std::max(finalTargetSamples, track.second);
+                        }
+                        const int64_t finalTargetUs =
+                            (finalTargetSamples * 1000000ll + kMixerSampleRate - 1) / kMixerSampleRate;
+
+                        auto minimumTrackCursor = [this]() -> int64_t {
+                            if (cachedTrackToSources.empty()) {
+                                return 0;
+                            }
+                            int64_t minimum = std::numeric_limits<int64_t>::max();
+                            for (const auto& track : cachedTrackToSources) {
+                                const auto cursor = trackTimelineSamples.find(track.first);
+                                minimum = std::min(minimum,
+                                                   cursor != trackTimelineSamples.end() ? cursor->second : 0);
+                            }
+                            return minimum == std::numeric_limits<int64_t>::max() ? 0 : minimum;
+                        };
+
+                        const int64_t beforeDrain = minimumTrackCursor();
+                        const int64_t missingSamples = std::max<int64_t>(0, finalTargetSamples - beforeDrain);
+                        const int64_t maxDrainIterations =
+                            std::max<int64_t>(1, (missingSamples + (kMixerSampleRate / 2) - 1) /
+                                                     (kMixerSampleRate / 2) +
+                                                     8);
+                        int64_t drainIterations = 0;
+                        for (; drainIterations < maxDrainIterations; ++drainIterations) {
+                            const int64_t before = minimumTrackCursor();
+                            if (before >= finalTargetSamples || cachedTrackToSources.empty()) {
+                                break;
+                            }
+                            PullAndEncodeAudio(finalTargetUs, true);
+                            const int64_t after = minimumTrackCursor();
+                            if (after <= before) {
+                                DLL_Log(
+                                    "[StopAudio] WARNING: audio-only final pull made no progress: target=%lld "
+                                    "minimum=%lld iteration=%lld/%lld",
+                                    finalTargetSamples, after, drainIterations + 1, maxDrainIterations);
+                                break;
+                            }
+                        }
+                        const int64_t afterDrain = minimumTrackCursor();
+                        audioOnlyStopTailFinalized = true;
+                        DLL_Log(
+                            "[StopAudio] Audio-only mixed tail finalized: target=%lld samples wall=%lldus "
+                            "minimumBefore=%lld minimumAfter=%lld iterations=%lld tracks=%zu",
+                            finalTargetSamples, wallElapsedUs, beforeDrain, afterDrain, drainIterations,
+                            cachedTrackToSources.size());
+                    }
                     audioStopDrainComplete.store(true, std::memory_order_release);
                     audioDrainCv.notify_all();
                 }
@@ -5110,6 +5476,13 @@ MEDIAENGINE_API bool MediaEngine_CanRepeatLastFrame() {
         return g_Engine->CanRepeatLastFrame();
     }
     return false;
+}
+
+MEDIAENGINE_API void MediaEngine_ResetRepeatFrameCache() {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
+    if (g_Engine) {
+        g_Engine->ResetRepeatFrameCache();
+    }
 }
 
 MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,

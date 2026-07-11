@@ -82,6 +82,15 @@ TEST(CapturePipelinePolicyTest, WgcStopDrainRefusesHeldFrameRepeatPath) {
     EXPECT_FALSE(policy::CanDrainOutstandingWgcTicks(false, false, true, true));
 }
 
+TEST(CapturePipelinePolicyTest, ScheduledFreshEncodeFailureUsesPriorFrameWithoutTimelineHole) {
+    EXPECT_TRUE(policy::ShouldRepeatAfterScheduledFreshEncodeFailure(true, false, false, true, true));
+    EXPECT_FALSE(policy::ShouldRepeatAfterScheduledFreshEncodeFailure(false, false, false, true, true));
+    EXPECT_FALSE(policy::ShouldRepeatAfterScheduledFreshEncodeFailure(true, true, false, true, true));
+    EXPECT_FALSE(policy::ShouldRepeatAfterScheduledFreshEncodeFailure(true, false, true, true, true));
+    EXPECT_FALSE(policy::ShouldRepeatAfterScheduledFreshEncodeFailure(true, false, false, false, true));
+    EXPECT_FALSE(policy::ShouldRepeatAfterScheduledFreshEncodeFailure(true, false, false, true, false));
+}
+
 TEST(CapturePipelinePolicyTest, WgcLiveSchedulerRebaseIsBoundedToSingleTick) {
     EXPECT_EQ(policy::GetWgcLiveSchedulerRebaseTicksThisLoop(0, 32, 1), 0u);
     EXPECT_EQ(policy::GetWgcLiveSchedulerRebaseTicksThisLoop(20, 0, 1), 0u);

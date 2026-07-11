@@ -283,6 +283,18 @@ inline bool CanDrainOutstandingCfrTicks(bool useScreenGrab, bool queuedFrameAvai
     return queuedFrameAvailable || bufferedFrameAvailable || (hasLastFrame && mediaEngineCanRepeatLastFrame);
 }
 
+// A non-deferred fresh-frame failure must not punch a hole in an already
+// scheduled CFR timeline. If the encoder still owns a cache from the previous
+// successfully emitted frame, the caller can emit that content at the exact
+// scheduled timestamp and account it as a duplicate. Deferred inject frames
+// remain on their retry path and must not be mistaken for hard failures.
+inline bool ShouldRepeatAfterScheduledFreshEncodeFailure(bool scheduledCfrTick, bool freshEncodeSucceeded,
+                                                         bool freshEncodeDeferred, bool repeatPathAvailable,
+                                                         bool repeatCacheAvailable) {
+    return scheduledCfrTick && !freshEncodeSucceeded && !freshEncodeDeferred && repeatPathAvailable &&
+           repeatCacheAvailable;
+}
+
 // Returns the maximum number of output ticks to emit in a single encoder loop
 // iteration when catching up.  The value includes the main tick itself, so
 // "2" means 1 main + 1 extra repeat.

@@ -1,6 +1,6 @@
 # Multi Audio Capture
 
-Last cross-checked: 2026-07-01 (pre-start app-audio packet evidence now blocks optional silent bootstrap; plus multi-app track-freeze fix, catastrophic backlog resync, and capture re-activation)
+Last cross-checked: 2026-07-11 (worker-owned WASAPI lifecycle/reactivation, validated bounded packet allocation, bounded no-wait final drains, audio-loop failure handshake, and audio-only tail preservation)
 Stale-risk: medium
 
 Primary sources:
@@ -19,6 +19,8 @@ Primary sources:
 - `tests/test_audio_resampler.cpp`
 - `tests/test_audio_sync_utils.cpp`
 - `tests/test_audio_time_utils.cpp`
+- `tests/test_audio_capture_source.cpp`
+- `tests/test_audio_ring_buffer.cpp`
 - `tools/analyze_capture_av.py`
 - `testapp/av_sync_stimulus.h`
 - `testapp/dx12_av_sync_test.cpp`
@@ -27,6 +29,14 @@ Primary sources:
 - `tests/test_av_sync_stimulus.cpp`
 
 ## Summary
+
+### WASAPI lifecycle and stop-tail invariants (2026-07-11)
+
+Endpoint capture owns COM initialization, device enumeration, activation, `IAudioClient`/`IAudioCaptureClient`, start, reactivation, and release entirely on its worker thread. The controlling thread only signals, waits for the startup handshake, and joins. Reactivation is serialized with stop and every partial failure clears the capture interface before retry. Process-loopback async activation has an explicit cancellation event and does not pay the same mode-independent timeout twice.
+
+Both endpoint and process-loopback workers validate the announced/actual frame count, endpoint-buffer bound, sample rate, checked frame-to-byte multiplication, and non-silent data pointer before allocating or copying. Allocation and queue-insertion failures are contained and logged. Queue replacement is transactional: a new packet is inserted before the oldest packet is removed, so allocation failure cannot lose both. `AUDCLNT_S_BUFFER_EMPTY` never calls `ReleaseBuffer` because no packet was acquired.
+
+Stop performs exactly one no-wait/no-reactivation final drain of already committed WASAPI packets, bounded by the endpoint buffer (or the universal two-second packet bound when buffer telemetry is unavailable). Capture sources stop while `AudioLoop` is still consuming; a drain request/complete handshake empties their queues before the loop exits. Audio-only recording also flushes source and track resamplers and pulls every exported track to a common final cursor. Any exception escaping `AudioLoop` stops producers, marks the loop stopped, completes the drain handshake, and wakes all waiters, preventing shutdown deadlock.
 
 The audio pipeline supports separate system audio, microphone, and process/app audio sources, with each source assigned to one or more output tracks. Track format is resolved per output track before encoder creation: sample rate, channel count, channel mask/layout, codec, bitrate, and bit depth are no longer hard-coded to stereo.
 

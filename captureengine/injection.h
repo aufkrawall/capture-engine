@@ -7,6 +7,7 @@
 #include <wbemidl.h>
 #include <atomic>
 #include <comdef.h>
+#include <condition_variable>
 #include <functional>
 #include <list>
 #include <thread>
@@ -15,8 +16,7 @@
 #include <string>
 #include <vector>
 
-// CRITICAL FIX: Inherit from enable_shared_from_this for safe delayed injection
-class InjectionManager : public std::enable_shared_from_this<InjectionManager> {
+class InjectionManager {
 public:
   InjectionManager(const AppConfig &config);
   ~InjectionManager();
@@ -65,15 +65,20 @@ public:
   // WMI Event Sink
   class ProcessEventSink : public IWbemObjectSink {
     LONG m_lRef;
-    std::atomic<bool> bDone;
+    bool bDone;
+    uint32_t activeCallbacks;
+    std::mutex callbackMutex;
+    std::condition_variable callbacksDrained;
     InjectionManager *pManager;
 
   public:
     ProcessEventSink(InjectionManager *manager)
-        : m_lRef(0), bDone(false), pManager(manager) {}
-    virtual ~ProcessEventSink() { bDone.store(true, std::memory_order_release); }
+        : m_lRef(0), bDone(false), activeCallbacks(0), pManager(manager) {}
+    virtual ~ProcessEventSink() { MarkDoneAndDrain(); }
 
-    void MarkDone() { bDone.store(true, std::memory_order_release); }
+    bool EnterCallback();
+    void LeaveCallback();
+    void MarkDoneAndDrain();
 
     virtual ULONG STDMETHODCALLTYPE AddRef();
     virtual ULONG STDMETHODCALLTYPE Release();
@@ -122,10 +127,10 @@ private:
   IUnsecuredApartment *pUnsecApp = nullptr;
   ProcessEventSink *pSink = nullptr;
   IWbemObjectSink *pStubSink = nullptr;
+  bool wmiCoInitNeedsUninitialize = false;
 
   void ScanExistingProcesses();
-  void LaunchDelayedInjectionThread(const std::shared_ptr<InjectionManager> &managerShared,
-                                    DWORD pid, const std::string &name,
+  void LaunchDelayedInjectionThread(DWORD pid, const std::string &name,
                                     const char *sourceTag);
   void ReapCompletedDelayedInjectionThreadsLocked();
   bool IsWhitelisted(const std::string &processName);

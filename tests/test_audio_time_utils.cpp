@@ -67,8 +67,7 @@ TEST(AudioTimeUtilsTest, SanitizeCaptureQpcReplacesFarFutureGarbage) {
     const uint64_t garbageFuture = now + 429000000000000ULL;  // ~497 days ahead
     EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(garbageFuture, now), now);
     // Just past the future tolerance also gets corrected.
-    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(
-                  now + ce::audio::kDefaultCaptureQpcFutureToleranceUnits + 1, now),
+    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(now + ce::audio::kDefaultCaptureQpcFutureToleranceUnits + 1, now),
               now);
 }
 
@@ -76,12 +75,10 @@ TEST(AudioTimeUtilsTest, SanitizeCaptureQpcReplacesFarPastGarbage) {
     const uint64_t now = 305000000000ULL;
     // Absurdly stale / near-zero positions are also out-of-domain.
     EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(0, now), now);
-    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(
-                  now - ce::audio::kDefaultCaptureQpcPastToleranceUnits - 1, now),
+    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(now - ce::audio::kDefaultCaptureQpcPastToleranceUnits - 1, now),
               now);
     // Within the past tolerance -> preserved.
-    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(
-                  now - ce::audio::kDefaultCaptureQpcPastToleranceUnits + 1, now),
+    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(now - ce::audio::kDefaultCaptureQpcPastToleranceUnits + 1, now),
               now - ce::audio::kDefaultCaptureQpcPastToleranceUnits + 1);
 }
 
@@ -89,6 +86,41 @@ TEST(AudioTimeUtilsTest, SanitizeCaptureQpcTrustsValueWhenNoReferenceClock) {
     // nowQpc100ns == 0 means QueryPerformanceCounter is unavailable; trust the value.
     const uint64_t reported = 999999999999999ULL;
     EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(reported, 0), reported);
+}
+
+TEST(AudioTimeUtilsTest, SanitizeCaptureQpcHandlesCounterValuesNearUint64Max) {
+    const uint64_t max = std::numeric_limits<uint64_t>::max();
+    const uint64_t now = max - 100;
+    // A small future delta must survive even though now + tolerance would wrap.
+    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(max - 50, now, 100, 100), max - 50);
+    // A delta outside the explicit tolerance is replaced without overflowing.
+    EXPECT_EQ(ce::audio::SanitizeCaptureQpcPosition(max, now, 50, 100), now);
+}
+
+TEST(AudioTimeUtilsTest, WasapiPacketFrameCountRequiresExactBoundedPacket) {
+    EXPECT_TRUE(ce::audio::IsWasapiCapturePacketFrameCountValid(480, 480, 960, 48000));
+    EXPECT_TRUE(ce::audio::IsWasapiCapturePacketFrameCountValid(480, 480, 0, 48000));
+    EXPECT_FALSE(ce::audio::IsWasapiCapturePacketFrameCountValid(480, 479, 960, 48000));
+    EXPECT_FALSE(ce::audio::IsWasapiCapturePacketFrameCountValid(0, 0, 960, 48000));
+    EXPECT_FALSE(ce::audio::IsWasapiCapturePacketFrameCountValid(961, 961, 960, 48000));
+    EXPECT_FALSE(ce::audio::IsWasapiCapturePacketFrameCountValid(480, 480, 960, 0));
+}
+
+TEST(AudioTimeUtilsTest, WasapiPacketFrameCountHasAbsoluteLiveCaptureBoundWithoutTelemetry) {
+    constexpr uint32_t sampleRate = 48000;
+    const uint32_t maxFrames = ce::audio::MaxWasapiCapturePacketFrames(sampleRate);
+    ASSERT_EQ(maxFrames, sampleRate * ce::audio::kMaxWasapiCapturePacketDurationSeconds);
+    EXPECT_TRUE(ce::audio::IsWasapiCapturePacketFrameCountValid(maxFrames, maxFrames, 0, sampleRate));
+    EXPECT_FALSE(ce::audio::IsWasapiCapturePacketFrameCountValid(maxFrames + 1, maxFrames + 1, 0, sampleRate));
+}
+
+TEST(AudioTimeUtilsTest, AudioPacketByteSizeIsChecked) {
+    size_t bytes = 0;
+    EXPECT_TRUE(ce::audio::TryComputeAudioPacketByteSize(480, 8, &bytes));
+    EXPECT_EQ(bytes, 3840u);
+    EXPECT_FALSE(ce::audio::TryComputeAudioPacketByteSize(0, 8, &bytes));
+    EXPECT_FALSE(ce::audio::TryComputeAudioPacketByteSize(480, 0, &bytes));
+    EXPECT_FALSE(ce::audio::TryComputeAudioPacketByteSize(480, 8, nullptr));
 }
 
 TEST(AudioTimeUtilsTest, ParseSampleRateAcceptsDefaultSentinelAndEmpty) {
@@ -122,4 +154,3 @@ TEST(AudioTimeUtilsTest, ParseSampleRateRejectsPartialNumbersStrictly) {
     EXPECT_EQ(ce::audio::ParseSampleRateOr("48000abc", 44100), 44100);
     EXPECT_EQ(ce::audio::ParseSampleRateOr("44100x", 96000), 96000);
 }
-

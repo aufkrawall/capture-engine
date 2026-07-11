@@ -231,6 +231,35 @@ TEST(FrameQueueHardeningTest, ClearReleasesAllQueuedTextures) {
     EXPECT_TRUE(queue.IsEmpty());
 }
 
+TEST(FrameQueueHardeningTest, RetargetDropsOnlyRetiredWgcEpochs) {
+    FrameQueue queue(4);
+    FakeTexture2D retiredTexture;
+    FakeTexture2D activeTexture;
+
+    QueuedFrame retired;
+    retired.texture = &retiredTexture;
+    retired.wgcSourceEpoch = 4;
+    ASSERT_TRUE(queue.Push(std::move(retired), false));
+
+    QueuedFrame active;
+    active.texture = &activeTexture;
+    active.wgcSourceEpoch = 5;
+    ASSERT_TRUE(queue.Push(std::move(active), false));
+
+    QueuedFrame inject;
+    inject.isInjectMode = true;
+    inject.wgcSourceEpoch = 0;
+    ASSERT_TRUE(queue.Push(std::move(inject), false));
+
+    EXPECT_EQ(queue.DiscardWgcEpochNotEqual(5), 1u);
+    EXPECT_EQ(retiredTexture.ReleaseCallCount(), 1u);
+    EXPECT_EQ(activeTexture.ReleaseCallCount(), 0u);
+    EXPECT_EQ(queue.Size(), 2u);
+
+    queue.Clear();
+    EXPECT_EQ(activeTexture.ReleaseCallCount(), 1u);
+}
+
 TEST(FrameQueueHardeningTest, DestructorReleasesRemainingTextures) {
     FakeTexture2D texture;
     {

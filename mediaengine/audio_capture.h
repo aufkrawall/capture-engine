@@ -4,6 +4,7 @@
 #include <mmdeviceapi.h>
 #include <windows.h>
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -15,18 +16,18 @@
 
 struct AudioPacket {
     std::vector<uint8_t> data;
-    int64_t timestamp;  // ms
-    int channels;
-    int sampleRate;
-    int bitsPerSample;
-    int blockAlign;
-    int validBitsPerSample;
-    uint32_t channelMask;
-    bool isFloat;
-    uint64_t devicePosition;  // For debug drift analysis
-    uint64_t qpcPosition;     // Latency-compensated WASAPI packet QPC position in 100-ns units
-    uint64_t rawQpcPosition;  // Raw WASAPI GetBuffer QPC position in 100-ns units
-    uint64_t streamLatency;   // IAudioClient stream latency in 100-ns units used for compensation
+    int64_t timestamp = 0;  // ms
+    int channels = 0;
+    int sampleRate = 0;
+    int bitsPerSample = 0;
+    int blockAlign = 0;
+    int validBitsPerSample = 0;
+    uint32_t channelMask = 0;
+    bool isFloat = false;
+    uint64_t devicePosition = 0;  // For debug drift analysis
+    uint64_t qpcPosition = 0;     // Latency-compensated WASAPI packet QPC position in 100-ns units
+    uint64_t rawQpcPosition = 0;  // Raw WASAPI GetBuffer QPC position in 100-ns units
+    uint64_t streamLatency = 0;   // IAudioClient stream latency in 100-ns units used for compensation
 };
 
 class AudioCapture {
@@ -73,7 +74,20 @@ private:
 
     std::atomic<bool> isCapturing;
     std::thread captureThread;
-    bool coInitOwned = false;  // true if Start() successfully called CoInitializeEx
+    DWORD workerThreadId_ = 0;
+
+    // Start() remains synchronous even though all WASAPI/COM initialization is
+    // worker-owned. CaptureLoop publishes its initialization result through this
+    // handshake; no COM interface crosses the worker-thread boundary.
+    std::mutex startupMutex_;
+    std::condition_variable startupCv_;
+    bool startupComplete_ = false;
+    bool startupSucceeded_ = false;
+
+    // Serializes endpoint reactivation against Stop's transition into join.
+    // Stop closes this gate after clearing isCapturing, ensuring no new COM
+    // activation can begin once shutdown has reached the join phase.
+    std::mutex reactivationMutex_;
 
     std::mutex queueMutex;
     std::deque<AudioPacket> packetQueue;  // Use deque for O(1) front removal
@@ -82,12 +96,19 @@ private:
     ce::audio::StreamRecoveryConfig recoveryConfig_;
 
     void CaptureLoop();
+    void CompleteStartup(bool succeeded);
+
+    // These helpers are called only by CaptureLoop. In particular,
+    // IAudioCaptureClient must be released on the same thread that obtained it
+    // through IAudioClient::GetService.
+    void ReleaseActiveClientOnWorkerThread(bool releaseDevice);
+    void ReleaseAllInterfacesOnWorkerThread();
 
     // Resolve the configured/default endpoint into pDevice (AddRef'd, caller owns).
-    // Shared by Start() and ReactivateClient() so both use identical resolution.
+    // Called only by the capture worker, for startup and reactivation.
     bool ResolveCaptureDevice();
     // Activate + initialize + start the client on the already-resolved pDevice,
-    // leaving pAudioClient/pCaptureClient/pwfx ready. Does NOT spawn the thread.
+    // leaving pAudioClient/pCaptureClient/pwfx ready. Worker-thread only.
     bool ActivateAndStartClientOnDevice();
     // Release the dead client+device and re-resolve+re-activate in place, keeping
     // the capture thread and queue alive. Used by CaptureLoop on a fatal error.

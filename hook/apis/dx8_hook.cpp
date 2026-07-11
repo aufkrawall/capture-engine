@@ -433,6 +433,8 @@ static uint32_t PackBgra8(uint8_t blue, uint8_t green, uint8_t red, uint8_t alph
 // DX8 Capture class using D3D9Ex shared surface wrapper
 class DX8Capture : public HookCaptureBase {
 public:
+    std::recursive_mutex captureMutex;
+
     // D3D9Ex wrapper for GPU sharing
     IDirect3D9Ex* d3d9Ex = nullptr;
     IDirect3DDevice9Ex* d3d9DeviceEx = nullptr;
@@ -457,18 +459,31 @@ public:
     // Cached D3D8 device
     IDirect3DDevice8* d3d8Device = nullptr;
     HWND overlayHwnd = NULL;
+    bool generationResetPending = false;
 
     void Cleanup() override {
-        CleanupDX8();
+        CleanupDX8(false);
     }
 
-    void CleanupDX8() {
+    bool CleanupDX8(bool force = false) {
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
+        bool hasPublishedGeneration = sharedFenceHandle.load(std::memory_order_acquire) != NULL;
+        for (const auto& handle : sharedTextureHandles)
+            hasPublishedGeneration = hasPublishedGeneration || handle.load(std::memory_order_acquire) != NULL;
+        SharedMemoryLayout* sharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+        if (!force && hasPublishedGeneration && HasOutstandingCaptureFrameLeases(sharedMem)) {
+            static std::atomic<int> s_generationLeaseLogCount{0};
+            if (s_generationLeaseLogCount.fetch_add(1, std::memory_order_relaxed) < 12) {
+                HookLog("DX8: Deferring capture resource cleanup while old frame leases are outstanding");
+            }
+            return false;
+        }
+
         // Release D3D11 resources
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-            if (sharedTextureHandles[i]) {
-                CloseHandle(sharedTextureHandles[i]);
-                sharedTextureHandles[i] = NULL;
-            }
+            HANDLE sharedHandle = sharedTextureHandles[i].exchange(NULL, std::memory_order_acq_rel);
+            if (sharedHandle && sharedTextureHandleOwned[i].exchange(false, std::memory_order_acq_rel))
+                CloseHandle(sharedHandle);
             if (sharedTextures[i]) {
                 sharedTextures[i]->Release();
                 sharedTextures[i] = nullptr;
@@ -530,8 +545,26 @@ public:
         d3d8Device = nullptr;
         overlayHwnd = NULL;
         initialized = false;
+        generationResetPending = false;
         useFences = false;
         fenceValue = 0;
+        return true;
+    }
+
+    void PrepareForDeviceReset() {
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
+        if (CleanupDX8(false))
+            return;
+
+        // D3D8 default-pool surfaces must be released before Reset even when
+        // the independently-owned D3D11 transport generation is still leased.
+        ReleaseD3D8Surface(d3d8SnapshotSurface);
+        ReleaseD3D8Surface(d3d8FrontBufferSurface);
+        d3d8SnapshotFormat = D3DFMT_UNKNOWN;
+        d3d8Device = nullptr;
+        initialized = false;
+        generationResetPending = true;
+        HookLog("DX8: Retaining shared transport generation across device Reset until frame leases drain");
     }
 
     void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override {
@@ -1078,7 +1111,8 @@ public:
             if (g_OverlayAdapter.IsInitialized()) {
                 g_OverlayAdapter.Shutdown();
             }
-            CleanupDX8();
+            if (!CleanupDX8(false))
+                return false;
         }
 
         d3d8Device = device;
@@ -1101,10 +1135,14 @@ public:
     }
 
     void Init(IDirect3DDevice8* device, HWND hwnd) {
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
         if (initialized)
+            return;
+        if (generationResetPending && !CleanupDX8(false))
             return;
 
         d3d8Device = device;
+        overlayHwnd = hwnd;
 
         // Get backbuffer size from HWND
         RECT rect;
@@ -1120,25 +1158,25 @@ public:
 
         // Create D3D9Ex wrapper for sharing
         if (!CreateD3D9ExWrapper(hwnd)) {
-            CleanupDX8();
+            CleanupDX8(false);
             return;
         }
 
         // Create D3D11 device
         if (!CreateD3D11Device()) {
-            CleanupDX8();
+            CleanupDX8(false);
             return;
         }
 
         // Create shared textures
         if (!CreateSharedTextures()) {
-            CleanupDX8();
+            CleanupDX8(false);
             return;
         }
 
         // Create D3D9Ex shared surface
         if (!CreateD3D9ExSharedSurface()) {
-            CleanupDX8();
+            CleanupDX8(false);
             return;
         }
 
@@ -1152,8 +1190,27 @@ public:
     }
 
     void CaptureFrame(IDirect3DDevice8* device, bool useFrontBuffer = true) {
+        std::unique_lock<std::recursive_mutex> captureLock(captureMutex, std::try_to_lock);
+        if (!captureLock.owns_lock())
+            return;
         if (!initialized || !d3d9DeviceEx || !d3d9SharedSurface)
             return;
+
+        HWND hwnd = overlayHwnd;
+        RECT rect = {};
+        if (hwnd && GetClientRect(hwnd, &rect)) {
+            const uint32_t currentWidth = static_cast<uint32_t>(std::max<LONG>(0, rect.right - rect.left));
+            const uint32_t currentHeight = static_cast<uint32_t>(std::max<LONG>(0, rect.bottom - rect.top));
+            if (currentWidth > 0 && currentHeight > 0 && (currentWidth != width || currentHeight != height)) {
+                HookLog("DX8: Capture resize detected (%ux%u -> %ux%u); rebuilding shared transport", width, height,
+                        currentWidth, currentHeight);
+                if (!CleanupDX8(false))
+                    return;
+                Init(device, hwnd);
+                if (!initialized)
+                    return;
+            }
+        }
 
         // Check if we should throttle capture (encoder is falling behind)
         if (g_IPC && g_IPC->GetSharedMem()) {
@@ -1162,7 +1219,13 @@ public:
             }
         }
 
-        int idx = writeIndex;
+        SharedMemoryLayout* captureSharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+        const int idx = FindAvailableCaptureTextureSlot(captureSharedMem, writeIndex.load(std::memory_order_relaxed));
+        if (idx < 0) {
+            droppedFrames.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        writeIndex.store(idx, std::memory_order_relaxed);
 
         // Get timestamp
         static int64_t qpcFreq = 0;
@@ -1181,20 +1244,31 @@ public:
             return;
         }
 
-        D3DLOCKED_RECT lockedRect;
-        if (SUCCEEDED(d3d9SharedSurface->LockRect(&lockedRect, NULL, D3DLOCK_READONLY))) {
-            d3d11Context->UpdateSubresource(sharedTextures[idx], 0, NULL, lockedRect.pBits, lockedRect.Pitch, 0);
-            d3d9SharedSurface->UnlockRect();
-        }
+        D3DLOCKED_RECT lockedRect = {};
+        const HRESULT lockHr = d3d9SharedSurface->LockRect(&lockedRect, NULL, D3DLOCK_READONLY);
+        if (FAILED(lockHr) || !lockedRect.pBits)
+            return;
+        d3d11Context->UpdateSubresource(sharedTextures[idx], 0, NULL, lockedRect.pBits, lockedRect.Pitch, 0);
+        d3d9SharedSurface->UnlockRect();
 
         // Signal fence if available
+        uint64_t publishedFenceValue = 0;
         if (useFences && context4 && fence) {
-            fenceValue++;
-            context4->Signal(fence, fenceValue);
+            const uint64_t candidateFenceValue = ++fenceValue;
+            const HRESULT signalHr = context4->Signal(fence, candidateFenceValue);
+            if (SUCCEEDED(signalHr)) {
+                publishedFenceValue = candidateFenceValue;
+            } else {
+                HookLog("DX8: Capture fence Signal failed value=%llu hr=0x%08X; using implicit sync later",
+                        static_cast<unsigned long long>(candidateFenceValue), signalHr);
+                useFences = false;
+            }
         }
+        if (publishedFenceValue == 0)
+            d3d11Context->Flush();
 
         // PASS RAW QPC
-        SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
+        SignalFrameReady(g_IPC, idx, qpc.QuadPart, publishedFenceValue);
         AdvanceWriteIndex();
     }
 };
@@ -1403,7 +1477,7 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Reset(IDirect3DDevice8* device, void*
     }
 
     // Cleanup capture
-    g_DX8Capture.Cleanup();
+    g_DX8Capture.PrepareForDeviceReset();
 
     // VSync Override
     if (g_IPC) {
@@ -1569,10 +1643,10 @@ void DX8Hook::Shutdown() {
         g_OverlayAdapter.Shutdown();
     }
 
-    g_DX8Capture.Cleanup();
+    g_DX8Capture.CleanupDX8(true);
 }
 
 void DX8Hook::OnHostDisconnect() {
     HookLog("DX8Hook::OnHostDisconnect()");
-    g_DX8Capture.Cleanup();
+    g_DX8Capture.CleanupDX8(true);
 }

@@ -1,14 +1,15 @@
 #include "injection.h"
-#include "injection_policy.h"
 #include <psapi.h>
 #include <tlhelp32.h>
 #include <algorithm>
 #include <array>
 #include <filesystem>
 #include <iostream>
+#include <system_error>
 #include <thread>
 #include "../common/logging.h"
 #include "../common/raii_helpers.h"
+#include "injection_policy.h"
 
 #include <aclapi.h>
 #include <bcrypt.h>
@@ -134,11 +135,12 @@ InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
 }
 
 InjectionManager::~InjectionManager() {
-    // CRITICAL FIX: Signal all delayed injection threads to stop
+    // Reject and drain WMI callbacks before joining raw-owner worker threads.
+    // Launch and worker-list transfer are serialized by threadListMutex, so no
+    // worker can appear after the list has been claimed for shutdown.
     RequestShutdown();
-    WaitForInjectionThreads(5000);
-
     ShutdownWMI();
+    WaitForInjectionThreads(5000);
     EjectAll();
 }
 
@@ -310,10 +312,9 @@ void InjectionManager::Update() {
                         it->source.c_str(), name.c_str(), (unsigned long)pid);
             } else if (ce::injection_policy::ShouldLaunchPendingInjection(true, IsAlreadyInjectedLocked(pid),
                                                                           IsRecentlyFailedLocked(pid))) {
-                std::shared_ptr<InjectionManager> managerShared = shared_from_this();
-                LogInfo("[%s] Launching deferred injection thread for %s (PID: %lu)", it->source.c_str(),
-                        name.c_str(), (unsigned long)pid);
-                LaunchDelayedInjectionThread(managerShared, pid, name, it->source.c_str());
+                LogInfo("[%s] Launching deferred injection thread for %s (PID: %lu)", it->source.c_str(), name.c_str(),
+                        (unsigned long)pid);
+                LaunchDelayedInjectionThread(pid, name, it->source.c_str());
             }
             it = pendingInjections.erase(it);
         } else {
@@ -344,6 +345,9 @@ bool InjectionManager::InitializeWMI() {
         LogError("Failed to initialize COM library. Error code = 0x%lX", hres);
         return false;
     }
+    // S_FALSE is still a successful COM initialization call and must be
+    // balanced exactly once on this thread.
+    wmiCoInitNeedsUninitialize = true;
 
     // Initialize Security
     phaseStartUs = Log_GetQpcUs();
@@ -495,18 +499,22 @@ bool InjectionManager::InitializeWMI() {
 }
 
 void InjectionManager::ShutdownWMI() {
-    // Mark the sink as done FIRST so any in-flight callback returns immediately
+    // Close the callback lifetime gate first. This rejects callbacks that have
+    // not entered yet and synchronously drains callbacks already using the raw
+    // manager pointer; CancelAsyncCall itself does not wait for client callback
+    // responses.
     if (pSink) {
-        pSink->MarkDone();
+        pSink->MarkDoneAndDrain();
     }
 
     if (pSvc) {
-        pSvc->CancelAsyncCall(pStubSink);
-        // Brief delay to let thread pool drain any WMI callbacks already queued.
-        // CancelAsyncCall prevents NEW notifications but callbacks already in the
-        // LRPC thread pool queue can still dispatch. 100ms is sufficient for the
-        // thread pool to complete any pending dispatch.
-        Sleep(100);
+        if (pStubSink) {
+            const HRESULT cancelHr = pSvc->CancelAsyncCall(pStubSink);
+            if (FAILED(cancelHr) && cancelHr != WBEM_E_NOT_FOUND) {
+                LogWarn("[Inject] WMI CancelAsyncCall failed during shutdown: 0x%08lX",
+                        static_cast<unsigned long>(cancelHr));
+            }
+        }
         pSvc->Release();
         pSvc = nullptr;
     }
@@ -526,7 +534,10 @@ void InjectionManager::ShutdownWMI() {
         pLoc->Release();
         pLoc = nullptr;
     }
-    CoUninitialize();
+    if (wmiCoInitNeedsUninitialize) {
+        CoUninitialize();
+        wmiCoInitNeedsUninitialize = false;
+    }
 }
 
 // Event Sink Implementation
@@ -542,6 +553,10 @@ ULONG STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Release() {
 }
 
 HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::QueryInterface(REFIID riid, void** ppv) {
+    if (!ppv) {
+        return E_POINTER;
+    }
+    *ppv = nullptr;
     if (riid == IID_IUnknown || riid == IID_IWbemObjectSink) {
         *ppv = (IWbemObjectSink*)this;
         AddRef();
@@ -550,12 +565,43 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::QueryInterface(REF
     return E_NOINTERFACE;
 }
 
+bool InjectionManager::ProcessEventSink::EnterCallback() {
+    std::lock_guard<std::mutex> lock(callbackMutex);
+    if (bDone || !pManager) {
+        return false;
+    }
+    ++activeCallbacks;
+    return true;
+}
+
+void InjectionManager::ProcessEventSink::LeaveCallback() {
+    std::lock_guard<std::mutex> lock(callbackMutex);
+    if (activeCallbacks > 0) {
+        --activeCallbacks;
+    }
+    if (activeCallbacks == 0) {
+        callbacksDrained.notify_all();
+    }
+}
+
+void InjectionManager::ProcessEventSink::MarkDoneAndDrain() {
+    std::unique_lock<std::mutex> lock(callbackMutex);
+    bDone = true;
+    callbacksDrained.wait(lock, [this]() { return activeCallbacks == 0; });
+    pManager = nullptr;
+}
+
 HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObjectCount, IWbemClassObject __RPC_FAR *
                                                                                               __RPC_FAR * apObjArray) {
+    if (!EnterCallback()) {
+        return WBEM_S_NO_ERROR;
+    }
+    CE_SCOPE_EXIT(LeaveCallback());
+
     // Exception handling: WMI callbacks can throw COM exceptions
     // Catching them prevents crashes and allows graceful degradation
     try {
-        if (bDone.load(std::memory_order_acquire) || !pManager)
+        if (!pManager)
             return WBEM_S_NO_ERROR;
 
         for (int i = 0; i < lObjectCount; i++) {
@@ -587,8 +633,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                 // Check whitelist (thread-safe? IsWhitelisted reads config which is
                 // const, so yes)
                 if (pManager->IsWhitelisted(name)) {
-                    std::shared_ptr<InjectionManager> managerShared = pManager->shared_from_this();
-                    pManager->LaunchDelayedInjectionThread(managerShared, pid, name, "WMI");
+                    pManager->LaunchDelayedInjectionThread(pid, name, "WMI");
                 }
             }
 
@@ -636,115 +681,126 @@ void InjectionManager::ReapCompletedDelayedInjectionThreadsLocked() {
     }
 }
 
-void InjectionManager::LaunchDelayedInjectionThread(const std::shared_ptr<InjectionManager>& managerShared, DWORD pid,
-                                                    const std::string& name, const char* sourceTag) {
+void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string& name, const char* sourceTag) {
     std::string source = sourceTag ? sourceTag : "Inject";
-    std::thread delayedThread([managerShared, pid, name, source]() {
-        try {
-            LogInfo("[%s] %s (PID: %lu) - Waiting for graphics API initialization before injection...", source.c_str(),
-                    name.c_str(), (unsigned long)pid);
+    std::lock_guard<std::mutex> threadLock(threadListMutex);
+    if (IsShuttingDown()) {
+        LogInfo("[%s] Skipping delayed injection launch during shutdown for %s (PID: %lu)", source.c_str(),
+                name.c_str(), static_cast<unsigned long>(pid));
+        return;
+    }
 
-            bool ready = false;
-            bool d3d12Loaded = false;
-            bool loggedModuleEnumFailure = false;
-            int waitMs = 0;
-            for (int i = 0; i < 300 && !ready; i++) {
-                if (managerShared->IsShuttingDown()) {
-                    LogInfo("[%s] %s (PID: %lu) - Shutdown requested, aborting delayed injection", source.c_str(),
-                            name.c_str(), (unsigned long)pid);
-                    return;
-                }
+    try {
+        delayedInjectionThreads.emplace_back([this, pid, name, source]() {
+            try {
+                LogInfo("[%s] %s (PID: %lu) - Waiting for graphics API initialization before injection...",
+                        source.c_str(), name.c_str(), (unsigned long)pid);
 
-                HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE, FALSE, pid);
-                if (!hProcess) {
-                    LogInfo("[%s] %s (PID: %lu) - Process exited before injection (OpenProcess failed, error=%lu)",
-                            source.c_str(), name.c_str(), (unsigned long)pid, (unsigned long)GetLastError());
-                    return;
-                }
+                bool ready = false;
+                bool d3d12Loaded = false;
+                bool loggedModuleEnumFailure = false;
+                int waitMs = 0;
+                for (int i = 0; i < 300 && !ready; i++) {
+                    if (IsShuttingDown()) {
+                        LogInfo("[%s] %s (PID: %lu) - Shutdown requested, aborting delayed injection", source.c_str(),
+                                name.c_str(), (unsigned long)pid);
+                        return;
+                    }
 
-                DWORD exitCode = 0;
-                if (GetExitCodeProcess(hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
-                    CloseHandle(hProcess);
-                    LogInfo("[%s] %s (PID: %lu) - Process exited before injection (exit code=%lu)", source.c_str(),
-                            name.c_str(), (unsigned long)pid, (unsigned long)exitCode);
-                    return;
-                }
+                    HANDLE hProcess =
+                        OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE, FALSE, pid);
+                    if (!hProcess) {
+                        LogInfo("[%s] %s (PID: %lu) - Process exited before injection (OpenProcess failed, error=%lu)",
+                                source.c_str(), name.c_str(), (unsigned long)pid, (unsigned long)GetLastError());
+                        return;
+                    }
 
-                if (!d3d12Loaded) {
-                    HMODULE hMods[1024];
-                    DWORD cbNeeded;
-                    if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
-                        for (unsigned int j = 0; j < (cbNeeded / sizeof(HMODULE)); j++) {
-                            char szModName[MAX_PATH];
-                            if (GetModuleFileNameExA(hProcess, hMods[j], szModName, sizeof(szModName))) {
-                                if (strstr(szModName, "d3d12.dll")) {
-                                    d3d12Loaded = true;
-                                    LogInfo("[%s] %s (PID: %lu) - D3D12.dll detected, injecting without fixed delay...",
+                    DWORD exitCode = 0;
+                    if (GetExitCodeProcess(hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
+                        CloseHandle(hProcess);
+                        LogInfo("[%s] %s (PID: %lu) - Process exited before injection (exit code=%lu)", source.c_str(),
+                                name.c_str(), (unsigned long)pid, (unsigned long)exitCode);
+                        return;
+                    }
+
+                    if (!d3d12Loaded) {
+                        HMODULE hMods[1024];
+                        DWORD cbNeeded;
+                        if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
+                            for (unsigned int j = 0; j < (cbNeeded / sizeof(HMODULE)); j++) {
+                                char szModName[MAX_PATH];
+                                if (GetModuleFileNameExA(hProcess, hMods[j], szModName, sizeof(szModName))) {
+                                    if (strstr(szModName, "d3d12.dll")) {
+                                        d3d12Loaded = true;
+                                        LogInfo(
+                                            "[%s] %s (PID: %lu) - D3D12.dll detected, injecting without fixed delay...",
                                             source.c_str(), name.c_str(), (unsigned long)pid);
-                                    break;
+                                        break;
+                                    }
                                 }
                             }
-                        }
-                    } else {
-                        DWORD err = GetLastError();
-                        if (!loggedModuleEnumFailure) {
-                            LogInfo(
-                                "[%s] %s (PID: %lu) - EnumProcessModules failed (error=%lu, access=0x%lX); "
-                                "continuing with conservative non-D3D12 injection timing",
-                                source.c_str(), name.c_str(), (unsigned long)pid, (unsigned long)err,
-                                (unsigned long)(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE));
-                            loggedModuleEnumFailure = true;
-                        }
-                        if (err == ERROR_ACCESS_DENIED && i < 2) {
-                            CloseHandle(hProcess);
-                            Sleep(100);
-                            waitMs += 100;
-                            continue;
+                        } else {
+                            DWORD err = GetLastError();
+                            if (!loggedModuleEnumFailure) {
+                                LogInfo(
+                                    "[%s] %s (PID: %lu) - EnumProcessModules failed (error=%lu, access=0x%lX); "
+                                    "continuing with conservative non-D3D12 injection timing",
+                                    source.c_str(), name.c_str(), (unsigned long)pid, (unsigned long)err,
+                                    (unsigned long)(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE));
+                                loggedModuleEnumFailure = true;
+                            }
+                            if (err == ERROR_ACCESS_DENIED && i < 2) {
+                                CloseHandle(hProcess);
+                                Sleep(100);
+                                waitMs += 100;
+                                continue;
+                            }
                         }
                     }
+                    CloseHandle(hProcess);
+
+                    if (ce::injection_policy::ShouldInjectAfterGraphicsProbe(d3d12Loaded)) {
+                        ready = true;
+                    }
+
+                    if (!ready) {
+                        Sleep(100);
+                        waitMs += 100;
+                    }
                 }
-                CloseHandle(hProcess);
 
-                if (ce::injection_policy::ShouldInjectAfterGraphicsProbe(d3d12Loaded)) {
-                    ready = true;
-                }
+                LogInfo("[%s] %s (PID: %lu) - Wait loop exited (ready=%d, d3d12=%d, waitMs=%d), attempting injection",
+                        source.c_str(), name.c_str(), (unsigned long)pid, (int)ready, (int)d3d12Loaded, waitMs);
 
-                if (!ready) {
-                    Sleep(100);
-                    waitMs += 100;
-                }
-            }
-
-            LogInfo("[%s] %s (PID: %lu) - Wait loop exited (ready=%d, d3d12=%d, waitMs=%d), attempting injection",
-                    source.c_str(), name.c_str(), (unsigned long)pid, (int)ready, (int)d3d12Loaded, waitMs);
-
-            std::lock_guard<std::mutex> lock(managerShared->injectMutex);
-            if (!managerShared->IsWhitelisted(name)) {
-                LogInfo("[%s] %s (PID: %lu) - No longer whitelisted, skipping injection", source.c_str(), name.c_str(),
-                        (unsigned long)pid);
-            } else if (!managerShared->IsAlreadyInjectedLocked(pid) && !managerShared->IsRecentlyFailedLocked(pid)) {
-                LogInfo("[%s] %s (PID: %lu) - Injecting (%s detected, waited %d ms)", source.c_str(), name.c_str(),
-                        (unsigned long)pid, d3d12Loaded ? "D3D12" : "non-D3D12 (DX11/DX9/Vulkan)", waitMs);
-                if (managerShared->Inject(pid, name)) {
-                    LogInfo("[%s] Injection successful.", source.c_str());
+                std::lock_guard<std::mutex> lock(injectMutex);
+                if (!IsWhitelisted(name)) {
+                    LogInfo("[%s] %s (PID: %lu) - No longer whitelisted, skipping injection", source.c_str(),
+                            name.c_str(), (unsigned long)pid);
+                } else if (!IsAlreadyInjectedLocked(pid) && !IsRecentlyFailedLocked(pid)) {
+                    LogInfo("[%s] %s (PID: %lu) - Injecting (%s detected, waited %d ms)", source.c_str(), name.c_str(),
+                            (unsigned long)pid, d3d12Loaded ? "D3D12" : "non-D3D12 (DX11/DX9/Vulkan)", waitMs);
+                    if (Inject(pid, name)) {
+                        LogInfo("[%s] Injection successful.", source.c_str());
+                    } else {
+                        LogError("[%s] Injection failed.", source.c_str());
+                        failedInjections.push_back({pid, GetTickCount64()});
+                    }
                 } else {
-                    LogError("[%s] Injection failed.", source.c_str());
-                    managerShared->failedInjections.push_back({pid, GetTickCount64()});
+                    LogInfo("[%s] %s (PID: %lu) - Already injected or recently failed, skipping", source.c_str(),
+                            name.c_str(), (unsigned long)pid);
                 }
-            } else {
-                LogInfo("[%s] %s (PID: %lu) - Already injected or recently failed, skipping", source.c_str(),
-                        name.c_str(), (unsigned long)pid);
+            } catch (const std::exception& e) {
+                LogError("[%s] Delayed injection thread exception for PID %lu: %s", source.c_str(), (unsigned long)pid,
+                         e.what());
+            } catch (...) {
+                LogError("[%s] Delayed injection thread unknown exception for PID %lu", source.c_str(),
+                         (unsigned long)pid);
             }
-        } catch (const std::exception& e) {
-            LogError("[%s] Delayed injection thread exception for PID %lu: %s", source.c_str(), (unsigned long)pid,
-                     e.what());
-        } catch (...) {
-            LogError("[%s] Delayed injection thread unknown exception for PID %lu", source.c_str(), (unsigned long)pid);
-        }
-    });
-
-    std::lock_guard<std::mutex> threadLock(threadListMutex);
-    delayedInjectionThreads.emplace_back(std::move(delayedThread));
+        });
+    } catch (const std::system_error& error) {
+        LogError("[%s] Failed to create delayed injection thread for %s (PID: %lu): %s", source.c_str(), name.c_str(),
+                 static_cast<unsigned long>(pid), error.what());
+    }
 }
 
 bool InjectionManager::IsRecentlyFailedLocked(DWORD pid) {
@@ -1092,8 +1148,10 @@ void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
 
         auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
-            LogWarn("[Injection] Timeout waiting for injection threads, detaching remaining");
-            t.detach();
+            LogWarn(
+                "[Injection] Timeout waiting for delayed injection thread; preserving ownership and joining "
+                "because it still references InjectionManager state");
+            t.join();
             continue;
         }
 
@@ -1106,12 +1164,12 @@ void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
             t.join();
         } else {
             if (waitResult == WAIT_TIMEOUT) {
-                LogWarn("[Injection] Timeout waiting for injection thread, detaching");
+                LogWarn("[Injection] Timeout waiting for delayed injection thread; preserving ownership and joining");
             } else {
-                LogWarn("[Injection] WaitForSingleObject failed for injection thread (error=%lu), detaching",
+                LogWarn("[Injection] WaitForSingleObject failed for delayed injection thread (error=%lu); joining",
                         GetLastError());
             }
-            t.detach();
+            t.join();
         }
     }
     LogInfo("[Injection] All delayed injection threads cleaned up");
@@ -1125,6 +1183,7 @@ bool InjectionManager::HasActiveInjections() const {
 
 bool InjectionManager::HasPendingInjections() {
     std::lock_guard<std::mutex> lock(injectMutex);
+    std::lock_guard<std::mutex> threadLock(threadListMutex);
     return !pendingInjections.empty() || !delayedInjectionThreads.empty();
 }
 

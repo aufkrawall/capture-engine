@@ -7,7 +7,15 @@ size_t AudioRingBuffer::Write(const float* data, size_t count) {
 
     // CRITICAL FIX: Use acquire ordering to synchronize with reads
     size_t avail = available.load(std::memory_order_acquire);
-    size_t freeSpace = capacity - avail;
+    const size_t currentCapacity = capacity.load(std::memory_order_relaxed);
+    if (currentCapacity == 0) {
+        if (count > 0) {
+            droppedSamples.fetch_add(count, std::memory_order_relaxed);
+            overflowFlag.store(true, std::memory_order_relaxed);
+        }
+        return 0;
+    }
+    size_t freeSpace = currentCapacity - avail;
 
     if (count > freeSpace) {
         // Track how many samples we're dropping for downstream gap compensation
@@ -21,7 +29,7 @@ size_t AudioRingBuffer::Write(const float* data, size_t count) {
         return 0;
     }
 
-    size_t firstChunk = std::min(count, capacity - writePos);
+    size_t firstChunk = std::min(count, currentCapacity - writePos);
     memcpy(&buffer[writePos], data, firstChunk * sizeof(float));
 
     size_t secondChunk = count - firstChunk;
@@ -29,7 +37,7 @@ size_t AudioRingBuffer::Write(const float* data, size_t count) {
         memcpy(&buffer[0], data + firstChunk, secondChunk * sizeof(float));
     }
 
-    writePos = (writePos + count) % capacity;
+    writePos = (writePos + count) % currentCapacity;
     // CRITICAL FIX: Use release ordering to publish writes to readers
     available.store(avail + count, std::memory_order_release);
 
@@ -39,17 +47,25 @@ size_t AudioRingBuffer::Write(const float* data, size_t count) {
 size_t AudioRingBuffer::WriteRetainNew(const float* data, size_t count) {
     std::lock_guard<std::mutex> lock(mutex);
 
-    if (count > capacity) {
+    const size_t currentCapacity = capacity.load(std::memory_order_relaxed);
+    if (currentCapacity == 0) {
+        if (count > 0) {
+            retainedSamples.fetch_add(count, std::memory_order_relaxed);
+            overflowFlag.store(true, std::memory_order_relaxed);
+        }
+        return 0;
+    }
+    if (count > currentCapacity) {
         // Can't fit even in an empty buffer; write only the newest `capacity` samples.
-        size_t dropped = count - capacity;
+        size_t dropped = count - currentCapacity;
         retainedSamples.fetch_add(dropped, std::memory_order_relaxed);
         overflowFlag.store(true, std::memory_order_relaxed);
         data += dropped;
-        count = capacity;
+        count = currentCapacity;
     }
 
     size_t avail = available.load(std::memory_order_acquire);
-    size_t freeSpace = capacity - avail;
+    size_t freeSpace = currentCapacity - avail;
 
     if (count > freeSpace) {
         // Drop oldest samples to make room and track the trim separately from
@@ -57,11 +73,11 @@ size_t AudioRingBuffer::WriteRetainNew(const float* data, size_t count) {
         size_t needDrop = count - freeSpace;
         retainedSamples.fetch_add(needDrop, std::memory_order_relaxed);
         overflowFlag.store(true, std::memory_order_relaxed);
-        readPos = (readPos + needDrop) % capacity;
+        readPos = (readPos + needDrop) % currentCapacity;
         avail -= needDrop;
     }
 
-    size_t firstChunk = std::min(count, capacity - writePos);
+    size_t firstChunk = std::min(count, currentCapacity - writePos);
     memcpy(&buffer[writePos], data, firstChunk * sizeof(float));
 
     size_t secondChunk = count - firstChunk;
@@ -69,7 +85,7 @@ size_t AudioRingBuffer::WriteRetainNew(const float* data, size_t count) {
         memcpy(&buffer[0], data + firstChunk, secondChunk * sizeof(float));
     }
 
-    writePos = (writePos + count) % capacity;
+    writePos = (writePos + count) % currentCapacity;
     available.store(avail + count, std::memory_order_release);
 
     return count;
@@ -80,9 +96,13 @@ size_t AudioRingBuffer::Read(float* outData, size_t count) {
 
     // CRITICAL FIX: Use acquire ordering to synchronize with writes
     size_t avail = available.load(std::memory_order_acquire);
+    const size_t currentCapacity = capacity.load(std::memory_order_relaxed);
+    if (currentCapacity == 0) {
+        return 0;
+    }
     size_t toRead = std::min(count, avail);
 
-    size_t firstChunk = std::min(toRead, capacity - readPos);
+    size_t firstChunk = std::min(toRead, currentCapacity - readPos);
     memcpy(outData, &buffer[readPos], firstChunk * sizeof(float));
 
     size_t secondChunk = toRead - firstChunk;
@@ -90,7 +110,7 @@ size_t AudioRingBuffer::Read(float* outData, size_t count) {
         memcpy(outData + firstChunk, &buffer[0], secondChunk * sizeof(float));
     }
 
-    readPos = (readPos + toRead) % capacity;
+    readPos = (readPos + toRead) % currentCapacity;
     // CRITICAL FIX: Use release ordering to publish the updated available count
     available.store(avail - toRead, std::memory_order_release);
 
@@ -102,10 +122,14 @@ size_t AudioRingBuffer::Peek(float* outData, size_t count) {
     // Same as Read but don't advance pointer
     // CRITICAL FIX: Use acquire ordering to synchronize with writes
     size_t avail = available.load(std::memory_order_acquire);
+    const size_t currentCapacity = capacity.load(std::memory_order_relaxed);
+    if (currentCapacity == 0) {
+        return 0;
+    }
     size_t toRead = std::min(count, avail);
     size_t tempReadPos = readPos;
 
-    size_t firstChunk = std::min(toRead, capacity - tempReadPos);
+    size_t firstChunk = std::min(toRead, currentCapacity - tempReadPos);
     memcpy(outData, &buffer[tempReadPos], firstChunk * sizeof(float));
 
     size_t secondChunk = toRead - firstChunk;
@@ -119,9 +143,13 @@ size_t AudioRingBuffer::Skip(size_t count) {
     std::lock_guard<std::mutex> lock(mutex);
     // CRITICAL FIX: Use acquire ordering to synchronize with writes
     size_t avail = available.load(std::memory_order_acquire);
+    const size_t currentCapacity = capacity.load(std::memory_order_relaxed);
+    if (currentCapacity == 0) {
+        return 0;
+    }
     size_t toSkip = std::min(count, avail);
 
-    readPos = (readPos + toSkip) % capacity;
+    readPos = (readPos + toSkip) % currentCapacity;
     // CRITICAL FIX: Use release ordering to publish the updated available count
     available.store(avail - toSkip, std::memory_order_release);
     return toSkip;

@@ -448,10 +448,9 @@ int InjectProcessMain(const AppConfig& config) {
     };
 
     if (injectorState.allowInjection) {
-        // CRITICAL: Must use make_shared because InjectionManager inherits
-        // enable_shared_from_this. Stack allocation causes shared_from_this() to
-        // throw bad_weak_ptr in WMI callback, which silently prevents ALL process
-        // injection.
+        // Keep controller ownership explicit. Delayed workers are owned and
+        // joined by InjectionManager; they no longer extend the manager's own
+        // lifetime through a shared_ptr cycle.
         const int64_t injectorInitStartUs = Log_GetQpcUs();
         injector = std::make_shared<InjectionManager>(injectorState.config);
         LogInfo("[StartupPerf] Injection manager construction took %.3f ms",

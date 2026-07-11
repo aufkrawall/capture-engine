@@ -59,8 +59,6 @@ uint32_t VkFormatToDXGI(uint32_t vkFormat) {
         // 10-bit formats (HDR10)
         case VK_FORMAT_A2B10G10R10_UNORM_PACK32:   // 64
             return DXGI_FORMAT_R10G10B10A2_UNORM;  // 30
-        case VK_FORMAT_A2R10G10B10_UNORM_PACK32:   // 65
-            return DXGI_FORMAT_R10G10B10A2_UNORM;  // Remap to DXGI standard
 
         // BGRX formats (no alpha) - use BGRA for shared resources
         // Note: B8G8R8X8_UNORM not commonly used with Vulkan external memory
@@ -71,9 +69,10 @@ uint32_t VkFormatToDXGI(uint32_t vkFormat) {
         case VK_FORMAT_R5G6B5_UNORM_PACK16:   // 56
             return DXGI_FORMAT_B5G6R5_UNORM;  // 85 (swizzle)
 
-        // Default fallback - BGRA8 is most common
+        // Never relabel unknown byte layouts as BGRA; doing so produces valid
+        // handles containing corrupt colors/row interpretation.
         default:
-            return DXGI_FORMAT_B8G8R8A8_UNORM;  // 87
+            return DXGI_FORMAT_UNKNOWN;
     }
 }
 
@@ -93,7 +92,6 @@ bool IsVkFormatCompatibleWithDXGI(VkFormat vkFormat) {
         // HDR formats - compatible with D3D12
         case VK_FORMAT_R16G16B16A16_SFLOAT:
         case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
-        case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
             return true;
 
         // Unsupported formats for export
@@ -373,7 +371,7 @@ void LayerIPC_SetFence(HANDLE fenceHandle) {
 }
 
 // Signal frame ready for SHMEM mode (textureIndex >= 100)
-void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue) {
+void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue, int64_t timestampQpc) {
     auto* mem = g_IPCClient.GetSharedMem();
     if (!mem)
         return;
@@ -391,10 +389,13 @@ void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue) {
 
     uint32_t slot = wIdx % FRAME_RING_SIZE;
 
-    LARGE_INTEGER qpc;
-    QueryPerformanceCounter(&qpc);
+    if (timestampQpc <= 0) {
+        LARGE_INTEGER qpc;
+        QueryPerformanceCounter(&qpc);
+        timestampQpc = qpc.QuadPart;
+    }
 
-    ring.slots[slot].timestamp = qpc.QuadPart;
+    ring.slots[slot].timestamp = timestampQpc;
     ring.slots[slot].frameIndex = wIdx;
     ring.slots[slot].textureIndex = textureIndex;  // >= 100 indicates SHMEM mode
     ring.slots[slot].sourcePid = GetCurrentProcessId();

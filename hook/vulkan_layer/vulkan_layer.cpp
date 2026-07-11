@@ -6,6 +6,7 @@
 
 #define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan_layer.h"
+#include <algorithm>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -514,6 +515,8 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device, PFN_vkGet
     dispatch->fp_vkDestroyShaderModule = (PFN_vkDestroyShaderModule)gdpa(device, "vkDestroyShaderModule");
 #ifdef VK_USE_PLATFORM_WIN32_KHR
     dispatch->fp_vkGetMemoryWin32HandleKHR = (PFN_vkGetMemoryWin32HandleKHR)gdpa(device, "vkGetMemoryWin32HandleKHR");
+    dispatch->fp_vkGetMemoryWin32HandlePropertiesKHR =
+        (PFN_vkGetMemoryWin32HandlePropertiesKHR)gdpa(device, "vkGetMemoryWin32HandlePropertiesKHR");
     dispatch->fp_vkGetSemaphoreWin32HandleKHR =
         (PFN_vkGetSemaphoreWin32HandleKHR)gdpa(device, "vkGetSemaphoreWin32HandleKHR");
 #endif
@@ -742,12 +745,79 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     }
 
     VkResult result = VK_SUCCESS;
+    bool captureInteropEnabled = false;
 
     if (!g_LayerState.whitelisted) {
         // Passthrough: call next layer directly without modification
         result = create_fn(physicalDevice, pCreateInfo, pAllocator, pDevice);
     } else {
-        // Inject required extensions
+        InstanceDispatch* instanceDispatch = VulkanLayerState::Get().GetInstanceDispatch(instance);
+        std::vector<VkExtensionProperties> availableExtensions;
+        if (instanceDispatch && instanceDispatch->fp_vkEnumerateDeviceExtensionProperties) {
+            uint32_t extensionCount = 0;
+            if (instanceDispatch->fp_vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount,
+                                                                          nullptr) == VK_SUCCESS &&
+                extensionCount > 0) {
+                availableExtensions.resize(extensionCount);
+                if (instanceDispatch->fp_vkEnumerateDeviceExtensionProperties(
+                        physicalDevice, nullptr, &extensionCount, availableExtensions.data()) != VK_SUCCESS) {
+                    availableExtensions.clear();
+                }
+            }
+        }
+        auto extensionAvailable = [&](const char* name) {
+            return std::any_of(availableExtensions.begin(), availableExtensions.end(),
+                               [&](const VkExtensionProperties& ext) { return strcmp(ext.extensionName, name) == 0; });
+        };
+
+        VkPhysicalDeviceProperties physicalProperties = {};
+        if (instanceDispatch && instanceDispatch->fp_vkGetPhysicalDeviceProperties)
+            instanceDispatch->fp_vkGetPhysicalDeviceProperties(physicalDevice, &physicalProperties);
+        const bool externalMemoryCore = physicalProperties.apiVersion >= VK_API_VERSION_1_1;
+        const bool externalSemaphoreCore = physicalProperties.apiVersion >= VK_API_VERSION_1_1;
+        const bool timelineCore = physicalProperties.apiVersion >= VK_API_VERSION_1_2;
+
+        PFN_vkGetPhysicalDeviceFeatures2 getFeatures2 =
+            instanceDispatch ? instanceDispatch->fp_vkGetPhysicalDeviceFeatures2 : nullptr;
+        if (!getFeatures2) {
+            getFeatures2 =
+                reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(gipa(instance, "vkGetPhysicalDeviceFeatures2KHR"));
+        }
+        VkPhysicalDeviceTimelineSemaphoreFeatures supportedTimeline = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
+        if (getFeatures2) {
+            VkPhysicalDeviceFeatures2 supportedFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+            supportedFeatures.pNext = &supportedTimeline;
+            getFeatures2(physicalDevice, &supportedFeatures);
+        }
+
+        const bool requiredExtensionsAvailable =
+            (externalMemoryCore || extensionAvailable(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME)) &&
+            extensionAvailable(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME) &&
+            (externalSemaphoreCore || extensionAvailable(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME)) &&
+            extensionAvailable(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME) &&
+            (timelineCore || extensionAvailable(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME));
+
+        const VkPhysicalDeviceTimelineSemaphoreFeatures* requestedTimeline = nullptr;
+        const VkPhysicalDeviceVulkan12Features* requestedVulkan12 = nullptr;
+        for (const VkBaseInStructure* node = reinterpret_cast<const VkBaseInStructure*>(pCreateInfo->pNext); node;
+             node = node->pNext) {
+            if (node->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES) {
+                requestedTimeline = reinterpret_cast<const VkPhysicalDeviceTimelineSemaphoreFeatures*>(node);
+            } else if (node->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES) {
+                requestedVulkan12 = reinterpret_cast<const VkPhysicalDeviceVulkan12Features*>(node);
+            }
+        }
+        const bool canEnableTimeline = supportedTimeline.timelineSemaphore == VK_TRUE;
+        const bool appSpecifiedTimeline = requestedTimeline || requestedVulkan12;
+        const bool appAlreadyEnabledTimeline = (requestedTimeline && requestedTimeline->timelineSemaphore == VK_TRUE) ||
+                                               (requestedVulkan12 && requestedVulkan12->timelineSemaphore == VK_TRUE);
+        captureInteropEnabled =
+            requiredExtensionsAvailable && canEnableTimeline && (!appSpecifiedTimeline || appAlreadyEnabledTimeline);
+
+        // Inject capture extensions only when the physical device actually
+        // advertises the complete Win32 external-memory/fence contract. Never
+        // make the game's vkCreateDevice fail merely because capture is absent.
         std::vector<const char*> extensions;
         for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
             extensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
@@ -771,30 +841,38 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
                 hasTimeline = true;
         }
 
-        if (!hasExtMem)
+        if (captureInteropEnabled && !hasExtMem && !externalMemoryCore)
             extensions.push_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
-        if (!hasExtMemWin32)
+        if (captureInteropEnabled && !hasExtMemWin32)
             extensions.push_back(VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME);
-        if (!hasExtSem)
+        if (captureInteropEnabled && !hasExtSem && !externalSemaphoreCore)
             extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME);
-        if (!hasExtSemWin32)
+        if (captureInteropEnabled && !hasExtSemWin32)
             extensions.push_back(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
-        if (!hasTimeline)
+        if (captureInteropEnabled && !hasTimeline && !timelineCore)
             extensions.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
 
         VkDeviceCreateInfo modifiedCreateInfo = *pCreateInfo;
         modifiedCreateInfo.enabledExtensionCount = (uint32_t)extensions.size();
         modifiedCreateInfo.ppEnabledExtensionNames = extensions.data();
 
-        // Enable timeline semaphore feature (required for
-        // VK_KHR_timeline_semaphore)
+        // Enable timeline semaphores only when the app did not already include
+        // the feature structure. Duplicating an sType in pNext is invalid.
         VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeatures = {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
         timelineFeatures.timelineSemaphore = VK_TRUE;
+        if (captureInteropEnabled && !appSpecifiedTimeline) {
+            timelineFeatures.pNext = (void*)modifiedCreateInfo.pNext;
+            modifiedCreateInfo.pNext = &timelineFeatures;
+        }
 
-        // Chain the feature structure
-        timelineFeatures.pNext = (void*)modifiedCreateInfo.pNext;
-        modifiedCreateInfo.pNext = &timelineFeatures;
+        if (!captureInteropEnabled) {
+            LayerLog(
+                "Vulkan Layer: Win32 external capture unavailable; creating device without capture-only "
+                "extensions (extensions=%d timelineSupported=%d timelineRequested=%d)",
+                requiredExtensionsAvailable ? 1 : 0, canEnableTimeline ? 1 : 0,
+                appSpecifiedTimeline ? (appAlreadyEnabledTimeline ? 1 : 0) : -1);
+        }
 
         LayerLog("Vulkan Layer: Calling next vkCreateDevice...");
         result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
@@ -806,6 +884,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
 
     auto* dispatch = new DeviceDispatch();
     dispatch->physicalDevice = physicalDevice;
+    dispatch->captureInteropEnabled = captureInteropEnabled;
     PopulateDeviceDispatch(dispatch, *pDevice, gdpa);
     VulkanLayerState::Get().RegisterDevice(*pDevice, dispatch);
 
@@ -996,6 +1075,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
 VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
                                                          const VkAllocationCallbacks* pAllocator) {
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    RetireCaptureSwapchain(device, swapchain);
     if (disp && disp->fp_vkDestroySwapchainKHR)
         disp->fp_vkDestroySwapchainKHR(device, swapchain, pAllocator);
     VulkanLayerState::Get().UnregisterSwapchain(swapchain);
@@ -1164,11 +1244,23 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 }
 
                 int64_t captureStartUs = PerfLogger::GetQpcUs();
-                VkSemaphore captureDone = GetCaptureSemaphore(sd->device, idx);
-                CaptureFrame(sd->device, queue, sd->images[idx], idx, currentWaitSemaphores, currentWaitSemaphoreCount,
-                             captureDone);
+                VkSemaphore captureDone = GetCaptureSemaphore(sd->device, sd->swapchain, idx);
+                if (captureDone == VK_NULL_HANDLE) {
+                    // Initialization may have been deferred while the previous
+                    // swapchain generation's media leases drained. Retry without
+                    // blocking the present path.
+                    InitializeCapture(sd->device, sd->swapchain, sd->format, sd->extent, sd->imageCount);
+                    captureDone = GetCaptureSemaphore(sd->device, sd->swapchain, idx);
+                }
+                NoteCaptureSwapchainImagePresented(sd->device, sd->swapchain, idx);
+                const bool captureSubmitted =
+                    CaptureFrame(sd->device, sd->swapchain, queue, sd->images[idx], currentWaitSemaphores,
+                                 currentWaitSemaphoreCount, captureDone);
                 perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
-                if (captureDone != VK_NULL_HANDLE) {
+                // Capture may intentionally skip before queue submission (for
+                // example while its non-blocking fence is busy). Preserve the
+                // original Present wait chain unless captureDone was really signaled.
+                if (captureSubmitted && captureDone != VK_NULL_HANDLE) {
                     chainedWaitSemaphores.assign(1, captureDone);
                     currentWaitSemaphores = chainedWaitSemaphores.data();
                     currentWaitSemaphoreCount = 1;

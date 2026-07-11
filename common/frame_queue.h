@@ -10,6 +10,7 @@
 #include <limits>
 #include <mutex>
 #include <vector>
+#include "inject_frame_ring_lease.h"
 #include "wgc_pool_lease.h"
 
 // Frame data that can represent either inject or framegrab mode
@@ -43,10 +44,13 @@ struct QueuedFrame {
             other.frameIndex = 0;
             textureIndex = other.textureIndex;
             other.textureIndex = -1;
+            injectRingLease = std::move(other.injectRingLease);
             wgcPoolSlot = other.wgcPoolSlot;
             other.wgcPoolSlot = std::numeric_limits<uint32_t>::max();
             wgcPoolGeneration = other.wgcPoolGeneration;
             other.wgcPoolGeneration = 0;
+            wgcSourceEpoch = other.wgcSourceEpoch;
+            other.wgcSourceEpoch = 0;
             wgcPoolLease = std::move(other.wgcPoolLease);
             enqueueQpc = other.enqueueQpc;
             other.enqueueQpc = 0;
@@ -72,6 +76,8 @@ struct QueuedFrame {
             other.isHDR = false;
             duplicateSourceTimestamp = other.duplicateSourceTimestamp;
             other.duplicateSourceTimestamp = false;
+            wgcCursorEmbedded = other.wgcCursorEmbedded;
+            other.wgcCursorEmbedded = false;
             captureLeft = other.captureLeft;
             other.captureLeft = 0;
             captureTop = other.captureTop;
@@ -93,8 +99,10 @@ struct QueuedFrame {
     uint32_t ringIndex = 0;  // Index in the SharedMemory ring buffer
     uint32_t frameIndex = 0;
     int32_t textureIndex = -1;
+    ce::InjectFrameRingLease injectRingLease;
     uint32_t wgcPoolSlot = std::numeric_limits<uint32_t>::max();
     uint64_t wgcPoolGeneration = 0;
+    uint64_t wgcSourceEpoch = 0;
     WgcPoolSlotLease wgcPoolLease;
     int64_t enqueueQpc = 0;
     uint32_t deferCount = 0;
@@ -112,6 +120,7 @@ struct QueuedFrame {
     bool isInjectMode = false;  // true = use inject fields, false = use framegrab fields
     bool isHDR = false;         // New: Signals Rec.2100 PQ content
     bool duplicateSourceTimestamp = false;
+    bool wgcCursorEmbedded = false;
     int32_t captureLeft = 0;  // Screen-space origin for partial-capture cursor overlay
     int32_t captureTop = 0;
 
@@ -259,6 +268,32 @@ public:
         for (auto* texture : texturesToRelease) {
             texture->Release();
         }
+    }
+
+    // Drop queued screen-grab frames from a retired capture source while
+    // preserving inject frames and frames already tagged with the new epoch.
+    // Texture releases happen outside the queue lock.
+    size_t DiscardWgcEpochNotEqual(uint64_t activeEpoch) {
+        std::vector<ID3D11Texture2D*> texturesToRelease;
+        size_t discarded = 0;
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            for (auto it = buffer.begin(); it != buffer.end();) {
+                if (!it->isInjectMode && it->wgcSourceEpoch != activeEpoch) {
+                    if (it->texture) {
+                        texturesToRelease.push_back(it->texture);
+                    }
+                    it = buffer.erase(it);
+                    ++discarded;
+                } else {
+                    ++it;
+                }
+            }
+        }
+        for (auto* texture : texturesToRelease) {
+            texture->Release();
+        }
+        return discarded;
     }
 
     // Signal shutdown to unblock waiting consumers

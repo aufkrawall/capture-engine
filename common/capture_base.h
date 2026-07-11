@@ -12,17 +12,84 @@
 
 // Shared capture constants
 static constexpr int CAPTURE_TEXTURE_COUNT = SHARED_TEXTURE_SLOT_COUNT;  // Ring buffer size for textures
-static constexpr int CAPTURE_RING_SIZE = 8;      // Pending frame ring size
+static constexpr int CAPTURE_RING_SIZE = 8;                              // Pending frame ring size
+
+// A queued inject frame keeps its producer texture alive until the media side
+// has copied or deliberately dropped it. Producers must call this immediately
+// before writing a ring texture; reusing a referenced slot would silently turn
+// an older queued frame into newer visual content.
+inline bool IsCaptureTextureSlotOutstanding(const SharedMemoryLayout* sharedMem, int32_t textureIndex) {
+    if (!sharedMem || textureIndex < 0)
+        return false;
+
+    const FrameRingBuffer& ring = sharedMem->frameRing;
+    const uint32_t readIndex = ring.readIndex.load(std::memory_order_acquire);
+    const uint32_t writeIndex = ring.writeIndex.load(std::memory_order_acquire);
+    uint32_t depth = writeIndex - readIndex;
+    uint32_t scanBegin = readIndex;
+    if (depth > FRAME_RING_SIZE) {
+        // Corrupt/overrun metadata must not cause an unbounded scan. Inspect
+        // every physical ring slot, including all content that can still exist.
+        depth = FRAME_RING_SIZE;
+        scanBegin = writeIndex - FRAME_RING_SIZE;
+    }
+
+    for (uint32_t offset = 0; offset < depth; ++offset) {
+        const FrameSlot& slot = ring.slots[(scanBegin + offset) % FRAME_RING_SIZE];
+        if (slot.valid.load(std::memory_order_acquire) != 0 && slot.textureIndex == textureIndex)
+            return true;
+    }
+    return false;
+}
+
+// A resource generation must stay published until every frame that references
+// it has been copied or dropped by the media process. FrameSlot deliberately
+// stores only the texture index (the handles live in generation-wide fields),
+// so replacing those fields while an old slot is valid would make the consumer
+// open the new generation for old frame metadata.
+inline bool HasOutstandingCaptureFrameLeases(const SharedMemoryLayout* sharedMem) {
+    if (!sharedMem)
+        return false;
+
+    const FrameRingBuffer& ring = sharedMem->frameRing;
+    const uint32_t readIndex = ring.readIndex.load(std::memory_order_acquire);
+    const uint32_t writeIndex = ring.writeIndex.load(std::memory_order_acquire);
+    uint32_t depth = writeIndex - readIndex;
+    uint32_t scanBegin = readIndex;
+    if (depth > FRAME_RING_SIZE) {
+        depth = FRAME_RING_SIZE;
+        scanBegin = writeIndex - FRAME_RING_SIZE;
+    }
+
+    for (uint32_t offset = 0; offset < depth; ++offset) {
+        if (ring.slots[(scanBegin + offset) % FRAME_RING_SIZE].valid.load(std::memory_order_acquire) != 0)
+            return true;
+    }
+    return false;
+}
+
+inline int32_t FindAvailableCaptureTextureSlot(const SharedMemoryLayout* sharedMem, int32_t firstTextureIndex,
+                                               uint32_t textureCount = CAPTURE_TEXTURE_COUNT) {
+    if (textureCount == 0 || textureCount > static_cast<uint32_t>(SHARED_TEXTURE_SLOT_COUNT))
+        return -1;
+    const uint32_t first = static_cast<uint32_t>(firstTextureIndex < 0 ? 0 : firstTextureIndex) % textureCount;
+    for (uint32_t offset = 0; offset < textureCount; ++offset) {
+        const int32_t candidate = static_cast<int32_t>((first + offset) % textureCount);
+        if (!IsCaptureTextureSlotOutstanding(sharedMem, candidate))
+            return candidate;
+    }
+    return -1;
+}
 
 // Pending frame metadata for async capture thread
 struct PendingCaptureFrame {
-    int64_t timestampQPC;           // QPC timestamp when frame was submitted
-    uint64_t fenceValue;            // GPU fence value for sync
-    uint32_t backBufferIndex;       // Back buffer index in swapchain (inject) or
-                                    // texture ring index (WGC)
-    uint64_t completionFenceValue;  // Value to signal when capture complete
-    void* apiData;                  // API-specific data (swapchain pointer, texture pointer, etc.)
-    uint64_t syncObject;            // Generic sync object handle (e.g. Vulkan Semaphore)
+    int64_t timestampQPC = 0;           // QPC timestamp when frame was submitted
+    uint64_t fenceValue = 0;            // GPU fence value for sync
+    uint32_t backBufferIndex = 0;       // Back buffer index in swapchain (inject) or
+                                        // texture ring index (WGC)
+    uint64_t completionFenceValue = 0;  // Value to signal when capture complete
+    void* apiData = nullptr;            // API-specific data (swapchain pointer, texture pointer, etc.)
+    uint64_t syncObject = 0;            // Generic sync object handle (e.g. Vulkan Semaphore)
 };
 
 // Shared capture state - base class for all capture implementations
@@ -31,7 +98,11 @@ class CaptureBase {
 public:
     // Shared texture handles (exported to other processes)
     // CRITICAL FIX: Use atomic handles to prevent double-close race conditions
-    std::atomic<HANDLE> sharedTextureHandles[CAPTURE_TEXTURE_COUNT];
+    std::atomic<HANDLE> sharedTextureHandles[CAPTURE_TEXTURE_COUNT]{};
+    // Legacy IDXGIResource::GetSharedHandle values are KMT identifiers owned by
+    // the resource, not Win32 handles. Only entries explicitly marked owned may
+    // be passed to CloseHandle (for example, CreateSharedHandle NT handles).
+    std::atomic<bool> sharedTextureHandleOwned[CAPTURE_TEXTURE_COUNT]{};
     std::atomic<HANDLE> sharedFenceHandle{NULL};
 
     // Capture dimensions and format
@@ -49,7 +120,7 @@ public:
     bool initialized = false;
 
     // Async capture thread ring buffer (lock-free SPSC)
-    PendingCaptureFrame pendingRing[CAPTURE_RING_SIZE];
+    PendingCaptureFrame pendingRing[CAPTURE_RING_SIZE]{};
     std::atomic<uint32_t> pendingWriteIdx{0};
     std::atomic<uint32_t> pendingReadIdx{0};
 
@@ -75,15 +146,15 @@ public:
 
     // Check if ring buffer has space
     bool HasPendingSpace() const {
-        uint32_t wIdx = pendingWriteIdx.load(std::memory_order_acquire);
-        return (wIdx - pendingReadIdx.load(std::memory_order_relaxed)) < CAPTURE_RING_SIZE;
+        const uint32_t wIdx = pendingWriteIdx.load(std::memory_order_relaxed);
+        return (wIdx - pendingReadIdx.load(std::memory_order_acquire)) < CAPTURE_RING_SIZE;
     }
 
     // Enqueue a frame for async capture
     bool EnqueueFrame(int64_t timestampQPC, uint64_t gpuFenceValue, uint32_t backBufferIndex, void* apiData,
                       uint64_t syncObject = 0) {
-        uint32_t wIdx = pendingWriteIdx.load(std::memory_order_acquire);
-        if (wIdx - pendingReadIdx.load(std::memory_order_relaxed) >= CAPTURE_RING_SIZE) {
+        const uint32_t wIdx = pendingWriteIdx.load(std::memory_order_relaxed);
+        if (wIdx - pendingReadIdx.load(std::memory_order_acquire) >= CAPTURE_RING_SIZE) {
             droppedFrames.fetch_add(1, std::memory_order_relaxed);
             return false;  // Ring full, frame dropped
         }
@@ -111,8 +182,9 @@ public:
     // This prevents double-close if called from multiple threads
     void CleanupSharedHandles() {
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-            HANDLE h = sharedTextureHandles[i].exchange(NULL);
-            if (h) {
+            HANDLE h = sharedTextureHandles[i].exchange(NULL, std::memory_order_acq_rel);
+            const bool owned = sharedTextureHandleOwned[i].exchange(false, std::memory_order_acq_rel);
+            if (h && owned) {
                 CloseHandle(h);
             }
         }
@@ -192,18 +264,40 @@ public:
     // Start async capture thread
     template <typename ThreadFunc>
     void StartCaptureThread(ThreadFunc func) {
-        if (captureThreadRunning)
+        bool expected = false;
+        if (!captureThreadRunning.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
+                                                          std::memory_order_acquire)) {
             return;
+        }
+
+        // A joinable thread means StopCaptureThread() was not completed. Starting a
+        // second std::thread would terminate the process when it overwrote the first.
+        if (captureThread.joinable()) {
+            captureThreadRunning.store(false, std::memory_order_release);
+            return;
+        }
 
         captureEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-        captureThreadShutdown = false;
-        captureThread = std::thread(func);
+        if (!captureEvent) {
+            captureThreadRunning.store(false, std::memory_order_release);
+            return;
+        }
+
+        captureThreadShutdown.store(false, std::memory_order_release);
+        try {
+            captureThread = std::thread(func);
+        } catch (...) {
+            CloseHandle(captureEvent);
+            captureEvent = NULL;
+            captureThreadRunning.store(false, std::memory_order_release);
+            return;
+        }
         // Do NOT detach. We want to join on shutdown.
     }
 
     // Stop async capture thread
     void StopCaptureThread() {
-        captureThreadShutdown = true;
+        captureThreadShutdown.store(true, std::memory_order_release);
         if (captureEvent)
             SetEvent(captureEvent);
 
@@ -216,7 +310,7 @@ public:
             captureEvent = NULL;
         }
 
-        captureThreadRunning = false;
+        captureThreadRunning.store(false, std::memory_order_release);
     }
 
     // Reset for new recording session
@@ -227,7 +321,10 @@ public:
         writeIndex.store(0, std::memory_order_relaxed);
         completionFenceValue.store(0, std::memory_order_relaxed);
         pendingCaptureWaitValue.store(0, std::memory_order_relaxed);
-        recordingSessionID++;
+        for (auto& pending : pendingRing) {
+            pending = {};
+        }
+        recordingSessionID.fetch_add(1, std::memory_order_relaxed);
     }
 
     // Virtual methods - implemented by each API/capture source

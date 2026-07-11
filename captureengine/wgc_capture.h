@@ -22,9 +22,15 @@ struct WGCCapturedFrame {
     int64_t timestamp = 0;  // QPC ticks (same unit as inject mode)
     int64_t rawTimestamp = 0;
     bool isHDR = false;  // True when the captured target is currently HDR/PQ
+    bool cursorEmbedded = false;
     int32_t captureLeft = 0;
     int32_t captureTop = 0;
     bool duplicateSourceTimestamp = false;
+    // Stable identity of the WGCCapture instance/source that produced this
+    // frame. It is captured at delivery time and never inferred from a global
+    // coordinator epoch, so retired callbacks cannot be relabeled as the new
+    // source during a retarget.
+    uint64_t sourceEpoch = 0;
     uint32_t poolSlot = std::numeric_limits<uint32_t>::max();
     uint64_t poolGeneration = 0;
     WgcPoolSlotLease poolLease;
@@ -127,10 +133,15 @@ public:
     // Use WaitForSingleObject with timeout based on expected frame interval
     HANDLE GetFrameArrivedEvent() const;
 
+    // Assign the coordinator-owned source identity carried by all subsequent
+    // direct and pull-mode frames from this capture instance.
+    void SetSourceEpoch(uint64_t sourceEpoch);
+    uint64_t GetSourceEpoch() const;
+
     // OBS-style direct callback: frames processed directly in WinRT callback
     // Callback receives: texture, width, height, QPC timestamp, HDR flag, capture origin
     void SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool,
-                                                   int32_t, int32_t, WgcPoolSlotLease&&)>
+                                                   bool, int32_t, int32_t, uint64_t, WgcPoolSlotLease&&)>
                                     callback);
 
     // Get count of frames processed via direct callback

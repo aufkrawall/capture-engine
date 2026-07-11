@@ -497,18 +497,6 @@ struct FrameRingBuffer {
     }
 };
 
-inline bool FrameRingIndexAfter(uint32_t candidate, uint32_t current) {
-    return static_cast<int32_t>(candidate - current) > 0;
-}
-
-inline void PublishFrameRingReadIndexAtLeast(FrameRingBuffer& ring, uint32_t nextReadIndex) {
-    uint32_t current = ring.readIndex.load(std::memory_order_acquire);
-    while (FrameRingIndexAfter(nextReadIndex, current) &&
-           !ring.readIndex.compare_exchange_weak(current, nextReadIndex, std::memory_order_release,
-                                                 std::memory_order_acquire)) {
-    }
-}
-
 // D3D9 Shmem Fallback Buffer
 // Used when shared handles are not available (e.g. legacy D3D9 on Win11)
 // Moving to separate shared memory to reduce 32-bit address space consumption
@@ -961,8 +949,9 @@ public:
     // VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT.
     struct EncoderTextures {
     private:
-        std::atomic<uint64_t> textureHandles_[4]{};     // NT handles from D3D11 CreateSharedHandle
-        std::atomic<uint64_t> kmtTextureHandles_[ENCODER_TEXTURE_SLOT_COUNT]{};  // KMT handles from IDXGIResource::GetSharedHandle
+        std::atomic<uint64_t> textureHandles_[4]{};  // NT handles from D3D11 CreateSharedHandle
+        std::atomic<uint64_t>
+            kmtTextureHandles_[ENCODER_TEXTURE_SLOT_COUNT]{};  // KMT handles from IDXGIResource::GetSharedHandle
         std::atomic<uint64_t> fenceHandle_{0};
         std::atomic<uint32_t> width_{0};
         std::atomic<uint32_t> height_{0};

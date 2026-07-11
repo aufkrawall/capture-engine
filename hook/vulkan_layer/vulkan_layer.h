@@ -46,6 +46,7 @@ struct InstanceDispatch {
 struct DeviceDispatch {
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    bool captureInteropEnabled = false;
     PFN_vkGetDeviceProcAddr fp_vkGetDeviceProcAddr = nullptr;
     PFN_vkDestroyDevice fp_vkDestroyDevice = nullptr;
     PFN_vkGetDeviceQueue fp_vkGetDeviceQueue = nullptr;
@@ -125,6 +126,7 @@ struct DeviceDispatch {
     PFN_vkDestroyShaderModule fp_vkDestroyShaderModule = nullptr;
 #ifdef VK_USE_PLATFORM_WIN32_KHR
     PFN_vkGetMemoryWin32HandleKHR fp_vkGetMemoryWin32HandleKHR = nullptr;
+    PFN_vkGetMemoryWin32HandlePropertiesKHR fp_vkGetMemoryWin32HandlePropertiesKHR = nullptr;
     PFN_vkGetSemaphoreWin32HandleKHR fp_vkGetSemaphoreWin32HandleKHR = nullptr;
 #endif
 };
@@ -317,10 +319,12 @@ VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex);
 PerformanceMetrics* GetOverlayPerformanceMetrics(VkDevice device);
 void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent,
                        uint32_t imageCount);
+void NoteCaptureSwapchainImagePresented(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex);
+void RetireCaptureSwapchain(VkDevice device, VkSwapchainKHR swapchain);
 void CleanupCapture(VkDevice device);
-void CaptureFrame(VkDevice device, VkQueue queue, VkImage srcImage, uint32_t imageIndex,
+bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkImage srcImage,
                   const VkSemaphore* waitSemaphores, uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore);
-VkSemaphore GetCaptureSemaphore(VkDevice device, uint32_t imageIndex);
+VkSemaphore GetCaptureSemaphore(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex);
 
 void TakeVulkanScreenshot(struct DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage, uint32_t width,
                           uint32_t height, VkFormat format, const VkSemaphore* waitSemaphores,

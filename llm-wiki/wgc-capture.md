@@ -1,10 +1,13 @@
 # WGC Capture
 
-Last cross-checked: 2026-07-03 (hardware-cursor research + fixes: WGC demotes the hw cursor architecturally (2020+, no API opt-out) while duplication preserves it; auto_fullscreen_capture=dxgi_dup default routes unhooked fullscreen games to monitor duplication; dup format handling is delivered-frame ground truth (ModeDesc gate removed — it cost the hw cursor via wrong WGC fallback); dup cursor-plane tracking + embedded-cursor suppression via MediaEngine_SetCursorCompositionSuppressed; R10 WGC pool retry ladder removed (E_INVALIDARG is API-level, driver misdiagnosis corrected); FP16 staging pool trimmed fps/15 floor 8 cap 12; InputFrameRatePredictor stall-EMA outlier gating + duplicate-timestamp minimal-advance fixes. 2026-07-02: DXGI Desktop Duplication added as second backend behind the shared screen-grab engine: capture_method=dxgi_dup, auto-mode desktop fallback priority, shared preflight/pool/ingress refactor, dup-specific smoothness budget without source-pool share, in-place WGC fallback, recording-thread config snapshot race fix. Earlier: WGC item/session/target-origin diagnostics, scored per-window detection, matched configured-window gating, auto foreground-fullscreen window targeting, WindowId window item creation path, R10 pool retry, FP16 split-budget fix, VRAM 3000MB, tolerance 900 permille, pool headroom slots, timer rebase threshold 18, wgc_prefer_compact_10bit_pool, wgc_smoothness_floor_ms always-on baseline jitter buffer, 125% source-frame smoothness reservoir sizing, capped smoothness summary target, source-coverage best-effort diagnostics, producer-only WGC cadence cap, hardware-cursor-preserving WGC cursor capture with encoder-side cursor composition)
+Last cross-checked: 2026-07-11 (capture reliability audit: callback epochs and shutdown drain, atomic capture ownership and retarget rollback, source-epoch/cursor lineage, first-frame-proven inject-to-WGC handoff, exact-target auto fallback, DXGI reset parking and exception/MMCSS cleanup. Earlier hardware-cursor, duplication-format, and smoothness work remains described below.)
 Stale-risk: medium (producer cadence, native-WGC-cursor avoidance, foreground-fullscreen target selection, matched configured-window gating, and WindowId item creation are built/unit-tested where policy is testable; real DirectFlip/VRR/hardware-cursor game validation is still pending; the DXGI duplication backend is built/unit-tested at the policy level but has NO real-hardware runtime validation yet)
 
 Primary sources:
 - `common/capture_pipeline_policy.h`
+- `common/atomic_shared_owner.h`
+- `common/callback_epoch.h`
+- `common/capture_handoff_state.h`
 - `common/wgc_pool_lease.h`
 - `common/shared_defs.h`
 - `captureengine/wgc_capture.cpp`
@@ -26,10 +29,22 @@ Primary sources:
 - `tests/test_video_format_policy.cpp`
 - `tests/test_audio_sync_utils.cpp`
 - `tests/test_mux_invariants.cpp`
+- `tests/test_atomic_shared_owner.cpp`
+- `tests/test_callback_epoch.cpp`
+- `tests/test_capture_coordinator_source.cpp`
+- `tests/test_capture_handoff_state.cpp`
 - `tests/test_shared_runtime_state.cpp`
 - `tools/analyze_capture_av.py`
 
 ## Current Summary
+
+### Lifecycle, retarget, and handoff invariants (2026-07-11)
+
+WGC callbacks never queue an unguarded raw `this`. Each capture instance owns a callback epoch; frame/closed callbacks acquire a lease before touching instance state, shutdown closes the epoch and drains existing leases, and late callbacks become no-ops. Capture publication uses atomically loaded `shared_ptr` ownership plus an exclusive lifecycle gate, so a callback/encoder read pins the object while retarget, stop, or destruction waits. Retarget is transactional: the replacement is fully initialized before publication, and failure restores/restarts the prior source rather than leaving capture unavailable. Source epochs are assigned by the producer and travel with each queued frame; the encoder discards retired epochs and resets repeat/cursor state only when the active WGC lineage actually changes.
+
+Auto inject fallback is a two-phase handoff. Inject remains authoritative while standby WGC/DXGI starts; the switch occurs only after the replacement has delivered first-frame proof. The standby source keeps its publication epoch at commit, so the proven frame and the last successful inject repeat remain usable across the boundary instead of creating a CFR hole. Failure or readiness timeout stops only standby capture and keeps inject alive. The fallback target must resolve to the requested process window/monitor (or a process-matching foreground window); an unresolved source is left unarmed and never silently becomes primary-monitor capture.
+
+The duplication acquire thread parks on a condition variable while reset/unusable instead of polling. Thread creation failures unwind cleanly, callback exceptions are contained, MMCSS registration is always balanced, and capture-running state is cleared on every exit. WGC pool recreation is transactional and includes HDR/VFR options; start/stop/reset paths are exception-safe and never destroy a capture object while its callbacks can still run.
 
 Windows Graphics Capture remains the default non-injected capture path. Same-device WGC capture is now the preferred low-overhead default (`wgc_same_device_capture=true`); the dedicated capture D3D11 device remains a supported fallback/diagnostic path when same-device initialization is disabled or fails. Split-device WGC still uses keyed mutex synchronization on shared texture-pool slots.
 

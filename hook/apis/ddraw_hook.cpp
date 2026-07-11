@@ -14,6 +14,7 @@
 #include <windows.h>
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -571,6 +572,8 @@ static void BootstrapDirectDrawHooksOnCurrentThread(const char* reason) {
 // DirectDraw Capture class
 class DDrawCapture : public HookCaptureBase {
 public:
+    std::recursive_mutex captureMutex;
+
     // D3D9Ex wrapper for GPU sharing
     IDirect3D9Ex* d3d9Ex = nullptr;
     IDirect3DDevice9Ex* d3d9DeviceEx = nullptr;
@@ -615,16 +618,28 @@ public:
     }
 
     void Cleanup() override {
-        CleanupDDraw();
+        CleanupDDraw(false);
     }
 
-    void CleanupDDraw() {
+    bool CleanupDDraw(bool force = false) {
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
+        bool hasPublishedGeneration = sharedFenceHandle.load(std::memory_order_acquire) != NULL;
+        for (const auto& handle : sharedTextureHandles)
+            hasPublishedGeneration = hasPublishedGeneration || handle.load(std::memory_order_acquire) != NULL;
+        SharedMemoryLayout* sharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+        if (!force && hasPublishedGeneration && HasOutstandingCaptureFrameLeases(sharedMem)) {
+            static std::atomic<int> s_generationLeaseLogCount{0};
+            if (s_generationLeaseLogCount.fetch_add(1, std::memory_order_relaxed) < 12) {
+                HookLog("DDraw: Deferring capture resource cleanup while old frame leases are outstanding");
+            }
+            return false;
+        }
+
         // Release D3D11 resources
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-            if (sharedTextureHandles[i]) {
-                CloseHandle(sharedTextureHandles[i]);
-                sharedTextureHandles[i] = NULL;
-            }
+            HANDLE sharedHandle = sharedTextureHandles[i].exchange(NULL, std::memory_order_acq_rel);
+            if (sharedHandle && sharedTextureHandleOwned[i].exchange(false, std::memory_order_acq_rel))
+                CloseHandle(sharedHandle);
             if (sharedTextures[i]) {
                 sharedTextures[i]->Release();
                 sharedTextures[i] = nullptr;
@@ -664,6 +679,7 @@ public:
         initialized = false;
         useFences = false;
         fenceValue = 0;
+        return true;
     }
 
     void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override {
@@ -1046,6 +1062,11 @@ public:
 
         const bool hwndChanged = targetHwnd && hwnd != targetHwnd;
         const bool sizeChanged = width != w || height != h;
+        if (initialized && (hwndChanged || sizeChanged)) {
+            // Capture owns the generation-wide dimensions. Let
+            // EnsureCaptureResources drain/rebuild it before mutating them.
+            return false;
+        }
         if ((hwndChanged || sizeChanged) && d3d9DeviceEx) {
             HookLog("DDraw: Recreating overlay helper (oldHwnd=%p newHwnd=%p old=%ux%u new=%ux%u)", targetHwnd, hwnd,
                     width, height, w, h);
@@ -1088,7 +1109,8 @@ public:
                 "DDraw: Reinitializing capture resources for new surface/size (oldSurface=%p newSurface=%p old=%ux%u "
                 "new=%ux%u)",
                 ddrawSurface, surface, width, height, w, h);
-            CleanupDDraw();
+            if (!CleanupDDraw(false))
+                return false;
         }
 
         ddrawSurface = surface;
@@ -1098,17 +1120,17 @@ public:
         format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
         if (!CreateD3D11Device()) {
-            CleanupDDraw();
+            CleanupDDraw(false);
             return false;
         }
 
         if (!CreateStagingTexture()) {
-            CleanupDDraw();
+            CleanupDDraw(false);
             return false;
         }
 
         if (!CreateSharedTextures()) {
-            CleanupDDraw();
+            CleanupDDraw(false);
             return false;
         }
 
@@ -1148,6 +1170,7 @@ public:
     }
 
     bool CaptureFrameFromSurface(IDirectDrawSurface7* surface) {
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
         if (!surface) {
             return false;
         }
@@ -1171,10 +1194,12 @@ public:
     }
 
     void Init(IDirectDrawSurface7* surface, HWND hwnd, uint32_t w, uint32_t h) {
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
         EnsureCaptureResources(surface, hwnd, w, h);
     }
 
     void CaptureFrame(void* bits, int pitch) {
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
         if (!initialized || !bits)
             return;
 
@@ -1185,7 +1210,13 @@ public:
             }
         }
 
-        int idx = writeIndex;
+        SharedMemoryLayout* captureSharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+        const int idx = FindAvailableCaptureTextureSlot(captureSharedMem, writeIndex.load(std::memory_order_relaxed));
+        if (idx < 0) {
+            droppedFrames.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        writeIndex.store(idx, std::memory_order_relaxed);
 
         // Get timestamp
         static int64_t qpcFreq = 0;
@@ -1199,39 +1230,51 @@ public:
         int64_t us = (qpc.QuadPart * 1000000) / qpcFreq;
 
         // Map staging texture and copy from DDraw surface
-        D3D11_MAPPED_SUBRESOURCE mapped;
+        D3D11_MAPPED_SUBRESOURCE mapped = {};
         HRESULT hr = d3d11Context->Map(stagingTexture, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        if (SUCCEEDED(hr)) {
-            // Copy row by row (handle different pitches)
-            uint8_t* src = (uint8_t*)bits;
-            uint8_t* dst = (uint8_t*)mapped.pData;
-            int rowSize = width * 4;  // Assuming 32-bit color
+        if (FAILED(hr) || !mapped.pData)
+            return;
 
-            for (uint32_t y = 0; y < height; y++) {
-                memcpy(dst, src, rowSize);
-                src += pitch;
-                dst += mapped.RowPitch;
-            }
+        // Copy row by row (handle different pitches)
+        uint8_t* src = (uint8_t*)bits;
+        uint8_t* dst = (uint8_t*)mapped.pData;
+        int rowSize = width * 4;  // Assuming 32-bit color
 
-            d3d11Context->Unmap(stagingTexture, 0);
-
-            // Copy staging to shared texture
-            d3d11Context->CopyResource(sharedTextures[idx], stagingTexture);
+        for (uint32_t y = 0; y < height; y++) {
+            memcpy(dst, src, rowSize);
+            src += pitch;
+            dst += mapped.RowPitch;
         }
+
+        d3d11Context->Unmap(stagingTexture, 0);
+
+        // Copy staging to shared texture
+        d3d11Context->CopyResource(sharedTextures[idx], stagingTexture);
 
         // Signal fence if available
+        uint64_t publishedFenceValue = 0;
         if (useFences && context4 && fence) {
-            fenceValue++;
-            context4->Signal(fence, fenceValue);
+            const uint64_t candidateFenceValue = ++fenceValue;
+            const HRESULT signalHr = context4->Signal(fence, candidateFenceValue);
+            if (SUCCEEDED(signalHr)) {
+                publishedFenceValue = candidateFenceValue;
+            } else {
+                HookLog("DDraw: Capture fence Signal failed value=%llu hr=0x%08X; using implicit sync later",
+                        static_cast<unsigned long long>(candidateFenceValue), signalHr);
+                useFences = false;
+            }
         }
+        if (publishedFenceValue == 0)
+            d3d11Context->Flush();
 
         // PASS RAW QPC
-        SignalFrameReady(g_IPC, idx, qpc.QuadPart, fenceValue);
+        SignalFrameReady(g_IPC, idx, qpc.QuadPart, publishedFenceValue);
         AdvanceWriteIndex();
     }
 
     // Capture via GetDC for surfaces that don't support Lock
     void CaptureFrameViaGDI(IDirectDrawSurface7* surface) {
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
         if (!initialized)
             return;
 
@@ -1971,8 +2014,7 @@ void DDrawHook::Init() {
     //   while Steam overlay controls the D3D9 vtable.
     if (GetModuleHandleA("d3d9.dll") || GetModuleHandleA("d3d8.dll")) {
         HookLog("DDraw: Skipping DDraw hooks (higher-level D3D API present; d3d9=%d d3d8=%d)",
-                GetModuleHandleA("d3d9.dll") ? 1 : 0,
-                GetModuleHandleA("d3d8.dll") ? 1 : 0);
+                GetModuleHandleA("d3d9.dll") ? 1 : 0, GetModuleHandleA("d3d8.dll") ? 1 : 0);
         return;
     }
 
@@ -2007,10 +2049,10 @@ void DDrawHook::Shutdown() {
         g_OverlayAdapter.Shutdown();
     }
 
-    g_DDrawCapture.Cleanup();
+    g_DDrawCapture.CleanupDDraw(true);
 }
 
 void DDrawHook::OnHostDisconnect() {
     HookLog("DDrawHook::OnHostDisconnect()");
-    g_DDrawCapture.Cleanup();
+    g_DDrawCapture.CleanupDDraw(true);
 }

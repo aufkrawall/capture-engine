@@ -50,6 +50,9 @@ MEDIAENGINE_API bool MediaEngine_RepeatLastFrame(int64_t timestamp);
 // CFR timeline position in microseconds for repeat/drain output.
 MEDIAENGINE_API bool MediaEngine_RepeatLastFrameWithTimeline(int64_t timestamp, int64_t timelineElapsedUs);
 MEDIAENGINE_API bool MediaEngine_CanRepeatLastFrame();
+// Invalidate encoded-packet, post-conversion texture, and cursor-aware source
+// caches after a capture source/epoch transition.
+MEDIAENGINE_API void MediaEngine_ResetRepeatFrameCache();
 
 // Process a frame from D3D11 texture directly (framegrab mode - zero copy)
 // texture: D3D11 texture in RGB/BGRA/FP16 format (caller retains ownership)

@@ -56,6 +56,7 @@ inline bool IsFatalWasapiStreamError(long hr) {
         case 0x88890004u:  // AUDCLNT_E_DEVICE_INVALIDATED
         case 0x8889000fu:  // AUDCLNT_E_ENDPOINT_CREATE_FAILED
         case 0x88890010u:  // AUDCLNT_E_SERVICE_NOT_RUNNING
+        case 0x88890026u:  // AUDCLNT_E_RESOURCES_INVALIDATED
             return true;
         default:
             return false;

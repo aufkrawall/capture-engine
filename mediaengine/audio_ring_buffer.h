@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <exception>
 #include <functional>
 #include <mutex>
 #include <vector>
@@ -25,7 +26,7 @@ public:
           writePos(0),
           available(0),
           droppedSamples(0) {
-        buffer.resize(capacity, 0.0f);
+        buffer.resize(capacitySamples, 0.0f);
     }
 
     // Push new samples into the buffer.
@@ -65,12 +66,14 @@ public:
 
     // Get free space to write
     size_t GetFree() const {
-        return capacity - available.load(std::memory_order_acquire);
+        const size_t currentCapacity = capacity.load(std::memory_order_acquire);
+        const size_t currentAvailable = available.load(std::memory_order_acquire);
+        return currentAvailable < currentCapacity ? currentCapacity - currentAvailable : 0;
     }
 
     // Get total capacity
     size_t GetCapacity() const {
-        return capacity;
+        return capacity.load(std::memory_order_acquire);
     }
 
     // Grow the backing capacity to at least `newCapacitySamples`. Used to defer
@@ -85,14 +88,23 @@ public:
     // because the buffer was non-empty.
     bool EnsureCapacity(size_t newCapacitySamples) {
         std::lock_guard<std::mutex> lock(mutex);
-        if (newCapacitySamples <= capacity) {
+        const size_t currentCapacity = capacity.load(std::memory_order_relaxed);
+        if (newCapacitySamples <= currentCapacity) {
             return true;
         }
         if (available.load(std::memory_order_acquire) != 0) {
             return false;  // refuse to realloc while holding buffered audio
         }
-        buffer.assign(newCapacitySamples, 0.0f);
-        capacity = newCapacitySamples;
+        // Allocate into a temporary so an allocation/length failure leaves the
+        // live ring, its indices, and the published capacity untouched.
+        std::vector<float> replacement;
+        try {
+            replacement.assign(newCapacitySamples, 0.0f);
+        } catch (const std::exception&) {
+            return false;
+        }
+        buffer.swap(replacement);
+        capacity.store(newCapacitySamples, std::memory_order_release);
         readPos = 0;
         writePos = 0;
         return true;
@@ -120,7 +132,7 @@ public:
 
 private:
     std::vector<float> buffer;
-    size_t capacity;
+    std::atomic<size_t> capacity;
     size_t readPos;
     size_t writePos;
     std::atomic<size_t> available;

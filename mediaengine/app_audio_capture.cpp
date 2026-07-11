@@ -5,7 +5,12 @@
 #include <tlhelp32.h>
 #include <algorithm>
 #include <chrono>
+#include <cstring>
+#include <exception>
 #include <functional>
+#include <limits>
+#include <new>
+#include <utility>
 #include "../common/raii_helpers.h"
 #include "audio_capture.h"  // For AudioPacket
 #include "audio_time_utils.h"
@@ -73,17 +78,28 @@ static bool IsIEEEFloat(const GUID& g) {
 
 class AppAudioCapture::ActivationHandler : public IActivateAudioInterfaceCompletionHandler {
 public:
-    ActivationHandler(HANDLE completeEvent)
+    ActivationHandler()
         : refCount(1),
-          completeEvent(completeEvent),
+          completeEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr)),
           resultCode(E_FAIL),
           audioClient(nullptr) {}
 
-    virtual ~ActivationHandler() = default;
+    virtual ~ActivationHandler() {
+        if (completeEvent) {
+            CloseHandle(completeEvent);
+        }
+        // Deliberately do not release audioClient here. Process-loopback client
+        // release crosses the same AudioSes teardown crash boundary documented in
+        // AbandonClientInterfaces(). A timed-out late activation is rare and the
+        // short-lived media process reclaims it at exit.
+    }
 
     // IUnknown - must return S_OK for IAgileObject to prevent
     // E_ILLEGAL_METHOD_CALL
     STDMETHODIMP QueryInterface(REFIID riid, void** ppvObject) override {
+        if (!ppvObject) {
+            return E_POINTER;
+        }
         if (riid == __uuidof(IUnknown) || riid == __uuidof(IActivateAudioInterfaceCompletionHandler) ||
             riid == IID_IAgileObject) {
             *ppvObject = static_cast<IActivateAudioInterfaceCompletionHandler*>(this);
@@ -111,24 +127,33 @@ public:
         HRESULT hrActivate = E_FAIL;
         IUnknown* pUnk = nullptr;
 
-        HRESULT hr = activateOperation->GetActivateResult(&hrActivate, &pUnk);
+        HRESULT hr = activateOperation ? activateOperation->GetActivateResult(&hrActivate, &pUnk) : E_POINTER;
         if (SUCCEEDED(hr) && SUCCEEDED(hrActivate) && pUnk) {
             hr = pUnk->QueryInterface(__uuidof(IAudioClient), reinterpret_cast<void**>(&audioClient));
+        }
+        if (pUnk) {
             pUnk->Release();
         }
 
         resultCode = SUCCEEDED(hr) ? hrActivate : hr;
 
         // Signal completion
-        SetEvent(completeEvent);
+        if (completeEvent) {
+            SetEvent(completeEvent);
+        }
         return S_OK;
     }
 
     HRESULT GetResult() const {
         return resultCode;
     }
-    IAudioClient* GetAudioClient() const {
-        return audioClient;
+    HANDLE GetEvent() const {
+        return completeEvent;
+    }
+    IAudioClient* TakeAudioClient() {
+        IAudioClient* client = audioClient;
+        audioClient = nullptr;
+        return client;
     }
 
 private:
@@ -142,19 +167,26 @@ private:
 // AppAudioCapture Implementation
 // ============================================================================
 AppAudioCapture::AppAudioCapture() {
-    activationCompleteEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     captureEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!captureEvent_) {
+        DLL_Log("[AppAudioCapture] CreateEventW for capture callback failed: 0x%lx; polling will be used",
+                GetLastError());
+    }
+    stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!stopEvent_) {
+        DLL_Log("[AppAudioCapture] CreateEventW for activation cancellation failed: 0x%lx", GetLastError());
+    }
 }
 
 AppAudioCapture::~AppAudioCapture() {
     Stop();
-    if (activationCompleteEvent) {
-        CloseHandle(activationCompleteEvent);
-        activationCompleteEvent = nullptr;
-    }
     if (captureEvent_) {
         CloseHandle(captureEvent_);
         captureEvent_ = nullptr;
+    }
+    if (stopEvent_) {
+        CloseHandle(stopEvent_);
+        stopEvent_ = nullptr;
     }
 }
 
@@ -206,9 +238,14 @@ bool AppAudioCapture::StartByPID(DWORD processId) {
         return false;
     }
 
-    if (isCapturing.load() || isMonitoring.load()) {
+    if (isCapturing.load() || isMonitoring.load() || asyncStartInProgress.load(std::memory_order_acquire)) {
         DLL_Log("[AppAudioCapture] Already running, call Stop() first");
         return false;
+    }
+
+    if (captureThread.joinable() || pAudioClient || pCaptureClient || pwfx) {
+        DLL_Log("[AppAudioCapture] Cleaning up completed/partial capture state before PID start");
+        Stop(true);
     }
 
     if (!IsProcessRunning(processId)) {
@@ -217,11 +254,18 @@ bool AppAudioCapture::StartByPID(DWORD processId) {
     }
 
     DLL_Log("[AppAudioCapture] Starting capture for PID %lu", processId);
+    if (stopEvent_ && !ResetEvent(stopEvent_)) {
+        DLL_Log("[AppAudioCapture] ResetEvent for activation cancellation failed: 0x%lx", GetLastError());
+        return false;
+    }
     shouldStop.store(false);
     targetPID.store(processId);
     targetProcessName.clear();
 
-    BeginAsyncStartForPID(processId);
+    if (!BeginAsyncStartForPID(processId)) {
+        targetPID.store(0, std::memory_order_release);
+        return false;
+    }
     return true;
 }
 
@@ -233,24 +277,45 @@ bool AppAudioCapture::StartByName(const std::string& processName) {
         return false;
     }
 
-    if (isCapturing.load() || isMonitoring.load()) {
+    if (isCapturing.load() || isMonitoring.load() || asyncStartInProgress.load(std::memory_order_acquire)) {
         DLL_Log("[AppAudioCapture] Already running, call Stop() first");
         return false;
     }
 
+    if (captureThread.joinable() || pAudioClient || pCaptureClient || pwfx) {
+        DLL_Log("[AppAudioCapture] Cleaning up completed/partial capture state before process monitor start");
+        Stop(true);
+    }
+
     DLL_Log("[AppAudioCapture] Starting monitor for process '%s'", processName.c_str());
     targetProcessName = processName;
+    if (stopEvent_ && !ResetEvent(stopEvent_)) {
+        DLL_Log("[AppAudioCapture] ResetEvent for activation cancellation failed: 0x%lx", GetLastError());
+        targetProcessName.clear();
+        return false;
+    }
     shouldStop.store(false);
     isMonitoring.store(true);
 
     // Start the process monitor thread
-    monitorThread = std::thread(&AppAudioCapture::ProcessMonitorLoop, this);
+    try {
+        monitorThread = std::thread(&AppAudioCapture::ProcessMonitorLoop, this);
+    } catch (const std::exception& error) {
+        DLL_Log("[AppAudioCapture] Failed to create process monitor thread: %s", error.what());
+        isMonitoring.store(false, std::memory_order_release);
+        shouldStop.store(true, std::memory_order_release);
+        targetProcessName.clear();
+        return false;
+    }
 
     return true;
 }
 
 void AppAudioCapture::Stop(bool discardPendingPackets) {
     shouldStop.store(true);
+    if (stopEvent_) {
+        SetEvent(stopEvent_);
+    }
     if (captureEvent_) {
         SetEvent(captureEvent_);
     }
@@ -259,7 +324,11 @@ void AppAudioCapture::Stop(bool discardPendingPackets) {
         std::lock_guard<std::mutex> lock(startMutex);
         if (pendingStartFuture.valid()) {
             pendingStartFuture.wait();
-            pendingStartFuture.get();
+            try {
+                pendingStartFuture.get();
+            } catch (const std::exception& error) {
+                DLL_Log("[AppAudioCapture] Async start raised during Stop: %s", error.what());
+            }
         }
         asyncStartInProgress.store(false, std::memory_order_release);
         startPendingValid.store(false, std::memory_order_release);
@@ -294,19 +363,26 @@ bool AppAudioCapture::GetNextPacket(AudioPacket& packet) {
         targetPID.load(std::memory_order_acquire) != 0 && !asyncStartInProgress.load(std::memory_order_acquire)) {
         targetPID.store(0, std::memory_order_release);
     }
-    std::lock_guard<std::mutex> lock(queueMutex);
-    if (packetQueue.empty())
-        return false;
-    packet = packetQueue.front();
-    packetQueue.pop_front();
+    AudioPacket queuedPacket;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        if (packetQueue.empty())
+            return false;
+        queuedPacket = std::move(packetQueue.front());
+        packetQueue.pop_front();
+    }
+    packet = std::move(queuedPacket);
     return true;
 }
 
 void AppAudioCapture::DiscardPendingPackets() {
-    std::lock_guard<std::mutex> lock(queueMutex);
-    if (!packetQueue.empty()) {
-        DLL_Log("[AppAudioCapture] Discarding %zu queued packets for PID %lu", packetQueue.size(), targetPID.load());
-        packetQueue.clear();
+    std::deque<AudioPacket> discarded;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        discarded.swap(packetQueue);
+    }
+    if (!discarded.empty()) {
+        DLL_Log("[AppAudioCapture] Discarding %zu queued packets for PID %lu", discarded.size(), targetPID.load());
     }
 }
 
@@ -315,11 +391,16 @@ size_t AppAudioCapture::PendingPacketCount() {
     return packetQueue.size();
 }
 
-void AppAudioCapture::BeginAsyncStartForPID(DWORD pid) {
+bool AppAudioCapture::BeginAsyncStartForPID(DWORD pid) {
     std::lock_guard<std::mutex> lock(startMutex);
     if (pendingStartFuture.valid()) {
         pendingStartFuture.wait();
-        const bool started = pendingStartFuture.get();
+        bool started = false;
+        try {
+            started = pendingStartFuture.get();
+        } catch (const std::exception& error) {
+            DLL_Log("[AppAudioCapture] Prior async start raised for PID %lu: %s", targetPID.load(), error.what());
+        }
         if (!started) {
             DLL_Log("[AppAudioCapture] Async start failed for PID %lu", targetPID.load());
         }
@@ -327,13 +408,27 @@ void AppAudioCapture::BeginAsyncStartForPID(DWORD pid) {
 
     asyncStartInProgress.store(true, std::memory_order_release);
     startPendingValid.store(false, std::memory_order_release);
-    pendingStartFuture = std::async(std::launch::async, [this, pid]() {
-        const bool ok = InitializeCaptureForPID(pid);
-        startPendingResult.store(ok, std::memory_order_release);
-        startPendingValid.store(true, std::memory_order_release);
+    try {
+        pendingStartFuture = std::async(std::launch::async, [this, pid]() {
+            bool ok = false;
+            try {
+                ok = InitializeCaptureForPID(pid);
+            } catch (const std::exception& error) {
+                DLL_Log("[AppAudioCapture] Async initialization raised for PID %lu: %s", pid, error.what());
+                CleanupCapture();
+            }
+            startPendingResult.store(ok, std::memory_order_release);
+            startPendingValid.store(true, std::memory_order_release);
+            asyncStartInProgress.store(false, std::memory_order_release);
+            return ok;
+        });
+    } catch (const std::exception& error) {
+        DLL_Log("[AppAudioCapture] Failed to launch async start for PID %lu: %s", pid, error.what());
         asyncStartInProgress.store(false, std::memory_order_release);
-        return ok;
-    });
+        startPendingValid.store(false, std::memory_order_release);
+        return false;
+    }
+    return true;
 }
 
 void AppAudioCapture::FinalizePendingAsyncStart() {
@@ -344,7 +439,12 @@ void AppAudioCapture::FinalizePendingAsyncStart() {
     std::lock_guard<std::mutex> lock(startMutex);
     if (pendingStartFuture.valid() &&
         pendingStartFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
-        const bool ok = pendingStartFuture.get();
+        bool ok = false;
+        try {
+            ok = pendingStartFuture.get();
+        } catch (const std::exception& error) {
+            DLL_Log("[AppAudioCapture] Async start completion raised for PID %lu: %s", targetPID.load(), error.what());
+        }
         startPendingValid.store(false, std::memory_order_release);
         if (ok) {
             DLL_Log("[AppAudioCapture] Async start completed for PID %lu", targetPID.load());
@@ -371,7 +471,14 @@ bool AppAudioCapture::StartCaptureThreadForCurrentClient() {
     }
 
     isCapturing.store(true, std::memory_order_release);
-    captureThread = std::thread(&AppAudioCapture::CaptureLoop, this);
+    try {
+        captureThread = std::thread(&AppAudioCapture::CaptureLoop, this);
+    } catch (const std::exception& error) {
+        DLL_Log("[AppAudioCapture] Failed to create capture thread for PID %lu: %s", targetPID.load(), error.what());
+        isCapturing.store(false, std::memory_order_release);
+        CleanupCapture();
+        return false;
+    }
     return true;
 }
 
@@ -391,19 +498,11 @@ bool AppAudioCapture::ReactivateClientForPID(DWORD pid) {
     return ActivateClientForPID(pid);
 }
 
-bool AppAudioCapture::ActivateClientForPID(DWORD pid) {
-    const HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    if (FAILED(coInitHr) && coInitHr != RPC_E_CHANGED_MODE) {
-        DLL_Log("[AppAudioCapture] CoInitializeEx failed: 0x%x", coInitHr);
+bool AppAudioCapture::ActivateAudioInterfaceForPID(DWORD pid, IAudioClient** audioClient) {
+    if (!audioClient) {
         return false;
     }
-    const bool coInitOwned = (coInitHr == S_OK);
-    CE_SCOPE_EXIT(if (coInitOwned) { CoUninitialize(); });
-
-    HRESULT hr;
-
-    // Reset the completion event
-    ResetEvent(activationCompleteEvent);
+    *audioClient = nullptr;
 
     // Set up activation parameters for per-process loopback
     AUDIOCLIENT_ACTIVATION_PARAMS audioParams = {};
@@ -416,26 +515,53 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid) {
     activateParams.blob.cbSize = sizeof(audioParams);
     activateParams.blob.pBlobData = reinterpret_cast<BYTE*>(&audioParams);
 
-    // Create completion handler
-    auto* handler = new ActivationHandler(activationCompleteEvent);
+    // Each activation owns its completion event through its handler. Reusing a
+    // shared event lets a timed-out old callback wake a later activation and makes
+    // the later attempt consume the wrong result.
+    auto* handler = new (std::nothrow) ActivationHandler();
+    if (!handler || !handler->GetEvent()) {
+        DLL_Log("[AppAudioCapture] Failed to create process-loopback activation handler/event: 0x%lx", GetLastError());
+        if (handler) {
+            handler->Release();
+        }
+        return false;
+    }
 
     IActivateAudioInterfaceAsyncOperation* asyncOp = nullptr;
-    hr = ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient), &activateParams,
-                                     handler, &asyncOp);
+    HRESULT hr = ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient),
+                                             &activateParams, handler, &asyncOp);
 
     if (FAILED(hr)) {
         DLL_Log("[AppAudioCapture] ActivateAudioInterfaceAsync failed: 0x%x", hr);
         handler->Release();
+        if (asyncOp) {
+            asyncOp->Release();
+        }
         return false;
     }
 
-    // Wait for activation to complete (with timeout)
-    DWORD waitResult = WaitForSingleObject(activationCompleteEvent, 5000);
-    if (waitResult != WAIT_OBJECT_0) {
-        DLL_Log("[AppAudioCapture] Activation timeout");
+    // Wait for activation to complete, but let Stop wake the asynchronous start
+    // immediately through a dedicated manual-reset cancellation event. Do not use
+    // captureEvent_ here: abandoned process-loopback clients can continue signaling
+    // their old capture callback event during a recovery activation.
+    HANDLE waitHandles[] = {handler->GetEvent(), stopEvent_};
+    const DWORD waitHandleCount = stopEvent_ ? 2 : 1;
+    const DWORD waitResult = WaitForMultipleObjects(waitHandleCount, waitHandles, FALSE, 5000);
+    if (waitHandleCount == 2 && waitResult == WAIT_OBJECT_0 + 1) {
+        DLL_Log("[AppAudioCapture] Activation cancelled for PID %lu during shutdown", pid);
         handler->Release();
-        if (asyncOp)
+        if (asyncOp) {
             asyncOp->Release();
+        }
+        return false;
+    }
+    if (waitResult != WAIT_OBJECT_0) {
+        DLL_Log("[AppAudioCapture] Activation wait failed for PID %lu: result=0x%lx error=0x%lx", pid, waitResult,
+                waitResult == WAIT_FAILED ? GetLastError() : ERROR_TIMEOUT);
+        handler->Release();
+        if (asyncOp) {
+            asyncOp->Release();
+        }
         return false;
     }
 
@@ -444,87 +570,147 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid) {
     if (FAILED(hr)) {
         DLL_Log("[AppAudioCapture] Activation failed: 0x%x", hr);
         handler->Release();
-        if (asyncOp)
+        if (asyncOp) {
             asyncOp->Release();
+        }
         return false;
     }
 
-    pAudioClient = handler->GetAudioClient();
+    *audioClient = handler->TakeAudioClient();
     handler->Release();
-    if (asyncOp)
+    if (asyncOp) {
         asyncOp->Release();
+    }
 
-    if (!pAudioClient) {
+    if (!*audioClient) {
         DLL_Log("[AppAudioCapture] No audio client obtained");
         return false;
     }
+    return true;
+}
+
+bool AppAudioCapture::ActivateClientForPID(DWORD pid) {
+    const HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(coInitHr) && coInitHr != RPC_E_CHANGED_MODE) {
+        DLL_Log("[AppAudioCapture] CoInitializeEx failed: 0x%x", coInitHr);
+        return false;
+    }
+    // S_FALSE is a successful call and increments COM's per-thread init count.
+    const bool coInitNeedsUninitialize = SUCCEEDED(coInitHr);
+    CE_SCOPE_EXIT(if (coInitNeedsUninitialize) { CoUninitialize(); });
 
     // Process loopback does not reliably expose the app's native mix format, so
     // request the resolved output layout and let AUTOCONVERTPCM do only the
     // unavoidable source conversion.
 
-    if (pwfx) {
-        CoTaskMemFree(pwfx);
-        pwfx = nullptr;
-    }
-
     // KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
     const GUID kKsDataFormatSubtypeIeeeFloat = {
         0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
 
-    pwfx = (WAVEFORMATEX*)CoTaskMemAlloc(sizeof(WAVEFORMATEXTENSIBLE));
-    if (!pwfx) {
-        DLL_Log("[AppAudioCapture] Failed to allocate format");
-        CleanupCapture();
-        return false;
-    }
+    struct ClientAttempt {
+        DWORD streamFlags;
+        REFERENCE_TIME bufferDuration;
+        bool requiresEvent;
+        const char* description;
+    };
+    const ClientAttempt attempts[] = {
+        {AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, 100000,
+         true, "event-driven loopback/autoconvert"},
+        {AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, 2000000, false,
+         "polling loopback/autoconvert"},
+        {0, 2000000, false, "polling plain"},
+    };
 
-    WAVEFORMATEXTENSIBLE* wfex = (WAVEFORMATEXTENSIBLE*)pwfx;
-    wfex->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-    wfex->Format.nChannels = static_cast<WORD>(std::clamp(requestedChannels, 1, 8));
-    wfex->Format.nSamplesPerSec = requestedSampleRate > 0 ? requestedSampleRate : 48000;
-    wfex->Format.wBitsPerSample = 32;
-    wfex->Format.nBlockAlign = wfex->Format.nChannels * wfex->Format.wBitsPerSample / 8;
-    wfex->Format.nAvgBytesPerSec = wfex->Format.nSamplesPerSec * wfex->Format.nBlockAlign;
-    wfex->Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
-    wfex->Samples.wValidBitsPerSample = 32;
-    wfex->dwChannelMask = requestedChannelMask;
-    wfex->SubFormat = kKsDataFormatSubtypeIeeeFloat;
+    HRESULT hr = E_FAIL;
+    bool initialized = false;
+    for (const ClientAttempt& attempt : attempts) {
+        if (shouldStop.load(std::memory_order_acquire)) {
+            DLL_Log("[AppAudioCapture] Activation cancelled for PID %lu during shutdown", pid);
+            return false;
+        }
+        if (attempt.requiresEvent && !captureEvent_) {
+            continue;
+        }
 
-    // Initialize audio client - per Microsoft sample, use LOOPBACK +
-    // AUTOCONVERTPCM AUTOCONVERTPCM tells Windows to convert the process audio to
-    // our format Use 10ms buffer (100000 hns) to reduce latency and burstiness
-    // CRITICAL FIX: AUTOCONVERTPCM is a FLAG, not a buffer duration parameter
-    DWORD streamFlags =
-        AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
-    hr = pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, streamFlags,
-                                  100000,  // hnsBufferDuration
-                                  0,       // hnsPeriodicity (must be 0 for SHARED)
-                                  pwfx, nullptr);
-    if (FAILED(hr)) {
-        // Try without EVENTCALLBACK
-        DLL_Log(
-            "[AppAudioCapture] Initialize with EVENTCALLBACK failed: 0x%x, "
-            "trying without",
-            hr);
-        streamFlags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM;
-        hr = pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, streamFlags, 2000000, 0, pwfx, nullptr);
-        if (FAILED(hr)) {
-            // Try without any special flags
+        IAudioClient* activatedClient = nullptr;
+        if (!ActivateAudioInterfaceForPID(pid, &activatedClient)) {
+            // Activation is independent of the event/polling flags used later by
+            // IAudioClient::Initialize. Repeating a five-second activation timeout
+            // once per mode only stalls capture and shutdown for up to 15 seconds.
             DLL_Log(
-                "[AppAudioCapture] Initialize with LOOPBACK failed: 0x%x, trying "
-                "plain",
-                hr);
-            streamFlags = 0;
-            hr = pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, 2000000, 0, pwfx, nullptr);
+                "[AppAudioCapture] Audio-interface activation failed for %s; capture-mode fallbacks were not "
+                "reached",
+                attempt.description);
+            return false;
+        }
+        pAudioClient = activatedClient;
+        if (shouldStop.load(std::memory_order_acquire)) {
+            DLL_Log("[AppAudioCapture] Activation completed for PID %lu after shutdown began; abandoning client", pid);
+            AbandonClientInterfaces();
+            return false;
+        }
+
+        pwfx = static_cast<WAVEFORMATEX*>(CoTaskMemAlloc(sizeof(WAVEFORMATEXTENSIBLE)));
+        if (!pwfx) {
+            DLL_Log("[AppAudioCapture] Failed to allocate capture format");
+            AbandonClientInterfaces();
+            return false;
+        }
+        std::memset(pwfx, 0, sizeof(WAVEFORMATEXTENSIBLE));
+        auto* wfex = reinterpret_cast<WAVEFORMATEXTENSIBLE*>(pwfx);
+        wfex->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+        wfex->Format.nChannels = static_cast<WORD>(std::clamp(requestedChannels, 1, 8));
+        wfex->Format.nSamplesPerSec = static_cast<DWORD>(requestedSampleRate > 0 ? requestedSampleRate : 48000);
+        wfex->Format.wBitsPerSample = 32;
+        wfex->Format.nBlockAlign = wfex->Format.nChannels * wfex->Format.wBitsPerSample / 8;
+        const uint64_t avgBytesPerSec = static_cast<uint64_t>(wfex->Format.nSamplesPerSec) * wfex->Format.nBlockAlign;
+        if (avgBytesPerSec > std::numeric_limits<DWORD>::max()) {
+            DLL_Log("[AppAudioCapture] Requested format byte rate is not representable: rate=%lu blockAlign=%u",
+                    wfex->Format.nSamplesPerSec, wfex->Format.nBlockAlign);
+            AbandonClientInterfaces();
+            return false;
+        }
+        wfex->Format.nAvgBytesPerSec = static_cast<DWORD>(avgBytesPerSec);
+        wfex->Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+        wfex->Samples.wValidBitsPerSample = 32;
+        wfex->dwChannelMask = requestedChannelMask;
+        wfex->SubFormat = kKsDataFormatSubtypeIeeeFloat;
+
+        hr = pAudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, attempt.streamFlags, attempt.bufferDuration, 0, pwfx,
+                                      nullptr);
+        if (FAILED(hr)) {
+            DLL_Log("[AppAudioCapture] Initialize failed for %s: 0x%x; trying next mode", attempt.description, hr);
+            // IAudioClient cannot be safely initialized again. Obtain a fresh
+            // process-loopback interface for every fallback attempt.
+            AbandonClientInterfaces();
+            continue;
+        }
+        activeStreamFlags = attempt.streamFlags;
+
+        if (attempt.requiresEvent) {
+            const BOOL resetOk = ResetEvent(captureEvent_);
+            hr = resetOk ? pAudioClient->SetEventHandle(captureEvent_) : HRESULT_FROM_WIN32(GetLastError());
             if (FAILED(hr)) {
-                DLL_Log("[AppAudioCapture] Initialize failed: 0x%x", hr);
-                CleanupCapture();
-                return false;
+                DLL_Log(
+                    "[AppAudioCapture] SetEventHandle failed for initialized event client: 0x%x; "
+                    "re-activating in polling mode",
+                    hr);
+                // Clearing activeStreamFlags alone is incorrect: the initialized
+                // client still requires an event and Start would fail or never wake.
+                AbandonClientInterfaces();
+                continue;
             }
         }
+
+        initialized = true;
+        break;
     }
-    activeStreamFlags = streamFlags;
+
+    if (!initialized || !pAudioClient || !pwfx) {
+        DLL_Log("[AppAudioCapture] All process-loopback initialization modes failed for PID %lu", pid);
+        AbandonClientInterfaces();
+        return false;
+    }
 
     REFERENCE_TIME streamLatency = 0;
     hr = pAudioClient->GetStreamLatency(&streamLatency);
@@ -546,18 +732,9 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid) {
     UINT32 bufferFrames = 0;
     bufferFrameCount = SUCCEEDED(pAudioClient->GetBufferSize(&bufferFrames)) ? bufferFrames : 0;
 
-    if ((activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
-        ResetEvent(captureEvent_);
-        hr = pAudioClient->SetEventHandle(captureEvent_);
-        if (FAILED(hr)) {
-            DLL_Log("[AppAudioCapture] SetEventHandle failed: 0x%x, reverting to polling", hr);
-            activeStreamFlags &= ~AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
-        }
-    }
-
     // Get capture client
     hr = pAudioClient->GetService(__uuidof(IAudioCaptureClient), reinterpret_cast<void**>(&pCaptureClient));
-    if (FAILED(hr)) {
+    if (FAILED(hr) || !pCaptureClient) {
         DLL_Log("[AppAudioCapture] GetService IAudioCaptureClient failed: 0x%x", hr);
         CleanupCapture();
         return false;
@@ -630,6 +807,12 @@ void AppAudioCapture::CleanupCapture() {
 
 void AppAudioCapture::CaptureLoop() {
     const HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (FAILED(coInitHr) && coInitHr != RPC_E_CHANGED_MODE) {
+        DLL_Log("[AppAudioCapture] CaptureLoop CoInitializeEx failed for PID %lu: 0x%x", targetPID.load(), coInitHr);
+        isCapturing.store(false, std::memory_order_release);
+        startPendingValid.store(false, std::memory_order_release);
+        return;
+    }
     DLL_Log("[AppAudioCapture] Capture loop started for PID %lu", targetPID.load());
 
     UINT32 packetLength = 0;
@@ -661,6 +844,11 @@ void AppAudioCapture::CaptureLoop() {
     uint64_t lastQueueDropLogTick = 0;
     uint64_t finalDrainPackets = 0;
     uint64_t finalDrainFrames = 0;
+    uint64_t finalDrainFrameBudget = 0;
+    LARGE_INTEGER qpcFreqLI = {};
+    const uint64_t qpcFreq =
+        QueryPerformanceFrequency(&qpcFreqLI) && qpcFreqLI.QuadPart > 0 ? static_cast<uint64_t>(qpcFreqLI.QuadPart) : 0;
+    int qpcSanitizeLogCount = 0;
 
     // --- Mid-recording stream recovery state (device-invalidation + silent stall) ---
     const ce::audio::StreamRecoveryConfig recoveryCfg = recoveryConfig_;
@@ -675,6 +863,11 @@ void AppAudioCapture::CaptureLoop() {
     int fatalErrLogCount = 0;
     int transientErrLogCount = 0;
     int getBufferErrLogCount = 0;
+    int emptyBufferLogCount = 0;
+    int releaseBufferErrLogCount = 0;
+    int invalidPacketLogCount = 0;
+    int allocationFailureLogCount = 0;
+    int discontinuityLogCount = 0;
     constexpr int kErrLogCap = 8;
     // Require a few consecutive misses before declaring the process gone, so a
     // transient OpenProcess hiccup cannot permanently kill an otherwise-live capture.
@@ -703,6 +896,7 @@ void AppAudioCapture::CaptureLoop() {
         lastPacketTick = GetTickCount64();
         if (ok) {
             ++reactivateSuccesses;
+            firstSet = false;
             DLL_Log("[AppAudioCapture] Re-activation succeeded for PID %lu (attempt=%llu mode=%s)", pid,
                     static_cast<unsigned long long>(reactivateAttempts),
                     (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
@@ -713,9 +907,51 @@ void AppAudioCapture::CaptureLoop() {
         return ok;
     };
 
-    while (isCapturing.load() && !shouldStop.load()) {
+    auto readNextPacketSize = [&](const char* context) -> bool {
+        packetLength = 0;
+        const HRESULT packetHr = pCaptureClient->GetNextPacketSize(&packetLength);
+        if (SUCCEEDED(packetHr)) {
+            return true;
+        }
+        if (ce::audio::IsFatalWasapiStreamError(packetHr)) {
+            if (fatalErrLogCount++ < kErrLogCap) {
+                DLL_Log(
+                    "[AppAudioCapture] FATAL stream error from GetNextPacketSize (%s): 0x%lx (PID %lu) - "
+                    "attempting re-activation",
+                    context, static_cast<unsigned long>(packetHr), targetPID.load());
+            }
+            if (isCapturing.load(std::memory_order_acquire) && !shouldStop.load(std::memory_order_acquire)) {
+                attemptReactivate("GetNextPacketSize_fatal", packetHr);
+            }
+        } else if (transientErrLogCount++ < kErrLogCap) {
+            DLL_Log("[AppAudioCapture] GetNextPacketSize failed (%s): 0x%lx", context,
+                    static_cast<unsigned long>(packetHr));
+        }
+        return false;
+    };
+
+    while (true) {
+        const bool drainingAfterStop =
+            !isCapturing.load(std::memory_order_acquire) || shouldStop.load(std::memory_order_acquire);
+        if (drainingAfterStop) {
+            // Stop wakes the worker, then the worker owns one non-blocking drain
+            // of packets already committed by WASAPI. This preserves the audio
+            // tail without waiting for new data or reactivating a dying stream.
+            if (finalDrainFrameBudget == 0) {
+                const uint32_t fallbackFrames =
+                    ce::audio::MaxWasapiCapturePacketFrames(pwfx ? pwfx->nSamplesPerSec : 0);
+                finalDrainFrameBudget = bufferFrameCount != 0 ? bufferFrameCount : fallbackFrames;
+                if (finalDrainFrameBudget == 0) {
+                    finalDrainFrameBudget = 1;
+                }
+            }
+            if (!pCaptureClient || !readNextPacketSize("final stop drain") || packetLength == 0) {
+                break;
+            }
+        }
+
         const uint64_t nowTick = GetTickCount64();
-        if (nowTick - lastProcessCheckTick >= 500) {
+        if (!drainingAfterStop && nowTick - lastProcessCheckTick >= 500) {
             lastProcessCheckTick = nowTick;
             if (!IsProcessRunning(targetPID.load())) {
                 if (++processMissingStreak >= kProcessMissingStreakToExit) {
@@ -731,44 +967,35 @@ void AppAudioCapture::CaptureLoop() {
             }
         }
 
-        if ((activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
+        if (!drainingAfterStop && (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
             const DWORD waitResult = WaitForSingleObject(captureEvent_, 200);
             if (waitResult == WAIT_FAILED) {
                 DLL_Log("[AppAudioCapture] WaitForSingleObject failed: 0x%lx", GetLastError());
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
-        } else {
+        } else if (!drainingAfterStop) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
         // A previous re-activation may have failed and abandoned the client; recover
         // it here (with backoff) before any client call, so we never deref nullptr.
         if (!pCaptureClient) {
-            attemptReactivate("client_null", 0);
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            if (!drainingAfterStop) {
+                attemptReactivate("client_null", 0);
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
             continue;
         }
 
-        hr = pCaptureClient->GetNextPacketSize(&packetLength);
-        if (FAILED(hr)) {
-            if (ce::audio::IsFatalWasapiStreamError(hr)) {
-                if (fatalErrLogCount++ < kErrLogCap) {
-                    DLL_Log(
-                        "[AppAudioCapture] FATAL stream error from GetNextPacketSize: 0x%lx (PID %lu) - "
-                        "attempting re-activation",
-                        static_cast<unsigned long>(hr), targetPID.load());
-                }
-                attemptReactivate("GetNextPacketSize_fatal", hr);
-                continue;
-            }
-            if (transientErrLogCount++ < kErrLogCap) {
-                DLL_Log("[AppAudioCapture] GetNextPacketSize failed (transient): 0x%lx", static_cast<unsigned long>(hr));
-            }
+        if (!drainingAfterStop && !readNextPacketSize("outer")) {
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
             continue;
         }
 
         if (packetLength == 0) {
+            if (drainingAfterStop) {
+                break;
+            }
             // Silent-stall watchdog: a process-loopback stream that delivered audio
             // before but has gone fully silent (no packets, no error) while its
             // process is still running usually means the app tore down and recreated
@@ -785,10 +1012,28 @@ void AppAudioCapture::CaptureLoop() {
             continue;
         }
 
-        const bool drainingAfterStop =
-            !isCapturing.load(std::memory_order_acquire) || shouldStop.load(std::memory_order_acquire);
         while (packetLength != 0) {
+            if (drainingAfterStop && finalDrainFrames >= finalDrainFrameBudget) {
+                DLL_Log(
+                    "[AppAudioCapture] Final drain reached the endpoint-buffer bound (%llu frame(s)); leaving "
+                    "newly-arrived data for stream teardown (PID %lu)",
+                    static_cast<unsigned long long>(finalDrainFrameBudget), targetPID.load());
+                packetLength = 0;
+                break;
+            }
             hr = pCaptureClient->GetBuffer(&pData, &numFramesAvailable, &flags, &devicePosition, &qpcPosition);
+            if (hr == AUDCLNT_S_BUFFER_EMPTY) {
+                // No packet was acquired for this success status. In particular,
+                // do not call ReleaseBuffer: that would be AUDCLNT_E_OUT_OF_ORDER.
+                if (emptyBufferLogCount++ < kErrLogCap) {
+                    DLL_Log(
+                        "[AppAudioCapture] GetBuffer returned AUDCLNT_S_BUFFER_EMPTY for PID %lu after announcing "
+                        "%u frame(s); waiting for the next capture notification",
+                        targetPID.load(), packetLength);
+                }
+                packetLength = 0;
+                break;
+            }
             if (FAILED(hr)) {
                 if (ce::audio::IsFatalWasapiStreamError(hr)) {
                     if (fatalErrLogCount++ < kErrLogCap) {
@@ -797,14 +1042,82 @@ void AppAudioCapture::CaptureLoop() {
                             "re-activation",
                             static_cast<unsigned long>(hr), targetPID.load());
                     }
-                    attemptReactivate("GetBuffer_fatal", hr);
+                    if (!drainingAfterStop) {
+                        attemptReactivate("GetBuffer_fatal", hr);
+                    }
                 } else if (getBufferErrLogCount++ < kErrLogCap) {
                     DLL_Log("[AppAudioCapture] GetBuffer failed: 0x%lx", static_cast<unsigned long>(hr));
                 }
                 break;
             }
-            // Healthy delivery: the stream is alive. Reset the silent-stall window,
-            // arm the watchdog, and clear backoff so future recovery is responsive.
+            const uint64_t rawQpcPosition = qpcPosition;
+            {
+                LARGE_INTEGER nowQpcLI = {};
+                const uint64_t nowQpc100ns =
+                    qpcFreq != 0 && QueryPerformanceCounter(&nowQpcLI) && nowQpcLI.QuadPart >= 0
+                        ? ce::audio::RawQpcToHundredNanoseconds(static_cast<uint64_t>(nowQpcLI.QuadPart), qpcFreq)
+                        : 0;
+                const uint64_t sanitizedQpc = ((flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0 && nowQpc100ns != 0)
+                                                  ? nowQpc100ns
+                                                  : ce::audio::SanitizeCaptureQpcPosition(qpcPosition, nowQpc100ns);
+                if (sanitizedQpc != qpcPosition) {
+                    if (qpcSanitizeLogCount++ < kErrLogCap) {
+                        DLL_Log(
+                            "[AppAudioCapture] WARNING: out-of-domain WASAPI qpcPosition=%llu substituted with "
+                            "nowQpc=%llu (PID=%lu frames=%u flags=0x%lx%s)",
+                            static_cast<unsigned long long>(qpcPosition), static_cast<unsigned long long>(nowQpc100ns),
+                            targetPID.load(), numFramesAvailable, flags,
+                            (flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) != 0 ? " TIMESTAMP_ERROR" : "");
+                    }
+                    qpcPosition = sanitizedQpc;
+                }
+            }
+
+            size_t bytes = 0;
+            const bool silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+            const bool frameCountValid = ce::audio::IsWasapiCapturePacketFrameCountValid(
+                packetLength, numFramesAvailable, bufferFrameCount, pwfx ? pwfx->nSamplesPerSec : 0);
+            const bool byteSizeValid =
+                pwfx && ce::audio::TryComputeAudioPacketByteSize(numFramesAvailable, pwfx->nBlockAlign, &bytes);
+            if (!frameCountValid || !byteSizeValid || (!silent && !pData)) {
+                if (invalidPacketLogCount++ < kErrLogCap) {
+                    DLL_Log(
+                        "[AppAudioCapture] WARNING: rejecting malformed WASAPI packet for PID %lu: announced=%u "
+                        "actual=%u bufferFrames=%u sampleRate=%u maxPacketFrames=%u blockAlign=%u data=%p "
+                        "flags=0x%lx",
+                        targetPID.load(), packetLength, numFramesAvailable, bufferFrameCount,
+                        pwfx ? pwfx->nSamplesPerSec : 0,
+                        ce::audio::MaxWasapiCapturePacketFrames(pwfx ? pwfx->nSamplesPerSec : 0),
+                        pwfx ? pwfx->nBlockAlign : 0, pData, flags);
+                }
+                const HRESULT releaseHr = pCaptureClient->ReleaseBuffer(numFramesAvailable);
+                if (FAILED(releaseHr)) {
+                    if (releaseBufferErrLogCount++ < kErrLogCap) {
+                        DLL_Log("[AppAudioCapture] ReleaseBuffer failed after malformed packet: 0x%lx",
+                                static_cast<unsigned long>(releaseHr));
+                    }
+                    if (!drainingAfterStop) {
+                        attemptReactivate("ReleaseBuffer_malformed", releaseHr);
+                    }
+                    packetLength = 0;
+                    break;
+                }
+                if (!readNextPacketSize("after malformed packet")) {
+                    break;
+                }
+                continue;
+            }
+            if ((flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0 && discontinuityLogCount < kErrLogCap) {
+                ++discontinuityLogCount;
+                DLL_Log(
+                    "[AppAudioCapture] WASAPI data discontinuity for PID %lu: frames=%u devPos=%llu qpc=%llu "
+                    "(occurrence=%d)",
+                    targetPID.load(), numFramesAvailable, static_cast<unsigned long long>(devicePosition),
+                    static_cast<unsigned long long>(qpcPosition), discontinuityLogCount);
+            }
+
+            // Healthy, validated delivery: reset the silent-stall window and
+            // clear backoff so future recovery is responsive.
             lastPacketTick = GetTickCount64();
             sawAnyPacket = true;
             recoveryBackoffMs = 0;
@@ -851,10 +1164,10 @@ void AppAudioCapture::CaptureLoop() {
                 // process loopback; peakAbs>0 means real audio is captured and any track silence is
                 // a downstream placement/consumption problem, not capture.
                 const double silentPct =
-                    windowTotalFrames > 0 ? (100.0 * static_cast<double>(windowSilentFlagFrames +
-                                                                         windowZeroContentFrames) /
-                                             static_cast<double>(windowTotalFrames))
-                                          : 0.0;
+                    windowTotalFrames > 0
+                        ? (100.0 * static_cast<double>(windowSilentFlagFrames + windowZeroContentFrames) /
+                           static_cast<double>(windowTotalFrames))
+                        : 0.0;
                 DLL_Log(
                     "[AppAudioCapture] Content (%lu): peakAbs=%.5f silentFlagFrames=%llu zeroFrames=%llu "
                     "totalFrames=%llu silent=%.1f%%",
@@ -868,7 +1181,7 @@ void AppAudioCapture::CaptureLoop() {
             }
 
             // Build packet with format info
-            AudioPacket packet;
+            AudioPacket packet{};
             packet.channels = pwfx->nChannels;
             packet.sampleRate = pwfx->nSamplesPerSec;
             packet.bitsPerSample = pwfx->wBitsPerSample;
@@ -876,7 +1189,7 @@ void AppAudioCapture::CaptureLoop() {
             packet.validBitsPerSample = 0;
             packet.channelMask = 0;
             packet.devicePosition = devicePosition;     // Store for debug drift analysis
-            packet.rawQpcPosition = qpcPosition;        // Store raw WASAPI timestamp for debug drift analysis
+            packet.rawQpcPosition = rawQpcPosition;     // Store raw WASAPI timestamp for debug drift analysis
             packet.streamLatency = streamLatency100ns;  // telemetry only (see below)
             // Period-center bias only (process loopback reports end-of-period QPCs). Do NOT advance
             // by streamLatency: the render->loopback A/V offset is corrected by delaying video
@@ -909,11 +1222,35 @@ void AppAudioCapture::CaptureLoop() {
             packet.timestamp = (int64_t)ce::audio::HundredNanosecondsToMilliseconds(packet.qpcPosition);
 
             // Copy or generate silence
-            size_t bytes = numFramesAvailable * pwfx->nBlockAlign;
-            packet.data.resize(bytes);
+            try {
+                packet.data.resize(bytes);
+            } catch (const std::exception& error) {
+                if (allocationFailureLogCount++ < kErrLogCap) {
+                    DLL_Log(
+                        "[AppAudioCapture] WARNING: packet allocation failed for PID %lu: %zu byte(s) / %u "
+                        "frame(s): %s; dropping this packet without terminating capture",
+                        targetPID.load(), bytes, numFramesAvailable, error.what());
+                }
+                const HRESULT releaseHr = pCaptureClient->ReleaseBuffer(numFramesAvailable);
+                if (FAILED(releaseHr)) {
+                    if (releaseBufferErrLogCount++ < kErrLogCap) {
+                        DLL_Log("[AppAudioCapture] ReleaseBuffer failed after packet allocation error: 0x%lx",
+                                static_cast<unsigned long>(releaseHr));
+                    }
+                    if (!drainingAfterStop) {
+                        attemptReactivate("ReleaseBuffer_allocation_failed", releaseHr);
+                    }
+                    packetLength = 0;
+                    break;
+                }
+                if (!readNextPacketSize("after packet allocation failure")) {
+                    break;
+                }
+                continue;
+            }
 
             windowTotalFrames += numFramesAvailable;
-            if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
+            if (silent) {
                 memset(packet.data.data(), 0, bytes);
                 windowSilentFlagFrames += numFramesAvailable;
             } else {
@@ -941,9 +1278,15 @@ void AppAudioCapture::CaptureLoop() {
                 }
             }
 
-            {
+            bool logQueueDrop = false;
+            uint64_t droppedPacketsToLog = 0;
+            uint64_t droppedFramesToLog = 0;
+            try {
                 std::lock_guard<std::mutex> lock(queueMutex);
-                if (packetQueue.size() >= kMaxQueuedPackets) {
+                // Transactional live-edge retention: if deque growth fails,
+                // every already-queued packet remains intact.
+                packetQueue.emplace_back(std::move(packet));
+                if (packetQueue.size() > kMaxQueuedPackets) {
                     const AudioPacket& droppedPacket = packetQueue.front();
                     uint64_t droppedFrames = 0;
                     if (droppedPacket.blockAlign > 0) {
@@ -955,19 +1298,30 @@ void AppAudioCapture::CaptureLoop() {
                     queueOverrunFrames.fetch_add(droppedFrames, std::memory_order_relaxed);
                     packetQueue.pop_front();
 
-                    const uint64_t nowTick = GetTickCount64();
-                    if (nowTick - lastQueueDropLogTick >= 1000) {
-                        DLL_Log(
-                            "[AppAudioCapture] WARNING: capture queue overrun - dropped %llu packet(s) / %llu frame(s) "
-                            "for PID %lu while keeping newest audio (depth=%zu)",
-                            static_cast<unsigned long long>(queueDropPackets),
-                            static_cast<unsigned long long>(queueDropFrames), targetPID.load(), kMaxQueuedPackets);
+                    const uint64_t queueNowTick = GetTickCount64();
+                    if (queueNowTick - lastQueueDropLogTick >= 1000) {
+                        logQueueDrop = true;
+                        droppedPacketsToLog = queueDropPackets;
+                        droppedFramesToLog = queueDropFrames;
                         queueDropPackets = 0;
                         queueDropFrames = 0;
-                        lastQueueDropLogTick = nowTick;
+                        lastQueueDropLogTick = queueNowTick;
                     }
                 }
-                packetQueue.push_back(packet);
+            } catch (const std::exception& error) {
+                if (allocationFailureLogCount++ < kErrLogCap) {
+                    DLL_Log(
+                        "[AppAudioCapture] WARNING: capture queue insertion failed for PID %lu: %s; dropping "
+                        "the new packet without terminating capture",
+                        targetPID.load(), error.what());
+                }
+            }
+            if (logQueueDrop) {
+                DLL_Log(
+                    "[AppAudioCapture] WARNING: capture queue overrun - dropped %llu packet(s) / %llu frame(s) "
+                    "for PID %lu while keeping newest audio (depth=%zu)",
+                    static_cast<unsigned long long>(droppedPacketsToLog),
+                    static_cast<unsigned long long>(droppedFramesToLog), targetPID.load(), kMaxQueuedPackets);
             }
 
             if (devicePosition > 0) {
@@ -976,10 +1330,24 @@ void AppAudioCapture::CaptureLoop() {
                 logicalFrameCursor += numFramesAvailable;
             }
 
-            pCaptureClient->ReleaseBuffer(numFramesAvailable);
-            hr = pCaptureClient->GetNextPacketSize(&packetLength);
-            if (FAILED(hr))
+            const HRESULT releaseHr = pCaptureClient->ReleaseBuffer(numFramesAvailable);
+            if (FAILED(releaseHr)) {
+                if (releaseBufferErrLogCount++ < kErrLogCap) {
+                    DLL_Log("[AppAudioCapture] ReleaseBuffer failed: 0x%lx - re-activating stream",
+                            static_cast<unsigned long>(releaseHr));
+                }
+                if (!drainingAfterStop) {
+                    attemptReactivate("ReleaseBuffer_failed", releaseHr);
+                }
+                packetLength = 0;
                 break;
+            }
+            if (!readNextPacketSize("inner drain")) {
+                break;
+            }
+        }
+        if (drainingAfterStop) {
+            break;
         }
     }
 
@@ -1001,7 +1369,7 @@ void AppAudioCapture::CaptureLoop() {
     }
     isCapturing.store(false);
     startPendingValid.store(false, std::memory_order_release);
-    if (SUCCEEDED(coInitHr) && coInitHr != S_FALSE) {
+    if (SUCCEEDED(coInitHr)) {
         CoUninitialize();
     }
 }
@@ -1020,25 +1388,25 @@ void AppAudioCapture::ProcessMonitorLoop() {
         }
 
         // Check if we're already capturing
-        if (isCapturing.load()) {
-            // Check if target process is still running
-            DWORD pid = targetPID.load();
-            if (pid != 0 && !IsProcessRunning(pid)) {
-                DLL_Log("[AppAudioCapture] Target process %lu exited, stopping capture", pid);
-                isCapturing.store(false);
-                if (captureThread.joinable()) {
-                    captureThread.join();
-                }
+        if (!isCapturing.load()) {
+            // CaptureLoop owns the three-consecutive-miss process-exit policy.
+            // Reap and clean its completed session before activating a replacement;
+            // a second one-shot monitor probe used to bypass that tolerance and
+            // permanently stop healthy capture on a transient OpenProcess failure.
+            if (captureThread.joinable()) {
+                captureThread.join();
                 CleanupCapture();
-                targetPID.store(0);
+                targetPID.store(0, std::memory_order_release);
             }
-        } else {
+
             // Not capturing - try to find the target process
             DWORD pid = FindProcessByName(targetProcessName);
             if (pid != 0) {
                 DLL_Log("[AppAudioCapture] Found process '%s' with PID %lu", targetProcessName.c_str(), pid);
                 targetPID.store(pid);
-                BeginAsyncStartForPID(pid);
+                if (!BeginAsyncStartForPID(pid)) {
+                    targetPID.store(0, std::memory_order_release);
+                }
             }
         }
 

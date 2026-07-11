@@ -38,6 +38,13 @@ TEST(CaptureBaseTest, InitialState) {
     for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
         EXPECT_EQ(capture.sharedTextureHandles[i], nullptr);
     }
+    for (const auto& pending : capture.pendingRing) {
+        EXPECT_EQ(pending.timestampQPC, 0);
+        EXPECT_EQ(pending.fenceValue, 0u);
+        EXPECT_EQ(pending.completionFenceValue, 0u);
+        EXPECT_EQ(pending.apiData, nullptr);
+        EXPECT_EQ(pending.syncObject, 0u);
+    }
 }
 
 TEST(CaptureBaseTest, CreateSharedResources) {
@@ -184,6 +191,56 @@ TEST(CaptureBaseTest, ResetForNewRecordingClearsPendingState) {
     EXPECT_EQ(capture.writeIndex.load(std::memory_order_relaxed), 0);
     EXPECT_EQ(capture.completionFenceValue.load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(capture.pendingCaptureWaitValue.load(std::memory_order_relaxed), 0u);
+    for (const auto& pending : capture.pendingRing) {
+        EXPECT_EQ(pending.timestampQPC, 0);
+        EXPECT_EQ(pending.fenceValue, 0u);
+        EXPECT_EQ(pending.completionFenceValue, 0u);
+        EXPECT_EQ(pending.apiData, nullptr);
+        EXPECT_EQ(pending.syncObject, 0u);
+    }
+}
+
+TEST(CaptureBaseTest, CleanupSharedHandlesClosesOnlyOwnedNtHandles) {
+    TestCapture capture;
+    HANDLE resourceOwnedHandle = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE ntHandle = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ASSERT_NE(resourceOwnedHandle, nullptr);
+    ASSERT_NE(ntHandle, nullptr);
+
+    capture.sharedTextureHandles[0].store(resourceOwnedHandle, std::memory_order_relaxed);
+    capture.sharedTextureHandles[1].store(ntHandle, std::memory_order_relaxed);
+    capture.sharedTextureHandleOwned[1].store(true, std::memory_order_relaxed);
+    capture.CleanupSharedHandles();
+
+    DWORD flags = 0;
+    EXPECT_TRUE(GetHandleInformation(resourceOwnedHandle, &flags));
+    EXPECT_FALSE(GetHandleInformation(ntHandle, &flags));
+    CloseHandle(resourceOwnedHandle);
+}
+
+TEST(CaptureBaseTest, StartCaptureThreadRejectsConcurrentSecondStart) {
+    TestCapture capture;
+    HANDLE started = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ASSERT_NE(started, nullptr);
+    ASSERT_NE(release, nullptr);
+    std::atomic<int> starts{0};
+
+    capture.StartCaptureThread([&]() {
+        starts.fetch_add(1, std::memory_order_relaxed);
+        SetEvent(started);
+        WaitForSingleObject(release, INFINITE);
+    });
+    ASSERT_EQ(WaitForSingleObject(started, 5000), WAIT_OBJECT_0);
+
+    capture.StartCaptureThread([&]() { starts.fetch_add(100, std::memory_order_relaxed); });
+    EXPECT_EQ(starts.load(std::memory_order_relaxed), 1);
+
+    SetEvent(release);
+    capture.StopCaptureThread();
+    EXPECT_FALSE(capture.captureThreadRunning.load(std::memory_order_acquire));
+    CloseHandle(release);
+    CloseHandle(started);
 }
 
 TEST(CaptureBaseTest, PublishToSharedMemoryCopiesCaptureMetadata) {
@@ -259,15 +316,61 @@ TEST(CaptureBaseTest, SignalFrameReadyWritesRingAndDropsWhenFull) {
     EXPECT_EQ(sharedMem.frameRing.droppedFrames.load(std::memory_order_relaxed), 1u);
 }
 
-TEST(CaptureBaseTest, PublishFrameRingReadIndexIsMonotonic) {
+TEST(CaptureBaseTest, OutstandingTextureSlotScanHonorsValidityAndWraparound) {
     SharedMemoryLayout sharedMem;
+    auto& ring = sharedMem.frameRing;
 
-    PublishFrameRingReadIndexAtLeast(sharedMem.frameRing, 5);
-    EXPECT_EQ(sharedMem.frameRing.readIndex.load(std::memory_order_acquire), 5u);
+    ring.readIndex.store(FRAME_RING_SIZE - 2, std::memory_order_relaxed);
+    ring.writeIndex.store(FRAME_RING_SIZE + 1, std::memory_order_relaxed);
+    FrameSlot& first = ring.slots[FRAME_RING_SIZE - 2];
+    first.textureIndex = 3;
+    first.valid.store(1, std::memory_order_release);
+    FrameSlot& ignored = ring.slots[FRAME_RING_SIZE - 1];
+    ignored.textureIndex = 5;
+    ignored.valid.store(0, std::memory_order_release);
+    FrameSlot& wrapped = ring.slots[0];
+    wrapped.textureIndex = 7;
+    wrapped.valid.store(1, std::memory_order_release);
 
-    PublishFrameRingReadIndexAtLeast(sharedMem.frameRing, 3);
-    EXPECT_EQ(sharedMem.frameRing.readIndex.load(std::memory_order_acquire), 5u);
+    EXPECT_TRUE(IsCaptureTextureSlotOutstanding(&sharedMem, 3));
+    EXPECT_FALSE(IsCaptureTextureSlotOutstanding(&sharedMem, 5));
+    EXPECT_TRUE(IsCaptureTextureSlotOutstanding(&sharedMem, 7));
+    EXPECT_FALSE(IsCaptureTextureSlotOutstanding(&sharedMem, 1));
+    EXPECT_EQ(FindAvailableCaptureTextureSlot(&sharedMem, 3, 8), 4);
+    EXPECT_FALSE(IsCaptureTextureSlotOutstanding(nullptr, 3));
+    EXPECT_FALSE(IsCaptureTextureSlotOutstanding(&sharedMem, -1));
 
-    PublishFrameRingReadIndexAtLeast(sharedMem.frameRing, 9);
-    EXPECT_EQ(sharedMem.frameRing.readIndex.load(std::memory_order_acquire), 9u);
+    for (uint32_t i = 0; i < 8; ++i) {
+        FrameSlot& slot = ring.slots[i];
+        slot.textureIndex = static_cast<int32_t>(i);
+        slot.valid.store(1, std::memory_order_release);
+    }
+    ring.readIndex.store(0, std::memory_order_relaxed);
+    ring.writeIndex.store(8, std::memory_order_release);
+    EXPECT_EQ(FindAvailableCaptureTextureSlot(&sharedMem, 0, 8), -1);
+}
+
+TEST(CaptureBaseTest, OutstandingFrameLeaseScanProtectsResourceGeneration) {
+    SharedMemoryLayout sharedMem;
+    auto& ring = sharedMem.frameRing;
+
+    EXPECT_FALSE(HasOutstandingCaptureFrameLeases(nullptr));
+    EXPECT_FALSE(HasOutstandingCaptureFrameLeases(&sharedMem));
+
+    ring.readIndex.store(FRAME_RING_SIZE - 1, std::memory_order_relaxed);
+    ring.writeIndex.store(FRAME_RING_SIZE + 2, std::memory_order_relaxed);
+    ring.slots[FRAME_RING_SIZE - 1].valid.store(0, std::memory_order_release);
+    ring.slots[0].valid.store(1, std::memory_order_release);
+    ring.slots[1].valid.store(0, std::memory_order_release);
+    EXPECT_TRUE(HasOutstandingCaptureFrameLeases(&sharedMem));
+
+    ring.slots[0].valid.store(0, std::memory_order_release);
+    EXPECT_FALSE(HasOutstandingCaptureFrameLeases(&sharedMem));
+
+    // Even corrupted/overrun indices remain bounded and conservatively inspect
+    // every physical slot that can still contain frame metadata.
+    ring.readIndex.store(0, std::memory_order_relaxed);
+    ring.writeIndex.store(FRAME_RING_SIZE + 4, std::memory_order_relaxed);
+    ring.slots[3].valid.store(1, std::memory_order_release);
+    EXPECT_TRUE(HasOutstandingCaptureFrameLeases(&sharedMem));
 }

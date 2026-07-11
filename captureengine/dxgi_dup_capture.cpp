@@ -5,6 +5,8 @@
 
 #include <avrt.h>
 #include <algorithm>
+#include <exception>
+#include <system_error>
 
 #include "../common/capture_pipeline_policy.h"
 #include "../common/logging.h"
@@ -50,24 +52,37 @@ const char* DupRotationName(DXGI_MODE_ROTATION rotation) {
     }
 }
 
-void EnsureDuplicationThreadQoS() {
-    THREAD_POWER_THROTTLING_STATE throttlingState = {};
-    throttlingState.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
-    throttlingState.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
-    throttlingState.StateMask = 0;
-    SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &throttlingState, sizeof(throttlingState));
+class DuplicationThreadQoS final {
+public:
+    DuplicationThreadQoS() {
+        THREAD_POWER_THROTTLING_STATE throttlingState = {};
+        throttlingState.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+        throttlingState.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+        throttlingState.StateMask = 0;
+        SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &throttlingState, sizeof(throttlingState));
 
-    DWORD taskIndex = 0;
-    HANDLE mmcssHandle = AvSetMmThreadCharacteristicsW(L"Capture", &taskIndex);
-    if (mmcssHandle) {
-        AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_HIGH);
-        LogInfo("[DXGIDup] Capture thread QoS enabled (tid=%lu, task=Capture)", GetCurrentThreadId());
-    } else {
-        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-        LogWarn("[DXGIDup] MMCSS unavailable, using THREAD_PRIORITY_HIGHEST (tid=%lu, err=%lu)", GetCurrentThreadId(),
-                GetLastError());
+        DWORD taskIndex = 0;
+        mmcssHandle_ = AvSetMmThreadCharacteristicsW(L"Capture", &taskIndex);
+        if (mmcssHandle_) {
+            AvSetMmThreadPriority(mmcssHandle_, AVRT_PRIORITY_HIGH);
+            LogInfo("[DXGIDup] Capture thread QoS enabled (tid=%lu, task=Capture)", GetCurrentThreadId());
+        } else {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+            LogWarn("[DXGIDup] MMCSS unavailable, using THREAD_PRIORITY_HIGHEST (tid=%lu, err=%lu)",
+                    GetCurrentThreadId(), GetLastError());
+        }
     }
-}
+
+    ~DuplicationThreadQoS() {
+        if (mmcssHandle_ && !AvRevertMmThreadCharacteristics(mmcssHandle_)) {
+            LogWarn("[DXGIDup] Failed to revert capture-thread MMCSS registration (tid=%lu, err=%lu)",
+                    GetCurrentThreadId(), GetLastError());
+        }
+    }
+
+private:
+    HANDLE mmcssHandle_ = nullptr;
+};
 
 template <typename T>
 void DupSafeRelease(T*& ptr) {
@@ -227,14 +242,14 @@ bool DxgiDuplicationSource::Init(ID3D11Device* device, HMONITOR monitor, bool re
     deliveredFormatLogged_ = false;
     width_ = duplDesc.ModeDesc.Width;
     height_ = duplDesc.ModeDesc.Height;
-    format_ = duplDesc.ModeDesc.Format;
+    format_.store(static_cast<uint32_t>(duplDesc.ModeDesc.Format), std::memory_order_release);
     desktopImageInSystemMemory_ = duplDesc.DesktopImageInSystemMemory != FALSE;
 
     LogInfo(
         "[DXGIDup] Duplication created: output=%ls monitor=0x%p size=%ux%u modeDescFormat=%s rotation=%s "
         "refresh=%u/%u systemMemory=%d requireHighPrecision=%d hdr=%d "
         "(delivered frame format is ground truth, logged at first frame)",
-        outputDesc.DeviceName, monitor, width_, height_, DupFormatName(format_), DupRotationName(duplDesc.Rotation),
+        outputDesc.DeviceName, monitor, width_, height_, DupFormatName(GetFormat()), DupRotationName(duplDesc.Rotation),
         duplDesc.ModeDesc.RefreshRate.Numerator, duplDesc.ModeDesc.RefreshRate.Denominator,
         desktopImageInSystemMemory_ ? 1 : 0, requireHighPrecision ? 1 : 0, outputIsHdr ? 1 : 0);
     return true;
@@ -257,13 +272,28 @@ bool DxgiDuplicationSource::Start(DxgiDuplicationFrameSink sink) {
     consecutiveAcquireFailures_.store(0, std::memory_order_relaxed);
     deliveredFrameCount_.store(0, std::memory_order_relaxed);
     running_.store(true, std::memory_order_release);
-    captureThread_ = std::thread(&DxgiDuplicationSource::CaptureThreadFunc, this);
-    LogInfo("[DXGIDup] Capture thread started (%ux%u %s)", width_, height_, DupFormatName(format_));
+    try {
+        captureThread_ = std::thread(&DxgiDuplicationSource::CaptureThreadFunc, this);
+    } catch (const std::system_error& e) {
+        running_.store(false, std::memory_order_release);
+        shutdown_.store(true, std::memory_order_release);
+        sink_ = {};
+        LogError("[DXGIDup] Failed to create capture thread: %s (code=%d)", e.what(), e.code().value());
+        return false;
+    } catch (...) {
+        running_.store(false, std::memory_order_release);
+        shutdown_.store(true, std::memory_order_release);
+        sink_ = {};
+        LogError("[DXGIDup] Failed to create capture thread: unknown exception");
+        return false;
+    }
+    LogInfo("[DXGIDup] Capture thread started (%ux%u %s)", width_, height_, DupFormatName(GetFormat()));
     return true;
 }
 
 void DxgiDuplicationSource::Stop() {
     shutdown_.store(true, std::memory_order_release);
+    shutdownCv_.notify_all();
     if (captureThread_.joinable()) {
         captureThread_.join();
     }
@@ -307,28 +337,35 @@ void DxgiDuplicationSource::UpdatePointerState(bool separatePointerVisible) {
 }
 
 void DxgiDuplicationSource::CaptureThreadFunc() {
-    EnsureDuplicationThreadQoS();
+    DuplicationThreadQoS qos;
 
     bool resetRequested = false;
     auto requestReset = [&](const char* reason) {
         if (!resetRequested) {
             resetRequested = true;
-            LogWarn("[DXGIDup] Requesting duplication reset: %s (delivered=%llu timeouts=%llu cursorOnly=%llu)",
-                    reason, static_cast<unsigned long long>(deliveredFrameCount_.load(std::memory_order_relaxed)),
+            LogWarn("[DXGIDup] Requesting duplication reset: %s (delivered=%llu timeouts=%llu cursorOnly=%llu)", reason,
+                    static_cast<unsigned long long>(deliveredFrameCount_.load(std::memory_order_relaxed)),
                     static_cast<unsigned long long>(acquireTimeoutCount_.load(std::memory_order_relaxed)),
                     static_cast<unsigned long long>(cursorOnlyUpdateCount_.load(std::memory_order_relaxed)));
             if (sink_.onResetNeeded) {
-                sink_.onResetNeeded(reason);
+                try {
+                    sink_.onResetNeeded(reason);
+                } catch (const std::exception& e) {
+                    LogError("[DXGIDup] Reset callback threw an exception: %s", e.what());
+                } catch (...) {
+                    LogError("[DXGIDup] Reset callback threw an unknown exception");
+                }
             }
         }
     };
 
     while (!shutdown_.load(std::memory_order_acquire)) {
         if (resetRequested) {
-            // Duplication is unusable; park until the owner stops/reinits so
-            // the reset request is not spammed and no busy loop burns CPU.
-            Sleep(10);
-            continue;
+            // Duplication is unusable; park without polling until the owner
+            // stops/reinitializes this source.
+            std::unique_lock<std::mutex> lock(shutdownMutex_);
+            shutdownCv_.wait(lock, [this]() { return shutdown_.load(std::memory_order_acquire); });
+            break;
         }
 
         DXGI_OUTDUPL_FRAME_INFO frameInfo = {};
@@ -385,7 +422,15 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
         if (frameInfo.LastPresentTime.QuadPart == 0) {
             cursorOnlyUpdateCount_.fetch_add(1, std::memory_order_relaxed);
             if (sink_.onCursorOnlyUpdate) {
-                sink_.onCursorOnlyUpdate();
+                try {
+                    sink_.onCursorOnlyUpdate();
+                } catch (const std::exception& e) {
+                    LogError("[DXGIDup] Cursor-only callback threw an exception: %s", e.what());
+                    requestReset("cursor-only sink callback failed");
+                } catch (...) {
+                    LogError("[DXGIDup] Cursor-only callback threw an unknown exception");
+                    requestReset("cursor-only sink callback failed");
+                }
             }
             DupSafeRelease(resource);
             duplication_->ReleaseFrame();
@@ -410,7 +455,7 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
                 LogInfo(
                     "[DXGIDup] First frame delivered: format=%s modeDescFormat=%s sourceContentBits=%u "
                     "requireHighPrecision=%d hdr=%d",
-                    DupFormatName(desc.Format), DupFormatName(format_), contentBits, requireHighPrecision_ ? 1 : 0,
+                    DupFormatName(desc.Format), DupFormatName(GetFormat()), contentBits, requireHighPrecision_ ? 1 : 0,
                     outputIsHdr_ ? 1 : 0);
                 if (requireHighPrecision_ && contentBits <= 8) {
                     LogWarn(
@@ -421,11 +466,10 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
                         contentBits);
                 }
                 // ModeDesc was only a display-mode hint; track the ground truth.
-                format_ = desc.Format;
+                format_.store(static_cast<uint32_t>(desc.Format), std::memory_order_release);
             }
             if (desc.Width != width_ || desc.Height != height_) {
-                LogWarn("[DXGIDup] Desktop size changed from %ux%u to %ux%u", width_, height_, desc.Width,
-                        desc.Height);
+                LogWarn("[DXGIDup] Desktop size changed from %ux%u to %ux%u", width_, height_, desc.Width, desc.Height);
                 texture->Release();
                 DupSafeRelease(resource);
                 duplication_->ReleaseFrame();
@@ -433,7 +477,15 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
                 continue;
             }
             deliveredFrameCount_.fetch_add(1, std::memory_order_relaxed);
-            sink_.onFrame(texture, desc, frameInfo.LastPresentTime.QuadPart, frameInfo.AccumulatedFrames);
+            try {
+                sink_.onFrame(texture, desc, frameInfo.LastPresentTime.QuadPart, frameInfo.AccumulatedFrames);
+            } catch (const std::exception& e) {
+                LogError("[DXGIDup] Frame sink callback threw an exception: %s", e.what());
+                requestReset("frame sink callback failed");
+            } catch (...) {
+                LogError("[DXGIDup] Frame sink callback threw an unknown exception");
+                requestReset("frame sink callback failed");
+            }
             texture->Release();
         } else {
             static std::atomic<uint32_t> textureFailLogCount{0};
@@ -454,14 +506,16 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
         }
     }
 
-    LogInfo("[DXGIDup] Capture thread exiting (delivered=%llu timeouts=%llu cursorOnly=%llu accumulatedMissed=%llu "
-            "protectedMasked=%llu separatePointer=%d cursorEmbedded=%d pointerStateTransitions=%llu)",
-            static_cast<unsigned long long>(deliveredFrameCount_.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(acquireTimeoutCount_.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(cursorOnlyUpdateCount_.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(accumulatedMissedFrameCount_.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(protectedContentMaskedFrameCount_.load(std::memory_order_relaxed)),
-            separatePointerVisible_.load(std::memory_order_relaxed) ? 1 : 0,
-            cursorEmbeddedInFrames_.load(std::memory_order_relaxed) ? 1 : 0,
-            static_cast<unsigned long long>(pointerStateTransitions_.load(std::memory_order_relaxed)));
+    LogInfo(
+        "[DXGIDup] Capture thread exiting (delivered=%llu timeouts=%llu cursorOnly=%llu accumulatedMissed=%llu "
+        "protectedMasked=%llu separatePointer=%d cursorEmbedded=%d pointerStateTransitions=%llu)",
+        static_cast<unsigned long long>(deliveredFrameCount_.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(acquireTimeoutCount_.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(cursorOnlyUpdateCount_.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(accumulatedMissedFrameCount_.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(protectedContentMaskedFrameCount_.load(std::memory_order_relaxed)),
+        separatePointerVisible_.load(std::memory_order_relaxed) ? 1 : 0,
+        cursorEmbeddedInFrames_.load(std::memory_order_relaxed) ? 1 : 0,
+        static_cast<unsigned long long>(pointerStateTransitions_.load(std::memory_order_relaxed)));
+    running_.store(false, std::memory_order_release);
 }

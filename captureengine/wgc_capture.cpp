@@ -15,10 +15,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
+#include "../common/callback_epoch.h"
 #include "../common/capture_pipeline_policy.h"
 #include "../common/frame_timing_utils.h"
 #include "../common/logging.h"
@@ -31,10 +33,6 @@
 #ifdef _MSC_VER
 #pragma comment(lib, "avrt.lib")
 #endif
-
-// Global inflight callback counter - outlives WGCCapture::Impl destruction
-// to prevent use-after-free when WinRT thread pool callbacks access Impl members
-static std::atomic<int32_t> g_WgcInflightCallbacks{0};
 
 // WinRT/C++WinRT headers for WGC
 #include <winrt/base.h>
@@ -408,23 +406,35 @@ void DisableCurrentWgcCallbackThreadPowerThrottling() {
     SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &throttlingState, sizeof(throttlingState));
 }
 
-void EnsureWgcCallbackThreadQoS() {
-    thread_local bool configured = false;
-    thread_local HANDLE mmcssHandle = nullptr;
-    if (configured) {
-        return;
+class WgcCallbackThreadQoS final {
+public:
+    WgcCallbackThreadQoS() {
+        DisableCurrentWgcCallbackThreadPowerThrottling();
+        DWORD taskIndex = 0;
+        mmcssHandle_ = AvSetMmThreadCharacteristicsW(L"Capture", &taskIndex);
+        if (mmcssHandle_) {
+            AvSetMmThreadPriority(mmcssHandle_, AVRT_PRIORITY_HIGH);
+            LogInfo("[WGC] Callback thread QoS enabled (tid=%lu, task=Capture)", GetCurrentThreadId());
+        } else {
+            LogWarn("[WGC] Callback thread QoS setup failed (tid=%lu, err=%lu)", GetCurrentThreadId(), GetLastError());
+        }
     }
-    configured = true;
 
-    DisableCurrentWgcCallbackThreadPowerThrottling();
-    DWORD taskIndex = 0;
-    mmcssHandle = AvSetMmThreadCharacteristicsW(L"Capture", &taskIndex);
-    if (mmcssHandle) {
-        AvSetMmThreadPriority(mmcssHandle, AVRT_PRIORITY_HIGH);
-        LogInfo("[WGC] Callback thread QoS enabled (tid=%lu, task=Capture)", GetCurrentThreadId());
-    } else {
-        LogWarn("[WGC] Callback thread QoS setup failed (tid=%lu, err=%lu)", GetCurrentThreadId(), GetLastError());
+    ~WgcCallbackThreadQoS() {
+        if (mmcssHandle_) {
+            AvRevertMmThreadCharacteristics(mmcssHandle_);
+        }
     }
+
+private:
+    HANDLE mmcssHandle_ = nullptr;
+};
+
+void EnsureWgcCallbackThreadQoS() {
+    // The free-threaded WGC pool reuses thread-pool workers. Keep MMCSS active
+    // for the lifetime of each worker, then balance it when that worker exits.
+    thread_local WgcCallbackThreadQoS qos;
+    (void)qos;
 }
 
 int64_t HundredNanosecondsToQpcTicks(int64_t value100ns, int64_t qpcFreq) {
@@ -591,12 +601,15 @@ bool EnsureBorderlessAccessRequested() {
 class WGCCapture::Impl {
 public:
 #if HAS_WGC
+    Impl()
+        : itemCallbackState_(ce::CallbackEpoch<Impl>::Create()),
+          frameCallbackState_(ce::CallbackEpoch<Impl>::Create()) {}
+
     ~Impl() {
-        if (item_) {
-            try {
-                item_.Closed(itemClosedToken_);
-            } catch (...) {}
-        }
+        alive_.store(false, std::memory_order_release);
+        StopCapture();
+        UnsubscribeItemClosed();
+        itemCallbackState_->DetachAndDrain();
         ReleaseTexturePool();
         SafeRelease(latestFrame_);
         SafeRelease(cachedTexture_);
@@ -613,6 +626,8 @@ public:
     }
 
     std::atomic<bool> alive_{true};
+    std::shared_ptr<ce::CallbackEpoch<Impl>> itemCallbackState_;
+    std::shared_ptr<ce::CallbackEpoch<Impl>> frameCallbackState_;
     winrt::GraphicsCaptureItem item_{nullptr};
     winrt::Direct3D11CaptureFramePool framePool_{nullptr};
     winrt::GraphicsCaptureSession session_{nullptr};
@@ -664,14 +679,15 @@ public:
     std::atomic<int64_t> lastDeliveredRawSourceQpc_{0};
     std::atomic<int64_t> lastObservedRawSourceQpc_{0};
     std::atomic<int64_t> lastAssignedSourceQpc_{0};
+    std::atomic<uint64_t> sourceEpoch_{0};
 
     // Callback function for direct frame processing.
     // Atomic raw function pointer: only static functions (or nullptr) are ever
     // stored, so std::function overhead and its non-atomic nature are avoided.
     // This eliminates the data race between the WinRT callback thread (reader)
     // and the main thread (writer during start/stop recording).
-    using DirectFrameCallbackFn = void (*)(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, int32_t,
-                                           int32_t, WgcPoolSlotLease&&);
+    using DirectFrameCallbackFn = void (*)(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, bool,
+                                           int32_t, int32_t, uint64_t, WgcPoolSlotLease&&);
     std::atomic<DirectFrameCallbackFn> frameCallback_{nullptr};
     std::atomic<uint32_t> callbackFrameCount_{0};
     std::atomic<uint32_t> inputFrameCount_{0};
@@ -694,9 +710,9 @@ public:
 
     // Frame throttle: skip CopyResource if we're ahead of target FPS
     uint32_t targetFps_ = 0;
-    int64_t targetIntervalQPC_ = 0;  // Minimum QPC ticks between captured frames (0 = no throttle)
-    int64_t lastCapturedQPC_ = 0;    // QPC of last frame we actually copied
-    int64_t nextCaptureQPC_ = 0;     // Next QPC deadline that is allowed to perform a GPU copy
+    int64_t targetIntervalQPC_ = 0;   // Minimum QPC ticks between captured frames (0 = no throttle)
+    int64_t lastCapturedQPC_ = 0;     // QPC of last frame we actually copied
+    int64_t nextCaptureQPC_ = 0;      // Next QPC deadline that is allowed to perform a GPU copy
     uint32_t producerTargetFps_ = 0;  // WGC MinUpdateInterval target (0 = max-rate)
     int64_t producerIntervalQPC_ = 0;
     std::atomic<uint32_t> skippedFrameCount_{0};
@@ -772,7 +788,9 @@ public:
     std::string dupInitFailureReason_;
     bool useHighPrecisionCapture_ = false;
     bool requireHighPrecisionCapture_ = false;
-    bool captureIsHDR_ = false;
+    // Deferred output rechecks run on the consumer thread while frame delivery
+    // reads this flag on the WinRT/duplication callback thread.
+    std::atomic<bool> captureIsHDR_{false};
     bool borderlessCapture_ = false;
     UINT outputBitsPerColor_ = 8;
     DXGI_COLOR_SPACE_TYPE outputColorSpace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
@@ -852,16 +870,20 @@ public:
         const ULONGLONG now = GetTickCount64();
         lastHDRCheckTick_.store(now, std::memory_order_relaxed);
 
-        if (!targetMonitor_)
+        const HMONITOR monitor = ResolveTargetMonitor();
+        if (!monitor)
             return;
 
         DXGI_OUTPUT_DESC1 desc1 = {};
-        if (QueryOutputDesc1ForMonitor(targetMonitor_, desc1)) {
+        if (QueryOutputDesc1ForMonitor(monitor, desc1)) {
             bool newHDR = ::IsHdrOutputColorSpace(desc1.ColorSpace);
             if (newHDR != captureIsHDR_) {
-                LogInfo("[WGC] HDR state changed mid-capture: %s -> %s", captureIsHDR_ ? "HDR" : "SDR",
-                        newHDR ? "HDR" : "SDR");
-                captureIsHDR_ = newHDR;
+                // The WGC frame-pool pixel format is immutable. Merely changing
+                // the metadata flag would mislabel frames and apply the wrong
+                // color conversion; recreate the source/pool on the new mode.
+                LogInfo("[WGC] HDR state changed mid-capture: %s -> %s; requesting capture recreation",
+                        captureIsHDR_ ? "HDR" : "SDR", newHDR ? "HDR" : "SDR");
+                FlagResetNeeded("HDR output state changed");
             }
         }
     }
@@ -1223,8 +1245,8 @@ public:
             const uint32_t budgetFps =
                 smoothnessBufferEnabled_ ? ce::capture_policy::GetWgcSmoothnessBudgetFps(smoothnessOutputFps_) : 0;
             const uint32_t desiredFrames = smoothnessBufferEnabled_ ? ce::capture_policy::GetWgcSmoothnessDesiredFrames(
-                                                                           smoothnessOutputFps_, smoothnessMaxMs_)
-                                                                     : 0;
+                                                                          smoothnessOutputFps_, smoothnessMaxMs_)
+                                                                    : 0;
             const uint32_t capShortfall =
                 desiredFrames > smoothnessRetainedFrames_ ? desiredFrames - smoothnessRetainedFrames_ : 0;
             const uint64_t capShortfallBytes = capShortfall * smoothnessCopyBytesPerSurface_;
@@ -2353,6 +2375,10 @@ public:
     // Acquire/Release contract as well as the WinRT surface lifetime.
     bool DeliverSourceTexture(ID3D11Texture2D* texture, const D3D11_TEXTURE2D_DESC& desc,
                               const SourceFramePreflight& pre, WGCCapturedFrame* outputFrame) {
+        // Snapshot identity before any GPU work. If the coordinator advances
+        // this already-warmed capture during an inject->WGC commit, an in-flight
+        // pre-commit frame must retain the retired epoch.
+        const uint64_t sourceEpoch = sourceEpoch_.load(std::memory_order_acquire);
         if (frameWidth_ != 0 && frameHeight_ != 0 && (desc.Width != frameWidth_ || desc.Height != frameHeight_)) {
             LogWarn("[WGC] Source size changed from %ux%u to %ux%u", frameWidth_, frameHeight_, desc.Width,
                     desc.Height);
@@ -2388,6 +2414,8 @@ public:
         int32_t captureLeft = 0;
         int32_t captureTop = 0;
         GetCaptureOrigin(captureLeft, captureTop);
+        const bool cursorEmbedded =
+            useDuplicationBackend_ && dupSource_ && dupSource_->IsCursorEmbeddedInFrames();
 
         if (outputFrame) {
             outputFrame->texture = copiedTexture;
@@ -2396,9 +2424,11 @@ public:
             outputFrame->timestamp = deliveredTimestamp;
             outputFrame->rawTimestamp = pre.rawSourceFrameQpc;
             outputFrame->isHDR = captureIsHDR_;
+            outputFrame->cursorEmbedded = cursorEmbedded;
             outputFrame->captureLeft = captureLeft;
             outputFrame->captureTop = captureTop;
             outputFrame->duplicateSourceTimestamp = pre.duplicateSourceTimestamp;
+            outputFrame->sourceEpoch = sourceEpoch;
             outputFrame->poolSlot = poolSlot;
             outputFrame->poolGeneration = poolGeneration;
             outputFrame->poolLease = std::move(poolLease);
@@ -2406,7 +2436,8 @@ public:
             auto cb = frameCallback_.load(std::memory_order_acquire);
             if (cb) {
                 cb(copiedTexture, desc.Width, desc.Height, deliveredTimestamp, pre.rawSourceFrameQpc, captureIsHDR_,
-                   pre.duplicateSourceTimestamp, captureLeft, captureTop, std::move(poolLease));
+                   cursorEmbedded, pre.duplicateSourceTimestamp, captureLeft, captureTop, sourceEpoch,
+                   std::move(poolLease));
             } else {
                 SafeRelease(copiedTexture);
             }
@@ -2524,9 +2555,6 @@ public:
     }
 
     void OnFrameArrived(winrt::Direct3D11CaptureFramePool const& sender, winrt::IInspectable const&) {
-        // Use global atomic for inflight count - survives Impl destruction
-        // to prevent use-after-free on WinRT thread pool callbacks
-        g_WgcInflightCallbacks.fetch_add(1, std::memory_order_acq_rel);
         EnsureWgcCallbackThreadQoS();
 
         LARGE_INTEGER callbackStart = {};
@@ -2549,12 +2577,6 @@ public:
             }
             UpdateAtomicMax(callbackDrainMaxCount_, drainedCount);
         };
-
-        struct DecrementGuard {
-            ~DecrementGuard() {
-                g_WgcInflightCallbacks.fetch_sub(1, std::memory_order_acq_rel);
-            }
-        } decrementGuard;
 
         // Check if Impl is still alive
         if (!alive_.load(std::memory_order_acquire)) {
@@ -2640,7 +2662,7 @@ public:
             SetEvent(frameArrivedEvent_);
         }
         recordCallbackProcess(drainedCount);
-    }  // decrementGuard destructor fires here, decrementing inflightCallbacks_
+    }
 
     bool CreateWinRTDevice() {
         // Get DXGI device from D3D11 device
@@ -2659,6 +2681,48 @@ public:
 
         winrtDevice_ = inspectable.as<winrt::IDirect3DDevice>();
         return winrtDevice_ != nullptr;
+    }
+
+    void UnsubscribeItemClosed() noexcept {
+        itemCallbackState_->StopAndDrain();
+        if (!item_) {
+            itemClosedToken_ = {};
+            return;
+        }
+        try {
+            item_.Closed(itemClosedToken_);
+        } catch (const winrt::hresult_error& e) {
+            LogWarn("[WGC] Failed to unsubscribe capture-item Closed handler: 0x%08lX",
+                    static_cast<unsigned long>(e.code().value));
+        } catch (...) {
+            LogWarn("[WGC] Failed to unsubscribe capture-item Closed handler");
+        }
+        itemClosedToken_ = {};
+    }
+
+    bool SubscribeItemClosed(const char* targetName, const char* resetReason) {
+        auto callbackState = itemCallbackState_;
+        const uint64_t callbackEpoch = itemCallbackState_->Begin(this);
+        try {
+            itemClosedToken_ = item_.Closed(
+                [callbackState = std::move(callbackState), callbackEpoch, targetName, resetReason](auto&&, auto&&) {
+                    auto owner = callbackState->Enter(callbackEpoch);
+                    if (!owner) {
+                        return;
+                    }
+                    LogWarn("[WGC] %s capture item closed by OS", targetName);
+                    owner->FlagResetNeeded(resetReason);
+                });
+            return true;
+        } catch (const winrt::hresult_error& e) {
+            LogError("[WGC] Failed to subscribe %s capture-item Closed handler: 0x%08lX", targetName,
+                     static_cast<unsigned long>(e.code().value));
+        } catch (...) {
+            LogError("[WGC] Failed to subscribe %s capture-item Closed handler", targetName);
+        }
+        itemCallbackState_->StopAndDrain();
+        itemClosedToken_ = {};
+        return false;
     }
 
     bool CreateForMonitor(HMONITOR hmon) {
@@ -2680,11 +2744,12 @@ public:
             return false;
         }
 
+        UnsubscribeItemClosed();
         item_ = item;
-        itemClosedToken_ = item_.Closed([this](auto&&, auto&&) {
-            LogWarn("[WGC] Capture item closed by OS");
-            FlagResetNeeded("capture item closed");
-        });
+        if (!SubscribeItemClosed("Monitor", "capture item closed")) {
+            item_ = nullptr;
+            return false;
+        }
         targetMonitor_ = hmon;
         targetWindow_ = nullptr;
         useDuplicationBackend_ = false;
@@ -2702,11 +2767,12 @@ public:
             HRESULT helperHr = E_FAIL;
             HRESULT createHr = E_FAIL;
             if (TryCreateCaptureItemFromWindowId(hwnd, item, windowIdValue, helperHr, createHr)) {
+                UnsubscribeItemClosed();
                 item_ = item;
-                itemClosedToken_ = item_.Closed([this](auto&&, auto&&) {
-                    LogWarn("[WGC] Window capture item closed by OS");
-                    FlagResetNeeded("window capture item closed");
-                });
+                if (!SubscribeItemClosed("Window", "window capture item closed")) {
+                    item_ = nullptr;
+                    return false;
+                }
                 targetWindow_ = hwnd;
                 targetMonitor_ = nullptr;
                 useDuplicationBackend_ = false;
@@ -2744,11 +2810,12 @@ public:
             return false;
         }
 
+        UnsubscribeItemClosed();
         item_ = item;
-        itemClosedToken_ = item_.Closed([this](auto&&, auto&&) {
-            LogWarn("[WGC] Window capture item closed by OS");
-            FlagResetNeeded("window capture item closed");
-        });
+        if (!SubscribeItemClosed("Window", "window capture item closed")) {
+            item_ = nullptr;
+            return false;
+        }
         targetWindow_ = hwnd;
         targetMonitor_ = nullptr;
         useDuplicationBackend_ = false;
@@ -2821,6 +2888,7 @@ public:
             return false;
         }
 
+        UnsubscribeItemClosed();
         item_ = nullptr;
         targetMonitor_ = hmon;
         targetWindow_ = nullptr;
@@ -3103,11 +3171,19 @@ public:
             frameArrivedEvent_ = CreateEvent(NULL, FALSE, FALSE, NULL);  // Auto-reset
         }
 
-        // Subscribe to FrameArrived - signals event for immediate wake
-        // Like OBS, we use callback to trigger processing, but actual work
-        // happens on our capture thread to avoid WinRT thread pool issues
-        frameArrivedToken_ =
-            framePool_.FrameArrived([this](auto&& sender, auto&& args) { OnFrameArrived(sender, args); });
+        // A queued WinRT callback retains only this shared epoch gate. Stop
+        // invalidates the epoch before releasing capture resources, so a
+        // handler that starts late cannot dereference a destroyed Impl.
+        const uint64_t callbackEpoch = frameCallbackState_->Begin(this);
+        auto callbackState = frameCallbackState_;
+        frameArrivedToken_ = framePool_.FrameArrived(
+            [callbackState = std::move(callbackState), callbackEpoch](auto&& sender, auto&& args) {
+                auto owner = callbackState->Enter(callbackEpoch);
+                if (!owner) {
+                    return;
+                }
+                owner->OnFrameArrived(sender, args);
+            });
 
         // Create and start capture session
         session_ = framePool_.CreateCaptureSession(item_);
@@ -3192,27 +3268,39 @@ public:
             dupSource_.reset();
         }
 
-        // Stop WinRT session and frame pool first - prevents new callbacks
+        // Stop the producer before closing the callback epoch. Queued handlers
+        // still retain the shared gate, but once StopAndDrain invalidates this
+        // epoch they can no longer acquire Impl. No timeout/polling is needed:
+        // active callback leases notify the gate when they leave.
         if (session_) {
-            session_.Close();
+            try {
+                session_.Close();
+            } catch (const winrt::hresult_error& e) {
+                LogWarn("[WGC] Capture session close failed: 0x%08lX", static_cast<unsigned long>(e.code().value));
+            } catch (...) {
+                LogWarn("[WGC] Capture session close failed");
+            }
             session_ = nullptr;
         }
-        if (framePool_) {
-            framePool_.FrameArrived(frameArrivedToken_);
-            framePool_.Close();
-            framePool_ = nullptr;
-        }
 
-        // Wait for any in-flight OnFrameArrived callbacks to finish
-        // (WinRT thread pool may still be processing a frame)
-        int waitMs = 0;
-        while (g_WgcInflightCallbacks.load(std::memory_order_acquire) > 0 && waitMs < 2000) {
-            Sleep(1);
-            waitMs++;
-        }
-        if (g_WgcInflightCallbacks.load(std::memory_order_acquire) > 0) {
-            LogWarn("[WGC] %d callbacks still in-flight after %dms wait - proceeding with cleanup",
-                    g_WgcInflightCallbacks.load(), waitMs);
+        frameCallbackState_->StopAndDrain();
+
+        if (framePool_) {
+            try {
+                framePool_.FrameArrived(frameArrivedToken_);
+            } catch (const winrt::hresult_error& e) {
+                LogWarn("[WGC] FrameArrived unsubscribe failed: 0x%08lX", static_cast<unsigned long>(e.code().value));
+            } catch (...) {
+                LogWarn("[WGC] FrameArrived unsubscribe failed");
+            }
+            try {
+                framePool_.Close();
+            } catch (const winrt::hresult_error& e) {
+                LogWarn("[WGC] Frame pool close failed: 0x%08lX", static_cast<unsigned long>(e.code().value));
+            } catch (...) {
+                LogWarn("[WGC] Frame pool close failed");
+            }
+            framePool_ = nullptr;
         }
 
         // Safe to clear callback now - no more concurrent readers
@@ -3627,7 +3715,20 @@ bool WGCCapture::StartCapture() {
     }
 #endif
 
-    bool result = impl_->StartCapture(width_, height_, captureCursor_);
+    bool result = false;
+    try {
+        result = impl_->StartCapture(width_, height_, captureCursor_);
+    } catch (const winrt::hresult_error& e) {
+        LogError("[WGC] Capture start failed with WinRT error 0x%08lX: %ls", static_cast<unsigned long>(e.code().value),
+                 e.message().c_str());
+        impl_->StopCapture();
+    } catch (const std::exception& e) {
+        LogError("[WGC] Capture start failed with C++ exception: %s", e.what());
+        impl_->StopCapture();
+    } catch (...) {
+        LogError("[WGC] Capture start failed with an unknown exception");
+        impl_->StopCapture();
+    }
     if (result) {
         capturing_ = true;
         LogInfo("[WGC] Capture started");
@@ -3680,8 +3781,27 @@ HANDLE WGCCapture::GetFrameArrivedEvent() const {
 #endif
 }
 
+void WGCCapture::SetSourceEpoch(uint64_t sourceEpoch) {
+#if HAS_WGC
+    if (impl_) {
+        impl_->sourceEpoch_.store(sourceEpoch, std::memory_order_release);
+    }
+#else
+    (void)sourceEpoch;
+#endif
+}
+
+uint64_t WGCCapture::GetSourceEpoch() const {
+#if HAS_WGC
+    return impl_ ? impl_->sourceEpoch_.load(std::memory_order_acquire) : 0;
+#else
+    return 0;
+#endif
+}
+
 void WGCCapture::SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool,
-                                                           bool, int32_t, int32_t, WgcPoolSlotLease&&)>
+                                                           bool, bool, int32_t, int32_t, uint64_t,
+                                                           WgcPoolSlotLease&&)>
                                             callback) {
 #if HAS_WGC
     if (impl_) {
@@ -4401,7 +4521,11 @@ uint32_t WGCCapture::GetSkippedFrameCount() const {
 }
 
 int32_t WGCCapture::GetInflightCallbackCount() const {
-    return g_WgcInflightCallbacks.load(std::memory_order_acquire);
+#if HAS_WGC
+    return impl_ ? static_cast<int32_t>(impl_->frameCallbackState_->ActiveCount()) : 0;
+#else
+    return 0;
+#endif
 }
 
 bool WGCCapture::IsHighPrecisionSource() const {
@@ -4449,7 +4573,14 @@ void WGCCapture::GetTargetIdentity(HWND* hwnd, HMONITOR* hmonitor) const {
 
 bool WGCCapture::NeedsReset() const {
 #if HAS_WGC
-    return impl_ && impl_->NeedsReset();
+    if (impl_) {
+        // VFR uses the direct callback path and does not drain the internal
+        // frame queue, so service deferred output/HDR probes here as well as
+        // from DrainPendingFrames. This remains on the owner/media thread.
+        impl_->MaybePerformDeferredHDRRecheck();
+        return impl_->NeedsReset();
+    }
+    return false;
 #else
     return false;
 #endif
@@ -4477,40 +4608,23 @@ void WGCCapture::ForceReset() {
         const uint32_t smoothnessOutputFps = impl_->smoothnessOutputFps_;
         const uint32_t smoothnessMaxMs = impl_->smoothnessMaxMs_;
         const uint32_t smoothnessVramBudgetMb = impl_->smoothnessVramBudgetMb_;
+        const uint32_t smoothnessSyncDelayFrames = impl_->smoothnessSyncDelayFrames_;
+        const bool skipSplitDeviceFlush = impl_->skipSplitDeviceFlush_;
+        const bool sameDeviceCapture = impl_->sameDeviceCapture_;
+        const bool preferCompact10bitPool = impl_->preferCompact10bitPool_;
+        const bool requireHighPrecisionCapture = impl_->requireHighPrecisionCapture_;
+        const uint32_t targetFps = impl_->targetFps_;
+        const uint32_t producerTargetFps = impl_->producerTargetFps_;
+        const auto* throttleFlag = impl_->throttleFlag_;
+        const auto directFrameCallback = impl_->frameCallback_.load(std::memory_order_acquire);
+        const uint64_t sourceEpoch = impl_->sourceEpoch_.load(std::memory_order_acquire);
 
-        // Clear the active direct-frame callback before tearing down
+        // Stop all producers and synchronously drain the per-instance callback
+        // epoch before destroying Impl. A queued WinRT callback can retain the
+        // shared gate, but cannot reacquire this owner after StopCapture.
         impl_->frameCallback_.store(nullptr, std::memory_order_release);
-
-        // Mark Impl as dead BEFORE destroying - prevents callbacks from accessing freed memory
         impl_->alive_.store(false, std::memory_order_release);
-
-        // Join the duplication capture thread before teardown when active.
-        if (impl_->dupSource_) {
-            impl_->dupSource_->Stop();
-            impl_->dupSource_.reset();
-        }
-
-        // Close session first - this stops new callbacks
-        if (impl_->session_) {
-            impl_->session_.Close();
-            impl_->session_ = nullptr;
-        }
-        if (impl_->framePool_) {
-            impl_->framePool_.FrameArrived(impl_->frameArrivedToken_);
-            impl_->framePool_.Close();
-            impl_->framePool_ = nullptr;
-        }
-
-        // Wait for in-flight callbacks to finish BEFORE destroying resources
-        int waitMs = 0;
-        while (g_WgcInflightCallbacks.load(std::memory_order_acquire) > 0 && waitMs < 5000) {
-            Sleep(1);
-            waitMs++;
-        }
-
-        // Now safe to release textures
-        impl_->ReleaseTexturePool();
-        SafeRelease(impl_->latestFrame_);
+        impl_->StopCapture();
 
         impl_.reset();
         impl_ = std::make_unique<Impl>();
@@ -4518,6 +4632,16 @@ void WGCCapture::ForceReset() {
         impl_->smoothnessOutputFps_ = smoothnessOutputFps;
         impl_->smoothnessMaxMs_ = smoothnessMaxMs;
         impl_->smoothnessVramBudgetMb_ = smoothnessVramBudgetMb;
+        impl_->smoothnessSyncDelayFrames_ = smoothnessSyncDelayFrames;
+        impl_->skipSplitDeviceFlush_ = skipSplitDeviceFlush;
+        impl_->sameDeviceCapture_ = sameDeviceCapture;
+        impl_->preferCompact10bitPool_ = preferCompact10bitPool;
+        impl_->requireHighPrecisionCapture_ = requireHighPrecisionCapture;
+        impl_->targetFps_ = targetFps;
+        impl_->producerTargetFps_ = producerTargetFps;
+        impl_->throttleFlag_ = throttleFlag;
+        impl_->sourceEpoch_.store(sourceEpoch, std::memory_order_release);
+        impl_->frameCallback_.store(directFrameCallback, std::memory_order_release);
         if (!impl_->InitializeDevices(device_)) {
             LogError("[WGC] ForceReset failed to reinitialize capture devices");
             return;

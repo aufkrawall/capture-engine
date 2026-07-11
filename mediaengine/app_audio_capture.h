@@ -62,7 +62,7 @@ public:
 
     /**
      * Get next available audio packet.
-     * @param packet Output packet (data copied)
+     * @param packet Output packet (queued storage is moved into it)
      * @return true if packet was available
      */
     bool GetNextPacket(AudioPacket& packet);
@@ -135,8 +135,9 @@ private:
     // keeping the capture thread, queue, and downstream track alive. Used by the
     // capture loop on a fatal stream error or a silent stall.
     bool ReactivateClientForPID(DWORD pid);
+    bool ActivateAudioInterfaceForPID(DWORD pid, IAudioClient** audioClient);
     bool StartCaptureThreadForCurrentClient();
-    void BeginAsyncStartForPID(DWORD pid);
+    bool BeginAsyncStartForPID(DWORD pid);
     void FinalizePendingAsyncStart();
 
     // Abandon process-loopback COM interfaces (without releasing them: releasing
@@ -200,8 +201,6 @@ private:
     std::atomic<bool> startPendingResult{false};
     std::atomic<bool> startPendingValid{false};
 
-    // Event for async activation completion
-    HANDLE activationCompleteEvent = nullptr;
     HANDLE captureEvent_ = nullptr;
-    HRESULT activationResult = 0x80004005;  // E_FAIL
+    HANDLE stopEvent_ = nullptr;
 };

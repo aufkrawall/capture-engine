@@ -31,7 +31,9 @@
 #include <stdint.h>
 #include <windows.h>
 #include <atomic>
+#include <condition_variable>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 
@@ -89,7 +91,7 @@ public:
         return height_;
     }
     DXGI_FORMAT GetFormat() const {
-        return format_;
+        return static_cast<DXGI_FORMAT>(format_.load(std::memory_order_acquire));
     }
     HMONITOR GetMonitor() const {
         return monitor_;
@@ -148,7 +150,9 @@ private:
     RECT monitorRect_ = {};
     uint32_t width_ = 0;
     uint32_t height_ = 0;
-    DXGI_FORMAT format_ = DXGI_FORMAT_UNKNOWN;
+    // The capture thread replaces the ModeDesc hint with the first delivered
+    // texture's ground-truth format. Consumers may query concurrently.
+    std::atomic<uint32_t> format_{static_cast<uint32_t>(DXGI_FORMAT_UNKNOWN)};
     bool desktopImageInSystemMemory_ = false;
     bool requireHighPrecision_ = false;
     bool outputIsHdr_ = false;
@@ -157,6 +161,8 @@ private:
     std::thread captureThread_;
     std::atomic<bool> shutdown_{false};
     std::atomic<bool> running_{false};
+    std::mutex shutdownMutex_;
+    std::condition_variable shutdownCv_;
     DxgiDuplicationFrameSink sink_;
 
     std::atomic<uint64_t> acquireTimeoutCount_{0};

@@ -3787,12 +3787,16 @@ static void PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLay
     if (shm->throttleCapture.load(std::memory_order_acquire))
         return;
 
-    if (!g_SharedCaptureD3D12.IsActive())
-        g_SharedCaptureD3D12.Initialize(g_Device.load(), pSwapChain);
-    if (!g_SharedCaptureD3D12.IsActive())
-        return;
-
     std::lock_guard<std::recursive_mutex> capLock(g_DX12CaptureMutex);
+    ID3D12Device* captureDevice = g_Device.load(std::memory_order_acquire);
+    if (!g_SharedCaptureD3D12.IsInitializedFor(captureDevice, pSwapChain)) {
+        if (!g_SharedCaptureD3D12.Initialize(captureDevice, pSwapChain)) {
+            return;
+        }
+        HookLogImportant("DX12: Shared capture initialized for swapchain generation sc=%p device=%p", pSwapChain,
+                         captureDevice);
+    }
+
     UINT bbIdx = 0;
     if (hasCurrentBackBufferIdx) {
         bbIdx = currentBackBufferIdx;

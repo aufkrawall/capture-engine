@@ -16,17 +16,19 @@ constexpr long Hr(unsigned long code) {
 
 TEST(AudioRecoveryPolicyTest, FatalErrorsAreDeviceInvalidatedFamilyOnly) {
     // Recoverable: the client is gone, re-activate from scratch.
-    EXPECT_TRUE(ce::audio::IsFatalWasapiStreamError(Hr(0x88890004)));   // AUDCLNT_E_DEVICE_INVALIDATED
-    EXPECT_TRUE(ce::audio::IsFatalWasapiStreamError(Hr(0x88890010)));   // AUDCLNT_E_SERVICE_NOT_RUNNING
-    EXPECT_TRUE(ce::audio::IsFatalWasapiStreamError(Hr(0x88890001)));   // AUDCLNT_E_NOT_INITIALIZED
-    EXPECT_TRUE(ce::audio::IsFatalWasapiStreamError(Hr(0x8889000f)));   // AUDCLNT_E_ENDPOINT_CREATE_FAILED
+    EXPECT_TRUE(ce::audio::IsFatalWasapiStreamError(Hr(0x88890004)));  // AUDCLNT_E_DEVICE_INVALIDATED
+    EXPECT_TRUE(ce::audio::IsFatalWasapiStreamError(Hr(0x88890010)));  // AUDCLNT_E_SERVICE_NOT_RUNNING
+    EXPECT_TRUE(ce::audio::IsFatalWasapiStreamError(Hr(0x88890001)));  // AUDCLNT_E_NOT_INITIALIZED
+    EXPECT_TRUE(ce::audio::IsFatalWasapiStreamError(Hr(0x8889000f)));  // AUDCLNT_E_ENDPOINT_CREATE_FAILED
+    EXPECT_TRUE(ce::audio::IsFatalWasapiStreamError(Hr(0x88890026)));  // AUDCLNT_E_RESOURCES_INVALIDATED
 }
 
 TEST(AudioRecoveryPolicyTest, NonFatalAndSuccessAreNotTreatedAsFatal) {
     EXPECT_FALSE(ce::audio::IsFatalWasapiStreamError(0));               // S_OK
     EXPECT_FALSE(ce::audio::IsFatalWasapiStreamError(1));               // S_FALSE
     EXPECT_FALSE(ce::audio::IsFatalWasapiStreamError(Hr(0x88890006)));  // AUDCLNT_E_BUFFER_TOO_LARGE (transient)
-    EXPECT_FALSE(ce::audio::IsFatalWasapiStreamError(Hr(0x8889000a)));  // AUDCLNT_E_DEVICE_IN_USE (not auto-recoverable)
+    EXPECT_FALSE(
+        ce::audio::IsFatalWasapiStreamError(Hr(0x8889000a)));  // AUDCLNT_E_DEVICE_IN_USE (not auto-recoverable)
     EXPECT_FALSE(ce::audio::IsFatalWasapiStreamError(Hr(0x80004005)));  // E_FAIL (generic)
 }
 

@@ -14,12 +14,16 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <exception>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 #include "../common/capture_pipeline_policy.h"
+#include "../common/capture_handoff_state.h"
+#include "../common/atomic_shared_owner.h"
 #include "../common/config.h"
 #include "../common/frame_queue.h"
 #include "../common/frame_timing_utils.h"
@@ -52,13 +56,18 @@ BOOL WINAPI MediaConsoleHandler(DWORD ctrlType) {
 }
 
 static FrameQueue g_FrameQueue(32);
+static std::mutex g_StandbyWgcFrameMutex;
+static QueuedFrame g_StandbyWgcFrame;
+static bool g_HasStandbyWgcFrame = false;
+static std::atomic<bool> g_RetainStandbyWgcFrameForHandoff{false};
 static std::thread g_EncoderThread;
 static QueuedFrame g_LastFrame;
 static bool g_HasLastFrame = false;
 static std::atomic<uint64_t> g_InjectDeferredFrames{0};
 
 // Screengrab mode components
-static std::unique_ptr<WGCCapture> g_WgcCap;
+static ce::AtomicSharedOwner<WGCCapture> g_WgcCap;
+static std::atomic<uint64_t> g_WgcSourceEpoch{0};
 static std::atomic<bool> g_UseScreenGrab{false};     // Active capture mode for the current recording
 static std::atomic<bool> g_PreferScreenGrab{false};  // Preferred mode for the next recording
 
@@ -89,6 +98,31 @@ static std::atomic<uint32_t> g_InjectBufferedTrimmedFrames{0};
 static std::atomic<uint32_t> g_InjectCadenceDroppedFrames{0};
 static std::atomic<uint32_t> g_WgcAdaptiveTargetFps{0};
 static std::atomic<uint64_t> g_ActivePathMismatchFramesDiscarded{0};
+
+static uint64_t AdvanceWgcSourceEpoch(const char* reason) {
+    const uint64_t epoch = g_WgcSourceEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+    LogInfo("[Media] Advanced WGC source epoch to %llu (%s)", static_cast<unsigned long long>(epoch),
+            reason ? reason : "unspecified");
+    return epoch;
+}
+
+static void PublishWgcCapture(std::shared_ptr<WGCCapture> replacement, const char* reason) {
+    const uint64_t epoch = AdvanceWgcSourceEpoch(reason);
+    if (replacement) {
+        // Bind the epoch before publication/start. A callback from the retired
+        // source keeps its old identity even if it finishes after this global
+        // coordinator epoch changes.
+        replacement->SetSourceEpoch(epoch);
+    }
+    auto retired = g_WgcCap.Exchange(std::move(replacement));
+    if (retired) {
+        // Exchange holds the lifecycle writer gate until all reader expressions
+        // finish. Releasing here keeps WinRT/COM teardown on the control thread
+        // without retaining potentially large stopped texture pools all session.
+        retired.reset();
+    }
+    LogInfo("[Media] Published WGC source epoch %llu", static_cast<unsigned long long>(epoch));
+}
 
 struct WgcRuntimeLogSnapshot {
     std::atomic<bool> hasPoolEvidence{false};
@@ -212,6 +246,11 @@ static void SnapshotWgcRuntimeLogState(const WGCCapture* cap) {
     AtomicMax(g_WgcRuntimeLogSnapshot.poolOverwritePrevented, cap->GetPoolSlotOverwritePreventedCount());
     AtomicMax(g_WgcRuntimeLogSnapshot.poolLeaseMismatches, cap->GetPoolLeaseMismatchCount());
     g_WgcRuntimeLogSnapshot.hasPoolEvidence.store(true, std::memory_order_release);
+}
+
+static void SnapshotPublishedWgcRuntimeLogState() {
+    const auto cap = g_WgcCap.Read();
+    SnapshotWgcRuntimeLogState(cap.get());
 }
 
 struct WgcRetargetRequest {
@@ -859,60 +898,88 @@ static bool JoinThreadWithTimeout(std::thread& thread, DWORD timeoutMs, const ch
     }
 
     if (waitResult == WAIT_TIMEOUT) {
-        LogWarn("[Media] Timeout waiting for %s thread (%lu ms), detaching", threadName,
-                static_cast<unsigned long>(timeoutMs));
+        LogWarn(
+            "[Media] Timeout waiting for %s thread (%lu ms); preserving ownership and continuing to wait because "
+            "cleanup while the worker is live would race released capture/encoder resources",
+            threadName, static_cast<unsigned long>(timeoutMs));
     } else {
-        LogWarn("[Media] WaitForSingleObject failed for %s thread (error=%lu), detaching", threadName, GetLastError());
+        LogWarn(
+            "[Media] WaitForSingleObject failed for %s thread (error=%lu); preserving ownership and joining "
+            "synchronously",
+            threadName, GetLastError());
     }
-    thread.detach();
-    return false;
+
+    thread.join();
+    LogInfo("[Media] %s thread eventually joined after the bounded wait", threadName);
+    return true;
 }
 
 void MediaLogCallback(const char* msg) {
     LogInfo("[Media] %s", msg);
 }
 
-static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp,
-                          int64_t rawTimestamp, bool isHDR, bool duplicateSourceTimestamp, int32_t captureLeft,
-                          int32_t captureTop, WgcPoolSlotLease&& poolLease) {
-    static std::atomic<int64_t> s_lastWgcTimestamp{0};
-    if (g_Recording.load(std::memory_order_acquire) && !IsActiveScreenGrab()) {
-        const uint64_t discarded = g_ActivePathMismatchFramesDiscarded.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (discarded <= 3 || (discarded % 120ull) == 0ull) {
-            LogInfo(
-                "[WGC] Dropping standby WGC frame while inject capture is active (discarded=%llu, ts=%lld). This "
-                "prevents mid-recording encoder mode switches.",
-                static_cast<unsigned long long>(discarded), static_cast<long long>(timestamp));
-        }
-        if (texture) {
-            texture->Release();
-        }
-        return;
+static void ReleaseStandaloneWgcQueuedFrame(QueuedFrame& frame) {
+    if (!frame.isInjectMode && frame.texture) {
+        frame.texture->Release();
+        frame.texture = nullptr;
     }
+    frame.wgcPoolLease.Reset();
+    frame = QueuedFrame{};
+}
 
-    SnapshotWgcRuntimeLogState(g_WgcCap.get());
+static void ClearStandbyWgcHandoffFrame() {
+    QueuedFrame stale;
+    {
+        std::lock_guard<std::mutex> lock(g_StandbyWgcFrameMutex);
+        if (!g_HasStandbyWgcFrame) {
+            return;
+        }
+        stale = std::move(g_StandbyWgcFrame);
+        g_HasStandbyWgcFrame = false;
+    }
+    ReleaseStandaloneWgcQueuedFrame(stale);
+}
 
-    QueuedFrame qf;
-    qf.isInjectMode = false;
-    qf.texture = texture;
-    qf.width = width;
-    qf.height = height;
-    qf.timestamp = timestamp;
-    qf.rawTimestamp = rawTimestamp;
-    qf.selectionTimestamp = timestamp;
-    qf.duplicateSourceTimestamp = duplicateSourceTimestamp;
-    qf.wgcPoolSlot = poolLease.Slot();
-    qf.wgcPoolGeneration = poolLease.Generation();
-    qf.wgcPoolLease = std::move(poolLease);
-    LARGE_INTEGER enqueueQpc;
-    QueryPerformanceCounter(&enqueueQpc);
-    qf.enqueueQpc = enqueueQpc.QuadPart;
-    qf.isHDR = isHDR;
-    qf.captureLeft = captureLeft;
-    qf.captureTop = captureTop;
+static bool HasStandbyWgcHandoffFrame() {
+    std::lock_guard<std::mutex> lock(g_StandbyWgcFrameMutex);
+    return g_HasStandbyWgcFrame;
+}
 
+static bool StoreStandbyWgcHandoffFrame(QueuedFrame&& frame) {
+    QueuedFrame stale;
+    {
+        std::lock_guard<std::mutex> lock(g_StandbyWgcFrameMutex);
+        // Recheck while holding the slot lock. A callback can observe the
+        // retention flag immediately before the handoff thread disarms it; in
+        // that race it must not repopulate the slot after the handoff has taken
+        // the proven frame.
+        if (!g_RetainStandbyWgcFrameForHandoff.load(std::memory_order_acquire)) {
+            return false;
+        }
+        if (g_HasStandbyWgcFrame) {
+            stale = std::move(g_StandbyWgcFrame);
+        }
+        g_StandbyWgcFrame = std::move(frame);
+        g_HasStandbyWgcFrame = true;
+    }
+    ReleaseStandaloneWgcQueuedFrame(stale);
+    return true;
+}
+
+static bool TakeStandbyWgcHandoffFrame(QueuedFrame& frame) {
+    std::lock_guard<std::mutex> lock(g_StandbyWgcFrameMutex);
+    if (!g_HasStandbyWgcFrame) {
+        return false;
+    }
+    frame = std::move(g_StandbyWgcFrame);
+    g_HasStandbyWgcFrame = false;
+    return true;
+}
+
+static void SubmitWgcQueuedFrame(QueuedFrame&& frame) {
+    static std::atomic<int64_t> s_lastWgcTimestamp{0};
     if (g_pSharedMem) {
-        const int64_t comparisonTimestamp = rawTimestamp > 0 ? rawTimestamp : timestamp;
+        const int64_t comparisonTimestamp = frame.rawTimestamp > 0 ? frame.rawTimestamp : frame.timestamp;
         const int64_t previousTimestamp = s_lastWgcTimestamp.exchange(comparisonTimestamp, std::memory_order_relaxed);
         if (previousTimestamp > 0) {
             if (comparisonTimestamp < previousTimestamp) {
@@ -925,14 +992,71 @@ static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t hei
         g_pSharedMem->runtimeState.framesQueued.fetch_add(1, std::memory_order_relaxed);
     }
 
-    if (!g_FrameQueue.Push(std::move(qf))) {
+    ID3D11Texture2D* texture = frame.texture;
+    if (!g_FrameQueue.Push(std::move(frame)) && texture) {
         texture->Release();
     }
 }
 
-static QueuedFrame MakeQueuedWgcFrame(WGCCapturedFrame&& frame) {
-    SnapshotWgcRuntimeLogState(g_WgcCap.get());
+static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp,
+                          int64_t rawTimestamp, bool isHDR, bool cursorEmbedded, bool duplicateSourceTimestamp,
+                          int32_t captureLeft, int32_t captureTop, uint64_t sourceEpoch,
+                          WgcPoolSlotLease&& poolLease) {
+    const uint64_t activeEpoch = g_WgcSourceEpoch.load(std::memory_order_acquire);
+    if (sourceEpoch != activeEpoch) {
+        static std::atomic<uint64_t> s_staleEpochDrops{0};
+        const uint64_t discarded = s_staleEpochDrops.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (discarded <= 3 || (discarded % 120ull) == 0ull) {
+            LogInfo("[WGC] Dropping retired-source callback frame: frameEpoch=%llu activeEpoch=%llu discarded=%llu",
+                    static_cast<unsigned long long>(sourceEpoch), static_cast<unsigned long long>(activeEpoch),
+                    static_cast<unsigned long long>(discarded));
+        }
+        if (texture) {
+            texture->Release();
+        }
+        return;
+    }
+    QueuedFrame qf;
+    qf.isInjectMode = false;
+    qf.texture = texture;
+    qf.width = width;
+    qf.height = height;
+    qf.timestamp = timestamp;
+    qf.rawTimestamp = rawTimestamp;
+    qf.selectionTimestamp = timestamp;
+    qf.duplicateSourceTimestamp = duplicateSourceTimestamp;
+    qf.wgcPoolSlot = poolLease.Slot();
+    qf.wgcPoolGeneration = poolLease.Generation();
+    qf.wgcSourceEpoch = sourceEpoch;
+    qf.wgcPoolLease = std::move(poolLease);
+    LARGE_INTEGER enqueueQpc;
+    QueryPerformanceCounter(&enqueueQpc);
+    qf.enqueueQpc = enqueueQpc.QuadPart;
+    qf.isHDR = isHDR;
+    qf.wgcCursorEmbedded = cursorEmbedded;
+    qf.captureLeft = captureLeft;
+    qf.captureTop = captureTop;
 
+    if (g_Recording.load(std::memory_order_acquire) && !IsActiveScreenGrab()) {
+        if (g_RetainStandbyWgcFrameForHandoff.load(std::memory_order_acquire) &&
+            StoreStandbyWgcHandoffFrame(std::move(qf))) {
+            return;
+        }
+        const uint64_t discarded = g_ActivePathMismatchFramesDiscarded.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (discarded <= 3 || (discarded % 120ull) == 0ull) {
+            LogInfo(
+                "[WGC] Dropping standby WGC frame while inject capture is active (discarded=%llu, ts=%lld). This "
+                "prevents mid-recording encoder mode switches.",
+                static_cast<unsigned long long>(discarded), static_cast<long long>(timestamp));
+        }
+        ReleaseStandaloneWgcQueuedFrame(qf);
+        return;
+    }
+
+    SubmitWgcQueuedFrame(std::move(qf));
+}
+
+static QueuedFrame MakeQueuedWgcFrame(WGCCapturedFrame&& frame) {
     QueuedFrame qf;
     qf.isInjectMode = false;
     qf.texture = frame.texture;
@@ -944,11 +1068,13 @@ static QueuedFrame MakeQueuedWgcFrame(WGCCapturedFrame&& frame) {
     qf.selectionTimestamp = frame.timestamp;
     qf.wgcPoolSlot = frame.poolSlot;
     qf.wgcPoolGeneration = frame.poolGeneration;
+    qf.wgcSourceEpoch = frame.sourceEpoch;
     qf.wgcPoolLease = std::move(frame.poolLease);
     LARGE_INTEGER enqueueQpc;
     QueryPerformanceCounter(&enqueueQpc);
     qf.enqueueQpc = enqueueQpc.QuadPart;
     qf.isHDR = frame.isHDR;
+    qf.wgcCursorEmbedded = frame.cursorEmbedded;
     qf.duplicateSourceTimestamp = frame.duplicateSourceTimestamp;
     qf.captureLeft = frame.captureLeft;
     qf.captureTop = frame.captureTop;
@@ -1006,11 +1132,7 @@ static void StopInjectCapturePipeline() {
 // the state only changes on hardware/software cursor-plane transitions.
 static std::atomic<bool> g_DupCursorSuppressionActive{false};
 
-static void SyncDuplicationCursorSuppression() {
-    bool suppress = false;
-    if (g_WgcCap && g_WgcCap->IsUsingDesktopDuplication()) {
-        suppress = g_WgcCap->IsDuplicationCursorEmbedded();
-    }
+static void SyncDuplicationCursorSuppression(bool suppress) {
     if (suppress == g_DupCursorSuppressionActive.load(std::memory_order_relaxed)) {
         return;
     }
@@ -1022,15 +1144,22 @@ static void SyncDuplicationCursorSuppression() {
             suppress ? "suppressed" : "active", suppress ? "already contain" : "do not contain");
 }
 
-static void StopWgcCapturePipeline() {
-    if (g_WgcCap) {
-        g_WgcCap->SetDirectFrameCallback(nullptr);
-        g_WgcCap->SetTargetFps(0);
-        if (g_WgcCap->IsCapturing()) {
-            g_WgcCap->StopCapture();
-        }
+static void ResetDuplicationCursorSuppression(const char* reason) {
+    const bool wasSuppressed = g_DupCursorSuppressionActive.exchange(false, std::memory_order_acq_rel);
+    if (MediaEngine_SetCursorCompositionSuppressed) {
+        // Always publish the reset. Merely clearing the local cache can leave
+        // the encoder latched in suppression across a reset/retarget.
+        MediaEngine_SetCursorCompositionSuppressed(false);
     }
+    if (wasSuppressed) {
+        LogInfo("[Media] Encoder cursor composition restored (%s)", reason ? reason : "capture transition");
+    }
+}
 
+static void StopWgcCapturePipeline() {
+    g_RetainStandbyWgcFrameForHandoff.store(false, std::memory_order_release);
+    ClearStandbyWgcHandoffFrame();
+    ResetDuplicationCursorSuppression("WGC pipeline stop");
     g_WgcCaptureShutdown = true;
     g_WgcAdaptiveTargetFps.store(0, std::memory_order_relaxed);
     if (g_pSharedMem) {
@@ -1044,13 +1173,21 @@ static void StopWgcCapturePipeline() {
         g_pSharedMem->runtimeState.wgcSelectionLateMaxUs.store(0, std::memory_order_relaxed);
     }
     JoinThreadWithTimeout(g_WgcCaptureThread, 5000, "WGC capture");
+
+    // Block encoder-side readers while the capture session and its WinRT/DXGI
+    // resources are torn down. Atomic shared ownership alone protects object
+    // lifetime; this access gate also protects mutable session internals.
+    auto capture = g_WgcCap.LockExclusive();
+    if (capture) {
+        capture->SetDirectFrameCallback(nullptr);
+        capture->SetTargetFps(0);
+        if (capture->IsCapturing()) {
+            capture->StopCapture();
+        }
+    }
 }
 
 static bool StartWgcRecordingCapture(const AppConfig& config) {
-    if (!g_WgcCap) {
-        return false;
-    }
-
     g_WgcRuntimeLogSnapshot.Reset();
 
     if (g_WgcCaptureThread.joinable()) {
@@ -1059,32 +1196,38 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
         JoinThreadWithTimeout(g_WgcCaptureThread, 5000, "WGC capture");
     }
 
-    if (g_WgcCap->IsCapturing()) {
-        g_WgcCap->SetDirectFrameCallback(nullptr);
-        g_WgcCap->StopCapture();
+    auto captureAccess = g_WgcCap.LockExclusive();
+    WGCCapture* capture = captureAccess.get();
+    if (!capture) {
+        return false;
     }
 
-    g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
+    if (capture->IsCapturing()) {
+        capture->SetDirectFrameCallback(nullptr);
+        capture->StopCapture();
+    }
+
+    capture->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
     if (config.video.captureCursor) {
         LogInfo("[Media] WGC cursor capture: native WGC cursor disabled; encoder-side cursor composition enabled");
     }
     HWND activeWgcWindow = NULL;
     HMONITOR activeWgcMonitor = NULL;
-    g_WgcCap->GetTargetIdentity(&activeWgcWindow, &activeWgcMonitor);
+    capture->GetTargetIdentity(&activeWgcWindow, &activeWgcMonitor);
     int32_t activeCaptureLeft = 0;
     int32_t activeCaptureTop = 0;
-    const bool haveCaptureOrigin = g_WgcCap->GetCaptureOrigin(activeCaptureLeft, activeCaptureTop);
+    const bool haveCaptureOrigin = capture->GetCaptureOrigin(activeCaptureLeft, activeCaptureTop);
     LogInfo("[Media] WGC recording target: target=%s backend=%s hwnd=0x%p hmon=0x%p originOk=%d origin=(%d,%d) "
             "captureCursor=%d nativeWgcCursor=%d encoderCursor=%d",
             activeWgcWindow ? "window" : "monitor",
-            g_WgcCap->IsUsingDesktopDuplication() ? "DxgiDuplication" : "WGC", activeWgcWindow, activeWgcMonitor,
+            capture->IsUsingDesktopDuplication() ? "DxgiDuplication" : "WGC", activeWgcWindow, activeWgcMonitor,
             haveCaptureOrigin ? 1 : 0, activeCaptureLeft, activeCaptureTop, config.video.captureCursor ? 1 : 0,
             ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor) ? 1 : 0,
             config.video.captureCursor ? 1 : 0);
-    g_WgcCap->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
-    g_WgcCap->SetSameDeviceCapture(config.wgcSameDeviceCapture);
-    g_WgcCap->SetPreferCompact10bitPool(config.wgcPreferCompact10bitPool);
-    g_WgcCap->SetRequireHighPrecisionCapture(IsExplicitTenBitVideo(config.video));
+    capture->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
+    capture->SetSameDeviceCapture(config.wgcSameDeviceCapture);
+    capture->SetPreferCompact10bitPool(config.wgcPreferCompact10bitPool);
+    capture->SetRequireHighPrecisionCapture(IsExplicitTenBitVideo(config.video));
     const uint32_t initialWgcTargetFps = GetInitialWgcCfrTargetFps(config.video);
     float maxAudioCaptureLatencyMs = 0.0f;
     for (const auto& audioSrc : config.audioSources) {
@@ -1106,26 +1249,27 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
         hasWgcContentDelayBudget ? ce::capture_policy::GetWgcEstimatedSyncDelayFramesForBudget(
                                        outputFps, static_cast<uint32_t>(std::ceil(maxAudioCaptureLatencyMs)))
                                  : 0u;
-    g_WgcCap->SetSmoothnessBufferBudget(
+    capture->SetSmoothnessBufferBudget(
         config.wgcSmoothnessBufferEnabled && !config.video.useVFR &&
             (hasWgcContentDelayBudget || wgcSmoothnessFloorBudgetDesired),
         outputFps, config.wgcSmoothnessBufferMaxMs, config.wgcSmoothnessBufferVramBudgetMb, syncDelayFramesForBudget);
     if (config.video.useVFR) {
-        g_WgcCap->SetDirectFrameCallback(QueueWgcFrame);
+        capture->SetDirectFrameCallback(QueueWgcFrame);
     } else {
-        g_WgcCap->SetDirectFrameCallback(nullptr);
+        capture->SetDirectFrameCallback(nullptr);
     }
-    g_WgcCap->ResetStats();
-    // Fresh encoder instances start unsuppressed; keep the poll state in sync.
-    g_DupCursorSuppressionActive.store(false, std::memory_order_relaxed);
+    capture->ResetStats();
+    // Explicitly reset both the cache and the encoder-side state. A prior
+    // duplication session may have ended while its software cursor was embedded.
+    ResetDuplicationCursorSuppression("WGC recording start");
     g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
     g_WgcAdaptiveTargetFps.store(initialWgcTargetFps, std::memory_order_relaxed);
     // CFR WGC asks the compositor for bounded steady-state source headroom, and
     // the adaptive policy temporarily returns to max-rate only during measured
     // source/reservoir recovery. Keep the local copy throttle disabled so the
     // producer governor does not become a second frame-drop policy.
-    g_WgcCap->SetTargetFps(0);
-    g_WgcCap->SetProducerTargetFps(initialWgcTargetFps);
+    capture->SetTargetFps(0);
+    capture->SetProducerTargetFps(initialWgcTargetFps);
 
     // For CFR recording, disable the encoder-bottleneck throttle at the WGC
     // callback level.  The throttle is all-or-nothing (bang-bang) and its slow
@@ -1134,7 +1278,7 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     // The encoder thread's buffer cap + Bresenham skip already provide smooth
     // backpressure, so the throttle is both unnecessary and harmful for CFR.
     if (!config.video.useVFR) {
-        g_WgcCap->SetThrottleFlag(nullptr);
+        capture->SetThrottleFlag(nullptr);
         LogInfo("[Media] WGC CFR mode: pull-latest sampling enabled, callback queue bypassed");
         LogInfo("[Media] WGC CFR mode: encoder-bottleneck throttle disabled (buffer cap provides backpressure)");
     }
@@ -1148,24 +1292,24 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
         g_pSharedMem->runtimeState.wgcSelectionEarlyMaxUs.store(0, std::memory_order_relaxed);
         g_pSharedMem->runtimeState.wgcSelectionLateMaxUs.store(0, std::memory_order_relaxed);
     }
-    if (!g_WgcCap->StartCapture()) {
-        g_WgcCap->SetDirectFrameCallback(nullptr);
+    if (!capture->StartCapture()) {
+        capture->SetDirectFrameCallback(nullptr);
         return false;
     }
-    SnapshotWgcRuntimeLogState(g_WgcCap.get());
+    SnapshotWgcRuntimeLogState(capture);
 
     // Tell the encoder whether the capture source runs at >8 bpc so that
     // bit_depth=auto resolves to 10-bit even when the WGC frame pool fell
     // back to BGRA8 (e.g. R10G10B10A2 pool creation failed).
     if (MediaEngine_SetSourcePrefers10Bit) {
-        const bool hiPrec = g_WgcCap->IsHighPrecisionSource();
+        const bool hiPrec = capture->IsHighPrecisionSource();
         LogInfo("[Media] WGC source high-precision=%s, notifying encoder", hiPrec ? "YES" : "NO");
         MediaEngine_SetSourcePrefers10Bit(hiPrec);
     } else {
         LogWarn("[Media] MediaEngine_SetSourcePrefers10Bit not available (old mediaengine.dll?)");
     }
 
-    g_WgcCap->SetGpuPriority(config.video.gpuPriority);
+    capture->SetGpuPriority(config.video.gpuPriority);
 
     g_WgcCaptureShutdown = false;
     // Recording-lifetime config snapshot: the main thread reassigns `config`
@@ -1761,6 +1905,14 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
 
     // Local read index tracks what WE have pushed to the FrameQueue
     uint32_t localReadIndex = g_pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
+    std::shared_ptr<ce::InjectFrameRingLeaseState> injectRingLeaseState;
+    try {
+        injectRingLeaseState = std::make_shared<ce::InjectFrameRingLeaseState>(&g_pSharedMem->frameRing);
+    } catch (const std::exception& error) {
+        LogError("[Inject Thread] Failed to allocate frame-ring ownership state: %s", error.what());
+        g_InjectCaptureRunning = false;
+        return;
+    }
 
     // PACING INITIALIZATION
     LARGE_INTEGER qpcFreq;
@@ -1785,12 +1937,13 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     uint32_t lastTrimmedCount = g_InjectBufferedTrimmedFrames.load(std::memory_order_relaxed);
     uint32_t lastCadenceDroppedCount = g_InjectCadenceDroppedFrames.load(std::memory_order_relaxed);
     uint32_t lastDeferredCount = g_InjectDeferredFrames.load(std::memory_order_relaxed);
+    bool earlyTexturesCreated = false;
+    bool sharedTexturesCreated = false;
 
     while (!g_InjectCaptureShutdown && g_Recording) {
         // Create encoder textures as soon as resolution is available (before frames arrive)
         // This is critical for DXVK where the Vulkan layer waits for encoder KMT textures
         // NOTE: non-static so it resets per thread lifetime (new recording = new thread)
-        bool earlyTexturesCreated = false;
         if (!earlyTexturesCreated && g_pSharedMem->GetWidth() > 0 && g_pSharedMem->GetHeight() > 0) {
             if (!g_pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
                 if (MediaEngine_CreateSharedCaptureTextures(g_pSharedMem->GetWidth(), g_pSharedMem->GetHeight(),
@@ -1808,13 +1961,18 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
         uint32_t writeIndex = g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
 
         // Overflow Protection
-        if (writeIndex > localReadIndex + FRAME_RING_SIZE) {
-            uint32_t dropped = writeIndex - localReadIndex - 1;
+        const uint32_t unreadRingEntries = writeIndex - localReadIndex;
+        if (unreadRingEntries > static_cast<uint32_t>(FRAME_RING_SIZE)) {
+            uint32_t dropped = unreadRingEntries - 1;
             // Only log huge jumps to avoid spam
             if (dropped > 10) {
                 LogInfo("[Inject Thread] Lag detected! Dropping %u frames to catch up", dropped);
             }
-            localReadIndex = writeIndex - 1;
+            const uint32_t catchupReadIndex = writeIndex - 1;
+            while (localReadIndex != catchupReadIndex) {
+                injectRingLeaseState->Complete(localReadIndex);
+                ++localReadIndex;
+            }
             droppedCount += dropped;
             g_pSharedMem->runtimeState.hostDroppedFrames.fetch_add(dropped, std::memory_order_relaxed);
             // Reset pacing on overflow/lag
@@ -1905,6 +2063,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     qf.ringIndex = localReadIndex;
                     qf.frameIndex = slot.frameIndex;
                     qf.textureIndex = texIdx;
+                    qf.injectRingLease = injectRingLeaseState->Acquire(localReadIndex);
                     qf.timestamp = slot.timestamp;
                     LARGE_INTEGER enqueueQpc;
                     QueryPerformanceCounter(&enqueueQpc);
@@ -1920,10 +2079,6 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         }
                     }
                     s_lastInjectTimestamp = slot.timestamp;
-
-                    // CRITICAL FIX: Reset valid flag after reading to prevent stale data
-                    // on slot reuse
-                    slot.valid.store(0, std::memory_order_release);
 
                     if (texIdx >= 100) {
                         qf.isShmem = true;
@@ -1957,7 +2112,6 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     qf.isHDR = g_pSharedMem->GetIsHDR();
 
                     // Per-recording state (reset on thread creation)
-                    bool sharedTexturesCreated = false;
                     if (!sharedTexturesCreated && g_pSharedMem->GetWidth() > 0 && g_pSharedMem->GetHeight() > 0) {
                         if (!g_pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
                             if (MediaEngine_CreateSharedCaptureTextures(g_pSharedMem->GetWidth(),
@@ -1995,14 +2149,16 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                                 if (nowTick - s_lastQueuedLineageLogTick >= 1000) {
                                     const uint32_t ringWrite =
                                         g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
-                                    const uint32_t nextRead = localReadIndex + 1;
+                                    const uint32_t ringAckRead =
+                                        g_pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
+                                    const uint32_t nextIngest = localReadIndex + 1;
                                     LogInfo(
                                         "[Inject Thread] Queue frame=%u ring=%u tex=%d fence=%llu ts=%lld qDepth=%u "
-                                        "ringNextRead=%u ringWrite=%u ringDepthAfter=%u",
+                                        "ringIngestNext=%u ringAckRead=%u ringWrite=%u ownedDepth=%u",
                                         lineage.frameIndex, lineage.ringIndex, lineage.textureIndex,
                                         static_cast<unsigned long long>(lineage.fenceValue),
-                                        static_cast<long long>(lineage.timestamp), queueDepth, nextRead, ringWrite,
-                                        static_cast<uint32_t>(ringWrite - nextRead));
+                                        static_cast<long long>(lineage.timestamp), queueDepth, nextIngest, ringAckRead,
+                                        ringWrite, static_cast<uint32_t>(ringWrite - ringAckRead));
                                     s_lastQueuedLineageLogTick = nowTick;
                                 }
                                 if (!g_InjectDeliveredFirstFrame.exchange(true, std::memory_order_acq_rel)) {
@@ -2022,23 +2178,21 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
 
                     if (dropFrame) {
                         localReadIndex++;
-                        PublishFrameRingReadIndexAtLeast(g_pSharedMem->frameRing, localReadIndex);
+                        qf.injectRingLease.Reset();
                         continue;
                     }
                 } else {
                     // Pacing drop: release the ring slot immediately so the producer
                     // does not stall behind frames that will never be encoded.
-                    slot.valid.store(0, std::memory_order_release);
+                    injectRingLeaseState->Complete(localReadIndex);
                     localReadIndex++;
-                    PublishFrameRingReadIndexAtLeast(g_pSharedMem->frameRing, localReadIndex);
                     continue;
                 }
 
                 localReadIndex++;
-                PublishFrameRingReadIndexAtLeast(g_pSharedMem->frameRing, localReadIndex);
             } else {
+                injectRingLeaseState->Complete(localReadIndex);
                 localReadIndex++;
-                PublishFrameRingReadIndexAtLeast(g_pSharedMem->frameRing, localReadIndex);
             }
         } else {
             emptySpinCount++;
@@ -2238,7 +2392,7 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastIngressDecimatedCreditCount = g_WgcCap->GetIngressDecimatedCreditCount();
             lastIngressSoftReservePressureCount = g_WgcCap->GetIngressSoftReservePressureCount();
             lastIngressHardReservePressureCount = g_WgcCap->GetIngressHardReservePressureCount();
-            SnapshotWgcRuntimeLogState(g_WgcCap.get());
+            SnapshotPublishedWgcRuntimeLogState();
             if (g_pSharedMem) {
                 lastDuplicateCount = g_pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
                 lastLateCount = g_pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
@@ -2402,7 +2556,7 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 g_pSharedMem->runtimeState.wgcInputMin500Fps.store(inputMin500Fps, std::memory_order_relaxed);
             }
 
-            SnapshotWgcRuntimeLogState(g_WgcCap.get());
+            SnapshotPublishedWgcRuntimeLogState();
             LogInfo(
                 "[WGC Perf] Input: %u | Queued: %u | DropFull: %u | DropPace: %u | DropThrottle: %u | "
                 "DropStale: %u (DupTs=%u OOO=%u) | SrcDupTs: seen=%u skip=%u | DropCursor: %u | "
@@ -2541,11 +2695,7 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
     };
     auto DiscardQueuedFrame = [&](QueuedFrame& queuedFrame) {
-        if (queuedFrame.isInjectMode) {
-            if (g_pSharedMem) {
-                PublishFrameRingReadIndexAtLeast(g_pSharedMem->frameRing, queuedFrame.ringIndex + 1);
-            }
-        } else {
+        if (!queuedFrame.isInjectMode) {
             ReleaseQueuedFrameTexture(queuedFrame);
         }
         queuedFrame = QueuedFrame{};
@@ -2555,6 +2705,9 @@ void EncoderThreadFunc(const AppConfig& config) {
     std::vector<WGCCapturedFrame> drainedWgcCapturedFrames;
     drainedWgcCapturedFrames.reserve(8);
     std::deque<QueuedFrame> bufferedWgcFrames;
+    uint64_t observedWgcSourceEpoch = g_WgcSourceEpoch.load(std::memory_order_acquire);
+    bool lastSuccessfulWgcCursorEmbedded = false;
+    bool hasSuccessfulWgcCursorMetadata = false;
     std::vector<size_t> wgcFreshCandidateIndices;
     wgcFreshCandidateIndices.reserve(64);
     std::vector<size_t> wgcFallbackCandidateIndices;
@@ -2601,6 +2754,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t lastEncodedInjectFrameIndex = 0;
     std::array<uint32_t, kInjectTextureSlotCount> lastEncodedFrameByTextureIndex{};
     InjectFrameLineage lastDeferredLineage;
+    InjectFrameLineage lastSuccessfullyEncodedInjectLineage;
     CadenceHealthCounters cadenceCounters;
     InputFrameRatePredictor wgcInputPredictor;
     InputFrameRatePredictor injectInputPredictor;
@@ -3738,6 +3892,55 @@ void EncoderThreadFunc(const AppConfig& config) {
         uint32_t outputShortfallTicks = 0;
         const bool activeScreenGrab = IsActiveScreenGrab();
         const bool useScreenGrab = activeScreenGrab;
+        const uint64_t currentWgcSourceEpoch = g_WgcSourceEpoch.load(std::memory_order_acquire);
+        if (activeScreenGrab && currentWgcSourceEpoch != observedWgcSourceEpoch) {
+            size_t bufferedDiscarded = 0;
+            for (auto it = bufferedWgcFrames.begin(); it != bufferedWgcFrames.end();) {
+                if (it->wgcSourceEpoch != currentWgcSourceEpoch) {
+                    ReleaseQueuedFrameTexture(*it);
+                    it = bufferedWgcFrames.erase(it);
+                    ++bufferedDiscarded;
+                } else {
+                    ++it;
+                }
+            }
+            const size_t queuedDiscarded = g_FrameQueue.DiscardWgcEpochNotEqual(currentWgcSourceEpoch);
+            if (g_HasLastFrame && !g_LastFrame.isInjectMode &&
+                g_LastFrame.wgcSourceEpoch != currentWgcSourceEpoch) {
+                ResetLastQueuedFrameCache();
+            }
+            observedWgcSourceEpoch = currentWgcSourceEpoch;
+            lastEmittedWgcSourceQpc = 0;
+            lastEmittedWgcSelectionQpc = 0;
+            lastWarmupWgcSourceQpc = 0;
+            wgcInputPredictor.Reset();
+            wgcRecentDeliveredFps = 0;
+            wgcRecentDeliveredMin250Fps = 0;
+            wgcRecentDeliveredMin500Fps = 0;
+            wgcRecentInputMin250Fps = 0;
+            wgcRecentInputMin500Fps = 0;
+            wgcLowSourceModeActive = false;
+            wgcLiveRecoveryModeActive = false;
+            wgcSourceStarvedCurrent = false;
+            lastSuccessfulWgcCursorEmbedded = false;
+            hasSuccessfulWgcCursorMetadata = false;
+            if (MediaEngine_ResetRepeatFrameCache) {
+                MediaEngine_ResetRepeatFrameCache();
+            }
+            ResetDuplicationCursorSuppression("WGC source epoch change");
+            LogInfo(
+                "[EncoderThread] WGC source epoch changed: epoch=%llu bufferedDiscarded=%zu queuedDiscarded=%zu; "
+                "selection/cursor lineage rebased without changing the audio or CFR timeline",
+                static_cast<unsigned long long>(currentWgcSourceEpoch), bufferedDiscarded, queuedDiscarded);
+        } else if (!activeScreenGrab && currentWgcSourceEpoch != observedWgcSourceEpoch) {
+            // Standby WGC retargets are unrelated to the authoritative inject
+            // pixels. Observe their publication epoch now so activating the
+            // already-proven standby source does not later invalidate the
+            // inject repeat fallback at the handoff boundary.
+            observedWgcSourceEpoch = currentWgcSourceEpoch;
+            LogInfo("[EncoderThread] Observed standby WGC source epoch %llu while inject remained active",
+                    static_cast<unsigned long long>(currentWgcSourceEpoch));
+        }
         const uint32_t outputFps = std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps));
         auto loadEncoderOverloadFlags = [&]() -> uint32_t {
             return g_pSharedMem ? g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed) : 0u;
@@ -5314,12 +5517,28 @@ void EncoderThreadFunc(const AppConfig& config) {
                 // scheduler be the only authority for selection/repeat/drop.
                 drainedScreenGrabFrames.clear();
                 drainedWgcCapturedFrames.clear();
-                if (g_WgcCap) {
-                    g_WgcCap->DrainPendingFrames(drainedWgcCapturedFrames, 0);
+                if (auto capture = g_WgcCap.Read()) {
+                    const uint64_t drainSourceEpoch = g_WgcSourceEpoch.load(std::memory_order_acquire);
+                    capture->DrainPendingFrames(drainedWgcCapturedFrames, 0);
                     for (auto& capturedFrame : drainedWgcCapturedFrames) {
-                        if (capturedFrame.texture) {
-                            drainedScreenGrabFrames.push_back(MakeQueuedWgcFrame(std::move(capturedFrame)));
+                        if (!capturedFrame.texture) {
+                            continue;
                         }
+                        if (capturedFrame.sourceEpoch != drainSourceEpoch) {
+                            static uint64_t s_retiredPullFrameDrops = 0;
+                            ++s_retiredPullFrameDrops;
+                            if (s_retiredPullFrameDrops <= 3 || (s_retiredPullFrameDrops % 120ull) == 0ull) {
+                                LogInfo(
+                                    "[WGC] Dropping retired-source pull frame: frameEpoch=%llu activeEpoch=%llu "
+                                    "discarded=%llu",
+                                    static_cast<unsigned long long>(capturedFrame.sourceEpoch),
+                                    static_cast<unsigned long long>(drainSourceEpoch),
+                                    static_cast<unsigned long long>(s_retiredPullFrameDrops));
+                            }
+                            ReleaseWgcCapturedFrame(capturedFrame);
+                            continue;
+                        }
+                        drainedScreenGrabFrames.push_back(MakeQueuedWgcFrame(std::move(capturedFrame)));
                     }
                 }
 
@@ -6930,8 +7149,13 @@ void EncoderThreadFunc(const AppConfig& config) {
             popped = false;
         }
 
+        const bool canPreserveLastFrameAcrossPathHandoff =
+            !config.video.useVFR &&
+            ((useScreenGrab && MediaEngine_RepeatLastFrameWithTimeline) || MediaEngine_RepeatLastFrame) &&
+            MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
         if (g_HasLastFrame &&
-            !ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, g_LastFrame.isInjectMode)) {
+            !ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, g_LastFrame.isInjectMode) &&
+            !canPreserveLastFrameAcrossPathHandoff) {
             discardActivePathMismatchFrame(g_LastFrame, "cached last frame", false);
             g_HasLastFrame = false;
         }
@@ -6941,7 +7165,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             popped = false;
         }
 
-        if (g_HasLastFrame && g_LastFrame.isInjectMode && g_RejectInjectFrames.load(std::memory_order_acquire)) {
+        if (g_HasLastFrame && g_LastFrame.isInjectMode && g_RejectInjectFrames.load(std::memory_order_acquire) &&
+            !canPreserveLastFrameAcrossPathHandoff) {
             g_LastFrame = QueuedFrame{};
             g_HasLastFrame = false;
         }
@@ -6955,6 +7180,46 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                                computeLiveTimelineElapsedUs(scheduledQpc));
             }
             return MediaEngine_RepeatLastFrame && MediaEngine_RepeatLastFrame(scheduledQpc);
+        };
+        auto recoverScheduledFreshEncodeFailure = [&](bool scheduledCfrTick, bool freshEncodeSucceeded,
+                                                       bool freshEncodeDeferred, int64_t scheduledQpc,
+                                                       const QueuedFrame* failedFrame, const char* context) {
+            const bool repeatCacheAvailable =
+                MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
+            if (!ce::capture_policy::ShouldRepeatAfterScheduledFreshEncodeFailure(
+                    scheduledCfrTick, freshEncodeSucceeded, freshEncodeDeferred, hasRepeatLastFramePath,
+                    repeatCacheAvailable)) {
+                return false;
+            }
+
+            // The failed WGC attempt may have changed cursor suppression to
+            // match pixels that were never emitted. Restore the metadata that
+            // belongs to the cached successful source frame before repeating.
+            if (failedFrame && !failedFrame->isInjectMode && hasSuccessfulWgcCursorMetadata) {
+                SyncDuplicationCursorSuppression(lastSuccessfulWgcCursorEmbedded);
+            }
+
+            const bool repeatSucceeded = repeatLastFrameForScheduledQpc(scheduledQpc);
+            const bool repeatDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
+            if (!repeatSucceeded || repeatDeferred) {
+                LogWarn(
+                    "[EncoderThread] CFR fresh encode failed and cached-repeat recovery also failed: context=%s "
+                    "scheduledQpc=%lld repeatSucceeded=%d repeatDeferred=%d",
+                    context ? context : "unknown", static_cast<long long>(scheduledQpc), repeatSucceeded ? 1 : 0,
+                    repeatDeferred ? 1 : 0);
+                return false;
+            }
+
+            static uint64_t s_freshEncodeRecoveryCount = 0;
+            ++s_freshEncodeRecoveryCount;
+            if (s_freshEncodeRecoveryCount <= 5 || (s_freshEncodeRecoveryCount % 120ull) == 0ull) {
+                LogWarn(
+                    "[EncoderThread] CFR fresh encode failure recovered with cached duplicate: context=%s "
+                    "scheduledQpc=%lld recoveryCount=%llu",
+                    context ? context : "unknown", static_cast<long long>(scheduledQpc),
+                    static_cast<unsigned long long>(s_freshEncodeRecoveryCount));
+            }
+            return true;
         };
         auto releaseWgcLeaseAfterMediaEngineCopy = [&](QueuedFrame& encodedFrame, const char* context) {
             if (encodedFrame.isInjectMode || !encodedFrame.wgcPoolLease.IsValid()) {
@@ -7879,29 +8144,11 @@ void EncoderThreadFunc(const AppConfig& config) {
             if (!config.video.useVFR && encoderGridStartQpc == 0) {
                 encoderGridStartQpc = frame.timestamp;
             }
-            if (frame.isInjectMode) {
-                if (g_HasLastFrame && !g_LastFrame.isInjectMode) {
-                    ReleaseQueuedFrameTexture(g_LastFrame);
-                }
-                g_LastFrame = std::move(frame);
-                g_HasLastFrame = true;
-                // After move, frame fields are nullptr - use g_LastFrame for processing
-                frameToProcess = &g_LastFrame;
-            } else {
-                if (g_HasLastFrame && !g_LastFrame.isInjectMode) {
-                    ReleaseQueuedFrameTexture(g_LastFrame);
-                }
-                if (frame.timestamp > 0) {
-                    lastEmittedWgcSourceQpc = frame.timestamp;
-                }
-                if (GetFrameSelectionTimestamp(frame) > 0) {
-                    lastEmittedWgcSelectionQpc = GetFrameSelectionTimestamp(frame);
-                }
-                g_LastFrame = std::move(frame);
-                g_HasLastFrame = true;
-                // After move, frame.texture is nullptr - use g_LastFrame for processing
-                frameToProcess = &g_LastFrame;
-            }
+            // Keep the last successfully emitted frame authoritative until the
+            // fresh candidate has actually encoded. This also keeps inject ring
+            // leases attached to deferred candidates instead of accidentally
+            // moving them into g_LastFrame before the fence result is known.
+            frameToProcess = &frame;
         } else if (g_HasLastFrame && g_EncoderRunning && g_Recording) {
             if (hasRepeatLastFramePath) {
                 wantsTrueRepeatLastFrame = true;
@@ -8246,12 +8493,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                                     g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
                                     g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1,
                                                                                            std::memory_order_relaxed);
-                                    PublishFrameRingReadIndexAtLeast(g_pSharedMem->frameRing,
-                                                                     catchupFrame.ringIndex + 1);
                                 }
 
+                                catchupFrame.injectRingLease.Reset();
                                 g_LastFrame = std::move(catchupFrame);
                                 g_HasLastFrame = true;
+                                lastSuccessfullyEncodedInjectLineage = catchupLineage;
                                 if (g_LastFrame.timestamp > 0) {
                                     lastEmittedInjectSourceQpc = g_LastFrame.timestamp;
                                 }
@@ -8325,29 +8572,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                             ++wgcFreshSelectionMissCount;
                             allowFreshCatchup = false;
                         } else {
-                            if (g_HasLastFrame && !g_LastFrame.isInjectMode) {
-                                ReleaseQueuedFrameTexture(g_LastFrame);
-                            }
-                            if (catchupFrame.timestamp > 0) {
-                                lastEmittedWgcSourceQpc = catchupFrame.timestamp;
-                            }
-                            if (GetFrameSelectionTimestamp(catchupFrame) > 0) {
-                                lastEmittedWgcSelectionQpc = GetFrameSelectionTimestamp(catchupFrame);
-                            }
-                            g_LastFrame = std::move(catchupFrame);
-                            g_HasLastFrame = true;
-
                             LARGE_INTEGER catchupStartEnc, catchupEndEnc;
                             QueryPerformanceCounter(&catchupStartEnc);
                             uint64_t frameAgeUs = 0;
-                            if (g_LastFrame.timestamp > 0 && catchupStartEnc.QuadPart > g_LastFrame.timestamp) {
-                                frameAgeUs = static_cast<uint64_t>((catchupStartEnc.QuadPart - g_LastFrame.timestamp) *
+                            if (catchupFrame.timestamp > 0 && catchupStartEnc.QuadPart > catchupFrame.timestamp) {
+                                frameAgeUs = static_cast<uint64_t>((catchupStartEnc.QuadPart - catchupFrame.timestamp) *
                                                                    1000000 / qpcFreq.QuadPart);
                             }
-                            cadenceCounters.frameAgeAccumUs += frameAgeUs;
-                            cadenceCounters.frameAgeSamples++;
-                            cadenceCounters.frameAgeMaxUs =
-                                std::max(cadenceCounters.frameAgeMaxUs, SaturatingToUint32(frameAgeUs));
                             if (repeatScheduledQpc > 0) {
                                 const int64_t signedOutputScheduleErrorUs =
                                     ((catchupStartEnc.QuadPart - repeatScheduledQpc) * 1000000) / qpcFreq.QuadPart;
@@ -8372,15 +8603,24 @@ void EncoderThreadFunc(const AppConfig& config) {
                             }
 
                             const int64_t catchupTimelineElapsedUs = computeLiveTimelineElapsedUs(repeatScheduledQpc);
-                            SyncDuplicationCursorSuppression();
-                            if (!MediaEngine_ProcessFrameD3D11(g_LastFrame.texture, g_LastFrame.timestamp,
-                                                               g_LastFrame.width, g_LastFrame.height, g_LastFrame.isHDR,
-                                                               g_LastFrame.captureLeft, g_LastFrame.captureTop,
-                                                               catchupTimelineElapsedUs)) {
+                            SyncDuplicationCursorSuppression(catchupFrame.wgcCursorEmbedded);
+                            const bool freshCatchupEncodeSucceeded = MediaEngine_ProcessFrameD3D11(
+                                catchupFrame.texture, catchupFrame.timestamp, catchupFrame.width, catchupFrame.height,
+                                catchupFrame.isHDR, catchupFrame.captureLeft, catchupFrame.captureTop,
+                                catchupTimelineElapsedUs);
+                            const bool recoveredCatchupEncodeFailure =
+                                !freshCatchupEncodeSucceeded &&
+                                recoverScheduledFreshEncodeFailure(true, false, false, repeatScheduledQpc,
+                                                                   &catchupFrame, "WGC fresh-catchup");
+                            if (!freshCatchupEncodeSucceeded && !recoveredCatchupEncodeFailure) {
+                                ReleaseQueuedFrameTexture(catchupFrame);
                                 cadenceCounters.liveTickMissCount++;
                                 break;
                             }
-                            releaseWgcLeaseAfterMediaEngineCopy(g_LastFrame, "fresh-catchup");
+                            releaseWgcLeaseAfterMediaEngineCopy(
+                                catchupFrame,
+                                recoveredCatchupEncodeFailure ? "fresh-catchup encode-failure repeat"
+                                                              : "fresh-catchup");
                             QueryPerformanceCounter(&catchupEndEnc);
 
                             const double currentEncodeMs =
@@ -8405,6 +8645,39 @@ void EncoderThreadFunc(const AppConfig& config) {
                                 g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
                                 g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                             }
+
+                            if (recoveredCatchupEncodeFailure) {
+                                ReleaseQueuedFrameTexture(catchupFrame);
+                                recordDuplicate(nullptr, nullptr, false, false, false, true);
+                                ++wgcRepeatCatchupCount;
+                                cadenceCounters.liveTickEmitCount++;
+                                cadenceCounters.liveTickDuplicateCount++;
+                                cadenceCounters.holdTicksRunning++;
+                                ++liveTicksOutput;
+                                ++encoderGridTickCount;
+                                ++cfrCatchupTicksExecuted;
+                                nextSampleTime.QuadPart += targetIntervalTicks;
+                                continue;
+                            }
+
+                            if (g_HasLastFrame && !g_LastFrame.isInjectMode) {
+                                ReleaseQueuedFrameTexture(g_LastFrame);
+                            }
+                            g_LastFrame = std::move(catchupFrame);
+                            g_HasLastFrame = true;
+                            cadenceCounters.frameAgeAccumUs += frameAgeUs;
+                            cadenceCounters.frameAgeSamples++;
+                            cadenceCounters.frameAgeMaxUs =
+                                std::max(cadenceCounters.frameAgeMaxUs, SaturatingToUint32(frameAgeUs));
+
+                            if (g_LastFrame.timestamp > 0) {
+                                lastEmittedWgcSourceQpc = g_LastFrame.timestamp;
+                            }
+                            if (GetFrameSelectionTimestamp(g_LastFrame) > 0) {
+                                lastEmittedWgcSelectionQpc = GetFrameSelectionTimestamp(g_LastFrame);
+                            }
+                            lastSuccessfulWgcCursorEmbedded = g_LastFrame.wgcCursorEmbedded;
+                            hasSuccessfulWgcCursorMetadata = true;
 
                             if (catchupSelectionTargetQpc > 0 && g_LastFrame.timestamp > 0) {
                                 if (encoderTooSlowForTargetCurrent) {
@@ -8543,7 +8816,9 @@ void EncoderThreadFunc(const AppConfig& config) {
             bool repeatDuplicateFromDeferred = false;
             const bool repeatDuplicateFromTimerRebase = encoderLateTickCount >= 2;
             const InjectFrameLineage duplicateLineage =
-                g_HasLastFrame ? MakeInjectFrameLineage(g_LastFrame) : InjectFrameLineage{};
+                !useScreenGrab && lastSuccessfullyEncodedInjectLineage.IsValid()
+                    ? lastSuccessfullyEncodedInjectLineage
+                    : (g_HasLastFrame ? MakeInjectFrameLineage(g_LastFrame) : InjectFrameLineage{});
             bool encodeSucceeded = repeatLastFrameForScheduledQpc(scheduledSampleQpc);
             bool encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
             QueryPerformanceCounter(&repeatEndEnc);
@@ -8635,9 +8910,6 @@ void EncoderThreadFunc(const AppConfig& config) {
                 frameAgeUs =
                     static_cast<uint64_t>((startEnc.QuadPart - frameToProcess->timestamp) * 1000000 / qpcFreq.QuadPart);
             }
-            cadenceCounters.frameAgeAccumUs += frameAgeUs;
-            cadenceCounters.frameAgeSamples++;
-            cadenceCounters.frameAgeMaxUs = std::max(cadenceCounters.frameAgeMaxUs, SaturatingToUint32(frameAgeUs));
             if (scheduledLiveCfrTick && scheduledSampleQpc > 0) {
                 const int64_t signedOutputScheduleErrorUs =
                     ((startEnc.QuadPart - scheduledSampleQpc) * 1000000) / qpcFreq.QuadPart;
@@ -8671,7 +8943,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 } else {
                     const int64_t liveTimelineElapsedUs =
                         scheduledLiveCfrTick ? computeLiveTimelineElapsedUs(scheduledSampleQpc) : -1;
-                    SyncDuplicationCursorSuppression();
+                    SyncDuplicationCursorSuppression(frameToProcess->wgcCursorEmbedded);
                     encodeSucceeded = MediaEngine_ProcessFrameD3D11(frameToProcess->texture, frameToProcess->timestamp,
                                                                     frameToProcess->width, frameToProcess->height,
                                                                     frameToProcess->isHDR, frameToProcess->captureLeft,
@@ -8680,9 +8952,62 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
             };
 
+            const bool attemptedFreshCandidate = popped && frameToProcess == &frame && !isDuplicate;
             encodeCurrentFrame();
-            if (encodeSucceeded && frameToProcess && !frameToProcess->isInjectMode) {
-                releaseWgcLeaseAfterMediaEngineCopy(*frameToProcess, "main");
+            const bool recoveredFreshEncodeFailure =
+                !encodeSucceeded &&
+                recoverScheduledFreshEncodeFailure(scheduledLiveCfrTick, encodeSucceeded, encodeDeferred,
+                                                   scheduledSampleQpc, frameToProcess, "main fresh frame");
+            if (recoveredFreshEncodeFailure) {
+                encodeSucceeded = true;
+                encodeDeferred = false;
+                isDuplicate = true;
+            }
+
+            if (attemptedFreshCandidate && !encodeDeferred) {
+                if (recoveredFreshEncodeFailure) {
+                    // The scheduled output contains the previous cached frame,
+                    // not this candidate. Consume its ownership without
+                    // changing last-successful source metadata.
+                    if (frame.isInjectMode) {
+                        frame.injectRingLease.Reset();
+                    } else {
+                        releaseWgcLeaseAfterMediaEngineCopy(frame, "main encode-failure repeat");
+                        ReleaseQueuedFrameTexture(frame);
+                    }
+                    frame = QueuedFrame{};
+                    frameToProcess = g_HasLastFrame ? &g_LastFrame : nullptr;
+                    popped = false;
+                } else if (encodeSucceeded) {
+                    if (frame.isInjectMode) {
+                        // The synchronous call has finished using the shared
+                        // slot. Deferred candidates never enter this branch and
+                        // retain their lease while queued for retry.
+                        frame.injectRingLease.Reset();
+                    } else {
+                        releaseWgcLeaseAfterMediaEngineCopy(frame, "main");
+                    }
+                    if (g_HasLastFrame && !g_LastFrame.isInjectMode) {
+                        ReleaseQueuedFrameTexture(g_LastFrame);
+                    }
+                    g_LastFrame = std::move(frame);
+                    g_HasLastFrame = true;
+                    frameToProcess = &g_LastFrame;
+                } else {
+                    // A hard fresh-frame failure consumed the synchronous call
+                    // but emitted nothing. Release the candidate (including its
+                    // inject ring lease) and preserve g_LastFrame unchanged.
+                    if (frame.isInjectMode) {
+                        frame.injectRingLease.Reset();
+                    } else {
+                        ReleaseQueuedFrameTexture(frame);
+                    }
+                    frame = QueuedFrame{};
+                    frameToProcess = nullptr;
+                    popped = false;
+                }
+            } else if (encodeSucceeded && frameToProcess && !frameToProcess->isInjectMode) {
+                releaseWgcLeaseAfterMediaEngineCopy(*frameToProcess, "main duplicate fallback");
             }
 
             QueryPerformanceCounter(&endEnc);
@@ -8818,8 +9143,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
                 lastDeferredLineage = {};
 
-                if (encodeSucceeded && !isDuplicate && frameToProcess && frameToProcess->timestamp > 0) {
-                    lastEmittedInjectSourceQpc = frameToProcess->timestamp;
+                if (encodeSucceeded && !isDuplicate && frameToProcess) {
+                    if (frameToProcess->timestamp > 0) {
+                        lastEmittedInjectSourceQpc = frameToProcess->timestamp;
+                    }
+                    lastSuccessfullyEncodedInjectLineage = MakeInjectFrameLineage(*frameToProcess);
                 }
 
                 if (g_pSharedMem) {
@@ -8829,13 +9157,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                     } else if (isDrainPhase) {
                         g_pSharedMem->runtimeState.drainFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                     }
-                    if (frameToProcess) {
-                        PublishFrameRingReadIndexAtLeast(g_pSharedMem->frameRing, frameToProcess->ringIndex + 1);
-                    }
+                }
+                if (encodeSucceeded && frameToProcess) {
+                    frameToProcess->injectRingLease.Reset();
                 }
             } else {
                 cadenceCounters.consecutiveDeferredFrames = 0;
-                if (g_pSharedMem) {
+                if (encodeSucceeded && g_pSharedMem) {
                     g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
                     if (isLivePhase) {
                         g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
@@ -8845,9 +9173,27 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
             }
 
+            if (encodeSucceeded && !isDuplicate && frameToProcess && !frameToProcess->isInjectMode) {
+                if (frameToProcess->timestamp > 0) {
+                    lastEmittedWgcSourceQpc = frameToProcess->timestamp;
+                }
+                if (GetFrameSelectionTimestamp(*frameToProcess) > 0) {
+                    lastEmittedWgcSelectionQpc = GetFrameSelectionTimestamp(*frameToProcess);
+                }
+                lastSuccessfulWgcCursorEmbedded = frameToProcess->wgcCursorEmbedded;
+                hasSuccessfulWgcCursorMetadata = true;
+            }
+
+            if (encodeSucceeded && !isDuplicate && frameToProcess) {
+                cadenceCounters.frameAgeAccumUs += frameAgeUs;
+                cadenceCounters.frameAgeSamples++;
+                cadenceCounters.frameAgeMaxUs =
+                    std::max(cadenceCounters.frameAgeMaxUs, SaturatingToUint32(frameAgeUs));
+            }
+
             if (encodeSucceeded) {
                 if (selectionMetricTargetQpc > 0 && frameToProcess && !frameToProcess->isInjectMode &&
-                    wgcSelectionDelayAppliedThisTick && scheduledLiveCfrTick &&
+                    !isDuplicate && wgcSelectionDelayAppliedThisTick && scheduledLiveCfrTick &&
                     !wgcDelayRealizationRecordedThisTick) {
                     recordWgcDelayRealization(signedSelectionErrorUs, signedRawSelectionErrorUs);
                 }
@@ -8884,9 +9230,12 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                 if (isDuplicate) {
                     const InjectFrameLineage duplicateLineage =
-                        frameToProcess ? MakeInjectFrameLineage(*frameToProcess) : InjectFrameLineage{};
-                    recordDuplicate(frameToProcess, duplicateLineage.IsValid() ? &duplicateLineage : nullptr,
-                                    duplicateFromDrain, duplicateFromDeferred, duplicateFromTimerRebase);
+                        recoveredFreshEncodeFailure && frameToProcess && frameToProcess->isInjectMode
+                            ? lastSuccessfullyEncodedInjectLineage
+                            : (frameToProcess ? MakeInjectFrameLineage(*frameToProcess) : InjectFrameLineage{});
+                    recordDuplicate(recoveredFreshEncodeFailure ? nullptr : frameToProcess,
+                                    duplicateLineage.IsValid() ? &duplicateLineage : nullptr, duplicateFromDrain,
+                                    duplicateFromDeferred, duplicateFromTimerRebase);
                 } else {
                     cadenceCounters.consecutiveDuplicateFrames = 0;
                     captureSessionSummary.currentContiguousDupTicks = 0;
@@ -8917,7 +9266,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                         // floor case): the extra smoothness/floor delay S is absorbed purely by the later
                         // live-start (scheduleOffset), so audio stays byte-exact and the floor is
                         // sync-neutral by construction (no ghost-image judder).
-                        if (useScreenGrab && isWgcEffectiveContentDelayActive() && frameToProcess &&
+                        if (useScreenGrab && isWgcEffectiveContentDelayActive() && !recoveredFreshEncodeFailure &&
+                            frameToProcess &&
                             !frameToProcess->isInjectMode) {
                             int64_t startupVideoQpc = GetFrameSelectionTimestamp(*frameToProcess);
                             if (startupVideoQpc <= 0) {
@@ -8973,7 +9323,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                     ++liveTicksOutput;
                 }
                 const InjectFrameLineage catchupLineage =
-                    frameToProcess ? MakeInjectFrameLineage(*frameToProcess) : InjectFrameLineage{};
+                    recoveredFreshEncodeFailure && frameToProcess && frameToProcess->isInjectMode
+                        ? lastSuccessfullyEncodedInjectLineage
+                        : (frameToProcess ? MakeInjectFrameLineage(*frameToProcess) : InjectFrameLineage{});
                 emitCatchupRepeats(catchupLineage.IsValid() ? &catchupLineage : nullptr);
             } else if (scheduledLiveCfrTick) {
                 cadenceCounters.liveTickMissCount++;
@@ -9906,7 +10258,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 SaturatingToUint32(liveTicksOutput), SaturatingToUint32(wgcCombinedExcessRepeatTotal),
                 SaturatingToUint32(wgcPolicyAddedRepeatTotal), wgcExcessRepeatClusterMaxTicks,
                 SaturatingToUint32(wgcDelayPostSelectionRejectedSyncRiskTotal));
-            SnapshotWgcRuntimeLogState(g_WgcCap.get());
+            SnapshotPublishedWgcRuntimeLogState();
             const bool wgcLogSnapshotHasPool =
                 g_WgcRuntimeLogSnapshot.hasPoolEvidence.load(std::memory_order_acquire);
             const uint32_t wgcSummarySourceFramePoolBuffers =
@@ -10822,13 +11174,13 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         LogInfo("[Media] Shared memory not available - using WGC mode");
     }
 
-    auto applyWgcOptions = [&]() {
-        if (!g_WgcCap) {
+    auto applyWgcOptions = [&](WGCCapture* capture) {
+        if (!capture) {
             return;
         }
-        g_WgcCap->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
-        g_WgcCap->SetSameDeviceCapture(config.wgcSameDeviceCapture);
-        g_WgcCap->SetPreferCompact10bitPool(config.wgcPreferCompact10bitPool);
+        capture->SetSkipSplitDeviceFlush(config.wgcSkipSplitDeviceFlush);
+        capture->SetSameDeviceCapture(config.wgcSameDeviceCapture);
+        capture->SetPreferCompact10bitPool(config.wgcPreferCompact10bitPool);
     };
 
     if (IsPreferredScreenGrab() || isAutoCaptureConfig()) {
@@ -10846,11 +11198,12 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             d3dDevice->GetImmediateContext(&d3dContext);
 
             if (WGCCapture::IsSupported()) {
-                g_WgcCap = std::make_unique<WGCCapture>();
-                applyWgcOptions();
-                if (g_WgcCap->Init(d3dDevice)) {
+                auto capture = std::make_shared<WGCCapture>();
+                applyWgcOptions(capture.get());
+                if (capture->Init(d3dDevice)) {
                     // Connect encoder bottleneck flag to WGC for throttle
-                    g_WgcCap->SetThrottleFlag(nullptr);
+                    capture->SetThrottleFlag(nullptr);
+                    PublishWgcCapture(std::move(capture), "initial WGC setup");
                     LogInfo("[Media] WGC support initialized%s",
                             IsPreferredScreenGrab() ? "" : " (standby for auto fallback)");
                 } else {
@@ -10860,7 +11213,6 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                         return 1;
                     } else {
                         LogInfo("[Media] WGC init failed - inject mode only");
-                        g_WgcCap.reset();
                     }
                 }
             }
@@ -10892,7 +11244,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     };
     auto releaseIdleWgcResources = [&]() {
         StopWgcCapturePipeline();
-        g_WgcCap.reset();
+        PublishWgcCapture(nullptr, "idle WGC resource release");
         if (d3dContext) {
             d3dContext->ClearState();
             d3dContext->Flush();
@@ -10914,6 +11266,10 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     uint32_t lastSourcePid = 0;
     uint32_t activeConfigSourcePid = 0;
     std::string activeConfigProcessName;
+    ce::capture_handoff::InjectToWgcHandoff autoWgcHandoff;
+    uint32_t autoWgcHandoffBaselineFrames = 0;
+    uint64_t autoWgcHandoffDeadlineTick = 0;
+    constexpr uint64_t kAutoWgcHandoffReadyTimeoutMs = 2000;
 
     auto clearCurrentWgcTarget = [&]() {
         currentCapturedWindow = NULL;
@@ -10965,9 +11321,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         activeConfigProcessName = processName;
 
         ApplyMediaPrioritySettings(config);
-        if (g_WgcCap) {
-            applyWgcOptions();
-            g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
+        if (auto capture = g_WgcCap.Read()) {
+            applyWgcOptions(capture.get());
+            capture->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
         }
         if (mediaEngineReady) {
             MediaEngine_SetLogCallback(IsDebugLoggingEnabled(config.logLevel) ? MediaLogCallback : nullptr);
@@ -11019,25 +11375,28 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         const bool preferDuplication = ce::capture_policy::ShouldPreferDxgiDuplicationForMonitorCapture(
             isExplicitDxgiDupConfig(), isExplicitWgcConfig(), isAutoCaptureConfig());
 
-        if (targetMonitor == NULL && currentCapturedWindow == NULL && !currentTargetPrefersInject && g_WgcCap &&
-            g_WgcCap->IsUsingDesktopDuplication() == preferDuplication) {
-            applyWgcOptions();
-            g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
-            g_WgcCap->SetThrottleFlag(nullptr);
-            SetPreferredScreenGrab(true);
-            return true;
+        {
+            const auto existingCapture = g_WgcCap.Read();
+            if (targetMonitor == NULL && currentCapturedWindow == NULL && !currentTargetPrefersInject &&
+                existingCapture && existingCapture->IsUsingDesktopDuplication() == preferDuplication) {
+                applyWgcOptions(existingCapture.get());
+                existingCapture->SetCaptureCursor(
+                    ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
+                existingCapture->SetThrottleFlag(nullptr);
+                SetPreferredScreenGrab(true);
+                return true;
+            }
         }
 
         if (!ensureWgcDevice()) {
             return false;
         }
 
-        g_WgcCap.reset();
-        g_WgcCap = std::make_unique<WGCCapture>();
-        applyWgcOptions();
+        auto capture = std::make_shared<WGCCapture>();
+        applyWgcOptions(capture.get());
         bool initOk = false;
         if (preferDuplication) {
-            initOk = g_WgcCap->InitForMonitorDuplication(d3dDevice, targetMonitor);
+            initOk = capture->InitForMonitorDuplication(d3dDevice, targetMonitor);
             if (initOk) {
                 LogInfo("[Media] Monitor capture backend selected: DXGI duplication (%s)",
                         isExplicitDxgiDupConfig() ? "explicit capture_method=dxgi_dup" : "auto desktop fallback");
@@ -11048,21 +11407,21 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             }
         }
         if (!initOk && targetMonitor) {
-            initOk = g_WgcCap->InitForMonitor(d3dDevice, targetMonitor);
+            initOk = capture->InitForMonitor(d3dDevice, targetMonitor);
             if (!initOk) {
                 LogWarn("[Media] Failed to init WGC for monitor 0x%p, falling back to primary", targetMonitor);
             }
         }
         if (!initOk) {
-            initOk = g_WgcCap->Init(d3dDevice);
+            initOk = capture->Init(d3dDevice);
         }
         if (!initOk) {
-            g_WgcCap.reset();
             return false;
         }
 
-        g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
-        g_WgcCap->SetThrottleFlag(nullptr);
+        capture->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
+        capture->SetThrottleFlag(nullptr);
+        PublishWgcCapture(std::move(capture), "monitor retarget");
         SetPreferredScreenGrab(true);
         currentCapturedWindow = NULL;
         currentTargetPrefersInject = false;
@@ -11088,19 +11447,18 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return false;
         }
 
-        g_WgcCap.reset();
-        g_WgcCap = std::make_unique<WGCCapture>();
-        applyWgcOptions();
-        if (!g_WgcCap->InitForMonitorDuplication(d3dDevice, targetMonitor)) {
+        auto capture = std::make_shared<WGCCapture>();
+        applyWgcOptions(capture.get());
+        if (!capture->InitForMonitorDuplication(d3dDevice, targetMonitor)) {
             LogWarn("[Media] DXGI duplication unavailable for fullscreen target's monitor "
                     "(%s hwnd=0x%p hmon=0x%p); using WGC window capture instead",
                     reason, targetWindow, targetMonitor);
-            g_WgcCap.reset();
             return false;
         }
 
-        g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
-        g_WgcCap->SetThrottleFlag(nullptr);
+        capture->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
+        capture->SetThrottleFlag(nullptr);
+        PublishWgcCapture(std::move(capture), "fullscreen duplication retarget");
         SetPreferredScreenGrab(true);
         currentCapturedWindow = NULL;
         currentTargetPrefersInject = false;
@@ -11119,12 +11477,16 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return false;
         }
 
-        if (currentCapturedWindow == targetWindow && g_WgcCap && !currentTargetPrefersInject) {
-            applyWgcOptions();
-            g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
-            g_WgcCap->SetThrottleFlag(nullptr);
-            SetPreferredScreenGrab(true);
-            return true;
+        {
+            const auto existingCapture = g_WgcCap.Read();
+            if (currentCapturedWindow == targetWindow && existingCapture && !currentTargetPrefersInject) {
+                applyWgcOptions(existingCapture.get());
+                existingCapture->SetCaptureCursor(
+                    ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
+                existingCapture->SetThrottleFlag(nullptr);
+                SetPreferredScreenGrab(true);
+                return true;
+            }
         }
 
         if (!ensureWgcDevice()) {
@@ -11132,12 +11494,12 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return false;
         }
 
-        g_WgcCap.reset();
-        g_WgcCap = std::make_unique<WGCCapture>();
-        applyWgcOptions();
-        if (g_WgcCap->InitForWindow(d3dDevice, targetWindow)) {
-            g_WgcCap->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
-            g_WgcCap->SetThrottleFlag(nullptr);
+        auto capture = std::make_shared<WGCCapture>();
+        applyWgcOptions(capture.get());
+        if (capture->InitForWindow(d3dDevice, targetWindow)) {
+            capture->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
+            capture->SetThrottleFlag(nullptr);
+            PublishWgcCapture(std::move(capture), "window retarget");
             SetPreferredScreenGrab(true);
             currentCapturedWindow = targetWindow;
             currentTargetPrefersInject = false;
@@ -11148,7 +11510,6 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
 
         LogError("[Media] Failed to init WGC for found window 0x%p.", targetWindow);
-        g_WgcCap.reset();
         currentCapturedWindow = NULL;
         currentTargetPrefersInject = false;
         if (!allowMonitorFallback) {
@@ -11173,9 +11534,33 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         pendingWgcRetarget = {};
 
         const bool restartActiveCapture = g_Recording && IsActiveScreenGrab();
+        const auto previousCapture = g_WgcCap.Load();
+        const HWND previousCapturedWindow = currentCapturedWindow;
+        const bool previousTargetPrefersInject = currentTargetPrefersInject;
+        const bool previousPreferredScreenGrab = IsPreferredScreenGrab();
         if (restartActiveCapture) {
             StopWgcCapturePipeline();
         }
+
+        auto restorePreviousCapture = [&](const char* failureReason) -> bool {
+            if (!previousCapture) {
+                LogError("[Media] WGC retarget rollback unavailable (%s): no previous capture", failureReason);
+                return false;
+            }
+            const auto publishedCapture = g_WgcCap.Load();
+            if (publishedCapture.get() != previousCapture.get()) {
+                PublishWgcCapture(previousCapture, "retarget rollback");
+            }
+            currentCapturedWindow = previousCapturedWindow;
+            currentTargetPrefersInject = previousTargetPrefersInject;
+            SetPreferredScreenGrab(previousPreferredScreenGrab);
+            if (restartActiveCapture && !StartWgcRecordingCapture(config)) {
+                LogError("[Media] WGC retarget rollback failed to restart previous source (%s)", failureReason);
+                return false;
+            }
+            LogWarn("[Media] WGC retarget rolled back to previous source (%s)", failureReason);
+            return true;
+        };
 
         if (!request.preferMonitor && request.window && !IsWindow(request.window)) {
             request.window = NULL;
@@ -11190,13 +11575,15 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             primed = primeWgcMonitorTarget(request.monitor);
         }
         if (!primed) {
-            LogWarn("[Media] Failed to apply queued WGC retarget");
+            LogWarn("[Media] Failed to initialize queued WGC retarget; restoring previous source");
+            restorePreviousCapture("replacement initialization failed");
             return false;
         }
 
         if (restartActiveCapture) {
             if (!StartWgcRecordingCapture(config)) {
-                LogError("[Media] Failed to restart WGC capture after retarget");
+                LogError("[Media] Failed to start replacement WGC capture; restoring previous source");
+                restorePreviousCapture("replacement start failed");
                 return false;
             }
             LogInfo("[Media] WGC capture restarted after retarget");
@@ -11209,6 +11596,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         const uint32_t sourcePid = g_pSharedMem ? g_pSharedMem->GetSourcePid() : 0;
         const bool injectWhitelisted = isInjectCaptureTarget(processName);
 
+        autoWgcHandoff.Reset();
+        autoWgcHandoffBaselineFrames = 0;
+        autoWgcHandoffDeadlineTick = 0;
         g_AutoWgcFallbackArmed.store(false, std::memory_order_release);
 
         if (isExplicitInjectConfig()) {
@@ -11217,10 +11607,48 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             return;
         }
 
-        if (injectWhitelisted) {
+        if (isAutoCaptureConfig() && injectWhitelisted) {
+            // Auto mode prefers inject for known-compatible games, but a hook
+            // connection is not proof that frames will arrive. Keep a fully
+            // initialized screen-grab target for the SAME game/window/monitor
+            // as a startup fallback. The generic primary-monitor standby is not
+            // sufficient on multi-monitor systems.
+            bool fallbackReady = false;
+            HWND fallbackWindow = sourcePid != 0 ? GetMainWindowForProcess(sourcePid) : NULL;
+            if (!fallbackWindow) {
+                const ForegroundWgcWindowCandidate candidate = GetForegroundWgcWindowCandidate();
+                // A foreground window is a valid fallback only when it belongs
+                // to the requested source process (or no source PID is known).
+                // Otherwise a transiently missing game window could silently
+                // redirect an auto recording to an unrelated foreground app.
+                if (candidate.usable && (sourcePid == 0 || candidate.pid == sourcePid)) {
+                    fallbackWindow = candidate.hwnd;
+                }
+            }
+            HMONITOR fallbackMonitor = fallbackWindow
+                                           ? MonitorFromWindow(fallbackWindow, MONITOR_DEFAULTTONEAREST)
+                                           : NULL;
+            if (fallbackWindow && IsWindowFullscreenLike(fallbackWindow) && config.autoFullscreenPrefersDxgiDup) {
+                fallbackReady = primeDxgiDupForWindowMonitor(fallbackWindow, "inject startup fallback");
+            }
+            if (!fallbackReady && fallbackWindow) {
+                fallbackReady = primeWgcWindowTarget(fallbackWindow, false, false);
+            }
+            if (!fallbackReady && fallbackMonitor && WGCCapture::IsSupported()) {
+                fallbackReady = primeWgcMonitorTarget(fallbackMonitor);
+            }
+            if (!fallbackReady && !fallbackWindow) {
+                LogWarn(
+                    "[Media] Auto inject fallback could not resolve a window/monitor for source PID %lu; "
+                    "leaving fallback unarmed instead of capturing an unrelated primary monitor",
+                    static_cast<unsigned long>(sourcePid));
+            }
+            g_AutoWgcFallbackArmed.store(fallbackReady, std::memory_order_release);
             SetPreferredScreenGrab(false);
-            clearCurrentWgcTarget();
-            LogInfo("[Media] Injection whitelist matched %s; auto mode will use inject capture", processName.c_str());
+            LogInfo(
+                "[Media] Injection whitelist matched %s; auto mode will use inject capture "
+                "(WGC fallback=%s hwnd=0x%p hmon=0x%p)",
+                processName.c_str(), fallbackReady ? "armed" : "unavailable", fallbackWindow, fallbackMonitor);
             return;
         }
 
@@ -11539,8 +11967,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 }
 
                 if (g_Recording && !IsActiveScreenGrab() && injectWhitelisted &&
+                    g_InjectDeliveredFirstFrame.load(std::memory_order_acquire) &&
                     g_AutoWgcFallbackArmed.exchange(false, std::memory_order_acq_rel)) {
-                    LogInfo("[Media] Injection whitelist matched %s; disarming WGC startup fallback for this recording",
+                    LogInfo("[Media] Inject delivery confirmed for %s; disarming WGC startup fallback",
                             procName.c_str());
                 }
 
@@ -11689,7 +12118,79 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 LogInfo("[Media] Inject delivery confirmed before monitor observed ring activity");
             }
 
-            if (!receivedFirstFrame && isAutoCaptureConfig() &&
+            if (autoWgcHandoff.GetPhase() == ce::capture_handoff::Phase::kStarting) {
+                if (receivedFirstFrame) {
+                    const auto transition = autoWgcHandoff.OnInjectFrame();
+                    if (transition.action == ce::capture_handoff::Action::kStopWgcKeepInject) {
+                        StopWgcCapturePipeline();
+                        g_RejectInjectFrames.store(false, std::memory_order_release);
+                        LogInfo("[Media] Inject delivered while WGC fallback was warming; WGC standby stopped and "
+                                "inject remains authoritative");
+                    }
+                } else {
+                    bool wgcReady = false;
+                    bool wgcFailed = false;
+                    uint32_t observedFrames = 0;
+                    if (auto capture = g_WgcCap.Read()) {
+                        observedFrames = capture->GetCallbackFrameCount();
+                        wgcFailed = !capture->IsCapturing() || capture->NeedsReset();
+                        wgcReady = !wgcFailed &&
+                                   (config.video.useVFR ? HasStandbyWgcHandoffFrame()
+                                                        : observedFrames > autoWgcHandoffBaselineFrames);
+                    } else {
+                        wgcFailed = true;
+                    }
+
+                    if (wgcReady) {
+                        const auto transition = autoWgcHandoff.OnWgcFirstFrame();
+                        if (transition.action == ce::capture_handoff::Action::kCommitWgcStopInject) {
+                            // Invalidate every cached/queued frame from the old
+                            // inject/WGC lineage before the encoder observes the
+                            // new active path. The CFR/audio clock itself is not
+                            // restarted.
+                            // Keep the standby capture's publication epoch. Its
+                            // proven first frame already carries that identity;
+                            // advancing here would discard the proof, clear the
+                            // inject repeat cache, and create a handoff hole
+                            // before any replacement-epoch frame exists.
+                            g_RejectInjectFrames.store(true, std::memory_order_release);
+                            g_RetainStandbyWgcFrameForHandoff.store(false, std::memory_order_release);
+                            QueuedFrame retainedVfrFrame;
+                            const bool hasRetainedVfrFrame =
+                                config.video.useVFR && TakeStandbyWgcHandoffFrame(retainedVfrFrame);
+                            SetActiveScreenGrab(true);
+                            if (hasRetainedVfrFrame) {
+                                SubmitWgcQueuedFrame(std::move(retainedVfrFrame));
+                            }
+                            StopInjectCapturePipeline();
+                            LogInfo(
+                                "[Media] Active recording path switched to WGC after first-frame proof "
+                                "(inputFrames=%u); inject stopped only after the replacement was delivering",
+                                observedFrames);
+                        }
+                    } else if (wgcFailed) {
+                        const auto transition = autoWgcHandoff.OnWgcFailure();
+                        if (transition.action == ce::capture_handoff::Action::kStopWgcKeepInject) {
+                            StopWgcCapturePipeline();
+                            g_RejectInjectFrames.store(false, std::memory_order_release);
+                            LogWarn("[Media] WGC fallback stopped before first-frame proof; inject capture remains "
+                                    "active");
+                        }
+                    } else if (GetTickCount64() >= autoWgcHandoffDeadlineTick) {
+                        const auto transition = autoWgcHandoff.OnWgcReadinessTimeout();
+                        if (transition.action == ce::capture_handoff::Action::kStopWgcKeepInject) {
+                            StopWgcCapturePipeline();
+                            g_RejectInjectFrames.store(false, std::memory_order_release);
+                            LogWarn("[Media] WGC fallback produced no frame within %llums; inject capture remains "
+                                    "active",
+                                    static_cast<unsigned long long>(kAutoWgcHandoffReadyTimeoutMs));
+                        }
+                    }
+                }
+            }
+
+            if (!receivedFirstFrame && autoWgcHandoff.GetPhase() == ce::capture_handoff::Phase::kIdle &&
+                isAutoCaptureConfig() &&
                 g_AutoWgcFallbackArmed.load(std::memory_order_acquire) && g_WgcCap) {
                 DWORD elapsed = GetTickCount() - injectModeStartTime;
                 const uint32_t activeSourcePid = g_pSharedMem ? g_pSharedMem->GetSourcePid() : 0;
@@ -11697,21 +12198,25 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                         receivedFirstFrame, isAutoCaptureConfig(),
                         g_AutoWgcFallbackArmed.load(std::memory_order_acquire), g_WgcCap != nullptr, elapsed,
                         activeSourcePid)) {
-                    LogInfo(
-                        "[Media] No frames from inject mode after %lums - falling "
-                        "back to WGC",
-                        elapsed);
+                    LogInfo("[Media] No frames from inject mode after %lums - starting WGC standby handoff", elapsed);
 
-                    g_RejectInjectFrames.store(true, std::memory_order_release);
+                    const auto transition = autoWgcHandoff.Begin();
                     g_AutoWgcFallbackArmed.store(false, std::memory_order_release);
-                    StopInjectCapturePipeline();
-                    if (StartWgcRecordingCapture(config)) {
-                        SetActiveScreenGrab(true);
-                        LogInfo(
-                            "[Media] Active recording path switched to WGC bounded pull-drain CFR "
-                            "(auto fallback from inject)");
+                    ClearStandbyWgcHandoffFrame();
+                    g_RetainStandbyWgcFrameForHandoff.store(config.video.useVFR, std::memory_order_release);
+                    if (transition.action == ce::capture_handoff::Action::kStartWgcKeepInject &&
+                        StartWgcRecordingCapture(config)) {
+                        autoWgcHandoffBaselineFrames = 0;
+                        autoWgcHandoffDeadlineTick = GetTickCount64() + kAutoWgcHandoffReadyTimeoutMs;
+                        LogInfo("[Media] WGC fallback session started; inject remains active pending first-frame "
+                                "proof (timeout=%llums)",
+                                static_cast<unsigned long long>(kAutoWgcHandoffReadyTimeoutMs));
                     } else {
-                        LogWarn("[Media] WGC fallback failed; inject monitoring remains unavailable");
+                        g_RetainStandbyWgcFrameForHandoff.store(false, std::memory_order_release);
+                        ClearStandbyWgcHandoffFrame();
+                        autoWgcHandoff.OnWgcFailure();
+                        g_RejectInjectFrames.store(false, std::memory_order_release);
+                        LogWarn("[Media] WGC fallback failed to start; inject capture remains active");
                     }
 
                     injectModeStartTime = 0;
@@ -11751,8 +12256,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
     StopRecording();
 
-    if (g_WgcCap)
-        g_WgcCap->StopCapture();
+    if (auto capture = g_WgcCap.LockExclusive()) {
+        capture->StopCapture();
+    }
     if (d3dContext)
         d3dContext->Release();
     d3dDevice = nullptr;
@@ -11764,6 +12270,14 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         mediaEngineReady = false;
     }
     MediaEngine_Unload();
+
+    // Release every remaining metadata/resource lease while the cross-process
+    // mapping is still valid. Normal recording stop already does this, but the
+    // process-exit path also covers partial startup failures and shutdowns that
+    // occur before a recording becomes active.
+    g_FrameQueue.Clear();
+    ClearStandbyWgcHandoffFrame();
+    ResetLastQueuedFrameCache();
 
     if (g_pShmem)
         UnmapViewOfFile(g_pShmem);

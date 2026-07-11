@@ -3,8 +3,11 @@
 #include <d3d11_4.h>
 #include <dxgi.h>
 #include <windows.h>
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
+#include <mutex>
 #include "../common/capture_base.h"
 #include "../common/capture_pacing.h"
 #include "../common/fps_limiter.h"
@@ -57,10 +60,18 @@ typedef uint64_t GLuint64;
 #define GL_FRAMEBUFFER_COMPLETE 0x8CD5
 #define GL_STREAM_READ 0x88E1
 #define GL_PIXEL_PACK_BUFFER 0x88EB
+#define GL_PIXEL_PACK_BUFFER_BINDING 0x88ED
 #define GL_READ_ONLY 0x88B8
+#define GL_TEXTURE_BINDING_2D 0x8069
+#define GL_DRAW_FRAMEBUFFER_BINDING 0x8CA6
+#define GL_READ_FRAMEBUFFER_BINDING 0x8CAA
 #define GL_SYNC_GPU_COMMANDS_COMPLETE 0x9117
 #define GL_SYNC_FLUSH_COMMANDS_BIT 0x00000001
 #define GL_TIMEOUT_IGNORED 0xFFFFFFFFFFFFFFFFull
+#define GL_ALREADY_SIGNALED 0x911A
+#define GL_TIMEOUT_EXPIRED 0x911B
+#define GL_CONDITION_SATISFIED 0x911C
+#define GL_WAIT_FAILED 0x911D
 
 // Function pointer typedefs for WGL hooks
 typedef BOOL(WINAPI* SwapBuffers_t)(HDC);
@@ -103,6 +114,7 @@ typedef void(WINAPI* glReadPixels_t)(GLint, GLint, GLsizei, GLsizei, GLenum, GLe
 typedef void*(WINAPI* glMapBuffer_t)(GLenum, GLenum);
 typedef GLboolean(WINAPI* glUnmapBuffer_t)(GLenum);
 typedef GLenum(WINAPI* glGetError_t)(void);
+typedef void(WINAPI* glGetIntegerv_t)(GLenum, GLint*);
 typedef void(WINAPI* glFlush_t)(void);
 typedef void(WINAPI* glFinish_t)(void);
 typedef GLsync(WINAPI* glFenceSync_t)(GLenum, GLbitfield);
@@ -155,6 +167,7 @@ static glReadPixels_t pglReadPixels = nullptr;
 static glMapBuffer_t pglMapBuffer = nullptr;
 static glUnmapBuffer_t pglUnmapBuffer = nullptr;
 static glGetError_t pglGetError = nullptr;
+static glGetIntegerv_t pglGetIntegerv = nullptr;
 static glFlush_t pglFlush = nullptr;
 static glFinish_t pglFinish = nullptr;
 static glFenceSync_t pglFenceSync = nullptr;
@@ -254,6 +267,8 @@ static void ApplyPrerenderLimitGL(float limit) {
 // OpenGL Capture class with D3D11 interop
 class OpenGLCapture : public HookCaptureBase {
 public:
+    std::recursive_mutex captureMutex;
+
     // D3D11 resources
     ID3D11Device* d3d11Device = nullptr;
     ID3D11DeviceContext* d3d11Context = nullptr;
@@ -270,9 +285,11 @@ public:
 
     // Fallback: PBO for async readback
     GLuint pbos[2]{};
+    GLsync pboSyncs[2]{};
     int currentPBO = 0;
     bool usePBO = false;
     bool pboPopulated = false;  // true after first PBO write cycle completes
+    bool pboSyncSupported = false;
     int64_t pboTimestampQpc[2]{};
 
     // D3D11.3 Fence support
@@ -284,23 +301,102 @@ public:
     bool usingNVInterop = false;
 
     void Cleanup() override {
-        CleanupGL();
+        TryCleanup(false);
     }
 
-    void CleanupGL() {
-        // Cleanup NV interop
+    bool TryCleanup(bool force) {
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
+        bool hasPublishedGeneration = sharedFenceHandle.load(std::memory_order_acquire) != NULL;
+        for (const auto& handle : sharedTextureHandles)
+            hasPublishedGeneration = hasPublishedGeneration || handle.load(std::memory_order_acquire) != NULL;
+        SharedMemoryLayout* sharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+        if (!force && hasPublishedGeneration && HasOutstandingCaptureFrameLeases(sharedMem)) {
+            static std::atomic<int> s_generationLeaseLogCount{0};
+            if (s_generationLeaseLogCount.fetch_add(1, std::memory_order_relaxed) < 12) {
+                HookLog("OpenGL: Deferring capture resource cleanup while old frame leases are outstanding");
+            }
+            return false;
+        }
+        CleanupGL();
+        return true;
+    }
+
+    void CleanupTransportResources() {
+        // NV interop objects must be unregistered before either their GL names
+        // or backing D3D11 textures are destroyed.
         if (nvDevice) {
-            for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
+            for (int i = 0; i < CAPTURE_TEXTURE_COUNT; ++i) {
                 if (nvTextureHandles[i] && wglDXUnregisterObjectNV) {
-                    wglDXUnregisterObjectNV(nvDevice, nvTextureHandles[i]);
+                    if (!wglDXUnregisterObjectNV(nvDevice, nvTextureHandles[i])) {
+                        HookLog("OpenGL: wglDXUnregisterObjectNV failed for texture %d during cleanup", i);
+                    }
                     nvTextureHandles[i] = nullptr;
                 }
             }
-            if (wglDXCloseDeviceNV) {
-                wglDXCloseDeviceNV(nvDevice);
+            if (wglDXCloseDeviceNV && !wglDXCloseDeviceNV(nvDevice)) {
+                HookLog("OpenGL: wglDXCloseDeviceNV failed during cleanup");
             }
             nvDevice = nullptr;
         }
+
+        for (int i = 0; i < CAPTURE_TEXTURE_COUNT; ++i) {
+            if (glTextures[i] && pglDeleteTextures) {
+                pglDeleteTextures(1, &glTextures[i]);
+                glTextures[i] = 0;
+            }
+        }
+        if (pglDeleteSync) {
+            for (auto& sync : pboSyncs) {
+                if (sync) {
+                    pglDeleteSync(sync);
+                    sync = nullptr;
+                }
+            }
+        } else {
+            pboSyncs[0] = pboSyncs[1] = nullptr;
+        }
+        if ((pbos[0] || pbos[1]) && pglDeleteBuffers) {
+            pglDeleteBuffers(2, pbos);
+            pbos[0] = pbos[1] = 0;
+        }
+
+        // IDXGIResource::GetSharedHandle returns legacy KMT handles. They are
+        // owned by the resource and must not be passed to CloseHandle.
+        for (auto& handle : sharedTextureHandles) {
+            handle.store(NULL, std::memory_order_release);
+        }
+        HANDLE fenceHandle = sharedFenceHandle.exchange(NULL, std::memory_order_acq_rel);
+        if (fenceHandle) {
+            CloseHandle(fenceHandle);  // ID3D11Fence::CreateSharedHandle is an owned NT handle.
+        }
+        for (auto*& texture : sharedTextures) {
+            if (texture) {
+                texture->Release();
+                texture = nullptr;
+            }
+        }
+        if (context4) {
+            context4->Release();
+            context4 = nullptr;
+        }
+        if (fence) {
+            fence->Release();
+            fence = nullptr;
+        }
+
+        useFences = false;
+        usingNVInterop = false;
+        usePBO = false;
+        pboPopulated = false;
+        pboSyncSupported = false;
+        currentPBO = 0;
+        pboTimestampQpc[0] = 0;
+        pboTimestampQpc[1] = 0;
+        fenceValue = 0;
+    }
+
+    void CleanupGL() {
+        CleanupTransportResources();
 
         // Cleanup OpenGL resources
         if (fbo && pglDeleteFramebuffers) {
@@ -311,42 +407,6 @@ public:
             pglDeleteTextures(1, &captureTexture);
             captureTexture = 0;
         }
-        for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-            if (glTextures[i] && pglDeleteTextures) {
-                pglDeleteTextures(1, &glTextures[i]);
-                glTextures[i] = 0;
-            }
-        }
-        if (pbos[0] && pglDeleteBuffers) {
-            pglDeleteBuffers(2, pbos);
-            pbos[0] = pbos[1] = 0;
-        }
-
-        // Release D3D11 resources
-        for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-            if (sharedTextureHandles[i]) {
-                CloseHandle(sharedTextureHandles[i]);
-                sharedTextureHandles[i] = NULL;
-            }
-            if (sharedTextures[i]) {
-                sharedTextures[i]->Release();
-                sharedTextures[i] = nullptr;
-            }
-        }
-
-        if (fence) {
-            fence->Release();
-            fence = nullptr;
-        }
-        if (context4) {
-            context4->Release();
-            context4 = nullptr;
-        }
-        if (sharedFenceHandle) {
-            CloseHandle(sharedFenceHandle);
-            sharedFenceHandle = NULL;
-        }
-
         if (d3d11Context) {
             d3d11Context->Release();
             d3d11Context = nullptr;
@@ -361,13 +421,9 @@ public:
         }
 
         initialized = false;
-        useFences = false;
-        usingNVInterop = false;
-        usePBO = false;
-        pboPopulated = false;
-        pboTimestampQpc[0] = 0;
-        pboTimestampQpc[1] = 0;
-        fenceValue = 0;
+        width = 0;
+        height = 0;
+        format = 0;
         g_CaptureHDC = NULL;
         g_CaptureContext = NULL;
     }
@@ -441,7 +497,7 @@ public:
     }
 
     bool InitNVInterop() {
-        if (!g_NVInteropAvailable || !wglDXOpenDeviceNV) {
+        if (!g_NVInteropAvailable || !wglDXOpenDeviceNV || !pglGenTextures || !pglCopyTexSubImage2D) {
             return false;
         }
 
@@ -471,18 +527,26 @@ public:
 
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
             HRESULT hr = d3d11Device->CreateTexture2D(&texDesc, NULL, &sharedTextures[i]);
-            if (FAILED(hr)) {
-                HookLog("OpenGL: Failed to create D3D11 texture %d", i);
+            if (FAILED(hr) || !sharedTextures[i]) {
+                HookLog("OpenGL: Failed to create D3D11 texture %d (hr=0x%08X)", i, hr);
                 return false;
             }
 
             // Get shared handle
             IDXGIResource* resource = nullptr;
-            sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&resource));
+            hr = sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&resource));
+            if (FAILED(hr) || !resource) {
+                HookLog("OpenGL: IDXGIResource query failed for NV texture %d (hr=0x%08X)", i, hr);
+                return false;
+            }
             HANDLE hShared = NULL;
-            resource->GetSharedHandle(&hShared);
-            sharedTextureHandles[i].store(hShared, std::memory_order_release);
+            hr = resource->GetSharedHandle(&hShared);
             resource->Release();
+            if (FAILED(hr) || !hShared) {
+                HookLog("OpenGL: GetSharedHandle failed for NV texture %d (hr=0x%08X handle=%p)", i, hr, hShared);
+                return false;
+            }
+            sharedTextureHandles[i].store(hShared, std::memory_order_release);
 
             // Create GL texture and register with NV interop
             pglGenTextures(1, &glTextures[i]);
@@ -503,11 +567,62 @@ public:
         return true;
     }
 
+    bool InitPBOFence() {
+        ID3D11Device5* device5 = nullptr;
+        HRESULT hr = d3d11Device->QueryInterface(IID_PPV_ARGS(&device5));
+        if (FAILED(hr) || !device5)
+            return false;
+
+        hr = device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence));
+        device5->Release();
+        if (FAILED(hr) || !fence) {
+            fence = nullptr;
+            return false;
+        }
+
+        HANDLE fenceHandle = nullptr;
+        hr = fence->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &fenceHandle);
+        if (FAILED(hr) || !fenceHandle) {
+            fence->Release();
+            fence = nullptr;
+            return false;
+        }
+
+        hr = d3d11Context->QueryInterface(IID_PPV_ARGS(&context4));
+        if (FAILED(hr) || !context4) {
+            CloseHandle(fenceHandle);
+            fence->Release();
+            fence = nullptr;
+            context4 = nullptr;
+            return false;
+        }
+
+        sharedFenceHandle.store(fenceHandle, std::memory_order_release);
+        useFences = true;
+        HookLog("OpenGL: PBO upload fence initialized (cross-process GPU completion sync)");
+        return true;
+    }
+
     bool InitPBOFallback() {
+        if (!pglGenBuffers || !pglBindBuffer || !pglBufferData || !pglReadPixels || !pglMapBuffer || !pglUnmapBuffer) {
+            HookLog("OpenGL: PBO fallback unavailable because required buffer/readback functions are missing");
+            return false;
+        }
+
         // Create PBOs for async readback
         pglGenBuffers(2, pbos);
+        if (!pbos[0] || !pbos[1]) {
+            HookLog("OpenGL: Failed to allocate PBO names (%u, %u)", pbos[0], pbos[1]);
+            return false;
+        }
 
-        size_t bufferSize = width * height * 4;
+        const uint64_t bufferSize64 = static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * 4u;
+        if (bufferSize64 == 0 || bufferSize64 > static_cast<uint64_t>((std::numeric_limits<ptrdiff_t>::max)())) {
+            HookLog("OpenGL: PBO allocation size is invalid (%ux%u, bytes=%llu)", width, height,
+                    static_cast<unsigned long long>(bufferSize64));
+            return false;
+        }
+        const ptrdiff_t bufferSize = static_cast<ptrdiff_t>(bufferSize64);
         for (int i = 0; i < 2; i++) {
             pglBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[i]);
             pglBufferData(GL_PIXEL_PACK_BUFFER, bufferSize, NULL, GL_STREAM_READ);
@@ -523,36 +638,53 @@ public:
         texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
         texDesc.SampleDesc.Count = 1;
         texDesc.Usage = D3D11_USAGE_DEFAULT;
-        texDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+        texDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
         texDesc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
 
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
             HRESULT hr = d3d11Device->CreateTexture2D(&texDesc, NULL, &sharedTextures[i]);
-            if (FAILED(hr)) {
-                HookLog("OpenGL: Failed to create D3D11 texture %d for PBO fallback", i);
+            if (FAILED(hr) || !sharedTextures[i]) {
+                HookLog("OpenGL: Failed to create D3D11 texture %d for PBO fallback (hr=0x%08X)", i, hr);
                 return false;
             }
 
             IDXGIResource* resource = nullptr;
-            sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&resource));
+            hr = sharedTextures[i]->QueryInterface(IID_PPV_ARGS(&resource));
+            if (FAILED(hr) || !resource) {
+                HookLog("OpenGL: IDXGIResource query failed for PBO texture %d (hr=0x%08X)", i, hr);
+                return false;
+            }
             HANDLE hShared = NULL;
-            resource->GetSharedHandle(&hShared);
-            sharedTextureHandles[i].store(hShared, std::memory_order_release);
+            hr = resource->GetSharedHandle(&hShared);
             resource->Release();
+            if (FAILED(hr) || !hShared) {
+                HookLog("OpenGL: GetSharedHandle failed for PBO texture %d (hr=0x%08X handle=%p)", i, hr, hShared);
+                return false;
+            }
+            sharedTextureHandles[i].store(hShared, std::memory_order_release);
         }
 
+        if (!InitPBOFence()) {
+            HookLog("OpenGL: D3D11.3 PBO fence unavailable; using legacy shared-resource Flush synchronization");
+        }
+        pboSyncSupported = pglFenceSync && pglClientWaitSync && pglDeleteSync;
+        if (!pboSyncSupported) {
+            HookLog("OpenGL: GL sync objects unavailable; PBO readback may use the legacy mapping path");
+        }
         usePBO = true;
         HookLog("OpenGL: PBO fallback initialized");
         return true;
     }
 
     void Init(HDC hDC) {
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
         if (initialized)
             return;
         HookLog("OpenGLCapture: Init(HDC=0x%p)", hDC);
 
         // Safety: Ensure required functions are loaded
-        if (!pglGenFramebuffers || !pglBindFramebuffer || !pglFramebufferTexture2D || !pglCheckFramebufferStatus) {
+        if (!pglGenFramebuffers || !pglBindFramebuffer || !pglFramebufferTexture2D || !pglCheckFramebufferStatus ||
+            !pglGenTextures || !pglBindTexture || !pglTexImage2D || !pglBlitFramebuffer || !pglGetIntegerv) {
             HookLog("OpenGLCapture: FBO extensions not available. FBO capture disabled.");
             return;
         }
@@ -562,8 +694,10 @@ public:
 
         // Get window size
         HWND hwnd = WindowFromDC(hDC);
-        RECT rect;
-        if (GetClientRect(hwnd, &rect)) {
+        RECT rect = {};
+        width = 0;
+        height = 0;
+        if (hwnd && GetClientRect(hwnd, &rect)) {
             width = rect.right - rect.left;
             height = rect.bottom - rect.top;
         }
@@ -574,8 +708,27 @@ public:
             return;
         }
 
+        // Initialization temporarily binds CE-owned GL objects. Preserve the
+        // application's state even on a partial initialization failure.
+        GLint previousReadFramebuffer = 0;
+        GLint previousDrawFramebuffer = 0;
+        GLint previousTexture2D = 0;
+        GLint previousPixelPackBuffer = 0;
+        pglGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFramebuffer);
+        pglGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &previousDrawFramebuffer);
+        pglGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture2D);
+        pglGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previousPixelPackBuffer);
+        auto restoreApplicationBindings = [&]() {
+            pglBindBuffer(GL_PIXEL_PACK_BUFFER, static_cast<GLuint>(previousPixelPackBuffer));
+            pglBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture2D));
+            pglBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousReadFramebuffer));
+            pglBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(previousDrawFramebuffer));
+        };
+
         // Create D3D11 device for interop
         if (!CreateD3D11Device()) {
+            restoreApplicationBindings();
+            CleanupGL();
             return;
         }
 
@@ -591,11 +744,10 @@ public:
 
         if (pglCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
             HookLog("OpenGL: FBO not complete");
-            pglBindFramebuffer(GL_FRAMEBUFFER, 0);
             CleanupGL();
+            restoreApplicationBindings();
             return;
         }
-        pglBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         // Try NV interop first, fallback to PBO
         bool captureReady = false;
@@ -604,13 +756,25 @@ public:
         }
 
         if (!captureReady) {
+            // NV interop can fail after creating only part of its texture ring.
+            // Tear that generation down before PBO creation so COM output slots,
+            // handles, and GL names are never overwritten/leaked.
+            CleanupTransportResources();
             captureReady = InitPBOFallback();
         }
 
         if (!captureReady) {
             HookLog("OpenGL: Failed to initialize capture");
             CleanupGL();
+            restoreApplicationBindings();
             return;
+        }
+
+        // NV interop transfers ownership back to D3D on unlock. Queueing a
+        // D3D11 fence immediately afterwards gives the media process an exact
+        // cross-process completion point, just like the PBO upload path.
+        if (usingNVInterop && !InitPBOFence()) {
+            HookLog("OpenGL: NV interop fence unavailable; using interop's implicit synchronization");
         }
 
         // Publish to shared memory
@@ -639,14 +803,53 @@ public:
             }
         }
 
+        restoreApplicationBindings();
         initialized = true;
         HookLog("OpenGL Capture Initialized: %dx%d (NV Interop: %s)", width, height,
                 usingNVInterop ? "Yes" : "No (PBO Fallback)");
     }
 
-    void CaptureFrame() {
+    void CaptureFrame(HDC hDC) {
+        std::unique_lock<std::recursive_mutex> captureLock(captureMutex, std::try_to_lock);
+        if (!captureLock.owns_lock()) {
+            static std::atomic<int> s_contentionLogCount{0};
+            if (s_contentionLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+                HookLog("OpenGL: Skipping concurrent SwapBuffers capture while capture resources are in use");
+            }
+            return;
+        }
         if (!initialized)
             return;
+
+        const HGLRC currentContext = wglGetCurrentContext();
+        if (!currentContext || currentContext != g_CaptureContext || hDC != g_CaptureHDC) {
+            static std::atomic<int> s_foreignContextLogCount{0};
+            if (s_foreignContextLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+                HookLog(
+                    "OpenGL: Skipping capture from non-owner context/HDC (currentRC=%p ownerRC=%p hdc=%p "
+                    "ownerHdc=%p)",
+                    currentContext, g_CaptureContext, hDC, g_CaptureHDC);
+            }
+            return;
+        }
+
+        HWND hwnd = hDC ? WindowFromDC(hDC) : nullptr;
+        RECT currentRect = {};
+        if (hwnd && GetClientRect(hwnd, &currentRect)) {
+            const uint32_t currentWidth =
+                static_cast<uint32_t>(std::max<LONG>(0, currentRect.right - currentRect.left));
+            const uint32_t currentHeight =
+                static_cast<uint32_t>(std::max<LONG>(0, currentRect.bottom - currentRect.top));
+            if (currentWidth > 0 && currentHeight > 0 && (currentWidth != width || currentHeight != height)) {
+                HookLogImportant("OpenGL: Capture resize detected (%ux%u -> %ux%u), rebuilding shared transport", width,
+                                 height, currentWidth, currentHeight);
+                if (!TryCleanup(false))
+                    return;
+                Init(hDC);
+                if (!initialized)
+                    return;
+            }
+        }
 
         // Check if we should throttle capture (encoder is falling behind)
         if (g_IPC && g_IPC->GetSharedMem()) {
@@ -662,10 +865,27 @@ public:
             return;
         }
 
-        int idx = writeIndex;
+        const int idx = FindAvailableCaptureTextureSlot(shm, writeIndex.load(std::memory_order_relaxed));
+        bool framePublished = false;
+        if (idx < 0) {
+            droppedFrames.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        writeIndex.store(idx, std::memory_order_relaxed);
 
         LARGE_INTEGER qpc;
         QueryPerformanceCounter(&qpc);
+
+        // Preserve application bindings. Capture runs at SwapBuffers, but many
+        // engines assume these bindings carry into construction of the next frame.
+        GLint previousReadFramebuffer = 0;
+        GLint previousDrawFramebuffer = 0;
+        GLint previousTexture2D = 0;
+        GLint previousPixelPackBuffer = 0;
+        pglGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previousReadFramebuffer);
+        pglGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &previousDrawFramebuffer);
+        pglGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture2D);
+        pglGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previousPixelPackBuffer);
 
         // Blit backbuffer to capture texture
         pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
@@ -684,46 +904,157 @@ public:
             if (wglDXLockObjectsNV(nvDevice, 1, &nvTextureHandles[idx])) {
                 pglBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
                 pglBindTexture(GL_TEXTURE_2D, glTextures[idx]);
-                if (pglCopyTexSubImage2D)
-                    pglCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, (GLsizei)width, (GLsizei)height);
+                pglCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, (GLsizei)width, (GLsizei)height);
                 pglBindTexture(GL_TEXTURE_2D, 0);
                 pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-                wglDXUnlockObjectsNV(nvDevice, 1, &nvTextureHandles[idx]);
-                SignalFrameReady(g_IPC, idx, qpc.QuadPart, 0);
-            }
-        } else if (usePBO) {
-            // PBO async readback
-            int readPBO = currentPBO;
-            int writePBO = (currentPBO + 1) % 2;
-
-            // Start async read to current PBO (use GL_BGRA to match BGRA texture layout)
-            pglBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[writePBO]);
-            pglBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-            pglReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, 0);
-            pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-            pboTimestampQpc[writePBO] = qpc.QuadPart;
-
-            // Read from previous PBO (only valid from 2nd frame onwards)
-            pglBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[readPBO]);
-            void* data = pglMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
-            if (data) {
-                if (pboPopulated) {
-                    // Copy to D3D11 texture and signal
-                    d3d11Context->UpdateSubresource(sharedTextures[idx], 0, NULL, data, width * 4, 0);
-                    pglUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-                    d3d11Context->Flush();  // Ensure GPU copy is submitted before encoder reads
-                    SignalFrameReady(g_IPC, idx, pboTimestampQpc[readPBO], 0);
+                if (wglDXUnlockObjectsNV(nvDevice, 1, &nvTextureHandles[idx])) {
+                    uint64_t publishedFenceValue = 0;
+                    bool completionPublished = true;
+                    if (useFences && fence && context4) {
+                        publishedFenceValue = ++fenceValue;
+                        const HRESULT signalHr = context4->Signal(fence, publishedFenceValue);
+                        if (FAILED(signalHr)) {
+                            completionPublished = false;
+                            useFences = false;
+                            HookLog(
+                                "OpenGL: NV interop fence Signal failed value=%llu hr=0x%08X; "
+                                "falling back to implicit sync on later frames",
+                                static_cast<unsigned long long>(publishedFenceValue), signalHr);
+                        }
+                        d3d11Context->Flush();
+                    }
+                    if (completionPublished) {
+                        SignalFrameReady(g_IPC, idx, qpc.QuadPart, publishedFenceValue);
+                        framePublished = true;
+                    }
                 } else {
-                    pglUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+                    static std::atomic<int> s_unlockFailureLogCount{0};
+                    if (s_unlockFailureLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+                        HookLog("OpenGL: NV interop unlock failed for texture %d; stale frame not published", idx);
+                    }
+                }
+            } else {
+                static std::atomic<int> s_lockFailureLogCount{0};
+                if (s_lockFailureLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+                    HookLog("OpenGL: NV interop lock failed for texture %d; frame skipped", idx);
                 }
             }
-            pglBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        } else if (usePBO) {
+            auto uploadPBO = [&](int readPBO) {
+                pglBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[readPBO]);
+                void* data = pglMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+                if (!data)
+                    return;
 
-            currentPBO = writePBO;
-            pboPopulated = true;  // PBO[writePBO] now has valid data for next frame
+                d3d11Context->UpdateSubresource(sharedTextures[idx], 0, NULL, data, width * 4, 0);
+                const GLboolean unmapSucceeded = pglUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+                if (unmapSucceeded != GL_TRUE) {
+                    HookLog("OpenGL: PBO %d data became invalid while mapped; frame not published", readPBO);
+                    return;
+                }
+
+                uint64_t publishedFenceValue = 0;
+                bool uploadSubmitted = true;
+                if (useFences && fence && context4) {
+                    publishedFenceValue = ++fenceValue;
+                    const HRESULT signalHr = context4->Signal(fence, publishedFenceValue);
+                    if (FAILED(signalHr)) {
+                        uploadSubmitted = false;
+                        useFences = false;
+                        HookLog("OpenGL: PBO upload fence Signal failed value=%llu hr=0x%08X",
+                                static_cast<unsigned long long>(publishedFenceValue), signalHr);
+                    }
+                }
+                d3d11Context->Flush();  // Submit UpdateSubresource and optional fence without a CPU wait.
+                if (uploadSubmitted) {
+                    SignalFrameReady(g_IPC, idx, pboTimestampQpc[readPBO], publishedFenceValue);
+                    framePublished = true;
+                }
+            };
+
+            if (pboSyncSupported) {
+                // Consume one completed readback without ever waiting on the
+                // Present thread. A zero-timeout wait is only a readiness query.
+                int readyPBO = -1;
+                for (int i = 0; i < 2; ++i) {
+                    if (!pboSyncs[i])
+                        continue;
+                    const GLenum waitResult = pglClientWaitSync(pboSyncs[i], GL_SYNC_FLUSH_COMMANDS_BIT, 0);
+                    if (waitResult == GL_ALREADY_SIGNALED || waitResult == GL_CONDITION_SATISFIED) {
+                        if (readyPBO < 0 || pboTimestampQpc[i] < pboTimestampQpc[readyPBO])
+                            readyPBO = i;
+                    } else if (waitResult == GL_WAIT_FAILED) {
+                        static std::atomic<int> s_pboWaitFailureLogCount{0};
+                        if (s_pboWaitFailureLogCount.fetch_add(1, std::memory_order_relaxed) < 8)
+                            HookLog("OpenGL: PBO %d sync readiness query failed; dropping readback", i);
+                        // The sync's state is unknown. Finish before recycling
+                        // its PBO so a failed readiness query cannot turn into a
+                        // read/write race on the next glReadPixels.
+                        if (pglFinish)
+                            pglFinish();
+                        pglDeleteSync(pboSyncs[i]);
+                        pboSyncs[i] = nullptr;
+                    }
+                }
+                if (readyPBO >= 0) {
+                    pglDeleteSync(pboSyncs[readyPBO]);
+                    pboSyncs[readyPBO] = nullptr;
+                    uploadPBO(readyPBO);
+                }
+
+                // Queue this source frame only when a PBO slot is free. If both
+                // reads are still in flight, dropping capture is preferable to
+                // stalling the game's SwapBuffers call.
+                int writePBO = -1;
+                for (int offset = 0; offset < 2; ++offset) {
+                    const int candidate = (currentPBO + offset) % 2;
+                    if (!pboSyncs[candidate]) {
+                        writePBO = candidate;
+                        break;
+                    }
+                }
+                if (writePBO >= 0) {
+                    pglBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[writePBO]);
+                    pglBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+                    pglReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, 0);
+                    pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+                    pboTimestampQpc[writePBO] = qpc.QuadPart;
+                    pboSyncs[writePBO] = pglFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+                    if (!pboSyncs[writePBO]) {
+                        // Rare GL error: finish only this failed synchronization
+                        // attempt so the PBO cannot be reused while still busy.
+                        HookLog("OpenGL: Failed to create PBO sync object; completing this readback synchronously");
+                        if (pglFinish)
+                            pglFinish();
+                        uploadPBO(writePBO);
+                    }
+                    currentPBO = (writePBO + 1) % 2;
+                }
+            } else {
+                // Compatibility path for contexts with PBOs but no GL sync
+                // objects. Retains capture support for old drivers.
+                const int readPBO = currentPBO;
+                const int writePBO = (currentPBO + 1) % 2;
+                pglBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[writePBO]);
+                pglBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+                pglReadPixels(0, 0, width, height, GL_BGRA, GL_UNSIGNED_BYTE, 0);
+                pglBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+                pboTimestampQpc[writePBO] = qpc.QuadPart;
+                if (pboPopulated)
+                    uploadPBO(readPBO);
+                currentPBO = writePBO;
+                pboPopulated = true;
+            }
+            pglBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
         }
 
-        AdvanceWriteIndex();
+        pglBindBuffer(GL_PIXEL_PACK_BUFFER, static_cast<GLuint>(previousPixelPackBuffer));
+        pglBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture2D));
+        pglBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previousReadFramebuffer));
+        pglBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(previousDrawFramebuffer));
+
+        if (framePublished)
+            AdvanceWriteIndex();
     }
 };
 
@@ -785,17 +1116,32 @@ static void ResetTrackedOpenGLState(HGLRC contextToReset) {
     const bool resetOverlay = resetAll || contextToReset == g_OverlayContext;
     const bool resetVersionState = resetAll || contextToReset == g_CurrentTrackedContext;
 
+    const HGLRC previousContext = wglGetCurrentContext();
+    const HDC previousDC = wglGetCurrentDC();
+    bool switchedToCaptureContext = false;
+    bool canCleanCaptureContext =
+        !resetCapture || !g_OpenGLCapture.initialized || !g_CaptureContext || previousContext == g_CaptureContext;
+    if (!canCleanCaptureContext && oWglMakeCurrent && g_CaptureHDC) {
+        switchedToCaptureContext = oWglMakeCurrent(g_CaptureHDC, g_CaptureContext) == TRUE;
+        canCleanCaptureContext = switchedToCaptureContext;
+        if (!canCleanCaptureContext) {
+            HookLog("OpenGL: Deferring cleanup for owner context %p because it could not be made current",
+                    g_CaptureContext);
+        }
+    }
+
     bool captureCleanupHandledOverlay = false;
-    if (resetCapture && g_OpenGLCapture.initialized) {
-        g_OpenGLCapture.Cleanup();
+    if (resetCapture && g_OpenGLCapture.initialized && canCleanCaptureContext) {
+        g_OpenGLCapture.TryCleanup(true);
         captureCleanupHandledOverlay = true;
     }
 
-    if (resetOverlay && !captureCleanupHandledOverlay && g_OverlayAdapter.IsInitialized()) {
+    if (resetOverlay && !captureCleanupHandledOverlay && g_OverlayAdapter.IsInitialized() &&
+        (!g_OverlayContext || wglGetCurrentContext() == g_OverlayContext)) {
         g_OverlayAdapter.Shutdown();
     }
 
-    if (resetCapture) {
+    if (resetCapture && (!g_OpenGLCapture.initialized || canCleanCaptureContext)) {
         g_CaptureContext = NULL;
         g_CaptureHDC = NULL;
     }
@@ -806,6 +1152,14 @@ static void ResetTrackedOpenGLState(HGLRC contextToReset) {
         g_CurrentTrackedContext = NULL;
         g_VersionChecked = false;
         g_LegacyContext = false;
+    }
+
+    if (switchedToCaptureContext) {
+        const BOOL restored =
+            previousContext ? oWglMakeCurrent(previousDC, previousContext) : oWglMakeCurrent(nullptr, nullptr);
+        if (!restored) {
+            HookLog("OpenGL: Failed to restore application context %p after capture cleanup", previousContext);
+        }
     }
 }
 
@@ -848,6 +1202,7 @@ static bool LoadGLFunctions() {
 
     // Load base GL functions from opengl32.dll
     pglGetError = (glGetError_t)GetProcAddress(gl, "glGetError");
+    pglGetIntegerv = (glGetIntegerv_t)GetProcAddress(gl, "glGetIntegerv");
     pglFlush = (glFlush_t)GetProcAddress(gl, "glFlush");
     pglFinish = (glFinish_t)GetProcAddress(gl, "glFinish");
 
@@ -1130,7 +1485,7 @@ static void SwapBegin(HDC hdc) {
                         }
                     }
                     if (g_OpenGLCapture.initialized) {
-                        g_OpenGLCapture.CaptureFrame();
+                        g_OpenGLCapture.CaptureFrame(hdc);
                     }
                 } else if (g_OpenGLCapture.initialized) {
                     g_OpenGLCapture.Cleanup();

@@ -3391,10 +3391,13 @@ thread_local int g_ResizeBuffersDepth = 0;
 // texture handles that the media-side D3D11 device can open.
 class DX11Capture : public HookCaptureBase {
 public:
+    std::recursive_mutex captureMutex;
     ID3D11Texture2D* sharedTextures[CAPTURE_TEXTURE_COUNT]{};
     ID3D11Query* copyQueries[CAPTURE_TEXTURE_COUNT]{};  // GPU sync queries
     ID3D11Device* cachedDevice = nullptr;
     ID3D11DeviceContext* cachedContext = nullptr;
+    IUnknown* cachedSwapChainIdentity = nullptr;
+    bool generationResetPending = false;
 
     // DX10 capture must stay on the real D3D10 device to avoid invalid
     // cross-device copies from a DX10 swapchain buffer into D3D11-owned
@@ -3422,13 +3425,24 @@ public:
     // Keyed Mutex Support (Proper Fix)
     IDXGIKeyedMutex* keyedMutexes[CAPTURE_TEXTURE_COUNT]{};
     bool useKeyedMutex = false;
+    bool sharedTextureHandlesAreNt[CAPTURE_TEXTURE_COUNT]{};
 
     // sharedTextureHandles are in base class
 
     void Cleanup() override {
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
         CaptureBase::StopCaptureThread();
-        // Close shared handles first to prevent leaks
-        CaptureBase::CleanupSharedHandles();
+        for (int i = 0; i < CAPTURE_TEXTURE_COUNT; ++i) {
+            HANDLE handle = sharedTextureHandles[i].exchange(NULL, std::memory_order_acq_rel);
+            if (handle && sharedTextureHandlesAreNt[i]) {
+                CloseHandle(handle);
+            }
+            sharedTextureHandlesAreNt[i] = false;
+        }
+        HANDLE fenceHandle = sharedFenceHandle.exchange(NULL, std::memory_order_acq_rel);
+        if (fenceHandle) {
+            CloseHandle(fenceHandle);
+        }
 
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
             g_DeferredRelease.Queue(sharedTextures[i]);
@@ -3467,14 +3481,41 @@ public:
         g_DeferredRelease.Queue(cachedDevice10);
         cachedDevice10 = nullptr;
 
-        cachedDevice = nullptr;
+        // GetImmediateContext returns an owned reference. Keeping it across every
+        // resize leaked a device/context generation and its driver allocations.
+        g_DeferredRelease.Queue(cachedContext);
         cachedContext = nullptr;
+
+        g_DeferredRelease.Queue(cachedSwapChainIdentity);
+        cachedSwapChainIdentity = nullptr;
+
+        cachedDevice = nullptr;
         initialized = false;
+        generationResetPending = false;
         useFences = false;
         useKeyedMutex = false;
         isDX10Mode = false;
         isDXVKMode = false;
         fenceValue = 0;  // Reset fence value for next session
+    }
+
+    void RequestGenerationReset(IDXGISwapChain* swapChain) {
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
+        if (!initialized || !swapChain)
+            return;
+
+        IUnknown* identity = nullptr;
+        const HRESULT identityHr = swapChain->QueryInterface(IID_PPV_ARGS(&identity));
+        const bool matchesCaptureSwapChain =
+            SUCCEEDED(identityHr) && identity && cachedSwapChainIdentity && identity == cachedSwapChainIdentity;
+        if (identity)
+            identity->Release();
+        if (!matchesCaptureSwapChain)
+            return;
+
+        initialized = false;
+        generationResetPending = true;
+        HookLog("DX11Capture: Swapchain resized; deferring capture generation rebuild until frame leases drain");
     }
 
     void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override {
@@ -3619,8 +3660,53 @@ public:
         if (initialized)
             return;
 
-        DXGI_SWAP_CHAIN_DESC desc;
-        swapChain->GetDesc(&desc);
+        if (!cachedSwapChainIdentity) {
+            const HRESULT identityHr =
+                swapChain ? swapChain->QueryInterface(IID_PPV_ARGS(&cachedSwapChainIdentity)) : E_POINTER;
+            if (FAILED(identityHr) || !cachedSwapChainIdentity) {
+                EarlyLog("%s Capture Init: failed to retain swapchain identity hr=0x%08X", isDX10Mode ? "DX10" : "DX11",
+                         identityHr);
+                Cleanup();
+                return;
+            }
+        }
+
+        DXGI_SWAP_CHAIN_DESC desc = {};
+        const HRESULT descHr = swapChain ? swapChain->GetDesc(&desc) : E_POINTER;
+        if (SUCCEEDED(descHr) && (desc.BufferDesc.Width == 0 || desc.BufferDesc.Height == 0 ||
+                                  desc.BufferDesc.Format == DXGI_FORMAT_UNKNOWN)) {
+            // Width/height may have been HWND-derived at creation. Resolve the
+            // concrete values from the actual buffer before rejecting capture.
+            if (isDX10Mode) {
+                ID3D10Texture2D* buffer = nullptr;
+                if (SUCCEEDED(swapChain->GetBuffer(0, IID_PPV_ARGS(&buffer))) && buffer) {
+                    D3D10_TEXTURE2D_DESC bufferDesc = {};
+                    buffer->GetDesc(&bufferDesc);
+                    desc.BufferDesc.Width = bufferDesc.Width;
+                    desc.BufferDesc.Height = bufferDesc.Height;
+                    desc.BufferDesc.Format = bufferDesc.Format;
+                    buffer->Release();
+                }
+            } else {
+                ID3D11Texture2D* buffer = nullptr;
+                if (SUCCEEDED(swapChain->GetBuffer(0, IID_PPV_ARGS(&buffer))) && buffer) {
+                    D3D11_TEXTURE2D_DESC bufferDesc = {};
+                    buffer->GetDesc(&bufferDesc);
+                    desc.BufferDesc.Width = bufferDesc.Width;
+                    desc.BufferDesc.Height = bufferDesc.Height;
+                    desc.BufferDesc.Format = bufferDesc.Format;
+                    buffer->Release();
+                }
+            }
+        }
+        if (FAILED(descHr) || desc.BufferDesc.Width == 0 || desc.BufferDesc.Height == 0 ||
+            desc.BufferDesc.Format == DXGI_FORMAT_UNKNOWN) {
+            EarlyLog("%s Capture Init: invalid swapchain description hr=0x%08X size=%ux%u format=%d",
+                     isDX10Mode ? "DX10" : "DX11", descHr, desc.BufferDesc.Width, desc.BufferDesc.Height,
+                     static_cast<int>(desc.BufferDesc.Format));
+            Cleanup();
+            return;
+        }
 
         width = desc.BufferDesc.Width;
         height = desc.BufferDesc.Height;
@@ -3659,6 +3745,7 @@ public:
                         HANDLE hTemp = NULL;
                         hr = resource->GetSharedHandle(&hTemp);
                         sharedTextureHandles[i].store(hTemp, std::memory_order_release);
+                        sharedTextureHandlesAreNt[i] = false;
                         resource->Release();
                     } else {
                         EarlyLog("DX10: Error - Failed to query IDXGIResource for texture %d", i);
@@ -3698,6 +3785,7 @@ public:
                                  (copyQueries10[0] != nullptr) ? "ON" : "OFF");
             } else {
                 EarlyLog("DX10 Capture Init FAILED (success=false)");
+                Cleanup();
             }
             return;
         } else {
@@ -3768,13 +3856,19 @@ public:
                     // Get Context4 for Signal()
                     ID3D11DeviceContext* immCtx = nullptr;
                     captureDevice->GetImmediateContext(&immCtx);
-                    if (SUCCEEDED(immCtx->QueryInterface(IID_PPV_ARGS(&context4)))) {
+                    if (immCtx && SUCCEEDED(immCtx->QueryInterface(IID_PPV_ARGS(&context4)))) {
                         useFences = true;
                         EarlyLog("DX11: D3D11 Fence created (async GPU sync enabled)");
                     } else {
-                        EarlyLog("DX11: Warning - ID3D11DeviceContext4 not available");
+                        EarlyLog("DX11: Warning - ID3D11DeviceContext4 not available; using implicit shared sync");
+                        HANDLE unusableFenceHandle = sharedFenceHandle.exchange(NULL, std::memory_order_acq_rel);
+                        if (unusableFenceHandle)
+                            CloseHandle(unusableFenceHandle);
+                        fence->Release();
+                        fence = nullptr;
                     }
-                    immCtx->Release();
+                    if (immCtx)
+                        immCtx->Release();
                 } else {
                     EarlyLog("DX11: Warning - Fence shared handle creation failed");
                     fence->Release();
@@ -3799,6 +3893,7 @@ public:
                     hr = pResource1->CreateSharedHandle(NULL, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
                                                         NULL, &hTemp);
                     sharedTextureHandles[i].store(hTemp, std::memory_order_release);
+                    sharedTextureHandlesAreNt[i] = SUCCEEDED(hr) && hTemp != NULL;
                     pResource1->Release();
                 } else {
                     // Fallback to legacy KMT if Resource1 not valid (should not happen
@@ -3811,6 +3906,7 @@ public:
                         HANDLE hTemp = NULL;
                         pResource->GetSharedHandle(&hTemp);
                         sharedTextureHandles[i].store(hTemp, std::memory_order_release);
+                        sharedTextureHandlesAreNt[i] = false;
                         pResource->Release();
                         EarlyLog(
                             "DX11: Warning - Fallback to KMT handle for KeyedMutex "
@@ -3904,6 +4000,7 @@ public:
                              (copyQueries[0] != nullptr) ? "ON" : "OFF", isDXVKMode ? "ON" : "OFF");
         } else {
             EarlyLog("%s Capture Init FAILED (success=false)", isDX10Mode ? "DX10" : "DX11");
+            Cleanup();
         }
     }
 
@@ -3930,8 +4027,17 @@ public:
     // Capture a frame from the swapchain to shared texture
     // Returns true if frame was captured, false if skipped/dropped
     bool CaptureFrame(IDXGISwapChain* swapChain) {
-        static int s_captureFrameCount = 0;
-        int frameNum = ++s_captureFrameCount;
+        std::unique_lock<std::recursive_mutex> captureLock(captureMutex, std::try_to_lock);
+        if (!captureLock.owns_lock()) {
+            static std::atomic<int> s_contentionLogCount{0};
+            if (s_contentionLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+                HookLog("DX11Capture: Skipping concurrent capture while another Present/cleanup owns resources");
+            }
+            return false;
+        }
+
+        static std::atomic<int> s_captureFrameCount{0};
+        int frameNum = s_captureFrameCount.fetch_add(1, std::memory_order_relaxed) + 1;
 
         if (!swapChain) {
             HookLog("DX11Capture: [%d] swapChain is null", frameNum);
@@ -3948,6 +4054,17 @@ public:
         // Initialize capture if needed (GetDevice only called during init to avoid per-frame COM overhead)
         if (!initialized) {
             HookLog("DX11Capture: [%d] Not initialized, initializing...", frameNum);
+            if (generationResetPending) {
+                SharedMemoryLayout* sharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+                if (HasOutstandingCaptureFrameLeases(sharedMem)) {
+                    static std::atomic<int> s_generationLeaseLogCount{0};
+                    if (s_generationLeaseLogCount.fetch_add(1, std::memory_order_relaxed) < 12) {
+                        HookLog("DX11Capture: [%d] Waiting for old frame leases before rebuilding resources", frameNum);
+                    }
+                    return false;
+                }
+                Cleanup();
+            }
             const DXGIShared::APIType swapChainApi = DetectSwapChainAPITypeForDX11Hook(swapChain);
             if (swapChainApi == DXGIShared::APIType::D3D10) {
                 if (!InitDX10(swapChain)) {
@@ -3991,6 +4108,14 @@ public:
             }
 
             int writeIdx = writeIndex % CAPTURE_TEXTURE_COUNT;
+            SharedMemoryLayout* captureSharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+            writeIdx = FindAvailableCaptureTextureSlot(captureSharedMem, writeIdx);
+            if (writeIdx < 0) {
+                droppedFrames.fetch_add(1, std::memory_order_relaxed);
+                backbuffer10->Release();
+                return false;
+            }
+            writeIndex.store(writeIdx, std::memory_order_relaxed);
             if (frameNum <= 20 || frameNum % 60 == 0) {
                 HookLog("DX10Capture: [%d] Copying to texture %d (writeIndex=%d)", frameNum, writeIdx,
                         writeIndex.load());
@@ -4066,6 +4191,14 @@ public:
 
         // Determine which texture slot to write to
         int writeIdx = writeIndex % CAPTURE_TEXTURE_COUNT;
+        SharedMemoryLayout* captureSharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+        writeIdx = FindAvailableCaptureTextureSlot(captureSharedMem, writeIdx);
+        if (writeIdx < 0) {
+            droppedFrames.fetch_add(1, std::memory_order_relaxed);
+            backbuffer->Release();
+            return false;
+        }
+        writeIndex.store(writeIdx, std::memory_order_relaxed);
 
         if (frameNum <= 20 || frameNum % 60 == 0) {
             HookLog("DX11Capture: [%d] Copying to texture %d (writeIndex=%d)", frameNum, writeIdx, writeIndex.load());
@@ -4105,7 +4238,24 @@ public:
         uint64_t currentFenceValue = 0;
         if (useFences && fence && context4) {
             currentFenceValue = ++fenceValue;
-            context4->Signal(fence, currentFenceValue);
+            const HRESULT signalHr = context4->Signal(fence, currentFenceValue);
+            if (FAILED(signalHr)) {
+                HookLog(
+                    "DX11Capture: Fence Signal failed value=%llu hr=0x%08X; falling back to implicit shared "
+                    "synchronization",
+                    static_cast<unsigned long long>(currentFenceValue), signalHr);
+                useFences = false;
+                currentFenceValue = 0;
+                context->Flush();
+                if (cachedDevice && FAILED(cachedDevice->GetDeviceRemovedReason())) {
+                    return false;
+                }
+            }
+        } else {
+            // A legacy shared texture has no explicit cross-process completion
+            // primitive. Submit the copy before publishing its ring entry so the
+            // media device cannot indefinitely observe an older texture version.
+            context->Flush();
         }
 
         // Signal frame ready to media process via IPC
@@ -4374,8 +4524,7 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
             static std::atomic<int> s_getDeviceFailureLogCount{0};
             const int logCount = s_getDeviceFailureLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 5) {
-                HookLogImportant("DX10: DrawOverlay failed to get ID3D10Device/Device1 from swapchain %p",
-                                 pSwapChain);
+                HookLogImportant("DX10: DrawOverlay failed to get ID3D10Device/Device1 from swapchain %p", pSwapChain);
             }
             return;
         }
@@ -4422,8 +4571,8 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
     }
 
     if (s_LastDX10OverlayHwnd && s_LastDX10OverlayHwnd != currentHwnd && g_OverlayAdapter.IsInitialized()) {
-        HookLogImportant("DX10: HWND changed from %p to %p, reinitializing overlay backend",
-                         s_LastDX10OverlayHwnd, currentHwnd);
+        HookLogImportant("DX10: HWND changed from %p to %p, reinitializing overlay backend", s_LastDX10OverlayHwnd,
+                         currentHwnd);
         g_OverlayAdapter.Shutdown();
     }
     s_LastDX10OverlayHwnd = currentHwnd;
@@ -4457,8 +4606,8 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
             static std::atomic<int> s_rtvFailureLogCount{0};
             const int logCount = s_rtvFailureLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 10) {
-                HookLogImportant("DX10: Failed to create overlay RTV for swapchain %p buffer=%u hr=0x%08X",
-                                 pSwapChain, bufferIndex, (unsigned)hr);
+                HookLogImportant("DX10: Failed to create overlay RTV for swapchain %p buffer=%u hr=0x%08X", pSwapChain,
+                                 bufferIndex, (unsigned)hr);
             }
             device->Release();
             return;
@@ -4935,6 +5084,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
     if (FAILED(hr)) {
         HookLog("DX11: ResizeBuffers FAILED hr=0x%08X", hr);
     } else {
+        g_DX11Capture.RequestGenerationReset(pSwapChain);
         HookLog("DX11: ResizeBuffers SUCCESS");
     }
 
