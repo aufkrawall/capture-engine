@@ -6096,3 +6096,48 @@ TEST(DXGISharedSourceTest, FFXProxyPresentRemovalQuiescesAndDrainsEnteredDetours
     EXPECT_NE(text.find("if (!lastPrework"), std::string::npos)
         << "a patched but never-entered proxy must keep the real-present fallback alive";
 }
+
+TEST(DXGISharedSourceTest, StreamlineFirstActivationUsesOfficialUiTagWithoutExtraGpuWork) {
+    namespace fs = std::filesystem;
+    auto readFile = [](const fs::path& path) {
+        std::ifstream stream(path, std::ios::binary);
+        EXPECT_TRUE(stream.good()) << path.string();
+        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    };
+
+    const std::string streamline = readFile(fs::current_path() / "hook" / "apis" / "streamline_hook.cpp");
+    const std::string renderer =
+        readFile(fs::current_path() / "hook" / "apis" / "dx12_streamline_ui_overlay.cpp");
+    const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+
+    EXPECT_NE(streamline.find("RegisterDynamicHookFiltered(\"slSetTagForFrame\""), std::string::npos);
+    EXPECT_NE(streamline.find("g_StreamlineUsesD3D12.load"), std::string::npos)
+        << "D3D11/Vulkan tags must never be interpreted as ID3D12Resource";
+    EXPECT_NE(streamline.find("wantsUiBootstrapRecord && tags && commandBuffer"), std::string::npos)
+        << "steady-state tag packets must not inspect resources or acquire a queue";
+    EXPECT_NE(renderer.find("g_FrameTagTrackingActive.load"), std::string::npos)
+        << "steady state must leave only one atomic hot-path branch";
+    const size_t setTagHook = streamline.find("slResult Hooked_slSetTagForFrame");
+    ASSERT_NE(setTagHook, std::string::npos);
+    const size_t record = streamline.find("TryRecordBootstrap(request)", setTagHook);
+    const size_t forward = streamline.find("return originalSetTagForFrame", setTagHook);
+    ASSERT_NE(record, std::string::npos);
+    ASSERT_NE(forward, std::string::npos);
+    EXPECT_LT(record, forward) << "Streamline's volatile-tag copy must include CE's UI draw";
+
+    EXPECT_NE(renderer.find("slot.target = request.uiResource"), std::string::npos);
+    EXPECT_NE(renderer.find("queue->Signal(fence.Get(), slot.fenceValue)"), std::string::npos);
+    EXPECT_EQ(renderer.find("WaitForSingleObject"), std::string::npos);
+    EXPECT_EQ(renderer.find("CopyResource"), std::string::npos);
+    EXPECT_EQ(renderer.find("CreateCommandQueue"), std::string::npos);
+    EXPECT_EQ(renderer.find("queue->ExecuteCommandLists"), std::string::npos);
+
+    const size_t eclBefore = dx12.find("dx12_streamline_ui_overlay::BeforeExecuteCommandLists");
+    const size_t realEcl = dx12.find("original(pThis, NumCommandLists, ppCommandLists)", eclBefore);
+    const size_t eclAfter = dx12.find("dx12_streamline_ui_overlay::AfterExecuteCommandLists", realEcl);
+    ASSERT_NE(eclBefore, std::string::npos);
+    ASSERT_NE(realEcl, std::string::npos);
+    ASSERT_NE(eclAfter, std::string::npos);
+    EXPECT_LT(eclBefore, realEcl);
+    EXPECT_LT(realEcl, eclAfter);
+}

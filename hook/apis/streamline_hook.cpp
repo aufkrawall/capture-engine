@@ -20,6 +20,7 @@
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/inline_hook.h"
 #include "dx12_hook.h"
+#include "dx12_streamline_ui_overlay.h"
 
 namespace {
 
@@ -240,6 +241,43 @@ struct slViewportHandle : slBaseStructure {
     uint32_t value = 0xFFFFFFFFu;
 };
 
+struct slExtent {
+    uint32_t top = 0;
+    uint32_t left = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
+enum class slResourceType : char {
+    kTexture2D = 0,
+};
+
+struct slResource : slBaseStructure {
+    slResourceType type = slResourceType::kTexture2D;
+    void* native = nullptr;
+    void* memory = nullptr;
+    void* view = nullptr;
+    uint32_t state = UINT_MAX;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t nativeFormat = 0;
+    uint32_t mipLevels = 0;
+    uint32_t arrayLayers = 0;
+    uint64_t gpuVirtualAddress = 0;
+    uint32_t flags = 0;
+    uint32_t usage = 0;
+    uint32_t reserved = 0;
+};
+
+struct slResourceTag : slBaseStructure {
+    slResource* resource = nullptr;
+    uint32_t type = 0;
+    int32_t lifecycle = 0;
+    slExtent extent{};
+};
+
+constexpr uint32_t kSLBufferTypeUIColorAndAlpha = 23;
+
 struct slDLSSGOptions : slBaseStructure {
     slDLSSGOptions() : slBaseStructure(kDLSSGOptionsStructType, kSLStructVersion5) {}
 
@@ -293,6 +331,8 @@ struct slReflexOptions : slBaseStructure {
 using PFN_slGetFeatureFunction = slResult (*)(uint32_t feature, const char* functionName, void*& function);
 using PFN_slGetPluginFunction = void* (*)(const char* functionName);
 using PFN_slSetD3DDevice = slResult (*)(void* d3dDevice);
+using PFN_slSetTagForFrame = slResult (*)(const slBaseStructure& frame, const slViewportHandle& viewport,
+                                          const slResourceTag* tags, uint32_t numTags, void* commandBuffer);
 using PFN_slDLSSGSetOptions = slResult (*)(const slViewportHandle& viewport, const slDLSSGOptions& options);
 using PFN_slDLSSGGetState = slResult (*)(const slViewportHandle& viewport, slDLSSGState& state,
                                          const slDLSSGOptions* options);
@@ -313,6 +353,7 @@ std::mutex g_ModuleHookMutex;
 std::mutex g_FeatureHookMutex;
 
 std::atomic<bool> g_DynamicHooksRegistered{false};
+std::atomic<bool> g_StreamlineUsesD3D12{false};
 std::atomic<bool> g_NoModulesLogged{false};
 std::atomic<bool> g_ModuleSnapshotFailureLogged{false};
 std::atomic<bool> g_ModuleSnapshotRetrySuccessLogged{false};
@@ -322,6 +363,7 @@ std::atomic<uint32_t> g_InstalledModuleMask{0};
 std::atomic<void*> g_SLGetFeatureFunctionTarget{nullptr};
 std::atomic<void*> g_SLGetPluginFunctionTarget{nullptr};
 std::atomic<void*> g_SLSetD3DDeviceTarget{nullptr};
+std::atomic<void*> g_SLSetTagForFrameTarget{nullptr};
 std::atomic<void*> g_DLSSGSetOptionsTarget{nullptr};
 std::atomic<void*> g_DLSSGGetStateTarget{nullptr};
 std::atomic<void*> g_ReflexSleepTarget{nullptr};
@@ -336,6 +378,7 @@ std::atomic<void*> g_ReflexSetConstantsImportFallbackAttemptedTarget{nullptr};
 std::atomic<bool> g_SLGetFeatureFunctionHooked{false};
 std::atomic<bool> g_SLGetPluginFunctionHooked{false};
 std::atomic<bool> g_SLSetD3DDeviceHooked{false};
+std::atomic<bool> g_SLSetTagForFrameHooked{false};
 std::atomic<bool> g_DLSSGSetOptionsHooked{false};
 std::atomic<bool> g_DLSSGGetStateHooked{false};
 std::atomic<bool> g_ReflexSleepHooked{false};
@@ -449,6 +492,7 @@ constexpr uint64_t kDLSSGHealthWarnRepeat = 512;
 PFN_slGetFeatureFunction g_Original_slGetFeatureFunction = nullptr;
 PFN_slGetPluginFunction g_Original_slGetPluginFunction = nullptr;
 PFN_slSetD3DDevice g_Original_slSetD3DDevice = nullptr;
+PFN_slSetTagForFrame g_Original_slSetTagForFrame = nullptr;
 PFN_slDLSSGSetOptions g_Original_slDLSSGSetOptions = nullptr;
 PFN_slDLSSGGetState g_Original_slDLSSGGetState = nullptr;
 PFN_slReflexSleep g_Original_slReflexSleep = nullptr;
@@ -458,6 +502,8 @@ PFN_slReflexSetConstants g_Original_slReflexSetConstants = nullptr;
 slResult Hooked_slGetFeatureFunction(uint32_t feature, const char* functionName, void*& function);
 void* Hooked_slGetPluginFunction(const char* functionName);
 slResult Hooked_slSetD3DDevice(void* d3dDevice);
+slResult Hooked_slSetTagForFrame(const slBaseStructure& frame, const slViewportHandle& viewport,
+                                 const slResourceTag* tags, uint32_t numTags, void* commandBuffer);
 slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& options);
 slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* options);
 slResult Hooked_slReflexSleep(const void* frame);
@@ -676,6 +722,15 @@ PFN_slSetD3DDevice GetCallableOriginalSetD3DDevice() {
     auto original = g_Original_slSetD3DDevice;
     return IsSavedStreamlineOriginalCallable("slSetD3DDevice", reinterpret_cast<void*>(original),
                                              g_SLSetD3DDeviceTarget.load(std::memory_order_acquire),
+                                             "core Streamline module")
+               ? original
+               : nullptr;
+}
+
+PFN_slSetTagForFrame GetCallableOriginalSetTagForFrame() {
+    auto original = g_Original_slSetTagForFrame;
+    return IsSavedStreamlineOriginalCallable("slSetTagForFrame", reinterpret_cast<void*>(original),
+                                             g_SLSetTagForFrameTarget.load(std::memory_order_acquire),
                                              "core Streamline module")
                ? original
                : nullptr;
@@ -1164,6 +1219,12 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
     }
 
     if (previousSignalObserved != signalUpdate.effectiveActive) {
+        if (signalUpdate.effectiveActive) {
+            ce::dx12_streamline_ui_overlay::BeginActivation(
+                static_cast<uint32_t>(std::clamp(signalUpdate.effectiveMultiplier, 1, 6)));
+        } else {
+            ce::dx12_streamline_ui_overlay::EndActivation("accepted Streamline FG OFF transition");
+        }
         DX12_OnStreamlineFGStateChanged(signalUpdate.effectiveActive);
         HookLogImportant("Streamline Hook: FG state transition %s->%s via %s", previousSignalObserved ? "ON" : "OFF",
                          signalUpdate.effectiveActive ? "ON" : "OFF", source ? source : "runtime-state");
@@ -1901,6 +1962,9 @@ void RegisterDynamicHooksOnce() {
     IATHook::RegisterDynamicHookFiltered("slSetD3DDevice", reinterpret_cast<void*>(Hooked_slSetD3DDevice),
                                          reinterpret_cast<void**>(&g_Original_slSetD3DDevice),
                                          IsStreamlineCoreDynamicHookModule);
+    IATHook::RegisterDynamicHookFiltered("slSetTagForFrame", reinterpret_cast<void*>(Hooked_slSetTagForFrame),
+                                         reinterpret_cast<void**>(&g_Original_slSetTagForFrame),
+                                         IsStreamlineCoreDynamicHookModule);
     IATHook::RegisterDynamicHookFiltered("slDLSSGSetOptions", reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
                                          reinterpret_cast<void**>(&g_Original_slDLSSGSetOptions),
                                          IsStreamlineDLSSGDynamicHookModule);
@@ -1938,6 +2002,8 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
     const auto originalGetPluginFunction =
         reinterpret_cast<PFN_slGetPluginFunction>(GetProcAddress(module, "slGetPluginFunction"));
     const auto originalSetD3DDevice = reinterpret_cast<PFN_slSetD3DDevice>(GetProcAddress(module, "slSetD3DDevice"));
+    const auto originalSetTagForFrame =
+        reinterpret_cast<PFN_slSetTagForFrame>(GetProcAddress(module, "slSetTagForFrame"));
     const auto originalDLSSGSetOptions =
         reinterpret_cast<PFN_slDLSSGSetOptions>(GetProcAddress(module, "slDLSSGSetOptions"));
     const auto originalDLSSGGetState = reinterpret_cast<PFN_slDLSSGGetState>(GetProcAddress(module, "slDLSSGGetState"));
@@ -1948,6 +2014,7 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
         reinterpret_cast<PFN_slReflexSetConstants>(GetProcAddress(module, "slReflexSetConstants"));
 
     if (!originalGetFeatureFunction && !originalGetPluginFunction && !originalSetD3DDevice &&
+        !originalSetTagForFrame &&
         !originalDLSSGSetOptions && !originalDLSSGGetState && !originalReflexSleep && !originalReflexSetOptions &&
         !originalReflexSetConstants) {
         return false;
@@ -1970,7 +2037,8 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
         };
         const bool anyCoreHookTargetWithinModule = targetWithinModule(g_SLGetFeatureFunctionTarget, module) ||
                                                    targetWithinModule(g_SLGetPluginFunctionTarget, module) ||
-                                                   targetWithinModule(g_SLSetD3DDeviceTarget, module);
+                                                   targetWithinModule(g_SLSetD3DDeviceTarget, module) ||
+                                                   targetWithinModule(g_SLSetTagForFrameTarget, module);
         if (!ce::streamline_runtime_policy::IsInstalledStreamlineModuleMaskStaleForReloadedModule(
                 true, anyCoreHookTargetWithinModule)) {
             return false;
@@ -1994,6 +2062,8 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
              reinterpret_cast<void* volatile*>(&g_Original_slGetPluginFunction)},
             {"slSetD3DDevice", &g_SLSetD3DDeviceTarget, &g_SLSetD3DDeviceHooked,
              reinterpret_cast<void* volatile*>(&g_Original_slSetD3DDevice)},
+            {"slSetTagForFrame", &g_SLSetTagForFrameTarget, &g_SLSetTagForFrameHooked,
+             reinterpret_cast<void* volatile*>(&g_Original_slSetTagForFrame)},
         };
         int healedSlots = 0;
         for (CoreSlotView& slot : coreSlots) {
@@ -2058,6 +2128,17 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
                 g_Original_slSetD3DDevice, g_SLSetD3DDeviceHooked, g_SLSetD3DDeviceTarget, "slSetD3DDevice");
         }
 
+        if (shouldHookCoreExports && originalSetTagForFrame) {
+            if (!g_Original_slSetTagForFrame) {
+                g_Original_slSetTagForFrame = originalSetTagForFrame;
+            }
+
+            hookedAnything |= InstallInlineHookOnce(
+                reinterpret_cast<void*>(originalSetTagForFrame), reinterpret_cast<void*>(Hooked_slSetTagForFrame),
+                g_Original_slSetTagForFrame, g_SLSetTagForFrameHooked, g_SLSetTagForFrameTarget,
+                "slSetTagForFrame");
+        }
+
         if (shouldHookCoreExports && moduleBit != 0 &&
             (g_IATPatchesMask.load(std::memory_order_acquire) & moduleBit) == 0) {
             void* dummy = nullptr;
@@ -2072,6 +2153,10 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
             if (originalSetD3DDevice) {
                 IATHook::PatchIATAllModules(moduleBaseName, "slSetD3DDevice",
                                             reinterpret_cast<void*>(Hooked_slSetD3DDevice), &dummy);
+            }
+            if (originalSetTagForFrame) {
+                IATHook::PatchIATAllModules(moduleBaseName, "slSetTagForFrame",
+                                            reinterpret_cast<void*>(Hooked_slSetTagForFrame), &dummy);
             }
             g_IATPatchesMask.fetch_or(moduleBit, std::memory_order_acq_rel);
         }
@@ -2677,6 +2762,16 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
             safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
             postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
 
+    // Arm before forwarding the first OFF->ON call. Streamline is allowed to do synchronous
+    // setup inside SetOptions; if it asks the app to tag the activation frame re-entrantly, the
+    // official UIColorAndAlpha path must already be ready. BeginActivation is idempotent until
+    // the corresponding accepted OFF transition.
+    if (!pureObserverOnly && requestedEnabled &&
+        !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
+        ce::dx12_streamline_ui_overlay::BeginActivation(
+            std::clamp(adjustedOptions.numFramesToGenerate + 1u, 1u, 6u));
+    }
+
     const bool setOptionsCallSuppressed = suppressOffCall;
     slResult result;
     if (suppressOffCall) {
@@ -2742,6 +2837,11 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
             ResetStartupProtectedOffChurnActiveProof("forwarded authoritative SetOptions disable");
         }
         result = originalSetOptions(viewport, adjustedOptions);
+    }
+
+    if (!pureObserverOnly && requestedEnabled && result != kSlResultOk &&
+        !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
+        ce::dx12_streamline_ui_overlay::EndActivation("slDLSSGSetOptions enable failed");
     }
 
     LogDLSSGSetOptionsTransition(viewportKey, options, adjustedOptions, originalGeneratedFrames, capabilityMax,
@@ -2994,12 +3094,86 @@ slResult Hooked_slSetD3DDevice(void* d3dDevice) {
         return kSlResultErrorInvalidState;
     }
 
+    bool isD3D12 = false;
+    if (d3dDevice) {
+        ID3D12Device* dx12Device = nullptr;
+        if (SUCCEEDED(static_cast<IUnknown*>(d3dDevice)->QueryInterface(IID_PPV_ARGS(&dx12Device))) && dx12Device) {
+            isD3D12 = true;
+            dx12Device->Release();
+        }
+    }
+
     const slResult result = originalSetD3DDevice(d3dDevice);
     if (result == kSlResultOk) {
+        g_StreamlineUsesD3D12.store(isD3D12, std::memory_order_release);
         TryResolveDLSSGFeatureHooks();
         TryResolveReflexFeatureHooks();
     }
     return result;
+}
+
+slResult Hooked_slSetTagForFrame(const slBaseStructure& frame, const slViewportHandle& viewport,
+                                 const slResourceTag* tags, uint32_t numTags, void* commandBuffer) {
+    auto originalSetTagForFrame = GetCallableOriginalSetTagForFrame();
+    if (!originalSetTagForFrame) {
+        return kSlResultErrorInvalidState;
+    }
+
+    const bool wantsUiBootstrapRecord = ce::dx12_streamline_ui_overlay::OnFrameTag(&frame);
+
+    // DLSS-G consumes UIColorAndAlpha before its first generated output exists, while PostSL can
+    // only run after that output has been produced. Record CE's one-shot activation overlay into
+    // the official UI layer on the app-provided command list. This introduces no copy, extra
+    // submission, queue, or wait and naturally follows Streamline's own synchronization.
+    if (!ShouldKeepPureObserverOnlyStreamlineBehavior() &&
+        g_StreamlineUsesD3D12.load(std::memory_order_acquire) && wantsUiBootstrapRecord && tags && commandBuffer) {
+        for (uint32_t i = 0; i < numTags; ++i) {
+            const slResourceTag& tag = tags[i];
+            if (tag.type != kSLBufferTypeUIColorAndAlpha || !tag.resource || !tag.resource->native ||
+                tag.resource->type != slResourceType::kTexture2D || tag.extent.top != 0 || tag.extent.left != 0) {
+                continue;
+            }
+
+            auto* uiResource = static_cast<ID3D12Resource*>(tag.resource->native);
+            const D3D12_RESOURCE_DESC desc = uiResource->GetDesc();
+            const uint32_t width = tag.extent.width != 0
+                                       ? tag.extent.width
+                                       : (tag.resource->width != 0 ? tag.resource->width
+                                                                   : static_cast<uint32_t>(desc.Width));
+            const uint32_t height = tag.extent.height != 0
+                                        ? tag.extent.height
+                                        : (tag.resource->height != 0 ? tag.resource->height : desc.Height);
+            const DXGI_FORMAT format = tag.resource->nativeFormat != 0
+                                           ? static_cast<DXGI_FORMAT>(tag.resource->nativeFormat)
+                                           : desc.Format;
+            const bool hdr = format == DXGI_FORMAT_R10G10B10A2_UNORM ||
+                             format == DXGI_FORMAT_R10G10B10A2_TYPELESS ||
+                             format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
+                             format == DXGI_FORMAT_R16G16B16A16_TYPELESS;
+            ID3D12CommandQueue* initializationQueue = DX12_AcquireOriginalGameQueueForOverlay();
+            if (initializationQueue) {
+                ce::dx12_streamline_ui_overlay::RecordRequest request;
+                request.commandList = static_cast<ID3D12GraphicsCommandList*>(commandBuffer);
+                request.uiResource = uiResource;
+                request.initializationQueue = initializationQueue;
+                request.resourceState = static_cast<D3D12_RESOURCE_STATES>(tag.resource->state);
+                request.format = format;
+                request.width = width;
+                request.height = height;
+                request.hdr = hdr;
+                request.frameToken = &frame;
+                const bool recorded = ce::dx12_streamline_ui_overlay::TryRecordBootstrap(request);
+                initializationQueue->Release();
+                if (recorded) {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Streamline observes the resource only after CE's commands have been appended. For volatile
+    // tags this is essential: any copy Streamline records into the same command list includes CE.
+    return originalSetTagForFrame(frame, viewport, tags, numTags, commandBuffer);
 }
 
 // Hook for Streamline Reflex sleep. This lets CE observe game-owned Reflex
@@ -3171,6 +3345,8 @@ void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char
          reinterpret_cast<void* volatile*>(&g_Original_slGetPluginFunction)},
         {"slSetD3DDevice", &g_SLSetD3DDeviceTarget, &g_SLSetD3DDeviceHooked,
          reinterpret_cast<void* volatile*>(&g_Original_slSetD3DDevice)},
+        {"slSetTagForFrame", &g_SLSetTagForFrameTarget, &g_SLSetTagForFrameHooked,
+         reinterpret_cast<void* volatile*>(&g_Original_slSetTagForFrame)},
         {"slDLSSGSetOptions", &g_DLSSGSetOptionsTarget, &g_DLSSGSetOptionsHooked,
          reinterpret_cast<void* volatile*>(&g_Original_slDLSSGSetOptions)},
         {"slDLSSGGetState", &g_DLSSGGetStateTarget, &g_DLSSGGetStateHooked,
@@ -3259,12 +3435,14 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
         HookLogImportant(
             "Streamline Hook: Fresh module load inspected %s (%p) "
             "slGetFeatureFunctionHooked=%d slGetPluginFunctionHooked=%d slSetD3DDeviceHooked=%d "
+            "slSetTagForFrameHooked=%d "
             "dlssgSetOptionsHooked=%d "
             "dlssgGetStateHooked=%d reflexSleepHooked=%d reflexSetOptionsHooked=%d reflexSetConstantsHooked=%d",
             GetModuleBaseName(moduleNameOrPath), module,
             g_SLGetFeatureFunctionHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_SLGetPluginFunctionHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_SLSetD3DDeviceHooked.load(std::memory_order_acquire) ? 1 : 0,
+            g_SLSetTagForFrameHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_DLSSGGetStateHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0,
@@ -3282,6 +3460,7 @@ bool IsDLSSFGRequestedViaStreamline() {
 }
 
 void OnAuthoritativeFFXTakeover() {
+    ce::dx12_streamline_ui_overlay::EndActivation("authoritative FFX takeover");
     size_t resetViewportCount = 0;
     size_t preservedCapabilityCount = 0;
     {
@@ -3340,6 +3519,7 @@ void OnAuthoritativeStreamlineStartupHandoff() {
 }
 
 void Shutdown() {
+    ce::dx12_streamline_ui_overlay::EndActivation("Streamline shutdown");
     std::lock_guard<std::mutex> lock(g_StateMutex);
     g_ViewportStates.clear();
     g_ViewportCapabilityMax.clear();
@@ -3358,6 +3538,7 @@ void Shutdown() {
     g_FGCompat.SetDLSSFGActive(false);
     g_FGCompat.SetStreamlineSupportPresent(false);
     DXGIShared::g_StreamlineFGRunning.store(false, std::memory_order_release);
+    g_StreamlineUsesD3D12.store(false, std::memory_order_release);
 }
 
 void FlushSuppressedSetOptionsOffIfNeeded() {

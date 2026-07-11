@@ -60,6 +60,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
 #include "dx11_hook.h"
 #include "dx12_ffx_suspend_overlay.h"
 #include "dx12_hook.h"
+#include "dx12_streamline_ui_overlay.h"
 #include "ffx_hook.h"
 #include "graphics_hook.h"
 #include "lod_helper.h"
@@ -238,6 +239,7 @@ enum class DX12OverlayRenderRoute : uint32_t {
     kNormal = 1,
     kPostSL = 2,
     kFFXPresentCallback = 3,
+    kStreamlineUI = 4,
 };
 static std::atomic<ULONGLONG> g_LastDX12OverlayRenderTickMs{0};
 static std::atomic<uint32_t> g_LastDX12OverlayRenderRoute{static_cast<uint32_t>(DX12OverlayRenderRoute::kNone)};
@@ -328,6 +330,8 @@ static const char* DX12OverlayRenderRouteName(uint32_t route) {
             return "post-sl";
         case DX12OverlayRenderRoute::kFFXPresentCallback:
             return "ffx-present-callback";
+        case DX12OverlayRenderRoute::kStreamlineUI:
+            return "streamline-ui";
         default:
             return "none";
     }
@@ -1616,6 +1620,15 @@ static bool EnsureDescFreeBackendForDeviceAndFormat(ID3D12Device* dev, DXGI_FORM
 std::atomic<ID3D12Device*> g_Device{nullptr};
 std::atomic<ID3D12CommandQueue*> g_CommandQueue{nullptr};
 std::recursive_mutex g_CommandQueueMutex;
+
+ID3D12CommandQueue* DX12_AcquireOriginalGameQueueForOverlay() {
+    std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+    ID3D12CommandQueue* queue = g_OriginalGameQueue;
+    if (queue) {
+        queue->AddRef();
+    }
+    return queue;
+}
 
 // Called by the freeze watchdog when it captures a freeze dump. If the D3D12
 // device is in a removed/hung state, emit DRED auto-breadcrumbs + page-fault info
@@ -12805,6 +12818,15 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         return;
     }
 
+    // The first DLSS-G input frame may already carry CE's overlay through Streamline's
+    // official UIColorAndAlpha tag. That route is recorded in the app's own command list
+    // before interpolation, so it covers the first generated output that exists before
+    // PostSL can possibly run. Do not blend the same overlay a second time on those output
+    // backbuffers. The next frame tag (or the bounded output count) retires this bootstrap.
+    if (ce::dx12_streamline_ui_overlay::ConsumePostSLCoverage()) {
+        return;
+    }
+
     // After FSR→DLSS: PostSL rendering causes DEVICE_REMOVED. Use graduated
     // probes so we do not jump directly from an empty submit to a full
     // copy-render-copy overlay pass on the first real PostSL frame.
@@ -22070,8 +22092,18 @@ skip_command_queue_registration:
     const bool eclCallerIsSteam = eclCallerModulePath[0] != '\0' && IsSteamOverlayModulePath(eclCallerModulePath);
     const bool hasDeferredOverlay = g_steamDeferredOverlay.pending;
 
-    if (original)
+    if (original) {
+        const bool streamlineUiBootstrapSubmitted =
+            ce::dx12_streamline_ui_overlay::BeforeExecuteCommandLists(NumCommandLists, ppCommandLists);
+        if (streamlineUiBootstrapSubmitted) {
+            // Account the recorded UI draw before entering a wrapped queue. Its ExecuteCommandLists
+            // implementation may synchronously re-enter Present, and that first output must already
+            // inherit the official-UI coverage proof.
+            NoteDX12OverlayRendered(DX12OverlayRenderRoute::kStreamlineUI);
+        }
         original(pThis, NumCommandLists, ppCommandLists);
+        ce::dx12_streamline_ui_overlay::AfterExecuteCommandLists(pThis, NumCommandLists, ppCommandLists);
+    }
 
     // After Steam's ECL completes: submit CE deferred overlay to the same queue.
     if (eclCallerIsSteam && hasDeferredOverlay) {
@@ -22638,6 +22670,7 @@ void DX12Hook::Shutdown() {
     // does not hold references that could stall the game's DX12 shutdown.
     DX12_UnregisterNativeFSRSwapchainPresentationQueue(nullptr, "DX12 shutdown");
     ce::dx12_ffx_suspend_overlay::Shutdown("DX12 shutdown");
+    ce::dx12_streamline_ui_overlay::Shutdown("DX12 shutdown");
     ResetFFXPresentCallbackOverlayBackend("DX12: Shutdown");
     {
         std::lock_guard<std::mutex> lock(g_FFXPresentCallbackBridgeMutex);

@@ -90,6 +90,10 @@ void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain* swapchain, 
 bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clearStartupWindow,
                                                    bool allowConfirmedWarmupService = false);
 DWORD DX12_GetGamePresentThreadId();
+// Returns one retained reference to the real game queue. Streamline's official UI-tag overlay
+// recorder uses it only to initialize device-scoped PSO/font resources; the overlay draw itself
+// remains inside the app-provided command list and is never separately submitted on this queue.
+ID3D12CommandQueue* DX12_AcquireOriginalGameQueueForOverlay();
 void DX12_SetFFXPresentCallbackBridge(void* bridgeKey, ce::ffx_api::PresentCallback originalCallback,
                                       void* originalUserContext);
 bool DX12_HasFFXPresentCallbackBridge(void* bridgeKey);
