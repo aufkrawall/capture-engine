@@ -16,7 +16,7 @@
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/inline_hook.h"
 #include "dx12_hook.h"
-#include "ffx_hook.h"
+#include "ffx_cached_pointer_router.h"
 
 extern void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled, bool retainedPresentCallbackBridge);
 extern void DX12_ClearNativeFSRRuntimeOwnedTeardown(const char* reason);
@@ -76,6 +76,15 @@ std::once_flag g_DynamicHookRegistrationOnce;
 // CRITICAL FIX: Track context types to know if destroyed context is FG
 std::mutex g_ContextMapMutex;
 std::unordered_map<ffxContext, uint32_t> g_ContextTypeMap;
+// Serializes post-provider transition publication with successful context destruction. The FFX provider may invoke
+// configure from multiple threads; CE's global routing/session mutations must never overlap or race context erasure.
+std::mutex g_FrameGenerationRoutingTransitionMutex;
+struct FrameGenerationRoutingState {
+    bool enabled = false;
+    bool bridgeActive = false;
+    bool appCallbackProvided = false;
+};
+std::unordered_map<ffxContext, FrameGenerationRoutingState> g_FrameGenerationRoutingByContext;
 std::mutex g_PresentCallbackBridgeMutex;
 std::unordered_set<void*> g_PresentCallbackBridgeKeys;
 
@@ -95,19 +104,25 @@ std::recursive_mutex g_FfxConfigureBreakpointMutex;
 static void* g_ffxConfigureVehHandle = nullptr;
 static uint8_t g_ffxConfigureOriginalFirstByte = 0;
 static std::atomic<bool> g_ffxConfigureVehArmed{false};
-// One-shot VEH detection: after CE processes the first ENABLED no-callback ffxConfigure, the VEH is
-// permanently disarmed (byte restored, no re-arm). All subsequent ffxConfigure calls execute natively
-// with zero CE overhead — eliminating the multi-threaded 0xCC contention that desyncs AMD's QPC-timed
-// pacing (ffxQuery+0x225fe). GTA's ffxConfigure calls come from 6-7 threads; the 0xCC byte mutation
+// One-shot VEH detection: after CE processes the first ENABLED no-callback ffxConfigure, the breakpoint is
+// permanently disarmed (byte restored, no re-arm). Calls already routed through IAT/GetProcAddress or the
+// cached-pointer router remain observable without touching AMD's code page. This eliminates the multi-threaded
+// 0xCC contention that desyncs AMD's QPC-timed pacing (ffxQuery+0x225fe). GTA's ffxConfigure calls come from
+// 6-7 threads; the 0xCC byte mutation
 // on a code page those threads call into creates timing irregularities. The synthetic test app (single-
-// threaded VEH hits) is stable; GTA (multi-threaded) wedges in ~8-10 frames. Reset by
-// FFXHook_ResetVehDisarmAndRearm when FG turns off (for on→off→on transitions).
+// threaded VEH hits) is stable; GTA (multi-threaded) wedges in ~8-10 frames. The latch resets on FG-off only
+// when no durable caller-owned pointer route is available for the next on-transition.
 static std::atomic<bool> g_ffxConfigureVehPermanentlyDisarmed{false};
+// A stable client-owned ffxConfigure pointer route survives context destruction. While it is active, resetting
+// FG state must not re-arm AMD's code-page breakpoint: the pointer route observes the next enable and every
+// suspend/resume transition without executable-page mutation.
+static std::atomic<bool> g_DurableCachedConfigureRouteActive{false};
 static std::atomic<int> g_FfxConfigureOriginalForwardDepth{0};
 static std::atomic<bool> g_FfxConfigureDeferredRearm{false};
 static std::atomic<void*> g_FfxConfigureDeferredRearmTarget{nullptr};
 
 static bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target, const char* moduleName, const char* reason);
+static void RestoreFfxConfigureBreakpointIfCurrent(void* target, const char* reason);
 static ffxReturnCode_t CallFfxConfigureOriginalGuarded(PfnFfxConfigure originalConfigure, ffxContext* context,
                                                        const ffxConfigureDescHeader* desc);
 static void ClearSubstituteUiReRegistrationForContext(ffxContext context);
@@ -263,8 +278,8 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* context, ffxCreateContextDes
 
     // Parse the swapchain creation descriptor before forwarding: the output pointer is populated by AMD, while
     // the exact game/presentation queue is an input. Direct proxy-backbuffer work is legal only on this queue.
-    const auto parsedSwapChainCreate = ce::ffx_api::ParseFrameGenerationSwapChainCreateState(
-        reinterpret_cast<const ce::ffx_api::ApiHeader*>(desc));
+    const auto parsedSwapChainCreate =
+        ce::ffx_api::ParseFrameGenerationSwapChainCreateState(reinterpret_cast<const ce::ffx_api::ApiHeader*>(desc));
     const bool duringStreamlineStartup = DXGIShared::IsStreamlineStartupTransitionWindowActive();
 
     // Call original first
@@ -293,8 +308,8 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* context, ffxCreateContextDes
         }
 
         // Check if this is a Frame Generation context
-        if (newlyTrackedContext && (effectId == FFX_API_EFFECT_ID_FRAMEGENERATION ||
-                                    effectId == FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN)) {
+        if (newlyTrackedContext &&
+            (effectId == FFX_API_EFFECT_ID_FRAMEGENERATION || effectId == FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN)) {
             int prevCount = g_FGContextCount.fetch_add(1, std::memory_order_acq_rel);
             HookLog(
                 "FFX Hook: Frame Generation context CREATED (type=0x%llx, "
@@ -333,10 +348,13 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
     // Call original
     ffxReturnCode_t result = g_Original_ffxDestroyContext(context, memCb);
 
+    std::unique_lock<std::mutex> transitionLock;
     if (result == FFX_API_RETURN_OK) {
+        transitionLock = std::unique_lock<std::mutex>(g_FrameGenerationRoutingTransitionMutex);
         {
             std::lock_guard<std::mutex> lock(g_ContextMapMutex);
             g_ContextTypeMap.erase(contextHandle);
+            g_FrameGenerationRoutingByContext.erase(contextHandle);
         }
         {
             std::lock_guard<std::mutex> lock(g_PresentCallbackBridgeMutex);
@@ -416,9 +434,9 @@ static void ClearSubstituteUiReRegistrationForContext(ffxContext context) {
     HookLogImportant("FFX Hook: Cleared substitute UI re-registration for destroyed context %p", context);
 }
 
-static void StoreSubstituteUiReRegistration(ffxContext* context, PfnFfxConfigure originalConfigure,
-                                            const ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource&
-                                                substitutedDesc) {
+static void StoreSubstituteUiReRegistration(
+    ffxContext* context, PfnFfxConfigure originalConfigure,
+    const ce::ffx_api::ConfigureDescFrameGenerationSwapChainRegisterUiResource& substitutedDesc) {
     std::lock_guard<std::mutex> lock(g_SubstReRegMutex);
     g_SubstReRegContext = context ? *context : nullptr;
     g_SubstReRegConfigure = originalConfigure;
@@ -639,8 +657,7 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         }
     } else if (retainedBridgeForDisabledConfigure) {
         static std::atomic<int> s_retainedDisabledPresentCallbackBridgeLogCount{0};
-        const int logCount =
-            s_retainedDisabledPresentCallbackBridgeLogCount.fetch_add(1, std::memory_order_relaxed);
+        const int logCount = s_retainedDisabledPresentCallbackBridgeLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 300) == 0) {
             const auto* originalDesc = reinterpret_cast<const ce::ffx_api::ConfigureDescFrameGeneration*>(desc);
             HookLogImportant(
@@ -695,15 +712,10 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
                 "FFX Hook: Native FSR configure without DX12 present-callback bridge "
                 "(context=%p frameID=%llu enabled=%d retainedBridge=%d originalPresent=%p log=%d)",
                 context, static_cast<unsigned long long>(originalDesc->frameID),
-                originalDesc->frameGenerationEnabled ? 1 : 0,
-                retainedExistingBridgeForDisabledConfigure ? 1 : 0,
+                originalDesc->frameGenerationEnabled ? 1 : 0, retainedExistingBridgeForDisabledConfigure ? 1 : 0,
                 reinterpret_cast<void*>(originalDesc->presentCallback), logCount + 1);
         }
     }
-
-    HookLog("FFX Hook: Frame Generation configure %s (context=%p, frameID=%llu, type=0x%llx)",
-            parsed.enabled ? "ENABLED" : "DISABLED", context, (unsigned long long)parsed.frameId,
-            (unsigned long long)desc->type);
 
     if (!parsed.enabled && disabledStartupArmingConfigure) {
         static std::atomic<int> s_disabledStartupArmingPreserveLogCount{0};
@@ -719,9 +731,50 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         return result;
     }
 
+    // Keep per-context dedupe and its global routing/session publications ordered even when a runtime emits
+    // configure packets concurrently. The provider call itself remains outside this lock.
+    std::lock_guard<std::mutex> transitionLock(g_FrameGenerationRoutingTransitionMutex);
+    const bool bridgeActiveForConfigure =
+        installedPresentCallbackBridge || retainedAlreadyBridgedPresentCallback || retainedBridgeForDisabledConfigure;
+    bool enabledStateChanged = parsed.enabled;
+    bool routingStateChanged = true;
+    {
+        std::lock_guard<std::mutex> lock(g_ContextMapMutex);
+        const auto existing = g_FrameGenerationRoutingByContext.find(contextHandle);
+        if (existing != g_FrameGenerationRoutingByContext.end()) {
+            enabledStateChanged = existing->second.enabled != parsed.enabled;
+            routingStateChanged = enabledStateChanged || existing->second.bridgeActive != bridgeActiveForConfigure ||
+                                  existing->second.appCallbackProvided != appPresentCallbackProvided;
+            existing->second = {parsed.enabled, bridgeActiveForConfigure, appPresentCallbackProvided};
+        } else {
+            // A first observed disabled configure has no live state to tear down. The first enabled configure is
+            // a real transition and must still finalize protected FFX startup.
+            enabledStateChanged = parsed.enabled;
+            g_FrameGenerationRoutingByContext.emplace(
+                contextHandle,
+                FrameGenerationRoutingState{parsed.enabled, bridgeActiveForConfigure, appPresentCallbackProvided});
+        }
+    }
+
+    if (enabledStateChanged) {
+        HookLogImportant("FFX Hook: Frame Generation configure transition %s (context=%p frameID=%llu type=0x%llx)",
+                         parsed.enabled ? "ENABLED" : "DISABLED", context,
+                         static_cast<unsigned long long>(parsed.frameId), static_cast<unsigned long long>(desc->type));
+    } else {
+        static std::atomic<int> s_unchangedConfigureLogCount{0};
+        const int logCount = s_unchangedConfigureLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (logCount <= 10 || (logCount % 600) == 0) {
+            HookLog(
+                "FFX Hook: Frame Generation configure unchanged (%s context=%p frameID=%llu routingChanged=%d "
+                "log=%d)",
+                parsed.enabled ? "enabled" : "disabled", context, static_cast<unsigned long long>(parsed.frameId),
+                routingStateChanged ? 1 : 0, logCount);
+        }
+    }
+
     // Native FSR can keep its context alive while toggling FG on/off via
     // ffxConfigure. Trust that runtime signal over context lifetime.
-    if (parsed.enabled) {
+    if (parsed.enabled && enabledStateChanged) {
         // MarkDirectFFXApiConfirmation intentionally requires the current FSR
         // activation to be live. Latch the API state before notifying DX12 so
         // the first enabled configure can finalize protected startup without an
@@ -736,20 +789,23 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
                 context, static_cast<unsigned long long>(parsed.frameId));
         }
     }
-    const bool retainedBridgeForConfigure = !parsed.enabled && (retainedExistingBridgeForDisabledConfigure ||
-                                                                retainedAlreadyBridgedPresentCallback ||
-                                                                retainedBridgeForDisabledConfigure);
-    DX12_OnNativeFSRPresentCallbackRoutingConfigured(
-        parsed.enabled,
-        installedPresentCallbackBridge || retainedAlreadyBridgedPresentCallback || retainedBridgeForDisabledConfigure,
-        appPresentCallbackProvided);
-    DX12_OnNativeFSRFrameGenerationConfigured(parsed.enabled, retainedBridgeForConfigure);
-    g_FGCompat.SetFSRFGActive(parsed.enabled);
-    ce::fg_session::EmitFGEvent(
-        parsed.enabled ? ce::fg_session::FGEventKind::kNativeFSRConfigureOn
-                       : ce::fg_session::FGEventKind::kNativeFSRConfigureOff,
-        "FFXHook::Hooked_ffxConfigure", context, nullptr,
-        parsed.enabled ? ce::fg_runtime::RuntimeMode::kFSRFG : ce::fg_runtime::RuntimeMode::kOff, parsed.enabled, true);
+    const bool retainedBridgeForConfigure =
+        !parsed.enabled && (retainedExistingBridgeForDisabledConfigure || retainedAlreadyBridgedPresentCallback ||
+                            retainedBridgeForDisabledConfigure);
+    if (routingStateChanged) {
+        DX12_OnNativeFSRPresentCallbackRoutingConfigured(parsed.enabled, bridgeActiveForConfigure,
+                                                         appPresentCallbackProvided);
+    }
+    if (enabledStateChanged) {
+        DX12_OnNativeFSRFrameGenerationConfigured(parsed.enabled, retainedBridgeForConfigure);
+        g_FGCompat.SetFSRFGActive(parsed.enabled);
+        ce::fg_session::EmitFGEvent(
+            parsed.enabled ? ce::fg_session::FGEventKind::kNativeFSRConfigureOn
+                           : ce::fg_session::FGEventKind::kNativeFSRConfigureOff,
+            "FFXHook::Hooked_ffxConfigure", context, nullptr,
+            parsed.enabled ? ce::fg_runtime::RuntimeMode::kFSRFG : ce::fg_runtime::RuntimeMode::kOff, parsed.enabled,
+            true);
+    }
     return result;
 }
 
@@ -807,6 +863,15 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
             HookLog("FFX Hook: No supported FFX exports found in %s - skipping (log=%d)", moduleName, logCount);
         }
         return false;
+    }
+
+    // Do not retire a live durable route merely because a related FFX DLL without ffxConfigure was observed.
+    // Only a genuinely different callable configure export requires a new breakpoint/routing epoch.
+    const void* installedConfigureTarget = g_ffxConfigureTarget.load(std::memory_order_acquire);
+    if (firstSeenModule && g_HookedModule && configureCtx && installedConfigureTarget &&
+        installedConfigureTarget != reinterpret_cast<void*>(configureCtx)) {
+        g_DurableCachedConfigureRouteActive.store(false, std::memory_order_release);
+        g_ffxConfigureVehPermanentlyDisarmed.store(false, std::memory_order_release);
     }
 
     const bool allowInlineHooks = ce::ffx_api::ShouldInlineHookFFXExportsForModule(moduleName);
@@ -957,12 +1022,54 @@ bool InstallHooksForModule(HMODULE hModule, const char* moduleName) {
         static std::atomic<int> s_hooksInstalledLogCount{0};
         const int logCount = s_hooksInstalledLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (firstSeenModule || logCount <= 20 || (logCount % 300) == 0) {
-            HookLog("FFX Hook: Hooks installed successfully for %s (inline=%d iat=%d veh=%d dynamic=1 protected=%d "
-                    "log=%d)",
-                    moduleName, inlineHookedAnything ? 1 : 0, iatPatchedAnything ? 1 : 0,
-                    vehHookedAnything ? 1 : 0,
-                    !allowInlineHooks ? 1 : 0, logCount);
+            HookLog(
+                "FFX Hook: Hooks installed successfully for %s (inline=%d iat=%d veh=%d dynamic=1 protected=%d "
+                "log=%d)",
+                moduleName, inlineHookedAnything ? 1 : 0, iatPatchedAnything ? 1 : 0, vehHookedAnything ? 1 : 0,
+                !allowInlineHooks ? 1 : 0, logCount);
         }
+    }
+
+    // A game can resolve FFX exports before CE's GetProcAddress hook wins startup initialization, then keep
+    // those addresses in writable SDK dispatch/global slots forever. Route those already-resolved client slots
+    // after the original exports and protected VEH fallback are fully initialized. This keeps
+    // create/configure/destroy observable (exact gameQueue capture and immediate suspend/resume state) without
+    // patching AMD's executable code or sustaining the contended entry breakpoint.
+    const ce::ffx_cached_pointer_router::Route cachedRoutes[] = {
+        {"ffxCreateContext", reinterpret_cast<void*>(createCtx), reinterpret_cast<void*>(Hooked_ffxCreateContext)},
+        {"ffxDestroyContext", reinterpret_cast<void*>(destroyCtx), reinterpret_cast<void*>(Hooked_ffxDestroyContext)},
+        {"ffxConfigure", reinterpret_cast<void*>(configureCtx), reinterpret_cast<void*>(Hooked_ffxConfigure)},
+    };
+    const auto cachedRouteResult =
+        ce::ffx_cached_pointer_router::Refresh(hModule, cachedRoutes, _countof(cachedRoutes));
+    constexpr std::uint64_t kConfigureRouteBit = std::uint64_t{1} << 2;
+    if ((cachedRouteResult.routedRouteMask & kConfigureRouteBit) != 0) {
+        // Once a durable client-owned ffxConfigure pointer routes through Hooked_ffxConfigure, the protected
+        // entry breakpoint is redundant. Retire it immediately. A caller that fetched the original before the
+        // atomic slot replacement still reaches the armed VEH; a caller that fetched the replacement reaches
+        // Hooked_ffxConfigure. Setting the permanent latch before restoring the byte also prevents an in-flight
+        // guarded forward from re-arming after it returns.
+        const bool durableRouteWasActive =
+            g_DurableCachedConfigureRouteActive.exchange(true, std::memory_order_acq_rel);
+        const bool breakpointWasArmed = g_ffxConfigureVehArmed.load(std::memory_order_acquire);
+        g_ffxConfigureVehPermanentlyDisarmed.store(true, std::memory_order_release);
+        RestoreFfxConfigureBreakpointIfCurrent(reinterpret_cast<void*>(configureCtx),
+                                               "durable cached ffxConfigure pointer route installed");
+        g_FfxConfigureDeferredRearm.store(false, std::memory_order_release);
+        g_FfxConfigureDeferredRearmTarget.store(nullptr, std::memory_order_release);
+        if (!durableRouteWasActive || breakpointWasArmed) {
+            HookLogImportant(
+                "FFX Hook: Retired protected ffxConfigure VEH breakpoint after installing a durable cached-pointer "
+                "route — all later enable/disable transitions remain observable without AMD code-page mutation");
+        }
+    }
+    if (cachedRouteResult.pointerSlotsPatched != 0) {
+        HookLogImportant(
+            "FFX Hook: Routed %zu pre-resolved FFX export pointer slot(s) across %zu client module(s) "
+            "(%zu writable non-executable sections) — startup-cached create/configure/destroy calls now retain "
+            "exact queue and transition visibility without modifying AMD code",
+            cachedRouteResult.pointerSlotsPatched, cachedRouteResult.modulesScanned,
+            cachedRouteResult.writableSectionsScanned);
     }
     return true;
 }
@@ -1231,17 +1338,15 @@ static LONG WINAPI FfxConfigureBreakpointVEH(EXCEPTION_POINTERS* ep) {
 
     // One-shot VEH detection: disarm only after BOTH (1) the no-callback flag is set AND (2) the UI
     // texture has been cached from a RegisterUiResource call. If we disarm before the cache is populated,
-    // subsequent ffxConfigure calls run natively and the cache is never filled → the bundle never fires.
+    // an otherwise-unrouted caller runs natively and the cache is never filled → the bundle never fires.
     // The RegisterUiResource (type=0x30002) may arrive before or after the enabled configure (type=0x20002)
     // that sets the no-callback flag, so we must wait for both conditions.
-    if (desc &&
-        DX12_IsNativeFSRInternalNoCallbackCompositionActive() &&
-        DX12_IsFFXUiResourceCachedForBundle() &&
+    if (desc && DX12_IsNativeFSRInternalNoCallbackCompositionActive() && DX12_IsFFXUiResourceCachedForBundle() &&
         !g_ffxConfigureVehPermanentlyDisarmed.exchange(true, std::memory_order_acq_rel)) {
         HookLogImportant(
             "FFX Hook: VEH permanently disarmed after one-shot no-callback detection (context=%p) — "
-            "subsequent ffxConfigure calls run natively (multi-threaded 0xCC contention was desyncing "
-            "AMD's ffxQuery pacing)",
+            "AMD's code page stays native; IAT/GetProcAddress/cached-pointer routes remain observable without "
+            "multi-threaded 0xCC contention that desyncs ffxQuery pacing",
             contextPtr);
     } else {
         // Re-arm after the real ffxConfigure returns. This keeps protected official
@@ -1324,12 +1429,11 @@ static std::atomic<uint32_t> g_SubstReRegInFlightTid{0};
 // swapchain runs ON that presenter thread — calling this from there closes the cycle and freezes the game
 // permanently. Hence the hard prework-context guard below (policy: MayReassertSubstituteUiResource).
 FFXSubstituteUiReRegistrationResult FFXHook_ReRegisterSubstituteUiResource() {
-    if (!g_SubstReRegActive.load(std::memory_order_acquire) ||
-        !DX12_IsNativeFSRInternalNoCallbackCompositionActive()) {
+    if (!g_SubstReRegActive.load(std::memory_order_acquire) || !DX12_IsNativeFSRInternalNoCallbackCompositionActive()) {
         return FFXSubstituteUiReRegistrationResult::kNotNeeded;
     }
-    const auto driver = ce::dx12_overlay_policy::ChooseFFXUiCompositeDriver(
-        DX12_IsCurrentThreadInsideFFXProxyPresentPrework());
+    const auto driver =
+        ce::dx12_overlay_policy::ChooseFFXUiCompositeDriver(DX12_IsCurrentThreadInsideFFXProxyPresentPrework());
     if (!ce::dx12_overlay_policy::MayReassertSubstituteUiResource(driver)) {
         static std::atomic<int> s_refusedLog{0};
         const int n = s_refusedLog.fetch_add(1, std::memory_order_relaxed);
@@ -1372,11 +1476,10 @@ FFXSubstituteUiReRegistrationResult FFXHook_ReRegisterSubstituteUiResource() {
 
 // Freeze-dump snapshot of the re-assert bracket (paired with DX12_LogFFXProxyPresentHookFreezeDiagnostics).
 void FFXHook_LogSubstituteReRegFreezeDiagnostics(const char* reason) {
-    HookLogImportant(
-        "FFX Hook: [subst-rereg-freeze-diag] %s — active=%d inFlightQpc=%llu inFlightTid=0x%04X",
-        reason ? reason : "freeze", g_SubstReRegActive.load(std::memory_order_acquire) ? 1 : 0,
-        static_cast<unsigned long long>(g_SubstReRegInFlightQpc.load(std::memory_order_acquire)),
-        g_SubstReRegInFlightTid.load(std::memory_order_acquire));
+    HookLogImportant("FFX Hook: [subst-rereg-freeze-diag] %s — active=%d inFlightQpc=%llu inFlightTid=0x%04X",
+                     reason ? reason : "freeze", g_SubstReRegActive.load(std::memory_order_acquire) ? 1 : 0,
+                     static_cast<unsigned long long>(g_SubstReRegInFlightQpc.load(std::memory_order_acquire)),
+                     g_SubstReRegInFlightTid.load(std::memory_order_acquire));
 }
 
 // Stop re-registering when CE's substitute texture is released (device change / teardown) — the stored desc's
@@ -1391,14 +1494,24 @@ void FFXHook_ClearSubstituteUiReRegistration() {
 
 // Reset the one-shot VEH disarm and re-arm the breakpoint for the next FG-on transition.
 // Called from DX12_OnNativeFSRFrameGenerationContextsDestroyed / ForceClearNativeFSRInternalNoCallbackComposition
-// when FG turns off. The next enabled ffxConfigure will fire the VEH once, detect no-callback mode, and
-// disarm again — one VEH hit per FG-on transition, no sustained multi-threaded contention.
+// when FG turns off and no durable cached-pointer route exists. The next enabled ffxConfigure will fire the VEH
+// once, detect no-callback mode, and disarm again — one VEH hit per FG-on transition, no sustained contention.
 void FFXHook_ResetVehDisarmAndRearm() {
+    if (g_DurableCachedConfigureRouteActive.load(std::memory_order_acquire)) {
+        g_ffxConfigureVehPermanentlyDisarmed.store(true, std::memory_order_release);
+        void* durableTarget = g_ffxConfigureTarget.load(std::memory_order_acquire);
+        RestoreFfxConfigureBreakpointIfCurrent(durableTarget, "durable cached ffxConfigure route remains active");
+        HookLogImportant(
+            "FFX Hook: Kept protected ffxConfigure VEH retired across FG context destruction because the durable "
+            "cached-pointer route remains active (target=%p)",
+            durableTarget);
+        return;
+    }
     g_ffxConfigureVehPermanentlyDisarmed.store(false, std::memory_order_release);
     void* target = g_ffxConfigureTarget.load(std::memory_order_acquire);
     if (target) {
-        ArmFfxConfigureBreakpoint(reinterpret_cast<PfnFfxConfigure>(target),
-                                  "protected official FFX runtime", "FG-off re-arm for next on-transition");
+        ArmFfxConfigureBreakpoint(reinterpret_cast<PfnFfxConfigure>(target), "protected official FFX runtime",
+                                  "FG-off re-arm for next on-transition");
         HookLogImportant("FFX Hook: VEH disarm reset + re-armed for next FG-on transition (target=%p)", target);
     }
 }
@@ -1562,6 +1675,9 @@ void Shutdown() {
     // is still readable and still points at CE's detour — the FFX module may already be unloaded here).
     DX12_RemoveFFXProxyPresentHook("FFX hook shutdown");
 
+    // Restore client-owned pre-resolved pointer slots before clearing original export addresses.
+    ce::ffx_cached_pointer_router::Shutdown();
+
     // Cleanup VEH breakpoint hook
     if (g_ffxConfigureVehHandle) {
         RemoveVectoredExceptionHandler(g_ffxConfigureVehHandle);
@@ -1575,6 +1691,7 @@ void Shutdown() {
     g_Original_ffxCreateContext = nullptr;
     g_Original_ffxDestroyContext = nullptr;
     g_Original_ffxConfigure = nullptr;
+    g_DurableCachedConfigureRouteActive.store(false, std::memory_order_release);
     g_HookedModule = nullptr;
     g_DefaultPresentCallback = nullptr;
     FFXHook_ClearSubstituteUiReRegistration();
@@ -1582,6 +1699,7 @@ void Shutdown() {
     {
         std::lock_guard<std::mutex> contextLock(g_ContextMapMutex);
         g_ContextTypeMap.clear();
+        g_FrameGenerationRoutingByContext.clear();
     }
     {
         std::lock_guard<std::mutex> bridgeLock(g_PresentCallbackBridgeMutex);

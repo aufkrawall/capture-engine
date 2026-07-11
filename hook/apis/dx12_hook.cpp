@@ -6527,6 +6527,21 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
             }
         }
     }
+    static std::atomic<void*> s_lastPreworkRouteProxy{nullptr};
+    static std::atomic<int> s_lastPreworkRoute{-1};
+    const int currentPreworkRoute = suspendBackbufferRoute ? 1 : 0;
+    void* previousPreworkProxy = s_lastPreworkRouteProxy.exchange(proxy, std::memory_order_acq_rel);
+    const int previousPreworkRoute = s_lastPreworkRoute.exchange(currentPreworkRoute, std::memory_order_acq_rel);
+    if (previousPreworkProxy != proxy || previousPreworkRoute != currentPreworkRoute) {
+        HookLogImportant(
+            "DX12: FFX proxy overlay route transition %s -> %s at prework #%llu (proxy=%p composited=%d) — "
+            "the first present after the configure transition selected the new target",
+            previousPreworkProxy != proxy || previousPreworkRoute < 0
+                ? "uninitialized"
+                : (previousPreworkRoute ? "suspend-backbuffer" : "active-ui-resource"),
+            suspendBackbufferRoute ? "suspend-backbuffer" : "active-ui-resource",
+            static_cast<unsigned long long>(preworkNum), (void*)proxy, composited ? 1 : 0);
+    }
     // A merely-entered detour is not coverage. Publish the live-driver heartbeat only after the command list
     // was submitted; otherwise immediately reactivate the real-present fallback for this same transition.
     g_FFXProxyPreworkLastQpc.store(composited ? static_cast<uint64_t>(qpc.QuadPart) : 0,

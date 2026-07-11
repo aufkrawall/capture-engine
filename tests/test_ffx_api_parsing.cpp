@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "../hook/apis/ffx_cached_pointer_router.h"
 #include "../hook/apis/ffx_hook.h"
 #include "../hook/common/ffx_api_parsing.h"
 
@@ -112,6 +113,38 @@ TEST(FFXApiParsingTest, IgnoresNonSwapChainCreateDescriptors) {
     EXPECT_FALSE(parsed.recognized);
     EXPECT_EQ(parsed.swapChainOutput, nullptr);
     EXPECT_EQ(parsed.gameQueue, nullptr);
+}
+
+TEST(FFXCachedPointerRouterTest, MatchesOnlyExactLiveOriginalExportPointers) {
+    ce::ffx_cached_pointer_router::Route routes[] = {
+        {"ffxCreateContext", reinterpret_cast<void*>(0x1000), reinterpret_cast<void*>(0x2000)},
+        {"ffxConfigure", reinterpret_cast<void*>(0x3000), reinterpret_cast<void*>(0x4000)},
+        {"invalid", nullptr, reinterpret_cast<void*>(0x5000)},
+        {"identity", reinterpret_cast<void*>(0x6000), reinterpret_cast<void*>(0x6000)},
+    };
+
+    EXPECT_EQ(ce::ffx_cached_pointer_router::detail::FindMatchingRoute(reinterpret_cast<void*>(0x1000), routes,
+                                                                       _countof(routes)),
+              0);
+    EXPECT_EQ(ce::ffx_cached_pointer_router::detail::FindMatchingRoute(reinterpret_cast<void*>(0x3000), routes,
+                                                                       _countof(routes)),
+              1);
+    EXPECT_EQ(ce::ffx_cached_pointer_router::detail::FindMatchingRoute(reinterpret_cast<void*>(0x6000), routes,
+                                                                       _countof(routes)),
+              -1);
+    EXPECT_EQ(ce::ffx_cached_pointer_router::detail::FindMatchingRoute(reinterpret_cast<void*>(0x7000), routes,
+                                                                       _countof(routes)),
+              -1);
+}
+
+TEST(FFXCachedPointerRouterTest, ScansOnlyWritableNonExecutablePersistentSections) {
+    EXPECT_TRUE(ce::ffx_cached_pointer_router::detail::IsWritableNonExecutableSection(IMAGE_SCN_MEM_READ |
+                                                                                      IMAGE_SCN_MEM_WRITE));
+    EXPECT_FALSE(ce::ffx_cached_pointer_router::detail::IsWritableNonExecutableSection(
+        IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE));
+    EXPECT_FALSE(ce::ffx_cached_pointer_router::detail::IsWritableNonExecutableSection(IMAGE_SCN_MEM_READ));
+    EXPECT_FALSE(ce::ffx_cached_pointer_router::detail::IsWritableNonExecutableSection(
+        IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_DISCARDABLE));
 }
 
 TEST(FFXApiParsingTest, PresentCallbackParsingExposesRuntimeCompositionSurface) {

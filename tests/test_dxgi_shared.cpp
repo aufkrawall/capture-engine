@@ -6036,6 +6036,28 @@ TEST(DXGISharedSourceTest, FFXOwnerQueueRendererRetainsTargetsAndNeverCpuWaits) 
     EXPECT_EQ(text.find("CreateCommandQueue"), std::string::npos);
 }
 
+TEST(DXGISharedSourceTest, DurableCachedFFXConfigureRouteRetiresContendedVehAndLogsFirstTransitionPresent) {
+    namespace fs = std::filesystem;
+    auto readFile = [](const fs::path& path) {
+        std::ifstream stream(path, std::ios::binary);
+        EXPECT_TRUE(stream.good()) << path.string();
+        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    };
+    const std::string ffx = readFile(fs::current_path() / "hook" / "apis" / "ffx_hook.cpp");
+    const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
+
+    EXPECT_NE(ffx.find("cachedRouteResult.routedRouteMask & kConfigureRouteBit"), std::string::npos);
+    EXPECT_NE(ffx.find("g_ffxConfigureVehPermanentlyDisarmed.store(true"), std::string::npos);
+    EXPECT_NE(ffx.find("g_DurableCachedConfigureRouteActive.exchange(true"), std::string::npos);
+    EXPECT_NE(ffx.find("durable cached ffxConfigure pointer route installed"), std::string::npos);
+    EXPECT_NE(ffx.find("Kept protected ffxConfigure VEH retired across FG context destruction"), std::string::npos);
+    EXPECT_NE(ffx.find("Frame Generation configure unchanged"), std::string::npos);
+    EXPECT_NE(ffx.find("if (enabledStateChanged)"), std::string::npos);
+    EXPECT_NE(dx12.find("FFX proxy overlay route transition %s -> %s"), std::string::npos);
+    EXPECT_NE(dx12.find("the first present after the configure transition selected the new target"),
+              std::string::npos);
+}
+
 TEST(DXGISharedSourceTest, FFXProxyPresentRemovalQuiescesAndDrainsEnteredDetours) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";

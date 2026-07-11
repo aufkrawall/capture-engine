@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-11 (capture reliability audit: WGC/DXGI callback and ownership lifetimes, transactional retarget/first-frame handoff, inject texture-slot leases across encoder copy, CFR encode-failure repeat recovery, worker-owned WASAPI and bounded final tail drains; see wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, and log/recent.md)
+Last cross-checked: 2026-07-11 (capture reliability audit plus durable startup-cached FFX export routing, exact owner-queue suspension visibility, protected-breakpoint retirement, and configure-transition dedupe; see wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, frame-generation/guardrails.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
