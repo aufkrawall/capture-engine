@@ -177,6 +177,7 @@ public:
     uint32_t GetDuplicateTimestampSkipCount() const;
     uint32_t GetKeyedMutexAcquireFailCount() const;
     uint32_t GetKeyedMutexReleaseFailCount() const;
+    uint32_t GetKeyedMutexAbandonedReclaimCount() const;
     uint32_t GetSplitDeviceFlushCount() const;
     uint32_t GetSplitDeviceFlushSkippedCount() const;
     uint32_t GetPoolSlotFastRewriteCount() const;

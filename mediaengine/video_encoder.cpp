@@ -1651,6 +1651,45 @@ bool VideoEncoder::CacheRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture,
     D3D11_TEXTURE2D_DESC srcDesc = {};
     sourceTexture->GetDesc(&srcDesc);
 
+    struct KeyedSourceGuard {
+        IDXGIKeyedMutex* mutex = nullptr;
+        bool acquired = false;
+
+        ~KeyedSourceGuard() {
+            if (!mutex) {
+                return;
+            }
+            if (acquired) {
+                mutex->ReleaseSync(0);
+            }
+            mutex->Release();
+        }
+    } keyedSourceGuard;
+
+    sourceTexture->QueryInterface(IID_PPV_ARGS(&keyedSourceGuard.mutex));
+    if (keyedSourceGuard.mutex) {
+        // Fresh split-device screen frames have already been consumed at key
+        // 1 by the conversion path, which returns ownership to key 0. The
+        // cursor-aware repeat cache is a second read and must explicitly own
+        // that key; copying without it produced black repeat frames while
+        // every fresh frame remained valid.
+        const HRESULT kmHr = keyedSourceGuard.mutex->AcquireSync(0, 0);
+        if (kmHr != S_OK) {
+            ++repeatSourceCacheKeyedAcquireFailCount;
+            if (repeatSourceCacheKeyedAcquireFailCount <= 5) {
+                DLL_Log("[VideoEncoder] Cursor-aware repeat source cache keyed-mutex acquire failed: "
+                        "HR=%x failures=%llu",
+                        kmHr, static_cast<unsigned long long>(repeatSourceCacheKeyedAcquireFailCount));
+            }
+            return false;
+        }
+        keyedSourceGuard.acquired = true;
+        if (!repeatSourceCacheKeyedMutexLogged) {
+            DLL_Log("[VideoEncoder] Cursor-aware repeat source cache synchronized at keyed mutex 0->0");
+            repeatSourceCacheKeyedMutexLogged = true;
+        }
+    }
+
     D3D11_TEXTURE2D_DESC cacheDesc = srcDesc;
     cacheDesc.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
     cacheDesc.MiscFlags = 0;
@@ -1685,6 +1724,11 @@ bool VideoEncoder::CacheRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture,
     {
         D3D11ScopedLock lock;
         d3d11Context->CopyResource(repeatSourceFrameTexture, sourceTexture);
+        if (keyedSourceGuard.acquired) {
+            // Submit the read before publishing key 0 back to the producer.
+            // This is a queue flush, not a CPU/GPU completion wait.
+            d3d11Context->Flush();
+        }
     }
 
     repeatSourceNeedsCursorRecompose = true;
@@ -6642,6 +6686,8 @@ void VideoEncoder::ResetRepeatFrameCache() {
     InvalidateRepeatPacketCache();
     repeatSourceCacheFailureLogged = false;
     repeatCursorRecomposeFallbackLogged = false;
+    repeatSourceCacheKeyedMutexLogged = false;
+    repeatSourceCacheKeyedAcquireFailCount = 0;
     if (hadCachedContent) {
         DLL_Log("[VideoEncoder] Repeat-frame cache invalidated for capture-source transition");
     }

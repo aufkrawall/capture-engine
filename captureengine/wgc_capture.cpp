@@ -727,6 +727,7 @@ public:
     std::atomic<uint32_t> poolDropCount_{0};
     std::atomic<uint32_t> keyedMutexAcquireFailCount_{0};
     std::atomic<uint32_t> keyedMutexReleaseFailCount_{0};
+    std::atomic<uint32_t> keyedMutexAbandonedReclaimCount_{0};
     std::atomic<uint32_t> splitDeviceFlushCount_{0};
     std::atomic<uint32_t> splitDeviceFlushSkippedCount_{0};
     std::atomic<uint32_t> poolSlotFastRewriteCount_{0};
@@ -1427,6 +1428,7 @@ public:
         poolDropCount_.store(0, std::memory_order_relaxed);
         keyedMutexAcquireFailCount_.store(0, std::memory_order_relaxed);
         keyedMutexReleaseFailCount_.store(0, std::memory_order_relaxed);
+        keyedMutexAbandonedReclaimCount_.store(0, std::memory_order_relaxed);
         splitDeviceFlushCount_.store(0, std::memory_order_relaxed);
         splitDeviceFlushSkippedCount_.store(0, std::memory_order_relaxed);
         poolSlotFastRewriteCount_.store(0, std::memory_order_relaxed);
@@ -2163,7 +2165,24 @@ public:
             bool mutexAcquired = false;
 
             if (writeMutex) {
-                const HRESULT kmHr = writeMutex->AcquireSync(0, 0);
+                HRESULT kmHr = writeMutex->AcquireSync(0, 0);
+                if (kmHr != S_OK) {
+                    // A free lease proves that no queued/reservoir/encoder
+                    // consumer can still use this slot. Key 1 therefore means
+                    // the previously published frame was discarded before
+                    // consumption; reclaim it instead of permanently
+                    // poisoning the slot for all future producer writes.
+                    kmHr = writeMutex->AcquireSync(1, 0);
+                    if (kmHr == S_OK) {
+                        const uint32_t reclaimed =
+                            keyedMutexAbandonedReclaimCount_.fetch_add(1, std::memory_order_relaxed) + 1;
+                        if (reclaimed <= 4) {
+                            LogInfo("[WGC] Reclaimed abandoned published pool slot %u at key 1 "
+                                    "(generation=%llu reclaim=%u)",
+                                    idx, static_cast<unsigned long long>(poolGeneration), reclaimed);
+                        }
+                    }
+                }
                 if (kmHr != S_OK) {
                     keyedMutexAcquireFailCount_.fetch_add(1, std::memory_order_relaxed);
                     slotLease.Reset();
@@ -2197,9 +2216,11 @@ public:
                     d3dContext_->Flush();
                     splitDeviceFlushCount_.fetch_add(1, std::memory_order_relaxed);
                 }
-                // Producer owns key 0 and publishes completed work with key 1.
-                // The encoder consumes key 1 and returns key 0.
-                const HRESULT releaseHr = writeMutex->ReleaseSync(1);
+                // A successful frame is published at key 1. Conversion
+                // failures return key 0 to the producer so an
+                // uninitialized surface can never enter the consumer state.
+                const uint64_t releaseKey = copySucceeded ? 1 : 0;
+                const HRESULT releaseHr = writeMutex->ReleaseSync(releaseKey);
                 if (releaseHr != S_OK) {
                     keyedMutexReleaseFailCount_.fetch_add(1, std::memory_order_relaxed);
                     LogWarn("[WGC] Shared texture ReleaseSync failed for slot %u: 0x%08lX", idx,
@@ -4038,6 +4059,14 @@ uint32_t WGCCapture::GetKeyedMutexAcquireFailCount() const {
 uint32_t WGCCapture::GetKeyedMutexReleaseFailCount() const {
 #if HAS_WGC
     return impl_ ? impl_->keyedMutexReleaseFailCount_.load(std::memory_order_relaxed) : 0;
+#else
+    return 0;
+#endif
+}
+
+uint32_t WGCCapture::GetKeyedMutexAbandonedReclaimCount() const {
+#if HAS_WGC
+    return impl_ ? impl_->keyedMutexAbandonedReclaimCount_.load(std::memory_order_relaxed) : 0;
 #else
     return 0;
 #endif

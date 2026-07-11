@@ -24,6 +24,14 @@ std::string ReadWgcCaptureSource() {
     return contents.str();
 }
 
+std::string ReadVideoEncoderSource() {
+    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "video_encoder.cpp";
+    std::ifstream file(source, std::ios::binary);
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return contents.str();
+}
+
 }  // namespace
 
 TEST(CaptureCoordinatorSourceTest, WgcRetargetUsesAtomicallyPublishedSharedOwnership) {
@@ -57,6 +65,33 @@ TEST(CaptureCoordinatorSourceTest, ExplicitTenBitWgcCannotUseCompactBgraIntermed
     EXPECT_NE(source.find("allowLossyBgra8Pool_ &&"), std::string::npos);
     EXPECT_NE(source.find("ShouldAllowBgra8WgcFallback(requireHighPrecisionCapture_, captureIsHDR_)"),
               std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, SplitDeviceKeyedMutexLifecycleCoversDiscardedAndRepeatedFrames) {
+    const std::string capture = ReadWgcCaptureSource();
+    const std::string encoder = ReadVideoEncoderSource();
+    ASSERT_FALSE(capture.empty());
+    ASSERT_FALSE(encoder.empty());
+
+    // A frame discarded by CFR never reaches the encoder to return key 1 to
+    // key 0. Once its lease is free, the producer must reclaim key 1 instead
+    // of permanently poisoning that pool slot.
+    EXPECT_NE(capture.find("writeMutex->AcquireSync(1, 0)"), std::string::npos);
+    EXPECT_NE(capture.find("keyedMutexAbandonedReclaimCount_"), std::string::npos);
+    EXPECT_NE(capture.find("const uint64_t releaseKey = copySucceeded ? 1 : 0"), std::string::npos);
+
+    // Cursor-aware CFR repeats make a second source read after fresh-frame
+    // conversion returned the shared surface to key 0. That cache copy must
+    // reacquire key 0 or the repeat texture can be black/stale.
+    const size_t cacheBegin = encoder.find("bool VideoEncoder::CacheRepeatSourceFrameTexture");
+    const size_t cacheEnd = encoder.find("bool VideoEncoder::PopulateD3D11FrameFromRepeatSource", cacheBegin);
+    ASSERT_NE(cacheBegin, std::string::npos);
+    ASSERT_NE(cacheEnd, std::string::npos);
+    const std::string cacheFunction = encoder.substr(cacheBegin, cacheEnd - cacheBegin);
+    EXPECT_NE(cacheFunction.find("keyedSourceGuard.mutex->AcquireSync(0, 0)"), std::string::npos);
+    EXPECT_NE(cacheFunction.find("d3d11Context->CopyResource(repeatSourceFrameTexture, sourceTexture)"),
+              std::string::npos);
+    EXPECT_NE(cacheFunction.find("d3d11Context->Flush()"), std::string::npos);
 }
 
 TEST(CaptureCoordinatorSourceTest, AutoFallbackProvesWgcBeforeStoppingInject) {

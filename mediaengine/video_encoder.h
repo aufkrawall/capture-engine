@@ -285,6 +285,8 @@ private:
     int repeatSourceCaptureOriginY = 0;
     bool repeatSourceCacheFailureLogged = false;
     bool repeatCursorRecomposeFallbackLogged = false;
+    bool repeatSourceCacheKeyedMutexLogged = false;
+    uint64_t repeatSourceCacheKeyedAcquireFailCount = 0;
 
     // Cached last encoded video packet for zero-cost frame repeats.
     // When RepeatLastFrame has a valid cache, it resubmits the cached encoded

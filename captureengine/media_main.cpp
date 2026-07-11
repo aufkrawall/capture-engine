@@ -2296,6 +2296,7 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
     uint32_t lastPoolDropCount = 0;
     uint32_t lastKeyedAcquireFailCount = 0;
     uint32_t lastKeyedReleaseFailCount = 0;
+    uint32_t lastKeyedAbandonedReclaimCount = 0;
     uint32_t lastSplitFlushCount = 0;
     uint32_t lastSplitFlushSkippedCount = 0;
     uint32_t lastPoolSlotFastRewriteCount = 0;
@@ -2337,6 +2338,7 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastPoolDropCount = 0;
             lastKeyedAcquireFailCount = 0;
             lastKeyedReleaseFailCount = 0;
+            lastKeyedAbandonedReclaimCount = 0;
             lastSplitFlushCount = 0;
             lastSplitFlushSkippedCount = 0;
             lastPoolSlotFastRewriteCount = 0;
@@ -2376,6 +2378,7 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastPoolDropCount = g_WgcCap->GetPoolDropCount();
             lastKeyedAcquireFailCount = g_WgcCap->GetKeyedMutexAcquireFailCount();
             lastKeyedReleaseFailCount = g_WgcCap->GetKeyedMutexReleaseFailCount();
+            lastKeyedAbandonedReclaimCount = g_WgcCap->GetKeyedMutexAbandonedReclaimCount();
             lastSplitFlushCount = g_WgcCap->GetSplitDeviceFlushCount();
             lastSplitFlushSkippedCount = g_WgcCap->GetSplitDeviceFlushSkippedCount();
             lastPoolSlotFastRewriteCount = g_WgcCap->GetPoolSlotFastRewriteCount();
@@ -2422,6 +2425,7 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             uint32_t currentPoolDropCount = g_WgcCap->GetPoolDropCount();
             uint32_t currentKeyedAcquireFailCount = g_WgcCap->GetKeyedMutexAcquireFailCount();
             uint32_t currentKeyedReleaseFailCount = g_WgcCap->GetKeyedMutexReleaseFailCount();
+            uint32_t currentKeyedAbandonedReclaimCount = g_WgcCap->GetKeyedMutexAbandonedReclaimCount();
             uint32_t currentSplitFlushCount = g_WgcCap->GetSplitDeviceFlushCount();
             uint32_t currentSplitFlushSkippedCount = g_WgcCap->GetSplitDeviceFlushSkippedCount();
             uint32_t currentPoolSlotFastRewriteCount = g_WgcCap->GetPoolSlotFastRewriteCount();
@@ -2457,6 +2461,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             uint32_t poolDropDelta = currentPoolDropCount - lastPoolDropCount;
             uint32_t keyedAcquireFailDelta = currentKeyedAcquireFailCount - lastKeyedAcquireFailCount;
             uint32_t keyedReleaseFailDelta = currentKeyedReleaseFailCount - lastKeyedReleaseFailCount;
+            uint32_t keyedAbandonedReclaimDelta =
+                currentKeyedAbandonedReclaimCount - lastKeyedAbandonedReclaimCount;
             uint32_t splitFlushDelta = currentSplitFlushCount - lastSplitFlushCount;
             uint32_t splitFlushSkippedDelta = currentSplitFlushSkippedCount - lastSplitFlushSkippedCount;
             uint32_t poolSlotFastRewriteDelta = currentPoolSlotFastRewriteCount - lastPoolSlotFastRewriteCount;
@@ -2579,7 +2585,7 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 "Ingress: accepted=%u decimated=%u retained=%u/%u lowWater=%u reason=%s "
                 "accLow=%u accRec=%u accSrcBelow=%u accHealthy=%u accPlaySoft=%u accPlayCredit=%u "
                 "decSoft=%u decHard=%u decCredit=%u softPress=%u hardPress=%u | "
-                "KMFail: %u/%u | Flush: %u/%u | "
+                "KMFail: %u/%u KMReclaim: %u | Flush: %u/%u | "
                 "Dedicated: %d | Encode: %lldus | Fence: %lldus | Throttle: %u | Mux: %uKB | Overload: 0x%X | "
                 "Backend: %s DupIdleTimeouts: %llu DupMissed: %llu DupHwCursor: %d DupCursorEmbedded: %d "
                 "DupPtrTransitions: %llu | TimingBasis: Copy/Convert/Encode/Fence=CPU-wall-or-submit",
@@ -2612,7 +2618,7 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 ingressAcceptedUniformPlayoutSoftReserveDelta, ingressAcceptedUniformPlayoutCreditDelta,
                 ingressDecimatedSoftReserveDelta, ingressDecimatedHardReserveDelta, ingressDecimatedCreditDelta,
                 ingressSoftReservePressureDelta, ingressHardReservePressureDelta, keyedAcquireFailDelta,
-                keyedReleaseFailDelta, splitFlushDelta, splitFlushSkippedDelta,
+                keyedReleaseFailDelta, keyedAbandonedReclaimDelta, splitFlushDelta, splitFlushSkippedDelta,
                 g_WgcCap->IsUsingDedicatedCaptureDevice() ? 1 : 0, encodeUs, fenceUs, throttleTargetFps,
                 (muxQueueBytes + 1023u) / 1024u, overloadFlags,
                 g_WgcCap->IsUsingDesktopDuplication() ? "DxgiDuplication" : "WGC",
@@ -2636,6 +2642,7 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             lastPoolDropCount = currentPoolDropCount;
             lastKeyedAcquireFailCount = currentKeyedAcquireFailCount;
             lastKeyedReleaseFailCount = currentKeyedReleaseFailCount;
+            lastKeyedAbandonedReclaimCount = currentKeyedAbandonedReclaimCount;
             lastSplitFlushCount = currentSplitFlushCount;
             lastSplitFlushSkippedCount = currentSplitFlushSkippedCount;
             lastPoolSlotFastRewriteCount = currentPoolSlotFastRewriteCount;
