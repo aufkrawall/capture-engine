@@ -280,3 +280,55 @@ TEST(AudioCaptureSourceTest, AudioWorkerExitAlwaysReleasesDrainWaiters) {
     EXPECT_NE(startBody.find("StopAudioCaptureSources(true)"), std::string::npos);
     EXPECT_EQ(source.find("std::thread(&MediaEngine::AudioLoop, this)"), std::string::npos);
 }
+
+TEST(AudioCaptureSourceTest, MultiTrackRoutesShareOnePhysicalCaptureAndFanOutPackets) {
+    const std::string source = ReadSource("mediaengine.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t coalesceBegin = source.find("void CoalesceCaptureRoutes()");
+    const size_t bufferInit = source.find("void InitAudioSourceBuffers(", coalesceBegin);
+    ASSERT_NE(coalesceBegin, std::string::npos);
+    ASSERT_NE(bufferInit, std::string::npos);
+    const std::string coalesceBody = source.substr(coalesceBegin, bufferInit - coalesceBegin);
+    EXPECT_NE(coalesceBody.find("src.captureFanoutOwnerIndex = ownerIdx"), std::string::npos);
+    EXPECT_NE(coalesceBody.find("src.capture.reset()"), std::string::npos);
+    EXPECT_NE(coalesceBody.find("src.appCapture.reset()"), std::string::npos);
+    EXPECT_NE(coalesceBody.find("AppAudioTrackIdentity(src.config.processName"), std::string::npos);
+    EXPECT_NE(coalesceBody.find("src.config.device.empty() ? \"<default>\""), std::string::npos);
+    EXPECT_NE(coalesceBody.find("appCaptureFormats[key]"), std::string::npos);
+    EXPECT_NE(coalesceBody.find("src.appCapture->SetRequestedFormat(48000, format.first, format.second)"),
+              std::string::npos);
+
+    const size_t loopBegin = source.find("void AudioLoop()");
+    const size_t loopEnd = source.find("MediaEngine: Audio thread stopped", loopBegin);
+    ASSERT_NE(loopBegin, std::string::npos);
+    ASSERT_NE(loopEnd, std::string::npos);
+    const std::string loopBody = source.substr(loopBegin, loopEnd - loopBegin);
+    EXPECT_NE(loopBody.find("captureFanoutQueues[routeIdx].push_back(packet)"), std::string::npos);
+    EXPECT_NE(loopBody.find("captureFanoutQueues[srcIdx].pop_front()"), std::string::npos);
+    EXPECT_NE(loopBody.find("Fanned packet owner="), std::string::npos);
+}
+
+TEST(AudioCaptureSourceTest, StartupQueueDropsPreAnchorPacketsInBoundedBatchesBeforeResampling) {
+    const std::string source = ReadSource("mediaengine.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t loopBegin = source.find("void AudioLoop()");
+    const size_t resample = source.find("src.resampler->Process(", loopBegin);
+    const size_t batch = source.find("kMaxPreStartDiscardBatchPackets", loopBegin);
+    ASSERT_NE(loopBegin, std::string::npos);
+    ASSERT_NE(batch, std::string::npos);
+    ASSERT_NE(resample, std::string::npos);
+    EXPECT_LT(batch, resample);
+    EXPECT_NE(source.find("Batched pre-start discard owner=", batch), std::string::npos);
+    EXPECT_NE(source.find("batchedDiscards < kMaxPreStartDiscardBatchPackets", batch), std::string::npos);
+}
+
+TEST(AudioCaptureSourceTest, AppBacklogDrainUsesWorstBufferedRouteInSharedCaptureGroup) {
+    const std::string source = ReadSource("mediaengine.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("int64_t GetCaptureGroupMaxBufferedSamples(size_t srcIdx) const"), std::string::npos);
+    EXPECT_NE(source.find("GetCaptureGroupMaxBufferedSamples(srcIdx)"), std::string::npos);
+    EXPECT_NE(source.find("const int64_t compensationBufferedSamples"), std::string::npos);
+}

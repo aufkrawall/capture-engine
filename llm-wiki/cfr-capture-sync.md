@@ -122,7 +122,7 @@ Use these signals together:
 - `[StopAudio] forceDrain ... iterations=...`: stop-time force drain may run multiple bounded chunks. Warnings `forceDrain made no progress` or `forceDrain incomplete` are strict follow-up evidence for track-cursor failures.
 - `[StopAudio] Source ... diff=+0 (+0.0 ms)`: sample-count equality to the selected final video timeline.
 - `[VideoEncoder] Final packet timeline`: actual last written packet end per stream and packet-level delta.
-- `[VideoEncoder] Final metadata durations`: container metadata duration after clamping.
+- `[VideoEncoder] Final metadata durations`: in-memory stream metadata sampled only after `av_write_trailer`; the log reports available/declared stream counts. Missing `AVStream::duration` fields are informational because some muxers do not populate them even after trailer. Packet timelines plus the bounded post-mux packet probe remain authoritative, and only complete metadata is compared against tolerance.
 - `[VideoEncoder] mux_closed ...`: trailer/file close and muxer cleanup completed; later probe problems should not imply the muxer is still owned.
 - `[VideoEncoder] post_mux_probe_start/complete/timeout/cancelled ...`: reopened-file stream duration/end check after trailer write; this is the external duration authority when it completes, and a timeout is a bounded validation failure/diagnostic rather than a shutdown hang.
 - `[VideoEncoder] Post-mux duration probe`: legacy/summary reopened-file stream duration/end check after trailer write.

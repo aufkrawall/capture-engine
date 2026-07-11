@@ -8,8 +8,7 @@
 namespace {
 
 std::string ReadVideoEncoderSource() {
-    const std::filesystem::path source =
-        std::filesystem::current_path() / "mediaengine" / "video_encoder.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "video_encoder.cpp";
     std::ifstream file(source, std::ios::binary);
     std::ostringstream contents;
     contents << file.rdbuf();
@@ -53,4 +52,28 @@ TEST(VideoEncoderSourceTest, CaptureSourceTransitionDropsEveryRepeatCacheLayer) 
     EXPECT_NE(body.find("repeatFrameTexture->Release()"), std::string::npos);
     EXPECT_NE(body.find("InvalidateRepeatSourceFrameTexture()"), std::string::npos);
     EXPECT_NE(body.find("InvalidateRepeatPacketCache()"), std::string::npos);
+}
+
+TEST(VideoEncoderSourceTest, MetadataDurationDiagnosticsRunAfterTrailerAndIgnoreUnavailableFields) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t syncFinalize = source.find("[VideoEncoder] Sync Stop: Finalizing file...");
+    const size_t syncTrailer = source.find("av_write_trailer(fmtCtx)", syncFinalize);
+    const size_t syncSummary = source.find("LogFinalDurationSummary(fmtCtx", syncTrailer);
+    ASSERT_NE(syncFinalize, std::string::npos);
+    ASSERT_NE(syncTrailer, std::string::npos);
+    ASSERT_NE(syncSummary, std::string::npos);
+    EXPECT_LT(syncTrailer, syncSummary);
+
+    const size_t asyncFinalize = source.find("[VideoEncoder] Async Finalize: Writing Trailer...");
+    const size_t asyncTrailer = source.find("av_write_trailer(fmtCtx)", asyncFinalize);
+    const size_t asyncSummary = source.find("LogFinalDurationSummary(fmtCtx", asyncTrailer);
+    ASSERT_NE(asyncFinalize, std::string::npos);
+    ASSERT_NE(asyncTrailer, std::string::npos);
+    ASSERT_NE(asyncSummary, std::string::npos);
+    EXPECT_LT(asyncTrailer, asyncSummary);
+
+    EXPECT_NE(source.find("const bool metadataComplete"), std::string::npos);
+    EXPECT_NE(source.find("Final in-memory AVStream durations are incomplete"), std::string::npos);
 }

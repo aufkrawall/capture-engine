@@ -24,8 +24,8 @@ extern "C" {
 #include <dxgi1_5.h>
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -224,8 +224,7 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
             const AVStream* packetStream = probeCtx->streams[pkt->stream_index];
             if (HasValidStreamTimeBase(packetStream)) {
                 const int64_t packetStartUs = av_rescale_q(pkt->pts, packetStream->time_base, AVRational{1, 1000000});
-                firstPacketStartUs[pkt->stream_index] =
-                    std::min(firstPacketStartUs[pkt->stream_index], packetStartUs);
+                firstPacketStartUs[pkt->stream_index] = std::min(firstPacketStartUs[pkt->stream_index], packetStartUs);
             }
         }
         av_packet_unref(pkt);
@@ -269,9 +268,9 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
         }
         const bool hasStreamStart = HasValidStreamTimeBase(probedStream) && probedStream->start_time != AV_NOPTS_VALUE;
         const bool hasFirstPacketStart = firstPacketStartUs[i] != INT64_MAX;
-        const int64_t startUs = ce::mux::ChoosePostMuxStreamStartUs(
-            hasStreamStart ? GetStreamStartUs(probedStream) : 0, hasStreamStart,
-            hasFirstPacketStart ? firstPacketStartUs[i] : 0, hasFirstPacketStart);
+        const int64_t startUs =
+            ce::mux::ChoosePostMuxStreamStartUs(hasStreamStart ? GetStreamStartUs(probedStream) : 0, hasStreamStart,
+                                                hasFirstPacketStart ? firstPacketStartUs[i] : 0, hasFirstPacketStart);
         const int64_t endUs = startUs + durationUs;
         if (probedStream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             ++videoStreamCount;
@@ -286,13 +285,11 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
             maxAudioRoundingToleranceUs = std::max(
                 maxAudioRoundingToleranceUs,
                 ce::mux::ComputeAudioMuxRoundingToleranceUs(probedStream->codecpar->sample_rate,
-                                                            probedStream->time_base.num,
-                                                            probedStream->time_base.den));
+                                                            probedStream->time_base.num, probedStream->time_base.den));
             maxAudioCodecPrimingToleranceUs = std::max(
-                maxAudioCodecPrimingToleranceUs,
-                ce::mux::ComputeAudioCodecPrimingToleranceUs(probedStream->codecpar->initial_padding,
-                                                             probedStream->codecpar->sample_rate,
-                                                             maxAudioRoundingToleranceUs));
+                maxAudioCodecPrimingToleranceUs, ce::mux::ComputeAudioCodecPrimingToleranceUs(
+                                                     probedStream->codecpar->initial_padding,
+                                                     probedStream->codecpar->sample_rate, maxAudioRoundingToleranceUs));
         }
     }
 
@@ -307,8 +304,7 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
             "[VideoEncoder] Post-mux audio duration rounding evidence (target=%lld audioMinEnd=%lld "
             "audioMaxEnd=%lld maxDelta=%lld tolerance=%lld)",
             finalDurationUs, minAudioEndUs, maxAudioEndUs, maxAudioDeltaUs, maxAudioRoundingToleranceUs);
-    } else if (audioStreamCount > 0 && maxAudioDeltaUs > 0 &&
-               maxAudioDeltaUs <= maxAudioCodecPrimingToleranceUs) {
+    } else if (audioStreamCount > 0 && maxAudioDeltaUs > 0 && maxAudioDeltaUs <= maxAudioCodecPrimingToleranceUs) {
         DLL_Log(
             "[VideoEncoder] Post-mux audio codec priming evidence (target=%lld audioMinEnd=%lld "
             "audioMaxEnd=%lld maxDelta=%lld primingTolerance=%lld roundingTolerance=%lld)",
@@ -373,8 +369,8 @@ bool ValidateFormatContextForHeader(const AVFormatContext* fmtCtx) {
     return true;
 }
 
-int64_t ComputeTargetVideoPts(int64_t timestampUs, bool useVfr, int fps, int64_t startPts,
-                              int64_t lastAssignedVideoPts, bool useExplicitCfrTimeline) {
+int64_t ComputeTargetVideoPts(int64_t timestampUs, bool useVfr, int fps, int64_t startPts, int64_t lastAssignedVideoPts,
+                              bool useExplicitCfrTimeline) {
     if (useVfr && startPts >= 0) {
         int64_t elapsedUs = timestampUs - startPts;
         if (elapsedUs < 0) {
@@ -410,9 +406,19 @@ void LogFinalDurationSummary(AVFormatContext* fmtCtx, int64_t finalDurationUs, u
     int64_t maxAudioDurationUs = 0;
     uint32_t videoStreamCount = 0;
     uint32_t audioStreamCount = 0;
+    uint32_t declaredVideoStreamCount = 0;
+    uint32_t declaredAudioStreamCount = 0;
     for (unsigned int i = 0; i < fmtCtx->nb_streams; ++i) {
         AVStream* stream = fmtCtx->streams[i];
-        if (!HasValidStreamTimeBase(stream) || stream->duration <= 0 || !stream->codecpar) {
+        if (!stream || !stream->codecpar) {
+            continue;
+        }
+        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            ++declaredVideoStreamCount;
+        } else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            ++declaredAudioStreamCount;
+        }
+        if (!HasValidStreamTimeBase(stream) || stream->duration <= 0) {
             continue;
         }
 
@@ -433,20 +439,31 @@ void LogFinalDurationSummary(AVFormatContext* fmtCtx, int64_t finalDurationUs, u
     }
 
     DLL_Log(
-        "[VideoEncoder] Final metadata durations: target=%lld us video=%lld us audioMin=%lld us audioMax=%lld us maxDelta=%lld "
-        "us "
-        "streams(v=%u a=%u) overload(encoder=%d mux=%d) backpressure=%u peakMux=%uKB peakPkts=%u",
+        "[VideoEncoder] Final metadata durations: target=%lld us video=%lld us audioMin=%lld us audioMax=%lld us "
+        "maxDelta=%lld us available(v=%u/%u a=%u/%u) overload(encoder=%d mux=%d) backpressure=%u "
+        "peakMux=%uKB peakPkts=%u",
         finalDurationUs, maxVideoDurationUs, minAudioDurationUs, maxAudioDurationUs, maxStreamDeltaUs, videoStreamCount,
-        audioStreamCount, encoderOverloaded ? 1 : 0, muxOverloaded ? 1 : 0, muxBackpressureEvents,
-        peakQueueBytes / 1024u, peakQueuePackets);
+        declaredVideoStreamCount, audioStreamCount, declaredAudioStreamCount, encoderOverloaded ? 1 : 0,
+        muxOverloaded ? 1 : 0, muxBackpressureEvents, peakQueueBytes / 1024u, peakQueuePackets);
+
+    const bool metadataComplete = videoStreamCount == declaredVideoStreamCount &&
+                                  audioStreamCount == declaredAudioStreamCount && videoStreamCount > 0;
+    if (!metadataComplete) {
+        DLL_Log(
+            "[VideoEncoder] Final in-memory AVStream durations are incomplete; packet timelines and the bounded "
+            "post-mux probe remain authoritative (available v=%u/%u a=%u/%u).",
+            videoStreamCount, declaredVideoStreamCount, audioStreamCount, declaredAudioStreamCount);
+        return;
+    }
 
     constexpr int64_t kDurationWarningToleranceUs = 1000;
     if (!ce::mux::IsDurationWithinToleranceUs(maxVideoDurationUs, finalDurationUs, kDurationWarningToleranceUs) ||
-        (audioStreamCount > 0 &&
+        (declaredAudioStreamCount > 0 &&
          !ce::mux::IsDurationWithinToleranceUs(minAudioDurationUs, maxAudioDurationUs, kDurationWarningToleranceUs)) ||
         maxStreamDeltaUs > kDurationWarningToleranceUs) {
         DLL_Log(
-            "[VideoEncoder] WARNING: Final metadata stream durations exceeded %lld us tolerance (target=%lld video=%lld "
+            "[VideoEncoder] WARNING: Final metadata stream durations exceeded %lld us tolerance (target=%lld "
+            "video=%lld "
             "audioMin=%lld audioMax=%lld maxDelta=%lld)",
             kDurationWarningToleranceUs, finalDurationUs, maxVideoDurationUs, minAudioDurationUs, maxAudioDurationUs,
             maxStreamDeltaUs);
@@ -924,11 +941,12 @@ static fs::path ResolveFallbackDir(const fs::path& exeDir) {
 static fs::path ResolveOutputDirectoryMappedDrive(const fs::path& outDir) {
     const ce::path::MappedDriveResolution resolution = ce::path::ResolveMappedDrivePath(outDir);
     if (resolution.changed) {
-        DLL_Log("[VideoEncoder] Resolved mapped output directory: %s -> %s (source=%s drive=%c: liveStatus=0x%08lX "
-                "registryStatus=0x%08lX)",
-                outDir.string().c_str(), resolution.path.string().c_str(),
-                ce::path::MappedDriveResolutionSourceName(resolution.source), static_cast<char>(resolution.driveLetter),
-                resolution.liveMappingStatus, resolution.registryStatus);
+        DLL_Log(
+            "[VideoEncoder] Resolved mapped output directory: %s -> %s (source=%s drive=%c: liveStatus=0x%08lX "
+            "registryStatus=0x%08lX)",
+            outDir.string().c_str(), resolution.path.string().c_str(),
+            ce::path::MappedDriveResolutionSourceName(resolution.source), static_cast<char>(resolution.driveLetter),
+            resolution.liveMappingStatus, resolution.registryStatus);
         return resolution.path;
     }
     return outDir;
@@ -960,9 +978,8 @@ static std::string GenerateOutputFilename(const VideoConfig& config) {
             DLL_Log("[VideoEncoder] Created output directory: %s", outDir.string().c_str());
         }
     } else if (!IsDirectoryWritable(outDir)) {
-        DLL_Log(
-            "[VideoEncoder] Output directory not accessible: %s. Falling back to captures subfolder.",
-            outDir.string().c_str());
+        DLL_Log("[VideoEncoder] Output directory not accessible: %s. Falling back to captures subfolder.",
+                outDir.string().c_str());
         useFallback = true;
     }
 
@@ -1186,8 +1203,7 @@ void VideoEncoder::RecordWrittenPacketTimeline(int streamIndex, int64_t pts, int
     }
 
     const int64_t packetStartUs = av_rescale_q(packetPts, timeBase, AVRational{1, 1000000});
-    const int64_t packetDurationUs =
-        duration > 0 ? av_rescale_q(duration, timeBase, AVRational{1, 1000000}) : 0;
+    const int64_t packetDurationUs = duration > 0 ? av_rescale_q(duration, timeBase, AVRational{1, 1000000}) : 0;
     ce::mux::ObservePacketTimeline(writtenPacketTimelines[streamIndex], packetStartUs, packetDurationUs);
 }
 
@@ -1253,8 +1269,8 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) const {
         DLL_Log(
             "[VideoEncoder] CFR packet coverage: expected=%lld emitted=%lld missing=%lld maxPtsGapUs=%lld "
             "maxPtsGapTicks=%.3f complete=%d fps=%d",
-            expectedPackets, emittedPackets, missingPackets, maxVideoPtsGapUs, maxPtsGapTicks,
-            coverageComplete ? 1 : 0, savedConfig.fps);
+            expectedPackets, emittedPackets, missingPackets, maxVideoPtsGapUs, maxPtsGapTicks, coverageComplete ? 1 : 0,
+            savedConfig.fps);
         if (!coverageComplete) {
             DLL_Log(
                 "[VideoEncoder] ERROR: CFR artifact failed packet-continuity validation: expected=%lld emitted=%lld "
@@ -1264,8 +1280,7 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) const {
     }
 
     constexpr int64_t kPacketDurationWarningToleranceUs = 1000;
-    if (audioPastTargetCount > 0 ||
-        (audioStreamCount > 0 && maxPacketDeltaUs > kPacketDurationWarningToleranceUs)) {
+    if (audioPastTargetCount > 0 || (audioStreamCount > 0 && maxPacketDeltaUs > kPacketDurationWarningToleranceUs)) {
         DLL_Log(
             "[VideoEncoder] WARNING: Packet-level A/V duration mismatch exceeded %lld us tolerance "
             "(target=%lld videoEnd=%lld audioMinEnd=%lld audioMaxEnd=%lld maxPacketDelta=%lld)",
@@ -1677,9 +1692,10 @@ bool VideoEncoder::CacheRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture,
         if (kmHr != S_OK) {
             ++repeatSourceCacheKeyedAcquireFailCount;
             if (repeatSourceCacheKeyedAcquireFailCount <= 5) {
-                DLL_Log("[VideoEncoder] Cursor-aware repeat source cache keyed-mutex acquire failed: "
-                        "HR=%x failures=%llu",
-                        kmHr, static_cast<unsigned long long>(repeatSourceCacheKeyedAcquireFailCount));
+                DLL_Log(
+                    "[VideoEncoder] Cursor-aware repeat source cache keyed-mutex acquire failed: "
+                    "HR=%x failures=%llu",
+                    kmHr, static_cast<unsigned long long>(repeatSourceCacheKeyedAcquireFailCount));
             }
             return false;
         }
@@ -2516,8 +2532,8 @@ int VideoEncoder::AddAudioStream(const AudioConfig& config, AVCodecContext* audi
         st->codecpar->codec_id = codec->id;
         st->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
         st->codecpar->sample_rate = sampleRate;
-        const int channels = std::clamp(config.downmix ? 2 : (config.outputChannels > 0 ? config.outputChannels : 2),
-                                        1, 8);
+        const int channels =
+            std::clamp(config.downmix ? 2 : (config.outputChannels > 0 ? config.outputChannels : 2), 1, 8);
         if (config.outputChannelMask != 0 && !config.downmix) {
             av_channel_layout_from_mask(&st->codecpar->ch_layout, config.outputChannelMask);
         } else {
@@ -3044,8 +3060,7 @@ void VideoEncoder::PublishRuntimeState() {
 
     pSharedMem->runtimeState.encoderOverloadFlags.store(flags, std::memory_order_relaxed);
     const double encodeMs = static_cast<double>(std::max<int64_t>(lastEncodeTimeUs, 0)) / 1000.0;
-    UpdateAdaptiveGpuThreadPriority(nowMs, encodeMs,
-                                    (flags & ce::capture_policy::kEncoderOverloadFlagEncoder) != 0);
+    UpdateAdaptiveGpuThreadPriority(nowMs, encodeMs, (flags & ce::capture_policy::kEncoderOverloadFlagEncoder) != 0);
     const double sustainFps = ce::capture_policy::GetEncoderSustainableOutputFps(encodeMs);
     const uint32_t sustainFpsX100 =
         sustainFps > 0.0 ? static_cast<uint32_t>(std::clamp(sustainFps * 100.0, 0.0, 4294967295.0)) : 0u;
@@ -3088,7 +3103,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 fenceValue);
     }
 
-    const bool wants10BitInput = isHDR || ce::video_format::IsHighPrecisionRgbInputFormat(static_cast<DXGI_FORMAT>(format));
+    const bool wants10BitInput =
+        isHDR || ce::video_format::IsHighPrecisionRgbInputFormat(static_cast<DXGI_FORMAT>(format));
     if (!initDone || isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput) {
         const bool reinitializingActiveRecording = initDone;
         const std::string preservedOutputFilename = outputFilename;
@@ -3648,8 +3664,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                     // publication already supplies the required ordering.
                     if (FAILED(hr) && hasSharedAlt) {
                         ce::HandleGuard dupTexAlt;
-                        if (DuplicateHandle(hProcess.get(), sharedHandleAlt, GetCurrentProcess(),
-                                            dupTexAlt.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+                        if (DuplicateHandle(hProcess.get(), sharedHandleAlt, GetCurrentProcess(), dupTexAlt.addressof(),
+                                            0, FALSE, DUPLICATE_SAME_ACCESS)) {
                             hr = CallOpenSharedResource1(d3d11Device, dupTexAlt.get(), IID_PPV_ARGS(&bgraTex));
                             hrNtAltDup = hr;
                             if (FAILED(hr)) {
@@ -4231,8 +4247,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             return false;
         }
 
-        if (!PrepareD3D11TextureForEncode(bgraTexture, (ID3D11Texture2D*)d3d11Frame->data[0],
-                                          CursorCompositionActive(), captureLeft, captureTop, true, 1)) {
+        if (!PrepareD3D11TextureForEncode(bgraTexture, (ID3D11Texture2D*)d3d11Frame->data[0], CursorCompositionActive(),
+                                          captureLeft, captureTop, true, 1)) {
             DLL_Log("[VideoEncoder] Frame %d: Direct D3D11 RGB preparation failed", encodeFrameCounter);
             av_frame_free(&d3d11Frame);
             return false;
@@ -4250,9 +4266,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             CURSORINFO ci = {sizeof(CURSORINFO)};
             if (GetCursorInfo(&ci)) {
                 if (encodeFrameCounter % 100 == 1) {
-                    DLL_Log("[Cursor] WGC frame %d: flags=%d hCursor=%p pos=(%d,%d) origin=(%d,%d)",
-                            encodeFrameCounter, ci.flags, (void*)ci.hCursor, ci.ptScreenPos.x, ci.ptScreenPos.y,
-                            captureLeft, captureTop);
+                    DLL_Log("[Cursor] WGC frame %d: flags=%d hCursor=%p pos=(%d,%d) origin=(%d,%d)", encodeFrameCounter,
+                            ci.flags, (void*)ci.hCursor, ci.ptScreenPos.x, ci.ptScreenPos.y, captureLeft, captureTop);
                 }
 
                 if (ci.hCursor) {
@@ -4394,8 +4409,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
     if (commitsStartPts) {
         startPts.store(effectiveStartPts, std::memory_order_relaxed);
-        DLL_Log("[VideoEncoder] Framegrab recording started at PTS %lld us",
-                static_cast<long long>(effectiveStartPts));
+        DLL_Log("[VideoEncoder] Framegrab recording started at PTS %lld us", static_cast<long long>(effectiveStartPts));
     }
     g_lastFramePts = pts;
     auto afterEncode = PerfTimer::now();
@@ -5019,8 +5033,8 @@ void VideoEncoder::Stop() {
                 "skipping synchronous finalize",
                 waitResult, WriterFinalizePhaseName(timedOutPhase),
                 static_cast<unsigned long long>(GetTickCount64() - waitStartMs),
-                currentQueueBytes.load(std::memory_order_relaxed),
-                currentQueuePackets.load(std::memory_order_relaxed), writerStillOwnsEncoderResources ? 1 : 0);
+                currentQueueBytes.load(std::memory_order_relaxed), currentQueuePackets.load(std::memory_order_relaxed),
+                writerStillOwnsEncoderResources ? 1 : 0);
         }
     }
 
@@ -5035,13 +5049,18 @@ void VideoEncoder::Stop() {
             int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
             if (finalDurationUs > 0) {
                 LogPacketTimelineSummary(finalDurationUs);
+            }
+            const int trailerResult = av_write_trailer(fmtCtx);
+            if (trailerResult < 0) {
+                DLL_Log("[VideoEncoder] Sync Stop: ERROR av_write_trailer failed: %d", trailerResult);
+            }
+            if (finalDurationUs > 0) {
                 LogFinalDurationSummary(fmtCtx, finalDurationUs, muxBackpressureCount.load(std::memory_order_relaxed),
                                         peakQueueBytes.load(std::memory_order_relaxed),
                                         peakQueuePackets.load(std::memory_order_relaxed),
                                         lastEncoderOverloadTickMs.load(std::memory_order_relaxed) > 0,
                                         lastMuxOverloadTickMs.load(std::memory_order_relaxed) > 0);
             }
-            av_write_trailer(fmtCtx);
             if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
                 avio_closep(&fmtCtx->pb);
             }
@@ -5509,10 +5528,10 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
             return false;
         }
         const bool encodeSdrGamma = ce::video_format::ShouldApplySdrLinearToSrgbBeforeRgb10(sourceFormat, currentIsHDR);
-        ID3D11Texture2D* converted = RenderFullscreenCopy(
-            vpInputTexture, vpInputDesc.Width, vpInputDesc.Height, inputSrvFormat, DXGI_FORMAT_R10G10B10A2_UNORM,
-            rgb10IntermediateTexture, rgb10IntermediateRTV, rgb10IntermediateWidth, rgb10IntermediateHeight, "RGB10",
-            encodeSdrGamma);
+        ID3D11Texture2D* converted =
+            RenderFullscreenCopy(vpInputTexture, vpInputDesc.Width, vpInputDesc.Height, inputSrvFormat,
+                                 DXGI_FORMAT_R10G10B10A2_UNORM, rgb10IntermediateTexture, rgb10IntermediateRTV,
+                                 rgb10IntermediateWidth, rgb10IntermediateHeight, "RGB10", encodeSdrGamma);
         if (!converted) {
             DLL_Log("[VP] Failed to convert high-precision input to RGB10A2 before VP (srcFmt=%d srvFmt=%d)",
                     sourceFormat, inputSrvFormat);
@@ -5527,10 +5546,11 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         vpInputIsLinear = ce::video_format::IsFp16RgbInputFormat(sourceFormat) && !encodeSdrGamma;
         vpInputTexture->GetDesc(&vpInputDesc);
         if (!vpFp16CompatLogged) {
-            DLL_Log("[VP] High-precision input fallback: HR=%x srcFmt=%d srvFmt=%d final=RGB10A2 path=%s output=%s",
-                    priorHr, sourceFormat, inputSrvFormat,
-                    encodeSdrGamma ? "SDR linear-to-sRGB" : (vpInputIsLinear ? "linear passthrough" : "typed passthrough"),
-                    ShouldUse10BitOutput() ? "P010" : "NV12");
+            DLL_Log(
+                "[VP] High-precision input fallback: HR=%x srcFmt=%d srvFmt=%d final=RGB10A2 path=%s output=%s",
+                priorHr, sourceFormat, inputSrvFormat,
+                encodeSdrGamma ? "SDR linear-to-sRGB" : (vpInputIsLinear ? "linear passthrough" : "typed passthrough"),
+                ShouldUse10BitOutput() ? "P010" : "NV12");
             vpFp16CompatLogged = true;
         }
         return true;
@@ -5806,8 +5826,7 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
             cursorRect.bottom,
         };
         if (useCursorStream && ce::cursor_geometry::ComputeClippedRects(cursorDestination, scaledWidth, scaledHeight,
-                                                                        frameW, frameH,
-                                                     &clipped)) {
+                                                                        frameW, frameH, &clipped)) {
             const RECT sourceRect = {
                 clipped.source.left,
                 clipped.source.top,
@@ -6056,8 +6075,8 @@ ID3D11Texture2D* VideoEncoder::RenderFullscreenCopy(ID3D11Texture2D* input, uint
     if (FAILED(hr)) {
         static std::atomic<int> srvFailLogCount{0};
         if (srvFailLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
-            DLL_Log("[%s] Failed to create SRV: texFmt=%d srvFmt=%d bind=%x misc=%x HR=%x", logPrefix,
-                    inputDesc.Format, inputSrvFormat, inputDesc.BindFlags, inputDesc.MiscFlags, hr);
+            DLL_Log("[%s] Failed to create SRV: texFmt=%d srvFmt=%d bind=%x misc=%x HR=%x", logPrefix, inputDesc.Format,
+                    inputSrvFormat, inputDesc.BindFlags, inputDesc.MiscFlags, hr);
         }
         return nullptr;
     }
@@ -6152,8 +6171,14 @@ void VideoEncoder::CleanupVideoProcessor() {
     videoProcessorInit = false;
     use10BitPipeline = false;
 
-    if (vpInputFp16StagingRTV) { vpInputFp16StagingRTV->Release(); vpInputFp16StagingRTV = nullptr; }
-    if (vpInputFp16Staging) { vpInputFp16Staging->Release(); vpInputFp16Staging = nullptr; }
+    if (vpInputFp16StagingRTV) {
+        vpInputFp16StagingRTV->Release();
+        vpInputFp16StagingRTV = nullptr;
+    }
+    if (vpInputFp16Staging) {
+        vpInputFp16Staging->Release();
+        vpInputFp16Staging = nullptr;
+    }
     vpInputFp16StagingW = 0;
     vpInputFp16StagingH = 0;
 
@@ -6671,13 +6696,13 @@ int64_t VideoEncoder::GetLastFrameFenceWaitUs() const {
 }
 
 bool VideoEncoder::CanRepeatLastFrame() const {
-    return recordingRequested && (repeatFrameTexture != nullptr ||
-                                  (repeatSourceNeedsCursorRecompose && repeatSourceFrameTexture != nullptr));
+    return recordingRequested &&
+           (repeatFrameTexture != nullptr || (repeatSourceNeedsCursorRecompose && repeatSourceFrameTexture != nullptr));
 }
 
 void VideoEncoder::ResetRepeatFrameCache() {
-    const bool hadCachedContent = repeatFrameTexture != nullptr || repeatSourceFrameTexture != nullptr ||
-                                  cachedRepeatPacket_ != nullptr;
+    const bool hadCachedContent =
+        repeatFrameTexture != nullptr || repeatSourceFrameTexture != nullptr || cachedRepeatPacket_ != nullptr;
     if (repeatFrameTexture) {
         repeatFrameTexture->Release();
         repeatFrameTexture = nullptr;
@@ -6845,6 +6870,14 @@ void VideoEncoder::AsyncWriteLoop() {
                 int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
                 if (finalDurationUs > 0) {
                     LogPacketTimelineSummary(finalDurationUs);
+                    DLL_Log("[VideoEncoder] Async Finalize: packet-derived duration target was %lld us",
+                            finalDurationUs);
+                }
+                const int trailerResult = av_write_trailer(fmtCtx);
+                if (trailerResult < 0) {
+                    DLL_Log("[VideoEncoder] Async Finalize: ERROR av_write_trailer failed: %d", trailerResult);
+                }
+                if (finalDurationUs > 0) {
                     for (unsigned s = 0; s < fmtCtx->nb_streams; s++) {
                         AVStream* st = fmtCtx->streams[s];
                         int64_t firstPts = st->start_time != AV_NOPTS_VALUE ? st->start_time : 0;
@@ -6854,12 +6887,14 @@ void VideoEncoder::AsyncWriteLoop() {
                         }
                         int64_t firstPtsUs = av_rescale_q(firstPts, st->time_base, AVRational{1, 1000000});
                         int64_t lastPtsUs = av_rescale_q(lastPts, st->time_base, AVRational{1, 1000000});
-                        DLL_Log("[PTS ALIGN METADATA] Stream %u (codec=%s): first=%lldus last=%lldus dur=%lldus tb=%d/%lld", s,
-                                st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO
-                                    ? "video"
-                                    : (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO ? "audio" : "unknown"),
-                                (long long)firstPtsUs, (long long)lastPtsUs, (long long)(lastPtsUs - firstPtsUs),
-                                st->time_base.num, (long long)st->time_base.den);
+                        DLL_Log(
+                            "[PTS ALIGN METADATA] Stream %u (codec=%s): first=%lldus last=%lldus dur=%lldus tb=%d/%lld",
+                            s,
+                            st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO
+                                ? "video"
+                                : (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO ? "audio" : "unknown"),
+                            (long long)firstPtsUs, (long long)lastPtsUs, (long long)(lastPtsUs - firstPtsUs),
+                            st->time_base.num, (long long)st->time_base.den);
                     }
                     LogFinalDurationSummary(fmtCtx, finalDurationUs,
                                             muxBackpressureCount.load(std::memory_order_relaxed),
@@ -6867,10 +6902,7 @@ void VideoEncoder::AsyncWriteLoop() {
                                             peakQueuePackets.load(std::memory_order_relaxed),
                                             lastEncoderOverloadTickMs.load(std::memory_order_relaxed) > 0,
                                             lastMuxOverloadTickMs.load(std::memory_order_relaxed) > 0);
-                    DLL_Log("[VideoEncoder] Async Finalize: packet-derived duration target was %lld us",
-                            finalDurationUs);
                 }
-                av_write_trailer(fmtCtx);
                 if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
                     avio_closep(&fmtCtx->pb);
                 }
