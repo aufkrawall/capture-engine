@@ -91,12 +91,13 @@ void ResetStartupProtectedOffChurnActiveProof(const char* reason) {
     }
 }
 
-void LogAcceptedOffDuringActivatedUnconfirmedResume(
-    const char* source, bool startupWindowActive, bool hadFSRFGPhase,
-    bool explicitSetOptionsActivationForCurrentComeback, bool safePostFSRBootstrapPath,
-    bool startupActivationPending, bool postSLActiveButUnconfirmed, bool postSLStartupActivationEntered,
-    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling,
-    bool postSLConfirmedButRuntimeStateStabilizing) {
+void LogAcceptedOffDuringActivatedUnconfirmedResume(const char* source, bool startupWindowActive, bool hadFSRFGPhase,
+                                                    bool explicitSetOptionsActivationForCurrentComeback,
+                                                    bool safePostFSRBootstrapPath, bool startupActivationPending,
+                                                    bool postSLActiveButUnconfirmed,
+                                                    bool postSLStartupActivationEntered, bool postSLConfirmedRendering,
+                                                    bool postSLConfirmedButStartupSettling,
+                                                    bool postSLConfirmedButRuntimeStateStabilizing) {
     static std::atomic<int> s_acceptLogCount{0};
     const int logCount = s_acceptLogCount.fetch_add(1, std::memory_order_relaxed);
     if (logCount < 20 || (logCount % 100) == 0) {
@@ -143,8 +144,7 @@ void MarkStartupProtectedActiveRuntimeProof(const char* source, int multiplier) 
         return;
     }
 
-    const uint32_t newProof =
-        g_StartupProtectedOffChurnActiveProofCount.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const uint32_t newProof = g_StartupProtectedOffChurnActiveProofCount.fetch_add(1, std::memory_order_acq_rel) + 1;
     if (ce::streamline_runtime_policy::HasStartupProtectedOffChurnActiveProof(newProof)) {
         const bool wasPending = g_StartupProtectedOffChurnNeedsActiveProof.exchange(false, std::memory_order_acq_rel);
         if (wasPending) {
@@ -167,8 +167,7 @@ void MarkStartupProtectedActiveRuntimeProof(const char* source, int multiplier) 
     }
 }
 
-bool IsStartupProtectedOffChurnAwaitingActiveProof(bool startupProtectedComebackProof,
-                                                   bool postSLConfirmedRendering,
+bool IsStartupProtectedOffChurnAwaitingActiveProof(bool startupProtectedComebackProof, bool postSLConfirmedRendering,
                                                    bool postSLConfirmedButStartupSettling) {
     return ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
         g_StartupProtectedOffChurnNeedsActiveProof.load(std::memory_order_acquire),
@@ -232,6 +231,8 @@ constexpr slStructType kDLSSGStateStructType = {
     0xcc8ac8e1, 0xa179, 0x44f5, {0x97, 0xfa, 0xe7, 0x41, 0x12, 0xf9, 0xbc, 0x61}};
 constexpr slStructType kViewportHandleStructType = {
     0x171b6435, 0x9b3c, 0x4fc8, {0x99, 0x94, 0xfb, 0xe5, 0x25, 0x69, 0xaa, 0xa4}};
+constexpr slStructType kResourceTagStructType = {
+    0x4c6a5aad, 0xb445, 0x496c, {0x87, 0xff, 0x1a, 0xf3, 0x84, 0x5b, 0xe6, 0x53}};
 constexpr slStructType kReflexOptionsStructType = {
     0xf03af81a, 0x6d0b, 0x4902, {0xa6, 0x51, 0xc4, 0x96, 0x5e, 0x21, 0x54, 0x34}};
 
@@ -335,6 +336,8 @@ using PFN_slSetTag = slResult (*)(const slViewportHandle& viewport, const slReso
                                   void* commandBuffer);
 using PFN_slSetTagForFrame = slResult (*)(const slBaseStructure& frame, const slViewportHandle& viewport,
                                           const slResourceTag* tags, uint32_t numTags, void* commandBuffer);
+using PFN_slEvaluateFeature = slResult (*)(uint32_t feature, const slBaseStructure& frame,
+                                           const slBaseStructure** inputs, uint32_t numInputs, void* commandBuffer);
 using PFN_slDLSSGSetOptions = slResult (*)(const slViewportHandle& viewport, const slDLSSGOptions& options);
 using PFN_slDLSSGGetState = slResult (*)(const slViewportHandle& viewport, slDLSSGState& state,
                                          const slDLSSGOptions* options);
@@ -367,6 +370,7 @@ std::atomic<void*> g_SLGetPluginFunctionTarget{nullptr};
 std::atomic<void*> g_SLSetD3DDeviceTarget{nullptr};
 std::atomic<void*> g_SLSetTagTarget{nullptr};
 std::atomic<void*> g_SLSetTagForFrameTarget{nullptr};
+std::atomic<void*> g_SLEvaluateFeatureTarget{nullptr};
 std::atomic<void*> g_DLSSGSetOptionsTarget{nullptr};
 std::atomic<void*> g_DLSSGGetStateTarget{nullptr};
 std::atomic<void*> g_ReflexSleepTarget{nullptr};
@@ -383,6 +387,7 @@ std::atomic<bool> g_SLGetPluginFunctionHooked{false};
 std::atomic<bool> g_SLSetD3DDeviceHooked{false};
 std::atomic<bool> g_SLSetTagHooked{false};
 std::atomic<bool> g_SLSetTagForFrameHooked{false};
+std::atomic<bool> g_SLEvaluateFeatureHooked{false};
 std::atomic<bool> g_DLSSGSetOptionsHooked{false};
 std::atomic<bool> g_DLSSGGetStateHooked{false};
 std::atomic<bool> g_ReflexSleepHooked{false};
@@ -498,6 +503,7 @@ PFN_slGetPluginFunction g_Original_slGetPluginFunction = nullptr;
 PFN_slSetD3DDevice g_Original_slSetD3DDevice = nullptr;
 PFN_slSetTag g_Original_slSetTag = nullptr;
 PFN_slSetTagForFrame g_Original_slSetTagForFrame = nullptr;
+PFN_slEvaluateFeature g_Original_slEvaluateFeature = nullptr;
 PFN_slDLSSGSetOptions g_Original_slDLSSGSetOptions = nullptr;
 PFN_slDLSSGGetState g_Original_slDLSSGGetState = nullptr;
 PFN_slReflexSleep g_Original_slReflexSleep = nullptr;
@@ -511,6 +517,8 @@ slResult Hooked_slSetTag(const slViewportHandle& viewport, const slResourceTag* 
                          void* commandBuffer);
 slResult Hooked_slSetTagForFrame(const slBaseStructure& frame, const slViewportHandle& viewport,
                                  const slResourceTag* tags, uint32_t numTags, void* commandBuffer);
+slResult Hooked_slEvaluateFeature(uint32_t feature, const slBaseStructure& frame, const slBaseStructure** inputs,
+                                  uint32_t numInputs, void* commandBuffer);
 slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSSGOptions& options);
 slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& state, const slDLSSGOptions* options);
 slResult Hooked_slReflexSleep(const void* frame);
@@ -694,15 +702,15 @@ bool IsSavedStreamlineOriginalCallable(const char* functionName, void* original,
                                        const char* expectedModuleRole) {
     const void* addressToValidate = validationAddress ? validationAddress : original;
     DWORD ownerError = ERROR_SUCCESS;
-    const bool ownerLoaded = DoesAddressBelongToLoadedModule(const_cast<void*>(addressToValidate), nullptr, nullptr, 0,
-                                                            &ownerError);
+    const bool ownerLoaded =
+        DoesAddressBelongToLoadedModule(const_cast<void*>(addressToValidate), nullptr, nullptr, 0, &ownerError);
     if (ce::streamline_runtime_policy::ShouldForwardSavedStreamlineOriginal(original != nullptr, ownerLoaded)) {
         return true;
     }
 
     if (original) {
         LogStaleStreamlineOriginalBlockedOnce(functionName, original, const_cast<void*>(addressToValidate),
-                                             expectedModuleRole, ownerError);
+                                              expectedModuleRole, ownerError);
     }
     return false;
 }
@@ -737,8 +745,7 @@ PFN_slSetD3DDevice GetCallableOriginalSetD3DDevice() {
 PFN_slSetTag GetCallableOriginalSetTag() {
     auto original = g_Original_slSetTag;
     return IsSavedStreamlineOriginalCallable("slSetTag", reinterpret_cast<void*>(original),
-                                             g_SLSetTagTarget.load(std::memory_order_acquire),
-                                             "core Streamline module")
+                                             g_SLSetTagTarget.load(std::memory_order_acquire), "core Streamline module")
                ? original
                : nullptr;
 }
@@ -747,6 +754,15 @@ PFN_slSetTagForFrame GetCallableOriginalSetTagForFrame() {
     auto original = g_Original_slSetTagForFrame;
     return IsSavedStreamlineOriginalCallable("slSetTagForFrame", reinterpret_cast<void*>(original),
                                              g_SLSetTagForFrameTarget.load(std::memory_order_acquire),
+                                             "core Streamline module")
+               ? original
+               : nullptr;
+}
+
+PFN_slEvaluateFeature GetCallableOriginalEvaluateFeature() {
+    auto original = g_Original_slEvaluateFeature;
+    return IsSavedStreamlineOriginalCallable("slEvaluateFeature", reinterpret_cast<void*>(original),
+                                             g_SLEvaluateFeatureTarget.load(std::memory_order_acquire),
                                              "core Streamline module")
                ? original
                : nullptr;
@@ -1169,8 +1185,8 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
         ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
             !active, startupWindowActive, startupProtectedComebackProof, startupActivationPending,
             postSLActiveButUnconfirmed, postSLStartupActivationEntered, postSLConfirmedRendering,
-            postSLConfirmedButStartupSettling, postSLConfirmedButRuntimeStateStabilizing ||
-                                                   postSLConfirmedButOffChurnAwaitingActiveProof);
+            postSLConfirmedButStartupSettling,
+            postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof);
     const bool explicitSetOptionsDisableIsAuthoritative =
         ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
             !active, sourceWasSetOptions, postSLConfirmedRendering, startupActivationPending,
@@ -1214,9 +1230,9 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
     } else if (explicitSetOptionsDisableIsAuthoritative) {
         ResetStartupProtectedOffChurnActiveProof("accepted authoritative SetOptions disable");
     } else if (!active && signalUpdate.deferredOffDuringStartupWindow) {
-        MarkStartupProtectedOffChurnObserved(source, postSLConfirmedRendering, postSLConfirmedButStartupSettling,
-                                             postSLConfirmedButRuntimeStateStabilizing ||
-                                                 postSLConfirmedButOffChurnAwaitingActiveProof);
+        MarkStartupProtectedOffChurnObserved(
+            source, postSLConfirmedRendering, postSLConfirmedButStartupSettling,
+            postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof);
     } else if (active) {
         MarkStartupProtectedActiveRuntimeProof(source, signalUpdate.effectiveMultiplier);
     } else if (!signalUpdate.effectiveActive) {
@@ -1903,8 +1919,7 @@ bool TryResolveReflexFeatureHooks() {
 
     if (!g_ReflexSetConstantsHooked.load(std::memory_order_acquire)) {
         queriedSetConstants = true;
-        setConstantsResult =
-            originalGetFeatureFunction(kSLFeatureReflex, "slReflexSetConstants", setConstantsFunction);
+        setConstantsResult = originalGetFeatureFunction(kSLFeatureReflex, "slReflexSetConstants", setConstantsFunction);
         if (setConstantsResult == kSlResultOk && setConstantsFunction) {
             const bool hooked = MaybeHookReflexSetConstants(setConstantsFunction, false);
             hookedAnything |= hooked;
@@ -1984,6 +1999,9 @@ void RegisterDynamicHooksOnce() {
     IATHook::RegisterDynamicHookFiltered("slSetTagForFrame", reinterpret_cast<void*>(Hooked_slSetTagForFrame),
                                          reinterpret_cast<void**>(&g_Original_slSetTagForFrame),
                                          IsStreamlineCoreDynamicHookModule);
+    IATHook::RegisterDynamicHookFiltered("slEvaluateFeature", reinterpret_cast<void*>(Hooked_slEvaluateFeature),
+                                         reinterpret_cast<void**>(&g_Original_slEvaluateFeature),
+                                         IsStreamlineCoreDynamicHookModule);
     IATHook::RegisterDynamicHookFiltered("slDLSSGSetOptions", reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
                                          reinterpret_cast<void**>(&g_Original_slDLSSGSetOptions),
                                          IsStreamlineDLSSGDynamicHookModule);
@@ -2024,6 +2042,8 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
     const auto originalSetTag = reinterpret_cast<PFN_slSetTag>(GetProcAddress(module, "slSetTag"));
     const auto originalSetTagForFrame =
         reinterpret_cast<PFN_slSetTagForFrame>(GetProcAddress(module, "slSetTagForFrame"));
+    const auto originalEvaluateFeature =
+        reinterpret_cast<PFN_slEvaluateFeature>(GetProcAddress(module, "slEvaluateFeature"));
     const auto originalDLSSGSetOptions =
         reinterpret_cast<PFN_slDLSSGSetOptions>(GetProcAddress(module, "slDLSSGSetOptions"));
     const auto originalDLSSGGetState = reinterpret_cast<PFN_slDLSSGGetState>(GetProcAddress(module, "slDLSSGGetState"));
@@ -2034,9 +2054,8 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
         reinterpret_cast<PFN_slReflexSetConstants>(GetProcAddress(module, "slReflexSetConstants"));
 
     if (!originalGetFeatureFunction && !originalGetPluginFunction && !originalSetD3DDevice && !originalSetTag &&
-        !originalSetTagForFrame &&
-        !originalDLSSGSetOptions && !originalDLSSGGetState && !originalReflexSleep && !originalReflexSetOptions &&
-        !originalReflexSetConstants) {
+        !originalSetTagForFrame && !originalEvaluateFeature && !originalDLSSGSetOptions && !originalDLSSGGetState &&
+        !originalReflexSleep && !originalReflexSetOptions && !originalReflexSetConstants) {
         return false;
     }
 
@@ -2059,7 +2078,8 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
                                                    targetWithinModule(g_SLGetPluginFunctionTarget, module) ||
                                                    targetWithinModule(g_SLSetD3DDeviceTarget, module) ||
                                                    targetWithinModule(g_SLSetTagTarget, module) ||
-                                                   targetWithinModule(g_SLSetTagForFrameTarget, module);
+                                                   targetWithinModule(g_SLSetTagForFrameTarget, module) ||
+                                                   targetWithinModule(g_SLEvaluateFeatureTarget, module);
         if (!ce::streamline_runtime_policy::IsInstalledStreamlineModuleMaskStaleForReloadedModule(
                 true, anyCoreHookTargetWithinModule)) {
             return false;
@@ -2083,10 +2103,11 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
              reinterpret_cast<void* volatile*>(&g_Original_slGetPluginFunction)},
             {"slSetD3DDevice", &g_SLSetD3DDeviceTarget, &g_SLSetD3DDeviceHooked,
              reinterpret_cast<void* volatile*>(&g_Original_slSetD3DDevice)},
-            {"slSetTag", &g_SLSetTagTarget, &g_SLSetTagHooked,
-             reinterpret_cast<void* volatile*>(&g_Original_slSetTag)},
+            {"slSetTag", &g_SLSetTagTarget, &g_SLSetTagHooked, reinterpret_cast<void* volatile*>(&g_Original_slSetTag)},
             {"slSetTagForFrame", &g_SLSetTagForFrameTarget, &g_SLSetTagForFrameHooked,
              reinterpret_cast<void* volatile*>(&g_Original_slSetTagForFrame)},
+            {"slEvaluateFeature", &g_SLEvaluateFeatureTarget, &g_SLEvaluateFeatureHooked,
+             reinterpret_cast<void* volatile*>(&g_Original_slEvaluateFeature)},
         };
         int healedSlots = 0;
         for (CoreSlotView& slot : coreSlots) {
@@ -2109,8 +2130,7 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
         g_IATPatchesMask.fetch_and(~moduleBit, std::memory_order_acq_rel);
     }
 
-    if (!shouldHookCoreExports &&
-        (originalGetFeatureFunction || originalGetPluginFunction || originalSetD3DDevice)) {
+    if (!shouldHookCoreExports && (originalGetFeatureFunction || originalGetPluginFunction || originalSetD3DDevice)) {
         LogSkippedStreamlineCoreExportsOnce(moduleBaseName, module, originalGetFeatureFunction != nullptr,
                                             originalGetPluginFunction != nullptr, originalSetD3DDevice != nullptr);
     }
@@ -2156,9 +2176,9 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
                 g_Original_slSetTag = originalSetTag;
             }
 
-            hookedAnything |= InstallInlineHookOnce(
-                reinterpret_cast<void*>(originalSetTag), reinterpret_cast<void*>(Hooked_slSetTag),
-                g_Original_slSetTag, g_SLSetTagHooked, g_SLSetTagTarget, "slSetTag");
+            hookedAnything |=
+                InstallInlineHookOnce(reinterpret_cast<void*>(originalSetTag), reinterpret_cast<void*>(Hooked_slSetTag),
+                                      g_Original_slSetTag, g_SLSetTagHooked, g_SLSetTagTarget, "slSetTag");
         }
 
         if (shouldHookCoreExports && originalSetTagForFrame) {
@@ -2168,8 +2188,18 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
 
             hookedAnything |= InstallInlineHookOnce(
                 reinterpret_cast<void*>(originalSetTagForFrame), reinterpret_cast<void*>(Hooked_slSetTagForFrame),
-                g_Original_slSetTagForFrame, g_SLSetTagForFrameHooked, g_SLSetTagForFrameTarget,
-                "slSetTagForFrame");
+                g_Original_slSetTagForFrame, g_SLSetTagForFrameHooked, g_SLSetTagForFrameTarget, "slSetTagForFrame");
+        }
+
+        if (shouldHookCoreExports && originalEvaluateFeature) {
+            if (!g_Original_slEvaluateFeature) {
+                g_Original_slEvaluateFeature = originalEvaluateFeature;
+            }
+
+            hookedAnything |=
+                InstallInlineHookOnce(reinterpret_cast<void*>(originalEvaluateFeature),
+                                      reinterpret_cast<void*>(Hooked_slEvaluateFeature), g_Original_slEvaluateFeature,
+                                      g_SLEvaluateFeatureHooked, g_SLEvaluateFeatureTarget, "slEvaluateFeature");
         }
 
         if (shouldHookCoreExports && moduleBit != 0 &&
@@ -2195,12 +2225,15 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
                 IATHook::PatchIATAllModules(moduleBaseName, "slSetTagForFrame",
                                             reinterpret_cast<void*>(Hooked_slSetTagForFrame), &dummy);
             }
+            if (originalEvaluateFeature) {
+                IATHook::PatchIATAllModules(moduleBaseName, "slEvaluateFeature",
+                                            reinterpret_cast<void*>(Hooked_slEvaluateFeature), &dummy);
+            }
             g_IATPatchesMask.fetch_or(moduleBit, std::memory_order_acq_rel);
         }
 
-        if (originalDLSSGSetOptions &&
-            ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slDLSSGSetOptions",
-                                                                                   moduleBaseName)) {
+        if (originalDLSSGSetOptions && ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad(
+                                           "slDLSSGSetOptions", moduleBaseName)) {
             hookedAnything |= InstallFeatureImportFallbackIfPresent(
                 moduleBaseName, "slDLSSGSetOptions", reinterpret_cast<void*>(Hooked_slDLSSGSetOptions),
                 reinterpret_cast<void*>(originalDLSSGSetOptions),
@@ -2208,8 +2241,7 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
         }
 
         if (originalDLSSGGetState &&
-            ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slDLSSGGetState",
-                                                                                   moduleBaseName)) {
+            ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slDLSSGGetState", moduleBaseName)) {
             hookedAnything |= InstallFeatureImportFallbackIfPresent(
                 moduleBaseName, "slDLSSGGetState", reinterpret_cast<void*>(Hooked_slDLSSGGetState),
                 reinterpret_cast<void*>(originalDLSSGGetState), reinterpret_cast<void**>(&g_Original_slDLSSGGetState),
@@ -2217,26 +2249,23 @@ bool InstallHooksForModule(HMODULE module, const char* moduleNameOrPath) {
         }
 
         if (originalReflexSleep &&
-            ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSleep",
-                                                                                   moduleBaseName)) {
+            ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSleep", moduleBaseName)) {
             hookedAnything |= InstallFeatureImportFallbackIfPresent(
                 moduleBaseName, "slReflexSleep", reinterpret_cast<void*>(Hooked_slReflexSleep),
                 reinterpret_cast<void*>(originalReflexSleep), reinterpret_cast<void**>(&g_Original_slReflexSleep),
                 "slReflexSleep");
         }
 
-        if (originalReflexSetOptions &&
-            ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSetOptions",
-                                                                                   moduleBaseName)) {
+        if (originalReflexSetOptions && ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad(
+                                            "slReflexSetOptions", moduleBaseName)) {
             hookedAnything |= InstallFeatureImportFallbackIfPresent(
                 moduleBaseName, "slReflexSetOptions", reinterpret_cast<void*>(Hooked_slReflexSetOptions),
                 reinterpret_cast<void*>(originalReflexSetOptions),
                 reinterpret_cast<void**>(&g_Original_slReflexSetOptions), "slReflexSetOptions");
         }
 
-        if (originalReflexSetConstants &&
-            ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSetConstants",
-                                                                                   moduleBaseName)) {
+        if (originalReflexSetConstants && ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad(
+                                              "slReflexSetConstants", moduleBaseName)) {
             hookedAnything |= InstallFeatureImportFallbackIfPresent(
                 moduleBaseName, "slReflexSetConstants", reinterpret_cast<void*>(Hooked_slReflexSetConstants),
                 reinterpret_cast<void*>(originalReflexSetConstants),
@@ -2401,11 +2430,9 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
     // Newer integrations can configure DLSS-G by passing options directly to GetState, after
     // slSetTagForFrame has already made the activation input volatile. Keep the latest inactive
     // DX12 UI tag covered before entering GetState so a late OFF->ON observation can adopt it.
-    if (!ShouldKeepPureObserverOnlyStreamlineBehavior() &&
-        g_StreamlineUsesD3D12.load(std::memory_order_acquire) &&
+    if (!ShouldKeepPureObserverOnlyStreamlineBehavior() && g_StreamlineUsesD3D12.load(std::memory_order_acquire) &&
         !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
-        const uint32_t requestedOutputs =
-            options ? std::clamp(options->numFramesToGenerate + 1u, 1u, 6u) : 2u;
+        const uint32_t requestedOutputs = options ? std::clamp(options->numFramesToGenerate + 1u, 1u, 6u) : 2u;
         ce::dx12_streamline_ui_overlay::BeginPreactivationStandby(requestedOutputs);
     }
 
@@ -2461,8 +2488,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
     // NVIDIA's status decode with Reflex call-activity evidence (DLSSG hard-requires Reflex, and GTA's
     // Reflex is historically flaky even without CE).
     if (result == kSlResultOk) {
-        const uint32_t previousStatus =
-            g_DLSSGLastObservedStatus.exchange(state.status, std::memory_order_relaxed);
+        const uint32_t previousStatus = g_DLSSGLastObservedStatus.exchange(state.status, std::memory_order_relaxed);
         if (previousStatus != state.status) {
             char prevText[160];
             char nowText[160];
@@ -2488,8 +2514,8 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
         } else {
             streak = g_DLSSGNotInterpolatingStreak.fetch_add(1, std::memory_order_relaxed) + 1;
         }
-        if (ce::streamline_runtime_policy::ShouldWarnDLSSGActiveButNotInterpolating(
-                streak, kDLSSGHealthWarnStreak, kDLSSGHealthWarnRepeat)) {
+        if (ce::streamline_runtime_policy::ShouldWarnDLSSGActiveButNotInterpolating(streak, kDLSSGHealthWarnStreak,
+                                                                                    kDLSSGHealthWarnRepeat)) {
             const uint64_t nowMs = GetTickCount64();
             const uint64_t sleepCount = g_ReflexSleepObservedCount.load(std::memory_order_relaxed);
             const uint64_t sleepCountAtLastLog =
@@ -2587,8 +2613,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
             ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
                 startupWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
                 safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
-                postSLConfirmedRendering, postSLConfirmedButStartupSettling,
-                effectivePostSLRuntimeStateStabilizing);
+                postSLConfirmedRendering, postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
         if (g_SuppressedSetOptionsOffDuringStartup && !shouldKeepDeferred) {
             if (acceptActivatedUnconfirmedResumeOff) {
                 LogAcceptedOffDuringActivatedUnconfirmedResume(
@@ -2630,8 +2655,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport, slDLSSGState& 
     // Skip vtable repair while PostSL has not yet confirmed rendering, to
     // avoid calling through Steam's overlay hook chain during SL's DllMain
     // (which can crash gameoverlayrenderer64 with a null pointer).
-    if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) &&
-        HookIsPostSLOverlayConfirmedRendering()) {
+    if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) && HookIsPostSLOverlayConfirmedRendering()) {
         DXGIShared::RepairVTableHooksIfNeeded();
     }
 
@@ -2713,9 +2737,8 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
             postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof;
         const bool explicitSetOptionsDisableIsAuthoritative =
             ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
-                requestedDisabled, true, postSLConfirmedRendering, startupActivationPending,
-                postSLActiveButUnconfirmed, postSLConfirmedButStartupSettling,
-                effectivePostSLRuntimeStateStabilizing);
+                requestedDisabled, true, postSLConfirmedRendering, startupActivationPending, postSLActiveButUnconfirmed,
+                postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
         const bool acceptActivatedUnconfirmedResumeOff =
             ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
                 requestedDisabled, startupWindowActive, startupProtectedComebackProof, startupActivationPending,
@@ -2726,8 +2749,7 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
             ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
                 startupWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
                 safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
-                postSLConfirmedRendering, postSLConfirmedButStartupSettling,
-                effectivePostSLRuntimeStateStabilizing);
+                postSLConfirmedRendering, postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
         if (g_SuppressedSetOptionsOffDuringStartup && !shouldKeepDeferred) {
             if (acceptActivatedUnconfirmedResumeOff) {
                 LogAcceptedOffDuringActivatedUnconfirmedResume(
@@ -2814,10 +2836,8 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     // setup inside SetOptions; if it asks the app to tag the activation frame re-entrantly, the
     // official UIColorAndAlpha path must already be ready. BeginActivation is idempotent until
     // the corresponding accepted OFF transition.
-    if (!pureObserverOnly && requestedEnabled &&
-        !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
-        ce::dx12_streamline_ui_overlay::BeginActivation(
-            std::clamp(adjustedOptions.numFramesToGenerate + 1u, 1u, 6u));
+    if (!pureObserverOnly && requestedEnabled && !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
+        ce::dx12_streamline_ui_overlay::BeginActivation(std::clamp(adjustedOptions.numFramesToGenerate + 1u, 1u, 6u));
     }
 
     const bool setOptionsCallSuppressed = suppressOffCall;
@@ -2847,14 +2867,12 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                 "preventing Streamline FG de-initialization before recovery proves stable",
                 viewportKey, options.mode, startupWindowActive ? 1 : 0, HookHasFSRFGHistory() ? 1 : 0,
                 explicitSetOptionsActivationForCurrentComeback ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0,
-                startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
-                postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
-                effectivePostSLRuntimeStateStabilizing ? 1 : 0,
+                startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
+                postSLConfirmedButStartupSettling ? 1 : 0, effectivePostSLRuntimeStateStabilizing ? 1 : 0,
                 postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0,
                 static_cast<unsigned long long>(suppressionLogCount));
         }
-        MarkStartupProtectedOffChurnObserved("SetOptions", postSLConfirmedRendering,
-                                             postSLConfirmedButStartupSettling,
+        MarkStartupProtectedOffChurnObserved("SetOptions", postSLConfirmedRendering, postSLConfirmedButStartupSettling,
                                              effectivePostSLRuntimeStateStabilizing);
         {
             std::lock_guard<std::mutex> offLock(g_SuppressedOffMutex);
@@ -2877,10 +2895,9 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                 "Streamline Hook: Accepting explicit slDLSSGSetOptions(OFF) as authoritative after confirmed PostSL "
                 "rendering (viewport=%u startupWindow=%d hadFSR=%d safeBootstrap=%d pending=%d unconfirmed=%d "
                 "settling=%d stabilizing=%d activeProofPending=%d)",
-                viewportKey, startupWindowActive ? 1 : 0, hadFSRFGPhase ? 1 : 0,
-                safePostFSRBootstrapPath ? 1 : 0, startupActivationPending ? 1 : 0,
-                postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
-                effectivePostSLRuntimeStateStabilizing ? 1 : 0,
+                viewportKey, startupWindowActive ? 1 : 0, hadFSRFGPhase ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0,
+                startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
+                postSLConfirmedButStartupSettling ? 1 : 0, effectivePostSLRuntimeStateStabilizing ? 1 : 0,
                 postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
             ResetStartupProtectedOffChurnActiveProof("forwarded authoritative SetOptions disable");
         }
@@ -3038,8 +3055,7 @@ static slResult SlNullFunctionStub() {
 void* Hooked_slGetPluginFunction(const char* functionName) {
     if (StreamlineHook::IsExternalOverlayPresentGuardActive()) {
         static std::atomic<int> s_externalOverlaySuppressedPluginLookupLogCount{0};
-        const int logCount =
-            s_externalOverlaySuppressedPluginLookupLogCount.fetch_add(1, std::memory_order_relaxed);
+        const int logCount = s_externalOverlaySuppressedPluginLookupLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 200) == 0) {
             HookLogImportant(
                 "Streamline Hook: Suppressing re-entrant slGetPluginFunction during guarded external overlay "
@@ -3178,79 +3194,91 @@ slResult Hooked_slSetD3DDevice(void* d3dDevice) {
     return result;
 }
 
+bool StructTypesEqual(const slStructType& lhs, const slStructType& rhs) {
+    return lhs.data1 == rhs.data1 && lhs.data2 == rhs.data2 && lhs.data3 == rhs.data3 &&
+           std::memcmp(lhs.data4, rhs.data4, sizeof(lhs.data4)) == 0;
+}
+
+bool TryRecordOfficialUiResourceTag(const void* frameToken, const slResourceTag& tag, void* commandBuffer) {
+    if (ShouldKeepPureObserverOnlyStreamlineBehavior() || !g_StreamlineUsesD3D12.load(std::memory_order_acquire) ||
+        !commandBuffer || tag.type != kSLBufferTypeUIColorAndAlpha || !tag.resource || !tag.resource->native ||
+        tag.resource->type != slResourceType::kTexture2D || tag.extent.top != 0 || tag.extent.left != 0) {
+        return false;
+    }
+
+    auto* uiResource = static_cast<ID3D12Resource*>(tag.resource->native);
+    const D3D12_RESOURCE_DESC desc = uiResource->GetDesc();
+    const uint32_t width = tag.extent.width != 0
+                               ? tag.extent.width
+                               : (tag.resource->width != 0 ? tag.resource->width : static_cast<uint32_t>(desc.Width));
+    const uint32_t height =
+        tag.extent.height != 0 ? tag.extent.height : (tag.resource->height != 0 ? tag.resource->height : desc.Height);
+    const DXGI_FORMAT format =
+        tag.resource->nativeFormat != 0 ? static_cast<DXGI_FORMAT>(tag.resource->nativeFormat) : desc.Format;
+    const bool hdr = format == DXGI_FORMAT_R10G10B10A2_UNORM || format == DXGI_FORMAT_R10G10B10A2_TYPELESS ||
+                     format == DXGI_FORMAT_R16G16B16A16_FLOAT || format == DXGI_FORMAT_R16G16B16A16_TYPELESS;
+    ID3D12CommandQueue* initializationQueue = DX12_AcquireOriginalGameQueueForOverlay();
+    if (!initializationQueue) {
+        return false;
+    }
+
+    ce::dx12_streamline_ui_overlay::RecordRequest request;
+    request.commandList = static_cast<ID3D12GraphicsCommandList*>(commandBuffer);
+    request.uiResource = uiResource;
+    request.initializationQueue = initializationQueue;
+    request.resourceState = static_cast<D3D12_RESOURCE_STATES>(tag.resource->state);
+    request.format = format;
+    request.width = width;
+    request.height = height;
+    request.hdr = hdr;
+    request.frameToken = frameToken;
+    const bool recorded = ce::dx12_streamline_ui_overlay::TryRecordBootstrap(request);
+    initializationQueue->Release();
+    return recorded;
+}
+
+uint32_t LogOfficialUiTagOpportunity(const char* tagApi, const void* frameToken, uint32_t viewportKey,
+                                     const slResourceTag* tags, uint32_t numTags, void* commandBuffer,
+                                     uint32_t feature = UINT_MAX, uint32_t numInputs = 0) {
+    static std::atomic<uint32_t> s_uiTagOpportunityLogCount{0};
+    const uint32_t opportunity = s_uiTagOpportunityLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (opportunity > 12 && (opportunity % 300) != 0) {
+        return 0;
+    }
+
+    HookLogImportant(
+        "Streamline Hook: Official UI tag record opportunity #%u (api=%s feature=%u frame=%p viewport=%u "
+        "tags=%p numTags=%u inputs=%u commandBuffer=%p d3d12=%d)",
+        opportunity, tagApi ? tagApi : "unknown", feature, frameToken, viewportKey, tags, numTags, numInputs,
+        commandBuffer, g_StreamlineUsesD3D12.load(std::memory_order_relaxed) ? 1 : 0);
+    const uint32_t loggedTags = tags ? std::min(numTags, 12u) : 0u;
+    for (uint32_t i = 0; i < loggedTags; ++i) {
+        const slResourceTag& tag = tags[i];
+        HookLogImportant(
+            "Streamline Hook: UI tag opportunity #%u tag[%u] type=%u lifecycle=%d resource=%p "
+            "extent=(%u,%u %ux%u)",
+            opportunity, i, tag.type, tag.lifecycle, tag.resource, tag.extent.left, tag.extent.top, tag.extent.width,
+            tag.extent.height);
+    }
+    return opportunity;
+}
+
 void TryRecordOfficialUiTag(const char* tagApi, const void* frameToken, const slViewportHandle& viewport,
                             const slResourceTag* tags, uint32_t numTags, void* commandBuffer) {
     const bool wantsUiBootstrapRecord = ce::dx12_streamline_ui_overlay::OnFrameTag(frameToken);
 
     if (wantsUiBootstrapRecord) {
-        static std::atomic<uint32_t> s_uiTagOpportunityLogCount{0};
-        const uint32_t opportunity =
-            s_uiTagOpportunityLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (opportunity <= 12 || (opportunity % 300) == 0) {
-            HookLogImportant(
-                "Streamline Hook: Official UI tag record opportunity #%u (api=%s frame=%p viewport=%u tags=%p "
-                "numTags=%u commandBuffer=%p d3d12=%d)",
-                opportunity, tagApi ? tagApi : "unknown", frameToken, GetViewportKey(viewport), tags, numTags,
-                commandBuffer,
-                g_StreamlineUsesD3D12.load(std::memory_order_relaxed) ? 1 : 0);
-            const uint32_t loggedTags = tags ? std::min(numTags, 12u) : 0u;
-            for (uint32_t i = 0; i < loggedTags; ++i) {
-                const slResourceTag& tag = tags[i];
-                HookLogImportant(
-                    "Streamline Hook: UI tag opportunity #%u tag[%u] type=%u lifecycle=%d resource=%p "
-                    "extent=(%u,%u %ux%u)",
-                    opportunity, i, tag.type, tag.lifecycle, tag.resource, tag.extent.left, tag.extent.top,
-                    tag.extent.width, tag.extent.height);
-            }
-        }
+        LogOfficialUiTagOpportunity(tagApi, frameToken, GetViewportKey(viewport), tags, numTags, commandBuffer);
     }
 
     // DLSS-G consumes UIColorAndAlpha before its first generated output exists, while PostSL can
     // only run after that output has been produced. Record CE's rolling/one-shot overlay into the
     // official UI layer on the app-provided command list. This introduces no copy, extra submission,
     // queue, or wait and naturally follows Streamline's own synchronization.
-    if (!ShouldKeepPureObserverOnlyStreamlineBehavior() &&
-        g_StreamlineUsesD3D12.load(std::memory_order_acquire) && wantsUiBootstrapRecord && tags && commandBuffer) {
+    if (wantsUiBootstrapRecord && tags) {
         for (uint32_t i = 0; i < numTags; ++i) {
-            const slResourceTag& tag = tags[i];
-            if (tag.type != kSLBufferTypeUIColorAndAlpha || !tag.resource || !tag.resource->native ||
-                tag.resource->type != slResourceType::kTexture2D || tag.extent.top != 0 || tag.extent.left != 0) {
-                continue;
-            }
-
-            auto* uiResource = static_cast<ID3D12Resource*>(tag.resource->native);
-            const D3D12_RESOURCE_DESC desc = uiResource->GetDesc();
-            const uint32_t width = tag.extent.width != 0
-                                       ? tag.extent.width
-                                       : (tag.resource->width != 0 ? tag.resource->width
-                                                                   : static_cast<uint32_t>(desc.Width));
-            const uint32_t height = tag.extent.height != 0
-                                        ? tag.extent.height
-                                        : (tag.resource->height != 0 ? tag.resource->height : desc.Height);
-            const DXGI_FORMAT format = tag.resource->nativeFormat != 0
-                                           ? static_cast<DXGI_FORMAT>(tag.resource->nativeFormat)
-                                           : desc.Format;
-            const bool hdr = format == DXGI_FORMAT_R10G10B10A2_UNORM ||
-                             format == DXGI_FORMAT_R10G10B10A2_TYPELESS ||
-                             format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
-                             format == DXGI_FORMAT_R16G16B16A16_TYPELESS;
-            ID3D12CommandQueue* initializationQueue = DX12_AcquireOriginalGameQueueForOverlay();
-            if (initializationQueue) {
-                ce::dx12_streamline_ui_overlay::RecordRequest request;
-                request.commandList = static_cast<ID3D12GraphicsCommandList*>(commandBuffer);
-                request.uiResource = uiResource;
-                request.initializationQueue = initializationQueue;
-                request.resourceState = static_cast<D3D12_RESOURCE_STATES>(tag.resource->state);
-                request.format = format;
-                request.width = width;
-                request.height = height;
-                request.hdr = hdr;
-                request.frameToken = frameToken;
-                const bool recorded = ce::dx12_streamline_ui_overlay::TryRecordBootstrap(request);
-                initializationQueue->Release();
-                if (recorded) {
-                    break;
-                }
+            if (TryRecordOfficialUiResourceTag(frameToken, tags[i], commandBuffer)) {
+                break;
             }
         }
     }
@@ -3285,6 +3313,76 @@ slResult Hooked_slSetTagForFrame(const slBaseStructure& frame, const slViewportH
     // Streamline observes the resource only after CE's commands have been appended. For volatile
     // tags this is essential: any copy Streamline records into the same command list includes CE.
     return originalSetTagForFrame(frame, viewport, tags, numTags, commandBuffer);
+}
+
+slResult Hooked_slEvaluateFeature(uint32_t feature, const slBaseStructure& frame, const slBaseStructure** inputs,
+                                  uint32_t numInputs, void* commandBuffer) {
+    auto originalEvaluateFeature = GetCallableOriginalEvaluateFeature();
+    if (!originalEvaluateFeature) {
+        return kSlResultErrorInvalidState;
+    }
+
+    // Streamline explicitly permits ResourceTag structures as local evaluate inputs; those tags
+    // never pass through slSetTag/slSetTagForFrame. Talos uses this route. Keep the steady-state
+    // evaluate path to one atomic branch, then inspect only the short activation/standby window.
+    const void* frameToken = &frame;
+    const bool wantsUiBootstrapRecord = ce::dx12_streamline_ui_overlay::OnFrameTag(frameToken);
+    if (wantsUiBootstrapRecord) {
+        slViewportHandle viewport;
+        uint32_t localTagCount = 0;
+        constexpr uint32_t kMaximumInputChainDepth = 16;
+        if (inputs) {
+            for (uint32_t i = 0; i < numInputs; ++i) {
+                const slBaseStructure* input = inputs[i];
+                for (uint32_t depth = 0; input && depth < kMaximumInputChainDepth; ++depth) {
+                    if (StructTypesEqual(input->structType, kViewportHandleStructType)) {
+                        viewport.value = static_cast<const slViewportHandle*>(input)->value;
+                    }
+                    if (StructTypesEqual(input->structType, kResourceTagStructType)) {
+                        ++localTagCount;
+                    }
+                    const slBaseStructure* next = input->next;
+                    if (next == input) {
+                        break;
+                    }
+                    input = next;
+                }
+            }
+        }
+
+        const uint32_t opportunity =
+            LogOfficialUiTagOpportunity("slEvaluateFeature", frameToken, GetViewportKey(viewport), nullptr,
+                                        localTagCount, commandBuffer, feature, numInputs);
+        uint32_t tagIndex = 0;
+        bool recorded = false;
+        if (inputs) {
+            for (uint32_t i = 0; i < numInputs && !recorded; ++i) {
+                const slBaseStructure* input = inputs[i];
+                for (uint32_t depth = 0; input && depth < kMaximumInputChainDepth; ++depth) {
+                    if (StructTypesEqual(input->structType, kResourceTagStructType)) {
+                        const auto& tag = *static_cast<const slResourceTag*>(input);
+                        if (opportunity != 0 && tagIndex < 12) {
+                            HookLogImportant(
+                                "Streamline Hook: UI tag opportunity #%u localTag[%u] input=%u depth=%u type=%u "
+                                "lifecycle=%d resource=%p extent=(%u,%u %ux%u)",
+                                opportunity, tagIndex, i, depth, tag.type, tag.lifecycle, tag.resource, tag.extent.left,
+                                tag.extent.top, tag.extent.width, tag.extent.height);
+                        }
+                        ++tagIndex;
+                        recorded = TryRecordOfficialUiResourceTag(frameToken, tag, commandBuffer);
+                    }
+                    const slBaseStructure* next = input->next;
+                    if (next == input) {
+                        break;
+                    }
+                    input = next;
+                }
+            }
+        }
+    }
+
+    // Append CE before Streamline observes/copies any eOnlyValidNow/eValidUntilEvaluate UI tag.
+    return originalEvaluateFeature(feature, frame, inputs, numInputs, commandBuffer);
 }
 
 // Hook for Streamline Reflex sleep. This lets CE observe game-owned Reflex
@@ -3456,10 +3554,11 @@ void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char
          reinterpret_cast<void* volatile*>(&g_Original_slGetPluginFunction)},
         {"slSetD3DDevice", &g_SLSetD3DDeviceTarget, &g_SLSetD3DDeviceHooked,
          reinterpret_cast<void* volatile*>(&g_Original_slSetD3DDevice)},
-        {"slSetTag", &g_SLSetTagTarget, &g_SLSetTagHooked,
-         reinterpret_cast<void* volatile*>(&g_Original_slSetTag)},
+        {"slSetTag", &g_SLSetTagTarget, &g_SLSetTagHooked, reinterpret_cast<void* volatile*>(&g_Original_slSetTag)},
         {"slSetTagForFrame", &g_SLSetTagForFrameTarget, &g_SLSetTagForFrameHooked,
          reinterpret_cast<void* volatile*>(&g_Original_slSetTagForFrame)},
+        {"slEvaluateFeature", &g_SLEvaluateFeatureTarget, &g_SLEvaluateFeatureHooked,
+         reinterpret_cast<void* volatile*>(&g_Original_slEvaluateFeature)},
         {"slDLSSGSetOptions", &g_DLSSGSetOptionsTarget, &g_DLSSGSetOptionsHooked,
          reinterpret_cast<void* volatile*>(&g_Original_slDLSSGSetOptions)},
         {"slDLSSGGetState", &g_DLSSGGetStateTarget, &g_DLSSGGetStateHooked,
@@ -3492,8 +3591,8 @@ void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char
     }
 
     std::atomic<void*>* attemptedTargets[] = {
-        &g_DLSSGSetOptionsImportFallbackAttemptedTarget, &g_DLSSGGetStateImportFallbackAttemptedTarget,
-        &g_ReflexSleepImportFallbackAttemptedTarget,     &g_ReflexSetOptionsImportFallbackAttemptedTarget,
+        &g_DLSSGSetOptionsImportFallbackAttemptedTarget,    &g_DLSSGGetStateImportFallbackAttemptedTarget,
+        &g_ReflexSleepImportFallbackAttemptedTarget,        &g_ReflexSetOptionsImportFallbackAttemptedTarget,
         &g_ReflexSetConstantsImportFallbackAttemptedTarget,
     };
     for (std::atomic<void*>* attempted : attemptedTargets) {
@@ -3548,7 +3647,7 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
         HookLogImportant(
             "Streamline Hook: Fresh module load inspected %s (%p) "
             "slGetFeatureFunctionHooked=%d slGetPluginFunctionHooked=%d slSetD3DDeviceHooked=%d "
-            "slSetTagHooked=%d slSetTagForFrameHooked=%d "
+            "slSetTagHooked=%d slSetTagForFrameHooked=%d slEvaluateFeatureHooked=%d "
             "dlssgSetOptionsHooked=%d "
             "dlssgGetStateHooked=%d reflexSleepHooked=%d reflexSetOptionsHooked=%d reflexSetConstantsHooked=%d",
             GetModuleBaseName(moduleNameOrPath), module,
@@ -3557,6 +3656,7 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
             g_SLSetD3DDeviceHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_SLSetTagHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_SLSetTagForFrameHooked.load(std::memory_order_acquire) ? 1 : 0,
+            g_SLEvaluateFeatureHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_DLSSGSetOptionsHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_DLSSGGetStateHooked.load(std::memory_order_acquire) ? 1 : 0,
             g_ReflexSleepHooked.load(std::memory_order_acquire) ? 1 : 0,
@@ -3670,9 +3770,8 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
     const bool postSLStartupActivationEntered = HookHasPostSLSyntheticStartupActivationEntered();
     const bool postSLConfirmedRendering = HookIsPostSLOverlayConfirmedRendering();
     const bool postSLConfirmedButStartupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
-    const bool postSLConfirmedButRuntimeStateStabilizing =
-        HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() ||
-        HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected();
+    const bool postSLConfirmedButRuntimeStateStabilizing = HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() ||
+                                                           HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected();
     const bool explicitSetOptionsActivationForCurrentComeback =
         g_CurrentComebackActivatedViaExplicitSetOptions.load(std::memory_order_acquire);
     const bool hadFSRFGPhase = HookHasFSRFGHistory();
@@ -3761,8 +3860,7 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
                 "Streamline Hook: Forwarding suppressed slDLSSGSetOptions(OFF) via periodic flush — startup window "
                 "expired (viewport=%u, activationPending=%d settling=%d stabilizing=%d activeProofPending=%d)",
                 g_SuppressedOffViewportKey, activationPending ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
-                effectivePostSLRuntimeStateStabilizing ? 1 : 0,
-                postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
+                effectivePostSLRuntimeStateStabilizing ? 1 : 0, postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
             const slResult offResult = originalSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
             if (offResult != kSlResultOk) {
                 HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) via periodic flush returned %d",
@@ -3817,8 +3915,8 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
             "Streamline Hook: Startup window expired with activation pending but no "
             "suppressed OFF — triggering PostSL callback directly to complete "
             "activation before Streamline times out");
-        const bool serviced = TryServicePostSLStartupActivation(
-            "StreamlineHook::FlushSuppressedSetOptionsOffIfNeeded expiry", true);
+        const bool serviced =
+            TryServicePostSLStartupActivation("StreamlineHook::FlushSuppressedSetOptionsOffIfNeeded expiry", true);
         HookLogImportant("Streamline Hook: PostSL startup activation service after startup expiry returned %d",
                          serviced ? 1 : 0);
     } else if (activationPending && callbackInstalled && postSLStartupActivationEntered) {
