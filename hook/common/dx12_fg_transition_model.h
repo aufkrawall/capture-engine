@@ -58,6 +58,7 @@ struct Input {
     bool streamlineLoaded = false;
     bool runtimeOwnsSwapchain = false;
     bool hadFSRPhase = false;
+    bool nativeFSRSuspended = false;
     bool recoveringPostFSRNonFG = false;
     bool startupBypassActive = false;
     bool overlaySuppressed = false;

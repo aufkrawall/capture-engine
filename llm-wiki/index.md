@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-12 (process-loopback restart live join, capture-method/injection independence, HAGS-on capture contention hardening, strict true-10-bit DXGI/WGC capture, multi-track audio, capture reliability, and current Streamline/FG routing; see multi-audio-capture.md, dx12-injection-bootstrap.md, performance-priority.md, wgc-capture.md, cfr-capture-sync.md, regression-testing-and-logging.md, and log/recent.md)
+Last cross-checked: 2026-07-12 (GTA Streamline-wrapped FFX owner-queue routing, FG overlay transition/performance invariants, process-loopback restart live join, capture-method/injection independence, HAGS-on capture contention hardening, strict true-10-bit DXGI/WGC capture, multi-track audio, and capture reliability; see frame-generation/guardrails.md, multi-audio-capture.md, dx12-injection-bootstrap.md, performance-priority.md, wgc-capture.md, cfr-capture-sync.md, regression-testing-and-logging.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`

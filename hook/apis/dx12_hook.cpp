@@ -5369,6 +5369,10 @@ static DXGI_FORMAT g_CEUiSubstituteFormat = DXGI_FORMAT_UNKNOWN;
 static D3D12_RESOURCE_STATES g_CEUiSubstituteInitialState = D3D12_RESOURCE_STATE_COMMON;
 static std::atomic<uint64_t> g_FFXUiPreparationSequence{0};
 static uint64_t g_FFXUiCommittedPreparationSequence = 0;  // guarded by g_FFXUiCompositeMutex
+// The presenter-thread compatibility driver can observe both real and generated output Presents for one
+// registered UI input. Composite at most once per accepted RegisterUiResource sequence or alpha blending is
+// applied repeatedly to the same texture and the two outputs visibly alternate in intensity.
+static uint64_t g_FFXUiPresenterFallbackLastSequence = 0;  // guarded by g_FFXUiCompositeMutex
 
 // --- FFX UI-composite timeline ring buffer (freeze diagnosis) -----------------------------------------
 // Records the last kFFXUiCompositeTimelineSize composite calls with QPC stamps, fence state, and game-ECL
@@ -5798,6 +5802,7 @@ static void ReleaseFFXUiCompositeInfra() {
     // AMD yet. Its later commit must not resurrect device-bound resources into the cleared generation.
     g_FFXUiCommittedPreparationSequence =
         g_FFXUiPreparationSequence.fetch_add(1, std::memory_order_acq_rel) + 1;
+    g_FFXUiPresenterFallbackLastSequence = 0;
     if (g_FFXUiCompositeList) { g_FFXUiCompositeList->Release(); g_FFXUiCompositeList = nullptr; }
     for (auto& a : g_FFXUiCompositeAlloc) { if (a) { a->Release(); a = nullptr; } }
     if (g_FFXUiCompositeRtvHeap) { g_FFXUiCompositeRtvHeap->Release(); g_FFXUiCompositeRtvHeap = nullptr; }
@@ -6200,13 +6205,24 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
 // the composite (the cached pointer is otherwise swapped without the lock). Returns true if composited.
 bool DX12_CompositeOverlayOntoCachedFFXUiResource() {
     bool composited = false;
+    bool alreadyCovered = false;
+    uint64_t coveredSequence = 0;
     {
         std::lock_guard<std::recursive_mutex> lock(g_FFXUiCompositeMutex);
         ID3D12Resource* uiTexture = g_CachedFFXUiTexture.load(std::memory_order_acquire);
         if (uiTexture) {
-            const uint32_t ffxState = g_CachedFFXUiState.load(std::memory_order_acquire);
-            const uint32_t flags = g_CachedFFXUiFlags.load(std::memory_order_acquire);
-            composited = DX12_CompositeOverlayOntoFFXUiResource(uiTexture, ffxState, flags);
+            const uint64_t targetSequence = g_FFXUiCommittedPreparationSequence;
+            alreadyCovered = !ce::dx12_overlay_policy::ShouldCompositeFFXPresenterFallback(
+                targetSequence, g_FFXUiPresenterFallbackLastSequence);
+            coveredSequence = targetSequence;
+            if (!alreadyCovered) {
+                const uint32_t ffxState = g_CachedFFXUiState.load(std::memory_order_acquire);
+                const uint32_t flags = g_CachedFFXUiFlags.load(std::memory_order_acquire);
+                composited = DX12_CompositeOverlayOntoFFXUiResource(uiTexture, ffxState, flags);
+                if (composited) {
+                    g_FFXUiPresenterFallbackLastSequence = targetSequence;
+                }
+            }
         }
     }
     // NOTE: the substitute UI-resource re-assert is deliberately NOT called here anymore. This function is
@@ -6217,18 +6233,31 @@ bool DX12_CompositeOverlayOntoCachedFFXUiResource() {
     // first FSR-FG frame (session 20260701_213656 freeze dump: presenter thread blocked in
     // RtlEnterCriticalSection under CE's DetourPresent, game thread spinning in amd_fidelityfx ffxQuery).
     // The re-assert now runs ONLY from the FFX proxy-present prework (game thread, before AMD's Present).
-    if (composited) {
+    if (alreadyCovered) {
+        static std::atomic<int> s_presenterDuplicateSkipLogCount{0};
+        const int logCount = s_presenterDuplicateSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: FFX presenter fallback skipped duplicate composite for accepted UI registration "
+                "sequence=%llu (log=%d) — real/generated outputs share one post-interpolation UI input",
+                static_cast<unsigned long long>(coveredSequence), logCount + 1);
+        }
+    }
+    if (composited || alreadyCovered) {
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
     }
-    return composited;
+    return composited || alreadyCovered;
 }
 
-// The exact FFX game/presentation queue is captured from the DX12 FrameGenerationSwapChain creation
-// descriptor. Bindings are keyed by the raw proxy identity without retaining the proxy itself: AddRef'ing a
-// startup/takeover swapchain pins its HWND and can make the replacement CreateSwapChainForHwnd fail E_ACCESSDENIED.
+// The FFX game/presentation queue is captured from the DX12 FrameGenerationSwapChain creation descriptor.
+// A proven Streamline wrapper also retains CE's real original game queue so target-device validation can
+// select its underlying submission path. Bindings are keyed by raw proxy identity without retaining the proxy
+// itself: AddRef'ing a startup/takeover swapchain pins its HWND and can make replacement creation fail.
 struct NativeFSRSwapchainQueueBinding {
     void* context = nullptr;
-    ID3D12CommandQueue* gameQueue = nullptr;
+    ID3D12CommandQueue* descriptorQueue = nullptr;
+    ID3D12CommandQueue* underlyingGameQueue = nullptr;
+    bool descriptorQueueUsesAcceptedStreamlineDevice = false;
 };
 
 static std::mutex g_NativeFSRSwapchainQueueBindingMutex;
@@ -6241,33 +6270,66 @@ void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapC
         return;
     }
 
+    ID3D12Device* descriptorDevice = nullptr;
+    presentationQueue->GetDevice(IID_PPV_ARGS(&descriptorDevice));
+    const bool streamlineWrappedQueue =
+        descriptorDevice && StreamlineHook::IsAcceptedD3D12Device(descriptorDevice);
+    ID3D12CommandQueue* underlyingGameQueue =
+        streamlineWrappedQueue ? DX12_AcquireOriginalGameQueueForOverlay() : nullptr;
+
     presentationQueue->AddRef();
-    ID3D12CommandQueue* replacedQueue = nullptr;
+    NativeFSRSwapchainQueueBinding replacedBinding = {};
     {
         std::lock_guard<std::mutex> lock(g_NativeFSRSwapchainQueueBindingMutex);
         auto& binding = g_NativeFSRSwapchainQueueBindings[swapChain];
-        if (binding.context == context && binding.gameQueue == presentationQueue) {
+        if (binding.context == context && binding.descriptorQueue == presentationQueue &&
+            binding.underlyingGameQueue == underlyingGameQueue &&
+            binding.descriptorQueueUsesAcceptedStreamlineDevice == streamlineWrappedQueue) {
             presentationQueue->Release();
+            if (underlyingGameQueue) {
+                underlyingGameQueue->Release();
+            }
+            if (descriptorDevice) {
+                descriptorDevice->Release();
+            }
             return;
         }
-        replacedQueue = binding.gameQueue;
-        binding = {context, presentationQueue};
+        replacedBinding = binding;
+        binding = {context, presentationQueue, underlyingGameQueue, streamlineWrappedQueue};
     }
-    if (replacedQueue) {
+    if (replacedBinding.descriptorQueue || replacedBinding.underlyingGameQueue) {
         ce::dx12_ffx_suspend_overlay::RetireProxy(swapChain, "FFX proxy queue binding replaced");
-        replacedQueue->Release();
+        if (replacedBinding.descriptorQueue) {
+            replacedBinding.descriptorQueue->Release();
+        }
+        if (replacedBinding.underlyingGameQueue) {
+            replacedBinding.underlyingGameQueue->Release();
+        }
     }
 
+    ID3D12Device* underlyingDevice = nullptr;
+    if (underlyingGameQueue) {
+        underlyingGameQueue->GetDevice(IID_PPV_ARGS(&underlyingDevice));
+    }
     HookLogImportant(
-        "DX12: Captured exact native-FSR swapchain game/presentation queue (context=%p proxy=%p queue=%p "
-        "nodeMask=%u) — suspension backbuffer overlay is authorized only on this queue",
-        context, swapChain, presentationQueue, presentationQueue->GetDesc().NodeMask);
+        "DX12: Captured native-FSR swapchain presentation queue (context=%p proxy=%p descriptorQueue=%p "
+        "descriptorDevice=%p streamlineWrapped=%d underlyingGameQueue=%p underlyingDevice=%p nodeMask=%u) — "
+        "direct overlay work uses the exact queue, or the validated underlying game queue for a proven "
+        "Streamline wrapper",
+        context, swapChain, presentationQueue, descriptorDevice, streamlineWrappedQueue ? 1 : 0,
+        underlyingGameQueue, underlyingDevice, presentationQueue->GetDesc().NodeMask);
+    if (underlyingDevice) {
+        underlyingDevice->Release();
+    }
+    if (descriptorDevice) {
+        descriptorDevice->Release();
+    }
 }
 
 void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const char* reason) {
     struct ReleasedBinding {
         void* proxy = nullptr;
-        ID3D12CommandQueue* queue = nullptr;
+        NativeFSRSwapchainQueueBinding binding = {};
     };
     std::vector<ReleasedBinding> releasedBindings;
     {
@@ -6275,8 +6337,8 @@ void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const cha
         for (auto it = g_NativeFSRSwapchainQueueBindings.begin();
              it != g_NativeFSRSwapchainQueueBindings.end();) {
             if (!context || it->second.context == context) {
-                if (it->second.gameQueue) {
-                    releasedBindings.push_back({it->first, it->second.gameQueue});
+                if (it->second.descriptorQueue || it->second.underlyingGameQueue) {
+                    releasedBindings.push_back({it->first, it->second});
                 }
                 it = g_NativeFSRSwapchainQueueBindings.erase(it);
             } else {
@@ -6287,7 +6349,12 @@ void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const cha
 
     for (const ReleasedBinding& binding : releasedBindings) {
         ce::dx12_ffx_suspend_overlay::RetireProxy(binding.proxy, reason);
-        binding.queue->Release();
+        if (binding.binding.descriptorQueue) {
+            binding.binding.descriptorQueue->Release();
+        }
+        if (binding.binding.underlyingGameQueue) {
+            binding.binding.underlyingGameQueue->Release();
+        }
     }
     if (!releasedBindings.empty()) {
         HookLogImportant("DX12: Released %zu native-FSR proxy queue binding(s) (%s)", releasedBindings.size(),
@@ -6295,17 +6362,118 @@ void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const cha
     }
 }
 
-static ID3D12CommandQueue* AcquireNativeFSRSwapchainPresentationQueue(IDXGISwapChain* proxy) {
-    if (!proxy) {
-        return nullptr;
+static bool QueueDeviceOwnsResource(ID3D12CommandQueue* queue, ID3D12Resource* target,
+                                    ID3D12Device** queueDeviceOut) {
+    if (queueDeviceOut) {
+        *queueDeviceOut = nullptr;
     }
-    std::lock_guard<std::mutex> lock(g_NativeFSRSwapchainQueueBindingMutex);
-    const auto it = g_NativeFSRSwapchainQueueBindings.find(proxy);
-    if (it == g_NativeFSRSwapchainQueueBindings.end() || !it->second.gameQueue) {
-        return nullptr;
+    if (!queue || !target) {
+        return false;
     }
-    it->second.gameQueue->AddRef();
-    return it->second.gameQueue;
+    ID3D12Device* queueDevice = nullptr;
+    if (FAILED(queue->GetDevice(IID_PPV_ARGS(&queueDevice))) || !queueDevice) {
+        return false;
+    }
+    const bool matches = IsResourceOwnedByDevice(target, queueDevice);
+    if (queueDeviceOut) {
+        *queueDeviceOut = queueDevice;
+    } else {
+        queueDevice->Release();
+    }
+    return matches;
+}
+
+struct AcquiredNativeFSROwnerQueue {
+    ID3D12CommandQueue* queue = nullptr;
+    ce::dx12_overlay_policy::NativeFSROwnerQueueRoute route =
+        ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kUnavailable;
+};
+
+static AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(IDXGISwapChain* proxy,
+                                                                               ID3D12Resource* target) {
+    if (!proxy || !target) {
+        return {};
+    }
+
+    NativeFSRSwapchainQueueBinding binding = {};
+    {
+        std::lock_guard<std::mutex> lock(g_NativeFSRSwapchainQueueBindingMutex);
+        const auto it = g_NativeFSRSwapchainQueueBindings.find(proxy);
+        if (it == g_NativeFSRSwapchainQueueBindings.end()) {
+            return {};
+        }
+        binding = it->second;
+        if (binding.descriptorQueue) {
+            binding.descriptorQueue->AddRef();
+        }
+        if (binding.underlyingGameQueue) {
+            binding.underlyingGameQueue->AddRef();
+        }
+    }
+    if (binding.descriptorQueueUsesAcceptedStreamlineDevice && !binding.underlyingGameQueue) {
+        // Some integrations create the FFX context before the first real Present establishes CE's original
+        // queue. Resolve it lazily once available; the target-device check below still has final authority.
+        binding.underlyingGameQueue = DX12_AcquireOriginalGameQueueForOverlay();
+    }
+
+    ID3D12Device* descriptorDevice = nullptr;
+    ID3D12Device* underlyingDevice = nullptr;
+    const bool exactMatches =
+        QueueDeviceOwnsResource(binding.descriptorQueue, target, &descriptorDevice);
+    const bool underlyingMatches =
+        QueueDeviceOwnsResource(binding.underlyingGameQueue, target, &underlyingDevice);
+    const auto route = ce::dx12_overlay_policy::ChooseNativeFSROwnerQueueRoute(
+        exactMatches, binding.descriptorQueueUsesAcceptedStreamlineDevice, underlyingMatches);
+
+    ID3D12CommandQueue* const descriptorQueueForLog = binding.descriptorQueue;
+    ID3D12CommandQueue* const underlyingQueueForLog = binding.underlyingGameQueue;
+    ID3D12CommandQueue* selectedQueue = nullptr;
+    if (route == ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kExactDescriptorQueue) {
+        selectedQueue = binding.descriptorQueue;
+        binding.descriptorQueue = nullptr;
+    } else if (route == ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kStreamlineUnderlyingGameQueue) {
+        selectedQueue = binding.underlyingGameQueue;
+        binding.underlyingGameQueue = nullptr;
+    }
+
+    if (binding.descriptorQueue) {
+        binding.descriptorQueue->Release();
+    }
+    if (binding.underlyingGameQueue) {
+        binding.underlyingGameQueue->Release();
+    }
+
+    static std::atomic<int> s_lastLoggedRoute{-1};
+    static std::atomic<int> s_unavailableLogCount{0};
+    const int routeValue = static_cast<int>(route);
+    const int previousRoute = s_lastLoggedRoute.exchange(routeValue, std::memory_order_relaxed);
+    const int unavailableLog = route == ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kUnavailable
+                                   ? s_unavailableLogCount.fetch_add(1, std::memory_order_relaxed)
+                                   : 0;
+    if (previousRoute != routeValue ||
+        (route == ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kUnavailable &&
+         (unavailableLog < 20 || (unavailableLog % 300) == 0))) {
+        const char* routeName =
+            route == ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kExactDescriptorQueue
+                ? "exact-descriptor"
+                : (route == ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kStreamlineUnderlyingGameQueue
+                       ? "streamline-underlying-game"
+                       : "unavailable");
+        HookLogImportant(
+            "DX12: Native-FSR owner queue route=%s proxy=%p target=%p descriptorQueue=%p descriptorDevice=%p "
+            "exactMatches=%d streamlineWrapped=%d underlyingQueue=%p underlyingDevice=%p underlyingMatches=%d "
+            "selected=%p",
+            routeName, proxy, target, descriptorQueueForLog, descriptorDevice, exactMatches ? 1 : 0,
+            binding.descriptorQueueUsesAcceptedStreamlineDevice ? 1 : 0, underlyingQueueForLog,
+            underlyingDevice, underlyingMatches ? 1 : 0, selectedQueue);
+    }
+    if (descriptorDevice) {
+        descriptorDevice->Release();
+    }
+    if (underlyingDevice) {
+        underlyingDevice->Release();
+    }
+    return {selectedQueue, route};
 }
 
 static bool SubmitNativeFSROwnerQueueOverlayCommandList(ID3D12CommandQueue* queue,
@@ -6326,18 +6494,31 @@ static HRESULT SignalNativeFSROwnerQueueOverlayFence(ID3D12CommandQueue* queue, 
 
 // During a runtime-owned no-callback FSR suspension AMD presents the replacement backbuffer 1:1 and does not
 // composite the registered UI resource. Draw directly onto that buffer immediately before the proxy Present,
-// but only on the exact game/presentation queue from the FFX swapchain creation descriptor. The SDK orders that
-// queue into its internal present queue, so no foreign queue, cross-queue race, copy, or per-frame CPU wait exists.
+// on the target-compatible owner queue resolved from the FFX descriptor. The SDK orders that queue into its
+// internal present queue, so no foreign queue, cross-queue race, copy, or per-frame CPU wait exists.
 bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy) {
-    ID3D12CommandQueue* gameQueue = AcquireNativeFSRSwapchainPresentationQueue(proxy);
-    if (!gameQueue) {
+    IDXGISwapChain3* swapChain3 = nullptr;
+    ID3D12Resource* backBuffer = nullptr;
+    if (proxy && SUCCEEDED(proxy->QueryInterface(IID_PPV_ARGS(&swapChain3))) && swapChain3) {
+        swapChain3->GetBuffer(swapChain3->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&backBuffer));
+        swapChain3->Release();
+    }
+    const AcquiredNativeFSROwnerQueue ownerQueue =
+        AcquireNativeFSRSwapchainPresentationQueue(proxy, backBuffer);
+    if (!ownerQueue.queue || !backBuffer) {
         static std::atomic<int> s_missingBindingLogCount{0};
         const int logCount = s_missingBindingLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 300) == 0) {
             HookLogImportant(
-                "DX12: FSR-suspend overlay refused backbuffer work because proxy %p has no exact "
-                "ffxCreateContext gameQueue binding (log=%d) — never guessing a swapchain-owner queue",
-                proxy, logCount + 1);
+                "DX12: FSR-suspend overlay refused backbuffer work because proxy %p has no target-compatible "
+                "FFX owner queue/backbuffer (queue=%p backbuffer=%p log=%d)",
+                proxy, ownerQueue.queue, backBuffer, logCount + 1);
+        }
+        if (ownerQueue.queue) {
+            ownerQueue.queue->Release();
+        }
+        if (backBuffer) {
+            backBuffer->Release();
         }
         return false;
     }
@@ -6351,12 +6532,15 @@ bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy) {
 
     ce::dx12_ffx_suspend_overlay::RenderRequest request = {};
     request.proxySwapChain = proxy;
-    request.presentationQueue = gameQueue;
+    request.presentationQueue = ownerQueue.queue;
+    request.targetResource = backBuffer;
+    request.routeName = "suspend-backbuffer";
     request.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;
     request.signalFence = &SignalNativeFSROwnerQueueOverlayFence;
     request.hdr = hdr;
     const bool rendered = ce::dx12_ffx_suspend_overlay::Render(request);
-    gameQueue->Release();
+    backBuffer->Release();
+    ownerQueue.queue->Release();
 
     if (rendered) {
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kFFXPresentCallback);
@@ -6365,57 +6549,66 @@ bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy) {
 }
 
 // Active no-callback FSR FG consumes the registered UI resource from the same FFX swapchain pipeline. Record
-// CE's UI-resource draw on the exact game/presentation queue immediately before proxy Present. That gives AMD
+// CE's UI-resource draw on the target-compatible owner queue immediately before proxy Present. That gives AMD
 // an explicit queue-order dependency without a foreign queue, a cross-queue resource race, or a per-frame CPU
-// completion wait. The cached resource stays pinned by both g_FFXUiCompositeMutex and the renderer slot until
-// the slot fence completes.
+// completion wait. A retained local reference plus the renderer slot pins rotating resources through submission.
 static bool DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(IDXGISwapChain* proxy) {
-    ID3D12CommandQueue* gameQueue = AcquireNativeFSRSwapchainPresentationQueue(proxy);
-    if (!gameQueue) {
+    ID3D12Resource* uiTexture = nullptr;
+    uint32_t ffxState = 0;
+    uint32_t flags = 0;
+    bool isSubstitute = false;
+    bool needsTransparentClear = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_FFXUiCompositeMutex);
+        uiTexture = g_CachedFFXUiTexture.load(std::memory_order_acquire);
+        if (uiTexture) {
+            uiTexture->AddRef();
+            ffxState = g_CachedFFXUiState.load(std::memory_order_acquire);
+            flags = g_CachedFFXUiFlags.load(std::memory_order_acquire);
+            isSubstitute = g_CEUiSubstituteTexture && uiTexture == g_CEUiSubstituteTexture;
+            needsTransparentClear = g_BundleTargetNeedsTransparentClear.load(std::memory_order_acquire);
+        }
+    }
+    if (!uiTexture) {
+        return false;
+    }
+
+    const AcquiredNativeFSROwnerQueue ownerQueue =
+        AcquireNativeFSRSwapchainPresentationQueue(proxy, uiTexture);
+    if (!ownerQueue.queue) {
         static std::atomic<int> s_missingBindingLogCount{0};
         const int logCount = s_missingBindingLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 300) == 0) {
             HookLogImportant(
-                "DX12: FSR active UI-resource overlay has no exact proxy gameQueue binding (proxy=%p log=%d); "
-                "owner-queue route unavailable",
-                proxy, logCount + 1);
+                "DX12: FSR active UI-resource overlay has no target-compatible proxy owner queue "
+                "(proxy=%p target=%p substitute=%d log=%d); owner-queue route unavailable",
+                proxy, uiTexture, isSubstitute ? 1 : 0, logCount + 1);
         }
-        {
-            std::lock_guard<std::recursive_mutex> lock(g_FFXUiCompositeMutex);
-            ID3D12Resource* cached = g_CachedFFXUiTexture.load(std::memory_order_acquire);
-            if (g_CEUiSubstituteTexture && cached == g_CEUiSubstituteTexture) {
-                // A CE-owned substitute has no incoming game-queue writer, so the legacy completion-waited
-                // route remains a safe compatibility fallback for an unknown FFX descriptor revision. Keep
-                // the lock across classification + draw so a concurrent accepted game target cannot turn this
-                // into a foreign-queue HUD write after the check.
-                return DX12_CompositeOverlayOntoFFXUiResource(
-                    cached, g_CachedFFXUiState.load(std::memory_order_acquire),
-                    g_CachedFFXUiFlags.load(std::memory_order_acquire));
-            }
-        }
-        return false;
+        // A CE-owned substitute has no incoming game-queue writer, so the legacy completion-waited route
+        // remains a safe compatibility fallback for an unknown FFX descriptor revision. A game-owned UI
+        // texture cannot use this fallback here because a foreign-queue write would race its producer.
+        const bool rendered = isSubstitute &&
+                              DX12_CompositeOverlayOntoFFXUiResource(uiTexture, ffxState, flags);
+        uiTexture->Release();
+        return rendered;
     }
 
-    bool rendered = false;
-    {
-        std::lock_guard<std::recursive_mutex> lock(g_FFXUiCompositeMutex);
-        ID3D12Resource* uiTexture = g_CachedFFXUiTexture.load(std::memory_order_acquire);
-        if (uiTexture) {
-            ce::dx12_ffx_suspend_overlay::RenderRequest request = {};
-            request.proxySwapChain = proxy;
-            request.presentationQueue = gameQueue;
-            request.targetResource = uiTexture;
-            request.targetState =
-                GetDX12StateFromFFXResourceState(g_CachedFFXUiState.load(std::memory_order_acquire));
-            request.clearTransparent = g_BundleTargetNeedsTransparentClear.load(std::memory_order_acquire);
-            request.routeName = "active-ui-resource";
-            request.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;
-            request.signalFence = &SignalNativeFSROwnerQueueOverlayFence;
-            request.hdr = false;
-            rendered = ce::dx12_ffx_suspend_overlay::Render(request);
-        }
-    }
-    gameQueue->Release();
+    ce::dx12_ffx_suspend_overlay::RenderRequest request = {};
+    request.proxySwapChain = proxy;
+    request.presentationQueue = ownerQueue.queue;
+    request.targetResource = uiTexture;
+    request.targetState = GetDX12StateFromFFXResourceState(ffxState);
+    request.clearTransparent = needsTransparentClear;
+    request.routeName = ownerQueue.route ==
+                                ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kStreamlineUnderlyingGameQueue
+                            ? "active-ui-resource-streamline-unwrapped"
+                            : "active-ui-resource";
+    request.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;
+    request.signalFence = &SignalNativeFSROwnerQueueOverlayFence;
+    request.hdr = false;
+    const bool rendered = ce::dx12_ffx_suspend_overlay::Render(request);
+    ownerQueue.queue->Release();
+    uiTexture->Release();
 
     return rendered;
 }
@@ -6523,7 +6716,7 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
     // SUSPENSION EXCEPTION (ffxConfigure frameGenerationEnabled=0 while AMD still owns the swapchain): AMD
     // presents its backbuffer 1:1 in passthrough and does NOT composite the registered UI resource, so the
     // UI-texture composite is invisible there (session 20260703_212441). Draw the overlay DIRECTLY onto the
-    // presented backbuffer on the exact FFX game queue captured at swapchain-context creation. Queue order
+    // presented backbuffer on the target-compatible FFX owner queue resolved at proxy Present. Queue order
     // guarantees game draw -> CE overlay -> AMD's internal gameFence handoff -> Present, without a foreign
     // queue or CPU wait. The re-assert stays skipped: AMD is not consuming the UI resource while suspended.
     bool composited;
@@ -6544,7 +6737,7 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
             if (logCount < 20 || (logCount % 300) == 0) {
                 HookLogImportant(
                     "DX12: FFX proxy prework did not re-register the substitute UI resource because the "
-                    "overlay composite lacked GPU-completion proof (log=%d)",
+                    "overlay composite lacked owner-queue submission proof (log=%d)",
                     logCount + 1);
             }
         }
@@ -13256,9 +13449,21 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         }
     }
 
-    // Pick an allocator from the pool (round-robin)
+    // Pick an allocator from the pool. Preserve round-robin locality, but scan the whole pool for a completed
+    // slot before considering a Present-thread wait. At high generated-frame rates the preferred slot can
+    // still be busy while a later slot is free; waiting in that case creates avoidable interval variance.
     int allocPoolSize = static_cast<int>(g_State.allocators.size());
-    int idx = g_State.allocIndex % allocPoolSize;
+    if (allocPoolSize <= 0) {
+        bb->Release();
+        return;
+    }
+    const int preferredIdx = g_State.allocIndex % allocPoolSize;
+    const UINT64 completedFenceValue = g_State.fence ? g_State.fence->GetCompletedValue() : UINT64_MAX;
+    int idx = ce::dx12_overlay_policy::ChooseReadyOverlayAllocatorSlot(
+        g_State.fenceValues.data(), allocPoolSize, preferredIdx, completedFenceValue);
+    if (idx < 0) {
+        idx = preferredIdx;
+    }
     g_State.allocIndex = (idx + 1) % allocPoolSize;
 
     auto* list = g_State.cmdList;
@@ -13271,7 +13476,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         return;
     }
 
-    // Fence check: ensure allocator's GPU work is complete before reset.
+    // Fence check: ensure allocator's GPU work is complete before reset. This is now exceptional: the pool-wide
+    // scan above reaches here with an in-flight allocator only when every allocator is still busy.
     // Uses event-based wait (SetEventOnCompletion + WaitForSingleObject) instead
     // of instant bail — at 100% GPU load, the allocator may be just microseconds
     // from completing, and a skip causes visible overlay flicker.  Event-based
@@ -21644,9 +21850,9 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // Minimal-overhead fast-path: during no-callback FSR FG, AMD's internal ECL calls on the FSR runtime
     // queue (or any non-game queue) must not go through CE's policy/lock/module-resolution overhead —
     // that overhead desyncs AMD's QPC-timed pacing (ffxQuery+0x225fe). Just forward immediately. The
-    // overlay is composited separately on CE's OWN fenced queue from DetourPresent
-    // (DX12_CompositeOverlayOntoCachedFFXUiResource), so nothing is appended to the game's ECL here. The
-    // game's own ECLs on g_OriginalGameQueue still get full processing (for frame counting).
+    // overlay is composited separately immediately before proxy Present on its target-compatible owner queue,
+    // so nothing is appended to arbitrary FFX-runtime ECLs here. The game's own ECLs on g_OriginalGameQueue
+    // still get full processing (for frame counting).
     if (g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) &&
         pThis != g_OriginalGameQueue) {
         ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);

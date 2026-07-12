@@ -226,3 +226,90 @@ TEST_F(DX12FGTransitionSequencesFixture, StartupBypassAndSuppressionOverrideNorm
     EXPECT_EQ(state.snapshot.renderMode, OverlayRenderMode::kSuppressed);
     EXPECT_FALSE(state.snapshot.overlayAllowed);
 }
+
+TEST_F(DX12FGTransitionSequencesFixture, FullFSRDLSSSuspendResumeSwitchLifecycleNeverLosesOverlayOrStatus) {
+    State state;
+    auto assertVisible = [&](ce::fg_runtime::RuntimeMode expectedMode, bool expectedActive) {
+        EXPECT_TRUE(state.snapshot.overlayAllowed);
+        EXPECT_NE(state.snapshot.renderMode, OverlayRenderMode::kSuppressed);
+        EXPECT_EQ(state.snapshot.publishRuntimeMode, expectedMode);
+        EXPECT_EQ(state.snapshot.publishFGActive, expectedActive);
+    };
+
+    // all FG off -> FSR FG on
+    state = Step(state, {.runtimeMode = ce::fg_runtime::RuntimeMode::kOff});
+    assertVisible(ce::fg_runtime::RuntimeMode::kOff, false);
+    state = Step(state, {.runtimeMode = ce::fg_runtime::RuntimeMode::kFSRFG,
+                         .effectiveFGActive = true,
+                         .runtimeOwnsSwapchain = true,
+                         .hadFSRPhase = true});
+    EXPECT_EQ(state.snapshot.renderMode, OverlayRenderMode::kRuntimeOwnedPreSL);
+    assertVisible(ce::fg_runtime::RuntimeMode::kFSRFG, true);
+
+    // FSR suspension retains FSR status and the runtime-owned overlay backend.
+    state = Step(state, {.runtimeMode = ce::fg_runtime::RuntimeMode::kFSRFG,
+                         .effectiveFGActive = true,
+                         .runtimeOwnsSwapchain = true,
+                         .hadFSRPhase = true,
+                         .nativeFSRSuspended = true});
+    EXPECT_EQ(state.snapshot.phase, TransitionPhase::kSuspended);
+    EXPECT_EQ(state.snapshot.renderMode, OverlayRenderMode::kRuntimeOwnedPreSL);
+    assertVisible(ce::fg_runtime::RuntimeMode::kFSRFG, true);
+
+    // FSR -> DLSS, then DLSS suspension and resume.
+    state = Step(state, {.runtimeMode = ce::fg_runtime::RuntimeMode::kDLSSFG,
+                         .effectiveFGActive = true,
+                         .streamlineFGRunning = true,
+                         .streamlineLoaded = true,
+                         .hadFSRPhase = true});
+    EXPECT_EQ(state.snapshot.renderMode, OverlayRenderMode::kPostSL);
+    assertVisible(ce::fg_runtime::RuntimeMode::kDLSSFG, true);
+    state = Step(state, {.runtimeMode = ce::fg_runtime::RuntimeMode::kDLSSFG,
+                         .effectiveFGActive = true,
+                         .streamlineFGRunning = false,
+                         .streamlineLoaded = true,
+                         .hadFSRPhase = true});
+    EXPECT_EQ(state.snapshot.phase, TransitionPhase::kSuspended);
+    EXPECT_EQ(state.snapshot.renderMode, OverlayRenderMode::kSuspendedFallback);
+    EXPECT_TRUE(state.snapshot.shouldInstallPostSLCallback);
+    assertVisible(ce::fg_runtime::RuntimeMode::kDLSSFG, true);
+    state = Step(state, {.runtimeMode = ce::fg_runtime::RuntimeMode::kDLSSFG,
+                         .effectiveFGActive = true,
+                         .streamlineFGRunning = true,
+                         .streamlineLoaded = true,
+                         .hadFSRPhase = true});
+    EXPECT_EQ(state.snapshot.renderMode, OverlayRenderMode::kPostSL);
+    assertVisible(ce::fg_runtime::RuntimeMode::kDLSSFG, true);
+
+    // Repeated DLSS -> FSR -> DLSS handoffs remain visible and authoritative.
+    state = Step(state, {.runtimeMode = ce::fg_runtime::RuntimeMode::kFSRFG,
+                         .effectiveFGActive = true,
+                         .runtimeOwnsSwapchain = true,
+                         .hadFSRPhase = true});
+    EXPECT_EQ(state.snapshot.phase, TransitionPhase::kSwitching);
+    EXPECT_EQ(state.snapshot.renderMode, OverlayRenderMode::kRuntimeOwnedPreSL);
+    assertVisible(ce::fg_runtime::RuntimeMode::kFSRFG, true);
+    state = Step(state, {.runtimeMode = ce::fg_runtime::RuntimeMode::kDLSSFG,
+                         .effectiveFGActive = true,
+                         .streamlineFGRunning = true,
+                         .streamlineLoaded = true,
+                         .hadFSRPhase = true});
+    EXPECT_EQ(state.snapshot.phase, TransitionPhase::kSwitching);
+    EXPECT_EQ(state.snapshot.renderMode, OverlayRenderMode::kPostSL);
+    assertVisible(ce::fg_runtime::RuntimeMode::kDLSSFG, true);
+
+    // DLSS -> all FG off -> DLSS keeps a drawable recovery/normal route and republishes status correctly.
+    state = Step(state, {.runtimeMode = ce::fg_runtime::RuntimeMode::kOff,
+                         .effectiveFGActive = false,
+                         .hadFSRPhase = true,
+                         .recoveringPostFSRNonFG = true});
+    EXPECT_EQ(state.snapshot.renderMode, OverlayRenderMode::kRecoveryPostFSROff);
+    assertVisible(ce::fg_runtime::RuntimeMode::kOff, false);
+    state = Step(state, {.runtimeMode = ce::fg_runtime::RuntimeMode::kDLSSFG,
+                         .effectiveFGActive = true,
+                         .streamlineFGRunning = true,
+                         .streamlineLoaded = true,
+                         .hadFSRPhase = true});
+    EXPECT_EQ(state.snapshot.renderMode, OverlayRenderMode::kPostSL);
+    assertVisible(ce::fg_runtime::RuntimeMode::kDLSSFG, true);
+}

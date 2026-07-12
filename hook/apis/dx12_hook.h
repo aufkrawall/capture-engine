@@ -101,8 +101,9 @@ bool DX12_HasFFXPresentCallbackBridgeWithOriginal(void* bridgeKey);
 bool DX12_IsFFXPresentCallbackBridgeCallback(ce::ffx_api::PresentCallback callback);
 void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey);
 void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain);
-// Capture the exact queue supplied in an FFX FrameGenerationSwapChain DX12 creation descriptor. The FFX SDK
-// defines this as the game/presentation queue; it is the only queue CE may use for direct proxy-backbuffer work.
+// Capture the queue supplied in an FFX FrameGenerationSwapChain DX12 creation descriptor. Normally this exact
+// queue owns direct work. If it is proven to be a Streamline wrapper, CE may use the already-validated real
+// original game queue on the target resource's device (the wrapper's underlying submission path).
 void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapChain,
                                                       ID3D12CommandQueue* presentationQueue);
 void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const char* reason);
@@ -116,9 +117,9 @@ void DX12_ClearNativeFSRStartupConfigureArming(const char* reason);
 void DX12_ClearOfficialFFXRuntimeOwnedPresentPathAssumption(const char* reason);
 uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameGenerationPresent* callbackDesc,
                                                  void* userCtx);
-// Draw the inject overlay onto a game-registered FFX UI resource (no-app-callback FSR FG). Submits on CE's
-// OWN fenced queue (g_FFXUiCompositeQueue), never AMD's runtime present queue or the game queue, and CPU-waits
-// for completion, so AMD composites it post-interpolation without wedging.
+// Last-resort compatibility draw onto a game-registered FFX UI resource (no-app-callback FSR FG). The normal
+// game-thread proxy path uses target-compatible owner-queue ordering with no copy or CPU wait; this function
+// retains the isolated completion-waited path for a CE-owned substitute when no owner queue can be resolved.
 bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResource, uint32_t ffxState, uint32_t flags);
 // Drive the composite using the cached (CE-substituted or game) UI texture. The per-present overlay refresh
 // under active no-callback FSR FG. Primary driver: the FFX proxy-present prework (game thread, before AMD's

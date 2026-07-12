@@ -12,7 +12,8 @@ struct RenderRequest {
     IDXGISwapChain* proxySwapChain = nullptr;
     ID3D12CommandQueue* presentationQueue = nullptr;
     // Null selects the proxy's current replacement backbuffer (suspension route). A non-null target selects
-    // the registered FFX UI resource (active no-callback route) while keeping the same owner-queue ordering.
+    // an already-retained replacement backbuffer or the registered FFX UI resource while keeping the same
+    // owner-queue ordering.
     ID3D12Resource* targetResource = nullptr;
     D3D12_RESOURCE_STATES targetState = D3D12_RESOURCE_STATE_PRESENT;
     bool clearTransparent = false;
@@ -23,8 +24,8 @@ struct RenderRequest {
 };
 
 // Renders immediately before the game calls the FFX proxy Present. The command list is submitted on the
-// exact game/presentation queue supplied to the FFX swapchain context, so queue order provides the handoff
-// from the game's frame to CE's overlay and then into Present without a CPU wait or foreign-queue access.
+// target-compatible owner queue (the exact FFX queue or a validated real queue beneath its Streamline wrapper),
+// so queue order provides the handoff into Present without a CPU wait or foreign-queue access.
 bool Render(const RenderRequest& request);
 
 // Retire resources tied to one proxy when its FFX swapchain context is destroyed/rebound. In-flight resources

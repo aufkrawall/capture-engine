@@ -356,6 +356,8 @@ std::mutex g_InitMutex;
 std::mutex g_StateMutex;
 std::mutex g_ModuleHookMutex;
 std::mutex g_FeatureHookMutex;
+std::mutex g_AcceptedD3D12DeviceMutex;
+ID3D12Device* g_AcceptedD3D12Device = nullptr;
 
 std::atomic<bool> g_DynamicHooksRegistered{false};
 std::atomic<bool> g_StreamlineUsesD3D12{false};
@@ -3164,17 +3166,24 @@ slResult Hooked_slSetD3DDevice(void* d3dDevice) {
         return kSlResultErrorInvalidState;
     }
 
-    bool isD3D12 = false;
+    ID3D12Device* acceptedD3D12Device = nullptr;
     if (d3dDevice) {
-        ID3D12Device* dx12Device = nullptr;
-        if (SUCCEEDED(static_cast<IUnknown*>(d3dDevice)->QueryInterface(IID_PPV_ARGS(&dx12Device))) && dx12Device) {
-            isD3D12 = true;
-            dx12Device->Release();
-        }
+        static_cast<IUnknown*>(d3dDevice)->QueryInterface(IID_PPV_ARGS(&acceptedD3D12Device));
     }
+    const bool isD3D12 = acceptedD3D12Device != nullptr;
 
     const slResult result = originalSetD3DDevice(d3dDevice);
     if (result == kSlResultOk) {
+        ID3D12Device* previousAcceptedDevice = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_AcceptedD3D12DeviceMutex);
+            previousAcceptedDevice = g_AcceptedD3D12Device;
+            g_AcceptedD3D12Device = acceptedD3D12Device;
+            acceptedD3D12Device = nullptr;
+        }
+        if (previousAcceptedDevice) {
+            previousAcceptedDevice->Release();
+        }
         g_StreamlineUsesD3D12.store(isD3D12, std::memory_order_release);
         if (isD3D12 && !ShouldKeepPureObserverOnlyStreamlineBehavior()) {
             // Resource tags are legal immediately after Streamline accepts the device. Some
@@ -3190,6 +3199,9 @@ slResult Hooked_slSetD3DDevice(void* d3dDevice) {
         }
         TryResolveDLSSGFeatureHooks();
         TryResolveReflexFeatureHooks();
+    }
+    if (acceptedD3D12Device) {
+        acceptedD3D12Device->Release();
     }
     return result;
 }
@@ -3509,6 +3521,30 @@ bool IsExternalOverlayPluginLookupGuardReady() {
     return g_SLGetPluginFunctionHooked.load(std::memory_order_acquire);
 }
 
+bool IsAcceptedD3D12Device(IUnknown* device) {
+    if (!device) {
+        return false;
+    }
+
+    IUnknown* candidateIdentity = nullptr;
+    IUnknown* acceptedIdentity = nullptr;
+    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&candidateIdentity))) || !candidateIdentity) {
+        return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_AcceptedD3D12DeviceMutex);
+        if (g_AcceptedD3D12Device) {
+            g_AcceptedD3D12Device->QueryInterface(IID_PPV_ARGS(&acceptedIdentity));
+        }
+    }
+    const bool matches = acceptedIdentity && candidateIdentity == acceptedIdentity;
+    if (acceptedIdentity) {
+        acceptedIdentity->Release();
+    }
+    candidateIdentity->Release();
+    return matches;
+}
+
 bool HasExplicitSetOptionsActivationForCurrentComeback() {
     // Provenance of the current comeback is tracked explicitly. Startup-window
     // OFF churn can temporarily re-arm provisional GetState suppression without
@@ -3753,6 +3789,15 @@ void Shutdown() {
     g_FGCompat.SetStreamlineSupportPresent(false);
     DXGIShared::g_StreamlineFGRunning.store(false, std::memory_order_release);
     g_StreamlineUsesD3D12.store(false, std::memory_order_release);
+    ID3D12Device* acceptedDevice = nullptr;
+    {
+        std::lock_guard<std::mutex> deviceLock(g_AcceptedD3D12DeviceMutex);
+        acceptedDevice = g_AcceptedD3D12Device;
+        g_AcceptedD3D12Device = nullptr;
+    }
+    if (acceptedDevice) {
+        acceptedDevice->Release();
+    }
 }
 
 void FlushSuppressedSetOptionsOffIfNeeded() {

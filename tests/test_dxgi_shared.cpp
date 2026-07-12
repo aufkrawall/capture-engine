@@ -5679,11 +5679,12 @@ TEST(DXGISharedSourceTest, StaleFSRQueueClearReceivesWarmResumeFlag) {
 // 20260703_210021 1fps stall / 20260703_212441 blank-via-UI-texture). During a
 // runtime-owned no-callback FSR suspension AMD presents its backbuffer in
 // passthrough and does NOT composite the registered UI resource, so the overlay
-// must be drawn onto the PRESENTED BACKBUFFER on the exact game/presentation
-// queue recorded from the FFX swapchain creation descriptor. Queue ordering
+// must be drawn onto the PRESENTED BACKBUFFER on the target-compatible owner
+// queue. Usually that is the exact FFX descriptor queue; a proven Streamline
+// wrapper resolves to CE's validated underlying real game queue. Queue ordering
 // then provides completion without a foreign queue or per-frame CPU wait.
 // ---------------------------------------------------------------------------
-TEST(DXGISharedSourceTest, SuspendBackbufferOverlayUsesExactOwnerQueueGatedToSuspension) {
+TEST(DXGISharedSourceTest, SuspendBackbufferOverlayUsesTargetCompatibleOwnerQueueGatedToSuspension) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
@@ -5701,8 +5702,8 @@ TEST(DXGISharedSourceTest, SuspendBackbufferOverlayUsesExactOwnerQueueGatedToSus
     // the UI-resource composite in the else branch).
     EXPECT_LT(backbufferCall - preworkGate, static_cast<size_t>(400));
 
-    // The backbuffer composite must use only the exact descriptor-owned queue;
-    // it must not guess a queue or use the foreign dedicated-queue path.
+    // The backbuffer composite must resolve against the actual target resource and use the selected owner
+    // queue. It must not use the foreign dedicated-queue path or wait on the CPU.
     const size_t fn = text.find("bool DX12_CompositeOverlayOntoSuspendBackbuffer(");
     ASSERT_NE(fn, std::string::npos);
     size_t fnEnd = text.find("\n}\n", fn);
@@ -5713,10 +5714,10 @@ TEST(DXGISharedSourceTest, SuspendBackbufferOverlayUsesExactOwnerQueueGatedToSus
     }
     ASSERT_NE(fnEnd, std::string::npos);
     const std::string body = text.substr(fn, fnEnd - fn);
-    EXPECT_NE(body.find("AcquireNativeFSRSwapchainPresentationQueue(proxy)"), std::string::npos);
-    EXPECT_NE(body.find("request.presentationQueue = gameQueue"), std::string::npos);
+    EXPECT_NE(body.find("AcquireNativeFSRSwapchainPresentationQueue(proxy, backBuffer)"), std::string::npos);
+    EXPECT_NE(body.find("request.presentationQueue = ownerQueue.queue"), std::string::npos);
     EXPECT_NE(body.find("SubmitNativeFSROwnerQueueOverlayCommandList"), std::string::npos);
-    EXPECT_NE(body.find("never guessing a swapchain-owner queue"), std::string::npos);
+    EXPECT_NE(body.find("no target-compatible"), std::string::npos);
     EXPECT_EQ(body.find("g_FFXUiCompositeQueue"), std::string::npos);
     EXPECT_EQ(body.find("WaitForSingleObject"), std::string::npos);
 }

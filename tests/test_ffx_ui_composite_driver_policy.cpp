@@ -7,6 +7,7 @@ namespace {
 using ce::dx12_overlay_policy::ChooseFFXUiCompositeDriver;
 using ce::dx12_overlay_policy::FFXUiCompositeDriver;
 using ce::dx12_overlay_policy::MayReassertSubstituteUiResource;
+using ce::dx12_overlay_policy::NativeFSROwnerQueueRoute;
 using ce::dx12_overlay_policy::ShouldInstallFFXProxyPresentHook;
 
 // Regression for session 20260701_213656: GTA froze PERMANENTLY on the first FSR-FG frame because CE
@@ -62,6 +63,48 @@ TEST(FFXUiCompositeDriverPolicyTest, ActiveInterpolationStillChoosesCompositeRou
         /*fsrFGDisabledSuspendPending=*/false, /*uiResourceCachedForBundle=*/true,
         /*bundleOverlayActivelyFiring=*/false);
     EXPECT_EQ(route, ce::dx12_overlay_policy::NoCallbackFSRFGOverlayRoute::kSkipBundleCovers);
+}
+
+TEST(NativeFSROwnerQueuePolicyTest, UsesExactDescriptorQueueWhenItsDeviceOwnsTheTarget) {
+    EXPECT_EQ(ce::dx12_overlay_policy::ChooseNativeFSROwnerQueueRoute(true, false, false),
+              NativeFSROwnerQueueRoute::kExactDescriptorQueue);
+    EXPECT_EQ(ce::dx12_overlay_policy::ChooseNativeFSROwnerQueueRoute(true, true, true),
+              NativeFSROwnerQueueRoute::kExactDescriptorQueue);
+}
+
+TEST(NativeFSROwnerQueuePolicyTest, UnwrapsOnlyAProvenStreamlineQueueToTheRealGameQueue) {
+    EXPECT_EQ(ce::dx12_overlay_policy::ChooseNativeFSROwnerQueueRoute(false, true, true),
+              NativeFSROwnerQueueRoute::kStreamlineUnderlyingGameQueue);
+    EXPECT_EQ(ce::dx12_overlay_policy::ChooseNativeFSROwnerQueueRoute(false, false, true),
+              NativeFSROwnerQueueRoute::kUnavailable);
+    EXPECT_EQ(ce::dx12_overlay_policy::ChooseNativeFSROwnerQueueRoute(false, true, false),
+              NativeFSROwnerQueueRoute::kUnavailable);
+}
+
+TEST(FFXPresenterFallbackPolicyTest, CompositesOnlyOncePerAcceptedUiRegistration) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldCompositeFFXPresenterFallback(41, 40));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldCompositeFFXPresenterFallback(41, 41));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldCompositeFFXPresenterFallback(42, 41));
+}
+
+TEST(FFXPresenterFallbackPolicyTest, UnknownRegistrationSequenceDoesNotSuppressCoverage) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldCompositeFFXPresenterFallback(0, 0));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldCompositeFFXPresenterFallback(0, 9));
+}
+
+TEST(PostSLAllocatorPolicyTest, KeepsPreferredCompletedSlotForRoundRobinLocality) {
+    const uint64_t fenceValues[] = {10, 20, 30, 40};
+    EXPECT_EQ(2, ce::dx12_overlay_policy::ChooseReadyOverlayAllocatorSlot(fenceValues, 4, 2, 30));
+}
+
+TEST(PostSLAllocatorPolicyTest, SkipsBusyPreferredSlotWithoutWaiting) {
+    const uint64_t fenceValues[] = {10, 50, 30, 60};
+    EXPECT_EQ(2, ce::dx12_overlay_policy::ChooseReadyOverlayAllocatorSlot(fenceValues, 4, 1, 30));
+}
+
+TEST(PostSLAllocatorPolicyTest, ReportsOnlyAnEntirelyBusyPoolAsUnavailable) {
+    const uint64_t fenceValues[] = {31, 50, 32, 60};
+    EXPECT_EQ(-1, ce::dx12_overlay_policy::ChooseReadyOverlayAllocatorSlot(fenceValues, 4, 1, 30));
 }
 
 }  // namespace

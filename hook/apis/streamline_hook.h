@@ -70,4 +70,9 @@ public:
 bool IsExternalOverlayPresentGuardActive();
 bool IsExternalOverlayPluginLookupGuardReady();
 
+// True when device is the D3D12 device identity most recently accepted by slSetD3DDevice. FFX integrations
+// layered through Streamline can expose a command-queue wrapper whose GetDevice returns this identity while
+// the registered FFX resources belong to the underlying real D3D12 device.
+bool IsAcceptedD3D12Device(IUnknown* device);
+
 }  // namespace StreamlineHook

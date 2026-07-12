@@ -534,6 +534,52 @@ enum class FFXUiOverlayTarget {
     kSubstituteCEFullSizeTexture,   // game registered a degenerate placeholder (GTA's 1x1) — substitute CE's own texture
 };
 
+enum class NativeFSROwnerQueueRoute {
+    kExactDescriptorQueue,
+    kStreamlineUnderlyingGameQueue,
+    kUnavailable,
+};
+
+// An FFX swapchain created through Streamline can receive Streamline's command-queue wrapper. Its GetDevice
+// identity is the wrapper device, while FFX UI/backbuffer resources and CE command lists belong to the real
+// device. In that one proven topology, the already-captured original game queue is the underlying submission
+// queue. Never substitute it for an arbitrary different-device FFX queue.
+inline NativeFSROwnerQueueRoute ChooseNativeFSROwnerQueueRoute(bool exactQueueMatchesTargetDevice,
+                                                                bool exactQueueUsesAcceptedStreamlineDevice,
+                                                                bool originalGameQueueMatchesTargetDevice) {
+    if (exactQueueMatchesTargetDevice) {
+        return NativeFSROwnerQueueRoute::kExactDescriptorQueue;
+    }
+    if (exactQueueUsesAcceptedStreamlineDevice && originalGameQueueMatchesTargetDevice) {
+        return NativeFSROwnerQueueRoute::kStreamlineUnderlyingGameQueue;
+    }
+    return NativeFSROwnerQueueRoute::kUnavailable;
+}
+
+// AMD can emit multiple real-swapchain Presents (real + generated outputs) for one accepted UI-resource
+// registration. The presenter-thread compatibility route must blend only once into that shared input.
+inline bool ShouldCompositeFFXPresenterFallback(uint64_t acceptedUiSequence,
+                                                uint64_t lastCompositedUiSequence) {
+    return acceptedUiSequence == 0 || acceptedUiSequence != lastCompositedUiSequence;
+}
+
+// Prefer the round-robin slot for cache locality, but never stall the Present thread merely because that
+// one allocator is still in flight while another allocator in the pool is already reusable. A negative
+// result means every slot is genuinely busy and the caller may use its bounded exceptional-path wait.
+inline int ChooseReadyOverlayAllocatorSlot(const uint64_t* fenceValues, int slotCount, int preferredSlot,
+                                           uint64_t completedFenceValue) {
+    if (!fenceValues || slotCount <= 0 || preferredSlot < 0 || preferredSlot >= slotCount) {
+        return -1;
+    }
+    for (int offset = 0; offset < slotCount; ++offset) {
+        const int slot = (preferredSlot + offset) % slotCount;
+        if (fenceValues[slot] == 0 || fenceValues[slot] <= completedFenceValue) {
+            return slot;
+        }
+    }
+    return -1;
+}
+
 // GTA Enhanced leaves UI composition ENABLED but registers a 1x1 placeholder UI texture, so AMD composites
 // nothing usable. Drawing the overlay onto a 1x1 texture is useless (and trips CreateCommandList/Reset
 // E_INVALIDARG), so when the game's UI texture is degenerate relative to the backbuffer, CE substitutes its

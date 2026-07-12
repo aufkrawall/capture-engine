@@ -89,6 +89,9 @@ OverlayRenderMode ResolveRenderMode(const Input& input) {
 }
 
 TransitionPhase ResolvePhase(const State& state, const Input& input) {
+    if (input.nativeFSRSuspended) {
+        return TransitionPhase::kSuspended;
+    }
     if (input.streamlineLoaded && !input.streamlineFGRunning && state.previousStreamlineFGRunning) {
         return TransitionPhase::kSuspended;
     }
