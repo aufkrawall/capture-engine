@@ -25,7 +25,7 @@ struct VS_OUTPUT {
 
 VS_OUTPUT VS_Main(uint vertexId : SV_VertexID) {
     VS_OUTPUT output;
-    
+
     // Generate quad corners based on vertex ID
     float2 corners[4] = {
         float2(0, 0), // Top-left
@@ -33,17 +33,17 @@ VS_OUTPUT VS_Main(uint vertexId : SV_VertexID) {
         float2(0, 1), // Bottom-left
         float2(1, 1)  // Bottom-right
     };
-    
+
     float2 corner = corners[vertexId];
-    
+
     // Convert normalized cursor rect to clip space (-1 to 1)
     float2 pos = cursorRect.xy + corner * cursorRect.zw;
     pos = pos * 2.0 - 1.0; // 0-1 to -1 to 1
     pos.y = -pos.y;        // Flip Y for D3D
-    
+
     output.pos = float4(pos, 0, 1);
     output.uv = corner;
-    
+
     return output;
 }
 

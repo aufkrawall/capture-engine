@@ -15,7 +15,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_CURRENT_SOURCE_DIR}/../build/
 # DX12 Test App
 add_executable(dx12_test WIN32 dx12_test.cpp)
 target_link_libraries(dx12_test d3d12 dxgi d3dcompiler)
-set_target_properties(dx12_test PROPERTIES 
+set_target_properties(dx12_test PROPERTIES
     OUTPUT_NAME "dx12_test"
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
 )
