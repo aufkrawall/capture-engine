@@ -156,7 +156,10 @@ MSYS2_DIST_URL = "https://repo.msys2.org/distrib/x86_64/"
 MSYS2_DEFAULT_TARBALL = "msys2-base-x86_64-20260322.tar.xz"
 
 # FG SDK download URLs (for test app DLLs and headers)
-FFX_SDK_URL = "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/download/v2.2.0/FidelityFX-Samples-v2.2.0-prebuilt.zip"
+FFX_SDK_URL = (
+    "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/download/v2.2.0/"
+    "FidelityFX-Samples-v2.2.0-prebuilt.zip"
+)
 FFX_SDK_ZIP_NAME = "FidelityFX-Samples-v2.2.0-prebuilt.zip"
 FFX_SDK_SOURCE_URL = "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/archive/refs/tags/v2.2.0.zip"
 FFX_SDK_SOURCE_ZIP_NAME = "FidelityFX-SDK-v2.2.0-source.zip"
@@ -2040,10 +2043,34 @@ def get_ffmpeg_runtime_dlls(ffmpeg_bin_src):
     return dlls
 
 
+def resolve_ffmpeg_runtime_dll_names(ffmpeg_bin_src):
+    """Resolve the current versioned FFmpeg DLL names from the install tree."""
+    resolved = {}
+    for prefix in ("avcodec", "avformat", "avutil", "swresample", "swscale"):
+        matches = sorted(glob.glob(os.path.join(ffmpeg_bin_src, f"{prefix}-*.dll")))
+        if not matches:
+            raise RuntimeError(f"Missing FFmpeg runtime DLL for {prefix} in {ffmpeg_bin_src}")
+
+        # A previous FFmpeg install can leave an older major-version DLL behind.
+        # Keep the highest numeric suffix and let the destination sync remove the
+        # stale copy instead of linking against a hard-coded historical version.
+        def version_key(path):
+            match = re.search(r"-(\d+)\.dll$", os.path.basename(path), re.IGNORECASE)
+            return (int(match.group(1)) if match else -1, os.path.basename(path).lower())
+
+        selected = max(matches, key=version_key)
+        if len(matches) > 1:
+            log(
+                f"[FFmpeg] Multiple {prefix} runtime DLLs found; selecting {os.path.basename(selected)} "
+                f"and removing stale versions from the bundle"
+            )
+        resolved[prefix] = os.path.basename(selected)
+    return resolved
+
+
 def sync_ffmpeg_runtime_dlls(ffmpeg_bin_src, ffmpeg_bin_dst, runtime_deps, extra_search_dirs):
-    ffmpeg_dlls = get_ffmpeg_runtime_dlls(ffmpeg_bin_src)
-    if not ffmpeg_dlls:
-        raise RuntimeError(f"No FFmpeg runtime DLLs found in {ffmpeg_bin_src}")
+    resolved_names = resolve_ffmpeg_runtime_dll_names(ffmpeg_bin_src)
+    ffmpeg_dlls = [os.path.join(ffmpeg_bin_src, name) for name in resolved_names.values()]
 
     dep_sources = {}
     for dep in runtime_deps:
@@ -2052,6 +2079,13 @@ def sync_ffmpeg_runtime_dlls(ffmpeg_bin_src, ffmpeg_bin_dst, runtime_deps, extra
             if os.path.exists(src):
                 dep_sources[dep] = src
                 break
+
+    missing_deps = [dep for dep in runtime_deps if dep not in dep_sources]
+    if missing_deps:
+        log(
+            "[FFmpeg] Optional runtime dependencies not found in configured search paths: "
+            + ", ".join(sorted(missing_deps))
+        )
 
     keep_names = {os.path.basename(dll).lower() for dll in ffmpeg_dlls}
     keep_names.update(dep.lower() for dep in dep_sources)
@@ -3312,6 +3346,18 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
 
     msys2_dir = get_linux_msys2_dir() if IS_LINUX else MSYS2_DIR
     vulkan_lib = os.path.join(msys2_dir, "clang64", "lib", "libvulkan-1.dll.a")
+
+    # Tests can run after a sanitizer child or independently of the product
+    # build. Always compile the common objects here with the current flags so
+    # sanitizer and non-sanitizer object files can never be mixed at link time.
+    common_objs = []
+    common_src_obj_pairs = []
+    for src in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp")):
+        rel_path = os.path.relpath(src, PROJECT_ROOT)
+        obj = os.path.join(obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
+        common_src_obj_pairs.append((src, obj))
+        common_objs.append(obj)
+    parallel_compile(env, clang_exe, cflags, common_src_obj_pairs)
 
     # Link against gtest, common, hook/common sources, mediaengine, and FFmpeg.
     # Keep this aligned with the actual hook/mediaengine linker inputs to avoid
@@ -5258,12 +5304,10 @@ def compile_project(
             ]
         )
         if not IS_LINUX:
+            ffmpeg_runtime_names = resolve_ffmpeg_runtime_dll_names(os.path.join(FFMPEG_DIR, "bin"))
             ce_ldflags.extend(
-                [
-                    "-Wl,--delayload=avformat-62.dll",
-                    "-Wl,--delayload=avcodec-62.dll",
-                    "-Wl,--delayload=avutil-60.dll",
-                ]
+                f"-Wl,--delayload={ffmpeg_runtime_names[prefix]}"
+                for prefix in ("avformat", "avcodec", "avutil")
             )
         if env.get("CE_DISABLE_LTO") != "1":
             ce_ldflags.append("-flto")

@@ -1,6 +1,7 @@
 #include "dump_helper.h"
 
 #include <windows.h>
+
 #include <shellapi.h>
 
 #include <cstdlib>

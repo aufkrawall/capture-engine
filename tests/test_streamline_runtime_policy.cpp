@@ -687,11 +687,12 @@ TEST(StreamlineRuntimePolicyTest, StreamlineModuleUnloadDispatchesHookInvalidati
 
 TEST(StreamlineRuntimePolicyTest, HookSlotInvalidationMatchesUnloadedImageRange) {
     alignas(16) static unsigned char image[0x100];
+    alignas(16) static unsigned char outsideImage[0x100];
     const void* base = image;
     const size_t size = sizeof(image);
     void* inRange = image + 0x40;
     void* pastEnd = image + sizeof(image);
-    void* outside = image - 0x40;
+    void* outside = outsideImage + 0x40;
 
     // Patched target inside the departing image.
     EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(inRange, nullptr, base,

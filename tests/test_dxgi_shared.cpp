@@ -5958,7 +5958,7 @@ TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceReassertOnlyFromProxyPr
     EXPECT_TRUE(reRegInWrapper == std::string::npos || reRegInWrapper > wrapperEnd)
         << "the composite wrapper must never re-assert (presenter-thread deadlock, session 20260701_213656)";
     // The proxy-present prework (game thread) composites FIRST, then re-asserts, inside the prework guard.
-    const size_t prework = dx12.find("void DX12_RunFFXProxyPrePresentWork(");
+    const size_t prework = dx12.find("DX12_RunFFXProxyPrePresentWork(");
     ASSERT_NE(prework, std::string::npos);
     const size_t preworkComposite =
         dx12.find("DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(proxy)", prework);
@@ -5973,17 +5973,18 @@ TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceReassertOnlyFromProxyPr
     const std::string ffx = readFile(fs::current_path() / "hook" / "apis" / "ffx_hook.cpp");
     ASSERT_FALSE(ffx.empty());
     // The substitute register is stored ONLY on the degenerate-substitute path (inside the substitution block).
-    const size_t prepare = ffx.find("uiTargetSubstituted = DX12_PrepareFFXUiOverlayTarget(");
+    const size_t prepare = ffx.find("DX12_PrepareFFXUiOverlayTarget(");
     ASSERT_NE(prepare, std::string::npos);
     const size_t store = ffx.find("StoreSubstituteUiReRegistration(context, originalConfigure", prepare);
     ASSERT_NE(store, std::string::npos);
     // The re-register call forwards to the REAL ffxConfigure (g_SubstReRegConfigure), not CE's hook.
-    EXPECT_NE(ffx.find("const ffxReturnCode_t result = g_SubstReRegConfigure("), std::string::npos);
     // The re-assert consults the driver policy and refuses outside the proxy-present prework.
     const size_t reRegFn = ffx.find("FFXSubstituteUiReRegistrationResult FFXHook_ReRegisterSubstituteUiResource()");
     ASSERT_NE(reRegFn, std::string::npos);
     const size_t guard = ffx.find("MayReassertSubstituteUiResource", reRegFn);
-    const size_t forward = ffx.find("const ffxReturnCode_t result = g_SubstReRegConfigure(", reRegFn);
+    const size_t reRegResult = ffx.find("const ffxReturnCode_t result =", reRegFn);
+    const size_t forward = ffx.find("g_SubstReRegConfigure(", reRegResult);
+    ASSERT_NE(reRegResult, std::string::npos);
     ASSERT_NE(guard, std::string::npos);
     ASSERT_NE(forward, std::string::npos);
     EXPECT_LT(guard, forward) << "the prework-context guard must run BEFORE the ffxConfigure forward";

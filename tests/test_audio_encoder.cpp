@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
+#include <windows.h>
+
+#include <mmreg.h>
+
 #include <algorithm>
 #include <vector>
-#include <windows.h>
-#include <mmreg.h>
 #include "../mediaengine/audio_encoder.h"
 
 extern "C" {

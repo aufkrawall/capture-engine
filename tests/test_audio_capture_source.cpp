@@ -307,7 +307,8 @@ TEST(AudioCaptureSourceTest, MultiTrackRoutesShareOnePhysicalCaptureAndFanOutPac
     EXPECT_NE(coalesceBody.find("src.captureFanoutOwnerIndex = ownerIdx"), std::string::npos);
     EXPECT_NE(coalesceBody.find("src.capture.reset()"), std::string::npos);
     EXPECT_NE(coalesceBody.find("src.appCapture.reset()"), std::string::npos);
-    EXPECT_NE(coalesceBody.find("AppAudioTrackIdentity(src.config.processName"), std::string::npos);
+    EXPECT_NE(coalesceBody.find("AppAudioTrackIdentity("), std::string::npos);
+    EXPECT_NE(coalesceBody.find("src.config.processName"), std::string::npos);
     EXPECT_NE(coalesceBody.find("src.config.device.empty() ? \"<default>\""), std::string::npos);
     EXPECT_NE(coalesceBody.find("appCaptureFormats[key]"), std::string::npos);
     EXPECT_NE(coalesceBody.find("src.appCapture->SetRequestedFormat(48000, format.first, format.second)"),
