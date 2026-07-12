@@ -4792,6 +4792,7 @@ private:
         std::vector<AudioPacket> deferredFirstTimelinePackets(audioSources.size());
         std::vector<bool> deferredFirstTimelinePacketValid(audioSources.size(), false);
         std::vector<int64_t> deferredFirstTimelinePacketStartSamples(audioSources.size(), 0);
+        std::vector<uint64_t> sourceCaptureEpochs(audioSources.size(), 0);
         std::vector<std::deque<AudioPacket>> captureFanoutQueues(audioSources.size());
         std::vector<uint64_t> captureFanoutPacketCounts(audioSources.size(), 0);
         std::vector<uint64_t> batchedPreStartDiscardCounts(audioSources.size(), 0);
@@ -4922,6 +4923,7 @@ private:
                     std::fill(deferredFirstTimelinePacketValid.begin(), deferredFirstTimelinePacketValid.end(), false);
                     std::fill(deferredFirstTimelinePacketStartSamples.begin(),
                               deferredFirstTimelinePacketStartSamples.end(), 0);
+                    std::fill(sourceCaptureEpochs.begin(), sourceCaptureEpochs.end(), 0);
                     for (auto& queue : captureFanoutQueues) {
                         queue.clear();
                     }
@@ -5075,6 +5077,67 @@ private:
                 }
 
                 if (gotPacket && !packet.data.empty()) {
+                    const uint64_t previousCaptureEpoch = sourceCaptureEpochs[srcIdx];
+                    const bool captureEpochTransition = ce::audio::IsAppAudioCaptureEpochTransition(
+                        src.sourceType == AudioConfig::AppAudio, previousCaptureEpoch, packet.captureEpoch);
+                    if (packet.captureEpoch != 0) {
+                        sourceCaptureEpochs[srcIdx] = packet.captureEpoch;
+                    }
+                    if (captureEpochTransition) {
+                        // A name-monitored app may exit and return under a new PID many minutes later;
+                        // fatal/silent-stall recovery also creates a fresh process-loopback stream. The
+                        // new stream's first QPC is valid in the recording domain, but it is not contiguous
+                        // with this route's old source-local write cursor. Treat it as a fresh late source
+                        // so the existing live-join policy overlaps already-encoded silence instead of
+                        // materializing the absence as a multi-minute ring-buffer gap.
+                        if (src.ringBuffer) {
+                            src.ringBuffer->Clear();
+                        }
+                        src.resampler.reset();
+                        if (src.syncResampler) {
+                            src.syncResampler->Reset();
+                        }
+                        src.postResampleBuffer.clear();
+                        sourceTimestamps[srcIdx] = 0;
+                        sourceLastPackets[srcIdx] = {};
+                        deferredFirstTimelinePacketValid[srcIdx] = false;
+                        src.timelineValid = false;
+                        src.isPrimed = false;
+                        src.bootstrapComplete = false;
+                        src.sawSyncPendingPackets = false;
+                        src.startupRealAudioSeen = false;
+                        src.startupSyntheticRingSamples = 0;
+                        src.startupSyntheticResamplerSamples = 0;
+                        src.startupSyntheticPostSamples = 0;
+                        src.startupGapProtectionSamples = 0;
+                        src.packetBoundaryFadeInSamplesRemaining = 0;
+                        src.underrunFadeSamplesRemaining = 0;
+                        src.pendingUnderrunRecoveryFade = true;
+                        src.appAudioBacklogDrainInitialized = false;
+                        src.appAudioBacklogDrainActive = false;
+                        src.appAudioBacklogDrainReason =
+                            static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::WithinSlack);
+                        src.appAudioBacklogTargetSamples = 0;
+                        src.appAudioBacklogExcessSamples = 0;
+                        src.appAudioBacklogCompensationDelta = 0;
+                        src.prevLeadSamples = 0;
+                        src.prevLeadSnapshotMs = 0;
+                        src.lastRateUpdateMs = 0;
+                        src.currentRateDelta = 0;
+                        src.targetRateDelta = 0;
+                        src.rateCompActive = false;
+                        src.targetRateSaturated = false;
+                        DLL_Log(
+                            "[AudioRoute] App capture epoch transition src=%zu track=%d process=%s "
+                            "epoch=%llu->%llu trackCursor=%lld sourceCursor=%llu; resetting route-local "
+                            "buffers for atomic live rejoin",
+                            srcIdx, src.track,
+                            src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
+                            static_cast<unsigned long long>(previousCaptureEpoch),
+                            static_cast<unsigned long long>(packet.captureEpoch),
+                            static_cast<long long>(trackTimelineSamples[src.track]),
+                            static_cast<unsigned long long>(src.qpcAlignedWrittenSamples));
+                    }
                     // First captured audio for this source: grow its ring buffer to
                     // full CFR capacity (deferred for app-audio sources whose target
                     // process may never run). The buffer is still empty at this point,

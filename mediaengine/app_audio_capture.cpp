@@ -747,16 +747,18 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid) {
         CleanupCapture();
         return false;
     }
+    const uint64_t activatedEpoch = captureEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
 
     const uint64_t bufferDurationUs =
         (pwfx->nSamplesPerSec > 0)
             ? (static_cast<uint64_t>(bufferFrameCount) * 1000000ull) / static_cast<uint64_t>(pwfx->nSamplesPerSec)
             : 0;
     DLL_Log(
-        "[AppAudioCapture] Started: PID=%lu channels=%d rate=%d bits=%d streamLatency=%lluus "
+        "[AppAudioCapture] Started: PID=%lu epoch=%llu channels=%d rate=%d bits=%d streamLatency=%lluus "
         "devicePeriod=%lluus minPeriod=%lluus bufferFrames=%u bufferDur=%lluus "
         "(latency routed via video content delay, not audio advance)",
-        pid, pwfx->nChannels, pwfx->nSamplesPerSec, pwfx->wBitsPerSample,
+        pid, static_cast<unsigned long long>(activatedEpoch), pwfx->nChannels, pwfx->nSamplesPerSec,
+        pwfx->wBitsPerSample,
         static_cast<unsigned long long>(streamLatency100ns / 10),
         static_cast<unsigned long long>(defaultDevicePeriod100ns / 10),
         static_cast<unsigned long long>(minDevicePeriod100ns / 10), bufferFrameCount,
@@ -1191,6 +1193,7 @@ void AppAudioCapture::CaptureLoop() {
             packet.devicePosition = devicePosition;     // Store for debug drift analysis
             packet.rawQpcPosition = rawQpcPosition;     // Store raw WASAPI timestamp for debug drift analysis
             packet.streamLatency = streamLatency100ns;  // telemetry only (see below)
+            packet.captureEpoch = captureEpoch.load(std::memory_order_acquire);
             // Period-center bias only (process loopback reports end-of-period QPCs). Do NOT advance
             // by streamLatency: the render->loopback A/V offset is corrected by delaying video
             // content (audio/PTS untouched), never by advancing live audio (the earlier samples do

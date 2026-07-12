@@ -488,6 +488,28 @@ TEST(AudioSyncUtilsTest, AppAudioPacketStitchingDoesNotAdvanceToEncodedCursor) {
     EXPECT_TRUE(ce::audio::ShouldAdvancePacketTimelineToEncodedCursor(false));
 }
 
+TEST(AudioSyncUtilsTest, AppAudioCaptureEpochTransitionDistinguishesRestartFromOrdinaryGap) {
+    EXPECT_FALSE(ce::audio::IsAppAudioCaptureEpochTransition(true, 0, 1));
+    EXPECT_FALSE(ce::audio::IsAppAudioCaptureEpochTransition(true, 1, 1));
+    EXPECT_TRUE(ce::audio::IsAppAudioCaptureEpochTransition(true, 1, 2));
+    EXPECT_TRUE(ce::audio::IsAppAudioCaptureEpochTransition(true, 9, 3));
+    EXPECT_FALSE(ce::audio::IsAppAudioCaptureEpochTransition(true, 1, 0));
+    EXPECT_FALSE(ce::audio::IsAppAudioCaptureEpochTransition(false, 1, 2));
+}
+
+TEST(AudioSyncUtilsTest, RestartedAppAudioEpochReusesLateJoinInsteadOfMaterializingLongAbsence) {
+    constexpr int64_t kRate = 48000;
+    const bool firstTimelinePacketAfterEpochReset =
+        ce::audio::IsAppAudioCaptureEpochTransition(true, 1, 2);
+    const auto join = ce::audio::ComputeLateAppSourceJoin(
+        true, firstTimelinePacketAfterEpochReset, false, kRate * 1430, kRate * 1430, kRate / 2, kRate / 100);
+
+    ASSERT_TRUE(join.joinLive);
+    EXPECT_EQ(join.joinCursorSamples, kRate * 1430);
+    EXPECT_EQ(join.preservedGapSamples, 0);
+    EXPECT_EQ(join.suppressedGapSamples, kRate * 1430);
+}
+
 TEST(AudioSyncUtilsTest, PreStartAppAudioEvidenceBlocksOptionalStartupUntilPrimed) {
     EXPECT_TRUE(ce::audio::ShouldRememberPreStartPacketForAppBootstrap(
         /*isAppAudioSource*/ true, /*firstSourcePacket*/ true, /*packetTimestampMs*/ 990,

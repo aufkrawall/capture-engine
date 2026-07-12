@@ -64,12 +64,36 @@ uint32_t DefaultChannelMask(int channels) {
     }
 }
 
+template <typename T>
+struct CodecConfigList {
+    const T* values = nullptr;
+    int count = 0;
+};
+
+template <typename T>
+CodecConfigList<T> GetCodecConfigs(const AVCodec* codec, AVCodecConfig config, const char* diagnosticName) {
+    CodecConfigList<T> result;
+    if (!codec) {
+        return result;
+    }
+    const void* values = nullptr;
+    if (avcodec_get_supported_config(nullptr, codec, config, 0, &values, &result.count) < 0) {
+        DLL_Log("[AudioEncoder] Failed to query codec %s capabilities for %s; treating as unrestricted", codec->name,
+                diagnosticName);
+        result.count = 0;
+        return result;
+    }
+    result.values = static_cast<const T*>(values);
+    return result;
+}
+
 bool CodecSupportsSampleFormat(const AVCodec* codec, AVSampleFormat fmt) {
-    if (!codec || !codec->sample_fmts) {
+    const auto formats = GetCodecConfigs<AVSampleFormat>(codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, "sample formats");
+    if (!formats.values) {
         return true;
     }
-    for (const AVSampleFormat* p = codec->sample_fmts; *p != AV_SAMPLE_FMT_NONE; ++p) {
-        if (*p == fmt) {
+    for (int i = 0; i < formats.count; ++i) {
+        if (formats.values[i] == fmt) {
             return true;
         }
     }
@@ -81,11 +105,13 @@ bool CodecSupportsSampleFormat(const AVCodec* codec, AVSampleFormat fmt) {
 // only a fixed set of layouts: ALAC supports 7.1(wide) but NOT plain 7.1, so a
 // 7.1 (side) endpoint fed verbatim makes avcodec_open2 fail with EINVAL.
 bool CodecSupportsChannelLayout(const AVCodec* codec, const AVChannelLayout* layout) {
-    if (!codec || !codec->ch_layouts || !layout) {
+    const auto layouts =
+        GetCodecConfigs<AVChannelLayout>(codec, AV_CODEC_CONFIG_CHANNEL_LAYOUT, "channel layouts");
+    if (!layouts.values || !layout) {
         return true;  // No restriction advertised by the codec.
     }
-    for (const AVChannelLayout* p = codec->ch_layouts; p->nb_channels != 0; ++p) {
-        if (av_channel_layout_compare(p, layout) == 0) {
+    for (int i = 0; i < layouts.count; ++i) {
+        if (av_channel_layout_compare(&layouts.values[i], layout) == 0) {
             return true;
         }
     }
@@ -99,13 +125,16 @@ bool CodecSupportsChannelLayout(const AVCodec* codec, const AVChannelLayout* lay
 // codec's first supported layout. Returns false if the codec lists no layout at
 // all (caller keeps the requested layout and lets avcodec_open2 decide).
 bool PickSupportedChannelLayout(const AVCodec* codec, int desiredChannels, AVChannelLayout* out) {
-    if (!codec || !codec->ch_layouts || !out) {
+    const auto layouts =
+        GetCodecConfigs<AVChannelLayout>(codec, AV_CODEC_CONFIG_CHANNEL_LAYOUT, "channel layouts");
+    if (!layouts.values || !out) {
         return false;
     }
     const AVChannelLayout* firstSupported = nullptr;
     const AVChannelLayout* stereo = nullptr;
     const AVChannelLayout* sameCount = nullptr;
-    for (const AVChannelLayout* p = codec->ch_layouts; p->nb_channels != 0; ++p) {
+    for (int i = 0; i < layouts.count; ++i) {
+        const AVChannelLayout* p = &layouts.values[i];
         if (!firstSupported) {
             firstSupported = p;
         }
@@ -279,9 +308,10 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
         codecCtx->sample_fmt = AV_SAMPLE_FMT_S32;
     } else if (codecName == "pcm_f32le" && CodecSupportsSampleFormat(codec, AV_SAMPLE_FMT_FLT)) {
         codecCtx->sample_fmt = AV_SAMPLE_FMT_FLT;
-    } else if (codec->sample_fmts) {
+    } else if (const auto formats =
+                   GetCodecConfigs<AVSampleFormat>(codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, "sample formats");
+               formats.values && formats.count > 0) {
         // iterating to find best supported format
-        const enum AVSampleFormat* p = codec->sample_fmts;
         enum AVSampleFormat best = AV_SAMPLE_FMT_NONE;
 
         // Preference list: Float Planar > Float > S16 Planar > S16 > S32 Planar
@@ -289,13 +319,11 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
                                              AV_SAMPLE_FMT_S16,  AV_SAMPLE_FMT_S32P, AV_SAMPLE_FMT_S32};
 
         for (auto pref : preferences) {
-            p = codec->sample_fmts;
-            while (*p != AV_SAMPLE_FMT_NONE) {
-                if (*p == pref) {
+            for (int i = 0; i < formats.count; ++i) {
+                if (formats.values[i] == pref) {
                     best = pref;
                     break;
                 }
-                p++;
             }
             if (best != AV_SAMPLE_FMT_NONE)
                 break;
@@ -303,7 +331,7 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
 
         if (best == AV_SAMPLE_FMT_NONE) {
             // Fallback to first
-            best = codec->sample_fmts[0];
+            best = formats.values[0];
         }
 
         codecCtx->sample_fmt = best;
@@ -338,16 +366,17 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
     codecCtx->sample_rate = sampleRate;
 
     // Check if sample rate is supported
-    if (codec->supported_samplerates) {
+    const auto sampleRates = GetCodecConfigs<int>(codec, AV_CODEC_CONFIG_SAMPLE_RATE, "sample rates");
+    if (sampleRates.values && sampleRates.count > 0) {
         int best_rate = 0;
-        for (int i = 0; codec->supported_samplerates[i]; i++) {
-            if (codec->supported_samplerates[i] == codecCtx->sample_rate) {
+        for (int i = 0; i < sampleRates.count; i++) {
+            if (sampleRates.values[i] == codecCtx->sample_rate) {
                 best_rate = codecCtx->sample_rate;
                 break;
             }
             if (!best_rate ||
-                abs(codec->supported_samplerates[i] - codecCtx->sample_rate) < abs(best_rate - codecCtx->sample_rate)) {
-                best_rate = codec->supported_samplerates[i];
+                abs(sampleRates.values[i] - codecCtx->sample_rate) < abs(best_rate - codecCtx->sample_rate)) {
+                best_rate = sampleRates.values[i];
             }
         }
         if (best_rate != codecCtx->sample_rate) {

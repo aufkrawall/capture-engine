@@ -194,6 +194,10 @@ private:
     std::deque<AudioPacket> packetQueue;
     std::atomic<uint64_t> queueOverrunPackets{0};
     std::atomic<uint64_t> queueOverrunFrames{0};
+    // Incremented after every successful process-loopback activation. Packets carry
+    // this epoch so downstream routes can distinguish a restarted/re-activated app
+    // stream from an ordinary packet gap without racing the monitor thread.
+    std::atomic<uint64_t> captureEpoch{0};
 
     std::mutex startMutex;
     std::future<bool> pendingStartFuture;

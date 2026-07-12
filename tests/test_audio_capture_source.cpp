@@ -53,6 +53,20 @@ TEST(AudioCaptureSourceTest, PacketAllocationFailureCannotEscapeCaptureThread) {
     EXPECT_NE(appSource.find("packetQueue.emplace_back(std::move(packet));"), std::string::npos);
 }
 
+TEST(AudioCaptureSourceTest, AppAudioPacketsCarryActivationEpochIntoAtomicRouteRejoin) {
+    const std::string appSource = ReadSource("app_audio_capture.cpp");
+    const std::string mediaSource = ReadSource("mediaengine.cpp");
+    ASSERT_FALSE(appSource.empty());
+    ASSERT_FALSE(mediaSource.empty());
+
+    EXPECT_NE(appSource.find("captureEpoch.fetch_add(1"), std::string::npos);
+    EXPECT_NE(appSource.find("packet.captureEpoch = captureEpoch.load("), std::string::npos);
+    EXPECT_NE(mediaSource.find("IsAppAudioCaptureEpochTransition("), std::string::npos);
+    EXPECT_NE(mediaSource.find("App capture epoch transition"), std::string::npos);
+    EXPECT_NE(mediaSource.find("src.ringBuffer->Clear()"), std::string::npos);
+    EXPECT_NE(mediaSource.find("sourceTimestamps[srcIdx] = 0"), std::string::npos);
+}
+
 TEST(AudioCaptureSourceTest, AppAudioStopDrainsAlreadyCommittedPacketsWithoutRecovery) {
     const std::string source = ReadSource("app_audio_capture.cpp");
     ASSERT_FALSE(source.empty());
