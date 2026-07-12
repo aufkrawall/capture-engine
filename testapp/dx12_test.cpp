@@ -20,6 +20,7 @@
 #include <dxgi1_5.h>
 #include <shellscalingapi.h>
 #include <wrl/client.h>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -88,6 +89,90 @@ float g_BarPosition = 0.0f;
 auto g_StartTime = std::chrono::high_resolution_clock::now();
 
 bool g_Running = true;
+
+void CreateSamplerPolicySmokeObjects() {
+    D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
+    heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+    heapDesc.NumDescriptors = 5;
+    ComPtr<ID3D12DescriptorHeap> samplerHeap;
+    if (FAILED(g_Device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&samplerHeap)))) {
+        printf("DX12 sampler-policy smoke: sampler heap creation failed\n");
+        return;
+    }
+
+    auto material = [] {
+        D3D12_SAMPLER_DESC desc = {};
+        desc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        desc.AddressU = desc.AddressV = desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        desc.MaxAnisotropy = 1;
+        desc.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+        desc.MinLOD = 0.0f;
+        desc.MaxLOD = D3D12_FLOAT32_MAX;
+        return desc;
+    };
+
+    std::array<D3D12_SAMPLER_DESC, 5> dynamicSamplers = {material(), material(), material(), material(), material()};
+    dynamicSamplers[1].Filter = D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+    dynamicSamplers[1].ComparisonFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    dynamicSamplers[2].Filter = D3D12_FILTER_MINIMUM_MIN_MAG_MIP_LINEAR;
+    dynamicSamplers[3].AddressU = dynamicSamplers[3].AddressV = dynamicSamplers[3].AddressW =
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    dynamicSamplers[4].MaxLOD = 0.0f;
+
+    D3D12_CPU_DESCRIPTOR_HANDLE samplerHandle = samplerHeap->GetCPUDescriptorHandleForHeapStart();
+    const UINT samplerStride = g_Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+    for (const auto& sampler : dynamicSamplers) {
+        g_Device->CreateSampler(&sampler, samplerHandle);
+        samplerHandle.ptr += samplerStride;
+    }
+
+    std::array<D3D12_STATIC_SAMPLER_DESC, 5> staticSamplers = {};
+    for (UINT index = 0; index < staticSamplers.size(); ++index) {
+        const auto& dynamic = dynamicSamplers[index];
+        auto& sampler = staticSamplers[index];
+        sampler.Filter = dynamic.Filter;
+        sampler.AddressU = dynamic.AddressU;
+        sampler.AddressV = dynamic.AddressV;
+        sampler.AddressW = dynamic.AddressW;
+        sampler.MipLODBias = dynamic.MipLODBias;
+        sampler.MaxAnisotropy = dynamic.MaxAnisotropy;
+        sampler.ComparisonFunc = dynamic.ComparisonFunc;
+        sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+        sampler.MinLOD = dynamic.MinLOD;
+        sampler.MaxLOD = dynamic.MaxLOD;
+        sampler.ShaderRegister = index;
+        sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    }
+
+    D3D12_ROOT_SIGNATURE_DESC rootDesc = {};
+    rootDesc.NumStaticSamplers = static_cast<UINT>(staticSamplers.size());
+    rootDesc.pStaticSamplers = staticSamplers.data();
+    rootDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    ComPtr<ID3DBlob> rootBlob;
+    ComPtr<ID3DBlob> errors;
+    HRESULT hr = D3D12SerializeRootSignature(&rootDesc, D3D_ROOT_SIGNATURE_VERSION_1_0, &rootBlob, &errors);
+    ComPtr<ID3D12RootSignature> rootSignature10;
+    if (SUCCEEDED(hr)) {
+        hr = g_Device->CreateRootSignature(0, rootBlob->GetBufferPointer(), rootBlob->GetBufferSize(),
+                                           IID_PPV_ARGS(&rootSignature10));
+    }
+
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC versioned = {};
+    versioned.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    versioned.Desc_1_1.NumStaticSamplers = static_cast<UINT>(staticSamplers.size());
+    versioned.Desc_1_1.pStaticSamplers = staticSamplers.data();
+    versioned.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    rootBlob.Reset();
+    errors.Reset();
+    const HRESULT versionedHr = D3D12SerializeVersionedRootSignature(&versioned, &rootBlob, &errors);
+    ComPtr<ID3D12RootSignature> rootSignature11;
+    if (SUCCEEDED(versionedHr)) {
+        g_Device->CreateRootSignature(0, rootBlob->GetBufferPointer(), rootBlob->GetBufferSize(),
+                                      IID_PPV_ARGS(&rootSignature11));
+    }
+    printf("DX12 sampler-policy smoke: dynamic=5 static-v1.0=%s static-v1.1=%s\n",
+           SUCCEEDED(hr) ? "ok" : "failed", rootSignature11 ? "ok" : "failed");
+}
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -171,6 +256,7 @@ bool InitDX12(HWND hwnd) {
         printf("Failed to create D3D12 device\n");
         return false;
     }
+    CreateSamplerPolicySmokeObjects();
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;

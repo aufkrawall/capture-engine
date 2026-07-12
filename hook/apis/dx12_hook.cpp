@@ -55,11 +55,11 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
-#include "../wrappers/root_signature_parser.h"
 #include "../wrappers/wrapper_hooks.h"
 #include "dx11_hook.h"
 #include "dx12_ffx_suspend_overlay.h"
 #include "dx12_hook.h"
+#include "dx12_sampler_hooks.h"
 #include "dx12_streamline_ui_overlay.h"
 #include "ffx_hook.h"
 #include "graphics_hook.h"
@@ -85,20 +85,12 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
 // Typedefs for D3D12 functions
 typedef void(STDMETHODCALLTYPE* ExecuteCommandListsPtr)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
 typedef HRESULT(STDMETHODCALLTYPE* SignalPtr)(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
-typedef void(STDMETHODCALLTYPE* CreateSamplerPtr)(ID3D12Device*, const D3D12_SAMPLER_DESC*,
-                                                  D3D12_CPU_DESCRIPTOR_HANDLE);
 typedef HRESULT(STDMETHODCALLTYPE* CreateCommittedResourcePtr)(ID3D12Device*, const D3D12_HEAP_PROPERTIES*,
                                                                D3D12_HEAP_FLAGS, const D3D12_RESOURCE_DESC*,
                                                                D3D12_RESOURCE_STATES, const D3D12_CLEAR_VALUE*, REFIID,
                                                                void**);
-typedef HRESULT(WINAPI* PFN_D3D12_SERIALIZE_ROOT_SIGNATURE)(const D3D12_ROOT_SIGNATURE_DESC*,
-                                                            D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**, ID3DBlob**);
-typedef HRESULT(WINAPI* PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE)(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC*,
-                                                                      ID3DBlob**, ID3DBlob**);
-
 // Global Function Pointers for detours (Visible to other modules)
 ExecuteCommandListsPtr oExecuteCommandLists = nullptr;
-CreateSamplerPtr oCreateSampler = nullptr;
 CreateCommittedResourcePtr oCreateCommittedResource = nullptr;
 // --- DX12 API call trace diagnostic (gated by Dx12TraceEnabled; off by default) ---
 typedef HRESULT(STDMETHODCALLTYPE* CreateCommandQueuePtr)(ID3D12Device*, const D3D12_COMMAND_QUEUE_DESC*, REFIID,
@@ -117,8 +109,6 @@ HRESULT STDMETHODCALLTYPE DetourTraceCreateDescriptorHeap(ID3D12Device*, const D
                                                           void**);
 HRESULT STDMETHODCALLTYPE DetourTraceCommandQueueSignal(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
 // --- end DX12 API call trace diagnostic ---
-PFN_D3D12_SERIALIZE_ROOT_SIGNATURE oSerializeRootSignature = nullptr;
-PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE oSerializeVersionedRootSignature = nullptr;
 static std::recursive_mutex g_ExecuteCommandListsHookStateMutex;
 static std::map<void**, ExecuteCommandListsPtr> g_ExecuteCommandListsOriginalByVTable;
 // ExecuteCommandLists runs many times per frame in CPU-bound workloads, so keep a
@@ -7999,10 +7989,6 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pThis, IUn
                                                        const DXGI_SWAP_CHAIN_DESC1* pDesc,
                                                        const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFDesc, IDXGIOutput* pOut,
                                                        IDXGISwapChain1** ppSC);
-void STDMETHODCALLTYPE DetourCreateSampler(ID3D12Device* pDevice, const D3D12_SAMPLER_DESC* pDesc,
-                                           D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor);
-
-extern "C" BOOL WINAPI ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC* pDesc);
 
 // REQUIRED EXPORTS
 void DX12_AdjustWrapperResizeDepth(int delta) {
@@ -22503,30 +22489,10 @@ void DX12_HookDeviceVTable(ID3D12Device* device) {
         }
     }
 
-    // Verify vtbl[22] is non-NULL before patching. A NULL entry means the
-    // device doesn't implement CreateSampler (common on SL wrapper devices
-    // with minimal vtable). Writing to a NULL slot writes to the wrong memory
-    // when the vtable is incomplete.
-    if (!vtbl[22]) {
-        HookLog("DX12: CreateSampler vtable entry is NULL for device %p - skipping hook", device);
-        return;
-    }
-
-    // CreateSampler is at vtable index 20 in ID3D12Device
-    // ID3D12Object: QueryInterface=0, AddRef=1, Release=2, GetPrivateData=3,
-    // SetPrivateData=4, SetPrivateDataInterface=5, SetName=6 ID3D12Device:
-    // GetNodeCount=7, CreateCommandQueue=8, CreateCommandAllocator=9,
-    // CreateGraphicsPipelineState=10, CreateComputePipelineState=11,
-    // CreateCommandList=12, CheckFeatureSupport=13, CreateDescriptorHeap=14,
-    // GetDescriptorHandleIncrementSize=15, CreateRootSignature=16,
-    // CreateConstantBufferView=17, CreateShaderResourceView=18,
-    // CreateUnorderedAccessView=19, CreateRenderTargetView=20,
-    // CreateDepthStencilView=21, CreateSampler=22 Let's use 22 for CreateSampler
-
-    if (vtbl[22] != (void*)DetourCreateSampler) {
-        HookLog("DX12: Hooking CreateSampler vtable for device %p", device);
-        VTableHook::Create(&vtbl[22], (LPVOID)DetourCreateSampler, (LPVOID*)&oCreateSampler);
-    }
+    // Install the sampler/root-signature pair together. The dedicated subsystem
+    // validates both slots, retains originals per vtable, and covers precompiled
+    // root-signature blobs without expanding this already-large overlay module.
+    ce::dx12_sampler_hooks::HookDevice(device);
 
     // DX12 trace: hook device creation calls to inspect queue/resource architecture (own command
     // queue? what resources/heaps?). CreateCommandQueue=8, CreateDescriptorHeap=14,
@@ -22639,111 +22605,6 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pThis, IUn
     return hr;
 }
 
-void STDMETHODCALLTYPE DetourCreateSampler(ID3D12Device* pDevice, const D3D12_SAMPLER_DESC* pDesc,
-                                           D3D12_CPU_DESCRIPTOR_HANDLE DestDescriptor) {
-    if (!pDesc || !oCreateSampler) {
-        if (oCreateSampler)
-            oCreateSampler(pDevice, pDesc, DestDescriptor);
-        return;
-    }
-
-    D3D12_SAMPLER_DESC modifiedDesc = *pDesc;
-    ApplyDX12SamplerOverridesCallback(&modifiedDesc);
-
-    oCreateSampler(pDevice, &modifiedDesc, DestDescriptor);
-}
-
-HRESULT WINAPI DetourSerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC* pRootSignature,
-                                            D3D_ROOT_SIGNATURE_VERSION Version, ID3DBlob** ppBlob,
-                                            ID3DBlob** ppErrorBlob) {
-    if (!pRootSignature || !ppBlob) {
-        if (oSerializeRootSignature)
-            return oSerializeRootSignature(pRootSignature, Version, ppBlob, ppErrorBlob);
-        return E_INVALIDARG;
-    }
-
-    HookLog("DetourSerializeRootSignature: CALLED, NumStaticSamplers=%u", pRootSignature->NumStaticSamplers);
-
-    if (pRootSignature->NumStaticSamplers > 0 && pRootSignature->pStaticSamplers) {
-        // Clone the descriptor with modified samplers
-        D3D12_ROOT_SIGNATURE_DESC modified = *pRootSignature;
-        std::vector<D3D12_STATIC_SAMPLER_DESC> modifiedSamplers(
-            pRootSignature->pStaticSamplers, pRootSignature->pStaticSamplers + pRootSignature->NumStaticSamplers);
-
-        bool anyModified = false;
-        for (auto& sampler : modifiedSamplers) {
-            if (RootSignatureParser::ApplyStaticSamplerOverrides(sampler)) {
-                anyModified = true;
-            }
-        }
-
-        if (anyModified) {
-            HookLog(
-                "DetourSerializeRootSignature: Modified %zu static samplers for "
-                "AF/mip bias",
-                modifiedSamplers.size());
-            modified.pStaticSamplers = modifiedSamplers.data();
-            if (oSerializeRootSignature)
-                return oSerializeRootSignature(&modified, Version, ppBlob, ppErrorBlob);
-        }
-    }
-
-    if (oSerializeRootSignature)
-        return oSerializeRootSignature(pRootSignature, Version, ppBlob, ppErrorBlob);
-    return E_FAIL;
-}
-
-HRESULT WINAPI DetourSerializeVersionedRootSignature(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC* pRootSignature,
-                                                     ID3DBlob** ppBlob, ID3DBlob** ppErrorBlob) {
-    if (!pRootSignature || !ppBlob) {
-        if (oSerializeVersionedRootSignature)
-            return oSerializeVersionedRootSignature(pRootSignature, ppBlob, ppErrorBlob);
-        return E_INVALIDARG;
-    }
-
-    uint32_t numStaticSamplers = 0;
-    if (pRootSignature->Version == D3D_ROOT_SIGNATURE_VERSION_1)
-        numStaticSamplers = pRootSignature->Desc_1_0.NumStaticSamplers;
-    HookLog(
-        "DetourSerializeVersionedRootSignature: CALLED, Version=%u, "
-        "NumStaticSamplers=%u",
-        pRootSignature->Version, numStaticSamplers);
-
-    if (pRootSignature->Version == D3D_ROOT_SIGNATURE_VERSION_1) {
-        const D3D12_ROOT_SIGNATURE_DESC* pDesc = &pRootSignature->Desc_1_0;
-
-        if (pDesc->NumStaticSamplers > 0 && pDesc->pStaticSamplers) {
-            D3D12_VERSIONED_ROOT_SIGNATURE_DESC modified = *pRootSignature;
-            D3D12_ROOT_SIGNATURE_DESC modifiedDesc = *pDesc;
-
-            std::vector<D3D12_STATIC_SAMPLER_DESC> modifiedSamplers(pDesc->pStaticSamplers,
-                                                                    pDesc->pStaticSamplers + pDesc->NumStaticSamplers);
-
-            bool anyModified = false;
-            for (auto& sampler : modifiedSamplers) {
-                if (RootSignatureParser::ApplyStaticSamplerOverrides(sampler)) {
-                    anyModified = true;
-                }
-            }
-
-            if (anyModified) {
-                HookLog(
-                    "DetourSerializeVersionedRootSignature: Modified %zu static "
-                    "samplers (v1.0)",
-                    modifiedSamplers.size());
-                modifiedDesc.pStaticSamplers = modifiedSamplers.data();
-                modified.Desc_1_0 = modifiedDesc;
-                if (oSerializeVersionedRootSignature)
-                    return oSerializeVersionedRootSignature(&modified, ppBlob, ppErrorBlob);
-            }
-        }
-    }
-
-    if (oSerializeVersionedRootSignature)
-        return oSerializeVersionedRootSignature(pRootSignature, ppBlob, ppErrorBlob);
-    return E_FAIL;
-}
-
 HRESULT STDMETHODCALLTYPE DetourCreateCommittedResource(ID3D12Device* device,
                                                         const D3D12_HEAP_PROPERTIES* pHeapProperties,
                                                         D3D12_HEAP_FLAGS HeapFlags, const D3D12_RESOURCE_DESC* pDesc,
@@ -22826,6 +22687,7 @@ HRESULT STDMETHODCALLTYPE DetourTraceCommandQueueSignal(ID3D12CommandQueue* queu
 
 void DX12Hook::Shutdown() {
     LogOverlayCoverageSummary("shutdown summary");
+    ce::dx12_sampler_hooks::LogSummary("shutdown");
     HookLogImportant(
         "DX12: Shutdown — cleaning up FFX state (runtime=%s overlayInit=%d syncInit=%d "
         "fgOwned=%d nativeFGPath=%d progressResolved=%d callbackBridges=%zu)",

@@ -154,6 +154,7 @@ bool WasD3D11Or10DeviceCreated();
 
 // Returns true if D3D12CreateDevice was actually called
 bool WasD3D12DeviceCreated();
+void MarkD3D12DeviceCreated();
 
 // ============================================================================
 // Helper Functions

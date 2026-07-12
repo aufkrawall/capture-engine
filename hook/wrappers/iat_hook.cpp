@@ -11,6 +11,7 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include "../apis/dx12_sampler_hooks.h"
 #include "../apis/dx11_hook.h"
 #include "../apis/lod_helper.h"
 #include "../common/overlay_compat.h"
@@ -19,73 +20,6 @@
 #include "wrapper_hooks.h"
 
 #pragma comment(lib, "psapi.lib")
-
-// ============================================================================
-// D3D12 Sampler Override Callback
-// ============================================================================
-// This callback is registered with d3d12_wrappers.dll to apply AF/mip bias
-// overrides. It has access to hook_common for config.
-
-extern "C" BOOL WINAPI ApplyDX12SamplerOverridesCallback(D3D12_SAMPLER_DESC* pDesc) {
-    if (!pDesc)
-        return FALSE;
-
-    // Skip overrides for samplers that have no mipmapping (MipLevels == 1 equivalent):
-    // MaxLOD == 0.0f means the sampler is clamped to the base mip level only.
-    // MinLOD == MaxLOD means a single fixed LOD is selected.
-    // Applying mip bias or AF to single-mip textures can cause GPU driver corruption
-    // on some hardware (e.g., Nvidia). D3D12 decouples samplers from textures, so we
-    // cannot check the texture's actual MipLevels here; this LOD-based heuristic covers
-    // the standard case where games set MaxLOD=0 for non-mipmapped samplers.
-    if (pDesc->MaxLOD == 0.0f)
-        return FALSE;
-    if (pDesc->MinLOD == pDesc->MaxLOD)
-        return FALSE;
-
-    const auto& gfx = GetActiveGraphicsConfig();
-
-    D3D12_FILTER origFilter = pDesc->Filter;
-    UINT origAniso = pDesc->MaxAnisotropy;
-    float origBias = pDesc->MipLODBias;
-
-    // Anisotropic Filtering override
-    std::string af = gfx.anisotropicFiltering;
-    if (af != "default") {
-        if (af == "off") {
-            if (ce::sampler_override::IsD3D12AnisotropicFilter(pDesc->Filter)) {
-                bool wasComparison = ce::sampler_override::IsD3D12ComparisonFilter(pDesc->Filter);
-                pDesc->Filter =
-                    wasComparison ? D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-                pDesc->MaxAnisotropy = 1;
-            }
-        } else {
-            UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
-
-            if (pDesc->AddressU != D3D12_TEXTURE_ADDRESS_MODE_BORDER &&
-                pDesc->AddressV != D3D12_TEXTURE_ADDRESS_MODE_BORDER &&
-                pDesc->AddressW != D3D12_TEXTURE_ADDRESS_MODE_BORDER) {
-                pDesc->Filter = ce::sampler_override::GetForcedAnisotropicFilter(pDesc->Filter);
-                pDesc->MaxAnisotropy = maxAniso;
-            }
-        }
-    }
-
-    // Mip Bias override
-    std::string biasStr = gfx.mipBias;
-    if (biasStr != "default" || gfx.forceMipBiasClamp) {
-        pDesc->MipLODBias = ApplyConfiguredMipBias(gfx, pDesc->MipLODBias);
-        pDesc->MipLODBias = FinalizeMipBias(gfx, pDesc->MipLODBias);
-    }
-
-    if (origFilter != pDesc->Filter || origAniso != pDesc->MaxAnisotropy || origBias != pDesc->MipLODBias) {
-        HookLog(
-            "ApplyDX12SamplerOverridesCallback: MODIFIED, Filter=0x%X->0x%X, "
-            "Aniso=%d->%d, Bias=%.2f->%.2f",
-            origFilter, pDesc->Filter, origAniso, pDesc->MaxAnisotropy, origBias, pDesc->MipLODBias);
-    }
-
-    return TRUE;
-}
 
 namespace IATHook {
 
@@ -513,22 +447,6 @@ extern PFN_CreateDXGIFactory oCreateDXGIFactory;
 extern PFN_CreateDXGIFactory1 oCreateDXGIFactory1;
 extern PFN_CreateDXGIFactory2 oCreateDXGIFactory2;
 
-// D3D12 Root Signature hooks (from dx12_hook.cpp)
-typedef HRESULT(WINAPI* PFN_D3D12_SERIALIZE_ROOT_SIGNATURE)(const D3D12_ROOT_SIGNATURE_DESC*,
-                                                            D3D_ROOT_SIGNATURE_VERSION, ID3DBlob**, ID3DBlob**);
-typedef HRESULT(WINAPI* PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE)(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC*,
-                                                                      ID3DBlob**, ID3DBlob**);
-
-extern PFN_D3D12_SERIALIZE_ROOT_SIGNATURE oSerializeRootSignature;
-extern PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE oSerializeVersionedRootSignature;
-
-extern HRESULT WINAPI DetourSerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC* pRootSignature,
-                                                   D3D_ROOT_SIGNATURE_VERSION Version, ID3DBlob** ppBlob,
-                                                   ID3DBlob** ppErrorBlob);
-
-extern HRESULT WINAPI DetourSerializeVersionedRootSignature(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC* pRootSignature,
-                                                            ID3DBlob** ppBlob, ID3DBlob** ppErrorBlob);
-
 namespace IATHook {
 
 static bool ShouldLogRepeatedIATScan(std::atomic<int>& counter) {
@@ -594,20 +512,27 @@ bool InitializeD3D12Hooks() {
     // These handle static samplers for AF/mip bias overrides
     // CRITICAL: These hooks are needed even without ENABLE_D3D12_WRAPPER
     oSerializeRootSignature =
-        reinterpret_cast<PFN_D3D12_SERIALIZE_ROOT_SIGNATURE>(GetProcAddress(hD3D12, "D3D12SerializeRootSignature"));
+        reinterpret_cast<D3D12SerializeRootSignaturePtr>(GetProcAddress(hD3D12, "D3D12SerializeRootSignature"));
 
-    oSerializeVersionedRootSignature = reinterpret_cast<PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE>(
+    oSerializeVersionedRootSignature = reinterpret_cast<D3D12SerializeVersionedRootSignaturePtr>(
         GetProcAddress(hD3D12, "D3D12SerializeVersionedRootSignature"));
+
+    oD3D12CreateDeviceRaw =
+        reinterpret_cast<D3D12CreateDeviceRawPtr>(GetProcAddress(hD3D12, "D3D12CreateDevice"));
 
     void* dummy;
     if (oSerializeRootSignature) {
         PatchIATAllModules("d3d12.dll", "D3D12SerializeRootSignature", (void*)DetourSerializeRootSignature, &dummy);
+        RegisterDynamicHook("D3D12SerializeRootSignature", (void*)DetourSerializeRootSignature,
+                            (void**)&oSerializeRootSignature);
         WrapperLog("IAT: Hooked D3D12SerializeRootSignature");
     }
 
     if (oSerializeVersionedRootSignature) {
         PatchIATAllModules("d3d12.dll", "D3D12SerializeVersionedRootSignature",
                            (void*)DetourSerializeVersionedRootSignature, &dummy);
+        RegisterDynamicHook("D3D12SerializeVersionedRootSignature", (void*)DetourSerializeVersionedRootSignature,
+                            (void**)&oSerializeVersionedRootSignature);
         WrapperLog("IAT: Hooked D3D12SerializeVersionedRootSignature");
     }
 
@@ -649,13 +574,20 @@ bool InitializeD3D12Hooks() {
     oD3D12CreateDevice = reinterpret_cast<PFN_D3D12CreateDevice>(GetProcAddress(hD3D12, "D3D12CreateDevice"));
 
     bool patchResult = PatchIATAllModules("d3d12.dll", "D3D12CreateDevice", (void*)Wrapped_D3D12CreateDevice, &dummy);
+    RegisterDynamicHook("D3D12CreateDevice", (void*)Wrapped_D3D12CreateDevice, (void**)&oD3D12CreateDevice);
     if (!patchResult) {
         WrapperLog("IAT: D3D12CreateDevice not found in IAT");
     }
 
     WrapperLog("IAT: D3D12 hooks initialized (patchResult=%d)", patchResult);
 #else
-    WrapperLog("IAT: D3D12 hooks initialized (root signature hooks only)");
+    bool patchResult = false;
+    if (oD3D12CreateDeviceRaw) {
+        patchResult = PatchIATAllModules("d3d12.dll", "D3D12CreateDevice", (void*)DetourD3D12CreateDeviceRaw, &dummy);
+        RegisterDynamicHook("D3D12CreateDevice", (void*)DetourD3D12CreateDeviceRaw,
+                            (void**)&oD3D12CreateDeviceRaw);
+    }
+    WrapperLog("IAT: D3D12 raw device/sampler/root-signature hooks initialized (patchResult=%d)", patchResult);
 #endif
 
     return true;

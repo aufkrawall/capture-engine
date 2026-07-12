@@ -251,6 +251,10 @@ bool WasD3D12DeviceCreated() {
     return g_D3D12DeviceCreated.load(std::memory_order_acquire);
 }
 
+void MarkD3D12DeviceCreated() {
+    g_D3D12DeviceCreated.store(true, std::memory_order_release);
+}
+
 void WrapperLog(const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -537,7 +541,7 @@ HRESULT WINAPI Wrapped_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL M
     }
 
     // Mark that D3D12 device creation was actually called
-    g_D3D12DeviceCreated.store(true, std::memory_order_release);
+    MarkD3D12DeviceCreated();
 
     // Initialize DX12 hooks (global vtable hooks + swapchain recreation trigger)
     if (g_dx12HookInstance) {
