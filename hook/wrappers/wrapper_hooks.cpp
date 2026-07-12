@@ -854,15 +854,13 @@ IDirect3D9* WINAPI Wrapped_Direct3DCreate9(UINT SDKVersion) {
     // Always return the original IDirect3D9 object from Direct3DCreate9.
     //
     // DO NOT return IDirect3D9Ex here even though IDirect3D9Ex is a COM superset.
-    // Games like Mirror's Edge access d3d9.dll's non-COM internal binary fields
-    // directly (e.g. factory+0x14, [ptr-4]).  IDirect3D9Ex has a different
-    // internal memory layout at those offsets, leading to null-pointer crashes.
+    // Some applications and injected overlays access non-COM runtime details;
+    // IDirect3D9Ex also changes managed-resource and lost-device semantics.
     //
     // DX9Hook's vtable hook on IDirect3D9::CreateDevice (installed by
     // DetourDirect3DCreate9 when this call reaches dx9_hook.cpp) intercepts
-    // device creation. That path only promotes to D3D9Ex when compatibility checks
-    // allow it, so DXVK and MirrorsEdge-style layout-sensitive cases stay on the
-    // native D3D9 path.
+    // device creation while preserving the requested classic device type. Shared
+    // capture resources are supplied by an internal helper after creation.
     if (!oDirect3DCreate9)
         return nullptr;
     IDirect3D9* pReal = oDirect3DCreate9(SDKVersion);

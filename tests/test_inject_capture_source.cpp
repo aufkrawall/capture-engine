@@ -164,3 +164,33 @@ TEST(InjectCaptureSourceTest, LegacyInjectProducersDoNotOverwriteOutstandingSlot
     EXPECT_NE(dx9.find("IsCaptureTextureSlotOutstanding(sharedMem, idx)"), std::string::npos);
     EXPECT_EQ(dx9.find("while (completionQuery->GetData"), std::string::npos);
 }
+
+TEST(InjectCaptureSourceTest, ClassicD3D9CapturePreservesDeviceTypeAndUsesSharedHelperRing) {
+    const std::string source = ReadSource("hook/apis/dx9_hook.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const std::string createDevice =
+        FunctionBody(source, "static HRESULT STDMETHODCALLTYPE DetourCreateDevice(", "// Hook: Direct3DCreate9");
+    const std::string sharedSetup =
+        FunctionBody(source, "bool SetupDirectD3D9SharedRing(", "bool HasPublishedGeneration() const");
+    ASSERT_FALSE(createDevice.empty());
+    ASSERT_FALSE(sharedSetup.empty());
+
+    EXPECT_NE(createDevice.find("ShouldPromoteClassicD3D9Device"), std::string::npos);
+    EXPECT_NE(createDevice.find("oCreateDevice(self"), std::string::npos);
+    EXPECT_EQ(createDevice.find("CreateDeviceEx"), std::string::npos);
+    EXPECT_EQ(source.find("ManagedPoolFix"), std::string::npos);
+    EXPECT_EQ(source.find("MirrorsEdge.exe"), std::string::npos);
+
+    const size_t nativeProbe = sharedSetup.find("ProbeDirectD3D9SharedTexture(device, \"game device\")");
+    const size_t helperProbe = sharedSetup.find("EnsureDirectD3D9ExProducerDevice");
+    ASSERT_NE(nativeProbe, std::string::npos);
+    ASSERT_NE(helperProbe, std::string::npos);
+    EXPECT_LT(nativeProbe, helperProbe);
+    EXPECT_NE(sharedSetup.find("skipping helper producers"), std::string::npos);
+    EXPECT_NE(sharedSetup.find("EnsureDirectD3D9ExProducerDevice"), std::string::npos);
+    EXPECT_NE(sharedSetup.find("TrySetupDirectD3D9SharedRingWithProducer"), std::string::npos);
+    EXPECT_NE(source.find("gameDevice->CreateTexture"), std::string::npos);
+    EXPECT_NE(source.find("d3d11Device->OpenSharedResource"), std::string::npos);
+    EXPECT_NE(source.find("Direct D3D9 shared ring zero-copy path active"), std::string::npos);
+}

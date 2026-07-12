@@ -15,12 +15,12 @@
 #include <mutex>
 #include <set>
 #include <thread>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include "../../common/frame_timing.h"
 #include "../common/capture_base.h"
 #include "../common/capture_pacing.h"
+#include "../common/d3d9_capture_policy.h"
 #include "../common/fps_limiter.h"
 #include "../common/freeze_watchdog.h"
 #include "../common/input_manager.h"
@@ -187,1023 +187,10 @@ void DX9_UnregisterInternalHelperDevice(IDirect3DDevice9* device) {
     }
 }
 
-// ============================================================================
-// D3D9Ex MANAGED Pool Compatibility Layer
-// ============================================================================
-// D3D9Ex rejects D3DPOOL_MANAGED with E_INVALIDARG. Games that create resources
-// with MANAGED pool crash when given a D3D9Ex device. This layer transparently
-// remaps MANAGED → DEFAULT and provides a SYSTEMMEM staging copy for LockRect/
-// Lock support. UpdateTexture/UpdateSurface uploads dirty staging data to VRAM
-// on UnlockRect/Unlock.
-// ============================================================================
-
-namespace ManagedPoolFix {
-
-// DIAGNOSTIC: When true, use SYSTEMMEM for all MANAGED resources instead of
-// DEFAULT+staging. This isolates whether corruption is from our staging approach
-// or from D3D9Ex rendering itself. SYSTEMMEM textures render correctly via
-// D3D9Ex's auto-managed GPU upload but can't be shared (no zero-copy capture).
-static constexpr bool kSysmemDiagMode = false;
-
-// DYNAMIC pool approach: remap MANAGED → DEFAULT + D3DUSAGE_DYNAMIC instead of
-// DEFAULT + SYSTEMMEM staging. DYNAMIC textures/VBs/IBs are directly lockable,
-// eliminating ALL staging infrastructure (staging maps, Lock/Unlock hooks,
-// GetSurfaceLevel/SurfUnlockRect hooks, UpdateTexture redirects). This is the
-// industry-standard approach used by dxwrapper and other D3D9Ex promotion tools.
-static constexpr bool kUseDynamicPool = false;
-
-// Set of textures remapped from MANAGED → DEFAULT + DYNAMIC (for GetLevelDesc hook)
-static std::unordered_set<IDirect3DTexture9*> g_dynamicRemapped;
-
-static bool g_active = false;
-static std::atomic<int> g_texCreated{0};
-static std::atomic<int> g_vbCreated{0};
-static std::atomic<int> g_ibCreated{0};
-static std::atomic<int> g_updateTexCalls{0};
-static std::atomic<int> g_updateTexFails{0};
-static std::atomic<int> g_texDirectLockCount{0};     // LockRect on remapped textures
-static std::atomic<int> g_surfUnlockUploadCount{0};  // UpdateTexture via SurfUnlockRect
-static std::atomic<int> g_texUnlockUploadCount{0};   // UpdateTexture via TexUnlockRect
-
-// Staging resource tracking maps
-static std::unordered_map<IDirect3DTexture9*, IDirect3DTexture9*> g_texStaging;  // DEFAULT → SYSTEMMEM
-static std::unordered_map<IDirect3DTexture9*, IDirect3DTexture9*> g_texDefault;  // SYSTEMMEM → DEFAULT (reverse)
-static std::unordered_set<IDirect3DTexture9*> g_texAutoGenMip;                   // DEFAULT textures with AUTOGENMIPMAP
-static std::unordered_map<IDirect3DVertexBuffer9*, IDirect3DVertexBuffer9*> g_vbStaging;
-static std::unordered_map<IDirect3DIndexBuffer9*, IDirect3DIndexBuffer9*> g_ibStaging;
-
-// Deferred upload: textures marked dirty on Unlock, flushed on SetTexture/Draw.
-// Reduces UpdateTexture calls from once-per-unlock to once-per-actual-use.
-static std::unordered_set<IDirect3DTexture9*> g_texDirty;
-static std::atomic<int> g_deferredFlushCount{0};
-
-// Diagnostic: track which DEFAULT textures have had data uploaded
-static std::set<IDirect3DTexture9*> g_texUploaded;
-static bool g_uploadDiagDone = false;
-
-// Original device vtable function pointers
-typedef HRESULT(STDMETHODCALLTYPE* CreateTexture_t)(IDirect3DDevice9*, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
-                                                    IDirect3DTexture9**, HANDLE*);
-typedef HRESULT(STDMETHODCALLTYPE* CreateVertexBuffer_t)(IDirect3DDevice9*, UINT, DWORD, DWORD, D3DPOOL,
-                                                         IDirect3DVertexBuffer9**, HANDLE*);
-typedef HRESULT(STDMETHODCALLTYPE* CreateIndexBuffer_t)(IDirect3DDevice9*, UINT, DWORD, D3DFORMAT, D3DPOOL,
-                                                        IDirect3DIndexBuffer9**, HANDLE*);
-
-static CreateTexture_t oCreateTexture = nullptr;
-static CreateVertexBuffer_t oCreateVertexBuffer = nullptr;
-static CreateIndexBuffer_t oCreateIndexBuffer = nullptr;
-
-// Original texture vtable function pointers
-typedef HRESULT(STDMETHODCALLTYPE* TexLockRect_t)(IDirect3DTexture9*, UINT, D3DLOCKED_RECT*, const RECT*, DWORD);
-typedef HRESULT(STDMETHODCALLTYPE* TexUnlockRect_t)(IDirect3DTexture9*, UINT);
-typedef ULONG(STDMETHODCALLTYPE* TexRelease_t)(IDirect3DTexture9*);
-
-static TexLockRect_t oTexLockRect = nullptr;
-static TexUnlockRect_t oTexUnlockRect = nullptr;
-static TexRelease_t oTexRelease = nullptr;
-static bool g_texHooksInstalled = false;
-
-// GetSurfaceLevel hook: return staging surface so surface-based LockRect works
-typedef HRESULT(STDMETHODCALLTYPE* TexGetSurfaceLevel_t)(IDirect3DTexture9*, UINT, IDirect3DSurface9**);
-static TexGetSurfaceLevel_t oTexGetSurfaceLevel = nullptr;
-
-// Surface UnlockRect hook: after unlocking staging surface, upload to DEFAULT
-typedef HRESULT(STDMETHODCALLTYPE* SurfUnlockRect_t)(IDirect3DSurface9*);
-static SurfUnlockRect_t oSurfUnlockRect = nullptr;
-static bool g_surfHooksInstalled = false;
-
-// GetLevelDesc hook: report D3DPOOL_MANAGED for remapped textures so D3DX uses Lock path
-typedef HRESULT(STDMETHODCALLTYPE* TexGetLevelDesc_t)(IDirect3DTexture9*, UINT, D3DSURFACE_DESC*);
-static TexGetLevelDesc_t oTexGetLevelDesc = nullptr;
-
-// Original VB vtable function pointers
-typedef HRESULT(STDMETHODCALLTYPE* VBLock_t)(IDirect3DVertexBuffer9*, UINT, UINT, void**, DWORD);
-typedef HRESULT(STDMETHODCALLTYPE* VBUnlock_t)(IDirect3DVertexBuffer9*);
-typedef ULONG(STDMETHODCALLTYPE* VBRelease_t)(IDirect3DVertexBuffer9*);
-
-static VBLock_t oVBLock = nullptr;
-static VBUnlock_t oVBUnlock = nullptr;
-static VBRelease_t oVBRelease = nullptr;
-static bool g_vbHooksInstalled = false;
-
-// Original IB vtable function pointers
-typedef HRESULT(STDMETHODCALLTYPE* IBLock_t)(IDirect3DIndexBuffer9*, UINT, UINT, void**, DWORD);
-typedef HRESULT(STDMETHODCALLTYPE* IBUnlock_t)(IDirect3DIndexBuffer9*);
-typedef ULONG(STDMETHODCALLTYPE* IBRelease_t)(IDirect3DIndexBuffer9*);
-
-static IBLock_t oIBLock = nullptr;
-static IBUnlock_t oIBUnlock = nullptr;
-static IBRelease_t oIBRelease = nullptr;
-static bool g_ibHooksInstalled = false;
-
-// Diagnostic: SetTexture hook to detect staging textures leaking into rendering
-typedef HRESULT(STDMETHODCALLTYPE* SetTexture_t)(IDirect3DDevice9*, DWORD, IDirect3DBaseTexture9*);
-static SetTexture_t oSetTexture = nullptr;
-static bool g_setTexHookInstalled = false;
-static std::atomic<int> g_stagingLeakCount{0};
-
-static bool ShouldCopyManagedBufferData(const char* resourceType, const void* resource, UINT size, HRESULT hrSrc,
-                                        HRESULT hrDst, const void* srcData, const void* dstData) {
-    if (FAILED(hrSrc) || FAILED(hrDst) || (size > 0 && (!srcData || !dstData))) {
-        HookLogImportant("DX9: MPF: %s sync skipped for %p size=%u hrSrc=0x%08X hrDst=0x%08X src=%p dst=%p",
-                         resourceType, resource, size, (unsigned)hrSrc, (unsigned)hrDst, srcData, dstData);
-        return false;
-    }
-    return size > 0;
-}
-
-static HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device, DWORD Stage,
-                                                  IDirect3DBaseTexture9* pTexture) {
-    if (pTexture && !kUseDynamicPool) {
-        IDirect3DTexture9* tex2d = nullptr;
-        if (SUCCEEDED(pTexture->QueryInterface(__uuidof(IDirect3DTexture9), (void**)&tex2d)) && tex2d) {
-            // Flush deferred upload if this texture is dirty
-            if (g_texDirty.count(tex2d)) {
-                auto it = g_texStaging.find(tex2d);
-                if (it != g_texStaging.end()) {
-                    bool isAutoGen = g_texAutoGenMip.count(tex2d) > 0;
-                    HRESULT hrUpd;
-                    if (isAutoGen) {
-                        IDirect3DSurface9* srcSurf = nullptr;
-                        IDirect3DSurface9* dstSurf = nullptr;
-                        it->second->GetSurfaceLevel(0, &srcSurf);
-                        oTexGetSurfaceLevel(tex2d, 0, &dstSurf);
-                        hrUpd = device->UpdateSurface(srcSurf, nullptr, dstSurf, nullptr);
-                        if (srcSurf)
-                            srcSurf->Release();
-                        if (dstSurf)
-                            dstSurf->Release();
-                    } else {
-                        hrUpd = device->UpdateTexture(it->second, tex2d);
-                    }
-                    int total = g_deferredFlushCount.fetch_add(1, std::memory_order_relaxed) + 1;
-                    g_updateTexCalls.fetch_add(1, std::memory_order_relaxed);
-                    if (FAILED(hrUpd))
-                        g_updateTexFails.fetch_add(1, std::memory_order_relaxed);
-                    if (total <= 5 || total % 1000 == 0)
-                        HookLogImportant("DX9: MPF: Deferred flush #%d tex=%p hr=0x%08X autoGen=%d", total, tex2d,
-                                         (unsigned)hrUpd, isAutoGen);
-                    g_texUploaded.insert(tex2d);
-                }
-                g_texDirty.erase(tex2d);
-            }
-            // Check if this is a STAGING texture that leaked into the rendering pipeline
-            if (g_texDefault.find(tex2d) != g_texDefault.end()) {
-                int count = g_stagingLeakCount.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (count <= 20) {
-                    D3DSURFACE_DESC desc = {};
-                    tex2d->GetLevelDesc(0, &desc);
-                    HookLogImportant(
-                        "DX9: MPF DIAG: STAGING TEXTURE LEAKED to SetTexture! stage=%u tex=%p %ux%u fmt=%d pool=%d",
-                        Stage, tex2d, desc.Width, desc.Height, (int)desc.Format, (int)desc.Pool);
-                }
-            }
-            tex2d->Release();
-        }
-    }
-    return oSetTexture(device, Stage, pTexture);
-}
-
-// Forward declaration for surface hook (used before definition)
-static HRESULT STDMETHODCALLTYPE DetourSurfUnlockRect(IDirect3DSurface9* pSurf);
-
-// UpdateTexture hook: when the game calls UpdateTexture with one of our
-// remapped DEFAULT textures as source, redirect to the SYSTEMMEM staging
-// copy. UpdateTexture requires the source to be SYSTEMMEM, not DEFAULT.
-typedef HRESULT(STDMETHODCALLTYPE* DeviceUpdateTexture_t)(IDirect3DDevice9*, IDirect3DBaseTexture9*,
-                                                          IDirect3DBaseTexture9*);
-static DeviceUpdateTexture_t oDeviceUpdateTexture = nullptr;
-static bool g_updateTexHookInstalled = false;
-static std::atomic<int> g_updateTexRedirects{0};
-
-static HRESULT STDMETHODCALLTYPE DetourDeviceUpdateTexture(IDirect3DDevice9* device, IDirect3DBaseTexture9* pSrcTex,
-                                                           IDirect3DBaseTexture9* pDstTex) {
-    if (pSrcTex) {
-        IDirect3DTexture9* srcTex2d = nullptr;
-        if (SUCCEEDED(pSrcTex->QueryInterface(__uuidof(IDirect3DTexture9), (void**)&srcTex2d)) && srcTex2d) {
-            auto it = g_texStaging.find(srcTex2d);
-            if (it != g_texStaging.end()) {
-                // Source is one of our remapped DEFAULT textures. Redirect to
-                // the SYSTEMMEM staging copy so UpdateTexture succeeds.
-                int n = g_updateTexRedirects.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (n <= 10)
-                    HookLogImportant("DX9: MPF: UpdateTexture redirect #%d src=%p→staging=%p dst=%p", n, srcTex2d,
-                                     it->second, pDstTex);
-                srcTex2d->Release();
-                return oDeviceUpdateTexture(device, static_cast<IDirect3DBaseTexture9*>(it->second), pDstTex);
-            }
-            srcTex2d->Release();
-        }
-    }
-    return oDeviceUpdateTexture(device, pSrcTex, pDstTex);
-}
-
-// --- Texture hooks ---
-
-static HRESULT STDMETHODCALLTYPE DetourTexLockRect(IDirect3DTexture9* pTex, UINT Level, D3DLOCKED_RECT* pRect,
-                                                   const RECT* pDirtyRect, DWORD Flags) {
-    auto it = g_texStaging.find(pTex);
-    if (it != g_texStaging.end()) {
-        // Use direct COM call on staging (SYSTEMMEM) texture - its vtable is unhooked
-        HRESULT hr = it->second->LockRect(Level, pRect, pDirtyRect, Flags);
-        int count = g_texDirectLockCount.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (count <= 5 || count % 500 == 0)
-            HookLogImportant("DX9: MPF: TexLockRect #%d pTex=%p level=%u flags=0x%x hr=0x%08X", count, pTex, Level,
-                             Flags, (unsigned)hr);
-        return hr;
-    }
-    return oTexLockRect(pTex, Level, pRect, pDirtyRect, Flags);
-}
-
-static HRESULT STDMETHODCALLTYPE DetourTexUnlockRect(IDirect3DTexture9* pTex, UINT Level) {
-    auto it = g_texStaging.find(pTex);
-    if (it != g_texStaging.end()) {
-        // Use direct COM call on staging texture
-        HRESULT hr = it->second->UnlockRect(Level);
-        if (SUCCEEDED(hr)) {
-            // Deferred upload: mark dirty, flush happens in SetTexture before rendering.
-            // This avoids redundant uploads for textures locked/unlocked multiple times.
-            g_texDirty.insert(pTex);
-            g_texUnlockUploadCount.fetch_add(1, std::memory_order_relaxed);
-        }
-        return hr;
-    }
-    return oTexUnlockRect(pTex, Level);
-}
-
-static ULONG STDMETHODCALLTYPE DetourTexRelease(IDirect3DTexture9* pTex) {
-    // Check refcount BEFORE calling Release
-    pTex->AddRef();
-    ULONG preRelease = oTexRelease(pTex);  // Undo our AddRef
-    if (preRelease == 1) {
-        if (kUseDynamicPool) {
-            g_dynamicRemapped.erase(pTex);
-        } else {
-            // Last reference - clean up staging before destruction
-            auto it = g_texStaging.find(pTex);
-            if (it != g_texStaging.end()) {
-                g_texDefault.erase(it->second);  // Remove reverse mapping
-                oTexRelease(it->second);         // Release staging
-                g_texStaging.erase(it);
-            }
-            g_texDirty.erase(pTex);
-        }
-        g_texAutoGenMip.erase(pTex);
-    }
-    return oTexRelease(pTex);  // The real Release
-}
-
-// GetSurfaceLevel hook: return staging surface so the game can LockRect on it
-static HRESULT STDMETHODCALLTYPE DetourTexGetSurfaceLevel(IDirect3DTexture9* pTex, UINT Level,
-                                                          IDirect3DSurface9** ppSurface) {
-    auto it = g_texStaging.find(pTex);
-    if (it != g_texStaging.end()) {
-        // Return staging surface (SYSTEMMEM) - it's lockable at any level
-        // Use direct COM call on staging texture (its vtable is unhooked)
-        HRESULT hr = it->second->GetSurfaceLevel(Level, ppSurface);
-        if (SUCCEEDED(hr) && !g_surfHooksInstalled) {
-            // Install surface UnlockRect inline hook on first staging surface obtained
-            uintptr_t* surfVtable = *(uintptr_t**)*ppSurface;
-            void* tramp = nullptr;
-            if (InlineHook::Install((void*)surfVtable[14], (void*)&DetourSurfUnlockRect, &tramp)) {
-                oSurfUnlockRect = (SurfUnlockRect_t)tramp;
-                g_surfHooksInstalled = true;
-                HookLogImportant("DX9: Managed pool fix: surface UnlockRect INLINE hook installed");
-            }
-        }
-        return hr;
-    }
-    return oTexGetSurfaceLevel(pTex, Level, ppSurface);
-}
-
-// Surface UnlockRect: after unlocking a staging surface, upload to DEFAULT texture
-static HRESULT STDMETHODCALLTYPE DetourSurfUnlockRect(IDirect3DSurface9* pSurf) {
-    HRESULT hr = oSurfUnlockRect(pSurf);
-    if (SUCCEEDED(hr)) {
-        // Find parent staging texture via GetContainer
-        IDirect3DTexture9* stagingTex = nullptr;
-        if (SUCCEEDED(pSurf->GetContainer(__uuidof(IDirect3DTexture9), (void**)&stagingTex)) && stagingTex) {
-            auto it = g_texDefault.find(stagingTex);
-            if (it != g_texDefault.end()) {
-                IDirect3DTexture9* defaultTex = it->second;
-                // Deferred upload: mark dirty, flush happens in SetTexture
-                g_texDirty.insert(defaultTex);
-                g_surfUnlockUploadCount.fetch_add(1, std::memory_order_relaxed);
-            }
-            stagingTex->Release();  // Release the GetContainer AddRef
-        }
-    }
-    return hr;
-}
-
-// GetLevelDesc hook: report D3DPOOL_MANAGED for remapped textures so D3DX and
-// game code use Lock path instead of creating temp SYSTEMMEM textures
-static HRESULT STDMETHODCALLTYPE DetourTexGetLevelDesc(IDirect3DTexture9* pTex, UINT Level, D3DSURFACE_DESC* pDesc) {
-    HRESULT hr = oTexGetLevelDesc(pTex, Level, pDesc);
-    if (SUCCEEDED(hr) && pDesc && pDesc->Pool == D3DPOOL_DEFAULT) {
-        bool isRemapped = kUseDynamicPool ? (g_dynamicRemapped.count(pTex) > 0) : (g_texStaging.count(pTex) > 0);
-        if (isRemapped) {
-            pDesc->Pool = D3DPOOL_MANAGED;
-            if (kUseDynamicPool)
-                pDesc->Usage &= ~D3DUSAGE_DYNAMIC;  // MANAGED doesn't have DYNAMIC
-        }
-    }
-    return hr;
-}
-
-static void InstallTextureHooks(IDirect3DTexture9* pTex) {
-    if (g_texHooksInstalled)
-        return;
-    uintptr_t* vtable = *(uintptr_t**)pTex;
-    void* tramp = nullptr;
-    bool ok = true;
-
-    if (InlineHook::Install((void*)vtable[19], (void*)&DetourTexLockRect, &tramp)) {
-        oTexLockRect = (TexLockRect_t)tramp;
-    } else {
-        ok = false;
-    }
-
-    if (ok && InlineHook::Install((void*)vtable[20], (void*)&DetourTexUnlockRect, &tramp)) {
-        oTexUnlockRect = (TexUnlockRect_t)tramp;
-    } else if (ok) {
-        ok = false;
-    }
-
-    if (ok && InlineHook::Install((void*)vtable[18], (void*)&DetourTexGetSurfaceLevel, &tramp)) {
-        oTexGetSurfaceLevel = (TexGetSurfaceLevel_t)tramp;
-    } else if (ok) {
-        ok = false;
-    }
-
-    if (ok && InlineHook::Install((void*)vtable[17], (void*)&DetourTexGetLevelDesc, &tramp)) {
-        oTexGetLevelDesc = (TexGetLevelDesc_t)tramp;
-    } else if (ok) {
-        ok = false;
-    }
-
-    if (ok && InlineHook::Install((void*)vtable[2], (void*)&DetourTexRelease, &tramp)) {
-        oTexRelease = (TexRelease_t)tramp;
-    } else if (ok) {
-        ok = false;
-    }
-
-    if (ok) {
-        g_texHooksInstalled = true;
-        HookLogImportant("DX9: Managed pool fix: texture INLINE hooks installed (incl GetLevelDesc)");
-    } else {
-        HookLogImportant("DX9: MPF: texture inline hooks FAILED");
-    }
-}
-
-// DYNAMIC mode: only install GetLevelDesc + Release hooks (no Lock/Unlock/GetSurfaceLevel)
-static void InstallDynamicTextureHooks(IDirect3DTexture9* pTex) {
-    if (g_texHooksInstalled)
-        return;
-    uintptr_t* vtable = *(uintptr_t**)pTex;
-    void* tramp = nullptr;
-    bool ok = true;
-
-    if (InlineHook::Install((void*)vtable[17], (void*)&DetourTexGetLevelDesc, &tramp)) {
-        oTexGetLevelDesc = (TexGetLevelDesc_t)tramp;
-    } else {
-        ok = false;
-    }
-
-    if (ok && InlineHook::Install((void*)vtable[2], (void*)&DetourTexRelease, &tramp)) {
-        oTexRelease = (TexRelease_t)tramp;
-    } else if (ok) {
-        ok = false;
-    }
-
-    if (ok) {
-        g_texHooksInstalled = true;
-        HookLogImportant("DX9: MPF: DYNAMIC texture hooks installed (GetLevelDesc + Release only)");
-    } else {
-        HookLogImportant("DX9: MPF: DYNAMIC texture hooks FAILED");
-    }
-}
-
-// --- Vertex Buffer hooks ---
-static std::atomic<int> g_vbOpsLogged{0};
-
-static HRESULT STDMETHODCALLTYPE DetourVBLock(IDirect3DVertexBuffer9* pVB, UINT Offset, UINT Size, void** ppData,
-                                              DWORD Flags) {
-    auto it = g_vbStaging.find(pVB);
-    if (it != g_vbStaging.end()) {
-        // Use direct COM call on staging (SYSTEMMEM) VB - its vtable is unhooked and correct
-        HRESULT hr = it->second->Lock(Offset, Size, ppData, Flags);
-        int n = g_vbOpsLogged.fetch_add(1, std::memory_order_relaxed);
-        if (n < 10)
-            HookLogImportant("DX9: MPF: VBLock pVB=%p off=%u size=%u flags=0x%x hr=0x%08X ppData=%p", pVB, Offset, Size,
-                             Flags, (unsigned)hr, ppData ? *ppData : nullptr);
-        return hr;
-    }
-    // VB and IB may share the same Lock function in d3d9.dll; check IB staging too
-    auto itIB = g_ibStaging.find(reinterpret_cast<IDirect3DIndexBuffer9*>(pVB));
-    if (itIB != g_ibStaging.end()) {
-        return itIB->second->Lock(Offset, Size, ppData, Flags);
-    }
-    return oVBLock(pVB, Offset, Size, ppData, Flags);
-}
-
-static HRESULT STDMETHODCALLTYPE DetourVBUnlock(IDirect3DVertexBuffer9* pVB) {
-    auto it = g_vbStaging.find(pVB);
-    if (it != g_vbStaging.end()) {
-        // Use direct COM call on staging (SYSTEMMEM) VB
-        HRESULT hr = it->second->Unlock();
-        if (SUCCEEDED(hr)) {
-            D3DVERTEXBUFFER_DESC desc;
-            pVB->GetDesc(&desc);
-            void* srcData = nullptr;
-            void* dstData = nullptr;
-            // Lock staging via direct COM, lock DEFAULT via original vtable
-            HRESULT hrSrc = it->second->Lock(0, desc.Size, &srcData, D3DLOCK_READONLY);
-            HRESULT hrDst = oVBLock(pVB, 0, desc.Size, &dstData, D3DLOCK_DISCARD);
-            if (ShouldCopyManagedBufferData("VB", pVB, desc.Size, hrSrc, hrDst, srcData, dstData)) {
-                std::memcpy(dstData, srcData, desc.Size);
-            }
-            int n = g_vbOpsLogged.fetch_add(1, std::memory_order_relaxed);
-            if (n < 10)
-                HookLogImportant("DX9: MPF: VBUnlock pVB=%p size=%u hrSrc=0x%08X hrDst=0x%08X", pVB, desc.Size,
-                                 (unsigned)hrSrc, (unsigned)hrDst);
-            if (SUCCEEDED(hrDst))
-                oVBUnlock(pVB);
-            if (SUCCEEDED(hrSrc))
-                it->second->Unlock();
-        }
-        return hr;
-    }
-    // VB and IB may share the same Unlock function in d3d9.dll; check IB staging too
-    auto itIB = g_ibStaging.find(reinterpret_cast<IDirect3DIndexBuffer9*>(pVB));
-    if (itIB != g_ibStaging.end()) {
-        IDirect3DIndexBuffer9* pIB = reinterpret_cast<IDirect3DIndexBuffer9*>(pVB);
-        HRESULT hr = itIB->second->Unlock();
-        if (SUCCEEDED(hr)) {
-            D3DINDEXBUFFER_DESC desc;
-            pIB->GetDesc(&desc);
-            void* srcData = nullptr;
-            void* dstData = nullptr;
-            HRESULT hrSrc = itIB->second->Lock(0, desc.Size, &srcData, D3DLOCK_READONLY);
-            HRESULT hrDst = oVBLock(pVB, 0, desc.Size, &dstData, D3DLOCK_DISCARD);
-            if (ShouldCopyManagedBufferData("IB(VB unlock path)", pIB, desc.Size, hrSrc, hrDst, srcData, dstData)) {
-                std::memcpy(dstData, srcData, desc.Size);
-            }
-            if (SUCCEEDED(hrDst))
-                oVBUnlock(pVB);
-            if (SUCCEEDED(hrSrc))
-                itIB->second->Unlock();
-        }
-        return hr;
-    }
-    return oVBUnlock(pVB);
-}
-
-static ULONG STDMETHODCALLTYPE DetourVBRelease(IDirect3DVertexBuffer9* pVB) {
-    pVB->AddRef();
-    ULONG preRelease = oVBRelease(pVB);
-    if (preRelease == 1) {
-        auto it = g_vbStaging.find(pVB);
-        if (it != g_vbStaging.end()) {
-            oVBRelease(it->second);
-            g_vbStaging.erase(it);
-        }
-        // VB and IB may share the same Release function in d3d9.dll
-        auto itIB = g_ibStaging.find(reinterpret_cast<IDirect3DIndexBuffer9*>(pVB));
-        if (itIB != g_ibStaging.end()) {
-            itIB->second->Release();
-            g_ibStaging.erase(itIB);
-        }
-    }
-    return oVBRelease(pVB);
-}
-
-static void InstallVBHooks(IDirect3DVertexBuffer9* pVB) {
-    if (g_vbHooksInstalled)
-        return;
-    uintptr_t* vtable = *(uintptr_t**)pVB;
-    void* tramp = nullptr;
-    bool ok = true;
-
-    if (InlineHook::Install((void*)vtable[11], (void*)&DetourVBLock, &tramp)) {
-        oVBLock = (VBLock_t)tramp;
-    } else {
-        ok = false;
-    }
-
-    if (ok && InlineHook::Install((void*)vtable[12], (void*)&DetourVBUnlock, &tramp)) {
-        oVBUnlock = (VBUnlock_t)tramp;
-    } else if (ok) {
-        ok = false;
-    }
-
-    if (ok && InlineHook::Install((void*)vtable[2], (void*)&DetourVBRelease, &tramp)) {
-        oVBRelease = (VBRelease_t)tramp;
-    } else if (ok) {
-        ok = false;
-    }
-
-    if (ok) {
-        g_vbHooksInstalled = true;
-        HookLogImportant("DX9: Managed pool fix: VB INLINE hooks installed");
-    } else {
-        HookLogImportant("DX9: MPF: VB inline hooks FAILED");
-    }
-}
-
-// --- Index Buffer hooks ---
-static HRESULT STDMETHODCALLTYPE DetourIBLock(IDirect3DIndexBuffer9* pIB, UINT Offset, UINT Size, void** ppData,
-                                              DWORD Flags) {
-    auto it = g_ibStaging.find(pIB);
-    if (it != g_ibStaging.end()) {
-        // Use direct COM call on staging (SYSTEMMEM) IB
-        return it->second->Lock(Offset, Size, ppData, Flags);
-    }
-    return oIBLock(pIB, Offset, Size, ppData, Flags);
-}
-
-static HRESULT STDMETHODCALLTYPE DetourIBUnlock(IDirect3DIndexBuffer9* pIB) {
-    auto it = g_ibStaging.find(pIB);
-    if (it != g_ibStaging.end()) {
-        // Use direct COM call on staging (SYSTEMMEM) IB
-        HRESULT hr = it->second->Unlock();
-        if (SUCCEEDED(hr)) {
-            D3DINDEXBUFFER_DESC desc;
-            pIB->GetDesc(&desc);
-            void* srcData = nullptr;
-            void* dstData = nullptr;
-            HRESULT hrSrc = it->second->Lock(0, desc.Size, &srcData, D3DLOCK_READONLY);
-            HRESULT hrDst = oIBLock(pIB, 0, desc.Size, &dstData, D3DLOCK_DISCARD);
-            if (ShouldCopyManagedBufferData("IB", pIB, desc.Size, hrSrc, hrDst, srcData, dstData)) {
-                std::memcpy(dstData, srcData, desc.Size);
-            }
-            if (SUCCEEDED(hrDst))
-                oIBUnlock(pIB);
-            if (SUCCEEDED(hrSrc))
-                it->second->Unlock();
-        }
-        return hr;
-    }
-    return oIBUnlock(pIB);
-}
-
-static ULONG STDMETHODCALLTYPE DetourIBRelease(IDirect3DIndexBuffer9* pIB) {
-    pIB->AddRef();
-    ULONG preRelease = oIBRelease(pIB);
-    if (preRelease == 1) {
-        auto it = g_ibStaging.find(pIB);
-        if (it != g_ibStaging.end()) {
-            oIBRelease(it->second);
-            g_ibStaging.erase(it);
-        }
-    }
-    return oIBRelease(pIB);
-}
-
-static void InstallIBHooks(IDirect3DIndexBuffer9* pIB) {
-    if (g_ibHooksInstalled)
-        return;
-
-    uintptr_t* vtable = *(uintptr_t**)pIB;
-    void* tramp = nullptr;
-
-    // IB Lock/Unlock may be separate functions from VB, but Release is often shared.
-    // Install each independently; if "already hooked", the VB detour covers it.
-
-    if (!oIBLock) {
-        if (InlineHook::Install((void*)vtable[11], (void*)&DetourIBLock, &tramp)) {
-            oIBLock = (IBLock_t)tramp;
-        }
-        // If failed: VB Lock already hooked this address, VB detour checks g_ibStaging
-    }
-
-    if (!oIBUnlock) {
-        if (InlineHook::Install((void*)vtable[12], (void*)&DetourIBUnlock, &tramp)) {
-            oIBUnlock = (IBUnlock_t)tramp;
-        }
-        // If failed: VB Unlock already hooked, VB detour checks g_ibStaging
-    }
-
-    if (!oIBRelease) {
-        if (InlineHook::Install((void*)vtable[2], (void*)&DetourIBRelease, &tramp)) {
-            oIBRelease = (IBRelease_t)tramp;
-        }
-        // If failed: VB Release already hooked, VB detour checks g_ibStaging
-    }
-
-    g_ibHooksInstalled = true;
-    HookLogImportant("DX9: Managed pool fix: IB hooks ready (Lock=%p Unlock=%p Release=%p, shared covered by VB)",
-                     (void*)oIBLock, (void*)oIBUnlock, (void*)oIBRelease);
-}
-
-// --- Device CreateTexture/VB/IB hooks ---
-static HRESULT STDMETHODCALLTYPE DetourD3D9CreateTexture(IDirect3DDevice9* device, UINT Width, UINT Height, UINT Levels,
-                                                         DWORD Usage, D3DFORMAT Format, D3DPOOL Pool,
-                                                         IDirect3DTexture9** ppTexture, HANDLE* pSharedHandle) {
-    if (Pool == D3DPOOL_MANAGED) {
-        // DIAGNOSTIC: SYSTEMMEM-only mode bypasses our staging infrastructure
-        if (kSysmemDiagMode) {
-            DWORD sysmemUsage = Usage & ~D3DUSAGE_AUTOGENMIPMAP;
-            HRESULT hr = oCreateTexture(device, Width, Height, Levels, sysmemUsage, Format, D3DPOOL_SYSTEMMEM,
-                                        ppTexture, nullptr);
-            if (SUCCEEDED(hr)) {
-                int count = g_texCreated.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (count <= 5 || count % 500 == 0)
-                    HookLogImportant("DX9: MPF SYSMEM DIAG: Tex #%d %ux%u fmt=%d → SYSTEMMEM", count, Width, Height,
-                                     (int)Format);
-                return hr;
-            }
-            HookLogImportant("DX9: MPF SYSMEM DIAG: CreateTex SYSTEMMEM FAILED hr=0x%08X", (unsigned)hr);
-            return hr;
-        }
-
-        if (kUseDynamicPool) {
-            // DYNAMIC approach: DEFAULT + DYNAMIC is directly lockable, no staging needed.
-            // This is the industry-standard approach used by dxwrapper.
-            DWORD dynUsage = Usage | D3DUSAGE_DYNAMIC;
-            HRESULT hr = oCreateTexture(device, Width, Height, Levels, dynUsage, Format, D3DPOOL_DEFAULT, ppTexture,
-                                        pSharedHandle);
-            if (SUCCEEDED(hr)) {
-                g_dynamicRemapped.insert(*ppTexture);
-                if (!g_texHooksInstalled)
-                    InstallDynamicTextureHooks(*ppTexture);
-
-                int count = g_texCreated.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (count <= 20 || count % 100 == 0) {
-                    HookLogImportant("DX9: MPF: Tex #%d DYNAMIC %ux%u fmt=%d usage=0x%x levels=%u", count, Width,
-                                     Height, (int)Format, dynUsage, Levels);
-                }
-                return S_OK;
-            }
-            // Fallback: SYSTEMMEM (slower but compatible)
-            HookLogImportant(
-                "DX9: MPF: CreateTex DEFAULT+DYNAMIC FAILED %ux%u fmt=%d usage=0x%x hr=0x%08X, "
-                "fallback SYSMEM",
-                Width, Height, (int)Format, dynUsage, (unsigned)hr);
-            DWORD sysmemUsage = Usage & ~D3DUSAGE_AUTOGENMIPMAP;
-            hr = oCreateTexture(device, Width, Height, Levels, sysmemUsage, Format, D3DPOOL_SYSTEMMEM, ppTexture,
-                                pSharedHandle);
-            if (SUCCEEDED(hr))
-                g_texCreated.fetch_add(1, std::memory_order_relaxed);
-            return hr;
-        }
-
-        // Legacy staging approach: DEFAULT + SYSTEMMEM staging pair
-        // Strip AUTOGENMIPMAP from staging (SYSTEMMEM doesn't support it)
-        DWORD stagingUsage = Usage & ~D3DUSAGE_AUTOGENMIPMAP;
-        bool hasAutoGenMip = (Usage & D3DUSAGE_AUTOGENMIPMAP) != 0;
-        // For AUTOGENMIPMAP textures, staging only needs level 0 — the GPU
-        // auto-generates the mip chain on the DEFAULT texture. Using Levels=1
-        // for staging prevents UpdateTexture from overwriting auto-generated
-        // mipmaps with uninitialized staging data.
-        UINT stagingLevels = hasAutoGenMip ? 1 : Levels;
-
-        // Create DEFAULT resource for GPU rendering
-        HRESULT hr =
-            oCreateTexture(device, Width, Height, Levels, Usage, Format, D3DPOOL_DEFAULT, ppTexture, pSharedHandle);
-        if (SUCCEEDED(hr)) {
-            // Create SYSTEMMEM staging for Lock support
-            IDirect3DTexture9* staging = nullptr;
-            hr = oCreateTexture(device, Width, Height, stagingLevels, stagingUsage, Format, D3DPOOL_SYSTEMMEM, &staging,
-                                nullptr);
-            if (SUCCEEDED(hr)) {
-                g_texStaging[*ppTexture] = staging;
-                g_texDefault[staging] = *ppTexture;  // Reverse mapping for surface unlock
-                if (hasAutoGenMip)
-                    g_texAutoGenMip.insert(*ppTexture);
-                if (!g_texHooksInstalled)
-                    InstallTextureHooks(*ppTexture);
-
-                int count = g_texCreated.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (count <= 20 || count % 100 == 0) {
-                    HookLogImportant(
-                        "DX9: ManagedPoolFix: Tex #%d remapped %ux%u fmt=%d usage=0x%x levels=%u autoGenMip=%d", count,
-                        Width, Height, (int)Format, Usage, Levels, hasAutoGenMip);
-                }
-                return S_OK;
-            }
-            (*ppTexture)->Release();
-            *ppTexture = nullptr;
-        }
-        // Fallback: SYSTEMMEM only (slower but compatible). Lock/Unlock work natively.
-        HookLogImportant(
-            "DX9: ManagedPoolFix: CreateTex DEFAULT FAILED %ux%u fmt=%d usage=0x%x hr=0x%08X, "
-            "fallback SYSMEM",
-            Width, Height, (int)Format, Usage, (unsigned)hr);
-        hr = oCreateTexture(device, Width, Height, Levels, stagingUsage, Format, D3DPOOL_SYSTEMMEM, ppTexture,
-                            pSharedHandle);
-        if (SUCCEEDED(hr))
-            g_texCreated.fetch_add(1, std::memory_order_relaxed);
-        return hr;
-    }
-    return oCreateTexture(device, Width, Height, Levels, Usage, Format, Pool, ppTexture, pSharedHandle);
-}
-
-static HRESULT STDMETHODCALLTYPE DetourD3D9CreateVertexBuffer(IDirect3DDevice9* device, UINT Length, DWORD Usage,
-                                                              DWORD FVF, D3DPOOL Pool, IDirect3DVertexBuffer9** ppVB,
-                                                              HANDLE* pSharedHandle) {
-    if (Pool == D3DPOOL_MANAGED) {
-        // DIAGNOSTIC: SYSTEMMEM-only mode
-        if (kSysmemDiagMode) {
-            HRESULT hr = oCreateVertexBuffer(device, Length, Usage, FVF, D3DPOOL_SYSTEMMEM, ppVB, nullptr);
-            if (SUCCEEDED(hr))
-                g_vbCreated.fetch_add(1, std::memory_order_relaxed);
-            return hr;
-        }
-        // Create DEFAULT + DYNAMIC (directly lockable, no staging needed)
-        HRESULT hr =
-            oCreateVertexBuffer(device, Length, Usage | D3DUSAGE_DYNAMIC, FVF, D3DPOOL_DEFAULT, ppVB, pSharedHandle);
-        if (SUCCEEDED(hr)) {
-            if (!kUseDynamicPool) {
-                // Legacy staging approach
-                IDirect3DVertexBuffer9* staging = nullptr;
-                hr = oCreateVertexBuffer(device, Length, 0, FVF, D3DPOOL_SYSTEMMEM, &staging, nullptr);
-                if (SUCCEEDED(hr)) {
-                    g_vbStaging[*ppVB] = staging;
-                    if (!g_vbHooksInstalled)
-                        InstallVBHooks(*ppVB);
-                }
-            }
-            g_vbCreated.fetch_add(1, std::memory_order_relaxed);
-            return S_OK;
-        }
-        // Fallback: SYSTEMMEM (slower rendering but compatible with all usage flags)
-        HookLogImportant(
-            "DX9: ManagedPoolFix: CreateVB DEFAULT+DYN FAILED len=%u usage=0x%x fvf=0x%x hr=0x%08X, "
-            "fallback SYSMEM",
-            Length, Usage, FVF, (unsigned)hr);
-        hr = oCreateVertexBuffer(device, Length, Usage, FVF, D3DPOOL_SYSTEMMEM, ppVB, pSharedHandle);
-        if (SUCCEEDED(hr))
-            g_vbCreated.fetch_add(1, std::memory_order_relaxed);
-        return hr;
-    }
-    HRESULT hr = oCreateVertexBuffer(device, Length, Usage, FVF, Pool, ppVB, pSharedHandle);
-    if (FAILED(hr)) {
-        HookLogImportant(
-            "DX9: ManagedPoolFix: CreateVB passthrough FAILED len=%u usage=0x%x fvf=0x%x pool=%d "
-            "hr=0x%08X",
-            Length, Usage, FVF, (int)Pool, (unsigned)hr);
-    }
-    return hr;
-}
-
-static HRESULT STDMETHODCALLTYPE DetourD3D9CreateIndexBuffer(IDirect3DDevice9* device, UINT Length, DWORD Usage,
-                                                             D3DFORMAT Format, D3DPOOL Pool,
-                                                             IDirect3DIndexBuffer9** ppIB, HANDLE* pSharedHandle) {
-    if (Pool == D3DPOOL_MANAGED) {
-        // DIAGNOSTIC: SYSTEMMEM-only mode
-        if (kSysmemDiagMode) {
-            HRESULT hr = oCreateIndexBuffer(device, Length, Usage, Format, D3DPOOL_SYSTEMMEM, ppIB, nullptr);
-            if (SUCCEEDED(hr))
-                g_ibCreated.fetch_add(1, std::memory_order_relaxed);
-            return hr;
-        }
-        HRESULT hr =
-            oCreateIndexBuffer(device, Length, Usage | D3DUSAGE_DYNAMIC, Format, D3DPOOL_DEFAULT, ppIB, pSharedHandle);
-        if (SUCCEEDED(hr)) {
-            if (!kUseDynamicPool) {
-                // Legacy staging approach
-                IDirect3DIndexBuffer9* staging = nullptr;
-                hr = oCreateIndexBuffer(device, Length, 0, Format, D3DPOOL_SYSTEMMEM, &staging, nullptr);
-                if (SUCCEEDED(hr)) {
-                    g_ibStaging[*ppIB] = staging;
-                    if (!g_ibHooksInstalled)
-                        InstallIBHooks(*ppIB);
-                }
-            }
-            g_ibCreated.fetch_add(1, std::memory_order_relaxed);
-            return S_OK;
-        }
-        // Fallback: SYSTEMMEM (slower rendering but compatible with all usage flags)
-        HookLogImportant(
-            "DX9: ManagedPoolFix: CreateIB DEFAULT+DYN FAILED len=%u usage=0x%x hr=0x%08X, "
-            "fallback SYSMEM",
-            Length, Usage, (unsigned)hr);
-        hr = oCreateIndexBuffer(device, Length, Usage, Format, D3DPOOL_SYSTEMMEM, ppIB, pSharedHandle);
-        if (SUCCEEDED(hr))
-            g_ibCreated.fetch_add(1, std::memory_order_relaxed);
-        return hr;
-    }
-    HRESULT hr = oCreateIndexBuffer(device, Length, Usage, Format, Pool, ppIB, pSharedHandle);
-    if (FAILED(hr)) {
-        HookLogImportant("DX9: ManagedPoolFix: CreateIB passthrough FAILED len=%u usage=0x%x pool=%d hr=0x%08X", Length,
-                         Usage, (int)Pool, (unsigned)hr);
-    }
-    return hr;
-}
-
-// --- Volume Texture and Cube Texture hooks ---
-// These resources rarely need Lock support, so we just remap MANAGED → DEFAULT.
-// If Lock fails, the game was doing something unusual.
-typedef HRESULT(STDMETHODCALLTYPE* CreateVolumeTexture_t)(IDirect3DDevice9*, UINT, UINT, UINT, UINT, DWORD, D3DFORMAT,
-                                                          D3DPOOL, IDirect3DVolumeTexture9**, HANDLE*);
-typedef HRESULT(STDMETHODCALLTYPE* CreateCubeTexture_t)(IDirect3DDevice9*, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
-                                                        IDirect3DCubeTexture9**, HANDLE*);
-static CreateVolumeTexture_t oCreateVolumeTexture = nullptr;
-static CreateCubeTexture_t oCreateCubeTexture = nullptr;
-static std::atomic<int> g_volTexCreated{0};
-static std::atomic<int> g_cubeTexCreated{0};
-
-static HRESULT STDMETHODCALLTYPE DetourD3D9CreateVolumeTexture(IDirect3DDevice9* device, UINT Width, UINT Height,
-                                                               UINT Depth, UINT Levels, DWORD Usage, D3DFORMAT Format,
-                                                               D3DPOOL Pool, IDirect3DVolumeTexture9** ppVolumeTexture,
-                                                               HANDLE* pSharedHandle) {
-    if (Pool == D3DPOOL_MANAGED) {
-        g_volTexCreated.fetch_add(1, std::memory_order_relaxed);
-        DWORD volUsage = kUseDynamicPool ? (Usage | D3DUSAGE_DYNAMIC) : Usage;
-        HRESULT hr = oCreateVolumeTexture(device, Width, Height, Depth, Levels, volUsage, Format, D3DPOOL_DEFAULT,
-                                          ppVolumeTexture, pSharedHandle);
-        if (SUCCEEDED(hr))
-            return hr;
-        HookLogImportant("DX9: ManagedPoolFix: CreateVolTex DEFAULT FAILED %ux%ux%u hr=0x%08X, fallback SYSMEM", Width,
-                         Height, Depth, (unsigned)hr);
-        return oCreateVolumeTexture(device, Width, Height, Depth, Levels, Usage & ~D3DUSAGE_AUTOGENMIPMAP, Format,
-                                    D3DPOOL_SYSTEMMEM, ppVolumeTexture, pSharedHandle);
-    }
-    return oCreateVolumeTexture(device, Width, Height, Depth, Levels, Usage, Format, Pool, ppVolumeTexture,
-                                pSharedHandle);
-}
-
-static HRESULT STDMETHODCALLTYPE DetourD3D9CreateCubeTexture(IDirect3DDevice9* device, UINT EdgeLength, UINT Levels,
-                                                             DWORD Usage, D3DFORMAT Format, D3DPOOL Pool,
-                                                             IDirect3DCubeTexture9** ppCubeTexture,
-                                                             HANDLE* pSharedHandle) {
-    if (Pool == D3DPOOL_MANAGED) {
-        g_cubeTexCreated.fetch_add(1, std::memory_order_relaxed);
-        DWORD cubeUsage = kUseDynamicPool ? (Usage | D3DUSAGE_DYNAMIC) : Usage;
-        HRESULT hr = oCreateCubeTexture(device, EdgeLength, Levels, cubeUsage, Format, D3DPOOL_DEFAULT, ppCubeTexture,
-                                        pSharedHandle);
-        if (SUCCEEDED(hr))
-            return hr;
-        HookLogImportant("DX9: ManagedPoolFix: CreateCubeTex DEFAULT FAILED edge=%u hr=0x%08X, fallback SYSMEM",
-                         EdgeLength, (unsigned)hr);
-        return oCreateCubeTexture(device, EdgeLength, Levels, Usage & ~D3DUSAGE_AUTOGENMIPMAP, Format,
-                                  D3DPOOL_SYSTEMMEM, ppCubeTexture, pSharedHandle);
-    }
-    return oCreateCubeTexture(device, EdgeLength, Levels, Usage, Format, Pool, ppCubeTexture, pSharedHandle);
-}
-
-// Install device-level hooks for MANAGED pool remapping
-// Uses InlineHook on the actual d3d9.dll function implementations so ALL call
-// paths are intercepted — including D3DX internal calls and cached pointers
-// that bypass COM vtable dispatch.
-static void InstallManagedPoolHooks(IDirect3DDevice9* device) {
-    if (!g_active)
-        return;
-
-    uintptr_t* vtable = *(uintptr_t**)device;
-
-    if (!oCreateTexture) {
-        void* trampoline = nullptr;
-        if (InlineHook::Install((void*)vtable[23], (void*)&DetourD3D9CreateTexture, &trampoline)) {
-            oCreateTexture = (CreateTexture_t)trampoline;
-            HookLogImportant("DX9: Managed pool fix: CreateTexture INLINE hook at %p", (void*)vtable[23]);
-        } else {
-            HookLogImportant("DX9: MPF: CreateTexture inline hook FAILED at %p", (void*)vtable[23]);
-        }
-    }
-    if (!oCreateVertexBuffer) {
-        void* trampoline = nullptr;
-        if (InlineHook::Install((void*)vtable[26], (void*)&DetourD3D9CreateVertexBuffer, &trampoline)) {
-            oCreateVertexBuffer = (CreateVertexBuffer_t)trampoline;
-            HookLogImportant("DX9: Managed pool fix: CreateVertexBuffer INLINE hook at %p", (void*)vtable[26]);
-        } else {
-            HookLogImportant("DX9: MPF: CreateVertexBuffer inline hook FAILED at %p", (void*)vtable[26]);
-        }
-    }
-    if (!oCreateIndexBuffer) {
-        void* trampoline = nullptr;
-        if (InlineHook::Install((void*)vtable[27], (void*)&DetourD3D9CreateIndexBuffer, &trampoline)) {
-            oCreateIndexBuffer = (CreateIndexBuffer_t)trampoline;
-            HookLogImportant("DX9: Managed pool fix: CreateIndexBuffer INLINE hook at %p", (void*)vtable[27]);
-        } else {
-            HookLogImportant("DX9: MPF: CreateIndexBuffer inline hook FAILED at %p", (void*)vtable[27]);
-        }
-    }
-    if (!oCreateVolumeTexture) {
-        void* trampoline = nullptr;
-        if (InlineHook::Install((void*)vtable[24], (void*)&DetourD3D9CreateVolumeTexture, &trampoline)) {
-            oCreateVolumeTexture = (CreateVolumeTexture_t)trampoline;
-            HookLogImportant("DX9: Managed pool fix: CreateVolumeTexture INLINE hook at %p", (void*)vtable[24]);
-        } else {
-            HookLogImportant("DX9: MPF: CreateVolumeTexture inline hook FAILED at %p", (void*)vtable[24]);
-        }
-    }
-    if (!oCreateCubeTexture) {
-        void* trampoline = nullptr;
-        if (InlineHook::Install((void*)vtable[25], (void*)&DetourD3D9CreateCubeTexture, &trampoline)) {
-            oCreateCubeTexture = (CreateCubeTexture_t)trampoline;
-            HookLogImportant("DX9: Managed pool fix: CreateCubeTexture INLINE hook at %p", (void*)vtable[25]);
-        } else {
-            HookLogImportant("DX9: MPF: CreateCubeTexture inline hook FAILED at %p", (void*)vtable[25]);
-        }
-    }
-    // DYNAMIC mode: SetTexture and UpdateTexture hooks are not needed (no staging)
-    if (!kUseDynamicPool) {
-        // Diagnostic: Install SetTexture hook to detect staging texture leaks
-        if (!g_setTexHookInstalled) {
-            void* trampoline = nullptr;
-            if (InlineHook::Install((void*)vtable[65], (void*)&DetourSetTexture, &trampoline)) {
-                oSetTexture = (SetTexture_t)trampoline;
-                g_setTexHookInstalled = true;
-                HookLogImportant("DX9: MPF DIAG: SetTexture inline hook installed at %p", (void*)vtable[65]);
-            }
-        }
-        // Hook UpdateTexture to redirect source from DEFAULT→staging for remapped textures
-        if (!g_updateTexHookInstalled) {
-            void* trampoline = nullptr;
-            if (InlineHook::Install((void*)vtable[31], (void*)&DetourDeviceUpdateTexture, &trampoline)) {
-                oDeviceUpdateTexture = (DeviceUpdateTexture_t)trampoline;
-                g_updateTexHookInstalled = true;
-                HookLogImportant("DX9: MPF: UpdateTexture inline hook installed at %p", (void*)vtable[31]);
-            }
-        }
-    } else {
-        HookLogImportant("DX9: MPF: DYNAMIC mode — skipping SetTexture/UpdateTexture hooks (no staging)");
-    }
-}
-
-// Diagnostic: log textures that haven't been uploaded at first render
-static void LogUploadDiagnostics() {
-    if (g_uploadDiagDone)
-        return;
-    g_uploadDiagDone = true;
-
-    if (kUseDynamicPool) {
-        HookLogImportant("DX9: MPF DYNAMIC: %d textures, %d VBs, %d IBs, %d vol, %d cube remapped", g_texCreated.load(),
-                         g_vbCreated.load(), g_ibCreated.load(), g_volTexCreated.load(), g_cubeTexCreated.load());
-        return;
-    }
-
-    int total = (int)g_texStaging.size();
-    int uploaded = (int)g_texUploaded.size();
-    int missing = total - uploaded;
-    HookLogImportant("DX9: MPF DIAG: %d/%d textures uploaded, %d NEVER uploaded", uploaded, total, missing);
-
-    // Verify staging texture data by reading first pixels
-    int checked = 0;
-    int empty = 0;
-    for (auto& [defaultTex, stagingTex] : g_texStaging) {
-        if (checked >= 50)
-            break;
-        D3DSURFACE_DESC desc = {};
-        if (FAILED(oTexGetLevelDesc(stagingTex, 0, &desc)))
-            continue;
-        // Only check uncompressed textures (DXT can't be sampled per-pixel easily)
-        if (desc.Format != D3DFMT_A8R8G8B8 && desc.Format != D3DFMT_X8R8G8B8)
-            continue;
-        D3DLOCKED_RECT rect = {};
-        if (SUCCEEDED(oTexLockRect(stagingTex, 0, &rect, nullptr, D3DLOCK_READONLY))) {
-            uint32_t* pixels = (uint32_t*)rect.pBits;
-            bool allZero = true;
-            int stride = rect.Pitch / 4;
-            // Sample a few pixels
-            for (int i = 0; i < 16 && i < (int)(desc.Width * desc.Height); i++) {
-                int y = (i * desc.Height / 16);
-                int x = (i * desc.Width / 16);
-                if (y < (int)desc.Height && x < (int)desc.Width) {
-                    if (pixels[y * stride + x] != 0) {
-                        allZero = false;
-                        break;
-                    }
-                }
-            }
-            oTexUnlockRect(stagingTex, 0);
-            if (allZero) {
-                empty++;
-                if (empty <= 10)
-                    HookLogImportant("DX9: MPF DIAG: EMPTY staging tex=%p default=%p %ux%u fmt=%d", stagingTex,
-                                     defaultTex, desc.Width, desc.Height, (int)desc.Format);
-            }
-            checked++;
-        }
-    }
-    HookLogImportant("DX9: MPF DIAG: Checked %d ARGB staging textures, %d EMPTY", checked, empty);
-
-    int leaks = g_stagingLeakCount.load(std::memory_order_relaxed);
-    HookLogImportant("DX9: MPF DIAG: staging texture leaks to SetTexture: %d", leaks);
-}
-
-}  // namespace ManagedPoolFix
 
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
-
-// Vulkan coordination: if Vulkan layer is actively presenting, skip DX9
-// present-time processing to avoid duplicate overlay/limiter effects in DXVK.
-static bool IsCurrentProcessNamed(const char* expectedExeName) {
-    if (!expectedExeName)
-        return false;
-
-    char exePath[MAX_PATH] = {};
-    if (!GetModuleFileNameA(nullptr, exePath, MAX_PATH))
-        return false;
-
-    const char* exeName = strrchr(exePath, '\\');
-    exeName = exeName ? (exeName + 1) : exePath;
-    return _stricmp(exeName, expectedExeName) == 0;
-}
 
 bool IsDXVKD3D9WrapperLoaded() {
     HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
@@ -1226,13 +213,8 @@ bool IsDXVKD3D9WrapperLoaded() {
     return true;
 }
 
-static bool ShouldBlockD3D9ExPromotionForCompatibility() {
-    // Mirror's Edge is known to read D3D9 object internals directly. Returning a
-    // plain IDirect3D9 factory avoids one crash path, but promoting the created
-    // device to D3D9Ex still swaps in the incompatible binary layout.
-    return IsCurrentProcessNamed("MirrorsEdge.exe");
-}
-
+// Vulkan coordination: if Vulkan layer is actively presenting, skip DX9
+// present-time processing to avoid duplicate overlay/limiter effects in DXVK.
 static bool ShouldSkipDX9PresentForVulkan() {
     SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     if (!shm || !shm->runtimeState.vulkanLayerActive.load(std::memory_order_acquire))
@@ -1676,11 +658,6 @@ static HRESULT STDMETHODCALLTYPE DetourD3D9PresentInline(IDirect3DDevice9* devic
         EarlyLog("DX9: DetourD3D9PresentInline called (device=%p, count=%d)", device, entryLogCount);
         entryLogCount++;
     }
-    // Run upload diagnostics after some frames to let loading finish
-    static int diagFrameCount = 0;
-    if (ManagedPoolFix::g_active && !ManagedPoolFix::g_uploadDiagDone && ++diagFrameCount == 120) {
-        ManagedPoolFix::LogUploadDiagnostics();
-    }
     if (HookIsShuttingDown()) {
         if (oD3D9PresentTrampoline)
             return oD3D9PresentTrampoline(device, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
@@ -1955,21 +932,6 @@ static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device,
 static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* device, DWORD Stage,
                                                             D3DTEXTURESTAGESTATETYPE Type, DWORD Value);
 
-// D3D9 format to DXGI format conversion
-static DXGI_FORMAT D3D9ToDXGIFormat(D3DFORMAT format) {
-    switch (format) {
-        case D3DFMT_A8R8G8B8:
-            return DXGI_FORMAT_B8G8R8A8_UNORM;
-        case D3DFMT_X8R8G8B8:
-            // Use BGRA8 for cross-process shared texture compatibility in D3D11 media path.
-            return DXGI_FORMAT_B8G8R8A8_UNORM;
-        case D3DFMT_A2B10G10R10:
-            return DXGI_FORMAT_R10G10B10A2_UNORM;
-        default:
-            return DXGI_FORMAT_UNKNOWN;
-    }
-}
-
 static const char* D3D9FormatName(D3DFORMAT format) {
     switch (format) {
         case D3DFMT_A8R8G8B8:
@@ -1982,19 +944,6 @@ static const char* D3D9FormatName(D3DFORMAT format) {
             return "UNKNOWN";
         default:
             return "OTHER";
-    }
-}
-
-static D3DFORMAT GetD3D9SharedTextureFormat(D3DFORMAT format) {
-    switch (format) {
-        case D3DFMT_X8R8G8B8:
-            // D3D9->D3D11 shared textures require an alpha-bearing 32-bit format.
-            return D3DFMT_A8R8G8B8;
-        case D3DFMT_A8R8G8B8:
-        case D3DFMT_A2B10G10R10:
-            return format;
-        default:
-            return format;
     }
 }
 
@@ -2066,17 +1015,9 @@ static int GetMSAASampleCount(IDirect3DDevice9* device) {
 
 // Proactive apply in Present
 
-// ============================================================================
-// D3D9 Runtime Patching - REMOVED
-// ============================================================================
-// The version-specific d3d9.dll runtime patching (20 hardcoded byte patterns)
-// has been replaced by transparent D3D9→D3D9Ex upgrade in
-// Wrapped_Direct3DCreate9. D3D9Ex natively supports shared texture handles,
-// so no runtime patching is needed. See d3d9_wrap.cpp::CreateDevice.
-
-// Forward declaration: D3D9Ex factory created by DetourDirect3DCreate9 for zero-copy upgrade
-// Defined below the class with initialization to nullptr.
-static IDirect3D9Ex* s_d3d9ExForUpgrade = nullptr;
+// Version-specific d3d9.dll runtime patching and transparent D3D9Ex device
+// promotion are intentionally absent. The native capture path uses a private
+// helper-owned shared ring while preserving the application's device type.
 
 // DX9 Capture class with D3D11 interop
 class DX9Capture : public HookCaptureBase {
@@ -2691,20 +1632,32 @@ public:
         const HRESULT sharedFmtHr =
             direct3D->CheckDeviceFormat(params.AdapterOrdinal, params.DeviceType, adapterFormat, D3DUSAGE_RENDERTARGET,
                                         D3DRTYPE_TEXTURE, d3d9SharedFormat);
-        bool canShareResource = false;
+        const HRESULT conversionHr =
+            d3d9Format == d3d9SharedFormat
+                ? D3D_OK
+                : direct3D->CheckDeviceFormatConversion(params.AdapterOrdinal, params.DeviceType, d3d9Format,
+                                                        d3d9SharedFormat);
+        bool advertisesExSharing = false;
 #ifdef D3DCAPS2_CANSHARERESOURCE
-        canShareResource = SUCCEEDED(capsHr) && ((caps.Caps2 & D3DCAPS2_CANSHARERESOURCE) != 0);
+        advertisesExSharing = SUCCEEDED(capsHr) && ((caps.Caps2 & D3DCAPS2_CANSHARERESOURCE) != 0);
 #endif
 
         HookLogImportant(
             "DX9: %s diagnostics: adapter=%u type=%u flags=0x%08x ex=%d adapterFmt=%s/%d backBufferFmt=%s/%d "
-            "sharedFmt=%s/%d capsHr=0x%08x caps2=0x%08x canShare=%d fmtCheck=0x%08x vendor=%04x device=%04x driver=%s",
+            "sharedFmt=%s/%d capsHr=0x%08x caps2=0x%08x exShareCap=%d fmtCheck=0x%08x conversion=0x%08x "
+            "vendor=%04x device=%04x driver=%s",
             label, params.AdapterOrdinal, (unsigned)params.DeviceType, (unsigned)params.BehaviorFlags, isEx ? 1 : 0,
             D3D9FormatName(adapterFormat), (int)adapterFormat, D3D9FormatName(d3d9Format), (int)d3d9Format,
             D3D9FormatName(d3d9SharedFormat), (int)d3d9SharedFormat, (unsigned)capsHr,
-            SUCCEEDED(capsHr) ? (unsigned)caps.Caps2 : 0u, canShareResource ? 1 : 0, (unsigned)sharedFmtHr,
-            SUCCEEDED(identHr) ? identifier.VendorId : 0u, SUCCEEDED(identHr) ? identifier.DeviceId : 0u,
-            SUCCEEDED(identHr) ? identifier.Driver : "?");
+            SUCCEEDED(capsHr) ? (unsigned)caps.Caps2 : 0u, advertisesExSharing ? 1 : 0, (unsigned)sharedFmtHr,
+            (unsigned)conversionHr, SUCCEEDED(identHr) ? identifier.VendorId : 0u,
+            SUCCEEDED(identHr) ? identifier.DeviceId : 0u, SUCCEEDED(identHr) ? identifier.Driver : "?");
+
+        if (!isEx && !advertisesExSharing) {
+            HookLogImportant("DX9: %s classic-device share capability is probe-only; the Ex-only caps bit is not "
+                             "used as a gate",
+                             label);
+        }
 
         direct3D->Release();
     }
@@ -3019,6 +1972,20 @@ public:
 
             LogDirectD3D9SharingDiagnostics(device, params, "game device");
 
+            // Some WDDM drivers expose the sharing caps bit through a classic
+            // device but reject shared creation/opening with D3DERR_INVALIDCALL.
+            // Probe the actual classic device first so an unsupported runtime
+            // does not pay for helpers that the game device cannot open.
+            const bool nativeProbeOk = ProbeDirectD3D9SharedTexture(device, "game device");
+            if (!isD3D9Ex && !nativeProbeOk) {
+                HookLogImportant(
+                    "DX9: Classic device rejected shared-resource creation for %s/%d; skipping helper producers",
+                    D3D9FormatName(d3d9SharedFormat), (int)d3d9SharedFormat);
+                CleanupSharedHandles();
+                ReleaseDirectD3D9SharedRing();
+                continue;
+            }
+
             if (EnsureDirectD3D9ExProducerDevice(params)) {
                 D3DDEVICE_CREATION_PARAMETERS helperParams = {};
                 if (SUCCEEDED(directSharedProducerDeviceEx->GetCreationParameters(&helperParams))) {
@@ -3046,7 +2013,6 @@ public:
             // Native ownership is a last resort: a helper-owned shared resource
             // can survive release of the game device's default-pool view during
             // Reset while queued media frames finish consuming the old generation.
-            const bool nativeProbeOk = ProbeDirectD3D9SharedTexture(device, "game device");
             if (nativeProbeOk) {
                 const char* nativeProducerLabel = isD3D9Ex ? "native D3D9Ex producer" : "native D3D9 producer";
                 if (TrySetupDirectD3D9SharedRingWithProducer(device, device, false, nativeProducerLabel)) {
@@ -3574,41 +2540,52 @@ public:
             return false;
         }
 
-        // Get the adapter for this D3D9 device.
-        // Use the D3D9Ex factory directly (s_d3d9ExForUpgrade) for LUID resolution
-        // since GetDirect3D is hooked to return the game's original D3D9 factory
-        // which can't be QI'd for IDirect3D9Ex.
+        D3DDEVICE_CREATION_PARAMETERS creationParams = {};
+        const bool hasCreationParams = SUCCEEDED(d3d9Device->GetCreationParameters(&creationParams));
+        const UINT targetAdapterOrdinal = hasCreationParams ? creationParams.AdapterOrdinal : D3DADAPTER_DEFAULT;
+
+        // Resolve the exact adapter without changing the game device. A private
+        // Ex factory is safe to retain as the later shared-resource owner; it is
+        // never returned to the application.
         IDirect3D9* d3d9 = nullptr;
         d3d9Device->GetDirect3D(&d3d9);
-
-        // Get adapter identifier
-        D3DADAPTER_IDENTIFIER9 adapterIdent;
-        d3d9->GetAdapterIdentifier(D3DADAPTER_DEFAULT, 0, &adapterIdent);
-
-        // Try to resolve exact adapter LUID via D3D9Ex (most reliable mapping to DXGI adapter).
         LUID targetLuid = {};
         bool hasTargetLuid = false;
-        IDirect3D9Ex* d3d9ExRoot = s_d3d9ExForUpgrade;
-        if (d3d9ExRoot) {
-            D3DDEVICE_CREATION_PARAMETERS params = {};
-            if (SUCCEEDED(d3d9Device->GetCreationParameters(&params))) {
-                if (SUCCEEDED(d3d9ExRoot->GetAdapterLUID(params.AdapterOrdinal, &targetLuid))) {
-                    hasTargetLuid = true;
-                    EarlyLog("DX9: Resolved D3D9Ex adapter LUID %08x:%08x", targetLuid.HighPart, targetLuid.LowPart);
-                }
-            }
-        } else if (SUCCEEDED(d3d9->QueryInterface(__uuidof(IDirect3D9Ex), (void**)&d3d9ExRoot)) && d3d9ExRoot) {
-            D3DDEVICE_CREATION_PARAMETERS params = {};
-            if (SUCCEEDED(d3d9Device->GetCreationParameters(&params))) {
-                if (SUCCEEDED(d3d9ExRoot->GetAdapterLUID(params.AdapterOrdinal, &targetLuid))) {
-                    hasTargetLuid = true;
-                    EarlyLog("DX9: Resolved D3D9Ex adapter LUID %08x:%08x (via QI)", targetLuid.HighPart,
-                             targetLuid.LowPart);
-                }
-            }
-            d3d9ExRoot->Release();
+        IDirect3D9Ex* gameFactoryEx = nullptr;
+        if (d3d9 && SUCCEEDED(d3d9->QueryInterface(__uuidof(IDirect3D9Ex), (void**)&gameFactoryEx)) &&
+            gameFactoryEx) {
+            hasTargetLuid = hasCreationParams &&
+                            SUCCEEDED(gameFactoryEx->GetAdapterLUID(targetAdapterOrdinal, &targetLuid));
+            gameFactoryEx->Release();
         }
-        d3d9->Release();
+        if (!hasTargetLuid && !IsDXVKD3D9WrapperLoaded()) {
+            HMODULE d3d9Module = GetModuleHandleA("d3d9.dll");
+            Direct3DCreate9Ex_t create9Ex =
+                d3d9Module ? reinterpret_cast<Direct3DCreate9Ex_t>(GetProcAddress(d3d9Module, "Direct3DCreate9Ex"))
+                           : nullptr;
+            if (!directSharedFactoryEx && create9Ex) {
+                const HRESULT factoryHr = create9Ex(D3D_SDK_VERSION, &directSharedFactoryEx);
+                if (FAILED(factoryHr)) {
+                    directSharedFactoryEx = nullptr;
+                    HookLogImportant("DX9: Private D3D9Ex helper factory unavailable for adapter mapping "
+                                     "(hr=0x%08x)",
+                                     (unsigned)factoryHr);
+                }
+            }
+            if (directSharedFactoryEx && hasCreationParams) {
+                hasTargetLuid =
+                    SUCCEEDED(directSharedFactoryEx->GetAdapterLUID(targetAdapterOrdinal, &targetLuid));
+            }
+        }
+        if (d3d9)
+            d3d9->Release();
+        if (hasTargetLuid) {
+            HookLogImportant("DX9: Resolved native device adapter LUID %08x:%08x (ordinal=%u)",
+                             targetLuid.HighPart, targetLuid.LowPart, targetAdapterOrdinal);
+        } else {
+            HookLogImportant("DX9: Exact adapter LUID unavailable; using D3D9 adapter ordinal %u",
+                             targetAdapterOrdinal);
+        }
 
         // Find matching DXGI adapter
         IDXGIAdapter1* adapter = nullptr;
@@ -3620,8 +2597,7 @@ public:
                 matched = (desc.AdapterLuid.LowPart == targetLuid.LowPart &&
                            desc.AdapterLuid.HighPart == targetLuid.HighPart);
             } else {
-                // Fallback when D3D9Ex LUID is unavailable.
-                matched = true;
+                matched = i == targetAdapterOrdinal;
             }
 
             if (matched) {
@@ -3722,16 +2698,19 @@ public:
         width = desc.Width;
         height = desc.Height;
         d3d9Format = desc.Format;
-        d3d9SharedFormat = GetD3D9SharedTextureFormat(desc.Format);
-        format = D3D9ToDXGIFormat(desc.Format);
+        const D3D9SharedFormatSelection sharedFormat = SelectD3D9SharedCaptureFormat(desc.Format);
+        d3d9SharedFormat = sharedFormat.resourceFormat;
+        format = sharedFormat.transportFormat;
         EarlyLog("DX9: Init Step 4: Format check. w=%d, h=%d, fmt=%d", width, height, d3d9Format);
-        if (d3d9SharedFormat != d3d9Format) {
-            HookLogImportant("DX9: Using shared-texture format %d for backbuffer format %d", d3d9SharedFormat,
-                             d3d9Format);
+        if (sharedFormat && sharedFormat.requiresConversion) {
+            HookLogImportant("DX9: Native GPU format conversion selected: backbuffer=%s/%d shared=%s/%d",
+                             D3D9FormatName(d3d9Format), (int)d3d9Format, D3D9FormatName(d3d9SharedFormat),
+                             (int)d3d9SharedFormat);
         }
 
-        if (format == DXGI_FORMAT_UNKNOWN) {
-            EarlyLog("DX9: Unsupported format %d", desc.Format);
+        if (!sharedFormat) {
+            HookLogImportant("DX9: Unsupported D3D9 capture backbuffer format %s/%d", D3D9FormatName(desc.Format),
+                             (int)desc.Format);
             CleanupDX9(true);
             return;
         }
@@ -3749,7 +2728,7 @@ public:
             HookLogImportant("DX9: Device supports D3D9Ex (zero-copy capture available)");
             isD3D9Ex = true;
         } else {
-            HookLogImportant("DX9: Device is legacy D3D9 (helper-assisted shared zero-copy will be attempted)");
+            HookLogImportant("DX9: Device is classic D3D9 (shared capture is probe-only; no Ex promotion)");
             d3d9DeviceEx = nullptr;
         }
 
@@ -4039,17 +3018,6 @@ public:
             const char* asyncSuffix = ((useD3D11Staging || useGDIInterop) && captureThreadRunning) ? "+ASYNC" : "";
             HookLogImportant("DX9 Capture Initialized (%s%s): %dx%d (LUID: %08x)", captureMode, asyncSuffix, width,
                              height, luidLow);
-            if (ManagedPoolFix::g_active) {
-                HookLogImportant("DX9: Managed pool fix: %d tex, %d VB, %d IB, %d vol, %d cube remapped",
-                                 ManagedPoolFix::g_texCreated.load(), ManagedPoolFix::g_vbCreated.load(),
-                                 ManagedPoolFix::g_ibCreated.load(), ManagedPoolFix::g_volTexCreated.load(),
-                                 ManagedPoolFix::g_cubeTexCreated.load());
-                HookLogImportant(
-                    "DX9: MPF uploads: %d total (%d via TexUnlock, %d via SurfUnlock), %d direct locks, %d fails",
-                    ManagedPoolFix::g_updateTexCalls.load(), ManagedPoolFix::g_texUnlockUploadCount.load(),
-                    ManagedPoolFix::g_surfUnlockUploadCount.load(), ManagedPoolFix::g_texDirectLockCount.load(),
-                    ManagedPoolFix::g_updateTexFails.load());
-            }
         } else {
             CleanupDX9();
         }
@@ -5139,12 +4107,6 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
                 "%lld us, Capture: %lld us",
                 frameCount, overlayUs, prerenderUs, captureUs);
 
-            if (ManagedPoolFix::g_active) {
-                EarlyLog("DX9: MPF stats (frame %d): %d tex, %d uploads (%d tex/%d surf), %d locks, %d fails",
-                         frameCount, ManagedPoolFix::g_texCreated.load(), ManagedPoolFix::g_updateTexCalls.load(),
-                         ManagedPoolFix::g_texUnlockUploadCount.load(), ManagedPoolFix::g_surfUnlockUploadCount.load(),
-                         ManagedPoolFix::g_texDirectLockCount.load(), ManagedPoolFix::g_updateTexFails.load());
-            }
         }
 
         // FPS limiter moved to PresentEnd (after PostPresentReadback) so that
@@ -5867,10 +4829,6 @@ typedef HRESULT(STDMETHODCALLTYPE* CreateDeviceEx_t)(IDirect3D9Ex*, UINT, D3DDEV
                                                      D3DPRESENT_PARAMETERS*, D3DDISPLAYMODEEX*, IDirect3DDevice9Ex**);
 static CreateDeviceEx_t oCreateDeviceEx = nullptr;
 
-// D3D9Ex factory used to silently upgrade legacy CreateDevice to CreateDeviceEx.
-// D3D9Ex devices support shared texture handles, enabling zero-copy capture.
-// (Defined at line ~1422 before DX9Capture class for forward reference)
-
 // Forward declarations for detours defined below
 static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, const RECT* pSourceRect, const RECT* pDestRect,
                                                HWND hDestWindowOverride, const RGNDATA* pDirtyRegion);
@@ -5884,22 +4842,6 @@ static HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device,
 static HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* self, const RECT* pSourceRect,
                                                    const RECT* pDestRect, HWND hDestWindowOverride,
                                                    const RGNDATA* pDirtyRegion, DWORD dwFlags);
-
-// GetDirect3D hook: When we create a D3D9Ex device via a separate factory,
-// the game's calls to GetDirect3D() must return the GAME'S original factory,
-// not our internal D3D9Ex factory, to avoid pointer-mismatch crashes.
-static IDirect3D9* s_gameOriginalFactory = nullptr;
-typedef HRESULT(STDMETHODCALLTYPE* PFN_GetDirect3D)(IDirect3DDevice9*, IDirect3D9**);
-static PFN_GetDirect3D oGetDirect3D = nullptr;
-
-static HRESULT STDMETHODCALLTYPE DetourGetDirect3D(IDirect3DDevice9* device, IDirect3D9** ppD3D9) {
-    if (s_gameOriginalFactory && ppD3D9) {
-        s_gameOriginalFactory->AddRef();
-        *ppD3D9 = s_gameOriginalFactory;
-        return S_OK;
-    }
-    return oGetDirect3D(device, ppD3D9);
-}
 
 static void InstallDeviceHooks(IDirect3DDevice9* device) {
     if (!device)
@@ -6051,17 +4993,6 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
         }
     }
 
-    // Install MANAGED pool remapping hooks for D3D9Ex compatibility
-    ManagedPoolFix::InstallManagedPoolHooks(device);
-
-    // Hook GetDirect3D to return the game's original factory when using separate D3D9Ex factory
-    if (s_gameOriginalFactory && !oGetDirect3D) {
-        uintptr_t* devVtable = *(uintptr_t**)device;
-        if (VTableHook::Create(&devVtable[6], (void*)&DetourGetDirect3D, (void**)&oGetDirect3D) ==
-            VTableHook::Success) {
-            HookLogImportant("DX9: GetDirect3D hook installed (redirects to game's original factory)");
-        }
-    }
 }
 // Existing Device Scanner for Late Injection
 // ============================================================================
@@ -6244,13 +5175,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
 
         HookLogImportant("DX9: CreateDevice Flags In: 0x%X (PUREDEVICE=%d)", BehaviorFlags,
                          !!(BehaviorFlags & D3DCREATE_PUREDEVICE));
-
-        // CUDA requirement: Multithreaded device, No Pure Device (for
-        // GetRenderTarget etc compliance)
-        BehaviorFlags |= D3DCREATE_MULTITHREADED;
-        BehaviorFlags &= ~D3DCREATE_PUREDEVICE;
-
-        HookLogImportant("DX9: CreateDevice Flags Out: 0x%X", BehaviorFlags);
+        HookLogImportant("DX9: CreateDevice flags preserved (multithreaded=%d pure=%d)",
+                         !!(BehaviorFlags & D3DCREATE_MULTITHREADED), !!(BehaviorFlags & D3DCREATE_PUREDEVICE));
         if (pPresentationParameters) {
             HookLogImportant(
                 "DX9: CreateDevice PP: %ux%u SwapEffect=%u Windowed=%d BackBufferFmt=%u BackBufferCount=%u",
@@ -6260,84 +5186,11 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
         }
     }
 
-    // Try to silently upgrade to D3D9Ex for zero-copy shared texture capture.
-    // Using staging ManagedPoolFix (DEFAULT + SYSTEMMEM) to correctly emulate
-    // MANAGED pool behavior and avoid visual corruption.
-    HRESULT hr = E_FAIL;
-    if (IsDXVKD3D9WrapperLoaded()) {
-        ManagedPoolFix::g_active = false;
-        static int dxvkUpgradeSkipLogCount = 0;
-        if (dxvkUpgradeSkipLogCount < 6) {
-            HookLogImportant(
-                "DX9: DXVK d3d9 wrapper detected - using native D3D9 device (skipping D3D9Ex upgrade and "
-                "ManagedPoolFix)");
-            dxvkUpgradeSkipLogCount++;
-        }
-    } else if (ShouldBlockD3D9ExPromotionForCompatibility()) {
-        ManagedPoolFix::g_active = false;
-        static int compatUpgradeSkipLogCount = 0;
-        if (compatUpgradeSkipLogCount < 6) {
-            HookLogImportant(
-                "DX9: MirrorsEdge compatibility - using native D3D9 device (skipping D3D9Ex upgrade and "
-                "ManagedPoolFix)");
-            compatUpgradeSkipLogCount++;
-        }
-    } else if (s_d3d9ExForUpgrade) {
-        IDirect3D9Ex* selfEx = nullptr;
-        bool isUnifiedFactory = SUCCEEDED(self->QueryInterface(__uuidof(IDirect3D9Ex), (void**)&selfEx)) && selfEx;
-        if (selfEx)
-            selfEx->Release();
-
-        IDirect3D9Ex* factoryForDevice = isUnifiedFactory ? static_cast<IDirect3D9Ex*>(self) : s_d3d9ExForUpgrade;
-        HookLogImportant("DX9: Attempting D3D9Ex device creation (%s factory, staging MPF active)",
-                         isUnifiedFactory ? "unified" : "separate");
-
-        // Enable MANAGED pool remapping BEFORE CreateDeviceEx
-        ManagedPoolFix::g_active = true;
-
-        D3DDISPLAYMODEEX* pModeEx = nullptr;
-        D3DDISPLAYMODEEX fullscreenMode = {};
-        if (pPresentationParameters && !pPresentationParameters->Windowed) {
-            fullscreenMode.Size = sizeof(D3DDISPLAYMODEEX);
-            fullscreenMode.Width = pPresentationParameters->BackBufferWidth;
-            fullscreenMode.Height = pPresentationParameters->BackBufferHeight;
-            fullscreenMode.RefreshRate = pPresentationParameters->FullScreen_RefreshRateInHz;
-            fullscreenMode.Format = pPresentationParameters->BackBufferFormat;
-            fullscreenMode.ScanLineOrdering = D3DSCANLINEORDERING_PROGRESSIVE;
-            pModeEx = &fullscreenMode;
-        }
-
-        IDirect3DDevice9Ex* deviceEx = nullptr;
-        if (oCreateDeviceEx) {
-            hr = oCreateDeviceEx(factoryForDevice, Adapter, DeviceType, hFocusWindow, BehaviorFlags,
-                                 pPresentationParameters, pModeEx, &deviceEx);
-        } else {
-            hr = factoryForDevice->CreateDeviceEx(Adapter, DeviceType, hFocusWindow, BehaviorFlags,
-                                                  pPresentationParameters, pModeEx, &deviceEx);
-        }
-
-        if (SUCCEEDED(hr) && deviceEx) {
-            if (!isUnifiedFactory) {
-                s_gameOriginalFactory = self;
-                self->AddRef();
-            }
-            HookLogImportant("DX9: CreateDevice upgraded to D3D9Ex (zero-copy, staging MPF active)");
-            *ppReturnedDeviceInterface = static_cast<IDirect3DDevice9*>(deviceEx);
-        } else {
-            ManagedPoolFix::g_active = false;
-            HookLogImportant("DX9: D3D9Ex CreateDeviceEx FAILED (hr=0x%08X), falling back to legacy", (unsigned)hr);
-            hr = E_FAIL;
-        }
-    } else {
-        ManagedPoolFix::g_active = false;
-        HookLogImportant("DX9: No D3D9Ex factory available, using legacy capture path");
-    }
-
-    if (FAILED(hr)) {
-        HookLogImportant("DX9: Using native D3D9 device (GDI interop fallback)");
-        hr = oCreateDevice(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters,
-                           ppReturnedDeviceInterface);
-    }
+    static_assert(!ShouldPromoteClassicD3D9Device());
+    HookLogImportant("DX9: Creating native classic D3D9 device; helper-owned shared capture will be probed later");
+    HRESULT hr =
+        oCreateDevice(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters,
+                      ppReturnedDeviceInterface);
 
     if (SUCCEEDED(hr)) {
         if (pPresentationParameters) {
@@ -6363,45 +5216,9 @@ static Direct3DCreate9_t oDirect3DCreate9 = nullptr;
 static IDirect3D9* WINAPI DetourDirect3DCreate9(UINT SDKVersion) {
     EarlyLog("DX9: Direct3DCreate9 called (Intercepted)");
 
-    // Separate factory approach: return the plain D3D9 factory to the game.
-    // We store a D3D9Ex factory internally for use in DetourCreateDevice to
-    // promote the device to D3D9Ex with ManagedPoolFix.
-    //
-    // Why not return D3D9Ex directly (unified approach)?
-    //   Steam overlay also hooks CreateDevice on the factory vtable. If its
-    //   hook replaces ours, the D3D9Ex factory creates a D3D9Ex device WITHOUT
-    //   ManagedPoolFix → MANAGED textures fail → game crash.
-    //   With the separate approach, even if our CreateDevice hook is overridden,
-    //   the worst case is a plain D3D9 device (which works fine, no crash).
-    typedef HRESULT(WINAPI * PFN_Create9Ex)(UINT, IDirect3D9Ex**);
-    HMODULE d3d9Mod = GetModuleHandleA("d3d9.dll");
-    if (IsDXVKD3D9WrapperLoaded()) {
-        static int dxvkFactorySkipLogCount = 0;
-        if (dxvkFactorySkipLogCount < 6) {
-            HookLogImportant("DX9: DXVK d3d9 wrapper detected - skipping separate D3D9Ex upgrade factory");
-            dxvkFactorySkipLogCount++;
-        }
-    } else if (ShouldBlockD3D9ExPromotionForCompatibility()) {
-        static int compatFactorySkipLogCount = 0;
-        if (compatFactorySkipLogCount < 6) {
-            HookLogImportant("DX9: MirrorsEdge compatibility - skipping separate D3D9Ex upgrade factory");
-            compatFactorySkipLogCount++;
-        }
-    } else if (d3d9Mod && !s_d3d9ExForUpgrade) {
-        PFN_Create9Ex pfnCreate9Ex = (PFN_Create9Ex)GetProcAddress(d3d9Mod, "Direct3DCreate9Ex");
-        if (pfnCreate9Ex) {
-            IDirect3D9Ex* d3d9Ex = nullptr;
-            HRESULT exHr = pfnCreate9Ex(SDKVersion, &d3d9Ex);
-            if (SUCCEEDED(exHr) && d3d9Ex) {
-                s_d3d9ExForUpgrade = d3d9Ex;  // kept alive for DetourCreateDevice
-                HookLogImportant("DX9: Created D3D9Ex factory for upgrade (stored, not returned to game)");
-            } else {
-                HookLogImportant("DX9: Direct3DCreate9Ex failed (hr=0x%08X), zero-copy unavailable", (unsigned)exHr);
-            }
-        }
-    }
-
-    // Call original (goes through Steam overlay hook chain if present)
+    // Keep the factory's public interface and internal runtime layout exactly as
+    // requested by the application. Sharing is introduced only through private
+    // capture resources after the native device exists.
     IDirect3D9* d3d9 = oDirect3DCreate9(SDKVersion);
     if (d3d9) {
         uintptr_t* vtable = *(uintptr_t**)d3d9;
@@ -6410,11 +5227,10 @@ static IDirect3D9* WINAPI DetourDirect3DCreate9(UINT SDKVersion) {
         if (vtable && vtableValid && !oCreateDevice) {
             if (VTableHook::Create(&vtable[16], (void*)&DetourCreateDevice, (void**)&oCreateDevice) ==
                 VTableHook::Success) {
-                EarlyLog("DX9: CreateDevice hook installed on D3D9 factory (separate, staging MPF)");
+                EarlyLog("DX9: CreateDevice hook installed on native D3D9 factory");
             }
         }
-        HookLogImportant("DX9: Returning plain D3D9 factory to game (separate approach, D3D9Ex %s)",
-                         s_d3d9ExForUpgrade ? "ready for upgrade" : "unavailable");
+        HookLogImportant("DX9: Returning native IDirect3D9 factory without Ex promotion");
     }
     return d3d9;
 }
@@ -6479,8 +5295,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(IDirect3D9Ex* self, UINT A
             pPresentationParameters->FullScreen_RefreshRateInHz, gfx.backbufferCount, originalBackBufferCount,
             pPresentationParameters->BackBufferCount, gfx.cpuPrerenderLimit);
 
-        // CUDA requirement: Multithreaded device
-        BehaviorFlags |= D3DCREATE_MULTITHREADED;
+        HookLogImportant("DX9: CreateDeviceEx flags preserved (multithreaded=%d pure=%d)",
+                         !!(BehaviorFlags & D3DCREATE_MULTITHREADED), !!(BehaviorFlags & D3DCREATE_PUREDEVICE));
     }
 
     HRESULT hr = oCreateDeviceEx(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters,
@@ -6575,37 +5391,6 @@ void DX9Hook::Init() {
             EarlyLog("DX9: Direct3DCreate9 inline hook installed (trampoline=%p)", trampoline);
         } else {
             EarlyLog("DX9: Direct3DCreate9 inline hook failed");
-        }
-    }
-
-    // Eagerly create a D3D9Ex factory for device upgrade and hook CreateDevice
-    // on BOTH the plain IDirect3D9 and IDirect3D9Ex vtables.  IDirect3D9 and
-    // IDirect3D9Ex have DIFFERENT vtables, so hooking one does NOT hook the other.
-    // We must hook the plain IDirect3D9 vtable to catch games that already called
-    // Direct3DCreate9 before injection (common in manual/late injection).
-    if (!ShouldBlockD3D9ExPromotionForCompatibility() && !s_d3d9ExForUpgrade && pD3DCreate9Ex) {
-        typedef HRESULT(WINAPI * PFN_Create9Ex)(UINT, IDirect3D9Ex**);
-        PFN_Create9Ex pfnCreate9Ex = (PFN_Create9Ex)pD3DCreate9Ex;
-        HRESULT hr = pfnCreate9Ex(D3D_SDK_VERSION, &s_d3d9ExForUpgrade);
-        if (SUCCEEDED(hr) && s_d3d9ExForUpgrade) {
-            uintptr_t* vtable = *(uintptr_t**)s_d3d9ExForUpgrade;
-            bool vtableValid = (vtable != nullptr) && (reinterpret_cast<uintptr_t>(vtable) >= 0x10000) &&
-                               (reinterpret_cast<uintptr_t>(vtable) < 0x7FFFFFFF0000);
-            if (vtable && vtableValid) {
-                if (!oCreateDeviceEx) {
-                    VTableHook::Create(&vtable[20], (void*)&DetourCreateDeviceEx, (void**)&oCreateDeviceEx);
-                }
-            }
-            EarlyLog("DX9: D3D9Ex factory pre-initialized for zero-copy upgrade");
-        } else {
-            s_d3d9ExForUpgrade = nullptr;
-            EarlyLog("DX9: D3D9Ex factory init failed (hr=0x%08X)", hr);
-        }
-    } else if (ShouldBlockD3D9ExPromotionForCompatibility()) {
-        static bool s_compatPreinitLogged = false;
-        if (!s_compatPreinitLogged) {
-            EarlyLog("DX9: MirrorsEdge compatibility - skipping D3D9Ex factory pre-init");
-            s_compatPreinitLogged = true;
         }
     }
 

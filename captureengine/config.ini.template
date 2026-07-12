@@ -96,7 +96,7 @@ whitelist=(
 ;GTA5_Enhanced.exe
 )
 
-; overlay_whitelist - Overlay-only injection (no capture). For use with WGC capture, e.g. with D3D9 non-ex when zero copy inject capture is not available.
+; overlay_whitelist - Overlay-only injection (no inject video). For use with GPU-based WGC capture, including classic D3D9 runtimes that reject shared resources.
 ; DO NOT USE IN MULTIPLAYER GAMES!
 overlay_whitelist=(
 ;MirrorsEdge.exe

@@ -84,40 +84,7 @@ HRESULT STDMETHODCALLTYPE CWrapDirect3D9::CreateDevice(UINT Adapter, D3DDEVTYPE 
                                                        DWORD BehaviorFlags,
                                                        D3DPRESENT_PARAMETERS* pPresentationParameters,
                                                        IDirect3DDevice9** ppReturnedDeviceInterface) {
-    // If backed by D3D9Ex, use CreateDeviceEx to get a device with native
-    // shared handle support for zero-copy capture.
-    if (m_pRealEx) {
-        WrapperLog("D3D9: CreateDevice -> redirecting to CreateDeviceEx for zero-copy capture");
-
-        // Build fullscreen display mode from present parameters if needed
-        D3DDISPLAYMODEEX* pMode = nullptr;
-        D3DDISPLAYMODEEX fullscreenMode = {};
-        if (pPresentationParameters && !pPresentationParameters->Windowed) {
-            fullscreenMode.Size = sizeof(D3DDISPLAYMODEEX);
-            fullscreenMode.Width = pPresentationParameters->BackBufferWidth;
-            fullscreenMode.Height = pPresentationParameters->BackBufferHeight;
-            fullscreenMode.RefreshRate = pPresentationParameters->FullScreen_RefreshRateInHz;
-            fullscreenMode.Format = pPresentationParameters->BackBufferFormat;
-            fullscreenMode.ScanLineOrdering = D3DSCANLINEORDERING_PROGRESSIVE;
-            pMode = &fullscreenMode;
-        }
-
-        IDirect3DDevice9Ex* pRealDeviceEx = nullptr;
-        HRESULT hr = m_pRealEx->CreateDeviceEx(Adapter, DeviceType, hFocusWindow, BehaviorFlags,
-                                               pPresentationParameters, pMode, &pRealDeviceEx);
-
-        if (SUCCEEDED(hr) && pRealDeviceEx) {
-            CWrapD3D9Device* pWrapper = new CWrapD3D9Device(pRealDeviceEx, true);
-            pRealDeviceEx->Release();
-            *ppReturnedDeviceInterface = pWrapper;
-            WrapperLog("D3D9: Created D3D9Ex device via CreateDeviceEx (zero-copy ready)");
-            return S_OK;
-        }
-
-        WrapperLog("D3D9: CreateDeviceEx failed (hr=0x%08X), falling back to CreateDevice", hr);
-    }
-
-    WrapperLog("D3D9: CreateDevice called (non-Ex path)");
+    WrapperLog("D3D9: CreateDevice called (native classic path)");
 
     IDirect3DDevice9* pRealDevice = nullptr;
     HRESULT hr =
@@ -127,7 +94,7 @@ HRESULT STDMETHODCALLTYPE CWrapDirect3D9::CreateDevice(UINT Adapter, D3DDEVTYPE 
         CWrapD3D9Device* pWrapper = new CWrapD3D9Device(pRealDevice, false);
         pRealDevice->Release();
         *ppReturnedDeviceInterface = pWrapper;
-        WrapperLog("D3D9: Created wrapped device (non-Ex)");
+        WrapperLog("D3D9: Created wrapped native classic device");
         return S_OK;
     }
 

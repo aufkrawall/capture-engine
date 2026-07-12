@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-12 (GTA post-FSR DLSS-suspend proof lifetime, Streamline-wrapped FFX owner-queue routing, FG overlay transition/performance invariants, ordered process-loopback exit and route-local compensation, WGC startup-cadence determinism, capture-method/injection independence, HAGS-on capture contention hardening, strict true-10-bit DXGI/WGC capture, and capture reliability; see frame-generation/guardrails.md, multi-audio-capture.md, dx12-injection-bootstrap.md, performance-priority.md, wgc-capture.md, cfr-capture-sync.md, regression-testing-and-logging.md, and log/recent.md)
+Last cross-checked: 2026-07-12 (native classic-D3D9 shared capture, GTA post-FSR DLSS-suspend proof lifetime, Streamline-wrapped FFX owner-queue routing, FG overlay transition/performance invariants, ordered process-loopback exit and route-local compensation, WGC startup-cadence determinism, capture-method/injection independence, HAGS-on capture contention hardening, strict true-10-bit DXGI/WGC capture, and capture reliability; see d3d9-capture.md, frame-generation/guardrails.md, multi-audio-capture.md, dx12-injection-bootstrap.md, performance-priority.md, wgc-capture.md, cfr-capture-sync.md, regression-testing-and-logging.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -40,6 +40,8 @@ Primary sources:
   - Supported `build.py` flags, interactions, environment variables, operational notes, and MinGW cross-compile pitfalls (INITGUID/PKEY, `mediaengine/audio_capture.cpp`).
 - `repo-map.md`
   - Top-level repo layout and subsystem ownership.
+- `d3d9-capture.md`
+  - Native classic-D3D9 device preservation, opportunistic shared-ring probing, D3D9Ex incompatibilities, synchronization/reset lifetime, diagnostics, and GPU-based WGC fallback. Last verified 2026-07-12.
 - `dx12-injection-bootstrap.md`
   - Current DX12 injection timing, capture-method/injection independence, active inject-video publication gating, hook bootstrap, and pseudo-overlay handoff behavior. Last verified 2026-07-12.
 - `dx12-overlay-third-party-coexistence.md`
