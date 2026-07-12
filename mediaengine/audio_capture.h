@@ -29,6 +29,7 @@ struct AudioPacket {
     uint64_t rawQpcPosition = 0;  // Raw WASAPI GetBuffer QPC position in 100-ns units
     uint64_t streamLatency = 0;   // IAudioClient stream latency in 100-ns units used for compensation
     uint64_t captureEpoch = 0;    // Process-loopback activation generation (0 for endpoint capture)
+    bool endOfStream = false;     // Ordered process-loopback end marker (never used for endpoint packets)
 };
 
 class AudioCapture {

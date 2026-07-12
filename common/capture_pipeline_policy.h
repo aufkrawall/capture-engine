@@ -767,6 +767,23 @@ inline int64_t ResolveWgcStartupSmoothnessActiveDelayQpc(int64_t pileupExtraDela
     return std::min(pileupExtraDelayQpc, jitterFloorDelayQpc);
 }
 
+inline bool IsWgcStartupCandidateCadenceAtOrAboveCfrTarget(size_t candidateCount, int64_t candidateSpanQpc,
+                                                           int64_t targetIntervalQpc) {
+    // Startup min-window telemetry includes the pre-live settling gap and can therefore classify an
+    // otherwise healthy VRR source differently from run to run. Use the candidates collected inside
+    // the bounded reserve wait as a second, local cadence proof. Three frames avoid treating a single
+    // coincidental pair as sustained cadence.
+    if (candidateCount < 3 || candidateSpanQpc <= 0 || targetIntervalQpc <= 0) {
+        return false;
+    }
+
+    const int64_t intervalCount = static_cast<int64_t>(candidateCount - 1);
+    const int64_t averageIntervalQpc = candidateSpanQpc / intervalCount;
+    const int64_t remainder = candidateSpanQpc % intervalCount;
+    const int64_t roundedUpAverageIntervalQpc = averageIntervalQpc + (remainder != 0 ? 1 : 0);
+    return roundedUpAverageIntervalQpc <= targetIntervalQpc;
+}
+
 inline int64_t GetWgcStartupBarrierQpc(int64_t nowQpc, int64_t targetIntervalTicks) {
     if (nowQpc <= 0 || targetIntervalTicks <= 0) {
         return nowQpc;

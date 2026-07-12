@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-12 (GTA post-FSR DLSS-suspend proof lifetime, Streamline-wrapped FFX owner-queue routing, FG overlay transition/performance invariants, process-loopback restart live join, capture-method/injection independence, HAGS-on capture contention hardening, strict true-10-bit DXGI/WGC capture, multi-track audio, and capture reliability; see frame-generation/guardrails.md, multi-audio-capture.md, dx12-injection-bootstrap.md, performance-priority.md, wgc-capture.md, cfr-capture-sync.md, regression-testing-and-logging.md, and log/recent.md)
+Last cross-checked: 2026-07-12 (GTA post-FSR DLSS-suspend proof lifetime, Streamline-wrapped FFX owner-queue routing, FG overlay transition/performance invariants, ordered process-loopback exit and route-local compensation, WGC startup-cadence determinism, capture-method/injection independence, HAGS-on capture contention hardening, strict true-10-bit DXGI/WGC capture, and capture reliability; see frame-generation/guardrails.md, multi-audio-capture.md, dx12-injection-bootstrap.md, performance-priority.md, wgc-capture.md, cfr-capture-sync.md, regression-testing-and-logging.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -57,7 +57,7 @@ Primary sources:
 - `regression-testing-and-logging.md`
   - Regression coverage expectations and deterministic capture runners, including the fast zero-drift gate, overload/long-soak profiles, and HAGS-on 4K120 contention gate. Last verified 2026-07-12.
 - `multi-audio-capture.md`
-  - Multi system audio (`[Audio.N]`), multi microphone (`[Microphone.N]`), and app audio capture, including worker-owned WASAPI lifecycle/reactivation, bounded validated packet delivery, no-wait final drain, and audio-only stop-tail preservation. Last verified 2026-07-11. Stale-risk: medium (runtime device matrices remain necessary).
+  - Multi system audio (`[Audio.N]`), multi microphone (`[Microphone.N]`), and app audio capture, including ordered process-loopback exit, route-local compensation, worker-owned WASAPI lifecycle/reactivation, bounded validated packet delivery, no-wait final drain, and audio-only stop-tail preservation. Last verified 2026-07-12. Stale-risk: medium (runtime device matrices remain necessary).
 - `wgc-capture.md`
   - WGC and DXGI Desktop Duplication backends, including callback epochs, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and hardware-cursor-aware duplication. Last verified 2026-07-12. Stale-risk: medium.
 - `cfr-capture-sync.md`

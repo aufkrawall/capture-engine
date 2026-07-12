@@ -875,6 +875,15 @@ inline bool ShouldTreatSparseStartedSourceAsSilence(bool isCfrRecording, bool so
     return isCfrRecording && sourceTimelineValid && sourceBootstrapComplete && !optionalUnstartedSource;
 }
 
+inline bool ShouldTreatInactiveStartedAppCaptureAsSilence(bool isCfrRecording, bool isAppAudioSource,
+                                                          bool sourceHasStarted, bool captureActive) {
+    // Once a process-loopback source has participated in the recording, its process may exit while
+    // other sources on the same track continue. No more packets can arrive from an inactive client,
+    // so waiting for a full pull chunk can only stall the whole track. Drain any buffered tail and
+    // represent the rest of the absolute timeline as silence; a later capture epoch live-joins again.
+    return isCfrRecording && isAppAudioSource && sourceHasStarted && !captureActive;
+}
+
 inline bool ShouldBootstrapPacketlessSourceAsSilence(bool isCfrRecording, bool sourceTimelineValid,
                                                      size_t bufferedRealSamples, int64_t targetTimelineSamples,
                                                      size_t requiredRealSamples) {

@@ -7935,21 +7935,30 @@ void EncoderThreadFunc(const AppConfig& config) {
                     // dependent judder). Pin to the measured jitter floor when that is shallower. Sync-neutral:
                     // the extra delay is absorbed by the live-start schedule offset; audio stays anchored to
                     // avContentDelay. Sources BELOW the CFR target keep the deep reservoir (lull absorption).
-                    const bool startupSourceAtOrAboveCfr =
+                    const bool startupMinWindowSourceAtOrAboveCfr =
                         g_WgcCap && ce::capture_policy::IsWgcIngressSourceAtOrAboveCfrTarget(
                                         std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps)),
                                         g_WgcCap->GetInputMin250Fps(), g_WgcCap->GetInputMin500Fps());
+                    const bool startupCandidateCadenceAtOrAboveCfr =
+                        ce::capture_policy::IsWgcStartupCandidateCadenceAtOrAboveCfrTarget(
+                            startupCandidates.size(), startupReserveSelection.reserveSpanQpc, targetIntervalTicks);
+                    const bool startupSourceAtOrAboveCfr =
+                        startupMinWindowSourceAtOrAboveCfr || startupCandidateCadenceAtOrAboveCfr;
                     wgcSmoothnessActiveDelayQpc = ce::capture_policy::ResolveWgcStartupSmoothnessActiveDelayQpc(
                         pileupSmoothnessActiveDelayQpc, wgcSmoothnessFloorDelayQpc, startupPartialReserveFallback,
                         startupSourceAtOrAboveCfr);
                     if (wgcSmoothnessActiveDelayQpc < pileupSmoothnessActiveDelayQpc) {
                         LogInfo(
                             "[EncoderThread] WGC startup underfed active-delay capped to measured jitter floor: "
-                            "pileupUs=%lld cappedUs=%lld floorUs=%lld reason=%s (avoids startup-timing-dependent "
-                            "deep-lock repeat clustering; sync-neutral)",
+                            "pileupUs=%lld cappedUs=%lld floorUs=%lld minWindowProof=%d candidateProof=%d "
+                            "candidates=%zu candidateSpanUs=%lld reason=%s (avoids startup-timing-dependent deep-lock "
+                            "repeat clustering; sync-neutral)",
                             static_cast<long long>(qpcDeltaToUs(pileupSmoothnessActiveDelayQpc)),
                             static_cast<long long>(qpcDeltaToUs(wgcSmoothnessActiveDelayQpc)),
                             static_cast<long long>(qpcDeltaToUs(wgcSmoothnessFloorDelayQpc)),
+                            startupMinWindowSourceAtOrAboveCfr ? 1 : 0,
+                            startupCandidateCadenceAtOrAboveCfr ? 1 : 0, startupCandidates.size(),
+                            static_cast<long long>(qpcDeltaToUs(startupReserveSelection.reserveSpanQpc)),
                             wgcStartupReserveReason.c_str());
                     } else if (startupPartialReserveFallback) {
                         // The fortistutter session showed this decision silently NOT engaging because the
@@ -7958,11 +7967,15 @@ void EncoderThreadFunc(const AppConfig& config) {
                         // cap is diagnosable instead of invisible.
                         LogInfo(
                             "[EncoderThread] WGC startup underfed active-delay cap NOT engaged: pileupUs=%lld "
-                            "floorUs=%lld sourceAtOrAboveCfr=%d inputMin250=%u inputMin500=%u outputFps=%u "
+                            "floorUs=%lld sourceAtOrAboveCfr=%d minWindowProof=%d candidateProof=%d "
+                            "candidates=%zu candidateSpanUs=%lld inputMin250=%u inputMin500=%u outputFps=%u "
                             "reason=%s (deep pile-up lock retained for lull absorption)",
                             static_cast<long long>(qpcDeltaToUs(pileupSmoothnessActiveDelayQpc)),
                             static_cast<long long>(qpcDeltaToUs(wgcSmoothnessFloorDelayQpc)),
-                            startupSourceAtOrAboveCfr ? 1 : 0, g_WgcCap ? g_WgcCap->GetInputMin250Fps() : 0u,
+                            startupSourceAtOrAboveCfr ? 1 : 0, startupMinWindowSourceAtOrAboveCfr ? 1 : 0,
+                            startupCandidateCadenceAtOrAboveCfr ? 1 : 0, startupCandidates.size(),
+                            static_cast<long long>(qpcDeltaToUs(startupReserveSelection.reserveSpanQpc)),
+                            g_WgcCap ? g_WgcCap->GetInputMin250Fps() : 0u,
                             g_WgcCap ? g_WgcCap->GetInputMin500Fps() : 0u, static_cast<uint32_t>(config.video.fps),
                             wgcStartupReserveReason.c_str());
                     }

@@ -528,6 +528,22 @@ TEST(CapturePipelinePolicyTest, WgcStartupActiveDelayCapsUnderfedPileupToJitterF
               2220000);
 }
 
+TEST(CapturePipelinePolicyTest, WgcStartupCandidateCadenceIgnoresPreLiveMinWindowPollution) {
+    constexpr int64_t targetIntervalQpc = 1000;
+
+    EXPECT_TRUE(policy::IsWgcStartupCandidateCadenceAtOrAboveCfrTarget(
+        /*candidateCount=*/30, /*candidateSpanQpc=*/29 * targetIntervalQpc, targetIntervalQpc));
+    EXPECT_TRUE(policy::IsWgcStartupCandidateCadenceAtOrAboveCfrTarget(
+        /*candidateCount=*/30, /*candidateSpanQpc=*/24 * targetIntervalQpc, targetIntervalQpc));
+    EXPECT_FALSE(policy::IsWgcStartupCandidateCadenceAtOrAboveCfrTarget(
+        /*candidateCount=*/30, /*candidateSpanQpc=*/30 * targetIntervalQpc, targetIntervalQpc));
+
+    // A single pair is too fragile to override the longer min-window evidence.
+    EXPECT_FALSE(policy::IsWgcStartupCandidateCadenceAtOrAboveCfrTarget(2, targetIntervalQpc, targetIntervalQpc));
+    EXPECT_FALSE(policy::IsWgcStartupCandidateCadenceAtOrAboveCfrTarget(30, 0, targetIntervalQpc));
+    EXPECT_FALSE(policy::IsWgcStartupCandidateCadenceAtOrAboveCfrTarget(30, 29 * targetIntervalQpc, 0));
+}
+
 TEST(CapturePipelinePolicyTest, WgcStartupReserveWaitBudgetExtendsForSmoothnessReservoir) {
     EXPECT_EQ(policy::GetWgcStartupReserveWaitBudgetQpc(/*startupContentDelayTargetQpc=*/2700,
                                                         /*targetIntervalTicks=*/100,

@@ -67,6 +67,35 @@ TEST(AudioCaptureSourceTest, AppAudioPacketsCarryActivationEpochIntoAtomicRouteR
     EXPECT_NE(mediaSource.find("sourceTimestamps[srcIdx] = 0"), std::string::npos);
 }
 
+TEST(AudioCaptureSourceTest, AppAudioCaptureEndMarkerOrdersEveryFanoutRouteBeforeTimelineSilence) {
+    const std::string appSource = ReadSource("app_audio_capture.cpp");
+    const std::string mediaSource = ReadSource("mediaengine.cpp");
+    ASSERT_FALSE(appSource.empty());
+    ASSERT_FALSE(mediaSource.empty());
+
+    const size_t dataQueue = appSource.find("packetQueue.emplace_back(std::move(packet));");
+    const size_t endMarker = appSource.find("endMarker.endOfStream = true");
+    const size_t endMarkerQueue = appSource.find("packetQueue.emplace_back(std::move(endMarker));", endMarker);
+    ASSERT_NE(dataQueue, std::string::npos);
+    ASSERT_NE(endMarker, std::string::npos);
+    ASSERT_NE(endMarkerQueue, std::string::npos);
+    EXPECT_LT(dataQueue, endMarker);
+    EXPECT_LT(endMarker, endMarkerQueue);
+
+    const size_t fanout = mediaSource.find("captureFanoutQueues[routeIdx].push_back(packet)");
+    const size_t routeEnd = mediaSource.find("if (gotPacket && packet.endOfStream)");
+    const size_t routeResume = mediaSource.find("src.appCaptureRouteEnded->exchange(false", routeEnd);
+    ASSERT_NE(fanout, std::string::npos);
+    ASSERT_NE(routeEnd, std::string::npos);
+    ASSERT_NE(routeResume, std::string::npos);
+    EXPECT_LT(fanout, routeEnd);
+    EXPECT_LT(routeEnd, routeResume);
+    EXPECT_NE(mediaSource.find("src.appCaptureRouteEnded->store(true", routeEnd), std::string::npos);
+    EXPECT_NE(mediaSource.find("src.timelineValid = true", routeEnd), std::string::npos);
+    EXPECT_NE(mediaSource.find("src.sourceType != AudioConfig::AppAudio || appCaptureRouteEnded"),
+              std::string::npos);
+}
+
 TEST(AudioCaptureSourceTest, AppAudioStopDrainsAlreadyCommittedPacketsWithoutRecovery) {
     const std::string source = ReadSource("app_audio_capture.cpp");
     ASSERT_FALSE(source.empty());
@@ -339,11 +368,14 @@ TEST(AudioCaptureSourceTest, StartupQueueDropsPreAnchorPacketsInBoundedBatchesBe
     EXPECT_NE(source.find("batchedDiscards < kMaxPreStartDiscardBatchPackets", batch), std::string::npos);
 }
 
-TEST(AudioCaptureSourceTest, AppBacklogDrainUsesWorstBufferedRouteInSharedCaptureGroup) {
+TEST(AudioCaptureSourceTest, AppBacklogDrainCannotStarveRouteFromDelayedSharedCaptureSibling) {
     const std::string source = ReadSource("mediaengine.cpp");
     ASSERT_FALSE(source.empty());
 
-    EXPECT_NE(source.find("int64_t GetCaptureGroupMaxBufferedSamples(size_t srcIdx) const"), std::string::npos);
-    EXPECT_NE(source.find("GetCaptureGroupMaxBufferedSamples(srcIdx)"), std::string::npos);
-    EXPECT_NE(source.find("const int64_t compensationBufferedSamples"), std::string::npos);
+    EXPECT_EQ(source.find("GetCaptureGroupMaxBufferedSamples"), std::string::npos);
+    EXPECT_NE(source.find("const int64_t compensationBufferedSamples = rbLevel"), std::string::npos);
+    EXPECT_NE(source.find("GetCaptureGroupBufferedSampleRange(srcIdx)"), std::string::npos);
+    EXPECT_NE(source.find("Applying route-local compensation so a delayed sibling cannot starve this"),
+              std::string::npos);
+    EXPECT_NE(source.find("ShouldTreatInactiveStartedAppCaptureAsSilence"), std::string::npos);
 }

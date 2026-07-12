@@ -278,6 +278,27 @@ TEST(AudioSyncUtilsTest, CfrAppAudioBacklogDrainUsesAppPitchCapForElevatedExcess
               ce::audio::ComputeTier1CompensationDelta(kTenSecondWindowSamples, kTenSecondWindowSamples, 0.5));
 }
 
+TEST(AudioSyncUtilsTest, SharedCaptureSiblingBacklogMustNotDriveHealthyRouteCompensation) {
+    constexpr int64_t kRate = 48000;
+    constexpr int64_t kTarget = kRate * 100 / 1000;
+    constexpr int64_t kHealthyRouteBuffer = kRate * 105 / 1000;
+    constexpr int64_t kDelayedSiblingBuffer = kRate * 1600 / 1000;
+    constexpr int64_t kSlack = kRate * 20 / 1000;
+    constexpr int64_t kDeadband = kRate * 10 / 1000;
+
+    const auto healthyRoute = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
+        true, true, false, true, false, kHealthyRouteBuffer, kTarget, kRate / 64, kRate * 10, 0.5, kSlack,
+        kDeadband);
+    const auto delayedSibling = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
+        true, true, false, true, false, kDelayedSiblingBuffer, kTarget, kRate / 64, kRate * 10, 0.5, kSlack,
+        kDeadband);
+
+    EXPECT_FALSE(healthyRoute.active);
+    EXPECT_EQ(healthyRoute.compensationDelta, 0);
+    EXPECT_TRUE(delayedSibling.active);
+    EXPECT_GT(delayedSibling.compensationDelta, 0);
+}
+
 TEST(AudioSyncUtilsTest, CfrAppAudioBacklogDrainRequiresEligibleAppCfrState) {
     constexpr int64_t kRate = 48000;
     constexpr int64_t kTarget = kRate * 140 / 1000;
@@ -604,6 +625,25 @@ TEST(AudioSyncUtilsTest, StartedSparseTimelineSourcesMayContributeSilence) {
     EXPECT_TRUE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(true, 0));
     EXPECT_FALSE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(true, 1));
     EXPECT_FALSE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(false, 0));
+}
+
+TEST(AudioSyncUtilsTest, InactiveStartedAppCaptureBecomesNonBlockingTimelineSilence) {
+    EXPECT_TRUE(ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(
+        /*isCfrRecording*/ true, /*isAppAudioSource*/ true, /*sourceHasStarted*/ true,
+        /*captureActive*/ false));
+    EXPECT_FALSE(ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(true, true, true, true));
+    EXPECT_FALSE(ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(true, true, false, false));
+    EXPECT_FALSE(ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(false, true, true, false));
+    EXPECT_FALSE(ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(true, false, true, false));
+
+    const bool inactiveSourceMaySilence = ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(
+        true, true, true, false);
+    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(
+        true, false, false, inactiveSourceMaySilence, /*requestedSamples*/ 48000 * 2,
+        /*bufferedTimelineSamples*/ 0));
+    EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(
+        true, true, false, inactiveSourceMaySilence, /*requestedSamples*/ 48000 * 2,
+        /*bufferedTimelineSamples*/ 0));
 }
 
 TEST(AudioSyncUtilsTest, PacketlessTimelineSourceCanBootstrapAsSilence) {

@@ -1369,6 +1369,23 @@ void AppAudioCapture::CaptureLoop() {
                 targetPID.load(), static_cast<unsigned long long>(queueDropPackets),
                 static_cast<unsigned long long>(queueDropFrames));
     }
+    try {
+        AudioPacket endMarker;
+        endMarker.captureEpoch = captureEpoch.load(std::memory_order_acquire);
+        endMarker.endOfStream = true;
+        size_t markerQueueDepth = 0;
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            // The marker is ordered after every captured packet and is not subject to the data-packet
+            // retention bound. Downstream fan-out observes it only after every route has received the tail.
+            packetQueue.emplace_back(std::move(endMarker));
+            markerQueueDepth = packetQueue.size();
+        }
+        DLL_Log("[AppAudioCapture] Queued ordered capture-end marker: epoch=%llu queueDepth=%zu",
+                static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)), markerQueueDepth);
+    } catch (const std::exception& error) {
+        DLL_Log("[AppAudioCapture] ERROR: Failed to queue ordered capture-end marker: %s", error.what());
+    }
     isCapturing.store(false);
     startPendingValid.store(false, std::memory_order_release);
     if (SUCCEEDED(coInitHr)) {

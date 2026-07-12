@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string>
@@ -119,6 +120,7 @@ public:
         uint64_t lastPacketTimelineAdjustWarnTick = 0;
         uint64_t lastAppPlaceDiagTick = 0;    // Throttle app-source placement-divergence diagnostics
         uint64_t lastAppConsumeDiagTick = 0;  // Throttle app-source consume/drain diagnostics
+        uint64_t lastCaptureGroupDivergenceWarnTick = 0;
         // App-audio latency observability: the ring backlog at consume time IS the audio-behind-video
         // delay. Sampled every pull so the recording-wide distribution (and any elevated/variable
         // latency) is obvious in the logs instead of needing manual reconstruction.
@@ -162,6 +164,7 @@ public:
         // capture per route creates independent startup queues and clock phases.
         size_t configuredSourceIndex = std::numeric_limits<size_t>::max();
         size_t captureFanoutOwnerIndex = std::numeric_limits<size_t>::max();
+        std::shared_ptr<std::atomic<bool>> appCaptureRouteEnded = std::make_shared<std::atomic<bool>>(false);
 
         size_t ringBufferPeakSamples = 0;
         uint32_t ringBufferUnderrunCount = 0;
@@ -512,12 +515,19 @@ public:
                 const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
                 const bool optionalUnstarted = ce::audio::IsOptionalUnstartedAppAudioSource(
                     isAppAudioSource, src.timelineValid, src.sawSyncPendingPackets);
+                const bool appCaptureRouteEnded =
+                    src.appCaptureRouteEnded && src.appCaptureRouteEnded->load(std::memory_order_acquire);
+                const bool inactiveStartedAppSourceMaySilence =
+                    ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(
+                        true, isAppAudioSource, src.timelineValid || src.sawSyncPendingPackets,
+                        !appCaptureRouteEnded);
                 const bool sparseStartedSourceCanSilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
                     true, src.timelineValid, src.bootstrapComplete, optionalUnstarted, true);
                 const bool strictSource = src.sourceType != AudioConfig::Microphone;
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
                 const bool sparseStartedSourceMaySilence = ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
-                    sparseStartedSourceCanSilence, bufferedTimelineSamples);
+                    sparseStartedSourceCanSilence, bufferedTimelineSamples) ||
+                    inactiveStartedAppSourceMaySilence;
                 if (ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, strictSource, optionalUnstarted,
                                                                   sparseStartedSourceMaySilence, requestedSamples,
                                                                   bufferedTimelineSamples)) {
@@ -714,7 +724,9 @@ public:
             src.alignedStartMs = -1;
             src.observedLateStartMs = 0;
             src.hasAlignedStart = false;
-            src.timelineValid = src.sourceType != AudioConfig::AppAudio;
+            const bool appCaptureRouteEnded =
+                src.appCaptureRouteEnded && src.appCaptureRouteEnded->load(std::memory_order_acquire);
+            src.timelineValid = src.sourceType != AudioConfig::AppAudio || appCaptureRouteEnded;
             src.isPrimed = false;
             src.bootstrapComplete = false;
             src.pendingUnderrunRecoveryFade = false;
@@ -2946,6 +2958,12 @@ public:
                 const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
                 const bool optionalUnstarted = ce::audio::IsOptionalUnstartedAppAudioSource(
                     isAppAudioSource, src.timelineValid, src.sawSyncPendingPackets);
+                const bool appCaptureRouteEnded =
+                    src.appCaptureRouteEnded && src.appCaptureRouteEnded->load(std::memory_order_acquire);
+                const bool inactiveStartedAppSourceMaySilence =
+                    ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(
+                        isCfrRecording, isAppAudioSource, src.timelineValid || src.sawSyncPendingPackets,
+                        !appCaptureRouteEnded);
                 const bool sparseStartedSourceCanSilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
                     isCfrRecording, src.timelineValid, src.bootstrapComplete, optionalUnstarted, finalStopDrain);
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
@@ -2953,7 +2971,8 @@ public:
                     ce::audio::kDefaultAudioPullQuantumSamples * 4;
                 const bool sparseStartedSourceMaySilence = ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
                     sparseStartedSourceCanSilence, bufferedTimelineSamples, samplesToEncode,
-                    kSparseStartedPartialSilenceThresholdSamples);
+                    kSparseStartedPartialSilenceThresholdSamples) ||
+                    inactiveStartedAppSourceMaySilence;
                 if (!trackLargeBacklogDrain &&
                     ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(isCfrRecording, forceDrain, optionalUnstarted,
                                                                       sparseStartedSourceMaySilence, samplesToEncode,
@@ -2973,10 +2992,10 @@ public:
                     dropLogCounter++ % 500 == 0) {
                     DLL_Log(
                         "[PullAudio] Timeline source gap silence: track=%d src=%zu buffered=%zu requested=%lld "
-                        "target=%lldms encoded=%lld. Source contributes available samples plus silence for missing "
-                        "range.",
+                        "target=%lldms encoded=%lld inactiveApp=%d. Source contributes available samples plus silence "
+                        "for missing range.",
                         track, srcIdx, bufferedTimelineSamples, samplesToEncode, trackAudioTargetMs,
-                        trackCursorSamples);
+                        trackCursorSamples, inactiveStartedAppSourceMaySilence ? 1 : 0);
                 }
             }
             if (deferForSourceBuffer) {
@@ -3045,11 +3064,7 @@ public:
                     const int64_t expectedLeadSamplesForCorrection =
                         std::max<int64_t>(targetLatencySamples,
                                           kBaseTargetLatencySamples + (effectiveWgcDriftLagMs * SAMPLE_RATE / 1000));
-                    const int64_t appDrainBudgetSamples =
-                        src.sourceType == AudioConfig::AppAudio
-                            ? std::max<int64_t>(static_cast<int64_t>(rbAvailable),
-                                                GetCaptureGroupMaxBufferedSamples(srcIdx))
-                            : static_cast<int64_t>(rbAvailable);
+                    const int64_t appDrainBudgetSamples = static_cast<int64_t>(rbAvailable);
                     const auto appAudioDrainBudgetDecision = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
                         isCfrRecording, src.sourceType == AudioConfig::AppAudio, forceDrain, trackStartupSettled,
                         startupTimelineProtected, appDrainBudgetSamples, expectedLeadSamplesForCorrection,
@@ -3218,10 +3233,28 @@ public:
                     // the explicit exception: it pulls process-loopback content back toward the live target.
                     {
                         const int64_t rbLevel = static_cast<int64_t>(rbAvailable);
-                        const int64_t compensationBufferedSamples =
-                            src.sourceType == AudioConfig::AppAudio
-                                ? std::max<int64_t>(rbLevel, GetCaptureGroupMaxBufferedSamples(srcIdx))
-                                : rbLevel;
+                        const int64_t compensationBufferedSamples = rbLevel;
+                        if (src.sourceType == AudioConfig::AppAudio && src.captureFanoutOwnerIndex == srcIdx) {
+                            const auto [groupMinSamples, groupMaxSamples] = GetCaptureGroupBufferedSampleRange(srcIdx);
+                            constexpr int64_t kCaptureGroupDivergenceWarnSamples = SAMPLE_RATE / 20;
+                            const int64_t groupSpreadSamples = groupMaxSamples - groupMinSamples;
+                            const uint64_t nowGroupTick = GetTickCount64();
+                            if (groupSpreadSamples >= kCaptureGroupDivergenceWarnSamples &&
+                                nowGroupTick - src.lastCaptureGroupDivergenceWarnTick >= 5000) {
+                                AppAudioCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
+                                DLL_Log(
+                                    "[AudioRoute] WARNING: shared app capture route backlog diverged owner=%zu "
+                                    "process=%s min=%lld max=%lld spread=%lld (%.1fms) captureActive=%d. "
+                                    "Applying route-local compensation so a delayed sibling cannot starve this "
+                                    "route.",
+                                    srcIdx, src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
+                                    static_cast<long long>(groupMinSamples), static_cast<long long>(groupMaxSamples),
+                                    static_cast<long long>(groupSpreadSamples),
+                                    static_cast<double>(groupSpreadSamples) * 1000.0 / SAMPLE_RATE,
+                                    routedCapture && routedCapture->IsCapturing() ? 1 : 0);
+                                src.lastCaptureGroupDivergenceWarnTick = nowGroupTick;
+                            }
+                        }
                         if (compensationBufferedSamples >= kMinCompensationBufferSamples) {
                             const int64_t expectedLead = expectedLeadSamplesForCorrection;
                             const int64_t trueDrift = compensationBufferedSamples - expectedLead;
@@ -4660,20 +4693,23 @@ private:
         return audioSources[ownerIdx].appCapture.get();
     }
 
-    int64_t GetCaptureGroupMaxBufferedSamples(size_t srcIdx) const {
+    std::pair<int64_t, int64_t> GetCaptureGroupBufferedSampleRange(size_t srcIdx) const {
         if (srcIdx >= audioSources.size()) {
-            return 0;
+            return {0, 0};
         }
         const size_t ownerIdx = audioSources[srcIdx].captureFanoutOwnerIndex;
+        int64_t minimum = std::numeric_limits<int64_t>::max();
         int64_t maximum = 0;
         for (const auto& route : audioSources) {
             if (route.captureFanoutOwnerIndex != ownerIdx || !route.ringBuffer) {
                 continue;
             }
             const size_t channels = static_cast<size_t>(std::max(1, route.mixChannels));
-            maximum = std::max<int64_t>(maximum, static_cast<int64_t>(route.ringBuffer->GetAvailable() / channels));
+            const int64_t bufferedSamples = static_cast<int64_t>(route.ringBuffer->GetAvailable() / channels);
+            minimum = std::min(minimum, bufferedSamples);
+            maximum = std::max(maximum, bufferedSamples);
         }
-        return maximum;
+        return {minimum == std::numeric_limits<int64_t>::max() ? 0 : minimum, maximum};
     }
 
     // Shared initialization for ring buffer and sync resampler on an AudioSource.
@@ -4931,7 +4967,9 @@ private:
                         src.alignedStartMs = -1;
                         src.observedLateStartMs = 0;
                         src.hasAlignedStart = false;
-                        src.timelineValid = src.sourceType != AudioConfig::AppAudio;
+                        const bool appCaptureRouteEnded =
+                            src.appCaptureRouteEnded && src.appCaptureRouteEnded->load(std::memory_order_acquire);
+                        src.timelineValid = src.sourceType != AudioConfig::AppAudio || appCaptureRouteEnded;
                         src.isPrimed = false;
                         src.bootstrapComplete = false;
                         src.pendingUnderrunRecoveryFade = false;
@@ -5075,7 +5113,32 @@ private:
                     }
                 }
 
+                if (gotPacket && packet.endOfStream) {
+                    if (src.appCaptureRouteEnded) {
+                        src.appCaptureRouteEnded->store(true, std::memory_order_release);
+                    }
+                    src.timelineValid = true;
+                    gotAnyPacket = true;
+                    DLL_Log(
+                        "[AudioRoute] Ordered app capture end reached src=%zu track=%d process=%s epoch=%llu "
+                        "buffered=%zu; future source gaps are timeline silence until a new epoch live-joins",
+                        srcIdx, src.track,
+                        src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
+                        static_cast<unsigned long long>(packet.captureEpoch), GetBufferedTimelineSamples(src));
+                    continue;
+                }
+
                 if (gotPacket && !packet.data.empty()) {
+                    const bool resumedAfterEnd =
+                        src.appCaptureRouteEnded && src.appCaptureRouteEnded->exchange(false, std::memory_order_acq_rel);
+                    if (resumedAfterEnd) {
+                        DLL_Log(
+                            "[AudioRoute] App capture packet resumed after ordered end src=%zu track=%d process=%s "
+                            "epoch=%llu; applying normal epoch/live-join policy",
+                            srcIdx, src.track,
+                            src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
+                            static_cast<unsigned long long>(packet.captureEpoch));
+                    }
                     const uint64_t previousCaptureEpoch = sourceCaptureEpochs[srcIdx];
                     const bool captureEpochTransition = ce::audio::IsAppAudioCaptureEpochTransition(
                         src.sourceType == AudioConfig::AppAudio, previousCaptureEpoch, packet.captureEpoch);
