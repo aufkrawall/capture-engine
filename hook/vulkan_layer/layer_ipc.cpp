@@ -286,7 +286,7 @@ bool LayerIPC_IsCaptureRequested() {
     auto* mem = g_IPCClient.GetSharedMem();
     if (!mem)
         return false;
-    return mem->runtimeState.captureRequested.load(std::memory_order_relaxed);
+    return mem->runtimeState.IsInjectVideoCaptureRequested();
 }
 
 // Set capture active status

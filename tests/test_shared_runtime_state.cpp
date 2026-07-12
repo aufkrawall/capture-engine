@@ -37,6 +37,22 @@ TEST(CaptureStateTest, CaptureRequestAndRecordingVisibilityAreIndependent) {
     EXPECT_TRUE(state.isRecording.load(std::memory_order_relaxed));
 }
 
+TEST(CaptureStateTest, InjectVideoRequestRequiresSessionAndActiveInjectPath) {
+    CaptureState state;
+
+    EXPECT_FALSE(state.IsInjectVideoCaptureRequested());
+
+    state.captureRequested.store(true, std::memory_order_release);
+    EXPECT_FALSE(state.IsInjectVideoCaptureRequested());
+
+    state.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, true);
+    EXPECT_TRUE(state.IsInjectVideoCaptureRequested());
+
+    state.captureRequested.store(false, std::memory_order_release);
+    EXPECT_FALSE(state.IsInjectVideoCaptureRequested());
+    EXPECT_TRUE(state.HasRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested));
+}
+
 TEST(CaptureStateTest, WgcDiagnosticsFieldsDefaultToZero) {
     CaptureState state;
 
@@ -163,30 +179,45 @@ TEST(SharedDefsTest, ValidateSharedMemoryRejectsBadHeaderAndAcceptsDefaultLayout
     EXPECT_FALSE(ValidateSharedMemory(&sharedMemory));
 }
 
-TEST(InjectOverlayPolicyTest, WgcWithoutOverlayTargetsDisablesInjection) {
+TEST(InjectOverlayPolicyTest, WgcKeepsFullInjectionWhitelistIndependentOfVideoMethod) {
     AppConfig config;
     config.captureMethod = "wgc";
     config.gameWhitelist.push_back({.pattern = "game.exe"});
-
-    const InjectorConfigState state = BuildInjectorConfigState(config);
-
-    EXPECT_FALSE(state.allowInjection);
-    EXPECT_TRUE(state.config.gameWhitelist.empty());
-    EXPECT_TRUE(state.config.overlayWhitelist.empty());
-}
-
-TEST(InjectOverlayPolicyTest, WgcOverlayOnlyInjectionKeepsOverlayTargetsOnly) {
-    AppConfig config;
-    config.captureMethod = "wgc";
-    config.gameWhitelist.push_back({.pattern = "game.exe"});
-    config.overlayWhitelist.push_back({.pattern = "SocialClubD3D12Renderer.dll"});
 
     const InjectorConfigState state = BuildInjectorConfigState(config);
 
     EXPECT_TRUE(state.allowInjection);
-    EXPECT_TRUE(state.config.gameWhitelist.empty());
+    ASSERT_EQ(state.config.gameWhitelist.size(), 1u);
+    EXPECT_EQ(state.config.gameWhitelist[0].pattern, "game.exe");
+    EXPECT_TRUE(state.config.overlayWhitelist.empty());
+}
+
+TEST(InjectOverlayPolicyTest, WgcKeepsFullAndOverlayOnlyTargetsSeparate) {
+    AppConfig config;
+    config.captureMethod = "wgc";
+    config.gameWhitelist.push_back({.pattern = "game.exe"});
+    config.overlayWhitelist.push_back({.pattern = "overlay-only.exe"});
+
+    const InjectorConfigState state = BuildInjectorConfigState(config);
+
+    EXPECT_TRUE(state.allowInjection);
+    ASSERT_EQ(state.config.gameWhitelist.size(), 1u);
+    EXPECT_EQ(state.config.gameWhitelist[0].pattern, "game.exe");
     ASSERT_EQ(state.config.overlayWhitelist.size(), 1u);
-    EXPECT_EQ(state.config.overlayWhitelist[0].pattern, "SocialClubD3D12Renderer.dll");
+    EXPECT_EQ(state.config.overlayWhitelist[0].pattern, "overlay-only.exe");
+}
+
+TEST(InjectOverlayPolicyTest, DxgiDupKeepsFullInjectionWhitelistIndependentOfVideoMethod) {
+    AppConfig config;
+    config.captureMethod = "dxgi_dup";
+    config.gameWhitelist.push_back({.pattern = "game.exe"});
+
+    const InjectorConfigState state = BuildInjectorConfigState(config);
+
+    EXPECT_TRUE(state.allowInjection);
+    ASSERT_EQ(state.config.gameWhitelist.size(), 1u);
+    EXPECT_EQ(state.config.gameWhitelist[0].pattern, "game.exe");
+    EXPECT_TRUE(state.config.overlayWhitelist.empty());
 }
 
 TEST(InjectOverlayPolicyTest, AutoOverlayOnlyInjectionKeepsOverlayTargetForHooking) {
@@ -215,6 +246,25 @@ TEST(InjectOverlayPolicyTest, AutoInjectionKeepsGameAndOverlayTargetsSeparate) {
     ASSERT_EQ(state.config.overlayWhitelist.size(), 1u);
     EXPECT_EQ(state.config.gameWhitelist[0].pattern, "capture-game.exe");
     EXPECT_EQ(state.config.overlayWhitelist[0].pattern, "overlay-only.exe");
+}
+
+TEST(InjectOverlayPolicyTest, CaptureMethodChangesDoNotChangeInjectionPolicyOrAutoTargets) {
+    AppConfig autoConfig;
+    autoConfig.captureMethod = "auto";
+    autoConfig.gameWhitelist.push_back({.pattern = "capture-game.exe"});
+    autoConfig.overlayWhitelist.push_back({.pattern = "overlay-only.exe"});
+
+    AppConfig screenGrabConfig = autoConfig;
+    screenGrabConfig.captureMethod = "wgc";
+
+    const InjectorConfigState autoState = BuildInjectorConfigState(autoConfig);
+    const InjectorConfigState screenGrabState = BuildInjectorConfigState(screenGrabConfig);
+
+    EXPECT_TRUE(autoState.allowInjection);
+    EXPECT_TRUE(screenGrabState.allowInjection);
+    EXPECT_EQ(autoState.config.gameWhitelist, screenGrabState.config.gameWhitelist);
+    EXPECT_EQ(autoState.config.overlayWhitelist, screenGrabState.config.overlayWhitelist);
+    EXPECT_FALSE(ShouldRescanForConfigChange(autoConfig, autoState, screenGrabConfig, screenGrabState));
 }
 
 TEST(InjectOverlayPolicyTest, StandardInjectionKeepsGameWhitelist) {

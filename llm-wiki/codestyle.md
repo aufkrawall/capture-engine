@@ -1,8 +1,9 @@
 # Code Style
 
-Last cross-checked: 2026-04-11
+Last cross-checked: 2026-07-12
 
 Primary sources:
+- `AGENTS.md`
 - `.clang-format`
 - `.flake8`
 - `pyrightconfig.json`
@@ -15,7 +16,7 @@ This page records the style rules that are either tool-backed or strongly reflec
 ## Tool-Backed Rules
 
 ### C++
-- `clang-format` is based on Google style.
+- `.clang-format` is based on Google style, but it is descriptive guidance for existing files rather than permission to rewrite them wholesale.
 - Column limit is 120.
 - Indent width is 4 spaces and tabs are disabled.
 - Brace style is attached / K&R.
@@ -49,6 +50,10 @@ This page records the style rules that are either tool-backed or strongly reflec
 - Hooking code is not one-size-fits-all in this tree. Current subsystems use wrapper hooks plus typed hook helpers such as `HookSystem::TypedHook` and `CustomHook::TypedHook`. Match the local subsystem pattern instead of forcing a global hook abstraction rewrite.
 
 ## Practical Notes
-- Formatter config is high confidence and low stale risk.
+- Do not run `clang-format.exe -i`, `python build.py --format`, or another whole-file automatic formatter on existing source unless explicitly requested. The current tree contains legacy formatting and mixed stored line endings; an in-place whole-file pass can create large unrelated diffs even when the intended edit is narrow.
+- Preserve the touched file's existing formatting and line endings. Inspect `git diff --check` and the semantic `git diff` before building.
+- Perform the required full build once after the final code change set, not after every intermediate edit. Stage only task-owned paths; use `git add -A` only when every worktree change has been verified task-owned and safe.
+- Scope dump analysis, LSP cleanup, and wiki edits to the task/touched area. Update the wiki only for durable future-useful knowledge, and keep diagnostic logging high-signal and rate-limited.
+- Formatter configuration values are high confidence as style guidance, but automatic whole-file conformance is intentionally not assumed.
 - Naming and local-pattern guidance is medium confidence and should be re-checked against the files you touch.
-- If formatter output, local file style, and this page disagree, prefer formatter output plus the local subsystem's established pattern.
+- If formatter output, local file style, and this page disagree, preserve the local subsystem's established pattern unless the user explicitly requested a formatting migration.

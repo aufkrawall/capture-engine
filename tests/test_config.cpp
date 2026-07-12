@@ -100,6 +100,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     std::string generatedText = ReadTextFile(missingFile);
     ASSERT_FALSE(generatedText.empty());
     EXPECT_NE(generatedText.find("; capture_method - Values: inject, wgc, dxgi_dup, auto"), std::string::npos);
+    EXPECT_NE(generatedText.find("This selects only the video acquisition path"), std::string::npos);
     EXPECT_NE(generatedText.find("capture_method=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_skip_split_device_flush=false"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_same_device_capture=true"), std::string::npos);

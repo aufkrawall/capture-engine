@@ -8,19 +8,19 @@ Copyright (c) 2026 aufkrawall
 ## Critical workflow
 
 - Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools unless there is a clear reason not to!
-- After code changes, run `python build.py --skip-updates`; do not use `python build.py --version`!
+- After the final code change set is complete, run `python build.py --skip-updates`; do not rebuild after every small intermediate edit, and do not use `python build.py --version`!
 - For test-only runs without recompilation, use `python build.py --no-build --run-tests --skip-updates`
 - Always git commit after code changes!
+- Never run `clang-format.exe -i`, `python build.py --format`, or any whole-file automatic formatter on existing source files unless explicitly requested. Preserve existing formatting and line endings; keep edits narrowly scoped and inspect `git diff --check` / `git diff` before building!
 - Before committing, run relevant tests/unit tests and ensure build/test results succeed.
-- Commit completed code changes with plain git commands only: `git status`, `git add -A`, `git commit -m "<message>"`!
+- Commit completed task-owned changes with plain git commands only: `git status`, `git add -- <task-owned paths>`, `git commit -m "<message>"`. Use `git add -A` only after verifying every worktree change is task-owned and safe to commit!
 - Do not push to cloud unless explicitly requested, generally just commit locally!
-- Always consult `llm-wiki/` for code, bug, build, test, config, debugging, or behavior work!
-- Keep `llm-wiki/` linted / quality-checked and updated when durable project knowledge changes!
-- Always update `llm-wiki/` after code changes!
+- Always consult `llm-wiki/` for code, bug, build, test, config, debugging, or behavior work; for trivial localized work, read only the directly relevant page(s) when needed!
+- Keep `llm-wiki/` linted / quality-checked and update it when durable project knowledge changes. For trivial edits with no future-useful context, perform the semantic check but do not edit the wiki!
 - Mistrust code, code annotations and llm-wiki! Each of them might be stale or outdated! Come to your own conclusion and act based on that!
 - When fixing a bug or implementing a feature, generally always add new regression test units, or adjust existing ones!
-- When fixing a bug or implementing a feature, generally always increase or improve debug logging to make bug diagnosis easier!
-- The llm-wiki might not get upated after every change, the git commit history might be more up to date!
+- When fixing a bug or implementing a feature, add or improve high-signal, rate-limited debug logging when it materially helps diagnose state transitions, failures, or regressions; do not add unconditional hot-path noise!
+- The llm-wiki might not get updated after every change; the git commit history might be more up to date!
 
 ## Engineering rules
 
@@ -55,7 +55,7 @@ Copyright (c) 2026 aufkrawall
 
 ## Build, diagnostics, and tests
 
-- Fix pre-existing, as well as newly introduced LSP errors/warnings along they way!
+- Fix newly introduced LSP errors/warnings, plus pre-existing issues in touched files or issues that directly block the task; do not expand into unrelated repository-wide cleanup!
 - We are paranoid about having sufficient regression tests, better too many than too few!
 - Add focused regression tests where possible, especially tests that would have failed before the fix!
 - If no regression-test infrastructure exists for the area, consider adding suitable unit infrastructure such as GoogleTest!
@@ -65,12 +65,12 @@ Copyright (c) 2026 aufkrawall
 ## Debugging and logging
 
 - We are paranoid about having sufficient debug logging!
-- Add additional debug logging when it helps diagnose issue root causes, state transitions, failure modes, unexpected runtime conditions, or future regressions!
+- Add high-signal, rate-limited debug logging when it helps diagnose issue root causes, state transitions, failure modes, unexpected runtime conditions, or future regressions!
 - Ensure builds preserve useful debug symbols etc. so crash dumps contain actionable information!
 
 ## Windows debugging and binary analysis tools
 
-- Always analyze available .dmp crash dumps when they exist!
+- For crash/debugging work, always analyze relevant available `.dmp` crash dumps; do not inspect unrelated historical dumps during ordinary feature work!
 Use the correct symbol path that includes both the Microsoft symbol server AND the local PDB directory:
 ```
 cdb -z crash.dmp -y "srv*;%USERPROFILE%\Programme\build\captureproject\installed\captureengine" -c ".ecxr; k; q"

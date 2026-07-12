@@ -1,8 +1,9 @@
 # build.py
 
-Last cross-checked: 2026-05-16 (added: MinGW cross-compile pitfalls section)
+Last cross-checked: 2026-07-12 (aligned agent verification workflow and formatter constraints)
 
 Primary sources:
+- `AGENTS.md`
 - `build.py`
 
 ## Scope
@@ -11,14 +12,20 @@ Primary sources:
 ## Default Mode
 Running `python build.py --skip-updates`.
 
-## Canonical Post-Change Verification
-Use one command for normal post-change verification:
+## Required Agent Post-Change Verification
+After the final code change set is complete, run the required full product build once:
 
 ```powershell
-python build.py --verify --skip-updates
+python build.py --skip-updates
 ```
 
-Canonical verification mode is now the preferred agent/maintainer workflow after code changes because it keeps build, lint, unit-test, and sanitizer-cadence validation inside one top-level run and leaves a compact verification bundle behind for later inspection.
+Then run relevant tests against the freshly built binaries. The canonical full test-only command is:
+
+```powershell
+python build.py --no-build --run-tests --skip-updates
+```
+
+Do not repeat the full build after every small intermediate edit; use focused tests during iteration and perform the required full build on the final code set. `--verify` remains available as an explicit broader quality/sanitizer workflow, but it is not the default agent command required by `AGENTS.md`.
 
 Default quality mode currently:
 - bootstraps toolchain state as needed
@@ -36,7 +43,7 @@ Default quality mode currently:
 ### User-facing and advanced flags
 | Flag | Tier | Effect | Notes |
 | --- | --- | --- | --- |
-| `--verify` | user-facing | Run the canonical post-change verification flow | Enables lint, unit tests, and sanitizer regression cadence in one top-level run and emits a compact verification bundle under `build/verification/`. Prefer this after code changes. |
+| `--verify` | user-facing | Run the broader combined verification flow | Enables lint, unit tests, and sanitizer regression cadence in one top-level run and emits a compact verification bundle under `build/verification/`. Use when explicitly requested or when the additional quality/sanitizer scope is warranted; the required default agent build remains `python build.py --skip-updates`. |
 | `--skip-updates` | user-facing | Skip FFmpeg source update work when possible | On Windows, if FFmpeg is already built and `installed/captureengine/ffmpeg` exists, the script can skip the FFmpeg rebuild and just sync runtime DLLs. On Linux and WSL, FFmpeg comes from MSYS2 packages. |
 | `--run-tests` | user-facing | Build and run `tests/unit_tests.exe` | Unit test sources are compiled on every build anyway so `compile_commands.json` stays useful. This flag controls execution. |
 | `--gtest-filter=<expr>` | user-facing | Pass a GoogleTest filter through to `tests/unit_tests.exe` | Useful together with `--run-tests` for focused iteration on one suite or a few cases. |
@@ -44,7 +51,7 @@ Default quality mode currently:
 | `--run-integration-tests` | user-facing | Run smoke integration tests after the build | Also implies `--run-tests`. Before running, the script forces at least `log_level=debug` in `installed/captureengine/config.ini` if that file exists. |
 | `--full-integration` | user-facing | Run the full integration matrix | Implies `--run-integration-tests`, which also implies `--run-tests`. |
 | `--lint` | user-facing | Run `clang-format --dry-run -Werror`, `flake8`, and `pyright` | If passed alone, the script exits after linting. |
-| `--format` | user-facing | Run `clang-format -i` and `black` | If passed alone, the script exits after formatting. |
+| `--format` | user-facing | Run `clang-format -i` and `black` | If passed alone, the script exits after formatting. Do not use it on existing source files unless explicitly requested; whole-file formatting creates unrelated churn in the current tree. |
 | `--incremental` | user-facing | Reuse cached objects when possible | Default behavior is force rebuild. This flag disables that default. |
 | `--force-rebuild` | advanced | Delete `build/obj` before the normal build flow starts | Separate from the default `FORCE_REBUILD=1` behavior; this does an early physical cleanup of objects. |
 | `--sanitize` | user-facing | Build with ASan + UBSan | Disables LTO, sets sanitizer env flags, copies sanitizer runtime DLLs, and skips some x86 artifacts whose sanitizer runtime is unavailable. |

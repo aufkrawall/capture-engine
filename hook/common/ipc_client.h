@@ -17,9 +17,11 @@ public:
                               // metadata exists
     bool SignalInjectFrameReady();
 
-    // Check if host requested capture, including the short hidden startup warmup.
+    // Check whether the active video backend consumes injected frames, including
+    // the short hidden startup warmup. WGC/DXGI recordings still set the session's
+    // raw captureRequested bit for REC/limiter state, but do not enable hook copies.
     bool IsCaptureRequested() const {
-        return pSharedMem && pSharedMem->runtimeState.captureRequested.load(std::memory_order_acquire);
+        return pSharedMem && pSharedMem->runtimeState.IsInjectVideoCaptureRequested();
     }
 
     bool IsRecording() const {

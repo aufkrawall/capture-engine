@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-12 (HAGS-on capture contention hardening, strict true-10-bit DXGI/WGC capture, multi-track audio, capture reliability, and current Streamline/FG routing; see performance-priority.md, wgc-capture.md, cfr-capture-sync.md, regression-testing-and-logging.md, and log/recent.md)
+Last cross-checked: 2026-07-12 (capture-method/injection independence, HAGS-on capture contention hardening, strict true-10-bit DXGI/WGC capture, multi-track audio, capture reliability, and current Streamline/FG routing; see dx12-injection-bootstrap.md, performance-priority.md, wgc-capture.md, cfr-capture-sync.md, regression-testing-and-logging.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -35,13 +35,13 @@ Primary sources:
 - `current.md`
   - Compact current-state summary, current logging model, and token-efficient routing into the longer wiki pages.
 - `codestyle.md`
-  - Formatter-backed style rules, Python tooling config, and common tree conventions.
+  - Style/tooling rules, the no-whole-file-in-place-formatter constraint for existing sources, Python tooling config, and common tree conventions. Last verified 2026-07-12.
 - `build.py.md`
   - Supported `build.py` flags, interactions, environment variables, operational notes, and MinGW cross-compile pitfalls (INITGUID/PKEY, `mediaengine/audio_capture.cpp`).
 - `repo-map.md`
   - Top-level repo layout and subsystem ownership.
 - `dx12-injection-bootstrap.md`
-  - Current DX12 injection timing, hook bootstrap, and pseudo-overlay handoff behavior.
+  - Current DX12 injection timing, capture-method/injection independence, active inject-video publication gating, hook bootstrap, and pseudo-overlay handoff behavior. Last verified 2026-07-12.
 - `dx12-overlay-third-party-coexistence.md`
   - Current DX12 overlay coexistence rules for third-party overlays such as Steam, Rockstar Social Club, and Epic EOS.
 - `dx11-forced-af.md`

@@ -1202,7 +1202,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 overlayCfg = shm->ReadOverlayConfig();
             }
             const bool overlayEnabled = !preferDX9Path && shm && overlayCfg.showOverlay;
-            const bool captureRequested = shm && shm->runtimeState.captureRequested.load(std::memory_order_acquire);
+            const bool captureRequested = shm && shm->runtimeState.IsInjectVideoCaptureRequested();
             const bool screenshotRequested = shm && shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire);
             const bool captureAfterOverlay = captureRequested && overlayEnabled && overlayCfg.captureIncludeOverlay;
             const bool captureBeforeOverlay = captureRequested && !captureAfterOverlay;

@@ -293,6 +293,11 @@ enum CaptureRuntimeFlags : uint32_t {
     kCaptureRuntimeFlagVulkanOverlayActive = 1u << 0,
     kCaptureRuntimeFlagInjectOverlayActive = 1u << 1,   // Inject hook is active in a game
     kCaptureRuntimeFlagInjectOverlayPending = 1u << 2,  // Inject overlay handoff/startup is still settling
+    // The active video path consumes injected frames. Kept separate from
+    // captureRequested so screen-grab recordings still drive REC state,
+    // capture-synced limiting, overlays, and graphics overrides without doing
+    // unused hook-side texture copies.
+    kCaptureRuntimeFlagInjectVideoCaptureRequested = 1u << 3,
 };
 
 enum class CapturePipelinePhase : uint32_t {
@@ -447,6 +452,11 @@ struct alignas(8) CaptureState {
 
     bool HasRuntimeFlag(uint32_t flag) const {
         return (runtimeFlags.load(std::memory_order_acquire) & flag) != 0;
+    }
+
+    bool IsInjectVideoCaptureRequested() const {
+        return captureRequested.load(std::memory_order_acquire) &&
+               HasRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested);
     }
 
     void SetRuntimeFlag(uint32_t flag, bool enabled) {

@@ -35,7 +35,7 @@ inline bool ShouldSkipCaptureForTargetCadence(SharedMemoryLayout* shm, const cha
         return false;
     }
 
-    if (!shm->runtimeState.captureRequested.load(std::memory_order_acquire)) {
+    if (!shm->runtimeState.IsInjectVideoCaptureRequested()) {
         return false;
     }
 

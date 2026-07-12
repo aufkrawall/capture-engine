@@ -355,12 +355,14 @@ log_level=trace
 
 ; capture_method - Values: inject, wgc, dxgi_dup, auto
 ;   inject = injected shared-memory capture only
-;   wgc    = Windows Graphics Capture only (screen or window grab, requires DWM present "fullscreen optimization" for older games)
+;   wgc    = Windows Graphics Capture video (screen or window grab, requires DWM present "fullscreen optimization" for older games)
 ;   dxgi_dup = DXGI Desktop Duplication monitor capture; explicit 10-bit requires a true R10/FP16 source
 ;   auto   = inject for whitelisted games, then WGC/DXGI according to target scope
+; This selects only the video acquisition path. [Injection] whitelist targets still receive
+; the injected overlay and graphics overrides with wgc/dxgi_dup; unused hook video copies stay off.
 capture_method=auto
 
-; wgc_window_detection - Window Capture (WGC) targets. Does not inject or overlay. Favors capturing found window over capturing the entire screen.
+; wgc_window_detection - Window Capture (WGC) targets. Does not itself enable injection or overlay. Favors capturing found window over capturing the entire screen.
 ; Format: process:window:mode - see [Injection] section for full format documentation.
 ; Safe with anti-cheats (no guarantees!). Tries to find corresponding window name when providing process name instead. Continues to capture screen when game window closes.
 wgc_window_detection=(
@@ -451,7 +453,8 @@ whitelist=(
 ;GTA5_Enhanced.exe
 )
 
-; overlay_whitelist - Overlay-only injection (no capture). For use with WGC capture, e.g. with D3D9 non-ex when zero copy inject capture is not available.
+; overlay_whitelist - Overlay-only injection (no injected video capture).
+; Useful with WGC/DXGI capture when only the overlay is desired.
 ; DO NOT USE IN MULTIPLAYER GAMES!
 overlay_whitelist=(
 ;MirrorsEdge.exe

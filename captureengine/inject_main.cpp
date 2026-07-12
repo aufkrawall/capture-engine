@@ -417,12 +417,15 @@ int InjectProcessMain(const AppConfig& config) {
 
     LogInfo("[Inject] Shared memory created and initialized");
 
-    // Initialize injector (WMI based)
-    // In WGC mode we still allow explicit overlay targets, but
-    // restrict WMI injection to overlay_whitelist entries only.
-    if (injectorState.allowInjection && injectorState.config.gameWhitelist.empty() &&
-        !currentConfig.gameWhitelist.empty()) {
-        LogInfo("[Inject] WGC mode + overlay_whitelist: enabling overlay-only injection");
+    // Injection and video acquisition are independent. Explicit screen-grab
+    // methods keep the full game whitelist active for overlays and graphics
+    // overrides; hook-side video copies are gated separately by the media path.
+    if (injectorState.allowInjection && IsScreenGrabCaptureMethod(currentConfig.captureMethod)) {
+        LogInfo(
+            "[Inject] Video method %s keeps injection active: fullTargets=%zu overlayOnlyTargets=%zu "
+            "(hook video copies follow the active media path)",
+            currentConfig.captureMethod.c_str(), currentConfig.gameWhitelist.size(),
+            currentConfig.overlayWhitelist.size());
     }
     std::shared_ptr<InjectionManager> injector;
     auto configureInjector = [&](const std::shared_ptr<InjectionManager>& manager) {
@@ -458,7 +461,7 @@ int InjectProcessMain(const AppConfig& config) {
         configureInjector(injector);
         LogInfo("[Inject] Injection manager initialized");
     } else {
-        LogInfo("[Inject] Injection manager SKIPPED (capture_method=%s, no active whitelist targets)",
+        LogInfo("[Inject] Injection manager SKIPPED (capture_method=%s, no whitelist targets)",
                 currentConfig.captureMethod.c_str());
     }
 
@@ -482,6 +485,17 @@ int InjectProcessMain(const AppConfig& config) {
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;
                 case ProcessCommand::StartRecording:
+                    // Media owns the active video-path decision. Clear any flag
+                    // left by an interrupted prior session before publishing the
+                    // new raw recording request; inject mode will re-arm it during
+                    // StartRecording after resolving the actual path.
+                    if (!pSharedMem->runtimeState.captureRequested.load(std::memory_order_acquire)) {
+                        if (pSharedMem->runtimeState.HasRuntimeFlag(
+                                kCaptureRuntimeFlagInjectVideoCaptureRequested)) {
+                            LogWarn("[Inject] Clearing stale inject-video publication flag before recording start");
+                        }
+                        pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, false);
+                    }
                     if (!pSharedMem->runtimeState.captureRequested.exchange(true, std::memory_order_acq_rel)) {
                         pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
                         pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
@@ -493,6 +507,7 @@ int InjectProcessMain(const AppConfig& config) {
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;
                 case ProcessCommand::StopRecording:
+                    pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, false);
                     pSharedMem->runtimeState.captureRequested.store(false, std::memory_order_release);
                     pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
                     pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);

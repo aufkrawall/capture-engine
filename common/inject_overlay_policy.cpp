@@ -1,21 +1,18 @@
 #include "inject_overlay_policy.h"
 
 InjectorConfigState BuildInjectorConfigState(const AppConfig& config) {
-    // Explicit screen-grab methods (wgc, dxgi_dup) never inject for capture;
-    // they still allow overlay-only injection via overlay_whitelist.
-    const bool wgcMode = IsScreenGrabCaptureMethod(config.captureMethod);
-    const bool overlayOnlyInjection = wgcMode && !config.overlayWhitelist.empty();
+    // Injection is an independent capability. capture_method selects the video
+    // acquisition backend; it must not suppress the injected overlay or graphics
+    // overrides requested by the normal whitelist.
     const bool hasInjectionTargets = !config.gameWhitelist.empty() || !config.overlayWhitelist.empty();
 
     InjectorConfigState state;
     state.config = config;
-    state.allowInjection = hasInjectionTargets && (!wgcMode || overlayOnlyInjection);
+    state.allowInjection = hasInjectionTargets;
 
     if (!state.allowInjection) {
         state.config.gameWhitelist.clear();
         state.config.overlayWhitelist.clear();
-    } else if (overlayOnlyInjection) {
-        state.config.gameWhitelist.clear();
     }
 
     return state;

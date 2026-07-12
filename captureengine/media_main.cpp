@@ -702,6 +702,20 @@ void SetCaptureRequestedState(bool enabled) {
     g_pSharedMem->runtimeState.captureRequested.store(enabled, std::memory_order_release);
 }
 
+void SetInjectVideoCaptureRequestedState(bool enabled, const char* reason) {
+    if (!g_pSharedMem) {
+        return;
+    }
+
+    const bool previous =
+        g_pSharedMem->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested);
+    g_pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, enabled);
+    if (previous != enabled) {
+        LogInfo("[Media] Inject video publication %s (%s)", enabled ? "enabled" : "disabled",
+                reason ? reason : "unspecified");
+    }
+}
+
 void SetRecordingVisibleState(bool enabled) {
     if (!g_pSharedMem) {
         return;
@@ -10952,6 +10966,10 @@ void StartRecording(const AppConfig& config) {
 
     timeBeginPeriod(1);
 
+    // A prior interrupted session must never leave hook-side video publication
+    // armed. The selected live path below explicitly enables it only for inject.
+    SetInjectVideoCaptureRequestedState(false, "recording start reset");
+
     if (g_AudioOnly) {
         LogInfo("[Media] Audio-only recording mode - skipping video capture");
 
@@ -11035,10 +11053,13 @@ void StartRecording(const AppConfig& config) {
         ResetEvent(g_InjectFrameReadyEvent);
     }
 
+    SetInjectVideoCaptureRequestedState(!useScreenGrab,
+                                        useScreenGrab ? "screen-grab recording path" : "inject recording path");
     SetCaptureRequestedState(true);
 
     if (!MediaEngine_StartRecording || !MediaEngine_StartRecording()) {
         LogError("[Media] Failed to start MediaEngine recording");
+        SetInjectVideoCaptureRequestedState(false, "recording start failure");
         SetCaptureRequestedState(false);
         SetRecordingVisibleState(false);
         timeEndPeriod(1);
@@ -11098,6 +11119,8 @@ void StopRecording() {
         return;
 
     LogInfo("[Media] Stopping recording...");
+
+    SetInjectVideoCaptureRequestedState(false, "recording stop");
 
     // Audio-only: skip all video/capture cleanup
     if (g_AudioOnly) {
@@ -12410,6 +12433,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                             const bool hasRetainedVfrFrame =
                                 config.video.useVFR && TakeStandbyWgcHandoffFrame(retainedVfrFrame);
                             SetActiveScreenGrab(true);
+                            SetInjectVideoCaptureRequestedState(false, "auto inject-to-WGC handoff committed");
                             if (hasRetainedVfrFrame) {
                                 SubmitWgcQueuedFrame(std::move(retainedVfrFrame));
                             }
