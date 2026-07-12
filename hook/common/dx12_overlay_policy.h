@@ -321,6 +321,16 @@ inline bool ShouldAbortPostSLSubmitAfterLifecycleChange(uint32_t entryEpoch, uin
     return entryEpoch != currentEpoch;
 }
 
+inline bool ShouldAwaitAuthoritativeQueueChangeBaseline(bool hasAuthoritativeBaseline,
+                                                        bool rawQueueMatchesAuthoritativeBaseline) {
+    // A proven return to the game's original swapchain queue is a topology
+    // boundary, not an FSR activation. Ignore leftover Streamline ECL traffic
+    // until the authoritative queue itself is observed, then use it as the new
+    // queue-change baseline. This is event-driven and does not delay a later
+    // genuine FSR queue change.
+    return hasAuthoritativeBaseline && !rawQueueMatchesAuthoritativeBaseline;
+}
+
 inline bool ShouldTreatSwapchainQueueAsAuthoritativeFFXRuntime(bool authoritativeFFXRuntimeCreator,
                                                                bool hasOriginalGameQueue,
                                                                bool queueMatchesOriginalGameQueue) {

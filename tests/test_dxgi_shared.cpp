@@ -1513,6 +1513,40 @@ TEST(DXGISharedTest, PostSLSubmitAbortsWhenSwapchainLifecycleChanges) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAbortPostSLSubmitAfterLifecycleChange(8, 8));
 }
 
+TEST(DXGISharedTest, NormalSwapchainReturnWaitsForAuthoritativeQueueBaseline) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAwaitAuthoritativeQueueChangeBaseline(true, false));
+    // Observing the proven queue consumes the boundary; a later distinct queue
+    // remains immediately eligible for genuine FSR activation detection.
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAwaitAuthoritativeQueueChangeBaseline(true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAwaitAuthoritativeQueueChangeBaseline(false, false));
+}
+
+TEST(DXGISharedSourceTest, NormalSwapchainReturnRebaselinesBeforeFirstPresent) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    const size_t handler = text.find("HandlePostSLRouteForNormalSwapchainReturn(");
+    ASSERT_NE(handler, std::string::npos);
+    const size_t reset = text.find("RequestFGDetectionHeuristicReset(returnedQueue);", handler);
+    const size_t retirementDecision =
+        text.find("ShouldRetirePostSLRouteForNormalSwapchainReturn(", handler);
+    ASSERT_NE(reset, std::string::npos);
+    ASSERT_NE(retirementDecision, std::string::npos);
+    EXPECT_LT(reset, retirementDecision)
+        << "every proven normal return must rebaseline even when no stale PostSL route remains armed";
+
+    const size_t processFrame = text.find("void ProcessFrame(");
+    ASSERT_NE(processFrame, std::string::npos);
+    EXPECT_NE(text.find("ShouldAwaitAuthoritativeQueueChangeBaseline(", processFrame), std::string::npos);
+    EXPECT_NE(text.find("Established authoritative queue-change baseline after normal swapchain return", processFrame),
+              std::string::npos);
+}
+
 TEST(DXGISharedTest, ThirdPartyOverlayECLQueueDoesNotOverrideKnownGameTrackingQueues) {
     EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(true, true, false, false, false));

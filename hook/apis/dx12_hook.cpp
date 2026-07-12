@@ -627,10 +627,11 @@ int HookGetPostSLGetStateOffWarmupProtectionLastFrame() {
 }
 
 // Flag to reset the queue-change heuristic's internal state.  Set during FG
-// transitions so that the heuristic starts fresh afterward (re-captures the
-// "initial queue" from the next 5 frames).  Without this, SL's leftover queue
-// persists in the heuristic's state after FG OFF → immediate false FSR FG
-// detection → wrong queue selection → DEVICE_HUNG.
+// transitions so that the heuristic starts fresh afterward. Most transitions
+// recapture the "initial queue" from the next 5 frames; a proven normal
+// swapchain return supplies its authoritative game queue directly. Without
+// this, SL's leftover queue persists after FG OFF → immediate false FSR FG
+// detection → wrong queue selection, blank overlay, or DEVICE_HUNG.
 static std::atomic<bool> g_ResetQueueChangeHeuristic{false};
 
 // Companion reset for the ECL-count-pattern FG heuristic in
@@ -642,8 +643,14 @@ static std::atomic<bool> g_ResetQueueChangeHeuristic{false};
 // 60-frame draw cooldowns that blanked a healthy overlay for 61 presents.
 // Set at every site that resets the queue-change heuristic.
 static std::atomic<bool> g_ResetECLPatternHeuristic{false};
+// Optional authoritative queue for the next queue-change heuristic epoch. A
+// normal swapchain return supplies the proven original queue here so leftover
+// Streamline ECL traffic cannot become the new baseline or a phantom FSR edge.
+// g_OriginalGameQueue retains this COM object for the hook lifetime.
+static std::atomic<ID3D12CommandQueue*> g_QueueChangeHeuristicAuthoritativeBaseline{nullptr};
 
-static void RequestFGDetectionHeuristicReset() {
+static void RequestFGDetectionHeuristicReset(ID3D12CommandQueue* authoritativeBaseline = nullptr) {
+    g_QueueChangeHeuristicAuthoritativeBaseline.store(authoritativeBaseline, std::memory_order_release);
     g_ResetQueueChangeHeuristic.store(true, std::memory_order_release);
     g_ResetECLPatternHeuristic.store(true, std::memory_order_release);
 }
@@ -4007,6 +4014,13 @@ static bool KnownDLSSFGModuleLoaded() {
 }
 
 static bool CanUseFSRFGHeuristics(const char** blockedReason = nullptr) {
+    if (g_QueueChangeHeuristicAuthoritativeBaseline.load(std::memory_order_acquire) != nullptr) {
+        if (blockedReason) {
+            *blockedReason = "normal swapchain return is awaiting its authoritative queue baseline";
+        }
+        return false;
+    }
+
     if (g_FGCompat.IsFSRFGApiActive()) {
         if (blockedReason) {
             *blockedReason = "authoritative FSR FG state is already active";
@@ -8664,7 +8678,7 @@ static bool InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(const ch
     return overlayWasLive && overlaySwapchainStateRetired;
 }
 
-static bool RetirePostSLRouteForNormalSwapchainReturn(
+static bool HandlePostSLRouteForNormalSwapchainReturn(
     const char* context, ID3D12CommandQueue* returnedQueue, ID3D12CommandQueue* originalGameQueue,
     const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
     const bool normalSwapchainReturn =
@@ -8676,6 +8690,13 @@ static bool RetirePostSLRouteForNormalSwapchainReturn(
     if (!normalSwapchainReturn) {
         return false;
     }
+
+    // A proven return is also an authoritative queue-topology boundary even
+    // when no PostSL route happens to remain armed. Seed the queue heuristic
+    // before the first Present so the departed Streamline queue can never be
+    // mistaken for the baseline of a new FSR epoch.
+    g_FGCompat.SetHeuristicFSRFGActive(false);
+    RequestFGDetectionHeuristicReset(returnedQueue);
 
     ID3D12CommandQueue* lockedQueue = nullptr;
     ID3D12CommandQueue* lastWorkingQueue = nullptr;
@@ -8695,7 +8716,7 @@ static bool RetirePostSLRouteForNormalSwapchainReturn(
             "%s: Original game queue validated normal swapchain return behind Streamline stack "
             "(queue=%p locked=%p lastWorking=%p routeArmed=%d) — no stale PostSL route to retire",
             context ? context : "CreateSwapChain", returnedQueue, lockedQueue, lastWorkingQueue, routeArmed ? 1 : 0);
-        return false;
+        return true;
     }
 
     SetPostSLCallbackInstalled(false, "DX12: normal swapchain return");
@@ -8729,7 +8750,7 @@ static bool RetirePostSLRouteForNormalSwapchainReturn(
     }
 
     HookLogImportant(
-        "%s: Original game queue validated normal swapchain return behind third-party Streamline stack — retired "
+        "%s: Original game queue validated normal swapchain return behind Streamline stack — retired "
         "stale PostSL route and invalidated swapchain-scoped overlay state "
         "(queue=%p locked=%p lastWorking=%p stableFrames=%d caller=%s)",
         context ? context : "CreateSwapChain", returnedQueue, lockedQueue, lastWorkingQueue, previousStableFrames,
@@ -8768,7 +8789,7 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
         const bool freshAuthoritativeStreamlineHandoff =
             ce::dx12_overlay_policy::ShouldArmStreamlineStartupTransitionWindowForFreshAuthoritativeRuntimeQueue(
                 authoritativeStreamlineRuntimeQueue, pQueue == currentSwapchainQueue);
-        const bool normalSwapchainReturn = RetirePostSLRouteForNormalSwapchainReturn(
+        const bool normalSwapchainReturn = HandlePostSLRouteForNormalSwapchainReturn(
             context, pQueue, currentOriginalGameQueue, captureEvidence);
 
         HookLogImportant("%s: QI for queue succeeded (queue=%p)", context, pQueue);
@@ -16764,105 +16785,154 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         // Without this, SL's leftover queue persists in s_initialQueue/
         // s_currentFGQueue and immediately re-triggers false FSR FG detection.
         if (g_ResetQueueChangeHeuristic.exchange(false, std::memory_order_acquire)) {
+            ID3D12CommandQueue* authoritativeBaseline =
+                g_QueueChangeHeuristicAuthoritativeBaseline.load(std::memory_order_acquire);
             // After SL FG OFF, SL may have created a new swapchain on a
             // different queue.  The game continues using SL's swapchain queue
             // even after FG teardown.  Anchoring to origGame would permanently
             // see the new queue as "different" → endless false FSR_FG.
             //
-            // Instead, allow recapture: set s_queueFrameCount = 0 so the next
-            // 5 frames capture s_initialQueue from g_CommandQueue.  During the
-            // grace period, CanUseFSRFGHeuristics blocks false detections.  By
-            // the time grace expires, s_initialQueue reflects the actual queue
-            // the game is using (whether that's origGame or SL's persistent queue).
+            // Ordinary transitions allow recapture from the next five frames.
+            // A proven normal swapchain return instead pins the baseline to its
+            // authoritative game queue and waits for that queue to be observed.
             HookLog(
                 "DX12: Queue-change heuristic reset (FG transition) — "
-                "was initial=%p fgQ=%p frame=%d (allowing recapture from g_CommandQueue)",
-                s_initialQueue, s_currentFGQueue, s_queueFrameCount);
-            s_initialQueue = nullptr;
+                "was initial=%p fgQ=%p frame=%d authoritativeBaseline=%p",
+                s_initialQueue, s_currentFGQueue, s_queueFrameCount, authoritativeBaseline);
+            s_initialQueue = authoritativeBaseline;
             s_currentFGQueue = nullptr;
-            s_queueFrameCount = 0;  // Recapture initial queue from live g_CommandQueue
+            s_queueFrameCount = authoritativeBaseline ? 5 : 0;
             s_consecutiveInitialQueueFrames = 0;
         }
 
         ID3D12CommandQueue* rawQueue = g_CommandQueue.load(std::memory_order_acquire);
-        ++s_queueFrameCount;
-        if (s_queueFrameCount <= 5) {
-            // Capture initial queue during first 5 frames (before FG activates)
-            s_initialQueue = rawQueue;
-        } else if (s_initialQueue) {
-            const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
-            ID3D12CommandQueue* currentSwapchainQueue = nullptr;
-            {
-                std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
-                currentSwapchainQueue = g_SwapchainQueue;
+        ID3D12CommandQueue* authoritativeBaseline =
+            g_QueueChangeHeuristicAuthoritativeBaseline.load(std::memory_order_acquire);
+        const bool awaitAuthoritativeBaseline =
+            ce::dx12_overlay_policy::ShouldAwaitAuthoritativeQueueChangeBaseline(
+                authoritativeBaseline != nullptr, rawQueue == authoritativeBaseline);
+        if (awaitAuthoritativeBaseline) {
+            static std::atomic<int> s_authoritativeBaselineWaitLogCount{0};
+            const int logCount = s_authoritativeBaselineWaitLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 256) == 0) {
+                HookLogImportant(
+                    "DX12: Ignoring leftover queue traffic while normal swapchain return awaits authoritative "
+                    "baseline (raw=%p baseline=%p scQueue=%p origGame=%p count=%d)",
+                    rawQueue, authoritativeBaseline, g_SwapchainQueue, g_OriginalGameQueue, logCount + 1);
             }
-            const bool lastWorkingQueueStillActiveDuringRecentTeardown =
-                g_PostSLLastWorkingQueue != nullptr &&
-                GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
-            const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
-                g_HadFSRFGPhase, g_NeedOffscreenOverlayAfterPostFSRNonFG, IsActualFrameGenerationActive(),
-                DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), currentSwapchainQueue != nullptr);
-            const bool ignoreQueueChangeDuringRecentTeardown =
-                rawQueue &&
-                ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
-                    recentStreamlineTeardown, postFSRNonFGRecovery, lastWorkingQueueStillActiveDuringRecentTeardown,
-                    rawQueue == g_PrimaryGameQueue.load(std::memory_order_acquire), rawQueue == g_OriginalGameQueue,
-                    rawQueue == currentSwapchainQueue, rawQueue == g_PostSLLastWorkingQueue);
-
-            if (ignoreQueueChangeDuringRecentTeardown) {
-                static std::atomic<int> s_recentTeardownQueueChangeIgnoreLogCount{0};
-                const int logCount = s_recentTeardownQueueChangeIgnoreLogCount.fetch_add(1, std::memory_order_relaxed);
-                if (logCount < 20 || (logCount % 256) == 0) {
-                    HookLogImportant(
-                        "DX12: Ignoring queue-change heuristic on teardown/recovery queue %p "
-                        "(initial=%p orig=%p primary=%p scQ=%p lastWorking=%p slOffGrace=%d postSLRecent=%d "
-                        "postFSR=%d frame=%d)",
-                        rawQueue, s_initialQueue, g_OriginalGameQueue,
-                        g_PrimaryGameQueue.load(std::memory_order_acquire), currentSwapchainQueue,
-                        g_PostSLLastWorkingQueue, g_SLOffHeuristicGrace.load(std::memory_order_acquire),
-                        lastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0, postFSRNonFGRecovery ? 1 : 0,
-                        s_queueFrameCount);
-                }
-                s_consecutiveInitialQueueFrames = 0;
-            } else {
-                bool isFGQueue = (rawQueue != s_initialQueue);
-                if (isFGQueue) {
-                    // Reset consecutive-initial counter — we just saw the FG queue
+            if (g_FGCompat.IsHeuristicFSRFGActive()) {
+                g_FGCompat.SetHeuristicFSRFGActive(false);
+            }
+        } else {
+            bool mayEvaluateQueueChange = true;
+            if (authoritativeBaseline) {
+                ID3D12CommandQueue* expectedBaseline = authoritativeBaseline;
+                if (g_QueueChangeHeuristicAuthoritativeBaseline.compare_exchange_strong(
+                        expectedBaseline, nullptr, std::memory_order_acq_rel, std::memory_order_acquire)) {
+                    s_initialQueue = rawQueue;
+                    s_currentFGQueue = nullptr;
+                    s_queueFrameCount = 5;
                     s_consecutiveInitialQueueFrames = 0;
+                    HookLogImportant(
+                        "DX12: Established authoritative queue-change baseline after normal swapchain return "
+                        "(baseline=%p scQueue=%p origGame=%p)",
+                        rawQueue, g_SwapchainQueue, g_OriginalGameQueue);
+                } else {
+                    // A concurrent lifecycle event replaced or consumed this
+                    // epoch. Do not evaluate the current queue against stale
+                    // function-local state; the winning epoch owns the reset.
+                    mayEvaluateQueueChange = false;
+                }
+            }
 
-                    if (!s_currentFGQueue) {
-                        if (UpdateHeuristicFSRFGState(true, "queue-change")) {
-                            // Queue changed away from initial → FSR FG activated
-                            s_currentFGQueue = rawQueue;
-                            HookLogImportant(
-                                "DX12: FG detected via queue change (initial=%p, current=%p, gameQ=%p, frame=%d)",
-                                s_initialQueue, rawQueue, gameQueue, s_queueFrameCount);
-                        } else {
-                            static std::atomic<int> s_ignoredQueueChangeLogCount{0};
-                            if (s_ignoredQueueChangeLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-                                HookLog(
-                                    "DX12: Ignoring queue change heuristic (initial=%p, current=%p, rawQ=%p, frame=%d)",
+            if (mayEvaluateQueueChange)
+                ++s_queueFrameCount;
+            if (mayEvaluateQueueChange && s_queueFrameCount <= 5) {
+                // Capture initial queue during first 5 frames (before FG activates)
+                s_initialQueue = rawQueue;
+            } else if (mayEvaluateQueueChange && s_initialQueue) {
+                const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
+                ID3D12CommandQueue* currentSwapchainQueue = nullptr;
+                {
+                    std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+                    currentSwapchainQueue = g_SwapchainQueue;
+                }
+                const bool lastWorkingQueueStillActiveDuringRecentTeardown =
+                    g_PostSLLastWorkingQueue != nullptr &&
+                    GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
+                const bool postFSRNonFGRecovery = ce::dx12_overlay_policy::IsPostFSRNonFGRecovery(
+                    g_HadFSRFGPhase, g_NeedOffscreenOverlayAfterPostFSRNonFG, IsActualFrameGenerationActive(),
+                    DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), currentSwapchainQueue != nullptr);
+                const bool ignoreQueueChangeDuringRecentTeardown =
+                    rawQueue &&
+                    ce::dx12_overlay_policy::ShouldIgnoreQueueChangeHeuristicDuringRecentStreamlineTeardown(
+                        recentStreamlineTeardown, postFSRNonFGRecovery,
+                        lastWorkingQueueStillActiveDuringRecentTeardown,
+                        rawQueue == g_PrimaryGameQueue.load(std::memory_order_acquire),
+                        rawQueue == g_OriginalGameQueue, rawQueue == currentSwapchainQueue,
+                        rawQueue == g_PostSLLastWorkingQueue);
+
+                if (ignoreQueueChangeDuringRecentTeardown) {
+                    static std::atomic<int> s_recentTeardownQueueChangeIgnoreLogCount{0};
+                    const int logCount =
+                        s_recentTeardownQueueChangeIgnoreLogCount.fetch_add(1, std::memory_order_relaxed);
+                    if (logCount < 20 || (logCount % 256) == 0) {
+                        HookLogImportant(
+                            "DX12: Ignoring queue-change heuristic on teardown/recovery queue %p "
+                            "(initial=%p orig=%p primary=%p scQ=%p lastWorking=%p slOffGrace=%d postSLRecent=%d "
+                            "postFSR=%d frame=%d)",
+                            rawQueue, s_initialQueue, g_OriginalGameQueue,
+                            g_PrimaryGameQueue.load(std::memory_order_acquire), currentSwapchainQueue,
+                            g_PostSLLastWorkingQueue, g_SLOffHeuristicGrace.load(std::memory_order_acquire),
+                            lastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0, postFSRNonFGRecovery ? 1 : 0,
+                            s_queueFrameCount);
+                    }
+                    s_consecutiveInitialQueueFrames = 0;
+                } else {
+                    bool isFGQueue = (rawQueue != s_initialQueue);
+                    if (isFGQueue) {
+                        // Reset consecutive-initial counter — we just saw the FG queue
+                        s_consecutiveInitialQueueFrames = 0;
+
+                        if (!s_currentFGQueue) {
+                            if (UpdateHeuristicFSRFGState(true, "queue-change")) {
+                                // Queue changed away from initial → FSR FG activated
+                                s_currentFGQueue = rawQueue;
+                                HookLogImportant(
+                                    "DX12: FG detected via queue change "
+                                    "(initial=%p, current=%p, gameQ=%p, frame=%d)",
                                     s_initialQueue, rawQueue, gameQueue, s_queueFrameCount);
+                            } else {
+                                static std::atomic<int> s_ignoredQueueChangeLogCount{0};
+                                if (s_ignoredQueueChangeLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+                                    HookLog(
+                                        "DX12: Ignoring queue change heuristic "
+                                        "(initial=%p, current=%p, rawQ=%p, frame=%d)",
+                                        s_initialQueue, rawQueue, gameQueue, s_queueFrameCount);
+                                }
                             }
                         }
-                    }
-                    // else: FG already active, FG queue seen again — normal FSR FG alternation
-                } else {
-                    // Seeing initial queue.  During FSR FG this happens every other frame.
-                    // Only deactivate after many CONSECUTIVE initial-queue frames.
-                    if (s_currentFGQueue) {
-                        ++s_consecutiveInitialQueueFrames;
-                        if (s_consecutiveInitialQueueFrames >= kDeactivationThreshold) {
-                            HookLogImportant(
-                                "DX12: FG deactivated via queue revert after %d consecutive initial-queue frames "
-                                "(initial=%p, fgQueue=%p, frame=%d)",
-                                s_consecutiveInitialQueueFrames, s_initialQueue, s_currentFGQueue, s_queueFrameCount);
-                            s_currentFGQueue = nullptr;
-                            s_consecutiveInitialQueueFrames = 0;
-                            UpdateHeuristicFSRFGState(false, "queue-change");
-                        } else if (s_consecutiveInitialQueueFrames == 1 || s_consecutiveInitialQueueFrames == 30) {
-                            HookLog("DX12: Seeing initial queue while FG active (consecutive=%d/%d, frame=%d)",
+                        // else: FG already active, FG queue seen again — normal FSR FG alternation
+                    } else {
+                        // Seeing initial queue. During FSR FG this happens every other frame.
+                        // Only deactivate after many CONSECUTIVE initial-queue frames.
+                        if (s_currentFGQueue) {
+                            ++s_consecutiveInitialQueueFrames;
+                            if (s_consecutiveInitialQueueFrames >= kDeactivationThreshold) {
+                                HookLogImportant(
+                                    "DX12: FG deactivated via queue revert after %d consecutive initial-queue "
+                                    "frames (initial=%p, fgQueue=%p, frame=%d)",
+                                    s_consecutiveInitialQueueFrames, s_initialQueue, s_currentFGQueue,
+                                    s_queueFrameCount);
+                                s_currentFGQueue = nullptr;
+                                s_consecutiveInitialQueueFrames = 0;
+                                UpdateHeuristicFSRFGState(false, "queue-change");
+                            } else if (s_consecutiveInitialQueueFrames == 1 ||
+                                       s_consecutiveInitialQueueFrames == 30) {
+                                HookLog(
+                                    "DX12: Seeing initial queue while FG active (consecutive=%d/%d, frame=%d)",
                                     s_consecutiveInitialQueueFrames, kDeactivationThreshold, s_queueFrameCount);
+                            }
                         }
                     }
                 }
@@ -22916,6 +22986,11 @@ void DX12Hook::Shutdown() {
     if (auto* deferredCommandQueue = g_DeferredCommandQueueRelease.exchange(nullptr, std::memory_order_acq_rel)) {
         deferredCommandQueue->Release();
     }
+    // The authoritative-baseline pointer is non-owning and backed by
+    // g_OriginalGameQueue. Clear it before releasing that retained queue.
+    g_QueueChangeHeuristicAuthoritativeBaseline.store(nullptr, std::memory_order_release);
+    g_ResetQueueChangeHeuristic.store(false, std::memory_order_release);
+    g_ResetECLPatternHeuristic.store(false, std::memory_order_release);
     if (g_OriginalGameQueue) {
         g_OriginalGameQueue->Release();
         g_OriginalGameQueue = nullptr;
