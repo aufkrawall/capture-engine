@@ -131,8 +131,8 @@ TEST(InjectCaptureSourceTest, D3D12SharedCaptureInitializationAndSubmissionAreTr
     ASSERT_FALSE(source.empty());
     const std::string init =
         FunctionBody(source, "bool SharedCaptureD3D12::Initialize(", "bool SharedCaptureD3D12::CreateSharedResources(");
-    const std::string reset =
-        FunctionBody(source, "bool SharedCaptureD3D12::Reset(bool force)", "bool SharedCaptureD3D12::IsInitializedFor(");
+    const std::string reset = FunctionBody(source, "bool SharedCaptureD3D12::Reset(bool force)",
+                                           "bool SharedCaptureD3D12::IsInitializedFor(");
     const std::string capture =
         FunctionBody(source, "bool SharedCaptureD3D12::CaptureFrame(", "bool SharedCaptureD3D12::GetCurrentFrame(");
     ASSERT_FALSE(init.empty());

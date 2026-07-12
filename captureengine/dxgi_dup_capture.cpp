@@ -63,8 +63,8 @@ public:
         throttlingState.StateMask = 0;
         if (!SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &throttlingState,
                                   sizeof(throttlingState))) {
-            LogWarn("[DXGIDup] Failed to disable execution-speed throttling (tid=%lu, err=%lu)",
-                    GetCurrentThreadId(), GetLastError());
+            LogWarn("[DXGIDup] Failed to disable execution-speed throttling (tid=%lu, err=%lu)", GetCurrentThreadId(),
+                    GetLastError());
         }
 
         DWORD taskIndex = 0;

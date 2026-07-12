@@ -244,10 +244,10 @@ inline bool ShouldApplyUnfocusedFlipModelDoNotWait(bool isD3D12Swapchain, bool i
     return (presentFlags & (kAllowTearing | kRestart)) == 0;
 }
 
-inline bool ShouldWaitOnD3D12FocusLossFrameLatency(bool isD3D12Swapchain, bool isFullscreen,
-                                                   bool processHasForeground, bool isIconic, bool hasZeroSize,
-                                                   bool presentSucceeded, bool frameGenerationActive,
-                                                   bool runtimeOwnedPresentation, bool hasFrameLatencyWaitable) {
+inline bool ShouldWaitOnD3D12FocusLossFrameLatency(bool isD3D12Swapchain, bool isFullscreen, bool processHasForeground,
+                                                   bool isIconic, bool hasZeroSize, bool presentSucceeded,
+                                                   bool frameGenerationActive, bool runtimeOwnedPresentation,
+                                                   bool hasFrameLatencyWaitable) {
     (void)isD3D12Swapchain;
     (void)isFullscreen;
     (void)processHasForeground;
@@ -352,30 +352,25 @@ inline bool ShouldForceSteamDX12BypassForState(bool bypassAvailable, bool isStea
         return true;
     }
 
-    const bool streamlineNeedsBypass =
-        streamlineLoaded && !streamlineFGRunning;
+    const bool streamlineNeedsBypass = streamlineLoaded && !streamlineFGRunning;
     const bool smoothMotionNeedsBypass = nvPresentLoaded;
     return streamlineNeedsBypass || smoothMotionNeedsBypass;
 }
 
-inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForState(bool externalPresentHookAvailable,
-                                                                   bool bypassAvailable, bool isSteamOverlay,
-                                                                   bool isD3D12SwapChain, bool inWrapperPresent,
-                                                                   bool isWrappedSwapChain,
-                                                                   bool externalOverlayPresentInvokeInProgress,
-                                                                   bool streamlineStackActive,
-                                                                   bool streamlinePluginLookupGuardAvailable,
-                                                                   bool steamNullCallbackRecoveryAvailable = true) {
+inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+    bool externalPresentHookAvailable, bool bypassAvailable, bool isSteamOverlay, bool isD3D12SwapChain,
+    bool inWrapperPresent, bool isWrappedSwapChain, bool externalOverlayPresentInvokeInProgress,
+    bool streamlineStackActive, bool streamlinePluginLookupGuardAvailable,
+    bool steamNullCallbackRecoveryAvailable = true) {
     // Directly calling Steam's saved Present hook is only safe when CE has a
     // bypass trampoline available for any recursive Present that Steam may issue
     // internally.  Wrapped swapchains already have their own cooperation path.
-    if (!externalPresentHookAvailable || !bypassAvailable || !isSteamOverlay || !isD3D12SwapChain ||
-        inWrapperPresent || isWrappedSwapChain || externalOverlayPresentInvokeInProgress) {
+    if (!externalPresentHookAvailable || !bypassAvailable || !isSteamOverlay || !isD3D12SwapChain || inWrapperPresent ||
+        isWrappedSwapChain || externalOverlayPresentInvokeInProgress) {
         return false;
     }
 
-    if (streamlineStackActive &&
-        (!streamlinePluginLookupGuardAvailable || !steamNullCallbackRecoveryAvailable)) {
+    if (streamlineStackActive && (!streamlinePluginLookupGuardAvailable || !steamNullCallbackRecoveryAvailable)) {
         // Steam may query Streamline while rendering its overlay, and it may
         // also call through its own lazily initialized NULL callback. The
         // Streamline plugin guard and Steam NULL-callback VEH guard protect
@@ -388,8 +383,8 @@ inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForState(bool external
 }
 
 inline bool ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(
-    bool basePolicyAllowsInvoke, bool steamCallbackSlotReadable, bool steamCallbackIsNull,
-    bool steamCallbackIsCEDummy, bool steamCallbackIsInvalidLowAddress, bool steamNullCallbackRecoveryAvailable) {
+    bool basePolicyAllowsInvoke, bool steamCallbackSlotReadable, bool steamCallbackIsNull, bool steamCallbackIsCEDummy,
+    bool steamCallbackIsInvalidLowAddress, bool steamNullCallbackRecoveryAvailable) {
     if (!basePolicyAllowsInvoke) {
         return false;
     }
@@ -478,10 +473,9 @@ inline bool ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRConfirmedStanda
 }
 
 inline bool ShouldAllowDX12StartupPresentPassForState(bool hasThirdPartyOverlay, bool presentTrampolineInstalled,
-                                                       bool present1TrampolineInstalled, bool steamBypassShouldOwnPath,
-                                                       bool bypassAvailable,
-                                                       ce::fg_runtime::RuntimeMode runtimeMode,
-                                                       bool streamlineFGRunning) {
+                                                      bool present1TrampolineInstalled, bool steamBypassShouldOwnPath,
+                                                      bool bypassAvailable, ce::fg_runtime::RuntimeMode runtimeMode,
+                                                      bool streamlineFGRunning) {
     if (!hasThirdPartyOverlay || presentTrampolineInstalled || present1TrampolineInstalled) {
         return false;
     }
@@ -497,8 +491,8 @@ inline bool ShouldAllowDX12StartupPresentPassForState(bool hasThirdPartyOverlay,
     }
 
     const bool actualFrameGenerationActive = streamlineFGRunning ||
-                                              runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG ||
-                                              runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
+                                             runtimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG ||
+                                             runtimeMode == ce::fg_runtime::RuntimeMode::kFSRFG;
 
     // The startup compatibility pass exists to let third-party overlays settle
     // before we start driving our own DX12 startup routing. Once Steam's
@@ -591,9 +585,10 @@ inline bool ShouldKeepSyntheticStartupStreamlinePresentOnNormalRoute(
             (hadFSRFGPhase && (explicitSetOptionsActivation || safePostFSRBootstrapPath)));
 }
 
-inline bool ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
-    bool isD3D12SwapChain, bool hadFSRFGPhase, bool startupTopLevelCandidate,
-    bool safePostFSRBootstrapPath, bool staleThirdPartyPresentHookRisk) {
+inline bool ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(bool isD3D12SwapChain, bool hadFSRFGPhase,
+                                                                            bool startupTopLevelCandidate,
+                                                                            bool safePostFSRBootstrapPath,
+                                                                            bool staleThirdPartyPresentHookRisk) {
     // The first large-gap Streamline startup-handoff Present can still be the
     // only top-level call that re-establishes the live route after an FSR-owned
     // swapchain handoff. That Present should remain logically on the normal SL
@@ -620,9 +615,10 @@ inline bool ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
            startupNormalRouteCandidate && (postFSRRuntimeHandoffRisk || thirdPartyPresentHookRisk);
 }
 
-inline bool ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(
-    bool isD3D12SwapChain, bool startupTopLevelCandidate, bool startupNormalRouteTransportRisk,
-    bool staleThirdPartyPresentHookRisk) {
+inline bool ShouldBypassPresentForStreamlineStartupHandoffPresentOnNormalRoute(bool isD3D12SwapChain,
+                                                                               bool startupTopLevelCandidate,
+                                                                               bool startupNormalRouteTransportRisk,
+                                                                               bool staleThirdPartyPresentHookRisk) {
     return isD3D12SwapChain && startupTopLevelCandidate &&
            (startupNormalRouteTransportRisk || staleThirdPartyPresentHookRisk);
 }
@@ -651,9 +647,10 @@ inline bool ShouldUseOverlaylessAppThreadPresentForPostFSRStreamlineStartupHando
     // direct DXGI bypass skips Streamline's mandatory startup handling. Keep the
     // first handoff overlayless but route it through Streamline.
     return !observerOnlyMode && isD3D12SwapChain && !inWrapperPresent && !isWrappedSwapChain &&
-           originalPresentAvailable && streamlineFGRunning && streamlinePresentRoutingActive && !callerFromStreamlineModule &&
-           streamlineStartupHandoffInProgress && runtimeOwnedSwapchainActive && hadFSRFGPhase &&
-           safePostFSRBootstrapPath && !postSLConfirmedRendering && !startupTopLevelPresentAlreadyConsumed;
+           originalPresentAvailable && streamlineFGRunning && streamlinePresentRoutingActive &&
+           !callerFromStreamlineModule && streamlineStartupHandoffInProgress && runtimeOwnedSwapchainActive &&
+           hadFSRFGPhase && safePostFSRBootstrapPath && !postSLConfirmedRendering &&
+           !startupTopLevelPresentAlreadyConsumed;
 }
 
 inline bool ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(

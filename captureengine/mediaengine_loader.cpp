@@ -108,8 +108,7 @@ bool MediaEngine_Load(const char* exeDir) {
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_RepeatLastFrameWithTimeline",
                        &MediaEngine_RepeatLastFrameWithTimeline);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_CanRepeatLastFrame", &MediaEngine_CanRepeatLastFrame);
-    success &=
-        GetFunc(g_MediaEngineModule, "MediaEngine_ResetRepeatFrameCache", &MediaEngine_ResetRepeatFrameCache);
+    success &= GetFunc(g_MediaEngineModule, "MediaEngine_ResetRepeatFrameCache", &MediaEngine_ResetRepeatFrameCache);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_ProcessFrameD3D11", &MediaEngine_ProcessFrameD3D11);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_StartRecording", &MediaEngine_StartRecording);
     success &= GetFunc(g_MediaEngineModule, "MediaEngine_StopRecording", &MediaEngine_StopRecording);

@@ -110,9 +110,8 @@ inline bool TemporalUpscaler::Initialize(ID3D12Device* device, DXGI_FORMAT color
     ComPtr<ID3DBlob> rsBlob;
     ComPtr<ID3DBlob> rsError;
     HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, &rsError);
-    if (FAILED(hr) ||
-        FAILED(device->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-                                           IID_PPV_ARGS(&rootSignature_)))) {
+    if (FAILED(hr) || FAILED(device->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+                                                         IID_PPV_ARGS(&rootSignature_)))) {
         testapp::Log("[FG-DIAG] TemporalUpscaler: root signature failed hr=0x%08lx %s\n",
                      static_cast<unsigned long>(hr),
                      rsError ? static_cast<const char*>(rsError->GetBufferPointer()) : "");
@@ -122,9 +121,9 @@ inline bool TemporalUpscaler::Initialize(ID3D12Device* device, DXGI_FORMAT color
     static const char kShaderSource[] =
         "cbuffer TaaCB : register(b0) {\n"
         "    float2 renderSize;\n"
-        "    float2 jitter;\n"        // pixels at render resolution
+        "    float2 jitter;\n"  // pixels at render resolution
         "    float historyValid;\n"
-        "    float blendFactor;\n"    // history weight
+        "    float blendFactor;\n"  // history weight
         "    float2 _pad;\n"
         "};\n"
         "Texture2D sceneTex : register(t0);\n"
@@ -178,8 +177,7 @@ inline bool TemporalUpscaler::Initialize(ID3D12Device* device, DXGI_FORMAT color
     }
     if (FAILED(hr)) {
         testapp::Log("[FG-DIAG] TemporalUpscaler: shader compile failed hr=0x%08lx %s\n",
-                     static_cast<unsigned long>(hr),
-                     error ? static_cast<const char*>(error->GetBufferPointer()) : "");
+                     static_cast<unsigned long>(hr), error ? static_cast<const char*>(error->GetBufferPointer()) : "");
         return false;
     }
 
@@ -269,8 +267,8 @@ inline void TemporalUpscaler::Render(ID3D12GraphicsCommandList* commandList, Aux
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = aux.HudlessRtv();
     commandList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-    D3D12_VIEWPORT viewport = {0.0f, 0.0f, static_cast<float>(aux.displayWidth),
-                               static_cast<float>(aux.displayHeight), 0.0f, 1.0f};
+    D3D12_VIEWPORT viewport = {0.0f, 0.0f, static_cast<float>(aux.displayWidth), static_cast<float>(aux.displayHeight),
+                               0.0f, 1.0f};
     D3D12_RECT scissor = {0, 0, static_cast<LONG>(aux.displayWidth), static_cast<LONG>(aux.displayHeight)};
     commandList->RSSetViewports(1, &viewport);
     commandList->RSSetScissorRects(1, &scissor);
@@ -281,8 +279,14 @@ inline void TemporalUpscaler::Render(ID3D12GraphicsCommandList* commandList, Aux
     D3D12_GPU_DESCRIPTOR_HANDLE gpuBase = srvHeap_->GetGPUDescriptorHandleForHeapStart();
     gpuBase.ptr += static_cast<UINT64>(slot) * srvStride_;
     commandList->SetGraphicsRootDescriptorTable(0, gpuBase);
-    const float constants[8] = {static_cast<float>(aux.renderWidth), static_cast<float>(aux.renderHeight),
-                                jitterX, jitterY, historyValid_ ? 1.0f : 0.0f, 0.9f, 0.0f, 0.0f};
+    const float constants[8] = {static_cast<float>(aux.renderWidth),
+                                static_cast<float>(aux.renderHeight),
+                                jitterX,
+                                jitterY,
+                                historyValid_ ? 1.0f : 0.0f,
+                                0.9f,
+                                0.0f,
+                                0.0f};
     commandList->SetGraphicsRoot32BitConstants(1, 8, constants, 0);
     commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     commandList->DrawInstanced(3, 1, 0, 0);
@@ -328,9 +332,8 @@ public:
 
     // Source must be in kColorReadState; the target RTV must already be bound-able
     // (RENDER_TARGET state is the caller's responsibility).
-    void Render(ID3D12GraphicsCommandList* commandList, ID3D12Resource* source,
-                D3D12_CPU_DESCRIPTOR_HANDLE targetRtv, UINT width, UINT height, UINT frameIndex,
-                uint32_t ditherSeed);
+    void Render(ID3D12GraphicsCommandList* commandList, ID3D12Resource* source, D3D12_CPU_DESCRIPTOR_HANDLE targetRtv,
+                UINT width, UINT height, UINT frameIndex, uint32_t ditherSeed);
 
 private:
     ComPtr<ID3D12Device> device_;
@@ -380,11 +383,9 @@ inline bool PresentBlitPass::Initialize(ID3D12Device* device, DXGI_FORMAT source
     ComPtr<ID3DBlob> rsBlob;
     ComPtr<ID3DBlob> rsError;
     HRESULT hr = D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &rsBlob, &rsError);
-    if (FAILED(hr) ||
-        FAILED(device->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
-                                           IID_PPV_ARGS(&rootSignature_)))) {
-        testapp::Log("[FG-DIAG] PresentBlitPass: root signature failed hr=0x%08lx %s\n",
-                     static_cast<unsigned long>(hr),
+    if (FAILED(hr) || FAILED(device->CreateRootSignature(0, rsBlob->GetBufferPointer(), rsBlob->GetBufferSize(),
+                                                         IID_PPV_ARGS(&rootSignature_)))) {
+        testapp::Log("[FG-DIAG] PresentBlitPass: root signature failed hr=0x%08lx %s\n", static_cast<unsigned long>(hr),
                      rsError ? static_cast<const char*>(rsError->GetBufferPointer()) : "");
         return false;
     }
@@ -422,8 +423,7 @@ inline bool PresentBlitPass::Initialize(ID3D12Device* device, DXGI_FORMAT source
                         D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps, &error);
     }
     if (FAILED(hr)) {
-        testapp::Log("[FG-DIAG] PresentBlitPass: shader compile failed hr=0x%08lx %s\n",
-                     static_cast<unsigned long>(hr),
+        testapp::Log("[FG-DIAG] PresentBlitPass: shader compile failed hr=0x%08lx %s\n", static_cast<unsigned long>(hr),
                      error ? static_cast<const char*>(error->GetBufferPointer()) : "");
         return false;
     }

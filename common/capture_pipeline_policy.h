@@ -261,8 +261,7 @@ inline bool ShouldCfrCatchUpToWallClock(uint32_t outputShortfallTicks, bool useS
 
 inline bool CanDrainOutstandingWgcTicks(bool queuedWgcFrameAvailable, bool bufferedWgcFrameAvailable, bool hasLastFrame,
                                         bool mediaEngineCanRepeatLastFrame) {
-    return queuedWgcFrameAvailable || bufferedWgcFrameAvailable ||
-           (hasLastFrame && mediaEngineCanRepeatLastFrame);
+    return queuedWgcFrameAvailable || bufferedWgcFrameAvailable || (hasLastFrame && mediaEngineCanRepeatLastFrame);
 }
 
 inline bool CanDrainOutstandingCfrTicks(bool useScreenGrab, bool queuedFrameAvailable, bool bufferedFrameAvailable,
@@ -675,8 +674,7 @@ inline uint32_t GetWgcFrameCountForDurationMs(uint32_t fps, uint32_t durationMs)
     if (fps == 0 || durationMs == 0) {
         return 0;
     }
-    const uint64_t frames =
-        (static_cast<uint64_t>(fps) * static_cast<uint64_t>(durationMs) + 999ull) / 1000ull;
+    const uint64_t frames = (static_cast<uint64_t>(fps) * static_cast<uint64_t>(durationMs) + 999ull) / 1000ull;
     return frames > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(frames);
 }
 
@@ -700,8 +698,7 @@ inline int64_t GetWgcStartupSmoothnessTargetDelayQpc(uint32_t retainedExtraFrame
 }
 
 inline int64_t GetWgcStartupReserveWaitBudgetQpc(int64_t startupContentDelayTargetQpc, int64_t targetIntervalTicks,
-                                                 int64_t smoothnessTargetDelayQpc,
-                                                 bool smoothnessStartupAttempted) {
+                                                 int64_t smoothnessTargetDelayQpc, bool smoothnessStartupAttempted) {
     if (startupContentDelayTargetQpc <= 0 || targetIntervalTicks <= 0) {
         return 0;
     }
@@ -718,8 +715,7 @@ inline int64_t GetWgcStartupReserveWaitBudgetQpc(int64_t startupContentDelayTarg
         return baseBudget;
     }
 
-    const int64_t smoothnessSlack =
-        saturatingAdd(smoothnessTargetDelayQpc, saturatingMul(targetIntervalTicks, 4));
+    const int64_t smoothnessSlack = saturatingAdd(smoothnessTargetDelayQpc, saturatingMul(targetIntervalTicks, 4));
     const int64_t smoothnessBudget = saturatingAdd(startupContentDelayTargetQpc, smoothnessSlack);
     return std::max(baseBudget, smoothnessBudget);
 }
@@ -881,11 +877,10 @@ inline uint32_t GetWgcCfrOvercaptureTargetFps(uint32_t outputFps,
     return static_cast<uint32_t>((static_cast<uint64_t>(outputFps) * headroomPermille + 999ull) / 1000ull);
 }
 
-inline uint32_t ComputeWgcAdaptiveCappedTargetFps(uint32_t outputFps,
-                                                   uint32_t sourceMin250Fps,
-                                                   uint32_t originalOvercaptureFps,
-                                                   uint32_t headroomFps = kWgcAdaptiveCapHeadroomFps,
-                                                   uint32_t sourceAvgFps = 0) {
+inline uint32_t ComputeWgcAdaptiveCappedTargetFps(uint32_t outputFps, uint32_t sourceMin250Fps,
+                                                  uint32_t originalOvercaptureFps,
+                                                  uint32_t headroomFps = kWgcAdaptiveCapHeadroomFps,
+                                                  uint32_t sourceAvgFps = 0) {
     if (sourceMin250Fps == 0 || outputFps == 0) {
         return 0;
     }
@@ -893,8 +888,7 @@ inline uint32_t ComputeWgcAdaptiveCappedTargetFps(uint32_t outputFps,
     // the source interval (e.g. 120fps MinUpdateInterval with 140fps VRR game)
     // causes WGC to gate every ~other frame (8.33ms min-interval rejects 7.1ms
     // input) → effective delivery is HALVED to ~70fps instead of 120fps.
-    const uint32_t effectiveSourceRate =
-        sourceAvgFps > 0 ? std::max(sourceMin250Fps, sourceAvgFps) : sourceMin250Fps;
+    const uint32_t effectiveSourceRate = sourceAvgFps > 0 ? std::max(sourceMin250Fps, sourceAvgFps) : sourceMin250Fps;
     const uint32_t floorFps = std::min(std::max(effectiveSourceRate, outputFps), originalOvercaptureFps);
     uint32_t candidate = std::max(floorFps, effectiveSourceRate + headroomFps);
     return std::min(candidate, originalOvercaptureFps);
@@ -1007,10 +1001,9 @@ inline bool ShouldUseWgcMaxRateForRecovery(const WgcAdaptiveTelemetry& telemetry
     // fresh-frame misses are DWM delivery burstiness, not true source starvation.
     // Max-rate WGC doesn't fix delivery gaps — DWM still controls the frame
     // pipeline. Keep the producer throttled to avoid futile max-rate cycling.
-    const bool sourceAboveTarget = telemetry.recentDeliveredMin250Fps > 0 &&
-                                   telemetry.recentDeliveredMin250Fps >= telemetry.outputFps &&
-                                   telemetry.recentInputMin250Fps > 0 &&
-                                   telemetry.recentInputMin250Fps >= telemetry.outputFps;
+    const bool sourceAboveTarget =
+        telemetry.recentDeliveredMin250Fps > 0 && telemetry.recentDeliveredMin250Fps >= telemetry.outputFps &&
+        telemetry.recentInputMin250Fps > 0 && telemetry.recentInputMin250Fps >= telemetry.outputFps;
     if (sourceAboveTarget) {
         return false;
     }
@@ -1051,30 +1044,26 @@ inline bool ShouldUseWgcMaxRateForDelayReservoirRecovery(const WgcAdaptiveTeleme
 }
 
 inline bool ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(const WgcAdaptiveTelemetry& telemetry,
-                                                             bool delayReservoirBelowLowWater,
-                                                             bool producerCapped) {
+                                                             bool delayReservoirBelowLowWater, bool producerCapped) {
     if (!producerCapped || !delayReservoirBelowLowWater || telemetry.outputFps == 0) {
         return false;
     }
 
     // When the source delivers above the output target on average, empty-tick
     // permille is delivery burstiness, not underfeed — keep the cap.
-    const bool sourceAboveTarget = telemetry.recentDeliveredMin250Fps > 0 &&
-                                   telemetry.recentDeliveredMin250Fps >= telemetry.outputFps &&
-                                   telemetry.recentInputMin250Fps > 0 &&
-                                   telemetry.recentInputMin250Fps >= telemetry.outputFps;
+    const bool sourceAboveTarget =
+        telemetry.recentDeliveredMin250Fps > 0 && telemetry.recentDeliveredMin250Fps >= telemetry.outputFps &&
+        telemetry.recentInputMin250Fps > 0 && telemetry.recentInputMin250Fps >= telemetry.outputFps;
     if (sourceAboveTarget) {
         return false;
     }
 
-    const bool inputBelowOutput =
-        telemetry.recentInputMin250Fps > 0 &&
-        telemetry.recentInputMin250Fps + kWgcRecoverySourceMarginFps < telemetry.outputFps;
+    const bool inputBelowOutput = telemetry.recentInputMin250Fps > 0 &&
+                                  telemetry.recentInputMin250Fps + kWgcRecoverySourceMarginFps < telemetry.outputFps;
     const bool deliveredBelowOutput =
         telemetry.recentDeliveredMin250Fps > 0 &&
         telemetry.recentDeliveredMin250Fps + kWgcRecoverySourceMarginFps < telemetry.outputFps;
-    return inputBelowOutput || deliveredBelowOutput ||
-           telemetry.emptyTickPermille >= kWgcLowSourceEmptyTickPermille;
+    return inputBelowOutput || deliveredBelowOutput || telemetry.emptyTickPermille >= kWgcLowSourceEmptyTickPermille;
 }
 
 inline bool ShouldUseWgcMaxRateForStartupReserveWait(bool reserveMissing, bool waitBudgetRemaining,
@@ -1162,8 +1151,7 @@ inline uint32_t GetDxgiDuplicationSourceContentBits(uint32_t dxgiFormat) {
     return 0;
 }
 
-inline bool IsAcceptableDxgiDuplicationFrameFormat(uint32_t dxgiFormat, bool requireHighPrecision,
-                                                   bool outputIsHdr) {
+inline bool IsAcceptableDxgiDuplicationFrameFormat(uint32_t dxgiFormat, bool requireHighPrecision, bool outputIsHdr) {
     constexpr uint32_t kFormatR16G16B16A16Float = 10;
     constexpr uint32_t kFormatR10G10B10A2Unorm = 24;
     constexpr uint32_t kFormatB8G8R8A8Unorm = 87;
@@ -1600,8 +1588,7 @@ inline bool ShouldEnterWgcLiveRecoveryMode(const WgcAdaptiveTelemetry& telemetry
 }
 
 inline bool ShouldExitWgcLiveRecoveryMode(const WgcAdaptiveTelemetry& telemetry, uint32_t outputShortfallTicks,
-                                          bool encoderBottlenecked,
-                                          bool stableUnderfeedExit = false) {
+                                          bool encoderBottlenecked, bool stableUnderfeedExit = false) {
     if (telemetry.outputFps == 0) {
         return true;
     }
@@ -1621,8 +1608,7 @@ inline bool ShouldExitWgcLiveRecoveryMode(const WgcAdaptiveTelemetry& telemetry,
 }
 
 inline bool ShouldExitWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry, bool encoderTooSlowForTarget = false,
-                                       bool bufferedReserveRecovered = false,
-                                       uint64_t durationInModeMs = 0) {
+                                       bool bufferedReserveRecovered = false, uint64_t durationInModeMs = 0) {
     if (telemetry.outputFps == 0) {
         return true;
     }
@@ -1635,12 +1621,9 @@ inline bool ShouldExitWgcLowSourceMode(const WgcAdaptiveTelemetry& telemetry, bo
     // period without starvation, treat this as the steady state and exit low-source mode
     // so the overcapture cap can be restored to an adaptive rate matching actual capability.
     constexpr uint64_t kStableUnderfeedExitMs = 5000;
-    if (durationInModeMs >= kStableUnderfeedExitMs &&
-        telemetry.recentDeliveredMin250Fps > 0 &&
-        telemetry.recentDeliveredMin500Fps > 0 &&
-        telemetry.recentInputMin250Fps > 0 &&
-        telemetry.recentInputMin500Fps > 0 &&
-        telemetry.emptyTickPermille <= kWgcLowSourceExitEmptyTickPermille &&
+    if (durationInModeMs >= kStableUnderfeedExitMs && telemetry.recentDeliveredMin250Fps > 0 &&
+        telemetry.recentDeliveredMin500Fps > 0 && telemetry.recentInputMin250Fps > 0 &&
+        telemetry.recentInputMin500Fps > 0 && telemetry.emptyTickPermille <= kWgcLowSourceExitEmptyTickPermille &&
         telemetry.bufferedWgcFrames <= 4) {
         return true;
     }
@@ -1940,8 +1923,8 @@ inline uint32_t GetWgcDelayReservoirTargetFrames(int64_t contentDelayQpc, int64_
     return delayFrames + extraFrames;
 }
 
-inline uint32_t GetWgcSmoothnessBudgetFps(
-    uint32_t outputFps, uint32_t sourceRatePermille = kWgcSmoothnessBufferSourceRatePermille) {
+inline uint32_t GetWgcSmoothnessBudgetFps(uint32_t outputFps,
+                                          uint32_t sourceRatePermille = kWgcSmoothnessBufferSourceRatePermille) {
     if (outputFps == 0) {
         return 0;
     }
@@ -2147,12 +2130,9 @@ inline uint32_t GetWgcSmoothnessPreferredSourceFramePoolBuffers(uint32_t outputF
 // requiresSourceFramePool=false is the DXGI Desktop Duplication shape: the OS
 // owns the single desktop image (no consumer-owned WGC source frame pool), so
 // the entire VRAM budget funds retained copy slots instead of splitting it.
-inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(uint32_t outputFps, uint32_t maxSmoothnessMs,
-                                                                    uint32_t width, uint32_t height,
-                                                                    uint32_t sourceBytesPerPixel,
-                                                                    uint32_t copyBytesPerPixel, uint32_t budgetMb,
-                                                                    uint32_t syncDelayFrames,
-                                                                    bool requiresSourceFramePool = true) {
+inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(
+    uint32_t outputFps, uint32_t maxSmoothnessMs, uint32_t width, uint32_t height, uint32_t sourceBytesPerPixel,
+    uint32_t copyBytesPerPixel, uint32_t budgetMb, uint32_t syncDelayFrames, bool requiresSourceFramePool = true) {
     WgcSmoothnessSurfaceBudget result{};
     result.desiredExtraFrames = GetWgcSmoothnessDesiredFrames(outputFps, maxSmoothnessMs);
     result.syncDelayFrames = syncDelayFrames;
@@ -2223,14 +2203,11 @@ inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(uint32_t out
                 if (firstValidSourceBuffers == 0) {
                     firstValidSourceBuffers = candidate;
                 }
-                const uint32_t cappedCopySlots =
-                    std::min<uint32_t>(rawCopySlots, kWgcSmoothnessBufferMaxPoolFrames);
+                const uint32_t cappedCopySlots = std::min<uint32_t>(rawCopySlots, kWgcSmoothnessBufferMaxPoolFrames);
                 const uint32_t retainedCap =
                     GetWgcSmoothnessRetainedFrameCap(cappedCopySlots, result.reservedFreeCopySlots);
-                const uint32_t extraCapacity =
-                    GetWgcSmoothnessExtraFramesForRetainedCap(retainedCap, syncDelayFrames);
-                const uint32_t retainedForCandidate =
-                    std::min(result.desiredExtraFrames, extraCapacity);
+                const uint32_t extraCapacity = GetWgcSmoothnessExtraFramesForRetainedCap(retainedCap, syncDelayFrames);
+                const uint32_t retainedForCandidate = std::min(result.desiredExtraFrames, extraCapacity);
                 if (retainedForCandidate > bestRetainedFrames) {
                     bestRetainedFrames = retainedForCandidate;
                     selectedSourceBuffers = candidate;
@@ -2244,15 +2221,15 @@ inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(uint32_t out
             selectedSourceBuffers = firstValidSourceBuffers;
         }
         if (selectedSourceBuffers == 0) {
-            const uint32_t maxSourceByBudget = static_cast<uint32_t>(
-                std::min<uint64_t>(preferredSourceBuffers, budgetBytes / sourceBytesPerSurface));
-            selectedSourceBuffers = std::max<uint32_t>(1u, std::min<uint32_t>(maxSourceByBudget, preferredSourceBuffers));
+            const uint32_t maxSourceByBudget =
+                static_cast<uint32_t>(std::min<uint64_t>(preferredSourceBuffers, budgetBytes / sourceBytesPerSurface));
+            selectedSourceBuffers =
+                std::max<uint32_t>(1u, std::min<uint32_t>(maxSourceByBudget, preferredSourceBuffers));
         }
 
         result.sourceFramePoolBuffers = selectedSourceBuffers;
-        maxBudgetedCopySlots =
-            std::min<uint32_t>(copySlotsForSourceBuffers(result.sourceFramePoolBuffers),
-                               kWgcSmoothnessBufferMaxPoolFrames);
+        maxBudgetedCopySlots = std::min<uint32_t>(copySlotsForSourceBuffers(result.sourceFramePoolBuffers),
+                                                  kWgcSmoothnessBufferMaxPoolFrames);
     }
 
     uint32_t copySlots = maxBudgetedCopySlots;
@@ -2311,8 +2288,7 @@ inline uint32_t GetWgcSmoothnessPoolFrameCount(uint32_t retainedFrames) {
 }
 
 inline uint32_t GetWgcPoolPressureRetainedTrimTarget(uint32_t currentFreeCopySlots, uint32_t reservedFreeCopySlots,
-                                                     uint32_t delayReservoirTargetFrames,
-                                                     uint32_t retainedFrameCap) {
+                                                     uint32_t delayReservoirTargetFrames, uint32_t retainedFrameCap) {
     if (reservedFreeCopySlots == 0 || currentFreeCopySlots > reservedFreeCopySlots || retainedFrameCap == 0 ||
         delayReservoirTargetFrames == 0) {
         return retainedFrameCap;
@@ -2359,13 +2335,10 @@ inline bool IsWgcIngressSourceAtOrAboveCfrTarget(uint32_t outputFps, uint32_t re
     return true;
 }
 
-inline WgcIngressAdmissionDecision DecideWgcIngressAdmission(uint32_t retainedFrames, uint32_t retainedFrameCap,
-                                                             uint32_t lowWaterFrames, bool recovering,
-                                                             uint32_t outputFps, uint32_t recentInputMin250Fps,
-                                                             uint32_t recentInputMin500Fps,
-                                                             double admissionCreditFrames, uint32_t freeCopySlots,
-                                                             uint32_t reservedFreeCopySlots,
-                                                             bool uniformPlayoutOwnsSurplus = false) {
+inline WgcIngressAdmissionDecision DecideWgcIngressAdmission(
+    uint32_t retainedFrames, uint32_t retainedFrameCap, uint32_t lowWaterFrames, bool recovering, uint32_t outputFps,
+    uint32_t recentInputMin250Fps, uint32_t recentInputMin500Fps, double admissionCreditFrames, uint32_t freeCopySlots,
+    uint32_t reservedFreeCopySlots, bool uniformPlayoutOwnsSurplus = false) {
     WgcIngressAdmissionDecision decision{};
     if (retainedFrameCap == 0) {
         decision.reason = "uncapped";
@@ -3063,8 +3036,7 @@ inline bool ShouldDropWgcFrontForNearerPlayout(int64_t frontTimestampQpc, int64_
 }
 
 inline bool ShouldSkipDeliveredDuplicateWgcSourceTimestamp(bool duplicateSourceTimestamp, int64_t rawSourceFrameQpc,
-                                                           int64_t lastDeliveredRawSourceQpc,
-                                                           bool cfrCaptureActive) {
+                                                           int64_t lastDeliveredRawSourceQpc, bool cfrCaptureActive) {
     if (!cfrCaptureActive || !duplicateSourceTimestamp || rawSourceFrameQpc <= 0 || lastDeliveredRawSourceQpc <= 0) {
         return false;
     }

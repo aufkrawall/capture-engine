@@ -252,9 +252,9 @@ TEST(AudioSyncUtilsTest, CfrAppAudioBacklogDrainIgnoresSmallExcess) {
     constexpr int64_t kTarget = kRate * 140 / 1000;
     constexpr int64_t kSlack = kRate * 20 / 1000;
     constexpr int64_t kDeadband = kRate * 10 / 1000;
-    const auto decision = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
-        true, true, false, true, false, kTarget + (kRate * 15 / 1000), kTarget, kRate / 64, kRate * 10, 0.5,
-        kSlack, kDeadband);
+    const auto decision =
+        ce::audio::ComputeCfrAppAudioBacklogDrainDecision(true, true, false, true, false, kTarget + (kRate * 15 / 1000),
+                                                          kTarget, kRate / 64, kRate * 10, 0.5, kSlack, kDeadband);
 
     EXPECT_FALSE(decision.active);
     EXPECT_EQ(decision.reason, ce::audio::CfrAppAudioBacklogDrainReason::WithinSlack);
@@ -268,13 +268,14 @@ TEST(AudioSyncUtilsTest, CfrAppAudioBacklogDrainUsesAppPitchCapForElevatedExcess
     constexpr int64_t kDeadband = kRate * 10 / 1000;
     constexpr int64_t kTenSecondWindowSamples = kRate * 10;
     const auto decision = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
-        true, true, false, true, false, kTarget + (kRate * 85 / 1000), kTarget, kRate / 64,
-        kTenSecondWindowSamples, 0.5, kSlack, kDeadband);
+        true, true, false, true, false, kTarget + (kRate * 85 / 1000), kTarget, kRate / 64, kTenSecondWindowSamples,
+        0.5, kSlack, kDeadband);
 
     EXPECT_TRUE(decision.active);
     EXPECT_EQ(decision.reason, ce::audio::CfrAppAudioBacklogDrainReason::Active);
     EXPECT_GT(decision.compensationDelta, 0);
-    EXPECT_LE(decision.compensationDelta, ce::audio::ComputeTier1CompensationDelta(kTenSecondWindowSamples, kTenSecondWindowSamples, 0.5));
+    EXPECT_LE(decision.compensationDelta,
+              ce::audio::ComputeTier1CompensationDelta(kTenSecondWindowSamples, kTenSecondWindowSamples, 0.5));
 }
 
 TEST(AudioSyncUtilsTest, CfrAppAudioBacklogDrainRequiresEligibleAppCfrState) {
@@ -499,10 +500,9 @@ TEST(AudioSyncUtilsTest, AppAudioCaptureEpochTransitionDistinguishesRestartFromO
 
 TEST(AudioSyncUtilsTest, RestartedAppAudioEpochReusesLateJoinInsteadOfMaterializingLongAbsence) {
     constexpr int64_t kRate = 48000;
-    const bool firstTimelinePacketAfterEpochReset =
-        ce::audio::IsAppAudioCaptureEpochTransition(true, 1, 2);
-    const auto join = ce::audio::ComputeLateAppSourceJoin(
-        true, firstTimelinePacketAfterEpochReset, false, kRate * 1430, kRate * 1430, kRate / 2, kRate / 100);
+    const bool firstTimelinePacketAfterEpochReset = ce::audio::IsAppAudioCaptureEpochTransition(true, 1, 2);
+    const auto join = ce::audio::ComputeLateAppSourceJoin(true, firstTimelinePacketAfterEpochReset, false, kRate * 1430,
+                                                          kRate * 1430, kRate / 2, kRate / 100);
 
     ASSERT_TRUE(join.joinLive);
     EXPECT_EQ(join.joinCursorSamples, kRate * 1430);

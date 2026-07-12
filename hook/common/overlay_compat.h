@@ -450,8 +450,7 @@ inline constexpr TrackedOverlayModule kTrackedOverlayModules[] = {
     // GetModuleHandleA("sl.interposer.dll") that stalls in the loader during the mode switch.
     {"sl.interposer.dll", false, false, false},
 };
-inline constexpr size_t kTrackedOverlayModuleCount =
-    sizeof(kTrackedOverlayModules) / sizeof(kTrackedOverlayModules[0]);
+inline constexpr size_t kTrackedOverlayModuleCount = sizeof(kTrackedOverlayModules) / sizeof(kTrackedOverlayModules[0]);
 static_assert(kTrackedOverlayModuleCount <= 32, "tracked-module loaded-set is a 32-bit mask");
 
 // Pure / loader-free: index of the tracked module whose base name case-insensitively equals

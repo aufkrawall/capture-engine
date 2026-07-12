@@ -391,10 +391,10 @@ TEST(CaptureBaseTest, CombinedSlotScanSkipsCpuLeasesAndGpuBusySlots) {
     std::array<bool, 8> gpuReady = {true, false, true, false, true, true, true, true};
     uint32_t cpuBusy = 0;
     uint32_t gpuBusy = 0;
-    EXPECT_EQ(FindAvailableCaptureTextureSlotIf(
-                  &sharedMem, 1, 8, [&](int32_t slot) { return gpuReady[static_cast<size_t>(slot)]; }, &cpuBusy,
-                  &gpuBusy),
-              5);
+    EXPECT_EQ(
+        FindAvailableCaptureTextureSlotIf(
+            &sharedMem, 1, 8, [&](int32_t slot) { return gpuReady[static_cast<size_t>(slot)]; }, &cpuBusy, &gpuBusy),
+        5);
     EXPECT_EQ(cpuBusy, 2u);
     EXPECT_EQ(gpuBusy, 2u);
 }
@@ -403,9 +403,8 @@ TEST(CaptureBaseTest, CombinedSlotScanReportsAllBusyWithoutWaiting) {
     SharedMemoryLayout sharedMem;
     uint32_t cpuBusy = 0;
     uint32_t gpuBusy = 0;
-    EXPECT_EQ(FindAvailableCaptureTextureSlotIf(
-                  &sharedMem, 6, 8, [](int32_t) { return false; }, &cpuBusy, &gpuBusy),
-              -1);
+    EXPECT_EQ(
+        FindAvailableCaptureTextureSlotIf(&sharedMem, 6, 8, [](int32_t) { return false; }, &cpuBusy, &gpuBusy), -1);
     EXPECT_EQ(cpuBusy, 0u);
     EXPECT_EQ(gpuBusy, 8u);
 }

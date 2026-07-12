@@ -20,8 +20,8 @@ TEST(PathUtilsTest, ReplacesMappedDriveRootWithUncRoot) {
 }
 
 TEST(PathUtilsTest, ReplacesMappedDriveRootWithoutDuplicatingSlashes) {
-    const std::filesystem::path resolved = ce::path::ReplaceDriveRootWithRemotePath(
-        std::filesystem::path(L"Z:/Captures"), L"\\\\nas\\recordings\\");
+    const std::filesystem::path resolved =
+        ce::path::ReplaceDriveRootWithRemotePath(std::filesystem::path(L"Z:/Captures"), L"\\\\nas\\recordings\\");
 
     EXPECT_EQ(resolved.wstring(), L"\\\\nas\\recordings\\Captures");
 }

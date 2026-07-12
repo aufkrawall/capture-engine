@@ -967,13 +967,15 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         if (!canonical.empty()) {
             config.wgcAllowLossyBgra8Pool = ParseBool(canonical);
             if (!legacy.empty()) {
-                LogWarn("[Config] Both wgc_allow_lossy_bgra8_pool and deprecated "
-                        "wgc_prefer_compact_10bit_pool are set; using the canonical option");
+                LogWarn(
+                    "[Config] Both wgc_allow_lossy_bgra8_pool and deprecated "
+                    "wgc_prefer_compact_10bit_pool are set; using the canonical option");
             }
         } else if (!legacy.empty()) {
             config.wgcAllowLossyBgra8Pool = ParseBool(legacy);
-            LogWarn("[Config] wgc_prefer_compact_10bit_pool is deprecated; use "
-                    "wgc_allow_lossy_bgra8_pool instead");
+            LogWarn(
+                "[Config] wgc_prefer_compact_10bit_pool is deprecated; use "
+                "wgc_allow_lossy_bgra8_pool instead");
         }
     }
     config.crashDumpDir = GetStr("General", "crash_dump_dir", "");

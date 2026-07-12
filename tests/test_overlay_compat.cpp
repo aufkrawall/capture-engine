@@ -27,8 +27,12 @@ bool IsSteamName(const char* name) {
 
 class OverlayModuleDetectionTest : public ::testing::Test {
 protected:
-    void SetUp() override { ResetThirdPartyOverlayModuleCacheForTesting(); }
-    void TearDown() override { ResetThirdPartyOverlayModuleCacheForTesting(); }
+    void SetUp() override {
+        ResetThirdPartyOverlayModuleCacheForTesting();
+    }
+    void TearDown() override {
+        ResetThirdPartyOverlayModuleCacheForTesting();
+    }
 };
 
 // --- Pure matcher: the key regression is that ordinary system DLLs do NOT match, so a load
@@ -118,7 +122,7 @@ TEST_F(OverlayModuleDetectionTest, NonMatchingUnloadIsNoOp) {
 // List-order priority: when several overlays are loaded, Steam (earliest in the list) is
 // reported, matching the previous in-order GetModuleHandleA walk regardless of load order.
 TEST_F(OverlayModuleDetectionTest, ListOrderPriorityIsIndependentOfLoadOrder) {
-    NoteModuleLoadedForOverlayCache("RTSSHooks64.dll");   // lower priority, loaded first
+    NoteModuleLoadedForOverlayCache("RTSSHooks64.dll");            // lower priority, loaded first
     NoteModuleLoadedForOverlayCache("gameoverlayrenderer64.dll");  // Steam, higher priority
     EXPECT_TRUE(IsSteamName(GetLoadedThirdPartyOverlayModuleName()));
 

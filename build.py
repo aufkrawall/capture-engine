@@ -1353,12 +1353,23 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
 
     # -- Required DLLs by test app --
     # FSR FG + FSR upscaler (super resolution): core + companion AMD runtime DLLs
-    fsr_dlls = ["amd_fidelityfx_framegeneration_dx12.dll", "amd_fidelityfx_loader_dx12.dll",
-                 "amd_fidelityfx_upscaler_dx12.dll", "amd_acs_x64.dll", "amd_ags_x64.dll"]
+    fsr_dlls = [
+        "amd_fidelityfx_framegeneration_dx12.dll",
+        "amd_fidelityfx_loader_dx12.dll",
+        "amd_fidelityfx_upscaler_dx12.dll",
+        "amd_acs_x64.dll",
+        "amd_ags_x64.dll",
+    ]
     # Streamline interposer loads companion .dlls + NGX DLLs at load time;
     # we must extract ALL .dll files from the zip's x64 bin dir.
-    sl_known_dlls = ["sl.interposer.dll", "sl.common.dll", "sl.dlss_g.dll",
-                     "sl.dlss.dll", "sl.reflex.dll", "nvngx_dlssg.dll"]
+    sl_known_dlls = [
+        "sl.interposer.dll",
+        "sl.common.dll",
+        "sl.dlss_g.dll",
+        "sl.dlss.dll",
+        "sl.reflex.dll",
+        "nvngx_dlssg.dll",
+    ]
 
     # _nvngx.dll comes from the NVIDIA driver (DriverStore), not from Streamline SDK zip.
     # Search dynamically in case the DriverStore path changes with driver updates.
@@ -1367,8 +1378,11 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
     missing_fsr = [d for d in fsr_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
     missing_sl = [d for d in sl_known_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
     missing_nvngx = not os.path.exists(os.path.join(testapp_dir, "_nvngx.dll"))
-    missing_headers = (not os.path.exists(streamline_header_probe) or not os.path.exists(ffx_header_probe) or
-                       not os.path.exists(ffx_upscale_header_probe))
+    missing_headers = (
+        not os.path.exists(streamline_header_probe)
+        or not os.path.exists(ffx_header_probe)
+        or not os.path.exists(ffx_upscale_header_probe)
+    )
 
     if not missing_fsr and not missing_sl and not missing_nvngx and not missing_headers:
         log("FG SDK DLLs already present - skipping download")
@@ -1399,12 +1413,12 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
     def _extract_all_dlls_from_path(zip_path: str, inner_prefix: str, dest_dir: str) -> List[str]:
         """Extract every .dll under a given prefix path from a zip archive."""
         import zipfile
+
         extracted = set()
         with zipfile.ZipFile(zip_path, "r") as zf:
             for entry in zf.infolist():
                 fname = os.path.basename(entry.filename)
-                if (fname.endswith(".dll") and entry.filename.startswith(inner_prefix)
-                        and fname not in extracted):
+                if fname.endswith(".dll") and entry.filename.startswith(inner_prefix) and fname not in extracted:
                     zf.extract(entry, dest_dir)
                     extracted_path = os.path.normpath(os.path.join(dest_dir, entry.filename))
                     dest_path = os.path.join(dest_dir, fname)
@@ -1428,6 +1442,7 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
 
         # Extract only needed DLLs from the archive
         import zipfile
+
         missing_from_archive = [d for d in dlls if not os.path.exists(os.path.join(testapp_dir, d))]
         if not missing_from_archive:
             return
@@ -1437,7 +1452,11 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
         with zipfile.ZipFile(zip_path, "r") as zf:
             for entry in zf.infolist():
                 fname = os.path.basename(entry.filename)
-                if fname in missing_from_archive and entry.filename.startswith(archive_inner_path) and fname not in extracted:
+                if (
+                    fname in missing_from_archive
+                    and entry.filename.startswith(archive_inner_path)
+                    and fname not in extracted
+                ):
                     zf.extract(entry, testapp_dir)
                     extracted_path = os.path.normpath(os.path.join(testapp_dir, entry.filename))
                     dest_path = os.path.join(testapp_dir, fname)
@@ -1503,7 +1522,9 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
         log(f"Extracted {extracted} FidelityFX header(s)")
 
     if missing_fsr:
-        _download_and_extract(FFX_SDK_URL, FFX_SDK_ZIP_NAME, "Samples/Upscalers/FidelityFX_FSR/dx12/x64/Release/", fsr_dlls)
+        _download_and_extract(
+            FFX_SDK_URL, FFX_SDK_ZIP_NAME, "Samples/Upscalers/FidelityFX_FSR/dx12/x64/Release/", fsr_dlls
+        )
 
     # Download and extract Streamline DLLs if any missing
     if missing_sl:

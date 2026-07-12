@@ -1,8 +1,8 @@
 #include "audio_encoder.h"
+#include <mmreg.h>
 #include "audio_sync_utils.h"
 #include "audio_time_utils.h"  // For ce::audio::ParseSampleRateOr
 #include "mediaengine.h"       // For DLL_Log
-#include <mmreg.h>
 
 extern "C" {
 #include <libavutil/audio_fifo.h>
@@ -105,8 +105,7 @@ bool CodecSupportsSampleFormat(const AVCodec* codec, AVSampleFormat fmt) {
 // only a fixed set of layouts: ALAC supports 7.1(wide) but NOT plain 7.1, so a
 // 7.1 (side) endpoint fed verbatim makes avcodec_open2 fail with EINVAL.
 bool CodecSupportsChannelLayout(const AVCodec* codec, const AVChannelLayout* layout) {
-    const auto layouts =
-        GetCodecConfigs<AVChannelLayout>(codec, AV_CODEC_CONFIG_CHANNEL_LAYOUT, "channel layouts");
+    const auto layouts = GetCodecConfigs<AVChannelLayout>(codec, AV_CODEC_CONFIG_CHANNEL_LAYOUT, "channel layouts");
     if (!layouts.values || !layout) {
         return true;  // No restriction advertised by the codec.
     }
@@ -125,8 +124,7 @@ bool CodecSupportsChannelLayout(const AVCodec* codec, const AVChannelLayout* lay
 // codec's first supported layout. Returns false if the codec lists no layout at
 // all (caller keeps the requested layout and lets avcodec_open2 decide).
 bool PickSupportedChannelLayout(const AVCodec* codec, int desiredChannels, AVChannelLayout* out) {
-    const auto layouts =
-        GetCodecConfigs<AVChannelLayout>(codec, AV_CODEC_CONFIG_CHANNEL_LAYOUT, "channel layouts");
+    const auto layouts = GetCodecConfigs<AVChannelLayout>(codec, AV_CODEC_CONFIG_CHANNEL_LAYOUT, "channel layouts");
     if (!layouts.values || !out) {
         return false;
     }
@@ -266,7 +264,7 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
     outputChannels = std::clamp(config.downmix ? 2 : (config.outputChannels > 0 ? config.outputChannels : 2), 1, 8);
     outputChannelMask = config.downmix ? DefaultChannelMask(2)
                                        : (config.outputChannelMask != 0 ? config.outputChannelMask
-                                                                       : DefaultChannelMask(outputChannels));
+                                                                        : DefaultChannelMask(outputChannels));
     allowShortFinalFrame = policy.allowShortFinalFrame;
 
     DLL_Log("[AudioEncoder] Using codec: requested=%s resolved=%s (id=%d) channels=%d mask=0x%x downmix=%d",
@@ -295,13 +293,13 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
 
     // Lossless/PCM policies honor bit_depth. Lossy codecs encode from the float mix path.
     if (codec->id == AV_CODEC_ID_ALAC) {
-        codecCtx->sample_fmt =
-            (policy.bitDepth == 16 && CodecSupportsSampleFormat(codec, AV_SAMPLE_FMT_S16P)) ? AV_SAMPLE_FMT_S16P
-                                                                                             : AV_SAMPLE_FMT_S32P;
+        codecCtx->sample_fmt = (policy.bitDepth == 16 && CodecSupportsSampleFormat(codec, AV_SAMPLE_FMT_S16P))
+                                   ? AV_SAMPLE_FMT_S16P
+                                   : AV_SAMPLE_FMT_S32P;
     } else if (codec->id == AV_CODEC_ID_FLAC) {
-        codecCtx->sample_fmt =
-            (policy.bitDepth == 16 && CodecSupportsSampleFormat(codec, AV_SAMPLE_FMT_S16)) ? AV_SAMPLE_FMT_S16
-                                                                                           : AV_SAMPLE_FMT_S32;
+        codecCtx->sample_fmt = (policy.bitDepth == 16 && CodecSupportsSampleFormat(codec, AV_SAMPLE_FMT_S16))
+                                   ? AV_SAMPLE_FMT_S16
+                                   : AV_SAMPLE_FMT_S32;
     } else if (codecName == "pcm_s16le" && CodecSupportsSampleFormat(codec, AV_SAMPLE_FMT_S16)) {
         codecCtx->sample_fmt = AV_SAMPLE_FMT_S16;
     } else if (codecName == "pcm_s24le" && CodecSupportsSampleFormat(codec, AV_SAMPLE_FMT_S32)) {
@@ -395,8 +393,8 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
         av_channel_layout_default(&chLayout, outputChannels);
     }
     if (chLayout.nb_channels > 0 && chLayout.nb_channels != outputChannels) {
-        DLL_Log("[AudioEncoder] Channel mask 0x%x resolved to %d channels, overriding configured %d",
-                outputChannelMask, chLayout.nb_channels, outputChannels);
+        DLL_Log("[AudioEncoder] Channel mask 0x%x resolved to %d channels, overriding configured %d", outputChannelMask,
+                chLayout.nb_channels, outputChannels);
         outputChannels = chLayout.nb_channels;
     }
 
@@ -420,15 +418,13 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
             // codec-supported layout. Different count -> downmix, and retarget the
             // resampler (outputChannelMask/outputChannels) to the new layout.
             DLL_Log("[AudioEncoder] Codec %s rejects channel layout '%s'; %s to '%s' (%d ch) so audio is preserved",
-                    codecName.c_str(), reqDesc, sameCount ? "relabeling" : "downmixing", newDesc,
-                    remapped.nb_channels);
+                    codecName.c_str(), reqDesc, sameCount ? "relabeling" : "downmixing", newDesc, remapped.nb_channels);
             av_channel_layout_uninit(&chLayout);
             av_channel_layout_copy(&chLayout, &remapped);
             if (!sameCount) {
                 outputChannels = chLayout.nb_channels;
-                outputChannelMask = (chLayout.order == AV_CHANNEL_ORDER_NATIVE)
-                                        ? static_cast<uint32_t>(chLayout.u.mask)
-                                        : DefaultChannelMask(outputChannels);
+                outputChannelMask = (chLayout.order == AV_CHANNEL_ORDER_NATIVE) ? static_cast<uint32_t>(chLayout.u.mask)
+                                                                                : DefaultChannelMask(outputChannels);
             }
             av_channel_layout_uninit(&remapped);
         } else {
@@ -590,17 +586,16 @@ void AudioEncoder::ApplyPacketDuration(AVPacket* pkt) {
     }
 }
 
-AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channels,
-                                                       int sampleRate, int bitsPerSample, int validBitsPerSample,
-                                                       int blockAlign, bool isFloat, int64_t timestamp) {
+AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channels, int sampleRate,
+                                                       int bitsPerSample, int validBitsPerSample, int blockAlign,
+                                                       bool isFloat, int64_t timestamp) {
     return EncodeSamples(data, sizeBytes, channels, sampleRate, bitsPerSample, validBitsPerSample, blockAlign, isFloat,
                          0, timestamp);
 }
 
-AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channels,
-                                                       int sampleRate, int bitsPerSample, int validBitsPerSample,
-                                                       int blockAlign, bool isFloat, uint32_t channelMask,
-                                                       int64_t timestamp) {
+AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int sizeBytes, int channels, int sampleRate,
+                                                       int bitsPerSample, int validBitsPerSample, int blockAlign,
+                                                       bool isFloat, uint32_t channelMask, int64_t timestamp) {
     EncodeResult result;
     int64_t submittedBefore = samplesCount;
     // If encoder was invalidated (reopen failed in Stop), try to reinit
@@ -704,8 +699,8 @@ AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int 
         }
 
         currentInputFormat = inputFmt;
-        DLL_Log("[AudioEnc] Resampler initialized: %dHz %dch mask=0x%x %s%d -> %dHz %dch mask=0x%x fmt=%d",
-                sampleRate, channels, channelMask, isFloat ? "float" : "int", bitsPerSample, codecCtx->sample_rate,
+        DLL_Log("[AudioEnc] Resampler initialized: %dHz %dch mask=0x%x %s%d -> %dHz %dch mask=0x%x fmt=%d", sampleRate,
+                channels, channelMask, isFloat ? "float" : "int", bitsPerSample, codecCtx->sample_rate,
                 outputFmt.channels, outputFmt.channelMask, (int)outputFmt.sampleFmt);
     }
 
@@ -742,8 +737,7 @@ AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int 
     // av_audio_fifo_write grow/drain the FIFO instead of truncating every such
     // track at the old five-second ceiling.
     int currentFifoSize = av_audio_fifo_size(audioFifo);
-    const int MAX_FIFO_SAMPLES =
-        std::max(codecCtx->sample_rate * 5, currentFifoSize + std::max(convertedSamples, 0));
+    const int MAX_FIFO_SAMPLES = std::max(codecCtx->sample_rate * 5, currentFifoSize + std::max(convertedSamples, 0));
     const int CROSSFADE_SAMPLES = codecCtx->sample_rate / 50;  // 20ms - smoother overflow handling
     int samplesToWrite = convertedSamples;
     bool applyingFadeOut = false;
@@ -1232,8 +1226,8 @@ void AudioEncoder::Flush() {
         const ce::audio::PacketEndClamp clamp =
             ce::audio::ClampPacketDurationToTargetSamples(pkt->pts, pkt->duration, targetSamples);
         if (!clamp.keep) {
-            DLL_Log("[AudioEncoder] Dropping packet beyond recording end: pts=%lld max=%lld",
-                    (long long)pkt->pts, (long long)targetSamples);
+            DLL_Log("[AudioEncoder] Dropping packet beyond recording end: pts=%lld max=%lld", (long long)pkt->pts,
+                    (long long)targetSamples);
             return false;
         }
         if (clamp.clamped) {
@@ -1283,9 +1277,8 @@ void AudioEncoder::Flush() {
         int numPlanesPre = planarPre ? nchPre : 1;
         const size_t zeroBytes = ce::audio::ComputeAudioSampleBufferBytes(silenceSamples, bpsPre, nchPre);
         if (zeroBytes == 0) {
-            DLL_Log(
-                "[AudioEncoder] Silence queue skipped invalid format: silenceSamples=%lld nch=%d bps=%d planar=%d",
-                silenceSamples, nchPre, bpsPre, (int)planarPre);
+            DLL_Log("[AudioEncoder] Silence queue skipped invalid format: silenceSamples=%lld nch=%d bps=%d planar=%d",
+                    silenceSamples, nchPre, bpsPre, (int)planarPre);
             return 0;
         }
 
@@ -1294,8 +1287,8 @@ void AudioEncoder::Flush() {
         for (int plane = 0; plane < numPlanesPre; plane++) {
             // For planar: each channel gets its own region; for interleaved:
             // the single plane contains all channels packed together.
-            planePtrs[plane] = zeroBuf.data() +
-                               ce::audio::ComputeAudioPlaneOffsetBytes(plane, silenceSamples, bpsPre, planarPre);
+            planePtrs[plane] =
+                zeroBuf.data() + ce::audio::ComputeAudioPlaneOffsetBytes(plane, silenceSamples, bpsPre, planarPre);
         }
         int written = av_audio_fifo_write(audioFifo, (void**)planePtrs.data(), (int)silenceSamples);
         const int64_t beforeQueued = queuedSilenceSamplesTotal;
@@ -1340,8 +1333,7 @@ void AudioEncoder::Flush() {
                     break;
                 }
                 const int64_t remainingSilence = maxSamples - samplesCount;
-                const int silenceChunk =
-                    (int)std::min<int64_t>(remainingSilence, std::max<int>(frame_size, 1));
+                const int silenceChunk = (int)std::min<int64_t>(remainingSilence, std::max<int>(frame_size, 1));
                 if (queueSilenceToFifo(silenceChunk) <= 0) {
                     break;
                 }
@@ -1476,7 +1468,8 @@ void AudioEncoder::Flush() {
         attachEndSkipSideData(lastPkt, discardPaddingSamples);
     } else if (discardPaddingSamples > 0 && finalDiscardSideDataAttached) {
         DLL_Log(
-            "[AudioEncoder] Final discard side data already attached while clamping: stream=%d endSkip=%lld/%lld samples",
+            "[AudioEncoder] Final discard side data already attached while clamping: stream=%d endSkip=%lld/%lld "
+            "samples",
             streamIndex, finalDiscardSideDataSamples, discardPaddingSamples);
     }
 

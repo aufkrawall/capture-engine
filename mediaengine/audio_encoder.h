@@ -69,8 +69,12 @@ public:
         videoTimeGetter = std::move(getter);
     }
 
-    int64_t GetSamplesCount() const { return samplesCount; }
-    int GetStreamIndex() const { return streamIndex; }
+    int64_t GetSamplesCount() const {
+        return samplesCount;
+    }
+    int GetStreamIndex() const {
+        return streamIndex;
+    }
     void Stop();
 
 private:

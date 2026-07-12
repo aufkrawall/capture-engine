@@ -523,10 +523,11 @@ void FreezeWatchdog::WatchdogThread() {
                      elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire),
                      dialogThreadId, runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0);
             OutputDebugStringA(logMsg);
-            HookLog("FreezeWatchdog: Status elapsed=%.1fs timeout=%.1fs monitoredTid=%lu dialogTid=%lu "
-                    "runtimePresentation=%d",
-                    elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire),
-                    dialogThreadId, runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0);
+            HookLog(
+                "FreezeWatchdog: Status elapsed=%.1fs timeout=%.1fs monitoredTid=%lu dialogTid=%lu "
+                "runtimePresentation=%d",
+                elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire), dialogThreadId,
+                runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0);
         }
 
         if (dialogSeenSince != 0 && !dialogDumpWritten) {
@@ -618,8 +619,8 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
     localtime_s(&local_tm, &time_t_now);
 
     std::stringstream fileNameStream;
-    fileNameStream << processName_ << "_FREEZE_" << std::put_time(&local_tm, "%Y-%m-%d_%H-%M-%S") << "_"
-                   << std::setw(3) << std::setfill('0') << millisecondPart << ".dmp";
+    fileNameStream << processName_ << "_FREEZE_" << std::put_time(&local_tm, "%Y-%m-%d_%H-%M-%S") << "_" << std::setw(3)
+                   << std::setfill('0') << millisecondPart << ".dmp";
     const std::string dumpFileName = fileNameStream.str();
     const std::filesystem::path dumpPathFs = std::filesystem::path(logsDir) / dumpFileName;
     const std::filesystem::path tempDumpPathFs =
@@ -711,8 +712,7 @@ void FreezeWatchdog::CreateMinidumpWithThreadContext(const std::string& reason, 
 
     LARGE_INTEGER dumpSize = {};
     const bool hasNonEmptyDump =
-        success && GetFileAttributesA(tempDumpPath.c_str()) != INVALID_FILE_ATTRIBUTES &&
-        [&]() {
+        success && GetFileAttributesA(tempDumpPath.c_str()) != INVALID_FILE_ATTRIBUTES && [&]() {
             HANDLE sizeFile = CreateFileA(tempDumpPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                           FILE_ATTRIBUTE_NORMAL, nullptr);
             if (sizeFile == INVALID_HANDLE_VALUE) {

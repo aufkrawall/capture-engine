@@ -8,8 +8,7 @@
 namespace {
 
 std::string ReadCoordinatorSource() {
-    const std::filesystem::path source =
-        std::filesystem::current_path() / "captureengine" / "media_main.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "media_main.cpp";
     std::ifstream file(source, std::ios::binary);
     std::ostringstream contents;
     contents << file.rdbuf();
@@ -103,9 +102,8 @@ TEST(CaptureCoordinatorSourceTest, AutoFallbackProvesWgcBeforeStoppingInject) {
     ASSERT_NE(fallbackStart, std::string::npos);
     ASSERT_NE(firstFrameProof, std::string::npos);
     const size_t activate = source.find("SetActiveScreenGrab(true)", firstFrameProof);
-    const size_t stopInjectPublication =
-        source.find("SetInjectVideoCaptureRequestedState(false, \"auto inject-to-WGC handoff committed\")",
-                    firstFrameProof);
+    const size_t stopInjectPublication = source.find(
+        "SetInjectVideoCaptureRequestedState(false, \"auto inject-to-WGC handoff committed\")", firstFrameProof);
     const size_t stopInject = source.find("StopInjectCapturePipeline()", firstFrameProof);
     ASSERT_NE(activate, std::string::npos);
     ASSERT_NE(stopInjectPublication, std::string::npos);

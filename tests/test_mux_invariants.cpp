@@ -4,11 +4,11 @@
 
 namespace {
 
-using ce::mux::ComputeDurationDeltaUs;
+using ce::mux::ChoosePostMuxStreamStartUs;
 using ce::mux::ComputeAudioCodecPrimingToleranceUs;
 using ce::mux::ComputeAudioMuxRoundingToleranceUs;
+using ce::mux::ComputeDurationDeltaUs;
 using ce::mux::ComputePacketEndUs;
-using ce::mux::ChoosePostMuxStreamStartUs;
 using ce::mux::HeaderValidationIssue;
 using ce::mux::HeaderValidationIssueToString;
 using ce::mux::IsDurationWithinToleranceUs;

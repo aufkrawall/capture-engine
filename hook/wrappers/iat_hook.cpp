@@ -470,8 +470,8 @@ bool PatchEAT(HMODULE exportingModule, const char* functionName, void* hookFunct
             BYTE* modBase = reinterpret_cast<BYTE*>(exportingModule);
             BYTE* hookAddr = reinterpret_cast<BYTE*>(hookFunction);
             if (hookAddr < modBase || hookAddr >= modBase + modInfo.SizeOfImage) {
-                WrapperLog("EAT: hookFunction %p outside exporting module range [%p, %p) for %s",
-                           hookFunction, modBase, modBase + modInfo.SizeOfImage, functionName);
+                WrapperLog("EAT: hookFunction %p outside exporting module range [%p, %p) for %s", hookFunction, modBase,
+                           modBase + modInfo.SizeOfImage, functionName);
                 break;
             }
             DWORD newRVA = static_cast<DWORD>(hookAddr - modBase);
@@ -1084,15 +1084,15 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
                 HookLogImportant(
                     "GetProcAddress: Intercepted FFX API %s from %s (orig=%p hook=%p log=%d) - native FSR "
                     "present-callback bridge can arm before unsafe overlay fallback",
-                    lpProcName, moduleName[0] ? moduleName : "unknown", proc, it->second.hookFunction,
-                    logCount + 1);
+                    lpProcName, moduleName[0] ? moduleName : "unknown", proc, it->second.hookFunction, logCount + 1);
             }
         }
         // CRITICAL: Log D3D11CreateDevice intercept at high visibility
         if (strcmp(lpProcName, "D3D11CreateDevice") == 0 || strcmp(lpProcName, "D3D11CreateDeviceAndSwapChain") == 0) {
-            HookLogImportant("GetProcAddress: Intercepted %s -> Wrapped_%s (game=%s) — "
-                             "preventing UE3 vtable-cache bypass",
-                             lpProcName, lpProcName, moduleName[0] ? moduleName : "unknown");
+            HookLogImportant(
+                "GetProcAddress: Intercepted %s -> Wrapped_%s (game=%s) — "
+                "preventing UE3 vtable-cache bypass",
+                lpProcName, lpProcName, moduleName[0] ? moduleName : "unknown");
         }
         return (FARPROC)it->second.hookFunction;
     }

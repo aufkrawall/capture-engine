@@ -400,9 +400,8 @@ public:
                 TraceLog(
                     "Apply: REFLEX post-present cadence target=%d waitUs=%lld sleep=skip push=%d "
                     "device=%d gap=%d",
-                    targetFps, cadence.actualWaitUs,
-                    reflexPostPresentPushOk_ ? 1 : 0, reflexPostPresentDeviceReady_ ? 1 : 0,
-                    reflexPostPresentRecentGap_ ? 1 : 0);
+                    targetFps, cadence.actualWaitUs, reflexPostPresentPushOk_ ? 1 : 0,
+                    reflexPostPresentDeviceReady_ ? 1 : 0, reflexPostPresentRecentGap_ ? 1 : 0);
                 HookLog(
                     "FPS Limiter: Reflex explicit mode active (target=%d fps, post-present local cadence only, "
                     "skipping CE-owned NvAPI Sleep for game-owned Reflex, wait=%lldus, device=%d)",
@@ -425,17 +424,16 @@ public:
                 const bool diagGameActivated = g_ReflexLimiter.IsGameActivated();
                 const uint32_t diagSleepCount = g_ReflexLimiter.GetGameSleepCount();
                 const bool diagInlineHooks = g_ReflexLimiter.AreInlineHooksInstalled();
-                TraceLog("Apply: REFLEX post-present stats frames=%u waitUs=%lld avgFps=%.1f instFps=%.1f target=%d "
-                         "sleep=skip gameAct=%d sleepRecent=%d sleepCount=%u inlineHooks=%d",
-                         cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps, targetFps,
-                         diagGameActivated ? 1 : 0, diagGameSleepRecent ? 1 : 0, diagSleepCount,
-                         diagInlineHooks ? 1 : 0);
+                TraceLog(
+                    "Apply: REFLEX post-present stats frames=%u waitUs=%lld avgFps=%.1f instFps=%.1f target=%d "
+                    "sleep=skip gameAct=%d sleepRecent=%d sleepCount=%u inlineHooks=%d",
+                    cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps, targetFps,
+                    diagGameActivated ? 1 : 0, diagGameSleepRecent ? 1 : 0, diagSleepCount, diagInlineHooks ? 1 : 0);
                 HookLog(
                     "FPS Limiter: Reflex post-present cadence (%u frames): lastWait=%lldus avgFps=%.1f "
                     "instFps=%.1f target=%d sleep=skip gameAct=%d sleepRecent=%d sleepCount=%u inlineHooks=%d",
                     cadence.frameCount, cadence.scheduledWaitUs, cadence.avgFps, cadence.instantFps, targetFps,
-                    diagGameActivated ? 1 : 0, diagGameSleepRecent ? 1 : 0, diagSleepCount,
-                    diagInlineHooks ? 1 : 0);
+                    diagGameActivated ? 1 : 0, diagGameSleepRecent ? 1 : 0, diagSleepCount, diagInlineHooks ? 1 : 0);
             }
         }
 
@@ -853,10 +851,11 @@ public:
                         loggedNativeFallback_ = false;
                         lastActualWaitUs_ = 0;
                         if (!reflexPostPresentArmedLogged_) {
-                            TraceLog("Apply: REFLEX post-present armed target=%d push=%d device=%d gap=%d "
-                                     "skipSleep=%d",
-                                     effectiveTargetFps, reflexPushOk ? 1 : 0, reflexDeviceReady ? 1 : 0,
-                                     recentPresentGap ? 1 : 0, reflexPostPresentSkipSleep_ ? 1 : 0);
+                            TraceLog(
+                                "Apply: REFLEX post-present armed target=%d push=%d device=%d gap=%d "
+                                "skipSleep=%d",
+                                effectiveTargetFps, reflexPushOk ? 1 : 0, reflexDeviceReady ? 1 : 0,
+                                recentPresentGap ? 1 : 0, reflexPostPresentSkipSleep_ ? 1 : 0);
                             HookLog(
                                 "FPS Limiter: Reflex explicit mode armed for post-present pacing "
                                 "(target=%d fps, push=%d, device=%d, skipSleep=%d)",
@@ -1076,22 +1075,23 @@ public:
         // timeout per frame before local fallback ran.
         const auto cadence = RunLocalCadence(effectiveTargetFps);
         if (localCadenceFirstFrame) {
-            TraceLog("Apply: LOCAL timer start sync=%s mode=%u configured=%u target=%d effective=%d events=%d/%d "
-                     "firstWaitUs=%lld firstLateUs=%lld",
-                     usingCaptureSync ? "capture" : "general", effectiveMode, configuredMode, targetFps,
-                     effectiveTargetFps, releaseEvent ? 1 : 0, requestEvent ? 1 : 0, cadence.scheduledWaitUs,
-                     cadence.lateUs);
+            TraceLog(
+                "Apply: LOCAL timer start sync=%s mode=%u configured=%u target=%d effective=%d events=%d/%d "
+                "firstWaitUs=%lld firstLateUs=%lld",
+                usingCaptureSync ? "capture" : "general", effectiveMode, configuredMode, targetFps, effectiveTargetFps,
+                releaseEvent ? 1 : 0, requestEvent ? 1 : 0, cadence.scheduledWaitUs, cadence.lateUs);
             HookLog("FPS Limiter: Local timer cadence active (sync=%s, mode=%u, target=%d, effective=%d)",
                     usingCaptureSync ? "capture" : "general", effectiveMode, targetFps, effectiveTargetFps);
         }
         if (cadence.emitStats) {
-            TraceLog("Apply: LOCAL timer stats frames=%u scheduledWaitUs=%lld actualWaitUs=%lld lateUs=%lld "
-                     "avgFps=%.1f instFps=%.1f target=%d waited=%u late=%u avgLateUs=%lld maxLateUs=%lld "
-                     "resets=%u dedup=%u activeDedup=%u",
-                     cadence.frameCount, cadence.scheduledWaitUs, cadence.actualWaitUs, cadence.lateUs,
-                     cadence.avgFps, cadence.instantFps, effectiveTargetFps, cadence.statsWaitedFrames,
-                     cadence.statsLateFrames, cadence.statsAvgLateUs, cadence.statsMaxLateUs,
-                     cadence.statsResetFrames, applyDedupCount_, applyActiveDedupCount_);
+            TraceLog(
+                "Apply: LOCAL timer stats frames=%u scheduledWaitUs=%lld actualWaitUs=%lld lateUs=%lld "
+                "avgFps=%.1f instFps=%.1f target=%d waited=%u late=%u avgLateUs=%lld maxLateUs=%lld "
+                "resets=%u dedup=%u activeDedup=%u",
+                cadence.frameCount, cadence.scheduledWaitUs, cadence.actualWaitUs, cadence.lateUs, cadence.avgFps,
+                cadence.instantFps, effectiveTargetFps, cadence.statsWaitedFrames, cadence.statsLateFrames,
+                cadence.statsAvgLateUs, cadence.statsMaxLateUs, cadence.statsResetFrames, applyDedupCount_,
+                applyActiveDedupCount_);
             HookLog(
                 "FPS Limiter: Local timer stats (%u frames): lastWait=%lldus late=%lldus avgFps=%.1f "
                 "instFps=%.1f target=%d waited=%u lateFrames=%u resets=%u activeDedup=%u",
@@ -1223,8 +1223,8 @@ private:
     bool reflexPostPresentPushOk_ = false;                   // Pre-present push state captured for diagnostics
     bool reflexPostPresentDeviceReady_ = false;              // Device state captured for diagnostics
     bool reflexPostPresentRecentGap_ = false;                // Present-gap state captured for diagnostics
-    bool reflexPostPresentSkipSleep_ = false;                // Skip CE-owned Sleep in ApplyPostPresent (game owns Reflex)
-    bool reflexPostPresentArmedLogged_ = false;              // Avoid spam when arming post-present cadence
+    bool reflexPostPresentSkipSleep_ = false;    // Skip CE-owned Sleep in ApplyPostPresent (game owns Reflex)
+    bool reflexPostPresentArmedLogged_ = false;  // Avoid spam when arming post-present cadence
     uint32_t reflexSleepBaselineCount_ =
         0;  // Sleep count at the last disruption; native handoff needs a fresh streak after it
     bool reflexRecentPresentGap_ = false;          // Edge detector for recent large Present gaps

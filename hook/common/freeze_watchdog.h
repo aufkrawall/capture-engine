@@ -21,8 +21,7 @@ inline bool ShouldCaptureWatchdogDump(bool dumpAlreadyCaptured) {
 }
 
 inline bool ShouldSuppressFreezeCheckForBackgroundProcess(bool processForeground, bool forceMonitor,
-                                                          bool presentInFlight,
-                                                          bool runtimePresentationMonitor) {
+                                                          bool presentInFlight, bool runtimePresentationMonitor) {
     return !processForeground && !forceMonitor && !presentInFlight && !runtimePresentationMonitor;
 }
 

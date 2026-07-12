@@ -38,7 +38,8 @@ public:
         friend class AtomicSharedOwner<T>;
 
         explicit Access(const AtomicSharedOwner<T>* owner)
-            : lock_(owner->accessMutex_), value_(std::atomic_load_explicit(&owner->value_, std::memory_order_acquire)) {}
+            : lock_(owner->accessMutex_),
+              value_(std::atomic_load_explicit(&owner->value_, std::memory_order_acquire)) {}
 
         std::shared_lock<std::shared_mutex> lock_;
         std::shared_ptr<T> value_;
@@ -67,7 +68,8 @@ public:
         friend class AtomicSharedOwner<T>;
 
         explicit ExclusiveAccess(AtomicSharedOwner<T>* owner)
-            : lock_(owner->accessMutex_), value_(std::atomic_load_explicit(&owner->value_, std::memory_order_acquire)) {}
+            : lock_(owner->accessMutex_),
+              value_(std::atomic_load_explicit(&owner->value_, std::memory_order_acquire)) {}
 
         std::unique_lock<std::shared_mutex> lock_;
         std::shared_ptr<T> value_;
@@ -88,8 +90,7 @@ public:
         std::atomic_store_explicit(&value_, std::move(value), order);
     }
 
-    std::shared_ptr<T> Exchange(std::shared_ptr<T> value,
-                                std::memory_order order = std::memory_order_acq_rel) {
+    std::shared_ptr<T> Exchange(std::shared_ptr<T> value, std::memory_order order = std::memory_order_acq_rel) {
         std::unique_lock<std::shared_mutex> lock(accessMutex_);
         return std::atomic_exchange_explicit(&value_, std::move(value), order);
     }

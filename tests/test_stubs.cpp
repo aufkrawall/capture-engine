@@ -45,24 +45,46 @@ void DX12_OnSwapchainResizeEnd() {}
 void DX12_SignalFSR4SwapchainRecreated() {}
 void DX12_ServiceDeferredECLProbe() {}
 void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain*, const char*) {}
-bool DX12_TryInvokePostSLStartupActivationCallback(const char*, bool, bool) { return false; }
+bool DX12_TryInvokePostSLStartupActivationCallback(const char*, bool, bool) {
+    return false;
+}
 void DX12_DumpDredIfDeviceRemoved(const char*) {}
 void DX12_LogOverlayGpuBreadcrumbs(const char*) {}
 void DX12_NoteFfxConfigureForward(uint64_t) {}
 void FFXHook_ResetVehDisarmAndRearm() {}
-bool DX12_IsNativeFSRInternalNoCallbackCompositionActive() { return false; }
-bool DX12_IsLiveSwapchainQueueOriginalGameQueue() { return false; }
-bool DX12_IsNativeFSRFGSuspendedDisablePending() { return false; }
-bool DX12_CompositeOverlayOntoCachedFFXUiResource() { return false; }
+bool DX12_IsNativeFSRInternalNoCallbackCompositionActive() {
+    return false;
+}
+bool DX12_IsLiveSwapchainQueueOriginalGameQueue() {
+    return false;
+}
+bool DX12_IsNativeFSRFGSuspendedDisablePending() {
+    return false;
+}
+bool DX12_CompositeOverlayOntoCachedFFXUiResource() {
+    return false;
+}
 void DX12_ProcessFrameMinimal(IDXGISwapChain*) {}
-bool DX12_ShouldCacheFFXUiResourceForBundle() { return false; }
-bool DX12_IsFFXUiResourceCachedForBundle() { return false; }
+bool DX12_ShouldCacheFFXUiResourceForBundle() {
+    return false;
+}
+bool DX12_IsFFXUiResourceCachedForBundle() {
+    return false;
+}
 // FFX proxy-swapchain Present hook (game-thread composite driver): tests exercise DetourPresent's fallback
 // arm, so the proxy driver reports not-driving here.
-bool DX12_IsFFXProxyPresentHookDriving() { return false; }
-bool DX12_IsFFXProxyPresentHookInstalled() { return false; }
-bool DX12_IsCurrentThreadInsideFFXProxyPresentPrework() { return false; }
-bool DX12_TryInstallFFXProxyPresentHook(void*, void*, const char*) { return false; }
+bool DX12_IsFFXProxyPresentHookDriving() {
+    return false;
+}
+bool DX12_IsFFXProxyPresentHookInstalled() {
+    return false;
+}
+bool DX12_IsCurrentThreadInsideFFXProxyPresentPrework() {
+    return false;
+}
+bool DX12_TryInstallFFXProxyPresentHook(void*, void*, const char*) {
+    return false;
+}
 void DX12_RemoveFFXProxyPresentHook(const char*) {}
 void DX12_LogFFXProxyPresentHookFreezeDiagnostics(const char*) {}
 

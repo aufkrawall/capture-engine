@@ -34,8 +34,7 @@ struct TrackedOwnerValue {
 
 TEST(AtomicSharedOwnerTest, ExchangeReturnsRetiredOwnerForControlledDestruction) {
     std::atomic<int> destroyed{0};
-    ce::AtomicSharedOwner<TrackedOwnerValue> owner(
-        std::make_shared<TrackedOwnerValue>(1, &destroyed));
+    ce::AtomicSharedOwner<TrackedOwnerValue> owner(std::make_shared<TrackedOwnerValue>(1, &destroyed));
 
     auto retired = owner.Exchange(std::make_shared<TrackedOwnerValue>(2, &destroyed));
     EXPECT_EQ(owner->Read(), 2);
@@ -48,17 +47,14 @@ TEST(AtomicSharedOwnerTest, ExchangeReturnsRetiredOwnerForControlledDestruction)
 
 TEST(AtomicSharedOwnerTest, ArrowAccessPinsPointeeAcrossConcurrentExchange) {
     std::atomic<int> destroyed{0};
-    ce::AtomicSharedOwner<TrackedOwnerValue> owner(
-        std::make_shared<TrackedOwnerValue>(7, &destroyed));
+    ce::AtomicSharedOwner<TrackedOwnerValue> owner(std::make_shared<TrackedOwnerValue>(7, &destroyed));
     std::atomic<bool> readerLoaded{false};
     std::atomic<bool> allowReaderToFinish{false};
     std::atomic<bool> exchangeStarted{false};
     std::atomic<bool> exchangeFinished{false};
     int observed = 0;
 
-    std::thread reader([&]() {
-        observed = owner->ReadAfterGate(&readerLoaded, &allowReaderToFinish);
-    });
+    std::thread reader([&]() { observed = owner->ReadAfterGate(&readerLoaded, &allowReaderToFinish); });
 
     while (!readerLoaded.load(std::memory_order_acquire)) {
         std::this_thread::yield();

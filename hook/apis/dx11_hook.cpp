@@ -4033,8 +4033,8 @@ public:
         std::unique_lock<std::recursive_mutex> captureLock(captureMutex, std::try_to_lock);
         if (!captureLock.owns_lock()) {
             if (g_IPC && g_IPC->GetSharedMem()) {
-                g_IPC->GetSharedMem()->runtimeState.injectProducerCaptureLockDrops.fetch_add(
-                    1, std::memory_order_relaxed);
+                g_IPC->GetSharedMem()->runtimeState.injectProducerCaptureLockDrops.fetch_add(1,
+                                                                                             std::memory_order_relaxed);
             }
             static std::atomic<int> s_contentionLogCount{0};
             if (s_contentionLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
@@ -4135,7 +4135,7 @@ public:
                             1, std::memory_order_relaxed);
                     if (gpuBusySlots != 0)
                         captureSharedMem->runtimeState.injectProducerGpuBusyDrops.fetch_add(1,
-                                                                                           std::memory_order_relaxed);
+                                                                                            std::memory_order_relaxed);
                 }
                 droppedFrames.fetch_add(1, std::memory_order_relaxed);
                 backbuffer10->Release();
@@ -4234,11 +4234,10 @@ public:
         if (writeIdx < 0) {
             if (captureSharedMem) {
                 if (cpuBusySlots != 0)
-                    captureSharedMem->runtimeState.injectProducerCpuLeaseBusyDrops.fetch_add(
-                        1, std::memory_order_relaxed);
+                    captureSharedMem->runtimeState.injectProducerCpuLeaseBusyDrops.fetch_add(1,
+                                                                                             std::memory_order_relaxed);
                 if (gpuBusySlots != 0)
-                    captureSharedMem->runtimeState.injectProducerGpuBusyDrops.fetch_add(1,
-                                                                                       std::memory_order_relaxed);
+                    captureSharedMem->runtimeState.injectProducerGpuBusyDrops.fetch_add(1, std::memory_order_relaxed);
             }
             droppedFrames.fetch_add(1, std::memory_order_relaxed);
             backbuffer->Release();

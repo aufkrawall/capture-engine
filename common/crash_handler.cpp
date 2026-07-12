@@ -212,8 +212,8 @@ void DeleteStaleEmptyInProgressDumpArtifactsForDirectory(const std::string& dump
             ec.clear();
             continue;
         }
-        if (!ce::crash_dump_policy::IsStaleEmptyInProgressDumpArtifact(
-                fileName.c_str(), static_cast<uint64_t>(fileSize))) {
+        if (!ce::crash_dump_policy::IsStaleEmptyInProgressDumpArtifact(fileName.c_str(),
+                                                                       static_cast<uint64_t>(fileSize))) {
             continue;
         }
 
@@ -289,18 +289,15 @@ bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD
         return false;
     }
 
-    const std::string dumpFileName = ce::crash_dump_policy::BuildSupplementalCrashDumpFileNameFromExternalSource(
-        fileNameHint);
+    const std::string dumpFileName =
+        ce::crash_dump_policy::BuildSupplementalCrashDumpFileNameFromExternalSource(fileNameHint);
     const std::string tempDumpFileName = ce::crash_dump_policy::BuildInProgressDumpFileName(dumpFileName.c_str());
     const std::filesystem::path dumpPath = std::filesystem::path(dumpDir) / dumpFileName;
     const std::filesystem::path tempDumpPath = std::filesystem::path(dumpDir) / tempDumpFileName;
 
     DeleteFileA(tempDumpPath.string().c_str());
-    HANDLE hFile =
-        CreateFileA(tempDumpPath.string().c_str(), GENERIC_READ | GENERIC_WRITE,
-                    FILE_SHARE_READ,
-                    nullptr, CREATE_ALWAYS,
-                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    HANDLE hFile = CreateFileA(tempDumpPath.string().c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
     if (hFile == INVALID_HANDLE_VALUE) {
         return false;
     }
@@ -341,8 +338,8 @@ bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD
     }
 
     bool preservedTempDump = false;
-    return PromoteInProgressDumpFile(tempDumpPath.string().c_str(), dumpPath.string().c_str(),
-                                     "SupplementalCrashDump", &preservedTempDump) ||
+    return PromoteInProgressDumpFile(tempDumpPath.string().c_str(), dumpPath.string().c_str(), "SupplementalCrashDump",
+                                     &preservedTempDump) ||
            preservedTempDump;
 }
 
@@ -548,8 +545,7 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
     }
 
     DeleteFileA(tempDumpPath);
-    HANDLE hFile = CreateFileA(tempDumpPath, GENERIC_READ | GENERIC_WRITE,
-                               FILE_SHARE_READ, NULL, CREATE_ALWAYS,
+    HANDLE hFile = CreateFileA(tempDumpPath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_ALWAYS,
                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
 
     if (hFile == INVALID_HANDLE_VALUE) {
@@ -969,16 +965,15 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
                      "RIP=0 DEP crash at vcall through NULL: "
                      "RAX=0x%016llX RCX=0x%016llX RDX=0x%016llX R8=0x%016llX R9=0x%016llX "
                      "RSP=0x%016llX - possible trampoline race condition",
-                     (unsigned long long)ctx->Rax, (unsigned long long)ctx->Rcx,
-                     (unsigned long long)ctx->Rdx, (unsigned long long)ctx->R8,
-                     (unsigned long long)ctx->R9, (unsigned long long)ctx->Rsp);
+                     (unsigned long long)ctx->Rax, (unsigned long long)ctx->Rcx, (unsigned long long)ctx->Rdx,
+                     (unsigned long long)ctx->R8, (unsigned long long)ctx->R9, (unsigned long long)ctx->Rsp);
 #else
             char rip0Info[256];
             snprintf(rip0Info, sizeof(rip0Info),
                      "EIP=0 DEP crash at vcall through NULL: "
                      "EAX=0x%08lX ECX=0x%08lX EDX=0x%08lX ESP=0x%08lX",
-                     (unsigned long)ctx->Eax, (unsigned long)ctx->Ecx,
-                     (unsigned long)ctx->Edx, (unsigned long)ctx->Esp);
+                     (unsigned long)ctx->Eax, (unsigned long)ctx->Ecx, (unsigned long)ctx->Edx,
+                     (unsigned long)ctx->Esp);
 #endif
             TraceCrash(rip0Info);
         }

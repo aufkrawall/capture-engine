@@ -528,10 +528,12 @@ inline bool ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
            !postSLConfirmedButRuntimeStateStabilizing;
 }
 
-inline bool ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
-    bool requestedInactive, bool sourceWasSetOptions, bool postSLConfirmedRendering,
-    bool startupActivationPending, bool postSLActiveButUnconfirmed, bool postSLConfirmedButStartupSettling,
-    bool postSLConfirmedButRuntimeStateStabilizing) {
+inline bool ShouldTreatExplicitSetOptionsDisableAsAuthoritative(bool requestedInactive, bool sourceWasSetOptions,
+                                                                bool postSLConfirmedRendering,
+                                                                bool startupActivationPending,
+                                                                bool postSLActiveButUnconfirmed,
+                                                                bool postSLConfirmedButStartupSettling,
+                                                                bool postSLConfirmedButRuntimeStateStabilizing) {
     // Once PostSL has actually rendered through the current topology and no
     // startup/proof window is still settling, an explicit slDLSSGSetOptions(OFF)
     // is the app's real FG mode switch. Keep the early stale-OFF guard for
@@ -635,8 +637,8 @@ inline bool IsDLSSGInterpolationPresentEvidence(uint32_t numFramesActuallyPresen
 // Deterministic streak warning: first warn after warnAtStreak consecutive non-interpolating ON samples
 // (GTA polls GetState ~per frame, so this lands within a handful of frames of a failed activation), then
 // repeat every repeatEvery samples so a long session stays readable.
-inline bool ShouldWarnDLSSGActiveButNotInterpolating(uint64_t consecutiveNonInterpolatingSamples,
-                                                     uint64_t warnAtStreak, uint64_t repeatEvery) {
+inline bool ShouldWarnDLSSGActiveButNotInterpolating(uint64_t consecutiveNonInterpolatingSamples, uint64_t warnAtStreak,
+                                                     uint64_t repeatEvery) {
     if (warnAtStreak == 0 || consecutiveNonInterpolatingSamples < warnAtStreak) {
         return false;
     }

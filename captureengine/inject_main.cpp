@@ -478,92 +478,94 @@ int InjectProcessMain(const AppConfig& config) {
         if (hasGame || (ipcNow - lastIpcPoll) >= 250) {
             lastIpcPoll = ipcNow;
             if (ipc.PollCommand(cmd)) {
-            switch (cmd) {
-                case ProcessCommand::Shutdown:
-                    LogInfo("[Inject] Shutdown command received");
-                    g_Running = false;
-                    ipc.SendResponse(ProcessResponse::Ack);
-                    break;
-                case ProcessCommand::StartRecording:
-                    // Media owns the active video-path decision. Clear any flag
-                    // left by an interrupted prior session before publishing the
-                    // new raw recording request; inject mode will re-arm it during
-                    // StartRecording after resolving the actual path.
-                    if (!pSharedMem->runtimeState.captureRequested.load(std::memory_order_acquire)) {
-                        if (pSharedMem->runtimeState.HasRuntimeFlag(
-                                kCaptureRuntimeFlagInjectVideoCaptureRequested)) {
-                            LogWarn("[Inject] Clearing stale inject-video publication flag before recording start");
+                switch (cmd) {
+                    case ProcessCommand::Shutdown:
+                        LogInfo("[Inject] Shutdown command received");
+                        g_Running = false;
+                        ipc.SendResponse(ProcessResponse::Ack);
+                        break;
+                    case ProcessCommand::StartRecording:
+                        // Media owns the active video-path decision. Clear any flag
+                        // left by an interrupted prior session before publishing the
+                        // new raw recording request; inject mode will re-arm it during
+                        // StartRecording after resolving the actual path.
+                        if (!pSharedMem->runtimeState.captureRequested.load(std::memory_order_acquire)) {
+                            if (pSharedMem->runtimeState.HasRuntimeFlag(
+                                    kCaptureRuntimeFlagInjectVideoCaptureRequested)) {
+                                LogWarn("[Inject] Clearing stale inject-video publication flag before recording start");
+                            }
+                            pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested,
+                                                                    false);
                         }
+                        if (!pSharedMem->runtimeState.captureRequested.exchange(true, std::memory_order_acq_rel)) {
+                            pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
+                            pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
+                        }
+                        // Set command flag for media process to poll (use atomic store)
+                        // Note: audioOnly flag is managed by the controller — do NOT clear
+                        // it here — the controller may have set it for audio-only recording.
+                        pSharedMem->runtimeState.cmdStartRecording.store(true, std::memory_order_release);
+                        ipc.SendResponse(ProcessResponse::Ack);
+                        break;
+                    case ProcessCommand::StopRecording:
                         pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, false);
-                    }
-                    if (!pSharedMem->runtimeState.captureRequested.exchange(true, std::memory_order_acq_rel)) {
+                        pSharedMem->runtimeState.captureRequested.store(false, std::memory_order_release);
                         pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
                         pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
-                    }
-                    // Set command flag for media process to poll (use atomic store)
-                    // Note: audioOnly flag is managed by the controller — do NOT clear
-                    // it here — the controller may have set it for audio-only recording.
-                    pSharedMem->runtimeState.cmdStartRecording.store(true, std::memory_order_release);
-                    ipc.SendResponse(ProcessResponse::Ack);
-                    break;
-                case ProcessCommand::StopRecording:
-                    pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, false);
-                    pSharedMem->runtimeState.captureRequested.store(false, std::memory_order_release);
-                    pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
-                    pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
-                    // Set command flag for media process to poll (use atomic store)
-                    pSharedMem->runtimeState.cmdStopRecording.store(true, std::memory_order_release);
-                    ipc.SendResponse(ProcessResponse::Ack);
-                    break;
-                case ProcessCommand::Ping:
-                    ipc.SendResponse(ProcessResponse::Pong);
-                    break;
-                case ProcessCommand::ReloadConfig: {
-                    AppConfig reloadedConfig;
-                    LoadConfig(configPath, reloadedConfig);
+                        // Set command flag for media process to poll (use atomic store)
+                        pSharedMem->runtimeState.cmdStopRecording.store(true, std::memory_order_release);
+                        ipc.SendResponse(ProcessResponse::Ack);
+                        break;
+                    case ProcessCommand::Ping:
+                        ipc.SendResponse(ProcessResponse::Pong);
+                        break;
+                    case ProcessCommand::ReloadConfig: {
+                        AppConfig reloadedConfig;
+                        LoadConfig(configPath, reloadedConfig);
 
-                    InjectorConfigState newInjectorState = BuildInjectorConfigState(reloadedConfig);
-                    const bool shouldRescan =
-                        ShouldRescanForConfigChange(currentConfig, injectorState, reloadedConfig, newInjectorState);
+                        InjectorConfigState newInjectorState = BuildInjectorConfigState(reloadedConfig);
+                        const bool shouldRescan =
+                            ShouldRescanForConfigChange(currentConfig, injectorState, reloadedConfig, newInjectorState);
 
-                    currentConfig = reloadedConfig;
-                    Log_SetLevel(currentConfig.logLevel);
-                    injectorState = newInjectorState;
+                        currentConfig = reloadedConfig;
+                        Log_SetLevel(currentConfig.logLevel);
+                        injectorState = newInjectorState;
 
-                    if (pDiscovery) {
-                        PopulateWhitelistCache(pDiscovery, currentConfig);
-                    }
-
-                    AppConfig activeConfig = ResolveActiveTargetConfig(configPath, pSharedMem, currentConfig);
-                    UpdateSharedMemoryFromConfig(pSharedMem, activeConfig);
-
-                    if (injector) {
-                        injector->UpdateConfig(injectorState.config);
-                        if (shouldRescan && injectorState.allowInjection) {
-                            LogInfo(
-                                "[Inject] Config reload changed whitelist/injection policy, rescanning running "
-                                "processes");
-                            injector->RescanExistingProcesses();
-                        } else if (!injectorState.allowInjection) {
-                            LogInfo(
-                                "[Inject] Config reload disabled new injections; existing injected targets are left "
-                                "alone");
+                        if (pDiscovery) {
+                            PopulateWhitelistCache(pDiscovery, currentConfig);
                         }
-                    } else if (injectorState.allowInjection) {
-                        const int64_t injectorInitStartUs = Log_GetQpcUs();
-                        injector = std::make_shared<InjectionManager>(injectorState.config);
-                        configureInjector(injector);
-                        LogInfo("[Inject] Injection manager started after config reload in %.3f ms",
-                                static_cast<double>(Log_GetQpcUs() - injectorInitStartUs) / 1000.0);
-                    }
 
-                    ipc.SendResponse(ProcessResponse::Ack);
-                    break;
+                        AppConfig activeConfig = ResolveActiveTargetConfig(configPath, pSharedMem, currentConfig);
+                        UpdateSharedMemoryFromConfig(pSharedMem, activeConfig);
+
+                        if (injector) {
+                            injector->UpdateConfig(injectorState.config);
+                            if (shouldRescan && injectorState.allowInjection) {
+                                LogInfo(
+                                    "[Inject] Config reload changed whitelist/injection policy, rescanning running "
+                                    "processes");
+                                injector->RescanExistingProcesses();
+                            } else if (!injectorState.allowInjection) {
+                                LogInfo(
+                                    "[Inject] Config reload disabled new injections; existing injected targets are "
+                                    "left "
+                                    "alone");
+                            }
+                        } else if (injectorState.allowInjection) {
+                            const int64_t injectorInitStartUs = Log_GetQpcUs();
+                            injector = std::make_shared<InjectionManager>(injectorState.config);
+                            configureInjector(injector);
+                            LogInfo("[Inject] Injection manager started after config reload in %.3f ms",
+                                    static_cast<double>(Log_GetQpcUs() - injectorInitStartUs) / 1000.0);
+                        }
+
+                        ipc.SendResponse(ProcessResponse::Ack);
+                        break;
+                    }
+                    default:
+                        ipc.SendResponse(ProcessResponse::Ack);
+                        break;
                 }
-                default:
-                    ipc.SendResponse(ProcessResponse::Ack);
-                    break;
-            }
             }
         }
 

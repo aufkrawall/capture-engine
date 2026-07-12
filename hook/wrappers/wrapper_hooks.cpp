@@ -39,8 +39,7 @@ static bool IsCallerFromStreamlineModule(const void* returnAddress, char* caller
         callerPathOut[0] = '\0';
     }
     HMODULE callerMod = nullptr;
-    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                             reinterpret_cast<const char*>(returnAddress), &callerMod) ||
         !callerMod) {
         return false;
@@ -61,8 +60,7 @@ static bool IsCallerFromFFXFrameGenerationModule(const void* returnAddress, char
         callerPathOut[0] = '\0';
     }
     HMODULE callerMod = nullptr;
-    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                             reinterpret_cast<const char*>(returnAddress), &callerMod) ||
         !callerMod) {
         return false;
@@ -99,8 +97,7 @@ static DXGIFactoryRuntimeDecision EvaluateDXGIFactoryRuntimeDecision(const void*
     char ffxCallerPath[MAX_PATH] = {};
     decision.callerFromStreamline =
         IsCallerFromStreamlineModule(returnAddress, streamlineCallerPath, sizeof(streamlineCallerPath));
-    decision.callerFromFFX =
-        IsCallerFromFFXFrameGenerationModule(returnAddress, ffxCallerPath, sizeof(ffxCallerPath));
+    decision.callerFromFFX = IsCallerFromFFXFrameGenerationModule(returnAddress, ffxCallerPath, sizeof(ffxCallerPath));
     if (decision.callerFromStreamline) {
         strncpy_s(decision.callerPath, sizeof(decision.callerPath), streamlineCallerPath, _TRUNCATE);
     } else if (decision.callerFromFFX) {
@@ -143,7 +140,8 @@ static DXGIFactoryRuntimeDecision EvaluateDXGIFactoryRuntimeDecision(const void*
 #include "iat_hook.h"
 #include "wrapper_hooks.h"
 // Forward declaration from dx11_hook.cpp (after D3D11 types are available)
-extern void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain);
+extern void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext,
+                                                  IDXGISwapChain* pSwapChain);
 
 static bool ApplyD3D11CreateDeviceSwapChainBackbufferOverride(DXGI_SWAP_CHAIN_DESC& desc) {
     const auto& gfx = GetActiveGraphicsConfig();
@@ -152,13 +150,14 @@ static bool ApplyD3D11CreateDeviceSwapChainBackbufferOverride(DXGI_SWAP_CHAIN_DE
     }
 
     const UINT requested = static_cast<UINT>(gfx.backbufferCount);
-    const bool isFlip = (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
-                         desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+    const bool isFlip =
+        (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL || desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
     if (isFlip && requested < desc.BufferCount) {
         desc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-        WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: BufferCount override skipped requested=%u game=%u "
-                   "swapEffect=%d (flip model)",
-                   requested, desc.BufferCount, desc.SwapEffect);
+        WrapperLog(
+            "Wrapped_D3D11CreateDeviceAndSwapChain: BufferCount override skipped requested=%u game=%u "
+            "swapEffect=%d (flip model)",
+            requested, desc.BufferCount, desc.SwapEffect);
         return false;
     }
     if (desc.BufferCount == requested) {
@@ -167,8 +166,8 @@ static bool ApplyD3D11CreateDeviceSwapChainBackbufferOverride(DXGI_SWAP_CHAIN_DE
         return false;
     }
 
-    WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: BufferCount override %u -> %u swapEffect=%d",
-               desc.BufferCount, requested, desc.SwapEffect);
+    WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: BufferCount override %u -> %u swapEffect=%d", desc.BufferCount,
+               requested, desc.SwapEffect);
     desc.BufferCount = requested;
     return true;
 }
@@ -373,8 +372,7 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
     // overlay code and crashes (0xC0000005 at RIP=0).  GetUnhookedDXGIExport
     // reads the original on-disk RVA and applies it to the loaded dxgi.dll base,
     // giving the real function entry that bypasses Steam's EAT hook entirely.
-    const auto decision =
-        EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory");
+    const auto decision = EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory");
     static auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory>(GetUnhookedDXGIExport("CreateDXGIFactory"));
     auto* createFn = SelectDXGIFactoryExportForCall("CreateDXGIFactory", unhookedFn, decision);
     if (!createFn)
@@ -429,8 +427,7 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
         return E_FAIL;
     }
 
-    const auto decision =
-        EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory1");
+    const auto decision = EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory1");
     static auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory1>(GetUnhookedDXGIExport("CreateDXGIFactory1"));
     auto* createFn = SelectDXGIFactoryExportForCall("CreateDXGIFactory1", unhookedFn, decision);
     if (!createFn)
@@ -482,8 +479,7 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFact
         return E_FAIL;
     }
 
-    const auto decision =
-        EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory2");
+    const auto decision = EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory2");
     static auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory2>(GetUnhookedDXGIExport("CreateDXGIFactory2"));
     auto* createFn = SelectDXGIFactoryExportForCall("CreateDXGIFactory2", unhookedFn, decision);
     if (!createFn)
@@ -642,8 +638,8 @@ HRESULT WINAPI Wrapped_D3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE
             auto* wrappedContext = new CWrapD3D11DeviceContext(pRealContext, pWrapper);
             *ppImmediateContext = wrappedContext;
             pRealContext->Release();
-            WrapperLog("Wrapped_D3D11CreateDevice: Returned wrapped immediate context real=%p wrapper=%p",
-                       pRealContext, wrappedContext);
+            WrapperLog("Wrapped_D3D11CreateDevice: Returned wrapped immediate context real=%p wrapper=%p", pRealContext,
+                       wrappedContext);
         } else {
             *ppImmediateContext = pRealContext;
         }
@@ -709,10 +705,11 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
         if (ppSwapChain && *ppSwapChain && HasBackbufferCountOverride(gfx.backbufferCount)) {
             DXGI_SWAP_CHAIN_DESC actualDesc = {};
             if (SUCCEEDED((*ppSwapChain)->GetDesc(&actualDesc))) {
-                WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Actual BufferCount=%u requested=%d "
-                           "size=%ux%u swapEffect=%d",
-                           actualDesc.BufferCount, gfx.backbufferCount, actualDesc.BufferDesc.Width,
-                           actualDesc.BufferDesc.Height, actualDesc.SwapEffect);
+                WrapperLog(
+                    "Wrapped_D3D11CreateDeviceAndSwapChain: Actual BufferCount=%u requested=%d "
+                    "size=%ux%u swapEffect=%d",
+                    actualDesc.BufferCount, gfx.backbufferCount, actualDesc.BufferDesc.Width,
+                    actualDesc.BufferDesc.Height, actualDesc.SwapEffect);
             }
         }
 
@@ -732,9 +729,8 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
             auto* wrappedContext = new CWrapD3D11DeviceContext(realContext, nullptr);
             *ppImmediateContext = wrappedContext;
             realContext->Release();
-            WrapperLog(
-                "Wrapped_D3D11CreateDeviceAndSwapChain: Returned wrapped immediate context real=%p wrapper=%p",
-                realContext, wrappedContext);
+            WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Returned wrapped immediate context real=%p wrapper=%p",
+                       realContext, wrappedContext);
         }
         static std::atomic<int> s_D3D11CompatLogCount{0};
         if (s_D3D11CompatLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {

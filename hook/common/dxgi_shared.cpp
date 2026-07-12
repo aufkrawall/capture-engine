@@ -71,8 +71,8 @@ static void InvokeDX12FlushDeferredSignal() {
 // and never engage the invisible-safe not-presentable backbuffer-work hold during the Alt+Tab
 // iflip<->composited mode switch, so the overlay touches the backbuffer mid-switch and the GPU
 // hangs (DEVICE_HUNG).
-static void NoteDX12PresentResultForVtablePath(IDXGISwapChain* pSwapChain, const char* presentName,
-                                               UINT SyncInterval, UINT Flags, HRESULT hr) {
+static void NoteDX12PresentResultForVtablePath(IDXGISwapChain* pSwapChain, const char* presentName, UINT SyncInterval,
+                                               UINT Flags, HRESULT hr) {
     if (!pSwapChain || IsInWrapperPresent()) {
         return;
     }
@@ -168,7 +168,8 @@ static PFN_DX12SetDeferOverlay ResolveDX12SetDeferOverlay() {
     static PFN_DX12SetDeferOverlay s_fn = nullptr;
     std::call_once(s_once, []() {
         HMODULE hHook = GetModuleHandleA("capture_hook_x64.dll");
-        if (!hHook) hHook = GetModuleHandleA("capture_hook_x86.dll");
+        if (!hHook)
+            hHook = GetModuleHandleA("capture_hook_x86.dll");
         if (hHook) {
             s_fn = reinterpret_cast<PFN_DX12SetDeferOverlay>(
                 GetProcAddress(hHook, "DX12_SetDeferOverlaySubmitToSteamECL"));
@@ -182,7 +183,8 @@ static PFN_DX12SubmitDeferredOverlay ResolveDX12SubmitSteamDeferredOverlay() {
     static PFN_DX12SubmitDeferredOverlay s_fn = nullptr;
     std::call_once(s_once, []() {
         HMODULE hHook = GetModuleHandleA("capture_hook_x64.dll");
-        if (!hHook) hHook = GetModuleHandleA("capture_hook_x86.dll");
+        if (!hHook)
+            hHook = GetModuleHandleA("capture_hook_x86.dll");
         if (hHook) {
             s_fn = reinterpret_cast<PFN_DX12SubmitDeferredOverlay>(
                 GetProcAddress(hHook, "DX12_SubmitSteamDeferredOverlay"));
@@ -196,7 +198,8 @@ static PFN_DX12IsDeferOverlayPending ResolveDX12IsDeferOverlayPending() {
     static PFN_DX12IsDeferOverlayPending s_fn = nullptr;
     std::call_once(s_once, []() {
         HMODULE hHook = GetModuleHandleA("capture_hook_x64.dll");
-        if (!hHook) hHook = GetModuleHandleA("capture_hook_x86.dll");
+        if (!hHook)
+            hHook = GetModuleHandleA("capture_hook_x86.dll");
         if (hHook) {
             s_fn = reinterpret_cast<PFN_DX12IsDeferOverlayPending>(
                 GetProcAddress(hHook, "DX12_IsDeferOverlaySubmitPending"));
@@ -207,11 +210,13 @@ static PFN_DX12IsDeferOverlayPending ResolveDX12IsDeferOverlayPending() {
 
 static void InvokeDX12SetDeferOverlaySubmitToSteamECL(bool defer) {
     PFN_DX12SetDeferOverlay fn = ResolveDX12SetDeferOverlay();
-    if (fn) fn(defer);
+    if (fn)
+        fn(defer);
 }
 static void InvokeDX12SubmitSteamDeferredOverlay() {
     PFN_DX12SubmitDeferredOverlay fn = ResolveDX12SubmitSteamDeferredOverlay();
-    if (fn) fn();
+    if (fn)
+        fn();
 }
 static bool InvokeDX12IsDeferOverlaySubmitPending() {
     PFN_DX12IsDeferOverlayPending fn = ResolveDX12IsDeferOverlayPending();
@@ -385,8 +390,8 @@ static bool ShouldBypassDX12InvisibleWindowPresent(IDXGISwapChain* pSwapChain, c
 
     const bool hasOutputWindow = desc.OutputWindow != nullptr;
     const bool outputWindowVisible = hasOutputWindow && IsWindowVisible(desc.OutputWindow) != FALSE;
-    if (!ce::dx12_overlay_policy::ShouldSkipDX12PresentProcessingForInvisibleWindowSwapchain(
-            hasOutputWindow, outputWindowVisible)) {
+    if (!ce::dx12_overlay_policy::ShouldSkipDX12PresentProcessingForInvisibleWindowSwapchain(hasOutputWindow,
+                                                                                             outputWindowVisible)) {
         return false;
     }
 
@@ -461,8 +466,8 @@ static bool s_steamInitCrashed = false;
 // Fallback only: Steam's NULL Present-shaped callbacks should normally be
 // patched to CE's DXGI bypass trampoline so Steam can keep chaining to a real
 // Present.  This no-op is used only when a bypass trampoline is not available.
-static HRESULT WINAPI SteamDummyRenderingCallback(IDXGISwapChain* /*pSwapChain*/,
-                                                    UINT /*SyncInterval*/, UINT /*Flags*/) {
+static HRESULT WINAPI SteamDummyRenderingCallback(IDXGISwapChain* /*pSwapChain*/, UINT /*SyncInterval*/,
+                                                  UINT /*Flags*/) {
     return S_OK;
 }
 
@@ -488,8 +493,7 @@ static void* SelectSteamNullCallbackRecoveryTarget(const SteamNullCallbackRecove
                : reinterpret_cast<void*>(SteamDummyRenderingCallback);
 }
 
-static void** ResolveSteamNullCallbackSlotFromFault(uintptr_t returnAddress, uintptr_t steamStart,
-                                                    uintptr_t steamEnd) {
+static void** ResolveSteamNullCallbackSlotFromFault(uintptr_t returnAddress, uintptr_t steamStart, uintptr_t steamEnd) {
 #ifdef _WIN64
     if (returnAddress < steamStart + 2 || returnAddress >= steamEnd) {
         return nullptr;
@@ -652,11 +656,9 @@ static LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
                 "-> %s=%p context=%s reason=%s hook=%p bypass=%p dynamicSlot=%d streamlineStack=%d pluginGuard=%d",
                 nullFnPtr, resolvedRva,
                 patchTarget == recoveryContext.bypass ? "DXGIBypassPresent" : "SteamDummyRenderingCallback",
-                patchTarget,
-                recoveryContext.context ? recoveryContext.context : "unknown",
+                patchTarget, recoveryContext.context ? recoveryContext.context : "unknown",
                 recoveryContext.reason ? recoveryContext.reason : "Present", recoveryContext.hook,
-                recoveryContext.bypass, dynamicallyResolvedSlot ? 1 : 0,
-                recoveryContext.streamlineStackActive ? 1 : 0,
+                recoveryContext.bypass, dynamicallyResolvedSlot ? 1 : 0, recoveryContext.streamlineStackActive ? 1 : 0,
                 recoveryContext.pluginLookupGuardReady ? 1 : 0);
         } else {
             HookLogImportant(
@@ -684,8 +686,7 @@ static LONG CALLBACK SteamOverlayInitVehHandler(PEXCEPTION_POINTERS ep) {
         ep->ContextRecord->Esp += 4;  // undo the call's stack push (4 bytes on x86)
         ep->ContextRecord->Eax = (DWORD)(uintptr_t)patchTarget;
         ep->ContextRecord->Eip = returnAddress - kCallOpcodeSize;
-        HookLog("SteamOverlayInitVehHandler: Retrying call eax with EAX=%p",
-                (void*)(DWORD_PTR)ep->ContextRecord->Eax);
+        HookLog("SteamOverlayInitVehHandler: Retrying call eax with EAX=%p", (void*)(DWORD_PTR)ep->ContextRecord->Eax);
 #endif
     } else {
         // Could not patch - skip past the crash entirely.
@@ -721,12 +722,7 @@ public:
         }
 
         s_steamNullCallbackRecoveryContext = SteamNullCallbackRecoveryContext{
-            context ? context : "unknown",
-            reason,
-            hook,
-            bypass,
-            streamlineStackActive,
-            pluginLookupGuardReady,
+            context ? context : "unknown", reason, hook, bypass, streamlineStackActive, pluginLookupGuardReady,
         };
         handle_ = AddVectoredExceptionHandler(1, SteamOverlayInitVehHandler);
         if (handle_) {
@@ -743,8 +739,8 @@ public:
             HookLogImportant(
                 "Guarded Steam Present hook failed to install Steam null-callback VEH recovery "
                 "(context=%s reason=%s hook=%p bypass=%p streamlineStack=%d pluginGuard=%d err=%lu)",
-                context ? context : "unknown", reason ? reason : "Present", hook, bypass,
-                streamlineStackActive ? 1 : 0, pluginLookupGuardReady ? 1 : 0, GetLastError());
+                context ? context : "unknown", reason ? reason : "Present", hook, bypass, streamlineStackActive ? 1 : 0,
+                pluginLookupGuardReady ? 1 : 0, GetLastError());
         }
     }
 
@@ -758,7 +754,9 @@ public:
     ScopedSteamNullCallbackRecoveryGuard(const ScopedSteamNullCallbackRecoveryGuard&) = delete;
     ScopedSteamNullCallbackRecoveryGuard& operator=(const ScopedSteamNullCallbackRecoveryGuard&) = delete;
 
-    bool IsInstalled() const { return handle_ != nullptr; }
+    bool IsInstalled() const {
+        return handle_ != nullptr;
+    }
 
 private:
     SteamNullCallbackRecoveryContext previousContext_;
@@ -919,8 +917,7 @@ static DX12StartupPresentMode GetDX12StartupPresentMode(bool bypassAvailable, co
     const bool bypassReady = EnsurePresentBypassTrampoline() != nullptr;
     if (!DXGIShared::ShouldAllowDX12StartupPresentPassForState(overlayModule != nullptr, oPresentTrampoline != nullptr,
                                                                oPresent1Trampoline != nullptr, steamBypassShouldOwnPath,
-                                                               bypassReady,
-                                                               g_FGCompat.GetRuntimeMode(),
+                                                               bypassReady, g_FGCompat.GetRuntimeMode(),
                                                                g_StreamlineFGRunning.load(std::memory_order_acquire))) {
         static std::atomic<int> s_startupPassBlockLogCount{0};
         const int blockNum = s_startupPassBlockLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -928,9 +925,8 @@ static DX12StartupPresentMode GetDX12StartupPresentMode(bool bypassAvailable, co
             HookLogImportant(
                 "GetDX12StartupPresentMode: Startup compat pass blocked "
                 "(overlay=%d trampoline=%d bypass=%d steamBypassOwn=%d runtimeMode=%d slFG=%d)",
-                overlayModule != nullptr ? 1 : 0, oPresentTrampoline != nullptr ? 1 : 0,
-                bypassReady ? 1 : 0, steamBypassShouldOwnPath ? 1 : 0,
-                static_cast<int>(g_FGCompat.GetRuntimeMode()),
+                overlayModule != nullptr ? 1 : 0, oPresentTrampoline != nullptr ? 1 : 0, bypassReady ? 1 : 0,
+                steamBypassShouldOwnPath ? 1 : 0, static_cast<int>(g_FGCompat.GetRuntimeMode()),
                 g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0);
         }
         return DX12StartupPresentMode::kNone;
@@ -1370,8 +1366,7 @@ static bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapCha
     const bool streamlinePluginLookupGuardReady = StreamlineHook::IsExternalOverlayPluginLookupGuardReady();
     const bool streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool postSLConfirmedRendering = isD3D12SwapChain && HookIsPostSLOverlayConfirmedRendering();
-    const bool postSLConfirmedButStartupSettling =
-        isD3D12SwapChain && HookIsPostSLOverlayConfirmedButStartupSettling();
+    const bool postSLConfirmedButStartupSettling = isD3D12SwapChain && HookIsPostSLOverlayConfirmedButStartupSettling();
     const bool startupTransitionWindowActive =
         isD3D12SwapChain && DXGIShared::IsStreamlineStartupTransitionWindowActive();
     void* steamCallbackBefore = nullptr;
@@ -1383,17 +1378,16 @@ static bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapCha
     const bool steamCallbackIsInvalidLowAddress =
         steamCallbackReadable && steamCallbackBefore != nullptr && steamCallbackAddress < 0x10000;
     ScopedSteamNullCallbackRecoveryGuard steamNullCallbackGuard(
-        externalPresent != nullptr && externalPresent != DetourPresent && presentBypass != nullptr &&
-            isSteamOverlay && isD3D12SwapChain,
+        externalPresent != nullptr && externalPresent != DetourPresent && presentBypass != nullptr && isSteamOverlay &&
+            isD3D12SwapChain,
         "guarded external Present", reason, reinterpret_cast<void*>(externalPresent),
         reinterpret_cast<void*>(presentBypass), streamlineStackActive, streamlinePluginLookupGuardReady);
     const bool steamNullCallbackRecoveryReady = steamNullCallbackGuard.IsInstalled();
-    const bool basePolicyAllowsGuardedSteamInvoke =
-        DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
-            externalPresent != nullptr && externalPresent != DetourPresent, presentBypass != nullptr,
-            isSteamOverlay, isD3D12SwapChain, IsInWrapperPresent(),
-            IsWrappedSwapChainObject(pSwapChain), s_externalOverlayPresentInvokeDepth > 0, streamlineStackActive,
-            streamlinePluginLookupGuardReady, steamNullCallbackRecoveryReady);
+    const bool basePolicyAllowsGuardedSteamInvoke = DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForState(
+        externalPresent != nullptr && externalPresent != DetourPresent, presentBypass != nullptr, isSteamOverlay,
+        isD3D12SwapChain, IsInWrapperPresent(), IsWrappedSwapChainObject(pSwapChain),
+        s_externalOverlayPresentInvokeDepth > 0, streamlineStackActive, streamlinePluginLookupGuardReady,
+        steamNullCallbackRecoveryReady);
     const bool callbackStateAllowsGuardedSteamInvoke =
         DXGIShared::ShouldInvokeGuardedExternalSteamOverlayPresentForCallbackState(
             basePolicyAllowsGuardedSteamInvoke, steamCallbackReadable, steamCallbackIsNull, steamCallbackIsCEDummy,
@@ -1402,35 +1396,32 @@ static bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapCha
         if (basePolicyAllowsGuardedSteamInvoke && externalPresent && presentBypass && isSteamOverlay &&
             isD3D12SwapChain) {
             static std::atomic<int> s_guardedSteamCallbackStateSkipLogCount{0};
-            const int skipNum =
-                s_guardedSteamCallbackStateSkipLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            const int skipNum = s_guardedSteamCallbackStateSkipLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (skipNum <= 20 || skipNum == 50 || (skipNum % 500) == 0) {
                 HookLogImportant(
                     "DXGIShared: Skipping guarded Steam Present hook #%d for %s because Steam callback state is not "
                     "a real renderer; using bypass trampoline instead (callbackReadable=%d null=%d ceDummy=%d "
                     "lowAddress=%d callback=%p steamNullGuard=%d streamlineStack=%d pluginGuard=%d tid=0x%04X)",
-                    skipNum, reason ? reason : "Present", steamCallbackReadable ? 1 : 0,
-                    steamCallbackIsNull ? 1 : 0, steamCallbackIsCEDummy ? 1 : 0,
-                    steamCallbackIsInvalidLowAddress ? 1 : 0, steamCallbackBefore,
+                    skipNum, reason ? reason : "Present", steamCallbackReadable ? 1 : 0, steamCallbackIsNull ? 1 : 0,
+                    steamCallbackIsCEDummy ? 1 : 0, steamCallbackIsInvalidLowAddress ? 1 : 0, steamCallbackBefore,
                     steamNullCallbackRecoveryReady ? 1 : 0, streamlineStackActive ? 1 : 0,
                     streamlinePluginLookupGuardReady ? 1 : 0, GetCurrentThreadId());
             }
         }
         if (externalPresent && presentBypass && isSteamOverlay && isD3D12SwapChain && streamlineStackActive) {
             static std::atomic<int> s_guardedSteamStreamlineStackSkipLogCount{0};
-            const int skipNum =
-                s_guardedSteamStreamlineStackSkipLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            const int skipNum = s_guardedSteamStreamlineStackSkipLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (skipNum <= 20 || skipNum == 50 || (skipNum % 500) == 0) {
                 HookLogImportant(
                     "DXGIShared: Skipping guarded Steam Present hook #%d for %s because current stack is inside "
                     "Streamline startup/FG routing and required guard state is not ready; using bypass trampoline "
                     "instead (slFG=%d confirmed=%d settling=%d startupWindow=%d pluginGuard=%d invokeDepth=%d "
                     "steamNullGuard=%d steamCallbackReadable=%d steamCallback=%p tid=0x%04X)",
-                    skipNum, reason ? reason : "Present", streamlineFGRunning ? 1 : 0,
-                    postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
-                    startupTransitionWindowActive ? 1 : 0, streamlinePluginLookupGuardReady ? 1 : 0,
-                    s_externalOverlayPresentInvokeDepth, steamNullCallbackRecoveryReady ? 1 : 0,
-                    steamCallbackReadable ? 1 : 0, steamCallbackBefore, GetCurrentThreadId());
+                    skipNum, reason ? reason : "Present", streamlineFGRunning ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
+                    postSLConfirmedButStartupSettling ? 1 : 0, startupTransitionWindowActive ? 1 : 0,
+                    streamlinePluginLookupGuardReady ? 1 : 0, s_externalOverlayPresentInvokeDepth,
+                    steamNullCallbackRecoveryReady ? 1 : 0, steamCallbackReadable ? 1 : 0, steamCallbackBefore,
+                    GetCurrentThreadId());
             }
         }
         return false;
@@ -1474,18 +1465,16 @@ static bool TryInvokeGuardedExternalSteamOverlayPresent(IDXGISwapChain* pSwapCha
         }
     }
 
-    if (DXGIShared::ShouldFallbackGuardedExternalSteamOverlayPresentForResult(
-            presentBypass != nullptr, hr, bbIdxMeasured, bbIdxAdvanced)) {
+    if (DXGIShared::ShouldFallbackGuardedExternalSteamOverlayPresentForResult(presentBypass != nullptr, hr,
+                                                                              bbIdxMeasured, bbIdxAdvanced)) {
         static std::atomic<int> s_guardedSteamBypassFallbackLogCount{0};
-        const int fallbackNum =
-            s_guardedSteamBypassFallbackLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        const int fallbackNum = s_guardedSteamBypassFallbackLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (fallbackNum <= 20 || fallbackNum == 50 || (fallbackNum % 500) == 0) {
             HookLogImportant(
                 "DXGIShared: Guarded Steam Present hook fallback #%d for %s via bypass=%p "
                 "(hr=0x%08X bbMeasured=%d bbIdx=%u->%u steamNullGuard=%d tid=0x%04X)",
-                fallbackNum, reason ? reason : "Present", (void*)presentBypass, (unsigned)hr,
-                bbIdxMeasured ? 1 : 0, bbIdxBefore, bbIdxAfter, steamNullCallbackRecoveryReady ? 1 : 0,
-                GetCurrentThreadId());
+                fallbackNum, reason ? reason : "Present", (void*)presentBypass, (unsigned)hr, bbIdxMeasured ? 1 : 0,
+                bbIdxBefore, bbIdxAfter, steamNullCallbackRecoveryReady ? 1 : 0, GetCurrentThreadId());
         }
         *resultOut = presentBypass(pSwapChain, SyncInterval, Flags);
         return true;
@@ -1544,8 +1533,7 @@ static bool ShouldKeepSLPresentRoutingDisabledNow(ce::fg_runtime::RuntimeMode* r
     if (runtimeOwnedNativeFGPresentPathOut) {
         *runtimeOwnedNativeFGPresentPathOut = runtimeOwnedNativeFGPresentPath;
     }
-    return DXGIShared::ShouldKeepSLPresentRoutingDisabledForRuntimeState(runtimeMode,
-                                                                         runtimeOwnedNativeFGPresentPath);
+    return DXGIShared::ShouldKeepSLPresentRoutingDisabledForRuntimeState(runtimeMode, runtimeOwnedNativeFGPresentPath);
 }
 
 // Detect if SL has hooked the Present function with an E9 JMP or FF 25
@@ -1630,10 +1618,9 @@ static void DetectSLPresentHook() {
     static std::atomic<uint32_t> s_trampolineBytesLogCount{0};
     const uint32_t trampolineLogCount = s_trampolineBytesLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
     if (trampolineLogCount <= 5 || (trampolineLogCount % 500) == 0) {
-        HookLogImportant(
-            "DetectSLPresentHook: trampoline=%p bytes: %02X %02X %02X %02X %02X %02X (trampolineLog=%u)",
-            oPresentTrampoline, trampolineBytes[0], trampolineBytes[1], trampolineBytes[2], trampolineBytes[3],
-            trampolineBytes[4], trampolineBytes[5], trampolineLogCount);
+        HookLogImportant("DetectSLPresentHook: trampoline=%p bytes: %02X %02X %02X %02X %02X %02X (trampolineLog=%u)",
+                         oPresentTrampoline, trampolineBytes[0], trampolineBytes[1], trampolineBytes[2],
+                         trampolineBytes[3], trampolineBytes[4], trampolineBytes[5], trampolineLogCount);
     }
 
     ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kOff;
@@ -1663,8 +1650,8 @@ static void DetectSLPresentHook() {
     HookLogImportant(
         "SL routing ACTIVE: Present calls will go through oPresent=%p "
         "(%s JMP target=%p module=%s) instead of trampoline=%p.  SL FG chain will execute.",
-        oPresent, isE9 ? "E9" : "FF25", hookTarget,
-        hookTargetModulePath[0] ? hookTargetModulePath : "unknown", oPresentTrampoline);
+        oPresent, isE9 ? "E9" : "FF25", hookTarget, hookTargetModulePath[0] ? hookTargetModulePath : "unknown",
+        oPresentTrampoline);
 }
 
 static void UpdateDXGIPresentMetricsAndPublish(bool isFirstHook, const char* publicationSource) {
@@ -1741,9 +1728,8 @@ bool IsDlssToggleEagerOverlayEnabled() {
 // DLSS FG turning on, PostSL not yet confirmed (once PostSL owns the overlay this bypass path is not
 // taken), and pure DLSS (no FSR history).
 static void MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain* pSwapChain, bool isD3D12,
-                                                               bool streamlineFGRunning,
-                                                               bool postSLConfirmedRendering, bool hadFSRFGPhase,
-                                                               const char* site) {
+                                                               bool streamlineFGRunning, bool postSLConfirmedRendering,
+                                                               bool hadFSRFGPhase, const char* site) {
     if (!IsDlssToggleEagerOverlayEnabled() || !isD3D12 || !streamlineFGRunning || postSLConfirmedRendering ||
         hadFSRFGPhase)
         return;
@@ -1751,8 +1737,8 @@ static void MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain* p
     const int n = s_log.fetch_add(1, std::memory_order_relaxed);
     if (n < 10 || (n % 120) == 0)
         HookLogImportant(
-            "DX12: Eager present-time overlay draw before Streamline-startup bypass (RTSS-style, site=%s sc=%p)",
-            site, (void*)pSwapChain);
+            "DX12: Eager present-time overlay draw before Streamline-startup bypass (RTSS-style, site=%s sc=%p)", site,
+            (void*)pSwapChain);
     HandleDX12ProcessFrame(pSwapChain, true);
 }
 
@@ -1916,8 +1902,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         PFN_Present recursiveBypass = EnsurePresentBypassTrampoline();
         if (DXGIShared::ShouldBypassRecursiveExternalOverlayPresent(true, recursiveBypass != nullptr)) {
             static std::atomic<int> s_recursiveExternalOverlayBypassLogCount{0};
-            const int bypassNum =
-                s_recursiveExternalOverlayBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            const int bypassNum = s_recursiveExternalOverlayBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
             if (bypassNum <= 10 || (bypassNum % 500) == 0) {
                 HookLogImportant(
                     "DetourPresent: Bypassing recursive external-overlay Present #%d while guarded Steam hook is "
@@ -1974,20 +1959,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                                           streamlineStartupHandoffInProgress && recentLargePresentGap &&
                                           matchesExpectedPresentThread;
     const bool stalePostFSRStartupHandoffPresentHookRisk =
-        api == APIType::D3D12 &&
-        ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(
-            presentBypassAvailable, steamOverlayLoaded, api == APIType::D3D12, inWrapperPresent,
-            wrappedSwapchain, hadFSRFGPhase, startupTopLevelCandidate);
+        api == APIType::D3D12 && ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(
+                                     presentBypassAvailable, steamOverlayLoaded, api == APIType::D3D12,
+                                     inWrapperPresent, wrappedSwapchain, hadFSRFGPhase, startupTopLevelCandidate);
     const bool startupHandoffSteamRisk = staleThirdPartyPresentHookRisk || stalePostFSRStartupHandoffPresentHookRisk;
-    const bool postFSRRuntimeStartupHandoffRisk =
-        ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
-            api == APIType::D3D12, hadFSRFGPhase, startupTopLevelCandidate, safePostFSRBootstrapPath,
-            startupHandoffSteamRisk);
-    const bool streamlineStartupHandoffTransportRisk =
-        ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
-            api == APIType::D3D12, inWrapperPresent, wrappedSwapchain, presentBypassAvailable,
-            callerFromStreamlineModule, streamlineStartupHandoffInProgress, runtimeOwnedSwapchainActive,
-            startupTopLevelCandidate, postFSRRuntimeStartupHandoffRisk, startupHandoffSteamRisk);
+    const bool postFSRRuntimeStartupHandoffRisk = ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
+        api == APIType::D3D12, hadFSRFGPhase, startupTopLevelCandidate, safePostFSRBootstrapPath,
+        startupHandoffSteamRisk);
+    const bool streamlineStartupHandoffTransportRisk = ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
+        api == APIType::D3D12, inWrapperPresent, wrappedSwapchain, presentBypassAvailable, callerFromStreamlineModule,
+        streamlineStartupHandoffInProgress, runtimeOwnedSwapchainActive, startupTopLevelCandidate,
+        postFSRRuntimeStartupHandoffRisk, startupHandoffSteamRisk);
     if (startupTopLevelCandidate) {
         bool expected = false;
         if (g_SharedState.streamlineStartupTopLevelPresentConsumed.compare_exchange_strong(
@@ -2023,20 +2005,19 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                         "(hadFSR=%d runtimeOwnsSwapchain=%d transportRisk=%d fsrHandoffRisk=%d steamRisk=%d "
                         "startupPending=%d confirmed=%d settling=%d bypass=%p owner=0x%04X depth=%d tid=0x%04X)",
                         bypassCount, hadFSRFGPhase ? 1 : 0, runtimeOwnedSwapchainActive ? 1 : 0,
-                        streamlineStartupHandoffTransportRisk ? 1 : 0,
-                        postFSRRuntimeStartupHandoffRisk ? 1 : 0, startupHandoffSteamRisk ? 1 : 0,
-                        streamlineStartupHandoffPending ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
-                        postSLConfirmedButStartupSettling ? 1 : 0, (void*)presentBypass, presentOwner,
-                        presentDepthVal, currentThreadId);
+                        streamlineStartupHandoffTransportRisk ? 1 : 0, postFSRRuntimeStartupHandoffRisk ? 1 : 0,
+                        startupHandoffSteamRisk ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
+                        postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
+                        (void*)presentBypass, presentOwner, presentDepthVal, currentThreadId);
                 }
                 if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
                         api == APIType::D3D12, postSLConfirmedRendering)) {
                     DX12_RetainStreamlineStartupActivationSwapchain(
                         pSwapChain, "DetourPresent: startup-handoff normal-route bypass");
                 }
-                MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(
-                    pSwapChain, api == APIType::D3D12, streamlineFGRunning, postSLConfirmedRendering, hadFSRFGPhase,
-                    "startupHandoffNormalRoute");
+                MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(pSwapChain, api == APIType::D3D12,
+                                                                   streamlineFGRunning, postSLConfirmedRendering,
+                                                                   hadFSRFGPhase, "startupHandoffNormalRoute");
                 return presentBypass(pSwapChain, SyncInterval, Flags);
             }
         } else if (runtimeOwnedSwapchainActive) {
@@ -2046,13 +2027,14 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             if (allowedCount <= 10 || (allowedCount % 100) == 0) {
                 HookLogImportant(
                     "DetourPresent: Streamline startup-handoff normal-route transport allowed #%d "
-                    "(hadFSR=%d runtimeOwnsSwapchain=%d transportRisk=%d fsrHandoffRisk=%d steamRisk=%d startupPending=%d "
+                    "(hadFSR=%d runtimeOwnsSwapchain=%d transportRisk=%d fsrHandoffRisk=%d steamRisk=%d "
+                    "startupPending=%d "
                     "confirmed=%d settling=%d owner=0x%04X depth=%d tid=0x%04X)",
                     allowedCount, hadFSRFGPhase ? 1 : 0, runtimeOwnedSwapchainActive ? 1 : 0,
-                    streamlineStartupHandoffTransportRisk ? 1 : 0,
-                    postFSRRuntimeStartupHandoffRisk ? 1 : 0, startupHandoffSteamRisk ? 1 : 0,
-                    streamlineStartupHandoffPending ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
-                    postSLConfirmedButStartupSettling ? 1 : 0, presentOwner, presentDepthVal, currentThreadId);
+                    streamlineStartupHandoffTransportRisk ? 1 : 0, postFSRRuntimeStartupHandoffRisk ? 1 : 0,
+                    startupHandoffSteamRisk ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
+                    postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0, presentOwner,
+                    presentDepthVal, currentThreadId);
             }
         }
     }
@@ -2064,17 +2046,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool stalePostFSRStartupNormalRoutePresentHookRisk =
         api == APIType::D3D12 &&
         ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupNormalRoute(
-            presentBypassAvailable, steamOverlayLoaded, api == APIType::D3D12, inWrapperPresent,
-            wrappedSwapchain, hadFSRFGPhase, keepStartupPresentOnNormalRoute);
+            presentBypassAvailable, steamOverlayLoaded, api == APIType::D3D12, inWrapperPresent, wrappedSwapchain,
+            hadFSRFGPhase, keepStartupPresentOnNormalRoute);
     const bool startupNormalRouteSteamRisk =
         staleThirdPartyPresentHookRisk || stalePostFSRStartupNormalRoutePresentHookRisk;
     const bool postFSRRuntimeStartupNormalRouteRisk =
         api == APIType::D3D12 && hadFSRFGPhase && safePostFSRBootstrapPath && keepStartupPresentOnNormalRoute;
-    const bool streamlineStartupNormalRouteTransportRisk =
-        ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
-            api == APIType::D3D12, inWrapperPresent, wrappedSwapchain, presentBypassAvailable,
-            callerFromStreamlineModule, streamlineStartupHandoffInProgress, runtimeOwnedSwapchainActive,
-            keepStartupPresentOnNormalRoute, postFSRRuntimeStartupNormalRouteRisk, startupNormalRouteSteamRisk);
+    const bool streamlineStartupNormalRouteTransportRisk = ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
+        api == APIType::D3D12, inWrapperPresent, wrappedSwapchain, presentBypassAvailable, callerFromStreamlineModule,
+        streamlineStartupHandoffInProgress, runtimeOwnedSwapchainActive, keepStartupPresentOnNormalRoute,
+        postFSRRuntimeStartupNormalRouteRisk, startupNormalRouteSteamRisk);
     if (keepStartupPresentOnNormalRoute) {
         const bool shouldInvokePostSLCallbackOnNormalRoute =
             DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
@@ -2126,10 +2107,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                     "(startupPending=%d unconfirmed=%d activationEntered=%d hadFSR=%d explicitSetOptions=%d "
                     "activeDLSSSignal=%d safeBootstrap=%d tid=0x%04X)",
                     postSLStartupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
-                    postSLStartupActivationEntered ? 1 : 0, hadFSRFGPhase ? 1 : 0,
-                    explicitSetOptionsActivation ? 1 : 0,
-                    activeDLSSFGRuntimeSignalObserved ? 1 : 0,
-                    safePostFSRBootstrapPath ? 1 : 0, currentThreadId);
+                    postSLStartupActivationEntered ? 1 : 0, hadFSRFGPhase ? 1 : 0, explicitSetOptionsActivation ? 1 : 0,
+                    activeDLSSFGRuntimeSignalObserved ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0, currentThreadId);
             }
         }
         if (DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
@@ -2138,9 +2117,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 startupNormalRouteSteamRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "Streamline startup normal-route Present");
             HRESULT guardedSteamHr = S_OK;
-            if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
-                                                            "Streamline startup normal-route Present",
-                                                            &guardedSteamHr)) {
+            if (TryInvokeGuardedExternalSteamOverlayPresent(
+                    pSwapChain, SyncInterval, Flags, "Streamline startup normal-route Present", &guardedSteamHr)) {
                 return guardedSteamHr;
             }
 
@@ -2163,12 +2141,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 }
                 if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
                         api == APIType::D3D12, postSLConfirmedRendering)) {
-                    DX12_RetainStreamlineStartupActivationSwapchain(
-                        pSwapChain, "DetourPresent: startup normal-route bypass");
+                    DX12_RetainStreamlineStartupActivationSwapchain(pSwapChain,
+                                                                    "DetourPresent: startup normal-route bypass");
                 }
-                MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(
-                    pSwapChain, api == APIType::D3D12, streamlineFGRunning, postSLConfirmedRendering, hadFSRFGPhase,
-                    "keepStartupNormalRoute");
+                MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(pSwapChain, api == APIType::D3D12,
+                                                                   streamlineFGRunning, postSLConfirmedRendering,
+                                                                   hadFSRFGPhase, "keepStartupNormalRoute");
                 return presentBypass(pSwapChain, SyncInterval, Flags);
             }
         } else if (runtimeOwnedSwapchainActive && callerFromStreamlineModule) {
@@ -2220,8 +2198,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 staleThirdPartyPresentHookRisk || stalePostFSRConfirmedStandalonePresentHookRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present");
             HRESULT guardedSteamHr = S_OK;
-            if (TryInvokeGuardedExternalSteamOverlayPresent(
-                    pSwapChain, SyncInterval, Flags, "post-FSR confirmed standalone Present", &guardedSteamHr)) {
+            if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
+                                                            "post-FSR confirmed standalone Present", &guardedSteamHr)) {
                 return guardedSteamHr;
             }
 
@@ -2258,8 +2236,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         DX12_ServiceDeferredECLProbe();
 
         HRESULT guardedSteamHr = S_OK;
-        if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
-                                                        "Streamline synthetic Present", &guardedSteamHr)) {
+        if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags, "Streamline synthetic Present",
+                                                        &guardedSteamHr)) {
             return guardedSteamHr;
         }
 
@@ -2504,11 +2482,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         if (startupMode == DX12StartupPresentMode::kPassThroughOriginal) {
             const bool steamOverlayPresent = IsSteamOverlayModule(overlayModule);
             const bool useBypass = steamOverlayPresent && oPresentBypass && !oPresentTrampoline;
-            HookLogImportant("DetourPresent: Startup compatibility pass #%d for third-party overlay %s "
-                             "(trampoline=%p bypass=%p steam=%d useBypass=%d)",
-                             startupPass, overlayModule ? overlayModule : "module",
-                             (void*)oPresentTrampoline, (void*)oPresentBypass,
-                             steamOverlayPresent ? 1 : 0, useBypass ? 1 : 0);
+            HookLogImportant(
+                "DetourPresent: Startup compatibility pass #%d for third-party overlay %s "
+                "(trampoline=%p bypass=%p steam=%d useBypass=%d)",
+                startupPass, overlayModule ? overlayModule : "module", (void*)oPresentTrampoline, (void*)oPresentBypass,
+                steamOverlayPresent ? 1 : 0, useBypass ? 1 : 0);
             if (g_IPC) {
                 g_SharedFpsLimiter.SetIPCClient(g_IPC);
                 g_SharedFpsLimiter.Apply();
@@ -2563,8 +2541,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                     "confirmed=%d oPresent=%p owner=0x%04X depth=%d tid=0x%04X)",
                     handoffCount, markedStartupConsumed ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
                     streamlineStartupTransitionWindowActive ? 1 : 0, runtimeOwnedSwapchainActive ? 1 : 0,
-                    safePostFSRBootstrapPath ? 1 : 0, postSLConfirmedRendering ? 1 : 0, (void*)oPresent,
-                    presentOwner, presentDepthVal, currentThreadId);
+                    safePostFSRBootstrapPath ? 1 : 0, postSLConfirmedRendering ? 1 : 0, (void*)oPresent, presentOwner,
+                    presentDepthVal, currentThreadId);
             }
             if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
                     api == APIType::D3D12, postSLConfirmedRendering)) {
@@ -2627,8 +2605,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             static std::once_flag s_steamOnlyFlag;
             std::call_once(s_steamOnlyFlag, []() {
                 char envVal[32] = {};
-                if (GetEnvironmentVariableA("CE_STEAM_ONLY_OVERLAY", envVal, sizeof(envVal)) > 0 &&
-                    envVal[0] == '1') {
+                if (GetEnvironmentVariableA("CE_STEAM_ONLY_OVERLAY", envVal, sizeof(envVal)) > 0 && envVal[0] == '1') {
                     DXGIShared::GetSteamOnlyOverlayExperimentalFlag().store(true, std::memory_order_relaxed);
                     HookLogImportant(
                         "DetourPresent: CE_STEAM_ONLY_OVERLAY=1 detected — Steam-only "
@@ -2647,7 +2624,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                     skipNum + 1);
             }
         }
-    // non-SL Steam path: log detection but DO NOT defer overlay ECL.
+        // non-SL Steam path: log detection but DO NOT defer overlay ECL.
         // Deferral was attempted (builds 0.1.2960-2963) but the ECL-hook failed
         // because Steam's ECL hook only fires on frame #1 (before overlay init).
         // Every subsequent frame fell through to the fallback path (after Present).
@@ -2667,9 +2644,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         if (nonSLSteamInvokePath) {
             static std::atomic<int> s_steamPathLog{0};
             if (s_steamPathLog.fetch_add(1, std::memory_order_relaxed) < 20) {
-                HookLogImportant(
-                    "DetourPresent: non-SL Steam path — SyncInterval=%u Flags=%u (normal overlay submit)",
-                    SyncInterval, Flags);
+                HookLogImportant("DetourPresent: non-SL Steam path — SyncInterval=%u Flags=%u (normal overlay submit)",
+                                 SyncInterval, Flags);
             }
         }
 
@@ -2851,9 +2827,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     // guarded Steam path can safely return no-op SL callbacks for that
     // re-entrant query. Until then, fall back to the bypass trampoline so the
     // game remains stable.
-    if (callerFromStreamlineModule &&
-        !s_slRoutingActive.load(std::memory_order_relaxed) &&
-        steamOverlayLoaded) {
+    if (callerFromStreamlineModule && !s_slRoutingActive.load(std::memory_order_relaxed) && steamOverlayLoaded) {
         HRESULT guardedSteamHr = S_OK;
         if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags, "SL startup bypass",
                                                         &guardedSteamHr)) {
@@ -3017,7 +2991,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool runtimeOwnedSwapchainActive = api == APIType::D3D12 && DoesFGRuntimeOwnSwapchain();
     const bool present1BypassAvailable = EnsurePresent1BypassTrampoline() != nullptr;
     const bool staleThirdPartyPresentHookRisk =
-        api == APIType::D3D12 && ShouldForceSteamDX12Bypass(pSwapChain, present1BypassAvailable, IsSLInterposerLoaded());
+        api == APIType::D3D12 &&
+        ShouldForceSteamDX12Bypass(pSwapChain, present1BypassAvailable, IsSLInterposerLoaded());
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -3050,20 +3025,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                                           streamlineStartupHandoffInProgress && recentLargePresentGap &&
                                           matchesExpectedPresentThread;
     const bool stalePostFSRStartupHandoffPresentHookRisk =
-        api == APIType::D3D12 &&
-        ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(
-            present1BypassAvailable, steamOverlayLoaded, api == APIType::D3D12, inWrapperPresent,
-            wrappedSwapchain, hadFSRFGPhase, startupTopLevelCandidate);
+        api == APIType::D3D12 && ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(
+                                     present1BypassAvailable, steamOverlayLoaded, api == APIType::D3D12,
+                                     inWrapperPresent, wrappedSwapchain, hadFSRFGPhase, startupTopLevelCandidate);
     const bool startupHandoffSteamRisk = staleThirdPartyPresentHookRisk || stalePostFSRStartupHandoffPresentHookRisk;
-    const bool postFSRRuntimeStartupHandoffRisk =
-        ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
-            api == APIType::D3D12, hadFSRFGPhase, startupTopLevelCandidate, safePostFSRBootstrapPath,
-            startupHandoffSteamRisk);
-    const bool streamlineStartupHandoffTransportRisk =
-        ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
-            api == APIType::D3D12, inWrapperPresent, wrappedSwapchain, present1BypassAvailable,
-            callerFromStreamlineModule, streamlineStartupHandoffInProgress, runtimeOwnedSwapchainActive,
-            startupTopLevelCandidate, postFSRRuntimeStartupHandoffRisk, startupHandoffSteamRisk);
+    const bool postFSRRuntimeStartupHandoffRisk = ShouldBypassPresentForPostFSRStartupHandoffPresentOnNormalRoute(
+        api == APIType::D3D12, hadFSRFGPhase, startupTopLevelCandidate, safePostFSRBootstrapPath,
+        startupHandoffSteamRisk);
+    const bool streamlineStartupHandoffTransportRisk = ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
+        api == APIType::D3D12, inWrapperPresent, wrappedSwapchain, present1BypassAvailable, callerFromStreamlineModule,
+        streamlineStartupHandoffInProgress, runtimeOwnedSwapchainActive, startupTopLevelCandidate,
+        postFSRRuntimeStartupHandoffRisk, startupHandoffSteamRisk);
     if (startupTopLevelCandidate) {
         bool expected = false;
         if (g_SharedState.streamlineStartupTopLevelPresentConsumed.compare_exchange_strong(
@@ -3088,16 +3060,15 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 static std::atomic<int> s_streamlineStartupHandoffBypassLogCount1{0};
                 int bypassCount = s_streamlineStartupHandoffBypassLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
                 if (bypassCount <= 10 || (bypassCount % 100) == 0) {
-                HookLogImportant(
-                    "DetourPresent1: Streamline startup-handoff normal-route bypass #%d "
-                    "(hadFSR=%d runtimeOwnsSwapchain=%d transportRisk=%d fsrHandoffRisk=%d steamRisk=%d "
-                    "startupPending=%d confirmed=%d settling=%d bypass=%p owner=0x%04X depth=%d tid=0x%04X)",
+                    HookLogImportant(
+                        "DetourPresent1: Streamline startup-handoff normal-route bypass #%d "
+                        "(hadFSR=%d runtimeOwnsSwapchain=%d transportRisk=%d fsrHandoffRisk=%d steamRisk=%d "
+                        "startupPending=%d confirmed=%d settling=%d bypass=%p owner=0x%04X depth=%d tid=0x%04X)",
                         bypassCount, hadFSRFGPhase ? 1 : 0, runtimeOwnedSwapchainActive ? 1 : 0,
-                        streamlineStartupHandoffTransportRisk ? 1 : 0,
-                        postFSRRuntimeStartupHandoffRisk ? 1 : 0, startupHandoffSteamRisk ? 1 : 0,
-                        streamlineStartupHandoffPending ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
-                        postSLConfirmedButStartupSettling ? 1 : 0, (void*)present1Bypass, presentOwner,
-                        presentDepthVal, currentThreadId);
+                        streamlineStartupHandoffTransportRisk ? 1 : 0, postFSRRuntimeStartupHandoffRisk ? 1 : 0,
+                        startupHandoffSteamRisk ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
+                        postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
+                        (void*)present1Bypass, presentOwner, presentDepthVal, currentThreadId);
                 }
                 if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
                         api == APIType::D3D12, postSLConfirmedRendering)) {
@@ -3113,13 +3084,14 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             if (allowedCount <= 10 || (allowedCount % 100) == 0) {
                 HookLogImportant(
                     "DetourPresent1: Streamline startup-handoff normal-route transport allowed #%d "
-                    "(hadFSR=%d runtimeOwnsSwapchain=%d transportRisk=%d fsrHandoffRisk=%d steamRisk=%d startupPending=%d "
+                    "(hadFSR=%d runtimeOwnsSwapchain=%d transportRisk=%d fsrHandoffRisk=%d steamRisk=%d "
+                    "startupPending=%d "
                     "confirmed=%d settling=%d owner=0x%04X depth=%d tid=0x%04X)",
                     allowedCount, hadFSRFGPhase ? 1 : 0, runtimeOwnedSwapchainActive ? 1 : 0,
-                    streamlineStartupHandoffTransportRisk ? 1 : 0,
-                    postFSRRuntimeStartupHandoffRisk ? 1 : 0, startupHandoffSteamRisk ? 1 : 0,
-                    streamlineStartupHandoffPending ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
-                    postSLConfirmedButStartupSettling ? 1 : 0, presentOwner, presentDepthVal, currentThreadId);
+                    streamlineStartupHandoffTransportRisk ? 1 : 0, postFSRRuntimeStartupHandoffRisk ? 1 : 0,
+                    startupHandoffSteamRisk ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
+                    postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0, presentOwner,
+                    presentDepthVal, currentThreadId);
             }
         }
     }
@@ -3131,17 +3103,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool stalePostFSRStartupNormalRoutePresentHookRisk =
         api == APIType::D3D12 &&
         ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupNormalRoute(
-            present1BypassAvailable, steamOverlayLoaded, api == APIType::D3D12, inWrapperPresent,
-            wrappedSwapchain, hadFSRFGPhase, keepStartupPresentOnNormalRoute);
+            present1BypassAvailable, steamOverlayLoaded, api == APIType::D3D12, inWrapperPresent, wrappedSwapchain,
+            hadFSRFGPhase, keepStartupPresentOnNormalRoute);
     const bool startupNormalRouteSteamRisk =
         staleThirdPartyPresentHookRisk || stalePostFSRStartupNormalRoutePresentHookRisk;
     const bool postFSRRuntimeStartupNormalRouteRisk =
         api == APIType::D3D12 && hadFSRFGPhase && safePostFSRBootstrapPath && keepStartupPresentOnNormalRoute;
-    const bool streamlineStartupNormalRouteTransportRisk =
-        ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
-            api == APIType::D3D12, inWrapperPresent, wrappedSwapchain, present1BypassAvailable,
-            callerFromStreamlineModule, streamlineStartupHandoffInProgress, runtimeOwnedSwapchainActive,
-            keepStartupPresentOnNormalRoute, postFSRRuntimeStartupNormalRouteRisk, startupNormalRouteSteamRisk);
+    const bool streamlineStartupNormalRouteTransportRisk = ShouldTreatStreamlineStartupNormalRouteTransportAsUnsafe(
+        api == APIType::D3D12, inWrapperPresent, wrappedSwapchain, present1BypassAvailable, callerFromStreamlineModule,
+        streamlineStartupHandoffInProgress, runtimeOwnedSwapchainActive, keepStartupPresentOnNormalRoute,
+        postFSRRuntimeStartupNormalRouteRisk, startupNormalRouteSteamRisk);
     if (keepStartupPresentOnNormalRoute) {
         const bool shouldInvokePostSLCallbackOnNormalRoute =
             DXGIShared::ShouldInvokePostSLCallbackWhileKeepingStreamlinePresentOnNormalRoute(
@@ -3193,10 +3164,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     "(startupPending=%d unconfirmed=%d activationEntered=%d hadFSR=%d explicitSetOptions=%d "
                     "activeDLSSSignal=%d safeBootstrap=%d tid=0x%04X)",
                     postSLStartupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
-                    postSLStartupActivationEntered ? 1 : 0, hadFSRFGPhase ? 1 : 0,
-                    explicitSetOptionsActivation ? 1 : 0,
-                    activeDLSSFGRuntimeSignalObserved ? 1 : 0,
-                    safePostFSRBootstrapPath ? 1 : 0, currentThreadId);
+                    postSLStartupActivationEntered ? 1 : 0, hadFSRFGPhase ? 1 : 0, explicitSetOptionsActivation ? 1 : 0,
+                    activeDLSSFGRuntimeSignalObserved ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0, currentThreadId);
             }
         }
         if (DXGIShared::ShouldBypassPresentWhileKeepingStreamlineStartupPresentOnNormalRoute(
@@ -3223,8 +3192,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 }
                 if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
                         api == APIType::D3D12, postSLConfirmedRendering)) {
-                    DX12_RetainStreamlineStartupActivationSwapchain(
-                        pSwapChain, "DetourPresent1: startup normal-route bypass");
+                    DX12_RetainStreamlineStartupActivationSwapchain(pSwapChain,
+                                                                    "DetourPresent1: startup normal-route bypass");
                 }
                 return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
             }
@@ -3498,8 +3467,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             const bool markedStartupConsumed =
                 g_SharedState.streamlineStartupTopLevelPresentConsumed.compare_exchange_strong(
                     expected, true, std::memory_order_acq_rel, std::memory_order_acquire);
-            RefreshLivePresentHooksForSwapchainIfNeeded(
-                pSwapChain, "app-thread post-FSR Streamline startup handoff Present1");
+            RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain,
+                                                        "app-thread post-FSR Streamline startup handoff Present1");
             static std::atomic<int> s_appThreadPostFSRStartupOverlaylessLogCount1{0};
             const int handoffCount =
                 s_appThreadPostFSRStartupOverlaylessLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -3510,8 +3479,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     "confirmed=%d oPresent1=%p owner=0x%04X depth=%d tid=0x%04X)",
                     handoffCount, markedStartupConsumed ? 1 : 0, streamlineStartupHandoffPending ? 1 : 0,
                     streamlineStartupTransitionWindowActive ? 1 : 0, runtimeOwnedSwapchainActive ? 1 : 0,
-                    safePostFSRBootstrapPath ? 1 : 0, postSLConfirmedRendering ? 1 : 0, (void*)oPresent1,
-                    presentOwner, presentDepthVal, currentThreadId);
+                    safePostFSRBootstrapPath ? 1 : 0, postSLConfirmedRendering ? 1 : 0, (void*)oPresent1, presentOwner,
+                    presentDepthVal, currentThreadId);
             }
             if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
                     api == APIType::D3D12, postSLConfirmedRendering)) {
@@ -3731,8 +3700,8 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
 }
 
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height,
-                                                DXGI_FORMAT NewFormat, UINT SwapChainFlags,
-                                                const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue) {
+                                               DXGI_FORMAT NewFormat, UINT SwapChainFlags,
+                                               const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue) {
     // Apply backbuffer count override from config
     {
         const auto& cfg = GetActiveGraphicsConfig();
@@ -4002,13 +3971,13 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
                     s_originalVtable8Present == (PFN_Present)presentAddr ? 1 : 0);
                 // Log which module presentAddr belongs to for debugging
                 HMODULE hAddrModule = nullptr;
-                if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                       (LPCSTR)presentAddr, &hAddrModule)) {
+                if (GetModuleHandleExA(
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        (LPCSTR)presentAddr, &hAddrModule)) {
                     char modulePath[MAX_PATH] = {};
                     GetModuleFileNameA(hAddrModule, modulePath, sizeof(modulePath));
-                    HookLogImportant(
-                        "InstallPresentInlineHooks: presentAddr=%p is in module: %s",
-                        presentAddr, modulePath[0] ? modulePath : "(unknown)");
+                    HookLogImportant("InstallPresentInlineHooks: presentAddr=%p is in module: %s", presentAddr,
+                                     modulePath[0] ? modulePath : "(unknown)");
                 }
             }
         } else {
@@ -4463,8 +4432,7 @@ void RemoveSwapchainVTableHooks() {
 // Returns true if this thread performed the init call (result in *resultOut).
 // Returns false if another thread won the init race or if init was skipped.
 static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
-                                         PFN_Present presentOriginal, PFN_Present presentBypass,
-                                         HRESULT* resultOut) {
+                                        PFN_Present presentOriginal, PFN_Present presentBypass, HRESULT* resultOut) {
     if (!pSwapChain || !resultOut || !s_hookedVTable || !presentOriginal || s_steamInitCrashed) {
         return false;
     }
@@ -4497,8 +4465,7 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
         "AttemptSteamDX12OverlayInit: vtable[8] temporarily restored to dxgi!Present=%p — "
         "calling through E9 JMP for Steam overlay init (with VEH protection) "
         "[s_originalVtable8Present=%p, same=%d]",
-        (void*)presentOriginal, (void*)s_originalVtable8Present,
-        s_originalVtable8Present == presentOriginal ? 1 : 0);
+        (void*)presentOriginal, (void*)s_originalVtable8Present, s_originalVtable8Present == presentOriginal ? 1 : 0);
 
     // Call through oPresent (E9 JMP at dxgi!Present) WITH VEH protection.
     //
@@ -4515,9 +4482,9 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
     // If the crash is NOT the expected NULL callback (e.g. a different Steam bug),
     // the handler returns EXCEPTION_CONTINUE_SEARCH and CE's existing VEH crash
     // handler catches it and writes a crash dump.
-    ScopedSteamNullCallbackRecoveryGuard steamInitGuard(
-        true, "non-SL Steam init", "AttemptSteamDX12OverlayInit", reinterpret_cast<void*>(presentOriginal),
-        reinterpret_cast<void*>(presentBypass), false, false);
+    ScopedSteamNullCallbackRecoveryGuard steamInitGuard(true, "non-SL Steam init", "AttemptSteamDX12OverlayInit",
+                                                        reinterpret_cast<void*>(presentOriginal),
+                                                        reinterpret_cast<void*>(presentBypass), false, false);
     HRESULT initHr = presentOriginal(pSwapChain, SyncInterval, Flags);
 
     // Re-hook vtable[8] with DetourPresent (our vtable hook)
@@ -4541,8 +4508,7 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
             void** steamCallbackPtr = (void**)((uintptr_t)steamMod + 0x1621d8);
             if (IsReadableMemory(steamCallbackPtr, sizeof(void*))) {
                 void* callbackAfterInit = *steamCallbackPtr;
-                if (callbackAfterInit != nullptr &&
-                    callbackAfterInit != (void*)SteamDummyRenderingCallback &&
+                if (callbackAfterInit != nullptr && callbackAfterInit != (void*)SteamDummyRenderingCallback &&
                     callbackAfterInit != (void*)presentBypass) {
                     HookLogImportant(
                         "AttemptSteamDX12OverlayInit: Steam legacy callback slot contains Steam-owned function %p "
@@ -4552,9 +4518,9 @@ static bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInt
                     HookLogImportant(
                         "AttemptSteamDX12OverlayInit: Steam legacy callback slot is %s (%p) "
                         "(bypass=%p dummy=%p)",
-                        callbackAfterInit == nullptr ? "NULL"
-                                                     : (callbackAfterInit == (void*)presentBypass ? "CE bypass"
-                                                                                                  : "CE dummy"),
+                        callbackAfterInit == nullptr
+                            ? "NULL"
+                            : (callbackAfterInit == (void*)presentBypass ? "CE bypass" : "CE dummy"),
                         callbackAfterInit, (void*)presentBypass, (void*)SteamDummyRenderingCallback);
                 }
             } else {
@@ -4618,14 +4584,14 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         // guarded path keeps Steam's overlay in the generated-frame path.
         const bool streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
         const auto runtimeMode = g_FGCompat.GetRuntimeMode();
-        const bool nativeFSRPresentationActive =
-            ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode) || g_FGCompat.IsFSRFGApiActive() ||
-            HookHasRuntimeOwnedNativeFGPresentPath();
-        if (slLoaded && DXGIShared::ShouldInvokeGuardedSteamPresentDuringForcedBypass(
-                            slLoaded, streamlineFGRunning, nativeFSRPresentationActive)) {
+        const bool nativeFSRPresentationActive = ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode) ||
+                                                 g_FGCompat.IsFSRFGApiActive() ||
+                                                 HookHasRuntimeOwnedNativeFGPresentPath();
+        if (slLoaded && DXGIShared::ShouldInvokeGuardedSteamPresentDuringForcedBypass(slLoaded, streamlineFGRunning,
+                                                                                      nativeFSRPresentationActive)) {
             HRESULT guardedSteamHr = S_OK;
-            if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
-                                                             "Steam DX12 forced bypass", &guardedSteamHr)) {
+            if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags, "Steam DX12 forced bypass",
+                                                            &guardedSteamHr)) {
                 return guardedSteamHr;
             }
         } else if (slLoaded) {
@@ -4663,8 +4629,8 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 const bool needInit = !s_steamDX12InitAttempted.load(std::memory_order_acquire);
                 if (needInit) {
                     HRESULT initHr = S_OK;
-                    if (AttemptSteamDX12OverlayInit(pSwapChain, SyncInterval, Flags,
-                                                    presentOriginal, presentBypass, &initHr)) {
+                    if (AttemptSteamDX12OverlayInit(pSwapChain, SyncInterval, Flags, presentOriginal, presentBypass,
+                                                    &initHr)) {
                         // This thread performed init successfully
                         return initHr;
                     }
@@ -4771,8 +4737,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                             e9JmpIntact = (resolvedTarget == (void*)g_externalOverlayPresentHook);
                         }
                     }
-                    uint64_t presentCallCount =
-                        g_SharedState.presentCallCount.load(std::memory_order_relaxed);
+                    uint64_t presentCallCount = g_SharedState.presentCallCount.load(std::memory_order_relaxed);
                     static std::atomic<int> s_steamNonSLDiagCount{0};
                     int diagNum = s_steamNonSLDiagCount.fetch_add(1, std::memory_order_relaxed) + 1;
                     if (diagNum <= 20 || (diagNum % 200) == 0) {
@@ -4780,10 +4745,9 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                             "CallOriginalPresent: DIAG #%d — bbIdx=%u bbCount=%u presentCalls=%llu "
                             "e9Bytes=%02X%02X%02X%02X%02X e9Intact=%d presentOrig=%p hookTarget=%p "
                             "vtableRestored=%d",
-                            diagNum, bbIdxBefore, bbCountBefore, (unsigned long long)presentCallCount,
-                            presentBytes[0], presentBytes[1], presentBytes[2], presentBytes[3],
-                            presentBytes[4], e9JmpIntact ? 1 : 0, (void*)presentOriginal,
-                            (void*)g_externalOverlayPresentHook, vtableRestored ? 1 : 0);
+                            diagNum, bbIdxBefore, bbCountBefore, (unsigned long long)presentCallCount, presentBytes[0],
+                            presentBytes[1], presentBytes[2], presentBytes[3], presentBytes[4], e9JmpIntact ? 1 : 0,
+                            (void*)presentOriginal, (void*)g_externalOverlayPresentHook, vtableRestored ? 1 : 0);
                     }
 
                     // Phase C: Invoke Steam's overlay handler through the E9 JMP
@@ -4794,8 +4758,8 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     if (presentOriginal && presentOriginal != (PFN_Present)DetourPresent) {
                         ScopedSteamNullCallbackRecoveryGuard steamInvokeGuard(
                             presentBypass != nullptr, "non-SL Steam Present", "E9 JMP steady Present",
-                            reinterpret_cast<void*>(presentOriginal), reinterpret_cast<void*>(presentBypass),
-                            false, false);
+                            reinterpret_cast<void*>(presentOriginal), reinterpret_cast<void*>(presentBypass), false,
+                            false);
                         StreamlineHook::ExternalOverlayPresentGuard slGuard;
                         steamHr = presentOriginal(pSwapChain, SyncInterval, Flags);
                         steamInvoked = true;
@@ -4823,8 +4787,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                                 e9IntactAfter = (resolvedTarget == (void*)g_externalOverlayPresentHook);
                             }
                         }
-                        uint64_t presentCallCountAfter =
-                            g_SharedState.presentCallCount.load(std::memory_order_relaxed);
+                        uint64_t presentCallCountAfter = g_SharedState.presentCallCount.load(std::memory_order_relaxed);
                         static std::atomic<int> s_steamNonSLInvokeCount{0};
                         int invokeNum = s_steamNonSLInvokeCount.fetch_add(1, std::memory_order_relaxed) + 1;
                         if (invokeNum <= 20 || (invokeNum % 200) == 0) {
@@ -4833,14 +4796,10 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                                 "hr=0x%08X bbIdx=%u->%u bufCount=%u->%u presentCalls=%llu "
                                 "e9Intact=%d->%d e9BytesAfter=%02X%02X%02X%02X%02X "
                                 "vtableRestored=%d",
-                                invokeNum, (unsigned)steamHr,
-                                bbIdxBefore, bbIdxAfter,
-                                bbCountBefore, scDescAfter.BufferCount,
-                                (unsigned long long)presentCallCountAfter,
-                                e9JmpIntact ? 1 : 0, e9IntactAfter ? 1 : 0,
-                                presentBytesAfter[0], presentBytesAfter[1], presentBytesAfter[2],
-                                presentBytesAfter[3], presentBytesAfter[4],
-                                vtableRestored ? 1 : 0);
+                                invokeNum, (unsigned)steamHr, bbIdxBefore, bbIdxAfter, bbCountBefore,
+                                scDescAfter.BufferCount, (unsigned long long)presentCallCountAfter, e9JmpIntact ? 1 : 0,
+                                e9IntactAfter ? 1 : 0, presentBytesAfter[0], presentBytesAfter[1], presentBytesAfter[2],
+                                presentBytesAfter[3], presentBytesAfter[4], vtableRestored ? 1 : 0);
                         }
                         // If the backbuffer index didn't advance, Steam's handler
                         // didn't chain to the original dxgi!Present.  Fall back to
@@ -4870,8 +4829,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                     // Phase C: Restore vtable[8] to DetourPresent (CE's hook) AFTER
                     // Steam's handler returns.  This ensures CE's overlay hook is
                     // active for the next frame.
-                    if (needVtableRestore && s_hookedVTable &&
-                        IsReadableMemory(s_hookedVTable, 9 * sizeof(void*))) {
+                    if (needVtableRestore && s_hookedVTable && IsReadableMemory(s_hookedVTable, 9 * sizeof(void*))) {
                         DWORD oldProtect = 0;
                         if (VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
                             if (s_hookedVTable[8] == (void*)presentOriginal) {
@@ -4932,8 +4890,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
                 HookLogImportant(
                     "CallOriginalPresent: non-SL Steam overlay — bypass trampoline at %p "
                     "(initAttempted=%d initCrashed=%d)",
-                    (void*)presentBypass,
-                    s_steamDX12InitAttempted.load(std::memory_order_acquire) ? 1 : 0,
+                    (void*)presentBypass, s_steamDX12InitAttempted.load(std::memory_order_acquire) ? 1 : 0,
                     s_steamInitCrashed ? 1 : 0);
             }
         }
@@ -4941,8 +4898,8 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         static int s_forcedBypassLogCount = 0;
         if (s_forcedBypassLogCount++ < 10) {
             HookLogImportant("CallOriginalPresent: forcing DXGI bypass for %s (slLoaded=%d, bypass=%p)",
-                             forcedBypassOverlay ? forcedBypassOverlay : "overlay",
-                             slLoaded ? 1 : 0, (void*)presentBypass);
+                             forcedBypassOverlay ? forcedBypassOverlay : "overlay", slLoaded ? 1 : 0,
+                             (void*)presentBypass);
         }
         return presentBypass(pSwapChain, SyncInterval, Flags);
     }
@@ -4970,8 +4927,8 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         static std::atomic<int> s_copFastPathCount{0};
         int fastPathNum = s_copFastPathCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (fastPathNum <= 10 || (fastPathNum % 1000) == 0) {
-            HookLog("CallOriginalPresent: SL fast-path oPresent=%p (#%d, tid=0x%04X)", presentOriginal,
-                    fastPathNum, GetCurrentThreadId());
+            HookLog("CallOriginalPresent: SL fast-path oPresent=%p (#%d, tid=0x%04X)", presentOriginal, fastPathNum,
+                    GetCurrentThreadId());
         }
         return presentOriginal(pSwapChain, SyncInterval, Flags);
     }
@@ -5032,8 +4989,7 @@ HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT 
         // called internally with Steam's E9 JMP.  Fall back to presentOriginal
         // (= dxgi!Present inner function with E9 JMP) if the COM method wasn't
         // captured (e.g. non-DX12 paths).
-        PFN_Present comTarget = s_originalVtable8Present ?
-            s_originalVtable8Present : presentOriginal;
+        PFN_Present comTarget = s_originalVtable8Present ? s_originalVtable8Present : presentOriginal;
         return comTarget(pSwapChain, SyncInterval, Flags);
     }
 
@@ -5094,10 +5050,8 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
             //
             // Steam does NOT hook Present1 with an E9 JMP, so calling
             // present1Original directly on an already-initialized Steam is safe.
-            if (!s_steamInitCrashed &&
-                s_steamDX12InitAttempted.load(std::memory_order_acquire) &&
-                present1Original && present1Original != DetourPresent1 &&
-                IsReadableMemory(pSwapChain, sizeof(void*))) {
+            if (!s_steamInitCrashed && s_steamDX12InitAttempted.load(std::memory_order_acquire) && present1Original &&
+                present1Original != DetourPresent1 && IsReadableMemory(pSwapChain, sizeof(void*))) {
                 static std::atomic<int> s_steamNonSLPresent1ViaE9JmpCount{0};
                 if (s_steamNonSLPresent1ViaE9JmpCount.fetch_add(1, std::memory_order_relaxed) < 10) {
                     HookLogImportant(
@@ -5113,8 +5067,7 @@ HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT
                 HookLogImportant(
                     "CallOriginalPresent1: non-SL Steam overlay — Present1 bypass "
                     "(initAttempted=%d initCrashed=%d)",
-                    s_steamDX12InitAttempted.load(std::memory_order_acquire) ? 1 : 0,
-                    s_steamInitCrashed ? 1 : 0);
+                    s_steamDX12InitAttempted.load(std::memory_order_acquire) ? 1 : 0, s_steamInitCrashed ? 1 : 0);
             }
         }
         return present1Bypass(pSwapChain, SyncInterval, Flags, pParams);

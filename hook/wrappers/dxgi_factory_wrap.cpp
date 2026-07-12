@@ -41,7 +41,8 @@ bool CaptureAndHookD3D12QueueFromFactoryDevice(IUnknown* pDevice, const char* ca
         executeModuleResolved && ce::overlay_compat::IsStreamlineFrameGenerationModulePath(executeModulePath);
     const bool vtableFromFFX =
         vtableModuleResolved && ce::overlay_compat::IsFFXFrameGenerationModulePath(vtableModulePath);
-    const bool executeFromFFX = executeModuleResolved && ce::overlay_compat::IsFFXFrameGenerationModulePath(executeModulePath);
+    const bool executeFromFFX =
+        executeModuleResolved && ce::overlay_compat::IsFFXFrameGenerationModulePath(executeModulePath);
     if (ce::dx12_overlay_policy::ShouldSkipCommandQueueVTableHookForFrameGenerationRuntimeModule(
             vtableFromStreamline, executeFromStreamline, vtableFromFFX, executeFromFFX)) {
         WrapperLog(
@@ -85,8 +86,8 @@ bool ShouldBypassSwapchainWrapperForFrameGenerationRuntime(bool d3d12CommandQueu
 }
 
 template <typename TSwapChain>
-void AssignCreatedSwapchain(TSwapChain* pReal, IUnknown* pDevice, bool d3d12CommandQueueSwapchain,
-                            const char* callName, TSwapChain** ppSwapChain) {
+void AssignCreatedSwapchain(TSwapChain* pReal, IUnknown* pDevice, bool d3d12CommandQueueSwapchain, const char* callName,
+                            TSwapChain** ppSwapChain) {
     if (!pReal || !ppSwapChain) {
         return;
     }
@@ -439,8 +440,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChainForCoreWindow(IUnkno
     IDXGISwapChain1* pReal = nullptr;
     HRESULT hr = m_pReal->CreateSwapChainForCoreWindow(DeWrap(pDevice), pWindow, pDesc, pRestrictToOutput, &pReal);
     if (SUCCEEDED(hr) && pReal) {
-        AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChainForCoreWindow",
-                               ppSwapChain);
+        AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChainForCoreWindow", ppSwapChain);
     } else
         *ppSwapChain = nullptr;
     return hr;

@@ -205,9 +205,7 @@ TEST(FrameTimingUtilsTest, SelectFrameClosestToGridIfPrefersReadyFrameNearGrid) 
     frames.push_back(std::move(newerReady));
 
     const size_t bestIndex = SelectFrameClosestToGridIf(frames, frames.size(), 100, 3, 50,
-                                                        [](const QueuedFrame& frame) {
-                                                            return frame.frameIndex != 2;
-                                                        });
+                                                        [](const QueuedFrame& frame) { return frame.frameIndex != 2; });
     EXPECT_EQ(bestIndex, 0u);
 }
 
@@ -504,8 +502,7 @@ namespace {
 
 // True 140 fps cadence (7142.86 us) quantized UP to a 5 ms composition clock: raw intervals mix
 // 5000/10000 us around the same average. The 10 ms raw gaps are what starved CFR output slots.
-std::vector<int64_t> MakeQuantizedCadence(int64_t startUs, size_t frames, double trueIntervalUs,
-                                          int64_t bucketUs) {
+std::vector<int64_t> MakeQuantizedCadence(int64_t startUs, size_t frames, double trueIntervalUs, int64_t bucketUs) {
     std::vector<int64_t> raw;
     raw.reserve(frames);
     for (size_t i = 0; i < frames; ++i) {
@@ -613,8 +610,7 @@ TEST(FrameTimingUtilsTest, SmoothMonotonicTimestampStaysStrictlyMonotonicOnDupli
         predictor.Update(dupTs, kQpcFreq);
         const int64_t smoothed = predictor.SmoothMonotonicTimestamp(dupTs, kOutputIntervalUs);
         EXPECT_GT(smoothed, prevSmoothed);
-        EXPECT_LE(AbsoluteTimestampDistance(smoothed, dupTs),
-                  predictor.GetSmoothingMaxDeviationQpc(kOutputIntervalUs));
+        EXPECT_LE(AbsoluteTimestampDistance(smoothed, dupTs), predictor.GetSmoothingMaxDeviationQpc(kOutputIntervalUs));
         prevSmoothed = smoothed;
     }
 }

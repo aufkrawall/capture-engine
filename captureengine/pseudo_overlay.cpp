@@ -354,8 +354,8 @@ bool PseudoOverlay::IsForegroundTarget() {
                     continue;
 
                 if (exeName == normalizedItem) {
-                    LogDebug("[PseudoOverlay] IsForegroundTarget: MATCH pid=%lu exe='%s' == '%s'", pid,
-                             exeName.c_str(), normalizedItem.c_str());
+                    LogDebug("[PseudoOverlay] IsForegroundTarget: MATCH pid=%lu exe='%s' == '%s'", pid, exeName.c_str(),
+                             normalizedItem.c_str());
                     match = true;
                     break;
                 }
@@ -363,8 +363,8 @@ bool PseudoOverlay::IsForegroundTarget() {
                          normalizedItem.c_str());
             }
         } else {
-            LogDebug("[PseudoOverlay] IsForegroundTarget: QueryFullProcessImageNameA failed pid=%lu error=%lu",
-                     pid, GetLastError());
+            LogDebug("[PseudoOverlay] IsForegroundTarget: QueryFullProcessImageNameA failed pid=%lu error=%lu", pid,
+                     GetLastError());
         }
         CloseHandle(hProcess);
     } else {
@@ -394,8 +394,7 @@ void PseudoOverlay::UpdateForegroundGraceState(bool currentHadTarget, uint32_t c
     // had no target last tick but have one now. The grace tracking state only
     // advances on these transitions so the grace timer measures from the latest
     // acquire edge, not from init.
-    const bool pidChanged =
-        lastForegroundAcquirePid_ != 0 && lastForegroundAcquirePid_ != currentPid;
+    const bool pidChanged = lastForegroundAcquirePid_ != 0 && lastForegroundAcquirePid_ != currentPid;
     const bool firstDetection = lastForegroundAcquireTick_ == 0;
     const bool isTransition = firstDetection || pidChanged || (!hadForegroundTarget_ && currentHadTarget);
 
@@ -425,15 +424,13 @@ void PseudoOverlay::UpdateForegroundGraceState(bool currentHadTarget, uint32_t c
 }
 
 ce::pseudo_overlay::FocusGraceDecision PseudoOverlay::EvaluateForegroundGrace(bool currentHadTarget,
-                                                                              uint32_t currentPid,
-                                                                              ULONGLONG now) {
+                                                                              uint32_t currentPid, ULONGLONG now) {
     const bool recordingChanged = prevIsRecording_ != isRecording_.load(std::memory_order_relaxed);
     prevIsRecording_ = isRecording_.load(std::memory_order_relaxed);
 
     auto decision = ce::pseudo_overlay::ComputeFocusGraceDecision(
-        now, lastForegroundAcquireTick_, lastForegroundAcquirePid_, currentPid,
-        hadForegroundTarget_, currentHadTarget, prevGraceActive_,
-        static_cast<uint32_t>(config_.foregroundAcquireGraceMs), recordingChanged);
+        now, lastForegroundAcquireTick_, lastForegroundAcquirePid_, currentPid, hadForegroundTarget_, currentHadTarget,
+        prevGraceActive_, static_cast<uint32_t>(config_.foregroundAcquireGraceMs), recordingChanged);
 
     if (decision.justEndedGrace && foregroundGraceEverStarted_) {
         ULONGLONG waited = 0;
@@ -638,10 +635,11 @@ void PseudoOverlay::OnTimerTick() {
     if (lastTimerTickMs_ != 0 && now > lastTimerTickMs_) {
         const ULONGLONG tickGapMs = now - lastTimerTickMs_;
         if (tickGapMs >= kPumpStallWarnMs) {
-            LogWarn("[PseudoOverlay] Message-pump stall: %llums between timer ticks (interval=%ums) — "
-                    "topmost overlay windows were unresponsive this long; a foreground/MPO transition "
-                    "during this window can freeze the game window",
-                    static_cast<unsigned long long>(tickGapMs), kTimerInterval);
+            LogWarn(
+                "[PseudoOverlay] Message-pump stall: %llums between timer ticks (interval=%ums) — "
+                "topmost overlay windows were unresponsive this long; a foreground/MPO transition "
+                "during this window can freeze the game window",
+                static_cast<unsigned long long>(tickGapMs), kTimerInterval);
         }
     }
     lastTimerTickMs_ = now;
@@ -778,9 +776,8 @@ void PseudoOverlay::UpdateOverlay() {
     const bool isRecording = isRecording_.load();
     const bool ghostActive = config_.alwaysRender && (!config_.alwaysRenderOnlyWhenGame || IsForegroundTarget());
 
-    const bool shouldHaveVisibleOverlay =
-        ShouldOverlayBeVisible(config_, isRecording, warnVisible_, overloadWarnUntil_.load(),
-                               screenshotNotifyUntil_.load(), ghostActive);
+    const bool shouldHaveVisibleOverlay = ShouldOverlayBeVisible(
+        config_, isRecording, warnVisible_, overloadWarnUntil_.load(), screenshotNotifyUntil_.load(), ghostActive);
 
     LogDebug("[PseudoOverlay] UpdateOverlay: mode=%d isRecording=%d warnVisible=%d ghost=%d shouldHaveVisible=%d",
              config_.mode, isRecording ? 1 : 0, warnVisible_ ? 1 : 0, ghostActive ? 1 : 0,
@@ -798,8 +795,7 @@ void PseudoOverlay::UpdateOverlay() {
     // Suppress when inject overlay is active in a hooked game
     const bool injectPending = IsInjectOverlayPending();
     const bool injectActive = IsInjectOverlayActive();
-    const bool suppressOverlay =
-        ShouldSuppressPseudoOverlayForInjectOverlayHandoff(injectPending, injectActive);
+    const bool suppressOverlay = ShouldSuppressPseudoOverlayForInjectOverlayHandoff(injectPending, injectActive);
     if (suppressOverlay) {
         if (!lastOverlaySuppressed_) {
             LogInfo("[PseudoOverlay] Suppressed while inject overlay handoff is active (pending=%d active=%d)",
@@ -838,8 +834,7 @@ void PseudoOverlay::UpdateOverlay() {
     const uint32_t rawFgPid = GetForegroundTargetPid();
     const bool currentHadTarget = IsForegroundTarget();
     const ULONGLONG nowForGrace = GetTickCount64();
-    const auto graceDecision =
-        EvaluateForegroundGrace(currentHadTarget, currentHadTarget ? rawFgPid : 0u, nowForGrace);
+    const auto graceDecision = EvaluateForegroundGrace(currentHadTarget, currentHadTarget ? rawFgPid : 0u, nowForGrace);
     if (graceDecision.suppressVisibleOverlay) {
         // Keep the anchor fresh even though we are not touching the OS yet. The
         // sticky fields are read by ResolveAnchorInfo() on the next call and by the
@@ -1172,8 +1167,8 @@ void PseudoOverlay::UpdateOverlay() {
         const BOOL ulwOk = UpdateLayeredWindow(hWarn_, NULL, &ptDst, &szWnd, hdcWarn_, &ptSrc, RGB(0, 0, 0), &blend,
                                                ULW_COLORKEY | ULW_ALPHA);
 
-        LogDebug("[PseudoOverlay] Warning overlay: msg='%s' alpha=%d wx=%d wy=%d w=%d h=%d ulw=%d",
-                 msg, warnAlpha, wx, wy, wW, wH, ulwOk ? 1 : 0);
+        LogDebug("[PseudoOverlay] Warning overlay: msg='%s' alpha=%d wx=%d wy=%d w=%d h=%d ulw=%d", msg, warnAlpha, wx,
+                 wy, wW, wH, ulwOk ? 1 : 0);
 
         lastWarnVis_ = warnAlpha > 0;
     }

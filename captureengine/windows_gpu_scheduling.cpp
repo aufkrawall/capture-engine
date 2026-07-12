@@ -188,12 +188,11 @@ bool QueryAdapterSchedulingEnvironment(const LUID& luid, AdapterSchedulingEnviro
     if (!gdi32) {
         gdi32 = LoadLibraryW(L"gdi32.dll");
     }
-    auto openAdapter = gdi32 ? reinterpret_cast<OpenAdapterFn>(GetProcAddress(gdi32, "D3DKMTOpenAdapterFromLuid"))
-                             : nullptr;
-    auto queryAdapter = gdi32 ? reinterpret_cast<QueryAdapterInfoFn>(GetProcAddress(gdi32, "D3DKMTQueryAdapterInfo"))
-                              : nullptr;
-    auto closeAdapter =
-        gdi32 ? reinterpret_cast<CloseAdapterFn>(GetProcAddress(gdi32, "D3DKMTCloseAdapter")) : nullptr;
+    auto openAdapter =
+        gdi32 ? reinterpret_cast<OpenAdapterFn>(GetProcAddress(gdi32, "D3DKMTOpenAdapterFromLuid")) : nullptr;
+    auto queryAdapter =
+        gdi32 ? reinterpret_cast<QueryAdapterInfoFn>(GetProcAddress(gdi32, "D3DKMTQueryAdapterInfo")) : nullptr;
+    auto closeAdapter = gdi32 ? reinterpret_cast<CloseAdapterFn>(GetProcAddress(gdi32, "D3DKMTCloseAdapter")) : nullptr;
     if (!openAdapter || !queryAdapter || !closeAdapter) {
         environment.openStatus = static_cast<LONG>(ERROR_PROC_NOT_FOUND);
         return false;
@@ -218,9 +217,8 @@ bool QueryAdapterSchedulingEnvironment(const LUID& luid, AdapterSchedulingEnviro
         environment.hags.supported = caps27.bits.hwSchSupported != 0;
         environment.hags.enabled = caps27.bits.hwSchEnabled != 0;
         environment.hags.enabledByDefault = caps27.bits.hwSchEnabledByDefault != 0;
-        environment.hags.supportState = environment.hags.supported
-                                                  ? ce::gpu_scheduling::HagsSupportState::kStable
-                                                  : ce::gpu_scheduling::HagsSupportState::kUnsupported;
+        environment.hags.supportState = environment.hags.supported ? ce::gpu_scheduling::HagsSupportState::kStable
+                                                                   : ce::gpu_scheduling::HagsSupportState::kUnsupported;
 
         Wddm29Caps caps29{};
         query.type = kQueryWddm29Caps;

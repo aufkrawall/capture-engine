@@ -3952,8 +3952,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                                                static_cast<uint64_t>(frequency.QuadPart);
                     encoderPacketLatencyAccumUs += latencyUs;
                     ++encoderPacketLatencySamples;
-                    encoderPacketLatencyMaxUs =
-                        std::max(encoderPacketLatencyMaxUs, SaturatingToUint32(latencyUs));
+                    encoderPacketLatencyMaxUs = std::max(encoderPacketLatencyMaxUs, SaturatingToUint32(latencyUs));
                 }
                 encoderSubmitQpcByPts.erase(submitIt);
             }
@@ -4035,11 +4034,12 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         const uint64_t receiveAvgUs = encoderReceiveCalls > 0 ? encoderReceiveAccumUs / encoderReceiveCalls : 0;
         const uint64_t packetLatencyAvgUs =
             encoderPacketLatencySamples > 0 ? encoderPacketLatencyAccumUs / encoderPacketLatencySamples : 0;
-        DLL_Log("[VideoEncoder Timing] sendAvg=%lluus receiveAvg=%lluus submitToPacket=%llu/%uus "
-                "eagainDrain=%u pendingPts=%zu",
-                static_cast<unsigned long long>(sendAvgUs), static_cast<unsigned long long>(receiveAvgUs),
-                static_cast<unsigned long long>(packetLatencyAvgUs), encoderPacketLatencyMaxUs,
-                encoderEagainDrainCount, encoderSubmitQpcByPts.size());
+        DLL_Log(
+            "[VideoEncoder Timing] sendAvg=%lluus receiveAvg=%lluus submitToPacket=%llu/%uus "
+            "eagainDrain=%u pendingPts=%zu",
+            static_cast<unsigned long long>(sendAvgUs), static_cast<unsigned long long>(receiveAvgUs),
+            static_cast<unsigned long long>(packetLatencyAvgUs), encoderPacketLatencyMaxUs, encoderEagainDrainCount,
+            encoderSubmitQpcByPts.size());
         encoderSendAccumUs = 0;
         encoderSendCalls = 0;
         encoderReceiveAccumUs = 0;

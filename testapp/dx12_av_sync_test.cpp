@@ -4,18 +4,18 @@
 #define WIN32_LEAN_AND_MEAN
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
-#include <windows.h>
 #include <d3d12.h>
 #include <dxgi1_5.h>
 #include <mmsystem.h>
+#include <windows.h>
 #include <wrl/client.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <cwchar>
 #include <cstring>
+#include <cwchar>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -160,7 +160,8 @@ void InitializeFrameTimer() {
     g_FrameTimer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
     g_FrameTimerHighResolution = false;
     if (!g_FrameTimer) {
-        testapp::Log("AVSYNC WARNING frame timer unavailable gle=%lu; using cooperative yield pacing\n", GetLastError());
+        testapp::Log("AVSYNC WARNING frame timer unavailable gle=%lu; using cooperative yield pacing\n",
+                     GetLastError());
     }
 }
 
@@ -224,12 +225,11 @@ void LoadConfig() {
     g_WindowChrome = GetPrivateProfileIntW(L"Display", L"window_chrome", g_WindowChrome, configPath.c_str());
     g_Topmost = GetPrivateProfileIntW(L"Display", L"topmost", g_Topmost, configPath.c_str());
     g_VSync = GetPrivateProfileIntW(L"Rendering", L"vsync", g_VSync, configPath.c_str());
-    g_TearingRequested = GetPrivateProfileIntW(L"Rendering", L"allow_tearing", g_TearingRequested ? 1 : 0,
-                                               configPath.c_str()) != 0;
+    g_TearingRequested =
+        GetPrivateProfileIntW(L"Rendering", L"allow_tearing", g_TearingRequested ? 1 : 0, configPath.c_str()) != 0;
     g_GpuLoadPasses = GetPrivateProfileIntW(L"Performance", L"gpu_load", g_GpuLoadPasses, configPath.c_str());
-    g_EncoderStressScene =
-        GetPrivateProfileIntW(L"Performance", L"encoder_stress_scene", g_EncoderStressScene ? 1 : 0,
-                              configPath.c_str()) != 0;
+    g_EncoderStressScene = GetPrivateProfileIntW(L"Performance", L"encoder_stress_scene", g_EncoderStressScene ? 1 : 0,
+                                                 configPath.c_str()) != 0;
     g_TargetFps = ClampInt(GetPrivateProfileIntW(L"AVSync", L"fps", g_TargetFps, configPath.c_str()), 1, 480);
     g_DurationSeconds =
         ClampInt(GetPrivateProfileIntW(L"AVSync", L"duration_seconds", g_DurationSeconds, configPath.c_str()), 1, 3600);
@@ -289,10 +289,8 @@ void ParseArgs(int argc, char** argv) {
         };
 
         if (readInt("--width", "--width=", &g_WindowWidth) || readInt("--height", "--height=", &g_WindowHeight) ||
-            readInt("--fps", "--fps=", &g_TargetFps) ||
-            readInt("--duration", "--duration=", &g_DurationSeconds) ||
-            readInt("--gpu-load", "--gpu-load=", &g_GpuLoadPasses) ||
-            readInt("--vsync", "--vsync=", &g_VSync) ||
+            readInt("--fps", "--fps=", &g_TargetFps) || readInt("--duration", "--duration=", &g_DurationSeconds) ||
+            readInt("--gpu-load", "--gpu-load=", &g_GpuLoadPasses) || readInt("--vsync", "--vsync=", &g_VSync) ||
             readInt("--fullscreen", "--fullscreen=", &g_Fullscreen) ||
             readInt("--window-chrome", "--window-chrome=", &g_WindowChrome) ||
             readInt("--topmost", "--topmost=", &g_Topmost) ||
@@ -349,9 +347,8 @@ void ParseArgs(int argc, char** argv) {
     g_AudioLeadMs = testapp::avsync::ClampAudioLeadMs(g_AudioLeadMs);
     g_AnalysisStartSeconds =
         testapp::avsync::ClampAnalysisStartSeconds(g_AnalysisStartSeconds, static_cast<double>(g_DurationSeconds));
-    std::sort(g_SourceStalls.begin(), g_SourceStalls.end(), [](const auto& lhs, const auto& rhs) {
-        return lhs.spec.startSeconds < rhs.spec.startSeconds;
-    });
+    std::sort(g_SourceStalls.begin(), g_SourceStalls.end(),
+              [](const auto& lhs, const auto& rhs) { return lhs.spec.startSeconds < rhs.spec.startSeconds; });
 }
 
 testapp::avsync::AudioRenderer g_Audio(&g_QpcFreq, &g_StimulusStartQpc);
@@ -463,8 +460,7 @@ bool InitDX12(HWND hwnd) {
             g_TearingSupported = allowTearing != FALSE;
         }
     }
-    g_TearingActive =
-        testapp::avsync::ShouldUseDxgiTearing(g_TearingRequested, g_TearingSupported, g_VSync != 0);
+    g_TearingActive = testapp::avsync::ShouldUseDxgiTearing(g_TearingRequested, g_TearingSupported, g_VSync != 0);
 
     if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_Device)))) {
         testapp::Log("AVSYNC WARNING D3D12CreateDevice failed\n");
@@ -601,9 +597,8 @@ void DrawEncoderStressScene(D3D12_CPU_DESCRIPTOR_HANDLE rtv, const testapp::avsy
         return;
     }
 
-    const auto layout =
-        testapp::avsync::ComputeEncoderStressLayout(g_WindowWidth, g_WindowHeight, kMarkerMargin, kMarkerTile,
-                                                    kMarkerGap);
+    const auto layout = testapp::avsync::ComputeEncoderStressLayout(g_WindowWidth, g_WindowHeight, kMarkerMargin,
+                                                                    kMarkerTile, kMarkerGap);
     if (!layout.valid) {
         return;
     }
@@ -749,7 +744,8 @@ void FinalizeSourceStalls() {
         }
         stall.actualEndQpc = nowQpc;
         stall.completed = true;
-        const double actualDurationMs = QpcToSeconds(stall.actualEndQpc.QuadPart - stall.actualBeginQpc.QuadPart) * 1000.0;
+        const double actualDurationMs =
+            QpcToSeconds(stall.actualEndQpc.QuadPart - stall.actualBeginQpc.QuadPart) * 1000.0;
         testapp::Log(
             "AVSYNC SOURCE_STALL_END index=%zu qpc=%lld stimulusSeconds=%.6f actualDurationMs=%.3f "
             "suppressedPresents=%llu frameId=%llu finalized=1\n",
@@ -767,7 +763,8 @@ void PaceNextFrame(double* nextFrameQpcTicks) {
     }
     for (;;) {
         const LARGE_INTEGER now = QueryQpc();
-        const LONGLONG remaining = static_cast<LONGLONG>(std::llround(*nextFrameQpcTicks - static_cast<double>(now.QuadPart)));
+        const LONGLONG remaining =
+            static_cast<LONGLONG>(std::llround(*nextFrameQpcTicks - static_cast<double>(now.QuadPart)));
         if (remaining <= 0) {
             break;
         }
@@ -824,9 +821,8 @@ void WriteManifest() {
     fprintf(out, "  \"visual_marker_version\": %d,\n", testapp::avsync::kVisualMarkerVersion);
     fprintf(out, "  \"encoder_stress_scene\": %d,\n", g_EncoderStressScene ? 1 : 0);
     fprintf(out, "  \"encoder_stress_scene_reserved_event_sample\": [0.40, 0.38, 0.60, 0.52],\n");
-    const auto stressLayout =
-        testapp::avsync::ComputeEncoderStressLayout(g_WindowWidth, g_WindowHeight, kMarkerMargin, kMarkerTile,
-                                                    kMarkerGap);
+    const auto stressLayout = testapp::avsync::ComputeEncoderStressLayout(g_WindowWidth, g_WindowHeight, kMarkerMargin,
+                                                                          kMarkerTile, kMarkerGap);
     fprintf(out,
             "  \"encoder_stress_layout\": {\"valid\": %d, \"tile\": %d, \"left\": %d, \"right\": %d, "
             "\"top\": %d, \"bottom\": %d, \"columns\": %d, \"rows\": %d, "
@@ -850,12 +846,12 @@ void WriteManifest() {
     fprintf(out, "  \"source_stalls\": [\n");
     for (size_t i = 0; i < g_SourceStalls.size(); ++i) {
         const auto& stall = g_SourceStalls[i];
-        const double actualStart =
-            stall.actualBeginQpc.QuadPart > 0 ? QpcToSeconds(stall.actualBeginQpc.QuadPart - g_StimulusStartQpc.QuadPart)
-                                              : -1.0;
-        const double actualEnd =
-            stall.actualEndQpc.QuadPart > 0 ? QpcToSeconds(stall.actualEndQpc.QuadPart - g_StimulusStartQpc.QuadPart)
-                                            : -1.0;
+        const double actualStart = stall.actualBeginQpc.QuadPart > 0
+                                       ? QpcToSeconds(stall.actualBeginQpc.QuadPart - g_StimulusStartQpc.QuadPart)
+                                       : -1.0;
+        const double actualEnd = stall.actualEndQpc.QuadPart > 0
+                                     ? QpcToSeconds(stall.actualEndQpc.QuadPart - g_StimulusStartQpc.QuadPart)
+                                     : -1.0;
         const double expectedRepeatSpan =
             static_cast<double>(stall.suppressedPresentCount) / static_cast<double>(std::max(1, g_TargetFps));
         fprintf(out,
@@ -865,10 +861,10 @@ void WriteManifest() {
                 "\"suppressed_present_count\": %llu, \"expected_repeat_span_seconds\": %.6f, "
                 "\"tolerance_seconds\": %.6f}%s\n",
                 i, stall.spec.startSeconds, stall.spec.durationSeconds * 1000.0, stall.spec.EndSeconds(),
-                static_cast<long long>(stall.actualBeginQpc.QuadPart), static_cast<long long>(stall.actualEndQpc.QuadPart),
-                actualStart, actualEnd, static_cast<unsigned long long>(stall.suppressedPresentCount),
-                expectedRepeatSpan, testapp::avsync::kDefaultSourceStallToleranceSeconds,
-                i + 1 == g_SourceStalls.size() ? "" : ",");
+                static_cast<long long>(stall.actualBeginQpc.QuadPart),
+                static_cast<long long>(stall.actualEndQpc.QuadPart), actualStart, actualEnd,
+                static_cast<unsigned long long>(stall.suppressedPresentCount), expectedRepeatSpan,
+                testapp::avsync::kDefaultSourceStallToleranceSeconds, i + 1 == g_SourceStalls.size() ? "" : ",");
     }
     fprintf(out, "  ],\n");
     fprintf(out, "  \"frame_marker_bits\": %d,\n", testapp::avsync::kFrameMarkerBits);
@@ -902,18 +898,14 @@ void WriteManifest() {
     fprintf(out, "    \"timer_high_resolution\": %d,\n", g_FrameTimerHighResolution ? 1 : 0);
     fprintf(out, "    \"target_interval_ms\": %.6f,\n", TargetFrameIntervalMs());
     fprintf(out, "    \"spike_threshold_ms\": %.6f,\n", FramePacingSpikeThresholdMs());
-    fprintf(out, "    \"present_delta_count\": %llu,\n",
-            static_cast<unsigned long long>(g_PresentDeltaCount));
+    fprintf(out, "    \"present_delta_count\": %llu,\n", static_cast<unsigned long long>(g_PresentDeltaCount));
     fprintf(out, "    \"average_present_delta_ms\": %.6f,\n", avgPresentDeltaMs);
     fprintf(out, "    \"max_present_delta_ms\": %.6f,\n", g_MaxPresentDeltaMs);
-    fprintf(out, "    \"spike_count\": %llu,\n",
-            static_cast<unsigned long long>(g_FramePacingSpikeCount));
-    fprintf(out, "    \"warmup_spike_count\": %llu,\n",
-            static_cast<unsigned long long>(g_WarmupPacingSpikeCount));
+    fprintf(out, "    \"spike_count\": %llu,\n", static_cast<unsigned long long>(g_FramePacingSpikeCount));
+    fprintf(out, "    \"warmup_spike_count\": %llu,\n", static_cast<unsigned long long>(g_WarmupPacingSpikeCount));
     fprintf(out, "    \"event_boundary_spike_count\": %llu,\n",
             static_cast<unsigned long long>(g_EventBoundaryPacingSpikeCount));
-    fprintf(out, "    \"planned_source_gap_count\": %llu\n",
-            static_cast<unsigned long long>(g_PlannedPresentGapCount));
+    fprintf(out, "    \"planned_source_gap_count\": %llu\n", static_cast<unsigned long long>(g_PlannedPresentGapCount));
     fprintf(out, "  }\n");
     fprintf(out, "}\n");
     fclose(out);
@@ -984,9 +976,8 @@ int main(int argc, char** argv) {
         "stimulusStartQpc=pending\n",
         GetCurrentProcessId(), g_WindowWidth, g_WindowHeight, g_TargetFps, g_DurationSeconds, g_AnalysisStartSeconds,
         g_VSync, g_Fullscreen, g_WindowChrome, g_Topmost, g_TearingRequested ? 1 : 0, g_GpuLoadPasses,
-        g_AudioEnabled ? 1 : 0,
-        g_AudioClockScheduling ? 1 : 0, g_AudioBufferMs, g_AudioLeadMs, g_EncoderStressScene ? 1 : 0,
-        static_cast<long long>(g_QpcFreq.QuadPart),
+        g_AudioEnabled ? 1 : 0, g_AudioClockScheduling ? 1 : 0, g_AudioBufferMs, g_AudioLeadMs,
+        g_EncoderStressScene ? 1 : 0, static_cast<long long>(g_QpcFreq.QuadPart),
         static_cast<long long>(g_AppStartQpc.QuadPart));
     LogEventSchedule();
     LogSourceStallSchedule();
@@ -1033,9 +1024,10 @@ int main(int argc, char** argv) {
         windowW = adjusted.right - adjusted.left;
         windowH = adjusted.bottom - adjusted.top;
     }
-    testapp::Log("AVSYNC START window requested=%dx%d render=%dx%d fullscreen=%d windowChrome=%d topmost=%d borderless=%d\n",
-                 g_RequestedWidth, g_RequestedHeight, g_WindowWidth, g_WindowHeight, g_Fullscreen, g_WindowChrome,
-                 g_Topmost, borderlessWindowed ? 1 : 0);
+    testapp::Log(
+        "AVSYNC START window requested=%dx%d render=%dx%d fullscreen=%d windowChrome=%d topmost=%d borderless=%d\n",
+        g_RequestedWidth, g_RequestedHeight, g_WindowWidth, g_WindowHeight, g_Fullscreen, g_WindowChrome, g_Topmost,
+        borderlessWindowed ? 1 : 0);
 
     HWND hwnd = CreateWindowExW(exStyle, wc.lpszClassName, L"DX12 A/V Sync Test", style, windowX, windowY, windowW,
                                 windowH, nullptr, nullptr, wc.hInstance, nullptr);
@@ -1130,9 +1122,8 @@ int main(int argc, char** argv) {
     testapp::Log(
         "AVSYNC SUMMARY frame_timing targetFps=%d timerHighRes=%d deltas=%llu avgDeltaMs=%.3f maxDeltaMs=%.3f "
         "spikes=%llu warmupSpikes=%llu eventBoundarySpikes=%llu plannedSourceGaps=%llu thresholdMs=%.3f\n",
-        g_TargetFps, g_FrameTimerHighResolution ? 1 : 0,
-        static_cast<unsigned long long>(g_PresentDeltaCount), avgPresentDeltaMs, g_MaxPresentDeltaMs,
-        static_cast<unsigned long long>(g_FramePacingSpikeCount),
+        g_TargetFps, g_FrameTimerHighResolution ? 1 : 0, static_cast<unsigned long long>(g_PresentDeltaCount),
+        avgPresentDeltaMs, g_MaxPresentDeltaMs, static_cast<unsigned long long>(g_FramePacingSpikeCount),
         static_cast<unsigned long long>(g_WarmupPacingSpikeCount),
         static_cast<unsigned long long>(g_EventBoundaryPacingSpikeCount),
         static_cast<unsigned long long>(g_PlannedPresentGapCount), FramePacingSpikeThresholdMs());

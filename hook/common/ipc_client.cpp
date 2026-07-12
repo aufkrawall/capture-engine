@@ -1,7 +1,11 @@
 #include "ipc_client.h"
 
 IPCClient::IPCClient()
-    : hMapFile(NULL), pSharedMem(nullptr), hMapShmem(NULL), pShmem(nullptr), hInjectFrameReadyEvent(NULL) {}
+    : hMapFile(NULL),
+      pSharedMem(nullptr),
+      hMapShmem(NULL),
+      pShmem(nullptr),
+      hInjectFrameReadyEvent(NULL) {}
 
 IPCClient::~IPCClient() {
     Disconnect();

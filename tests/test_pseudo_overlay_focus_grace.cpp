@@ -6,20 +6,19 @@ namespace pofg = ce::pseudo_overlay;
 
 // Helper: simulate a sequence of ticks by feeding the previous decision's graceActive
 // back into the next call. Returns the final decision.
-static pofg::FocusGraceDecision RunTick(pofg::FocusGraceDecision prev, uint64_t nowMs,
-                                         uint64_t lastTick, uint32_t lastPid, uint32_t currPid,
-                                         bool hadTarget, bool currTarget, uint32_t graceMs,
-                                         bool recChanged) {
-    return pofg::ComputeFocusGraceDecision(nowMs, lastTick, lastPid, currPid, hadTarget,
-                                            currTarget, prev.graceActive, graceMs, recChanged);
+static pofg::FocusGraceDecision RunTick(pofg::FocusGraceDecision prev, uint64_t nowMs, uint64_t lastTick,
+                                        uint32_t lastPid, uint32_t currPid, bool hadTarget, bool currTarget,
+                                        uint32_t graceMs, bool recChanged) {
+    return pofg::ComputeFocusGraceDecision(nowMs, lastTick, lastPid, currPid, hadTarget, currTarget, prev.graceActive,
+                                           graceMs, recChanged);
 }
 
 TEST(PseudoOverlayFocusGraceTest, GraceDisabledNeverSuppresses) {
     // grace_ms == 0 -> never suppress, even on first focus detection or transition.
     auto d = pofg::ComputeFocusGraceDecision(/*now*/ 1000, /*lastTick*/ 0, /*lastPid*/ 0,
-                                              /*currPid*/ 42, /*hadTarget*/ false,
-                                              /*currTarget*/ true, /*prevActive*/ false,
-                                              /*graceMs*/ 0, /*recChanged*/ false);
+                                             /*currPid*/ 42, /*hadTarget*/ false,
+                                             /*currTarget*/ true, /*prevActive*/ false,
+                                             /*graceMs*/ 0, /*recChanged*/ false);
     EXPECT_FALSE(d.suppressVisibleOverlay);
     EXPECT_FALSE(d.graceActive);
     EXPECT_FALSE(d.justStartedGrace);
@@ -32,8 +31,7 @@ TEST(PseudoOverlayFocusGraceTest, FirstDetectionSuppressesUntilGrace) {
     // First ever detection at t=500 with the whitelisted PID 1234.
     auto d0 = pofg::ComputeFocusGraceDecision(/*now*/ 500, /*lastTick*/ 0, /*lastPid*/ 0,
                                               /*currPid*/ 1234, /*hadTarget*/ false,
-                                              /*currTarget*/ true, /*prevActive*/ false,
-                                              kGraceMs, false);
+                                              /*currTarget*/ true, /*prevActive*/ false, kGraceMs, false);
     EXPECT_TRUE(d0.justStartedGrace);
     EXPECT_TRUE(d0.suppressVisibleOverlay);
 
@@ -41,8 +39,7 @@ TEST(PseudoOverlayFocusGraceTest, FirstDetectionSuppressesUntilGrace) {
     // (d0.graceActive is false on the transition tick). So pass prevActive=false.
     auto d1 = pofg::ComputeFocusGraceDecision(/*now*/ 1000, /*lastTick*/ 500, /*lastPid*/ 1234,
                                               /*currPid*/ 1234, /*hadTarget*/ true,
-                                              /*currTarget*/ true, /*prevActive*/ false, kGraceMs,
-                                              false);
+                                              /*currTarget*/ true, /*prevActive*/ false, kGraceMs, false);
     EXPECT_FALSE(d1.justStartedGrace);
     EXPECT_TRUE(d1.suppressVisibleOverlay);
     EXPECT_TRUE(d1.graceActive);
@@ -51,8 +48,7 @@ TEST(PseudoOverlayFocusGraceTest, FirstDetectionSuppressesUntilGrace) {
     // in grace, still suppressing.
     auto d2 = pofg::ComputeFocusGraceDecision(/*now*/ 1500, /*lastTick*/ 500, /*lastPid*/ 1234,
                                               /*currPid*/ 1234, /*hadTarget*/ true,
-                                              /*currTarget*/ true, /*prevActive*/ true, kGraceMs,
-                                              false);
+                                              /*currTarget*/ true, /*prevActive*/ true, kGraceMs, false);
     EXPECT_TRUE(d2.suppressVisibleOverlay);
     EXPECT_TRUE(d2.graceActive);
     EXPECT_FALSE(d2.justStartedGrace);
@@ -61,8 +57,7 @@ TEST(PseudoOverlayFocusGraceTest, FirstDetectionSuppressesUntilGrace) {
     // Edge: t=2500 = 500 + 2000 -> elapsed == graceMs -> render. prevActive was true.
     auto d3 = pofg::ComputeFocusGraceDecision(/*now*/ 2500, /*lastTick*/ 500, /*lastPid*/ 1234,
                                               /*currPid*/ 1234, /*hadTarget*/ true,
-                                              /*currTarget*/ true, /*prevActive*/ true, kGraceMs,
-                                              false);
+                                              /*currTarget*/ true, /*prevActive*/ true, kGraceMs, false);
     EXPECT_FALSE(d3.suppressVisibleOverlay);
     EXPECT_TRUE(d3.justEndedGrace);
     EXPECT_FALSE(d3.graceActive);
@@ -74,8 +69,7 @@ TEST(PseudoOverlayFocusGraceTest, MidSessionPidChangeReseatsGrace) {
     // Now a different whitelisted PID 5678 acquires focus at t=4000.
     auto d0 = pofg::ComputeFocusGraceDecision(/*now*/ 4000, /*lastTick*/ 500, /*lastPid*/ 1234,
                                               /*currPid*/ 5678, /*hadTarget*/ true,
-                                              /*currTarget*/ true, /*prevActive*/ false, kGraceMs,
-                                              false);
+                                              /*currTarget*/ true, /*prevActive*/ false, kGraceMs, false);
     EXPECT_TRUE(d0.justStartedGrace);
     // Mid-session PID change: the transition tick renders (so the overlay repositions
     // onto the new monitor) but the *next* tick at t=4500 is in grace.
@@ -101,8 +95,7 @@ TEST(PseudoOverlayFocusGraceTest, FocusLostClearsGrace) {
     // in grace. This is the path when the user Alt+Tabs AWAY from the game.
     auto d0 = pofg::ComputeFocusGraceDecision(/*now*/ 1000, /*lastTick*/ 500, /*lastPid*/ 1234,
                                               /*currPid*/ 0, /*hadTarget*/ true,
-                                              /*currTarget*/ false, /*prevActive*/ false,
-                                              kGraceMs, false);
+                                              /*currTarget*/ false, /*prevActive*/ false, kGraceMs, false);
     EXPECT_FALSE(d0.suppressVisibleOverlay);
     EXPECT_FALSE(d0.graceActive);
     EXPECT_FALSE(d0.justStartedGrace);
@@ -111,8 +104,7 @@ TEST(PseudoOverlayFocusGraceTest, FocusLostClearsGrace) {
     // Re-acquiring after focus loss is a fresh transition -> suppress.
     auto d1 = pofg::ComputeFocusGraceDecision(/*now*/ 3000, /*lastTick*/ 0, /*lastPid*/ 0,
                                               /*currPid*/ 1234, /*hadTarget*/ false,
-                                              /*currTarget*/ true, /*prevActive*/ false, kGraceMs,
-                                              false);
+                                              /*currTarget*/ true, /*prevActive*/ false, kGraceMs, false);
     EXPECT_TRUE(d1.suppressVisibleOverlay);
     EXPECT_TRUE(d1.justStartedGrace);
 }
@@ -158,8 +150,7 @@ TEST(PseudoOverlayFocusGraceTest, GraceExpiredAfterEdgeRendersAndDoesNotResuppre
     // in grace last tick).
     auto d0 = pofg::ComputeFocusGraceDecision(/*now*/ 2501, /*lastTick*/ 500, /*lastPid*/ 42,
                                               /*currPid*/ 42, /*hadTarget*/ true,
-                                              /*currTarget*/ true, /*prevActive*/ true, kGraceMs,
-                                              false);
+                                              /*currTarget*/ true, /*prevActive*/ true, kGraceMs, false);
     EXPECT_FALSE(d0.suppressVisibleOverlay);
     EXPECT_TRUE(d0.justEndedGrace);
 
@@ -174,10 +165,9 @@ TEST(PseudoOverlayFocusGraceTest, GraceExpiredAfterEdgeRendersAndDoesNotResuppre
 
 TEST(PseudoOverlayFocusGraceTest, ConvenienceWrapperMatchesDecisionField) {
     constexpr uint32_t kGraceMs = 2000;
-    const bool wrapperRes = pofg::ShouldSuppressPseudoOverlayForFocusGrace(
-        1000, 500, 42, 42, true, true, true, kGraceMs, false);
-    const auto decision = pofg::ComputeFocusGraceDecision(1000, 500, 42, 42, true, true, true,
-                                                         kGraceMs, false);
+    const bool wrapperRes =
+        pofg::ShouldSuppressPseudoOverlayForFocusGrace(1000, 500, 42, 42, true, true, true, kGraceMs, false);
+    const auto decision = pofg::ComputeFocusGraceDecision(1000, 500, 42, 42, true, true, true, kGraceMs, false);
     EXPECT_EQ(wrapperRes, decision.suppressVisibleOverlay);
 }
 
@@ -189,8 +179,7 @@ TEST(PseudoOverlayFocusGraceTest, NoTransitionNoGraceStillRenders) {
     constexpr uint32_t kGraceMs = 2000;
     auto d = pofg::ComputeFocusGraceDecision(/*now*/ 60000, /*lastTick*/ 500, /*lastPid*/ 42,
                                              /*currPid*/ 42, /*hadTarget*/ true,
-                                             /*currTarget*/ true, /*prevActive*/ false, kGraceMs,
-                                             false);
+                                             /*currTarget*/ true, /*prevActive*/ false, kGraceMs, false);
     EXPECT_FALSE(d.suppressVisibleOverlay);
     EXPECT_FALSE(d.justStartedGrace);
     EXPECT_FALSE(d.justEndedGrace);
@@ -203,8 +192,7 @@ TEST(PseudoOverlayFocusGraceTest, GraceBoundaryReachedExactlyMarksEnded) {
     constexpr uint32_t kGraceMs = 2000;
     auto d0 = pofg::ComputeFocusGraceDecision(/*now*/ 2500, /*lastTick*/ 500, /*lastPid*/ 42,
                                               /*currPid*/ 42, /*hadTarget*/ true,
-                                              /*currTarget*/ true, /*prevActive*/ true, kGraceMs,
-                                              false);
+                                              /*currTarget*/ true, /*prevActive*/ true, kGraceMs, false);
     EXPECT_FALSE(d0.suppressVisibleOverlay);
     EXPECT_TRUE(d0.justEndedGrace);
 }

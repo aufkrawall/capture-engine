@@ -39,7 +39,7 @@ float ComputeWorstPercentileFPS(const float* history, int historyIdx, float perc
     }
     return 1000.0f / (sum / worstCount);
 }
-}
+}  // namespace
 
 PerformanceMetrics::PerformanceMetrics() {
     memset(m_history, 0, sizeof(m_history));

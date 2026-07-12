@@ -4596,9 +4596,8 @@ private:
         auto captureKey = [](const AudioSource& src) -> CaptureRouteKey {
             std::string physicalIdentity;
             if (src.sourceType == AudioConfig::AppAudio) {
-                physicalIdentity =
-                    ce::audio::AppAudioTrackIdentity(src.config.processName,
-                                                     static_cast<unsigned long>(src.config.processId), 0);
+                physicalIdentity = ce::audio::AppAudioTrackIdentity(
+                    src.config.processName, static_cast<unsigned long>(src.config.processId), 0);
             } else {
                 physicalIdentity = src.config.device.empty() ? "<default>" : src.config.device;
                 std::transform(physicalIdentity.begin(), physicalIdentity.end(), physicalIdentity.begin(),

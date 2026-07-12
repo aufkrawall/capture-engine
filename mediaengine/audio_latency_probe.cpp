@@ -155,10 +155,9 @@ void ClearMemoryCacheForForceRemeasure(const std::string& key) {
         return;
     }
     std::lock_guard<std::mutex> lock(g_LatencyCacheMutex);
-    g_LatencyMemoryCache.erase(
-        std::remove_if(g_LatencyMemoryCache.begin(), g_LatencyMemoryCache.end(),
-            [&](const LatencyCacheEntry& e) { return e.key == key; }),
-        g_LatencyMemoryCache.end());
+    g_LatencyMemoryCache.erase(std::remove_if(g_LatencyMemoryCache.begin(), g_LatencyMemoryCache.end(),
+                                              [&](const LatencyCacheEntry& e) { return e.key == key; }),
+                               g_LatencyMemoryCache.end());
 }
 
 // Downmix one interleaved float frame block to mono channel 0 (sufficient for narrowband
@@ -520,17 +519,17 @@ RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDi
     const uint64_t minPeriod100ns = havePeriods ? static_cast<uint64_t>(std::max<REFERENCE_TIME>(0, minPeriod)) : 0;
     result.sampleRate = sampleRate;
     result.channels = channels;
-    const std::string deviceKey = MakeRenderEndpointCacheKey(result.deviceKey, sampleRate, channels, bitsPerSample,
-                                                             blockAlign, channelMask, defaultPeriod100ns,
-                                                             minPeriod100ns);
+    const std::string deviceKey =
+        MakeRenderEndpointCacheKey(result.deviceKey, sampleRate, channels, bitsPerSample, blockAlign, channelMask,
+                                   defaultPeriod100ns, minPeriod100ns);
     result.deviceKey = deviceKey;
 
     DLL_Log(
         "[AVSyncProbe] endpoint: key=%s rate=%d channels=%d bits=%d blockAlign=%d channelMask=0x%x "
         "devicePeriod=%lluus minPeriod=%lluus force=%d cacheMode=memory cacheDir=deprecated",
         deviceKey.c_str(), sampleRate, channels, bitsPerSample, blockAlign, channelMask,
-        static_cast<unsigned long long>(defaultPeriod100ns / 10),
-        static_cast<unsigned long long>(minPeriod100ns / 10), forceRemeasure ? 1 : 0);
+        static_cast<unsigned long long>(defaultPeriod100ns / 10), static_cast<unsigned long long>(minPeriod100ns / 10),
+        forceRemeasure ? 1 : 0);
 
     CleanupLegacyDiskCacheOnce(cacheDir);
 
@@ -607,9 +606,10 @@ RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDi
     result.latencyMs = agg.latencyMs;
 
     StoreMemoryCache(deviceKey, agg.latencyMs);
-    DLL_Log("[AVSyncProbe] measured: agreeingShots=%d/%d key=%s latency=%.3f ms cache=memory entries=%zu "
-            "confidence=high",
-            agg.agreeingCount, kProbeShots, deviceKey.c_str(), agg.latencyMs, MemoryCacheEntryCount());
+    DLL_Log(
+        "[AVSyncProbe] measured: agreeingShots=%d/%d key=%s latency=%.3f ms cache=memory entries=%zu "
+        "confidence=high",
+        agg.agreeingCount, kProbeShots, deviceKey.c_str(), agg.latencyMs, MemoryCacheEntryCount());
 
     cleanup();
     return result;

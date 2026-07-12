@@ -494,37 +494,37 @@ TEST(CapturePipelinePolicyTest, WgcStartupActiveDelayCapsUnderfedPileupToJitterF
     // jitter floor so the read delay keeps fresh-frame headroom (prevents startup-timing-dependent
     // deep-lock repeat clustering). Mirrors the Fortnite regression (pile-up ~222ms, floor ~16ms).
     EXPECT_EQ(policy::ResolveWgcStartupSmoothnessActiveDelayQpc(/*pileupExtraDelayQpc=*/2220000,
-                                                               /*jitterFloorDelayQpc=*/160000,
-                                                               /*startupUnderfed=*/true,
-                                                               /*sourceAtOrAboveCfrTarget=*/true),
+                                                                /*jitterFloorDelayQpc=*/160000,
+                                                                /*startupUnderfed=*/true,
+                                                                /*sourceAtOrAboveCfrTarget=*/true),
               160000);
 
     // Never INCREASE a shallow pile-up: floor deeper than pile-up -> keep pile-up.
     EXPECT_EQ(policy::ResolveWgcStartupSmoothnessActiveDelayQpc(/*pileupExtraDelayQpc=*/100000,
-                                                               /*jitterFloorDelayQpc=*/160000,
-                                                               /*startupUnderfed=*/true,
-                                                               /*sourceAtOrAboveCfrTarget=*/true),
+                                                                /*jitterFloorDelayQpc=*/160000,
+                                                                /*startupUnderfed=*/true,
+                                                                /*sourceAtOrAboveCfrTarget=*/true),
               100000);
 
     // Source BELOW the CFR target: preserve the deep reservoir (iter-6 lull absorption), no cap.
     EXPECT_EQ(policy::ResolveWgcStartupSmoothnessActiveDelayQpc(/*pileupExtraDelayQpc=*/2220000,
-                                                               /*jitterFloorDelayQpc=*/160000,
-                                                               /*startupUnderfed=*/true,
-                                                               /*sourceAtOrAboveCfrTarget=*/false),
+                                                                /*jitterFloorDelayQpc=*/160000,
+                                                                /*startupUnderfed=*/true,
+                                                                /*sourceAtOrAboveCfrTarget=*/false),
               2220000);
 
     // Reservoir target reached (not underfed): validated pile-up behavior unchanged.
     EXPECT_EQ(policy::ResolveWgcStartupSmoothnessActiveDelayQpc(/*pileupExtraDelayQpc=*/2220000,
-                                                               /*jitterFloorDelayQpc=*/160000,
-                                                               /*startupUnderfed=*/false,
-                                                               /*sourceAtOrAboveCfrTarget=*/true),
+                                                                /*jitterFloorDelayQpc=*/160000,
+                                                                /*startupUnderfed=*/false,
+                                                                /*sourceAtOrAboveCfrTarget=*/true),
               2220000);
 
     // No measured floor available: no cap.
     EXPECT_EQ(policy::ResolveWgcStartupSmoothnessActiveDelayQpc(/*pileupExtraDelayQpc=*/2220000,
-                                                               /*jitterFloorDelayQpc=*/0,
-                                                               /*startupUnderfed=*/true,
-                                                               /*sourceAtOrAboveCfrTarget=*/true),
+                                                                /*jitterFloorDelayQpc=*/0,
+                                                                /*startupUnderfed=*/true,
+                                                                /*sourceAtOrAboveCfrTarget=*/true),
               2220000);
 }
 
@@ -1292,8 +1292,8 @@ PlayoutStats RunNearestPlayout(int ticks, int64_t interval, int64_t contentDelay
     return s;
 }
 
-PlayoutStats RunNearestPlayoutResample(int ticks, int64_t outputInterval, int64_t sourceInterval,
-                                       int64_t contentDelay, int deliveryBatchTicks, int64_t startupFill) {
+PlayoutStats RunNearestPlayoutResample(int ticks, int64_t outputInterval, int64_t sourceInterval, int64_t contentDelay,
+                                       int deliveryBatchTicks, int64_t startupFill) {
     PlayoutStats s;
     std::deque<int64_t> buffer;
     const int64_t leadTol = policy::GetWgcActiveDelayResidualToleranceQpc(outputInterval);
@@ -1319,8 +1319,7 @@ PlayoutStats RunNearestPlayoutResample(int ticks, int64_t outputInterval, int64_
         while (!buffer.empty() && buffer.front() <= lastEmitted) {
             buffer.pop_front();
         }
-        while (buffer.size() > 1 &&
-               policy::ShouldDropWgcFrontForNearerPlayout(buffer[0], buffer[1], target, leadTol)) {
+        while (buffer.size() > 1 && policy::ShouldDropWgcFrontForNearerPlayout(buffer[0], buffer[1], target, leadTol)) {
             buffer.pop_front();
             ++s.staleDrops;
             staleDroppedThisTick = true;
@@ -1392,8 +1391,7 @@ GridDriftStats RunGridDriftPlayout(int ticks, int64_t interval, int64_t contentD
         if (applyAntiFreezeFloor && !buffer.empty()) {
             target = policy::ApplyWgcUniformPlayoutAntiFreezeFloor(target, buffer.front(), interval);
         }
-        while (buffer.size() > 1 &&
-               policy::ShouldDropWgcFrontForNearerPlayout(buffer[0], buffer[1], target, leadTol)) {
+        while (buffer.size() > 1 && policy::ShouldDropWgcFrontForNearerPlayout(buffer[0], buffer[1], target, leadTol)) {
             buffer.pop_front();
         }
         bool held = true;
@@ -1485,12 +1483,9 @@ TEST(CapturePipelinePolicyTest, WgcUniformPlayoutAntiFreezeFloorRequiresSyncSafe
     const int64_t contentDelay = 1000;
     const int64_t tol = policy::GetWgcActiveDelayResidualToleranceQpc(interval);
 
-    EXPECT_TRUE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(
-        contentDelay - tol, contentDelay, interval));
-    EXPECT_TRUE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(
-        contentDelay, contentDelay, interval));
-    EXPECT_FALSE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(
-        contentDelay - tol - 1, contentDelay, interval));
+    EXPECT_TRUE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(contentDelay - tol, contentDelay, interval));
+    EXPECT_TRUE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(contentDelay, contentDelay, interval));
+    EXPECT_FALSE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(contentDelay - tol - 1, contentDelay, interval));
     EXPECT_FALSE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(
         /*oldestBufferedAgeQpc=*/0, contentDelay, interval));
     EXPECT_TRUE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(
@@ -1512,8 +1507,8 @@ TEST(CapturePipelinePolicyTest, WgcUniformPlayoutFreezesUnderGridDriftWithoutAnt
 TEST(CapturePipelinePolicyTest, WgcUniformPlayoutAntiFreezeFloorResumesPlayoutBehindAudio) {
     const int reservoirFrames = 14;
     const int64_t interval = 100;
-    auto s = RunGridDriftPlayout(/*ticks=*/500, interval, /*contentDelay=*/800, /*gridLag=*/1000,
-                                 reservoirFrames, /*applyAntiFreezeFloor=*/true);
+    auto s = RunGridDriftPlayout(/*ticks=*/500, interval, /*contentDelay=*/800, /*gridLag=*/1000, reservoirFrames,
+                                 /*applyAntiFreezeFloor=*/true);
     // Freeze released: playout resumes at the source rate (one emit per tick after warmup).
     EXPECT_GE(s.emits, 490);
     EXPECT_LE(s.longestHoldRun, 2);
@@ -1916,8 +1911,8 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessDelayDesiredArmsForFloorWithoutAudi
 }
 
 TEST(CapturePipelinePolicyTest, WgcSmoothnessFloorDerivationIsClampedAndMonotonic) {
-    constexpr int64_t kQpcFreq = 10000000;     // 10 MHz QPC
-    constexpr int64_t kInterval120 = 83333;    // ~8.333 ms at 120 fps
+    constexpr int64_t kQpcFreq = 10000000;   // 10 MHz QPC
+    constexpr int64_t kInterval120 = 83333;  // ~8.333 ms at 120 fps
     constexpr uint32_t kMaxMs = 300;
     constexpr uint32_t kReservoirFrames = 30;  // ~250 ms buildable reservoir
 
@@ -1946,8 +1941,7 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessFloorDerivationIsClampedAndMonotoni
     extreme.deliveryGapMaxUs = 5000000;  // 5 s (absurd outlier)
     const int64_t floorExtreme =
         policy::DeriveWgcSmoothnessFloorDelayQpc(extreme, kInterval120, kQpcFreq, kMaxMs, kReservoirFrames);
-    const int64_t capQpc =
-        policy::GetWgcSmoothnessFloorCapQpc(kInterval120, kQpcFreq, kMaxMs, kReservoirFrames);
+    const int64_t capQpc = policy::GetWgcSmoothnessFloorCapQpc(kInterval120, kQpcFreq, kMaxMs, kReservoirFrames);
     EXPECT_EQ(floorExtreme, capQpc);
     EXPECT_LE(capQpc, kInterval120 * kReservoirFrames);
     EXPECT_LE(capQpc, (kQpcFreq * kMaxMs) / 1000);
@@ -1965,9 +1959,9 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessFloorIsSyncNeutralAcrossDelays) {
     // video content time must equal the audio real-sound time, INDEPENDENT of S. This is what keeps
     // a video-only floor (L=0, S>0) from drifting audio and from reintroducing ghost-image judder.
     const int64_t startupVideoQpc = 1000000;
-    const int64_t interval = 83333;  // ~120 fps at 10 MHz QPC
-    for (int64_t L : {0, 350000, 720000}) {          // 0 / 35 ms / 72 ms audio latency
-        for (int64_t S : {0, 166666, 500000}) {      // 0 / 2 frames / ~60 ms smoothness extra
+    const int64_t interval = 83333;              // ~120 fps at 10 MHz QPC
+    for (int64_t L : {0, 350000, 720000}) {      // 0 / 35 ms / 72 ms audio latency
+        for (int64_t S : {0, 166666, 500000}) {  // 0 / 2 frames / ~60 ms smoothness extra
             if (L + S <= 0) {
                 continue;  // no delay desired -> active-delay path not engaged (legacy near-live)
             }
@@ -1979,12 +1973,11 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessFloorIsSyncNeutralAcrossDelays) {
             const int64_t liveStart = startupVideoQpc + L + S;
             for (int64_t p = 0; p < 5; ++p) {
                 const int64_t gridTick = liveStart + p * interval;
-                const int64_t selectionTarget = policy::GetWgcSelectionTargetQpc(
-                    gridTick, /*fallback=*/0, interval, /*recordingOutputLive=*/true,
-                    /*extraSelectionDelayQpc=*/L + S);
+                const int64_t selectionTarget =
+                    policy::GetWgcSelectionTargetQpc(gridTick, /*fallback=*/0, interval, /*recordingOutputLive=*/true,
+                                                     /*extraSelectionDelayQpc=*/L + S);
                 const int64_t audioRealSoundTime = audioAnchor + p * interval - L;
-                EXPECT_EQ(selectionTarget, audioRealSoundTime)
-                    << "L=" << L << " S=" << S << " p=" << p;
+                EXPECT_EQ(selectionTarget, audioRealSoundTime) << "L=" << L << " S=" << S << " p=" << p;
             }
         }
     }
@@ -2285,8 +2278,8 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelaySoftLateTargetProtectsHealthyWindo
     EXPECT_FALSE(score.Accepted());
 
     score = policy::ScoreWgcActiveDelayRelaxedCandidate(108000, 80000, 100000, 8333, 1000000, 1, 0, 0, 7000,
-                                                         policy::WgcActiveDelayWindowClass::kSourceLimited,
-                                                         policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
+                                                        policy::WgcActiveDelayWindowClass::kSourceLimited,
+                                                        policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
     EXPECT_TRUE(score.Accepted());
 
     score = policy::ScoreWgcActiveDelayRelaxedCandidate(109000, 80000, 100000, 8333, 1000000, 1, 0, 0, 0,
@@ -2436,16 +2429,15 @@ TEST(CapturePipelinePolicyTest, WgcUniformPlayoutQuantizedSurplusSourceHoldsOnly
             while (!buffer.empty() && lastEmitted > 0 && buffer.front() <= lastEmitted) {
                 buffer.pop_front();  // stale sweep (already-emitted content)
             }
-            while (buffer.size() > 1 && policy::ShouldDropWgcFrontForNearerPlayout(buffer[0], buffer[1], target,
-                                                                                   leadToleranceUs)) {
+            while (buffer.size() > 1 &&
+                   policy::ShouldDropWgcFrontForNearerPlayout(buffer[0], buffer[1], target, leadToleranceUs)) {
                 buffer.pop_front();  // audio-passed surplus drop
             }
             if (buffer.empty()) {
                 ++holds;
                 continue;
             }
-            const auto playout =
-                policy::DecideWgcNearestPlayout(buffer.front(), target, leadToleranceUs, lastEmitted);
+            const auto playout = policy::DecideWgcNearestPlayout(buffer.front(), target, leadToleranceUs, lastEmitted);
             if (playout.emit) {
                 lastEmitted = buffer.front();
                 buffer.pop_front();
@@ -2800,8 +2792,8 @@ TEST(CapturePipelinePolicyTest, FullscreenAutoTargetPrefersDuplicationForHardwar
     // Inject-whitelisted games and explicit inject never reach screen grab.
     EXPECT_FALSE(policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(true, false,
                                                                             /*injectWhitelisted=*/true, true, true));
-    EXPECT_FALSE(policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(true, /*explicitInjectConfig=*/true,
-                                                                            false, true, true));
+    EXPECT_FALSE(policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(true, /*explicitInjectConfig=*/true, false,
+                                                                            true, true));
 
     // Non-auto configs make their own explicit backend choice.
     EXPECT_FALSE(policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(/*autoCaptureConfig=*/false, false, false,

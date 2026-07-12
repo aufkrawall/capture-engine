@@ -175,8 +175,8 @@ inline bool ShouldDelayAfterStartupOverlayResourcePrime(bool startupOverlayCompa
                                                         bool actualFrameGenerationActive,
                                                         ULONGLONG msSinceResourcePrime, ULONGLONG settleDelayMs,
                                                         bool preserveLiveOverlayDuringHandoff) {
-    return startupOverlayCompatibilityActive && !actualFrameGenerationActive &&
-           msSinceResourcePrime < settleDelayMs && !preserveLiveOverlayDuringHandoff;
+    return startupOverlayCompatibilityActive && !actualFrameGenerationActive && msSinceResourcePrime < settleDelayMs &&
+           !preserveLiveOverlayDuringHandoff;
 }
 
 inline bool ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
@@ -419,7 +419,8 @@ inline bool ShouldSkipCommandQueueVTableHookForFrameGenerationRuntimeModule(bool
 // How DetourPresent renders the overlay during native no-callback FSR FG (GTA-style: AMD composites a
 // registered UI texture onto every real + interpolated frame with no app present callback).
 enum class NoCallbackFSRFGOverlayRoute {
-    kSkipBundleCovers,   // overlay rides AMD's UI-resource composition (game-ECL bundle) — skip the backbuffer ProcessFrame
+    kSkipBundleCovers,   // overlay rides AMD's UI-resource composition (game-ECL bundle) — skip the backbuffer
+                         // ProcessFrame
     kMinimalBackbuffer,  // draw via minimal ProcessFrame (ONLY safe when AMD does NOT own the swapchain)
 };
 
@@ -530,8 +531,8 @@ inline bool ShouldInstallFFXProxyPresentHook(bool presentEntryInFFXRuntimeModule
 
 // Which texture the overlay is drawn onto under no-callback FSR FG UI-resource composition.
 enum class FFXUiOverlayTarget {
-    kCompositeOntoGameTexture,      // game registered a usable, ~backbuffer-sized UI texture — blend overlay on top
-    kSubstituteCEFullSizeTexture,   // game registered a degenerate placeholder (GTA's 1x1) — substitute CE's own texture
+    kCompositeOntoGameTexture,     // game registered a usable, ~backbuffer-sized UI texture — blend overlay on top
+    kSubstituteCEFullSizeTexture,  // game registered a degenerate placeholder (GTA's 1x1) — substitute CE's own texture
 };
 
 enum class NativeFSROwnerQueueRoute {
@@ -545,8 +546,8 @@ enum class NativeFSROwnerQueueRoute {
 // device. In that one proven topology, the already-captured original game queue is the underlying submission
 // queue. Never substitute it for an arbitrary different-device FFX queue.
 inline NativeFSROwnerQueueRoute ChooseNativeFSROwnerQueueRoute(bool exactQueueMatchesTargetDevice,
-                                                                bool exactQueueUsesAcceptedStreamlineDevice,
-                                                                bool originalGameQueueMatchesTargetDevice) {
+                                                               bool exactQueueUsesAcceptedStreamlineDevice,
+                                                               bool originalGameQueueMatchesTargetDevice) {
     if (exactQueueMatchesTargetDevice) {
         return NativeFSROwnerQueueRoute::kExactDescriptorQueue;
     }
@@ -558,8 +559,7 @@ inline NativeFSROwnerQueueRoute ChooseNativeFSROwnerQueueRoute(bool exactQueueMa
 
 // AMD can emit multiple real-swapchain Presents (real + generated outputs) for one accepted UI-resource
 // registration. The presenter-thread compatibility route must blend only once into that shared input.
-inline bool ShouldCompositeFFXPresenterFallback(uint64_t acceptedUiSequence,
-                                                uint64_t lastCompositedUiSequence) {
+inline bool ShouldCompositeFFXPresenterFallback(uint64_t acceptedUiSequence, uint64_t lastCompositedUiSequence) {
     return acceptedUiSequence == 0 || acceptedUiSequence != lastCompositedUiSequence;
 }
 
@@ -603,9 +603,11 @@ inline FFXUiOverlayTarget ChooseFFXUiOverlayTarget(uint32_t gameTexWidth, uint32
     return FFXUiOverlayTarget::kCompositeOntoGameTexture;
 }
 
-inline bool ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
-    bool hasOriginalGameQueue, bool queueMatchesOriginalGameQueue, bool streamlineRuntimeAvailable,
-    bool hadFSRFGPhase, bool fsrFGApiActive, fg_runtime::RuntimeMode runtimeMode) {
+inline bool ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(bool hasOriginalGameQueue,
+                                                                            bool queueMatchesOriginalGameQueue,
+                                                                            bool streamlineRuntimeAvailable,
+                                                                            bool hadFSRFGPhase, bool fsrFGApiActive,
+                                                                            fg_runtime::RuntimeMode runtimeMode) {
     if (!hasOriginalGameQueue || queueMatchesOriginalGameQueue || !streamlineRuntimeAvailable) {
         return false;
     }
@@ -741,10 +743,8 @@ inline int ResolveTransitionCooldownFrames(int existingCooldownFrames, int reque
 
 inline bool ShouldStartFrameGenerationTransitionCooldown(fg_runtime::RuntimeMode previousRuntimeMode,
                                                          fg_runtime::RuntimeMode nextRuntimeMode,
-                                                         bool previousEffectiveFGActive,
-                                                         bool nextEffectiveFGActive,
-                                                         bool previousStreamlineFGSignal,
-                                                         bool nextStreamlineFGSignal,
+                                                         bool previousEffectiveFGActive, bool nextEffectiveFGActive,
+                                                         bool previousStreamlineFGSignal, bool nextStreamlineFGSignal,
                                                          bool liveNoCallbackNativeFSRSuspensionToggle = false) {
     if (liveNoCallbackNativeFSRSuspensionToggle) {
         // Native-FSR suspend/resume on AMD's internal no-callback composition
@@ -790,12 +790,14 @@ inline bool ShouldStartFrameGenerationTransitionCooldown(fg_runtime::RuntimeMode
 // prevCooldown=0`), then one frame later the STREAMLINE_NO_FG->FSR_FG
 // classification re-armed the 60-frame draw cooldown and blanked the healthy
 // overlay for 60 presents because this exemption only matched kOff.
-inline bool IsLiveNoCallbackNativeFSRSuspensionToggle(
-    fg_runtime::RuntimeMode previousRuntimeMode, fg_runtime::RuntimeMode nextRuntimeMode, bool streamlineFGRunning,
-    bool nativeFSRInternalNoCallbackComposition, bool runtimeOwnsSwapchain, bool hasSwapchainQueue,
-    bool overlayBackendInitialized, bool overlayBackendQueueIsSwapchainQueue) {
-    if (streamlineFGRunning || !nativeFSRInternalNoCallbackComposition || !runtimeOwnsSwapchain ||
-        !hasSwapchainQueue || !overlayBackendInitialized || !overlayBackendQueueIsSwapchainQueue) {
+inline bool IsLiveNoCallbackNativeFSRSuspensionToggle(fg_runtime::RuntimeMode previousRuntimeMode,
+                                                      fg_runtime::RuntimeMode nextRuntimeMode, bool streamlineFGRunning,
+                                                      bool nativeFSRInternalNoCallbackComposition,
+                                                      bool runtimeOwnsSwapchain, bool hasSwapchainQueue,
+                                                      bool overlayBackendInitialized,
+                                                      bool overlayBackendQueueIsSwapchainQueue) {
+    if (streamlineFGRunning || !nativeFSRInternalNoCallbackComposition || !runtimeOwnsSwapchain || !hasSwapchainQueue ||
+        !overlayBackendInitialized || !overlayBackendQueueIsSwapchainQueue) {
         return false;
     }
 
@@ -803,8 +805,8 @@ inline bool IsLiveNoCallbackNativeFSRSuspensionToggle(
     const bool nextIsFSR = nextRuntimeMode == fg_runtime::RuntimeMode::kFSRFG;
     const bool previousIsNonFG = previousRuntimeMode == fg_runtime::RuntimeMode::kOff ||
                                  previousRuntimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG;
-    const bool nextIsNonFG = nextRuntimeMode == fg_runtime::RuntimeMode::kOff ||
-                             nextRuntimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG;
+    const bool nextIsNonFG =
+        nextRuntimeMode == fg_runtime::RuntimeMode::kOff || nextRuntimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG;
     return (previousIsFSR && nextIsNonFG) || (previousIsNonFG && nextIsFSR);
 }
 
@@ -887,9 +889,8 @@ inline bool ShouldKeepDrawingLiveOverlayThroughFGTransitionCooldown(bool overlay
 // ownership, the live queue, or authoritative FSR state — they keep the
 // cooldown.
 inline bool IsHeuristicOnlyRuntimeModeFlip(bool previousStreamlineFGSignal, bool nextStreamlineFGSignal,
-                                           bool runtimeOwnsSwapchain, bool fsrFGApiActive,
-                                           bool hasSwapchainQueue, bool overlayBackendInitialized,
-                                           bool overlayBackendQueueIsSwapchainQueue) {
+                                           bool runtimeOwnsSwapchain, bool fsrFGApiActive, bool hasSwapchainQueue,
+                                           bool overlayBackendInitialized, bool overlayBackendQueueIsSwapchainQueue) {
     return !previousStreamlineFGSignal && !nextStreamlineFGSignal && !runtimeOwnsSwapchain && !fsrFGApiActive &&
            hasSwapchainQueue && overlayBackendInitialized && overlayBackendQueueIsSwapchainQueue;
 }
@@ -974,8 +975,8 @@ inline bool IsGameSwapchainRecoveryToggleAfterNativeFSROff(fg_runtime::RuntimeMo
     if (streamlineFGRunning || !recoveryQueueMatchesLiveSwapchainQueue) {
         return false;
     }
-    const bool nextIsNonFG = nextRuntimeMode == fg_runtime::RuntimeMode::kOff ||
-                             nextRuntimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG;
+    const bool nextIsNonFG =
+        nextRuntimeMode == fg_runtime::RuntimeMode::kOff || nextRuntimeMode == fg_runtime::RuntimeMode::kStreamlineNoFG;
     return previousRuntimeMode == fg_runtime::RuntimeMode::kFSRFG && nextIsNonFG;
 }
 
@@ -1017,8 +1018,8 @@ inline bool ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFS
 // runtime-ownership + no-FSR/native-FG guards keep the strict cooldown for real takeovers.
 inline bool ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
     bool postSLExplicitOffKeepAlive, bool streamlineFGRunning, bool fsrFGApiActive,
-    bool nativeFSRInternalNoCallbackComposition, bool runtimeOwnsSwapchain,
-    bool swapchainQueueIsLiveCommandQueue, bool swapchainQueueIsConfirmedPostSLRenderQueue) {
+    bool nativeFSRInternalNoCallbackComposition, bool runtimeOwnsSwapchain, bool swapchainQueueIsLiveCommandQueue,
+    bool swapchainQueueIsConfirmedPostSLRenderQueue) {
     return postSLExplicitOffKeepAlive && !streamlineFGRunning && !fsrFGApiActive &&
            !nativeFSRInternalNoCallbackComposition && runtimeOwnsSwapchain &&
            (swapchainQueueIsLiveCommandQueue || swapchainQueueIsConfirmedPostSLRenderQueue);
@@ -1065,8 +1066,8 @@ inline bool ShouldKeepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover(bool slTurned
                                                                    bool runtimeOwnedNativeFGPresentPath,
                                                                    bool overlayInit, bool syncInit,
                                                                    bool deviceRemoved) {
-    return slTurnedOff && fsrFGApiActive && nativeFSRInternalNoCallbackComposition &&
-           runtimeOwnedNativeFGPresentPath && overlayInit && syncInit && !deviceRemoved;
+    return slTurnedOff && fsrFGApiActive && nativeFSRInternalNoCallbackComposition && runtimeOwnedNativeFGPresentPath &&
+           overlayInit && syncInit && !deviceRemoved;
 }
 
 // Round 4 (Talos DLSS-FG toggle-ON, session 20260614_030417: ~437 ms / 4 presents blank). When the
@@ -1208,8 +1209,7 @@ inline bool ShouldResetBlockedECLPatternHeuristicEvidence(bool canUseFSRFGHeuris
 inline bool ShouldSkipProcessFrameForZeroECLPresent(bool isInterpolatedFrame, bool hasDedicatedQueue,
                                                     bool heuristicFSRFG, bool runtimeOwnsSwapchain,
                                                     bool streamlineFGRunning, bool recentStreamlineTeardown,
-                                                    bool postFSRNonFGRecovery,
-                                                    ce::fg_runtime::RuntimeMode runtimeMode,
+                                                    bool postFSRNonFGRecovery, ce::fg_runtime::RuntimeMode runtimeMode,
                                                     bool liveSwapchainQueueIsGameRecoveryQueue = false,
                                                     bool fgTransitionCooldownActive = false) {
     if (!isInterpolatedFrame) {
@@ -1298,10 +1298,9 @@ inline bool ShouldDisableDedicatedOverlayQueueForRuntimeOwnedFrameGeneration(boo
 
 inline bool ShouldSkipSeparateOverlayGpuWorkForRuntimeOwnedFrameGeneration(
     bool runtimeOwnsSwapchain, bool streamlineFGRunning, fg_runtime::RuntimeMode runtimeMode,
-    bool authoritativeFSRActive, bool runtimeOwnedNativeFGPresentPath,
-    bool ffxPresentCallbackFallbackAllowed = false, bool nativeFSRInternalNoCallbackComposition = false,
-    bool ffxUiResourceCompositionActive = false, bool liveSwapchainQueueIsOriginalGameQueue = false,
-    bool fsrFGDisabledSuspendPending = false) {
+    bool authoritativeFSRActive, bool runtimeOwnedNativeFGPresentPath, bool ffxPresentCallbackFallbackAllowed = false,
+    bool nativeFSRInternalNoCallbackComposition = false, bool ffxUiResourceCompositionActive = false,
+    bool liveSwapchainQueueIsOriginalGameQueue = false, bool fsrFGDisabledSuspendPending = false) {
     if (streamlineFGRunning) {
         return false;
     }
@@ -1378,15 +1377,15 @@ inline bool ShouldSkipFreshRuntimeOwnedStreamlineNoFGPresentProcessing(bool runt
 }
 
 inline bool ShouldEvaluateFFXPresentCallbackFallback(bool ffxPresentCallbackStalled,
-                                                      bool explicitNativeFSROffPendingRuntimeOwnedTeardown) {
+                                                     bool explicitNativeFSROffPendingRuntimeOwnedTeardown) {
     (void)explicitNativeFSROffPendingRuntimeOwnedTeardown;
     return ffxPresentCallbackStalled;
 }
 
 inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
     bool evaluateFFXPresentCallbackFallback, bool progressResolvedOfficialFFXPresentPath, bool directFFXApiConfirmation,
-    bool currentFFXPresentCallbackProof, bool progressResolvedStableOverlayProof = false,
-    ULONGLONG stallDurationMs = 0, bool explicitNativeFSROffPendingRuntimeOwnedTeardown = false) {
+    bool currentFFXPresentCallbackProof, bool progressResolvedStableOverlayProof = false, ULONGLONG stallDurationMs = 0,
+    bool explicitNativeFSROffPendingRuntimeOwnedTeardown = false) {
     (void)stallDurationMs;
     (void)progressResolvedOfficialFFXPresentPath;
     (void)progressResolvedStableOverlayProof;
@@ -1418,7 +1417,7 @@ inline bool ShouldAllowNormalOverlayFallbackForStalledFFXPresentCallback(
 }
 
 inline bool IsFFXPresentCallbackProofCurrent(ULONGLONG lastCallbackTickMs, ULONGLONG swapchainQueueCaptureTimeMs,
-                                              ULONGLONG progressAssumedSinceMs) {
+                                             ULONGLONG progressAssumedSinceMs) {
     if (lastCallbackTickMs == 0) {
         return false;
     }
@@ -1454,16 +1453,18 @@ inline bool ShouldRetainFFXPresentCallbackBridgeForDisabledConfigure(bool recogn
 // toggle. Only the genuine no-original case falls back to clear/self-compose. This is distinct from the
 // disabled-configure retain above (that is for FG turning OFF; this is FG staying ENABLED with a
 // dropped app callback).
-inline bool ShouldRetainFFXPresentCallbackBridgeForEnabledNullCallbackToggle(
-    bool recognizedFrameGenerationConfigure, bool frameGenerationEnabled, bool appPresentCallbackProvided,
-    bool hasExistingBridgeWithOriginal) {
+inline bool ShouldRetainFFXPresentCallbackBridgeForEnabledNullCallbackToggle(bool recognizedFrameGenerationConfigure,
+                                                                             bool frameGenerationEnabled,
+                                                                             bool appPresentCallbackProvided,
+                                                                             bool hasExistingBridgeWithOriginal) {
     return recognizedFrameGenerationConfigure && frameGenerationEnabled && !appPresentCallbackProvided &&
            hasExistingBridgeWithOriginal;
 }
 
-inline bool ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(
-    bool runtimeOwnedNativeFGPresentPath, bool nativeFSRActive, bool ffxPresentCallbackStalled,
-    bool ffxPresentCallbackStallAllowsNormalOverlay) {
+inline bool ShouldAllowOverlaySuppressionTimeoutOverrideForNativeFSR(bool runtimeOwnedNativeFGPresentPath,
+                                                                     bool nativeFSRActive,
+                                                                     bool ffxPresentCallbackStalled,
+                                                                     bool ffxPresentCallbackStallAllowsNormalOverlay) {
     // The timeout is a visibility backstop for ordinary transition stalls, but
     // it must not overrule native/runtime-owned FSR.  When the FFX present
     // callback is healthy, the overlay is already rendered on the runtime-owned
@@ -1531,9 +1532,9 @@ inline bool ShouldTreatNativeFSRDisabledConfigureAsStartupArming(bool recognized
 }
 
 inline bool ShouldPreserveRuntimeOwnedNativeFGPresentPathAfterDisabledConfigure(bool runtimeOwnsSwapchain,
-                                                                               bool runtimeOwnedNativeFGPresentPath,
-                                                                               bool retainedPresentCallbackBridge,
-                                                                               bool hasDirectFFXApiConfirmation) {
+                                                                                bool runtimeOwnedNativeFGPresentPath,
+                                                                                bool retainedPresentCallbackBridge,
+                                                                                bool hasDirectFFXApiConfirmation) {
     // A disabled configure can be a transient FSR suspension packet while the
     // official runtime still owns presentation through its present callback.
     // Preserve the native-FG Present ownership latch whenever the stronger
@@ -1579,8 +1580,7 @@ inline bool ShouldPreserveFFXPresentCallbackBackendDuringNormalOverlayCleanup(bo
     return callbackBackendInitialized && runtimeOwnedNativeFGPresentPath;
 }
 
-inline bool ShouldBridgeOverlayViaFFXPresentCallback(bool runtimeOwnedNativeFGPresentPath,
-                                                     bool authoritativeFSRActive,
+inline bool ShouldBridgeOverlayViaFFXPresentCallback(bool runtimeOwnedNativeFGPresentPath, bool authoritativeFSRActive,
                                                      bool hasDirectFFXApiConfirmation,
                                                      fg_runtime::RuntimeMode runtimeMode) {
     // The FFX present callback is the safest overlay injection point whenever
@@ -1916,33 +1916,36 @@ struct D3D12FocusLossOverlayFenceWaitContext {
     HRESULT presentHr = S_OK;
 };
 
-inline bool ShouldWaitForD3D12FocusLossPostPresentOverlayFence(
-    bool isD3D12Swapchain, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize,
-    bool presentSucceeded, bool presentDeviceLost, bool frameGenerationActive, bool runtimeOwnedPresentation,
-    bool usingDedicatedQueue, bool hadDeferredOverlaySignal, bool signalSucceeded, bool hasFence, bool hasFenceEvent,
-    UINT64 fenceValue) {
+inline bool ShouldWaitForD3D12FocusLossPostPresentOverlayFence(bool isD3D12Swapchain, bool isFullscreen,
+                                                               bool processHasForeground, bool isIconic,
+                                                               bool hasZeroSize, bool presentSucceeded,
+                                                               bool presentDeviceLost, bool frameGenerationActive,
+                                                               bool runtimeOwnedPresentation, bool usingDedicatedQueue,
+                                                               bool hadDeferredOverlaySignal, bool signalSucceeded,
+                                                               bool hasFence, bool hasFenceEvent, UINT64 fenceValue) {
     return isD3D12Swapchain && !isFullscreen && !processHasForeground && !isIconic && !hasZeroSize &&
            presentSucceeded && !presentDeviceLost && !frameGenerationActive && !runtimeOwnedPresentation &&
            !usingDedicatedQueue && hadDeferredOverlaySignal && signalSucceeded && hasFence && hasFenceEvent &&
            fenceValue != 0;
 }
 
-inline bool ShouldSignalD3D12FocusLossOverlayFenceImmediately(
-    bool isWrappedD3D12Present, bool isFullscreen, bool processHasForeground, bool isIconic, bool hasZeroSize,
-    bool overlaySubmitSucceeded, bool deviceLost, bool frameGenerationActive, bool runtimeOwnedPresentation,
-    bool usingDedicatedQueue, bool steamDeferredOverlaySubmit, bool hasFence, bool hasFenceEvent, bool hasQueue,
-    UINT64 fenceValue) {
+inline bool ShouldSignalD3D12FocusLossOverlayFenceImmediately(bool isWrappedD3D12Present, bool isFullscreen,
+                                                              bool processHasForeground, bool isIconic,
+                                                              bool hasZeroSize, bool overlaySubmitSucceeded,
+                                                              bool deviceLost, bool frameGenerationActive,
+                                                              bool runtimeOwnedPresentation, bool usingDedicatedQueue,
+                                                              bool steamDeferredOverlaySubmit, bool hasFence,
+                                                              bool hasFenceEvent, bool hasQueue, UINT64 fenceValue) {
     return isWrappedD3D12Present && !isFullscreen && !processHasForeground && !isIconic && !hasZeroSize &&
            overlaySubmitSucceeded && !deviceLost && !frameGenerationActive && !runtimeOwnedPresentation &&
            !usingDedicatedQueue && !steamDeferredOverlaySubmit && hasFence && hasFenceEvent && hasQueue &&
            fenceValue != 0;
 }
 
-inline bool ShouldWaitForD3D12FocusLossImmediateOverlayFence(bool immediateFencePolicyAccepted,
-                                                             bool signalSucceeded, bool hasFence,
-                                                             bool hasFenceEvent, bool hasQueue, UINT64 fenceValue) {
-    return immediateFencePolicyAccepted && signalSucceeded && hasFence && hasFenceEvent && hasQueue &&
-           fenceValue != 0;
+inline bool ShouldWaitForD3D12FocusLossImmediateOverlayFence(bool immediateFencePolicyAccepted, bool signalSucceeded,
+                                                             bool hasFence, bool hasFenceEvent, bool hasQueue,
+                                                             UINT64 fenceValue) {
+    return immediateFencePolicyAccepted && signalSucceeded && hasFence && hasFenceEvent && hasQueue && fenceValue != 0;
 }
 
 inline bool ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(bool fenceWaitCompleted,
@@ -2056,19 +2059,14 @@ inline bool ShouldRequestImmediateDumpForD3D12FocusTransitionDeviceRemoval(bool 
 // runtime-owned / dedicated-queue / Steam-deferred routes manage their own
 // submission and are excluded. `transitionHoldFramesRemaining` is the edge-armed
 // per-Present countdown (see g_FocusTransitionHoldFrames).
-inline bool ShouldHoldD3D12OverlayBackbufferWorkDuringFocusTransition(bool isWindowed,
-                                                                      int transitionHoldFramesRemaining,
-                                                                      bool frameGenerationActive,
-                                                                      bool runtimeOwnedPresentation,
-                                                                      bool usingDedicatedQueue,
-                                                                      bool steamDeferredOverlaySubmit,
-                                                                      bool deviceLost, bool hasQueue) {
+inline bool ShouldHoldD3D12OverlayBackbufferWorkDuringFocusTransition(
+    bool isWindowed, int transitionHoldFramesRemaining, bool frameGenerationActive, bool runtimeOwnedPresentation,
+    bool usingDedicatedQueue, bool steamDeferredOverlaySubmit, bool deviceLost, bool hasQueue) {
     return isWindowed && transitionHoldFramesRemaining > 0 && !frameGenerationActive && !runtimeOwnedPresentation &&
            !usingDedicatedQueue && !steamDeferredOverlaySubmit && !deviceLost && hasQueue;
 }
 
-inline bool ShouldHoldD3D12FocusLossOverlayDrawForPendingFence(bool processHasForeground,
-                                                               bool hasPendingFocusLossFence,
+inline bool ShouldHoldD3D12FocusLossOverlayDrawForPendingFence(bool processHasForeground, bool hasPendingFocusLossFence,
                                                                bool pendingFenceComplete) {
     return !processHasForeground && hasPendingFocusLossFence && !pendingFenceComplete;
 }
@@ -2421,9 +2419,10 @@ inline bool ShouldSuppressSceneTransitionCooldownForStablePostSLGap(bool streaml
 // non-normal route and then blanks the NORMAL-route overlay for ~14 presents on
 // the next FG transition. Suppress arming on these routes; a gap that spans such
 // a route must also be discarded by the caller (track the previous run's route).
-inline bool ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute(
-    bool runtimeOwnsSwapchain, bool fsrFGApiActive, bool runtimeOwnedNativeFGPresentPath,
-    bool protectedOfficialFFXStartupActive) {
+inline bool ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute(bool runtimeOwnsSwapchain,
+                                                                             bool fsrFGApiActive,
+                                                                             bool runtimeOwnedNativeFGPresentPath,
+                                                                             bool protectedOfficialFFXStartupActive) {
     return runtimeOwnsSwapchain || fsrFGApiActive || runtimeOwnedNativeFGPresentPath ||
            protectedOfficialFFXStartupActive;
 }
@@ -2572,8 +2571,7 @@ inline bool ShouldResetPostSLStartupProgressOnReactivation(bool postSLConfirmedR
            runtimeStateStabilizationLogged;
 }
 
-inline bool ShouldKeepPostSLActiveWhenRealECLUnavailable(bool hasRealD3D12ECL,
-                                                         bool hasSelectedQueueOriginalSubmitPath,
+inline bool ShouldKeepPostSLActiveWhenRealECLUnavailable(bool hasRealD3D12ECL, bool hasSelectedQueueOriginalSubmitPath,
                                                          bool postSLConfirmedRendering,
                                                          bool postSLActiveButUnconfirmed) {
     if (hasRealD3D12ECL) {
@@ -2824,8 +2822,7 @@ inline bool ShouldRenderOverlayDirectlyOnFirstPostFSRDLSSReactivation(bool fastP
 // re-checks device-removed after the submit, so the real overlay render is itself the queue-health
 // proof. Render directly on the first reactivation present instead. The empty-ECL probe is retained for
 // off-swapchain-queue (origGame first-ECL, genuinely fragile) reactivations.
-inline bool ShouldRenderOverlayDirectlyOnPostSLTransitionProbe(bool selectedQueueIsSwapchainQueue,
-                                                               bool deviceHealthy) {
+inline bool ShouldRenderOverlayDirectlyOnPostSLTransitionProbe(bool selectedQueueIsSwapchainQueue, bool deviceHealthy) {
     return selectedQueueIsSwapchainQueue && deviceHealthy;
 }
 
@@ -2917,9 +2914,8 @@ inline bool ShouldBypassPostSLReactivationWarmup(bool hadFSRFGPhase, bool useTop
     // warm-up has naturally completed.
     (void)useTopLevelHandoffWrapperProgress;
     return postSLConfirmedRenderInCurrentEpoch || (hadFSRFGPhase && safePostFSRBootstrapPath) ||
-           (!hadFSRFGPhase &&
-            (confirmedPureStreamlineResumeProof || explicitEnablePureDLSSColdStartProof ||
-             sameQueuePureDLSSColdStartSafe));
+           (!hadFSRFGPhase && (confirmedPureStreamlineResumeProof || explicitEnablePureDLSSColdStartProof ||
+                               sameQueuePureDLSSColdStartSafe));
 }
 
 // Same-queue pure-DLSS cold start (Talos startup, session 20260615_162947: 29-present/437ms blank,
@@ -3179,8 +3175,8 @@ inline bool ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport
 // startup-activation swapchain, no overlay teardown / GPU flush) and retry; escalate to the full cleanup
 // only if the HWND stays pinned (a disturbed handoff beats a guaranteed crash).
 enum class CreateSwapchainAccessDeniedRecovery {
-    kFullOverlayCleanupAndRetry,     // CE/game-owned create: existing full cleanup + retry
-    kMinimalCEReleaseThenEscalate,   // runtime-managed create: minimal CE unpin + retry, escalate if still denied
+    kFullOverlayCleanupAndRetry,    // CE/game-owned create: existing full cleanup + retry
+    kMinimalCEReleaseThenEscalate,  // runtime-managed create: minimal CE unpin + retry, escalate if still denied
 };
 
 inline CreateSwapchainAccessDeniedRecovery ChooseCreateSwapchainAccessDeniedRecovery(
@@ -3275,19 +3271,20 @@ inline bool ShouldKeepStreamlineStartupHandoffPendingWhileSyntheticStartupHalfAr
                                                                postSLConfirmedButStartupSettling);
 }
 
-inline bool ShouldLetSyntheticPostSLProgressDuringOverlayReinitCooldown(
-    bool streamlineFGRunning, bool startupActivationPending, bool postSLActiveButUnconfirmed,
-    bool postSLConfirmedRendering, bool postSLConfirmedButStartupSettling) {
+inline bool ShouldLetSyntheticPostSLProgressDuringOverlayReinitCooldown(bool streamlineFGRunning,
+                                                                        bool startupActivationPending,
+                                                                        bool postSLActiveButUnconfirmed,
+                                                                        bool postSLConfirmedRendering,
+                                                                        bool postSLConfirmedButStartupSettling) {
     // The FG transition cooldown still protects the unsafe pre-SL/reinit path,
     // but a half-armed or freshly confirmed PostSL startup route is already on
     // Streamline's own Present callback timing. Re-applying the generic cooldown
     // to PostSL itself blanks the overlay during DLSS resume even though the only
     // remaining work is rebuilding resources on the new authoritative SL
     // swapchain from inside PostSL.
-    return streamlineFGRunning &&
-           ShouldKeepSyntheticStartupStateUntilConfirmedRender(startupActivationPending, postSLActiveButUnconfirmed,
-                                                               postSLConfirmedRendering,
-                                                               postSLConfirmedButStartupSettling);
+    return streamlineFGRunning && ShouldKeepSyntheticStartupStateUntilConfirmedRender(
+                                      startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
+                                      postSLConfirmedButStartupSettling);
 }
 
 inline bool ShouldContinueECLDrivenPostSLStartupProgress(bool overlayVisible, bool startupActivationPending,

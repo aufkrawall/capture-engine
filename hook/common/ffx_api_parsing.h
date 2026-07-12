@@ -213,8 +213,7 @@ inline ParsedFrameGenerationSwapChainCreateState ParseFrameGenerationSwapChainCr
             return {true, create->swapChain, create->gameQueue};
         }
         case kCreateContextDescTypeFrameGenerationSwapChainForHwndDX12: {
-            const auto* create =
-                reinterpret_cast<const CreateContextDescFrameGenerationSwapChainForHwndDX12*>(desc);
+            const auto* create = reinterpret_cast<const CreateContextDescFrameGenerationSwapChainForHwndDX12*>(desc);
             return {true, create->swapChain, create->gameQueue};
         }
         default:

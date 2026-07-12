@@ -571,8 +571,8 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
             // generated frame). The test app / games that register a usable full-size UI texture forward unchanged
             // and CE blends the overlay onto the game's own texture via the per-present composite.
             ce::ffx_api::Resource ceSubstitute = {};
-            uiTargetSubstituted = DX12_PrepareFFXUiOverlayTarget(
-                uiDesc->uiResource, uiDesc->flags, &ceSubstitute, &uiTargetPreparation);
+            uiTargetSubstituted =
+                DX12_PrepareFFXUiOverlayTarget(uiDesc->uiResource, uiDesc->flags, &ceSubstitute, &uiTargetPreparation);
             uiTargetPrepared = uiTargetPreparation.target != nullptr;
             if (uiTargetSubstituted) {
                 localUiConfig = *uiDesc;
@@ -1454,8 +1454,8 @@ FFXSubstituteUiReRegistrationResult FFXHook_ReRegisterSubstituteUiResource() {
     QueryPerformanceCounter(&qpc);
     g_SubstReRegInFlightTid.store(GetCurrentThreadId(), std::memory_order_release);
     g_SubstReRegInFlightQpc.store(static_cast<uint64_t>(qpc.QuadPart), std::memory_order_release);
-    const ffxReturnCode_t result = g_SubstReRegConfigure(
-        &g_SubstReRegContext, reinterpret_cast<const ffxConfigureDescHeader*>(&g_SubstReRegDesc));
+    const ffxReturnCode_t result =
+        g_SubstReRegConfigure(&g_SubstReRegContext, reinterpret_cast<const ffxConfigureDescHeader*>(&g_SubstReRegDesc));
     g_SubstReRegInFlightQpc.store(0, std::memory_order_release);
     g_SubstReRegInFlightTid.store(0, std::memory_order_release);
     if (result != FFX_API_RETURN_OK) {

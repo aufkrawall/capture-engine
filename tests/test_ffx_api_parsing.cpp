@@ -186,16 +186,16 @@ TEST(FFXApiParsingTest, PresentCallbackPremulAlphaReadsLinkedExtension) {
 
 TEST(FFXApiParsingTest, OfficialAMDFFXRuntimeModulesSkipInlineJumpsButArmConfigureFallback) {
     EXPECT_TRUE(ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName("amd_fidelityfx_dx12.dll"));
-    EXPECT_TRUE(ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName(
-        "C:\\Games\\GTAV\\amd_fidelityfx_framegeneration_dx12.dll"));
+    EXPECT_TRUE(
+        ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName("C:\\Games\\GTAV\\amd_fidelityfx_framegeneration_dx12.dll"));
     EXPECT_TRUE(ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName("AMD_FidelityFX_FG.dll"));
 
     EXPECT_FALSE(ce::ffx_api::ShouldInlineHookFFXExportsForModule("amd_fidelityfx_dx12.dll"));
-    EXPECT_FALSE(ce::ffx_api::ShouldInlineHookFFXExportsForModule(
-        "C:\\Games\\GTAV\\amd_fidelityfx_framegeneration_dx12.dll"));
+    EXPECT_FALSE(
+        ce::ffx_api::ShouldInlineHookFFXExportsForModule("C:\\Games\\GTAV\\amd_fidelityfx_framegeneration_dx12.dll"));
     EXPECT_TRUE(ce::ffx_api::ShouldPatchFFXImportsForModule("amd_fidelityfx_dx12.dll"));
-    EXPECT_TRUE(ce::ffx_api::ShouldPatchFFXImportsForModule(
-        "C:\\Games\\GTAV\\amd_fidelityfx_framegeneration_dx12.dll"));
+    EXPECT_TRUE(
+        ce::ffx_api::ShouldPatchFFXImportsForModule("C:\\Games\\GTAV\\amd_fidelityfx_framegeneration_dx12.dll"));
     EXPECT_TRUE(ce::ffx_api::ShouldArmProtectedOfficialFFXConfigureBreakpoint("amd_fidelityfx_dx12.dll"));
     EXPECT_TRUE(ce::ffx_api::ShouldArmProtectedOfficialFFXConfigureBreakpoint(
         "C:\\Games\\Talos\\amd_fidelityfx_framegeneration_dx12.dll"));

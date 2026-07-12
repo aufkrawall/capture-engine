@@ -21,8 +21,8 @@
 #include <dxgi1_4.h>
 #include <shellscalingapi.h>
 #include <wrl/client.h>
-#include <chrono>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -115,9 +115,15 @@ bool g_Running = true;
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
-        case WM_DESTROY: g_Running = false; PostQuitMessage(0); return 0;
+        case WM_DESTROY:
+            g_Running = false;
+            PostQuitMessage(0);
+            return 0;
         case WM_KEYDOWN:
-            if (wParam == VK_ESCAPE) { g_Running = false; DestroyWindow(hWnd); }
+            if (wParam == VK_ESCAPE) {
+                g_Running = false;
+                DestroyWindow(hWnd);
+            }
             return 0;
     }
     return DefWindowProc(hWnd, msg, wParam, lParam);
@@ -137,10 +143,11 @@ static void WaitForFenceValue(UINT64 fenceValue, const char* reason) {
         if (GetTickCount64() - startMs >= 500) {
             static std::atomic<bool> s_LoggedSlowFence{false};
             if (!s_LoggedSlowFence.exchange(true)) {
-                testapp::Log("[FG-DIAG] WARN slow fence wait (%s): waiting=%llu completed=%llu frameIndex=%u buffers=%u\n",
-                             reason ? reason : "unknown", static_cast<unsigned long long>(fenceValue),
-                             static_cast<unsigned long long>(g_Fence->GetCompletedValue()), g_FrameIndex,
-                             g_SwapChainBufferCount);
+                testapp::Log(
+                    "[FG-DIAG] WARN slow fence wait (%s): waiting=%llu completed=%llu frameIndex=%u buffers=%u\n",
+                    reason ? reason : "unknown", static_cast<unsigned long long>(fenceValue),
+                    static_cast<unsigned long long>(g_Fence->GetCompletedValue()), g_FrameIndex,
+                    g_SwapChainBufferCount);
                 testapp::LogFlush();
             }
         }
@@ -208,9 +215,8 @@ static ffxReturnCode_t TestFrameGenerationCallback(ffxDispatchDescFrameGeneratio
     uint64_t callbackIndex = ++g_FsrFrameGenerationCallbackCount;
     if (ret != FFX_API_RETURN_OK || callbackIndex <= 5 || (callbackIndex % 120) == 0) {
         testapp::Log("[FG-DIAG] FSR frame-generation callback #%llu frameID=%llu result=%u present=%p output0=%p\n",
-                     static_cast<unsigned long long>(callbackIndex),
-                     static_cast<unsigned long long>(params->frameID), ret, params->presentColor.resource,
-                     params->outputs[0].resource);
+                     static_cast<unsigned long long>(callbackIndex), static_cast<unsigned long long>(params->frameID),
+                     ret, params->presentColor.resource, params->outputs[0].resource);
     }
     return ret;
 }
@@ -225,15 +231,24 @@ enum FsrInitResult {
 
 static const char* FfxReturnName(ffxReturnCode_t code) {
     switch (code) {
-        case FFX_API_RETURN_OK: return "OK";
-        case FFX_API_RETURN_ERROR: return "ERROR";
-        case FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE: return "UNKNOWN_DESCTYPE";
-        case FFX_API_RETURN_ERROR_RUNTIME_ERROR: return "RUNTIME_ERROR";
-        case FFX_API_RETURN_NO_PROVIDER: return "NO_PROVIDER";
-        case FFX_API_RETURN_ERROR_MEMORY: return "MEMORY";
-        case FFX_API_RETURN_ERROR_PARAMETER: return "PARAMETER";
-        case FFX_API_RETURN_PROVIDER_NO_SUPPORT_NEW_DESCTYPE: return "PROVIDER_NO_SUPPORT_NEW_DESCTYPE";
-        default: return "unknown";
+        case FFX_API_RETURN_OK:
+            return "OK";
+        case FFX_API_RETURN_ERROR:
+            return "ERROR";
+        case FFX_API_RETURN_ERROR_UNKNOWN_DESCTYPE:
+            return "UNKNOWN_DESCTYPE";
+        case FFX_API_RETURN_ERROR_RUNTIME_ERROR:
+            return "RUNTIME_ERROR";
+        case FFX_API_RETURN_NO_PROVIDER:
+            return "NO_PROVIDER";
+        case FFX_API_RETURN_ERROR_MEMORY:
+            return "MEMORY";
+        case FFX_API_RETURN_ERROR_PARAMETER:
+            return "PARAMETER";
+        case FFX_API_RETURN_PROVIDER_NO_SUPPORT_NEW_DESCTYPE:
+            return "PROVIDER_NO_SUPPORT_NEW_DESCTYPE";
+        default:
+            return "unknown";
     }
 }
 
@@ -252,7 +267,8 @@ static void PreloadAmdCompanionDlls() {
 }
 
 static FsrInitResult LoadFSRRuntime() {
-    if (g_FfxModule) return kFsrOk;
+    if (g_FfxModule)
+        return kFsrOk;
 
     PreloadAmdCompanionDlls();
 
@@ -271,7 +287,8 @@ static FsrInitResult LoadFSRRuntime() {
             break;
         }
     }
-    if (!g_FfxModule) return kFsrNoDll;
+    if (!g_FfxModule)
+        return kFsrNoDll;
 
     g_FfxCreateContext = reinterpret_cast<PfnFfxCreateContext>(GetProcAddress(g_FfxModule, "ffxCreateContext"));
     g_FfxConfigure = reinterpret_cast<PfnFfxConfigure>(GetProcAddress(g_FfxModule, "ffxConfigure"));
@@ -279,7 +296,8 @@ static FsrInitResult LoadFSRRuntime() {
     g_FfxDestroyContext = reinterpret_cast<PfnFfxDestroyContext>(GetProcAddress(g_FfxModule, "ffxDestroyContext"));
     if (!g_FfxCreateContext || !g_FfxConfigure || !g_FfxDispatch || !g_FfxDestroyContext) {
         testapp::Log("  FSR DLL missing ffxCreateContext/ffxConfigure/ffxDispatch/ffxDestroyContext exports\n");
-        FreeLibrary(g_FfxModule); g_FfxModule = nullptr;
+        FreeLibrary(g_FfxModule);
+        g_FfxModule = nullptr;
         return kFsrNoExports;
     }
     return kFsrOk;
@@ -310,9 +328,11 @@ static bool CreateFSRSwapChainForHwndContext(IDXGIFactory4* factory, HWND hwnd, 
 
     ffxReturnCode_t ret = g_FfxCreateContext(&g_FfxSwapChainCtx, &createDesc.header, nullptr);
     if (ret != FFX_API_RETURN_OK || !g_FfxSwapChainCtx || !ffxSwapChain) {
-        testapp::Log("[FG-DIAG] ffxCreateContext(FRAMEGENERATIONSWAPCHAIN_FOR_HWND_DX12) FAILED code=%u (%s) ctx=%p swap=%p version=0x%08x flags=0x%x\n",
-                     ret, FfxReturnName(ret), (void*)g_FfxSwapChainCtx, ffxSwapChain,
-                     FFX_FRAMEGENERATION_SWAPCHAIN_DX12_VERSION, swapChainDesc.Flags);
+        testapp::Log(
+            "[FG-DIAG] ffxCreateContext(FRAMEGENERATIONSWAPCHAIN_FOR_HWND_DX12) FAILED code=%u (%s) ctx=%p swap=%p "
+            "version=0x%08x flags=0x%x\n",
+            ret, FfxReturnName(ret), (void*)g_FfxSwapChainCtx, ffxSwapChain, FFX_FRAMEGENERATION_SWAPCHAIN_DX12_VERSION,
+            swapChainDesc.Flags);
         g_FfxSwapChainCtx = nullptr;
         return false;
     }
@@ -329,9 +349,10 @@ static bool CreateFSRSwapChainForHwndContext(IDXGIFactory4* factory, HWND hwnd, 
     }
 
     g_SwapChain = swapChain3;
-    testapp::Log("[FG-DIAG] ffxCreateContext(FRAMEGENERATIONSWAPCHAIN_FOR_HWND_DX12) OK ctx=%p swapChain=%p version=0x%08x flags=0x%x\n",
-                 (void*)g_FfxSwapChainCtx, g_SwapChain.Get(), FFX_FRAMEGENERATION_SWAPCHAIN_DX12_VERSION,
-                 swapChainDesc.Flags);
+    testapp::Log(
+        "[FG-DIAG] ffxCreateContext(FRAMEGENERATIONSWAPCHAIN_FOR_HWND_DX12) OK ctx=%p swapChain=%p version=0x%08x "
+        "flags=0x%x\n",
+        (void*)g_FfxSwapChainCtx, g_SwapChain.Get(), FFX_FRAMEGENERATION_SWAPCHAIN_DX12_VERSION, swapChainDesc.Flags);
     return true;
 }
 
@@ -386,10 +407,11 @@ static FsrInitResult TryInitFSR() {
 
     ffxReturnCode_t ret = g_FfxCreateContext(&g_FfxCtx, &createDesc.header, nullptr);
     if (ret != FFX_API_RETURN_OK || !g_FfxCtx) {
-        testapp::Log("  ffxCreateContext(FRAMEGENERATION) FAILED code=%u (%s) ctx=%p display=%ux%u fmt=%u\n",
-                     ret, FfxReturnName(ret), (void*)g_FfxCtx, createDesc.displaySize.width,
-                     createDesc.displaySize.height, createDesc.backBufferFormat);
-        FreeLibrary(g_FfxModule); g_FfxModule = nullptr;
+        testapp::Log("  ffxCreateContext(FRAMEGENERATION) FAILED code=%u (%s) ctx=%p display=%ux%u fmt=%u\n", ret,
+                     FfxReturnName(ret), (void*)g_FfxCtx, createDesc.displaySize.width, createDesc.displaySize.height,
+                     createDesc.backBufferFormat);
+        FreeLibrary(g_FfxModule);
+        g_FfxModule = nullptr;
         return kFsrCreateFailed;
     }
     testapp::Log("  ffxCreateContext(FRAMEGENERATION) OK ctx=%p display=%ux%u fmt=%u hudlessFmt=%u swapchainCtx=%p\n",
@@ -403,7 +425,8 @@ static FsrInitResult TryInitFSR() {
 }
 
 static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer) {
-    if (!g_FfxConfigure || !g_FfxCtx) return false;
+    if (!g_FfxConfigure || !g_FfxCtx)
+        return false;
 
     ffxConfigureDescFrameGeneration cfgDesc = {};
     cfgDesc.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
@@ -416,9 +439,8 @@ static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer) {
     cfgDesc.frameGenerationEnabled = enable;
     cfgDesc.allowAsyncWorkloads = true;
     if (g_FgInputs.valid && g_FgInputs.hudlessColor) {
-        cfgDesc.HUDLessColor =
-            ffxApiGetResourceDX12(g_FgInputs.hudlessColor.Get(), testapp::dx12fg::kColorReadState,
-                                  FFX_API_RESOURCE_USAGE_READ_ONLY);
+        cfgDesc.HUDLessColor = ffxApiGetResourceDX12(g_FgInputs.hudlessColor.Get(), testapp::dx12fg::kColorReadState,
+                                                     FFX_API_RESOURCE_USAGE_READ_ONLY);
     } else if (backbuffer) {
         cfgDesc.HUDLessColor = ffxApiGetResourceDX12(backbuffer, FFX_API_RESOURCE_STATE_RENDER_TARGET,
                                                      FFX_API_RESOURCE_USAGE_RENDERTARGET);
@@ -433,14 +455,17 @@ static bool ConfigureFSR(bool enable, ID3D12Resource* backbuffer) {
 
     ffxReturnCode_t ret = g_FfxConfigure(&g_FfxCtx, &cfgDesc.header);
     if (ret != FFX_API_RETURN_OK) {
-        testapp::Log("[FG-DIAG] ffxConfigure(%s) frameID=%llu FAILED code=%u (%s) swapChain=%p swapchainCtx=%p flags=0x%x hudless=%p\n",
-                     enable ? "enable" : "disable", (unsigned long long)g_FrameIdCounter, ret, FfxReturnName(ret),
-                     (void*)g_SwapChain.Get(), (void*)g_FfxSwapChainCtx, cfgDesc.flags, cfgDesc.HUDLessColor.resource);
+        testapp::Log(
+            "[FG-DIAG] ffxConfigure(%s) frameID=%llu FAILED code=%u (%s) swapChain=%p swapchainCtx=%p flags=0x%x "
+            "hudless=%p\n",
+            enable ? "enable" : "disable", (unsigned long long)g_FrameIdCounter, ret, FfxReturnName(ret),
+            (void*)g_SwapChain.Get(), (void*)g_FfxSwapChainCtx, cfgDesc.flags, cfgDesc.HUDLessColor.resource);
     } else {
-        testapp::Log("[FG-DIAG] ffxConfigure(%s) frameID=%llu enabled=%d OK swapChain=%p swapchainCtx=%p flags=0x%x hudless=%p\n",
-                     enable ? "enable" : "disable", (unsigned long long)g_FrameIdCounter,
-                     cfgDesc.frameGenerationEnabled, (void*)g_SwapChain.Get(), (void*)g_FfxSwapChainCtx, cfgDesc.flags,
-                     cfgDesc.HUDLessColor.resource);
+        testapp::Log(
+            "[FG-DIAG] ffxConfigure(%s) frameID=%llu enabled=%d OK swapChain=%p swapchainCtx=%p flags=0x%x "
+            "hudless=%p\n",
+            enable ? "enable" : "disable", (unsigned long long)g_FrameIdCounter, cfgDesc.frameGenerationEnabled,
+            (void*)g_SwapChain.Get(), (void*)g_FfxSwapChainCtx, cfgDesc.flags, cfgDesc.HUDLessColor.resource);
     }
     testapp::LogFlush();
     if (ret == FFX_API_RETURN_OK && enable) {
@@ -486,17 +511,30 @@ static void DispatchFSRPrepare(float elapsedSeconds) {
 }
 
 static void DestroyFSRContexts() {
-    if (g_FfxConfigure && g_FfxCtx) ConfigureFSR(false, nullptr);
+    if (g_FfxConfigure && g_FfxCtx)
+        ConfigureFSR(false, nullptr);
     testapp::Log("[FG-DIAG] FSR callback totals: present=%llu frameGeneration=%llu\n",
                  static_cast<unsigned long long>(g_FsrPresentCallbackCount.load()),
                  static_cast<unsigned long long>(g_FsrFrameGenerationCallbackCount.load()));
-    if (g_FfxDestroyContext && g_FfxCtx) { g_FfxDestroyContext(&g_FfxCtx, nullptr); g_FfxCtx = nullptr; }
-    if (g_FfxDestroyContext && g_FfxSwapChainCtx) { g_FfxDestroyContext(&g_FfxSwapChainCtx, nullptr); g_FfxSwapChainCtx = nullptr; }
+    if (g_FfxDestroyContext && g_FfxCtx) {
+        g_FfxDestroyContext(&g_FfxCtx, nullptr);
+        g_FfxCtx = nullptr;
+    }
+    if (g_FfxDestroyContext && g_FfxSwapChainCtx) {
+        g_FfxDestroyContext(&g_FfxSwapChainCtx, nullptr);
+        g_FfxSwapChainCtx = nullptr;
+    }
 }
 
 static void UnloadFSRRuntime() {
-    if (g_FfxModule) { FreeLibrary(g_FfxModule); g_FfxModule = nullptr; }
-    g_FfxCreateContext = nullptr; g_FfxConfigure = nullptr; g_FfxDispatch = nullptr; g_FfxDestroyContext = nullptr;
+    if (g_FfxModule) {
+        FreeLibrary(g_FfxModule);
+        g_FfxModule = nullptr;
+    }
+    g_FfxCreateContext = nullptr;
+    g_FfxConfigure = nullptr;
+    g_FfxDispatch = nullptr;
+    g_FfxDestroyContext = nullptr;
 }
 
 static void ReleaseDX12Resources() {
@@ -527,7 +565,8 @@ bool InitDX12(HWND hwnd) {
     ComPtr<IDXGIFactory4> factory;
     CreateDXGIFactory1(IID_PPV_ARGS(&factory));
     if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_Device)))) {
-        printf("Failed to create D3D12 device\n"); return false;
+        printf("Failed to create D3D12 device\n");
+        return false;
     }
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
@@ -548,17 +587,20 @@ bool InitDX12(HWND hwnd) {
     if (g_FfxCreateContext) {
         usingFfxSwapChain = CreateFSRSwapChainForHwndContext(factory.Get(), hwnd, swapChainDesc);
     } else {
-        testapp::Log("[FG-DIAG] FSR FG swapchain creation skipped: runtime not loaded before DX12 swapchain creation\n");
+        testapp::Log(
+            "[FG-DIAG] FSR FG swapchain creation skipped: runtime not loaded before DX12 swapchain creation\n");
     }
     if (!usingFfxSwapChain) {
         ComPtr<IDXGISwapChain1> swapChain1;
-        HRESULT hr = factory->CreateSwapChainForHwnd(g_CommandQueue.Get(), hwnd, &swapChainDesc, nullptr, nullptr,
-                                                     &swapChain1);
+        HRESULT hr =
+            factory->CreateSwapChainForHwnd(g_CommandQueue.Get(), hwnd, &swapChainDesc, nullptr, nullptr, &swapChain1);
         if (FAILED(hr) || !swapChain1 || FAILED(swapChain1.As(&g_SwapChain))) {
             testapp::Log("[FG-DIAG] Native CreateSwapChainForHwnd failed hr=0x%08lx\n", static_cast<unsigned long>(hr));
             return false;
         }
-        testapp::Log("[FG-DIAG] Native DXGI swapchain created; FSR present callback path unavailable until FG swapchain succeeds\n");
+        testapp::Log(
+            "[FG-DIAG] Native DXGI swapchain created; FSR present callback path unavailable until FG swapchain "
+            "succeeds\n");
     }
     factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
     g_FrameIndex = g_SwapChain->GetCurrentBackBufferIndex();
@@ -608,9 +650,11 @@ bool InitDX12(HWND hwnd) {
     g_FenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     testapp::dx12fg::CreateAuxiliaryResources(g_Device.Get(), static_cast<UINT>(g_WindowWidth),
                                               static_cast<UINT>(g_WindowHeight), g_FgInputs);
-    testapp::Log("[FG-DIAG] Swapchain: %dx%d buffers=%u requested=%d maxLatency=%u waitable=%d format=DXGI_FORMAT_R8G8B8A8_UNORM vsync=%d fullscreen=%d\n",
-                 g_WindowWidth, g_WindowHeight, g_SwapChainBufferCount, kRequestedBackBuffers, g_MaxFrameLatency,
-                 g_FrameLatencyWaitHandle ? 1 : 0, g_VSync, g_Fullscreen);
+    testapp::Log(
+        "[FG-DIAG] Swapchain: %dx%d buffers=%u requested=%d maxLatency=%u waitable=%d "
+        "format=DXGI_FORMAT_R8G8B8A8_UNORM vsync=%d fullscreen=%d\n",
+        g_WindowWidth, g_WindowHeight, g_SwapChainBufferCount, kRequestedBackBuffers, g_MaxFrameLatency,
+        g_FrameLatencyWaitHandle ? 1 : 0, g_VSync, g_Fullscreen);
     return true;
 }
 
@@ -630,8 +674,8 @@ void Render() {
 
     // Enable FSR FG after ~2 seconds (pass real backbuffer as hudlessColor)
     if (g_FsrInitialized && !g_FsrEnabled && !g_FsrEnableAttempted && elapsed >= 2.0f) {
-        testapp::Log("[FG-DIAG] Enabling FSR FG after %.2f seconds (frameID=%llu)...\n",
-                     elapsed, (unsigned long long)g_FrameIdCounter);
+        testapp::Log("[FG-DIAG] Enabling FSR FG after %.2f seconds (frameID=%llu)...\n", elapsed,
+                     (unsigned long long)g_FrameIdCounter);
         g_FsrEnableAttempted = true;
         if (ConfigureFSR(true, g_RenderTargets[frameIndex].Get())) {
             g_FsrEnabled = true;
@@ -706,8 +750,12 @@ void Cleanup() {
 
 int main(int argc, char* argv[]) {
     LoadConfig();
-    if (argc >= 3) { g_WindowWidth = atoi(argv[1]); g_WindowHeight = atoi(argv[2]); }
-    if (argc >= 4) g_GpuLoadPasses = atoi(argv[3]);
+    if (argc >= 3) {
+        g_WindowWidth = atoi(argv[1]);
+        g_WindowHeight = atoi(argv[2]);
+    }
+    if (argc >= 4)
+        g_GpuLoadPasses = atoi(argv[3]);
 
     testapp::EnableGameDpiAwareness();
     testapp::ApplyGameScheduling();
@@ -740,18 +788,26 @@ int main(int argc, char* argv[]) {
     RegisterClassExW(&wc);
 
     RECT monitorRect = testapp::GetPrimaryMonitorRect();
-    if (g_Fullscreen) { g_WindowWidth = monitorRect.right - monitorRect.left; g_WindowHeight = monitorRect.bottom - monitorRect.top; }
+    if (g_Fullscreen) {
+        g_WindowWidth = monitorRect.right - monitorRect.left;
+        g_WindowHeight = monitorRect.bottom - monitorRect.top;
+    }
     DWORD style = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
     RECT rc = testapp::AdjustWindowRectForClientSize(style, 0, g_WindowWidth, g_WindowHeight);
 
     wchar_t title[256];
     swprintf(title, 256, L"DX12 FSR FG Test - %dx%d", g_WindowWidth, g_WindowHeight);
     HWND hwnd = CreateWindowW(WINDOW_CLASS, title, style, g_Fullscreen ? monitorRect.left : 0,
-                              g_Fullscreen ? monitorRect.top : 0, rc.right - rc.left, rc.bottom - rc.top,
-                              nullptr, nullptr, wc.hInstance, nullptr);
-    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) return 0;
-    if (!InitDX12(hwnd)) { testapp::Log("Failed to initialize DX12\n"); return 1; }
-    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) return 0;
+                              g_Fullscreen ? monitorRect.top : 0, rc.right - rc.left, rc.bottom - rc.top, nullptr,
+                              nullptr, wc.hInstance, nullptr);
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight))
+        return 0;
+    if (!InitDX12(hwnd)) {
+        testapp::Log("Failed to initialize DX12\n");
+        return 1;
+    }
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight))
+        return 0;
 
     testapp::Log("Initializing FSR FG...\n");
     FsrInitResult fsrResult = TryInitFSR();
@@ -764,7 +820,8 @@ int main(int argc, char* argv[]) {
             testapp::Log("[FG-DIAG] FSR FG DLL not found (build.py should have placed it next to exe)\n");
             break;
         case kFsrNoExports:
-            testapp::Log("[FG-DIAG] FSR FG DLL loaded but missing ffxCreateContext/ffxConfigure/ffxDestroyContext exports\n");
+            testapp::Log(
+                "[FG-DIAG] FSR FG DLL loaded but missing ffxCreateContext/ffxConfigure/ffxDestroyContext exports\n");
             break;
         case kFsrCreateFailed:
             testapp::Log("[FG-DIAG] FSR FG ffxCreateContext failed (no AMD GPU or unsupported runtime version?)\n");
@@ -775,8 +832,12 @@ int main(int argc, char* argv[]) {
 
     MSG msg = {};
     while (g_Running) {
-        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
-        if (g_Running) Render();
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        if (g_Running)
+            Render();
     }
     Cleanup();
     testapp::Log("Exiting (total frames rendered: %llu)\n", (unsigned long long)g_FrameIdCounter);

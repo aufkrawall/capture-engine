@@ -6,8 +6,8 @@
 #include <algorithm>
 #include <cstring>
 #include "../apis/dx12_hook.h"
-#include "hook_common.h"
 #include "dx12_overlay_policy.h"
+#include "hook_common.h"
 #include "overlay_shader_bytecode.h"
 
 namespace CustomOverlay {
@@ -732,9 +732,8 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
         return;
     }
 
-    const bool hasTexturedCommands = std::any_of(commands.begin(), commands.end(), [](const DrawCommand& cmd) {
-        return cmd.useTexture;
-    });
+    const bool hasTexturedCommands =
+        std::any_of(commands.begin(), commands.end(), [](const DrawCommand& cmd) { return cmd.useTexture; });
 
     if (hasTexturedCommands && !UploadFontTextureIfNeeded(currentCmdList)) {
         DX12_DEBUG_STEP("Render", "EARLY RETURN - deferred font upload failed");
@@ -856,9 +855,9 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
         }
     }
     for (const auto& cmd : commands) {
-        ID3D12PipelineState* pso =
-            cmd.useTexture ? (useHdrTextShader ? pipelineState.Get() : pipelineStateTexturedSdr.Get())
-                           : pipelineStateSolid.Get();
+        ID3D12PipelineState* pso = cmd.useTexture
+                                       ? (useHdrTextShader ? pipelineState.Get() : pipelineStateTexturedSdr.Get())
+                                       : pipelineStateSolid.Get();
         if (pso != lastPSO) {
             currentCmdList->SetPipelineState(pso);
             lastPSO = pso;

@@ -23,8 +23,7 @@ struct MappedDriveResolution {
 
 const char* MappedDriveResolutionSourceName(MappedDriveResolutionSource source);
 bool IsDriveAbsolutePath(const std::filesystem::path& path);
-std::filesystem::path ReplaceDriveRootWithRemotePath(const std::filesystem::path& path,
-                                                     const std::wstring& remoteRoot);
+std::filesystem::path ReplaceDriveRootWithRemotePath(const std::filesystem::path& path, const std::wstring& remoteRoot);
 MappedDriveResolution ResolveMappedDrivePath(const std::filesystem::path& path);
 
 }  // namespace ce::path

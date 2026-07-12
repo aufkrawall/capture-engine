@@ -186,8 +186,8 @@ private:
     int inputHeight = 0;
     int outputWidth = 0;  // Encoded output dimensions (after scaling)
     int outputHeight = 0;
-    bool scalingEnabled = false;                     // True if input != output dimensions
-    bool captureCursor = true;                       // Include mouse cursor in recording
+    bool scalingEnabled = false;  // True if input != output dimensions
+    bool captureCursor = true;    // Include mouse cursor in recording
     // Runtime cursor-composition suppression: set while the capture source's
     // frames already CONTAIN the cursor (DXGI duplication reporting a
     // software/composed cursor) so encoder-side composition does not draw a
@@ -195,7 +195,7 @@ private:
     // follows captureCursor because this state can flip mid-session on
     // hardware/software cursor-plane transitions.
     std::atomic<bool> cursorCompositionSuppressed{false};
-    int gpuPriority = 0;                             // GPU priority for encoder (-7 to 7)
+    int gpuPriority = 0;  // GPU priority for encoder (-7 to 7)
     int currentGpuThreadPriority = 0;
     uint64_t gpuPriorityPressureSinceMs = 0;
     uint64_t gpuPriorityHealthySinceMs = 0;
@@ -237,8 +237,9 @@ private:
     // Encoder-owned shared textures (for Vulkan interop)
     // Vulkan games import these textures instead of creating their own
     ID3D11Texture2D* sharedCaptureTextures[SHARED_TEXTURE_SLOT_COUNT] = {};
-    HANDLE sharedCaptureHandles[SHARED_TEXTURE_SLOT_COUNT] = {};     // NT handles
-    HANDLE sharedCaptureKmtHandles[SHARED_TEXTURE_SLOT_COUNT] = {};  // KMT handles (global WDDM, for DXVK Vulkan import)
+    HANDLE sharedCaptureHandles[SHARED_TEXTURE_SLOT_COUNT] = {};  // NT handles
+    HANDLE sharedCaptureKmtHandles[SHARED_TEXTURE_SLOT_COUNT] =
+        {};  // KMT handles (global WDDM, for DXVK Vulkan import)
     ID3D11Fence* sharedCaptureFence = nullptr;
     HANDLE sharedCaptureFenceHandle = nullptr;
     bool sharedCaptureTexturesCreated = false;
@@ -455,8 +456,8 @@ private:
                                       bool allowCursorHandleVisibilityFallback = false,
                                       uint64_t keyedMutexAcquireKey = 0);
     bool ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool cursorVisible = false,
-                           int cursorX = 0, int cursorY = 0, bool allowDirectInputView = true,
-                           int captureOriginX = 0, int captureOriginY = 0, uint64_t keyedMutexAcquireKey = 0);
+                           int cursorX = 0, int cursorY = 0, bool allowDirectInputView = true, int captureOriginX = 0,
+                           int captureOriginY = 0, uint64_t keyedMutexAcquireKey = 0);
     bool CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture);
     bool EnsureSwapRBShader();
     ID3D11Texture2D* RenderFullscreenCopy(ID3D11Texture2D* input, uint32_t w, uint32_t h, DXGI_FORMAT inputSrvFormat,

@@ -51,25 +51,25 @@ TEST(StreamlineRuntimePolicyTest, StreamlineCoreExportsHookOnlyStableCoreModules
 }
 
 TEST(StreamlineRuntimePolicyTest, FeatureExportsHookOnlyTheirOwningFeatureModules) {
-    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slDLSSGSetOptions",
-                                                                                       "sl.dlss_g.dll"));
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slDLSSGSetOptions", "sl.dlss_g.dll"));
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slDLSSGGetState",
                                                                                        "C:\\Game\\SL.DLSS_G.DLL"));
-    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSleep",
-                                                                                       "sl.reflex.dll"));
-    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSetOptions",
-                                                                                       "sl.reflex.dll"));
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSleep", "sl.reflex.dll"));
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSetOptions", "sl.reflex.dll"));
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSetConstants",
                                                                                        "sl.reflex.dll"));
 
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slGetPluginFunction",
-                                                                                        "sl.reflex.dll"));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slDLSSGSetOptions",
-                                                                                        "sl.reflex.dll"));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSleep",
-                                                                                        "sl.dlss_g.dll"));
-    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSetOptions",
-                                                                                        "sl.common.dll"));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slGetPluginFunction", "sl.reflex.dll"));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slDLSSGSetOptions", "sl.reflex.dll"));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSleep", "sl.dlss_g.dll"));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::ShouldHookStreamlineFeatureExportOnLoad("slReflexSetOptions", "sl.common.dll"));
 }
 
 TEST(StreamlineRuntimePolicyTest, ReturnedFeatureWrapperSubstitutionRequiresCallableOriginal) {
@@ -556,10 +556,10 @@ TEST(StreamlineRuntimePolicyTest, GetStateWarmupProtectionKeepsPureDLSSOffChurnD
 TEST(StreamlineRuntimePolicyTest, StartupProtectedOffChurnWaitsForActiveProofAfterPostSLConfirmation) {
     EXPECT_EQ(3u, ce::streamline_runtime_policy::GetStartupProtectedOffChurnActiveProofUpdateThreshold());
 
-    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
-        true, 0, true, true, false));
-    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
-        true, 2, true, true, false));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(true, 0, true,
+                                                                                                          true, false));
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(true, 2, true,
+                                                                                                          true, false));
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldKeepStartupProtectedOffChurnDeferredUntilActiveProof(
         true, 3, true, true, false));
 
@@ -695,20 +695,20 @@ TEST(StreamlineRuntimePolicyTest, HookSlotInvalidationMatchesUnloadedImageRange)
     void* outside = outsideImage + 0x40;
 
     // Patched target inside the departing image.
-    EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(inRange, nullptr, base,
-                                                                                             size));
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(inRange, nullptr, base, size));
     // Saved original/export inside the departing image (import-fallback slots).
-    EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(nullptr, inRange, base,
-                                                                                             size));
+    EXPECT_TRUE(
+        ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(nullptr, inRange, base, size));
 
-    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(outside, pastEnd, base,
-                                                                                              size));
-    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(nullptr, nullptr, base,
-                                                                                              size));
-    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(inRange, inRange,
-                                                                                              nullptr, size));
-    EXPECT_FALSE(ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(inRange, inRange, base,
-                                                                                              0));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(outside, pastEnd, base, size));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(nullptr, nullptr, base, size));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(inRange, inRange, nullptr, size));
+    EXPECT_FALSE(
+        ce::streamline_runtime_policy::IsStreamlineHookSlotInvalidatedByModuleUnload(inRange, inRange, base, 0));
 }
 
 TEST(StreamlineRuntimePolicyTest, ReloadedCoreModuleMaskIsStaleWhenNoTargetBelongsToArrivingInstance) {

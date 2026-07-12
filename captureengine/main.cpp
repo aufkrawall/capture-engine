@@ -125,9 +125,10 @@ struct MainThreadBlockTimer {
     ~MainThreadBlockTimer() {
         const ULONGLONG elapsedMs = GetTickCount64() - startMs_;
         if (elapsedMs >= 250) {
-            LogWarn("[Controller] Main-thread blocked %llums in %s — topmost overlay + global hotkeys "
-                    "were unresponsive this long (can wedge a game MPO/foreground transition)",
-                    static_cast<unsigned long long>(elapsedMs), label_);
+            LogWarn(
+                "[Controller] Main-thread blocked %llums in %s — topmost overlay + global hotkeys "
+                "were unresponsive this long (can wedge a game MPO/foreground transition)",
+                static_cast<unsigned long long>(elapsedMs), label_);
         }
     }
 };
@@ -660,8 +661,8 @@ static bool WithInjectSharedMem(std::function<void(SharedMemoryLayout*)> fn) {
     HANDLE hShm = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, shmName);
     if (!hShm)
         return false;
-    auto* pShm = (SharedMemoryLayout*)MapViewOfFile(hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0,
-                                                     sizeof(SharedMemoryLayout));
+    auto* pShm =
+        (SharedMemoryLayout*)MapViewOfFile(hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
     if (!pShm) {
         CloseHandle(hShm);
         return false;
@@ -691,9 +692,8 @@ void ToggleRecording() {
         }
 
         // Ensure audio-only flag is cleared for normal recording
-        WithInjectSharedMem([](SharedMemoryLayout* shm) {
-            shm->runtimeState.audioOnly.store(false, std::memory_order_release);
-        });
+        WithInjectSharedMem(
+            [](SharedMemoryLayout* shm) { shm->runtimeState.audioOnly.store(false, std::memory_order_release); });
 
         bool limiterReady = true;
         if (g_Config.fpsLimiter.captureSyncEnabled) {
@@ -777,9 +777,8 @@ void ToggleAudioOnlyRecording() {
         }
 
         // Set audioOnly flag in shared memory BEFORE notifying inject
-        bool audioOnlySet = WithInjectSharedMem([](SharedMemoryLayout* shm) {
-            shm->runtimeState.audioOnly.store(true, std::memory_order_release);
-        });
+        bool audioOnlySet = WithInjectSharedMem(
+            [](SharedMemoryLayout* shm) { shm->runtimeState.audioOnly.store(true, std::memory_order_release); });
 
         if (!audioOnlySet) {
             LogWarn("[Controller] No inject shared memory found for audio-only flag - media will use separate IPC");
@@ -1071,8 +1070,8 @@ bool CompleteControllerStartup() {
     const int64_t hotkeyStartUs = Log_GetQpcUs();
     RegisterHotKey(NULL, HOTKEY_ID_RECORD, g_Config.hotkeyStartStop.GetModifiers(), g_Config.hotkeyStartStop.vkey);
     if (g_Config.hotkeyScreenshot.vkey != 0) {
-    RegisterHotKey(NULL, HOTKEY_ID_SCREENSHOT, g_Config.hotkeyScreenshot.GetModifiers(),
-                   g_Config.hotkeyScreenshot.vkey);
+        RegisterHotKey(NULL, HOTKEY_ID_SCREENSHOT, g_Config.hotkeyScreenshot.GetModifiers(),
+                       g_Config.hotkeyScreenshot.vkey);
     }
     if (g_Config.hotkeyAudioOnly.vkey != 0) {
         RegisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY, g_Config.hotkeyAudioOnly.GetModifiers(),
@@ -1234,8 +1233,9 @@ int ControllerMain(HINSTANCE hInstance) {
         const int64_t rateLogElapsedUs = iterNowUs - iterRateLogStartUs;
         if (rateLogElapsedUs > 5000000) {
             const double rateHz = static_cast<double>(iterRateLogCount) / (rateLogElapsedUs / 1000000.0);
-            LogDebug("[ControllerDiag] iter=%llu rate=%.1f Hz delta=%lld us waitMs=%lu msgProc=%d", (unsigned long long)iterCount,
-                     rateHz, (long long)iterDeltaUs, GetControllerLoopWaitMs(lastConfigCheck), 0);
+            LogDebug("[ControllerDiag] iter=%llu rate=%.1f Hz delta=%lld us waitMs=%lu msgProc=%d",
+                     (unsigned long long)iterCount, rateHz, (long long)iterDeltaUs,
+                     GetControllerLoopWaitMs(lastConfigCheck), 0);
             iterRateLogCount = 0;
             iterRateLogStartUs = iterNowUs;
         }
@@ -1247,9 +1247,12 @@ int ControllerMain(HINSTANCE hInstance) {
         int msgHotkeys = 0;
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
             msgCount++;
-            if (msg.message == WM_TIMER) msgTimers++;
-            else if (msg.message == WM_HOTKEY) msgHotkeys++;
-            else if (msg.message != WM_QUIT && msg.message != kMsgCompleteControllerStartup) msgOthers++;
+            if (msg.message == WM_TIMER)
+                msgTimers++;
+            else if (msg.message == WM_HOTKEY)
+                msgHotkeys++;
+            else if (msg.message != WM_QUIT && msg.message != kMsgCompleteControllerStartup)
+                msgOthers++;
             if (msg.message == WM_QUIT) {
                 g_Running = false;
                 continue;
@@ -1417,8 +1420,7 @@ int ControllerMain(HINSTANCE hInstance) {
             LogDebug("[ControllerDiag] iter=%llu waitMs=%lu msgCount=%d (timer=%d other=%d hk=%d)",
                      (unsigned long long)iterCount, waitMs, msgCount, msgTimers, msgOthers, msgHotkeys);
             if (waitMs == 0) {
-                LogDebug("[ControllerDiag] iter=%llu WAITMS_ZERO cfgElapsed=%lu",
-                         (unsigned long long)iterCount,
+                LogDebug("[ControllerDiag] iter=%llu WAITMS_ZERO cfgElapsed=%lu", (unsigned long long)iterCount,
                          (unsigned long)(GetTickCount() - lastConfigCheck));
             }
         }
@@ -1512,7 +1514,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         SetCrashDumpDirectory(earlyLogsDir);
         InstallCrashHandler();
     } else {
-        OutputDebugStringA("[CaptureEngine] log_level=none: skipping log directory creation, crash handler, and all debug machinery\n");
+        OutputDebugStringA(
+            "[CaptureEngine] log_level=none: skipping log directory creation, crash handler, and all debug "
+            "machinery\n");
     }
 
     // Parse --auto-record flag: --auto-record=DELAY_MS,DURATION_MS

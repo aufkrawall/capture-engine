@@ -66,7 +66,7 @@ void LoadConfig() {
 }
 
 const wchar_t* WINDOW_CLASS = L"CaptureTestDLSSFG";
-constexpr int FRAME_COUNT = 3; // 3 back buffers: DLSS FG needs extra surfaces
+constexpr int FRAME_COUNT = 3;  // 3 back buffers: DLSS FG needs extra surfaces
 
 // DX12 objects
 ComPtr<ID3D12Device> g_Device;
@@ -117,9 +117,15 @@ bool g_Running = true;
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
-        case WM_DESTROY: g_Running = false; PostQuitMessage(0); return 0;
+        case WM_DESTROY:
+            g_Running = false;
+            PostQuitMessage(0);
+            return 0;
         case WM_KEYDOWN:
-            if (wParam == VK_ESCAPE) { g_Running = false; DestroyWindow(hWnd); }
+            if (wParam == VK_ESCAPE) {
+                g_Running = false;
+                DestroyWindow(hWnd);
+            }
             return 0;
     }
     return DefWindowProc(hWnd, msg, wParam, lParam);
@@ -154,19 +160,32 @@ void MoveToNextFrame() {
 // ---------------------------------------------------------------------------
 static const char* SlResultName(sl::Result result) {
     switch (result) {
-        case sl::Result::eOk: return "eOk";
-        case sl::Result::eErrorDriverOutOfDate: return "eErrorDriverOutOfDate";
-        case sl::Result::eErrorOSOutOfDate: return "eErrorOSOutOfDate";
-        case sl::Result::eErrorOSDisabledHWS: return "eErrorOSDisabledHWS";
-        case sl::Result::eErrorDeviceNotCreated: return "eErrorDeviceNotCreated";
-        case sl::Result::eErrorNoSupportedAdapterFound: return "eErrorNoSupportedAdapterFound";
-        case sl::Result::eErrorNotInitialized: return "eErrorNotInitialized";
-        case sl::Result::eErrorFeatureNotSupported: return "eErrorFeatureNotSupported";
-        case sl::Result::eErrorFeatureMissing: return "eErrorFeatureMissing";
-        case sl::Result::eErrorFeatureFailedToLoad: return "eErrorFeatureFailedToLoad";
-        case sl::Result::eErrorInvalidParameter: return "eErrorInvalidParameter";
-        case sl::Result::eErrorInvalidState: return "eErrorInvalidState";
-        default: return "unknown";
+        case sl::Result::eOk:
+            return "eOk";
+        case sl::Result::eErrorDriverOutOfDate:
+            return "eErrorDriverOutOfDate";
+        case sl::Result::eErrorOSOutOfDate:
+            return "eErrorOSOutOfDate";
+        case sl::Result::eErrorOSDisabledHWS:
+            return "eErrorOSDisabledHWS";
+        case sl::Result::eErrorDeviceNotCreated:
+            return "eErrorDeviceNotCreated";
+        case sl::Result::eErrorNoSupportedAdapterFound:
+            return "eErrorNoSupportedAdapterFound";
+        case sl::Result::eErrorNotInitialized:
+            return "eErrorNotInitialized";
+        case sl::Result::eErrorFeatureNotSupported:
+            return "eErrorFeatureNotSupported";
+        case sl::Result::eErrorFeatureMissing:
+            return "eErrorFeatureMissing";
+        case sl::Result::eErrorFeatureFailedToLoad:
+            return "eErrorFeatureFailedToLoad";
+        case sl::Result::eErrorInvalidParameter:
+            return "eErrorInvalidParameter";
+        case sl::Result::eErrorInvalidState:
+            return "eErrorInvalidState";
+        default:
+            return "unknown";
     }
 }
 
@@ -207,24 +226,24 @@ static bool LoadStreamlineAndInit() {
     g_SlSetD3DDevice = reinterpret_cast<PFun_slSetD3DDevice*>(GetProcAddress(g_SlModule, "slSetD3DDevice"));
     g_SlGetFeatureFunction =
         reinterpret_cast<PFun_slGetFeatureFunction*>(GetProcAddress(g_SlModule, "slGetFeatureFunction"));
-    g_SlGetNewFrameToken =
-        reinterpret_cast<PFun_slGetNewFrameToken*>(GetProcAddress(g_SlModule, "slGetNewFrameToken"));
+    g_SlGetNewFrameToken = reinterpret_cast<PFun_slGetNewFrameToken*>(GetProcAddress(g_SlModule, "slGetNewFrameToken"));
     g_SlSetConstants = reinterpret_cast<PFun_slSetConstants*>(GetProcAddress(g_SlModule, "slSetConstants"));
     g_SlSetTagForFrame = reinterpret_cast<PFun_slSetTagForFrame*>(GetProcAddress(g_SlModule, "slSetTagForFrame"));
     g_SlUpgradeInterface = reinterpret_cast<PFun_slUpgradeInterface*>(GetProcAddress(g_SlModule, "slUpgradeInterface"));
     g_SlCreateDXGIFactory1 =
         reinterpret_cast<PFun_CreateDXGIFactory1>(GetProcAddress(g_SlModule, "CreateDXGIFactory1"));
-    g_SlD3D12CreateDevice =
-        reinterpret_cast<PFun_D3D12CreateDevice>(GetProcAddress(g_SlModule, "D3D12CreateDevice"));
+    g_SlD3D12CreateDevice = reinterpret_cast<PFun_D3D12CreateDevice>(GetProcAddress(g_SlModule, "D3D12CreateDevice"));
 
     if (!g_SlInit || !g_SlShutdown || !g_SlSetD3DDevice || !g_SlGetFeatureFunction || !g_SlGetNewFrameToken ||
         !g_SlSetConstants || !g_SlSetTagForFrame) {
         testapp::Log("[FG-DIAG] sl.interposer.dll missing required core Streamline exports\n");
-        FreeLibrary(g_SlModule); g_SlModule = nullptr;
+        FreeLibrary(g_SlModule);
+        g_SlModule = nullptr;
         return false;
     }
-    testapp::Log("[FG-DIAG] Streamline proxy exports: CreateDXGIFactory1=%p D3D12CreateDevice=%p slUpgradeInterface=%p\n",
-                 (void*)g_SlCreateDXGIFactory1, (void*)g_SlD3D12CreateDevice, (void*)g_SlUpgradeInterface);
+    testapp::Log(
+        "[FG-DIAG] Streamline proxy exports: CreateDXGIFactory1=%p D3D12CreateDevice=%p slUpgradeInterface=%p\n",
+        (void*)g_SlCreateDXGIFactory1, (void*)g_SlD3D12CreateDevice, (void*)g_SlUpgradeInterface);
 
     std::wstring pluginPath = ExeDirectoryW();
     const wchar_t* pluginPaths[] = {pluginPath.c_str()};
@@ -248,7 +267,8 @@ static bool LoadStreamlineAndInit() {
     testapp::Log("[FG-DIAG] slInit result=%d (%s) pluginPath=%S sdk=0x%llx\n", static_cast<int>(initResult),
                  SlResultName(initResult), pluginPath.c_str(), static_cast<unsigned long long>(sl::kSDKVersion));
     if (initResult != sl::Result::eOk) {
-        FreeLibrary(g_SlModule); g_SlModule = nullptr;
+        FreeLibrary(g_SlModule);
+        g_SlModule = nullptr;
         return false;
     }
     g_SlInitialized = true;
@@ -299,8 +319,8 @@ static bool TryInitDLSSFG() {
         sl::ReflexOptions reflex = {};
         reflex.mode = sl::ReflexMode::eLowLatency;
         sl::Result reflexResult = g_SlReflexSetOptions(reflex);
-        testapp::Log("[FG-DIAG] slReflexSetOptions(mode=LowLatency) result=%d (%s)\n",
-                     static_cast<int>(reflexResult), SlResultName(reflexResult));
+        testapp::Log("[FG-DIAG] slReflexSetOptions(mode=LowLatency) result=%d (%s)\n", static_cast<int>(reflexResult),
+                     SlResultName(reflexResult));
     }
     testapp::Log("[FG-DIAG] Viewport handle initialized (value=%u)\n", static_cast<uint32_t>(g_SlViewport));
     return true;
@@ -312,13 +332,14 @@ static void SetPCLMarker(sl::FrameToken* token, sl::PCLMarker marker, const char
     }
     sl::Result ret = g_SlPCLSetMarker(marker, *token);
     if (ret != sl::Result::eOk && g_FrameTokenIndex < 8) {
-        testapp::Log("[FG-DIAG] slPCLSetMarker(%s) frame=%u result=%d (%s)\n",
-                     name, g_FrameTokenIndex ? g_FrameTokenIndex - 1 : 0, static_cast<int>(ret), SlResultName(ret));
+        testapp::Log("[FG-DIAG] slPCLSetMarker(%s) frame=%u result=%d (%s)\n", name,
+                     g_FrameTokenIndex ? g_FrameTokenIndex - 1 : 0, static_cast<int>(ret), SlResultName(ret));
     }
 }
 
 static bool SetDLSSFGMode(bool enable) {
-    if (!g_SlDLSSGSetOptions) return false;
+    if (!g_SlDLSSGSetOptions)
+        return false;
 
     sl::DLSSGOptions options = {};
     options.mode = enable ? sl::DLSSGMode::eOn : sl::DLSSGMode::eOff;
@@ -353,14 +374,13 @@ static bool PollDLSSFGState() {
     }
     sl::DLSSGState state = {};
     sl::Result ret = g_SlDLSSGGetState(g_SlViewport, state, nullptr);
-    testapp::Log("[FG-DIAG] slDLSSGGetState ret=%d (%s) vramUsage=%llu status=%u genFrames=%u maxGen=%u dynamicMFG=%d\n",
-                 static_cast<int>(ret), SlResultName(ret), (unsigned long long)state.estimatedVRAMUsageInBytes,
-                 static_cast<uint32_t>(state.status),
-                 state.numFramesActuallyPresented, state.numFramesToGenerateMax,
-                 static_cast<int>(state.bIsDynamicMFGSupported));
+    testapp::Log(
+        "[FG-DIAG] slDLSSGGetState ret=%d (%s) vramUsage=%llu status=%u genFrames=%u maxGen=%u dynamicMFG=%d\n",
+        static_cast<int>(ret), SlResultName(ret), (unsigned long long)state.estimatedVRAMUsageInBytes,
+        static_cast<uint32_t>(state.status), state.numFramesActuallyPresented, state.numFramesToGenerateMax,
+        static_cast<int>(state.bIsDynamicMFGSupported));
     if (ret == sl::Result::eOk && state.numFramesActuallyPresented > 0) {
-        testapp::Log("[FG-DIAG] DLSS FG active: %u generated frames\n",
-                     state.numFramesActuallyPresented);
+        testapp::Log("[FG-DIAG] DLSS FG active: %u generated frames\n", state.numFramesActuallyPresented);
         return true;
     }
     testapp::LogFlush();
@@ -375,23 +395,23 @@ static sl::FrameToken* BeginStreamlineFrame() {
     sl::FrameToken* token = nullptr;
     sl::Result ret = g_SlGetNewFrameToken(token, &frameIndex);
     if (ret != sl::Result::eOk || !token) {
-        testapp::Log("[FG-DIAG] slGetNewFrameToken frame=%u failed result=%d (%s)\n", frameIndex,
-                     static_cast<int>(ret), SlResultName(ret));
+        testapp::Log("[FG-DIAG] slGetNewFrameToken frame=%u failed result=%d (%s)\n", frameIndex, static_cast<int>(ret),
+                     SlResultName(ret));
         return nullptr;
     }
     if (g_SlReflexSleep) {
         sl::Result sleepResult = g_SlReflexSleep(*token);
         if (sleepResult != sl::Result::eOk && frameIndex < 8) {
-            testapp::Log("[FG-DIAG] slReflexSleep frame=%u result=%d (%s)\n", frameIndex,
-                         static_cast<int>(sleepResult), SlResultName(sleepResult));
+            testapp::Log("[FG-DIAG] slReflexSleep frame=%u result=%d (%s)\n", frameIndex, static_cast<int>(sleepResult),
+                         SlResultName(sleepResult));
         }
     }
     return token;
 }
 
 static void SubmitStreamlineFrameInputs(sl::FrameToken* token, UINT frameIndex) {
-    if (!token || !g_SlSetConstants || !g_SlSetTagForFrame || !g_FgInputs.valid ||
-        frameIndex >= FRAME_COUNT || !g_RenderTargets[frameIndex]) {
+    if (!token || !g_SlSetConstants || !g_SlSetTagForFrame || !g_FgInputs.valid || frameIndex >= FRAME_COUNT ||
+        !g_RenderTargets[frameIndex]) {
         return;
     }
 
@@ -447,13 +467,13 @@ static void SubmitStreamlineFrameInputs(sl::FrameToken* token, UINT frameIndex) 
         sl::ResourceTag(&ui, sl::kBufferTypeUIColorAndAlpha, sl::eValidUntilPresent, &extent),
         sl::ResourceTag(&backbuffer, sl::kBufferTypeBackbuffer, sl::eValidUntilPresent, &extent),
     };
-    sl::Result tagResult =
-        g_SlSetTagForFrame(*token, g_SlViewport, tags, _countof(tags), g_CommandList.Get());
+    sl::Result tagResult = g_SlSetTagForFrame(*token, g_SlViewport, tags, _countof(tags), g_CommandList.Get());
     if (tagResult != sl::Result::eOk || g_FrameTokenIndex < 5 || (g_FrameTokenIndex % 120) == 0) {
-        testapp::Log("[FG-DIAG] slSetTagForFrame frame=%u result=%d (%s) depth=%p mvec=%p hudless=%p ui=%p backbuffer=%p\n",
-                     g_FrameTokenIndex - 1, static_cast<int>(tagResult), SlResultName(tagResult),
-                     g_FgInputs.depth.Get(), g_FgInputs.motionVectors.Get(), g_FgInputs.hudlessColor.Get(),
-                     g_FgInputs.uiColor.Get(), g_RenderTargets[frameIndex].Get());
+        testapp::Log(
+            "[FG-DIAG] slSetTagForFrame frame=%u result=%d (%s) depth=%p mvec=%p hudless=%p ui=%p backbuffer=%p\n",
+            g_FrameTokenIndex - 1, static_cast<int>(tagResult), SlResultName(tagResult), g_FgInputs.depth.Get(),
+            g_FgInputs.motionVectors.Get(), g_FgInputs.hudlessColor.Get(), g_FgInputs.uiColor.Get(),
+            g_RenderTargets[frameIndex].Get());
     }
 }
 
@@ -467,7 +487,10 @@ static void ShutdownDLSSFG() {
                      SlResultName(shutdownResult));
         g_SlInitialized = false;
     }
-    if (g_SlModule) { FreeLibrary(g_SlModule); g_SlModule = nullptr; }
+    if (g_SlModule) {
+        FreeLibrary(g_SlModule);
+        g_SlModule = nullptr;
+    }
     g_SlDeviceSet = false;
 }
 
@@ -509,16 +532,16 @@ bool InitDX12(HWND hwnd) {
     PFun_D3D12CreateDevice createDevice = g_SlD3D12CreateDevice ? g_SlD3D12CreateDevice : D3D12CreateDevice;
     HRESULT deviceHr = createDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&g_Device));
     testapp::Log("[FG-DIAG] %s D3D12CreateDevice hr=0x%08lx device=%p\n",
-                 g_SlD3D12CreateDevice ? "Streamline" : "Native", static_cast<unsigned long>(deviceHr),
-                 g_Device.Get());
+                 g_SlD3D12CreateDevice ? "Streamline" : "Native", static_cast<unsigned long>(deviceHr), g_Device.Get());
     if (FAILED(deviceHr) || !g_Device) {
-        printf("Failed to create D3D12 device\n"); return false;
+        printf("Failed to create D3D12 device\n");
+        return false;
     }
     if (g_SlSetD3DDevice && g_SlInitialized) {
         sl::Result deviceResult = g_SlSetD3DDevice(g_Device.Get());
         g_SlDeviceSet = (deviceResult == sl::Result::eOk);
-        testapp::Log("[FG-DIAG] slSetD3DDevice(before swapchain) result=%d (%s)\n",
-                     static_cast<int>(deviceResult), SlResultName(deviceResult));
+        testapp::Log("[FG-DIAG] slSetD3DDevice(before swapchain) result=%d (%s)\n", static_cast<int>(deviceResult),
+                     SlResultName(deviceResult));
     }
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
@@ -536,10 +559,10 @@ bool InitDX12(HWND hwnd) {
     swapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
     ComPtr<IDXGISwapChain1> swapChain1;
-    HRESULT swapHr = factory->CreateSwapChainForHwnd(g_CommandQueue.Get(), hwnd, &swapChainDesc, nullptr, nullptr,
-                                                     &swapChain1);
-    testapp::Log("[FG-DIAG] CreateSwapChainForHwnd hr=0x%08lx swapChain1=%p\n",
-                 static_cast<unsigned long>(swapHr), swapChain1.Get());
+    HRESULT swapHr =
+        factory->CreateSwapChainForHwnd(g_CommandQueue.Get(), hwnd, &swapChainDesc, nullptr, nullptr, &swapChain1);
+    testapp::Log("[FG-DIAG] CreateSwapChainForHwnd hr=0x%08lx swapChain1=%p\n", static_cast<unsigned long>(swapHr),
+                 swapChain1.Get());
     if (FAILED(swapHr) || !swapChain1 || FAILED(swapChain1.As(&g_SwapChain))) {
         return false;
     }
@@ -572,8 +595,10 @@ bool InitDX12(HWND hwnd) {
     g_FenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     testapp::dx12fg::CreateAuxiliaryResources(g_Device.Get(), static_cast<UINT>(g_WindowWidth),
                                               static_cast<UINT>(g_WindowHeight), g_FgInputs);
-    testapp::Log("[FG-DIAG] Swapchain: %dx%d buffers=%d format=DXGI_FORMAT_R8G8B8A8_UNORM swapEffect=FLIP_DISCARD flags=FRAME_LATENCY_WAITABLE vsync=%d fullscreen=%d\n",
-                 g_WindowWidth, g_WindowHeight, FRAME_COUNT, g_VSync, g_Fullscreen);
+    testapp::Log(
+        "[FG-DIAG] Swapchain: %dx%d buffers=%d format=DXGI_FORMAT_R8G8B8A8_UNORM swapEffect=FLIP_DISCARD "
+        "flags=FRAME_LATENCY_WAITABLE vsync=%d fullscreen=%d\n",
+        g_WindowWidth, g_WindowHeight, FRAME_COUNT, g_VSync, g_Fullscreen);
     return true;
 }
 
@@ -665,8 +690,12 @@ void Cleanup() {
 
 int main(int argc, char* argv[]) {
     LoadConfig();
-    if (argc >= 3) { g_WindowWidth = atoi(argv[1]); g_WindowHeight = atoi(argv[2]); }
-    if (argc >= 4) g_GpuLoadPasses = atoi(argv[3]);
+    if (argc >= 3) {
+        g_WindowWidth = atoi(argv[1]);
+        g_WindowHeight = atoi(argv[2]);
+    }
+    if (argc >= 4)
+        g_GpuLoadPasses = atoi(argv[3]);
 
     testapp::EnableGameDpiAwareness();
     testapp::ApplyGameScheduling();
@@ -698,18 +727,26 @@ int main(int argc, char* argv[]) {
     RegisterClassExW(&wc);
 
     RECT monitorRect = testapp::GetPrimaryMonitorRect();
-    if (g_Fullscreen) { g_WindowWidth = monitorRect.right - monitorRect.left; g_WindowHeight = monitorRect.bottom - monitorRect.top; }
+    if (g_Fullscreen) {
+        g_WindowWidth = monitorRect.right - monitorRect.left;
+        g_WindowHeight = monitorRect.bottom - monitorRect.top;
+    }
     DWORD style = g_Fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
     RECT rc = testapp::AdjustWindowRectForClientSize(style, 0, g_WindowWidth, g_WindowHeight);
 
     wchar_t title[256];
     swprintf(title, 256, L"DX12 DLSS FG Test - %dx%d", g_WindowWidth, g_WindowHeight);
     HWND hwnd = CreateWindowW(WINDOW_CLASS, title, style, g_Fullscreen ? monitorRect.left : 0,
-                              g_Fullscreen ? monitorRect.top : 0, rc.right - rc.left, rc.bottom - rc.top,
-                              nullptr, nullptr, wc.hInstance, nullptr);
-    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) return 0;
-    if (!InitDX12(hwnd)) { testapp::Log("Failed to initialize DX12\n"); return 1; }
-    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight)) return 0;
+                              g_Fullscreen ? monitorRect.top : 0, rc.right - rc.left, rc.bottom - rc.top, nullptr,
+                              nullptr, wc.hInstance, nullptr);
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight))
+        return 0;
+    if (!InitDX12(hwnd)) {
+        testapp::Log("Failed to initialize DX12\n");
+        return 1;
+    }
+    if (!testapp::PrimeWindowForBenchmark(hwnd, g_Fullscreen != 0, g_WindowWidth, g_WindowHeight))
+        return 0;
 
     testapp::Log("Initializing DLSS FG...\n");
     if (streamlineLoaded && TryInitDLSSFG()) {
@@ -723,8 +760,12 @@ int main(int argc, char* argv[]) {
 
     MSG msg = {};
     while (g_Running) {
-        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
-        if (g_Running) Render();
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+        if (g_Running)
+            Render();
     }
     Cleanup();
     testapp::Log("Exiting\n");

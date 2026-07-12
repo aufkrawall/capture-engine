@@ -533,22 +533,22 @@ struct CfrAppAudioBacklogDrainDecision {
 
 inline const char* CfrAppAudioBacklogDrainReasonName(CfrAppAudioBacklogDrainReason reason) {
     switch (reason) {
-    case CfrAppAudioBacklogDrainReason::Active:
-        return "active";
-    case CfrAppAudioBacklogDrainReason::NotCfr:
-        return "not_cfr";
-    case CfrAppAudioBacklogDrainReason::NotAppAudio:
-        return "not_app_audio";
-    case CfrAppAudioBacklogDrainReason::ForceDrain:
-        return "force_drain";
-    case CfrAppAudioBacklogDrainReason::StartupNotSettled:
-        return "startup_not_settled";
-    case CfrAppAudioBacklogDrainReason::StartupTimelineProtected:
-        return "startup_timeline_protected";
-    case CfrAppAudioBacklogDrainReason::BufferBelowMinimum:
-        return "buffer_below_minimum";
-    case CfrAppAudioBacklogDrainReason::WithinSlack:
-        return "within_slack";
+        case CfrAppAudioBacklogDrainReason::Active:
+            return "active";
+        case CfrAppAudioBacklogDrainReason::NotCfr:
+            return "not_cfr";
+        case CfrAppAudioBacklogDrainReason::NotAppAudio:
+            return "not_app_audio";
+        case CfrAppAudioBacklogDrainReason::ForceDrain:
+            return "force_drain";
+        case CfrAppAudioBacklogDrainReason::StartupNotSettled:
+            return "startup_not_settled";
+        case CfrAppAudioBacklogDrainReason::StartupTimelineProtected:
+            return "startup_timeline_protected";
+        case CfrAppAudioBacklogDrainReason::BufferBelowMinimum:
+            return "buffer_below_minimum";
+        case CfrAppAudioBacklogDrainReason::WithinSlack:
+            return "within_slack";
     }
     return "unknown";
 }
@@ -595,8 +595,8 @@ inline CfrAppAudioBacklogDrainDecision ComputeCfrAppAudioBacklogDrainDecision(
     decision.compensationDelta = ComputeTier1CompensationDeltaWithDeadband(
         decision.excessSamples, compensationWindowSamples, maxPitchPercent, compensationDeadbandSamples);
     decision.active = decision.compensationDelta > 0;
-    decision.reason = decision.active ? CfrAppAudioBacklogDrainReason::Active
-                                      : CfrAppAudioBacklogDrainReason::WithinSlack;
+    decision.reason =
+        decision.active ? CfrAppAudioBacklogDrainReason::Active : CfrAppAudioBacklogDrainReason::WithinSlack;
     return decision;
 }
 
@@ -876,15 +876,14 @@ inline bool ShouldTreatSparseStartedSourceAsSilence(bool isCfrRecording, bool so
 }
 
 inline bool ShouldBootstrapPacketlessSourceAsSilence(bool isCfrRecording, bool sourceTimelineValid,
-                                                      size_t bufferedRealSamples, int64_t targetTimelineSamples,
-                                                      size_t requiredRealSamples) {
+                                                     size_t bufferedRealSamples, int64_t targetTimelineSamples,
+                                                     size_t requiredRealSamples) {
     return isCfrRecording && sourceTimelineValid && bufferedRealSamples == 0 && targetTimelineSamples > 0 &&
            static_cast<uint64_t>(targetTimelineSamples) >= static_cast<uint64_t>(requiredRealSamples);
 }
 
 inline bool ShouldTreatStartedAppSourceShortfallAsSilence(bool sparseStartedSourceMaySilence,
-                                                          size_t bufferedTimelineSamples,
-                                                          int64_t requestedSamples = 0,
+                                                          size_t bufferedTimelineSamples, int64_t requestedSamples = 0,
                                                           int64_t partialSilenceThresholdSamples = 0) {
     if (!sparseStartedSourceMaySilence) {
         return false;

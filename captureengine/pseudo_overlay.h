@@ -82,9 +82,8 @@ private:
     // Compute the focus-grace suppression decision using the latest tracked state plus
     // a fresh foreground snapshot. Returns the helper's decision; side-effect: may
     // update the tracking state via UpdateForegroundGraceState().
-    ce::pseudo_overlay::FocusGraceDecision EvaluateForegroundGrace(bool currentHadTarget,
-                                                                    uint32_t currentPid,
-                                                                    ULONGLONG now);
+    ce::pseudo_overlay::FocusGraceDecision EvaluateForegroundGrace(bool currentHadTarget, uint32_t currentPid,
+                                                                   ULONGLONG now);
 
     // GDI rendering helpers
     void InitGDI();

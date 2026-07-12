@@ -35,8 +35,8 @@ inline int ScaleTrailingEdge(int value, int numerator, int denominator) {
     return static_cast<int>(quotient);
 }
 
-inline bool ScaleDestinationRect(const Rect& input, int outputWidth, int outputHeight, int inputWidth,
-                                 int inputHeight, Rect* output) {
+inline bool ScaleDestinationRect(const Rect& input, int outputWidth, int outputHeight, int inputWidth, int inputHeight,
+                                 Rect* output) {
     if (!output || outputWidth <= 0 || outputHeight <= 0 || inputWidth <= 0 || inputHeight <= 0) {
         return false;
     }

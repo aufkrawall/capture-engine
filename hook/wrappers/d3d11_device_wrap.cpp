@@ -321,8 +321,8 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateDeferredContext(UINT ContextFl
         CWrapD3D11DeviceContext* wrappedContext = new CWrapD3D11DeviceContext(realContext, this);
         realContext->Release();
         *ppDeferredContext = wrappedContext;
-        WrapperLog("D3D11 Device Wrapper: CreateDeferredContext wrapped real=%p wrapper=%p flags=0x%X",
-                   realContext, wrappedContext, ContextFlags);
+        WrapperLog("D3D11 Device Wrapper: CreateDeferredContext wrapped real=%p wrapper=%p flags=0x%X", realContext,
+                   wrappedContext, ContextFlags);
     }
     return hr;
 }
@@ -448,8 +448,8 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateDeferredContext1(UINT ContextF
         CWrapD3D11DeviceContext* wrappedContext = new CWrapD3D11DeviceContext(realContext, this);
         realContext->Release();
         *ppDeferredContext = static_cast<ID3D11DeviceContext1*>(wrappedContext);
-        WrapperLog("D3D11 Device Wrapper: CreateDeferredContext1 wrapped real=%p wrapper=%p flags=0x%X",
-                   realContext, wrappedContext, ContextFlags);
+        WrapperLog("D3D11 Device Wrapper: CreateDeferredContext1 wrapped real=%p wrapper=%p flags=0x%X", realContext,
+                   wrappedContext, ContextFlags);
     }
     return hr;
 }
@@ -523,8 +523,8 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateDeferredContext2(UINT ContextF
         CWrapD3D11DeviceContext* wrappedContext = new CWrapD3D11DeviceContext(realContext, this);
         realContext->Release();
         *ppDeferredContext = static_cast<ID3D11DeviceContext2*>(wrappedContext);
-        WrapperLog("D3D11 Device Wrapper: CreateDeferredContext2 wrapped real=%p wrapper=%p flags=0x%X",
-                   realContext, wrappedContext, ContextFlags);
+        WrapperLog("D3D11 Device Wrapper: CreateDeferredContext2 wrapped real=%p wrapper=%p flags=0x%X", realContext,
+                   wrappedContext, ContextFlags);
     }
     return hr;
 }
@@ -632,8 +632,8 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateDeferredContext3(UINT ContextF
         CWrapD3D11DeviceContext* wrappedContext = new CWrapD3D11DeviceContext(realContext, this);
         realContext->Release();
         *ppDeferredContext = static_cast<ID3D11DeviceContext3*>(wrappedContext);
-        WrapperLog("D3D11 Device Wrapper: CreateDeferredContext3 wrapped real=%p wrapper=%p flags=0x%X",
-                   realContext, wrappedContext, ContextFlags);
+        WrapperLog("D3D11 Device Wrapper: CreateDeferredContext3 wrapped real=%p wrapper=%p flags=0x%X", realContext,
+                   wrappedContext, ContextFlags);
     }
     return hr;
 }

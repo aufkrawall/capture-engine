@@ -124,46 +124,81 @@ ce::dx12_overlay_policy::DredArmMode ArmMode() {
 
 const char* BreadcrumbOpName(D3D12_AUTO_BREADCRUMB_OP op) {
     switch (op) {
-        case D3D12_AUTO_BREADCRUMB_OP_SETMARKER: return "SETMARKER";
-        case D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT: return "BEGINEVENT";
-        case D3D12_AUTO_BREADCRUMB_OP_ENDEVENT: return "ENDEVENT";
-        case D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED: return "DRAWINSTANCED";
-        case D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED: return "DRAWINDEXEDINSTANCED";
-        case D3D12_AUTO_BREADCRUMB_OP_EXECUTEINDIRECT: return "EXECUTEINDIRECT";
-        case D3D12_AUTO_BREADCRUMB_OP_DISPATCH: return "DISPATCH";
-        case D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION: return "COPYBUFFERREGION";
-        case D3D12_AUTO_BREADCRUMB_OP_COPYTEXTUREREGION: return "COPYTEXTUREREGION";
-        case D3D12_AUTO_BREADCRUMB_OP_COPYRESOURCE: return "COPYRESOURCE";
-        case D3D12_AUTO_BREADCRUMB_OP_COPYTILES: return "COPYTILES";
-        case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCE: return "RESOLVESUBRESOURCE";
-        case D3D12_AUTO_BREADCRUMB_OP_CLEARRENDERTARGETVIEW: return "CLEARRENDERTARGETVIEW";
-        case D3D12_AUTO_BREADCRUMB_OP_CLEARUNORDEREDACCESSVIEW: return "CLEARUNORDEREDACCESSVIEW";
-        case D3D12_AUTO_BREADCRUMB_OP_CLEARDEPTHSTENCILVIEW: return "CLEARDEPTHSTENCILVIEW";
-        case D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER: return "RESOURCEBARRIER";
-        case D3D12_AUTO_BREADCRUMB_OP_EXECUTEBUNDLE: return "EXECUTEBUNDLE";
-        case D3D12_AUTO_BREADCRUMB_OP_PRESENT: return "PRESENT";
-        case D3D12_AUTO_BREADCRUMB_OP_RESOLVEQUERYDATA: return "RESOLVEQUERYDATA";
-        case D3D12_AUTO_BREADCRUMB_OP_BEGINSUBMISSION: return "BEGINSUBMISSION";
-        case D3D12_AUTO_BREADCRUMB_OP_ENDSUBMISSION: return "ENDSUBMISSION";
-        case D3D12_AUTO_BREADCRUMB_OP_DECODEFRAME: return "DECODEFRAME";
-        case D3D12_AUTO_BREADCRUMB_OP_PROCESSFRAMES: return "PROCESSFRAMES";
-        case D3D12_AUTO_BREADCRUMB_OP_DISPATCHRAYS: return "DISPATCHRAYS";
-        case D3D12_AUTO_BREADCRUMB_OP_BUILDRAYTRACINGACCELERATIONSTRUCTURE: return "BUILDRTAS";
-        default: return "OP";
+        case D3D12_AUTO_BREADCRUMB_OP_SETMARKER:
+            return "SETMARKER";
+        case D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT:
+            return "BEGINEVENT";
+        case D3D12_AUTO_BREADCRUMB_OP_ENDEVENT:
+            return "ENDEVENT";
+        case D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED:
+            return "DRAWINSTANCED";
+        case D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED:
+            return "DRAWINDEXEDINSTANCED";
+        case D3D12_AUTO_BREADCRUMB_OP_EXECUTEINDIRECT:
+            return "EXECUTEINDIRECT";
+        case D3D12_AUTO_BREADCRUMB_OP_DISPATCH:
+            return "DISPATCH";
+        case D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION:
+            return "COPYBUFFERREGION";
+        case D3D12_AUTO_BREADCRUMB_OP_COPYTEXTUREREGION:
+            return "COPYTEXTUREREGION";
+        case D3D12_AUTO_BREADCRUMB_OP_COPYRESOURCE:
+            return "COPYRESOURCE";
+        case D3D12_AUTO_BREADCRUMB_OP_COPYTILES:
+            return "COPYTILES";
+        case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCE:
+            return "RESOLVESUBRESOURCE";
+        case D3D12_AUTO_BREADCRUMB_OP_CLEARRENDERTARGETVIEW:
+            return "CLEARRENDERTARGETVIEW";
+        case D3D12_AUTO_BREADCRUMB_OP_CLEARUNORDEREDACCESSVIEW:
+            return "CLEARUNORDEREDACCESSVIEW";
+        case D3D12_AUTO_BREADCRUMB_OP_CLEARDEPTHSTENCILVIEW:
+            return "CLEARDEPTHSTENCILVIEW";
+        case D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER:
+            return "RESOURCEBARRIER";
+        case D3D12_AUTO_BREADCRUMB_OP_EXECUTEBUNDLE:
+            return "EXECUTEBUNDLE";
+        case D3D12_AUTO_BREADCRUMB_OP_PRESENT:
+            return "PRESENT";
+        case D3D12_AUTO_BREADCRUMB_OP_RESOLVEQUERYDATA:
+            return "RESOLVEQUERYDATA";
+        case D3D12_AUTO_BREADCRUMB_OP_BEGINSUBMISSION:
+            return "BEGINSUBMISSION";
+        case D3D12_AUTO_BREADCRUMB_OP_ENDSUBMISSION:
+            return "ENDSUBMISSION";
+        case D3D12_AUTO_BREADCRUMB_OP_DECODEFRAME:
+            return "DECODEFRAME";
+        case D3D12_AUTO_BREADCRUMB_OP_PROCESSFRAMES:
+            return "PROCESSFRAMES";
+        case D3D12_AUTO_BREADCRUMB_OP_DISPATCHRAYS:
+            return "DISPATCHRAYS";
+        case D3D12_AUTO_BREADCRUMB_OP_BUILDRAYTRACINGACCELERATIONSTRUCTURE:
+            return "BUILDRTAS";
+        default:
+            return "OP";
     }
 }
 
 const char* AllocationTypeName(D3D12_DRED_ALLOCATION_TYPE type) {
     switch (type) {
-        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_QUEUE: return "COMMAND_QUEUE";
-        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_ALLOCATOR: return "COMMAND_ALLOCATOR";
-        case D3D12_DRED_ALLOCATION_TYPE_PIPELINE_STATE: return "PIPELINE_STATE";
-        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_LIST: return "COMMAND_LIST";
-        case D3D12_DRED_ALLOCATION_TYPE_FENCE: return "FENCE";
-        case D3D12_DRED_ALLOCATION_TYPE_DESCRIPTOR_HEAP: return "DESCRIPTOR_HEAP";
-        case D3D12_DRED_ALLOCATION_TYPE_HEAP: return "HEAP";
-        case D3D12_DRED_ALLOCATION_TYPE_RESOURCE: return "RESOURCE";
-        default: return "OTHER";
+        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_QUEUE:
+            return "COMMAND_QUEUE";
+        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_ALLOCATOR:
+            return "COMMAND_ALLOCATOR";
+        case D3D12_DRED_ALLOCATION_TYPE_PIPELINE_STATE:
+            return "PIPELINE_STATE";
+        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_LIST:
+            return "COMMAND_LIST";
+        case D3D12_DRED_ALLOCATION_TYPE_FENCE:
+            return "FENCE";
+        case D3D12_DRED_ALLOCATION_TYPE_DESCRIPTOR_HEAP:
+            return "DESCRIPTOR_HEAP";
+        case D3D12_DRED_ALLOCATION_TYPE_HEAP:
+            return "HEAP";
+        case D3D12_DRED_ALLOCATION_TYPE_RESOURCE:
+            return "RESOURCE";
+        default:
+            return "OTHER";
     }
 }
 
@@ -187,8 +222,8 @@ void LogAllocationNodes(const char* label, const D3D12_DRED_ALLOCATION_NODE1* he
             HookLogImportant("DX12 DRED:    [%s] type=%s name='%s' obj=%p", label,
                              AllocationTypeName(n->AllocationType), name, (void*)n->pObject);
         } else if (n->ObjectNameW) {
-            HookLogImportant("DX12 DRED:    [%s] type=%s obj=%p name(W):", label,
-                             AllocationTypeName(n->AllocationType), (void*)n->pObject);
+            HookLogImportant("DX12 DRED:    [%s] type=%s obj=%p name(W):", label, AllocationTypeName(n->AllocationType),
+                             (void*)n->pObject);
             LogWideName("name=", n->ObjectNameW);
         } else {
             HookLogImportant("DX12 DRED:    [%s] type=%s name=<unnamed> obj=%p", label,
@@ -260,10 +295,9 @@ CE_DRED_KEEP bool ArmBeforeDeviceCreation() {
 
     static std::atomic<bool> s_armedLog{false};
     if (!s_armedLog.exchange(true)) {
-        HookLogImportant(
-            "DX12 DRED: armed %s (forced on) before device creation (mode=%s context1=%d)",
-            fullMode ? "auto-breadcrumbs + page-fault" : "page-fault only",
-            fullMode ? "full" : "page-fault-only", dred1 ? 1 : 0);
+        HookLogImportant("DX12 DRED: armed %s (forced on) before device creation (mode=%s context1=%d)",
+                         fullMode ? "auto-breadcrumbs + page-fault" : "page-fault only",
+                         fullMode ? "full" : "page-fault-only", dred1 ? 1 : 0);
     }
     return true;
 }
@@ -311,8 +345,8 @@ CE_DRED_KEEP void DumpOnDeviceRemoved(ID3D12Device* device, const char* reason) 
                 continue;
             }
             anyIncomplete = anyIncomplete || incomplete;
-            HookLogImportant("DX12 DRED:  node#%d queue='%s' list='%s' completedOps=%u/%u%s", node, queueName,
-                             listName, lastCompleted, n->BreadcrumbCount,
+            HookLogImportant("DX12 DRED:  node#%d queue='%s' list='%s' completedOps=%u/%u%s", node, queueName, listName,
+                             lastCompleted, n->BreadcrumbCount,
                              incomplete ? "  <-- INCOMPLETE (GPU hung in this list)" : "");
             if (n->pCommandHistory && n->BreadcrumbCount > 0) {
                 const UINT start = lastCompleted > 3 ? lastCompleted - 3 : 0;
@@ -470,8 +504,7 @@ CE_DRED_KEEP void DrainDebugLayerMessages(ID3D12Device* device, const char* cont
         D3D12_MESSAGE* message = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
         if (SUCCEEDED(infoQueue->GetMessage(i, message, &len)) && message->pDescription) {
             HookLogImportant("DX12 DBGLAYER [%s] sev=%d cat=%d id=%d: %s", context ? context : "?",
-                             (int)message->Severity, (int)message->Category, (int)message->ID,
-                             message->pDescription);
+                             (int)message->Severity, (int)message->Category, (int)message->ID, message->pDescription);
         }
     }
     if (count > 0) {

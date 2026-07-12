@@ -45,18 +45,14 @@ struct FocusGraceDecision {
 //
 // `lastAcquireTickMs == 0` is the sentinel for "no acquire recorded yet" and behaves
 // like a transition on the first focus detection.
-FocusGraceDecision ComputeFocusGraceDecision(uint64_t nowMs, uint64_t lastAcquireTickMs,
-                                             uint32_t lastAcquirePid, uint32_t currentPid,
-                                             bool hadForegroundTarget, bool currentHadTarget,
-                                             bool prevGraceActive, uint32_t graceMs,
-                                             bool recordingStateChanged);
+FocusGraceDecision ComputeFocusGraceDecision(uint64_t nowMs, uint64_t lastAcquireTickMs, uint32_t lastAcquirePid,
+                                             uint32_t currentPid, bool hadForegroundTarget, bool currentHadTarget,
+                                             bool prevGraceActive, uint32_t graceMs, bool recordingStateChanged);
 
 // Convenience wrapper for callers that just want the suppression bool. Returns the same
 // value as FocusGraceDecision::suppressVisibleOverlay.
-bool ShouldSuppressPseudoOverlayForFocusGrace(uint64_t nowMs, uint64_t lastAcquireTickMs,
-                                              uint32_t lastAcquirePid, uint32_t currentPid,
-                                              bool hadForegroundTarget, bool currentHadTarget,
-                                              bool prevGraceActive, uint32_t graceMs,
-                                              bool recordingStateChanged);
+bool ShouldSuppressPseudoOverlayForFocusGrace(uint64_t nowMs, uint64_t lastAcquireTickMs, uint32_t lastAcquirePid,
+                                              uint32_t currentPid, bool hadForegroundTarget, bool currentHadTarget,
+                                              bool prevGraceActive, uint32_t graceMs, bool recordingStateChanged);
 
 }  // namespace ce::pseudo_overlay

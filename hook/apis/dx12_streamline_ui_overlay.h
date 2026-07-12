@@ -43,8 +43,7 @@ bool TryRecordBootstrap(const RecordRequest& request);
 // visible-output coverage before a wrapped queue can re-enter Present; AfterSubmit signals the
 // exact submission queue so upload/descriptor slots are never reused without completion proof.
 bool BeforeExecuteCommandLists(UINT count, ID3D12CommandList* const* commandLists);
-void AfterExecuteCommandLists(ID3D12CommandQueue* queue, UINT count,
-                              ID3D12CommandList* const* commandLists);
+void AfterExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* commandLists);
 
 // Returns true when the current PostSL output is already covered by the official Streamline UI
 // resource and must not receive a duplicate output-backbuffer draw.

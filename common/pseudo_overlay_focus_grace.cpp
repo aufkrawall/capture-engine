@@ -15,11 +15,9 @@ bool IsUnsetTick(uint64_t tickMs) {
 
 }  // namespace
 
-FocusGraceDecision ComputeFocusGraceDecision(uint64_t nowMs, uint64_t lastAcquireTickMs,
-                                             uint32_t lastAcquirePid, uint32_t currentPid,
-                                             bool hadForegroundTarget, bool currentHadTarget,
-                                             bool prevGraceActive, uint32_t graceMs,
-                                             bool recordingStateChanged) {
+FocusGraceDecision ComputeFocusGraceDecision(uint64_t nowMs, uint64_t lastAcquireTickMs, uint32_t lastAcquirePid,
+                                             uint32_t currentPid, bool hadForegroundTarget, bool currentHadTarget,
+                                             bool prevGraceActive, uint32_t graceMs, bool recordingStateChanged) {
     FocusGraceDecision out;
     // Clamp the configured grace into a sane range. The config layer already clamps to
     // [0, 10000], but this helper must be safe to call with arbitrary inputs from tests.
@@ -114,14 +112,11 @@ FocusGraceDecision ComputeFocusGraceDecision(uint64_t nowMs, uint64_t lastAcquir
     return out;
 }
 
-bool ShouldSuppressPseudoOverlayForFocusGrace(uint64_t nowMs, uint64_t lastAcquireTickMs,
-                                              uint32_t lastAcquirePid, uint32_t currentPid,
-                                              bool hadForegroundTarget, bool currentHadTarget,
-                                              bool prevGraceActive, uint32_t graceMs,
-                                              bool recordingStateChanged) {
-    return ComputeFocusGraceDecision(nowMs, lastAcquireTickMs, lastAcquirePid, currentPid,
-                                     hadForegroundTarget, currentHadTarget, prevGraceActive,
-                                     graceMs, recordingStateChanged)
+bool ShouldSuppressPseudoOverlayForFocusGrace(uint64_t nowMs, uint64_t lastAcquireTickMs, uint32_t lastAcquirePid,
+                                              uint32_t currentPid, bool hadForegroundTarget, bool currentHadTarget,
+                                              bool prevGraceActive, uint32_t graceMs, bool recordingStateChanged) {
+    return ComputeFocusGraceDecision(nowMs, lastAcquireTickMs, lastAcquirePid, currentPid, hadForegroundTarget,
+                                     currentHadTarget, prevGraceActive, graceMs, recordingStateChanged)
         .suppressVisibleOverlay;
 }
 

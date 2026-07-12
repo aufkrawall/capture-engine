@@ -76,7 +76,9 @@ class WgcPoolSlotLease {
 public:
     WgcPoolSlotLease() = default;
     WgcPoolSlotLease(std::shared_ptr<WgcPoolLeaseState> state, uint32_t slot, uint64_t generation)
-        : state_(std::move(state)), slot_(slot), generation_(generation) {}
+        : state_(std::move(state)),
+          slot_(slot),
+          generation_(generation) {}
     ~WgcPoolSlotLease() {
         Reset();
     }

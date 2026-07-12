@@ -70,12 +70,24 @@ struct AuxiliaryResources {
         return handle;
     }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE HudlessRtv() const { return RtvAt(0); }
-    D3D12_CPU_DESCRIPTOR_HANDLE UiRtv() const { return RtvAt(1); }
-    D3D12_CPU_DESCRIPTOR_HANDLE MotionRtv() const { return RtvAt(2); }
-    D3D12_CPU_DESCRIPTOR_HANDLE SceneRtv() const { return RtvAt(3); }
-    D3D12_CPU_DESCRIPTOR_HANDLE ReactiveRtv() const { return RtvAt(4); }
-    D3D12_CPU_DESCRIPTOR_HANDLE TransparencyRtv() const { return RtvAt(5); }
+    D3D12_CPU_DESCRIPTOR_HANDLE HudlessRtv() const {
+        return RtvAt(0);
+    }
+    D3D12_CPU_DESCRIPTOR_HANDLE UiRtv() const {
+        return RtvAt(1);
+    }
+    D3D12_CPU_DESCRIPTOR_HANDLE MotionRtv() const {
+        return RtvAt(2);
+    }
+    D3D12_CPU_DESCRIPTOR_HANDLE SceneRtv() const {
+        return RtvAt(3);
+    }
+    D3D12_CPU_DESCRIPTOR_HANDLE ReactiveRtv() const {
+        return RtvAt(4);
+    }
+    D3D12_CPU_DESCRIPTOR_HANDLE TransparencyRtv() const {
+        return RtvAt(5);
+    }
 
     D3D12_CPU_DESCRIPTOR_HANDLE DepthDsv() const {
         return dsvHeap->GetCPUDescriptorHandleForHeapStart();
@@ -205,11 +217,12 @@ inline bool CreateAuxiliaryResources(ID3D12Device* device, UINT width, UINT heig
     out.displayHeight = height;
     out.colorFormat = sceneColorFormat;
     out.valid = true;
-    testapp::Log("[FG-DIAG] Auxiliary FG resources: hudless=%p ui=%p scene=%p mvec=%p depth=%p reactive=%p "
-                 "transparency=%p display=%ux%u render=%ux%u colorFormat=%d\n",
-                 out.hudlessColor.Get(), out.uiColor.Get(), out.sceneColor.Get(), out.motionVectors.Get(),
-                 out.depth.Get(), out.reactiveMask.Get(), out.transparencyMask.Get(), width, height, renderWidth,
-                 renderHeight, static_cast<int>(sceneColorFormat));
+    testapp::Log(
+        "[FG-DIAG] Auxiliary FG resources: hudless=%p ui=%p scene=%p mvec=%p depth=%p reactive=%p "
+        "transparency=%p display=%ux%u render=%ux%u colorFormat=%d\n",
+        out.hudlessColor.Get(), out.uiColor.Get(), out.sceneColor.Get(), out.motionVectors.Get(), out.depth.Get(),
+        out.reactiveMask.Get(), out.transparencyMask.Get(), width, height, renderWidth, renderHeight,
+        static_cast<int>(sceneColorFormat));
     return true;
 }
 

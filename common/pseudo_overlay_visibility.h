@@ -17,13 +17,13 @@ namespace ce::pseudo_overlay {
 // sanctioned overlay activity during a mode-2 recording is the encoder-overload warning and
 // the screenshot-saved notification, both represented below.
 struct OverlayVisibilityInputs {
-    int mode = 0;                       // 0=indicator, 1=warn+indicator, 2=warn-only
+    int mode = 0;  // 0=indicator, 1=warn+indicator, 2=warn-only
     bool isRecording = false;
-    bool warnVisible = false;           // NOT-RECORDING blink phase currently "on"
+    bool warnVisible = false;  // NOT-RECORDING blink phase currently "on"
     bool showEncoderOverloadWarn = true;
-    bool ghostActive = false;           // alwaysRender keepalive (1px alpha ghost)
+    bool ghostActive = false;  // alwaysRender keepalive (1px alpha ghost)
     uint64_t nowMs = 0;
-    uint64_t overloadWarnUntilMs = 0;   // 0 = no overload warning pending
+    uint64_t overloadWarnUntilMs = 0;      // 0 = no overload warning pending
     uint64_t screenshotNotifyUntilMs = 0;  // 0 = no screenshot notification pending
 };
 

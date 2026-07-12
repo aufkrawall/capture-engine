@@ -3,11 +3,11 @@
 #define WIN32_LEAN_AND_MEAN
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
-#include <windows.h>
 #include <audioclient.h>
 #include <avrt.h>
 #include <mmdeviceapi.h>
 #include <mmreg.h>
+#include <windows.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -24,34 +24,58 @@ namespace testapp::avsync {
 
 namespace audio_detail {
 
-constexpr GUID kAudioSubFormatPcm = {
-    WAVE_FORMAT_PCM, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+constexpr GUID kAudioSubFormatPcm = {WAVE_FORMAT_PCM, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
 constexpr GUID kAudioSubFormatIeeeFloat = {
     WAVE_FORMAT_IEEE_FLOAT, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
 
 }  // namespace audio_detail
 
 class AudioRenderer {
-   public:
+public:
     AudioRenderer(const LARGE_INTEGER* qpcFreq, const LARGE_INTEGER* stimulusStartQpc)
-        : qpcFreq_(qpcFreq), stimulusStartQpc_(stimulusStartQpc) {}
+        : qpcFreq_(qpcFreq),
+          stimulusStartQpc_(stimulusStartQpc) {}
 
     bool Start();
     void Stop();
-    bool IsReady() const { return ready_.load(std::memory_order_acquire); }
-    bool HadError() const { return error_.load(std::memory_order_acquire); }
-    void SetAudioClockScheduling(bool enabled) { audioClockSchedulingEnabled_ = enabled; }
-    void SetBufferDurationMs(int bufferMs) { requestedBufferMs_ = ClampAudioBufferMs(bufferMs); }
-    void SetAudioLeadMs(double leadMs) { audioLeadSeconds_ = ClampAudioLeadMs(leadMs) / 1000.0; }
-    int RequestedBufferDurationMs() const { return requestedBufferMs_; }
-    double AudioLeadMs() const { return audioLeadSeconds_ * 1000.0; }
-    uint64_t StreamLatency100ns() const { return streamLatency100ns_; }
-    UINT32 BufferFrames() const { return bufferFrames_; }
-    bool HasAudioClock() const { return hasAudioClock_.load(std::memory_order_acquire); }
-    bool AudioClockSchedulingEnabled() const { return audioClockSchedulingEnabled_; }
-    uint64_t AudioClockFrequency() const { return audioClockFrequency_; }
+    bool IsReady() const {
+        return ready_.load(std::memory_order_acquire);
+    }
+    bool HadError() const {
+        return error_.load(std::memory_order_acquire);
+    }
+    void SetAudioClockScheduling(bool enabled) {
+        audioClockSchedulingEnabled_ = enabled;
+    }
+    void SetBufferDurationMs(int bufferMs) {
+        requestedBufferMs_ = ClampAudioBufferMs(bufferMs);
+    }
+    void SetAudioLeadMs(double leadMs) {
+        audioLeadSeconds_ = ClampAudioLeadMs(leadMs) / 1000.0;
+    }
+    int RequestedBufferDurationMs() const {
+        return requestedBufferMs_;
+    }
+    double AudioLeadMs() const {
+        return audioLeadSeconds_ * 1000.0;
+    }
+    uint64_t StreamLatency100ns() const {
+        return streamLatency100ns_;
+    }
+    UINT32 BufferFrames() const {
+        return bufferFrames_;
+    }
+    bool HasAudioClock() const {
+        return hasAudioClock_.load(std::memory_order_acquire);
+    }
+    bool AudioClockSchedulingEnabled() const {
+        return audioClockSchedulingEnabled_;
+    }
+    uint64_t AudioClockFrequency() const {
+        return audioClockFrequency_;
+    }
 
-   private:
+private:
     double QpcToSeconds(LONGLONG deltaTicks) const;
     double QpcTicksToSeconds(LONGLONG ticks) const;
     double SecondsSinceStimulusStart() const;
@@ -187,7 +211,8 @@ inline bool AudioRenderer::Initialize() {
         return false;
     }
 
-    hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(client_.GetAddressOf()));
+    hr =
+        device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(client_.GetAddressOf()));
     if (FAILED(hr)) {
         testapp::Log("AVSYNC WARNING audio client activation failed hr=0x%08lx\n", static_cast<unsigned long>(hr));
         return false;
@@ -213,8 +238,8 @@ inline bool AudioRenderer::Initialize() {
 
     const REFERENCE_TIME requestedBufferDuration100ns =
         static_cast<REFERENCE_TIME>(ClampAudioBufferMs(requestedBufferMs_)) * 10000;
-    hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-                             requestedBufferDuration100ns, 0, mixFormat_, nullptr);
+    hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, requestedBufferDuration100ns,
+                             0, mixFormat_, nullptr);
     if (FAILED(hr)) {
         testapp::Log("AVSYNC WARNING audio Initialize failed hr=0x%08lx\n", static_cast<unsigned long>(hr));
         return false;
@@ -284,8 +309,7 @@ inline bool AudioRenderer::Initialize() {
         mixFormat_->nChannels, mixFormat_->nSamplesPerSec, mixFormat_->wBitsPerSample, mixFormat_->nBlockAlign,
         IsFloatFormat() ? 1 : 0, IsPcmFormat() ? 1 : 0, bufferFrames_, requestedBufferMs_, AudioLeadMs(),
         static_cast<unsigned long long>(streamLatency100ns_ / 10),
-        hasAudioClock_.load(std::memory_order_acquire) ? 1 : 0,
-        static_cast<unsigned long long>(audioClockFrequency_),
+        hasAudioClock_.load(std::memory_order_acquire) ? 1 : 0, static_cast<unsigned long long>(audioClockFrequency_),
         static_cast<long long>(audioStartQpc_.QuadPart), static_cast<long long>(stimulusQpc));
     return true;
 }
@@ -346,11 +370,9 @@ inline void AudioRenderer::ThreadMain() {
                 "fillFirstStimulusSeconds=%.6f fillLastStimulusSeconds=%.6f fillBaseOffsetSeconds=%.6f "
                 "audioLeadMs=%.3f\n",
                 static_cast<unsigned long long>(sampleCursor_), padding, available,
-                static_cast<unsigned long long>(underruns_),
-                static_cast<unsigned long long>(streamLatency100ns_ / 10),
+                static_cast<unsigned long long>(underruns_), static_cast<unsigned long long>(streamLatency100ns_ / 10),
                 usedClockScheduling_.load(std::memory_order_acquire) ? 1 : 0, SecondsSinceStimulusStart(),
-                lastFillFirstStimulusSeconds_, lastFillLastStimulusSeconds_, lastFillBaseOffsetSeconds_,
-                AudioLeadMs());
+                lastFillFirstStimulusSeconds_, lastFillLastStimulusSeconds_, lastFillBaseOffsetSeconds_, AudioLeadMs());
         }
     }
 
@@ -423,14 +445,13 @@ inline void AudioRenderer::FillAudio(BYTE* data, UINT32 frames, UINT32 queuedFra
     lastFillBaseOffsetSeconds_ = baseOffsetSeconds;
     lastFillFirstStimulusSeconds_ = baseOffsetSeconds + audioLeadSeconds_;
     lastFillLastStimulusSeconds_ =
-        frames == 0
-            ? lastFillFirstStimulusSeconds_
-            : lastFillFirstStimulusSeconds_ + static_cast<double>(frames - 1) / static_cast<double>(sampleRate);
+        frames == 0 ? lastFillFirstStimulusSeconds_
+                    : lastFillFirstStimulusSeconds_ + static_cast<double>(frames - 1) / static_cast<double>(sampleRate);
 
     for (UINT32 frame = 0; frame < frames; ++frame) {
         BYTE* frameData = data + frame * blockAlign;
-        const double stimulusSeconds = baseOffsetSeconds + audioLeadSeconds_ +
-                                       static_cast<double>(frame) / static_cast<double>(sampleRate);
+        const double stimulusSeconds =
+            baseOffsetSeconds + audioLeadSeconds_ + static_cast<double>(frame) / static_cast<double>(sampleRate);
         for (int channel = 0; channel < channels; ++channel) {
             WriteSample(frameData, channel, AudioSampleAt(stimulusSeconds, channel, channels));
         }

@@ -49,7 +49,7 @@ inline bool ShouldAllowStreamlineProxyExportToBypassDynamicHook(bool targetIsStr
 }
 
 inline bool ShouldAllowDynamicHookForThirdPartyOverlayCaller(bool targetIsFFXFrameGenerationModule,
-                                                            const char* functionName) {
+                                                             const char* functionName) {
     // GTA Enhanced can route official FFX module lookups through an overlay
     // shim. The generic overlay-caller guard is still correct for graphics API
     // hooks, but FFX API hooks must remain visible there so CE can install the
@@ -84,7 +84,8 @@ inline bool ShouldBypassDynamicHookForCaller(bool callerIsSystemModule, bool cal
 /**
  * Patch a single imported function in a module's IAT
  *
- * @param targetModule - Module whose IAT to patch (NULL for main exe)
+ * @param targetModule - Module whose IAT to patch (NULL
+ * for main exe)
  * @param sourceModule - DLL name that exports the function (e.g., "dxgi.dll")
  * @param functionName - Name of the function to hook
  * @param hookFunction - Our replacement function

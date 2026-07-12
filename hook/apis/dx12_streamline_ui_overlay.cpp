@@ -48,8 +48,8 @@ DXGI_FORMAT ResolveRtvFormat(DXGI_FORMAT format) {
     }
 }
 
-void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource,
-                D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
+void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, D3D12_RESOURCE_STATES before,
+                D3D12_RESOURCE_STATES after) {
     if (!list || !resource || before == after) {
         return;
     }
@@ -69,12 +69,10 @@ bool SameComObject(IUnknown* left, IUnknown* right) {
     ComPtr<IUnknown> leftIdentity;
     ComPtr<IUnknown> rightIdentity;
     return SUCCEEDED(left->QueryInterface(IID_PPV_ARGS(&leftIdentity))) &&
-           SUCCEEDED(right->QueryInterface(IID_PPV_ARGS(&rightIdentity))) &&
-           leftIdentity.Get() == rightIdentity.Get();
+           SUCCEEDED(right->QueryInterface(IID_PPV_ARGS(&rightIdentity))) && leftIdentity.Get() == rightIdentity.Get();
 }
 
-bool ContainsCommandList(ID3D12GraphicsCommandList* wanted, UINT count,
-                         ID3D12CommandList* const* lists) {
+bool ContainsCommandList(ID3D12GraphicsCommandList* wanted, UINT count, ID3D12CommandList* const* lists) {
     if (!wanted || !lists) {
         return false;
     }
@@ -95,8 +93,8 @@ struct Slot {
 
 class RendererState {
 public:
-    bool Initialize(ID3D12Device* newDevice, ID3D12CommandQueue* initializationQueue,
-                    DXGI_FORMAT newFormat, bool newHdr) {
+    bool Initialize(ID3D12Device* newDevice, ID3D12CommandQueue* initializationQueue, DXGI_FORMAT newFormat,
+                    bool newHdr) {
         if (!newDevice || !initializationQueue ||
             initializationQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
             return false;
@@ -167,7 +165,8 @@ public:
         }
         if (slotIndex == kSlotCount) {
             HookLogImportant(
-                "DX12: Streamline UI bootstrap overlay skipped — all %zu upload/RTV slots are in flight (completed=%llu)",
+                "DX12: Streamline UI bootstrap overlay skipped — all %zu upload/RTV slots are in flight "
+                "(completed=%llu)",
                 kSlotCount, static_cast<unsigned long long>(completed));
             return false;
         }
@@ -182,8 +181,7 @@ public:
         device->CreateRenderTargetView(request.uiResource, &rtvDesc, rtv);
 
         const UINT64 guardValue = ++lastFenceValue;
-        Transition(request.commandList, request.uiResource, request.resourceState,
-                   D3D12_RESOURCE_STATE_RENDER_TARGET);
+        Transition(request.commandList, request.uiResource, request.resourceState, D3D12_RESOURCE_STATE_RENDER_TARGET);
         overlay.SetIPCClient(g_IPC);
         overlay.SetReserveInactiveFGSpace(false);
         if (auto* metrics = DXGIShared::GetPerformanceMetrics()) {
@@ -194,8 +192,7 @@ public:
         overlay.SetDX12NextUploadSlot(static_cast<int>(slotIndex));
         overlay.SetDX12RenderTarget(request.commandList, reinterpret_cast<void*>(rtv.ptr));
         overlay.RenderOverlay(static_cast<int>(request.width), static_cast<int>(request.height));
-        Transition(request.commandList, request.uiResource, D3D12_RESOURCE_STATE_RENDER_TARGET,
-                   request.resourceState);
+        Transition(request.commandList, request.uiResource, D3D12_RESOURCE_STATE_RENDER_TARGET, request.resourceState);
 
         slot.target = request.uiResource;
         slot.pendingCommandList = request.commandList;
@@ -205,8 +202,7 @@ public:
         return true;
     }
 
-    void CompleteSubmittedLists(ID3D12CommandQueue* queue, UINT count,
-                                ID3D12CommandList* const* commandLists) {
+    void CompleteSubmittedLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* commandLists) {
         if (!queue) {
             return;
         }
@@ -220,7 +216,8 @@ public:
             if (FAILED(signalHr)) {
                 slot.fenceValue = UINT64_MAX;
                 HookLogImportant(
-                    "DX12: Streamline UI bootstrap completion Signal failed (queue=%p hr=0x%08X); retaining slot permanently",
+                    "DX12: Streamline UI bootstrap completion Signal failed (queue=%p hr=0x%08X); retaining slot "
+                    "permanently",
                     queue, static_cast<unsigned>(signalHr));
             }
         }
@@ -296,8 +293,7 @@ void BeginPreactivationStandby(uint32_t maximumOutputPresents) {
 void EndPreactivationStandby(const char* reason) {
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
     g_PreactivationStandbyEnabled = false;
-    if (g_Phase == BootstrapPhase::kStandbyIdle ||
-        g_Phase == BootstrapPhase::kStandbyPendingSubmission ||
+    if (g_Phase == BootstrapPhase::kStandbyIdle || g_Phase == BootstrapPhase::kStandbyPendingSubmission ||
         g_Phase == BootstrapPhase::kStandbySubmitted) {
         g_Phase = BootstrapPhase::kInactive;
         g_FrameToken = nullptr;
@@ -312,8 +308,7 @@ void EndPreactivationStandby(const char* reason) {
 
 void BeginActivation(uint32_t maximumOutputPresents) {
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
-    if (g_Phase == BootstrapPhase::kActivationIdle ||
-        g_Phase == BootstrapPhase::kActivationPendingSubmission ||
+    if (g_Phase == BootstrapPhase::kActivationIdle || g_Phase == BootstrapPhase::kActivationPendingSubmission ||
         g_Phase == BootstrapPhase::kActivationSubmitted) {
         return;
     }
@@ -421,16 +416,15 @@ bool OnFrameTag(const void* frameToken) {
         g_ActivationCommandList = nullptr;
         g_ActiveCoverage.store(false, std::memory_order_release);
         g_FrameTagTrackingActive.store(false, std::memory_order_release);
-        HookLogImportant(
-            "DX12: Streamline UI bootstrap coverage retired at the next frame tag (activationEpoch=%llu)",
-            static_cast<unsigned long long>(g_ActivationEpoch));
+        HookLogImportant("DX12: Streamline UI bootstrap coverage retired at the next frame tag (activationEpoch=%llu)",
+                         static_cast<unsigned long long>(g_ActivationEpoch));
     }
     return false;
 }
 
 bool TryRecordBootstrap(const RecordRequest& request) {
-    if (!request.commandList || !request.uiResource || !request.initializationQueue ||
-        !request.frameToken || request.width == 0 || request.height == 0 ||
+    if (!request.commandList || !request.uiResource || !request.initializationQueue || !request.frameToken ||
+        request.width == 0 || request.height == 0 ||
         request.resourceState == static_cast<D3D12_RESOURCE_STATES>(UINT_MAX)) {
         return false;
     }
@@ -443,8 +437,8 @@ bool TryRecordBootstrap(const RecordRequest& request) {
         (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0) {
         return false;
     }
-    const DXGI_FORMAT rtvFormat = ResolveRtvFormat(
-        request.format != DXGI_FORMAT_UNKNOWN ? request.format : desc.Format);
+    const DXGI_FORMAT rtvFormat =
+        ResolveRtvFormat(request.format != DXGI_FORMAT_UNKNOWN ? request.format : desc.Format);
     ComPtr<ID3D12Device> resourceDevice;
     ComPtr<ID3D12Device> listDevice;
     if (FAILED(request.uiResource->GetDevice(IID_PPV_ARGS(&resourceDevice))) ||
@@ -454,18 +448,16 @@ bool TryRecordBootstrap(const RecordRequest& request) {
     }
     D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {};
     support.Format = rtvFormat;
-    constexpr D3D12_FORMAT_SUPPORT1 required = static_cast<D3D12_FORMAT_SUPPORT1>(
-        D3D12_FORMAT_SUPPORT1_RENDER_TARGET | D3D12_FORMAT_SUPPORT1_BLENDABLE);
-    if (FAILED(resourceDevice->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support,
-                                                   sizeof(support))) ||
+    constexpr D3D12_FORMAT_SUPPORT1 required =
+        static_cast<D3D12_FORMAT_SUPPORT1>(D3D12_FORMAT_SUPPORT1_RENDER_TARGET | D3D12_FORMAT_SUPPORT1_BLENDABLE);
+    if (FAILED(resourceDevice->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) ||
         (support.Support1 & required) != required) {
         return false;
     }
 
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
     const bool standbyRecord = g_Phase == BootstrapPhase::kStandbyIdle;
-    if ((!standbyRecord && g_Phase != BootstrapPhase::kActivationIdle) ||
-        g_FrameToken != request.frameToken) {
+    if ((!standbyRecord && g_Phase != BootstrapPhase::kActivationIdle) || g_FrameToken != request.frameToken) {
         return false;
     }
     PruneRetiredRenderers();
@@ -474,8 +466,7 @@ bool TryRecordBootstrap(const RecordRequest& request) {
     }
     if (!g_Renderer) {
         auto renderer = std::make_unique<RendererState>();
-        if (!renderer->Initialize(resourceDevice.Get(), request.initializationQueue, rtvFormat,
-                                  request.hdr)) {
+        if (!renderer->Initialize(resourceDevice.Get(), request.initializationQueue, rtvFormat, request.hdr)) {
             return false;
         }
         g_Renderer = std::move(renderer);
@@ -487,20 +478,16 @@ bool TryRecordBootstrap(const RecordRequest& request) {
     if (!g_Renderer->Record(resolved, slot)) {
         return false;
     }
-    g_Phase = standbyRecord ? BootstrapPhase::kStandbyPendingSubmission
-                            : BootstrapPhase::kActivationPendingSubmission;
+    g_Phase = standbyRecord ? BootstrapPhase::kStandbyPendingSubmission : BootstrapPhase::kActivationPendingSubmission;
     g_ActivationCommandList = request.commandList;
     static std::atomic<uint64_t> s_standbyRecordLogCount{0};
-    const uint64_t standbyLog = standbyRecord
-                                    ? s_standbyRecordLogCount.fetch_add(1, std::memory_order_relaxed) + 1
-                                    : 0;
+    const uint64_t standbyLog = standbyRecord ? s_standbyRecordLogCount.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
     if (!standbyRecord || standbyLog <= 8 || (standbyLog % 300) == 0) {
         HookLogImportant(
             "DX12: Recorded inject overlay into Streamline UIColorAndAlpha %s resource (epoch=%llu slot=%zu "
             "frame=%p cmd=%p ui=%p %ux%u fmt=%d state=0x%X log=%llu) — no copy, extra submit, queue, or wait",
-            standbyRecord ? "preactivation standby" : "bootstrap",
-            static_cast<unsigned long long>(g_ActivationEpoch), slot, request.frameToken,
-            request.commandList, request.uiResource, request.width, request.height,
+            standbyRecord ? "preactivation standby" : "bootstrap", static_cast<unsigned long long>(g_ActivationEpoch),
+            slot, request.frameToken, request.commandList, request.uiResource, request.width, request.height,
             static_cast<int>(rtvFormat), static_cast<unsigned>(request.resourceState),
             static_cast<unsigned long long>(standbyLog));
     }
@@ -514,8 +501,7 @@ bool BeforeExecuteCommandLists(UINT count, ID3D12CommandList* const* commandList
         !ContainsCommandList(g_ActivationCommandList, count, commandLists)) {
         return false;
     }
-    g_Phase = standbySubmission ? BootstrapPhase::kStandbySubmitted
-                                : BootstrapPhase::kActivationSubmitted;
+    g_Phase = standbySubmission ? BootstrapPhase::kStandbySubmitted : BootstrapPhase::kActivationSubmitted;
     g_ActivationCommandList = nullptr;
     g_CoveragePresentsRemaining = standbySubmission ? 0 : g_MaximumOutputPresents;
     g_ActiveCoverage.store(!standbySubmission, std::memory_order_release);
@@ -528,8 +514,7 @@ bool BeforeExecuteCommandLists(UINT count, ID3D12CommandList* const* commandList
     return true;
 }
 
-void AfterExecuteCommandLists(ID3D12CommandQueue* queue, UINT count,
-                              ID3D12CommandList* const* commandLists) {
+void AfterExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* commandLists) {
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
     if (g_Renderer) {
         g_Renderer->CompleteSubmittedLists(queue, count, commandLists);
@@ -555,7 +540,8 @@ bool ConsumePostSLCoverage() {
     const int n = s_logCount.fetch_add(1, std::memory_order_relaxed);
     if (n < 20 || (n % 120) == 0) {
         HookLogImportant(
-            "DX12: PostSL output already covered by Streamline UIColorAndAlpha bootstrap overlay (epoch=%llu remaining=%u log=%d) — skipping duplicate output-backbuffer draw",
+            "DX12: PostSL output already covered by Streamline UIColorAndAlpha bootstrap overlay (epoch=%llu "
+            "remaining=%u log=%d) — skipping duplicate output-backbuffer draw",
             static_cast<unsigned long long>(g_ActivationEpoch), g_CoveragePresentsRemaining, n + 1);
     }
     return true;
@@ -584,7 +570,8 @@ void Shutdown(const char* reason) {
     g_RetiredRenderers.clear();
     if (abandoned != 0) {
         HookLogImportant(
-            "DX12: Abandoned %zu in-flight Streamline UI bootstrap renderer(s) during %s to avoid blocking GPU teardown",
+            "DX12: Abandoned %zu in-flight Streamline UI bootstrap renderer(s) during %s to avoid blocking GPU "
+            "teardown",
             abandoned, reason ? reason : "shutdown");
     }
 }

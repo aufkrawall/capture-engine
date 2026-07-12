@@ -137,8 +137,8 @@ TEST_F(AudioEncoderTest, OpusUsesLibopusAtFortyEightKhzAndScalesMultichannelBitr
     config.bitrate = 192;
     config.sampleRate = "44100";
     config.outputChannels = 6;
-    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER |
-                               SPEAKER_LOW_FREQUENCY | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
+    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                               SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
 
     ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
     ASSERT_NE(encoder.GetCodecContext(), nullptr);
@@ -155,9 +155,8 @@ TEST_F(AudioEncoderTest, AacScalesSevenPointOneBitrate) {
     config.bitrate = 192;
     config.sampleRate = "48000";
     config.outputChannels = 8;
-    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER |
-                               SPEAKER_LOW_FREQUENCY | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT |
-                               SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;
+    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                               SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT | SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;
 
     ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
     EXPECT_EQ(encoder.GetCodecContext()->bit_rate, 768000);
@@ -172,9 +171,9 @@ TEST_F(AudioEncoderTest, AlacSevenPointOneRemapsToSupportedLayoutInsteadOfFailin
     config.codec = "alac";
     config.sampleRate = "48000";
     config.outputChannels = 8;
-    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER |
-                               SPEAKER_LOW_FREQUENCY | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT |
-                               SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;  // 0x63f = 7.1 (side)
+    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                               SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT | SPEAKER_SIDE_LEFT |
+                               SPEAKER_SIDE_RIGHT;  // 0x63f = 7.1 (side)
 
     ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
     ASSERT_NE(encoder.GetCodecContext(), nullptr);
@@ -189,8 +188,8 @@ TEST_F(AudioEncoderTest, AlacSupportedLayoutIsLeftUnchanged) {
     config.codec = "alac";
     config.sampleRate = "48000";
     config.outputChannels = 6;
-    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER |
-                               SPEAKER_LOW_FREQUENCY | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;  // 5.1(back)
+    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                               SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;  // 5.1(back)
 
     ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
     ASSERT_NE(encoder.GetCodecContext(), nullptr);
@@ -205,9 +204,8 @@ TEST_F(AudioEncoderTest, AlacSevenPointOneEncodesAndProducesPackets) {
     config.codec = "alac";
     config.sampleRate = "48000";
     config.outputChannels = 8;
-    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER |
-                               SPEAKER_LOW_FREQUENCY | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT |
-                               SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;
+    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                               SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT | SPEAKER_SIDE_LEFT | SPEAKER_SIDE_RIGHT;
 
     ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
     encoder.SetStreamIndex(1);
@@ -357,8 +355,8 @@ TEST_F(AudioEncoderTest, MultichannelPcmEncodesPackets) {
     config.codec = "pcm";
     config.sampleRate = "48000";
     config.outputChannels = 6;
-    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER |
-                               SPEAKER_LOW_FREQUENCY | SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
+    config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY |
+                               SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT;
 
     ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
     encoder.SetStreamIndex(2);

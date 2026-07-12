@@ -583,7 +583,9 @@ bool TakeScreenshot(const std::string& screenshotDir) {
         std::error_code ec;
         if (!std::filesystem::exists(outDir, ec)) {
             if (!std::filesystem::create_directories(outDir, ec)) {
-                Log(LogLevel::Warn, "[Screenshot] Failed to create screenshot directory (%s). Falling back to screenshots subfolder.", ec.message().c_str());
+                Log(LogLevel::Warn,
+                    "[Screenshot] Failed to create screenshot directory (%s). Falling back to screenshots subfolder.",
+                    ec.message().c_str());
                 outDir = std::filesystem::path(exeDir) / "screenshots";
             }
         }

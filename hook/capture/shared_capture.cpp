@@ -813,8 +813,7 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, UINT ba
     if (availableSlot < 0) {
         if (captureSharedMem) {
             if (cpuBusySlots != 0)
-                captureSharedMem->runtimeState.injectProducerCpuLeaseBusyDrops.fetch_add(1,
-                                                                                         std::memory_order_relaxed);
+                captureSharedMem->runtimeState.injectProducerCpuLeaseBusyDrops.fetch_add(1, std::memory_order_relaxed);
             if (gpuBusySlots != 0)
                 captureSharedMem->runtimeState.injectProducerGpuBusyDrops.fetch_add(1, std::memory_order_relaxed);
         }

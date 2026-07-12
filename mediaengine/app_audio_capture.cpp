@@ -758,8 +758,7 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid) {
         "devicePeriod=%lluus minPeriod=%lluus bufferFrames=%u bufferDur=%lluus "
         "(latency routed via video content delay, not audio advance)",
         pid, static_cast<unsigned long long>(activatedEpoch), pwfx->nChannels, pwfx->nSamplesPerSec,
-        pwfx->wBitsPerSample,
-        static_cast<unsigned long long>(streamLatency100ns / 10),
+        pwfx->wBitsPerSample, static_cast<unsigned long long>(streamLatency100ns / 10),
         static_cast<unsigned long long>(defaultDevicePeriod100ns / 10),
         static_cast<unsigned long long>(minDevicePeriod100ns / 10), bufferFrameCount,
         static_cast<unsigned long long>(bufferDurationUs));

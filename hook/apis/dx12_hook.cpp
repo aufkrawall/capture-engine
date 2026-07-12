@@ -437,9 +437,8 @@ static void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const
                 "source=%s currentStreak=%llu remaining=%d",
                 static_cast<unsigned long long>(snapshot.totalPresents), drawObserved ? 1 : 0,
                 inheritCoverageIfNoDraw ? 1 : 0, (drawObserved || inheritCoverageIfNoDraw) ? 1 : 0,
-                DX12OverlayRenderRouteName(route), DX12OverlayRenderRouteName(prevRoute),
-                source ? source : "unknown", static_cast<unsigned long long>(snapshot.currentStreak),
-                verboseRemaining - 1);
+                DX12OverlayRenderRouteName(route), DX12OverlayRenderRouteName(prevRoute), source ? source : "unknown",
+                static_cast<unsigned long long>(snapshot.currentStreak), verboseRemaining - 1);
         }
     }
 
@@ -459,9 +458,8 @@ static void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const
             HookLogImportant(
                 "[OVERLAY COVERAGE] uncovered streak STARTED: gate=%s route=%s source=%s confirmed=%d "
                 "present=%llu uncovered=%llu",
-                streakGate ? streakGate : "unknown", DX12OverlayRenderRouteName(route),
-                source ? source : "unknown", startConfirmed ? 1 : 0,
-                static_cast<unsigned long long>(snapshot.totalPresents),
+                streakGate ? streakGate : "unknown", DX12OverlayRenderRouteName(route), source ? source : "unknown",
+                startConfirmed ? 1 : 0, static_cast<unsigned long long>(snapshot.totalPresents),
                 static_cast<unsigned long long>(snapshot.uncoveredPresents));
         }
     }
@@ -478,11 +476,10 @@ static void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const
             HookLogImportant(
                 "[OVERLAY COVERAGE] uncovered streak ended: missed=%llu durationMs=%llu confirmedDuringStreak=%d "
                 "longestStreak=%llu gate=%s lastGate=%s route=%s source=%s totals: presents=%llu uncovered=%llu",
-                static_cast<unsigned long long>(result.endedStreakLength),
-                static_cast<unsigned long long>(durationMs), confirmedDuringStreak ? 1 : 0,
-                static_cast<unsigned long long>(snapshot.longestStreak), streakGate ? streakGate : "unknown",
-                lastGate ? lastGate : "unknown", DX12OverlayRenderRouteName(route), source ? source : "unknown",
-                static_cast<unsigned long long>(snapshot.totalPresents),
+                static_cast<unsigned long long>(result.endedStreakLength), static_cast<unsigned long long>(durationMs),
+                confirmedDuringStreak ? 1 : 0, static_cast<unsigned long long>(snapshot.longestStreak),
+                streakGate ? streakGate : "unknown", lastGate ? lastGate : "unknown", DX12OverlayRenderRouteName(route),
+                source ? source : "unknown", static_cast<unsigned long long>(snapshot.totalPresents),
                 static_cast<unsigned long long>(snapshot.uncoveredPresents));
         }
     }
@@ -544,11 +541,11 @@ static void LogDX12OverlayVisibilityGap(const char* context, const char* reason,
     const int logCount = s_visibilityGapLogCount.fetch_add(1, std::memory_order_relaxed);
     if (logCount < 20 || (logCount % 300) == 0) {
         const uint32_t route = g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
-        HookLogImportant(
-            "DX12: Overlay visibility gap while %s (%s) — lastRenderAge=%llums lastRoute=%s log=%d",
-            context && context[0] ? context : "transitioning",
-            reason && reason[0] ? reason : "waiting for safe render route",
-            static_cast<unsigned long long>(nowMs - lastRenderMs), DX12OverlayRenderRouteName(route), logCount + 1);
+        HookLogImportant("DX12: Overlay visibility gap while %s (%s) — lastRenderAge=%llums lastRoute=%s log=%d",
+                         context && context[0] ? context : "transitioning",
+                         reason && reason[0] ? reason : "waiting for safe render route",
+                         static_cast<unsigned long long>(nowMs - lastRenderMs), DX12OverlayRenderRouteName(route),
+                         logCount + 1);
     }
 }
 
@@ -844,8 +841,7 @@ public:
         // relying on implicit COMMON promotion before sampling the same command
         // list was fragile on the x86 NVIDIA path.
         HRESULT hr = device_->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &rd,
-                                                      D3D12_RESOURCE_STATE_COMMON, nullptr,
-                                                      IID_PPV_ARGS(&fontBuffer_));
+                                                      D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&fontBuffer_));
         if (FAILED(hr)) {
             HookLogImportant("DescFree: font default buffer create failed hr=0x%08X", hr);
             return false;
@@ -854,9 +850,8 @@ public:
 
         D3D12_HEAP_PROPERTIES uploadHeap = {};
         uploadHeap.Type = D3D12_HEAP_TYPE_UPLOAD;
-        hr = device_->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &rd,
-                                              D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                                              IID_PPV_ARGS(&fontUploadBuffer_));
+        hr = device_->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                              nullptr, IID_PPV_ARGS(&fontUploadBuffer_));
         if (FAILED(hr)) {
             HookLogImportant("DescFree: font upload buffer create failed hr=0x%08X", hr);
             fontBuffer_->Release();
@@ -881,9 +876,8 @@ public:
 
         fontGpuAddr_ = fontBuffer_->GetGPUVirtualAddress();
         fontUploadPending_ = true;
-        HookLogImportant("DescFree: font structured buffer ready (%dx%d, %zu bytes, gpu=0x%llX)", fontWidth,
-                         fontHeight, dataSize,
-                         (unsigned long long)fontGpuAddr_);
+        HookLogImportant("DescFree: font structured buffer ready (%dx%d, %zu bytes, gpu=0x%llX)", fontWidth, fontHeight,
+                         dataSize, (unsigned long long)fontGpuAddr_);
         return true;
     }
 
@@ -934,7 +928,7 @@ public:
         cmdList->SetGraphicsRootSignature(rootSig_);
 
         if (ce::dx12_overlay_policy::ShouldRecordDescFreeFontUpload(fontUploadPending_, fontBuffer_ != nullptr,
-                                                                     fontUploadBuffer_ != nullptr)) {
+                                                                    fontUploadBuffer_ != nullptr)) {
             D3D12_RESOURCE_BARRIER fontToCopy = {};
             fontToCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
             fontToCopy.Transition.pResource = fontBuffer_;
@@ -954,8 +948,8 @@ public:
             cmdList->ResourceBarrier(1, &fontBarrier);
 
             fontUploadPending_ = false;
-            HookLogImportant("DescFree: font upload recorded to default buffer (%zu bytes, gpu=0x%llX)", fontBufferSize_,
-                             (unsigned long long)fontGpuAddr_);
+            HookLogImportant("DescFree: font upload recorded to default buffer (%zu bytes, gpu=0x%llX)",
+                             fontBufferSize_, (unsigned long long)fontGpuAddr_);
         }
 
         // Root constants: viewportW, viewportH, hdrMode, paperWhiteNits, fontW, fontH
@@ -999,8 +993,8 @@ public:
                     HookLogImportant(
                         "DX12 DIAG: DescFree command frame=%d cmd=%zu textured=%d vtxOff=%u vtxCount=%u idxOff=%u "
                         "idxCount=%u",
-                        logFrame, cmdIndex, cmd.useTexture ? 1 : 0, cmd.vertexOffset, cmd.vertexCount,
-                        cmd.indexOffset, cmd.indexCount);
+                        logFrame, cmdIndex, cmd.useTexture ? 1 : 0, cmd.vertexOffset, cmd.vertexCount, cmd.indexOffset,
+                        cmd.indexCount);
                 }
             }
         }
@@ -1022,9 +1016,8 @@ public:
             static std::atomic<int> s_overlayFootprintLog{0};
             const int n = s_overlayFootprintLog.fetch_add(1, std::memory_order_relaxed);
             if (n < 5 || (n % 600) == 0) {
-                HookLogImportant(
-                    "DX12 DIAG: overlay footprint draws=%zu vbBytes=%zu ibBytes=%zu slot=%d sample=%d",
-                    commands.size(), vbBytes, ibBytes, slot, n);
+                HookLogImportant("DX12 DIAG: overlay footprint draws=%zu vbBytes=%zu ibBytes=%zu slot=%d sample=%d",
+                                 commands.size(), vbBytes, ibBytes, slot, n);
             }
         }
     }
@@ -1591,10 +1584,9 @@ static bool EnsureDescFreeBackendForDeviceAndFormat(ID3D12Device* dev, DXGI_FORM
         return g_DescFreeBackend != nullptr && g_D3D11On12Adapter.IsInitialized();
     }
     if (g_DescFreeBackend && (g_DescFreeBackendDevice != dev || g_DescFreeBackendFormat != format)) {
-        HookLogImportant(
-            "DX12: DescFree backend stale (device %p->%p fmt %d->%d) — rebuilding (%s)",
-            g_DescFreeBackendDevice, dev, static_cast<int>(g_DescFreeBackendFormat), static_cast<int>(format),
-            context ? context : "unknown");
+        HookLogImportant("DX12: DescFree backend stale (device %p->%p fmt %d->%d) — rebuilding (%s)",
+                         g_DescFreeBackendDevice, dev, static_cast<int>(g_DescFreeBackendFormat),
+                         static_cast<int>(format), context ? context : "unknown");
         ShutdownDescFreeBackend(context);
     }
     if (!g_DescFreeBackend) {
@@ -1679,8 +1671,8 @@ static void EnsureOverlayBreadcrumbBuffer(ID3D12Device* device) {
     rd.SampleDesc.Count = 1;
     rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     ID3D12Resource* buf = nullptr;
-    HRESULT hr = device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COMMON,
-                                                 nullptr, IID_PPV_ARGS(&buf));
+    HRESULT hr = device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COMMON, nullptr,
+                                                 IID_PPV_ARGS(&buf));
     if (FAILED(hr) || !buf) {
         static std::atomic<int> s_bcCreateFailLog{0};
         if (s_bcCreateFailLog.fetch_add(1, std::memory_order_relaxed) < 3) {
@@ -1731,39 +1723,40 @@ void DX12_LogFFXUiCompositeFreezeDiagnostics(const char* reason);  // forward de
 
 void DX12_LogOverlayGpuBreadcrumbs(const char* reason) {
     if (g_OverlayBcMapped) {
-    const uint32_t seq = g_OverlayBcSeq.load(std::memory_order_relaxed);
-    uint32_t vals[kOverlayBcSlotCount] = {};
-    for (uint32_t i = 0; i < kOverlayBcSlotCount; ++i) {
-        vals[i] = g_OverlayBcMapped[i];
-    }
-    uint32_t lastCompletedOp = 0;
-    for (uint32_t op = kOverlayBcStart; op < kOverlayBcSlotCount; ++op) {
-        if (vals[op] == seq && seq != 0) {
-            lastCompletedOp = op;
+        const uint32_t seq = g_OverlayBcSeq.load(std::memory_order_relaxed);
+        uint32_t vals[kOverlayBcSlotCount] = {};
+        for (uint32_t i = 0; i < kOverlayBcSlotCount; ++i) {
+            vals[i] = g_OverlayBcMapped[i];
         }
-    }
-    const char* opName = "none (GPU never reached the overlay list this frame — CE's list is NOT the stall)";
-    switch (lastCompletedOp) {
-        case kOverlayBcStart:
-            opName = "start(list reset) — GPU stalled BEFORE the RT barrier";
-            break;
-        case kOverlayBcAfterRTBarrier:
-            opName = "after RT barrier — GPU stalled in the overlay DRAW";
-            break;
-        case kOverlayBcAfterDraw:
-            opName = "after overlay draw — GPU stalled in the PRESENT-back barrier";
-            break;
-        case kOverlayBcBeforeClose:
-            opName = "before Close — CE's WHOLE overlay list completed; wedge is a fence/CPU deadlock or AMD's work";
-            break;
-        default:
-            break;
-    }
-    HookLogImportant(
-        "DX12: [overlay-gpu-breadcrumb] %s — latestSeq=%u lastCompletedOp=%u (%s) "
-        "slots[start=%u rt=%u draw=%u close=%u]",
-        reason ? reason : "freeze", seq, lastCompletedOp, opName, vals[kOverlayBcStart],
-        vals[kOverlayBcAfterRTBarrier], vals[kOverlayBcAfterDraw], vals[kOverlayBcBeforeClose]);
+        uint32_t lastCompletedOp = 0;
+        for (uint32_t op = kOverlayBcStart; op < kOverlayBcSlotCount; ++op) {
+            if (vals[op] == seq && seq != 0) {
+                lastCompletedOp = op;
+            }
+        }
+        const char* opName = "none (GPU never reached the overlay list this frame — CE's list is NOT the stall)";
+        switch (lastCompletedOp) {
+            case kOverlayBcStart:
+                opName = "start(list reset) — GPU stalled BEFORE the RT barrier";
+                break;
+            case kOverlayBcAfterRTBarrier:
+                opName = "after RT barrier — GPU stalled in the overlay DRAW";
+                break;
+            case kOverlayBcAfterDraw:
+                opName = "after overlay draw — GPU stalled in the PRESENT-back barrier";
+                break;
+            case kOverlayBcBeforeClose:
+                opName =
+                    "before Close — CE's WHOLE overlay list completed; wedge is a fence/CPU deadlock or AMD's work";
+                break;
+            default:
+                break;
+        }
+        HookLogImportant(
+            "DX12: [overlay-gpu-breadcrumb] %s — latestSeq=%u lastCompletedOp=%u (%s) "
+            "slots[start=%u rt=%u draw=%u close=%u]",
+            reason ? reason : "freeze", seq, lastCompletedOp, opName, vals[kOverlayBcStart],
+            vals[kOverlayBcAfterRTBarrier], vals[kOverlayBcAfterDraw], vals[kOverlayBcBeforeClose]);
     }
     // Also dump the FFX UI-composite fence state + timeline (works even if breadcrumb buffer isn't armed).
     DX12_LogFFXUiCompositeFreezeDiagnostics(reason);
@@ -2393,10 +2386,9 @@ bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clea
         "startupActivationEntered=%d confirmed=%d warmupService=%d tid=0x%04X)",
         source ? source : "unknown", activationSwapchain, clearStartupWindow ? 1 : 0,
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire) ? 1 : 0,
-        HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0,
-        HookHasPostSLSyntheticStartupActivationEntered() ? 1 : 0,
-        g_PostSLConfirmedRendering.load(std::memory_order_acquire) ? 1 : 0,
-        allowConfirmedWarmupService ? 1 : 0, GetCurrentThreadId());
+        HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0, HookHasPostSLSyntheticStartupActivationEntered() ? 1 : 0,
+        g_PostSLConfirmedRendering.load(std::memory_order_acquire) ? 1 : 0, allowConfirmedWarmupService ? 1 : 0,
+        GetCurrentThreadId());
     postSLCallback(activationSwapchain);
     HookLogImportant(
         "DX12: Retained-swapchain PostSL startup activation callback returned "
@@ -2926,8 +2918,7 @@ static bool Dx12TraceEnabled() {
         char buf[16] = {};
         DWORD n = GetEnvironmentVariableA("CE_DX12_TRACE", buf, sizeof(buf));
         if (n > 0 && n < sizeof(buf)) {
-            if (buf[0] == '1' || _stricmp(buf, "on") == 0 || _stricmp(buf, "true") == 0 ||
-                _stricmp(buf, "yes") == 0) {
+            if (buf[0] == '1' || _stricmp(buf, "on") == 0 || _stricmp(buf, "true") == 0 || _stricmp(buf, "yes") == 0) {
                 return true;
             }
         }
@@ -2991,8 +2982,8 @@ static void Dx12TraceLog(const char* api, const char* details) {
             foundOriginator = true;
         }
         if (_stricmp(base, lastBase) != 0) {  // collapse consecutive duplicate frames
-            int w = _snprintf_s(trail + trailLen, sizeof(trail) - trailLen, _TRUNCATE, "%s%s", trailLen ? ">" : "",
-                                base);
+            int w =
+                _snprintf_s(trail + trailLen, sizeof(trail) - trailLen, _TRUNCATE, "%s%s", trailLen ? ">" : "", base);
             if (w > 0) {
                 trailLen += static_cast<size_t>(w);
             }
@@ -3136,14 +3127,14 @@ static void StageProtectedOfficialFFXStartupQueueFromCreateDevice(
         hasDirectQueue = queueDesc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT;
     }
 
-    const bool shouldStage = ce::dx12_overlay_policy::ShouldStageProtectedOfficialFFXStartupQueueForDeferredTakeover(
-        true, hasDirectQueue);
-    const char* modulePath = captureEvidence.ffxModulePath[0] ? captureEvidence.ffxModulePath
-                                                              : captureEvidence.callerModulePath;
+    const bool shouldStage =
+        ce::dx12_overlay_policy::ShouldStageProtectedOfficialFFXStartupQueueForDeferredTakeover(true, hasDirectQueue);
+    const char* modulePath =
+        captureEvidence.ffxModulePath[0] ? captureEvidence.ffxModulePath : captureEvidence.callerModulePath;
     if (shouldStage) {
-        StoreDeferredOfficialFFXTakeoverSideEffects(
-            queue, modulePath && modulePath[0] ? modulePath : "official FFX runtime",
-            "protected official FFX swapchain create queue staging");
+        StoreDeferredOfficialFFXTakeoverSideEffects(queue,
+                                                    modulePath && modulePath[0] ? modulePath : "official FFX runtime",
+                                                    "protected official FFX swapchain create queue staging");
         HookLogImportant(
             "%s: Protected official FFX startup staged runtime queue %p until enabled ffxConfigure "
             "(module=%s caller=%s)",
@@ -3299,10 +3290,9 @@ static bool ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
         std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
         originalGameQueue = g_OriginalGameQueue;
     }
-    const bool streamlineRuntimeAvailable =
-        IsStreamlineLoaded() || g_FGCompat.HasStreamlineSupport() ||
-        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ||
-        captureEvidence.authoritativeStreamlineRuntimeCreator;
+    const bool streamlineRuntimeAvailable = IsStreamlineLoaded() || g_FGCompat.HasStreamlineSupport() ||
+                                            DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ||
+                                            captureEvidence.authoritativeStreamlineRuntimeCreator;
     const bool deferRefresh = ce::dx12_overlay_policy::ShouldDeferPresentHookRefreshForPostFSRStreamlineRuntimeHandoff(
         originalGameQueue != nullptr, pQueue == originalGameQueue, streamlineRuntimeAvailable, g_HadFSRFGPhase,
         g_FGCompat.IsFSRFGApiActive(), g_FGCompat.GetRuntimeMode());
@@ -3351,8 +3341,7 @@ static void LogSkippedSwapchainDescriptorOverridesForRuntimeCreate(
         HookLogImportant(
             "%s: Preserving swapchain descriptor for authoritative FG runtime create "
             "(ffx=%d officialFFX=%d streamline=%d caller=%s BufferCount=%u Flags=0x%X SwapEffect=%d count=%d)",
-            context && context[0] ? context : "CreateSwapChain",
-            captureEvidence.authoritativeFFXRuntimeCreator ? 1 : 0,
+            context && context[0] ? context : "CreateSwapChain", captureEvidence.authoritativeFFXRuntimeCreator ? 1 : 0,
             captureEvidence.officialAMDFFXRuntimeCreator ? 1 : 0,
             captureEvidence.authoritativeStreamlineRuntimeCreator ? 1 : 0,
             captureEvidence.callerModulePath[0] ? captureEvidence.callerModulePath : "stack", bufferCount, flags,
@@ -3385,8 +3374,7 @@ static bool ShouldBypassInvisibleWindowCreateSwapchainSideEffects(HWND hWnd, IDX
 
 static void QuiesceStreamlinePostSLForProtectedOfficialFFXStartup(
     IDXGISwapChain* swapchain, const CreateSwapchainQueueCaptureEvidence& captureEvidence, const char* context) {
-    const bool callbackInstalled =
-        DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
+    const bool callbackInstalled = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr;
     const bool postSLActive = g_PostSLOverlayActive.load(std::memory_order_acquire);
     const bool postSLConfirmed = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
     const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
@@ -3536,8 +3524,7 @@ static bool MaybeFinalizeProtectedOfficialFFXStartupAfterSustainedProgress(const
         return false;
     }
 
-    const uint32_t processFrameSkips =
-        g_ProtectedOfficialFFXStartupProcessFrameSkips.load(std::memory_order_acquire);
+    const uint32_t processFrameSkips = g_ProtectedOfficialFFXStartupProcessFrameSkips.load(std::memory_order_acquire);
     const uint32_t eclPassThroughs = g_ProtectedOfficialFFXStartupECLPassThroughs.load(std::memory_order_acquire);
     if (processFrameSkips < ce::dx12_overlay_policy::GetProtectedOfficialFFXStartupProcessFrameProgressThreshold() &&
         eclPassThroughs < ce::dx12_overlay_policy::GetProtectedOfficialFFXStartupECLProgressThreshold()) {
@@ -3560,9 +3547,8 @@ static bool MaybeFinalizeProtectedOfficialFFXStartupAfterSustainedProgress(const
             "DX12: Protected official FFX startup has sustained frame progress but remains quiesced until direct "
             "ffxConfigure/present-callback proof (source=%s elapsed=%llums processFrameSkips=%u eclPassThroughs=%u "
             "log=%d)",
-            source && source[0] ? source : "unknown",
-            beginMs ? static_cast<unsigned long long>(nowMs - beginMs) : 0ULL, processFrameSkips, eclPassThroughs,
-            logCount + 1);
+            source && source[0] ? source : "unknown", beginMs ? static_cast<unsigned long long>(nowMs - beginMs) : 0ULL,
+            processFrameSkips, eclPassThroughs, logCount + 1);
     }
     return false;
 }
@@ -3671,9 +3657,8 @@ static void ClearStaleStreamlineOwnershipForFSRTakeover(const CreateSwapchainQue
 //       Use std::lock_guard with std::adopt_lock when using try_lock().
 static std::recursive_mutex g_OverlayMutex;
 
-static bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapChain,
-                                                           ID3D12CommandQueue* swapchainQueue,
-                                                           const char* context);
+static bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapChain, ID3D12CommandQueue* swapchainQueue,
+                                                          const char* context);
 static std::recursive_mutex g_DX12CaptureMutex;
 
 static OverlayConfig GetActiveDX12OverlayConfig(SharedMemoryLayout* shm) {
@@ -3980,7 +3965,7 @@ static thread_local int s_insideCEOverlayECLDepth = 0;
 static thread_local const char* s_insideCEOverlayECLReason = nullptr;
 
 class ScopedCEOverlayECLSubmission {
-   public:
+public:
     explicit ScopedCEOverlayECLSubmission(const char* reason) : previousReason_(s_insideCEOverlayECLReason) {
         ++s_insideCEOverlayECLDepth;
         s_insideCEOverlayECLReason = reason;
@@ -3994,7 +3979,7 @@ class ScopedCEOverlayECLSubmission {
     ScopedCEOverlayECLSubmission(const ScopedCEOverlayECLSubmission&) = delete;
     ScopedCEOverlayECLSubmission& operator=(const ScopedCEOverlayECLSubmission&) = delete;
 
-   private:
+private:
     const char* previousReason_ = nullptr;
 };
 
@@ -4119,10 +4104,8 @@ static bool IsFFXPresentCallbackStalled() {
         constexpr ULONGLONG kNeverFiredStallThresholdMs = 3000;
         return (now - g_FGRuntimeOwnsSwapchainSince) > kNeverFiredStallThresholdMs;
     }
-    const ULONGLONG assumedSince =
-        g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
-    if (g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire) &&
-        assumedSince != 0) {
+    const ULONGLONG assumedSince = g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
+    if (g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire) && assumedSince != 0) {
         constexpr ULONGLONG kProgressFallbackNeverFiredStallThresholdMs = 1500;
         return (now - assumedSince) > kProgressFallbackNeverFiredStallThresholdMs;
     }
@@ -4144,11 +4127,9 @@ struct ProgressResolvedOfficialFFXOverlayFallbackProof {
 
 static ProgressResolvedOfficialFFXOverlayFallbackProof EvaluateProgressResolvedOfficialFFXOverlayFallbackProof() {
     ProgressResolvedOfficialFFXOverlayFallbackProof result{};
-    result.progressResolved =
-        g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire);
+    result.progressResolved = g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire);
 
-    const ULONGLONG assumedSince =
-        g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
+    const ULONGLONG assumedSince = g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
     if (result.progressResolved && assumedSince != 0) {
         const ULONGLONG now = GetTickCount64();
         result.stableMs = (now >= assumedSince) ? (now - assumedSince) : 0;
@@ -4166,8 +4147,7 @@ static ProgressResolvedOfficialFFXOverlayFallbackProof EvaluateProgressResolvedO
     result.hasDevice = device != nullptr;
     result.deviceHr = device ? device->GetDeviceRemovedReason() : E_POINTER;
 
-    result.proof = result.progressResolved &&
-                   result.stableMs >= kProgressResolvedOfficialFFXOverlayFallbackStableMs &&
+    result.proof = result.progressResolved && result.stableMs >= kProgressResolvedOfficialFFXOverlayFallbackStableMs &&
                    result.swapchainQueueMatchesOriginalGameQueue && result.hasDevice && SUCCEEDED(result.deviceHr);
     return result;
 }
@@ -4218,19 +4198,16 @@ static void UpdateFFXPresentCallbackFirstStallDetection(bool ffxPresentCallbackS
 static bool ShouldAllowNormalOverlayFallbackForCurrentFFXPresentCallbackStall(bool ffxPresentCallbackStalled) {
     const bool explicitNativeFSROffPending =
         g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
-    const bool evaluateFFXCallbackFallback =
-        ce::dx12_overlay_policy::ShouldEvaluateFFXPresentCallbackFallback(ffxPresentCallbackStalled,
-                                                                          explicitNativeFSROffPending);
+    const bool evaluateFFXCallbackFallback = ce::dx12_overlay_policy::ShouldEvaluateFFXPresentCallbackFallback(
+        ffxPresentCallbackStalled, explicitNativeFSROffPending);
     UpdateFFXPresentCallbackFirstStallDetection(ffxPresentCallbackStalled);
     const bool progressResolvedOfficialFFXPresentPath =
         g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire);
     const bool directFFXApiConfirmation = g_FGCompat.HasDirectFFXApiConfirmation();
     const ULONGLONG lastCallback = g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
-    const ULONGLONG assumedSince =
-        g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
-    const bool currentFFXPresentCallbackProof =
-        ce::dx12_overlay_policy::IsFFXPresentCallbackProofCurrent(lastCallback, g_SwapchainQueueCaptureTime,
-                                                                  assumedSince);
+    const ULONGLONG assumedSince = g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
+    const bool currentFFXPresentCallbackProof = ce::dx12_overlay_policy::IsFFXPresentCallbackProofCurrent(
+        lastCallback, g_SwapchainQueueCaptureTime, assumedSince);
     const ProgressResolvedOfficialFFXOverlayFallbackProof progressProof =
         EvaluateProgressResolvedOfficialFFXOverlayFallbackProof();
     const ULONGLONG stallDurationMs = GetFFXPresentCallbackStallDurationMs();
@@ -4248,8 +4225,7 @@ static void LogSuppressedFFXPresentCallbackStallNormalOverlayFallback() {
 
     const ULONGLONG now = GetTickCount64();
     const ULONGLONG lastCallback = g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
-    const ULONGLONG assumedSince =
-        g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
+    const ULONGLONG assumedSince = g_OfficialFFXRuntimeOwnedPresentPathAssumedSinceMs.load(std::memory_order_acquire);
     const ProgressResolvedOfficialFFXOverlayFallbackProof progressProof =
         EvaluateProgressResolvedOfficialFFXOverlayFallbackProof();
     HookLogImportant(
@@ -4259,13 +4235,11 @@ static void LogSuppressedFFXPresentCallbackStallNormalOverlayFallback() {
         "runtime=%s apiFSR=%d nativeFGPath=%d stableProof=%d stableFor=%llums requiredStable=%llums "
         "hasScQ=%d hasOrig=%d sameQueue=%d "
         "hasDevice=%d deviceHr=0x%08X scQueue=%p origGame=%p cmdQ=%p log=%d)",
-        lastCallback, assumedSince ? (now - assumedSince) : 0,
-        g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0,
+        lastCallback, assumedSince ? (now - assumedSince) : 0, g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0,
         g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) ? 1 : 0,
-        g_FGRuntimeOwnsSwapchain ? 1 : 0,
-        ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
-        HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0, progressProof.proof ? 1 : 0,
-        progressProof.stableMs, kProgressResolvedOfficialFFXOverlayFallbackStableMs,
+        g_FGRuntimeOwnsSwapchain ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
+        g_FGCompat.IsFSRFGApiActive() ? 1 : 0, HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0,
+        progressProof.proof ? 1 : 0, progressProof.stableMs, kProgressResolvedOfficialFFXOverlayFallbackStableMs,
         progressProof.hasSwapchainQueue ? 1 : 0, progressProof.hasOriginalGameQueue ? 1 : 0,
         progressProof.swapchainQueueMatchesOriginalGameQueue ? 1 : 0, progressProof.hasDevice ? 1 : 0,
         static_cast<unsigned>(progressProof.deviceHr), g_SwapchainQueue, g_OriginalGameQueue,
@@ -4351,9 +4325,8 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
                 if (assumedSince > currentFFXProofSince) {
                     currentFFXProofSince = assumedSince;
                 }
-                const bool currentFFXPresentCallbackProof =
-                    ce::dx12_overlay_policy::IsFFXPresentCallbackProofCurrent(lastCallback, g_SwapchainQueueCaptureTime,
-                                                                              assumedSince);
+                const bool currentFFXPresentCallbackProof = ce::dx12_overlay_policy::IsFFXPresentCallbackProofCurrent(
+                    lastCallback, g_SwapchainQueueCaptureTime, assumedSince);
                 HookLogImportant(
                     "DX12: Native FSR fallback proof allows normal overlay rendering "
                     "(lastCallback=%llu ownedFor=%llums ffxStalled=%d "
@@ -4364,8 +4337,8 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
                     lastCallback, ownedSince ? (GetTickCount64() - ownedSince) : 0, ffxStalled ? 1 : 0,
                     assumedSince ? (GetTickCount64() - assumedSince) : 0,
                     static_cast<unsigned long long>(currentFFXProofSince), directFFXApiConfirmation ? 1 : 0,
-                    explicitNativeFSROffPending ? 1 : 0,
-                    currentFFXPresentCallbackProof ? 1 : 0, progressProof.proof ? 1 : 0, progressProof.stableMs,
+                    explicitNativeFSROffPending ? 1 : 0, currentFFXPresentCallbackProof ? 1 : 0,
+                    progressProof.proof ? 1 : 0, progressProof.stableMs,
                     progressProof.swapchainQueueMatchesOriginalGameQueue ? 1 : 0,
                     static_cast<unsigned>(progressProof.deviceHr), nativeFSRInternalNoCallbackComposition ? 1 : 0);
             }
@@ -4382,17 +4355,16 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
                 const bool uiCached = DX12_IsFFXUiResourceCachedForBundle();
                 const bool liveIsOrigGame = DX12_IsLiveSwapchainQueueOriginalGameQueue();
                 const char* fallbackReason = liveIsOrigGame ? "stale no-callback latch (live queue back on origGame)"
-                                             : !uiCached     ? "no UI resource registered"
-                                                             : "no-callback composition";
+                                             : !uiCached    ? "no UI resource registered"
+                                                            : "no-callback composition";
                 HookLogImportant(
                     "DX12: Native FSR no-callback composition — allowing normal/backbuffer overlay rendering "
                     "(%s) (runtime=%s apiFSR=%d nativeFGPath=%d runtimeOwns=%d explicitNativeOff=%d uiCached=%d "
                     "liveQueueIsOrigGame=%d scQueue=%p origGame=%p cmdQ=%p log=%d)",
                     fallbackReason, ce::fg_runtime::GetRuntimeModeName(runtimeMode), authoritativeFSRActive ? 1 : 0,
                     runtimeOwnedNativeFGPresentPath ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0,
-                    explicitNativeFSROffPending ? 1 : 0, uiCached ? 1 : 0, liveIsOrigGame ? 1 : 0,
-                    g_SwapchainQueue, g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire),
-                    logCount + 1);
+                    explicitNativeFSROffPending ? 1 : 0, uiCached ? 1 : 0, liveIsOrigGame ? 1 : 0, g_SwapchainQueue,
+                    g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire), logCount + 1);
             }
         }
         if (reason) {
@@ -4434,8 +4406,7 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
         }
         constexpr ULONGLONG kMaxOverlaySuppressionMs = 2000;
         if (now >= suppressedSince && (now - suppressedSince) >= kMaxOverlaySuppressionMs) {
-            const bool nativeFSRActive =
-                authoritativeFSRActive || ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode);
+            const bool nativeFSRActive = authoritativeFSRActive || ce::fg_runtime::RuntimeModeUsesFSR(runtimeMode);
             const ULONGLONG lastCallback = g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire);
             const bool ffxPresentCallbackEverFired = lastCallback != 0;
             const bool timeoutOverrideAllowed =
@@ -4443,8 +4414,7 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
                     runtimeOwnedNativeFGPresentPath, nativeFSRActive, ffxStalled, ffxStallAllowsNormalOverlay);
             if (!timeoutOverrideAllowed) {
                 static std::atomic<int> s_timeoutBlockedByNativeFSRLogCount{0};
-                const int logCount =
-                    s_timeoutBlockedByNativeFSRLogCount.fetch_add(1, std::memory_order_relaxed);
+                const int logCount = s_timeoutBlockedByNativeFSRLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 10 || (logCount % 600) == 0) {
                     HookLogImportant(
                         "DX12: Overlay suppression exceeded 2s but native FSR owns presentation; keeping normal "
@@ -4483,13 +4453,9 @@ static bool ShouldSkipSeparateOverlayGpuWorkForCurrentSwapchain(const char** rea
             HookLogImportant(
                 "DX12: Overlay suppression exceeded 2s (%llums) — forcing normal overlay rendering "
                 "(runtime=%s apiFSR=%d nativeFGPath=%d runtimeOwns=%d ffxStalled=%d ffxStallAllows=%d)",
-                elapsed,
-                ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
-                g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
-                runtimeOwnedNativeFGPresentPath ? 1 : 0,
-                g_FGRuntimeOwnsSwapchain ? 1 : 0,
-                ffxStalled ? 1 : 0,
-                ffxStallAllowsNormalOverlay ? 1 : 0);
+                elapsed, ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
+                g_FGCompat.IsFSRFGApiActive() ? 1 : 0, runtimeOwnedNativeFGPresentPath ? 1 : 0,
+                g_FGRuntimeOwnsSwapchain ? 1 : 0, ffxStalled ? 1 : 0, ffxStallAllowsNormalOverlay ? 1 : 0);
             return false;
         }
     }
@@ -4523,9 +4489,9 @@ static bool ShouldBridgeOverlayViaFFXPresentCallback(const ce::ffx_api::Callback
             HookLogImportant(
                 "DX12: FFX present callback bridge skipped overlay because no authoritative native FSR evidence is "
                 "active (runtimeOwnedNativePath=%d apiFSR=%d directFFX=%d runtime=%s frameId=%llu log=%d)",
-                runtimeOwnedNativeFGPresentPath ? 1 : 0, authoritativeFSRActive ? 1 : 0,
-                directFFXConfirmation ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(runtimeMode),
-                static_cast<unsigned long long>(desc->frameID), logCount + 1);
+                runtimeOwnedNativeFGPresentPath ? 1 : 0, authoritativeFSRActive ? 1 : 0, directFFXConfirmation ? 1 : 0,
+                ce::fg_runtime::GetRuntimeModeName(runtimeMode), static_cast<unsigned long long>(desc->frameID),
+                logCount + 1);
         }
         return false;
     }
@@ -4547,9 +4513,10 @@ static bool ShouldBridgeOverlayViaFFXPresentCallback(const ce::ffx_api::Callback
         static std::atomic<int> s_ffxPresentBridgeNoIPCLogCount{0};
         const int logCount = s_ffxPresentBridgeNoIPCLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 300) == 0) {
-            HookLogImportant("DX12: FFX present callback bridge skipped overlay because IPC is not connected "
-                             "(frameId=%llu log=%d)",
-                             static_cast<unsigned long long>(desc->frameID), logCount + 1);
+            HookLogImportant(
+                "DX12: FFX present callback bridge skipped overlay because IPC is not connected "
+                "(frameId=%llu log=%d)",
+                static_cast<unsigned long long>(desc->frameID), logCount + 1);
         }
         return false;
     }
@@ -4559,9 +4526,10 @@ static bool ShouldBridgeOverlayViaFFXPresentCallback(const ce::ffx_api::Callback
         static std::atomic<int> s_ffxPresentBridgeNoSharedMemLogCount{0};
         const int logCount = s_ffxPresentBridgeNoSharedMemLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 300) == 0) {
-            HookLogImportant("DX12: FFX present callback bridge skipped overlay because shared memory is unavailable "
-                             "(frameId=%llu log=%d)",
-                             static_cast<unsigned long long>(desc->frameID), logCount + 1);
+            HookLogImportant(
+                "DX12: FFX present callback bridge skipped overlay because shared memory is unavailable "
+                "(frameId=%llu log=%d)",
+                static_cast<unsigned long long>(desc->frameID), logCount + 1);
         }
         return false;
     }
@@ -4571,9 +4539,10 @@ static bool ShouldBridgeOverlayViaFFXPresentCallback(const ce::ffx_api::Callback
         static std::atomic<int> s_ffxPresentBridgeOverlayHiddenLogCount{0};
         const int logCount = s_ffxPresentBridgeOverlayHiddenLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 300) == 0) {
-            HookLog("DX12: FFX present callback bridge skipped overlay because overlay is hidden "
-                    "(frameId=%llu log=%d)",
-                    static_cast<unsigned long long>(desc->frameID), logCount + 1);
+            HookLog(
+                "DX12: FFX present callback bridge skipped overlay because overlay is hidden "
+                "(frameId=%llu log=%d)",
+                static_cast<unsigned long long>(desc->frameID), logCount + 1);
         }
         return false;
     }
@@ -4870,10 +4839,9 @@ static bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFr
         static std::atomic<int> s_ffxPresentTargetLogCount{0};
         const int targetLogCount = s_ffxPresentTargetLogCount.fetch_add(1, std::memory_order_relaxed);
         if (targetLogCount < 20 || (targetLogCount % 600) == 0) {
-            HookLog(
-                "DX12: FFX present callback rendered overlay target=%s resource=%p frameId=%llu generated=%d",
-                targetName ? targetName : "unknown", targetResource,
-                static_cast<unsigned long long>(desc->frameID), desc->isGeneratedFrame ? 1 : 0);
+            HookLog("DX12: FFX present callback rendered overlay target=%s resource=%p frameId=%llu generated=%d",
+                    targetName ? targetName : "unknown", targetResource, static_cast<unsigned long long>(desc->frameID),
+                    desc->isGeneratedFrame ? 1 : 0);
         }
         return true;
     };
@@ -4979,8 +4947,7 @@ bool DX12_HasFFXPresentCallbackBridgeWithOriginal(void* bridgeKey) {
 
     std::lock_guard<std::mutex> lock(g_FFXPresentCallbackBridgeMutex);
     const auto it = g_FFXPresentCallbackBridges.find(bridgeKey);
-    return it != g_FFXPresentCallbackBridges.end() && it->second.installed &&
-           it->second.originalCallback != nullptr &&
+    return it != g_FFXPresentCallbackBridges.end() && it->second.installed && it->second.originalCallback != nullptr &&
            it->second.originalCallback != &DX12_RenderOverlayViaFFXPresentCallback;
 }
 
@@ -5044,8 +5011,8 @@ void DX12_OnNativeFSRPresentCallbackRoutingConfigured(bool enabled, bool bridgeA
                 "DX12: Native FSR suspension retains internal no-callback composition route — normal overlay "
                 "rendering stays allowed on the runtime-owned swapchain queue (runtime=%s scQueue=%p origGame=%p "
                 "fgOwned=%d log=%d)",
-                ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_SwapchainQueue,
-                g_OriginalGameQueue, g_FGRuntimeOwnsSwapchain ? 1 : 0, retainLogCount + 1);
+                ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_SwapchainQueue, g_OriginalGameQueue,
+                g_FGRuntimeOwnsSwapchain ? 1 : 0, retainLogCount + 1);
         }
     }
 
@@ -5055,9 +5022,8 @@ void DX12_OnNativeFSRPresentCallbackRoutingConfigured(bool enabled, bool bridgeA
         HookLogImportant(
             "DX12: Native FSR present routing configured (enabled=%d bridgeActive=%d appCallback=%d "
             "internalNoCallback=%d retainedNoCallbackSuspension=%d runtime=%s scQueue=%p origGame=%p log=%d)",
-            enabled ? 1 : 0, bridgeActive ? 1 : 0, appCallbackProvided ? 1 : 0,
-            internalNoCallbackComposition ? 1 : 0, retainedNoCallbackSuspension ? 1 : 0,
-            ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
+            enabled ? 1 : 0, bridgeActive ? 1 : 0, appCallbackProvided ? 1 : 0, internalNoCallbackComposition ? 1 : 0,
+            retainedNoCallbackSuspension ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
             g_SwapchainQueue, g_OriginalGameQueue, logCount + 1);
     }
 }
@@ -5144,8 +5110,7 @@ void DX12_OnNativeFSRFrameGenerationConfigured(bool enabled, bool retainedPresen
                 "DX12: Native FSR explicitly configured FG OFF while runtime-owned swapchain teardown is still active "
                 "(scQueue=%p origGame=%p cmdQ=%p retainedBridge=%d directFFX=%d log=%d)",
                 g_SwapchainQueue, g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire),
-                retainedPresentCallbackBridge ? 1 : 0, g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0,
-                logCount + 1);
+                retainedPresentCallbackBridge ? 1 : 0, g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0, logCount + 1);
         }
     }
     ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kNativeFSRConfigureOff,
@@ -5164,16 +5129,20 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
             HookLogImportant(
                 "DX12: Suppressing recursive FFX present-callback bridge entry "
                 "(depth=%d frameId=%llu userCtx=%p log=%d)",
-                s_ffxPresentCallbackDepth,
-                desc ? static_cast<unsigned long long>(desc->frameID) : 0ULL, userCtx, logCount + 1);
+                s_ffxPresentCallbackDepth, desc ? static_cast<unsigned long long>(desc->frameID) : 0ULL, userCtx,
+                logCount + 1);
         }
         return 0;
     }
 
     struct CallbackDepthGuard {
         int& depth;
-        explicit CallbackDepthGuard(int& d) : depth(d) { ++depth; }
-        ~CallbackDepthGuard() { --depth; }
+        explicit CallbackDepthGuard(int& d) : depth(d) {
+            ++depth;
+        }
+        ~CallbackDepthGuard() {
+            --depth;
+        }
     } depthGuard(s_ffxPresentCallbackDepth);
 
     ce::ffx_api::PresentCallback originalCallback = nullptr;
@@ -5233,8 +5202,7 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
     const auto ffxCallbackRuntimeMode = g_FGCompat.GetRuntimeMode();
     const bool ffxRuntimeOwnsNativeFSRPresentation =
         g_FGCompat.IsFSRFGApiActive() || ce::fg_runtime::RuntimeModeUsesFSR(ffxCallbackRuntimeMode) ||
-        (g_FGRuntimeOwnsSwapchain &&
-         g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire));
+        (g_FGRuntimeOwnsSwapchain && g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire));
     const bool shouldComposeCurrentToOutput = ce::dx12_overlay_policy::ShouldComposeFFXPresentSourceToOutput(
         originalCallback != nullptr, ffxCallbackHasCurrentBackBuffer, ffxCallbackOutputDiffersFromCurrent);
     if (shouldComposeCurrentToOutput) {
@@ -5246,8 +5214,8 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
                 "app/default composition callback is available (frameId=%llu generated=%d runtimeOwnedNativeFSR=%d "
                 "runtime=%s log=%d)",
                 static_cast<unsigned long long>(desc->frameID), desc->isGeneratedFrame ? 1 : 0,
-                ffxRuntimeOwnsNativeFSRPresentation ? 1 : 0,
-                ce::fg_runtime::GetRuntimeModeName(ffxCallbackRuntimeMode), composeLogCount + 1);
+                ffxRuntimeOwnsNativeFSRPresentation ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(ffxCallbackRuntimeMode),
+                composeLogCount + 1);
         }
         // WEDGE PRECURSOR DIAGNOSTIC: self-composing on AMD's command list while AMD owns the native-FSR
         // presentation is the documented ffxQuery-wedge path (session 20260615_021242). With the
@@ -5285,8 +5253,8 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
                 "DX12: FFX present callback bridge preserving app/default-composed runtime output "
                 "(frameId=%llu generated=%d runtimeOwnedNativeFSR=%d runtime=%s log=%d)",
                 static_cast<unsigned long long>(desc->frameID), desc->isGeneratedFrame ? 1 : 0,
-                ffxRuntimeOwnsNativeFSRPresentation ? 1 : 0,
-                ce::fg_runtime::GetRuntimeModeName(ffxCallbackRuntimeMode), logCount + 1);
+                ffxRuntimeOwnsNativeFSRPresentation ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(ffxCallbackRuntimeMode),
+                logCount + 1);
         }
     }
 
@@ -5323,7 +5291,8 @@ uint32_t DX12_RenderOverlayViaFFXPresentCallback(ce::ffx_api::CallbackDescFrameG
 static std::recursive_mutex g_FFXUiCompositeMutex;
 static ID3D12Device* g_FFXUiCompositeDevice = nullptr;
 static ID3D12DescriptorHeap* g_FFXUiCompositeRtvHeap = nullptr;
-static constexpr int kFFXUiCompositeSlotCount = 3;  // 3-slot rotation recycled by fence value (signaled on CE's own queue).
+static constexpr int kFFXUiCompositeSlotCount =
+    3;  // 3-slot rotation recycled by fence value (signaled on CE's own queue).
 static ID3D12CommandAllocator* g_FFXUiCompositeAlloc[kFFXUiCompositeSlotCount] = {};
 static ID3D12GraphicsCommandList* g_FFXUiCompositeList = nullptr;
 // Step 2 revised: CE's OWN dedicated queue for the UI-composite submit. AMD does NOT track this queue
@@ -5332,7 +5301,8 @@ static ID3D12GraphicsCommandList* g_FFXUiCompositeList = nullptr;
 // Signal on any AMD-tracked queue → no ffxQuery pacing wedge. The UI texture is a game-owned committed
 // resource (not a swapchain backbuffer), so cross-queue writes from a DIRECT queue are legal with barriers.
 static ID3D12CommandQueue* g_FFXUiCompositeQueue = nullptr;
-static ID3D12Fence* g_FFXUiCompositeFence = nullptr;  // signaled on g_FFXUiCompositeQueue (CE's own queue, not the game queue)
+static ID3D12Fence* g_FFXUiCompositeFence =
+    nullptr;  // signaled on g_FFXUiCompositeQueue (CE's own queue, not the game queue)
 static HANDLE g_FFXUiCompositeFenceEvent = nullptr;
 static UINT64 g_FFXUiCompositeFenceVal = 0;
 static UINT64 g_FFXUiCompositeAllocFenceVal[kFFXUiCompositeSlotCount] = {};
@@ -5407,9 +5377,8 @@ static void RecordFFXUiCompositeTimelineEntry(const FFXUiCompositeTimelineEntry&
 
 static void DumpFFXUiCompositeTimeline(const char* reason) {
     const uint32_t idx = g_FFXUiCompositeTimelineIdx.load(std::memory_order_relaxed);
-    const int count = (idx < static_cast<uint32_t>(kFFXUiCompositeTimelineSize))
-                          ? static_cast<int>(idx)
-                          : kFFXUiCompositeTimelineSize;
+    const int count = (idx < static_cast<uint32_t>(kFFXUiCompositeTimelineSize)) ? static_cast<int>(idx)
+                                                                                 : kFFXUiCompositeTimelineSize;
     if (count == 0) {
         HookLogImportant("DX12: [ffx-ui-composite-timeline] %s — no composite calls recorded yet", reason ?: "freeze");
         return;
@@ -5417,30 +5386,26 @@ static void DumpFFXUiCompositeTimeline(const char* reason) {
     LARGE_INTEGER freq;
     QueryPerformanceFrequency(&freq);
     const double freqMs = static_cast<double>(freq.QuadPart) / 1000.0;
-    const uint32_t startIdx = (idx >= static_cast<uint32_t>(kFFXUiCompositeTimelineSize))
-                                  ? (idx % kFFXUiCompositeTimelineSize)
-                                  : 0;
+    const uint32_t startIdx =
+        (idx >= static_cast<uint32_t>(kFFXUiCompositeTimelineSize)) ? (idx % kFFXUiCompositeTimelineSize) : 0;
     HookLogImportant("DX12: [ffx-ui-composite-timeline] %s — %d entries (total=%u)", reason ?: "freeze", count, idx);
     for (int i = 0; i < count; ++i) {
         const uint32_t slotIdx = (startIdx + i) % kFFXUiCompositeTimelineSize;
         const auto& e = g_FFXUiCompositeTimeline[slotIdx];
         const double submitToReturnMs =
-            (e.returnQpc && e.submitQpc && freqMs > 0)
-                ? static_cast<double>(e.returnQpc - e.submitQpc) / freqMs
-                : -1.0;
+            (e.returnQpc && e.submitQpc && freqMs > 0) ? static_cast<double>(e.returnQpc - e.submitQpc) / freqMs : -1.0;
         HookLogImportant(
             "  [timeline %d/%d] frame=%llu slot=%u fenceVal=%llu fenceCompleted=%llu waitTimedOut=%u "
             "gameEcl=%u submitQpc=%llu returnQpc=%llu submitToReturnMs=%.3f uiTex=%p ffxState=0x%X queue=%p",
-            i + 1, count, static_cast<unsigned long long>(e.frame), e.slot,
-            static_cast<unsigned long long>(e.fenceVal), static_cast<unsigned long long>(e.fenceCompleted),
-            e.waitTimedOut, e.gameEclCount, static_cast<unsigned long long>(e.submitQpc),
-            static_cast<unsigned long long>(e.returnQpc), submitToReturnMs, e.uiTexture, e.ffxState, e.queue);
+            i + 1, count, static_cast<unsigned long long>(e.frame), e.slot, static_cast<unsigned long long>(e.fenceVal),
+            static_cast<unsigned long long>(e.fenceCompleted), e.waitTimedOut, e.gameEclCount,
+            static_cast<unsigned long long>(e.submitQpc), static_cast<unsigned long long>(e.returnQpc),
+            submitToReturnMs, e.uiTexture, e.ffxState, e.queue);
     }
     const uint64_t lastForwardQpc = g_LastFfxConfigureForwardQpc.load(std::memory_order_relaxed);
     const uint64_t cfgFrame = g_FfxConfigureFrame.load(std::memory_order_relaxed);
     HookLogImportant("  [timeline] lastFfxConfigureForwardQpc=%llu ffxConfigureFrame=%llu",
-                     static_cast<unsigned long long>(lastForwardQpc),
-                     static_cast<unsigned long long>(cfgFrame));
+                     static_cast<unsigned long long>(lastForwardQpc), static_cast<unsigned long long>(cfgFrame));
 }
 
 void DX12_LogFFXProxyPresentHookFreezeDiagnostics(const char* reason);  // defined with the proxy hook below
@@ -5459,9 +5424,8 @@ void DX12_LogFFXUiCompositeFreezeDiagnostics(const char* reason) {
         "DX12: [ffx-ui-composite-freeze-diag] %s — frame=%d fenceVal=%llu fenceCompleted=%llu "
         "fenceMatch=%d compositionActive=%d lastTickMs=%llu nowMs=%llu",
         reason ? reason : "freeze", frame, static_cast<unsigned long long>(fenceVal),
-        static_cast<unsigned long long>(fenceCompleted), fenceVal == fenceCompleted ? 1 : 0,
-        compositionActive ? 1 : 0, static_cast<unsigned long long>(lastTickMs),
-        static_cast<unsigned long long>(GetTickCount64()));
+        static_cast<unsigned long long>(fenceCompleted), fenceVal == fenceCompleted ? 1 : 0, compositionActive ? 1 : 0,
+        static_cast<unsigned long long>(lastTickMs), static_cast<unsigned long long>(GetTickCount64()));
     DumpFFXUiCompositeTimeline(reason);
     // Proxy-present driver + re-assert bracket state (defined later in this file / ffx_hook.cpp): shows in
     // one freeze dump whether the game-thread driver was live and whether a substitute re-assert was
@@ -5594,8 +5558,8 @@ static ID3D12Resource* PrepareCEUiSubstituteTexture(ID3D12Device* device, uint32
         return nullptr;
     }
     if (g_CEUiSubstituteTexture && IsResourceOwnedByDevice(g_CEUiSubstituteTexture, device) &&
-        g_CEUiSubstituteWidth == width && g_CEUiSubstituteHeight == height &&
-        g_CEUiSubstituteFormat == format && g_CEUiSubstituteInitialState == initialState) {
+        g_CEUiSubstituteWidth == width && g_CEUiSubstituteHeight == height && g_CEUiSubstituteFormat == format &&
+        g_CEUiSubstituteInitialState == initialState) {
         g_CEUiSubstituteTexture->AddRef();
         return g_CEUiSubstituteTexture;
     }
@@ -5614,8 +5578,8 @@ static ID3D12Resource* PrepareCEUiSubstituteTexture(ID3D12Device* device, uint32
     D3D12_CLEAR_VALUE clearValue = {};
     clearValue.Format = FFXUiCompositeRtvFormat(format);  // typed RTV format (the bundle clears with this)
     ID3D12Resource* tex = nullptr;
-    const HRESULT hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &td, initialState,
-                                                       &clearValue, IID_PPV_ARGS(&tex));
+    const HRESULT hr = device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &td, initialState, &clearValue,
+                                                       IID_PPV_ARGS(&tex));
     if (FAILED(hr) || !tex) {
         HookLogImportant("DX12: FFX UI substitute texture creation FAILED (%ux%u fmt=%d hr=0x%08X)", width, height,
                          static_cast<int>(format), static_cast<unsigned>(hr));
@@ -5769,8 +5733,8 @@ void DX12_CommitFFXUiOverlayTarget(DX12FFXUiOverlayTargetPreparation* preparatio
                 HookLogImportant(
                     "DX12: Committed accepted FFX UI target %p (substitute=%d %ux%u fmt=%d state=0x%X "
                     "sequence=%llu log=%d)",
-                    preparation->target, preparation->substitute ? 1 : 0, preparation->width,
-                    preparation->height, static_cast<int>(preparation->format), preparation->state,
+                    preparation->target, preparation->substitute ? 1 : 0, preparation->width, preparation->height,
+                    static_cast<int>(preparation->format), preparation->state,
                     static_cast<unsigned long long>(preparation->sequence), n + 1);
             }
         }
@@ -5789,9 +5753,9 @@ void DX12_NoteFfxConfigureForward(uint64_t configureType) {
         static std::atomic<int> s_registerUiResLogCount{0};
         const int n = s_registerUiResLogCount.fetch_add(1, std::memory_order_relaxed);
         if (n < 20 || (n % 300) == 0) {
-            HookLogImportant(
-                "FFX Hook: RegisterUiResource forwarded (type=0x30002 cfgFrame=%llu qpc=%llu log=%d)",
-                static_cast<unsigned long long>(frame), static_cast<unsigned long long>(qpc.QuadPart), n + 1);
+            HookLogImportant("FFX Hook: RegisterUiResource forwarded (type=0x30002 cfgFrame=%llu qpc=%llu log=%d)",
+                             static_cast<unsigned long long>(frame), static_cast<unsigned long long>(qpc.QuadPart),
+                             n + 1);
         }
     }
 }
@@ -5800,16 +5764,34 @@ static void ReleaseFFXUiCompositeInfra() {
     std::lock_guard<std::recursive_mutex> lock(g_FFXUiCompositeMutex);
     // Invalidate any RegisterUiResource preparation that entered before teardown and has not returned from
     // AMD yet. Its later commit must not resurrect device-bound resources into the cleared generation.
-    g_FFXUiCommittedPreparationSequence =
-        g_FFXUiPreparationSequence.fetch_add(1, std::memory_order_acq_rel) + 1;
+    g_FFXUiCommittedPreparationSequence = g_FFXUiPreparationSequence.fetch_add(1, std::memory_order_acq_rel) + 1;
     g_FFXUiPresenterFallbackLastSequence = 0;
-    if (g_FFXUiCompositeList) { g_FFXUiCompositeList->Release(); g_FFXUiCompositeList = nullptr; }
-    for (auto& a : g_FFXUiCompositeAlloc) { if (a) { a->Release(); a = nullptr; } }
-    if (g_FFXUiCompositeRtvHeap) { g_FFXUiCompositeRtvHeap->Release(); g_FFXUiCompositeRtvHeap = nullptr; }
-    if (g_FFXUiCompositeQueue) { g_FFXUiCompositeQueue->Release(); g_FFXUiCompositeQueue = nullptr; }
-    if (g_FFXUiCompositeFence) { g_FFXUiCompositeFence->Release(); g_FFXUiCompositeFence = nullptr; }
+    if (g_FFXUiCompositeList) {
+        g_FFXUiCompositeList->Release();
+        g_FFXUiCompositeList = nullptr;
+    }
+    for (auto& a : g_FFXUiCompositeAlloc) {
+        if (a) {
+            a->Release();
+            a = nullptr;
+        }
+    }
+    if (g_FFXUiCompositeRtvHeap) {
+        g_FFXUiCompositeRtvHeap->Release();
+        g_FFXUiCompositeRtvHeap = nullptr;
+    }
+    if (g_FFXUiCompositeQueue) {
+        g_FFXUiCompositeQueue->Release();
+        g_FFXUiCompositeQueue = nullptr;
+    }
+    if (g_FFXUiCompositeFence) {
+        g_FFXUiCompositeFence->Release();
+        g_FFXUiCompositeFence = nullptr;
+    }
     g_FFXUiCompositeFenceVal = 0;
-    for (int i = 0; i < kFFXUiCompositeSlotCount; ++i) { g_FFXUiCompositeAllocFenceVal[i] = 0; }
+    for (int i = 0; i < kFFXUiCompositeSlotCount; ++i) {
+        g_FFXUiCompositeAllocFenceVal[i] = 0;
+    }
     g_FFXUiCompositeFrame = 0;
     g_FFXUiCompositeTimelineIdx.store(0, std::memory_order_relaxed);
     g_LastFfxConfigureForwardQpc.store(0, std::memory_order_relaxed);
@@ -5891,8 +5873,8 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
         const uint32_t bbH = g_NoCallbackBackbufferHeight.load(std::memory_order_acquire);
         const bool degenerate =
             td.Width <= 1 || td.Height <= 1 ||
-            (bbW > 0 && bbH > 0 && (static_cast<uint32_t>(td.Width) * 2u < bbW ||
-                                    static_cast<uint32_t>(td.Height) * 2u < bbH));
+            (bbW > 0 && bbH > 0 &&
+             (static_cast<uint32_t>(td.Width) * 2u < bbW || static_cast<uint32_t>(td.Height) * 2u < bbH));
         if (degenerate) {
             static std::atomic<int> s_degenerateSkipLog{0};
             const int n = s_degenerateSkipLog.fetch_add(1, std::memory_order_relaxed);
@@ -5985,7 +5967,8 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
         g_FFXUiCompositeList->Close();
     }
     if (!g_FFXUiCompositeRtvHeap) {
-        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
+        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1, D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+                                                  0};
         if (FAILED(device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&g_FFXUiCompositeRtvHeap)))) {
             return false;
         }
@@ -6024,8 +6007,7 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
     }
     const int slot = g_FFXUiCompositeFrame % kFFXUiCompositeSlotCount;
     // Recycle the allocator slot by fence value (signaled on CE's own queue). Fast path: already complete.
-    if (g_FFXUiCompositeFence &&
-        g_FFXUiCompositeFence->GetCompletedValue() < g_FFXUiCompositeAllocFenceVal[slot]) {
+    if (g_FFXUiCompositeFence && g_FFXUiCompositeFence->GetCompletedValue() < g_FFXUiCompositeAllocFenceVal[slot]) {
         HookLogImportant(
             "DX12: FFX UI-composite refused in-flight allocator reuse (slot=%d guard=%llu completed=%llu) — "
             "prior completion proof is missing; no wait/overwrite",
@@ -6149,8 +6131,8 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
         g_FFXUiCompositeFence->GetCompletedValue() < g_FFXUiCompositeFenceVal) {
         const HRESULT eventHr =
             g_FFXUiCompositeFence->SetEventOnCompletion(g_FFXUiCompositeFenceVal, g_FFXUiCompositeFenceEvent);
-        const DWORD waitResult = SUCCEEDED(eventHr) ? WaitForSingleObject(g_FFXUiCompositeFenceEvent, INFINITE)
-                                                    : WAIT_FAILED;
+        const DWORD waitResult =
+            SUCCEEDED(eventHr) ? WaitForSingleObject(g_FFXUiCompositeFenceEvent, INFINITE) : WAIT_FAILED;
         if (waitResult != WAIT_OBJECT_0) {
             waitTimedOut = 1;
             HookLogImportant(
@@ -6169,17 +6151,11 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
 
     // Record this composite call in the timeline ring buffer for freeze diagnosis.
     const int gameEclCount = g_CommandListsExecutedThisFrame.load(std::memory_order_relaxed);
-    RecordFFXUiCompositeTimelineEntry({static_cast<uint64_t>(g_FFXUiCompositeFrame),
-                                       g_FFXUiCompositeFenceVal,
-                                       g_FFXUiCompositeFence ? g_FFXUiCompositeFence->GetCompletedValue() : 0,
-                                       static_cast<uint64_t>(submitQpc.QuadPart),
-                                       static_cast<uint64_t>(returnQpc.QuadPart),
-                                       waitTimedOut,
-                                       static_cast<uint32_t>(slot),
-                                       static_cast<uint32_t>(gameEclCount),
-                                       uiTexture,
-                                       ffxState,
-                                       submitQueue});
+    RecordFFXUiCompositeTimelineEntry(
+        {static_cast<uint64_t>(g_FFXUiCompositeFrame), g_FFXUiCompositeFenceVal,
+         g_FFXUiCompositeFence ? g_FFXUiCompositeFence->GetCompletedValue() : 0,
+         static_cast<uint64_t>(submitQpc.QuadPart), static_cast<uint64_t>(returnQpc.QuadPart), waitTimedOut,
+         static_cast<uint32_t>(slot), static_cast<uint32_t>(gameEclCount), uiTexture, ffxState, submitQueue});
 
     static std::atomic<int> s_uiCompositeLogCount{0};
     const int logCount = s_uiCompositeLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -6272,8 +6248,7 @@ void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapC
 
     ID3D12Device* descriptorDevice = nullptr;
     presentationQueue->GetDevice(IID_PPV_ARGS(&descriptorDevice));
-    const bool streamlineWrappedQueue =
-        descriptorDevice && StreamlineHook::IsAcceptedD3D12Device(descriptorDevice);
+    const bool streamlineWrappedQueue = descriptorDevice && StreamlineHook::IsAcceptedD3D12Device(descriptorDevice);
     ID3D12CommandQueue* underlyingGameQueue =
         streamlineWrappedQueue ? DX12_AcquireOriginalGameQueueForOverlay() : nullptr;
 
@@ -6316,8 +6291,8 @@ void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapC
         "descriptorDevice=%p streamlineWrapped=%d underlyingGameQueue=%p underlyingDevice=%p nodeMask=%u) — "
         "direct overlay work uses the exact queue, or the validated underlying game queue for a proven "
         "Streamline wrapper",
-        context, swapChain, presentationQueue, descriptorDevice, streamlineWrappedQueue ? 1 : 0,
-        underlyingGameQueue, underlyingDevice, presentationQueue->GetDesc().NodeMask);
+        context, swapChain, presentationQueue, descriptorDevice, streamlineWrappedQueue ? 1 : 0, underlyingGameQueue,
+        underlyingDevice, presentationQueue->GetDesc().NodeMask);
     if (underlyingDevice) {
         underlyingDevice->Release();
     }
@@ -6334,8 +6309,7 @@ void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const cha
     std::vector<ReleasedBinding> releasedBindings;
     {
         std::lock_guard<std::mutex> lock(g_NativeFSRSwapchainQueueBindingMutex);
-        for (auto it = g_NativeFSRSwapchainQueueBindings.begin();
-             it != g_NativeFSRSwapchainQueueBindings.end();) {
+        for (auto it = g_NativeFSRSwapchainQueueBindings.begin(); it != g_NativeFSRSwapchainQueueBindings.end();) {
             if (!context || it->second.context == context) {
                 if (it->second.descriptorQueue || it->second.underlyingGameQueue) {
                     releasedBindings.push_back({it->first, it->second});
@@ -6362,8 +6336,7 @@ void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const cha
     }
 }
 
-static bool QueueDeviceOwnsResource(ID3D12CommandQueue* queue, ID3D12Resource* target,
-                                    ID3D12Device** queueDeviceOut) {
+static bool QueueDeviceOwnsResource(ID3D12CommandQueue* queue, ID3D12Resource* target, ID3D12Device** queueDeviceOut) {
     if (queueDeviceOut) {
         *queueDeviceOut = nullptr;
     }
@@ -6390,7 +6363,7 @@ struct AcquiredNativeFSROwnerQueue {
 };
 
 static AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(IDXGISwapChain* proxy,
-                                                                               ID3D12Resource* target) {
+                                                                              ID3D12Resource* target) {
     if (!proxy || !target) {
         return {};
     }
@@ -6418,10 +6391,8 @@ static AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(ID
 
     ID3D12Device* descriptorDevice = nullptr;
     ID3D12Device* underlyingDevice = nullptr;
-    const bool exactMatches =
-        QueueDeviceOwnsResource(binding.descriptorQueue, target, &descriptorDevice);
-    const bool underlyingMatches =
-        QueueDeviceOwnsResource(binding.underlyingGameQueue, target, &underlyingDevice);
+    const bool exactMatches = QueueDeviceOwnsResource(binding.descriptorQueue, target, &descriptorDevice);
+    const bool underlyingMatches = QueueDeviceOwnsResource(binding.underlyingGameQueue, target, &underlyingDevice);
     const auto route = ce::dx12_overlay_policy::ChooseNativeFSROwnerQueueRoute(
         exactMatches, binding.descriptorQueueUsesAcceptedStreamlineDevice, underlyingMatches);
 
@@ -6450,9 +6421,8 @@ static AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(ID
     const int unavailableLog = route == ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kUnavailable
                                    ? s_unavailableLogCount.fetch_add(1, std::memory_order_relaxed)
                                    : 0;
-    if (previousRoute != routeValue ||
-        (route == ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kUnavailable &&
-         (unavailableLog < 20 || (unavailableLog % 300) == 0))) {
+    if (previousRoute != routeValue || (route == ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kUnavailable &&
+                                        (unavailableLog < 20 || (unavailableLog % 300) == 0))) {
         const char* routeName =
             route == ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kExactDescriptorQueue
                 ? "exact-descriptor"
@@ -6464,8 +6434,8 @@ static AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(ID
             "exactMatches=%d streamlineWrapped=%d underlyingQueue=%p underlyingDevice=%p underlyingMatches=%d "
             "selected=%p",
             routeName, proxy, target, descriptorQueueForLog, descriptorDevice, exactMatches ? 1 : 0,
-            binding.descriptorQueueUsesAcceptedStreamlineDevice ? 1 : 0, underlyingQueueForLog,
-            underlyingDevice, underlyingMatches ? 1 : 0, selectedQueue);
+            binding.descriptorQueueUsesAcceptedStreamlineDevice ? 1 : 0, underlyingQueueForLog, underlyingDevice,
+            underlyingMatches ? 1 : 0, selectedQueue);
     }
     if (descriptorDevice) {
         descriptorDevice->Release();
@@ -6476,8 +6446,7 @@ static AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(ID
     return {selectedQueue, route};
 }
 
-static bool SubmitNativeFSROwnerQueueOverlayCommandList(ID3D12CommandQueue* queue,
-                                                         ID3D12CommandList* commandList) {
+static bool SubmitNativeFSROwnerQueueOverlayCommandList(ID3D12CommandQueue* queue, ID3D12CommandList* commandList) {
     if (!queue || !commandList) {
         return false;
     }
@@ -6487,8 +6456,7 @@ static bool SubmitNativeFSROwnerQueueOverlayCommandList(ID3D12CommandQueue* queu
     return true;
 }
 
-static HRESULT SignalNativeFSROwnerQueueOverlayFence(ID3D12CommandQueue* queue, ID3D12Fence* fence,
-                                                      UINT64 value) {
+static HRESULT SignalNativeFSROwnerQueueOverlayFence(ID3D12CommandQueue* queue, ID3D12Fence* fence, UINT64 value) {
     return queue && fence ? queue->Signal(fence, value) : E_INVALIDARG;
 }
 
@@ -6503,8 +6471,7 @@ bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy) {
         swapChain3->GetBuffer(swapChain3->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&backBuffer));
         swapChain3->Release();
     }
-    const AcquiredNativeFSROwnerQueue ownerQueue =
-        AcquireNativeFSRSwapchainPresentationQueue(proxy, backBuffer);
+    const AcquiredNativeFSROwnerQueue ownerQueue = AcquireNativeFSRSwapchainPresentationQueue(proxy, backBuffer);
     if (!ownerQueue.queue || !backBuffer) {
         static std::atomic<int> s_missingBindingLogCount{0};
         const int logCount = s_missingBindingLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -6526,8 +6493,7 @@ bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy) {
     DXGI_SWAP_CHAIN_DESC desc = {};
     bool hdr = false;
     if (SUCCEEDED(proxy->GetDesc(&desc))) {
-        hdr = ResolveSwapchainOutputHDRState(proxy, desc.BufferDesc.Format,
-                                             "DX12: FSR-suspend owner-queue HDR");
+        hdr = ResolveSwapchainOutputHDRState(proxy, desc.BufferDesc.Format, "DX12: FSR-suspend owner-queue HDR");
     }
 
     ce::dx12_ffx_suspend_overlay::RenderRequest request = {};
@@ -6573,8 +6539,7 @@ static bool DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(IDXGISwapCh
         return false;
     }
 
-    const AcquiredNativeFSROwnerQueue ownerQueue =
-        AcquireNativeFSRSwapchainPresentationQueue(proxy, uiTexture);
+    const AcquiredNativeFSROwnerQueue ownerQueue = AcquireNativeFSRSwapchainPresentationQueue(proxy, uiTexture);
     if (!ownerQueue.queue) {
         static std::atomic<int> s_missingBindingLogCount{0};
         const int logCount = s_missingBindingLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -6587,8 +6552,7 @@ static bool DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(IDXGISwapCh
         // A CE-owned substitute has no incoming game-queue writer, so the legacy completion-waited route
         // remains a safe compatibility fallback for an unknown FFX descriptor revision. A game-owned UI
         // texture cannot use this fallback here because a foreign-queue write would race its producer.
-        const bool rendered = isSubstitute &&
-                              DX12_CompositeOverlayOntoFFXUiResource(uiTexture, ffxState, flags);
+        const bool rendered = isSubstitute && DX12_CompositeOverlayOntoFFXUiResource(uiTexture, ffxState, flags);
         uiTexture->Release();
         return rendered;
     }
@@ -6599,10 +6563,10 @@ static bool DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(IDXGISwapCh
     request.targetResource = uiTexture;
     request.targetState = GetDX12StateFromFFXResourceState(ffxState);
     request.clearTransparent = needsTransparentClear;
-    request.routeName = ownerQueue.route ==
-                                ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kStreamlineUnderlyingGameQueue
-                            ? "active-ui-resource-streamline-unwrapped"
-                            : "active-ui-resource";
+    request.routeName =
+        ownerQueue.route == ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kStreamlineUnderlyingGameQueue
+            ? "active-ui-resource-streamline-unwrapped"
+            : "active-ui-resource";
     request.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;
     request.signalFence = &SignalNativeFSROwnerQueueOverlayFence;
     request.hdr = false;
@@ -6628,8 +6592,7 @@ static bool DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(IDXGISwapCh
 // The proxy pointer arrives generically in ffxConfigure(FrameGeneration).swapChain (GTA passes it in the
 // startup-arming AND enabled configures the one-shot VEH intercepts; the test app passes it too).
 typedef HRESULT(STDMETHODCALLTYPE* PFN_FFXProxyPresent)(IDXGISwapChain*, UINT, UINT);
-typedef HRESULT(STDMETHODCALLTYPE* PFN_FFXProxyPresent1)(IDXGISwapChain*, UINT, UINT,
-                                                         const DXGI_PRESENT_PARAMETERS*);
+typedef HRESULT(STDMETHODCALLTYPE* PFN_FFXProxyPresent1)(IDXGISwapChain*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
 static std::mutex g_FFXProxyPresentHookMutex;
 static void* g_FFXProxySwapchain = nullptr;             // game-facing proxy object (identity/diagnostics only)
 static void** g_FFXProxyPresentVtableEntry = nullptr;   // &vtable[8] patched (class vtable in the FFX module)
@@ -6681,8 +6644,7 @@ bool DX12_IsFFXProxyPresentHookDriving() {
         // freshly patched-but-never-entered proxy as the live driver creates a deterministic first-frame gap.
         return false;
     }
-    const double ageMs =
-        static_cast<double>(now.QuadPart - lastPrework) * 1000.0 / static_cast<double>(freq.QuadPart);
+    const double ageMs = static_cast<double>(now.QuadPart - lastPrework) * 1000.0 / static_cast<double>(freq.QuadPart);
     return ageMs < 1000.0;
 }
 
@@ -6759,8 +6721,7 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
     }
     // A merely-entered detour is not coverage. Publish the live-driver heartbeat only after the command list
     // was submitted; otherwise immediately reactivate the real-present fallback for this same transition.
-    g_FFXProxyPreworkLastQpc.store(composited ? static_cast<uint64_t>(qpc.QuadPart) : 0,
-                                   std::memory_order_release);
+    g_FFXProxyPreworkLastQpc.store(composited ? static_cast<uint64_t>(qpc.QuadPart) : 0, std::memory_order_release);
     if (composited && !suspendBackbufferRoute) {
         g_FFXUiResourceCompositionActive.store(true, std::memory_order_release);
         g_FFXUiCompositeLastTickMs.store(GetTickCount64(), std::memory_order_release);
@@ -6864,8 +6825,9 @@ bool DX12_TryInstallFFXProxyPresentHook(void* swapChain, void* ffxRuntimeAnchor,
         // Same class vtable already routed to CE (e.g. FG re-enable with a fresh proxy of the same class):
         // just refresh the tracked object identity for diagnostics.
         if (g_FFXProxySwapchain != swapChain) {
-            HookLogImportant("DX12: FFX proxy-present hook retained across proxy object change (old=%p new=%p source=%s)",
-                             g_FFXProxySwapchain, swapChain, source ? source : "?");
+            HookLogImportant(
+                "DX12: FFX proxy-present hook retained across proxy object change (old=%p new=%p source=%s)",
+                g_FFXProxySwapchain, swapChain, source ? source : "?");
             g_FFXProxySwapchain = swapChain;
             // Do not let a successful heartbeat from the old object suppress the real-present fallback before
             // the replacement proxy has delivered its own first covered Present.
@@ -6908,17 +6870,15 @@ bool DX12_TryInstallFFXProxyPresentHook(void* swapChain, void* ffxRuntimeAnchor,
                          VTableHook::StatusToString(status), swapChain, (void*)&vtable[8], source ? source : "?");
         return false;
     }
-    g_FFXProxyPresentOriginal.store(reinterpret_cast<PFN_FFXProxyPresent>(originalPresent),
-                                    std::memory_order_release);
+    g_FFXProxyPresentOriginal.store(reinterpret_cast<PFN_FFXProxyPresent>(originalPresent), std::memory_order_release);
     g_FFXProxyPresentVtableEntry = &vtable[8];
     // Present1 (IDXGISwapChain1 slot 22) — hook when the slot exists and also resolves into the FFX module.
     g_FFXProxyPresent1VtableEntry = nullptr;
     if (IsReadableSwapchainPointer(&vtable[22]) && ModuleFromAddress(vtable[22]) == ffxModule) {
-        g_FFXProxyPresent1Original.store(reinterpret_cast<PFN_FFXProxyPresent1>(vtable[22]),
-                                         std::memory_order_release);
+        g_FFXProxyPresent1Original.store(reinterpret_cast<PFN_FFXProxyPresent1>(vtable[22]), std::memory_order_release);
         void* originalPresent1 = nullptr;
-        if (VTableHook::Create(&vtable[22], reinterpret_cast<void*>(&DX12_FFXProxyDetourPresent1),
-                               &originalPresent1) == VTableHook::Success &&
+        if (VTableHook::Create(&vtable[22], reinterpret_cast<void*>(&DX12_FFXProxyDetourPresent1), &originalPresent1) ==
+                VTableHook::Success &&
             originalPresent1) {
             g_FFXProxyPresent1Original.store(reinterpret_cast<PFN_FFXProxyPresent1>(originalPresent1),
                                              std::memory_order_release);
@@ -6987,9 +6947,8 @@ void DX12_RemoveFFXProxyPresentHook(const char* reason) {
     }
 
     std::unique_lock<std::mutex> drainLock(g_FFXProxyPresentDrainMutex);
-    g_FFXProxyPresentDrainCV.wait(drainLock, []() {
-        return g_FFXProxyPresentDetoursInFlight.load(std::memory_order_acquire) == 0;
-    });
+    g_FFXProxyPresentDrainCV.wait(
+        drainLock, []() { return g_FFXProxyPresentDetoursInFlight.load(std::memory_order_acquire) == 0; });
     HookLogImportant("DX12: FFX proxy-present detours drained (%s)", reason ? reason : "removed");
 }
 
@@ -7107,8 +7066,7 @@ static bool ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHando
         s_startupOverlayCompatSettled.load(std::memory_order_acquire), g_State.overlayInit && g_State.syncInit,
         g_FGRuntimeOwnsSwapchain, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
         g_FGCompat.GetRuntimeMode(), HookHasExplicitStreamlineSetOptionsActivation(),
-        s_startupOverlayObservedAnyFG.load(std::memory_order_acquire), g_HadFSRFGPhase,
-        g_OriginalGameQueue != nullptr);
+        s_startupOverlayObservedAnyFG.load(std::memory_order_acquire), g_HadFSRFGPhase, g_OriginalGameQueue != nullptr);
 }
 
 static void UpdateStartupOverlayCompatibilityState() {
@@ -7130,7 +7088,8 @@ static void UpdateStartupOverlayCompatibilityState() {
     const bool startupCompatSettled = s_startupOverlayCompatSettled.load(std::memory_order_acquire);
     const bool lateRuntimeOwnedHandoffJustObserved =
         s_pendingLateRuntimeOwnedStartupHandoff.exchange(false, std::memory_order_acq_rel);
-    const bool preserveLiveOverlayDuringHandoff = ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff();
+    const bool preserveLiveOverlayDuringHandoff =
+        ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff();
     if (!ce::dx12_overlay_policy::ShouldRearmStartupOverlayCompatibilityForLateRuntimeOwnedSwapchain(
             startupBlockingOverlayLoaded, actualFGActive, startupCompatSettled, g_FGRuntimeOwnsSwapchain,
             observedAnyFrameGenerationActivity, lateRuntimeOwnedHandoffJustObserved,
@@ -7353,7 +7312,8 @@ static void ProbeRealD3D12ECL(ID3D12Device* device) {
     bool sameVtable = (probeVtable == (directQueue ? *(void***)directQueue : nullptr));
     bool sameECL = (probeECL == directECL);
     bool probeIsD3D12 = (strstr(probeMod, "d3d12") != nullptr || strstr(probeMod, "D3D12") != nullptr);
-    bool probeSignalIsD3D12 = (strstr(probeSignalMod, "d3d12") != nullptr || strstr(probeSignalMod, "D3D12") != nullptr);
+    bool probeSignalIsD3D12 =
+        (strstr(probeSignalMod, "d3d12") != nullptr || strstr(probeSignalMod, "D3D12") != nullptr);
 
     HookLogImportant("DX12: ECL probe - COMPUTE ECL=%p (%s), DIRECT ECL=%p (%s), sameVtable=%d sameECL=%d isD3D12=%d",
                      probeECL, probeMod, directECL, directMod, sameVtable ? 1 : 0, sameECL ? 1 : 0,
@@ -8002,9 +7962,8 @@ static bool HookHasSafePostFSRBootstrapPathImpl() {
     const bool hasSwapchainQueueSubmitPath = hasTrackedSwapchainQueueSubmitPath || hasRealD3D12SubmitPath;
     const bool commandQueueMatchesSwapchainQueue =
         commandQueue != nullptr && swapchainQueue != nullptr && commandQueue == swapchainQueue;
-    const bool streamlineHandoffOrActive =
-        DXGIShared::IsStreamlineStartupHandoffPending() ||
-        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    const bool streamlineHandoffOrActive = DXGIShared::IsStreamlineStartupHandoffPending() ||
+                                           DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const bool runtimeOwnedSwapchainBootstrapSafe =
         ce::dx12_overlay_policy::ShouldTreatRuntimeOwnedSwapchainQueueAsSafePostFSRBootstrap(
             g_HadFSRFGPhase, hasRuntimeOwnedSwapchainQueue, streamlineHandoffOrActive, hasSwapchainQueueSubmitPath);
@@ -8016,9 +7975,8 @@ static bool HookHasSafePostFSRBootstrapPathImpl() {
             "cmdMatches=%d streamlineHandoffOrActive=%d)",
             swapchainQueue, commandQueue, originalGameQueue, (void*)g_RealD3D12ECL.load(std::memory_order_acquire),
             g_SLWrapperQueue.load(std::memory_order_acquire),
-            g_RealQueueBehindSLWrapper.load(std::memory_order_acquire),
-            hasTrackedSwapchainQueueSubmitPath ? 1 : 0, commandQueueMatchesSwapchainQueue ? 1 : 0,
-            streamlineHandoffOrActive ? 1 : 0);
+            g_RealQueueBehindSLWrapper.load(std::memory_order_acquire), hasTrackedSwapchainQueueSubmitPath ? 1 : 0,
+            commandQueueMatchesSwapchainQueue ? 1 : 0, streamlineHandoffOrActive ? 1 : 0);
     } else if (hasRuntimeOwnedSwapchainQueue && streamlineHandoffOrActive && !runtimeOwnedSwapchainBootstrapSafe) {
         static std::atomic<int> s_runtimeOwnedBootstrapUnsafeLogCount{0};
         const int logCount = s_runtimeOwnedBootstrapUnsafeLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -8027,8 +7985,7 @@ static bool HookHasSafePostFSRBootstrapPathImpl() {
                 "DX12: Runtime-owned Streamline swapchain queue not yet safe for post-FSR bootstrap "
                 "(scQueue=%p cmdQ=%p origGame=%p realECL=%p trackedSubmit=%d cmdMatches=%d "
                 "streamlineHandoffOrActive=%d log=%d)",
-                swapchainQueue, commandQueue, originalGameQueue,
-                (void*)g_RealD3D12ECL.load(std::memory_order_acquire),
+                swapchainQueue, commandQueue, originalGameQueue, (void*)g_RealD3D12ECL.load(std::memory_order_acquire),
                 hasTrackedSwapchainQueueSubmitPath ? 1 : 0, commandQueueMatchesSwapchainQueue ? 1 : 0,
                 streamlineHandoffOrActive ? 1 : 0, logCount + 1);
         }
@@ -8413,8 +8370,7 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
         // plain game queue (20260611_191950 FSR->OFF).
         const bool endNativeFGTeardownOnGameSwapchainCreation =
             ce::dx12_overlay_policy::ShouldEndRuntimeOwnedNativeFGTeardownOnGameSwapchainCreation(
-                gameCreatedSwapchain,
-                g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
+                gameCreatedSwapchain, g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
                 g_NativeFSRContextsDestroyedAwaitingGameSwapchain.load(std::memory_order_acquire),
                 g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
                 DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
@@ -8612,9 +8568,9 @@ static bool IsDX12Swapchain(IDXGISwapChain* pSwapChain) {
 }
 
 static bool InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(const char* context,
-                                                                         ID3D12CommandQueue* newSwapchainQueue,
-                                                                         ID3D12CommandQueue* previousSwapchainQueue,
-                                                                         ID3D12CommandQueue* originalGameQueue) {
+                                                                        ID3D12CommandQueue* newSwapchainQueue,
+                                                                        ID3D12CommandQueue* previousSwapchainQueue,
+                                                                        ID3D12CommandQueue* originalGameQueue) {
     ID3D12CommandQueue* lockedQueue = nullptr;
     ID3D12CommandQueue* lastWorkingQueue = nullptr;
     {
@@ -8676,10 +8632,9 @@ static bool InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(const ch
         overlayWasLive = g_State.overlayInit && g_State.syncInit && g_OverlayAdapter.IsInitialized();
         const bool preserveLiveOverlayDuringHandoff =
             ce::dx12_overlay_policy::ShouldPreserveLiveOverlayDuringRuntimeInactiveStreamlineHandoff(
-                s_startupOverlayCompatSettled.load(std::memory_order_acquire),
-                g_State.overlayInit && g_State.syncInit, g_FGRuntimeOwnsSwapchain,
-                DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), g_FGCompat.GetRuntimeMode(),
-                HookHasExplicitStreamlineSetOptionsActivation(),
+                s_startupOverlayCompatSettled.load(std::memory_order_acquire), g_State.overlayInit && g_State.syncInit,
+                g_FGRuntimeOwnsSwapchain, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
+                g_FGCompat.GetRuntimeMode(), HookHasExplicitStreamlineSetOptionsActivation(),
                 s_startupOverlayObservedAnyFG.load(std::memory_order_acquire), g_HadFSRFGPhase,
                 g_OriginalGameQueue != nullptr);
         if (preserveLiveOverlayDuringHandoff) {
@@ -8766,10 +8721,9 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
         // provenance is what lets explicit native-FSR OFF/destroy teardowns end
         // on game swapchain recreation instead of waiting for an origGame queue
         // return that fresh-queue games never deliver.
-        const bool gameCreatedSwapchain = !captureEvidence.callerFromThirdPartyOverlay &&
-                                          !captureEvidence.authoritativeFFXRuntimeCreator &&
-                                          !captureEvidence.officialAMDFFXRuntimeCreator &&
-                                          !captureEvidence.authoritativeStreamlineRuntimeCreator;
+        const bool gameCreatedSwapchain =
+            !captureEvidence.callerFromThirdPartyOverlay && !captureEvidence.authoritativeFFXRuntimeCreator &&
+            !captureEvidence.officialAMDFFXRuntimeCreator && !captureEvidence.authoritativeStreamlineRuntimeCreator;
         const bool runtimeOwnershipJustActivated = DX12_SetSwapchainQueue(
             pQueue, authoritativeStreamlineRuntimeQueue, authoritativeFFXRuntimeQueue, gameCreatedSwapchain);
         if (freshAuthoritativeStreamlineHandoff) {
@@ -8781,11 +8735,10 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
             }
             const bool retiredLiveOverlayState = InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(
                 context, pQueue, currentSwapchainQueue, currentOriginalGameQueue);
-            const bool prewarmPostSL =
-                ce::dx12_overlay_policy::ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(
-                    freshAuthoritativeStreamlineHandoff, g_HadFSRFGPhase, DXGIShared::DoesFGRuntimeOwnSwapchain(),
-                    DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), retiredLiveOverlayState,
-                    IsDX12Swapchain(pSwapChain));
+            const bool prewarmPostSL = ce::dx12_overlay_policy::ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(
+                freshAuthoritativeStreamlineHandoff, g_HadFSRFGPhase, DXGIShared::DoesFGRuntimeOwnSwapchain(),
+                DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), retiredLiveOverlayState,
+                IsDX12Swapchain(pSwapChain));
             if (prewarmPostSL) {
                 PrewarmPostSLOverlayForFreshStreamlineHandoff(pSwapChain, pQueue, context);
             }
@@ -9823,7 +9776,8 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
     HRESULT hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
     HookLogImportant("DeepHook: Trampoline returned hr=0x%08X sc=%p", hr, (ppSC ? *ppSC : nullptr));
 
-    const bool protectedOfficialFFXStartupCreate = ShouldUseProtectedOfficialFFXStartupSwapchainCreatePath(captureEvidence);
+    const bool protectedOfficialFFXStartupCreate =
+        ShouldUseProtectedOfficialFFXStartupSwapchainCreatePath(captureEvidence);
     if (SUCCEEDED(hr) && ppSC && *ppSC && !callerFromThirdPartyOverlay && !protectedOfficialFFXStartupCreate) {
         // Only start transition cooldown when a swapchain recreation actually
         // succeeded. Starting it on E_ACCESSDENIED leaves the overlay in a
@@ -9851,7 +9805,7 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
                 : ((callerFromFFXFGModule || ffxFrameGenerationInStack) ? "authoritative FFX takeover"
                                                                         : "Streamline active");
         if (ce::dx12_overlay_policy::ChooseCreateSwapchainAccessDeniedRecovery(passThroughForRuntimeManagedFG,
-                                                                              callerFromThirdPartyOverlay) ==
+                                                                               callerFromThirdPartyOverlay) ==
             ce::dx12_overlay_policy::CreateSwapchainAccessDeniedRecovery::kMinimalCEReleaseThenEscalate) {
             // See the INLINE variant: a failed runtime-managed create is fatal to the game (null swapchain
             // deref, session 20260702_092933). Minimal CE unpin (retained startup-activation swapchain) +
@@ -9868,9 +9822,8 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
                 Sleep(20);
                 hr = s_deepHookTrampoline(pThis, pDevice, hWnd, pDescToUse, pFDesc, pOut, ppSC);
                 if (SUCCEEDED(hr)) {
-                    HookLogImportant(
-                        "DeepHook: runtime-managed minimal-recovery retry %d succeeded hr=0x%08X sc=%p", attempt, hr,
-                        (ppSC && *ppSC) ? (void*)*ppSC : nullptr);
+                    HookLogImportant("DeepHook: runtime-managed minimal-recovery retry %d succeeded hr=0x%08X sc=%p",
+                                     attempt, hr, (ppSC && *ppSC) ? (void*)*ppSC : nullptr);
                 }
             }
             if (hr == E_ACCESSDENIED) {
@@ -10079,14 +10032,13 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
         }
     });
     if (deferPresentHookRefreshForStreamlineHandoff) {
-        DXGIShared::ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(
-            "post-FSR Streamline runtime swapchain create");
+        DXGIShared::ReleaseSwapchainPresentVTableHooksForRuntimeHandoff("post-FSR Streamline runtime swapchain create");
         HookLogImportant(
             "CreateSwapChainForHwnd INLINE: Released CE Present vtable ownership before post-FSR Streamline runtime "
             "handoff (queue=%p origGame=%p runtime=%s fsrApi=%d hadFSR=%d streamlineLoaded=%d)",
             deferredStreamlineHandoffQueue, g_OriginalGameQueue,
-            ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
-            g_FGCompat.IsFSRFGApiActive() ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, IsStreamlineLoaded() ? 1 : 0);
+            ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
+            g_HadFSRFGPhase ? 1 : 0, IsStreamlineLoaded() ? 1 : 0);
         // MAKE-BEFORE-BREAK for the runtime's replacement swapchain: the retained startup-activation
         // swapchain is an AddRef'd COM reference to the OLD (pre-handoff) chain. Holding it across this
         // create pins the old chain's HWND association, so DXGI fails the runtime's replacement create
@@ -10118,7 +10070,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
                 : ((callerFromFFXFGModule || ffxFrameGenerationInStack) ? "authoritative FFX takeover"
                                                                         : "Streamline active");
         if (ce::dx12_overlay_policy::ChooseCreateSwapchainAccessDeniedRecovery(passThroughForRuntimeManagedFG,
-                                                                              callerFromThirdPartyOverlay) ==
+                                                                               callerFromThirdPartyOverlay) ==
             ce::dx12_overlay_policy::CreateSwapchainAccessDeniedRecovery::kMinimalCEReleaseThenEscalate) {
             // A failed runtime-managed create is FATAL to the game — GTA dereferences the null swapchain
             // and crashes (session 20260702_092933) — so the old blind pass-through is not acceptable.
@@ -10201,8 +10153,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
             }
             // See the deep-hook recovery above: a retained startup-activation
             // swapchain pins the HWND association and makes every retry fail.
-            ReleaseStreamlineStartupActivationSwapchain(
-                "CreateSwapChainForHwnd INLINE: E_ACCESSDENIED recovery");
+            ReleaseStreamlineStartupActivationSwapchain("CreateSwapChainForHwnd INLINE: E_ACCESSDENIED recovery");
             HookLogImportant("CreateSwapChainForHwnd INLINE: Released overlay + RTV refs for HWND=%p", hWnd);
             {
                 std::lock_guard<std::mutex> lock(s_hwndSwapchainMutex);
@@ -11007,8 +10958,7 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
                     HookLogImportant(
                         "DX12: InitImGui — post-FSR inactive recovery using original present queue %p "
                         "(cmdQ=%p primaryQ=%p explicitNativeOff=%d)",
-                        queueForBackend, currentCommandQueue, currentPrimaryQueue,
-                        explicitNativeFSROffPending ? 1 : 0);
+                        queueForBackend, currentCommandQueue, currentPrimaryQueue, explicitNativeFSROffPending ? 1 : 0);
                 }
             } else {
                 queueForBackend = currentCommandQueue ? currentCommandQueue : currentPrimaryQueue;
@@ -11151,11 +11101,10 @@ void DrawOverlay(ID3D12GraphicsCommandList* cmdList, bool isRealFrame, UINT buff
 
     g_OverlayAdapter.SetDX12RenderTarget(cmdList, (void*)rtvHandle.ptr);
     g_OverlayAdapter.SetDX12UploadSlotFence(
-        g_State.fence,
-        ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
-            DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) || g_FGCompat.IsFGActive(),
-            g_State.fence != nullptr, g_State.currentFenceValue,
-            /*submitQueueMayBeDiscarded=*/ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()));
+        g_State.fence, ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
+                           DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) || g_FGCompat.IsFGActive(),
+                           g_State.fence != nullptr, g_State.currentFenceValue,
+                           /*submitQueueMayBeDiscarded=*/ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()));
 
     // Render overlay content
     g_OverlayAdapter.RenderOverlay(g_State.cachedWidth, g_State.cachedHeight);
@@ -11830,9 +11779,8 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
     }
 }
 
-static bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapChain,
-                                                           ID3D12CommandQueue* swapchainQueue,
-                                                           const char* context) {
+static bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapChain, ID3D12CommandQueue* swapchainQueue,
+                                                          const char* context) {
     if (!swapChain || !swapchainQueue) {
         return false;
     }
@@ -11878,8 +11826,7 @@ static bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapCh
             // different queue, then create the new swapchain RTVs and allocator/fence set without recording or
             // submitting an overlay draw. This completes before slDLSSGSetOptions(ON), so the first generated
             // Present cannot race a backend shutdown/rebuild.
-            g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(),
-                                                        std::memory_order_release);
+            g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(), std::memory_order_release);
             g_State.cachedWidth = desc.BufferDesc.Width;
             g_State.cachedHeight = desc.BufferDesc.Height;
             g_State.format = desc.BufferDesc.Format;
@@ -11892,14 +11839,13 @@ static bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapCh
                     InitOverlaySync(queueDevice, static_cast<int>(desc.BufferCount), swapchainQueue);
                 }
             }
-            ready = backendReady && g_State.overlayInit && g_State.syncInit && g_State.rtvDescHeap &&
-                    g_State.cmdList && !g_State.allocators.empty();
+            ready = backendReady && g_State.overlayInit && g_State.syncInit && g_State.rtvDescHeap && g_State.cmdList &&
+                    !g_State.allocators.empty();
             if (!ready && !g_State.rtvDescHeap) {
                 // Make the normal first-PostSL bootstrap retry the complete swapchain-scoped setup. Preserve the
                 // warm adapter if initialization itself succeeded; InitImGui will reuse it on that retry.
                 g_State.overlayInit = false;
-                g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(),
-                                                            std::memory_order_release);
+                g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(), std::memory_order_release);
             }
             overlayInit = g_State.overlayInit;
             syncInit = g_State.syncInit;
@@ -11917,8 +11863,7 @@ static bool PrewarmPostSLOverlayForFreshStreamlineHandoff(IDXGISwapChain* swapCh
         "(source=%s sc=%p queue=%p device=%p fmt=%d buffers=%u elapsed=%llums init=%d sync=%d rtv=%p)",
         ready ? "READY" : "INCOMPLETE", context ? context : "unknown", swapChain, swapchainQueue, queueDevice,
         static_cast<int>(desc.BufferDesc.Format), desc.BufferCount,
-        static_cast<unsigned long long>(GetTickCount64() - startedMs), overlayInit ? 1 : 0, syncInit ? 1 : 0,
-        rtvHeap);
+        static_cast<unsigned long long>(GetTickCount64() - startedMs), overlayInit ? 1 : 0, syncInit ? 1 : 0, rtvHeap);
 
     swapChain3->Release();
     queueDevice->Release();
@@ -12306,9 +12251,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // already drawn since the last presented-frame accounting boundary, the
     // current present is covered and the same-queue startup handoff must not
     // draw a second overlay on top of it.
-    const bool normalRouteDrawPendingAtEntry =
-        g_OverlayCoverageDrawCount.load(std::memory_order_acquire) !=
-        g_OverlayCoverageLastSeenDrawCount.load(std::memory_order_acquire);
+    const bool normalRouteDrawPendingAtEntry = g_OverlayCoverageDrawCount.load(std::memory_order_acquire) !=
+                                               g_OverlayCoverageLastSeenDrawCount.load(std::memory_order_acquire);
 
     // THREAD SAFETY: During FG, SL may fire Present from multiple threads.
     // Our rendering resources (allocators, command list, descriptor heap) are NOT
@@ -12352,11 +12296,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // callback (we are inside one — SL's present pipeline is live). Gates the
     // no-blank engage path for the synthetic-startup countdown and cold-start
     // warmup; GetState-only enables keep both protections.
-    const bool explicitEnablePureDLSSColdStartProof =
-        ce::dx12_overlay_policy::HasExplicitEnablePureDLSSColdStartProof(
-            g_HadFSRFGPhase, HookHasExplicitStreamlineSetOptionsActivation(),
-            HasRetainedStreamlineStartupActivationSwapchain(),
-            DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr);
+    const bool explicitEnablePureDLSSColdStartProof = ce::dx12_overlay_policy::HasExplicitEnablePureDLSSColdStartProof(
+        g_HadFSRFGPhase, HookHasExplicitStreamlineSetOptionsActivation(),
+        HasRetainedStreamlineStartupActivationSwapchain(),
+        DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr);
 
     // --- PostSL periodic stats logging ---
     int callNum = s_postSLCalls.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -12607,8 +12550,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                     HookLogImportant(
                         "DX12: PostSL synthetic startup waiting for safe bootstrap path after FSR phase "
                         "(realQ=%p realECL=%p slWrapper=%p safeBootstrap=%d)",
-                        directQueue, (void*)directECL, slWrapperQueue,
-                        safePostFSRBootstrapPathForPostSL ? 1 : 0);
+                        directQueue, (void*)directECL, slWrapperQueue, safePostFSRBootstrapPathForPostSL ? 1 : 0);
                 }
                 s_waitForSafePathLog++;
                 s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
@@ -12618,8 +12560,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
             const bool enterSyntheticStartupActivation =
                 ce::dx12_overlay_policy::ShouldEnterSyntheticPostSLStartupActivation(
-                    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(
-                        std::memory_order_acquire),
+                    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire),
                     postSLActiveButUnconfirmed, postSLConfirmedRendering);
             g_PostSLOverlayActive.store(true, std::memory_order_release);
             g_PostSLSyntheticStartupWrapperOnlyDumpRequested.store(false, std::memory_order_release);
@@ -12795,13 +12736,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 warmupLastWorkingQueue == warmupSwapchainQueue);
     const bool postSLConfirmedRenderThisEpoch =
         g_PostSLConfirmedRenderInCurrentReactivationEpoch.load(std::memory_order_acquire);
-    const bool bypassReactivationWarmup =
-        ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(
-            g_HadFSRFGPhase, useTopLevelHandoffWrapperProgress, safePostFSRBootstrapPathForPostSL,
-            confirmedPureStreamlineResumeWarmupProof, explicitEnablePureDLSSColdStartProof,
-            postSLConfirmedRenderThisEpoch, sameQueuePureDLSSColdStartSafe);
-    if (s_callsSinceReactivation <= warmupThreshold && !bypassReactivationWarmup &&
-        !keepAliveRenderAfterExplicitOff) {
+    const bool bypassReactivationWarmup = ce::dx12_overlay_policy::ShouldBypassPostSLReactivationWarmup(
+        g_HadFSRFGPhase, useTopLevelHandoffWrapperProgress, safePostFSRBootstrapPathForPostSL,
+        confirmedPureStreamlineResumeWarmupProof, explicitEnablePureDLSSColdStartProof, postSLConfirmedRenderThisEpoch,
+        sameQueuePureDLSSColdStartSafe);
+    if (s_callsSinceReactivation <= warmupThreshold && !bypassReactivationWarmup && !keepAliveRenderAfterExplicitOff) {
         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
         NoteDX12OverlayCoverageGate("postsl-reactivation-warmup");
         if (s_callsSinceReactivation <= 5 || s_callsSinceReactivation == warmupThreshold) {
@@ -12816,8 +12755,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 s_reactivationEpoch, s_callsSinceReactivation, warmupThreshold, s_reactivationEpoch <= 1 ? 1 : 0,
                 g_HadFSRFGPhase ? 1 : 0, safePostFSRBootstrapPathForPostSL ? 1 : 0,
                 confirmedPureStreamlineResumeWarmupProof ? 1 : 0, explicitEnablePureDLSSColdStartProof ? 1 : 0,
-                postSLConfirmedRenderThisEpoch ? 1 : 0,
-                HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0);
+                postSLConfirmedRenderThisEpoch ? 1 : 0, HasRetainedStreamlineStartupActivationSwapchain() ? 1 : 0);
         }
         return;
     }
@@ -12893,9 +12831,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             HookLogImportant(
                 "DX12: PostSL SKIP — startup transition window active, deferring ECL until DLSS FG stabilizes "
                 "(epoch=%d call#=%d activeDLSSSignal=%d warmupComplete=%d safeBootstrap=%d wrapperProgress=%d)",
-                s_reactivationEpoch, s_callsSinceReactivation, cachedSLFGActive ? 1 : 0,
-                postSLWarmupComplete ? 1 : 0, safePostFSRBootstrapPathForPostSL ? 1 : 0,
-                useTopLevelHandoffWrapperProgress ? 1 : 0);
+                s_reactivationEpoch, s_callsSinceReactivation, cachedSLFGActive ? 1 : 0, postSLWarmupComplete ? 1 : 0,
+                safePostFSRBootstrapPathForPostSL ? 1 : 0, useTopLevelHandoffWrapperProgress ? 1 : 0);
         }
         s_startupWindowGuardLog++;
         return;
@@ -13459,8 +13396,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     }
     const int preferredIdx = g_State.allocIndex % allocPoolSize;
     const UINT64 completedFenceValue = g_State.fence ? g_State.fence->GetCompletedValue() : UINT64_MAX;
-    int idx = ce::dx12_overlay_policy::ChooseReadyOverlayAllocatorSlot(
-        g_State.fenceValues.data(), allocPoolSize, preferredIdx, completedFenceValue);
+    int idx = ce::dx12_overlay_policy::ChooseReadyOverlayAllocatorSlot(g_State.fenceValues.data(), allocPoolSize,
+                                                                       preferredIdx, completedFenceValue);
     if (idx < 0) {
         idx = preferredIdx;
     }
@@ -14414,234 +14351,234 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     {
         ScopedCEOverlayECLSubmission ceOverlayECLGuard("PostSL overlay submit");
         if (slFGAtDispatch) {
-        // When SL FG recreated the swapchain on a different queue (scQueue != origGame),
-        // submit directly on scQueue.  SL's wrapper routes to origGame, causing
-        // cross-queue backbuffer access → DEVICE_REMOVED.
-        // PostSL fires after SL's FG pipeline completes, so scQueue is idle.
-        bool scQueueDiffers = (scQueue && scQueue != g_OriginalGameQueue);
+            // When SL FG recreated the swapchain on a different queue (scQueue != origGame),
+            // submit directly on scQueue.  SL's wrapper routes to origGame, causing
+            // cross-queue backbuffer access → DEVICE_REMOVED.
+            // PostSL fires after SL's FG pipeline completes, so scQueue is idle.
+            bool scQueueDiffers = (scQueue && scQueue != g_OriginalGameQueue);
 
-        // DIRECT QUEUE SUBMISSION (bypasses SL's COM wrapper):
-        //
-        // SL's COM wrapper (g_SLWrapperQueue) adds internal metadata to each ECL.
-        // This metadata accumulates and causes DEVICE_REMOVED after ~500-2000 frames.
-        // Confirmed by testing:
-        //   - Full-rate through wrapper: crash at ~500 frames
-        //   - 1/10 rate through wrapper: stable (damage drains between submits)
-        //   - Direct to real queue: 16,798+ frames stable
-        //   - Empty ECL through wrapper: stable (damage requires content)
-        //
-        // The fix: submit directly to the real D3D12 queue behind SL's wrapper
-        // using g_RealD3D12ECL (raw D3D12 function from d3d12core.dll vtable).
-        //
-        // Bootstrap: First frame submits through SL's wrapper with
-        // s_insidePostSLOverlayECL=true.  Our ECL detour sees the real queue
-        // as pThis and captures it into g_RealQueueBehindSLWrapper.
-        // Subsequent frames use the direct path.
-        //
-        // CAUTION FOR TALOS/OTHER GAMES: If the game uses FSR FG → DLSS FG
-        // transitions, the real queue behind SL might change.  Monitor for
-        // DEVICE_REMOVED after transitions and re-bootstrap if needed.
-        ID3D12CommandQueue* slQueue = slWrapperQueue;
+            // DIRECT QUEUE SUBMISSION (bypasses SL's COM wrapper):
+            //
+            // SL's COM wrapper (g_SLWrapperQueue) adds internal metadata to each ECL.
+            // This metadata accumulates and causes DEVICE_REMOVED after ~500-2000 frames.
+            // Confirmed by testing:
+            //   - Full-rate through wrapper: crash at ~500 frames
+            //   - 1/10 rate through wrapper: stable (damage drains between submits)
+            //   - Direct to real queue: 16,798+ frames stable
+            //   - Empty ECL through wrapper: stable (damage requires content)
+            //
+            // The fix: submit directly to the real D3D12 queue behind SL's wrapper
+            // using g_RealD3D12ECL (raw D3D12 function from d3d12core.dll vtable).
+            //
+            // Bootstrap: First frame submits through SL's wrapper with
+            // s_insidePostSLOverlayECL=true.  Our ECL detour sees the real queue
+            // as pThis and captures it into g_RealQueueBehindSLWrapper.
+            // Subsequent frames use the direct path.
+            //
+            // CAUTION FOR TALOS/OTHER GAMES: If the game uses FSR FG → DLSS FG
+            // transitions, the real queue behind SL might change.  Monitor for
+            // DEVICE_REMOVED after transitions and re-bootstrap if needed.
+            ID3D12CommandQueue* slQueue = slWrapperQueue;
 
-        const bool allowScQueueVirtualSubmit =
-            ce::dx12_overlay_policy::ShouldUsePostSLScQueueVirtualSubmit(g_HadFSRFGPhase, scQueueDiffers);
-        const bool preferSelectedSwapchainQueueDirectSubmitForPureDLSS =
-            ce::dx12_overlay_policy::ShouldUseSelectedSwapchainQueueDirectSubmitForPureDLSS(
-                g_HadFSRFGPhase, selectedQueueIsSwapchainQueue, selectedQueueOrigECL != nullptr,
-                selectedQueueOrigECLMatchesRealECL);
+            const bool allowScQueueVirtualSubmit =
+                ce::dx12_overlay_policy::ShouldUsePostSLScQueueVirtualSubmit(g_HadFSRFGPhase, scQueueDiffers);
+            const bool preferSelectedSwapchainQueueDirectSubmitForPureDLSS =
+                ce::dx12_overlay_policy::ShouldUseSelectedSwapchainQueueDirectSubmitForPureDLSS(
+                    g_HadFSRFGPhase, selectedQueueIsSwapchainQueue, selectedQueueOrigECL != nullptr,
+                    selectedQueueOrigECLMatchesRealECL);
 
-        const bool useWrapperSubmitAfterFSR = ce::dx12_overlay_policy::ShouldUsePostSLWrapperSubmitAfterFSR(
-            g_HadFSRFGPhase, usePostSLOffscreenComposite, selectedQueueIsSwapchainQueue, slQueue != nullptr,
-            preferSelectedSwapchainQueueSubmitAfterFSR);
+            const bool useWrapperSubmitAfterFSR = ce::dx12_overlay_policy::ShouldUsePostSLWrapperSubmitAfterFSR(
+                g_HadFSRFGPhase, usePostSLOffscreenComposite, selectedQueueIsSwapchainQueue, slQueue != nullptr,
+                preferSelectedSwapchainQueueSubmitAfterFSR);
 
-        if (useWrapperSubmitAfterFSR) {
-            // After an FSR phase, keep swapchain-touching PostSL work on the SL
-            // wrapper path when that is the only path that has successfully
-            // survived the post-FSR copy probes. We can still capture the real
-            // queue behind the wrapper for diagnostics and later promotion.
-            submittedQueue = slQueue;
-            s_insidePostSLOverlayECL = true;
-            slQueue->ExecuteCommandLists(1, lists);
-            s_insidePostSLOverlayECL = false;
-            usedVirtualCall = true;
-
-            static int s_postFSRWrapperSubmitLog = 0;
-            if (s_postFSRWrapperSubmitLog < 5 || (s_postFSRWrapperSubmitLog % 200) == 0) {
-                HookLogImportant(
-                    "DX12: PostSL post-FSR submit #%d via SL wrapper %p (liveWrapper=%p scQueue=%p realQ=%p "
-                    "offscreen=%d pinned=%d)",
-                    s_postFSRWrapperSubmitLog, slQueue, liveSLWrapperQueue, scQueue, realQ,
-                    usePostSLOffscreenComposite ? 1 : 0, usingPinnedPostFSRWrapperQueue ? 1 : 0);
-            }
-            s_postFSRWrapperSubmitLog++;
-        } else if (preferSelectedSwapchainQueueSubmitAfterFSR) {
-            // After an FSR phase, if PostSL already resolved to the runtime's
-            // swapchain queue and probe submits on that queue succeeded, keep
-            // using that queue directly. Falling back to the SL wrapper here
-            // reintroduces the cross-queue handoff we are trying to avoid.
-            submittedQueue = queue;
-            if (selectedQueueOrigECL) {
-                selectedQueueOrigECL(queue, 1, lists);
-                usedOrigECL = true;
-            } else {
-                realECL(queue, 1, lists);
-                usedRealECL = true;
-            }
-
-            static int s_postFSRDirectScQueueLog = 0;
-            if (s_postFSRDirectScQueueLog < 5 || (s_postFSRDirectScQueueLog % 200) == 0) {
-                HookLogImportant(
-                    "DX12: PostSL post-FSR submit #%d on selected scQueue %p (origECL=%d realECL=%d wrapper=%p)",
-                    s_postFSRDirectScQueueLog, queue, selectedQueueOrigECL ? 1 : 0, realECL ? 1 : 0,
-                    liveSLWrapperQueue);
-            }
-            s_postFSRDirectScQueueLog++;
-        } else if (preferSelectedQueueDirectSubmitAfterFSR) {
-            // After an FSR phase, the selected queue may already expose the real
-            // D3D12 submit entrypoint directly. In that case, do not bounce to a
-            // different late-captured "wrapper" queue for the first rendered
-            // frame; stay on the queue that already passed our probes.
-            submittedQueue = queue;
-            selectedQueueOrigECL(queue, 1, lists);
-            usedOrigECL = true;
-
-            static int s_postFSRDirectSelectedQueueLog = 0;
-            if (s_postFSRDirectSelectedQueueLog < 10 || (s_postFSRDirectSelectedQueueLog % 200) == 0) {
-                HookLogImportant(
-                    "DX12: PostSL post-FSR direct submit #%d on selected queue %p "
-                    "(origECL matches realECL, scQueue=%p latestWrapper=%p)",
-                    s_postFSRDirectSelectedQueueLog, queue, scQueue, liveSLWrapperQueue);
-            }
-            s_postFSRDirectSelectedQueueLog++;
-        } else if (preferSelectedSwapchainQueueDirectSubmitForPureDLSS) {
-            // Pure-DLSS startup/runtime path: when the live swapchain queue already
-            // resolves to the real/original D3D12 ECL entrypoint, avoid bouncing
-            // back through the queue's current virtual dispatch.
-            submittedQueue = queue;
-            selectedQueueOrigECL(queue, 1, lists);
-            usedOrigECL = true;
-
-            static int s_pureDLSSDirectScQueueLog = 0;
-            if (s_pureDLSSDirectScQueueLog < 10 || (s_pureDLSSDirectScQueueLog % 200) == 0) {
-                HookLogImportant(
-                    "DX12: PostSL pure-DLSS direct scQueue submit #%d on %p "
-                    "(origECL matches realECL, latestWrapper=%p)",
-                    s_pureDLSSDirectScQueueLog, queue, liveSLWrapperQueue);
-            }
-            s_pureDLSSDirectScQueueLog++;
-        } else if (allowScQueueVirtualSubmit) {
-            // Direct submission on scQueue — backbuffers belong to this queue.
-            // Bypass SL's wrapper entirely (routes to origGame → wrong queue).
-            submittedQueue = scQueue;
-            s_insidePostSLOverlayECL = true;
-            scQueue->ExecuteCommandLists(1, lists);
-            s_insidePostSLOverlayECL = false;
-            usedVirtualCall = true;
-
-            static int s_scQSubmitLog = 0;
-            if (s_scQSubmitLog < 5 || (s_scQSubmitLog % 500 == 0))
-                HookLogImportant("DX12: PostSL scQueue submit #%d on %p (origGame=%p, bypassing SL wrapper)",
-                                 s_scQSubmitLog, scQueue, g_OriginalGameQueue);
-            s_scQSubmitLog++;
-        } else if (realQ && realECL) {
-            // Direct submission: bypass SL's wrapper entirely
-            submittedQueue = realQ;
-            s_insidePostSLOverlayECL = true;
-            realECL(realQ, 1, lists);
-            s_insidePostSLOverlayECL = false;
-            usedRealECL = true;
-
-            static int s_directLog = 0;
-            if (s_directLog < 5 || (s_directLog % 500 == 0))
-                HookLogImportant("DX12: PostSL DIRECT submit #%d on real queue %p (bypass SL wrapper)", s_directLog,
-                                 realQ);
-            s_directLog++;
-        } else {
-            const bool allowWrapperBootstrap = ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(
-                g_HadFSRFGPhase, realQ != nullptr, realECL != nullptr);
-            if (!allowWrapperBootstrap) {
-                // For pure-DLSS startup (no FSR history), the real ECL might not
-                // be available yet if the deferred ECL probe hasn't fired (it's
-                // deferred until the Streamline startup window expires, and the
-                // window may still be active when PostSL first renders).  In this
-                // case, selectedQueueOrigECL is still valid (saved from the vtable
-                // hook on the swapchain queue).  Fall back to submitting through
-                // selectedQueueOrigECL on the queue itself rather than refusing
-                // and dropping every overlay frame.
-                if (!g_HadFSRFGPhase && selectedQueueOrigECL && selectedQueueIsSwapchainQueue) {
-                    submittedQueue = queue;
-                    selectedQueueOrigECL(queue, 1, lists);
-                    usedOrigECL = true;
-                    static int s_pureDLSSBootstrapFallbackLog = 0;
-                    if (s_pureDLSSBootstrapFallbackLog < 10) {
-                        HookLogImportant(
-                            "DX12: PostSL pure-DLSS bootstrap fallback via selectedQueueOrigECL on %p "
-                            "(realECL not yet probed, scQueue=%p)",
-                            queue, scQueue);
-                    }
-                    s_pureDLSSBootstrapFallbackLog++;
-                } else {
-                    HookLogImportant(
-                        "DX12: PostSL refusing SL wrapper bootstrap without direct path "
-                        "(queue=%p scQueue=%p wrapper=%p)",
-                        queue, scQueue, (void*)slQueue);
-                    bb->Release();
-                    return;
-                }
-            }
-
-            // Bootstrap: submit through SL's wrapper to capture real queue on first call
-            if (!slQueue && g_HadFSRFGPhase) {
-                HookLogImportant(
-                    "DX12: PostSL refusing post-FSR bootstrap without SL wrapper queue (queue=%p scQueue=%p)", queue,
-                    scQueue);
-                bb->Release();
-                return;
-            }
-            if (slQueue) {
+            if (useWrapperSubmitAfterFSR) {
+                // After an FSR phase, keep swapchain-touching PostSL work on the SL
+                // wrapper path when that is the only path that has successfully
+                // survived the post-FSR copy probes. We can still capture the real
+                // queue behind the wrapper for diagnostics and later promotion.
                 submittedQueue = slQueue;
                 s_insidePostSLOverlayECL = true;
                 slQueue->ExecuteCommandLists(1, lists);
                 s_insidePostSLOverlayECL = false;
                 usedVirtualCall = true;
-                HookLogImportant("DX12: PostSL bootstrap via SL wrapper %p (will capture real queue for direct path)",
-                                 slQueue);
-            } else {
-                if (!ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(
-                        slFGAtDispatch, slQueue != nullptr, realQ != nullptr, realECL != nullptr,
-                        selectedQueueIsSwapchainQueue, selectedQueueOrigECLMatchesRealECL,
-                        queue == g_OriginalGameQueue)) {
+
+                static int s_postFSRWrapperSubmitLog = 0;
+                if (s_postFSRWrapperSubmitLog < 5 || (s_postFSRWrapperSubmitLog % 200) == 0) {
                     HookLogImportant(
-                        "DX12: PostSL refusing no-wrapper virtual bootstrap during Streamline FG "
-                        "(queue=%p scQueue=%p realQ=%p realECL=%p)",
-                        queue, scQueue, realQ, (void*)realECL);
+                        "DX12: PostSL post-FSR submit #%d via SL wrapper %p (liveWrapper=%p scQueue=%p realQ=%p "
+                        "offscreen=%d pinned=%d)",
+                        s_postFSRWrapperSubmitLog, slQueue, liveSLWrapperQueue, scQueue, realQ,
+                        usePostSLOffscreenComposite ? 1 : 0, usingPinnedPostFSRWrapperQueue ? 1 : 0);
+                }
+                s_postFSRWrapperSubmitLog++;
+            } else if (preferSelectedSwapchainQueueSubmitAfterFSR) {
+                // After an FSR phase, if PostSL already resolved to the runtime's
+                // swapchain queue and probe submits on that queue succeeded, keep
+                // using that queue directly. Falling back to the SL wrapper here
+                // reintroduces the cross-queue handoff we are trying to avoid.
+                submittedQueue = queue;
+                if (selectedQueueOrigECL) {
+                    selectedQueueOrigECL(queue, 1, lists);
+                    usedOrigECL = true;
+                } else {
+                    realECL(queue, 1, lists);
+                    usedRealECL = true;
+                }
+
+                static int s_postFSRDirectScQueueLog = 0;
+                if (s_postFSRDirectScQueueLog < 5 || (s_postFSRDirectScQueueLog % 200) == 0) {
+                    HookLogImportant(
+                        "DX12: PostSL post-FSR submit #%d on selected scQueue %p (origECL=%d realECL=%d wrapper=%p)",
+                        s_postFSRDirectScQueueLog, queue, selectedQueueOrigECL ? 1 : 0, realECL ? 1 : 0,
+                        liveSLWrapperQueue);
+                }
+                s_postFSRDirectScQueueLog++;
+            } else if (preferSelectedQueueDirectSubmitAfterFSR) {
+                // After an FSR phase, the selected queue may already expose the real
+                // D3D12 submit entrypoint directly. In that case, do not bounce to a
+                // different late-captured "wrapper" queue for the first rendered
+                // frame; stay on the queue that already passed our probes.
+                submittedQueue = queue;
+                selectedQueueOrigECL(queue, 1, lists);
+                usedOrigECL = true;
+
+                static int s_postFSRDirectSelectedQueueLog = 0;
+                if (s_postFSRDirectSelectedQueueLog < 10 || (s_postFSRDirectSelectedQueueLog % 200) == 0) {
+                    HookLogImportant(
+                        "DX12: PostSL post-FSR direct submit #%d on selected queue %p "
+                        "(origECL matches realECL, scQueue=%p latestWrapper=%p)",
+                        s_postFSRDirectSelectedQueueLog, queue, scQueue, liveSLWrapperQueue);
+                }
+                s_postFSRDirectSelectedQueueLog++;
+            } else if (preferSelectedSwapchainQueueDirectSubmitForPureDLSS) {
+                // Pure-DLSS startup/runtime path: when the live swapchain queue already
+                // resolves to the real/original D3D12 ECL entrypoint, avoid bouncing
+                // back through the queue's current virtual dispatch.
+                submittedQueue = queue;
+                selectedQueueOrigECL(queue, 1, lists);
+                usedOrigECL = true;
+
+                static int s_pureDLSSDirectScQueueLog = 0;
+                if (s_pureDLSSDirectScQueueLog < 10 || (s_pureDLSSDirectScQueueLog % 200) == 0) {
+                    HookLogImportant(
+                        "DX12: PostSL pure-DLSS direct scQueue submit #%d on %p "
+                        "(origECL matches realECL, latestWrapper=%p)",
+                        s_pureDLSSDirectScQueueLog, queue, liveSLWrapperQueue);
+                }
+                s_pureDLSSDirectScQueueLog++;
+            } else if (allowScQueueVirtualSubmit) {
+                // Direct submission on scQueue — backbuffers belong to this queue.
+                // Bypass SL's wrapper entirely (routes to origGame → wrong queue).
+                submittedQueue = scQueue;
+                s_insidePostSLOverlayECL = true;
+                scQueue->ExecuteCommandLists(1, lists);
+                s_insidePostSLOverlayECL = false;
+                usedVirtualCall = true;
+
+                static int s_scQSubmitLog = 0;
+                if (s_scQSubmitLog < 5 || (s_scQSubmitLog % 500 == 0))
+                    HookLogImportant("DX12: PostSL scQueue submit #%d on %p (origGame=%p, bypassing SL wrapper)",
+                                     s_scQSubmitLog, scQueue, g_OriginalGameQueue);
+                s_scQSubmitLog++;
+            } else if (realQ && realECL) {
+                // Direct submission: bypass SL's wrapper entirely
+                submittedQueue = realQ;
+                s_insidePostSLOverlayECL = true;
+                realECL(realQ, 1, lists);
+                s_insidePostSLOverlayECL = false;
+                usedRealECL = true;
+
+                static int s_directLog = 0;
+                if (s_directLog < 5 || (s_directLog % 500 == 0))
+                    HookLogImportant("DX12: PostSL DIRECT submit #%d on real queue %p (bypass SL wrapper)", s_directLog,
+                                     realQ);
+                s_directLog++;
+            } else {
+                const bool allowWrapperBootstrap = ce::dx12_overlay_policy::ShouldAllowPostSLWrapperBootstrap(
+                    g_HadFSRFGPhase, realQ != nullptr, realECL != nullptr);
+                if (!allowWrapperBootstrap) {
+                    // For pure-DLSS startup (no FSR history), the real ECL might not
+                    // be available yet if the deferred ECL probe hasn't fired (it's
+                    // deferred until the Streamline startup window expires, and the
+                    // window may still be active when PostSL first renders).  In this
+                    // case, selectedQueueOrigECL is still valid (saved from the vtable
+                    // hook on the swapchain queue).  Fall back to submitting through
+                    // selectedQueueOrigECL on the queue itself rather than refusing
+                    // and dropping every overlay frame.
+                    if (!g_HadFSRFGPhase && selectedQueueOrigECL && selectedQueueIsSwapchainQueue) {
+                        submittedQueue = queue;
+                        selectedQueueOrigECL(queue, 1, lists);
+                        usedOrigECL = true;
+                        static int s_pureDLSSBootstrapFallbackLog = 0;
+                        if (s_pureDLSSBootstrapFallbackLog < 10) {
+                            HookLogImportant(
+                                "DX12: PostSL pure-DLSS bootstrap fallback via selectedQueueOrigECL on %p "
+                                "(realECL not yet probed, scQueue=%p)",
+                                queue, scQueue);
+                        }
+                        s_pureDLSSBootstrapFallbackLog++;
+                    } else {
+                        HookLogImportant(
+                            "DX12: PostSL refusing SL wrapper bootstrap without direct path "
+                            "(queue=%p scQueue=%p wrapper=%p)",
+                            queue, scQueue, (void*)slQueue);
+                        bb->Release();
+                        return;
+                    }
+                }
+
+                // Bootstrap: submit through SL's wrapper to capture real queue on first call
+                if (!slQueue && g_HadFSRFGPhase) {
+                    HookLogImportant(
+                        "DX12: PostSL refusing post-FSR bootstrap without SL wrapper queue (queue=%p scQueue=%p)",
+                        queue, scQueue);
                     bb->Release();
                     return;
                 }
-                if (slFGAtDispatch && selectedQueueIsSwapchainQueue && selectedQueueOrigECLMatchesRealECL &&
-                    selectedQueueOrigECL) {
-                    submittedQueue = queue;
-                    selectedQueueOrigECL(queue, 1, lists);
-                    usedOrigECL = true;
-                    static int s_noWrapperDirectSelectedQueueLog = 0;
-                    if (s_noWrapperDirectSelectedQueueLog < 10 || (s_noWrapperDirectSelectedQueueLog % 200) == 0) {
-                        HookLogImportant(
-                            "DX12: PostSL no-wrapper direct selected-queue submit #%d on %p "
-                            "(scQueue=%p origECL matches realECL)",
-                            s_noWrapperDirectSelectedQueueLog, queue, scQueue);
-                    }
-                    s_noWrapperDirectSelectedQueueLog++;
-                } else {
+                if (slQueue) {
+                    submittedQueue = slQueue;
                     s_insidePostSLOverlayECL = true;
-                    queue->ExecuteCommandLists(1, lists);
+                    slQueue->ExecuteCommandLists(1, lists);
                     s_insidePostSLOverlayECL = false;
                     usedVirtualCall = true;
-                    static int s_noSlQ = 0;
-                    if (s_noSlQ++ < 3)
-                        HookLogImportant("DX12: PostSL no SL wrapper queue, using origGame %p", queue);
+                    HookLogImportant(
+                        "DX12: PostSL bootstrap via SL wrapper %p (will capture real queue for direct path)", slQueue);
+                } else {
+                    if (!ce::dx12_overlay_policy::ShouldAllowPostSLDirectVirtualBootstrapWithoutWrapper(
+                            slFGAtDispatch, slQueue != nullptr, realQ != nullptr, realECL != nullptr,
+                            selectedQueueIsSwapchainQueue, selectedQueueOrigECLMatchesRealECL,
+                            queue == g_OriginalGameQueue)) {
+                        HookLogImportant(
+                            "DX12: PostSL refusing no-wrapper virtual bootstrap during Streamline FG "
+                            "(queue=%p scQueue=%p realQ=%p realECL=%p)",
+                            queue, scQueue, realQ, (void*)realECL);
+                        bb->Release();
+                        return;
+                    }
+                    if (slFGAtDispatch && selectedQueueIsSwapchainQueue && selectedQueueOrigECLMatchesRealECL &&
+                        selectedQueueOrigECL) {
+                        submittedQueue = queue;
+                        selectedQueueOrigECL(queue, 1, lists);
+                        usedOrigECL = true;
+                        static int s_noWrapperDirectSelectedQueueLog = 0;
+                        if (s_noWrapperDirectSelectedQueueLog < 10 || (s_noWrapperDirectSelectedQueueLog % 200) == 0) {
+                            HookLogImportant(
+                                "DX12: PostSL no-wrapper direct selected-queue submit #%d on %p "
+                                "(scQueue=%p origECL matches realECL)",
+                                s_noWrapperDirectSelectedQueueLog, queue, scQueue);
+                        }
+                        s_noWrapperDirectSelectedQueueLog++;
+                    } else {
+                        s_insidePostSLOverlayECL = true;
+                        queue->ExecuteCommandLists(1, lists);
+                        s_insidePostSLOverlayECL = false;
+                        usedVirtualCall = true;
+                        static int s_noSlQ = 0;
+                        if (s_noSlQ++ < 3)
+                            HookLogImportant("DX12: PostSL no SL wrapper queue, using origGame %p", queue);
+                    }
                 }
             }
-        }
         } else if (isSLWrapperQ) {
             ExecuteCommandListsPtr origECL = GetOriginalExecuteCommandLists(queue);
             if (origECL) {
@@ -15123,8 +15060,8 @@ static bool ShouldHoldOverlayDrawForPendingFocusLossFence() {
         return false;
     }
 
-    if (ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackbufferWorkForPendingFence(
-            processHasForeground, true, pendingFenceComplete)) {
+    if (ce::dx12_overlay_policy::ShouldHoldD3D12FocusLossBackbufferWorkForPendingFence(processHasForeground, true,
+                                                                                       pendingFenceComplete)) {
         static std::atomic<int> s_focusLossHoldLogCount{0};
         const int logCount = s_focusLossHoldLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 300) == 0) {
@@ -15185,10 +15122,9 @@ static void RequestImmediateFocusLossFenceDumpOnce(const char* reason, UINT64 fe
                                                    const DX12WrappedPresentFocusLossContext& presentContext,
                                                    HWND foregroundWindow, DWORD foregroundPid, HWND gameWindow,
                                                    DWORD processId, DWORD waitResult, DWORD waitLastError) {
-    const bool dumpAlreadyRequested =
-        g_FocusLossImmediateFenceDumpRequested.load(std::memory_order_acquire);
-    if (!ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(
-            false, dumpAlreadyRequested)) {
+    const bool dumpAlreadyRequested = g_FocusLossImmediateFenceDumpRequested.load(std::memory_order_acquire);
+    if (!ce::dx12_overlay_policy::ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(false,
+                                                                                                dumpAlreadyRequested)) {
         return;
     }
 
@@ -15245,9 +15181,11 @@ static bool IsD3D12FocusLossPresentDeviceLostHRESULT(HRESULT hr) {
     return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG;
 }
 
-extern "C" __declspec(dllexport) void DX12_NoteWrappedD3D12PresentResult(
-    const char* presentName, int callCount, UINT syncInterval, UINT presentFlags, HRESULT presentHr, BOOL isFullscreen,
-    BOOL isIconic, BOOL hasZeroSize, HWND gameWindow) {
+extern "C" __declspec(dllexport) void DX12_NoteWrappedD3D12PresentResult(const char* presentName, int callCount,
+                                                                         UINT syncInterval, UINT presentFlags,
+                                                                         HRESULT presentHr, BOOL isFullscreen,
+                                                                         BOOL isIconic, BOOL hasZeroSize,
+                                                                         HWND gameWindow) {
     HWND foregroundWindow = nullptr;
     DWORD foregroundPid = 0;
     const bool processHasForeground = ResolveCurrentProcessForeground(&foregroundWindow, &foregroundPid);
@@ -15316,8 +15254,8 @@ extern "C" __declspec(dllexport) void DX12_NoteWrappedD3D12PresentResult(
     presentContext.presentFlags = presentFlags;
 
     if (!foregroundMatchesGame) {
-        g_FocusLossForegroundReacquirePresentProofRemaining.store(
-            kFocusLossForegroundReacquirePresentProofFrames, std::memory_order_release);
+        g_FocusLossForegroundReacquirePresentProofRemaining.store(kFocusLossForegroundReacquirePresentProofFrames,
+                                                                  std::memory_order_release);
         g_FocusLossRecentTransitionPresentWindow.store(kFocusLossRecentTransitionDumpWindowFrames,
                                                        std::memory_order_release);
     } else if (presentSucceeded && !presentDeviceLost && !isFullscreen && !isIconic && !hasZeroSize) {
@@ -15376,11 +15314,10 @@ static bool WaitForFocusLossImmediateOverlayFenceBeforePresent(
                 "DX12: Focus-loss same-frame overlay fence already complete before Present "
                 "(present=%s#%d queue=%p fence=%llu completed=%llu fg=%p/%lu game=%p/%lu "
                 "sync=%u flags=0x%08X realECL=%d directD3D12=%d descFree=%d offscreen=%d)",
-                presentContext.presentName ? presentContext.presentName : "Present", presentContext.callCount,
-                queue, (unsigned long long)fenceValue, (unsigned long long)completedValue, foregroundWindow,
-                foregroundPid, gameWindow, processId, presentContext.syncInterval, presentContext.presentFlags,
-                usedRealECL ? 1 : 0, directD3D12Submit ? 1 : 0, usedDescFree ? 1 : 0,
-                offscreenCompositeRequired ? 1 : 0);
+                presentContext.presentName ? presentContext.presentName : "Present", presentContext.callCount, queue,
+                (unsigned long long)fenceValue, (unsigned long long)completedValue, foregroundWindow, foregroundPid,
+                gameWindow, processId, presentContext.syncInterval, presentContext.presentFlags, usedRealECL ? 1 : 0,
+                directD3D12Submit ? 1 : 0, usedDescFree ? 1 : 0, offscreenCompositeRequired ? 1 : 0);
         }
         return true;
     }
@@ -15397,13 +15334,13 @@ static bool WaitForFocusLossImmediateOverlayFenceBeforePresent(
                 "(hr=0x%08X present=%s#%d queue=%p fence=%llu completed=%llu event=%p fg=%p/%lu "
                 "game=%p/%lu sync=%u flags=0x%08X); holding future unfocused backbuffer work",
                 (unsigned)setHr, presentContext.presentName ? presentContext.presentName : "Present",
-                presentContext.callCount, queue, (unsigned long long)fenceValue,
-                (unsigned long long)completedValue, fenceEvent, foregroundWindow, foregroundPid, gameWindow,
-                processId, presentContext.syncInterval, presentContext.presentFlags);
+                presentContext.callCount, queue, (unsigned long long)fenceValue, (unsigned long long)completedValue,
+                fenceEvent, foregroundWindow, foregroundPid, gameWindow, processId, presentContext.syncInterval,
+                presentContext.presentFlags);
         }
-        RequestImmediateFocusLossFenceDumpOnce("D3D12 focus-loss overlay fence SetEventOnCompletion failed",
-                                               fenceValue, completedValue, queue, presentContext, foregroundWindow,
-                                               foregroundPid, gameWindow, processId, WAIT_FAILED, setLastError);
+        RequestImmediateFocusLossFenceDumpOnce("D3D12 focus-loss overlay fence SetEventOnCompletion failed", fenceValue,
+                                               completedValue, queue, presentContext, foregroundWindow, foregroundPid,
+                                               gameWindow, processId, WAIT_FAILED, setLastError);
         return false;
     }
 
@@ -15416,8 +15353,8 @@ static bool WaitForFocusLossImmediateOverlayFenceBeforePresent(
     if (!completed) {
         g_FocusLossPendingOverlayFenceValue.store(fenceValue, std::memory_order_release);
         RequestImmediateFocusLossFenceDumpOnce("D3D12 focus-loss same-frame overlay fence wait stalled", fenceValue,
-                                               completedValue, queue, presentContext, foregroundWindow,
-                                               foregroundPid, gameWindow, processId, waitResult, waitLastError);
+                                               completedValue, queue, presentContext, foregroundWindow, foregroundPid,
+                                               gameWindow, processId, waitResult, waitLastError);
         if (waitResult == WAIT_TIMEOUT) {
             const DWORD finalWaitResult = WaitForSingleObject(fenceEvent, INFINITE);
             const DWORD finalLastError = (finalWaitResult == WAIT_FAILED) ? GetLastError() : 0;
@@ -15447,8 +15384,7 @@ static bool WaitForFocusLossImmediateOverlayFenceBeforePresent(
             (unsigned long long)fenceValue, (unsigned long long)completedValue, foregroundWindow, foregroundPid,
             gameWindow, processId, presentContext.syncInterval, presentContext.presentFlags,
             kFocusLossImmediateFenceDumpTimeoutMs, waitLastError, completed ? 1 : 0, completed ? 0 : 1,
-            usedRealECL ? 1 : 0, directD3D12Submit ? 1 : 0, usedDescFree ? 1 : 0,
-            offscreenCompositeRequired ? 1 : 0);
+            usedRealECL ? 1 : 0, directD3D12Submit ? 1 : 0, usedDescFree ? 1 : 0, offscreenCompositeRequired ? 1 : 0);
     }
 
     return completed;
@@ -15752,10 +15688,10 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     g_FocusLossRecentTransitionPresentWindow.load(std::memory_order_acquire) > 0 ||
                     g_FocusLossForegroundReacquirePresentProofRemaining.load(std::memory_order_acquire) > 0;
                 if (!processHasForeground || recentFocusTransition) {
-                    RequestFocusLossDeviceRemovalDumpOnce(
-                        "D3D12 focus-loss device removal before ProcessFrame setup",
-                        devCheck->GetDeviceRemovedReason(), s_WrappedPresentFocusLossContext, foregroundWindow,
-                        foregroundPid, nullptr, GetCurrentProcessId(), nullptr);
+                    RequestFocusLossDeviceRemovalDumpOnce("D3D12 focus-loss device removal before ProcessFrame setup",
+                                                          devCheck->GetDeviceRemovedReason(),
+                                                          s_WrappedPresentFocusLossContext, foregroundWindow,
+                                                          foregroundPid, nullptr, GetCurrentProcessId(), nullptr);
                 }
             }
             g_State.overlayInit = false;
@@ -15835,7 +15771,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
     const bool hasOutputWindow = frameDesc.OutputWindow != nullptr;
     const bool outputWindowVisible = hasOutputWindow && IsWindowVisible(frameDesc.OutputWindow) != FALSE;
     if (ce::dx12_overlay_policy::ShouldSkipDX12PresentProcessingForInvisibleWindowSwapchain(hasOutputWindow,
-                                                                                             outputWindowVisible)) {
+                                                                                            outputWindowVisible)) {
         static std::atomic<int> s_invisibleSwapchainSkipLogCount{0};
         const int logCount = s_invisibleSwapchainSkipLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 256) == 0) {
@@ -16034,8 +15970,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             const auto runtimeMode = g_FGCompat.GetRuntimeMode();
             const uint32_t streamlineNoFGPresentCount =
                 g_RuntimeOwnedStreamlineNoFGPresentCount.load(std::memory_order_acquire);
-            const bool streamlineFGRunning =
-                DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+            const bool streamlineFGRunning = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
             deferredFreshStreamlineNoFGSwapchainCleanup =
                 ce::dx12_overlay_policy::ShouldSuppressFreshRuntimeOwnedStreamlineNoFGSeparateOverlayWork(
                     g_FGRuntimeOwnsSwapchain, streamlineFGRunning, runtimeMode, streamlineNoFGPresentCount,
@@ -16051,10 +15986,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 preserveOriginalGameQueue = g_OriginalGameQueue;
                 preserveCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
             }
-            const bool postSLConfirmedForSwapchainChange =
-                g_PostSLConfirmedRendering.load(std::memory_order_acquire);
-            const int postSLStableFramesForSwapchainChange =
-                g_PostSLStableFrameCount.load(std::memory_order_acquire);
+            const bool postSLConfirmedForSwapchainChange = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+            const int postSLStableFramesForSwapchainChange = g_PostSLStableFrameCount.load(std::memory_order_acquire);
             const bool confirmedPostSLBackendWarmupProtected =
                 ce::dx12_overlay_policy::ShouldTreatConfirmedPostSLBackendAsWarmupProtected(
                     postSLConfirmedForSwapchainChange, postSLStableFramesForSwapchainChange);
@@ -16145,8 +16078,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 // to finish initializing before we reinit overlay resources on the new
                 // swapchain.  Set a transition cooldown so the reinit path (below) defers
                 // until the FG runtime is stable.
-                bool fgCurrentlyActive =
-                    IsActualFrameGenerationActive() || DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+                bool fgCurrentlyActive = IsActualFrameGenerationActive() ||
+                                         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
                 // Also protect if FG was active within the last ~5 seconds (~300 frames).
                 // When switching FG modes, the game may disable one FG type many frames
                 // before the swapchain actually changes.  Heuristic detection goes inactive
@@ -16180,9 +16113,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
                 const bool immediateReinitAfterGameSwapchainRecovery =
                     ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterGameSwapchainRecoveryFromNativeFSROff(
-                        currentSwapchainQueue != nullptr &&
-                            g_PostNativeFSROffGameSwapchainRecoveryQueue.load(std::memory_order_acquire) ==
-                                currentSwapchainQueue,
+                        currentSwapchainQueue != nullptr && g_PostNativeFSROffGameSwapchainRecoveryQueue.load(
+                                                                std::memory_order_acquire) == currentSwapchainQueue,
                         g_FGCompat.IsFSRFGApiActive(),
                         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
                 // DLSS-FG SUSPEND (slDLSSGSetOptions(off), proxy stays live): the active-FG
@@ -16191,8 +16123,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 // for the full 90-frame cooldown. The make-before-break keep-alive latch marks
                 // a CONFIRMED PostSL path that is merely suspended (never set during an FSR/
                 // native-FG takeover), so reinit the warm backend immediately on its live queue.
-                const bool immediateReinitAfterConfirmedPostSLSuspension =
-                    ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
+                const bool immediateReinitAfterConfirmedPostSLSuspension = ce::dx12_overlay_policy::
+                    ShouldReinitOverlayImmediatelyAfterConfirmedPostSLSuspensionSwapchainChange(
                         g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire),
                         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
                         g_FGCompat.IsFSRFGApiActive(),
@@ -16217,8 +16149,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 auto* dlssOffDevice = g_Device.load(std::memory_order_acquire);
                 const bool dlssOffDeviceRemoved =
                     dlssOffDevice != nullptr && FAILED(dlssOffDevice->GetDeviceRemovedReason());
-                const bool immediateReinitAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue =
-                    ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue(
+                const bool immediateReinitAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue = ce::dx12_overlay_policy::
+                    ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue(
                         DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
                         g_FGCompat.IsFSRFGApiActive(),
                         g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
@@ -16253,8 +16185,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         "DX12: Swapchain change is %s — immediate overlay "
                         "reinit on its captured queue instead of FG transition cooldown "
                         "(scQueue=%p origGame=%p cmdQ=%p prevCooldown=%d)",
-                        immediateReinitAfterNoCallbackFFXTakeover
-                            ? "finalized no-callback official FFX takeover"
+                        immediateReinitAfterNoCallbackFFXTakeover ? "finalized no-callback official FFX takeover"
                         : immediateReinitAfterConfirmedPostSLSuspension
                             ? "confirmed-PostSL DLSS-FG suspension (proxy stays live, no blank)"
                         : immediateReinitAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue
@@ -16321,7 +16252,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                             g_FGCompat.SetHeuristicFSRFGActive(false);
                         }
                         HookLogImportant(
-                            "DX12: Reset queue-change heuristic after clean non-FG swapchain transition ending post-FSR "
+                            "DX12: Reset queue-change heuristic after clean non-FG swapchain transition ending "
+                            "post-FSR "
                             "recovery");
                     }
                 }
@@ -16372,8 +16304,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         const bool lastWorkingQueueStillActiveDuringRecentTeardown =
             g_PostSLLastWorkingQueue != nullptr &&
             GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
-        if (protectedOfficialFFXStartupOverlayOnly &&
-            ShouldReinitOverlayDuringDormantProtectedOfficialFFXStartup()) {
+        if (protectedOfficialFFXStartupOverlayOnly && ShouldReinitOverlayDuringDormantProtectedOfficialFFXStartup()) {
             // Dormant 2D-menu FSR arming: AMD is dormant (no enabled ffxConfigure / present callback) but
             // the game is presenting real menu frames on the LIVE FSR swapchain. The unconditional quiesce
             // return below is what blanked the overlay FOREVER in the menu (session 20260615_215017) — it
@@ -16431,8 +16362,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             // fall through (no return) — render on gameQueue below
         } else if (protectedOfficialFFXStartupOverlayOnly) {
             static std::atomic<int> s_protectedOfficialFFXStartupGpuQuietLogCount{0};
-            const int logCount =
-                s_protectedOfficialFFXStartupGpuQuietLogCount.fetch_add(1, std::memory_order_relaxed);
+            const int logCount = s_protectedOfficialFFXStartupGpuQuietLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 300) == 0) {
                 HookLogImportant(
                     "DX12: Protected official FFX startup suppressing separate overlay GPU work until enabled "
@@ -16454,146 +16384,153 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire));
 
             if (routingDecision ==
-            ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue) {
-            static int s_fgOwnSkipLog = 0;
-            if (s_fgOwnSkipLog++ < 10 || (s_fgOwnSkipLog % 300) == 0) {
-                HookLogImportant(
-                    "DX12: ProcessFrame — FG runtime owns swapchain but scQueue is null, SKIPPING overlay "
-                    "(origGame=%p, fsrFGHeur=%d, fgOwnedSince=%llums ago) #%d",
-                    g_OriginalGameQueue, fsrFGNow ? 1 : 0, GetTickCount64() - g_FGRuntimeOwnsSwapchainSince,
-                    s_fgOwnSkipLog);
-            }
-            return;
-        } else if (routingDecision ==
-                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue) {
-            // After FSR→DLSS: use scQueue (swapchain creation queue).
-            // The swapchain was created on FSR's queue; backbuffers are
-            // associated with it.  origGame can't access them (cross-queue).
-            // SL's wrapper queue also fails.  scQueue is the ONLY queue
-            // with authorized backbuffer access.
-            if (g_SwapchainQueue) {
+                ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipRuntimeOwnedSwapchainWithoutQueue) {
+                static int s_fgOwnSkipLog = 0;
+                if (s_fgOwnSkipLog++ < 10 || (s_fgOwnSkipLog % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: ProcessFrame — FG runtime owns swapchain but scQueue is null, SKIPPING overlay "
+                        "(origGame=%p, fsrFGHeur=%d, fgOwnedSince=%llums ago) #%d",
+                        g_OriginalGameQueue, fsrFGNow ? 1 : 0, GetTickCount64() - g_FGRuntimeOwnsSwapchainSince,
+                        s_fgOwnSkipLog);
+                }
+                return;
+            } else if (routingDecision ==
+                       ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue) {
+                // After FSR→DLSS: use scQueue (swapchain creation queue).
+                // The swapchain was created on FSR's queue; backbuffers are
+                // associated with it.  origGame can't access them (cross-queue).
+                // SL's wrapper queue also fails.  scQueue is the ONLY queue
+                // with authorized backbuffer access.
+                if (g_SwapchainQueue) {
+                    gameQueue = g_SwapchainQueue;
+                    static bool s_loggedPostFSR = false;
+                    if (!s_loggedPostFSR) {
+                        s_loggedPostFSR = true;
+                        HookLogImportant(
+                            "DX12: ProcessFrame — post-FSR SL FG, using scQueue %p (swapchain creation queue, "
+                            "origGame=%p)",
+                            gameQueue, g_OriginalGameQueue);
+                    }
+                } else {
+                    // Shouldn't happen — scQueue should be kept alive during hadFSR
+                    gameQueue = g_OriginalGameQueue;
+                    HookLogImportant("DX12: ProcessFrame — post-FSR SL FG but scQueue is null, fallback to origGame %p",
+                                     gameQueue);
+                }
+            } else if (routingDecision ==
+                       ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue) {
+                // SL FG (no FSR history): use origGame.
+                gameQueue = g_OriginalGameQueue;
+            } else if (routingDecision ==
+                       ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue) {
+                // After FSR->DLSS->off with scQueue intentionally unset, reuse the
+                // last queue that already proved it could render the live swapchain.
+                gameQueue = g_PostSLLastWorkingQueue;
+                if (lastWorkingQueueStillActiveDuringRecentTeardown) {
+                    static std::atomic<int> s_postFSRProcessFrameLastWorkingRouteLogCount{0};
+                    int logCount =
+                        s_postFSRProcessFrameLastWorkingRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+                    if (logCount < 10 || (logCount % 300) == 0) {
+                        HookLogImportant(
+                            "DX12: ProcessFrame — post-FSR inactive recovery keeping preserved PostSL lastWorking "
+                            "queue %p "
+                            "while teardown traffic is still active (cmdQ=%p origQ=%p primaryQ=%p)",
+                            g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
+                    }
+                }
+            } else if (routingDecision ==
+                       ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
+                // After FSR->DLSS->off, or an explicit native-FSR OFF/suspend while
+                // the stale FSR swapchain queue latch is still draining, prefer the
+                // known original Present queue over the most recent ECL queue. Talos
+                // uses separate render/present DIRECT queues; falling back to
+                // g_CommandQueue/primary picked the render queue and immediately hit
+                // DEVICE_REMOVED on the first recovered non-FG offscreen composite.
+                const auto queueSource =
+                    ce::dx12_overlay_policy::DecidePostFSRInactiveRecoveryQueueSource(g_OriginalGameQueue != nullptr);
+                if (queueSource == ce::dx12_overlay_policy::PostFSRInactiveRecoveryQueueSource::kOriginalPresentQueue) {
+                    gameQueue = g_OriginalGameQueue;
+                    const bool explicitNativeFSROffPending =
+                        g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
+                    static std::atomic<int> s_postFSRInactiveOrigRouteLogCount{0};
+                    int logCount = s_postFSRInactiveOrigRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+                    if (logCount < 10 || (logCount % 300) == 0) {
+                        HookLogImportant(
+                            "DX12: ProcessFrame — post-FSR inactive recovery using original present queue %p "
+                            "(cmdQ=%p primaryQ=%p explicitNativeOff=%d)",
+                            gameQueue, currentCommandQueue, currentPrimaryQueue, explicitNativeFSROffPending ? 1 : 0);
+                    }
+                } else {
+                    gameQueue = currentCommandQueue ? currentCommandQueue : currentPrimaryQueue;
+                    static std::atomic<int> s_postFSRInactiveFallbackRouteLogCount{0};
+                    int logCount = s_postFSRInactiveFallbackRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+                    if (logCount < 10 || (logCount % 300) == 0) {
+                        HookLogImportant(
+                            "DX12: ProcessFrame — post-FSR inactive recovery missing origGame, falling back to current "
+                            "command queue %p (primaryQ=%p)",
+                            gameQueue, currentPrimaryQueue);
+                    }
+                }
+            } else if (routingDecision ==
+                       ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue) {
+                // FSR FG: pSwapChain is FSR's swapchain, backbuffers belong to
+                // FSR's queue.  Submit on the swapchain queue to avoid cross-queue
+                // resource state conflicts.  We use realECL to bypass FSR's ECL
+                // hook on this queue.
                 gameQueue = g_SwapchainQueue;
-                static bool s_loggedPostFSR = false;
-                if (!s_loggedPostFSR) {
-                    s_loggedPostFSR = true;
+                if (!g_HadFSRFGPhase &&
+                    ce::dx12_overlay_policy::ShouldLatchFSRFGHistory(g_FGCompat.IsFSRFGApiActive(), true)) {
+                    g_HadFSRFGPhase = true;
                     HookLogImportant(
-                        "DX12: ProcessFrame — post-FSR SL FG, using scQueue %p (swapchain creation queue, origGame=%p)",
-                        gameQueue, g_OriginalGameQueue);
+                        "DX12: ProcessFrame — FSR FG history confirmed, origGame potentially corrupted for future DLSS "
+                        "FG");
                 }
+            } else if (routingDecision ==
+                       ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseRuntimeOwnedSwapchainQueue) {
+                // Runtime-owned swapchain without FSR evidence. This covers DLSS/
+                // Streamline suspend-resume windows where the live swapchain stays on
+                // a non-game queue but must NOT be promoted into post-FSR recovery.
+                const bool startupCompatCanUseSettledRuntimeOwnedQueue =
+                    startupOverlayCompatibilityActive &&
+                    ce::dx12_overlay_policy::ShouldAllowStartupOverlayRendering(
+                        true, g_SwapchainQueue != nullptr, g_FGRuntimeOwnsSwapchain, runtimeOwnedSwapchainActiveMs,
+                        kStartupOverlayPostResumeSettleMs,
+                        s_startupOverlayCompatSettled.load(std::memory_order_acquire),
+                        ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff());
+                const bool useOriginalQueueForStartupCompat =
+                    startupCompatCanUseSettledRuntimeOwnedQueue && g_OriginalGameQueue != nullptr;
+                gameQueue = useOriginalQueueForStartupCompat ? g_OriginalGameQueue : g_SwapchainQueue;
+                static int s_runtimeOwnedQueueLogCount = 0;
+                if (s_runtimeOwnedQueueLogCount++ < 10 || (s_runtimeOwnedQueueLogCount % 300) == 0) {
+                    const bool authoritativeFSR = g_FGCompat.IsFSRFGApiActive();
+                    HookLogImportant(
+                        "DX12: ProcessFrame — runtime-owned swapchain %s, using %s %p "
+                        "(origGame=%p slFG=%d hadFSR=%d apiFSR=%d startupCompatSettled=%d) #%d",
+                        authoritativeFSR ? "with authoritative FSR FG state" : "without FSR evidence",
+                        useOriginalQueueForStartupCompat ? "origGame" : "scQueue", gameQueue, g_OriginalGameQueue,
+                        slFGNow ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, authoritativeFSR ? 1 : 0,
+                        startupCompatCanUseSettledRuntimeOwnedQueue ? 1 : 0, s_runtimeOwnedQueueLogCount);
+                }
+            } else if (routingDecision ==
+                       ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue) {
+                // FSR FG active but g_SwapchainQueue not captured.
+                // DO NOT fall back to origGame — FSR FG uses origGame internally
+                // and injecting our ECLs on it will corrupt FSR's fence tracking,
+                // causing an internal FSR deadlock (ffxQuery spin-wait or WaitForSingleObject).
+                // Instead, skip rendering entirely until scQueue is recaptured.
+                static int s_fsrSkipLog = 0;
+                if (s_fsrSkipLog++ < 5 || (s_fsrSkipLog % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: ProcessFrame — FSR FG active but scQueue=null, SKIPPING overlay (origGame=%p used by "
+                        "FSR, "
+                        "#%d)",
+                        g_OriginalGameQueue, s_fsrSkipLog);
+                }
+                return;
             } else {
-                // Shouldn't happen — scQueue should be kept alive during hadFSR
-                gameQueue = g_OriginalGameQueue;
-                HookLogImportant("DX12: ProcessFrame — post-FSR SL FG but scQueue is null, fallback to origGame %p",
-                                 gameQueue);
-            }
-        } else if (routingDecision ==
-                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue) {
-            // SL FG (no FSR history): use origGame.
-            gameQueue = g_OriginalGameQueue;
-        } else if (routingDecision ==
-                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue) {
-            // After FSR->DLSS->off with scQueue intentionally unset, reuse the
-            // last queue that already proved it could render the live swapchain.
-            gameQueue = g_PostSLLastWorkingQueue;
-            if (lastWorkingQueueStillActiveDuringRecentTeardown) {
-                static std::atomic<int> s_postFSRProcessFrameLastWorkingRouteLogCount{0};
-                int logCount = s_postFSRProcessFrameLastWorkingRouteLogCount.fetch_add(1, std::memory_order_relaxed);
-                if (logCount < 10 || (logCount % 300) == 0) {
-                    HookLogImportant(
-                        "DX12: ProcessFrame — post-FSR inactive recovery keeping preserved PostSL lastWorking queue %p "
-                        "while teardown traffic is still active (cmdQ=%p origQ=%p primaryQ=%p)",
-                        g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
-                }
-            }
-        } else if (routingDecision ==
-                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
-            // After FSR->DLSS->off, or an explicit native-FSR OFF/suspend while
-            // the stale FSR swapchain queue latch is still draining, prefer the
-            // known original Present queue over the most recent ECL queue. Talos
-            // uses separate render/present DIRECT queues; falling back to
-            // g_CommandQueue/primary picked the render queue and immediately hit
-            // DEVICE_REMOVED on the first recovered non-FG offscreen composite.
-            const auto queueSource =
-                ce::dx12_overlay_policy::DecidePostFSRInactiveRecoveryQueueSource(g_OriginalGameQueue != nullptr);
-            if (queueSource == ce::dx12_overlay_policy::PostFSRInactiveRecoveryQueueSource::kOriginalPresentQueue) {
-                gameQueue = g_OriginalGameQueue;
-                const bool explicitNativeFSROffPending =
-                    g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire);
-                static std::atomic<int> s_postFSRInactiveOrigRouteLogCount{0};
-                int logCount = s_postFSRInactiveOrigRouteLogCount.fetch_add(1, std::memory_order_relaxed);
-                if (logCount < 10 || (logCount % 300) == 0) {
-                    HookLogImportant(
-                        "DX12: ProcessFrame — post-FSR inactive recovery using original present queue %p "
-                        "(cmdQ=%p primaryQ=%p explicitNativeOff=%d)",
-                        gameQueue, currentCommandQueue, currentPrimaryQueue, explicitNativeFSROffPending ? 1 : 0);
-                }
-            } else {
-                gameQueue = currentCommandQueue ? currentCommandQueue : currentPrimaryQueue;
-                static std::atomic<int> s_postFSRInactiveFallbackRouteLogCount{0};
-                int logCount = s_postFSRInactiveFallbackRouteLogCount.fetch_add(1, std::memory_order_relaxed);
-                if (logCount < 10 || (logCount % 300) == 0) {
-                    HookLogImportant(
-                        "DX12: ProcessFrame — post-FSR inactive recovery missing origGame, falling back to current "
-                        "command queue %p (primaryQ=%p)",
-                        gameQueue, currentPrimaryQueue);
-                }
-            }
-        } else if (routingDecision == ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue) {
-            // FSR FG: pSwapChain is FSR's swapchain, backbuffers belong to
-            // FSR's queue.  Submit on the swapchain queue to avoid cross-queue
-            // resource state conflicts.  We use realECL to bypass FSR's ECL
-            // hook on this queue.
-            gameQueue = g_SwapchainQueue;
-            if (!g_HadFSRFGPhase &&
-                ce::dx12_overlay_policy::ShouldLatchFSRFGHistory(g_FGCompat.IsFSRFGApiActive(), true)) {
-                g_HadFSRFGPhase = true;
-                HookLogImportant(
-                    "DX12: ProcessFrame — FSR FG history confirmed, origGame potentially corrupted for future DLSS FG");
-            }
-        } else if (routingDecision ==
-                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUseRuntimeOwnedSwapchainQueue) {
-            // Runtime-owned swapchain without FSR evidence. This covers DLSS/
-            // Streamline suspend-resume windows where the live swapchain stays on
-            // a non-game queue but must NOT be promoted into post-FSR recovery.
-            const bool startupCompatCanUseSettledRuntimeOwnedQueue =
-                startupOverlayCompatibilityActive &&
-                ce::dx12_overlay_policy::ShouldAllowStartupOverlayRendering(
-                    true, g_SwapchainQueue != nullptr, g_FGRuntimeOwnsSwapchain, runtimeOwnedSwapchainActiveMs,
-                    kStartupOverlayPostResumeSettleMs, s_startupOverlayCompatSettled.load(std::memory_order_acquire),
-                    ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff());
-            const bool useOriginalQueueForStartupCompat =
-                startupCompatCanUseSettledRuntimeOwnedQueue && g_OriginalGameQueue != nullptr;
-            gameQueue = useOriginalQueueForStartupCompat ? g_OriginalGameQueue : g_SwapchainQueue;
-            static int s_runtimeOwnedQueueLogCount = 0;
-            if (s_runtimeOwnedQueueLogCount++ < 10 || (s_runtimeOwnedQueueLogCount % 300) == 0) {
-                const bool authoritativeFSR = g_FGCompat.IsFSRFGApiActive();
-                HookLogImportant(
-                    "DX12: ProcessFrame — runtime-owned swapchain %s, using %s %p "
-                    "(origGame=%p slFG=%d hadFSR=%d apiFSR=%d startupCompatSettled=%d) #%d",
-                    authoritativeFSR ? "with authoritative FSR FG state" : "without FSR evidence",
-                    useOriginalQueueForStartupCompat ? "origGame" : "scQueue",
-                    gameQueue, g_OriginalGameQueue, slFGNow ? 1 : 0, g_HadFSRFGPhase ? 1 : 0, authoritativeFSR ? 1 : 0,
-                    startupCompatCanUseSettledRuntimeOwnedQueue ? 1 : 0, s_runtimeOwnedQueueLogCount);
-            }
-        } else if (routingDecision ==
-                   ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kSkipFSRWithoutSwapchainQueue) {
-            // FSR FG active but g_SwapchainQueue not captured.
-            // DO NOT fall back to origGame — FSR FG uses origGame internally
-            // and injecting our ECLs on it will corrupt FSR's fence tracking,
-            // causing an internal FSR deadlock (ffxQuery spin-wait or WaitForSingleObject).
-            // Instead, skip rendering entirely until scQueue is recaptured.
-            static int s_fsrSkipLog = 0;
-            if (s_fsrSkipLog++ < 5 || (s_fsrSkipLog % 300) == 0) {
-                HookLogImportant(
-                    "DX12: ProcessFrame — FSR FG active but scQueue=null, SKIPPING overlay (origGame=%p used by FSR, "
-                    "#%d)",
-                    g_OriginalGameQueue, s_fsrSkipLog);
-            }
-            return;
-        } else {
-            gameQueue = g_SwapchainQueue;
-            if (!gameQueue)
-                gameQueue = g_CommandQueue.load();
+                gameQueue = g_SwapchainQueue;
+                if (!gameQueue)
+                    gameQueue = g_CommandQueue.load();
             }
         }
     }
@@ -16910,8 +16847,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         const bool bypassProtectedOfficialFFXStartupReinitCooldown =
             ce::dx12_overlay_policy::ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(
                 protectedOfficialFFXStartupOverlayOnly,
-                protectedOfficialFFXStartupQueueRef != nullptr &&
-                    gameQueue == protectedOfficialFFXStartupQueueRef) ||
+                protectedOfficialFFXStartupQueueRef != nullptr && gameQueue == protectedOfficialFFXStartupQueueRef) ||
             // Dormant 2D-menu FSR arming: rebuild the fresh overlay on origGame immediately instead of
             // blanking the menu for the generic 60-frame cooldown (defense-in-depth; the FG->off teardown
             // also bypasses the cooldown for this case).
@@ -16936,8 +16872,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             const bool startupActivationPendingDuringReinitCooldown =
                 DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
             const bool postSLActiveButUnconfirmedDuringReinitCooldown = HookIsPostSLOverlayActiveButUnconfirmed();
-            const bool postSLConfirmedDuringReinitCooldown =
-                g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+            const bool postSLConfirmedDuringReinitCooldown = g_PostSLConfirmedRendering.load(std::memory_order_acquire);
             const bool postSLSettlingDuringReinitCooldown = HookIsPostSLOverlayConfirmedButStartupSettling();
             const bool preserveSyntheticStartupStateDuringReinitCooldown =
                 ce::dx12_overlay_policy::ShouldLetSyntheticPostSLProgressDuringOverlayReinitCooldown(
@@ -17200,19 +17135,20 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     "scQueue=%p origGame=%p cmdQ=%p",
                     skipSeparateOverlayGpuReason ? skipSeparateOverlayGpuReason : "runtime-owned swapchain",
                     ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
-                    g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
-                    g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0,
+                    g_FGCompat.IsFSRFGApiActive() ? 1 : 0, g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0,
                     g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire) ? 1 : 0,
                     HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0,
                     g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) ? 1 : 0,
-                    ffxStalled ? 1 : 0, ffxStallAllows ? 1 : 0,
-                    g_FGRuntimeOwnsSwapchain ? 1 : 0,
+                    ffxStalled ? 1 : 0, ffxStallAllows ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0,
                     g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire) != 0 ? 1 : 0,
                     static_cast<unsigned long long>(g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire)),
-                    (g_SwapchainQueue != nullptr && g_OriginalGameQueue != nullptr && g_SwapchainQueue == g_OriginalGameQueue) ? 1 : 0,
-                    EvaluateProgressResolvedOfficialFFXOverlayFallbackProof().proof ? 1 : 0,
-                    g_FGTransitionCooldown, g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0,
-                    g_SwapchainQueue, g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire));
+                    (g_SwapchainQueue != nullptr && g_OriginalGameQueue != nullptr &&
+                     g_SwapchainQueue == g_OriginalGameQueue)
+                        ? 1
+                        : 0,
+                    EvaluateProgressResolvedOfficialFFXOverlayFallbackProof().proof ? 1 : 0, g_FGTransitionCooldown,
+                    g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0, g_SwapchainQueue, g_OriginalGameQueue,
+                    g_CommandQueue.load(std::memory_order_acquire));
             }
             return;
         }
@@ -17449,17 +17385,18 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     "scQueue=%p origGame=%p cmdQ=%p",
                     skipSeparateOverlayGpuReason ? skipSeparateOverlayGpuReason : "runtime-owned swapchain",
                     ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
-                    g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
-                    g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0,
+                    g_FGCompat.IsFSRFGApiActive() ? 1 : 0, g_FGCompat.HasDirectFFXApiConfirmation() ? 1 : 0,
                     g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire) ? 1 : 0,
                     HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0,
                     g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire) ? 1 : 0,
-                    ffxStalled ? 1 : 0, ffxStallAllows ? 1 : 0,
-                    g_FGRuntimeOwnsSwapchain ? 1 : 0,
+                    ffxStalled ? 1 : 0, ffxStallAllows ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0,
                     g_LastFFXPresentCallbackTickMs.load(std::memory_order_acquire) != 0 ? 1 : 0,
-                    (g_SwapchainQueue != nullptr && g_OriginalGameQueue != nullptr && g_SwapchainQueue == g_OriginalGameQueue) ? 1 : 0,
-                    EvaluateProgressResolvedOfficialFFXOverlayFallbackProof().proof ? 1 : 0,
-                    g_SwapchainQueue, g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire));
+                    (g_SwapchainQueue != nullptr && g_OriginalGameQueue != nullptr &&
+                     g_SwapchainQueue == g_OriginalGameQueue)
+                        ? 1
+                        : 0,
+                    EvaluateProgressResolvedOfficialFFXOverlayFallbackProof().proof ? 1 : 0, g_SwapchainQueue,
+                    g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire));
             }
             return;
         }
@@ -17589,8 +17526,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     }
     const bool focusLossBackgroundUsingDedicatedQueue = g_State.overlayQueue && ShouldUseDedicatedOverlayQueue();
     const bool focusLossBackgroundRuntimeOwnedPresentation =
-        g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath() ||
-        DXGIShared::DoesFGRuntimeOwnSwapchain();
+        g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath() || DXGIShared::DoesFGRuntimeOwnSwapchain();
     const bool focusLossBackgroundSteamDeferredSubmit =
         g_deferOverlaySubmitToSteamECL && !focusLossBackgroundUsingDedicatedQueue;
     const bool focusLossBackgroundFrameGenerationActive =
@@ -17615,8 +17551,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         s_WrappedPresentFocusLossContext.valid || g_HaveD3D12PresentResultSignal.load(std::memory_order_acquire);
     const bool focusLossBackgroundBackbufferHold =
         ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkForNonPresentableSwapchain(
-            haveReliablePresentResultSignal, !frameDesc.Windowed, swapchainOccluded, iconicWindow,
-            zeroSizedSwapchain, focusLossBackgroundFrameGenerationActive, focusLossBackgroundRuntimeOwnedPresentation,
+            haveReliablePresentResultSignal, !frameDesc.Windowed, swapchainOccluded, iconicWindow, zeroSizedSwapchain,
+            focusLossBackgroundFrameGenerationActive, focusLossBackgroundRuntimeOwnedPresentation,
             focusLossBackgroundUsingDedicatedQueue, focusLossBackgroundSteamDeferredSubmit,
             focusLossBackgroundDeviceLost, gameQueue != nullptr);
     if (focusLossBackgroundBackbufferHold) {
@@ -17647,8 +17583,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         g_FocusLossRecentTransitionPresentWindow.store(kFocusLossRecentTransitionDumpWindowFrames,
                                                        std::memory_order_release);
     }
-    const bool holdFocusLossBackbufferWork =
-        pendingFocusLossBackbufferWorkHold || focusLossBackgroundBackbufferHold;
+    const bool holdFocusLossBackbufferWork = pendingFocusLossBackbufferWorkHold || focusLossBackgroundBackbufferHold;
     {
         static bool s_focusTransitionHoldActive = false;
         static std::atomic<int> s_focusTransitionHoldLogCount{0};
@@ -17670,8 +17605,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             s_focusTransitionHoldActive = false;
             HookLogImportant(
                 "DX12: Focus-change mode switch settled (present=%s#%d queue=%p foreground=%d)",
-                s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
-                                                             : "Present",
+                s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName : "Present",
                 s_WrappedPresentFocusLossContext.callCount, gameQueue, processHasForeground ? 1 : 0);
         }
     }
@@ -17692,20 +17626,17 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                                  : "Present",
                     s_WrappedPresentFocusLossContext.callCount, gameQueue, foregroundWindow, foregroundPid,
                     frameDesc.OutputWindow, currentProcessId, s_WrappedPresentFocusLossContext.syncInterval,
-                    s_WrappedPresentFocusLossContext.presentFlags,
-                    focusLossBackgroundFrameGenerationActive ? 1 : 0,
-                    focusLossBackgroundRuntimeOwnedPresentation ? 1 : 0,
-                    focusLossBackgroundUsingDedicatedQueue ? 1 : 0,
-                    focusLossBackgroundSteamDeferredSubmit ? 1 : 0,
-                    focusLossBackgroundDeviceLost ? 1 : 0, logCount + 1);
+                    s_WrappedPresentFocusLossContext.presentFlags, focusLossBackgroundFrameGenerationActive ? 1 : 0,
+                    focusLossBackgroundRuntimeOwnedPresentation ? 1 : 0, focusLossBackgroundUsingDedicatedQueue ? 1 : 0,
+                    focusLossBackgroundSteamDeferredSubmit ? 1 : 0, focusLossBackgroundDeviceLost ? 1 : 0,
+                    logCount + 1);
             }
         } else if (s_focusLossBackbufferHoldActive) {
             s_focusLossBackbufferHoldActive = false;
             HookLogImportant(
                 "DX12: Resuming overlay/capture backbuffer work — swapchain presentable again "
                 "(present=%s#%d queue=%p fg=%p/%lu game=%p/%lu foreground=%d recentWindow=%d)",
-                s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName
-                                                             : "Present",
+                s_WrappedPresentFocusLossContext.presentName ? s_WrappedPresentFocusLossContext.presentName : "Present",
                 s_WrappedPresentFocusLossContext.callCount, gameQueue, foregroundWindow, foregroundPid,
                 frameDesc.OutputWindow, currentProcessId, processHasForeground ? 1 : 0,
                 g_FocusLossRecentTransitionPresentWindow.load(std::memory_order_acquire));
@@ -17716,9 +17647,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     const bool captureWantsOverlay = captureOverlayCfg.showOverlay && captureOverlayCfg.captureIncludeOverlay;
     const bool captureUsePostSL = processCapture && g_IPC && g_IPC->IsRecording() && captureWantsOverlay &&
                                   ShouldUseConfirmedPostSLForOverlayIncludedWork(captureOverlayCfg);
-    const bool captureAfterOverlay =
-        processCapture && g_IPC && g_IPC->IsRecording() && captureWantsOverlay && !captureUsePostSL &&
-        !holdFocusLossBackbufferWork;
+    const bool captureAfterOverlay = processCapture && g_IPC && g_IPC->IsRecording() && captureWantsOverlay &&
+                                     !captureUsePostSL && !holdFocusLossBackbufferWork;
     const bool captureBeforeOverlay =
         processCapture && g_IPC && g_IPC->IsRecording() && !captureWantsOverlay && !holdFocusLossBackbufferWork;
     bool delayOverlayRenderAfterSyncInit = false;
@@ -17762,8 +17692,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             }
             suppressOverlayRenderForLoadedStartupOverlay = true;
         } else if (ce::overlay_compat::ShouldSuppressDX12OverlayRenderForRecentBlockingRendererActivity(
-                       processNeedsRenderDelay, actualFGActive, blockingOverlayModule,
-                       hasRecentBlockingRenderActivity, overlayBackendReady)) {
+                       processNeedsRenderDelay, actualFGActive, blockingOverlayModule, hasRecentBlockingRenderActivity,
+                       overlayBackendReady)) {
             static std::atomic<int> s_recentBlockingRendererSuppressLogCount{0};
             const ULONGLONG msSinceLastActivity = now - lastBlockingRenderActivityMs;
             if (s_recentBlockingRendererSuppressLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
@@ -17801,10 +17731,9 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         const ULONGLONG msSinceResourcePrime = now - s_startupOverlayResourcePrimeMs;
         const bool preserveLiveStartupOverlayDuringInactiveSL =
             ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff();
-        const bool shouldDelayAfterResourcePrime =
-            ce::dx12_overlay_policy::ShouldDelayAfterStartupOverlayResourcePrime(
-                startupOverlayCompatibilityActive, IsActualFrameGenerationActive(), msSinceResourcePrime,
-                kStartupOverlayPostResourcePrimeSettleMs, preserveLiveStartupOverlayDuringInactiveSL);
+        const bool shouldDelayAfterResourcePrime = ce::dx12_overlay_policy::ShouldDelayAfterStartupOverlayResourcePrime(
+            startupOverlayCompatibilityActive, IsActualFrameGenerationActive(), msSinceResourcePrime,
+            kStartupOverlayPostResourcePrimeSettleMs, preserveLiveStartupOverlayDuringInactiveSL);
         if (shouldDelayAfterResourcePrime) {
             static std::atomic<int> s_postResourcePrimeLogCount{0};
             if (s_postResourcePrimeLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
@@ -18427,31 +18356,29 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             ID3D12CommandQueue* transitionOverlayBackendQueue =
                 g_OverlayAdapterBackendQueue.load(std::memory_order_acquire);
             const bool liveNoCallbackNativeFSRSuspensionToggle =
-                !slSignalChanged && ce::dx12_overlay_policy::IsLiveNoCallbackNativeFSRSuspensionToggle(
-                                        s_lastRuntimeMode_saved, currentRuntimeMode, currentSLFGRunning,
-                                        g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire),
-                                        g_FGRuntimeOwnsSwapchain, transitionSwapchainQueue != nullptr,
-                                        g_State.overlayInit,
-                                        transitionSwapchainQueue != nullptr &&
-                                            transitionOverlayBackendQueue == transitionSwapchainQueue);
+                !slSignalChanged &&
+                ce::dx12_overlay_policy::IsLiveNoCallbackNativeFSRSuspensionToggle(
+                    s_lastRuntimeMode_saved, currentRuntimeMode, currentSLFGRunning,
+                    g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire), g_FGRuntimeOwnsSwapchain,
+                    transitionSwapchainQueue != nullptr, g_State.overlayInit,
+                    transitionSwapchainQueue != nullptr && transitionOverlayBackendQueue == transitionSwapchainQueue);
             ID3D12CommandQueue* postNativeFSROffRecoveryQueue =
                 g_PostNativeFSROffGameSwapchainRecoveryQueue.load(std::memory_order_acquire);
             const bool gameSwapchainRecoveryToggleAfterNativeFSROff =
-                !slSignalChanged && ce::dx12_overlay_policy::IsGameSwapchainRecoveryToggleAfterNativeFSROff(
-                                        s_lastRuntimeMode_saved, currentRuntimeMode, currentSLFGRunning,
-                                        transitionSwapchainQueue != nullptr &&
-                                            postNativeFSROffRecoveryQueue == transitionSwapchainQueue);
+                !slSignalChanged &&
+                ce::dx12_overlay_policy::IsGameSwapchainRecoveryToggleAfterNativeFSROff(
+                    s_lastRuntimeMode_saved, currentRuntimeMode, currentSLFGRunning,
+                    transitionSwapchainQueue != nullptr && postNativeFSROffRecoveryQueue == transitionSwapchainQueue);
             const bool heuristicOnlyRuntimeModeFlip =
-                !slSignalChanged && ce::dx12_overlay_policy::IsHeuristicOnlyRuntimeModeFlip(
-                                        s_lastSLFGRunning, currentSLFGRunning, g_FGRuntimeOwnsSwapchain,
-                                        g_FGCompat.IsFSRFGApiActive(), transitionSwapchainQueue != nullptr,
-                                        g_State.overlayInit,
-                                        transitionSwapchainQueue != nullptr &&
-                                            transitionOverlayBackendQueue == transitionSwapchainQueue);
+                !slSignalChanged &&
+                ce::dx12_overlay_policy::IsHeuristicOnlyRuntimeModeFlip(
+                    s_lastSLFGRunning, currentSLFGRunning, g_FGRuntimeOwnsSwapchain, g_FGCompat.IsFSRFGApiActive(),
+                    transitionSwapchainQueue != nullptr, g_State.overlayInit,
+                    transitionSwapchainQueue != nullptr && transitionOverlayBackendQueue == transitionSwapchainQueue);
             const bool shouldStartFGTransitionCooldown =
                 ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
-                    s_lastRuntimeMode_saved, currentRuntimeMode, s_lastFGActive, currentFGActive,
-                    s_lastSLFGRunning, currentSLFGRunning,
+                    s_lastRuntimeMode_saved, currentRuntimeMode, s_lastFGActive, currentFGActive, s_lastSLFGRunning,
+                    currentSLFGRunning,
                     liveNoCallbackNativeFSRSuspensionToggle || gameSwapchainRecoveryToggleAfterNativeFSROff ||
                         heuristicOnlyRuntimeModeFlip);
             if (!shouldStartFGTransitionCooldown) {
@@ -18472,353 +18399,361 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 s_lastRuntimeMode = currentRuntimeMode;
                 s_lastSLFGRunning = currentSLFGRunning;
             } else {
-            const ID3D12CommandQueue* currentPrimaryQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
-            const ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
-            const bool commandQueueSettledToPrimary =
-                currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue;
-            const int transitionCooldownFrames = ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(
-                                                     commandQueueSettledToPrimary, g_HadFSRFGPhase,
-                                                     previousWasFG && targetIsFGOff && !currentSLFGRunning)
-                                                     ? 15
-                                                     : 60;
-            HookLogImportant(
-                "DX12: FG transition prev_mode=%s next_mode=%s phase=%d ownership=%d render_mode=%d callback=%d "
-                "publish_active=%d sl_signal=%d->%d cooldown=%d epoch=%u",
-                ce::fg_runtime::GetRuntimeModeName(s_lastRuntimeMode),
-                ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode),
-                static_cast<int>(s_transitionState.snapshot.phase),
-                static_cast<int>(s_transitionState.snapshot.ownership),
-                static_cast<int>(s_transitionState.snapshot.renderMode),
-                s_transitionState.snapshot.shouldInstallPostSLCallback ? 1 : 0,
-                s_transitionState.snapshot.publishFGActive ? 1 : 0, s_lastSLFGRunning ? 1 : 0,
-                currentSLFGRunning ? 1 : 0, transitionCooldownFrames, s_transitionState.snapshot.epoch);
-            LogOverlayCoverageSummary("FG transition edge");
-            s_lastFGActive = currentFGActive;
-            s_lastRuntimeMode = currentRuntimeMode;
-            s_lastSLFGRunning = currentSLFGRunning;
-            g_FGTransitionCooldown = ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(
-                g_FGTransitionCooldown, transitionCooldownFrames,
-                ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(
-                    commandQueueSettledToPrimary, g_HadFSRFGPhase,
-                    previousWasFG && targetIsFGOff && !currentSLFGRunning));
-            g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
-            g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
-
-            // Immediately disable post-SL rendering during FG transitions.
-            // Keep the callback installed when Streamline is still running so
-            // synthetic startup presents can route through PostSL safely while
-            // the active gate and cooldown still suppress real rendering.
-            // Make-before-break: the explicit-OFF keep-alive owns the PostSL
-            // path until the normal route recovers — do not disable it here.
-            const bool innerKeepConfirmedPostSLAliveAcrossOff =
-                !currentSLFGRunning && g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire);
-            if (!innerKeepConfirmedPostSLAliveAcrossOff) {
-                g_PostSLOverlayActive.store(false, std::memory_order_release);
-                if (!DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(currentSLFGRunning)) {
-                    SetPostSLCallbackInstalled(false, "DX12: inner FG transition");
-                }
-            }
-            g_PostSLStallCounter.store(0, std::memory_order_release);      // Fresh start after transition
-            g_PostSLStableFrameCount.store(0, std::memory_order_release);  // Reset warmup counter
-            g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
-
-            // When SL FG turns ON or OFF, clear any false heuristic FSR FG state.
-            // SL's queue changes trigger the queue-change heuristic, causing
-            // false FSR FG detection.  Clear it during ANY SL FG transition:
-            //   - ON: SL creates new queues → queue-change heuristic fires falsely
-            //   - OFF: SL's queue was "current FG queue" → not cleared until
-            //          consecutive initial-queue frames pass the threshold
-            if (g_FGCompat.IsHeuristicFSRFGActive()) {
-                g_FGCompat.SetHeuristicFSRFGActive(false);
-                HookLogImportant("DX12: Cleared heuristic FSR FG during SL FG %s transition",
-                                 currentSLFGRunning ? "ON" : "OFF");
-            }
-
-            // Reset the queue-change heuristic's internal state so it re-captures
-            // the "initial queue" after the transition.  SL's leftover queue would
-            // otherwise persist as s_initialQueue/s_currentFGQueue and immediately
-            // re-trigger false FSR FG detection.
-            RequestFGDetectionHeuristicReset();
-
-            // Drain in-flight overlay GPU work on ANY FG transition.
-            // When FG activates (especially FSR FG), it may use the same queue
-            // our overlay was rendering on.  In-flight overlay ECLs on that queue
-            // can cause FSR's internal synchronization to deadlock (spin-wait in
-            // ffxQuery).  Drain ensures the queue is clean before FG takes over.
-            //
-            // Original: only drained on SL OFF.  Extended to all transitions
-            // because FSR FG also needs a clean queue at activation.
-            if (g_State.fence && g_State.currentFenceValue > 0) {
-                UINT64 lastVal = g_State.currentFenceValue;
-                HANDLE drainEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-                if (drainEvent) {
-                    HRESULT drainHr = g_State.fence->SetEventOnCompletion(lastVal, drainEvent);
-                    if (SUCCEEDED(drainHr)) {
-                        DWORD waitResult = WaitForSingleObject(drainEvent, 200);
-                        HookLogImportant(
-                            "DX12: FG transition — drained overlay GPU work (fenceVal=%llu wait=%u slSignalChanged=%d "
-                            "fgChanged=%d)",
-                            (unsigned long long)lastVal, waitResult, slSignalChanged ? 1 : 0, fgChanged ? 1 : 0);
-                    } else {
-                        HookLogImportant("DX12: FG transition — fence drain failed hr=0x%08X", drainHr);
-                    }
-                    CloseHandle(drainEvent);
-                }
-            }
-
-            ClearPostSLQueues("DX12: FG transition queue reset");
-            // Keep the SL wrapper queue alive while Streamline still owns the
-            // presentation path, even if FG is temporarily idle.
-            {
-                bool targetUsesStreamline = ce::fg_runtime::RuntimeModeUsesStreamline(currentRuntimeMode);
-                if (!targetUsesStreamline) {
-                    ID3D12CommandQueue* oldWrapper = g_SLWrapperQueue.exchange(nullptr, std::memory_order_acq_rel);
-                    if (oldWrapper) {
-                        oldWrapper->Release();
-                        HookLogImportant("DX12: runtime=%s — released SL wrapper queue %p",
-                                         ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), oldWrapper);
-                    }
-                } else {
-                    ID3D12CommandQueue* kept = g_SLWrapperQueue.load(std::memory_order_acquire);
-                    HookLogImportant("DX12: runtime=%s — keeping SL wrapper queue %p alive",
-                                     ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), kept);
-                }
-            }
-            if (!innerKeepConfirmedPostSLAliveAcrossOff) {
-                g_PostSLConfirmedRendering.store(false, std::memory_order_release);  // Re-probe needed
-            }
-            if (!ce::dx12_overlay_policy::ShouldPreservePostSLLastWorkingQueueForPostFSROffRecovery(
-                    g_HadFSRFGPhase, previousWasFG, targetIsFGOff)) {
-                // Old SL queues may be destroyed after most FG mode switches
-                // (e.g., DLSS FG phase 1 -> FSR FG -> DLSS FG phase 2). Keep the
-                // last validated queue only for the immediate post-FSR FG-off
-                // recovery window, where it is the only queue that already proved
-                // safe for the live swapchain.
-                SetPostSLLastWorkingQueue(nullptr);
-            } else {
-                HookLogImportant("DX12: Preserving PostSL lastWorkingQueue %p for immediate post-FSR FG-off recovery",
-                                 g_PostSLLastWorkingQueue);
-            }
-
-            // Save the current ProcessFrame gameQueue as a pre-FG snapshot.
-            // When PostSL activates after the cooldown, g_CommandQueue may have
-            // been polluted by SL's internal queues.  gameQueue (resolved at the
-            // top of ProcessFrame from scQueue or cmdQueue) is still the game's
-            // real queue at this point.
-            if (g_PreFGGameQueue)
-                g_PreFGGameQueue->Release();
-            g_PreFGGameQueue = gameQueue;
-            if (gameQueue)
-                gameQueue->AddRef();
-
-            // Force sync resources re-initialization on next overlay render.
-            // After FG type transitions (e.g., FSR→DLSS), the sync resources
-            // (allocators, fence, cmdList) were used on a different queue during
-            // the previous FG phase.  Re-using them on a new queue after swapchain
-            // recreation causes DEVICE_REMOVED.  Fresh resources avoid this.
-            //
-            // EXCEPTION 1: FG→off transitions do NOT invalidate sync.  There is no
-            // swapchain recreation when FG simply turns off, and the allocators/
-            // fence are device-level objects that work on any DIRECT queue.  The
-            // GPU drain above ensures all in-flight work completes.
-            //
-            // EXCEPTION 2: off→on transitions (None→FSR_FG or None→DLSS_FG) also
-            // do NOT invalidate sync.  The existing resources are device-level and
-            // work on any DIRECT queue.  Forcing re-init here is unnecessary and
-            // causes the "FG→FG" misclassification for what is really "off→on".
-            bool actualFGToFG = previousWasFG && !targetIsFGOff;
-            if (g_State.syncInit && actualFGToFG) {
-                HookLogImportant("DX12: FG transition (FG→FG: %s→%s) — forcing syncInit=false for fresh resources",
-                                 ce::fg_runtime::GetRuntimeModeName(s_lastRuntimeMode_saved),
-                                 ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode));
-                g_State.syncInit = false;
-            } else if (g_State.syncInit && targetIsFGOff) {
-                HookLogImportant("DX12: FG→off transition — keeping syncInit=true (reusing existing resources)");
-            } else if (g_State.syncInit && !previousWasFG && !targetIsFGOff) {
+                const ID3D12CommandQueue* currentPrimaryQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
+                const ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
+                const bool commandQueueSettledToPrimary =
+                    currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue;
+                const int transitionCooldownFrames = ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(
+                                                         commandQueueSettledToPrimary, g_HadFSRFGPhase,
+                                                         previousWasFG && targetIsFGOff && !currentSLFGRunning)
+                                                         ? 15
+                                                         : 60;
                 HookLogImportant(
-                    "DX12: FG off→on transition (%s→%s) — keeping syncInit=true (resources work on any queue)",
-                    ce::fg_runtime::GetRuntimeModeName(s_lastRuntimeMode_saved),
-                    ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode));
-            }
+                    "DX12: FG transition prev_mode=%s next_mode=%s phase=%d ownership=%d render_mode=%d callback=%d "
+                    "publish_active=%d sl_signal=%d->%d cooldown=%d epoch=%u",
+                    ce::fg_runtime::GetRuntimeModeName(s_lastRuntimeMode),
+                    ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode),
+                    static_cast<int>(s_transitionState.snapshot.phase),
+                    static_cast<int>(s_transitionState.snapshot.ownership),
+                    static_cast<int>(s_transitionState.snapshot.renderMode),
+                    s_transitionState.snapshot.shouldInstallPostSLCallback ? 1 : 0,
+                    s_transitionState.snapshot.publishFGActive ? 1 : 0, s_lastSLFGRunning ? 1 : 0,
+                    currentSLFGRunning ? 1 : 0, transitionCooldownFrames, s_transitionState.snapshot.epoch);
+                LogOverlayCoverageSummary("FG transition edge");
+                s_lastFGActive = currentFGActive;
+                s_lastRuntimeMode = currentRuntimeMode;
+                s_lastSLFGRunning = currentSLFGRunning;
+                g_FGTransitionCooldown = ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(
+                    g_FGTransitionCooldown, transitionCooldownFrames,
+                    ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(
+                        commandQueueSettledToPrimary, g_HadFSRFGPhase,
+                        previousWasFG && targetIsFGOff && !currentSLFGRunning));
+                g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+                g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
 
-            // Clear stale swapchain queue only when transitioning TO SL-based FG
-            // if we've never had an FSR FG phase. If FSR FG already ran, SL might
-            // reuse FSR's swapchain (no new CreateSwapChainForHwnd), so scQueue is
-            // the CORRECT queue for backbuffer access. Keep it alive via AddRef.
-            if (runtimeModeChanged) {
-                bool newTypeNeedsScQueue = (currentRuntimeMode == ce::fg_runtime::RuntimeMode::kFSRFG);
-                bool targetIsNone = !ce::fg_runtime::IsActualGeneratedFrameMode(currentRuntimeMode);
-                if (targetIsNone && !g_HadFSRFGPhase) {
-                    // FG→off: keep g_SwapchainQueue as-is.  Same rationale as
-                    // the outer slTurnedOff handler: SL's swapchain may persist
-                    // after FG teardown, so g_SwapchainQueue (set by the
-                    // CreateSwapChainForHwnd hook) already points to the correct
-                    // queue.  Restoring to origGame causes queue/swapchain
-                    // mismatch → DXGI_ERROR_ACCESS_DENIED.
-                    std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-                    // FG is off — FG runtime no longer owns the queue
-                    if (g_FGRuntimeOwnsSwapchain) {
-                        g_FGRuntimeOwnsSwapchain = false;
-                        DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
-                        g_FGRuntimeOwnsSwapchainSince = 0;
-                        ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
-                        ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
-                        HookLogImportant("DX12: FG→off — clearing FG runtime ownership of swapchain queue");
+                // Immediately disable post-SL rendering during FG transitions.
+                // Keep the callback installed when Streamline is still running so
+                // synthetic startup presents can route through PostSL safely while
+                // the active gate and cooldown still suppress real rendering.
+                // Make-before-break: the explicit-OFF keep-alive owns the PostSL
+                // path until the normal route recovers — do not disable it here.
+                const bool innerKeepConfirmedPostSLAliveAcrossOff =
+                    !currentSLFGRunning && g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire);
+                if (!innerKeepConfirmedPostSLAliveAcrossOff) {
+                    g_PostSLOverlayActive.store(false, std::memory_order_release);
+                    if (!DXGIShared::ShouldKeepPostSLCallbackInstalledDuringTransition(currentSLFGRunning)) {
+                        SetPostSLCallbackInstalled(false, "DX12: inner FG transition");
                     }
-                    HookLogImportant("DX12: FG→off — keeping g_SwapchainQueue %p (origGame=%p)", g_SwapchainQueue,
-                                     g_OriginalGameQueue);
-                    if (!g_SwapchainQueue && g_OriginalGameQueue) {
-                        // Swapchain queue not captured yet — fall back to origGame
-                        g_OriginalGameQueue->AddRef();
-                        g_SwapchainQueue = g_OriginalGameQueue;
-                        HookLogImportant("DX12: FG→off — scQueue was null, falling back to origGame %p",
-                                         g_OriginalGameQueue);
-                    }
-                } else if (!newTypeNeedsScQueue && !g_HadFSRFGPhase) {
-                    std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-                    // Clear FG runtime ownership when transitioning away from FSR FG
-                    if (g_FGRuntimeOwnsSwapchain && targetIsNone) {
-                        g_FGRuntimeOwnsSwapchain = false;
-                        DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
-                        g_FGRuntimeOwnsSwapchainSince = 0;
-                        ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
-                        ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
-                        HookLogImportant("DX12: FG type change to None — clearing FG runtime ownership");
-                    }
-                    if (g_SwapchainQueue) {
-                        // Protect recently-captured scQueue from phantom FG detections.
-                        // After swapchain recreation, the heuristic may briefly detect
-                        // NVIDIA_SM (false positive from Present rate measurement).
-                        // Clearing scQueue in that window causes ProcessFrame to fall
-                        // back to origGame, which FSR FG uses internally → deadlock.
-                        ULONGLONG age = GetTickCount64() - g_SwapchainQueueCaptureTime;
-                        if (age < 5000) {
+                }
+                g_PostSLStallCounter.store(0, std::memory_order_release);      // Fresh start after transition
+                g_PostSLStableFrameCount.store(0, std::memory_order_release);  // Reset warmup counter
+                g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
+
+                // When SL FG turns ON or OFF, clear any false heuristic FSR FG state.
+                // SL's queue changes trigger the queue-change heuristic, causing
+                // false FSR FG detection.  Clear it during ANY SL FG transition:
+                //   - ON: SL creates new queues → queue-change heuristic fires falsely
+                //   - OFF: SL's queue was "current FG queue" → not cleared until
+                //          consecutive initial-queue frames pass the threshold
+                if (g_FGCompat.IsHeuristicFSRFGActive()) {
+                    g_FGCompat.SetHeuristicFSRFGActive(false);
+                    HookLogImportant("DX12: Cleared heuristic FSR FG during SL FG %s transition",
+                                     currentSLFGRunning ? "ON" : "OFF");
+                }
+
+                // Reset the queue-change heuristic's internal state so it re-captures
+                // the "initial queue" after the transition.  SL's leftover queue would
+                // otherwise persist as s_initialQueue/s_currentFGQueue and immediately
+                // re-trigger false FSR FG detection.
+                RequestFGDetectionHeuristicReset();
+
+                // Drain in-flight overlay GPU work on ANY FG transition.
+                // When FG activates (especially FSR FG), it may use the same queue
+                // our overlay was rendering on.  In-flight overlay ECLs on that queue
+                // can cause FSR's internal synchronization to deadlock (spin-wait in
+                // ffxQuery).  Drain ensures the queue is clean before FG takes over.
+                //
+                // Original: only drained on SL OFF.  Extended to all transitions
+                // because FSR FG also needs a clean queue at activation.
+                if (g_State.fence && g_State.currentFenceValue > 0) {
+                    UINT64 lastVal = g_State.currentFenceValue;
+                    HANDLE drainEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+                    if (drainEvent) {
+                        HRESULT drainHr = g_State.fence->SetEventOnCompletion(lastVal, drainEvent);
+                        if (SUCCEEDED(drainHr)) {
+                            DWORD waitResult = WaitForSingleObject(drainEvent, 200);
                             HookLogImportant(
-                                "DX12: FG type change to %s — PRESERVING g_SwapchainQueue %p (captured %llu ms ago, "
-                                "too recent to clear)",
-                                ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue, age);
+                                "DX12: FG transition — drained overlay GPU work (fenceVal=%llu wait=%u "
+                                "slSignalChanged=%d "
+                                "fgChanged=%d)",
+                                (unsigned long long)lastVal, waitResult, slSignalChanged ? 1 : 0, fgChanged ? 1 : 0);
                         } else {
-                            HookLogImportant(
-                                "DX12: FG type change to %s — clearing stale g_SwapchainQueue %p (no FSR history, "
-                                "age=%llu ms)",
-                                ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue, age);
-                            g_SwapchainQueue->Release();
-                            g_SwapchainQueue = nullptr;
+                            HookLogImportant("DX12: FG transition — fence drain failed hr=0x%08X", drainHr);
                         }
+                        CloseHandle(drainEvent);
                     }
-                } else if (!newTypeNeedsScQueue && g_HadFSRFGPhase) {
-                    if (targetIsNone) {
-                        // FSR→DLSS→Off: wait for live non-FG command traffic to
-                        // prove which queue owns the resumed Present path again.
-                        // Forcing origGame back into g_SwapchainQueue here caused
-                        // Talos to submit the first recovered non-FG overlay ECL
-                        // on the wrong queue/backbuffer pairing, immediately
-                        // triggering DEVICE_REMOVED.
-                        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-                        const bool preserveRuntimeOwnedFSRTeardown =
-                            ce::dx12_overlay_policy::ShouldPreserveRuntimeOwnedFSRTeardown(
-                                targetIsNone, g_HadFSRFGPhase, g_FGRuntimeOwnsSwapchain,
-                                DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
-                        if (preserveRuntimeOwnedFSRTeardown) {
-                            HookLogImportant(
-                                "DX12: FG→off after FSR phase classified while runtime still owns swapchain — "
-                                "preserving FSR queue ownership until a stronger off signal appears "
-                                "(scQ=%p origGame=%p primary=%p cmdQ=%p)",
-                                g_SwapchainQueue, g_OriginalGameQueue,
-                                g_PrimaryGameQueue.load(std::memory_order_acquire),
-                                g_CommandQueue.load(std::memory_order_acquire));
-                            return;
+                }
+
+                ClearPostSLQueues("DX12: FG transition queue reset");
+                // Keep the SL wrapper queue alive while Streamline still owns the
+                // presentation path, even if FG is temporarily idle.
+                {
+                    bool targetUsesStreamline = ce::fg_runtime::RuntimeModeUsesStreamline(currentRuntimeMode);
+                    if (!targetUsesStreamline) {
+                        ID3D12CommandQueue* oldWrapper = g_SLWrapperQueue.exchange(nullptr, std::memory_order_acq_rel);
+                        if (oldWrapper) {
+                            oldWrapper->Release();
+                            HookLogImportant("DX12: runtime=%s — released SL wrapper queue %p",
+                                             ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), oldWrapper);
                         }
+                    } else {
+                        ID3D12CommandQueue* kept = g_SLWrapperQueue.load(std::memory_order_acquire);
+                        HookLogImportant("DX12: runtime=%s — keeping SL wrapper queue %p alive",
+                                         ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), kept);
+                    }
+                }
+                if (!innerKeepConfirmedPostSLAliveAcrossOff) {
+                    g_PostSLConfirmedRendering.store(false, std::memory_order_release);  // Re-probe needed
+                }
+                if (!ce::dx12_overlay_policy::ShouldPreservePostSLLastWorkingQueueForPostFSROffRecovery(
+                        g_HadFSRFGPhase, previousWasFG, targetIsFGOff)) {
+                    // Old SL queues may be destroyed after most FG mode switches
+                    // (e.g., DLSS FG phase 1 -> FSR FG -> DLSS FG phase 2). Keep the
+                    // last validated queue only for the immediate post-FSR FG-off
+                    // recovery window, where it is the only queue that already proved
+                    // safe for the live swapchain.
+                    SetPostSLLastWorkingQueue(nullptr);
+                } else {
+                    HookLogImportant(
+                        "DX12: Preserving PostSL lastWorkingQueue %p for immediate post-FSR FG-off recovery",
+                        g_PostSLLastWorkingQueue);
+                }
+
+                // Save the current ProcessFrame gameQueue as a pre-FG snapshot.
+                // When PostSL activates after the cooldown, g_CommandQueue may have
+                // been polluted by SL's internal queues.  gameQueue (resolved at the
+                // top of ProcessFrame from scQueue or cmdQueue) is still the game's
+                // real queue at this point.
+                if (g_PreFGGameQueue)
+                    g_PreFGGameQueue->Release();
+                g_PreFGGameQueue = gameQueue;
+                if (gameQueue)
+                    gameQueue->AddRef();
+
+                // Force sync resources re-initialization on next overlay render.
+                // After FG type transitions (e.g., FSR→DLSS), the sync resources
+                // (allocators, fence, cmdList) were used on a different queue during
+                // the previous FG phase.  Re-using them on a new queue after swapchain
+                // recreation causes DEVICE_REMOVED.  Fresh resources avoid this.
+                //
+                // EXCEPTION 1: FG→off transitions do NOT invalidate sync.  There is no
+                // swapchain recreation when FG simply turns off, and the allocators/
+                // fence are device-level objects that work on any DIRECT queue.  The
+                // GPU drain above ensures all in-flight work completes.
+                //
+                // EXCEPTION 2: off→on transitions (None→FSR_FG or None→DLSS_FG) also
+                // do NOT invalidate sync.  The existing resources are device-level and
+                // work on any DIRECT queue.  Forcing re-init here is unnecessary and
+                // causes the "FG→FG" misclassification for what is really "off→on".
+                bool actualFGToFG = previousWasFG && !targetIsFGOff;
+                if (g_State.syncInit && actualFGToFG) {
+                    HookLogImportant("DX12: FG transition (FG→FG: %s→%s) — forcing syncInit=false for fresh resources",
+                                     ce::fg_runtime::GetRuntimeModeName(s_lastRuntimeMode_saved),
+                                     ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode));
+                    g_State.syncInit = false;
+                } else if (g_State.syncInit && targetIsFGOff) {
+                    HookLogImportant("DX12: FG→off transition — keeping syncInit=true (reusing existing resources)");
+                } else if (g_State.syncInit && !previousWasFG && !targetIsFGOff) {
+                    HookLogImportant(
+                        "DX12: FG off→on transition (%s→%s) — keeping syncInit=true (resources work on any queue)",
+                        ce::fg_runtime::GetRuntimeModeName(s_lastRuntimeMode_saved),
+                        ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode));
+                }
+
+                // Clear stale swapchain queue only when transitioning TO SL-based FG
+                // if we've never had an FSR FG phase. If FSR FG already ran, SL might
+                // reuse FSR's swapchain (no new CreateSwapChainForHwnd), so scQueue is
+                // the CORRECT queue for backbuffer access. Keep it alive via AddRef.
+                if (runtimeModeChanged) {
+                    bool newTypeNeedsScQueue = (currentRuntimeMode == ce::fg_runtime::RuntimeMode::kFSRFG);
+                    bool targetIsNone = !ce::fg_runtime::IsActualGeneratedFrameMode(currentRuntimeMode);
+                    if (targetIsNone && !g_HadFSRFGPhase) {
+                        // FG→off: keep g_SwapchainQueue as-is.  Same rationale as
+                        // the outer slTurnedOff handler: SL's swapchain may persist
+                        // after FG teardown, so g_SwapchainQueue (set by the
+                        // CreateSwapChainForHwnd hook) already points to the correct
+                        // queue.  Restoring to origGame causes queue/swapchain
+                        // mismatch → DXGI_ERROR_ACCESS_DENIED.
+                        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                        // FG is off — FG runtime no longer owns the queue
                         if (g_FGRuntimeOwnsSwapchain) {
                             g_FGRuntimeOwnsSwapchain = false;
                             DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
                             g_FGRuntimeOwnsSwapchainSince = 0;
                             ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
                             ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
-                            const bool preserveAuthoritativeFSRDuringTransition =
-                                ce::dx12_overlay_policy::ShouldPreserveAuthoritativeFSRDuringTransitionCooldown(
-                                    g_FGCompat.IsFSRFGApiActive(), targetIsNone, g_FGTransitionCooldown);
-                            if (preserveAuthoritativeFSRDuringTransition) {
+                            HookLogImportant("DX12: FG→off — clearing FG runtime ownership of swapchain queue");
+                        }
+                        HookLogImportant("DX12: FG→off — keeping g_SwapchainQueue %p (origGame=%p)", g_SwapchainQueue,
+                                         g_OriginalGameQueue);
+                        if (!g_SwapchainQueue && g_OriginalGameQueue) {
+                            // Swapchain queue not captured yet — fall back to origGame
+                            g_OriginalGameQueue->AddRef();
+                            g_SwapchainQueue = g_OriginalGameQueue;
+                            HookLogImportant("DX12: FG→off — scQueue was null, falling back to origGame %p",
+                                             g_OriginalGameQueue);
+                        }
+                    } else if (!newTypeNeedsScQueue && !g_HadFSRFGPhase) {
+                        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                        // Clear FG runtime ownership when transitioning away from FSR FG
+                        if (g_FGRuntimeOwnsSwapchain && targetIsNone) {
+                            g_FGRuntimeOwnsSwapchain = false;
+                            DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
+                            g_FGRuntimeOwnsSwapchainSince = 0;
+                            ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
+                            ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
+                            HookLogImportant("DX12: FG type change to None — clearing FG runtime ownership");
+                        }
+                        if (g_SwapchainQueue) {
+                            // Protect recently-captured scQueue from phantom FG detections.
+                            // After swapchain recreation, the heuristic may briefly detect
+                            // NVIDIA_SM (false positive from Present rate measurement).
+                            // Clearing scQueue in that window causes ProcessFrame to fall
+                            // back to origGame, which FSR FG uses internally → deadlock.
+                            ULONGLONG age = GetTickCount64() - g_SwapchainQueueCaptureTime;
+                            if (age < 5000) {
                                 HookLogImportant(
-                                    "DX12: FG→off after FSR phase detected during active transition cooldown — "
-                                    "preserving authoritative FSR state until queue topology settles (cooldown=%d "
-                                    "scQ=%p origGame=%p primary=%p cmdQ=%p)",
-                                    g_FGTransitionCooldown, g_SwapchainQueue, g_OriginalGameQueue,
+                                    "DX12: FG type change to %s — PRESERVING g_SwapchainQueue %p (captured %llu ms "
+                                    "ago, "
+                                    "too recent to clear)",
+                                    ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue, age);
+                            } else {
+                                HookLogImportant(
+                                    "DX12: FG type change to %s — clearing stale g_SwapchainQueue %p (no FSR history, "
+                                    "age=%llu ms)",
+                                    ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue, age);
+                                g_SwapchainQueue->Release();
+                                g_SwapchainQueue = nullptr;
+                            }
+                        }
+                    } else if (!newTypeNeedsScQueue && g_HadFSRFGPhase) {
+                        if (targetIsNone) {
+                            // FSR→DLSS→Off: wait for live non-FG command traffic to
+                            // prove which queue owns the resumed Present path again.
+                            // Forcing origGame back into g_SwapchainQueue here caused
+                            // Talos to submit the first recovered non-FG overlay ECL
+                            // on the wrong queue/backbuffer pairing, immediately
+                            // triggering DEVICE_REMOVED.
+                            std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                            const bool preserveRuntimeOwnedFSRTeardown =
+                                ce::dx12_overlay_policy::ShouldPreserveRuntimeOwnedFSRTeardown(
+                                    targetIsNone, g_HadFSRFGPhase, g_FGRuntimeOwnsSwapchain,
+                                    DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
+                            if (preserveRuntimeOwnedFSRTeardown) {
+                                HookLogImportant(
+                                    "DX12: FG→off after FSR phase classified while runtime still owns swapchain — "
+                                    "preserving FSR queue ownership until a stronger off signal appears "
+                                    "(scQ=%p origGame=%p primary=%p cmdQ=%p)",
+                                    g_SwapchainQueue, g_OriginalGameQueue,
                                     g_PrimaryGameQueue.load(std::memory_order_acquire),
                                     g_CommandQueue.load(std::memory_order_acquire));
-                            } else if (g_FGCompat.IsFSRFGApiActive()) {
-                                SetNativeFSRStartupConfigureArmingPending(false, "runtime mode transition cleared FSR");
-                                ClearOfficialFFXRuntimeOwnedPresentPathAssumption("runtime mode transition cleared FSR");
-                                g_FGCompat.SetFSRFGActive(false);
-                                g_FGCompat.SetFSRFGMultiplier(0);
+                                return;
                             }
+                            if (g_FGRuntimeOwnsSwapchain) {
+                                g_FGRuntimeOwnsSwapchain = false;
+                                DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false,
+                                                                                       std::memory_order_release);
+                                g_FGRuntimeOwnsSwapchainSince = 0;
+                                ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
+                                ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
+                                const bool preserveAuthoritativeFSRDuringTransition =
+                                    ce::dx12_overlay_policy::ShouldPreserveAuthoritativeFSRDuringTransitionCooldown(
+                                        g_FGCompat.IsFSRFGApiActive(), targetIsNone, g_FGTransitionCooldown);
+                                if (preserveAuthoritativeFSRDuringTransition) {
+                                    HookLogImportant(
+                                        "DX12: FG→off after FSR phase detected during active transition cooldown — "
+                                        "preserving authoritative FSR state until queue topology settles (cooldown=%d "
+                                        "scQ=%p origGame=%p primary=%p cmdQ=%p)",
+                                        g_FGTransitionCooldown, g_SwapchainQueue, g_OriginalGameQueue,
+                                        g_PrimaryGameQueue.load(std::memory_order_acquire),
+                                        g_CommandQueue.load(std::memory_order_acquire));
+                                } else if (g_FGCompat.IsFSRFGApiActive()) {
+                                    SetNativeFSRStartupConfigureArmingPending(false,
+                                                                              "runtime mode transition cleared FSR");
+                                    ClearOfficialFFXRuntimeOwnedPresentPathAssumption(
+                                        "runtime mode transition cleared FSR");
+                                    g_FGCompat.SetFSRFGActive(false);
+                                    g_FGCompat.SetFSRFGMultiplier(0);
+                                }
+                                HookLogImportant(
+                                    "DX12: FG→off after FSR phase — clearing FG runtime ownership of swapchain queue");
+                            }
+                            if (g_SwapchainQueue && g_SwapchainQueue != g_OriginalGameQueue) {
+                                HookLogImportant(
+                                    "DX12: FG→off after FSR phase — releasing stale g_SwapchainQueue %p and waiting "
+                                    "for "
+                                    "the live non-FG queue to be recaptured (origGame=%p primary=%p cmdQ=%p)",
+                                    g_SwapchainQueue, g_OriginalGameQueue,
+                                    g_PrimaryGameQueue.load(std::memory_order_acquire),
+                                    g_CommandQueue.load(std::memory_order_acquire));
+                                g_SwapchainQueue->Release();
+                                g_SwapchainQueue = nullptr;
+                                g_SwapchainQueueCaptureTime = 0;
+                            }
+                            if (!g_SwapchainQueue) {
+                                HookLogImportant(
+                                    "DX12: FG→off after FSR phase — keeping g_SwapchainQueue null until non-wrapper "
+                                    "command traffic settles (origGame=%p primary=%p cmdQ=%p)",
+                                    g_OriginalGameQueue, g_PrimaryGameQueue.load(std::memory_order_acquire),
+                                    g_CommandQueue.load(std::memory_order_acquire));
+                            }
+                        } else {
+                            // FSR→DLSS transition: the swapchain was created on FSR's queue
+                            // (g_SwapchainQueue), so backbuffers belong to it. Keep it alive.
+                            // Render pre-SL on scQueue — the swapchain's own queue has
+                            // authorized access to backbuffers without cross-queue issues.
                             HookLogImportant(
-                                "DX12: FG→off after FSR phase — clearing FG runtime ownership of swapchain queue");
-                        }
-                        if (g_SwapchainQueue && g_SwapchainQueue != g_OriginalGameQueue) {
-                            HookLogImportant(
-                                "DX12: FG→off after FSR phase — releasing stale g_SwapchainQueue %p and waiting for "
-                                "the live non-FG queue to be recaptured (origGame=%p primary=%p cmdQ=%p)",
-                                g_SwapchainQueue, g_OriginalGameQueue,
-                                g_PrimaryGameQueue.load(std::memory_order_acquire),
-                                g_CommandQueue.load(std::memory_order_acquire));
-                            g_SwapchainQueue->Release();
-                            g_SwapchainQueue = nullptr;
-                            g_SwapchainQueueCaptureTime = 0;
-                        }
-                        if (!g_SwapchainQueue) {
-                            HookLogImportant(
-                                "DX12: FG→off after FSR phase — keeping g_SwapchainQueue null until non-wrapper "
-                                "command traffic settles (origGame=%p primary=%p cmdQ=%p)",
-                                g_OriginalGameQueue, g_PrimaryGameQueue.load(std::memory_order_acquire),
-                                g_CommandQueue.load(std::memory_order_acquire));
+                                "DX12: FG type change to %s — KEEPING g_SwapchainQueue %p for backbuffer access (it's "
+                                "the "
+                                "swapchain creation queue)",
+                                ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue);
+                            g_NeedGPUDrainBeforeRender = false;
                         }
                     } else {
-                        // FSR→DLSS transition: the swapchain was created on FSR's queue
-                        // (g_SwapchainQueue), so backbuffers belong to it. Keep it alive.
-                        // Render pre-SL on scQueue — the swapchain's own queue has
-                        // authorized access to backbuffers without cross-queue issues.
-                        HookLogImportant(
-                            "DX12: FG type change to %s — KEEPING g_SwapchainQueue %p for backbuffer access (it's the "
-                            "swapchain creation queue)",
-                            ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue);
-                        g_NeedGPUDrainBeforeRender = false;
-                    }
-                } else {
-                    HookLogImportant("DX12: FG type change to %s — keeping g_SwapchainQueue %p (FSR needs it)",
-                                     ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue);
-                }
-            }
-
-            // Probe real D3D12 ECL when SL FG first activates.  Must happen
-            // before the first overlay ECL submission so we have the bypass
-            // ready.
-            if (currentFGActive && IsStreamlineLoaded()) {
-                auto* dev = g_Device.load(std::memory_order_acquire);
-                if (dev)
-                    ProbeRealD3D12ECL(dev);
-            }
-
-            // Flush any pending deferred signal immediately so GPU work from the
-            // previous frame completes before SL reconfigures.
-            UINT64 deferredVal = g_deferredSignalValue.load(std::memory_order_acquire);
-            if (deferredVal != 0 && g_State.fence) {
-                ID3D12CommandQueue* sigQueue = g_deferredSignalQueue.load(std::memory_order_acquire);
-                if (!sigQueue)
-                    sigQueue = gameQueue;
-                if (sigQueue) {
-                    HRESULT hr = sigQueue->Signal(g_State.fence, deferredVal);
-                    if (SUCCEEDED(hr)) {
-                        int allocIdx = g_deferredSignalAllocIdx.load(std::memory_order_acquire);
-                        g_State.currentFenceValue = deferredVal;
-                        if (allocIdx >= 0 && allocIdx < (int)g_State.fenceValues.size())
-                            g_State.fenceValues[allocIdx] = deferredVal;
+                        HookLogImportant("DX12: FG type change to %s — keeping g_SwapchainQueue %p (FSR needs it)",
+                                         ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), g_SwapchainQueue);
                     }
                 }
-                g_deferredSignalValue.store(0, std::memory_order_release);
-                g_deferredSignalAllocIdx.store(-1, std::memory_order_release);
-                g_deferredSignalQueue.store(nullptr, std::memory_order_release);
-            }
+
+                // Probe real D3D12 ECL when SL FG first activates.  Must happen
+                // before the first overlay ECL submission so we have the bypass
+                // ready.
+                if (currentFGActive && IsStreamlineLoaded()) {
+                    auto* dev = g_Device.load(std::memory_order_acquire);
+                    if (dev)
+                        ProbeRealD3D12ECL(dev);
+                }
+
+                // Flush any pending deferred signal immediately so GPU work from the
+                // previous frame completes before SL reconfigures.
+                UINT64 deferredVal = g_deferredSignalValue.load(std::memory_order_acquire);
+                if (deferredVal != 0 && g_State.fence) {
+                    ID3D12CommandQueue* sigQueue = g_deferredSignalQueue.load(std::memory_order_acquire);
+                    if (!sigQueue)
+                        sigQueue = gameQueue;
+                    if (sigQueue) {
+                        HRESULT hr = sigQueue->Signal(g_State.fence, deferredVal);
+                        if (SUCCEEDED(hr)) {
+                            int allocIdx = g_deferredSignalAllocIdx.load(std::memory_order_acquire);
+                            g_State.currentFenceValue = deferredVal;
+                            if (allocIdx >= 0 && allocIdx < (int)g_State.fenceValues.size())
+                                g_State.fenceValues[allocIdx] = deferredVal;
+                        }
+                    }
+                    g_deferredSignalValue.store(0, std::memory_order_release);
+                    g_deferredSignalAllocIdx.store(-1, std::memory_order_release);
+                    g_deferredSignalQueue.store(nullptr, std::memory_order_release);
+                }
             }
         }
         bool skipOverlayDraw = false;
@@ -18829,9 +18764,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         if (g_FGTransitionCooldown > 0) {
             const bool bypassProtectedOfficialFFXStartupDrawCooldown =
                 ce::dx12_overlay_policy::ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(
-                    protectedOfficialFFXStartupOverlayOnly,
-                    protectedOfficialFFXStartupQueueRef != nullptr &&
-                        gameQueue == protectedOfficialFFXStartupQueueRef) ||
+                    protectedOfficialFFXStartupOverlayOnly, protectedOfficialFFXStartupQueueRef != nullptr &&
+                                                                gameQueue == protectedOfficialFFXStartupQueueRef) ||
                 // DORMANT 2D-menu FSR arming: the STREAMLINE_NO_FG->FSR_FG transition arms a 60-frame
                 // cooldown (session 20260616_024418) that blanks the menu overlay for ~450 ms and then the
                 // first post-cooldown submit (on stale RTVs) removed the device. We now rebuild against the
@@ -18853,8 +18787,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     appCallbackBridgeFSRActive);
             if (bypassProtectedOfficialFFXStartupDrawCooldown) {
                 static std::atomic<int> s_protectedFFXDrawCooldownBypassLogCount{0};
-                const int logCount =
-                    s_protectedFFXDrawCooldownBypassLogCount.fetch_add(1, std::memory_order_relaxed);
+                const int logCount = s_protectedFFXDrawCooldownBypassLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 10 || (logCount % 300) == 0) {
                     HookLogImportant(
                         "DX12: Bypassing FG transition draw cooldown for protected official FFX overlay-only path "
@@ -18873,8 +18806,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         "(oldCooldown=%d queue=%p scQueue=%p fsrApi=%d noCallback=%d log=%d)",
                         g_FGTransitionCooldown, gameQueue, transitionSwapchainQueue,
                         g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
-                        g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) ? 1 : 0,
-                        logCount + 1);
+                        g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) ? 1 : 0, logCount + 1);
                 }
                 // The transition bookkeeping (GPU drain, queue/heuristic resets)
                 // already ran in the arming block; only the multi-frame draw
@@ -19168,8 +19100,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                     HookLogImportant(
                                         "DX12: PostSL warmup stall service %s "
                                         "(stableFrames=%d stallCount=%d threshold=%d serviceLog=%d)",
-                                        serviced ? "rendered via retained callback" : "could not run",
-                                        stableFrames, stallCount, kPostSLWarmupThreshold, s_warmupServiceLog + 1);
+                                        serviced ? "rendered via retained callback" : "could not run", stableFrames,
+                                        stallCount, kPostSLWarmupThreshold, s_warmupServiceLog + 1);
                                 }
                                 ++s_warmupServiceLog;
                             }
@@ -19270,12 +19202,10 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             // first normal-route frame after the route change can't false-arm either.
             const bool runtimeOwnedOverlayRoute =
                 ce::dx12_overlay_policy::ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute(
-                    g_FGRuntimeOwnsSwapchain, g_FGCompat.IsFSRFGApiActive(),
-                    HookHasRuntimeOwnedNativeFGPresentPath(),
+                    g_FGRuntimeOwnsSwapchain, g_FGCompat.IsFSRFGApiActive(), HookHasRuntimeOwnedNativeFGPresentPath(),
                     ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup());
 
-            if (s_lastProcessFrameTime.QuadPart != 0 && !runtimeOwnedOverlayRoute &&
-                !s_lastSceneBlockSuppressedRoute) {
+            if (s_lastProcessFrameTime.QuadPart != 0 && !runtimeOwnedOverlayRoute && !s_lastSceneBlockSuppressedRoute) {
                 LARGE_INTEGER freq;
                 QueryPerformanceFrequency(&freq);
                 double deltaMs =
@@ -19529,8 +19459,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             (!processHasForeground || recentFocusTransition)) {
                             RequestFocusLossDeviceRemovalDumpOnce(
                                 "D3D12 focus-loss device removal before overlay render",
-                                devCheck->GetDeviceRemovedReason(), s_WrappedPresentFocusLossContext,
-                                foregroundWindow, foregroundPid, frameDesc.OutputWindow, currentProcessId, gameQueue);
+                                devCheck->GetDeviceRemovedReason(), s_WrappedPresentFocusLossContext, foregroundWindow,
+                                foregroundPid, frameDesc.OutputWindow, currentProcessId, gameQueue);
                         }
                         g_State.overlayInit = false;
                         CleanupRTVs();
@@ -19599,8 +19529,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                             WriteOverlayGpuBreadcrumb(list, kOverlayBcStart);
                             const bool preserveLiveStartupOverlayDuringInactiveSL =
                                 ShouldPreserveLiveStartupOverlayDuringRuntimeInactiveStreamlineHandoff();
-                            const bool hasPendingStartupOverlayResources =
-                                g_OverlayAdapter.HasPendingDX12Resources();
+                            const bool hasPendingStartupOverlayResources = g_OverlayAdapter.HasPendingDX12Resources();
                             const bool shouldPrimeStartupOverlayResources =
                                 s_startupOverlayResourcePrimeMs == 0 &&
                                 ce::dx12_overlay_policy::ShouldPrimeStartupOverlayResources(
@@ -19921,133 +19850,140 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     // After ECL, both resources decay back to COMMON.
                                                     if (EnsureOffscreenRT(dev, g_State.cachedWidth,
                                                                           g_State.cachedHeight, g_State.format)) {
-                                                    // Step 1: Copy backbuffer → offscreen RT
-                                                    // bb: implicit promotion COMMON→COPY_SOURCE (no explicit barrier!)
-                                                    // offscreen: explicit COMMON→COPY_DEST
-                                                    {
-                                                        D3D12_RESOURCE_BARRIER b = {};
-                                                        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                                                        b.Transition.pResource = g_State.offscreenRT;
-                                                        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-                                                        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-                                                        b.Transition.Subresource =
-                                                            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                                                        list->ResourceBarrier(1, &b);
-                                                    }
-                                                    {
-                                                        D3D12_TEXTURE_COPY_LOCATION src = {};
-                                                        src.pResource = bb;
-                                                        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                                                        src.SubresourceIndex = 0;
-                                                        D3D12_TEXTURE_COPY_LOCATION dst = {};
-                                                        dst.pResource = g_State.offscreenRT;
-                                                        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                                                        dst.SubresourceIndex = 0;
-                                                        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-                                                    }
+                                                        // Step 1: Copy backbuffer → offscreen RT
+                                                        // bb: implicit promotion COMMON→COPY_SOURCE (no explicit
+                                                        // barrier!) offscreen: explicit COMMON→COPY_DEST
+                                                        {
+                                                            D3D12_RESOURCE_BARRIER b = {};
+                                                            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                                                            b.Transition.pResource = g_State.offscreenRT;
+                                                            b.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+                                                            b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+                                                            b.Transition.Subresource =
+                                                                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                                                            list->ResourceBarrier(1, &b);
+                                                        }
+                                                        {
+                                                            D3D12_TEXTURE_COPY_LOCATION src = {};
+                                                            src.pResource = bb;
+                                                            src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                                                            src.SubresourceIndex = 0;
+                                                            D3D12_TEXTURE_COPY_LOCATION dst = {};
+                                                            dst.pResource = g_State.offscreenRT;
+                                                            dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                                                            dst.SubresourceIndex = 0;
+                                                            list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+                                                        }
 
-                                                    // Step 2: Barrier offscreen COPY_DEST → RENDER_TARGET
-                                                    {
-                                                        D3D12_RESOURCE_BARRIER b = {};
-                                                        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                                                        b.Transition.pResource = g_State.offscreenRT;
-                                                        b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-                                                        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                                                        b.Transition.Subresource =
-                                                            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                                                        list->ResourceBarrier(1, &b);
-                                                    }
+                                                        // Step 2: Barrier offscreen COPY_DEST → RENDER_TARGET
+                                                        {
+                                                            D3D12_RESOURCE_BARRIER b = {};
+                                                            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                                                            b.Transition.pResource = g_State.offscreenRT;
+                                                            b.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+                                                            b.Transition.StateAfter =
+                                                                D3D12_RESOURCE_STATE_RENDER_TARGET;
+                                                            b.Transition.Subresource =
+                                                                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                                                            list->ResourceBarrier(1, &b);
+                                                        }
 
-                                                    // Step 3: Render overlay to offscreen RT (on top of game frame)
-                                                    D3D12_CPU_DESCRIPTOR_HANDLE offRtv =
-                                                        g_State.offscreenRtvHeap->GetCPUDescriptorHandleForHeapStart();
-                                                    if (useTextureDx12Backend) {
-                                                        g_D3D11On12Adapter.SetDX12RenderTarget(list,
-                                                                                               (void*)offRtv.ptr);
-                                                        g_D3D11On12Adapter.SetDX12UploadSlotFence(
-                                                            g_State.fence,
-                                                            ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
-                                                                slFGActive || g_FGCompat.IsFGActive(),
-                                                                g_State.fence != nullptr, g_State.currentFenceValue,
-                                                                protectedOfficialFFXStartupOverlayOnly));
+                                                        // Step 3: Render overlay to offscreen RT (on top of game frame)
+                                                        D3D12_CPU_DESCRIPTOR_HANDLE offRtv =
+                                                            g_State.offscreenRtvHeap
+                                                                ->GetCPUDescriptorHandleForHeapStart();
+                                                        if (useTextureDx12Backend) {
+                                                            g_D3D11On12Adapter.SetDX12RenderTarget(list,
+                                                                                                   (void*)offRtv.ptr);
+                                                            g_D3D11On12Adapter.SetDX12UploadSlotFence(
+                                                                g_State.fence,
+                                                                ce::dx12_overlay_policy::
+                                                                    DecideOverlayUploadSlotGuardValue(
+                                                                        slFGActive || g_FGCompat.IsFGActive(),
+                                                                        g_State.fence != nullptr,
+                                                                        g_State.currentFenceValue,
+                                                                        protectedOfficialFFXStartupOverlayOnly));
+                                                        } else {
+                                                            s_descFreeCmdList = list;
+                                                            s_descFreeRtv = offRtv;
+                                                            // Publish the per-slot UPLOAD-ring guard.  Non-FG path:
+                                                            // this frame's overlay work is signaled on g_State.fence at
+                                                            // currentFenceValue+1, so the backend can pace slot reuse
+                                                            // to the GPU.  FG paths use a separate completion fence
+                                                            // (g_State.fence does not advance to this value) and
+                                                            // already synchronize per frame, so disable the guard there
+                                                            // to avoid a stale-value wait.
+                                                            s_descFreeSlotFence = g_State.fence;
+                                                            s_descFreeSlotGuardValue = ce::dx12_overlay_policy::
+                                                                DecideOverlayUploadSlotGuardValue(
+                                                                    slFGActive || g_FGCompat.IsFGActive(),
+                                                                    g_State.fence != nullptr, g_State.currentFenceValue,
+                                                                    protectedOfficialFFXStartupOverlayOnly);
+                                                        }
+
+                                                        g_D3D11On12Adapter.SetIPCClient(g_IPC);
+                                                        const auto metricsBinding =
+                                                            ce::dx12_overlay_policy::DecideOverlayMetricsBinding(
+                                                                isRealFrame);
+                                                        if (metricsBinding.bindMetrics) {
+                                                            g_D3D11On12Adapter.SetMetrics(
+                                                                DXGIShared::GetPerformanceMetrics());
+                                                        }
+                                                        if (metricsBinding.refreshFrameMetadata) {
+                                                            const char* api = "DX12";
+                                                            g_D3D11On12Adapter.SetGraphicsAPI(api);
+                                                        }
+                                                        g_D3D11On12Adapter.RenderOverlay(g_State.cachedWidth,
+                                                                                         g_State.cachedHeight);
+                                                        if (!useTextureDx12Backend) {
+                                                            s_descFreeCmdList = nullptr;
+                                                        }
+
+                                                        // Step 4: Barrier offscreen RT → COPY_SOURCE
+                                                        {
+                                                            D3D12_RESOURCE_BARRIER b = {};
+                                                            b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                                                            b.Transition.pResource = g_State.offscreenRT;
+                                                            b.Transition.StateBefore =
+                                                                D3D12_RESOURCE_STATE_RENDER_TARGET;
+                                                            b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+                                                            b.Transition.Subresource =
+                                                                D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                                                            list->ResourceBarrier(1, &b);
+                                                        }
+
+                                                        // Step 5: Copy offscreen → backbuffer
+                                                        // bb: implicit promotion COMMON→COPY_DEST (no explicit
+                                                        // barrier!)
+                                                        {
+                                                            D3D12_TEXTURE_COPY_LOCATION src = {};
+                                                            src.pResource = g_State.offscreenRT;
+                                                            src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                                                            src.SubresourceIndex = 0;
+                                                            D3D12_TEXTURE_COPY_LOCATION dst = {};
+                                                            dst.pResource = bb;
+                                                            dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                                                            dst.SubresourceIndex = 0;
+                                                            list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+                                                        }
+
+                                                        // After ECL: bb decays COPY_DEST→COMMON, offscreen decays
+                                                        // COPY_SOURCE→COMMON
+
+                                                        static int s_offscreenLog = 0;
+                                                        if (s_offscreenLog++ < 5) {
+                                                            HookLogImportant(
+                                                                "DX12: %s overlay via 2-copy compositing (bb=%p "
+                                                                "offRT=%p queue=%p)",
+                                                                offscreenReason, bb, g_State.offscreenRT, gameQueue);
+                                                        }
+                                                        usedPrimaryOverlayBackend = true;
+                                                        usedDescFree = !useTextureDx12Backend;
                                                     } else {
-                                                        s_descFreeCmdList = list;
-                                                        s_descFreeRtv = offRtv;
-                                                        // Publish the per-slot UPLOAD-ring guard.  Non-FG path: this
-                                                        // frame's overlay work is signaled on g_State.fence at
-                                                        // currentFenceValue+1, so the backend can pace slot reuse to the
-                                                        // GPU.  FG paths use a separate completion fence (g_State.fence
-                                                        // does not advance to this value) and already synchronize per
-                                                        // frame, so disable the guard there to avoid a stale-value wait.
-                                                        s_descFreeSlotFence = g_State.fence;
-                                                        s_descFreeSlotGuardValue =
-                                                            ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
-                                                                slFGActive || g_FGCompat.IsFGActive(),
-                                                                g_State.fence != nullptr, g_State.currentFenceValue,
-                                                                protectedOfficialFFXStartupOverlayOnly);
-                                                    }
-
-                                                    g_D3D11On12Adapter.SetIPCClient(g_IPC);
-                                                    const auto metricsBinding =
-                                                        ce::dx12_overlay_policy::DecideOverlayMetricsBinding(
-                                                            isRealFrame);
-                                                    if (metricsBinding.bindMetrics) {
-                                                        g_D3D11On12Adapter.SetMetrics(
-                                                            DXGIShared::GetPerformanceMetrics());
-                                                    }
-                                                    if (metricsBinding.refreshFrameMetadata) {
-                                                        const char* api = "DX12";
-                                                        g_D3D11On12Adapter.SetGraphicsAPI(api);
-                                                    }
-                                                    g_D3D11On12Adapter.RenderOverlay(g_State.cachedWidth,
-                                                                                     g_State.cachedHeight);
-                                                    if (!useTextureDx12Backend) {
-                                                        s_descFreeCmdList = nullptr;
-                                                    }
-
-                                                    // Step 4: Barrier offscreen RT → COPY_SOURCE
-                                                    {
-                                                        D3D12_RESOURCE_BARRIER b = {};
-                                                        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                                                        b.Transition.pResource = g_State.offscreenRT;
-                                                        b.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                                                        b.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
-                                                        b.Transition.Subresource =
-                                                            D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                                                        list->ResourceBarrier(1, &b);
-                                                    }
-
-                                                    // Step 5: Copy offscreen → backbuffer
-                                                    // bb: implicit promotion COMMON→COPY_DEST (no explicit barrier!)
-                                                    {
-                                                        D3D12_TEXTURE_COPY_LOCATION src = {};
-                                                        src.pResource = g_State.offscreenRT;
-                                                        src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                                                        src.SubresourceIndex = 0;
-                                                        D3D12_TEXTURE_COPY_LOCATION dst = {};
-                                                        dst.pResource = bb;
-                                                        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-                                                        dst.SubresourceIndex = 0;
-                                                        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-                                                    }
-
-                                                    // After ECL: bb decays COPY_DEST→COMMON, offscreen decays
-                                                    // COPY_SOURCE→COMMON
-
-                                                    static int s_offscreenLog = 0;
-                                                    if (s_offscreenLog++ < 5) {
                                                         HookLogImportant(
-                                                            "DX12: %s overlay via 2-copy compositing (bb=%p "
-                                                            "offRT=%p queue=%p)",
-                                                            offscreenReason, bb, g_State.offscreenRT, gameQueue);
-                                                    }
-                                                    usedPrimaryOverlayBackend = true;
-                                                    usedDescFree = !useTextureDx12Backend;
-                                                } else {
-                                                    HookLogImportant(
-                                                        "DX12: Failed to create offscreen RT for %s overlay; "
-                                                        "direct backbuffer fallback suppressed",
-                                                        offscreenReason);
+                                                            "DX12: Failed to create offscreen RT for %s overlay; "
+                                                            "direct backbuffer fallback suppressed",
+                                                            offscreenReason);
                                                     }
                                                 }
                                             } else {
@@ -20078,8 +20014,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                 }
 
                                                 if (useTextureDx12Backend) {
-                                                    g_D3D11On12Adapter.SetDX12RenderTarget(list,
-                                                                                           (void*)rtvHandle.ptr);
+                                                    g_D3D11On12Adapter.SetDX12RenderTarget(list, (void*)rtvHandle.ptr);
                                                     g_D3D11On12Adapter.SetDX12UploadSlotFence(
                                                         g_State.fence,
                                                         ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
@@ -20089,7 +20024,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                 } else {
                                                     s_descFreeCmdList = list;
                                                     s_descFreeRtv = rtvHandle;
-                                                    // Publish the per-slot UPLOAD-ring guard (see offscreen path above).
+                                                    // Publish the per-slot UPLOAD-ring guard (see offscreen path
+                                                    // above).
                                                     s_descFreeSlotFence = g_State.fence;
                                                     s_descFreeSlotGuardValue =
                                                         ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
@@ -20143,9 +20079,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                     if (!usedPrimaryOverlayBackend) {
                                         if (offscreenCompositeRequired) {
                                             static std::atomic<int> s_offscreenRequiredNoFallbackLogCount{0};
-                                            const int logCount =
-                                                s_offscreenRequiredNoFallbackLogCount.fetch_add(
-                                                    1, std::memory_order_relaxed);
+                                            const int logCount = s_offscreenRequiredNoFallbackLogCount.fetch_add(
+                                                1, std::memory_order_relaxed);
                                             if (logCount < 20 || (logCount % 300) == 0) {
                                                 HookLogImportant(
                                                     "DX12: Skipping direct backbuffer fallback because offscreen "
@@ -20191,12 +20126,14 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                         }
                                     }
 
-                                    const bool overlayDrawRecorded = usedPrimaryOverlayBackend || !offscreenCompositeRequired;
+                                    const bool overlayDrawRecorded =
+                                        usedPrimaryOverlayBackend || !offscreenCompositeRequired;
                                     QueryPerformanceCounter(&perfRecord);
 
                                     // GPU-breadcrumb: stamp the END of CE's overlay command list. If the GPU reaches
                                     // this marker but ffxQuery still wedges, CE's GPU work is NOT the stall (look to a
-                                    // fence/CPU deadlock or AMD's own work); if it stops earlier, CE's list is the stall.
+                                    // fence/CPU deadlock or AMD's own work); if it stops earlier, CE's list is the
+                                    // stall.
                                     WriteOverlayGpuBreadcrumb(list, kOverlayBcBeforeClose);
 
                                     HRESULT closeHr = list->Close();
@@ -20330,14 +20267,14 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                 s_eclPathLogCount++;
                                                 const char* path = (!useDedicated && realECL && !isSLWrapperECL)
                                                                        ? "realECL"
-                                                   : origECL ? "origECL"
-                                                             : "vtable";
+                                                                   : origECL ? "origECL"
+                                                                             : "vtable";
                                                 const bool pathIsD3D12Module =
                                                     (!useDedicated && realECL && !isSLWrapperECL)
                                                         ? true
-                                                        : (origECL ? IsD3D12ModuleAddress(reinterpret_cast<void*>(
-                                                                         origECL))
-                                                                   : false);
+                                                        : (origECL
+                                                               ? IsD3D12ModuleAddress(reinterpret_cast<void*>(origECL))
+                                                               : false);
                                                 HookLogImportant(
                                                     "DX12: ECL path=%s (eclQ=%p realECL=%p origECL=%p "
                                                     "dedicated=%d slWrapper=%d directD3D12=%d scQ=%p origGame=%p)",
@@ -20446,9 +20383,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     "devRemoved=0x%08X tid=0x%04X)",
                                                     s_reinitSubmitCount, eclQueue, usedDescFree ? 1 : 0,
                                                     usedRealECL ? 1 : 0, submitPathIsD3D12Module ? 1 : 0,
-                                                    offscreenCompositeRequired ? 1 : 0,
-                                                    startupOverlayPresent ? 1 : 0, bb, bufferIdx, (unsigned)devHrR,
-                                                    GetCurrentThreadId());
+                                                    offscreenCompositeRequired ? 1 : 0, startupOverlayPresent ? 1 : 0,
+                                                    bb, bufferIdx, (unsigned)devHrR, GetCurrentThreadId());
                                                 if (FAILED(devHrR)) {
                                                     HookLogImportant("DX12: DEVICE REMOVED after reinit submit #%d!",
                                                                      s_reinitSubmitCount);
@@ -20502,8 +20438,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                             }
                                             const bool steamDeferredOverlaySubmit =
                                                 g_deferOverlaySubmitToSteamECL && !useDedicated;
-                                            const bool focusLossImmediateFence =
-                                                ce::dx12_overlay_policy::ShouldSignalD3D12FocusLossOverlayFenceImmediately(
+                                            const bool focusLossImmediateFence = ce::dx12_overlay_policy::
+                                                ShouldSignalD3D12FocusLossOverlayFenceImmediately(
                                                     presentContext.valid, !frameDesc.Windowed, processHasForeground,
                                                     iconicWindow, zeroSizedSwapchain, true, deviceLostForFence,
                                                     anyFGForFence, runtimeOwnedPresentation, useDedicated,
@@ -20513,8 +20449,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                             if (!focusLossImmediateFence && presentContext.valid &&
                                                 !processHasForeground) {
                                                 static std::atomic<int> s_focusImmediateSkipLogCount{0};
-                                                const int logCount =
-                                                    s_focusImmediateSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+                                                const int logCount = s_focusImmediateSkipLogCount.fetch_add(
+                                                    1, std::memory_order_relaxed);
                                                 if (logCount < 40 || (logCount % 300) == 0) {
                                                     HookLog(
                                                         "DX12: Focus-loss immediate overlay fence skipped (%s "
@@ -20524,22 +20460,22 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                         "directD3D12=%d descFree=%d offscreen=%d)",
                                                         DescribeFocusLossImmediateFenceSkip(
                                                             presentContext.valid, !frameDesc.Windowed,
-                                                            processHasForeground, iconicWindow, zeroSizedSwapchain, true,
-                                                            deviceLostForFence, anyFGForFence, runtimeOwnedPresentation,
-                                                            useDedicated, steamDeferredOverlaySubmit,
-                                                            g_State.fence != nullptr, g_State.fenceEvent != nullptr,
-                                                            eclQueue != nullptr, next),
+                                                            processHasForeground, iconicWindow, zeroSizedSwapchain,
+                                                            true, deviceLostForFence, anyFGForFence,
+                                                            runtimeOwnedPresentation, useDedicated,
+                                                            steamDeferredOverlaySubmit, g_State.fence != nullptr,
+                                                            g_State.fenceEvent != nullptr, eclQueue != nullptr, next),
                                                         presentContext.presentName ? presentContext.presentName
                                                                                    : "Present",
                                                         presentContext.callCount, eclQueue, foregroundWindow,
                                                         foregroundPid, frameDesc.OutputWindow, currentProcessId,
                                                         presentContext.syncInterval, presentContext.presentFlags,
                                                         (unsigned long long)next, g_State.fenceEvent,
-                                                        anyFGForFence ? 1 : 0,
-                                                        runtimeOwnedPresentation ? 1 : 0, useDedicated ? 1 : 0,
-                                                        steamDeferredOverlaySubmit ? 1 : 0, deviceLostForFence ? 1 : 0,
-                                                        usedRealECL ? 1 : 0, submitPathIsD3D12Module ? 1 : 0,
-                                                        usedDescFree ? 1 : 0, offscreenCompositeRequired ? 1 : 0);
+                                                        anyFGForFence ? 1 : 0, runtimeOwnedPresentation ? 1 : 0,
+                                                        useDedicated ? 1 : 0, steamDeferredOverlaySubmit ? 1 : 0,
+                                                        deviceLostForFence ? 1 : 0, usedRealECL ? 1 : 0,
+                                                        submitPathIsD3D12Module ? 1 : 0, usedDescFree ? 1 : 0,
+                                                        offscreenCompositeRequired ? 1 : 0);
                                                 }
                                             }
 
@@ -20568,10 +20504,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                             (unsigned long long)completedValue, foregroundWindow,
                                                             foregroundPid, frameDesc.OutputWindow, currentProcessId,
                                                             presentContext.syncInterval, presentContext.presentFlags,
-                                                            usedRealECL ? 1 : 0,
-                                                            submitPathIsD3D12Module ? 1 : 0,
-                                                            usedDescFree ? 1 : 0,
-                                                            offscreenCompositeRequired ? 1 : 0);
+                                                            usedRealECL ? 1 : 0, submitPathIsD3D12Module ? 1 : 0,
+                                                            usedDescFree ? 1 : 0, offscreenCompositeRequired ? 1 : 0);
                                                     }
                                                     WaitForFocusLossImmediateOverlayFenceBeforePresent(
                                                         focusLossImmediateFence, true, g_State.fence,
@@ -20615,7 +20549,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                 // draw commands on the GPU when the FG runtime
                                                 // processes the backbuffer, causing D3D device
                                                 // removal (ERR_GFX_STATE).
-                                                SignalPtr realSignal = g_RealD3D12Signal.load(std::memory_order_acquire);
+                                                SignalPtr realSignal =
+                                                    g_RealD3D12Signal.load(std::memory_order_acquire);
                                                 ID3D12Fence* completionFence =
                                                     g_OverlayCompletionFence.load(std::memory_order_acquire);
                                                 if (realSignal && completionFence) {
@@ -20624,9 +20559,11 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     HRESULT compSigHr = realSignal(eclQueue, completionFence, compVal);
                                                     if (SUCCEEDED(compSigHr)) {
                                                         if (completionFence->GetCompletedValue() < compVal) {
-                                                            HANDLE compEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+                                                            HANDLE compEvent =
+                                                                CreateEventW(nullptr, FALSE, FALSE, nullptr);
                                                             if (compEvent) {
-                                                                completionFence->SetEventOnCompletion(compVal, compEvent);
+                                                                completionFence->SetEventOnCompletion(compVal,
+                                                                                                      compEvent);
                                                                 WaitForSingleObject(compEvent, 2000);
                                                                 CloseHandle(compEvent);
                                                             }
@@ -20675,9 +20612,9 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     "flags=0x%08X fgActive=%d runtimeOwned=%d); no same-frame fence "
                                                     "sync is possible",
                                                     DescribeFocusLossImmediateFenceSkip(
-                                                        presentContext.valid, !frameDesc.Windowed,
-                                                        processHasForeground, iconicWindow, zeroSizedSwapchain, true,
-                                                        false, anyFGForFence, runtimeOwnedPresentation, useDedicated,
+                                                        presentContext.valid, !frameDesc.Windowed, processHasForeground,
+                                                        iconicWindow, zeroSizedSwapchain, true, false, anyFGForFence,
+                                                        runtimeOwnedPresentation, useDedicated,
                                                         g_deferOverlaySubmitToSteamECL && !useDedicated, false,
                                                         g_State.fenceEvent != nullptr, eclQueue != nullptr, 0),
                                                     presentContext.presentName ? presentContext.presentName : "Present",
@@ -20861,8 +20798,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
             // so the overlay keeps drawing on origGame below (capture/FFX-retry/probe side
             // effects remain quiesced). Attribute this present accordingly instead of as a blank.
             NoteDX12OverlayCoverageGate("protected-ffx-dormant-origgame-draw");
-            const int logCount =
-                s_protectedOfficialFFXProcessFrameSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+            const int logCount = s_protectedOfficialFFXProcessFrameSkipLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 10 || (logCount % 300) == 0) {
                 HookLogImportant(
                     "DX12: Rendering overlay on origGame during dormant protected official FFX startup — "
@@ -20874,8 +20810,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
             }
         } else if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
             NoteDX12OverlayCoverageGate("protected-ffx-startup-quiesce");
-            const int logCount =
-                s_protectedOfficialFFXProcessFrameSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+            const int logCount = s_protectedOfficialFFXProcessFrameSkipLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 300) == 0) {
                 HookLogImportant(
                     "DX12: Protected official FFX startup pending - keeping ProcessFrame tracking-only while "
@@ -21041,9 +20976,8 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     const bool coverageInheritsFGComposedOverlay =
         ce::dx12_streamline_ui_overlay::HasActiveCoverage() ||
         (overlayBackendBoundToCurrentSwapchain &&
-         (isInterpolatedFrame ||
-          (streamlineFGRunning &&
-           DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr)));
+         (isInterpolatedFrame || (streamlineFGRunning && DXGIShared::g_PostSLOverlayRenderCallback.load(
+                                                             std::memory_order_acquire) != nullptr)));
     auto overlayCoverageGuard = ce::make_scope_guard([coverageInheritsFGComposedOverlay]() {
         AccountPresentForOverlayCoverage(coverageInheritsFGComposedOverlay, "ProcessFrameExternal");
     });
@@ -21057,8 +20991,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
         const auto runtimeMode = g_FGCompat.GetRuntimeMode();
         const bool runtimeOwnedStreamlineNoFG =
             ce::dx12_overlay_policy::ShouldSkipFreshRuntimeOwnedStreamlineNoFGPresentProcessing(
-                g_FGRuntimeOwnsSwapchain, streamlineFGRunning, runtimeMode, 1,
-                std::numeric_limits<uint32_t>::max());
+                g_FGRuntimeOwnsSwapchain, streamlineFGRunning, runtimeMode, 1, std::numeric_limits<uint32_t>::max());
         if (runtimeOwnedStreamlineNoFG) {
             const uint32_t presentCount =
                 g_RuntimeOwnedStreamlineNoFGPresentCount.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -21067,8 +21000,8 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
                 HookLogImportant(
                     "DX12: Runtime-owned Streamline no-FG swapchain present progress #%u "
                     "(settlePresents=%u scQueue=%p origGame=%p cmdQ=%p)",
-                    presentCount, kRuntimeOwnedStreamlineNoFGSettlePresents, currentSwapchainQueue,
-                    g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire));
+                    presentCount, kRuntimeOwnedStreamlineNoFGSettlePresents, currentSwapchainQueue, g_OriginalGameQueue,
+                    g_CommandQueue.load(std::memory_order_acquire));
             }
             if (ce::dx12_overlay_policy::ShouldSkipFreshRuntimeOwnedStreamlineNoFGPresentProcessing(
                     g_FGRuntimeOwnsSwapchain, streamlineFGRunning, runtimeMode, presentCount,
@@ -21082,16 +21015,15 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
                         "DX12: Skipping overlay/capture processing during fresh runtime-owned Streamline "
                         "no-FG handoff "
                         "(presentCount=%u settlePresents=%u sc=%p scQueue=%p origGame=%p cmdQ=%p runtime=%s)",
-                        presentCount, kRuntimeOwnedStreamlineNoFGSettlePresents, pSwapChain,
-                        currentSwapchainQueue, g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire),
+                        presentCount, kRuntimeOwnedStreamlineNoFGSettlePresents, pSwapChain, currentSwapchainQueue,
+                        g_OriginalGameQueue, g_CommandQueue.load(std::memory_order_acquire),
                         ce::fg_runtime::GetRuntimeModeName(runtimeMode));
                 }
                 sc3->Release();
                 return;
             }
         } else {
-            const uint32_t previous =
-                g_RuntimeOwnedStreamlineNoFGPresentCount.exchange(0, std::memory_order_acq_rel);
+            const uint32_t previous = g_RuntimeOwnedStreamlineNoFGPresentCount.exchange(0, std::memory_order_acq_rel);
             if (previous != 0) {
                 HookLogImportant(
                     "DX12: Runtime-owned Streamline no-FG settle counter reset after %u present(s) "
@@ -21304,8 +21236,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
             isInterpolatedFrame, hasDedicatedQueue, heuristicFSRFG, g_FGRuntimeOwnsSwapchain, streamlineFGRunning,
             recentStreamlineTeardown, postFSRNonFGRecovery, g_FGCompat.GetRuntimeMode(),
             currentSwapchainQueue != nullptr &&
-                g_PostNativeFSROffGameSwapchainRecoveryQueue.load(std::memory_order_acquire) ==
-                    currentSwapchainQueue,
+                g_PostNativeFSROffGameSwapchainRecoveryQueue.load(std::memory_order_acquire) == currentSwapchainQueue,
             g_FGTransitionCooldown > 0)) {
         NoteDX12OverlayCoverageGate("zero-ecl-skip");
         sc3->Release();
@@ -21558,8 +21489,8 @@ extern "C" __declspec(dllexport) bool DX12_WaitForFocusLossOverlayFenceAfterPres
             "(present=%s#%d fence=%llu completed=%llu queue=%p fg=%p/%lu game=%p/%lu "
             "sync=%u flags=0x%08X presentHr=0x%08X timeoutMs=%lu gle=%lu pendingHold=%d)",
             DX12WaitResultName(waitResult), waitResult, ctx.presentName ? ctx.presentName : "Present", ctx.callCount,
-            (unsigned long long)info.fenceValue, (unsigned long long)completedValue, info.queue,
-            ctx.foregroundWindow, ctx.foregroundPid, ctx.gameWindow, ctx.processId, ctx.syncInterval, ctx.presentFlags,
+            (unsigned long long)info.fenceValue, (unsigned long long)completedValue, info.queue, ctx.foregroundWindow,
+            ctx.foregroundPid, ctx.gameWindow, ctx.processId, ctx.syncInterval, ctx.presentFlags,
             (unsigned)ctx.presentHr, kFocusLossOverlayFenceWaitMs, waitLastError, completed ? 0 : 1);
     }
 
@@ -21578,8 +21509,8 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
     if (!g_State.fence) {
         static std::atomic<int> s_noFenceLog{0};
         if (ShouldLogOverlayCompletionWaitDiagnostic(s_noFenceLog)) {
-            HookLog("DX12: Overlay completion wait skipped (no fence; event=%p currentFence=%llu)",
-                    g_State.fenceEvent, (unsigned long long)g_State.currentFenceValue);
+            HookLog("DX12: Overlay completion wait skipped (no fence; event=%p currentFence=%llu)", g_State.fenceEvent,
+                    (unsigned long long)g_State.currentFenceValue);
         }
         return;
     }
@@ -21588,8 +21519,8 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
     if (fenceValueToWait == 0) {
         static std::atomic<int> s_noFenceValueLog{0};
         if (ShouldLogOverlayCompletionWaitDiagnostic(s_noFenceValueLog)) {
-            HookLog("DX12: Overlay completion wait skipped (no signaled fence value; fence=%p event=%p)",
-                    g_State.fence, g_State.fenceEvent);
+            HookLog("DX12: Overlay completion wait skipped (no signaled fence value; fence=%p event=%p)", g_State.fence,
+                    g_State.fenceEvent);
         }
         return;
     }
@@ -21630,10 +21561,9 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
         return;
     }
 
-    const char* waitMode = usingDedicatedQueue ? "dedicated-queue"
-                           : (!processHasForeground)
-                               ? "focus-loss"
-                               : (overlayModule ? overlayModule : "single-queue");
+    const char* waitMode = usingDedicatedQueue       ? "dedicated-queue"
+                           : (!processHasForeground) ? "focus-loss"
+                                                     : (overlayModule ? overlayModule : "single-queue");
     const bool focusLossMode = !usingDedicatedQueue && !processHasForeground;
 
     {
@@ -21658,9 +21588,10 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
         }
         static std::atomic<int> s_setEventFailureLog{0};
         if (ShouldLogOverlayCompletionWaitDiagnostic(s_setEventFailureLog)) {
-            HookLog("DX12: Overlay completion wait skipped (SetEventOnCompletion failed hr=0x%08X fence=%llu event=%p "
-                    "mode=%s pendingHold=%d)",
-                    setHr, (unsigned long long)fenceValueToWait, g_State.fenceEvent, waitMode, focusLossMode ? 1 : 0);
+            HookLog(
+                "DX12: Overlay completion wait skipped (SetEventOnCompletion failed hr=0x%08X fence=%llu event=%p "
+                "mode=%s pendingHold=%d)",
+                setHr, (unsigned long long)fenceValueToWait, g_State.fenceEvent, waitMode, focusLossMode ? 1 : 0);
         }
         return;
     }
@@ -21673,8 +21604,8 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
             g_FocusLossPendingOverlayFenceValue.store(fenceValueToWait, std::memory_order_release);
         }
         if (s_waitLogCount.fetch_add(1, std::memory_order_relaxed) < 50) {
-            HookLog("DX12: Overlay completion wait timed out for %s mode (fence=%llu pendingHold=%d)",
-                    waitMode, (unsigned long long)fenceValueToWait, focusLossMode ? 1 : 0);
+            HookLog("DX12: Overlay completion wait timed out for %s mode (fence=%llu pendingHold=%d)", waitMode,
+                    (unsigned long long)fenceValueToWait, focusLossMode ? 1 : 0);
         }
     } else if (waitHr == WAIT_OBJECT_0) {
         if (focusLossMode) {
@@ -21682,16 +21613,16 @@ extern "C" __declspec(dllexport) void DX12_WaitForOverlayCompletion(ID3D12Comman
             ClearFocusLossPendingOverlayFence("pre-Present wait completed", fenceValueToWait, completedVal);
         }
         if (s_waitLogCount.fetch_add(1, std::memory_order_relaxed) < 50) {
-            HookLog("DX12: Overlay completion wait finished for %s mode (fence=%llu)",
-                    waitMode, (unsigned long long)fenceValueToWait);
+            HookLog("DX12: Overlay completion wait finished for %s mode (fence=%llu)", waitMode,
+                    (unsigned long long)fenceValueToWait);
         }
     } else {
         if (focusLossMode) {
             g_FocusLossPendingOverlayFenceValue.store(fenceValueToWait, std::memory_order_release);
         }
         if (s_waitLogCount.fetch_add(1, std::memory_order_relaxed) < 50) {
-            HookLog("DX12: Overlay completion wait returned result=%lu for %s mode (fence=%llu pendingHold=%d)",
-                    waitHr, waitMode, (unsigned long long)fenceValueToWait, focusLossMode ? 1 : 0);
+            HookLog("DX12: Overlay completion wait returned result=%lu for %s mode (fence=%llu pendingHold=%d)", waitHr,
+                    waitMode, (unsigned long long)fenceValueToWait, focusLossMode ? 1 : 0);
         }
     }
 }
@@ -21768,11 +21699,9 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         static std::atomic<ULONGLONG> s_eclWindowStartMs{0};
         double prevMax = s_eclWindowMaxMs.load(std::memory_order_relaxed);
         while (diagEclMs > prevMax &&
-               !s_eclWindowMaxMs.compare_exchange_weak(prevMax, diagEclMs, std::memory_order_relaxed)) {
-        }
+               !s_eclWindowMaxMs.compare_exchange_weak(prevMax, diagEclMs, std::memory_order_relaxed)) {}
         // Approximate sum via double CAS-free add (relaxed; diagnostic only).
-        s_eclWindowSumMs.store(s_eclWindowSumMs.load(std::memory_order_relaxed) + diagEclMs,
-                               std::memory_order_relaxed);
+        s_eclWindowSumMs.store(s_eclWindowSumMs.load(std::memory_order_relaxed) + diagEclMs, std::memory_order_relaxed);
         const uint32_t windowCount = s_eclWindowCount.fetch_add(1, std::memory_order_relaxed) + 1;
         const ULONGLONG nowMs = GetTickCount64();
         ULONGLONG windowStart = s_eclWindowStartMs.load(std::memory_order_relaxed);
@@ -21800,8 +21729,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 const double winMax = s_eclWindowMaxMs.exchange(0.0, std::memory_order_relaxed);
                 const double winSum = s_eclWindowSumMs.exchange(0.0, std::memory_order_relaxed);
                 const uint32_t winCnt = s_eclWindowCount.exchange(0, std::memory_order_relaxed);
-                HookLogImportant("DX12 DIAG: ECL timing/1s: count=%u maxMs=%.2f avgMs=%.3f tid=0x%04X", winCnt,
-                                 winMax, winCnt ? (winSum / (double)winCnt) : 0.0, GetCurrentThreadId());
+                HookLogImportant("DX12 DIAG: ECL timing/1s: count=%u maxMs=%.2f avgMs=%.3f tid=0x%04X", winCnt, winMax,
+                                 winCnt ? (winSum / (double)winCnt) : 0.0, GetCurrentThreadId());
             }
         }
     });
@@ -21853,8 +21782,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     // overlay is composited separately immediately before proxy Present on its target-compatible owner queue,
     // so nothing is appended to arbitrary FFX-runtime ECLs here. The game's own ECLs on g_OriginalGameQueue
     // still get full processing (for frame counting).
-    if (g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) &&
-        pThis != g_OriginalGameQueue) {
+    if (g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) && pThis != g_OriginalGameQueue) {
         ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
         if (original) {
             original(pThis, NumCommandLists, ppCommandLists);
@@ -21973,8 +21901,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 "(queue=%p lists=%u eclProgress=%u)",
                 pThis, NumCommandLists, progressCount);
         } else if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
-            const int logCount =
-                s_protectedOfficialFFXECLPassThroughLogCount.fetch_add(1, std::memory_order_relaxed);
+            const int logCount = s_protectedOfficialFFXECLPassThroughLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 1024) == 0) {
                 HookLogImportant(
                     "DX12: Protected official FFX startup pending - passing ExecuteCommandLists through without CE "
@@ -22033,8 +21960,8 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                     "(activationPending=%d callbackInstalled=%d confirmed=%d nativeFGPath=%d apiFSR=%d "
                     "retained=%p last=%p log=%d)",
                     activationPending ? 1 : 0, callbackInstalled ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
-                    nativeFSRPresentPathActive ? 1 : 0, nativeFSRActive ? 1 : 0,
-                    g_StreamlineStartupActivationSwapchain, g_LastSwapChain, logCount + 1);
+                    nativeFSRPresentPathActive ? 1 : 0, nativeFSRActive ? 1 : 0, g_StreamlineStartupActivationSwapchain,
+                    g_LastSwapChain, logCount + 1);
             }
         }
         const bool safePostFSRBootstrapPath = HookHasSafePostFSRBootstrapPath();
@@ -22401,16 +22328,16 @@ __attribute__((noinline)) void DX12_HookQueueVTable(ID3D12CommandQueue* queue) {
     char executeModulePath[MAX_PATH] = {};
     const bool vtableModuleResolved =
         ce::overlay_compat::TryGetModulePathFromCodeAddress(vtbl, vtableModulePath, sizeof(vtableModulePath));
-    const bool executeModuleResolved =
-        vtbl[10] && ce::overlay_compat::TryGetModulePathFromCodeAddress(vtbl[10], executeModulePath,
-                                                                         sizeof(executeModulePath));
+    const bool executeModuleResolved = vtbl[10] && ce::overlay_compat::TryGetModulePathFromCodeAddress(
+                                                       vtbl[10], executeModulePath, sizeof(executeModulePath));
     const bool vtableFromStreamline =
         vtableModuleResolved && ce::overlay_compat::IsStreamlineFrameGenerationModulePath(vtableModulePath);
     const bool executeFromStreamline =
         executeModuleResolved && ce::overlay_compat::IsStreamlineFrameGenerationModulePath(executeModulePath);
     const bool vtableFromFFX =
         vtableModuleResolved && ce::overlay_compat::IsFFXFrameGenerationModulePath(vtableModulePath);
-    const bool executeFromFFX = executeModuleResolved && ce::overlay_compat::IsFFXFrameGenerationModulePath(executeModulePath);
+    const bool executeFromFFX =
+        executeModuleResolved && ce::overlay_compat::IsFFXFrameGenerationModulePath(executeModulePath);
     if (ce::dx12_overlay_policy::ShouldSkipCommandQueueVTableHookForFrameGenerationRuntimeModule(
             vtableFromStreamline, executeFromStreamline, vtableFromFFX, executeFromFFX)) {
         static std::atomic<int> s_fgRuntimeQueueVTableSkipLogCount{0};
@@ -22689,12 +22616,11 @@ HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwnd(IDXGIFactory2* pThis, IUn
     HRESULT hr = oCreateSwapChainForHwnd(pThis, pDevice, hWnd, pDesc, pFDesc, pOut, ppSC);
     if (Dx12TraceEnabled()) {
         char d[224];
-        _snprintf_s(d, sizeof(d), _TRUNCATE,
-                    "dev=%p hwnd=%p w=%u h=%u fmt=%d count=%u effect=%d flags=0x%X -> sc=%p hr=0x%08X", (void*)pDevice,
-                    (void*)hWnd, pDesc ? pDesc->Width : 0, pDesc ? pDesc->Height : 0, pDesc ? (int)pDesc->Format : -1,
-                    pDesc ? pDesc->BufferCount : 0, pDesc ? (int)pDesc->SwapEffect : -1,
-                    pDesc ? (unsigned)pDesc->Flags : 0u, (SUCCEEDED(hr) && ppSC) ? (void*)*ppSC : nullptr,
-                    (unsigned)hr);
+        _snprintf_s(
+            d, sizeof(d), _TRUNCATE, "dev=%p hwnd=%p w=%u h=%u fmt=%d count=%u effect=%d flags=0x%X -> sc=%p hr=0x%08X",
+            (void*)pDevice, (void*)hWnd, pDesc ? pDesc->Width : 0, pDesc ? pDesc->Height : 0,
+            pDesc ? (int)pDesc->Format : -1, pDesc ? pDesc->BufferCount : 0, pDesc ? (int)pDesc->SwapEffect : -1,
+            pDesc ? (unsigned)pDesc->Flags : 0u, (SUCCEEDED(hr) && ppSC) ? (void*)*ppSC : nullptr, (unsigned)hr);
         Dx12TraceLog("CreateSwapChainForHwnd", d);
     }
 
@@ -22847,7 +22773,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateCommittedResource(ID3D12Device* device,
 }
 
 HRESULT STDMETHODCALLTYPE DetourTraceCreateCommandQueue(ID3D12Device* device, const D3D12_COMMAND_QUEUE_DESC* pDesc,
-                                                      REFIID riid, void** ppQueue) {
+                                                        REFIID riid, void** ppQueue) {
     HRESULT hr = oTraceCreateCommandQueue ? oTraceCreateCommandQueue(device, pDesc, riid, ppQueue) : E_FAIL;
     if (Dx12TraceEnabled()) {
         static std::atomic<int> s_n{0};
@@ -22866,7 +22792,7 @@ HRESULT STDMETHODCALLTYPE DetourTraceCreateCommandQueue(ID3D12Device* device, co
 }
 
 HRESULT STDMETHODCALLTYPE DetourTraceCreateDescriptorHeap(ID3D12Device* device, const D3D12_DESCRIPTOR_HEAP_DESC* pDesc,
-                                                        REFIID riid, void** ppHeap) {
+                                                          REFIID riid, void** ppHeap) {
     HRESULT hr = oTraceCreateDescriptorHeap ? oTraceCreateDescriptorHeap(device, pDesc, riid, ppHeap) : E_FAIL;
     if (Dx12TraceEnabled()) {
         static std::atomic<int> s_n{0};
@@ -22900,13 +22826,13 @@ HRESULT STDMETHODCALLTYPE DetourTraceCommandQueueSignal(ID3D12CommandQueue* queu
 
 void DX12Hook::Shutdown() {
     LogOverlayCoverageSummary("shutdown summary");
-    HookLogImportant("DX12: Shutdown — cleaning up FFX state (runtime=%s overlayInit=%d syncInit=%d "
-                     "fgOwned=%d nativeFGPath=%d progressResolved=%d callbackBridges=%zu)",
-                     ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()),
-                     g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0,
-                     HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0,
-                     g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire) ? 1 : 0,
-                     g_FFXPresentCallbackBridges.size());
+    HookLogImportant(
+        "DX12: Shutdown — cleaning up FFX state (runtime=%s overlayInit=%d syncInit=%d "
+        "fgOwned=%d nativeFGPath=%d progressResolved=%d callbackBridges=%zu)",
+        ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode()), g_State.overlayInit ? 1 : 0,
+        g_State.syncInit ? 1 : 0, g_FGRuntimeOwnsSwapchain ? 1 : 0, HookHasRuntimeOwnedNativeFGPresentPath() ? 1 : 0,
+        g_OfficialFFXRuntimeOwnedPresentPathAssumedAfterProgress.load(std::memory_order_acquire) ? 1 : 0,
+        g_FFXPresentCallbackBridges.size());
 
     // Stop new proxy prework and drain callbacks that entered before quiescing before releasing any queue,
     // renderer, or cached UI-resource state they can touch.

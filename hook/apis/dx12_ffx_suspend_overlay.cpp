@@ -57,8 +57,7 @@ bool SameComObject(IUnknown* left, IUnknown* right) {
     ComPtr<IUnknown> leftIdentity;
     ComPtr<IUnknown> rightIdentity;
     return SUCCEEDED(left->QueryInterface(IID_PPV_ARGS(&leftIdentity))) &&
-           SUCCEEDED(right->QueryInterface(IID_PPV_ARGS(&rightIdentity))) &&
-           leftIdentity.Get() == rightIdentity.Get();
+           SUCCEEDED(right->QueryInterface(IID_PPV_ARGS(&rightIdentity))) && leftIdentity.Get() == rightIdentity.Get();
 }
 
 struct FrameSlot {
@@ -110,9 +109,8 @@ public:
         for (auto& slot : slots) {
             hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&slot.allocator));
             if (FAILED(hr) || !slot.allocator) {
-                HookLogImportant(
-                    "DX12: FSR-suspend owner-queue overlay failed to create command allocator hr=0x%08X",
-                    static_cast<unsigned>(hr));
+                HookLogImportant("DX12: FSR-suspend owner-queue overlay failed to create command allocator hr=0x%08X",
+                                 static_cast<unsigned>(hr));
                 return false;
             }
             hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, slot.allocator.Get(), nullptr,
@@ -138,8 +136,7 @@ public:
         return true;
     }
 
-    bool Matches(ID3D12Device* candidateDevice, ID3D12CommandQueue* candidateQueue,
-                 DXGI_FORMAT candidateFormat) const {
+    bool Matches(ID3D12Device* candidateDevice, ID3D12CommandQueue* candidateQueue, DXGI_FORMAT candidateFormat) const {
         return SameComObject(device.Get(), candidateDevice) && queue.Get() == candidateQueue &&
                format == candidateFormat;
     }
@@ -165,8 +162,8 @@ public:
     }
 
     RenderResult Render(ID3D12Resource* targetResource, UINT backBufferIndex, D3D12_RESOURCE_STATES targetState,
-                        bool clearTransparent, const char* routeName,
-                        SubmitCommandListCallback submitCommandList, SignalFenceCallback signalFence) {
+                        bool clearTransparent, const char* routeName, SubmitCommandListCallback submitCommandList,
+                        SignalFenceCallback signalFence) {
         if (!targetResource || !submitCommandList || !signalFence || !DeviceHealthy()) {
             return RenderResult::kFailed;
         }
@@ -204,8 +201,8 @@ public:
         const HRESULT listHr = SUCCEEDED(allocatorHr) ? slot.commandList->Reset(slot.allocator.Get(), nullptr) : E_FAIL;
         if (FAILED(allocatorHr) || FAILED(listHr)) {
             HookLogImportant(
-                "DX12: FSR-suspend owner-queue overlay reset failed (slot=%zu allocHr=0x%08X listHr=0x%08X)",
-                slotIndex, static_cast<unsigned>(allocatorHr), static_cast<unsigned>(listHr));
+                "DX12: FSR-suspend owner-queue overlay reset failed (slot=%zu allocHr=0x%08X listHr=0x%08X)", slotIndex,
+                static_cast<unsigned>(allocatorHr), static_cast<unsigned>(listHr));
             return RenderResult::kFailed;
         }
 
@@ -237,8 +234,8 @@ public:
         const HRESULT closeHr = slot.commandList->Close();
         if (FAILED(closeHr)) {
             HookLogImportant(
-                "DX12: FSR-suspend owner-queue overlay command-list Close failed (slot=%zu hr=0x%08X bb=%p)",
-                slotIndex, static_cast<unsigned>(closeHr), targetResource);
+                "DX12: FSR-suspend owner-queue overlay command-list Close failed (slot=%zu hr=0x%08X bb=%p)", slotIndex,
+                static_cast<unsigned>(closeHr), targetResource);
             return RenderResult::kFailed;
         }
         slot.inFlightTarget = targetResource;
@@ -279,9 +276,8 @@ public:
                 queue.Get(), static_cast<unsigned long long>(frameCount),
                 static_cast<unsigned long long>(submitFenceValue),
                 static_cast<unsigned long long>(fence->GetCompletedValue()), backBufferIndex, targetResource,
-                static_cast<unsigned long long>(targetDesc.Width), targetDesc.Height,
-                static_cast<int>(format), hdr ? 1 : 0, slotIndex, routeName ? routeName : "unknown",
-                clearTransparent ? 1 : 0, logCount + 1);
+                static_cast<unsigned long long>(targetDesc.Width), targetDesc.Height, static_cast<int>(format),
+                hdr ? 1 : 0, slotIndex, routeName ? routeName : "unknown", clearTransparent ? 1 : 0, logCount + 1);
         }
         return RenderResult::kRendered;
     }
@@ -333,9 +329,8 @@ void RetireState(std::unique_ptr<RendererState>& state, const char* reason) {
 }  // namespace
 
 bool Render(const RenderRequest& request) {
-    if (g_ShuttingDown.load(std::memory_order_acquire) || !request.proxySwapChain ||
-        !request.presentationQueue || !request.submitCommandList ||
-        !request.signalFence) {
+    if (g_ShuttingDown.load(std::memory_order_acquire) || !request.proxySwapChain || !request.presentationQueue ||
+        !request.submitCommandList || !request.signalFence) {
         return false;
     }
 
@@ -365,8 +360,7 @@ bool Render(const RenderRequest& request) {
 
     const D3D12_RESOURCE_DESC desc = targetResource->GetDesc();
     if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width == 0 || desc.Height == 0 ||
-        desc.SampleDesc.Count != 1 ||
-        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0) {
+        desc.SampleDesc.Count != 1 || (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0) {
         return false;
     }
     const DXGI_FORMAT rtvFormat = ResolveRtvFormat(desc.Format);
@@ -432,9 +426,9 @@ bool Render(const RenderRequest& request) {
         state->UpdateHdr(request.hdr);
     }
 
-    const auto result = state->Render(targetResource.Get(), backBufferIndex, request.targetState,
-                                      request.clearTransparent, request.routeName, request.submitCommandList,
-                                      request.signalFence);
+    const auto result =
+        state->Render(targetResource.Get(), backBufferIndex, request.targetState, request.clearTransparent,
+                      request.routeName, request.submitCommandList, request.signalFence);
     if (result == RendererState::RenderResult::kRenderedCompletionUnknown) {
         RetireState(state, "completion Signal failure");
         return true;

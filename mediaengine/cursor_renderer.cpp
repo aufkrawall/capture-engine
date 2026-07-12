@@ -536,8 +536,7 @@ bool CursorRenderer::UpdateCursorTexture(bool allowHandleVisibilityFallback) {
 }
 
 bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int frameWidth, int frameHeight,
-                                        int captureOriginX, int captureOriginY,
-                                        bool allowHandleVisibilityFallback) {
+                                        int captureOriginX, int captureOriginY, bool allowHandleVisibilityFallback) {
     if (!resourcesCreated || !device || !context) {
         return false;
     }

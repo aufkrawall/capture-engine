@@ -5,12 +5,12 @@
  */
 
 #include "overlay_adapter.h"
+#include "../../common/capture_pipeline_policy.h"
 #include "custom_font.h"
 #include "custom_overlay.h"
 #include "fg_detection.h"
 #include "hook_common.h"
 #include "perf_logger.h"
-#include "../../common/capture_pipeline_policy.h"
 
 #include <cfloat>  // FLT_MAX
 
@@ -1184,8 +1184,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         // Suppress encoder warnings while WGC is source/scheduler limited so
         // variable-FPS games do not look like encoder failures.
         uint32_t overloadFlags = mem.runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
-        const uint32_t captureHealthFlags =
-            mem.runtimeState.wgcCaptureHealthFlags.load(std::memory_order_relaxed);
+        const uint32_t captureHealthFlags = mem.runtimeState.wgcCaptureHealthFlags.load(std::memory_order_relaxed);
         uint64_t nowTick = GetTickCount64();
         const uint32_t warningKind = ce::capture_policy::SelectWgcOverlayWarningKind(overloadFlags, captureHealthFlags);
         if (ce::capture_policy::IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
@@ -1203,7 +1202,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             const uint32_t targetFps = mem.runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
             const uint32_t sustainFpsX100 = mem.runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
             const std::string overloadLabel = FormatEncoderOverloadLabel(sustainFpsX100, targetFps);
-            std::snprintf(buf, sizeof(buf), "%s %02d:%02d:%02d %s", recLabel, hours, minutes, seconds, overloadLabel.c_str());
+            std::snprintf(buf, sizeof(buf), "%s %02d:%02d:%02d %s", recLabel, hours, minutes, seconds,
+                          overloadLabel.c_str());
             renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);
         } else {
             // Normal recording display

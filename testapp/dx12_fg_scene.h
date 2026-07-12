@@ -194,7 +194,7 @@ struct SceneCamera {
 
 class SceneRenderer {
 public:
-    static constexpr UINT kFrameCount = 4;  // >= kMaxSwapChainBuffers ceiling
+    static constexpr UINT kFrameCount = 4;       // >= kMaxSwapChainBuffers ceiling
     static constexpr UINT kObjectsPerFrame = 2;  // floor + cube
 
     bool valid() const {
@@ -259,8 +259,7 @@ inline ComPtr<ID3D12Resource> SceneRenderer::CreateUploadBuffer(ID3D12Device* de
 
     ComPtr<ID3D12Resource> resource;
     if (FAILED(device->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc,
-                                               D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                                               IID_PPV_ARGS(&resource)))) {
+                                               D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&resource)))) {
         return nullptr;
     }
     if (initialData) {
@@ -406,7 +405,8 @@ inline bool SceneRenderer::Initialize(ID3D12Device* device, DXGI_FORMAT colorFor
         "    lit = lerp(lit, float3(0.58, 0.66, 0.80), fog);\n"
         "    o.color = float4(lit, 1.0);\n"
         "    float2 curUV = float2(i.curClip.x / i.curClip.w * 0.5 + 0.5, -i.curClip.y / i.curClip.w * 0.5 + 0.5);\n"
-        "    float2 prevUV = float2(i.prevClip.x / i.prevClip.w * 0.5 + 0.5, -i.prevClip.y / i.prevClip.w * 0.5 + 0.5);\n"
+        "    float2 prevUV = float2(i.prevClip.x / i.prevClip.w * 0.5 + 0.5, -i.prevClip.y / i.prevClip.w * 0.5 + "
+        "0.5);\n"
         "    o.motion = prevUV - curUV;\n"
         "    return o;\n"
         "}\n";
@@ -465,14 +465,49 @@ inline bool SceneRenderer::Initialize(ID3D12Device* device, DXGI_FORMAT colorFor
     };
     static const uint16_t kIndices[] = {
         // Floor (verts 0..3).
-        0, 1, 2, 0, 2, 3,
+        0,
+        1,
+        2,
+        0,
+        2,
+        3,
         // Cube (0-based; drawn with BaseVertexLocation = 4).
-        0, 1, 2, 0, 2, 3,  // back
-        4, 6, 5, 4, 7, 6,  // front
-        4, 5, 1, 4, 1, 0,  // bottom
-        3, 2, 6, 3, 6, 7,  // top
-        4, 0, 3, 4, 3, 7,  // left
-        1, 5, 6, 1, 6, 2,  // right
+        0,
+        1,
+        2,
+        0,
+        2,
+        3,  // back
+        4,
+        6,
+        5,
+        4,
+        7,
+        6,  // front
+        4,
+        5,
+        1,
+        4,
+        1,
+        0,  // bottom
+        3,
+        2,
+        6,
+        3,
+        6,
+        7,  // top
+        4,
+        0,
+        3,
+        4,
+        3,
+        7,  // left
+        1,
+        5,
+        6,
+        1,
+        6,
+        2,  // right
     };
     floorIndexCount_ = 6;
     cubeIndexCount_ = _countof(kIndices) - 6;
@@ -541,9 +576,8 @@ inline void SceneRenderer::Render(ID3D12GraphicsCommandList* commandList, D3D12_
 
     const float sweep = 2.6f * std::sin(timeSeconds * 0.55f);
     const float bob = 0.85f + 0.18f * std::sin(timeSeconds * 1.7f);
-    const Mat4 cubeModel =
-        Mat4Mul(Mat4Mul(Mat4RotationX(timeSeconds * 0.7f), Mat4RotationY(timeSeconds * 0.9f)),
-                Mat4Translation(sweep, bob, 1.4f));
+    const Mat4 cubeModel = Mat4Mul(Mat4Mul(Mat4RotationX(timeSeconds * 0.7f), Mat4RotationY(timeSeconds * 0.9f)),
+                                   Mat4Translation(sweep, bob, 1.4f));
     const Mat4 floorModel = Mat4Identity();
     const float fogFar = 70.0f;
 

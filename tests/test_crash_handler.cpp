@@ -134,8 +134,7 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("External dump storm threshold reached"), std::string::npos);
     EXPECT_NE(contents.find("Explicit native FSR OFF plus origGame swapchain return ending runtime-owned native-FG"),
               std::string::npos);
-    EXPECT_NE(contents.find("Native FSR configure without DX12 present-callback bridge"),
-              std::string::npos);
+    EXPECT_NE(contents.find("Native FSR configure without DX12 present-callback bridge"), std::string::npos);
     EXPECT_NE(
         contents.find("Native FSR disabled startup-arming configure forwarded without CE present-callback bridge"),
         std::string::npos);
@@ -150,8 +149,7 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
               std::string::npos);
     EXPECT_NE(contents.find("Protected official FFX startup pending - keeping ProcessFrame tracking-only"),
               std::string::npos);
-    EXPECT_NE(contents.find("Protected official FFX startup suppressing separate overlay GPU work"),
-              std::string::npos);
+    EXPECT_NE(contents.find("Protected official FFX startup suppressing separate overlay GPU work"), std::string::npos);
     EXPECT_NE(contents.find("Preserving overlay backend across protected official FFX startup swapchain change"),
               std::string::npos);
     EXPECT_NE(contents.find("Preserving swapchain descriptor for authoritative FG runtime create"), std::string::npos);
@@ -159,13 +157,11 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
               std::string::npos);
     EXPECT_NE(contents.find("Protected official FFX startup has sustained frame progress but remains quiesced"),
               std::string::npos);
-    EXPECT_NE(contents.find("progress-resolved official FFX runtime-owned Present path assumption"),
+    EXPECT_NE(contents.find("progress-resolved official FFX runtime-owned Present path assumption"), std::string::npos);
+    EXPECT_NE(contents.find("normal overlay fallback is unsafe for this native FSR handoff"), std::string::npos);
+    EXPECT_NE(contents.find("direct ffxConfigure/present-callback proof"), std::string::npos);
+    EXPECT_NE(contents.find("Protected official FFX startup immediately quiesced Streamline/PostSL"),
               std::string::npos);
-    EXPECT_NE(contents.find("normal overlay fallback is unsafe for this native FSR handoff"),
-              std::string::npos);
-    EXPECT_NE(contents.find("direct ffxConfigure/present-callback proof"),
-              std::string::npos);
-    EXPECT_NE(contents.find("Protected official FFX startup immediately quiesced Streamline/PostSL"), std::string::npos);
     EXPECT_NE(contents.find("Continuing DX12 overlay submissions while startup-overlay compatibility window is active"),
               std::string::npos);
     EXPECT_NE(contents.find("FFX Hook: Using IAT/dynamic hooks for protected official FFX module"), std::string::npos);
@@ -227,14 +223,9 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
 }
 
 TEST(FreezeWatchdogPolicyTest, BackgroundFreezeSuppressionKeepsRuntimePresentationMonitored) {
-    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, false, false,
-                                                                                          false));
-    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, false, true,
-                                                                                           false));
-    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, true, false,
-                                                                                           false));
-    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, false, false,
-                                                                                           true));
-    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(true, false, false,
-                                                                                           false));
+    EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, false, false, false));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, false, true, false));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, true, false, false));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, false, false, true));
+    EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(true, false, false, false));
 }

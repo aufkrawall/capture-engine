@@ -258,9 +258,9 @@ inline std::string MakeRenderEndpointCacheKey(const std::string& deviceId, int s
                                               int bitsPerSample, int blockAlign, uint32_t channelMask,
                                               uint64_t defaultPeriod100ns, uint64_t minPeriod100ns) {
     return SanitizeCacheToken(deviceId) + "|sr" + std::to_string(sampleRate) + "|ch" + std::to_string(channels) +
-           "|bits" + std::to_string(bitsPerSample) + "|align" + std::to_string(blockAlign) +
-           "|mask" + std::to_string(channelMask) + "|period" + std::to_string(defaultPeriod100ns) +
-           "|min" + std::to_string(minPeriod100ns);
+           "|bits" + std::to_string(bitsPerSample) + "|align" + std::to_string(blockAlign) + "|mask" +
+           std::to_string(channelMask) + "|period" + std::to_string(defaultPeriod100ns) + "|min" +
+           std::to_string(minPeriod100ns);
 }
 
 inline bool LookupLatencyCache(const std::vector<LatencyCacheEntry>& entries, const std::string& key, double* outMs) {

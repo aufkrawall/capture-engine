@@ -58,8 +58,7 @@ bool QueryLiveMappedDriveRemote(wchar_t driveLetter, std::wstring& remoteRoot, D
         return false;
     }
 
-    auto wnetGetConnection =
-        reinterpret_cast<WNetGetConnectionWFn>(GetProcAddress(mpr, "WNetGetConnectionW"));
+    auto wnetGetConnection = reinterpret_cast<WNetGetConnectionWFn>(GetProcAddress(mpr, "WNetGetConnectionW"));
     if (!wnetGetConnection) {
         status = ERROR_PROC_NOT_FOUND;
         return false;
@@ -166,7 +165,8 @@ MappedDriveResolution ResolveMappedDrivePath(const std::filesystem::path& path) 
     if (QueryRegistryMappedDriveRemote(result.driveLetter, remoteRoot, result.registryStatus)) {
         result.path = ReplaceDriveRootWithRemotePath(path, remoteRoot);
         result.changed = result.path != path;
-        result.source = result.changed ? MappedDriveResolutionSource::RegistryMapping : MappedDriveResolutionSource::None;
+        result.source =
+            result.changed ? MappedDriveResolutionSource::RegistryMapping : MappedDriveResolutionSource::None;
     }
     return result;
 }

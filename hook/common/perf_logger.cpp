@@ -112,7 +112,8 @@ void PerfLogger::LogFrame(const FrameMetrics& metrics) {
         lastLoggedQpcUs_ = metrics.qpcUs;
     }
 
-    fprintf(file_, "%llu,%lld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%u,%d,%d,%d,%d,%s,%lld\n",
+    fprintf(file_,
+            "%llu,%lld,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%u,%d,%d,%d,%d,%s,%lld\n",
             (unsigned long long)frameNum, (long long)metrics.qpcUs, metrics.totalUs, metrics.overlayUs,
             metrics.captureUs, metrics.deviceInitUs, metrics.prerenderWaitUs, metrics.fpsLimitWaitUs,
             metrics.fenceWaitUs, metrics.cmdListResetUs, metrics.renderUs, metrics.executeUs, metrics.stretchRectUs,

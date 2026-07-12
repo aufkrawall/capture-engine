@@ -27,8 +27,7 @@ inline void CompleteInjectFrameRingSlot(FrameRingBuffer& ring, uint32_t ringInde
     for (uint32_t attempts = 0; attempts < static_cast<uint32_t>(FRAME_RING_SIZE); ++attempts) {
         uint32_t current = ring.readIndex.load(std::memory_order_acquire);
         const uint32_t published = ring.writeIndex.load(std::memory_order_acquire);
-        if (current == published ||
-            ring.slots[current % FRAME_RING_SIZE].valid.load(std::memory_order_acquire) != 0) {
+        if (current == published || ring.slots[current % FRAME_RING_SIZE].valid.load(std::memory_order_acquire) != 0) {
             break;
         }
         ring.readIndex.compare_exchange_weak(current, current + 1, std::memory_order_release,
@@ -45,7 +44,8 @@ public:
     InjectFrameRingLease& operator=(const InjectFrameRingLease&) = delete;
 
     InjectFrameRingLease(InjectFrameRingLease&& other) noexcept
-        : state_(std::move(other.state_)), ringIndex_(other.ringIndex_) {
+        : state_(std::move(other.state_)),
+          ringIndex_(other.ringIndex_) {
         other.ringIndex_ = 0;
     }
 
@@ -77,7 +77,8 @@ private:
     friend class InjectFrameRingLeaseState;
 
     InjectFrameRingLease(std::shared_ptr<InjectFrameRingLeaseState> state, uint32_t ringIndex) noexcept
-        : state_(std::move(state)), ringIndex_(ringIndex) {}
+        : state_(std::move(state)),
+          ringIndex_(ringIndex) {}
 
     std::shared_ptr<InjectFrameRingLeaseState> state_;
     uint32_t ringIndex_ = 0;

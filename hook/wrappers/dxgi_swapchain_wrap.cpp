@@ -37,9 +37,11 @@ extern "C" __declspec(dllimport) bool DX12_WaitForFocusLossOverlayFenceAfterPres
 extern "C" __declspec(dllimport) void DX12_SetWrappedPresentFocusLossContext(const char* presentName, int callCount,
                                                                              UINT syncInterval, UINT presentFlags);
 extern "C" __declspec(dllimport) void DX12_ClearWrappedPresentFocusLossContext();
-extern "C" __declspec(dllimport) void DX12_NoteWrappedD3D12PresentResult(
-    const char* presentName, int callCount, UINT syncInterval, UINT presentFlags, HRESULT presentHr, BOOL isFullscreen,
-    BOOL isIconic, BOOL hasZeroSize, HWND gameWindow);
+extern "C" __declspec(dllimport) void DX12_NoteWrappedD3D12PresentResult(const char* presentName, int callCount,
+                                                                         UINT syncInterval, UINT presentFlags,
+                                                                         HRESULT presentHr, BOOL isFullscreen,
+                                                                         BOOL isIconic, BOOL hasZeroSize,
+                                                                         HWND gameWindow);
 
 // Query-based CPU prerender limit for D3D11 (implemented in dx11_hook.cpp)
 extern void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
@@ -69,9 +71,14 @@ class ScopedAvGuard {
         }
         return EXCEPTION_CONTINUE_SEARCH;
     }
+
 public:
-    ScopedAvGuard() { handle_ = AddVectoredExceptionHandler(1, Handler); }
-    ~ScopedAvGuard() { RemoveVectoredExceptionHandler(handle_); }
+    ScopedAvGuard() {
+        handle_ = AddVectoredExceptionHandler(1, Handler);
+    }
+    ~ScopedAvGuard() {
+        RemoveVectoredExceptionHandler(handle_);
+    }
 };
 
 #ifndef BUILDING_CAPTURE_HOOK
@@ -209,9 +216,8 @@ static bool ResolveCurrentProcessForeground(HWND* foregroundWindowOut, DWORD* fo
     return processHasForeground;
 }
 
-static ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo
-FlushDeferredDX12OverlaySignalAfterWrappedPresent(bool isD3D12, const char* presentName, int callCount,
-                                                  bool focusLostForSwapchain) {
+static ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo FlushDeferredDX12OverlaySignalAfterWrappedPresent(
+    bool isD3D12, const char* presentName, int callCount, bool focusLostForSwapchain) {
     ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo flushInfo = {};
     if (!ce::dx12_overlay_policy::ShouldFlushDeferredOverlaySignalAfterPresent(isD3D12)) {
         return flushInfo;
@@ -590,8 +596,8 @@ CWrapDXGISwapChain::~CWrapDXGISwapChain() {
     }
     // Remove wrapper↔real mapping and release final reference
     if (pRealToFree) {
-        if (ce::dx12_overlay_policy::ShouldClearSwapchainWrapperPrivateDataDuringWrapperDestructor(
-                wrapperReleasing, true)) {
+        if (ce::dx12_overlay_policy::ShouldClearSwapchainWrapperPrivateDataDuringWrapperDestructor(wrapperReleasing,
+                                                                                                   true)) {
             WrapperLog("SwapChain: Clearing wrapper private-data marker (wrapper=%p real=%p)", this, pRealToFree);
             ScopedAvGuard guard;
             pRealToFree->SetPrivateData(IID_CWrapDXGISwapChain, 0, nullptr);
@@ -738,9 +744,9 @@ void CWrapDXGISwapChain::ProbeD3D12FocusLossFrameLatencyAfterPresent(const char*
     const bool runtimeOwnedPresentation =
         DXGIShared::DoesFGRuntimeOwnSwapchain() || DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
 
-    const bool focusLossTelemetryCandidate =
-        m_IsD3D12 && !m_State.isFullscreen && !processHasForeground && !isIconic && !hasZeroSize &&
-        presentSucceeded && !frameGenerationActive && !runtimeOwnedPresentation;
+    const bool focusLossTelemetryCandidate = m_IsD3D12 && !m_State.isFullscreen && !processHasForeground && !isIconic &&
+                                             !hasZeroSize && presentSucceeded && !frameGenerationActive &&
+                                             !runtimeOwnedPresentation;
     HANDLE waitable = INVALID_HANDLE_VALUE;
     const bool hasFrameLatencyWaitable = waitable && waitable != INVALID_HANDLE_VALUE;
     const bool shouldWait = DXGIShared::ShouldWaitOnD3D12FocusLossFrameLatency(
@@ -758,10 +764,10 @@ void CWrapDXGISwapChain::ProbeD3D12FocusLossFrameLatencyAfterPresent(const char*
                     "zeroSize=%d fgActive=%d runtimeOwned=%d waitable=%p available=%d candidate=%d "
                     "reason=present-passthrough-v7)",
                     presentName, callCount, foregroundWindow, foregroundPid, m_hWnd, GetCurrentProcessId(),
-                    syncInterval, presentFlags, (unsigned)presentHr, m_State.isFullscreen ? 1 : 0,
-                    isIconic ? 1 : 0, hasZeroSize ? 1 : 0, frameGenerationActive ? 1 : 0,
-                    runtimeOwnedPresentation ? 1 : 0, hasFrameLatencyWaitable ? waitable : nullptr,
-                    hasFrameLatencyWaitable ? 1 : 0, focusLossTelemetryCandidate ? 1 : 0);
+                    syncInterval, presentFlags, (unsigned)presentHr, m_State.isFullscreen ? 1 : 0, isIconic ? 1 : 0,
+                    hasZeroSize ? 1 : 0, frameGenerationActive ? 1 : 0, runtimeOwnedPresentation ? 1 : 0,
+                    hasFrameLatencyWaitable ? waitable : nullptr, hasFrameLatencyWaitable ? 1 : 0,
+                    focusLossTelemetryCandidate ? 1 : 0);
             }
         }
         return;
@@ -778,8 +784,7 @@ void CWrapDXGISwapChain::ProbeD3D12FocusLossFrameLatencyAfterPresent(const char*
             "%s#%d: D3D12 focus-loss frame-latency waitable telemetry probe result=%s(0x%08lX) "
             "fg=%p/%lu ours=%p/%lu sync=%u flags=0x%08X waitable=%p available=1 timeoutMs=%lu gle=%lu",
             presentName, callCount, WaitResultName(waitResult), waitResult, foregroundWindow, foregroundPid, m_hWnd,
-            GetCurrentProcessId(), syncInterval, presentFlags, waitable, kFocusLossFrameLatencyProbeMs,
-            waitLastError);
+            GetCurrentProcessId(), syncInterval, presentFlags, waitable, kFocusLossFrameLatencyProbeMs, waitLastError);
     }
 }
 
@@ -970,10 +975,8 @@ void SetSwapchainWrapperShutdown() {
 // ============================================================================
 
 inline bool CWrapDXGISwapChain::IsWrapperZombie() const {
-    return m_Releasing.load(std::memory_order_acquire) ||
-           m_RefCount == 0 ||
-           m_DestructorCalled.load(std::memory_order_acquire) ||
-           g_WrapperShutdown.load(std::memory_order_acquire);
+    return m_Releasing.load(std::memory_order_acquire) || m_RefCount == 0 ||
+           m_DestructorCalled.load(std::memory_order_acquire) || g_WrapperShutdown.load(std::memory_order_acquire);
 }
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetPrivateData(REFGUID Name, UINT DataSize, const void* pData) {
@@ -1338,12 +1341,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
             const bool applyDoNotWait = DXGIShared::ShouldApplyUnfocusedFlipModelDoNotWait(
                 m_IsD3D12, m_State.isFullscreen, false, presentFlags);
             if (n == 0 || n % 300 == 0) {
-                WrapperLog(
-                    "Present#%d: Not foreground (fg=%p vs ours=%p), %s",
-                    callCount, foreground, m_hWnd,
-                    applyDoNotWait
-                        ? "SyncInterval ->0 + DO_NOT_WAIT (non-DX12 GPU throttle protection)"
-                        : "preserving Present pacing (D3D12 focus-loss safety)");
+                WrapperLog("Present#%d: Not foreground (fg=%p vs ours=%p), %s", callCount, foreground, m_hWnd,
+                           applyDoNotWait ? "SyncInterval ->0 + DO_NOT_WAIT (non-DX12 GPU throttle protection)"
+                                          : "preserving Present pacing (D3D12 focus-loss safety)");
             }
             if (applyDoNotWait) {
                 SyncInterval = 0;
@@ -1430,7 +1430,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::GetDesc(DXGI_SWAP_CHAIN_DESC* pDes
 static std::atomic<bool> s_ResizeInProgress{false};
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers(UINT BufferCount, UINT Width, UINT Height,
-                                                             DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+                                                            DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
     WrapperLog("CWrapDXGISwapChain::ResizeBuffers called - Width=%u, Height=%u", Width, Height);
     if (HasBackbufferCountOverride(GetActiveGraphicsConfig().backbufferCount))
         SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
@@ -1822,9 +1822,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetColorSpace1(DXGI_COLOR_SPACE_TY
 }
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers1(UINT BufferCount, UINT Width, UINT Height,
-                                                              DXGI_FORMAT Format, UINT SwapChainFlags,
-                                                              const UINT* pCreationNodeMask,
-                                                              IUnknown* const* ppPresentQueue) {
+                                                             DXGI_FORMAT Format, UINT SwapChainFlags,
+                                                             const UINT* pCreationNodeMask,
+                                                             IUnknown* const* ppPresentQueue) {
     if (HasBackbufferCountOverride(GetActiveGraphicsConfig().backbufferCount))
         SwapChainFlags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
     // RECURSION GUARD: Prevent infinite recursion with Steam/other overlays

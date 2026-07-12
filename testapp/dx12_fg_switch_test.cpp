@@ -18,8 +18,8 @@
 
 #include <atomic>
 #include <chrono>
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -354,28 +354,17 @@ struct GlyphPattern {
 
 static const uint8_t* GlyphRows(char ch) {
     static constexpr GlyphPattern kGlyphs[] = {
-        {'0', {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}},
-        {'1', {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}},
-        {'2', {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}},
-        {'3', {0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E}},
-        {':', {0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00}},
-        {'A', {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}},
-        {'C', {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E}},
-        {'D', {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E}},
-        {'E', {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F}},
-        {'F', {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10}},
-        {'G', {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E}},
-        {'H', {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}},
-        {'I', {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F}},
-        {'L', {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F}},
-        {'N', {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11}},
-        {'O', {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
-        {'P', {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10}},
-        {'R', {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11}},
-        {'S', {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E}},
-        {'T', {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}},
-        {'U', {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
-        {'V', {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04}},
+        {'0', {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}}, {'1', {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}},
+        {'2', {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}}, {'3', {0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E}},
+        {':', {0x00, 0x04, 0x04, 0x00, 0x04, 0x04, 0x00}}, {'A', {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}},
+        {'C', {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E}}, {'D', {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E}},
+        {'E', {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F}}, {'F', {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10}},
+        {'G', {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0E}}, {'H', {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}},
+        {'I', {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F}}, {'L', {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F}},
+        {'N', {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11}}, {'O', {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
+        {'P', {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10}}, {'R', {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11}},
+        {'S', {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E}}, {'T', {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}},
+        {'U', {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}}, {'V', {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04}},
     };
     static constexpr uint8_t kFallback[] = {0x0E, 0x11, 0x01, 0x06, 0x04, 0x00, 0x04};
 
@@ -513,10 +502,14 @@ static void DrawHudOverlay(ID3D12GraphicsCommandList* commandList, D3D12_CPU_DES
     DrawTextLine(commandList, rtvHandle, textColor, "100 HP", hudX, hudY, 5);
 
     auto drawRect = [&](LONG l, LONG t, LONG r, LONG b, const float* color) {
-        if (l < 0) l = 0;
-        if (t < 0) t = 0;
-        if (r > g_WindowWidth) r = g_WindowWidth;
-        if (b > g_WindowHeight) b = g_WindowHeight;
+        if (l < 0)
+            l = 0;
+        if (t < 0)
+            t = 0;
+        if (r > g_WindowWidth)
+            r = g_WindowWidth;
+        if (b > g_WindowHeight)
+            b = g_WindowHeight;
         if (l < r && t < b) {
             const D3D12_RECT rect = {l, t, r, b};
             commandList->ClearRenderTargetView(rtvHandle, color, 1, &rect);
@@ -610,8 +603,7 @@ static void RequestSuspensionToggle(FGMode mode, const char* reason) {
         "[FG-DIAG] Suspension toggle request: current=%s target=%s (%s) fsr=%d fsrSuspended=%d dlss=%d "
         "dlssSuspended=%d armed=%d\n",
         ModeName(g_CurrentMode), ModeName(mode), reason ? reason : "unknown", g_FsrEnabled ? 1 : 0,
-        g_FsrSuspended ? 1 : 0, g_DlssEnabled ? 1 : 0, g_DlssSuspended ? 1 : 0,
-        g_ModeSwitchingArmed ? 1 : 0);
+        g_FsrSuspended ? 1 : 0, g_DlssEnabled ? 1 : 0, g_DlssSuspended ? 1 : 0, g_ModeSwitchingArmed ? 1 : 0);
     testapp::LogFlush();
 }
 
@@ -637,8 +629,7 @@ static void ResetFSRPresentCallbackStressState(const char* reason) {
     g_FsrLastConfigureUsedPresentCallback = !g_FsrPresentCallbackStress;
     testapp::Log(
         "[FG-DIAG] FSR present-callback stress reset (%s): stress=%d interval=%ds initialRoute=%s frameID=%llu\n",
-        reason ? reason : "unknown", g_FsrPresentCallbackStress ? 1 : 0,
-        g_FsrPresentCallbackToggleIntervalSeconds,
+        reason ? reason : "unknown", g_FsrPresentCallbackStress ? 1 : 0, g_FsrPresentCallbackToggleIntervalSeconds,
         g_FsrLastConfigureUsedPresentCallback ? "app-callback" : "amd-internal",
         static_cast<unsigned long long>(g_FrameIdCounter));
 }
@@ -788,8 +779,8 @@ static bool LoadFSRRuntimeSerialized(const char* reason);
 static void UnloadFSRRuntimeSerialized(const char* reason);
 
 #include "dx12_fg_switch_common.inl"
-#include "dx12_fg_switch_streamline.inl"
 #include "dx12_fg_switch_fsr.inl"
+#include "dx12_fg_switch_streamline.inl"
 #include "dx12_fg_switch_swapchain.inl"
 #include "dx12_fg_switch_upscale.inl"
 
@@ -1037,8 +1028,7 @@ static bool ToggleCurrentFGSuspension(FGMode mode, const char* reason, UINT fram
     if (mode == FGMode::FSR) {
         if (!g_FfxCtx || !g_FsrInitialized) {
             testapp::Log("[FG-DIAG] Cannot toggle FSR suspension: ctx=%p initialized=%d enabled=%d suspended=%d\n",
-                         (void*)g_FfxCtx, g_FsrInitialized ? 1 : 0, g_FsrEnabled ? 1 : 0,
-                         g_FsrSuspended ? 1 : 0);
+                         (void*)g_FfxCtx, g_FsrInitialized ? 1 : 0, g_FsrEnabled ? 1 : 0, g_FsrSuspended ? 1 : 0);
             testapp::LogFlush();
             return false;
         }
@@ -1056,14 +1046,14 @@ static bool ToggleCurrentFGSuspension(FGMode mode, const char* reason, UINT fram
             }
         }
         testapp::Log("[FG-DIAG] Manual FSR suspension toggle: %s ok=%d frameID=%llu frameIndex=%u ctx=%p\n",
-                     enable ? "resume" : "suspend", ok ? 1 : 0,
-                     static_cast<unsigned long long>(g_FrameIdCounter), frameIndex, (void*)g_FfxCtx);
+                     enable ? "resume" : "suspend", ok ? 1 : 0, static_cast<unsigned long long>(g_FrameIdCounter),
+                     frameIndex, (void*)g_FfxCtx);
     } else if (mode == FGMode::DLSS) {
         if (!g_DlssInitialized || !g_SlDLSSGSetOptions) {
-            testapp::Log("[FG-DIAG] Cannot toggle DLSS suspension: initialized=%d setOptions=%p enabled=%d "
-                         "suspended=%d\n",
-                         g_DlssInitialized ? 1 : 0, (void*)g_SlDLSSGSetOptions, g_DlssEnabled ? 1 : 0,
-                         g_DlssSuspended ? 1 : 0);
+            testapp::Log(
+                "[FG-DIAG] Cannot toggle DLSS suspension: initialized=%d setOptions=%p enabled=%d "
+                "suspended=%d\n",
+                g_DlssInitialized ? 1 : 0, (void*)g_SlDLSSGSetOptions, g_DlssEnabled ? 1 : 0, g_DlssSuspended ? 1 : 0);
             testapp::LogFlush();
             return false;
         }
@@ -1078,15 +1068,16 @@ static bool ToggleCurrentFGSuspension(FGMode mode, const char* reason, UINT fram
             }
         }
         testapp::Log("[FG-DIAG] Manual DLSS suspension toggle: %s ok=%d frameID=%llu frameIndex=%u\n",
-                     enable ? "resume" : "suspend", ok ? 1 : 0,
-                     static_cast<unsigned long long>(g_FrameIdCounter), frameIndex);
+                     enable ? "resume" : "suspend", ok ? 1 : 0, static_cast<unsigned long long>(g_FrameIdCounter),
+                     frameIndex);
     }
 
     g_LastModeSwitchFrameId = g_FrameIdCounter;
-    testapp::Log("[FG-DIAG] Suspension toggle state: mode=%s ok=%d fsr=%d fsrSuspended=%d dlss=%d "
-                 "dlssSuspended=%d\n",
-                 ModeName(g_CurrentMode), ok ? 1 : 0, g_FsrEnabled ? 1 : 0, g_FsrSuspended ? 1 : 0,
-                 g_DlssEnabled ? 1 : 0, g_DlssSuspended ? 1 : 0);
+    testapp::Log(
+        "[FG-DIAG] Suspension toggle state: mode=%s ok=%d fsr=%d fsrSuspended=%d dlss=%d "
+        "dlssSuspended=%d\n",
+        ModeName(g_CurrentMode), ok ? 1 : 0, g_FsrEnabled ? 1 : 0, g_FsrSuspended ? 1 : 0, g_DlssEnabled ? 1 : 0,
+        g_DlssSuspended ? 1 : 0);
     UpdateWindowTitle();
     testapp::LogFlush();
     return ok;
@@ -1321,14 +1312,12 @@ static void RenderSwitchSceneInputs(float elapsedSeconds, LONG hudX, LONG hudY) 
     D3D12_RESOURCE_STATES& sceneTargetState = upscaling ? aux.sceneState : aux.hudlessState;
     const D3D12_CPU_DESCRIPTOR_HANDLE sceneRtv = upscaling ? aux.SceneRtv() : aux.HudlessRtv();
 
-    testapp::dx12fg::Transition(g_CommandList.Get(), sceneTarget, sceneTargetState,
-                                D3D12_RESOURCE_STATE_RENDER_TARGET);
+    testapp::dx12fg::Transition(g_CommandList.Get(), sceneTarget, sceneTargetState, D3D12_RESOURCE_STATE_RENDER_TARGET);
     testapp::dx12fg::Transition(g_CommandList.Get(), aux.uiColor.Get(), aux.uiState,
                                 D3D12_RESOURCE_STATE_RENDER_TARGET);
     testapp::dx12fg::Transition(g_CommandList.Get(), aux.motionVectors.Get(), aux.motionState,
                                 D3D12_RESOURCE_STATE_RENDER_TARGET);
-    testapp::dx12fg::Transition(g_CommandList.Get(), aux.depth.Get(), aux.depthState,
-                                D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    testapp::dx12fg::Transition(g_CommandList.Get(), aux.depth.Get(), aux.depthState, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
     // Clear the FG/upscaler inputs. The scene (sky + floor + cube) fills the scene color; motion
     // starts at zero (static parts stay zero); depth clears to far. The UI layer starts
@@ -1370,12 +1359,10 @@ static void RenderSwitchSceneInputs(float elapsedSeconds, LONG hudX, LONG hudY) 
     DrawStatusText(g_CommandList.Get(), aux.UiRtv());
 
     testapp::dx12fg::Transition(g_CommandList.Get(), sceneTarget, sceneTargetState, testapp::dx12fg::kColorReadState);
-    testapp::dx12fg::Transition(g_CommandList.Get(), aux.uiColor.Get(), aux.uiState,
-                                testapp::dx12fg::kColorReadState);
+    testapp::dx12fg::Transition(g_CommandList.Get(), aux.uiColor.Get(), aux.uiState, testapp::dx12fg::kColorReadState);
     testapp::dx12fg::Transition(g_CommandList.Get(), aux.motionVectors.Get(), aux.motionState,
                                 testapp::dx12fg::kColorReadState);
-    testapp::dx12fg::Transition(g_CommandList.Get(), aux.depth.Get(), aux.depthState,
-                                testapp::dx12fg::kDepthReadState);
+    testapp::dx12fg::Transition(g_CommandList.Get(), aux.depth.Get(), aux.depthState, testapp::dx12fg::kDepthReadState);
 }
 
 static void Render() {
@@ -1389,12 +1376,12 @@ static void Render() {
         if (deltaMs >= 25.0) {
             ++g_FramePacingSpikeCount;
             if (g_FramePacingSpikeCount <= 12 || (g_FramePacingSpikeCount % 30) == 0) {
-                testapp::Log("[FG-DIAG] Frame pacing spike frameID=%llu mode=%s deltaMs=%.2f "
-                             "asyncFSR=%d asyncSL=%d fsr=%d fsrSuspended=%d dlss=%d dlssSuspended=%d\n",
-                             static_cast<unsigned long long>(g_FrameIdCounter), ModeName(g_CurrentMode), deltaMs,
-                             g_FsrPreloadInProgress.load() ? 1 : 0,
-                             g_StreamlinePreloadInProgress.load() ? 1 : 0, g_FsrEnabled ? 1 : 0,
-                             g_FsrSuspended ? 1 : 0, g_DlssEnabled ? 1 : 0, g_DlssSuspended ? 1 : 0);
+                testapp::Log(
+                    "[FG-DIAG] Frame pacing spike frameID=%llu mode=%s deltaMs=%.2f "
+                    "asyncFSR=%d asyncSL=%d fsr=%d fsrSuspended=%d dlss=%d dlssSuspended=%d\n",
+                    static_cast<unsigned long long>(g_FrameIdCounter), ModeName(g_CurrentMode), deltaMs,
+                    g_FsrPreloadInProgress.load() ? 1 : 0, g_StreamlinePreloadInProgress.load() ? 1 : 0,
+                    g_FsrEnabled ? 1 : 0, g_FsrSuspended ? 1 : 0, g_DlssEnabled ? 1 : 0, g_DlssSuspended ? 1 : 0);
             }
         }
     } else {
@@ -1404,11 +1391,11 @@ static void Render() {
     float elapsed = std::chrono::duration<float>(now - g_StartTime).count();
 
     if (g_AutoExitSeconds > 0 && elapsed >= static_cast<float>(g_AutoExitSeconds)) {
-        testapp::Log("[FG-DIAG] Auto exit after %d seconds at frameID=%llu mode=%s fsr=%d fsrSuspended=%d "
-                     "dlss=%d dlssSuspended=%d\n",
-                     g_AutoExitSeconds, static_cast<unsigned long long>(g_FrameIdCounter), ModeName(g_CurrentMode),
-                     g_FsrEnabled ? 1 : 0, g_FsrSuspended ? 1 : 0, g_DlssEnabled ? 1 : 0,
-                     g_DlssSuspended ? 1 : 0);
+        testapp::Log(
+            "[FG-DIAG] Auto exit after %d seconds at frameID=%llu mode=%s fsr=%d fsrSuspended=%d "
+            "dlss=%d dlssSuspended=%d\n",
+            g_AutoExitSeconds, static_cast<unsigned long long>(g_FrameIdCounter), ModeName(g_CurrentMode),
+            g_FsrEnabled ? 1 : 0, g_FsrSuspended ? 1 : 0, g_DlssEnabled ? 1 : 0, g_DlssSuspended ? 1 : 0);
         testapp::LogFlush();
         g_Running = false;
         DestroyWindow(g_Hwnd);
@@ -1444,9 +1431,10 @@ static void Render() {
     if (g_ModeSwitchingArmed && g_SuspensionTogglePending) {
         ToggleCurrentFGSuspension(g_PendingSuspensionToggleMode, "manual", frameIndex);
         if (!g_Running || !g_SwapChain) {
-            testapp::Log("[FG-DIAG] Render aborted after suspension toggle because swapchain is unavailable "
-                         "(running=%d)\n",
-                         g_Running ? 1 : 0);
+            testapp::Log(
+                "[FG-DIAG] Render aborted after suspension toggle because swapchain is unavailable "
+                "(running=%d)\n",
+                g_Running ? 1 : 0);
             testapp::LogFlush();
             return;
         }
@@ -1461,9 +1449,8 @@ static void Render() {
 
     // Per-frame sub-pixel camera jitter for the temporal upscalers (Halton 2,3 over the
     // scale-dependent phase count); zero when upscaling is disabled (legacy behavior).
-    g_CurrentJitter = UpscalingActive()
-                          ? testapp::fg::ComputeJitter(g_FrameIdCounter, g_JitterPhaseCount)
-                          : testapp::fg::JitterOffset{0.0f, 0.0f};
+    g_CurrentJitter = UpscalingActive() ? testapp::fg::ComputeJitter(g_FrameIdCounter, g_JitterPhaseCount)
+                                        : testapp::fg::JitterOffset{0.0f, 0.0f};
 
     const UINT presentSyncInterval = ResolvePresentSyncInterval();
     const UINT presentFlags = ResolvePresentFlags(presentSyncInterval);
@@ -1487,9 +1474,8 @@ static void Render() {
             "configuredVsync=%d lastSuspendToggleFrame=%llu fps=%.1f reflexLL=%d render=%dx%d upscaler=%s\n",
             static_cast<unsigned long long>(g_FrameIdCounter), frameIndex, ModeName(g_CurrentMode),
             g_FsrEnabled ? 1 : 0, g_DlssEnabled ? 1 : 0, g_ManualMode ? 1 : 0, g_AutoStage,
-            g_FsrConfigureEveryFrame ? 1 : 0, g_FsrSuspended ? 1 : 0, g_DlssSuspended ? 1 : 0,
-            presentSyncInterval, presentFlags, g_VSync,
-            static_cast<unsigned long long>(g_LastFsrSuspendResumeToggleFrameId), fps,
+            g_FsrConfigureEveryFrame ? 1 : 0, g_FsrSuspended ? 1 : 0, g_DlssSuspended ? 1 : 0, presentSyncInterval,
+            presentFlags, g_VSync, static_cast<unsigned long long>(g_LastFsrSuspendResumeToggleFrameId), fps,
             g_ReflexLowLatencyActive ? 1 : 0, g_RenderWidth, g_RenderHeight, ActiveUpscalerName());
     }
 
@@ -1555,8 +1541,8 @@ static void Render() {
     HRESULT presentHr = g_SwapChain->Present(presentSyncInterval, presentFlags);
     if (FAILED(presentHr) || (g_LastModeSwitchFrameId != 0 && g_FrameIdCounter - g_LastModeSwitchFrameId <= 3)) {
         testapp::Log("[FG-DIAG] Present frameID=%llu mode=%s sync=%u flags=0x%x configuredVsync=%d hr=0x%08lx\n",
-                     static_cast<unsigned long long>(g_FrameIdCounter), ModeName(g_CurrentMode),
-                     presentSyncInterval, presentFlags, g_VSync, static_cast<unsigned long>(presentHr));
+                     static_cast<unsigned long long>(g_FrameIdCounter), ModeName(g_CurrentMode), presentSyncInterval,
+                     presentFlags, g_VSync, static_cast<unsigned long>(presentHr));
         testapp::LogFlush();
     }
     if (IsDeviceRemovedHr(presentHr)) {
@@ -1665,8 +1651,7 @@ int main(int argc, char* argv[]) {
                  g_BootstrapNativeSwapchainStressCount);
     testapp::Log("Stress: Startup native swapchain recreates before FG runtimes load = %d\n",
                  g_StartupNativeSwapchainRecreateCount);
-    testapp::Log("Stress: Async FG runtime preload after visible startup = %d\n",
-                 g_AsyncRuntimePreload ? 1 : 0);
+    testapp::Log("Stress: Async FG runtime preload after visible startup = %d\n", g_AsyncRuntimePreload ? 1 : 0);
     testapp::Log("Stress: DLSS one-shot suspend-and-hold = %d, off-after-active hold = %d (interval %ds)\n",
                  g_DlssSuspendResumeStress ? 1 : 0, g_DlssOffAfterActiveStress ? 1 : 0,
                  g_DlssSuspendResumeIntervalSeconds);
@@ -1733,9 +1718,10 @@ int main(int argc, char* argv[]) {
         testapp::LogFlush();
 
         for (int i = 0; i < g_StartupNativeSwapchainRecreateCount; ++i) {
-            testapp::Log("[FG-DIAG] Startup native swapchain recreate stress %d/%d while mode remains OFF before FG "
-                         "runtime preload\n",
-                         i + 1, g_StartupNativeSwapchainRecreateCount);
+            testapp::Log(
+                "[FG-DIAG] Startup native swapchain recreate stress %d/%d while mode remains OFF before FG "
+                "runtime preload\n",
+                i + 1, g_StartupNativeSwapchainRecreateCount);
             if (!RecreateSwapChain(false, "startup native recreate stress")) {
                 testapp::Log("[FG-DIAG] Startup native swapchain recreate stress failed\n");
                 Cleanup();
@@ -1756,7 +1742,8 @@ int main(int argc, char* argv[]) {
         g_ManualMode = false;
         g_SwapChainOwner = SwapChainOwner::Native;
     } else {
-        testapp::Log("[FG-DIAG] Early native startup stress disabled; window will be shown after final renderer init\n");
+        testapp::Log(
+            "[FG-DIAG] Early native startup stress disabled; window will be shown after final renderer init\n");
     }
 
     bool streamlineLoaded = false;
