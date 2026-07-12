@@ -86,6 +86,8 @@ void DX12_StartTransitionCooldown();
 void DX12_OnStreamlineFGStateChanged(bool active);
 bool DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
 void DX12_PrepareForStreamlineEnableTransition();
+void DX12_BeginStreamlineEnableCall();
+void DX12_EndStreamlineEnableCall();
 void DX12_RetainStreamlineStartupActivationSwapchain(IDXGISwapChain* swapchain, const char* source);
 bool DX12_TryInvokePostSLStartupActivationCallback(const char* source, bool clearStartupWindow,
                                                    bool allowConfirmedWarmupService = false);

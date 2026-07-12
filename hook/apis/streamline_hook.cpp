@@ -420,6 +420,7 @@ constexpr ULONGLONG kAuthoritativeFFXTakeoverGetStateSuppressMs = 250;
 std::atomic<bool> g_BlockGetStateOnlyReactivationUntilExplicitSetOptions{false};
 std::atomic<bool> g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap{false};
 std::atomic<bool> g_CurrentComebackActivatedViaExplicitSetOptions{false};
+std::atomic<bool> g_AcceptedRuntimeOffAwaitingSetOptions{false};
 std::atomic<bool> g_StartupWindowOffExtensionPending{false};
 
 std::mutex g_SuppressedOffMutex;
@@ -1193,7 +1194,8 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
         ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
             !active, sourceWasSetOptions, postSLConfirmedRendering, startupActivationPending,
             postSLActiveButUnconfirmed, postSLConfirmedButStartupSettling,
-            postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof);
+            postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof,
+            g_AcceptedRuntimeOffAwaitingSetOptions.load(std::memory_order_acquire));
     const bool deferOffSignal =
         !active && !explicitSetOptionsDisableIsAuthoritative && !acceptActivatedUnconfirmedResumeOff &&
         ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
@@ -1220,6 +1222,19 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
             explicitSetOptionsActivation);
     g_CurrentComebackActivatedViaExplicitSetOptions.store(updatedExplicitSetOptionsActivation,
                                                           std::memory_order_release);
+    const bool acceptedRuntimeOffAwaitingSetOptions =
+        ce::streamline_runtime_policy::ShouldLatchAcceptedRuntimeOffAwaitingSetOptions(
+            previousSignalObserved, signalUpdate.effectiveActive, sourceWasGetState);
+    if (acceptedRuntimeOffAwaitingSetOptions) {
+        g_AcceptedRuntimeOffAwaitingSetOptions.store(true, std::memory_order_release);
+        const bool wasBlockingGetStateOnlyReactivation =
+            g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.exchange(true, std::memory_order_acq_rel);
+        HookLogImportant(
+            "Streamline Hook: Accepted runtime OFF via %s before matching SetOptions — forwarding the next "
+            "SetOptions(OFF) despite stale PostSL startup proof and blocking GetState-only reactivation "
+            "(previousBlock=%d)",
+            source ? source : "runtime-state", wasBlockingGetStateOnlyReactivation ? 1 : 0);
+    }
     g_FGCompat.SetStreamlineFGSignal(signalUpdate.effectiveActive);
     ApplyCombinedDLSSFGState(signalUpdate.effectiveActive, signalUpdate.effectiveMultiplier);
     if (acceptActivatedUnconfirmedResumeOff) {
@@ -2740,7 +2755,8 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
         const bool explicitSetOptionsDisableIsAuthoritative =
             ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
                 requestedDisabled, true, postSLConfirmedRendering, startupActivationPending, postSLActiveButUnconfirmed,
-                postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
+                postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing,
+                g_AcceptedRuntimeOffAwaitingSetOptions.load(std::memory_order_acquire));
         const bool acceptActivatedUnconfirmedResumeOff =
             ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
                 requestedDisabled, startupWindowActive, startupProtectedComebackProof, startupActivationPending,
@@ -2781,6 +2797,8 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                     suppressedOriginalSetOptions(g_SuppressedOffViewport, g_SuppressedOffOptions);
                 if (offResult != kSlResultOk) {
                     HookLogImportant("Streamline Hook: Forwarded slDLSSGSetOptions(OFF) returned %d", offResult);
+                } else {
+                    g_AcceptedRuntimeOffAwaitingSetOptions.store(false, std::memory_order_release);
                 }
             }
             g_SuppressedSetOptionsOffDuringStartup = false;
@@ -2820,7 +2838,8 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     const bool explicitSetOptionsDisableIsAuthoritative =
         ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
             requestedDisabled, true, postSLConfirmedRendering, startupActivationPending, postSLActiveButUnconfirmed,
-            postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
+            postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing,
+            g_AcceptedRuntimeOffAwaitingSetOptions.load(std::memory_order_acquire));
     const bool acceptActivatedUnconfirmedResumeOff =
         ce::streamline_runtime_policy::ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
             requestedDisabled, startupWindowActive, startupProtectedComebackProof, startupActivationPending,
@@ -2903,7 +2922,13 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                 postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
             ResetStartupProtectedOffChurnActiveProof("forwarded authoritative SetOptions disable");
         }
+        if (!pureObserverOnly && requestedEnabled) {
+            DX12_BeginStreamlineEnableCall();
+        }
         result = originalSetOptions(viewport, adjustedOptions);
+        if (!pureObserverOnly && requestedEnabled) {
+            DX12_EndStreamlineEnableCall();
+        }
     }
 
     if (!pureObserverOnly && requestedEnabled && result != kSlResultOk &&
@@ -2954,6 +2979,7 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
 
     if (result == kSlResultOk) {
         if (!pureObserverOnly && requestedEnabled) {
+            g_AcceptedRuntimeOffAwaitingSetOptions.store(false, std::memory_order_release);
             const ULONGLONG previousSuppressUntilMs =
                 g_SuppressNewGetStateActivationUntilMs.exchange(0, std::memory_order_acq_rel);
             const bool wasBlockingGetStateOnlyReactivation =
@@ -3018,6 +3044,17 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                     postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedRendering ? 1 : 0,
                     postSLConfirmedButStartupSettling ? 1 : 0, effectivePostSLRuntimeStateStabilizing ? 1 : 0,
                     postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
+            }
+        }
+
+        if (!pureObserverOnly && requestedDisabled && !setOptionsCallSuppressed) {
+            const bool clearedAcceptedRuntimeOff =
+                g_AcceptedRuntimeOffAwaitingSetOptions.exchange(false, std::memory_order_acq_rel);
+            if (clearedAcceptedRuntimeOff) {
+                HookLogImportant(
+                    "Streamline Hook: Matching slDLSSGSetOptions(OFF) reached Streamline successfully — cleared "
+                    "accepted-runtime-OFF latch (viewport=%u)",
+                    viewportKey);
             }
         }
 
@@ -3737,6 +3774,7 @@ void OnAuthoritativeFFXTakeover() {
                                                  std::memory_order_release);
     g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.store(true, std::memory_order_release);
     g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
+    g_AcceptedRuntimeOffAwaitingSetOptions.store(false, std::memory_order_release);
     g_StartupWindowOffExtensionPending.store(false, std::memory_order_release);
     ResetStartupProtectedOffChurnActiveProof("authoritative FFX takeover");
     // A new FSR takeover resets the entire FG session context; any stale DLSS-only
@@ -3777,6 +3815,7 @@ void Shutdown() {
     g_BlockGetStateOnlyReactivationUntilExplicitSetOptions.store(false, std::memory_order_release);
     g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.store(false, std::memory_order_release);
     g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
+    g_AcceptedRuntimeOffAwaitingSetOptions.store(false, std::memory_order_release);
     g_StartupWindowOffExtensionPending.store(false, std::memory_order_release);
     ResetStartupProtectedOffChurnActiveProof("Streamline shutdown");
     {

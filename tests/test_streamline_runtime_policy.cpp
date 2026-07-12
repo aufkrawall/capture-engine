@@ -145,6 +145,23 @@ TEST(StreamlineRuntimePolicyTest, ExplicitSetOptionsOffIsAuthoritativeAfterConfi
         true, true, true, false, false, true, false));
     EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
         true, true, true, false, false, false, true));
+
+    // A GetState OFF edge can be accepted before its matching SetOptions call.
+    // The runtime call remains authoritative while prior PostSL startup proof is
+    // unwinding, otherwise Streamline never receives the user's disable request.
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+        true, true, false, true, true, true, true, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+        false, true, false, true, true, true, true, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+        true, false, false, true, true, true, true, true));
+}
+
+TEST(StreamlineRuntimePolicyTest, AcceptedGetStateOffWaitsForMatchingSetOptionsDisable) {
+    EXPECT_TRUE(ce::streamline_runtime_policy::ShouldLatchAcceptedRuntimeOffAwaitingSetOptions(true, false, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldLatchAcceptedRuntimeOffAwaitingSetOptions(false, false, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldLatchAcceptedRuntimeOffAwaitingSetOptions(true, true, true));
+    EXPECT_FALSE(ce::streamline_runtime_policy::ShouldLatchAcceptedRuntimeOffAwaitingSetOptions(true, false, false));
 }
 
 TEST(StreamlineRuntimePolicyTest, SuccessfulSetOptionsDisableClearsCachedStreamlineViewports) {

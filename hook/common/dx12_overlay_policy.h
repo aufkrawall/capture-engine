@@ -300,6 +300,27 @@ inline bool ShouldTreatSwapchainQueueAsAuthoritativeStreamlineRuntime(bool autho
     return authoritativeStreamlineRuntimeCreator && hasOriginalGameQueue && !queueMatchesOriginalGameQueue;
 }
 
+inline bool ShouldTreatOriginalQueueCreateWithStreamlineStackAsNormalReturn(
+    bool authoritativeFFXRuntimeCreator, bool callerFromStreamlineFGModule, bool streamlineFrameGenerationInStack,
+    bool streamlineEnableCallInFlight, bool hasOriginalGameQueue, bool queueMatchesOriginalGameQueue) {
+    // sl.interposer remains on wrapped DXGI call stacks while a third-party
+    // overlay forwards the game's ordinary swapchain recreation. Stack presence
+    // alone is therefore candidate evidence: a distinct queue proves an actual
+    // Streamline takeover, while the known original game queue proves the normal
+    // presentation topology has returned.
+    return !authoritativeFFXRuntimeCreator && !callerFromStreamlineFGModule && streamlineFrameGenerationInStack &&
+           !streamlineEnableCallInFlight && hasOriginalGameQueue && queueMatchesOriginalGameQueue;
+}
+
+inline bool ShouldRetirePostSLRouteForNormalSwapchainReturn(bool normalSwapchainReturn, bool postSLRouteArmed,
+                                                            bool hasDistinctPostSLQueueProof) {
+    return normalSwapchainReturn && postSLRouteArmed && hasDistinctPostSLQueueProof;
+}
+
+inline bool ShouldAbortPostSLSubmitAfterLifecycleChange(uint32_t entryEpoch, uint32_t currentEpoch) {
+    return entryEpoch != currentEpoch;
+}
+
 inline bool ShouldTreatSwapchainQueueAsAuthoritativeFFXRuntime(bool authoritativeFFXRuntimeCreator,
                                                                bool hasOriginalGameQueue,
                                                                bool queueMatchesOriginalGameQueue) {

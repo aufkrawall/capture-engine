@@ -239,6 +239,8 @@ static std::atomic<bool> g_PostSLSyntheticStartupTakeoverLogged{false};
 static std::atomic<int> g_PostSLSyntheticStartupWrapperProgressCount{0};
 static std::atomic<bool> g_PostSLSyntheticStartupWrapperOnlyDumpRequested{false};
 static std::atomic<uint32_t> g_PostSLLifecycleEpoch{0};
+static std::mutex g_PostSLRenderMutex;
+static std::atomic<uint32_t> g_StreamlineEnableCallsInFlight{0};
 
 // Set to true when PostSLOverlayRender has confirmed it can render (i.e., re-entrant
 // Present calls are actually happening).  In games like GTA V, SL FG bypasses our
@@ -3020,6 +3022,8 @@ struct CreateSwapchainQueueCaptureEvidence {
     bool authoritativeFFXRuntimeCreator = false;
     bool officialAMDFFXRuntimeCreator = false;
     bool authoritativeStreamlineRuntimeCreator = false;
+    bool callerFromStreamlineFGModule = false;
+    bool streamlineFrameGenerationInStack = false;
     char callerModulePath[MAX_PATH] = {};
     char ffxModulePath[MAX_PATH] = {};
 };
@@ -3035,6 +3039,8 @@ static CreateSwapchainQueueCaptureEvidence BuildCreateSwapchainQueueCaptureEvide
         ce::dx12_overlay_policy::ShouldTreatCreateSwapchainCallerAsAuthoritativeFFX(callerFromFFXFGModule,
                                                                                     ffxFrameGenerationInStack);
     evidence.authoritativeStreamlineRuntimeCreator = callerFromStreamlineFGModule || streamlineFrameGenerationInStack;
+    evidence.callerFromStreamlineFGModule = callerFromStreamlineFGModule;
+    evidence.streamlineFrameGenerationInStack = streamlineFrameGenerationInStack;
     if (callerModulePath && *callerModulePath) {
         strncpy_s(evidence.callerModulePath, sizeof(evidence.callerModulePath), callerModulePath, _TRUNCATE);
     }
@@ -3084,11 +3090,19 @@ static bool ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay(
         const int logCount = s_wrappedFGCreateCallerLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20) {
             const char* runtimeKind = (callerFromFFXFGModule || ffxFrameGenerationInStack) ? "FFX" : "Streamline";
-            HookLogImportant(
-                "%s: %s frame-generation stack detected behind third-party overlay caller %s — treating swapchain "
-                "as authoritative runtime takeover",
-                context ? context : "CreateSwapChain", runtimeKind,
-                callerModulePath && *callerModulePath ? callerModulePath : "unknown");
+            if (callerFromStreamlineFGModule || callerFromFFXFGModule || ffxFrameGenerationInStack) {
+                HookLogImportant(
+                    "%s: %s frame-generation stack detected behind third-party overlay caller %s — treating "
+                    "swapchain as authoritative runtime takeover",
+                    context ? context : "CreateSwapChain", runtimeKind,
+                    callerModulePath && *callerModulePath ? callerModulePath : "unknown");
+            } else {
+                HookLogImportant(
+                    "%s: Streamline stack detected behind third-party overlay caller %s — deferring takeover "
+                    "classification until queue identity is known",
+                    context ? context : "CreateSwapChain",
+                    callerModulePath && *callerModulePath ? callerModulePath : "unknown");
+            }
         }
     }
 
@@ -8650,6 +8664,79 @@ static bool InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(const ch
     return overlayWasLive && overlaySwapchainStateRetired;
 }
 
+static bool RetirePostSLRouteForNormalSwapchainReturn(
+    const char* context, ID3D12CommandQueue* returnedQueue, ID3D12CommandQueue* originalGameQueue,
+    const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
+    const bool normalSwapchainReturn =
+        ce::dx12_overlay_policy::ShouldTreatOriginalQueueCreateWithStreamlineStackAsNormalReturn(
+            captureEvidence.authoritativeFFXRuntimeCreator, captureEvidence.callerFromStreamlineFGModule,
+            captureEvidence.streamlineFrameGenerationInStack,
+            g_StreamlineEnableCallsInFlight.load(std::memory_order_acquire) != 0, originalGameQueue != nullptr,
+            returnedQueue == originalGameQueue);
+    if (!normalSwapchainReturn) {
+        return false;
+    }
+
+    ID3D12CommandQueue* lockedQueue = nullptr;
+    ID3D12CommandQueue* lastWorkingQueue = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        lockedQueue = g_PostSLLockedQueue;
+        lastWorkingQueue = g_PostSLLastWorkingQueue;
+    }
+    const bool routeArmed = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr ||
+                            g_PostSLOverlayActive.load(std::memory_order_acquire) ||
+                            g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+    const bool hasDistinctQueueProof = (lockedQueue && lockedQueue != returnedQueue) ||
+                                       (lastWorkingQueue && lastWorkingQueue != returnedQueue);
+    if (!ce::dx12_overlay_policy::ShouldRetirePostSLRouteForNormalSwapchainReturn(
+            normalSwapchainReturn, routeArmed, hasDistinctQueueProof)) {
+        HookLogImportant(
+            "%s: Original game queue validated normal swapchain return behind Streamline stack "
+            "(queue=%p locked=%p lastWorking=%p routeArmed=%d) — no stale PostSL route to retire",
+            context ? context : "CreateSwapChain", returnedQueue, lockedQueue, lastWorkingQueue, routeArmed ? 1 : 0);
+        return false;
+    }
+
+    SetPostSLCallbackInstalled(false, "DX12: normal swapchain return");
+    // Publish cancellation before waiting for an already-entered callback. The
+    // callback compares this epoch before every GPU submission point, exits,
+    // and releases the render mutex without a polling delay.
+    g_PostSLLifecycleEpoch.fetch_add(1, std::memory_order_acq_rel);
+    std::lock_guard<std::mutex> renderLock(g_PostSLRenderMutex);
+
+    const int previousStableFrames = g_PostSLStableFrameCount.exchange(0, std::memory_order_acq_rel);
+    g_PostSLOverlayActive.store(false, std::memory_order_release);
+    g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+    g_PostSLConfirmedRenderInCurrentReactivationEpoch.store(false, std::memory_order_release);
+    g_PostSLStallCounter.store(0, std::memory_order_release);
+    g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
+    g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
+    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
+    g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+    g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+    ResetPostSLLifecycleForTransition("DX12: normal swapchain return", true);
+    SetPostSLLastWorkingQueue(nullptr);
+    ReleaseStreamlineStartupActivationSwapchain("DX12: normal swapchain return");
+
+    if (g_State.overlayInit || g_State.syncInit) {
+        std::lock_guard<std::recursive_mutex> overlayLock(g_OverlayMutex);
+        g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(), std::memory_order_release);
+        g_State.overlayInit = false;
+        g_State.syncInit = false;
+        g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
+        CleanupRTVs();
+    }
+
+    HookLogImportant(
+        "%s: Original game queue validated normal swapchain return behind third-party Streamline stack — retired "
+        "stale PostSL route and invalidated swapchain-scoped overlay state "
+        "(queue=%p locked=%p lastWorking=%p stableFrames=%d caller=%s)",
+        context ? context : "CreateSwapChain", returnedQueue, lockedQueue, lastWorkingQueue, previousStableFrames,
+        captureEvidence.callerModulePath[0] ? captureEvidence.callerModulePath : "unknown");
+    return true;
+}
+
 static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapChain* pSwapChain, const char* context,
                                                   const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
     if (!pDevice || !pSwapChain)
@@ -8681,6 +8768,8 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
         const bool freshAuthoritativeStreamlineHandoff =
             ce::dx12_overlay_policy::ShouldArmStreamlineStartupTransitionWindowForFreshAuthoritativeRuntimeQueue(
                 authoritativeStreamlineRuntimeQueue, pQueue == currentSwapchainQueue);
+        const bool normalSwapchainReturn = RetirePostSLRouteForNormalSwapchainReturn(
+            context, pQueue, currentOriginalGameQueue, captureEvidence);
 
         HookLogImportant("%s: QI for queue succeeded (queue=%p)", context, pQueue);
         if (preserveCurrentGameQueue) {
@@ -8708,8 +8797,9 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
         // on game swapchain recreation instead of waiting for an origGame queue
         // return that fresh-queue games never deliver.
         const bool gameCreatedSwapchain =
-            !captureEvidence.callerFromThirdPartyOverlay && !captureEvidence.authoritativeFFXRuntimeCreator &&
-            !captureEvidence.officialAMDFFXRuntimeCreator && !captureEvidence.authoritativeStreamlineRuntimeCreator;
+            normalSwapchainReturn ||
+            (!captureEvidence.callerFromThirdPartyOverlay && !captureEvidence.authoritativeFFXRuntimeCreator &&
+             !captureEvidence.officialAMDFFXRuntimeCreator && !captureEvidence.authoritativeStreamlineRuntimeCreator);
         const bool runtimeOwnershipJustActivated = DX12_SetSwapchainQueue(
             pQueue, authoritativeStreamlineRuntimeQueue, authoritativeFFXRuntimeQueue, gameCreatedSwapchain);
         if (freshAuthoritativeStreamlineHandoff) {
@@ -9093,6 +9183,20 @@ static void StartTransitionCooldown() {
 
 void DX12_StartTransitionCooldown() {
     StartTransitionCooldown();
+}
+
+void DX12_BeginStreamlineEnableCall() {
+    g_StreamlineEnableCallsInFlight.fetch_add(1, std::memory_order_acq_rel);
+}
+
+void DX12_EndStreamlineEnableCall() {
+    uint32_t current = g_StreamlineEnableCallsInFlight.load(std::memory_order_acquire);
+    while (current != 0 && !g_StreamlineEnableCallsInFlight.compare_exchange_weak(
+                               current, current - 1, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    }
+    if (current == 0) {
+        HookLogImportant("DX12: Streamline enable-call tracking underflow — reset in-flight count");
+    }
 }
 
 void DX12_PrepareForStreamlineEnableTransition() {
@@ -12243,9 +12347,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // THREAD SAFETY: During FG, SL may fire Present from multiple threads.
     // Our rendering resources (allocators, command list, descriptor heap) are NOT
     // thread-safe. Use a try-lock to ensure only one thread renders at a time.
-    static std::atomic<bool> s_renderLock{false};
-    bool expected = false;
-    if (!s_renderLock.compare_exchange_strong(expected, true, std::memory_order_acquire)) {
+    if (!g_PostSLRenderMutex.try_lock()) {
         s_postSLSkipLock.fetch_add(1, std::memory_order_relaxed);
         NoteDX12OverlayCoverageGate("postsl-render-lock");
         static int s_lockSkip = 0;
@@ -12254,12 +12356,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         return;
     }
     // RAII unlock — ensures s_renderLock is released on ALL exit paths
-    struct RenderLockGuard {
-        std::atomic<bool>& lock;
-        ~RenderLockGuard() {
-            lock.store(false, std::memory_order_release);
-        }
-    } lockGuard{s_renderLock};
+    auto renderLockGuard = ce::make_scope_guard([]() { g_PostSLRenderMutex.unlock(); });
+    const uint32_t entryLifecycleEpoch = g_PostSLLifecycleEpoch.load(std::memory_order_acquire);
 
     // Cache FG state ONCE at function entry to avoid mid-function transition races.
     // g_StreamlineFGRunning can change between reads if FG transitions during PostSL.
@@ -12592,7 +12690,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         return;
     }
 
-    uint32_t lifecycleEpoch = g_PostSLLifecycleEpoch.load(std::memory_order_acquire);
+    uint32_t lifecycleEpoch = entryLifecycleEpoch;
     bool lifecycleChanged = lifecycleEpoch != s_seenLifecycleEpoch;
     if (lifecycleChanged) {
         s_wasActive = false;
@@ -14250,6 +14348,21 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         return;
     }
 
+    const uint32_t preSyncLifecycleEpoch = g_PostSLLifecycleEpoch.load(std::memory_order_acquire);
+    if (ce::dx12_overlay_policy::ShouldAbortPostSLSubmitAfterLifecycleChange(entryLifecycleEpoch,
+                                                                            preSyncLifecycleEpoch)) {
+        static std::atomic<int> s_lifecycleAbortLogCount{0};
+        const int logCount = s_lifecycleAbortLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 128) == 0) {
+            HookLogImportant(
+                "DX12: PostSL ABORT before queue synchronization — swapchain lifecycle changed during callback "
+                "(entryEpoch=%u currentEpoch=%u queue=%p scQueue=%p count=%d)",
+                entryLifecycleEpoch, preSyncLifecycleEpoch, queue, scQueue, logCount + 1);
+        }
+        bb->Release();
+        return;
+    }
+
     // CROSS-QUEUE GPU SYNC: When our overlay queue differs from the swapchain
     // queue (scQueue), the backbuffer was last used by SL's FG pipeline on
     // scQueue.  We MUST ensure SL's GPU work completes before our barriers
@@ -14335,6 +14448,20 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     }
 
     {
+        const uint32_t preSubmitLifecycleEpoch = g_PostSLLifecycleEpoch.load(std::memory_order_acquire);
+        if (ce::dx12_overlay_policy::ShouldAbortPostSLSubmitAfterLifecycleChange(entryLifecycleEpoch,
+                                                                                preSubmitLifecycleEpoch)) {
+            static std::atomic<int> s_lifecycleSubmitAbortLogCount{0};
+            const int logCount = s_lifecycleSubmitAbortLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 128) == 0) {
+                HookLogImportant(
+                    "DX12: PostSL ABORT before ECL — swapchain lifecycle changed during callback "
+                    "(entryEpoch=%u currentEpoch=%u queue=%p scQueue=%p count=%d)",
+                    entryLifecycleEpoch, preSubmitLifecycleEpoch, queue, scQueue, logCount + 1);
+            }
+            bb->Release();
+            return;
+        }
         ScopedCEOverlayECLSubmission ceOverlayECLGuard("PostSL overlay submit");
         if (slFGAtDispatch) {
             // When SL FG recreated the swapchain on a different queue (scQueue != origGame),

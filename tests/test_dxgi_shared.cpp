@@ -1484,6 +1484,35 @@ TEST(DXGISharedTest, WrappedStreamlineCreateSwapchainTrafficOverridesOverlayClas
                                                                                              true, false));
 }
 
+TEST(DXGISharedTest, OriginalQueueValidatesNormalReturnWithStreamlineStack) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatOriginalQueueCreateWithStreamlineStackAsNormalReturn(
+        false, false, true, false, true, true));
+
+    // Direct Streamline/FFX provenance and a distinct runtime queue still prove
+    // real late-enable takeovers (OFF->DLSS, OFF->FSR, and FSR->DLSS).
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldTreatOriginalQueueCreateWithStreamlineStackAsNormalReturn(
+            false, true, true, false, true, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldTreatOriginalQueueCreateWithStreamlineStackAsNormalReturn(
+            true, false, true, false, true, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldTreatOriginalQueueCreateWithStreamlineStackAsNormalReturn(
+            false, false, true, false, true, false));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldTreatOriginalQueueCreateWithStreamlineStackAsNormalReturn(
+            false, false, true, true, true, true));
+
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRetirePostSLRouteForNormalSwapchainReturn(true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetirePostSLRouteForNormalSwapchainReturn(true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRetirePostSLRouteForNormalSwapchainReturn(true, false, true));
+}
+
+TEST(DXGISharedTest, PostSLSubmitAbortsWhenSwapchainLifecycleChanges) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAbortPostSLSubmitAfterLifecycleChange(7, 8));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAbortPostSLSubmitAfterLifecycleChange(8, 8));
+}
+
 TEST(DXGISharedTest, ThirdPartyOverlayECLQueueDoesNotOverrideKnownGameTrackingQueues) {
     EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(true, true, false, false, false));

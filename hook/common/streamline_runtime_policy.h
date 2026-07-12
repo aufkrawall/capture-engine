@@ -533,15 +533,27 @@ inline bool ShouldTreatExplicitSetOptionsDisableAsAuthoritative(bool requestedIn
                                                                 bool startupActivationPending,
                                                                 bool postSLActiveButUnconfirmed,
                                                                 bool postSLConfirmedButStartupSettling,
-                                                                bool postSLConfirmedButRuntimeStateStabilizing) {
+                                                                bool postSLConfirmedButRuntimeStateStabilizing,
+                                                                bool acceptedRuntimeOffAwaitingSetOptions = false) {
     // Once PostSL has actually rendered through the current topology and no
     // startup/proof window is still settling, an explicit slDLSSGSetOptions(OFF)
     // is the app's real FG mode switch. Keep the early stale-OFF guard for
     // unconfirmed or still-stabilizing paths, but do not let it make the public
     // overlay state say DLSS FG after the app has intentionally disabled it.
-    return requestedInactive && sourceWasSetOptions && postSLConfirmedRendering && !startupActivationPending &&
-           !postSLActiveButUnconfirmed && !postSLConfirmedButStartupSettling &&
-           !postSLConfirmedButRuntimeStateStabilizing;
+    // GetState can expose the real user-requested OFF edge before the matching
+    // SetOptions call reaches this hook. Once that edge has been accepted, the
+    // matching SetOptions(OFF) must reach Streamline even if stale startup flags
+    // are still unwinding; otherwise CE reports OFF while leaving the runtime's
+    // old FG queue alive.
+    return requestedInactive && sourceWasSetOptions &&
+           (acceptedRuntimeOffAwaitingSetOptions ||
+            (postSLConfirmedRendering && !startupActivationPending && !postSLActiveButUnconfirmed &&
+             !postSLConfirmedButStartupSettling && !postSLConfirmedButRuntimeStateStabilizing));
+}
+
+inline bool ShouldLatchAcceptedRuntimeOffAwaitingSetOptions(bool previousRuntimeActive, bool effectiveRuntimeActive,
+                                                            bool sourceWasGetState) {
+    return previousRuntimeActive && !effectiveRuntimeActive && sourceWasGetState;
 }
 
 inline bool ResolveCurrentComebackExplicitSetOptionsActivation(bool previousExplicitSetOptionsActivation,
