@@ -16,6 +16,22 @@ void FillTestLegacyState(ce::fg_session::DX12LegacyStateView* out) {
 
 }  // namespace
 
+TEST(FGSessionStateTest, DLSSPriorityClearsDirectFFXConfirmationWithAuthoritativeFSRState) {
+    g_FGCompat.SetFSRFGActive(true);
+    g_FGCompat.MarkDirectFFXApiConfirmation();
+    ASSERT_TRUE(g_FGCompat.IsFSRFGApiActive());
+    ASSERT_TRUE(g_FGCompat.HasDirectFFXApiConfirmation());
+
+    g_FGCompat.SetDLSSFGMultiplier(2);
+    g_FGCompat.SetDLSSFGActive(true);
+
+    EXPECT_FALSE(g_FGCompat.IsFSRFGApiActive());
+    EXPECT_FALSE(g_FGCompat.HasDirectFFXApiConfirmation());
+    EXPECT_EQ(g_FGCompat.GetActiveFGType(), FGCompatibility::FGType::DLSS_FG);
+
+    g_FGCompat.SetDLSSFGActive(false);
+}
+
 TEST(FGSessionStateTest, NativeFSRCallbackPathBuildsRuntimeOwnedPlan) {
     ce::fg_session::ResetFGSessionStateForTests();
     g_TestLegacyState = {};

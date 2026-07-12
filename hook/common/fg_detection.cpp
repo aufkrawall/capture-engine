@@ -118,6 +118,13 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
             HookLog("FG: SL FG signal overrides heuristic FSR FG — clearing heuristic flag");
         }
 
+        // Direct FFX confirmation is scoped to one authoritative FSR FG
+        // activation.  Clear it before publishing FSR inactive so readers can
+        // never reconstruct stale native-FSR Present ownership after DLSS wins.
+        if (directFFXApiConfirmed.exchange(false, std::memory_order_acq_rel)) {
+            HookLog("FG: Cleared direct FFX API confirmation — DLSS FG took priority");
+        }
+
         if (fsrFGApiActive.load(std::memory_order_acquire)) {
             HookLog("FG: Clearing FSR FG API state — DLSS FG API takes priority");
             fsrFGApiActive.store(false, std::memory_order_release);
