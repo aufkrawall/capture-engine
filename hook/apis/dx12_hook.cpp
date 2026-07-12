@@ -3856,6 +3856,8 @@ static std::vector<ID3D12Fence*> g_PrerenderFences;
 static std::vector<HANDLE> g_PrerenderEvents;
 static uint64_t g_PrerenderFrameIndex = 0;
 static std::mutex g_PrerenderMutex;
+static ID3D12Device* g_PrerenderDevice = nullptr;
+static ID3D12CommandQueue* g_PrerenderQueue = nullptr;
 
 // ECL piggyback overlay: for games (like GTA5 Enhanced) that reject separate ECL
 // submissions touching backbuffers, render the overlay by appending our command
@@ -9869,6 +9871,8 @@ static HRESULT STDMETHODCALLTYPE DeepHookCreateSwapChainForHwnd(IDXGIFactory2* p
             UINT requested = (UINT)gfx.backbufferCount;
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+            if (isFlip)
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             if (isFlip && requested < modifiedDesc.BufferCount) {
                 modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
                 HookLogImportant("DeepHook: Skipping BufferCount override %u < game's %u (flip model)", requested,
@@ -10118,6 +10122,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndInline(IDXGIFactory
             UINT requested = (UINT)gfx.backbufferCount;
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+            if (isFlip)
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             if (isFlip && requested < modifiedDesc.BufferCount) {
                 modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
                 HookLogImportant("INLINE: Skipping BufferCount override %u < game's %u (flip model)", requested,
@@ -10404,6 +10410,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainGlobal(IDXGIFactory* pThis
             UINT requested = (UINT)gfx.backbufferCount;
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+            if (isFlip)
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             if (isFlip && requested < modifiedDesc.BufferCount) {
                 modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
                 HookLogImportant(
@@ -10538,6 +10546,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateSwapChainForHwndGlobal(IDXGIFactory
             UINT requested = (UINT)gfx.backbufferCount;
             bool isFlip = (modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL ||
                            modifiedDesc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+            if (isFlip)
+                modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
             if (isFlip && requested < modifiedDesc.BufferCount) {
                 modifiedDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
                 HookLogImportant(
@@ -12205,6 +12215,29 @@ static void ApplyPrerenderLimitDX12(float limit) {
 
     std::lock_guard<std::mutex> lock(g_PrerenderMutex);
 
+    if (g_PrerenderDevice != ctx.device || g_PrerenderQueue != ctx.queue) {
+        for (auto* fence : g_PrerenderFences) {
+            if (fence)
+                fence->Release();
+        }
+        g_PrerenderFences.clear();
+        for (HANDLE event : g_PrerenderEvents) {
+            if (event)
+                CloseHandle(event);
+        }
+        g_PrerenderEvents.clear();
+        g_PrerenderFrameIndex = 0;
+        if (g_PrerenderDevice)
+            g_PrerenderDevice->Release();
+        if (g_PrerenderQueue)
+            g_PrerenderQueue->Release();
+        g_PrerenderDevice = ctx.device;
+        g_PrerenderQueue = ctx.queue;
+        g_PrerenderDevice->AddRef();
+        g_PrerenderQueue->AddRef();
+        HookLogImportant("DX12: Prerender fence stream rebound device=%p queue=%p", ctx.device, ctx.queue);
+    }
+
     // Initialize fence ring buffer if needed
     if (g_PrerenderFences.empty()) {
         for (int i = 0; i < 16; i++) {
@@ -12223,15 +12256,14 @@ static void ApplyPrerenderLimitDX12(float limit) {
     if (g_PrerenderFences.empty())
         return;
 
-    constexpr DWORD kPrerenderWaitTimeoutMs = 8;
     static std::atomic<int> s_prerenderWarnLogs{0};
-    auto waitFenceBounded = [&](ID3D12Fence* waitFence, HANDLE waitEvent, uint64_t waitValue) -> bool {
-        if (!waitFence || !waitEvent)
+    auto waitForFence = [&](ID3D12Fence* fenceToWait, HANDLE waitEvent, uint64_t waitValue) -> bool {
+        if (!fenceToWait || !waitEvent)
             return false;
-        if (waitFence->GetCompletedValue() >= waitValue)
+        if (fenceToWait->GetCompletedValue() >= waitValue)
             return true;
 
-        HRESULT setHr = waitFence->SetEventOnCompletion(waitValue, waitEvent);
+        HRESULT setHr = fenceToWait->SetEventOnCompletion(waitValue, waitEvent);
         if (FAILED(setHr)) {
             if (s_prerenderWarnLogs.fetch_add(1, std::memory_order_relaxed) < 20) {
                 HookLog("DX12: Prerender SetEventOnCompletion failed hr=0x%08X value=%llu", setHr, waitValue);
@@ -12239,16 +12271,13 @@ static void ApplyPrerenderLimitDX12(float limit) {
             return false;
         }
 
-        DWORD waitResult = WaitForSingleObject(waitEvent, kPrerenderWaitTimeoutMs);
+        DWORD waitResult = WaitForSingleObject(waitEvent, INFINITE);
         if (waitResult == WAIT_OBJECT_0)
             return true;
 
         if (s_prerenderWarnLogs.fetch_add(1, std::memory_order_relaxed) < 20) {
-            if (waitResult == WAIT_TIMEOUT) {
-                HookLog("DX12: Prerender wait timed out (%lums) value=%llu", kPrerenderWaitTimeoutMs, waitValue);
-            } else {
-                HookLog("DX12: Prerender wait failed result=%lu value=%llu", waitResult, waitValue);
-            }
+            HookLog("DX12: Prerender wait failed result=%lu error=%lu value=%llu", waitResult, GetLastError(),
+                    waitValue);
         }
         return false;
     };
@@ -12262,16 +12291,12 @@ static void ApplyPrerenderLimitDX12(float limit) {
         uint64_t value = g_PrerenderFrameIndex + 1;
         HRESULT signalHr = ctx.queue->Signal(fence, value);
         if (SUCCEEDED(signalHr)) {
-            waitFenceBounded(fence, event, value);
+            waitForFence(fence, event, value);
         } else if (s_prerenderWarnLogs.fetch_add(1, std::memory_order_relaxed) < 20) {
             HookLog("DX12: Prerender signal failed hr=0x%08X value=%llu", signalHr, value);
         }
     } else {
-        // Buffered Limit: For fractional limits (e.g., 0.5), we use Buffered 1
-        // (Lookback 1) combined with an idle gap to approximate sub-frame latency.
-        bool isFractional = (limit > 0.01f && limit < 1.0f);
-        int effectiveLimit = isFractional ? 1 : (int)limit;
-        int lookback = effectiveLimit;
+        const int lookback = std::clamp(static_cast<int>(limit), 1, 6);
 
         // Signal current frame
         uint64_t signalValue = g_PrerenderFrameIndex + 1;
@@ -12292,7 +12317,7 @@ static void ApplyPrerenderLimitDX12(float limit) {
             uint64_t waitValue = (g_PrerenderFrameIndex - lookback) + 1;
 
             if (waitFence->GetCompletedValue() < waitValue) {
-                waitFenceBounded(waitFence, waitEvent, waitValue);
+                waitForFence(waitFence, waitEvent, waitValue);
             }
         }
     }
@@ -22954,6 +22979,15 @@ void DX12Hook::Shutdown() {
             CloseHandle(event);
     }
     g_PrerenderEvents.clear();
+    g_PrerenderFrameIndex = 0;
+    if (g_PrerenderDevice) {
+        g_PrerenderDevice->Release();
+        g_PrerenderDevice = nullptr;
+    }
+    if (g_PrerenderQueue) {
+        g_PrerenderQueue->Release();
+        g_PrerenderQueue = nullptr;
+    }
 
     // Clean up descriptor-free backend
     ShutdownDescFreeBackend("DX12Hook::Shutdown", true);

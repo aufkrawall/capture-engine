@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <windows.h>
 #include "../common/config.h"
+#include "../hook/common/nvngx_parameter_abi.h"
 
 namespace {
 std::string MakeTestPath(const char* filename) {
@@ -599,6 +600,39 @@ TEST(ConfigHelpersTest, DlssPresetParsingAcceptsFutureLetters) {
     EXPECT_EQ(ParseDlssPreset("Z"), 26u);
     EXPECT_EQ(ParseDlssRRPreset("A"), 1u);
     EXPECT_EQ(ParseDlssRRPreset("Z"), 26u);
+    EXPECT_EQ(ParseDlssPreset(" A "), 1u);
+    EXPECT_EQ(ParseDlssPreset("A-suffix"), 0u);
+    EXPECT_EQ(ParseDlssRRPreset("AB"), 0u);
+}
+
+TEST(ConfigHelpersTest, NvngxParameterVtableSlotsMatchSdkAbi) {
+    EXPECT_EQ(ce::nvngx_parameter_abi::kSetI, 3u);
+    EXPECT_EQ(ce::nvngx_parameter_abi::kSetUI, 4u);
+    EXPECT_EQ(ce::nvngx_parameter_abi::kSetF, 6u);
+    EXPECT_EQ(ce::nvngx_parameter_abi::kGetI, 11u);
+    EXPECT_EQ(ce::nvngx_parameter_abi::kGetUI, 12u);
+}
+
+TEST(ConfigHelpersTest, DlssSharpeningParsingRejectsMalformedAndOutOfRangeValues) {
+    EXPECT_FLOAT_EQ(ParseDlssSharpening("default"), -2.0f);
+    EXPECT_FLOAT_EQ(ParseDlssSharpening("off"), -1.0f);
+    EXPECT_FLOAT_EQ(ParseDlssSharpening("0.625"), 0.625f);
+    EXPECT_FLOAT_EQ(ParseDlssSharpening("1.0suffix"), -2.0f);
+    EXPECT_FLOAT_EQ(ParseDlssSharpening("nan"), -2.0f);
+    EXPECT_FLOAT_EQ(ParseDlssSharpening("-0.1"), -2.0f);
+    EXPECT_FLOAT_EQ(ParseDlssSharpening("1.1"), -2.0f);
+}
+
+TEST_F(ConfigTest, GraphicsQueueAndSamplerModesAreValidated) {
+    WriteConfig("[Graphics]\n"
+                "sampler_override_mode=AGGRESSIVE\n"
+                "cpu_prerender_limit=2.5\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.graphics.samplerOverrideMode, "aggressive");
+    EXPECT_FLOAT_EQ(config.graphics.cpuPrerenderLimit, -1.0f);
 }
 
 TEST(ConfigHelpersTest, MatchModeParsing) {

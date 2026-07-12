@@ -38,4 +38,24 @@ inline bool IsManualReflexLimiterConfigured(bool generalEnabled, int generalFps,
            (captureSyncEnabled && captureSyncMode == nativeModeValue);
 }
 
+inline bool ShouldScaleTargetForFrameGeneration(bool usingCaptureSync, bool injectVideoCaptureRequested) {
+    // Inject capture publishes only application-rendered frames, while WGC/DXGI
+    // observe the final presented stream including generated frames.
+    return !usingCaptureSync || !injectVideoCaptureRequested;
+}
+
+inline int64_t NextRationalIntervalTicks(int64_t frequency, int fps, int64_t& remainder) {
+    if (frequency <= 0 || fps <= 0) {
+        remainder = 0;
+        return 1;
+    }
+    int64_t ticks = frequency / fps;
+    remainder += frequency % fps;
+    if (remainder >= fps) {
+        remainder -= fps;
+        ++ticks;
+    }
+    return ticks > 0 ? ticks : 1;
+}
+
 }  // namespace ce::fps_limiter_policy

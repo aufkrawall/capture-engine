@@ -646,9 +646,12 @@ void CWrapDXGISwapChain::WaitFrameLatency() {
 
     HANDLE waitable = EnsureFrameLatencyWaitable("backbuffer pacing");
     if (waitable && waitable != INVALID_HANDLE_VALUE) {
-        DWORD waitResult = WaitForSingleObject(waitable, 16);
-        if (waitResult == WAIT_TIMEOUT) {
-            HookLog("WaitFrameLatency: timeout waiting for DWM flip queue drain");
+        DWORD waitResult = WaitForSingleObject(waitable, INFINITE);
+        if (waitResult != WAIT_OBJECT_0) {
+            static std::atomic<int> s_waitFailLogCount{0};
+            if (s_waitFailLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+                WrapperLog("WaitFrameLatency: wait failed result=%lu error=%lu", waitResult, GetLastError());
+            }
         }
     }
 }
@@ -1357,7 +1360,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         DX12_WaitForOverlayCompletion(nullptr);
     }
 
-    WaitFrameLatency();
     const int64_t presentCallStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
     HRESULT hr = pRealCached->Present(SyncInterval, presentFlags);
     if (m_IsD3D12) {
@@ -1373,6 +1375,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     LogD3D12PresentDeviceLostHRESULT(m_IsD3D12, "Present", callCount, hr);
     WaitD3D12FocusLossOverlayFenceAfterPresent("Present", callCount, SyncInterval, presentFlags, hr, flushInfo);
     if (SUCCEEDED(hr)) {
+        // A Present hook is the earliest boundary before the game starts the
+        // next frame. Waiting here prevents simulation/render work from being
+        // queued behind a full vsync present queue.
+        WaitFrameLatency();
         g_SharedFpsLimiter.ApplyPostPresent();
     }
     ProbeD3D12FocusLossFrameLatencyAfterPresent("Present", callCount, SyncInterval, presentFlags, hr);
@@ -1698,7 +1704,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         DX12_WaitForOverlayCompletion(nullptr);
     }
 
-    WaitFrameLatency();
     HRESULT hr = pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
     if (m_IsD3D12) {
         const BOOL isIconic = (m_hWnd != nullptr) ? IsIconic(m_hWnd) : FALSE;
@@ -1713,6 +1718,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     LogD3D12PresentDeviceLostHRESULT(m_IsD3D12, "Present1", callCount, hr);
     WaitD3D12FocusLossOverlayFenceAfterPresent("Present1", callCount, SyncInterval, PresentFlags, hr, flushInfo);
     if (SUCCEEDED(hr)) {
+        WaitFrameLatency();
         g_SharedFpsLimiter.ApplyPostPresent();
     }
     ProbeD3D12FocusLossFrameLatencyAfterPresent("Present1", callCount, SyncInterval, PresentFlags, hr);

@@ -34,10 +34,11 @@ thread_local bool g_InPresentHook = false;
 // This gives: smooth triple buffering + ~1 frame effective latency
 
 struct FrameLimitState {
-    VkFence waitFence = VK_NULL_HANDLE;
-    VkFence signalFence = VK_NULL_HANDLE;
+    VkDevice device = VK_NULL_HANDLE;
+    std::vector<VkFence> fences;
+    std::vector<bool> submitted;
     uint64_t frameIndex = 0;
-    bool initialized = false;
+    uint32_t lookback = UINT32_MAX;
 };
 static std::mutex g_FrameLimitMutex;
 static std::unordered_map<VkQueue, FrameLimitState> g_FrameLimitStates;
@@ -54,41 +55,108 @@ static bool IsDXVKD3D11WrapperLoaded() {
 }
 
 static void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limit) {
-    // CPU prerender limit for Vulkan
-    //
-    // limit=0 (serial): CPU waits for GPU to finish all work before proceeding
-    //                  Use vkQueueWaitIdle - ensures minimal latency
-    //
-    // limit=1:         Swapchain with minImageCount=2 already provides natural
-    // limiting.
-    //                  vkAcquireNextImageKHR blocks if all images are in flight.
-    //                  No additional GPU sync needed - let the swapchain do its
-    //                  job.
-    //
-    // limit>=2:        Higher limits allow more CPU ahead, no sync needed.
-    //                  Game's natural buffering handles throughput.
-    //
-    // Note: Tracking game's fences is unsafe (game may destroy them or pass
-    // VK_NULL_HANDLE)
-    //       Empty submit approach adds overhead. Swapchain provides the limiting
-    //       we need.
-
     if (limit < 0.0f)
         return;
     if (queue == VK_NULL_HANDLE || device == VK_NULL_HANDLE)
         return;
 
-    // Only limit=0 needs explicit GPU sync
-    if (limit == 0.0f) {
-        DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
-        if (disp && disp->fp_vkQueueWaitIdle) {
-            disp->fp_vkQueueWaitIdle(queue);
-        }
+    DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    if (!disp || !disp->fp_vkCreateFence || !disp->fp_vkDestroyFence || !disp->fp_vkWaitForFences ||
+        !disp->fp_vkResetFences || !disp->fp_vkQueueSubmit) {
+        return;
     }
 
-    // For limit=1 and above: The backbuffer_count config (minImageCount)
-    // already provides natural frame limiting through swapchain acquire
-    // semantics. No additional CPU-GPU synchronization needed.
+    std::lock_guard<std::mutex> lock(g_FrameLimitMutex);
+    FrameLimitState& state = g_FrameLimitStates[queue];
+    if (state.device != device || state.fences.empty()) {
+        DeviceDispatch* oldDisp =
+            state.device != VK_NULL_HANDLE ? VulkanLayerState::Get().GetDeviceDispatch(state.device) : nullptr;
+        for (VkFence fence : state.fences) {
+            if (fence != VK_NULL_HANDLE && oldDisp && oldDisp->fp_vkDestroyFence)
+                oldDisp->fp_vkDestroyFence(state.device, fence, nullptr);
+        }
+        state = {};
+        state.device = device;
+        VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        for (int index = 0; index < 7; ++index) {
+            VkFence fence = VK_NULL_HANDLE;
+            if (disp->fp_vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+                break;
+            }
+            state.fences.push_back(fence);
+        }
+        if (state.fences.size() != 7) {
+            for (VkFence fence : state.fences)
+                disp->fp_vkDestroyFence(device, fence, nullptr);
+            g_FrameLimitStates.erase(queue);
+            LayerLog("Vulkan Prerender: failed to create complete fence ring for queue=%p", queue);
+            return;
+        }
+        state.submitted.assign(state.fences.size(), false);
+        LayerLog("Vulkan Prerender: fence ring ready device=%p queue=%p", device, queue);
+    }
+
+    const uint32_t lookback = static_cast<uint32_t>(std::clamp(static_cast<int>(limit), 0, 6));
+    if (state.lookback != lookback) {
+        for (size_t index = 0; index < state.fences.size(); ++index) {
+            if (!state.submitted[index])
+                continue;
+            VkFence fence = state.fences[index];
+            const VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+            if (waitResult != VK_SUCCESS) {
+                LayerLog("Vulkan Prerender: mode-change drain failed result=%d queue=%p",
+                         static_cast<int>(waitResult), queue);
+                return;
+            }
+            disp->fp_vkResetFences(device, 1, &fence);
+            state.submitted[index] = false;
+        }
+        state.frameIndex = 0;
+        state.lookback = lookback;
+        LayerLog("Vulkan Prerender: queue=%p depth changed to %u", queue, lookback);
+    }
+
+    if (lookback > 0 && state.frameIndex >= lookback) {
+        const size_t oldIndex = (state.frameIndex - lookback) % state.fences.size();
+        VkFence oldFence = state.fences[oldIndex];
+        const VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &oldFence, VK_TRUE, UINT64_MAX);
+        if (waitResult != VK_SUCCESS) {
+            LayerLog("Vulkan Prerender: wait failed result=%d queue=%p frame=%llu", static_cast<int>(waitResult),
+                     queue, static_cast<unsigned long long>(state.frameIndex));
+            return;
+        }
+        disp->fp_vkResetFences(device, 1, &oldFence);
+        state.submitted[oldIndex] = false;
+    }
+
+    const size_t currentIndex = state.frameIndex % state.fences.size();
+    VkFence currentFence = state.fences[currentIndex];
+    if (state.submitted[currentIndex]) {
+        // The seven-slot ring guarantees this is unnecessary at a stable depth,
+        // but keep reuse valid across unexpected state transitions.
+        const VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &currentFence, VK_TRUE, UINT64_MAX);
+        if (waitResult != VK_SUCCESS)
+            return;
+        disp->fp_vkResetFences(device, 1, &currentFence);
+        state.submitted[currentIndex] = false;
+    }
+    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    const VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submitInfo, currentFence);
+    if (submitResult != VK_SUCCESS) {
+        LayerLog("Vulkan Prerender: marker submit failed result=%d queue=%p", static_cast<int>(submitResult), queue);
+        return;
+    }
+    state.submitted[currentIndex] = true;
+    if (lookback == 0) {
+        const VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &currentFence, VK_TRUE, UINT64_MAX);
+        if (waitResult != VK_SUCCESS) {
+            LayerLog("Vulkan Prerender: serial wait failed result=%d queue=%p", static_cast<int>(waitResult), queue);
+            return;
+        }
+        disp->fp_vkResetFences(device, 1, &currentFence);
+        state.submitted[currentIndex] = false;
+    }
+    ++state.frameIndex;
 }
 
 static void CleanupPrerenderFences(VkDevice device) {
@@ -96,16 +164,16 @@ static void CleanupPrerenderFences(VkDevice device) {
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (disp && disp->fp_vkDestroyFence) {
-        for (auto& pair : g_FrameLimitStates) {
-            if (pair.second.waitFence != VK_NULL_HANDLE) {
-                disp->fp_vkDestroyFence(device, pair.second.waitFence, nullptr);
+        for (auto it = g_FrameLimitStates.begin(); it != g_FrameLimitStates.end();) {
+            if (it->second.device != device) {
+                ++it;
+                continue;
             }
-            if (pair.second.signalFence != VK_NULL_HANDLE) {
-                disp->fp_vkDestroyFence(device, pair.second.signalFence, nullptr);
-            }
+            for (VkFence fence : it->second.fences)
+                disp->fp_vkDestroyFence(device, fence, nullptr);
+            it = g_FrameLimitStates.erase(it);
         }
-        g_FrameLimitStates.clear();
-        LayerLog("Vulkan Prerender: Cleaned up fence pairs");
+        LayerLog("Vulkan Prerender: cleaned up device fence rings");
     }
 }
 
@@ -127,6 +195,7 @@ VulkanLayerState::VulkanLayerState()
       m_ForceMipBiasClamp(false),
       m_MipBiasMode("strict"),
       m_MipMapping("default"),
+      m_SamplerOverrideMode("safe"),
       m_VsyncMode("default"),
       m_BackbufferCount(0),
       m_PrerenderLimit(-1.0f) {}
@@ -374,6 +443,7 @@ void VulkanLayerState::UpdateFromSharedMemory(IPCClient* ipc) {
 
     m_ForceMipBiasClamp = cfg.forceMipBiasClamp;
     m_MipMapping = cfg.mipMapping[0] ? cfg.mipMapping : "default";
+    m_SamplerOverrideMode = cfg.samplerOverrideMode[0] ? cfg.samplerOverrideMode : "safe";
 
     // VSync mode
     m_VsyncMode = cfg.vsyncMode;
@@ -385,10 +455,10 @@ void VulkanLayerState::UpdateFromSharedMemory(IPCClient* ipc) {
     m_PrerenderLimit = cfg.prerenderLimit;
 
     LayerLog(
-        "VulkanLayerState: Updated from config - AF=%d, MipBias=%.1f, "
+        "VulkanLayerState: Updated from config - policy=%s AF=%d, MipBias=%.1f, "
         "MipMap=%s, Clamp=%d, VSync=%s, BBCount=%d",
-        m_MaxAnisotropy, m_MipLodBias, m_MipMapping.c_str(), m_ForceMipBiasClamp ? 1 : 0, m_VsyncMode.c_str(),
-        m_BackbufferCount);
+        m_SamplerOverrideMode.c_str(), m_MaxAnisotropy, m_MipLodBias, m_MipMapping.c_str(),
+        m_ForceMipBiasClamp ? 1 : 0, m_VsyncMode.c_str(), m_BackbufferCount);
 }
 
 // ============================================================================
@@ -746,6 +816,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
 
     VkResult result = VK_SUCCESS;
     bool captureInteropEnabled = false;
+    bool samplerAnisotropyEnabled = false;
+    float maxSamplerAnisotropy = 1.0f;
+    float maxSamplerLodBias = 0.0f;
 
     if (!g_LayerState.whitelisted) {
         // Passthrough: call next layer directly without modification
@@ -773,6 +846,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
         VkPhysicalDeviceProperties physicalProperties = {};
         if (instanceDispatch && instanceDispatch->fp_vkGetPhysicalDeviceProperties)
             instanceDispatch->fp_vkGetPhysicalDeviceProperties(physicalDevice, &physicalProperties);
+        maxSamplerAnisotropy = physicalProperties.limits.maxSamplerAnisotropy;
+        maxSamplerLodBias = physicalProperties.limits.maxSamplerLodBias;
         const bool externalMemoryCore = physicalProperties.apiVersion >= VK_API_VERSION_1_1;
         const bool externalSemaphoreCore = physicalProperties.apiVersion >= VK_API_VERSION_1_1;
         const bool timelineCore = physicalProperties.apiVersion >= VK_API_VERSION_1_2;
@@ -856,6 +931,22 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
         modifiedCreateInfo.enabledExtensionCount = (uint32_t)extensions.size();
         modifiedCreateInfo.ppEnabledExtensionNames = extensions.data();
 
+        VkPhysicalDeviceFeatures enabledFeatures = {};
+        if (pCreateInfo->pEnabledFeatures) {
+            enabledFeatures = *pCreateInfo->pEnabledFeatures;
+            samplerAnisotropyEnabled = enabledFeatures.samplerAnisotropy == VK_TRUE;
+            modifiedCreateInfo.pEnabledFeatures = &enabledFeatures;
+        } else {
+            for (const VkBaseInStructure* node = reinterpret_cast<const VkBaseInStructure*>(pCreateInfo->pNext); node;
+                 node = node->pNext) {
+                if (node->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2) {
+                    const auto* features2 = reinterpret_cast<const VkPhysicalDeviceFeatures2*>(node);
+                    samplerAnisotropyEnabled = features2->features.samplerAnisotropy == VK_TRUE;
+                    break;
+                }
+            }
+        }
+
         // Enable timeline semaphores only when the app did not already include
         // the feature structure. Duplicating an sType in pNext is invalid.
         VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeatures = {
@@ -885,6 +976,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     auto* dispatch = new DeviceDispatch();
     dispatch->physicalDevice = physicalDevice;
     dispatch->captureInteropEnabled = captureInteropEnabled;
+    dispatch->samplerAnisotropyEnabled = samplerAnisotropyEnabled;
+    dispatch->maxSamplerAnisotropy = maxSamplerAnisotropy;
+    dispatch->maxSamplerLodBias = maxSamplerLodBias;
     PopulateDeviceDispatch(dispatch, *pDevice, gdpa);
     VulkanLayerState::Get().RegisterDevice(*pDevice, dispatch);
 
@@ -1358,33 +1452,50 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkAcquireNextImageKHR(VkDevice device, Vk
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const VkSamplerCreateInfo* pCreateInfo,
                                                        const VkAllocationCallbacks* pAllocator, VkSampler* pSampler) {
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
+    if (!disp || !disp->fp_vkCreateSampler || !pCreateInfo)
+        return VK_ERROR_INITIALIZATION_FAILED;
     VkSamplerCreateInfo modified = *pCreateInfo;
     if (g_LayerState.whitelisted) {
         auto& state = VulkanLayerState::Get();
 
-        // Skip overrides for non-mipmapped samplers
-        bool overridesAllowed = true;
-        if (modified.maxLod == 0.0f)
-            overridesAllowed = false;
-        if (modified.minLod == modified.maxLod)
-            overridesAllowed = false;
-
-        // Skip overrides for border-addressed samplers (commonly shadow maps)
-        bool hasBorderAddress = (modified.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
-                                 modified.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
-                                 modified.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER);
+        bool specialReduction = false;
+        for (const VkBaseInStructure* node = reinterpret_cast<const VkBaseInStructure*>(modified.pNext); node;
+             node = node->pNext) {
+            if (node->sType == VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO) {
+                const auto* reduction = reinterpret_cast<const VkSamplerReductionModeCreateInfo*>(node);
+                specialReduction = reduction->reductionMode != VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE;
+                break;
+            }
+        }
+        const auto isMaterialAddress = [](VkSamplerAddressMode mode) {
+            return mode == VK_SAMPLER_ADDRESS_MODE_REPEAT || mode == VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+        };
+        const bool materialAddress = isMaterialAddress(modified.addressModeU) &&
+                                     isMaterialAddress(modified.addressModeV) &&
+                                     isMaterialAddress(modified.addressModeW);
+        const bool mipmapped = modified.maxLod > 0.0f && modified.minLod < modified.maxLod;
+        const bool linearMinMag = modified.minFilter == VK_FILTER_LINEAR && modified.magFilter == VK_FILTER_LINEAR;
+        const bool overridesAllowed = mipmapped && modified.compareEnable == VK_FALSE && !specialReduction &&
+                                      (state.IsAggressiveSamplerOverride() || (materialAddress && linearMinMag));
 
         if (overridesAllowed) {
             // Anisotropic filtering override
-            if (state.IsAnisotropyOverrideActive() && !hasBorderAddress) {
+            if (state.IsAnisotropyOverrideActive()) {
                 uint32_t maxAniso = state.GetMaxAnisotropy();
                 if (maxAniso <= 1) {
                     // "off" - disable anisotropic filtering
                     modified.anisotropyEnable = VK_FALSE;
                     modified.maxAnisotropy = 1.0f;
-                } else {
+                } else if (disp->samplerAnisotropyEnabled) {
                     modified.anisotropyEnable = VK_TRUE;
-                    modified.maxAnisotropy = (float)maxAniso;
+                    modified.maxAnisotropy =
+                        std::min(static_cast<float>(maxAniso), std::max(1.0f, disp->maxSamplerAnisotropy));
+                } else {
+                    static std::atomic<int> s_anisotropyFeatureLogCount{0};
+                    if (s_anisotropyFeatureLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+                        LayerLog("Vulkan sampler: forced AF skipped because samplerAnisotropy was not enabled at "
+                                 "vkCreateDevice");
+                    }
                 }
             }
 
@@ -1419,17 +1530,22 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const Vk
                     modified.mipLodBias = userBias;
                 }
 
-                // Clamp to Vulkan spec limits
-                if (modified.mipLodBias < -16.0f)
-                    modified.mipLodBias = -16.0f;
-                if (modified.mipLodBias > 15.99f)
-                    modified.mipLodBias = 15.99f;
+                const float maxBias = disp->maxSamplerLodBias > 0.0f ? disp->maxSamplerLodBias : 16.0f;
+                modified.mipLodBias = std::clamp(modified.mipLodBias, -maxBias, maxBias);
             }
         }
     }
-    if (disp && disp->fp_vkCreateSampler)
-        return disp->fp_vkCreateSampler(device, &modified, pAllocator, pSampler);
-    return VK_ERROR_INITIALIZATION_FAILED;
+    const bool changed = std::memcmp(&modified, pCreateInfo, sizeof(modified)) != 0;
+    VkResult result = disp->fp_vkCreateSampler(device, &modified, pAllocator, pSampler);
+    if (result != VK_SUCCESS && changed) {
+        static std::atomic<int> s_fallbackLogCount{0};
+        if (s_fallbackLogCount.fetch_add(1, std::memory_order_relaxed) < 10) {
+            LayerLog("Vulkan sampler: overridden descriptor failed result=%d; retrying original transactionally",
+                     static_cast<int>(result));
+        }
+        result = disp->fp_vkCreateSampler(device, pCreateInfo, pAllocator, pSampler);
+    }
+    return result;
 }
 
 #ifdef VK_USE_PLATFORM_WIN32_KHR

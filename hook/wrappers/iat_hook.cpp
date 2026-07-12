@@ -519,6 +519,7 @@ bool InitializeD3D12Hooks() {
 
     oD3D12CreateDeviceRaw =
         reinterpret_cast<D3D12CreateDeviceRawPtr>(GetProcAddress(hD3D12, "D3D12CreateDevice"));
+    oD3D12GetInterface = reinterpret_cast<D3D12GetInterfacePtr>(GetProcAddress(hD3D12, "D3D12GetInterface"));
 
     void* dummy;
     if (oSerializeRootSignature) {
@@ -534,6 +535,12 @@ bool InitializeD3D12Hooks() {
         RegisterDynamicHook("D3D12SerializeVersionedRootSignature", (void*)DetourSerializeVersionedRootSignature,
                             (void**)&oSerializeVersionedRootSignature);
         WrapperLog("IAT: Hooked D3D12SerializeVersionedRootSignature");
+    }
+
+    if (oD3D12GetInterface) {
+        PatchIATAllModules("d3d12.dll", "D3D12GetInterface", (void*)DetourD3D12GetInterface, &dummy);
+        RegisterDynamicHook("D3D12GetInterface", (void*)DetourD3D12GetInterface, (void**)&oD3D12GetInterface);
+        WrapperLog("IAT: Hooked D3D12GetInterface / ID3D12DeviceFactory");
     }
 
 #ifdef ENABLE_D3D12_WRAPPER

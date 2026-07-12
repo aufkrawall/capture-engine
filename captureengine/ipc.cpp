@@ -158,6 +158,9 @@ void IPCManager::UpdateConfig(const AppConfig& newConfig) {
         strncpy(dst.anisotropicFiltering, src.anisotropicFiltering.c_str(), sizeof(dst.anisotropicFiltering) - 1);
         dst.anisotropicFiltering[sizeof(dst.anisotropicFiltering) - 1] = '\0';
 
+        strncpy(dst.samplerOverrideMode, src.samplerOverrideMode.c_str(), sizeof(dst.samplerOverrideMode) - 1);
+        dst.samplerOverrideMode[sizeof(dst.samplerOverrideMode) - 1] = '\0';
+
         strncpy(dst.mipMapping, src.mipMapping.c_str(), sizeof(dst.mipMapping) - 1);
         dst.mipMapping[sizeof(dst.mipMapping) - 1] = '\0';
 

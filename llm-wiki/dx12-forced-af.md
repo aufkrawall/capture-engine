@@ -18,23 +18,26 @@ promotion especially visible as red/green corruption.
 
 ## Invariants
 
-- Only ordinary non-comparison/non-reduction samplers with linear min/mag
-  filtering, a usable mip range, and wrap/mirror addressing can be promoted.
-- Comparison, minimum/maximum reduction, border, clamp/mirror-once, fixed/no-mip,
-  point-min/mag, and invalid descriptors retain their game semantics.
+- `sampler_override_mode=safe` promotes only ordinary non-comparison/non-reduction samplers with linear min/mag
+  filtering, a usable mip range, and wrap/mirror addressing. `aggressive` broadens ordinary sampler coverage while
+  preserving structurally special samplers.
+- Every mode preserves comparison, minimum/maximum reduction, fixed/no-mip, invalid, and flagged non-normalized
+  samplers. Safe mode additionally preserves border, clamp/mirror-once, and point-min/mag descriptors; aggressive mode
+  intentionally opts ordinary instances of those families into the override.
 - `ComparisonFunc` does not classify a normal filter as a comparison sampler.
 - AF-off and mip-bias changes use the same safety boundary. Mip-bias application
   is independent from AF configuration, but never changes protected sampler
   classes.
-- Dynamic and static samplers share the same policy. Static sampler coverage
-  includes serializer descriptors and precompiled root-signature blobs for v1.0
-  and v1.1.
+- Dynamic and static samplers share the same policy, including mip mapping. Dynamic coverage includes `CreateSampler`
+  and `ID3D12Device11::CreateSampler2`; static coverage includes precompiled root-signature blobs for v1.0-v1.2.
+- `CreateRootSignature` is the sole static-sampler mutation boundary. Serializer detours pass through so offset/base
+  mip bias is never applied twice.
 - Raw `D3D12CreateDevice` interception returns the requested unwrapped interface,
   then installs `CreateSampler` and `CreateRootSignature` hooks on the actual
   device before it reaches the game. Originals are retained per validated vtable.
-- D3D12 device creation and both root-signature serializers are covered through
-  IAT imports and dynamic `GetProcAddress` resolution. Third-party overlay and
-  Streamline modules retain the existing bypass rules.
+- D3D12 device creation, `D3D12GetInterface`/`ID3D12DeviceFactory::CreateDevice`, and both root-signature serializers
+  are covered through IAT imports and dynamic `GetProcAddress` resolution. Third-party overlay and Streamline modules
+  retain the existing bypass rules.
 
 ## Diagnostics
 

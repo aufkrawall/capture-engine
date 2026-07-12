@@ -35,6 +35,26 @@ TEST(SamplerOverrideUtilsTest, ClassifiesD3D12ComparisonAndReductionFilters) {
     EXPECT_EQ(GetForcedAnisotropicFilter(D3D12_FILTER_MIN_MAG_MIP_LINEAR), D3D12_FILTER_ANISOTROPIC);
 }
 
+TEST(SamplerOverrideUtilsTest, D3D10SafeAndAggressiveEligibilityProtectSpecialSamplers) {
+    GraphicsConfig gfx;
+    D3D10_SAMPLER_DESC desc = {};
+    desc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
+    desc.AddressU = D3D10_TEXTURE_ADDRESS_WRAP;
+    desc.AddressV = D3D10_TEXTURE_ADDRESS_WRAP;
+    desc.AddressW = D3D10_TEXTURE_ADDRESS_WRAP;
+    desc.MinLOD = 0.0f;
+    desc.MaxLOD = D3D10_FLOAT32_MAX;
+
+    EXPECT_TRUE(IsD3D10SamplerOverrideEligible(desc, gfx));
+    desc.AddressU = D3D10_TEXTURE_ADDRESS_CLAMP;
+    EXPECT_FALSE(IsD3D10SamplerOverrideEligible(desc, gfx));
+
+    gfx.samplerOverrideMode = "aggressive";
+    EXPECT_TRUE(IsD3D10SamplerOverrideEligible(desc, gfx));
+    desc.Filter = D3D10_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR;
+    EXPECT_FALSE(IsD3D10SamplerOverrideEligible(desc, gfx));
+}
+
 TEST(SamplerOverrideUtilsTest, HashChangesWhenSamplerOverrideInputsChange) {
     GraphicsConfig base;
     base.anisotropicFiltering = "16x";

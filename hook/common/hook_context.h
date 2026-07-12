@@ -427,6 +427,9 @@ inline GraphicsConfig HookContext::GetActiveGraphicsConfig() const {
         GraphicsConfig result;
         result.vsyncMode = sharedMem->graphicsConfig.vsyncMode;
         result.anisotropicFiltering = sharedMem->graphicsConfig.anisotropicFiltering;
+        result.samplerOverrideMode = sharedMem->graphicsConfig.samplerOverrideMode[0]
+                                         ? sharedMem->graphicsConfig.samplerOverrideMode
+                                         : "safe";
         result.mipMapping = sharedMem->graphicsConfig.mipMapping;
         result.mipBias = sharedMem->graphicsConfig.mipBias;
         result.mipBiasMode = sharedMem->graphicsConfig.mipBiasMode;

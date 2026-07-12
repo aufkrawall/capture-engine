@@ -1,0 +1,70 @@
+# Graphics Overrides And Frame Pacing
+
+Last cross-checked: 2026-07-12
+
+Primary sources:
+- `common/config.{h,cpp}`
+- `common/strict_float_parse.h`
+- `common/shared_defs.h`
+- `hook/common/{hook_common,dxgi_shared,fps_limiter,fps_limiter_policy,sampler_override_utils}.*`
+- `hook/apis/{dx9_hook,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,opengl_hook}.cpp`
+- `hook/vulkan_layer/vulkan_layer.{h,cpp}`
+- `tests/{test_config,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter}.cpp`
+
+## Configuration contract
+
+- `sampler_override_mode=safe|aggressive` defaults to `safe`. Safe mode protects comparison/reduction, fixed-LOD,
+  non-material-address, and point-min/mag sampler families. Aggressive mode expands ordinary sampler coverage but still
+  preserves comparison/reduction, invalid, fixed-LOD, Vulkan non-normalized, and other structurally special samplers.
+- `cpu_prerender_limit` has integer semantics only: `-1`, `0`, or `1-6`. Fractional, non-finite, trailing-junk, and
+  out-of-range inputs normalize to `-1`.
+- `backbuffer_count=N` retains physical count changes where safe. A flip-model reduction that would violate the game's
+  allocation remains physical-count preserving and uses waitable-swapchain maximum latency `N-1` as the equivalent
+  present depth.
+- DLSS preset input is exactly one trimmed `A-Z` character or `default`. Sharpening is exactly `default`, `off`, or a
+  finite full-string value in `0.0-1.0`.
+- Shared memory contains the host's fully resolved per-process profile. The hook-local config is used only before IPC
+  exists; sentinel-only selective merging is forbidden because it prevents a profile from resetting a global value.
+
+## Sampler invariants
+
+- DX9 forces MIN/MAG anisotropy independently of `mip_mapping`; MAXANISOTROPY alone is reconciled by setting MIN/MAG
+  on the same eligible sampler. Safe mode requires mipmapped material addressing.
+- D3D10/11 wrapper-to-real `CreateSamplerState` forwarding is explicitly marked so the raw vtable hook cannot apply
+  offset/base bias twice. D3D11 creation and bind replacement use one shared policy.
+- DX12 has one mutation boundary for static samplers: `ID3D12Device::CreateRootSignature`. Serializer detours observe
+  dynamic resolution coverage but pass descriptors through, preventing offset/base bias from being applied once at
+  serialization and again at root creation. Coverage includes sampler v1/v2, root signatures 1.0/1.1/1.2, raw
+  `D3D12CreateDevice`, and `D3D12GetInterface`/`ID3D12DeviceFactory::CreateDevice`.
+- Vulkan uses only device-enabled anisotropy, clamps to physical-device limits, recognizes sampler-reduction pNext
+  structures directly, and retries the original descriptor transactionally if an override is rejected.
+- OpenGL intercepts both texture parameters and modern sampler objects. CPU prerender sync rings are owned per HGLRC.
+
+## Queue-depth and limiter invariants
+
+- D3D10 limit zero uses a native event query; D3D10 limits 1-6 use DXGI maximum frame latency. D3D11 query rings and
+  DX12 fence rings are serialized and rebound when device/queue identity changes. Configured waits do not silently
+  escape after an 8/16 ms timeout while GPU- or vblank-bound.
+- Vulkan `cpu_prerender_limit=1-6` uses a per-queue seven-fence marker ring; `0` waits the current marker. OpenGL uses
+  the same lookback semantics per context. Vulkan drains and resets outstanding markers when the configured depth
+  changes so a previously signaled fence is never resubmitted.
+- Flip-model latency waitables are requested at creation whenever `backbuffer_count` is active. Wrapped DXGI waits at
+  the post-Present/next-frame boundary so simulation/render work cannot begin behind a full vsync queue.
+- The timer limiter uses a rational QPC/Bresenham grid, never emits a short catch-up interval after a missed deadline,
+  and arms a high-resolution timer before the deadline. The fine margin is `clamp(p99 timer wake overshoot + 25us,
+  50us, 250us)`; only the final 50us is a tight spin.
+- Concurrent/re-entrant Present streams cannot advance one cadence: the first caller owns the cadence mutex and other
+  callers skip without blocking. VFR disables capture-grid synchronization only, not an independently configured
+  general cap.
+- Frame-generation scaling depends on the captured source. WGC/DXGI see final presented/generated frames and scale the
+  base target; inject capture publishes application-rendered frames and does not divide its capture-sync target.
+- Anti-Lag 2 and XeLL are initialized before auto/explicit availability selection once a DX12 device and matching game
+  module exist; selection must not reject an API before its lazy initialization attempt.
+
+## Diagnostics and stale-risk
+
+- Sampler logs are bounded by fingerprint/reason. Queue/fence rebinding and failed waits are high-signal and rate
+  limited. The limiter's periodic stats report waited/late/reset frames and actual wait time.
+- Runtime validation remains required across representative native/DXVK D3D9, D3D10/11, D3D12, Vulkan, and OpenGL
+  games, plus WGC and inject CFR capture. In particular, validate Kena/Blackwell, multi-swapchain engines, asynchronous
+  Vulkan present queues, and OpenGL shared-context applications.

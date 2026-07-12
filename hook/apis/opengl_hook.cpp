@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <limits>
 #include <mutex>
+#include <unordered_map>
 #include "../common/capture_base.h"
 #include "../common/capture_pacing.h"
 #include "../common/fps_limiter.h"
@@ -15,6 +16,7 @@
 #include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
+#include "../common/sampler_override_utils.h"
 #include "../common/screenshot_hook.h"
 #include "../wrappers/iat_hook.h"
 #include "hook_common.h"
@@ -100,6 +102,8 @@ typedef void(WINAPI* glTexParameteri_t)(GLenum, GLenum, GLint);
 typedef void(WINAPI* glTexParameterf_t)(GLenum, GLenum, GLfloat);
 typedef void(WINAPI* glTexParameteriv_t)(GLenum, GLenum, const GLint*);
 typedef void(WINAPI* glTexParameterfv_t)(GLenum, GLenum, const GLfloat*);
+typedef void(WINAPI* glSamplerParameteri_t)(GLuint, GLenum, GLint);
+typedef void(WINAPI* glSamplerParameterf_t)(GLuint, GLenum, GLfloat);
 typedef void(WINAPI* glGenFramebuffers_t)(GLsizei, GLuint*);
 typedef void(WINAPI* glDeleteFramebuffers_t)(GLsizei, const GLuint*);
 typedef void(WINAPI* glBindFramebuffer_t)(GLenum, GLuint);
@@ -153,6 +157,8 @@ static glTexParameteri_t pglTexParameteri = nullptr;
 static glTexParameterf_t pglTexParameterf = nullptr;
 static glTexParameteriv_t pglTexParameteriv = nullptr;
 static glTexParameterfv_t pglTexParameterfv = nullptr;
+static glSamplerParameteri_t pglSamplerParameteri = nullptr;
+static glSamplerParameterf_t pglSamplerParameterf = nullptr;
 static glGenFramebuffers_t pglGenFramebuffers = nullptr;
 static glDeleteFramebuffers_t pglDeleteFramebuffers = nullptr;
 static glBindFramebuffer_t pglBindFramebuffer = nullptr;
@@ -203,64 +209,52 @@ static HGLRC g_CurrentTrackedContext = NULL;
 static HGLRC g_OverlayContext = NULL;
 static HGLRC g_CaptureContext = NULL;
 
-// Prerender Limit State
-static std::vector<GLsync> g_PrerenderSyncs;
-static uint64_t g_PrerenderFrameIndex = 0;
-static int64_t g_LastSleepUs = 0;
+struct GLPrerenderState {
+    std::vector<GLsync> syncs;
+    uint64_t frameIndex = 0;
+};
+static std::mutex g_PrerenderMutex;
+static std::unordered_map<HGLRC, GLPrerenderState> g_PrerenderStates;
 
 static void ApplyPrerenderLimitGL(float limit) {
     if (limit < 0.0f || !pglFinish)
         return;
-
-    bool isFractional = (limit > 0.01f && limit < 1.0f);
+    const HGLRC context = wglGetCurrentContext();
+    if (!context)
+        return;
+    std::lock_guard<std::mutex> lock(g_PrerenderMutex);
+    GLPrerenderState& state = g_PrerenderStates[context];
 
     if (limit == 0.0f) {
         // Strict Serial: Wait for CURRENT frame to finish
         pglFinish();
     } else {
-        if (!pglFenceSync)
+        if (!pglFenceSync || !pglClientWaitSync || !pglDeleteSync)
             return;
 
         // Buffered Limit: For fractional limits (e.g., 0.5), we use Buffered 1
         // (Lookback 1) combined with an idle gap to approximate sub-frame latency.
-        int effectiveLimit = isFractional ? 1 : (int)limit;
-        int lookback = effectiveLimit;
+        const int lookback = std::clamp(static_cast<int>(limit), 1, 6);
 
-        if (g_PrerenderSyncs.empty()) {
-            g_PrerenderSyncs.resize(16, nullptr);
+        if (state.syncs.empty()) {
+            state.syncs.resize(7, nullptr);
         }
 
         // Wait for oldest
-        if (g_PrerenderFrameIndex >= (uint64_t)lookback) {
-            GLsync waitSync = g_PrerenderSyncs[(g_PrerenderFrameIndex - lookback) % g_PrerenderSyncs.size()];
+        if (state.frameIndex >= static_cast<uint64_t>(lookback)) {
+            const size_t waitIndex = (state.frameIndex - lookback) % state.syncs.size();
+            GLsync waitSync = state.syncs[waitIndex];
             if (waitSync) {
                 pglClientWaitSync(waitSync, GL_SYNC_FLUSH_COMMANDS_BIT, GL_TIMEOUT_IGNORED);
                 pglDeleteSync(waitSync);
-                g_PrerenderSyncs[(g_PrerenderFrameIndex - lookback) % g_PrerenderSyncs.size()] = nullptr;
+                state.syncs[waitIndex] = nullptr;
             }
         }
 
         // Create new sync for current frame
         GLsync currentSync = pglFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        g_PrerenderSyncs[g_PrerenderFrameIndex % g_PrerenderSyncs.size()] = currentSync;
-        g_PrerenderFrameIndex++;
-    }
-
-    // Strict Serial + Fixed Idle Gap for fractional limits
-    if (isFractional) {
-        // effectiveLimit already set to 0 for Strict Serial above
-
-        // After the wait completes, calculate and apply a fixed idle gap
-        float fps = g_PerfMetrics.GetCurrentFPS();
-        double targetFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
-
-        // Fixed Idle Gap = TargetFrameTime * (1.0 - limit) * 0.10
-        int64_t idleGapUs = (int64_t)(targetFrameTimeUs * (1.0 - limit) * 0.10);
-        if (idleGapUs > 0) {
-            if (idleGapUs > 10000)
-                idleGapUs = 10000;  // Cap at 10ms
-            PrecisionSleep(idleGapUs);
-        }
+        state.syncs[state.frameIndex % state.syncs.size()] = currentSync;
+        state.frameIndex++;
     }
 }
 
@@ -1631,6 +1625,20 @@ static BOOL WINAPI DetourWglDeleteContext(HGLRC hglrc) {
     HookLog("OpenGL: wglDeleteContext called (ctx=0x%p)", hglrc);
     ResetTrackedOpenGLState(hglrc);
 
+    {
+        std::lock_guard<std::mutex> lock(g_PrerenderMutex);
+        auto it = g_PrerenderStates.find(hglrc);
+        if (it != g_PrerenderStates.end()) {
+            if (wglGetCurrentContext() == hglrc && pglDeleteSync) {
+                for (GLsync sync : it->second.syncs) {
+                    if (sync)
+                        pglDeleteSync(sync);
+                }
+            }
+            g_PrerenderStates.erase(it);
+        }
+    }
+
     return oWglDeleteContext(hglrc);
 }
 
@@ -1690,6 +1698,11 @@ static void WINAPI DetourGlTexParameteri(GLenum target, GLenum pname, GLint para
                     param = 16;
             }
         }
+        if (pname == 0x2801 /*GL_TEXTURE_MIN_FILTER*/ && param >= 0x2700 && param <= 0x2703 &&
+            af != "default" && af != "off" && pglTexParameterf) {
+            pglTexParameterf(target, 0x84FE /*GL_TEXTURE_MAX_ANISOTROPY_EXT*/,
+                             static_cast<GLfloat>(ce::sampler_override::GetConfiguredMaxAnisotropy(gfx)));
+        }
 
         // Mip Mapping
         const auto& mip = gfx.mipMapping;
@@ -1710,6 +1723,45 @@ static void WINAPI DetourGlTexParameteri(GLenum target, GLenum pname, GLint para
     }
     if (pglTexParameteri)
         pglTexParameteri(target, pname, param);
+}
+
+static void WINAPI DetourGlSamplerParameteri(GLuint sampler, GLenum pname, GLint param) {
+    if (g_IPC) {
+        const auto& gfx = GetActiveGraphicsConfig();
+        if (pname == 0x84FE && gfx.anisotropicFiltering != "default") {
+            param = gfx.anisotropicFiltering == "off"
+                        ? 1
+                        : static_cast<GLint>(ce::sampler_override::GetConfiguredMaxAnisotropy(gfx));
+        }
+        if (pname == 0x2801 /*GL_TEXTURE_MIN_FILTER*/) {
+            if (gfx.mipMapping == "trilinear" && param >= 0x2700 && param <= 0x2702)
+                param = 0x2703;
+            else if (gfx.mipMapping == "bilinear" && (param == 0x2702 || param == 0x2703))
+                param = 0x2701;
+            if (param >= 0x2700 && param <= 0x2703 && gfx.anisotropicFiltering != "default" &&
+                gfx.anisotropicFiltering != "off" && pglSamplerParameterf) {
+                pglSamplerParameterf(
+                    sampler, 0x84FE,
+                    static_cast<GLfloat>(ce::sampler_override::GetConfiguredMaxAnisotropy(gfx)));
+            }
+        }
+    }
+    if (pglSamplerParameteri)
+        pglSamplerParameteri(sampler, pname, param);
+}
+
+static void WINAPI DetourGlSamplerParameterf(GLuint sampler, GLenum pname, GLfloat param) {
+    if (g_IPC) {
+        const auto& gfx = GetActiveGraphicsConfig();
+        if (pname == 0x8501 /*GL_TEXTURE_LOD_BIAS*/ && (gfx.forceMipBiasClamp || HasConfiguredMipBias(gfx)))
+            param = FinalizeMipBias(gfx, ApplyConfiguredMipBias(gfx, param));
+        if (pname == 0x84FE && gfx.anisotropicFiltering != "default")
+            param = gfx.anisotropicFiltering == "off"
+                        ? 1.0f
+                        : static_cast<GLfloat>(ce::sampler_override::GetConfiguredMaxAnisotropy(gfx));
+    }
+    if (pglSamplerParameterf)
+        pglSamplerParameterf(sampler, pname, param);
 }
 
 static void WINAPI DetourGlTexParameterf(GLenum target, GLenum pname, GLfloat param) {
@@ -1763,6 +1815,15 @@ static PROC WINAPI DetourWglGetProcAddress(LPCSTR lpszProc) {
         if (proc)
             oWglSwapIntervalEXT = (wglSwapIntervalEXT_t)proc;
         return (PROC)DetourWglSwapIntervalEXT;
+    }
+
+    if (strcmp(lpszProc, "glSamplerParameteri") == 0) {
+        pglSamplerParameteri = reinterpret_cast<glSamplerParameteri_t>(oWglGetProcAddress(lpszProc));
+        return reinterpret_cast<PROC>(&DetourGlSamplerParameteri);
+    }
+    if (strcmp(lpszProc, "glSamplerParameterf") == 0) {
+        pglSamplerParameterf = reinterpret_cast<glSamplerParameterf_t>(oWglGetProcAddress(lpszProc));
+        return reinterpret_cast<PROC>(&DetourGlSamplerParameterf);
     }
 
     if (strcmp(lpszProc, "glRenderbufferStorageMultisample") == 0) {
@@ -1846,14 +1907,20 @@ void OpenGLHook::Shutdown() {
     HookLog("OpenGLHook::Shutdown()");
     ResetTrackedOpenGLState(NULL);
 
-    // Clean up prerender sync objects
-    if (pglDeleteSync) {
-        for (auto sync : g_PrerenderSyncs) {
-            if (sync)
-                pglDeleteSync(sync);
+    {
+        std::lock_guard<std::mutex> lock(g_PrerenderMutex);
+        const HGLRC current = wglGetCurrentContext();
+        if (pglDeleteSync && current) {
+            auto it = g_PrerenderStates.find(current);
+            if (it != g_PrerenderStates.end()) {
+                for (GLsync sync : it->second.syncs) {
+                    if (sync)
+                        pglDeleteSync(sync);
+                }
+            }
         }
+        g_PrerenderStates.clear();
     }
-    g_PrerenderSyncs.clear();
     // IAT hooks remain until process exit
 }
 

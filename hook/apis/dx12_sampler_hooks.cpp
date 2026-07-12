@@ -15,6 +15,7 @@
 #include "dx12_hook.h"
 
 D3D12CreateDeviceRawPtr oD3D12CreateDeviceRaw = nullptr;
+D3D12GetInterfacePtr oD3D12GetInterface = nullptr;
 D3D12SerializeRootSignaturePtr oSerializeRootSignature = nullptr;
 D3D12SerializeVersionedRootSignaturePtr oSerializeVersionedRootSignature = nullptr;
 
@@ -23,10 +24,40 @@ namespace {
 
 using CreateSamplerPtr = void(STDMETHODCALLTYPE*)(ID3D12Device*, const D3D12_SAMPLER_DESC*,
                                                   D3D12_CPU_DESCRIPTOR_HANDLE);
+struct SamplerDesc2Compat {
+    D3D12_FILTER Filter;
+    D3D12_TEXTURE_ADDRESS_MODE AddressU;
+    D3D12_TEXTURE_ADDRESS_MODE AddressV;
+    D3D12_TEXTURE_ADDRESS_MODE AddressW;
+    FLOAT MipLODBias;
+    UINT MaxAnisotropy;
+    D3D12_COMPARISON_FUNC ComparisonFunc;
+    union {
+        FLOAT FloatBorderColor[4];
+        UINT UintBorderColor[4];
+    };
+    FLOAT MinLOD;
+    FLOAT MaxLOD;
+    UINT Flags;
+};
+struct StaticSamplerDesc1Compat {
+    D3D12_STATIC_SAMPLER_DESC base;
+    UINT Flags;
+};
+struct RootSignatureDesc2Compat {
+    UINT NumParameters;
+    const D3D12_ROOT_PARAMETER1* pParameters;
+    UINT NumStaticSamplers;
+    const StaticSamplerDesc1Compat* pStaticSamplers;
+    D3D12_ROOT_SIGNATURE_FLAGS Flags;
+};
+using CreateSampler2Ptr = void(STDMETHODCALLTYPE*)(IUnknown*, const SamplerDesc2Compat*,
+                                                   D3D12_CPU_DESCRIPTOR_HANDLE);
 using CreateRootSignaturePtr = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, UINT, const void*, SIZE_T, REFIID, void**);
 
 struct DeviceOriginals {
     CreateSamplerPtr createSampler = nullptr;
+    CreateSampler2Ptr createSampler2 = nullptr;
     CreateRootSignaturePtr createRootSignature = nullptr;
 };
 
@@ -38,6 +69,8 @@ struct DecisionCounters {
 
 std::mutex g_deviceHookMutex;
 std::unordered_map<void**, DeviceOriginals> g_deviceOriginals;
+using FactoryCreateDevicePtr = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
+std::unordered_map<void**, FactoryCreateDevicePtr> g_factoryOriginals;
 DecisionCounters g_dynamicCounters;
 DecisionCounters g_staticCounters;
 std::atomic<uint64_t> g_deviceCreateCalls{0};
@@ -57,9 +90,11 @@ void LogConfigOnce() {
     const uint64_t configHash = ce::sampler_override::HashSamplerOverrideConfig(gfx);
     uint64_t expected = 0;
     if (g_firstConfigHash.compare_exchange_strong(expected, configHash, std::memory_order_acq_rel)) {
-        HookLogImportant("DX12 AF: creation-time sampler policy configured (af=%s mipBias=%s mipMode=%s clamp=%d)",
-                         gfx.anisotropicFiltering.c_str(), gfx.mipBias.c_str(), gfx.mipBiasMode.c_str(),
-                         gfx.forceMipBiasClamp ? 1 : 0);
+        HookLogImportant(
+            "DX12 sampler overrides: creation-time policy configured (policy=%s af=%s mip=%s mipBias=%s "
+            "mipMode=%s clamp=%d)",
+            gfx.samplerOverrideMode.c_str(), gfx.anisotropicFiltering.c_str(), gfx.mipMapping.c_str(),
+            gfx.mipBias.c_str(), gfx.mipBiasMode.c_str(), gfx.forceMipBiasClamp ? 1 : 0);
     } else if (expected != configHash && !g_configChangeLogged.exchange(true, std::memory_order_acq_rel)) {
         HookLogImportant(
             "DX12 AF: sampler-affecting configuration changed after descriptor creation began "
@@ -90,11 +125,12 @@ void RecordDecision(DecisionCounters& counters, const char* source, const Desc& 
         }
     }
     if (shouldLog) {
-        HookLog("DX12 AF: %s sampler fingerprint=0x%llX decision=%s afChanged=%d biasChanged=%d "
+        HookLog("DX12 AF: %s sampler fingerprint=0x%llX decision=%s afChanged=%d mipChanged=%d biasChanged=%d "
                 "filter=0x%X address=%u/%u/%u aniso=%u lod=%.3f..%.3f bias=%.3f",
                 source, static_cast<unsigned long long>(fingerprint),
                 ce::dx12_sampler_policy::DecisionName(result.decision), result.anisotropyModified ? 1 : 0,
-                result.mipBiasModified ? 1 : 0, static_cast<unsigned>(original.Filter),
+                result.mipMappingModified ? 1 : 0, result.mipBiasModified ? 1 : 0,
+                static_cast<unsigned>(original.Filter),
                 static_cast<unsigned>(original.AddressU), static_cast<unsigned>(original.AddressV),
                 static_cast<unsigned>(original.AddressW), original.MaxAnisotropy, original.MinLOD, original.MaxLOD,
                 original.MipLODBias);
@@ -123,6 +159,53 @@ DeviceOriginals FindOriginals(ID3D12Device* device) {
     std::lock_guard<std::mutex> lock(g_deviceHookMutex);
     const auto it = g_deviceOriginals.find(vtable);
     return it == g_deviceOriginals.end() ? DeviceOriginals{} : it->second;
+}
+
+HRESULT STDMETHODCALLTYPE DetourFactoryCreateDevice(IUnknown* factory, IUnknown* adapter,
+                                                     D3D_FEATURE_LEVEL minimumFeatureLevel, REFIID riid,
+                                                     void** device) {
+    FactoryCreateDevicePtr original = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_deviceHookMutex);
+        const auto it = g_factoryOriginals.find(*reinterpret_cast<void***>(factory));
+        if (it != g_factoryOriginals.end())
+            original = it->second;
+    }
+    if (!original)
+        return E_FAIL;
+    const HRESULT hr = original(factory, adapter, minimumFeatureLevel, riid, device);
+    if (SUCCEEDED(hr) && device && *device) {
+        ID3D12Device* baseDevice = nullptr;
+        auto* unknown = reinterpret_cast<IUnknown*>(*device);
+        if (SUCCEEDED(unknown->QueryInterface(IID_ID3D12Device, reinterpret_cast<void**>(&baseDevice))) &&
+            baseDevice) {
+            DX12_HookDeviceVTable(baseDevice);
+            baseDevice->Release();
+        }
+    }
+    return hr;
+}
+
+void HookDeviceFactory(IUnknown* factory) {
+    if (!factory)
+        return;
+    void** vtable = *reinterpret_cast<void***>(factory);
+    if (!vtable || !vtable[9])
+        return;
+    std::lock_guard<std::mutex> lock(g_deviceHookMutex);
+    if (g_factoryOriginals.find(vtable) != g_factoryOriginals.end())
+        return;
+    FactoryCreateDevicePtr original = nullptr;
+    const VTableHook::Status status = VTableHook::Create(
+        &vtable[9], reinterpret_cast<void*>(&DetourFactoryCreateDevice), reinterpret_cast<void**>(&original));
+    if (status == VTableHook::Success && original) {
+        g_factoryOriginals.emplace(vtable, original);
+        HookLogImportant("DX12 AF: ID3D12DeviceFactory::CreateDevice hook ready factory=%p vtable=%p", factory,
+                         vtable);
+    } else {
+        HookLogImportant("DX12 AF: ID3D12DeviceFactory hook failed factory=%p status=%s", factory,
+                         VTableHook::StatusToString(status));
+    }
 }
 
 bool ModifyStaticSamplers(D3D12_ROOT_SIGNATURE_DESC& desc, std::vector<D3D12_STATIC_SAMPLER_DESC>& samplers,
@@ -157,6 +240,23 @@ bool ModifyStaticSamplers(D3D12_ROOT_SIGNATURE_DESC1& desc, std::vector<D3D12_ST
     return modified;
 }
 
+bool ModifyStaticSamplers(RootSignatureDesc2Compat& desc, std::vector<StaticSamplerDesc1Compat>& samplers,
+                          const char* source) {
+    if (desc.NumStaticSamplers == 0 || !desc.pStaticSamplers)
+        return false;
+    samplers.assign(desc.pStaticSamplers, desc.pStaticSamplers + desc.NumStaticSamplers);
+    bool modified = false;
+    for (auto& sampler : samplers) {
+        // NON_NORMALIZED_COORDINATES has sampling restrictions that ordinary
+        // material overrides must never rewrite.
+        if ((sampler.Flags & 0x2u) == 0)
+            modified = ApplyStaticSampler(sampler.base, source).Modified() || modified;
+    }
+    if (modified)
+        desc.pStaticSamplers = samplers.data();
+    return modified;
+}
+
 bool RewriteRootSignatureBlob(const void* blob, SIZE_T blobSize, ID3DBlob** rewrittenBlob) {
     if (!blob || blobSize == 0 || !rewrittenBlob || !oSerializeVersionedRootSignature) {
         return false;
@@ -184,7 +284,34 @@ bool RewriteRootSignatureBlob(const void* blob, SIZE_T blobSize, ID3DBlob** rewr
     D3D12_VERSIONED_ROOT_SIGNATURE_DESC modified = *original;
     std::vector<D3D12_STATIC_SAMPLER_DESC> samplers;
     bool anyModified = false;
-    if (modified.Version == D3D_ROOT_SIGNATURE_VERSION_1_0) {
+    if (static_cast<unsigned>(modified.Version) == 3u) {
+        auto root12 = *reinterpret_cast<const RootSignatureDesc2Compat*>(&original->Desc_1_0);
+        std::vector<StaticSamplerDesc1Compat> samplers12;
+        if (ModifyStaticSamplers(root12, samplers12, "precompiled-v1.2")) {
+            struct VersionedRootSignatureDesc12Compat {
+                D3D_ROOT_SIGNATURE_VERSION Version;
+                RootSignatureDesc2Compat Desc_1_2;
+            } root = {static_cast<D3D_ROOT_SIGNATURE_VERSION>(3), root12};
+            ID3DBlob* errors = nullptr;
+            const HRESULT serializeHr = oSerializeVersionedRootSignature(
+                reinterpret_cast<const D3D12_VERSIONED_ROOT_SIGNATURE_DESC*>(&root), rewrittenBlob, &errors);
+            if (errors)
+                errors->Release();
+            deserializer->Release();
+            if (SUCCEEDED(serializeHr) && *rewrittenBlob)
+                return true;
+            if (*rewrittenBlob) {
+                (*rewrittenBlob)->Release();
+                *rewrittenBlob = nullptr;
+            }
+            static std::atomic<uint32_t> failureLogs{0};
+            if (failureLogs.fetch_add(1, std::memory_order_relaxed) < 8) {
+                HookLogImportant("DX12 AF: root-signature 1.2 reserialization failed hr=0x%08X; passing through",
+                                 static_cast<unsigned>(serializeHr));
+            }
+            return false;
+        }
+    } else if (modified.Version == D3D_ROOT_SIGNATURE_VERSION_1_0) {
         anyModified = ModifyStaticSamplers(modified.Desc_1_0, samplers, "precompiled-v1.0");
     } else if (modified.Version == D3D_ROOT_SIGNATURE_VERSION_1_1) {
         anyModified = ModifyStaticSamplers(modified.Desc_1_1, samplers, "precompiled-v1.1");
@@ -230,6 +357,26 @@ void STDMETHODCALLTYPE DetourCreateSampler(ID3D12Device* device, const D3D12_SAM
     D3D12_SAMPLER_DESC modified = *desc;
     ApplyDynamicSampler(modified, "dynamic");
     originals.createSampler(device, &modified, destination);
+}
+
+void STDMETHODCALLTYPE DetourCreateSampler2(IUnknown* device, const SamplerDesc2Compat* desc,
+                                             D3D12_CPU_DESCRIPTOR_HANDLE destination) {
+    const DeviceOriginals originals = FindOriginals(reinterpret_cast<ID3D12Device*>(device));
+    if (!originals.createSampler2) {
+        HookLogImportant("DX12 AF: CreateSampler2 detour has no per-vtable original for device=%p", device);
+        return;
+    }
+    if (!desc || (desc->Flags & 0x2u) != 0) {
+        originals.createSampler2(device, desc, destination);
+        return;
+    }
+    SamplerDesc2Compat modified = *desc;
+    D3D12_SAMPLER_DESC ordinary = {};
+    static_assert(sizeof(ordinary) + sizeof(UINT) == sizeof(modified));
+    std::memcpy(&ordinary, &modified, sizeof(ordinary));
+    ApplyDynamicSampler(ordinary, "dynamic-v2");
+    std::memcpy(&modified, &ordinary, sizeof(ordinary));
+    originals.createSampler2(device, &modified, destination);
 }
 
 HRESULT STDMETHODCALLTYPE DetourCreateRootSignature(ID3D12Device* device, UINT nodeMask, const void* blob,
@@ -305,6 +452,26 @@ bool HookDevice(ID3D12Device* device) {
         g_deviceHookSuccesses.fetch_add(1, std::memory_order_relaxed);
         HookLogImportant("DX12 AF: actual device sampler/root-signature hooks ready device=%p vtable=%p", device,
                          vtable);
+    }
+
+    static const GUID iidDevice11 = {0x5405c344, 0xd457, 0x444e, {0xb4, 0xdd, 0x23, 0x66, 0xe4, 0x5a, 0xee, 0x39}};
+    IUnknown* device11 = nullptr;
+    if (SUCCEEDED(device->QueryInterface(iidDevice11, reinterpret_cast<void**>(&device11))) && device11) {
+        void** vtable11 = *reinterpret_cast<void***>(device11);
+        if (vtable11 && vtable11[84] != reinterpret_cast<void*>(&DetourCreateSampler2)) {
+            CreateSampler2Ptr original = nullptr;
+            const VTableHook::Status status = VTableHook::Create(
+                &vtable11[84], reinterpret_cast<void*>(&DetourCreateSampler2), reinterpret_cast<void**>(&original));
+            if (status == VTableHook::Success && original) {
+                g_deviceOriginals[vtable11].createSampler2 = original;
+                HookLogImportant("DX12 AF: CreateSampler2 hook ready device=%p vtable=%p", device11, vtable11);
+            } else {
+                HookLogImportant("DX12 AF: CreateSampler2 hook failed device=%p status=%s", device11,
+                                 VTableHook::StatusToString(status));
+                success = false;
+            }
+        }
+        device11->Release();
     }
     return success;
 }
@@ -382,21 +549,32 @@ HRESULT WINAPI DetourD3D12CreateDeviceRaw(IUnknown* adapter, D3D_FEATURE_LEVEL m
     return hr;
 }
 
+HRESULT WINAPI DetourD3D12GetInterface(REFCLSID clsid, REFIID riid, void** object) {
+    if (!oD3D12GetInterface)
+        return E_FAIL;
+    const HRESULT hr = oD3D12GetInterface(clsid, riid, object);
+    if (SUCCEEDED(hr) && object && *object) {
+        static const GUID iidDeviceFactory = {
+            0x61f307d3, 0xd34e, 0x4e7c, {0x83, 0x74, 0x3b, 0xa4, 0xde, 0x23, 0xcc, 0xcb}};
+        IUnknown* factory = nullptr;
+        auto* unknown = reinterpret_cast<IUnknown*>(*object);
+        if (SUCCEEDED(unknown->QueryInterface(iidDeviceFactory, reinterpret_cast<void**>(&factory))) && factory) {
+            ce::dx12_sampler_hooks::HookDeviceFactory(factory);
+            factory->Release();
+        }
+    }
+    return hr;
+}
+
 HRESULT WINAPI DetourSerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC* rootSignature,
                                              D3D_ROOT_SIGNATURE_VERSION version, ID3DBlob** blob,
                                              ID3DBlob** errorBlob) {
     if (!oSerializeRootSignature) {
         return E_FAIL;
     }
-    if (!rootSignature || rootSignature->NumStaticSamplers == 0 || !rootSignature->pStaticSamplers) {
-        return oSerializeRootSignature(rootSignature, version, blob, errorBlob);
-    }
-
-    D3D12_ROOT_SIGNATURE_DESC modified = *rootSignature;
-    std::vector<D3D12_STATIC_SAMPLER_DESC> samplers;
-    if (ce::dx12_sampler_hooks::ModifyStaticSamplers(modified, samplers, "serialize-v1.0")) {
-        return oSerializeRootSignature(&modified, version, blob, errorBlob);
-    }
+    // CreateRootSignature is the single mutation boundary. Rewriting here as well
+    // would apply non-idempotent offset/base bias twice when the resulting blob is
+    // passed through the device hook.
     return oSerializeRootSignature(rootSignature, version, blob, errorBlob);
 }
 
@@ -405,17 +583,5 @@ HRESULT WINAPI DetourSerializeVersionedRootSignature(const D3D12_VERSIONED_ROOT_
     if (!oSerializeVersionedRootSignature) {
         return E_FAIL;
     }
-    if (!rootSignature) {
-        return oSerializeVersionedRootSignature(rootSignature, blob, errorBlob);
-    }
-
-    D3D12_VERSIONED_ROOT_SIGNATURE_DESC modified = *rootSignature;
-    std::vector<D3D12_STATIC_SAMPLER_DESC> samplers;
-    bool anyModified = false;
-    if (modified.Version == D3D_ROOT_SIGNATURE_VERSION_1_0) {
-        anyModified = ce::dx12_sampler_hooks::ModifyStaticSamplers(modified.Desc_1_0, samplers, "serialize-v1.0");
-    } else if (modified.Version == D3D_ROOT_SIGNATURE_VERSION_1_1) {
-        anyModified = ce::dx12_sampler_hooks::ModifyStaticSamplers(modified.Desc_1_1, samplers, "serialize-v1.1");
-    }
-    return oSerializeVersionedRootSignature(anyModified ? &modified : rootSignature, blob, errorBlob);
+    return oSerializeVersionedRootSignature(rootSignature, blob, errorBlob);
 }

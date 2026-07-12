@@ -151,12 +151,13 @@ struct FpsLimiterConfig {
 struct GraphicsConfig {
     std::string vsyncMode;               // "off", "fifo" (on), "adaptive", "mailbox"
     std::string anisotropicFiltering;    // "off", "2x", "4x", "8x", "16x"
+    std::string samplerOverrideMode = "safe";  // "safe" protects special-purpose samplers; "aggressive" forces all ordinary samplers
     std::string mipMapping;              // "bilinear", "trilinear"
     std::string mipBias;                 // "default", "0", "0.5", "-0.5", etc.
     std::string mipBiasMode = "strict";  // "strict", "offset", "base"
     bool forceMipBiasClamp = false;      // Force all texture mip bias values to 0
     std::string msaaSamples;             // "off", "2x", "4x", "8x"
-    float cpuPrerenderLimit = -1.0f;     // -1 = default, 0, 0.5, 1-6
+    float cpuPrerenderLimit = -1.0f;     // integer semantics: -1 = default, 0 = fully serialized, 1-6 = queued frames
     int backbufferCount = -1;            // -1 = app controlled, 2-6
     int frameLatency = 0;                // 0 = default, 1-6 (SetMaximumFrameLatency)
     bool sgssaa = false;                 // Enable Sparse Grid Supersampling

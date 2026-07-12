@@ -4,6 +4,7 @@
 
 #include "d3d10_device_wrap.h"
 #include <cstdlib>
+#include "../apis/dx11_hook.h"
 #include "../apis/lod_helper.h"
 #include "../common/sampler_override_utils.h"
 #include "dxgi_device_wrap.h"
@@ -41,10 +42,9 @@ void CWrapD3D10Device::ApplySamplerOverrides(D3D10_SAMPLER_DESC* pDesc) {
     if (!g_GraphicsOverridesActive.load(std::memory_order_acquire))
         return;
 
-    if (pDesc->MaxLOD == 0.0f || pDesc->MinLOD == pDesc->MaxLOD)
-        return;
-
     const auto& gfx = GetActiveGraphicsConfig();
+    if (!ce::sampler_override::IsD3D10SamplerOverrideEligible(*pDesc, gfx))
+        return;
 
     const std::string& af = gfx.anisotropicFiltering;
     if (af != "default" && !af.empty()) {
@@ -67,6 +67,13 @@ void CWrapD3D10Device::ApplySamplerOverrides(D3D10_SAMPLER_DESC* pDesc) {
     }
 
     const std::string& bias = gfx.mipBias;
+    if (!ce::sampler_override::IsD3D10AnisotropicFilter(pDesc->Filter)) {
+        if (gfx.mipMapping == "trilinear")
+            pDesc->Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
+        else if (gfx.mipMapping == "bilinear")
+            pDesc->Filter = D3D10_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    }
+
     if ((bias != "default" && !bias.empty()) || gfx.forceMipBiasClamp) {
         float originalBias = pDesc->MipLODBias;
         pDesc->MipLODBias = ApplyConfiguredMipBias(gfx, originalBias);
@@ -509,7 +516,10 @@ HRESULT STDMETHODCALLTYPE CWrapD3D10Device::CreateSamplerState(const D3D10_SAMPL
     if (pSamplerDesc) {
         D3D10_SAMPLER_DESC desc = *pSamplerDesc;
         ApplySamplerOverrides(&desc);
-        return m_pReal->CreateSamplerState(&desc, ppSamplerState);
+        DX11Hook_BeginWrapperSamplerForwarding();
+        const HRESULT hr = m_pReal->CreateSamplerState(&desc, ppSamplerState);
+        DX11Hook_EndWrapperSamplerForwarding();
+        return hr;
     }
     return m_pReal->CreateSamplerState(pSamplerDesc, ppSamplerState);
 }

@@ -167,6 +167,18 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::SetSamplerState(DWORD Sampler, D3DSAM
                     pTex->Release();
                 }
             }
+
+            if (shouldOverride && gfx.samplerOverrideMode != "aggressive") {
+                for (D3DSAMPLERSTATETYPE addressType :
+                     {D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_ADDRESSW}) {
+                    DWORD address = D3DTADDRESS_CLAMP;
+                    m_pReal->GetSamplerState(Sampler, addressType, &address);
+                    if (address != D3DTADDRESS_WRAP && address != D3DTADDRESS_MIRROR) {
+                        shouldOverride = false;
+                        break;
+                    }
+                }
+            }
         }
 
         if (shouldOverride) {
@@ -183,11 +195,22 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::SetSamplerState(DWORD Sampler, D3DSAM
                         Value = 8;
                     else
                         Value = 16;
+                    if (af[0] != 'o') {
+                        m_pReal->SetSamplerState(Sampler, D3DSAMP_MINFILTER, D3DTEXF_ANISOTROPIC);
+                        m_pReal->SetSamplerState(Sampler, D3DSAMP_MAGFILTER, D3DTEXF_ANISOTROPIC);
+                    }
                 }
             } else if (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER || Type == D3DSAMP_MIPFILTER) {
                 const char* mip = gfx.mipMapping.c_str();
-                if (mip[0] != 'd') {
-                    bool isAniso = (gfx.anisotropicFiltering != "default" && gfx.anisotropicFiltering != "off");
+                const bool isAniso =
+                    (gfx.anisotropicFiltering != "default" && gfx.anisotropicFiltering != "off");
+                if (isAniso && (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER)) {
+                    Value = D3DTEXF_ANISOTROPIC;
+                } else if (gfx.anisotropicFiltering == "off" &&
+                           (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER) &&
+                           Value == D3DTEXF_ANISOTROPIC) {
+                    Value = D3DTEXF_LINEAR;
+                } else if (mip[0] != 'd') {
 
                     if (mip[0] == 't') {  // trilinear
                         Value = D3DTEXF_LINEAR;
@@ -200,9 +223,6 @@ HRESULT STDMETHODCALLTYPE CWrapD3D9Device::SetSamplerState(DWORD Sampler, D3DSAM
                         Value = D3DTEXF_POINT;
                     }
 
-                    if (isAniso && (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER)) {
-                        Value = D3DTEXF_ANISOTROPIC;
-                    }
                 }
             } else if (Type == D3DSAMP_MIPMAPLODBIAS) {
                 float finalBias = ApplyConfiguredMipBias(gfx, *((float*)&Value));

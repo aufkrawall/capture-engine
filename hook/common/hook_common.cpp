@@ -455,6 +455,7 @@ GraphicsConfig GetActiveGraphicsConfig() {
         const auto& shmGfx = g_IPC->GetSharedMem()->graphicsConfig;
         mergedConfig.vsyncMode = shmGfx.vsyncMode;
         mergedConfig.anisotropicFiltering = shmGfx.anisotropicFiltering;
+        mergedConfig.samplerOverrideMode = shmGfx.samplerOverrideMode[0] ? shmGfx.samplerOverrideMode : "safe";
         mergedConfig.mipMapping = shmGfx.mipMapping;
         mergedConfig.mipBias = shmGfx.mipBias;
         mergedConfig.mipBiasMode = shmGfx.mipBiasMode;
@@ -500,8 +501,13 @@ GraphicsConfig GetActiveGraphicsConfig() {
         mergedConfig = GraphicsConfig();
     }
 
-    // Apply Overrides from g_pLocalConfig
-    if (g_pLocalConfig) {
+    // Shared memory already contains the host's fully resolved per-process
+    // profile and remains authoritative for hot reloads. Use the hook-local
+    // fully resolved config only before IPC exists; selectively overlaying
+    // non-default values made it impossible for a profile to reset a global
+    // override back to default/strict/false.
+    if (g_pLocalConfig && !(g_IPC && g_IPC->GetSharedMem())) {
+        mergedConfig = g_pLocalConfig->graphics;
         if (g_pLocalConfig->graphics.parsed.srPreset > 0) {
             static uint32_t lastLoggedLocal = 0;
             if (g_pLocalConfig->graphics.parsed.srPreset != lastLoggedLocal) {
@@ -541,6 +547,7 @@ GraphicsConfig GetActiveGraphicsConfig() {
             !g_pLocalConfig->graphics.anisotropicFiltering.empty()) {
             mergedConfig.anisotropicFiltering = g_pLocalConfig->graphics.anisotropicFiltering;
         }
+        mergedConfig.samplerOverrideMode = g_pLocalConfig->graphics.samplerOverrideMode;
         if (g_pLocalConfig->graphics.mipMapping != "default" && !g_pLocalConfig->graphics.mipMapping.empty()) {
             mergedConfig.mipMapping = g_pLocalConfig->graphics.mipMapping;
         }

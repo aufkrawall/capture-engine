@@ -4,10 +4,12 @@
 #include <cctype>
 #include <cerrno>
 #include <climits>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include "logging.h"
+#include "strict_float_parse.h"
 
 // Helper to trim specific characters from both ends
 std::string Trim(const std::string& s, const char* chars = " \t\r\n\"()") {
@@ -211,9 +213,12 @@ bool ParseBool(const std::string& val) {
 // Helper to parse DLSS presets (A-Z -> 1-26, Default -> 0)
 // Accept the full alphabet so future NGX preset letters work without another update.
 uint32_t ParseDlssPreset(const std::string& val) {
-    if (val.empty() || _stricmp(val.c_str(), "default") == 0)
+    const std::string normalized = Trim(val, " \t\r\n\"");
+    if (normalized.empty() || _stricmp(normalized.c_str(), "default") == 0)
         return 0;
-    char c = toupper(val[0]);
+    if (normalized.size() != 1)
+        return 0;
+    const char c = static_cast<char>(std::toupper(static_cast<unsigned char>(normalized[0])));
     if (c >= 'A' && c <= 'Z')
         return (uint32_t)(c - 'A' + 1);
     return 0;
@@ -221,26 +226,21 @@ uint32_t ParseDlssPreset(const std::string& val) {
 
 // Helper to parse Ray Reconstruction presets (A-Z -> 1-26, Default -> 0)
 uint32_t ParseDlssRRPreset(const std::string& val) {
-    if (val.empty() || _stricmp(val.c_str(), "default") == 0)
-        return 0;
-    char c = toupper(val[0]);
-    if (c >= 'A' && c <= 'Z')
-        return (uint32_t)(c - 'A' + 1);
-    return 0;
+    return ParseDlssPreset(val);
 }
 
 // Helper to parse DLSS sharpening (-2.0 default, -1.0 off, 0.0-1.0 value)
 float ParseDlssSharpening(const std::string& val) {
-    if (val.empty() || _stricmp(val.c_str(), "default") == 0)
+    const std::string normalized = Trim(val, " \t\r\n\"");
+    if (normalized.empty() || _stricmp(normalized.c_str(), "default") == 0)
         return -2.0f;
-    if (_stricmp(val.c_str(), "off") == 0)
+    if (_stricmp(normalized.c_str(), "off") == 0)
         return -1.0f;
-    char* end = nullptr;
-    float f = std::strtof(val.c_str(), &end);
-    if (end == val.c_str()) {
+    float f = 0.0f;
+    if (!ce::TryParseFiniteFloat(normalized, f) || f < 0.0f || f > 1.0f) {
         return -2.0f;
     }
-    return f;  // Clamp if necessary? Usually NGX handles 0.0-1.0
+    return f;
 }
 
 int ParseDlssFGFactor(const std::string& val) {
@@ -669,6 +669,8 @@ general_limiter_mode=basic
 vsync_mode=default
 ; anisotropic_filtering - Values: default, off, 2x, 4x, 8x, 16x
 anisotropic_filtering=default
+; sampler_override_mode - Values: safe, aggressive. Safe protects special-purpose samplers.
+sampler_override_mode=safe
 ; mip_mapping (untested) - Values: default, bilinear, trilinear
 mip_mapping=default
 ; mip_bias - Values: default or float (e.g. -0.5, 0, 0.5)
@@ -897,18 +899,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             return def;
         // Normalization: replace ',' with '.'
         std::replace(valStr.begin(), valStr.end(), ',', '.');
-        try {
-            // Use stringstream with C locale for consistent parsing
-            std::stringstream ss(valStr);
-            ss.imbue(std::locale::classic());
-            float f;
-            ss >> f;
-            if (ss.fail())
-                return def;
-            return f;
-        } catch (...) {
-            return def;
-        }
+        float parsed = 0.0f;
+        return ce::TryParseFiniteFloat(valStr, parsed) ? parsed : def;
     };
 
     // General
@@ -999,12 +991,25 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     // Graphics Overrides
     config.graphics.vsyncMode = GetStr("Graphics", "vsync_mode", "default");
     config.graphics.anisotropicFiltering = GetStr("Graphics", "anisotropic_filtering", "default");
+    config.graphics.samplerOverrideMode = GetStr("Graphics", "sampler_override_mode", "safe");
+    std::transform(config.graphics.samplerOverrideMode.begin(), config.graphics.samplerOverrideMode.end(),
+                   config.graphics.samplerOverrideMode.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (config.graphics.samplerOverrideMode != "safe" && config.graphics.samplerOverrideMode != "aggressive") {
+        config.graphics.samplerOverrideMode = "safe";
+    }
     config.graphics.mipMapping = GetStr("Graphics", "mip_mapping", "default");
     config.graphics.mipBias = GetStr("Graphics", "mip_bias", "default");
     config.graphics.mipBiasMode = GetStr("Graphics", "mip_bias_mode", "strict");
     config.graphics.forceMipBiasClamp = GetBool("Graphics", "force_mip_bias_clamp", false);
     config.graphics.msaaSamples = GetStr("Graphics", "msaa_samples", "default");
     config.graphics.cpuPrerenderLimit = GetFloat("Graphics", "cpu_prerender_limit", -1.0f);
+    if (!std::isfinite(config.graphics.cpuPrerenderLimit) ||
+        config.graphics.cpuPrerenderLimit != std::trunc(config.graphics.cpuPrerenderLimit) ||
+        (config.graphics.cpuPrerenderLimit != -1.0f &&
+         (config.graphics.cpuPrerenderLimit < 0.0f || config.graphics.cpuPrerenderLimit > 6.0f))) {
+        config.graphics.cpuPrerenderLimit = -1.0f;
+    }
     config.graphics.backbufferCount = GetInt("Graphics", "backbuffer_count", -1);
     if (config.graphics.backbufferCount == 0) {
         config.graphics.backbufferCount = -1;

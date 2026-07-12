@@ -47,6 +47,9 @@ struct DeviceDispatch {
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     bool captureInteropEnabled = false;
+    bool samplerAnisotropyEnabled = false;
+    float maxSamplerAnisotropy = 1.0f;
+    float maxSamplerLodBias = 0.0f;
     PFN_vkGetDeviceProcAddr fp_vkGetDeviceProcAddr = nullptr;
     PFN_vkDestroyDevice fp_vkDestroyDevice = nullptr;
     PFN_vkGetDeviceQueue fp_vkGetDeviceQueue = nullptr;
@@ -221,6 +224,9 @@ public:
     const char* GetMipMapping() const {
         return m_MipMapping.c_str();
     }
+    bool IsAggressiveSamplerOverride() const {
+        return m_SamplerOverrideMode == "aggressive";
+    }
     const char* GetVsyncMode() const {
         return m_VsyncMode.c_str();
     }
@@ -258,6 +264,7 @@ private:
     bool m_ForceMipBiasClamp;
     std::string m_MipBiasMode;
     std::string m_MipMapping;
+    std::string m_SamplerOverrideMode;
     std::string m_VsyncMode;
     int32_t m_BackbufferCount;
     float m_PrerenderLimit;

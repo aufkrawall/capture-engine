@@ -5,6 +5,8 @@
 #include <timeapi.h>  // For timeBeginPeriod/timeEndPeriod
 // clang-format on
 #include <intrin.h>
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <mutex>
 #include "antilag2_limiter.h"
@@ -67,11 +69,14 @@ private:
             qpcFrequency = freq.QuadPart;
         }
 
-        int64_t intervalTicks = qpcFrequency / effectiveTargetFps;
-        int64_t phaseOffsetTicks = intervalTicks / 2;
-        if (phaseOffsetTicks < 1) {
-            phaseOffsetTicks = 1;
+        if (localIntervalFps_ != effectiveTargetFps) {
+            localIntervalFps_ = effectiveTargetFps;
+            localIntervalRemainder_ = 0;
         }
+        const auto NextIntervalTicks = [&]() {
+            return ce::fps_limiter_policy::NextRationalIntervalTicks(qpcFrequency, effectiveTargetFps,
+                                                                      localIntervalRemainder_);
+        };
 
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
@@ -79,6 +84,7 @@ private:
         if (localTargetTime_ == 0) {
             // Start later in the current frame rather than a full frame ahead.
             // This preserves the low-latency behavior expected from Reflex.
+            const int64_t phaseOffsetTicks = std::max<int64_t>(1, (qpcFrequency / effectiveTargetFps) / 2);
             localTargetTime_ = now.QuadPart + phaseOffsetTicks;
             localFrameCount_ = 0;
             localStatsIntervalStart_ = now.QuadPart;
@@ -112,13 +118,15 @@ private:
         result.actualWaitUs = ((afterWait.QuadPart - beforeWait.QuadPart) * 1000000) / qpcFrequency;
         lastActualWaitUs_ = result.actualWaitUs;
 
-        localTargetTime_ += intervalTicks;
-
         QueryPerformanceCounter(&now);
-        if (localTargetTime_ < now.QuadPart - intervalTicks * 2) {
-            localTargetTime_ = now.QuadPart + phaseOffsetTicks;
+        if (waitTicks <= 0) {
+            // Never emit a short catch-up interval after a hitch or an over-budget
+            // frame. Rebase the rational grid at the actual present boundary.
+            localTargetTime_ = now.QuadPart + NextIntervalTicks();
             result.resetCadence = true;
             ++localStatsResetFrames_;
+        } else {
+            localTargetTime_ += NextIntervalTicks();
         }
 
         localFrameCount_++;
@@ -228,9 +236,12 @@ public:
         // Convert to microseconds for better precision
         int64_t diffUs = (diff * 1000000) / qpcFrequency;
 
-        // Try high-resolution waitable timer for waits > 1ms (available on Win10
-        // 1803+)
-        if (diffUs > 1000 && !highResTimerFailed) {
+        const int64_t fineMarginUs = adaptiveFineMarginUs_;
+
+        // Arm the kernel timer before the deadline, then trim only the measured
+        // scheduler tail. Arming at the deadline itself turns wake-up latency
+        // directly into frame-time variance.
+        if (diffUs > fineMarginUs + 100 && !highResTimerFailed) {
             std::lock_guard<std::mutex> lock(timerStateMutex_);
             if (!highResTimer) {
                 // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x2
@@ -241,19 +252,17 @@ public:
             }
 
             if (highResTimer) {
-                // Convert to 100ns intervals (negative = relative)
-                // Use double to avoid int64 overflow when diff * 10000000 > INT64_MAX.
-                // At qpcFrequency ~10MHz and diff up to ~200ms, diff*10M can exceed 2^53 in double
-                // but stays well within int64 range for reasonable frame times (<1s).
-                // The divide-before-multiply approach prevents overflow for large diffs.
+                const int64_t coarseUs = diffUs - fineMarginUs;
+                const int64_t coarseTargetTick = targetTick - (fineMarginUs * qpcFrequency / 1000000);
                 LARGE_INTEGER dueTime;
-                dueTime.QuadPart =
-                    -static_cast<int64_t>(static_cast<double>(diff) * (10000000.0 / static_cast<double>(qpcFrequency)));
+                dueTime.QuadPart = -coarseUs * 10;
 
                 if (SetWaitableTimer(highResTimer, &dueTime, 0, NULL, NULL, FALSE)) {
-                    WaitForSingleObject(highResTimer, (DWORD)(diffUs / 1000 + 5));
-                    // Fall through to spin-wait for sub-μs precision trim
+                    WaitForSingleObject(highResTimer, static_cast<DWORD>((coarseUs + 999) / 1000 + 2));
                     QueryPerformanceCounter(&now);
+                    const int64_t coarseOvershootUs =
+                        std::max<int64_t>(0, (now.QuadPart - coarseTargetTick) * 1000000 / qpcFrequency);
+                    RecordTimerOvershoot(coarseOvershootUs);
                     diff = targetTick - now.QuadPart;
                     diffUs = (diff * 1000000) / qpcFrequency;
                     if (diff <= 0)
@@ -263,21 +272,14 @@ public:
             }
         }
 
-        // Fallback: Hybrid sleep strategy
-        // - If > 2ms remaining, use Sleep(1) for power efficiency
-        // - If 0.5ms - 2ms, use SwitchToThread() or Sleep(0)
-        // - If < 0.5ms, spin-wait for precision
-        // Exit when QPC ticks reach target (not when diffUs rounds to 0)
+        // The high-resolution timer normally leaves only 50-250us. Yield while
+        // there is still scheduler headroom and spin only for the final 50us.
         while (diff > 0) {
-            if (diffUs > 10000) {  // > 10ms
+            if (diffUs > 2000) {
                 Sleep(1);
-            } else if (diffUs > 2000) {  // 2ms - 10ms
-                Sleep(0);                // Yield but remain schedulable soon
-            } else if (diffUs > 500) {
-                // Very short yield
+            } else if (diffUs > 50) {
                 SwitchToThread();
             } else {
-                // Final <0.5ms - tight spin for sub-ms precision
                 _mm_pause();
             }
 
@@ -350,6 +352,11 @@ public:
     }
 
     void ApplyPostPresent() {
+        std::unique_lock<std::mutex> cadenceLock(cadenceMutex_, std::try_to_lock);
+        if (!cadenceLock.owns_lock()) {
+            concurrentApplySkips_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
         if (!reflexPostPresentCadencePending_) {
             return;
         }
@@ -360,7 +367,6 @@ public:
             return;
         }
 
-        EnsureTimerResolution();
         isActivelyLimiting_.store(true, std::memory_order_relaxed);
 
         const auto cadence = RunLocalCadence(targetFps);
@@ -446,6 +452,11 @@ public:
     // CE-owned Reflex pacing to defer its wait until after Present returns, so
     // the blocked time sits before the next frame's simulation/render work.
     void Apply(bool allowPostPresentReflexCadence = false) {
+        std::unique_lock<std::mutex> cadenceLock(cadenceMutex_, std::try_to_lock);
+        if (!cadenceLock.owns_lock()) {
+            concurrentApplySkips_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
         SharedMemoryLayout* shm = nullptr;
         if (dbgShm) {
             shm = dbgShm;
@@ -545,9 +556,17 @@ public:
             configuredMode = generalMode;
         }
 
-        // VFR Mode Passthrough: Disable limiter if VFR is active
-        if (useVFR) {
-            limiterActive = false;
+        // VFR only makes capture-grid synchronization meaningless. A separately
+        // configured general cap must remain active.
+        if (useVFR && usingCaptureSync) {
+            usingCaptureSync = false;
+            if (generalEnabled && generalFps > 0) {
+                limiterActive = true;
+                targetFps = generalFps;
+                configuredMode = generalMode;
+            } else {
+                limiterActive = false;
+            }
         }
 
         if (!limiterActive) {
@@ -569,6 +588,8 @@ public:
             // Reset local limiter state when inactive
             if (localTargetTime_ != 0) {
                 localTargetTime_ = 0;
+                localIntervalFps_ = 0;
+                localIntervalRemainder_ = 0;
                 localFrameCount_ = 0;
                 localStatsIntervalStart_ = 0;
                 localStatsFrameCount_ = 0;
@@ -609,6 +630,7 @@ public:
 
         uint32_t effectiveMode = configuredMode;
 
+        TryInitializeDx12NativeLimiters(configuredMode);
         if (configuredMode == LimiterModeValues::kAuto) {
             // Priority: Reflex (NVIDIA, game-activated) → Anti-Lag 2 (AMD, game-activated) →
             //            XeLL (Intel, game-activated) → FG fallback → basic
@@ -690,7 +712,9 @@ public:
              effectiveMode == LimiterModeValues::kXeLL);
         const bool explicitReflexMode = configuredMode == LimiterModeValues::kNative;
         g_ReflexLimiter.SetManualLimiterConfiguredOrActive(limiterActive && explicitReflexMode);
-        if (fgActive && (effectiveMode == LimiterModeValues::kFGFallback || isNativeMode)) {
+        if (fgActive && (effectiveMode == LimiterModeValues::kFGFallback || isNativeMode) &&
+            ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(
+                usingCaptureSync, shm->runtimeState.IsInjectVideoCaptureRequested())) {
             effectiveTargetFps = targetFps / fgMultiplier;
             if (effectiveTargetFps < 1)
                 effectiveTargetFps = 1;
@@ -702,6 +726,8 @@ public:
             // Reset pacing cadence immediately when FPS or mode changes so hot
             // config reloads apply on the next frame instead of riding stale state.
             localTargetTime_ = 0;
+            localIntervalFps_ = 0;
+            localIntervalRemainder_ = 0;
             localFrameCount_ = 0;
             localStatsIntervalStart_ = 0;
             localStatsFrameCount_ = 0;
@@ -1027,8 +1053,6 @@ public:
         // FG fallback has already adjusted effectiveTargetFps above.
         // =====================================================================
 
-        // Ensure 1ms timer resolution when limiter is active
-        EnsureTimerResolution();
         isActivelyLimiting_.store(true, std::memory_order_relaxed);
 
         if (effectiveTargetFps <= 0)
@@ -1149,6 +1173,8 @@ public:
         lastApplyReturnQpc = 0;
         isActivelyLimiting_.store(false, std::memory_order_relaxed);
         localTargetTime_ = 0;
+        localIntervalFps_ = 0;
+        localIntervalRemainder_ = 0;
         localFrameCount_ = 0;
         localStatsIntervalStart_ = 0;
         localStatsFrameCount_ = 0;
@@ -1171,6 +1197,44 @@ public:
     }
 
 private:
+    void RecordTimerOvershoot(int64_t overshootUs) {
+        timerOvershootUs_[timerOvershootCursor_] = std::clamp<int64_t>(overshootUs, 0, 2000);
+        timerOvershootCursor_ = (timerOvershootCursor_ + 1) % timerOvershootUs_.size();
+        if (timerOvershootSampleCount_ < timerOvershootUs_.size()) {
+            ++timerOvershootSampleCount_;
+        }
+
+        std::array<int64_t, 64> sorted = timerOvershootUs_;
+        std::sort(sorted.begin(), sorted.begin() + timerOvershootSampleCount_);
+        const size_t p99Index = timerOvershootSampleCount_ > 1
+                                    ? ((timerOvershootSampleCount_ * 99 + 99) / 100) - 1
+                                    : 0;
+        adaptiveFineMarginUs_ = std::clamp<int64_t>(sorted[p99Index] + 25, 50, 250);
+    }
+
+    void TryInitializeDx12NativeLimiters(uint32_t configuredMode) {
+        auto* ctx = ce::GetHookContext();
+        if (!ctx || ctx->activeAPI != ce::ActiveGraphicsAPI::DX12) {
+            return;
+        }
+        auto* device = static_cast<ID3D12Device*>(ctx->graphicsData.dx12.device);
+        if (!device) {
+            return;
+        }
+
+        const bool autoMode = configuredMode == LimiterModeValues::kAuto;
+        if (!antilag2InitAttempted_ &&
+            (configuredMode == LimiterModeValues::kAntiLag2 || (autoMode && GetModuleHandleA("amd_ags_x64.dll")))) {
+            g_AntiLag2Limiter.Init(device);
+            antilag2InitAttempted_ = true;
+        }
+        if (!xellInitAttempted_ &&
+            (configuredMode == LimiterModeValues::kXeLL || (autoMode && GetModuleHandleW(L"libxell.dll")))) {
+            g_XeLLLimiter.Init(device);
+            xellInitAttempted_ = true;
+        }
+    }
+
     void ResetReflexNativePacingState() {
         if (reflexLimiterActive_ || reflexNativeSleepActive_ || g_ReflexLimiter.GetTargetIntervalUs() != 0) {
             g_ReflexLimiter.SetTargetFps(0);
@@ -1232,6 +1296,8 @@ private:
     bool xellInitAttempted_ = false;               // Lazy init flag for XeLL
     int64_t lastApplyReturnQpc = 0;                // QPC tick when Apply() last returned from wait (dedup guard)
     int64_t localTargetTime_ = 0;                  // QPC target for local capture sync cadence
+    int localIntervalFps_ = 0;                     // Denominator of the rational QPC cadence
+    int64_t localIntervalRemainder_ = 0;           // Bresenham remainder; prevents integer-FPS drift
     uint32_t localFrameCount_ = 0;                 // Frame count for local capture sync stats
     int64_t localStatsIntervalStart_ = 0;          // QPC start of current stats interval
     uint32_t localStatsFrameCount_ = 0;            // Frame count within current stats interval
@@ -1253,6 +1319,12 @@ private:
     int traceLogCount_ = 0;
     mutable std::mutex eventStateMutex_;
     mutable std::mutex timerStateMutex_;
+    mutable std::mutex cadenceMutex_;
+    std::array<int64_t, 64> timerOvershootUs_{};
+    size_t timerOvershootCursor_ = 0;
+    size_t timerOvershootSampleCount_ = 0;
+    int64_t adaptiveFineMarginUs_ = 100;
+    std::atomic<uint32_t> concurrentApplySkips_{0};
     static inline std::atomic<int> s_TimerResolutionRefCount{0};
 };
 

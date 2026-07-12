@@ -115,6 +115,9 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
     // Graphics
     strncpy(pSharedMem->graphicsConfig.vsyncMode, config.graphics.vsyncMode.c_str(), 31);
     strncpy(pSharedMem->graphicsConfig.anisotropicFiltering, config.graphics.anisotropicFiltering.c_str(), 31);
+    strncpy(pSharedMem->graphicsConfig.samplerOverrideMode, config.graphics.samplerOverrideMode.c_str(),
+            sizeof(pSharedMem->graphicsConfig.samplerOverrideMode) - 1);
+    pSharedMem->graphicsConfig.samplerOverrideMode[sizeof(pSharedMem->graphicsConfig.samplerOverrideMode) - 1] = '\0';
     strncpy(pSharedMem->graphicsConfig.mipMapping, config.graphics.mipMapping.c_str(), 31);
     strncpy(pSharedMem->graphicsConfig.mipBias, config.graphics.mipBias.c_str(), 31);
     strncpy(pSharedMem->graphicsConfig.mipBiasMode, config.graphics.mipBiasMode.c_str(), 31);
@@ -186,7 +189,8 @@ static void UpdateSharedMemoryFromConfig(SharedMemoryLayout* pSharedMem, const A
     const uint64_t summaryHash =
         std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.vsyncMode)) ^
         (std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.anisotropicFiltering)) << 1) ^
-        (std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.mipBias)) << 2) ^
+        (std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.samplerOverrideMode)) << 2) ^
+        (std::hash<std::string>{}(std::string(pSharedMem->graphicsConfig.mipBias)) << 3) ^
         (static_cast<uint64_t>(pSharedMem->graphicsConfig.backbufferCount) << 3) ^
         (static_cast<uint64_t>(pSharedMem->fpsLimiter.GetGeneralFps()) << 4) ^
         (static_cast<uint64_t>(pSharedMem->fpsLimiter.GetGeneralEnabled()) << 5) ^

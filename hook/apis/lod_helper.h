@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "../../common/config.h"
+#include "../../common/strict_float_parse.h"
 
 // Helper to check if SGSSAA is requested and what the sample count is
 // Returns true if SGSSAA should be applied, false otherwise.
@@ -55,10 +56,7 @@ inline bool TryParseConfiguredMipBias(const GraphicsConfig& gfx, float& outBias)
     if (!HasConfiguredMipBias(gfx)) {
         return false;
     }
-
-    char* end = nullptr;
-    outBias = std::strtof(gfx.mipBias.c_str(), &end);
-    return end != gfx.mipBias.c_str();
+    return ce::TryParseFiniteFloat(gfx.mipBias, outBias);
 }
 
 inline float ApplyConfiguredMipBias(const GraphicsConfig& gfx, float originalBias) {

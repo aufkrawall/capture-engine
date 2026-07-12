@@ -170,6 +170,50 @@ TEST(DX12SamplerPolicyTest, AppliesMipBiasOnlyToSafeMaterialSampler) {
     EXPECT_FLOAT_EQ(shadow.MipLODBias, 0.0f);
 }
 
+TEST(DX12SamplerPolicyTest, AppliesMipMappingWithoutMisreportingAnisotropy) {
+    GraphicsConfig gfx = ForcedAf("default");
+    gfx.mipMapping = "bilinear";
+    D3D12_SAMPLER_DESC desc = MaterialSampler();
+
+    const auto result = ce::dx12_sampler_policy::Apply(desc, gfx);
+
+    EXPECT_TRUE(result.Modified());
+    EXPECT_TRUE(result.mipMappingModified);
+    EXPECT_FALSE(result.anisotropyModified);
+    EXPECT_EQ(desc.Filter, D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT);
+
+    gfx.mipMapping = "trilinear";
+    const auto trilinear = ce::dx12_sampler_policy::Apply(desc, gfx);
+    EXPECT_TRUE(trilinear.mipMappingModified);
+    EXPECT_EQ(desc.Filter, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
+}
+
+TEST(DX12SamplerPolicyTest, AggressiveModeIncludesOrdinaryPointAndClampSamplers) {
+    GraphicsConfig gfx = ForcedAf();
+    gfx.samplerOverrideMode = "aggressive";
+    D3D12_SAMPLER_DESC desc = MaterialSampler(D3D12_FILTER_MIN_MAG_MIP_POINT);
+    desc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+
+    const auto result = ce::dx12_sampler_policy::Apply(desc, gfx);
+
+    EXPECT_TRUE(result.Modified());
+    EXPECT_EQ(desc.Filter, D3D12_FILTER_ANISOTROPIC);
+    EXPECT_EQ(desc.MaxAnisotropy, 16u);
+}
+
+TEST(DX12SamplerPolicyTest, MalformedMipBiasIsIgnored) {
+    for (const char* value : {"1suffix", "nan", "inf"}) {
+        GraphicsConfig gfx = ForcedAf("default");
+        gfx.mipBias = value;
+        D3D12_SAMPLER_DESC desc = MaterialSampler();
+
+        const auto result = ce::dx12_sampler_policy::Apply(desc, gfx);
+
+        EXPECT_FALSE(result.Modified()) << value;
+        EXPECT_FLOAT_EQ(desc.MipLODBias, 0.0f);
+    }
+}
+
 TEST(DX12SamplerPolicyTest, IsIdempotentAndReportsAlreadyCompliant) {
     D3D12_SAMPLER_DESC desc = MaterialSampler();
     EXPECT_TRUE(ce::dx12_sampler_policy::Apply(desc, ForcedAf()).Modified());
@@ -213,7 +257,12 @@ TEST(DX12SamplerPolicyTest, RuntimeCoverageIncludesDynamicExportsAndPrecompiledR
     EXPECT_NE(hooks.find("D3D12CreateVersionedRootSignatureDeserializer"), std::string::npos);
     EXPECT_NE(hooks.find("D3D_ROOT_SIGNATURE_VERSION_1_0"), std::string::npos);
     EXPECT_NE(hooks.find("D3D_ROOT_SIGNATURE_VERSION_1_1"), std::string::npos);
+    EXPECT_NE(hooks.find("precompiled-v1.2"), std::string::npos);
+    EXPECT_NE(hooks.find("DetourCreateSampler2"), std::string::npos);
+    EXPECT_NE(hooks.find("DetourFactoryCreateDevice"), std::string::npos);
     EXPECT_NE(hooks.find("std::unordered_map<void**, DeviceOriginals>"), std::string::npos);
+    EXPECT_NE(hooks.find("CreateRootSignature is the single mutation boundary"), std::string::npos);
+    EXPECT_EQ(hooks.find("ModifyStaticSamplers(modified, samplers, \"serialize-v1.0\")"), std::string::npos);
 }
 
 }  // namespace

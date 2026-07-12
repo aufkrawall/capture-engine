@@ -967,6 +967,11 @@ static UINT ResolvePresentFrameLatencyOverride(const char** sourceOut) {
             *sourceOut = "cpu_prerender_limit";
         return static_cast<UINT>(cfg.cpuPrerenderLimit);
     }
+    if (HasBackbufferCountOverride(cfg.backbufferCount)) {
+        if (sourceOut)
+            *sourceOut = "backbuffer_count-equivalent-depth";
+        return static_cast<UINT>(cfg.backbufferCount - 1);
+    }
 
     if (sourceOut)
         *sourceOut = nullptr;
@@ -1004,15 +1009,16 @@ void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain) {
         return;
     }
 
-    DWORD waitResult = WaitForSingleObject(hWaitable, 16);
-    if (waitResult == WAIT_TIMEOUT) {
-        static int s_logCount = 0;
-        if (s_logCount++ < 10)
-            HookLog("WaitBackbufferFrameLatency: timeout");
-    } else if (waitResult == WAIT_OBJECT_0) {
+    DWORD waitResult = WaitForSingleObject(hWaitable, INFINITE);
+    if (waitResult == WAIT_OBJECT_0) {
         static int s_logCount = 0;
         if (s_logCount++ < 3)
             HookLog("WaitBackbufferFrameLatency: wait succeeded");
+    } else {
+        static std::atomic<int> s_waitFailLogCount{0};
+        if (s_waitFailLogCount.fetch_add(1, std::memory_order_relaxed) < 10)
+            HookLogImportant("WaitBackbufferFrameLatency: wait failed result=%lu error=%lu", waitResult,
+                             GetLastError());
     }
     pSC2->Release();
 }

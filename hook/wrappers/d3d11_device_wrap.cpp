@@ -5,6 +5,7 @@
  */
 
 #include "d3d11_device_wrap.h"
+#include "../apis/dx11_hook.h"
 #include "../apis/lod_helper.h"
 #include "../common/sampler_override_utils.h"
 #include "d3d11_devicecontext_wrap.h"
@@ -75,33 +76,8 @@ void CWrapD3D11Device::ApplySamplerOverrides(D3D11_SAMPLER_DESC* pDesc) {
     if (!g_GraphicsOverridesActive.load(std::memory_order_acquire))
         return;
 
-    // Skip non-mipmapped samplers (same logic as DetourCreateSamplerState)
-    if (pDesc->MaxLOD == 0.0f || pDesc->MinLOD == pDesc->MaxLOD)
-        return;
-
     const auto& gfx = GetActiveGraphicsConfig();
-
-    // Forced AF-on needs SRV/resource context on Blackwell. Create-time only
-    // handles disabling existing AF and mip-bias changes.
-    const std::string& af = gfx.anisotropicFiltering;
-    if (af != "default" && !af.empty()) {
-        if (af == "off") {
-            if (ce::sampler_override::IsD3D11AnisotropicFilter(pDesc->Filter)) {
-                bool wasComparison = ce::sampler_override::IsD3D11ComparisonFilter(pDesc->Filter);
-                pDesc->Filter =
-                    wasComparison ? D3D11_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-                pDesc->MaxAnisotropy = 1;
-            }
-        }
-    }
-
-    // Mip Bias
-    const std::string& bias = gfx.mipBias;
-    if ((bias != "default" && !bias.empty()) || gfx.forceMipBiasClamp) {
-        float originalBias = pDesc->MipLODBias;
-        pDesc->MipLODBias = ApplyConfiguredMipBias(gfx, originalBias);
-        pDesc->MipLODBias = FinalizeMipBias(gfx, pDesc->MipLODBias);
-    }
+    DX11Hook_ApplySamplerOverrides(*pDesc, gfx, false);
 }
 
 // ============================================================================
@@ -294,7 +270,10 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateSamplerState(const D3D11_SAMPL
     if (pSamplerDesc) {
         D3D11_SAMPLER_DESC desc = *pSamplerDesc;
         ApplySamplerOverrides(&desc);
-        return m_pReal->CreateSamplerState(&desc, ppSamplerState);
+        DX11Hook_BeginWrapperSamplerForwarding();
+        const HRESULT hr = m_pReal->CreateSamplerState(&desc, ppSamplerState);
+        DX11Hook_EndWrapperSamplerForwarding();
+        return hr;
     }
     return m_pReal->CreateSamplerState(pSamplerDesc, ppSamplerState);
 }

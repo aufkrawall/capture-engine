@@ -202,6 +202,37 @@ TEST_F(FpsLimiterTest, CaptureWarmupUsesCaptureRequestedForCaptureSync) {
     EXPECT_LT(elapsedMs, 30.0);
 }
 
+TEST_F(FpsLimiterTest, VfrCaptureStillHonorsConfiguredGeneralLimiter) {
+    mockShm->runtimeState.captureRequested = true;
+    mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
+    mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
+    mockShm->fpsLimiter.SetCaptureFps(60);
+    mockShm->fpsLimiter.SetUseVFR(true);
+    mockShm->fpsLimiter.SetGeneralEnabled(true);
+    mockShm->fpsLimiter.SetGeneralFps(120);
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
+
+    limiter.Apply();
+
+    EXPECT_TRUE(limiter.IsActivelyLimiting());
+    EXPECT_GT(limiter.GetLastWaitUs(), 0);
+}
+
+TEST(FpsLimiterPolicyTest, FrameGenerationScalingMatchesCaptureSource) {
+    EXPECT_TRUE(ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(false, false));
+    EXPECT_TRUE(ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(false, true));
+    EXPECT_TRUE(ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(true, false));
+    EXPECT_FALSE(ce::fps_limiter_policy::ShouldScaleTargetForFrameGeneration(true, true));
+}
+
+TEST(FpsLimiterPolicyTest, RationalIntervalsPreserveExactLongTermCadence) {
+    int64_t remainder = 0;
+    EXPECT_EQ(ce::fps_limiter_policy::NextRationalIntervalTicks(10, 3, remainder), 3);
+    EXPECT_EQ(ce::fps_limiter_policy::NextRationalIntervalTicks(10, 3, remainder), 3);
+    EXPECT_EQ(ce::fps_limiter_policy::NextRationalIntervalTicks(10, 3, remainder), 4);
+    EXPECT_EQ(remainder, 0);
+}
+
 // Test that limiter mode config values are stored/read correctly in shared memory
 TEST_F(FpsLimiterTest, LimiterMode_SharedMemory) {
     mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kFGFallback));

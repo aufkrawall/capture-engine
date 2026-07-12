@@ -41,6 +41,19 @@ inline D3D10_FILTER GetForcedAnisotropicFilter(D3D10_FILTER originalFilter) {
     return IsD3D10ComparisonFilter(originalFilter) ? D3D10_FILTER_COMPARISON_ANISOTROPIC : D3D10_FILTER_ANISOTROPIC;
 }
 
+inline bool IsD3D10SamplerOverrideEligible(const D3D10_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
+    if (desc.MaxLOD <= 0.0f || desc.MinLOD >= desc.MaxLOD || IsD3D10ComparisonFilter(desc.Filter))
+        return false;
+    if (gfx.samplerOverrideMode == "aggressive")
+        return true;
+    const auto materialAddress = [](D3D10_TEXTURE_ADDRESS_MODE mode) {
+        return mode == D3D10_TEXTURE_ADDRESS_WRAP || mode == D3D10_TEXTURE_ADDRESS_MIRROR;
+    };
+    return materialAddress(desc.AddressU) && materialAddress(desc.AddressV) && materialAddress(desc.AddressW) &&
+           D3D11_DECODE_MIN_FILTER(static_cast<D3D11_FILTER>(desc.Filter)) == D3D11_FILTER_TYPE_LINEAR &&
+           D3D11_DECODE_MAG_FILTER(static_cast<D3D11_FILTER>(desc.Filter)) == D3D11_FILTER_TYPE_LINEAR;
+}
+
 inline bool IsD3D11ReductionFilter(D3D11_FILTER filter) {
     return filter >= D3D11_FILTER_MINIMUM_MIN_MAG_MIP_POINT;
 }
@@ -972,6 +985,7 @@ inline uint64_t HashSamplerOverrideConfig(const GraphicsConfig& gfx) {
     };
 
     mixString(gfx.anisotropicFiltering);
+    mixString(gfx.samplerOverrideMode);
     mixString(gfx.mipMapping);
     mixString(gfx.mipBias);
     mixString(gfx.mipBiasMode);

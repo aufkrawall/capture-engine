@@ -317,6 +317,8 @@ general_limiter_mode=basic
 vsync_mode=default
 ; anisotropic_filtering - Values: default, off, 2x, 4x, 8x, 16x
 anisotropic_filtering=default
+; sampler_override_mode - Values: safe, aggressive. Safe protects special-purpose samplers.
+sampler_override_mode=safe
 ; mip_mapping (untested) - Values: default, bilinear, trilinear
 mip_mapping=default
 ; mip_bias - Values: default or float (e.g. -0.5, 0, 0.5)

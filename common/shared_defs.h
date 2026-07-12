@@ -42,7 +42,7 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 28: Added OverlayConfig::dx12FocusAnalysis (config-gated DX12 focus/mode-switch analysis)
 // Version 29: Expanded hook->host shared texture slots from 8 to 16 for high-rate CFR inject selection
 // Version 30: Added inject producer contention and frame-ready wake diagnostics
-static constexpr uint32_t SHARED_MEMORY_VERSION = 30;
+static constexpr uint32_t SHARED_MEMORY_VERSION = 31;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -249,12 +249,13 @@ struct OverlayConfig {
 struct SharedGraphicsConfig {
     char vsyncMode[32];                  // "default", "off", "fifo", "mailbox", "adaptive"
     char anisotropicFiltering[32];       // "default", "off", "2x", "4x", "8x", "16x"
+    char samplerOverrideMode[16];        // "safe" (default) or "aggressive"
     char mipMapping[32];                 // "default", "bilinear", "trilinear"
     char mipBias[32];                    // "default", "0.0", "-0.5", etc.
     char mipBiasMode[32];                // "strict", "offset", "base"
     bool forceMipBiasClamp;              // Force all texture mip bias values to 0
     char msaaSamples[32];                // "default", "off", "2x", "4x", "8x"
-    float prerenderLimit;                // -1=default, 0=serial, 0.5=hybrid, >=1 buffered
+    float prerenderLimit;                // integer semantics: -1=default, 0=serial, 1-6 buffered
     int32_t backbufferCount;             // -1=app controlled, 2-6 actual count
     int32_t frameLatency;                // 0=default, 1-6 (SetMaximumFrameLatency)
     bool sgssaa;                         // Enable Sparse Grid Supersampling

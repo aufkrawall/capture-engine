@@ -82,6 +82,10 @@ static const char* g_DetectedAPI = "DX11";
 // Prerender Limit Fencing
 static std::vector<ID3D11Query*> g_PrerenderQueries;
 static uint64_t g_PrerenderFrameIndex = 0;
+static ID3D11Device* g_PrerenderQueryDevice = nullptr;
+static ID3D10Device* g_PrerenderQueryDevice10 = nullptr;
+static ID3D10Query* g_PrerenderSerialQuery10 = nullptr;
+static std::mutex g_PrerenderMutex;
 static int64_t g_LastSleepUs = 0;
 
 // Deferred state bootstrap: used after Present hook installation so games that
@@ -243,6 +247,8 @@ static bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC& desc, const c
     const UINT requested = static_cast<UINT>(gfx.backbufferCount);
     const bool isFlip =
         (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL || desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+    if (isFlip)
+        ApplyDX11WaitableFlag(desc);
     if (isFlip && requested < desc.BufferCount) {
         ApplyDX11WaitableFlag(desc);
         HookLogImportant("DX11: %s BufferCount override skipped requested=%u game=%u swapEffect=%d (flip model)",
@@ -270,6 +276,8 @@ static bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC1& desc, const 
     const UINT requested = static_cast<UINT>(gfx.backbufferCount);
     const bool isFlip =
         (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL || desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD);
+    if (isFlip)
+        ApplyDX11WaitableFlag(desc);
     if (isFlip && requested < desc.BufferCount) {
         ApplyDX11WaitableFlag(desc);
         HookLogImportant("DX11: %s BufferCount override skipped requested=%u game=%u swapEffect=%d (flip model)",
@@ -542,6 +550,7 @@ static std::unordered_map<DXGI_FORMAT, bool> g_D3D11FormatSupportCache;
 
 static thread_local bool g_InOverlayRender = false;
 static thread_local uint32_t g_WrapperContextForwardDepth11 = 0;
+static thread_local uint32_t g_WrapperSamplerForwardDepth = 0;
 
 void DX11Hook_BeginWrapperContextForwarding() {
     ++g_WrapperContextForwardDepth11;
@@ -555,6 +564,19 @@ void DX11Hook_EndWrapperContextForwarding() {
 
 bool DX11Hook_IsWrapperContextForwarding() {
     return g_WrapperContextForwardDepth11 != 0;
+}
+
+void DX11Hook_BeginWrapperSamplerForwarding() {
+    ++g_WrapperSamplerForwardDepth;
+}
+
+void DX11Hook_EndWrapperSamplerForwarding() {
+    if (g_WrapperSamplerForwardDepth != 0)
+        --g_WrapperSamplerForwardDepth;
+}
+
+bool DX11Hook_IsWrapperSamplerForwarding() {
+    return g_WrapperSamplerForwardDepth != 0;
 }
 
 enum class D3D11ShaderStage : uint32_t {
@@ -1552,9 +1574,25 @@ static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11Device
     return true;
 }
 
-static bool ApplySamplerOverrides11(D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx,
+bool DX11Hook_ApplySamplerOverrides(D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx,
                                     bool allowAnisotropicOverride) {
     bool modified = false;
+
+    if (desc.MaxLOD <= 0.0f || desc.MinLOD >= desc.MaxLOD ||
+        ce::sampler_override::IsD3D11ComparisonFilter(desc.Filter) ||
+        ce::sampler_override::IsD3D11ReductionFilter(desc.Filter)) {
+        return false;
+    }
+    if (gfx.samplerOverrideMode != "aggressive") {
+        const auto materialAddress = [](D3D11_TEXTURE_ADDRESS_MODE mode) {
+            return mode == D3D11_TEXTURE_ADDRESS_WRAP || mode == D3D11_TEXTURE_ADDRESS_MIRROR;
+        };
+        if (!materialAddress(desc.AddressU) || !materialAddress(desc.AddressV) || !materialAddress(desc.AddressW) ||
+            D3D11_DECODE_MIN_FILTER(desc.Filter) != D3D11_FILTER_TYPE_LINEAR ||
+            D3D11_DECODE_MAG_FILTER(desc.Filter) != D3D11_FILTER_TYPE_LINEAR) {
+            return false;
+        }
+    }
 
     const std::string& af = gfx.anisotropicFiltering;
     if (af != "default" && !af.empty()) {
@@ -1672,7 +1710,7 @@ static ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* 
     original->GetDesc(&desc);
 
     const bool allowAnisotropicOverride = ShouldForceAnisotropyForStageSlot(device, context, stage, slot, desc, gfx);
-    const bool modified = ApplySamplerOverrides11(desc, gfx, allowAnisotropicOverride);
+    const bool modified = DX11Hook_ApplySamplerOverrides(desc, gfx, allowAnisotropicOverride);
     if (!modified) {
         device->Release();
         return original;
@@ -5132,8 +5170,63 @@ void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
 
     ID3D11Device* dev = nullptr;
     if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev)))) {
-        HookLogImportant("DX11: Prerender limit FAILED - GetDevice failed");
+        // D3D10 limits 1-6 use IDXGIDevice1::SetMaximumFrameLatency. DXGI has
+        // no zero-depth value, so serialize limit 0 with a native event query.
+        ID3D10Device* dev10 = nullptr;
+        if (limit == 0.0f && SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&dev10))) && dev10) {
+            std::lock_guard<std::mutex> prerenderLock(g_PrerenderMutex);
+            if (g_PrerenderQueryDevice10 != dev10) {
+                if (g_PrerenderSerialQuery10) {
+                    g_PrerenderSerialQuery10->Release();
+                    g_PrerenderSerialQuery10 = nullptr;
+                }
+                if (g_PrerenderQueryDevice10)
+                    g_PrerenderQueryDevice10->Release();
+                g_PrerenderQueryDevice10 = dev10;
+                g_PrerenderQueryDevice10->AddRef();
+                HookLogImportant("D3D10: Serial prerender query rebound to device=%p", dev10);
+            }
+            if (!g_PrerenderSerialQuery10) {
+                D3D10_QUERY_DESC queryDesc = {};
+                queryDesc.Query = D3D10_QUERY_EVENT;
+                dev10->CreateQuery(&queryDesc, &g_PrerenderSerialQuery10);
+            }
+            if (g_PrerenderSerialQuery10) {
+                g_PrerenderSerialQuery10->End();
+                dev10->Flush();
+                const int64_t waitStart = PerfLogger::GetQpcUs();
+                while (g_PrerenderSerialQuery10->GetData(nullptr, 0, 0) == S_FALSE)
+                    SwitchToThread();
+                const int64_t waitUs = PerfLogger::GetQpcUs() - waitStart;
+                const int idx = g_DiagPrerenderWaits.fetch_add(1, std::memory_order_relaxed);
+                if (idx < 12)
+                    HookLogImportant("D3D10: Prerender serial wait=%lldus (#%d)", (long long)waitUs, idx + 1);
+                g_DiagPrerenderFrames.fetch_add(1, std::memory_order_relaxed);
+            }
+            dev10->Release();
+            return;
+        }
+        if (dev10)
+            dev10->Release();
+        static std::atomic<int> s_nonD3D11LogCount{0};
+        if (limit == 0.0f && s_nonD3D11LogCount.fetch_add(1, std::memory_order_relaxed) < 5)
+            HookLogImportant("D3D10/11: Manual prerender query path unavailable for swapchain=%p", pSwapChain);
         return;
+    }
+
+    std::lock_guard<std::mutex> prerenderLock(g_PrerenderMutex);
+    if (g_PrerenderQueryDevice != dev) {
+        for (auto* query : g_PrerenderQueries) {
+            if (query)
+                query->Release();
+        }
+        g_PrerenderQueries.clear();
+        g_PrerenderFrameIndex = 0;
+        if (g_PrerenderQueryDevice)
+            g_PrerenderQueryDevice->Release();
+        g_PrerenderQueryDevice = dev;
+        g_PrerenderQueryDevice->AddRef();
+        HookLogImportant("DX11: Prerender query stream rebound to device=%p", dev);
     }
 
     ID3D11DeviceContext* ctx = nullptr;
@@ -5154,8 +5247,6 @@ void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
     }
 
     if (!g_PrerenderQueries.empty()) {
-        bool isFractional = (limit > 0.01f && limit < 1.0f);
-
         if (limit == 0.0f) {
             // Strict Serial: Wait for current frame
             ID3D11Query* q = g_PrerenderQueries[g_PrerenderFrameIndex % g_PrerenderQueries.size()];
@@ -5171,10 +5262,7 @@ void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
                                  (unsigned long long)g_PrerenderFrameIndex, (long long)waitUs, idx + 1);
             }
         } else {
-            // Buffered Limit: For fractional limits (e.g., 0.5), we use Buffered 1
-            // (Lookback 1) combined with an idle gap to approximate sub-frame latency.
-            int effectiveLimit = isFractional ? 1 : (int)limit;
-            int lookback = effectiveLimit;
+            const int lookback = std::clamp(static_cast<int>(limit), 1, 6);
 
             ID3D11Query* currentQ = g_PrerenderQueries[g_PrerenderFrameIndex % g_PrerenderQueries.size()];
             ctx->End(currentQ);
@@ -5196,25 +5284,6 @@ void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
         g_PrerenderFrameIndex++;
         g_DiagPrerenderFrames.fetch_add(1, std::memory_order_relaxed);
 
-        // Strict Serial + Fixed Idle Gap for fractional limits
-        if (isFractional) {
-            float fps = 60.0f;
-            if (auto* m = DXGIShared::GetPerformanceMetrics())
-                fps = m->GetCurrentFPS();
-            double targetFrameTimeUs = (fps > 1.0f) ? (1000000.0 / fps) : 16666.0;
-
-            int64_t idleGapUs = (int64_t)(targetFrameTimeUs * (1.0 - limit) * 0.10);
-            if (idleGapUs > 0) {
-                if (idleGapUs > 10000)
-                    idleGapUs = 10000;
-                int idx = g_DiagPrerenderWaits.fetch_add(1, std::memory_order_relaxed);
-                if (idx < 6) {
-                    HookLogImportant("DX11: Prerender fractional idle gap fps=%.1f gap=%lldus (#%d)", fps,
-                                     (long long)idleGapUs, idx + 1);
-                }
-                PrecisionSleep(idleGapUs);
-            }
-        }
     }
 
     ctx->Release();
@@ -5239,6 +5308,8 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
                                                    ID3D11SamplerState** ppSamplerState) {
     if (!pSamplerDesc)
         return oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
+    if (DX11Hook_IsWrapperSamplerForwarding())
+        return oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
     if (!g_GraphicsOverridesActive.load(std::memory_order_acquire))
         return oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
 
@@ -5254,7 +5325,7 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
     // handles AF-off, mip mapping, and mip-bias changes, but forced AF-on is
     // applied later by the bind-state reconciler.
     const bool allowAF = false;
-    const bool modified = ApplySamplerOverrides11(desc, gfx, allowAF);
+    const bool modified = DX11Hook_ApplySamplerOverrides(desc, gfx, allowAF);
 
     {
         static std::atomic<int> s_createAFLog{0};
@@ -5313,6 +5384,8 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device* pDevice, cons
 
     if (!pSamplerDesc)
         return oCreateSamplerState10(pDevice, pSamplerDesc, ppSamplerState);
+    if (DX11Hook_IsWrapperSamplerForwarding())
+        return oCreateSamplerState10(pDevice, pSamplerDesc, ppSamplerState);
     if (!g_GraphicsOverridesActive.load(std::memory_order_acquire))
         return oCreateSamplerState10(pDevice, pSamplerDesc, ppSamplerState);
 
@@ -5323,16 +5396,10 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device* pDevice, cons
         debug = true;
     }
 
-    // Skip overrides for samplers that have no mipmapping (MipLevels == 1 equivalent).
-    // See CreateSamplerState (D3D11) above for full explanation of the limitation.
-    bool overridesAllowed = true;
-    if (pSamplerDesc->MaxLOD == 0.0f)
-        overridesAllowed = false;
-    if (pSamplerDesc->MinLOD == pSamplerDesc->MaxLOD)
-        overridesAllowed = false;
+    const auto& gfx = GetActiveGraphicsConfig();
+    const bool overridesAllowed = ce::sampler_override::IsD3D10SamplerOverrideEligible(*pSamplerDesc, gfx);
 
     if (overridesAllowed && g_IPC) {
-        const auto& gfx = GetActiveGraphicsConfig();
         // Anisotropic Filtering
         std::string af = gfx.anisotropicFiltering;
         if (af != "default") {
@@ -5450,13 +5517,7 @@ static ID3D10SamplerState* GetOrCreateReplacementSampler10(ID3D10Device* pDevice
     D3D10_SAMPLER_DESC originalDesc;
     pOriginal->GetDesc(&originalDesc);
 
-    // Skip overrides for samplers that have no mipmapping (MipLevels == 1 equivalent).
-    // See CreateSamplerState (D3D11) above for full explanation of the limitation.
-    bool overridesAllowed = true;
-    if (originalDesc.MaxLOD == 0.0f)
-        overridesAllowed = false;
-    if (originalDesc.MinLOD == originalDesc.MaxLOD)
-        overridesAllowed = false;
+    const bool overridesAllowed = ce::sampler_override::IsD3D10SamplerOverrideEligible(originalDesc, gfx);
 
     if (!overridesAllowed || !g_IPC) {
         AddReplacementSampler(pOriginal, pOriginal);  // Cache as no-op
@@ -5908,11 +5969,27 @@ void DX11Hook::Shutdown() {
     }
 
     // Clean up prerender queries
-    for (auto* q : g_PrerenderQueries) {
-        if (q)
-            q->Release();
+    {
+        std::lock_guard<std::mutex> lock(g_PrerenderMutex);
+        for (auto* q : g_PrerenderQueries) {
+            if (q)
+                q->Release();
+        }
+        g_PrerenderQueries.clear();
+        g_PrerenderFrameIndex = 0;
+        if (g_PrerenderQueryDevice) {
+            g_PrerenderQueryDevice->Release();
+            g_PrerenderQueryDevice = nullptr;
+        }
+        if (g_PrerenderSerialQuery10) {
+            g_PrerenderSerialQuery10->Release();
+            g_PrerenderSerialQuery10 = nullptr;
+        }
+        if (g_PrerenderQueryDevice10) {
+            g_PrerenderQueryDevice10->Release();
+            g_PrerenderQueryDevice10 = nullptr;
+        }
     }
-    g_PrerenderQueries.clear();
 
     g_DX11Capture.Cleanup();
     if (g_mainRenderTargetView) {

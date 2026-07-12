@@ -1,15 +1,19 @@
 #include "nvngx_hook.h"
 #include <atomic>
 #include <mutex>
+#include <type_traits>
+#include <unordered_map>
 #include <vector>
 #include "../common/fg_detection.h"  // For FG_SetDLSSActive
 #include "../common/hook_common.h"
+#include "../common/nvngx_parameter_abi.h"
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/vtable_hook.h"
 
 // --- NGX SDK Mini-Definitions ---
 enum NVSDK_NGX_Result {
     NVSDK_NGX_Result_Success = 0x1,
+    NVSDK_NGX_Result_FAIL_FeatureNotSupported = 0xBAD00001,
 };
 
 struct NVSDK_NGX_Parameter {
@@ -95,11 +99,25 @@ typedef NVSDK_NGX_Result(STDMETHODCALLTYPE* PFN_GetI)(NVSDK_NGX_Parameter* pThis
 typedef NVSDK_NGX_Result(STDMETHODCALLTYPE* PFN_GetUI)(NVSDK_NGX_Parameter* pThis, const char* InName,
                                                        unsigned int* OutValue);
 
-static PFN_SetI oSetI = nullptr;
-static PFN_SetUI oSetUI = nullptr;
-static PFN_SetF oSetF = nullptr;
-static PFN_GetI oGetI = nullptr;
-static PFN_GetUI oGetUI = nullptr;
+struct ParameterVTableOriginals {
+    PFN_SetI setI = nullptr;
+    PFN_SetUI setUI = nullptr;
+    PFN_SetF setF = nullptr;
+    PFN_GetI getI = nullptr;
+    PFN_GetUI getUI = nullptr;
+};
+
+static std::mutex g_NVHookMutex;
+static std::unordered_map<void**, ParameterVTableOriginals> g_ParameterVTableOriginals;
+
+static ParameterVTableOriginals GetParameterOriginals(NVSDK_NGX_Parameter* params) {
+    if (!params)
+        return {};
+    void** vtable = *reinterpret_cast<void***>(params);
+    std::lock_guard<std::mutex> lock(g_NVHookMutex);
+    const auto it = g_ParameterVTableOriginals.find(vtable);
+    return it == g_ParameterVTableOriginals.end() ? ParameterVTableOriginals{} : it->second;
+}
 
 // Track active hints per Quality Level (0=Perf, 1=Bal, 2=Qual, 3=UP, 4=UQ,
 // 5=DLAA) Initialize to '?'
@@ -189,6 +207,9 @@ static void LogOncePerParam(const char* param, const char* msg, ...) {
 }
 
 void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InName, int InValue) {
+    const PFN_SetI original = GetParameterOriginals(pThis).setI;
+    if (!original)
+        return;
     if (IsSafeString(InName)) {
         if (strcmp(InName, NVSDK_NGX_Parameter_CreateFlags) == 0) {
             std::string mode = GetActiveGraphicsConfig().dlssAutoExposure;
@@ -325,10 +346,13 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
             g_ParameterQualityMap[pThis] = InValue;
         }
     }
-    oSetI(pThis, InName, InValue);
+    original(pThis, InName, InValue);
 }
 
 void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InName, unsigned int InValue) {
+    const PFN_SetUI original = GetParameterOriginals(pThis).setUI;
+    if (!original)
+        return;
     if (IsSafeString(InName)) {
         if (strcmp(InName, NVSDK_NGX_Parameter_CreateFlags) == 0) {
             // AutoExposure flag override
@@ -481,10 +505,13 @@ void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InNa
             g_ParameterDimsMap[pThis].outHeight = InValue;
         }
     }
-    oSetUI(pThis, InName, InValue);
+    original(pThis, InName, InValue);
 }
 
 void STDMETHODCALLTYPE Hooked_SetF(NVSDK_NGX_Parameter* pThis, const char* InName, float InValue) {
+    const PFN_SetF original = GetParameterOriginals(pThis).setF;
+    if (!original)
+        return;
     if (IsSafeString(InName)) {
         const auto& cfg = GetActiveGraphicsConfig();
 
@@ -512,11 +539,14 @@ void STDMETHODCALLTYPE Hooked_SetF(NVSDK_NGX_Parameter* pThis, const char* InNam
             }
         }
     }
-    oSetF(pThis, InName, InValue);
+    original(pThis, InName, InValue);
 }
 
 NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetI(NVSDK_NGX_Parameter* pThis, const char* InName, int* OutValue) {
-    NVSDK_NGX_Result res = oGetI(pThis, InName, OutValue);
+    const PFN_GetI original = GetParameterOriginals(pThis).getI;
+    if (!original)
+        return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+    NVSDK_NGX_Result res = original(pThis, InName, OutValue);
     if (res == NVSDK_NGX_Result_Success && OutValue && IsSafeString(InName)) {
         // If the game/driver is reading back a preset or quality value, we capture
         // it
@@ -532,7 +562,10 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetI(NVSDK_NGX_Parameter* pThis, const
 
 NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetUI(NVSDK_NGX_Parameter* pThis, const char* InName,
                                                 unsigned int* OutValue) {
-    NVSDK_NGX_Result res = oGetUI(pThis, InName, OutValue);
+    const PFN_GetUI original = GetParameterOriginals(pThis).getUI;
+    if (!original)
+        return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+    NVSDK_NGX_Result res = original(pThis, InName, OutValue);
     if (res == NVSDK_NGX_Result_Success && OutValue && IsSafeString(InName)) {
         if (strcmp(InName, NVSDK_NGX_Parameter_PerfQualityValue) == 0) {
             std::lock_guard<std::mutex> lock(g_ParamMapMutex);
@@ -544,17 +577,12 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_GetUI(NVSDK_NGX_Parameter* pThis, cons
     return res;
 }
 
-static std::mutex g_NVHookMutex;
-static std::vector<void*> g_HookedVTables;
-
 void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
     if (!IsSafePtr(pParams)) {
         if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
             NVNGXLog("EnsureVTableHooks: Skipped (Unsafe Ptr %p)", pParams);
         return;
     }
-    std::lock_guard<std::mutex> lock(g_NVHookMutex);
-
     void** vtable = *(void***)pParams;
     if (!vtable)
         return;
@@ -563,32 +591,45 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
         NVNGXLog("EnsureVTableHooks: pParams=%p, vtable=%p", pParams, vtable);
 
-    // Check if VTable is already hooked
-    bool alreadyHooked = false;
-    for (void* v : g_HookedVTables) {
-        if (v == vtable) {
-            alreadyHooked = true;
-            break;
+    {
+        std::lock_guard<std::mutex> lock(g_NVHookMutex);
+        auto [routeIt, inserted] = g_ParameterVTableOriginals.try_emplace(vtable);
+        (void)inserted;
+        ParameterVTableOriginals& originals = routeIt->second;
+        const bool complete = originals.setI && originals.setUI && originals.setF && originals.getI && originals.getUI;
+
+        if (!complete) {
+            if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
+                NVNGXLog("NVNGX: Installing typed hooks on VTable at %p", vtable);
+
+            auto Install = [&](int idx, LPVOID hook, auto& original) {
+                if (original)
+                    return true;
+                if (!vtable[idx] || vtable[idx] == hook)
+                    return false;
+                LPVOID captured = nullptr;
+                if (VTableHook::Create(&vtable[idx], hook, &captured) != VTableHook::Success || !captured)
+                    return false;
+                original = reinterpret_cast<std::decay_t<decltype(original)>>(captured);
+                return true;
+            };
+
+            const bool installed =
+                Install(ce::nvngx_parameter_abi::kSetI, (LPVOID)&Hooked_SetI, originals.setI) &&
+                Install(ce::nvngx_parameter_abi::kSetUI, (LPVOID)&Hooked_SetUI, originals.setUI) &&
+                Install(ce::nvngx_parameter_abi::kSetF, (LPVOID)&Hooked_SetF, originals.setF) &&
+                Install(ce::nvngx_parameter_abi::kGetI, (LPVOID)&Hooked_GetI, originals.getI) &&
+                Install(ce::nvngx_parameter_abi::kGetUI, (LPVOID)&Hooked_GetUI, originals.getUI);
+            if (!installed) {
+                static std::atomic<uint32_t> failureLogs{0};
+                if (failureLogs.fetch_add(1, std::memory_order_relaxed) < 8) {
+                    HookLogImportant("NVNGX: parameter vtable hook incomplete vtable=%p setI=%d setUI=%d setF=%d "
+                                     "getI=%d getUI=%d",
+                                     vtable, originals.setI ? 1 : 0, originals.setUI ? 1 : 0,
+                                     originals.setF ? 1 : 0, originals.getI ? 1 : 0, originals.getUI ? 1 : 0);
+                }
+            }
         }
-    }
-
-    if (!alreadyHooked) {
-        if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
-            NVNGXLog("NVNGX: Installing typed hooks on VTable at %p", vtable);
-
-        auto Install = [&](int idx, LPVOID pHook, LPVOID* ppOrig) {
-            if (!vtable[idx] || *ppOrig)
-                return;
-            VTableHook::Create(&vtable[idx], pHook, ppOrig);
-        };
-
-        Install(3, (LPVOID)&Hooked_SetI, (LPVOID*)&oSetI);
-        Install(4, (LPVOID)&Hooked_SetUI, (LPVOID*)&oSetUI);
-        Install(6, (LPVOID)&Hooked_SetF, (LPVOID*)&oSetF);
-        Install(8, (LPVOID)&Hooked_GetI, (LPVOID*)&oGetI);
-        Install(9, (LPVOID)&Hooked_GetUI, (LPVOID*)&oGetUI);
-
-        g_HookedVTables.push_back(vtable);
     }
 
     // Initial Injection via SetI (VT[3])
@@ -718,7 +759,7 @@ static PFN_NVSDK_NGX_GetParameters oGetCapabilityParameters_VULKAN = nullptr;
 NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_ProcessParameters(PFN_NVSDK_NGX_GetParameters original,
                                                             NVSDK_NGX_Parameter** OutParameters, const char* source) {
     if (!original)
-        return NVSDK_NGX_Result_Success;
+        return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
     NVSDK_NGX_Result res = original(OutParameters);
     if (res == NVSDK_NGX_Result_Success && OutParameters && *OutParameters) {
         if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
@@ -1029,15 +1070,18 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
         NVNGXLog("Hooked_CreateFeature_Process: Entry ctx=%p, ID=%d, params=%p", ctx, featureID, params);
 
-    NVSDK_NGX_Result res = NVSDK_NGX_Result_Success;
-    if (original)
-        res = original(ctx, featureID, params, handle);
+    if (!original)
+        return NVSDK_NGX_Result_FAIL_FeatureNotSupported;
+
+    if (params)
+        EnsureVTableHooks(params);
+    const NVSDK_NGX_Result res = original(ctx, featureID, params, handle);
 
     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
         NVNGXLog("Hooked_CreateFeature_Process: Original Result=%X", res);
 
     // On success, update status
-    if ((int)res >= 0) {
+    if (res == NVSDK_NGX_Result_Success) {
         // Update version if not yet found (handling lazy load)
         if (g_IPC && g_IPC->GetSharedMem()) {
             if (g_IPC->GetSharedMem()->dlssState.versionMajor == 0) {
@@ -1047,6 +1091,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
 
         if (g_IPC && g_IPC->GetSharedMem()) {
             auto& state = g_IPC->GetSharedMem()->dlssState;
+            const ParameterVTableOriginals parameterOriginals = GetParameterOriginals(params);
 
             if (featureID == 1) {
                 state.srActive = true;
@@ -1057,8 +1102,8 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                 auto SyncPreset = [&](const char* name) {
                     unsigned int val = 0;
                     NVSDK_NGX_Result getRes;
-                    if (oGetUI) {
-                        getRes = oGetUI(params, name, &val);
+                    if (parameterOriginals.getUI) {
+                        getRes = parameterOriginals.getUI(params, name, &val);
                         if (getRes == NVSDK_NGX_Result_Success) {
                             UpdatePresetHint(name, val, "SyncUI");
                             return;
@@ -1066,8 +1111,8 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                             NVNGXLog("NVNGX: oGetUI(%s) returned %X", name, getRes);
                         }
                     }
-                    if (oGetI) {
-                        getRes = oGetI(params, name, (int*)&val);
+                    if (parameterOriginals.getI) {
+                        getRes = parameterOriginals.getI(params, name, (int*)&val);
                         if (getRes == NVSDK_NGX_Result_Success) {
                             UpdatePresetHint(name, val, "SyncI");
                         } else if (g_IPC->GetSharedMem()->GetDebugLogging()) {
@@ -1085,7 +1130,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                 // Probe for undocumented internal parameters that might expose
                 // driver-forced preset
                 static bool probeOnce = false;
-                if (!probeOnce && oGetUI && g_IPC && g_IPC->GetSharedMem() &&
+                if (!probeOnce && parameterOriginals.getUI && g_IPC && g_IPC->GetSharedMem() &&
                     g_IPC->GetSharedMem()->GetDebugLogging()) {
                     probeOnce = true;
                     const char* probeParams[] = {"DLSS.Preset.Active",
@@ -1100,7 +1145,7 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                                                  nullptr};
                     for (int i = 0; probeParams[i]; i++) {
                         unsigned int probedVal = 0;
-                        NVSDK_NGX_Result probeRes = oGetUI(params, probeParams[i], &probedVal);
+                        NVSDK_NGX_Result probeRes = parameterOriginals.getUI(params, probeParams[i], &probedVal);
                         if (probeRes == NVSDK_NGX_Result_Success && probedVal > 0) {
                             NVNGXLog("NVNGX: PROBE SUCCESS! '%s' = %u ('%c')", probeParams[i], probedVal,
                                      PresetIDToChar(probedVal));
@@ -1153,10 +1198,10 @@ NVSDK_NGX_Result __cdecl Hooked_CreateFeature_Process(PFN_NVSDK_NGX_CreateFeatur
                     if (configuredMultiplier > 0) {
                         mfgMultiplier = configuredMultiplier;
                     }
-                    if (params && oGetI) {
+                    if (params && parameterOriginals.getI) {
                         int multValue = 0;
                         NVSDK_NGX_Result multRes =
-                            oGetI(params, NVSDK_NGX_Parameter_FrameGenerationMultiplier, &multValue);
+                            parameterOriginals.getI(params, NVSDK_NGX_Parameter_FrameGenerationMultiplier, &multValue);
                         if (multRes == NVSDK_NGX_Result_Success && multValue >= 2 && multValue <= 4) {
                             mfgMultiplier = multValue;
                         }
@@ -1330,11 +1375,11 @@ void NVNGXHook::Install() {
     HookLogImportant("NVNGX: Found '%s' at %p, installing IAT patches", foundDllName, (void*)hNGX);
 
     auto PatchIAT = [](const char* name, LPVOID pHook, LPVOID* ppOrig) {
-        void* dummy;
-        IATHook::PatchIATAllModules("_nvngx.dll", name, pHook, &dummy);
-        IATHook::PatchIATAllModules("nvngx.dll", name, pHook, &dummy);
-        IATHook::PatchIATAllModules("sl.dlss.dll", name, pHook, &dummy);
-        (void)ppOrig;
+        for (const char* module : {"_nvngx.dll", "nvngx.dll", "sl.dlss.dll"}) {
+            void* captured = nullptr;
+            if (IATHook::PatchIATAllModules(module, name, pHook, &captured) && captured && ppOrig && !*ppOrig)
+                *ppOrig = captured;
+        }
     };
 
     PatchIAT("NVSDK_NGX_D3D11_GetParameters", (LPVOID)&Hooked_GetParams_D3D11, (LPVOID*)&oGetParameters_D3D11);

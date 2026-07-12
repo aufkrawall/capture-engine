@@ -11,7 +11,12 @@ namespace {
 
 bool HasSamplerOverride(const GraphicsConfig& gfx) {
     return (!gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default") ||
+           (!gfx.mipMapping.empty() && gfx.mipMapping != "default") ||
            (!gfx.mipBias.empty() && gfx.mipBias != "default") || gfx.forceMipBiasClamp;
+}
+
+bool IsAggressive(const GraphicsConfig& gfx) {
+    return gfx.samplerOverrideMode == "aggressive";
 }
 
 bool IsMaterialAddressMode(D3D12_TEXTURE_ADDRESS_MODE mode) {
@@ -45,20 +50,22 @@ Decision Classify(const D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
     if (ce::sampler_override::IsD3D12ReductionFilter(desc.Filter)) {
         return Decision::ReductionFilter;
     }
-    if (desc.AddressU == D3D12_TEXTURE_ADDRESS_MODE_BORDER ||
-        desc.AddressV == D3D12_TEXTURE_ADDRESS_MODE_BORDER ||
-        desc.AddressW == D3D12_TEXTURE_ADDRESS_MODE_BORDER) {
-        return Decision::BorderAddress;
-    }
-    if (!IsMaterialAddressMode(desc.AddressU) || !IsMaterialAddressMode(desc.AddressV) ||
-        !IsMaterialAddressMode(desc.AddressW)) {
-        return Decision::ScreenSpaceAddress;
+    if (!IsAggressive(gfx)) {
+        if (desc.AddressU == D3D12_TEXTURE_ADDRESS_MODE_BORDER ||
+            desc.AddressV == D3D12_TEXTURE_ADDRESS_MODE_BORDER ||
+            desc.AddressW == D3D12_TEXTURE_ADDRESS_MODE_BORDER) {
+            return Decision::BorderAddress;
+        }
+        if (!IsMaterialAddressMode(desc.AddressU) || !IsMaterialAddressMode(desc.AddressV) ||
+            !IsMaterialAddressMode(desc.AddressW)) {
+            return Decision::ScreenSpaceAddress;
+        }
     }
     if (desc.MaxLOD <= 0.0f || desc.MinLOD >= desc.MaxLOD) {
         return Decision::FixedLod;
     }
-    if (D3D12_DECODE_MIN_FILTER(desc.Filter) != D3D12_FILTER_TYPE_LINEAR ||
-        D3D12_DECODE_MAG_FILTER(desc.Filter) != D3D12_FILTER_TYPE_LINEAR) {
+    if (!IsAggressive(gfx) && (D3D12_DECODE_MIN_FILTER(desc.Filter) != D3D12_FILTER_TYPE_LINEAR ||
+                               D3D12_DECODE_MAG_FILTER(desc.Filter) != D3D12_FILTER_TYPE_LINEAR)) {
         return Decision::PointMinMag;
     }
     return Decision::Allow;
@@ -84,6 +91,17 @@ Result ApplyImpl(D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
     const UINT originalAnisotropy = desc.MaxAnisotropy;
     const float originalBias = desc.MipLODBias;
 
+    if (gfx.mipMapping == "bilinear") {
+        desc.Filter = D3D12_ENCODE_BASIC_FILTER(D3D12_DECODE_MIN_FILTER(desc.Filter),
+                                                D3D12_DECODE_MAG_FILTER(desc.Filter), D3D12_FILTER_TYPE_POINT,
+                                                D3D12_DECODE_FILTER_REDUCTION(desc.Filter));
+    } else if (gfx.mipMapping == "trilinear") {
+        desc.Filter = D3D12_ENCODE_BASIC_FILTER(D3D12_DECODE_MIN_FILTER(desc.Filter),
+                                                D3D12_DECODE_MAG_FILTER(desc.Filter), D3D12_FILTER_TYPE_LINEAR,
+                                                D3D12_DECODE_FILTER_REDUCTION(desc.Filter));
+    }
+
+    const D3D12_FILTER filterAfterMipMapping = desc.Filter;
     if (gfx.anisotropicFiltering == "off") {
         if (ce::sampler_override::IsD3D12AnisotropicFilter(desc.Filter)) {
             desc.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -98,7 +116,8 @@ Result ApplyImpl(D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
         desc.MipLODBias = FinalizeMipBias(gfx, ApplyConfiguredMipBias(gfx, desc.MipLODBias));
     }
 
-    result.anisotropyModified = originalFilter != desc.Filter || originalAnisotropy != desc.MaxAnisotropy;
+    result.anisotropyModified = filterAfterMipMapping != desc.Filter || originalAnisotropy != desc.MaxAnisotropy;
+    result.mipMappingModified = originalFilter != filterAfterMipMapping;
     result.mipBiasModified = std::memcmp(&originalBias, &desc.MipLODBias, sizeof(originalBias)) != 0;
     if (!result.Modified()) {
         result.decision = Decision::AlreadyCompliant;

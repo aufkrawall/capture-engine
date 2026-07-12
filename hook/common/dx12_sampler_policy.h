@@ -24,10 +24,11 @@ enum class Decision : uint8_t {
 struct Result {
     Decision decision = Decision::OverrideDisabled;
     bool anisotropyModified = false;
+    bool mipMappingModified = false;
     bool mipBiasModified = false;
 
     bool Modified() const {
-        return anisotropyModified || mipBiasModified;
+        return anisotropyModified || mipMappingModified || mipBiasModified;
     }
 };
 
