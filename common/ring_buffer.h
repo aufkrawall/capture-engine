@@ -107,6 +107,8 @@ template <typename T, size_t N>
 class LockFreeRingBuffer : public RingBufferBase<T> {
     static_assert(N > 0, "Ring buffer size must be greater than 0");
     static_assert((N & (N - 1)) == 0, "Ring buffer size must be power of 2 for efficient modulo");
+    static_assert(std::is_copy_assignable_v<T>,
+                  "Ring buffer element type must be copy-assignable (Push/Pop use operator=)");
 
 public:
     static constexpr size_t CapacityValue = N;

@@ -12564,7 +12564,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             if (cooldownLeft > 0) {
                 if (ce::dx12_overlay_policy::ShouldDelaySyntheticPostSLActivationBehindRepeatedCallbacks(
                         g_HadFSRFGPhase, safePostFSRBootstrapPathForPostSL)) {
-                    g_PostSLCooldownRemaining.store(cooldownLeft - 1, std::memory_order_release);
+                    g_PostSLCooldownRemaining.fetch_sub(1, std::memory_order_acq_rel);
                     if (cooldownLeft > 1) {
                         s_postSLSkipOther.fetch_add(1, std::memory_order_relaxed);
                         NoteDX12OverlayCoverageGate("postsl-startup-countdown");
