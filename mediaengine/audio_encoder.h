@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <deque>
 #include <functional>
@@ -16,6 +17,48 @@ extern "C" {
 
 class AudioEncoder {
 public:
+    enum class FinalFramePolicy {
+        ExactShortFrame,
+        PadAndSignalDiscard,
+        BlockAlignedPcm,
+    };
+
+    struct AudioCodecRuntimeContract {
+        std::string encoderName;
+        AVCodecID codecId = AV_CODEC_ID_NONE;
+        AVSampleFormat sampleFormat = AV_SAMPLE_FMT_NONE;
+        int sampleRate = 0;
+        int channels = 0;
+        uint32_t channelMask = 0;
+        int rawBitDepth = 0;
+        int frameSize = 0;
+        int capabilities = 0;
+        int initialPadding = 0;
+        FinalFramePolicy finalFramePolicy = FinalFramePolicy::ExactShortFrame;
+        bool requiresMatroskaCodecDelay = false;
+        bool requiresMatroskaDiscardPadding = false;
+        bool nativeAacNmr = false;
+        int nativeAacNmrSpeed = -1;
+        bool valid = false;
+    };
+
+    struct AudioFinalizationReport {
+        int64_t timelineTargetSamples = 0;
+        int64_t inputTimelineSamples = 0;
+        int64_t expectedSourceSilenceSamples = 0;
+        int64_t codecSubmittedSamples = 0;
+        int64_t primingSamples = 0;
+        int64_t terminalPaddingSamples = 0;
+        int64_t packetEndpointSamples = 0;
+        int64_t expectedDecodedSamples = 0;
+        uint64_t packetCount = 0;
+        uint64_t packetBytes = 0;
+        uint64_t controlPacketCount = 0;
+        uint64_t durationlessPacketCount = 0;
+        bool drainReachedEof = false;
+        bool protocolError = false;
+    };
+
     struct EncodeResult {
         int64_t acceptedSamples = 0;
         int64_t submittedSamples = 0;
@@ -32,6 +75,15 @@ public:
     }
     bool IsReady() const {
         return initDone && codecCtx != nullptr;
+    }
+    const AudioCodecRuntimeContract& GetRuntimeContract() const {
+        return runtimeContract;
+    }
+    const AudioFinalizationReport& GetFinalizationReport() const {
+        return finalizationReport;
+    }
+    void SetExpectedSourceSilenceSamples(int64_t samples) {
+        finalizationReport.expectedSourceSilenceSamples = std::max<int64_t>(0, samples);
     }
 
     // Reinitialize with saved config (used after Stop() failed to reopen)
@@ -53,12 +105,10 @@ public:
 
     void SetStreamIndex(int index);  // Now flushes buffered packets
 
-    // SetRecordingStart - NOTE: logging happens in EncodeSamples to avoid header
-    // deps
-    void SetRecordingStart(int64_t startUs) {
-        pendingStartUs = startUs;  // Will be applied and logged in EncodeSamples
-        needsReset = true;
-    }
+    // Called by the audio-timeline reset owner while packet routing is gated.
+    // The generation makes repeated delivery idempotent and prevents a route
+    // reset from becoming visible before its encoder FIFO/cursors are reset.
+    bool ResetForRecordingStart(int64_t startUs, uint64_t generation);
     void SetRecordingEndUs(int64_t endUs) {
         recordingEndUs = endUs;
     }
@@ -102,8 +152,7 @@ private:
     int64_t recordingEndUs;                  // When video ended (us video pts)
     int64_t lastPacketTimestampMs;           // Last packet timestamp (ms) for PTS sync with
                                              // video
-    std::atomic<int64_t> pendingStartUs{0};  // Deferred recording start (set by SetRecordingStart)
-    std::atomic<bool> needsReset{false};     // Flag for deferred reset
+    uint64_t recordingResetGeneration = 0;
     int fifoCapacity = 32768;                // Capacity set during Init()
     int64_t resampledSamplesTotal = 0;       // Total samples output from resampler (for drift calculation)
 
@@ -116,7 +165,6 @@ private:
     // Buffer for packets before streamIndex is set.
     // Uses deque for O(1) removal from the front when the buffer overflows.
     std::deque<AVPacket*> pendingPackets;
-    std::deque<int64_t> pendingFrameDurations;
 
     // Per-recording warning flags (reset in Stop() for multi-recording support)
     bool warnedOnce = false;  // "stream not yet assigned" warning gate
@@ -132,7 +180,11 @@ private:
     // FIFO overflow tracking - drop NEWEST samples to maintain timeline continuity
     bool wasDroppingSamples = false;
     int64_t totalDroppedSamples = 0;
+    int64_t totalAcceptedSamples = 0;
+    AudioCodecRuntimeContract runtimeContract;
+    AudioFinalizationReport finalizationReport;
 
     void ApplyPacketDuration(AVPacket* pkt);
     void Flush();
+    void ReleaseCodecResources();
 };

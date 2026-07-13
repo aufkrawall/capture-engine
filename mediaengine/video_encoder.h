@@ -77,6 +77,8 @@ public:
                                      struct SharedMemoryLayout* sharedMem);
 
     int64_t GetExpectedFinalDurationUs() const;
+    int64_t GetAssignedCfrFrameCount() const;
+    int GetConfiguredFps() const;
     int64_t GetEncodedDurationUs() const;      // Get exact duration of encoded video in microseconds
     int64_t GetLastFrameEncodeTimeUs() const;  // Get duration of last frame encoding (excluding wait)
     int64_t GetLastFrameFenceWaitUs() const;   // Get duration of last fence wait (GPU wait)

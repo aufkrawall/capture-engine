@@ -2592,8 +2592,11 @@ class FFmpegBuilder:
             "--nm=llvm-nm",
             "--ranlib=llvm-ranlib",
             # Optimization
-            "--extra-cflags=-O3 -ffast-math -flto",
-            "--extra-cxxflags=-O3 -ffast-math -flto",
+            # AAC NMR and multiple FFmpeg DSP/psychoacoustic paths use NaN/Inf
+            # sentinels. -ffast-math makes those undefined and can silently
+            # invalidate the encoder's quality decisions.
+            "--extra-cflags=-O3 -flto",
+            "--extra-cxxflags=-O3 -flto",
             "--extra-ldflags=-flto -O3",
             f"--extra-ldflags=-L{msys_lib}",
             # Keep the FFmpeg build redistributable under LGPLv2.1+.
@@ -2636,7 +2639,7 @@ class FFmpegBuilder:
             "--enable-demuxer=concat,matroska,mov,mp4",
             # SW Encoders (Audio)
             "--enable-encoder=aac,libopus,flac,alac,pcm_s16le,pcm_s24le,pcm_f32le",
-            "--enable-decoder=aac,opus,flac,alac",
+            "--enable-decoder=aac,opus,flac,alac,pcm_s16le,pcm_s24le,pcm_f32le",
             "--enable-parser=aac,opus,flac",
             # HW Encoders
             "--enable-encoder=h264_nvenc,hevc_nvenc,av1_nvenc",
@@ -2657,6 +2660,21 @@ class FFmpegBuilder:
         self.run([make_exe, "install"], cwd=build_dir, env=env)
 
 
+FFMPEG_BUILD_CONFIGURATION_VERSION = 3
+
+
+def ffmpeg_build_configuration_fingerprint():
+    """Track local configure/patch inputs independently of the upstream commit."""
+    digest = hashlib.sha256(f"configure-v{FFMPEG_BUILD_CONFIGURATION_VERSION}\n".encode("ascii"))
+    patches_dir = os.path.join(PROJECT_ROOT, "patches", "ffmpeg")
+    if os.path.isdir(patches_dir):
+        for patch_name in sorted(name for name in os.listdir(patches_dir) if name.endswith(".patch")):
+            digest.update(patch_name.encode("utf-8"))
+            with open(os.path.join(patches_dir, patch_name), "rb") as patch_file:
+                digest.update(patch_file.read())
+    return digest.hexdigest()
+
+
 def compile_custom_ffmpeg(skip_updates=False):
     """Build FFmpeg from git master. Check for updates and rebuild if needed.
 
@@ -2674,6 +2692,12 @@ def compile_custom_ffmpeg(skip_updates=False):
     # Check if FFmpeg repo exists and get current commit for tracking
     ffmpeg_repo = os.path.join(builder.repos_dir, "ffmpeg")
     commit_file = os.path.join(builder.build_root, "last_built_commit.txt")
+    configuration_file = os.path.join(builder.build_root, "last_build_configuration.txt")
+    current_configuration = ffmpeg_build_configuration_fingerprint()
+    previous_configuration = ""
+    if os.path.exists(configuration_file):
+        with open(configuration_file, "r", encoding="utf-8") as f:
+            previous_configuration = f.read().strip()
 
     # Determine if rebuild is needed
     needs_rebuild = False
@@ -2682,6 +2706,13 @@ def compile_custom_ffmpeg(skip_updates=False):
         # No built FFmpeg - definitely need to build
         needs_rebuild = True
         log("FFmpeg not built yet - building...")
+    elif previous_configuration != current_configuration:
+        needs_rebuild = True
+        log(
+            "FFmpeg local build configuration changed "
+            f"({previous_configuration[:8] if previous_configuration else 'unstamped'}"
+            f" -> {current_configuration[:8]}) - rebuilding without changing the pinned source"
+        )
     elif skip_updates and os.path.isdir(os.path.join(BIN_DIR, "ffmpeg")):
         # Prebuilt DLLs present and updates skipped - skip entirely
         log("FFmpeg DLLs present, --skip-updates: skipping FFmpeg build.")
@@ -2762,6 +2793,8 @@ def compile_custom_ffmpeg(skip_updates=False):
             )
             with open(commit_file, "w") as f:
                 f.write(current_commit)
+            with open(configuration_file, "w", encoding="utf-8") as f:
+                f.write(current_configuration)
             log(f"Built FFmpeg commit: {current_commit[:8]}")
         except Exception as e:
             log(f"FFmpeg Build Failed: {e}")
@@ -5208,6 +5241,40 @@ def compile_project(
                 # generate_hash(me_dll) # MediaEngine doesn't need hash check for injection
                 # Note: mediaengine.dll is output directly to BIN_DIR (main folder)
                 # It acts as a bridge to FFmpeg DLLs in ffmpeg/ subfolder
+
+                # Keep process-loopback AudioSes COM state outside the long-lived
+                # captureengine process. This tiny loader inherits only the shared
+                # packet mapping and its two synchronization events, loads the just-
+                # built mediaengine.dll, and exits after each capture worker lifetime.
+                process_loopback_helper_src = os.path.join(
+                    PROJECT_ROOT, "helpers", "process_loopback_helper_main.cpp"
+                )
+                process_loopback_helper = os.path.join(BIN_DIR, "process_loopback_helper.exe")
+                temp_process_loopback_helper = os.path.join(curr_obj_dir, "process_loopback_helper.tmp.exe")
+                helper_cflags = [f for f in curr_cflags if not f.startswith("-flto")]
+                helper_ldflags = [
+                    "-municode",
+                    "-static",
+                    "-static-libgcc",
+                    "-static-libstdc++",
+                    "-Wl,--subsystem,windows",
+                    "-lkernel32",
+                ]
+                append_windows_pdb_linker_flag(helper_ldflags, process_loopback_helper)
+                safe_delete_file(temp_process_loopback_helper)
+                run_command(
+                    [curr_clang_exe]
+                    + helper_cflags
+                    + [process_loopback_helper_src]
+                    + helper_ldflags
+                    + ["-o", temp_process_loopback_helper],
+                    env=curr_env,
+                )
+                if not safe_copy_file(temp_process_loopback_helper, process_loopback_helper):
+                    log("ERROR: Failed to place process_loopback_helper.exe")
+                    sys.exit(1)
+                safe_delete_file(temp_process_loopback_helper)
+                record_verification_artifact("process_loopback_helper_exe", process_loopback_helper)
 
                 # Copy FFmpeg DLLs to bin/ffmpeg/ for runtime (Linux)
                 if IS_LINUX:

@@ -520,15 +520,24 @@ bool AudioCapture::ActivateAndStartClientOnDevice() {
         return false;
     }
 
+    const uint64_t activatedEpoch = captureEpoch_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        AudioPacket epochStart;
+        epochStart.captureEpoch = activatedEpoch;
+        epochStart.recordType = AudioPacketRecordType::EpochStart;
+        packetQueue.emplace_back(std::move(epochStart));
+    }
+
     const uint64_t bufferDurationUs =
         (pwfx->nSamplesPerSec > 0)
             ? (static_cast<uint64_t>(bufferFrameCount_) * 1000000ull) / static_cast<uint64_t>(pwfx->nSamplesPerSec)
             : 0;
     DLL_Log(
-        "[AudioCapture] Started: channels=%d rate=%d bits=%d streamLatency=%lluus loopback=%d "
+        "[AudioCapture] Started: epoch=%llu channels=%d rate=%d bits=%d streamLatency=%lluus loopback=%d "
         "devicePeriod=%lluus minPeriod=%lluus bufferFrames=%u bufferDur=%lluus "
         "(latency routed via video content delay, not audio advance)",
-        pwfx->nChannels, pwfx->nSamplesPerSec, pwfx->wBitsPerSample,
+        static_cast<unsigned long long>(activatedEpoch), pwfx->nChannels, pwfx->nSamplesPerSec, pwfx->wBitsPerSample,
         static_cast<unsigned long long>(streamLatency100ns_ / 10), isLoopback_ ? 1 : 0,
         static_cast<unsigned long long>(defaultDevicePeriod100ns_ / 10),
         static_cast<unsigned long long>(minDevicePeriod100ns_ / 10), bufferFrameCount_,
@@ -979,6 +988,7 @@ void AudioCapture::CaptureLoop() {
             // Build packet with format info
             AudioPacket packet{};
             FillPacketFormatFromWaveFormat(pwfx, &packet);
+            packet.captureEpoch = captureEpoch_.load(std::memory_order_acquire);
             packet.devicePosition = devicePosition;      // Store for debugging if needed
             packet.rawQpcPosition = rawQpcPosition;      // Store unmodified WASAPI timestamp for debugging
             packet.streamLatency = streamLatency100ns_;  // telemetry only (see below)
@@ -1041,12 +1051,18 @@ void AudioCapture::CaptureLoop() {
                 // we trim the oldest one to retain the live edge.
                 packetQueue.emplace_back(std::move(packet));
                 if (packetQueue.size() > kMaxQueuedPackets) {
-                    const AudioPacket& droppedPacket = packetQueue.front();
+                    auto droppedIt = std::find_if(packetQueue.begin(), packetQueue.end(), [](const auto& queued) {
+                        return queued.recordType == AudioPacketRecordType::Data;
+                    });
+                    if (droppedIt == packetQueue.end()) {
+                        --droppedIt;  // The packet just appended above is always a data record.
+                    }
+                    const AudioPacket& droppedPacket = *droppedIt;
                     if (droppedPacket.blockAlign > 0) {
                         queueDropFrames += droppedPacket.data.size() / static_cast<size_t>(droppedPacket.blockAlign);
                     }
                     queueDropPackets++;
-                    packetQueue.pop_front();
+                    packetQueue.erase(droppedIt);
 
                     const uint64_t nowTick = GetTickCount64();
                     if (nowTick - lastQueueDropLogTick >= 1000) {

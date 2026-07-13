@@ -1,6 +1,6 @@
 # Multi Audio Capture
 
-Last cross-checked: 2026-07-12 (ordered process-loopback end markers, route-local app backlog compensation, activation epochs and atomic route rejoin, multi-track physical-capture fan-out, batched pre-anchor queue cleanup, worker-owned WASAPI lifecycle/reactivation, and lossless stop-tail preservation)
+Last cross-checked: 2026-07-14 (generation-numbered reset/commit, ordered endpoint/app epochs, disposable process-loopback worker, codec runtime/finalization contracts, exact completed-file decode verification, route-local compensation, and lossless stop-tail preservation)
 Stale-risk: medium
 
 Primary sources:
@@ -12,7 +12,12 @@ Primary sources:
 - `mediaengine/audio_time_utils.h`
 - `mediaengine/audio_resampler.cpp`
 - `mediaengine/audio_encoder.cpp`
+- `mediaengine/process_loopback_capture.cpp`
+- `mediaengine/process_loopback_protocol.h`
+- `mediaengine/process_loopback_worker.cpp`
+- `helpers/process_loopback_helper_main.cpp`
 - `mediaengine/mediaengine.cpp`
+- `mediaengine/matroska_timing.h`
 - `mediaengine/video_encoder.cpp`
 - `tests/test_config.cpp`
 - `tests/test_audio_encoder.cpp`
@@ -20,6 +25,8 @@ Primary sources:
 - `tests/test_audio_sync_utils.cpp`
 - `tests/test_audio_time_utils.cpp`
 - `tests/test_audio_capture_source.cpp`
+- `tests/test_audio_mux_integration.cpp`
+- `tests/test_process_loopback_protocol.cpp`
 - `tests/test_audio_ring_buffer.cpp`
 - `tools/analyze_capture_av.py`
 - `testapp/av_sync_stimulus.h`
@@ -29,6 +36,14 @@ Primary sources:
 - `tests/test_av_sync_stimulus.cpp`
 
 ## Summary
+
+### Atomic reset, epochs, and process-loopback isolation (2026-07-14)
+
+Audio startup/reset is one generation-numbered command acknowledged by the audio worker, every physical source/route, track mixer, encoder FIFO, ring, resampler, QPC cursor, and drift estimator. The video side cannot commit frame zero until that generation is fully acknowledged; the first successful video encode commits the shared audio/video anchor. This replaces independent bootstrap flags that could leave track 2/3 processing a preserved pre-anchor backlog while track 1 had already joined the new timeline.
+
+Every successful WASAPI activation—system loopback, microphone, and process loopback—starts a new epoch. Capture queues carry ordered `EpochStart`, data, and EOS records. Old and new generations may coexist until the old tail is consumed; owner acknowledgement is what permits retirement. Format, packet position, latency, drift, resampler, and timeline state never cross an epoch. A source that is closed, not yet started, or past ordered EOS contributes expected timeline silence and is not reported as an underrun. Unrelated playback applications starting/stopping on an unchanged system mix endpoint are ordinary content changes, not endpoint epochs.
+
+Each unique process-loopback capture now runs inside `process_loopback_helper.exe`. The media process and helper communicate through a versioned shared-memory SPSC packet/lifecycle ring plus inherited data/space/stop events. The producer never advances the consumer cursor on overrun; worker death/restart, ring wrap, oversized packets, ordering, and diagnostic-ring pressure are explicit and unit tested. Reaping the disposable helper bounds AudioSes/`CLoopbackMixer` COM state to one worker lifetime while immutable packets still fan out from one physical capture to every route.
 
 ### WASAPI lifecycle and stop-tail invariants (2026-07-11)
 
@@ -56,7 +71,7 @@ Each exported track owns an independent audio timeline cursor. Per-source counte
 
 A process-loopback source that first becomes active well after recording start joins live at the current track cursor, preserving only a tiny fade/cushion window. CE logs `[AudioLoop] Late app source live join ... suppressedGap=... preservedGap=... process=...` and stop summaries expose `qjoin` / `qjoinKeep`. A raw `Source primed ... lateStart=...` line is not a failure when the same source has live-join evidence; it is a failure when it means old source-local backlog was retained and later mixed into the live track. This distinction matters for duplicate process-loopback routing and late helper-process tests.
 
-Name-monitored process loopback also handles a source that was active, exited, and later returned under a new PID (or whose WASAPI stream was re-activated). Every successful process-loopback activation increments an epoch carried by each immutable `AudioPacket`. The audio worker observes that epoch independently on every fanned-out route, clears only route-local buffered/conversion state, and reuses the same late-source live-join policy. This prevents a legitimate minutes-long process absence from being materialized as a huge packet-timeline gap, a saturated 30-second ring, repeated catastrophic resyncs, or divergent mixed/pure routes. `[AppAudioCapture] Started: PID=... epoch=...` and `[AudioRoute] App capture epoch transition ... resetting route-local buffers for atomic live rejoin` are the high-signal breadcrumbs. Initial activation is not treated as a transition, endpoint capture keeps epoch zero, and ordinary packet jitter within one activation does not reset anything.
+Name-monitored process loopback also handles a source that was active, exited, and later returned under a new PID (or whose WASAPI stream was re-activated). Every successful activation increments an epoch carried by ordered lifecycle/data records. The audio worker observes that epoch independently on every fanned-out route, drains the prior tail, clears route-local buffered/conversion state at the ordered boundary, and reuses the same late-source live-join policy. The same rule now applies to system and microphone endpoint recovery: successful endpoint activation starts a fresh epoch instead of carrying format/position/drift state through recovery. This prevents a legitimate minutes-long absence from becoming a huge packet-timeline gap, saturated ring, repeated resync, or divergent mixed/pure routes. Epoch-start/ack, old-tail retirement, and live-rejoin logs are the high-signal breadcrumbs; ordinary packets and ordinary changes to the contents of an unchanged system mix do not reset anything.
 
 Every process-loopback capture-loop exit enqueues an ordered end-of-stream marker after its last captured/final-drained packet. Fan-out copies that marker to all routes before route handling marks them ended. A previously-started ended route then contributes timeline silence without blocking a mixed track's live pull or final catch-up; this avoids waiting forever for a process that cannot produce another packet while still preserving its ordered tail. A later real packet/activation clears the ended state and follows the normal epoch/live-join reset. Logs to expect are `[AppAudioCapture] Queued ordered capture-end marker` and `[AudioRoute] Ordered app capture end reached`.
 
@@ -71,9 +86,9 @@ A WASAPI capture stream can die mid-recording and, before this hardening, both c
 
 `ce::audio` (`audio_recovery_policy.h`, pure/unit-tested) decides WHEN to re-activate: `IsFatalWasapiStreamError` classifies the device-invalidation family narrowly; `NextRecoveryBackoffMs`/`RecoveryBackoffElapsed` apply exponential backoff (base 1 s → cap 30 s) so an unrecoverable stream (or a legitimately paused app) is not hammered; `ShouldReactivateForSilentStall` only arms after the stream delivered ≥1 packet (`sawAnyPacket`) and has been silent ≥10 s.
 
-Both `AppAudioCapture::CaptureLoop` and `AudioCapture::CaptureLoop` now re-activate the client IN PLACE on a fatal error (keeping the capture thread, packet queue, and downstream track alive), and a healthy `GetBuffer` resets the backoff. App audio additionally runs the silent-stall watchdog (endpoint loopback does not have that failure mode, so system audio gets fatal-error recovery only). App-audio re-activation goes through `ReactivateClientForPID` → `AbandonClientInterfaces` (abandons, never releases, the process-loopback COM interfaces — see the AudioSes crash boundary below — the leaked wrappers are tiny and bounded by backoff). System audio re-activation (`ReactivateClient`) re-resolves the endpoint via the shared `ResolveCaptureDevice`/`ActivateAndStartClientOnDevice` helpers and CAN safely `Release()` the old interfaces (only `IAudioClient::Stop()` trips the AudioSes crash for endpoint loopback). The app-audio process-exit check also now tolerates 3 consecutive missed `IsProcessRunning` probes before declaring exit, so a transient `OpenProcess` hiccup cannot permanently kill a live capture. Per-session error logging replaced a latent `static int errCount` that silently swallowed every error after the first session.
+Endpoint `AudioCapture::CaptureLoop` re-activates its client on a fatal error while keeping the downstream track alive; a successful activation emits a new ordered endpoint epoch. Process-loopback recovery instead reaps and restarts the disposable helper so its COM graph cannot accumulate in the media process. App audio additionally runs the silent-stall watchdog (endpoint loopback does not have that failure mode, so system audio gets fatal-error recovery only). The app-audio process-exit check tolerates 3 consecutive missed `IsProcessRunning` probes before declaring exit, so a transient `OpenProcess` hiccup cannot permanently kill a live capture. Per-session, rate-limited diagnostics replaced static counters that previously hid errors in later recordings.
 
-Process-loopback teardown has a Windows AudioSes crash boundary. Dumps from duplicate/late app-audio runs showed `AudioSes!CLoopbackMixer::Cleanup` / `AudioLimiterAPO` crashes after app-capture shutdown. `AppAudioCapture::AbandonClientInterfaces` (called from both `CleanupCapture` and mid-recording `ReactivateClientForPID`) therefore logs `Abandoning process-loopback COM interfaces (audioClient=... to avoid AudioSes CLoopbackMixer teardown crash` and leaves those OS-backed interfaces to the short-lived media process teardown instead of calling the crash-prone `Stop()`/release path. Any `crash.log` / dump remains a strict run failure in triage; the abandon log is the expected healthy shutdown breadcrumb.
+Process-loopback teardown has a Windows AudioSes crash boundary. Dumps from duplicate/late app-audio runs showed `AudioSes!CLoopbackMixer::Cleanup` / `AudioLimiterAPO` crashes after app-capture shutdown. The current boundary is process isolation, not indefinite in-process abandonment: the helper owns activation/capture/COM state and normal teardown terminates/reaps that process. Any `crash.log` / dump remains a strict run failure; helper exit/restart and reclaimed handle/private-memory counters are the healthy lifecycle evidence.
 
 ### Read-stall recovery (catastrophic backlog resync)
 
@@ -114,7 +129,15 @@ WASAPI capture records device-reported stream latency, device period, packet dur
 - Channel-layout fallback: a codec advertising a fixed supported-layout list (`AVCodec::ch_layouts`) is validated before `avcodec_open2`. If the resolved track layout is rejected, `AudioEncoder::Init` remaps it (`CodecSupportsChannelLayout`/`PickSupportedChannelLayout`): a same-channel-count supported layout is preferred and applied as a RELABEL (the resampler keeps emitting the original layout via the unchanged `outputChannelMask`, so every channel's samples pass through and only mismatched position labels change), otherwise it downmixes (retargeting `outputChannelMask`/`outputChannels`). This exists because ALAC supports `7.1(wide)` (FL FR FC LFE BL BR FLC FRC) but NOT plain `7.1` (…SL SR, mask `0x63f`): an 8ch/7.1 default endpoint previously failed `avcodec_open2` with EINVAL (-22) on EVERY track, dropping the whole encoder set and producing a recording with NO audio. Now ALAC stores the 7.1 data in its 7.1(wide) slots; all 8 channels are preserved. Unit coverage in `tests/test_audio_encoder.cpp` (`AlacSevenPointOne*`).
 - AAC and Opus do not receive arbitrary short final frames; finalization pads to codec frame boundaries and relies on sample accounting plus `AV_PKT_DATA_SKIP_SAMPLES`/trailing metadata for the effective duration.
 
-The bundled Windows FFmpeg build must include `libopus` plus the concrete PCM encoders above. `--skip-updates` reuses the existing FFmpeg tree and DLLs, so changing the codec set requires a one-time FFmpeg rebuild before normal `--skip-updates` validation can prove Opus/PCM availability.
+Each opened encoder publishes an `AudioCodecRuntimeContract` containing the actual encoder, sample format/rate, channel layout, frame size/capabilities, initial padding, final-frame policy, and Matroska delay/discard requirements. Each stop publishes an `AudioFinalizationReport` with target/real/silence/submitted/priming/padding/packet-end/decoded-sample accounting. Encoder PTS/durations, negative priming PTS, and skip metadata are preserved; start/end skip fields on the same packet are merged. Codec contexts, frames, FIFOs, and resamplers are fresh per recording, drained once to EOF on their owner thread, and destroyed rather than reused through `avcodec_flush_buffers()`.
+
+- AAC is FFmpeg's native `aac` encoder from the pinned master revision, explicitly configured for its new NMR coder with `aac_nmr_speed=0` (slowest/best-quality mode). Initialization verifies the effective private options after `avcodec_open2`; silently falling back to another coder/speed is an error. Complete fixed frames are submitted, only the terminal frame is padded, negative first-packet PTS is retained, and exact start/end discard describes the decoded target.
+- Opus requires `libopus`, 48 kHz, 20 ms frames, `application=audio`, and disabled DTX. Pre-skip, Matroska `CodecDelay`/`SeekPreRoll`, multichannel mapping, and final `DiscardPadding` remain explicit.
+- ALAC resolves raw bit depth before open so its magic cookie matches the coded stream, uses an exact short final frame, and validates supported 16/24/32-bit/layout mappings. The current pinned encoder resolves a requested 32-bit path to its actual supported 24-bit coded depth and reports that result rather than claiming false 32-bit output.
+- FLAC resolves bit depth/block sizing before open, uses an exact short final block, validates STREAMINFO/extradata, and drains to a decoder-clean trailer. Its zero-duration EOF `AV_PKT_DATA_NEW_EXTRADATA` control packet is counted separately and is not a durationless media packet.
+- PCM enforces exact block alignment for `pcm_s16le`, packed `pcm_s24le`, and `pcm_f32le`, with zero priming/padding and 64-bit byte/sample accounting.
+
+The bundled Windows FFmpeg build includes matching decoders as well as the encoders so normal temporary-file integration tests can reopen and fully decode production Matroska output. `--skip-updates` fingerprints the local FFmpeg configuration version plus patch contents; a changed fingerprint rebuilds the pinned source even when updates are disabled. FFmpeg retains `-O3 -flto` but deliberately omits `-ffast-math`, because the NMR AAC implementation relies on defined NaN/Inf behavior.
 
 ## Layout And Mixing
 
@@ -132,6 +155,11 @@ The bundled Windows FFmpeg build must include `libopus` plus the concrete PCM en
 
 Useful logs for this area:
 
+- `[AudioReset]` / startup-contract generation lines identify command, per-owner acknowledgement, committed generation/anchor, outstanding owners, and any transactional abort. A video commit before every route/encoder acknowledgement is a strict fault.
+- `[AudioEpoch]`, `[AudioRoute] EpochStart`, ordered EOS, and tail-retirement lines identify source type/identity, old/new epoch, activation reason, queue order, fanout route, acknowledgement, and the track cursor used for rejoin. Data before its `EpochStart`, old-tail loss, or state carried across epochs is a fault.
+- `[ProcessLoopback]` helper lifecycle lines report protocol version, worker PID/generation, inherited-handle/ring identity, read/write sequence, wrap/overrun/oversize counters, restart reason, exit code, handles, and private-memory snapshots. Repeated growth across completed cycles or a producer moving the consumer cursor is a fault.
+- `[AudioEncoder] Codec runtime contract` and finalization lines report actual codec/sample format/rate/layout/frame size, native AAC NMR/speed, priming, submitted/real/silence/padding samples, timed/control/durationless packet counts, EOF, expected decoded samples, and protocol status. A durationless media packet, unsupported flush/reuse, or incomplete drain is strict.
+- The completed-file analyzer decodes every stream to canonical float and reports exact samples, first/last content, inter-track correlation, channel identity, unexpected silence, clipping, discontinuities, and decoder errors. This evidence outranks packet metadata or `DURATION` tags.
 - `[AudioCapture] ProbeMixFormat ...`: endpoint sample rate, channels, and channel mask.
 - `[AudioCapture] Started ... streamLatency=... loopback=... devicePeriod=... minPeriod=... bufferFrames=... bufferDur=...` and `[AppAudioCapture] Started ... streamLatency=... devicePeriod=... minPeriod=... bufferFrames=... bufferDur=...`: WASAPI latency/passive telemetry. `streamLatency` is no longer subtracted from packet QPC (delay-only model); the Source Sync Start lines show `wouldAdvanceQpc=` purely as the retired-behavior reference. App-audio packet logs should show `processLoopbackPacketBias=half_period`.
 - `[AudioCapture] WARNING: out-of-domain WASAPI qpcPosition=... substituted with nowQpc=...`: a capture endpoint reported a QPC position outside the valid window around the live performance counter (observed: a 192 kHz loopback device emitting a first-packet position ~497 days in the future). `AudioCapture::CaptureLoop` now validates every `IAudioCaptureClient::GetBuffer` QPC via `ce::audio::SanitizeCaptureQpcPosition` and substitutes the current QPC; the raw value is still preserved on `AudioPacket::rawQpcPosition`. Throttled to 8 lines/session. Healthy positions pass through bit-identical, so any occurrence flags a driver quirk worth noting. Without this guard the bogus timestamp made `AudioLoop` request a multi-TB leading-silence `std::vector<float>` → `std::bad_alloc` → `std::terminate` (uncaught crash, exception code `0x20474343`).
@@ -153,7 +181,7 @@ Useful logs for this area:
 - `[AudioLoop] Late app source live join ... suppressedGap=... preservedGap=... process=...`: a process-loopback source first became active late and CE trimmed stale source-local backlog instead of backfilling it into the live mix.
 - `[AudioRoute] App capture epoch transition ... epoch=A->B ... atomic live rejoin`: a previously active name-monitored process returned or its loopback stream was re-activated. Every routed track resets its source-local buffers and joins the current track cursor; a following oversized-gap clamp/catastrophic resync indicates a regression.
 - `[STOP AUDIO] Source ... qjoin:... qjoinKeep:... process=...`: stop-time proof that a late app source joined live; `qjoin>0` with clean decoded strict markers means a later `lateStart` prime line was handled intentionally.
-- `[AppAudioCapture] Abandoning process-loopback COM interfaces ...`: expected process-loopback teardown/re-activation protection for the AudioSes CLoopbackMixer crash family. A companion `crash.log` or dump is not expected and is a strict failure.
+- `[ProcessLoopback] Helper ... exit/restart/reaped ...`: current process-loopback teardown/recovery protection for the AudioSes CLoopbackMixer crash family. The older in-process `Abandoning process-loopback COM interfaces` line is historical; a companion `crash.log` or dump remains a strict failure.
 - `[AppAudioCapture] FATAL stream error from GetNextPacketSize/GetBuffer: 0x... - attempting re-activation` and `[AudioCapture] FATAL stream error ...`: a device-invalidation-family HRESULT killed the stream; the loop is re-activating the client in place. Followed by `Re-activating ... (reason=... attempt=N nextBackoffMs=...)` and `Re-activation succeeded`/`FAILED`. A handful per long session (device/driver flap) is healthy recovery; a steady stream of FAILED with no success means the endpoint/process is truly gone.
 - `[AppAudioCapture] Process-loopback silent stall for PID ... (N ms without packets, process alive) - re-activating`: the app went silent with no error (e.g. game auto-muted on alt-tab and recreated its session); the watchdog re-attaches. Expected to be followed by resumed `Source Sync` lines once the app is audible again.
 - `[AppAudioCapture] Target process ... not found on check K/3 - deferring exit`: a single `IsProcessRunning` miss; capture is NOT torn down until 3 consecutive misses. A genuine exit logs `... exited (missed 3 consecutive checks)`.
@@ -183,7 +211,11 @@ Focused regression coverage lives in:
 - `tests/test_config.cpp`
   - Inheritance and override behavior for `downmix`, `bitrate`, `sample_rate`, and `bit_depth`.
 - `tests/test_audio_encoder.cpp`
-  - PCM alias resolution, PCM bit-depth variants, Opus/libopus policy, lossy multichannel bitrate scaling, multichannel PCM packet output, AAC/Opus final-packet clamping, packed Opus silence padding, and pure-silence tracks for AAC/ALAC/FLAC/Opus/PCM.
+  - PCM alias/alignment/bit-depth variants, Opus/libopus policy, native AAC NMR speed-zero verification, multichannel bitrate/layout behavior, codec boundary lengths, explicit priming/discard accounting, FLAC EOF control-packet classification, pure silence, and repeated fresh-resource cycles for AAC/ALAC/FLAC/Opus/PCM.
+- `tests/test_audio_mux_integration.cpp`
+  - Production Matroska mux path writes AAC, ALAC, FLAC, Opus, and PCM from one deterministic PCM source, reopens with the bundled FFmpeg libraries, fully decodes every stream, and requires identical decoded endpoints plus codec-relative correlation within 1 ms.
+- `tests/test_process_loopback_protocol.cpp`
+  - Ordered lifecycle/data round trips, independent diagnostic ring, wrap, full-ring behavior without consumer-cursor theft, oversized packet rejection, bounded worker restart, and resource-reclamation policy.
 - `tests/test_audio_resampler.cpp`
   - Channel-mask preservation for stereo and 5.1 resampling paths.
 - `tests/test_audio_sync_utils.cpp`
@@ -234,9 +266,9 @@ Updated on 2026-06-14:
 
 - `installed/captureengine/logs/fortiaacdelayhangingprocess` showed a codec-independent app-audio content delay: Brave process-loopback sources joined about `7.46 s` late, retained source-local backlog, and then produced gap-silence/underrun evidence even though final stream lengths were exact. The fix makes a first-active late app source join at the current track cursor, trim stale first-packet backlog, and log `Late app source live join` plus `qjoin/qjoinKeep`.
 - `installed/captureengine/logs/fortisubsequentcapturedied` and the dump from `fortiaacdelayhangingprocess` showed media shutdown stuck in the post-mux probe path. Mux finalization now closes the trailer/file before optional post-mux validation starts, logs `mux_closed` / `post_mux_probe_start`, and bounds/cancels the probe so destructor shutdown cannot wait forever.
-- Late-app runtime validation passed at `installed/captureengine/avsync_runs/late_app_fix_20260614_0344`: WGC+ALAC and inject+AAC both live-joined the delayed helper source, ended all tracks sample-exactly, completed post-mux probes immediately, and produced no dumps or lingering CE/test processes. The earlier inject attempt exposed the AudioSes CLoopbackMixer teardown crash; `AppAudioCapture` now abandons process-loopback COM interfaces during cleanup and triage treats any crash log as `ce_process_crash`.
+- Late-app runtime validation passed at `installed/captureengine/avsync_runs/late_app_fix_20260614_0344`: WGC+ALAC and inject+AAC both live-joined the delayed source, ended all tracks sample-exactly, completed post-mux probes immediately, and produced no dumps or lingering CE/test processes. At that time `AppAudioCapture` abandoned process-loopback COM interfaces; the 2026-07-14 disposable-helper design above supersedes that historical in-process workaround. Triage still treats any crash log as `ce_process_crash`.
 
 ## Open Questions / Stale-Risk
 
-- Future audio changes still need the full `tools/run_av_sync_matrix.py --include-source-stall` matrix plus focused low-source-FPS and load checks. Run packet/log-level validation with `tools/analyze_capture_av.py --full-scan --decode-check --waveform-tail-scan --strict-sync-events --max-audio-spread-ms 0 --max-video-audio-delta-ms 0 --max-audio-tail-marker-spread-ms 0 --max-log-event audio_extreme_drift=0` when checking non-synthetic captures.
+- This hardening pass intentionally did not run `tools/run_av_sync_matrix.py`, stimulus captures, or automated real-time soaks. Real WGC/DXGI/inject, VRR/stall/overload, long-runtime, application churn, and endpoint recovery evidence remains a manual validation handoff. Use the completed-file analyzer on those recordings/session logs; synthetic matrices remain a separate future release gate only when explicitly authorized.
 - Synthetic tests cover the codec/config/layout policy, but they do not prove every real device's channel mask maps losslessly. Logs should call out unknown masks so those devices can be handled explicitly.

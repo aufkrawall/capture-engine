@@ -222,10 +222,12 @@ AudioEncoder::AudioEncoder()
 }
 
 AudioEncoder::~AudioEncoder() {
-    // Stop flushes but doesn't free resources (for multi-recording support)
     Stop();
+    ReleaseCodecResources();
+}
 
-    // Now free everything - AudioResampler cleans itself up via unique_ptr
+void AudioEncoder::ReleaseCodecResources() {
+    const bool hadResources = resampler || audioFifo || codecCtx || frame;
     resampler.reset();
     if (audioFifo) {
         av_audio_fifo_free(audioFifo);
@@ -239,9 +241,21 @@ AudioEncoder::~AudioEncoder() {
         av_frame_free(&frame);
         frame = nullptr;
     }
+    initDone = false;
+    if (hadResources) {
+        DLL_Log("[AudioResource] Destroyed per-recording codec/FIFO/frame/resampler: encoder=%s",
+                runtimeContract.encoderName.empty() ? "<unresolved>" : runtimeContract.encoderName.c_str());
+    }
 }
 
 bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)> packetCallback) {
+    if (initDone) {
+        DLL_Log("[AudioResource] ERROR: Init called on an active codec context; Stop must drain and destroy it first");
+        return false;
+    }
+    // Clear any resources left by a previous failed initialization. Successful recording
+    // contexts reach this point only after Stop() drained them to EOF and destroyed them.
+    ReleaseCodecResources();
     onPacket = packetCallback;
 
 #if defined(__clang__)
@@ -270,20 +284,6 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
     DLL_Log("[AudioEncoder] Using codec: requested=%s resolved=%s (id=%d) channels=%d mask=0x%x downmix=%d",
             policy.requestedName.c_str(), codecName.c_str(), codec->id, outputChannels, outputChannelMask,
             config.downmix ? 1 : 0);
-
-    // Clean up existing resources so Init() can be safely called for reinit
-    if (codecCtx) {
-        avcodec_free_context(&codecCtx);
-    }
-    if (frame) {
-        av_frame_free(&frame);
-        frame = nullptr;
-    }
-    if (audioFifo) {
-        av_audio_fifo_free(audioFifo);
-        audioFifo = nullptr;
-    }
-    initDone = false;
 
     codecCtx = avcodec_alloc_context3(codec);
     if (!codecCtx) {
@@ -456,9 +456,22 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
         av_dict_set(&codecOptions, "application", "audio", 0);
         av_dict_set(&codecOptions, "frame_duration", "20", 0);
         av_dict_set(&codecOptions, "dtx", "0", 0);
+    } else if (codec->id == AV_CODEC_ID_AAC && codecName == "aac") {
+        // Current FFmpeg master exposes its new noise-to-mask ratio trellis
+        // coder through the native "aac" encoder. Select its slowest/best
+        // quality mode explicitly so a future default change cannot silently
+        // downgrade recordings.
+        av_dict_set(&codecOptions, "aac_coder", "nmr", 0);
+        av_dict_set(&codecOptions, "aac_nmr_speed", "0", 0);
     }
 
     int ret = avcodec_open2(codecCtx, codec, &codecOptions);
+    const AVDictionaryEntry* unusedCodecOption = av_dict_get(codecOptions, "", nullptr, AV_DICT_IGNORE_SUFFIX);
+    if (ret >= 0 && unusedCodecOption) {
+        DLL_Log("[AudioEncoder] ERROR: codec %s rejected runtime option %s=%s", codecName.c_str(),
+                unusedCodecOption->key, unusedCodecOption->value);
+        ret = AVERROR_OPTION_NOT_FOUND;
+    }
     av_dict_free(&codecOptions);
     if (ret < 0) {
         char errbuf[256];
@@ -472,11 +485,77 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
         codecCtx->time_base = {1, codecCtx->sample_rate};
     }
 
+    bool nativeAacNmr = false;
+    int64_t nativeAacNmrSpeed = -1;
+    if (codec->id == AV_CODEC_ID_AAC && codecName == "aac") {
+        int64_t selectedCoder = -1;
+        const AVOption* nmrOption = av_opt_find(codecCtx->priv_data, "nmr", "coder", 0, 0);
+        if (!nmrOption || av_opt_get_int(codecCtx->priv_data, "aac_coder", 0, &selectedCoder) < 0 ||
+            av_opt_get_int(codecCtx->priv_data, "aac_nmr_speed", 0, &nativeAacNmrSpeed) < 0 ||
+            selectedCoder != nmrOption->default_val.i64 || nativeAacNmrSpeed != 0) {
+            DLL_Log(
+                "[AudioEncoder] ERROR: native AAC did not retain required NMR best-quality contract: "
+                "coder=%lld expected=%lld speed=%lld",
+                static_cast<long long>(selectedCoder),
+                static_cast<long long>(nmrOption ? nmrOption->default_val.i64 : -1),
+                static_cast<long long>(nativeAacNmrSpeed));
+            avcodec_free_context(&codecCtx);
+            return false;
+        }
+        nativeAacNmr = true;
+    }
+
     // Save codec ID and name for recreation in Stop()
     savedCodecId = codec->id;
     savedCodecName = codecName;
 
-    DLL_Log("[AudioEncoder] Codec opened. frame_size=%d", codecCtx->frame_size);
+    const bool supportsVariableFrame = (codec->capabilities & AV_CODEC_CAP_VARIABLE_FRAME_SIZE) != 0;
+    const bool supportsSmallLastFrame = (codec->capabilities & AV_CODEC_CAP_SMALL_LAST_FRAME) != 0;
+    const bool isPcm = codecName.rfind("pcm_", 0) == 0;
+    runtimeContract = {};
+    runtimeContract.encoderName = codecName;
+    runtimeContract.codecId = codec->id;
+    runtimeContract.sampleFormat = codecCtx->sample_fmt;
+    runtimeContract.sampleRate = codecCtx->sample_rate;
+    runtimeContract.channels = codecCtx->ch_layout.nb_channels;
+    runtimeContract.channelMask = outputChannelMask;
+    runtimeContract.rawBitDepth = codecCtx->bits_per_raw_sample;
+    runtimeContract.frameSize = codecCtx->frame_size;
+    runtimeContract.capabilities = codec->capabilities;
+    runtimeContract.initialPadding = codecCtx->initial_padding;
+    runtimeContract.finalFramePolicy =
+        isPcm ? FinalFramePolicy::BlockAlignedPcm
+              : (allowShortFinalFrame && (supportsVariableFrame || supportsSmallLastFrame)
+                     ? FinalFramePolicy::ExactShortFrame
+                     : FinalFramePolicy::PadAndSignalDiscard);
+    runtimeContract.requiresMatroskaCodecDelay = codec->id == AV_CODEC_ID_OPUS || codec->id == AV_CODEC_ID_AAC;
+    runtimeContract.requiresMatroskaDiscardPadding =
+        runtimeContract.finalFramePolicy == FinalFramePolicy::PadAndSignalDiscard;
+    runtimeContract.nativeAacNmr = nativeAacNmr;
+    runtimeContract.nativeAacNmrSpeed = static_cast<int>(nativeAacNmrSpeed);
+    runtimeContract.valid = true;
+
+    if (codec->id == AV_CODEC_ID_OPUS &&
+        (codecName != "libopus" || codecCtx->sample_rate != 48000 || codecCtx->frame_size != 960)) {
+        DLL_Log(
+            "[AudioEncoder] ERROR: invalid Opus runtime contract: encoder=%s rate=%d frame=%d "
+            "(required libopus/48000/960)",
+            codecName.c_str(), codecCtx->sample_rate, codecCtx->frame_size);
+        avcodec_free_context(&codecCtx);
+        runtimeContract.valid = false;
+        return false;
+    }
+
+    DLL_Log(
+        "[AudioCodecContract] encoder=%s id=%d fmt=%s rate=%d channels=%d mask=0x%x rawBits=%d frame=%d "
+        "caps=0x%x initialPadding=%d finalPolicy=%d codecDelay=%d discardPadding=%d aacNmr=%d aacNmrSpeed=%d",
+        runtimeContract.encoderName.c_str(), runtimeContract.codecId,
+        av_get_sample_fmt_name(runtimeContract.sampleFormat), runtimeContract.sampleRate, runtimeContract.channels,
+        runtimeContract.channelMask, runtimeContract.rawBitDepth, runtimeContract.frameSize,
+        runtimeContract.capabilities, runtimeContract.initialPadding,
+        static_cast<int>(runtimeContract.finalFramePolicy), runtimeContract.requiresMatroskaCodecDelay ? 1 : 0,
+        runtimeContract.requiresMatroskaDiscardPadding ? 1 : 0, runtimeContract.nativeAacNmr ? 1 : 0,
+        runtimeContract.nativeAacNmrSpeed);
 
     // Create audio FIFO buffer - size based on 2 seconds worth of audio
     // This scales with sample rate (e.g., 96kHz gets larger buffer than 48kHz)
@@ -495,6 +574,7 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
     if (!frame) {
         DLL_Log("[AudioEncoder] Failed to allocate frame");
         av_audio_fifo_free(audioFifo);
+        audioFifo = nullptr;
         avcodec_free_context(&codecCtx);
         return false;
     }
@@ -518,6 +598,7 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
         DLL_Log("[AudioEncoder] Failed to allocate frame buffer: %s", errbuf);
         av_frame_free(&frame);
         av_audio_fifo_free(audioFifo);
+        audioFifo = nullptr;
         avcodec_free_context(&codecCtx);
         return false;
     }
@@ -525,7 +606,9 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
     initDone = true;
     savedConfig = config;       // Save for potential reinit
     lastPacketTimestampMs = 0;  // Initialize timestamp tracker
-    pendingFrameDurations.clear();
+    finalizationReport = {};
+    finalizationReport.primingSamples = codecCtx->initial_padding;
+    totalAcceptedSamples = 0;
     DLL_Log("[AudioEncoder] Initialization complete");
     return true;
 #if defined(__clang__)
@@ -561,28 +644,86 @@ void AudioEncoder::SetStreamIndex(int index) {
     }
 }
 
+bool AudioEncoder::ResetForRecordingStart(int64_t startUs, uint64_t generation) {
+    if (generation == 0 || generation <= recordingResetGeneration) {
+        return generation != 0;
+    }
+
+    const int fifoSize = audioFifo ? av_audio_fifo_size(audioFifo) : 0;
+    DLL_Log(
+        "[AudioEnc] Timeline reset generation=%llu: startUs=%lld oldSamples=%lld "
+        "oldResampled=%lld fifo=%d",
+        static_cast<unsigned long long>(generation), static_cast<long long>(startUs),
+        static_cast<long long>(samplesCount), static_cast<long long>(resampledSamplesTotal), fifoSize);
+
+    recordingStartUs = startUs;
+    firstTimestamp = -1;
+    samplesCount = 0;
+    resampledSamplesTotal = 0;
+    totalAcceptedSamples = 0;
+    lastPacketTimestampMs = 0;
+    finalizationReport = {};
+    finalizationReport.primingSamples = runtimeContract.initialPadding;
+    lastInputTimestamp = -1;
+    if (audioFifo) {
+        av_audio_fifo_reset(audioFifo);
+    }
+    if (resampler) {
+        resampler->Reset();
+    }
+    recordingResetGeneration = generation;
+    return true;
+}
+
 void AudioEncoder::ApplyPacketDuration(AVPacket* pkt) {
     if (!pkt) {
         return;
     }
 
-    int64_t expectedDuration = 0;
-    if (!pendingFrameDurations.empty()) {
-        expectedDuration = pendingFrameDurations.front();
-        pendingFrameDurations.pop_front();
-    }
-
-    if (pkt->duration > 0) {
+    ++finalizationReport.packetCount;
+    finalizationReport.packetBytes += static_cast<uint64_t>(std::max(pkt->size, 0));
+    size_t newExtradataSize = 0;
+    const uint8_t* newExtradata = av_packet_get_side_data(pkt, AV_PKT_DATA_NEW_EXTRADATA, &newExtradataSize);
+    if (pkt->duration <= 0 && pkt->size == 0 && newExtradata && newExtradataSize > 0) {
+        ++finalizationReport.controlPacketCount;
+        DLL_Log(
+            "[AudioEncoder] Encoder EOF control packet: encoder=%s stream=%d pts=%lld newExtradata=%zu bytes",
+            runtimeContract.encoderName.c_str(), streamIndex, static_cast<long long>(pkt->pts), newExtradataSize);
         return;
     }
-
-    if (expectedDuration > 0) {
-        pkt->duration = expectedDuration;
+    if (pkt->duration <= 0) {
+        ++finalizationReport.durationlessPacketCount;
+        finalizationReport.protocolError = true;
+        DLL_Log(
+            "[AudioEncoder] ERROR: encoder emitted unexplained durationless packet: encoder=%s stream=%d "
+            "pts=%lld dts=%lld packet=%llu",
+            runtimeContract.encoderName.c_str(), streamIndex, static_cast<long long>(pkt->pts),
+            static_cast<long long>(pkt->dts), static_cast<unsigned long long>(finalizationReport.packetCount));
         return;
     }
-
-    if (codecCtx && codecCtx->frame_size > 0) {
-        pkt->duration = codecCtx->frame_size;
+    if (pkt->pts != AV_NOPTS_VALUE && pkt->pts <= INT64_MAX - pkt->duration) {
+        finalizationReport.packetEndpointSamples =
+            std::max(finalizationReport.packetEndpointSamples, pkt->pts + pkt->duration);
+    }
+    if (runtimeContract.finalFramePolicy == FinalFramePolicy::BlockAlignedPcm) {
+        int bytesPerChannel = 0;
+        if (runtimeContract.encoderName == "pcm_s16le") {
+            bytesPerChannel = 2;
+        } else if (runtimeContract.encoderName == "pcm_s24le") {
+            bytesPerChannel = 3;
+        } else if (runtimeContract.encoderName == "pcm_f32le") {
+            bytesPerChannel = 4;
+        }
+        const int blockAlign = bytesPerChannel * runtimeContract.channels;
+        if (blockAlign <= 0 || pkt->size < 0 || pkt->size % blockAlign != 0 ||
+            pkt->duration != pkt->size / blockAlign) {
+            finalizationReport.protocolError = true;
+            DLL_Log(
+                "[AudioEncoder] ERROR: PCM packet violates block alignment: encoder=%s stream=%d bytes=%d "
+                "blockAlign=%d duration=%lld",
+                runtimeContract.encoderName.c_str(), streamIndex, pkt->size, blockAlign,
+                static_cast<long long>(pkt->duration));
+        }
     }
 }
 
@@ -613,34 +754,6 @@ AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int 
         return result;
     }
 
-    // DEFERRED RESET: SetRecordingStart was called from video thread - apply
-    // reset now with logging
-    if (needsReset.exchange(false, std::memory_order_acq_rel)) {
-        int64_t deferredStartUs = pendingStartUs.exchange(0, std::memory_order_acq_rel);
-        int fifoSize = audioFifo ? av_audio_fifo_size(audioFifo) : 0;
-        DLL_Log(
-            "[AudioEnc] RECORDING START RESET: startUs=%lld, OLD "
-            "samplesCount=%lld, resampledTotal=%lld, FIFO=%d",
-            (long long)deferredStartUs, (long long)samplesCount, (long long)resampledSamplesTotal, fifoSize);
-
-        recordingStartUs = deferredStartUs;
-        // SetRecordingEndUs can race ahead of the first real sample when a
-        // packetless co-mixed source delayed this encoder until stop.  Do not
-        // erase that already-published boundary while applying the deferred
-        // start reset.
-        firstTimestamp = -1;
-        samplesCount = 0;
-        resampledSamplesTotal = 0;
-        lastPacketTimestampMs = 0;
-        pendingFrameDurations.clear();
-        lastInputTimestamp = -1;
-        if (audioFifo)
-            av_audio_fifo_reset(audioFifo);
-        if (resampler)
-            resampler->Reset();
-
-        DLL_Log("[AudioEnc] Reset complete - audio will restart from PTS=0");
-    }
     submittedBefore = samplesCount;
 
     // CRITICAL: Discard audio samples that arrive before first video frame
@@ -905,6 +1018,7 @@ AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int 
     }
     result.acceptedSamples = std::max(ret, 0);
     resampledSamplesTotal += result.acceptedSamples;
+    totalAcceptedSamples += result.acceptedSamples;
 
     AudioResampler::FreeOutputBuffer(resampledData);
 
@@ -999,7 +1113,6 @@ AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int 
             result.failed = true;
             continue;
         }
-        pendingFrameDurations.push_back(frame_size);
         // Only advance PTS counter after a successful send so tracking stays accurate
         samplesCount += frame_size;
 
@@ -1082,11 +1195,6 @@ void AudioEncoder::Stop() {
         Flush();
     }
 
-    // Only drain the audio FIFO to start fresh for next recording
-    if (audioFifo) {
-        av_audio_fifo_reset(audioFifo);
-    }
-
     // Reset all state for next recording
     DLL_Log("[AudioEnc] Stop: Resetting state (samplesCount=%lld, streamIndex=%d)", (long long)samplesCount,
             streamIndex);
@@ -1096,7 +1204,6 @@ void AudioEncoder::Stop() {
     firstTimestamp = -1;
     recordingStartUs = -1;
     recordingEndUs = 0;
-    pendingFrameDurations.clear();
     resampledSamplesTotal = 0;  // Reset resampler output counter for next recording
     lastInputTimestamp = -1;    // Reset continuity tracking
     lastPacketTimestampMs = 0;  // Reset PTS tracker
@@ -1107,24 +1214,18 @@ void AudioEncoder::Stop() {
     noPacketCount = 0;
     wasDroppingSamples = false;
     totalDroppedSamples = 0;
+    totalAcceptedSamples = 0;
     // Clear any pending packets
     for (auto* pkt : pendingPackets) {
         av_packet_free(&pkt);
     }
     pendingPackets.clear();
 
-    // Flush resampler buffers if they exist
-    if (resampler) {
-        // Recreating it is safest to clear internal buffers
-        resampler.reset();
-    }
-
-    // Do NOT free codecCtx/frame here. Freeing an ALAC codec that is in EOF state
-    // (after avcodec_send_frame(nullptr) in Flush()) can crash inside FFmpeg.
-    // Init() (called via Reinit() before the next recording) already frees and
-    // recreates these resources, so deferred cleanup is safe.
-    // The destructor also handles cleanup if no next recording occurs.
-    initDone = false;
+    // A recording owns one fresh codec context/FIFO/frame/resampler lifetime.
+    // Destroy the drained context instead of attempting unsupported generic
+    // avcodec_flush_buffers() reuse (AAC/ALAC/FLAC/Opus/PCM all warn or retain
+    // codec-private state under that pattern).
+    ReleaseCodecResources();
 }
 
 void AudioEncoder::Flush() {
@@ -1132,32 +1233,6 @@ void AudioEncoder::Flush() {
         return;
 
     DLL_Log("[AudioEncoder] Flushing encoder...");
-
-    if (needsReset.exchange(false)) {
-        const int64_t deferredStartUs = pendingStartUs.exchange(0, std::memory_order_acq_rel);
-        const int64_t preservedEndUs = recordingEndUs;
-        int fifoSize = audioFifo ? av_audio_fifo_size(audioFifo) : 0;
-        DLL_Log(
-            "[AudioEnc] RECORDING START RESET during flush: startUs=%lld, OLD "
-            "samplesCount=%lld, resampledTotal=%lld, FIFO=%d, endUs=%lld",
-            (long long)deferredStartUs, (long long)samplesCount, (long long)resampledSamplesTotal, fifoSize,
-            (long long)preservedEndUs);
-
-        recordingStartUs = deferredStartUs;
-        recordingEndUs = preservedEndUs;
-        firstTimestamp = -1;
-        samplesCount = 0;
-        resampledSamplesTotal = 0;
-        lastPacketTimestampMs = 0;
-        pendingFrameDurations.clear();
-        lastInputTimestamp = -1;
-        if (audioFifo) {
-            av_audio_fifo_reset(audioFifo);
-        }
-        if (resampler) {
-            resampler->Reset();
-        }
-    }
 
     // Calculate maximum samples to encode based on video duration
     // This ensures audio ends exactly when video ends (Microsecond precision)
@@ -1201,48 +1276,45 @@ void AudioEncoder::Flush() {
         if (!pkt || endSkipSamples <= 0 || endSkipSamples > UINT32_MAX) {
             return false;
         }
-        uint8_t* skipData = av_packet_new_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, 10);
+        size_t existingSize = 0;
+        uint8_t* skipData = av_packet_get_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, &existingSize);
+        uint32_t startSkipSamples = 0;
+        uint32_t existingEndSkipSamples = 0;
+        uint8_t startSkipReason = 0;
+        if (skipData && existingSize >= 10) {
+            startSkipSamples = AV_RL32(skipData);
+            existingEndSkipSamples = AV_RL32(skipData + 4);
+            startSkipReason = skipData[8];
+        } else {
+            skipData = av_packet_new_side_data(pkt, AV_PKT_DATA_SKIP_SAMPLES, 10);
+        }
         if (!skipData) {
             DLL_Log("[AudioEncoder] WARNING: failed to add packet end-skip side data: stream=%d endSkip=%lld samples",
                     streamIndex, endSkipSamples);
             return false;
         }
 
-        AV_WL32(skipData, 0);
-        AV_WL32(skipData + 4, (uint32_t)endSkipSamples);
-        skipData[8] = 0;
+        const uint64_t mergedEndSkip =
+            std::min<uint64_t>(UINT32_MAX, static_cast<uint64_t>(existingEndSkipSamples) + endSkipSamples);
+        AV_WL32(skipData, startSkipSamples);
+        AV_WL32(skipData + 4, static_cast<uint32_t>(mergedEndSkip));
+        skipData[8] = startSkipReason;
         skipData[9] = 0;  // padding silence
         finalDiscardSideDataAttached = true;
-        finalDiscardSideDataSamples = endSkipSamples;
-        DLL_Log("[AudioEncoder] Added packet end-skip side data: stream=%d endSkip=%lld samples", streamIndex,
-                endSkipSamples);
+        finalDiscardSideDataSamples = static_cast<int64_t>(mergedEndSkip);
+        DLL_Log(
+            "[AudioEncoder] Merged packet skip side data: stream=%d startSkip=%u existingEnd=%u addedEnd=%lld "
+            "mergedEnd=%llu samples",
+            streamIndex, startSkipSamples, existingEndSkipSamples, endSkipSamples,
+            static_cast<unsigned long long>(mergedEndSkip));
         return true;
     };
 
-    auto packetWithinEndBoundary = [&](AVPacket* pkt) {
-        if (!pkt || targetSamples == INT64_MAX || pkt->pts == AV_NOPTS_VALUE) {
-            return true;
-        }
-        const ce::audio::PacketEndClamp clamp =
-            ce::audio::ClampPacketDurationToTargetSamples(pkt->pts, pkt->duration, targetSamples);
-        if (!clamp.keep) {
-            DLL_Log("[AudioEncoder] Dropping packet beyond recording end: pts=%lld max=%lld", (long long)pkt->pts,
-                    (long long)targetSamples);
-            return false;
-        }
-        if (clamp.clamped) {
-            const int64_t originalDuration = pkt->duration;
-            DLL_Log("[AudioEncoder] Clamping final packet duration: pts=%lld dur=%lld -> %lld max=%lld",
-                    (long long)pkt->pts, (long long)pkt->duration, (long long)clamp.durationSamples,
-                    (long long)targetSamples);
-            pkt->duration = clamp.durationSamples;
-            if (!finalDiscardSideDataAttached) {
-                attachEndSkipSideData(pkt, originalDuration - clamp.durationSamples);
-            }
-        }
-        return true;
-    };
-
+    // Packets emitted while the terminal frames are submitted stay buffered
+    // until EOF. This lets the actual final packet carry end-discard metadata
+    // without rewriting encoder PTS/durations or guessing which receive call
+    // will produce the last packet.
+    std::vector<AVPacket*> flushedPackets;
     auto drainPackets = [&]() {
         while (true) {
             AVPacket* pkt = av_packet_alloc();
@@ -1256,12 +1328,8 @@ void AudioEncoder::Flush() {
                 break;
             }
             ApplyPacketDuration(pkt);
-            if (packetWithinEndBoundary(pkt)) {
-                pkt->stream_index = streamIndex;
-                if (onPacket)
-                    onPacket(pkt);
-            }
-            av_packet_free(&pkt);
+            pkt->stream_index = streamIndex;
+            flushedPackets.push_back(pkt);
         }
     };
 
@@ -1393,7 +1461,6 @@ void AudioEncoder::Flush() {
             }
 
             frame->pts = samplesCount;
-            samplesCount += samplesToSend;
 
             ret = avcodec_send_frame(codecCtx, frame);
             if (ret == AVERROR(EAGAIN)) {
@@ -1403,7 +1470,7 @@ void AudioEncoder::Flush() {
             if (ret < 0) {
                 break;
             }
-            pendingFrameDurations.push_back(samplesToSend);
+            samplesCount += samplesToSend;
             drainPackets();
         }
     }
@@ -1432,33 +1499,39 @@ void AudioEncoder::Flush() {
         "discardPadding=%lld priming=%d trailing=%d",
         streamIndex, samplesCount, targetSamples, maxSamples, discardPaddingSamples, codecCtx->initial_padding,
         codecCtx->trailing_padding);
-    if (!pendingFrameDurations.empty()) {
-        DLL_Log("[AudioEncoder] Flush: pending duration slots before final drain=%zu", pendingFrameDurations.size());
+    // Drain exactly once. A drained encoder is destroyed by Stop(); encoder
+    // contexts are never reused through avcodec_flush_buffers().
+    const int drainStartResult = avcodec_send_frame(codecCtx, nullptr);
+    if (drainStartResult < 0 && drainStartResult != AVERROR_EOF) {
+        char errbuf[256];
+        av_strerror(drainStartResult, errbuf, sizeof(errbuf));
+        DLL_Log("[AudioEncoder] ERROR: failed to begin encoder drain: %s", errbuf);
+        finalizationReport.protocolError = true;
     }
-
-    // Send NULL frame to trigger final drain of codec's internal buffer.
-    // After draining, avcodec_flush_buffers() resets the codec out of EOF state
-    // so it can be safely freed by avcodec_free_context (called from Init() on
-    // next recording start) without triggering double-free bugs in ALAC.
-    avcodec_send_frame(codecCtx, nullptr);
     // Final drain
-    std::vector<AVPacket*> flushedPackets;
     while (true) {
         AVPacket* pkt = av_packet_alloc();
         int ret = avcodec_receive_packet(codecCtx, pkt);
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+        if (ret == AVERROR_EOF) {
+            finalizationReport.drainReachedEof = true;
+            av_packet_free(&pkt);
+            break;
+        }
+        if (ret == AVERROR(EAGAIN)) {
+            DLL_Log("[AudioEncoder] ERROR: encoder drain returned EAGAIN before EOF");
+            finalizationReport.protocolError = true;
             av_packet_free(&pkt);
             break;
         }
         if (ret < 0) {
+            char errbuf[256];
+            av_strerror(ret, errbuf, sizeof(errbuf));
+            DLL_Log("[AudioEncoder] ERROR: encoder drain failed before EOF: %s", errbuf);
+            finalizationReport.protocolError = true;
             av_packet_free(&pkt);
             break;
         }
         ApplyPacketDuration(pkt);
-        if (!packetWithinEndBoundary(pkt)) {
-            av_packet_free(&pkt);
-            continue;
-        }
         pkt->stream_index = streamIndex;  // Ensure correct stream index for flushed packets
         flushedPackets.push_back(pkt);
     }
@@ -1480,12 +1553,33 @@ void AudioEncoder::Flush() {
         av_packet_free(&pkt);
     }
 
-    // Reset the codec out of EOF/draining state so avcodec_free_context (called
-    // from Init() or the destructor) operates on a clean codec rather than one
-    // that has been drained to EOF. This prevents potential double-free bugs in
-    // some codec implementations (e.g. ALAC) when the context is freed after EOF.
-    avcodec_flush_buffers(codecCtx);
-    pendingFrameDurations.clear();
-
+    finalizationReport.timelineTargetSamples = targetSamples == INT64_MAX ? samplesCount : targetSamples;
+    finalizationReport.inputTimelineSamples = totalAcceptedSamples;
+    finalizationReport.codecSubmittedSamples = samplesCount;
+    finalizationReport.primingSamples = codecCtx->initial_padding;
+    finalizationReport.terminalPaddingSamples = std::max<int64_t>(0, discardPaddingSamples);
+    finalizationReport.expectedDecodedSamples = finalizationReport.timelineTargetSamples;
+    if (!finalizationReport.drainReachedEof || finalizationReport.durationlessPacketCount > 0 ||
+        finalizationReport.codecSubmittedSamples < finalizationReport.timelineTargetSamples) {
+        finalizationReport.protocolError = true;
+    }
+    DLL_Log(
+        "[AudioFinalization] encoder=%s stream=%d target=%lld input=%lld expectedSilence=%lld submitted=%lld "
+        "priming=%lld terminalPadding=%lld packetEnd=%lld expectedDecoded=%lld packets=%llu bytes=%llu "
+        "controlPackets=%llu durationless=%llu drainEof=%d protocolError=%d",
+        runtimeContract.encoderName.c_str(), streamIndex,
+        static_cast<long long>(finalizationReport.timelineTargetSamples),
+        static_cast<long long>(finalizationReport.inputTimelineSamples),
+        static_cast<long long>(finalizationReport.expectedSourceSilenceSamples),
+        static_cast<long long>(finalizationReport.codecSubmittedSamples),
+        static_cast<long long>(finalizationReport.primingSamples),
+        static_cast<long long>(finalizationReport.terminalPaddingSamples),
+        static_cast<long long>(finalizationReport.packetEndpointSamples),
+        static_cast<long long>(finalizationReport.expectedDecodedSamples),
+        static_cast<unsigned long long>(finalizationReport.packetCount),
+        static_cast<unsigned long long>(finalizationReport.packetBytes),
+        static_cast<unsigned long long>(finalizationReport.controlPacketCount),
+        static_cast<unsigned long long>(finalizationReport.durationlessPacketCount),
+        finalizationReport.drainReachedEof ? 1 : 0, finalizationReport.protocolError ? 1 : 0);
     DLL_Log("[AudioEncoder] Flush complete");
 }

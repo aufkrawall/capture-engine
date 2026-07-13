@@ -1,12 +1,14 @@
 #include <gtest/gtest.h>
 
+#include "../mediaengine/matroska_timing.h"
 #include "../mediaengine/mux_invariants.h"
 
 namespace {
 
 using ce::mux::ChoosePostMuxStreamStartUs;
-using ce::mux::ComputeAudioCodecPrimingToleranceUs;
 using ce::mux::ComputeAudioMuxRoundingToleranceUs;
+using ce::mux::ComputeCfrAudioLatticeExtensionFrames;
+using ce::mux::ComputeCfrAudioLatticeFrameQuantum;
 using ce::mux::ComputeDurationDeltaUs;
 using ce::mux::ComputePacketEndUs;
 using ce::mux::HeaderValidationIssue;
@@ -18,6 +20,15 @@ using ce::mux::PacketTimelineStats;
 using ce::mux::ValidateStreamForHeader;
 
 }  // namespace
+
+TEST(MuxInvariantTest, BundledMatroskaMuxerRequiresAndReportsMicrosecondPrecision) {
+    AVFormatContext* formatContext = nullptr;
+    ASSERT_GE(avformat_alloc_output_context2(&formatContext, nullptr, "matroska", nullptr), 0);
+    ASSERT_NE(formatContext, nullptr);
+    EXPECT_TRUE(ce::media::IsMatroskaMuxer(formatContext));
+    EXPECT_TRUE(ce::media::RequireMicrosecondMatroskaTimestampPrecision(formatContext));
+    avformat_free_context(formatContext);
+}
 
 TEST(MuxInvariantTest, HeaderValidationAcceptsStreamsWithCodecParamsAndTimeBase) {
     EXPECT_EQ(ValidateStreamForHeader(true, true, 1, 1000), HeaderValidationIssue::kNone);
@@ -55,12 +66,13 @@ TEST(MuxInvariantTest, AudioMuxRoundingToleranceCoversOneSampleOrTimebaseTick) {
     EXPECT_EQ(ComputeAudioMuxRoundingToleranceUs(0, 0, 0), 1);
 }
 
-TEST(MuxInvariantTest, AudioCodecPrimingToleranceCoversCodecDelayPlusRounding) {
-    EXPECT_EQ(ComputeAudioCodecPrimingToleranceUs(1024, 48000, 21), 21355);
-    EXPECT_EQ(ComputeAudioCodecPrimingToleranceUs(312, 48000, 21), 6521);
-    EXPECT_EQ(ComputeAudioCodecPrimingToleranceUs(0, 48000, 21), 0);
-    EXPECT_EQ(ComputeAudioCodecPrimingToleranceUs(312, 0, 21), 0);
-    EXPECT_EQ(ComputeAudioCodecPrimingToleranceUs(312, 48000, -1), 6500);
+TEST(MuxInvariantTest, CfrEndpointExtendsOnlyToTheMinimumCommonAudioLattice) {
+    EXPECT_EQ(ComputeCfrAudioLatticeFrameQuantum(120, {48000}), 1);
+    EXPECT_EQ(ComputeCfrAudioLatticeFrameQuantum(144, {48000}), 3);
+    EXPECT_EQ(ComputeCfrAudioLatticeFrameQuantum(144, {44100, 48000}), 12);
+    EXPECT_EQ(ComputeCfrAudioLatticeExtensionFrames(100, 3), 2);
+    EXPECT_EQ(ComputeCfrAudioLatticeExtensionFrames(102, 3), 0);
+    EXPECT_EQ(ComputeCfrAudioLatticeExtensionFrames(109, 12), 11);
 }
 
 TEST(MuxInvariantTest, PostMuxStartUsesPrimingStartBeforeFirstReadablePacket) {

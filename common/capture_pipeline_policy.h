@@ -698,7 +698,8 @@ inline int64_t GetWgcStartupSmoothnessTargetDelayQpc(uint32_t retainedExtraFrame
 }
 
 inline int64_t GetWgcStartupReserveWaitBudgetQpc(int64_t startupContentDelayTargetQpc, int64_t targetIntervalTicks,
-                                                 int64_t smoothnessTargetDelayQpc, bool smoothnessStartupAttempted) {
+                                                 int64_t smoothnessTargetDelayQpc, bool smoothnessStartupAttempted,
+                                                 int64_t qpcTicksPerSecond = 0) {
     if (startupContentDelayTargetQpc <= 0 || targetIntervalTicks <= 0) {
         return 0;
     }
@@ -717,7 +718,8 @@ inline int64_t GetWgcStartupReserveWaitBudgetQpc(int64_t startupContentDelayTarg
 
     const int64_t smoothnessSlack = saturatingAdd(smoothnessTargetDelayQpc, saturatingMul(targetIntervalTicks, 4));
     const int64_t smoothnessBudget = saturatingAdd(startupContentDelayTargetQpc, smoothnessSlack);
-    return std::max(baseBudget, smoothnessBudget);
+    const int64_t computedBudget = std::max(baseBudget, smoothnessBudget);
+    return qpcTicksPerSecond > 0 ? qpcTicksPerSecond : computedBudget;
 }
 
 inline int64_t SelectWgcStartupSmoothnessExtraDelayQpc(int64_t actualStartupDelayQpc, int64_t avContentDelayQpc,
@@ -800,6 +802,66 @@ inline int64_t GetWgcStartupAudioAnchorQpc(int64_t videoFrameQpc, int64_t conten
         return videoFrameQpc;
     }
     return videoFrameQpc + contentDelayQpc;
+}
+
+struct CfrTimelineStartContract {
+    int64_t videoOriginQpc = 0;
+    int64_t liveQpc = 0;
+    int64_t renderLoopbackLatencyQpc = 0;
+    int64_t contentDelayQpc = 0;
+    int64_t smoothnessReserveQpc = 0;
+    int64_t audioAnchorQpc = 0;
+    bool valid = false;
+};
+
+inline CfrTimelineStartContract BuildCfrTimelineStartContract(int64_t videoOriginQpc, int64_t liveQpc,
+                                                               int64_t renderLoopbackLatencyQpc) {
+    CfrTimelineStartContract contract;
+    contract.videoOriginQpc = videoOriginQpc;
+    contract.liveQpc = liveQpc;
+    contract.renderLoopbackLatencyQpc = renderLoopbackLatencyQpc;
+    if (videoOriginQpc <= 0 || liveQpc < videoOriginQpc || renderLoopbackLatencyQpc < 0 ||
+        videoOriginQpc > INT64_MAX - renderLoopbackLatencyQpc) {
+        return contract;
+    }
+
+    contract.contentDelayQpc = liveQpc - videoOriginQpc;
+    if (contract.contentDelayQpc < renderLoopbackLatencyQpc) {
+        return contract;
+    }
+    contract.smoothnessReserveQpc = contract.contentDelayQpc - renderLoopbackLatencyQpc;
+    contract.audioAnchorQpc = videoOriginQpc + renderLoopbackLatencyQpc;
+    contract.valid = true;
+    return contract;
+}
+
+inline size_t SelectNearestMonotonicTimestampIndex(const int64_t* timestamps, size_t count, int64_t targetQpc) {
+    if (!timestamps || count == 0) {
+        return 0;
+    }
+    size_t bestIndex = 0;
+    uint64_t bestDistance = UINT64_MAX;
+    bool found = false;
+    const auto signedDistance = [](int64_t left, int64_t right) {
+        // Biasing the signed domain into unsigned order makes the distance exact even
+        // across INT64_MIN/INT64_MAX, where ordinary signed subtraction would overflow.
+        const uint64_t biasedLeft = static_cast<uint64_t>(left) ^ (uint64_t{1} << 63);
+        const uint64_t biasedRight = static_cast<uint64_t>(right) ^ (uint64_t{1} << 63);
+        return biasedLeft >= biasedRight ? biasedLeft - biasedRight : biasedRight - biasedLeft;
+    };
+    for (size_t i = 0; i < count; ++i) {
+        if (timestamps[i] <= 0) {
+            continue;
+        }
+        const uint64_t distance = signedDistance(timestamps[i], targetQpc);
+        if (!found || distance < bestDistance ||
+            (distance == bestDistance && timestamps[i] > timestamps[bestIndex])) {
+            bestIndex = i;
+            bestDistance = distance;
+            found = true;
+        }
+    }
+    return bestIndex;
 }
 
 struct WgcStartupReserveSelection {

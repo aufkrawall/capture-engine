@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-07-12 (aligned agent verification workflow and formatter constraints)
+Last cross-checked: 2026-07-14 (FFmpeg configuration/patch fingerprinting, codec decode support, and NMR-safe math flags)
 
 Primary sources:
 - `AGENTS.md`
@@ -143,7 +143,9 @@ Default quality mode currently:
 - On Windows, the script bootstraps MSYS2 and manages a custom FFmpeg build path.
 - FFmpeg runtime DLL names are resolved from the current install tree, rather than hard-coded. The Windows CaptureEngine link therefore delay-loads the installed major versions (for example `avcodec-63.dll`, `avformat-63.dll`, and `avutil-61.dll`), while bundle synchronization selects the highest numeric version and removes stale copies. Missing optional runtime dependencies are logged with their configured search paths.
 - `compile_tests()` recompiles the shared `common/*.cpp` objects with the active test flags before linking. This prevents a sanitizer child build from leaving ASan/UBSan objects in the shared object directory for a later non-sanitizer test-only link.
-- The custom Windows FFmpeg recipe is part of audio codec support. The expected audio encoder set includes `aac`, `alac`, `flac`, `libopus`, `pcm_s16le`, `pcm_s24le`, and `pcm_f32le`; runtime DLL copying includes `libopus-0.dll`. `--skip-updates` may skip the FFmpeg rebuild when DLLs already exist, so codec-set changes need an explicit non-skip/force rebuild once before normal skip-updates builds can validate them.
+- The custom Windows FFmpeg recipe is part of audio codec support. The expected audio encoder set includes `aac`, `alac`, `flac`, `libopus`, `pcm_s16le`, `pcm_s24le`, and `pcm_f32le`; matching audio decoders are enabled for completed-file integration verification, and runtime DLL copying includes `libopus-0.dll`.
+- `FFMPEG_BUILD_CONFIGURATION_VERSION` plus the contents of `patches/ffmpeg/*.patch` form the local FFmpeg configuration fingerprint stored in `last_build_configuration.txt`. Even with `--skip-updates`, a fingerprint change rebuilds the already-pinned FFmpeg source instead of silently reusing stale DLLs. Bump the configuration version whenever configure flags/codec sets change; patch content is detected automatically.
+- FFmpeg is built with `-O3 -flto` but without `-ffast-math`. The pinned native AAC encoder defaults to the new NMR coder, and CE explicitly selects `aac_coder=nmr,aac_nmr_speed=0`; NMR's numerical guards require defined NaN/Inf behavior. The local Matroska microsecond-precision and NVENC CFR patches are checked/applied against the pinned source during a rebuild.
 - On Windows, `--skip-updates` now also skips the old unconditional MSYS2 `pacman -S --needed ...` package-install step. Earlier behavior still entered pacman even on focused test runs and could hang on mirrors or stale package-manager state before any compile/test work started.
 - The nested sanitizer regression child now writes to its own log file inside the parent verification bundle instead of clobbering the parent top-level `build.log`.
 - MSYS2 package install now uses an explicit timeout and logs partial stdout/stderr on timeout instead of silently waiting forever.

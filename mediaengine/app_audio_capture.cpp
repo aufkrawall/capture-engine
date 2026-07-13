@@ -176,6 +176,10 @@ AppAudioCapture::AppAudioCapture() {
     if (!stopEvent_) {
         DLL_Log("[AppAudioCapture] CreateEventW for activation cancellation failed: 0x%lx", GetLastError());
     }
+    packetReadyEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!packetReadyEvent_) {
+        DLL_Log("[AppAudioCapture] CreateEventW for packet notification failed: 0x%lx", GetLastError());
+    }
 }
 
 AppAudioCapture::~AppAudioCapture() {
@@ -187,6 +191,10 @@ AppAudioCapture::~AppAudioCapture() {
     if (stopEvent_) {
         CloseHandle(stopEvent_);
         stopEvent_ = nullptr;
+    }
+    if (packetReadyEvent_) {
+        CloseHandle(packetReadyEvent_);
+        packetReadyEvent_ = nullptr;
     }
 }
 
@@ -370,6 +378,9 @@ bool AppAudioCapture::GetNextPacket(AudioPacket& packet) {
             return false;
         queuedPacket = std::move(packetQueue.front());
         packetQueue.pop_front();
+        if (!packetQueue.empty() && packetReadyEvent_) {
+            SetEvent(packetReadyEvent_);
+        }
     }
     packet = std::move(queuedPacket);
     return true;
@@ -380,6 +391,9 @@ void AppAudioCapture::DiscardPendingPackets() {
     {
         std::lock_guard<std::mutex> lock(queueMutex);
         discarded.swap(packetQueue);
+        if (packetReadyEvent_) {
+            ResetEvent(packetReadyEvent_);
+        }
     }
     if (!discarded.empty()) {
         DLL_Log("[AppAudioCapture] Discarding %zu queued packets for PID %lu", discarded.size(), targetPID.load());
@@ -420,6 +434,12 @@ bool AppAudioCapture::BeginAsyncStartForPID(DWORD pid) {
             startPendingResult.store(ok, std::memory_order_release);
             startPendingValid.store(true, std::memory_order_release);
             asyncStartInProgress.store(false, std::memory_order_release);
+            // Wake the process-loopback helper even when activation failed and
+            // therefore produced no epoch/data record. This keeps worker state
+            // transitions event-driven instead of requiring an activation poll.
+            if (packetReadyEvent_) {
+                SetEvent(packetReadyEvent_);
+            }
             return ok;
         });
     } catch (const std::exception& error) {
@@ -748,6 +768,16 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid) {
         return false;
     }
     const uint64_t activatedEpoch = captureEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        AudioPacket epochStart;
+        epochStart.captureEpoch = activatedEpoch;
+        epochStart.recordType = AudioPacketRecordType::EpochStart;
+        packetQueue.emplace_back(std::move(epochStart));
+        if (packetReadyEvent_) {
+            SetEvent(packetReadyEvent_);
+        }
+    }
 
     const uint64_t bufferDurationUs =
         (pwfx->nSamplesPerSec > 0)
@@ -1288,8 +1318,17 @@ void AppAudioCapture::CaptureLoop() {
                 // Transactional live-edge retention: if deque growth fails,
                 // every already-queued packet remains intact.
                 packetQueue.emplace_back(std::move(packet));
+                if (packetReadyEvent_) {
+                    SetEvent(packetReadyEvent_);
+                }
                 if (packetQueue.size() > kMaxQueuedPackets) {
-                    const AudioPacket& droppedPacket = packetQueue.front();
+                    auto droppedIt = std::find_if(packetQueue.begin(), packetQueue.end(), [](const auto& queued) {
+                        return queued.recordType == AudioPacketRecordType::Data;
+                    });
+                    if (droppedIt == packetQueue.end()) {
+                        --droppedIt;  // The packet just appended above is always a data record.
+                    }
+                    const AudioPacket& droppedPacket = *droppedIt;
                     uint64_t droppedFrames = 0;
                     if (droppedPacket.blockAlign > 0) {
                         droppedFrames = droppedPacket.data.size() / static_cast<size_t>(droppedPacket.blockAlign);
@@ -1298,7 +1337,7 @@ void AppAudioCapture::CaptureLoop() {
                     queueDropPackets++;
                     queueOverrunPackets.fetch_add(1, std::memory_order_relaxed);
                     queueOverrunFrames.fetch_add(droppedFrames, std::memory_order_relaxed);
-                    packetQueue.pop_front();
+                    packetQueue.erase(droppedIt);
 
                     const uint64_t queueNowTick = GetTickCount64();
                     if (queueNowTick - lastQueueDropLogTick >= 1000) {
@@ -1372,6 +1411,7 @@ void AppAudioCapture::CaptureLoop() {
     try {
         AudioPacket endMarker;
         endMarker.captureEpoch = captureEpoch.load(std::memory_order_acquire);
+        endMarker.recordType = AudioPacketRecordType::EndOfStream;
         endMarker.endOfStream = true;
         size_t markerQueueDepth = 0;
         {
@@ -1379,6 +1419,9 @@ void AppAudioCapture::CaptureLoop() {
             // The marker is ordered after every captured packet and is not subject to the data-packet
             // retention bound. Downstream fan-out observes it only after every route has received the tail.
             packetQueue.emplace_back(std::move(endMarker));
+            if (packetReadyEvent_) {
+                SetEvent(packetReadyEvent_);
+            }
             markerQueueDepth = packetQueue.size();
         }
         DLL_Log("[AppAudioCapture] Queued ordered capture-end marker: epoch=%llu queueDepth=%zu",

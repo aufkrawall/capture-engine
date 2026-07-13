@@ -33,6 +33,19 @@ TEST(AudioTimeUtilsTest, RawQpcToHundredNanosecondsHandlesLargeCountersWithoutOv
     EXPECT_EQ(ce::audio::RawQpcToHundredNanoseconds(rawQpc, 10000000ULL), rawQpc);
 }
 
+TEST(AudioTimeUtilsTest, VirtualTwoAndEightHourSessionsRetainExactSampleAndTimestampCounts) {
+    constexpr uint64_t twoHours100ns = 2ull * 60ull * 60ull * ce::audio::kHundredNanosecondsPerSecond;
+    constexpr uint64_t eightHours100ns = 8ull * 60ull * 60ull * ce::audio::kHundredNanosecondsPerSecond;
+    for (int sampleRate : {44100, 48000, 96000}) {
+        const uint64_t twoHourSamples = 2ull * 60ull * 60ull * static_cast<uint64_t>(sampleRate);
+        const uint64_t eightHourSamples = 8ull * 60ull * 60ull * static_cast<uint64_t>(sampleRate);
+        EXPECT_EQ(ce::audio::HundredNanosecondsToSamples(twoHours100ns, sampleRate), twoHourSamples);
+        EXPECT_EQ(ce::audio::HundredNanosecondsToSamples(eightHours100ns, sampleRate), eightHourSamples);
+        EXPECT_EQ(ce::audio::AudioFramesToHundredNanoseconds(twoHourSamples, sampleRate), twoHours100ns);
+        EXPECT_EQ(ce::audio::AudioFramesToHundredNanoseconds(eightHourSamples, sampleRate), eightHours100ns);
+    }
+}
+
 TEST(AudioTimeUtilsTest, CaptureLatencyCompensationSubtractsWhenEnabled) {
     EXPECT_EQ(ce::audio::ApplyCaptureLatencyCompensation(1230000, 300000, true), 930000u);
     EXPECT_EQ(ce::audio::ApplyCaptureLatencyCompensation(1230000, 300000, false), 1230000u);

@@ -14,6 +14,12 @@
 
 #include "audio_recovery_policy.h"
 
+enum class AudioPacketRecordType : uint8_t {
+    Data,
+    EpochStart,
+    EndOfStream,
+};
+
 struct AudioPacket {
     std::vector<uint8_t> data;
     int64_t timestamp = 0;  // ms
@@ -28,8 +34,9 @@ struct AudioPacket {
     uint64_t qpcPosition = 0;     // Latency-compensated WASAPI packet QPC position in 100-ns units
     uint64_t rawQpcPosition = 0;  // Raw WASAPI GetBuffer QPC position in 100-ns units
     uint64_t streamLatency = 0;   // IAudioClient stream latency in 100-ns units used for compensation
-    uint64_t captureEpoch = 0;    // Process-loopback activation generation (0 for endpoint capture)
-    bool endOfStream = false;     // Ordered process-loopback end marker (never used for endpoint packets)
+    uint64_t captureEpoch = 0;    // Successful WASAPI activation generation
+    AudioPacketRecordType recordType = AudioPacketRecordType::Data;
+    bool endOfStream = false;  // Legacy mirror of recordType==EndOfStream during protocol migration
 };
 
 class AudioCapture {
@@ -73,6 +80,7 @@ private:
     uint64_t defaultDevicePeriod100ns_ = 0;
     uint64_t minDevicePeriod100ns_ = 0;
     uint32_t bufferFrameCount_ = 0;
+    std::atomic<uint64_t> captureEpoch_{0};
 
     std::atomic<bool> isCapturing;
     std::thread captureThread;

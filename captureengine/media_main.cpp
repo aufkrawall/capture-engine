@@ -8039,7 +8039,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                             std::max<uint32_t>(wgcStartupReserveWaitFreshenedMax, SaturatingToUint32(startupFreshened));
                         const int64_t waitBudgetQpc = ce::capture_policy::GetWgcStartupReserveWaitBudgetQpc(
                             startupContentDelayTargetQpc, targetIntervalTicks, smoothnessTargetDelayQpc,
-                            smoothnessStartupAttempted);
+                            smoothnessStartupAttempted, qpcFreq.QuadPart);
                         const bool waitBudgetRemaining =
                             waitNow.QuadPart - wgcStartupReserveWaitStartQpc < waitBudgetQpc;
                         if (waitBudgetRemaining) {
@@ -8109,13 +8109,13 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                     const int64_t latestStartupSelectionQpc =
                         startupSelectionQpcs.empty() ? 0 : startupSelectionQpcs.back();
-                    const int64_t selectedStartupSelectionQpc =
+                    int64_t selectedStartupSelectionQpc =
                         selectedStartupIndex < startupCandidates.size()
                             ? GetFrameSelectionTimestamp(startupCandidates[selectedStartupIndex].frame)
                             : 0;
-                    const int64_t actualStartupDelayQpc = latestStartupSelectionQpc > selectedStartupSelectionQpc
-                                                              ? latestStartupSelectionQpc - selectedStartupSelectionQpc
-                                                              : 0;
+                    int64_t actualStartupDelayQpc = latestStartupSelectionQpc > selectedStartupSelectionQpc
+                                                        ? latestStartupSelectionQpc - selectedStartupSelectionQpc
+                                                        : 0;
                     const int64_t pileupSmoothnessActiveDelayQpc =
                         ce::capture_policy::SelectWgcStartupSmoothnessExtraDelayQpc(
                             actualStartupDelayQpc, avContentDelayQpc, smoothnessTargetDelayQpc);
@@ -8138,6 +8138,36 @@ void EncoderThreadFunc(const AppConfig& config) {
                     wgcSmoothnessActiveDelayQpc = ce::capture_policy::ResolveWgcStartupSmoothnessActiveDelayQpc(
                         pileupSmoothnessActiveDelayQpc, wgcSmoothnessFloorDelayQpc, startupPartialReserveFallback,
                         startupSourceAtOrAboveCfr);
+                    if (startupPartialReserveFallback && !startupSelectionQpcs.empty() &&
+                        latestStartupSelectionQpc > 0) {
+                        const size_t fallbackIndexBeforeContractRecalculation = selectedStartupIndex;
+                        const int64_t recalculatedContentDelayQpc =
+                            avContentDelayQpc + std::max<int64_t>(0, wgcSmoothnessActiveDelayQpc);
+                        const int64_t recalculatedTargetQpc =
+                            latestStartupSelectionQpc > recalculatedContentDelayQpc
+                                ? latestStartupSelectionQpc - recalculatedContentDelayQpc
+                                : latestStartupSelectionQpc;
+                        selectedStartupIndex = ce::capture_policy::SelectNearestMonotonicTimestampIndex(
+                            startupSelectionQpcs.data(), startupSelectionQpcs.size(), recalculatedTargetQpc);
+                        selectedStartupSelectionQpc = startupSelectionQpcs[selectedStartupIndex];
+                        actualStartupDelayQpc = latestStartupSelectionQpc > selectedStartupSelectionQpc
+                                                    ? latestStartupSelectionQpc - selectedStartupSelectionQpc
+                                                    : 0;
+                        wgcSmoothnessActiveDelayQpc =
+                            ce::capture_policy::SelectWgcStartupSmoothnessExtraDelayQpc(
+                                actualStartupDelayQpc, avContentDelayQpc, smoothnessTargetDelayQpc);
+                        LogInfo(
+                            "[EncoderThread] WGC partial reservoir contract recalculated: oldIndex=%zu newIndex=%zu "
+                            "latestQpc=%lld targetQpc=%lld selectedQpc=%lld realizedContentDelayUs=%lld "
+                            "renderDelayUs=%lld smoothReserveUs=%lld (frame selection and delay changed together)",
+                            fallbackIndexBeforeContractRecalculation, selectedStartupIndex,
+                            static_cast<long long>(latestStartupSelectionQpc),
+                            static_cast<long long>(recalculatedTargetQpc),
+                            static_cast<long long>(selectedStartupSelectionQpc),
+                            static_cast<long long>(qpcDeltaToUs(actualStartupDelayQpc)),
+                            static_cast<long long>(qpcDeltaToUs(avContentDelayQpc)),
+                            static_cast<long long>(qpcDeltaToUs(wgcSmoothnessActiveDelayQpc)));
+                    }
                     if (wgcSmoothnessActiveDelayQpc < pileupSmoothnessActiveDelayQpc) {
                         LogInfo(
                             "[EncoderThread] WGC startup underfed active-delay capped to measured jitter floor: "
@@ -8213,7 +8243,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         wgcStartupReserveWaitStartQpc > 0
                             ? std::max<int64_t>(0, wgcStartupReserveSpanUs - wgcStartupReserveWaitInitialSpanUs)
                             : 0;
-                    const int64_t startupSelectedDelayUs = qpcDeltaToUs(startupReserveSelection.selectedDelayQpc);
+                    const int64_t startupSelectedDelayUs = qpcDeltaToUs(actualStartupDelayQpc);
                     const bool startupReserveFallback =
                         startupContentDelayTargetQpc > 0 && !startupReserveSelection.usedDelayReserve;
                     const int64_t startDeltaUs =
@@ -9686,11 +9716,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                             if (startupVideoQpc <= 0) {
                                 startupVideoQpc = frameToProcess->timestamp;
                             }
-                            const int64_t startupEffectiveDelayQpc = getWgcEffectiveContentDelayQpc();
                             const int64_t startupAudioAnchorDelayQpc = avContentDelayQpc;
-                            const int64_t startupAudioAnchorQpc = ce::capture_policy::GetWgcStartupAudioAnchorQpc(
-                                startupVideoQpc, startupAudioAnchorDelayQpc);
-                            if (startupVideoQpc > 0 && startupAudioAnchorQpc > 0) {
+                            const auto startContract = ce::capture_policy::BuildCfrTimelineStartContract(
+                                startupVideoQpc, liveStartQpc.QuadPart, startupAudioAnchorDelayQpc);
+                            if (startContract.valid) {
+                                const int64_t startupEffectiveDelayQpc = startContract.contentDelayQpc;
+                                const int64_t startupAudioAnchorQpc = startContract.audioAnchorQpc;
+                                wgcSmoothnessActiveDelayQpc = startContract.smoothnessReserveQpc;
                                 wgcAvSyncStartupVideoQpc = startupVideoQpc;
                                 wgcAvSyncStartupAudioAnchorQpc = startupAudioAnchorQpc;
                                 wgcAvSyncStartupEffectiveDelayQpc = startupEffectiveDelayQpc;
@@ -9710,7 +9742,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                     qpcFreq.QuadPart > 0 ? (wgcAvSyncScheduleOffsetQpc * 1000000) / qpcFreq.QuadPart
                                                          : 0;
                                 LogInfo(
-                                    "[AVSyncApply] wgc_schedule_anchor: videoQpc=%lld audioAnchorQpc=%lld "
+                                    "[AVSyncApply] wgc_cfr_start_contract: videoQpc=%lld audioAnchorQpc=%lld "
                                     "liveStartQpc=%lld requestedDelayUs=%lld startupDelayUs=%lld "
                                     "scheduleOffsetUs=%lld selectionOffsetUs=0 audioAnchorDelayUs=%lld "
                                     "renderDelayUs=%lld "
@@ -9723,6 +9755,15 @@ void EncoderThreadFunc(const AppConfig& config) {
                                     static_cast<long long>(audioAnchorDelayUs), static_cast<long long>(renderDelayUs),
                                     static_cast<long long>(smoothExtraDelayUs), config.avSyncConfidence.c_str(),
                                     config.avSyncReason.c_str());
+                            } else {
+                                LogInfo(
+                                    "[AVSyncApply] ERROR: invalid WGC CFR start contract: videoQpc=%lld "
+                                    "liveStartQpc=%lld renderDelayUs=%lld observedContentDelayUs=%lld; "
+                                    "startup audio anchor not published",
+                                    static_cast<long long>(startupVideoQpc),
+                                    static_cast<long long>(liveStartQpc.QuadPart),
+                                    static_cast<long long>(qpcToUs(startupAudioAnchorDelayQpc)),
+                                    static_cast<long long>(qpcToUs(liveStartQpc.QuadPart - startupVideoQpc)));
                             }
                         }
                         // For the selection grid, we treat the first frame as tick 1.

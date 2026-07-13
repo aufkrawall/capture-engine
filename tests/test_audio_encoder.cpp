@@ -4,6 +4,7 @@
 #include <mmreg.h>
 
 #include <algorithm>
+#include <limits>
 #include <vector>
 #include "../mediaengine/audio_encoder.h"
 
@@ -100,7 +101,7 @@ TEST_F(AudioEncoderTest, PcmAcceptsFinalBatchLongerThanFiveSeconds) {
 
     ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
     encoder.SetStreamIndex(1);
-    encoder.SetRecordingStart(0);
+    ASSERT_TRUE(encoder.ResetForRecordingStart(0, 1));
 
     constexpr int kSamples = 625600;
     std::vector<float> samples(static_cast<size_t>(kSamples) * 2u, 0.0f);
@@ -209,7 +210,7 @@ TEST_F(AudioEncoderTest, AlacSevenPointOneEncodesAndProducesPackets) {
 
     ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
     encoder.SetStreamIndex(1);
-    encoder.SetRecordingStart(0);
+    ASSERT_TRUE(encoder.ResetForRecordingStart(0, 1));
 
     auto data = CreateDummyFloatAudio(200, 48000, 8);  // 200ms of 8ch float
     encoder.EncodeSamples(data.data(), static_cast<int>(data.size()), 8, 48000, 32, 32,
@@ -219,7 +220,7 @@ TEST_F(AudioEncoderTest, AlacSevenPointOneEncodesAndProducesPackets) {
     EXPECT_FALSE(receivedPackets.empty());
 }
 
-TEST_F(AudioEncoderTest, AacFlushClampsPaddedFinalPacketToVideoTarget) {
+TEST_F(AudioEncoderTest, AacFlushPreservesPacketDurationsAndSignalsExactDecodedTarget) {
     AudioConfig config;
     config.codec = "aac";
     config.bitrate = 192;
@@ -229,7 +230,7 @@ TEST_F(AudioEncoderTest, AacFlushClampsPaddedFinalPacketToVideoTarget) {
 
     ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
     encoder.SetStreamIndex(1);
-    encoder.SetRecordingStart(0);
+    ASSERT_TRUE(encoder.ResetForRecordingStart(0, 1));
 
     constexpr int64_t kTargetUs = 10916667;
     constexpr int64_t kTargetSamples = 524000;
@@ -240,24 +241,30 @@ TEST_F(AudioEncoderTest, AacFlushClampsPaddedFinalPacketToVideoTarget) {
     encoder.Stop();
 
     ASSERT_FALSE(receivedPackets.empty());
-    int64_t maxPacketEnd = 0;
+    int64_t maxPacketEnd = std::numeric_limits<int64_t>::min();
     for (auto* pkt : receivedPackets) {
         ASSERT_NE(pkt, nullptr);
-        if (pkt->pts == AV_NOPTS_VALUE || pkt->duration <= 0 || pkt->pts < 0) {
+        EXPECT_GT(pkt->duration, 0);
+        if (pkt->pts == AV_NOPTS_VALUE || pkt->duration <= 0) {
             continue;
         }
-        EXPECT_LT(pkt->pts, kTargetSamples);
         maxPacketEnd = std::max<int64_t>(maxPacketEnd, pkt->pts + pkt->duration);
     }
-    EXPECT_EQ(maxPacketEnd, kTargetSamples);
+    EXPECT_GT(maxPacketEnd, kTargetSamples);
     size_t skipSideDataSize = 0;
     int endReason = -1;
     EXPECT_EQ(MaxPacketEndSkipSamples(receivedPackets, &skipSideDataSize, &endReason), 288);
     EXPECT_EQ(skipSideDataSize, 10u);
     EXPECT_EQ(endReason, 0);
+    const auto& report = encoder.GetFinalizationReport();
+    EXPECT_EQ(report.timelineTargetSamples, kTargetSamples);
+    EXPECT_EQ(report.terminalPaddingSamples, 288);
+    EXPECT_EQ(report.durationlessPacketCount, 0u);
+    EXPECT_TRUE(report.drainReachedEof);
+    EXPECT_FALSE(report.protocolError);
 }
 
-TEST_F(AudioEncoderTest, OpusFlushPadsPackedSilenceWithoutPacketsPastTarget) {
+TEST_F(AudioEncoderTest, OpusFlushPreservesPreSkipAndSignalsTerminalDiscard) {
     AudioConfig config;
     config.codec = "opus";
     config.bitrate = 192;
@@ -267,27 +274,35 @@ TEST_F(AudioEncoderTest, OpusFlushPadsPackedSilenceWithoutPacketsPastTarget) {
 
     ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
     encoder.SetStreamIndex(1);
-    encoder.SetRecordingStart(0);
+    ASSERT_TRUE(encoder.ResetForRecordingStart(0, 1));
     encoder.SetRecordingEndUs(25000);
     encoder.Stop();
 
     ASSERT_FALSE(receivedPackets.empty());
     constexpr int64_t kTargetSamples = 1200;
-    int64_t maxPacketEnd = 0;
+    int64_t maxPacketEnd = std::numeric_limits<int64_t>::min();
+    bool sawNegativePrimingPts = false;
     for (auto* pkt : receivedPackets) {
         ASSERT_NE(pkt, nullptr);
-        if (pkt->pts == AV_NOPTS_VALUE || pkt->duration <= 0 || pkt->pts < 0) {
+        EXPECT_GT(pkt->duration, 0);
+        if (pkt->pts == AV_NOPTS_VALUE || pkt->duration <= 0) {
             continue;
         }
-        EXPECT_LT(pkt->pts, kTargetSamples);
+        sawNegativePrimingPts = sawNegativePrimingPts || pkt->pts < 0;
         maxPacketEnd = std::max<int64_t>(maxPacketEnd, pkt->pts + pkt->duration);
     }
-    EXPECT_EQ(maxPacketEnd, kTargetSamples);
+    EXPECT_TRUE(sawNegativePrimingPts);
+    EXPECT_GT(maxPacketEnd, kTargetSamples);
     size_t skipSideDataSize = 0;
     int endReason = -1;
     EXPECT_GT(MaxPacketEndSkipSamples(receivedPackets, &skipSideDataSize, &endReason), 0);
     EXPECT_EQ(skipSideDataSize, 10u);
     EXPECT_EQ(endReason, 0);
+    const auto& report = encoder.GetFinalizationReport();
+    EXPECT_EQ(report.timelineTargetSamples, kTargetSamples);
+    EXPECT_EQ(report.terminalPaddingSamples, 720);
+    EXPECT_TRUE(report.drainReachedEof);
+    EXPECT_FALSE(report.protocolError);
 }
 
 TEST_F(AudioEncoderTest, SilenceFlushIsBoundedForEveryAudioCodec) {
@@ -319,23 +334,25 @@ TEST_F(AudioEncoderTest, SilenceFlushIsBoundedForEveryAudioCodec) {
             }
         })) << codecCase.codec;
         localEncoder.SetStreamIndex(1);
-        localEncoder.SetRecordingStart(0);
+        ASSERT_TRUE(localEncoder.ResetForRecordingStart(0, 1));
         localEncoder.SetRecordingEndUs(kTargetUs);
         localEncoder.Stop();
 
         ASSERT_FALSE(packets.empty()) << codecCase.codec;
-        bool sawBoundedPacket = false;
-        int64_t maxPacketEnd = 0;
+        bool sawTimedPacket = false;
         for (auto* pkt : packets) {
             ASSERT_NE(pkt, nullptr) << codecCase.codec;
-            if (pkt->pts != AV_NOPTS_VALUE && pkt->duration > 0 && pkt->pts >= 0) {
-                sawBoundedPacket = true;
-                EXPECT_LT(pkt->pts, kTargetSamples) << codecCase.codec;
-                maxPacketEnd = std::max<int64_t>(maxPacketEnd, pkt->pts + pkt->duration);
+            if (pkt->pts != AV_NOPTS_VALUE && pkt->duration > 0) {
+                sawTimedPacket = true;
             }
         }
-        EXPECT_TRUE(sawBoundedPacket) << codecCase.codec;
-        EXPECT_EQ(maxPacketEnd, kTargetSamples) << codecCase.codec;
+        EXPECT_TRUE(sawTimedPacket) << codecCase.codec;
+        const auto& report = localEncoder.GetFinalizationReport();
+        EXPECT_EQ(report.timelineTargetSamples, kTargetSamples) << codecCase.codec;
+        EXPECT_EQ(report.expectedDecodedSamples, kTargetSamples) << codecCase.codec;
+        EXPECT_EQ(report.durationlessPacketCount, 0u) << codecCase.codec;
+        EXPECT_TRUE(report.drainReachedEof) << codecCase.codec;
+        EXPECT_FALSE(report.protocolError) << codecCase.codec;
         const std::string codecName = codecCase.codec;
         if (codecName == "aac" || codecName == "opus") {
             size_t skipSideDataSize = 0;
@@ -360,7 +377,7 @@ TEST_F(AudioEncoderTest, MultichannelPcmEncodesPackets) {
 
     ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
     encoder.SetStreamIndex(2);
-    encoder.SetRecordingStart(0);
+    ASSERT_TRUE(encoder.ResetForRecordingStart(0, 1));
 
     auto data = CreateDummyFloatAudio(20, 48000, 6);
     encoder.EncodeSamples(data.data(), static_cast<int>(data.size()), 6, 48000, 32, 32, 24, true,
@@ -379,7 +396,7 @@ TEST_F(AudioEncoderTest, DiscardBeforeStart) {
     encoder.SetStreamIndex(0);  // Ready to emit
 
     // Set start time to 1000us
-    encoder.SetRecordingStart(1000);
+    ASSERT_TRUE(encoder.ResetForRecordingStart(1000, 1));
 
     // Feed audio at timestamp 500us (before start)
     auto data = CreateDummyAudio(10, 48000, 2);  // 10ms
@@ -396,7 +413,7 @@ TEST_F(AudioEncoderTest, GapFilling) {
     config.bitrate = 128;
     encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); });
     encoder.SetStreamIndex(0);
-    encoder.SetRecordingStart(0);
+    ASSERT_TRUE(encoder.ResetForRecordingStart(0, 1));
 
     // Send enough audio to produce at least one AAC frame (1024 samples @ 48kHz ≈ 21.3ms)
     // Send 100ms to ensure multiple complete frames
@@ -424,7 +441,7 @@ TEST_F(AudioEncoderTest, BufferUntilStreamIndex) {
 
     // Set stream index first - encoder needs this to emit packets
     encoder.SetStreamIndex(1);
-    encoder.SetRecordingStart(0);
+    ASSERT_TRUE(encoder.ResetForRecordingStart(0, 1));
 
     // Send 100ms of audio (enough for ~4 AAC frames)
     auto data = CreateDummyAudio(100, 48000, 2);
@@ -437,5 +454,170 @@ TEST_F(AudioEncoderTest, BufferUntilStreamIndex) {
     // Verify stream index is correct on all packets
     for (auto* pkt : receivedPackets) {
         EXPECT_EQ(pkt->stream_index, 1);
+    }
+}
+
+TEST(AudioEncoderContractTest, CodecRuntimeContractsReflectOpenedEncoderState) {
+    struct CodecCase {
+        const char* codec;
+        const char* bitDepth;
+        int expectedRate;
+        AudioEncoder::FinalFramePolicy finalPolicy;
+    };
+    const CodecCase cases[] = {
+        {"aac", "default", 48000, AudioEncoder::FinalFramePolicy::PadAndSignalDiscard},
+        {"alac", "24", 48000, AudioEncoder::FinalFramePolicy::ExactShortFrame},
+        {"flac", "24", 48000, AudioEncoder::FinalFramePolicy::ExactShortFrame},
+        {"opus", "default", 48000, AudioEncoder::FinalFramePolicy::PadAndSignalDiscard},
+        {"pcm", "24", 48000, AudioEncoder::FinalFramePolicy::BlockAlignedPcm},
+    };
+    for (const auto& codecCase : cases) {
+        AudioEncoder localEncoder;
+        AudioConfig config;
+        config.codec = codecCase.codec;
+        config.bitDepth = codecCase.bitDepth;
+        config.sampleRate = std::string(codecCase.codec) == "opus" ? "44100" : "48000";
+        config.outputChannels = 2;
+        config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+        ASSERT_TRUE(localEncoder.Init(config, [](AVPacket*) {})) << codecCase.codec;
+        const auto& contract = localEncoder.GetRuntimeContract();
+        EXPECT_TRUE(contract.valid) << codecCase.codec;
+        EXPECT_EQ(contract.sampleRate, codecCase.expectedRate) << codecCase.codec;
+        EXPECT_EQ(contract.channels, 2) << codecCase.codec;
+        EXPECT_EQ(contract.finalFramePolicy, codecCase.finalPolicy) << codecCase.codec;
+        EXPECT_FALSE(contract.encoderName.empty()) << codecCase.codec;
+        if (std::string(codecCase.codec) == "aac") {
+            EXPECT_EQ(contract.encoderName, "aac");
+            EXPECT_TRUE(contract.nativeAacNmr);
+            EXPECT_EQ(contract.nativeAacNmrSpeed, 0);
+        }
+        if (std::string(codecCase.codec) == "opus") {
+            EXPECT_EQ(contract.encoderName, "libopus");
+            EXPECT_EQ(contract.frameSize, 960);
+            EXPECT_TRUE(contract.requiresMatroskaCodecDelay);
+            EXPECT_TRUE(contract.requiresMatroskaDiscardPadding);
+        }
+        localEncoder.Stop();
+        EXPECT_FALSE(localEncoder.IsReady()) << codecCase.codec;
+    }
+}
+
+TEST(AudioEncoderContractTest, BoundaryLengthsFinalizeExactlyForEveryCodec) {
+    const char* codecs[] = {"aac", "alac", "flac", "opus", "pcm"};
+    for (const char* codec : codecs) {
+        AudioEncoder probe;
+        AudioConfig config;
+        config.codec = codec;
+        config.bitrate = 192;
+        config.sampleRate = "48000";
+        config.bitDepth = "24";
+        config.outputChannels = 2;
+        config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+        ASSERT_TRUE(probe.Init(config, [](AVPacket*) {})) << codec;
+        const int nominalFrame = probe.GetRuntimeContract().frameSize > 0 ? probe.GetRuntimeContract().frameSize : 4096;
+        probe.Stop();
+        const int lengths[] = {1, nominalFrame - 1, nominalFrame, nominalFrame + 1, nominalFrame * 3};
+        uint64_t generation = 1;
+        for (int targetSamples : lengths) {
+            AudioEncoder localEncoder;
+            std::vector<AVPacket*> packets;
+            ASSERT_TRUE(localEncoder.Init(config, [&packets](AVPacket* packet) {
+                if (AVPacket* clone = av_packet_clone(packet)) {
+                    packets.push_back(clone);
+                }
+            })) << codec << " target=" << targetSamples;
+            localEncoder.SetStreamIndex(1);
+            ASSERT_TRUE(localEncoder.ResetForRecordingStart(0, generation++));
+            const int64_t targetUs =
+                (static_cast<int64_t>(targetSamples) * 1000000ll + 24000ll) / 48000ll;
+            localEncoder.SetRecordingEndUs(targetUs);
+            localEncoder.Stop();
+            const auto& report = localEncoder.GetFinalizationReport();
+            EXPECT_EQ(report.timelineTargetSamples, targetSamples) << codec << " target=" << targetSamples;
+            EXPECT_EQ(report.expectedDecodedSamples, targetSamples) << codec << " target=" << targetSamples;
+            EXPECT_GE(report.codecSubmittedSamples, targetSamples) << codec << " target=" << targetSamples;
+            EXPECT_EQ(report.durationlessPacketCount, 0u) << codec << " target=" << targetSamples;
+            EXPECT_EQ(report.controlPacketCount, codec == "flac" ? 1u : 0u)
+                << codec << " target=" << targetSamples;
+            EXPECT_TRUE(report.drainReachedEof) << codec << " target=" << targetSamples;
+            EXPECT_FALSE(report.protocolError) << codec << " target=" << targetSamples;
+            EXPECT_FALSE(packets.empty()) << codec << " target=" << targetSamples;
+            for (AVPacket* packet : packets) {
+                av_packet_free(&packet);
+            }
+        }
+    }
+}
+
+TEST(AudioEncoderContractTest, RepeatedRecordingCyclesOwnFreshCodecResources) {
+    const char* codecs[] = {"aac", "alac", "flac", "opus", "pcm"};
+    for (const char* codec : codecs) {
+        AudioEncoder localEncoder;
+        AudioConfig config;
+        config.codec = codec;
+        config.bitrate = 192;
+        config.sampleRate = "48000";
+        config.bitDepth = "24";
+        config.outputChannels = 2;
+        config.outputChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+        for (uint64_t cycle = 1; cycle <= 6; ++cycle) {
+            size_t packetCount = 0;
+            ASSERT_TRUE(localEncoder.Init(config, [&packetCount](AVPacket*) { ++packetCount; }))
+                << codec << " cycle=" << cycle;
+            ASSERT_TRUE(localEncoder.IsReady());
+            localEncoder.SetStreamIndex(1);
+            ASSERT_TRUE(localEncoder.ResetForRecordingStart(0, cycle));
+            localEncoder.SetRecordingEndUs(100000);
+            localEncoder.Stop();
+            EXPECT_FALSE(localEncoder.IsReady()) << codec << " cycle=" << cycle;
+            EXPECT_GT(packetCount, 0u) << codec << " cycle=" << cycle;
+            EXPECT_FALSE(localEncoder.GetFinalizationReport().protocolError) << codec << " cycle=" << cycle;
+        }
+    }
+}
+
+TEST(AudioEncoderContractTest, ActiveCodecContextCannotBeReinitializedWithoutDrain) {
+    AudioEncoder localEncoder;
+    AudioConfig config;
+    config.codec = "aac";
+    config.sampleRate = "48000";
+    ASSERT_TRUE(localEncoder.Init(config, [](AVPacket*) {}));
+    EXPECT_FALSE(localEncoder.Init(config, [](AVPacket*) {}));
+    EXPECT_TRUE(localEncoder.IsReady());
+    localEncoder.SetStreamIndex(1);
+    ASSERT_TRUE(localEncoder.ResetForRecordingStart(0, 1));
+    localEncoder.SetRecordingEndUs(100000);
+    localEncoder.Stop();
+    EXPECT_TRUE(localEncoder.GetFinalizationReport().drainReachedEof);
+}
+
+TEST(AudioEncoderContractTest, LosslessBitDepthAndSampleRateAreResolvedBeforeOpen) {
+    struct Case {
+        const char* codec;
+        const char* bitDepth;
+        const char* sampleRate;
+        int expectedBits;
+        int expectedRate;
+    };
+    const Case cases[] = {
+        {"alac", "16", "44100", 16, 44100}, {"alac", "24", "48000", 24, 48000},
+        {"alac", "32", "96000", 24, 96000}, {"flac", "16", "44100", 16, 44100},
+        {"flac", "24", "48000", 24, 48000}, {"flac", "32", "96000", 32, 96000},
+        {"pcm", "16", "44100", 16, 44100}, {"pcm", "24", "48000", 24, 48000},
+        {"pcm", "32", "96000", 32, 96000},
+    };
+    for (const auto& item : cases) {
+        AudioEncoder localEncoder;
+        AudioConfig config;
+        config.codec = item.codec;
+        config.bitDepth = item.bitDepth;
+        config.sampleRate = item.sampleRate;
+        config.outputChannels = 1;
+        config.outputChannelMask = SPEAKER_FRONT_CENTER;
+        ASSERT_TRUE(localEncoder.Init(config, [](AVPacket*) {}))
+            << item.codec << '/' << item.bitDepth << '/' << item.sampleRate;
+        EXPECT_EQ(localEncoder.GetRuntimeContract().sampleRate, item.expectedRate);
+        EXPECT_EQ(localEncoder.GetRuntimeContract().rawBitDepth, item.expectedBits);
+        localEncoder.Stop();
     }
 }

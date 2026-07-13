@@ -71,6 +71,9 @@ public:
     void DiscardPendingPackets();
 
     size_t PendingPacketCount();
+    HANDLE GetPacketReadyEvent() const {
+        return packetReadyEvent_;
+    }
 
     uint64_t GetQueueOverrunPacketCount() const {
         return queueOverrunPackets.load(std::memory_order_relaxed);
@@ -207,4 +210,5 @@ private:
 
     HANDLE captureEvent_ = nullptr;
     HANDLE stopEvent_ = nullptr;
+    HANDLE packetReadyEvent_ = nullptr;
 };

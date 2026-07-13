@@ -519,6 +519,13 @@ TEST(AudioSyncUtilsTest, AppAudioCaptureEpochTransitionDistinguishesRestartFromO
     EXPECT_FALSE(ce::audio::IsAppAudioCaptureEpochTransition(false, 1, 2));
 }
 
+TEST(AudioSyncUtilsTest, EverySuccessfulWasapiReactivationStartsANewEpoch) {
+    EXPECT_FALSE(ce::audio::IsAudioCaptureEpochTransition(0, 1));
+    EXPECT_FALSE(ce::audio::IsAudioCaptureEpochTransition(4, 4));
+    EXPECT_TRUE(ce::audio::IsAudioCaptureEpochTransition(4, 5));
+    EXPECT_FALSE(ce::audio::IsAudioCaptureEpochTransition(4, 0));
+}
+
 TEST(AudioSyncUtilsTest, RestartedAppAudioEpochReusesLateJoinInsteadOfMaterializingLongAbsence) {
     constexpr int64_t kRate = 48000;
     const bool firstTimelinePacketAfterEpochReset = ce::audio::IsAppAudioCaptureEpochTransition(true, 1, 2);

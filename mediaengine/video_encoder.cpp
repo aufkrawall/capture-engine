@@ -7,6 +7,7 @@
 #include "audio_time_utils.h"  // For ce::audio::ParseSampleRateOr
 #include "cursor_geometry.h"
 #include "mediaengine.h"
+#include "matroska_timing.h"
 #include "mux_invariants.h"
 #include "video_encoder_options.h"
 #include "video_format_policy.h"
@@ -206,7 +207,6 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
     int64_t maxAudioEndUs = 0;
     int64_t maxAudioDeltaUs = 0;
     int64_t maxAudioRoundingToleranceUs = 1;
-    int64_t maxAudioCodecPrimingToleranceUs = 0;
     uint32_t videoStreamCount = 0;
     uint32_t audioStreamCount = 0;
     std::vector<int64_t> firstPacketStartUs(probeCtx->nb_streams, INT64_MAX);
@@ -286,10 +286,6 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
                 maxAudioRoundingToleranceUs,
                 ce::mux::ComputeAudioMuxRoundingToleranceUs(probedStream->codecpar->sample_rate,
                                                             probedStream->time_base.num, probedStream->time_base.den));
-            maxAudioCodecPrimingToleranceUs = std::max(
-                maxAudioCodecPrimingToleranceUs, ce::mux::ComputeAudioCodecPrimingToleranceUs(
-                                                     probedStream->codecpar->initial_padding,
-                                                     probedStream->codecpar->sample_rate, maxAudioRoundingToleranceUs));
         }
     }
 
@@ -304,12 +300,6 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
             "[VideoEncoder] Post-mux audio duration rounding evidence (target=%lld audioMinEnd=%lld "
             "audioMaxEnd=%lld maxDelta=%lld tolerance=%lld)",
             finalDurationUs, minAudioEndUs, maxAudioEndUs, maxAudioDeltaUs, maxAudioRoundingToleranceUs);
-    } else if (audioStreamCount > 0 && maxAudioDeltaUs > 0 && maxAudioDeltaUs <= maxAudioCodecPrimingToleranceUs) {
-        DLL_Log(
-            "[VideoEncoder] Post-mux audio codec priming evidence (target=%lld audioMinEnd=%lld "
-            "audioMaxEnd=%lld maxDelta=%lld primingTolerance=%lld roundingTolerance=%lld)",
-            finalDurationUs, minAudioEndUs, maxAudioEndUs, maxAudioDeltaUs, maxAudioCodecPrimingToleranceUs,
-            maxAudioRoundingToleranceUs);
     } else if (audioStreamCount > 0 && maxAudioDeltaUs > maxAudioRoundingToleranceUs) {
         DLL_Log(
             "[VideoEncoder] WARNING: Post-mux audio duration mismatch (target=%lld audioMinEnd=%lld "
@@ -3221,16 +3211,13 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         if (fmtCtx->priv_data) {
             av_opt_set(fmtCtx->priv_data, "reserve_index_space", "2000000", 0);  // 2MB
 
-            // Try to set microsecond timestamp precision for MKV.  Standard FFmpeg
-            // builds may not expose this option yet, so we log and continue if it
-            // is unavailable rather than treating it as an error.
-            int tsRet = av_opt_set(fmtCtx->priv_data, "timestamp_precision", "1000", 0);
-            if (tsRet < 0) {
-                DLL_Log(
-                    "[VideoEncoder] MKV timestamp_precision option not available (ret=%d), "
-                    "using default 1ms precision",
-                    tsRet);
+        }
+        if (!ce::media::RequireMicrosecondMatroskaTimestampPrecision(fmtCtx)) {
+            DLL_Log("[VideoEncoder] ERROR: Matroska timestamp_precision=1000 is required but unavailable");
+            if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
+                avio_closep(&fmtCtx->pb);
             }
+            return false;
         }
 
         if (!ValidateFormatContextForHeader(fmtCtx)) {
@@ -4211,13 +4198,13 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         }
         if (fmtCtx->priv_data) {
             av_opt_set(fmtCtx->priv_data, "reserve_index_space", "2000000", 0);
-            int tsRet = av_opt_set(fmtCtx->priv_data, "timestamp_precision", "1000", 0);
-            if (tsRet < 0) {
-                DLL_Log(
-                    "[VideoEncoder] MKV timestamp_precision option not available (ret=%d), "
-                    "using default 1ms precision",
-                    tsRet);
+        }
+        if (!ce::media::RequireMicrosecondMatroskaTimestampPrecision(fmtCtx)) {
+            DLL_Log("[VideoEncoder] ERROR: Matroska timestamp_precision=1000 is required but unavailable");
+            if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
+                avio_closep(&fmtCtx->pb);
             }
+            return false;
         }
         if (!ValidateFormatContextForHeader(fmtCtx)) {
             if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
@@ -6655,6 +6642,14 @@ int64_t VideoEncoder::GetExpectedFinalDurationUs() const {
             fps = 60;
         return av_rescale(lastAssignedVideoPts + 1, 1000000, fps);
     }
+}
+
+int64_t VideoEncoder::GetAssignedCfrFrameCount() const {
+    return !savedConfig.useVFR && lastAssignedVideoPts >= 0 ? lastAssignedVideoPts + 1 : 0;
+}
+
+int VideoEncoder::GetConfiguredFps() const {
+    return savedConfig.fps > 0 ? savedConfig.fps : 0;
 }
 
 int64_t VideoEncoder::GetEncodedDurationUs() const {

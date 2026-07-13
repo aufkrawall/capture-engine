@@ -548,8 +548,15 @@ TEST(CapturePipelinePolicyTest, WgcStartupReserveWaitBudgetExtendsForSmoothnessR
     EXPECT_EQ(policy::GetWgcStartupReserveWaitBudgetQpc(/*startupContentDelayTargetQpc=*/2700,
                                                         /*targetIntervalTicks=*/100,
                                                         /*smoothnessTargetDelayQpc=*/2400,
-                                                        /*smoothnessStartupAttempted=*/true),
-              5500);
+                                                        /*smoothnessStartupAttempted=*/true,
+                                                        /*qpcTicksPerSecond=*/10000),
+              10000);
+    EXPECT_EQ(policy::GetWgcStartupReserveWaitBudgetQpc(/*startupContentDelayTargetQpc=*/15000,
+                                                        /*targetIntervalTicks=*/100,
+                                                        /*smoothnessTargetDelayQpc=*/5000,
+                                                        /*smoothnessStartupAttempted=*/true,
+                                                        /*qpcTicksPerSecond=*/10000),
+              10000);
     EXPECT_EQ(policy::GetWgcStartupReserveWaitBudgetQpc(/*startupContentDelayTargetQpc=*/2700,
                                                         /*targetIntervalTicks=*/100,
                                                         /*smoothnessTargetDelayQpc=*/0,
@@ -560,6 +567,26 @@ TEST(CapturePipelinePolicyTest, WgcStartupReserveWaitBudgetExtendsForSmoothnessR
                                                         /*smoothnessTargetDelayQpc=*/2400,
                                                         /*smoothnessStartupAttempted=*/true),
               0);
+}
+
+TEST(CapturePipelinePolicyTest, CfrTimelineStartContractKeepsVideoReserveAndAudioAnchorAtomic) {
+    const auto contract = policy::BuildCfrTimelineStartContract(
+        /*videoOriginQpc=*/100000, /*liveQpc=*/103300, /*renderLoopbackLatencyQpc=*/500);
+
+    ASSERT_TRUE(contract.valid);
+    EXPECT_EQ(contract.contentDelayQpc, 3300);
+    EXPECT_EQ(contract.smoothnessReserveQpc, 2800);
+    EXPECT_EQ(contract.audioAnchorQpc, 100500);
+    EXPECT_EQ(contract.liveQpc - contract.audioAnchorQpc, contract.smoothnessReserveQpc);
+
+    EXPECT_FALSE(policy::BuildCfrTimelineStartContract(100000, 100400, 500).valid);
+    EXPECT_FALSE(policy::BuildCfrTimelineStartContract(100000, 99999, 0).valid);
+}
+
+TEST(CapturePipelinePolicyTest, PartialStartupReservoirReselectsNearestMatchingContractFrame) {
+    const int64_t candidates[] = {1000, 1100, 1180, 1240};
+    EXPECT_EQ(policy::SelectNearestMonotonicTimestampIndex(candidates, 4, /*targetQpc=*/1140), 2u);
+    EXPECT_EQ(policy::SelectNearestMonotonicTimestampIndex(candidates, 4, /*targetQpc=*/1050), 1u);
 }
 
 TEST(CapturePipelinePolicyTest, WgcPreLiveStartupDelayExcludesSmoothnessReservoir) {

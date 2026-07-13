@@ -15,6 +15,13 @@ std::string ReadSource(const char* filename) {
     return contents.str();
 }
 
+std::string ReadProjectSource(const std::filesystem::path& relativePath) {
+    std::ifstream file(std::filesystem::current_path() / relativePath, std::ios::binary);
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return contents.str();
+}
+
 void ExpectBufferEmptyHandledBeforeGenericFailure(const std::string& source) {
     const size_t emptyStatus = source.find("if (hr == AUDCLNT_S_BUFFER_EMPTY)");
     ASSERT_NE(emptyStatus, std::string::npos);
@@ -53,18 +60,43 @@ TEST(AudioCaptureSourceTest, PacketAllocationFailureCannotEscapeCaptureThread) {
     EXPECT_NE(appSource.find("packetQueue.emplace_back(std::move(packet));"), std::string::npos);
 }
 
-TEST(AudioCaptureSourceTest, AppAudioPacketsCarryActivationEpochIntoAtomicRouteRejoin) {
+TEST(AudioCaptureSourceTest, EveryCaptureRouteUsesOwnerAcknowledgedEpochRejoin) {
     const std::string appSource = ReadSource("app_audio_capture.cpp");
+    const std::string endpointSource = ReadSource("audio_capture.cpp");
     const std::string mediaSource = ReadSource("mediaengine.cpp");
     ASSERT_FALSE(appSource.empty());
+    ASSERT_FALSE(endpointSource.empty());
     ASSERT_FALSE(mediaSource.empty());
 
     EXPECT_NE(appSource.find("captureEpoch.fetch_add(1"), std::string::npos);
     EXPECT_NE(appSource.find("packet.captureEpoch = captureEpoch.load("), std::string::npos);
-    EXPECT_NE(mediaSource.find("IsAppAudioCaptureEpochTransition("), std::string::npos);
-    EXPECT_NE(mediaSource.find("App capture epoch transition"), std::string::npos);
-    EXPECT_NE(mediaSource.find("src.ringBuffer->Clear()"), std::string::npos);
+    EXPECT_NE(endpointSource.find("captureEpoch_.fetch_add(1"), std::string::npos);
+    EXPECT_NE(endpointSource.find("packet.captureEpoch = captureEpoch_.load("), std::string::npos);
+    EXPECT_NE(mediaSource.find("IsAudioCaptureEpochTransition("), std::string::npos);
+    EXPECT_NE(mediaSource.find("FlushCaptureResamplerForEpoch("), std::string::npos);
+    EXPECT_NE(mediaSource.find("ServiceAudioEpochResetOnPull("), std::string::npos);
+    EXPECT_NE(mediaSource.find("epochResetRequested->store(packet.captureEpoch"), std::string::npos);
+    EXPECT_NE(mediaSource.find("epochResetAcknowledged->store(requested"), std::string::npos);
     EXPECT_NE(mediaSource.find("sourceTimestamps[srcIdx] = 0"), std::string::npos);
+}
+
+TEST(AudioCaptureSourceTest, ProcessLoopbackComStateLivesInDisposableInheritedHandleWorker) {
+    const std::string mediaSource = ReadSource("mediaengine.cpp");
+    const std::string proxySource = ReadSource("process_loopback_capture.cpp");
+    const std::string workerSource = ReadSource("process_loopback_worker.cpp");
+    const std::string helperSource = ReadProjectSource("helpers/process_loopback_helper_main.cpp");
+    ASSERT_FALSE(mediaSource.empty());
+    ASSERT_FALSE(proxySource.empty());
+    ASSERT_FALSE(workerSource.empty());
+    ASSERT_FALSE(helperSource.empty());
+
+    EXPECT_NE(mediaSource.find("std::unique_ptr<ProcessLoopbackCapture> appCapture"), std::string::npos);
+    EXPECT_NE(proxySource.find("PROC_THREAD_ATTRIBUTE_HANDLE_LIST"), std::string::npos);
+    EXPECT_NE(proxySource.find("CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT"), std::string::npos);
+    EXPECT_NE(proxySource.find("retiredWorkers_.push_back(std::move(activeWorker_))"), std::string::npos);
+    EXPECT_NE(workerSource.find("AppAudioCapture capture"), std::string::npos);
+    EXPECT_NE(workerSource.find("Recycling after process-loopback reactivation"), std::string::npos);
+    EXPECT_NE(helperSource.find("MediaEngine_RunProcessLoopbackWorker"), std::string::npos);
 }
 
 TEST(AudioCaptureSourceTest, AppAudioCaptureEndMarkerOrdersEveryFanoutRouteBeforeTimelineSilence) {
@@ -83,8 +115,8 @@ TEST(AudioCaptureSourceTest, AppAudioCaptureEndMarkerOrdersEveryFanoutRouteBefor
     EXPECT_LT(endMarker, endMarkerQueue);
 
     const size_t fanout = mediaSource.find("captureFanoutQueues[routeIdx].push_back(packet)");
-    const size_t routeEnd = mediaSource.find("if (gotPacket && packet.endOfStream)");
-    const size_t routeResume = mediaSource.find("src.appCaptureRouteEnded->exchange(false", routeEnd);
+    const size_t routeEnd = mediaSource.find("packet.recordType == AudioPacketRecordType::EndOfStream");
+    const size_t routeResume = mediaSource.find("src.appCaptureRouteEnded->store(false", routeEnd);
     ASSERT_NE(fanout, std::string::npos);
     ASSERT_NE(routeEnd, std::string::npos);
     ASSERT_NE(routeResume, std::string::npos);

@@ -3,10 +3,11 @@
 #include "../common/logging.h"
 #include "../common/path_utils.h"
 #include "../common/shared_defs.h"
-#include "app_audio_capture.h"
 #include "audio_capture.h"
 #include "audio_encoder.h"
 #include "audio_latency_probe.h"
+#include "matroska_timing.h"
+#include "process_loopback_capture.h"
 
 #include <dxgi1_5.h>
 #include <algorithm>
@@ -59,7 +60,7 @@ public:
     // Multi-source audio support
     struct AudioSource {
         std::unique_ptr<AudioCapture> capture;        // For system/mic audio
-        std::unique_ptr<AppAudioCapture> appCapture;  // For per-app audio
+        std::unique_ptr<ProcessLoopbackCapture> appCapture;  // Disposable worker for per-app audio
         std::unique_ptr<AudioEncoder> encoder;        // Owned encoder (if first source for this track)
         AudioEncoder* sharedEncoderPtr = nullptr;     // Always points to the encoder to use
         std::unique_ptr<AudioRingBuffer> ringBuffer;  // Pull Model Buffer (Writer=Capture, Reader=Encoder)
@@ -147,6 +148,16 @@ public:
         uint32_t catastrophicResyncEvents = 0;        // Number of catastrophic backlog resyncs (alt-tab/DPC/overload)
         uint64_t lastCatastrophicResyncTick = 0;      // Throttle catastrophic resync logging
         double wgcCoverageLossTrimAccumulator = 0.0;  // Fractional carry for paced overload micro-trims
+        uint64_t timelineResetGeneration = 0;         // Last atomic startup reset acknowledged by this route
+        // Epoch transitions are a two-owner hand-off. AudioLoop owns format conversion and the ring writer;
+        // PullAndEncodeAudio owns syncResampler/postResampleBuffer. Shared atomics let the writer stop at the
+        // epoch boundary until the pull side has encoded the old tail and reset only its own state.
+        std::shared_ptr<std::atomic<uint64_t>> epochResetRequested =
+            std::make_shared<std::atomic<uint64_t>>(0);
+        std::shared_ptr<std::atomic<uint64_t>> epochResetAcknowledged =
+            std::make_shared<std::atomic<uint64_t>>(0);
+        uint64_t epochSyncTailFlushedGeneration = 0;  // Pull-thread-owned generation
+        uint64_t lastEpochTransitionWaitLogTick = 0;
 
         // Rate-based drift correction state
         int64_t prevLeadSamples = 0;       // Previous lead measurement for rate calculation
@@ -350,6 +361,10 @@ public:
     std::thread audioThread;
     std::atomic<bool> audioRunning;
     std::atomic<bool> audioSyncPending{false};  // Pause AudioLoop writes during buffer clear
+    std::atomic<uint64_t> audioResetRequestedGeneration{0};
+    std::atomic<uint64_t> audioResetAcknowledgedGeneration{0};
+    std::atomic<uint64_t> audioResetCommittedGeneration{0};
+    std::atomic<bool> audioResetPreservePackets{false};
     std::mutex audioDrainMutex;
     std::mutex audioSourceStopMutex;
     std::condition_variable audioDrainCv;
@@ -665,25 +680,18 @@ public:
         StopCaptureSourcesAndDrainAudioLoop();
     }
 
-    void SyncAudioToFirstVideoFrame(int64_t startQpcMs, int64_t startQpc100ns, bool preservePendingPackets = false) {
-        recordingStartSystemQPCMs.store(startQpcMs, std::memory_order_release);
-        recordingStartSystemQpc100ns.store(startQpc100ns, std::memory_order_release);
-        DLL_Log(
-            "[A/V START] Shared startup anchor selected: startMs=%lld startQpc100ns=%lld sources=%zu delta=0us "
-            "preservePending=%d",
-            startQpcMs, startQpc100ns, audioSources.size(), preservePendingPackets ? 1 : 0);
-
+    void ApplyAudioTimelineReset(uint64_t generation, int64_t startQpcMs, bool preservePendingPackets) {
         // Discard anything captured before the first video frame for the normal
         // low-latency start. WGC CFR smoothness startup is the exception: the
         // selected video frame is deliberately older, so queued post-anchor audio
         // is the content that matches that frame and must be preserved.
-        audioSyncPending.store(true);
         if (!preservePendingPackets) {
             DiscardPendingAudioPackets();
         }
+        std::set<AudioEncoder*> resetEncoders;
         for (auto& src : audioSources) {
-            if (src.sharedEncoderPtr) {
-                src.sharedEncoderPtr->SetRecordingStart(0);
+            if (src.sharedEncoderPtr && resetEncoders.insert(src.sharedEncoderPtr).second) {
+                src.sharedEncoderPtr->ResetForRecordingStart(0, generation);
             }
             if (src.ringBuffer) {
                 src.ringBuffer->Clear();
@@ -778,14 +786,60 @@ public:
             src.targetRateDelta = 0;
             src.rateCompActive = false;
             src.targetRateSaturated = false;
+            src.timelineResetGeneration = generation;
+            src.epochResetRequested->store(0, std::memory_order_release);
+            src.epochResetAcknowledged->store(0, std::memory_order_release);
+            src.epochSyncTailFlushedGeneration = 0;
+            src.lastEpochTransitionWaitLogTick = 0;
             DLL_Log(
-                "[A/V START] Audio source reset to shared anchor: src=%zu track=%d type=%d startMs=%lld "
-                "timelineValid=%d captureLatencyMs=%.3f",
+                "[A/V START] Audio route acknowledged reset: generation=%llu src=%zu track=%d type=%d "
+                "startMs=%lld timelineValid=%d captureLatencyMs=%.3f",
+                static_cast<unsigned long long>(generation),
                 static_cast<size_t>(&src - audioSources.data()), src.track, static_cast<int>(src.sourceType),
                 startQpcMs, src.timelineValid ? 1 : 0, static_cast<double>(src.config.captureLatencyMs));
         }
-        audioSyncPending.store(false);
+        DLL_Log(
+            "[A/V START] Reset generation=%llu applied atomically: routes=%zu encoders=%zu preservePending=%d",
+            static_cast<unsigned long long>(generation), audioSources.size(), resetEncoders.size(),
+            preservePendingPackets ? 1 : 0);
+    }
+
+    void SyncAudioToFirstVideoFrame(int64_t startQpcMs, int64_t startQpc100ns, bool preservePendingPackets = false) {
+        audioSyncPending.store(true, std::memory_order_release);
+        audioResetPreservePackets.store(preservePendingPackets, std::memory_order_release);
+        recordingStartSystemQPCMs.store(startQpcMs, std::memory_order_release);
+        recordingStartSystemQpc100ns.store(startQpc100ns, std::memory_order_release);
+        const uint64_t generation = audioResetRequestedGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+        DLL_Log(
+            "[A/V START] Shared startup reset issued: generation=%llu startMs=%lld startQpc100ns=%lld "
+            "sources=%zu preservePending=%d worker=%d",
+            static_cast<unsigned long long>(generation), startQpcMs, startQpc100ns, audioSources.size(),
+            preservePendingPackets ? 1 : 0, audioRunning.load(std::memory_order_acquire) ? 1 : 0);
+        audioDrainCv.notify_all();
+
+        bool resetAppliedByWorker = false;
+        if (audioRunning.load(std::memory_order_acquire)) {
+            std::unique_lock<std::mutex> lock(audioDrainMutex);
+            audioDrainCv.wait(lock, [this, generation]() {
+                return audioResetAcknowledgedGeneration.load(std::memory_order_acquire) >= generation ||
+                       !audioRunning.load(std::memory_order_acquire);
+            });
+            resetAppliedByWorker =
+                audioResetAcknowledgedGeneration.load(std::memory_order_acquire) >= generation;
+        }
+        if (!resetAppliedByWorker) {
+            ApplyAudioTimelineReset(generation, startQpcMs, preservePendingPackets);
+            audioResetAcknowledgedGeneration.store(generation, std::memory_order_release);
+        }
+
+        ResetAudioPullStateForRecording();
+        audioResetCommittedGeneration.store(generation, std::memory_order_release);
+        audioSyncPending.store(false, std::memory_order_release);
         preservePendingStartupAudioPackets.store(false, std::memory_order_release);
+        audioDrainCv.notify_all();
+        DLL_Log(
+            "[A/V START] Shared startup reset committed: generation=%llu routeAcks=%zu encoderAndPullState=ready",
+            static_cast<unsigned long long>(generation), audioSources.size());
     }
 
     // Pull Model: source counters are diagnostic/source-local; each exported
@@ -1064,7 +1118,7 @@ public:
 
                     // Create appropriate capture type
                     if (audioConfig.sourceType == AudioConfig::AppAudio) {
-                        source.appCapture = std::make_unique<AppAudioCapture>();
+                        source.appCapture = std::make_unique<ProcessLoopbackCapture>();
                         source.appCapture->SetRequestedFormat(48000, source.mixChannels, source.mixChannelMask);
                     } else {
                         source.capture = std::make_unique<AudioCapture>();
@@ -1099,7 +1153,7 @@ public:
 
                     // Create appropriate capture type
                     if (audioConfig.sourceType == AudioConfig::AppAudio) {
-                        source.appCapture = std::make_unique<AppAudioCapture>();
+                        source.appCapture = std::make_unique<ProcessLoopbackCapture>();
                         source.appCapture->SetRequestedFormat(48000, source.mixChannels, source.mixChannelMask);
                     } else {
                         source.capture = std::make_unique<AudioCapture>();
@@ -1198,6 +1252,11 @@ public:
             }
             if (avio_open(&audioOnlyFmtCtx->pb, audioOnlyFilename.c_str(), AVIO_FLAG_WRITE) < 0) {
                 DLL_Log("MediaEngine: Failed to open audio-only output file: %s", audioOnlyFilename.c_str());
+                return false;
+            }
+            if (!ce::media::RequireMicrosecondMatroskaTimestampPrecision(audioOnlyFmtCtx)) {
+                DLL_Log("MediaEngine: Matroska timestamp_precision=1000 is required for audio-only output");
+                avio_closep(&audioOnlyFmtCtx->pb);
                 return false;
             }
             AVDictionary* opts = nullptr;
@@ -1476,6 +1535,10 @@ public:
                 src.targetRateDelta = 0;
                 src.rateCompActive = false;
                 src.targetRateSaturated = false;
+                src.epochResetRequested->store(0, std::memory_order_release);
+                src.epochResetAcknowledged->store(0, std::memory_order_release);
+                src.epochSyncTailFlushedGeneration = 0;
+                src.lastEpochTransitionWaitLogTick = 0;
             }
 
             // Start all audio sources
@@ -1636,6 +1699,13 @@ public:
             }
             // Stop each unique encoder exactly once
             for (auto& [si, enc] : streamEnc2) {
+                for (const auto& src : audioSources) {
+                    if (src.encoder.get() == enc) {
+                        enc->SetExpectedSourceSilenceSamples(
+                            static_cast<int64_t>(trackFullSilenceSamples[src.track]));
+                        break;
+                    }
+                }
                 enc->Stop();
             }
             for (auto& src : audioSources) {
@@ -1664,6 +1734,8 @@ public:
             DLL_Log("[STOP SUMMARY] Audio-only recording finalized");
             return;
         }
+
+        ExtendCfrToCommonAudioLattice();
 
         int64_t endUs = 0;
         constexpr int kStopSampleRate = 48000;
@@ -1826,7 +1898,7 @@ public:
                     100.0 *
                     static_cast<double>(s.appLatencyBuckets[2] + s.appLatencyBuckets[3] + s.appLatencyBuckets[4]) /
                     static_cast<double>(n);
-                AppAudioCapture* routedCapture = GetAppCaptureForRoute(i);
+                ProcessLoopbackCapture* routedCapture = GetAppCaptureForRoute(i);
                 const uint64_t queueOverrunPackets = routedCapture ? routedCapture->GetQueueOverrunPacketCount() : 0;
                 const uint64_t queueOverrunFrames = routedCapture ? routedCapture->GetQueueOverrunFrameCount() : 0;
                 DLL_Log(
@@ -1962,6 +2034,8 @@ public:
                 src.appCapture->Stop();
             }
             if (src.encoder) {
+                src.encoder->SetExpectedSourceSilenceSamples(
+                    static_cast<int64_t>(trackFullSilenceSamples[src.track]));
                 src.encoder->Stop();
             }
 
@@ -2055,6 +2129,10 @@ public:
             src.targetRateDelta = 0;
             src.rateCompActive = false;
             src.targetRateSaturated = false;
+            src.epochResetRequested->store(0, std::memory_order_release);
+            src.epochResetAcknowledged->store(0, std::memory_order_release);
+            src.epochSyncTailFlushedGeneration = 0;
+            src.lastEpochTransitionWaitLogTick = 0;
         }
 
         // Reset video frame tracking for next recording
@@ -2214,6 +2292,48 @@ public:
         const int64_t audioTimelineUs = cfrRecording ? videoEnc->GetExpectedFinalDurationUs() : committedElapsedUs;
         PullAndEncodeAudio(audioTimelineUs);
         return true;
+    }
+
+    void ExtendCfrToCommonAudioLattice() {
+        if (!IsCfrRecording() || !videoEnc || !videoEnc->CanRepeatLastFrame()) {
+            return;
+        }
+        const int fps = videoEnc->GetConfiguredFps();
+        const int64_t frameCount = videoEnc->GetAssignedCfrFrameCount();
+        std::vector<int> sampleRates;
+        std::set<AudioEncoder*> seenEncoders;
+        for (const auto& source : audioSources) {
+            AudioEncoder* encoder = source.sharedEncoderPtr;
+            if (!encoder || !seenEncoders.insert(encoder).second) {
+                continue;
+            }
+            const AVCodecContext* codecContext = encoder->GetCodecContext();
+            if (codecContext && codecContext->sample_rate > 0) {
+                sampleRates.push_back(codecContext->sample_rate);
+            }
+        }
+        const int64_t frameQuantum = ce::mux::ComputeCfrAudioLatticeFrameQuantum(fps, sampleRates);
+        const int64_t extensionFrames =
+            ce::mux::ComputeCfrAudioLatticeExtensionFrames(frameCount, frameQuantum);
+        DLL_Log(
+            "[FinalizationLattice] CFR endpoint contract fps=%d frames=%lld quantum=%lld extension=%lld "
+            "audioRates=%zu expectedDurationUs=%lld",
+            fps, static_cast<long long>(frameCount), static_cast<long long>(frameQuantum),
+            static_cast<long long>(extensionFrames), sampleRates.size(), videoEnc->GetExpectedFinalDurationUs());
+        for (int64_t index = 0; index < extensionFrames; ++index) {
+            const int64_t nextTimelineUs = videoEnc->GetExpectedFinalDurationUs();
+            if (!RepeatLastFrame(0, nextTimelineUs)) {
+                DLL_Log(
+                    "[FinalizationLattice] ERROR: failed to append repeat %lld/%lld at timelineUs=%lld; "
+                    "decoded endpoint verification must reject any resulting mismatch",
+                    static_cast<long long>(index + 1), static_cast<long long>(extensionFrames),
+                    static_cast<long long>(nextTimelineUs));
+                break;
+            }
+        }
+        DLL_Log("[FinalizationLattice] CFR endpoint committed frames=%lld durationUs=%lld",
+                static_cast<long long>(videoEnc->GetAssignedCfrFrameCount()),
+                static_cast<long long>(videoEnc->GetExpectedFinalDurationUs()));
     }
 
     bool IsWgcCfrRecording() const {
@@ -2520,6 +2640,175 @@ public:
         return true;
     }
 
+    bool FlushCaptureResamplerForEpoch(AudioSource& src, size_t srcIdx, uint64_t oldEpoch, uint64_t newEpoch) {
+        if (!src.resampler || !src.resampler->IsReady() || !src.ringBuffer) {
+            return true;
+        }
+
+        const size_t channels = static_cast<size_t>(std::clamp(src.mixChannels, 1, 8));
+        const int64_t delayedSamples = std::max<int64_t>(0, src.resampler->GetDelay());
+        if (delayedSamples > static_cast<int64_t>(std::numeric_limits<size_t>::max() / channels)) {
+            DLL_Log(
+                "[AudioEpoch] ERROR: Capture-resampler tail size overflow src=%zu track=%d epoch=%llu->%llu "
+                "delay=%lld channels=%zu",
+                srcIdx, src.track, static_cast<unsigned long long>(oldEpoch),
+                static_cast<unsigned long long>(newEpoch), static_cast<long long>(delayedSamples), channels);
+            return false;
+        }
+
+        const size_t requiredFloats = static_cast<size_t>(delayedSamples) * channels;
+        const size_t freeFloats = src.ringBuffer->GetFree();
+        if (requiredFloats > freeFloats) {
+            const uint64_t nowTick = GetTickCount64();
+            if (nowTick - src.lastEpochTransitionWaitLogTick >= 1000) {
+                DLL_Log(
+                    "[AudioEpoch] Waiting for capture-tail ring capacity src=%zu track=%d epoch=%llu->%llu "
+                    "requiredFloats=%zu freeFloats=%zu bufferedSamples=%zu",
+                    srcIdx, src.track, static_cast<unsigned long long>(oldEpoch),
+                    static_cast<unsigned long long>(newEpoch), requiredFloats, freeFloats,
+                    src.ringBuffer->GetAvailable() / channels);
+                src.lastEpochTransitionWaitLogTick = nowTick;
+            }
+            return false;
+        }
+
+        size_t flushedSamples = 0;
+        constexpr size_t kMaxFlushPasses = 8;
+        for (size_t pass = 0; pass < kMaxFlushPasses; ++pass) {
+            uint8_t** tailData = nullptr;
+            int tailSamples = 0;
+            if (!src.resampler->Flush(&tailData, &tailSamples)) {
+                AudioResampler::FreeOutputBuffer(tailData);
+                break;
+            }
+            if (tailSamples > 0 && tailData && tailData[0]) {
+                const size_t tailFloats = static_cast<size_t>(tailSamples) * channels;
+                const size_t writtenFloats =
+                    src.ringBuffer->Write(reinterpret_cast<const float*>(tailData[0]), tailFloats);
+                if (writtenFloats != tailFloats) {
+                    DLL_Log(
+                        "[AudioEpoch] ERROR: Capture tail could not be preserved src=%zu track=%d "
+                        "epoch=%llu->%llu requestedFloats=%zu writtenFloats=%zu",
+                        srcIdx, src.track, static_cast<unsigned long long>(oldEpoch),
+                        static_cast<unsigned long long>(newEpoch), tailFloats, writtenFloats);
+                    AudioResampler::FreeOutputBuffer(tailData);
+                    return false;
+                }
+                const size_t writtenSamples = writtenFloats / channels;
+                src.qpcAlignedWrittenSamples += writtenSamples;
+                flushedSamples += writtenSamples;
+            }
+            AudioResampler::FreeOutputBuffer(tailData);
+        }
+
+        const int64_t remainingDelay = std::max<int64_t>(0, src.resampler->GetDelay());
+        if (remainingDelay != 0) {
+            DLL_Log(
+                "[AudioEpoch] ERROR: Capture-resampler tail did not drain src=%zu track=%d epoch=%llu->%llu "
+                "flushed=%zu remaining=%lld",
+                srcIdx, src.track, static_cast<unsigned long long>(oldEpoch),
+                static_cast<unsigned long long>(newEpoch), flushedSamples, static_cast<long long>(remainingDelay));
+            return false;
+        }
+
+        DLL_Log(
+            "[AudioEpoch] Capture owner published epoch reset src=%zu track=%d epoch=%llu->%llu "
+            "captureTail=%zu ringBuffered=%zu",
+            srcIdx, src.track, static_cast<unsigned long long>(oldEpoch), static_cast<unsigned long long>(newEpoch),
+            flushedSamples, src.ringBuffer->GetAvailable() / channels);
+        return true;
+    }
+
+    bool ServiceAudioEpochResetOnPull(AudioSource& src, size_t srcIdx) {
+        if (!src.epochResetRequested || !src.epochResetAcknowledged) {
+            return false;
+        }
+        const uint64_t requested = src.epochResetRequested->load(std::memory_order_acquire);
+        const uint64_t acknowledged = src.epochResetAcknowledged->load(std::memory_order_acquire);
+        if (requested == 0 || requested == acknowledged) {
+            return false;
+        }
+
+        const int channels = std::clamp(src.mixChannels, 1, 8);
+        if (src.ringBuffer && src.ringBuffer->GetAvailable() >= static_cast<size_t>(channels)) {
+            return false;
+        }
+
+        if (src.epochSyncTailFlushedGeneration != requested) {
+            size_t syncTailSamples = 0;
+            constexpr size_t kMaxFlushPasses = 8;
+            if (src.syncResampler && src.syncResampler->IsReady()) {
+                for (size_t pass = 0; pass < kMaxFlushPasses; ++pass) {
+                    uint8_t** tailData = nullptr;
+                    int tailSamples = 0;
+                    if (!src.syncResampler->Flush(&tailData, &tailSamples)) {
+                        AudioResampler::FreeOutputBuffer(tailData);
+                        break;
+                    }
+                    AppendSyncResamplerOutput(src, srcIdx, channels, tailData, tailSamples);
+                    syncTailSamples += static_cast<size_t>(std::max(tailSamples, 0));
+                    AudioResampler::FreeOutputBuffer(tailData);
+                }
+                const int64_t remainingDelay = std::max<int64_t>(0, src.syncResampler->GetDelay());
+                if (remainingDelay != 0) {
+                    DLL_Log(
+                        "[AudioEpoch] ERROR: Sync-resampler tail did not drain src=%zu track=%d generation=%llu "
+                        "flushed=%zu remaining=%lld",
+                        srcIdx, src.track, static_cast<unsigned long long>(requested), syncTailSamples,
+                        static_cast<long long>(remainingDelay));
+                    return false;
+                }
+            }
+            src.epochSyncTailFlushedGeneration = requested;
+            DLL_Log(
+                "[AudioEpoch] Pull owner drained sync tail src=%zu track=%d generation=%llu syncTail=%zu "
+                "postBuffered=%zu",
+                srcIdx, src.track, static_cast<unsigned long long>(requested), syncTailSamples,
+                src.postResampleBuffer.size() / static_cast<size_t>(channels));
+        }
+
+        if (!src.postResampleBuffer.empty()) {
+            return false;
+        }
+        if (src.syncResampler && src.syncResampler->IsReady() && !src.syncResampler->Reset()) {
+            DLL_Log("[AudioEpoch] ERROR: Pull-owner sync reset failed src=%zu track=%d generation=%llu", srcIdx,
+                    src.track, static_cast<unsigned long long>(requested));
+            return false;
+        }
+
+        src.startupSyntheticResamplerSamples = 0;
+        src.startupSyntheticPostSamples = 0;
+        src.dropFadeSamplesRemaining = 0;
+        src.dropFadeStartL = 0.0f;
+        src.dropFadeStartR = 0.0f;
+        src.dropFadeStart.clear();
+        src.underrunFadeSamplesRemaining = 0;
+        src.pendingUnderrunRecoveryFade = true;
+        src.appAudioBacklogDrainInitialized = false;
+        src.appAudioBacklogDrainActive = false;
+        src.appAudioBacklogDrainReason =
+            static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::WithinSlack);
+        src.appAudioBacklogTargetSamples = 0;
+        src.appAudioBacklogExcessSamples = 0;
+        src.appAudioBacklogCompensationDelta = 0;
+        src.prevLeadSamples = 0;
+        src.prevLeadSnapshotMs = 0;
+        src.lastRateUpdateMs = 0;
+        src.currentRateDelta = 0;
+        src.targetRateDelta = 0;
+        src.rateCompActive = false;
+        src.targetRateSaturated = false;
+        src.epochResetAcknowledged->store(requested, std::memory_order_release);
+        audioDrainCv.notify_all();
+        DLL_Log(
+            "[AudioEpoch] Pull owner acknowledged reset src=%zu track=%d generation=%llu ring=0 post=0 "
+            "trackCursor=%lld sourceEncoded=%lld",
+            srcIdx, src.track, static_cast<unsigned long long>(requested),
+            static_cast<long long>(trackTimelineSamples[src.track]),
+            srcIdx < encodedSamplesPerSource.size() ? static_cast<long long>(encodedSamplesPerSource[srcIdx]) : -1ll);
+        return true;
+    }
+
     void FlushAudioOnlyResamplerTails() {
         constexpr size_t kMaxFlushPasses = 8;
         constexpr size_t kSyncPumpSamples = 4800;
@@ -2630,6 +2919,10 @@ public:
         constexpr int64_t kWgcCoverageLossMaxDropPerCall =
             ce::audio::kDefaultAudioPullQuantumSamples;  // 5ms paced overload trim quantum
         constexpr int64_t kWgcVisualSyncMaxBufferedLagMs = 4000;
+
+        for (size_t srcIdx = 0; srcIdx < audioSources.size(); ++srcIdx) {
+            ServiceAudioEpochResetOnPull(audioSources[srcIdx], srcIdx);
+        }
 
         // Audio-only recording follows its wall-clock timeline. Video CFR
         // continuity policies (encoder-lag reservoirs, CFR source waits, and
@@ -3023,6 +3316,9 @@ public:
                 auto& src = audioSources[srcIdx];
 
                 const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
+                const bool expectedTimelineSilence =
+                    isAppAudioSource && src.appCaptureRouteEnded &&
+                    src.appCaptureRouteEnded->load(std::memory_order_acquire);
                 if (ce::audio::IsOptionalUnstartedAppAudioSource(isAppAudioSource, src.timelineValid,
                                                                  src.sawSyncPendingPackets)) {
                     continue;
@@ -3253,7 +3549,7 @@ public:
                             const uint64_t nowGroupTick = GetTickCount64();
                             if (groupSpreadSamples >= kCaptureGroupDivergenceWarnSamples &&
                                 nowGroupTick - src.lastCaptureGroupDivergenceWarnTick >= 5000) {
-                                AppAudioCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
+                                ProcessLoopbackCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
                                 DLL_Log(
                                     "[AudioRoute] WARNING: shared app capture route backlog diverged owner=%zu "
                                     "process=%s min=%lld max=%lld spread=%lld (%.1fms) captureActive=%d. "
@@ -3830,7 +4126,7 @@ public:
                         appExcessSamples >= kAppAudioLatencyWarnExcessSamples || appDelayMs >= kAppLatencyWarnMs;
                     const bool appLatencyWarnChanged = appLatencyElevated != src.appLatencyWarnActive;
                     if (appLatencyWarnChanged) {
-                        AppAudioCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
+                        ProcessLoopbackCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
                         const size_t pendingPackets = routedCapture ? routedCapture->PendingPacketCount() : 0;
                         const uint64_t queueOverrunPackets =
                             routedCapture ? routedCapture->GetQueueOverrunPacketCount() : 0;
@@ -3849,7 +4145,7 @@ public:
                         src.appLatencyWarnActive = appLatencyElevated;
                     }
                     if (appLatencyElevated && nowConsumeTick - src.lastAppLatencyWarnTick >= 5000) {
-                        AppAudioCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
+                        ProcessLoopbackCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
                         const size_t pendingPackets = routedCapture ? routedCapture->PendingPacketCount() : 0;
                         const uint64_t queueOverrunPackets =
                             routedCapture ? routedCapture->GetQueueOverrunPacketCount() : 0;
@@ -3870,7 +4166,7 @@ public:
                     }
 
                     if (nowConsumeTick - src.lastAppConsumeDiagTick >= 1000) {
-                        AppAudioCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
+                        ProcessLoopbackCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
                         const size_t pendingPackets = routedCapture ? routedCapture->PendingPacketCount() : 0;
                         const uint64_t queueOverrunPackets =
                             routedCapture ? routedCapture->GetQueueOverrunPacketCount() : 0;
@@ -3912,7 +4208,7 @@ public:
                     }
                     size_t padSamples = (totalFloats - toCopy) / CHANNELS;
                     const bool startupPadding = !src.bootstrapComplete;
-                    if (!startupPadding) {
+                    if (!startupPadding && !expectedTimelineSilence) {
                         src.underrunPadSamples += padSamples;
                         if (src.syncResampler && src.syncResampler->IsReady() && src.rateCompActive) {
                             if (swr_set_compensation(src.syncResampler->GetSwrContext(), 0, SAMPLE_RATE * 10) >= 0) {
@@ -3944,11 +4240,12 @@ public:
                                 (int)srcIdx);
                         }
                     }
-                    src.pendingUnderrunRecoveryFade = !startupPadding;
+                    src.pendingUnderrunRecoveryFade = !startupPadding && !expectedTimelineSilence;
                     if (startupPadding && realCopiedSamples == 0) {
                         src.pendingStartupJoinFade = true;
                     }
-                    if (!startupPadding && src.alignedStartMs >= 0 && padSamples >= (size_t)(SAMPLE_RATE / 200) &&
+                    if (!startupPadding && !expectedTimelineSilence && src.alignedStartMs >= 0 &&
+                        padSamples >= (size_t)(SAMPLE_RATE / 200) &&
                         dropLogCounter++ % 100 == 0) {
                         DLL_Log(
                             "[PullAudio] WARNING: Source underrun - src %d padding %zu samples with silence "
@@ -4387,6 +4684,11 @@ public:
                 }
             }
         }
+        // A pull may have consumed the last post-resampler samples of an old epoch.
+        // Acknowledge only after that content has actually entered the common track cursor.
+        for (size_t srcIdx = 0; srcIdx < audioSources.size(); ++srcIdx) {
+            ServiceAudioEpochResetOnPull(audioSources[srcIdx], srcIdx);
+        }
         if (sharedMemLayout) {
             sharedMemLayout->runtimeState.wgcAudioLeadExcessSamples.store(
                 isWgcCfrRecording ? maxWgcAudioLeadExcessSamples : 0u, std::memory_order_relaxed);
@@ -4557,7 +4859,7 @@ public:
 
                     // Create appropriate capture type
                     if (audioConfig.sourceType == AudioConfig::AppAudio) {
-                        source.appCapture = std::make_unique<AppAudioCapture>();
+                        source.appCapture = std::make_unique<ProcessLoopbackCapture>();
                         source.appCapture->SetRequestedFormat(48000, source.mixChannels, source.mixChannelMask);
                     } else {
                         source.capture = std::make_unique<AudioCapture>();
@@ -4589,7 +4891,7 @@ public:
 
                     // Create appropriate capture type
                     if (audioConfig.sourceType == AudioConfig::AppAudio) {
-                        source.appCapture = std::make_unique<AppAudioCapture>();
+                        source.appCapture = std::make_unique<ProcessLoopbackCapture>();
                         source.appCapture->SetRequestedFormat(48000, source.mixChannels, source.mixChannelMask);
                     } else {
                         source.capture = std::make_unique<AudioCapture>();
@@ -4694,7 +4996,7 @@ private:
                 sharedRouteCount, audioSources.size());
     }
 
-    AppAudioCapture* GetAppCaptureForRoute(size_t srcIdx) {
+    ProcessLoopbackCapture* GetAppCaptureForRoute(size_t srcIdx) {
         if (srcIdx >= audioSources.size()) {
             return nullptr;
         }
@@ -4840,11 +5142,13 @@ private:
         std::vector<bool> deferredFirstTimelinePacketValid(audioSources.size(), false);
         std::vector<int64_t> deferredFirstTimelinePacketStartSamples(audioSources.size(), 0);
         std::vector<uint64_t> sourceCaptureEpochs(audioSources.size(), 0);
+        std::vector<std::deque<AudioPacket>> pendingEpochPackets(audioSources.size());
         std::vector<std::deque<AudioPacket>> captureFanoutQueues(audioSources.size());
         std::vector<uint64_t> captureFanoutPacketCounts(audioSources.size(), 0);
         std::vector<uint64_t> batchedPreStartDiscardCounts(audioSources.size(), 0);
         int64_t sharedStartupRebaseOffsetSamples = -1;
-        int64_t lastSeenStartQPC = 0;  // Detect recording session changes
+        uint64_t appliedAudioResetGeneration =
+            audioResetAcknowledgedGeneration.load(std::memory_order_acquire);
         bool audioOnlyStopTailFinalized = false;
 
         // Per-source A/V equalization: delay each audio source so every source sits at the same
@@ -4944,6 +5248,50 @@ private:
         };
 
         while (audioRunning) {
+            const uint64_t requestedResetGeneration =
+                audioResetRequestedGeneration.load(std::memory_order_acquire);
+            if (requestedResetGeneration > appliedAudioResetGeneration) {
+                const bool preserveResetPackets = audioResetPreservePackets.load(std::memory_order_acquire);
+                ApplyAudioTimelineReset(requestedResetGeneration,
+                                        recordingStartSystemQPCMs.load(std::memory_order_acquire),
+                                        preserveResetPackets);
+                std::fill(sourceTimestamps.begin(), sourceTimestamps.end(), 0);
+                std::fill(sourceLoggedPreStartDrop.begin(), sourceLoggedPreStartDrop.end(), false);
+                std::fill(deferredFirstTimelinePacketValid.begin(), deferredFirstTimelinePacketValid.end(), false);
+                std::fill(deferredFirstTimelinePacketStartSamples.begin(),
+                          deferredFirstTimelinePacketStartSamples.end(), 0);
+                std::fill(sourceCaptureEpochs.begin(), sourceCaptureEpochs.end(), 0);
+                std::fill(sourceLastPackets.begin(), sourceLastPackets.end(), AudioPacket{});
+                std::fill(lastPacketTime.begin(), lastPacketTime.end(), std::chrono::steady_clock::now());
+                for (auto& queue : pendingEpochPackets) {
+                    queue.clear();
+                }
+                if (!preserveResetPackets) {
+                    for (auto& queue : captureFanoutQueues) {
+                        queue.clear();
+                    }
+                }
+                trackNextTimestamp.clear();
+                sharedStartupRebaseOffsetSamples = -1;
+                audioOnlyStopTailFinalized = false;
+                appliedAudioResetGeneration = requestedResetGeneration;
+                audioResetAcknowledgedGeneration.store(requestedResetGeneration, std::memory_order_release);
+                audioDrainCv.notify_all();
+            }
+
+            if (requestedResetGeneration >
+                    audioResetCommittedGeneration.load(std::memory_order_acquire) &&
+                !audioStopDrainRequested.load(std::memory_order_acquire)) {
+                std::unique_lock<std::mutex> lock(audioDrainMutex);
+                audioDrainCv.wait(lock, [this, requestedResetGeneration]() {
+                    return !audioRunning.load(std::memory_order_acquire) ||
+                           audioResetCommittedGeneration.load(std::memory_order_acquire) >=
+                               requestedResetGeneration ||
+                           audioStopDrainRequested.load(std::memory_order_acquire);
+                });
+                continue;
+            }
+
             if (audioSyncPending.load(std::memory_order_acquire) &&
                 preservePendingStartupAudioPackets.load(std::memory_order_acquire) &&
                 !audioStopDrainRequested.load(std::memory_order_acquire)) {
@@ -4959,52 +5307,6 @@ private:
             bool gotAnyPacket = false;
             auto now = std::chrono::steady_clock::now();
 
-            // Detect new recording session (StartRecording called again) and
-            // reset per-source timestamps so first-packet silence padding fires.
-            {
-                int64_t currentStartQPC = recordingStartSystemQPCMs.load();
-                if (currentStartQPC != lastSeenStartQPC) {
-                    lastSeenStartQPC = currentStartQPC;
-                    std::fill(sourceTimestamps.begin(), sourceTimestamps.end(), 0);
-                    std::fill(sourceLoggedPreStartDrop.begin(), sourceLoggedPreStartDrop.end(), false);
-                    std::fill(deferredFirstTimelinePacketValid.begin(), deferredFirstTimelinePacketValid.end(), false);
-                    std::fill(deferredFirstTimelinePacketStartSamples.begin(),
-                              deferredFirstTimelinePacketStartSamples.end(), 0);
-                    std::fill(sourceCaptureEpochs.begin(), sourceCaptureEpochs.end(), 0);
-                    for (auto& queue : captureFanoutQueues) {
-                        queue.clear();
-                    }
-                    sharedStartupRebaseOffsetSamples = -1;
-                    for (auto& src : audioSources) {
-                        src.alignedStartMs = -1;
-                        src.observedLateStartMs = 0;
-                        src.hasAlignedStart = false;
-                        const bool appCaptureRouteEnded =
-                            src.appCaptureRouteEnded && src.appCaptureRouteEnded->load(std::memory_order_acquire);
-                        src.timelineValid = src.sourceType != AudioConfig::AppAudio || appCaptureRouteEnded;
-                        src.isPrimed = false;
-                        src.bootstrapComplete = false;
-                        src.pendingUnderrunRecoveryFade = false;
-                        src.underrunFadeSamplesRemaining = 0;
-                        src.packetBoundaryFadeInSamplesRemaining = 0;
-                        src.startupSyntheticRingSamples = 0;
-                        src.startupSyntheticResamplerSamples = 0;
-                        src.startupSyntheticPostSamples = 0;
-                        src.startupGapProtectionSamples = 0;
-                        src.qpcAlignedWrittenSamples = 0;
-                        src.packetTimelineGapSamples = 0;
-                        src.packetTimelineOverlapSamples = 0;
-                        src.startupRebasedGapSamples = 0;
-                        src.lateAppJoinSuppressedGapSamples = 0;
-                        src.lateAppJoinPreservedGapSamples = 0;
-                        src.startupRealAudioSeen = false;
-                        src.pendingStartupJoinFade = false;
-                        src.bootstrapTrimSamples = 0;
-                        src.lastPacketTimelineAdjustWarnTick = 0;
-                    }
-                }
-            }
-
             // Step 1: Poll all sources and accumulate samples into buffers
             for (size_t srcIdx = 0; srcIdx < audioSources.size(); srcIdx++) {
                 auto& src = audioSources[srcIdx];
@@ -5019,7 +5321,26 @@ private:
                 bool gotPacket = false;
                 bool gotDeferredFirstTimelinePacket = false;
 
-                if (deferredFirstTimelinePacketValid[srcIdx]) {
+                const uint64_t requestedEpochReset =
+                    src.epochResetRequested->load(std::memory_order_acquire);
+                const uint64_t acknowledgedEpochReset =
+                    src.epochResetAcknowledged->load(std::memory_order_acquire);
+                if (requestedEpochReset != 0 && requestedEpochReset != acknowledgedEpochReset) {
+                    // The pull owner is still encoding the previous epoch's ring/sync/post tail.
+                    // Do not poll new capture data into route state until it acknowledges the reset.
+                    continue;
+                }
+
+                if (!pendingEpochPackets[srcIdx].empty()) {
+                    packet = std::move(pendingEpochPackets[srcIdx].front());
+                    pendingEpochPackets[srcIdx].pop_front();
+                    gotPacket = true;
+                    DLL_Log(
+                        "[AudioEpoch] Consuming deferred epoch record after pull acknowledgement src=%zu track=%d "
+                        "epoch=%llu remaining=%zu",
+                        srcIdx, src.track, static_cast<unsigned long long>(packet.captureEpoch),
+                        pendingEpochPackets[srcIdx].size());
+                } else if (deferredFirstTimelinePacketValid[srcIdx]) {
                     const bool finalStopDrain = audioStopDrainRequested.load(std::memory_order_acquire);
                     if (!trySelectSharedStartupRebase(finalStopDrain)) {
                         gotAnyPacket = true;
@@ -5125,7 +5446,45 @@ private:
                     }
                 }
 
-                if (gotPacket && packet.endOfStream) {
+                if (gotPacket && packet.recordType == AudioPacketRecordType::EpochStart) {
+                    const uint64_t previousCaptureEpoch = sourceCaptureEpochs[srcIdx];
+                    if (packet.captureEpoch != 0 && previousCaptureEpoch == 0) {
+                        sourceCaptureEpochs[srcIdx] = packet.captureEpoch;
+                    }
+                    if (ce::audio::IsAudioCaptureEpochTransition(previousCaptureEpoch, packet.captureEpoch)) {
+                        if (!FlushCaptureResamplerForEpoch(src, srcIdx, previousCaptureEpoch, packet.captureEpoch)) {
+                            pendingEpochPackets[srcIdx].push_front(std::move(packet));
+                            continue;
+                        }
+                        src.epochResetRequested->store(packet.captureEpoch, std::memory_order_release);
+                        audioDrainCv.notify_all();
+                        gotAnyPacket = true;
+                        DLL_Log(
+                            "[AudioEpoch] Ordered epoch start requested pull reset src=%zu track=%d type=%d "
+                            "epoch=%llu->%llu ringBuffered=%zu",
+                            srcIdx, src.track, static_cast<int>(src.sourceType),
+                            static_cast<unsigned long long>(previousCaptureEpoch),
+                            static_cast<unsigned long long>(packet.captureEpoch),
+                            src.ringBuffer ? src.ringBuffer->GetAvailable() /
+                                                 static_cast<size_t>(std::clamp(src.mixChannels, 1, 8))
+                                           : 0);
+                        continue;
+                    }
+                    gotAnyPacket = true;
+                    DLL_Log(
+                        "[AudioRoute] Ordered epoch start reached src=%zu track=%d type=%d epoch=%llu previous=%llu "
+                        "ringBuffered=%zu",
+                        srcIdx, src.track, static_cast<int>(src.sourceType),
+                        static_cast<unsigned long long>(packet.captureEpoch),
+                        static_cast<unsigned long long>(previousCaptureEpoch),
+                        src.ringBuffer ? src.ringBuffer->GetAvailable() /
+                                             static_cast<size_t>(std::clamp(src.mixChannels, 1, 8))
+                                       : 0);
+                    continue;
+                }
+
+                if (gotPacket &&
+                    (packet.recordType == AudioPacketRecordType::EndOfStream || packet.endOfStream)) {
                     if (src.appCaptureRouteEnded) {
                         src.appCaptureRouteEnded->store(true, std::memory_order_release);
                     }
@@ -5136,42 +5495,52 @@ private:
                         "buffered=%zu; future source gaps are timeline silence until a new epoch live-joins",
                         srcIdx, src.track,
                         src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
-                        static_cast<unsigned long long>(packet.captureEpoch), GetBufferedTimelineSamples(src));
+                        static_cast<unsigned long long>(packet.captureEpoch),
+                        src.ringBuffer ? src.ringBuffer->GetAvailable() /
+                                             static_cast<size_t>(std::clamp(src.mixChannels, 1, 8))
+                                       : 0);
                     continue;
                 }
 
                 if (gotPacket && !packet.data.empty()) {
                     const bool resumedAfterEnd =
-                        src.appCaptureRouteEnded && src.appCaptureRouteEnded->exchange(false, std::memory_order_acq_rel);
-                    if (resumedAfterEnd) {
-                        DLL_Log(
-                            "[AudioRoute] App capture packet resumed after ordered end src=%zu track=%d process=%s "
-                            "epoch=%llu; applying normal epoch/live-join policy",
-                            srcIdx, src.track,
-                            src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
-                            static_cast<unsigned long long>(packet.captureEpoch));
-                    }
+                        src.appCaptureRouteEnded && src.appCaptureRouteEnded->load(std::memory_order_acquire);
                     const uint64_t previousCaptureEpoch = sourceCaptureEpochs[srcIdx];
-                    const bool captureEpochTransition = ce::audio::IsAppAudioCaptureEpochTransition(
-                        src.sourceType == AudioConfig::AppAudio, previousCaptureEpoch, packet.captureEpoch);
-                    if (packet.captureEpoch != 0) {
-                        sourceCaptureEpochs[srcIdx] = packet.captureEpoch;
-                    }
+                    const bool captureEpochTransition =
+                        ce::audio::IsAudioCaptureEpochTransition(previousCaptureEpoch, packet.captureEpoch);
                     if (captureEpochTransition) {
+                        const uint64_t requested = src.epochResetRequested->load(std::memory_order_acquire);
+                        const uint64_t acknowledged = src.epochResetAcknowledged->load(std::memory_order_acquire);
+                        if (requested != packet.captureEpoch) {
+                            if (!FlushCaptureResamplerForEpoch(src, srcIdx, previousCaptureEpoch,
+                                                               packet.captureEpoch)) {
+                                pendingEpochPackets[srcIdx].push_front(std::move(packet));
+                                continue;
+                            }
+                            src.epochResetRequested->store(packet.captureEpoch, std::memory_order_release);
+                            audioDrainCv.notify_all();
+                            pendingEpochPackets[srcIdx].push_back(std::move(packet));
+                            gotAnyPacket = true;
+                            DLL_Log(
+                                "[AudioEpoch] Data arrived without a preceding transition marker; requested "
+                                "pull reset and deferred data src=%zu track=%d type=%d epoch=%llu->%llu",
+                                srcIdx, src.track, static_cast<int>(src.sourceType),
+                                static_cast<unsigned long long>(previousCaptureEpoch),
+                                static_cast<unsigned long long>(packet.captureEpoch));
+                            continue;
+                        }
+                        if (acknowledged != packet.captureEpoch) {
+                            pendingEpochPackets[srcIdx].push_back(std::move(packet));
+                            gotAnyPacket = true;
+                            continue;
+                        }
                         // A name-monitored app may exit and return under a new PID many minutes later;
                         // fatal/silent-stall recovery also creates a fresh process-loopback stream. The
                         // new stream's first QPC is valid in the recording domain, but it is not contiguous
                         // with this route's old source-local write cursor. Treat it as a fresh late source
                         // so the existing live-join policy overlaps already-encoded silence instead of
                         // materializing the absence as a multi-minute ring-buffer gap.
-                        if (src.ringBuffer) {
-                            src.ringBuffer->Clear();
-                        }
                         src.resampler.reset();
-                        if (src.syncResampler) {
-                            src.syncResampler->Reset();
-                        }
-                        src.postResampleBuffer.clear();
                         sourceTimestamps[srcIdx] = 0;
                         sourceLastPackets[srcIdx] = {};
                         deferredFirstTimelinePacketValid[srcIdx] = false;
@@ -5181,36 +5550,32 @@ private:
                         src.sawSyncPendingPackets = false;
                         src.startupRealAudioSeen = false;
                         src.startupSyntheticRingSamples = 0;
-                        src.startupSyntheticResamplerSamples = 0;
-                        src.startupSyntheticPostSamples = 0;
                         src.startupGapProtectionSamples = 0;
                         src.packetBoundaryFadeInSamplesRemaining = 0;
-                        src.underrunFadeSamplesRemaining = 0;
-                        src.pendingUnderrunRecoveryFade = true;
-                        src.appAudioBacklogDrainInitialized = false;
-                        src.appAudioBacklogDrainActive = false;
-                        src.appAudioBacklogDrainReason =
-                            static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::WithinSlack);
-                        src.appAudioBacklogTargetSamples = 0;
-                        src.appAudioBacklogExcessSamples = 0;
-                        src.appAudioBacklogCompensationDelta = 0;
-                        src.prevLeadSamples = 0;
-                        src.prevLeadSnapshotMs = 0;
-                        src.lastRateUpdateMs = 0;
-                        src.currentRateDelta = 0;
-                        src.targetRateDelta = 0;
-                        src.rateCompActive = false;
-                        src.targetRateSaturated = false;
                         DLL_Log(
-                            "[AudioRoute] App capture epoch transition src=%zu track=%d process=%s "
-                            "epoch=%llu->%llu trackCursor=%lld sourceCursor=%llu; resetting route-local "
-                            "buffers for atomic live rejoin",
-                            srcIdx, src.track,
+                            "[AudioEpoch] Capture owner accepted acknowledged transition src=%zu track=%d type=%d "
+                            "process=%s epoch=%llu->%llu requested=%llu acknowledged=%llu trackCursor=%lld "
+                            "sourceCursor=%llu; capture state reset for live rejoin",
+                            srcIdx, src.track, static_cast<int>(src.sourceType),
                             src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
                             static_cast<unsigned long long>(previousCaptureEpoch),
                             static_cast<unsigned long long>(packet.captureEpoch),
+                            static_cast<unsigned long long>(requested),
+                            static_cast<unsigned long long>(acknowledged),
                             static_cast<long long>(trackTimelineSamples[src.track]),
                             static_cast<unsigned long long>(src.qpcAlignedWrittenSamples));
+                    }
+                    if (packet.captureEpoch != 0) {
+                        sourceCaptureEpochs[srcIdx] = packet.captureEpoch;
+                    }
+                    if (resumedAfterEnd) {
+                        src.appCaptureRouteEnded->store(false, std::memory_order_release);
+                        DLL_Log(
+                            "[AudioRoute] App capture resumed after ordered end src=%zu track=%d process=%s "
+                            "epoch=%llu; old tail preserved before live rejoin",
+                            srcIdx, src.track,
+                            src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
+                            static_cast<unsigned long long>(packet.captureEpoch));
                     }
                     // First captured audio for this source: grow its ring buffer to
                     // full CFR capacity (deferred for app-audio sources whose target

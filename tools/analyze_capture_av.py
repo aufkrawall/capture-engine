@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import array
 import collections
 import csv
 import datetime
@@ -9,15 +10,28 @@ import math
 import os
 import re
 import statistics
-import struct
 import subprocess
 import sys
 import tempfile
+from fractions import Fraction
 from pathlib import Path
 from typing import NoReturn
 
 
 LOG_PATTERNS = {
+    "audio_start_reset_issued": re.compile(r"\[A/V START\] Shared startup reset issued"),
+    "audio_start_reset_committed": re.compile(r"\[A/V START\] Shared startup reset committed"),
+    "audio_capture_epoch_start": re.compile(r"\[AudioRoute\] Ordered epoch start reached"),
+    "audio_capture_epoch_transition": re.compile(r"\[AudioRoute\] Capture epoch transition"),
+    "audio_codec_contract": re.compile(r"\[AudioCodecContract\]"),
+    "audio_finalization": re.compile(r"\[AudioFinalization\]"),
+    "audio_finalization_protocol_error": re.compile(r"\[AudioFinalization\].*protocolError=1"),
+    "audio_resource_destroyed": re.compile(r"\[AudioResource\] Destroyed per-recording"),
+    "audio_worker_start": re.compile(r"\[AppAudioWorker\] Started generation="),
+    "audio_worker_exit": re.compile(r"\[AppAudioWorker\] Exit generation="),
+    "audio_worker_overrun": re.compile(r"\[AppAudioWorker\].*(?:overrun=[1-9]|Overrun=[1-9])"),
+    "cfr_finalization_lattice": re.compile(r"\[FinalizationLattice\] CFR endpoint contract"),
+    "cfr_finalization_lattice_error": re.compile(r"\[FinalizationLattice\] ERROR"),
     "audio_latency_cap": re.compile(r"\[PullAudio\] Audio latency cap:"),
     "audio_retain_trim": re.compile(r"\[PullAudio\] WARNING: WGC CFR audio headroom exhausted"),
     "audio_retained_trim_summary": re.compile(r"\[PullAudio\] Retained-audio trim summary"),
@@ -321,6 +335,18 @@ POST_MUX_AUDIO_PRIMING_RE = re.compile(
     r"primingTolerance=(\d+) roundingTolerance=(\d+)",
     re.IGNORECASE,
 )
+AUDIO_CODEC_CONTRACT_RE = re.compile(
+    r"\[AudioCodecContract\] encoder=(\S+) id=(\d+) fmt=(\S+) rate=(\d+) channels=(\d+) mask=(0x[0-9a-f]+) "
+    r"rawBits=(\d+) frame=(\d+) caps=(0x[0-9a-f]+) initialPadding=(\d+) finalPolicy=(\d+) "
+    r"codecDelay=(\d+) discardPadding=(\d+)",
+    re.IGNORECASE,
+)
+AUDIO_FINALIZATION_RE = re.compile(
+    r"\[AudioFinalization\] encoder=(\S+) stream=(-?\d+) target=(\d+) input=(\d+) expectedSilence=(\d+) "
+    r"submitted=(\d+) priming=(\d+) terminalPadding=(\d+) packetEnd=(-?\d+) expectedDecoded=(\d+) "
+    r"packets=(\d+) bytes=(\d+) durationless=(\d+) drainEof=(\d+) protocolError=(\d+)",
+    re.IGNORECASE,
+)
 PACKET_MISMATCH_RE = re.compile(r"Packet-level A/V duration mismatch", re.IGNORECASE)
 LOG_LINE_TIMESTAMP_RE = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3,6})\]")
 STOP_AUDIO_TRACK_RE = re.compile(
@@ -366,6 +392,8 @@ WGC_AUDIO_LATE_RISK_NEAR_CAP_US = 9500
 WGC_REALIZED_DELAY_INSTABILITY_SPREAD_US = 12000
 
 TRIAGE_AUDIO_FAULT_EVENTS = {
+    "audio_finalization_protocol_error",
+    "audio_worker_overrun",
     "audio_latency_cap",
     "audio_retain_trim",
     "audio_retained_trim_summary",
@@ -387,6 +415,7 @@ TRIAGE_AUDIO_FAULT_EVENTS = {
 }
 
 TRIAGE_VISUAL_FAULT_EVENTS = {
+    "cfr_finalization_lattice_error",
     "cfr_packet_coverage_fault",
     "wgc_fresh_catchup",
     "wgc_stop_drain_aborted",
@@ -477,6 +506,21 @@ def parse_ratio(text):
             return 0.0
         return parse_float(numerator, 0.0) / denominator_value
     return parse_float(text, 0.0)
+
+
+def parse_ratio_fraction(text):
+    if not text or text == "0/0":
+        return Fraction(0, 1)
+    try:
+        return Fraction(str(text))
+    except (ValueError, ZeroDivisionError):
+        return Fraction(0, 1)
+
+
+def round_fraction(value):
+    if value < 0:
+        return -round_fraction(-value)
+    return (value.numerator * 2 + value.denominator) // (2 * value.denominator)
 
 
 def safe_mean(values):
@@ -998,7 +1042,19 @@ def analyze_audio_tail_marker(ffmpeg, capture_path, audio_ordinal, stream_info, 
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     frame_bytes = channels * 4
     total_samples = 0
+    first_marker_sample = None
     last_marker_sample = None
+    peak_sample = 0.0
+    clipping_samples = 0
+    silent_samples = 0
+    longest_silence_samples = 0
+    current_silence_samples = 0
+    discontinuities = 0
+    previous_frame = None
+    identical_channel_frames = 0
+    signature = []
+    signature_stride = max(1, sample_rate // 1000)
+    signature_limit = 120000
     pending = b""
     assert process.stdout is not None
     while True:
@@ -1011,13 +1067,38 @@ def analyze_audio_tail_marker(ffmpeg, capture_path, audio_ordinal, stream_info, 
             continue
         payload = pending[:usable]
         pending = pending[usable:]
-        values = struct.unpack("<" + "f" * (usable // 4), payload)
+        values = array.array("f")
+        values.frombytes(payload)
+        if sys.byteorder != "little":
+            values.byteswap()
         frames = usable // frame_bytes
         for frame in range(frames):
             base = frame * channels
-            peak = max(abs(values[base + channel]) for channel in range(channels))
+            channel_values = values[base : base + channels]
+            peak = max(abs(value) for value in channel_values)
+            peak_sample = max(peak_sample, peak)
+            clipping_samples += sum(1 for value in channel_values if abs(value) >= 1.0)
             if peak > threshold:
+                if first_marker_sample is None:
+                    first_marker_sample = total_samples + frame
                 last_marker_sample = total_samples + frame
+                current_silence_samples = 0
+            else:
+                silent_samples += 1
+                current_silence_samples += 1
+                longest_silence_samples = max(longest_silence_samples, current_silence_samples)
+            if previous_frame is not None and any(
+                abs(channel_values[channel] - previous_frame[channel]) > 1.5 for channel in range(channels)
+            ):
+                discontinuities += 1
+            previous_frame = channel_values
+            if channels > 1 and all(
+                abs(channel_values[channel] - channel_values[0]) <= 1e-7 for channel in range(1, channels)
+            ):
+                identical_channel_frames += 1
+            absolute_sample = total_samples + frame
+            if absolute_sample % signature_stride == 0 and len(signature) < signature_limit:
+                signature.append(sum(channel_values) / channels)
         total_samples += frames
 
     stderr = b""
@@ -1035,12 +1116,159 @@ def analyze_audio_tail_marker(ffmpeg, capture_path, audio_ordinal, stream_info, 
         "sample_rate": sample_rate,
         "channels": channels,
         "samples": total_samples,
+        "first_marker_sample": first_marker_sample,
         "last_marker_sample": last_marker_sample,
         "last_marker_time": last_marker_time,
         "tail_silence_ms": tail_silence_ms,
         "stderr": stderr.decode("utf-8", errors="replace").strip(),
         "returncode": returncode,
+        "peak": peak_sample,
+        "clipping_samples": clipping_samples,
+        "silent_samples": silent_samples,
+        "longest_silence_samples": longest_silence_samples,
+        "discontinuities": discontinuities,
+        "identical_channel_frames": identical_channel_frames,
+        "signature_rate": sample_rate / signature_stride,
+        "signature": signature,
     }
+
+
+def analyze_inter_track_correlations(decoded_tracks, max_offset_ms=10):
+    correlations = []
+    for left_index in range(len(decoded_tracks)):
+        for right_index in range(left_index + 1, len(decoded_tracks)):
+            left = decoded_tracks[left_index]
+            right = decoded_tracks[right_index]
+            if not left.get("signature") or not right.get("signature"):
+                continue
+            signature_rate = min(left["signature_rate"], right["signature_rate"])
+            if abs(left["signature_rate"] - right["signature_rate"]) > 0.01 or signature_rate <= 0:
+                continue
+            max_lag = max(0, int(round(max_offset_ms * signature_rate / 1000.0)))
+            best = None
+            for lag in range(-max_lag, max_lag + 1):
+                left_start = max(0, -lag)
+                right_start = max(0, lag)
+                count = min(len(left["signature"]) - left_start, len(right["signature"]) - right_start)
+                if count < 32:
+                    continue
+                left_values = left["signature"][left_start : left_start + count]
+                right_values = right["signature"][right_start : right_start + count]
+                left_mean = sum(left_values) / count
+                right_mean = sum(right_values) / count
+                numerator = 0.0
+                left_energy = 0.0
+                right_energy = 0.0
+                for left_value, right_value in zip(left_values, right_values):
+                    left_delta = left_value - left_mean
+                    right_delta = right_value - right_mean
+                    numerator += left_delta * right_delta
+                    left_energy += left_delta * left_delta
+                    right_energy += right_delta * right_delta
+                denominator = math.sqrt(left_energy * right_energy)
+                correlation = numerator / denominator if denominator > 0 else 0.0
+                if best is None or correlation > best[0]:
+                    best = (correlation, lag)
+            if best is not None:
+                correlations.append(
+                    {
+                        "left": left["audio_ordinal"],
+                        "right": right["audio_ordinal"],
+                        "correlation": best[0],
+                        "offset_ms": best[1] * 1000.0 / signature_rate,
+                    }
+                )
+    return correlations
+
+
+def analyze_completed_capture_exact(ffprobe, ffmpeg, capture_path, threshold=1e-4):
+    format_info, video_streams, audio_streams = analyze_streams(ffprobe, capture_path)
+    video_stream = video_streams[0]
+    fps_text = video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate")
+    fps_fraction = parse_ratio_fraction(fps_text)
+    nominal_fps = float(fps_fraction) if fps_fraction > 0 else 0.0
+    video_timing = analyze_video_timing(ffprobe, capture_path, nominal_fps=nominal_fps)
+    packet_coverage = analyze_cfr_packet_coverage(ffprobe, capture_path, nominal_fps)
+    frame_count = video_timing["frame_count"]
+    target_duration = Fraction(frame_count, 1) / fps_fraction if fps_fraction > 0 else Fraction(0, 1)
+    decoded_tracks = [
+        analyze_audio_tail_marker(ffmpeg, capture_path, ordinal, stream_info, threshold)
+        for ordinal, stream_info in enumerate(audio_streams)
+    ]
+    track_reports = []
+    endpoints = []
+    for ordinal, (stream_info, decoded) in enumerate(zip(audio_streams, decoded_tracks)):
+        sample_rate = decoded["sample_rate"]
+        exact_target = target_duration * sample_rate if sample_rate > 0 else Fraction(0, 1)
+        lattice_representable = exact_target.denominator == 1
+        expected_samples = exact_target.numerator if lattice_representable else round_fraction(exact_target)
+        decoder_clean = decoded["returncode"] == 0 and decoded["stderr"] == ""
+        endpoint_exact = lattice_representable and decoded["samples"] == expected_samples
+        if sample_rate > 0:
+            endpoints.append(Fraction(decoded["samples"], sample_rate))
+        track_reports.append(
+            {
+                "audio_ordinal": ordinal,
+                "stream_index": parse_int(stream_info.get("index"), ordinal),
+                "codec": stream_info.get("codec_name", ""),
+                "sample_rate": sample_rate,
+                "channels": decoded["channels"],
+                "decoded_samples": decoded["samples"],
+                "expected_samples": expected_samples,
+                "sample_delta": decoded["samples"] - expected_samples,
+                "lattice_representable": lattice_representable,
+                "endpoint_exact": endpoint_exact,
+                "decoder_clean": decoder_clean,
+                "decoder_returncode": decoded["returncode"],
+                "decoder_stderr": decoded["stderr"],
+                "first_content_sample": decoded["first_marker_sample"],
+                "last_content_sample": decoded["last_marker_sample"],
+                "tail_silence_ms": decoded["tail_silence_ms"],
+                "peak": decoded["peak"],
+                "clipping_samples": decoded["clipping_samples"],
+                "silent_frames": decoded["silent_samples"],
+                "longest_silence_frames": decoded["longest_silence_samples"],
+                "discontinuities": decoded["discontinuities"],
+                "identical_channel_frames": decoded["identical_channel_frames"],
+            }
+        )
+    endpoint_durations_identical = not endpoints or all(endpoint == endpoints[0] for endpoint in endpoints[1:])
+    all_tracks_exact = all(track["endpoint_exact"] and track["decoder_clean"] for track in track_reports)
+    correlations = analyze_inter_track_correlations(decoded_tracks)
+    return {
+        "capture": str(capture_path),
+        "container_duration": parse_float(format_info.get("duration")),
+        "video": {
+            "codec": video_stream.get("codec_name", ""),
+            "fps": fps_text,
+            "frame_count": frame_count,
+            "target_duration_numerator": target_duration.numerator,
+            "target_duration_denominator": target_duration.denominator,
+            "decoded_duration": video_timing["duration"],
+            "packet_coverage": packet_coverage,
+        },
+        "tracks": track_reports,
+        "correlations": correlations,
+        "endpoint_durations_identical": endpoint_durations_identical,
+        "all_tracks_exact": all_tracks_exact,
+        "decoder_clean": all(track["decoder_clean"] for track in track_reports),
+        "cfr_packet_coverage_exact": packet_coverage["complete"],
+        "passed": all_tracks_exact and endpoint_durations_identical and packet_coverage["complete"],
+    }
+
+
+def attach_completed_capture_report(report, completed_capture):
+    report["completed_capture"] = completed_capture
+    if not completed_capture["all_tracks_exact"] or not completed_capture["endpoint_durations_identical"]:
+        if "ce_audio_timeline_fault" not in report["verdicts"]:
+            report["verdicts"].append("ce_audio_timeline_fault")
+        report["faults"]["audio_timeline"] = True
+    if not completed_capture["cfr_packet_coverage_exact"]:
+        if "ce_visual_timeline_fault" not in report["verdicts"]:
+            report["verdicts"].append("ce_visual_timeline_fault")
+        report["faults"]["visual_timeline"] = True
+    if len(report["verdicts"]) > 1 and "unknown" in report["verdicts"]:
+        report["verdicts"].remove("unknown")
 
 
 def count_unjoined_late_app_source_backlog(text):
@@ -1593,6 +1821,10 @@ def merge_window_media_evidence(window_evidence, full_evidence):
         "final_metadata",
         "post_mux_audio_mismatch_delta_us",
         "post_mux_audio_priming",
+        "audio_codec_contracts",
+        "audio_finalizations",
+        "stop_audio_tracks",
+        "stop_audio_sources",
         "stop_app_audio_latency",
     ):
         merged[key] = full_evidence.get(key, [])
@@ -1901,6 +2133,8 @@ def parse_media_triage(media_text):
     final_metadata = []
     post_mux_audio_mismatches = []
     post_mux_audio_priming = []
+    audio_codec_contracts = []
+    audio_finalizations = []
     stop_audio_tracks = []
     stop_audio_sources = []
     stop_app_audio_latency = []
@@ -2199,6 +2433,48 @@ def parse_media_triage(media_text):
                     "line": line,
                 }
             )
+        codec_contract_match = AUDIO_CODEC_CONTRACT_RE.search(line)
+        if codec_contract_match:
+            audio_codec_contracts.append(
+                {
+                    "encoder": codec_contract_match.group(1),
+                    "codec_id": parse_int(codec_contract_match.group(2)),
+                    "sample_format": codec_contract_match.group(3),
+                    "sample_rate": parse_int(codec_contract_match.group(4)),
+                    "channels": parse_int(codec_contract_match.group(5)),
+                    "channel_mask": int(codec_contract_match.group(6), 16),
+                    "raw_bit_depth": parse_int(codec_contract_match.group(7)),
+                    "frame_size": parse_int(codec_contract_match.group(8)),
+                    "capabilities": int(codec_contract_match.group(9), 16),
+                    "initial_padding": parse_int(codec_contract_match.group(10)),
+                    "final_policy": parse_int(codec_contract_match.group(11)),
+                    "requires_codec_delay": parse_int(codec_contract_match.group(12)),
+                    "requires_discard_padding": parse_int(codec_contract_match.group(13)),
+                    "line": line,
+                }
+            )
+        finalization_match = AUDIO_FINALIZATION_RE.search(line)
+        if finalization_match:
+            audio_finalizations.append(
+                {
+                    "encoder": finalization_match.group(1),
+                    "stream": parse_int(finalization_match.group(2)),
+                    "target_samples": parse_int(finalization_match.group(3)),
+                    "input_samples": parse_int(finalization_match.group(4)),
+                    "expected_silence_samples": parse_int(finalization_match.group(5)),
+                    "submitted_samples": parse_int(finalization_match.group(6)),
+                    "priming_samples": parse_int(finalization_match.group(7)),
+                    "terminal_padding_samples": parse_int(finalization_match.group(8)),
+                    "packet_endpoint_samples": parse_int(finalization_match.group(9)),
+                    "expected_decoded_samples": parse_int(finalization_match.group(10)),
+                    "packet_count": parse_int(finalization_match.group(11)),
+                    "packet_bytes": parse_int(finalization_match.group(12)),
+                    "durationless_packets": parse_int(finalization_match.group(13)),
+                    "drain_eof": parse_int(finalization_match.group(14)),
+                    "protocol_error": parse_int(finalization_match.group(15)),
+                    "line": line,
+                }
+            )
         stop_track_match = STOP_AUDIO_TRACK_RE.search(line)
         if stop_track_match:
             sources = [
@@ -2293,6 +2569,8 @@ def parse_media_triage(media_text):
         "final_metadata": final_metadata,
         "post_mux_audio_mismatch_delta_us": post_mux_audio_mismatches,
         "post_mux_audio_priming": post_mux_audio_priming,
+        "audio_codec_contracts": audio_codec_contracts,
+        "audio_finalizations": audio_finalizations,
         "stop_audio_tracks": stop_audio_tracks,
         "stop_audio_sources": stop_audio_sources,
         "stop_app_audio_latency": stop_app_audio_latency,
@@ -2517,13 +2795,10 @@ def has_encoder_or_mux_backpressure(media_evidence, perf_summaries, windowed=Fal
 
 
 def is_post_mux_delta_codec_priming(media_evidence, delta_us):
-    if delta_us <= 1:
-        return True
-    return any(
-        delta_us <= item.get("priming_tolerance_us", 0) + item.get("rounding_tolerance_us", 0)
-        and item.get("max_delta_us", 0) <= item.get("priming_tolerance_us", 0) + item.get("rounding_tolerance_us", 0)
-        for item in media_evidence.get("post_mux_audio_priming", [])
-    )
+    # Priming and discard metadata explain packet topology; they never excuse a
+    # completed-file decoded endpoint mismatch. Only the muxer's one-microsecond
+    # timestamp rounding can remain informational here.
+    return delta_us <= 1
 
 
 def has_exact_final_mux_evidence(media_evidence):
@@ -3693,6 +3968,8 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "exported_av_sync_ok": exported_av_sync_ok,
             "final_packet_timelines": media_evidence["final_packet_timelines"],
             "final_metadata": media_evidence["final_metadata"],
+            "audio_codec_contracts": media_evidence["audio_codec_contracts"],
+            "audio_finalizations": media_evidence["audio_finalizations"],
             "rounding_evidence": rounding_evidence,
         },
     }
@@ -4016,6 +4293,39 @@ def print_triage_report(report):
                 info=int(rounding["post_mux_one_us_or_less_is_info"]),
             )
         )
+    completed = report.get("completed_capture")
+    if completed:
+        video = completed["video"]
+        print(
+            "  completed_capture passed={passed} cfr={cfr} frames={frames} fps={fps} "
+            "endpoints_identical={identical} decoder_clean={decoder}".format(
+                passed=int(completed["passed"]),
+                cfr=int(completed["cfr_packet_coverage_exact"]),
+                frames=video["frame_count"],
+                fps=video["fps"],
+                identical=int(completed["endpoint_durations_identical"]),
+                decoder=int(completed["decoder_clean"]),
+            )
+        )
+        for track in completed["tracks"]:
+            print(
+                "    a:{ordinal} codec={codec} rate={rate} decoded={decoded} expected={expected} "
+                "delta={delta:+d} lattice={lattice} exact={exact} decoder={decoder} "
+                "first={first} last={last} tail_ms={tail}".format(
+                    ordinal=track["audio_ordinal"],
+                    codec=track["codec"],
+                    rate=track["sample_rate"],
+                    decoded=track["decoded_samples"],
+                    expected=track["expected_samples"],
+                    delta=track["sample_delta"],
+                    lattice=int(track["lattice_representable"]),
+                    exact=int(track["endpoint_exact"]),
+                    decoder=int(track["decoder_clean"]),
+                    first=track["first_content_sample"],
+                    last=track["last_content_sample"],
+                    tail=track["tail_silence_ms"],
+                )
+            )
 
 
 def print_top_histogram(name, histogram, limit=6):
@@ -4414,8 +4724,8 @@ def self_test():
         assert "wgc_pool_saturated_safe_drop" in report["verdicts"]
         assert "wgc_copy_pool_pressure" in report["verdicts"]
         assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
-        assert "ce_audio_timeline_fault" not in report["verdicts"]
-        assert report["evidence"]["rounding_evidence"]["post_mux_one_us_or_less_is_info"]
+        assert "ce_audio_timeline_fault" in report["verdicts"]
+        assert not report["evidence"]["rounding_evidence"]["post_mux_one_us_or_less_is_info"]
 
         wgc_quality_summary = make_session(
             "wgc_quality_summary",
@@ -6244,6 +6554,13 @@ def main():
             report = classify_session_triage(args.session_dir, effective_capture, args.recording_window)
         except ValueError as exc:
             fail(str(exc))
+        if effective_capture:
+            attach_completed_capture_report(
+                report,
+                analyze_completed_capture_exact(
+                    args.ffprobe, args.ffmpeg, effective_capture, args.tail_threshold
+                ),
+            )
         print_triage_report(report)
         if args.json_out:
             args.json_out.parent.mkdir(parents=True, exist_ok=True)
@@ -6263,7 +6580,9 @@ def main():
     format_info, video_streams, audio_streams = analyze_streams(args.ffprobe, args.capture)
     video_stream = video_streams[0]
     format_duration = parse_float(format_info.get("duration"))
-    nominal_fps = parse_ratio(video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate"))
+    nominal_fps_text = video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate")
+    nominal_fps_fraction = parse_ratio_fraction(nominal_fps_text)
+    nominal_fps = float(nominal_fps_fraction) if nominal_fps_fraction > 0 else 0.0
     video_timing = (
         analyze_video_timing(args.ffprobe, args.capture, nominal_fps=nominal_fps)
         if args.full_scan
@@ -6286,14 +6605,29 @@ def main():
             for audio_ordinal, _stream_info in enumerate(audio_streams)
         ]
     tail_results = []
-    if args.waveform_tail_scan or args.max_audio_tail_marker_spread_ms is not None:
+    if args.full_scan or args.waveform_tail_scan or args.max_audio_tail_marker_spread_ms is not None:
         tail_results = [
             analyze_audio_tail_marker(args.ffmpeg, args.capture, audio_ordinal, stream_info, args.tail_threshold)
             for audio_ordinal, stream_info in enumerate(audio_streams)
         ]
+    if args.full_scan:
+        for track, decoded in zip(audio_tracks, tail_results):
+            track["source"] = "decoded-pcm-f32"
+            track["sample_total"] = decoded["samples"]
+            track["decoded_duration"] = (
+                decoded["samples"] / decoded["sample_rate"] if decoded["sample_rate"] > 0 else 0.0
+            )
+            track["frame_start"] = 0.0
+            track["frame_end"] = track["decoded_duration"]
+    inter_track_correlations = analyze_inter_track_correlations(tail_results)
     log_summary = analyze_log(args.log)
 
     video_duration = video_timing["duration"]
+    cfr_target_duration = (
+        Fraction(video_timing["frame_count"], 1) / nominal_fps_fraction
+        if nominal_fps_fraction > 0
+        else Fraction(0, 1)
+    )
     audio_lengths = [track["decoded_duration"] for track in audio_tracks]
     audio_duration_spread = (max(audio_lengths) - min(audio_lengths)) if audio_lengths else 0.0
     video_audio_max_delta = (
@@ -6437,26 +6771,47 @@ def main():
         print()
 
     if tail_results:
-        print("audio_tail_markers:")
+        print("audio_decoded_pcm:")
         for result in tail_results:
+            first_marker = result["first_marker_sample"]
             marker = result["last_marker_sample"]
+            first_marker_text = "none" if first_marker is None else str(first_marker)
             marker_text = "none" if marker is None else str(marker)
             time_text = "none" if result["last_marker_time"] is None else f"{result['last_marker_time']:.6f}"
             silence_text = "none" if result["tail_silence_ms"] is None else f"{result['tail_silence_ms']:.3f}ms"
             print(
-                "  a:{ordinal} samples={samples} last_marker_sample={marker} last_marker_time={time} "
-                "tail_silence={silence} threshold={threshold:g}".format(
+                "  a:{ordinal} samples={samples} first_marker_sample={first_marker} last_marker_sample={marker} "
+                "last_marker_time={time} tail_silence={silence} peak={peak:.7f} clipping={clipping} "
+                "silent={silent} longest_silence={longest} discontinuities={discontinuities} "
+                "identical_channel_frames={identical} decoder_rc={returncode} threshold={threshold:g}".format(
                     ordinal=result["audio_ordinal"],
                     samples=result["samples"],
+                    first_marker=first_marker_text,
                     marker=marker_text,
                     time=time_text,
                     silence=silence_text,
+                    peak=result["peak"],
+                    clipping=result["clipping_samples"],
+                    silent=result["silent_samples"],
+                    longest=result["longest_silence_samples"],
+                    discontinuities=result["discontinuities"],
+                    identical=result["identical_channel_frames"],
+                    returncode=result["returncode"],
                     threshold=args.tail_threshold,
                 )
             )
             if result["stderr"]:
                 print(f"    stderr={result['stderr'].replace(chr(10), ' | ')}")
         print(f"  audio_tail_marker_spread={audio_tail_marker_spread:.6f}")
+        for correlation in inter_track_correlations:
+            print(
+                "  correlation a:{left}<->a:{right} coefficient={coefficient:.6f} offset={offset:+.3f}ms".format(
+                    left=correlation["left"],
+                    right=correlation["right"],
+                    coefficient=correlation["correlation"],
+                    offset=correlation["offset_ms"],
+                )
+            )
         print()
 
     if log_summary:
@@ -6525,6 +6880,49 @@ def main():
             "expected": "all CFR ticks represented; max gap <= 1.01 ticks",
         }
     )
+    if args.full_scan:
+        decoded_endpoints = []
+        for result in tail_results:
+            exact_target = cfr_target_duration * result["sample_rate"]
+            lattice_representable = exact_target.denominator == 1
+            expected_samples = exact_target.numerator if lattice_representable else round_fraction(exact_target)
+            decoded_endpoints.append((result["samples"], expected_samples, result["sample_rate"]))
+            checks.append(
+                {
+                    "name": f"audio_decoded_exact.a:{result['audio_ordinal']}",
+                    "passed": result["returncode"] == 0
+                    and result["stderr"] == ""
+                    and lattice_representable
+                    and result["samples"] == expected_samples,
+                    "actual": (
+                        f"samples={result['samples']} expected={expected_samples} rate={result['sample_rate']} "
+                        f"lattice={int(lattice_representable)} returncode={result['returncode']} "
+                        f"stderr={'empty' if result['stderr'] == '' else 'nonempty'}"
+                    ),
+                    "expected": "completed-file decoded PCM equals the CFR-derived sample target exactly",
+                }
+            )
+        comparable_counts = {samples for samples, _expected, rate in decoded_endpoints if rate == 48000}
+        if comparable_counts:
+            checks.append(
+                {
+                    "name": "audio_48000_track_endpoints_identical",
+                    "passed": len(comparable_counts) == 1,
+                    "actual": sorted(comparable_counts),
+                    "expected": "identical decoded sample counts for all 48 kHz tracks",
+                }
+            )
+        endpoint_durations = {
+            Fraction(samples, rate) for samples, _expected, rate in decoded_endpoints if rate > 0
+        }
+        checks.append(
+            {
+                "name": "audio_track_endpoint_durations_identical",
+                "passed": len(endpoint_durations) <= 1,
+                "actual": [f"{value.numerator}/{value.denominator}" for value in sorted(endpoint_durations)],
+                "expected": "all decoded tracks end at the same exact rational duration",
+            }
+        )
     if args.decode_check:
         for result in decode_results:
             checks.append(
@@ -6572,6 +6970,29 @@ def main():
     )
     print()
     print_checks(checks)
+
+    if args.json_out:
+        standalone_report = {
+            "schema": "ce-completed-capture-av-v2",
+            "capture": str(args.capture),
+            "video": {
+                "codec": video_stream.get("codec_name", ""),
+                "fps": nominal_fps_text,
+                "frame_count": video_timing["frame_count"],
+                "duration": video_duration,
+                "packet_coverage": packet_coverage,
+            },
+            "audio_tracks": audio_tracks,
+            "decoded_pcm": [
+                {key: value for key, value in result.items() if key != "signature"}
+                for result in tail_results
+            ],
+            "correlations": inter_track_correlations,
+            "checks": checks,
+            "passed": all(check["passed"] for check in checks),
+        }
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
+        args.json_out.write_text(json.dumps(standalone_report, indent=2), encoding="utf-8")
 
     if any(not check["passed"] for check in checks):
         raise SystemExit(1)

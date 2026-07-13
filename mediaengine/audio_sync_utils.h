@@ -808,8 +808,12 @@ inline bool ShouldAdvancePacketTimelineToEncodedCursor(bool isAppAudioSource) {
     return !isAppAudioSource;
 }
 
+inline bool IsAudioCaptureEpochTransition(uint64_t previousEpoch, uint64_t packetEpoch) {
+    return previousEpoch != 0 && packetEpoch != 0 && packetEpoch != previousEpoch;
+}
+
 inline bool IsAppAudioCaptureEpochTransition(bool isAppAudioSource, uint64_t previousEpoch, uint64_t packetEpoch) {
-    return isAppAudioSource && previousEpoch != 0 && packetEpoch != 0 && packetEpoch != previousEpoch;
+    return isAppAudioSource && IsAudioCaptureEpochTransition(previousEpoch, packetEpoch);
 }
 
 inline LateAppSourceJoin ComputeLateAppSourceJoin(bool isAppAudioSource, bool firstTimelinePacket,

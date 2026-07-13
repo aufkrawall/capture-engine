@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
+#include <numeric>
+#include <vector>
 
 namespace ce::mux {
 
@@ -69,15 +72,31 @@ inline int64_t ComputeAudioMuxRoundingToleranceUs(int sampleRate, int timeBaseNu
     return toleranceUs;
 }
 
-inline int64_t ComputeAudioCodecPrimingToleranceUs(int initialPaddingSamples, int sampleRate,
-                                                   int64_t roundingToleranceUs) {
-    if (initialPaddingSamples <= 0 || sampleRate <= 0) {
+inline int64_t ComputeCfrAudioLatticeFrameQuantum(int fps, const std::vector<int>& sampleRates) {
+    if (fps <= 0) {
         return 0;
     }
-    const int64_t primingUs =
-        (static_cast<int64_t>(initialPaddingSamples) * 1000000LL + static_cast<int64_t>(sampleRate) - 1LL) /
-        static_cast<int64_t>(sampleRate);
-    return primingUs + std::max<int64_t>(0, roundingToleranceUs);
+    int64_t quantum = 1;
+    for (int sampleRate : sampleRates) {
+        if (sampleRate <= 0) {
+            continue;
+        }
+        const int64_t rateQuantum = fps / std::gcd(fps, sampleRate);
+        const int64_t divisor = std::gcd(quantum, rateQuantum);
+        if (quantum > std::numeric_limits<int64_t>::max() / (rateQuantum / divisor)) {
+            return 0;
+        }
+        quantum *= rateQuantum / divisor;
+    }
+    return quantum;
+}
+
+inline int64_t ComputeCfrAudioLatticeExtensionFrames(int64_t frameCount, int64_t frameQuantum) {
+    if (frameCount < 0 || frameQuantum <= 0) {
+        return 0;
+    }
+    const int64_t remainder = frameCount % frameQuantum;
+    return remainder == 0 ? 0 : frameQuantum - remainder;
 }
 
 inline int64_t ChoosePostMuxStreamStartUs(int64_t streamStartUs, bool hasStreamStart, int64_t firstPacketStartUs,
