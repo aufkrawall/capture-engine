@@ -215,20 +215,24 @@ private:
 }  // namespace ce
 
 // C-compatible wrapper for shared memory usage
+// std::atomic<uint32_t> has the same size/alignment as uint32_t on all supported
+// platforms, making the ABI compatible with C consumers.
 extern "C" {
-// These functions can be called from C code
 typedef struct {
-    uint32_t sequence;
-    char data[1024];  // Flexible array for config data
+    std::atomic<uint32_t> sequence;
+    char data[1024];
 } SequenceLockHeader;
 
 inline uint32_t SequenceLock_ReadBegin(const SequenceLockHeader* header) {
-    return header->sequence;
+    uint32_t seq;
+    while ((seq = header->sequence.load(std::memory_order_acquire)) & 1u) {
+        _mm_pause();
+    }
+    return seq;
 }
 
 inline bool SequenceLock_ReadRetry(const SequenceLockHeader* header, uint32_t startSeq) {
-    uint32_t current = header->sequence;
-    // Retry if sequence changed or is odd (write in progress)
+    uint32_t current = header->sequence.load(std::memory_order_acquire);
     return (current != startSeq) || (current & 1);
 }
 }

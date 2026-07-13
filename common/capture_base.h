@@ -128,6 +128,7 @@ public:
     // be passed to CloseHandle (for example, CreateSharedHandle NT handles).
     std::atomic<bool> sharedTextureHandleOwned[CAPTURE_TEXTURE_COUNT]{};
     std::atomic<HANDLE> sharedFenceHandle{NULL};
+    std::atomic<bool> sharedFenceHandleOwned{false};
 
     // Capture dimensions and format
     uint32_t width = 0;
@@ -212,8 +213,10 @@ public:
                 CloseHandle(h);
             }
         }
-        HANDLE h = sharedFenceHandle.exchange(NULL);
-        if (h) {
+        // Fence handle: check ownership flag (KMT handles from GetSharedHandle
+        // must not be CloseHandle'd). Use acq_rel for consistency with textures.
+        HANDLE h = sharedFenceHandle.exchange(NULL, std::memory_order_acq_rel);
+        if (h && sharedFenceHandleOwned) {
             CloseHandle(h);
         }
     }
@@ -221,14 +224,16 @@ public:
     // Publish shared handles to IPC shared memory
     // Note: sharedMem pointer is passed rather than using global g_IPC
     // to support both hook (g_IPC->GetSharedMem()) and WGC (g_pSharedMem)
+    // These handles are being published for the first time on this thread,
+    // so relaxed loads are safe — no concurrent consumer can read them yet.
     void PublishToSharedMemory(SharedMemoryLayout* sharedMem) {
         if (!sharedMem)
             return;
 
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; i++) {
-            sharedMem->SetSharedHandle(i, (uint64_t)sharedTextureHandles[i].load());
+            sharedMem->SetSharedHandle(i, (uint64_t)sharedTextureHandles[i].load(std::memory_order_relaxed));
         }
-        sharedMem->SetFenceShareHandle((uint64_t)sharedFenceHandle.load());
+        sharedMem->SetFenceShareHandle((uint64_t)sharedFenceHandle.load(std::memory_order_relaxed));
         sharedMem->SetWidth(width);
         sharedMem->SetHeight(height);
         sharedMem->SetFormat(format);
@@ -282,11 +287,6 @@ public:
         slot.fenceValue = gpuFenceValue;
         slot.frameIndex = wIdx;
         slot.sourcePid = GetCurrentProcessId();
-
-        // Memory barrier: Ensure all above writes are visible before setting valid
-        // flag This prevents the reader from seeing valid=1 with
-        // stale/uninitialized data
-        std::atomic_thread_fence(std::memory_order_release);
 
         slot.valid.store(1, std::memory_order_release);
 

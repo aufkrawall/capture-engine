@@ -1238,6 +1238,13 @@ void TryInstallMiniDumpWriteDumpHookForModule(HMODULE module, const char* module
 }
 
 LONG HookExecutionFaultHandler(EXCEPTION_POINTERS* exceptionPointers, ULONG_PTR accessType, ULONG_PTR faultAddr) {
+  static thread_local int t_vehRecursionDepth = 0;
+  if (t_vehRecursionDepth > 3) {
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+  ++t_vehRecursionDepth;
+  struct VEHRecursionGuard { ~VEHRecursionGuard() { --t_vehRecursionDepth; } } guard;
+
   if (!exceptionPointers || !exceptionPointers->ContextRecord || accessType != 8 || faultAddr == 0) {
     return EXCEPTION_CONTINUE_SEARCH;
   }

@@ -65,6 +65,106 @@ double QpcDeltaToMs(int64_t deltaUs) {
     return static_cast<double>(deltaUs) / 1000.0;
 }
 
+// Read a null-terminated string from a remote process.
+static bool ReadRemoteString(HANDLE hProc, LPCVOID address, char* buffer, size_t bufferSize) {
+    if (!buffer || bufferSize == 0) return false;
+    buffer[0] = '\0';
+    size_t offset = 0;
+    while (offset < bufferSize - 1) {
+        char c;
+        if (!ReadProcessMemory(hProc, static_cast<const char*>(address) + offset, &c, 1, NULL))
+            return false;
+        buffer[offset++] = c;
+        if (c == '\0') return true;
+    }
+    buffer[bufferSize - 1] = '\0';
+    return true;
+}
+
+// Resolve a function address in a remote 32-bit (WoW64) module by manually
+// parsing its PE export directory. Used for cross-bitness injection where
+// GetProcAddress from the local 64-bit module returns the wrong address.
+static LPVOID GetRemoteProcAddress(HANDLE hProc, HMODULE hModule, const char* funcName) {
+    IMAGE_DOS_HEADER dosHeader;
+    if (!ReadProcessMemory(hProc, hModule, &dosHeader, sizeof(dosHeader), NULL))
+        return nullptr;
+    if (dosHeader.e_magic != IMAGE_DOS_SIGNATURE)
+        return nullptr;
+
+    BYTE* pNtHeaders = (BYTE*)hModule + dosHeader.e_lfanew;
+    IMAGE_NT_HEADERS32 ntHeaders;
+    if (!ReadProcessMemory(hProc, pNtHeaders, &ntHeaders, sizeof(ntHeaders), NULL))
+        return nullptr;
+    if (ntHeaders.Signature != IMAGE_NT_SIGNATURE)
+        return nullptr;
+
+    DWORD exportDirRVA = ntHeaders.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+    if (exportDirRVA == 0)
+        return nullptr;
+
+    IMAGE_EXPORT_DIRECTORY exportDir;
+    if (!ReadProcessMemory(hProc, (BYTE*)hModule + exportDirRVA, &exportDir, sizeof(exportDir), NULL))
+        return nullptr;
+
+    // Read Name Table
+    std::vector<DWORD> nameRVAs(exportDir.NumberOfNames);
+    if (!ReadProcessMemory(hProc, (BYTE*)hModule + exportDir.AddressOfNames, nameRVAs.data(),
+                           nameRVAs.size() * sizeof(DWORD), NULL))
+        return nullptr;
+
+    for (DWORD i = 0; i < exportDir.NumberOfNames; i++) {
+        char buffer[256];
+        if (ReadRemoteString(hProc, (BYTE*)hModule + nameRVAs[i], buffer, sizeof(buffer))) {
+            if (strcmp(buffer, funcName) == 0) {
+                WORD ordinal;
+                if (!ReadProcessMemory(hProc, (BYTE*)hModule + exportDir.AddressOfNameOrdinals + (i * sizeof(WORD)),
+                                       &ordinal, sizeof(WORD), NULL))
+                    return nullptr;
+
+                DWORD funcRVA;
+                if (!ReadProcessMemory(hProc,
+                                       (BYTE*)hModule + exportDir.AddressOfFunctions + (ordinal * sizeof(DWORD)),
+                                       &funcRVA, sizeof(DWORD), NULL))
+                    return nullptr;
+
+                return (BYTE*)hModule + funcRVA;
+            }
+        }
+    }
+    return nullptr;
+}
+
+// Resolve a function address in a remote 32-bit module by module name.
+// Opens the remote module enumeration and delegates to GetRemoteProcAddress above.
+static LPVOID GetRemoteModuleProcAddress(HANDLE hProc, const wchar_t* moduleName, const char* funcName) {
+    int maxRetries = 20;
+    for (int retry = 0; retry < maxRetries; retry++) {
+        HMODULE hMods[1024];
+        DWORD cbNeeded;
+        if (EnumProcessModulesEx(hProc, hMods, sizeof(hMods), &cbNeeded, LIST_MODULES_32BIT)) {
+            for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+                char szModName[MAX_PATH];
+                if (GetModuleFileNameExA(hProc, hMods[i], szModName, sizeof(szModName))) {
+                    std::string modName = szModName;
+                    std::transform(modName.begin(), modName.end(), modName.begin(), ::tolower);
+
+                    // Convert wide module name to lower for comparison
+                    char narrowModuleName[MAX_PATH];
+                    WideCharToMultiByte(CP_UTF8, 0, moduleName, -1, narrowModuleName, sizeof(narrowModuleName), NULL, NULL);
+                    std::string lowerTarget = narrowModuleName;
+                    std::transform(lowerTarget.begin(), lowerTarget.end(), lowerTarget.begin(), ::tolower);
+
+                    if (modName.find(lowerTarget) != std::string::npos) {
+                        return GetRemoteProcAddress(hProc, hMods[i], funcName);
+                    }
+                }
+            }
+        }
+        Sleep(100);
+    }
+    return nullptr;
+}
+
 constexpr uint64_t kPendingInjectionDelayMs = 1;
 
 struct BstrGuard {
@@ -617,6 +717,11 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
             if (FAILED(pUnk->QueryInterface(IID_IWbemClassObject, (void**)&pTargetCase)))
                 continue;
 
+            struct TargetCaseGuard {
+                IWbemClassObject* obj;
+                ~TargetCaseGuard() { if (obj) obj->Release(); }
+            } guard{pTargetCase};
+
             // Get Name
             _variant_t vName;
             pTargetCase->Get(L"Name", 0, &vName, NULL, NULL);
@@ -636,8 +741,6 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
                     pManager->LaunchDelayedInjectionThread(pid, name, "WMI");
                 }
             }
-
-            pTargetCase->Release();
         }
     } catch (const _com_error& e) {
         // COM exception - log and continue gracefully
@@ -783,6 +886,9 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
                         LogInfo("[%s] Injection successful.", source.c_str());
                     } else {
                         LogError("[%s] Injection failed.", source.c_str());
+                        if (failedInjections.size() >= 1024) {
+                            failedInjections.erase(failedInjections.begin());
+                        }
                         failedInjections.push_back({pid, GetTickCount64()});
                     }
                 } else {
@@ -1077,12 +1183,25 @@ bool InjectionManager::InjectEarly(DWORD pid, const std::string& dllPath, HANDLE
         return false;
     }
 
-    HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
-    FARPROC pLoadLibraryA = GetProcAddress(hKernel32, "LoadLibraryA");
-    if (!pLoadLibraryA) {
-        LogError("[APC] Failed to get LoadLibraryA address");
-        CloseHandle(hProcess);
-        return false;
+    BOOL isWow64Target = FALSE;
+    IsWow64Process(hProcess, &isWow64Target);
+
+    LPVOID pLoadLibraryA = nullptr;
+    if (isWow64Target) {
+        pLoadLibraryA = GetRemoteModuleProcAddress(hProcess, L"kernel32.dll", "LoadLibraryA");
+        if (!pLoadLibraryA) {
+            LogError("[APC] Failed to resolve LoadLibraryA in WoW64 process");
+            CloseHandle(hProcess);
+            return false;
+        }
+    } else {
+        HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
+        pLoadLibraryA = (LPVOID)GetProcAddress(hKernel32, "LoadLibraryA");
+        if (!pLoadLibraryA) {
+            LogError("[APC] Failed to get LoadLibraryA address");
+            CloseHandle(hProcess);
+            return false;
+        }
     }
 
     SIZE_T pathSize = dllPath.size() + 1;
@@ -1149,9 +1268,8 @@ void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
         auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
             LogWarn(
-                "[Injection] Timeout waiting for delayed injection thread; preserving ownership and joining "
-                "because it still references InjectionManager state");
-            t.join();
+                "[Injection] Timeout waiting for delayed injection thread; detaching to avoid indefinite block");
+            t.detach();
             continue;
         }
 
@@ -1164,12 +1282,12 @@ void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
             t.join();
         } else {
             if (waitResult == WAIT_TIMEOUT) {
-                LogWarn("[Injection] Timeout waiting for delayed injection thread; preserving ownership and joining");
+                LogWarn("[Injection] Timeout waiting for delayed injection thread; detaching to avoid indefinite block");
             } else {
-                LogWarn("[Injection] WaitForSingleObject failed for delayed injection thread (error=%lu); joining",
+                LogWarn("[Injection] WaitForSingleObject failed for delayed injection thread (error=%lu); detaching",
                         GetLastError());
             }
-            t.join();
+            t.detach();
         }
     }
     LogInfo("[Injection] All delayed injection threads cleaned up");
@@ -1210,9 +1328,17 @@ void InjectionManager::Eject(DWORD pid) {
                 std::string modName = szModName;
                 if (modName.find("capture_hook_x64.dll") != std::string::npos ||
                     modName.find("capture_hook_x86.dll") != std::string::npos) {
-                    HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
-                    LPTHREAD_START_ROUTINE pFreeLibrary =
-                        (LPTHREAD_START_ROUTINE)GetProcAddress(hKernel32, "FreeLibrary");
+                    BOOL isWow64Target = FALSE;
+                    IsWow64Process(hProcess, &isWow64Target);
+
+                    LPTHREAD_START_ROUTINE pFreeLibrary = nullptr;
+                    if (isWow64Target) {
+                        LPVOID p = GetRemoteModuleProcAddress(hProcess, L"kernel32.dll", "FreeLibrary");
+                        pFreeLibrary = reinterpret_cast<LPTHREAD_START_ROUTINE>(p);
+                    } else {
+                        pFreeLibrary = reinterpret_cast<LPTHREAD_START_ROUTINE>(
+                            GetProcAddress(GetModuleHandleA("kernel32.dll"), "FreeLibrary"));
+                    }
 
                     HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0, pFreeLibrary, (LPVOID)hMods[i], 0, NULL);
                     if (hThread) {
