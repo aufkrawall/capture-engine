@@ -1,9 +1,12 @@
 #include "cursor_renderer.h"
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <new>
 #include "../common/raii_helpers.h"
 #include "mediaengine.h"
+#include "cursor_geometry.h"
 
 // Simple vertex/pixel shader for alpha-blended cursor overlay
 // Compiled inline using D3DCompile at runtime
@@ -11,6 +14,7 @@ static const char* CURSOR_SHADER_SOURCE = R"(
 // Constant buffer
 cbuffer CursorCB : register(b0) {
     float4 cursorRect; // x, y, width, height (normalized 0-1)
+    float4 colorParams; // mode, paper-white nits, unused, unused
 };
 
 // Textures
@@ -47,9 +51,29 @@ VS_OUTPUT VS_Main(uint vertexId : SV_VertexID) {
     return output;
 }
 
-// Pixel shader - sample cursor texture with alpha
+float sRGBToLinear(float s) {
+    return (s <= 0.04045) ? (s / 12.92) : pow((s + 0.055) / 1.055, 2.4);
+}
+
+float linearToPQ(float nits) {
+    float lp = pow(max(nits, 0.0) / 10000.0, 0.1593017578125);
+    return pow((0.8359375 + 18.8515625 * lp) / (1.0 + 18.6875 * lp), 78.84375);
+}
+
+// Windows cursor resources are SDR sRGB. Convert their RGB values into the
+// destination transfer function before the fixed-function alpha blend.
 float4 PS_Main(VS_OUTPUT input) : SV_TARGET {
-    return cursorTex.Sample(cursorSampler, input.uv);
+    float4 cursor = cursorTex.Sample(cursorSampler, input.uv);
+    if (colorParams.x > 0.5) {
+        float3 linear = float3(sRGBToLinear(cursor.r), sRGBToLinear(cursor.g), sRGBToLinear(cursor.b));
+        if (colorParams.x < 1.5) {
+            cursor.rgb = linear * (colorParams.y / 80.0);
+        } else {
+            cursor.rgb = float3(linearToPQ(linear.r * colorParams.y), linearToPQ(linear.g * colorParams.y),
+                                linearToPQ(linear.b * colorParams.y));
+        }
+    }
+    return cursor;
 }
 )";
 
@@ -142,6 +166,8 @@ void CursorRenderer::Cleanup() {
     rasterizerState = nullptr;
 
     lastCursor = nullptr;
+    lastRequestedWidth = 0;
+    lastRequestedHeight = 0;
     resourcesCreated = false;
 }
 
@@ -424,21 +450,24 @@ bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32
 
         uint32_t bottomOffset = bmpMask.bmWidthBytes * (*outHeight);
 
-        for (uint32_t i = 0; i < pixels; i++) {
-            uint32_t byteOffset = i / 8;
-            uint32_t bitOffset = 7 - (i % 8);
+        for (uint32_t y = 0; y < *outHeight; ++y) {
+            for (uint32_t x = 0; x < *outWidth; ++x) {
+                const uint32_t byteOffset = y * bmpMask.bmWidthBytes + x / 8;
+                const uint32_t bitOffset = 7 - (x % 8);
+                const uint32_t i = y * (*outWidth) + x;
 
-            uint8_t andMask = (maskData[byteOffset] >> bitOffset) & 1;
-            uint8_t xorMask = (maskData[bottomOffset + byteOffset] >> bitOffset) & 1;
+                uint8_t andMask = (maskData[byteOffset] >> bitOffset) & 1;
+                uint8_t xorMask = (maskData[bottomOffset + byteOffset] >> bitOffset) & 1;
 
-            uint32_t color;
-            if (!andMask) {
-                color = xorMask ? 0xFFFFFFFF : 0xFF000000;  // White or black
-            } else {
-                color = xorMask ? 0xFFFFFFFF : 0x00000000;  // Inverted or transparent
+                uint32_t color;
+                if (!andMask) {
+                    color = xorMask ? 0xFFFFFFFF : 0xFF000000;  // White or black
+                } else {
+                    color = xorMask ? 0xFFFFFFFF : 0x00000000;  // Inverted or transparent
+                }
+
+                memcpy(bitmap.get() + i * 4, &color, 4);
             }
-
-            memcpy(bitmap.get() + i * 4, &color, 4);
         }
         *outBitmap = bitmap.release();
     }
@@ -449,48 +478,102 @@ bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32
     return true;
 }
 
-bool CursorRenderer::UpdateCursorTexture(bool allowHandleVisibilityFallback) {
-    CURSORINFO ci = {sizeof(CURSORINFO)};
-    if (!GetCursorInfo(&ci)) {
+bool CursorRenderer::LoadCursorBitmap(HCURSOR cursor, uint32_t requestedWidth, uint32_t requestedHeight,
+                                      CursorBitmapData* result) {
+    if (!cursor || !result) {
         return false;
     }
 
-    // Check if cursor is hidden
-    const bool cursorVisible = (ci.flags & CURSOR_SHOWING) || (allowHandleVisibilityFallback && ci.hCursor);
-    if (!cursorVisible) {
-        return false;
-    }
-
-    // Check if cursor shape changed
-    if (ci.hCursor == lastCursor && cursorTexture) {
-        return true;  // Same cursor, texture already valid
-    }
-
-    // New cursor shape - extract bitmap
-    HICON icon = CopyIcon(ci.hCursor);
+    *result = {};
+    HICON icon = CopyIcon(cursor);
     if (!icon) {
         return false;
     }
 
-    ICONINFO ii;
-    if (!GetIconInfo(icon, &ii)) {
-        DestroyIcon(icon);
-        return false;
-    }
-
-    hotspotX = ii.xHotspot;
-    hotspotY = ii.yHotspot;
-    DeleteObject(ii.hbmColor);
-    DeleteObject(ii.hbmMask);
+    auto readHotspot = [](HICON source, int32_t* x, int32_t* y) {
+        ICONINFO info = {};
+        if (!GetIconInfo(source, &info)) {
+            return false;
+        }
+        *x = static_cast<int32_t>(info.xHotspot);
+        *y = static_cast<int32_t>(info.yHotspot);
+        DeleteObject(info.hbmColor);
+        DeleteObject(info.hbmMask);
+        return true;
+    };
 
     uint8_t* rawBitmap = nullptr;
-    if (!ExtractCursorBitmap(icon, &rawBitmap, &cursorWidth, &cursorHeight, &isMonochrome)) {
+    if (!readHotspot(icon, &result->hotspotX, &result->hotspotY) ||
+        !ExtractCursorBitmap(icon, &rawBitmap, &result->width, &result->height, &result->isMonochrome)) {
         DestroyIcon(icon);
         return false;
     }
-    std::unique_ptr<uint8_t[]> bitmap(rawBitmap);
+    result->pixels.reset(rawBitmap);
 
+    const uint32_t targetWidth = std::max(result->width, requestedWidth);
+    const uint32_t targetHeight = std::max(result->height, requestedHeight);
+    if (targetWidth != result->width || targetHeight != result->height) {
+        HICON resourceSized = reinterpret_cast<HICON>(
+            CopyImage(cursor, IMAGE_CURSOR, static_cast<int>(targetWidth), static_cast<int>(targetHeight),
+                      LR_COPYFROMRESOURCE));
+        if (resourceSized) {
+            CursorBitmapData resource;
+            uint8_t* resourcePixels = nullptr;
+            if (readHotspot(resourceSized, &resource.hotspotX, &resource.hotspotY) &&
+                ExtractCursorBitmap(resourceSized, &resourcePixels, &resource.width, &resource.height,
+                                    &resource.isMonochrome)) {
+                resource.pixels.reset(resourcePixels);
+                if (resource.width >= result->width && resource.height >= result->height) {
+                    *result = std::move(resource);
+                }
+            }
+            DestroyIcon(resourceSized);
+        }
+    }
+
+    const uint32_t finalWidth = std::max(result->width, targetWidth);
+    const uint32_t finalHeight = std::max(result->height, targetHeight);
+    if (finalWidth != result->width || finalHeight != result->height) {
+        const uint32_t sourceWidth = result->width;
+        const uint32_t sourceHeight = result->height;
+        auto scaled = ScaleBitmapNearestNeighbor(result->pixels.get(), sourceWidth, sourceHeight, finalWidth,
+                                                 finalHeight);
+        if (scaled) {
+            result->hotspotX = static_cast<int32_t>((static_cast<int64_t>(result->hotspotX) * finalWidth +
+                                                     sourceWidth / 2) /
+                                                    sourceWidth);
+            result->hotspotY = static_cast<int32_t>((static_cast<int64_t>(result->hotspotY) * finalHeight +
+                                                     sourceHeight / 2) /
+                                                    sourceHeight);
+            result->pixels = std::move(scaled);
+            result->width = finalWidth;
+            result->height = finalHeight;
+        }
+    }
     DestroyIcon(icon);
+    return result->pixels != nullptr && result->width != 0 && result->height != 0;
+}
+
+bool CursorRenderer::UpdateCursorTexture(const ce::cursor::CaptureState& state) {
+    const HCURSOR cursor = reinterpret_cast<HCURSOR>(state.handle);
+    if (!state.IsVisible() || !cursor) {
+        return false;
+    }
+
+    if (cursor == lastCursor && state.requestedWidth == lastRequestedWidth &&
+        state.requestedHeight == lastRequestedHeight && cursorTexture) {
+        return true;
+    }
+
+    CursorBitmapData bitmap;
+    if (!LoadCursorBitmap(cursor, state.requestedWidth, state.requestedHeight, &bitmap)) {
+        return false;
+    }
+    cursorWidth = bitmap.width;
+    cursorHeight = bitmap.height;
+    hotspotX = bitmap.hotspotX;
+    hotspotY = bitmap.hotspotY;
+    isMonochrome = bitmap.isMonochrome;
 
     // Create or update cursor texture
     if (cursorTexture) {
@@ -513,7 +596,7 @@ bool CursorRenderer::UpdateCursorTexture(bool allowHandleVisibilityFallback) {
     texDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
     D3D11_SUBRESOURCE_DATA initData = {};
-    initData.pSysMem = bitmap.get();
+    initData.pSysMem = bitmap.pixels.get();
     initData.SysMemPitch = cursorWidth * 4;
 
     HRESULT hr = device->CreateTexture2D(&texDesc, &initData, &cursorTexture);
@@ -531,29 +614,25 @@ bool CursorRenderer::UpdateCursorTexture(bool allowHandleVisibilityFallback) {
         return false;
     }
 
-    lastCursor = ci.hCursor;
+    lastCursor = cursor;
+    lastRequestedWidth = state.requestedWidth;
+    lastRequestedHeight = state.requestedHeight;
     return true;
 }
 
 bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int frameWidth, int frameHeight,
-                                        int captureOriginX, int captureOriginY, bool allowHandleVisibilityFallback) {
+                                        const ce::cursor::CaptureState& state, CursorColorMode colorMode,
+                                        float paperWhiteNits) {
     if (!resourcesCreated || !device || !context) {
         return false;
     }
 
-    // Fast path: Check if cursor is visible (single API call)
-    CURSORINFO ci = {sizeof(CURSORINFO)};
-    if (!GetCursorInfo(&ci)) {
+    if (!state.IsVisible()) {
         return false;
     }
 
-    const bool cursorVisible = (ci.flags & CURSOR_SHOWING) || (allowHandleVisibilityFallback && ci.hCursor);
-    if (!cursorVisible) {
-        return false;  // Cursor hidden - zero overhead path
-    }
-
     // Update cursor texture if needed
-    if (!UpdateCursorTexture(allowHandleVisibilityFallback)) {
+    if (!UpdateCursorTexture(state)) {
         return false;
     }
 
@@ -572,16 +651,20 @@ bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int fram
         return false;
     }
 
-    // The process is Per-Monitor V2 DPI-aware (via embedded manifest), so
-    // GetCursorInfo() already returns physical screen coordinates.
-    // captureOrigin is also in physical coords.  No DPI conversion needed.
-    POINT cursorPos = ci.ptScreenPos;
+    ce::cursor_geometry::Rect cursorRect;
+    const int captureWidth = state.captureWidth != 0 ? static_cast<int>(state.captureWidth) : frameWidth;
+    const int captureHeight = state.captureHeight != 0 ? static_cast<int>(state.captureHeight) : frameHeight;
+    if (!ce::cursor_geometry::MapScreenCursorToFrame(
+            state.screenX, state.screenY, hotspotX, hotspotY, static_cast<int>(cursorWidth),
+            static_cast<int>(cursorHeight), state.captureLeft, state.captureTop, captureWidth, captureHeight,
+            frameWidth, frameHeight, &cursorRect)) {
+        return false;
+    }
 
-    // Calculate normalized cursor position and size
-    float cursorX = (float)((cursorPos.x - captureOriginX) - hotspotX) / (float)frameWidth;
-    float cursorY = (float)((cursorPos.y - captureOriginY) - hotspotY) / (float)frameHeight;
-    float cursorW = (float)cursorWidth / (float)frameWidth;
-    float cursorH = (float)cursorHeight / (float)frameHeight;
+    const float cursorX = static_cast<float>(cursorRect.left) / static_cast<float>(frameWidth);
+    const float cursorY = static_cast<float>(cursorRect.top) / static_cast<float>(frameHeight);
+    const float cursorW = static_cast<float>(cursorRect.right - cursorRect.left) / static_cast<float>(frameWidth);
+    const float cursorH = static_cast<float>(cursorRect.bottom - cursorRect.top) / static_cast<float>(frameHeight);
 
     // Update constant buffer
     D3D11_MAPPED_SUBRESOURCE mapped;
@@ -592,6 +675,10 @@ bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int fram
         cb->cursorY = cursorY;
         cb->cursorWidth = cursorW;
         cb->cursorHeight = cursorH;
+        cb->colorMode = static_cast<float>(colorMode);
+        cb->paperWhiteNits = paperWhiteNits;
+        cb->padding0 = 0.0f;
+        cb->padding1 = 0.0f;
         context->Unmap(constantBuffer, 0);
     }
 

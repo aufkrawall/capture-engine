@@ -1,6 +1,6 @@
 # WGC Capture
 
-Last cross-checked: 2026-07-12 (HAGS-on contention hardening, pool prewarm, memory-budget telemetry, and OOM-only fallback.)
+Last cross-checked: 2026-07-14 (cursor/content timeline alignment, per-monitor DPI resources, DXGI pointer metadata, and SDR/HDR cursor color handling.)
 Stale-risk: medium (producer cadence, native-WGC-cursor avoidance, foreground-fullscreen target selection, matched configured-window gating, and WindowId item creation are built/unit-tested where policy is testable; the corrected DXGI keyed-mutex repeat/reclaim lifecycle still needs a fresh real-hardware pixel-level confirmation)
 
 Primary sources:
@@ -10,6 +10,7 @@ Primary sources:
 - `common/capture_handoff_state.h`
 - `common/wgc_pool_lease.h`
 - `common/shared_defs.h`
+- `common/cursor_capture_state.h`
 - `captureengine/wgc_capture.cpp`
 - `captureengine/wgc_capture.h`
 - `captureengine/dxgi_dup_capture.cpp`
@@ -19,6 +20,8 @@ Primary sources:
 - `captureengine/pseudo_overlay.cpp`
 - `mediaengine/mediaengine.cpp`
 - `mediaengine/video_encoder.cpp`
+- `mediaengine/cursor_renderer.cpp`
+- `mediaengine/cursor_geometry.h`
 - `mediaengine/video_format_policy.h`
 - `mediaengine/audio_sync_utils.h`
 - `common/config.cpp`
@@ -29,6 +32,7 @@ Primary sources:
 - `tests/test_video_format_policy.cpp`
 - `tests/test_audio_sync_utils.cpp`
 - `tests/test_mux_invariants.cpp`
+- `tests/test_cursor_geometry.cpp`
 - `tests/test_atomic_shared_owner.cpp`
 - `tests/test_callback_epoch.cpp`
 - `tests/test_capture_coordinator_source.cpp`
@@ -66,7 +70,9 @@ WGC window item creation now has explicit diagnostics and a best-effort `WindowI
 
 WGC CFR now aims for smooth output with lower steady-state pressure on the game: it asks the Windows compositor for a modest producer cadence (`ceil(output_fps * 1.25)`) through `MinUpdateInterval`, switches the producer back to max-rate only while recovering from source starvation or an underfilled delay reservoir, and restores the cap after sustained fresh input. When the source consistently delivers below the 125% overcapture target (stable underfeed >= 3s), the adaptive cap sets the producer target to `sourceMin250Fps + 5` (clamped between outputFps and 125%) instead of the futile max-rate=0 — this keeps the WGC producer throttled to a realistic rate matching actual source capability. A startup warmup grace period (200ms) prevents early WGC callback starvation from permanently latching recovery mode. The recovery mode exit logic includes a stable underfeed exit path: after 5s of bounded stable delivery (even below target), low-source and live-recovery modes self-exit to allow the overcapture cap to restore at an adaptive rate. This producer cadence is separate from the local copy throttle: CFR recording keeps local WGC copy throttling disabled so the scheduler can still consume every delivered source frame, preserve reservoir fill, and make its own drop/repeat decisions. Explicit 10-bit capture is quality-mandatory: when `Video.bit_depth=10`, WGC must stay on a high-precision input path (`R10G10B10A2` first, FP16 as the only fallback) and fail loudly if no high-precision frame-pool path is available. BGRA8 throughput fallback is allowed only for 8-bit or automatic SDR paths.
 
-WGC recording must preserve the user's live hardware cursor. `capture_cursor=true` still means the cursor appears in the recording, but the WGC session is configured with native cursor capture disabled (`IsCursorCaptureEnabled(false)`) so Windows can keep the game cursor in the hardware plane and avoid software-cursor/DirectFlip/VRR side effects. CE composites a cursor copy into encoded frames on the GPU in the media engine. For cursor-aware CFR repeats, the encoder keeps a cursor-free cached source texture and re-renders that cached game frame with the current cursor position; the encoded-packet repeat fast path remains available only when cursor pixels are not dynamic. Window capture cursor placement must use the actual WGC item/frame size to resolve the capture origin against the client rect or window rect; do not assume every borderless capture uses client-origin coordinates. The previous `IGraphicsCaptureSession4::DirtyRegionMode(ReportOnly)` cursor-only suppression path is removed from recording because the `20260701_092742` run showed DirectFlip/VRR loss while dirty-region metadata and native WGC cursor capture were active. Logs to watch are `[Media] WGC cursor capture: native WGC cursor disabled; encoder-side cursor composition enabled`, `[WGC] Native cursor capture: NO`, `Producer cadence target active`, `[WGC Perf] ... Throttle=<producer fps>`, `DropCursor=0`, and absence of `Dirty-region metadata enabled`.
+WGC recording must preserve the user's live hardware cursor. `capture_cursor=true` still means the cursor appears in the recording, but the WGC session is configured with native cursor capture disabled (`IsCursorCaptureEnabled(false)`) so Windows can keep the game cursor in the hardware plane and avoid software-cursor/DirectFlip/VRR side effects. CE composites a cursor copy into encoded frames on the GPU in the media engine. Cursor state is sampled once in captureengine, carried with fresh frames through the EXE/DLL ABI, and retained in bounded timestamp-ordered histories. A CFR repeat samples the live cursor but selects the state at the source-content target (`scheduledQpc - active WGC content delay` for screen grab), so delayed/reservoir pixels are never paired with an unrelated encoder-time cursor. DXGI duplication fresh frames override the generic position with `DXGI_OUTDUPL_FRAME_INFO.PointerPosition` plus `LastMouseUpdateTime`; its embedded/software-cursor signal still suppresses encoder composition. Inject capture resolves the source process client rectangle and maps desktop coordinates through client-to-swap-chain scaling instead of assuming screen origin `(0,0)`.
+
+Cursor resources are keyed by handle plus per-monitor requested dimensions. `GetSystemMetricsForDpi` supplies the monitor-DPI target, `CopyImage(..., LR_COPYFROMRESOURCE)` requests the nearest native Windows cursor resource before any point-filtered fallback, and larger accessibility/custom cursors are never downscaled. Hotspots scale with rounded integer math; negative-monitor origins, client/swap-chain scaling, clipping, and out-of-order timeline selection have unit coverage. The video-processor cursor stream is explicitly tagged SDR/sRGB so the VP converts it into SDR or HDR output correctly; the direct-RGB shader performs matching sRGB-to-scRGB/PQ transfer conversion. Both direct and VP paths reuse cached GPU textures, and DPI/metric lookup is cached per capture thread/monitor. The previous `IGraphicsCaptureSession4::DirtyRegionMode(ReportOnly)` cursor-only suppression path remains removed because the `20260701_092742` run showed DirectFlip/VRR loss while dirty-region metadata and native WGC cursor capture were active. Logs to watch include the rate-limited `[Cursor] CFR timeline ...`, `[Cursor] Rect ... dpi=... stateQpc=...`, the native-cursor-disabled messages, `DropCursor=0`, and absence of `Dirty-region metadata enabled`.
 
 R10 (`R10G10B10A2`) WGC frame pools are rejected by the WinRT capture layer itself with `E_INVALIDARG`; one R10 attempt remains for future Windows versions, then WGC uses FP16. The FP16 source pool is staging-only and its callback converts FP16 to retained R10 on the GPU; FP16 exactly represents all R10 values, so explicit 10-bit capture keeps a true >8-bit chain through P010 encode. The canonical option is `wgc_allow_lossy_bgra8_pool=false`. Setting it true may select a lower-VRAM BGRA8 staging pool only for non-explicit/auto bit-depth operation; `bit_depth=10` and HDR always gate that branch out, and DXGI duplication never consults it. `wgc_prefer_compact_10bit_pool` is a deprecated alias used only when the canonical key is absent; the canonical key wins if both exist. The prior claim that the old option set false was not a true 10-bit chain was incorrect: observed FP16 source → R10 retained → P010 encode contains no lossy 8-bit intermediate. Typed SRVs and all conversion remain GPU-side.
 

@@ -2076,7 +2076,8 @@ public:
 
     bool ProcessFrame(uint64_t handle, uint64_t fenceHandle, uint64_t fenceVal, int64_t timestampQPC, int32_t luidLow,
                       int32_t luidHigh, uint32_t sourcePid, uint32_t width, uint32_t height, uint32_t format,
-                      bool isHDR, bool isShmem = false, int shmemSlot = 0) {
+                      bool isHDR, bool isShmem = false, int shmemSlot = 0,
+                      const ce::cursor::CaptureState* cursorState = nullptr) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         if (!videoEnc || !recording)
             return false;
@@ -2103,6 +2104,9 @@ public:
 
         // Maybe we want preview later? For now, recording only.
         videoEnc->SetAdapterLUID(luidLow, luidHigh);
+        if (cursorState) {
+            videoEnc->SetCursorCaptureState(*cursorState);
+        }
         bool res = videoEnc->EncodeFrame((HANDLE)handle, (HANDLE)fenceHandle, fenceVal, realElapsedUs, sourcePid, width,
                                          height, format, isHDR, isShmem, shmemSlot);
 
@@ -2155,11 +2159,12 @@ public:
         return res;
     }
 
-    bool RepeatLastFrame(int64_t timestampQPC) {
-        return RepeatLastFrame(timestampQPC, -1);
+    bool RepeatLastFrame(int64_t timestampQPC, const ce::cursor::CaptureState* cursorState = nullptr) {
+        return RepeatLastFrame(timestampQPC, -1, cursorState);
     }
 
-    bool RepeatLastFrame(int64_t timestampQPC, int64_t timelineElapsedUs) {
+    bool RepeatLastFrame(int64_t timestampQPC, int64_t timelineElapsedUs,
+                         const ce::cursor::CaptureState* cursorState = nullptr) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         const bool cfrRecording = IsCfrRecording();
         const bool wgcCfrRecording = IsWgcCfrRecording();
@@ -2186,6 +2191,9 @@ public:
         }
 
         const bool useExplicitWgcCfrTimeline = wgcCfrRecording && timelineElapsedUs >= 0;
+        if (cursorState) {
+            videoEnc->SetCursorCaptureState(*cursorState);
+        }
         bool res = videoEnc->RepeatLastFrame(realElapsedUs, useExplicitWgcCfrTimeline);
         if (!res) {
             return false;
@@ -2248,7 +2256,8 @@ public:
 
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
     bool ProcessFrameD3D11(void* texture, int64_t timestampQPC, uint32_t width, uint32_t height, bool isHDR,
-                           int32_t captureLeft, int32_t captureTop, int64_t timelineElapsedUs) {
+                           int32_t captureLeft, int32_t captureTop, int64_t timelineElapsedUs,
+                           const ce::cursor::CaptureState* cursorState) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         if (!videoEnc || !recording)
             return false;
@@ -2333,6 +2342,9 @@ public:
                                                                      d3d11TimelineState.lastElapsedUs);
         }
         const bool useExplicitWgcCfrTimeline = IsWgcCfrRecording() && timelineElapsedUs >= 0;
+        if (cursorState) {
+            videoEnc->SetCursorCaptureState(*cursorState);
+        }
         if (!videoEnc->EncodeFrameD3D11((ID3D11Texture2D*)texture, realElapsedUs, width, height, isHDR, captureLeft,
                                         captureTop, useExplicitWgcCfrTimeline)) {
             DLL_Log("MediaEngine: D3D11 frame encode failed at ts=%lld", debugTimestamp);
@@ -5809,27 +5821,29 @@ MEDIAENGINE_API void MediaEngine_Shutdown() {
 MEDIAENGINE_API bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
                                               int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
                                               uint32_t width, uint32_t height, uint32_t format, bool isHDR,
-                                              bool isShmem, int shmemSlot) {
+                                              bool isShmem, int shmemSlot,
+                                              const ce::cursor::CaptureState* cursorState) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine) {
         return g_Engine->ProcessFrame(textureHandle, fenceHandle, fenceValue, timestamp, luidLow, luidHigh, sourcePid,
-                                      width, height, format, isHDR, isShmem, shmemSlot);
+                                      width, height, format, isHDR, isShmem, shmemSlot, cursorState);
     }
     return false;
 }
 
-MEDIAENGINE_API bool MediaEngine_RepeatLastFrame(int64_t timestamp) {
+MEDIAENGINE_API bool MediaEngine_RepeatLastFrame(int64_t timestamp, const ce::cursor::CaptureState* cursorState) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine) {
-        return g_Engine->RepeatLastFrame(timestamp);
+        return g_Engine->RepeatLastFrame(timestamp, cursorState);
     }
     return false;
 }
 
-MEDIAENGINE_API bool MediaEngine_RepeatLastFrameWithTimeline(int64_t timestamp, int64_t timelineElapsedUs) {
+MEDIAENGINE_API bool MediaEngine_RepeatLastFrameWithTimeline(int64_t timestamp, int64_t timelineElapsedUs,
+                                                             const ce::cursor::CaptureState* cursorState) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine) {
-        return g_Engine->RepeatLastFrame(timestamp, timelineElapsedUs);
+        return g_Engine->RepeatLastFrame(timestamp, timelineElapsedUs, cursorState);
     }
     return false;
 }
@@ -5851,11 +5865,12 @@ MEDIAENGINE_API void MediaEngine_ResetRepeatFrameCache() {
 
 MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
                                                    bool isHDR, int32_t captureLeft, int32_t captureTop,
-                                                   int64_t timelineElapsedUs) {
+                                                   int64_t timelineElapsedUs,
+                                                   const ce::cursor::CaptureState* cursorState) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine) {
         return g_Engine->ProcessFrameD3D11(texture, timestamp, width, height, isHDR, captureLeft, captureTop,
-                                           timelineElapsedUs);
+                                           timelineElapsedUs, cursorState);
     }
     return false;
 }

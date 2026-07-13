@@ -10,6 +10,7 @@
 #include <limits>
 #include <mutex>
 #include <vector>
+#include "cursor_capture_state.h"
 #include "inject_frame_ring_lease.h"
 #include "wgc_pool_lease.h"
 
@@ -82,6 +83,8 @@ struct QueuedFrame {
             other.captureLeft = 0;
             captureTop = other.captureTop;
             other.captureTop = 0;
+            cursorState = other.cursorState;
+            other.cursorState = {};
             isShmem = other.isShmem;
             other.isShmem = false;
             shmemSlot = other.shmemSlot;
@@ -123,6 +126,7 @@ struct QueuedFrame {
     bool wgcCursorEmbedded = false;
     int32_t captureLeft = 0;  // Screen-space origin for partial-capture cursor overlay
     int32_t captureTop = 0;
+    ce::cursor::CaptureState cursorState;
 
     // For shmem fallback (D3D9 Win11)
     bool isShmem = false;

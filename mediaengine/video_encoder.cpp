@@ -1598,8 +1598,11 @@ bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3
                 cursorInitLogged = true;
             }
         } else {
+            const CursorColorMode cursorColorMode =
+                currentIsHDR && dstDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM ? CursorColorMode::Hdr10Pq
+                                                                                : CursorColorMode::Sdr;
             cursorRenderer->CompositeOntoFrame(normalizedTexture, (int)dstDesc.Width, (int)dstDesc.Height,
-                                               captureOriginX, captureOriginY, allowCursorHandleVisibilityFallback);
+                                               cursorCaptureState, cursorColorMode);
         }
     }
 
@@ -1797,20 +1800,12 @@ bool VideoEncoder::PopulateD3D11FrameFromRepeatSource(AVFrame* d3d11Frame) {
     int cursorX = 0;
     int cursorY = 0;
     if (CursorCompositionActive() && vpSupportsOverlay && cursorRenderer) {
-        CURSORINFO ci = {sizeof(CURSORINFO)};
-        if (GetCursorInfo(&ci)) {
-            if (encodeFrameCounter % 100 == 1) {
-                DLL_Log("[Cursor] WGC repeat frame %d: flags=%d hCursor=%p pos=(%d,%d) origin=(%d,%d)",
-                        encodeFrameCounter, ci.flags, (void*)ci.hCursor, ci.ptScreenPos.x, ci.ptScreenPos.y,
-                        repeatSourceCaptureOriginX, repeatSourceCaptureOriginY);
-            }
-
-            if (ci.hCursor) {
-                cursorVisible = true;
-                cursorX = ci.ptScreenPos.x;
-                cursorY = ci.ptScreenPos.y;
-                activeCursor = GetCursorCacheEntry(ci.hCursor);
-            }
+        cursorVisible = cursorCaptureState.IsVisible();
+        if (cursorVisible) {
+            cursorX = cursorCaptureState.screenX;
+            cursorY = cursorCaptureState.screenY;
+            activeCursor = GetCursorCacheEntry(cursorCaptureState);
+            cursorVisible = activeCursor != nullptr;
         }
     }
 
@@ -3829,24 +3824,12 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     int cursorX = 0, cursorY = 0;
 
     if (!useDirectRgbPath && CursorCompositionActive() && vpSupportsOverlay && cursorRenderer) {
-        CURSORINFO ci = {sizeof(CURSORINFO)};
-        if (GetCursorInfo(&ci)) {
-            // Log cursor state periodically (every 100 frames)
-            if (encodeFrameCounter % 100 == 1) {
-                DLL_Log("[Cursor] Frame %d: flags=%d hCursor=%p pos=(%d,%d)", encodeFrameCounter, ci.flags,
-                        (void*)ci.hCursor, ci.ptScreenPos.x, ci.ptScreenPos.y);
-            }
-
-            // Hardware cursor in DX12 DirectFlip may not set CURSOR_SHOWING
-            // So we check if cursor handle is valid instead
-            if (ci.hCursor) {
-                cursorVisible = true;
-                cursorX = ci.ptScreenPos.x;
-                cursorY = ci.ptScreenPos.y;
-
-                // Get cursor from LRU cache (creates if not cached)
-                activeCursor = GetCursorCacheEntry(ci.hCursor);
-            }
+        cursorVisible = cursorCaptureState.IsVisible();
+        if (cursorVisible) {
+            cursorX = cursorCaptureState.screenX;
+            cursorY = cursorCaptureState.screenY;
+            activeCursor = GetCursorCacheEntry(cursorCaptureState);
+            cursorVisible = activeCursor != nullptr;
         }
     }
 
@@ -4345,19 +4328,12 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         int cursorX = 0;
         int cursorY = 0;
         if (CursorCompositionActive() && vpSupportsOverlay && cursorRenderer) {
-            CURSORINFO ci = {sizeof(CURSORINFO)};
-            if (GetCursorInfo(&ci)) {
-                if (encodeFrameCounter % 100 == 1) {
-                    DLL_Log("[Cursor] WGC frame %d: flags=%d hCursor=%p pos=(%d,%d) origin=(%d,%d)", encodeFrameCounter,
-                            ci.flags, (void*)ci.hCursor, ci.ptScreenPos.x, ci.ptScreenPos.y, captureLeft, captureTop);
-                }
-
-                if (ci.hCursor) {
-                    cursorVisible = true;
-                    cursorX = ci.ptScreenPos.x;
-                    cursorY = ci.ptScreenPos.y;
-                    activeCursor = GetCursorCacheEntry(ci.hCursor);
-                }
+            cursorVisible = cursorCaptureState.IsVisible();
+            if (cursorVisible) {
+                cursorX = cursorCaptureState.screenX;
+                cursorY = cursorCaptureState.screenY;
+                activeCursor = GetCursorCacheEntry(cursorCaptureState);
+                cursorVisible = activeCursor != nullptr;
             }
         }
 
@@ -5837,6 +5813,12 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         const OutputRangeMode outputRange = GetEffectiveOutputRange(savedConfig.colorRange, currentIsHDR);
         videoContext1->VideoProcessorSetStreamColorSpace1(
             videoProcessor, 0, GetVideoProcessorInputColorSpace(vpInputDesc.Format, currentIsHDR, vpInputIsLinear));
+        // Cursor resources are always Windows SDR/sRGB. Explicitly tagging
+        // stream 1 lets the VP convert them correctly for SDR and HDR output.
+        if (vpSupportsOverlay) {
+            videoContext1->VideoProcessorSetStreamColorSpace1(videoProcessor, 1,
+                                                              DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+        }
         videoContext1->VideoProcessorSetOutputColorSpace1(
             videoProcessor,
             GetVideoProcessorOutputColorSpace(ShouldUse10BitOutput(), currentIsHDR, configuredColorSpace, outputRange));
@@ -5853,70 +5835,36 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     // Stream 1: Cursor overlay (only if visible and VP supports it)
     bool useCursorStream = cursorVisible && vpSupportsOverlay && activeCursor && activeCursor->inputView;
     if (useCursorStream) {
-        // The process is Per-Monitor V2 DPI-aware (via embedded manifest), so
-        // GetCursorInfo() already returns physical screen coordinates.  No
-        // virtual→physical conversion needed.
-        int scaledWidth = (int)activeCursor->width;
-        int scaledHeight = (int)activeCursor->height;
-
-        // Cursor position is in physical screen pixels; convert to frame-local
-        // coordinates for WGC/window captures.
-        int physicalX = cursorX - captureOriginX;
-        int physicalY = cursorY - captureOriginY;
-
-        // Apply hotspot offset (already pre-scaled in cache entry)
-        int hotspotXScaled = activeCursor->hotspotX;
-        int hotspotYScaled = activeCursor->hotspotY;
-
-        // Set cursor destination rectangle
-        RECT cursorRect;
-        cursorRect.left = physicalX - hotspotXScaled;
-        cursorRect.top = physicalY - hotspotYScaled;
-        cursorRect.right = cursorRect.left + scaledWidth;
-        cursorRect.bottom = cursorRect.top + scaledHeight;
+        const int scaledWidth = static_cast<int>(activeCursor->width);
+        const int scaledHeight = static_cast<int>(activeCursor->height);
+        const int frameW = scalingEnabled ? outputWidth : width;
+        const int frameH = scalingEnabled ? outputHeight : height;
+        const int captureWidth = cursorCaptureState.captureWidth != 0
+                                     ? static_cast<int>(cursorCaptureState.captureWidth)
+                                     : width;
+        const int captureHeight = cursorCaptureState.captureHeight != 0
+                                      ? static_cast<int>(cursorCaptureState.captureHeight)
+                                      : height;
+        ce::cursor_geometry::Rect cursorDestination;
+        if (!ce::cursor_geometry::MapScreenCursorToFrame(
+                cursorX, cursorY, activeCursor->hotspotX, activeCursor->hotspotY, scaledWidth, scaledHeight,
+                cursorCaptureState.captureLeft, cursorCaptureState.captureTop, captureWidth, captureHeight, frameW,
+                frameH, &cursorDestination)) {
+            useCursorStream = false;
+        }
 
         // Log cursor rect periodically for debugging
         static int logCounter = 0;
         if (logCounter++ % 200 == 0) {
-            DLL_Log("[Cursor] Rect: (%d,%d)-(%d,%d) pos=(%d,%d) size=%dx%d frame=%dx%d", cursorRect.left,
-                    cursorRect.top, cursorRect.right, cursorRect.bottom, cursorX, cursorY, scaledWidth, scaledHeight,
-                    width, height);
+            DLL_Log(
+                "[Cursor] Rect: (%d,%d)-(%d,%d) pos=(%d,%d) bitmap=%dx%d frame=%dx%d "
+                "capture=(%d,%d %dx%d) dpi=%u stateQpc=%lld",
+                cursorDestination.left, cursorDestination.top, cursorDestination.right, cursorDestination.bottom,
+                cursorX, cursorY, scaledWidth, scaledHeight, frameW, frameH, cursorCaptureState.captureLeft,
+                cursorCaptureState.captureTop, captureWidth, captureHeight, cursorCaptureState.dpi,
+                static_cast<long long>(cursorCaptureState.associationQpc));
         }
-
-        // If resolution scaling is enabled (e.g. 4K -> 1080p), we must scale the
-        // cursor coordinates to match the output texture dimensions. The
-        // VideoProcessor applies the cursor overlay to the DESTINATION surface.
-        if (scalingEnabled) {
-            ce::cursor_geometry::Rect scaledDestination;
-            const ce::cursor_geometry::Rect unscaledDestination = {
-                cursorRect.left,
-                cursorRect.top,
-                cursorRect.right,
-                cursorRect.bottom,
-            };
-            if (!ce::cursor_geometry::ScaleDestinationRect(unscaledDestination, outputWidth, outputHeight, width,
-                                                           height, &scaledDestination)) {
-                useCursorStream = false;
-            } else {
-                cursorRect = {
-                    scaledDestination.left,
-                    scaledDestination.top,
-                    scaledDestination.right,
-                    scaledDestination.bottom,
-                };
-            }
-        }
-
-        // Clipping bounds use OUTPUT dimensions when scaling
-        int frameW = scalingEnabled ? outputWidth : width;
-        int frameH = scalingEnabled ? outputHeight : height;
         ce::cursor_geometry::ClippedRects clipped;
-        const ce::cursor_geometry::Rect cursorDestination = {
-            cursorRect.left,
-            cursorRect.top,
-            cursorRect.right,
-            cursorRect.bottom,
-        };
         if (useCursorStream && ce::cursor_geometry::ComputeClippedRects(cursorDestination, scaledWidth, scaledHeight,
                                                                         frameW, frameH, &clipped)) {
             const RECT sourceRect = {
@@ -6337,6 +6285,8 @@ void VideoEncoder::CleanupCursorCache() {
             entry.texture = nullptr;
         }
         entry.handle = nullptr;
+        entry.requestedWidth = 0;
+        entry.requestedHeight = 0;
         entry.width = 0;
         entry.height = 0;
         entry.hotspotX = 0;
@@ -6566,8 +6516,9 @@ bool VideoEncoder::ScaleCursorOnGPU(ID3D11Texture2D* srcTex, uint32_t srcW, uint
     return true;
 }
 
-VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(HCURSOR handle) {
-    if (!handle)
+VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(const ce::cursor::CaptureState& state) {
+    const HCURSOR handle = reinterpret_cast<HCURSOR>(state.handle);
+    if (!state.IsVisible() || !handle)
         return nullptr;
 
     // VideoProcessor must be initialized before we can create cursor input views
@@ -6576,7 +6527,9 @@ VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(HCURSOR handle
     if (!videoProcessorInit || !videoDevice || !videoProcessorEnum) {
         // Check if cursor is already cached (can still return cached entries)
         for (int i = 0; i < kCursorCacheSize; i++) {
-            if (cursorCache[i].handle == handle && cursorCache[i].texture && cursorCache[i].inputView) {
+            if (cursorCache[i].handle == handle && cursorCache[i].requestedWidth == state.requestedWidth &&
+                cursorCache[i].requestedHeight == state.requestedHeight && cursorCache[i].texture &&
+                cursorCache[i].inputView) {
                 return &cursorCache[i];
             }
         }
@@ -6587,7 +6540,8 @@ VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(HCURSOR handle
 
     // 1. Look for existing cache entry
     for (int i = 0; i < kCursorCacheSize; i++) {
-        if (cursorCache[i].handle == handle && cursorCache[i].texture) {
+        if (cursorCache[i].handle == handle && cursorCache[i].requestedWidth == state.requestedWidth &&
+            cursorCache[i].requestedHeight == state.requestedHeight && cursorCache[i].texture) {
             cursorCache[i].lastUsedFrame = cursorFrameCounter;
             return &cursorCache[i];
         }
@@ -6623,98 +6577,43 @@ VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(HCURSOR handle
     if (!cursorRenderer)
         return nullptr;
 
-    HICON icon = CopyIcon(handle);
-    if (!icon)
-        return nullptr;
-
-    // Get hotspot info (original, before any scaling)
-    ICONINFO ii;
-    int32_t origHotspotX = 0, origHotspotY = 0;
-    if (GetIconInfo(icon, &ii)) {
-        origHotspotX = (int32_t)ii.xHotspot;
-        origHotspotY = (int32_t)ii.yHotspot;
-        DeleteObject(ii.hbmColor);
-        DeleteObject(ii.hbmMask);
-    }
-
-    uint8_t* bitmap = nullptr;
-    uint32_t w, h;
-    bool mono;
-
-    if (!cursorRenderer->ExtractCursorBitmap(icon, &bitmap, &w, &h, &mono)) {
-        DestroyIcon(icon);
+    CursorBitmapData bitmap;
+    if (!cursorRenderer->LoadCursorBitmap(handle, state.requestedWidth, state.requestedHeight, &bitmap)) {
         return nullptr;
     }
-    DestroyIcon(icon);
+    entry.hotspotX = bitmap.hotspotX;
+    entry.hotspotY = bitmap.hotspotY;
 
-    // Pre-scale cursor bitmap to DPI-correct display size on the GPU.
-    // Uses a pixel shader with point sampling for crisp nearest-neighbor upscale.
-    // This prevents bilinear blur from VP scaling when the extracted bitmap
-    // (typically 32x32) is smaller than the expected display size at >100% DPI.
-    int expectedW = GetSystemMetrics(SM_CXCURSOR);
-    int expectedH = GetSystemMetrics(SM_CYCURSOR);
-    bool needsScaling = (expectedW > 0 && expectedH > 0 && ((uint32_t)expectedW != w || (uint32_t)expectedH != h));
-
-    if (needsScaling) {
-        // Scale hotspot proportionally
-        float sx = (float)expectedW / (float)w;
-        float sy = (float)expectedH / (float)h;
-        origHotspotX = (int32_t)(origHotspotX * sx);
-        origHotspotY = (int32_t)(origHotspotY * sy);
-    }
-
-    entry.hotspotX = origHotspotX;
-    entry.hotspotY = origHotspotY;
-
-    // Create D3D11 texture at ORIGINAL extracted size (with SRV bind for GPU scaling)
     D3D11_TEXTURE2D_DESC texDesc = {};
-    texDesc.Width = w;
-    texDesc.Height = h;
+    texDesc.Width = bitmap.width;
+    texDesc.Height = bitmap.height;
     texDesc.MipLevels = 1;
     texDesc.ArraySize = 1;
     texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     texDesc.SampleDesc.Count = 1;
     texDesc.Usage = D3D11_USAGE_DEFAULT;
-    texDesc.BindFlags = needsScaling ? D3D11_BIND_SHADER_RESOURCE : 0;
+    texDesc.BindFlags = 0;
 
     D3D11_SUBRESOURCE_DATA initData = {};
-    initData.pSysMem = bitmap;
-    initData.SysMemPitch = w * 4;
+    initData.pSysMem = bitmap.pixels.get();
+    initData.SysMemPitch = bitmap.width * 4;
 
     ID3D11Texture2D* srcTexture = nullptr;
     ID3D11Device* baseDevice = nullptr;
     d3d11Device->QueryInterface(IID_PPV_ARGS(&baseDevice));
-    HRESULT hr = baseDevice->CreateTexture2D(&texDesc, &initData, &srcTexture);
-    baseDevice->Release();
-    delete[] bitmap;
+    HRESULT hr = baseDevice ? baseDevice->CreateTexture2D(&texDesc, &initData, &srcTexture) : E_NOINTERFACE;
+    if (baseDevice) {
+        baseDevice->Release();
+    }
 
     if (FAILED(hr)) {
         DLL_Log("[CursorCache] CreateTexture2D failed: HR=%x", hr);
         return nullptr;
     }
 
-    if (needsScaling) {
-        // GPU scale: render srcTexture to a new texture at target display size
-        // using point sampling (nearest-neighbor, no blur)
-        ID3D11Texture2D* scaledTex = nullptr;
-        if (ScaleCursorOnGPU(srcTexture, w, h, &scaledTex, (uint32_t)expectedW, (uint32_t)expectedH)) {
-            srcTexture->Release();
-            entry.texture = scaledTex;
-            entry.width = (uint32_t)expectedW;
-            entry.height = (uint32_t)expectedH;
-            DLL_Log("[CursorCache] GPU-scaled cursor: %ux%u -> %ux%u", w, h, expectedW, expectedH);
-        } else {
-            // GPU scaling failed - fall back to original texture
-            DLL_Log("[CursorCache] GPU scaling failed, using original %ux%u", w, h);
-            entry.texture = srcTexture;
-            entry.width = w;
-            entry.height = h;
-        }
-    } else {
-        entry.texture = srcTexture;
-        entry.width = w;
-        entry.height = h;
-    }
+    entry.texture = srcTexture;
+    entry.width = bitmap.width;
+    entry.height = bitmap.height;
 
     // Create VP input view from the (possibly GPU-scaled) texture
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivDesc = {};
@@ -6737,14 +6636,9 @@ VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(HCURSOR handle
     }
 
     entry.handle = handle;
+    entry.requestedWidth = state.requestedWidth;
+    entry.requestedHeight = state.requestedHeight;
     entry.lastUsedFrame = cursorFrameCounter;
-
-    static int cacheHits = 0, cacheMisses = 0;
-    cacheMisses++;
-    if ((cacheHits + cacheMisses) % 100 == 0) {
-        DLL_Log("[CursorCache] Stats: hits=%d misses=%d (%.1f%% hit rate)", cacheHits, cacheMisses,
-                100.0 * cacheHits / (cacheHits + cacheMisses));
-    }
 
     return &entry;
 }

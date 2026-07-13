@@ -9,6 +9,7 @@
 #include <d3d11.h>
 #include <d3d12.h>
 #include "../common/config.h"
+#include "../common/cursor_capture_state.h"
 
 extern "C" {
 
@@ -41,14 +42,16 @@ MEDIAENGINE_API void MediaEngine_SetAudioOnly(bool audioOnly);
 MEDIAENGINE_API bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
                                               int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
                                               uint32_t width, uint32_t height, uint32_t format, bool isHDR,
-                                              bool isShmem = false, int shmemSlot = 0);
+                                              bool isShmem = false, int shmemSlot = 0,
+                                              const ce::cursor::CaptureState* cursorState = nullptr);
 
 // Re-emit the previously encoded video frame content as a true duplicate.
 // Returns false if no prior frame exists or the duplicate encode failed.
-MEDIAENGINE_API bool MediaEngine_RepeatLastFrame(int64_t timestamp);
+MEDIAENGINE_API bool MediaEngine_RepeatLastFrame(int64_t timestamp, const ce::cursor::CaptureState* cursorState);
 // Same as MediaEngine_RepeatLastFrame, but lets the caller provide an explicit
 // CFR timeline position in microseconds for repeat/drain output.
-MEDIAENGINE_API bool MediaEngine_RepeatLastFrameWithTimeline(int64_t timestamp, int64_t timelineElapsedUs);
+MEDIAENGINE_API bool MediaEngine_RepeatLastFrameWithTimeline(int64_t timestamp, int64_t timelineElapsedUs,
+                                                             const ce::cursor::CaptureState* cursorState);
 MEDIAENGINE_API bool MediaEngine_CanRepeatLastFrame();
 // Invalidate encoded-packet, post-conversion texture, and cursor-aware source
 // caches after a capture source/epoch transition.
@@ -62,7 +65,8 @@ MEDIAENGINE_API void MediaEngine_ResetRepeatFrameCache();
 //                    engine's steady clock as before.
 MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
                                                    bool isHDR, int32_t captureLeft, int32_t captureTop,
-                                                   int64_t timelineElapsedUs);
+                                                   int64_t timelineElapsedUs,
+                                                   const ce::cursor::CaptureState* cursorState);
 
 // Start Recording (Create file, start encoders)
 MEDIAENGINE_API bool MediaEngine_StartRecording();

@@ -25,6 +25,7 @@
 #include "../common/capture_handoff_state.h"
 #include "../common/capture_pipeline_policy.h"
 #include "../common/config.h"
+#include "../common/cursor_capture_state.h"
 #include "../common/frame_queue.h"
 #include "../common/frame_timing_utils.h"
 #include "../common/logging.h"
@@ -101,6 +102,117 @@ static std::atomic<uint32_t> g_InjectBufferedTrimmedFrames{0};
 static std::atomic<uint32_t> g_InjectCadenceDroppedFrames{0};
 static std::atomic<uint32_t> g_WgcAdaptiveTargetFps{0};
 static std::atomic<uint64_t> g_ActivePathMismatchFramesDiscarded{0};
+static ce::cursor::Timeline g_WgcCursorTimeline(1024);
+static ce::cursor::Timeline g_InjectCursorTimeline(1024);
+
+static UINT GetCursorDpiAtPoint(POINT point) {
+    using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
+    using GetDpiForSystemFn = UINT(WINAPI*)();
+    static const HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    static const auto getDpiForWindow =
+        reinterpret_cast<GetDpiForWindowFn>(user32 ? GetProcAddress(user32, "GetDpiForWindow") : nullptr);
+    static const auto getDpiForSystem =
+        reinterpret_cast<GetDpiForSystemFn>(user32 ? GetProcAddress(user32, "GetDpiForSystem") : nullptr);
+
+    static thread_local HMONITOR cachedMonitor = nullptr;
+    static thread_local UINT cachedDpi = 0;
+    const HMONITOR monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+    if (monitor && monitor == cachedMonitor && cachedDpi != 0) {
+        return cachedDpi;
+    }
+
+    if (getDpiForWindow) {
+        const HWND pointWindow = WindowFromPoint(point);
+        if (pointWindow) {
+            const UINT dpi = getDpiForWindow(pointWindow);
+            if (dpi != 0) {
+                cachedMonitor = monitor;
+                cachedDpi = dpi;
+                return cachedDpi;
+            }
+        }
+    }
+    if (getDpiForSystem) {
+        const UINT dpi = getDpiForSystem();
+        if (dpi != 0) {
+            cachedMonitor = monitor;
+            cachedDpi = dpi;
+            return cachedDpi;
+        }
+    }
+    return 96;
+}
+
+static int GetCursorMetricForDpi(int metric, UINT dpi) {
+    using GetSystemMetricsForDpiFn = int(WINAPI*)(int, UINT);
+    static const HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    static const auto getSystemMetricsForDpi = reinterpret_cast<GetSystemMetricsForDpiFn>(
+        user32 ? GetProcAddress(user32, "GetSystemMetricsForDpi") : nullptr);
+    return getSystemMetricsForDpi ? getSystemMetricsForDpi(metric, dpi) : GetSystemMetrics(metric);
+}
+
+static ce::cursor::CaptureState CaptureCursorSnapshot(int64_t associationQpc, int32_t captureLeft,
+                                                       int32_t captureTop, uint32_t captureWidth,
+                                                       uint32_t captureHeight, bool suppressed) {
+    ce::cursor::CaptureState state;
+    state.associationQpc = associationQpc;
+    state.captureLeft = captureLeft;
+    state.captureTop = captureTop;
+    state.captureWidth = captureWidth;
+    state.captureHeight = captureHeight;
+
+    LARGE_INTEGER observedQpc;
+    QueryPerformanceCounter(&observedQpc);
+    state.observedQpc = observedQpc.QuadPart;
+
+    CURSORINFO cursorInfo = {sizeof(CURSORINFO)};
+    if (!GetCursorInfo(&cursorInfo)) {
+        return state;
+    }
+
+    state.flags = ce::cursor::kStateValid;
+    state.handle = reinterpret_cast<uint64_t>(cursorInfo.hCursor);
+    state.screenX = cursorInfo.ptScreenPos.x;
+    state.screenY = cursorInfo.ptScreenPos.y;
+    if (suppressed || (cursorInfo.flags & CURSOR_SUPPRESSED) != 0) {
+        state.flags |= ce::cursor::kStateSuppressed;
+    } else if ((cursorInfo.flags & CURSOR_SHOWING) != 0) {
+        state.flags |= ce::cursor::kStateVisible;
+    } else if (cursorInfo.hCursor) {
+        // DirectFlip / independent-flip cursor planes can retain a valid
+        // hardware cursor handle without CURSOR_SHOWING being observable in
+        // this process. Preserve the existing compatibility fallback, but
+        // record it so diagnostics can distinguish it from normal visibility.
+        state.flags |= ce::cursor::kStateVisible | ce::cursor::kStateHandleVisibilityFallback;
+    }
+
+    state.dpi = GetCursorDpiAtPoint(cursorInfo.ptScreenPos);
+    static thread_local UINT cachedMetricDpi = 0;
+    static thread_local uint32_t cachedCursorWidth = 0;
+    static thread_local uint32_t cachedCursorHeight = 0;
+    if (state.dpi != cachedMetricDpi || cachedCursorWidth == 0 || cachedCursorHeight == 0) {
+        cachedMetricDpi = state.dpi;
+        cachedCursorWidth = static_cast<uint32_t>(std::max(1, GetCursorMetricForDpi(SM_CXCURSOR, state.dpi)));
+        cachedCursorHeight = static_cast<uint32_t>(std::max(1, GetCursorMetricForDpi(SM_CYCURSOR, state.dpi)));
+    }
+    state.requestedWidth = cachedCursorWidth;
+    state.requestedHeight = cachedCursorHeight;
+    return state;
+}
+
+static void ApplySourceCursorPosition(ce::cursor::CaptureState& state, bool valid, int32_t screenX, int32_t screenY,
+                                      int64_t updateQpc) {
+    if (!valid || updateQpc <= 0) {
+        return;
+    }
+    state.screenX = screenX;
+    state.screenY = screenY;
+    // DXGI Desktop Duplication supplies a QPC-timestamped hardware-pointer
+    // position from the same AcquireNextFrame metadata as the desktop image.
+    // Keep associationQpc tied to the image, and retain the pointer timestamp
+    // as the more precise observation time for diagnostics.
+    state.observedQpc = updateQpc;
+}
 
 static uint64_t AdvanceWgcSourceEpoch(const char* reason) {
     const uint64_t epoch = g_WgcSourceEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -1023,7 +1135,9 @@ static void SubmitWgcQueuedFrame(QueuedFrame&& frame) {
 
 static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp,
                           int64_t rawTimestamp, bool isHDR, bool cursorEmbedded, bool duplicateSourceTimestamp,
-                          int32_t captureLeft, int32_t captureTop, uint64_t sourceEpoch, WgcPoolSlotLease&& poolLease) {
+                          bool cursorPositionValid, int32_t cursorScreenX, int32_t cursorScreenY,
+                          int64_t cursorUpdateQpc, int32_t captureLeft, int32_t captureTop, uint64_t sourceEpoch,
+                          WgcPoolSlotLease&& poolLease) {
     const uint64_t activeEpoch = g_WgcSourceEpoch.load(std::memory_order_acquire);
     if (sourceEpoch != activeEpoch) {
         static std::atomic<uint64_t> s_staleEpochDrops{0};
@@ -1058,6 +1172,9 @@ static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t hei
     qf.wgcCursorEmbedded = cursorEmbedded;
     qf.captureLeft = captureLeft;
     qf.captureTop = captureTop;
+    qf.cursorState = CaptureCursorSnapshot(timestamp, captureLeft, captureTop, width, height, cursorEmbedded);
+    ApplySourceCursorPosition(qf.cursorState, cursorPositionValid, cursorScreenX, cursorScreenY, cursorUpdateQpc);
+    g_WgcCursorTimeline.Publish(qf.cursorState);
 
     if (g_Recording.load(std::memory_order_acquire) && !IsActiveScreenGrab()) {
         if (g_RetainStandbyWgcFrameForHandoff.load(std::memory_order_acquire) &&
@@ -1100,6 +1217,11 @@ static QueuedFrame MakeQueuedWgcFrame(WGCCapturedFrame&& frame) {
     qf.duplicateSourceTimestamp = frame.duplicateSourceTimestamp;
     qf.captureLeft = frame.captureLeft;
     qf.captureTop = frame.captureTop;
+    qf.cursorState = CaptureCursorSnapshot(frame.timestamp, frame.captureLeft, frame.captureTop, frame.width,
+                                           frame.height, frame.cursorEmbedded);
+    ApplySourceCursorPosition(qf.cursorState, frame.cursorPositionValid, frame.cursorScreenX, frame.cursorScreenY,
+                              frame.cursorUpdateQpc);
+    g_WgcCursorTimeline.Publish(qf.cursorState);
     return qf;
 }
 
@@ -2290,6 +2412,32 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     qf.luidHigh = g_pSharedMem->GetLuidHighPart();
                     qf.isHDR = g_pSharedMem->GetIsHDR();
 
+                    // Inject textures are swap-chain-local, while Windows cursor
+                    // coordinates are desktop-global. Resolve the game client
+                    // area once per PID and map through its current physical
+                    // bounds so windowed, borderless, DPI, and render-scale
+                    // configurations all place the cursor correctly.
+                    static DWORD s_cursorWindowPid = 0;
+                    static HWND s_cursorWindow = NULL;
+                    if (qf.sourcePid != s_cursorWindowPid || !s_cursorWindow || !IsWindow(s_cursorWindow) ||
+                        !WindowBelongsToProcess(s_cursorWindow, qf.sourcePid)) {
+                        s_cursorWindowPid = qf.sourcePid;
+                        s_cursorWindow = qf.sourcePid != 0 ? GetMainWindowForProcess(qf.sourcePid) : NULL;
+                    }
+                    RECT captureBounds = {0, 0, static_cast<LONG>(qf.width), static_cast<LONG>(qf.height)};
+                    RECT clientBounds = {};
+                    if (s_cursorWindow && GetWindowClientRectInScreen(s_cursorWindow, clientBounds) &&
+                        clientBounds.right > clientBounds.left && clientBounds.bottom > clientBounds.top) {
+                        captureBounds = clientBounds;
+                    }
+                    qf.captureLeft = captureBounds.left;
+                    qf.captureTop = captureBounds.top;
+                    qf.cursorState = CaptureCursorSnapshot(
+                        qf.timestamp, captureBounds.left, captureBounds.top,
+                        static_cast<uint32_t>(captureBounds.right - captureBounds.left),
+                        static_cast<uint32_t>(captureBounds.bottom - captureBounds.top), false);
+                    g_InjectCursorTimeline.Publish(qf.cursorState);
+
                     // Per-recording state (reset on thread creation)
                     if (!sharedTexturesCreated && g_pSharedMem->GetWidth() > 0 && g_pSharedMem->GetHeight() > 0) {
                         if (!g_pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
@@ -2874,6 +3022,9 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
 
 void EncoderThreadFunc(const AppConfig& config) {
     LogInfo("[EncoderThread] Started");
+
+    g_WgcCursorTimeline.Clear();
+    g_InjectCursorTimeline.Clear();
 
     DisableCurrentThreadPowerThrottling("EncoderThread");
     ScopedMmcssTask encoderMmcssTask(L"Pro Audio", AVRT_PRIORITY_HIGH, "EncoderThread");
@@ -7390,11 +7541,51 @@ void EncoderThreadFunc(const AppConfig& config) {
             !config.video.useVFR &&
             ((useScreenGrab && MediaEngine_RepeatLastFrameWithTimeline) || MediaEngine_RepeatLastFrame);
         auto repeatLastFrameForScheduledQpc = [&](int64_t scheduledQpc) {
+            ce::cursor::CaptureState cursorState;
+            if (config.video.captureCursor && g_HasLastFrame) {
+                const uint32_t captureWidth = g_LastFrame.cursorState.captureWidth != 0
+                                                  ? g_LastFrame.cursorState.captureWidth
+                                                  : g_LastFrame.width;
+                const uint32_t captureHeight = g_LastFrame.cursorState.captureHeight != 0
+                                                   ? g_LastFrame.cursorState.captureHeight
+                                                   : g_LastFrame.height;
+                const ce::cursor::CaptureState liveState = CaptureCursorSnapshot(
+                    scheduledQpc, g_LastFrame.captureLeft, g_LastFrame.captureTop, captureWidth, captureHeight,
+                    useScreenGrab && g_LastFrame.wgcCursorEmbedded);
+                ce::cursor::Timeline& timeline = useScreenGrab ? g_WgcCursorTimeline : g_InjectCursorTimeline;
+                timeline.Publish(liveState);
+                const int64_t cursorTargetQpc =
+                    useScreenGrab ? std::max<int64_t>(1, scheduledQpc - getWgcEffectiveContentDelayQpc())
+                                  : scheduledQpc;
+                if (!timeline.SelectAtOrBefore(cursorTargetQpc, &cursorState)) {
+                    cursorState = liveState;
+                }
+
+                static uint64_t s_cursorTimelineLogCount = 0;
+                ++s_cursorTimelineLogCount;
+                if (s_cursorTimelineLogCount <= 5 || (s_cursorTimelineLogCount % 600ull) == 0ull) {
+                    LogInfo(
+                        "[Cursor] CFR timeline backend=%s scheduled=%lld target=%lld selected=%lld observed=%lld "
+                        "deltaUs=%lld dpi=%u size=%ux%u bounds=(%d,%d %ux%u) visible=%d fallback=%d",
+                        useScreenGrab ? "screen-grab" : "inject", static_cast<long long>(scheduledQpc),
+                        static_cast<long long>(cursorTargetQpc), static_cast<long long>(cursorState.associationQpc),
+                        static_cast<long long>(cursorState.observedQpc),
+                        static_cast<long long>(qpcFreq.QuadPart > 0
+                                                   ? ((cursorTargetQpc - cursorState.associationQpc) * 1000000) /
+                                                         qpcFreq.QuadPart
+                                                   : 0),
+                        cursorState.dpi, cursorState.requestedWidth, cursorState.requestedHeight,
+                        cursorState.captureLeft, cursorState.captureTop, cursorState.captureWidth,
+                        cursorState.captureHeight, cursorState.IsVisible() ? 1 : 0,
+                        (cursorState.flags & ce::cursor::kStateHandleVisibilityFallback) != 0 ? 1 : 0);
+                }
+            }
             if (useScreenGrab && !config.video.useVFR && MediaEngine_RepeatLastFrameWithTimeline) {
                 return MediaEngine_RepeatLastFrameWithTimeline(scheduledQpc,
-                                                               computeLiveTimelineElapsedUs(scheduledQpc));
+                                                               computeLiveTimelineElapsedUs(scheduledQpc),
+                                                               &cursorState);
             }
-            return MediaEngine_RepeatLastFrame && MediaEngine_RepeatLastFrame(scheduledQpc);
+            return MediaEngine_RepeatLastFrame && MediaEngine_RepeatLastFrame(scheduledQpc, &cursorState);
         };
         auto recoverScheduledFreshEncodeFailure = [&](bool scheduledCfrTick, bool freshEncodeSucceeded,
                                                       bool freshEncodeDeferred, int64_t scheduledQpc,
@@ -8642,7 +8833,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                                 (uint64_t)catchupFrame.sharedHandle, (uint64_t)catchupFrame.fenceHandle,
                                 catchupFrame.fenceValue, catchupFrame.timestamp, catchupFrame.luidLow,
                                 catchupFrame.luidHigh, catchupFrame.sourcePid, catchupFrame.width, catchupFrame.height,
-                                catchupFrame.format, catchupFrame.isHDR, catchupFrame.isShmem, catchupFrame.shmemSlot);
+                                catchupFrame.format, catchupFrame.isHDR, catchupFrame.isShmem, catchupFrame.shmemSlot,
+                                &catchupFrame.cursorState);
                             const bool catchupEncodeDeferred =
                                 MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
                             QueryPerformanceCounter(&catchupEndEnc);
@@ -8831,7 +9023,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                             const bool freshCatchupEncodeSucceeded = MediaEngine_ProcessFrameD3D11(
                                 catchupFrame.texture, catchupFrame.timestamp, catchupFrame.width, catchupFrame.height,
                                 catchupFrame.isHDR, catchupFrame.captureLeft, catchupFrame.captureTop,
-                                catchupTimelineElapsedUs);
+                                catchupTimelineElapsedUs, &catchupFrame.cursorState);
                             const bool recoveredCatchupEncodeFailure =
                                 !freshCatchupEncodeSucceeded &&
                                 recoverScheduledFreshEncodeFailure(true, false, false, repeatScheduledQpc,
@@ -9161,7 +9353,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         frameToProcess->fenceValue, frameToProcess->timestamp, frameToProcess->luidLow,
                         frameToProcess->luidHigh, frameToProcess->sourcePid, frameToProcess->width,
                         frameToProcess->height, frameToProcess->format, frameToProcess->isHDR, frameToProcess->isShmem,
-                        frameToProcess->shmemSlot);
+                        frameToProcess->shmemSlot, &frameToProcess->cursorState);
                     encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
                 } else {
                     const int64_t liveTimelineElapsedUs =
@@ -9170,7 +9362,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     encodeSucceeded = MediaEngine_ProcessFrameD3D11(frameToProcess->texture, frameToProcess->timestamp,
                                                                     frameToProcess->width, frameToProcess->height,
                                                                     frameToProcess->isHDR, frameToProcess->captureLeft,
-                                                                    frameToProcess->captureTop, liveTimelineElapsedUs);
+                                                                    frameToProcess->captureTop, liveTimelineElapsedUs,
+                                                                    &frameToProcess->cursorState);
                     encodeDeferred = false;
                 }
             };

@@ -135,6 +135,16 @@ public:
     uint64_t GetPointerStateTransitionCount() const {
         return pointerStateTransitions_.load(std::memory_order_relaxed);
     }
+    bool GetPointerPosition(int32_t* screenX, int32_t* screenY, int64_t* updateQpc) const {
+        const int64_t timestamp = pointerUpdateQpc_.load(std::memory_order_acquire);
+        if (timestamp <= 0 || !screenX || !screenY || !updateQpc) {
+            return false;
+        }
+        *screenX = pointerScreenX_.load(std::memory_order_relaxed);
+        *screenY = pointerScreenY_.load(std::memory_order_relaxed);
+        *updateQpc = timestamp;
+        return true;
+    }
 
 private:
     void CaptureThreadFunc();
@@ -182,4 +192,7 @@ private:
     std::atomic<bool> separatePointerVisible_{true};
     std::atomic<bool> cursorEmbeddedInFrames_{false};
     std::atomic<uint64_t> pointerStateTransitions_{0};
+    std::atomic<int32_t> pointerScreenX_{0};
+    std::atomic<int32_t> pointerScreenY_{0};
+    std::atomic<int64_t> pointerUpdateQpc_{0};
 };

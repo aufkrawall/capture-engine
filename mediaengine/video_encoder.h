@@ -15,6 +15,7 @@
 #include <unordered_map>
 #include <vector>
 #include "../common/config.h"
+#include "../common/cursor_capture_state.h"
 #include "../common/shared_defs.h"
 #include "mux_invariants.h"
 
@@ -86,6 +87,10 @@ public:
     // window/monitor while advancing the new source's CFR timeline.
     void ResetRepeatFrameCache();
     bool WasLastFrameDeferred() const;
+
+    void SetCursorCaptureState(const ce::cursor::CaptureState& state) {
+        cursorCaptureState = state;
+    }
 
     int AddAudioStream(const AudioConfig& config, AVCodecContext* audioCtx = nullptr, int track = -1);
 
@@ -411,6 +416,8 @@ private:
     static constexpr int kCursorCacheSize = 8;
     struct CursorCacheEntry {
         HCURSOR handle = nullptr;
+        uint32_t requestedWidth = 0;
+        uint32_t requestedHeight = 0;
         ID3D11Texture2D* texture = nullptr;
         ID3D11VideoProcessorInputView* inputView = nullptr;
         uint32_t width = 0;
@@ -422,6 +429,7 @@ private:
     CursorCacheEntry cursorCache[kCursorCacheSize];
     CursorCacheEntry* activeCursor = nullptr;  // Currently active cursor entry
     uint64_t cursorFrameCounter = 0;           // Tracks frame number for LRU
+    ce::cursor::CaptureState cursorCaptureState;
 
     // Cursor state cached per-frame (used in EncodeFrameD3D11 — member to reset between recordings)
     int cursorUpdateCounter = 0;
@@ -430,7 +438,7 @@ private:
     bool cachedCursorVisible = false;
 
     // Find or create cursor cache entry
-    CursorCacheEntry* GetCursorCacheEntry(HCURSOR handle);
+    CursorCacheEntry* GetCursorCacheEntry(const ce::cursor::CaptureState& state);
     bool ConfigureAndOpenCodec();
     void CleanupCursorCache();
     bool ShouldUse10BitOutput() const {

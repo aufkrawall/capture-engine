@@ -49,6 +49,26 @@ inline bool ScaleDestinationRect(const Rect& input, int outputWidth, int outputH
     return output->left < output->right && output->top < output->bottom;
 }
 
+// Maps a screen-space cursor rectangle into the encoded frame. The captured
+// content can be a monitor, a window client area, or a swap-chain texture whose
+// dimensions differ from the client area (render scaling / DPI transitions).
+inline bool MapScreenCursorToFrame(int screenX, int screenY, int hotspotX, int hotspotY, int cursorWidth,
+                                   int cursorHeight, int captureLeft, int captureTop, int captureWidth,
+                                   int captureHeight, int frameWidth, int frameHeight, Rect* output) {
+    if (!output || cursorWidth <= 0 || cursorHeight <= 0 || captureWidth <= 0 || captureHeight <= 0 ||
+        frameWidth <= 0 || frameHeight <= 0) {
+        return false;
+    }
+
+    const Rect screenRelative = {
+        screenX - hotspotX - captureLeft,
+        screenY - hotspotY - captureTop,
+        screenX - hotspotX - captureLeft + cursorWidth,
+        screenY - hotspotY - captureTop + cursorHeight,
+    };
+    return ScaleDestinationRect(screenRelative, frameWidth, frameHeight, captureWidth, captureHeight, output);
+}
+
 // Clips a scaled cursor destination to the output frame and derives the
 // corresponding source crop. Using floor for the leading edges and ceil for
 // the trailing edges preserves every source texel that contributes to the

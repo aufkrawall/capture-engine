@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-12 (native classic-D3D9 shared capture, GTA post-FSR DLSS-suspend proof lifetime, Streamline-wrapped FFX owner-queue routing, FG overlay transition/performance invariants, ordered process-loopback exit and route-local compensation, WGC startup-cadence determinism, capture-method/injection independence, HAGS-on capture contention hardening, strict true-10-bit DXGI/WGC capture, and capture reliability; see d3d9-capture.md, frame-generation/guardrails.md, multi-audio-capture.md, dx12-injection-bootstrap.md, performance-priority.md, wgc-capture.md, cfr-capture-sync.md, regression-testing-and-logging.md, and log/recent.md)
+Last cross-checked: 2026-07-14 (transactional CFR/audio startup, exact codec-decoded endpoints, disposable process-loopback lifecycle, native AAC NMR configuration, cursor/content timeline alignment, and mixed-DPI/SDR/HDR composition, plus the 2026-07-12 capture/overlay state; see multi-audio-capture.md, cfr-capture-sync.md, build.py.md, wgc-capture.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -37,7 +37,7 @@ Primary sources:
 - `codestyle.md`
   - Style/tooling rules, the no-whole-file-in-place-formatter constraint for existing sources, Python tooling config, and common tree conventions. Last verified 2026-07-12.
 - `build.py.md`
-  - Supported `build.py` flags, interactions, environment variables, operational notes, and MinGW cross-compile pitfalls (INITGUID/PKEY, `mediaengine/audio_capture.cpp`).
+  - Supported `build.py` flags, interactions, FFmpeg configuration/patch fingerprinting, NMR-safe codec flags, environment variables, operational notes, and MinGW cross-compile pitfalls. Last verified 2026-07-14.
 - `repo-map.md`
   - Top-level repo layout and subsystem ownership.
 - `d3d9-capture.md`
@@ -63,11 +63,11 @@ Primary sources:
 - `regression-testing-and-logging.md`
   - Regression coverage expectations and deterministic capture runners, including the fast zero-drift gate, overload/long-soak profiles, and HAGS-on 4K120 contention gate. Last verified 2026-07-12.
 - `multi-audio-capture.md`
-  - Multi system audio (`[Audio.N]`), multi microphone (`[Microphone.N]`), and app audio capture, including ordered process-loopback exit, route-local compensation, worker-owned WASAPI lifecycle/reactivation, bounded validated packet delivery, no-wait final drain, and audio-only stop-tail preservation. Last verified 2026-07-12. Stale-risk: medium (runtime device matrices remain necessary).
+  - Multi system/microphone/app capture, including generation-numbered reset/commit, ordered activation epochs, disposable process-loopback helper isolation, codec-specific finalization, completed-file decode authority, route-local compensation, and stop-tail preservation. Last verified 2026-07-14. Stale-risk: medium (real device/runtime validation remains necessary).
 - `wgc-capture.md`
-  - WGC and DXGI Desktop Duplication backends, including callback epochs, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and hardware-cursor-aware duplication. Last verified 2026-07-12. Stale-risk: medium.
+  - WGC and DXGI Desktop Duplication backends, including callback epochs, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and timeline/DPI/HDR-correct encoder cursor composition. Last verified 2026-07-14. Stale-risk: medium.
 - `cfr-capture-sync.md`
-  - Shared WGC/inject CFR and A/V invariants, including event-driven inject transport, combined CPU/GPU slot safety, starvation attribution, repeat recovery, and exact stop/tail accounting. Last verified 2026-07-12. Stale-risk: medium.
+  - Shared WGC/DXGI/inject CFR and A/V invariants, including transactional startup, 300 ms WGC/DXGI look-ahead, nearest monotonic source selection, causal inject transport, overload repeats, and exact decoded stop/tail accounting. Last verified 2026-07-14. Stale-risk: medium.
 - `performance-priority.md`
   - `[Performance]` priorities, adapter-aware HAGS auto resolution, D3D11 priority persistence/readback, capture/encoder MMCSS QoS, and D3D12 queue constraints. Last verified 2026-07-12. Stale-risk: medium.
 - `recording-output-paths.md`

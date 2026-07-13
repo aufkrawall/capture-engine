@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "../mediaengine/cursor_geometry.h"
+#include "../common/cursor_capture_state.h"
 
 namespace cg = ce::cursor_geometry;
 
@@ -70,4 +71,61 @@ TEST(CursorGeometryTest, RejectsEmptyOrFullyInvisibleGeometry) {
     EXPECT_FALSE(cg::ComputeClippedRects({-20, 10, -1, 20}, 32, 32, 100, 100, &result));
     EXPECT_FALSE(cg::ComputeClippedRects({0, 0, 20, 20}, 0, 32, 100, 100, &result));
     EXPECT_FALSE(cg::ComputeClippedRects({0, 0, 20, 20}, 32, 32, 100, 100, nullptr));
+}
+
+TEST(CursorGeometryTest, MapsNegativeMonitorOriginAndHotspotIntoFrame) {
+    cg::Rect result;
+    ASSERT_TRUE(cg::MapScreenCursorToFrame(-1860, 120, 8, 12, 48, 48, -1920, 0, 1920, 1080, 1920, 1080,
+                                           &result));
+
+    EXPECT_EQ(result.left, 52);
+    EXPECT_EQ(result.top, 108);
+    EXPECT_EQ(result.right, 100);
+    EXPECT_EQ(result.bottom, 156);
+}
+
+TEST(CursorGeometryTest, MapsWindowClientCoordinatesToScaledSwapChain) {
+    cg::Rect result;
+    ASSERT_TRUE(cg::MapScreenCursorToFrame(600, 350, 10, 10, 60, 60, 100, 50, 1000, 600, 2000, 1200, &result));
+
+    EXPECT_EQ(result.left, 980);
+    EXPECT_EQ(result.top, 580);
+    EXPECT_EQ(result.right, 1100);
+    EXPECT_EQ(result.bottom, 700);
+}
+
+TEST(CursorTimelineTest, SelectsNewestStateAtOrBeforeContentTime) {
+    ce::cursor::Timeline timeline(4);
+    ce::cursor::CaptureState first;
+    first.flags = ce::cursor::kStateValid;
+    first.associationQpc = 100;
+    first.screenX = 10;
+    ce::cursor::CaptureState second = first;
+    second.associationQpc = 200;
+    second.screenX = 20;
+
+    timeline.Publish(second);
+    timeline.Publish(first);
+
+    ce::cursor::CaptureState selected;
+    EXPECT_FALSE(timeline.SelectAtOrBefore(99, &selected));
+    ASSERT_TRUE(timeline.SelectAtOrBefore(150, &selected));
+    EXPECT_EQ(selected.screenX, 10);
+    ASSERT_TRUE(timeline.SelectAtOrBefore(200, &selected));
+    EXPECT_EQ(selected.screenX, 20);
+}
+
+TEST(CursorTimelineTest, DropsOldestSamplesAtCapacity) {
+    ce::cursor::Timeline timeline(2);
+    for (int64_t qpc : {100, 200, 300}) {
+        ce::cursor::CaptureState state;
+        state.flags = ce::cursor::kStateValid;
+        state.associationQpc = qpc;
+        timeline.Publish(state);
+    }
+
+    ce::cursor::CaptureState selected;
+    EXPECT_FALSE(timeline.SelectAtOrBefore(100, &selected));
+    ASSERT_TRUE(timeline.SelectAtOrBefore(250, &selected));
+    EXPECT_EQ(selected.associationQpc, 200);
 }

@@ -274,6 +274,7 @@ bool DxgiDuplicationSource::Start(DxgiDuplicationFrameSink sink) {
         return true;
     }
 
+    pointerUpdateQpc_.store(0, std::memory_order_release);
     sink_ = std::move(sink);
     shutdown_.store(false, std::memory_order_release);
     acquireTimeoutCount_.store(0, std::memory_order_relaxed);
@@ -461,6 +462,11 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
         // state (also pointer-only updates). This is the live hardware/software
         // cursor-plane detector and drives encoder-side cursor suppression.
         if (frameInfo.LastMouseUpdateTime.QuadPart != 0) {
+            pointerScreenX_.store(frameInfo.PointerPosition.Position.x + monitorRect_.left,
+                                  std::memory_order_relaxed);
+            pointerScreenY_.store(frameInfo.PointerPosition.Position.y + monitorRect_.top,
+                                  std::memory_order_relaxed);
+            pointerUpdateQpc_.store(frameInfo.LastMouseUpdateTime.QuadPart, std::memory_order_release);
             UpdatePointerState(frameInfo.PointerPosition.Visible != FALSE);
         }
 
