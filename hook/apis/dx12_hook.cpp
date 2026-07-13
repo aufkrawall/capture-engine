@@ -689,7 +689,7 @@ static ID3D12CommandQueue* g_PostSLLockedQueue = nullptr;
 // Tracks whether FSR FG was ever active during this session.
 // Once set, origGame is assumed corrupted (NVIDIA driver internal state broken
 // after FSR FG phase) and PostSL uses g_CommandQueue (SL's wrapper) instead.
-static bool g_HadFSRFGPhase = false;
+static std::atomic<bool> g_HadFSRFGPhase{false};
 
 bool HookHasFSRFGHistory() {
     return g_HadFSRFGPhase;
@@ -706,7 +706,7 @@ bool HookHasExplicitStreamlineSetOptionsActivation() {
 // offscreen compositing path (CopyTextureRegion + implicit state promotion)
 // avoids ALL explicit barriers on the backbuffer, making it safe regardless
 // of actual state.  Cleared on clean swapchain transition (non-FG).
-static bool g_NeedOffscreenOverlayAfterPostFSRNonFG = false;
+static std::atomic<bool> g_NeedOffscreenOverlayAfterPostFSRNonFG{false};
 
 // GPU drain: flush all in-flight GPU work before first overlay render after
 // FSR→DLSS transition.  SL's FG pipeline may have concurrent backbuffer
@@ -721,8 +721,8 @@ std::atomic<int> g_PostSLECLDiagCount{0};
 
 // Post-FSR graduated probe system: after FSR→DLSS transition, incrementally test
 // what rendering operations are safe before committing to full overlay render.
-static int g_PostFSRProbeLevel = 0;  // 0=scratch, 1=reserved, 2=offscreen-copy-only, 3=full allowed
-static int g_PostFSRProbeFrames = 0;
+static std::atomic<int> g_PostFSRProbeLevel{0};  // 0=scratch, 1=reserved, 2=offscreen-copy-only, 3=full allowed
+static std::atomic<int> g_PostFSRProbeFrames{0};
 static constexpr int kPostFSRProbeFramesPerLevel = 3;
 static bool g_PostFSRDescFreeRecreated = false;
 
@@ -777,7 +777,7 @@ static ID3D12CommandQueue* g_OriginalGameQueue = nullptr;
 // suppressed so that SL / FSR FG can finish initializing without interference.
 // Set by ProcessFrame's FG transition detection; checked by swapchain-change
 // invalidation to prevent premature overlay reinit during FG mode switches.
-static int g_FGTransitionCooldown = 0;
+static std::atomic<int> g_FGTransitionCooldown{0};
 
 // Counts frames since FG was last active.  When a game switches FG modes
 // (e.g., FSR FG → DLSS FG), FG heuristics may go inactive for many frames
@@ -2764,7 +2764,7 @@ static void FillFGSessionLegacyStateView(ce::fg_session::DX12LegacyStateView* ou
         DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire);
     view.postSLActiveButUnconfirmed = HookIsPostSLOverlayActiveButUnconfirmed();
     view.postSLStableFrameCount = g_PostSLStableFrameCount.load(std::memory_order_acquire);
-    view.fgTransitionCooldown = g_FGTransitionCooldown;
+    view.fgTransitionCooldown = g_FGTransitionCooldown.load(std::memory_order_acquire);
     view.observerOnly = HookOverlayObserverOnlyEnabled();
     view.observerPolicyOnly = HookOverlayObserverPolicyOnlyEnabled();
     view.observerStartupPresentOnly = HookOverlayObserverStartupPresentOnlyEnabled();
@@ -9719,20 +9719,20 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
             const int cooldownFrames =
                 confirmedPostSLSuspensionImmediateReinit ? 0 : (useShortPostFSRCooldown ? 15 : 60);
             g_FGTransitionCooldown = ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(
-                g_FGTransitionCooldown, cooldownFrames,
+                g_FGTransitionCooldown.load(std::memory_order_acquire), cooldownFrames,
                 confirmedPostSLSuspensionImmediateReinit || useShortPostFSRCooldown);
-            g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+            g_PostSLCooldownRemaining.store(g_FGTransitionCooldown.load(std::memory_order_acquire), std::memory_order_release);
             g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
             if (confirmedPostSLSuspensionImmediateReinit) {
                 HookLogImportant(
                     "DX12: Streamline FG OFF after FSR history — confirmed-PostSL suspension (proxy stays live, "
                     "keep-alive armed), immediate warm overlay reinit instead of 60-frame blank (cooldown=%d)",
-                    g_FGTransitionCooldown);
+                    g_FGTransitionCooldown.load(std::memory_order_acquire));
             } else {
                 HookLogImportant(
                     "DX12: Streamline FG OFF after FSR history — deferring non-FG overlay reinit for %d frames so "
                     "Talos/Streamline teardown can settle before pre-SL resources are rebuilt",
-                    g_FGTransitionCooldown);
+                    g_FGTransitionCooldown.load(std::memory_order_acquire));
             }
             HookLogImportant(
                 "DX12: Streamline FG OFF after FSR history — invalidated sync resources for delayed reinit");
@@ -11109,7 +11109,7 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         "lastWorkingQ=%p, slFG=%d, fgCooldown=%d)",
         queueForBackend, g_OriginalGameQueue, g_PrimaryGameQueue.load(std::memory_order_acquire), g_SwapchainQueue,
         (void*)g_CommandQueue.load(), g_PostSLLastWorkingQueue,
-        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0, g_FGTransitionCooldown);
+        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0, g_FGTransitionCooldown.load(std::memory_order_acquire));
 
     const bool preserveAcrossResize = g_PreserveOverlayAdapterAcrossResize.exchange(false, std::memory_order_acq_rel);
     // Warm reuse is device+format scoped: the backend never uses its bound
@@ -12807,8 +12807,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         // Reset ECL diagnostic counter for fresh diagnostics after transition
         g_PostSLECLDiagCount.store(0, std::memory_order_relaxed);
         // Reset post-FSR probe state for fresh graduated probing
-        g_PostFSRProbeLevel = 0;
-        g_PostFSRProbeFrames = 0;
+        g_PostFSRProbeLevel.store(0, std::memory_order_release);
+        g_PostFSRProbeFrames.store(0, std::memory_order_release);
         g_PostFSRDescFreeRecreated = false;
     }
     s_wasActive = active;
@@ -13668,14 +13668,14 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // and draw the overlay directly on this first reactivation present. The slower graduated probe is
     // retained for the unproven / off-swapchain-queue fragile paths (fastPostFSRDLSSProbe=false there).
     if (ce::dx12_overlay_policy::ShouldRenderOverlayDirectlyOnFirstPostFSRDLSSReactivation(fastPostFSRDLSSProbe,
-                                                                                           g_PostFSRProbeLevel)) {
+                                                                                           g_PostFSRProbeLevel.load(std::memory_order_acquire))) {
         HookLogImportant(
             "DX12: PostSL post-FSR fast bootstrap — rendering overlay directly on first reactivation present "
             "(skipping redundant scratch-barrier probe; render's own pre/post devRemoved check is the health "
             "proof) queue=%p scQueue=%p epoch=%d",
             queue, scQueue, s_reactivationEpoch);
-        g_PostFSRProbeLevel = 3;
-        g_PostFSRProbeFrames = 0;
+        g_PostFSRProbeLevel.store(3, std::memory_order_release);
+        g_PostFSRProbeFrames.store(0, std::memory_order_release);
     }
 
     // --- Post-FSR graduated probing ---
@@ -13683,7 +13683,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // Level 1: Reserved for future backbuffer-specific probes
     // Level 2: Offscreen copy-only pass (touch swapchain only via copy ops)
     // Level 3+: Full offscreen composite/render is allowed
-    bool isPostFSRProbe = g_HadFSRFGPhase && g_PostFSRProbeLevel < 3;
+    bool isPostFSRProbe = g_HadFSRFGPhase && g_PostFSRProbeLevel.load(std::memory_order_acquire) < 3;
 
     // For post-FSR rendering, use SL's wrapper queue captured from ECL detour.
     // origGame's driver-internal state tracking for FSR-created swapchain backbuffers is
@@ -13733,7 +13733,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
     if (isPostFSRProbe) {
         // Log comprehensive diagnostics on first probe frame
-        if (g_PostFSRProbeFrames == 0 && g_PostFSRProbeLevel == 0) {
+        if (g_PostFSRProbeFrames.load(std::memory_order_acquire) == 0 && g_PostFSRProbeLevel.load(std::memory_order_acquire) == 0) {
             D3D12_RESOURCE_DESC bbDesc = bb->GetDesc();
             HookLogImportant("DX12: PostSL post-FSR DIAG: pSwapChain=%p bb=%p bufIdx=%u bbW=%u bbH=%u", pSwapChain, bb,
                              bufIdx, (unsigned)bbDesc.Width, bbDesc.Height);
@@ -13747,11 +13747,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                                                                                    realQ != nullptr);
         const bool bootstrapRealQueueCaptureViaWrapperProbe =
             ce::dx12_overlay_policy::ShouldBootstrapPostSLRealQueueCaptureViaWrapperProbeAfterFSR(
-                g_HadFSRFGPhase, cachedSLFGActive, g_PostFSRProbeLevel, realQ != nullptr, slWrapperQueue != nullptr,
+                g_HadFSRFGPhase, cachedSLFGActive, g_PostFSRProbeLevel.load(std::memory_order_acquire), realQ != nullptr, slWrapperQueue != nullptr,
                 hasSelectedQueueSubmitPath, isSLWrapperQ);
-        if (preferRealQueueBehindWrapperAfterFSR && g_PostFSRProbeLevel >= 2) {
-            g_PostFSRProbeLevel = 3;
-            g_PostFSRProbeFrames = 0;
+        if (preferRealQueueBehindWrapperAfterFSR && g_PostFSRProbeLevel.load(std::memory_order_acquire) >= 2) {
+            g_PostFSRProbeLevel.store(3, std::memory_order_release);
+            g_PostFSRProbeFrames.store(0, std::memory_order_release);
             HookLogImportant(
                 "DX12: PostSL post-FSR switching to direct real queue behind wrapper %p — skipping level 2 probe",
                 realQ);
@@ -13766,11 +13766,11 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
         ID3D12CommandQueue* probeQueue =
             bootstrapRealQueueCaptureViaWrapperProbe
                 ? queue
-                : ((g_PostFSRProbeLevel >= 1 && slWrapperQueue && !preferSelectedSwapchainQueueSubmitAfterFSR)
+                : ((g_PostFSRProbeLevel.load(std::memory_order_acquire) >= 1 && slWrapperQueue && !preferSelectedSwapchainQueueSubmitAfterFSR)
                        ? slWrapperQueue
                        : queue);
 
-        if (g_PostFSRProbeLevel == 0) {
+        if (g_PostFSRProbeLevel.load(std::memory_order_acquire) == 0) {
             // Probe 0: Scratch resource barrier on origGame — confirms queue works.
             D3D12_HEAP_PROPERTIES heapProps = {};
             heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -13802,7 +13802,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 list->ResourceBarrier(2, barriers);
                 scratch->Release();
             }
-        } else if (g_PostFSRProbeLevel == 1) {
+        } else if (g_PostFSRProbeLevel.load(std::memory_order_acquire) >= 1) {
             // Probe 1: PRESENT→RT→PRESENT on backbuffer via SL's wrapper queue.
             // SL's ECL interception dispatches to its internal queue which has correct
             // resource state tracking for the swapchain backbuffers.
@@ -13819,7 +13819,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
             list->ResourceBarrier(2, barriers);
         } else if (ce::dx12_overlay_policy::ShouldUsePostSLOffscreenCopyOnlyProbeAfterFSR(
-                       g_HadFSRFGPhase, g_PostFSRProbeLevel, usePostSLOffscreenComposite,
+                       g_HadFSRFGPhase, g_PostFSRProbeLevel.load(std::memory_order_acquire), usePostSLOffscreenComposite,
                        selectedQueueIsSwapchainQueue)) {
             if (!EnsureOffscreenRT(dev, g_State.cachedWidth, g_State.cachedHeight, g_State.format)) {
                 HookLogImportant(
@@ -13894,7 +13894,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 bbToPresent.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
                 list->ResourceBarrier(1, &bbToPresent);
             }
-        } else if (g_PostFSRProbeLevel == 2) {
+        } else if (g_PostFSRProbeLevel.load(std::memory_order_acquire) >= 2) {
             probeHandled = false;
         }
 
@@ -13937,21 +13937,21 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             }
 
             HRESULT probeHr = dev->GetDeviceRemovedReason();
-            g_PostFSRProbeFrames++;
+            g_PostFSRProbeFrames.fetch_add(1, std::memory_order_acq_rel);
             const char* probeNames[] = {"scratch-barrier", "SLwrapper-bb-barrier", "offscreen-copy-only"};
-            const char* probeName = g_PostFSRProbeLevel < 3 ? probeNames[g_PostFSRProbeLevel] : "unknown";
+            const char* probeName = g_PostFSRProbeLevel.load(std::memory_order_acquire) < 3 ? probeNames[g_PostFSRProbeLevel.load(std::memory_order_acquire)] : "unknown";
             HookLogImportant(
                 "DX12: PostSL post-FSR PROBE level=%d (%s) frame=%d/%d queue=%p devRemoved=0x%08X %s (fast=%d)",
-                g_PostFSRProbeLevel, probeName, g_PostFSRProbeFrames, postFSRProbeFramesPerLevel, probeQueue, probeHr,
+                g_PostFSRProbeLevel.load(std::memory_order_acquire), probeName, g_PostFSRProbeFrames.load(std::memory_order_acquire), postFSRProbeFramesPerLevel, probeQueue, probeHr,
                 FAILED(probeHr) ? "FAILED" : "OK", fastPostFSRDLSSProbe ? 1 : 0);
 
             if (FAILED(probeHr)) {
                 // DEVICE_REMOVED from BB barrier is FATAL — skip to barrier-free.
                 // Scratch barrier failures are non-fatal (queue just isn't ready).
-                int skipTo = (g_PostFSRProbeLevel >= 1) ? 2 : g_PostFSRProbeLevel + 1;
-                g_PostFSRProbeLevel = skipTo;
-                g_PostFSRProbeFrames = 0;
-                HookLogImportant("DX12: PostSL post-FSR probe FAILED, advancing to level %d", g_PostFSRProbeLevel);
+                int skipTo = (g_PostFSRProbeLevel.load(std::memory_order_acquire) >= 1) ? 2 : g_PostFSRProbeLevel.load(std::memory_order_acquire) + 1;
+                g_PostFSRProbeLevel.store(static_cast<int>(skipTo), std::memory_order_release);
+                g_PostFSRProbeFrames.store(0, std::memory_order_release);
+                HookLogImportant("DX12: PostSL post-FSR probe FAILED, advancing to level %d", g_PostFSRProbeLevel.load(std::memory_order_acquire));
                 bb->Release();
                 return;
             }
@@ -13962,13 +13962,13 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
                 // swapchain's resource state. Level 2 only validates copy traffic on
                 // the swapchain timeline before any real overlay rendering is attempted.
                 int nextLevel =
-                    (g_PostFSRProbeLevel == 0) ? (selectedQueueIsSwapchainQueue ? 3 : 2) : g_PostFSRProbeLevel + 1;
-                g_PostFSRProbeLevel = nextLevel;
-                g_PostFSRProbeFrames = 0;
+                    (g_PostFSRProbeLevel.load(std::memory_order_acquire) == 0) ? (selectedQueueIsSwapchainQueue ? 3 : 2) : g_PostFSRProbeLevel.load(std::memory_order_acquire) + 1;
+                g_PostFSRProbeLevel.store(static_cast<int>(nextLevel), std::memory_order_release);
+                g_PostFSRProbeFrames.store(0, std::memory_order_release);
                 HookLogImportant(
                     "DX12: PostSL post-FSR probe PASSED, advancing to level %d (selectedScQueue=%d skipped BB barrier "
                     "probe)",
-                    g_PostFSRProbeLevel, selectedQueueIsSwapchainQueue ? 1 : 0);
+                    g_PostFSRProbeLevel.load(std::memory_order_acquire), selectedQueueIsSwapchainQueue ? 1 : 0);
             }
             bb->Release();
             return;
@@ -15902,7 +15902,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 HookLogImportant(
                     "DX12: PostFGOff-PF #%d (overlayInit=%d syncInit=%d cooldown=%d "
                     "slFG=%d fgActive=%d devRemoved=0x%08X tid=0x%04X)",
-                    pfCount + 1, g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0, g_FGTransitionCooldown,
+                    pfCount + 1, g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0, g_FGTransitionCooldown.load(std::memory_order_acquire),
                     slFGNow ? 1 : 0, g_FGCompat.IsFGActive() ? 1 : 0, (unsigned)pfDevHr, GetCurrentThreadId());
             }
             // Immediately abort overlay rendering if device was removed
@@ -16207,7 +16207,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         g_LastSwapChain, pSwapChain, postSLStableFramesForSwapchainChange,
                         confirmedPostSLBackendWarmupProtected ? 1 : 0, g_HadFSRFGPhase ? 1 : 0,
                         g_FGRuntimeOwnsSwapchain ? 1 : 0, preserveSwapchainQueue, preserveOriginalGameQueue,
-                        preserveCommandQueue, g_FGTransitionCooldown, logCount + 1);
+                        preserveCommandQueue, g_FGTransitionCooldown.load(std::memory_order_acquire), logCount + 1);
                 }
             } else if (deferredFreshStreamlineNoFGSwapchainCleanup) {
                 static std::atomic<int> s_deferredFreshSLNoFGSwapchainCleanupLogCount{0};
@@ -16330,8 +16330,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     // and its queue was captured at creation. Either way, rebuild
                     // the overlay immediately instead of blanking it for the
                     // generic transition cooldown.
-                    const int previousCooldown = g_FGTransitionCooldown;
-                    g_FGTransitionCooldown = 0;
+                    const int previousCooldown = g_FGTransitionCooldown.load(std::memory_order_acquire);
+                    g_FGTransitionCooldown.store(0, std::memory_order_release);
                     g_PostSLCooldownRemaining.store(0, std::memory_order_release);
                     g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
                     g_PostSLOverlayActive.store(false, std::memory_order_release);
@@ -16365,10 +16365,10 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                             DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
                     }
                     g_FGTransitionCooldown = ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(
-                        g_FGTransitionCooldown, cooldownFrames,
+                        g_FGTransitionCooldown.load(std::memory_order_acquire), cooldownFrames,
                         ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(
                             commandQueueSettledToPrimary, g_HadFSRFGPhase, slOffSwapchainGrace > 0));
-                    g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+                    g_PostSLCooldownRemaining.store(g_FGTransitionCooldown.load(std::memory_order_acquire), std::memory_order_release);
                     g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
                     g_PostSLOverlayActive.store(false, std::memory_order_release);
                     g_PostSLConfirmedRendering.store(false, std::memory_order_release);
@@ -16381,7 +16381,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         "(fgActive=%d, fgRecentFrames=%d, slSignal=%d, prevCooldown=%d, slOffGrace=%d, "
                         "fgOwned=%d, scQueue=%p, origGame=%p cmdQ=%p primaryQ=%p)",
                         cooldownFrames, fgCurrentlyActive ? 1 : 0, g_FramesSinceFGActive,
-                        DXGIShared::g_StreamlineFGRunning.load() ? 1 : 0, g_FGTransitionCooldown, slOffSwapchainGrace,
+                        DXGIShared::g_StreamlineFGRunning.load() ? 1 : 0, g_FGTransitionCooldown.load(std::memory_order_acquire), slOffSwapchainGrace,
                         g_FGRuntimeOwnsSwapchain ? 1 : 0, currentSwapchainQueue, currentOriginalGameQueue,
                         currentCommandQueue, currentPrimaryQueue);
                 } else {
@@ -17067,14 +17067,14 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 HookLogImportant(
                     "DX12: Bypassing FG transition reinit cooldown for protected official FFX overlay-only path "
                     "(oldCooldown=%d queue=%p sc=%p log=%d)",
-                    g_FGTransitionCooldown, gameQueue, pSwapChain, logCount + 1);
+                    g_FGTransitionCooldown.load(std::memory_order_acquire), gameQueue, pSwapChain, logCount + 1);
             }
-            g_FGTransitionCooldown = 0;
+            g_FGTransitionCooldown.store(0, std::memory_order_release);
             g_PostSLCooldownRemaining.store(0, std::memory_order_release);
             g_PostSLOverlayActive.store(false, std::memory_order_release);
         }
         if (g_FGTransitionCooldown > 0) {
-            --g_FGTransitionCooldown;
+            g_FGTransitionCooldown.fetch_sub(1, std::memory_order_acq_rel);
             const bool streamlineFGRunningDuringReinitCooldown =
                 DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
             const bool startupActivationPendingDuringReinitCooldown =
@@ -17101,7 +17101,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 // authoritative Streamline swapchain.
                 g_PostSLCooldownRemaining.store(0, std::memory_order_release);
             } else {
-                g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+                g_PostSLCooldownRemaining.store(g_FGTransitionCooldown.load(std::memory_order_acquire), std::memory_order_release);
             }
             static std::atomic<int> s_fgCooldownReinitBlockLogCount{0};
             int logCount = s_fgCooldownReinitBlockLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -17111,7 +17111,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 HookLogImportant(
                     "DX12: Deferring overlay reinit during FG transition cooldown (%d frames remaining, "
                     "preserveHalfArmedPostSL=%d postSLCooldown=%d)",
-                    g_FGTransitionCooldown, preserveSyntheticStartupStateDuringReinitCooldown ? 1 : 0,
+                    g_FGTransitionCooldown.load(std::memory_order_acquire), preserveSyntheticStartupStateDuringReinitCooldown ? 1 : 0,
                     g_PostSLCooldownRemaining.load(std::memory_order_relaxed));
             }
             if (g_FGTransitionCooldown == 0) {
@@ -17354,7 +17354,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                      g_SwapchainQueue == g_OriginalGameQueue)
                         ? 1
                         : 0,
-                    EvaluateProgressResolvedOfficialFFXOverlayFallbackProof().proof ? 1 : 0, g_FGTransitionCooldown,
+                    EvaluateProgressResolvedOfficialFFXOverlayFallbackProof().proof ? 1 : 0, g_FGTransitionCooldown.load(std::memory_order_acquire),
                     g_State.overlayInit ? 1 : 0, g_State.syncInit ? 1 : 0, g_SwapchainQueue, g_OriginalGameQueue,
                     g_CommandQueue.load(std::memory_order_acquire));
             }
@@ -17510,7 +17510,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     // resources only), NEITHER path runs — the cooldown stays forever, permanently
     // blocking staged activation and overlay rendering.
     if (g_State.overlayInit && !g_State.syncInit && g_FGTransitionCooldown > 0) {
-        --g_FGTransitionCooldown;
+        g_FGTransitionCooldown.fetch_sub(1, std::memory_order_acq_rel);
         const bool preserveActivePostSLDuringSynclessCooldown =
             ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(
                 DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
@@ -17518,11 +17518,11 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         if (!preserveActivePostSLDuringSynclessCooldown) {
             g_PostSLOverlayActive.store(false, std::memory_order_release);
         }
-        g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+        g_PostSLCooldownRemaining.store(g_FGTransitionCooldown.load(std::memory_order_acquire), std::memory_order_release);
         static std::atomic<int> s_synclessCooldownLogCount{0};
         int logCount = s_synclessCooldownLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || g_FGTransitionCooldown == 0) {
-            HookLogImportant("DX12: FG cooldown (sync-invalidated path): %d frames remaining", g_FGTransitionCooldown);
+            HookLogImportant("DX12: FG cooldown (sync-invalidated path): %d frames remaining", g_FGTransitionCooldown.load(std::memory_order_acquire));
         }
         if (g_FGTransitionCooldown == 0) {
             s_synclessCooldownLogCount.store(0, std::memory_order_relaxed);
@@ -18126,7 +18126,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             } else if (bypassPureStreamlineOffCooldown || bypassConfirmedPostSLSuspensionCooldown ||
                        keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover ||
                        reinitFreshOverlayForDormantProtectedFFXMenu) {
-                g_FGTransitionCooldown = 0;
+                g_FGTransitionCooldown.store(0, std::memory_order_release);
                 g_PostSLCooldownRemaining.store(0, std::memory_order_release);
                 HookLogImportant(
                     "DX12: [outer] %s — bypassing generic reinit cooldown "
@@ -18139,8 +18139,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                            : "confirmed-PostSL DLSS-FG suspension (proxy stays live)"),
                     g_SwapchainQueue, g_OriginalGameQueue, (unsigned)transitionDeviceHr);
             } else {
-                g_FGTransitionCooldown = std::max(g_FGTransitionCooldown, 60);
-                g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+                g_FGTransitionCooldown = std::max(g_FGTransitionCooldown.load(std::memory_order_acquire), 60);
+                g_PostSLCooldownRemaining.store(g_FGTransitionCooldown.load(std::memory_order_acquire), std::memory_order_release);
             }
 
             // Reset PostSL state for fresh start after transition.
@@ -18314,7 +18314,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             // Only decrement here when the inner block won't run.
             // The inner block (inside allowOverlayRender gate) has its own
             // countdown logic.  Avoid double-decrementing.
-            --g_FGTransitionCooldown;
+            g_FGTransitionCooldown.fetch_sub(1, std::memory_order_acq_rel);
             const bool preserveActivePostSLDuringBlockedCooldown =
                 ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(
                     outerSLFGRunning, g_PostSLConfirmedRendering.load(std::memory_order_acquire),
@@ -18322,7 +18322,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             if (!preserveActivePostSLDuringBlockedCooldown) {
                 g_PostSLOverlayActive.store(false, std::memory_order_release);
             }
-            g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+            g_PostSLCooldownRemaining.store(g_FGTransitionCooldown.load(std::memory_order_acquire), std::memory_order_release);
             if (g_FGTransitionCooldown == 0) {
                 HookLogImportant("DX12: [outer] FG transition cooldown complete (slFG=%d)", outerSLFGRunning ? 1 : 0);
                 if (outerSLFGRunning) {
@@ -18632,11 +18632,11 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 s_lastRuntimeMode = currentRuntimeMode;
                 s_lastSLFGRunning = currentSLFGRunning;
                 g_FGTransitionCooldown = ce::dx12_overlay_policy::ResolveTransitionCooldownFrames(
-                    g_FGTransitionCooldown, transitionCooldownFrames,
+                    g_FGTransitionCooldown.load(std::memory_order_acquire), transitionCooldownFrames,
                     ce::dx12_overlay_policy::ShouldUseShortPostFSRInactiveCooldown(
                         commandQueueSettledToPrimary, g_HadFSRFGPhase,
                         previousWasFG && targetIsFGOff && !currentSLFGRunning));
-                g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+                g_PostSLCooldownRemaining.store(g_FGTransitionCooldown.load(std::memory_order_acquire), std::memory_order_release);
                 g_ProbeRealD3D12ECLDeferred.store(true, std::memory_order_release);
 
                 // Immediately disable post-SL rendering during FG transitions.
@@ -18876,13 +18876,13 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                 ClearExplicitNativeFSROffPendingRuntimeOwnedTeardown();
                                 const bool preserveAuthoritativeFSRDuringTransition =
                                     ce::dx12_overlay_policy::ShouldPreserveAuthoritativeFSRDuringTransitionCooldown(
-                                        g_FGCompat.IsFSRFGApiActive(), targetIsNone, g_FGTransitionCooldown);
+                                        g_FGCompat.IsFSRFGApiActive(), targetIsNone, g_FGTransitionCooldown.load(std::memory_order_acquire));
                                 if (preserveAuthoritativeFSRDuringTransition) {
                                     HookLogImportant(
                                         "DX12: FG→off after FSR phase detected during active transition cooldown — "
                                         "preserving authoritative FSR state until queue topology settles (cooldown=%d "
                                         "scQ=%p origGame=%p primary=%p cmdQ=%p)",
-                                        g_FGTransitionCooldown, g_SwapchainQueue, g_OriginalGameQueue,
+                                        g_FGTransitionCooldown.load(std::memory_order_acquire), g_SwapchainQueue, g_OriginalGameQueue,
                                         g_PrimaryGameQueue.load(std::memory_order_acquire),
                                         g_CommandQueue.load(std::memory_order_acquire));
                                 } else if (g_FGCompat.IsFSRFGApiActive()) {
@@ -19000,9 +19000,9 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     HookLogImportant(
                         "DX12: Bypassing FG transition draw cooldown for protected official FFX overlay-only path "
                         "(oldCooldown=%d queue=%p sc=%p log=%d)",
-                        g_FGTransitionCooldown, gameQueue, pSwapChain, logCount + 1);
+                        g_FGTransitionCooldown.load(std::memory_order_acquire), gameQueue, pSwapChain, logCount + 1);
                 }
-                g_FGTransitionCooldown = 0;
+                g_FGTransitionCooldown.store(0, std::memory_order_release);
                 g_PostSLCooldownRemaining.store(0, std::memory_order_release);
                 g_PostSLOverlayActive.store(false, std::memory_order_release);
             } else if (keepDrawingLiveOverlayThroughCooldown) {
@@ -19012,7 +19012,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     HookLogImportant(
                         "DX12: Keeping live overlay drawing through FG transition cooldown — no blank "
                         "(oldCooldown=%d queue=%p scQueue=%p fsrApi=%d noCallback=%d log=%d)",
-                        g_FGTransitionCooldown, gameQueue, transitionSwapchainQueue,
+                        g_FGTransitionCooldown.load(std::memory_order_acquire), gameQueue, transitionSwapchainQueue,
                         g_FGCompat.IsFSRFGApiActive() ? 1 : 0,
                         g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire) ? 1 : 0, logCount + 1);
                 }
@@ -19020,7 +19020,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 // already ran in the arming block; only the multi-frame draw
                 // suppression is removed. PostSL is not the transport here, so
                 // leave its state untouched.
-                g_FGTransitionCooldown = 0;
+                g_FGTransitionCooldown.store(0, std::memory_order_release);
                 // A stale scene-transition cooldown (e.g. armed during the prior FSR
                 // phase) must never blank the live overlay C1 just decided to keep
                 // drawing — clearing it here is the safety net for the phantom-arming
@@ -19033,7 +19033,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 }
                 NoteDX12OverlayCoverageGate("live-overlay-kept-drawing");
             } else {
-                --g_FGTransitionCooldown;
+                g_FGTransitionCooldown.fetch_sub(1, std::memory_order_acq_rel);
                 const bool preserveActivePostSLDuringCooldown =
                     ce::dx12_overlay_policy::ShouldPreserveActivePostSLDuringFGCooldown(
                         currentSLFGRunning, g_PostSLConfirmedRendering.load(std::memory_order_acquire),
@@ -19051,7 +19051,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         HookLogImportant(
                             "DX12: FG cooldown preserving active PostSL path "
                             "(remaining=%d slSignal=%d confirmed=%d unconfirmed=%d)",
-                            g_FGTransitionCooldown, currentSLFGRunning ? 1 : 0,
+                            g_FGTransitionCooldown.load(std::memory_order_acquire), currentSLFGRunning ? 1 : 0,
                             g_PostSLConfirmedRendering.load(std::memory_order_relaxed) ? 1 : 0,
                             HookIsPostSLOverlayActiveButUnconfirmed() ? 1 : 0);
                     }
@@ -19059,7 +19059,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 } else {
                     // During cooldown, suppress BOTH pre-SL and post-SL rendering.
                     g_PostSLOverlayActive.store(false, std::memory_order_release);
-                    g_PostSLCooldownRemaining.store(g_FGTransitionCooldown, std::memory_order_release);
+                    g_PostSLCooldownRemaining.store(g_FGTransitionCooldown.load(std::memory_order_acquire), std::memory_order_release);
                 }
 
                 // Periodic device-removed check during cooldown to pinpoint
@@ -19071,7 +19071,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         if (FAILED(cooldownDevHr)) {
                             HookLogImportant(
                                 "DX12: DEVICE REMOVED DURING COOLDOWN (cooldown=%d devRemoved=0x%08X tid=0x%04X)",
-                                g_FGTransitionCooldown, (unsigned)cooldownDevHr, GetCurrentThreadId());
+                                g_FGTransitionCooldown.load(std::memory_order_acquire), (unsigned)cooldownDevHr, GetCurrentThreadId());
                         }
                     }
                 }
@@ -19384,7 +19384,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                     "cooldown=%d sceneCool=%d postSLCallback=%d postSLActive=%d skip=%d stallCount=%d stableFrames=%d "
                     "runtime=%s",
                     s_routingFrameCount, currentFGActive ? 1 : 0, slFGActive ? 1 : 0, currentSLFGRunning ? 1 : 0,
-                    g_FGTransitionCooldown, g_SceneTransitionCooldown.load(std::memory_order_relaxed),
+                    g_FGTransitionCooldown.load(std::memory_order_acquire), g_SceneTransitionCooldown.load(std::memory_order_relaxed),
                     DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_relaxed) != nullptr ? 1 : 0,
                     g_PostSLOverlayActive.load(std::memory_order_relaxed) ? 1 : 0, skipOverlayDraw ? 1 : 0,
                     g_PostSLStallCounter.load(std::memory_order_relaxed),
@@ -20606,7 +20606,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                         {
                                             static int s_postTransitionFrames = 0;
                                             static int s_lastTransitionCooldown = -1;
-                                            int curCooldown = g_FGTransitionCooldown;
+                                            int curCooldown = g_FGTransitionCooldown.load(std::memory_order_acquire);
                                             if (curCooldown > 0 && s_lastTransitionCooldown <= 0)
                                                 s_postTransitionFrames = 0;  // new transition started
                                             if (curCooldown <= 0 && s_lastTransitionCooldown > 0)
