@@ -216,7 +216,8 @@ public:
         // Fence handle: check ownership flag (KMT handles from GetSharedHandle
         // must not be CloseHandle'd). Use acq_rel for consistency with textures.
         HANDLE h = sharedFenceHandle.exchange(NULL, std::memory_order_acq_rel);
-        if (h && sharedFenceHandleOwned) {
+        const bool fenceOwned = sharedFenceHandleOwned.exchange(false, std::memory_order_acq_rel);
+        if (h && fenceOwned) {
             CloseHandle(h);
         }
     }
