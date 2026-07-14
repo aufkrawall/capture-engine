@@ -4122,13 +4122,10 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
 // EncodeFrameD3D11: Direct D3D11 texture encoding for framegrab
 // mode Zero-copy path - texture is converted RGB/BGRA -> NV12/P010 directly on GPU
-bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, uint32_t frameWidth,
-                                    uint32_t frameHeight, bool isHDR, int32_t captureLeft, int32_t captureTop,
-                                    bool useExplicitCfrTimeline) {
+bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t frameWidth, uint32_t frameHeight,
+                                     bool isHDR) {
     if (!recordingRequested)
         return false;
-
-    inputFrameCount++;
 
     ReleaseInjectDeviceStateForScreenGrab();
 
@@ -4218,6 +4215,21 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             return false;
         }
         fileOpened = true;
+    }
+
+    return true;
+}
+
+bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, uint32_t frameWidth,
+                                    uint32_t frameHeight, bool isHDR, int32_t captureLeft, int32_t captureTop,
+                                    bool useExplicitCfrTimeline) {
+    if (!recordingRequested)
+        return false;
+
+    inputFrameCount++;
+
+    if (!PrepareFrameD3D11(bgraTexture, frameWidth, frameHeight, isHDR)) {
+        return false;
     }
 
     // Detect new recording start and reset counters (using class members)

@@ -53,6 +53,10 @@ public:
     bool RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimeline = false);
 
     // Encode a D3D11 texture directly (framegrab mode - zero copy)
+    // Prepare the deferred D3D11 encoder/mux path without assigning a CFR slot
+    // or committing the first video/audio timeline anchor.
+    bool PrepareFrameD3D11(ID3D11Texture2D* texture, uint32_t frameWidth, uint32_t frameHeight, bool isHDR);
+
     bool EncodeFrameD3D11(ID3D11Texture2D* texture, int64_t pts, uint32_t frameWidth, uint32_t frameHeight, bool isHDR,
                           int32_t captureLeft, int32_t captureTop, bool useExplicitCfrTimeline = false);
 

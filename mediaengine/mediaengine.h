@@ -64,6 +64,10 @@ MEDIAENGINE_API bool MediaEngine_CanRepeatLastFrame();
 // caches after a capture source/epoch transition.
 MEDIAENGINE_API void MediaEngine_ResetRepeatFrameCache();
 
+// Pre-open the WGC/DXGI D3D11 video encoder and mux path without consuming a
+// frame or committing frame zero. The caller retains ownership of texture.
+MEDIAENGINE_API bool MediaEngine_PrepareFrameD3D11(void* texture, uint32_t width, uint32_t height, bool isHDR);
+
 // Process a frame from D3D11 texture directly (framegrab mode - zero copy)
 // texture: D3D11 texture in RGB/BGRA/FP16 format (caller retains ownership)
 // timestamp: Source frame timestamp in QPC ticks

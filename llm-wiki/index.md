@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-14 (transactional CFR/audio startup, exact codec-decoded endpoints, disposable process-loopback lifecycle, native AAC NMR configuration, cursor/content timeline alignment, and mixed-DPI/SDR/HDR composition, plus the 2026-07-12 capture/overlay state; see multi-audio-capture.md, cfr-capture-sync.md, build.py.md, wgc-capture.md, and log/recent.md)
+Last cross-checked: 2026-07-14 (transactional WGC/DXGI encoder prewarm and delayed-debt pruning, multi-process app-audio tree-root selection, exact codec-decoded endpoints, disposable process-loopback lifecycle, native AAC NMR configuration, cursor/content timeline alignment, and mixed-DPI/SDR/HDR composition, plus the 2026-07-12 capture/overlay state; see multi-audio-capture.md, cfr-capture-sync.md, build.py.md, wgc-capture.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`

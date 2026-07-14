@@ -30,6 +30,11 @@ LOG_PATTERNS = {
     "audio_worker_start": re.compile(r"\[AppAudioWorker\] Started generation="),
     "audio_worker_exit": re.compile(r"\[AppAudioWorker\] Exit generation="),
     "audio_worker_overrun": re.compile(r"\[AppAudioWorker\].*(?:overrun=[1-9]|Overrun=[1-9])"),
+    "audio_app_process_tree_selected": re.compile(r"\[AppAudioCapture\] Process-name tree resolution"),
+    "audio_app_active_no_data": re.compile(
+        r"\[AppAudioCapture\] WARNING: process-loopback stream is active but has delivered no data packets"
+    ),
+    "audio_app_stop_active_no_data": re.compile(r"\[STOP AUDIO\] Source \d+ \(app-active-no-data\)"),
     "cfr_finalization_lattice": re.compile(r"\[FinalizationLattice\] CFR endpoint contract"),
     "cfr_finalization_lattice_error": re.compile(r"\[FinalizationLattice\] ERROR"),
     "audio_latency_cap": re.compile(r"\[PullAudio\] Audio latency cap:"),
@@ -76,6 +81,13 @@ LOG_PATTERNS = {
     "wgc_fresh_catchup": re.compile(r"\[EncoderThread\] CFR Catchup applied using fresh frame"),
     "wgc_too_new_slot_repeat": re.compile(r"\[EncoderThread\] WGC CFR slot repeat: buffered frame is too new"),
     "wgc_stale_visual_debt_drop": re.compile(r"\[EncoderThread\] WGC CFR stale visual debt drop"),
+    "wgc_video_prewarm_failed": re.compile(r"WGC transactional video prewarm FAILED"),
+    "wgc_start_contract_selected": re.compile(r"WGC CFR start contract selected"),
+    "wgc_start_contract_committed": re.compile(r"WGC CFR start contract committed"),
+    "wgc_start_contract_error": re.compile(
+        r"ERROR: WGC (?:CFR start contract selection failed|"
+        r"first frame encoded without a valid transactional start contract)"
+    ),
     "wgc_stale_fresh_catchup_blocked": re.compile(r"\[EncoderThread\] WGC CFR stale fresh-catchup blocked"),
     "wgc_visual_timeline_debt_drop": re.compile(r"\[EncoderThread\] WGC CFR visual timeline debt drop"),
     "wgc_live_scheduler_rebase": re.compile(r"\[EncoderThread\] WGC CFR live scheduler rebase"),
@@ -421,6 +433,7 @@ TRIAGE_VISUAL_FAULT_EVENTS = {
     "wgc_stop_drain_aborted",
     "wgc_stop_hold_repeats",
     "wgc_drain_duplicate_summary",
+    "wgc_start_contract_error",
 }
 
 TRIAGE_MUX_FAULT_EVENTS = {

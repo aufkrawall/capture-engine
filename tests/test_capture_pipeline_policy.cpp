@@ -579,8 +579,17 @@ TEST(CapturePipelinePolicyTest, CfrTimelineStartContractKeepsVideoReserveAndAudi
     EXPECT_EQ(contract.audioAnchorQpc, 100500);
     EXPECT_EQ(contract.liveQpc - contract.audioAnchorQpc, contract.smoothnessReserveQpc);
 
+    const auto rebased = policy::RebaseCfrTimelineStartContract(contract, 200000);
+    ASSERT_TRUE(rebased.valid);
+    EXPECT_EQ(rebased.videoOriginQpc, 200000);
+    EXPECT_EQ(rebased.liveQpc, 203300);
+    EXPECT_EQ(rebased.audioAnchorQpc, 200500);
+    EXPECT_EQ(rebased.contentDelayQpc, contract.contentDelayQpc);
+    EXPECT_EQ(rebased.smoothnessReserveQpc, contract.smoothnessReserveQpc);
+
     EXPECT_FALSE(policy::BuildCfrTimelineStartContract(100000, 100400, 500).valid);
     EXPECT_FALSE(policy::BuildCfrTimelineStartContract(100000, 99999, 0).valid);
+    EXPECT_FALSE(policy::RebaseCfrTimelineStartContract({}, 200000).valid);
 }
 
 TEST(CapturePipelinePolicyTest, PartialStartupReservoirReselectsNearestMatchingContractFrame) {
@@ -2196,6 +2205,15 @@ TEST(CapturePipelinePolicyTest, WgcLiveSelectionTargetClampsOnlyBeyondVisualDebt
                                                        policy::kCfrShortfallCatchupThresholdTicks, true),
               1550);
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1360, 1600, 100, 1000, true, true, 20, true), 1360);
+    // A deliberate 400-tick content delay is the normal playout position, not
+    // stale visual debt. Only age beyond that delay plus the bounded debt
+    // allowance may be clamped away.
+    EXPECT_EQ(policy::GetWgcLiveVisualDebtFloorQpcForMode(1600, 100, 1000, false, 400), 950);
+    EXPECT_EQ(policy::GetWgcLiveVisualDebtFloorQpcForMode(1600, 100, 1000, true, 400), 1150);
+    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(
+                  1000, 1600, 100, 1000, false, true, 20, true,
+                  policy::kCfrShortfallCatchupThresholdTicks, false, 400),
+              1000);
     EXPECT_FALSE(
         policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, true, true, true, true));
 }

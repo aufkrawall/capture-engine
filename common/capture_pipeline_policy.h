@@ -835,6 +835,16 @@ inline CfrTimelineStartContract BuildCfrTimelineStartContract(int64_t videoOrigi
     return contract;
 }
 
+inline CfrTimelineStartContract RebaseCfrTimelineStartContract(const CfrTimelineStartContract& contract,
+                                                                int64_t videoOriginQpc) {
+    if (!contract.valid || videoOriginQpc <= 0 || contract.contentDelayQpc < 0 ||
+        videoOriginQpc > INT64_MAX - contract.contentDelayQpc) {
+        return {};
+    }
+    return BuildCfrTimelineStartContract(videoOriginQpc, videoOriginQpc + contract.contentDelayQpc,
+                                         contract.renderLoopbackLatencyQpc);
+}
+
 inline size_t SelectNearestMonotonicTimestampIndex(const int64_t* timestamps, size_t count, int64_t targetQpc) {
     if (!timestamps || count == 0) {
         return 0;
@@ -1921,7 +1931,8 @@ inline int64_t GetWgcLiveVisualDebtFloorQpc(int64_t liveNowQpc, int64_t targetIn
 }
 
 inline int64_t GetWgcLiveVisualDebtFloorQpcForMode(int64_t liveNowQpc, int64_t targetIntervalTicks,
-                                                   int64_t qpcTicksPerSecond, bool encoderLimitedSmoothnessMode) {
+                                                   int64_t qpcTicksPerSecond, bool encoderLimitedSmoothnessMode,
+                                                   int64_t intentionalContentDelayQpc = 0) {
     const int64_t debtLimitQpc =
         encoderLimitedSmoothnessMode
             ? GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcTicksPerSecond, kWgcEncoderLimitedLiveVisualDebtMs,
@@ -1931,14 +1942,19 @@ inline int64_t GetWgcLiveVisualDebtFloorQpcForMode(int64_t liveNowQpc, int64_t t
         return 0;
     }
 
-    return liveNowQpc > debtLimitQpc ? (liveNowQpc - debtLimitQpc) : 0;
+    const int64_t contentDelayQpc = std::max<int64_t>(0, intentionalContentDelayQpc);
+    if (contentDelayQpc > INT64_MAX - debtLimitQpc) {
+        return 0;
+    }
+    const int64_t maximumFrameAgeQpc = contentDelayQpc + debtLimitQpc;
+    return liveNowQpc > maximumFrameAgeQpc ? (liveNowQpc - maximumFrameAgeQpc) : 0;
 }
 
 inline int64_t ClampWgcSelectionTargetToLiveQpc(
     int64_t selectionTargetQpc, int64_t liveNowQpc, int64_t targetIntervalTicks, int64_t qpcTicksPerSecond,
     bool lowSourceMode, bool liveRecoveryMode, uint32_t outputShortfallTicks, bool encoderBottlenecked,
     uint32_t severeShortfallThresholdTicks = kCfrShortfallCatchupThresholdTicks,
-    bool encoderLimitedSmoothnessMode = false) {
+    bool encoderLimitedSmoothnessMode = false, int64_t intentionalContentDelayQpc = 0) {
     (void)lowSourceMode;
     (void)liveRecoveryMode;
     (void)encoderBottlenecked;
@@ -1955,7 +1971,8 @@ inline int64_t ClampWgcSelectionTargetToLiveQpc(
     }
 
     const int64_t visualDebtFloorQpc = GetWgcLiveVisualDebtFloorQpcForMode(
-        liveNowQpc, targetIntervalTicks, qpcTicksPerSecond, encoderLimitedSmoothnessMode);
+        liveNowQpc, targetIntervalTicks, qpcTicksPerSecond, encoderLimitedSmoothnessMode,
+        intentionalContentDelayQpc);
     if (visualDebtFloorQpc <= 0 || selectionTargetQpc >= visualDebtFloorQpc) {
         return selectionTargetQpc;
     }
@@ -2878,13 +2895,15 @@ inline bool ShouldPreserveWgcStartupPartialReserve(size_t candidateCount, int64_
 
 inline bool IsWgcFrameWithinLiveVisualDebtWindow(int64_t frameSelectionQpc, int64_t liveNowQpc,
                                                  int64_t targetIntervalTicks, int64_t qpcTicksPerSecond,
-                                                 bool encoderLimitedSmoothnessMode = false) {
+                                                 bool encoderLimitedSmoothnessMode = false,
+                                                 int64_t intentionalContentDelayQpc = 0) {
     if (frameSelectionQpc <= 0) {
         return true;
     }
 
     const int64_t visualDebtFloorQpc = GetWgcLiveVisualDebtFloorQpcForMode(
-        liveNowQpc, targetIntervalTicks, qpcTicksPerSecond, encoderLimitedSmoothnessMode);
+        liveNowQpc, targetIntervalTicks, qpcTicksPerSecond, encoderLimitedSmoothnessMode,
+        intentionalContentDelayQpc);
     return visualDebtFloorQpc <= 0 || frameSelectionQpc >= visualDebtFloorQpc;
 }
 

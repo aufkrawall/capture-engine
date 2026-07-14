@@ -101,6 +101,7 @@ public:
         int64_t alignedStartMs = -1;                   // First source packet offset relative to recording start
         int64_t observedLateStartMs = 0;               // Latest observed startup delay used for startup pull slack
         bool hasAlignedStart = false;                  // True after first packet aligned to recording start
+        bool sawCaptureEpoch = false;                  // Activation succeeded even if WASAPI delivered no data
         bool timelineValid = false;                // True once the source can contribute silence/real audio on timeline
         bool isPrimed = false;                     // True after source has buffered a startup safety cushion
         bool bootstrapComplete = false;            // True after startup backlog is settled and live sync may engage
@@ -732,6 +733,7 @@ public:
             src.alignedStartMs = -1;
             src.observedLateStartMs = 0;
             src.hasAlignedStart = false;
+            src.sawCaptureEpoch = false;
             const bool appCaptureRouteEnded =
                 src.appCaptureRouteEnded && src.appCaptureRouteEnded->load(std::memory_order_acquire);
             src.timelineValid = src.sourceType != AudioConfig::AppAudio || appCaptureRouteEnded;
@@ -1482,6 +1484,7 @@ public:
                 src.alignedStartMs = -1;
                 src.observedLateStartMs = 0;
                 src.hasAlignedStart = false;
+                src.sawCaptureEpoch = false;
                 src.timelineValid = false;
                 src.isPrimed = false;
                 src.bootstrapComplete = false;
@@ -1969,8 +1972,13 @@ public:
         for (size_t i = 0; i < audioSources.size() && i < encodedSamplesPerSource.size(); i++) {
             auto& src = audioSources[i];
             const bool isApp = (src.sourceType == AudioConfig::AppAudio);
-            const bool neverStarted = isApp && !src.hasAlignedStart;
-            if (neverStarted) {
+            const bool noAppData = isApp && !src.hasAlignedStart;
+            if (noAppData && src.sawCaptureEpoch) {
+                DLL_Log(
+                    "[STOP AUDIO] Source %zu (app-active-no-data): track=%d process=%s; activation epoch was "
+                    "ordered but no WASAPI data packet arrived, so the route contains expected timeline silence",
+                    i, src.track, src.config.processName.empty() ? "<pid-mode>" : src.config.processName.c_str());
+            } else if (noAppData) {
                 DLL_Log("[STOP AUDIO] Source %zu (app-never-started): track=%d", i, src.track);
             } else {
                 const double latencyTrimPerMinute =
@@ -2076,6 +2084,7 @@ public:
             src.alignedStartMs = -1;
             src.observedLateStartMs = 0;
             src.hasAlignedStart = false;
+            src.sawCaptureEpoch = false;
             src.timelineValid = false;
             src.isPrimed = false;
             src.bootstrapComplete = false;
@@ -2372,6 +2381,26 @@ public:
             DLL_Log("[AVSyncApply] wgc_start_extra_delay: smoothExtraDelayMs=%.3f smoothExtraDelayQpc=%lld", delayMs,
                     clampedDelayQpc);
         }
+    }
+
+    bool PrepareFrameD3D11(void* texture, uint32_t width, uint32_t height, bool isHDR) {
+        std::lock_guard<std::recursive_mutex> lock(muxMutex);
+        if (!videoEnc || !recording || !texture || width == 0 || height == 0) {
+            DLL_Log(
+                "[VideoPrewarm] D3D11 prepare rejected: encoder=%d recording=%d texture=%d dimensions=%ux%u",
+                videoEnc ? 1 : 0, recording ? 1 : 0, texture ? 1 : 0, width, height);
+            return false;
+        }
+
+        const auto start = std::chrono::steady_clock::now();
+        const bool prepared = videoEnc->PrepareFrameD3D11(static_cast<ID3D11Texture2D*>(texture), width, height, isHDR);
+        const int64_t elapsedUs =
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
+        DLL_Log("[VideoPrewarm] D3D11 deferred encoder/mux prepare %s: dimensions=%ux%u hdr=%d elapsed=%lldus "
+                "firstFrameCommitted=%d",
+                prepared ? "complete" : "FAILED", width, height, isHDR ? 1 : 0,
+                static_cast<long long>(elapsedUs), firstVideoFrameMs != 0 ? 1 : 0);
+        return prepared;
     }
 
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
@@ -5447,6 +5476,7 @@ private:
                 }
 
                 if (gotPacket && packet.recordType == AudioPacketRecordType::EpochStart) {
+                    src.sawCaptureEpoch = true;
                     const uint64_t previousCaptureEpoch = sourceCaptureEpochs[srcIdx];
                     if (packet.captureEpoch != 0 && previousCaptureEpoch == 0) {
                         sourceCaptureEpochs[srcIdx] = packet.captureEpoch;
@@ -6226,6 +6256,14 @@ MEDIAENGINE_API void MediaEngine_ResetRepeatFrameCache() {
     if (g_Engine) {
         g_Engine->ResetRepeatFrameCache();
     }
+}
+
+MEDIAENGINE_API bool MediaEngine_PrepareFrameD3D11(void* texture, uint32_t width, uint32_t height, bool isHDR) {
+    std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
+    if (g_Engine) {
+        return g_Engine->PrepareFrameD3D11(texture, width, height, isHDR);
+    }
+    return false;
 }
 
 MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,

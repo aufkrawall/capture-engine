@@ -3195,6 +3195,12 @@ void EncoderThreadFunc(const AppConfig& config) {
     bool wgcStartupReserveMaxRateUsed = false;
     uint32_t wgcStartupReserveMaxRateCount = 0;
     int64_t wgcSmoothnessActiveDelayQpc = 0;
+    ce::capture_policy::CfrTimelineStartContract pendingWgcStartContract{};
+    uint64_t pendingWgcStartContractGeneration = 0;
+    uint64_t committedWgcStartContractGeneration = 0;
+    bool wgcEncoderPrewarmAttempted = false;
+    bool wgcEncoderPrewarmSucceeded = false;
+    int64_t wgcEncoderPrewarmElapsedUs = 0;
     // Smoothness FLOOR diagnostics/state (resolved once at startup, then fixed for the session).
     int64_t wgcSmoothnessFloorDelayQpc = 0;            // resolved floor delay target (QPC); 0 = floor inactive
     int64_t wgcSmoothnessFloorRequestedQpc = 0;        // pre-clamp requested floor (QPC), for logging
@@ -3774,6 +3780,12 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcAvSyncStartupVideoQpc = 0;
             wgcAvSyncStartupEffectiveDelayQpc = 0;
             wgcSmoothnessActiveDelayQpc = 0;
+            pendingWgcStartContract = {};
+            pendingWgcStartContractGeneration = 0;
+            committedWgcStartContractGeneration = 0;
+            wgcEncoderPrewarmAttempted = false;
+            wgcEncoderPrewarmSucceeded = false;
+            wgcEncoderPrewarmElapsedUs = 0;
             wgcSmoothnessFloorDelayQpc = 0;
             wgcSmoothnessFloorRequestedQpc = 0;
             wgcSmoothnessFloorSource = "off";
@@ -4470,8 +4482,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 return 0;
             }
             const bool encoderLimitedSmoothnessMode = isWgcEncoderLimitedSmoothnessMode();
+            const int64_t intentionalContentDelayQpc = getWgcEffectiveContentDelayQpc();
             const int64_t visualDebtFloorQpc = ce::capture_policy::GetWgcLiveVisualDebtFloorQpcForMode(
-                liveNowQpc, targetIntervalTicks, qpcFreq.QuadPart, encoderLimitedSmoothnessMode);
+                liveNowQpc, targetIntervalTicks, qpcFreq.QuadPart, encoderLimitedSmoothnessMode,
+                intentionalContentDelayQpc);
             if (visualDebtFloorQpc <= 0) {
                 return 0;
             }
@@ -4507,9 +4521,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (nowTick - s_lastStaleWgcDebtLogTick >= 1000 || dropped >= 8) {
                     LogWarn(
                         "[EncoderThread] WGC CFR stale visual debt drop: reason=%s mode=%s dropped=%zu floorQpc=%lld "
-                        "liveNowQpc=%lld maxDebt=%lluus remaining=%zu shortfall=%u",
+                        "liveNowQpc=%lld contentDelay=%lldus maxDebt=%lluus remaining=%zu shortfall=%u",
                         reason ? reason : "unknown", encoderLimitedSmoothnessMode ? "encoder_limited" : "bounded_live",
                         dropped, static_cast<long long>(visualDebtFloorQpc), static_cast<long long>(liveNowQpc),
+                        static_cast<long long>(qpcToUs(intentionalContentDelayQpc)),
                         static_cast<unsigned long long>(maxDebtUs), bufferedWgcFrames.size(), outputShortfallTicks);
                     s_lastStaleWgcDebtLogTick = nowTick;
                 }
@@ -4825,7 +4840,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             const int64_t clampedSelectionTargetQpc = ce::capture_policy::ClampWgcSelectionTargetToLiveQpc(
                 selectionTargetQpc, liveNowQpc, targetIntervalTicks, qpcFreq.QuadPart, wgcLowSourceModeActive,
                 wgcLiveRecoveryModeActive, outputShortfallTicks, encoderBottlenecked,
-                ce::capture_policy::kCfrShortfallCatchupThresholdTicks, isWgcEncoderLimitedSmoothnessMode());
+                ce::capture_policy::kCfrShortfallCatchupThresholdTicks, isWgcEncoderLimitedSmoothnessMode(),
+                getWgcEffectiveContentDelayQpc());
             if (clampedSelectionTargetQpc > selectionTargetQpc) {
                 const uint64_t clampDeltaUs = static_cast<uint64_t>(clampedSelectionTargetQpc - selectionTargetQpc) *
                                               1000000ull / static_cast<uint64_t>(qpcFreq.QuadPart);
@@ -7780,6 +7796,29 @@ void EncoderThreadFunc(const AppConfig& config) {
                         continue;
                     }
 
+                    // WGC/DXGI dimensions and texture format are known only after a frame arrives.
+                    // Finish the deferred codec/device/mux initialization now, while frame zero is
+                    // still transactional. The producer continues filling the reservoir during this
+                    // call, and no CFR slot or A/V anchor is committed by the prepare API.
+                    if (!wgcEncoderPrewarmAttempted) {
+                        wgcEncoderPrewarmAttempted = true;
+                        LARGE_INTEGER prewarmStartQpc = {};
+                        LARGE_INTEGER prewarmEndQpc = {};
+                        QueryPerformanceCounter(&prewarmStartQpc);
+                        wgcEncoderPrewarmSucceeded =
+                            MediaEngine_PrepareFrameD3D11 &&
+                            MediaEngine_PrepareFrameD3D11(frame.texture, frame.width, frame.height, frame.isHDR);
+                        QueryPerformanceCounter(&prewarmEndQpc);
+                        wgcEncoderPrewarmElapsedUs = qpcToUs(prewarmEndQpc.QuadPart - prewarmStartQpc.QuadPart);
+                        LogInfo(
+                            "[EncoderThread] WGC transactional video prewarm %s: elapsed=%lldus frameQpc=%lld "
+                            "dimensions=%ux%u hdr=%d queuedAfter=%zu bufferedAfter=%zu; frame zero remains pending",
+                            wgcEncoderPrewarmSucceeded ? "complete" : "FAILED",
+                            static_cast<long long>(wgcEncoderPrewarmElapsedUs),
+                            static_cast<long long>(frame.timestamp), frame.width, frame.height, frame.isHDR ? 1 : 0,
+                            g_FrameQueue.Size(), bufferedWgcFrames.size());
+                    }
+
                     size_t startupBufferedExamined = 0;
                     size_t startupQueueExamined = 0;
                     size_t startupFreshened = 0;
@@ -8232,6 +8271,41 @@ void EncoderThreadFunc(const AppConfig& config) {
                         wgcRetainedCapTrimTotal += startupRetainedCapTrimmed;
                         wgcRetainedCapTrimWindow += startupRetainedCapTrimmed;
                     }
+
+                    ++pendingWgcStartContractGeneration;
+                    const int64_t selectedContentDelayQpc = getWgcEffectiveContentDelayQpc();
+                    if (frame.timestamp > 0 && selectedContentDelayQpc >= 0 &&
+                        frame.timestamp <= INT64_MAX - selectedContentDelayQpc) {
+                        pendingWgcStartContract = ce::capture_policy::BuildCfrTimelineStartContract(
+                            frame.timestamp, frame.timestamp + selectedContentDelayQpc, avContentDelayQpc);
+                    } else {
+                        pendingWgcStartContract = {};
+                    }
+                    if (pendingWgcStartContract.valid) {
+                        LogInfo(
+                            "[EncoderThread] WGC CFR start contract selected: generation=%llu videoQpc=%lld "
+                            "selectionQpc=%lld liveQpc=%lld contentDelayUs=%lld renderDelayUs=%lld "
+                            "smoothReserveUs=%lld retainedNewer=%zu prewarm=%s/%lldus",
+                            static_cast<unsigned long long>(pendingWgcStartContractGeneration),
+                            static_cast<long long>(pendingWgcStartContract.videoOriginQpc),
+                            static_cast<long long>(GetFrameSelectionTimestamp(frame)),
+                            static_cast<long long>(pendingWgcStartContract.liveQpc),
+                            static_cast<long long>(qpcDeltaToUs(pendingWgcStartContract.contentDelayQpc)),
+                            static_cast<long long>(qpcDeltaToUs(pendingWgcStartContract.renderLoopbackLatencyQpc)),
+                            static_cast<long long>(qpcDeltaToUs(pendingWgcStartContract.smoothnessReserveQpc)),
+                            bufferedWgcFrames.size(), wgcEncoderPrewarmSucceeded ? "ok" : "failed",
+                            static_cast<long long>(wgcEncoderPrewarmElapsedUs));
+                    } else {
+                        LogWarn(
+                            "[EncoderThread] ERROR: WGC CFR start contract selection failed: generation=%llu "
+                            "videoQpc=%lld contentDelayUs=%lld renderDelayUs=%lld prewarm=%s/%lldus",
+                            static_cast<unsigned long long>(pendingWgcStartContractGeneration),
+                            static_cast<long long>(frame.timestamp),
+                            static_cast<long long>(qpcDeltaToUs(selectedContentDelayQpc)),
+                            static_cast<long long>(qpcDeltaToUs(avContentDelayQpc)),
+                            wgcEncoderPrewarmSucceeded ? "ok" : "failed",
+                            static_cast<long long>(wgcEncoderPrewarmElapsedUs));
+                    }
                     updateWgcIngressPressure("startup-selected");
 
                     LARGE_INTEGER anchorNow;
@@ -8466,16 +8540,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                 }
                 QueryPerformanceCounter(&nextSampleTime);
-                liveStartQpc.QuadPart =
-                    0;  // Set after first frame's encoder initialization delay to avoid initial judder
+                liveStartQpc.QuadPart = 0;  // Commit the pending start contract after the first successful encode.
                 encoderGridStartQpc = nextSampleTime.QuadPart;
-                // Flush stale warmup frames from ALL buffers.  During the gap
-                // between capture start and encoder readiness, frames accumulate
-                // in the shmem ring → g_FrameQueue → bufferedInjectFrames.
-                // Without flushing, they burst into the encoder all at once,
-                // causing trimming and duplicate-induced judder in the first
-                // second of recording.
-                {
+                // Inject warmup is causal and must discard stale queued work. WGC/DXGI,
+                // however, just selected an intentional look-ahead reservoir; those
+                // newer frames are part of the immutable start contract and must survive
+                // the live handoff.
+                if (!useScreenGrab) {
                     QueuedFrame qf;
                     size_t queueFlushed = 0;
                     while (g_FrameQueue.Pop(qf, 0)) {
@@ -8506,10 +8577,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                                 keepCount);
                     }
                 }
-                if (!bufferedWgcFrames.empty()) {
-                    size_t flushed = bufferedWgcFrames.size();
-                    ClearBufferedWgcFrames();
-                    LogInfo("[EncoderThread] Flushed %zu warmup WGC frames before live handoff", flushed);
+                if (useScreenGrab) {
+                    LogInfo(
+                        "[EncoderThread] Preserved transactional WGC startup reserve at live handoff: "
+                        "generation=%llu buffered=%zu queued=%zu contractValid=%d contentDelayUs=%lld",
+                        static_cast<unsigned long long>(pendingWgcStartContractGeneration), bufferedWgcFrames.size(),
+                        g_FrameQueue.Size(), pendingWgcStartContract.valid ? 1 : 0,
+                        static_cast<long long>(qpcToUs(pendingWgcStartContract.contentDelayQpc)));
                 }
                 // Reset counters so per-second logs start clean at going-live.
                 g_InjectBufferedTrimmedFrames.store(0, std::memory_order_relaxed);
@@ -9699,7 +9773,45 @@ void EncoderThreadFunc(const AppConfig& config) {
                     if (liveStartQpc.QuadPart == 0 && liveTicksOutput == 0) {
                         LARGE_INTEGER afterInit;
                         QueryPerformanceCounter(&afterInit);
-                        liveStartQpc = afterInit;
+                        ce::capture_policy::CfrTimelineStartContract committedStartContract{};
+                        const bool canCommitTransactionalWgcStart =
+                            useScreenGrab && !recoveredFreshEncodeFailure && frameToProcess &&
+                            !frameToProcess->isInjectMode && pendingWgcStartContract.valid;
+                        if (canCommitTransactionalWgcStart) {
+                            committedStartContract = ce::capture_policy::RebaseCfrTimelineStartContract(
+                                pendingWgcStartContract, frameToProcess->timestamp);
+                        }
+                        if (committedStartContract.valid) {
+                            liveStartQpc.QuadPart = committedStartContract.liveQpc;
+                            committedWgcStartContractGeneration = pendingWgcStartContractGeneration;
+                            const int64_t selectionOriginQpc = GetFrameSelectionTimestamp(*frameToProcess);
+                            const int64_t selectionOffsetUs =
+                                qpcToUs(selectionOriginQpc - committedStartContract.videoOriginQpc);
+                            const int64_t commitLatenessUs = qpcToUs(afterInit.QuadPart - liveStartQpc.QuadPart);
+                            LogInfo(
+                                "[EncoderThread] WGC CFR start contract committed after first successful encode: "
+                                "generation=%llu videoQpc=%lld selectionQpc=%lld selectionOffsetUs=%lld "
+                                "liveQpc=%lld contentDelayUs=%lld commitLatenessUs=%lld prewarm=%s/%lldus",
+                                static_cast<unsigned long long>(committedWgcStartContractGeneration),
+                                static_cast<long long>(committedStartContract.videoOriginQpc),
+                                static_cast<long long>(selectionOriginQpc), static_cast<long long>(selectionOffsetUs),
+                                static_cast<long long>(liveStartQpc.QuadPart),
+                                static_cast<long long>(qpcToUs(committedStartContract.contentDelayQpc)),
+                                static_cast<long long>(commitLatenessUs),
+                                wgcEncoderPrewarmSucceeded ? "ok" : "failed",
+                                static_cast<long long>(wgcEncoderPrewarmElapsedUs));
+                        } else {
+                            liveStartQpc = afterInit;
+                            if (useScreenGrab) {
+                                LogWarn(
+                                    "[EncoderThread] ERROR: WGC first frame encoded without a valid transactional "
+                                    "start contract: pendingGeneration=%llu pendingValid=%d recoveredFailure=%d "
+                                    "frame=%d; using encode-completion wall anchor",
+                                    static_cast<unsigned long long>(pendingWgcStartContractGeneration),
+                                    pendingWgcStartContract.valid ? 1 : 0, recoveredFreshEncodeFailure ? 1 : 0,
+                                    frameToProcess && !frameToProcess->isInjectMode ? 1 : 0);
+                            }
+                        }
                         // Set warmup window: give the capture system 200ms to accumulate a small buffer
                         // before making policy decisions. Prevents early startup starvation (slow WGC
                         // callback delivery) from permanently poisoning the entire session.
@@ -9710,19 +9822,14 @@ void EncoderThreadFunc(const AppConfig& config) {
                         // floor case): the extra smoothness/floor delay S is absorbed purely by the later
                         // live-start (scheduleOffset), so audio stays byte-exact and the floor is
                         // sync-neutral by construction (no ghost-image judder).
-                        if (useScreenGrab && isWgcEffectiveContentDelayActive() && !recoveredFreshEncodeFailure &&
-                            frameToProcess && !frameToProcess->isInjectMode) {
-                            int64_t startupVideoQpc = GetFrameSelectionTimestamp(*frameToProcess);
-                            if (startupVideoQpc <= 0) {
-                                startupVideoQpc = frameToProcess->timestamp;
-                            }
-                            const int64_t startupAudioAnchorDelayQpc = avContentDelayQpc;
-                            const auto startContract = ce::capture_policy::BuildCfrTimelineStartContract(
-                                startupVideoQpc, liveStartQpc.QuadPart, startupAudioAnchorDelayQpc);
-                            if (startContract.valid) {
-                                const int64_t startupEffectiveDelayQpc = startContract.contentDelayQpc;
-                                const int64_t startupAudioAnchorQpc = startContract.audioAnchorQpc;
-                                wgcSmoothnessActiveDelayQpc = startContract.smoothnessReserveQpc;
+                        if (useScreenGrab && isWgcEffectiveContentDelayActive()) {
+                            if (committedStartContract.valid) {
+                                const int64_t startupVideoQpc = committedStartContract.videoOriginQpc;
+                                const int64_t startupEffectiveDelayQpc = committedStartContract.contentDelayQpc;
+                                const int64_t startupAudioAnchorQpc = committedStartContract.audioAnchorQpc;
+                                const int64_t startupAudioAnchorDelayQpc =
+                                    committedStartContract.renderLoopbackLatencyQpc;
+                                wgcSmoothnessActiveDelayQpc = committedStartContract.smoothnessReserveQpc;
                                 wgcAvSyncStartupVideoQpc = startupVideoQpc;
                                 wgcAvSyncStartupAudioAnchorQpc = startupAudioAnchorQpc;
                                 wgcAvSyncStartupEffectiveDelayQpc = startupEffectiveDelayQpc;
@@ -9742,16 +9849,20 @@ void EncoderThreadFunc(const AppConfig& config) {
                                     qpcFreq.QuadPart > 0 ? (wgcAvSyncScheduleOffsetQpc * 1000000) / qpcFreq.QuadPart
                                                          : 0;
                                 LogInfo(
-                                    "[AVSyncApply] wgc_cfr_start_contract: videoQpc=%lld audioAnchorQpc=%lld "
+                                    "[AVSyncApply] wgc_cfr_start_contract: generation=%llu videoQpc=%lld "
+                                    "audioAnchorQpc=%lld "
                                     "liveStartQpc=%lld requestedDelayUs=%lld startupDelayUs=%lld "
-                                    "scheduleOffsetUs=%lld selectionOffsetUs=0 audioAnchorDelayUs=%lld "
+                                    "scheduleOffsetUs=%lld selectionOffsetUs=%lld audioAnchorDelayUs=%lld "
                                     "renderDelayUs=%lld "
                                     "smoothExtraDelayUs=%lld confidence=%s reason=%s",
+                                    static_cast<unsigned long long>(committedWgcStartContractGeneration),
                                     static_cast<long long>(startupVideoQpc),
                                     static_cast<long long>(startupAudioAnchorQpc),
                                     static_cast<long long>(liveStartQpc.QuadPart),
                                     static_cast<long long>(requestedDelayUs), static_cast<long long>(startupDelayUs),
                                     static_cast<long long>(scheduleOffsetUs),
+                                    static_cast<long long>(
+                                        qpcToUs(GetFrameSelectionTimestamp(*frameToProcess) - startupVideoQpc)),
                                     static_cast<long long>(audioAnchorDelayUs), static_cast<long long>(renderDelayUs),
                                     static_cast<long long>(smoothExtraDelayUs), config.avSyncConfidence.c_str(),
                                     config.avSyncReason.c_str());
@@ -9760,19 +9871,22 @@ void EncoderThreadFunc(const AppConfig& config) {
                                     "[AVSyncApply] ERROR: invalid WGC CFR start contract: videoQpc=%lld "
                                     "liveStartQpc=%lld renderDelayUs=%lld observedContentDelayUs=%lld; "
                                     "startup audio anchor not published",
-                                    static_cast<long long>(startupVideoQpc),
+                                    static_cast<long long>(frameToProcess ? frameToProcess->timestamp : 0),
                                     static_cast<long long>(liveStartQpc.QuadPart),
-                                    static_cast<long long>(qpcToUs(startupAudioAnchorDelayQpc)),
-                                    static_cast<long long>(qpcToUs(liveStartQpc.QuadPart - startupVideoQpc)));
+                                    static_cast<long long>(qpcToUs(avContentDelayQpc)),
+                                    static_cast<long long>(qpcToUs(
+                                        liveStartQpc.QuadPart - (frameToProcess ? frameToProcess->timestamp : 0))));
                             }
                         }
+                        pendingWgcStartContract = {};
                         // For the selection grid, we treat the first frame as tick 1.
                         // To align future idealQpc calculations perfectly with scheduledSampleQpc,
                         // we must offset the anchor back by one target interval.
                         encoderGridStartQpc = liveStartQpc.QuadPart - targetIntervalTicks;
-                        // Start the CFR timeline exactly 1 tick from now, skipping the init delay entirely
+                        // Continue from the immutable contract grid. Deferred initialization time
+                        // is commit-lateness telemetry and never changes the selected content delay.
                         nextSampleTime.QuadPart = liveStartQpc.QuadPart + targetIntervalTicks;
-                        LogInfo("[EncoderThread] Anchored CFR live timeline after first frame (init delay skipped)");
+                        LogInfo("[EncoderThread] Anchored CFR live timeline after first frame (contract grid kept)");
                     }
                     ++liveTicksOutput;
                 }

@@ -15,6 +15,7 @@ Primary sources:
 - `mediaengine/process_loopback_capture.cpp`
 - `mediaengine/process_loopback_protocol.h`
 - `mediaengine/process_loopback_worker.cpp`
+- `mediaengine/process_tree_selection.h`
 - `helpers/process_loopback_helper_main.cpp`
 - `mediaengine/mediaengine.cpp`
 - `mediaengine/matroska_timing.h`
@@ -27,6 +28,7 @@ Primary sources:
 - `tests/test_audio_capture_source.cpp`
 - `tests/test_audio_mux_integration.cpp`
 - `tests/test_process_loopback_protocol.cpp`
+- `tests/test_process_tree_selection.cpp`
 - `tests/test_audio_ring_buffer.cpp`
 - `tools/analyze_capture_av.py`
 - `testapp/av_sync_stimulus.h`
@@ -44,6 +46,8 @@ Audio startup/reset is one generation-numbered command acknowledged by the audio
 Every successful WASAPI activation—system loopback, microphone, and process loopback—starts a new epoch. Capture queues carry ordered `EpochStart`, data, and EOS records. Old and new generations may coexist until the old tail is consumed; owner acknowledgement is what permits retirement. Format, packet position, latency, drift, resampler, and timeline state never cross an epoch. A source that is closed, not yet started, or past ordered EOS contributes expected timeline silence and is not reported as an underrun. Unrelated playback applications starting/stopping on an unchanged system mix endpoint are ordinary content changes, not endpoint epochs.
 
 Each unique process-loopback capture now runs inside `process_loopback_helper.exe`. The media process and helper communicate through a versioned shared-memory SPSC packet/lifecycle ring plus inherited data/space/stop events. The producer never advances the consumer cursor on overrun; worker death/restart, ring wrap, oversized packets, ordering, and diagnostic-ring pressure are explicit and unit tested. Reaping the disposable helper bounds AudioSes/`CLoopbackMixer` COM state to one worker lifetime while immutable packets still fan out from one physical capture to every route.
+
+Name-based process loopback resolves a same-executable process-tree root, not the first Toolhelp snapshot match. Multi-process applications commonly place audio in a sibling utility process; activating process-tree loopback against an arbitrary renderer/child excludes that sibling even though system loopback still hears it. Resolution now ascends same-name parents for every match, selects the largest independent same-name tree deterministically, and logs match/root/tree counts plus the first enumerated PID versus selected root. An activated epoch that delivers no data logs a rate-limited `active but has delivered no data packets` warning and ends as `app-active-no-data`, distinct from `app-never-started`; it remains expected timeline silence rather than an underrun. This resolution/lifecycle rule is independent of WGC, DXGI Duplication, or inject video capture.
 
 ### WASAPI lifecycle and stop-tail invariants (2026-07-11)
 
@@ -216,6 +220,8 @@ Focused regression coverage lives in:
   - Production Matroska mux path writes AAC, ALAC, FLAC, Opus, and PCM from one deterministic PCM source, reopens with the bundled FFmpeg libraries, fully decodes every stream, and requires identical decoded endpoints plus codec-relative correlation within 1 ms.
 - `tests/test_process_loopback_protocol.cpp`
   - Ordered lifecycle/data round trips, independent diagnostic ring, wrap, full-ring behavior without consumer-cursor theft, oversized packet rejection, bounded worker restart, and resource-reclamation policy.
+- `tests/test_process_tree_selection.cpp`
+  - Multi-process name resolution selects the same-name tree root rather than the first enumerated child, chooses the largest independent tree deterministically, and contains missing-parent/cycle inputs.
 - `tests/test_audio_resampler.cpp`
   - Channel-mask preservation for stereo and 5.1 resampling paths.
 - `tests/test_audio_sync_utils.cpp`

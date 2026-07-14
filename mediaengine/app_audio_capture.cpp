@@ -15,6 +15,7 @@
 #include "audio_capture.h"  // For AudioPacket
 #include "audio_time_utils.h"
 #include "mediaengine.h"  // For DLL_Log
+#include "process_tree_selection.h"
 
 // Required for ActivateAudioInterfaceAsync
 #pragma comment(lib, "mmdevapi.lib")
@@ -884,6 +885,8 @@ void AppAudioCapture::CaptureLoop() {
     // --- Mid-recording stream recovery state (device-invalidation + silent stall) ---
     const ce::audio::StreamRecoveryConfig recoveryCfg = recoveryConfig_;
     uint64_t lastPacketTick = GetTickCount64();  // arms the silent-stall window from stream start
+    uint64_t noPacketSinceTick = lastPacketTick;
+    uint64_t lastNoPacketDiagnosticTick = 0;
     uint64_t lastReactivateTick = 0;
     uint64_t recoveryBackoffMs = 0;
     bool sawAnyPacket = false;
@@ -925,6 +928,7 @@ void AppAudioCapture::CaptureLoop() {
         // Restart the silent-stall window regardless of outcome: on success we wait
         // for fresh audio; on failure we wait the full window before the next try.
         lastPacketTick = GetTickCount64();
+        noPacketSinceTick = lastPacketTick;
         if (ok) {
             ++reactivateSuccesses;
             firstSet = false;
@@ -1026,6 +1030,20 @@ void AppAudioCapture::CaptureLoop() {
         if (packetLength == 0) {
             if (drainingAfterStop) {
                 break;
+            }
+            const uint64_t noPacketNow = GetTickCount64();
+            if (!sawAnyPacket && noPacketNow - noPacketSinceTick >= 3000 &&
+                (lastNoPacketDiagnosticTick == 0 || noPacketNow - lastNoPacketDiagnosticTick >= 30000)) {
+                DLL_Log(
+                    "[AppAudioCapture] WARNING: process-loopback stream is active but has delivered no data "
+                    "packets for %llu ms: PID=%lu process=%s epoch=%llu mode=%s processAlive=%d. The route "
+                    "remains expected timeline silence; verify process-tree root selection and target audio activity",
+                    static_cast<unsigned long long>(noPacketNow - noPacketSinceTick), targetPID.load(),
+                    targetProcessName.empty() ? "<pid-mode>" : targetProcessName.c_str(),
+                    static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)),
+                    (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling",
+                    IsProcessRunning(targetPID.load()) ? 1 : 0);
+                lastNoPacketDiagnosticTick = noPacketNow;
             }
             // Silent-stall watchdog: a process-loopback stream that delivered audio
             // before but has gone fully silent (no packets, no error) while its
@@ -1464,7 +1482,8 @@ void AppAudioCapture::ProcessMonitorLoop() {
             // Not capturing - try to find the target process
             DWORD pid = FindProcessByName(targetProcessName);
             if (pid != 0) {
-                DLL_Log("[AppAudioCapture] Found process '%s' with PID %lu", targetProcessName.c_str(), pid);
+                DLL_Log("[AppAudioCapture] Selected process-tree root '%s' with PID %lu",
+                        targetProcessName.c_str(), pid);
                 targetPID.store(pid);
                 if (!BeginAsyncStartForPID(pid)) {
                     targetPID.store(0, std::memory_order_release);
@@ -1490,24 +1509,30 @@ DWORD AppAudioCapture::FindProcessByName(const std::string& name) {
     PROCESSENTRY32W pe32 = {};
     pe32.dwSize = sizeof(pe32);
 
-    DWORD foundPID = 0;
+    std::vector<ce::process_loopback::ProcessTreeEntry> processes;
 
     if (Process32FirstW(snapshot, &pe32)) {
         do {
-            // Convert wide string to narrow for comparison
-            char exeName[MAX_PATH];
-            WideCharToMultiByte(CP_UTF8, 0, pe32.szExeFile, -1, exeName, MAX_PATH, nullptr, nullptr);
-
-            // Case-insensitive comparison
-            if (_stricmp(exeName, name.c_str()) == 0) {
-                foundPID = pe32.th32ProcessID;
-                break;
+            char exeName[MAX_PATH] = {};
+            if (WideCharToMultiByte(CP_UTF8, 0, pe32.szExeFile, -1, exeName, MAX_PATH, nullptr, nullptr) > 0) {
+                processes.push_back({pe32.th32ProcessID, pe32.th32ParentProcessID, exeName});
             }
         } while (Process32NextW(snapshot, &pe32));
     }
 
     CloseHandle(snapshot);
-    return foundPID;
+    const auto selection = ce::process_loopback::SelectProcessTreeRootByName(processes, name);
+    if (selection.selectedProcessId != 0) {
+        DLL_Log(
+            "[AppAudioCapture] Process-name tree resolution '%s': matches=%zu roots=%zu firstPID=%lu "
+            "selectedRootPID=%lu selectedParentPID=%lu selectedTreeMembers=%zu firstMatchWasRoot=%d",
+            name.c_str(), selection.matchingProcessCount, selection.rootCandidateCount,
+            static_cast<unsigned long>(selection.firstMatchProcessId),
+            static_cast<unsigned long>(selection.selectedProcessId),
+            static_cast<unsigned long>(selection.selectedParentProcessId), selection.selectedTreeSize,
+            selection.firstMatchProcessId == selection.selectedProcessId ? 1 : 0);
+    }
+    return selection.selectedProcessId;
 }
 
 bool AppAudioCapture::IsProcessRunning(DWORD pid) {

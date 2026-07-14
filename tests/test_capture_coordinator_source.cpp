@@ -182,6 +182,36 @@ TEST(CaptureCoordinatorSourceTest, FreshFrameMetadataCommitsOnlyAfterSuccessfulE
     EXPECT_NE(source.find("Deferred candidates never enter this branch"), std::string::npos);
 }
 
+TEST(CaptureCoordinatorSourceTest, WgcAndDuplicationStartupPrewarmsBeforeTransactionalContractCommit) {
+    const std::string source = ReadCoordinatorSource();
+    const std::string encoder = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(encoder.empty());
+
+    const size_t startupBarrier = source.find("IsWgcFramePastStartupBarrier");
+    const size_t prewarm = source.find("MediaEngine_PrepareFrameD3D11", startupBarrier);
+    const size_t contractSelection = source.find("WGC CFR start contract selected", prewarm);
+    const size_t firstEncodeCommit = source.find("WGC CFR start contract committed after first successful encode",
+                                                 contractSelection);
+    ASSERT_NE(startupBarrier, std::string::npos);
+    ASSERT_NE(prewarm, std::string::npos);
+    ASSERT_NE(contractSelection, std::string::npos);
+    ASSERT_NE(firstEncodeCommit, std::string::npos);
+    EXPECT_LT(startupBarrier, prewarm);
+    EXPECT_LT(prewarm, contractSelection);
+    EXPECT_LT(contractSelection, firstEncodeCommit);
+
+    EXPECT_NE(source.find("Preserved transactional WGC startup reserve at live handoff"), std::string::npos);
+    EXPECT_EQ(source.find("Flushed %zu warmup WGC frames before live handoff"), std::string::npos);
+
+    const size_t prepareBegin = encoder.find("bool VideoEncoder::PrepareFrameD3D11");
+    const size_t encodeBegin = encoder.find("bool VideoEncoder::EncodeFrameD3D11", prepareBegin);
+    ASSERT_NE(prepareBegin, std::string::npos);
+    ASSERT_NE(encodeBegin, std::string::npos);
+    EXPECT_EQ(encoder.substr(prepareBegin, encodeBegin - prepareBegin).find("inputFrameCount++"), std::string::npos);
+    EXPECT_NE(encoder.find("inputFrameCount++", encodeBegin), std::string::npos);
+}
+
 TEST(CaptureCoordinatorSourceTest, ProvenStandbyFrameAndInjectRepeatSurviveHandoffBoundary) {
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());
