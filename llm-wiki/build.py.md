@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-07-14 (FFmpeg configuration/patch fingerprinting, codec decode support, and NMR-safe math flags)
+Last cross-checked: 2026-07-14 (source-built FFmpeg dependency closure, signed MSYS2 provenance, PE import guards, FFmpeg configuration/patch fingerprinting, codec decode support, and NMR-safe math flags)
 
 Primary sources:
 - `AGENTS.md`
@@ -11,6 +11,16 @@ Primary sources:
 
 ## Default Mode
 Running `python build.py --skip-updates`.
+
+## Windows FFmpeg Dependency Provenance
+- `ffmpeg_dependencies.json` is the authoritative manifest for the Windows FFmpeg dependency closure. It pins LLVM/libc++/libunwind 22.1.8, libiconv 1.19, Opus 1.6.1, libva 2.24.1, oneVPL/libvpl 2.17.0, and SVT-AV1 4.1.0, plus source URLs, SHA-256 values, package outputs, runtime DLLs, licenses, and build order.
+- `SourceDependencyBuilder` builds the runtime dependencies into the private `ffmpeg_build/dependencies/prefix`. Runtime synchronization copies only from that prefix; it never copies shipped runtime DLLs from `build/msys64/clang64/bin`. The optional `libcharset-1.dll` is included only if PE inspection proves that `libiconv-2.dll` imports it.
+- Each MSYS2 source package is downloaded from the official MSYS2 source mirror, checked against its pinned SHA-256, and verified with its detached `.sig` sidecar against the pinned full source-package signing fingerprint `5F944B027F7FE2091985AA2EFA11531AA0AA7F57`. The source recipes are built with normal `makepkg-mingw` signature/hash verification; `--skippgpcheck` is not used.
+- Upstream archives are downloaded independently from the manifest URLs and checked against their pinned SHA-256 before the signed MSYS2 recipe is built. LLVM/libc++ and libiconv recipe key fingerprints are pinned and retrieved only through HKPS keyservers into a dedicated build keyring; signature or fingerprint failures abort the build.
+- A fresh MSYS2 bootstrap archive is selected from the official distribution listing, verified with its detached signature against `E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964`, and only then extracted. MSYS2 `pacman` remains the source of the compiler, linker, build tools, headers, and package-manager runtime; its installed package signatures are a separate trusted-toolchain boundary.
+- Final FFmpeg DLL synchronization enforces private-prefix provenance, checks the PE import closure against Windows system DLLs and the shipped directory, and validates PE export tables in the verification pass. The current custom FFmpeg branch remains separately trusted input; this migration preserves its existing ABI set rather than upgrading FFmpeg majors.
+- The release boundary is `installed/captureengine`: its product DLLs/EXEs are built by this project or by the source-built FFmpeg closure. `installed/testapp` is validation-only and may contain precompiled FSR, Streamline, NVIDIA, and other SDK/driver test binaries; never package that directory, `build/msys64`, SDK caches, or `external` build inputs as the product.
+- This establishes strong, reproducible provenance checks for the new dependency closure, not a claim of 100% trust for every project input. The precompiled MSYS2 toolchain/build environment and the existing FFmpeg Git source still require trust in their official distribution/repository; this change does not add a signed-commit/tag policy for that FFmpeg checkout. Hardware-specific oneVPL/QSV runtime validation remains an external validation step.
 
 ## Required Agent Post-Change Verification
 After the final code change set is complete, run the required full product build once:
@@ -99,7 +109,7 @@ Default quality mode currently:
 
 ## Lint and Format Coverage
 - C and C++ lint and format target these directories: `common`, `hook`, `captureengine`, `mediaengine`, `testapp`, and `tests`.
-- Python lint and format currently target `build.py` and `testapp`.
+- Python lint and format currently target `build.py`, `ffmpeg_dependencies.py`, `test_ffmpeg_dependencies.py`, and `testapp`.
 
 ## Unit Test Behavior
 - `compile_tests()` runs on every build so `compile_commands.json` contains authoritative entries for tests even if tests are not executed.
@@ -141,6 +151,8 @@ Default quality mode currently:
 - `build/verification/latest_summary.txt`, `latest_manifest.json`, `latest_run_dir.txt`, and `latest_build.log` always point at the most recent top-level verification/build run.
 - For long-running verification/build commands, prefer re-reading `build/verification/latest_summary.txt` or `latest_manifest.json` to check completion/status instead of leaving a shell in a passive polling/watch loop. The summary/manifest pair is the intended status contract.
 - On Windows, the script bootstraps MSYS2 and manages a custom FFmpeg build path.
+- On Windows, dependency builds use the newest resolved official MSYS2 base archive and the installed/current clang64 toolchain; `--skip-updates` deliberately skips pacman updates, so use a normal update-enabled setup when refreshing the toolchain.
+- The source-built dependency manifest participates in the FFmpeg configuration fingerprint. Deleting `ffmpeg_build/dependencies/prefix` and the FFmpeg output forces a clean dependency/FFmpeg rebuild; the verification pass should then confirm source-package signatures, upstream hashes, PE imports/exports, and runtime provenance.
 - FFmpeg runtime DLL names are resolved from the current install tree, rather than hard-coded. The Windows CaptureEngine link therefore delay-loads the installed major versions (for example `avcodec-63.dll`, `avformat-63.dll`, and `avutil-61.dll`), while bundle synchronization selects the highest numeric version and removes stale copies. Missing optional runtime dependencies are logged with their configured search paths.
 - `compile_tests()` recompiles the shared `common/*.cpp` objects with the active test flags before linking. This prevents a sanitizer child build from leaving ASan/UBSan objects in the shared object directory for a later non-sanitizer test-only link.
 - The custom Windows FFmpeg recipe is part of audio codec support. The expected audio encoder set includes `aac`, `alac`, `flac`, `libopus`, `pcm_s16le`, `pcm_s24le`, and `pcm_f32le`; matching audio decoders are enabled for completed-file integration verification, and runtime DLL copying includes `libopus-0.dll`.
@@ -156,6 +168,8 @@ Default quality mode currently:
 - On Linux and WSL, the script uses cross-compilers and downloaded MSYS2 packages for dependencies.
 
 ### MinGW Cross-Compile Pitfalls
+
+- **LLVM 22 Windows x86 TLS**: the x86 hook/link path uses native Windows TLS. LLVM 22's `-femulated-tls` mode can leave unresolved local thread-local symbols at the LLD link boundary, so do not reintroduce that flag without a toolchain-specific fix and regression coverage. Source anchor: `build.py` Windows x86 compile/link/test flag construction.
 
 - **`PKEY_Device_FriendlyName` link error (INITGUID)**: Debian mingw-w64 cross-compile fails with `undefined reference to PKEY_Device_FriendlyName` because `INITGUID` is never defined. The `<functiondiscoverykeys_devpkey.h>` header uses `DEFINE_PROPERTYKEY`, which only produces an `extern` declaration when `INITGUID` is not defined — the backing definition is never emitted. The fix is to avoid the header entirely and define the `PROPERTYKEY` locally with the raw GUID `{0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}` and PID 14. Source anchor: `mediaengine/audio_capture.cpp:3-7`, commit `3ef86ff`.
 
@@ -180,4 +194,5 @@ python build.py --production --skip-updates
 
 ## Open Questions / Stale-Risk
 - Stale risk is medium because the CLI is manual and easy to change without a single declarative schema.
+- The trust boundary is intentionally not absolute: MSYS2's precompiled compiler/build tools and the current custom FFmpeg source are still external inputs. Reconfirm their release/signature policies when changing toolchain or FFmpeg revisions; run Intel hardware validation for oneVPL/QSV before treating that path as runtime-validated.
 - Re-check this page after any `sys.argv` parsing, debug-info/PDB emission change, integration defaults, sanitizer flow, or FFmpeg bootstrap change.

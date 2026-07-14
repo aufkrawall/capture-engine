@@ -44,6 +44,18 @@ import json
 
 from typing import List, Dict, Optional, Union, Any
 
+from ffmpeg_dependencies import (
+    SourceDependencyBuilder,
+    dependency_manifest_fingerprint,
+    dependency_prefix,
+    is_path_within,
+    load_dependency_manifest,
+    manifest_runtime_dlls,
+    parse_pe_import_names,
+    verify_detached_signature,
+    verify_pe_import_closure,
+)
+
 # --- Platform Detection ---
 IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
@@ -153,7 +165,12 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 BUILD_DIR = os.path.join(PROJECT_ROOT, BUILD_DIR_NAME)
 MSYS2_DIST_URL = "https://repo.msys2.org/distrib/x86_64/"
-MSYS2_DEFAULT_TARBALL = "msys2-base-x86_64-20260322.tar.xz"
+MSYS2_DEFAULT_TARBALL = "msys2-base-x86_64-20260611.tar.xz"
+MSYS2_BOOTSTRAP_PGP_KEY = "E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964"
+MSYS2_BOOTSTRAP_KEY_SERVERS = (
+    "hkps://keys.openpgp.org",
+    "hkps://keyserver.ubuntu.com",
+)
 
 # FG SDK download URLs (for test app DLLs and headers)
 FFX_SDK_URL = (
@@ -237,6 +254,16 @@ FFMPEG_DIR = os.path.join(PROJECT_ROOT, "external", "ffmpeg")
 
 PACKAGES = [
     "mingw-w64-clang-x86_64-toolchain",
+    # Source-package builds use makepkg-mingw, but their build tools remain
+    # precompiled MSYS2 tooling rather than shipped runtime dependencies.
+    "base-devel",
+    "mingw-w64-clang-x86_64-autotools",
+    "mingw-w64-clang-x86_64-gettext-tools",
+    "mingw-w64-clang-x86_64-gperf",
+    "mingw-w64-clang-x86_64-doxygen",
+    "mingw-w64-clang-x86_64-llvm-tools",
+    "mingw-w64-clang-x86_64-compiler-rt",
+    "mingw-w64-clang-x86_64-python",
     # "mingw-w64-x86_64-toolchain", # GCC removed (User requested Zig)
     "mingw-w64-clang-x86_64-pkgconf",
     # ffmpeg & codecs removed (built from source)
@@ -256,9 +283,6 @@ PACKAGES = [
     "mingw-w64-clang-x86_64-cppwinrt",  # For Windows Graphics Capture
     "mingw-w64-clang-x86_64-gtest",
     "mingw-w64-clang-x86_64-amf-headers",
-    "mingw-w64-clang-x86_64-onevpl",  # For QSV
-    "mingw-w64-clang-x86_64-svt-av1",  # For libsvtav1 / AVIF screenshots
-    "mingw-w64-clang-x86_64-opus",  # For libopus audio encoding
     "mingw-w64-clang-x86_64-lld",  # For delay-load support (x64 + x86 cross-compile)
     "mingw-w64-clang-x86_64-clang-tools-extra",  # For clang-format
     "make",
@@ -499,29 +523,121 @@ def _url_exists(url: str) -> bool:
         return False
 
 
+def download_verified_url(url: str, destination: str) -> None:
+    temporary_path = destination + ".tmp"
+    try:
+        with urllib.request.urlopen(url, timeout=180) as response:
+            with open(temporary_path, "wb") as output_file:
+                shutil.copyfileobj(response, output_file)
+        os.replace(temporary_path, destination)
+    finally:
+        if os.path.exists(temporary_path):
+            os.remove(temporary_path)
+
+
+def _bootstrap_gpg_context() -> tuple[str, Dict[str, str]]:
+    gpg_candidates = [shutil.which("gpg.exe"), shutil.which("gpg")]
+    if os.path.exists(os.path.join(MSYS2_DIR, "usr", "bin", "gpg.exe")):
+        gpg_candidates.append(os.path.join(MSYS2_DIR, "usr", "bin", "gpg.exe"))
+    gpg_exe = next((candidate for candidate in gpg_candidates if candidate), None)
+    if not gpg_exe:
+        raise RuntimeError(
+            "A trusted host GPG executable is required to verify the MSYS2 bootstrap archive; "
+            "install GnuPG before creating a fresh MSYS2 tree"
+        )
+
+    keyring_dir = os.path.join(BUILD_DIR, "msys2-bootstrap-gnupg")
+    os.makedirs(keyring_dir, exist_ok=True)
+    env = os.environ.copy()
+    if os.path.normcase(os.path.abspath(gpg_exe)).startswith(os.path.normcase(os.path.abspath(MSYS2_DIR))):
+        env["GNUPGHOME"] = to_unix(keyring_dir)
+    else:
+        env["GNUPGHOME"] = keyring_dir
+    return gpg_exe, env
+
+
+def ensure_msys2_bootstrap_key() -> tuple[str, Dict[str, str]]:
+    gpg_exe, env = _bootstrap_gpg_context()
+
+    def has_key() -> bool:
+        result = subprocess.run(
+            [gpg_exe, "--batch", "--with-colons", "--list-keys", MSYS2_BOOTSTRAP_PGP_KEY],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        return MSYS2_BOOTSTRAP_PGP_KEY.lower() in result.stdout.lower()
+
+    if not has_key():
+        imported = False
+        for keyserver in MSYS2_BOOTSTRAP_KEY_SERVERS:
+            log(f"Retrieving MSYS2 bootstrap signing key {MSYS2_BOOTSTRAP_PGP_KEY} from {keyserver}")
+            result = subprocess.run(
+                [
+                    gpg_exe,
+                    "--batch",
+                    "--keyserver",
+                    keyserver,
+                    "--recv-keys",
+                    MSYS2_BOOTSTRAP_PGP_KEY,
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0 and has_key():
+                imported = True
+                break
+            if result.stderr:
+                log(f"MSYS2 bootstrap key lookup failed: {result.stderr.strip()}")
+        if not imported:
+            raise RuntimeError(
+                "Could not retrieve and fingerprint-verify the MSYS2 bootstrap signing key "
+                f"{MSYS2_BOOTSTRAP_PGP_KEY}"
+            )
+    return gpg_exe, env
+
+
+def verify_msys2_bootstrap_archive(archive_path: str, archive_url: str) -> None:
+    signature_path = archive_path + ".sig"
+    signature_url = archive_url + ".sig"
+    if not os.path.exists(signature_path):
+        log(f"Downloading MSYS2 bootstrap signature: {signature_url}")
+        download_verified_url(signature_url, signature_path)
+    gpg_exe, env = ensure_msys2_bootstrap_key()
+    try:
+        verify_detached_signature(gpg_exe, archive_path, signature_path, [MSYS2_BOOTSTRAP_PGP_KEY], env)
+    except Exception:
+        log("Cached MSYS2 bootstrap signature was not valid; downloading a fresh sidecar")
+        download_verified_url(signature_url, signature_path)
+        verify_detached_signature(gpg_exe, archive_path, signature_path, [MSYS2_BOOTSTRAP_PGP_KEY], env)
+    log(f"Verified MSYS2 bootstrap archive signature with {MSYS2_BOOTSTRAP_PGP_KEY}")
+
+
 def resolve_msys2_url() -> str:
     override = os.environ.get("CE_MSYS2_URL", "").strip()
     if override:
         log(f"Using MSYS2 base archive override: {override}")
         return override
 
+    request = urllib.request.Request(MSYS2_DIST_URL, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            html = response.read().decode("utf-8", errors="replace")
+        matches = re.findall(r'href="(msys2-base-x86_64-(\d{8})\.tar\.xz)"', html)
+        if matches:
+            latest_name, _ = max(matches, key=lambda item: item[1])
+            resolved_url = MSYS2_DIST_URL + latest_name
+            log(f"Resolved latest MSYS2 base archive: {latest_name}")
+            return resolved_url
+    except Exception as error:
+        log(f"Could not resolve the latest MSYS2 base archive: {error}")
+
     fallback_url = MSYS2_DIST_URL + MSYS2_DEFAULT_TARBALL
     if _url_exists(fallback_url):
+        log(f"Using pinned MSYS2 bootstrap fallback: {MSYS2_DEFAULT_TARBALL}")
         return fallback_url
-
-    log(f"MSYS2 fallback snapshot unavailable: {MSYS2_DEFAULT_TARBALL}; resolving latest available archive...")
-    request = urllib.request.Request(MSYS2_DIST_URL, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        html = response.read().decode("utf-8", errors="replace")
-
-    matches = re.findall(r'href="(msys2-base-x86_64-(\d{8})\.tar\.xz)"', html)
-    if not matches:
-        raise RuntimeError(f"Could not resolve a downloadable MSYS2 base archive from {MSYS2_DIST_URL}")
-
-    latest_name, _ = max(matches, key=lambda item: item[1])
-    resolved_url = MSYS2_DIST_URL + latest_name
-    log(f"Resolved latest MSYS2 base archive: {latest_name}")
-    return resolved_url
+    raise RuntimeError(f"Could not resolve a downloadable MSYS2 base archive from {MSYS2_DIST_URL}")
 
 
 def verify_msys2_ffmpeg_build_deps(msys2_dir: str) -> None:
@@ -546,11 +662,15 @@ def verify_msys2_ffmpeg_build_deps(msys2_dir: str) -> None:
         os.pathsep
     )
 
-    required_pkg_configs = [
-        ("vpl", "mingw-w64-clang-x86_64-onevpl"),
-        ("SvtAv1Enc", "mingw-w64-clang-x86_64-svt-av1"),
-        ("opus", "mingw-w64-clang-x86_64-opus"),
-    ]
+    required_pkg_configs = (
+        [
+            ("vpl", "mingw-w64-clang-x86_64-onevpl"),
+            ("SvtAv1Enc", "mingw-w64-clang-x86_64-svt-av1"),
+            ("opus", "mingw-w64-clang-x86_64-opus"),
+        ]
+        if IS_LINUX
+        else []
+    )
     required_headers = [
         (
             os.path.join("spirv", "unified1", "spirv.h"),
@@ -559,6 +679,38 @@ def verify_msys2_ffmpeg_build_deps(msys2_dir: str) -> None:
     ]
 
     missing = []
+    if not IS_LINUX:
+        required_tools = [
+            os.path.join(usr_bin, "makepkg"),
+            os.path.join(usr_bin, "makepkg-mingw"),
+            os.path.join(usr_bin, "bash.exe"),
+            os.path.join(clang_bin, "cmake.exe"),
+            os.path.join(clang_bin, "meson.exe"),
+            os.path.join(clang_bin, "ninja.exe"),
+            os.path.join(clang_bin, "llvm-objdump.exe"),
+        ]
+        missing.extend((tool, "MSYS2 source-build tooling") for tool in required_tools if not os.path.exists(tool))
+
+        pacman_exe = os.path.join(usr_bin, "pacman.exe")
+        required_toolchain_packages = [
+            "mingw-w64-clang-x86_64-clang",
+            "mingw-w64-clang-x86_64-llvm-tools",
+            "mingw-w64-clang-x86_64-compiler-rt",
+        ]
+        for package_name in required_toolchain_packages:
+            package_result = subprocess.run(
+                [pacman_exe, "-Q", package_name],
+                capture_output=True,
+                text=True,
+            )
+            if package_result.returncode != 0:
+                missing.append((package_name, "LLVM 22.1.8-compatible MSYS2 toolchain"))
+                continue
+            version_match = re.search(r"\s(\d+\.\d+\.\d+)-", package_result.stdout)
+            if not version_match or version_match.group(1) != "22.1.8":
+                installed = package_result.stdout.strip() or "unknown version"
+                missing.append((installed, "LLVM 22.1.8-compatible MSYS2 toolchain"))
+
     for pkg_name, package_name in required_pkg_configs:
         result = subprocess.run(
             [pkg_config_exe, "--exists", pkg_name],
@@ -1250,6 +1402,7 @@ def setup_msys2(skip_updates: bool = False):
         else:
             log(f"Using cached MSYS2 base archive: {tar_name}")
 
+        verify_msys2_bootstrap_archive(tar_path, msys2_url)
         log("Extracting MSYS2...")
         with tarfile.open(tar_path) as f:
             safe_extract_tar(f, BUILD_DIR)
@@ -1271,6 +1424,20 @@ def setup_msys2(skip_updates: bool = False):
         patch_amf_header()
         verify_msys2_ffmpeg_build_deps(MSYS2_DIR)
         return
+
+    log("Updating MSYS2 base and installed packages...")
+    for update_pass in range(2):
+        log(f"MSYS2 full upgrade pass {update_pass + 1}/2")
+        clear_stale_msys2_pacman_lock()
+        run_command(
+            [
+                msys_bash,
+                "-lc",
+                "pacman -Syu --noconfirm --disable-download-timeout",
+            ],
+            input_str="\n",
+            timeout=900,
+        )
 
     log("Installing Packages...")
     msys_bash = os.path.join(MSYS2_DIR, "usr", "bin", "bash.exe")
@@ -2004,6 +2171,9 @@ def resolve_msys2_gtest_link_inputs(lib_dir: str, *, prefer_static: bool = False
 # --- FFmpeg Configuration ---
 FFMPEG_URL = "https://git.ffmpeg.org/ffmpeg.git"
 FFNVCODEC_URL = "https://git.videolan.org/git/ffmpeg/nv-codec-headers.git"
+FFMPEG_DEPENDENCY_MANIFEST = os.path.join(PROJECT_ROOT, "ffmpeg_dependencies.json")
+FFMPEG_DEPENDENCY_MANIFEST_DATA = load_dependency_manifest(FFMPEG_DEPENDENCY_MANIFEST)
+FFMPEG_DEPENDENCY_PREFIX = dependency_prefix(PROJECT_ROOT)
 FFMPEG_RUNTIME_DLL_PATTERNS = [
     "avcodec-*.dll",
     "avformat-*.dll",
@@ -2011,16 +2181,10 @@ FFMPEG_RUNTIME_DLL_PATTERNS = [
     "swresample-*.dll",
     "swscale-*.dll",
 ]
-WINDOWS_FFMPEG_RUNTIME_DEPS = [
-    "libiconv-2.dll",
-    "libva_win32.dll",
-    "libva.dll",
-    "libvpl-2.dll",
-    "libSvtAv1Enc-4.dll",
-    "libopus-0.dll",
-    "libc++.dll",
-    "libunwind.dll",
-]
+WINDOWS_FFMPEG_RUNTIME_DEPS = manifest_runtime_dlls(FFMPEG_DEPENDENCY_MANIFEST_DATA)
+WINDOWS_FFMPEG_OPTIONAL_RUNTIME_DEPS = manifest_runtime_dlls(
+    FFMPEG_DEPENDENCY_MANIFEST_DATA, optional=True
+)
 WINDOWS_SANITIZER_RUNTIME_DEPS = [
     "libclang_rt.asan_dynamic-x86_64.dll",
     "libc++.dll",  # Required by ASan runtime; shared with FFmpeg via libvpl-2.dll
@@ -2040,6 +2204,37 @@ LINUX_FFMPEG_RUNTIME_DEPS = [
     "libgcc_s_seh-1.dll",
     "libstdc++-6.dll",
 ]
+
+
+def get_windows_ffmpeg_runtime_deps(runtime_bin: str) -> List[str]:
+    """Return mandatory deps plus libcharset only when libiconv imports it."""
+    deps = list(WINDOWS_FFMPEG_RUNTIME_DEPS)
+    libcharset_name = "libcharset-1.dll"
+    libcharset_path = os.path.join(runtime_bin, libcharset_name)
+    if not os.path.exists(libcharset_path):
+        return deps
+
+    objdump_exe = os.path.join(MSYS2_DIR, "clang64", "bin", "llvm-objdump.exe")
+    libiconv_path = os.path.join(runtime_bin, "libiconv-2.dll")
+    if not os.path.exists(objdump_exe) or not os.path.exists(libiconv_path):
+        raise RuntimeError("Cannot determine whether libiconv imports optional libcharset-1.dll")
+    result = subprocess.run([objdump_exe, "-p", libiconv_path], capture_output=True, text=True, check=True)
+    if libcharset_name.lower() in parse_pe_import_names(result.stdout):
+        deps.append(libcharset_name)
+        log("[FFmpeg] libiconv imports libcharset-1.dll; including the optional runtime DLL")
+    else:
+        log("[FFmpeg] libiconv does not import libcharset-1.dll; leaving it out of the bundle")
+    return deps
+
+
+def get_windows_ffmpeg_pkg_config_path(existing: str = "") -> str:
+    paths = [
+        os.path.join(FFMPEG_DEPENDENCY_PREFIX, "lib", "pkgconfig"),
+        os.path.join(FFMPEG_DIR, "lib", "pkgconfig"),
+    ]
+    if existing:
+        paths.append(existing)
+    return os.pathsep.join(paths)
 
 
 def to_unix(p):
@@ -2089,7 +2284,14 @@ def resolve_ffmpeg_runtime_dll_names(ffmpeg_bin_src):
     return resolved
 
 
-def sync_ffmpeg_runtime_dlls(ffmpeg_bin_src, ffmpeg_bin_dst, runtime_deps, extra_search_dirs):
+def sync_ffmpeg_runtime_dlls(
+    ffmpeg_bin_src,
+    ffmpeg_bin_dst,
+    runtime_deps,
+    extra_search_dirs,
+    required_runtime_deps=False,
+    private_runtime_root=None,
+):
     resolved_names = resolve_ffmpeg_runtime_dll_names(ffmpeg_bin_src)
     ffmpeg_dlls = [os.path.join(ffmpeg_bin_src, name) for name in resolved_names.values()]
 
@@ -2103,10 +2305,22 @@ def sync_ffmpeg_runtime_dlls(ffmpeg_bin_src, ffmpeg_bin_dst, runtime_deps, extra
 
     missing_deps = [dep for dep in runtime_deps if dep not in dep_sources]
     if missing_deps:
+        if required_runtime_deps:
+            raise RuntimeError(
+                "Required source-built FFmpeg runtime dependencies are missing: "
+                + ", ".join(sorted(missing_deps))
+            )
         log(
             "[FFmpeg] Optional runtime dependencies not found in configured search paths: "
             + ", ".join(sorted(missing_deps))
         )
+
+    if private_runtime_root:
+        for dependency, source in dep_sources.items():
+            if not is_path_within(source, private_runtime_root):
+                raise RuntimeError(
+                    f"FFmpeg runtime dependency {dependency} resolved outside the private source prefix: {source}"
+                )
 
     keep_names = {os.path.basename(dll).lower() for dll in ffmpeg_dlls}
     keep_names.update(dep.lower() for dep in dep_sources)
@@ -2136,6 +2350,12 @@ def sync_ffmpeg_runtime_dlls(ffmpeg_bin_src, ffmpeg_bin_dst, runtime_deps, extra
             raise RuntimeError(f"Failed to copy runtime dependency {dep} to {ffmpeg_bin_dst}")
         log(f"Copied runtime dep {dep} to ffmpeg dir")
 
+    if private_runtime_root:
+        objdump_exe = os.path.join(MSYS2_DIR, "clang64", "bin", "llvm-objdump.exe")
+        if not os.path.exists(objdump_exe):
+            raise RuntimeError(f"Missing LLVM PE import checker: {objdump_exe}")
+        verify_pe_import_closure(ffmpeg_bin_dst, objdump_exe, logger=log)
+
 
 def remove_redundant_root_runtime_dlls(root_dir: str, runtime_deps: List[str]) -> None:
     for dep_name in sorted(set(runtime_deps)):
@@ -2155,7 +2375,16 @@ def sync_windows_sanitizer_runtime_dlls(target_dir: str) -> None:
     clang_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
     os.makedirs(target_dir, exist_ok=True)
     for dll_name in WINDOWS_SANITIZER_RUNTIME_DEPS:
-        src = os.path.join(clang_bin, dll_name)
+        if dll_name.lower() == "libclang_rt.asan_dynamic-x86_64.dll":
+            # ASan is a developer-only build runtime.  It remains resolved
+            # from the MSYS2 toolchain during sanitizer tests and must never
+            # become a product-bundle dependency copied from clang64/bin.
+            log("Leaving the MSYS2 ASan developer runtime out of the product bundle")
+            continue
+        if dll_name.lower() == "libc++.dll":
+            src = os.path.join(FFMPEG_DEPENDENCY_PREFIX, "bin", dll_name)
+        else:
+            src = os.path.join(clang_bin, dll_name)
         if not os.path.exists(src):
             raise RuntimeError(f"Missing sanitizer runtime DLL: {src}")
         dst = os.path.join(target_dir, dll_name)
@@ -2181,7 +2410,7 @@ def remove_stale_windows_sanitizer_runtime_dlls(target_dir: str) -> None:
 def get_msys_license_root():
     if IS_LINUX:
         return os.path.join(get_linux_msys2_dir(), "clang64", "share", "licenses")
-    return os.path.join(MSYS2_DIR, "clang64", "share", "licenses")
+    return os.path.join(FFMPEG_DEPENDENCY_PREFIX, "share", "licenses")
 
 
 def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
@@ -2196,6 +2425,15 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
                 (
                     os.path.join(license_root, "libiconv", "COPYING.LIB"),
                     "LGPLv2.1_libiconv.txt",
+                ),
+            ],
+        ),
+        (
+            "libcharset-1.dll",
+            [
+                (
+                    os.path.join(license_root, "libiconv", "libcharset", "COPYING.LIB"),
+                    "LGPLv2.1_libcharset.txt",
                 ),
             ],
         ),
@@ -2361,7 +2599,7 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
 
 
 class FFmpegBuilder:
-    def __init__(self, root_dir, msys_dir, install_dir, license_mode="gpl"):
+    def __init__(self, root_dir, msys_dir, install_dir, license_mode="gpl", dependency_prefix_path=None):
         self.root = root_dir
         self.msys = msys_dir
         self.install_dir = install_dir
@@ -2374,6 +2612,8 @@ class FFmpegBuilder:
         # Output dirs
         self.prefix = to_unix(install_dir)
         self.win_prefix = install_dir
+        self.dependency_prefix = dependency_prefix_path or dependency_prefix(root_dir)
+        self.dependency_unix_prefix = to_unix(self.dependency_prefix)
         self.license_mode = "lgpl"  # Changed to LGPL per user request
 
     def _vulkan_import_lib(self, arch: str) -> Optional[str]:
@@ -2401,16 +2641,27 @@ class FFmpegBuilder:
         msys_inc = to_unix(os.path.join(self.msys, "clang64", "include"))
         msys_lib = to_unix(os.path.join(self.msys, "clang64", "lib"))
         msys_pkgconfig = os.path.join(self.msys, "clang64", "lib", "pkgconfig")
+        dependency_inc = to_unix(os.path.join(self.dependency_prefix, "include"))
+        dependency_lib = to_unix(os.path.join(self.dependency_prefix, "lib"))
+        dependency_pkgconfig = os.path.join(self.dependency_prefix, "lib", "pkgconfig")
 
         env["CC"] = "clang"
         env["CXX"] = "clang++"
-        env["CFLAGS"] = f"-O3 -ffunction-sections -fdata-sections -I{self.prefix}/include -I{msys_inc}"
-        env["CXXFLAGS"] = f"-O3 -ffunction-sections -fdata-sections -I{self.prefix}/include -I{msys_inc}"
-        env["LDFLAGS"] = f"-Wl,--gc-sections -L{self.prefix}/lib -L{msys_lib}"
+        env["CFLAGS"] = (
+            f"-O3 -ffunction-sections -fdata-sections -I{dependency_inc} "
+            f"-I{self.prefix}/include -I{msys_inc}"
+        )
+        env["CXXFLAGS"] = (
+            f"-O3 -ffunction-sections -fdata-sections -I{dependency_inc} "
+            f"-I{self.prefix}/include -I{msys_inc}"
+        )
+        env["LDFLAGS"] = f"-Wl,--gc-sections -L{dependency_lib} -L{self.prefix}/lib -L{msys_lib}"
         env["PKG_CONFIG"] = f"{pkg_config} --static"
         # pkg-config here is a native Windows binary, so it expects Windows-style paths.
         # Using /c/... MSYS paths makes the NVCodec probe fail to locate ffnvcodec.pc.
-        env["PKG_CONFIG_PATH"] = os.pathsep.join([os.path.join(self.win_prefix, "lib", "pkgconfig"), msys_pkgconfig])
+        env["PKG_CONFIG_PATH"] = os.pathsep.join(
+            [dependency_pkgconfig, os.path.join(self.win_prefix, "lib", "pkgconfig"), msys_pkgconfig]
+        )
         env["MSYSTEM"] = "CLANG64"  # Ensure we are treated as MinGW-Clang
 
         return env
@@ -2569,6 +2820,7 @@ class FFmpegBuilder:
 
         # Define msys_lib for extra-ldflags
         msys_lib = to_unix(os.path.join(self.msys, "clang64", "lib"))
+        dependency_lib = to_unix(os.path.join(self.dependency_prefix, "lib"))
 
         conf = [
             bash_exe,
@@ -2598,7 +2850,7 @@ class FFmpegBuilder:
             "--extra-cflags=-O3 -flto",
             "--extra-cxxflags=-O3 -flto",
             "--extra-ldflags=-flto -O3",
-            f"--extra-ldflags=-L{msys_lib}",
+            f"--extra-ldflags=-L{dependency_lib} -L{msys_lib}",
             # Keep the FFmpeg build redistributable under LGPLv2.1+.
             # The extra components used here (FFNVCodec headers, AMF headers,
             # oneVPL/libvpl, MediaFoundation, Windows HW accel APIs) do not
@@ -2660,12 +2912,14 @@ class FFmpegBuilder:
         self.run([make_exe, "install"], cwd=build_dir, env=env)
 
 
-FFMPEG_BUILD_CONFIGURATION_VERSION = 3
+FFMPEG_BUILD_CONFIGURATION_VERSION = 4
 
 
 def ffmpeg_build_configuration_fingerprint():
     """Track local configure/patch inputs independently of the upstream commit."""
     digest = hashlib.sha256(f"configure-v{FFMPEG_BUILD_CONFIGURATION_VERSION}\n".encode("ascii"))
+    digest.update(b"dependency-manifest\n")
+    digest.update(dependency_manifest_fingerprint(FFMPEG_DEPENDENCY_MANIFEST).encode("ascii"))
     patches_dir = os.path.join(PROJECT_ROOT, "patches", "ffmpeg")
     if os.path.isdir(patches_dir):
         for patch_name in sorted(name for name in os.listdir(patches_dir) if name.endswith(".patch")):
@@ -2685,8 +2939,27 @@ def compile_custom_ffmpeg(skip_updates=False):
         log("Running on Linux/WSL - using MSYS2 FFmpeg (downloaded from repo)")
         return  # FFmpeg is downloaded as part of MSYS2 packages
 
-    # Use internal builder
-    builder = FFmpegBuilder(root_dir=PROJECT_ROOT, msys_dir=MSYS2_DIR, install_dir=FFMPEG_DIR)
+    dependency_builder = SourceDependencyBuilder(
+        project_root=PROJECT_ROOT,
+        msys2_dir=MSYS2_DIR,
+        manifest_path=FFMPEG_DEPENDENCY_MANIFEST,
+        logger=log,
+    )
+    try:
+        dependency_builder.ensure()
+    except Exception as e:
+        log(f"FFmpeg source dependency build failed: {e}")
+        sys.exit(1)
+
+    # Use internal builder after the complete source-built dependency closure
+    # is available. The private prefix is intentionally first for pkg-config,
+    # headers, and linker resolution.
+    builder = FFmpegBuilder(
+        root_dir=PROJECT_ROOT,
+        msys_dir=MSYS2_DIR,
+        install_dir=FFMPEG_DIR,
+        dependency_prefix_path=dependency_builder.prefix,
+    )
     builder.setup_dirs()
 
     # Check if FFmpeg repo exists and get current commit for tracking
@@ -2720,12 +2993,14 @@ def compile_custom_ffmpeg(skip_updates=False):
             log("Copying FFmpeg DLLs...")
             ffmpeg_bin_src = os.path.join(FFMPEG_DIR, "bin")
             ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
-            msys_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
+            runtime_deps = get_windows_ffmpeg_runtime_deps(dependency_builder.bin_dir)
             sync_ffmpeg_runtime_dlls(
                 ffmpeg_bin_src,
                 ffmpeg_bin_dst,
-                WINDOWS_FFMPEG_RUNTIME_DEPS,
-                [msys_bin],
+                runtime_deps,
+                [dependency_builder.bin_dir],
+                required_runtime_deps=True,
+                private_runtime_root=dependency_builder.prefix,
             )
             log("Custom FFmpeg Setup Complete.")
         except Exception as e:
@@ -2805,12 +3080,14 @@ def compile_custom_ffmpeg(skip_updates=False):
         log("Copying FFmpeg DLLs...")
         ffmpeg_bin_src = os.path.join(FFMPEG_DIR, "bin")
         ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
-        msys_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
+        runtime_deps = get_windows_ffmpeg_runtime_deps(dependency_builder.bin_dir)
         sync_ffmpeg_runtime_dlls(
             ffmpeg_bin_src,
             ffmpeg_bin_dst,
-            WINDOWS_FFMPEG_RUNTIME_DEPS,
-            [msys_bin],
+            runtime_deps,
+            [dependency_builder.bin_dir],
+            required_runtime_deps=True,
+            private_runtime_root=dependency_builder.prefix,
         )
 
         log("Custom FFmpeg Setup Complete.")
@@ -2839,7 +3116,15 @@ def get_env():
     env = os.environ.copy()
     apply_workspace_temp_environment(env)
     env["PATH"] = clang_bin + os.pathsep + usr_bin + os.pathsep + env.get("PATH", "")
-    env["PKG_CONFIG_PATH"] = os.path.join(MSYS2_DIR, "clang64", "lib", "pkgconfig")
+    private_lib = os.path.join(FFMPEG_DEPENDENCY_PREFIX, "lib")
+    env["PKG_CONFIG_PATH"] = os.pathsep.join(
+        [
+            os.path.join(private_lib, "pkgconfig"),
+            os.path.join(MSYS2_DIR, "clang64", "lib", "pkgconfig"),
+        ]
+    )
+    env.pop("CPLUS_INCLUDE_PATH", None)
+    env["LIBRARY_PATH"] = os.pathsep.join([private_lib, os.path.join(MSYS2_DIR, "clang64", "lib")])
     env["CCACHE_DIR"] = os.path.join(MSYS2_DIR, ".ccache")
     env["DISABLE_CCACHE"] = "1"
     return env, clang_bin
@@ -3382,9 +3667,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     else:
         # Use local FFmpeg on Windows
         env_ffmpeg = env.copy()
-        env_ffmpeg["PKG_CONFIG_PATH"] = (
-            os.path.join(FFMPEG_DIR, "lib", "pkgconfig") + os.pathsep + env_ffmpeg.get("PKG_CONFIG_PATH", "")
-        )
+        env_ffmpeg["PKG_CONFIG_PATH"] = get_windows_ffmpeg_pkg_config_path(env_ffmpeg.get("PKG_CONFIG_PATH", ""))
 
         pkgs = ["libavcodec", "libavformat", "libavutil", "libswresample", "libswscale"]
         ffmpeg_cflags = run_command([pkg_config, "--cflags"] + pkgs, env=env_ffmpeg).strip().split()
@@ -3545,12 +3828,18 @@ def copy_test_runtime_dlls(tests_dir):
 
     msys_bin = os.path.join(get_host_msys2_dir(), "clang64", "bin")
     ffmpeg_bin = os.path.join(PROJECT_ROOT, "installed", "captureengine", "ffmpeg")
+    source_built_names = {
+        name.lower()
+        for name in WINDOWS_FFMPEG_RUNTIME_DEPS + WINDOWS_FFMPEG_OPTIONAL_RUNTIME_DEPS
+    }
     copied = []
     for dll_dir in [msys_bin, ffmpeg_bin]:
         if not os.path.isdir(dll_dir):
             continue
         for dll in os.listdir(dll_dir):
             if not dll.lower().endswith(".dll"):
+                continue
+            if dll_dir == msys_bin and dll.lower() in source_built_names:
                 continue
             src = os.path.join(dll_dir, dll)
             dst = os.path.join(tests_dir, dll)
@@ -3571,7 +3860,7 @@ def run_tests(env, test_exe, gtest_filter=None):
     msys_bin = os.path.join(get_host_msys2_dir(), "clang64", "bin")
     ffmpeg_dir = os.path.join(PROJECT_ROOT, "installed", "captureengine", "ffmpeg")
     test_env = dict(env)
-    test_env["PATH"] = msys_bin + os.pathsep + ffmpeg_dir + os.pathsep + test_env.get("PATH", "")
+    test_env["PATH"] = ffmpeg_dir + os.pathsep + msys_bin + os.pathsep + test_env.get("PATH", "")
 
     if IS_LINUX:
         wine_exe = shutil.which("wine64") or shutil.which("wine")
@@ -3784,7 +4073,7 @@ def run_lint(env):
         log("Running flake8...")
         # Lint build scripts and test scripts
         # We need to specify paths explicitly to avoid traversing build/ directories if exclude fails
-        py_targets = ["build.py", "testapp"]
+        py_targets = ["build.py", "ffmpeg_dependencies.py", "test_ffmpeg_dependencies.py", "testapp"]
 
         cmd = [sys.executable, "-m", "flake8"] + py_targets
         res = subprocess.run(cmd, capture_output=True, text=True)
@@ -4007,7 +4296,6 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
             "-mstackrealign",
             "-stdlib=libstdc++",
-            "-femulated-tls",
         ]
 
     if env.get("CE_SANITIZE") == "1":
@@ -4616,7 +4904,6 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
                 "--target=i686-w64-mingw32",
                 "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
                 "-stdlib=libstdc++",
-                "-femulated-tls",
             ]
             hook_cflags.extend(x86_cross_flags)
             layer_cflags.extend(x86_cross_flags)
@@ -4881,7 +5168,6 @@ def compile_project(
                     "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
                     "-mstackrealign",
                     "-stdlib=libstdc++",
-                    "-femulated-tls",
                 ]
             curr_cflags = make_cpp_cflags(
                 OPT_FLAGS_X86,
@@ -5038,7 +5324,6 @@ def compile_project(
                         "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
                         "-mstackrealign",
                         "-stdlib=libstdc++",
-                        "-femulated-tls",
                     ]
                     if not IS_LINUX
                     else []
@@ -5137,10 +5422,8 @@ def compile_project(
                 else:
                     # Use local FFmpeg on Windows
                     env_ffmpeg = curr_env.copy()
-                    env_ffmpeg["PKG_CONFIG_PATH"] = (
-                        os.path.join(FFMPEG_DIR, "lib", "pkgconfig")
-                        + os.pathsep
-                        + env_ffmpeg.get("PKG_CONFIG_PATH", "")
+                    env_ffmpeg["PKG_CONFIG_PATH"] = get_windows_ffmpeg_pkg_config_path(
+                        env_ffmpeg.get("PKG_CONFIG_PATH", "")
                     )
 
                     pkgs = [
@@ -5318,9 +5601,7 @@ def compile_project(
             ce_ffmpeg_cflags, _ = get_linux_ffmpeg_build_flags(env, pkg_config)
         else:
             env_ffmpeg = env.copy()
-            env_ffmpeg["PKG_CONFIG_PATH"] = (
-                os.path.join(FFMPEG_DIR, "lib", "pkgconfig") + os.pathsep + env_ffmpeg.get("PKG_CONFIG_PATH", "")
-            )
+            env_ffmpeg["PKG_CONFIG_PATH"] = get_windows_ffmpeg_pkg_config_path(env_ffmpeg.get("PKG_CONFIG_PATH", ""))
             pkgs = [
                 "libavcodec",
                 "libavformat",
@@ -5434,14 +5715,20 @@ def compile_project(
     if not IS_LINUX:
         ffmpeg_bin_src = os.path.join(FFMPEG_DIR, "bin")
         ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
-        msys_bin = os.path.join(MSYS2_DIR, "clang64", "bin")
+        runtime_bin = os.path.join(FFMPEG_DEPENDENCY_PREFIX, "bin")
+        runtime_deps = get_windows_ffmpeg_runtime_deps(runtime_bin)
         sync_ffmpeg_runtime_dlls(
             ffmpeg_bin_src,
             ffmpeg_bin_dst,
-            WINDOWS_FFMPEG_RUNTIME_DEPS,
-            [msys_bin],
+            runtime_deps,
+            [runtime_bin],
+            required_runtime_deps=True,
+            private_runtime_root=FFMPEG_DEPENDENCY_PREFIX,
         )
-        remove_redundant_root_runtime_dlls(BIN_DIR, WINDOWS_FFMPEG_RUNTIME_DEPS)
+        remove_redundant_root_runtime_dlls(
+            BIN_DIR,
+            WINDOWS_FFMPEG_RUNTIME_DEPS + WINDOWS_FFMPEG_OPTIONAL_RUNTIME_DEPS,
+        )
         if env.get("CE_SANITIZE") == "1":
             sync_windows_sanitizer_runtime_dlls(BIN_DIR)
         else:

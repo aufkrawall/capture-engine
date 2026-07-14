@@ -1,0 +1,179 @@
+{
+  "schema_version": 1,
+  "target": "clang64",
+  "toolchain_version": "22.1.8",
+  "builder": "msys2-makepkg-mingw",
+  "build_options": [
+    "MINGW_ARCH=clang64",
+    "--nodeps",
+    "--nocheck",
+    "--cleanbuild",
+    "--force",
+    "--nocolor"
+  ],
+  "dependencies": [
+    {
+      "name": "llvm-runtime",
+      "version": "22.1.8",
+      "source_revision": "llvmorg-22.1.8",
+      "source_repository": "https://github.com/llvm/llvm-project",
+      "upstream_source_url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/llvm-project-22.1.8.src.tar.xz",
+      "upstream_source_sha256": "922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888",
+      "source_package": "mingw-w64-libc++-22.1.8-1.src.tar.zst",
+      "source_package_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-libc++-22.1.8-1.src.tar.zst",
+      "source_package_sha256": "e6836f20f4b5e7f4bc84ea9aff51de72fd2d04e383c7edf6d2b7f53c90154e2c",
+      "source_package_signature_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-libc++-22.1.8-1.src.tar.zst.sig",
+      "source_package_pgp_keys": [
+        "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      ],
+      "pgp_keys": [
+        "B6C8F98282B944E3B0D5C2530FC3042E345AD05D",
+        "474E22316ABF4785A88C6E8EA2C794A986419D8A",
+        "71046D1E9C6656BDD61171873E83BABF4A4F9E85",
+        "FFB3368980F3E6BB5737145A316C56D064CACBA5",
+        "D574BD5D1D0E98895E3BF90044F2485E45D59042"
+      ],
+      "package_outputs": [
+        "mingw-w64-clang-x86_64-libc++",
+        "mingw-w64-clang-x86_64-libunwind"
+      ],
+      "runtime_dlls": [
+        "libc++.dll",
+        "libunwind.dll"
+      ],
+      "license_paths": [
+        "share/licenses/libc++/LICENSE",
+        "share/licenses/libunwind/LICENSE"
+      ]
+    },
+    {
+      "name": "libiconv",
+      "version": "1.19",
+      "source_revision": "1.19",
+      "source_repository": "https://git.savannah.gnu.org/cgit/libiconv.git",
+      "upstream_source_url": "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.19.tar.gz",
+      "upstream_source_sha256": "88dd96a8c0464eca144fc791ae60cd31cd8ee78321e67397e25fc095c4a19aa6",
+      "source_package": "mingw-w64-libiconv-1.19-1.src.tar.zst",
+      "source_package_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-libiconv-1.19-1.src.tar.zst",
+      "source_package_sha256": "74428280c17094da5b702c29b2e1a0abae59556ea5dfdd65705cc8ccc1e000fb",
+      "source_package_signature_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-libiconv-1.19-1.src.tar.zst.sig",
+      "source_package_pgp_keys": [
+        "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      ],
+      "pgp_keys": [
+        "E0FFBD975397F77A32AB76ECB6301D9E1BBEAC08"
+      ],
+      "package_outputs": [
+        "mingw-w64-clang-x86_64-libiconv"
+      ],
+      "runtime_dlls": [
+        "libiconv-2.dll"
+      ],
+      "optional_runtime_dlls": [
+        "libcharset-1.dll"
+      ],
+      "license_paths": [
+        "share/licenses/libiconv/COPYING.LIB",
+        "share/licenses/libiconv/libcharset/COPYING.LIB"
+      ]
+    },
+    {
+      "name": "opus",
+      "version": "1.6.1",
+      "source_revision": "v1.6.1",
+      "source_repository": "https://github.com/xiph/opus",
+      "upstream_source_url": "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz",
+      "upstream_source_sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1",
+      "source_package": "mingw-w64-opus-1.6.1-1.src.tar.zst",
+      "source_package_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-opus-1.6.1-1.src.tar.zst",
+      "source_package_sha256": "f9f4f73a700edcd35e11d7f47bcb164c850b781fa2cccb48cd30d505262b43a2",
+      "source_package_signature_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-opus-1.6.1-1.src.tar.zst.sig",
+      "source_package_pgp_keys": [
+        "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      ],
+      "package_outputs": [
+        "mingw-w64-clang-x86_64-opus"
+      ],
+      "runtime_dlls": [
+        "libopus-0.dll"
+      ],
+      "license_paths": [
+        "share/licenses/opus/COPYING"
+      ]
+    },
+    {
+      "name": "libva",
+      "version": "2.24.1",
+      "source_revision": "2.24.1",
+      "source_repository": "https://github.com/intel/libva",
+      "upstream_source_url": "https://github.com/intel/libva/archive/2.24.1/libva-2.24.1.tar.gz",
+      "upstream_source_sha256": "0b4a3649ee8d683b9cce2ef094df4fb039d276c0cef7e49337c43d3b297b9f42",
+      "source_package": "mingw-w64-libva-2.24.1-1.src.tar.zst",
+      "source_package_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-libva-2.24.1-1.src.tar.zst",
+      "source_package_sha256": "7854d48806606fd1503444f3aba96a7aa19a3c6c07f74f4b0f50257dac9a1469",
+      "source_package_signature_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-libva-2.24.1-1.src.tar.zst.sig",
+      "source_package_pgp_keys": [
+        "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      ],
+      "package_outputs": [
+        "mingw-w64-clang-x86_64-libva"
+      ],
+      "runtime_dlls": [
+        "libva.dll",
+        "libva_win32.dll"
+      ],
+      "license_paths": [
+        "share/licenses/libva/COPYING"
+      ]
+    },
+    {
+      "name": "onevpl",
+      "version": "2.17.0",
+      "source_revision": "v2.17.0",
+      "source_repository": "https://github.com/intel/libvpl",
+      "upstream_source_url": "https://github.com/intel/libvpl/archive/v2.17.0/libvpl-2.17.0.tar.gz",
+      "upstream_source_sha256": "4de3e2faf1e8307fb282e4a43f443191810f6a6b0a484fffa7995ba1c814c6ec",
+      "source_package": "mingw-w64-libvpl-2.17.0-1.src.tar.zst",
+      "source_package_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-libvpl-2.17.0-1.src.tar.zst",
+      "source_package_sha256": "4bd392447f4a5f986462cfc412ab7ace3dfaa980e53b41f35d08c44b8b31cc9d",
+      "source_package_signature_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-libvpl-2.17.0-1.src.tar.zst.sig",
+      "source_package_pgp_keys": [
+        "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      ],
+      "package_outputs": [
+        "mingw-w64-clang-x86_64-libvpl"
+      ],
+      "runtime_dlls": [
+        "libvpl-2.dll"
+      ],
+      "license_paths": [
+        "share/licenses/libvpl/LICENSE"
+      ]
+    },
+    {
+      "name": "svt-av1",
+      "version": "4.1.0",
+      "source_revision": "v4.1.0",
+      "source_repository": "https://gitlab.com/AOMediaCodec/SVT-AV1",
+      "upstream_source_url": "https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v4.1.0/SVT-AV1-v4.1.0.tar.gz",
+      "upstream_source_sha256": "6c4c0c44ff0ba3d136d6f57f3a707f9de8e9c866f50f809c1d22a43f0d8c9583",
+      "source_package": "mingw-w64-svt-av1-4.1.0-1.src.tar.zst",
+      "source_package_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-svt-av1-4.1.0-1.src.tar.zst",
+      "source_package_sha256": "782da694549933d117a37743f14066be568765304b28ee529cffab86864e50c6",
+      "source_package_signature_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-svt-av1-4.1.0-1.src.tar.zst.sig",
+      "source_package_pgp_keys": [
+        "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      ],
+      "package_outputs": [
+        "mingw-w64-clang-x86_64-svt-av1"
+      ],
+      "runtime_dlls": [
+        "libSvtAv1Enc-4.dll"
+      ],
+      "license_paths": [
+        "share/licenses/svt-av1/LICENSE",
+        "share/licenses/svt-av1/PATENTS.md"
+      ]
+    }
+  ]
+}
