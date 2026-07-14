@@ -6,7 +6,9 @@
 #include <new>
 #include "../common/raii_helpers.h"
 #include "mediaengine.h"
+#include "cursor_bitmap_utils.h"
 #include "cursor_geometry.h"
+#include "video_format_policy.h"
 
 // Simple vertex/pixel shader for alpha-blended cursor overlay
 // Compiled inline using D3DCompile at runtime
@@ -60,6 +62,12 @@ float linearToPQ(float nits) {
     return pow((0.8359375 + 18.8515625 * lp) / (1.0 + 18.6875 * lp), 78.84375);
 }
 
+float3 rec709ToRec2020(float3 color) {
+    return float3(0.6274040 * color.r + 0.3292820 * color.g + 0.0433136 * color.b,
+                  0.0690970 * color.r + 0.9195400 * color.g + 0.0113612 * color.b,
+                  0.0163916 * color.r + 0.0880132 * color.g + 0.8955950 * color.b);
+}
+
 // Windows cursor resources are SDR sRGB. Convert their RGB values into the
 // destination transfer function before the fixed-function alpha blend.
 float4 PS_Main(VS_OUTPUT input) : SV_TARGET {
@@ -69,8 +77,9 @@ float4 PS_Main(VS_OUTPUT input) : SV_TARGET {
         if (colorParams.x < 1.5) {
             cursor.rgb = linear * (colorParams.y / 80.0);
         } else {
-            cursor.rgb = float3(linearToPQ(linear.r * colorParams.y), linearToPQ(linear.g * colorParams.y),
-                                linearToPQ(linear.b * colorParams.y));
+            float3 rec2020 = rec709ToRec2020(linear);
+            cursor.rgb = float3(linearToPQ(rec2020.r * colorParams.y), linearToPQ(rec2020.g * colorParams.y),
+                                linearToPQ(rec2020.b * colorParams.y));
         }
     }
     return cursor;
@@ -137,8 +146,7 @@ void CursorRenderer::Cleanup() {
         cursorTexture->Release();
     if (cursorSRV)
         cursorSRV->Release();
-    if (targetRTV)
-        targetRTV->Release();
+    ClearTargetRenderViewCache();
     if (vertexShader)
         vertexShader->Release();
     if (pixelShader)
@@ -156,7 +164,6 @@ void CursorRenderer::Cleanup() {
 
     cursorTexture = nullptr;
     cursorSRV = nullptr;
-    targetRTV = nullptr;
     vertexShader = nullptr;
     pixelShader = nullptr;
     vertexBuffer = nullptr;
@@ -335,146 +342,96 @@ bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32
     *outHeight = 0;
     *outIsMonochrome = false;
 
-    ICONINFO ii;
+    ICONINFO ii = {};
     if (!GetIconInfo(icon, &ii)) {
         return false;
     }
 
-    BITMAP bmpColor = {};
-    BITMAP bmpMask = {};
-    std::unique_ptr<uint8_t[]> colorData;
-    std::unique_ptr<uint8_t[]> maskData;
-
-    *outIsMonochrome = (ii.hbmColor == nullptr);
-
-    if (ii.hbmColor) {
-        if (GetObject(ii.hbmColor, sizeof(bmpColor), &bmpColor) == 0) {
-            DeleteObject(ii.hbmColor);
-            DeleteObject(ii.hbmMask);
-            return false;
-        }
-
-        if (bmpColor.bmBitsPixel < 32) {
-            // Non-32bpp not supported
-            DeleteObject(ii.hbmColor);
-            DeleteObject(ii.hbmMask);
-            return false;
-        }
-
-        uint32_t size = bmpColor.bmHeight * bmpColor.bmWidthBytes;
-        colorData.reset(new (std::nothrow) uint8_t[size]);
-        if (!colorData) {
-            DeleteObject(ii.hbmColor);
-            DeleteObject(ii.hbmMask);
-            return false;
-        }
-        if (GetBitmapBits(ii.hbmColor, size, colorData.get()) != static_cast<LONG>(size)) {
-            DeleteObject(ii.hbmColor);
-            DeleteObject(ii.hbmMask);
-            return false;
-        }
-
-        *outWidth = bmpColor.bmWidth;
-        *outHeight = bmpColor.bmHeight;
-
-        // Check if we need to apply mask for alpha
-        if (ii.hbmMask && GetObject(ii.hbmMask, sizeof(bmpMask), &bmpMask) != 0) {
-            uint32_t maskSize = bmpMask.bmHeight * bmpMask.bmWidthBytes;
-            maskData.reset(new (std::nothrow) uint8_t[maskSize]);
-            if (!maskData) {
-                DeleteObject(ii.hbmColor);
-                DeleteObject(ii.hbmMask);
-                return false;
-            }
-            if (GetBitmapBits(ii.hbmMask, maskSize, maskData.get()) != static_cast<LONG>(maskSize)) {
-                DeleteObject(ii.hbmColor);
-                DeleteObject(ii.hbmMask);
-                return false;
-            }
-
-            // Check if color bitmap has alpha
-            bool hasAlpha = false;
-            uint32_t pixels = bmpColor.bmWidth * bmpColor.bmHeight;
-            for (uint32_t i = 0; i < pixels && !hasAlpha; i++) {
-                if (colorData[i * 4 + 3] != 0) {
-                    hasAlpha = true;
-                }
-            }
-
-            // Apply mask if no alpha in color bitmap
-            if (!hasAlpha) {
-                for (uint32_t y = 0; y < (uint32_t)bmpMask.bmHeight; y++) {
-                    for (uint32_t x = 0; x < (uint32_t)bmpMask.bmWidth; x++) {
-                        uint32_t maskBitOffset = y * (bmpMask.bmWidthBytes * 8) + x;
-                        uint8_t maskByte = maskData[maskBitOffset / 8];
-                        bool maskBit = (maskByte >> (7 - (maskBitOffset % 8))) & 1;
-
-                        uint32_t pixelIdx = (y * bmpColor.bmWidth + x) * 4;
-                        colorData[pixelIdx + 3] = maskBit ? 0 : 255;
-                    }
-                }
-            }
-        }
-
-        *outBitmap = colorData.release();
-    } else {
-        // Monochrome cursor - not fully supported, create placeholder
-        if (!GetObject(ii.hbmMask, sizeof(bmpMask), &bmpMask)) {
-            DeleteObject(ii.hbmMask);
-            return false;
-        }
-
-        // Monochrome mask is split: top half = AND mask, bottom half = XOR mask
-        *outWidth = bmpMask.bmWidth;
-        *outHeight = bmpMask.bmHeight / 2;
-        uint32_t pixels = (*outWidth) * (*outHeight);
-        std::unique_ptr<uint8_t[]> bitmap(new (std::nothrow) uint8_t[pixels * 4]);
-        if (!bitmap) {
-            DeleteObject(ii.hbmColor);
-            DeleteObject(ii.hbmMask);
-            return false;
-        }
-
-        uint32_t maskSize = bmpMask.bmHeight * bmpMask.bmWidthBytes;
-        maskData.reset(new (std::nothrow) uint8_t[maskSize]);
-        if (!maskData) {
-            DeleteObject(ii.hbmColor);
-            DeleteObject(ii.hbmMask);
-            return false;
-        }
-        if (GetBitmapBits(ii.hbmMask, maskSize, maskData.get()) != static_cast<LONG>(maskSize)) {
-            DeleteObject(ii.hbmColor);
-            DeleteObject(ii.hbmMask);
-            return false;
-        }
-
-        uint32_t bottomOffset = bmpMask.bmWidthBytes * (*outHeight);
-
-        for (uint32_t y = 0; y < *outHeight; ++y) {
-            for (uint32_t x = 0; x < *outWidth; ++x) {
-                const uint32_t byteOffset = y * bmpMask.bmWidthBytes + x / 8;
-                const uint32_t bitOffset = 7 - (x % 8);
-                const uint32_t i = y * (*outWidth) + x;
-
-                uint8_t andMask = (maskData[byteOffset] >> bitOffset) & 1;
-                uint8_t xorMask = (maskData[bottomOffset + byteOffset] >> bitOffset) & 1;
-
-                uint32_t color;
-                if (!andMask) {
-                    color = xorMask ? 0xFFFFFFFF : 0xFF000000;  // White or black
-                } else {
-                    color = xorMask ? 0xFFFFFFFF : 0x00000000;  // Inverted or transparent
-                }
-
-                memcpy(bitmap.get() + i * 4, &color, 4);
-            }
-        }
-        *outBitmap = bitmap.release();
-    }
-
+    *outIsMonochrome = ii.hbmColor == nullptr;
+    BITMAP nativeBitmap = {};
+    const HBITMAP dimensionBitmap = ii.hbmColor ? ii.hbmColor : ii.hbmMask;
+    const bool dimensionsValid =
+        dimensionBitmap && GetObject(dimensionBitmap, sizeof(nativeBitmap), &nativeBitmap) != 0;
     DeleteObject(ii.hbmColor);
     DeleteObject(ii.hbmMask);
+    if (!dimensionsValid || nativeBitmap.bmWidth <= 0 || nativeBitmap.bmHeight == 0) {
+        return false;
+    }
 
+    const uint32_t width = static_cast<uint32_t>(nativeBitmap.bmWidth);
+    const uint32_t bitmapHeight = static_cast<uint32_t>(std::abs(nativeBitmap.bmHeight));
+    const uint32_t height = *outIsMonochrome ? bitmapHeight / 2 : bitmapHeight;
+    if (width == 0 || height == 0) {
+        return false;
+    }
+
+    BITMAPINFO dibInfo = {};
+    dibInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    dibInfo.bmiHeader.biWidth = static_cast<LONG>(width);
+    dibInfo.bmiHeader.biHeight = -static_cast<LONG>(height);  // Top-down, matching D3D texture rows.
+    dibInfo.bmiHeader.biPlanes = 1;
+    dibInfo.bmiHeader.biBitCount = 32;
+    dibInfo.bmiHeader.biCompression = BI_RGB;
+
+    HDC dc = CreateCompatibleDC(nullptr);
+    void* dibPixels = nullptr;
+    HBITMAP dib = dc ? CreateDIBSection(dc, &dibInfo, DIB_RGB_COLORS, &dibPixels, nullptr, 0) : nullptr;
+    HGDIOBJ previousBitmap = dib ? SelectObject(dc, dib) : nullptr;
+    if (!dc || !dib || !dibPixels || !previousBitmap || previousBitmap == HGDI_ERROR) {
+        if (dib)
+            DeleteObject(dib);
+        if (dc)
+            DeleteDC(dc);
+        return false;
+    }
+
+    const size_t pixelCount = static_cast<size_t>(width) * height;
+    auto overBlack = std::make_unique<uint8_t[]>(pixelCount * 4);
+    auto result = std::make_unique<uint8_t[]>(pixelCount * 4);
+    auto drawOver = [&](uint32_t background) {
+        std::fill_n(static_cast<uint32_t*>(dibPixels), pixelCount, background);
+        return DrawIconEx(dc, 0, 0, icon, static_cast<int>(width), static_cast<int>(height), 0, nullptr,
+                          DI_NORMAL) != FALSE;
+    };
+
+    bool rendered = drawOver(0xFF000000u);
+    if (rendered) {
+        memcpy(overBlack.get(), dibPixels, pixelCount * 4);
+        rendered = drawOver(0xFFFFFFFFu);
+    }
+    if (rendered) {
+        const auto* overWhite = static_cast<const uint8_t*>(dibPixels);
+        for (size_t i = 0; i < pixelCount; ++i) {
+            const ce::cursor_bitmap::Bgra8 black = {
+                overBlack[i * 4 + 0],
+                overBlack[i * 4 + 1],
+                overBlack[i * 4 + 2],
+                overBlack[i * 4 + 3],
+            };
+            const ce::cursor_bitmap::Bgra8 white = {
+                overWhite[i * 4 + 0],
+                overWhite[i * 4 + 1],
+                overWhite[i * 4 + 2],
+                overWhite[i * 4 + 3],
+            };
+            const auto straight = ce::cursor_bitmap::ReconstructStraightAlpha(black, white);
+            result[i * 4 + 0] = straight.b;
+            result[i * 4 + 1] = straight.g;
+            result[i * 4 + 2] = straight.r;
+            result[i * 4 + 3] = straight.a;
+        }
+    }
+
+    SelectObject(dc, previousBitmap);
+    DeleteObject(dib);
+    DeleteDC(dc);
+    if (!rendered) {
+        return false;
+    }
+
+    *outBitmap = result.release();
+    *outWidth = width;
+    *outHeight = height;
     return true;
 }
 
@@ -620,48 +577,127 @@ bool CursorRenderer::UpdateCursorTexture(const ce::cursor::CaptureState& state) 
     return true;
 }
 
-bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int frameWidth, int frameHeight,
-                                        const ce::cursor::CaptureState& state, CursorColorMode colorMode,
-                                        float paperWhiteNits) {
-    if (!resourcesCreated || !device || !context) {
+bool CursorRenderer::GetCursorFrameRect(int frameWidth, int frameHeight, const ce::cursor::CaptureState& state,
+                                        RECT* result) {
+    if (!result || !resourcesCreated || !device || !context || frameWidth <= 0 || frameHeight <= 0 ||
+        !state.IsVisible() || !UpdateCursorTexture(state) || !cursorTexture || !cursorSRV) {
         return false;
     }
 
-    if (!state.IsVisible()) {
-        return false;
-    }
-
-    // Update cursor texture if needed
-    if (!UpdateCursorTexture(state)) {
-        return false;
-    }
-
-    if (!cursorTexture || !cursorSRV) {
-        return false;
-    }
-
-    // Create render target view for target texture
-    if (targetRTV) {
-        targetRTV->Release();
-        targetRTV = nullptr;
-    }
-
-    HRESULT hr = device->CreateRenderTargetView(targetTexture, nullptr, &targetRTV);
-    if (FAILED(hr)) {
-        return false;
-    }
-
-    ce::cursor_geometry::Rect cursorRect;
     const int captureWidth = state.captureWidth != 0 ? static_cast<int>(state.captureWidth) : frameWidth;
     const int captureHeight = state.captureHeight != 0 ? static_cast<int>(state.captureHeight) : frameHeight;
     const int positionHotspotX =
         ce::cursor_geometry::ResolveHotspotForPosition(hotspotX, state.PositionIsShapeTopLeft());
     const int positionHotspotY =
         ce::cursor_geometry::ResolveHotspotForPosition(hotspotY, state.PositionIsShapeTopLeft());
+    ce::cursor_geometry::Rect cursorRect;
     if (!ce::cursor_geometry::MapScreenCursorToFrame(
             state.screenX, state.screenY, positionHotspotX, positionHotspotY, static_cast<int>(cursorWidth),
             static_cast<int>(cursorHeight), state.captureLeft, state.captureTop, captureWidth, captureHeight,
             frameWidth, frameHeight, &cursorRect)) {
+        return false;
+    }
+
+    *result = {cursorRect.left, cursorRect.top, cursorRect.right, cursorRect.bottom};
+    return true;
+}
+
+void CursorRenderer::ClearTargetRenderViewCache() {
+    for (auto& entry : targetRtvCache) {
+        if (entry.view) {
+            entry.view->Release();
+        }
+        entry = {};
+    }
+    targetRtvUseCounter = 0;
+    targetRtvWidth = 0;
+    targetRtvHeight = 0;
+    targetRtvArraySize = 0;
+    targetRtvFormat = DXGI_FORMAT_UNKNOWN;
+    targetRtvSampleDesc = {};
+}
+
+ID3D11RenderTargetView* CursorRenderer::GetTargetRenderView(ID3D11Texture2D* targetTexture,
+                                                            const D3D11_TEXTURE2D_DESC& targetDesc) {
+    const bool targetClassChanged = targetRtvWidth != targetDesc.Width || targetRtvHeight != targetDesc.Height ||
+                                    targetRtvArraySize != targetDesc.ArraySize ||
+                                    targetRtvFormat != targetDesc.Format ||
+                                    targetRtvSampleDesc.Count != targetDesc.SampleDesc.Count ||
+                                    targetRtvSampleDesc.Quality != targetDesc.SampleDesc.Quality;
+    if (targetClassChanged) {
+        ClearTargetRenderViewCache();
+        targetRtvWidth = targetDesc.Width;
+        targetRtvHeight = targetDesc.Height;
+        targetRtvArraySize = targetDesc.ArraySize;
+        targetRtvFormat = targetDesc.Format;
+        targetRtvSampleDesc = targetDesc.SampleDesc;
+    }
+
+    ++targetRtvUseCounter;
+    TargetRtvCacheEntry* replacement = nullptr;
+    for (auto& entry : targetRtvCache) {
+        if (entry.texture == targetTexture && entry.view) {
+            entry.lastUsed = targetRtvUseCounter;
+            return entry.view;
+        }
+        if (!replacement || !entry.view || entry.lastUsed < replacement->lastUsed) {
+            replacement = &entry;
+            if (!entry.view) {
+                break;
+            }
+        }
+    }
+
+    D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+    rtvDesc.Format = ce::video_format::GetRgbShaderResourceViewFormat(targetDesc.Format);
+    if (rtvDesc.Format == DXGI_FORMAT_UNKNOWN) {
+        return nullptr;
+    }
+    if (targetDesc.ArraySize > 1) {
+        if (targetDesc.SampleDesc.Count > 1) {
+            rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMSARRAY;
+            rtvDesc.Texture2DMSArray.ArraySize = 1;
+        } else {
+            rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
+            rtvDesc.Texture2DArray.MipSlice = 0;
+            rtvDesc.Texture2DArray.ArraySize = 1;
+        }
+    } else if (targetDesc.SampleDesc.Count > 1) {
+        rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMS;
+    } else {
+        rtvDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        rtvDesc.Texture2D.MipSlice = 0;
+    }
+
+    ID3D11RenderTargetView* view = nullptr;
+    if (FAILED(device->CreateRenderTargetView(targetTexture, &rtvDesc, &view))) {
+        return nullptr;
+    }
+    if (replacement->view) {
+        replacement->view->Release();
+    }
+    replacement->texture = targetTexture;
+    replacement->view = view;
+    replacement->lastUsed = targetRtvUseCounter;
+    return view;
+}
+
+bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int frameWidth, int frameHeight,
+                                        const ce::cursor::CaptureState& state, CursorColorMode colorMode,
+                                        float paperWhiteNits) {
+    if (!targetTexture || !resourcesCreated || !device || !context) {
+        return false;
+    }
+
+    RECT cursorRect = {};
+    if (!GetCursorFrameRect(frameWidth, frameHeight, state, &cursorRect)) {
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC targetDesc = {};
+    targetTexture->GetDesc(&targetDesc);
+    ID3D11RenderTargetView* targetRTV = GetTargetRenderView(targetTexture, targetDesc);
+    if (!targetRTV) {
         return false;
     }
 
@@ -672,24 +708,25 @@ bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int fram
 
     // Update constant buffer
     D3D11_MAPPED_SUBRESOURCE mapped;
-    hr = context->Map(constantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    if (SUCCEEDED(hr)) {
-        CursorConstants* cb = (CursorConstants*)mapped.pData;
-        cb->cursorX = cursorX;
-        cb->cursorY = cursorY;
-        cb->cursorWidth = cursorW;
-        cb->cursorHeight = cursorH;
-        cb->colorMode = static_cast<float>(colorMode);
-        cb->paperWhiteNits = paperWhiteNits;
-        cb->padding0 = 0.0f;
-        cb->padding1 = 0.0f;
-        context->Unmap(constantBuffer, 0);
+    HRESULT hr = context->Map(constantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    if (FAILED(hr)) {
+        return false;
     }
+    CursorConstants* cb = (CursorConstants*)mapped.pData;
+    cb->cursorX = cursorX;
+    cb->cursorY = cursorY;
+    cb->cursorWidth = cursorW;
+    cb->cursorHeight = cursorH;
+    cb->colorMode = static_cast<float>(colorMode);
+    cb->paperWhiteNits = paperWhiteNits;
+    cb->padding0 = 0.0f;
+    cb->padding1 = 0.0f;
+    context->Unmap(constantBuffer, 0);
 
     // Save current state
     ID3D11RenderTargetView* oldRTV = nullptr;
     ID3D11DepthStencilView* oldDSV = nullptr;
-    D3D11_VIEWPORT oldVP;
+    D3D11_VIEWPORT oldVP = {};
     UINT numVPs = 1;
     context->OMGetRenderTargets(1, &oldRTV, &oldDSV);
     context->RSGetViewports(&numVPs, &oldVP);
@@ -719,9 +756,12 @@ bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int fram
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     context->Draw(4, 0);
 
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    context->PSSetShaderResources(0, 1, &nullSRV);
+
     // Restore state
     context->OMSetRenderTargets(1, &oldRTV, oldDSV);
-    context->RSSetViewports(1, &oldVP);
+    context->RSSetViewports(numVPs ? 1 : 0, numVPs ? &oldVP : nullptr);
 
     if (oldRTV)
         oldRTV->Release();

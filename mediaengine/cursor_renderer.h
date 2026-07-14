@@ -2,6 +2,7 @@
 
 #include <d3d11.h>
 #include <windows.h>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include "../common/cursor_capture_state.h"
@@ -23,7 +24,7 @@ struct CursorBitmapData {
 
 // Scale a BGRA bitmap using nearest-neighbor (point) filtering.
 // Used to pre-scale cursor bitmaps to DPI-correct display size before GPU upload,
-// so the D3D11 Video Processor does a 1:1 blit with no bilinear blur.
+// so cursor composition never needs a video-oriented scaling filter.
 std::unique_ptr<uint8_t[]> ScaleBitmapNearestNeighbor(const uint8_t* src, uint32_t srcW, uint32_t srcH, uint32_t dstW,
                                                       uint32_t dstH);
 
@@ -49,9 +50,10 @@ public:
                             const ce::cursor::CaptureState& state, CursorColorMode colorMode,
                             float paperWhiteNits = 200.0f);
 
-    // Extract cursor bitmap to CPU memory (public for VP overlay use)
-    bool ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32_t* outWidth, uint32_t* outHeight,
-                             bool* outIsMonochrome);
+    // Resolves the full, unclipped cursor rectangle and prepares the cached
+    // point-sampled cursor texture. Used to back up only the pixels that the
+    // subsequent draw can touch.
+    bool GetCursorFrameRect(int frameWidth, int frameHeight, const ce::cursor::CaptureState& state, RECT* result);
 
     // Loads the best Windows cursor resource for the requested monitor-DPI
     // size. Larger custom/accessibility cursors are never downscaled.
@@ -59,18 +61,23 @@ public:
                           CursorBitmapData* result);
 
 private:
+    bool ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32_t* outWidth, uint32_t* outHeight,
+                             bool* outIsMonochrome);
+
     // Check cursor state and update texture if shape changed
     bool UpdateCursorTexture(const ce::cursor::CaptureState& state);
 
     // Create D3D11 resources for rendering
     bool CreateRenderingResources();
+    ID3D11RenderTargetView* GetTargetRenderView(ID3D11Texture2D* targetTexture,
+                                                const D3D11_TEXTURE2D_DESC& targetDesc);
+    void ClearTargetRenderViewCache();
 
     // D3D11 resources
     ID3D11Device* device = nullptr;
     ID3D11DeviceContext* context = nullptr;
     ID3D11Texture2D* cursorTexture = nullptr;
     ID3D11ShaderResourceView* cursorSRV = nullptr;
-    ID3D11RenderTargetView* targetRTV = nullptr;
     ID3D11VertexShader* vertexShader = nullptr;
     ID3D11PixelShader* pixelShader = nullptr;
     ID3D11Buffer* vertexBuffer = nullptr;
@@ -89,6 +96,20 @@ private:
     uint32_t cursorHeight = 0;
     bool isMonochrome = false;
     bool resourcesCreated = false;
+
+    static constexpr std::size_t kTargetRtvCacheSize = 64;
+    struct TargetRtvCacheEntry {
+        ID3D11Texture2D* texture = nullptr;
+        ID3D11RenderTargetView* view = nullptr;
+        uint64_t lastUsed = 0;
+    };
+    std::array<TargetRtvCacheEntry, kTargetRtvCacheSize> targetRtvCache{};
+    uint64_t targetRtvUseCounter = 0;
+    uint32_t targetRtvWidth = 0;
+    uint32_t targetRtvHeight = 0;
+    uint32_t targetRtvArraySize = 0;
+    DXGI_FORMAT targetRtvFormat = DXGI_FORMAT_UNKNOWN;
+    DXGI_SAMPLE_DESC targetRtvSampleDesc = {};
 
     // Constant buffer data for shader
     struct CursorConstants {

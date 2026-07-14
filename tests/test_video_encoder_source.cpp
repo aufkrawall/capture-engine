@@ -78,7 +78,7 @@ TEST(VideoEncoderSourceTest, MetadataDurationDiagnosticsRunAfterTrailerAndIgnore
     EXPECT_NE(source.find("Final in-memory AVStream durations are incomplete"), std::string::npos);
 }
 
-TEST(VideoEncoderSourceTest, DesktopAndCursorVpStreamsDisableAutomaticTemporalProcessing) {
+TEST(VideoEncoderSourceTest, VideoProcessorUsesOneDeterministicPrecompositedRgbStream) {
     const std::string source = ReadVideoEncoderSource();
     ASSERT_FALSE(source.empty());
 
@@ -87,10 +87,39 @@ TEST(VideoEncoderSourceTest, DesktopAndCursorVpStreamsDisableAutomaticTemporalPr
               std::string::npos);
     EXPECT_NE(source.find("VideoProcessorSetStreamAutoProcessingMode(videoProcessor, 0, FALSE)"),
               std::string::npos);
-    EXPECT_NE(source.find("VideoProcessorSetStreamFrameFormat(videoProcessor, 1, "
-                          "D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE)"),
+    EXPECT_NE(source.find("[VideoProcessor] Deterministic single-stream processing"), std::string::npos);
+    EXPECT_EQ(source.find("VideoProcessorSetStreamFrameFormat(videoProcessor, 1"), std::string::npos);
+    EXPECT_EQ(source.find("VideoProcessorSetStreamAutoProcessingMode(videoProcessor, 1"), std::string::npos);
+    EXPECT_EQ(source.find("VideoProcessorSetStreamAlpha"), std::string::npos);
+    EXPECT_EQ(source.find("streams[1]"), std::string::npos);
+}
+
+TEST(VideoEncoderSourceTest, CursorPrecompositionBacksUpOnlyTouchedRgbRegionOnNormalCaptureSurfaces) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("PrepareVideoProcessorCursorInput(bgraTexture, overlayCursor"), std::string::npos);
+    EXPECT_NE(source.find("(sourceDesc.BindFlags & D3D11_BIND_RENDER_TARGET) != 0"), std::string::npos);
+    EXPECT_NE(source.find("CopySubresourceRegion(cursorRestoreTexture, 0, 0, 0, 0, source"), std::string::npos);
+    EXPECT_NE(source.find("CopySubresourceRegion(target, 0, destinationX, destinationY, 0, backup"),
               std::string::npos);
-    EXPECT_NE(source.find("VideoProcessorSetStreamAutoProcessingMode(videoProcessor, 1, FALSE)"),
+    EXPECT_NE(source.find("Point RGB precomposition before VP active"), std::string::npos);
+    EXPECT_NE(source.find("VideoProcessorBlt(videoProcessor, outputViews[bufIdx], 0, 1, &stream)"),
               std::string::npos);
-    EXPECT_NE(source.find("[VideoProcessor] Deterministic stream processing"), std::string::npos);
+}
+
+TEST(VideoEncoderSourceTest, CursorPrecompositionFailureNeverFailsVideoConversion) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t prepare = source.find("bool VideoEncoder::PrepareVideoProcessorCursorInput");
+    ASSERT_NE(prepare, std::string::npos);
+    const size_t preparedSource = source.find("*preparedSource = source;", prepare);
+    ASSERT_NE(preparedSource, std::string::npos);
+    const size_t convert = source.find("bool VideoEncoder::ConvertBGRAtoNV12", preparedSource);
+    ASSERT_NE(convert, std::string::npos);
+    const std::string cursorBody = source.substr(preparedSource, convert - preparedSource);
+
+    EXPECT_EQ(cursorBody.find("return false;"), std::string::npos);
+    EXPECT_NE(cursorBody.find("video conversion continues without this"), std::string::npos);
 }

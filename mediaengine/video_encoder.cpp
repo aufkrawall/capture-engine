@@ -5,7 +5,6 @@
 #include "../common/raii_helpers.h"
 #include "../common/shared_defs.h"
 #include "audio_time_utils.h"  // For ce::audio::ParseSampleRateOr
-#include "cursor_geometry.h"
 #include "mediaengine.h"
 #include "matroska_timing.h"
 #include "mux_invariants.h"
@@ -1457,7 +1456,6 @@ void VideoEncoder::ReleaseInjectDeviceStateForScreenGrab() {
     }
 
     CleanupVideoProcessor();
-    CleanupCursorCache();
     if (cursorRenderer) {
         cursorRenderer->Cleanup();
     }
@@ -1786,20 +1784,7 @@ bool VideoEncoder::PopulateD3D11FrameFromRepeatSource(AVFrame* d3d11Frame) {
     }
 
     ID3D11Texture2D* nv12Tex = nullptr;
-    bool cursorVisible = false;
-    int cursorX = 0;
-    int cursorY = 0;
-    if (CursorCompositionActive() && vpSupportsOverlay && cursorRenderer) {
-        cursorVisible = cursorCaptureState.IsVisible();
-        if (cursorVisible) {
-            cursorX = cursorCaptureState.screenX;
-            cursorY = cursorCaptureState.screenY;
-            activeCursor = GetCursorCacheEntry(cursorCaptureState);
-            cursorVisible = activeCursor != nullptr;
-        }
-    }
-
-    if (!ConvertBGRAtoNV12(repeatSourceFrameTexture, &nv12Tex, cursorVisible, cursorX, cursorY, false,
+    if (!ConvertBGRAtoNV12(repeatSourceFrameTexture, &nv12Tex, CursorCompositionActive(), false,
                            repeatSourceCaptureOriginX, repeatSourceCaptureOriginY)) {
         return false;
     }
@@ -3796,27 +3781,12 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     const AVPixelFormat activeSwFormat = GetActiveD3D11SwFormat();
     const bool useDirectRgbPath = IsDirectRgbD3D11SwFormat(activeSwFormat);
 
-    // 4. Ensure Video Processor is initialized first (to get vpSupportsOverlay)
+    // 4. Ensure Video Processor is initialized before RGB -> YUV conversion.
     if (!useDirectRgbPath && !videoProcessorInit) {
         if (!InitVideoProcessor()) {
             DLL_Log("[VideoEncoder] Frame %d: VP init failed", encodeFrameCounter);
             bgraTex->Release();
             return false;
-        }
-    }
-
-    // 5. Get cursor info for VP overlay compositing (now vpSupportsOverlay is
-    // valid)
-    bool cursorVisible = false;
-    int cursorX = 0, cursorY = 0;
-
-    if (!useDirectRgbPath && CursorCompositionActive() && vpSupportsOverlay && cursorRenderer) {
-        cursorVisible = cursorCaptureState.IsVisible();
-        if (cursorVisible) {
-            cursorX = cursorCaptureState.screenX;
-            cursorY = cursorCaptureState.screenY;
-            activeCursor = GetCursorCacheEntry(cursorCaptureState);
-            cursorVisible = activeCursor != nullptr;
         }
     }
 
@@ -3849,10 +3819,10 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             return false;
         }
     } else {
-        // 6. Convert BGRA -> NV12 on GPU using Video Processor (with cursor
-        // overlay)
+        // 6. Point-composite a separate cursor in RGB, then convert the one
+        // deterministic RGB stream to NV12/P010 on the GPU.
         ID3D11Texture2D* nv12Tex = nullptr;
-        if (!ConvertBGRAtoNV12(bgraTex, &nv12Tex, cursorVisible, cursorX, cursorY, true)) {
+        if (!ConvertBGRAtoNV12(bgraTex, &nv12Tex, CursorCompositionActive(), true)) {
             DLL_Log("[VideoEncoder] Frame %d: GPU color conversion failed", encodeFrameCounter);
             bgraTex->Release();
             av_frame_free(&d3d11Frame);
@@ -4284,8 +4254,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         }
     }
 
-    const bool recomposeCursorForRepeats =
-        CursorCompositionActive() && cursorRenderer && (useDirectRgbPath || vpSupportsOverlay);
+    const bool recomposeCursorForRepeats = CursorCompositionActive() && cursorRenderer;
     if (recomposeCursorForRepeats) {
         InvalidateRepeatPacketCache();
     } else if (repeatSourceNeedsCursorRecompose) {
@@ -4318,27 +4287,14 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             return false;
         }
     } else {
-        // Convert captured RGB -> NV12/P010 using Video Processor. WGC keeps
-        // native cursor capture disabled so Windows can retain the hardware
-        // cursor plane; when requested, draw a cursor copy into the encoded
-        // frame here.
+        // WGC/DXGI/inject keep a hardware cursor separate whenever Windows
+        // permits it. Point-composite that cursor into RGB before the single
+        // VP conversion so its filtering matches a Windows-embedded cursor.
         ID3D11Texture2D* nv12Tex = nullptr;
-        bool cursorVisible = false;
-        int cursorX = 0;
-        int cursorY = 0;
-        if (CursorCompositionActive() && vpSupportsOverlay && cursorRenderer) {
-            cursorVisible = cursorCaptureState.IsVisible();
-            if (cursorVisible) {
-                cursorX = cursorCaptureState.screenX;
-                cursorY = cursorCaptureState.screenY;
-                activeCursor = GetCursorCacheEntry(cursorCaptureState);
-                cursorVisible = activeCursor != nullptr;
-            }
-        }
 
         // Scoped Lock for D3D11 Immediate Context (protects Blt/CopyResource)
-        bool convertSuccess =
-            ConvertBGRAtoNV12(bgraTexture, &nv12Tex, cursorVisible, cursorX, cursorY, true, captureLeft, captureTop, 1);
+        bool convertSuccess = ConvertBGRAtoNV12(bgraTexture, &nv12Tex, CursorCompositionActive(), true, captureLeft,
+                                                captureTop, 1);
 
         if (!convertSuccess) {
             DLL_Log("[VideoEncoder] Frame %d: GPU color conversion failed", encodeFrameCounter);
@@ -4871,7 +4827,6 @@ void VideoEncoder::CleanupResources() {
     }
 
     CleanupVideoProcessor();
-    CleanupCursorCache();
     if (cursorRenderer) {
         cursorRenderer->Cleanup();
     }
@@ -4929,10 +4884,6 @@ void VideoEncoder::CleanupResources() {
     encoderEagainDrainCount = 0;
     encoderTimingLastLogTick = 0;
     asyncWriteErrorCount = 0;
-    cursorUpdateCounter = 0;
-    cachedCursorX = 0;
-    cachedCursorY = 0;
-    cachedCursorVisible = false;
 }
 
 void VideoEncoder::ReleasePreservedEncoderTextures() {
@@ -5241,46 +5192,18 @@ bool VideoEncoder::InitVideoProcessor() {
         return false;
     }
 
-    // Check if VP supports 2+ input streams for cursor overlay
-    D3D11_VIDEO_PROCESSOR_CAPS vpCaps = {};
-    hr = videoProcessorEnum->GetVideoProcessorCaps(&vpCaps);
-    if (SUCCEEDED(hr)) {
-        vpSupportsOverlay = (vpCaps.MaxInputStreams >= 2);
-        DLL_Log("[VideoProcessor] MaxInputStreams=%d, overlay support=%s", vpCaps.MaxInputStreams,
-                vpSupportsOverlay ? "YES" : "NO");
-    } else {
-        DLL_Log("[VideoProcessor] Failed to get VP caps, overlay disabled");
-        vpSupportsOverlay = false;
-    }
-
-    // Desktop and cursor textures are independent progressive frames. Driver
-    // auto-processing may otherwise apply denoise, de-ringing, image
-    // stabilization, or other temporal/video heuristics. Those heuristics are
-    // inappropriate for pixel-sharp UI and can make a moving cursor alternate
-    // between a sharp repeat and a ghosted fresh frame.
+    // Capture textures are progressive desktop/game frames. Driver automatic
+    // processing may apply temporal video heuristics that are inappropriate
+    // for pixel-sharp UI. A separate cursor is already point-composited into
+    // this RGB stream before the VP sees it.
     videoContext->VideoProcessorSetStreamFrameFormat(videoProcessor, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
     videoContext->VideoProcessorSetStreamAutoProcessingMode(videoProcessor, 0, FALSE);
-    if (vpSupportsOverlay) {
-        videoContext->VideoProcessorSetStreamFrameFormat(videoProcessor, 1, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
-        videoContext->VideoProcessorSetStreamAutoProcessingMode(videoProcessor, 1, FALSE);
-    }
     D3D11_VIDEO_FRAME_FORMAT mainFrameFormat = D3D11_VIDEO_FRAME_FORMAT_INTERLACED_TOP_FIELD_FIRST;
     BOOL mainAutoProcessing = TRUE;
     videoContext->VideoProcessorGetStreamFrameFormat(videoProcessor, 0, &mainFrameFormat);
     videoContext->VideoProcessorGetStreamAutoProcessingMode(videoProcessor, 0, &mainAutoProcessing);
-    D3D11_VIDEO_FRAME_FORMAT cursorFrameFormat = D3D11_VIDEO_FRAME_FORMAT_INTERLACED_TOP_FIELD_FIRST;
-    BOOL cursorAutoProcessing = TRUE;
-    if (vpSupportsOverlay) {
-        videoContext->VideoProcessorGetStreamFrameFormat(videoProcessor, 1, &cursorFrameFormat);
-        videoContext->VideoProcessorGetStreamAutoProcessingMode(videoProcessor, 1, &cursorAutoProcessing);
-    }
-    DLL_Log(
-        "[VideoProcessor] Deterministic stream processing: mainProgressive=%d mainAuto=%d "
-        "cursorStream=%d cursorProgressive=%d cursorAuto=%d",
-        mainFrameFormat == D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE ? 1 : 0, mainAutoProcessing ? 1 : 0,
-        vpSupportsOverlay ? 1 : 0,
-        vpSupportsOverlay && cursorFrameFormat == D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE ? 1 : 0,
-        vpSupportsOverlay && cursorAutoProcessing ? 1 : 0);
+    DLL_Log("[VideoProcessor] Deterministic single-stream processing: progressive=%d auto=%d",
+            mainFrameFormat == D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE ? 1 : 0, mainAutoProcessing ? 1 : 0);
 
     // Configure scaling filter if scaling is enabled
     if (scalingEnabled) {
@@ -5533,9 +5456,197 @@ bool VideoEncoder::InitVideoProcessor() {
     return true;
 }
 
-bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool cursorVisible,
-                                     int cursorX, int cursorY, bool allowDirectInputView, int captureOriginX,
-                                     int captureOriginY, uint64_t keyedMutexAcquireKey) {
+VideoEncoder::CursorSourceRestore::~CursorSourceRestore() {
+    if (!active || !context || !target || !backup || width == 0 || height == 0) {
+        return;
+    }
+    const D3D11_BOX backupBox = {0, 0, 0, width, height, 1};
+    context->CopySubresourceRegion(target, 0, destinationX, destinationY, 0, backup, 0, &backupBox);
+}
+
+void VideoEncoder::CleanupCursorCompositionResources() {
+    if (cursorRestoreTexture) {
+        cursorRestoreTexture->Release();
+        cursorRestoreTexture = nullptr;
+    }
+    if (cursorCompositeTexture) {
+        cursorCompositeTexture->Release();
+        cursorCompositeTexture = nullptr;
+    }
+}
+
+bool VideoEncoder::PrepareVideoProcessorCursorInput(ID3D11Texture2D* source, bool overlayCursor,
+                                                    CursorSourceRestore* restore,
+                                                    ID3D11Texture2D** preparedSource) {
+    if (!source || !restore || !preparedSource || !d3d11Device || !d3d11Context) {
+        return false;
+    }
+    *preparedSource = source;
+    if (!overlayCursor || !cursorRenderer || !cursorCaptureState.IsVisible()) {
+        return true;
+    }
+
+    if (!cursorRenderer->Init(d3d11Device, d3d11Context)) {
+        if (cursorPrecompositionFailureLogs++ < 5) {
+            DLL_Log(
+                "[Cursor] Failed to initialize RGB cursor renderer; video conversion continues without this "
+                "separate cursor draw");
+        }
+        return true;
+    }
+
+    D3D11_TEXTURE2D_DESC sourceDesc = {};
+    source->GetDesc(&sourceDesc);
+    RECT cursorRect = {};
+    if (!cursorRenderer->GetCursorFrameRect(static_cast<int>(sourceDesc.Width), static_cast<int>(sourceDesc.Height),
+                                            cursorCaptureState, &cursorRect)) {
+        if (cursorPrecompositionFailureLogs++ < 5) {
+            DLL_Log(
+                "[Cursor] Failed to resolve cursor bitmap/rectangle; video conversion continues without this "
+                "separate cursor draw");
+        }
+        return true;
+    }
+
+    const LONG clippedLeft = std::clamp<LONG>(cursorRect.left, 0, static_cast<LONG>(sourceDesc.Width));
+    const LONG clippedTop = std::clamp<LONG>(cursorRect.top, 0, static_cast<LONG>(sourceDesc.Height));
+    const LONG clippedRight = std::clamp<LONG>(cursorRect.right, 0, static_cast<LONG>(sourceDesc.Width));
+    const LONG clippedBottom = std::clamp<LONG>(cursorRect.bottom, 0, static_cast<LONG>(sourceDesc.Height));
+    if (clippedLeft >= clippedRight || clippedTop >= clippedBottom) {
+        return true;
+    }
+
+    const UINT regionWidth = static_cast<UINT>(clippedRight - clippedLeft);
+    const UINT regionHeight = static_cast<UINT>(clippedBottom - clippedTop);
+    ID3D11Texture2D* compositionTarget = source;
+    bool useSmallRestore = (sourceDesc.BindFlags & D3D11_BIND_RENDER_TARGET) != 0 && sourceDesc.SampleDesc.Count == 1;
+
+    if (useSmallRestore) {
+        bool recreateRestore = cursorRestoreTexture == nullptr;
+        if (cursorRestoreTexture) {
+            D3D11_TEXTURE2D_DESC existing = {};
+            cursorRestoreTexture->GetDesc(&existing);
+            recreateRestore = existing.Format != sourceDesc.Format || existing.Width < regionWidth ||
+                              existing.Height < regionHeight;
+        }
+        if (recreateRestore) {
+            if (cursorRestoreTexture) {
+                cursorRestoreTexture->Release();
+                cursorRestoreTexture = nullptr;
+            }
+            D3D11_TEXTURE2D_DESC restoreDesc = {};
+            restoreDesc.Width = regionWidth;
+            restoreDesc.Height = regionHeight;
+            restoreDesc.MipLevels = 1;
+            restoreDesc.ArraySize = 1;
+            restoreDesc.Format = sourceDesc.Format;
+            restoreDesc.SampleDesc.Count = 1;
+            restoreDesc.Usage = D3D11_USAGE_DEFAULT;
+            const HRESULT restoreHr = d3d11Device->CreateTexture2D(&restoreDesc, nullptr, &cursorRestoreTexture);
+            if (FAILED(restoreHr)) {
+                useSmallRestore = false;
+                if (cursorPrecompositionFailureLogs++ < 5) {
+                    DLL_Log("[Cursor] Small RGB restore texture creation failed: fmt=%d %ux%u HR=%x",
+                            sourceDesc.Format, regionWidth, regionHeight, restoreHr);
+                }
+            }
+        }
+    }
+
+    if (useSmallRestore) {
+        const D3D11_BOX sourceBox = {
+            static_cast<UINT>(clippedLeft),
+            static_cast<UINT>(clippedTop),
+            0,
+            static_cast<UINT>(clippedRight),
+            static_cast<UINT>(clippedBottom),
+            1,
+        };
+        d3d11Context->CopySubresourceRegion(cursorRestoreTexture, 0, 0, 0, 0, source, 0, &sourceBox);
+        restore->context = d3d11Context;
+        restore->target = source;
+        restore->backup = cursorRestoreTexture;
+        restore->destinationX = static_cast<UINT>(clippedLeft);
+        restore->destinationY = static_cast<UINT>(clippedTop);
+        restore->width = regionWidth;
+        restore->height = regionHeight;
+        restore->active = true;
+    } else {
+        bool recreateComposite = cursorCompositeTexture == nullptr;
+        if (cursorCompositeTexture) {
+            D3D11_TEXTURE2D_DESC existing = {};
+            cursorCompositeTexture->GetDesc(&existing);
+            recreateComposite = existing.Width != sourceDesc.Width || existing.Height != sourceDesc.Height ||
+                                existing.MipLevels != sourceDesc.MipLevels ||
+                                existing.ArraySize != sourceDesc.ArraySize || existing.Format != sourceDesc.Format ||
+                                existing.SampleDesc.Count != sourceDesc.SampleDesc.Count ||
+                                existing.SampleDesc.Quality != sourceDesc.SampleDesc.Quality;
+        }
+        if (recreateComposite) {
+            if (cursorCompositeTexture) {
+                cursorCompositeTexture->Release();
+                cursorCompositeTexture = nullptr;
+            }
+            D3D11_TEXTURE2D_DESC compositeDesc = sourceDesc;
+            compositeDesc.Usage = D3D11_USAGE_DEFAULT;
+            compositeDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+            compositeDesc.CPUAccessFlags = 0;
+            compositeDesc.MiscFlags = 0;
+            const HRESULT compositeHr =
+                d3d11Device->CreateTexture2D(&compositeDesc, nullptr, &cursorCompositeTexture);
+            if (FAILED(compositeHr)) {
+                if (cursorPrecompositionFailureLogs++ < 5) {
+                    DLL_Log(
+                        "[Cursor] RGB cursor fallback texture creation failed; video conversion continues without "
+                        "this separate cursor draw: fmt=%d bind=%x HR=%x",
+                        sourceDesc.Format, sourceDesc.BindFlags, compositeHr);
+                }
+                return true;
+            }
+        }
+        d3d11Context->CopyResource(cursorCompositeTexture, source);
+        compositionTarget = cursorCompositeTexture;
+        *preparedSource = cursorCompositeTexture;
+        if (!cursorFullCopyFallbackLogged) {
+            DLL_Log("[Cursor] RGB precomposition fallback uses a full-frame GPU copy: fmt=%d bind=%x samples=%u",
+                    sourceDesc.Format, sourceDesc.BindFlags, sourceDesc.SampleDesc.Count);
+            cursorFullCopyFallbackLogged = true;
+        }
+    }
+
+    const CursorColorMode colorMode = ce::video_format::IsFp16RgbInputFormat(sourceDesc.Format)
+                                          ? CursorColorMode::ScRgb
+                                          : (currentIsHDR ? CursorColorMode::Hdr10Pq : CursorColorMode::Sdr);
+    const float cursorPaperWhiteNits = currentIsHDR ? 200.0f : 80.0f;
+    if (!cursorRenderer->CompositeOntoFrame(compositionTarget, static_cast<int>(sourceDesc.Width),
+                                            static_cast<int>(sourceDesc.Height), cursorCaptureState, colorMode,
+                                            cursorPaperWhiteNits)) {
+        if (cursorPrecompositionFailureLogs++ < 5) {
+            DLL_Log(
+                "[Cursor] Point-sampled RGB cursor draw failed; video conversion continues without this separate "
+                "cursor draw: fmt=%d bind=%x",
+                sourceDesc.Format, sourceDesc.BindFlags);
+        }
+        return true;
+    }
+
+    // The video processor must never observe its input simultaneously bound as
+    // a graphics render target. All work remains ordered on this one immediate
+    // context; no flush or CPU/GPU wait is required.
+    d3d11Context->OMSetRenderTargets(0, nullptr, nullptr);
+    if (!cursorPrecompositionLogged) {
+        DLL_Log(
+            "[Cursor] Point RGB precomposition before VP active: fmt=%d bind=%x region=%ux%u smallRestore=%d "
+            "(separate and Windows-embedded cursors now share the main conversion stream)",
+            sourceDesc.Format, sourceDesc.BindFlags, regionWidth, regionHeight, useSmallRestore ? 1 : 0);
+        cursorPrecompositionLogged = true;
+    }
+    return true;
+}
+
+bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool overlayCursor,
+                                     bool allowDirectInputView, int captureOriginX, int captureOriginY,
+                                     uint64_t keyedMutexAcquireKey) {
     if (!videoProcessorInit) {
         if (!InitVideoProcessor())
             return false;
@@ -5591,6 +5702,12 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         keyedMutexGuard.acquired = true;
     }
 
+    CursorSourceRestore cursorSourceRestore;
+    ID3D11Texture2D* preparedCursorSource = bgraTexture;
+    if (!PrepareVideoProcessorCursorInput(bgraTexture, overlayCursor, &cursorSourceRestore, &preparedCursorSource)) {
+        return false;
+    }
+
     // Try to create the VP input view directly from the source texture only for
     // inject/shared-handle frames. WGC/direct-texture frames are valid capture
     // inputs, but probing them with CreateVideoProcessorInputView can raise a
@@ -5604,14 +5721,14 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     // If input is RGBA, swap R/B channels to produce BGRA before VP processing.
     // D3D11 Video Processor expects BGRA input; DXVK KMT textures may be RGBA.
     // A fullscreen shader pass with a BGRA render target handles the byte reorder.
-    ID3D11Texture2D* vpInputTexture = bgraTexture;
+    ID3D11Texture2D* vpInputTexture = preparedCursorSource;
     bool allowVpInputView = allowDirectInputView;
     bool needReleaseConverted = false;
     bool vpInputIsLinear = false;
     bool wantsFp16VpStagingPath = false;
     D3D11_TEXTURE2D_DESC vpInputDesc = {};
     auto releaseConvertedInput = [&]() {
-        if (needReleaseConverted && vpInputTexture && vpInputTexture != bgraTexture) {
+        if (needReleaseConverted && vpInputTexture && vpInputTexture != preparedCursorSource) {
             vpInputTexture->Release();
         }
         needReleaseConverted = false;
@@ -5633,7 +5750,7 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
                     sourceFormat, inputSrvFormat);
             return false;
         }
-        if (needReleaseConverted && vpInputTexture != bgraTexture) {
+        if (needReleaseConverted && vpInputTexture != preparedCursorSource) {
             vpInputTexture->Release();
         }
         vpInputTexture = converted;
@@ -5653,9 +5770,9 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     };
     {
         D3D11_TEXTURE2D_DESC srcDesc;
-        bgraTexture->GetDesc(&srcDesc);
+        preparedCursorSource->GetDesc(&srcDesc);
         if (srcDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM) {
-            ID3D11Texture2D* converted = SwapRBChannels(bgraTexture, srcDesc.Width, srcDesc.Height);
+            ID3D11Texture2D* converted = SwapRBChannels(preparedCursorSource, srcDesc.Width, srcDesc.Height);
             if (converted) {
                 vpInputTexture = converted;
                 needReleaseConverted = true;
@@ -5841,94 +5958,18 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         const OutputRangeMode outputRange = GetEffectiveOutputRange(savedConfig.colorRange, currentIsHDR);
         videoContext1->VideoProcessorSetStreamColorSpace1(
             videoProcessor, 0, GetVideoProcessorInputColorSpace(vpInputDesc.Format, currentIsHDR, vpInputIsLinear));
-        // Cursor resources are always Windows SDR/sRGB. Explicitly tagging
-        // stream 1 lets the VP convert them correctly for SDR and HDR output.
-        if (vpSupportsOverlay) {
-            videoContext1->VideoProcessorSetStreamColorSpace1(videoProcessor, 1,
-                                                              DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
-        }
         videoContext1->VideoProcessorSetOutputColorSpace1(
             videoProcessor,
             GetVideoProcessorOutputColorSpace(ShouldUse10BitOutput(), currentIsHDR, configuredColorSpace, outputRange));
     }
 
-    // Setup streams array
-    D3D11_VIDEO_PROCESSOR_STREAM streams[2] = {};
-    UINT streamCount = 1;
-
-    // Stream 0: Main frame (always enabled)
-    streams[0].Enable = TRUE;
-    streams[0].pInputSurface = localInputView;
-
-    // Stream 1: Cursor overlay (only if visible and VP supports it)
-    bool useCursorStream = cursorVisible && vpSupportsOverlay && activeCursor && activeCursor->inputView;
-    if (useCursorStream) {
-        const int scaledWidth = static_cast<int>(activeCursor->width);
-        const int scaledHeight = static_cast<int>(activeCursor->height);
-        const int frameW = scalingEnabled ? outputWidth : width;
-        const int frameH = scalingEnabled ? outputHeight : height;
-        const int captureWidth = cursorCaptureState.captureWidth != 0
-                                     ? static_cast<int>(cursorCaptureState.captureWidth)
-                                     : width;
-        const int captureHeight = cursorCaptureState.captureHeight != 0
-                                      ? static_cast<int>(cursorCaptureState.captureHeight)
-                                      : height;
-        const int positionHotspotX = ce::cursor_geometry::ResolveHotspotForPosition(
-            activeCursor->hotspotX, cursorCaptureState.PositionIsShapeTopLeft());
-        const int positionHotspotY = ce::cursor_geometry::ResolveHotspotForPosition(
-            activeCursor->hotspotY, cursorCaptureState.PositionIsShapeTopLeft());
-        ce::cursor_geometry::Rect cursorDestination;
-        if (!ce::cursor_geometry::MapScreenCursorToFrame(
-                cursorX, cursorY, positionHotspotX, positionHotspotY, scaledWidth, scaledHeight,
-                cursorCaptureState.captureLeft, cursorCaptureState.captureTop, captureWidth, captureHeight, frameW,
-                frameH, &cursorDestination)) {
-            useCursorStream = false;
-        }
-
-        // Log cursor rect periodically for debugging
-        static int logCounter = 0;
-        if (logCounter++ % 200 == 0) {
-            DLL_Log(
-                "[Cursor] Rect: (%d,%d)-(%d,%d) pos=(%d,%d) bitmap=%dx%d frame=%dx%d "
-                "capture=(%d,%d %dx%d) dpi=%u stateQpc=%lld observedQpc=%lld coord=%s",
-                cursorDestination.left, cursorDestination.top, cursorDestination.right, cursorDestination.bottom,
-                cursorX, cursorY, scaledWidth, scaledHeight, frameW, frameH, cursorCaptureState.captureLeft,
-                cursorCaptureState.captureTop, captureWidth, captureHeight, cursorCaptureState.dpi,
-                static_cast<long long>(cursorCaptureState.associationQpc),
-                static_cast<long long>(cursorCaptureState.observedQpc),
-                cursorCaptureState.PositionIsShapeTopLeft() ? "shape-top-left" : "hotspot");
-        }
-        ce::cursor_geometry::ClippedRects clipped;
-        if (useCursorStream && ce::cursor_geometry::ComputeClippedRects(cursorDestination, scaledWidth, scaledHeight,
-                                                                        frameW, frameH, &clipped)) {
-            const RECT sourceRect = {
-                clipped.source.left,
-                clipped.source.top,
-                clipped.source.right,
-                clipped.source.bottom,
-            };
-            const RECT destinationRect = {
-                clipped.destination.left,
-                clipped.destination.top,
-                clipped.destination.right,
-                clipped.destination.bottom,
-            };
-            videoContext->VideoProcessorSetStreamSourceRect(videoProcessor, 1, TRUE, &sourceRect);
-            videoContext->VideoProcessorSetStreamDestRect(videoProcessor, 1, TRUE, &destinationRect);
-            videoContext->VideoProcessorSetStreamAlpha(videoProcessor, 1, TRUE, 1.0f);
-
-            streams[1].Enable = TRUE;
-            streams[1].pInputSurface = activeCursor->inputView;
-            streamCount = 2;
-        } else {
-            // Cursor completely out of bounds - don't draw
-            // (streams[1].Enable is already FALSE by default init)
-        }
-    }
+    D3D11_VIDEO_PROCESSOR_STREAM stream = {};
+    stream.Enable = TRUE;
+    stream.pInputSurface = localInputView;
 
     // Perform the conversion using current buffer
     int bufIdx = currentNV12Buffer;
-    hr = videoContext->VideoProcessorBlt(videoProcessor, outputViews[bufIdx], 0, streamCount, streams);
+    hr = videoContext->VideoProcessorBlt(videoProcessor, outputViews[bufIdx], 0, 1, &stream);
 
     localInputView->Release();
 
@@ -5939,10 +5980,10 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
             bgraTexture->GetDesc(&srcDesc);
             const HRESULT deviceReason = d3d11Device->GetDeviceRemovedReason();
             DLL_Log(
-                "[VideoProcessor] Blt failed. HR=%x streams=%u bufIdx=%d "
+                "[VideoProcessor] Blt failed. HR=%x streams=1 bufIdx=%d "
                 "srcFmt=%d srcW=%u srcH=%u srcBind=%x srcMisc=%x "
                 "inputW=%d inputH=%d outputW=%d outputH=%d deviceReason=%x",
-                hr, streamCount, bufIdx, srcDesc.Format, srcDesc.Width, srcDesc.Height, srcDesc.BindFlags,
+                hr, bufIdx, srcDesc.Format, srcDesc.Width, srcDesc.Height, srcDesc.BindFlags,
                 srcDesc.MiscFlags, inputWidth, inputHeight, outputWidth, outputHeight, deviceReason);
         }
         if (needReleaseConverted)
@@ -6215,8 +6256,7 @@ void VideoEncoder::CleanupVideoProcessor() {
     nv12StagingTextures.clear();
     currentNV12Buffer = 0;
 
-    // Cleanup cursor overlay resources (LRU cache)
-    CleanupCursorCache();
+    CleanupCursorCompositionResources();
 
     if (inputView) {
         inputView->Release();
@@ -6301,380 +6341,9 @@ void VideoEncoder::CleanupVideoProcessor() {
     vpInputViewLogged = false;
     vpFp16CompatLogged = false;
     fp16VpInputStrategy = Fp16VpInputStrategy::kUnknown;
-}
-
-// ============================================================================
-// LRU Cursor Cache Implementation
-// ============================================================================
-
-void VideoEncoder::CleanupCursorCache() {
-    for (int i = 0; i < kCursorCacheSize; i++) {
-        auto& entry = cursorCache[i];
-        if (entry.inputView) {
-            entry.inputView->Release();
-            entry.inputView = nullptr;
-        }
-        if (entry.texture) {
-            entry.texture->Release();
-            entry.texture = nullptr;
-        }
-        entry.handle = nullptr;
-        entry.requestedWidth = 0;
-        entry.requestedHeight = 0;
-        entry.width = 0;
-        entry.height = 0;
-        entry.hotspotX = 0;
-        entry.hotspotY = 0;
-        entry.lastUsedFrame = 0;
-    }
-    activeCursor = nullptr;
-    cursorFrameCounter = 0;
-
-    // Clean up GPU cursor scaling resources
-    if (cursorScaleVS) {
-        cursorScaleVS->Release();
-        cursorScaleVS = nullptr;
-    }
-    if (cursorScalePS) {
-        cursorScalePS->Release();
-        cursorScalePS = nullptr;
-    }
-    if (cursorScaleSampler) {
-        cursorScaleSampler->Release();
-        cursorScaleSampler = nullptr;
-    }
-    cursorScalingInit = false;
-}
-
-bool VideoEncoder::InitCursorScaling() {
-    if (cursorScalingInit)
-        return true;
-
-    if (!d3d11Device)
-        return false;
-
-    // Minimal fullscreen-triangle shaders for point-filtered texture copy/scale
-    static const char* SCALE_SHADER_SRC = R"(
-Texture2D srcTex : register(t0);
-SamplerState pointSam : register(s0);
-struct VS_OUT { float4 pos : SV_POSITION; float2 uv : TEXCOORD; };
-VS_OUT VS_Main(uint id : SV_VertexID) {
-    VS_OUT o;
-    o.uv = float2((id == 1) ? 2.0f : 0.0f, (id == 2) ? 2.0f : 0.0f);
-    o.pos = float4(o.uv.x * 2.0f - 1.0f, 1.0f - o.uv.y * 2.0f, 0.0f, 1.0f);
-    return o;
-}
-float4 PS_Main(VS_OUT i) : SV_TARGET { return srcTex.Sample(pointSam, i.uv); }
-)";
-
-    ID3D11Device* baseDev = nullptr;
-    d3d11Device->QueryInterface(IID_PPV_ARGS(&baseDev));
-    if (!baseDev)
-        return false;
-
-    // Load compiler
-    HMODULE d3dCompiler = LoadLibraryW(L"d3dcompiler_47.dll");
-    if (!d3dCompiler) {
-        baseDev->Release();
-        return false;
-    }
-    typedef HRESULT(WINAPI * PFN_D3DCompile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR,
-                                             LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
-    auto d3dCompile = (PFN_D3DCompile)GetProcAddress(d3dCompiler, "D3DCompile");
-    if (!d3dCompile) {
-        FreeLibrary(d3dCompiler);
-        baseDev->Release();
-        return false;
-    }
-
-    // Compile shaders
-    ID3DBlob *vsBlob = nullptr, *psBlob = nullptr, *errBlob = nullptr;
-    HRESULT hr = d3dCompile(SCALE_SHADER_SRC, strlen(SCALE_SHADER_SRC), nullptr, nullptr, nullptr, "VS_Main", "vs_4_0",
-                            0, 0, &vsBlob, &errBlob);
-    if (FAILED(hr)) {
-        if (errBlob)
-            errBlob->Release();
-        FreeLibrary(d3dCompiler);
-        baseDev->Release();
-        return false;
-    }
-    hr = d3dCompile(SCALE_SHADER_SRC, strlen(SCALE_SHADER_SRC), nullptr, nullptr, nullptr, "PS_Main", "ps_4_0", 0, 0,
-                    &psBlob, &errBlob);
-    if (FAILED(hr)) {
-        vsBlob->Release();
-        if (errBlob)
-            errBlob->Release();
-        FreeLibrary(d3dCompiler);
-        baseDev->Release();
-        return false;
-    }
-
-    hr = baseDev->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &cursorScaleVS);
-    vsBlob->Release();
-    if (FAILED(hr)) {
-        psBlob->Release();
-        FreeLibrary(d3dCompiler);
-        baseDev->Release();
-        return false;
-    }
-
-    hr = baseDev->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &cursorScalePS);
-    psBlob->Release();
-    FreeLibrary(d3dCompiler);
-    if (FAILED(hr)) {
-        baseDev->Release();
-        return false;
-    }
-
-    // Point sampler for crisp nearest-neighbor scaling
-    D3D11_SAMPLER_DESC sampDesc = {};
-    sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
-    sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-    sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    hr = baseDev->CreateSamplerState(&sampDesc, &cursorScaleSampler);
-    baseDev->Release();
-    if (FAILED(hr))
-        return false;
-
-    cursorScalingInit = true;
-    return true;
-}
-
-bool VideoEncoder::ScaleCursorOnGPU(ID3D11Texture2D* srcTex, uint32_t srcW, uint32_t srcH, ID3D11Texture2D** dstTex,
-                                    uint32_t dstW, uint32_t dstH) {
-    if (!cursorScalingInit && !InitCursorScaling())
-        return false;
-
-    ID3D11Device* baseDev = nullptr;
-    d3d11Device->QueryInterface(IID_PPV_ARGS(&baseDev));
-    if (!baseDev)
-        return false;
-
-    ID3D11DeviceContext* baseCtx = nullptr;
-    d3d11Context->QueryInterface(IID_PPV_ARGS(&baseCtx));
-    if (!baseCtx) {
-        baseDev->Release();
-        return false;
-    }
-
-    // Create source SRV
-    ID3D11ShaderResourceView* srcSRV = nullptr;
-    HRESULT hr = baseDev->CreateShaderResourceView(srcTex, nullptr, &srcSRV);
-    if (FAILED(hr)) {
-        baseDev->Release();
-        baseCtx->Release();
-        return false;
-    }
-
-    // Create destination texture (with RTV bind for rendering)
-    D3D11_TEXTURE2D_DESC dstDesc = {};
-    dstDesc.Width = dstW;
-    dstDesc.Height = dstH;
-    dstDesc.MipLevels = 1;
-    dstDesc.ArraySize = 1;
-    dstDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    dstDesc.SampleDesc.Count = 1;
-    dstDesc.Usage = D3D11_USAGE_DEFAULT;
-    dstDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-
-    ID3D11Texture2D* scaledTex = nullptr;
-    hr = baseDev->CreateTexture2D(&dstDesc, nullptr, &scaledTex);
-    if (FAILED(hr)) {
-        srcSRV->Release();
-        baseDev->Release();
-        baseCtx->Release();
-        return false;
-    }
-
-    // Create RTV for destination
-    ID3D11RenderTargetView* dstRTV = nullptr;
-    hr = baseDev->CreateRenderTargetView(scaledTex, nullptr, &dstRTV);
-    if (FAILED(hr)) {
-        scaledTex->Release();
-        srcSRV->Release();
-        baseDev->Release();
-        baseCtx->Release();
-        return false;
-    }
-
-    // Save state
-    ID3D11RenderTargetView* oldRTV = nullptr;
-    ID3D11DepthStencilView* oldDSV = nullptr;
-    D3D11_VIEWPORT oldVP;
-    UINT numVPs = 1;
-    baseCtx->OMGetRenderTargets(1, &oldRTV, &oldDSV);
-    baseCtx->RSGetViewports(&numVPs, &oldVP);
-
-    // Set up render state
-    D3D11_VIEWPORT vp = {};
-    vp.Width = (float)dstW;
-    vp.Height = (float)dstH;
-    vp.MaxDepth = 1.0f;
-
-    float clearColor[4] = {0, 0, 0, 0};
-    baseCtx->OMSetRenderTargets(1, &dstRTV, nullptr);
-    baseCtx->RSSetViewports(1, &vp);
-    baseCtx->ClearRenderTargetView(dstRTV, clearColor);
-
-    // Set shaders
-    baseCtx->VSSetShader(cursorScaleVS, nullptr, 0);
-    baseCtx->PSSetShader(cursorScalePS, nullptr, 0);
-    baseCtx->PSSetShaderResources(0, 1, &srcSRV);
-    baseCtx->PSSetSamplers(0, 1, &cursorScaleSampler);
-
-    // Disable blending (straight copy)
-    baseCtx->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
-
-    // Draw fullscreen triangle
-    baseCtx->IASetInputLayout(nullptr);
-    baseCtx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    baseCtx->Draw(3, 0);
-
-    // Restore state
-    baseCtx->OMSetRenderTargets(1, &oldRTV, oldDSV);
-    baseCtx->RSSetViewports(1, &oldVP);
-
-    if (oldRTV)
-        oldRTV->Release();
-    if (oldDSV)
-        oldDSV->Release();
-
-    // Cleanup
-    dstRTV->Release();
-    srcSRV->Release();
-    baseDev->Release();
-    baseCtx->Release();
-
-    *dstTex = scaledTex;
-    return true;
-}
-
-VideoEncoder::CursorCacheEntry* VideoEncoder::GetCursorCacheEntry(const ce::cursor::CaptureState& state) {
-    const HCURSOR handle = reinterpret_cast<HCURSOR>(state.handle);
-    if (!state.IsVisible() || !handle)
-        return nullptr;
-
-    // VideoProcessor must be initialized before we can create cursor input views
-    // On first frame, this hasn't happened yet - return existing cached entries
-    // only
-    if (!videoProcessorInit || !videoDevice || !videoProcessorEnum) {
-        // Check if cursor is already cached (can still return cached entries)
-        for (int i = 0; i < kCursorCacheSize; i++) {
-            if (cursorCache[i].handle == handle && cursorCache[i].requestedWidth == state.requestedWidth &&
-                cursorCache[i].requestedHeight == state.requestedHeight && cursorCache[i].texture &&
-                cursorCache[i].inputView) {
-                return &cursorCache[i];
-            }
-        }
-        return nullptr;  // Can't create new cache entries without VideoProcessor
-    }
-
-    cursorFrameCounter++;
-
-    // 1. Look for existing cache entry
-    for (int i = 0; i < kCursorCacheSize; i++) {
-        if (cursorCache[i].handle == handle && cursorCache[i].requestedWidth == state.requestedWidth &&
-            cursorCache[i].requestedHeight == state.requestedHeight && cursorCache[i].texture) {
-            cursorCache[i].lastUsedFrame = cursorFrameCounter;
-            return &cursorCache[i];
-        }
-    }
-
-    // 2. Find empty slot or LRU slot
-    int targetIdx = 0;
-    uint64_t oldestFrame = UINT64_MAX;
-
-    for (int i = 0; i < kCursorCacheSize; i++) {
-        if (cursorCache[i].handle == nullptr) {
-            targetIdx = i;
-            break;
-        }
-        if (cursorCache[i].lastUsedFrame < oldestFrame) {
-            oldestFrame = cursorCache[i].lastUsedFrame;
-            targetIdx = i;
-        }
-    }
-
-    // 3. Evict old entry if needed
-    auto& entry = cursorCache[targetIdx];
-    if (entry.inputView) {
-        entry.inputView->Release();
-        entry.inputView = nullptr;
-    }
-    if (entry.texture) {
-        entry.texture->Release();
-        entry.texture = nullptr;
-    }
-
-    // 4. Create new cursor texture
-    if (!cursorRenderer)
-        return nullptr;
-
-    CursorBitmapData bitmap;
-    if (!cursorRenderer->LoadCursorBitmap(handle, state.requestedWidth, state.requestedHeight, &bitmap)) {
-        return nullptr;
-    }
-    entry.hotspotX = bitmap.hotspotX;
-    entry.hotspotY = bitmap.hotspotY;
-
-    D3D11_TEXTURE2D_DESC texDesc = {};
-    texDesc.Width = bitmap.width;
-    texDesc.Height = bitmap.height;
-    texDesc.MipLevels = 1;
-    texDesc.ArraySize = 1;
-    texDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    texDesc.SampleDesc.Count = 1;
-    texDesc.Usage = D3D11_USAGE_DEFAULT;
-    texDesc.BindFlags = 0;
-
-    D3D11_SUBRESOURCE_DATA initData = {};
-    initData.pSysMem = bitmap.pixels.get();
-    initData.SysMemPitch = bitmap.width * 4;
-
-    ID3D11Texture2D* srcTexture = nullptr;
-    ID3D11Device* baseDevice = nullptr;
-    d3d11Device->QueryInterface(IID_PPV_ARGS(&baseDevice));
-    HRESULT hr = baseDevice ? baseDevice->CreateTexture2D(&texDesc, &initData, &srcTexture) : E_NOINTERFACE;
-    if (baseDevice) {
-        baseDevice->Release();
-    }
-
-    if (FAILED(hr)) {
-        DLL_Log("[CursorCache] CreateTexture2D failed: HR=%x", hr);
-        return nullptr;
-    }
-
-    entry.texture = srcTexture;
-    entry.width = bitmap.width;
-    entry.height = bitmap.height;
-
-    // Create VP input view from the (possibly GPU-scaled) texture
-    D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivDesc = {};
-    ivDesc.FourCC = 0;
-    ivDesc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
-    ivDesc.Texture2D.MipSlice = 0;
-
-    hr = E_FAIL;
-    try {
-        hr = videoDevice->CreateVideoProcessorInputView(entry.texture, videoProcessorEnum, &ivDesc, &entry.inputView);
-    } catch (...) {
-        hr = E_FAIL;
-    }
-
-    if (FAILED(hr)) {
-        DLL_Log("[CursorCache] CreateVPInputView failed: HR=%x", hr);
-        entry.texture->Release();
-        entry.texture = nullptr;
-        return nullptr;
-    }
-
-    entry.handle = handle;
-    entry.requestedWidth = state.requestedWidth;
-    entry.requestedHeight = state.requestedHeight;
-    entry.lastUsedFrame = cursorFrameCounter;
-
-    return &entry;
+    cursorPrecompositionLogged = false;
+    cursorFullCopyFallbackLogged = false;
+    cursorPrecompositionFailureLogs = 0;
 }
 
 int64_t VideoEncoder::GetExpectedFinalDurationUs() const {

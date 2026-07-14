@@ -404,49 +404,35 @@ private:
     };
     Fp16VpInputStrategy fp16VpInputStrategy = Fp16VpInputStrategy::kUnknown;
 
-    // Cursor overlay via VP multi-stream (Option C)
-    bool vpSupportsOverlay = false;  // MaxInputStreams >= 2
-
-    // GPU cursor scaling infrastructure (point-filtered upscale via pixel shader)
-    ID3D11VertexShader* cursorScaleVS = nullptr;
-    ID3D11PixelShader* cursorScalePS = nullptr;
-    ID3D11SamplerState* cursorScaleSampler = nullptr;  // Point sampling for crisp upscale
-    bool cursorScalingInit = false;
-    bool InitCursorScaling();  // Create shader + sampler (once)
-    bool ScaleCursorOnGPU(ID3D11Texture2D* srcTex, uint32_t srcW, uint32_t srcH, ID3D11Texture2D** dstTex,
-                          uint32_t dstW, uint32_t dstH);
-
     bool use10BitPipeline = false;  // Set when input is 10-bit/HDR
 
-    // LRU Cursor Cache - avoids recreating textures for common cursor shapes
-    static constexpr int kCursorCacheSize = 8;
-    struct CursorCacheEntry {
-        HCURSOR handle = nullptr;
-        uint32_t requestedWidth = 0;
-        uint32_t requestedHeight = 0;
-        ID3D11Texture2D* texture = nullptr;
-        ID3D11VideoProcessorInputView* inputView = nullptr;
-        uint32_t width = 0;
-        uint32_t height = 0;
-        int32_t hotspotX = 0;
-        int32_t hotspotY = 0;
-        uint64_t lastUsedFrame = 0;  // For LRU eviction
+    // A separate cursor is point-composited into the RGB source before the
+    // single VP RGB->YUV conversion. Normal capture surfaces are mutated only
+    // inside this small transactional region and restored before ownership is
+    // returned to WGC/DXGI/inject.
+    struct CursorSourceRestore {
+        ID3D11DeviceContext* context = nullptr;
+        ID3D11Texture2D* target = nullptr;
+        ID3D11Texture2D* backup = nullptr;
+        UINT destinationX = 0;
+        UINT destinationY = 0;
+        UINT width = 0;
+        UINT height = 0;
+        bool active = false;
+
+        ~CursorSourceRestore();
     };
-    CursorCacheEntry cursorCache[kCursorCacheSize];
-    CursorCacheEntry* activeCursor = nullptr;  // Currently active cursor entry
-    uint64_t cursorFrameCounter = 0;           // Tracks frame number for LRU
+    ID3D11Texture2D* cursorRestoreTexture = nullptr;
+    ID3D11Texture2D* cursorCompositeTexture = nullptr;
+    bool cursorPrecompositionLogged = false;
+    bool cursorFullCopyFallbackLogged = false;
+    uint32_t cursorPrecompositionFailureLogs = 0;
     ce::cursor::CaptureState cursorCaptureState;
 
-    // Cursor state cached per-frame (used in EncodeFrameD3D11 — member to reset between recordings)
-    int cursorUpdateCounter = 0;
-    int cachedCursorX = 0;
-    int cachedCursorY = 0;
-    bool cachedCursorVisible = false;
-
-    // Find or create cursor cache entry
-    CursorCacheEntry* GetCursorCacheEntry(const ce::cursor::CaptureState& state);
+    bool PrepareVideoProcessorCursorInput(ID3D11Texture2D* source, bool overlayCursor,
+                                          CursorSourceRestore* restore, ID3D11Texture2D** preparedSource);
+    void CleanupCursorCompositionResources();
     bool ConfigureAndOpenCodec();
-    void CleanupCursorCache();
     bool ShouldUse10BitOutput() const {
         if (savedConfig.bitDepth == "10") {
             return true;
@@ -469,9 +455,9 @@ private:
                                       int captureOriginX = 0, int captureOriginY = 0,
                                       bool allowCursorHandleVisibilityFallback = false,
                                       uint64_t keyedMutexAcquireKey = 0);
-    bool ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool cursorVisible = false,
-                           int cursorX = 0, int cursorY = 0, bool allowDirectInputView = true, int captureOriginX = 0,
-                           int captureOriginY = 0, uint64_t keyedMutexAcquireKey = 0);
+    bool ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool overlayCursor = false,
+                           bool allowDirectInputView = true, int captureOriginX = 0, int captureOriginY = 0,
+                           uint64_t keyedMutexAcquireKey = 0);
     bool CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture);
     bool EnsureSwapRBShader();
     ID3D11Texture2D* RenderFullscreenCopy(ID3D11Texture2D* input, uint32_t w, uint32_t h, DXGI_FORMAT inputSrvFormat,
