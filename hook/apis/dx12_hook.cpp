@@ -8644,6 +8644,48 @@ static bool InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(const ch
     return overlayWasLive && overlaySwapchainStateRetired;
 }
 
+static void PublishPostSLRouteRetirementForNormalSwapchainReturn(const char* reason) {
+    SetPostSLCallbackInstalled(false, reason);
+    // Publish cancellation before waiting for an already-entered callback. The
+    // callback compares this epoch before every GPU submission point, exits,
+    // and releases the render mutex without a polling delay.
+    g_PostSLLifecycleEpoch.fetch_add(1, std::memory_order_acq_rel);
+}
+
+static int FinishPostSLRouteRetirementForNormalSwapchainReturn(const char* reason) {
+    std::lock_guard<std::mutex> renderLock(g_PostSLRenderMutex);
+
+    const int previousStableFrames = g_PostSLStableFrameCount.exchange(0, std::memory_order_acq_rel);
+    g_PostSLOverlayActive.store(false, std::memory_order_release);
+    g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+    g_PostSLConfirmedRenderInCurrentReactivationEpoch.store(false, std::memory_order_release);
+    g_PostSLStallCounter.store(0, std::memory_order_release);
+    g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
+    g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
+    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
+    g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
+    g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
+    ResetPostSLLifecycleForTransition(reason, true);
+    SetPostSLLastWorkingQueue(nullptr);
+    ReleaseStreamlineStartupActivationSwapchain(reason);
+
+    if (g_State.overlayInit || g_State.syncInit) {
+        std::lock_guard<std::recursive_mutex> overlayLock(g_OverlayMutex);
+        g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(), std::memory_order_release);
+        g_State.overlayInit = false;
+        g_State.syncInit = false;
+        g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
+        CleanupRTVs();
+    }
+
+    return previousStableFrames;
+}
+
+static int RetirePostSLRouteForNormalSwapchainReturn(const char* reason) {
+    PublishPostSLRouteRetirementForNormalSwapchainReturn(reason);
+    return FinishPostSLRouteRetirementForNormalSwapchainReturn(reason);
+}
+
 static bool HandlePostSLRouteForNormalSwapchainReturn(
     const char* context, ID3D12CommandQueue* returnedQueue, ID3D12CommandQueue* originalGameQueue,
     const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
@@ -8673,7 +8715,9 @@ static bool HandlePostSLRouteForNormalSwapchainReturn(
     }
     const bool routeArmed = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr ||
                             g_PostSLOverlayActive.load(std::memory_order_acquire) ||
-                            g_PostSLConfirmedRendering.load(std::memory_order_acquire);
+                            g_PostSLConfirmedRendering.load(std::memory_order_acquire) ||
+                            g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire) || lockedQueue != nullptr ||
+                            lastWorkingQueue != nullptr;
     const bool hasDistinctQueueProof = (lockedQueue && lockedQueue != returnedQueue) ||
                                        (lastWorkingQueue && lastWorkingQueue != returnedQueue);
     if (!ce::dx12_overlay_policy::ShouldRetirePostSLRouteForNormalSwapchainReturn(
@@ -8685,35 +8729,8 @@ static bool HandlePostSLRouteForNormalSwapchainReturn(
         return true;
     }
 
-    SetPostSLCallbackInstalled(false, "DX12: normal swapchain return");
-    // Publish cancellation before waiting for an already-entered callback. The
-    // callback compares this epoch before every GPU submission point, exits,
-    // and releases the render mutex without a polling delay.
-    g_PostSLLifecycleEpoch.fetch_add(1, std::memory_order_acq_rel);
-    std::lock_guard<std::mutex> renderLock(g_PostSLRenderMutex);
-
-    const int previousStableFrames = g_PostSLStableFrameCount.exchange(0, std::memory_order_acq_rel);
-    g_PostSLOverlayActive.store(false, std::memory_order_release);
-    g_PostSLConfirmedRendering.store(false, std::memory_order_release);
-    g_PostSLConfirmedRenderInCurrentReactivationEpoch.store(false, std::memory_order_release);
-    g_PostSLStallCounter.store(0, std::memory_order_release);
-    g_PostSLRuntimeStateStabilizationLogged.store(false, std::memory_order_release);
-    g_PostSLExtendedRuntimeStateStabilizationForCurrentEpoch.store(false, std::memory_order_release);
-    DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.store(false, std::memory_order_release);
-    g_PostSLSyntheticStartupActivatedButUnconfirmed.store(false, std::memory_order_release);
-    g_PostSLSyntheticStartupTakeoverLogged.store(false, std::memory_order_release);
-    ResetPostSLLifecycleForTransition("DX12: normal swapchain return", true);
-    SetPostSLLastWorkingQueue(nullptr);
-    ReleaseStreamlineStartupActivationSwapchain("DX12: normal swapchain return");
-
-    if (g_State.overlayInit || g_State.syncInit) {
-        std::lock_guard<std::recursive_mutex> overlayLock(g_OverlayMutex);
-        g_PreserveOverlayAdapterAcrossResize.store(g_OverlayAdapter.IsInitialized(), std::memory_order_release);
-        g_State.overlayInit = false;
-        g_State.syncInit = false;
-        g_ResetReinitSubmitCounter.store(true, std::memory_order_release);
-        CleanupRTVs();
-    }
+    const int previousStableFrames =
+        RetirePostSLRouteForNormalSwapchainReturn("DX12: normal swapchain return");
 
     HookLogImportant(
         "%s: Original game queue validated normal swapchain return behind Streamline stack — retired "
@@ -10982,6 +10999,8 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         bool fsrFGNow = IsFSRFrameGenerationActive();
         ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
         ID3D12CommandQueue* currentPrimaryQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
+        const bool postFSRInactiveRecoveryPending =
+            g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire);
         const bool lastWorkingQueueStillActiveDuringRecentTeardown =
             g_PostSLLastWorkingQueue != nullptr &&
             GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
@@ -10989,7 +11008,7 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
             g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
             g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr,
-            lastWorkingQueueStillActiveDuringRecentTeardown,
+            postFSRInactiveRecoveryPending,
             currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue,
             g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
             g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire));
@@ -11009,25 +11028,14 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue) {
             queueForBackend = g_PostSLLastWorkingQueue;
-            if (lastWorkingQueueStillActiveDuringRecentTeardown) {
-                static std::atomic<int> s_postFSRBackendLastWorkingRouteLogCount{0};
-                int logCount = s_postFSRBackendLastWorkingRouteLogCount.fetch_add(1, std::memory_order_relaxed);
-                if (logCount < 10 || (logCount % 300) == 0) {
-                    HookLogImportant(
-                        "DX12: InitImGui — post-FSR inactive recovery keeping preserved PostSL lastWorking queue %p "
-                        "while teardown traffic is still active (cmdQ=%p origQ=%p primaryQ=%p)",
-                        g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
-                }
-            } else {
-                static std::atomic<int> s_postFSRBackendValidatedRouteLogCount{0};
-                int logCount = s_postFSRBackendValidatedRouteLogCount.fetch_add(1, std::memory_order_relaxed);
-                if (logCount < 10 || (logCount % 300) == 0) {
-                    HookLogImportant(
-                        "DX12: InitImGui — post-FSR inactive recovery reusing validated PostSL lastWorking queue %p "
-                        "until a clean non-FG swapchain transition re-establishes queue ownership "
-                        "(cmdQ=%p origQ=%p primaryQ=%p)",
-                        g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
-                }
+            static std::atomic<int> s_postFSRBackendLastWorkingRouteLogCount{0};
+            int logCount = s_postFSRBackendLastWorkingRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 10 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "DX12: InitImGui — post-FSR inactive recovery epoch using preserved PostSL lastWorking queue %p "
+                    "(cmdQ=%p origQ=%p primaryQ=%p recentTraffic=%d)",
+                    g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue,
+                    lastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0);
             }
         } else if (routingDecision ==
                    ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
@@ -11041,9 +11049,10 @@ bool InitImGui(ID3D12Device* device, int buffers, DXGI_FORMAT format, HWND hwnd)
                 int logCount = s_postFSRBackendOrigRouteLogCount.fetch_add(1, std::memory_order_relaxed);
                 if (logCount < 10 || (logCount % 300) == 0) {
                     HookLogImportant(
-                        "DX12: InitImGui — post-FSR inactive recovery using original present queue %p "
-                        "(cmdQ=%p primaryQ=%p explicitNativeOff=%d)",
-                        queueForBackend, currentCommandQueue, currentPrimaryQueue, explicitNativeFSROffPending ? 1 : 0);
+                        "DX12: InitImGui — post-FSR normal/recovery routing using original present queue %p "
+                        "(cmdQ=%p primaryQ=%p recoveryPending=%d explicitNativeOff=%d)",
+                        queueForBackend, currentCommandQueue, currentPrimaryQueue,
+                        postFSRInactiveRecoveryPending ? 1 : 0, explicitNativeFSROffPending ? 1 : 0);
                 }
             } else {
                 queueForBackend = currentCommandQueue ? currentCommandQueue : currentPrimaryQueue;
@@ -13201,7 +13210,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             hasRuntimeOwnedSwapchainQueue, explicitSetOptionsActivation, safePostFSRBootstrapPath);
         const bool resumeOnValidatedLastWorkingQueue = ce::dx12_overlay_policy::
             ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
-                g_HadFSRFGPhase, g_PostSLLastWorkingQueue != nullptr, scQueue != nullptr, explicitSetOptionsActivation,
+                g_HadFSRFGPhase, g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire),
+                g_PostSLLastWorkingQueue != nullptr, scQueue != nullptr, explicitSetOptionsActivation,
                 safePostFSRBootstrapPath);
         const bool lockedQueueIsSLWrapper =
             g_PostSLLockedQueue && g_PostSLLockedQueue != g_OriginalGameQueue && g_PostSLLockedQueue != scQueue;
@@ -16002,7 +16012,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         return;
     }
     // RAII unlock when we exit
-    std::lock_guard<std::recursive_mutex> lock(g_OverlayMutex, std::adopt_lock);
+    std::unique_lock<std::recursive_mutex> lock(g_OverlayMutex, std::adopt_lock);
 
     // SAFETY: Check device state after acquiring lock
     if (g_InSwapchainResizeCleanup.load(std::memory_order_acquire)) {
@@ -16347,14 +16357,60 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                         currentCommandQueue, currentPrimaryQueue);
                 } else {
                     HookLogImportant("DX12: Swapchain change (no FG active) — normal reinit");
-                    const bool endingPostFSRNonFGRecovery = g_NeedOffscreenOverlayAfterPostFSRNonFG;
+                    const bool endingPostFSRNonFGRecovery =
+                        g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire);
                     const bool explicitSwapchainQueueProof =
                         ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(
                             endingPostFSRNonFGRecovery, currentSwapchainQueue != nullptr,
                             currentOriginalGameQueue != nullptr,
                             currentSwapchainQueue != nullptr && currentOriginalGameQueue != nullptr &&
                                 currentSwapchainQueue == currentOriginalGameQueue);
-                    g_NeedOffscreenOverlayAfterPostFSRNonFG = false;
+                    ID3D12CommandQueue* postSLLockedQueue = nullptr;
+                    ID3D12CommandQueue* postSLLastWorkingQueue = nullptr;
+                    {
+                        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
+                        postSLLockedQueue = g_PostSLLockedQueue;
+                        postSLLastWorkingQueue = g_PostSLLastWorkingQueue;
+                    }
+                    const bool postSLRouteArmed =
+                        DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr ||
+                        g_PostSLOverlayActive.load(std::memory_order_acquire) ||
+                        g_PostSLConfirmedRendering.load(std::memory_order_acquire) ||
+                        g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire) || postSLLockedQueue != nullptr ||
+                        postSLLastWorkingQueue != nullptr;
+                    const bool hasDistinctPostSLQueueProof =
+                        currentOriginalGameQueue != nullptr &&
+                        ((postSLLockedQueue && postSLLockedQueue != currentOriginalGameQueue) ||
+                         (postSLLastWorkingQueue && postSLLastWorkingQueue != currentOriginalGameQueue));
+                    const bool retirePostSLRoute =
+                        ce::dx12_overlay_policy::ShouldRetirePostSLRouteForNormalSwapchainReturn(
+                            endingPostFSRNonFGRecovery, postSLRouteArmed, hasDistinctPostSLQueueProof);
+
+                    if (retirePostSLRoute) {
+                        PublishPostSLRouteRetirementForNormalSwapchainReturn(
+                            "DX12: clean non-FG Present return");
+                    }
+                    // Publish the authoritative normal-return boundary before
+                    // waiting for an already-entered PostSL callback. Concurrent
+                    // routing must immediately stop treating its historical queue
+                    // as eligible for the replacement swapchain.
+                    g_NeedOffscreenOverlayAfterPostFSRNonFG.store(false, std::memory_order_release);
+                    if (retirePostSLRoute) {
+                        // PostSL owns its render mutex before it can enter overlay
+                        // initialization (render -> overlay lock order). Release
+                        // ProcessFrame's overlay lock while the cancellation epoch
+                        // drains an already-entered callback, then reacquire it
+                        // before rebuilding/drawing on the normal route below.
+                        lock.unlock();
+                        const int previousStableFrames = FinishPostSLRouteRetirementForNormalSwapchainReturn(
+                            "DX12: clean non-FG Present return");
+                        lock.lock();
+                        HookLogImportant(
+                            "DX12: Clean non-FG Present return retired stale PostSL route before normal overlay "
+                            "reinit (locked=%p lastWorking=%p origGame=%p stableFrames=%d)",
+                            postSLLockedQueue, postSLLastWorkingQueue, currentOriginalGameQueue,
+                            previousStableFrames);
+                    }
                     if (explicitSwapchainQueueProof) {
                         HookLogImportant(
                             "DX12: Ended post-FSR non-FG recovery on explicit swapchain-queue proof "
@@ -16413,6 +16469,8 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
         ID3D12CommandQueue* currentCommandQueue = g_CommandQueue.load(std::memory_order_acquire);
         ID3D12CommandQueue* currentPrimaryQueue = g_PrimaryGameQueue.load(std::memory_order_acquire);
         const bool recentStreamlineTeardown = g_SLOffHeuristicGrace.load(std::memory_order_acquire) > 0;
+        const bool postFSRInactiveRecoveryPending =
+            g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire);
         const bool lastWorkingQueueStillActiveDuringRecentTeardown =
             g_PostSLLastWorkingQueue != nullptr &&
             GetTickCount64() < g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
@@ -16432,7 +16490,7 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
             const auto routingDecision = ce::dx12_overlay_policy::DecideSwapchainOverlayRouting(
                 g_FGRuntimeOwnsSwapchain, slFGNow, fsrFGNow, g_HadFSRFGPhase, g_SwapchainQueue != nullptr,
                 g_OriginalGameQueue != nullptr, g_PostSLLastWorkingQueue != nullptr,
-                lastWorkingQueueStillActiveDuringRecentTeardown,
+                postFSRInactiveRecoveryPending,
                 currentCommandQueue != nullptr && currentCommandQueue == currentPrimaryQueue,
                 g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire),
                 g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire));
@@ -16477,20 +16535,19 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                 gameQueue = g_OriginalGameQueue;
             } else if (routingDecision ==
                        ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue) {
-                // After FSR->DLSS->off with scQueue intentionally unset, reuse the
-                // last queue that already proved it could render the live swapchain.
+                // During the explicit post-FSR inactive recovery epoch with
+                // scQueue intentionally unset, reuse the last queue that already
+                // proved it could render the still-live transition swapchain.
                 gameQueue = g_PostSLLastWorkingQueue;
-                if (lastWorkingQueueStillActiveDuringRecentTeardown) {
-                    static std::atomic<int> s_postFSRProcessFrameLastWorkingRouteLogCount{0};
-                    int logCount =
-                        s_postFSRProcessFrameLastWorkingRouteLogCount.fetch_add(1, std::memory_order_relaxed);
-                    if (logCount < 10 || (logCount % 300) == 0) {
-                        HookLogImportant(
-                            "DX12: ProcessFrame — post-FSR inactive recovery keeping preserved PostSL lastWorking "
-                            "queue %p "
-                            "while teardown traffic is still active (cmdQ=%p origQ=%p primaryQ=%p)",
-                            g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue);
-                    }
+                static std::atomic<int> s_postFSRProcessFrameLastWorkingRouteLogCount{0};
+                int logCount =
+                    s_postFSRProcessFrameLastWorkingRouteLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logCount < 10 || (logCount % 300) == 0) {
+                    HookLogImportant(
+                        "DX12: ProcessFrame — post-FSR inactive recovery epoch using preserved PostSL lastWorking "
+                        "queue %p (cmdQ=%p origQ=%p primaryQ=%p recentTraffic=%d)",
+                        g_PostSLLastWorkingQueue, currentCommandQueue, g_OriginalGameQueue, currentPrimaryQueue,
+                        lastWorkingQueueStillActiveDuringRecentTeardown ? 1 : 0);
                 }
             } else if (routingDecision ==
                        ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue) {
@@ -16510,9 +16567,10 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
                     int logCount = s_postFSRInactiveOrigRouteLogCount.fetch_add(1, std::memory_order_relaxed);
                     if (logCount < 10 || (logCount % 300) == 0) {
                         HookLogImportant(
-                            "DX12: ProcessFrame — post-FSR inactive recovery using original present queue %p "
-                            "(cmdQ=%p primaryQ=%p explicitNativeOff=%d)",
-                            gameQueue, currentCommandQueue, currentPrimaryQueue, explicitNativeFSROffPending ? 1 : 0);
+                            "DX12: ProcessFrame — post-FSR normal/recovery routing using original present queue %p "
+                            "(cmdQ=%p primaryQ=%p recoveryPending=%d explicitNativeOff=%d)",
+                            gameQueue, currentCommandQueue, currentPrimaryQueue,
+                            postFSRInactiveRecoveryPending ? 1 : 0, explicitNativeFSROffPending ? 1 : 0);
                     }
                 } else {
                     gameQueue = currentCommandQueue ? currentCommandQueue : currentPrimaryQueue;

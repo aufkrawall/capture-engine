@@ -1516,6 +1516,36 @@ TEST(DXGISharedSourceTest, NormalSwapchainReturnRebaselinesBeforeFirstPresent) {
               std::string::npos);
 }
 
+TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueueRouting) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    const size_t cleanReturn = text.find("Swapchain change (no FG active) — normal reinit");
+    ASSERT_NE(cleanReturn, std::string::npos);
+    const size_t publishNormalBoundary = text.find(
+        "g_NeedOffscreenOverlayAfterPostFSRNonFG.store(false, std::memory_order_release);", cleanReturn);
+    ASSERT_NE(publishNormalBoundary, std::string::npos);
+    const size_t unlockOverlay = text.find("lock.unlock();", publishNormalBoundary);
+    ASSERT_NE(unlockOverlay, std::string::npos);
+    const size_t retirePostSL =
+        text.find("FinishPostSLRouteRetirementForNormalSwapchainReturn(", unlockOverlay);
+    ASSERT_NE(retirePostSL, std::string::npos);
+    const size_t relockOverlay = text.find("lock.lock();", retirePostSL);
+    ASSERT_NE(relockOverlay, std::string::npos);
+    const size_t normalQueueRouting = text.find("DecideSwapchainOverlayRouting(", relockOverlay);
+    ASSERT_NE(normalQueueRouting, std::string::npos);
+    EXPECT_LT(publishNormalBoundary, unlockOverlay);
+    EXPECT_LT(unlockOverlay, retirePostSL);
+    EXPECT_LT(retirePostSL, relockOverlay);
+    EXPECT_LT(relockOverlay, normalQueueRouting)
+        << "a clean normal return must invalidate the retired PostSL queue before this Present chooses a queue";
+}
+
 TEST(DXGISharedTest, ThirdPartyOverlayECLQueueDoesNotOverrideKnownGameTrackingQueues) {
     EXPECT_TRUE(
         ce::dx12_overlay_policy::ShouldIgnoreThirdPartyOverlayQueueForGameTracking(true, true, false, false, false));
@@ -1586,18 +1616,12 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingPreservesPostFSRStreamlineTransi
               SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue);
 }
 
-TEST(DXGISharedTest, DX12SwapchainOverlayRoutingPrefersValidatedLastWorkingQueueDuringPostFSRInactiveRecovery) {
+TEST(DXGISharedTest, DX12SwapchainOverlayRoutingUsesLastWorkingQueueOnlyDuringPostFSRInactiveRecoveryEpoch) {
     using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
     using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
 
     EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, false, false, false),
               SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
-
-    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, false, false),
-              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue);
-
-    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, false, true),
-              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue);
 
     EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, true, false),
               SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue);
@@ -1605,11 +1629,55 @@ TEST(DXGISharedTest, DX12SwapchainOverlayRoutingPrefersValidatedLastWorkingQueue
     EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, true, true),
               SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue);
 
+    // A clean non-FG swapchain return has ended the recovery epoch. The retained
+    // PostSL pointer is now historical and must not receive replacement-swapchain
+    // overlay work, regardless of the current ECL/primary queue relationship.
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, false, false),
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, false, true),
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
+
     EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, true, true, false, false, false),
               SwapchainOverlayRoutingDecision::kUseNormalRouting);
     EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, false, false, true, false, false, false),
               SwapchainOverlayRoutingDecision::kUseNormalRouting);
     EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, false, false, false, false),
+              SwapchainOverlayRoutingDecision::kUseNormalRouting);
+}
+
+TEST(DXGISharedTest, DX12SwapchainOverlayRoutingCoversEveryOffFSRAndDLSSDirection) {
+    using ce::dx12_overlay_policy::DecideSwapchainOverlayRouting;
+    using ce::dx12_overlay_policy::SwapchainOverlayRoutingDecision;
+
+    // Fresh OFF and direct OFF -> FSR.
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, false, true, true, false, false, true),
+              SwapchainOverlayRoutingDecision::kUseNormalRouting);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, true, true, true, true, false, false, true),
+              SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
+
+    // FSR -> OFF recovery, OFF -> FSR re-enable, and direct FSR -> DLSS.
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, false, true, true),
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, true, true, true, true, false, true, true),
+              SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, true, false, true, true, true, true, true, true),
+              SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue);
+
+    // DLSS -> OFF keeps the proven transition queue only inside recovery. The
+    // clean OFF return and a later OFF -> DLSS must use original-queue proof.
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, true, true),
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, true, false, true, true, false, true),
+              SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, true, false, true, false, true, true, false, true),
+              SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue);
+
+    // DLSS -> FSR and the pure-DLSS OFF -> ON -> OFF family.
+    EXPECT_EQ(DecideSwapchainOverlayRouting(true, false, true, true, true, true, true, false, true),
+              SwapchainOverlayRoutingDecision::kUseFSRSwapchainQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, true, false, false, true, true, false, false, true),
+              SwapchainOverlayRoutingDecision::kUseStreamlineOriginalQueue);
+    EXPECT_EQ(DecideSwapchainOverlayRouting(false, false, false, false, true, true, false, false, true),
               SwapchainOverlayRoutingDecision::kUseNormalRouting);
 }
 
@@ -1960,23 +2028,26 @@ TEST(DXGISharedTest, ConfirmedPostSLSuspensionReinitsImmediatelyWhenSwapchainQue
 TEST(DXGISharedTest, ReusesValidatedLastWorkingQueueForResumedDLSSDuringPostFSRInactiveRecovery) {
     EXPECT_TRUE(ce::dx12_overlay_policy::
                     ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
-                        true, true, false, true, false));
+                        true, true, true, false, true, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::
                     ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
-                        true, true, false, false, true));
+                        true, true, true, false, false, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::
                      ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
-                         false, true, false, true, false));
+                         false, true, true, false, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::
                      ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
-                         true, false, false, true, false));
+                         true, false, true, false, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::
                      ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
-                         true, true, true, true, false));
+                         true, true, false, false, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::
                      ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
-                         true, true, false, false, false));
+                         true, true, true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::
+                     ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
+                         true, true, true, false, false, false));
 }
 
 TEST(DXGISharedTest, FreshPostFSRStreamlineHandoffInvalidatesOnlyStaleLastWorkingQueueProof) {

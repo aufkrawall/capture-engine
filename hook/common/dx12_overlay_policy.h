@@ -684,8 +684,8 @@ enum class PostFSRInactiveRecoveryQueueSource {
 
 inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(
     bool runtimeOwnsSwapchain, bool streamlineFGActive, bool fsrFGActive, bool hadFSRFGPhase, bool hasSwapchainQueue,
-    bool hasOriginalGameQueue, bool hasPostSLLastWorkingQueue,
-    bool postSLLastWorkingQueueStillActiveDuringRecentTeardown, bool commandQueueMatchesPrimaryGameQueue,
+    bool hasOriginalGameQueue, bool hasPostSLLastWorkingQueue, bool postFSRInactiveRecoveryPending,
+    bool commandQueueMatchesPrimaryGameQueue,
     bool explicitNativeFSROffPendingRuntimeOwnedTeardown = false,
     bool nativeFSRInternalNoCallbackCompositionLive = false) {
     if (streamlineFGActive && hadFSRFGPhase) {
@@ -723,19 +723,18 @@ inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(
     if (!streamlineFGActive && !fsrFGActive && hadFSRFGPhase && !hasSwapchainQueue && hasOriginalGameQueue) {
         // After FSR->DLSS->off, ProcessFrame intentionally leaves g_SwapchainQueue
         // unset until a future clean non-FG swapchain transition can re-establish
-        // queue ownership. The preserved PostSL last-working queue is the only
-        // queue that already proved it can render the recovered live swapchain,
-        // so keep routing through it for the whole recovery window rather than
-        // falling back to origGame after a short teardown-activity pulse.
-        if (hasPostSLLastWorkingQueue) {
-            (void)postSLLastWorkingQueueStillActiveDuringRecentTeardown;
+        // queue ownership. The preserved PostSL last-working queue remains valid
+        // only while that recovery epoch is explicitly pending. A clean normal
+        // swapchain transition ends the epoch and makes the original Present
+        // queue authoritative; recent traffic on the old PostSL queue is not
+        // render-ownership proof for the replacement swapchain.
+        if (postFSRInactiveRecoveryPending && hasPostSLLastWorkingQueue) {
             return SwapchainOverlayRoutingDecision::kUsePostFSRInactiveLastWorkingQueue;
         }
 
-        // After FSR->DLSS->off, ProcessFrame intentionally leaves g_SwapchainQueue
-        // unset until a fresh non-FG Present path can prove the live swapchain
-        // queue again. If we no longer have a previously validated PostSL queue,
-        // fall back to the non-PostSL recovery path.
+        // During recovery this is the fallback when no PostSL proof exists. After
+        // a clean normal return it is the required route even if a stale retained
+        // PostSL pointer has not yet been retired.
         (void)commandQueueMatchesPrimaryGameQueue;
         return SwapchainOverlayRoutingDecision::kUsePostFSRInactiveOriginalQueue;
     }
@@ -2320,14 +2319,16 @@ inline bool ShouldSeedStreamlineStartupBootstrapAsConsumedForConfirmedPostSLResu
 }
 
 inline bool ShouldReuseValidatedPostSLLastWorkingQueueForStreamlineResumeDuringPostFSRInactiveRecovery(
-    bool hadFSRFGPhase, bool hasPostSLLastWorkingQueue, bool hasSwapchainQueue, bool explicitSetOptionsActivation,
-    bool safePostFSRBootstrapPath) {
+    bool hadFSRFGPhase, bool postFSRInactiveRecoveryPending, bool hasPostSLLastWorkingQueue, bool hasSwapchainQueue,
+    bool explicitSetOptionsActivation, bool safePostFSRBootstrapPath) {
     // After a mixed FSR->DLSS epoch goes fully FG-off, the recovered non-FG path
     // can intentionally keep scQueue unset while it reuses the already validated
     // PostSL last-working queue. If a later DLSS-only resume happens before a
     // fresh non-FG swapchain proof re-establishes scQueue, that validated queue
-    // is still the strongest evidence for the live topology.
-    return hadFSRFGPhase && hasPostSLLastWorkingQueue && !hasSwapchainQueue &&
+    // is still the strongest evidence for the live topology. Once the recovery
+    // epoch ends, the same pointer is historical evidence only and must not be
+    // revived for a later DLSS activation.
+    return hadFSRFGPhase && postFSRInactiveRecoveryPending && hasPostSLLastWorkingQueue && !hasSwapchainQueue &&
            (explicitSetOptionsActivation || safePostFSRBootstrapPath);
 }
 
