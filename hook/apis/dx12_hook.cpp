@@ -6259,11 +6259,12 @@ struct NativeFSRSwapchainQueueBinding {
 static std::mutex g_NativeFSRSwapchainQueueBindingMutex;
 static std::unordered_map<void*, NativeFSRSwapchainQueueBinding> g_NativeFSRSwapchainQueueBindings;
 
-void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapChain,
-                                                      ID3D12CommandQueue* presentationQueue) {
+static bool RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapChain,
+                                                        ID3D12CommandQueue* presentationQueue,
+                                                        bool onlyWhenMissing, const char* source) {
     if (!context || !swapChain || !presentationQueue ||
         presentationQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
-        return;
+        return false;
     }
 
     ID3D12Device* descriptorDevice = nullptr;
@@ -6276,6 +6277,20 @@ void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapC
     NativeFSRSwapchainQueueBinding replacedBinding = {};
     {
         std::lock_guard<std::mutex> lock(g_NativeFSRSwapchainQueueBindingMutex);
+        const auto existing = g_NativeFSRSwapchainQueueBindings.find(swapChain);
+        if (onlyWhenMissing &&
+            !ce::dx12_overlay_policy::ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(
+                existing != g_NativeFSRSwapchainQueueBindings.end(), context != nullptr, swapChain != nullptr,
+                presentationQueue != nullptr)) {
+            presentationQueue->Release();
+            if (underlyingGameQueue) {
+                underlyingGameQueue->Release();
+            }
+            if (descriptorDevice) {
+                descriptorDevice->Release();
+            }
+            return false;
+        }
         auto& binding = g_NativeFSRSwapchainQueueBindings[swapChain];
         if (binding.context == context && binding.descriptorQueue == presentationQueue &&
             binding.underlyingGameQueue == underlyingGameQueue &&
@@ -6287,7 +6302,7 @@ void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapC
             if (descriptorDevice) {
                 descriptorDevice->Release();
             }
-            return;
+            return false;
         }
         replacedBinding = binding;
         binding = {context, presentationQueue, underlyingGameQueue, streamlineWrappedQueue};
@@ -6309,16 +6324,41 @@ void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapC
     HookLogImportant(
         "DX12: Captured native-FSR swapchain presentation queue (context=%p proxy=%p descriptorQueue=%p "
         "descriptorDevice=%p streamlineWrapped=%d underlyingGameQueue=%p underlyingDevice=%p nodeMask=%u) — "
-        "direct overlay work uses the exact queue, or the validated underlying game queue for a proven "
-        "Streamline wrapper",
+        "source=%s; direct overlay work uses the exact queue, or the validated underlying game queue for a "
+        "proven Streamline wrapper",
         context, swapChain, presentationQueue, descriptorDevice, streamlineWrappedQueue ? 1 : 0, underlyingGameQueue,
-        underlyingDevice, presentationQueue->GetDesc().NodeMask);
+        underlyingDevice, presentationQueue->GetDesc().NodeMask, source && source[0] ? source : "unknown");
     if (underlyingDevice) {
         underlyingDevice->Release();
     }
     if (descriptorDevice) {
         descriptorDevice->Release();
     }
+    return true;
+}
+
+void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapChain,
+                                                      ID3D12CommandQueue* presentationQueue) {
+    RegisterNativeFSRSwapchainPresentationQueue(context, swapChain, presentationQueue, false,
+                                                "ffxCreateContext descriptor");
+}
+
+bool DX12_TryRecoverNativeFSRSwapchainPresentationQueue(void* context, void* swapChain) {
+    ID3D12CommandQueue* capturedQueue = ReferenceDeferredOfficialFFXTakeoverQueue();
+    if (!capturedQueue) {
+        return false;
+    }
+
+    const bool recovered = RegisterNativeFSRSwapchainPresentationQueue(
+        context, swapChain, capturedQueue, true, "protected inner DXGI swapchain create");
+    capturedQueue->Release();
+    if (recovered) {
+        HookLogImportant(
+            "DX12: Recovered native-FSR proxy owner-queue binding from protected inner swapchain create "
+            "(context=%p proxy=%p) — closing missed in-flight ffxCreateContext interception before proxy Present",
+            context, swapChain);
+    }
+    return recovered;
 }
 
 void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const char* reason) {

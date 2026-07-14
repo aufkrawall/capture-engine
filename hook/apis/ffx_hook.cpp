@@ -555,9 +555,8 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     // (type=0x00030002 on the swapchain context). AMD composites that UI resource onto BOTH real and
     // generated frames POST-interpolation on its own queue. Cache the UI texture (or substitute CE's own
     // backbuffer-sized texture for a degenerate game placeholder) so the per-present composite
-    // (DX12_CompositeOverlayOntoCachedFFXUiResource, driven from DetourPresent) can draw CE's overlay onto it
-    // on CE's OWN fenced queue. AMD then composites the overlay post-interpolation. Forwarded unchanged unless
-    // a substitute texture was swapped in.
+    // can draw CE's overlay onto it on the target-compatible owner queue before proxy Present. AMD then
+    // composites the overlay post-interpolation. Forwarded unchanged unless a substitute texture was swapped in.
     if (parsedDesc &&
         parsedDesc->type == ce::ffx_api::kConfigureDescTypeFrameGenerationSwapChainRegisterUiResourceDX12 &&
         (DX12_ShouldCacheFFXUiResourceForBundle() ||
@@ -625,6 +624,10 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     // the first interpolated present. Idempotent + module-validated (only patches a Present entry that
     // resolves into the FFX runtime module); originalConfigure anchors that module check.
     if (recognizedFGConfigure && localConfig.swapChain) {
+        // The protected inner DXGI create captures the descriptor gameQueue even when this ffxCreateContext call
+        // was already in flight as CE routed cached export pointers. Associate that exact queue with the proxy
+        // before its Present hook becomes reachable. A primary descriptor binding always wins.
+        DX12_TryRecoverNativeFSRSwapchainPresentationQueue(contextHandle, localConfig.swapChain);
         DX12_TryInstallFFXProxyPresentHook(localConfig.swapChain, reinterpret_cast<void*>(originalConfigure),
                                            "ffxConfigure(FrameGeneration)");
     }

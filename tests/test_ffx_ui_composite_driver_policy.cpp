@@ -9,6 +9,7 @@ using ce::dx12_overlay_policy::FFXUiCompositeDriver;
 using ce::dx12_overlay_policy::MayReassertSubstituteUiResource;
 using ce::dx12_overlay_policy::NativeFSROwnerQueueRoute;
 using ce::dx12_overlay_policy::ShouldInstallFFXProxyPresentHook;
+using ce::dx12_overlay_policy::ShouldRecoverNativeFSRProxyBindingFromProtectedCreate;
 
 // Regression for session 20260701_213656: GTA froze PERMANENTLY on the first FSR-FG frame because CE
 // re-asserted the substitute UI resource (ffxConfigure/RegisterUiResource, which takes AMD's
@@ -79,6 +80,21 @@ TEST(NativeFSROwnerQueuePolicyTest, UnwrapsOnlyAProvenStreamlineQueueToTheRealGa
               NativeFSROwnerQueueRoute::kUnavailable);
     EXPECT_EQ(ce::dx12_overlay_policy::ChooseNativeFSROwnerQueueRoute(false, true, false),
               NativeFSROwnerQueueRoute::kUnavailable);
+}
+
+// GTA session gtafsrfgflicker entered ffxCreateContext before CE finished replacing the cached export pointer.
+// The nested protected DXGI create still captured the descriptor gameQueue, and ffxConfigure later supplied the
+// proxy. That joined evidence must fill the missing binding, but must never replace a binding published by the
+// primary ffxCreateContext hook.
+TEST(NativeFSROwnerQueuePolicyTest, RecoversMissingBindingFromProtectedCreateAndConfigureEvidence) {
+    EXPECT_TRUE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(false, true, true, true));
+    EXPECT_FALSE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(true, true, true, true));
+}
+
+TEST(NativeFSROwnerQueuePolicyTest, RecoveryRequiresEveryHalfOfTheJoinedEvidence) {
+    EXPECT_FALSE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(false, false, true, true));
+    EXPECT_FALSE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(false, true, false, true));
+    EXPECT_FALSE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(false, true, true, false));
 }
 
 TEST(FFXPresenterFallbackPolicyTest, CompositesOnlyOncePerAcceptedUiRegistration) {

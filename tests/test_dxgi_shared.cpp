@@ -2707,22 +2707,6 @@ TEST(DXGISharedTest, FFXUiCompositeThreeSlotRotationCoversAllSlots) {
     EXPECT_EQ(slotAtFrame102, 0);  // wraps back to 0
 }
 
-// Test that the UI-composite submit must use CE's own dedicated queue, NOT the game queue.
-// The game queue is tracked by AMD for FSR-FG pacing; any extra ECL or Signal on it wedges ffxQuery.
-// CE's dedicated queue (g_FFXUiCompositeQueue) is not tracked by AMD → no pacing perturbation.
-// This test validates the policy invariant: the composite queue must differ from the game queue.
-TEST(DXGISharedTest, FFXUiCompositeSubmitQueueMustNotBeGameQueue) {
-    // The invariant: g_FFXUiCompositeQueue != g_OriginalGameQueue when the dedicated queue is active.
-    // We test the logical invariant: the submit queue for the UI composite must not be an AMD-tracked queue.
-    // In the implementation, submitQueue = g_FFXUiCompositeQueue (created separately from g_OriginalGameQueue).
-    // If the dedicated queue creation fails, submitQueue falls back to gameQueue — this is logged as a
-    // fallback and the freeze diagnostics will show it. The policy test confirms the intent:
-    // a dedicated queue that is NOT the game queue is the correct design.
-    void* gameQueue = reinterpret_cast<void*>(0x1000);
-    void* ceCompositeQueue = reinterpret_cast<void*>(0x2000);
-    EXPECT_NE(ceCompositeQueue, gameQueue) << "CE's UI-composite queue must be a separate queue from the game queue";
-}
-
 // Test the cached UI texture null-skip: when no UI texture is cached (first frame or after FG off),
 // the composite wrapper (DX12_CompositeOverlayOntoCachedFFXUiResource) must not attempt to draw (null → skip).
 TEST(DXGISharedTest, FFXUiBundleCachedTextureNullSkip) {
@@ -5783,6 +5767,48 @@ TEST(DXGISharedSourceTest, SuspendBackbufferOverlayUsesTargetCompatibleOwnerQueu
     EXPECT_NE(body.find("no target-compatible"), std::string::npos);
     EXPECT_EQ(body.find("g_FFXUiCompositeQueue"), std::string::npos);
     EXPECT_EQ(body.find("WaitForSingleObject"), std::string::npos);
+}
+
+// GTA session gtafsrfgflicker missed ffxCreateContext because the call was already in flight while CE routed the
+// cached export. The protected inner DXGI create captured the same descriptor queue, but without joining it to
+// the proxy from ffxConfigure the game-thread composite had no owner queue and the unordered presenter fallback
+// alternated overlay visibility across real/generated output. Recovery must happen before the proxy hook is live.
+TEST(DXGISharedSourceTest, ProtectedCreateQueueRecoveryPrecedesFFXProxyPresentHookInstallation) {
+    namespace fs = std::filesystem;
+    const fs::path ffxSource = fs::current_path() / "hook" / "apis" / "ffx_hook.cpp";
+    const fs::path dx12Source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(ffxSource));
+    ASSERT_TRUE(fs::exists(dx12Source));
+
+    std::ifstream ffxStream(ffxSource, std::ios::binary);
+    std::ifstream dx12Stream(dx12Source, std::ios::binary);
+    ASSERT_TRUE(ffxStream.good());
+    ASSERT_TRUE(dx12Stream.good());
+    const std::string ffxText((std::istreambuf_iterator<char>(ffxStream)), std::istreambuf_iterator<char>());
+    const std::string dx12Text((std::istreambuf_iterator<char>(dx12Stream)), std::istreambuf_iterator<char>());
+
+    const size_t configureBlock = ffxText.find("if (recognizedFGConfigure && localConfig.swapChain) {");
+    ASSERT_NE(configureBlock, std::string::npos);
+    const size_t recovery =
+        ffxText.find("DX12_TryRecoverNativeFSRSwapchainPresentationQueue(contextHandle, localConfig.swapChain)",
+                     configureBlock);
+    const size_t hookInstall = ffxText.find("DX12_TryInstallFFXProxyPresentHook(localConfig.swapChain", configureBlock);
+    ASSERT_NE(recovery, std::string::npos);
+    ASSERT_NE(hookInstall, std::string::npos);
+    EXPECT_LT(recovery, hookInstall);
+
+    const size_t recoveryFunction =
+        dx12Text.find("bool DX12_TryRecoverNativeFSRSwapchainPresentationQueue(void* context, void* swapChain)");
+    ASSERT_NE(recoveryFunction, std::string::npos);
+    size_t recoveryFunctionEnd = dx12Text.find("\n}\n", recoveryFunction);
+    if (recoveryFunctionEnd == std::string::npos) {
+        recoveryFunctionEnd = dx12Text.find("\n}\r\n", recoveryFunction);
+    }
+    ASSERT_NE(recoveryFunctionEnd, std::string::npos);
+    const std::string recoveryBody = dx12Text.substr(recoveryFunction, recoveryFunctionEnd - recoveryFunction);
+    EXPECT_NE(recoveryBody.find("ReferenceDeferredOfficialFFXTakeoverQueue()"), std::string::npos);
+    EXPECT_NE(recoveryBody.find("capturedQueue, true, \"protected inner DXGI swapchain create\""),
+              std::string::npos);
 }
 
 // ---------------------------------------------------------------------------
