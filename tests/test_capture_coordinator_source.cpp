@@ -93,6 +93,32 @@ TEST(CaptureCoordinatorSourceTest, SplitDeviceKeyedMutexLifecycleCoversDiscarded
     EXPECT_NE(cacheFunction.find("d3d11Context->Flush()"), std::string::npos);
 }
 
+TEST(CaptureCoordinatorSourceTest, FreshAndRepeatedCfrFramesShareScheduledCursorSelection) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t resolver = source.find("auto selectCursorStateForScheduledQpc");
+    const size_t repeat = source.find("auto repeatLastFrameForScheduledQpc", resolver);
+    const size_t recovery = source.find("auto recoverScheduledFreshEncodeFailure", repeat);
+    ASSERT_NE(resolver, std::string::npos);
+    ASSERT_NE(repeat, std::string::npos);
+    ASSERT_NE(recovery, std::string::npos);
+
+    const std::string resolverBody = source.substr(resolver, repeat - resolver);
+    EXPECT_NE(resolverBody.find("timeline.SelectAtOrBefore(cursorTargetQpc, &cursorState)"), std::string::npos);
+    EXPECT_NE(resolverBody.find("cursorState.flags |= ce::cursor::kStateValid | ce::cursor::kStateSuppressed"),
+              std::string::npos);
+
+    const std::string repeatBody = source.substr(repeat, recovery - repeat);
+    EXPECT_NE(repeatBody.find("selectCursorStateForScheduledQpc(scheduledQpc, g_LastFrame, \"repeat\")"),
+              std::string::npos);
+
+    EXPECT_NE(source.find("selectCursorStateForScheduledQpc(scheduledSampleQpc, *frameToProcess, \"fresh\")"),
+              std::string::npos);
+    EXPECT_NE(source.find("selectCursorStateForScheduledQpc(repeatScheduledQpc, catchupFrame, \"fresh-catchup\")"),
+              std::string::npos);
+}
+
 TEST(CaptureCoordinatorSourceTest, AutoFallbackProvesWgcBeforeStoppingInject) {
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());

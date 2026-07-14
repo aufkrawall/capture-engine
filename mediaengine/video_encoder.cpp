@@ -5253,6 +5253,35 @@ bool VideoEncoder::InitVideoProcessor() {
         vpSupportsOverlay = false;
     }
 
+    // Desktop and cursor textures are independent progressive frames. Driver
+    // auto-processing may otherwise apply denoise, de-ringing, image
+    // stabilization, or other temporal/video heuristics. Those heuristics are
+    // inappropriate for pixel-sharp UI and can make a moving cursor alternate
+    // between a sharp repeat and a ghosted fresh frame.
+    videoContext->VideoProcessorSetStreamFrameFormat(videoProcessor, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+    videoContext->VideoProcessorSetStreamAutoProcessingMode(videoProcessor, 0, FALSE);
+    if (vpSupportsOverlay) {
+        videoContext->VideoProcessorSetStreamFrameFormat(videoProcessor, 1, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+        videoContext->VideoProcessorSetStreamAutoProcessingMode(videoProcessor, 1, FALSE);
+    }
+    D3D11_VIDEO_FRAME_FORMAT mainFrameFormat = D3D11_VIDEO_FRAME_FORMAT_INTERLACED_TOP_FIELD_FIRST;
+    BOOL mainAutoProcessing = TRUE;
+    videoContext->VideoProcessorGetStreamFrameFormat(videoProcessor, 0, &mainFrameFormat);
+    videoContext->VideoProcessorGetStreamAutoProcessingMode(videoProcessor, 0, &mainAutoProcessing);
+    D3D11_VIDEO_FRAME_FORMAT cursorFrameFormat = D3D11_VIDEO_FRAME_FORMAT_INTERLACED_TOP_FIELD_FIRST;
+    BOOL cursorAutoProcessing = TRUE;
+    if (vpSupportsOverlay) {
+        videoContext->VideoProcessorGetStreamFrameFormat(videoProcessor, 1, &cursorFrameFormat);
+        videoContext->VideoProcessorGetStreamAutoProcessingMode(videoProcessor, 1, &cursorAutoProcessing);
+    }
+    DLL_Log(
+        "[VideoProcessor] Deterministic stream processing: mainProgressive=%d mainAuto=%d "
+        "cursorStream=%d cursorProgressive=%d cursorAuto=%d",
+        mainFrameFormat == D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE ? 1 : 0, mainAutoProcessing ? 1 : 0,
+        vpSupportsOverlay ? 1 : 0,
+        vpSupportsOverlay && cursorFrameFormat == D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE ? 1 : 0,
+        vpSupportsOverlay && cursorAutoProcessing ? 1 : 0);
+
     // Configure scaling filter if scaling is enabled
     if (scalingEnabled) {
         // Map sharpness (0-100) directly to D3D11 VP edge enhancement

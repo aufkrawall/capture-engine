@@ -77,3 +77,20 @@ TEST(VideoEncoderSourceTest, MetadataDurationDiagnosticsRunAfterTrailerAndIgnore
     EXPECT_NE(source.find("const bool metadataComplete"), std::string::npos);
     EXPECT_NE(source.find("Final in-memory AVStream durations are incomplete"), std::string::npos);
 }
+
+TEST(VideoEncoderSourceTest, DesktopAndCursorVpStreamsDisableAutomaticTemporalProcessing) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("VideoProcessorSetStreamFrameFormat(videoProcessor, 0, "
+                          "D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE)"),
+              std::string::npos);
+    EXPECT_NE(source.find("VideoProcessorSetStreamAutoProcessingMode(videoProcessor, 0, FALSE)"),
+              std::string::npos);
+    EXPECT_NE(source.find("VideoProcessorSetStreamFrameFormat(videoProcessor, 1, "
+                          "D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE)"),
+              std::string::npos);
+    EXPECT_NE(source.find("VideoProcessorSetStreamAutoProcessingMode(videoProcessor, 1, FALSE)"),
+              std::string::npos);
+    EXPECT_NE(source.find("[VideoProcessor] Deterministic stream processing"), std::string::npos);
+}

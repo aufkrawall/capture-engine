@@ -7419,18 +7419,20 @@ void EncoderThreadFunc(const AppConfig& config) {
         const bool hasRepeatLastFramePath =
             !config.video.useVFR &&
             ((useScreenGrab && MediaEngine_RepeatLastFrameWithTimeline) || MediaEngine_RepeatLastFrame);
-        auto repeatLastFrameForScheduledQpc = [&](int64_t scheduledQpc) {
-            ce::cursor::CaptureState cursorState;
-            if (config.video.captureCursor && g_HasLastFrame) {
-                const uint32_t captureWidth = g_LastFrame.cursorState.captureWidth != 0
-                                                  ? g_LastFrame.cursorState.captureWidth
-                                                  : g_LastFrame.width;
-                const uint32_t captureHeight = g_LastFrame.cursorState.captureHeight != 0
-                                                   ? g_LastFrame.cursorState.captureHeight
-                                                   : g_LastFrame.height;
-                const ce::cursor::CaptureState liveState = CaptureCursorSnapshot(
-                    scheduledQpc, g_LastFrame.captureLeft, g_LastFrame.captureTop, captureWidth, captureHeight,
-                    useScreenGrab && g_LastFrame.wgcCursorEmbedded);
+        auto selectCursorStateForScheduledQpc = [&](int64_t scheduledQpc, const QueuedFrame& referenceFrame,
+                                                     const char* outputKind) {
+            ce::cursor::CaptureState cursorState = referenceFrame.cursorState;
+            if (config.video.captureCursor && scheduledQpc > 0) {
+                const uint32_t captureWidth = referenceFrame.cursorState.captureWidth != 0
+                                                  ? referenceFrame.cursorState.captureWidth
+                                                  : referenceFrame.width;
+                const uint32_t captureHeight = referenceFrame.cursorState.captureHeight != 0
+                                                   ? referenceFrame.cursorState.captureHeight
+                                                   : referenceFrame.height;
+                const bool cursorEmbedded = useScreenGrab && referenceFrame.wgcCursorEmbedded;
+                const ce::cursor::CaptureState liveState =
+                    CaptureCursorSnapshot(scheduledQpc, referenceFrame.captureLeft, referenceFrame.captureTop,
+                                          captureWidth, captureHeight, cursorEmbedded);
                 ce::cursor::Timeline& timeline = useScreenGrab ? g_WgcCursorTimeline : g_InjectCursorTimeline;
                 timeline.Publish(liveState);
                 const int64_t cursorTargetQpc =
@@ -7439,15 +7441,25 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (!timeline.SelectAtOrBefore(cursorTargetQpc, &cursorState)) {
                     cursorState = liveState;
                 }
+                if (cursorEmbedded) {
+                    // Pixel ownership is authoritative: an embedded cursor in
+                    // the selected source texture must never be drawn again,
+                    // even if the delayed timeline selected an older state.
+                    cursorState.flags |= ce::cursor::kStateValid | ce::cursor::kStateSuppressed;
+                    cursorState.flags &= ~ce::cursor::kStateVisible;
+                }
 
                 static uint64_t s_cursorTimelineLogCount = 0;
                 ++s_cursorTimelineLogCount;
                 if (s_cursorTimelineLogCount <= 5 || (s_cursorTimelineLogCount % 600ull) == 0ull) {
                     LogInfo(
-                        "[Cursor] CFR timeline backend=%s scheduled=%lld target=%lld selected=%lld observed=%lld "
-                        "deltaUs=%lld dpi=%u size=%ux%u bounds=(%d,%d %ux%u) visible=%d fallback=%d coord=%s",
-                        useScreenGrab ? "screen-grab" : "inject", static_cast<long long>(scheduledQpc),
-                        static_cast<long long>(cursorTargetQpc), static_cast<long long>(cursorState.associationQpc),
+                        "[Cursor] CFR timeline backend=%s output=%s scheduled=%lld target=%lld source=%lld "
+                        "selected=%lld observed=%lld deltaUs=%lld dpi=%u size=%ux%u bounds=(%d,%d %ux%u) "
+                        "visible=%d embedded=%d fallback=%d coord=%s",
+                        useScreenGrab ? "screen-grab" : "inject", outputKind ? outputKind : "unknown",
+                        static_cast<long long>(scheduledQpc), static_cast<long long>(cursorTargetQpc),
+                        static_cast<long long>(referenceFrame.cursorState.associationQpc),
+                        static_cast<long long>(cursorState.associationQpc),
                         static_cast<long long>(cursorState.observedQpc),
                         static_cast<long long>(qpcFreq.QuadPart > 0
                                                    ? ((cursorTargetQpc - cursorState.associationQpc) * 1000000) /
@@ -7455,10 +7467,17 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                    : 0),
                         cursorState.dpi, cursorState.requestedWidth, cursorState.requestedHeight,
                         cursorState.captureLeft, cursorState.captureTop, cursorState.captureWidth,
-                        cursorState.captureHeight, cursorState.IsVisible() ? 1 : 0,
+                        cursorState.captureHeight, cursorState.IsVisible() ? 1 : 0, cursorEmbedded ? 1 : 0,
                         (cursorState.flags & ce::cursor::kStateHandleVisibilityFallback) != 0 ? 1 : 0,
                         cursorState.PositionIsShapeTopLeft() ? "shape-top-left" : "hotspot");
                 }
+            }
+            return cursorState;
+        };
+        auto repeatLastFrameForScheduledQpc = [&](int64_t scheduledQpc) {
+            ce::cursor::CaptureState cursorState;
+            if (config.video.captureCursor && g_HasLastFrame) {
+                cursorState = selectCursorStateForScheduledQpc(scheduledQpc, g_LastFrame, "repeat");
             }
             if (useScreenGrab && !config.video.useVFR && MediaEngine_RepeatLastFrameWithTimeline) {
                 return MediaEngine_RepeatLastFrameWithTimeline(scheduledQpc,
@@ -8972,10 +8991,12 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                             const int64_t catchupTimelineElapsedUs = computeLiveTimelineElapsedUs(repeatScheduledQpc);
                             SyncDuplicationCursorSuppression(catchupFrame.wgcCursorEmbedded);
+                            const ce::cursor::CaptureState catchupCursorState =
+                                selectCursorStateForScheduledQpc(repeatScheduledQpc, catchupFrame, "fresh-catchup");
                             const bool freshCatchupEncodeSucceeded = MediaEngine_ProcessFrameD3D11(
                                 catchupFrame.texture, catchupFrame.timestamp, catchupFrame.width, catchupFrame.height,
                                 catchupFrame.isHDR, catchupFrame.captureLeft, catchupFrame.captureTop,
-                                catchupTimelineElapsedUs, &catchupFrame.cursorState);
+                                catchupTimelineElapsedUs, &catchupCursorState);
                             const bool recoveredCatchupEncodeFailure =
                                 !freshCatchupEncodeSucceeded &&
                                 recoverScheduledFreshEncodeFailure(true, false, false, repeatScheduledQpc,
@@ -9299,13 +9320,20 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
 
             auto encodeCurrentFrame = [&]() {
+                ce::cursor::CaptureState scheduledCursorState;
+                const ce::cursor::CaptureState* cursorState = &frameToProcess->cursorState;
+                if (scheduledLiveCfrTick && scheduledSampleQpc > 0) {
+                    scheduledCursorState =
+                        selectCursorStateForScheduledQpc(scheduledSampleQpc, *frameToProcess, "fresh");
+                    cursorState = &scheduledCursorState;
+                }
                 if (frameToProcess->isInjectMode) {
                     encodeSucceeded = MediaEngine_ProcessFrame(
                         (uint64_t)frameToProcess->sharedHandle, (uint64_t)frameToProcess->fenceHandle,
                         frameToProcess->fenceValue, frameToProcess->timestamp, frameToProcess->luidLow,
                         frameToProcess->luidHigh, frameToProcess->sourcePid, frameToProcess->width,
                         frameToProcess->height, frameToProcess->format, frameToProcess->isHDR, frameToProcess->isShmem,
-                        frameToProcess->shmemSlot, &frameToProcess->cursorState);
+                        frameToProcess->shmemSlot, cursorState);
                     encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
                 } else {
                     const int64_t liveTimelineElapsedUs =
@@ -9315,7 +9343,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                                     frameToProcess->width, frameToProcess->height,
                                                                     frameToProcess->isHDR, frameToProcess->captureLeft,
                                                                     frameToProcess->captureTop, liveTimelineElapsedUs,
-                                                                    &frameToProcess->cursorState);
+                                                                    cursorState);
                     encodeDeferred = false;
                 }
             };
