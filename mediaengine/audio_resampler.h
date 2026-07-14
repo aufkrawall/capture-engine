@@ -21,6 +21,12 @@ extern "C" {
  */
 class AudioResampler {
 public:
+    enum class FlushResult {
+        Output,
+        Complete,
+        Error,
+    };
+
     // Input format description (from WASAPI)
     struct InputFormat {
         int channels;
@@ -73,9 +79,12 @@ public:
      *
      * @param outputData    [out] Pointer to allocated output buffer
      * @param outputSamples [out] Number of flushed samples
-     * @return true if samples were flushed
+     * @return Output when samples were produced, Complete when libswresample
+     *         can produce no more output, or Error on a real failure. Complete
+     *         is authoritative even when swr_get_delay retains an intrinsic
+     *         filter delay after end-of-input.
      */
-    bool Flush(uint8_t*** outputData, int* outputSamples);
+    FlushResult Flush(uint8_t*** outputData, int* outputSamples);
 
     /**
      * Get the delay in samples currently buffered in the resampler.

@@ -23,6 +23,7 @@ struct ProcessNameSelection {
     size_t matchingProcessCount = 0;
     size_t rootCandidateCount = 0;
     size_t selectedTreeSize = 0;
+    size_t selectedProcessTreeSize = 0;
 };
 
 inline bool ProcessExecutableNamesEqual(const std::string& lhs, const std::string& rhs) {
@@ -94,7 +95,31 @@ inline ProcessNameSelection SelectProcessTreeRootByName(const std::vector<Proces
     if (selectedIt != byProcessId.end()) {
         result.selectedParentProcessId = selectedIt->second->parentProcessId;
     }
+
+    for (const auto& process : processes) {
+        uint32_t processId = process.processId;
+        std::unordered_set<uint32_t> visited;
+        visited.reserve(8);
+        while (processId != 0 && visited.insert(processId).second) {
+            if (processId == selectedProcessId) {
+                ++result.selectedProcessTreeSize;
+                break;
+            }
+            const auto processIt = byProcessId.find(processId);
+            if (processIt == byProcessId.end()) {
+                break;
+            }
+            processId = processIt->second->parentProcessId;
+        }
+    }
     return result;
+}
+
+inline bool ShouldReactivateUnqualifiedCaptureForTreeGrowth(bool activationQualified, uint32_t activeProcessId,
+                                                            size_t activatedTreeSize,
+                                                            const ProcessNameSelection& observedSelection) {
+    return !activationQualified && activeProcessId != 0 && observedSelection.selectedProcessId == activeProcessId &&
+           observedSelection.selectedProcessTreeSize > activatedTreeSize;
 }
 
 }  // namespace ce::process_loopback

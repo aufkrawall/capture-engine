@@ -174,6 +174,38 @@ TEST(AudioCaptureSourceTest, SilentStallRecoveryUsesCurrentActivationQualificati
     EXPECT_NE(appSource.find("currentActivationQualified = true;", loopBegin), std::string::npos);
 }
 
+TEST(AudioCaptureSourceTest, UnqualifiedNameCaptureReattachesWhenItsSelectedProcessTreeGrows) {
+    const std::string appSource = ReadSource("app_audio_capture.cpp");
+    const std::string selectionSource = ReadSource("process_tree_selection.h");
+    ASSERT_FALSE(appSource.empty());
+    ASSERT_FALSE(selectionSource.empty());
+
+    EXPECT_NE(selectionSource.find("selectedProcessTreeSize"), std::string::npos);
+    EXPECT_NE(selectionSource.find("ShouldReactivateUnqualifiedCaptureForTreeGrowth("), std::string::npos);
+    EXPECT_NE(appSource.find("activatedProcessTreeSize.store(selection.selectedProcessTreeSize"), std::string::npos);
+    EXPECT_NE(appSource.find("ShouldReactivateUnqualifiedCaptureForTreeGrowth("), std::string::npos);
+    EXPECT_NE(appSource.find("attemptReactivate(\"unqualified_process_tree_growth\", 0, false)"), std::string::npos);
+}
+
+TEST(AudioCaptureSourceTest, EpochResetUsesTerminalResamplerFlushResultInsteadOfReportedDelay) {
+    const std::string mediaSource = ReadSource("mediaengine.cpp");
+    ASSERT_FALSE(mediaSource.empty());
+
+    const size_t captureFlush = mediaSource.find("bool FlushCaptureResamplerForEpoch(");
+    const size_t resetService = mediaSource.find("bool ServiceAudioEpochResetOnPull(", captureFlush);
+    const size_t audioOnlyFlush = mediaSource.find("void FlushAudioOnlyResamplerTails(", resetService);
+    ASSERT_NE(captureFlush, std::string::npos);
+    ASSERT_NE(resetService, std::string::npos);
+    ASSERT_NE(audioOnlyFlush, std::string::npos);
+
+    const std::string captureBody = mediaSource.substr(captureFlush, resetService - captureFlush);
+    const std::string resetBody = mediaSource.substr(resetService, audioOnlyFlush - resetService);
+    EXPECT_NE(captureBody.find("AudioResampler::FlushResult::Complete"), std::string::npos);
+    EXPECT_NE(resetBody.find("AudioResampler::FlushResult::Complete"), std::string::npos);
+    EXPECT_EQ(captureBody.find("remainingDelay != 0"), std::string::npos);
+    EXPECT_EQ(resetBody.find("remainingDelay != 0"), std::string::npos);
+}
+
 TEST(AudioCaptureSourceTest, EndpointWasapiInterfacesRemainWorkerOwned) {
     const std::string source = ReadSource("audio_capture.cpp");
     ASSERT_FALSE(source.empty());

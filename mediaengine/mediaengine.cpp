@@ -2703,11 +2703,22 @@ public:
 
         size_t flushedSamples = 0;
         constexpr size_t kMaxFlushPasses = 8;
+        bool flushComplete = false;
         for (size_t pass = 0; pass < kMaxFlushPasses; ++pass) {
             uint8_t** tailData = nullptr;
             int tailSamples = 0;
-            if (!src.resampler->Flush(&tailData, &tailSamples)) {
+            const AudioResampler::FlushResult flushResult = src.resampler->Flush(&tailData, &tailSamples);
+            if (flushResult == AudioResampler::FlushResult::Error) {
                 AudioResampler::FreeOutputBuffer(tailData);
+                DLL_Log(
+                    "[AudioEpoch] ERROR: Capture-resampler flush failed src=%zu track=%d epoch=%llu->%llu "
+                    "flushed=%zu",
+                    srcIdx, src.track, static_cast<unsigned long long>(oldEpoch),
+                    static_cast<unsigned long long>(newEpoch), flushedSamples);
+                return false;
+            }
+            if (flushResult == AudioResampler::FlushResult::Complete) {
+                flushComplete = true;
                 break;
             }
             if (tailSamples > 0 && tailData && tailData[0]) {
@@ -2730,13 +2741,12 @@ public:
             AudioResampler::FreeOutputBuffer(tailData);
         }
 
-        const int64_t remainingDelay = std::max<int64_t>(0, src.resampler->GetDelay());
-        if (remainingDelay != 0) {
+        if (!flushComplete) {
             DLL_Log(
-                "[AudioEpoch] ERROR: Capture-resampler tail did not drain src=%zu track=%d epoch=%llu->%llu "
-                "flushed=%zu remaining=%lld",
-                srcIdx, src.track, static_cast<unsigned long long>(oldEpoch),
-                static_cast<unsigned long long>(newEpoch), flushedSamples, static_cast<long long>(remainingDelay));
+                "[AudioEpoch] Capture-resampler flush pass bound reached src=%zu track=%d epoch=%llu->%llu "
+                "flushed=%zu reportedDelay=%lld; continuing on the next owner pass",
+                srcIdx, src.track, static_cast<unsigned long long>(oldEpoch), static_cast<unsigned long long>(newEpoch),
+                flushedSamples, static_cast<long long>(std::max<int64_t>(0, src.resampler->GetDelay())));
             return false;
         }
 
@@ -2767,24 +2777,33 @@ public:
             size_t syncTailSamples = 0;
             constexpr size_t kMaxFlushPasses = 8;
             if (src.syncResampler && src.syncResampler->IsReady()) {
+                bool flushComplete = false;
                 for (size_t pass = 0; pass < kMaxFlushPasses; ++pass) {
                     uint8_t** tailData = nullptr;
                     int tailSamples = 0;
-                    if (!src.syncResampler->Flush(&tailData, &tailSamples)) {
+                    const AudioResampler::FlushResult flushResult = src.syncResampler->Flush(&tailData, &tailSamples);
+                    if (flushResult == AudioResampler::FlushResult::Error) {
                         AudioResampler::FreeOutputBuffer(tailData);
+                        DLL_Log(
+                            "[AudioEpoch] ERROR: Sync-resampler flush failed src=%zu track=%d generation=%llu "
+                            "flushed=%zu",
+                            srcIdx, src.track, static_cast<unsigned long long>(requested), syncTailSamples);
+                        return false;
+                    }
+                    if (flushResult == AudioResampler::FlushResult::Complete) {
+                        flushComplete = true;
                         break;
                     }
                     AppendSyncResamplerOutput(src, srcIdx, channels, tailData, tailSamples);
                     syncTailSamples += static_cast<size_t>(std::max(tailSamples, 0));
                     AudioResampler::FreeOutputBuffer(tailData);
                 }
-                const int64_t remainingDelay = std::max<int64_t>(0, src.syncResampler->GetDelay());
-                if (remainingDelay != 0) {
+                if (!flushComplete) {
                     DLL_Log(
-                        "[AudioEpoch] ERROR: Sync-resampler tail did not drain src=%zu track=%d generation=%llu "
-                        "flushed=%zu remaining=%lld",
+                        "[AudioEpoch] Sync-resampler flush pass bound reached src=%zu track=%d generation=%llu "
+                        "flushed=%zu reportedDelay=%lld; continuing on the next pull pass",
                         srcIdx, src.track, static_cast<unsigned long long>(requested), syncTailSamples,
-                        static_cast<long long>(remainingDelay));
+                        static_cast<long long>(std::max<int64_t>(0, src.syncResampler->GetDelay())));
                     return false;
                 }
             }
@@ -2851,8 +2870,13 @@ public:
                 for (size_t pass = 0; pass < kMaxFlushPasses; ++pass) {
                     uint8_t** tailData = nullptr;
                     int tailSamples = 0;
-                    if (!src.resampler->Flush(&tailData, &tailSamples)) {
+                    const AudioResampler::FlushResult flushResult = src.resampler->Flush(&tailData, &tailSamples);
+                    if (flushResult != AudioResampler::FlushResult::Output) {
                         AudioResampler::FreeOutputBuffer(tailData);
+                        if (flushResult == AudioResampler::FlushResult::Error) {
+                            DLL_Log("[StopAudio] ERROR: Capture-resampler tail flush failed src=%zu track=%d", srcIdx,
+                                    src.track);
+                        }
                         break;
                     }
                     if (tailSamples > 0 && tailData && tailData[0]) {
@@ -2891,8 +2915,13 @@ public:
                 for (size_t pass = 0; pass < kMaxFlushPasses; ++pass) {
                     uint8_t** tailData = nullptr;
                     int tailSamples = 0;
-                    if (!src.syncResampler->Flush(&tailData, &tailSamples)) {
+                    const AudioResampler::FlushResult flushResult = src.syncResampler->Flush(&tailData, &tailSamples);
+                    if (flushResult != AudioResampler::FlushResult::Output) {
                         AudioResampler::FreeOutputBuffer(tailData);
+                        if (flushResult == AudioResampler::FlushResult::Error) {
+                            DLL_Log("[StopAudio] ERROR: Sync-resampler tail flush failed src=%zu track=%d", srcIdx,
+                                    src.track);
+                        }
                         break;
                     }
                     AppendSyncResamplerOutput(src, srcIdx, channels, tailData, tailSamples);

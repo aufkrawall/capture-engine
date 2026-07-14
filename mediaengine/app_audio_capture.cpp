@@ -269,6 +269,7 @@ bool AppAudioCapture::StartByPID(DWORD processId) {
     }
     shouldStop.store(false);
     targetPID.store(processId);
+    activatedProcessTreeSize.store(0, std::memory_order_release);
     targetProcessName.clear();
 
     if (!BeginAsyncStartForPID(processId)) {
@@ -363,6 +364,7 @@ void AppAudioCapture::Stop(bool discardPendingPackets) {
     }
     CleanupCapture();
     targetPID.store(0);
+    activatedProcessTreeSize.store(0, std::memory_order_release);
     targetProcessName.clear();
 }
 
@@ -939,6 +941,12 @@ void AppAudioCapture::CaptureLoop() {
         if (ok) {
             ++reactivateSuccesses;
             firstSet = false;
+            if (!targetProcessName.empty()) {
+                const auto selection = FindProcessByName(targetProcessName, false);
+                if (selection.selectedProcessId == pid) {
+                    activatedProcessTreeSize.store(selection.selectedProcessTreeSize, std::memory_order_release);
+                }
+            }
             DLL_Log("[AppAudioCapture] Re-activation succeeded for PID %lu (attempt=%llu mode=%s)", pid,
                     static_cast<unsigned long long>(reactivateAttempts),
                     (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
@@ -995,17 +1003,36 @@ void AppAudioCapture::CaptureLoop() {
         const uint64_t nowTick = GetTickCount64();
         if (!drainingAfterStop && nowTick - lastProcessCheckTick >= 500) {
             lastProcessCheckTick = nowTick;
-            if (!IsProcessRunning(targetPID.load())) {
+            const DWORD activePid = targetPID.load(std::memory_order_acquire);
+            if (!IsProcessRunning(activePid)) {
                 if (++processMissingStreak >= kProcessMissingStreakToExit) {
-                    DLL_Log("[AppAudioCapture] Target process %lu exited (missed %d consecutive checks)",
-                            targetPID.load(), processMissingStreak);
+                    DLL_Log("[AppAudioCapture] Target process %lu exited (missed %d consecutive checks)", activePid,
+                            processMissingStreak);
                     targetPID.store(0, std::memory_order_release);
                     break;
                 }
-                DLL_Log("[AppAudioCapture] Target process %lu not found on check %d/%d - deferring exit",
-                        targetPID.load(), processMissingStreak, kProcessMissingStreakToExit);
+                DLL_Log("[AppAudioCapture] Target process %lu not found on check %d/%d - deferring exit", activePid,
+                        processMissingStreak, kProcessMissingStreakToExit);
             } else {
                 processMissingStreak = 0;
+                if (!currentActivationQualified && !targetProcessName.empty()) {
+                    const auto selection = FindProcessByName(targetProcessName, false);
+                    const uint64_t activatedTreeSize = activatedProcessTreeSize.load(std::memory_order_acquire);
+                    if (ce::process_loopback::ShouldReactivateUnqualifiedCaptureForTreeGrowth(
+                            currentActivationQualified, activePid, static_cast<size_t>(activatedTreeSize), selection) &&
+                        ce::audio::RecoveryBackoffElapsed(nowTick, lastReactivateTick, recoveryBackoffMs)) {
+                        DLL_Log(
+                            "[AppAudioCapture] Unqualified process-loopback target tree grew after activation: "
+                            "process=%s PID=%lu members=%llu->%zu epoch=%llu; re-activating against the complete "
+                            "tree so newly-created audio children are included",
+                            targetProcessName.c_str(), activePid, static_cast<unsigned long long>(activatedTreeSize),
+                            selection.selectedProcessTreeSize,
+                            static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)));
+                        if (attemptReactivate("unqualified_process_tree_growth", 0, false)) {
+                            continue;
+                        }
+                    }
+                }
             }
         }
 
@@ -1524,16 +1551,20 @@ void AppAudioCapture::ProcessMonitorLoop() {
                 captureThread.join();
                 CleanupCapture();
                 targetPID.store(0, std::memory_order_release);
+                activatedProcessTreeSize.store(0, std::memory_order_release);
             }
 
             // Not capturing - try to find the target process
-            DWORD pid = FindProcessByName(targetProcessName);
+            const auto selection = FindProcessByName(targetProcessName);
+            const DWORD pid = selection.selectedProcessId;
             if (pid != 0) {
-                DLL_Log("[AppAudioCapture] Selected process-tree root '%s' with PID %lu",
-                        targetProcessName.c_str(), pid);
+                DLL_Log("[AppAudioCapture] Selected process-tree root '%s' with PID %lu", targetProcessName.c_str(),
+                        pid);
                 targetPID.store(pid);
+                activatedProcessTreeSize.store(selection.selectedProcessTreeSize, std::memory_order_release);
                 if (!BeginAsyncStartForPID(pid)) {
                     targetPID.store(0, std::memory_order_release);
+                    activatedProcessTreeSize.store(0, std::memory_order_release);
                 }
             }
         }
@@ -1547,10 +1578,11 @@ void AppAudioCapture::ProcessMonitorLoop() {
     DLL_Log("[AppAudioCapture] Monitor loop exited");
 }
 
-DWORD AppAudioCapture::FindProcessByName(const std::string& name) {
+ce::process_loopback::ProcessNameSelection AppAudioCapture::FindProcessByName(const std::string& name,
+                                                                              bool logSelection) {
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) {
-        return 0;
+        return {};
     }
 
     PROCESSENTRY32W pe32 = {};
@@ -1569,17 +1601,18 @@ DWORD AppAudioCapture::FindProcessByName(const std::string& name) {
 
     CloseHandle(snapshot);
     const auto selection = ce::process_loopback::SelectProcessTreeRootByName(processes, name);
-    if (selection.selectedProcessId != 0) {
+    if (logSelection && selection.selectedProcessId != 0) {
         DLL_Log(
             "[AppAudioCapture] Process-name tree resolution '%s': matches=%zu roots=%zu firstPID=%lu "
-            "selectedRootPID=%lu selectedParentPID=%lu selectedTreeMembers=%zu firstMatchWasRoot=%d",
+            "selectedRootPID=%lu selectedParentPID=%lu selectedNameMembers=%zu selectedProcessTreeMembers=%zu "
+            "firstMatchWasRoot=%d",
             name.c_str(), selection.matchingProcessCount, selection.rootCandidateCount,
             static_cast<unsigned long>(selection.firstMatchProcessId),
             static_cast<unsigned long>(selection.selectedProcessId),
             static_cast<unsigned long>(selection.selectedParentProcessId), selection.selectedTreeSize,
-            selection.firstMatchProcessId == selection.selectedProcessId ? 1 : 0);
+            selection.selectedProcessTreeSize, selection.firstMatchProcessId == selection.selectedProcessId ? 1 : 0);
     }
-    return selection.selectedProcessId;
+    return selection;
 }
 
 bool AppAudioCapture::IsProcessRunning(DWORD pid) {

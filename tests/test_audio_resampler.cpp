@@ -149,7 +149,7 @@ TEST(AudioResamplerTest, ProcessCanUpmixMonoAndResampleToEncoderRate) {
 
     uint8_t** flushed = nullptr;
     int flushedSamples = 0;
-    if (resampler.Flush(&flushed, &flushedSamples)) {
+    if (resampler.Flush(&flushed, &flushedSamples) == AudioResampler::FlushResult::Output) {
         totalOutputSamples += flushedSamples;
         if (flushedSamples > 0) {
             ASSERT_NE(flushed, nullptr);
@@ -163,6 +163,46 @@ TEST(AudioResamplerTest, ProcessCanUpmixMonoAndResampleToEncoderRate) {
     }
 
     EXPECT_GT(totalOutputSamples, static_cast<int>(monoSamples.size()));
+}
+
+TEST(AudioResamplerTest, FlushCompletionDoesNotRequireReportedFilterDelayToReachZero) {
+    AudioResampler resampler;
+    AudioResampler::InputFormat inFmt{};
+    inFmt.channels = 2;
+    inFmt.sampleRate = 48000;
+    inFmt.bitsPerSample = 32;
+    inFmt.validBitsPerSample = 32;
+    inFmt.isFloat = true;
+    inFmt.blockAlign = 8;
+    inFmt.channelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+
+    ASSERT_TRUE(resampler.Init(inFmt, MakeStereoFloatOutput()));
+    ASSERT_GE(swr_set_compensation(resampler.GetSwrContext(), -20, 480000), 0);
+
+    std::vector<float> input(960, 0.25f);
+    uint8_t** output = nullptr;
+    int outputSamples = 0;
+    ASSERT_TRUE(resampler.Process(reinterpret_cast<const uint8_t*>(input.data()),
+                                  static_cast<int>(input.size() * sizeof(float)), &output, &outputSamples));
+    AudioResampler::FreeOutputBuffer(output);
+
+    bool completed = false;
+    int64_t terminalReportedDelay = 0;
+    for (int pass = 0; pass < 8; ++pass) {
+        uint8_t** tail = nullptr;
+        int tailSamples = 0;
+        const AudioResampler::FlushResult result = resampler.Flush(&tail, &tailSamples);
+        AudioResampler::FreeOutputBuffer(tail);
+        ASSERT_NE(result, AudioResampler::FlushResult::Error);
+        if (result == AudioResampler::FlushResult::Complete) {
+            completed = true;
+            terminalReportedDelay = resampler.GetDelay();
+            break;
+        }
+    }
+
+    EXPECT_TRUE(completed);
+    EXPECT_GT(terminalReportedDelay, 0);
 }
 
 TEST(AudioResamplerTest, ResetClearsBufferedDelayAndClockTracking) {

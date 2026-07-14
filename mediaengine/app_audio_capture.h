@@ -16,6 +16,7 @@
 // Include for AudioPacket definition
 #include "audio_capture.h"
 #include "audio_recovery_policy.h"
+#include "process_tree_selection.h"
 
 /**
  * Per-application audio capture using Windows 10/11 process loopback API.
@@ -159,8 +160,11 @@ private:
     // Process monitoring loop (runs in monitorThread for name-based capture)
     void ProcessMonitorLoop();
 
-    // Find PID by process name
-    static DWORD FindProcessByName(const std::string& name);
+    // Resolve the largest same-name process tree. The selected tree size is
+    // retained with an activation so a still-unqualified client can reattach
+    // when a multi-process application finishes spawning its audio child.
+    static ce::process_loopback::ProcessNameSelection FindProcessByName(const std::string& name,
+                                                                        bool logSelection = true);
 
     // Check if a process is still running
     static bool IsProcessRunning(DWORD pid);
@@ -183,6 +187,7 @@ private:
 
     // Target process info
     std::atomic<DWORD> targetPID{0};
+    std::atomic<uint64_t> activatedProcessTreeSize{0};
     std::string targetProcessName;
 
     // State flags

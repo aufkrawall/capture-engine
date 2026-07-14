@@ -223,17 +223,21 @@ bool AudioResampler::Process(const uint8_t* inputData, int inputBytes, uint8_t**
     return true;
 }
 
-bool AudioResampler::Flush(uint8_t*** outputData, int* outputSamples) {
+AudioResampler::FlushResult AudioResampler::Flush(uint8_t*** outputData, int* outputSamples) {
+    if (!outputData || !outputSamples) {
+        return FlushResult::Error;
+    }
+    *outputData = nullptr;
+    *outputSamples = 0;
+
     if (!swrCtx) {
-        return false;
+        return FlushResult::Error;
     }
 
     // Get remaining delay
     int64_t delay = swr_get_delay(swrCtx, outFmt.sampleRate);
     if (delay <= 0) {
-        *outputData = nullptr;
-        *outputSamples = 0;
-        return false;
+        return FlushResult::Complete;
     }
 
     // Allocate output buffer
@@ -241,23 +245,33 @@ bool AudioResampler::Flush(uint8_t*** outputData, int* outputSamples) {
     int ret = av_samples_alloc_array_and_samples(&outBuf, nullptr, outFmt.channels, (int)delay, outFmt.sampleFmt, 0);
 
     if (ret < 0) {
-        return false;
+        DLL_Log("[AudioResampler] Failed to allocate flush output buffer");
+        return FlushResult::Error;
     }
 
     // Flush (pass nullptr as input)
     int convertedSamples = swr_convert(swrCtx, outBuf, (int)delay, nullptr, 0);
 
-    if (convertedSamples <= 0) {
+    if (convertedSamples < 0) {
+        char errbuf[256];
+        av_strerror(convertedSamples, errbuf, sizeof(errbuf));
+        DLL_Log("[AudioResampler] Flush conversion failed: %s", errbuf);
         av_freep(&outBuf[0]);
         av_freep(&outBuf);
-        *outputData = nullptr;
-        *outputSamples = 0;
-        return false;
+        return FlushResult::Error;
+    }
+    if (convertedSamples == 0) {
+        // swr_get_delay can retain the resampler's intrinsic filter delay even
+        // after a null-input conversion proves that no samples remain
+        // producible. Treat the conversion result as the EOF authority.
+        av_freep(&outBuf[0]);
+        av_freep(&outBuf);
+        return FlushResult::Complete;
     }
 
     *outputData = outBuf;
     *outputSamples = convertedSamples;
-    return true;
+    return FlushResult::Output;
 }
 
 int64_t AudioResampler::GetDelay() const {

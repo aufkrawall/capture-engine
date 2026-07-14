@@ -21,6 +21,7 @@ TEST(ProcessTreeSelectionTest, SelectsSameNameTreeRootInsteadOfFirstEnumeratedCh
     EXPECT_EQ(selection.matchingProcessCount, 4u);
     EXPECT_EQ(selection.rootCandidateCount, 1u);
     EXPECT_EQ(selection.selectedTreeSize, 4u);
+    EXPECT_EQ(selection.selectedProcessTreeSize, 4u);
 }
 
 TEST(ProcessTreeSelectionTest, SelectsLargestIndependentSameNameTreeDeterministically) {
@@ -39,6 +40,20 @@ TEST(ProcessTreeSelectionTest, SelectsLargestIndependentSameNameTreeDeterministi
     EXPECT_EQ(selection.matchingProcessCount, 5u);
     EXPECT_EQ(selection.rootCandidateCount, 2u);
     EXPECT_EQ(selection.selectedTreeSize, 3u);
+    EXPECT_EQ(selection.selectedProcessTreeSize, 3u);
+}
+
+TEST(ProcessTreeSelectionTest, SelectedProcessTreeIncludesDifferentlyNamedDescendants) {
+    const std::vector<policy::ProcessTreeEntry> processes = {
+        {500, 4, "browser.exe"},      {501, 500, "browser.exe"}, {502, 500, "audio-helper.exe"},
+        {503, 502, "codec-host.exe"}, {4, 0, "explorer.exe"},
+    };
+
+    const auto selection = policy::SelectProcessTreeRootByName(processes, "browser.exe");
+
+    EXPECT_EQ(selection.selectedProcessId, 500u);
+    EXPECT_EQ(selection.selectedTreeSize, 2u);
+    EXPECT_EQ(selection.selectedProcessTreeSize, 4u);
 }
 
 TEST(ProcessTreeSelectionTest, HandlesMissingParentsCyclesAndNoMatch) {
@@ -55,4 +70,19 @@ TEST(ProcessTreeSelectionTest, HandlesMissingParentsCyclesAndNoMatch) {
     const auto absent = policy::SelectProcessTreeRootByName(processes, "missing.exe");
     EXPECT_EQ(absent.selectedProcessId, 0u);
     EXPECT_EQ(absent.matchingProcessCount, 0u);
+}
+
+TEST(ProcessTreeSelectionTest, UnqualifiedCaptureReactivatesOnlyWhenItsSelectedTreeGrows) {
+    policy::ProcessNameSelection observed;
+    observed.selectedProcessId = 500;
+    observed.selectedProcessTreeSize = 9;
+
+    EXPECT_TRUE(policy::ShouldReactivateUnqualifiedCaptureForTreeGrowth(
+        /*activationQualified=*/false, /*activeProcessId=*/500, /*activatedTreeSize=*/5, observed));
+    EXPECT_FALSE(policy::ShouldReactivateUnqualifiedCaptureForTreeGrowth(
+        /*activationQualified=*/true, /*activeProcessId=*/500, /*activatedTreeSize=*/5, observed));
+    EXPECT_FALSE(policy::ShouldReactivateUnqualifiedCaptureForTreeGrowth(
+        /*activationQualified=*/false, /*activeProcessId=*/600, /*activatedTreeSize=*/5, observed));
+    EXPECT_FALSE(policy::ShouldReactivateUnqualifiedCaptureForTreeGrowth(
+        /*activationQualified=*/false, /*activeProcessId=*/500, /*activatedTreeSize=*/9, observed));
 }
