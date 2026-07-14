@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-14 (corrected GTA FSR-FG protected-create proxy/owner-queue recovery, max-rate variable-input WGC CFR, polling-first/first-packet-qualified process loopback, transactional WGC/DXGI encoder prewarm and delayed-debt pruning, exact codec-decoded endpoints, disposable process-loopback lifecycle, native AAC NMR configuration, cursor/content timeline alignment, and mixed-DPI/SDR/HDR composition; see frame-generation/guardrails.md, multi-audio-capture.md, cfr-capture-sync.md, build.py.md, wgc-capture.md, and log/recent.md)
+Last cross-checked: 2026-07-14 (corrected GTA FSR-FG protected-create proxy/owner-queue recovery and protected-startup proxy-backbuffer routing, max-rate variable-input WGC CFR, polling-first/first-packet-qualified process loopback, transactional WGC/DXGI encoder prewarm and delayed-debt pruning, exact codec-decoded endpoints, disposable process-loopback lifecycle, native AAC NMR configuration, cursor/content timeline alignment, and mixed-DPI/SDR/HDR composition; see frame-generation/guardrails.md, multi-audio-capture.md, cfr-capture-sync.md, build.py.md, wgc-capture.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`

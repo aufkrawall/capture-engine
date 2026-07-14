@@ -407,12 +407,6 @@ TEST(DXGISharedTest, OverlayUploadSlotGuardDisabledForFGAndMissingFence) {
     EXPECT_EQ(pol::DecideOverlayUploadSlotGuardValue(true, true, 41u), 0u);
     // No overlay fence -> nothing to wait on.
     EXPECT_EQ(pol::DecideOverlayUploadSlotGuardValue(false, false, 41u), 0u);
-    // Dormant protected-FFX 2D-menu draw submits on the TRANSIENT staged takeover queue; its pending
-    // overlay-fence Signal is discarded on the runtime handoff, so a guard would block the present thread
-    // for the full 1 s timeout every frame (session 20260616_142044). Disable it (0) even on the non-FG
-    // path. The 4th arg defaults false, so the existing non-FG callers keep guarding normally.
-    EXPECT_EQ(pol::DecideOverlayUploadSlotGuardValue(false, true, 41u, /*submitQueueMayBeDiscarded=*/true), 0u);
-    EXPECT_EQ(pol::DecideOverlayUploadSlotGuardValue(false, true, 41u, /*submitQueueMayBeDiscarded=*/false), 42u);
 }
 
 TEST(DXGISharedTest, OverlayUploadSlotWaitsOnlyWhenGpuBehindActiveGuard) {
@@ -802,16 +796,14 @@ TEST(DXGISharedTest, EagerlyDrawsPreSLOverlayDuringDLSSToggleOnWhenSameQueueAndO
                                                                  /*swapchainQueueIsOriginalGameQueue=*/false));
 }
 
-TEST(DXGISharedTest, NormalOverlayAllowedDuringDormantProtectedFFXStartup) {
+TEST(DXGISharedTest, NormalOverlayDeniedDuringDormantProtectedFFXStartup) {
     using ce::dx12_overlay_policy::ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup;
 
-    // 2D-menu FSR arming (Talos): protected official-FFX startup pending, the overlay backend is live,
-    // a DISTINCT staged takeover queue exists (the live FSR swapchain's creation queue we submit on),
-    // AMD is dormant (no enabled ffxConfigure / callback), and a few stable frames have elapsed →
-    // rebuild against the live swapchain and draw on the staged queue instead of an 8 s menu blank.
+    // GTA session 20260714_142550 proves the strongest former dormant evidence is still unsafe: the staged
+    // create queue is AMD's internal presenter, and normal overlay work there strands its completion fence.
     // Signature: (protectedPending, overlayInit, syncInit, hasDistinctStagedTakeoverQueue, directFFX,
     //             callbackActive, sustainedProgress).
-    EXPECT_TRUE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
+    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
         /*protectedOfficialFFXStartupPending=*/true, /*overlayInit=*/true, /*syncInit=*/true,
         /*hasDistinctStagedTakeoverQueue=*/true, /*hasDirectFFXApiConfirmation=*/false,
         /*ffxPresentCallbackActive=*/false, /*sustainedGameProgress=*/true));
@@ -838,37 +830,14 @@ TEST(DXGISharedTest, NormalOverlayAllowedDuringDormantProtectedFFXStartup) {
         /*protectedPending=*/false, true, true, true, false, false, true));
 }
 
-// POST-SWITCH topology (user decision 2026-06-16): after a sequence of DLSS<->FSR switches the Talos
-// menu re-arms FSR with runtimeOwns=1 and scQueue!=origGame (g_SwapchainQueue is a PRIOR FSR queue, the
-// live swapchain is on a NEW staged queue). The earlier !runtimeOwns/scQueue==origGame guardrail denied
-// this (it was the GTA-freeze guard) and left the menu blank. Those two conjuncts are now DROPPED — the
-// dormant draw rebuilds against the live swapchain and submits on its CREATION queue (the staged
-// takeover queue) regardless of ownership/origGame, gated only on a distinct staged queue existing + AMD
-// dormant + sustained progress. This pins the new contract (and would fail against the old guardrail).
-TEST(DXGISharedTest, DormantDrawAllowedAfterFGSwitchingWhenStagedQueueExistsAndAmdDormant) {
-    using ce::dx12_overlay_policy::ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup;
+TEST(DXGISharedTest, ProtectedFFXStartupUsesProxyBackbufferOnlyUntilDirectProof) {
+    using ce::dx12_overlay_policy::ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute;
 
-    // The exact post-switch shape that used to deny (runtimeOwns=1, scQueue!=origGame): now ALLOWED
-    // because a distinct staged takeover queue exists and AMD is dormant. (runtimeOwns / scQueue are no
-    // longer inputs to the policy — the dormant draw is queue-correct on the staged creation queue.)
-    EXPECT_TRUE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        /*protectedPending=*/true, /*overlayInit=*/true, /*syncInit=*/true,
-        /*hasDistinctStagedTakeoverQueue=*/true, /*directFFX=*/false, /*callbackActive=*/false,
-        /*sustainedProgress=*/true));
-
-    // The non-negotiable guards still deny even in this topology:
-    // no staged queue to submit on.
-    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, true, true, /*hasStaged=*/false, false, false, true));
-    // AMD enabled (directFFX) → hand to the FFX callback route, do not self-submit.
-    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(true, true, true, true,
-                                                                                      /*directFFX=*/true, false, true));
-    // live FFX present callback firing → AMD active.
-    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(true, true, true, true, false,
-                                                                                      /*callbackActive=*/true, true));
-    // still inside the fragile create instant (not enough sustained progress).
-    EXPECT_FALSE(ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
-        true, true, true, true, false, false, /*sustainedProgress=*/false));
+    EXPECT_TRUE(ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute(
+        /*protectedPending=*/true, /*startupResolved=*/false, /*proxyHookInstalled=*/true));
+    EXPECT_FALSE(ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute(false, false, true));
+    EXPECT_FALSE(ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute(true, true, true));
+    EXPECT_FALSE(ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute(true, false, false));
 }
 
 TEST(DXGISharedTest, SLPresentRoutingStaysDisabledAcrossNativeFGTeardownAndActiveOwnership) {
@@ -5722,16 +5691,15 @@ TEST(DXGISharedSourceTest, StaleFSRQueueClearReceivesWarmResumeFlag) {
 }
 
 // ---------------------------------------------------------------------------
-// FSR-FG SUSPENSION overlay visibility (sessions 20260703_204119 blank /
-// 20260703_210021 1fps stall / 20260703_212441 blank-via-UI-texture). During a
-// runtime-owned no-callback FSR suspension AMD presents its backbuffer in
-// passthrough and does NOT composite the registered UI resource, so the overlay
-// must be drawn onto the PRESENTED BACKBUFFER on the target-compatible owner
-// queue. Usually that is the exact FFX descriptor queue; a proven Streamline
-// wrapper resolves to CE's validated underlying real game queue. Queue ordering
-// then provides completion without a foreign queue or per-frame CPU wait.
+// FSR-FG passthrough overlay visibility. Runtime-owned suspension and protected
+// disabled startup arming both present the proxy backbuffer without consuming the
+// registered UI resource. The proxy-present prework must draw onto that buffer on
+// the target-compatible owner queue. Usually that is the exact FFX descriptor
+// queue; a proven Streamline wrapper resolves to CE's validated underlying real
+// game queue. Queue ordering then provides completion without a foreign queue or
+// per-frame CPU wait.
 // ---------------------------------------------------------------------------
-TEST(DXGISharedSourceTest, SuspendBackbufferOverlayUsesTargetCompatibleOwnerQueueGatedToSuspension) {
+TEST(DXGISharedSourceTest, ProxyBackbufferOverlayUsesTargetCompatibleOwnerQueueForPassthroughRoutes) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
@@ -5740,14 +5708,19 @@ TEST(DXGISharedSourceTest, SuspendBackbufferOverlayUsesTargetCompatibleOwnerQueu
     std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
     ASSERT_FALSE(text.empty());
 
-    // The proxy-present prework must select the backbuffer route ONLY under an explicit suspension.
-    const size_t preworkGate = text.find("if (DX12_IsNativeFSRFGSuspendedDisablePending()) {");
-    ASSERT_NE(preworkGate, std::string::npos);
-    const size_t backbufferCall = text.find("DX12_CompositeOverlayOntoSuspendBackbuffer(proxy)", preworkGate);
+    const size_t prework = text.find("DX12_RunFFXProxyPrePresentWork(");
+    ASSERT_NE(prework, std::string::npos);
+    const size_t startupGate =
+        text.find("ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute(", prework);
+    const size_t suspensionGate = text.find("DX12_IsNativeFSRFGSuspendedDisablePending()", prework);
+    const size_t backbufferCall = text.find("DX12_CompositeOverlayOntoSuspendBackbuffer(", prework);
+    ASSERT_NE(startupGate, std::string::npos);
+    ASSERT_NE(suspensionGate, std::string::npos);
     ASSERT_NE(backbufferCall, std::string::npos);
-    // The suspend branch is tight — the backbuffer call is right under the suspension gate (active FG keeps
-    // the UI-resource composite in the else branch).
-    EXPECT_LT(backbufferCall - preworkGate, static_cast<size_t>(400));
+    EXPECT_LT(startupGate, backbufferCall);
+    EXPECT_LT(suspensionGate, backbufferCall);
+    EXPECT_NE(text.find("protected-startup-backbuffer", backbufferCall), std::string::npos);
+    EXPECT_NE(text.find("suspend-backbuffer", backbufferCall), std::string::npos);
 
     // The backbuffer composite must resolve against the actual target resource and use the selected owner
     // queue. It must not use the foreign dedicated-queue path or wait on the CPU.
@@ -5767,6 +5740,29 @@ TEST(DXGISharedSourceTest, SuspendBackbufferOverlayUsesTargetCompatibleOwnerQueu
     EXPECT_NE(body.find("no target-compatible"), std::string::npos);
     EXPECT_EQ(body.find("g_FFXUiCompositeQueue"), std::string::npos);
     EXPECT_EQ(body.find("WaitForSingleObject"), std::string::npos);
+}
+
+TEST(DXGISharedSourceTest, ProtectedFFXStartupNestedPresentNeverSubmitsOnStagedInternalQueue) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+
+    const size_t processFrameQueueRouting = text.find("FSR FG: FSR creates a NEW swapchain");
+    ASSERT_NE(processFrameQueueRouting, std::string::npos);
+    const size_t normalRoute = text.find("ID3D12CommandQueue* gameQueue = nullptr;", processFrameQueueRouting);
+    ASSERT_NE(normalRoute, std::string::npos);
+    const size_t protectedBranch = text.find("if (protectedOfficialFFXStartupOverlayOnly) {", normalRoute);
+    const size_t protectedReturn = text.find("return;", protectedBranch);
+    const size_t normalRouting = text.find("DecideSwapchainOverlayRouting(", protectedBranch);
+    ASSERT_NE(protectedBranch, std::string::npos);
+    ASSERT_NE(protectedReturn, std::string::npos);
+    ASSERT_NE(normalRouting, std::string::npos);
+    EXPECT_LT(protectedReturn, normalRouting)
+        << "the nested real-swapchain path must return tracking-only before normal overlay queue selection";
+    EXPECT_EQ(text.find("gameQueue = protectedOfficialFFXStartupQueueRef"), std::string::npos)
+        << "the staged nested DXGI create queue is AMD's internal presenter and is evidence only";
 }
 
 // GTA session 20260714_140617 proved the protected inner DXGI create queue is FFX's newly-created internal

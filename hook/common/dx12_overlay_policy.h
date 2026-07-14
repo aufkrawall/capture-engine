@@ -2016,19 +2016,12 @@ inline bool ShouldRequestImmediateDumpForD3D12FocusLossImmediateFenceWait(bool f
 // current completed value.  The fence is the real synchronization; pacing the
 // CPU to the GPU here keeps the overlay visible every frame (never hidden) while
 // preventing the upload-ring data race.
-inline uint64_t DecideOverlayUploadSlotGuardValue(bool fgActive, bool hasOverlayFence, uint64_t currentFenceValue,
-                                                  bool submitQueueMayBeDiscarded = false) {
+inline uint64_t DecideOverlayUploadSlotGuardValue(bool fgActive, bool hasOverlayFence, uint64_t currentFenceValue) {
     // FG paths advance a separate completion fence (not the overlay fence) and
     // already synchronize per frame, so a guard keyed on the overlay fence would
     // never be reached there -> disable it.  Without an overlay fence there is
     // nothing to wait on.
-    //
-    // submitQueueMayBeDiscarded: the dormant protected-FFX 2D-menu draw submits on the TRANSIENT staged
-    // takeover queue, whose pending overlay-fence Signal is discarded when the runtime takes over / the
-    // swapchain transitions (e.g. DLSS handoff). A guard published then would never be reached on the next
-    // phase's fence -> the present thread would block on it for the full kSlotWaitTimeoutMs (1 s) every
-    // frame (session 20260616_142044: ~1 fps after FSR->DLSS). Disable the guard so no stale value survives.
-    if (fgActive || !hasOverlayFence || submitQueueMayBeDiscarded) {
+    if (fgActive || !hasOverlayFence) {
         return 0;
     }
     return currentFenceValue + 1;
@@ -3523,34 +3516,30 @@ inline bool ShouldAllowOverlayOnlyDuringProtectedOfficialFFXStartup(bool protect
     return false;
 }
 
-// 2D-MENU FSR-FG ARMING (Talos): switching to FSR FG in a 2D menu makes AMD create its FFX
-// swapchain, arming protected official-FFX startup, while AMD's FFX runtime stays DORMANT (no
-// enabled `ffxConfigure`, no present callback) until 3D resumes — so the blanket quiesce blanks
-// the overlay for the whole menu (8+ s observed). The game is, however, presenting real menu
-// frames on the LIVE FSR swapchain, so CE keeps the overlay visible by rebuilding against that
-// swapchain and drawing on its CREATION queue (the staged takeover queue) — the only queue
-// authorized to touch its backbuffers (cross-queue = DEVICE_REMOVED). The caller resolves the
-// submit queue to that staged takeover queue and rebuilds the RTVs against the live swapchain.
-//
-// Gated ONLY on: protected-FFX startup pending, the overlay backend live (overlayInit/syncInit,
-// bootstrappable during the fresh rebuild), a DISTINCT staged takeover queue existing (the live
-// swapchain's creation queue we submit on), AMD provably DORMANT (no `directFFXApiConfirmation`,
-// no live FFX present callback), and `sustainedGameProgress` (a few stable present frames so the
-// fragile AMD swapchain-create instant stays quiesced). The instant the runtime enables (enabled
-// `ffxConfigure` / FFX present callback fires) this returns false and the full quiesce + FFX
-// present-callback bridge resume unchanged.
-//
-// GTA RISK (per user decision 2026-06-16, NOT GTA-validated): the earlier `!runtimeOwnsSwapchain
-// && swapchainQueueIsOriginalGameQueue` guardrail — which kept this false for GTA's runtime-owned/
-// staged-queue menu topology — has been DROPPED so the same Talos menu works after FG-switching
-// sequences (topology becomes runtimeOwns=1, scQueue!=origGame). This widens the documented
-// `20260525_195848_gtafreeze` ffxQuery-wedge risk surface; GTA must be re-validated. Independently
-// revertible (restore the two conjuncts). See guardrails.md.
+// The staged official-FFX create queue is deferred takeover evidence only. It is AMD's internal
+// present queue in GTA and must never receive CE overlay work before an enabled configure proves
+// the final route. Startup visibility instead rides the already-hooked game-facing proxy Present:
+// the proxy exposes its current passthrough backbuffer, and the descriptor binding resolves the
+// target-compatible game/producer queue that AMD orders before its internal present.
+inline bool ShouldUseProtectedOfficialFFXStartupProxyBackbufferRoute(bool protectedOfficialFFXStartupPending,
+                                                                     bool ffxStartupAlreadyResolved,
+                                                                     bool proxyPresentHookInstalled) {
+    return protectedOfficialFFXStartupPending && !ffxStartupAlreadyResolved && proxyPresentHookInstalled;
+}
+
+// Retained as a hard guardrail for legacy transition call sites. Sustained frame progress, a live
+// backend, or a staged queue cannot turn the nested real-swapchain Present into a safe submit path.
 inline bool ShouldAllowNormalOverlayDrawDuringDormantProtectedOfficialFFXStartup(
     bool protectedOfficialFFXStartupPending, bool overlayInit, bool syncInit, bool hasDistinctStagedTakeoverQueue,
     bool hasDirectFFXApiConfirmation, bool ffxPresentCallbackActive, bool sustainedGameProgress) {
-    return protectedOfficialFFXStartupPending && overlayInit && syncInit && hasDistinctStagedTakeoverQueue &&
-           !hasDirectFFXApiConfirmation && !ffxPresentCallbackActive && sustainedGameProgress;
+    (void)protectedOfficialFFXStartupPending;
+    (void)overlayInit;
+    (void)syncInit;
+    (void)hasDistinctStagedTakeoverQueue;
+    (void)hasDirectFFXApiConfirmation;
+    (void)ffxPresentCallbackActive;
+    (void)sustainedGameProgress;
+    return false;
 }
 
 inline bool ShouldBypassFGTransitionCooldownForProtectedOfficialFFXOverlayOnly(bool protectedOverlayOnlyEligible,
