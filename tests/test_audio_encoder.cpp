@@ -130,6 +130,11 @@ TEST_F(AudioEncoderTest, PcmBitDepthOverridesSelectConcreteEncoders) {
     ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
     EXPECT_EQ(encoder.GetCodecContext()->codec_id, AV_CODEC_ID_PCM_F32LE);
     EXPECT_EQ(encoder.GetCodecContext()->sample_fmt, AV_SAMPLE_FMT_FLT);
+
+    encoder.Stop();
+    config.bitDepth = "16trailing";
+    ASSERT_TRUE(encoder.Init(config, [this](AVPacket* p) { PacketCallback(p); }));
+    EXPECT_EQ(encoder.GetCodecContext()->codec_id, AV_CODEC_ID_PCM_S24LE);
 }
 
 TEST_F(AudioEncoderTest, OpusUsesLibopusAtFortyEightKhzAndScalesMultichannelBitrate) {

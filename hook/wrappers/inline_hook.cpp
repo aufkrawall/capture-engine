@@ -496,6 +496,31 @@ static std::vector<uint8_t*> g_trampolinePools;
 static size_t g_trampolineOffset = 0;
 static constexpr size_t TRAMPOLINE_POOL_SIZE = 4096;
 static constexpr size_t TRAMPOLINE_ENTRY_SIZE = 64;  // Max per hook
+static constexpr size_t TRAMPOLINE_ALIGNMENT = 16;
+
+static bool IsControlFlowGuardEnabled();
+
+static uint8_t* AllocateWritableTrampolinePage(void* preferredAddress) {
+    const bool cfgEnabled = IsControlFlowGuardEnabled();
+    const DWORD initialProtection =
+        cfgEnabled ? PAGE_EXECUTE_READ | PAGE_TARGETS_INVALID : PAGE_READWRITE;
+    void* allocation = VirtualAlloc(preferredAddress, TRAMPOLINE_POOL_SIZE, MEM_COMMIT | MEM_RESERVE,
+                                    initialProtection);
+    if (!allocation || !cfgEnabled)
+        return static_cast<uint8_t*>(allocation);
+
+    // PAGE_TARGETS_INVALID is accepted only by VirtualAlloc. Start with an RX
+    // page whose entire CFG bitmap is invalid, then remove execute permission
+    // while constructing the trampoline. Finalization restores RX with
+    // PAGE_TARGETS_NO_UPDATE so the invalid bitmap survives until the one
+    // aligned entrypoint is registered.
+    DWORD oldProtection = 0;
+    if (!VirtualProtect(allocation, TRAMPOLINE_POOL_SIZE, PAGE_READWRITE, &oldProtection)) {
+        VirtualFree(allocation, 0, MEM_RELEASE);
+        return nullptr;
+    }
+    return static_cast<uint8_t*>(allocation);
+}
 
 // Deep hook data structures (forward declaration for RemoveAll)
 struct DeepHookEntry {
@@ -516,11 +541,9 @@ static constexpr int PATCH_SIZE = 5;  // E9 + 4-byte relative offset
 #endif
 
 // Allocate memory near the target (within ±2GB for x64).
-// The pool is allocated as PAGE_READWRITE (NON-executable) to prevent
-// third-party memory scanners (sl_interposer, Steam overlay) from
-// misinterpreting it as a COM vtable. The pool is temporarily made
-// PAGE_EXECUTE_READWRITE only during trampoline construction and during
-// actual trampoline execution (via lazy-exec page fault handling in VEH).
+// Each trampoline gets a private read/write page while it is constructed. The
+// page is sealed execute/read before any target can reference it, which keeps
+// the allocation W^X and avoids changing protection under active callers.
 static uint8_t* AllocateTrampolinePool(void* nearAddr) {
 #ifdef _WIN64
     // Try to allocate within ±2GB of target for RIP-relative fixups
@@ -537,7 +560,7 @@ static uint8_t* AllocateTrampolinePool(void* nearAddr) {
             // Align to allocation granularity (64KB)
             uintptr_t aligned = (addr + 0xFFFF) & ~(uintptr_t)0xFFFF;
             if (aligned + TRAMPOLINE_POOL_SIZE <= addr + mbi.RegionSize) {
-                void* p = VirtualAlloc((void*)aligned, TRAMPOLINE_POOL_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+                void* p = AllocateWritableTrampolinePage(reinterpret_cast<void*>(aligned));
                 if (p)
                     return (uint8_t*)p;
             }
@@ -546,7 +569,7 @@ static uint8_t* AllocateTrampolinePool(void* nearAddr) {
     }
 #endif
     // Fallback: allocate anywhere
-    return (uint8_t*)VirtualAlloc(nullptr, TRAMPOLINE_POOL_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    return AllocateWritableTrampolinePage(nullptr);
 }
 
 bool IsInTrampolinePool(void* address) {
@@ -593,65 +616,67 @@ bool GetTrampolinePoolInfo(void* address, void** poolBaseOut, DWORD* protectOut)
     return false;
 }
 
-void SetTrampolinePoolProtection(DWORD newProtect) {
-    for (const auto& pool : g_trampolinePools) {
-        DWORD oldProtect;
-        VirtualProtect((void*)pool, TRAMPOLINE_POOL_SIZE, newProtect, &oldProtect);
-    }
+static bool IsControlFlowGuardEnabled() {
+    PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY policy{};
+    return GetProcessMitigationPolicy(GetCurrentProcess(), ProcessControlFlowGuardPolicy, &policy, sizeof(policy)) &&
+           policy.EnableControlFlowGuard;
 }
 
-bool SetTrampolinePoolProtectionForAddress(void* address, DWORD newProtect) {
-    if (!address) {
+static bool RegisterOnlyTrampolineEntrypoint(void* allocationBase, size_t allocationSize, void* entrypoint) {
+    if (!IsControlFlowGuardEnabled())
+        return true;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(allocationBase);
+    const uintptr_t entry = reinterpret_cast<uintptr_t>(entrypoint);
+    if (!allocationBase || entry < base || entry >= base + allocationSize ||
+        ((entry - base) % TRAMPOLINE_ALIGNMENT) != 0) {
         return false;
     }
-    uintptr_t addr = reinterpret_cast<uintptr_t>(address);
-    for (const auto& pool : g_trampolinePools) {
-        uintptr_t poolStart = reinterpret_cast<uintptr_t>(pool);
-        uintptr_t poolEnd = poolStart + TRAMPOLINE_POOL_SIZE;
-        if (addr >= poolStart && addr < poolEnd) {
-            DWORD oldProtect;
-            return VirtualProtect((void*)pool, TRAMPOLINE_POOL_SIZE, newProtect, &oldProtect) != FALSE;
-        }
-    }
-    return false;
-}
-
-static bool IsTrampolinePoolNearTarget(const uint8_t* pool, void* nearAddr) {
-#ifdef _WIN64
-    if (!pool || !nearAddr)
+    CFG_CALL_TARGET_INFO target{};
+    target.Offset = entry - base;
+    target.Flags = CFG_CALL_TARGET_VALID;
+    using SetProcessValidCallTargetsFn = BOOL(WINAPI*)(HANDLE, PVOID, SIZE_T, ULONG, PCFG_CALL_TARGET_INFO);
+    static const auto setProcessValidCallTargets = []() -> SetProcessValidCallTargetsFn {
+        HMODULE module = GetModuleHandleW(L"kernelbase.dll");
+        if (!module)
+            module = GetModuleHandleW(L"kernel32.dll");
+        return module ? reinterpret_cast<SetProcessValidCallTargetsFn>(
+                            GetProcAddress(module, "SetProcessValidCallTargets"))
+                      : nullptr;
+    }();
+    if (!setProcessValidCallTargets) {
+        HookLogImportant("InlineHook: SetProcessValidCallTargets is unavailable for CFG-enabled target");
         return false;
-    uintptr_t poolAddr = reinterpret_cast<uintptr_t>(pool);
-    uintptr_t targetAddr = reinterpret_cast<uintptr_t>(nearAddr);
-    int64_t distance = static_cast<int64_t>(targetAddr) - static_cast<int64_t>(poolAddr);
-    return distance <= INT32_MAX && distance >= INT32_MIN;
-#else
-    (void)pool;
-    (void)nearAddr;
+    }
+    if (!setProcessValidCallTargets(GetCurrentProcess(), allocationBase, allocationSize, 1, &target)) {
+        HookLogImportant("InlineHook: SetProcessValidCallTargets failed for entry=%p page=%p error=%lu", entrypoint,
+                         allocationBase, GetLastError());
+        return false;
+    }
     return true;
-#endif
+}
+
+static bool FinalizeExecutableTrampoline(void* allocationBase, size_t allocationSize, void* entrypoint,
+                                         size_t usedBytes) {
+    if (!allocationBase || !entrypoint || usedBytes == 0 || usedBytes > allocationSize)
+        return false;
+    FlushInstructionCache(GetCurrentProcess(), entrypoint, usedBytes);
+    DWORD oldProtect = 0;
+    const DWORD executeProtection = PAGE_EXECUTE_READ |
+                                    (IsControlFlowGuardEnabled() ? PAGE_TARGETS_NO_UPDATE : 0);
+    if (!VirtualProtect(allocationBase, allocationSize, executeProtection, &oldProtect)) {
+        HookLogImportant("InlineHook: Failed to seal trampoline RX entry=%p error=%lu", entrypoint, GetLastError());
+        return false;
+    }
+    if (!RegisterOnlyTrampolineEntrypoint(allocationBase, allocationSize, entrypoint)) {
+        DWORD ignored = 0;
+        VirtualProtect(allocationBase, allocationSize, PAGE_READWRITE, &ignored);
+        return false;
+    }
+    return true;
 }
 
 static uint8_t* GetTrampolineSlot(void* nearAddr) {
-    bool needNewPool = false;
     if (!g_trampolinePool) {
-        needNewPool = true;
-    } else if (!IsTrampolinePoolNearTarget(g_trampolinePool, nearAddr)) {
-#ifdef _WIN64
-        uintptr_t poolAddr = reinterpret_cast<uintptr_t>(g_trampolinePool);
-        uintptr_t targetAddr = reinterpret_cast<uintptr_t>(nearAddr);
-        int64_t distance = static_cast<int64_t>(targetAddr) - static_cast<int64_t>(poolAddr);
-        HookLog("GetTrampolineSlot: Existing pool too far from target (distance=%lld), allocating additional pool",
-                static_cast<long long>(distance));
-#else
-        HookLog("GetTrampolineSlot: Existing pool too far from target, allocating additional pool");
-#endif
-        needNewPool = true;
-    } else if (g_trampolineOffset + TRAMPOLINE_ENTRY_SIZE > TRAMPOLINE_POOL_SIZE) {
-        HookLog("GetTrampolineSlot: Existing pool exhausted, allocating additional pool");
-        needNewPool = true;
-    }
-
-    if (needNewPool) {
         uint8_t* newPool = AllocateTrampolinePool(nearAddr);
         if (!newPool)
             return nullptr;
@@ -662,11 +687,52 @@ static uint8_t* GetTrampolineSlot(void* nearAddr) {
                 g_trampolinePools.size());
     }
 
+    g_trampolineOffset = (g_trampolineOffset + TRAMPOLINE_ALIGNMENT - 1) & ~(TRAMPOLINE_ALIGNMENT - 1);
     uint8_t* slot = g_trampolinePool + g_trampolineOffset;
     HookLog("GetTrampolineSlot: Allocating slot at offset %zu (addr=%p) for target %p", g_trampolineOffset, slot,
             nearAddr);
     g_trampolineOffset += TRAMPOLINE_ENTRY_SIZE;
     return slot;
+}
+
+static bool FinalizeCurrentTrampoline(uint8_t* trampoline, size_t usedBytes) {
+    uint8_t* pool = g_trampolinePool;
+    const bool validEntry = pool && trampoline && trampoline >= pool && trampoline < pool + TRAMPOLINE_POOL_SIZE;
+    const bool finalized =
+        validEntry && FinalizeExecutableTrampoline(pool, TRAMPOLINE_POOL_SIZE, trampoline, usedBytes);
+    // A sealed or failed page is never reopened for another trampoline. This
+    // avoids transiently revoking execute permission from an active entrypoint.
+    g_trampolinePool = nullptr;
+    g_trampolineOffset = 0;
+    if (!finalized && pool) {
+        const auto entry = std::find(g_trampolinePools.begin(), g_trampolinePools.end(), pool);
+        if (entry != g_trampolinePools.end())
+            g_trampolinePools.erase(entry);
+        VirtualFree(pool, 0, MEM_RELEASE);
+    }
+    return finalized;
+}
+
+static void AbandonCurrentTrampoline() {
+    uint8_t* pool = g_trampolinePool;
+    g_trampolinePool = nullptr;
+    g_trampolineOffset = 0;
+    if (!pool)
+        return;
+    const auto entry = std::find(g_trampolinePools.begin(), g_trampolinePools.end(), pool);
+    if (entry != g_trampolinePools.end())
+        g_trampolinePools.erase(entry);
+    VirtualFree(pool, 0, MEM_RELEASE);
+}
+
+static void ReleaseSealedTrampoline(void* trampoline) {
+    if (!trampoline)
+        return;
+    const auto entry = std::find(g_trampolinePools.begin(), g_trampolinePools.end(), trampoline);
+    if (entry == g_trampolinePools.end())
+        return;
+    g_trampolinePools.erase(entry);
+    VirtualFree(trampoline, 0, MEM_RELEASE);
 }
 
 // Write an absolute jump at 'dest' to 'target'
@@ -1025,6 +1091,7 @@ bool Install(void* target, void* detour, void** outTrampoline) {
         LogDirect("FAILED: null parameter");
         return false;
     }
+    *outTrampoline = nullptr;
 
     std::lock_guard<std::mutex> lock(g_hookMutex);
 
@@ -1245,6 +1312,7 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                             }
                             if (fixupFailed || static_cast<size_t>(trampolineOff + 5) > TRAMPOLINE_ENTRY_SIZE) {
                                 LogDirect("Chain hook: trampoline build failed (off=%d)", trampolineOff);
+                                AbandonCurrentTrampoline();
                                 return false;
                             }
 
@@ -1268,6 +1336,12 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                             LogDirect("Chain trampoline: %d src bytes -> %d trampoline bytes, JMP -> %p (rel=0x%08X)",
                                       chainCopySize, trampolineOff, (void*)(chainCode + chainCopySize),
                                       (unsigned)jmpOffset);
+                            const size_t chainTrampolineBytes =
+                                static_cast<size_t>(trampolineOff + 5 + (chainHasPendingAbsCall ? 8 : 0));
+                            if (!FinalizeCurrentTrampoline(chainTrampoline, chainTrampolineBytes)) {
+                                LogDirect("Chain hook: trampoline RX/CFG finalization failed");
+                                return false;
+                            }
 
                             // Create the hook entry
                             HookEntry newHook = {};
@@ -1308,6 +1382,8 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                                 return true;
                             } else {
                                 LogDirect("FAILED: VirtualProtect failed for chain target");
+                                *outTrampoline = nullptr;
+                                ReleaseSealedTrampoline(chainTrampoline);
                             }
                         }
                     } else {
@@ -1380,17 +1456,6 @@ bool Install(void* target, void* detour, void** outTrampoline) {
     LogDirect("Trampoline allocated at %p", trampoline);
     HookLog("InlineHook: Trampoline allocated at %p", trampoline);
 
-    // CRITICAL: Make the trampoline pool executable for construction.
-    // The pool is kept PAGE_READWRITE (non-executable) by default to prevent
-    // third-party memory scanners from misinterpreting it as a COM vtable.
-    // We temporarily make it EXECUTE_READWRITE while building the trampoline
-    // so the FlushInstructionCache and subsequent JMP instructions work.
-    DWORD oldPoolProtect = 0;
-    uint8_t* currentPool = g_trampolinePool;
-    if (currentPool) {
-        VirtualProtect(currentPool, TRAMPOLINE_POOL_SIZE, PAGE_EXECUTE_READWRITE, &oldPoolProtect);
-    }
-
     // Copy original instructions to trampoline, fixing up RIP-relative refs
     int trampolineOffset = 0;
     int srcOffset = 0;
@@ -1413,6 +1478,7 @@ bool Install(void* target, void* detour, void** outTrampoline) {
             code + srcOffset, reinterpret_cast<uintptr_t>(code + srcOffset), instrLen,
             reinterpret_cast<uintptr_t>(code), copySize, trampoline, &trampolineOffset, is64bit, "InlineHook");
         if (shortBranchResult == ShortControlRelocationResult::kFailed) {
+            AbandonCurrentTrampoline();
             return false;
         }
         if (shortBranchResult == ShortControlRelocationResult::kHandled) {
@@ -1484,6 +1550,7 @@ bool Install(void* target, void* detour, void** outTrampoline) {
 
                 HookLog("InlineHook: RIP-relative fixup out of range at %p+%d (opcode=0x%02X)", target, srcOffset,
                         opcode);
+                AbandonCurrentTrampoline();
                 return false;
             }
 
@@ -1531,17 +1598,12 @@ bool Install(void* target, void* detour, void** outTrampoline) {
         }
     }
 
-    // CRITICAL: Flush instruction cache on the trampoline to ensure all writes
-    // (instructions + RIP fixups + WriteJump + CALL absolute conversion) are
-    // globally visible before we redirect any thread to it via the target patch.
-    FlushInstructionCache(GetCurrentProcess(), trampoline, trampolineOffset);
-
-    // CRITICAL: Revert pool to PAGE_READWRITE (non-executable) to prevent
-    // third-party scanners from misinterpreting it as a COM vtable.
-    // The trampoline will be lazily-made-executable via the VEH handler
-    // when a thread first tries to execute code from the pool.
-    if (currentPool) {
-        VirtualProtect(currentPool, TRAMPOLINE_POOL_SIZE, PAGE_READWRITE, &oldPoolProtect);
+    // Seal the private page RX and, under CFG, make this 16-byte-aligned entry
+    // the page's only valid indirect-call target before patching live code.
+    if (!FinalizeCurrentTrampoline(trampoline, static_cast<size_t>(trampolineOffset))) {
+        LogDirect("FAILED: Could not seal/register trampoline entrypoint");
+        HookLog("InlineHook: Trampoline RX/CFG finalization failed");
+        return false;
     }
 
     // Save original bytes
@@ -1558,6 +1620,7 @@ bool Install(void* target, void* detour, void** outTrampoline) {
     if (!VirtualProtect(target, copySize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
         LogDirect("FAILED: VirtualProtect failed (error=%lu)", GetLastError());
         HookLog("InlineHook: VirtualProtect failed (error=%lu)", GetLastError());
+        ReleaseSealedTrampoline(trampoline);
         return false;
     }
     LogDirect("VirtualProtect succeeded, oldProtect=0x%08X", oldProtect);
@@ -1961,7 +2024,7 @@ void* InstallDeepHook(void* target, void* wrapperFn) {
     HookLog("DeepHook: Will displace %d bytes at offset %d (patch needs %d)", displaceSize, resumeOffset,
             neededPatchSize);
 
-    // Step 6: Allocate executable memory nearby for the full trampoline
+    // Step 6: Allocate private writable memory nearby for the full trampoline.
     // The trampoline contains: original prolog [0, resumeOffset+displaceSize) + JMP to continue
     uint8_t* trampoline = nullptr;
     {
@@ -1969,25 +2032,24 @@ void* InstallDeepHook(void* target, void* wrapperFn) {
         for (uintptr_t delta = 0x10000; delta < 0x7FFF0000ULL; delta += 0x10000) {
             if (tgt > delta) {
                 uintptr_t tryAddr = (tgt - delta + 0xFFFF) & ~(uintptr_t)0xFFFF;
-                trampoline =
-                    (uint8_t*)VirtualAlloc((void*)tryAddr, 256, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+                trampoline = AllocateWritableTrampolinePage(reinterpret_cast<void*>(tryAddr));
                 if (trampoline)
                     break;
             }
             uintptr_t tryAddr = ((tgt + delta) + 0xFFFF) & ~(uintptr_t)0xFFFF;
-            trampoline = (uint8_t*)VirtualAlloc((void*)tryAddr, 256, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            trampoline = AllocateWritableTrampolinePage(reinterpret_cast<void*>(tryAddr));
             if (trampoline)
                 break;
         }
     }
     if (!trampoline) {
-        trampoline = (uint8_t*)VirtualAlloc(nullptr, 256, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        trampoline = AllocateWritableTrampolinePage(nullptr);
     }
     if (!trampoline) {
         HookLog("DeepHook: Failed to allocate trampoline memory");
         return nullptr;
     }
-    memset(trampoline, 0xCC, 256);  // Fill with INT3 for safety
+    memset(trampoline, 0xCC, TRAMPOLINE_POOL_SIZE);  // Fill with INT3 for safety
 
     HookLog("DeepHook: Trampoline at %p (distance=%lld)", trampoline,
             (long long)((intptr_t)trampoline - (intptr_t)target));
@@ -2100,7 +2162,11 @@ void* InstallDeepHook(void* target, void* wrapperFn) {
         tOff += 8;
     }
 
-    FlushInstructionCache(GetCurrentProcess(), trampoline, tOff);
+    if (!FinalizeExecutableTrampoline(trampoline, TRAMPOLINE_POOL_SIZE, trampoline, static_cast<size_t>(tOff))) {
+        HookLog("DeepHook: Trampoline RX/CFG finalization failed");
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        return nullptr;
+    }
 
     HookLog("DeepHook: Trampoline built, %d bytes (prolog=%d, displaced=%d, jmp=%d)", tOff, resumeOffset, displaceSize,
             PATCH_SIZE);
@@ -2271,7 +2337,7 @@ void* CreateBypassTrampoline(void* target) {
     void* trampolinePoolBase = nullptr;
     DWORD trampolinePoolProtect = 0;
     GetTrampolinePoolInfo(trampoline, &trampolinePoolBase, &trampolinePoolProtect);
-    HookLog("BypassTrampoline: Lazy-exec managed entry=%p pool=%p protect=0x%08lX", trampoline, trampolinePoolBase,
+    HookLog("BypassTrampoline: Building aligned entry=%p pool=%p protect=0x%08lX", trampoline, trampolinePoolBase,
             static_cast<unsigned long>(trampolinePoolProtect));
 
     // Step 5: Copy original instructions to trampoline with RIP-relative fixups.
@@ -2287,6 +2353,7 @@ void* CreateBypassTrampoline(void* target) {
         int instrLen = GetInstructionLength(origDiskBytes + srcOffset, kIs64Bit);
         if (instrLen == 0) {
             HookLog("BypassTrampoline: Instruction decode failed at offset %d", srcOffset);
+            AbandonCurrentTrampoline();
             return nullptr;
         }
 
@@ -2295,6 +2362,7 @@ void* CreateBypassTrampoline(void* target) {
             instrLen, reinterpret_cast<uintptr_t>(target), resumeOffset, trampoline, &trampolineOffset, kIs64Bit,
             "BypassTrampoline");
         if (shortBranchResult == ShortControlRelocationResult::kFailed) {
+            AbandonCurrentTrampoline();
             return nullptr;
         }
         if (shortBranchResult == ShortControlRelocationResult::kHandled) {
@@ -2355,6 +2423,7 @@ void* CreateBypassTrampoline(void* target) {
 
                 HookLog("BypassTrampoline: RIP fixup out of range at offset %d (opcode=0x%02X)", srcOffset,
                         origDiskBytes[srcOffset]);
+                AbandonCurrentTrampoline();
                 return nullptr;
             }
 
@@ -2382,11 +2451,14 @@ void* CreateBypassTrampoline(void* target) {
         HookLog("BypassTrampoline: Patched absolute CALL target at trampoline+%d", trampolineOffset - 8);
     }
 
-    FlushInstructionCache(GetCurrentProcess(), trampoline, trampolineOffset);
+    if (!FinalizeCurrentTrampoline(trampoline, static_cast<size_t>(trampolineOffset))) {
+        HookLog("BypassTrampoline: Trampoline RX/CFG finalization failed");
+        return nullptr;
+    }
 
     GetTrampolinePoolInfo(trampoline, &trampolinePoolBase, &trampolinePoolProtect);
     HookLog(
-        "BypassTrampoline: Created lazy-exec trampoline at %p (%d bytes, pool=%p protect=0x%08lX) "
+        "BypassTrampoline: Created RX/CFG trampoline at %p (%d bytes, pool=%p protect=0x%08lX) "
         "- bypasses %d-byte external hook at %p (resume=%d firstCandidate=%d)",
         trampoline, trampolineOffset, trampolinePoolBase, static_cast<unsigned long>(trampolinePoolProtect),
         existingJmpSize, target, resumeOffset, verifiedResume.firstCandidateOffset);

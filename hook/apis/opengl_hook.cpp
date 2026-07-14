@@ -1465,7 +1465,8 @@ static void SwapBegin(HDC hdc) {
             bool screenshotIncludeOverlay = shm ? shm->overlayConfig.screenshotIncludeOverlay : true;
             bool shouldDrawOverlay = shouldDraw;
             bool isRecording = g_IPC && g_IPC->IsRecording();
-            const bool screenshotRequested = shm && shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire);
+            const uint64_t screenshotRequestId = GetPendingScreenshotRequestId(shm);
+            const bool screenshotRequested = screenshotRequestId != 0;
             const bool screenshotAfterOverlay = screenshotRequested && shouldDrawOverlay && screenshotIncludeOverlay;
             const bool screenshotBeforeOverlay = screenshotRequested && !screenshotAfterOverlay;
 
@@ -1497,32 +1498,42 @@ static void SwapBegin(HDC hdc) {
                 }
             };
 
-            auto completeScreenshot = [shm]() {
+            auto doScreenshot = [hdc, shm, screenshotRequestId]() {
                 if (!shm)
                     return;
-                shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
-                shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
-                shm->runtimeState.notificationType.store(1, std::memory_order_release);
-                shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
-            };
-
-            auto doScreenshot = [hdc, shm, completeScreenshot]() {
-                if (!shm)
-                    return;
+                bool queued = false;
                 if (pglReadPixels) {
                     // Get viewport dimensions from the DC window
                     RECT rc;
                     if (GetClientRect(WindowFromDC(hdc), &rc)) {
                         int w = rc.right;
                         int h = rc.bottom;
-                        if (w > 0 && h > 0) {
-                            std::vector<uint8_t> pixels(w * h * 4);
+                        if (w > 0 && h > 0 && w <= 16384 && h <= 16384) {
+                            const size_t rowPitch = static_cast<size_t>(w) * 4;
+                            std::vector<uint8_t> pixels(rowPitch * static_cast<size_t>(h));
                             pglReadPixels(0, 0, w, h, 0x80E1 /*GL_BGRA*/, 0x1401 /*GL_UNSIGNED_BYTE*/, pixels.data());
-                            WriteBMPFileAsync(shm->runtimeState.screenshotPath, pixels.data(), w, h, w * 4);
+                            if (!pglGetError || pglGetError() == 0 /* GL_NO_ERROR */) {
+                                std::vector<uint8_t> row(rowPitch);
+                                for (int y = 0; y < h / 2; ++y) {
+                                    uint8_t* top = pixels.data() + static_cast<size_t>(y) * rowPitch;
+                                    uint8_t* bottom =
+                                        pixels.data() + static_cast<size_t>(h - 1 - y) * rowPitch;
+                                    memcpy(row.data(), top, rowPitch);
+                                    memcpy(top, bottom, rowPitch);
+                                    memcpy(bottom, row.data(), rowPitch);
+                                }
+                                queued = QueueScreenshotPixels(
+                                    shm, screenshotRequestId, pixels.data(), static_cast<uint32_t>(w),
+                                    static_cast<uint32_t>(h), static_cast<uint32_t>(rowPitch),
+                                    ScreenshotPixelFormat::BGRA8, ScreenshotColorEncoding::SRGB);
+                            }
                         }
                     }
                 }
-                completeScreenshot();
+                if (!queued) {
+                    CompleteScreenshotRequest(shm, screenshotRequestId, ScreenshotRequestStatus::Failed,
+                                              ERROR_READ_FAULT);
+                }
             };
 
             if (!g_LegacyContext && !captureIncludeOverlay)

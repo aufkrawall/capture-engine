@@ -2176,51 +2176,77 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
 // ---- Vulkan Screenshot ----
 // Reads pixels from the swapchain image using a staging buffer.
 // Uses the Vulkan dispatch table and creates a one-shot command buffer.
-void TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage, uint32_t width,
+bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage, uint32_t width,
                           uint32_t height, VkFormat format, const VkSemaphore* waitSemaphores,
-                          uint32_t waitSemaphoreCount, const char* outputPath) {
-    if (!disp || !device || !srcImage || width == 0 || height == 0 || !outputPath)
-        return;
+                          uint32_t waitSemaphoreCount, SharedMemoryLayout* sharedMemory, uint64_t requestId) {
+    if (!disp || !device || !srcImage || !sharedMemory || requestId == 0 || width == 0 || height == 0 ||
+        width > 16384 || height > 16384) {
+        return false;
+    }
+
+    uint32_t bytesPerPixel = 0;
+    ScreenshotPixelFormat pixelFormat{};
+    ScreenshotColorEncoding colorEncoding{};
+    bool swapPackedRedBlue = false;
+    switch (format) {
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_B8G8R8A8_SRGB:
+            bytesPerPixel = 4;
+            pixelFormat = ScreenshotPixelFormat::BGRA8;
+            colorEncoding = ScreenshotColorEncoding::SRGB;
+            break;
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+            bytesPerPixel = 4;
+            pixelFormat = ScreenshotPixelFormat::RGBA8;
+            colorEncoding = ScreenshotColorEncoding::SRGB;
+            break;
+        case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+            bytesPerPixel = 4;
+            pixelFormat = ScreenshotPixelFormat::R10G10B10A2;
+            colorEncoding = ScreenshotColorEncoding::BT2020_PQ;
+            break;
+        case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
+            bytesPerPixel = 4;
+            pixelFormat = ScreenshotPixelFormat::R10G10B10A2;
+            colorEncoding = ScreenshotColorEncoding::BT2020_PQ;
+            swapPackedRedBlue = true;
+            break;
+        case VK_FORMAT_R16G16B16A16_SFLOAT:
+            bytesPerPixel = 8;
+            pixelFormat = ScreenshotPixelFormat::RGBA16F;
+            colorEncoding = ScreenshotColorEncoding::LinearScRGB;
+            break;
+        default:
+            HookLog("[Screenshot] Vulkan: Unsupported format %u", static_cast<unsigned>(format));
+            return false;
+    }
 
     const uint32_t queueFamilyIndex = VulkanLayerState::Get().GetQueueFamilyIndex(queue);
     if (queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
         HookLog("[Screenshot] Vulkan: Queue family unknown, skipping screenshot");
-        return;
+        return false;
     }
     if (!VulkanLayerState::Get().QueueSupportsTransfer(queue)) {
         HookLog("[Screenshot] Vulkan: Queue family %u lacks transfer support, skipping screenshot", queueFamilyIndex);
-        return;
+        return false;
     }
 
     // Calculate row pitch (4 bytes per pixel for BGRA/RGBA)
-    uint32_t rowPitch = width * 4;
+    uint32_t rowPitch = width * bytesPerPixel;
     VkDeviceSize bufferSize = static_cast<VkDeviceSize>(rowPitch) * height;
 
     // Find HOST_VISIBLE | HOST_COHERENT memory type
     VkPhysicalDeviceMemoryProperties memProps;
     VkPhysicalDevice physDev = disp->physicalDevice;
     if (physDev == VK_NULL_HANDLE)
-        return;
+        return false;
 
     auto* instDisp =
         VulkanLayerState::Get().GetInstanceDispatch(VulkanLayerState::Get().GetInstanceFromPhysicalDevice(physDev));
     if (!instDisp || !instDisp->fp_vkGetPhysicalDeviceMemoryProperties)
-        return;
+        return false;
     instDisp->fp_vkGetPhysicalDeviceMemoryProperties(physDev, &memProps);
-
-    uint32_t memTypeIndex = UINT32_MAX;
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
-        if ((memProps.memoryTypes[i].propertyFlags &
-             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
-            (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
-            memTypeIndex = i;
-            break;
-        }
-    }
-    if (memTypeIndex == UINT32_MAX) {
-        HookLog("[Screenshot] Vulkan: No HOST_VISIBLE memory type found");
-        return;
-    }
 
     // Create staging buffer
     VkBufferCreateInfo bufInfo = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -2229,10 +2255,26 @@ void TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
 
     VkBuffer stagingBuffer = VK_NULL_HANDLE;
     if (disp->fp_vkCreateBuffer(device, &bufInfo, nullptr, &stagingBuffer) != VK_SUCCESS)
-        return;
+        return false;
 
     VkMemoryRequirements memReqs;
     disp->fp_vkGetBufferMemoryRequirements(device, stagingBuffer, &memReqs);
+
+    uint32_t memTypeIndex = UINT32_MAX;
+    for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i) {
+        if ((memReqs.memoryTypeBits & (1u << i)) != 0 &&
+            (memProps.memoryTypes[i].propertyFlags &
+             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+            memTypeIndex = i;
+            break;
+        }
+    }
+    if (memTypeIndex == UINT32_MAX) {
+        HookLog("[Screenshot] Vulkan: No compatible HOST_VISIBLE memory type found");
+        disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
+        return false;
+    }
 
     VkMemoryAllocateInfo allocInfo = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     allocInfo.allocationSize = memReqs.size;
@@ -2241,9 +2283,13 @@ void TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
     VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
     if (disp->fp_vkAllocateMemory(device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS) {
         disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
-        return;
+        return false;
     }
-    disp->fp_vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0);
+    if (disp->fp_vkBindBufferMemory(device, stagingBuffer, stagingMemory, 0) != VK_SUCCESS) {
+        disp->fp_vkFreeMemory(device, stagingMemory, nullptr);
+        disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
+        return false;
+    }
 
     // Create command pool
     VkCommandPoolCreateInfo poolInfo = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -2254,7 +2300,7 @@ void TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
     if (disp->fp_vkCreateCommandPool(device, &poolInfo, nullptr, &cmdPool) != VK_SUCCESS) {
         disp->fp_vkFreeMemory(device, stagingMemory, nullptr);
         disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
-        return;
+        return false;
     }
 
     // Allocate command buffer
@@ -2268,13 +2314,19 @@ void TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
         disp->fp_vkDestroyCommandPool(device, cmdPool, nullptr);
         disp->fp_vkFreeMemory(device, stagingMemory, nullptr);
         disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
-        return;
+        return false;
     }
 
     // Record commands
     VkCommandBufferBeginInfo beginInfo = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    disp->fp_vkBeginCommandBuffer(cmdBuf, &beginInfo);
+    if (disp->fp_vkBeginCommandBuffer(cmdBuf, &beginInfo) != VK_SUCCESS) {
+        disp->fp_vkFreeCommandBuffers(device, cmdPool, 1, &cmdBuf);
+        disp->fp_vkDestroyCommandPool(device, cmdPool, nullptr);
+        disp->fp_vkFreeMemory(device, stagingMemory, nullptr);
+        disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
+        return false;
+    }
 
     // Transition image: PRESENT_SRC_KHR -> TRANSFER_SRC_OPTIMAL
     VkImageMemoryBarrier imgBarrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -2302,7 +2354,13 @@ void TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
     disp->fp_vkCmdPipelineBarrier(cmdBuf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0,
                                   nullptr, 0, nullptr, 1, &imgBarrier);
 
-    disp->fp_vkEndCommandBuffer(cmdBuf);
+    if (disp->fp_vkEndCommandBuffer(cmdBuf) != VK_SUCCESS) {
+        disp->fp_vkFreeCommandBuffers(device, cmdPool, 1, &cmdBuf);
+        disp->fp_vkDestroyCommandPool(device, cmdPool, nullptr);
+        disp->fp_vkFreeMemory(device, stagingMemory, nullptr);
+        disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
+        return false;
+    }
 
     // Create fence and submit
     VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -2312,7 +2370,7 @@ void TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
         disp->fp_vkDestroyCommandPool(device, cmdPool, nullptr);
         disp->fp_vkFreeMemory(device, stagingMemory, nullptr);
         disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
-        return;
+        return false;
     }
 
     VkSubmitInfo submitInfo = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -2325,33 +2383,46 @@ void TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
         submitInfo.pWaitSemaphores = waitSemaphores;
         submitInfo.pWaitDstStageMask = waitStages.data();
     }
-    disp->fp_vkQueueSubmit(queue, 1, &submitInfo, fence);
+    const VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submitInfo, fence);
+    if (submitResult != VK_SUCCESS) {
+        disp->fp_vkDestroyFence(device, fence, nullptr);
+        disp->fp_vkFreeCommandBuffers(device, cmdPool, 1, &cmdBuf);
+        disp->fp_vkDestroyCommandPool(device, cmdPool, nullptr);
+        disp->fp_vkFreeMemory(device, stagingMemory, nullptr);
+        disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
+        return false;
+    }
 
-    // Wait up to 500ms
-    VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, 500000000ULL);  // 500ms in ns
-
+    // This is a one-shot readback. Waiting for its fence both makes mapped data
+    // valid and proves that any Present wait semaphores consumed above are done.
+    const VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    bool queued = false;
     if (waitResult == VK_SUCCESS) {
-        // Map and save
         void* mappedData = nullptr;
-        disp->fp_vkMapMemory(device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &mappedData);
-
-        // Write pixels (SDR as BMP, HDR as raw)
-        bool isHDR = (format == VK_FORMAT_R16G16B16A16_SFLOAT || format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
-                      format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
-        if (isHDR) {
-            bool isPQ = (format != VK_FORMAT_R16G16B16A16_SFLOAT);
-            std::string rawPath(outputPath);
-            rawPath += ".raw";
-            uint32_t hdrFormat = (format == VK_FORMAT_R16G16B16A16_SFLOAT) ? kHDRFormatR16F : kHDRFormatR10;
-            WriteHDRRawAsync(rawPath.c_str(), static_cast<const uint8_t*>(mappedData), width, height, rowPitch,
-                             hdrFormat, isPQ);
-        } else {
-            WriteBMPFileAsync(outputPath, static_cast<const uint8_t*>(mappedData), width, height, rowPitch);
+        if (disp->fp_vkMapMemory(device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &mappedData) == VK_SUCCESS &&
+            mappedData) {
+            if (swapPackedRedBlue) {
+                std::vector<uint32_t> converted(static_cast<size_t>(width) * height);
+                const auto* sourcePixels = static_cast<const uint32_t*>(mappedData);
+                for (size_t i = 0; i < converted.size(); ++i) {
+                    const uint32_t value = sourcePixels[i];
+                    converted[i] = (value & 0xC00FFC00u) | ((value >> 20) & 0x3FFu) |
+                                   ((value & 0x3FFu) << 20);
+                }
+                queued = QueueScreenshotPixels(sharedMemory, requestId,
+                                               reinterpret_cast<const uint8_t*>(converted.data()), width, height,
+                                               rowPitch, pixelFormat, colorEncoding);
+            } else {
+                queued = QueueScreenshotPixels(sharedMemory, requestId, static_cast<const uint8_t*>(mappedData),
+                                               width, height, rowPitch, pixelFormat, colorEncoding);
+            }
+            disp->fp_vkUnmapMemory(device, stagingMemory);
         }
-
-        disp->fp_vkUnmapMemory(device, stagingMemory);
     } else {
-        HookLog("[Screenshot] Vulkan fence wait timed out or failed: %d", waitResult);
+        HookLog("[Screenshot] Vulkan fence wait failed: %d", waitResult);
+    }
+    if (!queued) {
+        CompleteScreenshotRequest(sharedMemory, requestId, ScreenshotRequestStatus::Failed, ERROR_READ_FAULT);
     }
 
     // Cleanup
@@ -2360,4 +2431,5 @@ void TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
     disp->fp_vkDestroyCommandPool(device, cmdPool, nullptr);
     disp->fp_vkFreeMemory(device, stagingMemory, nullptr);
     disp->fp_vkDestroyBuffer(device, stagingBuffer, nullptr);
+    return true;
 }

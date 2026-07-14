@@ -2,6 +2,7 @@
 #include <mmreg.h>
 #include "audio_sync_utils.h"
 #include "audio_time_utils.h"  // For ce::audio::ParseSampleRateOr
+#include "../common/strict_integer_parse.h"
 #include "mediaengine.h"       // For DLL_Log
 
 extern "C" {
@@ -14,7 +15,6 @@ extern "C" {
 #include <cctype>
 #include <climits>
 #include <cstdint>
-#include <cstdlib>
 #include <string>
 
 namespace {
@@ -29,8 +29,8 @@ int ResolveAudioBitDepth(const AudioConfig& config, int fallback) {
     if (config.bitDepth.empty() || config.bitDepth == "default") {
         return fallback;
     }
-    int depth = std::atoi(config.bitDepth.c_str());
-    if (depth == 16 || depth == 24 || depth == 32) {
+    int32_t depth = 0;
+    if (ce::TryParseInt32(config.bitDepth, depth) && (depth == 16 || depth == 24 || depth == 32)) {
         return depth;
     }
     DLL_Log("[AudioEncoder] Unsupported bit_depth=%s, using %d", config.bitDepth.c_str(), fallback);

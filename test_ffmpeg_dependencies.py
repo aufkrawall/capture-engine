@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import ffmpeg_dependencies as dependencies
 
@@ -13,8 +14,10 @@ class FfmpegDependencyManifestTest(unittest.TestCase):
         self.assertEqual(manifest["toolchain_version"], "22.1.8")
         self.assertEqual(
             [dependency["name"] for dependency in manifest["dependencies"]],
-            ["llvm-runtime", "libiconv", "opus", "libva", "onevpl", "svt-av1"],
+            ["llvm-runtime", "libiconv", "opus", "libva", "onevpl", "libwinpthread", "aom", "svt-av1"],
         )
+        self.assertIn("libaom.dll", dependencies.manifest_runtime_dlls(manifest))
+        self.assertIn("libwinpthread-1.dll", dependencies.manifest_runtime_dlls(manifest))
         self.assertIn("libiconv-2.dll", dependencies.manifest_runtime_dlls(manifest))
         self.assertIn("libcharset-1.dll", dependencies.manifest_runtime_dlls(manifest, optional=True))
         self.assertNotIn("libcharset-1.dll", dependencies.manifest_runtime_dlls(manifest))
@@ -33,8 +36,71 @@ class FfmpegDependencyManifestTest(unittest.TestCase):
             dependencies.dependency_manifest_fingerprint(str(manifest_path)),
         )
 
+    def test_manifest_fingerprint_changes_with_build_policy(self) -> None:
+        manifest_path = Path(__file__).with_name("ffmpeg_dependencies.json")
+        original = dependencies.dependency_manifest_fingerprint(str(manifest_path))
+        with mock.patch.object(
+            dependencies,
+            "DEPENDENCY_BUILD_CONFIGURATION_VERSION",
+            dependencies.DEPENDENCY_BUILD_CONFIGURATION_VERSION + 1,
+        ):
+            changed = dependencies.dependency_manifest_fingerprint(str(manifest_path))
+        self.assertNotEqual(original, changed)
+
+    def test_ffmpeg_libaom_component_and_cache_version_are_current(self) -> None:
+        build_source = Path(__file__).with_name("build.py").read_text(encoding="utf-8")
+        self.assertIn('"--enable-encoder=libaom_av1"', build_source)
+        self.assertIn('"--enable-decoder=libaom_av1"', build_source)
+        self.assertNotIn('"--enable-encoder=libaom-av1"', build_source)
+        self.assertIn("FFMPEG_BUILD_CONFIGURATION_VERSION = 7", build_source)
+
 
 class FfmpegDependencyPeHelperTest(unittest.TestCase):
+    def test_removes_read_only_extracted_package_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            extracted_tree = Path(temp_dir) / "recipe"
+            read_only_object = extracted_tree / ".git" / "objects" / "00" / "object"
+            read_only_object.parent.mkdir(parents=True)
+            read_only_object.write_bytes(b"object")
+            read_only_object.chmod(0o444)
+
+            dependencies.remove_tree(str(extracted_tree))
+
+            self.assertFalse(extracted_tree.exists())
+
+    def test_injects_policy_after_makepkg_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pkgbuild_path = Path(temp_dir) / "PKGBUILD"
+            pkgbuild_path.write_text("build() {\n  true\n}\n", encoding="utf-8")
+            dependencies.inject_dependency_build_policy(
+                str(pkgbuild_path),
+                "/c/private dependency prefix",
+                "/clang64/lib",
+            )
+            content = pkgbuild_path.read_text(encoding="utf-8")
+            self.assertIn(dependencies.DEPENDENCY_BUILD_POLICY_MARKER, content)
+            self.assertIn("-march=x86-64", content)
+            self.assertIn("-mguard=cf", content)
+            self.assertIn("-Wl,--guard-cf", content)
+            self.assertIn("PKG_CONFIG_PATH=", content)
+            with self.assertRaises(dependencies.DependencyBuildError):
+                dependencies.inject_dependency_build_policy(
+                    str(pkgbuild_path),
+                    "/c/private dependency prefix",
+                    "/clang64/lib",
+                )
+
+    def test_requires_effective_guard_cf_metadata(self) -> None:
+        output = """
+        IMAGE_DLL_CHARACTERISTICS_GUARD_CF (0x4000)
+        GuardCFFunctionTable: 0x180001000
+        GuardCFFunctionCount: 17
+        CF_FUNCTION_TABLE_PRESENT (0x400)
+        """
+        self.assertEqual(dependencies.parse_guard_cf_function_count(output), 17)
+        with self.assertRaises(dependencies.DependencyBuildError):
+            dependencies.parse_guard_cf_function_count(output.replace("GuardCFFunctionCount: 17", "GuardCFFunctionCount: 0"))
+
     def test_parses_imported_dll_names_case_insensitively(self) -> None:
         output = """
         DLL Name: KERNEL32.dll

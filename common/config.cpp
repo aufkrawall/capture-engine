@@ -1,6 +1,7 @@
 #include "config.h"
 #include <windows.h>
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <climits>
@@ -10,6 +11,19 @@
 #include <sstream>
 #include "logging.h"
 #include "strict_float_parse.h"
+#include "strict_integer_parse.h"
+
+static void LogInvalidConfigBoundary(const char* section, const char* key, const std::string& value,
+                                     const std::string& fallback) {
+    static std::atomic<uint32_t> logged{0};
+    const uint32_t index = logged.fetch_add(1, std::memory_order_relaxed);
+    if (index < 64) {
+        LogWarn("Config: [%s] %s='%s' is invalid; using documented default '%s'", section, key, value.c_str(),
+                fallback.c_str());
+    } else if (index == 64) {
+        LogWarn("Config: further invalid-value diagnostics are suppressed for this process");
+    }
+}
 
 // Helper to trim specific characters from both ends
 std::string Trim(const std::string& s, const char* chars = " \t\r\n\"()") {
@@ -297,23 +311,15 @@ static bool ReadTextFile(const std::string& path, std::string& out) {
 }
 
 static bool TryParseInt(const std::string& value, int& out, int base = 10) {
-    char* end = nullptr;
-    long parsed = std::strtol(value.c_str(), &end, base);
-    if (end == value.c_str()) {
+    int32_t parsed = 0;
+    if (!ce::TryParseInt32(value, parsed, base))
         return false;
-    }
-    out = static_cast<int>(parsed);
+    out = parsed;
     return true;
 }
 
 static bool TryParseUInt32(const std::string& value, uint32_t& out, int base = 10) {
-    char* end = nullptr;
-    unsigned long parsed = std::strtoul(value.c_str(), &end, base);
-    if (end == value.c_str()) {
-        return false;
-    }
-    out = static_cast<uint32_t>(parsed);
-    return true;
+    return ce::TryParseUInt32(value, out, base);
 }
 
 // Validate a config sample_rate string at load time. Accepts the "default"
@@ -885,7 +891,20 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         if (valStr.empty())
             return def;
         int parsed = def;
-        return TryParseInt(valStr, parsed) ? parsed : def;
+        if (!TryParseInt(valStr, parsed)) {
+            LogInvalidConfigBoundary(section, key, valStr, std::to_string(def));
+            return def;
+        }
+        return parsed;
+    };
+
+    auto GetBoundedInt = [&](const char* section, const char* key, int def, int minimum, int maximum) {
+        const int value = GetInt(section, key, def);
+        if (value < minimum || value > maximum) {
+            LogInvalidConfigBoundary(section, key, std::to_string(value), std::to_string(def));
+            return def;
+        }
+        return value;
     };
 
     auto GetBool = [&](const char* section, const char* key, bool def) {
@@ -900,7 +919,11 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         // Normalization: replace ',' with '.'
         std::replace(valStr.begin(), valStr.end(), ',', '.');
         float parsed = 0.0f;
-        return ce::TryParseFiniteFloat(valStr, parsed) ? parsed : def;
+        if (!ce::TryParseFiniteFloat(valStr, parsed)) {
+            LogInvalidConfigBoundary(section, key, valStr, std::to_string(def));
+            return def;
+        }
+        return parsed;
     };
 
     // General
@@ -949,8 +972,16 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             config.wgcSmoothnessFloorAuto = true;
             config.wgcSmoothnessFloorMs = 0;
         } else {
-            config.wgcSmoothnessFloorAuto = false;
-            config.wgcSmoothnessFloorMs = static_cast<uint32_t>(std::max(0, atoi(floorRaw.c_str())));
+            int parsedFloor = 0;
+            if (!TryParseInt(floorRaw, parsedFloor) || parsedFloor < 0 ||
+                static_cast<uint32_t>(parsedFloor) > config.wgcSmoothnessBufferMaxMs) {
+                LogInvalidConfigBoundary("General", "wgc_smoothness_floor_ms", floorRaw, "auto");
+                config.wgcSmoothnessFloorAuto = true;
+                config.wgcSmoothnessFloorMs = 0;
+            } else {
+                config.wgcSmoothnessFloorAuto = false;
+                config.wgcSmoothnessFloorMs = static_cast<uint32_t>(parsedFloor);
+            }
         }
     }
     {
@@ -978,7 +1009,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     // Performance (Priority Settings)
     config.processPriority =
         NormalizePriorityString(GetStr("Performance", "process_priority", "high"), "above_normal", false);
-    config.video.gpuPriority = GetInt("Performance", "gpu_priority", 7);
+    config.video.gpuPriority = GetBoundedInt("Performance", "gpu_priority", 7, -7, 7);
     config.gpuSchedulingPriority =
         NormalizePriorityString(GetStr("Performance", "gpu_scheduling_priority", "auto"), "off", true);
     config.copyQueuePriority = GetStr("Performance", "copy_queue_priority", "normal");
@@ -1000,6 +1031,13 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     }
     config.graphics.mipMapping = GetStr("Graphics", "mip_mapping", "default");
     config.graphics.mipBias = GetStr("Graphics", "mip_bias", "default");
+    if (!config.graphics.mipBias.empty() && config.graphics.mipBias != "default") {
+        float parsedMipBias = 0.0f;
+        if (!ce::TryParseFiniteFloat(config.graphics.mipBias, parsedMipBias)) {
+            LogInvalidConfigBoundary("Graphics", "mip_bias", config.graphics.mipBias, "default");
+            config.graphics.mipBias = "default";
+        }
+    }
     config.graphics.mipBiasMode = GetStr("Graphics", "mip_bias_mode", "strict");
     config.graphics.forceMipBiasClamp = GetBool("Graphics", "force_mip_bias_clamp", false);
     config.graphics.msaaSamples = GetStr("Graphics", "msaa_samples", "default");
@@ -1011,7 +1049,10 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         config.graphics.cpuPrerenderLimit = -1.0f;
     }
     config.graphics.backbufferCount = GetInt("Graphics", "backbuffer_count", -1);
-    if (config.graphics.backbufferCount == 0) {
+    if (config.graphics.backbufferCount != -1 &&
+        (config.graphics.backbufferCount < 2 || config.graphics.backbufferCount > 6)) {
+        LogInvalidConfigBoundary("Graphics", "backbuffer_count", std::to_string(config.graphics.backbufferCount),
+                                 "-1");
         config.graphics.backbufferCount = -1;
     }
     config.graphics.sgssaa = GetBool("Graphics", "sgssaa", false);
@@ -1091,11 +1132,12 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     // FPS Limiter
     config.fpsLimiter.captureSyncEnabled = GetBool("FpsLimiter", "capture_sync_enabled", false);
-    config.fpsLimiter.captureSyncMultiplier = GetInt("FpsLimiter", "capture_sync_multiplier", 1);
+    config.fpsLimiter.captureSyncMultiplier =
+        GetBoundedInt("FpsLimiter", "capture_sync_multiplier", 1, 1, 8);
     config.fpsLimiter.captureSyncLimiterMode =
         ParseLimiterMode(GetStr("FpsLimiter", "capture_sync_limiter_mode", "auto"));
     config.fpsLimiter.generalEnabled = GetBool("FpsLimiter", "general_enabled", false);
-    config.fpsLimiter.generalFps = GetInt("FpsLimiter", "general_fps", 120);
+    config.fpsLimiter.generalFps = GetBoundedInt("FpsLimiter", "general_fps", 120, 1, 1000);
     config.fpsLimiter.generalLimiterMode = ParseLimiterMode(GetStr("FpsLimiter", "general_limiter_mode", "auto"));
 
     // Whitelist
@@ -1369,15 +1411,23 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     // HDR
     std::string paperWhiteStr = GetStr("Overlay", "hdr_paper_white", "auto");
+    std::transform(paperWhiteStr.begin(), paperWhiteStr.end(), paperWhiteStr.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (paperWhiteStr == "auto") {
         config.overlay.hdrPaperWhite = 0.0f;
     } else {
-        config.overlay.hdrPaperWhite = (float)atof(paperWhiteStr.c_str());
+        float paperWhite = 0.0f;
+        if (ce::TryParseFiniteFloat(paperWhiteStr, paperWhite) && paperWhite >= 1.0f && paperWhite <= 10000.0f) {
+            config.overlay.hdrPaperWhite = paperWhite;
+        } else {
+            LogInvalidConfigBoundary("Overlay", "hdr_paper_white", paperWhiteStr, "auto");
+            config.overlay.hdrPaperWhite = 0.0f;
+        }
     }
 
     // Video
     config.video.encoder = GetStr("Video", "encoder", "av1_nvenc");
-    config.video.fps = GetInt("Video", "fps", 120);
+    config.video.fps = GetBoundedInt("Video", "fps", 120, 1, 1000);
     config.video.container = GetStr("Video", "container", "mkv");
     config.video.outputDir = GetStr("Video", "output_dir", "");
     config.video.rateControl = GetStr("Video", "rate_control", "VBR");
@@ -1385,7 +1435,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.video.maxBitrate = GetStr("Video", "max_bitrate", "150Mbps");
     config.video.keyframeInterval = GetInt("Video", "keyframe_interval", 2);
     config.video.profile = GetStr("Video", "profile", "auto");
-    config.video.bFrames = GetInt("Video", "b_frames", 0);
+    config.video.bFrames = GetBoundedInt("Video", "b_frames", 0, 0, 4);
     config.video.customOptions = GetStr("Video", "custom_options", "");
     config.video.captureCursor = ParseBool(GetStr("Video", "capture_cursor", "true"));
     config.video.useVFR = GetBool("Video", "vfr", false);
@@ -1408,7 +1458,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     // Media Foundation encoder settings (from [MediaFoundation] section)
     config.video.mfRateControl = GetStr("MediaFoundation", "rate_control", "quality");
-    config.video.mfQuality = GetInt("MediaFoundation", "quality", 80);
+    config.video.mfQuality = GetBoundedInt("MediaFoundation", "quality", 80, 0, 100);
     config.video.mfScenario = GetStr("MediaFoundation", "scenario", "live_streaming");
     config.video.mfHwEncoding = GetBool("MediaFoundation", "hw_encoding", true);
 
@@ -1420,7 +1470,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.video.scaling.quality = GetStr("Scaling", "quality", "normal");
     std::string sharpnessValue = GetStr("Scaling", "sharpness", "");
     bool hasExplicitSharpness = !sharpnessValue.empty();
-    config.video.scaling.sharpness = hasExplicitSharpness ? GetInt("Scaling", "sharpness", 100) : 100;
+    config.video.scaling.sharpness =
+        hasExplicitSharpness ? GetBoundedInt("Scaling", "sharpness", 100, 0, 100) : 100;
 
     // Backward compatibility: Convert "filter" to quality/sharpness if "filter"
     // is set and "sharpness" was not explicitly configured.
@@ -1579,7 +1630,13 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         AudioConfig appAudio;
         appAudio.enabled = ParseBool(enabledStr);
         appAudio.processName = GetStr(section, "process", "");
-        appAudio.processId = (DWORD)GetInt(section, "process_id", 0);
+        const std::string processIdText = GetStr(section, "process_id", "");
+        uint32_t parsedProcessId = 0;
+        if (!processIdText.empty() && !TryParseUInt32(processIdText, parsedProcessId, 10)) {
+            LogInvalidConfigBoundary(section, "process_id", processIdText, "0");
+            parsedProcessId = 0;
+        }
+        appAudio.processId = static_cast<DWORD>(parsedProcessId);
         appAudio.tracks = GetIntList(section, "track", appIdx + 2);
         appAudio.codec = GetStr(section, "codec", sysAudio.codec.c_str());
         appAudio.bitrate = GetInt(section, "bitrate", sysAudio.bitrate);
@@ -1699,8 +1756,8 @@ AppConfig::HotkeyConfig ParseHotkey(const std::string& val) {
 
     // Parse function keys F1-F24
     if (key.length() >= 2 && key[0] == 'F') {
-        int fnum = std::atoi(key.substr(1).c_str());
-        if (fnum >= 1 && fnum <= 24) {
+        int fnum = 0;
+        if (TryParseInt(key.substr(1), fnum) && fnum >= 1 && fnum <= 24) {
             hk.vkey = VK_F1 + (fnum - 1);
         }
     }

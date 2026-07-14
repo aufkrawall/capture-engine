@@ -42,7 +42,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 28: Added OverlayConfig::dx12FocusAnalysis (config-gated DX12 focus/mode-switch analysis)
 // Version 29: Expanded hook->host shared texture slots from 8 to 16 for high-rate CFR inject selection
 // Version 30: Added inject producer contention and frame-ready wake diagnostics
-static constexpr uint32_t SHARED_MEMORY_VERSION = 31;
+// Version 32: Added generation-based screenshot completion and recording-integrity failure state
+static constexpr uint32_t SHARED_MEMORY_VERSION = 32;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -184,6 +185,60 @@ inline void StoreSeqCst(std::atomic<T>& atomic, T value) {
 enum class OverlayPosition : int { TopLeft = 0, TopRight = 1, BottomLeft = 2, BottomRight = 3 };
 
 enum class LogLevel : int { Off = 0, Error = 1, Warn = 2, Info = 3, Debug = 4, Trace = 5 };
+
+enum class RecordingFailureCode : uint32_t {
+    None = 0,
+    ProcessLoopbackTransportIntegrity = 1,
+};
+
+enum class ScreenshotRequestStatus : uint32_t {
+    Idle = 0,
+    Pending = 1,
+    Writing = 2,
+    Succeeded = 3,
+    Busy = 4,
+    Failed = 5,
+};
+
+enum class ScreenshotPayloadKind : uint32_t {
+    None = 0,
+    RawV2 = 1,
+};
+
+enum class ScreenshotPixelFormat : uint32_t {
+    BGRA8 = 1,
+    RGBA8 = 2,
+    R10G10B10A2 = 3,
+    RGBA16F = 4,
+};
+
+enum class ScreenshotColorEncoding : uint32_t {
+    SRGB = 1,
+    BT2020_PQ = 2,
+    LinearScRGB = 3,
+};
+
+#pragma pack(push, 1)
+struct ScreenshotRawHeaderV2 {
+    static constexpr uint32_t kMagic = 0x32525343;  // "CSR2"
+    static constexpr uint16_t kVersion = 2;
+
+    uint32_t magic = kMagic;
+    uint16_t version = kVersion;
+    uint16_t headerSize = 64;
+    uint32_t pixelFormat = 0;
+    uint32_t colorEncoding = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t rowPitch = 0;
+    uint32_t reserved32 = 0;
+    uint64_t payloadSize = 0;
+    uint64_t totalSize = 0;
+    uint64_t requestId = 0;
+    uint64_t reserved64 = 0;
+};
+#pragma pack(pop)
+static_assert(sizeof(ScreenshotRawHeaderV2) == 64, "ScreenshotRawHeaderV2 ABI must remain exactly 64 bytes");
 
 struct OverlayConfig {
     // Master toggle
@@ -429,13 +484,18 @@ struct alignas(8) CaptureState {
     std::atomic<bool> cmdStopRecording{false};
     std::atomic<bool> ackRecordingStarted{false};
     std::atomic<bool> ackRecordingStopped{false};
+    std::atomic<uint32_t> recordingFailureCode{static_cast<uint32_t>(RecordingFailureCode::None)};
 
-    // Screenshot command (host -> hook)
-    // Host sets cmdTakeScreenshot=true and writes the output path into screenshotPath.
-    // Hook reads the backbuffer, saves as BMP, clears cmdTakeScreenshot, sets ackScreenshotTaken.
-    std::atomic<bool> cmdTakeScreenshot{false};
-    std::atomic<bool> ackScreenshotTaken{false};
-    char screenshotPath[512]{};  // Full path to output BMP file
+    // Screenshot request/result protocol (host -> hook -> host). screenshotPath is
+    // the request-owned .part path; the hook atomically publishes the matching
+    // .ready payload before completing and signaling screenshotCompletionEventName.
+    std::atomic<uint64_t> screenshotRequestId{0};
+    std::atomic<uint64_t> screenshotCompletedRequestId{0};
+    std::atomic<uint32_t> screenshotStatus{static_cast<uint32_t>(ScreenshotRequestStatus::Idle)};
+    std::atomic<uint32_t> screenshotError{0};
+    std::atomic<uint32_t> screenshotPayloadKind{static_cast<uint32_t>(ScreenshotPayloadKind::None)};
+    char screenshotPath[512]{};
+    char screenshotCompletionEventName[128]{};
 
     std::atomic<bool> captureRequested{false};       // Hooks should keep feeding frames (warmup + live recording)
     std::atomic<bool> isRecording{false};            // File output and REC overlay indicator are live

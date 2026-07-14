@@ -1,35 +1,40 @@
 #pragma once
 
 #include <windows.h>
+
+#include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <string>
 
-// Process modes - determined by command-line flag
-enum class ProcessMode { Controller = 0, Inject = 1, Media = 2, Limiter = 3, Logger = 4, Sensors = 5 };
+enum class ProcessMode : uint32_t { Controller = 0, Inject = 1, Media = 2, Limiter = 3, Logger = 4, Sensors = 5 };
 
-// Commands sent from Controller to child processes
-enum class ProcessCommand : uint32_t {
+enum class ProcessCommand : uint16_t {
     None = 0,
-    Shutdown = 1,        // Graceful exit
-    StartRecording = 2,  // Begin capture/encoding
-    StopRecording = 3,   // End capture/encoding
-    ReloadConfig = 4,    // Hot-reload config from disk
-    Ping = 5             // Health check (expects Pong response)
+    Shutdown = 1,
+    StartRecording = 2,
+    StopRecording = 3,
+    ReloadConfig = 4,
+    Ping = 5,
 };
 
-// Responses from child processes to Controller
-enum class ProcessResponse : uint32_t {
+enum class ProcessResponse : uint16_t {
     None = 0,
-    Ack = 1,    // Command acknowledged
-    Pong = 2,   // Response to Ping
-    Error = 3,  // Command failed
+    Ack = 1,
+    Pong = 2,
+    Error = 3,
     RecordingStarted = 4,
-    RecordingStopped = 5
+    RecordingStopped = 5,
 };
 
-// Status reported by child processes
+enum class ProcessMessageKind : uint16_t {
+    Startup = 1,
+    Command = 2,
+    Response = 3,
+};
+
 struct ProcessStatus {
     bool alive;
     uint32_t uptimeMs;
@@ -38,125 +43,109 @@ struct ProcessStatus {
     char lastError[128];
 };
 
-// Message header for named pipe communication
-struct ProcessMessage {
-    uint32_t magic;  // 0xCAPE for validation
-    uint32_t size;   // Total message size including header
-    union {
-        ProcessCommand command;
-        ProcessResponse response;
-    };
-    uint32_t sequence;  // For request/response matching
-    char payload[256];  // Optional payload (config path, error message, etc.)
-};
+using ProcessChannelNonce = std::array<uint8_t, 16>;
 
 constexpr uint32_t PROCESS_MSG_MAGIC = 0x43415045;  // "CAPE"
+constexpr uint16_t PROCESS_PROTOCOL_VERSION = 2;
+constexpr size_t PROCESS_MAX_PAYLOAD = 256;
 
-// Named pipe names for each process type
-constexpr const wchar_t* PIPE_NAME_INJECT = L"\\\\.\\pipe\\CaptureEngine_Inject";
-constexpr const wchar_t* PIPE_NAME_MEDIA = L"\\\\.\\pipe\\CaptureEngine_Media";
-constexpr const wchar_t* PIPE_NAME_LIMITER = L"\\\\.\\pipe\\CaptureEngine_Limiter";
+#pragma pack(push, 1)
+struct ProcessMessage {
+    uint32_t magic = PROCESS_MSG_MAGIC;
+    uint16_t version = PROCESS_PROTOCOL_VERSION;
+    uint16_t headerSize = 52;
+    uint32_t totalSize = 52;
+    ProcessMessageKind kind = ProcessMessageKind::Startup;
+    uint16_t opcode = 0;
+    ProcessMode senderMode = ProcessMode::Controller;
+    uint64_t sequence = 0;
+    uint32_t senderPid = 0;
+    uint32_t payloadSize = 0;
+    ProcessChannelNonce nonce{};
+    char payload[PROCESS_MAX_PAYLOAD]{};
+};
+#pragma pack(pop)
 
-// Get pipe name for a process mode
-inline const wchar_t* GetPipeName(ProcessMode mode) {
-    switch (mode) {
-        case ProcessMode::Inject:
-            return PIPE_NAME_INJECT;
-        case ProcessMode::Media:
-            return PIPE_NAME_MEDIA;
-        case ProcessMode::Limiter:
-            return PIPE_NAME_LIMITER;
-        default:
-            return nullptr;
-    }
-}
+static_assert(offsetof(ProcessMessage, payload) == 52, "ProcessMessage header ABI changed");
+static_assert(sizeof(ProcessMessage) == 308, "ProcessMessage ABI changed");
 
-// Parse command-line to determine process mode
-// Returns Controller if no --mode flag found
+bool ValidateProcessMessage(const ProcessMessage& message, size_t bytesRead, ProcessMessageKind expectedKind,
+                            ProcessMode expectedSenderMode, uint32_t expectedSenderPid,
+                            const ProcessChannelNonce& expectedNonce, uint64_t expectedSequence,
+                            bool requireExactSequence);
+
 ProcessMode ParseProcessMode(int argc, char* argv[]);
-ProcessMode ParseProcessMode(LPSTR lpCmdLine);
-
-// Get log file name for a process mode
+ProcessMode ParseProcessMode(LPSTR commandLine);
 const char* GetLogFileName(ProcessMode mode);
 
-// Server side (child processes) - listens for commands from controller
 class ProcessIPCServer {
-public:
-    ProcessIPCServer(ProcessMode mode);
-    ProcessIPCServer(ProcessMode mode, const wchar_t* pipeNameOverride);
+  public:
+    explicit ProcessIPCServer(ProcessMode mode);
     ~ProcessIPCServer();
+
+    ProcessIPCServer(const ProcessIPCServer&) = delete;
+    ProcessIPCServer& operator=(const ProcessIPCServer&) = delete;
 
     bool Init();
     void Shutdown();
-
-    // Non-blocking check for incoming command
-    // Returns true if a command was received
-    bool PollCommand(ProcessCommand& outCmd, char* outPayload = nullptr, size_t payloadSize = 0);
-
-    // Send response back to controller
+    bool PollCommand(ProcessCommand& command, char* payload = nullptr, size_t payloadSize = 0);
     bool SendResponse(ProcessResponse response, const char* payload = nullptr);
 
-    // Check if controller is connected
     bool IsConnected() const {
-        return connected.load(std::memory_order_acquire);
+        return connected_.load(std::memory_order_acquire);
+    }
+    bool HasFatalDisconnect() const {
+        return fatalDisconnect_.load(std::memory_order_acquire);
     }
 
-private:
-    const wchar_t* ResolvePipeName() const;
-    void ResetConnectOverlappedLocked();
-    void HandlePipeDisconnectLocked(bool logDisconnect);
+  private:
+    bool ReadStartupArguments();
+    bool SendStartupHandshake();
+    void MarkDisconnected(DWORD error, const char* operation);
 
-    ProcessMode mode;
-    std::wstring pipeNameOverride;
-    HANDLE hPipe;
-    std::atomic<bool> connected;
-    uint32_t lastSequence;
-    HANDLE connectEvent;
-    OVERLAPPED connectOverlapped;
-    bool connectPending;
-    mutable std::mutex stateMutex;
+    ProcessMode mode_;
+    HANDLE pipe_ = INVALID_HANDLE_VALUE;
+    std::atomic<bool> connected_{false};
+    std::atomic<bool> fatalDisconnect_{false};
+    uint64_t lastSequence_ = 0;
+    uint32_t controllerPid_ = 0;
+    ProcessChannelNonce nonce_{};
+    std::mutex mutex_;
 };
 
-// Client side (controller) - sends commands to child processes
 class ProcessIPCClient {
-public:
-    ProcessIPCClient(ProcessMode targetMode);
-    ProcessIPCClient(ProcessMode targetMode, const wchar_t* pipeNameOverride);
+  public:
+    explicit ProcessIPCClient(ProcessMode targetMode);
     ~ProcessIPCClient();
 
-    bool Connect(DWORD timeoutMs = 5000);
+    ProcessIPCClient(const ProcessIPCClient&) = delete;
+    ProcessIPCClient& operator=(const ProcessIPCClient&) = delete;
+
+    bool PrepareChildEndpoint(HANDLE& childEndpoint, std::wstring& childArguments);
+    bool CompleteChildSpawn(uint32_t childPid, DWORD timeoutMs = 5000);
     void Disconnect();
+    bool SendCommand(ProcessCommand command, const char* payload = nullptr,
+                     ProcessResponse* response = nullptr, DWORD timeoutMs = 1000);
 
-    // Send command and optionally wait for response
-    bool SendCommand(ProcessCommand cmd, const char* payload = nullptr, ProcessResponse* outResponse = nullptr,
-                     DWORD timeoutMs = 1000);
-
-    // Check connection status
     bool IsConnected() const {
-        return hPipe != INVALID_HANDLE_VALUE;
+        return connected_.load(std::memory_order_acquire);
     }
 
-private:
-    const wchar_t* ResolvePipeName() const;
+  private:
+    bool ReadMessageWithTimeout(ProcessMessage& message, DWORD& bytesRead, DWORD timeoutMs);
+    bool WriteMessageWithTimeout(const ProcessMessage& message, DWORD timeoutMs);
 
-    ProcessMode targetMode;
-    std::wstring pipeNameOverride;
-    HANDLE hPipe;
-    uint32_t sequence;
+    ProcessMode targetMode_;
+    HANDLE pipe_ = INVALID_HANDLE_VALUE;
+    std::atomic<bool> connected_{false};
+    uint64_t sequence_ = 0;
+    uint32_t expectedChildPid_ = 0;
+    ProcessChannelNonce nonce_{};
+    std::mutex mutex_;
 };
 
-// Global session directory name (e.g., "20260318_200247").
-// Set by Controller at startup, parsed from --session-dir= by children.
 extern std::string g_SessionDirName;
+std::string ParseSessionDir(LPSTR commandLine);
 
-// Parse --session-dir=<name> from WinMain lpCmdLine string.
-// Returns the session dir name or empty string if not present.
-std::string ParseSessionDir(LPSTR lpCmdLine);
-
-// Utility: Spawn a child process with specified mode
-// Returns process handle on success, NULL on failure
-HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath);
-
-// Utility: Wait for child process to exit (with timeout)
-// Returns true if process exited, false on timeout
-bool WaitForChildExit(HANDLE hProcess, DWORD timeoutMs);
+HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCClient* ipcClient = nullptr);
+bool WaitForChildExit(HANDLE process, DWORD timeoutMs);

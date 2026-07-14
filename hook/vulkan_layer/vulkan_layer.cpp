@@ -6,6 +6,8 @@
 
 #define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan_layer.h"
+
+#include "../../common/strict_float_parse.h"
 #include <algorithm>
 #include <cstring>
 #include <deque>
@@ -15,6 +17,7 @@
 #include "../common/fps_limiter.h"
 #include "../common/perf_logger.h"
 #include "../common/performance_metrics.h"
+#include "../common/screenshot_hook.h"
 #include "layer_main.h"  // For LayerLog and g_LayerState
 
 // Reentrancy guard shared with other hooks (defined here for the layer)
@@ -428,8 +431,17 @@ void VulkanLayerState::UpdateFromSharedMemory(IPCClient* ipc) {
 
     // Parse mip bias
     if (strncmp(cfg.mipBias, "default", 7) != 0 && cfg.mipBias[0] != '\0') {
-        m_MipLodBias = (float)atof(cfg.mipBias);
-        m_MipBiasOverrideActive = true;
+        float parsedBias = 0.0f;
+        if (ce::TryParseFiniteFloat(cfg.mipBias, parsedBias)) {
+            m_MipLodBias = parsedBias;
+            m_MipBiasOverrideActive = true;
+        } else {
+            m_MipLodBias = 0.0f;
+            m_MipBiasOverrideActive = false;
+            static std::atomic<bool> loggedInvalidMipBias{false};
+            if (!loggedInvalidMipBias.exchange(true, std::memory_order_relaxed))
+                LayerLog("VulkanLayerState: rejected malformed mip bias '%s'", cfg.mipBias);
+        }
     } else {
         m_MipLodBias = 0.0f;
         m_MipBiasOverrideActive = false;
@@ -1297,7 +1309,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             }
             const bool overlayEnabled = !preferDX9Path && shm && overlayCfg.showOverlay;
             const bool captureRequested = shm && shm->runtimeState.IsInjectVideoCaptureRequested();
-            const bool screenshotRequested = shm && shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire);
+            const uint64_t screenshotRequestId = GetPendingScreenshotRequestId(shm);
+            const bool screenshotRequested = screenshotRequestId != 0;
             const bool captureAfterOverlay = captureRequested && overlayEnabled && overlayCfg.captureIncludeOverlay;
             const bool captureBeforeOverlay = captureRequested && !captureAfterOverlay;
             const bool screenshotAfterOverlay =
@@ -1365,16 +1378,21 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
             auto doScreenshot = [&]() {
                 if (!screenshotRequested || !shm)
                     return;
+                bool waitsConsumed = false;
                 DeviceDispatch* vkDisp = VulkanLayerState::Get().GetDeviceDispatch(sd->device);
                 if (vkDisp && idx < sd->images.size()) {
-                    TakeVulkanScreenshot(vkDisp, sd->device, queue, sd->images[idx], sd->extent.width,
-                                         sd->extent.height, sd->format, currentWaitSemaphores,
-                                         currentWaitSemaphoreCount, shm->runtimeState.screenshotPath);
+                    waitsConsumed = TakeVulkanScreenshot(
+                        vkDisp, sd->device, queue, sd->images[idx], sd->extent.width, sd->extent.height, sd->format,
+                        currentWaitSemaphores, currentWaitSemaphoreCount, shm, screenshotRequestId);
                 }
-                shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
-                shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
-                shm->runtimeState.notificationType.store(1, std::memory_order_release);
-                shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
+                if (waitsConsumed) {
+                    currentWaitSemaphores = nullptr;
+                    currentWaitSemaphoreCount = 0;
+                    modified = true;
+                } else {
+                    CompleteScreenshotRequest(shm, screenshotRequestId, ScreenshotRequestStatus::Failed,
+                                              ERROR_READ_FAULT);
+                }
             };
 
             if (captureBeforeOverlay) {

@@ -3721,20 +3721,11 @@ static void DrawDX9Overlay(IDirect3DDevice9* device) {
     g_InOverlayRender = false;
 }
 
-static void CompleteDX9Screenshot(SharedMemoryLayout* shm) {
-    if (!shm)
+static void CaptureDX9Screenshot(IDirect3DDevice9* device, SharedMemoryLayout* shm, uint64_t requestId) {
+    if (!device || !shm || requestId == 0)
         return;
 
-    shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
-    shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
-    shm->runtimeState.notificationType.store(1, std::memory_order_release);
-    shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
-}
-
-static void CaptureDX9Screenshot(IDirect3DDevice9* device, SharedMemoryLayout* shm) {
-    if (!device || !shm)
-        return;
-
+    bool queued = false;
     IDirect3DSurface9* bb = nullptr;
     if (SUCCEEDED(device->GetRenderTarget(0, &bb)) && bb) {
         D3DSURFACE_DESC bbDesc;
@@ -3746,8 +3737,12 @@ static void CaptureDX9Screenshot(IDirect3DDevice9* device, SharedMemoryLayout* s
             if (SUCCEEDED(device->GetRenderTargetData(bb, staging))) {
                 D3DLOCKED_RECT locked;
                 if (SUCCEEDED(staging->LockRect(&locked, NULL, D3DLOCK_READONLY))) {
-                    WriteBMPFileAsync(shm->runtimeState.screenshotPath, static_cast<const uint8_t*>(locked.pBits),
-                                      bbDesc.Width, bbDesc.Height, locked.Pitch);
+                    if (locked.Pitch > 0) {
+                        queued = QueueScreenshotPixels(
+                            shm, requestId, static_cast<const uint8_t*>(locked.pBits), bbDesc.Width, bbDesc.Height,
+                            static_cast<uint32_t>(locked.Pitch), ScreenshotPixelFormat::BGRA8,
+                            ScreenshotColorEncoding::SRGB);
+                    }
                     staging->UnlockRect();
                 }
             }
@@ -3755,8 +3750,8 @@ static void CaptureDX9Screenshot(IDirect3DDevice9* device, SharedMemoryLayout* s
         }
         bb->Release();
     }
-
-    CompleteDX9Screenshot(shm);
+    if (!queued)
+        CompleteScreenshotRequest(shm, requestId, ScreenshotRequestStatus::Failed, ERROR_READ_FAULT);
 }
 
 // Performance measurement
@@ -3774,7 +3769,7 @@ static thread_local bool g_overlayDrawnBeforePresent = false;
 // Tracks whether the overlay was redrawn from a nested EndScene during Present.
 static thread_local bool g_overlayDrawnInPresentEndScene = false;
 static thread_local bool g_captureDeferredToPresentEndScene = false;
-static thread_local bool g_screenshotDeferredToPresentEndScene = false;
+static thread_local uint64_t g_screenshotDeferredToPresentEndScene = 0;
 static thread_local bool g_sawPresentNestedEndScene = false;
 static std::atomic<bool> g_PreferOverlayInPresentEndScene{false};
 
@@ -3877,7 +3872,7 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 
         g_overlayDrawnInPresentEndScene = false;
         g_captureDeferredToPresentEndScene = false;
-        g_screenshotDeferredToPresentEndScene = false;
+        g_screenshotDeferredToPresentEndScene = 0;
         g_sawPresentNestedEndScene = false;
 
         static bool luidReported = false;
@@ -3977,7 +3972,8 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
         bool preferEndSceneOverlay = shouldDrawOverlay && endSceneHookActive;
         const bool captureAfterOverlay = captureIncludeOverlay;
         const bool captureBeforeOverlay = !captureAfterOverlay;
-        const bool screenshotRequested = shm && shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire);
+        const uint64_t screenshotRequestId = GetPendingScreenshotRequestId(shm);
+        const bool screenshotRequested = screenshotRequestId != 0;
         const bool screenshotAfterOverlay =
             screenshotRequested && shouldDrawOverlay && (shm ? shm->overlayConfig.screenshotIncludeOverlay : true);
         const bool screenshotBeforeOverlay = screenshotRequested && !screenshotAfterOverlay;
@@ -4071,7 +4067,7 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 
         auto doScreenshot = [&]() {
             if (screenshotRequested && shm) {
-                CaptureDX9Screenshot(device, shm);
+                CaptureDX9Screenshot(device, shm, screenshotRequestId);
             }
         };
 
@@ -4086,7 +4082,7 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
             doCapture();
         }
         if (deferScreenshotToPresentEndScene) {
-            g_screenshotDeferredToPresentEndScene = true;
+            g_screenshotDeferredToPresentEndScene = screenshotRequestId;
         } else if (screenshotAfterOverlay) {
             doScreenshot();
         }
@@ -4284,7 +4280,7 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
             }
         }
         g_captureDeferredToPresentEndScene = false;
-        g_screenshotDeferredToPresentEndScene = false;
+        g_screenshotDeferredToPresentEndScene = 0;
         g_overlayDrawnBeforePresent = false;
         g_overlayDrawnInPresentEndScene = false;
         g_sawPresentNestedEndScene = false;
@@ -4355,8 +4351,8 @@ static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
             g_captureDeferredToPresentEndScene = false;
         }
         if (g_screenshotDeferredToPresentEndScene && shm) {
-            CaptureDX9Screenshot(device, shm);
-            g_screenshotDeferredToPresentEndScene = false;
+            CaptureDX9Screenshot(device, shm, g_screenshotDeferredToPresentEndScene);
+            g_screenshotDeferredToPresentEndScene = 0;
         }
         return oEndScene(device);
     }
@@ -4734,7 +4730,7 @@ static HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device, D3DPRESEN
         }
 
         // MSAA Override
-        const char* msaa = GetActiveGraphicsConfig().msaaSamples.c_str();
+        const char* msaa = gfx.msaaSamples.c_str();
         if (msaa[0] != 'd') {
             IDirect3D9* d3d = nullptr;
             if (SUCCEEDED(device->GetDirect3D(&d3d))) {

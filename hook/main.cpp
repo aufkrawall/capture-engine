@@ -27,6 +27,7 @@
 #include "common/ipc_client.h"
 #include "common/overlay_compat.h"
 #include "common/perf_logger.h"
+#include "common/screenshot_hook.h"
 #include "common/streamline_runtime_policy.h"
 #include "common/reflex_limiter.h"
 #include "common/system_metrics.h"
@@ -1235,62 +1236,6 @@ void TryInstallMiniDumpWriteDumpHookForModule(HMODULE module, const char* module
     g_MiniDumpWriteDumpHookInstalled.store(true, std::memory_order_release);
     HookLogImportant("CrashMirror: Installed MiniDumpWriteDump hook at %p (trampoline=%p)", target, trampoline);
   });
-}
-
-LONG HookExecutionFaultHandler(EXCEPTION_POINTERS* exceptionPointers, ULONG_PTR accessType, ULONG_PTR faultAddr) {
-  static thread_local int t_vehRecursionDepth = 0;
-  if (t_vehRecursionDepth > 3) {
-    return EXCEPTION_CONTINUE_SEARCH;
-  }
-  ++t_vehRecursionDepth;
-  struct VEHRecursionGuard { ~VEHRecursionGuard() { --t_vehRecursionDepth; } } guard;
-
-  if (!exceptionPointers || !exceptionPointers->ContextRecord || accessType != 8 || faultAddr == 0) {
-    return EXCEPTION_CONTINUE_SEARCH;
-  }
-
-  void* faultPtr = reinterpret_cast<void*>(faultAddr);
-  if (!InlineHook::IsInTrampolinePool(faultPtr)) {
-    return EXCEPTION_CONTINUE_SEARCH;
-  }
-
-  void* poolBase = nullptr;
-  DWORD poolProtect = 0;
-  InlineHook::GetTrampolinePoolInfo(faultPtr, &poolBase, &poolProtect);
-
-  if (!InlineHook::SetTrampolinePoolProtectionForAddress(faultPtr, PAGE_EXECUTE_READWRITE)) {
-    static std::atomic<int> s_lazyExecProtectFailCount{0};
-    if (s_lazyExecProtectFailCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-      HookLogImportant(
-          "LazyExec: Failed to make trampoline pool executable for fault=%p pool=%p protect=0x%08lX",
-          faultPtr, poolBase, static_cast<unsigned long>(poolProtect));
-    }
-    return EXCEPTION_CONTINUE_SEARCH;
-  }
-
-  FlushInstructionCache(GetCurrentProcess(), faultPtr, 64);
-
-#ifdef _WIN64
-  const auto oldIp = exceptionPointers->ContextRecord->Rip;
-  exceptionPointers->ContextRecord->Rip = faultAddr;
-#else
-  const auto oldIp = exceptionPointers->ContextRecord->Eip;
-  exceptionPointers->ContextRecord->Eip = static_cast<DWORD>(faultAddr);
-#endif
-
-  static std::atomic<int> s_lazyExecRecoverCount{0};
-  const int recoverNum = s_lazyExecRecoverCount.fetch_add(1, std::memory_order_relaxed) + 1;
-  if (recoverNum <= 20 || (recoverNum % 200) == 0) {
-    char msg[384];
-    snprintf(msg, sizeof(msg),
-             "LazyExec: Recovered trampoline DEP fault #%d fault=%p pool=%p oldProtect=0x%08lX oldIP=%p",
-             recoverNum, faultPtr, poolBase, static_cast<unsigned long>(poolProtect),
-             reinterpret_cast<void*>(static_cast<uintptr_t>(oldIp)));
-    TraceCrash(msg);
-    HookLogImportant("%s", msg);
-  }
-
-  return EXCEPTION_CONTINUE_EXECUTION;
 }
 
 BOOL WINAPI HookedMiniDumpWriteDump(HANDLE hProcess, DWORD ProcessId, HANDLE hFile, MINIDUMP_TYPE DumpType,
@@ -3482,7 +3427,6 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     // Install crash handler for all non-service processes
     // (Injection delay in captureengine prevents D3D12 init crashes)
     if (!IsServiceProcess(fileName)) {
-      RegisterCrashExecutionFaultHandler(HookExecutionFaultHandler);
       InstallCrashHandler();
       if (HMODULE hDbgHelp = GetModuleHandleA("dbghelp.dll")) {
         TryInstallMiniDumpWriteDumpHookForModule(hDbgHelp, "dbghelp.dll");
@@ -3637,6 +3581,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
     DXGIShared::RemoveSwapchainVTableHooks();
 
     RequestHookShutdown();
+    ShutdownScreenshotWorker();
 
     // Signal HookThread to exit
     if (g_hCheckHooksEvent) {

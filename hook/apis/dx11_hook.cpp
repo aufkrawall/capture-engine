@@ -4361,17 +4361,8 @@ static OverlayConfig GetActiveDX11OverlayConfig(SharedMemoryLayout* shm) {
     return cfg;
 }
 
-static void CompleteRequestedDX11Screenshot(SharedMemoryLayout* shm) {
-    if (!shm)
-        return;
-
-    shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
-    shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
-    shm->runtimeState.notificationType.store(1, std::memory_order_release);
-    shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
-}
-
-static void CaptureDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm) {
+static void CaptureDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm, uint64_t requestId) {
+    bool queued = false;
     ID3D11Texture2D* backbuffer = nullptr;
     UINT bbIdx = ResolveDX11BackBufferIndex(pSwapChain);
     pSwapChain->GetBuffer(bbIdx, IID_PPV_ARGS(&backbuffer));
@@ -4382,39 +4373,29 @@ static void CaptureDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout
             ID3D11DeviceContext* context = nullptr;
             device->GetImmediateContext(&context);
             if (context) {
-                D3D11_TEXTURE2D_DESC bbDesc;
-                backbuffer->GetDesc(&bbDesc);
-                bool isHDR =
-                    (bbDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM || bbDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
-                if (isHDR) {
-                    bool isPQ = (bbDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
-                    std::string rawPath(shm->runtimeState.screenshotPath);
-                    rawPath += ".raw";
-                    SaveD3D11TextureAsHDR(device, context, backbuffer, isPQ, rawPath.c_str());
-                } else {
-                    SaveD3D11TextureAsBMP(device, context, backbuffer, shm->runtimeState.screenshotPath);
-                }
+                queued = SaveD3D11TextureAsScreenshotRaw(device, context, backbuffer, shm, requestId);
                 context->Release();
             }
             device->Release();
         }
         backbuffer->Release();
     }
-
-    CompleteRequestedDX11Screenshot(shm);
+    if (!queued)
+        CompleteScreenshotRequest(shm, requestId, ScreenshotRequestStatus::Failed, ERROR_READ_FAULT);
 }
 
-static void CaptureDX10Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm) {
+static void CaptureDX10Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm, uint64_t requestId) {
     ID3D10Device* device = nullptr;
     if (FAILED(pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device))) {
         ID3D10Device1* device10_1 = nullptr;
         if (FAILED(pSwapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&device10_1))) {
-            CompleteRequestedDX11Screenshot(shm);
+            CompleteScreenshotRequest(shm, requestId, ScreenshotRequestStatus::Failed, ERROR_NOT_SUPPORTED);
             return;
         }
         device = device10_1;
     }
 
+    bool queued = false;
     ID3D10Texture2D* backbuffer = nullptr;
     UINT bbIdx = ResolveDX11BackBufferIndex(pSwapChain);
     if (SUCCEEDED(pSwapChain->GetBuffer(bbIdx, __uuidof(ID3D10Texture2D), (void**)&backbuffer))) {
@@ -4432,8 +4413,21 @@ static void CaptureDX10Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout
             device->CopyResource(staging, backbuffer);
             D3D10_MAPPED_TEXTURE2D mapped;
             if (SUCCEEDED(staging->Map(0, D3D10_MAP_READ, 0, &mapped))) {
-                WriteBMPFileAsync(shm->runtimeState.screenshotPath, static_cast<const uint8_t*>(mapped.pData),
-                                  bbDesc.Width, bbDesc.Height, mapped.RowPitch);
+                ScreenshotPixelFormat pixelFormat = ScreenshotPixelFormat::BGRA8;
+                ScreenshotColorEncoding colorEncoding = ScreenshotColorEncoding::SRGB;
+                if (bbDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
+                    bbDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) {
+                    pixelFormat = ScreenshotPixelFormat::RGBA8;
+                } else if (bbDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM) {
+                    pixelFormat = ScreenshotPixelFormat::R10G10B10A2;
+                    colorEncoding = ScreenshotColorEncoding::BT2020_PQ;
+                } else if (bbDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
+                    pixelFormat = ScreenshotPixelFormat::RGBA16F;
+                    colorEncoding = ScreenshotColorEncoding::LinearScRGB;
+                }
+                queued = QueueScreenshotPixels(shm, requestId, static_cast<const uint8_t*>(mapped.pData),
+                                               bbDesc.Width, bbDesc.Height, mapped.RowPitch, pixelFormat,
+                                               colorEncoding);
                 staging->Unmap(0);
             }
             staging->Release();
@@ -4442,26 +4436,27 @@ static void CaptureDX10Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout
     }
 
     device->Release();
-    CompleteRequestedDX11Screenshot(shm);
+    if (!queued)
+        CompleteScreenshotRequest(shm, requestId, ScreenshotRequestStatus::Failed, ERROR_READ_FAULT);
 }
 
-static void CaptureRequestedDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm) {
-    if (!shm)
+static void CaptureRequestedDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm, uint64_t requestId) {
+    if (!shm || requestId == 0)
         return;
 
     const DXGIShared::APIType swapChainApi = DetectSwapChainAPITypeForDX11Hook(pSwapChain);
     if (swapChainApi == DXGIShared::APIType::D3D10) {
-        CaptureDX10Screenshot(pSwapChain, shm);
+        CaptureDX10Screenshot(pSwapChain, shm, requestId);
         return;
     }
 
     if (swapChainApi != DXGIShared::APIType::D3D11) {
         HookLog("DX11 Screenshot: Unsupported swapchain API %s", GetDX11HookBaseAPIName(swapChainApi));
-        CompleteRequestedDX11Screenshot(shm);
+        CompleteScreenshotRequest(shm, requestId, ScreenshotRequestStatus::Failed, ERROR_NOT_SUPPORTED);
         return;
     }
 
-    CaptureDX11Screenshot(pSwapChain, shm);
+    CaptureDX11Screenshot(pSwapChain, shm, requestId);
 }
 
 static void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain) {
@@ -4476,7 +4471,8 @@ static void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain) {
     OverlayConfig overlayCfg = GetActiveDX11OverlayConfig(shm);
     const bool shouldDrawOverlay = shm && overlayCfg.showOverlay;
     const bool captureAfterOverlay = shouldDrawOverlay && overlayCfg.captureIncludeOverlay;
-    const bool screenshotRequested = shm && shm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire);
+    const uint64_t screenshotRequestId = GetPendingScreenshotRequestId(shm);
+    const bool screenshotRequested = screenshotRequestId != 0;
     const bool screenshotAfterOverlay = shouldDrawOverlay && overlayCfg.screenshotIncludeOverlay;
 
     auto doCapture = [&](bool afterOverlay) {
@@ -4489,7 +4485,7 @@ static void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain) {
 
     auto doScreenshot = [&]() {
         if (screenshotRequested) {
-            CaptureRequestedDX11Screenshot(pSwapChain, shm);
+            CaptureRequestedDX11Screenshot(pSwapChain, shm, screenshotRequestId);
         }
     };
 

@@ -98,7 +98,7 @@ TEST(CrashHandlerTest, RegisteredExecutionFaultHandlerIgnoresReadWriteAccessViol
     EXPECT_EQ(g_HandlerCallCount, 0);
 }
 
-TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
+TEST(CrashHandlerBinaryTest, HookDllContainsCfgSealedTrampolineRegressionStrings) {
     const std::filesystem::path hookDll =
         std::filesystem::current_path() / "installed" / "captureengine" / "capture_hook_x64.dll";
     if (!std::filesystem::exists(hookDll)) {
@@ -107,8 +107,9 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
 
     const std::string contents = ReadBinaryFile(hookDll);
     ASSERT_FALSE(contents.empty());
-    EXPECT_NE(contents.find("LazyExec: Recovered trampoline DEP fault"), std::string::npos);
-    EXPECT_NE(contents.find("BypassTrampoline: Created lazy-exec trampoline"), std::string::npos);
+    EXPECT_EQ(contents.find("LazyExec: Recovered trampoline DEP fault"), std::string::npos);
+    EXPECT_NE(contents.find("BypassTrampoline: Created RX/CFG trampoline"), std::string::npos);
+    EXPECT_NE(contents.find("SetProcessValidCallTargets failed"), std::string::npos);
     EXPECT_NE(contents.find("Extended resume offset past patched fill bytes"), std::string::npos);
     EXPECT_NE(contents.find("Guarded Steam Present hook installed Steam null-callback VEH recovery"),
               std::string::npos);
@@ -222,6 +223,27 @@ TEST(CrashHandlerBinaryTest, HookDllContainsLazyExecRegressionStrings) {
     EXPECT_NE(contents.find("DX12 DRED: ===== device-removed extended data"), std::string::npos);
     // Device-removed ECL forward guard (avoids nvwgf2um AV after a DEVICE_HUNG TDR).
     EXPECT_NE(contents.find("Skipping app ExecuteCommandLists forward"), std::string::npos);
+}
+
+TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap) {
+    const std::filesystem::path source =
+        std::filesystem::current_path() / "hook" / "wrappers" / "inline_hook.cpp";
+    const std::string contents = ReadBinaryFile(source);
+    ASSERT_FALSE(contents.empty());
+    EXPECT_NE(contents.find("PAGE_EXECUTE_READ | PAGE_TARGETS_INVALID"), std::string::npos);
+    EXPECT_NE(contents.find("PAGE_EXECUTE_READ |"), std::string::npos);
+    EXPECT_NE(contents.find("PAGE_TARGETS_NO_UPDATE"), std::string::npos);
+    EXPECT_NE(contents.find("target.Flags = CFG_CALL_TARGET_VALID"), std::string::npos);
+    EXPECT_NE(contents.find("GetProcAddress(module, \"SetProcessValidCallTargets\")"), std::string::npos);
+    EXPECT_NE(contents.find("SetProcessValidCallTargets is unavailable for CFG-enabled target"), std::string::npos);
+    EXPECT_NE(contents.find("1, &target"), std::string::npos);
+
+    const size_t allocatorStart = contents.find("static uint8_t* AllocateWritableTrampolinePage");
+    const size_t allocatorEnd = contents.find("// Deep hook data structures", allocatorStart);
+    ASSERT_NE(allocatorStart, std::string::npos);
+    ASSERT_NE(allocatorEnd, std::string::npos);
+    EXPECT_EQ(contents.substr(allocatorStart, allocatorEnd - allocatorStart).find("PAGE_EXECUTE_READWRITE"),
+              std::string::npos);
 }
 
 TEST(FreezeWatchdogPolicyTest, BackgroundFreezeSuppressionKeepsRuntimePresentationMonitored) {

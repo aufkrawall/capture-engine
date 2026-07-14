@@ -1,15 +1,25 @@
 # Recording Output Paths
 
-Last cross-checked: 2026-06-30 (mapped-drive output directories are resolved to UNC for elevated recording)
+Last cross-checked: 2026-07-15 (shared collision-safe reservation and atomic publication for video, audio-only, PNG, and AVIF outputs)
 
 ## Summary
 
-Recording output paths are resolved in the MediaEngine DLL:
+All capture outputs use `ce::capture_output::ReservedCaptureOutput`:
 
-- Normal video recordings use `VideoEncoder::GenerateOutputFilename()` in `mediaengine/video_encoder.cpp`.
-- Audio-only recordings use `MediaEngine::InitAudioOnlyMuxer()` in `mediaengine/mediaengine.cpp`.
+- Normal video recordings reserve through `VideoEncoder` in `mediaengine/video_encoder.cpp`.
+- Audio-only recordings reserve through `MediaEngine::InitAudioOnlyMuxer()` in `mediaengine/mediaengine.cpp`.
+- SDR PNG and HDR AVIF screenshots reserve and atomically publish through `captureengine/screenshot_encoding.cpp`.
 
-`[Video] output_dir` may be empty, relative, absolute local, UNC, or a mapped-drive path. Empty normal video output writes to the `captures` subfolder next to the executable. Relative normal video output is resolved below the executable directory. Audio-only output still uses the existing audio-only behavior for empty/relative paths (`.` / current process working directory); the mapped-drive fix applies to drive-absolute output directories before the muxer opens the file.
+`[Video] output_dir` may be empty, relative, absolute local, UNC, or a mapped-drive path. Empty video, audio-only, and screenshot output writes to the `captures` subfolder next to the executable. Relative output is resolved below the executable directory. All three paths preserve the mapped-drive behavior below.
+
+## Reservation And Publication Invariants
+
+- Filenames contain UTC milliseconds, the writer PID, and an atomic process-local sequence. A collision adds a bounded retry suffix.
+- The destination is reserved with `CreateFileW(CREATE_NEW)`. Existing paths are never truncated, removed, or selected as the recording destination.
+- The reservation records the Windows volume/file identity. Failure cleanup deletes only a path that still has the reserved identity.
+- A video or audio muxer opens only its owned placeholder. The reservation handle remains open without delete sharing for the writer lifetime; successful close/trailer publishes the file, while failure cleanup removes only the owned partial file.
+- A screenshot is fully encoded and closed in a separately reserved staging file, then atomically replaces only its owned zero-byte placeholder with `ReplaceFileW(..., REPLACEFILE_WRITE_THROUGH)`.
+- Post-mux duration probing and exact audio finalization retain the reserved filename. User-visible screenshot notification occurs only after final atomic publication.
 
 ## Mapped Drives And Elevation
 
@@ -30,15 +40,18 @@ Limits:
 ## Source Anchors
 
 - `common/path_utils.{h,cpp}` (`ResolveMappedDrivePath`, `ReplaceDriveRootWithRemotePath`)
-- `mediaengine/video_encoder.cpp` (`GenerateOutputFilename`, mapped output-directory log)
-- `mediaengine/mediaengine.cpp` (`InitAudioOnlyMuxer`, audio-only mapped output-directory log)
-- `tests/test_path_utils.cpp` (drive-absolute detection and UNC root replacement)
+- `common/reserved_capture_output.{h,cpp}` (`ResolveCaptureDirectory`, `ReservedCaptureOutput`)
+- `mediaengine/video_encoder.cpp` (`ReserveOutputFilename`, muxer ownership and publication)
+- `mediaengine/mediaengine.cpp` (`InitAudioOnlyMuxer`, audio-only ownership and publication)
+- `captureengine/screenshot_encoding.cpp` (reserved staging and atomic final commit)
+- `tests/test_path_utils.cpp` and `tests/test_reserved_capture_output.cpp`
 
 ## Validation
 
-- `python build.py --skip-updates --run-tests --gtest-filter=PathUtilsTest.*:ConfigTest.ParsePerformancePriorityValues:ConfigTest.InvalidPerformancePriorityValuesFallBackConservatively` passed 6 focused tests and completed build 0.1.4369.
+- `ReservedCaptureOutputTest` covers forced identical clock/PID/sequence values for video, audio-only, PNG, and AVIF extensions; it proves collision retry and byte-identical sentinel preservation.
+- The required full product build passed as build 0.1.4806. The canonical no-build run passed 1,501 native tests in 105 suites and all four Python tool self-tests.
 
 ## Open Questions / Stale-risk
 
 - Runtime validation with an actual elevated CE process writing to a persistent mapped network drive should confirm the log reports `source=registry_mapping` when the elevated token cannot see the live mapping.
-- Screenshot output still has a separate path path in `captureengine/screenshot.cpp`; this page only documents recording outputs.
+- Filesystem atomicity and identity semantics still depend on the destination filesystem implementing the corresponding Windows operations; network-share runtime validation remains useful.

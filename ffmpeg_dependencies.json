@@ -151,6 +151,58 @@
       ]
     },
     {
+      "name": "libwinpthread",
+      "version": "14.0.0.r179.g24aaa6147-1",
+      "source_revision": "24aaa6147d114be596a46459f7a0a7230006afca",
+      "source_repository": "https://github.com/mingw-w64/mingw-w64",
+      "upstream_source_url": "https://github.com/mingw-w64/mingw-w64/archive/24aaa6147d114be596a46459f7a0a7230006afca/mingw-w64-24aaa6147d114be596a46459f7a0a7230006afca.tar.gz",
+      "upstream_source_sha256": "d0faf42ca7b9b103373f0dfa8519216259e8c63f00ff618be48674eff7285be4",
+      "source_package": "mingw-w64-winpthreads-14.0.0.r179.g24aaa6147-1.src.tar.zst",
+      "source_package_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r179.g24aaa6147-1.src.tar.zst",
+      "source_package_sha256": "5b1659ca665551b57c3c4b0075ef323839457eeb62c3cc3855df9149f84978d6",
+      "source_package_signature_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r179.g24aaa6147-1.src.tar.zst.sig",
+      "source_package_pgp_keys": [
+        "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      ],
+      "package_outputs": [
+        "mingw-w64-clang-x86_64-libwinpthread"
+      ],
+      "runtime_dlls": [
+        "libwinpthread-1.dll"
+      ],
+      "license_paths": [
+        "share/licenses/libwinpthread/COPYING"
+      ]
+    },
+    {
+      "name": "aom",
+      "version": "3.14.1-1",
+      "source_revision": "v3.14.1",
+      "source_repository": "https://aomedia.googlesource.com/aom",
+      "upstream_source_url": "https://storage.googleapis.com/aom-releases/libaom-3.14.1.tar.gz",
+      "upstream_source_sha256": "44bf90dbd23e734d50e70a8c41c285193922938bd0d3bc2ee56764d181d55ef5",
+      "source_package": "mingw-w64-aom-3.14.1-1.src.tar.zst",
+      "source_package_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-aom-3.14.1-1.src.tar.zst",
+      "source_package_sha256": "420b80c94cf52cd4197616a71f0df90ee2def4659828a89496e8b7f92def16d3",
+      "source_package_signature_url": "https://mirror.msys2.org/mingw/sources/mingw-w64-aom-3.14.1-1.src.tar.zst.sig",
+      "source_package_pgp_keys": [
+        "5F944B027F7FE2091985AA2EFA11531AA0AA7F57"
+      ],
+      "pgp_keys": [
+        "B002F08B74A148DAA01F7123A48E86DB0B830498"
+      ],
+      "package_outputs": [
+        "mingw-w64-clang-x86_64-aom"
+      ],
+      "runtime_dlls": [
+        "libaom.dll"
+      ],
+      "license_paths": [
+        "share/licenses/aom/LICENSE",
+        "share/licenses/aom/PATENTS"
+      ]
+    },
+    {
       "name": "svt-av1",
       "version": "4.1.0",
       "source_revision": "v4.1.0",

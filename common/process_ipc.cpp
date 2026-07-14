@@ -1,92 +1,374 @@
 #include "process_ipc.h"
-#include <sddl.h>
-#include <cstring>
+
 #include "logging.h"
-#include "raii_helpers.h"
+#include "restricted_child_process.h"
+
+#include <bcrypt.h>
+#include <sddl.h>
+#include <shellapi.h>
+
+#include <algorithm>
+#include <array>
+#include <cerrno>
+#include <cstdarg>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <limits>
+#include <string>
+#include <vector>
 
 std::string g_SessionDirName;
 
 namespace {
 
-void CancelAndDrainOverlapped(HANDLE handle, OVERLAPPED* overlapped, HANDLE eventHandle, DWORD waitMs) {
-    if (handle == INVALID_HANDLE_VALUE || !overlapped)
-        return;
+std::atomic<uint32_t> g_invalidMessageLogCount{0};
+std::atomic<uint64_t> g_pipeNameSequence{1};
 
-    if (!CancelIoEx(handle, overlapped)) {
-        DWORD cancelError = GetLastError();
-        if (cancelError != ERROR_NOT_FOUND && cancelError != ERROR_INVALID_HANDLE) {
-            LogError("[IPC] CancelIoEx failed: %d", cancelError);
+void LogInvalidMessage(const char* format, ...) {
+    if (g_invalidMessageLogCount.fetch_add(1, std::memory_order_relaxed) >= 32)
+        return;
+    char message[512]{};
+    va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(message, sizeof(message), format, arguments);
+    va_end(arguments);
+    LogWarn("[IPC] Rejected message: %s", message);
+}
+
+bool IsValidMode(ProcessMode mode) {
+    return mode >= ProcessMode::Controller && mode <= ProcessMode::Sensors;
+}
+
+bool IsValidCommand(uint16_t opcode) {
+    return opcode >= static_cast<uint16_t>(ProcessCommand::Shutdown) &&
+           opcode <= static_cast<uint16_t>(ProcessCommand::Ping);
+}
+
+bool IsValidResponse(uint16_t opcode) {
+    return opcode >= static_cast<uint16_t>(ProcessResponse::Ack) &&
+           opcode <= static_cast<uint16_t>(ProcessResponse::RecordingStopped);
+}
+
+bool ValidatePayload(const ProcessMessage& message) {
+    if (message.payloadSize > PROCESS_MAX_PAYLOAD)
+        return false;
+    if (message.payloadSize == 0)
+        return true;
+    if (message.payload[message.payloadSize - 1] != '\0')
+        return false;
+    return strnlen(message.payload, message.payloadSize) == message.payloadSize - 1;
+}
+
+bool ValidateOpcodePayload(const ProcessMessage& message) {
+    if (message.kind == ProcessMessageKind::Startup)
+        return message.payloadSize == 0;
+    if (message.kind == ProcessMessageKind::Command) {
+        if (message.opcode == static_cast<uint16_t>(ProcessCommand::StartRecording)) {
+            return message.payloadSize == 0 ||
+                   (message.payloadSize == sizeof("audio_only") && strcmp(message.payload, "audio_only") == 0);
+        }
+        return message.payloadSize == 0;
+    }
+    if (message.kind == ProcessMessageKind::Response) {
+        return message.opcode == static_cast<uint16_t>(ProcessResponse::Error) || message.payloadSize == 0;
+    }
+    return false;
+}
+
+bool IsResponseAllowed(ProcessCommand command, ProcessResponse response) {
+    if (response == ProcessResponse::Error)
+        return true;
+    switch (command) {
+        case ProcessCommand::Shutdown:
+        case ProcessCommand::ReloadConfig:
+            return response == ProcessResponse::Ack;
+        case ProcessCommand::StartRecording:
+            return response == ProcessResponse::Ack || response == ProcessResponse::RecordingStarted;
+        case ProcessCommand::StopRecording:
+            return response == ProcessResponse::Ack || response == ProcessResponse::RecordingStopped;
+        case ProcessCommand::Ping:
+            return response == ProcessResponse::Pong;
+        default:
+            return false;
+    }
+}
+
+bool IsIpcMode(ProcessMode mode) {
+    return mode == ProcessMode::Inject || mode == ProcessMode::Media || mode == ProcessMode::Limiter;
+}
+
+const wchar_t* ModeNameWide(ProcessMode mode) {
+    switch (mode) {
+        case ProcessMode::Inject:
+            return L"inject";
+        case ProcessMode::Media:
+            return L"media";
+        case ProcessMode::Limiter:
+            return L"limiter";
+        case ProcessMode::Logger:
+            return L"logger";
+        case ProcessMode::Sensors:
+            return L"sensors";
+        default:
+            return L"controller";
+    }
+}
+
+const char* ModeName(ProcessMode mode) {
+    switch (mode) {
+        case ProcessMode::Inject:
+            return "inject";
+        case ProcessMode::Media:
+            return "media";
+        case ProcessMode::Limiter:
+            return "limiter";
+        case ProcessMode::Logger:
+            return "logger";
+        case ProcessMode::Sensors:
+            return "sensors";
+        default:
+            return "controller";
+    }
+}
+
+std::wstring Utf8ToWide(const char* text) {
+    if (!text || !*text)
+        return {};
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, nullptr, 0);
+    if (length <= 1)
+        return {};
+    std::wstring result(static_cast<size_t>(length), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, result.data(), length) == 0)
+        return {};
+    result.resize(static_cast<size_t>(length - 1));
+    return result;
+}
+
+std::wstring QuoteCommandLineArgument(const std::wstring& argument) {
+    if (argument.empty())
+        return L"\"\"";
+    if (argument.find_first_of(L" \t\"") == std::wstring::npos)
+        return argument;
+    std::wstring quoted(1, L'\"');
+    size_t backslashes = 0;
+    for (wchar_t character : argument) {
+        if (character == L'\\') {
+            ++backslashes;
+            continue;
+        }
+        if (character == L'\"') {
+            quoted.append(backslashes * 2 + 1, L'\\');
+            quoted.push_back(L'\"');
+        } else {
+            quoted.append(backslashes, L'\\');
+            quoted.push_back(character);
+        }
+        backslashes = 0;
+    }
+    quoted.append(backslashes * 2, L'\\');
+    quoted.push_back(L'\"');
+    return quoted;
+}
+
+bool ParseUnsigned(const wchar_t* text, int base, uint64_t maximum, uint64_t& value) {
+    if (!text || !*text || *text == L'-')
+        return false;
+    errno = 0;
+    wchar_t* end = nullptr;
+    const unsigned long long parsed = wcstoull(text, &end, base);
+    if (errno == ERANGE || end == text || !end || *end != L'\0' || parsed > maximum)
+        return false;
+    value = static_cast<uint64_t>(parsed);
+    return true;
+}
+
+int HexValue(wchar_t character) {
+    if (character >= L'0' && character <= L'9')
+        return character - L'0';
+    if (character >= L'a' && character <= L'f')
+        return character - L'a' + 10;
+    if (character >= L'A' && character <= L'F')
+        return character - L'A' + 10;
+    return -1;
+}
+
+bool ParseNonce(const wchar_t* text, ProcessChannelNonce& nonce) {
+    if (!text || wcslen(text) != nonce.size() * 2)
+        return false;
+    for (size_t index = 0; index < nonce.size(); ++index) {
+        const int high = HexValue(text[index * 2]);
+        const int low = HexValue(text[index * 2 + 1]);
+        if (high < 0 || low < 0)
+            return false;
+        nonce[index] = static_cast<uint8_t>((high << 4) | low);
+    }
+    return true;
+}
+
+std::wstring NonceToHex(const ProcessChannelNonce& nonce) {
+    constexpr wchar_t digits[] = L"0123456789abcdef";
+    std::wstring result;
+    result.reserve(nonce.size() * 2);
+    for (uint8_t value : nonce) {
+        result.push_back(digits[value >> 4]);
+        result.push_back(digits[value & 0xF]);
+    }
+    return result;
+}
+
+bool FillNonce(ProcessChannelNonce& nonce) {
+    return BCryptGenRandom(nullptr, nonce.data(), static_cast<ULONG>(nonce.size()),
+                           BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+}
+
+struct PipeSecurity {
+    SECURITY_ATTRIBUTES attributes{};
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+
+    ~PipeSecurity() {
+        if (descriptor)
+            LocalFree(descriptor);
+    }
+};
+
+bool BuildPipeSecurity(PipeSecurity& security) {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+        return false;
+    DWORD bytes = 0;
+    GetTokenInformation(token, TokenUser, nullptr, 0, &bytes);
+    std::vector<uint8_t> storage(bytes);
+    const bool queried = bytes != 0 && GetTokenInformation(token, TokenUser, storage.data(), bytes, &bytes) != FALSE;
+    CloseHandle(token);
+    if (!queried)
+        return false;
+
+    auto* tokenUser = reinterpret_cast<TOKEN_USER*>(storage.data());
+    wchar_t* sid = nullptr;
+    if (!ConvertSidToStringSidW(tokenUser->User.Sid, &sid))
+        return false;
+    const std::wstring sddl = L"D:P(A;;GA;;;SY)(A;;GA;;;" + std::wstring(sid) + L")";
+    LocalFree(sid);
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &security.descriptor,
+                                                               nullptr)) {
+        return false;
+    }
+    security.attributes.nLength = sizeof(security.attributes);
+    security.attributes.lpSecurityDescriptor = security.descriptor;
+    security.attributes.bInheritHandle = FALSE;
+    return true;
+}
+
+void CancelOverlapped(HANDLE pipe, OVERLAPPED& overlapped) {
+    CancelIoEx(pipe, &overlapped);
+    DWORD ignored = 0;
+    GetOverlappedResult(pipe, &overlapped, &ignored, TRUE);
+}
+
+ProcessMessage BuildMessage(ProcessMessageKind kind, uint16_t opcode, ProcessMode senderMode, uint64_t sequence,
+                            uint32_t senderPid, const ProcessChannelNonce& nonce, const char* payload) {
+    ProcessMessage message{};
+    message.kind = kind;
+    message.opcode = opcode;
+    message.senderMode = senderMode;
+    message.sequence = sequence;
+    message.senderPid = senderPid;
+    message.nonce = nonce;
+    if (payload && *payload) {
+        const size_t length = strnlen(payload, PROCESS_MAX_PAYLOAD);
+        if (length < PROCESS_MAX_PAYLOAD) {
+            memcpy(message.payload, payload, length);
+            message.payloadSize = static_cast<uint32_t>(length + 1);
         }
     }
+    message.totalSize = message.headerSize + message.payloadSize;
+    return message;
+}
 
-    HANDLE waitHandle = eventHandle ? eventHandle : overlapped->hEvent;
-    if (!waitHandle)
-        return;
-
-    DWORD waitResult = WaitForSingleObject(waitHandle, waitMs);
-    if (waitResult == WAIT_OBJECT_0) {
-        DWORD bytesTransferred = 0;
-        GetOverlappedResult(handle, overlapped, &bytesTransferred, FALSE);
-    }
+bool HasModeTokenBoundary(const char* token, size_t length) {
+    const char next = token[length];
+    return next == '\0' || next == ' ' || next == '\t';
 }
 
 }  // namespace
 
-// Parse --mode= from command line
+bool ValidateProcessMessage(const ProcessMessage& message, size_t bytesRead, ProcessMessageKind expectedKind,
+                            ProcessMode expectedSenderMode, uint32_t expectedSenderPid,
+                            const ProcessChannelNonce& expectedNonce, uint64_t expectedSequence,
+                            bool requireExactSequence) {
+    if (bytesRead < offsetof(ProcessMessage, payload) || bytesRead > sizeof(ProcessMessage) ||
+        message.magic != PROCESS_MSG_MAGIC || message.version != PROCESS_PROTOCOL_VERSION ||
+        message.headerSize != offsetof(ProcessMessage, payload) || message.totalSize != bytesRead ||
+        message.totalSize != message.headerSize + message.payloadSize || message.kind != expectedKind ||
+        message.senderMode != expectedSenderMode || !IsValidMode(message.senderMode) ||
+        message.senderPid != expectedSenderPid || message.nonce != expectedNonce || !ValidatePayload(message) ||
+        !ValidateOpcodePayload(message)) {
+        return false;
+    }
+    if ((requireExactSequence && message.sequence != expectedSequence) ||
+        (!requireExactSequence && message.sequence <= expectedSequence)) {
+        return false;
+    }
+    switch (message.kind) {
+        case ProcessMessageKind::Startup:
+            return message.opcode == 0 && message.sequence == 0 && message.payloadSize == 0;
+        case ProcessMessageKind::Command:
+            return IsValidCommand(message.opcode);
+        case ProcessMessageKind::Response:
+            return IsValidResponse(message.opcode);
+        default:
+            return false;
+    }
+}
+
 ProcessMode ParseProcessMode(int argc, char* argv[]) {
-    for (int i = 1; i < argc; i++) {
-        if (strncmp(argv[i], "--mode=", 7) == 0) {
-            const char* mode = argv[i] + 7;
-            if (strcmp(mode, "inject") == 0)
-                return ProcessMode::Inject;
-            if (strcmp(mode, "media") == 0)
-                return ProcessMode::Media;
-            if (strcmp(mode, "limiter") == 0)
-                return ProcessMode::Limiter;
-            if (strcmp(mode, "logger") == 0)
-                return ProcessMode::Logger;
-            if (strcmp(mode, "sensors") == 0)
-                return ProcessMode::Sensors;
-        }
+    for (int index = 1; index < argc; ++index) {
+        if (strcmp(argv[index], "--mode=inject") == 0)
+            return ProcessMode::Inject;
+        if (strcmp(argv[index], "--mode=media") == 0)
+            return ProcessMode::Media;
+        if (strcmp(argv[index], "--mode=limiter") == 0)
+            return ProcessMode::Limiter;
+        if (strcmp(argv[index], "--mode=logger") == 0)
+            return ProcessMode::Logger;
+        if (strcmp(argv[index], "--mode=sensors") == 0)
+            return ProcessMode::Sensors;
     }
     return ProcessMode::Controller;
 }
 
-ProcessMode ParseProcessMode(LPSTR lpCmdLine) {
-    if (!lpCmdLine || lpCmdLine[0] == '\0')
+ProcessMode ParseProcessMode(LPSTR commandLine) {
+    if (!commandLine)
         return ProcessMode::Controller;
-
-    // Simple search for --mode=
-    const char* modeStr = strstr(lpCmdLine, "--mode=");
-    if (!modeStr)
+    const char* mode = strstr(commandLine, "--mode=");
+    if (!mode)
         return ProcessMode::Controller;
-
-    modeStr += 7;  // Skip "--mode="
-    if (strncmp(modeStr, "inject", 6) == 0)
+    mode += 7;
+    if (strncmp(mode, "inject", 6) == 0 && HasModeTokenBoundary(mode, 6))
         return ProcessMode::Inject;
-    if (strncmp(modeStr, "media", 5) == 0)
+    if (strncmp(mode, "media", 5) == 0 && HasModeTokenBoundary(mode, 5))
         return ProcessMode::Media;
-    if (strncmp(modeStr, "limiter", 7) == 0)
+    if (strncmp(mode, "limiter", 7) == 0 && HasModeTokenBoundary(mode, 7))
         return ProcessMode::Limiter;
-    if (strncmp(modeStr, "logger", 6) == 0)
+    if (strncmp(mode, "logger", 6) == 0 && HasModeTokenBoundary(mode, 6))
         return ProcessMode::Logger;
-    if (strncmp(modeStr, "sensors", 7) == 0)
+    if (strncmp(mode, "sensors", 7) == 0 && HasModeTokenBoundary(mode, 7))
         return ProcessMode::Sensors;
-
     return ProcessMode::Controller;
 }
 
-std::string ParseSessionDir(LPSTR lpCmdLine) {
-    if (!lpCmdLine || lpCmdLine[0] == '\0')
+std::string ParseSessionDir(LPSTR commandLine) {
+    if (!commandLine)
         return {};
-    const char* ptr = strstr(lpCmdLine, "--session-dir=");
-    if (!ptr)
+    const char* value = strstr(commandLine, "--session-dir=");
+    if (!value)
         return {};
-    ptr += 14;  // Skip "--session-dir="
-    const char* end = ptr;
+    value += 14;
+    const char* end = value;
     while (*end && *end != ' ' && *end != '\t')
-        end++;
-    return std::string(ptr, end);
+        ++end;
+    return std::string(value, end);
 }
 
 const char* GetLogFileName(ProcessMode mode) {
@@ -101,520 +383,460 @@ const char* GetLogFileName(ProcessMode mode) {
             return "logger.log";
         case ProcessMode::Sensors:
             return "sensors.log";
-        case ProcessMode::Controller:
         default:
             return "captureengine.log";
     }
 }
 
-// ============================================================================
-// ProcessIPCServer Implementation (Child processes)
-// ============================================================================
-
-ProcessIPCServer::ProcessIPCServer(ProcessMode mode) : ProcessIPCServer(mode, nullptr) {}
-
-ProcessIPCServer::ProcessIPCServer(ProcessMode mode, const wchar_t* pipeNameOverride)
-    : mode(mode),
-      pipeNameOverride(pipeNameOverride ? pipeNameOverride : L""),
-      hPipe(INVALID_HANDLE_VALUE),
-      connected(false),
-      lastSequence(0),
-      connectEvent(NULL),
-      connectOverlapped{},
-      connectPending(false) {}
+ProcessIPCServer::ProcessIPCServer(ProcessMode mode) : mode_(mode) {}
 
 ProcessIPCServer::~ProcessIPCServer() {
     Shutdown();
 }
 
-void ProcessIPCServer::ResetConnectOverlappedLocked() {
-    connectPending = false;
-    connectOverlapped = {};
-    connectOverlapped.hEvent = connectEvent;
-}
-
-const wchar_t* ProcessIPCServer::ResolvePipeName() const {
-    return !pipeNameOverride.empty() ? pipeNameOverride.c_str() : GetPipeName(mode);
-}
-
-void ProcessIPCServer::HandlePipeDisconnectLocked(bool logDisconnect) {
-    if (logDisconnect) {
-        LogInfo("[IPC] Controller disconnected");
-    }
-
-    connected.store(false, std::memory_order_release);
-    if (hPipe != INVALID_HANDLE_VALUE) {
-        if (connectPending) {
-            CancelAndDrainOverlapped(hPipe, &connectOverlapped, connectEvent, 50);
+bool ProcessIPCServer::ReadStartupArguments() {
+    int argumentCount = 0;
+    wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+    if (!arguments)
+        return false;
+    uint64_t handleValue = 0;
+    uint64_t controllerPid = 0;
+    bool haveHandle = false;
+    bool haveControllerPid = false;
+    bool haveNonce = false;
+    bool invalid = false;
+    for (int index = 1; index < argumentCount; ++index) {
+        constexpr wchar_t handlePrefix[] = L"--ipc-handle=";
+        constexpr wchar_t pidPrefix[] = L"--ipc-controller-pid=";
+        constexpr wchar_t noncePrefix[] = L"--ipc-nonce=";
+        if (wcsncmp(arguments[index], handlePrefix, std::size(handlePrefix) - 1) == 0) {
+            if (haveHandle ||
+                !ParseUnsigned(arguments[index] + std::size(handlePrefix) - 1, 0,
+                               std::numeric_limits<uintptr_t>::max(), handleValue)) {
+                invalid = true;
+            } else {
+                haveHandle = true;
+            }
+        } else if (wcsncmp(arguments[index], pidPrefix, std::size(pidPrefix) - 1) == 0) {
+            if (haveControllerPid ||
+                !ParseUnsigned(arguments[index] + std::size(pidPrefix) - 1, 10,
+                               std::numeric_limits<uint32_t>::max(), controllerPid) ||
+                controllerPid == 0) {
+                invalid = true;
+            } else {
+                haveControllerPid = true;
+            }
+        } else if (wcsncmp(arguments[index], noncePrefix, std::size(noncePrefix) - 1) == 0) {
+            if (haveNonce || !ParseNonce(arguments[index] + std::size(noncePrefix) - 1, nonce_)) {
+                invalid = true;
+            } else {
+                haveNonce = true;
+            }
         }
-        DisconnectNamedPipe(hPipe);
+    }
+    LocalFree(arguments);
+    if (invalid || !haveHandle || !haveControllerPid || !haveNonce || handleValue == 0 ||
+        handleValue == reinterpret_cast<uintptr_t>(INVALID_HANDLE_VALUE)) {
+        return false;
     }
 
-    ResetConnectOverlappedLocked();
+    pipe_ = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(handleValue));
+    controllerPid_ = static_cast<uint32_t>(controllerPid);
+    DWORD handleFlags = 0;
+    DWORD endpointFlags = 0;
+    DWORD pipeState = 0;
+    DWORD serverPid = 0;
+    if (!GetHandleInformation(pipe_, &handleFlags) || GetFileType(pipe_) != FILE_TYPE_PIPE ||
+        !GetNamedPipeInfo(pipe_, &endpointFlags, nullptr, nullptr, nullptr) ||
+        !GetNamedPipeHandleStateW(pipe_, &pipeState, nullptr, nullptr, nullptr, nullptr, 0) ||
+        (handleFlags & HANDLE_FLAG_INHERIT) == 0 || (endpointFlags & PIPE_SERVER_END) != 0 ||
+        (pipeState & PIPE_READMODE_MESSAGE) == 0 ||
+        !GetNamedPipeServerProcessId(pipe_, &serverPid) ||
+        serverPid != controllerPid_) {
+        CloseHandle(pipe_);
+        pipe_ = INVALID_HANDLE_VALUE;
+        return false;
+    }
+    return SetHandleInformation(pipe_, HANDLE_FLAG_INHERIT, 0) != FALSE;
+}
+
+bool ProcessIPCServer::SendStartupHandshake() {
+    const ProcessMessage handshake =
+        BuildMessage(ProcessMessageKind::Startup, 0, mode_, 0, GetCurrentProcessId(), nonce_, nullptr);
+    DWORD bytesWritten = 0;
+    return WriteFile(pipe_, &handshake, handshake.totalSize, &bytesWritten, nullptr) &&
+           bytesWritten == handshake.totalSize;
 }
 
 bool ProcessIPCServer::Init() {
-    std::lock_guard<std::mutex> lock(stateMutex);
-
-    if (hPipe != INVALID_HANDLE_VALUE)
-        return true;
-
-    const wchar_t* pipeName = ResolvePipeName();
-    if (!pipeName) {
-        LogError("[IPC] Invalid process mode for server");
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!IsIpcMode(mode_) || pipe_ != INVALID_HANDLE_VALUE || !ReadStartupArguments() || !SendStartupHandshake()) {
+        if (pipe_ != INVALID_HANDLE_VALUE)
+            CloseHandle(pipe_);
+        pipe_ = INVALID_HANDLE_VALUE;
         return false;
     }
-
-    SECURITY_ATTRIBUTES sa = {};
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = FALSE;
-    PSECURITY_DESCRIPTOR pipeSecurity = nullptr;
-    const wchar_t* pipeSddl = pipeNameOverride.empty()
-                                  ? L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)(A;;GA;;;AU)(A;;GA;;;AC)S:(ML;;NW;;;LW)"
-                                  : L"D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;IU)(A;;GA;;;AU)(A;;GA;;;AC)(A;;GA;;;WD)"
-                                    L"S:(ML;;NW;;;LW)";
-    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(pipeSddl, SDDL_REVISION_1, &pipeSecurity, NULL)) {
-        sa.lpSecurityDescriptor = pipeSecurity;
-    } else {
-        LogError("[IPC] Failed to create pipe security descriptor: %d", GetLastError());
-    }
-
-    // Create named pipe server
-    hPipe = CreateNamedPipeW(pipeName,
-                             PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,  // Async for non-blocking
-                             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-                             1,                       // Max instances
-                             sizeof(ProcessMessage),  // Output buffer
-                             sizeof(ProcessMessage),  // Input buffer
-                             0,                       // Default timeout
-                             pipeSecurity ? &sa : NULL);
-    if (pipeSecurity) {
-        LocalFree(pipeSecurity);
-    }
-
-    if (hPipe == INVALID_HANDLE_VALUE) {
-        LogError("[IPC] Failed to create pipe: %d", GetLastError());
-        return false;
-    }
-
-    connectEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-    if (!connectEvent) {
-        LogError("[IPC] Failed to create connect event: %d", GetLastError());
-        CloseHandle(hPipe);
-        hPipe = INVALID_HANDLE_VALUE;
-        return false;
-    }
-
-    connectOverlapped = {};
-    connectOverlapped.hEvent = connectEvent;
-
-    LogInfo("[IPC] Server pipe created, waiting for connection...");
+    connected_.store(true, std::memory_order_release);
+    fatalDisconnect_.store(false, std::memory_order_release);
+    LogInfo("[IPC] Accepted inherited %s endpoint from controller PID %lu", ModeName(mode_),
+            static_cast<unsigned long>(controllerPid_));
     return true;
 }
 
-void ProcessIPCServer::Shutdown() {
-    std::lock_guard<std::mutex> lock(stateMutex);
-
-    if (hPipe != INVALID_HANDLE_VALUE && connectPending) {
-        CancelAndDrainOverlapped(hPipe, &connectOverlapped, connectEvent, 50);
+void ProcessIPCServer::MarkDisconnected(DWORD error, const char* operation) {
+    if (!fatalDisconnect_.exchange(true, std::memory_order_acq_rel))
+        LogWarn("[IPC] %s channel failed during %s (error=%lu); child will exit", ModeName(mode_), operation,
+                static_cast<unsigned long>(error));
+    connected_.store(false, std::memory_order_release);
+    if (pipe_ != INVALID_HANDLE_VALUE) {
+        CloseHandle(pipe_);
+        pipe_ = INVALID_HANDLE_VALUE;
     }
-    connectPending = false;
-    connected.store(false, std::memory_order_release);
-    if (hPipe != INVALID_HANDLE_VALUE) {
-        DisconnectNamedPipe(hPipe);
-        CloseHandle(hPipe);
-        hPipe = INVALID_HANDLE_VALUE;
-    }
-    if (connectEvent) {
-        CloseHandle(connectEvent);
-        connectEvent = NULL;
-    }
-    connectOverlapped = {};
-    connected = false;
-    lastSequence = 0;
 }
 
-bool ProcessIPCServer::PollCommand(ProcessCommand& outCmd, char* outPayload, size_t payloadSize) {
-    std::lock_guard<std::mutex> lock(stateMutex);
-
-    if (hPipe == INVALID_HANDLE_VALUE)
-        return false;
-
-    // If not connected, try to accept connection (non-blocking)
-    if (!connected.load(std::memory_order_acquire)) {
-        if (!connectPending) {
-            ResetEvent(connectEvent);
-            ResetConnectOverlappedLocked();
-
-            BOOL connectResult = ConnectNamedPipe(hPipe, &connectOverlapped);
-            if (connectResult) {
-                connected.store(true, std::memory_order_release);
-                LogInfo("[IPC] Controller connected");
-            } else {
-                DWORD connectError = GetLastError();
-                if (connectError == ERROR_PIPE_CONNECTED) {
-                    SetEvent(connectEvent);
-                    connected.store(true, std::memory_order_release);
-                    LogInfo("[IPC] Controller already connected");
-                } else if (connectError == ERROR_IO_PENDING) {
-                    connectPending = true;
-                    return false;
-                } else {
-                    LogError("[IPC] ConnectNamedPipe failed: %d", connectError);
-                    return false;
-                }
-            }
-        }
-
-        if (connectPending) {
-            DWORD waitResult = WaitForSingleObject(connectEvent, 0);
-            if (waitResult == WAIT_TIMEOUT) {
-                return false;
-            }
-            if (waitResult != WAIT_OBJECT_0) {
-                LogError("[IPC] WaitForSingleObject on connect event failed: %d", GetLastError());
-                CancelAndDrainOverlapped(hPipe, &connectOverlapped, connectEvent, 50);
-                ResetConnectOverlappedLocked();
-                return false;
-            }
-
-            DWORD bytesTransferred = 0;
-            if (!GetOverlappedResult(hPipe, &connectOverlapped, &bytesTransferred, FALSE)) {
-                DWORD connectError = GetLastError();
-                if (connectError != ERROR_PIPE_CONNECTED) {
-                    if (connectError == ERROR_BROKEN_PIPE || connectError == ERROR_NO_DATA) {
-                        DisconnectNamedPipe(hPipe);
-                    } else if (connectError == ERROR_OPERATION_ABORTED) {
-                        ResetConnectOverlappedLocked();
-                        return false;
-                    } else {
-                        LogError("[IPC] ConnectNamedPipe completion failed: %d", connectError);
-                    }
-                    ResetConnectOverlappedLocked();
-                    return false;
-                }
-            }
-
-            ResetConnectOverlappedLocked();
-            connected.store(true, std::memory_order_release);
-            LogInfo("[IPC] Controller connected");
-        }
+void ProcessIPCServer::Shutdown() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    connected_.store(false, std::memory_order_release);
+    if (pipe_ != INVALID_HANDLE_VALUE) {
+        CloseHandle(pipe_);
+        pipe_ = INVALID_HANDLE_VALUE;
     }
+    lastSequence_ = 0;
+}
 
-    // Check for incoming message (non-blocking)
-    DWORD bytesAvailable = 0;
-    if (!PeekNamedPipe(hPipe, NULL, 0, NULL, &bytesAvailable, NULL)) {
-        DWORD pipeError = GetLastError();
-        if (pipeError == ERROR_BROKEN_PIPE || pipeError == ERROR_NO_DATA) {
-            HandlePipeDisconnectLocked(true);
-        }
+bool ProcessIPCServer::PollCommand(ProcessCommand& command, char* payload, size_t payloadSize) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!connected_.load(std::memory_order_acquire) || pipe_ == INVALID_HANDLE_VALUE)
+        return false;
+    DWORD available = 0;
+    DWORD messageBytes = 0;
+    if (!PeekNamedPipe(pipe_, nullptr, 0, nullptr, &available, &messageBytes)) {
+        MarkDisconnected(GetLastError(), "peek");
+        return false;
+    }
+    if (available == 0)
+        return false;
+    if (messageBytes < offsetof(ProcessMessage, payload) || messageBytes > sizeof(ProcessMessage)) {
+        LogInvalidMessage("invalid byte length %lu", static_cast<unsigned long>(messageBytes));
+        MarkDisconnected(ERROR_INVALID_DATA, "framing");
         return false;
     }
 
-    if (bytesAvailable == 0)
-        return false;
-
-    // Read message
-    ProcessMessage msg = {};
+    ProcessMessage message{};
     DWORD bytesRead = 0;
-    if (!ReadFile(hPipe, &msg, sizeof(msg), &bytesRead, NULL)) {
-        DWORD readError = GetLastError();
-        if (readError == ERROR_BROKEN_PIPE || readError == ERROR_NO_DATA) {
-            HandlePipeDisconnectLocked(true);
-        } else {
-            LogError("[IPC] ReadFile failed: %d", readError);
+    if (!ReadFile(pipe_, &message, sizeof(message), &bytesRead, nullptr)) {
+        MarkDisconnected(GetLastError(), "read");
+        return false;
+    }
+    if (!ValidateProcessMessage(message, bytesRead, ProcessMessageKind::Command, ProcessMode::Controller,
+                                controllerPid_, nonce_, lastSequence_, false)) {
+        LogInvalidMessage("command identity/header/sequence mismatch");
+        MarkDisconnected(ERROR_INVALID_DATA, "validation");
+        return false;
+    }
+    lastSequence_ = message.sequence;
+    command = static_cast<ProcessCommand>(message.opcode);
+    if (payload && payloadSize != 0) {
+        payload[0] = '\0';
+        if (message.payloadSize != 0) {
+            const size_t copyLength = std::min(payloadSize - 1, static_cast<size_t>(message.payloadSize - 1));
+            memcpy(payload, message.payload, copyLength);
+            payload[copyLength] = '\0';
         }
-        return false;
     }
-
-    // Validate
-    if (msg.magic != PROCESS_MSG_MAGIC) {
-        LogError("[IPC] Invalid message magic: 0x%08X", msg.magic);
-        return false;
-    }
-
-    lastSequence = msg.sequence;
-    outCmd = msg.command;
-
-    if (outPayload && payloadSize > 0) {
-        size_t copyLen = payloadSize - 1;
-        if (copyLen > sizeof(msg.payload))
-            copyLen = sizeof(msg.payload);
-        memcpy(outPayload, msg.payload, copyLen);
-        outPayload[copyLen] = '\0';
-    }
-
     return true;
 }
 
 bool ProcessIPCServer::SendResponse(ProcessResponse response, const char* payload) {
-    std::lock_guard<std::mutex> lock(stateMutex);
-
-    if (!connected.load(std::memory_order_acquire) || hPipe == INVALID_HANDLE_VALUE)
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!connected_.load(std::memory_order_acquire) || pipe_ == INVALID_HANDLE_VALUE ||
+        !IsValidResponse(static_cast<uint16_t>(response)) ||
+        (payload && strnlen(payload, PROCESS_MAX_PAYLOAD) == PROCESS_MAX_PAYLOAD)) {
         return false;
-
-    ProcessMessage msg = {};
-    msg.magic = PROCESS_MSG_MAGIC;
-    msg.size = sizeof(msg);
-    msg.response = response;
-    msg.sequence = lastSequence;
-
-    if (payload) {
-        strncpy(msg.payload, payload, sizeof(msg.payload) - 1);
     }
-
+    const ProcessMessage message = BuildMessage(ProcessMessageKind::Response, static_cast<uint16_t>(response), mode_,
+                                                lastSequence_, GetCurrentProcessId(), nonce_, payload);
+    if (!ValidateOpcodePayload(message))
+        return false;
     DWORD bytesWritten = 0;
-    if (!WriteFile(hPipe, &msg, sizeof(msg), &bytesWritten, NULL)) {
-        DWORD writeError = GetLastError();
-        if (writeError == ERROR_BROKEN_PIPE || writeError == ERROR_NO_DATA) {
-            HandlePipeDisconnectLocked(true);
-        } else {
-            LogError("[IPC] WriteFile failed: %d", writeError);
-        }
+    if (!WriteFile(pipe_, &message, message.totalSize, &bytesWritten, nullptr) || bytesWritten != message.totalSize) {
+        MarkDisconnected(GetLastError(), "write");
         return false;
     }
-
     return true;
 }
 
-// ============================================================================
-// ProcessIPCClient Implementation (Controller)
-// ============================================================================
-
-ProcessIPCClient::ProcessIPCClient(ProcessMode targetMode) : ProcessIPCClient(targetMode, nullptr) {}
-
-ProcessIPCClient::ProcessIPCClient(ProcessMode targetMode, const wchar_t* pipeNameOverride)
-    : targetMode(targetMode),
-      pipeNameOverride(pipeNameOverride ? pipeNameOverride : L""),
-      hPipe(INVALID_HANDLE_VALUE),
-      sequence(0) {}
+ProcessIPCClient::ProcessIPCClient(ProcessMode targetMode) : targetMode_(targetMode) {}
 
 ProcessIPCClient::~ProcessIPCClient() {
     Disconnect();
 }
 
-bool ProcessIPCClient::Connect(DWORD timeoutMs) {
-    if (hPipe != INVALID_HANDLE_VALUE)
-        return true;
+bool ProcessIPCClient::PrepareChildEndpoint(HANDLE& childEndpoint, std::wstring& childArguments) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    childEndpoint = INVALID_HANDLE_VALUE;
+    childArguments.clear();
+    if (!IsIpcMode(targetMode_) || !FillNonce(nonce_))
+        return false;
+    if (pipe_ != INVALID_HANDLE_VALUE)
+        CloseHandle(pipe_);
+    pipe_ = INVALID_HANDLE_VALUE;
+    connected_.store(false, std::memory_order_release);
+    sequence_ = 0;
+    expectedChildPid_ = 0;
 
-    const wchar_t* pipeName = ResolvePipeName();
-    if (!pipeName) {
-        LogError("[IPC] Invalid target mode for client");
+    PipeSecurity security;
+    if (!BuildPipeSecurity(security))
+        return false;
+    const std::wstring nonceHex = NonceToHex(nonce_);
+    wchar_t pipeName[256]{};
+    _snwprintf_s(pipeName, std::size(pipeName), _TRUNCATE, L"\\\\.\\pipe\\CE_%08X_%016llX_%ls",
+                 GetCurrentProcessId(),
+                 static_cast<unsigned long long>(g_pipeNameSequence.fetch_add(1, std::memory_order_relaxed)),
+                 nonceHex.c_str());
+    pipe_ = CreateNamedPipeW(pipeName, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1,
+                             sizeof(ProcessMessage), sizeof(ProcessMessage), 0, &security.attributes);
+    if (pipe_ == INVALID_HANDLE_VALUE)
+        return false;
+
+    OVERLAPPED connectOverlapped{};
+    connectOverlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!connectOverlapped.hEvent) {
+        CloseHandle(pipe_);
+        pipe_ = INVALID_HANDLE_VALUE;
+        return false;
+    }
+    BOOL connectStarted = ConnectNamedPipe(pipe_, &connectOverlapped);
+    const DWORD connectError = connectStarted ? ERROR_SUCCESS : GetLastError();
+    if (!connectStarted && connectError != ERROR_IO_PENDING && connectError != ERROR_PIPE_CONNECTED) {
+        CloseHandle(connectOverlapped.hEvent);
+        CloseHandle(pipe_);
+        pipe_ = INVALID_HANDLE_VALUE;
         return false;
     }
 
-    const ULONGLONG startTick = GetTickCount64();
-    while (true) {
-        // Open pipe with FILE_FLAG_OVERLAPPED for async I/O support. Try this
-        // before WaitNamedPipeW: a server can have an overlapped ConnectNamedPipe
-        // pending while WaitNamedPipeW still reports no available instance.
-        hPipe = CreateFileW(pipeName, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
-        if (hPipe != INVALID_HANDLE_VALUE) {
-            break;
-        }
-
-        const DWORD pipeError = GetLastError();
-        if (pipeError != ERROR_PIPE_BUSY && pipeError != ERROR_FILE_NOT_FOUND) {
-            LogError("[IPC] Failed to connect to pipe: %d", pipeError);
-            return false;
-        }
-
-        const ULONGLONG now = GetTickCount64();
-        if (now - startTick >= timeoutMs) {
-            LogError("[IPC] Timed out connecting to pipe: %d", pipeError);
-            return false;
-        }
-
-        DWORD waitMs = static_cast<DWORD>(timeoutMs - (now - startTick));
-        if (waitMs > 50) {
-            waitMs = 50;
-        }
-
-        if (pipeError == ERROR_PIPE_BUSY) {
-            WaitNamedPipeW(pipeName, waitMs);
-        } else {
-            SwitchToThread();
-        }
-    }
-
-    // Set message mode
-    DWORD mode = PIPE_READMODE_MESSAGE;
-    if (!SetNamedPipeHandleState(hPipe, &mode, NULL, NULL)) {
-        LogError("[IPC] Failed to set pipe message mode: %d", GetLastError());
-        Disconnect();
+    childEndpoint = CreateFileW(pipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD childReadMode = PIPE_READMODE_MESSAGE;
+    if (childEndpoint == INVALID_HANDLE_VALUE ||
+        !SetNamedPipeHandleState(childEndpoint, &childReadMode, nullptr, nullptr) ||
+        !SetHandleInformation(childEndpoint, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+        if (childEndpoint != INVALID_HANDLE_VALUE)
+            CloseHandle(childEndpoint);
+        childEndpoint = INVALID_HANDLE_VALUE;
+        CancelOverlapped(pipe_, connectOverlapped);
+        CloseHandle(connectOverlapped.hEvent);
+        CloseHandle(pipe_);
+        pipe_ = INVALID_HANDLE_VALUE;
         return false;
     }
+    bool connected = connectStarted || connectError == ERROR_PIPE_CONNECTED;
+    if (!connected && WaitForSingleObject(connectOverlapped.hEvent, 5000) == WAIT_OBJECT_0) {
+        DWORD ignored = 0;
+        connected = GetOverlappedResult(pipe_, &connectOverlapped, &ignored, FALSE) != FALSE;
+    }
+    if (!connected) {
+        CancelOverlapped(pipe_, connectOverlapped);
+        CloseHandle(childEndpoint);
+        childEndpoint = INVALID_HANDLE_VALUE;
+        CloseHandle(connectOverlapped.hEvent);
+        CloseHandle(pipe_);
+        pipe_ = INVALID_HANDLE_VALUE;
+        return false;
+    }
+    CloseHandle(connectOverlapped.hEvent);
 
-    LogInfo("[IPC] Connected to %s process", targetMode == ProcessMode::Inject    ? "inject"
-                                             : targetMode == ProcessMode::Media   ? "media"
-                                             : targetMode == ProcessMode::Limiter ? "limiter"
-                                                                                  : "unknown");
+    wchar_t arguments[320]{};
+    _snwprintf_s(arguments, std::size(arguments), _TRUNCATE,
+                 L"--ipc-handle=0x%llX --ipc-controller-pid=%lu --ipc-nonce=%ls",
+                 static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(childEndpoint)),
+                 static_cast<unsigned long>(GetCurrentProcessId()), nonceHex.c_str());
+    childArguments = arguments;
     return true;
 }
 
-const wchar_t* ProcessIPCClient::ResolvePipeName() const {
-    return !pipeNameOverride.empty() ? pipeNameOverride.c_str() : GetPipeName(targetMode);
+bool ProcessIPCClient::ReadMessageWithTimeout(ProcessMessage& message, DWORD& bytesRead, DWORD timeoutMs) {
+    message = {};
+    bytesRead = 0;
+    OVERLAPPED overlapped{};
+    overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!overlapped.hEvent)
+        return false;
+    BOOL read = ReadFile(pipe_, &message, sizeof(message), &bytesRead, &overlapped);
+    if (!read && GetLastError() == ERROR_IO_PENDING) {
+        const DWORD waitResult = WaitForSingleObject(overlapped.hEvent, timeoutMs);
+        if (waitResult == WAIT_OBJECT_0)
+            read = GetOverlappedResult(pipe_, &overlapped, &bytesRead, FALSE);
+        else
+            CancelOverlapped(pipe_, overlapped);
+    }
+    CloseHandle(overlapped.hEvent);
+    return read != FALSE;
+}
+
+bool ProcessIPCClient::WriteMessageWithTimeout(const ProcessMessage& message, DWORD timeoutMs) {
+    DWORD bytesWritten = 0;
+    OVERLAPPED overlapped{};
+    overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!overlapped.hEvent)
+        return false;
+    BOOL written = WriteFile(pipe_, &message, message.totalSize, &bytesWritten, &overlapped);
+    if (!written && GetLastError() == ERROR_IO_PENDING) {
+        const DWORD waitResult = WaitForSingleObject(overlapped.hEvent, timeoutMs);
+        if (waitResult == WAIT_OBJECT_0)
+            written = GetOverlappedResult(pipe_, &overlapped, &bytesWritten, FALSE);
+        else
+            CancelOverlapped(pipe_, overlapped);
+    }
+    CloseHandle(overlapped.hEvent);
+    return written != FALSE && bytesWritten == message.totalSize;
+}
+
+bool ProcessIPCClient::CompleteChildSpawn(uint32_t childPid, DWORD timeoutMs) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (pipe_ == INVALID_HANDLE_VALUE || childPid == 0)
+        return false;
+    expectedChildPid_ = childPid;
+
+    ProcessMessage handshake{};
+    DWORD bytesRead = 0;
+    if (!ReadMessageWithTimeout(handshake, bytesRead, timeoutMs) ||
+        !ValidateProcessMessage(handshake, bytesRead, ProcessMessageKind::Startup, targetMode_, childPid, nonce_, 0,
+                                true)) {
+        LogError("[IPC] Invalid or missing startup handshake from %s PID %lu", ModeName(targetMode_),
+                 static_cast<unsigned long>(childPid));
+        CloseHandle(pipe_);
+        pipe_ = INVALID_HANDLE_VALUE;
+        return false;
+    }
+    connected_.store(true, std::memory_order_release);
+    LogInfo("[IPC] Authenticated inherited %s endpoint (PID %lu)", ModeName(targetMode_),
+            static_cast<unsigned long>(childPid));
+    return true;
 }
 
 void ProcessIPCClient::Disconnect() {
-    if (hPipe != INVALID_HANDLE_VALUE) {
-        CloseHandle(hPipe);
-        hPipe = INVALID_HANDLE_VALUE;
+    std::lock_guard<std::mutex> lock(mutex_);
+    connected_.store(false, std::memory_order_release);
+    if (pipe_ != INVALID_HANDLE_VALUE) {
+        CancelIoEx(pipe_, nullptr);
+        CloseHandle(pipe_);
+        pipe_ = INVALID_HANDLE_VALUE;
     }
+    expectedChildPid_ = 0;
 }
 
-bool ProcessIPCClient::SendCommand(ProcessCommand cmd, const char* payload, ProcessResponse* outResponse,
+bool ProcessIPCClient::SendCommand(ProcessCommand command, const char* payload, ProcessResponse* response,
                                    DWORD timeoutMs) {
-    // Try to reconnect if pipe is closed
-    if (hPipe == INVALID_HANDLE_VALUE) {
-        if (!Connect(1000)) {
-            return false;
-        }
-    }
-
-    // Build message
-    ProcessMessage msg = {};
-    msg.magic = PROCESS_MSG_MAGIC;
-    msg.size = sizeof(msg);
-    msg.command = cmd;
-    msg.sequence = ++sequence;
-
-    if (payload) {
-        strncpy(msg.payload, payload, sizeof(msg.payload) - 1);
-    }
-
-    // Send with overlapped I/O
-    DWORD bytesWritten = 0;
-    OVERLAPPED ovWrite = {};
-    ce::HandleGuard writeEvent(CreateEvent(NULL, TRUE, FALSE, NULL));
-    ovWrite.hEvent = writeEvent.get();
-
-    BOOL writeResult = WriteFile(hPipe, &msg, sizeof(msg), &bytesWritten, &ovWrite);
-    if (!writeResult && GetLastError() == ERROR_IO_PENDING) {
-        // Wait for write to complete
-        DWORD waitResult = WaitForSingleObject(ovWrite.hEvent, timeoutMs);
-        if (waitResult == WAIT_OBJECT_0) {
-            if (!GetOverlappedResult(hPipe, &ovWrite, &bytesWritten, FALSE)) {
-                LogError("[IPC] SendCommand WriteFile completion failed: %d - disconnecting", GetLastError());
-                Disconnect();
-                return false;
-            }
-            writeResult = TRUE;
-        } else {
-            CancelAndDrainOverlapped(hPipe, &ovWrite, ovWrite.hEvent, 50);
-            LogError("[IPC] SendCommand WriteFile timeout - disconnecting for reconnect");
-            Disconnect();  // Close and reconnect on next attempt
-            return false;
-        }
-    }
-
-    if (!writeResult) {
-        LogError("[IPC] SendCommand WriteFile failed: %d - disconnecting", GetLastError());
-        Disconnect();
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!connected_.load(std::memory_order_acquire) || pipe_ == INVALID_HANDLE_VALUE ||
+        !IsValidCommand(static_cast<uint16_t>(command)) ||
+        (payload && strnlen(payload, PROCESS_MAX_PAYLOAD) == PROCESS_MAX_PAYLOAD)) {
         return false;
     }
-
-    // Always read response to drain the pipe buffer (server always sends one).
-    // If callers skip reading for fire-and-forget commands (outResponse==nullptr),
-    // unread responses accumulate and corrupt sequence matching for later calls.
-    ProcessMessage resp = {};
+    if (sequence_ == std::numeric_limits<uint64_t>::max()) {
+        connected_.store(false, std::memory_order_release);
+        CloseHandle(pipe_);
+        pipe_ = INVALID_HANDLE_VALUE;
+        return false;
+    }
+    const uint64_t sequence = ++sequence_;
+    const ProcessMessage request =
+        BuildMessage(ProcessMessageKind::Command, static_cast<uint16_t>(command), ProcessMode::Controller, sequence,
+                     GetCurrentProcessId(), nonce_, payload);
+    if (!ValidateOpcodePayload(request))
+        return false;
+    ProcessMessage reply{};
     DWORD bytesRead = 0;
-
-    OVERLAPPED ovRead = {};
-    ce::HandleGuard readEvent(CreateEvent(NULL, TRUE, FALSE, NULL));
-    ovRead.hEvent = readEvent.get();
-
-    BOOL readResult = ReadFile(hPipe, &resp, sizeof(resp), &bytesRead, &ovRead);
-    if (!readResult && GetLastError() == ERROR_IO_PENDING) {
-        DWORD waitResult = WaitForSingleObject(ovRead.hEvent, timeoutMs);
-        if (waitResult == WAIT_OBJECT_0) {
-            if (!GetOverlappedResult(hPipe, &ovRead, &bytesRead, FALSE)) {
-                LogError("[IPC] SendCommand read completion failed: %d - disconnecting", GetLastError());
-                Disconnect();
-                return false;
-            }
-            readResult = TRUE;
-        } else {
-            CancelAndDrainOverlapped(hPipe, &ovRead, ovRead.hEvent, 50);
-            LogError("[IPC] SendCommand read timeout - disconnecting for reconnect");
-            Disconnect();  // Close and reconnect on next attempt
-            return false;
-        }
-    }
-
-    if (outResponse) {
-        if (readResult && resp.magic == PROCESS_MSG_MAGIC && resp.sequence == sequence) {
-            *outResponse = resp.response;
-            return true;
-        }
-        LogError("[IPC] SendCommand invalid response: magic=0x%X seq=%u (expected %u)", resp.magic, resp.sequence,
-                 sequence);
+    if (!WriteMessageWithTimeout(request, timeoutMs) || !ReadMessageWithTimeout(reply, bytesRead, timeoutMs) ||
+        !ValidateProcessMessage(reply, bytesRead, ProcessMessageKind::Response, targetMode_, expectedChildPid_, nonce_,
+                                sequence, true) ||
+        !IsResponseAllowed(command, static_cast<ProcessResponse>(reply.opcode))) {
+        connected_.store(false, std::memory_order_release);
+        CloseHandle(pipe_);
+        pipe_ = INVALID_HANDLE_VALUE;
+        LogWarn("[IPC] %s command channel broke; a fresh child is required", ModeName(targetMode_));
         return false;
     }
-
-    return readResult ? true : false;
+    if (response)
+        *response = static_cast<ProcessResponse>(reply.opcode);
+    return true;
 }
 
-// ============================================================================
-// Process Spawning Utilities
-// ============================================================================
-
-HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath) {
-    // Get our own executable path
-    char exePath[MAX_PATH];
-    GetModuleFileNameA(NULL, exePath, MAX_PATH);
-
-    // Build command line with mode flag
-    char cmdLine[MAX_PATH * 2];
-    const char* modeStr = "controller";
-    if (mode == ProcessMode::Inject)
-        modeStr = "inject";
-    else if (mode == ProcessMode::Media)
-        modeStr = "media";
-    else if (mode == ProcessMode::Limiter)
-        modeStr = "limiter";
-    else if (mode == ProcessMode::Logger)
-        modeStr = "logger";
-    else if (mode == ProcessMode::Sensors)
-        modeStr = "sensors";
-
-    if (configPath && configPath[0]) {
-        snprintf(cmdLine, sizeof(cmdLine), "\"%s\" --mode=%s --config=\"%s\"", exePath, modeStr, configPath);
-    } else {
-        snprintf(cmdLine, sizeof(cmdLine), "\"%s\" --mode=%s", exePath, modeStr);
+HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCClient* ipcClient) {
+    if (IsIpcMode(mode) && !ipcClient) {
+        LogError("[Spawn] Missing IPC client for %s child", ModeName(mode));
+        return nullptr;
     }
 
-    // Logger and Sensors need to know the controller PID for shutdown signaling
-    if (mode == ProcessMode::Logger || mode == ProcessMode::Sensors) {
-        size_t len = strlen(cmdLine);
-        snprintf(cmdLine + len, sizeof(cmdLine) - len, " --parent-pid=%u", GetCurrentProcessId());
+    std::wstring executablePath(32768, L'\0');
+    const DWORD executableLength =
+        GetModuleFileNameW(nullptr, executablePath.data(), static_cast<DWORD>(executablePath.size()));
+    if (executableLength == 0 || executableLength >= executablePath.size())
+        return nullptr;
+    executablePath.resize(executableLength);
+
+    HANDLE childEndpoint = INVALID_HANDLE_VALUE;
+    std::wstring ipcArguments;
+    std::vector<HANDLE> inheritedHandles;
+    if (ipcClient) {
+        if (!ipcClient->PrepareChildEndpoint(childEndpoint, ipcArguments)) {
+            LogError("[Spawn] Failed to create inherited %s IPC endpoint", ModeName(mode));
+            return nullptr;
+        }
+        inheritedHandles.push_back(childEndpoint);
     }
 
-    // Pass session directory name so children log into the same session folder
-    if (!g_SessionDirName.empty()) {
-        size_t len = strlen(cmdLine);
-        snprintf(cmdLine + len, sizeof(cmdLine) - len, " --session-dir=%s", g_SessionDirName.c_str());
+    std::wstring commandLine = QuoteCommandLineArgument(executablePath) + L" --mode=" + ModeNameWide(mode);
+    if (configPath && *configPath) {
+        const std::wstring wideConfig = Utf8ToWide(configPath);
+        if (wideConfig.empty()) {
+            if (childEndpoint != INVALID_HANDLE_VALUE)
+                CloseHandle(childEndpoint);
+            if (ipcClient)
+                ipcClient->Disconnect();
+            return nullptr;
+        }
+        commandLine += L" --config=" + QuoteCommandLineArgument(wideConfig);
+    }
+    if (mode == ProcessMode::Logger || mode == ProcessMode::Sensors)
+        commandLine += L" --parent-pid=" + std::to_wstring(GetCurrentProcessId());
+    if (!g_SessionDirName.empty())
+        commandLine += L" --session-dir=" + QuoteCommandLineArgument(Utf8ToWide(g_SessionDirName.c_str()));
+    if (!ipcArguments.empty())
+        commandLine += L" " + ipcArguments;
+
+    ce::process::RestrictedChildProcess child;
+    DWORD error = ERROR_SUCCESS;
+    const bool launched = ce::process::LaunchRestrictedChildProcess(
+        executablePath, commandLine, std::filesystem::path(executablePath).parent_path().wstring(), inheritedHandles,
+        CREATE_NO_WINDOW, child, error);
+    if (childEndpoint != INVALID_HANDLE_VALUE) {
+        SetHandleInformation(childEndpoint, HANDLE_FLAG_INHERIT, 0);
+        CloseHandle(childEndpoint);
+    }
+    if (!launched) {
+        if (ipcClient)
+            ipcClient->Disconnect();
+        LogError("[Spawn] Failed to create %s process: %lu", ModeName(mode), static_cast<unsigned long>(error));
+        return nullptr;
     }
 
-    STARTUPINFOA si = {};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi = {};
-
-    if (!CreateProcessA(NULL, cmdLine, NULL, NULL, FALSE,
-                        CREATE_NO_WINDOW,  // Hidden window for child processes
-                        NULL, NULL, &si, &pi)) {
-        LogError("[Spawn] Failed to create %s process: %d", modeStr, GetLastError());
-        return NULL;
+    if (ipcClient && !ipcClient->CompleteChildSpawn(child.processId, 5000)) {
+        ipcClient->Disconnect();
+        if (WaitForSingleObject(child.processHandle, 2000) != WAIT_OBJECT_0)
+            TerminateProcess(child.processHandle, ERROR_ACCESS_DENIED);
+        LogError("[Spawn] %s child failed inherited-channel authentication", ModeName(mode));
+        return nullptr;
     }
 
-    LogInfo("[Spawn] Launched %s process (PID: %d)", modeStr, pi.dwProcessId);
-    CloseHandle(pi.hThread);
-    return pi.hProcess;
+    LogInfo("[Spawn] Launched %s process (PID: %lu)", ModeName(mode), static_cast<unsigned long>(child.processId));
+    HANDLE process = child.processHandle;
+    child.processHandle = nullptr;
+    return process;
 }
 
-bool WaitForChildExit(HANDLE hProcess, DWORD timeoutMs) {
-    if (!hProcess)
-        return true;
-    DWORD result = WaitForSingleObject(hProcess, timeoutMs);
-    return (result == WAIT_OBJECT_0);
+bool WaitForChildExit(HANDLE process, DWORD timeoutMs) {
+    return !process || WaitForSingleObject(process, timeoutMs) == WAIT_OBJECT_0;
 }

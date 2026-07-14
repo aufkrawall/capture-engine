@@ -3,6 +3,7 @@
 #include "../common/frame_timing_utils.h"
 #include "../common/path_utils.h"
 #include "../common/raii_helpers.h"
+#include "../common/reserved_capture_output.h"
 #include "../common/shared_defs.h"
 #include "audio_time_utils.h"  // For ce::audio::ParseSampleRateOr
 #include "mediaengine.h"
@@ -887,106 +888,17 @@ static HANDLE NormalizeSourceHandleForWow64(HANDLE handle, uint32_t sourcePid) {
 #endif
 }
 
-// Helper to generate robust output filename
-static fs::path GetExecutableDirectory() {
-    wchar_t modulePath[MAX_PATH] = {};
-    DWORD len = GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) {
-        std::error_code ec;
-        fs::path cwd = fs::current_path(ec);
-        return ec ? fs::path(".") : cwd;
+static ce::capture_output::ReservedCaptureOutput ReserveOutputFilename(const VideoConfig& config) {
+    const fs::path exeDir = ce::capture_output::GetExecutableDirectory();
+    const fs::path outDir = ce::capture_output::ResolveCaptureDirectory(config.outputDir, exeDir);
+    const std::wstring extension(config.container.begin(), config.container.end());
+    auto reservation = ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture", extension);
+    if (reservation) {
+        DLL_Log("[VideoEncoder] Reserved output file: %s", reservation.Utf8Path().c_str());
+    } else {
+        DLL_Log("[VideoEncoder] ERROR: Could not reserve a collision-safe output in: %s", outDir.string().c_str());
     }
-
-    fs::path exePath(modulePath);
-    if (exePath.has_parent_path()) {
-        return exePath.parent_path();
-    }
-
-    std::error_code ec;
-    fs::path cwd = fs::current_path(ec);
-    return ec ? fs::path(".") : cwd;
-}
-
-static bool IsDirectoryWritable(const fs::path& dir) {
-    DWORD attrs = GetFileAttributesW(dir.wstring().c_str());
-    if (attrs == INVALID_FILE_ATTRIBUTES) {
-        return false;
-    }
-    if (!(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
-        return false;
-    }
-    return true;
-}
-
-static fs::path ResolveFallbackDir(const fs::path& exeDir) {
-    fs::path fallbackDir = exeDir / "captures";
-    std::error_code ec;
-    if (!fs::exists(fallbackDir, ec)) {
-        fs::create_directories(fallbackDir, ec);
-    }
-    return fallbackDir;
-}
-
-static fs::path ResolveOutputDirectoryMappedDrive(const fs::path& outDir) {
-    const ce::path::MappedDriveResolution resolution = ce::path::ResolveMappedDrivePath(outDir);
-    if (resolution.changed) {
-        DLL_Log(
-            "[VideoEncoder] Resolved mapped output directory: %s -> %s (source=%s drive=%c: liveStatus=0x%08lX "
-            "registryStatus=0x%08lX)",
-            outDir.string().c_str(), resolution.path.string().c_str(),
-            ce::path::MappedDriveResolutionSourceName(resolution.source), static_cast<char>(resolution.driveLetter),
-            resolution.liveMappingStatus, resolution.registryStatus);
-        return resolution.path;
-    }
-    return outDir;
-}
-
-static std::string GenerateOutputFilename(const VideoConfig& config) {
-    const fs::path exeDir = GetExecutableDirectory();
-    const fs::path capturesDir = ResolveFallbackDir(exeDir);
-
-    // Respect output_dir when set. When left empty, write to captures subfolder.
-    fs::path outDir = config.outputDir.empty() ? capturesDir : fs::path(config.outputDir);
-    if (!config.outputDir.empty() && outDir.is_relative()) {
-        outDir = exeDir / outDir;
-    }
-    outDir = ResolveOutputDirectoryMappedDrive(outDir);
-
-    bool useFallback = false;
-
-    // Check if the configured directory is usable
-    std::error_code ec;
-    if (!fs::exists(outDir, ec)) {
-        if (!fs::create_directories(outDir, ec)) {
-            DLL_Log(
-                "[VideoEncoder] Failed to create output directory: %s (Error: "
-                "%d). Falling back to captures subfolder.",
-                outDir.string().c_str(), ec.value());
-            useFallback = true;
-        } else {
-            DLL_Log("[VideoEncoder] Created output directory: %s", outDir.string().c_str());
-        }
-    } else if (!IsDirectoryWritable(outDir)) {
-        DLL_Log("[VideoEncoder] Output directory not accessible: %s. Falling back to captures subfolder.",
-                outDir.string().c_str());
-        useFallback = true;
-    }
-
-    if (useFallback) {
-        outDir = capturesDir;
-    }
-
-    std::string filenameOnly = "capture_" + std::to_string(GetTickCount64()) + "." + config.container;
-    fs::path fullPath = outDir / filenameOnly;
-
-    // Handle Windows backslashes for FFmpeg
-    std::filesystem::path absPath = std::filesystem::absolute(fullPath, ec);
-    if (!ec) {
-        DLL_Log("[VideoEncoder] Output file: %s", absPath.string().c_str());
-        return absPath.string();
-    }
-    DLL_Log("[VideoEncoder] Output file: %s", fullPath.string().c_str());
-    return fullPath.string();
+    return reservation;
 }
 
 // RAII Wrapper for MediaEngine D3D11 Guard
@@ -1316,7 +1228,11 @@ bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fp
     av_log_set_level(AV_LOG_WARNING);
 
     DLL_Log("[VideoEncoder] Step 3: Creating output filename");
-    outputFilename = GenerateOutputFilename(config);
+    outputReservation = ReserveOutputFilename(config);
+    if (!outputReservation) {
+        return false;
+    }
+    outputFilename = outputReservation.Utf8Path();
     DLL_Log("[VideoEncoder] Initial output file candidate: %s", outputFilename.c_str());
 
     DLL_Log("[VideoEncoder] Step 4: Calling avformat_alloc_output_context2");
@@ -2678,7 +2594,11 @@ bool VideoEncoder::Start() {
     // If fmtCtx was freed by Stop(), recreate it for the new recording
     if (!fmtCtx) {
         // Generate new output filename using robust helper
-        outputFilename = GenerateOutputFilename(savedConfig);
+        outputReservation = ReserveOutputFilename(savedConfig);
+        if (!outputReservation) {
+            return false;
+        }
+        outputFilename = outputReservation.Utf8Path();
         DLL_Log("[VideoEncoder] Creating new format context for: %s", outputFilename.c_str());
 
         if (avformat_alloc_output_context2(&fmtCtx, nullptr, nullptr, outputFilename.c_str()) < 0) {
@@ -3098,6 +3018,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     if (!initDone || isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput) {
         const bool reinitializingActiveRecording = initDone;
         const std::string preservedOutputFilename = outputFilename;
+        auto preservedOutputReservation = std::move(outputReservation);
         if (reinitializingActiveRecording) {
             DLL_Log("[VideoEncoder] Format mode changed (hdr=%d->%d use10bit=%d->%d). Re-initializing...", currentIsHDR,
                     isHDR, currentUse10BitInput, wants10BitInput);
@@ -3116,6 +3037,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         }
         if (reinitializingActiveRecording) {
             if (!preservedOutputFilename.empty()) {
+                outputReservation = std::move(preservedOutputReservation);
                 outputFilename = preservedOutputFilename;
                 DLL_Log("[VideoEncoder] Preserving output filename across format mode re-init: %s",
                         outputFilename.c_str());
@@ -3166,6 +3088,11 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     if (!fileOpened) {
         DLL_Log("[VideoEncoder] Opening Output File: %s", outputFilename.c_str());
         if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
+            if (!outputReservation.ReleaseToWriter()) {
+                DLL_Log("[VideoEncoder] ERROR: Reserved output identity changed before mux open: %s",
+                        outputFilename.c_str());
+                return false;
+            }
             // Use 256KB buffer for better performance on slow storage (HDD/network)
             // Default is 32KB which causes many small writes
             int ret = avio_open2(&fmtCtx->pb, outputFilename.c_str(), AVIO_FLAG_WRITE, nullptr, nullptr);
@@ -3200,14 +3127,18 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         if (!ce::media::RequireMicrosecondMatroskaTimestampPrecision(fmtCtx)) {
             DLL_Log("[VideoEncoder] ERROR: Matroska timestamp_precision=1000 is required but unavailable");
             if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-                avio_closep(&fmtCtx->pb);
+                const int closeResult = avio_closep(&fmtCtx->pb);
+                if (closeResult < 0)
+                    DLL_Log("[VideoEncoder] ERROR: Failed to close rejected output: %d", closeResult);
             }
             return false;
         }
 
         if (!ValidateFormatContextForHeader(fmtCtx)) {
             if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-                avio_closep(&fmtCtx->pb);
+                const int closeResult = avio_closep(&fmtCtx->pb);
+                if (closeResult < 0)
+                    DLL_Log("[VideoEncoder] ERROR: Failed to close invalid output context: %d", closeResult);
             }
             return false;
         }
@@ -3217,6 +3148,11 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             char errbuf[256];
             av_strerror(ret, errbuf, sizeof(errbuf));
             DLL_Log("Failed to write header: %d (%s)", ret, errbuf);
+            if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
+                const int closeResult = avio_closep(&fmtCtx->pb);
+                if (closeResult < 0)
+                    DLL_Log("[VideoEncoder] ERROR: Failed to close output after header failure: %d", closeResult);
+            }
             return false;
         }
 
@@ -3232,7 +3168,9 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             if (fmtCtx->pb->error < 0) {
                 DLL_Log("Failed to flush header: %d", fmtCtx->pb->error);
                 if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-                    avio_closep(&fmtCtx->pb);
+                    const int closeResult = avio_closep(&fmtCtx->pb);
+                    if (closeResult < 0)
+                        DLL_Log("[VideoEncoder] ERROR: Failed to close output after flush failure: %d", closeResult);
                 }
                 return false;
             }
@@ -4120,6 +4058,7 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
     if (!initDone || isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput) {
         const bool reinitializingActiveRecording = initDone;
         const std::string preservedOutputFilename = outputFilename;
+        auto preservedOutputReservation = std::move(outputReservation);
         if (reinitializingActiveRecording) {
             DLL_Log("[VideoEncoder] WGC mode changed (fmt=%d hdr=%d->%d use10bit=%d->%d). Re-initializing...",
                     texDesc.Format, currentIsHDR, isHDR, currentUse10BitInput, wants10BitInput);
@@ -4142,6 +4081,7 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
         }
         if (reinitializingActiveRecording) {
             if (!preservedOutputFilename.empty()) {
+                outputReservation = std::move(preservedOutputReservation);
                 outputFilename = preservedOutputFilename;
                 DLL_Log("[VideoEncoder] Preserving output filename across WGC mode re-init: %s",
                         outputFilename.c_str());
@@ -4157,6 +4097,11 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
     if (!fileOpened) {
         DLL_Log("[VideoEncoder] Opening Output File: %s", outputFilename.c_str());
         if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
+            if (!outputReservation.ReleaseToWriter()) {
+                DLL_Log("[VideoEncoder] ERROR: Reserved output identity changed before WGC mux open: %s",
+                        outputFilename.c_str());
+                return false;
+            }
             int ret = avio_open(&fmtCtx->pb, outputFilename.c_str(), AVIO_FLAG_WRITE);
             if (ret < 0) {
                 DLL_Log("Failed to open output file: %d", ret);
@@ -4169,19 +4114,29 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
         if (!ce::media::RequireMicrosecondMatroskaTimestampPrecision(fmtCtx)) {
             DLL_Log("[VideoEncoder] ERROR: Matroska timestamp_precision=1000 is required but unavailable");
             if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-                avio_closep(&fmtCtx->pb);
+                const int closeResult = avio_closep(&fmtCtx->pb);
+                if (closeResult < 0)
+                    DLL_Log("[VideoEncoder] ERROR: Failed to close rejected WGC output: %d", closeResult);
             }
             return false;
         }
         if (!ValidateFormatContextForHeader(fmtCtx)) {
             if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-                avio_closep(&fmtCtx->pb);
+                const int closeResult = avio_closep(&fmtCtx->pb);
+                if (closeResult < 0)
+                    DLL_Log("[VideoEncoder] ERROR: Failed to close invalid WGC output context: %d", closeResult);
             }
             return false;
         }
 
-        if (avformat_write_header(fmtCtx, nullptr) < 0) {
-            DLL_Log("Failed to write header");
+        const int headerResult = avformat_write_header(fmtCtx, nullptr);
+        if (headerResult < 0) {
+            DLL_Log("Failed to write header: %d", headerResult);
+            if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
+                const int closeResult = avio_closep(&fmtCtx->pb);
+                if (closeResult < 0)
+                    DLL_Log("[VideoEncoder] ERROR: Failed to close WGC output after header failure: %d", closeResult);
+            }
             return false;
         }
         fileOpened = true;
@@ -5079,13 +5034,23 @@ void VideoEncoder::Stop() {
                                         lastEncoderOverloadTickMs.load(std::memory_order_relaxed) > 0,
                                         lastMuxOverloadTickMs.load(std::memory_order_relaxed) > 0);
             }
+            int closeResult = 0;
             if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-                avio_closep(&fmtCtx->pb);
+                closeResult = avio_closep(&fmtCtx->pb);
+                if (closeResult < 0) {
+                    DLL_Log("[VideoEncoder] Sync Stop: ERROR avio_closep failed: %d", closeResult);
+                }
             }
             fileOpened = false;
+            const bool published = trailerResult >= 0 && closeResult >= 0;
+            if (published) {
+                outputReservation.Publish();
+            } else {
+                outputReservation.CleanupOwnedFile();
+            }
             DLL_Log("[VideoEncoder] mux_closed file='%s' finalDurationUs=%lld", outputFilename.c_str(),
                     (long long)finalDurationUs);
-            if (finalDurationUs > 0) {
+            if (published && finalDurationUs > 0) {
                 RunPostMuxDurationProbeBounded(outputFilename, finalDurationUs);
             }
         }
@@ -6600,13 +6565,23 @@ void VideoEncoder::AsyncWriteLoop() {
                                             lastEncoderOverloadTickMs.load(std::memory_order_relaxed) > 0,
                                             lastMuxOverloadTickMs.load(std::memory_order_relaxed) > 0);
                 }
+                int closeResult = 0;
                 if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
-                    avio_closep(&fmtCtx->pb);
+                    closeResult = avio_closep(&fmtCtx->pb);
+                    if (closeResult < 0) {
+                        DLL_Log("[VideoEncoder] Async Finalize: ERROR avio_closep failed: %d", closeResult);
+                    }
                 }
                 fileOpened = false;
+                const bool published = trailerResult >= 0 && closeResult >= 0;
+                if (published) {
+                    outputReservation.Publish();
+                } else {
+                    outputReservation.CleanupOwnedFile();
+                }
                 DLL_Log("[VideoEncoder] mux_closed file='%s' finalDurationUs=%lld", outputFilename.c_str(),
                         (long long)finalDurationUs);
-                if (finalDurationUs > 0) {
+                if (published && finalDurationUs > 0) {
                     writerFinalizePhase.store(kWriterPhasePostMuxProbe, std::memory_order_release);
                     RunPostMuxDurationProbeBounded(outputFilename, finalDurationUs);
                 }

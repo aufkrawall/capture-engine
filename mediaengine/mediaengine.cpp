@@ -2,6 +2,7 @@
 #include "../common/capture_pipeline_policy.h"
 #include "../common/logging.h"
 #include "../common/path_utils.h"
+#include "../common/reserved_capture_output.h"
 #include "../common/shared_defs.h"
 #include "audio_capture.h"
 #include "audio_encoder.h"
@@ -349,11 +350,14 @@ public:
     bool audioOnly = false;
     AVFormatContext* audioOnlyFmtCtx = nullptr;
     std::string audioOnlyFilename;
+    ce::capture_output::ReservedCaptureOutput audioOnlyOutputReservation;
+    bool audioOnlyTrailerSucceeded = false;
     std::vector<AudioEncoder*> trackEncoders;  // All unique encoders for audio-only padding
 
     AppConfig config;
     std::recursive_mutex muxMutex;  // Must be recursive - WritePacket callback from EncodeFrame
     bool recording;
+    bool processLoopbackIntegrityFailureSignaled = false;
     bool timingModeFrozenForSession = false;
     bool sessionUseVfr = false;
     bool activeScreenGrab = false;
@@ -952,40 +956,45 @@ public:
     }
 
     void InitAudioOnlyMuxer(const AppConfig* config) {
-        namespace fs = std::filesystem;
-
-        fs::path outDir = config->video.outputDir.empty() ? fs::path(".") : fs::path(config->video.outputDir);
-        const ce::path::MappedDriveResolution resolution = ce::path::ResolveMappedDrivePath(outDir);
-        if (resolution.changed) {
-            DLL_Log(
-                "MediaEngine: Resolved mapped audio-only output directory: %s -> %s (source=%s drive=%c: "
-                "liveStatus=0x%08lX registryStatus=0x%08lX)",
-                outDir.string().c_str(), resolution.path.string().c_str(),
-                ce::path::MappedDriveResolutionSourceName(resolution.source), static_cast<char>(resolution.driveLetter),
-                resolution.liveMappingStatus, resolution.registryStatus);
-            outDir = resolution.path;
+        const std::filesystem::path exeDir = ce::capture_output::GetExecutableDirectory();
+        const std::filesystem::path outDir =
+            ce::capture_output::ResolveCaptureDirectory(config->video.outputDir, exeDir);
+        audioOnlyOutputReservation =
+            ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_audio", L"mka");
+        if (!audioOnlyOutputReservation) {
+            DLL_Log("MediaEngine: Failed to reserve collision-safe audio-only output in %s",
+                    outDir.string().c_str());
+            audioOnlyFmtCtx = nullptr;
+            return;
         }
-        std::error_code ec;
-        fs::create_directories(outDir, ec);
-        if (ec) {
-            DLL_Log("MediaEngine: Failed to create audio-only output directory: %s (Error: %d)",
-                    outDir.string().c_str(), ec.value());
-        }
-        audioOnlyFilename = (outDir / ("capture_audio_" + std::to_string(GetTickCount64()) + ".mka")).string();
+        audioOnlyFilename = audioOnlyOutputReservation.Utf8Path();
+        audioOnlyTrailerSucceeded = false;
         if (avformat_alloc_output_context2(&audioOnlyFmtCtx, nullptr, "matroska", audioOnlyFilename.c_str()) < 0) {
             DLL_Log("MediaEngine: Failed to create audio-only muxer");
             audioOnlyFmtCtx = nullptr;
+            audioOnlyOutputReservation.CleanupOwnedFile();
+            audioOnlyFilename.clear();
         }
     }
 
     void CleanupAudioOnlyMuxer() {
+        int closeResult = 0;
         if (audioOnlyFmtCtx) {
             if (audioOnlyFmtCtx->pb) {
-                avio_closep(&audioOnlyFmtCtx->pb);
+                closeResult = avio_closep(&audioOnlyFmtCtx->pb);
+                if (closeResult < 0) {
+                    DLL_Log("MediaEngine: Failed to close audio-only output: %d", closeResult);
+                }
             }
             avformat_free_context(audioOnlyFmtCtx);
             audioOnlyFmtCtx = nullptr;
         }
+        if (audioOnlyTrailerSucceeded && closeResult >= 0) {
+            audioOnlyOutputReservation.Publish();
+        } else {
+            audioOnlyOutputReservation.CleanupOwnedFile();
+        }
+        audioOnlyTrailerSucceeded = false;
         audioOnlyFilename.clear();
     }
 
@@ -1245,11 +1254,21 @@ public:
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         if (recording)
             return true;
+        processLoopbackIntegrityFailureSignaled = false;
+        if (sharedMemLayout) {
+            sharedMemLayout->runtimeState.recordingFailureCode.store(
+                static_cast<uint32_t>(RecordingFailureCode::None), std::memory_order_release);
+        }
 
         // Audio-only: open muxer, write header, skip video pipeline entirely
         if (audioOnly) {
             if (!audioOnlyFmtCtx) {
                 DLL_Log("MediaEngine: Audio-only muxer not initialized");
+                return false;
+            }
+            if (!audioOnlyOutputReservation.ReleaseToWriter()) {
+                DLL_Log("MediaEngine: Reserved audio-only output identity changed before mux open: %s",
+                        audioOnlyFilename.c_str());
                 return false;
             }
             if (avio_open(&audioOnlyFmtCtx->pb, audioOnlyFilename.c_str(), AVIO_FLAG_WRITE) < 0) {
@@ -1258,12 +1277,21 @@ public:
             }
             if (!ce::media::RequireMicrosecondMatroskaTimestampPrecision(audioOnlyFmtCtx)) {
                 DLL_Log("MediaEngine: Matroska timestamp_precision=1000 is required for audio-only output");
-                avio_closep(&audioOnlyFmtCtx->pb);
+                const int closeResult = avio_closep(&audioOnlyFmtCtx->pb);
+                if (closeResult < 0)
+                    DLL_Log("MediaEngine: Failed to close rejected audio-only output: %d", closeResult);
+                audioOnlyOutputReservation.CleanupOwnedFile();
                 return false;
             }
             AVDictionary* opts = nullptr;
-            if (avformat_write_header(audioOnlyFmtCtx, &opts) < 0) {
-                DLL_Log("MediaEngine: Failed to write audio-only header");
+            const int headerResult = avformat_write_header(audioOnlyFmtCtx, &opts);
+            av_dict_free(&opts);
+            if (headerResult < 0) {
+                DLL_Log("MediaEngine: Failed to write audio-only header: %d", headerResult);
+                const int closeResult = avio_closep(&audioOnlyFmtCtx->pb);
+                if (closeResult < 0)
+                    DLL_Log("MediaEngine: Failed to close audio-only output after header failure: %d", closeResult);
+                audioOnlyOutputReservation.CleanupOwnedFile();
                 return false;
             }
             DLL_Log("MediaEngine: Audio-only recording writing to %s", audioOnlyFilename.c_str());
@@ -1358,7 +1386,7 @@ public:
                         }
                     }
                     if (audioOnlyFmtCtx) {
-                        av_write_trailer(audioOnlyFmtCtx);
+                        audioOnlyTrailerSucceeded = av_write_trailer(audioOnlyFmtCtx) >= 0;
                         CleanupAudioOnlyMuxer();
                     }
                     DLL_Log("MediaEngine: Audio-only recording start failed because the audio worker could not start");
@@ -1718,7 +1746,10 @@ public:
                     src.syncResampler->Reset();
             }
             if (audioOnlyFmtCtx) {
-                av_write_trailer(audioOnlyFmtCtx);
+                audioOnlyTrailerSucceeded = av_write_trailer(audioOnlyFmtCtx) >= 0;
+                if (!audioOnlyTrailerSucceeded) {
+                    DLL_Log("[StopAudio] ERROR: Audio-only trailer write failed");
+                }
                 DLL_Log("[StopAudio] Audio-only recording finalized: %s", audioOnlyFilename.c_str());
                 CleanupAudioOnlyMuxer();
             }
@@ -5418,6 +5449,23 @@ private:
                         // Poll the one physical capture that owns this route group.
                         if (src.appCapture) {
                             gotPacket = src.appCapture->GetNextPacket(packet);
+                            if (!gotPacket && src.appCapture->HasIntegrityFailure() &&
+                                !processLoopbackIntegrityFailureSignaled) {
+                                processLoopbackIntegrityFailureSignaled = true;
+                                const uint32_t status = src.appCapture->GetTransportStatus();
+                                DLL_Log(
+                                    "[AudioLoop] FATAL: app-audio transport integrity failure src=%zu track=%d "
+                                    "status=%u; requesting a failed recording stop",
+                                    srcIdx, src.track, status);
+                                if (sharedMemLayout) {
+                                    sharedMemLayout->runtimeState.recordingFailureCode.store(
+                                        static_cast<uint32_t>(
+                                            RecordingFailureCode::ProcessLoopbackTransportIntegrity),
+                                        std::memory_order_release);
+                                    sharedMemLayout->runtimeState.cmdStopRecording.store(true,
+                                                                                       std::memory_order_release);
+                                }
+                            }
                         } else if (src.capture) {
                             gotPacket = src.capture->GetNextPacket(packet);
                         }

@@ -389,6 +389,11 @@ int LimiterProcessMain(const AppConfig& config) {
                     break;
             }
         }
+        if (ipc.HasFatalDisconnect()) {
+            LogWarn("[Limiter] Controller IPC disconnected; exiting for a clean respawn");
+            g_Running = false;
+            break;
+        }
 
         if (!shm) {
             Sleep(100);

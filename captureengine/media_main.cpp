@@ -11165,6 +11165,8 @@ void StartRecording(const AppConfig& config) {
         if (g_pSharedMem) {
             StoreRelease(g_pSharedMem->runtimeState.cmdStartRecording, false);
             StoreRelease(g_pSharedMem->runtimeState.cmdStopRecording, false);
+            StoreRelease(g_pSharedMem->runtimeState.recordingFailureCode,
+                         static_cast<uint32_t>(RecordingFailureCode::None));
             SetRecordingVisibleState(false);
         }
 
@@ -11207,6 +11209,8 @@ void StartRecording(const AppConfig& config) {
     if (g_pSharedMem) {
         StoreRelease(g_pSharedMem->runtimeState.cmdStartRecording, false);
         StoreRelease(g_pSharedMem->runtimeState.cmdStopRecording, false);
+        StoreRelease(g_pSharedMem->runtimeState.recordingFailureCode,
+                     static_cast<uint32_t>(RecordingFailureCode::None));
         SetRecordingVisibleState(false);
     }
 
@@ -12321,6 +12325,13 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;
             }
+        }
+        if (ipc.HasFatalDisconnect()) {
+            LogWarn("[Media] Controller IPC disconnected; stopping for a clean respawn");
+            if (g_Recording)
+                StopRecording();
+            g_Running = false;
+            break;
         }
 
         if (g_pSharedMem) {

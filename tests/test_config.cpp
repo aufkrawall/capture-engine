@@ -541,7 +541,48 @@ TEST_F(ConfigTest, WhitelistParsing) {
 }
 
 TEST_F(ConfigTest, InvalidValuesFallBack) {
-    // Test robustness if needed
+    WriteConfig(
+        "[General]\n"
+        "wgc_smoothness_buffer_max_ms=300\n"
+        "wgc_smoothness_floor_ms=3oops\n"
+        "[Performance]\n"
+        "gpu_priority=8\n"
+        "[Graphics]\n"
+        "backbuffer_count=7\n"
+        "mip_bias=nan\n"
+        "[FpsLimiter]\n"
+        "capture_sync_multiplier=0\n"
+        "general_fps=1001\n"
+        "[Overlay]\n"
+        "hdr_paper_white=nan\n"
+        "[Video]\n"
+        "fps=0\n"
+        "b_frames=5\n"
+        "[MediaFoundation]\n"
+        "quality=101\n"
+        "[Scaling]\n"
+        "sharpness=-1\n"
+        "[AppAudio.1]\n"
+        "enabled=true\n"
+        "process_id=1oops\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.video.gpuPriority, 7);
+    EXPECT_EQ(config.graphics.backbufferCount, -1);
+    EXPECT_EQ(config.graphics.mipBias, "default");
+    EXPECT_EQ(config.fpsLimiter.captureSyncMultiplier, 1);
+    EXPECT_EQ(config.fpsLimiter.generalFps, 120);
+    EXPECT_FLOAT_EQ(config.overlay.hdrPaperWhite, 0.0f);
+    EXPECT_EQ(config.video.fps, 120);
+    EXPECT_EQ(config.video.bFrames, 0);
+    EXPECT_EQ(config.video.mfQuality, 80);
+    EXPECT_EQ(config.video.scaling.sharpness, 100);
+    EXPECT_TRUE(config.wgcSmoothnessFloorAuto);
+    EXPECT_EQ(config.wgcSmoothnessFloorMs, 0u);
+    ASSERT_EQ(config.audioSources.size(), 1u);
+    EXPECT_EQ(config.audioSources.front().sourceType, AudioConfig::SystemAudio);
 }
 
 TEST_F(ConfigTest, ParseGraphicsOverrideOptions) {

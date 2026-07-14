@@ -31,6 +31,8 @@ public:
     uint64_t GetQueueOverrunPacketCount() const;
     uint64_t GetQueueOverrunFrameCount() const;
     uint64_t GetWorkerRestartCount() const;
+    bool HasIntegrityFailure() const;
+    uint32_t GetTransportStatus() const;
 
     void SetRequestedFormat(int sampleRate, int channels, uint32_t channelMask);
     bool IsCapturing() const;
@@ -51,6 +53,7 @@ private:
     void RetireActiveWorkerLocked(bool unexpectedExit, DWORD exitCode);
     void CleanupDrainedWorkersLocked();
     void AccumulateAndDestroyWorkerLocked(std::unique_ptr<WorkerInstance> worker);
+    void HandleIntegrityFailureLocked(WorkerInstance& worker);
     static std::wstring QuoteCommandArgument(const std::wstring& value);
     static std::wstring Utf8ToWide(const std::string& value);
 
@@ -66,6 +69,8 @@ private:
     uint64_t accumulatedDiagnosticOverruns_ = 0;
     bool desiredRunning_ = false;
     bool restartDesired_ = false;
+    bool integrityFailure_ = false;
+    uint32_t fatalTransportStatus_ = 0;
     bool targetByName_ = false;
     DWORD targetProcessId_ = 0;
     std::string targetProcessName_;

@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-14 (source-built FFmpeg dependency provenance and PE closure checks; corrected GTA post-FSR normal-return/PostSL queue authority, FSR-FG protected-create proxy/owner-queue recovery and protected-startup proxy-backbuffer routing, max-rate variable-input WGC CFR, polling-first/first-packet-qualified process loopback with post-restart tree-growth reattachment and terminal epoch-tail draining, transactional WGC/DXGI encoder prewarm and delayed-debt pruning, exact codec-decoded endpoints, disposable process-loopback lifecycle, native AAC NMR configuration, cursor/content timeline alignment, and mixed-DPI/SDR/HDR composition; see frame-generation/guardrails.md, multi-audio-capture.md, cfr-capture-sync.md, build.py.md, wgc-capture.md, and log/recent.md)
+Last cross-checked: 2026-07-15 (generation-bound screenshot publication, collision-safe capture outputs, restricted process IPC, variable-length process-loopback transport, source-built libaom closure, strict config boundaries, and existing graphics/audio state; see screenshots.md, recording-output-paths.md, process-ipc.md, multi-audio-capture.md, build.py.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -37,7 +37,11 @@ Primary sources:
 - `codestyle.md`
   - Style/tooling rules, the no-whole-file-in-place-formatter constraint for existing sources, Python tooling config, and common tree conventions. Last verified 2026-07-12.
 - `build.py.md`
-  - Supported `build.py` flags, interactions, FFmpeg configuration/patch fingerprinting, NMR-safe codec flags, environment variables, operational notes, and MinGW cross-compile pitfalls. Last verified 2026-07-14.
+  - Supported `build.py` flags, source-built dependency closure, PE verification, sanitizer/FP/CPU policy, FFmpeg configuration/patch fingerprinting, environment variables, operational notes, and MinGW cross-compile pitfalls. Last verified 2026-07-15.
+- `screenshots.md`
+  - Shared ABI 32 screenshot requests, raw payload v2, managed hook worker, strict payload validation, PNG/10-bit 4:4:4 AVIF encoding, color conversion, and atomic publication. Last verified 2026-07-15.
+- `process-ipc.md`
+  - Restricted handle-list child launcher, private per-spawn controller channels, PID/nonce startup identity, exact versioned messages, and malformed-message rejection. Last verified 2026-07-15.
 - `repo-map.md`
   - Top-level repo layout and subsystem ownership.
 - `d3d9-capture.md`
@@ -71,7 +75,7 @@ Primary sources:
 - `performance-priority.md`
   - `[Performance]` priorities, adapter-aware HAGS auto resolution, D3D11 priority persistence/readback, capture/encoder MMCSS QoS, and D3D12 queue constraints. Last verified 2026-07-12. Stale-risk: medium.
 - `recording-output-paths.md`
-  - MediaEngine recording output filename/directory behavior, including elevated-process mapped-drive handling by rewriting persistent mapped drive letters to UNC via `WNetGetConnectionW` or `HKCU\Network\<drive>\RemotePath`. Last verified 2026-06-30. Stale-risk: medium.
+  - Shared collision-safe video/audio/screenshot output reservation, identity-owned cleanup, atomic screenshot publication, executable-relative/default paths, and elevated mapped-drive handling. Last verified 2026-07-15. Stale-risk: low.
 - `log.md`
   - Stub pointing to `log/recent.md` (recent activity) and `log/archive-YYYY-Www*.md` (weekly archives).
 

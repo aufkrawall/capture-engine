@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <limits>
 #include <mutex>
 #include <string>
 
@@ -49,7 +50,12 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(
     const HANDLE mappingHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(mappingHandleValue));
     const HANDLE packetEvent = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(packetEventValue));
     const HANDLE stopEvent = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(stopEventValue));
-    void* mapping = MapViewOfFile(mappingHandle, FILE_MAP_ALL_ACCESS, 0, 0, ce::process_loopback::MappingBytes());
+    const uint64_t mappingBytes =
+        ce::process_loopback::MappingBytes(static_cast<uint32_t>(sampleRate), static_cast<uint32_t>(channels), 32);
+    if (mappingBytes == 0 || mappingBytes > std::numeric_limits<SIZE_T>::max()) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    void* mapping = MapViewOfFile(mappingHandle, FILE_MAP_ALL_ACCESS, 0, 0, static_cast<SIZE_T>(mappingBytes));
     if (!mapping || !ce::process_loopback::Validate(mapping, workerGeneration)) {
         if (mapping) {
             UnmapViewOfFile(mapping);
@@ -64,7 +70,8 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(
                               std::memory_order_release);
     header->heartbeatTick.store(GetTickCount64(), std::memory_order_release);
 
-    WorkerLogRelay relay{mapping};
+    WorkerLogRelay relay;
+    relay.mapping = mapping;
     g_WorkerLogRelay.store(&relay, std::memory_order_release);
     MediaEngine_SetLogCallback(&RelayWorkerLog);
 
@@ -107,7 +114,7 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(
                         header->workerState.store(static_cast<uint32_t>(ce::process_loopback::WorkerState::Failed),
                                                   std::memory_order_release);
                         RelayWorkerLog(
-                            "[Worker] Shared packet ring overrun; stopping instead of corrupting ordered audio");
+                            "[Worker] Shared transport integrity failure; stopping without a silent helper restart");
                         exitCode = ERROR_BUFFER_OVERFLOW;
                         stopping = true;
                         break;

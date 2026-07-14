@@ -36,6 +36,7 @@
 #include "../common/overlay_compat.h"
 #include "../common/overlay_metrics_publisher.h"
 #include "../common/performance_metrics.h"
+#include "../common/screenshot_hook.h"
 #include "../common/streamline_compat.h"
 #include "../common/streamline_runtime_policy.h"
 
@@ -43,11 +44,6 @@
 #include "../common/freeze_watchdog.h"
 #include "../common/perf_logger.h"
 
-// Forward declarations for screenshot functions
-bool SaveDX12TextureAsBMP(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* backBuffer,
-                          const char* outputPath);
-bool SaveDX12TextureAsHDR(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* backBuffer, bool isPQ,
-                          const char* outputPath);
 static bool IsActualFrameGenerationActive();
 static bool IsStreamlineLoaded();
 static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativeStreamlineRuntimeQueue,
@@ -3613,43 +3609,24 @@ static bool ShouldUseConfirmedPostSLForOverlayIncludedWork(const OverlayConfig& 
            g_PostSLConfirmedRendering.load(std::memory_order_acquire);
 }
 
-static void CompleteRequestedDX12Screenshot(SharedMemoryLayout* shm) {
-    if (!shm)
-        return;
-
-    shm->runtimeState.cmdTakeScreenshot.store(false, std::memory_order_release);
-    shm->runtimeState.ackScreenshotTaken.store(true, std::memory_order_release);
-    shm->runtimeState.notificationType.store(1, std::memory_order_release);
-    shm->runtimeState.notificationExpiry.store(GetTickCount64() + 3000ULL, std::memory_order_release);
-}
-
 static void CaptureRequestedDX12Screenshot(IDXGISwapChain3* sc3, SharedMemoryLayout* shm,
-                                           ID3D12CommandQueue* queueOverride = nullptr) {
-    if (!sc3 || !shm)
+                                           uint64_t requestId, ID3D12CommandQueue* queueOverride = nullptr) {
+    if (!sc3 || !shm || requestId == 0)
         return;
 
+    bool queued = false;
     ID3D12Device* dx12Device = g_Device.load();
     ID3D12CommandQueue* dx12Queue = queueOverride ? queueOverride : g_CommandQueue.load();
     if (dx12Device && dx12Queue) {
         UINT bbIdx = sc3->GetCurrentBackBufferIndex();
         ID3D12Resource* backBuffer = nullptr;
         if (SUCCEEDED(sc3->GetBuffer(bbIdx, IID_PPV_ARGS(&backBuffer)))) {
-            D3D12_RESOURCE_DESC desc = backBuffer->GetDesc();
-            bool isHDR =
-                (desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM || desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
-            if (isHDR) {
-                bool isPQ = (desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
-                std::string rawPath(shm->runtimeState.screenshotPath);
-                rawPath += ".raw";
-                SaveDX12TextureAsHDR(dx12Device, dx12Queue, backBuffer, isPQ, rawPath.c_str());
-            } else {
-                SaveDX12TextureAsBMP(dx12Device, dx12Queue, backBuffer, shm->runtimeState.screenshotPath);
-            }
+            queued = SaveDX12TextureAsScreenshotRaw(dx12Device, dx12Queue, backBuffer, shm, requestId);
             backBuffer->Release();
         }
     }
-
-    CompleteRequestedDX12Screenshot(shm);
+    if (!queued)
+        CompleteScreenshotRequest(shm, requestId, ScreenshotRequestStatus::Failed, ERROR_READ_FAULT);
 }
 
 static void PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm,
@@ -14744,9 +14721,10 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             postSLOverlayCfg.captureIncludeOverlay) {
             PublishDX12CapturedFrame(pSwapChain, postSLShm, submittedQueue, true, bufIdx);
         }
-        if (postSLShm && postSLShm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire) &&
-            postSLOverlayCfg.showOverlay && postSLOverlayCfg.screenshotIncludeOverlay) {
-            CaptureRequestedDX12Screenshot(sc3, postSLShm, submittedQueue);
+        const uint64_t postSLScreenshotRequestId = GetPendingScreenshotRequestId(postSLShm);
+        if (postSLScreenshotRequestId != 0 && postSLOverlayCfg.showOverlay &&
+            postSLOverlayCfg.screenshotIncludeOverlay) {
+            CaptureRequestedDX12Screenshot(sc3, postSLShm, postSLScreenshotRequestId, submittedQueue);
         }
     }
 
@@ -20782,16 +20760,16 @@ void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain) {
     }
     SharedMemoryLayout* screenshotShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     OverlayConfig screenshotOverlayCfg = GetActiveDX12OverlayConfig(screenshotShm);
-    const bool screenshotRequested =
-        screenshotShm && screenshotShm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire);
+    const uint64_t screenshotRequestId = GetPendingScreenshotRequestId(screenshotShm);
+    const bool screenshotRequested = screenshotRequestId != 0;
     const bool screenshotWantsOverlay =
         screenshotRequested && screenshotOverlayCfg.showOverlay && screenshotOverlayCfg.screenshotIncludeOverlay;
     if (screenshotRequested && !screenshotWantsOverlay) {
-        CaptureRequestedDX12Screenshot(sc3, screenshotShm);
+        CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
     }
     ProcessFrame(sc3, processCapture);
     if (screenshotWantsOverlay && !ShouldUseConfirmedPostSLForOverlayIncludedWork(screenshotOverlayCfg)) {
-        CaptureRequestedDX12Screenshot(sc3, screenshotShm);
+        CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
     }
     sc3->Release();
 }
@@ -21259,14 +21237,14 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
 
     SharedMemoryLayout* screenshotShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     OverlayConfig screenshotOverlayCfg = GetActiveDX12OverlayConfig(screenshotShm);
-    const bool screenshotRequested =
-        screenshotShm && screenshotShm->runtimeState.cmdTakeScreenshot.load(std::memory_order_acquire);
+    const uint64_t screenshotRequestId = GetPendingScreenshotRequestId(screenshotShm);
+    const bool screenshotRequested = screenshotRequestId != 0;
     const bool screenshotWantsOverlay =
         screenshotRequested && screenshotOverlayCfg.showOverlay && screenshotOverlayCfg.screenshotIncludeOverlay;
     const bool screenshotUsePostSL =
         screenshotWantsOverlay && ShouldUseConfirmedPostSLForOverlayIncludedWork(screenshotOverlayCfg);
     if (screenshotRequested && !screenshotWantsOverlay) {
-        CaptureRequestedDX12Screenshot(sc3, screenshotShm);
+        CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
     }
 
     // For interpolated frames, only render overlay (no capture processing) since
@@ -21274,7 +21252,7 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     ProcessFrame(sc3, processCapture);
 
     if (screenshotWantsOverlay && !screenshotUsePostSL) {
-        CaptureRequestedDX12Screenshot(sc3, screenshotShm);
+        CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
     }
 
     sc3->Release();

@@ -5,9 +5,11 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 #include "../common/logging.h"
 #include "../common/shared_defs.h"
+#include "../common/strict_integer_parse.h"
 
 struct LoggerSession {
     HANDLE hMap;
@@ -38,8 +40,16 @@ int LoggerProcessMain(const AppConfig& config) {
     uint32_t controllerPid = 0;
     const char* cmdLine = GetCommandLineA();
     const char* pidArg = strstr(cmdLine, "--parent-pid=");
-    if (pidArg)
-        controllerPid = (uint32_t)atoi(pidArg + 13);
+    if (pidArg) {
+        const char* value = pidArg + 13;
+        const char* end = value;
+        while (*end >= '0' && *end <= '9')
+            ++end;
+        if ((*end == '\0' || *end == ' ' || *end == '\t') &&
+            !ce::TryParseUInt32(std::string_view(value, static_cast<size_t>(end - value)), controllerPid)) {
+            controllerPid = 0;
+        }
+    }
 
     // Create/open shutdown event keyed to controller PID
     HANDLE hShutdownEvent = INVALID_HANDLE_VALUE;

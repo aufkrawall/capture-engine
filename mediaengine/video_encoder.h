@@ -16,6 +16,7 @@
 #include <vector>
 #include "../common/config.h"
 #include "../common/cursor_capture_state.h"
+#include "../common/reserved_capture_output.h"
 #include "../common/shared_defs.h"
 #include "mux_invariants.h"
 
@@ -212,6 +213,7 @@ private:
     uint64_t gpuPriorityHealthySinceMs = 0;
     std::unique_ptr<CursorRenderer> cursorRenderer;  // GPU cursor compositing
     std::string outputFilename;
+    ce::capture_output::ReservedCaptureOutput outputReservation;
 
     // Audio stream support (deferred creation after video stream)
     // Single source backward compatibility

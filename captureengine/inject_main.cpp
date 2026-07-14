@@ -572,6 +572,11 @@ int InjectProcessMain(const AppConfig& config) {
                 }
             }
         }
+        if (ipc.HasFatalDisconnect()) {
+            LogWarn("[Inject] Controller IPC disconnected; exiting for a clean respawn");
+            g_Running = false;
+            break;
+        }
 
         // Monitor sourcePid for config reloads (CBT hook support)
         static uint32_t lastSourcePid = 0;

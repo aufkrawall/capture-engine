@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <vector>
 
+struct SharedMemoryLayout;
+
 // Reentrancy guard shared with other hooks
 extern thread_local bool g_InPresentHook;
 
@@ -333,6 +335,6 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
                   const VkSemaphore* waitSemaphores, uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore);
 VkSemaphore GetCaptureSemaphore(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex);
 
-void TakeVulkanScreenshot(struct DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage, uint32_t width,
-                          uint32_t height, VkFormat format, const VkSemaphore* waitSemaphores,
-                          uint32_t waitSemaphoreCount, const char* outputPath);
+bool TakeVulkanScreenshot(struct DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage,
+                          uint32_t width, uint32_t height, VkFormat format, const VkSemaphore* waitSemaphores,
+                          uint32_t waitSemaphoreCount, SharedMemoryLayout* sharedMemory, uint64_t requestId);

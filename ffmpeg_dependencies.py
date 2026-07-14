@@ -27,7 +27,9 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
+import stat
 import subprocess
 import urllib.request
 import urllib.parse
@@ -38,8 +40,26 @@ CommandRunner = Callable[..., Any]
 Logger = Callable[[str], None]
 
 
+DEPENDENCY_BUILD_CONFIGURATION_VERSION = 2
+DEPENDENCY_COMPILE_FLAGS = (
+    "-march=x86-64 -mtune=generic -mguard=cf -ffunction-sections -fdata-sections"
+)
+DEPENDENCY_LINK_FLAGS = "-Wl,--gc-sections -Wl,--guard-cf"
+DEPENDENCY_BUILD_POLICY_MARKER = "# captureproject source-dependency build policy"
+
+
 class DependencyBuildError(RuntimeError):
     """Raised when a pinned FFmpeg dependency cannot be source-built safely."""
+
+
+def remove_tree(path: str) -> None:
+    """Remove an extracted package tree, including read-only Git objects."""
+
+    def make_writable_and_retry(function: Callable[..., Any], entry: str, _: Any) -> None:
+        os.chmod(entry, stat.S_IREAD | stat.S_IWRITE)
+        function(entry)
+
+    shutil.rmtree(path, onerror=make_writable_and_retry)
 
 
 def load_dependency_manifest(manifest_path: str) -> Dict[str, Any]:
@@ -93,8 +113,73 @@ def load_dependency_manifest(manifest_path: str) -> Dict[str, Any]:
 
 
 def dependency_manifest_fingerprint(manifest_path: str) -> str:
+    """Fingerprint provenance and project-controlled dependency build policy."""
+    digest = hashlib.sha256()
     with open(manifest_path, "rb") as manifest_file:
-        return hashlib.sha256(manifest_file.read()).hexdigest()
+        digest.update(manifest_file.read())
+    digest.update(b"\0captureproject-dependency-build-policy\0")
+    digest.update(
+        json.dumps(
+            {
+                "configuration_version": DEPENDENCY_BUILD_CONFIGURATION_VERSION,
+                "compile_flags": DEPENDENCY_COMPILE_FLAGS,
+                "link_flags": DEPENDENCY_LINK_FLAGS,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    return digest.hexdigest()
+
+
+def inject_dependency_build_policy(pkgbuild_path: str, prefix: str, msys_lib: str) -> None:
+    """Append policy after makepkg's config has replaced the caller's flags."""
+    with open(pkgbuild_path, "r", encoding="utf-8") as pkgbuild_file:
+        existing = pkgbuild_file.read()
+    if DEPENDENCY_BUILD_POLICY_MARKER in existing:
+        raise DependencyBuildError(f"Dependency PKGBUILD already contains the project build policy: {pkgbuild_path}")
+
+    prefix_value = shlex.quote(prefix)
+    msys_lib_value = shlex.quote(msys_lib)
+    policy = f"""
+
+{DEPENDENCY_BUILD_POLICY_MARKER}
+_captureproject_prefix={prefix_value}
+_captureproject_msys_lib={msys_lib_value}
+CPPFLAGS+=" -I${{_captureproject_prefix}}/include"
+CFLAGS+=" {DEPENDENCY_COMPILE_FLAGS} -I${{_captureproject_prefix}}/include"
+CXXFLAGS+=" {DEPENDENCY_COMPILE_FLAGS} -I${{_captureproject_prefix}}/include"
+LDFLAGS+=" {DEPENDENCY_LINK_FLAGS} -L${{_captureproject_prefix}}/lib -L${{_captureproject_msys_lib}}"
+PKG_CONFIG_PATH="${{_captureproject_prefix}}/lib/pkgconfig:${{PKG_CONFIG_PATH:-}}"
+CMAKE_PREFIX_PATH="${{_captureproject_prefix}}:${{CMAKE_PREFIX_PATH:-}}"
+export CPPFLAGS CFLAGS CXXFLAGS LDFLAGS PKG_CONFIG_PATH CMAKE_PREFIX_PATH
+"""
+    with open(pkgbuild_path, "a", encoding="utf-8", newline="\n") as pkgbuild_file:
+        pkgbuild_file.write(policy)
+
+
+def parse_guard_cf_function_count(readobj_output: str) -> int:
+    """Return the effective CFG target count or fail closed on partial metadata."""
+    if "IMAGE_DLL_CHARACTERISTICS_GUARD_CF" not in readobj_output:
+        raise DependencyBuildError("missing IMAGE_DLL_CHARACTERISTICS_GUARD_CF")
+    table_match = re.search(
+        r"^\s*GuardCFFunctionTable:\s+(0x[0-9A-Fa-f]+|\d+)",
+        readobj_output,
+        flags=re.MULTILINE,
+    )
+    count_match = re.search(
+        r"^\s*GuardCFFunctionCount:\s+(0x[0-9A-Fa-f]+|\d+)",
+        readobj_output,
+        flags=re.MULTILINE,
+    )
+    if table_match is None or int(table_match.group(1), 0) == 0:
+        raise DependencyBuildError("GuardCFFunctionTable is empty")
+    count = int(count_match.group(1), 0) if count_match is not None else 0
+    if count <= 0:
+        raise DependencyBuildError("GuardCFFunctionCount is zero")
+    if "CF_FUNCTION_TABLE_PRESENT" not in readobj_output:
+        raise DependencyBuildError("GuardFlags lacks CF_FUNCTION_TABLE_PRESENT")
+    return count
 
 
 def dependency_prefix(project_root: str) -> str:
@@ -279,9 +364,11 @@ class SourceDependencyBuilder:
 
         prefix_include = self._unix_path(os.path.join(self.prefix, "include"))
         prefix_lib = self._unix_path(os.path.join(self.prefix, "lib"))
-        env["CFLAGS"] = f"-O3 -ffunction-sections -fdata-sections -I{prefix_include}"
-        env["CXXFLAGS"] = f"-O3 -ffunction-sections -fdata-sections -I{prefix_include}"
-        env["LDFLAGS"] = f"-Wl,--gc-sections -L{prefix_lib} -L{self._unix_path(self.msys_lib)}"
+        env["CFLAGS"] = f"-O3 -mguard=cf -ffunction-sections -fdata-sections -I{prefix_include}"
+        env["CXXFLAGS"] = f"-O3 -mguard=cf -ffunction-sections -fdata-sections -I{prefix_include}"
+        env["LDFLAGS"] = (
+            f"-Wl,--gc-sections -Wl,--guard-cf -L{prefix_lib} -L{self._unix_path(self.msys_lib)}"
+        )
         env["PKG_CONFIG_PATH"] = os.pathsep.join(
             [os.path.join(self.prefix, "lib", "pkgconfig"), self.msys_pkgconfig]
         )
@@ -430,7 +517,7 @@ class SourceDependencyBuilder:
     def _extract_recipe(self, dependency: Mapping[str, Any], archive_path: str) -> str:
         dependency_recipe_root = os.path.join(self.recipe_dir, dependency["name"])
         if os.path.isdir(dependency_recipe_root):
-            shutil.rmtree(dependency_recipe_root)
+            remove_tree(dependency_recipe_root)
         os.makedirs(dependency_recipe_root, exist_ok=True)
         env = self._build_environment()
         self._run(
@@ -449,12 +536,17 @@ class SourceDependencyBuilder:
             raise DependencyBuildError(
                 f"Expected one PKGBUILD for {dependency['name']}, found {len(package_builds)}"
             )
+        inject_dependency_build_policy(
+            package_builds[0],
+            self._unix_path(self.prefix),
+            self._unix_path(self.msys_lib),
+        )
         return os.path.dirname(package_builds[0])
 
     def _extract_package(self, package_archive: str, dependency: Mapping[str, Any]) -> None:
         extract_root = os.path.join(self.staging_dir, dependency["name"], os.path.basename(package_archive))
         if os.path.isdir(extract_root):
-            shutil.rmtree(extract_root)
+            remove_tree(extract_root)
         os.makedirs(extract_root, exist_ok=True)
         env = self._build_environment()
         self._run(
@@ -528,17 +620,49 @@ class SourceDependencyBuilder:
                 state = json.load(state_file)
         except (OSError, ValueError):
             return False
-        if state.get("manifest_sha256") != fingerprint:
+        if state.get("build_fingerprint_sha256") != fingerprint:
+            return False
+        if state.get("build_configuration_version") != DEPENDENCY_BUILD_CONFIGURATION_VERSION:
+            return False
+        guard_cf_targets = state.get("guard_cf_targets")
+        if not isinstance(guard_cf_targets, dict) or any(
+            not isinstance(guard_cf_targets.get(dll_name), int) or guard_cf_targets[dll_name] <= 0
+            for dll_name in manifest_runtime_dlls(self.manifest)
+        ):
             return False
         return all(
             os.path.isfile(os.path.join(self.bin_dir, dll_name))
             for dll_name in manifest_runtime_dlls(self.manifest)
         )
 
+    def _verify_runtime_guard_cf(self) -> Dict[str, int]:
+        readobj_exe = os.path.join(self.clang_bin, "llvm-readobj.exe")
+        if not os.path.isfile(readobj_exe):
+            raise DependencyBuildError(f"Missing llvm-readobj required for CFG verification: {readobj_exe}")
+
+        counts: Dict[str, int] = {}
+        for dll_name in manifest_runtime_dlls(self.manifest):
+            dll_path = os.path.join(self.bin_dir, dll_name)
+            result = subprocess.run(
+                [readobj_exe, "--file-headers", "--coff-load-config", dll_path],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise DependencyBuildError(
+                    f"llvm-readobj failed while verifying CFG for {dll_name}: {result.stderr.strip()}"
+                )
+            try:
+                counts[dll_name] = parse_guard_cf_function_count(result.stdout)
+            except DependencyBuildError as error:
+                raise DependencyBuildError(f"Source-built {dll_name} has ineffective CFG: {error}") from error
+        return counts
+
     def _reset_outputs(self) -> None:
         for path in (self.prefix, self.recipe_dir, self.staging_dir, self.state_path):
             if os.path.isdir(path):
-                shutil.rmtree(path)
+                remove_tree(path)
             elif os.path.exists(path):
                 os.remove(path)
         os.makedirs(self.recipe_dir, exist_ok=True)
@@ -548,8 +672,13 @@ class SourceDependencyBuilder:
         """Build all pinned dependencies when the private prefix is incomplete."""
         fingerprint = dependency_manifest_fingerprint(self.manifest_path)
         if self._is_complete(fingerprint):
-            self._log(f"Private dependency prefix is current: {self.prefix}")
-            return self.prefix
+            try:
+                self._verify_runtime_guard_cf()
+            except DependencyBuildError as error:
+                self._log(f"Private dependency prefix failed CFG revalidation: {error}")
+            else:
+                self._log(f"Private dependency prefix is current: {self.prefix}")
+                return self.prefix
 
         self._log("Private dependency prefix is missing or stale; rebuilding all dependencies")
         self._reset_outputs()
@@ -567,12 +696,16 @@ class SourceDependencyBuilder:
             raise DependencyBuildError(
                 "Source builds completed without the expected runtime DLLs: " + ", ".join(sorted(missing))
             )
+        guard_cf_targets = self._verify_runtime_guard_cf()
 
         os.makedirs(self.root, exist_ok=True)
         state = {
-            "manifest_sha256": fingerprint,
+            "build_configuration_version": DEPENDENCY_BUILD_CONFIGURATION_VERSION,
+            "build_fingerprint_sha256": fingerprint,
+            "manifest_sha256": self._sha256(self.manifest_path),
             "toolchain_version": self.manifest["toolchain_version"],
             "built_packages": built_packages,
+            "guard_cf_targets": guard_cf_targets,
         }
         temporary_state = self.state_path + ".tmp"
         with open(temporary_state, "w", encoding="utf-8", newline="\n") as state_file:

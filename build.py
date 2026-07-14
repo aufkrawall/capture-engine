@@ -78,7 +78,7 @@ COMMON_WARNING_FLAGS = [
     "-Wundef",
     "-Wno-unused-parameter",
 ]
-COMMON_WINDOWS_COMPILE_FLAGS = ["-D_WIN32_WINNT=0x0A00", "-DNOMINMAX"]
+COMMON_WINDOWS_COMPILE_FLAGS = ["-D_WIN32_WINNT=0x0A00", "-DNOMINMAX", "-mguard=cf"]
 if IS_WINDOWS:
     # Emit native CodeView info so clang/lld can write PDBs that CDB, WinDbg,
     # and Visual Studio understand without switching away from the clang toolchain.
@@ -86,14 +86,13 @@ if IS_WINDOWS:
 else:
     COMMON_DEBUG_INFO_FLAGS = ["-g1"]  # Minimal DWARF info for crash symbolication with low size impact
 
-# x86-64-v3 requires AVX2 (Haswell 2013+), provides ~10-20% performance boost
-# Used only for the host process (captureengine.exe) where CPU is controlled.
+# First-party x64 code must run on the architectural x86-64 baseline. Codec
+# libraries retain their own measured runtime dispatch for newer instruction sets.
 OPT_FLAGS_X64 = [
     "-O3",
     "-flto",
-    "-ffast-math",
-    "-fcf-protection=full",  # Control Flow Integrity
-    "-march=x86-64-v3",
+    "-fcf-protection=full",  # CET where supported; Windows CFG is -mguard=cf/--guard-cf.
+    "-march=x86-64",
     "-mtune=generic",
     "-fvisibility=hidden",
     "-ffunction-sections",
@@ -106,7 +105,7 @@ HOOK_OPT_FLAGS_X64 = [
     "-O3",
     "-flto",
     "-fcf-protection=full",  # Control Flow Integrity
-    "-march=x86-64-v2",  # SSE4.2 + POPCNT minimum — safe for CPUs back to ~2008
+    "-march=x86-64",
     "-mtune=generic",
     "-fvisibility=hidden",
     "-ffunction-sections",
@@ -120,7 +119,6 @@ HOOK_OPT_FLAGS_X64 = [
 OPT_FLAGS_X86 = [
     "-O3",
     "-flto",
-    "-ffast-math",
     "-march=i686",
     "-mtune=generic",
     "-fvisibility=hidden",
@@ -149,12 +147,28 @@ LD_OPT_FLAGS = [
     "-Wl,--gc-sections",
     "-Wl,--dynamicbase",  # ASLR
     "-Wl,--nxcompat",  # DEP/NX
+    "-Wl,--guard-cf",  # Windows Control Flow Guard metadata and target table
 ] + COMMON_DEBUG_INFO_FLAGS
 
 # x64-only linker flags (high-entropy ASLR not supported on x86)
 LD_OPT_FLAGS_X64 = [
     "-Wl,--high-entropy-va",  # High-entropy 64-bit ASLR
 ]
+
+# Floating-point state that affects timestamps, mixing, resampling, or HDR color
+# conversion must not vary with contraction/reassociation decisions.
+STRICT_FP_MEDIA_SOURCES = {
+    "app_audio_capture.cpp",
+    "audio_capture.cpp",
+    "audio_encoder.cpp",
+    "audio_latency_probe.cpp",
+    "audio_resampler.cpp",
+    "mediaengine.cpp",
+    "process_loopback_capture.cpp",
+    "process_loopback_worker.cpp",
+    "video_encoder.cpp",
+}
+STRICT_FP_FLAGS = ["-ffp-model=strict"]
 
 # --- Configuration ---
 BUILD_DIR_NAME = "build"
@@ -2532,10 +2546,23 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
             ],
         ),
         (
+            "libaom.dll",
+            [
+                (
+                    os.path.join(license_root, "aom", "LICENSE"),
+                    "BSD-2-Clause_libaom.txt",
+                ),
+                (
+                    os.path.join(license_root, "aom", "PATENTS"),
+                    "AOM-Patent-License-1.0_libaom.txt",
+                ),
+            ],
+        ),
+        (
             "libwinpthread-1.dll",
             [
                 (
-                    os.path.join(license_root, "crt", "COPYING.MinGW-w64-runtime.txt"),
+                    os.path.join(license_root, "libwinpthread", "COPYING"),
                     "Mingw-w64-runtime_libwinpthread.txt",
                 ),
             ],
@@ -2648,14 +2675,17 @@ class FFmpegBuilder:
         env["CC"] = "clang"
         env["CXX"] = "clang++"
         env["CFLAGS"] = (
-            f"-O3 -ffunction-sections -fdata-sections -I{dependency_inc} "
+            f"-O3 -mguard=cf -ffunction-sections -fdata-sections -I{dependency_inc} "
             f"-I{self.prefix}/include -I{msys_inc}"
         )
         env["CXXFLAGS"] = (
-            f"-O3 -ffunction-sections -fdata-sections -I{dependency_inc} "
+            f"-O3 -mguard=cf -ffunction-sections -fdata-sections -I{dependency_inc} "
             f"-I{self.prefix}/include -I{msys_inc}"
         )
-        env["LDFLAGS"] = f"-Wl,--gc-sections -L{dependency_lib} -L{self.prefix}/lib -L{msys_lib}"
+        env["LDFLAGS"] = (
+            f"-Wl,--gc-sections -Wl,--guard-cf "
+            f"-L{dependency_lib} -L{self.prefix}/lib -L{msys_lib}"
+        )
         env["PKG_CONFIG"] = f"{pkg_config} --static"
         # pkg-config here is a native Windows binary, so it expects Windows-style paths.
         # Using /c/... MSYS paths makes the NVCodec probe fail to locate ffnvcodec.pc.
@@ -2847,9 +2877,9 @@ class FFmpegBuilder:
             # AAC NMR and multiple FFmpeg DSP/psychoacoustic paths use NaN/Inf
             # sentinels. -ffast-math makes those undefined and can silently
             # invalidate the encoder's quality decisions.
-            "--extra-cflags=-O3 -flto",
-            "--extra-cxxflags=-O3 -flto",
-            "--extra-ldflags=-flto -O3",
+            "--extra-cflags=-O3 -flto -mguard=cf",
+            "--extra-cxxflags=-O3 -flto -mguard=cf",
+            "--extra-ldflags=-flto -O3 -Wl,--guard-cf",
             f"--extra-ldflags=-L{dependency_lib} -L{msys_lib}",
             # Keep the FFmpeg build redistributable under LGPLv2.1+.
             # The extra components used here (FFNVCodec headers, AMF headers,
@@ -2876,6 +2906,7 @@ class FFmpegBuilder:
             "--enable-amf",
             "--enable-libvpl",  # QSV
             "--enable-mediafoundation",
+            "--enable-libaom",  # AOM AV1 encoder (10-bit 4:4:4 AVIF screenshots)
             "--enable-libsvtav1",  # SVT-AV1 encoder (fast AV1, BSD license)
             "--enable-libopus",  # Opus audio encoder with correct packetization support
             # Tuning
@@ -2898,9 +2929,13 @@ class FFmpegBuilder:
             "--enable-encoder=h264_amf,hevc_amf,av1_amf",
             "--enable-encoder=h264_qsv,hevc_qsv,av1_qsv,vp9_qsv",
             "--enable-encoder=h264_mf,hevc_mf",  # MediaFoundation
+            # FFmpeg configure component names use underscores even though the
+            # runtime encoder name exposed by libavcodec is "libaom-av1".
+            "--enable-encoder=libaom_av1",  # AOM AV1 (HDR 4:4:4 still images)
             "--enable-encoder=libsvtav1",  # SVT-AV1 (for AVIF screenshots)
             # HW Decoders
             "--enable-decoder=h264,hevc,av1,vp9,mjpeg",
+            "--enable-decoder=libaom_av1",  # Deterministic 10-bit 4:4:4 AVIF verification/decoding
             "--enable-decoder=h264_qsv,hevc_qsv,av1_qsv,vp9_qsv",
             "--enable-decoder=h264_cuvid,hevc_cuvid,vp9_cuvid,av1_cuvid",
             "--enable-hwaccel=h264_nvdec,hevc_nvdec,av1_nvdec",
@@ -2912,7 +2947,7 @@ class FFmpegBuilder:
         self.run([make_exe, "install"], cwd=build_dir, env=env)
 
 
-FFMPEG_BUILD_CONFIGURATION_VERSION = 4
+FFMPEG_BUILD_CONFIGURATION_VERSION = 7
 
 
 def ffmpeg_build_configuration_fingerprint():
@@ -3729,6 +3764,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
             "-lshlwapi",
             "-ldwmapi",
             "-lshcore",
+            "-lwindowscodecs",
             "-lmfplat",
             "-lmfuuid",
             "-lbcrypt",
@@ -3749,6 +3785,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     me_src = glob.glob(os.path.join(PROJECT_ROOT, "mediaengine", "*.cpp"))
     me_objs = []
     src_obj_pairs = []
+    strict_fp_src_obj_pairs = []
     # We need to compile MediaEngine with MEDIAENGINE_EXPORTS or similar if needed,
     # but for static linking in tests, we just need the symbols.
     # Note: AudioEncoder.cpp might rely on specific defines.
@@ -3757,10 +3794,14 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     for src in me_src:
         rel_path = os.path.relpath(src, PROJECT_ROOT)
         obj = os.path.join(obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
-        src_obj_pairs.append((src, obj))
+        if os.path.basename(src) in STRICT_FP_MEDIA_SOURCES:
+            strict_fp_src_obj_pairs.append((src, obj))
+        else:
+            src_obj_pairs.append((src, obj))
         me_objs.append(obj)
 
     parallel_compile(env, clang_exe, me_cflags, src_obj_pairs)
+    parallel_compile(env, clang_exe, me_cflags + STRICT_FP_FLAGS, strict_fp_src_obj_pairs)
 
     # 3. Compile Tests
     test_cflags = (
@@ -3783,6 +3824,15 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
         test_objs.append(obj)
 
     parallel_compile(env, clang_exe, test_cflags, src_obj_pairs)
+
+    screenshot_encoding_src = os.path.join(PROJECT_ROOT, "captureengine", "screenshot_encoding.cpp")
+    screenshot_encoding_obj = os.path.join(obj_dir, "captureengine", "screenshot_encoding.test.o").replace("\\", "/")
+    parallel_compile(
+        env,
+        clang_exe,
+        test_cflags + STRICT_FP_FLAGS,
+        [(screenshot_encoding_src, screenshot_encoding_obj)],
+    )
 
     # 4. Compile hook/common for tests
     hook_common_src = glob.glob(os.path.join(PROJECT_ROOT, "hook", "common", "*.cpp"))
@@ -3812,6 +3862,7 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
         + test_objs
         + common_objs
         + me_objs
+        + [screenshot_encoding_obj]
         + hook_common_objs
         + hook_wrapper_test_objs
         + ldflags_test
@@ -5282,6 +5333,7 @@ def compile_project(
                 "-lpsapi",
                 "-lavrt",
                 "-ldbghelp",
+                "-lbcrypt",
                 "-ladvapi32",
             ]
         )
@@ -5483,6 +5535,8 @@ def compile_project(
                     "-ladvapi32",
                     "-lgdi32",
                 ]
+                me_ldflags.extend(LD_OPT_FLAGS)
+                me_ldflags.extend(LD_OPT_FLAGS_X64)
                 if curr_env.get("CE_DISABLE_LTO") != "1":
                     # LTO disabled for mediaengine: on MinGW/clang, LTO can strip
                     # exception handling tables needed for D3D11 SEH exception catching
@@ -5502,12 +5556,17 @@ def compile_project(
                 me_cflags = [f for f in me_cflags if not f.startswith("-flto")]
                 me_objs: List[str] = []
                 src_obj_pairs: List[tuple[str, str]] = []
+                strict_fp_src_obj_pairs: List[tuple[str, str]] = []
                 for src in me_src:
                     rel_path = os.path.relpath(src, PROJECT_ROOT)
                     obj = os.path.join(curr_obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
-                    src_obj_pairs.append((src, obj))
+                    if os.path.basename(src) in STRICT_FP_MEDIA_SOURCES:
+                        strict_fp_src_obj_pairs.append((src, obj))
+                    else:
+                        src_obj_pairs.append((src, obj))
                     me_objs.append(obj)
                 parallel_compile(curr_env, curr_clang_exe, me_cflags, src_obj_pairs)
+                parallel_compile(curr_env, curr_clang_exe, me_cflags + STRICT_FP_FLAGS, strict_fp_src_obj_pairs)
 
                 log("Linking MediaEngine x64...")
                 temp_me_dll = os.path.join(curr_obj_dir, "mediaengine.tmp.dll")
@@ -5543,6 +5602,8 @@ def compile_project(
                     "-Wl,--subsystem,windows",
                     "-lkernel32",
                 ]
+                helper_ldflags.extend(LD_OPT_FLAGS)
+                helper_ldflags.extend(LD_OPT_FLAGS_X64)
                 append_windows_pdb_linker_flag(helper_ldflags, process_loopback_helper)
                 safe_delete_file(temp_process_loopback_helper)
                 run_command(
@@ -5613,14 +5674,19 @@ def compile_project(
 
         ce_objs: List[str] = []
         src_obj_pairs: List[tuple[str, str]] = []
+        strict_fp_src_obj_pairs: List[tuple[str, str]] = []
         for src in ce_src:
             if "screen_capture.cpp" in src:
                 continue
             rel_path = os.path.relpath(src, PROJECT_ROOT)
             obj = os.path.join(ce_obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
-            src_obj_pairs.append((src, obj))
+            if os.path.basename(src) == "screenshot_encoding.cpp":
+                strict_fp_src_obj_pairs.append((src, obj))
+            else:
+                src_obj_pairs.append((src, obj))
             ce_objs.append(obj)
         parallel_compile(env, clang_exe, cflags + ce_ffmpeg_cflags, src_obj_pairs)
+        parallel_compile(env, clang_exe, cflags + ce_ffmpeg_cflags + STRICT_FP_FLAGS, strict_fp_src_obj_pairs)
 
         # Resource file
         rc_file = os.path.join(PROJECT_ROOT, "captureengine", "captureengine.rc")
@@ -5640,12 +5706,10 @@ def compile_project(
             "-static-libgcc",
             "-static-libstdc++",
         ]
+        ce_ldflags.extend(LD_OPT_FLAGS)
+        ce_ldflags.extend(LD_OPT_FLAGS_X64)
         ce_ldflags.extend(
             [
-                "-Wl,--gc-sections",
-                "-Wl,--dynamicbase",  # ASLR
-                "-Wl,--high-entropy-va",  # High-entropy 64-bit ASLR
-                "-Wl,--nxcompat",  # DEP/NX
                 "-ld3d11",
                 "-ldxgi",
                 "-luser32",
@@ -5666,7 +5730,7 @@ def compile_project(
                 "-lversion",
                 "-lntdll",
                 "-ladvapi32",
-                # FFmpeg for HDR screenshot encoding (AVIF via SVT-AV1) — delay-loaded so SetDllDirectory works
+                # FFmpeg for HDR screenshot encoding (AVIF via libaom) — delay-loaded so SetDllDirectory works
                 os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
                 os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),
                 os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
@@ -5794,6 +5858,34 @@ def compile_project(
     tests_dir = os.path.join(PROJECT_ROOT, "tests")
     if os.path.exists(os.path.join(tests_dir, "unit_tests.exe")):
         copy_test_runtime_dlls(tests_dir)
+
+    pe_hardening_verifier = os.path.join(PROJECT_ROOT, "tools", "verify_pe_hardening.py")
+    llvm_readobj = os.path.join(MSYS2_DIR, "clang64", "bin", "llvm-readobj.exe")
+    pe_verifier_command = [
+        sys.executable,
+        pe_hardening_verifier,
+        "--llvm-readobj",
+        llvm_readobj,
+        "--root",
+        BIN_DIR,
+        # The current clang64 -> mingw32 cross-linker marks x86 images for CFG
+        # but cannot populate their target tables. Keep all other x86 PE checks
+        # active while effective x86 CFG is deferred.
+        "--allow-missing-x86-cfg",
+    ]
+    if env.get("CE_SANITIZE") == "1":
+        # The sanitizer pass intentionally produces only x64 developer artifacts.
+        # Ignore stale x86 outputs from the preceding product build and recognize
+        # the toolchain-resolved ASan runtime without copying it into the bundle.
+        pe_verifier_command.extend(
+            ["--skip-x86", "--allow-runtime-dll", "libclang_rt.asan_dynamic-x86_64.dll"]
+        )
+    run_command(
+        pe_verifier_command,
+        cwd=PROJECT_ROOT,
+        env=env,
+    )
+    log("Verified PE mitigations, architecture, section permissions, CFG tables, imports, and first-party PDBs")
 
     clear_stale_hook_pdb_cache()
 
@@ -6011,6 +6103,7 @@ def main():
     gtest_filter = parse_flag_value("--gtest-filter")
     tests_only_flag = "--tests-only" in sys.argv
     sanitize_flag = "--sanitize" in sys.argv
+    sanitize_x86_flag = "--sanitize-x86" in sys.argv
     sanitize_regression_flag = "--sanitize-regression" in sys.argv
     sanitize_regression_child = "--sanitize-regression-child" in sys.argv
     # --production: build signed production binaries (requires CE_PRODUCTION_BUILD=1)
@@ -6037,6 +6130,11 @@ def main():
             break
     if VERBOSE_COMMANDS:
         log("Verbose command logging enabled (--verbose-commands)")
+
+    if sanitize_x86_flag:
+        log("ERROR: x86 ASan/UBSan coverage was explicitly requested, but the required MinGW x86 sanitizer "
+            "runtime is unavailable. Refusing to silently skip x86 coverage.")
+        sys.exit(2)
 
     current_build_number = bump_and_write_build_version()
     # Store for use by compile_project
@@ -6135,7 +6233,7 @@ def main():
         env["CE_DISABLE_LTO"] = "1"
 
         OPT_FLAGS_X64.extend(sanitize_compile)
-        OPT_FLAGS_X86.extend(sanitize_compile)
+        HOOK_OPT_FLAGS_X64.extend(sanitize_compile)
         LD_OPT_FLAGS.extend(sanitize_link)
 
     if skip_updates:

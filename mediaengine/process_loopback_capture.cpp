@@ -3,11 +3,14 @@
 #include "app_audio_capture.h"
 #include "mediaengine.h"
 #include "process_loopback_protocol.h"
+#include "../common/restricted_child_process.h"
 
 #include <algorithm>
+#include <bit>
 #include <filesystem>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 using ce::process_loopback::SharedHeader;
@@ -66,16 +69,25 @@ bool ProcessLoopbackCapture::IsSupported() {
 
 void ProcessLoopbackCapture::SetRequestedFormat(int sampleRate, int channels, uint32_t channelMask) {
     std::lock_guard<std::mutex> lock(mutex_);
-    requestedSampleRate_ = sampleRate > 0 ? sampleRate : 48000;
-    requestedChannels_ = std::clamp(channels > 0 ? channels : 2, 1, 8);
-    requestedChannelMask_ = channelMask;
-    if (requestedChannelMask_ == 0) {
-        requestedChannelMask_ = requestedChannels_ == 1
-                                    ? SPEAKER_FRONT_CENTER
-                                    : requestedChannels_ == 2
-                                          ? SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
-                                          : 0;
+    ce::process_loopback::TransportLayout layout;
+    if (sampleRate < 0 || channels < 0 ||
+        !ce::process_loopback::ComputeTransportLayout(static_cast<uint32_t>(sampleRate),
+                                                      static_cast<uint32_t>(channels), 32, layout) ||
+        (channelMask != 0 && std::popcount(channelMask) != channels)) {
+        requestedSampleRate_ = 0;
+        requestedChannels_ = 0;
+        requestedChannelMask_ = 0;
+        DLL_Log("[AppAudioWorker] Invalid requested format rejected: %dHz/%dch/0x%x", sampleRate, channels,
+                channelMask);
+        return;
     }
+    requestedSampleRate_ = sampleRate;
+    requestedChannels_ = channels;
+    requestedChannelMask_ = channelMask != 0 ? channelMask
+                                             : channels == 1 ? SPEAKER_FRONT_CENTER
+                                                             : channels == 2
+                                                                   ? SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
+                                                                   : 0;
 }
 
 bool ProcessLoopbackCapture::StartByPID(DWORD processId) {
@@ -91,6 +103,8 @@ bool ProcessLoopbackCapture::StartByPID(DWORD processId) {
     targetByName_ = false;
     targetProcessId_ = processId;
     targetProcessName_.clear();
+    integrityFailure_ = false;
+    fatalTransportStatus_ = 0;
     desiredRunning_ = true;
     restartDesired_ = true;
     if (!StartWorkerLocked(false)) {
@@ -115,6 +129,8 @@ bool ProcessLoopbackCapture::StartByName(const std::string& processName) {
     targetByName_ = true;
     targetProcessId_ = 0;
     targetProcessName_ = processName;
+    integrityFailure_ = false;
+    fatalTransportStatus_ = 0;
     desiredRunning_ = true;
     restartDesired_ = true;
     if (!StartWorkerLocked(false)) {
@@ -169,7 +185,14 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
     SECURITY_ATTRIBUTES inheritable{};
     inheritable.nLength = sizeof(inheritable);
     inheritable.bInheritHandle = TRUE;
-    const uint64_t mappingBytes = ce::process_loopback::MappingBytes();
+    const uint64_t mappingBytes =
+        ce::process_loopback::MappingBytes(static_cast<uint32_t>(requestedSampleRate_),
+                                           static_cast<uint32_t>(requestedChannels_), 32);
+    if (mappingBytes == 0 || mappingBytes > std::numeric_limits<SIZE_T>::max()) {
+        DLL_Log("[AppAudioWorker] Invalid shared mapping size for %dHz/%dch", requestedSampleRate_,
+                requestedChannels_);
+        return false;
+    }
     worker->mappingHandle =
         CreateFileMappingW(INVALID_HANDLE_VALUE, &inheritable, PAGE_READWRITE, static_cast<DWORD>(mappingBytes >> 32),
                            static_cast<DWORD>(mappingBytes), nullptr);
@@ -181,7 +204,10 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
         return false;
     }
     worker->mapping = MapViewOfFile(worker->mappingHandle, FILE_MAP_ALL_ACCESS, 0, 0, mappingBytes);
-    if (!worker->mapping || !ce::process_loopback::Initialize(worker->mapping, worker->generation)) {
+    if (!worker->mapping ||
+        !ce::process_loopback::Initialize(worker->mapping, worker->generation,
+                                          static_cast<uint32_t>(requestedSampleRate_),
+                                          static_cast<uint32_t>(requestedChannels_), 32)) {
         DLL_Log("[AppAudioWorker] Shared mapping failed generation=%llu bytes=%llu error=0x%lx",
                 static_cast<unsigned long long>(worker->generation), static_cast<unsigned long long>(mappingBytes),
                 GetLastError());
@@ -209,43 +235,20 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
                                L" " + std::to_wstring(requestedChannels_) + L" " +
                                std::to_wstring(requestedChannelMask_) + L" " +
                                QuoteCommandArgument(Utf8ToWide(targetProcessName_));
-    std::vector<wchar_t> mutableCommand(commandLine.begin(), commandLine.end());
-    mutableCommand.push_back(L'\0');
-
-    SIZE_T attributeBytes = 0;
-    InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeBytes);
-    std::vector<uint8_t> attributeStorage(attributeBytes);
-    STARTUPINFOEXW startup{};
-    startup.StartupInfo.cb = sizeof(startup);
-    startup.lpAttributeList = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(attributeStorage.data());
-    if (!InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &attributeBytes)) {
-        DLL_Log("[AppAudioWorker] InitializeProcThreadAttributeList failed: 0x%lx", GetLastError());
-        return false;
-    }
-    HANDLE inheritedHandles[] = {worker->mappingHandle, worker->packetEvent, worker->stopEvent};
-    const bool handleListReady =
-        UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inheritedHandles,
-                                  sizeof(inheritedHandles), nullptr, nullptr) != FALSE;
-    if (!handleListReady) {
-        DLL_Log("[AppAudioWorker] UpdateProcThreadAttribute(handle-list) failed: 0x%lx", GetLastError());
-        DeleteProcThreadAttributeList(startup.lpAttributeList);
-        return false;
-    }
-
-    PROCESS_INFORMATION process{};
-    const BOOL created = CreateProcessW(helperPath.c_str(), mutableCommand.data(), nullptr, nullptr, TRUE,
-                                        CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr,
-                                        helperPath.parent_path().c_str(), &startup.StartupInfo, &process);
-    const DWORD createError = created ? ERROR_SUCCESS : GetLastError();
-    DeleteProcThreadAttributeList(startup.lpAttributeList);
-    if (!created) {
+    ce::process::RestrictedChildProcess process;
+    DWORD createError = ERROR_SUCCESS;
+    // The shared launcher installs PROC_THREAD_ATTRIBUTE_HANDLE_LIST and combines
+    // CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT so no unrelated parent handle is inherited.
+    if (!ce::process::LaunchRestrictedChildProcess(
+            helperPath.wstring(), commandLine, helperPath.parent_path().wstring(),
+            {worker->mappingHandle, worker->packetEvent, worker->stopEvent}, CREATE_NO_WINDOW, process,
+            createError)) {
         DLL_Log("[AppAudioWorker] CreateProcess failed generation=%llu error=0x%lx",
                 static_cast<unsigned long long>(worker->generation), createError);
         return false;
     }
-    CloseHandle(process.hThread);
-    worker->processHandle = process.hProcess;
-    worker->processId = process.dwProcessId;
+    worker->processHandle = std::exchange(process.processHandle, nullptr);
+    worker->processId = process.processId;
     activeWorker_ = std::move(worker);
     if (restart) {
         ++workerRestartCount_;
@@ -289,7 +292,8 @@ void ProcessLoopbackCapture::RetireActiveWorkerLocked(bool unexpectedExit, DWORD
     const uint64_t pending = ce::process_loopback::PendingPacketCount(activeWorker_->mapping);
     DLL_Log(
         "[AppAudioWorker] Exit generation=%llu helperPid=%lu exitCode=0x%lx unexpected=%d state=%u "
-        "pending=%llu produced=%llu consumed=%llu overrun=%llu/%llu lifecycleOverrun=%llu clean=%llu recycle=%llu",
+        "pending=%llu produced=%llu consumed=%llu overrun=%llu/%llu lifecycleOverrun=%llu transport=%u "
+        "integrityFailures=%llu clean=%llu recycle=%llu",
         static_cast<unsigned long long>(activeWorker_->generation), activeWorker_->processId, exitCode,
         unexpectedExit ? 1 : 0, header->workerState.load(std::memory_order_relaxed),
         static_cast<unsigned long long>(pending),
@@ -298,6 +302,8 @@ void ProcessLoopbackCapture::RetireActiveWorkerLocked(bool unexpectedExit, DWORD
         static_cast<unsigned long long>(header->overrunPackets.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(header->overrunFrames.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(header->lifecycleOverrunPackets.load(std::memory_order_relaxed)),
+        header->transportStatus.load(std::memory_order_relaxed),
+        static_cast<unsigned long long>(header->integrityFailureCount.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(header->workerCleanExitCount.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(header->workerRecycleCount.load(std::memory_order_relaxed)));
     retiredWorkers_.push_back(std::move(activeWorker_));
@@ -309,12 +315,34 @@ void ProcessLoopbackCapture::RetireActiveWorkerLocked(bool unexpectedExit, DWORD
     }
 }
 
+void ProcessLoopbackCapture::HandleIntegrityFailureLocked(WorkerInstance& worker) {
+    if (!ce::process_loopback::HasFatalTransportFailure(worker.mapping)) {
+        return;
+    }
+    const uint32_t status = worker.Header()->transportStatus.load(std::memory_order_acquire);
+    if (!integrityFailure_) {
+        DLL_Log(
+            "[AppAudioWorker] FATAL: transport integrity failed generation=%llu helperPid=%lu status=%u; "
+            "disabling helper restart and requesting recording failure",
+            static_cast<unsigned long long>(worker.generation), worker.processId, status);
+    }
+    integrityFailure_ = true;
+    fatalTransportStatus_ = status;
+    desiredRunning_ = false;
+    restartDesired_ = false;
+    worker.stopRequested = true;
+    if (worker.stopEvent) {
+        SetEvent(worker.stopEvent);
+    }
+}
+
 void ProcessLoopbackCapture::RefreshWorkerLocked() {
     for (auto& worker : retiredWorkers_) {
         DrainWorkerDiagnosticsLocked(*worker);
     }
     if (activeWorker_) {
         DrainWorkerDiagnosticsLocked(*activeWorker_);
+        HandleIntegrityFailureLocked(*activeWorker_);
         const DWORD wait = WaitForSingleObject(activeWorker_->processHandle, 0);
         if (wait == WAIT_OBJECT_0) {
             DWORD exitCode = ERROR_PROCESS_ABORTED;
@@ -322,8 +350,10 @@ void ProcessLoopbackCapture::RefreshWorkerLocked() {
             const SharedHeader* header = activeWorker_->Header();
             const bool clean = header->workerCleanExitCount.load(std::memory_order_acquire) != 0;
             const bool recycle = header->workerRecycleCount.load(std::memory_order_acquire) != 0;
+            const bool transportFailure = ce::process_loopback::HasFatalTransportFailure(activeWorker_->mapping);
             const bool restartAfterExit = ce::process_loopback::ClassifyWorkerExit(
-                                              desiredRunning_, activeWorker_->stopRequested, clean, recycle) ==
+                                              desiredRunning_, activeWorker_->stopRequested, clean, recycle,
+                                              transportFailure) ==
                                           ce::process_loopback::WorkerExitDisposition::Restart;
             RetireActiveWorkerLocked(restartAfterExit && !recycle, exitCode);
             if (recycle && desiredRunning_) {
@@ -378,6 +408,9 @@ bool ProcessLoopbackCapture::GetNextPacket(AudioPacket& packet) {
     RefreshWorkerLocked();
     WorkerInstance* selected = !retiredWorkers_.empty() ? retiredWorkers_.front().get() : activeWorker_.get();
     if (!selected || !ce::process_loopback::ReadPacket(selected->mapping, packet)) {
+        if (selected) {
+            HandleIntegrityFailureLocked(*selected);
+        }
         return false;
     }
     if (packet.captureEpoch != 0) {
@@ -409,8 +442,7 @@ size_t ProcessLoopbackCapture::PendingPacketCount() {
 void ProcessLoopbackCapture::DiscardPendingPackets() {
     std::lock_guard<std::mutex> lock(mutex_);
     auto discard = [](WorkerInstance& worker) {
-        SharedHeader* header = worker.Header();
-        header->readSequence.store(header->writeSequence.load(std::memory_order_acquire), std::memory_order_release);
+        ce::process_loopback::DiscardPackets(worker.mapping);
         if (worker.packetEvent) {
             ResetEvent(worker.packetEvent);
         }
@@ -449,9 +481,7 @@ void ProcessLoopbackCapture::Stop(bool discardPendingPackets) {
     }
     if (discardPendingPackets) {
         for (auto& worker : retiredWorkers_) {
-            SharedHeader* header = worker->Header();
-            header->readSequence.store(header->writeSequence.load(std::memory_order_acquire),
-                                       std::memory_order_release);
+            ce::process_loopback::DiscardPackets(worker->mapping);
         }
     }
     CleanupDrainedWorkersLocked();
@@ -504,6 +534,16 @@ uint64_t ProcessLoopbackCapture::GetQueueOverrunFrameCount() const {
 uint64_t ProcessLoopbackCapture::GetWorkerRestartCount() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return workerRestartCount_;
+}
+
+bool ProcessLoopbackCapture::HasIntegrityFailure() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return integrityFailure_;
+}
+
+uint32_t ProcessLoopbackCapture::GetTransportStatus() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return fatalTransportStatus_;
 }
 
 bool ProcessLoopbackCapture::IsCapturing() const {

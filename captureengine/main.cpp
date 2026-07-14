@@ -12,13 +12,16 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 #include "../common/config.h"
 #include "../common/crash_handler.h"
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
+#include "../common/strict_integer_parse.h"
 #include "../common/vulkan_layer_registration.h"
 #include "dump_helper.h"
 #include "injection.h"
@@ -103,6 +106,14 @@ void PrimeStartupCursor() {
     if (arrow) {
         SetCursor(arrow);
     }
+}
+
+bool TryParseAutoRecordValue(std::string_view value, DWORD& result) {
+    uint32_t parsed = 0;
+    if (!ce::TryParseUInt32(value, parsed))
+        return false;
+    result = parsed;
+    return true;
 }
 
 bool IsProcessRunning(HANDLE hProcess) {
@@ -232,6 +243,29 @@ void CloseProcessHandle(HANDLE& processHandle) {
 
 bool EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHandle, ProcessIPCClient* client, DWORD timeoutMs,
                                  const char* processName) {
+    if (processHandle && IsProcessRunning(processHandle) && client && !client->IsConnected()) {
+        const DWORD disconnectWaitMs = std::min<DWORD>(timeoutMs, 2000);
+        const ULONGLONG deadline = GetTickCount64() + disconnectWaitMs;
+        while (IsProcessRunning(processHandle) && GetTickCount64() < deadline) {
+            const ULONGLONG now = GetTickCount64();
+            if (now >= deadline)
+                break;
+            const ULONGLONG remaining64 = deadline - now;
+            const DWORD remaining = static_cast<DWORD>(std::min<ULONGLONG>(remaining64, MAXDWORD));
+            const DWORD wait =
+                MsgWaitForMultipleObjectsEx(1, &processHandle, remaining, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            if (wait == WAIT_OBJECT_0)
+                break;
+            if (wait == WAIT_OBJECT_0 + 1)
+                PumpStartupMessages();
+            else
+                break;
+        }
+        if (IsProcessRunning(processHandle)) {
+            LogWarn("[Controller] %s has not exited after its IPC channel broke; deferring respawn", processName);
+            return false;
+        }
+    }
     if (!processHandle || !IsProcessRunning(processHandle)) {
         if (client) {
             client->Disconnect();
@@ -242,7 +276,7 @@ bool EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHandle, Proces
         }
 
         const int64_t spawnStartUs = Log_GetQpcUs();
-        processHandle = SpawnChildProcess(mode, g_ConfigPath.c_str());
+        processHandle = SpawnChildProcess(mode, g_ConfigPath.c_str(), client);
         const int64_t spawnUs = Log_GetQpcUs() - spawnStartUs;
         if (!processHandle) {
             LogError("[Controller] Failed to spawn %s process on demand", processName);
@@ -255,21 +289,7 @@ bool EnsureChildProcessConnected(ProcessMode mode, HANDLE& processHandle, Proces
         return true;
     }
 
-    const DWORD startTime = GetTickCount();
-    while (g_Running && GetTickCount() - startTime < timeoutMs) {
-        if (client->Connect(10)) {
-            return true;
-        }
-        if (!IsProcessRunning(processHandle)) {
-            break;
-        }
-        PumpStartupMessages();
-        PrimeStartupCursor();
-        MsgWaitForMultipleObjectsEx(0, nullptr, 25, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-    }
-
-    LogError("[Controller] Failed to connect to %s process within %lu ms", processName,
-             static_cast<unsigned long>(timeoutMs));
+    LogError("[Controller] %s process is running without its inherited authenticated IPC channel", processName);
     return false;
 }
 
@@ -527,11 +547,11 @@ void LaunchGameSuspended(const std::string& path) {
                 launchCommand.rawCommandLine.c_str());
 
         if (CreateProcessA(cleanPath.c_str(), mutableCommandLine, NULL, NULL, FALSE, 0, NULL, workingDir, &si, &pi)) {
-            LogInfo("[Launcher] Launcher started (PID: %d). WMI will catch the game.", pi.dwProcessId);
+            LogInfo("[Launcher] Launcher started (PID: %lu). WMI will catch the game.", pi.dwProcessId);
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
         } else {
-            LogError("[Launcher] Failed to start launcher: %d", GetLastError());
+            LogError("[Launcher] Failed to start launcher: %lu", GetLastError());
         }
     } else {
         // This looks like the actual game - use suspended injection
@@ -540,7 +560,7 @@ void LaunchGameSuspended(const std::string& path) {
         if (CreateProcessA(cleanPath.c_str(), mutableCommandLine, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, workingDir,
                            &si, &pi)) {
             LogInfo(
-                "[Launcher] Process Created (PID: %d). Attempting early APC "
+                "[Launcher] Process Created (PID: %lu). Attempting early APC "
                 "injection...",
                 pi.dwProcessId);
 
@@ -586,42 +606,16 @@ void LaunchGameSuspended(const std::string& path) {
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
         } else {
-            LogError("[Launcher] Failed to CreateProcess: %d", GetLastError());
+            LogError("[Launcher] Failed to CreateProcess: %lu", GetLastError());
         }
     }
 }
 
-// Connect to child processes with retry
-bool ConnectToChildProcesses(DWORD timeoutMs) {
-    DWORD startTime = GetTickCount();
-
-    while (g_Running && GetTickCount() - startTime < timeoutMs) {
-        bool allConnected = true;
-
-        if (g_hInjectProcess && !g_InjectClient->IsConnected()) {
-            if (!g_InjectClient->Connect(10))
-                allConnected = false;
-        }
-        if (g_hMediaProcess && !g_MediaClient->IsConnected()) {
-            if (!g_MediaClient->Connect(10))
-                allConnected = false;
-        }
-        if (g_hLimiterProcess && !g_LimiterClient->IsConnected()) {
-            if (!g_LimiterClient->Connect(10))
-                allConnected = false;
-        }
-        // Note: Logger and Sensors don't use pipe IPC yet, they use shared
-        // memory/files
-
-        if (allConnected)
-            return true;
-        PumpStartupMessages();
-        PrimeStartupCursor();
-        MsgWaitForMultipleObjectsEx(0, nullptr, 25, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
-        PumpStartupMessages();
-    }
-
-    return false;
+// Spawn authenticates IPC synchronously; there is no reconnect-by-name phase.
+bool ConnectToChildProcesses(DWORD) {
+    return (!g_hInjectProcess || g_InjectClient->IsConnected()) &&
+           (!g_hMediaProcess || g_MediaClient->IsConnected()) &&
+           (!g_hLimiterProcess || g_LimiterClient->IsConnected());
 }
 
 // Send command to all child processes
@@ -671,6 +665,41 @@ static bool WithInjectSharedMem(std::function<void(SharedMemoryLayout*)> fn) {
     UnmapViewOfFile(pShm);
     CloseHandle(hShm);
     return true;
+}
+
+void CheckRecordingFailureState() {
+    if (!g_Recording)
+        return;
+
+    uint32_t failureCode = static_cast<uint32_t>(RecordingFailureCode::None);
+    if (!WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
+            failureCode = sharedMemory->runtimeState.recordingFailureCode.load(std::memory_order_acquire);
+        }) ||
+        failureCode == static_cast<uint32_t>(RecordingFailureCode::None)) {
+        return;
+    }
+
+    LogError("[Controller] Recording failed with integrity code %u; stopping all recording state", failureCode);
+    if (g_InjectClient && g_InjectClient->IsConnected()) {
+        ProcessResponse response = ProcessResponse::Ack;
+        if (!g_InjectClient->SendCommand(ProcessCommand::StopRecording, nullptr, &response, 1000)) {
+            LogWarn("[Controller] Failed to deliver the recording-failure stop to inject");
+        }
+    }
+    if (g_MediaClient)
+        g_MediaClient->Disconnect();
+    CloseProcessHandle(g_hMediaProcess);
+
+    g_Recording = false;
+    if (g_AutoRecordEnabled) {
+        LogError("[Controller] Auto-record disabled after a recording-integrity failure");
+        g_AutoRecordEnabled = false;
+        g_AutoRecordStartTime = 0;
+    }
+    if (g_Tray)
+        g_Tray->SetRecordingState(false);
+    if (g_PseudoOverlay)
+        g_PseudoOverlay->SetRecordingState(false);
 }
 
 // Toggle recording - controller notifies inject which sets shared memory
@@ -968,31 +997,45 @@ void ShutdownChildProcesses() {
     g_hSensorProcess = NULL;
 }
 
-// Monitor child processes for crashes
+// Monitor authenticated children and replace a process only after its broken
+// channel has caused the old instance to exit. Media and limiter are recovered
+// only while the controller still owns a handle for an expected live instance;
+// their normal deferred/off states deliberately keep a null handle.
 void CheckChildProcessHealth() {
     static DWORD lastCheck = 0;
     if (GetTickCount() - lastCheck < 1000)
         return;  // Check once per second
     lastCheck = GetTickCount();
 
-    auto checkProcess = [](HANDLE h, const char* name, bool& reportedDead) {
-        if (!h)
+    auto recoverProcess = [](ProcessMode mode, HANDLE& process, ProcessIPCClient* client, const char* name,
+                             bool expected, bool& recoveryFailureReported) {
+        if (!expected)
             return;
-        DWORD exitCode;
-        if (GetExitCodeProcess(h, &exitCode) && exitCode != STILL_ACTIVE) {
-            if (!reportedDead) {
-                LogError("[Controller] %s process exited with code %d", name, exitCode);
-                reportedDead = true;
-            }
-        } else {
-            reportedDead = false;  // Reset in case the process was restarted
+        if (process && IsProcessRunning(process) && client && client->IsConnected()) {
+            recoveryFailureReported = false;
+            return;
+        }
+
+        if (EnsureChildProcessConnected(mode, process, client, 2000, name)) {
+            LogInfo("[Controller] Recovered %s after process exit or authenticated-channel failure", name);
+            recoveryFailureReported = false;
+            return;
+        }
+        if (!recoveryFailureReported) {
+            LogError("[Controller] Could not yet recover %s after process exit or IPC failure", name);
+            recoveryFailureReported = true;
         }
     };
 
-    static bool injectDead = false, mediaDead = false, limiterDead = false;
-    checkProcess(g_hInjectProcess, "Inject", injectDead);
-    checkProcess(g_hMediaProcess, "Media", mediaDead);
-    checkProcess(g_hLimiterProcess, "Limiter", limiterDead);
+    static bool injectRecoveryFailure = false;
+    static bool mediaRecoveryFailure = false;
+    static bool limiterRecoveryFailure = false;
+    recoverProcess(ProcessMode::Inject, g_hInjectProcess, g_InjectClient.get(), "inject", true,
+                   injectRecoveryFailure);
+    recoverProcess(ProcessMode::Media, g_hMediaProcess, g_MediaClient.get(), "media", g_hMediaProcess != nullptr,
+                   mediaRecoveryFailure);
+    recoverProcess(ProcessMode::Limiter, g_hLimiterProcess, g_LimiterClient.get(), "limiter",
+                   g_hLimiterProcess != nullptr, limiterRecoveryFailure);
 }
 
 bool CompleteControllerStartup() {
@@ -1004,7 +1047,7 @@ bool CompleteControllerStartup() {
     LogInfo("[Controller] Spawning child processes...");
 
     const int64_t injectSpawnStartUs = Log_GetQpcUs();
-    g_hInjectProcess = SpawnChildProcess(ProcessMode::Inject, g_ConfigPath.c_str());
+    g_hInjectProcess = SpawnChildProcess(ProcessMode::Inject, g_ConfigPath.c_str(), g_InjectClient.get());
     const int64_t injectSpawnUs = Log_GetQpcUs() - injectSpawnStartUs;
     if (!g_hInjectProcess) {
         LogError("[Controller] Failed to spawn inject process");
@@ -1014,7 +1057,7 @@ bool CompleteControllerStartup() {
     int64_t mediaSpawnUs = 0;
     if (ShouldStartMediaProcessAtStartup()) {
         const int64_t mediaSpawnStartUs = Log_GetQpcUs();
-        g_hMediaProcess = SpawnChildProcess(ProcessMode::Media, g_ConfigPath.c_str());
+        g_hMediaProcess = SpawnChildProcess(ProcessMode::Media, g_ConfigPath.c_str(), g_MediaClient.get());
         mediaSpawnUs = Log_GetQpcUs() - mediaSpawnStartUs;
         if (!g_hMediaProcess) {
             LogError("[Controller] Failed to spawn media process");
@@ -1027,7 +1070,7 @@ bool CompleteControllerStartup() {
     int64_t limiterSpawnUs = 0;
     if (ShouldStartLimiterProcessAtStartup(g_Config)) {
         const int64_t limiterSpawnStartUs = Log_GetQpcUs();
-        g_hLimiterProcess = SpawnChildProcess(ProcessMode::Limiter, g_ConfigPath.c_str());
+        g_hLimiterProcess = SpawnChildProcess(ProcessMode::Limiter, g_ConfigPath.c_str(), g_LimiterClient.get());
         limiterSpawnUs = Log_GetQpcUs() - limiterSpawnStartUs;
         if (!g_hLimiterProcess) {
             LogError("[Controller] Failed to spawn limiter process");
@@ -1106,7 +1149,7 @@ bool CompleteControllerStartup() {
         QpcDeltaToMs(Log_GetQpcUs() - g_ControllerStartupTiming.controllerStartUs));
 
     if (g_AutoRecordEnabled) {
-        LogInfo("[Controller] Auto-record enabled: delay=%dms, duration=%dms", g_AutoRecordDelayMs,
+        LogInfo("[Controller] Auto-record enabled: delay=%lums, duration=%lums", g_AutoRecordDelayMs,
                 g_AutoRecordDurationMs);
         g_AutoRecordStartTime = GetTickCount();
     }
@@ -1317,6 +1360,10 @@ int ControllerMain(HINSTANCE hInstance) {
         }
 
         const int64_t postMsgUs = Log_GetQpcUs();
+
+        // A fatal media transport failure must clear controller ownership before
+        // health recovery can mistake the intentional failed stop for a crash.
+        CheckRecordingFailureState();
 
         // Check child process health
         CheckChildProcessHealth();
@@ -1530,11 +1577,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     size_t autoRecordPos = cmdLine.find("--auto-record=");
     if (autoRecordPos != std::string::npos) {
         std::string params = cmdLine.substr(autoRecordPos + 14);
+        const size_t tokenEnd = params.find_first_of(" \t");
+        if (tokenEnd != std::string::npos)
+            params.resize(tokenEnd);
         size_t commaPos = params.find(',');
         if (commaPos != std::string::npos) {
-            g_AutoRecordDelayMs = (DWORD)atoi(params.substr(0, commaPos).c_str());
-            g_AutoRecordDurationMs = (DWORD)atoi(params.substr(commaPos + 1).c_str());
-            g_AutoRecordEnabled = true;
+            DWORD delayMs = 0;
+            DWORD durationMs = 0;
+            if (TryParseAutoRecordValue(std::string_view(params).substr(0, commaPos), delayMs) &&
+                TryParseAutoRecordValue(std::string_view(params).substr(commaPos + 1), durationMs)) {
+                g_AutoRecordDelayMs = delayMs;
+                g_AutoRecordDurationMs = durationMs;
+                g_AutoRecordEnabled = true;
+            } else {
+                LogWarn("[Controller] Ignoring malformed --auto-record value '%s'", params.c_str());
+            }
         }
     }
 
