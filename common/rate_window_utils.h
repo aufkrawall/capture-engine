@@ -23,6 +23,14 @@ inline uint32_t ScaleCountToRate(uint32_t count, uint64_t windowMs) {
     return static_cast<uint32_t>((static_cast<uint64_t>(count) * 1000ull + (windowMs / 2ull)) / windowMs);
 }
 
+inline uint32_t AgeCachedRate(uint32_t cachedRate, uint64_t lastSampleMs, uint64_t nowMs,
+                              uint64_t sampleWindowMs) {
+    if (cachedRate == 0 || sampleWindowMs == 0 || lastSampleMs == 0 || nowMs < lastSampleMs) {
+        return 0;
+    }
+    return nowMs - lastSampleMs < sampleWindowMs ? cachedRate : 0;
+}
+
 template <uint64_t BucketMs = kDefaultBucketMs, size_t BucketCount = kDefaultBucketCount>
 class SlidingRateWindow {
 public:

@@ -504,19 +504,19 @@ bool AppAudioCapture::StartCaptureThreadForCurrentClient() {
 }
 
 bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
-    if (!ActivateClientForPID(pid)) {
+    if (!ActivateClientForPID(pid, true)) {
         return false;
     }
     return StartCaptureThreadForCurrentClient();
 }
 
-bool AppAudioCapture::ReactivateClientForPID(DWORD pid) {
+bool AppAudioCapture::ReactivateClientForPID(DWORD pid, bool allowEventDriven) {
     // Drop the dead client without releasing the process-loopback COM interfaces
     // (releasing them crashes AudioSes CLoopbackMixer cleanup). The capture
     // thread, packet queue, and downstream track stay alive; we just swap in a
     // freshly activated client so packets resume on the same source.
     AbandonClientInterfaces();
-    return ActivateClientForPID(pid);
+    return ActivateClientForPID(pid, allowEventDriven);
 }
 
 bool AppAudioCapture::ActivateAudioInterfaceForPID(DWORD pid, IAudioClient** audioClient) {
@@ -610,7 +610,7 @@ bool AppAudioCapture::ActivateAudioInterfaceForPID(DWORD pid, IAudioClient** aud
     return true;
 }
 
-bool AppAudioCapture::ActivateClientForPID(DWORD pid) {
+bool AppAudioCapture::ActivateClientForPID(DWORD pid, bool allowEventDriven) {
     const HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(coInitHr) && coInitHr != RPC_E_CHANGED_MODE) {
         DLL_Log("[AppAudioCapture] CoInitializeEx failed: 0x%x", coInitHr);
@@ -635,10 +635,10 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid) {
         const char* description;
     };
     const ClientAttempt attempts[] = {
-        {AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, 100000,
-         true, "event-driven loopback/autoconvert"},
         {AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, 2000000, false,
          "polling loopback/autoconvert"},
+        {AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, 100000,
+         true, "event-driven loopback/autoconvert"},
         {0, 2000000, false, "polling plain"},
     };
 
@@ -649,7 +649,7 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid) {
             DLL_Log("[AppAudioCapture] Activation cancelled for PID %lu during shutdown", pid);
             return false;
         }
-        if (attempt.requiresEvent && !captureEvent_) {
+        if (attempt.requiresEvent && (!allowEventDriven || !captureEvent_)) {
             continue;
         }
 
@@ -794,8 +794,9 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid) {
         static_cast<unsigned long long>(minDevicePeriod100ns / 10), bufferFrameCount,
         static_cast<unsigned long long>(bufferDurationUs));
 
-    DLL_Log("[AppAudioCapture] Capture mode: %s",
-            (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
+    DLL_Log("[AppAudioCapture] Capture mode contract: selected=%s preference=polling-first eventFallbackAllowed=%d",
+            (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling",
+            allowEventDriven ? 1 : 0);
 
     return true;
 }
@@ -804,11 +805,11 @@ void AppAudioCapture::AbandonClientInterfaces() {
     // Process loopback is backed by AudioSes' CLoopbackMixer. On current Windows 11
     // builds the mixer can crash in AudioLimiterAPO cleanup when the process-loopback
     // COM interfaces are released, especially with duplicate process-loopback
-    // captures. The media process is short-lived per recording, so leave these
-    // OS-owned interfaces for process teardown instead of touching the crash-prone
-    // AudioSes cleanup path. Mid-recording re-activation goes through here too; the
-    // abandoned wrappers are tiny and bounded by recovery backoff, so the leak is
-    // negligible and reclaimed at process exit.
+    // captures. This object runs in a disposable process-loopback helper, so leave
+    // these OS-owned interfaces for helper teardown instead of touching the
+    // crash-prone AudioSes cleanup path. A re-activation emits a new epoch; the
+    // worker then recycles the helper immediately, bounding abandoned wrappers to
+    // one helper generation even during a long recording.
     if (pCaptureClient || pAudioClient) {
         DLL_Log(
             "[AppAudioCapture] Abandoning process-loopback COM interfaces "
@@ -885,11 +886,15 @@ void AppAudioCapture::CaptureLoop() {
     // --- Mid-recording stream recovery state (device-invalidation + silent stall) ---
     const ce::audio::StreamRecoveryConfig recoveryCfg = recoveryConfig_;
     uint64_t lastPacketTick = GetTickCount64();  // arms the silent-stall window from stream start
-    uint64_t noPacketSinceTick = lastPacketTick;
     uint64_t lastNoPacketDiagnosticTick = 0;
     uint64_t lastReactivateTick = 0;
     uint64_t recoveryBackoffMs = 0;
     bool sawAnyPacket = false;
+    bool currentActivationQualified = false;
+    uint64_t currentActivationStartTick = lastPacketTick;
+    uint64_t qualifiedActivationCount = 0;
+    uint64_t eventFallbackAttempts = 0;
+    uint64_t eventFallbackSuccesses = 0;
     uint64_t reactivateAttempts = 0;
     uint64_t reactivateSuccesses = 0;
     // Per-session throttled error logging (NOT static: must reset every session, or
@@ -910,7 +915,7 @@ void AppAudioCapture::CaptureLoop() {
 
     // Tear down the dead client and re-activate in place. Honors backoff so a stream
     // that cannot be recovered (or an app that is legitimately paused) is not hammered.
-    auto attemptReactivate = [&](const char* reason, long hrCode) -> bool {
+    auto attemptReactivate = [&](const char* reason, long hrCode, bool allowEventDriven = true) -> bool {
         const uint64_t now = GetTickCount64();
         if (!ce::audio::RecoveryBackoffElapsed(now, lastReactivateTick, recoveryBackoffMs)) {
             return false;
@@ -924,11 +929,13 @@ void AppAudioCapture::CaptureLoop() {
             "attempt=%llu nextBackoffMs=%llu)",
             pid, reason, static_cast<unsigned long>(hrCode), static_cast<unsigned long long>(reactivateAttempts),
             static_cast<unsigned long long>(recoveryBackoffMs));
-        const bool ok = ReactivateClientForPID(pid);
-        // Restart the silent-stall window regardless of outcome: on success we wait
-        // for fresh audio; on failure we wait the full window before the next try.
+        const bool ok = ReactivateClientForPID(pid, allowEventDriven);
+        // A successful replacement must qualify with its own first packet before
+        // another silent-stall recovery can arm. A failed/null client still retries
+        // through the explicit backoff path below.
         lastPacketTick = GetTickCount64();
-        noPacketSinceTick = lastPacketTick;
+        currentActivationStartTick = lastPacketTick;
+        currentActivationQualified = false;
         if (ok) {
             ++reactivateSuccesses;
             firstSet = false;
@@ -1032,17 +1039,36 @@ void AppAudioCapture::CaptureLoop() {
                 break;
             }
             const uint64_t noPacketNow = GetTickCount64();
-            if (!sawAnyPacket && noPacketNow - noPacketSinceTick >= 3000 &&
+            const uint64_t activationElapsedMs =
+                noPacketNow >= currentActivationStartTick ? noPacketNow - currentActivationStartTick : 0;
+            const bool eventDriven = (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0;
+            if (ce::audio::ShouldFallbackUnqualifiedEventCapture(
+                    eventDriven, currentActivationQualified, activationElapsedMs, recoveryCfg) &&
+                ce::audio::RecoveryBackoffElapsed(noPacketNow, lastReactivateTick, recoveryBackoffMs)) {
+                ++eventFallbackAttempts;
+                DLL_Log(
+                    "[AppAudioCapture] WARNING: event-driven activation failed first-packet qualification for "
+                    "PID %lu after %llu ms (epoch=%llu); re-activating polling-only and recycling the helper "
+                    "generation to bound abandoned AudioSes state",
+                    targetPID.load(), static_cast<unsigned long long>(activationElapsedMs),
+                    static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)));
+                if (attemptReactivate("event_first_packet_timeout", 0, false)) {
+                    ++eventFallbackSuccesses;
+                }
+                continue;
+            }
+            if (!currentActivationQualified && activationElapsedMs >= 3000 &&
                 (lastNoPacketDiagnosticTick == 0 || noPacketNow - lastNoPacketDiagnosticTick >= 30000)) {
                 DLL_Log(
                     "[AppAudioCapture] WARNING: process-loopback stream is active but has delivered no data "
-                    "packets for %llu ms: PID=%lu process=%s epoch=%llu mode=%s processAlive=%d. The route "
-                    "remains expected timeline silence; verify process-tree root selection and target audio activity",
-                    static_cast<unsigned long long>(noPacketNow - noPacketSinceTick), targetPID.load(),
+                    "packets for %llu ms: PID=%lu process=%s epoch=%llu mode=%s processAlive=%d everPacket=%d. "
+                    "The polling route remains expected timeline silence; verify process-tree root selection and "
+                    "target audio activity",
+                    static_cast<unsigned long long>(activationElapsedMs), targetPID.load(),
                     targetProcessName.empty() ? "<pid-mode>" : targetProcessName.c_str(),
                     static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)),
                     (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling",
-                    IsProcessRunning(targetPID.load()) ? 1 : 0);
+                    IsProcessRunning(targetPID.load()) ? 1 : 0, sawAnyPacket ? 1 : 0);
                 lastNoPacketDiagnosticTick = noPacketNow;
             }
             // Silent-stall watchdog: a process-loopback stream that delivered audio
@@ -1050,7 +1076,7 @@ void AppAudioCapture::CaptureLoop() {
             // process is still running usually means the app tore down and recreated
             // its audio session (e.g. a game auto-muting on alt-tab) and the mixer
             // did not reattach. Re-activate to reattach to the live session.
-            if (ce::audio::ShouldReactivateForSilentStall(sawAnyPacket, GetTickCount64(), lastPacketTick,
+            if (ce::audio::ShouldReactivateForSilentStall(currentActivationQualified, GetTickCount64(), lastPacketTick,
                                                           lastReactivateTick, recoveryBackoffMs, recoveryCfg)) {
                 DLL_Log(
                     "[AppAudioCapture] Process-loopback silent stall for PID %lu (%llu ms without packets, process "
@@ -1168,6 +1194,19 @@ void AppAudioCapture::CaptureLoop() {
             // Healthy, validated delivery: reset the silent-stall window and
             // clear backoff so future recovery is responsive.
             lastPacketTick = GetTickCount64();
+            if (!currentActivationQualified) {
+                currentActivationQualified = true;
+                ++qualifiedActivationCount;
+                DLL_Log(
+                    "[AppAudioCapture] First-packet qualification succeeded: PID=%lu epoch=%llu mode=%s "
+                    "elapsed=%llums frames=%u flags=0x%lx",
+                    targetPID.load(), static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)),
+                    (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling",
+                    static_cast<unsigned long long>(lastPacketTick >= currentActivationStartTick
+                                                        ? lastPacketTick - currentActivationStartTick
+                                                        : 0),
+                    numFramesAvailable, flags);
+            }
             sawAnyPacket = true;
             recoveryBackoffMs = 0;
             if (drainingAfterStop) {
@@ -1411,6 +1450,14 @@ void AppAudioCapture::CaptureLoop() {
     }
 
     DLL_Log("[AppAudioCapture] Capture loop exited");
+    DLL_Log(
+        "[AppAudioCapture] First-packet qualification summary for PID %lu: everPacket=%d currentQualified=%d "
+        "qualifiedActivations=%llu eventFallback=%llu/%llu finalEpoch=%llu finalMode=%s",
+        targetPID.load(), sawAnyPacket ? 1 : 0, currentActivationQualified ? 1 : 0,
+        static_cast<unsigned long long>(qualifiedActivationCount), static_cast<unsigned long long>(eventFallbackSuccesses),
+        static_cast<unsigned long long>(eventFallbackAttempts),
+        static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)),
+        (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
     if (reactivateAttempts > 0) {
         DLL_Log("[AppAudioCapture] Stream recovery summary for PID %lu: %llu re-activation attempt(s), %llu succeeded",
                 targetPID.load(), static_cast<unsigned long long>(reactivateAttempts),

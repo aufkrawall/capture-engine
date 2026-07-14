@@ -719,6 +719,8 @@ public:
     std::atomic<uint32_t> deliveredMin500Fps_{0};
     std::atomic<uint32_t> inputMin250Fps_{0};
     std::atomic<uint32_t> inputMin500Fps_{0};
+    std::atomic<uint64_t> lastDeliveredRateSampleTickMs_{0};
+    std::atomic<uint64_t> lastInputRateSampleTickMs_{0};
 
     // Frame throttle: skip CopyResource if we're ahead of target FPS
     uint32_t targetFps_ = 0;
@@ -1685,6 +1687,8 @@ public:
         deliveredMin500Fps_.store(0, std::memory_order_relaxed);
         inputMin250Fps_.store(0, std::memory_order_relaxed);
         inputMin500Fps_.store(0, std::memory_order_relaxed);
+        lastDeliveredRateSampleTickMs_.store(0, std::memory_order_relaxed);
+        lastInputRateSampleTickMs_.store(0, std::memory_order_relaxed);
         skippedFrameCount_.store(0, std::memory_order_relaxed);
         pacingSkipCount_.store(0, std::memory_order_relaxed);
         throttleSkipCount_.store(0, std::memory_order_relaxed);
@@ -1805,6 +1809,7 @@ public:
     void RecordInputFrameEvent() {
         const uint64_t nowMs = GetTickCount64();
         inputRateWindow_.AddSample(nowMs);
+        lastInputRateSampleTickMs_.store(nowMs, std::memory_order_relaxed);
         inputMin250Fps_.store(inputRateWindow_.MinRatePerSecond(nowMs, 250, 1000), std::memory_order_relaxed);
         inputMin500Fps_.store(inputRateWindow_.MinRatePerSecond(nowMs, 500, 1000), std::memory_order_relaxed);
     }
@@ -1812,6 +1817,7 @@ public:
     void RecordDeliveredFrameEvent() {
         const uint64_t nowMs = GetTickCount64();
         deliveredRateWindow_.AddSample(nowMs);
+        lastDeliveredRateSampleTickMs_.store(nowMs, std::memory_order_relaxed);
         deliveredRatePerSec_.store(deliveredRateWindow_.RatePerSecond(nowMs, 1000), std::memory_order_relaxed);
         deliveredMin250Fps_.store(deliveredRateWindow_.MinRatePerSecond(nowMs, 250, 1000), std::memory_order_relaxed);
         deliveredMin500Fps_.store(deliveredRateWindow_.MinRatePerSecond(nowMs, 500, 1000), std::memory_order_relaxed);
@@ -1910,18 +1916,31 @@ public:
             }
 
             const HRESULT hr = session5->put_MinUpdateInterval(interval100ns);
+            int64_t readback100ns = -1;
+            const HRESULT readbackHr = SUCCEEDED(hr) ? session5->get_MinUpdateInterval(&readback100ns) : hr;
             session5->Release();
             if (FAILED(hr)) {
-                LogInfo("[WGC] MinUpdateInterval not available (older WinRT projection/runtime)");
+                LogWarn("[WGC] MinUpdateInterval write failed: requested=%lld (100ns) targetFps=%u hr=0x%08lX",
+                        static_cast<long long>(interval100ns), producerTargetFps_, static_cast<unsigned long>(hr));
                 return;
             }
 
-            if (producerTargetFps_ > 0) {
-                LogInfo("[WGC] MinUpdateInterval set to %lld (100ns) for %u fps target", (long long)interval100ns,
-                        producerTargetFps_);
-            } else {
-                LogInfo("[WGC] MinUpdateInterval set to 0 (max rate)");
+            if (FAILED(readbackHr)) {
+                LogWarn(
+                    "[WGC] MinUpdateInterval readback unavailable: requested=%lld (100ns) targetFps=%u hr=0x%08lX",
+                    static_cast<long long>(interval100ns), producerTargetFps_, static_cast<unsigned long>(readbackHr));
+                return;
             }
+            if (readback100ns != interval100ns) {
+                LogError(
+                    "[WGC] ERROR: MinUpdateInterval readback mismatch: requested=%lld actual=%lld (100ns) "
+                    "targetFps=%u",
+                    static_cast<long long>(interval100ns), static_cast<long long>(readback100ns), producerTargetFps_);
+                return;
+            }
+            LogInfo("[WGC] MinUpdateInterval contract applied: requested=%lld actual=%lld (100ns) targetFps=%u mode=%s",
+                    static_cast<long long>(interval100ns), static_cast<long long>(readback100ns), producerTargetFps_,
+                    producerTargetFps_ == 0 ? "max-rate" : "finite-limit");
         } catch (...) {
             LogInfo("[WGC] MinUpdateInterval not available (older WinRT projection/runtime)");
         }
@@ -3685,8 +3704,9 @@ public:
                 targetWindow_ ? "window" : "monitor", originMode ? originMode : "unresolved", originLeft, originTop,
                 frameWidth_, frameHeight_);
 
-        // Ask WGC to wake no faster than the requested producer cadence so
-        // cursor movement cannot drive compositor work far above useful capture FPS.
+        // Apply and verify the producer contract before capture starts. CFR uses
+        // zero (max rate); any surplus compositor updates are cheaper and safer
+        // to discard in the timestamp scheduler than through interval aliasing.
         ApplyMinUpdateInterval();
 
         session_.StartCapture();
@@ -4326,7 +4346,10 @@ int64_t WGCCapture::GetSourceToCopyLatencyMaxUs() const {
 
 uint32_t WGCCapture::GetDeliveredRatePerSec() const {
 #if HAS_WGC
-    return impl_ ? impl_->deliveredRatePerSec_.load(std::memory_order_relaxed) : 0;
+    return impl_ ? ce::rate_window::AgeCachedRate(impl_->deliveredRatePerSec_.load(std::memory_order_relaxed),
+                                                  impl_->lastDeliveredRateSampleTickMs_.load(std::memory_order_relaxed),
+                                                  GetTickCount64(), 1000)
+                 : 0;
 #else
     return 0;
 #endif
@@ -4334,7 +4357,10 @@ uint32_t WGCCapture::GetDeliveredRatePerSec() const {
 
 uint32_t WGCCapture::GetDeliveredMin250Fps() const {
 #if HAS_WGC
-    return impl_ ? impl_->deliveredMin250Fps_.load(std::memory_order_relaxed) : 0;
+    return impl_ ? ce::rate_window::AgeCachedRate(impl_->deliveredMin250Fps_.load(std::memory_order_relaxed),
+                                                  impl_->lastDeliveredRateSampleTickMs_.load(std::memory_order_relaxed),
+                                                  GetTickCount64(), 250)
+                 : 0;
 #else
     return 0;
 #endif
@@ -4342,7 +4368,10 @@ uint32_t WGCCapture::GetDeliveredMin250Fps() const {
 
 uint32_t WGCCapture::GetDeliveredMin500Fps() const {
 #if HAS_WGC
-    return impl_ ? impl_->deliveredMin500Fps_.load(std::memory_order_relaxed) : 0;
+    return impl_ ? ce::rate_window::AgeCachedRate(impl_->deliveredMin500Fps_.load(std::memory_order_relaxed),
+                                                  impl_->lastDeliveredRateSampleTickMs_.load(std::memory_order_relaxed),
+                                                  GetTickCount64(), 500)
+                 : 0;
 #else
     return 0;
 #endif
@@ -4350,7 +4379,10 @@ uint32_t WGCCapture::GetDeliveredMin500Fps() const {
 
 uint32_t WGCCapture::GetInputMin250Fps() const {
 #if HAS_WGC
-    return impl_ ? impl_->inputMin250Fps_.load(std::memory_order_relaxed) : 0;
+    return impl_ ? ce::rate_window::AgeCachedRate(impl_->inputMin250Fps_.load(std::memory_order_relaxed),
+                                                  impl_->lastInputRateSampleTickMs_.load(std::memory_order_relaxed),
+                                                  GetTickCount64(), 250)
+                 : 0;
 #else
     return 0;
 #endif
@@ -4358,7 +4390,10 @@ uint32_t WGCCapture::GetInputMin250Fps() const {
 
 uint32_t WGCCapture::GetInputMin500Fps() const {
 #if HAS_WGC
-    return impl_ ? impl_->inputMin500Fps_.load(std::memory_order_relaxed) : 0;
+    return impl_ ? ce::rate_window::AgeCachedRate(impl_->inputMin500Fps_.load(std::memory_order_relaxed),
+                                                  impl_->lastInputRateSampleTickMs_.load(std::memory_order_relaxed),
+                                                  GetTickCount64(), 500)
+                 : 0;
 #else
     return 0;
 #endif

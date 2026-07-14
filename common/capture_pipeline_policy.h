@@ -112,14 +112,11 @@ constexpr uint32_t kWgcRecoveryEnterShortfallTicks = 3;
 constexpr uint32_t kWgcRecoveryEnterHoldMs = 120;
 constexpr uint32_t kWgcRecoveryExitHoldMs = 450;
 constexpr double kWgcAudioLeadCatchupThresholdMs = 40.0;
-// Steady WGC CFR asks the compositor for modest source headroom instead of an
-// unlimited producer rate. Max-rate is still used temporarily by the adaptive
-// recovery path when source/reservoir telemetry shows that the cap is hurting
-// smoothness.
-constexpr uint32_t kWgcCfrOvercaptureHeadroomPermille = 1250;
-constexpr uint32_t kWgcCfrOvercaptureStableRestoreMs = 2000;
-constexpr uint32_t kWgcAdaptiveCapUnderfeedWaitMs = 3000;
-constexpr uint32_t kWgcAdaptiveCapHeadroomFps = 5;
+// Long enough to distinguish a sustained below-output source from a transient
+// delivery wobble when classifying recovery state. This is telemetry only: CFR
+// WGC capture must never feed the resulting post-sampler rate back into
+// MinUpdateInterval.
+constexpr uint32_t kWgcStableUnderfeedClassificationMs = 3000;
 constexpr double kEncoderGpuPriorityRaiseBudgetRatio = 0.75;
 constexpr double kEncoderGpuPriorityRestoreBudgetRatio = 0.50;
 constexpr uint32_t kEncoderOverloadFlagEncoder = 1u;
@@ -953,34 +950,26 @@ inline bool IsWgcFramePastStartupBarrier(int64_t frameQpc, int64_t startupBarrie
     return startupBarrierQpc <= 0 || (frameQpc > 0 && frameQpc >= startupBarrierQpc);
 }
 
-inline uint32_t GetWgcCfrOvercaptureTargetFps(uint32_t outputFps,
-                                              uint32_t headroomPermille = kWgcCfrOvercaptureHeadroomPermille) {
-    if (headroomPermille == 0u) {
-        return 0u;
-    }
-
-    if (outputFps == 0 || headroomPermille <= 1000u) {
-        return outputFps;
-    }
-
-    return static_cast<uint32_t>((static_cast<uint64_t>(outputFps) * headroomPermille + 999ull) / 1000ull);
+inline uint32_t GetWgcCfrProducerTargetFps(uint32_t /*outputFps*/) {
+    // WGC MinUpdateInterval is a minimum gap between accepted compositor
+    // updates, not a resampler. With periodic source rate S and finite limit P,
+    // the idealized delivery rate is S / ceil(S / P). A 138 fps source limited
+    // to 120 therefore becomes about 69 fps; a 160 fps source limited to 150
+    // becomes about 80 fps. Since the source cadence is variable and is only
+    // observable after this gate, no finite feedback target is universally
+    // safe. CFR records at max producer rate and the timestamp-nearest scheduler
+    // discards surplus history itself.
+    return 0;
 }
 
-inline uint32_t ComputeWgcAdaptiveCappedTargetFps(uint32_t outputFps, uint32_t sourceMin250Fps,
-                                                  uint32_t originalOvercaptureFps,
-                                                  uint32_t headroomFps = kWgcAdaptiveCapHeadroomFps,
-                                                  uint32_t sourceAvgFps = 0) {
-    if (sourceMin250Fps == 0 || outputFps == 0) {
-        return 0;
+inline uint32_t EstimateWgcMinUpdateIntervalDeliveryFps(uint32_t sourceFps, uint32_t producerTargetFps) {
+    if (sourceFps == 0 || producerTargetFps == 0 || producerTargetFps >= sourceFps) {
+        return sourceFps;
     }
-    // Never cap below the source's actual average delivery rate. Capping below
-    // the source interval (e.g. 120fps MinUpdateInterval with 140fps VRR game)
-    // causes WGC to gate every ~other frame (8.33ms min-interval rejects 7.1ms
-    // input) → effective delivery is HALVED to ~70fps instead of 120fps.
-    const uint32_t effectiveSourceRate = sourceAvgFps > 0 ? std::max(sourceMin250Fps, sourceAvgFps) : sourceMin250Fps;
-    const uint32_t floorFps = std::min(std::max(effectiveSourceRate, outputFps), originalOvercaptureFps);
-    uint32_t candidate = std::max(floorFps, effectiveSourceRate + headroomFps);
-    return std::min(candidate, originalOvercaptureFps);
+    const uint32_t acceptedEvery = static_cast<uint32_t>(
+        (static_cast<uint64_t>(sourceFps) + static_cast<uint64_t>(producerTargetFps) - 1ull) /
+        static_cast<uint64_t>(producerTargetFps));
+    return sourceFps / acceptedEvery;
 }
 
 inline bool ShouldRaiseAdaptiveEncoderGpuPriority(double encodeMs, double frameIntervalMs,
@@ -1078,111 +1067,6 @@ inline bool IsWgcActiveDelaySourceLimitedJitter(const WgcAdaptiveTelemetry& tele
     return telemetry.emptyTickPermille >= kWgcLowSourceExitEmptyTickPermille ||
            telemetry.recentDeliveredMin250Fps < telemetry.outputFps ||
            telemetry.recentInputMin250Fps < telemetry.outputFps;
-}
-
-inline bool ShouldUseWgcMaxRateForRecovery(const WgcAdaptiveTelemetry& telemetry, uint32_t noFreshTickPermille,
-                                           bool lowSourceModeActive, bool liveRecoveryModeActive) {
-    if (telemetry.outputFps == 0) {
-        return false;
-    }
-
-    // When the source delivers above the output target on average, per-tick
-    // fresh-frame misses are DWM delivery burstiness, not true source starvation.
-    // Max-rate WGC doesn't fix delivery gaps — DWM still controls the frame
-    // pipeline. Keep the producer throttled to avoid futile max-rate cycling.
-    const bool sourceAboveTarget =
-        telemetry.recentDeliveredMin250Fps > 0 && telemetry.recentDeliveredMin250Fps >= telemetry.outputFps &&
-        telemetry.recentInputMin250Fps > 0 && telemetry.recentInputMin250Fps >= telemetry.outputFps;
-    if (sourceAboveTarget) {
-        return false;
-    }
-
-    if (lowSourceModeActive || liveRecoveryModeActive) {
-        return true;
-    }
-
-    if (noFreshTickPermille >= kWgcLowSourceEmptyTickPermille) {
-        return true;
-    }
-
-    return telemetry.recentInputMin250Fps > 0 && telemetry.recentInputMin250Fps < telemetry.outputFps;
-}
-
-inline bool ShouldUseWgcMaxRateForDelayReservoirRecovery(const WgcAdaptiveTelemetry& telemetry,
-                                                         bool delayReservoirBelowLowWater, bool lowSourceModeActive,
-                                                         bool liveRecoveryModeActive) {
-    if (!delayReservoirBelowLowWater || telemetry.outputFps == 0) {
-        return false;
-    }
-    if (lowSourceModeActive || liveRecoveryModeActive) {
-        return false;
-    }
-    if (telemetry.emptyTickPermille >= kWgcDeepUnderfeedEmptyTickPermille) {
-        return false;
-    }
-    if (telemetry.recentInputMin250Fps > 0 &&
-        telemetry.recentInputMin250Fps + kWgcRecoverySourceMarginFps < telemetry.outputFps) {
-        return false;
-    }
-    if (telemetry.recentDeliveredMin250Fps > 0 &&
-        telemetry.recentDeliveredMin250Fps + kWgcRecoverySourceMarginFps < telemetry.outputFps &&
-        telemetry.emptyTickPermille >= kWgcLowSourceExitEmptyTickPermille) {
-        return false;
-    }
-    return true;
-}
-
-inline bool ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(const WgcAdaptiveTelemetry& telemetry,
-                                                             bool delayReservoirBelowLowWater, bool producerCapped) {
-    if (!producerCapped || !delayReservoirBelowLowWater || telemetry.outputFps == 0) {
-        return false;
-    }
-
-    // When the source delivers above the output target on average, empty-tick
-    // permille is delivery burstiness, not underfeed — keep the cap.
-    const bool sourceAboveTarget =
-        telemetry.recentDeliveredMin250Fps > 0 && telemetry.recentDeliveredMin250Fps >= telemetry.outputFps &&
-        telemetry.recentInputMin250Fps > 0 && telemetry.recentInputMin250Fps >= telemetry.outputFps;
-    if (sourceAboveTarget) {
-        return false;
-    }
-
-    const bool inputBelowOutput = telemetry.recentInputMin250Fps > 0 &&
-                                  telemetry.recentInputMin250Fps + kWgcRecoverySourceMarginFps < telemetry.outputFps;
-    const bool deliveredBelowOutput =
-        telemetry.recentDeliveredMin250Fps > 0 &&
-        telemetry.recentDeliveredMin250Fps + kWgcRecoverySourceMarginFps < telemetry.outputFps;
-    return inputBelowOutput || deliveredBelowOutput || telemetry.emptyTickPermille >= kWgcLowSourceEmptyTickPermille;
-}
-
-inline bool ShouldUseWgcMaxRateForStartupReserveWait(bool reserveMissing, bool waitBudgetRemaining,
-                                                     bool producerCapped) {
-    return reserveMissing && waitBudgetRemaining && producerCapped;
-}
-
-inline bool ShouldRestoreWgcOvercaptureCap(const WgcAdaptiveTelemetry& telemetry, uint32_t noFreshTickPermille,
-                                           uint64_t stableDurationMs,
-                                           uint64_t requiredStableMs = kWgcCfrOvercaptureStableRestoreMs) {
-    if (telemetry.outputFps == 0 || stableDurationMs < requiredStableMs) {
-        return false;
-    }
-
-    // When the source delivers above the output target on all recent windows,
-    // per-tick fresh misses are DWM delivery burstiness, not source starvation.
-    // Restore the cap so the producer is throttled to a realistic rate.
-    const bool sourceAboveTarget = telemetry.recentDeliveredMin250Fps >= telemetry.outputFps &&
-                                   telemetry.recentDeliveredMin500Fps >= telemetry.outputFps &&
-                                   telemetry.recentInputMin250Fps >= telemetry.outputFps &&
-                                   telemetry.recentInputMin500Fps >= telemetry.outputFps;
-    if (sourceAboveTarget) {
-        return true;
-    }
-
-    return telemetry.recentDeliveredMin250Fps >= telemetry.outputFps &&
-           telemetry.recentDeliveredMin500Fps >= telemetry.outputFps &&
-           telemetry.recentInputMin250Fps >= telemetry.outputFps &&
-           telemetry.recentInputMin500Fps >= telemetry.outputFps &&
-           noFreshTickPermille <= kWgcLowSourceExitEmptyTickPermille;
 }
 
 inline bool ShouldUseNativeWgcCursorCapture(bool /*recordingCursorRequested*/) {

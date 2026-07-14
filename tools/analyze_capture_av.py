@@ -35,6 +35,11 @@ LOG_PATTERNS = {
         r"\[AppAudioCapture\] WARNING: process-loopback stream is active but has delivered no data packets"
     ),
     "audio_app_stop_active_no_data": re.compile(r"\[STOP AUDIO\] Source \d+ \(app-active-no-data\)"),
+    "audio_app_capture_mode_contract": re.compile(r"\[AppAudioCapture\] Capture mode contract:"),
+    "audio_app_first_packet_qualified": re.compile(r"\[AppAudioCapture\] First-packet qualification succeeded:"),
+    "audio_app_event_first_packet_fallback": re.compile(
+        r"\[AppAudioCapture\] WARNING: event-driven activation failed first-packet qualification"
+    ),
     "cfr_finalization_lattice": re.compile(r"\[FinalizationLattice\] CFR endpoint contract"),
     "cfr_finalization_lattice_error": re.compile(r"\[FinalizationLattice\] ERROR"),
     "audio_latency_cap": re.compile(r"\[PullAudio\] Audio latency cap:"),
@@ -87,6 +92,14 @@ LOG_PATTERNS = {
     "wgc_start_contract_error": re.compile(
         r"ERROR: WGC (?:CFR start contract selection failed|"
         r"first frame encoded without a valid transactional start contract)"
+    ),
+    "wgc_cfr_max_rate_producer_contract": re.compile(r"\[WGC CFR\] Producer contract:.*producerTargetFps=0"),
+    "wgc_cfr_producer_contract_fault": re.compile(
+        r"(?:\[WGC CFR\] Producer contract:.*producerTargetFps=[1-9]\d*|"
+        r"\[WGC CFR\] ERROR: producer contract violation|"
+        r"\[WGC\] ERROR: MinUpdateInterval readback mismatch|"
+        r"\[Cadence Health\].*\bWgcThr=[1-9]\d*)",
+        re.IGNORECASE,
     ),
     "wgc_stale_fresh_catchup_blocked": re.compile(r"\[EncoderThread\] WGC CFR stale fresh-catchup blocked"),
     "wgc_visual_timeline_debt_drop": re.compile(r"\[EncoderThread\] WGC CFR visual timeline debt drop"),
@@ -434,6 +447,7 @@ TRIAGE_VISUAL_FAULT_EVENTS = {
     "wgc_stop_hold_repeats",
     "wgc_drain_duplicate_summary",
     "wgc_start_contract_error",
+    "wgc_cfr_producer_contract_fault",
 }
 
 TRIAGE_MUX_FAULT_EVENTS = {
@@ -3601,6 +3615,8 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     wgc_delivery_gap = has_wgc_delivery_gap(media_evidence)
     if wgc_delivery_gap:
         verdicts.append("wgc_delivery_gap")
+    if log_summary and log_summary["counts"].get("wgc_cfr_producer_contract_fault", 0) > 0:
+        verdicts.append("wgc_producer_rate_contract_fault")
     wgc_framepool_pressure = has_wgc_framepool_pressure_attribution(media_evidence)
     if wgc_framepool_pressure:
         verdicts.append("wgc_framepool_pressure")
@@ -3746,6 +3762,8 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
         verdicts.append("wgc_sync_delay_reserve_pressure")
     if started_app_source_health["late_source_backlog_count"] > 0 or started_app_source_health["backlog_sources"]:
         verdicts.append("late_app_source_backlog")
+    if log_summary and log_summary["counts"].get("audio_app_stop_active_no_data", 0) > 0:
+        verdicts.append("app_audio_active_no_data")
     if started_app_source_health["app_gap_silence_count"] > 0:
         if sparse_only_app_silence:
             verdicts.append("sparse_app_source_silence")
@@ -4505,6 +4523,31 @@ def self_test():
             if perf:
                 (session / "perf_metrics_1.csv").write_text(perf, encoding="utf-8")
             return session
+
+        finite_wgc_producer = make_session(
+            "finite_wgc_producer",
+            media=(
+                "[Cadence Health] Live=120 Unique=72 Dup=48 WgcThr=120 Adj=1 SrcFps=72.00\n"
+                "[WGC CFR] Producer contract: backend=wgc outputFps=120 producerTargetFps=120 "
+                "minUpdateInterval100ns=83333 policy=finite localThrottleFps=0\n"
+            ),
+        )
+        report = classify_session_triage(finite_wgc_producer)
+        assert report["evidence"]["log_counts"]["wgc_cfr_producer_contract_fault"] == 2
+        assert "wgc_producer_rate_contract_fault" in report["verdicts"]
+        assert "ce_visual_timeline_fault" in report["verdicts"]
+
+        app_active_no_data = make_session(
+            "app_active_no_data",
+            media=(
+                "[AppAudioCapture] Capture mode contract: selected=polling preference=polling-first "
+                "eventFallbackAllowed=1\n"
+                "[STOP AUDIO] Source 1 (app-active-no-data): track=2 process=brave.exe\n"
+            ),
+        )
+        report = classify_session_triage(app_active_no_data)
+        assert "app_audio_active_no_data" in report["verdicts"]
+        assert report["evidence"]["log_counts"]["audio_app_capture_mode_contract"] == 1
 
         source_gap = make_session(
             "source_gap",

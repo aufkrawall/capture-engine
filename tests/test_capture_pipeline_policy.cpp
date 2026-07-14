@@ -649,15 +649,20 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelaySourceRecoveryClassifiesSevereStal
     EXPECT_FALSE(policy::IsWgcSevereSourceStallForActiveDelay(0, 0, 0, 1000, 0));
 }
 
-TEST(CapturePipelinePolicyTest, WgcCfrSourceCaptureDefaultsToSteadyHeadroomCap) {
-    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(0), 0u);
-    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(60), 75u);
-    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(120), 150u);
-    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(143), 179u);
-    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(120, 0), 0u);
-    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(60, 1250), 75u);
-    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(120, 1250), 150u);
-    EXPECT_EQ(policy::GetWgcCfrOvercaptureTargetFps(143, 1250), 179u);
+TEST(CapturePipelinePolicyTest, WgcCfrSourceCaptureAlwaysUsesMaxProducerRate) {
+    EXPECT_EQ(policy::GetWgcCfrProducerTargetFps(0), 0u);
+    EXPECT_EQ(policy::GetWgcCfrProducerTargetFps(60), 0u);
+    EXPECT_EQ(policy::GetWgcCfrProducerTargetFps(120), 0u);
+    EXPECT_EQ(policy::GetWgcCfrProducerTargetFps(1000), 0u);
+}
+
+TEST(CapturePipelinePolicyTest, WgcFiniteProducerIntervalsCanAliasToHalfRate) {
+    EXPECT_EQ(policy::EstimateWgcMinUpdateIntervalDeliveryFps(138, 0), 138u);
+    EXPECT_EQ(policy::EstimateWgcMinUpdateIntervalDeliveryFps(138, 120), 69u);
+    EXPECT_EQ(policy::EstimateWgcMinUpdateIntervalDeliveryFps(138, 150), 138u);
+    EXPECT_EQ(policy::EstimateWgcMinUpdateIntervalDeliveryFps(160, 150), 80u);
+    EXPECT_EQ(policy::EstimateWgcMinUpdateIntervalDeliveryFps(144, 120), 72u);
+    EXPECT_EQ(policy::EstimateWgcMinUpdateIntervalDeliveryFps(120, 120), 120u);
 }
 
 TEST(CapturePipelinePolicyTest, WgcRecordingAvoidsNativeCursorCapture) {
@@ -695,113 +700,6 @@ TEST(CapturePipelinePolicyTest, AutoWgcUsesForegroundFullscreenWindowOnlyWhenNoS
         /*autoCaptureConfig=*/true, /*explicitInjectConfig=*/false, /*injectWhitelisted=*/false,
         /*hasSourcePid=*/false, /*hasMatchedConfiguredWgcWindow=*/false, /*foregroundUsable=*/true,
         /*foregroundFullscreenLike=*/false));
-}
-
-TEST(CapturePipelinePolicyTest, WgcOvercaptureSwitchesToMaxRateDuringRecovery) {
-    policy::WgcAdaptiveTelemetry telemetry{};
-    telemetry.outputFps = 120;
-    telemetry.recentDeliveredMin250Fps = 120;
-    telemetry.recentDeliveredMin500Fps = 120;
-    telemetry.recentInputMin250Fps = 122;
-    telemetry.recentInputMin500Fps = 122;
-
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, 20, false, false));
-
-    // When source delivers above the output target on average, per-tick fresh
-    // misses and recovery-mode flags are DWM delivery burstiness, not starvation.
-    // Max-rate is futile — DWM still controls the frame pipeline.
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, 20, true, false));
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, 20, false, true));
-    EXPECT_FALSE(
-        policy::ShouldUseWgcMaxRateForRecovery(telemetry, policy::kWgcLowSourceEmptyTickPermille, false, false));
-
-    telemetry.recentInputMin250Fps = 119;
-    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForRecovery(telemetry, 20, false, false));
-}
-
-TEST(CapturePipelinePolicyTest, WgcDelayReservoirRecoveryRequiresHealthySource) {
-    policy::WgcAdaptiveTelemetry telemetry{};
-    telemetry.outputFps = 120;
-    telemetry.recentDeliveredMin250Fps = 122;
-    telemetry.recentDeliveredMin500Fps = 122;
-    telemetry.recentInputMin250Fps = 122;
-    telemetry.recentInputMin500Fps = 122;
-    telemetry.emptyTickPermille = 20;
-
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(telemetry, false, false, false));
-    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(telemetry, true, false, false));
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(telemetry, true, true, false));
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(telemetry, true, false, true));
-
-    telemetry.recentInputMin250Fps = 90;
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(telemetry, true, false, false));
-
-    telemetry.recentInputMin250Fps = 122;
-    telemetry.recentDeliveredMin250Fps = 90;
-    telemetry.emptyTickPermille = policy::kWgcLowSourceExitEmptyTickPermille;
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(telemetry, true, false, false));
-}
-
-TEST(CapturePipelinePolicyTest, WgcCappedActiveDelayUnderfeedUsesMaxRateRecovery) {
-    policy::WgcAdaptiveTelemetry telemetry{};
-    telemetry.outputFps = 120;
-    telemetry.recentDeliveredMin250Fps = 122;
-    telemetry.recentInputMin250Fps = 122;
-    telemetry.emptyTickPermille = 20;
-
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
-        telemetry, /*delayReservoirBelowLowWater=*/true, /*producerCapped=*/true));
-
-    telemetry.recentInputMin250Fps = 115;
-    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
-        telemetry, /*delayReservoirBelowLowWater=*/true, /*producerCapped=*/true));
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
-        telemetry, /*delayReservoirBelowLowWater=*/false, /*producerCapped=*/true));
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
-        telemetry, /*delayReservoirBelowLowWater=*/true, /*producerCapped=*/false));
-
-    telemetry.recentInputMin250Fps = 122;
-    telemetry.recentDeliveredMin250Fps = 115;
-    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
-        telemetry, /*delayReservoirBelowLowWater=*/true, /*producerCapped=*/true));
-
-    telemetry.recentDeliveredMin250Fps = 122;
-    telemetry.emptyTickPermille = policy::kWgcLowSourceEmptyTickPermille;
-    // Source delivers above target (122 >= 120) — empty-tick permille is delivery
-    // burstiness, not underfeed. Keep the cap.
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
-        telemetry, /*delayReservoirBelowLowWater=*/true, /*producerCapped=*/true));
-}
-
-TEST(CapturePipelinePolicyTest, WgcStartupReserveWaitCanUseMaxRateRecovery) {
-    EXPECT_TRUE(policy::ShouldUseWgcMaxRateForStartupReserveWait(
-        /*reserveMissing=*/true, /*waitBudgetRemaining=*/true, /*producerCapped=*/true));
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForStartupReserveWait(
-        /*reserveMissing=*/false, /*waitBudgetRemaining=*/true, /*producerCapped=*/true));
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForStartupReserveWait(
-        /*reserveMissing=*/true, /*waitBudgetRemaining=*/false, /*producerCapped=*/true));
-    EXPECT_FALSE(policy::ShouldUseWgcMaxRateForStartupReserveWait(
-        /*reserveMissing=*/true, /*waitBudgetRemaining=*/true, /*producerCapped=*/false));
-}
-
-TEST(CapturePipelinePolicyTest, WgcOvercaptureRestoresOnlyAfterStableFreshSource) {
-    policy::WgcAdaptiveTelemetry telemetry{};
-    telemetry.outputFps = 120;
-    telemetry.recentDeliveredMin250Fps = 120;
-    telemetry.recentDeliveredMin500Fps = 120;
-    telemetry.recentInputMin250Fps = 122;
-    telemetry.recentInputMin500Fps = 122;
-
-    EXPECT_FALSE(policy::ShouldRestoreWgcOvercaptureCap(telemetry, 20, 1999));
-    EXPECT_TRUE(policy::ShouldRestoreWgcOvercaptureCap(telemetry, 20, 2000));
-
-    telemetry.recentInputMin250Fps = 119;
-    EXPECT_FALSE(policy::ShouldRestoreWgcOvercaptureCap(telemetry, 20, 2500));
-
-    telemetry.recentInputMin250Fps = 122;
-    // Source delivers above target — per-tick fresh misses are DWM delivery
-    // burstiness, not starvation. Restore the cap.
-    EXPECT_TRUE(policy::ShouldRestoreWgcOvercaptureCap(telemetry, 80, 2500));
 }
 
 TEST(CapturePipelinePolicyTest, AdaptiveEncoderGpuPriorityUsesBudgetHysteresis) {

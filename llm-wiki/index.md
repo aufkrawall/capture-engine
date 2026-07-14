@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-14 (transactional WGC/DXGI encoder prewarm and delayed-debt pruning, multi-process app-audio tree-root selection, exact codec-decoded endpoints, disposable process-loopback lifecycle, native AAC NMR configuration, cursor/content timeline alignment, and mixed-DPI/SDR/HDR composition, plus the 2026-07-12 capture/overlay state; see multi-audio-capture.md, cfr-capture-sync.md, build.py.md, wgc-capture.md, and log/recent.md)
+Last cross-checked: 2026-07-14 (max-rate variable-input WGC CFR, polling-first/first-packet-qualified process loopback, transactional WGC/DXGI encoder prewarm and delayed-debt pruning, exact codec-decoded endpoints, disposable process-loopback lifecycle, native AAC NMR configuration, cursor/content timeline alignment, and mixed-DPI/SDR/HDR composition; see multi-audio-capture.md, cfr-capture-sync.md, build.py.md, wgc-capture.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -63,11 +63,11 @@ Primary sources:
 - `regression-testing-and-logging.md`
   - Regression coverage expectations and deterministic capture runners, including the fast zero-drift gate, overload/long-soak profiles, and HAGS-on 4K120 contention gate. Last verified 2026-07-12.
 - `multi-audio-capture.md`
-  - Multi system/microphone/app capture, including generation-numbered reset/commit, ordered activation epochs, disposable process-loopback helper isolation, codec-specific finalization, completed-file decode authority, route-local compensation, and stop-tail preservation. Last verified 2026-07-14. Stale-risk: medium (real device/runtime validation remains necessary).
+  - Multi system/microphone/app capture, including polling-first process loopback with event-mode first-packet qualification, generation-numbered reset/commit, ordered activation epochs, disposable helper isolation/recycle, codec-specific finalization, completed-file decode authority, route-local compensation, and stop-tail preservation. Last verified 2026-07-14. Stale-risk: medium (real device/runtime validation remains necessary).
 - `wgc-capture.md`
-  - WGC and DXGI Desktop Duplication backends, including callback epochs, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and timeline/DPI/HDR-correct encoder cursor composition. Last verified 2026-07-14. Stale-risk: medium.
+  - WGC and DXGI Desktop Duplication backends, including the max-rate variable-input CFR producer invariant, callback-rate aging, callback epochs, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and timeline/DPI/HDR-correct encoder cursor composition. Last verified 2026-07-14. Stale-risk: medium.
 - `cfr-capture-sync.md`
-  - Shared WGC/DXGI/inject CFR and A/V invariants, including transactional startup, 300 ms WGC/DXGI look-ahead, nearest monotonic source selection, causal inject transport, overload repeats, and exact decoded stop/tail accounting. Last verified 2026-07-14. Stale-risk: medium.
+  - Shared WGC/DXGI/inject CFR and A/V invariants, including max-rate variable-input WGC production, transactional startup, 300 ms WGC/DXGI look-ahead, nearest monotonic source selection, causal inject transport, overload repeats, and exact decoded stop/tail accounting. Last verified 2026-07-14. Stale-risk: medium.
 - `performance-priority.md`
   - `[Performance]` priorities, adapter-aware HAGS auto resolution, D3D11 priority persistence/readback, capture/encoder MMCSS QoS, and D3D12 queue constraints. Last verified 2026-07-12. Stale-risk: medium.
 - `recording-output-paths.md`

@@ -133,11 +133,13 @@ private:
     // Activate + initialize + start a process-loopback client for pid, leaving
     // pAudioClient/pCaptureClient/pwfx ready. Does NOT launch the capture thread,
     // so it is reusable for both first start and mid-stream re-activation.
-    bool ActivateClientForPID(DWORD pid);
+    // Polling/autoconvert is the primary process-loopback contract. Event mode
+    // remains an initialization fallback when allowEventDriven is true.
+    bool ActivateClientForPID(DWORD pid, bool allowEventDriven);
     // Abandon the current (dead) client and re-activate a fresh one in place,
     // keeping the capture thread, queue, and downstream track alive. Used by the
     // capture loop on a fatal stream error or a silent stall.
-    bool ReactivateClientForPID(DWORD pid);
+    bool ReactivateClientForPID(DWORD pid, bool allowEventDriven);
     bool ActivateAudioInterfaceForPID(DWORD pid, IAudioClient** audioClient);
     bool StartCaptureThreadForCurrentClient();
     bool BeginAsyncStartForPID(DWORD pid);

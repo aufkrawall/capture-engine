@@ -100,7 +100,7 @@ static std::atomic<bool> g_RejectInjectFrames{false};
 static std::atomic<bool> g_AutoWgcFallbackArmed{false};
 static std::atomic<uint32_t> g_InjectBufferedTrimmedFrames{0};
 static std::atomic<uint32_t> g_InjectCadenceDroppedFrames{0};
-static std::atomic<uint32_t> g_WgcAdaptiveTargetFps{0};
+static std::atomic<uint32_t> g_WgcProducerTargetFps{0};
 static std::atomic<uint64_t> g_ActivePathMismatchFramesDiscarded{0};
 static ce::cursor::Timeline g_WgcCursorTimeline(1024);
 static ce::cursor::Timeline g_InjectCursorTimeline(1024);
@@ -668,7 +668,7 @@ uint32_t GetInitialWgcCfrTargetFps(const VideoConfig& video) {
         return 0;
     }
 
-    return ce::capture_policy::GetWgcCfrOvercaptureTargetFps(static_cast<uint32_t>(video.fps));
+    return ce::capture_policy::GetWgcCfrProducerTargetFps(static_cast<uint32_t>(video.fps));
 }
 
 uint32_t SaturatingToUint32(uint64_t value) {
@@ -983,13 +983,6 @@ struct CadenceHealthCounters {
     void Reset() {
         *this = {};
     }
-};
-
-enum class WgcAdaptiveThrottleMode : uint32_t {
-    kOff = 0,
-    kHeadroom105 = 1,
-    kHeadroom108 = 2,
-    kHeadroom125 = 3,
 };
 
 InjectFrameLineage MakeInjectFrameLineage(const QueuedFrame& frame) {
@@ -1329,7 +1322,7 @@ static void StopWgcCapturePipeline() {
     ClearStandbyWgcHandoffFrame();
     ResetDuplicationCursorSuppression("WGC pipeline stop");
     g_WgcCaptureShutdown = true;
-    g_WgcAdaptiveTargetFps.store(0, std::memory_order_relaxed);
+    g_WgcProducerTargetFps.store(0, std::memory_order_relaxed);
     if (g_pSharedMem) {
         g_pSharedMem->runtimeState.wgcTargetFps.store(0, std::memory_order_relaxed);
         g_pSharedMem->runtimeState.wgcCaptureHealthFlags.store(0, std::memory_order_relaxed);
@@ -1435,13 +1428,18 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     // duplication session may have ended while its software cursor was embedded.
     ResetDuplicationCursorSuppression("WGC recording start");
     g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
-    g_WgcAdaptiveTargetFps.store(initialWgcTargetFps, std::memory_order_relaxed);
-    // CFR WGC asks the compositor for bounded steady-state source headroom, and
-    // the adaptive policy temporarily returns to max-rate only during measured
-    // source/reservoir recovery. Keep the local copy throttle disabled so the
-    // producer governor does not become a second frame-drop policy.
+    g_WgcProducerTargetFps.store(initialWgcTargetFps, std::memory_order_relaxed);
+    // A finite WGC MinUpdateInterval aliases variable-rate sources and can turn
+    // 138 fps into about 69 fps. CFR therefore receives every compositor update
+    // and leaves surplus-frame selection to the timestamp scheduler. DXGI
+    // duplication has no producer interval; it shares the same zero target so
+    // the screen-grab contract is backend-independent.
     capture->SetTargetFps(0);
     capture->SetProducerTargetFps(initialWgcTargetFps);
+    LogInfo(
+        "[WGC CFR] Producer contract: backend=%s outputFps=%u producerTargetFps=%u minUpdateInterval100ns=0 "
+        "policy=max-rate-variable-input localThrottleFps=0",
+        capture->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc", outputFps, initialWgcTargetFps);
     // Persist before StartCapture so any device rebuild and the first WGC/DXGI
     // submissions inherit the configured relative GPU priority.
     capture->SetGpuPriority(config.video.gpuPriority);
@@ -3192,8 +3190,6 @@ void EncoderThreadFunc(const AppConfig& config) {
     int64_t wgcStartupDelayTargetUs = 0;
     bool wgcStartupSelectedByDelayReserve = false;
     std::string wgcStartupReserveReason = "not-run";
-    bool wgcStartupReserveMaxRateUsed = false;
-    uint32_t wgcStartupReserveMaxRateCount = 0;
     int64_t wgcSmoothnessActiveDelayQpc = 0;
     ce::capture_policy::CfrTimelineStartContract pendingWgcStartContract{};
     uint64_t pendingWgcStartContractGeneration = 0;
@@ -3394,12 +3390,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t wgcSyncDelaySourceRecoveryHoldCount = 0;
     uint64_t wgcActiveDelaySourceRecoveryUntilTick = 0;
     uint64_t wgcActiveDelaySourceRecoveryTicks = 0;
-    uint32_t wgcAdaptiveThrottleAdjustments = 0;
-    WgcAdaptiveThrottleMode wgcAdaptiveThrottleMode = WgcAdaptiveThrottleMode::kOff;
-    uint32_t wgcAdaptiveThrottlePendingTargetFps = 0;
-    WgcAdaptiveThrottleMode wgcAdaptiveThrottlePendingMode = WgcAdaptiveThrottleMode::kOff;
-    uint64_t wgcAdaptiveThrottlePendingSinceTick = 0;
-    uint64_t wgcOvercaptureStableSinceTick = 0;
+    uint32_t wgcProducerRateRetuneCount = 0;
+    uint64_t wgcProducerRateRetuneTotal = 0;
     uint32_t wgcRecentDeliveredFps = 0;
     uint32_t wgcRecentDeliveredMin250Fps = 0;
     uint32_t wgcRecentDeliveredMin500Fps = 0;
@@ -6155,7 +6147,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         : 0;
                 const bool stableWgcUnderfeed =
                     wgcSourceHealthTelemetryReady &&
-                    wgcLowSourceDurationMs >= ce::capture_policy::kWgcAdaptiveCapUnderfeedWaitMs &&
+                    wgcLowSourceDurationMs >= ce::capture_policy::kWgcStableUnderfeedClassificationMs &&
                     wgcRecentDeliveredMin250Fps > 0 && wgcRecentInputMin250Fps > 0;
                 const bool shouldExitWgcLowSourceMode =
                     ce::capture_policy::ShouldExitWgcLowSourceMode(wgcAdaptiveTelemetry, encoderTooSlowForTargetCurrent,
@@ -6320,132 +6312,19 @@ void EncoderThreadFunc(const AppConfig& config) {
                     ++wgcActiveDelaySourceRecoveryTicks;
                 }
 
-                if (g_WgcCap && recordingOutputLive && g_Recording && targetIntervalTicks > 0) {
+                if (g_WgcCap && recordingOutputLive && g_Recording) {
                     const uint32_t currentTargetFps = g_WgcCap->GetProducerTargetFps();
-                    const uint32_t overcaptureTargetFps = ce::capture_policy::GetWgcCfrOvercaptureTargetFps(outputFps);
-                    uint32_t desiredTargetFps = overcaptureTargetFps;
-                    WgcAdaptiveThrottleMode desiredThrottleMode = overcaptureTargetFps > outputFps
-                                                                      ? WgcAdaptiveThrottleMode::kHeadroom125
-                                                                      : WgcAdaptiveThrottleMode::kOff;
-                    const uint32_t averageJitterUs = SaturatingToUint32(g_WgcCap->GetSourceJitterAvgUs());
-                    const uint32_t poolDropCount = g_WgcCap->GetPoolDropCount();
-                    const uint32_t queueDepth =
-                        static_cast<uint32_t>(std::min<size_t>(bufferedWgcFrames.size(), 0xFFFFFFFFull));
-                    bool delayReservoirBelowLowWater = false;
-                    bool cappedActiveDelayUnderfeedRecovery = false;
-                    if (!inWgcWarmup) {
-                        const double duplicateRatio =
-                            (cadenceCounters.liveTickEmitCount > 0)
-                                ? static_cast<double>(cadenceCounters.liveTickDuplicateCount) /
-                                      static_cast<double>(cadenceCounters.liveTickEmitCount)
-                                : 0.0;
-                        wgcRecentDeliveredFps = g_WgcCap->GetDeliveredRatePerSec();
-                        wgcRecentDeliveredMin250Fps = g_WgcCap->GetDeliveredMin250Fps();
-                        wgcRecentDeliveredMin500Fps = g_WgcCap->GetDeliveredMin500Fps();
-                        wgcRecentInputMin250Fps = g_WgcCap->GetInputMin250Fps();
-                        wgcRecentInputMin500Fps = g_WgcCap->GetInputMin500Fps();
-
-                        ce::capture_policy::WgcAdaptiveTelemetry adaptiveTelemetry{};
-                        adaptiveTelemetry.outputFps = outputFps;
-                        adaptiveTelemetry.recentDeliveredFps = wgcRecentDeliveredFps;
-                        adaptiveTelemetry.recentDeliveredMin250Fps = wgcRecentDeliveredMin250Fps;
-                        adaptiveTelemetry.recentDeliveredMin500Fps = wgcRecentDeliveredMin500Fps;
-                        adaptiveTelemetry.recentInputMin250Fps = wgcRecentInputMin250Fps;
-                        adaptiveTelemetry.recentInputMin500Fps = wgcRecentInputMin500Fps;
-                        adaptiveTelemetry.averageJitterUs = averageJitterUs;
-                        adaptiveTelemetry.emptyTickPermille = wgcNoFreshTickPermille;
-                        adaptiveTelemetry.bufferedWgcFrames = queueDepth;
-                        adaptiveTelemetry.duplicateRatio = duplicateRatio;
-                        delayReservoirBelowLowWater =
-                            isWgcEffectiveContentDelayActive() &&
-                            ce::capture_policy::IsWgcDelayReservoirBelowLowWater(
-                                queueDepth, getWgcEffectiveContentDelayQpc(), targetIntervalTicks);
-                        const bool delayReservoirMaxRateRecovery =
-                            ce::capture_policy::ShouldUseWgcMaxRateForDelayReservoirRecovery(
-                                adaptiveTelemetry, delayReservoirBelowLowWater, wgcLowSourceModeActive,
-                                wgcLiveRecoveryModeActive);
-                        cappedActiveDelayUnderfeedRecovery =
-                            ce::capture_policy::ShouldUseWgcMaxRateForCappedActiveDelayUnderfeed(
-                                adaptiveTelemetry, delayReservoirBelowLowWater, currentTargetFps > 0);
-                        const bool sourceCadenceMaxRateRecovery =
-                            !isWgcEffectiveContentDelayActive() &&
-                            ce::capture_policy::ShouldUseWgcMaxRateForRecovery(
-                                adaptiveTelemetry, wgcNoFreshTickPermille, wgcLowSourceModeActive,
-                                wgcLiveRecoveryModeActive);
-                        const bool maxRateRecovery = delayReservoirMaxRateRecovery ||
-                                                     cappedActiveDelayUnderfeedRecovery || sourceCadenceMaxRateRecovery;
-                        if (maxRateRecovery) {
-                            if (stableWgcUnderfeed && !inWgcWarmup) {
-                                const uint32_t adaptiveCap = ce::capture_policy::ComputeWgcAdaptiveCappedTargetFps(
-                                    outputFps, wgcRecentInputMin250Fps, overcaptureTargetFps,
-                                    ce::capture_policy::kWgcAdaptiveCapHeadroomFps, wgcRecentDeliveredFps);
-                                if (adaptiveCap > 0) {
-                                    desiredTargetFps = adaptiveCap;
-                                    desiredThrottleMode = WgcAdaptiveThrottleMode::kHeadroom125;
-                                } else {
-                                    desiredTargetFps = 0;
-                                    desiredThrottleMode = WgcAdaptiveThrottleMode::kOff;
-                                }
-                            } else {
-                                desiredTargetFps = 0;
-                                desiredThrottleMode = WgcAdaptiveThrottleMode::kOff;
-                            }
-                            wgcOvercaptureStableSinceTick = 0;
-                        } else {
-                            if (wgcOvercaptureStableSinceTick == 0) {
-                                wgcOvercaptureStableSinceTick = wgcPolicyNowTick;
-                            }
-                            const uint64_t stableMs = wgcPolicyNowTick >= wgcOvercaptureStableSinceTick
-                                                          ? (wgcPolicyNowTick - wgcOvercaptureStableSinceTick)
-                                                          : 0;
-                            if (currentTargetFps == 0 && !ce::capture_policy::ShouldRestoreWgcOvercaptureCap(
-                                                             adaptiveTelemetry, wgcNoFreshTickPermille, stableMs)) {
-                                desiredTargetFps = 0;
-                                desiredThrottleMode = WgcAdaptiveThrottleMode::kOff;
-                            }
-                        }
-                    }  // !inWgcWarmup
-
-                    if (desiredTargetFps > 0 && wgcRecentInputMin250Fps > 0) {
-                        desiredTargetFps = std::max<uint32_t>(outputFps, desiredTargetFps);
-                    }
-
-                    if (desiredTargetFps != wgcAdaptiveThrottlePendingTargetFps ||
-                        desiredThrottleMode != wgcAdaptiveThrottlePendingMode) {
-                        wgcAdaptiveThrottlePendingTargetFps = desiredTargetFps;
-                        wgcAdaptiveThrottlePendingMode = desiredThrottleMode;
-                        wgcAdaptiveThrottlePendingSinceTick = wgcPolicyNowTick;
-                    }
-
-                    if (desiredTargetFps == currentTargetFps) {
-                        wgcAdaptiveThrottleMode = desiredThrottleMode;
-                    } else {
-                        constexpr uint64_t kWgcAdaptiveThrottleEnterHoldMs = 120;
-                        constexpr uint64_t kWgcAdaptiveThrottleExitHoldMs = 120;
-                        constexpr uint64_t kWgcAdaptiveThrottleRetuneHoldMs = 180;
-                        const uint64_t requiredHoldMs =
-                            currentTargetFps == 0 ? kWgcAdaptiveThrottleEnterHoldMs
-                                                  : (desiredTargetFps == 0 ? kWgcAdaptiveThrottleExitHoldMs
-                                                                           : kWgcAdaptiveThrottleRetuneHoldMs);
-                        const bool holdElapsed =
-                            wgcAdaptiveThrottlePendingSinceTick > 0 &&
-                            (wgcPolicyNowTick - wgcAdaptiveThrottlePendingSinceTick) >= requiredHoldMs;
-                        if (holdElapsed) {
-                            g_WgcCap->SetProducerTargetFps(desiredTargetFps);
-                            g_WgcAdaptiveTargetFps.store(desiredTargetFps, std::memory_order_relaxed);
-                            wgcAdaptiveThrottleMode = desiredThrottleMode;
-                            ++wgcAdaptiveThrottleAdjustments;
-                            LogInfo(
-                                "[WGC CFR] Adaptive capture rate %s: target=%u output=%u src=%u/%u noFresh=%upm "
-                                "lowSrc=%d recover=%d delayReservoirLow=%d cappedUnderfeed=%d reservoir=%u/%u "
-                                "queue=%u jitter=%uus copy=%lldus poolDrop=%u",
-                                desiredTargetFps == 0 ? "max-rate recovery" : "overcapture cap", desiredTargetFps,
-                                outputFps, wgcRecentInputMin250Fps, wgcRecentInputMin500Fps, wgcNoFreshTickPermille,
-                                wgcLowSourceModeActive ? 1 : 0, wgcLiveRecoveryModeActive ? 1 : 0,
-                                delayReservoirBelowLowWater ? 1 : 0, cappedActiveDelayUnderfeedRecovery ? 1 : 0,
-                                queueDepth, getWgcDelayReservoirTargetFrames(), queueDepth, averageJitterUs,
-                                static_cast<long long>(g_WgcCap->GetLastCopyTimeUs()), poolDropCount);
-                        }
+                    if (currentTargetFps != 0) {
+                        LogError(
+                            "[WGC CFR] ERROR: producer contract violation: backend=%s outputFps=%u "
+                            "producerTargetFps=%u; forcing MinUpdateInterval=0 because finite producer intervals "
+                            "alias variable-rate input",
+                            g_WgcCap->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc", outputFps,
+                            currentTargetFps);
+                        g_WgcCap->SetProducerTargetFps(0);
+                        g_WgcProducerTargetFps.store(0, std::memory_order_relaxed);
+                        ++wgcProducerRateRetuneCount;
+                        ++wgcProducerRateRetuneTotal;
                     }
                 }
 
@@ -8082,22 +7961,6 @@ void EncoderThreadFunc(const AppConfig& config) {
                         const bool waitBudgetRemaining =
                             waitNow.QuadPart - wgcStartupReserveWaitStartQpc < waitBudgetQpc;
                         if (waitBudgetRemaining) {
-                            const bool useStartupReserveMaxRate =
-                                ce::capture_policy::ShouldUseWgcMaxRateForStartupReserveWait(
-                                    startupReserveMissing, waitBudgetRemaining,
-                                    g_WgcCap && g_WgcCap->GetProducerTargetFps() > 0);
-                            if (useStartupReserveMaxRate) {
-                                g_WgcCap->SetProducerTargetFps(0);
-                                g_WgcAdaptiveTargetFps.store(0, std::memory_order_relaxed);
-                                wgcStartupReserveMaxRateUsed = true;
-                                ++wgcStartupReserveMaxRateCount;
-                                LogInfo(
-                                    "[EncoderThread] WGC startup delay-reserve refill switched producer to max-rate: "
-                                    "reason=%s candidates=%zu span=%lldus target=%lldus",
-                                    startupReserveBelowLowWater ? "low_water" : "span", startupCandidates.size(),
-                                    static_cast<long long>(wgcStartupReserveSpanUs),
-                                    static_cast<long long>(qpcDeltaToUs(startupContentDelayTargetQpc)));
-                            }
                             ++wgcStartupReserveWaitCount;
                             for (auto& candidate : startupCandidates) {
                                 if (candidate.frame.texture || candidate.frame.sharedHandle ||
@@ -10257,8 +10120,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcSelectedSourceBacktrackThisWindow, static_cast<unsigned long long>(wgcSelectedSourceBacktrackTotal),
                 invalidMeta - lastInvalidMetaCount, invalidHandle - lastInvalidHandleCount,
                 packetClamps - lastPacketClampCount, negativePts - lastNegativePtsCount,
-                nonMonotonicPts - lastNonMonotonicPtsCount, g_WgcAdaptiveTargetFps.load(std::memory_order_relaxed),
-                wgcAdaptiveThrottleAdjustments, overloadFlags, (muxQueueBytes + 1023u) / 1024u, muxQueuePackets,
+                nonMonotonicPts - lastNonMonotonicPtsCount, g_WgcProducerTargetFps.load(std::memory_order_relaxed),
+                wgcProducerRateRetuneCount, overloadFlags, (muxQueueBytes + 1023u) / 1024u, muxQueuePackets,
                 muxBackpressureCount, muxBackpressureWaitUs, muxBackpressureMaxWaitUs, smoothedEncodeMs,
                 encoderBudgetUtilizationPermille, sustainableOutputFps, encoderTooSlowForTarget ? 1 : 0,
                 g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0, wgcLowSourceModeActive ? 1 : 0,
@@ -10624,7 +10487,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             cfrCatchupTicksExecuted = 0;
             wgcFreshCatchupCount = 0;
             wgcReserveSpendTickCount = 0;
-            wgcAdaptiveThrottleAdjustments = 0;
+            wgcProducerRateRetuneCount = 0;
             wgcNoFreshTickCount = 0;
             wgcDelayReservoirLowWaterTickCount = 0;
             wgcQueueTickSampleCount = 0;
@@ -10922,7 +10785,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "scheduleOffset=%lldus effectiveDelay=%.1fms lowSourceBypass=%llu modeMismatch=%llu "
                 "sourceBacktrack=%llu syncDelaySourceLimitedHolds=%llu syncDelayPolicyHolds=%llu "
                 "startupReserveFrames=%u startupReserveSpan=%lldus startupDelayTarget=%lldus "
-                "startupReserveSelected=%d startupReserveReason=%s startupMaxRate=%d/%u "
+                "startupReserveSelected=%d startupReserveReason=%s producerTargetFps=%u producerContractRetunes=%llu "
                 "smoothBuf=%d smoothTargetMs=%u "
                 "smoothFrames=%u/%u/%u smoothDelay=%.1fms smoothPoolSlots=%u sourceFramePoolBuffers=%u "
                 "budgetSurfaces=%u syncFrames=%u extraFrames=%u retainedCap=%u reservedFreeSlots=%u safetySlots=%u "
@@ -10950,7 +10813,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(wgcSyncDelayPolicyHoldTotal), wgcStartupReserveFrames,
                 static_cast<long long>(wgcStartupReserveSpanUs), static_cast<long long>(wgcStartupDelayTargetUs),
                 wgcStartupSelectedByDelayReserve ? 1 : 0, wgcStartupReserveReason.c_str(),
-                wgcStartupReserveMaxRateUsed ? 1 : 0, wgcStartupReserveMaxRateCount,
+                g_WgcCap ? g_WgcCap->GetProducerTargetFps() : 0u,
+                static_cast<unsigned long long>(wgcProducerRateRetuneTotal),
                 config.wgcSmoothnessBufferEnabled ? 1 : 0, config.wgcSmoothnessBufferMaxMs, wgcSmoothnessActualFrames,
                 wgcSmoothnessRetainedFrames, wgcSmoothnessDesiredFrames,
                 static_cast<double>(wgcSummarySmoothActualDelayUs) / 1000.0, wgcSmoothnessPoolSlots,

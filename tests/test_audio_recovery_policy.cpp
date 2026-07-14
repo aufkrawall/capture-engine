@@ -32,6 +32,20 @@ TEST(AudioRecoveryPolicyTest, NonFatalAndSuccessAreNotTreatedAsFatal) {
     EXPECT_FALSE(ce::audio::IsFatalWasapiStreamError(Hr(0x80004005)));  // E_FAIL (generic)
 }
 
+TEST(AudioRecoveryPolicyTest, UnqualifiedEventCaptureFallsBackAtDeadlineOnly) {
+    ce::audio::StreamRecoveryConfig cfg;
+    cfg.firstPacketEventFallbackMs = 1000;
+
+    EXPECT_FALSE(ce::audio::ShouldFallbackUnqualifiedEventCapture(
+        /*eventDriven=*/true, /*activationQualified=*/false, /*elapsed=*/999, cfg));
+    EXPECT_TRUE(ce::audio::ShouldFallbackUnqualifiedEventCapture(
+        /*eventDriven=*/true, /*activationQualified=*/false, /*elapsed=*/1000, cfg));
+    EXPECT_FALSE(ce::audio::ShouldFallbackUnqualifiedEventCapture(
+        /*eventDriven=*/false, /*activationQualified=*/false, /*elapsed=*/10000, cfg));
+    EXPECT_FALSE(ce::audio::ShouldFallbackUnqualifiedEventCapture(
+        /*eventDriven=*/true, /*activationQualified=*/true, /*elapsed=*/10000, cfg));
+}
+
 // --- Exponential backoff progression ---
 
 TEST(AudioRecoveryPolicyTest, BackoffStartsAtBaseThenDoublesToCap) {
@@ -69,9 +83,9 @@ TEST(AudioRecoveryPolicyTest, BackoffElapsedRespectsWindowAndBackwardsClock) {
 
 TEST(AudioRecoveryPolicyTest, SilentStallNeverFiresBeforeAnyPacketSeen) {
     ce::audio::StreamRecoveryConfig cfg;  // defaults: 10 s window
-    // Process has produced nothing yet (sawAnyPacket=false) -> never churn, even
-    // after an arbitrarily long initial silence.
-    EXPECT_FALSE(ce::audio::ShouldReactivateForSilentStall(/*sawAnyPacket*/ false, /*now*/ 1000000,
+    // The current activation has produced nothing -> never churn, even after an
+    // arbitrarily long initial or post-recovery silence.
+    EXPECT_FALSE(ce::audio::ShouldReactivateForSilentStall(/*activationQualified*/ false, /*now*/ 1000000,
                                                            /*lastPacket*/ 0, /*lastReact*/ 0,
                                                            /*backoff*/ 0, cfg));
 }
@@ -81,11 +95,11 @@ TEST(AudioRecoveryPolicyTest, SilentStallRequiresFullWindowThenFires) {
     cfg.silentStallReactivateMs = 10000;
 
     // Stream delivered audio before; gone silent for less than the window -> wait.
-    EXPECT_FALSE(ce::audio::ShouldReactivateForSilentStall(/*sawAnyPacket*/ true, /*now*/ 109000,
+    EXPECT_FALSE(ce::audio::ShouldReactivateForSilentStall(/*activationQualified*/ true, /*now*/ 109000,
                                                            /*lastPacket*/ 100000, /*lastReact*/ 0,
                                                            /*backoff*/ 0, cfg));
     // Silent for the full window with no prior attempt -> fire.
-    EXPECT_TRUE(ce::audio::ShouldReactivateForSilentStall(/*sawAnyPacket*/ true, /*now*/ 110000,
+    EXPECT_TRUE(ce::audio::ShouldReactivateForSilentStall(/*activationQualified*/ true, /*now*/ 110000,
                                                           /*lastPacket*/ 100000, /*lastReact*/ 0,
                                                           /*backoff*/ 0, cfg));
 }
@@ -96,11 +110,11 @@ TEST(AudioRecoveryPolicyTest, SilentStallStillHonorsBackoffBetweenAttempts) {
 
     // Window satisfied (15 s since last packet) but only 500 ms since the last
     // re-activation attempt and backoff is 1 s -> hold off.
-    EXPECT_FALSE(ce::audio::ShouldReactivateForSilentStall(/*sawAnyPacket*/ true, /*now*/ 115000,
+    EXPECT_FALSE(ce::audio::ShouldReactivateForSilentStall(/*activationQualified*/ true, /*now*/ 115000,
                                                            /*lastPacket*/ 100000, /*lastReact*/ 114500,
                                                            /*backoff*/ 1000, cfg));
     // Once backoff has elapsed, fire.
-    EXPECT_TRUE(ce::audio::ShouldReactivateForSilentStall(/*sawAnyPacket*/ true, /*now*/ 116000,
+    EXPECT_TRUE(ce::audio::ShouldReactivateForSilentStall(/*activationQualified*/ true, /*now*/ 116000,
                                                           /*lastPacket*/ 100000, /*lastReact*/ 114500,
                                                           /*backoff*/ 1000, cfg));
 }
@@ -108,7 +122,7 @@ TEST(AudioRecoveryPolicyTest, SilentStallStillHonorsBackoffBetweenAttempts) {
 TEST(AudioRecoveryPolicyTest, SilentStallIgnoresBackwardsPacketClock) {
     ce::audio::StreamRecoveryConfig cfg;
     // now < lastPacketTick (clock skew) -> treat as not stalled.
-    EXPECT_FALSE(ce::audio::ShouldReactivateForSilentStall(/*sawAnyPacket*/ true, /*now*/ 90000,
+    EXPECT_FALSE(ce::audio::ShouldReactivateForSilentStall(/*activationQualified*/ true, /*now*/ 90000,
                                                            /*lastPacket*/ 100000, /*lastReact*/ 0,
                                                            /*backoff*/ 0, cfg));
 }

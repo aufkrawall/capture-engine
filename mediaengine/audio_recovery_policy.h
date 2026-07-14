@@ -34,6 +34,12 @@ namespace ce::audio {
 
 // Re-activation timing policy. Defaults are conservative, universal bounds.
 struct StreamRecoveryConfig {
+    // An event-driven process-loopback activation must produce its first packet
+    // within this window. Some AudioSes configurations accept and start the
+    // client but never deliver event-mode packets; a one-way polling fallback
+    // is then required. Polling activations are allowed to remain silent because
+    // an app may legitimately not have started playback yet.
+    uint64_t firstPacketEventFallbackMs = 1000;
     // A process-loopback stream that produced audio before, then yields zero
     // packets for at least this long while its target process is still running,
     // is treated as a dead-but-silent stall and re-activated.
@@ -42,6 +48,12 @@ struct StreamRecoveryConfig {
     uint64_t baseBackoffMs = 1000;
     uint64_t maxBackoffMs = 30000;
 };
+
+inline bool ShouldFallbackUnqualifiedEventCapture(bool eventDriven, bool activationQualified,
+                                                   uint64_t activationElapsedMs,
+                                                   const StreamRecoveryConfig& cfg) {
+    return eventDriven && !activationQualified && activationElapsedMs >= cfg.firstPacketEventFallbackMs;
+}
 
 // AUDCLNT_E_* HRESULTs (stored as negative HRESULT / 0x8889xxxx when unsigned)
 // that mean "the client is gone, re-activate from scratch" rather than a
@@ -86,13 +98,15 @@ inline bool RecoveryBackoffElapsed(uint64_t nowMs, uint64_t lastReactivateTickMs
 }
 
 // Silent-stall watchdog gate. Only arms after the stream has delivered at least
-// one packet (sawAnyPacket), so a source whose process is merely paused from the
-// start is never churned. Then requires the configured silent window AND that
-// backoff has elapsed since the previous attempt.
-inline bool ShouldReactivateForSilentStall(bool sawAnyPacket, uint64_t nowMs, uint64_t lastPacketTickMs,
+// one packet in the current activation, so an initially silent source and a
+// successfully reactivated-but-still-silent source are not churned forever.
+// A new first packet re-arms one recovery for a later silence episode. Then
+// requires the configured silent window AND that backoff has elapsed since the
+// previous attempt.
+inline bool ShouldReactivateForSilentStall(bool activationQualified, uint64_t nowMs, uint64_t lastPacketTickMs,
                                            uint64_t lastReactivateTickMs, uint64_t currentBackoffMs,
                                            const StreamRecoveryConfig& cfg) {
-    if (!sawAnyPacket) {
+    if (!activationQualified) {
         return false;
     }
     if (nowMs < lastPacketTickMs) {

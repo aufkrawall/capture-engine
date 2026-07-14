@@ -41,3 +41,12 @@ TEST(RateWindowUtilsTest, SlidingRateWindowResetClearsHistory) {
     EXPECT_EQ(window.RatePerSecond(450, 500), 0u);
     EXPECT_EQ(window.MinRatePerSecond(450, 250, 500), 0u);
 }
+
+TEST(RateWindowUtilsTest, CachedRateExpiresWhenCallbacksStop) {
+    EXPECT_EQ(rate_window::AgeCachedRate(138, 1000, 1249, 250), 138u);
+    EXPECT_EQ(rate_window::AgeCachedRate(138, 1000, 1250, 250), 0u);
+    EXPECT_EQ(rate_window::AgeCachedRate(138, 1000, 2000, 250), 0u);
+    EXPECT_EQ(rate_window::AgeCachedRate(0, 1000, 1100, 250), 0u);
+    EXPECT_EQ(rate_window::AgeCachedRate(138, 0, 1100, 250), 0u);
+    EXPECT_EQ(rate_window::AgeCachedRate(138, 1200, 1100, 250), 0u);
+}

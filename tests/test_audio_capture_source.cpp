@@ -159,6 +159,21 @@ TEST(AudioCaptureSourceTest, ActivationFailureDoesNotRepeatModeIndependentTimeou
     EXPECT_NE(appSource.find("SetEvent(stopEvent_)"), std::string::npos);
 }
 
+TEST(AudioCaptureSourceTest, SilentStallRecoveryUsesCurrentActivationQualification) {
+    const std::string appSource = ReadSource("app_audio_capture.cpp");
+    ASSERT_FALSE(appSource.empty());
+
+    const size_t loopBegin = appSource.find("void AppAudioCapture::CaptureLoop()");
+    const size_t recoveryCall = appSource.find("ShouldReactivateForSilentStall(", loopBegin);
+    ASSERT_NE(loopBegin, std::string::npos);
+    ASSERT_NE(recoveryCall, std::string::npos);
+    const std::string recoveryWindow = appSource.substr(recoveryCall, 512);
+    EXPECT_NE(recoveryWindow.find("currentActivationQualified"), std::string::npos);
+    EXPECT_EQ(recoveryWindow.find("sawAnyPacket"), std::string::npos);
+    EXPECT_NE(appSource.find("currentActivationQualified = false;", loopBegin), std::string::npos);
+    EXPECT_NE(appSource.find("currentActivationQualified = true;", loopBegin), std::string::npos);
+}
+
 TEST(AudioCaptureSourceTest, EndpointWasapiInterfacesRemainWorkerOwned) {
     const std::string source = ReadSource("audio_capture.cpp");
     ASSERT_FALSE(source.empty());
