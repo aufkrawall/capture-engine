@@ -5844,9 +5844,13 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         const int captureHeight = cursorCaptureState.captureHeight != 0
                                       ? static_cast<int>(cursorCaptureState.captureHeight)
                                       : height;
+        const int positionHotspotX = ce::cursor_geometry::ResolveHotspotForPosition(
+            activeCursor->hotspotX, cursorCaptureState.PositionIsShapeTopLeft());
+        const int positionHotspotY = ce::cursor_geometry::ResolveHotspotForPosition(
+            activeCursor->hotspotY, cursorCaptureState.PositionIsShapeTopLeft());
         ce::cursor_geometry::Rect cursorDestination;
         if (!ce::cursor_geometry::MapScreenCursorToFrame(
-                cursorX, cursorY, activeCursor->hotspotX, activeCursor->hotspotY, scaledWidth, scaledHeight,
+                cursorX, cursorY, positionHotspotX, positionHotspotY, scaledWidth, scaledHeight,
                 cursorCaptureState.captureLeft, cursorCaptureState.captureTop, captureWidth, captureHeight, frameW,
                 frameH, &cursorDestination)) {
             useCursorStream = false;
@@ -5857,11 +5861,13 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
         if (logCounter++ % 200 == 0) {
             DLL_Log(
                 "[Cursor] Rect: (%d,%d)-(%d,%d) pos=(%d,%d) bitmap=%dx%d frame=%dx%d "
-                "capture=(%d,%d %dx%d) dpi=%u stateQpc=%lld",
+                "capture=(%d,%d %dx%d) dpi=%u stateQpc=%lld observedQpc=%lld coord=%s",
                 cursorDestination.left, cursorDestination.top, cursorDestination.right, cursorDestination.bottom,
                 cursorX, cursorY, scaledWidth, scaledHeight, frameW, frameH, cursorCaptureState.captureLeft,
                 cursorCaptureState.captureTop, captureWidth, captureHeight, cursorCaptureState.dpi,
-                static_cast<long long>(cursorCaptureState.associationQpc));
+                static_cast<long long>(cursorCaptureState.associationQpc),
+                static_cast<long long>(cursorCaptureState.observedQpc),
+                cursorCaptureState.PositionIsShapeTopLeft() ? "shape-top-left" : "hotspot");
         }
         ce::cursor_geometry::ClippedRects clipped;
         if (useCursorStream && ce::cursor_geometry::ComputeClippedRects(cursorDestination, scaledWidth, scaledHeight,

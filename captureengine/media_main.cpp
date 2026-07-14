@@ -200,20 +200,6 @@ static ce::cursor::CaptureState CaptureCursorSnapshot(int64_t associationQpc, in
     return state;
 }
 
-static void ApplySourceCursorPosition(ce::cursor::CaptureState& state, bool valid, int32_t screenX, int32_t screenY,
-                                      int64_t updateQpc) {
-    if (!valid || updateQpc <= 0) {
-        return;
-    }
-    state.screenX = screenX;
-    state.screenY = screenY;
-    // DXGI Desktop Duplication supplies a QPC-timestamped hardware-pointer
-    // position from the same AcquireNextFrame metadata as the desktop image.
-    // Keep associationQpc tied to the image, and retain the pointer timestamp
-    // as the more precise observation time for diagnostics.
-    state.observedQpc = updateQpc;
-}
-
 static uint64_t AdvanceWgcSourceEpoch(const char* reason) {
     const uint64_t epoch = g_WgcSourceEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
     LogInfo("[Media] Advanced WGC source epoch to %llu (%s)", static_cast<unsigned long long>(epoch),
@@ -1128,9 +1114,8 @@ static void SubmitWgcQueuedFrame(QueuedFrame&& frame) {
 
 static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp,
                           int64_t rawTimestamp, bool isHDR, bool cursorEmbedded, bool duplicateSourceTimestamp,
-                          bool cursorPositionValid, int32_t cursorScreenX, int32_t cursorScreenY,
-                          int64_t cursorUpdateQpc, int32_t captureLeft, int32_t captureTop, uint64_t sourceEpoch,
-                          WgcPoolSlotLease&& poolLease) {
+                          const ce::cursor::SourcePointerObservation& cursorObservation, int32_t captureLeft,
+                          int32_t captureTop, uint64_t sourceEpoch, WgcPoolSlotLease&& poolLease) {
     const uint64_t activeEpoch = g_WgcSourceEpoch.load(std::memory_order_acquire);
     if (sourceEpoch != activeEpoch) {
         static std::atomic<uint64_t> s_staleEpochDrops{0};
@@ -1166,7 +1151,7 @@ static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t hei
     qf.captureLeft = captureLeft;
     qf.captureTop = captureTop;
     qf.cursorState = CaptureCursorSnapshot(timestamp, captureLeft, captureTop, width, height, cursorEmbedded);
-    ApplySourceCursorPosition(qf.cursorState, cursorPositionValid, cursorScreenX, cursorScreenY, cursorUpdateQpc);
+    ce::cursor::ApplySourcePointerObservation(&qf.cursorState, cursorObservation);
     g_WgcCursorTimeline.Publish(qf.cursorState);
 
     if (g_Recording.load(std::memory_order_acquire) && !IsActiveScreenGrab()) {
@@ -1212,8 +1197,7 @@ static QueuedFrame MakeQueuedWgcFrame(WGCCapturedFrame&& frame) {
     qf.captureTop = frame.captureTop;
     qf.cursorState = CaptureCursorSnapshot(frame.timestamp, frame.captureLeft, frame.captureTop, frame.width,
                                            frame.height, frame.cursorEmbedded);
-    ApplySourceCursorPosition(qf.cursorState, frame.cursorPositionValid, frame.cursorScreenX, frame.cursorScreenY,
-                              frame.cursorUpdateQpc);
+    ce::cursor::ApplySourcePointerObservation(&qf.cursorState, frame.cursorObservation);
     g_WgcCursorTimeline.Publish(qf.cursorState);
     return qf;
 }
@@ -7461,7 +7445,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (s_cursorTimelineLogCount <= 5 || (s_cursorTimelineLogCount % 600ull) == 0ull) {
                     LogInfo(
                         "[Cursor] CFR timeline backend=%s scheduled=%lld target=%lld selected=%lld observed=%lld "
-                        "deltaUs=%lld dpi=%u size=%ux%u bounds=(%d,%d %ux%u) visible=%d fallback=%d",
+                        "deltaUs=%lld dpi=%u size=%ux%u bounds=(%d,%d %ux%u) visible=%d fallback=%d coord=%s",
                         useScreenGrab ? "screen-grab" : "inject", static_cast<long long>(scheduledQpc),
                         static_cast<long long>(cursorTargetQpc), static_cast<long long>(cursorState.associationQpc),
                         static_cast<long long>(cursorState.observedQpc),
@@ -7472,7 +7456,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                         cursorState.dpi, cursorState.requestedWidth, cursorState.requestedHeight,
                         cursorState.captureLeft, cursorState.captureTop, cursorState.captureWidth,
                         cursorState.captureHeight, cursorState.IsVisible() ? 1 : 0,
-                        (cursorState.flags & ce::cursor::kStateHandleVisibilityFallback) != 0 ? 1 : 0);
+                        (cursorState.flags & ce::cursor::kStateHandleVisibilityFallback) != 0 ? 1 : 0,
+                        cursorState.PositionIsShapeTopLeft() ? "shape-top-left" : "hotspot");
                 }
             }
             if (useScreenGrab && !config.video.useVFR && MediaEngine_RepeatLastFrameWithTimeline) {

@@ -654,8 +654,12 @@ bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int fram
     ce::cursor_geometry::Rect cursorRect;
     const int captureWidth = state.captureWidth != 0 ? static_cast<int>(state.captureWidth) : frameWidth;
     const int captureHeight = state.captureHeight != 0 ? static_cast<int>(state.captureHeight) : frameHeight;
+    const int positionHotspotX =
+        ce::cursor_geometry::ResolveHotspotForPosition(hotspotX, state.PositionIsShapeTopLeft());
+    const int positionHotspotY =
+        ce::cursor_geometry::ResolveHotspotForPosition(hotspotY, state.PositionIsShapeTopLeft());
     if (!ce::cursor_geometry::MapScreenCursorToFrame(
-            state.screenX, state.screenY, hotspotX, hotspotY, static_cast<int>(cursorWidth),
+            state.screenX, state.screenY, positionHotspotX, positionHotspotY, static_cast<int>(cursorWidth),
             static_cast<int>(cursorHeight), state.captureLeft, state.captureTop, captureWidth, captureHeight,
             frameWidth, frameHeight, &cursorRect)) {
         return false;

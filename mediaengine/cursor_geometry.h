@@ -5,6 +5,10 @@
 
 namespace ce::cursor_geometry {
 
+inline int ResolveHotspotForPosition(int hotspot, bool positionIsShapeTopLeft) {
+    return positionIsShapeTopLeft ? 0 : hotspot;
+}
+
 struct Rect {
     int left = 0;
     int top = 0;

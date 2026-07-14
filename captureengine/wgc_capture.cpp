@@ -698,7 +698,7 @@ public:
     // This eliminates the data race between the WinRT callback thread (reader)
     // and the main thread (writer during start/stop recording).
     using DirectFrameCallbackFn = void (*)(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, bool,
-                                           bool, int32_t, int32_t, int64_t, int32_t, int32_t, uint64_t,
+                                           const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint64_t,
                                            WgcPoolSlotLease&&);
     std::atomic<DirectFrameCallbackFn> frameCallback_{nullptr};
     std::atomic<uint32_t> callbackFrameCount_{0};
@@ -2780,13 +2780,11 @@ public:
         int32_t captureLeft = 0;
         int32_t captureTop = 0;
         GetCaptureOrigin(captureLeft, captureTop);
-        const bool cursorEmbedded = useDuplicationBackend_ && dupSource_ && dupSource_->IsCursorEmbeddedInFrames();
-        int32_t cursorScreenX = 0;
-        int32_t cursorScreenY = 0;
-        int64_t cursorUpdateQpc = 0;
-        const bool cursorPositionValid = useDuplicationBackend_ && dupSource_ &&
-                                         dupSource_->GetPointerPosition(&cursorScreenX, &cursorScreenY,
-                                                                        &cursorUpdateQpc);
+        ce::cursor::SourcePointerObservation cursorObservation;
+        if (useDuplicationBackend_ && dupSource_) {
+            dupSource_->GetPointerState(&cursorObservation);
+        }
+        const bool cursorEmbedded = cursorObservation.valid && cursorObservation.embedded;
 
         if (outputFrame) {
             outputFrame->texture = copiedTexture;
@@ -2796,10 +2794,7 @@ public:
             outputFrame->rawTimestamp = pre.rawSourceFrameQpc;
             outputFrame->isHDR = captureIsHDR_;
             outputFrame->cursorEmbedded = cursorEmbedded;
-            outputFrame->cursorPositionValid = cursorPositionValid;
-            outputFrame->cursorScreenX = cursorScreenX;
-            outputFrame->cursorScreenY = cursorScreenY;
-            outputFrame->cursorUpdateQpc = cursorUpdateQpc;
+            outputFrame->cursorObservation = cursorObservation;
             outputFrame->captureLeft = captureLeft;
             outputFrame->captureTop = captureTop;
             outputFrame->duplicateSourceTimestamp = pre.duplicateSourceTimestamp;
@@ -2811,8 +2806,8 @@ public:
             auto cb = frameCallback_.load(std::memory_order_acquire);
             if (cb) {
                 cb(copiedTexture, desc.Width, desc.Height, deliveredTimestamp, pre.rawSourceFrameQpc, captureIsHDR_,
-                   cursorEmbedded, pre.duplicateSourceTimestamp, cursorPositionValid, cursorScreenX, cursorScreenY,
-                   cursorUpdateQpc, captureLeft, captureTop, sourceEpoch, std::move(poolLease));
+                   cursorEmbedded, pre.duplicateSourceTimestamp, cursorObservation, captureLeft, captureTop,
+                   sourceEpoch, std::move(poolLease));
             } else {
                 SafeRelease(copiedTexture);
             }
@@ -4261,9 +4256,10 @@ uint64_t WGCCapture::GetSourceEpoch() const {
 #endif
 }
 
-void WGCCapture::SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool,
-                                                           bool, bool, bool, int32_t, int32_t, int64_t, int32_t,
-                                                           int32_t, uint64_t, WgcPoolSlotLease&&)>
+void WGCCapture::SetDirectFrameCallback(std::function<void(
+                                            ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, bool,
+                                            const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint64_t,
+                                            WgcPoolSlotLease&&)>
                                             callback) {
 #if HAS_WGC
     if (impl_) {

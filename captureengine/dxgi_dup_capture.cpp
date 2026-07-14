@@ -274,7 +274,13 @@ bool DxgiDuplicationSource::Start(DxgiDuplicationFrameSink sink) {
         return true;
     }
 
-    pointerUpdateQpc_.store(0, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(pointerStateMutex_);
+        pointerState_ = {};
+    }
+    separatePointerVisible_.store(true, std::memory_order_relaxed);
+    cursorEmbeddedInFrames_.store(false, std::memory_order_relaxed);
+    pointerStateTransitions_.store(0, std::memory_order_relaxed);
     sink_ = std::move(sink);
     shutdown_.store(false, std::memory_order_release);
     acquireTimeoutCount_.store(0, std::memory_order_relaxed);
@@ -355,7 +361,8 @@ void DxgiDuplicationSource::ReleaseDuplication() {
     DupSafeRelease(duplication_);
 }
 
-void DxgiDuplicationSource::UpdatePointerState(bool separatePointerVisible) {
+void DxgiDuplicationSource::UpdatePointerState(const DXGI_OUTDUPL_FRAME_INFO& frameInfo) {
+    const bool separatePointerVisible = frameInfo.PointerPosition.Visible != FALSE;
     // Embedded means: the cursor is showing inside this monitor, but the
     // duplication reports no separate pointer — Windows composes the cursor
     // into the desktop image (software cursor), so the frames already contain
@@ -367,6 +374,24 @@ void DxgiDuplicationSource::UpdatePointerState(bool separatePointerVisible) {
     }
     const bool embedded = cursorShowingInMonitor && !separatePointerVisible;
 
+    ce::cursor::SourcePointerObservation nextState;
+    nextState.valid = true;
+    nextState.visible = separatePointerVisible;
+    nextState.embedded = embedded;
+    nextState.positionValid = separatePointerVisible;
+    nextState.positionIsShapeTopLeft = separatePointerVisible;
+    nextState.updateQpc = frameInfo.LastMouseUpdateTime.QuadPart;
+    if (separatePointerVisible) {
+        // DXGI supplies the shape's top-left, not the cursor hotspot. Position
+        // is explicitly invalid when Visible is FALSE and must not be consumed.
+        nextState.screenX = frameInfo.PointerPosition.Position.x + monitorRect_.left;
+        nextState.screenY = frameInfo.PointerPosition.Position.y + monitorRect_.top;
+    }
+    {
+        std::lock_guard<std::mutex> lock(pointerStateMutex_);
+        pointerState_ = nextState;
+    }
+
     const bool prevSeparate = separatePointerVisible_.exchange(separatePointerVisible, std::memory_order_relaxed);
     const bool prevEmbedded = cursorEmbeddedInFrames_.exchange(embedded, std::memory_order_relaxed);
     if (prevSeparate != separatePointerVisible || prevEmbedded != embedded) {
@@ -374,8 +399,10 @@ void DxgiDuplicationSource::UpdatePointerState(bool separatePointerVisible) {
         if (transitions <= 16 || (transitions % 100ull) == 0ull) {
             LogInfo(
                 "[DXGIDup] Cursor plane state changed: separatePointer=%d embedded=%d cursorInMonitor=%d "
-                "(%s) transitions=%llu",
+                "positionValid=%d pos=(%d,%d) updateQpc=%lld (%s) transitions=%llu",
                 separatePointerVisible ? 1 : 0, embedded ? 1 : 0, cursorShowingInMonitor ? 1 : 0,
+                nextState.positionValid ? 1 : 0, nextState.screenX, nextState.screenY,
+                static_cast<long long>(nextState.updateQpc),
                 separatePointerVisible
                     ? "hardware cursor plane active; encoder-side cursor composition draws the cursor"
                     : (embedded ? "software/composed cursor embedded in frames; encoder-side composition suppressed"
@@ -462,12 +489,7 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
         // state (also pointer-only updates). This is the live hardware/software
         // cursor-plane detector and drives encoder-side cursor suppression.
         if (frameInfo.LastMouseUpdateTime.QuadPart != 0) {
-            pointerScreenX_.store(frameInfo.PointerPosition.Position.x + monitorRect_.left,
-                                  std::memory_order_relaxed);
-            pointerScreenY_.store(frameInfo.PointerPosition.Position.y + monitorRect_.top,
-                                  std::memory_order_relaxed);
-            pointerUpdateQpc_.store(frameInfo.LastMouseUpdateTime.QuadPart, std::memory_order_release);
-            UpdatePointerState(frameInfo.PointerPosition.Visible != FALSE);
+            UpdatePointerState(frameInfo);
         }
 
         if (frameInfo.ProtectedContentMaskedOut) {

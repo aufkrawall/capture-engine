@@ -8,6 +8,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "../common/cursor_capture_state.h"
 #include "../common/wgc_pool_lease.h"
 
 // Forward declarations to avoid including WinRT headers in public interface
@@ -23,10 +24,7 @@ struct WGCCapturedFrame {
     int64_t rawTimestamp = 0;
     bool isHDR = false;  // True when the captured target is currently HDR/PQ
     bool cursorEmbedded = false;
-    bool cursorPositionValid = false;
-    int32_t cursorScreenX = 0;
-    int32_t cursorScreenY = 0;
-    int64_t cursorUpdateQpc = 0;
+    ce::cursor::SourcePointerObservation cursorObservation;
     int32_t captureLeft = 0;
     int32_t captureTop = 0;
     bool duplicateSourceTimestamp = false;
@@ -145,8 +143,8 @@ public:
     // OBS-style direct callback: frames processed directly in WinRT callback
     // Callback receives: texture, width, height, QPC timestamp, HDR flag, capture origin
     void SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool,
-                                                   bool, bool, int32_t, int32_t, int64_t, int32_t, int32_t, uint64_t,
-                                                   WgcPoolSlotLease&&)>
+                                                   bool, const ce::cursor::SourcePointerObservation&, int32_t, int32_t,
+                                                   uint64_t, WgcPoolSlotLease&&)>
                                     callback);
 
     // Get count of frames processed via direct callback

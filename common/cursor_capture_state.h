@@ -14,6 +14,9 @@ enum CaptureStateFlags : uint32_t {
     kStateVisible = 1u << 1,
     kStateSuppressed = 1u << 2,
     kStateHandleVisibilityFallback = 1u << 3,
+    // screenX/screenY identify the top-left of the cursor shape rather than
+    // the cursor hotspot. DXGI Desktop Duplication uses this convention.
+    kStatePositionIsShapeTopLeft = 1u << 4,
 };
 
 // A plain-data snapshot shared across the capture EXE / media-engine DLL ABI.
@@ -40,7 +43,58 @@ struct CaptureState {
     bool IsVisible() const {
         return IsValid() && (flags & kStateVisible) != 0 && (flags & kStateSuppressed) == 0 && handle != 0;
     }
+    bool PositionIsShapeTopLeft() const {
+        return (flags & kStatePositionIsShapeTopLeft) != 0;
+    }
 };
+
+// Source-owned pointer metadata associated with a QPC timestamp. In
+// particular, DXGI Desktop Duplication reports shape-top-left coordinates and
+// declares Position invalid whenever Visible is FALSE.
+struct SourcePointerObservation {
+    int64_t updateQpc = 0;
+    int32_t screenX = 0;
+    int32_t screenY = 0;
+    bool valid = false;
+    bool visible = false;
+    bool embedded = false;
+    bool positionValid = false;
+    bool positionIsShapeTopLeft = false;
+};
+
+inline void ApplySourcePointerObservation(CaptureState* state, const SourcePointerObservation& observation) {
+    if (!state || !observation.valid || observation.updateQpc <= 0) {
+        return;
+    }
+
+    // The source timestamp is authoritative for this pointer observation. It
+    // must not be retroactively associated with an unrelated desktop frame.
+    state->associationQpc = observation.updateQpc;
+    state->observedQpc = observation.updateQpc;
+    state->flags |= kStateValid;
+    state->flags &= ~(kStateVisible | kStateSuppressed | kStateHandleVisibilityFallback |
+                      kStatePositionIsShapeTopLeft);
+
+    if (observation.embedded) {
+        state->flags |= kStateSuppressed;
+        return;
+    }
+    if (!observation.visible) {
+        // An authoritative hidden update must override the handle-based
+        // DirectFlip fallback. The source explicitly says there is no separate
+        // cursor to draw.
+        return;
+    }
+
+    state->flags |= kStateVisible;
+    if (observation.positionValid) {
+        state->screenX = observation.screenX;
+        state->screenY = observation.screenY;
+        if (observation.positionIsShapeTopLeft) {
+            state->flags |= kStatePositionIsShapeTopLeft;
+        }
+    }
+}
 
 // Bounded, timestamp-ordered cursor history. Capture callbacks publish here,
 // while the CFR scheduler selects the snapshot belonging to a source-content

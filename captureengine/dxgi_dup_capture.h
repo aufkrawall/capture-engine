@@ -14,9 +14,9 @@
 // - Frames are delivered only when the desktop image changes (frame-on-change).
 //   CFR repeats downstream cover static content; AcquireNextFrame timeouts are
 //   normal idle, not errors.
-// - The hardware cursor is NOT composed into duplicated frames, which matches
-//   the project cursor policy exactly (encoder-side cursor composition from
-//   GetCursorInfo; the live cursor stays in the hardware plane).
+// - A separate hardware cursor is normally not composed into duplicated
+//   frames. Windows can transition to a software cursor already embedded in
+//   the desktop image; per-update pointer metadata suppresses double drawing.
 // - Pointer-only updates arrive with LastPresentTime == 0 and are reported to
 //   the sink as cursor-only updates (no frame content change).
 // - DXGI_ERROR_ACCESS_LOST (mode change, HDR toggle, secure desktop, desktop
@@ -36,6 +36,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include "../common/cursor_capture_state.h"
 
 struct DxgiDuplicationFrameSink {
     // Called on the duplication capture thread. The texture is only valid for
@@ -135,22 +136,20 @@ public:
     uint64_t GetPointerStateTransitionCount() const {
         return pointerStateTransitions_.load(std::memory_order_relaxed);
     }
-    bool GetPointerPosition(int32_t* screenX, int32_t* screenY, int64_t* updateQpc) const {
-        const int64_t timestamp = pointerUpdateQpc_.load(std::memory_order_acquire);
-        if (timestamp <= 0 || !screenX || !screenY || !updateQpc) {
+    bool GetPointerState(ce::cursor::SourcePointerObservation* state) const {
+        if (!state) {
             return false;
         }
-        *screenX = pointerScreenX_.load(std::memory_order_relaxed);
-        *screenY = pointerScreenY_.load(std::memory_order_relaxed);
-        *updateQpc = timestamp;
-        return true;
+        std::lock_guard<std::mutex> lock(pointerStateMutex_);
+        *state = pointerState_;
+        return state->valid;
     }
 
 private:
     void CaptureThreadFunc();
     void ReleaseDuplication();
 
-    void UpdatePointerState(bool separatePointerVisible);
+    void UpdatePointerState(const DXGI_OUTDUPL_FRAME_INFO& frameInfo);
 
     ID3D11Device* device_ = nullptr;  // Not owned.
     IDXGIOutputDuplication* duplication_ = nullptr;
@@ -192,7 +191,6 @@ private:
     std::atomic<bool> separatePointerVisible_{true};
     std::atomic<bool> cursorEmbeddedInFrames_{false};
     std::atomic<uint64_t> pointerStateTransitions_{0};
-    std::atomic<int32_t> pointerScreenX_{0};
-    std::atomic<int32_t> pointerScreenY_{0};
-    std::atomic<int64_t> pointerUpdateQpc_{0};
+    mutable std::mutex pointerStateMutex_;
+    ce::cursor::SourcePointerObservation pointerState_;
 };
