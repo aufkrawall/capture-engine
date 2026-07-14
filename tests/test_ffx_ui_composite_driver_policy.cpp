@@ -82,19 +82,19 @@ TEST(NativeFSROwnerQueuePolicyTest, UnwrapsOnlyAProvenStreamlineQueueToTheRealGa
               NativeFSROwnerQueueRoute::kUnavailable);
 }
 
-// GTA session gtafsrfgflicker entered ffxCreateContext before CE finished replacing the cached export pointer.
-// The nested protected DXGI create still captured the descriptor gameQueue, and ffxConfigure later supplied the
-// proxy. That joined evidence must fill the missing binding, but must never replace a binding published by the
-// primary ffxCreateContext hook.
+// GTA session 20260714_140617 proved that the nested protected DXGI create captures FFX's newly-created internal
+// presentQueue, not the descriptor gameQueue. It is missed-create evidence only; recovery also requires the
+// retained pre-FSR original game/producer queue and must never replace a primary descriptor binding.
 TEST(NativeFSROwnerQueuePolicyTest, RecoversMissingBindingFromProtectedCreateAndConfigureEvidence) {
-    EXPECT_TRUE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(false, true, true, true));
-    EXPECT_FALSE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(true, true, true, true));
+    EXPECT_TRUE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(false, true, true, true, true));
+    EXPECT_FALSE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(true, true, true, true, true));
 }
 
 TEST(NativeFSROwnerQueuePolicyTest, RecoveryRequiresEveryHalfOfTheJoinedEvidence) {
-    EXPECT_FALSE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(false, false, true, true));
-    EXPECT_FALSE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(false, true, false, true));
-    EXPECT_FALSE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(false, true, true, false));
+    EXPECT_FALSE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(false, false, true, true, true));
+    EXPECT_FALSE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(false, true, false, true, true));
+    EXPECT_FALSE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(false, true, true, false, true));
+    EXPECT_FALSE(ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(false, true, true, true, false));
 }
 
 TEST(FFXPresenterFallbackPolicyTest, CompositesOnlyOncePerAcceptedUiRegistration) {

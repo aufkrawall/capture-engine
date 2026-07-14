@@ -108,8 +108,10 @@ void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain);
 // original game queue on the target resource's device (the wrapper's underlying submission path).
 void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapChain,
                                                        ID3D12CommandQueue* presentationQueue);
-// Recover the same queue from the protected inner DXGI swapchain create when ffxCreateContext was already in
-// flight before CE routed a cached export pointer. Must run before the proxy Present hook becomes reachable.
+// Recover the descriptor-equivalent owner from the retained pre-FSR original game queue when ffxCreateContext
+// was already in flight before CE routed a cached export pointer. The protected inner DXGI create is required
+// evidence only: its queue is FFX's internal present queue and must never be used as the owner binding.
+// Must run before the proxy Present hook becomes reachable.
 bool DX12_TryRecoverNativeFSRSwapchainPresentationQueue(void* context, void* swapChain);
 void DX12_UnregisterNativeFSRSwapchainPresentationQueue(void* context, const char* reason);
 void DX12_ServiceDeferredECLProbe();

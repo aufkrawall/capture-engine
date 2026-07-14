@@ -6245,15 +6245,19 @@ bool DX12_CompositeOverlayOntoCachedFFXUiResource() {
     return composited || alreadyCovered;
 }
 
-// The FFX game/presentation queue is captured from the DX12 FrameGenerationSwapChain creation descriptor.
-// A proven Streamline wrapper also retains CE's real original game queue so target-device validation can
-// select its underlying submission path. Bindings are keyed by raw proxy identity without retaining the proxy
-// itself: AddRef'ing a startup/takeover swapchain pins its HWND and can make replacement creation fail.
+// The FFX game/presentation queue is normally captured from the DX12 FrameGenerationSwapChain creation
+// descriptor. If that call was already in flight when interception became live, the retained pre-FSR original
+// game queue is the recoverable equivalent; the nested DXGI create queue is FFX's internal presentQueue and is
+// never bound here. A proven Streamline wrapper also retains CE's real original game queue so target-device
+// validation can select its underlying submission path. Bindings are keyed by raw proxy identity without
+// retaining the proxy itself: AddRef'ing a startup/takeover swapchain pins its HWND and can make replacement
+// creation fail.
 struct NativeFSRSwapchainQueueBinding {
     void* context = nullptr;
     ID3D12CommandQueue* descriptorQueue = nullptr;
     ID3D12CommandQueue* underlyingGameQueue = nullptr;
     bool descriptorQueueUsesAcceptedStreamlineDevice = false;
+    bool recoveredOriginalGameQueue = false;
 };
 
 static std::mutex g_NativeFSRSwapchainQueueBindingMutex;
@@ -6261,7 +6265,8 @@ static std::unordered_map<void*, NativeFSRSwapchainQueueBinding> g_NativeFSRSwap
 
 static bool RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapChain,
                                                         ID3D12CommandQueue* presentationQueue,
-                                                        bool onlyWhenMissing, const char* source) {
+                                                        bool onlyWhenMissing, bool recoveredOriginalGameQueue,
+                                                        bool hasProtectedInnerPresentQueue, const char* source) {
     if (!context || !swapChain || !presentationQueue ||
         presentationQueue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT) {
         return false;
@@ -6281,7 +6286,7 @@ static bool RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swa
         if (onlyWhenMissing &&
             !ce::dx12_overlay_policy::ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(
                 existing != g_NativeFSRSwapchainQueueBindings.end(), context != nullptr, swapChain != nullptr,
-                presentationQueue != nullptr)) {
+                hasProtectedInnerPresentQueue, presentationQueue != nullptr)) {
             presentationQueue->Release();
             if (underlyingGameQueue) {
                 underlyingGameQueue->Release();
@@ -6294,7 +6299,8 @@ static bool RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swa
         auto& binding = g_NativeFSRSwapchainQueueBindings[swapChain];
         if (binding.context == context && binding.descriptorQueue == presentationQueue &&
             binding.underlyingGameQueue == underlyingGameQueue &&
-            binding.descriptorQueueUsesAcceptedStreamlineDevice == streamlineWrappedQueue) {
+            binding.descriptorQueueUsesAcceptedStreamlineDevice == streamlineWrappedQueue &&
+            binding.recoveredOriginalGameQueue == recoveredOriginalGameQueue) {
             presentationQueue->Release();
             if (underlyingGameQueue) {
                 underlyingGameQueue->Release();
@@ -6305,7 +6311,8 @@ static bool RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swa
             return false;
         }
         replacedBinding = binding;
-        binding = {context, presentationQueue, underlyingGameQueue, streamlineWrappedQueue};
+        binding = {context, presentationQueue, underlyingGameQueue, streamlineWrappedQueue,
+                   recoveredOriginalGameQueue};
     }
     if (replacedBinding.descriptorQueue || replacedBinding.underlyingGameQueue) {
         ce::dx12_ffx_suspend_overlay::RetireProxy(swapChain, "FFX proxy queue binding replaced");
@@ -6323,11 +6330,13 @@ static bool RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swa
     }
     HookLogImportant(
         "DX12: Captured native-FSR swapchain presentation queue (context=%p proxy=%p descriptorQueue=%p "
-        "descriptorDevice=%p streamlineWrapped=%d underlyingGameQueue=%p underlyingDevice=%p nodeMask=%u) — "
-        "source=%s; direct overlay work uses the exact queue, or the validated underlying game queue for a "
-        "proven Streamline wrapper",
-        context, swapChain, presentationQueue, descriptorDevice, streamlineWrappedQueue ? 1 : 0, underlyingGameQueue,
-        underlyingDevice, presentationQueue->GetDesc().NodeMask, source && source[0] ? source : "unknown");
+        "descriptorDevice=%p streamlineWrapped=%d recoveredOriginal=%d underlyingGameQueue=%p "
+        "underlyingDevice=%p nodeMask=%u) — source=%s; direct overlay work uses the exact descriptor/recovered "
+        "owner queue, or the validated underlying game queue for a proven Streamline wrapper",
+        context, swapChain, presentationQueue, descriptorDevice, streamlineWrappedQueue ? 1 : 0,
+        recoveredOriginalGameQueue ? 1 : 0, underlyingGameQueue, underlyingDevice,
+        presentationQueue->GetDesc().NodeMask,
+        source && source[0] ? source : "unknown");
     if (underlyingDevice) {
         underlyingDevice->Release();
     }
@@ -6339,25 +6348,45 @@ static bool RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swa
 
 void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapChain,
                                                       ID3D12CommandQueue* presentationQueue) {
-    RegisterNativeFSRSwapchainPresentationQueue(context, swapChain, presentationQueue, false,
+    RegisterNativeFSRSwapchainPresentationQueue(context, swapChain, presentationQueue, false, false, false,
                                                 "ffxCreateContext descriptor");
 }
 
 bool DX12_TryRecoverNativeFSRSwapchainPresentationQueue(void* context, void* swapChain) {
-    ID3D12CommandQueue* capturedQueue = ReferenceDeferredOfficialFFXTakeoverQueue();
-    if (!capturedQueue) {
+    ID3D12CommandQueue* protectedInnerPresentQueue = ReferenceDeferredOfficialFFXTakeoverQueue();
+    if (!protectedInnerPresentQueue) {
         return false;
     }
 
+    // FidelityFX creates a fresh high-priority presentQueue and passes THAT queue to its nested
+    // CreateSwapChainForHwnd. The creation descriptor's input gameQueue is retained separately and owns the
+    // replacement backbuffers plus UI snapshot copy. When the descriptor call itself was missed, the only safe
+    // recoverable equivalent is CE's pre-FSR original game/producer queue; using the protected inner queue here
+    // races the game UI producer and perturbs AMD's presenter.
+    ID3D12CommandQueue* originalGameQueue = DX12_AcquireOriginalGameQueueForOverlay();
     const bool recovered = RegisterNativeFSRSwapchainPresentationQueue(
-        context, swapChain, capturedQueue, true, "protected inner DXGI swapchain create");
-    capturedQueue->Release();
+        context, swapChain, originalGameQueue, true, true, protectedInnerPresentQueue != nullptr,
+        "pre-FSR original game queue (protected inner FFX create evidence)");
     if (recovered) {
         HookLogImportant(
-            "DX12: Recovered native-FSR proxy owner-queue binding from protected inner swapchain create "
-            "(context=%p proxy=%p) — closing missed in-flight ffxCreateContext interception before proxy Present",
-            context, swapChain);
+            "DX12: Recovered native-FSR proxy owner-queue binding from pre-FSR original game queue "
+            "(context=%p proxy=%p ownerQueue=%p protectedInnerPresentQueue=%p) — the nested DXGI queue is "
+            "FFX's internal presenter and is evidence only, never CE's overlay submission queue",
+            context, swapChain, originalGameQueue, protectedInnerPresentQueue);
+    } else if (!originalGameQueue) {
+        static std::atomic<int> s_missingOriginalQueueLogCount{0};
+        const int logCount = s_missingOriginalQueueLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 20 || (logCount % 300) == 0) {
+            HookLogImportant(
+                "DX12: Native-FSR proxy owner recovery refused because the protected inner FFX present queue "
+                "%p has no retained pre-FSR original game queue (context=%p proxy=%p log=%d)",
+                protectedInnerPresentQueue, context, swapChain, logCount + 1);
+        }
     }
+    if (originalGameQueue) {
+        originalGameQueue->Release();
+    }
+    protectedInnerPresentQueue->Release();
     return recovered;
 }
 
@@ -6485,17 +6514,17 @@ static AcquiredNativeFSROwnerQueue AcquireNativeFSRSwapchainPresentationQueue(ID
                                         (unavailableLog < 20 || (unavailableLog % 300) == 0))) {
         const char* routeName =
             route == ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kExactDescriptorQueue
-                ? "exact-descriptor"
+                ? (binding.recoveredOriginalGameQueue ? "recovered-original-game" : "exact-descriptor")
                 : (route == ce::dx12_overlay_policy::NativeFSROwnerQueueRoute::kStreamlineUnderlyingGameQueue
                        ? "streamline-underlying-game"
                        : "unavailable");
         HookLogImportant(
             "DX12: Native-FSR owner queue route=%s proxy=%p target=%p descriptorQueue=%p descriptorDevice=%p "
             "exactMatches=%d streamlineWrapped=%d underlyingQueue=%p underlyingDevice=%p underlyingMatches=%d "
-            "selected=%p",
+            "recoveredOriginal=%d selected=%p",
             routeName, proxy, target, descriptorQueueForLog, descriptorDevice, exactMatches ? 1 : 0,
             binding.descriptorQueueUsesAcceptedStreamlineDevice ? 1 : 0, underlyingQueueForLog, underlyingDevice,
-            underlyingMatches ? 1 : 0, selectedQueue);
+            underlyingMatches ? 1 : 0, binding.recoveredOriginalGameQueue ? 1 : 0, selectedQueue);
     }
     if (descriptorDevice) {
         descriptorDevice->Release();

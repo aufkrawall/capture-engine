@@ -589,12 +589,16 @@ inline NativeFSROwnerQueueRoute ChooseNativeFSROwnerQueueRoute(bool exactQueueMa
 }
 
 // A protected official-FFX ffxCreateContext call can already be in flight when CE routes a cached export
-// pointer. The nested DXGI swapchain create still exposes the same descriptor gameQueue, and the first observed
-// ffxConfigure exposes the resulting proxy. Join those two observations only when the primary create hook did
-// not already publish a binding; a recovered observation must never replace stronger descriptor evidence.
+// pointer. The nested DXGI swapchain create proves that missed-create topology, but its queue is FFX's newly
+// created internal presentQueue, NOT the creation descriptor's gameQueue. The recoverable owner is the retained
+// pre-FSR original game queue that produced the UI/backbuffers. Join that evidence to the first observed proxy
+// only when the primary create hook did not already publish stronger exact descriptor evidence.
 inline bool ShouldRecoverNativeFSRProxyBindingFromProtectedCreate(bool hasExistingBinding, bool hasContext,
-                                                                  bool hasProxySwapChain, bool hasCapturedQueue) {
-    return !hasExistingBinding && hasContext && hasProxySwapChain && hasCapturedQueue;
+                                                                  bool hasProxySwapChain,
+                                                                  bool hasProtectedInnerPresentQueue,
+                                                                  bool hasOriginalGameQueue) {
+    return !hasExistingBinding && hasContext && hasProxySwapChain && hasProtectedInnerPresentQueue &&
+           hasOriginalGameQueue;
 }
 
 // AMD can emit multiple real-swapchain Presents (real + generated outputs) for one accepted UI-resource

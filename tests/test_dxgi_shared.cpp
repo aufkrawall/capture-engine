@@ -5769,10 +5769,9 @@ TEST(DXGISharedSourceTest, SuspendBackbufferOverlayUsesTargetCompatibleOwnerQueu
     EXPECT_EQ(body.find("WaitForSingleObject"), std::string::npos);
 }
 
-// GTA session gtafsrfgflicker missed ffxCreateContext because the call was already in flight while CE routed the
-// cached export. The protected inner DXGI create captured the same descriptor queue, but without joining it to
-// the proxy from ffxConfigure the game-thread composite had no owner queue and the unordered presenter fallback
-// alternated overlay visibility across real/generated output. Recovery must happen before the proxy hook is live.
+// GTA session 20260714_140617 proved the protected inner DXGI create queue is FFX's newly-created internal
+// presentQueue, not the descriptor gameQueue. It proves the missed-create topology but must never become CE's
+// overlay owner binding. Recovery uses the retained original game/producer queue before the proxy hook is live.
 TEST(DXGISharedSourceTest, ProtectedCreateQueueRecoveryPrecedesFFXProxyPresentHookInstallation) {
     namespace fs = std::filesystem;
     const fs::path ffxSource = fs::current_path() / "hook" / "apis" / "ffx_hook.cpp";
@@ -5807,8 +5806,10 @@ TEST(DXGISharedSourceTest, ProtectedCreateQueueRecoveryPrecedesFFXProxyPresentHo
     ASSERT_NE(recoveryFunctionEnd, std::string::npos);
     const std::string recoveryBody = dx12Text.substr(recoveryFunction, recoveryFunctionEnd - recoveryFunction);
     EXPECT_NE(recoveryBody.find("ReferenceDeferredOfficialFFXTakeoverQueue()"), std::string::npos);
-    EXPECT_NE(recoveryBody.find("capturedQueue, true, \"protected inner DXGI swapchain create\""),
+    EXPECT_NE(recoveryBody.find("DX12_AcquireOriginalGameQueueForOverlay()"), std::string::npos);
+    EXPECT_NE(recoveryBody.find("originalGameQueue, true, true, protectedInnerPresentQueue != nullptr"),
               std::string::npos);
+    EXPECT_EQ(recoveryBody.find("context, swapChain, protectedInnerPresentQueue, true"), std::string::npos);
 }
 
 // ---------------------------------------------------------------------------

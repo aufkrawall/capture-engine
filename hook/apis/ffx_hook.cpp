@@ -624,9 +624,10 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
     // the first interpolated present. Idempotent + module-validated (only patches a Present entry that
     // resolves into the FFX runtime module); originalConfigure anchors that module check.
     if (recognizedFGConfigure && localConfig.swapChain) {
-        // The protected inner DXGI create captures the descriptor gameQueue even when this ffxCreateContext call
-        // was already in flight as CE routed cached export pointers. Associate that exact queue with the proxy
-        // before its Present hook becomes reachable. A primary descriptor binding always wins.
+        // A protected inner DXGI create proves that this ffxCreateContext was already in flight as CE routed
+        // cached export pointers. Its queue is FFX's internal presentQueue, not the descriptor gameQueue; recover
+        // the retained pre-FSR original game/producer queue before the proxy hook becomes reachable. A primary
+        // descriptor binding always wins.
         DX12_TryRecoverNativeFSRSwapchainPresentationQueue(contextHandle, localConfig.swapChain);
         DX12_TryInstallFFXProxyPresentHook(localConfig.swapChain, reinterpret_cast<void*>(originalConfigure),
                                            "ffxConfigure(FrameGeneration)");
