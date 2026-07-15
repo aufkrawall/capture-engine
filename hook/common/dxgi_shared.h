@@ -95,6 +95,12 @@ extern std::atomic<bool> g_StreamlineFGRunning;
 // Present/Present1 call counter for bypass detection by SL hook.
 extern std::atomic<uint64_t> g_PresentCallCounter;
 
+// Records that ProcessFrame already performed the exact-proxy PostSL
+// explicit-OFF keep-alive draw for the current top-level Present. A nested
+// Present on the same thread then skips its ordinary PostSL callback so one
+// displayed frame never receives the overlay twice.
+void MarkPostSLOffKeepAlivePrePresentDrawn();
+
 // Initialization
 void Init();
 

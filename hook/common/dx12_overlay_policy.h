@@ -682,6 +682,59 @@ enum class PostFSRInactiveRecoveryQueueSource {
     kCurrentCommandQueueFallback,
 };
 
+enum class PostFSRNonFGPresentRoute {
+    kNormal,
+    kConfirmedPostSLKeepAlive,
+    kAwaitNormalOwnershipProof,
+};
+
+inline bool IsPostFSRNormalRouteOwnershipProven(bool hasSwapchainQueue, bool hasOriginalGameQueue,
+                                                bool swapchainQueueMatchesOriginalGameQueue,
+                                                bool currentSwapchainMatchesCapturedSwapchainQueue,
+                                                bool currentSwapchainMatchesProvenOriginalQueueSwapchain) {
+    // A swapchain pointer change is not ownership proof. FSR/DLSS transitions
+    // can alternate between two already-existing runtime proxies without
+    // creating a new swapchain at that boundary. Accept only a fresh captured
+    // original-queue association, or the exact swapchain identity whose
+    // original-queue association was proven before FG took ownership.
+    return hasOriginalGameQueue &&
+           ((hasSwapchainQueue && swapchainQueueMatchesOriginalGameQueue &&
+             currentSwapchainMatchesCapturedSwapchainQueue) ||
+            currentSwapchainMatchesProvenOriginalQueueSwapchain);
+}
+
+inline PostFSRNonFGPresentRoute DecidePostFSRNonFGPresentRoute(
+    bool postFSRRecoveryPending, bool actualFGActive, bool streamlineFGRunning,
+    bool normalRouteOwnershipProven, bool postSLKeepAliveArmed, bool postSLCallbackReady,
+    bool hasPostSLRenderQueue, bool currentSwapchainMatchesLastSuccessfulPostSLSwapchain) {
+    if (!postFSRRecoveryPending || actualFGActive || streamlineFGRunning || normalRouteOwnershipProven) {
+        return PostFSRNonFGPresentRoute::kNormal;
+    }
+
+    // While DLSS is explicitly off, the Streamline proxy can remain the live
+    // Present path without issuing another re-entrant callback. Keep that exact,
+    // previously successful proxy on its already-proven PostSL route. ProcessFrame
+    // performs one ordinary PostSL draw immediately before the pass-through
+    // Present; any same-thread nested callback is de-duplicated for that Present.
+    // This requires no copy, new queue, wait, or normal-route backbuffer access.
+    if (postSLKeepAliveArmed && postSLCallbackReady && hasPostSLRenderQueue &&
+        currentSwapchainMatchesLastSuccessfulPostSLSwapchain) {
+        return PostFSRNonFGPresentRoute::kConfirmedPostSLKeepAlive;
+    }
+
+    // Neither the historical PostSL queue nor the original queue is safe for an
+    // unknown swapchain. Stay GPU-quiet until creation/identity evidence proves
+    // one of those existing routes; do not guess from the pointer-change event.
+    return PostFSRNonFGPresentRoute::kAwaitNormalOwnershipProof;
+}
+
+inline bool ShouldRejectPostSLKeepAliveRenderForUnprovenSwapchain(
+    bool postSLKeepAliveArmed, bool streamlineFGRunning, bool hasLastSuccessfulPostSLSwapchain,
+    bool currentSwapchainMatchesLastSuccessfulPostSLSwapchain) {
+    return postSLKeepAliveArmed && !streamlineFGRunning &&
+           (!hasLastSuccessfulPostSLSwapchain || !currentSwapchainMatchesLastSuccessfulPostSLSwapchain);
+}
+
 inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(
     bool runtimeOwnsSwapchain, bool streamlineFGActive, bool fsrFGActive, bool hadFSRFGPhase, bool hasSwapchainQueue,
     bool hasOriginalGameQueue, bool hasPostSLLastWorkingQueue, bool postFSRInactiveRecoveryPending,
@@ -1220,13 +1273,14 @@ inline bool ShouldResetQueueChangeHeuristicAfterCleanNonFGSwapchainChange(bool e
 inline bool ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(bool endingPostFSRNonFGRecovery,
                                                                        bool hasSwapchainQueue,
                                                                        bool hasOriginalGameQueue,
-                                                                       bool swapchainQueueMatchesOriginalGameQueue) {
+                                                                       bool swapchainQueueMatchesOriginalGameQueue,
+                                                                       bool currentSwapchainMatchesCapturedQueue) {
     // A fresh swapchain recreation captured on the original Present queue is the
     // strongest non-heuristic signal we have that ownership has returned to the
     // normal non-FG topology. End the post-FSR recovery immediately in that case
     // instead of waiting for later cleanup paths to notice indirectly.
     return endingPostFSRNonFGRecovery && hasSwapchainQueue && hasOriginalGameQueue &&
-           swapchainQueueMatchesOriginalGameQueue;
+           swapchainQueueMatchesOriginalGameQueue && currentSwapchainMatchesCapturedQueue;
 }
 
 inline bool ShouldSuppressHeuristicFSRActivationDuringPostFSRNonFGRecovery(
@@ -3009,6 +3063,16 @@ inline bool ShouldResumeConfirmedPostSLFromKeepAliveOnStreamlineOn(bool keepAliv
 inline bool ShouldAllowPostSLKeepAliveRenderAfterExplicitOff(bool keepAliveLatched, bool streamlineFGRunning,
                                                              bool streamlineModulesLoaded) {
     return keepAliveLatched && !streamlineFGRunning && streamlineModulesLoaded;
+}
+
+inline bool ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive(
+    bool keepAliveRenderAfterExplicitOff, bool currentSwapchainMatchesLastSuccessfulPostSLSwapchain,
+    bool hasPostSLLastWorkingQueue) {
+    // Explicit OFF clears the transient swapchain-queue capture and can leave an
+    // older epoch lock behind. The retained last-working queue is the exact
+    // successful direct submit path which armed this swapchain keep-alive.
+    return keepAliveRenderAfterExplicitOff && currentSwapchainMatchesLastSuccessfulPostSLSwapchain &&
+           hasPostSLLastWorkingQueue;
 }
 
 inline bool ShouldClearStreamlineStartupTransitionWindowAfterConfirmedPostSLRendering(

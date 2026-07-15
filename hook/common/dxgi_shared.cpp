@@ -300,6 +300,33 @@ static std::atomic<DWORD> g_presentThreadId{0};
 static std::atomic<int> g_presentDepth{0};
 static std::atomic<DWORD> g_resizeThreadId{0};
 static std::atomic<int> g_resizeDepth{0};
+// Present-scoped duplicate suppression for the explicit-OFF exact-proxy route.
+// This is thread-local because a different Streamline worker Present represents
+// a distinct output frame and must retain its own PostSL draw.
+static thread_local uint32_t s_postSLOffKeepAlivePresentScopeDepth = 0;
+static thread_local bool s_postSLOffKeepAlivePrePresentDrawn = false;
+
+static void BeginPostSLOffKeepAlivePresentScope() {
+    if (s_postSLOffKeepAlivePresentScopeDepth++ == 0) {
+        s_postSLOffKeepAlivePrePresentDrawn = false;
+    }
+}
+
+static void EndPostSLOffKeepAlivePresentScope() {
+    if (s_postSLOffKeepAlivePresentScopeDepth != 0 && --s_postSLOffKeepAlivePresentScopeDepth == 0) {
+        s_postSLOffKeepAlivePrePresentDrawn = false;
+    }
+}
+
+void MarkPostSLOffKeepAlivePrePresentDrawn() {
+    if (s_postSLOffKeepAlivePresentScopeDepth != 0) {
+        s_postSLOffKeepAlivePrePresentDrawn = true;
+    }
+}
+
+static bool WasPostSLOffKeepAlivePrePresentDrawn() {
+    return s_postSLOffKeepAlivePresentScopeDepth != 0 && s_postSLOffKeepAlivePrePresentDrawn;
+}
 
 // Helper to check if we're recursively entering from the same thread
 static bool IsRecursivePresent() {
@@ -2227,8 +2254,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     if (streamlineSyntheticReentrant) {
         auto postSLCallback =
             observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
-        if (postSLCallback) {
+        if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn()) {
             postSLCallback(pSwapChain);
+        } else if (postSLCallback) {
+            static std::atomic<int> s_postSLOffKeepAliveNestedDedupLogCount{0};
+            const int logCount =
+                s_postSLOffKeepAliveNestedDedupLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "DetourPresent: Skipping nested PostSL callback because the exact-proxy explicit-OFF "
+                    "keep-alive already drew before this Present (sc=%p log=%d)",
+                    pSwapChain, logCount + 1);
+            }
         }
 
         if (api == APIType::D3D12) {
@@ -2354,8 +2391,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         // with SL's FG pipeline.
         auto postSLCallback =
             observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
-        if (postSLCallback) {
+        if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn()) {
             postSLCallback(pSwapChain);
+        } else if (postSLCallback) {
+            static std::atomic<int> s_postSLOffKeepAliveRecursiveDedupLogCount{0};
+            const int logCount =
+                s_postSLOffKeepAliveRecursiveDedupLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "DetourPresent: Skipping re-entrant PostSL callback because the exact-proxy explicit-OFF "
+                    "keep-alive already drew in this top-level Present (sc=%p log=%d)",
+                    pSwapChain, logCount + 1);
+            }
         }
         if (api == APIType::D3D12) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "re-entrant Present");
@@ -2379,6 +2426,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         return S_OK;
     }
     auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
+    BeginPostSLOffKeepAlivePresentScope();
+    auto postSLOffKeepAlivePresentScopeGuard =
+        ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
 
     // Detect SL's E9 JMP on Present if not already detected. DetectSLPresentHook
     // itself owns the native-FSR suppression rule so the explicit native-FSR OFF
@@ -3269,8 +3319,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     if (streamlineSyntheticReentrant) {
         auto postSLCallback =
             observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
-        if (postSLCallback) {
+        if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn()) {
             postSLCallback(pSwapChain);
+        } else if (postSLCallback) {
+            static std::atomic<int> s_postSLOffKeepAliveNestedDedupLogCount1{0};
+            const int logCount =
+                s_postSLOffKeepAliveNestedDedupLogCount1.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "DetourPresent1: Skipping nested PostSL callback because the exact-proxy explicit-OFF "
+                    "keep-alive already drew before this Present (sc=%p log=%d)",
+                    pSwapChain, logCount + 1);
+            }
         }
 
         if (api == APIType::D3D12) {
@@ -3360,8 +3420,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         // Post-SL overlay rendering (same as DetourPresent).
         auto postSLCallback =
             observerOnlyMode ? nullptr : g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
-        if (postSLCallback) {
+        if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn()) {
             postSLCallback(pSwapChain);
+        } else if (postSLCallback) {
+            static std::atomic<int> s_postSLOffKeepAliveRecursiveDedupLogCount1{0};
+            const int logCount =
+                s_postSLOffKeepAliveRecursiveDedupLogCount1.fetch_add(1, std::memory_order_relaxed);
+            if (logCount < 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "DetourPresent1: Skipping re-entrant PostSL callback because the exact-proxy explicit-OFF "
+                    "keep-alive already drew in this top-level Present (sc=%p log=%d)",
+                    pSwapChain, logCount + 1);
+            }
         }
         if (api == APIType::D3D12) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "re-entrant Present1");
@@ -3384,6 +3454,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         return S_OK;
     }
     auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
+    BeginPostSLOffKeepAlivePresentScope();
+    auto postSLOffKeepAlivePresentScopeGuard =
+        ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
 
     // Detect SL's E9 JMP if not yet done (same as DetourPresent). DetectSLPresentHook
     // itself owns the native-FSR suppression rule.

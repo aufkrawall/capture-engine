@@ -1525,10 +1525,51 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
     const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
     ASSERT_FALSE(text.empty());
 
-    const size_t cleanReturn = text.find("Swapchain change (no FG active) — normal reinit");
+    const size_t processFrame = text.find("void ProcessFrame(");
+    ASSERT_NE(processFrame, std::string::npos);
+    const size_t recoveryDecision = text.find("DecidePostFSRNonFGPresentRoute(", processFrame);
+    ASSERT_NE(recoveryDecision, std::string::npos);
+    const size_t exactPostSLKeepAlive = text.find("PostSLOverlayRenderGated(pSwapChain);", recoveryDecision);
+    const size_t directDrawSuccess =
+        text.find("const bool directKeepAliveDrawSucceeded", exactPostSLKeepAlive);
+    const size_t directDrawSuccessGuard = text.find("if (directKeepAliveDrawSucceeded)", directDrawSuccess);
+    const size_t markPrePresentDraw =
+        text.find("DXGIShared::MarkPostSLOffKeepAlivePrePresentDrawn();", directDrawSuccessGuard);
+    const size_t exactPostSLReturn = text.find("return true;", markPrePresentDraw);
+    ASSERT_NE(exactPostSLKeepAlive, std::string::npos);
+    ASSERT_NE(directDrawSuccess, std::string::npos);
+    ASSERT_NE(directDrawSuccessGuard, std::string::npos);
+    ASSERT_NE(markPrePresentDraw, std::string::npos);
+    ASSERT_NE(exactPostSLReturn, std::string::npos);
+    const size_t overlayMutex = text.find("g_OverlayMutex.try_lock()", recoveryDecision);
+    ASSERT_NE(overlayMutex, std::string::npos);
+    EXPECT_LT(recoveryDecision, exactPostSLKeepAlive);
+    EXPECT_LT(exactPostSLKeepAlive, directDrawSuccess);
+    EXPECT_LT(directDrawSuccess, directDrawSuccessGuard);
+    EXPECT_LT(directDrawSuccessGuard, markPrePresentDraw);
+    EXPECT_LT(markPrePresentDraw, exactPostSLReturn);
+    EXPECT_LT(exactPostSLReturn, overlayMutex)
+        << "the exact confirmed proxy must draw once before pass-through Present and before normal backbuffer access";
+    const size_t postLockRecoveryRecheck = text.find(
+        "if (g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire)) {", overlayMutex);
+    ASSERT_NE(postLockRecoveryRecheck, std::string::npos);
+    const size_t postLockRouteResnapshot =
+        text.find("routePostFSRNonFGPresentBeforeBackbufferAccess()", postLockRecoveryRecheck);
+    ASSERT_NE(postLockRouteResnapshot, std::string::npos);
+    EXPECT_LT(overlayMutex, postLockRecoveryRecheck);
+    EXPECT_LT(postLockRecoveryRecheck, postLockRouteResnapshot)
+        << "a newly armed OFF edge must invalidate even an earlier normal-route ownership proof";
+
+    const size_t cleanReturn = text.find("Swapchain change (no FG active) — normal reinit", overlayMutex);
     ASSERT_NE(cleanReturn, std::string::npos);
+    const size_t ownershipGuard =
+        text.find("if (endingPostFSRNonFGRecovery && !postFSRNormalRouteOwnershipProven)", cleanReturn);
+    ASSERT_NE(ownershipGuard, std::string::npos);
+    const size_t provenNormalBoundary =
+        text.find("if (endingPostFSRNonFGRecovery && postFSRNormalRouteOwnershipProven)", ownershipGuard);
+    ASSERT_NE(provenNormalBoundary, std::string::npos);
     const size_t publishNormalBoundary = text.find(
-        "g_NeedOffscreenOverlayAfterPostFSRNonFG.store(false, std::memory_order_release);", cleanReturn);
+        "g_NeedOffscreenOverlayAfterPostFSRNonFG.store(false, std::memory_order_release);", provenNormalBoundary);
     ASSERT_NE(publishNormalBoundary, std::string::npos);
     const size_t unlockOverlay = text.find("lock.unlock();", publishNormalBoundary);
     ASSERT_NE(unlockOverlay, std::string::npos);
@@ -1539,11 +1580,160 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
     ASSERT_NE(relockOverlay, std::string::npos);
     const size_t normalQueueRouting = text.find("DecideSwapchainOverlayRouting(", relockOverlay);
     ASSERT_NE(normalQueueRouting, std::string::npos);
+    EXPECT_LT(ownershipGuard, provenNormalBoundary);
+    EXPECT_LT(provenNormalBoundary, publishNormalBoundary);
     EXPECT_LT(publishNormalBoundary, unlockOverlay);
     EXPECT_LT(unlockOverlay, retirePostSL);
     EXPECT_LT(retirePostSL, relockOverlay);
     EXPECT_LT(relockOverlay, normalQueueRouting)
         << "a clean normal return must invalidate the retired PostSL queue before this Present chooses a queue";
+}
+
+TEST(DXGISharedSourceTest, PostFSROwnershipProofsAreExactAndPublishedBeforeTransitionConsumers) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    const size_t queueCaptureComment = text.find("// Capture the queue that was passed to CreateSwapChain");
+    ASSERT_NE(queueCaptureComment, std::string::npos);
+    const size_t setSwapchainQueue = text.find("static bool DX12_SetSwapchainQueue(", queueCaptureComment);
+    ASSERT_NE(setSwapchainQueue, std::string::npos);
+    const size_t queueLock = text.find("std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);",
+                                       setSwapchainQueue);
+    const size_t exactQueueAssociation =
+        text.find("g_LastSwapchainQueueCaptureSwapchain.store(associatedSwapchain", queueLock);
+    const size_t staleNativeAssociationClear =
+        text.find("g_LastProvenOriginalQueueSwapchain.compare_exchange_strong(", exactQueueAssociation);
+    const size_t swapchainQueueWrite = text.find("g_SwapchainQueue = pQueue;", exactQueueAssociation);
+    ASSERT_NE(queueLock, std::string::npos);
+    ASSERT_NE(exactQueueAssociation, std::string::npos);
+    ASSERT_NE(staleNativeAssociationClear, std::string::npos);
+    ASSERT_NE(swapchainQueueWrite, std::string::npos);
+    EXPECT_LT(queueLock, exactQueueAssociation);
+    EXPECT_LT(exactQueueAssociation, staleNativeAssociationClear);
+    EXPECT_LT(staleNativeAssociationClear, swapchainQueueWrite);
+    EXPECT_LT(exactQueueAssociation, swapchainQueueWrite)
+        << "queue ownership and its exact swapchain identity must share one publication boundary";
+
+    const size_t captureSwapchainQueue = text.find("static void CaptureSwapchainQueueFromCreateDevice(");
+    ASSERT_NE(captureSwapchainQueue, std::string::npos);
+    const size_t capturedOnOriginalQueue = text.find("bool capturedOnOriginalQueue = false;", captureSwapchainQueue);
+    ASSERT_NE(capturedOnOriginalQueue, std::string::npos);
+    const size_t normalIdentityLock = text.find(
+        "std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);", capturedOnOriginalQueue);
+    const size_t rememberNormalIdentity =
+        text.find("RememberOriginalQueueSwapchainIdentity(pSwapChain", normalIdentityLock);
+    ASSERT_NE(normalIdentityLock, std::string::npos);
+    ASSERT_NE(rememberNormalIdentity, std::string::npos);
+    EXPECT_LT(normalIdentityLock, rememberNormalIdentity)
+        << "normal queue verification and exact native identity publication must share one lock boundary";
+
+    const size_t postSLRender = text.find("static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {");
+    ASSERT_NE(postSLRender, std::string::npos);
+    const size_t postSubmitHealth = text.find("HRESULT postDevReason = dev->GetDeviceRemovedReason();", postSLRender);
+    const size_t healthySuccessfulSubmit =
+        text.find("if (SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue)", postSubmitHealth);
+    const size_t successfulSubmitSequence =
+        text.find("++s_PostSLSuccessfulSubmitSequence;", healthySuccessfulSubmit);
+    const size_t exactPostSLProof =
+        text.find("g_LastSuccessfulPostSLSwapchain.exchange(pSwapChain", successfulSubmitSequence);
+    const size_t confirmedPostSL =
+        text.find("g_PostSLConfirmedRenderInCurrentReactivationEpoch.store(true", exactPostSLProof);
+    ASSERT_NE(postSubmitHealth, std::string::npos);
+    ASSERT_NE(healthySuccessfulSubmit, std::string::npos);
+    ASSERT_NE(successfulSubmitSequence, std::string::npos);
+    ASSERT_NE(exactPostSLProof, std::string::npos);
+    ASSERT_NE(confirmedPostSL, std::string::npos);
+    EXPECT_LT(postSubmitHealth, healthySuccessfulSubmit);
+    EXPECT_LT(healthySuccessfulSubmit, successfulSubmitSequence);
+    EXPECT_LT(successfulSubmitSequence, exactPostSLProof);
+    EXPECT_LT(exactPostSLProof, confirmedPostSL)
+        << "the OFF callback must not observe confirmation before exact proxy ownership proof";
+}
+
+TEST(DXGISharedSourceTest, ExactExplicitOffProxyUsesLastSuccessfulQueueAheadOfAnyStaleEpochLock) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    const size_t postSLRender = text.find("static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {");
+    const size_t exactQueueSelection =
+        text.find("ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive(", postSLRender);
+    const size_t staleLockedQueueFallback = text.find("} else if (g_PostSLLockedQueue) {", exactQueueSelection);
+    ASSERT_NE(postSLRender, std::string::npos);
+    ASSERT_NE(exactQueueSelection, std::string::npos);
+    ASSERT_NE(staleLockedQueueFallback, std::string::npos);
+    EXPECT_LT(exactQueueSelection, staleLockedQueueFallback);
+
+    const size_t lockedQueueMutation =
+        text.find("ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive(", staleLockedQueueFallback);
+    const size_t selectedQueueMatch = text.find("const bool selectedQueueMatchesLockedQueue", lockedQueueMutation);
+    ASSERT_NE(lockedQueueMutation, std::string::npos);
+    ASSERT_NE(selectedQueueMatch, std::string::npos);
+    EXPECT_LT(lockedQueueMutation, selectedQueueMatch)
+        << "the exact retained queue must be allowed to replace a stale epoch lock before mutation is decided";
+}
+
+TEST(DXGISharedSourceTest, ExactExplicitOffDirectDrawSuppressesOnlySameThreadNestedPresentDuplicate) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "common" / "dxgi_shared.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    const size_t present =
+        text.find("HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {");
+    const size_t recursivePresent = text.find("if (IsRecursivePresent()) {", present);
+    const size_t recursivePresentDedup =
+        text.find("if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn())", recursivePresent);
+    const size_t presentScope = text.find("BeginPostSLOffKeepAlivePresentScope();", recursivePresentDedup);
+    const size_t processPresent = text.find("HandleDX12ProcessFrame(pSwapChain, true);", presentScope);
+    ASSERT_NE(present, std::string::npos);
+    ASSERT_NE(recursivePresent, std::string::npos);
+    ASSERT_NE(recursivePresentDedup, std::string::npos);
+    ASSERT_NE(presentScope, std::string::npos);
+    ASSERT_NE(processPresent, std::string::npos);
+    EXPECT_LT(recursivePresent, recursivePresentDedup);
+    EXPECT_LT(recursivePresentDedup, presentScope);
+    EXPECT_LT(presentScope, processPresent);
+
+    const size_t present1 = text.find(
+        "HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,",
+        processPresent);
+    const size_t recursivePresent1 = text.find("if (IsRecursivePresent()) {", present1);
+    const size_t recursivePresent1Dedup =
+        text.find("if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn())", recursivePresent1);
+    const size_t present1Scope = text.find("BeginPostSLOffKeepAlivePresentScope();", recursivePresent1Dedup);
+    const size_t processPresent1 = text.find("HandleDX12ProcessFrame(pSwapChain, true);", present1Scope);
+    ASSERT_NE(present1, std::string::npos);
+    ASSERT_NE(recursivePresent1, std::string::npos);
+    ASSERT_NE(recursivePresent1Dedup, std::string::npos);
+    ASSERT_NE(present1Scope, std::string::npos);
+    ASSERT_NE(processPresent1, std::string::npos);
+    EXPECT_LT(recursivePresent1, recursivePresent1Dedup);
+    EXPECT_LT(recursivePresent1Dedup, present1Scope);
+    EXPECT_LT(present1Scope, processPresent1);
+
+    const size_t threadLocalScope = text.find("static thread_local uint32_t s_postSLOffKeepAlivePresentScopeDepth");
+    const size_t markFunction = text.find("void MarkPostSLOffKeepAlivePrePresentDrawn()", threadLocalScope);
+    const size_t markOnlyInsideScope =
+        text.find("if (s_postSLOffKeepAlivePresentScopeDepth != 0)", markFunction);
+    ASSERT_NE(threadLocalScope, std::string::npos);
+    ASSERT_NE(markFunction, std::string::npos);
+    ASSERT_NE(markOnlyInsideScope, std::string::npos);
+    EXPECT_LT(threadLocalScope, markFunction);
+    EXPECT_LT(markFunction, markOnlyInsideScope)
+        << "a generated frame on another worker thread must retain its independent PostSL draw";
 }
 
 TEST(DXGISharedTest, ThirdPartyOverlayECLQueueDoesNotOverrideKnownGameTrackingQueues) {
@@ -3173,16 +3363,90 @@ TEST(DXGISharedTest, CleanNonFGSwapchainChangeResetsQueueHeuristicOnlyWhenEnding
 
 TEST(DXGISharedTest, ExplicitSwapchainQueueProofEndsPostFSRRecoveryOnlyWhenOwnershipReturnsToOriginalQueue) {
     EXPECT_TRUE(
-        ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(true, true, true, true));
+        ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(
+            true, true, true, true, true));
 
     EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(false, true, true, true));
+        ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(
+            false, true, true, true, true));
     EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(true, false, true, true));
+        ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(
+            true, false, true, true, true));
     EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(true, true, false, true));
+        ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(
+            true, true, false, true, true));
     EXPECT_FALSE(
-        ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(true, true, true, false));
+        ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(
+            true, true, true, false, true));
+    EXPECT_FALSE(
+        ce::dx12_overlay_policy::ShouldEndPostFSRNonFGRecoveryOnExplicitSwapchainQueueProof(
+            true, true, true, true, false));
+}
+
+TEST(DXGISharedTest, PostFSRNormalRouteRequiresQueueOrExactRememberedSwapchainOwnershipProof) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::IsPostFSRNormalRouteOwnershipProven(
+        true, true, true, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::IsPostFSRNormalRouteOwnershipProven(
+        false, true, false, false, true));
+
+    // GTA can rotate FFX proxy -> existing Streamline proxy while every FG
+    // signal is already off. Pointer change alone must not authorize the
+    // original queue for that runtime proxy's backbuffer.
+    EXPECT_FALSE(ce::dx12_overlay_policy::IsPostFSRNormalRouteOwnershipProven(
+        false, true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::IsPostFSRNormalRouteOwnershipProven(
+        true, true, true, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::IsPostFSRNormalRouteOwnershipProven(
+        true, false, true, true, true));
+}
+
+TEST(DXGISharedTest, GTAProxyRotationKeepsExactConfirmedPostSLRouteUntilNormalOwnershipIsProven) {
+    using Route = ce::dx12_overlay_policy::PostFSRNonFGPresentRoute;
+
+    EXPECT_EQ(ce::dx12_overlay_policy::DecidePostFSRNonFGPresentRoute(
+                  true, false, false, false, true, true, true, true),
+              Route::kConfirmedPostSLKeepAlive);
+    EXPECT_EQ(ce::dx12_overlay_policy::DecidePostFSRNonFGPresentRoute(
+                  true, false, false, true, true, true, true, false),
+              Route::kNormal);
+    EXPECT_EQ(ce::dx12_overlay_policy::DecidePostFSRNonFGPresentRoute(
+                  true, true, false, false, true, true, true, true),
+              Route::kNormal);
+    EXPECT_EQ(ce::dx12_overlay_policy::DecidePostFSRNonFGPresentRoute(
+                  true, false, true, false, true, true, true, true),
+              Route::kNormal);
+
+    EXPECT_EQ(ce::dx12_overlay_policy::DecidePostFSRNonFGPresentRoute(
+                  true, false, false, false, true, true, true, false),
+              Route::kAwaitNormalOwnershipProof);
+    EXPECT_EQ(ce::dx12_overlay_policy::DecidePostFSRNonFGPresentRoute(
+                  true, false, false, false, true, false, true, true),
+              Route::kAwaitNormalOwnershipProof);
+    EXPECT_EQ(ce::dx12_overlay_policy::DecidePostFSRNonFGPresentRoute(
+                  true, false, false, false, true, true, false, true),
+              Route::kAwaitNormalOwnershipProof);
+}
+
+TEST(DXGISharedTest, ExplicitOffPostSLKeepAliveRejectsEverySwapchainExceptItsLastSuccessfulIdentity) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRejectPostSLKeepAliveRenderForUnprovenSwapchain(
+        true, false, true, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRejectPostSLKeepAliveRenderForUnprovenSwapchain(
+        true, false, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldRejectPostSLKeepAliveRenderForUnprovenSwapchain(
+        true, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRejectPostSLKeepAliveRenderForUnprovenSwapchain(
+        true, true, true, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRejectPostSLKeepAliveRenderForUnprovenSwapchain(
+        false, false, true, false));
+}
+
+TEST(DXGISharedTest, ExactExplicitOffKeepAlivePrefersOnlyItsProvenLastWorkingQueue) {
+    using ce::dx12_overlay_policy::ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive;
+
+    EXPECT_TRUE(ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive(true, true, true));
+    EXPECT_FALSE(ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive(false, true, true));
+    EXPECT_FALSE(ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive(true, false, true));
+    EXPECT_FALSE(ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive(true, true, false));
 }
 
 TEST(DXGISharedTest, SwapchainChangeGuardCatchesRecentStreamlineTeardownOnRuntimeOwnedQueue) {
