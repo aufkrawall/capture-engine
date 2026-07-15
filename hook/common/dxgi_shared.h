@@ -96,10 +96,14 @@ extern std::atomic<bool> g_StreamlineFGRunning;
 extern std::atomic<uint64_t> g_PresentCallCounter;
 
 // Records that ProcessFrame already performed the exact-proxy PostSL
-// explicit-OFF keep-alive draw for the current top-level Present. A nested
-// Present on the same thread then skips its ordinary PostSL callback so one
-// displayed frame never receives the overlay twice.
+// explicit-OFF keep-alive draw for the current top-level Present. The wrapper
+// owns the outer scope across ProcessFrame and its real Present; nested detour
+// scopes preserve the marker so one displayed frame never receives the overlay
+// twice even if the DLSS suspend edge occurs inside the real Present call.
+void BeginPostSLOffKeepAlivePresentScope();
+void EndPostSLOffKeepAlivePresentScope();
 void MarkPostSLOffKeepAlivePrePresentDrawn();
+bool WasPostSLOffKeepAlivePrePresentDrawn();
 
 // Initialization
 void Init();

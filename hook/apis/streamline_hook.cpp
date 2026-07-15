@@ -2955,14 +2955,20 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                 effectivePostSLRuntimeStateStabilizing);
             ResetStartupProtectedOffChurnActiveProof("forwarded activated-unconfirmed SetOptions disable");
         } else if (explicitSetOptionsDisableIsAuthoritative) {
-            HookLogImportant(
-                "Streamline Hook: Accepting explicit slDLSSGSetOptions(OFF) as authoritative after confirmed PostSL "
-                "rendering (viewport=%u startupWindow=%d hadFSR=%d safeBootstrap=%d pending=%d unconfirmed=%d "
-                "settling=%d stabilizing=%d activeProofPending=%d)",
-                viewportKey, startupWindowActive ? 1 : 0, hadFSRFGPhase ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0,
-                startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
-                postSLConfirmedButStartupSettling ? 1 : 0, effectivePostSLRuntimeStateStabilizing ? 1 : 0,
-                postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0);
+            static std::atomic<uint64_t> s_authoritativeSetOptionsOffLogCount{0};
+            const uint64_t logCount = s_authoritativeSetOptionsOffLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (logCount <= 20 || (logCount % 300) == 0) {
+                HookLogImportant(
+                    "Streamline Hook: Accepting explicit slDLSSGSetOptions(OFF) as authoritative after confirmed "
+                    "PostSL rendering (viewport=%u startupWindow=%d hadFSR=%d safeBootstrap=%d pending=%d "
+                    "unconfirmed=%d settling=%d stabilizing=%d activeProofPending=%d log=%llu)",
+                    viewportKey, startupWindowActive ? 1 : 0, hadFSRFGPhase ? 1 : 0,
+                    safePostFSRBootstrapPath ? 1 : 0, startupActivationPending ? 1 : 0,
+                    postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
+                    effectivePostSLRuntimeStateStabilizing ? 1 : 0,
+                    postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0,
+                    static_cast<unsigned long long>(logCount));
+            }
             ResetStartupProtectedOffChurnActiveProof("forwarded authoritative SetOptions disable");
         }
         if (!pureObserverOnly && requestedEnabled) {

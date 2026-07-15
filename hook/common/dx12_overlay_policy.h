@@ -3065,6 +3065,20 @@ inline bool ShouldAllowPostSLKeepAliveRenderAfterExplicitOff(bool keepAliveLatch
     return keepAliveLatched && !streamlineFGRunning && streamlineModulesLoaded;
 }
 
+inline bool ShouldDriveExactPostSLOffKeepAliveBeforePresent(
+    bool keepAliveLatched, bool streamlineFGRunning, bool fsrFGApiActive, bool runtimeOwnedNativeFGPresentPath,
+    bool protectedOfficialFFXStartup, bool streamlineModulesLoaded, bool callbackExecutionEnabled, bool callbackInstalled,
+    bool hasPostSLRenderQueue, bool currentSwapchainMatchesLastSuccessfulPostSLSwapchain) {
+    // A runtime proxy may keep issuing Present after DLSS-G is explicitly OFF
+    // while bypassing every ordinary ProcessFrame entry (for example, through a
+    // wrapped/pass-through Present). Drive the already-proven PostSL route before
+    // any such early return. Exact swapchain + successful queue proof are
+    // mandatory, and native FSR ownership always wins the GPU-quiesce boundary.
+    return keepAliveLatched && !streamlineFGRunning && !fsrFGApiActive && !runtimeOwnedNativeFGPresentPath &&
+           !protectedOfficialFFXStartup && streamlineModulesLoaded && callbackExecutionEnabled && callbackInstalled &&
+           hasPostSLRenderQueue && currentSwapchainMatchesLastSuccessfulPostSLSwapchain;
+}
+
 inline bool ShouldPreserveConfirmedPostSLProxyResourcesAcrossOuterOff(
     bool streamlineTurnedOff, bool postSLExplicitOffKeepAlive, bool currentSwapchainMatchesLastSuccessfulPostSL,
     bool hasOverlayBackend, bool hasSyncBackend, bool deviceRemoved) {

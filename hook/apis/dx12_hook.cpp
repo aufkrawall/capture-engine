@@ -2548,6 +2548,22 @@ static void SetPostSLCallbackInstalled(bool installed, const char* reason) {
     }
 }
 
+static void RetirePostSLExplicitOffKeepAliveAfterNormalRouteDraw(const char* reason) {
+    // A real normal-route submit is the make-before-break handoff boundary. Retire
+    // immediately so a nested wrapper re-entry for this same Present cannot enter
+    // the retained callback, account a second Present, or attempt a second draw.
+    // A DLSS-G resume clears the latch before rendering and therefore never lands
+    // here as an OFF keep-alive retirement.
+    if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) ||
+        !g_PostSLExplicitOffKeepAlive.exchange(false, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    g_PostSLOverlayActive.store(false, std::memory_order_release);
+    g_PostSLConfirmedRendering.store(false, std::memory_order_release);
+    SetPostSLCallbackInstalled(false, reason);
+}
+
 static void WaitForInFlightPostSLCallbacks(const char* reason) {
     for (int spin = 0; spin < 200; ++spin) {
         uint32_t inFlight = g_PostSLCallbackInFlight.load(std::memory_order_acquire);
@@ -15181,6 +15197,55 @@ static void PostSLOverlayRenderGated(IDXGISwapChain* pSwapChain) {
     PostSLOverlayRender(pSwapChain);
 }
 
+bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapChain, const char* source) {
+    const bool keepAliveLatched = g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire);
+    if (!pSwapChain || !keepAliveLatched || DXGIShared::WasPostSLOffKeepAlivePrePresentDrawn()) {
+        return false;
+    }
+
+    ID3D12CommandQueue* lastWorkingQueue = nullptr;
+    ID3D12CommandQueue* lockedQueue = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        lastWorkingQueue = g_PostSLLastWorkingQueue;
+        lockedQueue = g_PostSLLockedQueue;
+    }
+
+    const bool callbackInstalled =
+        DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) == &PostSLOverlayRenderGated;
+    const bool exactLastSuccessfulSwapchain =
+        pSwapChain != nullptr && pSwapChain == g_LastSuccessfulPostSLSwapchain.load(std::memory_order_acquire);
+    if (!ce::dx12_overlay_policy::ShouldDriveExactPostSLOffKeepAliveBeforePresent(
+            keepAliveLatched, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
+            g_FGCompat.IsFSRFGApiActive(),
+            HookHasRuntimeOwnedNativeFGPresentPath(), ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup(),
+            IsStreamlineLoaded(), g_PostSLCallbackExecutionEnabled.load(std::memory_order_acquire), callbackInstalled,
+            lastWorkingQueue != nullptr || lockedQueue != nullptr, exactLastSuccessfulSwapchain)) {
+        return false;
+    }
+
+    const uint64_t successfulSubmitSequenceBefore = s_PostSLSuccessfulSubmitSequence;
+    PostSLOverlayRenderGated(pSwapChain);
+    const uint64_t successfulSubmitSequenceAfter = s_PostSLSuccessfulSubmitSequence;
+    const bool submitted = successfulSubmitSequenceAfter != successfulSubmitSequenceBefore;
+    if (submitted) {
+        DXGIShared::MarkPostSLOffKeepAlivePrePresentDrawn();
+    } else {
+        NoteDX12OverlayCoverageGate("postsl-pre-routing-exact-off-keepalive-submit-missed");
+    }
+
+    static std::atomic<int> s_preRoutingExactOffKeepAliveLogCount{0};
+    const int logCount = s_preRoutingExactOffKeepAliveLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (logCount < 20 || (logCount % 300) == 0) {
+        HookLogImportant(
+            "DX12: Pre-routing exact-proxy PostSL OFF keep-alive submit completed=%d sequence=%llu->%llu "
+            "(source=%s sc=%p lastWorking=%p locked=%p log=%d)",
+            submitted ? 1 : 0, successfulSubmitSequenceBefore, successfulSubmitSequenceAfter,
+            source ? source : "Present", pSwapChain, lastWorkingQueue, lockedQueue, logCount + 1);
+    }
+    return submitted;
+}
+
 // ============================================================
 // Steam ECL deferred overlay submission
 // ============================================================
@@ -15227,6 +15292,8 @@ static bool SubmitSteamDeferredOverlay(ID3D12CommandQueue* submitQueue, const ch
         }
     }
     NoteDX12OverlayRendered(DX12OverlayRenderRoute::kNormal);
+    RetirePostSLExplicitOffKeepAliveAfterNormalRouteDraw(
+        "DX12: PostSL keep-alive retired after Steam-deferred normal-route draw");
 
     // Signal fence immediately (not deferred) since we need to wait before Present.
     if (g_State.fence) {
@@ -20706,6 +20773,8 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                         }
                                         if (overlayDrawRecorded) {
                                             NoteDX12OverlayRendered(DX12OverlayRenderRoute::kNormal);
+                                            RetirePostSLExplicitOffKeepAliveAfterNormalRouteDraw(
+                                                "DX12: PostSL keep-alive retired after normal-route draw");
                                         }
 
                                         // SL/FSR FG diagnostic: log after ECL submission

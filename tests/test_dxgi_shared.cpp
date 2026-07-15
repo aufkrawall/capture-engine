@@ -1693,35 +1693,57 @@ TEST(DXGISharedSourceTest, ExactExplicitOffDirectDrawSuppressesOnlySameThreadNes
 
     const size_t present =
         text.find("HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {");
+    const size_t presentScope = text.find("BeginPostSLOffKeepAlivePresentScope();", present);
+    const size_t wrappedPassThrough = text.find("if (wrappedSwapchain) {", presentScope);
+    const size_t wrappedKeepAlive =
+        text.find("DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(", wrappedPassThrough);
+    const size_t wrappedOriginalPresent = text.find("CallOriginalPresent(pSwapChain", wrappedKeepAlive);
     const size_t recursivePresent = text.find("if (IsRecursivePresent()) {", present);
     const size_t recursivePresentDedup =
         text.find("if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn())", recursivePresent);
-    const size_t presentScope = text.find("BeginPostSLOffKeepAlivePresentScope();", recursivePresentDedup);
     const size_t processPresent = text.find("HandleDX12ProcessFrame(pSwapChain, true);", presentScope);
     ASSERT_NE(present, std::string::npos);
+    ASSERT_NE(presentScope, std::string::npos);
+    ASSERT_NE(wrappedPassThrough, std::string::npos);
+    ASSERT_NE(wrappedKeepAlive, std::string::npos);
+    ASSERT_NE(wrappedOriginalPresent, std::string::npos);
     ASSERT_NE(recursivePresent, std::string::npos);
     ASSERT_NE(recursivePresentDedup, std::string::npos);
-    ASSERT_NE(presentScope, std::string::npos);
     ASSERT_NE(processPresent, std::string::npos);
+    EXPECT_LT(presentScope, wrappedPassThrough);
+    EXPECT_LT(wrappedPassThrough, wrappedKeepAlive);
+    EXPECT_LT(wrappedKeepAlive, wrappedOriginalPresent);
     EXPECT_LT(recursivePresent, recursivePresentDedup);
-    EXPECT_LT(recursivePresentDedup, presentScope);
+    EXPECT_LT(presentScope, recursivePresentDedup);
     EXPECT_LT(presentScope, processPresent);
 
     const size_t present1 = text.find(
         "HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,",
         processPresent);
+    const size_t present1Scope = text.find("BeginPostSLOffKeepAlivePresentScope();", present1);
+    const size_t wrappedPresent1PassThrough =
+        text.find("pSwapChain->QueryInterface(IID_CWrapDXGISwapChain", present1Scope);
+    const size_t wrappedPresent1KeepAlive =
+        text.find("DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(", wrappedPresent1PassThrough);
+    const size_t wrappedOriginalPresent1 =
+        text.find("CallOriginalPresent1(pSwapChain", wrappedPresent1KeepAlive);
     const size_t recursivePresent1 = text.find("if (IsRecursivePresent()) {", present1);
     const size_t recursivePresent1Dedup =
         text.find("if (postSLCallback && !WasPostSLOffKeepAlivePrePresentDrawn())", recursivePresent1);
-    const size_t present1Scope = text.find("BeginPostSLOffKeepAlivePresentScope();", recursivePresent1Dedup);
     const size_t processPresent1 = text.find("HandleDX12ProcessFrame(pSwapChain, true);", present1Scope);
     ASSERT_NE(present1, std::string::npos);
+    ASSERT_NE(present1Scope, std::string::npos);
+    ASSERT_NE(wrappedPresent1PassThrough, std::string::npos);
+    ASSERT_NE(wrappedPresent1KeepAlive, std::string::npos);
+    ASSERT_NE(wrappedOriginalPresent1, std::string::npos);
     ASSERT_NE(recursivePresent1, std::string::npos);
     ASSERT_NE(recursivePresent1Dedup, std::string::npos);
-    ASSERT_NE(present1Scope, std::string::npos);
     ASSERT_NE(processPresent1, std::string::npos);
+    EXPECT_LT(present1Scope, wrappedPresent1PassThrough);
+    EXPECT_LT(wrappedPresent1PassThrough, wrappedPresent1KeepAlive);
+    EXPECT_LT(wrappedPresent1KeepAlive, wrappedOriginalPresent1);
     EXPECT_LT(recursivePresent1, recursivePresent1Dedup);
-    EXPECT_LT(recursivePresent1Dedup, present1Scope);
+    EXPECT_LT(present1Scope, recursivePresent1Dedup);
     EXPECT_LT(present1Scope, processPresent1);
 
     const size_t threadLocalScope = text.find("static thread_local uint32_t s_postSLOffKeepAlivePresentScopeDepth");
@@ -1734,6 +1756,112 @@ TEST(DXGISharedSourceTest, ExactExplicitOffDirectDrawSuppressesOnlySameThreadNes
     EXPECT_LT(threadLocalScope, markFunction);
     EXPECT_LT(markFunction, markOnlyInsideScope)
         << "a generated frame on another worker thread must retain its independent PostSL draw";
+}
+
+TEST(DXGISharedSourceTest, WrapperPresentScopeSpansProcessFrameAndRealPresentForExactOffDeduplication) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "wrappers" / "dxgi_swapchain_wrap.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    const size_t present = text.find("HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(");
+    const size_t presentScope = text.find("DXGIShared::BeginPostSLOffKeepAlivePresentScope();", present);
+    const size_t processPresent = text.find("DX12_ProcessFrameExternal(pRealCached);", presentScope);
+    const size_t realPresent = text.find("pRealCached->Present(SyncInterval, presentFlags)", processPresent);
+    ASSERT_NE(present, std::string::npos);
+    ASSERT_NE(presentScope, std::string::npos);
+    ASSERT_NE(processPresent, std::string::npos);
+    ASSERT_NE(realPresent, std::string::npos);
+    EXPECT_LT(presentScope, processPresent);
+    EXPECT_LT(processPresent, realPresent);
+
+    const size_t present1 = text.find("HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(", realPresent);
+    const size_t present1Scope = text.find("DXGIShared::BeginPostSLOffKeepAlivePresentScope();", present1);
+    const size_t processPresent1 = text.find("DX12_ProcessFrameExternal(pReal1Cached);", present1Scope);
+    const size_t realPresent1 =
+        text.find("pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters)", processPresent1);
+    ASSERT_NE(present1, std::string::npos);
+    ASSERT_NE(present1Scope, std::string::npos);
+    ASSERT_NE(processPresent1, std::string::npos);
+    ASSERT_NE(realPresent1, std::string::npos);
+    EXPECT_LT(present1Scope, processPresent1);
+    EXPECT_LT(processPresent1, realPresent1);
+}
+
+TEST(DXGISharedSourceTest, WrappedPassThroughDrivesOnlySuccessfulExactProxyKeepAliveBeforePresent) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    const size_t helper = text.find("bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(");
+    const size_t latch = text.find("const bool keepAliveLatched", helper);
+    const size_t samePresentDedup = text.find("WasPostSLOffKeepAlivePrePresentDrawn()", latch);
+    const size_t queueLock = text.find("g_CommandQueueMutex", samePresentDedup);
+    const size_t exactPolicy = text.find("ShouldDriveExactPostSLOffKeepAliveBeforePresent(", queueLock);
+    const size_t submit = text.find("PostSLOverlayRenderGated(pSwapChain);", exactPolicy);
+    const size_t success = text.find("const bool submitted", submit);
+    const size_t mark = text.find("DXGIShared::MarkPostSLOffKeepAlivePrePresentDrawn();", success);
+    ASSERT_NE(helper, std::string::npos);
+    ASSERT_NE(latch, std::string::npos);
+    ASSERT_NE(samePresentDedup, std::string::npos);
+    ASSERT_NE(queueLock, std::string::npos);
+    ASSERT_NE(exactPolicy, std::string::npos);
+    ASSERT_NE(submit, std::string::npos);
+    ASSERT_NE(success, std::string::npos);
+    ASSERT_NE(mark, std::string::npos);
+    EXPECT_LT(latch, queueLock) << "steady-state Presents must fast-return before taking the queue lock";
+    EXPECT_LT(samePresentDedup, queueLock);
+    EXPECT_LT(queueLock, exactPolicy);
+    EXPECT_LT(exactPolicy, submit);
+    EXPECT_LT(submit, success);
+    EXPECT_LT(success, mark) << "only a real successful submit may suppress the same-present nested callback";
+}
+
+TEST(DXGISharedSourceTest, SuccessfulNormalDrawImmediatelyRetiresExactOffKeepAliveBeforeNestedPresent) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    const size_t helper = text.find("static void RetirePostSLExplicitOffKeepAliveAfterNormalRouteDraw(");
+    const size_t requireOff = text.find("g_StreamlineFGRunning.load", helper);
+    const size_t consumeLatch = text.find("g_PostSLExplicitOffKeepAlive.exchange(false", requireOff);
+    const size_t disableCallback = text.find("SetPostSLCallbackInstalled(false, reason);", consumeLatch);
+    ASSERT_NE(helper, std::string::npos);
+    ASSERT_NE(requireOff, std::string::npos);
+    ASSERT_NE(consumeLatch, std::string::npos);
+    ASSERT_NE(disableCallback, std::string::npos);
+    EXPECT_LT(requireOff, consumeLatch);
+    EXPECT_LT(consumeLatch, disableCallback);
+
+    const size_t normalSubmit = text.find("NoteDX12OverlayRendered(DX12OverlayRenderRoute::kNormal);", helper);
+    const size_t immediateRetirement =
+        text.find("RetirePostSLExplicitOffKeepAliveAfterNormalRouteDraw(", normalSubmit);
+    ASSERT_NE(normalSubmit, std::string::npos);
+    ASSERT_NE(immediateRetirement, std::string::npos);
+    EXPECT_LT(normalSubmit, immediateRetirement)
+        << "the keep-alive may retire only after a real normal-route overlay submit";
+
+    const size_t recordedDrawGuard = text.find("if (overlayDrawRecorded) {", immediateRetirement);
+    const size_t recordedNormalSubmit =
+        text.find("NoteDX12OverlayRendered(DX12OverlayRenderRoute::kNormal);", recordedDrawGuard);
+    const size_t recordedImmediateRetirement =
+        text.find("RetirePostSLExplicitOffKeepAliveAfterNormalRouteDraw(", recordedNormalSubmit);
+    ASSERT_NE(recordedDrawGuard, std::string::npos);
+    ASSERT_NE(recordedNormalSubmit, std::string::npos);
+    ASSERT_NE(recordedImmediateRetirement, std::string::npos);
+    EXPECT_LT(recordedDrawGuard, recordedNormalSubmit);
+    EXPECT_LT(recordedNormalSubmit, recordedImmediateRetirement);
 }
 
 TEST(DXGISharedTest, ThirdPartyOverlayECLQueueDoesNotOverrideKnownGameTrackingQueues) {
@@ -3438,6 +3566,48 @@ TEST(DXGISharedTest, ExplicitOffPostSLKeepAliveRejectsEverySwapchainExceptItsLas
         true, true, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldRejectPostSLKeepAliveRenderForUnprovenSwapchain(
         false, false, true, false));
+}
+
+TEST(DXGISharedTest, ExactPostSLOffKeepAliveCoversEveryDlssSuspendEntryButNeverNativeFSROwnership) {
+    using ce::dx12_overlay_policy::ShouldDriveExactPostSLOffKeepAliveBeforePresent;
+
+    // OFF->DLSS->suspend, FSR->DLSS->suspend, and DLSS->all-FG-off all
+    // converge on the same exact-proxy invariant. FSR history is deliberately
+    // irrelevant once PostSL has proved the current proxy and queue.
+    {
+        SCOPED_TRACE("all FG off -> DLSS -> suspended/off");
+        EXPECT_TRUE(ShouldDriveExactPostSLOffKeepAliveBeforePresent(
+            true, false, false, false, false, true, true, true, true, true));
+    }
+    {
+        SCOPED_TRACE("FSR active/off -> DLSS -> suspended/off");
+        EXPECT_TRUE(ShouldDriveExactPostSLOffKeepAliveBeforePresent(
+            true, false, false, false, false, true, true, true, true, true));
+    }
+
+    // Active DLSS uses its ordinary callback; either active/suspended FSR route
+    // owns composition and must keep separate PostSL work GPU-quiet.
+    EXPECT_FALSE(ShouldDriveExactPostSLOffKeepAliveBeforePresent(
+        true, true, false, false, false, true, true, true, true, true));
+    EXPECT_FALSE(ShouldDriveExactPostSLOffKeepAliveBeforePresent(
+        true, false, true, false, false, true, true, true, true, true));
+    EXPECT_FALSE(ShouldDriveExactPostSLOffKeepAliveBeforePresent(
+        true, false, false, true, false, true, true, true, true, true));
+    EXPECT_FALSE(ShouldDriveExactPostSLOffKeepAliveBeforePresent(
+        true, false, false, false, true, true, true, true, true, true));
+
+    EXPECT_FALSE(ShouldDriveExactPostSLOffKeepAliveBeforePresent(
+        false, false, false, false, false, true, true, true, true, true));
+    EXPECT_FALSE(ShouldDriveExactPostSLOffKeepAliveBeforePresent(
+        true, false, false, false, false, false, true, true, true, true));
+    EXPECT_FALSE(ShouldDriveExactPostSLOffKeepAliveBeforePresent(
+        true, false, false, false, false, true, false, true, true, true));
+    EXPECT_FALSE(ShouldDriveExactPostSLOffKeepAliveBeforePresent(
+        true, false, false, false, false, true, true, false, true, true));
+    EXPECT_FALSE(ShouldDriveExactPostSLOffKeepAliveBeforePresent(
+        true, false, false, false, false, true, true, true, false, true));
+    EXPECT_FALSE(ShouldDriveExactPostSLOffKeepAliveBeforePresent(
+        true, false, false, false, false, true, true, true, true, false));
 }
 
 TEST(DXGISharedTest, ExactExplicitOffKeepAlivePrefersOnlyItsProvenLastWorkingQueue) {

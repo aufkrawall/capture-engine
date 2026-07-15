@@ -40,6 +40,9 @@ void* InlineHook::CreateBypassTrampoline(void*) {
 // Note: These are regular C++ functions, not extern "C"
 void DX12_InvalidateSwapchain() {}
 void DX12_ProcessFrameExternal(IDXGISwapChain*) {}
+bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain*, const char*) {
+    return false;
+}
 void DX12_OnSwapchainResizeBegin() {}
 void DX12_OnSwapchainResizeEnd() {}
 void DX12_SignalFSR4SwapchainRecreated() {}

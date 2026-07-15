@@ -306,13 +306,13 @@ static std::atomic<int> g_resizeDepth{0};
 static thread_local uint32_t s_postSLOffKeepAlivePresentScopeDepth = 0;
 static thread_local bool s_postSLOffKeepAlivePrePresentDrawn = false;
 
-static void BeginPostSLOffKeepAlivePresentScope() {
+void BeginPostSLOffKeepAlivePresentScope() {
     if (s_postSLOffKeepAlivePresentScopeDepth++ == 0) {
         s_postSLOffKeepAlivePrePresentDrawn = false;
     }
 }
 
-static void EndPostSLOffKeepAlivePresentScope() {
+void EndPostSLOffKeepAlivePresentScope() {
     if (s_postSLOffKeepAlivePresentScopeDepth != 0 && --s_postSLOffKeepAlivePresentScopeDepth == 0) {
         s_postSLOffKeepAlivePrePresentDrawn = false;
     }
@@ -324,7 +324,7 @@ void MarkPostSLOffKeepAlivePrePresentDrawn() {
     }
 }
 
-static bool WasPostSLOffKeepAlivePrePresentDrawn() {
+bool WasPostSLOffKeepAlivePrePresentDrawn() {
     return s_postSLOffKeepAlivePresentScopeDepth != 0 && s_postSLOffKeepAlivePrePresentDrawn;
 }
 
@@ -1893,6 +1893,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     if (api == APIType::D3D12 && ShouldBypassDX12InvisibleWindowPresent(pSwapChain, "DetourPresent")) {
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
+    BeginPostSLOffKeepAlivePresentScope();
+    auto postSLOffKeepAlivePresentScopeGuard =
+        ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
 
     // Capture the caller here, not in a helper. We need the code that called
     // into DetourPresent, not the helper's own return address inside this DLL.
@@ -2337,6 +2340,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
 
     if (wrappedSwapchain) {
+        if (api == APIType::D3D12) {
+            DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(
+                pSwapChain, "DXGIShared::DetourPresent wrapped-swapchain pass-through");
+        }
         static int s_wrappedPassCount = 0;
         if (s_wrappedPassCount < 5) {
             s_wrappedPassCount++;
@@ -2353,6 +2360,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
 
     if (inWrapperPresent) {
+        if (api == APIType::D3D12) {
+            DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(
+                pSwapChain, "DXGIShared::DetourPresent wrapper re-entry pass-through");
+        }
         static int s_inWrapperPassCount = 0;
         if (s_inWrapperPassCount < 5) {
             s_inWrapperPassCount++;
@@ -2426,10 +2437,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         return S_OK;
     }
     auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
-    BeginPostSLOffKeepAlivePresentScope();
-    auto postSLOffKeepAlivePresentScopeGuard =
-        ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
-
     // Detect SL's E9 JMP on Present if not already detected. DetectSLPresentHook
     // itself owns the native-FSR suppression rule so the explicit native-FSR OFF
     // teardown window stays protected too.
@@ -3005,6 +3012,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     if (api == APIType::D3D12 && ShouldBypassDX12InvisibleWindowPresent(pSwapChain, "DetourPresent1")) {
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
+    BeginPostSLOffKeepAlivePresentScope();
+    auto postSLOffKeepAlivePresentScopeGuard =
+        ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
 
     const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
     char detourCallerModulePath[MAX_PATH] = {};
@@ -3390,10 +3400,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     void* pWrapper = nullptr;
     if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, &pWrapper))) {
         ((IUnknown*)pWrapper)->Release();
+        if (api == APIType::D3D12) {
+            DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(
+                pSwapChain, "DXGIShared::DetourPresent1 wrapped-swapchain pass-through");
+        }
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
 
     if (IsInWrapperPresent()) {
+        if (api == APIType::D3D12) {
+            DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(
+                pSwapChain, "DXGIShared::DetourPresent1 wrapper re-entry pass-through");
+        }
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
 
@@ -3454,10 +3472,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         return S_OK;
     }
     auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
-    BeginPostSLOffKeepAlivePresentScope();
-    auto postSLOffKeepAlivePresentScopeGuard =
-        ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
-
     // Detect SL's E9 JMP if not yet done (same as DetourPresent). DetectSLPresentHook
     // itself owns the native-FSR suppression rule.
     if (!s_slRoutingActive.load(std::memory_order_relaxed) && IsSLInterposerLoaded()) {

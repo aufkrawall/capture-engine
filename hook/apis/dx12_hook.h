@@ -75,6 +75,7 @@ public:
 extern DX12Hook* g_dx12HookInstance;
 
 void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
+bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapChain, const char* source);
 void DX12_HookQueueVTable(ID3D12CommandQueue* queue);
 void DX12_HookDeviceVTable(ID3D12Device* device);
 void DX12_OnSwapchainResizeBegin();

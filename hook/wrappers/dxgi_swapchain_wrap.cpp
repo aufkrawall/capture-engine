@@ -1240,6 +1240,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         if (s_presentDepth.fetch_sub(1) == 1)
             s_presentThreadId.store(0);
     });
+    DXGIShared::BeginPostSLOffKeepAlivePresentScope();
+    // Span both ProcessFrame and the real Present re-entry: DLSS can report its
+    // suspend edge between them, and either side may be the first safe draw.
+    auto postSLOffKeepAlivePresentScopeGuard =
+        ::ce::make_scope_guard([]() { DXGIShared::EndPostSLOffKeepAlivePresentScope(); });
 
     if (callCount < 20) {
         WrapperLog("Present: Processing call#%d", callCount);
@@ -1637,6 +1642,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         if (s_present1Depth.fetch_sub(1) == 1)
             s_present1ThreadId.store(0);
     });
+    DXGIShared::BeginPostSLOffKeepAlivePresentScope();
+    // Present1 needs the same outer lifetime as Present for exact-proxy dedup.
+    auto postSLOffKeepAlivePresentScopeGuard =
+        ::ce::make_scope_guard([]() { DXGIShared::EndPostSLOffKeepAlivePresentScope(); });
 
     // Update performance metrics for FPS calculation
     static int64_t qpcFreq = 0;
