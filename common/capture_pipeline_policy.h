@@ -3138,6 +3138,11 @@ inline bool ShouldAllowSteadyStateWgcReserveBuild(uint32_t recentInputMin250Fps,
     return smoothedInputPerTick >= reserveBuildThreshold;
 }
 
+inline bool HasRecordingEncoderOrMuxPressure(uint32_t encoderOverloadFlags, uint32_t muxBackpressureCount,
+                                             uint64_t encoderLimitedDropCount) {
+    return encoderOverloadFlags != 0 || muxBackpressureCount > 0 || encoderLimitedDropCount > 0;
+}
+
 inline bool ShouldHoldSingleFreshWgcFrame(bool reservePressureActive, bool lowSourceMode, uint32_t recentInputMin250Fps,
                                           uint32_t outputFps, double smoothedInputPerTick,
                                           uint32_t outputShortfallTicks, bool encoderBottlenecked,

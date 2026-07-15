@@ -72,6 +72,23 @@ inline int64_t ComputeAudioMuxRoundingToleranceUs(int sampleRate, int timeBaseNu
     return toleranceUs;
 }
 
+inline int64_t ComputeAudioPaddingDurationUs(uint64_t samples, int sampleRate) {
+    if (samples == 0 || sampleRate <= 0) {
+        return 0;
+    }
+    return static_cast<int64_t>((samples * 1000000ULL + static_cast<uint64_t>(sampleRate) / 2ULL) /
+                                static_cast<uint64_t>(sampleRate));
+}
+
+inline int64_t ComputeDecodedAudioDurationUs(int64_t packetCoverageDurationUs, int sampleRate,
+                                             uint64_t initialPaddingSamples, uint64_t terminalPaddingSamples) {
+    if (packetCoverageDurationUs <= 0) {
+        return 0;
+    }
+    const int64_t paddingUs = ComputeAudioPaddingDurationUs(initialPaddingSamples + terminalPaddingSamples, sampleRate);
+    return std::max<int64_t>(0, packetCoverageDurationUs - paddingUs);
+}
+
 inline int64_t ComputeCfrAudioLatticeFrameQuantum(int fps, const std::vector<int>& sampleRates) {
     if (fps <= 0) {
         return 0;
@@ -119,6 +136,7 @@ struct PacketTimelineStats {
     int64_t firstStartUs = 0;
     int64_t lastStartUs = 0;
     int64_t lastEndUs = 0;
+    int64_t lastDecodedEndUs = 0;
     int64_t maxForwardStartGapUs = 0;
 };
 
@@ -126,7 +144,8 @@ inline int64_t ComputePacketEndUs(int64_t packetStartUs, int64_t packetDurationU
     return std::max<int64_t>(0, packetStartUs) + std::max<int64_t>(0, packetDurationUs);
 }
 
-inline void ObservePacketTimeline(PacketTimelineStats& stats, int64_t packetStartUs, int64_t packetDurationUs) {
+inline void ObservePacketTimeline(PacketTimelineStats& stats, int64_t packetStartUs, int64_t packetDurationUs,
+                                  int64_t terminalDiscardUs = 0) {
     const int64_t clampedStartUs = std::max<int64_t>(0, packetStartUs);
     const int64_t packetEndUs = ComputePacketEndUs(packetStartUs, packetDurationUs);
     if (!stats.seen) {
@@ -142,6 +161,8 @@ inline void ObservePacketTimeline(PacketTimelineStats& stats, int64_t packetStar
     }
     stats.packetCount++;
     stats.lastEndUs = std::max(stats.lastEndUs, packetEndUs);
+    stats.lastDecodedEndUs =
+        std::max(stats.lastDecodedEndUs, std::max<int64_t>(0, packetEndUs - std::max<int64_t>(0, terminalDiscardUs)));
 }
 
 inline bool PacketTimelineExceedsTarget(const PacketTimelineStats& stats, int64_t targetDurationUs,

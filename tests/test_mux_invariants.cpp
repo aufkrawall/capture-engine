@@ -7,6 +7,8 @@ namespace {
 
 using ce::mux::ChoosePostMuxStreamStartUs;
 using ce::mux::ComputeAudioMuxRoundingToleranceUs;
+using ce::mux::ComputeAudioPaddingDurationUs;
+using ce::mux::ComputeDecodedAudioDurationUs;
 using ce::mux::ComputeCfrAudioLatticeExtensionFrames;
 using ce::mux::ComputeCfrAudioLatticeFrameQuantum;
 using ce::mux::ComputeDurationDeltaUs;
@@ -66,6 +68,13 @@ TEST(MuxInvariantTest, AudioMuxRoundingToleranceCoversOneSampleOrTimebaseTick) {
     EXPECT_EQ(ComputeAudioMuxRoundingToleranceUs(0, 0, 0), 1);
 }
 
+TEST(MuxInvariantTest, AacPacketCoverageExcludesCodecPrimingAndTerminalPadding) {
+    EXPECT_EQ(ComputeAudioPaddingDurationUs(1024, 48000), 21333);
+    EXPECT_EQ(ComputeDecodedAudioDurationUs(16938666, 48000, 1024, 32), 16916666);
+    EXPECT_EQ(ComputeDecodedAudioDurationUs(33770666, 48000, 1024, 768), 33733333);
+    EXPECT_EQ(ComputeDecodedAudioDurationUs(1000, 0, 1024, 32), 1000);
+}
+
 TEST(MuxInvariantTest, CfrEndpointExtendsOnlyToTheMinimumCommonAudioLattice) {
     EXPECT_EQ(ComputeCfrAudioLatticeFrameQuantum(120, {48000}), 1);
     EXPECT_EQ(ComputeCfrAudioLatticeFrameQuantum(144, {48000}), 3);
@@ -113,4 +122,12 @@ TEST(MuxInvariantTest, PacketTimelineDetectsAudioPastMetadataTarget) {
     EXPECT_EQ(ComputePacketEndUs(102485333, 85333), 102570666);
     EXPECT_TRUE(PacketTimelineExceedsTarget(stats, 102183333, 1000));
     EXPECT_FALSE(PacketTimelineExceedsTarget(stats, 102570000, 1000));
+}
+
+TEST(MuxInvariantTest, PacketTimelineExcludesTerminalDiscardFromDecodedEndpoint) {
+    PacketTimelineStats stats;
+    ObservePacketTimeline(stats, 16896000, 21333, 667);
+
+    EXPECT_EQ(stats.lastEndUs, 16917333);
+    EXPECT_EQ(stats.lastDecodedEndUs, 16916666);
 }

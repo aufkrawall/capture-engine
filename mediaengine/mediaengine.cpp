@@ -2004,6 +2004,7 @@ public:
             auto& src = audioSources[i];
             const bool isApp = (src.sourceType == AudioConfig::AppAudio);
             const bool noAppData = isApp && !src.hasAlignedStart;
+            const bool idleSystemLoopback = src.sourceType == AudioConfig::SystemAudio && !src.hasAlignedStart;
             if (noAppData && src.sawCaptureEpoch) {
                 DLL_Log(
                     "[STOP AUDIO] Source %zu (app-active-no-data): track=%d process=%s; activation epoch was "
@@ -2011,6 +2012,11 @@ public:
                     i, src.track, src.config.processName.empty() ? "<pid-mode>" : src.config.processName.c_str());
             } else if (noAppData) {
                 DLL_Log("[STOP AUDIO] Source %zu (app-never-started): track=%d", i, src.track);
+            } else if (idleSystemLoopback) {
+                DLL_Log(
+                    "[STOP AUDIO] Source %zu (system-inactive-no-data): track=%d encoded=%llu; the render endpoint "
+                    "produced no packets, so its full recording timeline is expected silence",
+                    i, src.track, static_cast<unsigned long long>(encodedSamplesPerSource[i]));
             } else {
                 const double latencyTrimPerMinute =
                     ce::audio::ComputeSamplesPerMinute(src.latencyTrimSamples, expectedVideoUsForStop);
@@ -3405,9 +3411,11 @@ public:
                 auto& src = audioSources[srcIdx];
 
                 const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
-                const bool expectedTimelineSilence =
+                const bool expectedTimelineSilence = ce::audio::IsExpectedSourceTimelineSilence(
+                    isAppAudioSource,
                     isAppAudioSource && src.appCaptureRouteEnded &&
-                    src.appCaptureRouteEnded->load(std::memory_order_acquire);
+                        src.appCaptureRouteEnded->load(std::memory_order_acquire),
+                    src.sourceType == AudioConfig::SystemAudio, src.hasAlignedStart);
                 if (ce::audio::IsOptionalUnstartedAppAudioSource(isAppAudioSource, src.timelineValid,
                                                                  src.sawSyncPendingPackets)) {
                     continue;
@@ -3979,7 +3987,9 @@ public:
                     while (src.postResampleBuffer.size() < totalFloats) {
                         size_t rbFloats = src.ringBuffer->GetAvailable();
                         if (rbFloats == 0) {
-                            src.ringBufferUnderrunCount++;
+                            if (!expectedTimelineSilence) {
+                                src.ringBufferUnderrunCount++;
+                            }
                             break;
                         }
                         size_t rbSamples = rbFloats / CHANNELS;

@@ -2793,3 +2793,10 @@ TEST(CapturePipelinePolicyTest, DuplicationBudgetSpendsSourcePoolShareOnCopySlot
     const auto tightDup = policy::ComputeWgcSmoothnessSurfaceBudget(120, 300, 3840, 2160, 8, 4, 1024, 4, false);
     EXPECT_GT(tightDup.retainedExtraFrames, tightWgc.retainedExtraFrames);
 }
+
+TEST(CapturePipelinePolicyTest, RecordingPressureRequiresAnAuthoritativeRuntimeEvent) {
+    EXPECT_FALSE(policy::HasRecordingEncoderOrMuxPressure(0, 0, 0));
+    EXPECT_TRUE(policy::HasRecordingEncoderOrMuxPressure(1, 0, 0));
+    EXPECT_TRUE(policy::HasRecordingEncoderOrMuxPressure(0, 1, 0));
+    EXPECT_TRUE(policy::HasRecordingEncoderOrMuxPressure(0, 0, 1));
+}

@@ -757,6 +757,11 @@ inline bool IsOptionalUnstartedAppAudioSource(bool isAppAudioSource, bool source
     return isAppAudioSource && !sourceTimelineValid && !sawPreStartPackets;
 }
 
+inline bool IsExpectedSourceTimelineSilence(bool isAppAudioSource, bool appCaptureRouteEnded,
+                                            bool isSystemLoopbackSource, bool hasAlignedStart) {
+    return (isAppAudioSource && appCaptureRouteEnded) || (isSystemLoopbackSource && !hasAlignedStart);
+}
+
 inline bool IsSourceStartupPrimed(bool sourceIsPrimed, bool sourceTimelineValid, bool isAppAudioSource,
                                   bool sawPreStartPackets = false) {
     return sourceIsPrimed ||

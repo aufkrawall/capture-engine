@@ -10877,10 +10877,9 @@ void EncoderThreadFunc(const AppConfig& config) {
             const bool wgcSummaryPoolPressure = wgcSummaryPoolSaturatedDrops > 0 || wgcSummaryIngressHard > 0 ||
                                                 wgcSummaryIngressDecimated > 0 || wgcSummaryPoolFreeMin == 0;
             const bool wgcSummaryEncoderMuxPressure =
-                wgcSummaryOverloadFlags != 0 || wgcSummaryMuxBackpressure > 0 ||
-                (captureSessionSummary.minEncoderSustainFps != std::numeric_limits<double>::max() &&
-                 captureSessionSummary.minEncoderSustainFps > 0.0 &&
-                 captureSessionSummary.minEncoderSustainFps + 0.5 < static_cast<double>(config.video.fps));
+                ce::capture_policy::HasRecordingEncoderOrMuxPressure(wgcSummaryOverloadFlags,
+                                                                     wgcSummaryMuxBackpressure,
+                                                                     wgcEncoderLimitedSourceDropTotal);
             const char* wgcSummaryLimiter = wgcSummaryEncoderMuxPressure                       ? "encoder_or_mux"
                                             : wgcSummaryPoolPressure                           ? "wgc_pool_pressure"
                                             : captureSessionSummary.duplicateNoSourceTicks > 0 ? "source_limited"

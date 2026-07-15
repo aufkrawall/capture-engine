@@ -450,6 +450,13 @@ TEST(AudioSyncUtilsTest, OptionalUnstartedAppAudioDoesNotBlockStartupPriming) {
     EXPECT_TRUE(ce::audio::IsSourceStartupPrimed(true, true, false));
 }
 
+TEST(AudioSyncUtilsTest, IdleSystemLoopbackSilenceIsNotAnUnderrun) {
+    EXPECT_TRUE(ce::audio::IsExpectedSourceTimelineSilence(false, false, true, false));
+    EXPECT_FALSE(ce::audio::IsExpectedSourceTimelineSilence(false, false, true, true));
+    EXPECT_FALSE(ce::audio::IsExpectedSourceTimelineSilence(false, false, false, false));
+    EXPECT_TRUE(ce::audio::IsExpectedSourceTimelineSilence(true, true, false, true));
+}
+
 TEST(AudioSyncUtilsTest, BootstrapReadinessRequiresPrimedOrBufferedRealAudio) {
     EXPECT_TRUE(ce::audio::IsSourceBootstrapReady(false, false, false, true, 0, 240));
     EXPECT_FALSE(ce::audio::IsSourceBootstrapReady(false, true, false, true, 0, 240));

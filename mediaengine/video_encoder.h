@@ -158,7 +158,8 @@ private:
     void ApplyGpuThreadPriority(int priority, const char* reason);
     void UpdateAdaptiveGpuThreadPriority(uint64_t nowMs, double encodeMs, bool encoderPressureActive);
     void ResetPacketTimelineDiagnostics();
-    void RecordWrittenPacketTimeline(int streamIndex, int64_t pts, int64_t dts, int64_t duration, AVRational timeBase);
+    void RecordWrittenPacketTimeline(int streamIndex, int64_t pts, int64_t dts, int64_t duration, AVRational timeBase,
+                                     uint32_t terminalDiscardSamples, int sampleRate);
     void LogPacketTimelineSummary(int64_t finalDurationUs) const;
 
     std::function<void(AVPacket*)> onPacket;  // Callback member

@@ -16,6 +16,7 @@
 #include <windows.h>
 
 extern "C" {
+#include <libavutil/intreadwrite.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
@@ -95,6 +96,7 @@ bool HasValidStreamTimeBase(const AVStream* stream) {
 
 constexpr uint64_t kPostMuxProbeTimeoutMs = 5000;
 constexpr int kPostMuxProbeMaxPackets = 512;
+constexpr int kPostMuxProbeMaxTailPackets = 16384;
 
 struct PostMuxProbeControl {
     std::atomic<bool> cancel{false};
@@ -167,6 +169,15 @@ int64_t GetStreamDurationUs(const AVStream* stream) {
     return av_rescale_q(stream->duration, stream->time_base, AVRational{1, 1000000});
 }
 
+uint32_t GetPacketTerminalDiscardSamples(const AVPacket* packet) {
+    if (!packet) {
+        return 0;
+    }
+    size_t sideDataSize = 0;
+    const uint8_t* sideData = av_packet_get_side_data(packet, AV_PKT_DATA_SKIP_SAMPLES, &sideDataSize);
+    return sideData && sideDataSize >= 8 ? AV_RL32(sideData + 4) : 0;
+}
+
 bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationUs,
                              PostMuxProbeControl* control = nullptr) {
     if (filename.empty() || finalDurationUs <= 0) {
@@ -209,6 +220,11 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
     int64_t maxAudioRoundingToleranceUs = 1;
     uint32_t videoStreamCount = 0;
     uint32_t audioStreamCount = 0;
+    int64_t minRawAudioEndUs = 0;
+    int64_t maxRawAudioEndUs = 0;
+    uint64_t totalInitialPaddingSamples = 0;
+    uint64_t totalTerminalPaddingSamples = 0;
+    uint32_t codecPaddedAudioStreamCount = 0;
     std::vector<int64_t> firstPacketStartUs(probeCtx->nb_streams, INT64_MAX);
     av_seek_frame(probeCtx, -1, 0, AVSEEK_FLAG_BACKWARD);
     AVPacket* pkt = av_packet_alloc();
@@ -256,6 +272,39 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
         DLL_Log("[VideoEncoder] post_mux_probe_packet_limit file='%s' packets=%d", filename.c_str(), packetsRead);
     }
 
+    std::vector<uint32_t> terminalDiscardSamples(probeCtx->nb_streams, 0);
+    std::vector<int64_t> terminalPacketPts(probeCtx->nb_streams, INT64_MIN);
+    bool tailScanComplete = false;
+    int tailPacketsRead = 0;
+    const int64_t tailSeekUs = std::max<int64_t>(0, finalDurationUs - 5000000);
+    ret = avformat_seek_file(probeCtx, -1, INT64_MIN, tailSeekUs, INT64_MAX, AVSEEK_FLAG_BACKWARD);
+    if (ret >= 0) {
+        pkt = av_packet_alloc();
+        while (pkt && tailPacketsRead < kPostMuxProbeMaxTailPackets && !ShouldCancelPostMuxProbe(control)) {
+            ret = av_read_frame(probeCtx, pkt);
+            if (ret < 0) {
+                tailScanComplete = ret == AVERROR_EOF;
+                break;
+            }
+            ++tailPacketsRead;
+            if (pkt->stream_index >= 0 && static_cast<unsigned int>(pkt->stream_index) < probeCtx->nb_streams &&
+                pkt->pts != AV_NOPTS_VALUE && pkt->pts >= terminalPacketPts[pkt->stream_index]) {
+                const AVStream* packetStream = probeCtx->streams[pkt->stream_index];
+                if (packetStream && packetStream->codecpar &&
+                    packetStream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+                    terminalPacketPts[pkt->stream_index] = pkt->pts;
+                    terminalDiscardSamples[pkt->stream_index] = GetPacketTerminalDiscardSamples(pkt);
+                }
+            }
+            av_packet_unref(pkt);
+        }
+        av_packet_free(&pkt);
+    }
+    if (!tailScanComplete) {
+        DLL_Log("[VideoEncoder] post_mux_probe_tail_incomplete file='%s' seekRet=%d packets=%d limit=%d",
+                filename.c_str(), ret, tailPacketsRead, kPostMuxProbeMaxTailPackets);
+    }
+
     for (unsigned int i = 0; i < probeCtx->nb_streams; ++i) {
         const AVStream* probedStream = probeCtx->streams[i];
         if (!probedStream || !probedStream->codecpar) {
@@ -276,12 +325,29 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
             ++videoStreamCount;
             maxVideoEndUs = std::max(maxVideoEndUs, endUs);
         } else if (probedStream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            const int sampleRate = probedStream->codecpar->sample_rate;
+            const uint64_t initialPaddingSamples =
+                static_cast<uint64_t>(std::max(0, probedStream->codecpar->initial_padding));
+            const uint64_t endPaddingSamples = tailScanComplete ? terminalDiscardSamples[i] : 0;
+            const int64_t presentationStartUs =
+                hasStreamStart ? std::max<int64_t>(0, GetStreamStartUs(probedStream)) : 0;
+            const int64_t decodedDurationUs = ce::mux::ComputeDecodedAudioDurationUs(
+                durationUs, sampleRate, initialPaddingSamples, endPaddingSamples);
+            const int64_t decodedEndUs = presentationStartUs + decodedDurationUs;
             ++audioStreamCount;
-            if (minAudioEndUs == 0 || endUs < minAudioEndUs) {
-                minAudioEndUs = endUs;
+            if (minAudioEndUs == 0 || decodedEndUs < minAudioEndUs) {
+                minAudioEndUs = decodedEndUs;
             }
-            maxAudioEndUs = std::max(maxAudioEndUs, endUs);
-            maxAudioDeltaUs = std::max(maxAudioDeltaUs, ce::mux::ComputeDurationDeltaUs(endUs, finalDurationUs));
+            maxAudioEndUs = std::max(maxAudioEndUs, decodedEndUs);
+            if (minRawAudioEndUs == 0 || endUs < minRawAudioEndUs) {
+                minRawAudioEndUs = endUs;
+            }
+            maxRawAudioEndUs = std::max(maxRawAudioEndUs, endUs);
+            totalInitialPaddingSamples += initialPaddingSamples;
+            totalTerminalPaddingSamples += endPaddingSamples;
+            codecPaddedAudioStreamCount += (initialPaddingSamples > 0 || endPaddingSamples > 0) ? 1u : 0u;
+            maxAudioDeltaUs =
+                std::max(maxAudioDeltaUs, ce::mux::ComputeDurationDeltaUs(decodedEndUs, finalDurationUs));
             maxAudioRoundingToleranceUs = std::max(
                 maxAudioRoundingToleranceUs,
                 ce::mux::ComputeAudioMuxRoundingToleranceUs(probedStream->codecpar->sample_rate,
@@ -291,9 +357,23 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
 
     DLL_Log(
         "[VideoEncoder] Post-mux duration probe: target=%lld us videoEnd=%lld us audioMinEnd=%lld us "
-        "audioMaxEnd=%lld us maxAudioDelta=%lld us streams(v=%u a=%u)",
+        "audioMaxEnd=%lld us maxAudioDelta=%lld us streams(v=%u a=%u) rawAudioMinEnd=%lld us "
+        "rawAudioMaxEnd=%lld us paddingSamples(initial=%llu terminal=%llu streams=%u tailComplete=%d)",
         finalDurationUs, maxVideoEndUs, minAudioEndUs, maxAudioEndUs, maxAudioDeltaUs, videoStreamCount,
-        audioStreamCount);
+        audioStreamCount, minRawAudioEndUs, maxRawAudioEndUs,
+        static_cast<unsigned long long>(totalInitialPaddingSamples),
+        static_cast<unsigned long long>(totalTerminalPaddingSamples), codecPaddedAudioStreamCount,
+        tailScanComplete ? 1 : 0);
+
+    if (codecPaddedAudioStreamCount > 0) {
+        DLL_Log(
+            "[VideoEncoder] Post-mux audio codec-padding applied: decodedMinEnd=%lld decodedMaxEnd=%lld "
+            "rawMinEnd=%lld rawMaxEnd=%lld initialSamples=%llu terminalSamples=%llu streams=%u tailComplete=%d",
+            minAudioEndUs, maxAudioEndUs, minRawAudioEndUs, maxRawAudioEndUs,
+            static_cast<unsigned long long>(totalInitialPaddingSamples),
+            static_cast<unsigned long long>(totalTerminalPaddingSamples), codecPaddedAudioStreamCount,
+            tailScanComplete ? 1 : 0);
+    }
 
     if (audioStreamCount > 0 && maxAudioDeltaUs > 0 && maxAudioDeltaUs <= maxAudioRoundingToleranceUs) {
         DLL_Log(
@@ -1095,7 +1175,7 @@ void VideoEncoder::ResetPacketTimelineDiagnostics() {
 }
 
 void VideoEncoder::RecordWrittenPacketTimeline(int streamIndex, int64_t pts, int64_t dts, int64_t duration,
-                                               AVRational timeBase) {
+                                               AVRational timeBase, uint32_t terminalDiscardSamples, int sampleRate) {
     if (streamIndex < 0 || !fmtCtx || static_cast<unsigned int>(streamIndex) >= fmtCtx->nb_streams ||
         !HasValidStreamTimeBase(fmtCtx->streams[streamIndex])) {
         return;
@@ -1115,7 +1195,10 @@ void VideoEncoder::RecordWrittenPacketTimeline(int streamIndex, int64_t pts, int
 
     const int64_t packetStartUs = av_rescale_q(packetPts, timeBase, AVRational{1, 1000000});
     const int64_t packetDurationUs = duration > 0 ? av_rescale_q(duration, timeBase, AVRational{1, 1000000}) : 0;
-    ce::mux::ObservePacketTimeline(writtenPacketTimelines[streamIndex], packetStartUs, packetDurationUs);
+    const int64_t terminalDiscardUs =
+        ce::mux::ComputeAudioPaddingDurationUs(terminalDiscardSamples, sampleRate);
+    ce::mux::ObservePacketTimeline(writtenPacketTimelines[streamIndex], packetStartUs, packetDurationUs,
+                                   terminalDiscardUs);
 }
 
 void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) const {
@@ -1126,6 +1209,7 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) const {
     int64_t maxVideoEndUs = 0;
     int64_t minAudioEndUs = 0;
     int64_t maxAudioEndUs = 0;
+    int64_t maxRawAudioEndUs = 0;
     int64_t maxPacketDeltaUs = 0;
     uint32_t videoStreamCount = 0;
     uint64_t videoPacketCount = 0;
@@ -1150,11 +1234,12 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) const {
             maxVideoPtsGapUs = std::max(maxVideoPtsGapUs, timeline.maxForwardStartGapUs);
         } else if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
             ++audioStreamCount;
-            if (minAudioEndUs == 0 || timeline.lastEndUs < minAudioEndUs) {
-                minAudioEndUs = timeline.lastEndUs;
+            if (minAudioEndUs == 0 || timeline.lastDecodedEndUs < minAudioEndUs) {
+                minAudioEndUs = timeline.lastDecodedEndUs;
             }
-            maxAudioEndUs = std::max(maxAudioEndUs, timeline.lastEndUs);
-            if (ce::mux::PacketTimelineExceedsTarget(timeline, finalDurationUs, 1000)) {
+            maxAudioEndUs = std::max(maxAudioEndUs, timeline.lastDecodedEndUs);
+            maxRawAudioEndUs = std::max(maxRawAudioEndUs, timeline.lastEndUs);
+            if (timeline.lastDecodedEndUs > finalDurationUs + 1000) {
                 ++audioPastTargetCount;
             }
         }
@@ -1168,9 +1253,9 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) const {
 
     DLL_Log(
         "[VideoEncoder] Final packet timeline: target=%lld us videoEnd=%lld us audioMinEnd=%lld us "
-        "audioMaxEnd=%lld us maxPacketDelta=%lld us streams(v=%u a=%u) audioPastTarget=%u",
+        "audioMaxEnd=%lld us maxPacketDelta=%lld us streams(v=%u a=%u) audioPastTarget=%u rawAudioMaxEnd=%lld us",
         finalDurationUs, maxVideoEndUs, minAudioEndUs, maxAudioEndUs, maxPacketDeltaUs, videoStreamCount,
-        audioStreamCount, audioPastTargetCount);
+        audioStreamCount, audioPastTargetCount, maxRawAudioEndUs);
     if (!savedConfig.useVFR && savedConfig.fps > 0 && videoStreamCount > 0) {
         const int64_t expectedPackets = av_rescale_rnd(finalDurationUs, savedConfig.fps, 1000000, AV_ROUND_NEAR_INF);
         const int64_t emittedPackets = static_cast<int64_t>(videoPacketCount);
@@ -6425,10 +6510,14 @@ void VideoEncoder::AsyncWriteLoop() {
                 const int64_t writtenDts = pkt->dts;
                 const int64_t writtenDuration = pkt->duration;
                 const AVRational writtenTimeBase = fmtCtx->streams[pkt->stream_index]->time_base;
+                const uint32_t writtenTerminalDiscardSamples = GetPacketTerminalDiscardSamples(pkt);
+                const int writtenSampleRate = fmtCtx->streams[pkt->stream_index]->codecpar
+                                                  ? fmtCtx->streams[pkt->stream_index]->codecpar->sample_rate
+                                                  : 0;
                 int ret = av_interleaved_write_frame(fmtCtx, pkt);
                 if (ret >= 0) {
                     RecordWrittenPacketTimeline(writtenStreamIndex, writtenPts, writtenDts, writtenDuration,
-                                                writtenTimeBase);
+                                                writtenTimeBase, writtenTerminalDiscardSamples, writtenSampleRate);
                 }
                 if (ret < 0) {
                     if (asyncWriteErrorCount++ < 10) {
@@ -6516,7 +6605,7 @@ void VideoEncoder::AsyncWriteLoop() {
                     const AVRational flushedTimeBase = stream->time_base;
                     if (av_interleaved_write_frame(fmtCtx, pkt) >= 0) {
                         RecordWrittenPacketTimeline(flushedStreamIndex, flushedPts, flushedDts, flushedDuration,
-                                                    flushedTimeBase);
+                                                    flushedTimeBase, 0, 0);
                     }
                     av_packet_unref(pkt);
                     flushedCount++;
