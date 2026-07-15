@@ -73,11 +73,11 @@ float3 rec709ToRec2020(float3 color) {
 float4 PS_Main(VS_OUTPUT input) : SV_TARGET {
     float4 cursor = cursorTex.Sample(cursorSampler, input.uv);
     if (colorParams.x > 0.5) {
-        float3 linear = float3(sRGBToLinear(cursor.r), sRGBToLinear(cursor.g), sRGBToLinear(cursor.b));
+        float3 linearRgb = float3(sRGBToLinear(cursor.r), sRGBToLinear(cursor.g), sRGBToLinear(cursor.b));
         if (colorParams.x < 1.5) {
-            cursor.rgb = linear * (colorParams.y / 80.0);
+            cursor.rgb = linearRgb * (colorParams.y / 80.0);
         } else {
-            float3 rec2020 = rec709ToRec2020(linear);
+            float3 rec2020 = rec709ToRec2020(linearRgb);
             cursor.rgb = float3(linearToPQ(rec2020.r * colorParams.y), linearToPQ(rec2020.g * colorParams.y),
                                 linearToPQ(rec2020.b * colorParams.y));
         }
@@ -183,29 +183,29 @@ bool CursorRenderer::CreateRenderingResources() {
 
     DLL_Log("[CursorRenderer] CreateRenderingResources starting");
 
-    // Compile shaders
-    ce::ComGuard<ID3DBlob> vsBlob;
-    ce::ComGuard<ID3DBlob> psBlob;
-    ce::ComGuard<ID3DBlob> errorBlob;
-
     // Load D3DCompile dynamically
     DLL_Log("[CursorRenderer] Loading d3dcompiler_47.dll");
-    HMODULE d3dCompiler = LoadLibraryW(L"d3dcompiler_47.dll");
+    ce::ModuleGuard d3dCompiler(LoadLibraryW(L"d3dcompiler_47.dll"));
     if (!d3dCompiler) {
         DLL_Log("[CursorRenderer] Failed to load d3dcompiler_47.dll");
         return false;
     }
     DLL_Log("[CursorRenderer] d3dcompiler_47.dll loaded OK");
 
+    // D3DCompile returns blobs whose Release implementation lives in the compiler
+    // module. Declare them after the module guard so they are destroyed first.
+    ce::ComGuard<ID3DBlob> vsBlob;
+    ce::ComGuard<ID3DBlob> psBlob;
+    ce::ComGuard<ID3DBlob> errorBlob;
+
     typedef HRESULT(WINAPI * pD3DCompile)(LPCVOID pSrcData, SIZE_T SrcDataSize, LPCSTR pSourceName,
                                           const D3D_SHADER_MACRO* pDefines, ID3DInclude* pInclude, LPCSTR pEntrypoint,
                                           LPCSTR pTarget, UINT Flags1, UINT Flags2, ID3DBlob** ppCode,
                                           ID3DBlob** ppErrorMsgs);
 
-    pD3DCompile d3dCompile = (pD3DCompile)GetProcAddress(d3dCompiler, "D3DCompile");
+    pD3DCompile d3dCompile = (pD3DCompile)GetProcAddress(d3dCompiler.get(), "D3DCompile");
     if (!d3dCompile) {
         DLL_Log("[CursorRenderer] Failed to get D3DCompile function");
-        FreeLibrary(d3dCompiler);
         return false;
     }
     DLL_Log("[CursorRenderer] D3DCompile found");
@@ -218,7 +218,6 @@ bool CursorRenderer::CreateRenderingResources() {
         if (errorBlob) {
             DLL_Log("[CursorRenderer] VS compile error: %s", (char*)errorBlob->GetBufferPointer());
         }
-        FreeLibrary(d3dCompiler);
         return false;
     }
     errorBlob.reset();
@@ -232,13 +231,10 @@ bool CursorRenderer::CreateRenderingResources() {
         if (errorBlob) {
             DLL_Log("[CursorRenderer] PS compile error: %s", (char*)errorBlob->GetBufferPointer());
         }
-        FreeLibrary(d3dCompiler);
         return false;
     }
     errorBlob.reset();
     DLL_Log("[CursorRenderer] PS compiled OK");
-
-    FreeLibrary(d3dCompiler);
 
     // Create shaders
     DLL_Log("[CursorRenderer] Creating vertex shader, device=%p vsBlob=%p", (void*)device, (void*)vsBlob.get());

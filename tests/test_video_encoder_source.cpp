@@ -15,7 +15,33 @@ std::string ReadVideoEncoderSource() {
     return contents.str();
 }
 
+std::string ReadCursorRendererSource() {
+    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "cursor_renderer.cpp";
+    std::ifstream file(source, std::ios::binary);
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return contents.str();
+}
+
 }  // namespace
+
+TEST(VideoEncoderSourceTest, CursorShaderCompilesAndCompilerModuleOutlivesReturnedBlobs) {
+    const std::string source = ReadCursorRendererSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_EQ(source.find("float3 linear ="), std::string::npos);
+    EXPECT_NE(source.find("float3 linearRgb ="), std::string::npos);
+
+    const size_t moduleGuard = source.find("ce::ModuleGuard d3dCompiler");
+    const size_t vertexBlob = source.find("ce::ComGuard<ID3DBlob> vsBlob", moduleGuard);
+    ASSERT_NE(moduleGuard, std::string::npos);
+    ASSERT_NE(vertexBlob, std::string::npos);
+    EXPECT_LT(moduleGuard, vertexBlob);
+
+    const size_t createResources = source.find("bool CursorRenderer::CreateRenderingResources()");
+    ASSERT_NE(createResources, std::string::npos);
+    EXPECT_EQ(source.find("FreeLibrary(d3dCompiler)", createResources), std::string::npos);
+}
 
 TEST(VideoEncoderSourceTest, RealTimeGpuPathsNeverUseSleepRetries) {
     const std::string source = ReadVideoEncoderSource();

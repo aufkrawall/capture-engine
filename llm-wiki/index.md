@@ -69,7 +69,7 @@ Primary sources:
 - `multi-audio-capture.md`
   - Multi system/microphone/app capture, including process-loopback protocol 2 descriptor/byte rings, fatal transport-integrity propagation, polling-first activation, render-session recovery, ordered epochs, disposable helper isolation/recycle, exact finalization, and route-local compensation. Last verified 2026-07-15. Stale-risk: medium (real device/runtime validation remains necessary).
 - `wgc-capture.md`
-  - WGC and DXGI Desktop Duplication backends, including the max-rate variable-input CFR producer invariant, callback-rate aging, callback epochs, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and straight-alpha point-sampled single-stream DPI/HDR cursor composition. Last verified 2026-07-14. Stale-risk: medium.
+  - WGC and DXGI Desktop Duplication backends, including the max-rate variable-input CFR producer invariant, callback-rate aging, callback epochs, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and crash-safe straight-alpha point-sampled single-stream DPI/HDR cursor composition. Last verified 2026-07-15. Stale-risk: medium.
 - `cfr-capture-sync.md`
   - Shared WGC/DXGI/inject CFR and A/V invariants, including max-rate variable-input WGC production, transactional startup, 300 ms WGC/DXGI look-ahead, nearest monotonic source selection, causal inject transport, overload repeats, and exact decoded stop/tail accounting. Last verified 2026-07-14. Stale-risk: medium.
 - `performance-priority.md`

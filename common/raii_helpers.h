@@ -78,6 +78,57 @@ public:
 // Same as HandleGuard but semantically clearer for events
 using EventGuard = HandleGuard;
 
+// ModuleGuard - RAII wrapper for LoadLibrary results
+// Keeps code-backed objects alive until they have been released.
+class ModuleGuard {
+    HMODULE module_ = nullptr;
+
+public:
+    ModuleGuard() = default;
+    explicit ModuleGuard(HMODULE module) : module_(module) {}
+
+    ~ModuleGuard() {
+        reset();
+    }
+
+    ModuleGuard(ModuleGuard&& o) noexcept : module_(o.module_) {
+        o.module_ = nullptr;
+    }
+
+    ModuleGuard& operator=(ModuleGuard&& o) noexcept {
+        if (this != &o) {
+            reset();
+            module_ = o.module_;
+            o.module_ = nullptr;
+        }
+        return *this;
+    }
+
+    ModuleGuard(const ModuleGuard&) = delete;
+    ModuleGuard& operator=(const ModuleGuard&) = delete;
+
+    void reset(HMODULE module = nullptr) {
+        if (module_) {
+            FreeLibrary(module_);
+        }
+        module_ = module;
+    }
+
+    HMODULE get() const {
+        return module_;
+    }
+
+    HMODULE release() {
+        HMODULE module = module_;
+        module_ = nullptr;
+        return module;
+    }
+
+    explicit operator bool() const {
+        return module_ != nullptr;
+    }
+};
+
 // MappingGuard - RAII wrapper for MapViewOfFile results
 class MappingGuard {
     void* ptr_ = nullptr;
