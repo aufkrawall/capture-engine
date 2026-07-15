@@ -1,7 +1,7 @@
 # FFmpeg Patches
 
-Custom patches for FFmpeg's Matroska (MKV) muxer, adding microsecond-precision
-timestamp support.
+Custom FFmpeg patches used by CaptureEngine for precise Matroska timestamps and
+NVENC game-capture behavior.
 
 ## License
 
@@ -36,8 +36,26 @@ ffmpeg -i input -c:v copy -timestamp_precision 1000 output.mkv
 av_opt_set(fmtCtx->priv_data, "timestamp_precision", "1000", 0);
 ```
 
+### 0002-nvenc-bframe-cfr-improvements.patch
+
+Carries the project NVENC behavior for B-frame references, game-capture
+lookahead depth, AV1 capability handling, unknown NVENC picture types, and
+encoder-flush draining.
+
 ## Applying Patches
 
 Patches are automatically applied by `build.py` during the FFmpeg build step.
 They are applied to the working copy after `shutil.copytree` from the upstream
-source, so the upstream repository remains unmodified.
+source, so the upstream repository remains unmodified. Windows Git may check
+the upstream worktree out with CRLF even though the patches are LF. Before
+applying anything, the build parses the standard `--- a/` and `+++ b/` text
+headers, rejects targets that escape the disposable working tree, and converts
+CRLF to LF only in those named target files. It then uses strict
+`git apply --verbose`; whitespace-ignore flags are intentionally not used.
+
+When the pinned FFmpeg source changes, refresh both patch context and blob IDs
+against that exact commit. Run the focused pipeline regression with:
+
+```powershell
+python -m unittest -v test_ffmpeg_patch_utils.py
+```

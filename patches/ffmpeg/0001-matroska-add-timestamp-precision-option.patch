@@ -1,5 +1,5 @@
 diff --git a/libavformat/matroskaenc.c b/libavformat/matroskaenc.c
-index c9386db..d2cfb53 100644
+index 97d66558f81d1db794967923801b1672e92d949a..5db3d85c624d48b7d203143778108ad48231a5e2 100644
 --- a/libavformat/matroskaenc.c
 +++ b/libavformat/matroskaenc.c
 @@ -263,6 +263,8 @@ typedef struct MatroskaMuxContext {
@@ -70,7 +70,7 @@ index c9386db..d2cfb53 100644
      return 0;
  }
  
-@@ -3576,8 +3586,8 @@ static int mkv_init(struct AVFormatContext *s)
+@@ -3600,8 +3610,8 @@ static int mkv_init(struct AVFormatContext *s)
              track->uid = mkv_get_uid(mkv->tracks, i, &c);
          }
  
@@ -81,7 +81,7 @@ index c9386db..d2cfb53 100644
  
          if (st->codecpar->codec_type == AVMEDIA_TYPE_ATTACHMENT) {
              if (IS_WEBM(mkv)) {
-@@ -3661,6 +3671,7 @@ static const AVOption options[] = {
+@@ -3685,6 +3695,7 @@ static const AVOption options[] = {
      { "infer", "for each track type, mark each track of disposition default as default; if none exists, mark the first track as default", 0, AV_OPT_TYPE_CONST, { .i64 = DEFAULT_MODE_INFER }, 0, 0, FLAGS, .unit = "default_mode" },
      { "infer_no_subs", "for each track type, mark each track of disposition default as default; for audio and video: if none exists, mark the first track as default", 0, AV_OPT_TYPE_CONST, { .i64 = DEFAULT_MODE_INFER_NO_SUBS }, 0, 0, FLAGS, .unit = "default_mode" },
      { "passthrough", "use the disposition flag as-is", 0, AV_OPT_TYPE_CONST, { .i64 = DEFAULT_MODE_PASSTHROUGH }, 0, 0, FLAGS, .unit = "default_mode" },

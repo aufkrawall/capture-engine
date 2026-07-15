@@ -72,17 +72,37 @@ TEST(ProcessTreeSelectionTest, HandlesMissingParentsCyclesAndNoMatch) {
     EXPECT_EQ(absent.matchingProcessCount, 0u);
 }
 
-TEST(ProcessTreeSelectionTest, UnqualifiedCaptureReactivatesOnlyWhenItsSelectedTreeGrows) {
-    policy::ProcessNameSelection observed;
-    observed.selectedProcessId = 500;
-    observed.selectedProcessTreeSize = 9;
+TEST(ProcessTreeSelectionTest, MatchesOnlyTheSelectedRootAndItsDescendants) {
+    const std::vector<policy::ProcessTreeEntry> processes = {
+        {500, 4, "browser.exe"},   {501, 500, "audio-helper.exe"}, {502, 501, "codec-host.exe"},
+        {600, 4, "other.exe"},     {601, 600, "other-audio.exe"},  {700, 701, "cycle-a.exe"},
+        {701, 700, "cycle-b.exe"},
+    };
 
-    EXPECT_TRUE(policy::ShouldReactivateUnqualifiedCaptureForTreeGrowth(
-        /*activationQualified=*/false, /*activeProcessId=*/500, /*activatedTreeSize=*/5, observed));
-    EXPECT_FALSE(policy::ShouldReactivateUnqualifiedCaptureForTreeGrowth(
-        /*activationQualified=*/true, /*activeProcessId=*/500, /*activatedTreeSize=*/5, observed));
-    EXPECT_FALSE(policy::ShouldReactivateUnqualifiedCaptureForTreeGrowth(
-        /*activationQualified=*/false, /*activeProcessId=*/600, /*activatedTreeSize=*/5, observed));
-    EXPECT_FALSE(policy::ShouldReactivateUnqualifiedCaptureForTreeGrowth(
-        /*activationQualified=*/false, /*activeProcessId=*/500, /*activatedTreeSize=*/9, observed));
+    EXPECT_TRUE(policy::ProcessBelongsToTree(processes, 500, 500));
+    EXPECT_TRUE(policy::ProcessBelongsToTree(processes, 501, 500));
+    EXPECT_TRUE(policy::ProcessBelongsToTree(processes, 502, 500));
+    EXPECT_FALSE(policy::ProcessBelongsToTree(processes, 600, 500));
+    EXPECT_FALSE(policy::ProcessBelongsToTree(processes, 601, 500));
+    EXPECT_FALSE(policy::ProcessBelongsToTree(processes, 700, 500));
+    EXPECT_FALSE(policy::ProcessBelongsToTree(processes, 0, 500));
+    EXPECT_FALSE(policy::ProcessBelongsToTree(processes, 500, 0));
+    EXPECT_TRUE(policy::ProcessBelongsToTree({}, 500, 500));
+    EXPECT_FALSE(policy::ProcessBelongsToTree({}, 501, 500));
+}
+
+TEST(ProcessTreeSelectionTest, RecyclesForNewTargetSessionWhenActivationWasUnqualifiedOrHadNoTargetSession) {
+    const std::vector<policy::ProcessTreeEntry> processes = {
+        {500, 4, "browser.exe"},
+        {501, 500, "audio-helper.exe"},
+        {600, 4, "other.exe"},
+    };
+
+    EXPECT_TRUE(policy::ShouldRecycleCaptureForSessionCreation(processes, false, true, 500, 501, 7, 8));
+    EXPECT_TRUE(policy::ShouldRecycleCaptureForSessionCreation(processes, false, false, 500, 500, 7, 8));
+    EXPECT_TRUE(policy::ShouldRecycleCaptureForSessionCreation(processes, true, false, 500, 501, 7, 8));
+    EXPECT_FALSE(policy::ShouldRecycleCaptureForSessionCreation(processes, true, true, 500, 501, 7, 8));
+    EXPECT_FALSE(policy::ShouldRecycleCaptureForSessionCreation(processes, false, false, 500, 501, 7, 7));
+    EXPECT_FALSE(policy::ShouldRecycleCaptureForSessionCreation(processes, false, false, 500, 501, 8, 7));
+    EXPECT_FALSE(policy::ShouldRecycleCaptureForSessionCreation(processes, false, false, 500, 600, 7, 8));
 }

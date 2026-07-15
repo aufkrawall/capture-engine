@@ -67,7 +67,7 @@ Primary sources:
 - `regression-testing-and-logging.md`
   - Regression coverage expectations and deterministic capture runners, including the fast zero-drift gate, overload/long-soak profiles, and HAGS-on 4K120 contention gate. Last verified 2026-07-12.
 - `multi-audio-capture.md`
-  - Multi system/microphone/app capture, including polling-first process loopback with event-mode first-packet qualification, generation-numbered reset/commit, ordered activation epochs, disposable helper isolation/recycle, codec-specific finalization, completed-file decode authority, route-local compensation, and stop-tail preservation. Last verified 2026-07-14. Stale-risk: medium (real device/runtime validation remains necessary).
+  - Multi system/microphone/app capture, including process-loopback protocol 2 descriptor/byte rings, fatal transport-integrity propagation, polling-first activation, render-session recovery, ordered epochs, disposable helper isolation/recycle, exact finalization, and route-local compensation. Last verified 2026-07-15. Stale-risk: medium (real device/runtime validation remains necessary).
 - `wgc-capture.md`
   - WGC and DXGI Desktop Duplication backends, including the max-rate variable-input CFR producer invariant, callback-rate aging, callback epochs, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and straight-alpha point-sampled single-stream DPI/HDR cursor composition. Last verified 2026-07-14. Stale-risk: medium.
 - `cfr-capture-sync.md`

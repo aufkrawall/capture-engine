@@ -38,7 +38,9 @@ struct StreamRecoveryConfig {
     // within this window. Some AudioSes configurations accept and start the
     // client but never deliver event-mode packets; a one-way polling fallback
     // is then required. Polling activations are allowed to remain silent because
-    // an app may legitimately not have started playback yet.
+    // an app may legitimately not have started playback yet; a target render-
+    // session creation after activation is handled by an exact Windows audio-
+    // session notification rather than an elapsed-silence guess.
     uint64_t firstPacketEventFallbackMs = 1000;
     // A process-loopback stream that produced audio before, then yields zero
     // packets for at least this long while its target process is still running,

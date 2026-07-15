@@ -115,11 +115,37 @@ inline ProcessNameSelection SelectProcessTreeRootByName(const std::vector<Proces
     return result;
 }
 
-inline bool ShouldReactivateUnqualifiedCaptureForTreeGrowth(bool activationQualified, uint32_t activeProcessId,
-                                                            size_t activatedTreeSize,
-                                                            const ProcessNameSelection& observedSelection) {
-    return !activationQualified && activeProcessId != 0 && observedSelection.selectedProcessId == activeProcessId &&
-           observedSelection.selectedProcessTreeSize > activatedTreeSize;
+inline bool ProcessBelongsToTree(const std::vector<ProcessTreeEntry>& processes, uint32_t processId,
+                                 uint32_t rootProcessId) {
+    if (processId == 0 || rootProcessId == 0) {
+        return false;
+    }
+
+    uint32_t currentProcessId = processId;
+    // This runs only on rare session-creation notifications. A bounded linear
+    // walk avoids allocating another hash table on the capture thread while
+    // still terminating safely on corrupt/cyclic parent data.
+    for (size_t depth = 0; currentProcessId != 0 && depth <= processes.size(); ++depth) {
+        if (currentProcessId == rootProcessId) {
+            return true;
+        }
+        const auto processIt = std::find_if(processes.begin(), processes.end(),
+                                            [&](const auto& process) { return process.processId == currentProcessId; });
+        if (processIt == processes.end()) {
+            return false;
+        }
+        currentProcessId = processIt->parentProcessId;
+    }
+    return false;
+}
+
+inline bool ShouldRecycleCaptureForSessionCreation(const std::vector<ProcessTreeEntry>& processes,
+                                                   bool activationQualified, bool activationHadObservedTargetSession,
+                                                   uint32_t activeRootProcessId, uint32_t sessionProcessId,
+                                                   uint64_t activationGeneration, uint64_t notificationGeneration) {
+    return notificationGeneration > activationGeneration &&
+           ProcessBelongsToTree(processes, sessionProcessId, activeRootProcessId) &&
+           (!activationQualified || !activationHadObservedTargetSession);
 }
 
 }  // namespace ce::process_loopback

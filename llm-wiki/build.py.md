@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-07-14 (source-built FFmpeg dependency closure, signed MSYS2 provenance, PE import guards, FFmpeg configuration/patch fingerprinting, codec decode support, and NMR-safe math flags)
+Last cross-checked: 2026-07-15 (source-built FFmpeg dependency closure, signed MSYS2 provenance, PE import guards, FFmpeg configuration/patch fingerprinting, codec decode support, NMR-safe math flags, and strict CRLF-safe custom-patch application)
 
 Primary sources:
 - `AGENTS.md`
@@ -110,7 +110,7 @@ Default quality mode currently:
 
 ## Lint and Format Coverage
 - C and C++ lint and format target these directories: `common`, `hook`, `captureengine`, `mediaengine`, `testapp`, and `tests`.
-- Python lint and format currently target `build.py`, `ffmpeg_dependencies.py`, `test_ffmpeg_dependencies.py`, and `testapp`.
+- Python lint currently targets `build.py`, `ffmpeg_dependencies.py`, `ffmpeg_patch_utils.py`, their focused tests, and `testapp`. Automatic Python formatting remains limited to `build.py` and `testapp`.
 
 ## Unit Test Behavior
 - `compile_tests()` runs on every build so `compile_commands.json` contains authoritative entries for tests even if tests are not executed.
@@ -118,6 +118,7 @@ Default quality mode currently:
 - `--gtest-filter` is passed through as `--gtest_filter=...` when `tests/unit_tests.exe` is executed.
 - `--tests-only` now takes effect before the normal product build phases, so focused test runs do not also rebuild the hook DLL, mediaengine DLL, captureengine.exe, Vulkan layer, and test apps.
 - `copy_test_runtime_dlls()` copies required MSYS2 and FFmpeg DLLs next to `tests/unit_tests.exe`, so direct execution works after a successful build.
+- An unfiltered `--run-tests` also runs `test_ffmpeg_patch_utils.py`, which exercises strict patch application after CRLF target normalization and rejects target traversal, before the existing A/V tool self-tests.
 - On Linux, executing `unit_tests.exe` requires `wine64` or `wine` in `PATH`.
 
 ## Test App Build Behavior
@@ -158,7 +159,7 @@ Default quality mode currently:
 - `compile_tests()` recompiles the shared `common/*.cpp` objects with the active test flags before linking. This prevents a sanitizer child build from leaving ASan/UBSan objects in the shared object directory for a later non-sanitizer test-only link.
 - The custom Windows FFmpeg recipe is part of audio codec support. The expected audio encoder set includes `aac`, `alac`, `flac`, `libopus`, `pcm_s16le`, `pcm_s24le`, and `pcm_f32le`; matching audio decoders are enabled for completed-file integration verification, and runtime DLL copying includes `libopus-0.dll`.
 - `FFMPEG_BUILD_CONFIGURATION_VERSION` plus the contents of `patches/ffmpeg/*.patch` form the local FFmpeg configuration fingerprint stored in `last_build_configuration.txt`. Even with `--skip-updates`, a fingerprint change rebuilds the already-pinned FFmpeg source instead of silently reusing stale DLLs. Bump the configuration version whenever configure flags/codec sets change; patch content is detected automatically.
-- FFmpeg is built with `-O3 -flto` but without `-ffast-math`. The pinned native AAC encoder defaults to the new NMR coder, and CE explicitly selects `aac_coder=nmr,aac_nmr_speed=0`; NMR's numerical guards require defined NaN/Inf behavior. The local Matroska microsecond-precision and NVENC CFR patches are checked/applied against the pinned source during a rebuild.
+- FFmpeg is built with `-O3 -flto` but without `-ffast-math`. The pinned native AAC encoder defaults to the new NMR coder, and CE explicitly selects `aac_coder=nmr,aac_nmr_speed=0`; NMR's numerical guards require defined NaN/Inf behavior. Before applying the local Matroska microsecond-precision and NVENC CFR patches, the disposable FFmpeg copy parses their standard text headers, validates that every old/new target remains inside the copy, and normalizes CRLF only in those target files. Strict `git apply --verbose` remains authoritative; do not substitute whitespace-ignore flags. Both patches must be refreshed against the exact pinned commit when upstream context changes.
 - On Windows, `--skip-updates` now also skips the old unconditional MSYS2 `pacman -S --needed ...` package-install step. Earlier behavior still entered pacman even on focused test runs and could hang on mirrors or stale package-manager state before any compile/test work started.
 - The nested sanitizer regression child now writes to its own log file inside the parent verification bundle instead of clobbering the parent top-level `build.log`.
 - MSYS2 package install now uses an explicit timeout and logs partial stdout/stderr on timeout instead of silently waiting forever.

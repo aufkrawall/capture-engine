@@ -91,12 +91,14 @@ TEST(AudioCaptureSourceTest, ProcessLoopbackComStateLivesInDisposableInheritedHa
     ASSERT_FALSE(helperSource.empty());
 
     EXPECT_NE(mediaSource.find("std::unique_ptr<ProcessLoopbackCapture> appCapture"), std::string::npos);
-    EXPECT_NE(proxySource.find("PROC_THREAD_ATTRIBUTE_HANDLE_LIST"), std::string::npos);
-    EXPECT_NE(proxySource.find("CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT"), std::string::npos);
+    EXPECT_NE(proxySource.find("LaunchRestrictedChildProcess"), std::string::npos);
+    EXPECT_NE(proxySource.find("{worker->mappingHandle, worker->packetEvent, worker->stopEvent}"),
+              std::string::npos);
     EXPECT_NE(proxySource.find("retiredWorkers_.push_back(std::move(activeWorker_))"), std::string::npos);
     EXPECT_NE(workerSource.find("AppAudioCapture capture"), std::string::npos);
     EXPECT_NE(workerSource.find("Recycling after process-loopback reactivation"), std::string::npos);
     EXPECT_NE(helperSource.find("MediaEngine_RunProcessLoopbackWorker"), std::string::npos);
+    EXPECT_NE(helperSource.find("IsUnsignaledEvent"), std::string::npos);
 }
 
 TEST(AudioCaptureSourceTest, AppAudioCaptureEndMarkerOrdersEveryFanoutRouteBeforeTimelineSilence) {
@@ -174,17 +176,58 @@ TEST(AudioCaptureSourceTest, SilentStallRecoveryUsesCurrentActivationQualificati
     EXPECT_NE(appSource.find("currentActivationQualified = true;", loopBegin), std::string::npos);
 }
 
-TEST(AudioCaptureSourceTest, UnqualifiedNameCaptureReattachesWhenItsSelectedProcessTreeGrows) {
+TEST(AudioCaptureSourceTest, CaptureRecyclesWhenTargetRenderSessionRequiresFreshBinding) {
     const std::string appSource = ReadSource("app_audio_capture.cpp");
     const std::string selectionSource = ReadSource("process_tree_selection.h");
+    const std::string sessionMonitorSource = ReadSource("process_audio_session_monitor.cpp");
+    const std::string workerSource = ReadSource("process_loopback_worker.cpp");
     ASSERT_FALSE(appSource.empty());
     ASSERT_FALSE(selectionSource.empty());
+    ASSERT_FALSE(sessionMonitorSource.empty());
+    ASSERT_FALSE(workerSource.empty());
 
-    EXPECT_NE(selectionSource.find("selectedProcessTreeSize"), std::string::npos);
-    EXPECT_NE(selectionSource.find("ShouldReactivateUnqualifiedCaptureForTreeGrowth("), std::string::npos);
-    EXPECT_NE(appSource.find("activatedProcessTreeSize.store(selection.selectedProcessTreeSize"), std::string::npos);
-    EXPECT_NE(appSource.find("ShouldReactivateUnqualifiedCaptureForTreeGrowth("), std::string::npos);
-    EXPECT_NE(appSource.find("attemptReactivate(\"unqualified_process_tree_growth\", 0, false)"), std::string::npos);
+    const size_t monitorStart = appSource.find("audioSessionMonitor_.Start(stopEvent_)");
+    const size_t clientActivation = appSource.find("ActivateClientForPID(pid, true)", monitorStart);
+    ASSERT_NE(monitorStart, std::string::npos);
+    ASSERT_NE(clientActivation, std::string::npos);
+    EXPECT_LT(monitorStart, clientActivation);
+    EXPECT_NE(sessionMonitorSource.find("COINIT_MULTITHREADED"), std::string::npos);
+    EXPECT_NE(sessionMonitorSource.find("RegisterSessionNotification(notification)"), std::string::npos);
+    EXPECT_NE(sessionMonitorSource.find("UnregisterSessionNotification(notification)"), std::string::npos);
+    EXPECT_NE(sessionMonitorSource.find("GetSessionEnumerator(&sessionEnumerator)"), std::string::npos);
+    EXPECT_NE(sessionMonitorSource.find("sessionEnumerator->GetCount(&sessionCount)"), std::string::npos);
+    EXPECT_NE(sessionMonitorSource.find("sessionEnumerator->GetSession(sessionIndex, &session)"), std::string::npos);
+    EXPECT_NE(sessionMonitorSource.find("std::shared_ptr<SharedState>"), std::string::npos);
+    EXPECT_NE(sessionMonitorSource.find("acceptingNotifications"), std::string::npos);
+    EXPECT_NE(sessionMonitorSource.find("std::array<AudioSessionCreation"), std::string::npos);
+    EXPECT_EQ(sessionMonitorSource.find("std::deque<AudioSessionCreation>"), std::string::npos);
+    const size_t activationFunction = appSource.find("bool AppAudioCapture::ActivateClientForPID");
+    const size_t processTreeSnapshot =
+        appSource.find("const auto processTree = SnapshotProcessTree();", activationFunction);
+    const size_t generationBoundary = appSource.find("SnapshotGenerationAndObservedProcessIds(", activationFunction);
+    const size_t activateInterface =
+        appSource.find("ActivateAudioInterfaceForPID(pid, &activatedClient)", activationFunction);
+    ASSERT_NE(processTreeSnapshot, std::string::npos);
+    ASSERT_NE(generationBoundary, std::string::npos);
+    ASSERT_NE(activateInterface, std::string::npos);
+    EXPECT_LT(processTreeSnapshot, generationBoundary);
+    EXPECT_LT(generationBoundary, activateInterface);
+    EXPECT_NE(appSource.find("activationHadObservedTargetSession_.store("), std::string::npos);
+    EXPECT_NE(selectionSource.find("ShouldRecycleCaptureForSessionCreation("), std::string::npos);
+    const size_t recyclePolicy = appSource.find("ShouldRecycleCaptureForSessionCreation(");
+    EXPECT_NE(recyclePolicy, std::string::npos);
+    const size_t captureLoop = appSource.find("void AppAudioCapture::CaptureLoop()");
+    const size_t notificationDrain = appSource.find("audioSessionMonitor_.TakeSessionCreations(", captureLoop);
+    const size_t packetRead = appSource.find("readNextPacketSize(\"outer\")", captureLoop);
+    ASSERT_NE(notificationDrain, std::string::npos);
+    ASSERT_NE(packetRead, std::string::npos);
+    EXPECT_LT(notificationDrain, packetRead);
+    EXPECT_EQ(appSource.find("DiscardSessionCreations"), std::string::npos);
+    const size_t recycleRequest = appSource.find("workerRecycleRequested.store(true");
+    ASSERT_NE(recycleRequest, std::string::npos);
+    EXPECT_NE(appSource.substr(recycleRequest, 256).find("SetEvent(packetReadyEvent_)"), std::string::npos);
+    EXPECT_NE(workerSource.find("capture.IsWorkerRecycleRequested()"), std::string::npos);
+    EXPECT_EQ(appSource.find("unqualified_process_tree_growth"), std::string::npos);
 }
 
 TEST(AudioCaptureSourceTest, EpochResetUsesTerminalResamplerFlushResultInsteadOfReportedDelay) {

@@ -1,8 +1,8 @@
 diff --git a/libavcodec/nvenc.c b/libavcodec/nvenc.c
-index 3922305..a13462b 100644
+index dffbb67652413e25468f8537409eb0b33b7b0da3..286a8dfbb5ada0060e38c65c40b735f99a255bb0 100644
 --- a/libavcodec/nvenc.c
 +++ b/libavcodec/nvenc.c
-@@ -576,8 +576,16 @@ static int nvenc_check_capabilities(AVCodecContext *avctx)
+@@ -529,8 +529,16 @@ static int nvenc_check_capabilities(AVCodecContext *avctx)
  
      ret = nvenc_check_cap(avctx, NV_ENC_CAPS_SUPPORT_WEIGHTED_PREDICTION);
      if (ctx->weighted_pred > 0 && ret <= 0) {
@@ -21,7 +21,7 @@ index 3922305..a13462b 100644
      }
  
      ret = nvenc_check_cap(avctx, NV_ENC_CAPS_SUPPORT_CABAC);
-@@ -1197,8 +1205,12 @@ static av_cold int nvenc_setup_rate_control(AVCodecContext *avctx)
+@@ -1088,8 +1096,12 @@ static av_cold int nvenc_setup_rate_control(AVCodecContext *avctx)
      }
  
      if (ctx->rc_lookahead > 0) {
@@ -35,8 +35,7 @@ index 3922305..a13462b 100644
  
          if (lkd_bound < 0) {
              ctx->encode_config.rcParams.enableLookahead = 0;
-@@ -1281,6 +1293,8 @@ static av_cold int nvenc_setup_h264_config(AVCodecContext *avctx)
-         h264->entropyCodingMode = ctx->coder;
+@@ -1305,6 +1317,8 @@ static av_cold int nvenc_setup_h264_config(AVCodecContext *avctx)
 
      if (ctx->b_ref_mode >= 0)
          h264->useBFramesAsRef = ctx->b_ref_mode;
@@ -44,8 +43,8 @@ index 3922305..a13462b 100644
 +        h264->useBFramesAsRef = NV_ENC_BFRAME_REF_MODE_MIDDLE;
  
      h264->numRefL0 = avctx->refs;
-@@ -1475,6 +1489,8 @@ static av_cold int nvenc_setup_hevc_config(AVCodecContext *avctx)
-     hevc->tier = ctx->tier;
+     h264->numRefL1 = avctx->refs;
+@@ -1498,6 +1512,8 @@ static av_cold int nvenc_setup_hevc_config(AVCodecContext *avctx)
 
      if (ctx->b_ref_mode >= 0)
          hevc->useBFramesAsRef = ctx->b_ref_mode;
@@ -53,7 +52,8 @@ index 3922305..a13462b 100644
 +        hevc->useBFramesAsRef = NV_ENC_BFRAME_REF_MODE_MIDDLE;
  
      hevc->numRefL0 = avctx->refs;
-@@ -1586,6 +1602,13 @@ static av_cold int nvenc_setup_av1_config(AVCodecContext *avctx)
+     hevc->numRefL1 = avctx->refs;
+@@ -1609,6 +1625,13 @@ static av_cold int nvenc_setup_av1_config(AVCodecContext *avctx)
  
      if (ctx->b_ref_mode >= 0)
          av1->useBFramesAsRef = ctx->b_ref_mode;
@@ -67,7 +67,7 @@ index 3922305..a13462b 100644
  
      av1->numFwdRefs = avctx->refs;
      av1->numBwdRefs = avctx->refs;
-@@ -2636,10 +2659,13 @@ static int process_output_surface(AVCodecContext *avctx, AVPacket *pkt, NvencSur
+@@ -2685,10 +2708,13 @@ static int process_output_surface(AVCodecContext *avctx, AVPacket *pkt, NvencSur
          pict_type = AV_PICTURE_TYPE_BI;
          break;
      default:
@@ -85,7 +85,7 @@ index 3922305..a13462b 100644
      }
  
      ff_encode_add_stats_side_data(pkt,
-@@ -3178,6 +3204,26 @@ av_cold void ff_nvenc_encode_flush(AVCodecContext *avctx)
+@@ -3228,6 +3254,26 @@ av_cold void ff_nvenc_encode_flush(AVCodecContext *avctx)
      NvencContext *ctx = avctx->priv_data;
  
      nvenc_send_frame(avctx, NULL);

@@ -55,6 +55,7 @@ from ffmpeg_dependencies import (
     verify_detached_signature,
     verify_pe_import_closure,
 )
+from ffmpeg_patch_utils import normalize_custom_patch_targets
 
 # --- Platform Detection ---
 IS_WINDOWS = sys.platform == "win32"
@@ -2833,6 +2834,13 @@ class FFmpegBuilder:
         if os.path.isdir(patches_dir):
             git_exe = self.get_tool_path("git")
             patch_files = sorted(f for f in os.listdir(patches_dir) if f.endswith(".patch"))
+            patch_paths = [os.path.join(patches_dir, patch_file) for patch_file in patch_files]
+            normalized_targets = normalize_custom_patch_targets(build_dir, patch_paths)
+            if normalized_targets:
+                log(
+                    f"[FFmpeg] Normalized LF line endings for {len(normalized_targets)} custom patch "
+                    f"target(s): {', '.join(normalized_targets)}"
+                )
             for pf in patch_files:
                 patch_path = os.path.join(patches_dir, pf)
                 log(f"[FFmpeg] Applying patch: {pf}")
@@ -3955,20 +3963,33 @@ def run_tests(env, test_exe, gtest_filter=None):
 def run_python_tool_self_tests(env):
     log("=== Running Python Tool Self-Tests ===")
     tool_tests = [
-        ("analyze_av_sync_stimulus", os.path.join(PROJECT_ROOT, "tools", "analyze_av_sync_stimulus.py")),
-        ("analyze_capture_av", os.path.join(PROJECT_ROOT, "tools", "analyze_capture_av.py")),
-        ("run_av_sync_matrix", os.path.join(PROJECT_ROOT, "tools", "run_av_sync_matrix.py")),
+        (
+            "ffmpeg_patch_utils",
+            [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_ffmpeg_patch_utils.py")],
+        ),
+        (
+            "analyze_av_sync_stimulus",
+            [sys.executable, os.path.join(PROJECT_ROOT, "tools", "analyze_av_sync_stimulus.py"), "--self-test"],
+        ),
+        (
+            "analyze_capture_av",
+            [sys.executable, os.path.join(PROJECT_ROOT, "tools", "analyze_capture_av.py"), "--self-test"],
+        ),
+        (
+            "run_av_sync_matrix",
+            [sys.executable, os.path.join(PROJECT_ROOT, "tools", "run_av_sync_matrix.py"), "--self-test"],
+        ),
     ]
     ok = True
-    for name, script in tool_tests:
+    for name, command in tool_tests:
         start = time.time()
-        result = subprocess.run([sys.executable, script, "--self-test"], env=env)
+        result = subprocess.run(command, env=env)
         elapsed = time.time() - start
         record_verification_step(
             f"python_tool_self_test.{name}",
             "passed" if result.returncode == 0 else "failed",
             duration_seconds=elapsed,
-            details={"exit_code": result.returncode, "script": script},
+            details={"exit_code": result.returncode, "command": command},
         )
         if result.returncode != 0:
             log(f"Python tool self-test failed: {name} (exit code {result.returncode})")
@@ -4124,7 +4145,14 @@ def run_lint(env):
         log("Running flake8...")
         # Lint build scripts and test scripts
         # We need to specify paths explicitly to avoid traversing build/ directories if exclude fails
-        py_targets = ["build.py", "ffmpeg_dependencies.py", "test_ffmpeg_dependencies.py", "testapp"]
+        py_targets = [
+            "build.py",
+            "ffmpeg_dependencies.py",
+            "ffmpeg_patch_utils.py",
+            "test_ffmpeg_dependencies.py",
+            "test_ffmpeg_patch_utils.py",
+            "testapp",
+        ]
 
         cmd = [sys.executable, "-m", "flake8"] + py_targets
         res = subprocess.run(cmd, capture_output=True, text=True)

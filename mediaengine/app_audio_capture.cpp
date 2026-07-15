@@ -4,6 +4,7 @@
 #include <psapi.h>
 #include <tlhelp32.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <exception>
@@ -67,6 +68,28 @@ static bool IsIEEEFloat(const GUID& g) {
     return g.Data1 == 0x00000003 && g.Data2 == 0x0000 && g.Data3 == 0x0010 && g.Data4[0] == 0x80 &&
            g.Data4[1] == 0x00 && g.Data4[2] == 0x00 && g.Data4[3] == 0xaa && g.Data4[4] == 0x00 && g.Data4[5] == 0x38 &&
            g.Data4[6] == 0x9b && g.Data4[7] == 0x71;
+}
+
+static std::vector<ce::process_loopback::ProcessTreeEntry> SnapshotProcessTree() {
+    std::vector<ce::process_loopback::ProcessTreeEntry> processes;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return processes;
+    }
+
+    PROCESSENTRY32W processEntry = {};
+    processEntry.dwSize = sizeof(processEntry);
+    if (Process32FirstW(snapshot, &processEntry)) {
+        do {
+            char executableName[MAX_PATH] = {};
+            if (WideCharToMultiByte(CP_UTF8, 0, processEntry.szExeFile, -1, executableName, MAX_PATH, nullptr,
+                                    nullptr) > 0) {
+                processes.push_back({processEntry.th32ProcessID, processEntry.th32ParentProcessID, executableName});
+            }
+        } while (Process32NextW(snapshot, &processEntry));
+    }
+    CloseHandle(snapshot);
+    return processes;
 }
 
 // ============================================================================
@@ -268,8 +291,8 @@ bool AppAudioCapture::StartByPID(DWORD processId) {
         return false;
     }
     shouldStop.store(false);
+    workerRecycleRequested.store(false, std::memory_order_release);
     targetPID.store(processId);
-    activatedProcessTreeSize.store(0, std::memory_order_release);
     targetProcessName.clear();
 
     if (!BeginAsyncStartForPID(processId)) {
@@ -305,6 +328,7 @@ bool AppAudioCapture::StartByName(const std::string& processName) {
         return false;
     }
     shouldStop.store(false);
+    workerRecycleRequested.store(false, std::memory_order_release);
     isMonitoring.store(true);
 
     // Start the process monitor thread
@@ -335,7 +359,7 @@ void AppAudioCapture::Stop(bool discardPendingPackets) {
         if (pendingStartFuture.valid()) {
             pendingStartFuture.wait();
             try {
-                pendingStartFuture.get();
+                (void)pendingStartFuture.get();
             } catch (const std::exception& error) {
                 DLL_Log("[AppAudioCapture] Async start raised during Stop: %s", error.what());
             }
@@ -359,12 +383,22 @@ void AppAudioCapture::Stop(bool discardPendingPackets) {
         captureThread.join();
     }
 
+    const bool sessionMonitorWasRunning = audioSessionMonitor_.IsRunning();
+    audioSessionMonitor_.Stop();
+    const size_t monitoredEndpoints = audioSessionMonitor_.RegisteredEndpointCount();
+    const uint64_t sessionNotifications = audioSessionMonitor_.Generation();
+    const uint64_t droppedSessionNotifications = audioSessionMonitor_.DroppedNotificationCount();
+    if (sessionMonitorWasRunning) {
+        DLL_Log("[AppAudioCapture] Audio-session monitor stopped: endpoints=%zu notifications=%llu dropped=%llu",
+                monitoredEndpoints, static_cast<unsigned long long>(sessionNotifications),
+                static_cast<unsigned long long>(droppedSessionNotifications));
+    }
+
     if (discardPendingPackets) {
         DiscardPendingPackets();
     }
     CleanupCapture();
     targetPID.store(0);
-    activatedProcessTreeSize.store(0, std::memory_order_release);
     targetProcessName.clear();
 }
 
@@ -506,6 +540,22 @@ bool AppAudioCapture::StartCaptureThreadForCurrentClient() {
 }
 
 bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
+    if (!audioSessionMonitor_.IsRunning()) {
+        if (audioSessionMonitor_.Start(stopEvent_)) {
+            DLL_Log(
+                "[AppAudioCapture] Audio-session creation monitor armed before process-loopback activation: "
+                "registeredEndpoints=%zu activeEndpoints=%zu existingSessions=%zu registrationFailures=%zu "
+                "firstFailure=0x%lx",
+                audioSessionMonitor_.RegisteredEndpointCount(), audioSessionMonitor_.ActiveEndpointCount(),
+                audioSessionMonitor_.ExistingSessionCount(), audioSessionMonitor_.RegistrationFailureCount(),
+                static_cast<unsigned long>(audioSessionMonitor_.FirstRegistrationFailure()));
+        } else {
+            DLL_Log(
+                "[AppAudioCapture] WARNING: audio-session creation monitor unavailable (hr=0x%lx); "
+                "initial process-loopback activation cannot observe a render session created after startup",
+                static_cast<unsigned long>(audioSessionMonitor_.StartupResult()));
+        }
+    }
     if (!ActivateClientForPID(pid, true)) {
         return false;
     }
@@ -656,6 +706,28 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid, bool allowEventDriven) {
         }
 
         IAudioClient* activatedClient = nullptr;
+        // Atomically record the notification boundary and the render-session
+        // processes already known at that boundary. Windows can emit silent
+        // placeholder packets even when process loopback was activated before
+        // the target's first session existed, so packet arrival alone cannot
+        // prove that this client attached to the target session.
+        const auto processTree = SnapshotProcessTree();
+        std::array<DWORD, 1024> observedSessionProcessIds{};
+        size_t observedSessionProcessCount = 0;
+        const uint64_t activationGeneration = audioSessionMonitor_.SnapshotGenerationAndObservedProcessIds(
+            observedSessionProcessIds.data(), observedSessionProcessIds.size(), &observedSessionProcessCount);
+        const bool hadObservedTargetSession =
+            std::any_of(observedSessionProcessIds.begin(),
+                        observedSessionProcessIds.begin() + observedSessionProcessCount, [&](DWORD sessionProcessId) {
+                            return ce::process_loopback::ProcessBelongsToTree(processTree, sessionProcessId, pid);
+                        });
+        activationHadObservedTargetSession_.store(hadObservedTargetSession, std::memory_order_release);
+        activationAudioSessionGeneration_.store(activationGeneration, std::memory_order_release);
+        DLL_Log(
+            "[AppAudioCapture] Process-loopback activation boundary: PID=%lu generation=%llu "
+            "observedSessionProcesses=%zu targetSessionObserved=%d mode=%s",
+            pid, static_cast<unsigned long long>(activationGeneration), observedSessionProcessCount,
+            hadObservedTargetSession ? 1 : 0, attempt.description);
         if (!ActivateAudioInterfaceForPID(pid, &activatedClient)) {
             // Activation is independent of the event/polling flags used later by
             // IAudioClient::Initialize. Repeating a five-second activation timeout
@@ -941,12 +1013,6 @@ void AppAudioCapture::CaptureLoop() {
         if (ok) {
             ++reactivateSuccesses;
             firstSet = false;
-            if (!targetProcessName.empty()) {
-                const auto selection = FindProcessByName(targetProcessName, false);
-                if (selection.selectedProcessId == pid) {
-                    activatedProcessTreeSize.store(selection.selectedProcessTreeSize, std::memory_order_release);
-                }
-            }
             DLL_Log("[AppAudioCapture] Re-activation succeeded for PID %lu (attempt=%llu mode=%s)", pid,
                     static_cast<unsigned long long>(reactivateAttempts),
                     (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
@@ -1015,35 +1081,62 @@ void AppAudioCapture::CaptureLoop() {
                         processMissingStreak, kProcessMissingStreakToExit);
             } else {
                 processMissingStreak = 0;
-                if (!currentActivationQualified && !targetProcessName.empty()) {
-                    const auto selection = FindProcessByName(targetProcessName, false);
-                    const uint64_t activatedTreeSize = activatedProcessTreeSize.load(std::memory_order_acquire);
-                    if (ce::process_loopback::ShouldReactivateUnqualifiedCaptureForTreeGrowth(
-                            currentActivationQualified, activePid, static_cast<size_t>(activatedTreeSize), selection) &&
-                        ce::audio::RecoveryBackoffElapsed(nowTick, lastReactivateTick, recoveryBackoffMs)) {
-                        DLL_Log(
-                            "[AppAudioCapture] Unqualified process-loopback target tree grew after activation: "
-                            "process=%s PID=%lu members=%llu->%zu epoch=%llu; re-activating against the complete "
-                            "tree so newly-created audio children are included",
-                            targetProcessName.c_str(), activePid, static_cast<unsigned long long>(activatedTreeSize),
-                            selection.selectedProcessTreeSize,
-                            static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)));
-                        if (attemptReactivate("unqualified_process_tree_growth", 0, false)) {
-                            continue;
-                        }
-                    }
-                }
             }
         }
 
+        const HANDLE sessionActivityEvent = audioSessionMonitor_.GetActivityEvent();
         if (!drainingAfterStop && (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 && captureEvent_) {
-            const DWORD waitResult = WaitForSingleObject(captureEvent_, 200);
+            HANDLE waitHandles[] = {captureEvent_, sessionActivityEvent};
+            const DWORD waitHandleCount = sessionActivityEvent ? 2 : 1;
+            const DWORD waitResult = WaitForMultipleObjects(waitHandleCount, waitHandles, FALSE, 200);
             if (waitResult == WAIT_FAILED) {
-                DLL_Log("[AppAudioCapture] WaitForSingleObject failed: 0x%lx", GetLastError());
+                DLL_Log("[AppAudioCapture] Capture/session notification wait failed: 0x%lx", GetLastError());
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
         } else if (!drainingAfterStop) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            if (sessionActivityEvent) {
+                WaitForSingleObject(sessionActivityEvent, 10);
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        }
+
+        if (!drainingAfterStop) {
+            std::array<ce::process_loopback::AudioSessionCreation, 64> sessionCreations{};
+            const size_t sessionCreationCount =
+                audioSessionMonitor_.TakeSessionCreations(sessionCreations.data(), sessionCreations.size());
+            if (sessionCreationCount != 0) {
+                const uint64_t activationGeneration = activationAudioSessionGeneration_.load(std::memory_order_acquire);
+                const bool activationHadObservedTargetSession =
+                    activationHadObservedTargetSession_.load(std::memory_order_acquire);
+                const DWORD activePid = targetPID.load(std::memory_order_acquire);
+                const auto processTree = SnapshotProcessTree();
+                for (size_t creationIndex = 0; creationIndex < sessionCreationCount; ++creationIndex) {
+                    const auto& creation = sessionCreations[creationIndex];
+                    if (!ce::process_loopback::ShouldRecycleCaptureForSessionCreation(
+                            processTree, currentActivationQualified, activationHadObservedTargetSession, activePid,
+                            creation.processId, activationGeneration, creation.generation)) {
+                        continue;
+                    }
+                    workerRecycleRequested.store(true, std::memory_order_release);
+                    if (packetReadyEvent_) {
+                        SetEvent(packetReadyEvent_);
+                    }
+                    DLL_Log(
+                        "[AppAudioCapture] Target render session requires a fresh process-loopback binding: "
+                        "targetPID=%lu sessionPID=%lu notificationGeneration=%llu activationGeneration=%llu "
+                        "activationQualified=%d targetSessionObservedAtActivation=%d epoch=%llu; recycling the "
+                        "disposable helper",
+                        activePid, creation.processId, static_cast<unsigned long long>(creation.generation),
+                        static_cast<unsigned long long>(activationGeneration), currentActivationQualified ? 1 : 0,
+                        activationHadObservedTargetSession ? 1 : 0,
+                        static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)));
+                    break;
+                }
+                if (workerRecycleRequested.load(std::memory_order_acquire)) {
+                    break;
+                }
+            }
         }
 
         // A previous re-activation may have failed and abandoned the client; recover
@@ -1089,13 +1182,20 @@ void AppAudioCapture::CaptureLoop() {
                 DLL_Log(
                     "[AppAudioCapture] WARNING: process-loopback stream is active but has delivered no data "
                     "packets for %llu ms: PID=%lu process=%s epoch=%llu mode=%s processAlive=%d everPacket=%d. "
-                    "The polling route remains expected timeline silence; verify process-tree root selection and "
-                    "target audio activity",
+                    "sessionMonitor=%d activationSessionGeneration=%llu observedSessionGeneration=%llu "
+                    "targetSessionObservedAtActivation=%d. The "
+                    "polling route remains expected timeline silence; a matching post-activation render-session "
+                    "notification will trigger exact recovery. Verify process-tree root selection and target audio "
+                    "activity",
                     static_cast<unsigned long long>(activationElapsedMs), targetPID.load(),
                     targetProcessName.empty() ? "<pid-mode>" : targetProcessName.c_str(),
                     static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)),
                     (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling",
-                    IsProcessRunning(targetPID.load()) ? 1 : 0, sawAnyPacket ? 1 : 0);
+                    IsProcessRunning(targetPID.load()) ? 1 : 0, sawAnyPacket ? 1 : 0,
+                    audioSessionMonitor_.IsRunning() ? 1 : 0,
+                    static_cast<unsigned long long>(activationAudioSessionGeneration_.load(std::memory_order_acquire)),
+                    static_cast<unsigned long long>(audioSessionMonitor_.Generation()),
+                    activationHadObservedTargetSession_.load(std::memory_order_acquire) ? 1 : 0);
                 lastNoPacketDiagnosticTick = noPacketNow;
             }
             // Silent-stall watchdog: a process-loopback stream that delivered audio
@@ -1226,13 +1326,13 @@ void AppAudioCapture::CaptureLoop() {
                 ++qualifiedActivationCount;
                 DLL_Log(
                     "[AppAudioCapture] First-packet qualification succeeded: PID=%lu epoch=%llu mode=%s "
-                    "elapsed=%llums frames=%u flags=0x%lx",
+                    "elapsed=%llums frames=%u flags=0x%lx targetSessionObservedAtActivation=%d",
                     targetPID.load(), static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)),
                     (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling",
-                    static_cast<unsigned long long>(lastPacketTick >= currentActivationStartTick
-                                                        ? lastPacketTick - currentActivationStartTick
-                                                        : 0),
-                    numFramesAvailable, flags);
+                    static_cast<unsigned long long>(
+                        lastPacketTick >= currentActivationStartTick ? lastPacketTick - currentActivationStartTick : 0),
+                    numFramesAvailable, flags,
+                    activationHadObservedTargetSession_.load(std::memory_order_acquire) ? 1 : 0);
             }
             sawAnyPacket = true;
             recoveryBackoffMs = 0;
@@ -1481,8 +1581,8 @@ void AppAudioCapture::CaptureLoop() {
         "[AppAudioCapture] First-packet qualification summary for PID %lu: everPacket=%d currentQualified=%d "
         "qualifiedActivations=%llu eventFallback=%llu/%llu finalEpoch=%llu finalMode=%s",
         targetPID.load(), sawAnyPacket ? 1 : 0, currentActivationQualified ? 1 : 0,
-        static_cast<unsigned long long>(qualifiedActivationCount), static_cast<unsigned long long>(eventFallbackSuccesses),
-        static_cast<unsigned long long>(eventFallbackAttempts),
+        static_cast<unsigned long long>(qualifiedActivationCount),
+        static_cast<unsigned long long>(eventFallbackSuccesses), static_cast<unsigned long long>(eventFallbackAttempts),
         static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)),
         (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0 ? "event-driven" : "polling");
     if (reactivateAttempts > 0) {
@@ -1551,7 +1651,6 @@ void AppAudioCapture::ProcessMonitorLoop() {
                 captureThread.join();
                 CleanupCapture();
                 targetPID.store(0, std::memory_order_release);
-                activatedProcessTreeSize.store(0, std::memory_order_release);
             }
 
             // Not capturing - try to find the target process
@@ -1561,10 +1660,8 @@ void AppAudioCapture::ProcessMonitorLoop() {
                 DLL_Log("[AppAudioCapture] Selected process-tree root '%s' with PID %lu", targetProcessName.c_str(),
                         pid);
                 targetPID.store(pid);
-                activatedProcessTreeSize.store(selection.selectedProcessTreeSize, std::memory_order_release);
                 if (!BeginAsyncStartForPID(pid)) {
                     targetPID.store(0, std::memory_order_release);
-                    activatedProcessTreeSize.store(0, std::memory_order_release);
                 }
             }
         }
@@ -1580,26 +1677,7 @@ void AppAudioCapture::ProcessMonitorLoop() {
 
 ce::process_loopback::ProcessNameSelection AppAudioCapture::FindProcessByName(const std::string& name,
                                                                               bool logSelection) {
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) {
-        return {};
-    }
-
-    PROCESSENTRY32W pe32 = {};
-    pe32.dwSize = sizeof(pe32);
-
-    std::vector<ce::process_loopback::ProcessTreeEntry> processes;
-
-    if (Process32FirstW(snapshot, &pe32)) {
-        do {
-            char exeName[MAX_PATH] = {};
-            if (WideCharToMultiByte(CP_UTF8, 0, pe32.szExeFile, -1, exeName, MAX_PATH, nullptr, nullptr) > 0) {
-                processes.push_back({pe32.th32ProcessID, pe32.th32ParentProcessID, exeName});
-            }
-        } while (Process32NextW(snapshot, &pe32));
-    }
-
-    CloseHandle(snapshot);
+    const auto processes = SnapshotProcessTree();
     const auto selection = ce::process_loopback::SelectProcessTreeRootByName(processes, name);
     if (logSelection && selection.selectedProcessId != 0) {
         DLL_Log(

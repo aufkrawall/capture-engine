@@ -97,6 +97,7 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(
             bool stopping = false;
             bool sawEndOfStream = false;
             bool recycleWorker = false;
+            bool recoveryRecycleLogged = false;
             while (true) {
                 AudioPacket packet;
                 while (capture.GetNextPacket(packet)) {
@@ -120,6 +121,16 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(
                         break;
                     } else {
                         SetEvent(packetEvent);
+                    }
+                }
+
+                if (capture.IsWorkerRecycleRequested()) {
+                    recycleWorker = true;
+                    if (!recoveryRecycleLogged) {
+                        RelayWorkerLog(
+                            "[Worker] Recycling after target audio-session creation invalidated the "
+                            "pre-session process-loopback binding");
+                        recoveryRecycleLogged = true;
                     }
                 }
 

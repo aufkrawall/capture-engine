@@ -16,6 +16,7 @@
 // Include for AudioPacket definition
 #include "audio_capture.h"
 #include "audio_recovery_policy.h"
+#include "process_audio_session_monitor.h"
 #include "process_tree_selection.h"
 
 /**
@@ -107,6 +108,10 @@ public:
         return targetPID.load();
     }
 
+    bool IsWorkerRecycleRequested() const {
+        return workerRecycleRequested.load(std::memory_order_acquire);
+    }
+
     /**
      * Get the target process name (empty if PID-based).
      */
@@ -160,9 +165,8 @@ private:
     // Process monitoring loop (runs in monitorThread for name-based capture)
     void ProcessMonitorLoop();
 
-    // Resolve the largest same-name process tree. The selected tree size is
-    // retained with an activation so a still-unqualified client can reattach
-    // when a multi-process application finishes spawning its audio child.
+    // Resolve the largest same-name process tree. Windows audio-session
+    // notifications are matched against this root and all of its descendants.
     static ce::process_loopback::ProcessNameSelection FindProcessByName(const std::string& name,
                                                                         bool logSelection = true);
 
@@ -184,16 +188,19 @@ private:
 
     // Mid-recording stream re-activation policy (device-invalidation + silent stall).
     ce::audio::StreamRecoveryConfig recoveryConfig_;
+    ce::process_loopback::ProcessAudioSessionMonitor audioSessionMonitor_;
+    std::atomic<uint64_t> activationAudioSessionGeneration_{0};
+    std::atomic<bool> activationHadObservedTargetSession_{false};
 
     // Target process info
     std::atomic<DWORD> targetPID{0};
-    std::atomic<uint64_t> activatedProcessTreeSize{0};
     std::string targetProcessName;
 
     // State flags
     std::atomic<bool> isCapturing{false};
     std::atomic<bool> isMonitoring{false};
     std::atomic<bool> shouldStop{false};
+    std::atomic<bool> workerRecycleRequested{false};
 
     // Threads
     std::thread captureThread;
