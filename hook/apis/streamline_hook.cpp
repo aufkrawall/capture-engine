@@ -421,6 +421,7 @@ std::atomic<bool> g_BlockGetStateOnlyReactivationUntilExplicitSetOptions{false};
 std::atomic<bool> g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap{false};
 std::atomic<bool> g_CurrentComebackActivatedViaExplicitSetOptions{false};
 std::atomic<bool> g_AcceptedRuntimeOffAwaitingSetOptions{false};
+std::atomic<bool> g_ConfirmedDLSSReflexSuspendPending{false};
 std::atomic<bool> g_StartupWindowOffExtensionPending{false};
 
 std::mutex g_SuppressedOffMutex;
@@ -1077,6 +1078,8 @@ void HandleStreamlineReflexPacingSignal(const char* sourceName, int32_t mode, ui
 
     if (pacingSignalActive) {
         const bool activationEdge = !g_ReflexLimiter.IsGameActivated();
+        const bool clearedSuspendIntent =
+            g_ConfirmedDLSSReflexSuspendPending.exchange(false, std::memory_order_acq_rel);
         if (activationEdge) {
             HookLogImportant(
                 "Streamline Hook: Game ACTIVATED Reflex pacing via %s (mode=%d lowLatency=%d frameLimitUs=%u "
@@ -1087,12 +1090,35 @@ void HandleStreamlineReflexPacingSignal(const char* sourceName, int32_t mode, ui
                 MaybePrepareForStreamlineEnableTransitionFromReflex(sourceName);
             }
         }
+        if (clearedSuspendIntent) {
+            HookLogImportant(
+                "Streamline Hook: Cleared confirmed Reflex suspend intent on pacing reactivation via %s",
+                sourceName ? sourceName : "unknown");
+        }
         g_ReflexLimiter.SetGameActivated(true);
         g_ReflexLimiter.MarkNativePacingSignal();
     } else {
-        if (g_ReflexLimiter.IsGameActivated()) {
+        const bool deactivationEdge = g_ReflexLimiter.IsGameActivated();
+        if (deactivationEdge) {
             HookLogImportant("Streamline Hook: Game DEACTIVATED Reflex pacing via %s (mode=%d frameLimitUs=%u)",
                              sourceName ? sourceName : "unknown", mode, incomingFrameLimitUs);
+        }
+        if (ce::streamline_runtime_policy::ShouldArmConfirmedDLSSReflexSuspendIntent(
+                deactivationEdge, g_FGCompat.IsDLSSFGApiActive(),
+                DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
+                HookIsPostSLOverlayConfirmedRendering(),
+                DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire),
+                HookIsPostSLOverlayActiveButUnconfirmed(), HookIsPostSLOverlayConfirmedButStartupSettling(),
+                HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() ||
+                    HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected())) {
+            const bool wasPending = g_ConfirmedDLSSReflexSuspendPending.exchange(true, std::memory_order_acq_rel);
+            ResetStartupProtectedOffChurnActiveProof("stable confirmed Reflex suspend intent");
+            if (!wasPending) {
+                HookLogImportant(
+                    "Streamline Hook: Stable confirmed DLSS-G epoch observed Reflex OFF via %s — next inactive "
+                    "GetState/SetOptions edge is authoritative (manual limiter target remains unchanged)",
+                    sourceName ? sourceName : "unknown");
+            }
         }
         g_ReflexLimiter.SetGameActivated(false);
     }
@@ -1196,14 +1222,18 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
             postSLActiveButUnconfirmed, postSLConfirmedButStartupSettling,
             postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof,
             g_AcceptedRuntimeOffAwaitingSetOptions.load(std::memory_order_acquire));
+    const bool previousSignal = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+    const bool confirmedReflexSuspendIsAuthoritative =
+        ce::streamline_runtime_policy::ShouldAcceptInactiveStreamlineSignalAfterConfirmedReflexSuspend(
+            g_ConfirmedDLSSReflexSuspendPending.load(std::memory_order_acquire), !active, previousSignal);
     const bool deferOffSignal =
         !active && !explicitSetOptionsDisableIsAuthoritative && !acceptActivatedUnconfirmedResumeOff &&
+        !confirmedReflexSuspendIsAuthoritative &&
         ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
             startupWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
             safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
             postSLConfirmedButStartupSettling,
             postSLConfirmedButRuntimeStateStabilizing || postSLConfirmedButOffChurnAwaitingActiveProof);
-    const bool previousSignal = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const auto signalUpdate = ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate(
         active, deferOffSignal, previousSignal, multiplier);
     const bool previousExplicitSetOptionsActivation =
@@ -1237,7 +1267,17 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
     }
     g_FGCompat.SetStreamlineFGSignal(signalUpdate.effectiveActive);
     ApplyCombinedDLSSFGState(signalUpdate.effectiveActive, signalUpdate.effectiveMultiplier);
-    if (acceptActivatedUnconfirmedResumeOff) {
+    if (confirmedReflexSuspendIsAuthoritative && !signalUpdate.deferredOffDuringStartupWindow) {
+        const bool consumedSuspendIntent =
+            g_ConfirmedDLSSReflexSuspendPending.exchange(false, std::memory_order_acq_rel);
+        ResetStartupProtectedOffChurnActiveProof("accepted confirmed Reflex suspend runtime OFF");
+        if (consumedSuspendIntent) {
+            HookLogImportant(
+                "Streamline Hook: Accepted %s OFF as authoritative after stable confirmed Reflex suspend — "
+                "startup churn protection remains armed for future cold starts",
+                source ? source : "runtime-state");
+        }
+    } else if (acceptActivatedUnconfirmedResumeOff) {
         LogAcceptedOffDuringActivatedUnconfirmedResume(
             source, startupWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
             safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed,
@@ -2848,6 +2888,9 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
     const bool suppressOffCall =
         !pureObserverOnly && requestedDisabled && !explicitSetOptionsDisableIsAuthoritative &&
         !acceptActivatedUnconfirmedResumeOff &&
+        !ce::streamline_runtime_policy::ShouldAcceptInactiveStreamlineSignalAfterConfirmedReflexSuspend(
+            g_ConfirmedDLSSReflexSuspendPending.load(std::memory_order_acquire), requestedDisabled,
+            DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) &&
         ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
             startupWindowActive, hadFSRFGPhase, explicitSetOptionsActivationForCurrentComeback,
             safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
@@ -3775,6 +3818,7 @@ void OnAuthoritativeFFXTakeover() {
     g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.store(true, std::memory_order_release);
     g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
     g_AcceptedRuntimeOffAwaitingSetOptions.store(false, std::memory_order_release);
+    g_ConfirmedDLSSReflexSuspendPending.store(false, std::memory_order_release);
     g_StartupWindowOffExtensionPending.store(false, std::memory_order_release);
     ResetStartupProtectedOffChurnActiveProof("authoritative FFX takeover");
     // A new FSR takeover resets the entire FG session context; any stale DLSS-only
@@ -3795,6 +3839,7 @@ void OnAuthoritativeFFXTakeover() {
 void OnAuthoritativeStreamlineStartupHandoff() {
     g_SuppressNewGetStateActivationUntilMs.store(GetTickCount64() + kAuthoritativeFFXTakeoverGetStateSuppressMs,
                                                  std::memory_order_release);
+    g_ConfirmedDLSSReflexSuspendPending.store(false, std::memory_order_release);
     g_StartupWindowOffExtensionPending.store(true, std::memory_order_release);
     ResetStartupProtectedOffChurnActiveProof("authoritative Streamline startup handoff");
     HookLogImportant(
@@ -3816,6 +3861,7 @@ void Shutdown() {
     g_BlockGetStateOnlyReactivationUntilSafePostFSRBootstrap.store(false, std::memory_order_release);
     g_CurrentComebackActivatedViaExplicitSetOptions.store(false, std::memory_order_release);
     g_AcceptedRuntimeOffAwaitingSetOptions.store(false, std::memory_order_release);
+    g_ConfirmedDLSSReflexSuspendPending.store(false, std::memory_order_release);
     g_StartupWindowOffExtensionPending.store(false, std::memory_order_release);
     ResetStartupProtectedOffChurnActiveProof("Streamline shutdown");
     {

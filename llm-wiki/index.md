@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-15 (GTA exact-proxy PostSL/normal ownership across post-FSR OFF rotations, generation-bound screenshot publication, collision-safe capture outputs, restricted process IPC, variable-length process-loopback transport, source-built libaom closure, strict config boundaries, and existing graphics/audio state; see frame-generation/guardrails.md, screenshots.md, recording-output-paths.md, process-ipc.md, multi-audio-capture.md, build.py.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-15 (GTA stable Reflex-driven DLSS-G menu suspension and exact-proxy continuity, exact-proxy PostSL/normal ownership across post-FSR OFF rotations, generation-bound screenshot publication, collision-safe capture outputs, restricted process IPC, variable-length process-loopback transport, source-built libaom closure, strict config boundaries, and existing graphics/audio state; see frame-generation/guardrails.md, overlay-fg-status.md, screenshots.md, recording-output-paths.md, process-ipc.md, multi-audio-capture.md, build.py.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -57,9 +57,9 @@ Primary sources:
 - `graphics-overrides-and-frame-pacing.md`
   - Cross-API sampler/config semantics, CPU/present queue-depth enforcement, adaptive rational FPS limiting, capture-sync/FG rules, diagnostics, and runtime validation matrix. Last verified 2026-07-12.
 - `frame-generation-switching.md`
-  - Stub pointing to `frame-generation/guardrails.md` (invariants, including current Streamline startup transport rules) and `frame-generation/case-studies.md` (chronological deep-dive).
+  - Stub pointing to `frame-generation/guardrails.md` (invariants, including current stable Reflex suspend and Streamline startup transport rules) and `frame-generation/case-studies.md` (chronological deep-dive). Last verified 2026-07-15.
 - `overlay-fg-status.md`
-  - Current visible FG status publication rules for the overlay.
+  - Current visible FG status publication rules for the overlay, including authoritative stable Reflex-driven Streamline suspend edges. Last verified 2026-07-15.
 - `debug-tools.md`
   - Available Windows debug tools (cdb, windbg, Sysinternals) and their installed paths.
 - `pseudo-overlay.md`

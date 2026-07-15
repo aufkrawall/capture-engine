@@ -454,6 +454,59 @@ TEST(StreamlineRuntimePolicyTest, ReflexFrameLimitForwardingKeepsIncomingSignalO
     EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineReflexFrameLimitActive(overridden.frameLimitUs));
 }
 
+TEST(StreamlineRuntimePolicyTest, StableConfirmedReflexOffArmsAuthoritativeDLSSSuspendOnlyAfterStartup) {
+    using ce::streamline_runtime_policy::ShouldArmConfirmedDLSSReflexSuspendIntent;
+
+    EXPECT_TRUE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, true, false, false, false, false));
+
+    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(false, true, true, true, false, false, false, false));
+    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, false, true, true, false, false, false, false));
+    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, false, true, false, false, false, false));
+    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, false, false, false, false, false));
+    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, true, true, false, false, false));
+    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, true, false, true, false, false));
+    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, true, false, false, true, false));
+    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, true, false, false, false, true));
+}
+
+TEST(StreamlineRuntimePolicyTest, ConfirmedReflexSuspendBypassesOnlyNextActiveToInactiveRuntimeEdge) {
+    using ce::streamline_runtime_policy::ShouldAcceptInactiveStreamlineSignalAfterConfirmedReflexSuspend;
+
+    EXPECT_TRUE(ShouldAcceptInactiveStreamlineSignalAfterConfirmedReflexSuspend(true, true, true));
+    EXPECT_FALSE(ShouldAcceptInactiveStreamlineSignalAfterConfirmedReflexSuspend(false, true, true));
+    EXPECT_FALSE(ShouldAcceptInactiveStreamlineSignalAfterConfirmedReflexSuspend(true, false, true));
+    EXPECT_FALSE(ShouldAcceptInactiveStreamlineSignalAfterConfirmedReflexSuspend(true, true, false));
+
+    // A configured manual cap can still override the forwarded frame interval;
+    // suspend ownership follows the game's incoming Reflex OFF edge separately.
+    const auto manualCap = ce::streamline_runtime_policy::ResolveStreamlineReflexFrameLimitForwarding(0, 16666);
+    EXPECT_TRUE(manualCap.overrideApplied);
+    EXPECT_EQ(16666u, manualCap.frameLimitUs);
+    EXPECT_TRUE(ShouldAcceptInactiveStreamlineSignalAfterConfirmedReflexSuspend(true, true, true));
+}
+
+TEST(StreamlineRuntimePolicyTest, RepeatedMenuSuspendCannotBeReclassifiedAsStartupOffChurn) {
+    using ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate;
+    using ce::streamline_runtime_policy::ShouldAcceptInactiveStreamlineSignalAfterConfirmedReflexSuspend;
+    using ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback;
+
+    // Reproduce session 20260715_141520 after a successful menu resume: the
+    // previous startup OFF-churn latch lacks fresh active proof, so the generic
+    // stale-startup policy alone would incorrectly keep DLSS-G ON forever.
+    const bool staleStartupPolicyWouldDefer =
+        ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
+            false, false, true, false, false, false, true, false, true);
+    ASSERT_TRUE(staleStartupPolicyWouldDefer);
+
+    const bool reflexSuspendIsAuthoritative =
+        ShouldAcceptInactiveStreamlineSignalAfterConfirmedReflexSuspend(true, true, true);
+    const auto update = ResolveCombinedRuntimeSignalUpdate(
+        false, staleStartupPolicyWouldDefer && !reflexSuspendIsAuthoritative, true, 0);
+    EXPECT_FALSE(update.deferredOffDuringStartupWindow);
+    EXPECT_FALSE(update.effectiveActive);
+    EXPECT_EQ(0, update.effectiveMultiplier);
+}
+
 TEST(StreamlineRuntimePolicyTest, SuppressSetOptionsOffDuringStartupTransitionWindow) {
     EXPECT_TRUE(ce::streamline_runtime_policy::ShouldSuppressSetOptionsOffDuringStartupTransitionWindow(true, true));
 

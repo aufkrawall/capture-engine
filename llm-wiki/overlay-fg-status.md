@@ -1,11 +1,14 @@
 # Overlay FG Status
 
-Last cross-checked: 2026-04-25
+Last cross-checked: 2026-07-15
 
 Primary sources:
 - `hook/common/overlay_metrics_publisher.cpp`
 - `hook/common/dx12_overlay_policy.h`
+- `hook/common/streamline_runtime_policy.h`
+- `hook/apis/streamline_hook.cpp`
 - `tests/test_overlay_fg_status_publication.cpp`
+- `tests/test_streamline_runtime_policy.cpp`
 
 ## Scope
 This page records how the current tree publishes visible FG status to the overlay.
@@ -24,6 +27,7 @@ This page records how the current tree publishes visible FG status to the overla
 - When FG is inactive, the helper resets published output FPS and base FPS to `0.0f` and resets the multiplier to `1`.
 - The helper tracks the last published state and only emits the main publication log when the visible state actually changes.
 - A stale visible FG label can still originate upstream from runtime classification drift even when `PublishOverlayFGMetrics()` itself behaves correctly. Talos `installed/captureengine/logs/20260416_192846` showed this explicitly: CE first published `runtime=STREAMLINE_NO_FG active=0`, then immediately re-detected heuristic `FSR_FG` from a lingering runtime-owned queue after `ffxConfigure(frameGenerationEnabled=0)` had already disabled the native FSR present-callback bridge.
+- GTA `installed/captureengine/logs/20260715_141520` showed another upstream ownership failure: after repeated stable DLSS-G menu suspend/resume cycles, the generic startup stale-OFF proof latch suppressed a real inactive GetState plus every matching SetOptions OFF. Streamline reported `REFLEX-NOT-DETECTED` while CE kept DLSS-G logically ON, so status and routing could not mirror the runtime. A game-input Reflex deactivation now arms a one-shot authoritative OFF only during an already-confirmed, fully settled PostSL epoch. The next active-to-inactive runtime edge consumes it; startup Reflex churn remains protected. This decision uses the incoming game signal, not CE's optional forwarded manual-limiter interval.
 - The current tree now treats an explicit native-FSR `frameGenerationEnabled=0` signal as authoritative during runtime-owned teardown: heuristic `FSR_FG` reactivation is suppressed until the runtime-owned swapchain ownership actually unwinds or native FSR explicitly turns back on. That keeps the visible overlay status from snapping back to stale `FSR FG` after a real `FSR_FG -> off` transition.
 - Talos `installed/captureengine/logs/20260423_215138` and the immediate build-`0.1.2565` rerun `installed/captureengine/logs/20260423_220858` showed a different upstream family: publication freshness was already correct, but CE missed the final authoritative `DLSS FG -> off` edge entirely because `slDLSSGSetOptions` inline hooking failed in that session and the first fallback only covered the core Streamline DLLs, not the later owner module backing the actual feature export.
 - The current tree now keeps the key Streamline FG exports reachable through four interception seams: inline hook on the export itself, wrapper substitution through `slGetFeatureFunction`, dynamic lookup hooks for direct `GetProcAddress` requests, and an owner-module direct-import fallback armed from the real returned feature-export pointer when export-inline patching fails. That means an explicit menu-side OFF can still clear the visible overlay state immediately even if the export-inline hook failed in that process.
@@ -45,11 +49,12 @@ This page records how the current tree publishes visible FG status to the overla
 - When a visible label is stale but `PublishOverlayFGMetrics()` is publishing the wrong runtime, fix the upstream runtime-state ownership/heuristic boundary instead of papering over the label mapping.
 - When a visible label is stale and the log never shows the final authoritative OFF edge, inspect Streamline feature-hook coverage first (`slDLSSGSetOptions`, `slDLSSGGetState`, current `slReflexSetOptions`, and legacy `slReflexSetConstants`) before revisiting publication-order logic, and verify that the fallback was armed on the actual owner module of the failing export rather than only on `sl.interposer.dll` / `sl.common.dll`.
 - If a menu-side DLSS FG disable is not visible until leaving a 2D menu, first decide whether the log contains an authoritative disable edge. A successful non-suppressed `slDLSSGSetOptions(OFF)` is authoritative. A disabled `slDLSSGGetState` with options, known capability, and fence evidence is also authoritative enough to clear stale cached Streamline viewport state. A steady active `slDLSSGGetState` in menu rendering is not enough to clear the label by itself.
+- During an already-stable DLSS-G epoch, a game-input Reflex ON-to-OFF edge followed by an inactive GetState/SetOptions edge is authoritative suspend evidence and must not be reclassified as cold-start churn. Conversely, a Reflex bounce before PostSL confirmation or while startup settling/stabilization is active remains non-authoritative. Keep CE's configured manual Reflex interval separate from this game-state decision.
 - For this family, first check for `Streamline Hook: slGetFeatureFunction returned slDLSSGSetOptions`, `Using returned-pointer wrapper fallback`, `slDLSSGSetOptions forwarded/suppressed requested=off`, sampled `slDLSSGGetState observed ... optionsMode=off/on clearAll=...`, and `Cleared ... cached DLSSG viewport runtime state(s)` lines before changing publication logic.
 - If a menu-side `FSR FG -> DLSS FG` switch detects DLSS FG but the overlay disappears, inspect the post-FSR bootstrap proof rather than only the label publisher. A fresh runtime-owned Streamline swapchain queue with a tracked submit path and matching live command queue is now valid bootstrap evidence; `safeBootstrap=0` in that shape is stale.
 - Inactive `Off` and inactive `STREAMLINE_NO_FG` both publish FG metric type `0`; do not treat that label-level equivalence as an overlay divergence. Use `DoOverlayFGPublishedTypesDiffer(...)` when deciding whether planner-vs-visible publication differences deserve override diagnostics.
 - If a runtime path can produce stale status for even a few frames, add a regression test before assuming the behavior is acceptable.
 
 ## Open Questions / Stale-Risk
-- Stale risk is medium because publication correctness still depends on runtime classification and call ordering across multiple DX12 paths, but the shared preferred-visible-state cache plus shared publication-order sequence now remove the two obvious repaint seams, and the owner-module Streamline direct-import fallback removes the most recent "missed final OFF edge" observation gap from Talos `20260423_215138` / `20260423_220858`.
+- Stale risk is medium because publication correctness still depends on runtime classification and call ordering across multiple DX12 paths. The shared preferred-visible-state cache, publication-order sequence, owner-module Streamline fallback, and stable-Reflex-suspend evidence close the currently observed repaint/missed-OFF families, but fresh GTA/Talos all-direction transitions remain required.
 - Re-check this page after any change to `ResolveOverlayFGMetricType()`, `PublishOverlayFGMetrics()`, or DX12 overlay routing that publishes FG state.

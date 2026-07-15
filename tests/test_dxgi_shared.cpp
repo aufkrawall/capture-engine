@@ -5775,6 +5775,48 @@ TEST(DXGISharedTest, StreamlineOnWithKeepAliveIsWarmResumeNotColdStart) {
     EXPECT_FALSE(ShouldResumeConfirmedPostSLFromKeepAliveOnStreamlineOn(true, false));
 }
 
+TEST(DXGISharedTest, ExactConfirmedPostSLProxySurvivesOuterOffWithoutDrainOrReinit) {
+    using ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLProxyResourcesAcrossOuterOff;
+
+    EXPECT_TRUE(ShouldPreserveConfirmedPostSLProxyResourcesAcrossOuterOff(true, true, true, true, true, false));
+
+    EXPECT_FALSE(ShouldPreserveConfirmedPostSLProxyResourcesAcrossOuterOff(false, true, true, true, true, false));
+    EXPECT_FALSE(ShouldPreserveConfirmedPostSLProxyResourcesAcrossOuterOff(true, false, true, true, true, false));
+    EXPECT_FALSE(ShouldPreserveConfirmedPostSLProxyResourcesAcrossOuterOff(true, true, false, true, true, false));
+    EXPECT_FALSE(ShouldPreserveConfirmedPostSLProxyResourcesAcrossOuterOff(true, true, true, false, true, false));
+    EXPECT_FALSE(ShouldPreserveConfirmedPostSLProxyResourcesAcrossOuterOff(true, true, true, true, false, false));
+    EXPECT_FALSE(ShouldPreserveConfirmedPostSLProxyResourcesAcrossOuterOff(true, true, true, true, true, true));
+}
+
+TEST(DXGISharedSourceTest, OuterOffPreservesExactConfirmedPostSLProxyBeforeTransitionDraw) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    const size_t outerOff = text.find("const bool preserveConfirmedPostSLProxyResourcesAcrossOuterOff");
+    ASSERT_NE(outerOff, std::string::npos);
+    const size_t coverageGate = text.find("[OVERLAY COVERAGE] attribute", outerOff);
+    ASSERT_NE(coverageGate, std::string::npos);
+
+    const size_t drainGuard = text.find(
+        "if (g_State.fence && !preserveConfirmedPostSLProxyResourcesAcrossOuterOff)", outerOff);
+    const size_t reinitBranch =
+        text.find("if (g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover", drainGuard);
+    const size_t reinitGuard =
+        text.find("!preserveConfirmedPostSLProxyResourcesAcrossOuterOff) {", reinitBranch);
+    ASSERT_NE(drainGuard, std::string::npos);
+    ASSERT_NE(reinitBranch, std::string::npos);
+    ASSERT_NE(reinitGuard, std::string::npos);
+    EXPECT_LT(reinitGuard - reinitBranch, static_cast<size_t>(240));
+    EXPECT_LT(drainGuard, coverageGate);
+    EXPECT_LT(reinitGuard, coverageGate);
+}
+
 TEST(DXGISharedTest, PostSLKeepAliveRenderRequiresLiveStreamlineStack) {
     using ce::dx12_overlay_policy::ShouldAllowPostSLKeepAliveRenderAfterExplicitOff;
 

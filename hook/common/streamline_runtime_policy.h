@@ -58,6 +58,27 @@ inline bool IsStreamlineReflexPacingSignalActive(int32_t mode, uint32_t frameLim
     return IsStreamlineReflexLowLatencyModeEnabled(mode) || IsStreamlineReflexFrameLimitActive(frameLimitUs);
 }
 
+inline bool ShouldArmConfirmedDLSSReflexSuspendIntent(
+    bool reflexDeactivationEdge, bool dlssFGApiActive, bool streamlineFGRunning, bool postSLConfirmedRendering,
+    bool startupActivationPending, bool postSLActiveButUnconfirmed, bool postSLConfirmedButStartupSettling,
+    bool postSLConfirmedButRuntimeStateStabilizing) {
+    // A Reflex OFF edge during a stable confirmed DLSS-G epoch is the runtime's
+    // suspend intent (for example a menu that temporarily disables generation).
+    // Do not arm during cold-start churn: Reflex can briefly bounce OFF before
+    // PostSL has confirmed, and that historical family still needs protection.
+    return reflexDeactivationEdge && dlssFGApiActive && streamlineFGRunning && postSLConfirmedRendering &&
+           !startupActivationPending && !postSLActiveButUnconfirmed && !postSLConfirmedButStartupSettling &&
+           !postSLConfirmedButRuntimeStateStabilizing;
+}
+
+inline bool ShouldAcceptInactiveStreamlineSignalAfterConfirmedReflexSuspend(bool confirmedReflexSuspendPending,
+                                                                            bool requestedInactive,
+                                                                            bool previousStreamlineSignalActive) {
+    // Consume only an actual active -> inactive runtime edge. A later Reflex ON
+    // clears the pending intent, so it cannot weaken a future startup guard.
+    return confirmedReflexSuspendPending && requestedInactive && previousStreamlineSignalActive;
+}
+
 inline char ToLowerAscii(char c) {
     if (c >= 'A' && c <= 'Z') {
         return static_cast<char>(c - 'A' + 'a');

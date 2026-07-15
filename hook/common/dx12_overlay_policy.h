@@ -3065,6 +3065,18 @@ inline bool ShouldAllowPostSLKeepAliveRenderAfterExplicitOff(bool keepAliveLatch
     return keepAliveLatched && !streamlineFGRunning && streamlineModulesLoaded;
 }
 
+inline bool ShouldPreserveConfirmedPostSLProxyResourcesAcrossOuterOff(
+    bool streamlineTurnedOff, bool postSLExplicitOffKeepAlive, bool currentSwapchainMatchesLastSuccessfulPostSL,
+    bool hasOverlayBackend, bool hasSyncBackend, bool deviceRemoved) {
+    // The keep-alive is make-before-break only if the outer ProcessFrame path
+    // leaves the exact, already-proven proxy backend intact. Rebuilding the same
+    // RTV/fence state after first destroying it creates a one-present blank and
+    // an unnecessary transition-time drain. Unknown/replaced swapchains and a
+    // removed device retain the strict teardown path.
+    return streamlineTurnedOff && postSLExplicitOffKeepAlive && currentSwapchainMatchesLastSuccessfulPostSL &&
+           hasOverlayBackend && hasSyncBackend && !deviceRemoved;
+}
+
 inline bool ShouldUsePostSLLastWorkingQueueForExactExplicitOffKeepAlive(
     bool keepAliveRenderAfterExplicitOff, bool currentSwapchainMatchesLastSuccessfulPostSLSwapchain,
     bool hasPostSLLastWorkingQueue) {

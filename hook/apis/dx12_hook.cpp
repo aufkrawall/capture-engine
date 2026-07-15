@@ -18284,6 +18284,13 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
             // remaining presents.
             const bool keepConfirmedPostSLAliveAcrossOuterOff =
                 slTurnedOff && g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire);
+            const auto* lastSuccessfulPostSLSwapchain =
+                g_LastSuccessfulPostSLSwapchain.load(std::memory_order_acquire);
+            const bool preserveConfirmedPostSLProxyResourcesAcrossOuterOff =
+                ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLProxyResourcesAcrossOuterOff(
+                    slTurnedOff, keepConfirmedPostSLAliveAcrossOuterOff,
+                    pSwapChain != nullptr && pSwapChain == lastSuccessfulPostSLSwapchain, g_State.overlayInit,
+                    g_State.syncInit, FAILED(transitionDeviceHr));
             // A confirmed-PostSL DLSS-FG SUSPEND (proxy stays live) is safe to rebuild
             // immediately even WITH FSR history: PostSL confirmed rendering means the
             // overlay ECL on the runtime-owned SL queue already succeeded this epoch, so
@@ -18415,7 +18422,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 InvalidateAllOverlayCachedFrames();
 
                 // Drain in-flight GPU work
-                if (g_State.fence) {
+                if (g_State.fence && !preserveConfirmedPostSLProxyResourcesAcrossOuterOff) {
                     UINT64 lastVal = g_State.currentFenceValue;
                     HANDLE drainEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
                     if (drainEvent) {
@@ -18429,6 +18436,11 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                         }
                         CloseHandle(drainEvent);
                     }
+                } else if (preserveConfirmedPostSLProxyResourcesAcrossOuterOff) {
+                    HookLogImportant(
+                        "DX12: [outer] FG->off — preserving exact confirmed PostSL proxy resources "
+                        "(proxy=%p queue=%p; no drain/reinit/copy/wait)",
+                        lastSuccessfulPostSLSwapchain, g_PostSLLastWorkingQueue);
                 }
 
                 // Force overlay reinit — PostSL's RTVs reference SL's swapchain
@@ -18438,10 +18450,15 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                 // already warm-reinited the overlay on the runtime-owned FSR swapchain queue
                 // this same frame (its RTVs are valid for FSR's swapchain, not stale SL ones).
                 // Tearing it down here is what produced the 60-present blank — keep it live.
-                if (g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover) {
+                if (g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover &&
+                    !preserveConfirmedPostSLProxyResourcesAcrossOuterOff) {
                     HookLogImportant("DX12: [outer] FG→off — forcing overlay reinit (stale SL backbuffers)");
                     g_State.overlayInit = false;
                     CleanupRTVs();
+                } else if (g_State.overlayInit && preserveConfirmedPostSLProxyResourcesAcrossOuterOff) {
+                    HookLogImportant(
+                        "DX12: [outer] FG->off — exact confirmed PostSL proxy remains current; warm backend stays "
+                        "drawable for this transition present");
                 } else if (g_State.overlayInit && keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover) {
                     HookLogImportant(
                         "DX12: [outer] FG→off — DLSS->FSR no-callback takeover already reinited the overlay on the "
