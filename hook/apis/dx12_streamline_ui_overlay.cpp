@@ -602,6 +602,25 @@ bool ConsumePostSLCoverage() {
     return true;
 }
 
+bool RetirePostSLCoverageForExactBackbufferTakeover() {
+    std::lock_guard<std::recursive_mutex> lock(g_Mutex);
+    if (g_Phase != BootstrapPhase::kActivationSubmitted || !g_CoverageBudget.NeedsCurrentFrameRecord()) {
+        return false;
+    }
+    const uint32_t retiredOutputs = g_CoverageBudget.Remaining();
+    g_Phase = BootstrapPhase::kFinished;
+    g_ActivationCommandList = nullptr;
+    g_CoverageBudget.Reset();
+    g_AdoptedStandbyNeedsActivationFrameRecord = false;
+    g_ActiveCoverage.store(false, std::memory_order_release);
+    g_FrameTagTrackingActive.store(false, std::memory_order_release);
+    HookLogImportant(
+        "DX12: Streamline UI bootstrap retired %u remaining output(s) at exact PostSL backbuffer takeover "
+        "(epoch=%llu) — later proxy buffers must receive their own PostSL draw",
+        retiredOutputs, static_cast<unsigned long long>(g_ActivationEpoch));
+    return true;
+}
+
 bool HasActiveCoverage() {
     return g_ActiveCoverage.load(std::memory_order_acquire);
 }

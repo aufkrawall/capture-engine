@@ -373,6 +373,7 @@ static std::atomic<uint64_t> g_OverlayCoverageStreakStartTickMs{0};
 static std::atomic<bool> g_OverlayCoverageStreakStartConfirmed{false};
 static ce::dx12_overlay_policy::OverlayPresentCoverageTracker g_OverlayCoverageTracker;
 static std::atomic_flag g_OverlayCoverageLock = ATOMIC_FLAG_INIT;
+static thread_local bool g_RequireExactPostSLStartupTransportDraw = false;
 
 // Verbose overlay-handoff diagnostic window. The [OVERLAY COVERAGE] streak gate only reports a blank
 // when a present is UNCOVERED, but an off->DLSS engage flash can sit BELOW that: every present is
@@ -414,6 +415,12 @@ static const char* DX12OverlayRenderRouteName(uint32_t route);
 // accounted present (any route), with FG-composed inheritance (see block comment).
 static void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const char* source) {
     const uint64_t draws = g_OverlayCoverageDrawCount.load(std::memory_order_acquire);
+    // Visibility cannot be interrupted before CE has established its first
+    // visible overlay draw. Excluding pre-initialization Presents keeps later
+    // transition summaries and interruption markers semantically precise.
+    if (!ce::dx12_overlay_policy::ShouldAccountOverlayVisibilityPresent(draws)) {
+        return;
+    }
     const uint64_t lastSeen = g_OverlayCoverageLastSeenDrawCount.exchange(draws, std::memory_order_acq_rel);
     const bool drawObserved = draws != lastSeen;
 
@@ -463,8 +470,8 @@ static void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const
         if (startLogCount < 100 || (startLogCount % 20) == 0) {
             const uint32_t route = g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
             HookLogImportant(
-                "[OVERLAY COVERAGE] uncovered streak STARTED: gate=%s route=%s source=%s confirmed=%d "
-                "present=%llu uncovered=%llu",
+                "[OVERLAY COVERAGE] [OVERLAY VISIBILITY] INTERRUPTED/UNPROVEN: no overlay draw belongs to the "
+                "current presentation route (gate=%s route=%s source=%s confirmed=%d present=%llu uncovered=%llu)",
                 streakGate ? streakGate : "unknown", DX12OverlayRenderRouteName(route), source ? source : "unknown",
                 startConfirmed ? 1 : 0, static_cast<unsigned long long>(snapshot.totalPresents),
                 static_cast<unsigned long long>(snapshot.uncoveredPresents));
@@ -481,8 +488,9 @@ static void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const
             const uint64_t durationMs = startTick ? (GetTickCount64() - startTick) : 0;
             const bool confirmedDuringStreak = g_OverlayCoverageStreakStartConfirmed.load(std::memory_order_relaxed);
             HookLogImportant(
-                "[OVERLAY COVERAGE] uncovered streak ended: missed=%llu durationMs=%llu confirmedDuringStreak=%d "
-                "longestStreak=%llu gate=%s lastGate=%s route=%s source=%s totals: presents=%llu uncovered=%llu",
+                "[OVERLAY COVERAGE] [OVERLAY VISIBILITY] RESTORED after uncovered route: missed=%llu durationMs=%llu "
+                "confirmedDuringStreak=%d longestStreak=%llu gate=%s lastGate=%s route=%s source=%s totals: "
+                "presents=%llu uncovered=%llu",
                 static_cast<unsigned long long>(result.endedStreakLength), static_cast<unsigned long long>(durationMs),
                 confirmedDuringStreak ? 1 : 0, static_cast<unsigned long long>(snapshot.longestStreak),
                 streakGate ? streakGate : "unknown", lastGate ? lastGate : "unknown", DX12OverlayRenderRouteName(route),
@@ -490,6 +498,35 @@ static void AccountPresentForOverlayCoverage(bool inheritCoverageIfNoDraw, const
                 static_cast<unsigned long long>(snapshot.uncoveredPresents));
         }
     }
+}
+
+void DX12_AccountOverlayTransportPresent(bool inheritCoverageIfNoDraw, const char* gate, const char* source) {
+    NoteDX12OverlayCoverageGate(gate ? gate : "transport-present-uncovered");
+    AccountPresentForOverlayCoverage(inheritCoverageIfNoDraw, source ? source : "transport-present");
+}
+
+bool DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(IDXGISwapChain* pSwapChain, const char* source) {
+    auto postSLCallback = DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire);
+    if (!pSwapChain || !postSLCallback || g_RequireExactPostSLStartupTransportDraw) {
+        return false;
+    }
+
+    const uint64_t drawsBefore = g_OverlayCoverageDrawCount.load(std::memory_order_acquire);
+    g_RequireExactPostSLStartupTransportDraw = true;
+    postSLCallback(pSwapChain);
+    g_RequireExactPostSLStartupTransportDraw = false;
+    const bool drawn = g_OverlayCoverageDrawCount.load(std::memory_order_acquire) != drawsBefore;
+
+    static std::atomic<int> s_exactStartupTransportDrawLogCount{0};
+    const int logCount = s_exactStartupTransportDrawLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (logCount <= 20 || (logCount % 120) == 0 || !drawn) {
+        HookLogImportant(
+            "[OVERLAY VISIBILITY] exact PostSL startup-transport draw %s before Present "
+            "(source=%s swapchain=%p activeOfficialUiCoverage=%d log=%d)",
+            drawn ? "SUBMITTED" : "MISSED", source ? source : "unknown", pSwapChain,
+            ce::dx12_streamline_ui_overlay::HasActiveCoverage() ? 1 : 0, logCount);
+    }
+    return drawn;
 }
 
 // Logs a coverage summary line. Called at FG transition edges and shutdown so
@@ -13231,9 +13268,31 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // backbuffers. An adopted preactivation record first rolls onto the real activation tag when
     // required; later source tags replace that eValidUntilPresent record until bounded PostSL
     // output consumption or deactivation retires the handoff.
-    if (ce::dx12_streamline_ui_overlay::ConsumePostSLCoverage()) {
+    const bool officialUiCoverageActive = ce::dx12_streamline_ui_overlay::HasActiveCoverage();
+    const bool requireExactPostSLStartupOutputDraw =
+        ce::dx12_overlay_policy::ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup(
+            g_RequireExactPostSLStartupTransportDraw, g_HadFSRFGPhase, safePostFSRBootstrapPathForPostSL,
+            officialUiCoverageActive);
+    const bool retiredOfficialUiCoverage =
+        requireExactPostSLStartupOutputDraw && officialUiCoverageActive &&
+        ce::dx12_streamline_ui_overlay::RetirePostSLCoverageForExactBackbufferTakeover();
+    if (!requireExactPostSLStartupOutputDraw &&
+        ce::dx12_streamline_ui_overlay::ConsumePostSLCoverage()) {
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kStreamlineUI);
         return;
+    }
+    if (requireExactPostSLStartupOutputDraw && officialUiCoverageActive) {
+        static std::atomic<int> s_exactTransportOverridesOfficialUiLogCount{0};
+        const int logCount =
+            s_exactTransportOverridesOfficialUiLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (logCount <= 20 || (logCount % 120) == 0) {
+            HookLogImportant(
+                "DX12: PostSL first proven post-FSR startup output requires an exact backbuffer draw; "
+                "retiredOfficialUiCoverage=%d so later proxy buffers cannot inherit stale coverage "
+                "(transportForced=%d call#=%d log=%d)",
+                retiredOfficialUiCoverage ? 1 : 0, g_RequireExactPostSLStartupTransportDraw ? 1 : 0,
+                s_callsSinceReactivation, logCount);
+        }
     }
 
     // After FSR→DLSS: PostSL rendering causes DEVICE_REMOVED. Use graduated

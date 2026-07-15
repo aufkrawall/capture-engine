@@ -3873,6 +3873,18 @@ private:
     uint32_t remainingOutputs_ = 0;
 };
 
+inline bool ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup(
+    bool forcedStartupTransportDraw, bool hadFSRFGPhase, bool safePostFSRBootstrapPath,
+    bool officialUiCoverageActive) {
+    // Official UIColorAndAlpha coverage is useful for later generated outputs,
+    // but some runtimes can expose their first proxy output before that tag is
+    // visible. The first proven post-FSR PostSL callback must therefore seed
+    // the exact output backbuffer itself and retire the bounded UI handoff so
+    // every later proxy buffer also receives an exact PostSL draw.
+    return forcedStartupTransportDraw ||
+           (hadFSRFGPhase && safePostFSRBootstrapPath && officialUiCoverageActive);
+}
+
 // ---------------------------------------------------------------------------
 // [OVERLAY COVERAGE] per-present overlay-coverage accounting.
 // ---------------------------------------------------------------------------
@@ -3898,6 +3910,10 @@ struct OverlayPresentCoverageResult {
     uint64_t endedStreakLength = 0;
     bool newLongestStreak = false;
 };
+
+inline bool ShouldAccountOverlayVisibilityPresent(uint64_t overlayDrawCount) {
+    return overlayDrawCount != 0;
+}
 
 class OverlayPresentCoverageTracker {
 public:

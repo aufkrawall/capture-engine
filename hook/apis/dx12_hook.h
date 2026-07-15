@@ -75,6 +75,8 @@ public:
 extern DX12Hook* g_dx12HookInstance;
 
 void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
+void DX12_AccountOverlayTransportPresent(bool inheritCoverageIfNoDraw, const char* gate, const char* source);
+bool DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(IDXGISwapChain* pSwapChain, const char* source);
 bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(IDXGISwapChain* pSwapChain, const char* source);
 void DX12_HookQueueVTable(ID3D12CommandQueue* queue);
 void DX12_HookDeviceVTable(ID3D12Device* device);

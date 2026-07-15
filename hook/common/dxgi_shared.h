@@ -552,6 +552,31 @@ inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(
     return true;
 }
 
+inline bool ShouldUseStreamlineStartupTopLevelCandidate(
+    bool observerOnlyMode, bool streamlineSyntheticReentrant, bool callerFromStreamlineModule,
+    bool isD3D12SwapChain, bool streamlineFGRunning, bool streamlineStartupHandoffInProgress,
+    bool recentLargePresentGap, bool matchesExpectedPresentThread, bool postSLConfirmedRendering) {
+    // The large-gap promotion is a one-shot bootstrap route. Once PostSL has
+    // already submitted successfully, reclassifying later standalone output
+    // Presents as the original handoff bypass suppresses the proven PostSL
+    // callback until the large-gap window expires and visibly drains the
+    // overlay from every swapchain buffer.
+    return !observerOnlyMode && !streamlineSyntheticReentrant && callerFromStreamlineModule && isD3D12SwapChain &&
+           streamlineFGRunning && streamlineStartupHandoffInProgress && recentLargePresentGap &&
+           matchesExpectedPresentThread && !postSLConfirmedRendering;
+}
+
+inline bool ShouldRenderExactPostSLBeforeStartupHandoffTransport(
+    bool isD3D12SwapChain, bool hadFSRFGPhase, bool safePostFSRBootstrapPath, bool streamlineFGRunning,
+    bool startupTopLevelCandidate, bool postSLConfirmedRendering) {
+    // The first runtime-owned Present after FSR can precede the ordinary PostSL
+    // callback by one output. Once the post-FSR queue topology is proven safe,
+    // draw onto that exact proxy backbuffer before forwarding it. Cold DLSS and
+    // already-confirmed routes keep their established paths unchanged.
+    return isD3D12SwapChain && hadFSRFGPhase && safePostFSRBootstrapPath && streamlineFGRunning &&
+           startupTopLevelCandidate && !postSLConfirmedRendering;
+}
+
 inline bool ShouldAllowSpecialStreamlinePresentRouting(bool observerOnlyMode) {
     // The narrowed observer-startup-present-only seam now preserves only the
     // non-Streamline startup-Present probe pieces such as the FFX startup

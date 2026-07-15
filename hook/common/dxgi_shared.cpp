@@ -1990,10 +1990,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule, postSLConfirmedRendering,
             postSLConfirmedButStartupSettling, streamlineStartupHandoffInProgress, presentOwnershipActive,
             recentLargePresentGap, matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
-    const bool startupTopLevelCandidate = !observerOnlyMode && !streamlineSyntheticReentrant &&
-                                          callerFromStreamlineModule && api == APIType::D3D12 && streamlineFGRunning &&
-                                          streamlineStartupHandoffInProgress && recentLargePresentGap &&
-                                          matchesExpectedPresentThread;
+    const bool startupTopLevelCandidate = DXGIShared::ShouldUseStreamlineStartupTopLevelCandidate(
+        observerOnlyMode, streamlineSyntheticReentrant, callerFromStreamlineModule, api == APIType::D3D12,
+        streamlineFGRunning, streamlineStartupHandoffInProgress, recentLargePresentGap,
+        matchesExpectedPresentThread, postSLConfirmedRendering);
     const bool stalePostFSRStartupHandoffPresentHookRisk =
         api == APIType::D3D12 && ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(
                                      presentBypassAvailable, steamOverlayLoaded, api == APIType::D3D12,
@@ -2025,9 +2025,26 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                 api == APIType::D3D12, startupTopLevelCandidate, streamlineStartupHandoffTransportRisk,
                 postFSRRuntimeStartupHandoffRisk || startupHandoffSteamRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "Streamline startup-handoff Present");
+            if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
+                    api == APIType::D3D12, postSLConfirmedRendering)) {
+                DX12_RetainStreamlineStartupActivationSwapchain(
+                    pSwapChain, "DetourPresent: startup-handoff normal-route transport");
+            }
+            bool exactStartupTransportDrawn = false;
+            if (DXGIShared::ShouldRenderExactPostSLBeforeStartupHandoffTransport(
+                    api == APIType::D3D12, hadFSRFGPhase, safePostFSRBootstrapPath, streamlineFGRunning,
+                    startupTopLevelCandidate, postSLConfirmedRendering)) {
+                exactStartupTransportDrawn = DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(
+                    pSwapChain, "DetourPresent/startup-handoff-transport");
+            }
             HRESULT guardedSteamHr = S_OK;
             if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
                                                             "Streamline startup-handoff Present", &guardedSteamHr)) {
+                if (SUCCEEDED(guardedSteamHr)) {
+                    DX12_AccountOverlayTransportPresent(exactStartupTransportDrawn,
+                                                        "streamline-startup-handoff-transport",
+                                                        "DetourPresent/guarded-startup-handoff");
+                }
                 return guardedSteamHr;
             }
 
@@ -2046,15 +2063,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                         postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
                         (void*)presentBypass, presentOwner, presentDepthVal, currentThreadId);
                 }
-                if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
-                        api == APIType::D3D12, postSLConfirmedRendering)) {
-                    DX12_RetainStreamlineStartupActivationSwapchain(
-                        pSwapChain, "DetourPresent: startup-handoff normal-route bypass");
-                }
                 MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(pSwapChain, api == APIType::D3D12,
                                                                    streamlineFGRunning, postSLConfirmedRendering,
                                                                    hadFSRFGPhase, "startupHandoffNormalRoute");
-                return presentBypass(pSwapChain, SyncInterval, Flags);
+                const HRESULT hr = presentBypass(pSwapChain, SyncInterval, Flags);
+                if (SUCCEEDED(hr)) {
+                    DX12_AccountOverlayTransportPresent(exactStartupTransportDrawn,
+                                                        "streamline-startup-handoff-transport",
+                                                        "DetourPresent/startup-handoff-bypass");
+                }
+                return hr;
             }
         } else if (runtimeOwnedSwapchainActive) {
             static std::atomic<int> s_streamlineStartupHandoffNormalTransportAllowedLogCount{0};
@@ -3086,10 +3104,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule, postSLConfirmedRendering,
             postSLConfirmedButStartupSettling, streamlineStartupHandoffInProgress, presentOwnershipActive,
             recentLargePresentGap, matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
-    const bool startupTopLevelCandidate = !observerOnlyMode && !streamlineSyntheticReentrant &&
-                                          callerFromStreamlineModule && api == APIType::D3D12 && streamlineFGRunning &&
-                                          streamlineStartupHandoffInProgress && recentLargePresentGap &&
-                                          matchesExpectedPresentThread;
+    const bool startupTopLevelCandidate = DXGIShared::ShouldUseStreamlineStartupTopLevelCandidate(
+        observerOnlyMode, streamlineSyntheticReentrant, callerFromStreamlineModule, api == APIType::D3D12,
+        streamlineFGRunning, streamlineStartupHandoffInProgress, recentLargePresentGap,
+        matchesExpectedPresentThread, postSLConfirmedRendering);
     const bool stalePostFSRStartupHandoffPresentHookRisk =
         api == APIType::D3D12 && ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(
                                      present1BypassAvailable, steamOverlayLoaded, api == APIType::D3D12,
@@ -3121,6 +3139,18 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                 api == APIType::D3D12, startupTopLevelCandidate, streamlineStartupHandoffTransportRisk,
                 postFSRRuntimeStartupHandoffRisk || startupHandoffSteamRisk)) {
             RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "Streamline startup-handoff Present1");
+            if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
+                    api == APIType::D3D12, postSLConfirmedRendering)) {
+                DX12_RetainStreamlineStartupActivationSwapchain(
+                    pSwapChain, "DetourPresent1: startup-handoff normal-route transport");
+            }
+            bool exactStartupTransportDrawn = false;
+            if (DXGIShared::ShouldRenderExactPostSLBeforeStartupHandoffTransport(
+                    api == APIType::D3D12, hadFSRFGPhase, safePostFSRBootstrapPath, streamlineFGRunning,
+                    startupTopLevelCandidate, postSLConfirmedRendering)) {
+                exactStartupTransportDrawn = DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(
+                    pSwapChain, "DetourPresent1/startup-handoff-transport");
+            }
             PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
             if (present1Bypass) {
                 static std::atomic<int> s_streamlineStartupHandoffBypassLogCount1{0};
@@ -3136,12 +3166,13 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                         postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
                         (void*)present1Bypass, presentOwner, presentDepthVal, currentThreadId);
                 }
-                if (ce::dx12_overlay_policy::ShouldRetainStreamlineStartupActivationSwapchainFromStartupTransport(
-                        api == APIType::D3D12, postSLConfirmedRendering)) {
-                    DX12_RetainStreamlineStartupActivationSwapchain(
-                        pSwapChain, "DetourPresent1: startup-handoff normal-route bypass");
+                const HRESULT hr = present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+                if (SUCCEEDED(hr)) {
+                    DX12_AccountOverlayTransportPresent(exactStartupTransportDrawn,
+                                                        "streamline-startup-handoff-transport",
+                                                        "DetourPresent1/startup-handoff-bypass");
                 }
-                return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+                return hr;
             }
         } else if (runtimeOwnedSwapchainActive) {
             static std::atomic<int> s_streamlineStartupHandoffNormalTransportAllowedLogCount1{0};

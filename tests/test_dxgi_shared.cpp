@@ -99,6 +99,17 @@ TEST(DXGISharedTest, StreamlineUiActivationCoverageSurvivesFrameTagsUntilPostSLC
     EXPECT_EQ(coverage.Remaining(), 0u);
 }
 
+TEST(DXGISharedTest, FirstProvenPostFSRPostSLOutputCannotTrustOfficialUiAlone) {
+    using ce::dx12_overlay_policy::ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup;
+
+    EXPECT_TRUE(ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup(false, true, true, true));
+    EXPECT_TRUE(ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup(true, false, false, false));
+
+    EXPECT_FALSE(ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup(false, false, true, true));
+    EXPECT_FALSE(ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup(false, true, false, true));
+    EXPECT_FALSE(ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup(false, true, true, false));
+}
+
 TEST(DXGISharedTest, GameSwapchainCreationAfterExplicitDLSSOffProvesNativeReturn) {
     using ce::dx12_overlay_policy::ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn;
 
@@ -4104,6 +4115,35 @@ TEST(DXGISharedTest, StreamlineStartupHandoffPresentUsesTopLevelPathAfterLargeGa
                                                                               false, true, true, false));
 }
 
+TEST(DXGISharedTest, ConfirmedPostSLCannotReenterLargeGapStartupHandoffBypass) {
+    EXPECT_TRUE(DXGIShared::ShouldUseStreamlineStartupTopLevelCandidate(
+        false, false, true, true, true, true, true, true, false));
+
+    EXPECT_FALSE(DXGIShared::ShouldUseStreamlineStartupTopLevelCandidate(
+        false, false, true, true, true, true, true, true, true));
+    EXPECT_FALSE(DXGIShared::ShouldUseStreamlineStartupTopLevelCandidate(
+        true, false, true, true, true, true, true, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseStreamlineStartupTopLevelCandidate(
+        false, true, true, true, true, true, true, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseStreamlineStartupTopLevelCandidate(
+        false, false, false, true, true, true, true, true, false));
+    EXPECT_FALSE(DXGIShared::ShouldUseStreamlineStartupTopLevelCandidate(
+        false, false, true, true, true, true, false, true, false));
+}
+
+TEST(DXGISharedTest, ProvenPostFSRHandoffDrawsPostSLBeforeItsFirstTransportPresent) {
+    using DXGIShared::ShouldRenderExactPostSLBeforeStartupHandoffTransport;
+
+    EXPECT_TRUE(ShouldRenderExactPostSLBeforeStartupHandoffTransport(
+        true, true, true, true, true, /*postSLConfirmedRendering=*/false));
+    EXPECT_FALSE(ShouldRenderExactPostSLBeforeStartupHandoffTransport(false, true, true, true, true, false));
+    EXPECT_FALSE(ShouldRenderExactPostSLBeforeStartupHandoffTransport(true, false, true, true, true, false));
+    EXPECT_FALSE(ShouldRenderExactPostSLBeforeStartupHandoffTransport(true, true, false, true, true, false));
+    EXPECT_FALSE(ShouldRenderExactPostSLBeforeStartupHandoffTransport(true, true, true, false, true, false));
+    EXPECT_FALSE(ShouldRenderExactPostSLBeforeStartupHandoffTransport(true, true, true, true, false, false));
+    EXPECT_FALSE(ShouldRenderExactPostSLBeforeStartupHandoffTransport(true, true, true, true, true, true));
+}
+
 TEST(DXGISharedTest, ConfirmedPostSLStandaloneStreamlinePresentUsesNormalRouteWithoutPresentOwnerAfterStartupSettles) {
     EXPECT_FALSE(DXGIShared::ShouldTreatStreamlinePresentAsSyntheticReentrant(true, true, true, true, false, false,
                                                                               false, false, true, true));
@@ -5833,6 +5873,12 @@ TEST(DXGISharedTest, OverlayPresentCoverageStreakAccounting) {
     EXPECT_EQ(tracker.TotalPresents(), 6u);
     EXPECT_EQ(tracker.UncoveredPresents(), 3u);
     EXPECT_EQ(tracker.LongestUncoveredStreak(), 2u);
+}
+
+TEST(DXGISharedTest, OverlayVisibilityInterruptionAccountingStartsAfterFirstDraw) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldAccountOverlayVisibilityPresent(0));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAccountOverlayVisibilityPresent(1));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAccountOverlayVisibilityPresent(42));
 }
 
 TEST(DXGISharedTest, OverlayPresentCoverageFGComposedInheritance) {
