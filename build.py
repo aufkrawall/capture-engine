@@ -79,7 +79,14 @@ COMMON_WARNING_FLAGS = [
     "-Wundef",
     "-Wno-unused-parameter",
 ]
-COMMON_WINDOWS_COMPILE_FLAGS = ["-D_WIN32_WINNT=0x0A00", "-DNOMINMAX", "-mguard=cf"]
+# CFG is reliable for the native x64 toolchain. The Windows clang64 ->
+# mingw32 x86 cross-link currently emits the CFG image bit without a usable
+# target table, and those x86 images can fault during MinGW CRT startup. Keep
+# the x86 test apps and inject/layer binaries on the ordinary baseline policy
+# until the x86 linker can produce valid CFG metadata.
+CFG_COMPILE_FLAG = "-mguard=cf"
+CFG_LINK_FLAG = "-Wl,--guard-cf"
+COMMON_WINDOWS_COMPILE_FLAGS = ["-D_WIN32_WINNT=0x0A00", "-DNOMINMAX"]
 if IS_WINDOWS:
     # Emit native CodeView info so clang/lld can write PDBs that CDB, WinDbg,
     # and Visual Studio understand without switching away from the clang toolchain.
@@ -140,6 +147,28 @@ HOOK_OPT_FLAGS_X86 = [
     "-fno-strict-aliasing",  # Same aliasing concerns as x64 hook DLL
 ] + COMMON_HARDENING_FLAGS
 
+# Test apps are non-security-critical graphics stimuli. Keep their compiler
+# policy independent from CaptureEngine/hook hardening so a mitigation or
+# toolchain metadata issue cannot prevent an API test from starting.
+TESTAPP_OPT_FLAGS_X64 = [
+    "-O3",
+    "-flto",
+    "-march=x86-64",
+    "-mtune=generic",
+    "-fvisibility=hidden",
+    "-ffunction-sections",
+    "-fdata-sections",
+]
+TESTAPP_OPT_FLAGS_X86 = [
+    "-O3",
+    "-march=i686",
+    "-mtune=generic",
+    "-fvisibility=hidden",
+    "-ffunction-sections",
+    "-fdata-sections",
+]
+TESTAPP_NO_SECURITY_LINK_FLAGS = ["-Wl,--no-guard-cf"]
+
 # Linker optimization flags
 # Keep debug info enabled for crash dumps and post-mortem analysis. On Windows
 # this pairs with sidecar PDB emission; on non-Windows hosts we keep minimal
@@ -148,11 +177,12 @@ LD_OPT_FLAGS = [
     "-Wl,--gc-sections",
     "-Wl,--dynamicbase",  # ASLR
     "-Wl,--nxcompat",  # DEP/NX
-    "-Wl,--guard-cf",  # Windows Control Flow Guard metadata and target table
 ] + COMMON_DEBUG_INFO_FLAGS
 
-# x64-only linker flags (high-entropy ASLR not supported on x86)
+# x64-only linker flags. x86 intentionally does not receive CFG until the
+# cross-linker can emit a valid target table; high-entropy VA is x64-only too.
 LD_OPT_FLAGS_X64 = [
+    CFG_LINK_FLAG,
     "-Wl,--high-entropy-va",  # High-entropy 64-bit ASLR
 ]
 
@@ -249,11 +279,14 @@ def make_cpp_cflags(
     extra_flags: Optional[List[str]] = None,
     suppress_microsoft_exception_spec: bool = False,
     production_build: bool = False,
+    enable_cfg: bool = True,
 ) -> List[str]:
     flags = CPP_STD_FLAGS + opt_flags + COMMON_DEBUG_INFO_FLAGS + (arch_flags or []) + COMMON_WARNING_FLAGS
     if suppress_microsoft_exception_spec:
         flags.append("-Wno-microsoft-exception-spec")
     flags += COMMON_WINDOWS_COMPILE_FLAGS
+    if enable_cfg:
+        flags.append(CFG_COMPILE_FLAG)
     flags.append("-I" + os.path.join(PROJECT_ROOT, "common"))
     if production_build:
         flags.append("-DCE_PRODUCTION_BUILD=1")
@@ -3968,6 +4001,10 @@ def run_python_tool_self_tests(env):
             [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_ffmpeg_patch_utils.py")],
         ),
         (
+            "build_flag_policy",
+            [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_build_flags.py")],
+        ),
+        (
             "analyze_av_sync_stimulus",
             [sys.executable, os.path.join(PROJECT_ROOT, "tools", "analyze_av_sync_stimulus.py"), "--self-test"],
         ),
@@ -4354,6 +4391,11 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     """Compile test applications using Clang (and x86 if available)"""
     log("Compiling Test Applications...")
 
+    # Test apps are stimulus binaries, not security boundaries. Do not reuse
+    # the shared CaptureEngine flags: that would add CFG/CET/stack-protector
+    # policy to the x64 apps, while the x86 apps need the same simple policy.
+    cflags = make_cpp_cflags(TESTAPP_OPT_FLAGS_X64, enable_cfg=False)
+
     testapp_src_dir = os.path.join(PROJECT_ROOT, "testapp")
     testapp_bin_dir = TESTAPP_BIN_DIR
     os.makedirs(testapp_bin_dir, exist_ok=True)
@@ -4384,9 +4426,10 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     cflags_x86 = [
         f
         for f in make_cpp_cflags(
-            OPT_FLAGS_X86,
+            TESTAPP_OPT_FLAGS_X86,
             arch_flags=x86_arch_flags,
             suppress_microsoft_exception_spec=True,
+            enable_cfg=False,
         )
         if f != "-flto"
     ]
@@ -4434,7 +4477,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         tasks.append((desc, cmd, cwd, make_task_temp_environment(task_env, desc)))
 
     def make_cmd(compiler, flags, source, linker_flags, output):
-        effective_linker_flags = list(linker_flags)
+        effective_linker_flags = list(linker_flags) + list(TESTAPP_NO_SECURITY_LINK_FLAGS)
         append_windows_pdb_linker_flag(effective_linker_flags, output)
         cmd_base = [compiler] + flags + [source] + effective_linker_flags + ["-o", output]
         if ccache_exe:
@@ -4971,7 +5014,11 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     else:
         hook_opt_flags = HOOK_OPT_FLAGS_X86
 
-    hook_cflags = make_cpp_cflags(hook_opt_flags, suppress_microsoft_exception_spec=True) + layer_extra_flags
+    hook_cflags = make_cpp_cflags(
+        hook_opt_flags,
+        suppress_microsoft_exception_spec=True,
+        enable_cfg=arch == "x64",
+    ) + layer_extra_flags
     layer_cflags = cflags + layer_extra_flags
 
     # x86 cross-compilation from clang64: need --target, --sysroot, and
@@ -5252,6 +5299,7 @@ def compile_project(
                 OPT_FLAGS_X86,
                 arch_flags=x86_arch_flags,
                 suppress_microsoft_exception_spec=True,
+                enable_cfg=False,
             )
 
         if arch == "x64":
@@ -5409,6 +5457,7 @@ def compile_project(
                     else []
                 ),
                 suppress_microsoft_exception_spec=True,
+                enable_cfg=False,
             )
 
         hk_cflags = (
@@ -5858,6 +5907,7 @@ def compile_project(
                             "--sysroot=" + os.path.join(MSYS2_DIR, "mingw32"),
                         ]
                     ),
+                    enable_cfg=False,
                 )
                 compile_vulkan_layer(x86_env, x86_clang, x86_cflags, "x86")
     elif env.get("CE_SANITIZE") == "1":
