@@ -11,9 +11,11 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 #include "../apis/dx12_sampler_hooks.h"
 #include "../apis/dx11_hook.h"
 #include "../apis/lod_helper.h"
+#include "../common/module_enumeration.h"
 #include "../common/overlay_compat.h"
 #include "../common/sampler_override_utils.h"
 #include "hook_common.h"
@@ -286,12 +288,9 @@ bool PatchIATAllModules(const char* sourceModule, const char* functionName, void
     void* firstOriginal = nullptr;
 
     // Get list of all loaded modules
-    HMODULE modules[1024];
-    DWORD needed;
-    if (EnumProcessModules(GetCurrentProcess(), modules, sizeof(modules), &needed)) {
-        int count = needed / sizeof(HMODULE);
-
-        for (int i = 0; i < count; ++i) {
+    std::vector<HMODULE> modules;
+    if (ce::EnumerateProcessModules(GetCurrentProcess(), modules)) {
+        for (size_t i = 0; i < modules.size(); ++i) {
             void* orig = nullptr;
 
             // helpful for debugging - see which modules we actually scan

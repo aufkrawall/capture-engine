@@ -4155,7 +4155,8 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
 
                         // Known overlay modules that we should cooperate with
                         std::string moduleLower = moduleName;
-                        std::transform(moduleLower.begin(), moduleLower.end(), moduleLower.begin(), ::tolower);
+                        std::transform(moduleLower.begin(), moduleLower.end(), moduleLower.begin(),
+                                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
                         if (moduleLower.find("nvidia") != std::string::npos ||
                             moduleLower.find("nvngx") != std::string::npos ||

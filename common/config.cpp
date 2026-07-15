@@ -168,7 +168,8 @@ static std::string StripOuterQuotes(const std::string& s) {
 // Check if string is a known match mode keyword
 static bool IsMatchModeKeyword(const std::string& s) {
     std::string lower = s;
-    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return lower == "exact" || lower == "title_executable" || lower == "title_exec" || lower == "title_type" ||
            lower == "title_class";
 }
@@ -203,7 +204,8 @@ static WhitelistEntry ParseEntry(const std::string& raw) {
         // Single segment: determine if it's process or window
         std::string val = Trim(StripOuterQuotes(segments[0]));
         std::string lower = val;
-        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
         if (lower.size() > 4 &&
             (lower.substr(lower.size() - 4) == ".exe" || lower.substr(lower.size() - 4) == ".com" ||
              lower.substr(lower.size() - 4) == ".scr" || lower.substr(lower.size() - 4) == ".bat")) {
@@ -220,7 +222,8 @@ static WhitelistEntry ParseEntry(const std::string& raw) {
 // Helper to parse bool
 bool ParseBool(const std::string& val) {
     std::string lower = val;
-    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return lower == "true" || lower == "1" || lower == "yes" || lower == "on";
 }
 
@@ -816,7 +819,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     if (!currentProcessName.empty()) {
         // Normalize to lower case for comparison
         std::string procNameLower = currentProcessName;
-        std::transform(procNameLower.begin(), procNameLower.end(), procNameLower.begin(), ::tolower);
+        std::transform(procNameLower.begin(), procNameLower.end(), procNameLower.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
         for (int i = 1; i <= 8; ++i) {
             char appSec[32];
@@ -840,7 +844,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
                 // Match by process name for override section selection
                 std::string matchName = autoEntry.pattern;
-                std::transform(matchName.begin(), matchName.end(), matchName.begin(), ::tolower);
+                std::transform(matchName.begin(), matchName.end(), matchName.begin(),
+                               [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
                 if (matchName == procNameLower) {
                     overrideSection = appSec;
                 }
@@ -1477,7 +1482,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     // is set and "sharpness" was not explicitly configured.
     std::string legacyFilter = GetStr("Scaling", "filter", "");
     if (!legacyFilter.empty() && legacyFilter != "auto" && !hasExplicitSharpness) {
-        std::transform(legacyFilter.begin(), legacyFilter.end(), legacyFilter.begin(), ::tolower);
+        std::transform(legacyFilter.begin(), legacyFilter.end(), legacyFilter.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
         if (legacyFilter == "lanczos") {
             config.video.scaling.quality = "best";
             config.video.scaling.sharpness = 50;
@@ -1490,7 +1496,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     // Parse output resolution string to dimensions
     std::string res = config.video.scaling.outputResolution;
-    std::transform(res.begin(), res.end(), res.begin(), ::tolower);
+    std::transform(res.begin(), res.end(), res.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
     if (res == "native" || res.empty()) {
         config.video.scaling.outputWidth = 0;
@@ -1734,7 +1741,8 @@ AppConfig::HotkeyConfig ParseHotkey(const std::string& val) {
         return hk;
 
     std::string upper = val;
-    std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+    std::transform(upper.begin(), upper.end(), upper.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
 
     // Check for modifiers
     if (upper.find("CTRL+") != std::string::npos || upper.find("CONTROL+") != std::string::npos) {

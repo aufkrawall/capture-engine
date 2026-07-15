@@ -1592,7 +1592,8 @@ static bool MatchesProcessEntry(const WhitelistEntry& entry, const std::string& 
     }
 
     std::string lowerItem = entry.pattern;
-    std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(), ::tolower);
+    std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
     if (entry.mode == MatchMode::kExact) {
         return lowerProcessName == lowerItem;
@@ -1607,7 +1608,8 @@ static bool MatchesProcessEntries(const std::vector<WhitelistEntry>& entries, co
     }
 
     std::string lowerName = processName;
-    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
     for (const auto& entry : entries) {
         if (MatchesProcessEntry(entry, lowerName)) {
@@ -1663,12 +1665,14 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets) {
             char title[256];
             GetWindowTextA(hwnd, title, sizeof(title));
             std::string titleStr = title;
-            std::transform(titleStr.begin(), titleStr.end(), titleStr.begin(), ::tolower);
+            std::transform(titleStr.begin(), titleStr.end(), titleStr.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
             char className[256];
             GetClassNameA(hwnd, className, sizeof(className));
             std::string classStr = className;
-            std::transform(classStr.begin(), classStr.end(), classStr.begin(), ::tolower);
+            std::transform(classStr.begin(), classStr.end(), classStr.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
             DWORD pid = 0;
             GetWindowThreadProcessId(hwnd, &pid);
@@ -1684,7 +1688,8 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets) {
                         if (pos != std::string::npos) {
                             procName = procName.substr(pos + 1);
                         }
-                        std::transform(procName.begin(), procName.end(), procName.begin(), ::tolower);
+                        std::transform(procName.begin(), procName.end(), procName.begin(),
+                                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
                     }
                     CloseHandle(hProcess);
                 }
@@ -1698,7 +1703,8 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets) {
 
                 if (entry.HasWindow()) {
                     std::string winLower = entry.windowName;
-                    std::transform(winLower.begin(), winLower.end(), winLower.begin(), ::tolower);
+                    std::transform(winLower.begin(), winLower.end(), winLower.begin(),
+                                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
                     if (mode == MatchMode::kExact) {
                         matched = !titleStr.empty() && titleStr == winLower;

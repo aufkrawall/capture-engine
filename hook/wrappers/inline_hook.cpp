@@ -1189,7 +1189,8 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                     char moduleName[MAX_PATH] = {};
                     GetModuleFileNameA(hModule, moduleName, MAX_PATH);
                     std::string modLower(moduleName);
-                    std::transform(modLower.begin(), modLower.end(), modLower.begin(), ::tolower);
+                    std::transform(modLower.begin(), modLower.end(), modLower.begin(),
+                                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
                     if (modLower.find("gameoverlayrenderer") != std::string::npos ||
                         modLower.find("d3doverlay") != std::string::npos ||
                         modLower.find("discord") != std::string::npos || modLower.find("nvidia") != std::string::npos ||

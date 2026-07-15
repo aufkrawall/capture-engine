@@ -7,7 +7,9 @@
 #include <iostream>
 #include <system_error>
 #include <thread>
+#include <vector>
 #include "../common/logging.h"
+#include "../common/module_enumeration.h"
 #include "../common/raii_helpers.h"
 #include "injection_policy.h"
 
@@ -139,20 +141,21 @@ static LPVOID GetRemoteProcAddress(HANDLE hProc, HMODULE hModule, const char* fu
 static LPVOID GetRemoteModuleProcAddress(HANDLE hProc, const wchar_t* moduleName, const char* funcName) {
     int maxRetries = 20;
     for (int retry = 0; retry < maxRetries; retry++) {
-        HMODULE hMods[1024];
-        DWORD cbNeeded;
-        if (EnumProcessModulesEx(hProc, hMods, sizeof(hMods), &cbNeeded, LIST_MODULES_32BIT)) {
-            for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+        std::vector<HMODULE> hMods;
+        if (ce::EnumerateProcessModulesEx(hProc, LIST_MODULES_32BIT, hMods)) {
+            for (size_t i = 0; i < hMods.size(); i++) {
                 char szModName[MAX_PATH];
                 if (GetModuleFileNameExA(hProc, hMods[i], szModName, sizeof(szModName))) {
                     std::string modName = szModName;
-                    std::transform(modName.begin(), modName.end(), modName.begin(), ::tolower);
+                    std::transform(modName.begin(), modName.end(), modName.begin(),
+                                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
                     // Convert wide module name to lower for comparison
                     char narrowModuleName[MAX_PATH];
                     WideCharToMultiByte(CP_UTF8, 0, moduleName, -1, narrowModuleName, sizeof(narrowModuleName), NULL, NULL);
                     std::string lowerTarget = narrowModuleName;
-                    std::transform(lowerTarget.begin(), lowerTarget.end(), lowerTarget.begin(), ::tolower);
+                    std::transform(lowerTarget.begin(), lowerTarget.end(), lowerTarget.begin(),
+                                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
                     if (modName.find(lowerTarget) != std::string::npos) {
                         return GetRemoteProcAddress(hProc, hMods[i], funcName);
@@ -259,7 +262,8 @@ void InjectionManager::RescanExistingProcesses() {
 
 bool InjectionManager::IsWhitelisted(const std::string& processName) {
     std::string lowerName = processName;
-    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
     std::lock_guard<std::mutex> configLock(configMutex);
 
@@ -275,7 +279,8 @@ bool InjectionManager::IsWhitelisted(const std::string& processName) {
             continue;
 
         std::string lowerItem = entry.pattern;
-        std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(), ::tolower);
+        std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
         if (entry.mode == MatchMode::kExact) {
             if (lowerName == lowerItem) {
@@ -301,7 +306,8 @@ bool InjectionManager::IsWhitelisted(const std::string& processName) {
             continue;
 
         std::string lowerItem = entry.pattern;
-        std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(), ::tolower);
+        std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
         if (entry.mode == MatchMode::kExact) {
             if (lowerName == lowerItem) {
@@ -347,10 +353,9 @@ bool InjectionManager::IsAlreadyInjectedLocked(DWORD pid) {
         return false;
 
     bool found = false;
-    HMODULE hMods[1024];
-    DWORD cbNeeded;
-    if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
-        for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+    std::vector<HMODULE> hMods;
+    if (ce::EnumerateProcessModules(hProcess, hMods)) {
+        for (size_t i = 0; i < hMods.size(); i++) {
             char szModName[MAX_PATH];
             if (GetModuleFileNameExA(hProcess, hMods[i], szModName, sizeof(szModName))) {
                 std::string modName = szModName;
@@ -827,10 +832,9 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
                     }
 
                     if (!d3d12Loaded) {
-                        HMODULE hMods[1024];
-                        DWORD cbNeeded;
-                        if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
-                            for (unsigned int j = 0; j < (cbNeeded / sizeof(HMODULE)); j++) {
+                        std::vector<HMODULE> hMods;
+                        if (ce::EnumerateProcessModules(hProcess, hMods)) {
+                            for (size_t j = 0; j < hMods.size(); j++) {
                                 char szModName[MAX_PATH];
                                 if (GetModuleFileNameExA(hProcess, hMods[j], szModName, sizeof(szModName))) {
                                     if (strstr(szModName, "d3d12.dll")) {
@@ -1058,15 +1062,15 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
         int maxRetries = 20;  // 2 seconds (20 * 100ms)
 
         for (int retry = 0; retry < maxRetries; retry++) {
-            HMODULE hMods[1024];
-            DWORD cbNeeded;
-            if (EnumProcessModulesEx(hProcess.get(), hMods, sizeof(hMods), &cbNeeded, LIST_MODULES_32BIT)) {
-                for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+            std::vector<HMODULE> hMods;
+            if (ce::EnumerateProcessModulesEx(hProcess.get(), LIST_MODULES_32BIT, hMods)) {
+                for (size_t i = 0; i < hMods.size(); i++) {
                     char szModName[MAX_PATH];
                     if (GetModuleFileNameExA(hProcess.get(), hMods[i], szModName, sizeof(szModName))) {
                         std::string modName = szModName;
                         // Case insensitive check
-                        std::transform(modName.begin(), modName.end(), modName.begin(), ::tolower);
+                        std::transform(modName.begin(), modName.end(), modName.begin(),
+                                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
                         if (modName.find("kernel32.dll") != std::string::npos) {
                             // Found kernel32!
@@ -1135,13 +1139,11 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
 
     // Verify DLL is actually loaded in remote process
     {
-        HMODULE hMods[256];
-        DWORD cbNeeded = 0;
         DWORD filterFlag = isWow64 ? LIST_MODULES_32BIT : LIST_MODULES_64BIT;
         bool dllFound = false;
-        if (EnumProcessModulesEx(hProcess.get(), hMods, sizeof(hMods), &cbNeeded, filterFlag)) {
-            int moduleCount = cbNeeded / sizeof(HMODULE);
-            for (int i = 0; i < moduleCount; i++) {
+        std::vector<HMODULE> hMods;
+        if (ce::EnumerateProcessModulesEx(hProcess.get(), filterFlag, hMods)) {
+            for (size_t i = 0; i < hMods.size(); i++) {
                 char szModName[MAX_PATH];
                 if (GetModuleFileNameExA(hProcess.get(), hMods[i], szModName, sizeof(szModName))) {
                     if (strstr(szModName, "capture_hook_x64.dll") || strstr(szModName, "capture_hook_x86.dll")) {
@@ -1319,10 +1321,9 @@ void InjectionManager::Eject(DWORD pid) {
         openedProcessHandle = true;
     }
 
-    HMODULE hMods[1024];
-    DWORD cbNeeded;
-    if (EnumProcessModules(hProcess, hMods, sizeof(hMods), &cbNeeded)) {
-        for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+    std::vector<HMODULE> hMods;
+    if (ce::EnumerateProcessModules(hProcess, hMods)) {
+        for (size_t i = 0; i < hMods.size(); i++) {
             char szModName[MAX_PATH];
             if (GetModuleFileNameExA(hProcess, hMods[i], szModName, sizeof(szModName))) {
                 std::string modName = szModName;
@@ -1555,7 +1556,8 @@ bool InjectionManager::VerifyDLLHash(const std::string& dllPath) {
     bool match = (actualHash.length() == expectedHash.length());
     if (match) {
         for (size_t i = 0; i < actualHash.length(); ++i) {
-            if (std::tolower(actualHash[i]) != std::tolower(expectedHash[i])) {
+            if (std::tolower(static_cast<unsigned char>(actualHash[i])) !=
+                std::tolower(static_cast<unsigned char>(expectedHash[i]))) {
                 match = false;
                 break;
             }

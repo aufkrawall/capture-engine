@@ -140,12 +140,10 @@ public:
                     return false;  // Drop the new item
 
                 case RingBufferPolicy::DropOld:
-                    // Advance read index to make room
-                    readIndex_.store(rIdx + 1, ordering_.readIndexStore);
-                    break;
-
                 case RingBufferPolicy::Overwrite:
-                    // Will overwrite oldest after increment
+                    // Both policies replace the oldest element. Keep the
+                    // logical size bounded when advancing the write index.
+                    readIndex_.store(rIdx + 1, ordering_.readIndexStore);
                     break;
 
                 case RingBufferPolicy::Block:
@@ -330,7 +328,11 @@ public:
           readIndex_(other.readIndex_.load()),
           droppedCount_(other.droppedCount_.load()),
           policy_(other.policy_),
-          ordering_(other.ordering_) {}
+          ordering_(other.ordering_) {
+        other.capacity_ = 0;
+        other.writeIndex_.store(0, std::memory_order_relaxed);
+        other.readIndex_.store(0, std::memory_order_relaxed);
+    }
 
     DynamicRingBuffer& operator=(DynamicRingBuffer&& other) noexcept {
         if (this != &other) {
@@ -341,11 +343,19 @@ public:
             droppedCount_.store(other.droppedCount_.load());
             policy_ = other.policy_;
             ordering_ = other.ordering_;
+            other.capacity_ = 0;
+            other.writeIndex_.store(0, std::memory_order_relaxed);
+            other.readIndex_.store(0, std::memory_order_relaxed);
         }
         return *this;
     }
 
     bool Push(const T& item) override {
+        if (capacity_ == 0) {
+            droppedCount_.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+
         uint32_t wIdx = writeIndex_.load(ordering_.writeIndexLoad);
         uint32_t rIdx = readIndex_.load(ordering_.readIndexLoad);
 
@@ -356,9 +366,8 @@ public:
                 case RingBufferPolicy::DropNew:
                     return false;
                 case RingBufferPolicy::DropOld:
-                    readIndex_.store(rIdx + 1, ordering_.readIndexStore);
-                    break;
                 case RingBufferPolicy::Overwrite:
+                    readIndex_.store(rIdx + 1, ordering_.readIndexStore);
                     break;
                 case RingBufferPolicy::Block:
                     return false;

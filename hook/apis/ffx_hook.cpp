@@ -6,12 +6,14 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 #include "../common/dx12_overlay_policy.h"
 #include "../common/dxgi_shared.h"
 #include "../common/ffx_api_parsing.h"
 #include "../common/fg_detection.h"
 #include "../common/fg_session_state.h"
 #include "../common/hook_common.h"
+#include "../common/module_enumeration.h"
 #include "../common/overlay_compat.h"
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/inline_hook.h"
@@ -1627,11 +1629,10 @@ void Init() {
     // One-time diagnostic at 30th retry: enumerate loaded modules for debugging
     if (s_initCallCount == 30) {
         HookLogImportant("FFX Hook: Module enumeration diagnostic (call #%d):", s_initCallCount);
-        HMODULE hMods[1024];
-        DWORD cbNeeded;
-        if (EnumProcessModules(GetCurrentProcess(), hMods, sizeof(hMods), &cbNeeded)) {
+        std::vector<HMODULE> hMods;
+        if (ce::EnumerateProcessModules(GetCurrentProcess(), hMods)) {
             int found = 0;
-            for (DWORD i = 0; i < cbNeeded / sizeof(HMODULE); i++) {
+            for (size_t i = 0; i < hMods.size(); i++) {
                 wchar_t modName[MAX_PATH];
                 if (GetModuleFileNameW(hMods[i], modName, MAX_PATH)) {
                     std::wstring lower(modName);
@@ -1648,8 +1649,7 @@ void Init() {
                 }
             }
             if (found == 0) {
-                HookLogImportant("FFX Hook:   No AMD/FFX/FSR modules among %d loaded",
-                                 (int)(cbNeeded / sizeof(HMODULE)));
+                HookLogImportant("FFX Hook:   No AMD/FFX/FSR modules among %zu inspected", hMods.size());
             }
         }
     }

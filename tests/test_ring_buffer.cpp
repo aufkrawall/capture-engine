@@ -159,9 +159,17 @@ TEST_F(LockFreeRingBufferTest, OverwritePolicy) {
     for (int i = 0; i < 4; i++) {
         overwrite.Push(i);  // 0,1,2,3
     }
-    overwrite.Push(99);  // overwrite oldest slot (no read index advance for Overwrite)
-    // After overwrite, write advanced, read stays — size might be 4 still
+    overwrite.Push(99);  // overwrite oldest slot
     EXPECT_EQ(overwrite.DroppedCount(), 1u);
+    EXPECT_EQ(overwrite.Size(), 4u);
+    EXPECT_EQ(overwrite.Available(), 0u);
+
+    int value = 0;
+    for (int expected : {1, 2, 3, 99}) {
+        ASSERT_TRUE(overwrite.Pop(value));
+        EXPECT_EQ(value, expected);
+    }
+    EXPECT_TRUE(overwrite.Empty());
 }
 
 TEST_F(LockFreeRingBufferTest, DirectIndexAccess) {
@@ -262,6 +270,67 @@ TEST_F(DynamicRingBufferTest, DropOldPolicy) {
     int val = 0;
     dropOld.Pop(val);
     EXPECT_EQ(val, 1);  // 0 was dropped
+}
+
+TEST_F(DynamicRingBufferTest, OverwritePolicyKeepsSizeBounded) {
+    DynamicRingBuffer<int> overwrite(4, RingBufferPolicy::Overwrite);
+    for (int i = 0; i < 4; i++) {
+        overwrite.Push(i);
+    }
+    overwrite.Push(10);
+
+    EXPECT_EQ(overwrite.DroppedCount(), 1u);
+    EXPECT_EQ(overwrite.Size(), 4u);
+    EXPECT_EQ(overwrite.Available(), 0u);
+
+    int value = 0;
+    for (int expected : {1, 2, 3, 10}) {
+        ASSERT_TRUE(overwrite.Pop(value));
+        EXPECT_EQ(value, expected);
+    }
+}
+
+TEST_F(DynamicRingBufferTest, ZeroCapacityRejectsPushForEveryPolicy) {
+    for (RingBufferPolicy policy : {RingBufferPolicy::DropNew, RingBufferPolicy::DropOld,
+                                    RingBufferPolicy::Overwrite, RingBufferPolicy::Block}) {
+        DynamicRingBuffer<int> zeroCapacity(0, policy);
+        EXPECT_TRUE(zeroCapacity.Empty());
+        EXPECT_TRUE(zeroCapacity.Full());
+        EXPECT_EQ(zeroCapacity.Available(), 0u);
+        EXPECT_FALSE(zeroCapacity.Push(1));
+        EXPECT_EQ(zeroCapacity.DroppedCount(), 1u);
+    }
+}
+
+TEST_F(DynamicRingBufferTest, MovedFromBufferIsSafelyEmpty) {
+    DynamicRingBuffer<int> source(4);
+    source.Push(1);
+
+    DynamicRingBuffer<int> destination(std::move(source));
+
+    EXPECT_EQ(source.Capacity(), 0u);
+    EXPECT_TRUE(source.Empty());
+    EXPECT_FALSE(source.Push(2));
+
+    int value = 0;
+    ASSERT_TRUE(destination.Pop(value));
+    EXPECT_EQ(value, 1);
+}
+
+TEST_F(DynamicRingBufferTest, MoveAssignmentLeavesSourceSafelyEmpty) {
+    DynamicRingBuffer<int> source(4);
+    source.Push(7);
+    DynamicRingBuffer<int> destination(2);
+
+    destination = std::move(source);
+
+    EXPECT_EQ(source.Capacity(), 0u);
+    EXPECT_TRUE(source.Empty());
+    EXPECT_FALSE(source.Push(8));
+
+    int value = 0;
+    ASSERT_TRUE(destination.Pop(value));
+    EXPECT_EQ(value, 7);
 }
 
 // ============================================================================

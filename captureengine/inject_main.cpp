@@ -232,7 +232,8 @@ static void PopulateWhitelistCache(DiscoveryInfo* pDisc, const AppConfig& config
         size_t len = name.length();
         if (p + len + 1 < end) {
             std::string lower = name;
-            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
             memcpy(p, lower.c_str(), len);
             p += len;
             *p++ = '\0';

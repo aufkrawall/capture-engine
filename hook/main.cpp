@@ -1721,7 +1721,8 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
 
     std::string filenameLower = filename;
     std::transform(filenameLower.begin(), filenameLower.end(),
-                   filenameLower.begin(), ::tolower);
+                   filenameLower.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
     std::string overridePath;
     bool isStreamlineMatch = false;
@@ -1771,7 +1772,8 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
 
         std::string cfgFilenameLower = cfgFilename;
         std::transform(cfgFilenameLower.begin(), cfgFilenameLower.end(),
-                       cfgFilenameLower.begin(), ::tolower);
+                       cfgFilenameLower.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
         if (cfgFilenameLower == filenameLower) {
           finalPath = overridePath;
