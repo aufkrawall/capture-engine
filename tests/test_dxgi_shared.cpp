@@ -1527,8 +1527,17 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
 
     const size_t processFrame = text.find("void ProcessFrame(");
     ASSERT_NE(processFrame, std::string::npos);
-    const size_t recoveryDecision = text.find("DecidePostFSRNonFGPresentRoute(", processFrame);
+    const size_t explicitOffRouteProtection =
+        text.find("const bool explicitOffKeepAlivePending =", processFrame);
+    const size_t routeProtectionGuard =
+        text.find("if (!postFSRRecoveryPending && !explicitOffKeepAlivePending)", explicitOffRouteProtection);
+    const size_t recoveryDecision = text.find("DecideInactiveDLSSPresentRoute(", processFrame);
+    ASSERT_NE(explicitOffRouteProtection, std::string::npos);
+    ASSERT_NE(routeProtectionGuard, std::string::npos);
     ASSERT_NE(recoveryDecision, std::string::npos);
+    EXPECT_LT(explicitOffRouteProtection, routeProtectionGuard);
+    EXPECT_LT(routeProtectionGuard, recoveryDecision)
+        << "a pure-DLSS explicit-OFF proxy must use the exact keep-alive route even without FSR history";
     const size_t exactPostSLKeepAlive = text.find("PostSLOverlayRenderGated(pSwapChain);", recoveryDecision);
     const size_t directDrawSuccess =
         text.find("const bool directKeepAliveDrawSucceeded", exactPostSLKeepAlive);
@@ -1551,12 +1560,16 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
     EXPECT_LT(exactPostSLReturn, overlayMutex)
         << "the exact confirmed proxy must draw once before pass-through Present and before normal backbuffer access";
     const size_t postLockRecoveryRecheck = text.find(
-        "if (g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire)) {", overlayMutex);
+        "if (g_NeedOffscreenOverlayAfterPostFSRNonFG.load(std::memory_order_acquire) ||", overlayMutex);
+    const size_t postLockExplicitOffRecheck =
+        text.find("g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire))", postLockRecoveryRecheck);
     ASSERT_NE(postLockRecoveryRecheck, std::string::npos);
+    ASSERT_NE(postLockExplicitOffRecheck, std::string::npos);
     const size_t postLockRouteResnapshot =
-        text.find("routePostFSRNonFGPresentBeforeBackbufferAccess()", postLockRecoveryRecheck);
+        text.find("routeInactiveDLSSPresentBeforeBackbufferAccess()", postLockExplicitOffRecheck);
     ASSERT_NE(postLockRouteResnapshot, std::string::npos);
     EXPECT_LT(overlayMutex, postLockRecoveryRecheck);
+    EXPECT_LT(postLockRecoveryRecheck, postLockExplicitOffRecheck);
     EXPECT_LT(postLockRecoveryRecheck, postLockRouteResnapshot)
         << "a newly armed OFF edge must invalidate even an earlier normal-route ownership proof";
 
@@ -1824,7 +1837,7 @@ TEST(DXGISharedSourceTest, WrappedPassThroughDrivesOnlySuccessfulExactProxyKeepA
     EXPECT_LT(success, mark) << "only a real successful submit may suppress the same-present nested callback";
 }
 
-TEST(DXGISharedSourceTest, SuccessfulNormalDrawImmediatelyRetiresExactOffKeepAliveBeforeNestedPresent) {
+TEST(DXGISharedSourceTest, NormalCommandSubmitCannotRetireExactOffKeepAliveWithoutPresentationOwnershipProof) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
@@ -1833,35 +1846,33 @@ TEST(DXGISharedSourceTest, SuccessfulNormalDrawImmediatelyRetiresExactOffKeepAli
     const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
     ASSERT_FALSE(text.empty());
 
-    const size_t helper = text.find("static void RetirePostSLExplicitOffKeepAliveAfterNormalRouteDraw(");
-    const size_t requireOff = text.find("g_StreamlineFGRunning.load", helper);
-    const size_t consumeLatch = text.find("g_PostSLExplicitOffKeepAlive.exchange(false", requireOff);
-    const size_t disableCallback = text.find("SetPostSLCallbackInstalled(false, reason);", consumeLatch);
-    ASSERT_NE(helper, std::string::npos);
-    ASSERT_NE(requireOff, std::string::npos);
-    ASSERT_NE(consumeLatch, std::string::npos);
-    ASSERT_NE(disableCallback, std::string::npos);
-    EXPECT_LT(requireOff, consumeLatch);
-    EXPECT_LT(consumeLatch, disableCallback);
+    EXPECT_EQ(text.find("RetirePostSLExplicitOffKeepAliveAfterNormalRouteDraw"), std::string::npos);
 
-    const size_t normalSubmit = text.find("NoteDX12OverlayRendered(DX12OverlayRenderRoute::kNormal);", helper);
-    const size_t immediateRetirement =
-        text.find("RetirePostSLExplicitOffKeepAliveAfterNormalRouteDraw(", normalSubmit);
-    ASSERT_NE(normalSubmit, std::string::npos);
-    ASSERT_NE(immediateRetirement, std::string::npos);
-    EXPECT_LT(normalSubmit, immediateRetirement)
-        << "the keep-alive may retire only after a real normal-route overlay submit";
+    const size_t callback = text.find("static void PostSLOverlayRenderGated(");
+    const size_t streamlineGone = text.find("const bool streamlineGone = !IsStreamlineLoaded();", callback);
+    const size_t unloadRetirement =
+        text.find("PostSL keep-alive retired after Streamline unload", streamlineGone);
+    ASSERT_NE(callback, std::string::npos);
+    ASSERT_NE(streamlineGone, std::string::npos);
+    ASSERT_NE(unloadRetirement, std::string::npos);
 
-    const size_t recordedDrawGuard = text.find("if (overlayDrawRecorded) {", immediateRetirement);
-    const size_t recordedNormalSubmit =
-        text.find("NoteDX12OverlayRendered(DX12OverlayRenderRoute::kNormal);", recordedDrawGuard);
-    const size_t recordedImmediateRetirement =
-        text.find("RetirePostSLExplicitOffKeepAliveAfterNormalRouteDraw(", recordedNormalSubmit);
-    ASSERT_NE(recordedDrawGuard, std::string::npos);
-    ASSERT_NE(recordedNormalSubmit, std::string::npos);
-    ASSERT_NE(recordedImmediateRetirement, std::string::npos);
-    EXPECT_LT(recordedDrawGuard, recordedNormalSubmit);
-    EXPECT_LT(recordedNormalSubmit, recordedImmediateRetirement);
+    const size_t authoritativeRetirement = text.find("HandlePostSLRouteForNormalSwapchainReturn(");
+    const size_t normalReturnPolicy =
+        text.find("ShouldRetirePostSLRouteForNormalSwapchainReturn(", authoritativeRetirement);
+    ASSERT_NE(authoritativeRetirement, std::string::npos);
+    ASSERT_NE(normalReturnPolicy, std::string::npos);
+
+    const size_t warmResumeArm =
+        text.find("g_PostSLWarmResumePreservationPending.store(callbackAlreadyInstalled &&");
+    const size_t successfulPostSLSubmit = text.find("if (SUCCEEDED(postDevReason) && rendered && pSwapChain");
+    const size_t warmResumeCompletion =
+        text.find("g_PostSLWarmResumePreservationPending.exchange(false", successfulPostSLSubmit);
+    ASSERT_NE(warmResumeArm, std::string::npos);
+    ASSERT_NE(successfulPostSLSubmit, std::string::npos);
+    ASSERT_NE(warmResumeCompletion, std::string::npos);
+    EXPECT_LT(warmResumeArm, successfulPostSLSubmit);
+    EXPECT_LT(successfulPostSLSubmit, warmResumeCompletion)
+        << "the warm-resume marker must be proof-completed by a real PostSL submit, not a timer or pointer event";
 }
 
 TEST(DXGISharedTest, ThirdPartyOverlayECLQueueDoesNotOverrideKnownGameTrackingQueues) {
@@ -3529,28 +3540,28 @@ TEST(DXGISharedTest, PostFSRNormalRouteRequiresQueueOrExactRememberedSwapchainOw
 }
 
 TEST(DXGISharedTest, GTAProxyRotationKeepsExactConfirmedPostSLRouteUntilNormalOwnershipIsProven) {
-    using Route = ce::dx12_overlay_policy::PostFSRNonFGPresentRoute;
+    using Route = ce::dx12_overlay_policy::InactiveDLSSPresentRoute;
 
-    EXPECT_EQ(ce::dx12_overlay_policy::DecidePostFSRNonFGPresentRoute(
+    EXPECT_EQ(ce::dx12_overlay_policy::DecideInactiveDLSSPresentRoute(
                   true, false, false, false, true, true, true, true),
               Route::kConfirmedPostSLKeepAlive);
-    EXPECT_EQ(ce::dx12_overlay_policy::DecidePostFSRNonFGPresentRoute(
+    EXPECT_EQ(ce::dx12_overlay_policy::DecideInactiveDLSSPresentRoute(
                   true, false, false, true, true, true, true, false),
               Route::kNormal);
-    EXPECT_EQ(ce::dx12_overlay_policy::DecidePostFSRNonFGPresentRoute(
+    EXPECT_EQ(ce::dx12_overlay_policy::DecideInactiveDLSSPresentRoute(
                   true, true, false, false, true, true, true, true),
               Route::kNormal);
-    EXPECT_EQ(ce::dx12_overlay_policy::DecidePostFSRNonFGPresentRoute(
+    EXPECT_EQ(ce::dx12_overlay_policy::DecideInactiveDLSSPresentRoute(
                   true, false, true, false, true, true, true, true),
               Route::kNormal);
 
-    EXPECT_EQ(ce::dx12_overlay_policy::DecidePostFSRNonFGPresentRoute(
+    EXPECT_EQ(ce::dx12_overlay_policy::DecideInactiveDLSSPresentRoute(
                   true, false, false, false, true, true, true, false),
               Route::kAwaitNormalOwnershipProof);
-    EXPECT_EQ(ce::dx12_overlay_policy::DecidePostFSRNonFGPresentRoute(
+    EXPECT_EQ(ce::dx12_overlay_policy::DecideInactiveDLSSPresentRoute(
                   true, false, false, false, true, false, true, true),
               Route::kAwaitNormalOwnershipProof);
-    EXPECT_EQ(ce::dx12_overlay_policy::DecidePostFSRNonFGPresentRoute(
+    EXPECT_EQ(ce::dx12_overlay_policy::DecideInactiveDLSSPresentRoute(
                   true, false, false, false, true, true, false, true),
               Route::kAwaitNormalOwnershipProof);
 }
@@ -4577,7 +4588,7 @@ TEST(DXGISharedTest, ConfirmedPostSLBackendWarmupUsesProofThreshold) {
 
 TEST(DXGISharedTest, PostFSRConfirmedPostSLBackendSurvivesActiveSwapchainChange) {
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
-        true, true, true, true, true, true, true, true));
+        true, true, true, true, true, true, true, true, false, false, false, false, false));
 
     // 20260612_002523: the PURE-DLSS startup (no FSR history) must preserve a
     // confirmed PostSL backend too. PostSL confirmation is proof on the LIVE
@@ -4585,22 +4596,35 @@ TEST(DXGISharedTest, PostFSRConfirmedPostSLBackendSurvivesActiveSwapchainChange)
     // the overlay permanently when zero-ECL classification also starved the
     // cooldown ticks.
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
-        true, true, true, false, true, true, true, true));
+        true, true, true, false, true, true, true, true, false, false, false, false, false));
+
+    // 20260715_164211: after thousands of confirmed frames, a DLSS suspend ->
+    // warm resume cleared transient swapchain-queue capture. The first wrapper
+    // Present was still the exact last successful PostSL swapchain/queue and
+    // must not destroy that route or arm a 90-frame cooldown.
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+        true, true, false, true, false, false, true, false, false, false, true, true, false));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+        true, true, false, true, false, false, true, false, false, false, false, true, true));
 
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
-        false, true, true, true, true, true, true, true));
+        false, true, true, true, true, true, true, true, false, false, true, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
-        true, false, true, true, true, true, true, true));
+        true, false, true, true, true, true, true, true, false, false, true, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
-        true, true, false, true, true, true, true, true));
+        true, true, false, true, false, false, true, false, false, false, false, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
-        true, true, true, true, false, true, true, true));
+        true, true, true, true, false, true, true, true, false, false, false, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
-        true, true, true, true, true, false, true, true));
+        true, true, true, true, true, false, true, true, false, false, false, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
-        true, true, true, true, true, true, false, true));
+        true, true, true, true, true, true, false, true, false, false, false, false, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
-        true, true, true, true, true, true, true, false));
+        true, true, true, true, true, true, true, false, false, false, false, false, false));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+        true, true, false, true, false, false, true, false, true, false, true, true, true));
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
+        true, true, false, true, false, false, true, false, false, true, true, true, true));
 }
 
 TEST(DXGISharedTest, ArmedFGTransitionCooldownAlwaysTicksDespiteZeroECLClassification) {
@@ -5916,8 +5940,9 @@ TEST(DXGISharedSourceTest, RetainedStartupActivationSwapchainReleasedOnChurnOffA
 // Make-before-break keep-alive across explicit Streamline FG OFF (session
 // 20260613_032326: DLSS suspend/resume handoff seams were the last visible
 // 3-4-present blanks). Confirmed PostSL stays armed-and-rendering across the
-// off edge until the normal route's first confirmed draw; Streamline FG ON
-// while the latch is set is a warm resume of a continuously-live path.
+// off edge until authoritative normal presentation ownership is proven;
+// Streamline FG ON while the latch is set is a warm resume of a continuously-
+// live path.
 // ---------------------------------------------------------------------------
 
 TEST(DXGISharedTest, ConfirmedPostSLKeepsRenderingAcrossExplicitStreamlineOff) {

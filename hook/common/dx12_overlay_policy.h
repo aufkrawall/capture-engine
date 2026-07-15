@@ -682,7 +682,7 @@ enum class PostFSRInactiveRecoveryQueueSource {
     kCurrentCommandQueueFallback,
 };
 
-enum class PostFSRNonFGPresentRoute {
+enum class InactiveDLSSPresentRoute {
     kNormal,
     kConfirmedPostSLKeepAlive,
     kAwaitNormalOwnershipProof,
@@ -703,12 +703,12 @@ inline bool IsPostFSRNormalRouteOwnershipProven(bool hasSwapchainQueue, bool has
             currentSwapchainMatchesProvenOriginalQueueSwapchain);
 }
 
-inline PostFSRNonFGPresentRoute DecidePostFSRNonFGPresentRoute(
-    bool postFSRRecoveryPending, bool actualFGActive, bool streamlineFGRunning,
+inline InactiveDLSSPresentRoute DecideInactiveDLSSPresentRoute(
+    bool routeProtectionPending, bool actualFGActive, bool streamlineFGRunning,
     bool normalRouteOwnershipProven, bool postSLKeepAliveArmed, bool postSLCallbackReady,
     bool hasPostSLRenderQueue, bool currentSwapchainMatchesLastSuccessfulPostSLSwapchain) {
-    if (!postFSRRecoveryPending || actualFGActive || streamlineFGRunning || normalRouteOwnershipProven) {
-        return PostFSRNonFGPresentRoute::kNormal;
+    if (!routeProtectionPending || actualFGActive || streamlineFGRunning || normalRouteOwnershipProven) {
+        return InactiveDLSSPresentRoute::kNormal;
     }
 
     // While DLSS is explicitly off, the Streamline proxy can remain the live
@@ -719,13 +719,13 @@ inline PostFSRNonFGPresentRoute DecidePostFSRNonFGPresentRoute(
     // This requires no copy, new queue, wait, or normal-route backbuffer access.
     if (postSLKeepAliveArmed && postSLCallbackReady && hasPostSLRenderQueue &&
         currentSwapchainMatchesLastSuccessfulPostSLSwapchain) {
-        return PostFSRNonFGPresentRoute::kConfirmedPostSLKeepAlive;
+        return InactiveDLSSPresentRoute::kConfirmedPostSLKeepAlive;
     }
 
     // Neither the historical PostSL queue nor the original queue is safe for an
     // unknown swapchain. Stay GPU-quiet until creation/identity evidence proves
     // one of those existing routes; do not guess from the pointer-change event.
-    return PostFSRNonFGPresentRoute::kAwaitNormalOwnershipProof;
+    return InactiveDLSSPresentRoute::kAwaitNormalOwnershipProof;
 }
 
 inline bool ShouldRejectPostSLKeepAliveRenderForUnprovenSwapchain(
@@ -3508,7 +3508,9 @@ inline bool ShouldEnterSyntheticPostSLStartupActivation(bool startupActivationPe
 inline bool ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
     bool streamlineFGRunning, bool postSLConfirmedRendering, bool confirmedPostSLBackendWarmupProtected,
     bool hadFSRFGPhase, bool runtimeOwnsSwapchain, bool hasSwapchainQueue, bool hasOriginalGameQueue,
-    bool swapchainQueueDiffersFromOriginalGameQueue) {
+    bool swapchainQueueDiffersFromOriginalGameQueue, bool fsrFGApiActive, bool runtimeOwnedNativeFGPresentPath,
+    bool currentSwapchainMatchesLastSuccessfulPostSL, bool hasConfirmedPostSLRenderQueue,
+    bool warmResumePreservationPending) {
     // GTA can briefly report a swapchain pointer change after PostSL has
     // already rendered successfully on Streamline's runtime-owned queue
     // (FSR -> DLSS handoff, 20260531_232108). Treating that as an ordinary
@@ -3521,10 +3523,25 @@ inline bool ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
     // cooldown ticks. PostSL confirmation is by definition proof on the LIVE
     // swapchain (the callback hands CE the presenting swapchain), so it is
     // preserve-worthy with or without FSR history.
+    //
+    // A suspend -> warm-resume can legitimately clear transient swapchain-queue
+    // bookkeeping before the first synthetic wrapper Present. In that topology,
+    // either exact equality with the last successfully submitted PostSL
+    // swapchain, or the event-driven warm-resume marker before the first active
+    // submit, plus the retained render queue is stronger evidence than runtime-
+    // ownership bookkeeping and remains valid after the historical 30-frame
+    // warmup range. A real FSR/native takeover is still an absolute veto.
     (void)hadFSRFGPhase;
-    return streamlineFGRunning && postSLConfirmedRendering && confirmedPostSLBackendWarmupProtected &&
-           runtimeOwnsSwapchain && hasSwapchainQueue && hasOriginalGameQueue &&
-           swapchainQueueDiffersFromOriginalGameQueue;
+    if (!streamlineFGRunning || !postSLConfirmedRendering || fsrFGApiActive || runtimeOwnedNativeFGPresentPath) {
+        return false;
+    }
+    const bool runtimeQueueProof = confirmedPostSLBackendWarmupProtected && runtimeOwnsSwapchain &&
+                                   hasSwapchainQueue && hasOriginalGameQueue &&
+                                   swapchainQueueDiffersFromOriginalGameQueue;
+    const bool retainedSuccessfulRouteProof = hasConfirmedPostSLRenderQueue &&
+                                              (currentSwapchainMatchesLastSuccessfulPostSL ||
+                                               warmResumePreservationPending);
+    return runtimeQueueProof || retainedSuccessfulRouteProof;
 }
 
 inline bool ShouldLatchPostSLSuspensionOnStreamlineSignalDrop(bool streamlineFGRunning, bool postSLActive,
