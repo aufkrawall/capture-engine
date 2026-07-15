@@ -636,9 +636,9 @@ TEST(AudioSyncUtilsTest, StartedSparseTimelineSourcesMayContributeSilence) {
     EXPECT_FALSE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, true, true, true));
     EXPECT_TRUE(ce::audio::ShouldTreatSparseStartedSourceAsSilence(true, true, true, false, true));
 
-    EXPECT_TRUE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(true, 0));
-    EXPECT_FALSE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(true, 1));
-    EXPECT_FALSE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(false, 0));
+    EXPECT_TRUE(ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(true, 0));
+    EXPECT_FALSE(ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(true, 1));
+    EXPECT_FALSE(ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(false, 0));
 }
 
 TEST(AudioSyncUtilsTest, InactiveStartedAppCaptureBecomesNonBlockingTimelineSilence) {
@@ -668,20 +668,21 @@ TEST(AudioSyncUtilsTest, PacketlessTimelineSourceCanBootstrapAsSilence) {
     EXPECT_FALSE(ce::audio::ShouldBootstrapPacketlessSourceAsSilence(true, true, 0, 1199, 1200));
 }
 
-TEST(AudioSyncUtilsTest, StartedSparseAppAudioPartialShortfallSilencesOnlyLargeLivePulls) {
+TEST(AudioSyncUtilsTest, StartedSparseTimelinePartialShortfallSilencesOnlyLargeLivePulls) {
     constexpr int64_t thresholdSamples = ce::audio::kDefaultAudioPullQuantumSamples * 4;
 
-    EXPECT_TRUE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
+    EXPECT_TRUE(ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(
         /*sparseStartedSourceMaySilence*/ true, /*bufferedTimelineSamples*/ 0,
         /*requestedSamples*/ ce::audio::kDefaultAudioPullQuantumSamples, thresholdSamples));
-    EXPECT_FALSE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
+    EXPECT_FALSE(ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(
         /*sparseStartedSourceMaySilence*/ true, /*bufferedTimelineSamples*/ 320, /*requestedSamples*/ 400,
         thresholdSamples));
-    EXPECT_TRUE(ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
+    EXPECT_TRUE(ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(
         /*sparseStartedSourceMaySilence*/ true, /*bufferedTimelineSamples*/ 320, /*requestedSamples*/ 13600,
         thresholdSamples));
 
-    const bool sparsePartialLargePullMaySilence = ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
+    const bool sparsePartialLargePullMaySilence =
+        ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(
         /*sparseStartedSourceMaySilence*/ true, /*bufferedTimelineSamples*/ 320, /*requestedSamples*/ 13600,
         thresholdSamples);
     EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(
@@ -882,51 +883,6 @@ TEST(AudioSyncUtilsTest, AppAudioTrackIdentityIsCaseInsensitivePerProcessAndTrac
     EXPECT_NE(ce::audio::AppAudioTrackIdentity("", 1234, 1), ce::audio::AppAudioTrackIdentity("", 5678, 1));
 }
 
-// --- Catastrophic backlog resync (read-stall recovery: alt-tab / DPC / encoder overload) ---
-
-TEST(AudioSyncUtilsTest, CatastrophicResyncOnlyAppliesToCfrAppAudio) {
-    const int64_t rate = 48000;
-    const int64_t threshold = rate * 2;    // 2s
-    const int64_t bigBacklog = rate * 10;  // 10s backlog
-    const int64_t target = rate / 10;      // 100ms
-    const int64_t keep = rate / 10;
-    // Non-CFR: never resync here (non-CFR has its own overflow handling).
-    EXPECT_EQ(ce::audio::ComputeCatastrophicBacklogResyncTrim(false, true, bigBacklog, target, threshold, keep), 0);
-    // Non-app (system/mic) source: not covered by this app-audio path.
-    EXPECT_EQ(ce::audio::ComputeCatastrophicBacklogResyncTrim(true, false, bigBacklog, target, threshold, keep), 0);
-}
-
-TEST(AudioSyncUtilsTest, CatastrophicResyncLeavesHealthyBacklogUntouched) {
-    const int64_t rate = 48000;
-    const int64_t threshold = rate * 2;  // 2s
-    const int64_t target = rate / 10;    // 100ms
-    const int64_t keep = rate / 10;
-    // Healthy steady-state backlog (~116ms, like the clean baseline) is well below the
-    // 2s catastrophic threshold -> no trim, no-trim CFR policy preserved.
-    EXPECT_EQ(ce::audio::ComputeCatastrophicBacklogResyncTrim(true, true, 5586, target, threshold, keep), 0);
-    // Exactly at the threshold is still not catastrophic.
-    EXPECT_EQ(ce::audio::ComputeCatastrophicBacklogResyncTrim(true, true, threshold, target, threshold, keep), 0);
-    // Sub-second drift (e.g. 500ms) is preserved (no audio cut for routine jitter).
-    EXPECT_EQ(ce::audio::ComputeCatastrophicBacklogResyncTrim(true, true, rate / 2, target, threshold, keep), 0);
-}
-
-TEST(AudioSyncUtilsTest, CatastrophicResyncDropsStaleBacklogKeepingLiveCushion) {
-    const int64_t rate = 48000;
-    const int64_t threshold = rate * 2;  // 2s
-    const int64_t target = rate / 10;    // 100ms cushion
-    const int64_t keep = rate / 10;
-    // A 10s backlog (sustained stall) -> drop down to the live cushion (max(keep,target)).
-    const int64_t backlog = rate * 10;
-    const int64_t trim = ce::audio::ComputeCatastrophicBacklogResyncTrim(true, true, backlog, target, threshold, keep);
-    EXPECT_EQ(trim, backlog - rate / 10);
-    // After the trim the retained backlog is exactly the cushion -> bounded, never saturates.
-    EXPECT_EQ(backlog - trim, rate / 10);
-    // A near-saturation 29s backlog still resolves to the same small cushion.
-    const int64_t huge = rate * 29;
-    EXPECT_EQ(ce::audio::ComputeCatastrophicBacklogResyncTrim(true, true, huge, target, threshold, keep),
-              huge - rate / 10);
-}
-
 TEST(AudioSyncUtilsTest, SuppressBufferDeferOnlyWhenCatastrophicallyBehind) {
     const int64_t rate = 48000;
     const int64_t maxGap = rate * 2;  // 2s catch-up threshold
@@ -979,17 +935,6 @@ TEST(AudioSyncUtilsTest, MultiAppCatchupDoesNotFreezeOnUnderBufferedLiveSource) 
     // And the normal (not-behind) path still keeps the buffer-wait protection: a healthy track that is
     // only a small quantum behind does NOT suppress, so brief startup/jitter buffering still applies.
     EXPECT_FALSE(ce::audio::ShouldSuppressBufferDeferForCatchup(/*samplesToEncode*/ 240, maxGap, false));
-}
-
-TEST(AudioSyncUtilsTest, CatastrophicResyncKeepCushionHonorsTargetLatency) {
-    const int64_t rate = 48000;
-    const int64_t threshold = rate * 2;
-    // When the target latency cushion exceeds the floor, keep the larger (target) cushion.
-    const int64_t target = rate / 2;   // 500ms target
-    const int64_t keep = rate / 10;    // 100ms floor
-    const int64_t backlog = rate * 6;  // 6s
-    const int64_t trim = ce::audio::ComputeCatastrophicBacklogResyncTrim(true, true, backlog, target, threshold, keep);
-    EXPECT_EQ(backlog - trim, rate / 2);  // retained cushion == target latency (the larger of the two)
 }
 
 // --- WGC audio-continuity input helpers (extracted from PullAndEncodeAudio) ---

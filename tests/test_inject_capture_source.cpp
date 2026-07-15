@@ -152,6 +152,17 @@ TEST(InjectCaptureSourceTest, D3D12SharedCaptureInitializationAndSubmissionAreTr
     EXPECT_NE(capture.find("Queue Signal failed"), std::string::npos);
 }
 
+TEST(InjectCaptureSourceTest, SharedCaptureManagerOutlivesStaticCaptureTargets) {
+    const std::string source = ReadSource("hook/capture/shared_capture.cpp");
+    ASSERT_FALSE(source.empty());
+    const std::string getManager =
+        FunctionBody(source, "CaptureManager& CaptureManager::Get()", "void CaptureManager::RegisterCaptureTarget(");
+    ASSERT_FALSE(getManager.empty());
+
+    EXPECT_NE(getManager.find("static CaptureManager* const instance = new CaptureManager();"), std::string::npos);
+    EXPECT_EQ(getManager.find("static CaptureManager instance;"), std::string::npos);
+}
+
 TEST(InjectCaptureSourceTest, LegacyInjectProducersDoNotOverwriteOutstandingSlots) {
     for (const char* path : {"hook/apis/dx8_hook.cpp", "hook/apis/dx9_hook.cpp", "hook/apis/ddraw_hook.cpp"}) {
         const std::string source = ReadSource(path);

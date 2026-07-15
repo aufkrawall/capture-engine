@@ -337,7 +337,7 @@ INJECT_CONTENTION_RE = re.compile(
 INJECT_CFR_SUMMARY_RE = re.compile(
     r"\[Inject CFR SUMMARY\].*Live=(\d+) Dup=(\d+) DupPct=([0-9.]+)% "
     r"DupReason\(src=(\d+) def=(\d+) timer=(\d+) drain=(\d+)\).*"
-    r"FreshCatchup=(\d+) RepeatCatchup=(\d+) StaleTrim=(\d+)",
+    r"FreshCatchup=(\d+) RepeatCatchup=(\d+) StaleTrim=(\d+)(?: Recovery=(\d+)/(\d+))?",
     re.IGNORECASE,
 )
 INJECT_CFR_SOURCE_RE = re.compile(
@@ -2405,6 +2405,8 @@ def parse_media_triage(media_text):
                     "fresh_catchup": parse_int(inject_summary_match.group(8)),
                     "repeat_catchup": parse_int(inject_summary_match.group(9)),
                     "stale_trim": parse_int(inject_summary_match.group(10)),
+                    "recovery_active": parse_int(inject_summary_match.group(11) or "0"),
+                    "recovery_episodes": parse_int(inject_summary_match.group(12) or "0"),
                     "line": line,
                 }
             )
@@ -2776,6 +2778,8 @@ def summarize_inject_pacing(media_evidence):
         "summary_dup_def": sum(row["dup_def"] for row in summary_rows),
         "summary_dup_timer": sum(row["dup_timer"] for row in summary_rows),
         "summary_dup_drain": sum(row["dup_drain"] for row in summary_rows),
+        "summary_recovery_active": max((row["recovery_active"] for row in summary_rows), default=0),
+        "summary_recovery_episodes": sum(row["recovery_episodes"] for row in summary_rows),
         "source_fps_min": min((row["source_fps_min"] for row in source_rows), default=0.0),
         "source_fps_max": max((row["source_fps_max"] for row in source_rows), default=0.0),
         "jitter_max_us": max((row["jitter_max_us"] for row in source_rows), default=0),
@@ -5055,7 +5059,8 @@ def self_test():
                 "EncQ: 0 | Dup: 5 | Late: 0 | Trim: 0 | SelDrop: 20 | Def: 0 | Encode: 308us | Fence: 2us | "
                 "Mux: 0KB | Overload: 0x0\n"
                 "[Inject CFR SUMMARY] Live=582 Dup=48 DupPct=8.2% DupReason(src=48 def=0 timer=0 drain=0) "
-                "FreshCatchup=0 RepeatCatchup=0 StaleTrim=7 PathMismatch=0/0 DefRequeued=0 DefDropped=0\n"
+                "FreshCatchup=3 RepeatCatchup=1 StaleTrim=7 Recovery=0/1 PathMismatch=0/0 DefRequeued=0 "
+                "DefDropped=0\n"
                 "[Inject CFR SUMMARY] SourceFps=71.13..79.26 JitterMax=1373us SelMax=67148us EncEmaMax=0.55ms "
                 "SustainMin=1818.8fps\n"
             ),
@@ -5067,6 +5072,7 @@ def self_test():
         assert report["evidence"]["inject_pacing"]["drop_pace"] == 85
         assert report["evidence"]["inject_pacing"]["publication_fps"] == 240
         assert report["evidence"]["inject_pacing"]["summary_dup_src"] == 48
+        assert report["evidence"]["inject_pacing"]["summary_recovery_episodes"] == 1
 
         inject_planned_source_stall = make_session(
             "inject_planned_source_stall",

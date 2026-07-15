@@ -214,10 +214,12 @@ TEST(CapturePipelinePolicyTest, StartupHeadroomUsesStartupWindow) {
 }
 
 TEST(CapturePipelinePolicyTest, InjectLiveAgeTrimPreservesReserveAndExpandsUnderPressure) {
-    EXPECT_EQ(policy::GetInjectLiveMaxFrameAgeQpc(false, false, false, 100), 0);
-    EXPECT_EQ(policy::GetInjectLiveMaxFrameAgeQpc(true, false, false, 100),
+    EXPECT_EQ(policy::GetInjectLiveMaxFrameAgeQpc(false, false, false, false, 100), 0);
+    EXPECT_EQ(policy::GetInjectLiveMaxFrameAgeQpc(true, false, false, false, 100),
               100 * static_cast<int64_t>(policy::kInjectLiveHealthyMaxFrameAgeTicks));
-    EXPECT_EQ(policy::GetInjectLiveMaxFrameAgeQpc(true, true, false, 100),
+    EXPECT_EQ(policy::GetInjectLiveMaxFrameAgeQpc(true, true, false, false, 100),
+              100 * static_cast<int64_t>(policy::kInjectLivePressureMaxFrameAgeTicks));
+    EXPECT_EQ(policy::GetInjectLiveMaxFrameAgeQpc(true, false, false, true, 100),
               100 * static_cast<int64_t>(policy::kInjectLivePressureMaxFrameAgeTicks));
 
     EXPECT_FALSE(policy::ShouldTrimStaleInjectLiveFrame(1000, 1400, 300, 3, 2));
@@ -2579,29 +2581,38 @@ TEST(CapturePipelinePolicyTest, CfrCatchupTicksGradualBelowForceThreshold) {
     EXPECT_EQ(policy::GetCfrCatchupTicksThisLoop(policy::kCfrShortfallForceCatchupThresholdTicks - 1), 2u);
 }
 
-TEST(CapturePipelinePolicyTest, InjectCfrCatchupAvoidsDuplicateBurstsBelowForceThreshold) {
-    EXPECT_EQ(policy::GetInjectCfrCatchupTicksThisLoop(policy::kCfrShortfallCatchupThresholdTicks), 1u);
-    EXPECT_EQ(policy::GetInjectCfrCatchupTicksThisLoop(policy::kCfrShortfallForceCatchupThresholdTicks - 1), 1u);
-    EXPECT_EQ(policy::GetInjectCfrCatchupTicksThisLoop(policy::kCfrShortfallForceCatchupThresholdTicks), 2u);
-    EXPECT_EQ(policy::GetInjectCfrCatchupTicksThisLoop(100), 2u);
-    EXPECT_EQ(policy::GetInjectCfrCatchupTicksThisLoop(100, true), 1u);
+TEST(CapturePipelinePolicyTest, InjectCfrRecoveryUsesHysteresisAndPausesWhileEncoderIsSlow) {
+    EXPECT_FALSE(policy::GetInjectCfrRecoveryActive(false, true, false,
+                                                    policy::kCfrShortfallForceCatchupThresholdTicks - 1));
+    EXPECT_TRUE(policy::GetInjectCfrRecoveryActive(false, true, false,
+                                                   policy::kCfrShortfallForceCatchupThresholdTicks));
+    EXPECT_TRUE(policy::GetInjectCfrRecoveryActive(true, true, false,
+                                                  policy::kInjectCfrRecoveryExitShortfallTicks + 1));
+    EXPECT_FALSE(policy::GetInjectCfrRecoveryActive(true, true, false,
+                                                   policy::kInjectCfrRecoveryExitShortfallTicks));
+    EXPECT_FALSE(policy::GetInjectCfrRecoveryActive(true, false, false, 100));
+    EXPECT_FALSE(policy::GetInjectCfrRecoveryActive(true, true, true, 100));
+
+    EXPECT_EQ(policy::GetInjectCfrCatchupTicksThisLoop(100, false), 1u);
+    EXPECT_EQ(policy::GetInjectCfrCatchupTicksThisLoop(100, true), 2u);
+    EXPECT_EQ(policy::GetInjectCfrCatchupTicksThisLoop(100, true, true), 1u);
 }
 
 TEST(CapturePipelinePolicyTest, InjectFreshCatchupRequiresHealthyEncoderAndQueuedCredit) {
     EXPECT_TRUE(policy::ShouldUseFreshInjectCatchup(false, false, false, 4, 2, 1.0,
-                                                    policy::kCfrShortfallForceCatchupThresholdTicks));
+                                                    policy::kCfrShortfallForceCatchupThresholdTicks, true));
     EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(true, false, false, 4, 2, 1.0,
-                                                     policy::kCfrShortfallForceCatchupThresholdTicks));
+                                                     policy::kCfrShortfallForceCatchupThresholdTicks, true));
     EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, true, false, 4, 2, 1.0,
-                                                     policy::kCfrShortfallForceCatchupThresholdTicks));
+                                                     policy::kCfrShortfallForceCatchupThresholdTicks, true));
     EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, false, true, 4, 2, 1.0,
-                                                     policy::kCfrShortfallForceCatchupThresholdTicks));
+                                                     policy::kCfrShortfallForceCatchupThresholdTicks, true));
     EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, false, false, 2, 2, 1.0,
-                                                     policy::kCfrShortfallForceCatchupThresholdTicks));
+                                                     policy::kCfrShortfallForceCatchupThresholdTicks, true));
     EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, false, false, 4, 2, 0.99,
-                                                     policy::kCfrShortfallForceCatchupThresholdTicks));
+                                                     policy::kCfrShortfallForceCatchupThresholdTicks, true));
     EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, false, false, 4, 2, 1.0,
-                                                     policy::kCfrShortfallForceCatchupThresholdTicks - 1));
+                                                     policy::kCfrShortfallForceCatchupThresholdTicks, false));
 }
 
 TEST(CapturePipelinePolicyTest, WgcCatchupTicksRecoverModerateShortfallWhenHealthy) {

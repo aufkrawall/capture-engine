@@ -652,38 +652,6 @@ inline int64_t ComputeRuntimeOverflowCapSamples(bool isCfrContinuityProtected, i
     return std::max<int64_t>(defaultCap, emergencyCap);
 }
 
-// Catastrophic backlog resync for a CFR app-audio source.
-//
-// Normal CFR policy never trims app-audio backlog: sub-second drift is absorbed by
-// repeating video frames, never by cutting audio (which would be an audible artifact
-// for no benefit). But a SUSTAINED read-stall - the consume/encode side frozen by an
-// alt-tab, a DPC latency spike, or encoder overload while live process-loopback capture
-// keeps writing - makes the per-source ring backlog grow without bound. Left unchecked it
-// saturates the (multi-second) ring, after which WriteRetainNew discards the very samples
-// the reader still needs and the source can never recover: the track goes permanently
-// silent. Those stalls are unavoidable in the field, so the pipeline must survive them.
-//
-// Above a CATASTROPHIC threshold (seconds of backlog - far beyond any legitimate jitter,
-// so the healthy steady state is never touched) the only options are unbounded latency or
-// a one-time resync. Resync wins: drop the stale backlog down to a small live cushion and
-// keep the newest audio, so the source resumes contributing live audio immediately (the
-// caller fades the seam). Returns the number of oldest samples to drop, or 0 to keep the
-// no-trim policy. Scoped to CFR app-audio; everything else keeps the existing behavior.
-inline int64_t ComputeCatastrophicBacklogResyncTrim(bool isCfrRecording, bool isAppAudioSource,
-                                                    int64_t rbAvailableSamples, int64_t targetLatencySamples,
-                                                    int64_t catastrophicThresholdSamples, int64_t minKeepSamples) {
-    if (!isCfrRecording || !isAppAudioSource) {
-        return 0;
-    }
-    if (rbAvailableSamples <= std::max<int64_t>(0, catastrophicThresholdSamples)) {
-        return 0;
-    }
-    const int64_t keepSamples =
-        std::max<int64_t>(std::max<int64_t>(0, minKeepSamples), std::max<int64_t>(0, targetLatencySamples));
-    const int64_t trimSamples = rbAvailableSamples - keepSamples;
-    return trimSamples > 0 ? trimSamples : 0;
-}
-
 // A track that has fallen more than maxGapSamples behind the live target is catching up after a
 // read-stall (alt-tab, DPC spike, encoder overload) and MUST make forward progress on every pull.
 // When this returns true the caller suppresses the buffer-wait defer: otherwise a co-mixed source
@@ -900,9 +868,10 @@ inline bool ShouldBootstrapPacketlessSourceAsSilence(bool isCfrRecording, bool s
            static_cast<uint64_t>(targetTimelineSamples) >= static_cast<uint64_t>(requiredRealSamples);
 }
 
-inline bool ShouldTreatStartedAppSourceShortfallAsSilence(bool sparseStartedSourceMaySilence,
-                                                          size_t bufferedTimelineSamples, int64_t requestedSamples = 0,
-                                                          int64_t partialSilenceThresholdSamples = 0) {
+inline bool ShouldTreatStartedTimelineSourceShortfallAsSilence(bool sparseStartedSourceMaySilence,
+                                                               size_t bufferedTimelineSamples,
+                                                               int64_t requestedSamples = 0,
+                                                               int64_t partialSilenceThresholdSamples = 0) {
     if (!sparseStartedSourceMaySilence) {
         return false;
     }

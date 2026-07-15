@@ -3139,6 +3139,10 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint64_t injectFreshCatchupTotal = 0;
     uint64_t injectRepeatCatchupTotal = 0;
     uint64_t injectLiveStaleTrimTotal = 0;
+    bool injectCfrRecoveryActive = false;
+    bool injectEncoderServiceTooSlowCurrent = false;
+    uint32_t injectCfrRecoveryEpisodesThisWindow = 0;
+    uint64_t injectCfrRecoveryEpisodesTotal = 0;
     uint64_t activePathMismatchDiscardTotal = 0;
     size_t pendingLiveInjectReadyFrames = 0;
     DWORD lastHealthLog = GetTickCount();
@@ -4646,8 +4650,33 @@ void EncoderThreadFunc(const AppConfig& config) {
             const uint32_t targetOutputFpsForPolicy = std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps));
             encoderTooSlowForTargetCurrent = ce::capture_policy::IsEncoderTooSlowForTargetFps(
                 smoothedEncodeMs, frameIntervalMs, targetOutputFpsForPolicy);
+            injectEncoderServiceTooSlowCurrent = ce::capture_policy::IsEncoderTooSlowForTargetFps(
+                std::max(smoothedEncodeMs, smoothedEncCycleMs), frameIntervalMs, targetOutputFpsForPolicy);
             const bool encoderCatchupBottleneckedCurrent =
                 encoderTooSlowForTargetCurrent || g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+            const bool nextInjectCfrRecoveryActive = ce::capture_policy::GetInjectCfrRecoveryActive(
+                injectCfrRecoveryActive, recordingOutputLive && !activeScreenGrab, config.video.useVFR,
+                outputShortfallTicks);
+            if (nextInjectCfrRecoveryActive != injectCfrRecoveryActive) {
+                injectCfrRecoveryActive = nextInjectCfrRecoveryActive;
+                if (injectCfrRecoveryActive) {
+                    ++injectCfrRecoveryEpisodesThisWindow;
+                    ++injectCfrRecoveryEpisodesTotal;
+                }
+                LogInfo(
+                    "[Inject CFR] Recovery %s: shortfall=%u/%.1fms enc=%.2fms cycle=%.2fms bottleneck=%d. "
+                    "exitDebt=%u tick(s)",
+                    injectCfrRecoveryActive
+                        ? "entered"
+                        : (outputShortfallTicks <= ce::capture_policy::kInjectCfrRecoveryExitShortfallTicks
+                               ? "completed"
+                               : "disarmed"),
+                    outputShortfallTicks,
+                    ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
+                    smoothedEncodeMs, smoothedEncCycleMs,
+                    g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0,
+                    ce::capture_policy::kInjectCfrRecoveryExitShortfallTicks);
+            }
             const double shortfallDurationMs =
                 ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
             wgcAudioLeadExcessMsCurrent = loadWgcAudioLeadExcessMs();
@@ -4668,7 +4697,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     wgcAudioLeadExcessMsCurrent);
             } else {
                 catchupTicksThisLoop = ce::capture_policy::GetInjectCfrCatchupTicksThisLoop(
-                    outputShortfallTicks, encoderTooSlowForTargetCurrent);
+                    outputShortfallTicks, injectCfrRecoveryActive,
+                    encoderCatchupBottleneckedCurrent || injectEncoderServiceTooSlowCurrent);
             }
             if (activeScreenGrab && wgcLiveRecoveryModeActive && !wgcAudioLeadCatchupPressure) {
                 catchupTicksThisLoop = std::min<uint32_t>(catchupTicksThisLoop, 1u);
@@ -7150,8 +7180,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 QueryPerformanceCounter(&trimNowQpc);
                 const bool injectEncoderBottlenecked = g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
                 int64_t maxInjectLiveAgeQpc = ce::capture_policy::GetInjectLiveMaxFrameAgeQpc(
-                    recordingOutputLive, injectEncoderBottlenecked, encoderTooSlowForTargetCurrent,
-                    targetIntervalTicks);
+                    recordingOutputLive, injectEncoderBottlenecked, injectEncoderServiceTooSlowCurrent,
+                    injectCfrRecoveryActive, targetIntervalTicks);
                 if (avContentDelayActive) {
                     // Don't age-trim the intentionally retained content-delay frames.
                     maxInjectLiveAgeQpc = std::max(maxInjectLiveAgeQpc,
@@ -8257,6 +8287,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 liveStartQpc = {};
                 wgcInputPredictor.Reset();
                 smoothedEncCycleMs = 0.0;
+                injectCfrRecoveryActive = false;
+                injectEncoderServiceTooSlowCurrent = false;
                 encCycleMaxMs = 0;
                 dupTimestampCount = 0;
                 lastWgcDuplicateTimestampSkipCountForCadence =
@@ -8730,9 +8762,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                                   injectContentDelayFrames;
                     const bool encoderBottleneckedNow = g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
                     const bool allowFreshInjectCatchup = ce::capture_policy::ShouldUseFreshInjectCatchup(
-                        config.video.useVFR, encoderBottleneckedNow, encoderTooSlowForTargetCurrent,
+                        config.video.useVFR, encoderBottleneckedNow, injectEncoderServiceTooSlowCurrent,
                         bufferedInjectFrames.size(), catchupMinBufferedInjectFrames, frameCreditAccumulator,
-                        outputShortfallTicks);
+                        outputShortfallTicks, injectCfrRecoveryActive);
                     if (allowFreshInjectCatchup) {
                         size_t availableCount = bufferedInjectFrames.size() - catchupMinBufferedInjectFrames;
                         const int64_t catchupGridTick = encoderGridTickCount + 1;
@@ -10392,11 +10424,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                     (nowTick - s_lastInjectRepeatPressureInfoTick) >= 5000) {
                     LogInfo(
                         "[Inject CFR] Repeat pressure: hardEncoderOverload=%d dup=%u srcLimited=%u fenceDeferred=%u "
-                        "timer=%u freshCatchup=%u repeatCatchup=%u staleTrim=%u requeued=%u droppedDeferred=%u "
+                        "timer=%u freshCatchup=%u repeatCatchup=%u staleTrim=%u recovery=%d/%u requeued=%u "
+                        "droppedDeferred=%u "
                         "tickEmit=%u unique=%u sourceFps=%.2f enc=%.2fms sustain=%.1ffps overload=0x%X",
                         hardEncoderPressure ? 1 : 0, duplicateTicksThisWindow, sourceRepeatsThisWindow,
                         deferredRepeatsThisWindow, dupTimer - lastDuplicateReasonTimerRebase,
                         injectFreshCatchupThisWindow, injectRepeatCatchupThisWindow, injectLiveStaleTrimThisWindow,
+                        injectCfrRecoveryActive ? 1 : 0, injectCfrRecoveryEpisodesThisWindow,
                         injectDeferredRequeuedThisWindow, injectDeferredDroppedThisWindow,
                         cadenceCounters.liveTickEmitCount, cadenceCounters.liveTickUniqueCount, srcFpsX100Val / 100.0,
                         smoothedEncodeMs, sustainableOutputFps, overloadFlags);
@@ -10422,6 +10456,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             injectFreshCatchupThisWindow = 0;
             injectRepeatCatchupThisWindow = 0;
             injectLiveStaleTrimThisWindow = 0;
+            injectCfrRecoveryEpisodesThisWindow = 0;
             activePathMismatchDiscardThisWindow = 0;
             cadenceCounters.Reset();
             cadenceCounters.holdTicksRunning = savedHoldTicks;  // Preserve in-progress hold run
@@ -11108,7 +11143,8 @@ void EncoderThreadFunc(const AppConfig& config) {
         } else {
             LogInfo(
                 "[Inject CFR SUMMARY] Live=%llu Dup=%llu DupPct=%.1f%% DupReason(src=%llu def=%llu timer=%llu "
-                "drain=%llu) FreshCatchup=%llu RepeatCatchup=%llu StaleTrim=%llu PathMismatch=%llu/%llu "
+                "drain=%llu) FreshCatchup=%llu RepeatCatchup=%llu StaleTrim=%llu Recovery=%d/%llu "
+                "PathMismatch=%llu/%llu "
                 "DefRequeued=%llu DefDropped=%llu",
                 static_cast<unsigned long long>(liveTicksOutput),
                 static_cast<unsigned long long>(captureSessionSummary.duplicateTicks),
@@ -11120,6 +11156,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(injectFreshCatchupTotal),
                 static_cast<unsigned long long>(injectRepeatCatchupTotal),
                 static_cast<unsigned long long>(injectLiveStaleTrimTotal),
+                injectCfrRecoveryActive ? 1 : 0,
+                static_cast<unsigned long long>(injectCfrRecoveryEpisodesTotal),
                 static_cast<unsigned long long>(activePathMismatchDiscardTotal),
                 static_cast<unsigned long long>(g_ActivePathMismatchFramesDiscarded.load(std::memory_order_relaxed)),
                 static_cast<unsigned long long>(injectDeferredRequeuedTotal),

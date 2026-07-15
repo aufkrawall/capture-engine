@@ -146,9 +146,8 @@ public:
         int64_t appAudioBacklogTargetSamples = 0;
         int64_t appAudioBacklogExcessSamples = 0;
         int32_t appAudioBacklogCompensationDelta = 0;
-        uint64_t catastrophicResyncSamples = 0;       // Stale samples dropped resyncing to live after a read-stall
-        uint32_t catastrophicResyncEvents = 0;        // Number of catastrophic backlog resyncs (alt-tab/DPC/overload)
-        uint64_t lastCatastrophicResyncTick = 0;      // Throttle catastrophic resync logging
+        uint64_t catastrophicResyncSamples = 0;   // Legacy log-schema sentinel; CFR destructive resync is prohibited
+        uint32_t catastrophicResyncEvents = 0;    // Legacy log-schema sentinel; must remain zero
         double wgcCoverageLossTrimAccumulator = 0.0;  // Fractional carry for paced overload micro-trims
         uint64_t timelineResetGeneration = 0;         // Last atomic startup reset acknowledged by this route
         // Epoch transitions are a two-owner hand-off. AudioLoop owns format conversion and the ring writer;
@@ -545,7 +544,8 @@ public:
                     true, src.timelineValid, src.bootstrapComplete, optionalUnstarted, true);
                 const bool strictSource = src.sourceType != AudioConfig::Microphone;
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
-                const bool sparseStartedSourceMaySilence = ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
+                const bool sparseStartedSourceMaySilence =
+                    ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(
                     sparseStartedSourceCanSilence, bufferedTimelineSamples) ||
                     inactiveStartedAppSourceMaySilence;
                 if (ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, strictSource, optionalUnstarted,
@@ -781,7 +781,6 @@ public:
             src.appAudioBacklogCompensationDelta = 0;
             src.catastrophicResyncSamples = 0;
             src.catastrophicResyncEvents = 0;
-            src.lastCatastrophicResyncTick = 0;
             src.lastRetainedTrimWarnTick = 0;
             src.lastPacketTimelineAdjustWarnTick = 0;
             src.wgcCoverageLossTrimAccumulator = 0.0;
@@ -1555,7 +1554,6 @@ public:
                 src.appAudioBacklogCompensationDelta = 0;
                 src.catastrophicResyncSamples = 0;
                 src.catastrophicResyncEvents = 0;
-                src.lastCatastrophicResyncTick = 0;
                 src.lastRetainedTrimWarnTick = 0;
                 src.lastPacketTimelineAdjustWarnTick = 0;
                 src.wgcCoverageLossTrimAccumulator = 0.0;
@@ -2164,7 +2162,6 @@ public:
             src.appAudioBacklogCompensationDelta = 0;
             src.catastrophicResyncSamples = 0;
             src.catastrophicResyncEvents = 0;
-            src.lastCatastrophicResyncTick = 0;
             src.lastRetainedTrimWarnTick = 0;
             src.lastPacketTimelineAdjustWarnTick = 0;
             src.wgcCoverageLossTrimAccumulator = 0.0;
@@ -3353,6 +3350,8 @@ public:
             bool deferForSourceBuffer = false;
             const bool finalStopDrain = audioStopDrainRequested.load(std::memory_order_acquire) ||
                                         audioFinalizingCfrStop.load(std::memory_order_acquire);
+            constexpr int64_t kSparseStartedPartialSilenceThresholdSamples =
+                ce::audio::kDefaultAudioPullQuantumSamples * 4;
             for (size_t srcIdx : srcIndices) {
                 auto& src = audioSources[srcIdx];
                 const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
@@ -3367,9 +3366,8 @@ public:
                 const bool sparseStartedSourceCanSilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
                     isCfrRecording, src.timelineValid, src.bootstrapComplete, optionalUnstarted, finalStopDrain);
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
-                constexpr int64_t kSparseStartedPartialSilenceThresholdSamples =
-                    ce::audio::kDefaultAudioPullQuantumSamples * 4;
-                const bool sparseStartedSourceMaySilence = ce::audio::ShouldTreatStartedAppSourceShortfallAsSilence(
+                const bool sparseStartedSourceMaySilence =
+                    ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(
                     sparseStartedSourceCanSilence, bufferedTimelineSamples, samplesToEncode,
                     kSparseStartedPartialSilenceThresholdSamples) ||
                     inactiveStartedAppSourceMaySilence;
@@ -3411,13 +3409,28 @@ public:
                 auto& src = audioSources[srcIdx];
 
                 const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
-                const bool expectedTimelineSilence = ce::audio::IsExpectedSourceTimelineSilence(
-                    isAppAudioSource,
+                const bool optionalUnstarted = ce::audio::IsOptionalUnstartedAppAudioSource(
+                    isAppAudioSource, src.timelineValid, src.sawSyncPendingPackets);
+                const bool appCaptureRouteEnded =
                     isAppAudioSource && src.appCaptureRouteEnded &&
-                        src.appCaptureRouteEnded->load(std::memory_order_acquire),
-                    src.sourceType == AudioConfig::SystemAudio, src.hasAlignedStart);
-                if (ce::audio::IsOptionalUnstartedAppAudioSource(isAppAudioSource, src.timelineValid,
-                                                                 src.sawSyncPendingPackets)) {
+                    src.appCaptureRouteEnded->load(std::memory_order_acquire);
+                const bool inactiveStartedAppSourceMaySilence =
+                    ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(
+                        isCfrRecording, isAppAudioSource, src.timelineValid || src.sawSyncPendingPackets,
+                        !appCaptureRouteEnded);
+                const bool sparseStartedSourceCanSilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
+                    isCfrRecording, src.timelineValid, src.bootstrapComplete, optionalUnstarted, finalStopDrain);
+                const bool sparseStartedSourceMaySilence =
+                    ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(
+                        sparseStartedSourceCanSilence, GetBufferedTimelineSamples(src), samplesToEncode,
+                        kSparseStartedPartialSilenceThresholdSamples) ||
+                    inactiveStartedAppSourceMaySilence;
+                const bool expectedTimelineSilence =
+                    sparseStartedSourceMaySilence ||
+                    ce::audio::IsExpectedSourceTimelineSilence(isAppAudioSource, appCaptureRouteEnded,
+                                                               src.sourceType == AudioConfig::SystemAudio,
+                                                               src.hasAlignedStart);
+                if (optionalUnstarted) {
                     continue;
                 }
                 ++eligibleSources;
@@ -3899,51 +3912,9 @@ public:
                     if (!forceDrain && src.ringBuffer && !startupTimelineProtected) {
                         constexpr int64_t kMaxOverflowSamples = SAMPLE_RATE / 2;            // 500ms max overflow
                         constexpr int64_t kWgcCfrEmergencyRingMarginSamples = SAMPLE_RATE;  // 1s before full
-                        // A catastrophic backlog (a sustained read-stall from alt-tab, a DPC latency spike,
-                        // or encoder overload, while live process-loopback capture keeps writing) is the one
-                        // case where the CFR "never trim audio" policy must yield: otherwise the ring saturates
-                        // and the source goes permanently silent. 2s is far above any legitimate jitter, so the
-                        // healthy steady state (~100-200ms backlog) is never touched. Generic, not device tuning.
-                        constexpr int64_t kCatastrophicAppBacklogSamples = SAMPLE_RATE * 2;  // 2s = stall, not jitter
                         rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                         const int64_t rbCapacitySamples =
                             static_cast<int64_t>(src.ringBuffer->GetCapacity() / CHANNELS);
-
-                        // Resync a catastrophically backlogged CFR app source to the live edge so a read-stall
-                        // cannot end the track in permanent silence. Drops stale backlog, keeps the newest audio,
-                        // and fades the seam (CaptureDropFadeAnchor). One discontinuity after a real stall, never
-                        // a dead track. Below the threshold the no-trim policy is preserved untouched.
-                        const int64_t catastrophicResyncTrim = ce::audio::ComputeCatastrophicBacklogResyncTrim(
-                            isCfrRecording, src.sourceType == AudioConfig::AppAudio, static_cast<int64_t>(rbAvailable),
-                            targetLatencySamples, kCatastrophicAppBacklogSamples,
-                            SAMPLE_RATE / 10 /* keep >= 100ms live cushion */);
-                        if (catastrophicResyncTrim > 0) {
-                            const int64_t backlogBefore = static_cast<int64_t>(rbAvailable);
-                            CaptureDropFadeAnchor(src, CHANNELS);
-                            src.dropFadeSamplesRemaining = (int)kRuntimeDropFadeSamples;
-                            size_t trimmedFloats =
-                                src.ringBuffer->Skip(static_cast<size_t>(catastrophicResyncTrim) * CHANNELS);
-                            size_t trimmedSamples = trimmedFloats / CHANNELS;
-                            ce::audio::ConsumeSyntheticBufferedSamples(src.startupSyntheticRingSamples, trimmedSamples);
-                            ce::audio::ConsumeSyntheticBufferedSamples(src.startupGapProtectionSamples, trimmedSamples);
-                            src.latencyTrimSamples += trimmedSamples;
-                            src.catastrophicResyncSamples += trimmedSamples;
-                            src.catastrophicResyncEvents++;
-                            rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
-                            const uint64_t nowTick = GetTickCount64();
-                            if (nowTick - src.lastCatastrophicResyncTick >= 1000) {
-                                DLL_Log(
-                                    "[PullAudio] App source catastrophic backlog resync - src %d dropped %lld stale "
-                                    "samples (%.2fs) to live edge after read-stall (backlogWas=%lld now=%lld "
-                                    "target=%lld cap=%lld event#%u). Recovery from alt-tab/DPC/encoder stall; the "
-                                    "track stays live instead of going permanently silent.",
-                                    (int)srcIdx, (long long)trimmedSamples,
-                                    static_cast<double>(trimmedSamples) / SAMPLE_RATE, (long long)backlogBefore,
-                                    (long long)rbAvailable, (long long)targetLatencySamples,
-                                    (long long)rbCapacitySamples, src.catastrophicResyncEvents);
-                                src.lastCatastrophicResyncTick = nowTick;
-                            }
-                        }
 
                         const int64_t overflowCapSamples = ce::audio::ComputeRuntimeOverflowCapSamples(
                             isCfrRecording, targetLatencySamples, rbCapacitySamples, kMaxOverflowSamples,
@@ -4339,7 +4310,10 @@ public:
                                 (int)srcIdx);
                         }
                     }
-                    src.pendingUnderrunRecoveryFade = !startupPadding && !expectedTimelineSilence;
+                    // Expected timeline silence (for example a focused game's process loopback muting on
+                    // alt-tab) is not an underrun, but the first real samples after it still need a short
+                    // route-local fade-in so an arbitrary waveform phase cannot click at the silence seam.
+                    src.pendingUnderrunRecoveryFade = !startupPadding;
                     if (startupPadding && realCopiedSamples == 0) {
                         src.pendingStartupJoinFade = true;
                     }

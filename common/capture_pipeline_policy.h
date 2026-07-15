@@ -102,6 +102,7 @@ constexpr uint32_t kWgcEncoderLimitedSourceBufferFloorFrames = 4;
 constexpr uint32_t kWgcEncoderLimitedLiveSchedulerRebaseTicksPerLoop = 4;
 constexpr uint32_t kCfrShortfallCatchupThresholdTicks = 2;
 constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
+constexpr uint32_t kInjectCfrRecoveryExitShortfallTicks = 1;
 constexpr double kWgcSevereShortfallDurationMs = 500.0;
 constexpr uint32_t kWgcDeepUnderfeedMarginFps = 8;
 constexpr uint32_t kWgcDeepUnderfeedEmptyTickPermille = 350;
@@ -633,8 +634,24 @@ inline double GetEncoderSustainableOutputFps(double encodeMs) {
     return 1000.0 / encodeMs;
 }
 
-inline uint32_t GetInjectCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks, bool encoderBottlenecked = false) {
-    if (outputShortfallTicks < kCfrShortfallForceCatchupThresholdTicks || encoderBottlenecked) {
+inline bool GetInjectCfrRecoveryActive(bool wasActive, bool recordingOutputLive, bool useVFR,
+                                       uint32_t outputShortfallTicks) {
+    if (!recordingOutputLive || useVFR) {
+        return false;
+    }
+
+    if (wasActive) {
+        // Do not bounce between 17 and 18 ticks after a one-tick catch-up.
+        // Keep the episode armed so later healthy service windows can finish it.
+        return outputShortfallTicks > kInjectCfrRecoveryExitShortfallTicks;
+    }
+
+    return outputShortfallTicks >= kCfrShortfallForceCatchupThresholdTicks;
+}
+
+inline uint32_t GetInjectCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks, bool recoveryActive,
+                                                 bool encoderBottlenecked = false) {
+    if (!recoveryActive || outputShortfallTicks <= kInjectCfrRecoveryExitShortfallTicks || encoderBottlenecked) {
         return 1u;
     }
 
@@ -643,12 +660,13 @@ inline uint32_t GetInjectCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks, 
 
 inline bool ShouldUseFreshInjectCatchup(bool useVFR, bool encoderBottlenecked, bool encoderActivelyTooSlow,
                                         size_t bufferedInjectFrames, size_t minBufferedInjectFrames,
-                                        double frameCreditAccumulator, uint32_t outputShortfallTicks) {
+                                        double frameCreditAccumulator, uint32_t outputShortfallTicks,
+                                        bool recoveryActive) {
     if (useVFR || encoderBottlenecked || encoderActivelyTooSlow) {
         return false;
     }
 
-    if (outputShortfallTicks < kCfrShortfallForceCatchupThresholdTicks) {
+    if (!recoveryActive || outputShortfallTicks <= kInjectCfrRecoveryExitShortfallTicks) {
         return false;
     }
 
@@ -1404,13 +1422,15 @@ inline size_t GetMaxBufferedInjectFrames(size_t injectReserveFrames, bool record
 }
 
 inline int64_t GetInjectLiveMaxFrameAgeQpc(bool recordingOutputLive, bool encoderBottlenecked,
-                                           bool encoderActivelyTooSlow, int64_t targetIntervalTicks) {
+                                           bool encoderActivelyTooSlow, bool recoveryActive,
+                                           int64_t targetIntervalTicks) {
     if (!recordingOutputLive || targetIntervalTicks <= 0) {
         return 0;
     }
 
-    const uint32_t maxAgeTicks = (encoderBottlenecked || encoderActivelyTooSlow) ? kInjectLivePressureMaxFrameAgeTicks
-                                                                                 : kInjectLiveHealthyMaxFrameAgeTicks;
+    const uint32_t maxAgeTicks = (encoderBottlenecked || encoderActivelyTooSlow || recoveryActive)
+                                     ? kInjectLivePressureMaxFrameAgeTicks
+                                     : kInjectLiveHealthyMaxFrameAgeTicks;
     return targetIntervalTicks * static_cast<int64_t>(maxAgeTicks);
 }
 

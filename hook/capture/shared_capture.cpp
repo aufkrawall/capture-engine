@@ -17,8 +17,13 @@
 // ============================================================================
 
 CaptureManager& CaptureManager::Get() {
-    static CaptureManager instance;
-    return instance;
+    // Shared capture targets are themselves process-lifetime statics in several
+    // hook modules.  A destructed function-static manager can therefore be
+    // reached by a later target destructor during CRT/DLL teardown.  Keep the
+    // registry alive until process termination; Windows reclaims it together
+    // with the injected process.
+    static CaptureManager* const instance = new CaptureManager();
+    return *instance;
 }
 
 void CaptureManager::RegisterCaptureTarget(const char* name, ISharedCaptureTarget* target) {

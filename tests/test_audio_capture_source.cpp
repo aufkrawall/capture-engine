@@ -501,3 +501,17 @@ TEST(AudioCaptureSourceTest, AppBacklogDrainCannotStarveRouteFromDelayedSharedCa
               std::string::npos);
     EXPECT_NE(source.find("ShouldTreatInactiveStartedAppCaptureAsSilence"), std::string::npos);
 }
+
+TEST(AudioCaptureSourceTest, CfrSourceGapsAreRouteLocalSilenceWithoutDestructiveResync) {
+    const std::string source = ReadSource("mediaengine.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t expectedSilence = source.find("const bool expectedTimelineSilence =");
+    ASSERT_NE(expectedSilence, std::string::npos);
+    const size_t sparseSilence = source.find("sparseStartedSourceMaySilence ||", expectedSilence);
+    ASSERT_NE(sparseSilence, std::string::npos);
+    EXPECT_LT(sparseSilence, expectedSilence + 300);
+    EXPECT_NE(source.find("src.pendingUnderrunRecoveryFade = !startupPadding;"), std::string::npos);
+    EXPECT_EQ(source.find("ComputeCatastrophicBacklogResyncTrim"), std::string::npos);
+    EXPECT_EQ(source.find("App source catastrophic backlog resync"), std::string::npos);
+}
