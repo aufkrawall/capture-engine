@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-07-12
+Last cross-checked: 2026-07-15
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -13,9 +13,11 @@ Primary sources:
 
 ## Configuration contract
 
-- `sampler_override_mode=safe|aggressive` defaults to `safe`. Safe mode protects comparison/reduction, fixed-LOD,
-  non-material-address, and point-min/mag sampler families. Aggressive mode expands ordinary sampler coverage but still
-  preserves comparison/reduction, invalid, fixed-LOD, Vulkan non-normalized, and other structurally special samplers.
+- `sampler_override_mode=safe|aggressive` defaults to `safe`. Safe mode protects comparison/reduction, fixed-LOD, and
+  point-min/mag sampler families, with API-specific material-address restrictions (DX12/Vulkan remain wrap/mirror;
+  D3D10/11 can accept clamp/mirror-once when shader/resource evidence is available). Aggressive mode expands ordinary
+  sampler coverage but still preserves comparison/reduction, invalid, fixed-LOD, border, Vulkan non-normalized, and
+  other structurally special samplers.
 - `cpu_prerender_limit` has integer semantics only: `-1`, `0`, or `1-6`. Fractional, non-finite, trailing-junk, and
   out-of-range inputs normalize to `-1`.
 - `backbuffer_count=N` retains physical count changes where safe. A flip-model reduction that would violate the game's
@@ -37,7 +39,9 @@ Primary sources:
   serialization and again at root creation. Coverage includes sampler v1/v2, root signatures 1.0/1.1/1.2, raw
   `D3D12CreateDevice`, and `D3D12GetInterface`/`ID3D12DeviceFactory::CreateDevice`.
 - Vulkan uses only device-enabled anisotropy, clamps to physical-device limits, recognizes sampler-reduction pNext
-  structures directly, and retries the original descriptor transactionally if an override is rejected.
+  structures directly, and retries the original descriptor transactionally if an override is rejected. All modes
+  preserve clamp-to-border, unnormalized-coordinate, comparison, special-reduction, and nonstandard-filter samplers.
+  The decision occurs only at `vkCreateSampler`; there is no draw/dispatch cost.
 - OpenGL intercepts both texture parameters and modern sampler objects. CPU prerender sync rings are owned per HGLRC.
 
 ## Queue-depth and limiter invariants

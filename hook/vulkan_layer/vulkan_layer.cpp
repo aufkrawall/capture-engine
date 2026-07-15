@@ -1491,10 +1491,18 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const Vk
         const bool materialAddress = isMaterialAddress(modified.addressModeU) &&
                                      isMaterialAddress(modified.addressModeV) &&
                                      isMaterialAddress(modified.addressModeW);
+        const bool borderAddress = modified.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
+                                   modified.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER ||
+                                   modified.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
         const bool mipmapped = modified.maxLod > 0.0f && modified.minLod < modified.maxLod;
         const bool linearMinMag = modified.minFilter == VK_FILTER_LINEAR && modified.magFilter == VK_FILTER_LINEAR;
-        const bool overridesAllowed = mipmapped && modified.compareEnable == VK_FALSE && !specialReduction &&
-                                      (state.IsAggressiveSamplerOverride() || (materialAddress && linearMinMag));
+        const bool standardMinMag =
+            (modified.minFilter == VK_FILTER_NEAREST || modified.minFilter == VK_FILTER_LINEAR) &&
+            (modified.magFilter == VK_FILTER_NEAREST || modified.magFilter == VK_FILTER_LINEAR);
+        const bool overridesAllowed =
+            mipmapped && modified.compareEnable == VK_FALSE && !specialReduction && !borderAddress &&
+            modified.unnormalizedCoordinates == VK_FALSE && standardMinMag &&
+            (state.IsAggressiveSamplerOverride() || (materialAddress && linearMinMag));
 
         if (overridesAllowed) {
             // Anisotropic filtering override

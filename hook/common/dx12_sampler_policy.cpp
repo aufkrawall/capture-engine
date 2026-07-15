@@ -48,12 +48,12 @@ Decision Classify(const D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
     if (ce::sampler_override::IsD3D12ReductionFilter(desc.Filter)) {
         return Decision::ReductionFilter;
     }
+    if (desc.AddressU == D3D12_TEXTURE_ADDRESS_MODE_BORDER ||
+        desc.AddressV == D3D12_TEXTURE_ADDRESS_MODE_BORDER ||
+        desc.AddressW == D3D12_TEXTURE_ADDRESS_MODE_BORDER) {
+        return Decision::BorderAddress;
+    }
     if (!IsAggressive(gfx)) {
-        if (desc.AddressU == D3D12_TEXTURE_ADDRESS_MODE_BORDER ||
-            desc.AddressV == D3D12_TEXTURE_ADDRESS_MODE_BORDER ||
-            desc.AddressW == D3D12_TEXTURE_ADDRESS_MODE_BORDER) {
-            return Decision::BorderAddress;
-        }
         if (!IsMaterialAddressMode(desc.AddressU) || !IsMaterialAddressMode(desc.AddressV) ||
             !IsMaterialAddressMode(desc.AddressW)) {
             return Decision::ScreenSpaceAddress;

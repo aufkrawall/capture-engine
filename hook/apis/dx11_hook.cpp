@@ -48,6 +48,7 @@ ce::DeferredReleaseQueue g_DeferredRelease;
 #include <dxgi1_4.h>  // For IDXGISwapChain3
 #include "../common/input_manager.h"
 #include "../wrappers/custom_hook.h"
+#include "../wrappers/d3d11_devicecontext_wrap.h"
 #include "../wrappers/iat_hook.h"
 #include "../wrappers/vtable_hook.h"
 #include "../wrappers/wrapper_base.h"
@@ -61,8 +62,6 @@ extern void DX12_SignalFSR4SwapchainRecreated();
 // Called BEFORE new swapchain creation to immediately invalidate overlay
 // (checked throughout Present)
 extern void DX12_InvalidateSwapchain();
-void RegisterWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader, const void* shaderBytecode, SIZE_T bytecodeLength);
-
 // Globals
 // Cached device/context with AddRef — avoids calling GetDevice() every frame
 // (which crashes during shutdown when the swapchain's internal device ref is
@@ -117,8 +116,6 @@ static std::atomic<int> g_DiagSamplerAFApplied{0};
 static std::atomic<int> g_DiagSamplerReplacementCreated{0};
 static std::atomic<int> g_DiagSamplerRebound{0};
 static std::atomic<int> g_DiagSamplerDrawReconcileCalls{0};
-static std::atomic<int> g_DiagSamplerDrawHookCalls{0};
-static std::atomic<int> g_DiagSamplerDrawDirtyMisses{0};
 static std::atomic<int> g_DiagSamplerReconcileSlots{0};
 static std::atomic<int> g_DiagSamplerBindDeferred{0};
 static std::atomic<int> g_DiagSamplerEffectiveBindCalls{0};
@@ -134,8 +131,6 @@ static std::atomic<int> g_DiagD3D11ContextVTablesHooked{0};
 static std::atomic<int> g_DiagD3D11ContextHookSkips{0};
 static std::atomic<int> g_DiagCreateDeferredContext11{0};
 static std::atomic<int> g_DiagExecuteCommandList11{0};
-static std::atomic<int> g_DiagPixelShaderMetadataCreated{0};
-static std::atomic<int> g_DiagPixelShaderMetadataFailed{0};
 static std::atomic<int> g_DiagPrerenderFrames{0};
 static std::atomic<int> g_DiagPrerenderWaits{0};
 
@@ -544,9 +539,7 @@ static std::vector<D3D11SamplerCacheEntry> g_SamplerCache11;
 static std::shared_mutex g_SamplerCacheMutex11;
 static std::vector<ID3D11SamplerState*> g_ReplacementSamplers11;
 static uint64_t g_SamplerConfigHash11 = 0;
-
-static std::mutex g_D3D11FormatSupportMutex;
-static std::unordered_map<DXGI_FORMAT, bool> g_D3D11FormatSupportCache;
+static std::atomic<uint64_t> g_SamplerConfigHash11Fast{0};
 
 static thread_local bool g_InOverlayRender = false;
 static thread_local uint32_t g_WrapperContextForwardDepth11 = 0;
@@ -700,6 +693,7 @@ static void ClearReplacementSamplerCache11Unlocked() {
     g_ReplacementSamplers11.clear();
     g_SamplerCache11.clear();
     g_SamplerConfigHash11 = 0;
+    g_SamplerConfigHash11Fast.store(0, std::memory_order_release);
 }
 
 static void ClearReplacementSamplerCache11() {
@@ -709,12 +703,17 @@ static void ClearReplacementSamplerCache11() {
 
 static void EnsureSamplerCacheFresh11(const GraphicsConfig& gfx) {
     const uint64_t configHash = ce::sampler_override::HashSamplerOverrideConfig(gfx);
+    if (g_SamplerConfigHash11Fast.load(std::memory_order_acquire) == configHash) {
+        return;
+    }
     std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex11);
     if (g_SamplerConfigHash11 == configHash) {
+        g_SamplerConfigHash11Fast.store(configHash, std::memory_order_release);
         return;
     }
     ClearReplacementSamplerCache11Unlocked();
     g_SamplerConfigHash11 = configHash;
+    g_SamplerConfigHash11Fast.store(configHash, std::memory_order_release);
 }
 
 struct D3D11StageState {
@@ -726,84 +725,27 @@ struct D3D11StageState {
 struct D3D11PerContextState {
     D3D11StageState stages[6];
     ID3D11PixelShader* pixelShader = nullptr;
+    WrapperPixelShaderAFMetadata pixelShaderMetadata = {};
+    bool hasPixelShaderMetadata = false;
     uint32_t pixelSamplerDirtyMask = 0;
 };
 
 static std::mutex g_D3D11ContextStateMutex;
 static std::unordered_map<ID3D11DeviceContext*, D3D11PerContextState> g_D3D11ContextStates;
+static std::atomic<uint32_t> g_D3D11DirtyContextCount{0};
 
-struct D3D11PixelShaderAFMetadata {
-    ce::sampler_override::D3D11ShaderSamplerUsage usage = {};
-    bool available = false;
-    bool disassembleFailed = false;
-};
-
-static std::mutex g_D3D11PixelShaderMetadataMutex;
-static std::unordered_map<ID3D11PixelShader*, D3D11PixelShaderAFMetadata> g_D3D11PixelShaderMetadata;
-
-static D3D11PixelShaderAFMetadata BuildPixelShaderAFMetadata11(const void* bytecode, SIZE_T bytecodeLength) {
-    D3D11PixelShaderAFMetadata metadata = {};
-    if (!bytecode || bytecodeLength == 0) {
-        metadata.disassembleFailed = true;
-        return metadata;
-    }
-
-    ID3DBlob* disassembly = nullptr;
-    const HRESULT hr =
-        D3DDisassemble(bytecode, bytecodeLength, D3D_DISASM_ENABLE_DEFAULT_VALUE_PRINTS, nullptr, &disassembly);
-    if (FAILED(hr) || !disassembly) {
-        metadata.disassembleFailed = true;
-        int idx = g_DiagPixelShaderMetadataFailed.fetch_add(1, std::memory_order_relaxed);
-        if (idx < 12) {
-            HookLogImportant("DX11: AF pixel-shader disassembly failed hr=0x%08X bytecode=%zu (#%d)", hr,
-                             static_cast<size_t>(bytecodeLength), idx + 1);
-        }
-        return metadata;
-    }
-
-    metadata.usage = ce::sampler_override::ParseD3D11ShaderSamplerUsage(
-        static_cast<const char*>(disassembly->GetBufferPointer()), disassembly->GetBufferSize());
-    metadata.available = true;
-    disassembly->Release();
-    return metadata;
-}
-
-static void RegisterPixelShaderAFMetadata11(ID3D11PixelShader* shader, const void* bytecode, SIZE_T bytecodeLength) {
-    if (!shader) {
+// The raw-vtable fallback is normally bypassed by the context wrapper. For
+// callers that retain a real context pointer, let clean draws test one atomic
+// and return without taking the process-global state mutex.
+static void MarkPixelSamplersDirty11Locked(D3D11PerContextState& state, uint32_t mask) {
+    if (mask == 0) {
         return;
     }
-
-    const D3D11PixelShaderAFMetadata metadata = BuildPixelShaderAFMetadata11(bytecode, bytecodeLength);
-    {
-        std::lock_guard<std::mutex> lock(g_D3D11PixelShaderMetadataMutex);
-        g_D3D11PixelShaderMetadata[shader] = metadata;
+    const uint32_t previous = state.pixelSamplerDirtyMask;
+    state.pixelSamplerDirtyMask |= mask;
+    if (previous == 0) {
+        g_D3D11DirtyContextCount.fetch_add(1, std::memory_order_release);
     }
-
-    int idx = g_DiagPixelShaderMetadataCreated.fetch_add(1, std::memory_order_relaxed);
-    if (idx < 48) {
-        const auto summary = ce::sampler_override::SummarizeD3D11ShaderSamplerUsage(metadata.usage);
-        HookLogImportant(
-            "DX11: AF pixel-shader metadata shader=%p available=%d failed=%d samplers=%u pairs=%u "
-            "kinds(implicit=%u bias=%u lod=%u grad=%u comp=%u other=%u safe=%u unsafe=%u) "
-            "unsupported=%d (#%d)",
-            (void*)shader, metadata.available ? 1 : 0, metadata.disassembleFailed ? 1 : 0, summary.samplerCount,
-            summary.texturePairCount, summary.implicitSamplers, summary.biasSamplers, summary.lodSamplers,
-            summary.gradientSamplers, summary.comparisonSamplers, summary.otherExplicitSamplers, summary.afSafeSamplers,
-            summary.unsafeExplicitSamplers, metadata.usage.sawUnsupportedRegister ? 1 : 0, idx + 1);
-    }
-}
-
-static bool GetPixelShaderAFMetadata11(ID3D11PixelShader* shader, D3D11PixelShaderAFMetadata* outMetadata) {
-    if (!shader || !outMetadata) {
-        return false;
-    }
-    std::lock_guard<std::mutex> lock(g_D3D11PixelShaderMetadataMutex);
-    auto it = g_D3D11PixelShaderMetadata.find(shader);
-    if (it == g_D3D11PixelShaderMetadata.end()) {
-        return false;
-    }
-    *outMetadata = it->second;
-    return true;
 }
 
 static size_t GetStageIndex(D3D11ShaderStage stage) {
@@ -872,9 +814,7 @@ static uint32_t PixelSamplerDirtyMaskForResourceRange11Locked(const D3D11PerCont
         return 0;
     }
 
-    D3D11PixelShaderAFMetadata metadata = {};
-    const bool hasMetadata = GetPixelShaderAFMetadata11(state.pixelShader, &metadata);
-    if (!hasMetadata || !metadata.available) {
+    if (!state.hasPixelShaderMetadata || !state.pixelShaderMetadata.available) {
         return TrackedPixelSamplerMask11Locked(state);
     }
 
@@ -882,7 +822,8 @@ static uint32_t PixelSamplerDirtyMaskForResourceRange11Locked(const D3D11PerCont
     const UINT actualViews = (numViews < maxViews) ? numViews : maxViews;
     uint32_t mask = 0;
     for (UINT i = 0; i < actualViews; ++i) {
-        mask |= ce::sampler_override::D3D11ShaderSamplerMaskForTextureSlot(metadata.usage, startSlot + i);
+        mask |= ce::sampler_override::D3D11ShaderSamplerMaskForTextureSlot(state.pixelShaderMetadata.usage,
+                                                                           startSlot + i);
     }
     return mask & TrackedPixelSamplerMask11Locked(state);
 }
@@ -941,45 +882,68 @@ static void GetStageSamplers11(ID3D11DeviceContext* context, D3D11ShaderStage st
     }
 }
 
+static void ReleaseTrackedContextState11(D3D11PerContextState& state) {
+    for (D3D11StageState& stageState : state.stages) {
+        for (ID3D11ShaderResourceView*& view : stageState.srvs) {
+            if (view) {
+                view->Release();
+                view = nullptr;
+            }
+        }
+        for (ID3D11SamplerState*& sampler : stageState.samplers) {
+            if (sampler) {
+                sampler->Release();
+                sampler = nullptr;
+            }
+        }
+        for (ID3D11SamplerState*& sampler : stageState.realSamplers) {
+            if (sampler) {
+                sampler->Release();
+                sampler = nullptr;
+            }
+        }
+    }
+    if (state.pixelShader) {
+        state.pixelShader->Release();
+        state.pixelShader = nullptr;
+    }
+}
+
 static void ReleaseTrackedShaderResources11Unlocked() {
     for (auto& [context, state] : g_D3D11ContextStates) {
         (void)context;
-        for (D3D11StageState& stageState : state.stages) {
-            for (ID3D11ShaderResourceView*& view : stageState.srvs) {
-                if (view) {
-                    view->Release();
-                    view = nullptr;
-                }
-            }
-            for (ID3D11SamplerState*& sampler : stageState.samplers) {
-                if (sampler) {
-                    sampler->Release();
-                    sampler = nullptr;
-                }
-            }
-            for (ID3D11SamplerState*& sampler : stageState.realSamplers) {
-                if (sampler) {
-                    sampler->Release();
-                    sampler = nullptr;
-                }
-            }
-        }
-        if (state.pixelShader) {
-            state.pixelShader->Release();
-            state.pixelShader = nullptr;
-        }
+        ReleaseTrackedContextState11(state);
     }
     g_D3D11ContextStates.clear();
+    g_D3D11DirtyContextCount.store(0, std::memory_order_release);
+}
+
+static void ClearTrackedContextState11(ID3D11DeviceContext* context) {
+    if (!context) {
+        return;
+    }
+    D3D11PerContextState retiredState = {};
+    {
+        std::lock_guard<std::mutex> lock(g_D3D11ContextStateMutex);
+        auto it = g_D3D11ContextStates.find(context);
+        if (it == g_D3D11ContextStates.end()) {
+            return;
+        }
+        if (it->second.pixelSamplerDirtyMask != 0) {
+            g_D3D11DirtyContextCount.fetch_sub(1, std::memory_order_release);
+        }
+        retiredState = it->second;
+        g_D3D11ContextStates.erase(it);
+    }
+    // Driver-owned COM destruction must not run under the tracking mutex; a
+    // release can execute arbitrary runtime code and must be safe to re-enter.
+    ReleaseTrackedContextState11(retiredState);
 }
 
 static void ReleaseTrackedShaderResources11() {
     {
         std::lock_guard<std::mutex> lock(g_D3D11ContextStateMutex);
         ReleaseTrackedShaderResources11Unlocked();
-    }
-    {
-        std::lock_guard<std::mutex> lock(g_D3D11PixelShaderMetadataMutex);
-        g_D3D11PixelShaderMetadata.clear();
     }
 }
 
@@ -1018,8 +982,8 @@ static void UpdateStageShaderResources(ID3D11DeviceContext* context, D3D11Shader
         state.srvs[slot] = view;
     }
     if (stage == D3D11ShaderStage::Pixel && changed) {
-        contextState.pixelSamplerDirtyMask |=
-            PixelSamplerDirtyMaskForResourceRange11Locked(contextState, startSlot, actualViews);
+        MarkPixelSamplersDirty11Locked(
+            contextState, PixelSamplerDirtyMaskForResourceRange11Locked(contextState, startSlot, actualViews));
     }
 }
 
@@ -1059,7 +1023,7 @@ static uint32_t UpdateStageSamplers(ID3D11DeviceContext* context, D3D11ShaderSta
         }
         state.samplers[slot] = sampler;
     }
-    contextState.pixelSamplerDirtyMask |= dirtyMask;
+    MarkPixelSamplersDirty11Locked(contextState, dirtyMask);
     return dirtyMask;
 }
 
@@ -1132,7 +1096,11 @@ static void ClearPixelSamplerDirtyMask11(ID3D11DeviceContext* context, uint32_t 
     std::lock_guard<std::mutex> lock(g_D3D11ContextStateMutex);
     auto it = g_D3D11ContextStates.find(context);
     if (it != g_D3D11ContextStates.end()) {
+        const uint32_t previous = it->second.pixelSamplerDirtyMask;
         it->second.pixelSamplerDirtyMask &= ~slotMask;
+        if (previous != 0 && it->second.pixelSamplerDirtyMask == 0) {
+            g_D3D11DirtyContextCount.fetch_sub(1, std::memory_order_release);
+        }
     }
 }
 
@@ -1183,7 +1151,7 @@ static void UpdateTrackedPixelShader11(ID3D11DeviceContext* context, ID3D11Pixel
     if (contextState.pixelShader == shader) {
         return;
     }
-    contextState.pixelSamplerDirtyMask |= TrackedPixelSamplerMask11Locked(contextState);
+    MarkPixelSamplersDirty11Locked(contextState, TrackedPixelSamplerMask11Locked(contextState));
     if (shader) {
         shader->AddRef();
     }
@@ -1191,10 +1159,16 @@ static void UpdateTrackedPixelShader11(ID3D11DeviceContext* context, ID3D11Pixel
         contextState.pixelShader->Release();
     }
     contextState.pixelShader = shader;
+    contextState.pixelShaderMetadata = {};
+    contextState.hasPixelShaderMetadata =
+        GetWrapperPixelShaderAFMetadata(contextState.pixelShader, &contextState.pixelShaderMetadata);
 }
 
 static uint32_t ConsumePixelSamplerDirtyMask11(ID3D11DeviceContext* context) {
     if (!context) {
+        return 0;
+    }
+    if (g_D3D11DirtyContextCount.load(std::memory_order_acquire) == 0) {
         return 0;
     }
     std::lock_guard<std::mutex> lock(g_D3D11ContextStateMutex);
@@ -1204,21 +1178,33 @@ static uint32_t ConsumePixelSamplerDirtyMask11(ID3D11DeviceContext* context) {
     }
     const uint32_t mask = it->second.pixelSamplerDirtyMask;
     it->second.pixelSamplerDirtyMask = 0;
+    if (mask != 0) {
+        g_D3D11DirtyContextCount.fetch_sub(1, std::memory_order_release);
+    }
     return mask;
 }
 
-static ID3D11PixelShader* GetTrackedPixelShader11(ID3D11DeviceContext* context) {
-    if (!context) {
-        return nullptr;
+static bool GetTrackedPixelShaderMetadata11(ID3D11DeviceContext* context, bool* hasShader,
+                                            WrapperPixelShaderAFMetadata* metadata) {
+    if (hasShader) {
+        *hasShader = false;
     }
-
+    if (!context || !metadata) {
+        return false;
+    }
     std::lock_guard<std::mutex> lock(g_D3D11ContextStateMutex);
     auto it = g_D3D11ContextStates.find(context);
-    if (it == g_D3D11ContextStates.end() || !it->second.pixelShader) {
-        return nullptr;
+    if (it == g_D3D11ContextStates.end()) {
+        return false;
     }
-    it->second.pixelShader->AddRef();
-    return it->second.pixelShader;
+    if (hasShader) {
+        *hasShader = it->second.pixelShader != nullptr;
+    }
+    if (!it->second.hasPixelShaderMetadata) {
+        return false;
+    }
+    *metadata = it->second.pixelShaderMetadata;
+    return true;
 }
 
 static void RefreshPixelShaderFromContext11(ID3D11DeviceContext* context) {
@@ -1283,98 +1269,11 @@ static void RefreshStageSamplersFromContext11(ID3D11DeviceContext* context, D3D1
     }
 }
 
-static bool SupportsD3D11SamplingFormat(ID3D11Device* device, DXGI_FORMAT format) {
-    if (!device || format == DXGI_FORMAT_UNKNOWN) {
-        return false;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(g_D3D11FormatSupportMutex);
-        auto it = g_D3D11FormatSupportCache.find(format);
-        if (it != g_D3D11FormatSupportCache.end()) {
-            return it->second;
-        }
-    }
-
-    UINT support = 0;
-    bool result =
-        SUCCEEDED(device->CheckFormatSupport(format, &support)) && (support & D3D11_FORMAT_SUPPORT_SHADER_SAMPLE) != 0;
-
-    std::lock_guard<std::mutex> lock(g_D3D11FormatSupportMutex);
-    g_D3D11FormatSupportCache[format] = result;
-    return result;
-}
-
 static ce::sampler_override::D3D11ForcedAFResourceDecision ClassifyViewForForcedAF11(
     ID3D11Device* device, ID3D11ShaderResourceView* view,
     ce::sampler_override::D3D11Texture2DForcedAFInfo* outInfo = nullptr) {
-    using ce::sampler_override::D3D11ForcedAFResourceDecision;
-    if (!view) {
-        return D3D11ForcedAFResourceDecision::UnsupportedViewDimension;
-    }
-
-    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    view->GetDesc(&srvDesc);
-    const bool formatSupported = SupportsD3D11SamplingFormat(device, srvDesc.Format);
-    if (outInfo) {
-        *outInfo = {};
-        outInfo->format = srvDesc.Format;
-        outInfo->textureFormat = DXGI_FORMAT_UNKNOWN;
-        outInfo->viewDimension = srvDesc.ViewDimension;
-        outInfo->formatSupported = formatSupported;
-    }
-    if (!formatSupported) {
-        return D3D11ForcedAFResourceDecision::UnsupportedFormat;
-    }
-
-    ID3D11Resource* resource = nullptr;
-    view->GetResource(&resource);
-    if (!resource) {
-        return D3D11ForcedAFResourceDecision::UnsupportedViewDimension;
-    }
-
-    D3D11ForcedAFResourceDecision decision = D3D11ForcedAFResourceDecision::UnsupportedViewDimension;
-
-    ID3D11Texture2D* texture2D = nullptr;
-    if (SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&texture2D))) && texture2D) {
-        D3D11_TEXTURE2D_DESC textureDesc = {};
-        texture2D->GetDesc(&textureDesc);
-
-        UINT mostDetailedMip = 0;
-        UINT viewMipLevels = UINT_MAX;
-        switch (srvDesc.ViewDimension) {
-            case D3D11_SRV_DIMENSION_TEXTURE2D:
-                mostDetailedMip = srvDesc.Texture2D.MostDetailedMip;
-                viewMipLevels = srvDesc.Texture2D.MipLevels;
-                break;
-            default:
-                viewMipLevels = 0;
-                break;
-        }
-
-        ce::sampler_override::D3D11Texture2DForcedAFInfo info = {};
-        info.format = srvDesc.Format;
-        info.textureFormat = textureDesc.Format;
-        info.viewDimension = srvDesc.ViewDimension;
-        info.width = textureDesc.Width;
-        info.height = textureDesc.Height;
-        info.mipLevels = textureDesc.MipLevels;
-        info.mostDetailedMip = mostDetailedMip;
-        info.viewMipLevels = viewMipLevels;
-        info.arraySize = textureDesc.ArraySize;
-        info.sampleCount = textureDesc.SampleDesc.Count;
-        info.bindFlags = textureDesc.BindFlags;
-        info.miscFlags = textureDesc.MiscFlags;
-        info.formatSupported = true;
-        if (outInfo) {
-            *outInfo = info;
-        }
-        decision = ce::sampler_override::ClassifyD3D11Texture2DForForcedAF(info);
-        texture2D->Release();
-    }
-
-    resource->Release();
-    return decision;
+    (void)device;
+    return GetWrapperForcedAFViewMetadata(view, outInfo);
 }
 
 static bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
@@ -1416,6 +1315,8 @@ static bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const Graphics
             }
             return false;
         }
+        case D3D11ForcedAFSamplerDecision::PointMinMag:
+            return false;
     }
     return false;
 }
@@ -1437,12 +1338,14 @@ static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11Device
         return false;
     }
 
-    ID3D11PixelShader* shader = GetTrackedPixelShader11(context);
-    if (!shader) {
+    WrapperPixelShaderAFMetadata metadata = {};
+    bool hasShader = false;
+    bool hasMetadata = GetTrackedPixelShaderMetadata11(context, &hasShader, &metadata);
+    if (!hasShader) {
         RefreshPixelShaderFromContext11(context);
-        shader = GetTrackedPixelShader11(context);
+        hasMetadata = GetTrackedPixelShaderMetadata11(context, &hasShader, &metadata);
     }
-    if (!shader) {
+    if (!hasShader) {
         int idx = g_DiagSamplerSkipNoShader.fetch_add(1, std::memory_order_relaxed);
         if (idx < 12) {
             HookLogImportant("DX11: AF skip sampler (no active pixel shader, slot=%u)", slot);
@@ -1450,9 +1353,6 @@ static bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11Device
         return false;
     }
 
-    D3D11PixelShaderAFMetadata metadata = {};
-    const bool hasMetadata = GetPixelShaderAFMetadata11(shader, &metadata);
-    shader->Release();
     if (!hasMetadata || !metadata.available) {
         int idx = g_DiagSamplerSkipNoShaderMetadata.fetch_add(1, std::memory_order_relaxed);
         if (idx < 24) {
@@ -1580,15 +1480,13 @@ bool DX11Hook_ApplySamplerOverrides(D3D11_SAMPLER_DESC& desc, const GraphicsConf
 
     if (desc.MaxLOD <= 0.0f || desc.MinLOD >= desc.MaxLOD ||
         ce::sampler_override::IsD3D11ComparisonFilter(desc.Filter) ||
-        ce::sampler_override::IsD3D11ReductionFilter(desc.Filter)) {
+        ce::sampler_override::IsD3D11ReductionFilter(desc.Filter) ||
+        desc.AddressU == D3D11_TEXTURE_ADDRESS_BORDER || desc.AddressV == D3D11_TEXTURE_ADDRESS_BORDER ||
+        desc.AddressW == D3D11_TEXTURE_ADDRESS_BORDER) {
         return false;
     }
     if (gfx.samplerOverrideMode != "aggressive") {
-        const auto materialAddress = [](D3D11_TEXTURE_ADDRESS_MODE mode) {
-            return mode == D3D11_TEXTURE_ADDRESS_WRAP || mode == D3D11_TEXTURE_ADDRESS_MIRROR;
-        };
-        if (!materialAddress(desc.AddressU) || !materialAddress(desc.AddressV) || !materialAddress(desc.AddressW) ||
-            D3D11_DECODE_MIN_FILTER(desc.Filter) != D3D11_FILTER_TYPE_LINEAR ||
+        if (D3D11_DECODE_MIN_FILTER(desc.Filter) != D3D11_FILTER_TYPE_LINEAR ||
             D3D11_DECODE_MAG_FILTER(desc.Filter) != D3D11_FILTER_TYPE_LINEAR) {
             return false;
         }
@@ -1697,7 +1595,7 @@ static ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* 
         return original;
     }
 
-    const auto& gfx = GetActiveGraphicsConfig();
+    const auto& gfx = GetActiveGraphicsConfigCached();
     EnsureSamplerCacheFresh11(gfx);
 
     ID3D11Device* device = nullptr;
@@ -1882,7 +1780,6 @@ static HRESULT STDMETHODCALLTYPE DetourCreatePixelShader11(ID3D11Device* device,
                                                            ID3D11PixelShader** pixelShader) {
     const HRESULT hr = oCreatePixelShader11(device, shaderBytecode, bytecodeLength, classLinkage, pixelShader);
     if (SUCCEEDED(hr) && pixelShader && *pixelShader) {
-        RegisterPixelShaderAFMetadata11(*pixelShader, shaderBytecode, bytecodeLength);
         RegisterWrapperPixelShaderAFMetadata(*pixelShader, shaderBytecode, bytecodeLength);
     }
     return hr;
@@ -2050,6 +1947,9 @@ static void ReconcilePixelSamplersBeforeDraw11(ID3D11DeviceContext* context) {
     if (!context || g_InOverlayRender || DX11Hook_IsWrapperContextForwarding()) {
         return;
     }
+    if (g_D3D11DirtyContextCount.load(std::memory_order_acquire) == 0) {
+        return;
+    }
     SetSamplers11_t original =
         ResolveContextOriginal11(context, 10, &D3D11ContextVTableOriginals::psSetSamplers, oPSSetSamplers11);
     if (!original) {
@@ -2057,10 +1957,6 @@ static void ReconcilePixelSamplersBeforeDraw11(ID3D11DeviceContext* context) {
     }
     const uint32_t dirtyMask = ConsumePixelSamplerDirtyMask11(context);
     if (dirtyMask == 0) {
-        int idx = g_DiagSamplerDrawDirtyMisses.fetch_add(1, std::memory_order_relaxed);
-        if (idx < 16) {
-            HookLog("DX11: AF draw reconcile skipped ctx=%p reason=clean-or-untracked (#%d)", (void*)context, idx + 1);
-        }
         return;
     }
     const int rebound = ReconcileStageSamplers11(original, context, D3D11ShaderStage::Pixel, 0,
@@ -2072,37 +1968,8 @@ static void ReconcilePixelSamplersBeforeDraw11(ID3D11DeviceContext* context) {
     }
 }
 
-static void NoteD3D11DrawHookHit(const char* name, ID3D11DeviceContext* context) {
-    if (DX11Hook_IsWrapperContextForwarding()) {
-        return;
-    }
-    int idx = g_DiagSamplerDrawHookCalls.fetch_add(1, std::memory_order_relaxed);
-    if (idx < 32) {
-        void** vtable = context ? *reinterpret_cast<void***>(context) : nullptr;
-        HookLog("DX11: AF draw hook hit %s ctx=%p vtable=%p (#%d)", name ? name : "unknown", (void*)context,
-                (void*)vtable, idx + 1);
-    } else if (idx > 0 && (idx % 1000) == 0) {
-        HookLog(
-            "DX11: AF draw stats draws=%d allowed=%d nonColor=%d unsafe=%d bindDeferred=%d "
-            "effectiveBindCalls=%d effectiveBinds=%d bindSkips=%d drawDirtyMiss=%d drawReconcile=%d "
-            "reconcileSlots=%d rebound=%d",
-            idx, g_DiagSamplerAllowsAF.load(std::memory_order_relaxed),
-            g_DiagSamplerSkipNonColorResource.load(std::memory_order_relaxed),
-            g_DiagSamplerSkipUnsafeResource.load(std::memory_order_relaxed),
-            g_DiagSamplerBindDeferred.load(std::memory_order_relaxed),
-            g_DiagSamplerEffectiveBindCalls.load(std::memory_order_relaxed),
-            g_DiagSamplerEffectiveBinds.load(std::memory_order_relaxed),
-            g_DiagSamplerEffectiveBindSkips.load(std::memory_order_relaxed),
-            g_DiagSamplerDrawDirtyMisses.load(std::memory_order_relaxed),
-            g_DiagSamplerDrawReconcileCalls.load(std::memory_order_relaxed),
-            g_DiagSamplerReconcileSlots.load(std::memory_order_relaxed),
-            g_DiagSamplerRebound.load(std::memory_order_relaxed));
-    }
-}
-
 static void STDMETHODCALLTYPE DetourDrawIndexed11(ID3D11DeviceContext* context, UINT indexCount,
                                                   UINT startIndexLocation, INT baseVertexLocation) {
-    NoteD3D11DrawHookHit("DrawIndexed", context);
     ReconcilePixelSamplersBeforeDraw11(context);
     DrawIndexed11_t original =
         ResolveContextOriginal11(context, 12, &D3D11ContextVTableOriginals::drawIndexed, oDrawIndexed11);
@@ -2112,7 +1979,6 @@ static void STDMETHODCALLTYPE DetourDrawIndexed11(ID3D11DeviceContext* context, 
 }
 
 static void STDMETHODCALLTYPE DetourDraw11(ID3D11DeviceContext* context, UINT vertexCount, UINT startVertexLocation) {
-    NoteD3D11DrawHookHit("Draw", context);
     ReconcilePixelSamplersBeforeDraw11(context);
     Draw11_t original = ResolveContextOriginal11(context, 13, &D3D11ContextVTableOriginals::draw, oDraw11);
     if (original) {
@@ -2123,7 +1989,6 @@ static void STDMETHODCALLTYPE DetourDraw11(ID3D11DeviceContext* context, UINT ve
 static void STDMETHODCALLTYPE DetourDrawIndexedInstanced11(ID3D11DeviceContext* context, UINT indexCountPerInstance,
                                                            UINT instanceCount, UINT startIndexLocation,
                                                            INT baseVertexLocation, UINT startInstanceLocation) {
-    NoteD3D11DrawHookHit("DrawIndexedInstanced", context);
     ReconcilePixelSamplersBeforeDraw11(context);
     DrawIndexedInstanced11_t original = ResolveContextOriginal11(
         context, 20, &D3D11ContextVTableOriginals::drawIndexedInstanced, oDrawIndexedInstanced11);
@@ -2136,7 +2001,6 @@ static void STDMETHODCALLTYPE DetourDrawIndexedInstanced11(ID3D11DeviceContext* 
 static void STDMETHODCALLTYPE DetourDrawInstanced11(ID3D11DeviceContext* context, UINT vertexCountPerInstance,
                                                     UINT instanceCount, UINT startVertexLocation,
                                                     UINT startInstanceLocation) {
-    NoteD3D11DrawHookHit("DrawInstanced", context);
     ReconcilePixelSamplersBeforeDraw11(context);
     DrawInstanced11_t original =
         ResolveContextOriginal11(context, 21, &D3D11ContextVTableOriginals::drawInstanced, oDrawInstanced11);
@@ -2146,7 +2010,6 @@ static void STDMETHODCALLTYPE DetourDrawInstanced11(ID3D11DeviceContext* context
 }
 
 static void STDMETHODCALLTYPE DetourDrawAuto11(ID3D11DeviceContext* context) {
-    NoteD3D11DrawHookHit("DrawAuto", context);
     ReconcilePixelSamplersBeforeDraw11(context);
     DrawAuto11_t original = ResolveContextOriginal11(context, 38, &D3D11ContextVTableOriginals::drawAuto, oDrawAuto11);
     if (original) {
@@ -2157,7 +2020,6 @@ static void STDMETHODCALLTYPE DetourDrawAuto11(ID3D11DeviceContext* context) {
 static void STDMETHODCALLTYPE DetourDrawIndexedInstancedIndirect11(ID3D11DeviceContext* context,
                                                                    ID3D11Buffer* bufferForArgs,
                                                                    UINT alignedByteOffsetForArgs) {
-    NoteD3D11DrawHookHit("DrawIndexedInstancedIndirect", context);
     ReconcilePixelSamplersBeforeDraw11(context);
     DrawIndexedInstancedIndirect11_t original = ResolveContextOriginal11(
         context, 39, &D3D11ContextVTableOriginals::drawIndexedInstancedIndirect, oDrawIndexedInstancedIndirect11);
@@ -2168,7 +2030,6 @@ static void STDMETHODCALLTYPE DetourDrawIndexedInstancedIndirect11(ID3D11DeviceC
 
 static void STDMETHODCALLTYPE DetourDrawInstancedIndirect11(ID3D11DeviceContext* context, ID3D11Buffer* bufferForArgs,
                                                             UINT alignedByteOffsetForArgs) {
-    NoteD3D11DrawHookHit("DrawInstancedIndirect", context);
     ReconcilePixelSamplersBeforeDraw11(context);
     DrawInstancedIndirect11_t original = ResolveContextOriginal11(
         context, 40, &D3D11ContextVTableOriginals::drawInstancedIndirect, oDrawInstancedIndirect11);
@@ -2182,10 +2043,9 @@ static void STDMETHODCALLTYPE DetourExecuteCommandList11(ID3D11DeviceContext* co
     int idx = g_DiagExecuteCommandList11.fetch_add(1, std::memory_order_relaxed);
     if (idx < 24) {
         HookLogImportant(
-            "DX11: ExecuteCommandList ctx=%p commandList=%p restore=%d drawHooks=%d deferredContexts=%d "
+            "DX11: ExecuteCommandList ctx=%p commandList=%p restore=%d deferredContexts=%d "
             "drawReconcile=%d (#%d)",
             (void*)context, (void*)commandList, restoreContextState ? 1 : 0,
-            g_DiagSamplerDrawHookCalls.load(std::memory_order_relaxed),
             g_DiagCreateDeferredContext11.load(std::memory_order_relaxed),
             g_DiagSamplerDrawReconcileCalls.load(std::memory_order_relaxed), idx + 1);
     }
@@ -2194,6 +2054,9 @@ static void STDMETHODCALLTYPE DetourExecuteCommandList11(ID3D11DeviceContext* co
         ResolveContextOriginal11(context, 58, &D3D11ContextVTableOriginals::executeCommandList, oExecuteCommandList11);
     if (original) {
         original(context, commandList, restoreContextState);
+    }
+    if (!restoreContextState) {
+        ClearTrackedContextState11(context);
     }
 }
 
@@ -5908,12 +5771,8 @@ void DX11Hook::Shutdown() {
         int afSingleMip = g_DiagSamplerSkipSingleMip.load(std::memory_order_relaxed);
         int afNonColor = g_DiagSamplerSkipNonColorResource.load(std::memory_order_relaxed);
         int afUnsafe = g_DiagSamplerSkipUnsafeResource.load(std::memory_order_relaxed);
-        int afShaderMeta = g_DiagPixelShaderMetadataCreated.load(std::memory_order_relaxed);
-        int afShaderMetaFail = g_DiagPixelShaderMetadataFailed.load(std::memory_order_relaxed);
         int afRuntimeHooks = g_DiagSamplerRuntimeHookInstalled.load(std::memory_order_relaxed);
         int afDrawReconcile = g_DiagSamplerDrawReconcileCalls.load(std::memory_order_relaxed);
-        int afDrawHooks = g_DiagSamplerDrawHookCalls.load(std::memory_order_relaxed);
-        int afDrawDirtyMiss = g_DiagSamplerDrawDirtyMisses.load(std::memory_order_relaxed);
         int afReconcileSlots = g_DiagSamplerReconcileSlots.load(std::memory_order_relaxed);
         int afBindDeferred = g_DiagSamplerBindDeferred.load(std::memory_order_relaxed);
         int afEffectiveBindCalls = g_DiagSamplerEffectiveBindCalls.load(std::memory_order_relaxed);
@@ -5932,18 +5791,17 @@ void DX11Hook::Shutdown() {
         int prerenderWaits = g_DiagPrerenderWaits.load(std::memory_order_relaxed);
         HookLog(
             "DX11: Override summary: AF_allowed=%d AF_applied=%d AF_replaced=%d AF_runtimeHooks=%d "
-            "AF_shaderMeta(created=%d fail=%d) AF_skip(noMips=%d border=%d reduction=%d comp=%d stage=%d "
+            "AF_skip(noMips=%d border=%d reduction=%d comp=%d stage=%d "
             "noShader=%d noShaderMeta=%d shaderUnused=%d explicitSample=%d noSRV=%d fmt=%d singleMip=%d "
             "nonColor=%d unsafe=%d) AF_lodAllowed=%d bindDeferred=%d effectiveBindCalls=%d effectiveBinds=%d "
-            "bindSkips=%d drawHooks=%d drawDirtyMiss=%d "
-            "drawReconcile=%d reconcileSlots=%d "
+            "bindSkips=%d drawReconcile=%d reconcileSlots=%d "
             "bootstrap(complete=%d retry=%d disabled=%d) "
             "contextVTables=%d contextHookSkips=%d deferredContexts=%d executeCommandLists=%d "
             "mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
-            afAllowed, afApplied, afReplaced, afRuntimeHooks, afShaderMeta, afShaderMetaFail, afNoMips, afBorder,
-            afReduction, afComparison, afStage, afNoShader, afNoShaderMeta, afShaderUnused, afExplicitSample, afNoSRV,
+            afAllowed, afApplied, afReplaced, afRuntimeHooks, afNoMips, afBorder, afReduction, afComparison, afStage,
+            afNoShader, afNoShaderMeta, afShaderUnused, afExplicitSample, afNoSRV,
             afFormat, afSingleMip, afNonColor, afUnsafe, afAllowLod, afBindDeferred, afEffectiveBindCalls,
-            afEffectiveBinds, afEffectiveBindSkips, afDrawHooks, afDrawDirtyMiss, afDrawReconcile, afReconcileSlots,
+            afEffectiveBinds, afEffectiveBindSkips, afDrawReconcile, afReconcileSlots,
             afBootstrapComplete, afBootstrapRetry, afBootstrapDisabled, afContextVTables, afContextHookSkips,
             afDeferredContexts, afExecuteCommandLists, mipBias, mipOverride, prerenderFrames, prerenderWaits);
     }
@@ -5959,11 +5817,6 @@ void DX11Hook::Shutdown() {
     ClearReplacementSamplerCache11();
     ReleaseTrackedShaderResources11();
     ClearDeferredAFBootstraps11();
-    {
-        std::lock_guard<std::mutex> lock(g_D3D11FormatSupportMutex);
-        g_D3D11FormatSupportCache.clear();
-    }
-
     // Clean up prerender queries
     {
         std::lock_guard<std::mutex> lock(g_PrerenderMutex);
@@ -6022,12 +5875,8 @@ void DX11Hook::OnHostDisconnect() {
         int afSingleMip = g_DiagSamplerSkipSingleMip.load(std::memory_order_relaxed);
         int afNonColor = g_DiagSamplerSkipNonColorResource.load(std::memory_order_relaxed);
         int afUnsafe = g_DiagSamplerSkipUnsafeResource.load(std::memory_order_relaxed);
-        int afShaderMeta = g_DiagPixelShaderMetadataCreated.load(std::memory_order_relaxed);
-        int afShaderMetaFail = g_DiagPixelShaderMetadataFailed.load(std::memory_order_relaxed);
         int afRuntimeHooks = g_DiagSamplerRuntimeHookInstalled.load(std::memory_order_relaxed);
         int afDrawReconcile = g_DiagSamplerDrawReconcileCalls.load(std::memory_order_relaxed);
-        int afDrawHooks = g_DiagSamplerDrawHookCalls.load(std::memory_order_relaxed);
-        int afDrawDirtyMiss = g_DiagSamplerDrawDirtyMisses.load(std::memory_order_relaxed);
         int afReconcileSlots = g_DiagSamplerReconcileSlots.load(std::memory_order_relaxed);
         int afBindDeferred = g_DiagSamplerBindDeferred.load(std::memory_order_relaxed);
         int afEffectiveBindCalls = g_DiagSamplerEffectiveBindCalls.load(std::memory_order_relaxed);
@@ -6046,18 +5895,17 @@ void DX11Hook::OnHostDisconnect() {
         int prerenderWaits = g_DiagPrerenderWaits.load(std::memory_order_relaxed);
         HookLog(
             "DX11: Override summary: AF_allowed=%d AF_applied=%d AF_replaced=%d AF_runtimeHooks=%d "
-            "AF_shaderMeta(created=%d fail=%d) AF_skip(noMips=%d border=%d reduction=%d comp=%d stage=%d "
+            "AF_skip(noMips=%d border=%d reduction=%d comp=%d stage=%d "
             "noShader=%d noShaderMeta=%d shaderUnused=%d explicitSample=%d noSRV=%d fmt=%d singleMip=%d "
             "nonColor=%d unsafe=%d) AF_lodAllowed=%d bindDeferred=%d effectiveBindCalls=%d effectiveBinds=%d "
-            "bindSkips=%d drawHooks=%d drawDirtyMiss=%d "
-            "drawReconcile=%d reconcileSlots=%d "
+            "bindSkips=%d drawReconcile=%d reconcileSlots=%d "
             "bootstrap(complete=%d retry=%d disabled=%d) "
             "contextVTables=%d contextHookSkips=%d deferredContexts=%d executeCommandLists=%d "
             "mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
-            afAllowed, afApplied, afReplaced, afRuntimeHooks, afShaderMeta, afShaderMetaFail, afNoMips, afBorder,
-            afReduction, afComparison, afStage, afNoShader, afNoShaderMeta, afShaderUnused, afExplicitSample, afNoSRV,
+            afAllowed, afApplied, afReplaced, afRuntimeHooks, afNoMips, afBorder, afReduction, afComparison, afStage,
+            afNoShader, afNoShaderMeta, afShaderUnused, afExplicitSample, afNoSRV,
             afFormat, afSingleMip, afNonColor, afUnsafe, afAllowLod, afBindDeferred, afEffectiveBindCalls,
-            afEffectiveBinds, afEffectiveBindSkips, afDrawHooks, afDrawDirtyMiss, afDrawReconcile, afReconcileSlots,
+            afEffectiveBinds, afEffectiveBindSkips, afDrawReconcile, afReconcileSlots,
             afBootstrapComplete, afBootstrapRetry, afBootstrapDisabled, afContextVTables, afContextHookSkips,
             afDeferredContexts, afExecuteCommandLists, mipBias, mipOverride, prerenderFrames, prerenderWaits);
     }

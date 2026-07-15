@@ -648,6 +648,36 @@ GraphicsConfig GetActiveGraphicsConfig() {
     return mergedConfig;
 }
 
+const GraphicsConfig& GetActiveGraphicsConfigCached() {
+    thread_local GraphicsConfig cachedConfig;
+    thread_local uint32_t cachedVersion = 0xFFFFFFFFu;
+    thread_local DWORD lastRefreshTick = 0;
+    thread_local bool initialized = false;
+
+    uint32_t currentVersion = 0;
+    const bool hasSharedConfig = g_IPC && g_IPC->GetSharedMem();
+    if (hasSharedConfig) {
+        currentVersion = g_IPC->GetSharedMem()->configVersion.load(std::memory_order_acquire);
+    }
+
+    const DWORD now = GetTickCount();
+    const bool localRefreshDue = !hasSharedConfig && now - lastRefreshTick >= 1000;
+    if (!initialized || currentVersion != cachedVersion || localRefreshDue) {
+        cachedConfig = GetActiveGraphicsConfig();
+        cachedVersion = currentVersion;
+        lastRefreshTick = now;
+        initialized = true;
+    }
+    return cachedConfig;
+}
+
+uint32_t GetActiveGraphicsConfigVersion() {
+    if (g_IPC && g_IPC->GetSharedMem()) {
+        return g_IPC->GetSharedMem()->configVersion.load(std::memory_order_acquire);
+    }
+    return 0;
+}
+
 float GetActivePrerenderLimit() {
     const auto& cfg = GetActiveGraphicsConfig();
     return cfg.cpuPrerenderLimit;

@@ -9,17 +9,29 @@
 
 #include <d3d11_4.h>
 #include <cstdint>
+#include "../common/sampler_override_utils.h"
 #include "wrapper_base.h"
 
 // Forward declarations
 class CWrapD3D11Device;
+struct WrapperPixelShaderAFMetadataHandle;
 
 // Wrapper GUID for identification
 // {F6A78901-BCDE-F123-4567-890123456789}
 static const GUID IID_CWrapD3D11DeviceContext = {
     0xf6a78901, 0xbcde, 0xf123, {0x45, 0x67, 0x89, 0x01, 0x23, 0x45, 0x67, 0x89}};
 
+struct WrapperPixelShaderAFMetadata {
+    ce::sampler_override::D3D11ShaderSamplerUsage usage = {};
+    bool available = false;
+    bool disassembleFailed = false;
+};
+
 void RegisterWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader, const void* shaderBytecode, SIZE_T bytecodeLength);
+bool GetWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader, WrapperPixelShaderAFMetadata* outMetadata);
+void RegisterWrapperForcedAFViewMetadata(ID3D11ShaderResourceView* view);
+ce::sampler_override::D3D11ForcedAFResourceDecision GetWrapperForcedAFViewMetadata(
+    ID3D11ShaderResourceView* view, ce::sampler_override::D3D11Texture2DForcedAFInfo* outInfo = nullptr);
 
 /**
  * CWrapD3D11DeviceContext - Wraps ID3D11DeviceContext through
@@ -341,40 +353,43 @@ private:
     ID3D11DeviceContext2* m_pReal2;
     ID3D11DeviceContext3* m_pReal3;
     ID3D11DeviceContext4* m_pReal4;
+    ID3D11Device* m_pAFRealDevice;
     CWrapD3D11Device* m_pDevice;
     LONG m_RefCount;
     int m_Version;
     ID3D11PixelShader* m_CurrentPixelShader;
+    WrapperPixelShaderAFMetadataHandle* m_CurrentPixelShaderAFMetadata;
+    uint32_t m_CurrentPixelAFCandidateMask;
+    uint32_t m_PixelTrackedSamplerMask;
     uint32_t m_PixelSamplerDirtyMask;
     uint32_t m_PixelForcedSamplerMask;
-    bool m_AFStreamingQuietInitialized;
-    bool m_AFLastStreamingQuiet;
-    bool m_AFQuietReopenDirtyPending;
+    uint64_t m_LastSamplerConfigHash;
+    uint32_t m_LastGraphicsConfigVersion;
+    GraphicsConfig m_AFGraphicsConfig;
+    bool m_AFEnabled;
+    uint8_t m_PixelSRVAFState[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
+    ID3D11SamplerState* m_ForcedSamplerVariants[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT];
+    bool m_ForcedSamplerVariantResolved[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT];
     ID3D11ShaderResourceView* m_TrackedSRVs[6][D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT];
     ID3D11SamplerState* m_TrackedSamplers[6][D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT];
     ID3D11SamplerState* m_RealSamplers[6][D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT];
 
     void PromoteInterfaces();
     void ClearForcedAFTracking();
-    uint32_t ForcedRestoreMaskForPixelShaderResourceSlots(UINT startSlot, UINT numViews) const;
-    uint32_t DirtyMaskForPixelShaderResourceSlots(UINT startSlot, UINT numViews) const;
-    uint32_t DirtyMaskForPixelShaderResourceViewSlot(UINT slot, ID3D11ShaderResourceView* view) const;
+    void ClearForcedAFSamplerVariants();
+    void RefreshForcedAFConfig();
+    uint32_t DirtyMaskForPixelShaderResourceViewSlot(UINT slot) const;
     uint32_t TrackedPixelSamplerMask() const;
     uint32_t PixelAFCandidateSamplerMask() const;
     void TrackShaderResources(UINT stageIndex, UINT startSlot, UINT numViews, ID3D11ShaderResourceView* const* views);
-    void MarkForcedAFResourceMutation(ID3D11Resource* resource, const char* reason, UINT subresource);
-    void MarkForcedAFViewMutation(ID3D11View* view, const char* reason);
-    void InvalidateTrackedForcedAFViewsForResourceMutation(ID3D11Resource* resource, UINT writeDraw,
-                                                           const char* reason);
     uint32_t TrackSamplers(UINT stageIndex, UINT startSlot, UINT numSamplers, ID3D11SamplerState* const* samplers);
     void TrackPixelShader(ID3D11PixelShader* shader);
     void RefreshPixelShader();
     void RefreshShaderResources(UINT stageIndex, UINT startSlot, UINT numViews);
     ID3D11SamplerState* ResolveForcedAFSampler(UINT stageIndex, UINT slot, ID3D11Device* realDevice,
-                                               ID3D11SamplerState* original);
-    int ReconcileSamplers(UINT stageIndex, UINT startSlot, UINT numSlots, uint32_t slotMask);
+                                               ID3D11SamplerState* original, const GraphicsConfig& gfx);
+    void ReconcileSamplers(UINT stageIndex, UINT startSlot, UINT numSlots, uint32_t slotMask);
     void PreparePixelSamplersForDraw();
-    void SetRealSampler(UINT stageIndex, UINT slot, ID3D11SamplerState* sampler);
     void SetRealSamplerRange(UINT stageIndex, UINT startSlot, UINT numSamplers, ID3D11SamplerState* const* samplers);
     void RememberRealSampler(UINT stageIndex, UINT slot, ID3D11SamplerState* sampler);
     void BindTrackedSamplers(UINT stageIndex, UINT startSlot, UINT numSamplers, ID3D11SamplerState* const* samplers);

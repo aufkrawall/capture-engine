@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-15 (module-enumeration/ring-buffer/input-byte hardening, pixel-probed exact PostSL proxy-buffer takeover for FSR->DLSS, strict overlay-visibility interruption logging, fresh-queue native return after explicit DLSS off, authoritative PostSL/normal presentation ownership and warm-resume wrapper catch-up, wrapped-Present exact-proxy coverage during DLSS-G suspension, switch-app transactional FSR->DLSS presentation, GTA stable Reflex-driven DLSS-G menu suspension and exact-proxy continuity, generation-bound screenshot publication, collision-safe capture outputs, restricted process IPC, variable-length process-loopback transport, source-built libaom closure, strict config boundaries, and existing graphics/audio state; see frame-generation/guardrails.md, overlay-fg-status.md, screenshots.md, recording-output-paths.md, process-ipc.md, multi-audio-capture.md, build.py.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-15 (zero-lock clean-draw D3D11 forced AF and hardened DX12/Vulkan sampler policy, module-enumeration/ring-buffer/input-byte hardening, pixel-probed exact PostSL proxy-buffer takeover for FSR->DLSS, strict overlay-visibility interruption logging, fresh-queue native return after explicit DLSS off, authoritative PostSL/normal presentation ownership and warm-resume wrapper catch-up, wrapped-Present exact-proxy coverage during DLSS-G suspension, switch-app transactional FSR->DLSS presentation, GTA stable Reflex-driven DLSS-G menu suspension and exact-proxy continuity, generation-bound screenshot publication, collision-safe capture outputs, restricted process IPC, variable-length process-loopback transport, source-built libaom closure, strict config boundaries, and existing graphics/audio state; see dx11-forced-af.md, dx12-forced-af.md, graphics-overrides-and-frame-pacing.md, frame-generation/guardrails.md, overlay-fg-status.md, screenshots.md, recording-output-paths.md, process-ipc.md, multi-audio-capture.md, build.py.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -51,7 +51,7 @@ Primary sources:
 - `dx12-overlay-third-party-coexistence.md`
   - Current DX12 overlay coexistence rules for third-party overlays such as Steam, Rockstar Social Club, and Epic EOS.
 - `dx11-forced-af.md`
-  - Current Blackwell-safe D3D11 forced anisotropic filtering policy, per-context bootstrap, wrapper-context draw path, wrapper/vtable forwarding guard, streamed-SRV warm-up, shader-slot role probation/recovery, runtime enabled gating, candidate-resource registry/negative cache, runtime sampler/SRV tracking, diagnostics, and stale-risk.
+  - Current Blackwell-safe D3D11 forced anisotropic filtering policy: immutable shader/SRV/sampler object caches, dirty-slot-only reconciliation, zero-lock clean draws, broader material coverage, state-boundary handling, diagnostics, and runtime-validation stale-risk. Last verified 2026-07-15.
 - `dx12-forced-af.md`
   - Conservative-by-default creation-time DX12 sampler policy, early raw/factory-device interception, dynamic/static and precompiled root-signature 1.0-1.2 coverage, per-vtable chaining, diagnostics, and Kena/Blackwell validation requirements.
 - `graphics-overrides-and-frame-pacing.md`

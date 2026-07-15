@@ -44,13 +44,12 @@ inline D3D10_FILTER GetForcedAnisotropicFilter(D3D10_FILTER originalFilter) {
 inline bool IsD3D10SamplerOverrideEligible(const D3D10_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
     if (desc.MaxLOD <= 0.0f || desc.MinLOD >= desc.MaxLOD || IsD3D10ComparisonFilter(desc.Filter))
         return false;
+    if (desc.AddressU == D3D10_TEXTURE_ADDRESS_BORDER || desc.AddressV == D3D10_TEXTURE_ADDRESS_BORDER ||
+        desc.AddressW == D3D10_TEXTURE_ADDRESS_BORDER)
+        return false;
     if (gfx.samplerOverrideMode == "aggressive")
         return true;
-    const auto materialAddress = [](D3D10_TEXTURE_ADDRESS_MODE mode) {
-        return mode == D3D10_TEXTURE_ADDRESS_WRAP || mode == D3D10_TEXTURE_ADDRESS_MIRROR;
-    };
-    return materialAddress(desc.AddressU) && materialAddress(desc.AddressV) && materialAddress(desc.AddressW) &&
-           D3D11_DECODE_MIN_FILTER(static_cast<D3D11_FILTER>(desc.Filter)) == D3D11_FILTER_TYPE_LINEAR &&
+    return D3D11_DECODE_MIN_FILTER(static_cast<D3D11_FILTER>(desc.Filter)) == D3D11_FILTER_TYPE_LINEAR &&
            D3D11_DECODE_MAG_FILTER(static_cast<D3D11_FILTER>(desc.Filter)) == D3D11_FILTER_TYPE_LINEAR;
 }
 
@@ -340,13 +339,18 @@ inline bool D3D11ShaderSamplerUsesOtherExplicitSample(const D3D11ShaderSamplerUs
 
 inline bool D3D11ShaderSamplerUsesUnsafeExplicitSample(const D3D11ShaderSamplerUsage& usage, UINT samplerSlot) {
     return samplerSlot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT &&
-           (usage.samplerUsesGradientSample[samplerSlot] || usage.samplerUsesComparisonSample[samplerSlot] ||
+           (usage.samplerUsesLodSample[samplerSlot] || usage.samplerUsesComparisonSample[samplerSlot] ||
             usage.samplerUsesOtherExplicitSample[samplerSlot]);
 }
 
 inline bool D3D11ShaderSamplerUsesAFSafeSample(const D3D11ShaderSamplerUsage& usage, UINT samplerSlot) {
-    return samplerSlot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT && usage.samplerUsesImplicitSample[samplerSlot] &&
-           !usage.samplerUsesExplicitSample[samplerSlot];
+    if (samplerSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
+        return false;
+    }
+    const bool hasDerivativeFootprint = usage.samplerUsesImplicitSample[samplerSlot] ||
+                                        usage.samplerUsesBiasSample[samplerSlot] ||
+                                        usage.samplerUsesGradientSample[samplerSlot];
+    return hasDerivativeFootprint && !D3D11ShaderSamplerUsesUnsafeExplicitSample(usage, samplerSlot);
 }
 
 inline bool D3D11ShaderSamplerUsesOnlyImplicitSample(const D3D11ShaderSamplerUsage& usage, UINT samplerSlot) {
@@ -510,6 +514,7 @@ enum class D3D11ForcedAFSamplerDecision {
     BorderAddress,
     ReductionFilter,
     ComparisonFilter,
+    PointMinMag,
 };
 
 inline D3D11ForcedAFSamplerDecision ClassifyD3D11SamplerForForcedAF(const D3D11_SAMPLER_DESC& desc,
@@ -517,7 +522,7 @@ inline D3D11ForcedAFSamplerDecision ClassifyD3D11SamplerForForcedAF(const D3D11_
     if (!IsAnisotropicOverrideEnabled(gfx)) {
         return D3D11ForcedAFSamplerDecision::OverrideDisabled;
     }
-    if (desc.MaxLOD == 0.0f || desc.MinLOD == desc.MaxLOD) {
+    if (desc.MaxLOD <= 0.0f || desc.MinLOD >= desc.MaxLOD) {
         return D3D11ForcedAFSamplerDecision::FixedLOD;
     }
     if (desc.AddressU == D3D11_TEXTURE_ADDRESS_BORDER || desc.AddressV == D3D11_TEXTURE_ADDRESS_BORDER ||
@@ -529,6 +534,11 @@ inline D3D11ForcedAFSamplerDecision ClassifyD3D11SamplerForForcedAF(const D3D11_
     }
     if (IsD3D11ComparisonFilter(desc.Filter)) {
         return D3D11ForcedAFSamplerDecision::ComparisonFilter;
+    }
+    if (gfx.samplerOverrideMode != "aggressive" &&
+        (D3D11_DECODE_MIN_FILTER(desc.Filter) != D3D11_FILTER_TYPE_LINEAR ||
+         D3D11_DECODE_MAG_FILTER(desc.Filter) != D3D11_FILTER_TYPE_LINEAR)) {
+        return D3D11ForcedAFSamplerDecision::PointMinMag;
     }
     return D3D11ForcedAFSamplerDecision::Allow;
 }
@@ -564,11 +574,7 @@ inline bool IsPotentiallyProblematicD3D11AFFormat(DXGI_FORMAT format) {
         case DXGI_FORMAT_BC2_TYPELESS:
         case DXGI_FORMAT_BC3_TYPELESS:
         case DXGI_FORMAT_BC4_TYPELESS:
-        case DXGI_FORMAT_BC4_UNORM:
-        case DXGI_FORMAT_BC4_SNORM:
         case DXGI_FORMAT_BC5_TYPELESS:
-        case DXGI_FORMAT_BC5_UNORM:
-        case DXGI_FORMAT_BC5_SNORM:
         case DXGI_FORMAT_BC6H_TYPELESS:
         case DXGI_FORMAT_BC7_TYPELESS:
         case DXGI_FORMAT_R16_TYPELESS:
@@ -595,57 +601,52 @@ inline bool IsPotentiallyProblematicD3D11AFFormat(DXGI_FORMAT format) {
 
 inline bool IsLikelyColorD3D11AFFormat(DXGI_FORMAT format) {
     switch (format) {
+        case DXGI_FORMAT_R32G32B32A32_FLOAT:
+        case DXGI_FORMAT_R32G32B32_FLOAT:
+        case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        case DXGI_FORMAT_R16G16B16A16_UNORM:
+        case DXGI_FORMAT_R16G16B16A16_SNORM:
+        case DXGI_FORMAT_R32G32_FLOAT:
+        case DXGI_FORMAT_R10G10B10A2_UNORM:
+        case DXGI_FORMAT_R11G11B10_FLOAT:
         case DXGI_FORMAT_R8G8B8A8_UNORM:
         case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        case DXGI_FORMAT_R8G8B8A8_SNORM:
+        case DXGI_FORMAT_R16G16_FLOAT:
+        case DXGI_FORMAT_R16G16_UNORM:
+        case DXGI_FORMAT_R16G16_SNORM:
+        case DXGI_FORMAT_R32_FLOAT:
+        case DXGI_FORMAT_R8G8_UNORM:
+        case DXGI_FORMAT_R8G8_SNORM:
+        case DXGI_FORMAT_R16_FLOAT:
+        case DXGI_FORMAT_R16_UNORM:
+        case DXGI_FORMAT_R16_SNORM:
+        case DXGI_FORMAT_R8_UNORM:
+        case DXGI_FORMAT_R8_SNORM:
+        case DXGI_FORMAT_A8_UNORM:
+        case DXGI_FORMAT_R9G9B9E5_SHAREDEXP:
         case DXGI_FORMAT_B8G8R8A8_UNORM:
         case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
         case DXGI_FORMAT_B8G8R8X8_UNORM:
         case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+        case DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM:
+        case DXGI_FORMAT_B5G6R5_UNORM:
+        case DXGI_FORMAT_B5G5R5A1_UNORM:
+        case DXGI_FORMAT_B4G4R4A4_UNORM:
         case DXGI_FORMAT_BC1_UNORM:
         case DXGI_FORMAT_BC1_UNORM_SRGB:
         case DXGI_FORMAT_BC2_UNORM:
         case DXGI_FORMAT_BC2_UNORM_SRGB:
         case DXGI_FORMAT_BC3_UNORM:
         case DXGI_FORMAT_BC3_UNORM_SRGB:
+        case DXGI_FORMAT_BC4_UNORM:
+        case DXGI_FORMAT_BC4_SNORM:
+        case DXGI_FORMAT_BC5_UNORM:
+        case DXGI_FORMAT_BC5_SNORM:
+        case DXGI_FORMAT_BC6H_UF16:
+        case DXGI_FORMAT_BC6H_SF16:
         case DXGI_FORMAT_BC7_UNORM:
         case DXGI_FORMAT_BC7_UNORM_SRGB:
-            return true;
-        default:
-            return false;
-    }
-}
-
-inline bool IsHighConfidenceColorD3D11AFFormat(DXGI_FORMAT format) {
-    switch (format) {
-        case DXGI_FORMAT_R8G8B8A8_UNORM:
-        case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
-        case DXGI_FORMAT_B8G8R8A8_UNORM:
-        case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
-        case DXGI_FORMAT_B8G8R8X8_UNORM:
-        case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
-        case DXGI_FORMAT_BC1_UNORM:
-        case DXGI_FORMAT_BC1_UNORM_SRGB:
-        case DXGI_FORMAT_BC2_UNORM:
-        case DXGI_FORMAT_BC2_UNORM_SRGB:
-        case DXGI_FORMAT_BC3_UNORM:
-        case DXGI_FORMAT_BC3_UNORM_SRGB:
-        case DXGI_FORMAT_BC7_UNORM:
-        case DXGI_FORMAT_BC7_UNORM_SRGB:
-            return true;
-        default:
-            return false;
-    }
-}
-
-inline bool IsTypelessD3D11AFFormat(DXGI_FORMAT format) {
-    switch (format) {
-        case DXGI_FORMAT_R8G8B8A8_TYPELESS:
-        case DXGI_FORMAT_BC1_TYPELESS:
-        case DXGI_FORMAT_BC2_TYPELESS:
-        case DXGI_FORMAT_BC3_TYPELESS:
-        case DXGI_FORMAT_B8G8R8A8_TYPELESS:
-        case DXGI_FORMAT_B8G8R8X8_TYPELESS:
-        case DXGI_FORMAT_BC7_TYPELESS:
             return true;
         default:
             return false;
@@ -654,16 +655,10 @@ inline bool IsTypelessD3D11AFFormat(DXGI_FORMAT format) {
 
 enum class D3D11ForcedAFResourceDecision {
     Allow,
-    PendingStableObservation,
-    PendingStreamingQuiet,
     UnsupportedFormat,
     UnsupportedViewDimension,
     Multisampled,
-    ArrayResource,
-    CubeResource,
     DepthStencilResource,
-    RenderTargetResource,
-    UnorderedAccessResource,
     ProblematicFormat,
     NonColorFormat,
     SingleVisibleMip,
@@ -673,26 +668,14 @@ inline const char* D3D11ForcedAFResourceDecisionName(D3D11ForcedAFResourceDecisi
     switch (decision) {
         case D3D11ForcedAFResourceDecision::Allow:
             return "allow";
-        case D3D11ForcedAFResourceDecision::PendingStableObservation:
-            return "pending-stable-observation";
-        case D3D11ForcedAFResourceDecision::PendingStreamingQuiet:
-            return "pending-streaming-quiet";
         case D3D11ForcedAFResourceDecision::UnsupportedFormat:
             return "unsupported-format";
         case D3D11ForcedAFResourceDecision::UnsupportedViewDimension:
             return "unsupported-view-dimension";
         case D3D11ForcedAFResourceDecision::Multisampled:
             return "multisampled";
-        case D3D11ForcedAFResourceDecision::ArrayResource:
-            return "array-resource";
-        case D3D11ForcedAFResourceDecision::CubeResource:
-            return "cube-resource";
         case D3D11ForcedAFResourceDecision::DepthStencilResource:
             return "depth-stencil-resource";
-        case D3D11ForcedAFResourceDecision::RenderTargetResource:
-            return "render-target-resource";
-        case D3D11ForcedAFResourceDecision::UnorderedAccessResource:
-            return "unordered-access-resource";
         case D3D11ForcedAFResourceDecision::ProblematicFormat:
             return "problematic-format";
         case D3D11ForcedAFResourceDecision::NonColorFormat:
@@ -701,93 +684,6 @@ inline const char* D3D11ForcedAFResourceDecisionName(D3D11ForcedAFResourceDecisi
             return "single-visible-mip";
     }
     return "unknown";
-}
-
-inline UINT ResolveD3D11ForcedAFViewWarmupStartDraw(UINT firstSeenDraw, UINT lastResourceWriteDraw) {
-    return lastResourceWriteDraw > firstSeenDraw ? lastResourceWriteDraw : firstSeenDraw;
-}
-
-inline D3D11ForcedAFResourceDecision ResolveD3D11ForcedAFViewWarmupDecision(
-    UINT currentDraw, UINT firstSeenDraw, UINT allowObservations, UINT requiredObservations, UINT requiredAgeDraws,
-    UINT requiredStreamingAgeDraws, UINT acceleratedObservations = 0, UINT acceleratedAgeDraws = 0) {
-    if (allowObservations < requiredObservations) {
-        return D3D11ForcedAFResourceDecision::PendingStableObservation;
-    }
-
-    if (currentDraw < firstSeenDraw) {
-        return D3D11ForcedAFResourceDecision::PendingStableObservation;
-    }
-
-    const UINT resourceAgeDraws = currentDraw - firstSeenDraw;
-    if (resourceAgeDraws < requiredAgeDraws) {
-        return D3D11ForcedAFResourceDecision::PendingStableObservation;
-    }
-
-    const bool acceleratedAllow = acceleratedObservations != 0 && acceleratedAgeDraws != 0 &&
-                                  allowObservations >= acceleratedObservations &&
-                                  resourceAgeDraws >= acceleratedAgeDraws;
-    if (requiredStreamingAgeDraws != 0 && resourceAgeDraws < requiredStreamingAgeDraws && !acceleratedAllow) {
-        return D3D11ForcedAFResourceDecision::PendingStreamingQuiet;
-    }
-
-    return D3D11ForcedAFResourceDecision::Allow;
-}
-
-inline bool D3D11ForcedAFStreamingWindowIsQuiet(UINT currentDraw, UINT lastResourceCacheMissDraw,
-                                                UINT lastResourceWriteDraw, UINT requiredQuietDraws) {
-    if (requiredQuietDraws == 0) {
-        return true;
-    }
-    if (lastResourceCacheMissDraw != 0) {
-        if (currentDraw < lastResourceCacheMissDraw || currentDraw - lastResourceCacheMissDraw < requiredQuietDraws) {
-            return false;
-        }
-    }
-    if (lastResourceWriteDraw != 0) {
-        if (currentDraw < lastResourceWriteDraw || currentDraw - lastResourceWriteDraw < requiredQuietDraws) {
-            return false;
-        }
-    }
-    return true;
-}
-
-inline D3D11ForcedAFResourceDecision ApplyD3D11ForcedAFGlobalStreamingGate(D3D11ForcedAFResourceDecision decision,
-                                                                           bool globalStreamingQuiet,
-                                                                           bool resourceAlreadyStable) {
-    if (resourceAlreadyStable) {
-        return decision;
-    }
-    if (decision == D3D11ForcedAFResourceDecision::Allow && !globalStreamingQuiet) {
-        return D3D11ForcedAFResourceDecision::PendingStreamingQuiet;
-    }
-    return decision;
-}
-
-inline D3D11ForcedAFResourceDecision ApplyD3D11ForcedAFGlobalStreamingGate(D3D11ForcedAFResourceDecision decision,
-                                                                           bool globalStreamingQuiet) {
-    return ApplyD3D11ForcedAFGlobalStreamingGate(decision, globalStreamingQuiet, false);
-}
-
-inline uint32_t ResolveD3D11ForcedAFQuietTransitionDirtyMask(bool globalStreamingQuiet, bool quietStateChanged,
-                                                             uint32_t candidateSamplerMask, uint32_t forcedSamplerMask,
-                                                             bool& pendingQuietReopenDirty) {
-    if (!quietStateChanged && !pendingQuietReopenDirty) {
-        return 0;
-    }
-
-    const uint32_t dirtyMask = candidateSamplerMask | forcedSamplerMask;
-    if (!globalStreamingQuiet) {
-        pendingQuietReopenDirty = false;
-        return quietStateChanged ? dirtyMask : 0;
-    }
-
-    if (dirtyMask == 0) {
-        pendingQuietReopenDirty = true;
-        return 0;
-    }
-
-    pendingQuietReopenDirty = false;
-    return dirtyMask;
 }
 
 struct D3D11Texture2DForcedAFInfo {
@@ -806,81 +702,27 @@ struct D3D11Texture2DForcedAFInfo {
     bool formatSupported = false;
 };
 
-struct D3D11ForcedAFSamplerRoleState {
-    bool sawAllowedResource = false;
-    bool sawUnsafeResource = false;
-    bool blockedMixedRole = false;
-    UINT allowedRecoveryObservations = 0;
-    UINT recoveryCount = 0;
-};
-
-inline constexpr UINT kD3D11ForcedAFSamplerRoleRecoveryObservations = 16;
-
-// Track one semantic shader-sampler role, not a raw D3D sampler object. Engines
-// often reuse the same sampler state object for diffuse, normal, and mask slots.
-// Blocking by object would make one unsafe normal-map use suppress AF for unrelated
-// color slots that happen to share the same linear/wrap sampler.
-inline bool ObserveD3D11ForcedAFSamplerRole(D3D11ForcedAFSamplerRoleState& state,
-                                            D3D11ForcedAFResourceDecision decision) {
-    if (decision == D3D11ForcedAFResourceDecision::PendingStableObservation ||
-        decision == D3D11ForcedAFResourceDecision::PendingStreamingQuiet) {
-        return false;
-    }
-
-    if (decision == D3D11ForcedAFResourceDecision::Allow) {
-        state.sawAllowedResource = true;
-        if (!state.sawUnsafeResource && !state.blockedMixedRole) {
-            state.allowedRecoveryObservations = 0;
-            return true;
-        }
-        state.blockedMixedRole = true;
-        if (state.allowedRecoveryObservations < kD3D11ForcedAFSamplerRoleRecoveryObservations) {
-            ++state.allowedRecoveryObservations;
-        }
-        if (state.allowedRecoveryObservations >= kD3D11ForcedAFSamplerRoleRecoveryObservations) {
-            state.blockedMixedRole = false;
-            state.sawUnsafeResource = false;
-            state.allowedRecoveryObservations = 0;
-            ++state.recoveryCount;
-            return true;
-        }
-        return false;
-    }
-
-    if (decision != D3D11ForcedAFResourceDecision::Allow) {
-        state.sawUnsafeResource = true;
-        state.allowedRecoveryObservations = 0;
-        if (state.sawAllowedResource) {
-            state.blockedMixedRole = true;
-        }
-    }
-    return decision == D3D11ForcedAFResourceDecision::Allow && !state.blockedMixedRole;
-}
-
 inline D3D11ForcedAFResourceDecision ClassifyD3D11Texture2DForForcedAF(const D3D11Texture2DForcedAFInfo& info) {
     if (!info.formatSupported) {
         return D3D11ForcedAFResourceDecision::UnsupportedFormat;
     }
-    if (info.viewDimension != D3D11_SRV_DIMENSION_TEXTURE2D) {
-        return D3D11ForcedAFResourceDecision::UnsupportedViewDimension;
+    switch (info.viewDimension) {
+        case D3D11_SRV_DIMENSION_TEXTURE2D:
+        case D3D11_SRV_DIMENSION_TEXTURE2DARRAY:
+        case D3D11_SRV_DIMENSION_TEXTURECUBE:
+        case D3D11_SRV_DIMENSION_TEXTURECUBEARRAY:
+            break;
+        case D3D11_SRV_DIMENSION_TEXTURE2DMS:
+        case D3D11_SRV_DIMENSION_TEXTURE2DMSARRAY:
+            return D3D11ForcedAFResourceDecision::Multisampled;
+        default:
+            return D3D11ForcedAFResourceDecision::UnsupportedViewDimension;
     }
     if (info.sampleCount > 1) {
         return D3D11ForcedAFResourceDecision::Multisampled;
     }
-    if (info.arraySize > 1) {
-        return D3D11ForcedAFResourceDecision::ArrayResource;
-    }
-    if ((info.miscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0) {
-        return D3D11ForcedAFResourceDecision::CubeResource;
-    }
     if ((info.bindFlags & D3D11_BIND_DEPTH_STENCIL) != 0) {
         return D3D11ForcedAFResourceDecision::DepthStencilResource;
-    }
-    if ((info.bindFlags & D3D11_BIND_RENDER_TARGET) != 0) {
-        return D3D11ForcedAFResourceDecision::RenderTargetResource;
-    }
-    if ((info.bindFlags & D3D11_BIND_UNORDERED_ACCESS) != 0) {
-        return D3D11ForcedAFResourceDecision::UnorderedAccessResource;
     }
     if (IsPotentiallyProblematicD3D11AFFormat(info.format)) {
         return D3D11ForcedAFResourceDecision::ProblematicFormat;
@@ -900,37 +742,6 @@ inline D3D11ForcedAFResourceDecision ClassifyD3D11Texture2DForForcedAF(const D3D
 
 inline bool D3D11Texture2DAllowsForcedAF(const D3D11Texture2DForcedAFInfo& info) {
     return ClassifyD3D11Texture2DForForcedAF(info) == D3D11ForcedAFResourceDecision::Allow;
-}
-
-inline bool D3D11Texture2DMayNeedForcedAFMutationTracking(const D3D11Texture2DForcedAFInfo& info) {
-    if (info.viewDimension != D3D11_SRV_DIMENSION_TEXTURE2D) {
-        return false;
-    }
-    if ((info.bindFlags & D3D11_BIND_SHADER_RESOURCE) == 0) {
-        return false;
-    }
-    if (info.sampleCount > 1 || info.arraySize > 1) {
-        return false;
-    }
-    if ((info.miscFlags & D3D11_RESOURCE_MISC_TEXTURECUBE) != 0) {
-        return false;
-    }
-    if ((info.bindFlags & (D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_RENDER_TARGET | D3D11_BIND_UNORDERED_ACCESS)) != 0) {
-        return false;
-    }
-
-    if (IsTypelessD3D11AFFormat(info.format)) {
-        return false;
-    }
-    if (IsPotentiallyProblematicD3D11AFFormat(info.format)) {
-        return false;
-    }
-    if (!IsLikelyColorD3D11AFFormat(info.format)) {
-        return false;
-    }
-
-    const UINT totalMipLevels = ResolveFullMipCount2D(info.width, info.height, info.mipLevels);
-    return ResolveVisibleMipCount(totalMipLevels, info.mostDetailedMip, info.viewMipLevels) > 1;
 }
 
 inline bool IsD3D12ReductionFilter(D3D12_FILTER filter) {

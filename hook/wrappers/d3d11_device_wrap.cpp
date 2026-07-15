@@ -166,7 +166,11 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateTexture3D(const D3D11_TEXTURE3
 HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateShaderResourceView(ID3D11Resource* pResource,
                                                                      const D3D11_SHADER_RESOURCE_VIEW_DESC* pDesc,
                                                                      ID3D11ShaderResourceView** ppSRView) {
-    return m_pReal->CreateShaderResourceView(pResource, pDesc, ppSRView);
+    const HRESULT hr = m_pReal->CreateShaderResourceView(pResource, pDesc, ppSRView);
+    if (SUCCEEDED(hr) && ppSRView && *ppSRView) {
+        RegisterWrapperForcedAFViewMetadata(*ppSRView);
+    }
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateUnorderedAccessView(ID3D11Resource* pResource,
@@ -554,7 +558,11 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateShaderResourceView1(ID3D11Reso
                                                                       ID3D11ShaderResourceView1** ppSRView1) {
     if (!m_pReal3)
         return E_NOINTERFACE;
-    return m_pReal3->CreateShaderResourceView1(pResource, pDesc1, ppSRView1);
+    const HRESULT hr = m_pReal3->CreateShaderResourceView1(pResource, pDesc1, ppSRView1);
+    if (SUCCEEDED(hr) && ppSRView1 && *ppSRView1) {
+        RegisterWrapperForcedAFViewMetadata(*ppSRView1);
+    }
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateUnorderedAccessView1(ID3D11Resource* pResource,

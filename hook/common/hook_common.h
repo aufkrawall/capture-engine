@@ -206,6 +206,11 @@ void HookUpdatePreferredOverlayFGPublicationState(bool active, ce::fg_runtime::R
 
 // Helper to get active config (Local > IPC)
 GraphicsConfig GetActiveGraphicsConfig();
+// Thread-local snapshot for draw/bind hot paths. The snapshot refreshes when the
+// shared-memory config version changes and avoids copying string-heavy config on
+// every sampler decision.
+const GraphicsConfig& GetActiveGraphicsConfigCached();
+uint32_t GetActiveGraphicsConfigVersion();
 float GetActivePrerenderLimit();
 
 // Helper to apply VSync override (reduces duplication across DX9/11/12)

@@ -201,6 +201,20 @@ TEST(DX12SamplerPolicyTest, AggressiveModeIncludesOrdinaryPointAndClampSamplers)
     EXPECT_EQ(desc.MaxAnisotropy, 16u);
 }
 
+TEST(DX12SamplerPolicyTest, AggressiveModeStillProtectsBorderSamplers) {
+    GraphicsConfig gfx = ForcedAf();
+    gfx.samplerOverrideMode = "aggressive";
+    D3D12_SAMPLER_DESC desc = MaterialSampler();
+    desc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+    const D3D12_SAMPLER_DESC original = desc;
+
+    const auto result = ce::dx12_sampler_policy::Apply(desc, gfx);
+
+    EXPECT_FALSE(result.Modified());
+    EXPECT_EQ(result.decision, ce::dx12_sampler_policy::Decision::BorderAddress);
+    EXPECT_EQ(0, std::memcmp(&desc, &original, sizeof(desc)));
+}
+
 TEST(DX12SamplerPolicyTest, MalformedMipBiasIsIgnored) {
     for (const char* value : {"1suffix", "nan", "inf"}) {
         GraphicsConfig gfx = ForcedAf("default");

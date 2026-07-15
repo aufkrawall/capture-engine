@@ -1,6 +1,6 @@
 # DX12 Forced Anisotropic Filtering
 
-Last cross-checked: 2026-07-12
+Last cross-checked: 2026-07-15
 
 Primary sources:
 - `hook/common/dx12_sampler_policy.{h,cpp}`
@@ -21,9 +21,9 @@ promotion especially visible as red/green corruption.
 - `sampler_override_mode=safe` promotes only ordinary non-comparison/non-reduction samplers with linear min/mag
   filtering, a usable mip range, and wrap/mirror addressing. `aggressive` broadens ordinary sampler coverage while
   preserving structurally special samplers.
-- Every mode preserves comparison, minimum/maximum reduction, fixed/no-mip, invalid, and flagged non-normalized
-  samplers. Safe mode additionally preserves border, clamp/mirror-once, and point-min/mag descriptors; aggressive mode
-  intentionally opts ordinary instances of those families into the override.
+- Every mode preserves comparison, minimum/maximum reduction, fixed/no-mip, invalid, and border samplers. Safe mode
+  additionally preserves clamp/mirror-once and point-min/mag descriptors; aggressive mode intentionally opts ordinary
+  instances of those two families into the override but can never promote a border sampler.
 - `ComparisonFunc` does not classify a normal filter as a comparison sampler.
 - AF-off and mip-bias changes use the same safety boundary. Mip-bias application
   is independent from AF configuration, but never changes protected sampler
@@ -64,3 +64,6 @@ promotion especially visible as red/green corruption.
 - Fresh RTX 5070 validation is required. The expected result is nonzero eligible
   override counters, protected shadow/post-process sampler decisions, sharper
   eligible material textures, and no red/green corruption in the supplied scene.
+- The 2026-07-15 border hardening is creation-time only and adds no draw/dispatch
+  overhead. Required build `0.1.4878` and all 1,537 native tests at metadata
+  `0.1.4879` passed; fresh Blackwell runtime validation remains pending.
