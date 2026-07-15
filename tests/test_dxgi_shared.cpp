@@ -75,6 +75,53 @@ TEST(DXGISharedTest, AppCommandListsAreNotForwardedIntoARemovedDevice) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldForwardAppCommandListsToDriver(/*deviceRemoved=*/true));
 }
 
+TEST(DXGISharedTest, StreamlineUiActivationCoverageSurvivesFrameTagsUntilPostSLConsumesIt) {
+    ce::dx12_overlay_policy::StreamlineUiActivationCoverageBudget coverage;
+
+    coverage.Arm(2);
+    EXPECT_TRUE(coverage.NeedsCurrentFrameRecord());
+    EXPECT_EQ(coverage.Remaining(), 2u);
+
+    // Any number of eValidUntilPresent source-tag rollovers must keep requesting
+    // a current-frame record without spending the PostSL output budget.
+    EXPECT_TRUE(coverage.NeedsCurrentFrameRecord());
+    EXPECT_TRUE(coverage.NeedsCurrentFrameRecord());
+    EXPECT_EQ(coverage.Remaining(), 2u);
+
+    EXPECT_TRUE(coverage.ConsumePostSLOutput());
+    EXPECT_TRUE(coverage.NeedsCurrentFrameRecord());
+    EXPECT_EQ(coverage.Remaining(), 1u);
+    EXPECT_TRUE(coverage.ConsumePostSLOutput());
+    EXPECT_FALSE(coverage.NeedsCurrentFrameRecord());
+    EXPECT_FALSE(coverage.ConsumePostSLOutput());
+
+    coverage.Reset();
+    EXPECT_EQ(coverage.Remaining(), 0u);
+}
+
+TEST(DXGISharedTest, GameSwapchainCreationAfterExplicitDLSSOffProvesNativeReturn) {
+    using ce::dx12_overlay_policy::ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn;
+
+    EXPECT_TRUE(ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn(
+        /*gameCreatedSwapchain=*/true, /*postSLExplicitOffKeepAlive=*/true,
+        /*actualFrameGenerationActive=*/false, /*streamlineFGRunning=*/false));
+
+    // Explicit OFF without a game-created replacement is only suspension: the
+    // exact Streamline proxy must keep its proven PostSL rendering route.
+    EXPECT_FALSE(ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn(
+        /*gameCreatedSwapchain=*/false, /*postSLExplicitOffKeepAlive=*/true,
+        /*actualFrameGenerationActive=*/false, /*streamlineFGRunning=*/false));
+    EXPECT_FALSE(ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn(
+        /*gameCreatedSwapchain=*/true, /*postSLExplicitOffKeepAlive=*/true,
+        /*actualFrameGenerationActive=*/true, /*streamlineFGRunning=*/false));
+    EXPECT_FALSE(ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn(
+        /*gameCreatedSwapchain=*/true, /*postSLExplicitOffKeepAlive=*/true,
+        /*actualFrameGenerationActive=*/false, /*streamlineFGRunning=*/true));
+    EXPECT_FALSE(ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn(
+        /*gameCreatedSwapchain=*/true, /*postSLExplicitOffKeepAlive=*/false,
+        /*actualFrameGenerationActive=*/false, /*streamlineFGRunning=*/false));
+}
+
 TEST(DXGISharedTest, TransitionCooldownDoesNotHeavySuspendDrawableDX12Overlay) {
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldHeavySuspendDX12OverlayForSwapchainState(false, false));
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldHeavySuspendDX12OverlayForSwapchainState(true, false));
@@ -6873,8 +6920,12 @@ TEST(DXGISharedSourceTest, StreamlineGetStateOnlyActivationAdoptsPreTaggedOffici
         << "runtime diagnostics must distinguish exact tag-lifetime rollover from missing PostSL coverage";
     EXPECT_NE(renderer.find("if (g_Phase == BootstrapPhase::kStandbyIdle)"), std::string::npos)
         << "a frame without a usable UI tag must not prevent standby from trying the next frame";
-    EXPECT_NE(renderer.find("standbySubmission ? 0 : g_MaximumOutputPresents"), std::string::npos)
+    EXPECT_NE(renderer.find("g_CoverageBudget.Arm(g_MaximumOutputPresents)"), std::string::npos)
         << "standby draws must become visible-output coverage only after an activation edge";
+    EXPECT_NE(renderer.find("Streamline UI bootstrap continuing on next activation frame tag"), std::string::npos)
+        << "eValidUntilPresent source-frame rollover must re-record until PostSL consumes the handoff";
+    EXPECT_NE(renderer.find("g_CoverageBudget.ConsumePostSLOutput()"), std::string::npos)
+        << "only real PostSL output consumption may spend the official-UI coverage budget";
     EXPECT_NE(dx12.find("officialUiCoverage = ce::dx12_streamline_ui_overlay::HasActiveCoverage()"), std::string::npos)
         << "generated presents before PostSL can render must inherit the submitted official-UI overlay";
     EXPECT_NE(dx12.find("normalRouteDrawPendingAtEntry"), std::string::npos)

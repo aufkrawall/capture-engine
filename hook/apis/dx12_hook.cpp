@@ -48,7 +48,8 @@ static bool IsActualFrameGenerationActive();
 static bool IsStreamlineLoaded();
 static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativeStreamlineRuntimeQueue,
                                    bool authoritativeFFXRuntimeQueue, bool gameCreatedSwapchain = false,
-                                   IDXGISwapChain* associatedSwapchain = nullptr);
+                                   IDXGISwapChain* associatedSwapchain = nullptr,
+                                   bool authoritativeNormalSwapchainReturn = false);
 #include "../common/swapchain_wrapper.h"
 #include "../common/system_metrics.h"
 #include "../wrappers/dxgi_swapchain_wrap.h"
@@ -8339,7 +8340,7 @@ __attribute__((noinline)) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue) 
 // DX12_SetCommandQueue).  Also hooks the queue vtable for ECL interception.
 static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativeStreamlineRuntimeQueue,
                                    bool authoritativeFFXRuntimeQueue, bool gameCreatedSwapchain,
-                                   IDXGISwapChain* associatedSwapchain) {
+                                   IDXGISwapChain* associatedSwapchain, bool authoritativeNormalSwapchainReturn) {
     if (!pQueue)
         return false;
 
@@ -8387,6 +8388,33 @@ static bool DX12_SetSwapchainQueue(ID3D12CommandQueue* pQueue, bool authoritativ
 
         // Track whether an FG runtime owns this swapchain/queue
         bool runtimeOwns = (g_OriginalGameQueue && pQueue != g_OriginalGameQueue);
+
+        if (authoritativeNormalSwapchainReturn) {
+            runtimeOwns = false;
+            if (g_OriginalGameQueue != pQueue) {
+                ID3D12CommandQueue* oldOriginalGameQueue = g_OriginalGameQueue;
+                g_OriginalGameQueue = pQueue;
+                g_LastProvenOriginalQueueSwapchain.store(nullptr, std::memory_order_release);
+                pQueue->AddRef();
+                HookLogImportant(
+                    "DX12: Re-baselined original game queue to authoritative normal-return queue %p "
+                    "(was %p; the game replaced the retired Streamline presentation topology)",
+                    pQueue, oldOriginalGameQueue);
+                if (oldOriginalGameQueue) {
+                    oldOriginalGameQueue->Release();
+                }
+            }
+            const bool ownershipWasHeld = g_FGRuntimeOwnsSwapchain;
+            g_FGRuntimeOwnsSwapchain = false;
+            DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
+            g_FGRuntimeOwnsSwapchainSince = 0;
+            ResetStaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak();
+            s_pendingLateRuntimeOwnedStartupHandoff.store(false, std::memory_order_release);
+            HookLogImportant(
+                "DX12: Authoritative normal swapchain return ended retired Streamline queue ownership "
+                "(queue=%p origGame=%p ownershipWasHeld=%d)",
+                pQueue, g_OriginalGameQueue, ownershipWasHeld ? 1 : 0);
+        }
 
         // A GAME-created swapchain (caller is neither an FG runtime nor a
         // third-party overlay) arriving while explicit native-FSR OFF/destroy
@@ -8738,12 +8766,20 @@ static int RetirePostSLRouteForNormalSwapchainReturn(const char* reason) {
 static bool HandlePostSLRouteForNormalSwapchainReturn(
     const char* context, ID3D12CommandQueue* returnedQueue, ID3D12CommandQueue* originalGameQueue,
     const CreateSwapchainQueueCaptureEvidence& captureEvidence) {
-    const bool normalSwapchainReturn =
+    const bool originalQueueNormalSwapchainReturn =
         ce::dx12_overlay_policy::ShouldTreatOriginalQueueCreateWithStreamlineStackAsNormalReturn(
             captureEvidence.authoritativeFFXRuntimeCreator, captureEvidence.callerFromStreamlineFGModule,
             captureEvidence.streamlineFrameGenerationInStack,
             g_StreamlineEnableCallsInFlight.load(std::memory_order_acquire) != 0, originalGameQueue != nullptr,
             returnedQueue == originalGameQueue);
+    const bool gameCreatedSwapchain =
+        !captureEvidence.callerFromThirdPartyOverlay && !captureEvidence.authoritativeFFXRuntimeCreator &&
+        !captureEvidence.officialAMDFFXRuntimeCreator && !captureEvidence.authoritativeStreamlineRuntimeCreator;
+    const bool gameSwapchainAfterExplicitDLSSOff =
+        ce::dx12_overlay_policy::ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn(
+            gameCreatedSwapchain, g_PostSLExplicitOffKeepAlive.load(std::memory_order_acquire),
+            IsActualFrameGenerationActive(), DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire));
+    const bool normalSwapchainReturn = originalQueueNormalSwapchainReturn || gameSwapchainAfterExplicitDLSSOff;
     if (!normalSwapchainReturn) {
         return false;
     }
@@ -8769,12 +8805,17 @@ static bool HandlePostSLRouteForNormalSwapchainReturn(
                             lastWorkingQueue != nullptr;
     const bool hasDistinctQueueProof = (lockedQueue && lockedQueue != returnedQueue) ||
                                        (lastWorkingQueue && lastWorkingQueue != returnedQueue);
+    const char* normalReturnProof = gameSwapchainAfterExplicitDLSSOff
+                                        ? "Game-created replacement swapchain validated normal return after "
+                                          "explicit DLSS off"
+                                        : "Original game queue validated normal swapchain return behind "
+                                          "Streamline stack";
     if (!ce::dx12_overlay_policy::ShouldRetirePostSLRouteForNormalSwapchainReturn(
-            normalSwapchainReturn, routeArmed, hasDistinctQueueProof)) {
+            normalSwapchainReturn, routeArmed, hasDistinctQueueProof || gameSwapchainAfterExplicitDLSSOff)) {
         HookLogImportant(
-            "%s: Original game queue validated normal swapchain return behind Streamline stack "
-            "(queue=%p locked=%p lastWorking=%p routeArmed=%d) — no stale PostSL route to retire",
-            context ? context : "CreateSwapChain", returnedQueue, lockedQueue, lastWorkingQueue, routeArmed ? 1 : 0);
+            "%s: %s (queue=%p locked=%p lastWorking=%p routeArmed=%d) — no stale PostSL route to retire",
+            context ? context : "CreateSwapChain", normalReturnProof, returnedQueue, lockedQueue, lastWorkingQueue,
+            routeArmed ? 1 : 0);
         return true;
     }
 
@@ -8782,11 +8823,10 @@ static bool HandlePostSLRouteForNormalSwapchainReturn(
         RetirePostSLRouteForNormalSwapchainReturn("DX12: normal swapchain return");
 
     HookLogImportant(
-        "%s: Original game queue validated normal swapchain return behind Streamline stack — retired "
-        "stale PostSL route and invalidated swapchain-scoped overlay state "
+        "%s: %s — retired stale PostSL route and invalidated swapchain-scoped overlay state "
         "(queue=%p locked=%p lastWorking=%p stableFrames=%d caller=%s)",
-        context ? context : "CreateSwapChain", returnedQueue, lockedQueue, lastWorkingQueue, previousStableFrames,
-        captureEvidence.callerModulePath[0] ? captureEvidence.callerModulePath : "unknown");
+        context ? context : "CreateSwapChain", normalReturnProof, returnedQueue, lockedQueue, lastWorkingQueue,
+        previousStableFrames, captureEvidence.callerModulePath[0] ? captureEvidence.callerModulePath : "unknown");
     return true;
 }
 
@@ -8858,7 +8898,7 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
         // queue/identity pair at the transition edge.
         const bool runtimeOwnershipJustActivated = DX12_SetSwapchainQueue(
             pQueue, authoritativeStreamlineRuntimeQueue, authoritativeFFXRuntimeQueue, gameCreatedSwapchain,
-            pSwapChain);
+            pSwapChain, normalSwapchainReturn);
         bool capturedOnOriginalQueue = false;
         {
             std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
@@ -13189,7 +13229,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // before interpolation, so it covers the first generated output that exists before
     // PostSL can possibly run. Do not blend the same overlay a second time on those output
     // backbuffers. An adopted preactivation record first rolls onto the real activation tag when
-    // required; bounded output consumption, a later input tag, or deactivation then retires it.
+    // required; later source tags replace that eValidUntilPresent record until bounded PostSL
+    // output consumption or deactivation retires the handoff.
     if (ce::dx12_streamline_ui_overlay::ConsumePostSLCoverage()) {
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kStreamlineUI);
         return;

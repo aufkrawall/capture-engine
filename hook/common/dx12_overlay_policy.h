@@ -312,6 +312,19 @@ inline bool ShouldTreatOriginalQueueCreateWithStreamlineStackAsNormalReturn(
            !streamlineEnableCallInFlight && hasOriginalGameQueue && queueMatchesOriginalGameQueue;
 }
 
+inline bool ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn(
+    bool gameCreatedSwapchain, bool postSLExplicitOffKeepAlive, bool actualFrameGenerationActive,
+    bool streamlineFGRunning) {
+    // Explicit OFF alone is not a normal-route boundary: menu suspension can
+    // leave the proven Streamline proxy presenting indefinitely. A swapchain
+    // created by the game after that OFF edge is stronger evidence. It proves
+    // that the app has replaced the proxy with a native Present topology, even
+    // when the app also rebuilt its device/queue and therefore cannot return to
+    // the retired original queue pointer.
+    return gameCreatedSwapchain && postSLExplicitOffKeepAlive && !actualFrameGenerationActive &&
+           !streamlineFGRunning;
+}
+
 inline bool ShouldRetirePostSLRouteForNormalSwapchainReturn(bool normalSwapchainReturn, bool postSLRouteArmed,
                                                             bool hasDistinctPostSLQueueProof) {
     return normalSwapchainReturn && postSLRouteArmed && hasDistinctPostSLQueueProof;
@@ -3822,6 +3835,43 @@ inline bool ShouldEnableDredFromEnv(const char* value, bool isSet) {
 inline bool ShouldForwardAppCommandListsToDriver(bool deviceRemoved) {
     return !deviceRemoved;
 }
+
+// Streamline UIColorAndAlpha tags use eValidUntilPresent: a submitted UI record
+// covers only that source frame. During a cold DLSS-G activation, keep replacing
+// the record on each new source frame until PostSL has consumed the requested
+// output handoff. Source-frame rollover must not spend this budget; otherwise a
+// tag can expire immediately before the first PostSL output and expose one blank
+// present. The caller serializes access while this small policy object remains
+// independently unit-testable.
+class StreamlineUiActivationCoverageBudget {
+public:
+    void Reset() {
+        remainingOutputs_ = 0;
+    }
+
+    void Arm(uint32_t maximumOutputPresents) {
+        remainingOutputs_ = maximumOutputPresents;
+    }
+
+    bool NeedsCurrentFrameRecord() const {
+        return remainingOutputs_ != 0;
+    }
+
+    bool ConsumePostSLOutput() {
+        if (remainingOutputs_ == 0) {
+            return false;
+        }
+        --remainingOutputs_;
+        return true;
+    }
+
+    uint32_t Remaining() const {
+        return remainingOutputs_;
+    }
+
+private:
+    uint32_t remainingOutputs_ = 0;
+};
 
 // ---------------------------------------------------------------------------
 // [OVERLAY COVERAGE] per-present overlay-coverage accounting.

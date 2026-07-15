@@ -10,6 +10,7 @@
 #include <wrl/client.h>
 
 #include "../common/dxgi_shared.h"
+#include "../common/dx12_overlay_policy.h"
 #include "../common/hook_common.h"
 #include "../common/ipc_client.h"
 #include "../common/overlay_adapter.h"
@@ -245,7 +246,7 @@ bool g_PreactivationStandbyEnabled = false;
 const void* g_FrameToken = nullptr;
 ID3D12GraphicsCommandList* g_ActivationCommandList = nullptr;
 uint32_t g_MaximumOutputPresents = 1;
-uint32_t g_CoveragePresentsRemaining = 0;
+ce::dx12_overlay_policy::StreamlineUiActivationCoverageBudget g_CoverageBudget;
 uint64_t g_ActivationEpoch = 0;
 bool g_AdoptedStandbyNeedsActivationFrameRecord = false;
 
@@ -281,7 +282,7 @@ void BeginPreactivationStandby(uint32_t maximumOutputPresents) {
         g_Phase = BootstrapPhase::kStandbyIdle;
         g_FrameToken = nullptr;
         g_ActivationCommandList = nullptr;
-        g_CoveragePresentsRemaining = 0;
+        g_CoverageBudget.Reset();
         g_AdoptedStandbyNeedsActivationFrameRecord = false;
         g_ActiveCoverage.store(false, std::memory_order_release);
         g_FrameTagTrackingActive.store(true, std::memory_order_release);
@@ -300,7 +301,7 @@ void EndPreactivationStandby(const char* reason) {
         g_Phase = BootstrapPhase::kInactive;
         g_FrameToken = nullptr;
         g_ActivationCommandList = nullptr;
-        g_CoveragePresentsRemaining = 0;
+        g_CoverageBudget.Reset();
         g_AdoptedStandbyNeedsActivationFrameRecord = false;
         g_ActiveCoverage.store(false, std::memory_order_release);
         g_FrameTagTrackingActive.store(false, std::memory_order_release);
@@ -324,17 +325,17 @@ void BeginActivation(uint32_t maximumOutputPresents) {
     if (adoptedSubmittedStandby) {
         g_Phase = BootstrapPhase::kActivationSubmitted;
         g_ActivationCommandList = nullptr;
-        g_CoveragePresentsRemaining = g_MaximumOutputPresents;
+        g_CoverageBudget.Arm(g_MaximumOutputPresents);
         g_ActiveCoverage.store(true, std::memory_order_release);
     } else if (adoptedPendingStandby) {
         g_Phase = BootstrapPhase::kActivationPendingSubmission;
-        g_CoveragePresentsRemaining = 0;
+        g_CoverageBudget.Reset();
         g_ActiveCoverage.store(false, std::memory_order_release);
     } else {
         g_Phase = BootstrapPhase::kActivationIdle;
         g_FrameToken = nullptr;
         g_ActivationCommandList = nullptr;
-        g_CoveragePresentsRemaining = 0;
+        g_CoverageBudget.Reset();
         g_ActiveCoverage.store(false, std::memory_order_release);
     }
     g_FrameTagTrackingActive.store(true, std::memory_order_release);
@@ -359,7 +360,7 @@ void EndActivation(const char* reason) {
     g_Phase = g_PreactivationStandbyEnabled ? BootstrapPhase::kStandbyIdle : BootstrapPhase::kInactive;
     g_FrameToken = nullptr;
     g_ActivationCommandList = nullptr;
-    g_CoveragePresentsRemaining = 0;
+    g_CoverageBudget.Reset();
     g_AdoptedStandbyNeedsActivationFrameRecord = false;
     g_ActiveCoverage.store(false, std::memory_order_release);
     g_FrameTagTrackingActive.store(g_PreactivationStandbyEnabled, std::memory_order_release);
@@ -418,7 +419,7 @@ bool OnFrameTag(const void* frameToken) {
         g_FrameToken = frameToken;
         g_Phase = BootstrapPhase::kActivationIdle;
         g_ActivationCommandList = nullptr;
-        g_CoveragePresentsRemaining = 0;
+        g_CoverageBudget.Reset();
         g_AdoptedStandbyNeedsActivationFrameRecord = false;
         g_ActiveCoverage.store(false, std::memory_order_release);
         HookLogImportant(
@@ -426,6 +427,28 @@ bool OnFrameTag(const void* frameToken) {
             "(activationEpoch=%llu standbyFrame=%p activationFrame=%p) — prior eValidUntilPresent lifetime "
             "ended; requesting exact current-tag coverage",
             static_cast<unsigned long long>(g_ActivationEpoch), adoptedFrameToken, frameToken);
+        return true;
+    }
+
+    if ((g_Phase == BootstrapPhase::kActivationSubmitted ||
+         g_Phase == BootstrapPhase::kActivationIdle) &&
+        g_CoverageBudget.NeedsCurrentFrameRecord()) {
+        // The prior UIColorAndAlpha record ended at its source-frame Present.
+        // Re-record on this tag until PostSL consumes the output handoff budget;
+        // advancing source-frame tags alone must never create a blank interval.
+        g_FrameToken = frameToken;
+        g_Phase = BootstrapPhase::kActivationIdle;
+        g_ActivationCommandList = nullptr;
+        g_ActiveCoverage.store(false, std::memory_order_release);
+        static std::atomic<int> s_continuedActivationTagLogCount{0};
+        const int n = s_continuedActivationTagLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (n < 12 || (n % 120) == 0) {
+            HookLogImportant(
+                "DX12: Streamline UI bootstrap continuing on next activation frame tag "
+                "(activationEpoch=%llu remainingOutputs=%u log=%d) — prior eValidUntilPresent record ended; "
+                "requesting replacement until PostSL consumes the handoff",
+                static_cast<unsigned long long>(g_ActivationEpoch), g_CoverageBudget.Remaining(), n + 1);
+        }
         return true;
     }
 
@@ -439,7 +462,7 @@ bool OnFrameTag(const void* frameToken) {
             "(activationEpoch=%llu) — retaining normal PostSL fallback",
             static_cast<unsigned long long>(g_ActivationEpoch));
     } else if (g_Phase == BootstrapPhase::kActivationSubmitted) {
-        g_CoveragePresentsRemaining = 0;
+        g_CoverageBudget.Reset();
         g_Phase = BootstrapPhase::kFinished;
         g_ActivationCommandList = nullptr;
         g_ActiveCoverage.store(false, std::memory_order_release);
@@ -531,13 +554,17 @@ bool BeforeExecuteCommandLists(UINT count, ID3D12CommandList* const* commandList
     }
     g_Phase = standbySubmission ? BootstrapPhase::kStandbySubmitted : BootstrapPhase::kActivationSubmitted;
     g_ActivationCommandList = nullptr;
-    g_CoveragePresentsRemaining = standbySubmission ? 0 : g_MaximumOutputPresents;
+    if (standbySubmission) {
+        g_CoverageBudget.Reset();
+    } else if (!g_CoverageBudget.NeedsCurrentFrameRecord()) {
+        g_CoverageBudget.Arm(g_MaximumOutputPresents);
+    }
     g_ActiveCoverage.store(!standbySubmission, std::memory_order_release);
     if (!standbySubmission) {
         HookLogImportant(
             "DX12: Streamline UI bootstrap overlay command list entering app submission (epoch=%llu "
             "coveredOutputs=%u)",
-            static_cast<unsigned long long>(g_ActivationEpoch), g_CoveragePresentsRemaining);
+            static_cast<unsigned long long>(g_ActivationEpoch), g_CoverageBudget.Remaining());
     }
     return true;
 }
@@ -555,12 +582,11 @@ void AfterExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12Comma
 
 bool ConsumePostSLCoverage() {
     std::lock_guard<std::recursive_mutex> lock(g_Mutex);
-    if (g_Phase != BootstrapPhase::kActivationSubmitted || g_CoveragePresentsRemaining == 0) {
+    if (g_Phase != BootstrapPhase::kActivationSubmitted || !g_CoverageBudget.ConsumePostSLOutput()) {
         return false;
     }
     g_AdoptedStandbyNeedsActivationFrameRecord = false;
-    --g_CoveragePresentsRemaining;
-    if (g_CoveragePresentsRemaining == 0) {
+    if (!g_CoverageBudget.NeedsCurrentFrameRecord()) {
         g_Phase = BootstrapPhase::kFinished;
         g_ActiveCoverage.store(false, std::memory_order_release);
         g_FrameTagTrackingActive.store(false, std::memory_order_release);
@@ -571,7 +597,7 @@ bool ConsumePostSLCoverage() {
         HookLogImportant(
             "DX12: PostSL output already covered by Streamline UIColorAndAlpha bootstrap overlay (epoch=%llu "
             "remaining=%u log=%d) — skipping duplicate output-backbuffer draw",
-            static_cast<unsigned long long>(g_ActivationEpoch), g_CoveragePresentsRemaining, n + 1);
+            static_cast<unsigned long long>(g_ActivationEpoch), g_CoverageBudget.Remaining(), n + 1);
     }
     return true;
 }
@@ -585,7 +611,7 @@ void Shutdown(const char* reason) {
     g_PreactivationStandbyEnabled = false;
     g_Phase = BootstrapPhase::kInactive;
     g_ActivationCommandList = nullptr;
-    g_CoveragePresentsRemaining = 0;
+    g_CoverageBudget.Reset();
     g_AdoptedStandbyNeedsActivationFrameRecord = false;
     g_ActiveCoverage.store(false, std::memory_order_release);
     g_FrameTagTrackingActive.store(false, std::memory_order_release);

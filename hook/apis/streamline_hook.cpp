@@ -3371,8 +3371,9 @@ void TryRecordOfficialUiTag(const char* tagApi, const void* frameToken, const sl
 
     // DLSS-G consumes UIColorAndAlpha before its first generated output exists, while PostSL can
     // only run after that output has been produced. Record CE's rolling/one-shot overlay into the
-    // official UI layer on the app-provided command list. This introduces no copy, extra submission,
-    // queue, or wait and naturally follows Streamline's own synchronization.
+    // official UI layer on the app-provided command list. Source frames keep replacing the
+    // eValidUntilPresent record until PostSL consumes the bounded output handoff. This introduces
+    // no copy, extra submission, queue, or wait and naturally follows Streamline's synchronization.
     if (wantsUiBootstrapRecord && tags) {
         for (uint32_t i = 0; i < numTags; ++i) {
             if (TryRecordOfficialUiResourceTag(frameToken, tags[i], commandBuffer)) {
