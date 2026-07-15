@@ -9,7 +9,10 @@
 namespace ce::audio {
 
 constexpr int64_t kDefaultSteadyAudioPullLatencyMs = 60;
-constexpr int64_t kSettledCfrAudioPullLatencyMs = 0;
+// This is capture/encode scheduling lookahead, not a content or PTS offset. Keeping the
+// CFR consumer behind the live capture edge absorbs ordinary WASAPI/process-loopback
+// delivery jitter; the final force-drain still closes every track at the exact video end.
+constexpr int64_t kSettledCfrAudioPullLatencyMs = kDefaultSteadyAudioPullLatencyMs;
 constexpr int64_t kDefaultAudioPullQuantumSamples = 240;
 
 struct PacketTimelineAdjustment {
@@ -754,6 +757,23 @@ inline bool IsSourceBootstrapReady(bool sourceBootstrapComplete, bool sourceTime
     return sourceIsPrimed || bufferedRealSamples >= requiredRealSamples;
 }
 
+inline bool IsSourceBootstrapTimelineReady(bool sourceBootstrapComplete, bool optionalUnstartedSource,
+                                           bool sourceReady, bool packetlessSilenceReady,
+                                           size_t bufferedTimelineSamples, int64_t targetTimelineSamples) {
+    if (!sourceReady && !packetlessSilenceReady) {
+        return false;
+    }
+
+    // Already-established and genuinely packetless/optional sources have no additional
+    // timeline evidence to wait for. A started source with buffered audio must cover the
+    // first requested range so bootstrap cannot manufacture a short silence notch.
+    if (sourceBootstrapComplete || optionalUnstartedSource || packetlessSilenceReady || targetTimelineSamples <= 0) {
+        return true;
+    }
+
+    return bufferedTimelineSamples >= static_cast<size_t>(targetTimelineSamples);
+}
+
 inline size_t ComputeRequiredBootstrapRealSamples(int64_t targetTimelineSamples, size_t minimumRealSamples) {
     (void)targetTimelineSamples;
     return minimumRealSamples;
@@ -775,10 +795,6 @@ inline uint64_t ConsumeSyntheticBufferedSamples(uint64_t& syntheticBufferedSampl
 inline int64_t ResolveSourceTimelineWriteCursor(uint64_t qpcAlignedWrittenSamples, int64_t encodedCursorSamples) {
     return std::max<int64_t>(static_cast<int64_t>(qpcAlignedWrittenSamples),
                              std::max<int64_t>(0, encodedCursorSamples));
-}
-
-inline bool ShouldAdvancePacketTimelineToEncodedCursor(bool isAppAudioSource) {
-    return !isAppAudioSource;
 }
 
 inline bool IsAudioCaptureEpochTransition(uint64_t previousEpoch, uint64_t packetEpoch) {

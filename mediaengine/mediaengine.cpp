@@ -3248,9 +3248,15 @@ public:
                 const bool srcReady = ce::audio::IsSourceBootstrapReady(
                     src.bootstrapComplete, src.timelineValid, src.isPrimed, isAppAudioSource, bufferedRealSamples,
                     requiredBootstrapSamples, src.sawSyncPendingPackets);
+                const bool optionalUnstarted = ce::audio::IsOptionalUnstartedAppAudioSource(
+                    isAppAudioSource, src.timelineValid, src.sawSyncPendingPackets);
                 const bool packetlessSilenceReady = ce::audio::ShouldBootstrapPacketlessSourceAsSilence(
                     isCfrRecording, src.timelineValid, bufferedRealSamples, targetSamples, requiredBootstrapSamples);
-                trackReadyForBootstrap = trackReadyForBootstrap && (srcReady || packetlessSilenceReady);
+                const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
+                const bool srcTimelineReady = ce::audio::IsSourceBootstrapTimelineReady(
+                    src.bootstrapComplete, optionalUnstarted, srcReady, packetlessSilenceReady,
+                    bufferedTimelineSamples, targetSamples);
+                trackReadyForBootstrap = trackReadyForBootstrap && srcTimelineReady;
             }
 
             if (!trackBootstrapComplete[track]) {
@@ -3279,9 +3285,10 @@ public:
                 trackBootstrapWaitLogCounters[track] = 0;
                 DLL_Log(
                     "[PullAudio] Track %d bootstrap complete - target=%lldms samples=%lld forced=%d trimmed=%llu "
-                    "protected=%llu",
+                    "protected=%llu lookahead=%lldms",
                     track, trackAudioTargetMs, targetSamples, forcedBootstrap ? 1 : 0,
-                    (unsigned long long)bootstrapTrimmed, (unsigned long long)bootstrapProtected);
+                    (unsigned long long)bootstrapTrimmed, (unsigned long long)bootstrapProtected,
+                    trackAudioPullLatencyMs);
             }
 
             size_t firstSrcIdx = srcIndices[0];
@@ -3390,10 +3397,10 @@ public:
                     dropLogCounter++ % 500 == 0) {
                     DLL_Log(
                         "[PullAudio] Timeline source gap silence: track=%d src=%zu buffered=%zu requested=%lld "
-                        "target=%lldms encoded=%lld inactiveApp=%d. Source contributes available samples plus silence "
-                        "for missing range.",
+                        "target=%lldms encoded=%lld lookahead=%lldms inactiveApp=%d. Source contributes available "
+                        "samples plus silence for missing range after the ingestion reservoir.",
                         track, srcIdx, bufferedTimelineSamples, samplesToEncode, trackAudioTargetMs,
-                        trackCursorSamples, inactiveStartedAppSourceMaySilence ? 1 : 0);
+                        trackCursorSamples, trackAudioPullLatencyMs, inactiveStartedAppSourceMaySilence ? 1 : 0);
                 }
             }
             if (deferForSourceBuffer) {
@@ -5811,9 +5818,7 @@ private:
                                     packetStartSamples += audioEqualizationDelaySamples[srcIdx];
                                     packetStartSamples = ce::audio::ApplyStartupPacketTimelineRebaseOffset(
                                         packetStartSamples, static_cast<int64_t>(src.startupRebasedGapSamples));
-                                    if (srcIdx < encodedSamplesPerSource.size() &&
-                                        ce::audio::ShouldAdvancePacketTimelineToEncodedCursor(src.sourceType ==
-                                                                                              AudioConfig::AppAudio)) {
+                                    if (srcIdx < encodedSamplesPerSource.size()) {
                                         const int64_t encodedCursorSamples =
                                             ce::audio::ResolveSourceTimelineWriteCursor(
                                                 src.qpcAlignedWrittenSamples, encodedSamplesPerSource[srcIdx]);

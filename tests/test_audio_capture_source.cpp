@@ -506,6 +506,9 @@ TEST(AudioCaptureSourceTest, CfrSourceGapsAreRouteLocalSilenceWithoutDestructive
     const std::string source = ReadSource("mediaengine.cpp");
     ASSERT_FALSE(source.empty());
 
+    EXPECT_NE(source.find("ce::audio::ComputeSettledCfrAudioPullLatencyMs("), std::string::npos);
+    EXPECT_NE(source.find("ce::audio::IsSourceBootstrapTimelineReady("), std::string::npos);
+
     const size_t expectedSilence = source.find("const bool expectedTimelineSilence =");
     ASSERT_NE(expectedSilence, std::string::npos);
     const size_t sparseSilence = source.find("sparseStartedSourceMaySilence ||", expectedSilence);
@@ -514,4 +517,12 @@ TEST(AudioCaptureSourceTest, CfrSourceGapsAreRouteLocalSilenceWithoutDestructive
     EXPECT_NE(source.find("src.pendingUnderrunRecoveryFade = !startupPadding;"), std::string::npos);
     EXPECT_EQ(source.find("ComputeCatastrophicBacklogResyncTrim"), std::string::npos);
     EXPECT_EQ(source.find("App source catastrophic backlog resync"), std::string::npos);
+
+    const size_t cursorGuard = source.find("if (srcIdx < encodedSamplesPerSource.size()) {");
+    const size_t exportedCursor = source.find("ce::audio::ResolveSourceTimelineWriteCursor(", cursorGuard);
+    ASSERT_NE(cursorGuard, std::string::npos);
+    ASSERT_NE(exportedCursor, std::string::npos);
+    EXPECT_LT(exportedCursor, cursorGuard + 500);
+    EXPECT_EQ(source.substr(cursorGuard, exportedCursor - cursorGuard).find("AudioConfig::AppAudio"),
+              std::string::npos);
 }
