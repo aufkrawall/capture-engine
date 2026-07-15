@@ -27,10 +27,8 @@ bool IsFiniteFloat(float value) {
     constexpr uint32_t exponentMask = 0x7F800000u;
     static_assert(std::endian::native == std::endian::little);
 
-    // The hook is compiled with -ffast-math, which lets the optimizer assume
-    // ordinary floating-point expressions never contain NaN or infinity. Read
-    // the object representation through volatile bytes so descriptor validation
-    // still observes the exact bits supplied by the application.
+    // Read the object representation directly so descriptor validation never
+    // depends on floating-point comparison behavior or the active FP environment.
     const auto* bytes = reinterpret_cast<const volatile uint8_t*>(&value);
     const uint32_t bits = static_cast<uint32_t>(bytes[0]) | (static_cast<uint32_t>(bytes[1]) << 8) |
                           (static_cast<uint32_t>(bytes[2]) << 16) | (static_cast<uint32_t>(bytes[3]) << 24);
