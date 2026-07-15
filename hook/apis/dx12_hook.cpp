@@ -13176,7 +13176,8 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
     // official UIColorAndAlpha tag. That route is recorded in the app's own command list
     // before interpolation, so it covers the first generated output that exists before
     // PostSL can possibly run. Do not blend the same overlay a second time on those output
-    // backbuffers. The next frame tag (or the bounded output count) retires this bootstrap.
+    // backbuffers. An adopted preactivation record first rolls onto the real activation tag when
+    // required; bounded output consumption, a later input tag, or deactivation then retires it.
     if (ce::dx12_streamline_ui_overlay::ConsumePostSLCoverage()) {
         NoteDX12OverlayRendered(DX12OverlayRenderRoute::kStreamlineUI);
         return;

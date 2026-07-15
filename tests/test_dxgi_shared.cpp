@@ -6663,6 +6663,19 @@ TEST(DXGISharedSourceTest, StreamlineGetStateOnlyActivationAdoptsPreTaggedOffici
     EXPECT_NE(renderer.find("BootstrapPhase::kActivationSubmitted"), std::string::npos);
     EXPECT_NE(renderer.find("adoptedSubmittedStandby"), std::string::npos)
         << "a GetState OFF-to-ON edge after tagging must adopt the already-submitted UI record";
+    const size_t adoptedStandbyRollover =
+        renderer.find("if (g_AdoptedStandbyNeedsActivationFrameRecord &&");
+    ASSERT_NE(adoptedStandbyRollover, std::string::npos);
+    const size_t requestActivationRecord = renderer.find("return true;", adoptedStandbyRollover);
+    const size_t ordinaryActivationRetirement =
+        renderer.find("g_FrameToken = frameToken;", requestActivationRecord);
+    ASSERT_NE(requestActivationRecord, std::string::npos);
+    ASSERT_NE(ordinaryActivationRetirement, std::string::npos);
+    EXPECT_LT(requestActivationRecord, ordinaryActivationRetirement)
+        << "a different first activation token must replace an expired adopted standby tag before ordinary "
+           "one-shot retirement";
+    EXPECT_NE(renderer.find("prior eValidUntilPresent lifetime", adoptedStandbyRollover), std::string::npos)
+        << "runtime diagnostics must distinguish exact tag-lifetime rollover from missing PostSL coverage";
     EXPECT_NE(renderer.find("if (g_Phase == BootstrapPhase::kStandbyIdle)"), std::string::npos)
         << "a frame without a usable UI tag must not prevent standby from trying the next frame";
     EXPECT_NE(renderer.find("standbySubmission ? 0 : g_MaximumOutputPresents"), std::string::npos)

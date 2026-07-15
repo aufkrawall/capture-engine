@@ -39,6 +39,7 @@
 #include "dx12_fg_scene.h"
 #include "dx12_fg_taa.h"
 #include "fg_present_policy.h"
+#include "fg_switch_transition.h"
 #include "fg_upscale_policy.h"
 #include "testapp_common.h"
 
@@ -192,6 +193,9 @@ static ffxContext g_FfxUpscaleCtx = nullptr;
 static bool g_FsrInitialized = false;
 static bool g_FsrEnabled = false;
 static bool g_FsrSuspended = false;
+static testapp::fg::FsrExitTransitionStage g_FsrExitTransitionStage =
+    testapp::fg::FsrExitTransitionStage::None;
+static bool g_FsrRuntimeRetirementPendingForDlss = false;
 static bool g_FsrRuntimeLoaded = false;
 static bool g_FsrConfigureEveryFrame = true;
 static bool g_FsrLastConfigureUsedPresentCallback = true;
@@ -563,11 +567,13 @@ static void UpdateRenderResolution() {
         g_DlssHdrInput ? 1 : 0, g_FsrUpscaleVersionConfig, g_FsrSharpeningEnabled ? 1 : 0);
 }
 
-// Policy rationale lives in fg_present_policy.h: DLSS mode (active and suspended) presents the
-// Streamline proxy uncapped with Reflex pacing the output; OFF/FSR run real swapchains that honor
-// the configured vsync; the tearing flag follows the user's vsync intent.
+// Policy rationale lives in fg_present_policy.h: a Streamline proxy target (including the one
+// FG-off replacement Present before DLSS activation) presents uncapped, with Reflex pacing active
+// DLSS output; OFF/FSR real swapchains honor configured vsync. Tearing follows the user's intent.
 static testapp::fg::ProxyPresentPolicy ResolvePresentPolicy() {
-    return testapp::fg::ResolveProxyPresentPolicy(g_CurrentMode == FGMode::DLSS, g_VSync,
+    const bool dlssProxyTarget = g_CurrentMode == FGMode::DLSS ||
+                                 testapp::fg::IsDlssReplacementSurfaceStage(g_FsrExitTransitionStage);
+    return testapp::fg::ResolveProxyPresentPolicy(dlssProxyTarget, g_VSync,
                                                   g_CurrentSwapChainAllowTearing);
 }
 
@@ -977,22 +983,6 @@ static bool ReinitializeDX12ForNativeOff(const char* reason) {
     return InitDX12(g_Hwnd, false, reason ? reason : "enter OFF mode");
 }
 
-static bool ReinitializeDX12ForDLSS(const char* reason) {
-    ReleaseDX12RendererResourcesForSwitch(reason);
-    if (!g_SlInitialized && !LoadStreamlineAndInitSerialized(reason ? reason : "enter DLSS")) {
-        testapp::Log("[FG-DIAG] Streamline load failed while recreating DLSS renderer (%s)\n",
-                     reason ? reason : "enter DLSS");
-        return false;
-    }
-    if (!InitDX12(g_Hwnd, false, reason ? reason : "enter DLSS mode")) {
-        return false;
-    }
-    g_DlssInitialized = TryInitDLSSFG();
-    testapp::Log("[FG-DIAG] DLSS init after renderer recreation (%s) state=%d\n", reason ? reason : "enter DLSS",
-                 g_DlssInitialized ? 1 : 0);
-    return g_DlssInitialized;
-}
-
 static bool EnsureStreamlineReadyForDLSS(const char* reason) {
     if (!g_SlInitialized) {
         testapp::Log("[FG-DIAG] Loading Streamline on demand for DLSS mode (%s)\n", reason ? reason : "unknown");
@@ -1006,6 +996,11 @@ static bool EnsureStreamlineReadyForDLSS(const char* reason) {
         g_SlDeviceSet = deviceResult == sl::Result::eOk;
         testapp::Log("[FG-DIAG] slSetD3DDevice(%s) result=%d (%s)\n", reason ? reason : "DLSS mode",
                      static_cast<int>(deviceResult), SlResultName(deviceResult));
+    }
+    if (!g_SlDeviceSet) {
+        testapp::Log("[FG-DIAG] Streamline device binding unavailable for DLSS mode (%s) device=%p setFn=%p\n",
+                     reason ? reason : "unknown", g_Device.Get(), (void*)g_SlSetD3DDevice);
+        return false;
     }
     if (!g_DlssInitialized) {
         g_DlssInitialized = TryInitDLSSFG();
@@ -1091,10 +1086,143 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
     testapp::Log("[FG-DIAG] Switching FG mode: %s -> %s (%s frameID=%llu frameIndex=%u)\n", ModeName(g_CurrentMode),
                  ModeName(target), reason ? reason : "unknown", static_cast<unsigned long long>(g_FrameIdCounter),
                  frameIndex);
+
+    if (g_FsrExitTransitionStage == testapp::fg::FsrExitTransitionStage::ReplacementPresentPending) {
+        if (g_SwapChain && g_SwapChainUsesStreamline) {
+            const bool defersDlssActivation = testapp::fg::ShouldDeferDlssActivationUntilReplacementPresent(
+                target == FGMode::DLSS, g_FsrExitTransitionStage);
+            testapp::Log("[FG-DIAG] DLSS replacement passthrough Present still pending; deferring mode switch "
+                         "(target=%s deferDlssActivation=%d frameID=%llu swapChain=%p)\n",
+                         ModeName(target), defersDlssActivation ? 1 : 0,
+                         static_cast<unsigned long long>(g_FrameIdCounter), g_SwapChain.Get());
+            testapp::LogFlush();
+            return true;
+        }
+        testapp::Log("[FG-DIAG] WARN cannot retry DLSS replacement passthrough Present because its proxy "
+                     "topology is unavailable; restarting the requested transition (target=%s swapChain=%p "
+                     "streamline=%d)\n",
+                     ModeName(target), g_SwapChain.Get(), g_SwapChainUsesStreamline ? 1 : 0);
+        g_FsrExitTransitionStage = testapp::fg::FsrExitTransitionStage::None;
+        g_FsrRuntimeRetirementPendingForDlss = false;
+    } else if (g_FsrExitTransitionStage == testapp::fg::FsrExitTransitionStage::ReplacementPresented) {
+        testapp::Log("[FG-DIAG] DLSS replacement passthrough Present completed; %s "
+                     "(target=%s frameID=%llu swapChain=%p)\n",
+                     target == FGMode::DLSS ? "activation may proceed" : "following the newer mode request",
+                     ModeName(target), static_cast<unsigned long long>(g_FrameIdCounter), g_SwapChain.Get());
+        g_FsrExitTransitionStage = testapp::fg::FsrExitTransitionStage::None;
+        if (target == FGMode::FSR) {
+            g_FsrRuntimeRetirementPendingForDlss = false;
+        }
+    }
     WaitForGpu();
 
     bool ok = true;
-    if (g_FsrEnabled) {
+    if (target == FGMode::FSR && g_FsrExitTransitionStage != testapp::fg::FsrExitTransitionStage::None) {
+        testapp::Log("[FG-DIAG] Cancelling staged FSR exit because the pending target returned to FSR "
+                     "(stage=%d frameID=%llu)\n",
+                     static_cast<int>(g_FsrExitTransitionStage),
+                     static_cast<unsigned long long>(g_FrameIdCounter));
+        g_FsrExitTransitionStage = testapp::fg::FsrExitTransitionStage::None;
+    }
+
+    const testapp::fg::FsrExitTransitionAction fsrExitAction = testapp::fg::ResolveFsrExitTransitionAction(
+        g_CurrentMode == FGMode::FSR, target == FGMode::FSR, g_FsrEnabled, g_FsrExitTransitionStage);
+    bool fsrExitHandled = false;
+    if (fsrExitAction == testapp::fg::FsrExitTransitionAction::PresentPassthrough) {
+        fsrExitHandled = true;
+        if (g_SwapChain && g_SwapChainOwner == SwapChainOwner::FSR && g_FfxSwapChainCtx) {
+            testapp::Log("[FG-DIAG] FSR exit passthrough Present still pending; deferring teardown "
+                         "(target=%s frameID=%llu)\n",
+                         ModeName(target), static_cast<unsigned long long>(g_FrameIdCounter));
+            testapp::LogFlush();
+            return true;
+        }
+        testapp::Log("[FG-DIAG] WARN cannot retry FSR exit passthrough Present because its proxy topology "
+                     "is unavailable; continuing teardown (target=%s swapChain=%p owner=%s ctx=%p)\n",
+                     ModeName(target), g_SwapChain.Get(), SwapChainOwnerName(g_SwapChainOwner),
+                     (void*)g_FfxSwapChainCtx);
+        g_FsrExitTransitionStage = testapp::fg::FsrExitTransitionStage::PassthroughPresented;
+    } else if (fsrExitAction == testapp::fg::FsrExitTransitionAction::DisableAndPresentPassthrough) {
+        fsrExitHandled = true;
+        const bool disabled = ConfigureFSR(false, nullptr, "leave FSR mode", true);
+        g_FsrEnabled = false;
+        ok = ok && disabled;
+        if (disabled && g_SwapChain && g_SwapChainOwner == SwapChainOwner::FSR && g_FfxSwapChainCtx) {
+            // Keep the disabled proxy alive for one ordinary application Present. For a DLSS
+            // target it remains alive after that Present while Streamline is initialized, so the
+            // cold runtime load cannot remove the only visible DWM presentation surface.
+            g_FsrSuspended = true;
+            g_FsrExitTransitionStage = testapp::fg::FsrExitTransitionStage::PresentPending;
+            testapp::Log("[FG-DIAG] FSR disabled; staging one passthrough Present before teardown "
+                         "(target=%s frameID=%llu swapChain=%p ctx=%p)\n",
+                         ModeName(target), static_cast<unsigned long long>(g_FrameIdCounter), g_SwapChain.Get(),
+                         (void*)g_FfxSwapChainCtx);
+            UpdateWindowTitle();
+            testapp::LogFlush();
+            return true;
+        }
+        testapp::Log("[FG-DIAG] WARN FSR exit cannot stage a passthrough Present; using immediate teardown "
+                     "(disabled=%d target=%s swapChain=%p owner=%s ctx=%p)\n",
+                     disabled ? 1 : 0, ModeName(target), g_SwapChain.Get(), SwapChainOwnerName(g_SwapChainOwner),
+                     (void*)g_FfxSwapChainCtx);
+        ResetFSRSuspensionStressState("leave FSR mode without passthrough Present");
+        ok = ok && WaitForFSRSwapChainPresents("leave FSR mode");
+        WaitForGpu();
+    }
+    if (g_FsrExitTransitionStage == testapp::fg::FsrExitTransitionStage::PassthroughPresented) {
+        fsrExitHandled = true;
+        const bool dlssReady = g_SlInitialized && g_SlDeviceSet && g_DlssInitialized;
+        if (testapp::fg::ShouldPrepareDlssBeforeFsrPresentationBreak(
+                true, target == FGMode::DLSS, dlssReady, g_FsrExitTransitionStage)) {
+            testapp::Log("[FG-DIAG] FSR exit passthrough Present completed; preparing Streamline while the "
+                         "disabled FSR presentation surface remains alive (frameID=%llu swapChain=%p ctx=%p)\n",
+                         static_cast<unsigned long long>(g_FrameIdCounter), g_SwapChain.Get(),
+                         (void*)g_FfxSwapChainCtx);
+            testapp::LogFlush();
+            if (!EnsureStreamlineReadyForDLSS("prepare DLSS before FSR presentation break")) {
+                testapp::Log("[FG-DIAG] Streamline preparation failed before FSR presentation break; "
+                             "rolling back to active FSR without destroying its proxy\n");
+                g_FsrExitTransitionStage = testapp::fg::FsrExitTransitionStage::None;
+                if (g_SlInitialized || g_SlModule) {
+                    ShutdownStreamlineSerialized("rollback failed DLSS preparation");
+                }
+                ResetFSRSuspensionStressState("rollback failed DLSS preparation");
+                const UINT activeFrameIndex = g_FrameIndex < g_SwapChainBufferCount ? g_FrameIndex : frameIndex;
+                const bool resumed =
+                    ConfigureFSR(true,
+                                 activeFrameIndex < g_SwapChainBufferCount ? g_RenderTargets[activeFrameIndex].Get()
+                                                                          : nullptr,
+                                 "rollback failed DLSS preparation", true);
+                g_FsrEnabled = resumed;
+                if (resumed) {
+                    RegisterFSRUiResource();
+                }
+                g_ModeSwitchPending = false;
+                UpdateWindowTitle();
+                testapp::Log("[FG-DIAG] FSR rollback after failed DLSS preparation resumed=%d current=%s\n",
+                             resumed ? 1 : 0, ModeName(g_CurrentMode));
+                testapp::LogFlush();
+                return false;
+            }
+        }
+        const bool preparedDlss = g_SlInitialized && g_SlDeviceSet && g_DlssInitialized;
+        if (!testapp::fg::CanCommitFsrPresentationBreak(true, target == FGMode::DLSS, preparedDlss,
+                                                       g_FsrExitTransitionStage)) {
+            testapp::Log("[FG-DIAG] WARN refusing FSR presentation break before its DLSS replacement is ready "
+                         "(target=%s slInit=%d slDevice=%d dlssInit=%d)\n",
+                         ModeName(target), g_SlInitialized ? 1 : 0, g_SlDeviceSet ? 1 : 0,
+                         g_DlssInitialized ? 1 : 0);
+            testapp::LogFlush();
+            return true;
+        }
+        testapp::Log("[FG-DIAG] FSR exit replacement ready; committing presentation break "
+                     "(target=%s frameID=%llu slInit=%d slDevice=%d dlssInit=%d)\n",
+                     ModeName(target), static_cast<unsigned long long>(g_FrameIdCounter),
+                     g_SlInitialized ? 1 : 0, g_SlDeviceSet ? 1 : 0, g_DlssInitialized ? 1 : 0);
+        ResetFSRSuspensionStressState("leave FSR mode after passthrough Present");
+        ok = ok && WaitForFSRSwapChainPresents("leave FSR mode after passthrough Present");
+        WaitForGpu();
+    } else if (!fsrExitHandled && g_FsrEnabled) {
         const bool disabled = ConfigureFSR(false, nullptr, "leave FSR mode", true);
         g_FsrEnabled = false;
         ResetFSRSuspensionStressState("leave FSR mode");
@@ -1146,17 +1274,44 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
             ok = false;
         }
     } else if (target == FGMode::DLSS) {
-        if (ok && (g_SwapChainOwner == SwapChainOwner::FSR || g_FfxCtx || g_FfxSwapChainCtx)) {
+        const bool enteringFromFsr =
+            g_SwapChainOwner == SwapChainOwner::FSR || g_FfxCtx || g_FfxSwapChainCtx;
+        bool recreatedDlssSurface = false;
+        if (ok && !EnsureStreamlineReadyForDLSS(enteringFromFsr ? "enter DLSS mode after FSR"
+                                                                 : "enter DLSS mode from native")) {
+            ok = false;
+        }
+        if (ok && enteringFromFsr) {
             DestroyFSRContexts();
             g_FsrInitialized = false;
-            ok = ReinitializeDX12ForDLSS("enter DLSS mode after FSR") && ok;
-            MaybeUnloadFSRRuntimeAfterSwitch("enter DLSS mode");
-            StartAsyncFSRRuntimePreload("after entering DLSS mode");
+            // Streamline, its device binding, and its feature entry points were prepared while the
+            // disabled FSR proxy was still the visible surface. Reuse the existing device/queue and
+            // replace only swapchain-bound resources, matching the already smooth FSR->OFF handoff.
+            recreatedDlssSurface = RecreateSwapChain(false, "enter DLSS mode after prepared FSR exit");
+            ok = recreatedDlssSurface && ok;
+            g_FsrRuntimeRetirementPendingForDlss = recreatedDlssSurface;
         }
         if (ok && !g_SwapChainUsesStreamline) {
-            ok = ReinitializeDX12ForDLSS("enter DLSS mode from native") && ok;
-        } else if (ok) {
-            ok = EnsureStreamlineReadyForDLSS("enter DLSS mode") && ok;
+            // Native->DLSS (including FSR->OFF->DLSS) also prepares Streamline before releasing the
+            // visible native chain, then performs the shortest possible swapchain-only handoff.
+            recreatedDlssSurface = RecreateSwapChain(false, "enter DLSS mode from prepared native surface");
+            ok = recreatedDlssSurface && ok;
+        }
+        if (ok && recreatedDlssSurface) {
+            // A newly created Streamline proxy has not displayed anything yet. Enabling DLSS-G now
+            // makes its first Present also perform the feature's large lazy resource/model setup,
+            // leaving DWM without a replacement image in the meantime. Present one covered FG-off
+            // frame through this same proxy first; the pending request activates DLSS next frame.
+            g_CurrentMode = FGMode::Off;
+            g_FsrExitTransitionStage = testapp::fg::FsrExitTransitionStage::ReplacementPresentPending;
+            g_Taa.Reset();
+            testapp::Log("[FG-DIAG] DLSS replacement surface ready; staging one covered FG-off passthrough "
+                         "Present before activation (frameID=%llu swapChain=%p fromFsr=%d)\n",
+                         static_cast<unsigned long long>(g_FrameIdCounter), g_SwapChain.Get(),
+                         enteringFromFsr ? 1 : 0);
+            UpdateWindowTitle();
+            testapp::LogFlush();
+            return true;
         }
         if (!g_DlssInitialized) {
             testapp::Log("[FG-DIAG] Cannot switch to DLSS FG: Streamline DLSS-G was not initialized\n");
@@ -1203,9 +1358,21 @@ static bool SwitchMode(FGMode target, const char* reason, UINT frameIndex) {
                 g_SwapChain.Get(), g_SwapChainUsesStreamline ? 1 : 0);
             ok = ReinitializeDX12ForNativeOff("enter OFF mode after DLSS") && ok;
         }
+        if (ok && g_FsrRuntimeRetirementPendingForDlss) {
+            MaybeUnloadFSRRuntimeAfterSwitch("after cancelled DLSS replacement entered OFF");
+            StartAsyncFSRRuntimePreload("after cancelled DLSS replacement entered OFF");
+            g_FsrRuntimeRetirementPendingForDlss = false;
+        }
     }
 
     if (!ok) {
+        if (g_FsrRuntimeRetirementPendingForDlss) {
+            if (g_SwapChain) {
+                MaybeUnloadFSRRuntimeAfterSwitch("after failed DLSS activation");
+                StartAsyncFSRRuntimePreload("after failed DLSS activation");
+            }
+            g_FsrRuntimeRetirementPendingForDlss = false;
+        }
         if (target != FGMode::Off) {
             target = g_FsrEnabled ? FGMode::FSR : ((g_DlssEnabled || g_DlssSuspended) ? FGMode::DLSS : FGMode::Off);
         }
@@ -1538,12 +1705,48 @@ static void Render() {
     g_CommandQueue->ExecuteCommandLists(1, lists);
     SetPCLMarker(frameToken, sl::PCLMarker::eRenderSubmitEnd, "RenderSubmitEnd");
     SetPCLMarker(frameToken, sl::PCLMarker::ePresentStart, "PresentStart");
+    const bool fsrExitPassthroughPresent =
+        g_FsrExitTransitionStage == testapp::fg::FsrExitTransitionStage::PresentPending;
+    const bool dlssReplacementPassthroughPresent =
+        g_FsrExitTransitionStage == testapp::fg::FsrExitTransitionStage::ReplacementPresentPending;
     HRESULT presentHr = g_SwapChain->Present(presentSyncInterval, presentFlags);
-    if (FAILED(presentHr) || (g_LastModeSwitchFrameId != 0 && g_FrameIdCounter - g_LastModeSwitchFrameId <= 3)) {
-        testapp::Log("[FG-DIAG] Present frameID=%llu mode=%s sync=%u flags=0x%x configuredVsync=%d hr=0x%08lx\n",
+    if (fsrExitPassthroughPresent || dlssReplacementPassthroughPresent || FAILED(presentHr) ||
+        (g_LastModeSwitchFrameId != 0 && g_FrameIdCounter - g_LastModeSwitchFrameId <= 3)) {
+        testapp::Log("[FG-DIAG] Present frameID=%llu mode=%s sync=%u flags=0x%x configuredVsync=%d "
+                     "fsrExitPassthrough=%d dlssReplacementPassthrough=%d hr=0x%08lx\n",
                      static_cast<unsigned long long>(g_FrameIdCounter), ModeName(g_CurrentMode), presentSyncInterval,
-                     presentFlags, g_VSync, static_cast<unsigned long>(presentHr));
+                     presentFlags, g_VSync, fsrExitPassthroughPresent ? 1 : 0,
+                     dlssReplacementPassthroughPresent ? 1 : 0,
+                     static_cast<unsigned long>(presentHr));
         testapp::LogFlush();
+    }
+    if (fsrExitPassthroughPresent) {
+        if (SUCCEEDED(presentHr)) {
+            g_FsrExitTransitionStage = testapp::fg::FsrExitTransitionStage::PassthroughPresented;
+        } else {
+            testapp::Log("[FG-DIAG] WARN FSR exit passthrough Present failed; keeping the proxy alive for a retry "
+                         "(frameID=%llu hr=0x%08lx)\n",
+                         static_cast<unsigned long long>(g_FrameIdCounter), static_cast<unsigned long>(presentHr));
+            testapp::LogFlush();
+        }
+    }
+    if (dlssReplacementPassthroughPresent) {
+        if (SUCCEEDED(presentHr)) {
+            g_FsrExitTransitionStage = testapp::fg::FsrExitTransitionStage::ReplacementPresented;
+        } else {
+            testapp::Log("[FG-DIAG] WARN DLSS replacement passthrough Present failed; deferring activation and "
+                         "keeping the proxy alive for a retry (frameID=%llu hr=0x%08lx)\n",
+                         static_cast<unsigned long long>(g_FrameIdCounter), static_cast<unsigned long>(presentHr));
+            testapp::LogFlush();
+        }
+    }
+    if (SUCCEEDED(presentHr) && g_FsrRuntimeRetirementPendingForDlss && g_CurrentMode == FGMode::DLSS &&
+        g_DlssEnabled) {
+        // Keep FSR module work out of both the replacement passthrough and DLSS-G's first active
+        // Present. Once that active image was delivered, retirement cannot lengthen either gap.
+        MaybeUnloadFSRRuntimeAfterSwitch("after first active DLSS Present");
+        StartAsyncFSRRuntimePreload("after first active DLSS Present");
+        g_FsrRuntimeRetirementPendingForDlss = false;
     }
     if (IsDeviceRemovedHr(presentHr)) {
         // Dump DRED (once, internal guard) and stop the loop instead of live-locking on a dead device.

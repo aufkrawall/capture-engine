@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-15 (GTA stable Reflex-driven DLSS-G menu suspension and exact-proxy continuity, exact-proxy PostSL/normal ownership across post-FSR OFF rotations, generation-bound screenshot publication, collision-safe capture outputs, restricted process IPC, variable-length process-loopback transport, source-built libaom closure, strict config boundaries, and existing graphics/audio state; see frame-generation/guardrails.md, overlay-fg-status.md, screenshots.md, recording-output-paths.md, process-ipc.md, multi-audio-capture.md, build.py.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-15 (exact Streamline adopted-tag rollover plus switch-app transactional FSR->DLSS prepare-before-break and replacement-first-Present activation, GTA stable Reflex-driven DLSS-G menu suspension and exact-proxy continuity, exact-proxy PostSL/normal ownership across post-FSR OFF rotations, generation-bound screenshot publication, collision-safe capture outputs, restricted process IPC, variable-length process-loopback transport, source-built libaom closure, strict config boundaries, and existing graphics/audio state; see frame-generation/guardrails.md, overlay-fg-status.md, screenshots.md, recording-output-paths.md, process-ipc.md, multi-audio-capture.md, build.py.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`

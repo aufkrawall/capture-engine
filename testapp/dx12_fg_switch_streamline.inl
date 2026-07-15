@@ -121,6 +121,10 @@ static bool TryInitDLSSFG() {
         testapp::Log("[FG-DIAG] slSetD3DDevice result=%d (%s)\n", static_cast<int>(deviceResult),
                      SlResultName(deviceResult));
     }
+    if (!g_SlDeviceSet) {
+        testapp::Log("[FG-DIAG] Cannot resolve DLSS/Reflex feature functions before Streamline accepts the device\n");
+        return false;
+    }
 
     void* fnPtr = nullptr;
     if (g_SlGetFeatureFunction(sl::kFeatureDLSS_G, "slDLSSGSetOptions", fnPtr) == sl::Result::eOk && fnPtr) {

@@ -32,10 +32,11 @@ void EndPreactivationStandby(const char* reason);
 void BeginActivation(uint32_t maximumOutputPresents);
 void EndActivation(const char* reason);
 
-// Called for every slSetTagForFrame packet before attempting a bootstrap record. A new frame
-// token ends the prior UI-coverage lifetime (eValidUntilPresent) so PostSL resumes normally.
-// Returns true only when the current frame still needs a standby/activation record. Callers use
-// this as the hot-path gate before inspecting any tag resources or acquiring a queue.
+// Called for every slSetTagForFrame packet before attempting a bootstrap record. When activation
+// adopted the prior standby tag after its Present, the first different activation token requests
+// a replacement record because eValidUntilPresent has expired. Later tokens end the one-shot
+// bootstrap so PostSL resumes normally. Returns true only when the current frame still needs a
+// standby/activation record; callers use this as the hot-path gate before inspecting resources.
 bool OnFrameTag(const void* frameToken);
 bool TryRecordBootstrap(const RecordRequest& request);
 

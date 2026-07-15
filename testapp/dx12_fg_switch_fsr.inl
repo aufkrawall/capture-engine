@@ -463,4 +463,5 @@ static void DestroyFSRContexts() {
     g_FsrEnabled = false;
     g_FsrSuspended = false;
     g_FsrInitialized = false;
+    g_FsrExitTransitionStage = testapp::fg::FsrExitTransitionStage::None;
 }

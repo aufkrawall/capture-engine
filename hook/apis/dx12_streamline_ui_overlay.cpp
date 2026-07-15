@@ -247,6 +247,7 @@ ID3D12GraphicsCommandList* g_ActivationCommandList = nullptr;
 uint32_t g_MaximumOutputPresents = 1;
 uint32_t g_CoveragePresentsRemaining = 0;
 uint64_t g_ActivationEpoch = 0;
+bool g_AdoptedStandbyNeedsActivationFrameRecord = false;
 
 void PruneRetiredRenderers() {
     auto it = g_RetiredRenderers.begin();
@@ -281,6 +282,7 @@ void BeginPreactivationStandby(uint32_t maximumOutputPresents) {
         g_FrameToken = nullptr;
         g_ActivationCommandList = nullptr;
         g_CoveragePresentsRemaining = 0;
+        g_AdoptedStandbyNeedsActivationFrameRecord = false;
         g_ActiveCoverage.store(false, std::memory_order_release);
         g_FrameTagTrackingActive.store(true, std::memory_order_release);
         HookLogImportant(
@@ -299,6 +301,7 @@ void EndPreactivationStandby(const char* reason) {
         g_FrameToken = nullptr;
         g_ActivationCommandList = nullptr;
         g_CoveragePresentsRemaining = 0;
+        g_AdoptedStandbyNeedsActivationFrameRecord = false;
         g_ActiveCoverage.store(false, std::memory_order_release);
         g_FrameTagTrackingActive.store(false, std::memory_order_release);
         HookLogImportant("DX12: Streamline UI preactivation standby disarmed (%s)",
@@ -317,6 +320,7 @@ void BeginActivation(uint32_t maximumOutputPresents) {
 
     const bool adoptedSubmittedStandby = g_Phase == BootstrapPhase::kStandbySubmitted;
     const bool adoptedPendingStandby = g_Phase == BootstrapPhase::kStandbyPendingSubmission;
+    g_AdoptedStandbyNeedsActivationFrameRecord = adoptedSubmittedStandby || adoptedPendingStandby;
     if (adoptedSubmittedStandby) {
         g_Phase = BootstrapPhase::kActivationSubmitted;
         g_ActivationCommandList = nullptr;
@@ -356,6 +360,7 @@ void EndActivation(const char* reason) {
     g_FrameToken = nullptr;
     g_ActivationCommandList = nullptr;
     g_CoveragePresentsRemaining = 0;
+    g_AdoptedStandbyNeedsActivationFrameRecord = false;
     g_ActiveCoverage.store(false, std::memory_order_release);
     g_FrameTagTrackingActive.store(g_PreactivationStandbyEnabled, std::memory_order_release);
     HookLogImportant("DX12: Streamline UI bootstrap overlay %s (%s)",
@@ -399,6 +404,29 @@ bool OnFrameTag(const void* frameToken) {
                 static_cast<unsigned long long>(g_ActivationEpoch), n + 1);
         }
         return false;
+    }
+
+    if (g_AdoptedStandbyNeedsActivationFrameRecord &&
+        (g_Phase == BootstrapPhase::kActivationPendingSubmission ||
+         g_Phase == BootstrapPhase::kActivationSubmitted)) {
+        // Standby resources use eValidUntilPresent. An activation reported after the standby
+        // frame's Present can provisionally adopt that record, but a different frame token proves
+        // that its lifetime ended. Record into this first real activation frame instead of
+        // retiring coverage before PostSL has produced any output. Renderer slots independently
+        // retain any older pending command list until its exact app submission completes.
+        const void* adoptedFrameToken = g_FrameToken;
+        g_FrameToken = frameToken;
+        g_Phase = BootstrapPhase::kActivationIdle;
+        g_ActivationCommandList = nullptr;
+        g_CoveragePresentsRemaining = 0;
+        g_AdoptedStandbyNeedsActivationFrameRecord = false;
+        g_ActiveCoverage.store(false, std::memory_order_release);
+        HookLogImportant(
+            "DX12: Streamline UI bootstrap rolling adopted standby record into first activation frame "
+            "(activationEpoch=%llu standbyFrame=%p activationFrame=%p) — prior eValidUntilPresent lifetime "
+            "ended; requesting exact current-tag coverage",
+            static_cast<unsigned long long>(g_ActivationEpoch), adoptedFrameToken, frameToken);
+        return true;
     }
 
     g_FrameToken = frameToken;
@@ -530,6 +558,7 @@ bool ConsumePostSLCoverage() {
     if (g_Phase != BootstrapPhase::kActivationSubmitted || g_CoveragePresentsRemaining == 0) {
         return false;
     }
+    g_AdoptedStandbyNeedsActivationFrameRecord = false;
     --g_CoveragePresentsRemaining;
     if (g_CoveragePresentsRemaining == 0) {
         g_Phase = BootstrapPhase::kFinished;
@@ -557,6 +586,7 @@ void Shutdown(const char* reason) {
     g_Phase = BootstrapPhase::kInactive;
     g_ActivationCommandList = nullptr;
     g_CoveragePresentsRemaining = 0;
+    g_AdoptedStandbyNeedsActivationFrameRecord = false;
     g_ActiveCoverage.store(false, std::memory_order_release);
     g_FrameTagTrackingActive.store(false, std::memory_order_release);
     RetireRenderer(g_Renderer);
