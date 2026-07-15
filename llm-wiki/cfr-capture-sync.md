@@ -1,6 +1,6 @@
 # CFR Capture Sync
 
-Last cross-checked: 2026-07-14 (max-rate variable-input WGC producer contract, transactional CFR/audio startup, 300 ms WGC/DXGI look-ahead, timestamp-nearest source selection, exact codec-decoded endpoints, event-driven inject ingestion, and ordered audio epochs)
+Last cross-checked: 2026-07-15 (pre-live stop-drain termination, max-rate variable-input WGC producer contract, transactional CFR/audio startup, 300 ms WGC/DXGI look-ahead, timestamp-nearest source selection, exact codec-decoded endpoints, event-driven inject ingestion, and ordered audio epochs)
 Stale-risk: low
 
 ## Inject contention invariants (2026-07-12)
@@ -130,6 +130,7 @@ Use these signals together:
 
 - `TimerRebase` / duplicate timer-rebase counts: nonzero values indicate live CFR rescheduling pressure. They must not represent discarded timeline debt in CFR captures.
 - `CFR stop drain ... path=inject|WGC`: shows whether stop-time outstanding CFR ticks were closed.
+- `[EncoderThread] CFR stop drain skipped before first live video frame`: the recording stopped before any video frame committed the output timeline. There is no CFR prefix to close; the encoder worker disarms the drain and proceeds to reserved-output cleanup instead of polling an already-shut-down empty queue.
 - `[A/V START] Audio source reset ... timelineValid=...`: non-app sources should become valid at the shared anchor; app audio stays optional only until first packet evidence. If an app source saw sync-pending packets, subsequent bootstrap should wait rather than encode a leading silent head.
 - `[PullAudio] Track ... bootstrap complete ... forced=0 trimmed=0`: any `forced=1` or nonzero `trimmed` indicates the old content-shortening startup path.
 - `[PullAudio] App source gap silence ...`: a started app source has no buffered samples for the requested range and is intentionally contributing silence instead of blocking the exported track. This is expected for sparse app sources; repeated lines are still useful evidence when a mixed track sounds wrong.

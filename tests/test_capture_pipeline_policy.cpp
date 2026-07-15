@@ -134,6 +134,13 @@ TEST(CapturePipelinePolicyTest, EveryCfrBackendDrainsItsContiguousPrefixAtStop) 
     EXPECT_TRUE(policy::CanDrainOutstandingCfrTicks(true, false, true, false, false));
 }
 
+TEST(CapturePipelinePolicyTest, StopBeforeFirstLiveFrameCannotKeepCfrDrainArmed) {
+    EXPECT_TRUE(policy::ShouldAbortCfrStopDrainBeforeOutputIsLive(false, false, true));
+    EXPECT_FALSE(policy::ShouldAbortCfrStopDrainBeforeOutputIsLive(true, false, true));
+    EXPECT_FALSE(policy::ShouldAbortCfrStopDrainBeforeOutputIsLive(false, true, true));
+    EXPECT_FALSE(policy::ShouldAbortCfrStopDrainBeforeOutputIsLive(false, false, false));
+}
+
 TEST(CapturePipelinePolicyTest, WgcCoverageLossRepeatPolicyRequiresLagMismatch) {
     EXPECT_TRUE(policy::HasWgcUnrecoverableCoverageLoss(6333.0, 23.0));
     EXPECT_TRUE(policy::HasWgcUnrecoverableCoverageLoss(6333.0, 23.0, 80.0));

@@ -170,6 +170,14 @@ inline bool ShouldDrainOutstandingCfrTicksAtStop(bool useScreenGrab, bool useVFR
     return true;
 }
 
+inline bool ShouldAbortCfrStopDrainBeforeOutputIsLive(bool recording, bool recordingOutputLive,
+                                                       bool drainOutstandingCfrTicks) {
+    // A recording that never committed its first video frame has no CFR output
+    // prefix or accrued output debt to close.  Keeping the drain armed in this
+    // state also prevents the encoder worker from observing shutdown.
+    return !recording && !recordingOutputLive && drainOutstandingCfrTicks;
+}
+
 inline bool ShouldUseInjectCaptureForAutoTarget(bool explicitInjectCapture, bool autoCapture,
                                                 bool gameWhitelistMatched) {
     return explicitInjectCapture || (autoCapture && gameWhitelistMatched);

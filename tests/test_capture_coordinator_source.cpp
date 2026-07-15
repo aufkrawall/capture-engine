@@ -208,6 +208,21 @@ TEST(CaptureCoordinatorSourceTest, FreshFrameMetadataCommitsOnlyAfterSuccessfulE
     EXPECT_NE(source.find("Deferred candidates never enter this branch"), std::string::npos);
 }
 
+TEST(CaptureCoordinatorSourceTest, StopBeforeFirstLiveFrameDisarmsCfrDrainBeforeQueuePolling) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t drainAbort = source.find("ShouldAbortCfrStopDrainBeforeOutputIsLive");
+    const size_t drainClear = source.find("g_DrainOutstandingCfrTicks.store(false", drainAbort);
+    const size_t stopDrain = source.find("if (!recordingActive && recordingOutputLive && drainOutstandingCfrTicks)",
+                                         drainClear);
+    ASSERT_NE(drainAbort, std::string::npos);
+    ASSERT_NE(drainClear, std::string::npos);
+    ASSERT_NE(stopDrain, std::string::npos);
+    EXPECT_LT(drainAbort, drainClear);
+    EXPECT_LT(drainClear, stopDrain);
+}
+
 TEST(CaptureCoordinatorSourceTest, WgcAndDuplicationStartupPrewarmsBeforeTransactionalContractCommit) {
     const std::string source = ReadCoordinatorSource();
     const std::string encoder = ReadVideoEncoderSource();

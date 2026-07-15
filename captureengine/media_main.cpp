@@ -4539,8 +4539,16 @@ void EncoderThreadFunc(const AppConfig& config) {
                 outputShortfallTicks = updateLiveCfrShortfall(shortfallNow.QuadPart);
             }
         }
-        if (!g_Recording.load(std::memory_order_acquire) && recordingOutputLive &&
-            g_DrainOutstandingCfrTicks.load(std::memory_order_acquire)) {
+        const bool recordingActive = g_Recording.load(std::memory_order_acquire);
+        const bool drainOutstandingCfrTicks = g_DrainOutstandingCfrTicks.load(std::memory_order_acquire);
+        if (ce::capture_policy::ShouldAbortCfrStopDrainBeforeOutputIsLive(
+                recordingActive, recordingOutputLive, drainOutstandingCfrTicks)) {
+            LogWarn(
+                "[EncoderThread] CFR stop drain skipped before first live video frame; no output timeline or "
+                "captured frame exists to drain");
+            g_DrainOutstandingCfrTicks.store(false, std::memory_order_release);
+        }
+        if (!recordingActive && recordingOutputLive && drainOutstandingCfrTicks) {
             const bool mediaEngineCanRepeatLastFrame =
                 MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
             if (activeScreenGrab && !bufferedWgcFrames.empty()) {
