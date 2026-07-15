@@ -4,6 +4,7 @@
 #include "../common/path_utils.h"
 #include "../common/raii_helpers.h"
 #include "../common/reserved_capture_output.h"
+#include "../common/secure_dll_loading.h"
 #include "../common/shared_defs.h"
 #include "audio_time_utils.h"  // For ce::audio::ParseSampleRateOr
 #include "mediaengine.h"
@@ -6099,7 +6100,7 @@ bool VideoEncoder::EnsureSwapRBShader() {
     if (swapRBShaderCreated)
         return true;
 
-    HMODULE d3dCompiler = LoadLibraryW(L"d3dcompiler_47.dll");
+    HMODULE d3dCompiler = ce::security::LoadSystemLibrary(L"d3dcompiler_47.dll");
     if (!d3dCompiler) {
         DLL_Log("[SwapRB] Failed to load d3dcompiler_47.dll");
         return false;

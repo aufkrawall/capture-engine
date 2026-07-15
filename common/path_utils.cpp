@@ -1,4 +1,5 @@
 #include "path_utils.h"
+#include "secure_dll_loading.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -51,7 +52,7 @@ bool QueryLiveMappedDriveRemote(wchar_t driveLetter, std::wstring& remoteRoot, D
 
     HMODULE mpr = GetModuleHandleW(L"mpr.dll");
     if (!mpr) {
-        mpr = LoadLibraryW(L"mpr.dll");
+        mpr = ce::security::LoadSystemLibrary(L"mpr.dll");
     }
     if (!mpr) {
         status = GetLastError();

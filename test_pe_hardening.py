@@ -28,6 +28,7 @@ Section {
 }
 GuardCFFunctionTable: 0x140001000
 GuardCFFunctionCount: 42
+  CF_INSTRUMENTED
   CF_FUNCTION_TABLE_PRESENT
 """
         result = hardening.parse_llvm_readobj_hardening(output, "x64")
@@ -94,6 +95,31 @@ Section {
             (root / "capture_hook_x86.dll").touch()
             names = [path.name for path, _ in hardening.shipped_binaries(root, skip_x86=True)]
         self.assertEqual(names, ["captureengine.exe"])
+
+    def test_effective_cfg_requires_instrumentation_flag(self) -> None:
+        output = """
+Arch: x86_64
+  IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE
+  IMAGE_DLL_CHARACTERISTICS_HIGH_ENTROPY_VA
+  IMAGE_DLL_CHARACTERISTICS_NX_COMPAT
+  IMAGE_DLL_CHARACTERISTICS_GUARD_CF
+GuardCFFunctionTable: 0x140001000
+GuardCFFunctionCount: 1
+  CF_FUNCTION_TABLE_PRESENT
+"""
+        result = hardening.parse_llvm_readobj_hardening(output, "x64")
+        self.assertIn("GuardFlags lacks CF_INSTRUMENTED", result.errors)
+
+    def test_x86_subdirectory_selects_x86_architecture(self) -> None:
+        self.assertEqual(hardening.expected_architecture(Path("testapp") / "x86" / "dx11_test.exe"), "x86")
+
+    def test_executables_only_excludes_third_party_dlls(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "dx12_test.exe").touch()
+            (root / "vendor.dll").touch()
+            names = [path.name for path, _ in hardening.shipped_binaries(root, executables_only=True)]
+        self.assertEqual(names, ["dx12_test.exe"])
 
 
 if __name__ == "__main__":

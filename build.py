@@ -147,18 +147,10 @@ HOOK_OPT_FLAGS_X86 = [
     "-fno-strict-aliasing",  # Same aliasing concerns as x64 hook DLL
 ] + COMMON_HARDENING_FLAGS
 
-# Test apps are non-security-critical graphics stimuli. Keep their compiler
-# policy independent from CaptureEngine/hook hardening so a mitigation or
-# toolchain metadata issue cannot prevent an API test from starting.
-TESTAPP_OPT_FLAGS_X64 = [
-    "-O3",
-    "-flto",
-    "-march=x86-64",
-    "-mtune=generic",
-    "-fvisibility=hidden",
-    "-ffunction-sections",
-    "-fdata-sections",
-]
+# Test apps are also CFG/injection compatibility stimuli. Keep x64 on the
+# production hardening baseline. The x86 cross-link exception below is limited
+# to CFG; stack protection and fortified headers remain valid on that path.
+TESTAPP_OPT_FLAGS_X64 = list(OPT_FLAGS_X64)
 TESTAPP_OPT_FLAGS_X86 = [
     "-O3",
     "-march=i686",
@@ -166,8 +158,8 @@ TESTAPP_OPT_FLAGS_X86 = [
     "-fvisibility=hidden",
     "-ffunction-sections",
     "-fdata-sections",
-]
-TESTAPP_NO_SECURITY_LINK_FLAGS = ["-Wl,--no-guard-cf"]
+] + COMMON_HARDENING_FLAGS
+TESTAPP_X86_CFG_LINK_FLAGS = ["-Wl,--no-guard-cf"]
 
 # Linker optimization flags
 # Keep debug info enabled for crash dumps and post-mortem analysis. On Windows
@@ -2709,11 +2701,13 @@ class FFmpegBuilder:
         env["CC"] = "clang"
         env["CXX"] = "clang++"
         env["CFLAGS"] = (
-            f"-O3 -mguard=cf -ffunction-sections -fdata-sections -I{dependency_inc} "
+            f"-O3 -mguard=cf -fstack-protector-strong -D_FORTIFY_SOURCE=2 "
+            f"-ffunction-sections -fdata-sections -I{dependency_inc} "
             f"-I{self.prefix}/include -I{msys_inc}"
         )
         env["CXXFLAGS"] = (
-            f"-O3 -mguard=cf -ffunction-sections -fdata-sections -I{dependency_inc} "
+            f"-O3 -mguard=cf -fstack-protector-strong -D_FORTIFY_SOURCE=2 "
+            f"-ffunction-sections -fdata-sections -I{dependency_inc} "
             f"-I{self.prefix}/include -I{msys_inc}"
         )
         env["LDFLAGS"] = (
@@ -2988,7 +2982,7 @@ class FFmpegBuilder:
         self.run([make_exe, "install"], cwd=build_dir, env=env)
 
 
-FFMPEG_BUILD_CONFIGURATION_VERSION = 7
+FFMPEG_BUILD_CONFIGURATION_VERSION = 8
 
 
 def ffmpeg_build_configuration_fingerprint():
@@ -4391,10 +4385,10 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     """Compile test applications using Clang (and x86 if available)"""
     log("Compiling Test Applications...")
 
-    # Test apps are stimulus binaries, not security boundaries. Do not reuse
-    # the shared CaptureEngine flags: that would add CFG/CET/stack-protector
-    # policy to the x64 apps, while the x86 apps need the same simple policy.
-    cflags = make_cpp_cflags(TESTAPP_OPT_FLAGS_X64, enable_cfg=False)
+    # x64 test apps intentionally exercise injection into an effectively
+    # CFG-instrumented process. Only the broken i686 CRT/load-config path is
+    # exempted below.
+    cflags = make_cpp_cflags(TESTAPP_OPT_FLAGS_X64)
 
     testapp_src_dir = os.path.join(PROJECT_ROOT, "testapp")
     testapp_bin_dir = TESTAPP_BIN_DIR
@@ -4476,8 +4470,12 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     def add_task(desc, cmd, cwd=None, task_env=env):
         tasks.append((desc, cmd, cwd, make_task_temp_environment(task_env, desc)))
 
-    def make_cmd(compiler, flags, source, linker_flags, output):
-        effective_linker_flags = list(linker_flags) + list(TESTAPP_NO_SECURITY_LINK_FLAGS)
+    def make_cmd(compiler, flags, source, linker_flags, output, *, arch="x64"):
+        effective_linker_flags = list(linker_flags) + list(LD_OPT_FLAGS)
+        if arch == "x64":
+            effective_linker_flags.extend(LD_OPT_FLAGS_X64)
+        else:
+            effective_linker_flags.extend(TESTAPP_X86_CFG_LINK_FLAGS)
         append_windows_pdb_linker_flag(effective_linker_flags, output)
         cmd_base = [compiler] + flags + [source] + effective_linker_flags + ["-o", output]
         if ccache_exe:
@@ -4485,7 +4483,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         return cmd_base
 
     def make_cmd_x86(compiler, flags, source, linker_flags, output):
-        return make_cmd(compiler, flags, source, x86_linker_prefix + list(linker_flags), output)
+        return make_cmd(compiler, flags, source, x86_linker_prefix + list(linker_flags), output, arch="x86")
 
     vulkan_lib = get_linux_vulkan_import_lib_path("x64")
     vulkan_lib_x86 = get_linux_vulkan_import_lib_path("x86")
@@ -5668,6 +5666,7 @@ def compile_project(
                 process_loopback_helper_src = os.path.join(
                     PROJECT_ROOT, "helpers", "process_loopback_helper_main.cpp"
                 )
+                secure_dll_loading_src = os.path.join(PROJECT_ROOT, "common", "secure_dll_loading.cpp")
                 process_loopback_helper = os.path.join(BIN_DIR, "process_loopback_helper.exe")
                 temp_process_loopback_helper = os.path.join(curr_obj_dir, "process_loopback_helper.tmp.exe")
                 helper_cflags = [f for f in curr_cflags if not f.startswith("-flto")]
@@ -5686,7 +5685,7 @@ def compile_project(
                 run_command(
                     [curr_clang_exe]
                     + helper_cflags
-                    + [process_loopback_helper_src]
+                    + [process_loopback_helper_src, secure_dll_loading_src]
                     + helper_ldflags
                     + ["-o", temp_process_loopback_helper],
                     env=curr_env,
@@ -5963,7 +5962,23 @@ def compile_project(
         cwd=PROJECT_ROOT,
         env=env,
     )
-    log("Verified PE mitigations, architecture, section permissions, CFG tables, imports, and first-party PDBs")
+    if env.get("CE_SANITIZE") != "1":
+        for testapp_root in (TESTAPP_BIN_DIR, os.path.join(TESTAPP_BIN_DIR, "x86")):
+            run_command(
+                [
+                    sys.executable,
+                    pe_hardening_verifier,
+                    "--llvm-readobj",
+                    llvm_readobj,
+                    "--root",
+                    testapp_root,
+                    "--executables-only",
+                    "--allow-missing-x86-cfg",
+                ],
+                cwd=PROJECT_ROOT,
+                env=env,
+            )
+    log("Verified PE mitigations, architecture, section permissions, effective CFG, imports, and PDBs")
 
     clear_stale_hook_pdb_cache()
 

@@ -7,6 +7,7 @@
 #include "../common/inject_overlay_policy.h"
 #include "../common/logging.h"
 #include "../common/pseudo_overlay_visibility.h"
+#include "../common/secure_dll_loading.h"
 
 #include <dwmapi.h>
 
@@ -19,7 +20,7 @@ void EnsureDwmApi() {
     if (g_DwmApiInitialized)
         return;
     g_DwmApiInitialized = true;
-    HMODULE mod = LoadLibraryA("dwmapi.dll");
+    HMODULE mod = ce::security::LoadSystemLibrary(L"dwmapi.dll");
     if (mod) {
         g_DwmSetWindowAttribute = (DwmSetWindowAttributeFn)GetProcAddress(mod, "DwmSetWindowAttribute");
     }

@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-15 (zero-lock clean-draw D3D11 forced AF and hardened DX12/Vulkan sampler policy, module-enumeration/ring-buffer/input-byte hardening, pixel-probed exact PostSL proxy-buffer takeover for FSR->DLSS, strict overlay-visibility interruption logging, fresh-queue native return after explicit DLSS off, authoritative PostSL/normal presentation ownership and warm-resume wrapper catch-up, wrapped-Present exact-proxy coverage during DLSS-G suspension, switch-app transactional FSR->DLSS presentation, GTA stable Reflex-driven DLSS-G menu suspension and exact-proxy continuity, generation-bound screenshot publication, collision-safe capture outputs, restricted process IPC, variable-length process-loopback transport, source-built libaom closure, strict config boundaries, and existing graphics/audio state; see dx11-forced-af.md, dx12-forced-af.md, graphics-overrides-and-frame-pacing.md, frame-generation/guardrails.md, overlay-fg-status.md, screenshots.md, recording-output-paths.md, process-ipc.md, multi-audio-capture.md, build.py.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-16 (scoped x64/test-app/FFmpeg hardening and restricted DLL search, zero-lock clean-draw D3D11 forced AF and hardened DX12/Vulkan sampler policy, module-enumeration/ring-buffer/input-byte hardening, pixel-probed exact PostSL proxy-buffer takeover for FSR->DLSS, strict overlay-visibility interruption logging, fresh-queue native return after explicit DLSS off, authoritative PostSL/normal presentation ownership and warm-resume wrapper catch-up, wrapped-Present exact-proxy coverage during DLSS-G suspension, switch-app transactional FSR->DLSS presentation, GTA stable Reflex-driven DLSS-G menu suspension and exact-proxy continuity, generation-bound screenshot publication, collision-safe capture outputs, restricted process IPC, variable-length process-loopback transport, source-built libaom closure, strict config boundaries, and existing graphics/audio state; see dx11-forced-af.md, dx12-forced-af.md, graphics-overrides-and-frame-pacing.md, frame-generation/guardrails.md, overlay-fg-status.md, screenshots.md, recording-output-paths.md, process-ipc.md, multi-audio-capture.md, build.py.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -37,7 +37,7 @@ Primary sources:
 - `codestyle.md`
   - Style/tooling rules, the no-whole-file-in-place-formatter constraint for existing sources, Python tooling config, and common tree conventions. Last verified 2026-07-12.
 - `build.py.md`
-  - Supported `build.py` flags, source-built dependency closure, PE verification, sanitizer/FP/CPU policy, FFmpeg configuration/patch fingerprinting, environment variables, operational notes, and MinGW cross-compile pitfalls. Last verified 2026-07-15.
+  - Supported `build.py` flags, source-built dependency closure, PE verification, scoped CFG/stack/fortify and DLL-search policy, sanitizer/FP/CPU policy, FFmpeg configuration/patch fingerprinting, environment variables, operational notes, and MinGW cross-compile pitfalls. Last verified 2026-07-16.
 - `screenshots.md`
   - Shared ABI 32 screenshot requests, raw payload v2, managed hook worker, strict payload validation, PNG/10-bit 4:4:4 AVIF encoding, color conversion, and atomic publication. Last verified 2026-07-15.
 - `process-ipc.md`

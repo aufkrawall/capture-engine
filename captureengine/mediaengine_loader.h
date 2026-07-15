@@ -86,7 +86,8 @@ extern MediaEngine_SetSourcePrefers10Bit_t MediaEngine_SetSourcePrefers10Bit;
 extern MediaEngine_SetCursorCompositionSuppressed_t MediaEngine_SetCursorCompositionSuppressed;
 extern MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency;
 
-// Load mediaengine.dll from exe_dir/ffmpeg/ folder
+// Load mediaengine.dll from exeDir with dependencies restricted to the
+// application, its private ffmpeg directory, and System32.
 // Returns true on success, false on failure
 bool MediaEngine_Load(const char* exeDir);
 

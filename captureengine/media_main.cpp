@@ -32,6 +32,7 @@
 #include "../common/process_ipc.h"
 #include "../common/rate_window_utils.h"
 #include "../common/shared_defs.h"
+#include "../common/secure_dll_loading.h"
 #include "../common/thread_power_throttling_compat.h"
 #include "mediaengine_loader.h"
 #include "wgc_capture.h"
@@ -2031,7 +2032,7 @@ static void ApplyMediaGpuSchedulingPriority(const AppConfig& config, const LUID*
 
     HMODULE gdi32 = GetModuleHandleA("gdi32.dll");
     if (!gdi32) {
-        gdi32 = LoadLibraryA("gdi32.dll");
+        gdi32 = ce::security::LoadSystemLibrary(L"gdi32.dll");
     }
     if (!gdi32) {
         LogWarn("[Media] GPU scheduling priority class unavailable: failed to load gdi32.dll");

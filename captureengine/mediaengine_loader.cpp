@@ -1,7 +1,9 @@
 #include "mediaengine_loader.h"
 #include <windows.h>
 #include <cstring>
+#include <filesystem>
 #include "../common/logging.h"
+#include "../common/secure_dll_loading.h"
 
 MediaEngine_SetLogCallback_t MediaEngine_SetLogCallback = nullptr;
 DLL_Log_t DLL_Log = nullptr;
@@ -51,47 +53,20 @@ bool MediaEngine_Load(const char* exeDir) {
         return true;
     }
 
-    char ffmpegDir[MAX_PATH];
-    snprintf(ffmpegDir, sizeof(ffmpegDir), "%s\\ffmpeg", exeDir);
-
-    if (GetFileAttributesA(ffmpegDir) == INVALID_FILE_ATTRIBUTES) {
-        LogError("[MediaEngine] FFmpeg folder not found: %s", ffmpegDir);
+    const std::filesystem::path executableDirectory = std::filesystem::absolute(exeDir).lexically_normal();
+    const std::filesystem::path ffmpegDirectory = executableDirectory / L"ffmpeg";
+    DWORD loadError = ERROR_SUCCESS;
+    if (!ce::security::EnsureSecureDllSearchDirectory(ffmpegDirectory, &loadError)) {
+        LogError("[MediaEngine] Failed to register secure FFmpeg directory: error %lu", loadError);
         return false;
     }
+    LogInfo("[MediaEngine] Registered restricted FFmpeg dependency directory");
 
-    if (!SetDllDirectoryA(ffmpegDir)) {
-        LogError("[MediaEngine] Failed to set DLL directory: %s", ffmpegDir);
-        return false;
-    }
-    LogInfo("[MediaEngine] Set DLL search path to: %s", ffmpegDir);
-
-    // Pre-load libc++.dll from the FFmpeg directory. libvpl-2.dll has a static
-    // link-time dependency on libc++.dll. SetDllDirectoryA only affects
-    // LoadLibrary/delay-load search, not transitive static import resolution
-    // by the OS loader. Pre-loading makes the module available before
-    // mediaengine.dll triggers the FFmpeg import chain.
-    char libcxxPath[MAX_PATH];
-    snprintf(libcxxPath, sizeof(libcxxPath), "%s\\libc++.dll", ffmpegDir);
-    if (GetFileAttributesA(libcxxPath) != INVALID_FILE_ATTRIBUTES) {
-        HMODULE hLibcxx = LoadLibraryA(libcxxPath);
-        if (hLibcxx) {
-            LogInfo("[MediaEngine] Pre-loaded libc++.dll from FFmpeg dir");
-        } else {
-            LogError("[MediaEngine] Failed to pre-load libc++.dll: error %lu", GetLastError());
-        }
-    } else {
-        LogInfo("[MediaEngine] libc++.dll not found in FFmpeg dir (non-sanitizer build)");
-    }
-
-    char dllPath[MAX_PATH];
-    snprintf(dllPath, sizeof(dllPath), "%s\\mediaengine.dll", exeDir);
-
-    LogInfo("[MediaEngine] Loading: %s", dllPath);
-    g_MediaEngineModule = LoadLibraryA(dllPath);
+    const std::filesystem::path dllPath = executableDirectory / L"mediaengine.dll";
+    LogInfo("[MediaEngine] Loading mediaengine.dll from the executable directory");
+    g_MediaEngineModule = ce::security::LoadLibraryFromSecurePath(dllPath, &loadError);
     if (!g_MediaEngineModule) {
-        DWORD err = GetLastError();
-        LogError("[MediaEngine] Failed to load mediaengine.dll: error %lu", err);
-        SetDllDirectoryA(nullptr);
+        LogError("[MediaEngine] Failed to load mediaengine.dll: error %lu", loadError);
         return false;
     }
     LogInfo("[MediaEngine] Loaded successfully");
@@ -140,7 +115,6 @@ bool MediaEngine_Load(const char* exeDir) {
         LogError("[MediaEngine] Failed to get all function pointers");
         FreeLibrary(g_MediaEngineModule);
         g_MediaEngineModule = nullptr;
-        SetDllDirectoryA(nullptr);
         return false;
     }
 
@@ -185,5 +159,4 @@ void MediaEngine_Unload() {
     MediaEngine_SetCursorCompositionSuppressed = nullptr;
     MediaEngine_MeasureRenderEndpointLatency = nullptr;
 
-    SetDllDirectoryA(nullptr);
 }

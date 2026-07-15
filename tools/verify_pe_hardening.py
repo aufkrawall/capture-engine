@@ -57,6 +57,8 @@ def parse_llvm_readobj_hardening(
         errors.append("GuardCFFunctionCount is zero")
     if require_cfg and "CF_FUNCTION_TABLE_PRESENT" not in output:
         errors.append("GuardFlags lacks CF_FUNCTION_TABLE_PRESENT")
+    if require_cfg and "CF_INSTRUMENTED" not in output:
+        errors.append("GuardFlags lacks CF_INSTRUMENTED")
 
     for section in re.findall(r"Section \{.*?^\s*\}", output, re.MULTILINE | re.DOTALL):
         if "IMAGE_SCN_MEM_EXECUTE" in section and "IMAGE_SCN_MEM_WRITE" in section:
@@ -84,7 +86,7 @@ def is_available_system_dll(dll_name: str, architecture: str) -> bool:
 
 
 def expected_architecture(path: Path) -> str:
-    return "x86" if "_x86" in path.stem.lower() else "x64"
+    return "x86" if "_x86" in path.stem.lower() or any(part.lower() == "x86" for part in path.parts) else "x64"
 
 
 def verify_binary(
@@ -121,13 +123,17 @@ def verify_binary(
     return dataclasses.replace(result, errors=tuple(errors))
 
 
-def shipped_binaries(root: Path, skip_x86: bool = False) -> Iterable[tuple[Path, bool]]:
+def shipped_binaries(
+    root: Path, skip_x86: bool = False, executables_only: bool = False
+) -> Iterable[tuple[Path, bool]]:
     for path in sorted(root.glob("*.exe")) + sorted(root.glob("*.dll")):
+        if executables_only and path.suffix.lower() != ".exe":
+            continue
         if skip_x86 and expected_architecture(path) == "x86":
             continue
         yield path, True
     ffmpeg = root / "ffmpeg"
-    if ffmpeg.is_dir():
+    if not executables_only and ffmpeg.is_dir():
         for path in sorted(ffmpeg.glob("*.dll")):
             yield path, False
 
@@ -138,9 +144,10 @@ def verify_tree(
     allowed_runtime_dlls: Iterable[str] = (),
     skip_x86: bool = False,
     allow_missing_x86_cfg: bool = False,
+    executables_only: bool = False,
 ) -> list[str]:
     failures: list[str] = []
-    binaries = list(shipped_binaries(root, skip_x86=skip_x86))
+    binaries = list(shipped_binaries(root, skip_x86=skip_x86, executables_only=executables_only))
     if not binaries:
         return [f"no shipped PE files found under {root}"]
     available_dlls = {path.name.lower() for path, _ in binaries if path.suffix.lower() == ".dll"}
@@ -166,6 +173,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--allow-runtime-dll", action="append", default=[])
     parser.add_argument("--skip-x86", action="store_true")
     parser.add_argument("--allow-missing-x86-cfg", action="store_true")
+    parser.add_argument("--executables-only", action="store_true")
     args = parser.parse_args(argv)
     failures = verify_tree(
         args.llvm_readobj,
@@ -173,6 +181,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.allow_runtime_dll,
         args.skip_x86,
         args.allow_missing_x86_cfg,
+        args.executables_only,
     )
     if failures:
         for failure in failures:

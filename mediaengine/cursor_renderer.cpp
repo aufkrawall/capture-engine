@@ -5,6 +5,7 @@
 #include <memory>
 #include <new>
 #include "../common/raii_helpers.h"
+#include "../common/secure_dll_loading.h"
 #include "mediaengine.h"
 #include "cursor_bitmap_utils.h"
 #include "cursor_geometry.h"
@@ -185,7 +186,7 @@ bool CursorRenderer::CreateRenderingResources() {
 
     // Load D3DCompile dynamically
     DLL_Log("[CursorRenderer] Loading d3dcompiler_47.dll");
-    ce::ModuleGuard d3dCompiler(LoadLibraryW(L"d3dcompiler_47.dll"));
+    ce::ModuleGuard d3dCompiler(ce::security::LoadSystemLibrary(L"d3dcompiler_47.dll"));
     if (!d3dCompiler) {
         DLL_Log("[CursorRenderer] Failed to load d3dcompiler_47.dll");
         return false;

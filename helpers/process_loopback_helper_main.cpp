@@ -1,6 +1,7 @@
 #include <windows.h>
 
 #include "../mediaengine/process_loopback_protocol.h"
+#include "../common/secure_dll_loading.h"
 
 #include <bit>
 #include <cstdint>
@@ -125,10 +126,14 @@ int wmain(int argc, wchar_t** argv) {
         return static_cast<int>(GetLastError());
     }
     const std::filesystem::path executableDir = std::filesystem::path(executablePath).parent_path();
-    SetDllDirectoryW((executableDir / L"ffmpeg").c_str());
-    HMODULE mediaEngine = LoadLibraryW((executableDir / L"mediaengine.dll").c_str());
+    DWORD loadError = ERROR_SUCCESS;
+    if (!ce::security::EnsureSecureDllSearchDirectory(executableDir / L"ffmpeg", &loadError)) {
+        return static_cast<int>(loadError);
+    }
+    HMODULE mediaEngine =
+        ce::security::LoadLibraryFromSecurePath(executableDir / L"mediaengine.dll", &loadError);
     if (!mediaEngine) {
-        return static_cast<int>(GetLastError());
+        return static_cast<int>(loadError);
     }
     auto entry = reinterpret_cast<WorkerEntry>(GetProcAddress(mediaEngine, "MediaEngine_RunProcessLoopbackWorker"));
     if (!entry) {

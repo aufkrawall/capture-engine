@@ -10,6 +10,7 @@
 #include <string>
 #include "crash_dump_policy.h"
 #include "logging.h"
+#include "secure_dll_loading.h"
 
 static std::string g_DumpDir = ".\\logs";
 static std::mutex g_DumpDirMutex;
@@ -362,7 +363,7 @@ static void RegisterWithWER() {
     // that bypass our VEH handler
     HMODULE hWer = GetModuleHandleW(L"wer.dll");
     if (!hWer)
-        hWer = LoadLibraryW(L"wer.dll");
+        hWer = ce::security::LoadSystemLibrary(L"wer.dll");
     if (hWer) {
         typedef HRESULT(WINAPI * PFN_WerSetFlags)(DWORD);
         auto pfnWerSetFlags = (PFN_WerSetFlags)GetProcAddress(hWer, "WerSetFlags");

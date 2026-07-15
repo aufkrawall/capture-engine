@@ -2,6 +2,7 @@
 
 #include "../common/logging.h"
 #include "../common/reserved_capture_output.h"
+#include "../common/secure_dll_loading.h"
 #include "../common/shared_defs.h"
 #include "screenshot_encoding.h"
 #include "wgc_capture.h"
@@ -86,20 +87,6 @@ class ComInitializer {
 
   private:
     HRESULT result_ = E_FAIL;
-};
-
-class DllDirectoryGuard {
-  public:
-    explicit DllDirectoryGuard(const std::filesystem::path& directory) {
-        changed_ = SetDllDirectoryW(directory.c_str()) != FALSE;
-    }
-    ~DllDirectoryGuard() {
-        if (changed_)
-            SetDllDirectoryW(nullptr);
-    }
-
-  private:
-    bool changed_ = false;
 };
 
 std::string WideToUtf8(const std::wstring& text) {
@@ -366,7 +353,11 @@ bool TakeGdiScreenshot(RawScreenshot& screenshot) {
 bool TakeScreenshot(const std::string& screenshotDirectory) {
     std::lock_guard<std::mutex> lock(g_screenshotMutex);
     const std::filesystem::path executableDirectory = ce::capture_output::GetExecutableDirectory();
-    DllDirectoryGuard dllDirectory(executableDirectory / L"ffmpeg");
+    DWORD dllSearchError = ERROR_SUCCESS;
+    if (!ce::security::EnsureSecureDllSearchDirectory(executableDirectory / L"ffmpeg", &dllSearchError)) {
+        LogError("[Screenshot] Failed to register secure FFmpeg directory: error %lu", dllSearchError);
+        return false;
+    }
     const std::filesystem::path outputDirectory =
         ce::capture_output::ResolveCaptureDirectory(screenshotDirectory, executableDirectory);
 

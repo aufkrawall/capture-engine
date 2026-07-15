@@ -25,6 +25,7 @@
 #include "../common/frame_timing_utils.h"
 #include "../common/logging.h"
 #include "../common/rate_window_utils.h"
+#include "../common/secure_dll_loading.h"
 #include "../common/thread_power_throttling_compat.h"
 #include "../mediaengine/video_format_policy.h"
 #include "dxgi_dup_capture.h"
@@ -247,7 +248,7 @@ GetWindowIdFromWindowFn ResolveGetWindowIdFromWindow() {
         for (const wchar_t* moduleName : modules) {
             HMODULE module = GetModuleHandleW(moduleName);
             if (!module) {
-                module = LoadLibraryW(moduleName);
+                module = ce::security::LoadSystemLibrary(moduleName);
             }
             if (!module) {
                 continue;
@@ -1016,7 +1017,7 @@ public:
             return false;
         }
 
-        HMODULE d3dCompiler = LoadLibraryW(L"d3dcompiler_47.dll");
+        HMODULE d3dCompiler = ce::security::LoadSystemLibrary(L"d3dcompiler_47.dll");
         if (!d3dCompiler) {
             LogError("[WGC] Failed to load d3dcompiler_47.dll for retained-copy conversion");
             return false;

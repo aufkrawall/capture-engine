@@ -1,4 +1,5 @@
 #include "windows_gpu_scheduling.h"
+#include "../common/secure_dll_loading.h"
 
 #include <dxgi.h>
 #include <algorithm>
@@ -186,7 +187,7 @@ bool QueryAdapterSchedulingEnvironment(const LUID& luid, AdapterSchedulingEnviro
 
     HMODULE gdi32 = GetModuleHandleW(L"gdi32.dll");
     if (!gdi32) {
-        gdi32 = LoadLibraryW(L"gdi32.dll");
+        gdi32 = ce::security::LoadSystemLibrary(L"gdi32.dll");
     }
     auto openAdapter =
         gdi32 ? reinterpret_cast<OpenAdapterFn>(GetProcAddress(gdi32, "D3DKMTOpenAdapterFromLuid")) : nullptr;
