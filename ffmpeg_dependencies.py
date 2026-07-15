@@ -42,7 +42,8 @@ Logger = Callable[[str], None]
 
 DEPENDENCY_BUILD_CONFIGURATION_VERSION = 2
 DEPENDENCY_COMPILE_FLAGS = (
-    "-march=x86-64 -mtune=generic -mguard=cf -ffunction-sections -fdata-sections"
+    "-march=x86-64 -mtune=generic -mguard=cf -fstack-protector-strong "
+    "-D_FORTIFY_SOURCE=2 -ffunction-sections -fdata-sections"
 )
 DEPENDENCY_LINK_FLAGS = "-Wl,--gc-sections -Wl,--guard-cf"
 DEPENDENCY_BUILD_POLICY_MARKER = "# captureproject source-dependency build policy"
@@ -364,8 +365,8 @@ class SourceDependencyBuilder:
 
         prefix_include = self._unix_path(os.path.join(self.prefix, "include"))
         prefix_lib = self._unix_path(os.path.join(self.prefix, "lib"))
-        env["CFLAGS"] = f"-O3 -mguard=cf -ffunction-sections -fdata-sections -I{prefix_include}"
-        env["CXXFLAGS"] = f"-O3 -mguard=cf -ffunction-sections -fdata-sections -I{prefix_include}"
+        env["CFLAGS"] = f"-O3 {DEPENDENCY_COMPILE_FLAGS} -I{prefix_include}"
+        env["CXXFLAGS"] = f"-O3 {DEPENDENCY_COMPILE_FLAGS} -I{prefix_include}"
         env["LDFLAGS"] = (
             f"-Wl,--gc-sections -Wl,--guard-cf -L{prefix_lib} -L{self._unix_path(self.msys_lib)}"
         )

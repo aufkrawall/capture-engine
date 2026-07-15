@@ -47,12 +47,20 @@ class FfmpegDependencyManifestTest(unittest.TestCase):
             changed = dependencies.dependency_manifest_fingerprint(str(manifest_path))
         self.assertNotEqual(original, changed)
 
+        with mock.patch.object(
+            dependencies,
+            "DEPENDENCY_COMPILE_FLAGS",
+            dependencies.DEPENDENCY_COMPILE_FLAGS + " -fno-stack-protector",
+        ):
+            changed = dependencies.dependency_manifest_fingerprint(str(manifest_path))
+        self.assertNotEqual(original, changed)
+
     def test_ffmpeg_libaom_component_and_cache_version_are_current(self) -> None:
         build_source = Path(__file__).with_name("build.py").read_text(encoding="utf-8")
         self.assertIn('"--enable-encoder=libaom_av1"', build_source)
         self.assertIn('"--enable-decoder=libaom_av1"', build_source)
         self.assertNotIn('"--enable-encoder=libaom-av1"', build_source)
-        self.assertIn("FFMPEG_BUILD_CONFIGURATION_VERSION = 7", build_source)
+        self.assertIn("FFMPEG_BUILD_CONFIGURATION_VERSION = 8", build_source)
 
 
 class FfmpegDependencyPeHelperTest(unittest.TestCase):
@@ -81,6 +89,8 @@ class FfmpegDependencyPeHelperTest(unittest.TestCase):
             self.assertIn(dependencies.DEPENDENCY_BUILD_POLICY_MARKER, content)
             self.assertIn("-march=x86-64", content)
             self.assertIn("-mguard=cf", content)
+            self.assertIn("-fstack-protector-strong", content)
+            self.assertIn("-D_FORTIFY_SOURCE=2", content)
             self.assertIn("-Wl,--guard-cf", content)
             self.assertIn("PKG_CONFIG_PATH=", content)
             with self.assertRaises(dependencies.DependencyBuildError):
