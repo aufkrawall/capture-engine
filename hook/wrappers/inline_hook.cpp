@@ -622,6 +622,19 @@ static bool IsControlFlowGuardEnabled() {
            policy.EnableControlFlowGuard;
 }
 
+using SetProcessValidCallTargetsFn = BOOL(WINAPI*)(HANDLE, PVOID, SIZE_T, ULONG, PCFG_CALL_TARGET_INFO);
+
+#ifdef _WIN64
+__declspec(guard(nocf))
+#endif
+static BOOL CallCfgRegistrationBootstrap(SetProcessValidCallTargetsFn function, HANDLE process, PVOID base,
+                                         SIZE_T size, ULONG count, PCFG_CALL_TARGET_INFO targets) {
+    // MinGW's Kernel32 import library does not expose this Windows API. This
+    // one trusted export call must bootstrap registration without first
+    // requiring its dynamically resolved address to pass the host CFG bitmap.
+    return function(process, base, size, count, targets);
+}
+
 static bool RegisterOnlyTrampolineEntrypoint(void* allocationBase, size_t allocationSize, void* entrypoint) {
     if (!IsControlFlowGuardEnabled())
         return true;
@@ -634,7 +647,6 @@ static bool RegisterOnlyTrampolineEntrypoint(void* allocationBase, size_t alloca
     CFG_CALL_TARGET_INFO target{};
     target.Offset = entry - base;
     target.Flags = CFG_CALL_TARGET_VALID;
-    using SetProcessValidCallTargetsFn = BOOL(WINAPI*)(HANDLE, PVOID, SIZE_T, ULONG, PCFG_CALL_TARGET_INFO);
     static const auto setProcessValidCallTargets = []() -> SetProcessValidCallTargetsFn {
         HMODULE module = GetModuleHandleW(L"kernelbase.dll");
         if (!module)
@@ -647,7 +659,8 @@ static bool RegisterOnlyTrampolineEntrypoint(void* allocationBase, size_t alloca
         HookLogImportant("InlineHook: SetProcessValidCallTargets is unavailable for CFG-enabled target");
         return false;
     }
-    if (!setProcessValidCallTargets(GetCurrentProcess(), allocationBase, allocationSize, 1, &target)) {
+    if (!CallCfgRegistrationBootstrap(setProcessValidCallTargets, GetCurrentProcess(), allocationBase,
+                                      allocationSize, 1, &target)) {
         HookLogImportant("InlineHook: SetProcessValidCallTargets failed for entry=%p page=%p error=%lu", entrypoint,
                          allocationBase, GetLastError());
         return false;

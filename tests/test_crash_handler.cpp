@@ -234,9 +234,10 @@ TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap)
     EXPECT_NE(contents.find("PAGE_EXECUTE_READ |"), std::string::npos);
     EXPECT_NE(contents.find("PAGE_TARGETS_NO_UPDATE"), std::string::npos);
     EXPECT_NE(contents.find("target.Flags = CFG_CALL_TARGET_VALID"), std::string::npos);
+    EXPECT_NE(contents.find("__declspec(guard(nocf))"), std::string::npos);
+    EXPECT_NE(contents.find("CallCfgRegistrationBootstrap(setProcessValidCallTargets"), std::string::npos);
     EXPECT_NE(contents.find("GetProcAddress(module, \"SetProcessValidCallTargets\")"), std::string::npos);
-    EXPECT_NE(contents.find("SetProcessValidCallTargets is unavailable for CFG-enabled target"), std::string::npos);
-    EXPECT_NE(contents.find("1, &target"), std::string::npos);
+    EXPECT_NE(contents.find("allocationSize, 1, &target"), std::string::npos);
 
     const size_t allocatorStart = contents.find("static uint8_t* AllocateWritableTrampolinePage");
     const size_t allocatorEnd = contents.find("// Deep hook data structures", allocatorStart);

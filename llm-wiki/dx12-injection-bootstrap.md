@@ -1,6 +1,6 @@
 # DX12 Injection Bootstrap
 
-Last cross-checked: 2026-07-12
+Last cross-checked: 2026-07-16
 
 Primary sources:
 - `captureengine/injection.cpp`
@@ -11,6 +11,8 @@ Primary sources:
 - `common/inject_overlay_policy.cpp`
 - `common/shared_defs.h`
 - `hook/main.cpp`
+- `hook/wrappers/inline_hook.cpp`
+- `tests/test_crash_handler.cpp`
 - `tests/test_shared_runtime_state.cpp`
 - `tests/test_capture_coordinator_source.cpp`
 
@@ -29,6 +31,7 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
 - `auto` routing is unchanged: a normal-whitelist match selects inject video, non-matches select the existing WGC/DXGI target path, and overlay-only targets stay on screen capture. During a live inject-to-WGC fallback, inject publication remains enabled until WGC first-frame proof; the media coordinator clears the inject-video flag only after committing the WGC path and before stopping the inject capture pipeline.
 - In current wrapper builds, DX12 hook bootstrap is for state tracking and `ExecuteCommandLists` tracking. Present and `ResizeBuffers` interception comes from wrappers rather than DXGI vtable hooks.
 - In wrapper builds, DX12 hook init is deferred until real D3D12 device creation is observed. In no-wrapper builds, the hook instance is initialized more eagerly so late injection does not miss the recovery path.
+- Inline-hook trampolines in a CFG-enabled x64 host begin on a `PAGE_TARGETS_INVALID` page, are built without write/execute overlap, sealed RX with `PAGE_TARGETS_NO_UPDATE`, and register only their aligned entrypoint. MinGW's Kernel32 import library lacks `SetProcessValidCallTargets`, so the exact export is resolved from already-loaded KernelBase/Kernel32 and invoked through one x64 `guard(nocf)` bootstrap wrapper. Do not turn that into a general unchecked-call helper or widen its use: the exception exists only because a normal dynamically resolved call is CFG-checked before it can register the new target. Session `20260716_013421` and a debugger reproduction proved the old indirect call fast-failed with subcode 10 in `InlineHook::FinalizeExecutableTrampoline` before hook initialization.
 
 ## Working Guidance
 - For DX12 games, prefer bootstrap-aware injection over eager process-start injection.
@@ -38,6 +41,7 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
 - Log each bootstrap phase with enough context to reconstruct failures later: wait-loop start, D3D12 detection, fallback path, wait-loop exit, hook-init deferral, and overlay handoff state.
 - For capture-method/injection separation diagnostics, look for `[Inject] Video method ... keeps injection active` and `[Media] Inject video publication enabled|disabled (...)`.
 - When changing pending-injection scan logic, keep lock ownership explicit. Avoid calling public query helpers from code that already holds `injectMutex`; add or use locked helpers and policy tests instead.
+- Preserve the one-call CFG registration bootstrap boundary when changing trampoline allocation or API resolution. The host CFG policy and the hook DLL's own CFG instrumentation must remain enabled; never solve a bootstrap failure by disabling x64 test-app CFG or marking whole trampoline pages valid.
 - Do not treat the current polling sleeps as permission to add more timing bandaids. Existing polling is part of bootstrap orchestration; it is not a general-purpose fix for overlay or FG correctness bugs.
 
 ## Open Questions / Stale-Risk
