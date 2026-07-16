@@ -8,6 +8,7 @@
 #pragma once
 
 #include "custom_overlay.h"
+#include "legacy_overlay_cache.h"
 
 struct IDirect3DDevice8;
 struct IDirect3DTexture8;
@@ -27,6 +28,9 @@ public:
 
     bool Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData) override;
     void Shutdown() override;
+    void OnDrawDataChanged() override {
+        geometryUpload.MarkDrawDataChanged();
+    }
 
     void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                 const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) override;
@@ -39,11 +43,13 @@ private:
     IDirect3DTexture8* fontTexture = nullptr;
     IDirect3DVertexBuffer8* vertexBuffer = nullptr;
     IDirect3DIndexBuffer8* indexBuffer = nullptr;
+    DWORD stateBlock = 0;
 
     size_t vertexBufferSize = 0;
     size_t indexBufferSize = 0;
 
     IDirect3DBaseTexture8* lastTexture = nullptr;
+    LegacyGeometryUploadState geometryUpload;
     bool initialized = false;
 };
 

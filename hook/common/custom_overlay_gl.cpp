@@ -28,8 +28,20 @@ typedef char GLchar;
 #define GL_CURRENT_PROGRAM 0x8B8D
 #define GL_CLAMP_TO_EDGE 0x812F
 #define GL_TEXTURE0 0x84C0
+#define GL_ACTIVE_TEXTURE 0x84E0
+#define GL_CLIENT_ACTIVE_TEXTURE 0x84E1
 #define GL_STATIC_DRAW 0x88E4
 #define GL_DYNAMIC_DRAW 0x88E8
+#endif
+
+#ifndef GL_VERTEX_ARRAY_BINDING
+#define GL_VERTEX_ARRAY_BINDING 0x85B5
+#endif
+#ifndef GL_BLEND_SRC_RGB
+#define GL_BLEND_SRC_RGB 0x80C9
+#define GL_BLEND_DST_RGB 0x80C8
+#define GL_BLEND_SRC_ALPHA 0x80CB
+#define GL_BLEND_DST_ALPHA 0x80CA
 #endif
 
 namespace {
@@ -50,6 +62,7 @@ typedef void(APIENTRY* PFN_glEnable)(GLenum);
 typedef void(APIENTRY* PFN_glDisable)(GLenum);
 typedef GLboolean(APIENTRY* PFN_glIsEnabled)(GLenum);
 typedef void(APIENTRY* PFN_glBlendFunc)(GLenum, GLenum);
+typedef void(APIENTRY* PFN_glBlendFuncSeparate)(GLenum, GLenum, GLenum, GLenum);
 typedef void(APIENTRY* PFN_glMatrixMode)(GLenum);
 typedef void(APIENTRY* PFN_glPushMatrix)(void);
 typedef void(APIENTRY* PFN_glPopMatrix)(void);
@@ -95,6 +108,7 @@ typedef GLint(APIENTRY* PFN_glGetUniformLocation)(GLuint, const GLchar*);
 typedef void(APIENTRY* PFN_glUniform2f)(GLint, GLfloat, GLfloat);
 typedef void(APIENTRY* PFN_glUniform1i)(GLint, GLint);
 typedef void(APIENTRY* PFN_glActiveTexture)(GLenum);
+typedef void(APIENTRY* PFN_glClientActiveTexture)(GLenum);
 
 static PFN_wglGetCurrentContext pwglGetCurrentContext = nullptr;
 static PFN_wglGetProcAddress pwglGetProcAddress = nullptr;
@@ -112,6 +126,7 @@ static PFN_glEnable pglEnable = nullptr;
 static PFN_glDisable pglDisable = nullptr;
 static PFN_glIsEnabled pglIsEnabled = nullptr;
 static PFN_glBlendFunc pglBlendFunc = nullptr;
+static PFN_glBlendFuncSeparate pglBlendFuncSeparate = nullptr;
 static PFN_glMatrixMode pglMatrixMode = nullptr;
 static PFN_glPushMatrix pglPushMatrix = nullptr;
 static PFN_glPopMatrix pglPopMatrix = nullptr;
@@ -157,9 +172,20 @@ static PFN_glGetUniformLocation pglGetUniformLocation = nullptr;
 static PFN_glUniform2f pglUniform2f = nullptr;
 static PFN_glUniform1i pglUniform1i = nullptr;
 static PFN_glActiveTexture pglActiveTexture = nullptr;
+static PFN_glClientActiveTexture pglClientActiveTexture = nullptr;
 
 static bool g_GLFunctionsLoaded = false;
 static bool g_GLModernFunctionsLoaded = false;
+
+static PROC GetOptionalGLProc(const char* coreName, const char* extensionName = nullptr) {
+    PROC proc = pwglGetProcAddress ? pwglGetProcAddress(coreName) : nullptr;
+    if ((!proc || proc == (PROC)1 || proc == (PROC)2 || proc == (PROC)3 || proc == (PROC)-1) && extensionName) {
+        proc = pwglGetProcAddress ? pwglGetProcAddress(extensionName) : nullptr;
+    }
+    if (proc == (PROC)1 || proc == (PROC)2 || proc == (PROC)3 || proc == (PROC)-1)
+        return nullptr;
+    return proc;
+}
 
 static bool LoadGLFunctions() {
     if (g_GLFunctionsLoaded)
@@ -213,6 +239,23 @@ static bool LoadGLFunctions() {
 
     g_GLFunctionsLoaded = true;
     return true;
+}
+
+static void LoadGLLegacyOptionalFunctions() {
+    if (!pglBlendFuncSeparate) {
+        pglBlendFuncSeparate =
+            (PFN_glBlendFuncSeparate)GetOptionalGLProc("glBlendFuncSeparate", "glBlendFuncSeparateEXT");
+    }
+    if (!pglBindBuffer)
+        pglBindBuffer = (PFN_glBindBuffer)GetOptionalGLProc("glBindBuffer", "glBindBufferARB");
+    if (!pglBindVertexArray)
+        pglBindVertexArray = (PFN_glBindVertexArray)GetOptionalGLProc("glBindVertexArray", "glBindVertexArrayAPPLE");
+    if (!pglActiveTexture)
+        pglActiveTexture = (PFN_glActiveTexture)GetOptionalGLProc("glActiveTexture", "glActiveTextureARB");
+    if (!pglClientActiveTexture) {
+        pglClientActiveTexture =
+            (PFN_glClientActiveTexture)GetOptionalGLProc("glClientActiveTexture", "glClientActiveTextureARB");
+    }
 }
 
 static bool LoadGLModernFunctions() {
@@ -511,6 +554,8 @@ bool OpenGLBackend::Initialize(int fontTextureWidth, int fontTextureHeight, cons
     texWidth = fontTextureWidth;
     texHeight = fontTextureHeight;
 
+    LoadGLLegacyOptionalFunctions();
+
     ClearGLErrors();
 
     const char* versionStr = pglGetString ? (const char*)pglGetString(GL_VERSION) : nullptr;
@@ -566,6 +611,11 @@ void OpenGLBackend::Shutdown() {
     }
     initialized = false;
     useModernPath = false;
+    legacyProbeContext = nullptr;
+    legacyMatrixChecked = false;
+    legacyMatrixValid = true;
+    legacyArrayChecked = false;
+    legacyArrayProbeSucceeded = false;
 }
 
 void OpenGLBackend::Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
@@ -586,8 +636,6 @@ void OpenGLBackend::Render(const std::vector<DrawVertex>& vertices, const std::v
     HGLRC currentCtx = pwglGetCurrentContext ? pwglGetCurrentContext() : nullptr;
     if (!currentCtx)
         return;
-
-    ClearGLErrors();
 
     if (useModernPath && modern.valid) {
         RenderModern(vertices, indices, commands, viewportWidth, viewportHeight);
@@ -668,14 +716,72 @@ void OpenGLBackend::RenderModern(const std::vector<DrawVertex>& vertices, const 
 
 void OpenGLBackend::RenderLegacy(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                                  const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) {
-    GLint lastTexture = 0;
-    pglGetIntegerv(GL_TEXTURE_BINDING_2D, &lastTexture);
+    HGLRC currentContext = pwglGetCurrentContext ? pwglGetCurrentContext() : nullptr;
+    if (currentContext != legacyProbeContext) {
+        legacyProbeContext = currentContext;
+        legacyMatrixChecked = false;
+        legacyMatrixValid = true;
+        legacyArrayChecked = false;
+        legacyArrayProbeSucceeded = false;
+    }
+
     GLint lastViewport[4] = {0};
     pglGetIntegerv(GL_VIEWPORT, lastViewport);
-    GLboolean lastBlend = pglIsEnabled(GL_BLEND);
-    GLboolean lastDepthTest = pglIsEnabled(GL_DEPTH_TEST);
-    GLboolean lastCullFace = pglIsEnabled(GL_CULL_FACE);
-    GLboolean lastTexture2D = pglIsEnabled(GL_TEXTURE_2D);
+    const GLboolean lastBlend = pglIsEnabled(GL_BLEND);
+    const GLboolean lastDepthTest = pglIsEnabled(GL_DEPTH_TEST);
+    const GLboolean lastCullFace = pglIsEnabled(GL_CULL_FACE);
+    GLint lastBlendSrcRGB = GL_ONE;
+    GLint lastBlendDstRGB = GL_ZERO;
+    GLint lastBlendSrcAlpha = GL_ONE;
+    GLint lastBlendDstAlpha = GL_ZERO;
+    pglGetIntegerv(GL_BLEND_SRC, &lastBlendSrcRGB);
+    pglGetIntegerv(GL_BLEND_DST, &lastBlendDstRGB);
+    if (pglBlendFuncSeparate) {
+        pglGetIntegerv(GL_BLEND_SRC_ALPHA, &lastBlendSrcAlpha);
+        pglGetIntegerv(GL_BLEND_DST_ALPHA, &lastBlendDstAlpha);
+    } else {
+        lastBlendSrcAlpha = lastBlendSrcRGB;
+        lastBlendDstAlpha = lastBlendDstRGB;
+    }
+
+    GLint lastActiveTexture = GL_TEXTURE0;
+    if (pglActiveTexture) {
+        pglGetIntegerv(GL_ACTIVE_TEXTURE, &lastActiveTexture);
+        pglActiveTexture(GL_TEXTURE0);
+    }
+    GLint lastClientActiveTexture = GL_TEXTURE0;
+    if (pglClientActiveTexture) {
+        pglGetIntegerv(GL_CLIENT_ACTIVE_TEXTURE, &lastClientActiveTexture);
+        pglClientActiveTexture(GL_TEXTURE0);
+    }
+    GLint lastTexture = 0;
+    pglGetIntegerv(GL_TEXTURE_BINDING_2D, &lastTexture);
+    const GLboolean lastTexture2D = pglIsEnabled(GL_TEXTURE_2D);
+
+    GLint lastVAO = 0;
+    if (pglBindVertexArray)
+        pglGetIntegerv(GL_VERTEX_ARRAY_BINDING, &lastVAO);
+    GLint lastVBO = 0;
+    GLint lastIBO = 0;
+    if (pglBindBuffer) {
+        pglGetIntegerv(GL_ARRAY_BUFFER_BINDING, &lastVBO);
+        pglGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &lastIBO);
+    }
+
+    const GLboolean lastVertexArray = pglIsEnabled(GL_VERTEX_ARRAY);
+    const GLboolean lastTexCoordArray = pglIsEnabled(GL_TEXTURE_COORD_ARRAY);
+    const GLboolean lastColorArray = pglIsEnabled(GL_COLOR_ARRAY);
+    GLint lastMatrixMode = GL_MODELVIEW;
+    pglGetIntegerv(GL_MATRIX_MODE, &lastMatrixMode);
+
+    // Client pointers below address CPU memory. Move to VAO 0 and explicitly
+    // clear buffer bindings only after every original binding/enable was saved.
+    if (pglBindVertexArray)
+        pglBindVertexArray(0);
+    if (pglBindBuffer) {
+        pglBindBuffer(GL_ARRAY_BUFFER, 0);
+        pglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    }
 
     pglEnable(GL_BLEND);
     pglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -685,21 +791,18 @@ void OpenGLBackend::RenderLegacy(const std::vector<DrawVertex>& vertices, const 
 
     pglViewport(0, 0, viewportWidth, viewportHeight);
 
-    static bool useMatrixOps = true;
-    static bool checkedMatrixOps = false;
-
-    if (!checkedMatrixOps) {
+    if (!legacyMatrixChecked) {
         ClearGLErrors();
         pglMatrixMode(GL_PROJECTION);
-        GLenum err = pglGetError ? pglGetError() : 0;
-        if (err != 0) {
-            useMatrixOps = false;
+        const GLenum err = pglGetError ? pglGetError() : GL_NO_ERROR;
+        legacyMatrixValid = (err == GL_NO_ERROR);
+        if (!legacyMatrixValid) {
             HookLog("OpenGLBackend: Legacy using NDC transform (matrix err=0x%X)", err);
         }
-        checkedMatrixOps = true;
+        legacyMatrixChecked = true;
     }
 
-    if (useMatrixOps && pglMatrixMode && pglPushMatrix && pglLoadIdentity && pglOrtho) {
+    if (legacyMatrixValid) {
         pglMatrixMode(GL_PROJECTION);
         pglPushMatrix();
         pglLoadIdentity();
@@ -710,60 +813,38 @@ void OpenGLBackend::RenderLegacy(const std::vector<DrawVertex>& vertices, const 
         pglLoadIdentity();
     }
 
-    static bool useImmediateMode = false;
-    static bool checkedImmediateMode = false;
-
-    if (!checkedImmediateMode) {
-        ClearGLErrors();
-
-        GLint boundVAO = 0;
-        pglGetIntegerv(0x85B5, &boundVAO);
-        ClearGLErrors();
-
-        if (boundVAO != 0 && pglBindVertexArray) {
-            pglBindVertexArray(0);
+    const bool arrayFunctionsAvailable = pglEnableClientState && pglDisableClientState && pglVertexPointer &&
+                                         pglTexCoordPointer && pglColorPointer && pglDrawElements;
+    if (!legacyArrayChecked) {
+        legacyArrayProbeSucceeded = false;
+        if (legacyMatrixValid && arrayFunctionsAvailable) {
+            const DrawVertex* vtx = vertices.data();
             ClearGLErrors();
+            pglEnableClientState(GL_VERTEX_ARRAY);
+            pglEnableClientState(GL_TEXTURE_COORD_ARRAY);
+            pglEnableClientState(GL_COLOR_ARRAY);
+            pglVertexPointer(2, GL_FLOAT, sizeof(DrawVertex), &vtx->x);
+            pglTexCoordPointer(2, GL_FLOAT, sizeof(DrawVertex), &vtx->u);
+            pglColorPointer(4, GL_UNSIGNED_BYTE, sizeof(DrawVertex), &vtx->color);
+            pglDrawElements(GL_TRIANGLES, 0, GL_UNSIGNED_SHORT, indices.data());
+            const GLenum arrayErr = pglGetError ? pglGetError() : GL_NO_ERROR;
+            legacyArrayProbeSucceeded = (arrayErr == GL_NO_ERROR);
+            if (!legacyArrayProbeSucceeded) {
+                HookLog("OpenGLBackend: Legacy array preflight failed (err=0x%X); using immediate fallback",
+                        arrayErr);
+            } else {
+                HookLog("OpenGLBackend: Legacy using batched vertex arrays");
+            }
         }
-
-        pglBegin(GL_QUADS);
-        GLenum beginErr = pglGetError ? pglGetError() : 0;
-        if (beginErr == 0) {
-            pglEnd();
-            useImmediateMode = true;
-            HookLog("OpenGLBackend: Legacy using immediate mode");
-        } else {
-            HookLog("OpenGLBackend: Legacy using vertex arrays (glBegin err=0x%X)", beginErr);
+        if (!legacyArrayProbeSucceeded) {
+            HookLog("OpenGLBackend: Legacy immediate-mode compatibility fallback enabled");
         }
-        checkedImmediateMode = true;
+        legacyArrayChecked = true;
     }
 
-    if (useImmediateMode && pglBegin && pglEnd && pglVertex2f && pglTexCoord2f && pglColor4ub) {
-        for (const auto& cmd : commands) {
-            if (cmd.useTexture) {
-                pglBindTexture(GL_TEXTURE_2D, fontTextureId);
-            } else {
-                pglBindTexture(GL_TEXTURE_2D, 0);
-            }
-
-            pglBegin(GL_TRIANGLES);
-            for (uint32_t i = 0; i < cmd.indexCount; i++) {
-                uint16_t idx = indices[cmd.indexOffset + i];
-                const DrawVertex& v = vertices[idx];
-                GLubyte r = (v.color >> 0) & 0xFF;
-                GLubyte g = (v.color >> 8) & 0xFF;
-                GLubyte b = (v.color >> 16) & 0xFF;
-                GLubyte a = (v.color >> 24) & 0xFF;
-
-                float vx = (v.x / viewportWidth) * 2.0f - 1.0f;
-                float vy = 1.0f - (v.y / viewportHeight) * 2.0f;
-
-                pglColor4ub(r, g, b, a);
-                pglTexCoord2f(v.u, v.v);
-                pglVertex2f(vx, vy);
-            }
-            pglEnd();
-        }
-    } else {
+    const LegacyGLDrawPath drawPath =
+        SelectLegacyGLDrawPath(legacyMatrixValid, arrayFunctionsAvailable, legacyArrayProbeSucceeded);
+    if (drawPath == LegacyGLDrawPath::Arrays) {
         pglEnableClientState(GL_VERTEX_ARRAY);
         pglEnableClientState(GL_TEXTURE_COORD_ARRAY);
         pglEnableClientState(GL_COLOR_ARRAY);
@@ -774,29 +855,77 @@ void OpenGLBackend::RenderLegacy(const std::vector<DrawVertex>& vertices, const 
         pglColorPointer(4, GL_UNSIGNED_BYTE, sizeof(DrawVertex), &vtx->color);
 
         for (const auto& cmd : commands) {
-            if (cmd.useTexture) {
-                pglBindTexture(GL_TEXTURE_2D, fontTextureId);
-            } else {
-                pglBindTexture(GL_TEXTURE_2D, 0);
-            }
-
+            pglBindTexture(GL_TEXTURE_2D, cmd.useTexture ? fontTextureId : 0);
             pglDrawElements(GL_TRIANGLES, cmd.indexCount, GL_UNSIGNED_SHORT, indices.data() + cmd.indexOffset);
         }
+    } else if (pglBegin && pglEnd && pglVertex2f && pglTexCoord2f && pglColor4ub) {
+        for (const auto& cmd : commands) {
+            pglBindTexture(GL_TEXTURE_2D, cmd.useTexture ? fontTextureId : 0);
 
-        pglDisableClientState(GL_VERTEX_ARRAY);
-        pglDisableClientState(GL_TEXTURE_COORD_ARRAY);
-        pglDisableClientState(GL_COLOR_ARRAY);
+            pglBegin(GL_TRIANGLES);
+            for (uint32_t i = 0; i < cmd.indexCount; i++) {
+                const uint16_t idx = indices[cmd.indexOffset + i];
+                const DrawVertex& v = vertices[idx];
+                const GLubyte r = (v.color >> 0) & 0xFF;
+                const GLubyte g = (v.color >> 8) & 0xFF;
+                const GLubyte b = (v.color >> 16) & 0xFF;
+                const GLubyte a = (v.color >> 24) & 0xFF;
+
+                const float vx = legacyMatrixValid ? v.x : (v.x / viewportWidth) * 2.0f - 1.0f;
+                const float vy = legacyMatrixValid ? v.y : 1.0f - (v.y / viewportHeight) * 2.0f;
+                pglColor4ub(r, g, b, a);
+                pglTexCoord2f(v.u, v.v);
+                pglVertex2f(vx, vy);
+            }
+            pglEnd();
+        }
     }
 
-    if (useMatrixOps && pglMatrixMode && pglPopMatrix) {
+    if (legacyMatrixValid) {
         pglMatrixMode(GL_PROJECTION);
         pglPopMatrix();
         pglMatrixMode(GL_MODELVIEW);
         pglPopMatrix();
     }
+    pglMatrixMode((GLenum)lastMatrixMode);
 
-    pglBindTexture(GL_TEXTURE_2D, lastTexture);
+    if (pglBindVertexArray)
+        pglBindVertexArray((GLuint)lastVAO);
+    if (pglBindBuffer) {
+        pglBindBuffer(GL_ARRAY_BUFFER, (GLuint)lastVBO);
+        pglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (GLuint)lastIBO);
+    }
+
+    if (lastVertexArray)
+        pglEnableClientState(GL_VERTEX_ARRAY);
+    else
+        pglDisableClientState(GL_VERTEX_ARRAY);
+    if (lastTexCoordArray)
+        pglEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    else
+        pglDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    if (lastColorArray)
+        pglEnableClientState(GL_COLOR_ARRAY);
+    else
+        pglDisableClientState(GL_COLOR_ARRAY);
+
+    pglBindTexture(GL_TEXTURE_2D, (GLuint)lastTexture);
+    if (lastTexture2D)
+        pglEnable(GL_TEXTURE_2D);
+    else
+        pglDisable(GL_TEXTURE_2D);
+    if (pglClientActiveTexture)
+        pglClientActiveTexture((GLenum)lastClientActiveTexture);
+    if (pglActiveTexture)
+        pglActiveTexture((GLenum)lastActiveTexture);
+
     pglViewport(lastViewport[0], lastViewport[1], lastViewport[2], lastViewport[3]);
+    if (pglBlendFuncSeparate) {
+        pglBlendFuncSeparate((GLenum)lastBlendSrcRGB, (GLenum)lastBlendDstRGB, (GLenum)lastBlendSrcAlpha,
+                             (GLenum)lastBlendDstAlpha);
+    } else {
+        pglBlendFunc((GLenum)lastBlendSrcRGB, (GLenum)lastBlendDstRGB);
+    }
     if (lastBlend)
         pglEnable(GL_BLEND);
     else
@@ -809,10 +938,6 @@ void OpenGLBackend::RenderLegacy(const std::vector<DrawVertex>& vertices, const 
         pglEnable(GL_CULL_FACE);
     else
         pglDisable(GL_CULL_FACE);
-    if (lastTexture2D)
-        pglEnable(GL_TEXTURE_2D);
-    else
-        pglDisable(GL_TEXTURE_2D);
 }
 
 }  // namespace CustomOverlay

@@ -986,13 +986,10 @@ public:
             hr = d3d9DeviceEx->PresentEx(nullptr, nullptr, overlayHwnd, nullptr, 0);
         }
         static uint32_t overlayPresentCount = 0;
-        static uint64_t lastOverlayPresentLogTick = 0;
         overlayPresentCount++;
-        uint64_t nowTick = GetTickCount64();
-        if (overlayPresentCount <= 8 || (nowTick - lastOverlayPresentLogTick) >= 1000) {
+        if (overlayPresentCount <= 8) {
             HookLogImportant("DX8: Overlay helper PresentEx hr=0x%08X hwnd=%p size=%ux%u count=%u", (unsigned)hr,
                              overlayHwnd, width, height, overlayPresentCount);
-            lastOverlayPresentLogTick = nowTick;
         }
 
         if (FAILED(hr) && hr != D3DERR_WASSTILLDRAWING) {
@@ -1415,13 +1412,10 @@ static void DrawDX8Overlay(IDirect3DDevice8* device, HWND hwnd) {
         g_OverlayAdapter.RenderOverlay(static_cast<int>(renderWidth), static_cast<int>(renderHeight));
     }
     static uint32_t overlayRenderSubmitCount = 0;
-    static uint64_t lastOverlayRenderSubmitLogTick = 0;
     overlayRenderSubmitCount++;
-    uint64_t nowTick = GetTickCount64();
-    if (overlayRenderSubmitCount <= 8 || (nowTick - lastOverlayRenderSubmitLogTick) >= 1000) {
+    if (overlayRenderSubmitCount <= 8) {
         HookLogImportant("DX8: Overlay render submitted (hwnd=%p, size=%ux%u count=%u)", hwnd, renderWidth,
                          renderHeight, overlayRenderSubmitCount);
-        lastOverlayRenderSubmitLogTick = nowTick;
     }
 }
 

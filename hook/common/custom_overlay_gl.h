@@ -11,6 +11,7 @@
 #include <GL/gl.h>
 #include <windows.h>
 #include "custom_overlay.h"
+#include "legacy_overlay_cache.h"
 
 namespace CustomOverlay {
 
@@ -31,6 +32,11 @@ private:
     int texHeight = 0;
     bool initialized = false;
     bool useModernPath = false;
+    HGLRC legacyProbeContext = nullptr;
+    bool legacyMatrixChecked = false;
+    bool legacyMatrixValid = true;
+    bool legacyArrayChecked = false;
+    bool legacyArrayProbeSucceeded = false;
 
     struct ModernResources {
         GLuint programTextured = 0;

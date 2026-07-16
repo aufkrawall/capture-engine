@@ -1397,13 +1397,10 @@ public:
         HWND presentWindowOverride = d3d9UsesFlipEx ? nullptr : targetHwnd;
         HRESULT hr = d3d9DeviceEx->PresentEx(nullptr, nullptr, presentWindowOverride, nullptr, 0);
         static uint32_t overlayPresentCount = 0;
-        static uint64_t lastOverlayPresentLogTick = 0;
         overlayPresentCount++;
-        uint64_t nowTick = GetTickCount64();
-        if (overlayPresentCount <= 8 || (nowTick - lastOverlayPresentLogTick) >= 1000) {
+        if (overlayPresentCount <= 8) {
             HookLogImportant("DDraw: Overlay helper PresentEx hr=0x%08X hwnd=%p size=%ux%u count=%u", (unsigned)hr,
                              targetHwnd, width, height, overlayPresentCount);
-            lastOverlayPresentLogTick = nowTick;
         }
 
         if (FAILED(hr) && hr != D3DERR_WASSTILLDRAWING) {
@@ -1598,14 +1595,11 @@ static void DrawDDrawOverlay(IDirectDrawSurface7* overlaySourceSurface) {
         g_DDrawCapture.CopyPrimarySurfaceToOverlayBackbuffer(overlaySourceSurface);
         g_OverlayAdapter.RenderOverlay(g_DDrawCapture.width, g_DDrawCapture.height);
         static uint32_t overlayRenderSubmitCount = 0;
-        static uint64_t lastOverlayRenderSubmitLogTick = 0;
         overlayRenderSubmitCount++;
-        uint64_t nowTick = GetTickCount64();
-        if (overlayRenderSubmitCount <= 8 || (nowTick - lastOverlayRenderSubmitLogTick) >= 1000) {
+        if (overlayRenderSubmitCount <= 8) {
             HookLogImportant("DDraw: Overlay render submitted (hwnd=%p, size=%ux%u count=%u)",
                              g_DDrawCapture.targetHwnd, g_DDrawCapture.width, g_DDrawCapture.height,
                              overlayRenderSubmitCount);
-            lastOverlayRenderSubmitLogTick = nowTick;
         }
         g_DDrawCapture.PresentOverlay();
     }

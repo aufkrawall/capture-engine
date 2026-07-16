@@ -97,6 +97,10 @@ bool DX8Backend::Initialize(int fontTextureWidth, int fontTextureHeight, const u
 }
 
 void DX8Backend::Shutdown() {
+    if (stateBlock && device) {
+        device->DeleteStateBlock(stateBlock);
+        stateBlock = 0;
+    }
     if (indexBuffer) {
         indexBuffer->Release();
         indexBuffer = nullptr;
@@ -110,6 +114,7 @@ void DX8Backend::Shutdown() {
         fontTexture = nullptr;
     }
     lastTexture = nullptr;
+    geometryUpload.MarkBufferRecreated();
     initialized = false;
 }
 
@@ -136,6 +141,7 @@ bool DX8Backend::ResizeVertexBuffer(size_t requiredBytes) {
 
     vertexBuffer = newBuffer;
     vertexBufferSize = newSize;
+    geometryUpload.MarkBufferRecreated();
     return true;
 }
 
@@ -162,6 +168,7 @@ bool DX8Backend::ResizeIndexBuffer(size_t requiredBytes) {
 
     indexBuffer = newBuffer;
     indexBufferSize = newSize;
+    geometryUpload.MarkBufferRecreated();
     return true;
 }
 
@@ -172,51 +179,63 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     }
 
     const size_t vbSize = vertices.size() * sizeof(DX8Vertex);
-    if (vbSize > vertexBufferSize && !ResizeVertexBuffer(vbSize)) {
-        return;
-    }
-
     const size_t ibSize = indices.size() * sizeof(uint16_t);
-    if (ibSize > indexBufferSize && !ResizeIndexBuffer(ibSize)) {
-        return;
-    }
+    HRESULT hr = D3D_OK;
+    if (geometryUpload.NeedsUpload()) {
+        if (vbSize > vertexBufferSize && !ResizeVertexBuffer(vbSize)) {
+            geometryUpload.MarkUploadFailed();
+            return;
+        }
+        if (ibSize > indexBufferSize && !ResizeIndexBuffer(ibSize)) {
+            geometryUpload.MarkUploadFailed();
+            return;
+        }
 
-    void* vbPtr = nullptr;
-    HRESULT hr = vertexBuffer->Lock(0, 0, reinterpret_cast<BYTE**>(&vbPtr), D3DLOCK_DISCARD);
-    if (FAILED(hr) || !vbPtr) {
-        return;
-    }
+        void* vbPtr = nullptr;
+        hr = vertexBuffer->Lock(0, 0, reinterpret_cast<BYTE**>(&vbPtr), D3DLOCK_DISCARD);
+        if (FAILED(hr) || !vbPtr) {
+            geometryUpload.MarkUploadFailed();
+            return;
+        }
 
-    DX8Vertex* dst = static_cast<DX8Vertex*>(vbPtr);
-    for (const auto& v : vertices) {
-        dst->x = v.x - 0.5f;
-        dst->y = v.y - 0.5f;
-        dst->z = 0.0f;
-        dst->rhw = 1.0f;
-        const uint8_t r = (v.color >> 0) & 0xFF;
-        const uint8_t g = (v.color >> 8) & 0xFF;
-        const uint8_t b = (v.color >> 16) & 0xFF;
-        const uint8_t a = (v.color >> 24) & 0xFF;
-        dst->color = (static_cast<DWORD>(a) << 24) | (static_cast<DWORD>(r) << 16) | (static_cast<DWORD>(g) << 8) | b;
-        dst->u = v.u;
-        dst->v = v.v;
-        ++dst;
-    }
-    vertexBuffer->Unlock();
+        DX8Vertex* dst = static_cast<DX8Vertex*>(vbPtr);
+        for (const auto& v : vertices) {
+            dst->x = v.x - 0.5f;
+            dst->y = v.y - 0.5f;
+            dst->z = 0.0f;
+            dst->rhw = 1.0f;
+            const uint8_t r = (v.color >> 0) & 0xFF;
+            const uint8_t g = (v.color >> 8) & 0xFF;
+            const uint8_t b = (v.color >> 16) & 0xFF;
+            const uint8_t a = (v.color >> 24) & 0xFF;
+            dst->color =
+                (static_cast<DWORD>(a) << 24) | (static_cast<DWORD>(r) << 16) | (static_cast<DWORD>(g) << 8) | b;
+            dst->u = v.u;
+            dst->v = v.v;
+            ++dst;
+        }
+        if (FAILED(vertexBuffer->Unlock())) {
+            geometryUpload.MarkUploadFailed();
+            return;
+        }
 
-    void* ibPtr = nullptr;
-    hr = indexBuffer->Lock(0, 0, reinterpret_cast<BYTE**>(&ibPtr), D3DLOCK_DISCARD);
-    if (FAILED(hr) || !ibPtr) {
-        return;
+        void* ibPtr = nullptr;
+        hr = indexBuffer->Lock(0, 0, reinterpret_cast<BYTE**>(&ibPtr), D3DLOCK_DISCARD);
+        if (FAILED(hr) || !ibPtr) {
+            geometryUpload.MarkUploadFailed();
+            return;
+        }
+        memcpy(ibPtr, indices.data(), ibSize);
+        if (FAILED(indexBuffer->Unlock())) {
+            geometryUpload.MarkUploadFailed();
+            return;
+        }
+        geometryUpload.MarkUploadSucceeded();
     }
-    memcpy(ibPtr, indices.data(), ibSize);
-    indexBuffer->Unlock();
 
     IDirect3DSurface8* oldRT = nullptr;
     IDirect3DSurface8* oldDS = nullptr;
     IDirect3DSurface8* backBuffer = nullptr;
-    DWORD stateBlock = 0;
-
     D3DMATRIX oldWorld = {};
     D3DMATRIX oldView = {};
     D3DMATRIX oldProjection = {};
@@ -234,8 +253,22 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     device->GetRenderTarget(&oldRT);
     device->GetDepthStencilSurface(&oldDS);
 
-    hr = device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
+    if (stateBlock == 0) {
+        hr = device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
+    }
+    if (SUCCEEDED(hr) && stateBlock != 0) {
+        hr = device->CaptureStateBlock(stateBlock);
+    }
     if (FAILED(hr) || stateBlock == 0) {
+        static int stateCaptureFailureCount = 0;
+        if (stateCaptureFailureCount < 4) {
+            HookLogImportant("[Overlay] DX8::Render: state-block capture failed hr=0x%08X", (unsigned)hr);
+            stateCaptureFailureCount++;
+        }
+        if (stateBlock) {
+            device->DeleteStateBlock(stateBlock);
+            stateBlock = 0;
+        }
         if (oldRT) {
             oldRT->Release();
         }
@@ -308,8 +341,16 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         device->EndScene();
     }
 
-    device->ApplyStateBlock(stateBlock);
-    device->DeleteStateBlock(stateBlock);
+    const HRESULT applyHr = device->ApplyStateBlock(stateBlock);
+    if (FAILED(applyHr)) {
+        static int stateApplyFailureCount = 0;
+        if (stateApplyFailureCount < 4) {
+            HookLogImportant("[Overlay] DX8::Render: state-block apply failed hr=0x%08X", (unsigned)applyHr);
+            stateApplyFailureCount++;
+        }
+        device->DeleteStateBlock(stateBlock);
+        stateBlock = 0;
+    }
 
     if (hasOldWorld) {
         device->SetTransform(D3DTS_WORLD, &oldWorld);

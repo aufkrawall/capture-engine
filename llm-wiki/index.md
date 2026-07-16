@@ -30,6 +30,8 @@ Primary sources:
 - For DX12 overlay, injection, or FG work, read `dx12-injection-bootstrap.md`, `dx12-overlay-third-party-coexistence.md`, `frame-generation/guardrails.md`, `frame-generation/case-studies.md`, `overlay-fg-status.md`, and `regression-testing-and-logging.md`.
 
 ## Content Catalog
+- `overlay-rendering.md`
+  - Shared overlay layout/graph/font invariants, legacy DX8/DX9/DX10/OpenGL cache and state-isolation policy, truthful memory telemetry, DirectDraw performance boundary, and runtime-validation stale-risk. Last verified 2026-07-16.
 - `handoff-dx12-32bit-crash.md`
   - Fixed-state pickup note for the 32-bit DX12 inject-overlay crash/freeze: proven font-resource trigger, unconfirmed NVIDIA/WoW64 attribution, solid glyph-span text fix, runtime validation boundary, invariants, and source anchors. Last verified 2026-07-16.
 - `current.md`

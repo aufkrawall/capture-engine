@@ -179,6 +179,7 @@ public:
     }
 
     // Render the accumulated draw commands
+    virtual void OnDrawDataChanged() {}
     virtual void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                         const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) = 0;
 

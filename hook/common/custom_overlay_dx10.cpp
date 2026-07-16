@@ -76,6 +76,8 @@ void DX10Backend::Shutdown() {
     depthStencilState.Reset();
 
     device = nullptr;
+    geometryUpload.MarkBufferRecreated();
+    constantBufferState.Invalidate();
     initialized = false;
 }
 
@@ -210,6 +212,7 @@ bool DX10Backend::ResizeVertexBuffer(size_t requiredBytes) {
 
     vertexBuffer = newBuffer;
     vertexBufferSize = newSize;
+    geometryUpload.MarkBufferRecreated();
 
     return true;
 }
@@ -235,6 +238,7 @@ bool DX10Backend::ResizeIndexBuffer(size_t requiredBytes) {
 
     indexBuffer = newBuffer;
     indexBufferSize = newSize;
+    geometryUpload.MarkBufferRecreated();
 
     return true;
 }
@@ -244,45 +248,52 @@ void DX10Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     if (!initialized || !device || vertices.empty() || commands.empty())
         return;
 
-    // Resize buffers if needed
-    size_t vbSize = vertices.size() * sizeof(DrawVertex);
-    if (vbSize > vertexBufferSize) {
-        if (!ResizeVertexBuffer(vbSize))
+    const size_t vbSize = vertices.size() * sizeof(DrawVertex);
+    const size_t ibSize = indices.size() * sizeof(uint16_t);
+    if (geometryUpload.NeedsUpload()) {
+        if (vbSize > vertexBufferSize && !ResizeVertexBuffer(vbSize)) {
+            geometryUpload.MarkUploadFailed();
             return;
-    }
-
-    size_t ibSize = indices.size() * sizeof(uint16_t);
-    if (ibSize > indexBufferSize) {
-        if (!ResizeIndexBuffer(ibSize))
+        }
+        if (ibSize > indexBufferSize && !ResizeIndexBuffer(ibSize)) {
+            geometryUpload.MarkUploadFailed();
             return;
-    }
+        }
 
-    // Update vertex buffer
-    void* mapped = nullptr;
-    HRESULT hr = vertexBuffer->Map(D3D10_MAP_WRITE_DISCARD, 0, &mapped);
-    if (SUCCEEDED(hr)) {
+        void* mapped = nullptr;
+        HRESULT hr = vertexBuffer->Map(D3D10_MAP_WRITE_DISCARD, 0, &mapped);
+        if (FAILED(hr) || !mapped) {
+            geometryUpload.MarkUploadFailed();
+            return;
+        }
         memcpy(mapped, vertices.data(), vbSize);
         vertexBuffer->Unmap();
-    }
 
-    // Update index buffer
-    mapped = nullptr;
-    hr = indexBuffer->Map(D3D10_MAP_WRITE_DISCARD, 0, &mapped);
-    if (SUCCEEDED(hr)) {
+        mapped = nullptr;
+        hr = indexBuffer->Map(D3D10_MAP_WRITE_DISCARD, 0, &mapped);
+        if (FAILED(hr) || !mapped) {
+            geometryUpload.MarkUploadFailed();
+            return;
+        }
         memcpy(mapped, indices.data(), ibSize);
         indexBuffer->Unmap();
+        geometryUpload.MarkUploadSucceeded();
     }
 
-    // Update constant buffer with HDR params
-    mapped = nullptr;
-    hr = constantBuffer->Map(D3D10_MAP_WRITE_DISCARD, 0, &mapped);
-    if (SUCCEEDED(hr)) {
+    if (constantBufferState.NeedsUpdate(viewportWidth, viewportHeight, hdrMode, paperWhiteNits)) {
+        void* mapped = nullptr;
+        const HRESULT hr = constantBuffer->Map(D3D10_MAP_WRITE_DISCARD, 0, &mapped);
+        if (FAILED(hr) || !mapped) {
+            constantBufferState.Invalidate();
+            return;
+        }
         float* cb = (float*)mapped;
         cb[0] = (float)viewportWidth;
         cb[1] = (float)viewportHeight;
         cb[2] = (float)hdrMode;
         cb[3] = paperWhiteNits;
         constantBuffer->Unmap();
+        constantBufferState.MarkUpdated(viewportWidth, viewportHeight, hdrMode, paperWhiteNits);
     }
 
     // Save full pipeline state

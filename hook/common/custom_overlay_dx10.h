@@ -15,6 +15,7 @@
 #include <d3d10.h>
 #include <wrl/client.h>
 #include "custom_overlay.h"
+#include "legacy_overlay_cache.h"
 
 namespace CustomOverlay {
 
@@ -31,6 +32,9 @@ public:
 
     bool Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData) override;
     void Shutdown() override;
+    void OnDrawDataChanged() override {
+        geometryUpload.MarkDrawDataChanged();
+    }
 
     void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                 const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) override;
@@ -63,6 +67,8 @@ private:
 
     // Shader caching
     ID3D10PixelShader* lastPixelShader = nullptr;
+    LegacyGeometryUploadState geometryUpload;
+    DX10ConstantBufferState constantBufferState;
 
     bool initialized = false;
 };

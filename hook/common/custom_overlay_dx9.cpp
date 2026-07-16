@@ -95,6 +95,10 @@ bool DX9Backend::Initialize(int fontTextureWidth, int fontTextureHeight, const u
 }
 
 void DX9Backend::Shutdown() {
+    if (stateBlock) {
+        stateBlock->Release();
+        stateBlock = nullptr;
+    }
     if (indexBuffer) {
         indexBuffer->Release();
         indexBuffer = nullptr;
@@ -107,6 +111,8 @@ void DX9Backend::Shutdown() {
         fontTexture->Release();
         fontTexture = nullptr;
     }
+    lastTexture = nullptr;
+    geometryUpload.MarkBufferRecreated();
     initialized = false;
 }
 
@@ -129,6 +135,7 @@ bool DX9Backend::ResizeVertexBuffer(size_t requiredBytes) {
 
     vertexBuffer = newBuffer;
     vertexBufferSize = newSize;
+    geometryUpload.MarkBufferRecreated();
 
     return true;
 }
@@ -152,6 +159,7 @@ bool DX9Backend::ResizeIndexBuffer(size_t requiredBytes) {
 
     indexBuffer = newBuffer;
     indexBufferSize = newSize;
+    geometryUpload.MarkBufferRecreated();
 
     return true;
 }
@@ -167,29 +175,31 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     if (!initialized || !device || vertices.empty())
         return;
 
-    // Resize buffers if needed
-    size_t vbSize = vertices.size() * sizeof(DX9Vertex);
-    if (vbSize > vertexBufferSize) {
-        if (!ResizeVertexBuffer(vbSize))
+    const size_t vbSize = vertices.size() * sizeof(DX9Vertex);
+    const size_t ibSize = indices.size() * sizeof(uint16_t);
+    if (geometryUpload.NeedsUpload()) {
+        if (vbSize > vertexBufferSize && !ResizeVertexBuffer(vbSize)) {
+            geometryUpload.MarkUploadFailed();
             return;
-    }
-
-    size_t ibSize = indices.size() * sizeof(uint16_t);
-    if (ibSize > indexBufferSize) {
-        if (!ResizeIndexBuffer(ibSize))
+        }
+        if (ibSize > indexBufferSize && !ResizeIndexBuffer(ibSize)) {
+            geometryUpload.MarkUploadFailed();
             return;
-    }
+        }
 
-    // Upload vertices
-    void* vbPtr;
-    HRESULT vbLockHr = vertexBuffer->Lock(0, 0, &vbPtr, D3DLOCK_DISCARD);
-    static int lockLogCount = 0;
-    if (lockLogCount < 2) {
-        HookLogImportant("[Overlay] DX9::Render: VBLock hr=0x%08X IBLock (pending), vbSize=%zu ibSize=%zu",
-                         (unsigned)vbLockHr, vbSize, ibSize);
-        lockLogCount++;
-    }
-    if (SUCCEEDED(vbLockHr)) {
+        void* vbPtr = nullptr;
+        const HRESULT vbLockHr = vertexBuffer->Lock(0, 0, &vbPtr, D3DLOCK_DISCARD);
+        static int lockLogCount = 0;
+        if (lockLogCount < 2) {
+            HookLogImportant("[Overlay] DX9::Render: VBLock hr=0x%08X, vbSize=%zu ibSize=%zu", (unsigned)vbLockHr,
+                             vbSize, ibSize);
+            lockLogCount++;
+        }
+        if (FAILED(vbLockHr) || !vbPtr) {
+            geometryUpload.MarkUploadFailed();
+            return;
+        }
+
         DX9Vertex* dst = (DX9Vertex*)vbPtr;
         for (const auto& v : vertices) {
             // D3D9 rasterization targets pixel centers at +0.5. Shift to avoid
@@ -207,20 +217,28 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
             dst->v = v.v;
             dst++;
         }
-        vertexBuffer->Unlock();
-    }
+        if (FAILED(vertexBuffer->Unlock())) {
+            geometryUpload.MarkUploadFailed();
+            return;
+        }
 
-    // Upload indices
-    void* ibPtr;
-    if (SUCCEEDED(indexBuffer->Lock(0, 0, &ibPtr, D3DLOCK_DISCARD))) {
+        void* ibPtr = nullptr;
+        const HRESULT ibLockHr = indexBuffer->Lock(0, 0, &ibPtr, D3DLOCK_DISCARD);
+        if (FAILED(ibLockHr) || !ibPtr) {
+            geometryUpload.MarkUploadFailed();
+            return;
+        }
         memcpy(ibPtr, indices.data(), ibSize);
-        indexBuffer->Unlock();
+        if (FAILED(indexBuffer->Unlock())) {
+            geometryUpload.MarkUploadFailed();
+            return;
+        }
+        geometryUpload.MarkUploadSucceeded();
     }
 
     // Redirect to backbuffer so the overlay always lands on the presented surface,
     // regardless of what render target the game left active when it called Present.
     IDirect3DSurface9* oldRT = nullptr;
-    IDirect3DStateBlock9* stateBlock = nullptr;
     D3DMATRIX oldWorld = {};
     D3DMATRIX oldView = {};
     D3DMATRIX oldProjection = {};
@@ -231,12 +249,20 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     bool hasOldViewport = SUCCEEDED(device->GetViewport(&oldViewport));
     IDirect3DSurface9* backBuffer = nullptr;
     device->GetRenderTarget(0, &oldRT);
-    HRESULT stateBlockHr = device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
+    HRESULT stateBlockHr = D3D_OK;
+    if (!stateBlock) {
+        stateBlockHr = device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
+    }
     if (SUCCEEDED(stateBlockHr) && stateBlock) {
         stateBlockHr = stateBlock->Capture();
     }
     if (FAILED(stateBlockHr)) {
-        HookLogImportant("[Overlay] DX9::Render: Create/CaptureStateBlock FAILED hr=0x%08X", (unsigned)stateBlockHr);
+        static int stateCaptureFailureCount = 0;
+        if (stateCaptureFailureCount < 4) {
+            HookLogImportant("[Overlay] DX9::Render: state-block capture failed hr=0x%08X",
+                             (unsigned)stateBlockHr);
+            stateCaptureFailureCount++;
+        }
         if (stateBlock) {
             stateBlock->Release();
             stateBlock = nullptr;
@@ -359,8 +385,10 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
             HookLogImportant("[Overlay] DX9::Render: ApplyStateBlock hr=0x%08X", (unsigned)applyHr);
             applyLogCount++;
         }
-        stateBlock->Release();
-        stateBlock = nullptr;
+        if (FAILED(applyHr)) {
+            stateBlock->Release();
+            stateBlock = nullptr;
+        }
     }
 
     if (hasOldWorld) {

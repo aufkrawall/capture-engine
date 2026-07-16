@@ -4131,16 +4131,15 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
                 g_DX9Capture.Init(device);
             }
 
-            // Periodic recording state logging
-            static int captureLogCounter = 0;
+            // Log recording transitions, not a steady Present-path heartbeat.
+            static bool captureStateLogged = false;
+            static bool lastRec = false;
             bool isRec = ipc && ipc->IsRecording();
-            if (captureLogCounter++ % 60 == 0 || isRec) {
-                static bool lastRec = false;
-                if (captureLogCounter % 60 == 1 || isRec != lastRec) {
-                    EarlyLog("DX9: Capture check frame=%d ipc=%p isRecording=%d initialized=%d backBuffer=%p",
-                             frameCount, ipc, isRec ? 1 : 0, g_DX9Capture.initialized, backBuffer);
-                    lastRec = isRec;
-                }
+            if (!captureStateLogged || isRec != lastRec) {
+                EarlyLog("DX9: Capture state frame=%d ipc=%p isRecording=%d initialized=%d backBuffer=%p", frameCount,
+                         ipc, isRec ? 1 : 0, g_DX9Capture.initialized, backBuffer);
+                captureStateLogged = true;
+                lastRec = isRec;
             }
             if (ipc && ipc->IsRecording()) {
                 if (g_DX9Capture.initialized && backBuffer) {
@@ -4186,21 +4185,6 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 
         QueryPerformanceCounter(&qpc);
         g_Timing.captureTime = qpc.QuadPart - captureStart;
-
-        if (frameCount % 300 == 0) {
-            SharedMemoryLayout* shm = ipc ? ipc->GetSharedMem() : nullptr;
-
-            // Convert timing to microseconds
-            int64_t overlayUs = (g_Timing.overlayTime * 1000000) / qpcFreq;
-            int64_t captureUs = (g_Timing.captureTime * 1000000) / qpcFreq;
-            int64_t prerenderUs = (g_Timing.prerenderTime * 1000000) / qpcFreq;
-
-            EarlyLog(
-                "DX9: Performance (Frame %d). Overlay: %lld us, WaitPrerender: "
-                "%lld us, Capture: %lld us",
-                frameCount, overlayUs, prerenderUs, captureUs);
-
-        }
 
         // FPS limiter moved to PresentEnd (after PostPresentReadback) so that
         // SmartWait accounts for ALL hook overhead including readback.

@@ -11,6 +11,7 @@
 #include "fg_detection.h"
 #include "graphics_api_identity.h"
 #include "hook_common.h"
+#include "overlay_layout_policy.h"
 #include "perf_logger.h"
 
 #include <cfloat>  // FLT_MAX
@@ -36,6 +37,8 @@
 OverlayAdapter g_OverlayAdapter;
 
 namespace {
+using namespace ce::overlay_layout;
+
 bool OverlayConfigEquals(const OverlayConfig& a, const OverlayConfig& b) {
     return a.showOverlay == b.showOverlay && a.captureIncludeOverlay == b.captureIncludeOverlay &&
            a.screenshotIncludeOverlay == b.screenshotIncludeOverlay && a.showFPS == b.showFPS &&
@@ -274,15 +277,11 @@ void OverlayAdapter::ResetStateLocked() {
     lastViewportWidth = 0;
     lastViewportHeight = 0;
     lastUpdateTime = 0;
-    lastFGActive = false;
     reserveInactiveFGSpace = false;
-    lastReserveInactiveFGSpace = false;
-    lastRecordingActive = false;
-    lastShowOverloadWarning = false;
-    lastRecordingSeconds = 0;
+    hasLastFrameLayout = false;
+    lastFrameLayout = {};
     lastEncoderOverloadTick = 0;
     lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
-    lastRenderedRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
     layoutDirty = true;
     memset(&lastRenderedConfig, 0, sizeof(lastRenderedConfig));
 }
@@ -551,14 +550,32 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         }
     }
 
-    bool fgVisible = cfg.showFG && metrics && metrics->IsFGActive();
-    bool isRecording = sharedMem->runtimeState.isRecording.load(std::memory_order_acquire);
-    uint64_t recordingSeconds = 0;
+    FrameLayoutSnapshot frameLayout = {};
+    frameLayout.fgActive = cfg.showFG && metrics && metrics->IsFGActive();
+    frameLayout.reserveFGSpace = cfg.showFG && reserveInactiveFGSpace;
+    if (frameLayout.fgActive && metrics) {
+        frameLayout.fgMultiplier = metrics->GetFGMultiplier();
+        std::snprintf(frameLayout.fgLabel, sizeof(frameLayout.fgLabel), "%s", metrics->GetFGTypeLabel());
+        frameLayout.fgBaseFPS = metrics->GetFGBaseFPS();
+        frameLayout.fgOutputFPS = metrics->GetFGOutputFPS();
+    } else if (frameLayout.reserveFGSpace) {
+        frameLayout.fgMultiplier = 4;
+        std::snprintf(frameLayout.fgLabel, sizeof(frameLayout.fgLabel), "DLSS FG");
+    }
+    if (frameLayout.fgOutputFPS < 1.0f)
+        frameLayout.fgOutputFPS = cachedFPS;
+    if (frameLayout.fgBaseFPS < 1.0f) {
+        frameLayout.fgBaseFPS = frameLayout.fgMultiplier >= 2 ? frameLayout.fgOutputFPS / frameLayout.fgMultiplier
+                                                              : cachedFPS;
+    }
+
+    frameLayout.recordingActive = sharedMem->runtimeState.isRecording.load(std::memory_order_acquire);
+    frameLayout.recordingAudioOnly = sharedMem->runtimeState.audioOnly.load(std::memory_order_acquire);
     uint64_t nowTick64 = GetTickCount64();
-    if (cfg.showRecording && isRecording) {
+    if (cfg.showRecording && frameLayout.recordingActive) {
         int64_t startTime = sharedMem->runtimeState.recordingStartTime.load(std::memory_order_acquire);
         if (startTime > 0) {
-            recordingSeconds = (nowTick64 - startTime) / 1000;
+            frameLayout.recordingSeconds = (nowTick64 - startTime) / 1000;
         }
         uint32_t overloadFlags = sharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
         const uint32_t captureHealthFlags =
@@ -575,20 +592,60 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         lastEncoderOverloadTick = 0;
         lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
     }
-    bool showOverloadWarning = (lastEncoderOverloadTick != 0) && ((nowTick64 - lastEncoderOverloadTick) <= 5000);
-    const uint32_t recordingWarningKind =
-        showOverloadWarning ? lastRecordingWarningKind : ce::capture_policy::kOverlayWarningNone;
+    frameLayout.showOverloadWarning =
+        (lastEncoderOverloadTick != 0) && ((nowTick64 - lastEncoderOverloadTick) <= 5000);
+    frameLayout.recordingWarningKind = frameLayout.showOverloadWarning
+                                           ? lastRecordingWarningKind
+                                           : ce::capture_policy::kOverlayWarningNone;
+    frameLayout.recordingTargetFps = sharedMem->runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
+    frameLayout.recordingSustainFpsX100 =
+        sharedMem->runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
+
+    const uint64_t notificationExpiry =
+        sharedMem->runtimeState.notificationExpiry.load(std::memory_order_acquire);
+    frameLayout.notificationType = sharedMem->runtimeState.notificationType.load(std::memory_order_relaxed);
+    frameLayout.notificationVisible = notificationExpiry > nowTick64 && frameLayout.notificationType != 0;
+
+    ce::overlay_layout::RowInputs rowInputs = {};
+    rowInputs.showGPU = cfg.showGPU;
+    rowInputs.showCPU = cfg.showCPU;
+    rowInputs.showVRAM = cfg.showVRAM;
+    rowInputs.showRAM = cfg.showRAM;
+    rowInputs.showFPS = cfg.showFPS;
+    rowInputs.showFPSAverages = cachedAvgFPS > 0.0f && cached1PercentLow > 0.0f;
+    rowInputs.showFG = cfg.showFG;
+    rowInputs.fgActive = frameLayout.fgActive;
+    rowInputs.reserveFGSpace = frameLayout.reserveFGSpace;
+    rowInputs.showRecording = cfg.showRecording;
+    rowInputs.recordingActive = frameLayout.recordingActive;
+    rowInputs.notificationVisible = frameLayout.notificationVisible;
+    frameLayout.rowMask = ce::overlay_layout::BuildOverlayRowMask(rowInputs);
+    frameLayout.rowCount = CountOverlayRows(frameLayout.rowMask);
+
     PresentDebugSample* activeDebugSample = PerfLogger::Get().GetActiveDebugSample();
     bool showGraph = cfg.showFrameTime && metrics;
     bool shouldRefreshGraph = showGraph;
     bool viewportChanged = (viewportWidth != lastViewportWidth) || (viewportHeight != lastViewportHeight);
     bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);
-    bool dynamicStateChanged = (fgVisible != lastFGActive) || (reserveInactiveFGSpace != lastReserveInactiveFGSpace) ||
-                               (isRecording != lastRecordingActive) || (recordingSeconds != lastRecordingSeconds) ||
-                               (showOverloadWarning != lastShowOverloadWarning) ||
-                               (recordingWarningKind != lastRenderedRecordingWarningKind);
+    const bool rowSetChanged = !hasLastFrameLayout || frameLayout.rowMask != lastFrameLayout.rowMask;
+    const bool fgIdentityChanged =
+        !hasLastFrameLayout || frameLayout.fgActive != lastFrameLayout.fgActive ||
+        frameLayout.reserveFGSpace != lastFrameLayout.reserveFGSpace ||
+        frameLayout.fgMultiplier != lastFrameLayout.fgMultiplier ||
+        std::strcmp(frameLayout.fgLabel, lastFrameLayout.fgLabel) != 0;
+    const bool recordingChanged =
+        !hasLastFrameLayout || frameLayout.recordingActive != lastFrameLayout.recordingActive ||
+        frameLayout.recordingAudioOnly != lastFrameLayout.recordingAudioOnly ||
+        frameLayout.recordingSeconds != lastFrameLayout.recordingSeconds ||
+        frameLayout.showOverloadWarning != lastFrameLayout.showOverloadWarning ||
+        frameLayout.recordingWarningKind != lastFrameLayout.recordingWarningKind;
+    const bool notificationChanged =
+        !hasLastFrameLayout || frameLayout.notificationVisible != lastFrameLayout.notificationVisible ||
+        frameLayout.notificationType != lastFrameLayout.notificationType;
+    bool dynamicStateChanged = rowSetChanged || fgIdentityChanged || recordingChanged || notificationChanged;
     bool needRebuild = !hasCachedFrame || shouldUpdate || shouldRefreshGraph || viewportChanged || configChanged ||
                        dynamicStateChanged || layoutDirty;
+    const bool refreshLayout = shouldUpdate || layoutDirty || configChanged || rowSetChanged || fgIdentityChanged;
     static int renderPathLogCount = 0;
     if (renderPathLogCount < 10) {
         HookLogImportant(
@@ -630,7 +687,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         HookLogImportant("[Overlay] RenderOverlay: BeginFrame %dx%d", viewportWidth, viewportHeight);
     }
     renderer->BeginFrame(viewportWidth, viewportHeight);
-    RenderContent(viewportWidth, viewportHeight, cfg, shouldUpdate);
+    RenderContent(viewportWidth, viewportHeight, cfg, frameLayout, refreshLayout);
     if (activeDebugSample) {
         activeDebugSample->flags |= kPresentSampleFlagOverlayRebuilt;
         activeDebugSample->overlayBuildUs += static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayBuildStartUs);
@@ -649,21 +706,16 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     lastRenderedConfig = cfg;
     lastViewportWidth = viewportWidth;
     lastViewportHeight = viewportHeight;
-    lastFGActive = fgVisible;
-    lastReserveInactiveFGSpace = reserveInactiveFGSpace;
-    lastRecordingActive = isRecording;
-    lastRecordingSeconds = recordingSeconds;
-    lastShowOverloadWarning = showOverloadWarning;
-    lastRenderedRecordingWarningKind = recordingWarningKind;
+    lastFrameLayout = frameLayout;
+    hasLastFrameLayout = true;
 }
 
-void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const OverlayConfig& cfg, bool shouldUpdate) {
+void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const OverlayConfig& cfg,
+                                   const FrameLayoutSnapshot& frameLayout, bool refreshLayout) {
     using namespace CustomOverlay;
 
     if (!ipc || !ipc->GetSharedMem())
         return;
-    auto& mem = *ipc->GetSharedMem();
-
     // Get DPI scale for consistent sizing
     float dpiScale = renderer->GetDpiScale();
 
@@ -681,18 +733,24 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     float lineHeight = (float)renderer->GetLineHeight();
 
-    // Check dynamic states used by both sizing and rendering
-    bool fgActive = metrics && metrics->IsFGActive();
-    bool showFGDetails = cfg.showFG && fgActive;
-    const bool reserveFGDetailsSpace = cfg.showFG && reserveInactiveFGSpace;
-    bool isRecording = mem.runtimeState.isRecording.load(std::memory_order_acquire);
+    const bool rowGPU = (frameLayout.rowMask & kRowGPU) != 0;
+    const bool rowCPU = (frameLayout.rowMask & kRowCPU) != 0;
+    const bool rowVRAM = (frameLayout.rowMask & kRowVRAM) != 0;
+    const bool rowRAM = (frameLayout.rowMask & kRowRAM) != 0;
+    const bool rowFPS = (frameLayout.rowMask & kRowFPS) != 0;
+    const bool rowFGRates = (frameLayout.rowMask & kRowFGRates) != 0;
+    const bool rowFPSAverages = (frameLayout.rowMask & kRowFPSAverages) != 0;
+    const bool rowFGStatus = (frameLayout.rowMask & kRowFGStatus) != 0;
+    const bool rowRecording = (frameLayout.rowMask & kRowRecording) != 0;
+    const bool rowNotification = (frameLayout.rowMask & kRowNotification) != 0;
+    const bool vramTelemetryAvailable = cachedSystemMetrics.gpuUsageValid || cachedSystemMetrics.vramUsed != 0;
 
     // Adaptive overlay width: measure visible labels/values and size to content.
     const float kShadowPad = 1.0f;
     const float kBgLeftPad = 4.0f * dpiScale;
     const float kBgRightPad = 4.0f * dpiScale + kShadowPad;
     float kBgTopPad = 2.0f * dpiScale;
-    if (cfg.showVRAM || cfg.showRAM) {
+    if (rowVRAM || rowRAM) {
         kBgTopPad = (std::max)(kBgTopPad, lineHeight * 0.20f + kShadowPad);
     }
     const float kBgBottomPad = 2.0f * dpiScale + kShadowPad;
@@ -714,87 +772,98 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     // Expensive layout measurement (snprintf + CalcTextSize) – cached between
     // updates to avoid per-frame overhead at high refresh rates.
-    if (shouldUpdate || layoutDirty) {
+    if (refreshLayout) {
         float maxLabelWidth = 0.0f;
         float maxValueWidth = 0.0f;
         char measureBuf[96];
 
-        if (cfg.showGPU) {
-            snprintf(measureBuf, sizeof(measureBuf), "%.0f%%", cachedSystemMetrics.gpuUsage);
+        if (rowGPU) {
+            if (cachedSystemMetrics.gpuUsageValid)
+                snprintf(measureBuf, sizeof(measureBuf), "%.0f%%", cachedSystemMetrics.gpuUsage);
+            else
+                snprintf(measureBuf, sizeof(measureBuf), "--");
             maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(SystemMetricsCollector::Get().GetGPUName()));
             maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+            maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth("100%") + kShadowPad);
         }
-        if (cfg.showCPU) {
+        if (rowCPU) {
             snprintf(measureBuf, sizeof(measureBuf), "%.0f%% (%.0f%%)", cachedSystemMetrics.cpuUsage,
                      cachedSystemMetrics.cpuMaxCoreUsage);
             maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(SystemMetricsCollector::Get().GetCPUName()));
             maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+            maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth("100% (100%)") + kShadowPad);
         }
-        if (cfg.showVRAM) {
+        if (rowVRAM) {
             float gbUsed = (float)cachedSystemMetrics.vramUsed / (1024.0f * 1024.0f * 1024.0f);
             float gbTotal = (float)cachedSystemMetrics.vramTotal / (1024.0f * 1024.0f * 1024.0f);
-            if (gbTotal < 0.1f)
-                gbTotal = 11.66f;
+            const MemoryValueMode memoryMode = SelectMemoryValueMode(
+                vramTelemetryAvailable, cachedSystemMetrics.vramUsed, cachedSystemMetrics.vramTotal);
             char usedBuf[32], totalBuf[32];
-            snprintf(usedBuf, sizeof(usedBuf), "%.2f GB", gbUsed);
-            snprintf(totalBuf, sizeof(totalBuf), "of %.2f GB", gbTotal);
-            float valueWidth = MeasureTextWidth(usedBuf) + kMemoryGap +
-                               MeasureTextWidthScaled(totalBuf, kMemorySuffixScale) + kShadowPad;
+            float valueWidth = MeasureTextWidth("--") + kShadowPad;
+            if (memoryMode != MemoryValueMode::Unavailable) {
+                snprintf(usedBuf, sizeof(usedBuf), "%.2f GB",
+                         memoryMode == MemoryValueMode::UsedAndTotal ? (std::max)(gbUsed, gbTotal) : gbUsed);
+                valueWidth = MeasureTextWidth(usedBuf) + kShadowPad;
+                if (memoryMode == MemoryValueMode::UsedAndTotal) {
+                    snprintf(totalBuf, sizeof(totalBuf), "of %.2f GB", gbTotal);
+                    valueWidth += kMemoryGap + MeasureTextWidthScaled(totalBuf, kMemorySuffixScale);
+                }
+            }
             maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("VRAM"));
             maxValueWidth = (std::max)(maxValueWidth, valueWidth);
         }
-        if (cfg.showRAM) {
+        if (rowRAM) {
             float gbUsed = (float)cachedSystemMetrics.ramUsed / (1024.0f * 1024.0f * 1024.0f);
             float gbTotal = (float)cachedSystemMetrics.ramTotal / (1024.0f * 1024.0f * 1024.0f);
-            if (gbTotal < 0.1f)
-                gbTotal = 31.93f;
+            const MemoryValueMode memoryMode =
+                SelectMemoryValueMode(cachedSystemMetrics.ramUsed != 0, cachedSystemMetrics.ramUsed,
+                                      cachedSystemMetrics.ramTotal);
             char usedBuf[32], totalBuf[32];
-            snprintf(usedBuf, sizeof(usedBuf), "%.2f GB", gbUsed);
-            snprintf(totalBuf, sizeof(totalBuf), "of %.2f GB", gbTotal);
-            float valueWidth = MeasureTextWidth(usedBuf) + kMemoryGap +
-                               MeasureTextWidthScaled(totalBuf, kMemorySuffixScale) + kShadowPad;
+            float valueWidth = MeasureTextWidth("--") + kShadowPad;
+            if (memoryMode != MemoryValueMode::Unavailable) {
+                snprintf(usedBuf, sizeof(usedBuf), "%.2f GB",
+                         memoryMode == MemoryValueMode::UsedAndTotal ? (std::max)(gbUsed, gbTotal) : gbUsed);
+                valueWidth = MeasureTextWidth(usedBuf) + kShadowPad;
+                if (memoryMode == MemoryValueMode::UsedAndTotal) {
+                    snprintf(totalBuf, sizeof(totalBuf), "of %.2f GB", gbTotal);
+                    valueWidth += kMemoryGap + MeasureTextWidthScaled(totalBuf, kMemorySuffixScale);
+                }
+            }
             maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("RAM"));
             maxValueWidth = (std::max)(maxValueWidth, valueWidth);
         }
-        if (cfg.showFPS) {
+        if (rowFPS) {
             const char* apiLabel = graphicsAPI[0] ? graphicsAPI : "FPS";
             snprintf(measureBuf, sizeof(measureBuf), "%.0f FPS", cachedFPS);
             maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(apiLabel));
             maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+            maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth("9999 FPS") + kShadowPad);
 
-            if ((showFGDetails || reserveFGDetailsSpace) && metrics) {
-                float baseFPS = metrics->GetFGBaseFPS();
-                float outputFPS = metrics->GetFGOutputFPS();
-                int fgMult = metrics->GetFGMultiplier();
-                if (outputFPS < 1.0f)
-                    outputFPS = cachedFPS;
-                if (baseFPS < 1.0f) {
-                    if (fgMult >= 2)
-                        baseFPS = outputFPS / fgMult;
-                    else
-                        baseFPS = cachedFPS;
-                }
-                snprintf(measureBuf, sizeof(measureBuf), "%.0f / %.0f FPS", baseFPS, outputFPS);
+            if (rowFGRates) {
+                snprintf(measureBuf, sizeof(measureBuf), "%.0f / %.0f FPS", frameLayout.fgBaseFPS,
+                         frameLayout.fgOutputFPS);
                 maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("Base/Display"));
                 maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+                maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth("9999 / 9999 FPS") + kShadowPad);
             }
 
-            if (cachedAvgFPS > 0 && cached1PercentLow > 0) {
+            if (rowFPSAverages) {
                 snprintf(measureBuf, sizeof(measureBuf), "%.0f / %.0f / %.0f", cachedAvgFPS, cached1PercentLow,
                          cached01PercentLow);
                 maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("Avg/1%/0.1%"));
                 maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
+                maxValueWidth =
+                    (std::max)(maxValueWidth, MeasureTextWidth("9999 / 9999 / 9999") + kShadowPad);
             }
         }
-        if ((showFGDetails || reserveFGDetailsSpace) && metrics) {
-            int multiplier = metrics->GetFGMultiplier();
-            const char* fgLabel = metrics->GetFGTypeLabel();
-            if (reserveInactiveFGSpace && !showFGDetails) {
-                fgLabel = "DLSS FG";
-                multiplier = 4;
+        if (rowFGStatus) {
+            const char* fgLabels[] = {"DLSS FG", "FSR FG", "NVIDIA SM", "FG"};
+            for (const char* fgLabel : fgLabels) {
+                snprintf(measureBuf, sizeof(measureBuf), "%s 4x", fgLabel);
+                maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(fgLabel));
+                maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
             }
-            snprintf(measureBuf, sizeof(measureBuf), "%s %dx", fgLabel, multiplier);
-            maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(fgLabel));
+            snprintf(measureBuf, sizeof(measureBuf), "%s %dx", frameLayout.fgLabel, frameLayout.fgMultiplier);
             maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
         }
 
@@ -805,14 +874,19 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
         // Recording row uses a fixed-width digit format; measure a canonical string
         // so the result is stable regardless of elapsed time (digits are tabular).
-        if (cfg.showRecording && isRecording) {
+        if (rowRecording) {
             char recBuf[96];
             snprintf(recBuf, sizeof(recBuf), "REC 00:00:00");
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
             snprintf(recBuf, sizeof(recBuf), "REC 00:00:00 !ENCODER OVERLOAD!");
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
+            snprintf(recBuf, sizeof(recBuf), "REC 00:00:00 !ENC SEVERE 9999.9/9999!");
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
             snprintf(recBuf, sizeof(recBuf), "AUDIO 00:00:00");
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
+        }
+        if (rowNotification) {
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Screenshot saved!") + kShadowPad);
         }
 
         cachedContentWidth = measuredWidth;
@@ -830,34 +904,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     // Calculate required height upfront so BottomLeft/BottomRight use the real
     // overlay height instead of a hardcoded estimate.
-    float requiredHeight = lineHeight;
-    if (cfg.showGPU)
-        requiredHeight += lineHeight;
-    if (cfg.showCPU)
-        requiredHeight += lineHeight;
-    if (cfg.showVRAM)
-        requiredHeight += lineHeight;
-    if (cfg.showRAM)
-        requiredHeight += lineHeight;
-    if (cfg.showFPS) {
-        requiredHeight += lineHeight;
-        if (cachedAvgFPS > 0)
-            requiredHeight += lineHeight;
-        // Base/Display line when FG is active
-        if (showFGDetails || reserveFGDetailsSpace)
-            requiredHeight += lineHeight;
-    }
-    if (showFGDetails || reserveFGDetailsSpace)
-        requiredHeight += lineHeight;
-    if (cfg.showRecording && isRecording)
-        requiredHeight += lineHeight;
-
-    // Extend by one line when screenshot notification is active
-    uint64_t notifExpiry = mem.runtimeState.notificationExpiry.load(std::memory_order_acquire);
-    uint32_t notifType = mem.runtimeState.notificationType.load(std::memory_order_relaxed);
-    bool showNotification = (notifExpiry > 0 && GetTickCount64() < notifExpiry && notifType != 0);
-    if (showNotification)
-        requiredHeight += lineHeight;
+    float requiredHeight = frameLayout.rowCount * lineHeight;
 
     constexpr int GRAPH_SAMPLES = 180;
     bool showGraph = cfg.showFrameTime && metrics;
@@ -897,29 +944,9 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     uint32_t bgColor = (bgAlpha << 24) | (cfg.bgColor & 0x00FFFFFF);
     renderer->DrawRectFilled(x - kBgLeftPad, y - kBgTopPad, bgWidth, bgHeight, bgColor);
 
-    // Calculate cursorY for graph position (same layout as text pass)
-    float graphCursorY = y;
-    if (cfg.showGPU)
-        graphCursorY += lineHeight;
-    if (cfg.showCPU)
-        graphCursorY += lineHeight;
-    if (cfg.showVRAM)
-        graphCursorY += lineHeight;
-    if (cfg.showRAM)
-        graphCursorY += lineHeight;
-    if (cfg.showFPS) {
-        graphCursorY += lineHeight;
-        if (cachedAvgFPS > 0 && cached1PercentLow > 0)
-            graphCursorY += lineHeight;
-        if (showFGDetails || reserveFGDetailsSpace)
-            graphCursorY += lineHeight;
-    }
-    if (showFGDetails || reserveFGDetailsSpace)
-        graphCursorY += lineHeight;
-    if (cfg.showRecording && isRecording)
-        graphCursorY += lineHeight;
-    if (showNotification)
-        graphCursorY += lineHeight;
+    // The row mask is the single source of truth for text, panel height, and
+    // graph placement, so rows appear/disappear atomically.
+    float graphCursorY = y + frameLayout.rowCount * lineHeight;
 
     // Max frame time display values – recomputed at most once every 2 seconds so
     // the label doesn't flicker on every frame.
@@ -1024,10 +1051,10 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     float labelCol = x;
 
     // Transient notification inside the overlay panel (background extends to fit)
-    if (notifExpiry > 0 && GetTickCount64() < notifExpiry && notifType != 0) {
+    if (rowNotification) {
         const char* notifText = nullptr;
         uint32_t notifColor = Colors::Green;
-        switch (notifType) {
+        switch (frameLayout.notificationType) {
             case 1:
                 notifText = "Screenshot saved!";
                 break;
@@ -1041,17 +1068,21 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     }
 
     // GPU - Name in green, % in yellow (based on load)
-    if (cfg.showGPU) {
-        snprintf(buf, 64, "%.0f%%", cachedSystemMetrics.gpuUsage);
+    if (rowGPU) {
+        if (cachedSystemMetrics.gpuUsageValid)
+            snprintf(buf, 64, "%.0f%%", cachedSystemMetrics.gpuUsage);
+        else
+            snprintf(buf, 64, "--");
         renderer->DrawTextWithShadow(labelCol, cursorY, SystemMetricsCollector::Get().GetGPUName(), Colors::LabelGreen,
                                      shadowColor);
-        renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, GetLoadColor(cachedSystemMetrics.gpuUsage),
-                                       shadowColor);
+        const uint32_t gpuValueColor =
+            cachedSystemMetrics.gpuUsageValid ? GetLoadColor(cachedSystemMetrics.gpuUsage) : Colors::Gray;
+        renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, gpuValueColor, shadowColor);
         cursorY += lineHeight;
     }
 
     // CPU - Name in green, % (maxCore%) in cyan
-    if (cfg.showCPU) {
+    if (rowCPU) {
         snprintf(buf, 64, "%.0f%% (%.0f%%)", cachedSystemMetrics.cpuUsage, cachedSystemMetrics.cpuMaxCoreUsage);
         renderer->DrawTextWithShadow(labelCol, cursorY, SystemMetricsCollector::Get().GetCPUName(), Colors::LabelGreen,
                                      shadowColor);
@@ -1061,70 +1092,91 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     // VRAM - Label in orange, "X.XX GB" in white, "of Y.YY GB" in smaller raised
     // text
-    if (cfg.showVRAM) {
+    if (rowVRAM) {
         float gbUsed = (float)cachedSystemMetrics.vramUsed / (1024.0f * 1024.0f * 1024.0f);
         float gbTotal = (float)cachedSystemMetrics.vramTotal / (1024.0f * 1024.0f * 1024.0f);
-        if (gbTotal < 0.1f)
-            gbTotal = 11.66f;  // Fallback if not detected
+        const MemoryValueMode memoryMode = SelectMemoryValueMode(
+            vramTelemetryAvailable, cachedSystemMetrics.vramUsed, cachedSystemMetrics.vramTotal);
 
         renderer->DrawTextWithShadow(labelCol, cursorY, "VRAM", Colors::LabelOrange, shadowColor);
 
-        char usedBuf[32];
-        snprintf(usedBuf, 32, "%.2f GB", gbUsed);
-        char totalBuf[32];
-        snprintf(totalBuf, 32, "of %.2f GB", gbTotal);
+        if (memoryMode == MemoryValueMode::Unavailable) {
+            renderer->DrawTextRightAligned(valueRightEdge, cursorY, "--", Colors::Gray, shadowColor);
+            cursorY += lineHeight;
+        } else {
+            char usedBuf[32];
+            snprintf(usedBuf, 32, "%.2f GB", gbUsed);
+            if (memoryMode == MemoryValueMode::UsedOnly) {
+                renderer->DrawTextRightAligned(valueRightEdge, cursorY, usedBuf, Colors::LabelOrange, shadowColor);
+                cursorY += lineHeight;
+            } else {
+                char totalBuf[32];
+                snprintf(totalBuf, 32, "of %.2f GB", gbTotal);
 
-        // Right-align the whole "used + of total" composite so it always fits.
-        float usedWidth = 0, usedHeight = 0;
-        float totalWidth = 0;
-        renderer->CalcTextSize(usedBuf, &usedWidth, &usedHeight);
-        float smallScale = 0.75f;     // Smaller scale for superscript
-        float gap = 2.0f * dpiScale;  // Minimal gap between segments
-        renderer->CalcTextSizeScaled(totalBuf, &totalWidth, nullptr, smallScale);
-        float usedX = valueRightEdge - (usedWidth + gap + totalWidth);
-        renderer->DrawTextWithShadow(usedX, cursorY, usedBuf, Colors::LabelOrange, shadowColor);
+                // Right-align the whole "used + of total" composite so it always fits.
+                float usedWidth = 0, usedHeight = 0;
+                float totalWidth = 0;
+                renderer->CalcTextSize(usedBuf, &usedWidth, &usedHeight);
+                float smallScale = 0.75f;     // Smaller scale for superscript
+                float gap = 2.0f * dpiScale;  // Minimal gap between segments
+                renderer->CalcTextSizeScaled(totalBuf, &totalWidth, nullptr, smallScale);
+                float usedX = valueRightEdge - (usedWidth + gap + totalWidth);
+                renderer->DrawTextWithShadow(usedX, cursorY, usedBuf, Colors::LabelOrange, shadowColor);
 
-        float raisedY = cursorY - usedHeight * 0.20f;  // Raised 20% of line height
-        renderer->DrawTextScaledWithShadow(usedX + usedWidth + gap, raisedY, totalBuf, textColor, shadowColor,
-                                           smallScale);
+                float raisedY = cursorY - usedHeight * 0.20f;  // Raised 20% of line height
+                renderer->DrawTextScaledWithShadow(usedX + usedWidth + gap, raisedY, totalBuf, textColor, shadowColor,
+                                                   smallScale);
 
-        cursorY += lineHeight;
+                cursorY += lineHeight;
+            }
+        }
     }
 
     // RAM - Label in pink, "X.XX GB" in white, "of Y.YY GB" in smaller raised
     // text
-    if (cfg.showRAM) {
+    if (rowRAM) {
         float gbUsed = (float)cachedSystemMetrics.ramUsed / (1024.0f * 1024.0f * 1024.0f);
         float gbTotal = (float)cachedSystemMetrics.ramTotal / (1024.0f * 1024.0f * 1024.0f);
-        if (gbTotal < 0.1f)
-            gbTotal = 31.93f;  // Fallback if not detected
+        const MemoryValueMode memoryMode =
+            SelectMemoryValueMode(cachedSystemMetrics.ramUsed != 0, cachedSystemMetrics.ramUsed,
+                                  cachedSystemMetrics.ramTotal);
 
         renderer->DrawTextWithShadow(labelCol, cursorY, "RAM", Colors::LabelPink, shadowColor);
 
-        char usedBuf[32];
-        snprintf(usedBuf, 32, "%.2f GB", gbUsed);
-        char totalBuf[32];
-        snprintf(totalBuf, 32, "of %.2f GB", gbTotal);
+        if (memoryMode == MemoryValueMode::Unavailable) {
+            renderer->DrawTextRightAligned(valueRightEdge, cursorY, "--", Colors::Gray, shadowColor);
+            cursorY += lineHeight;
+        } else {
+            char usedBuf[32];
+            snprintf(usedBuf, 32, "%.2f GB", gbUsed);
+            if (memoryMode == MemoryValueMode::UsedOnly) {
+                renderer->DrawTextRightAligned(valueRightEdge, cursorY, usedBuf, Colors::LabelPink, shadowColor);
+                cursorY += lineHeight;
+            } else {
+                char totalBuf[32];
+                snprintf(totalBuf, 32, "of %.2f GB", gbTotal);
 
-        // Right-align the whole "used + of total" composite so it always fits.
-        float usedWidth = 0, usedHeight = 0;
-        float totalWidth = 0;
-        renderer->CalcTextSize(usedBuf, &usedWidth, &usedHeight);
-        float smallScale = 0.75f;     // Smaller scale for superscript
-        float gap = 2.0f * dpiScale;  // Minimal gap between segments
-        renderer->CalcTextSizeScaled(totalBuf, &totalWidth, nullptr, smallScale);
-        float usedX = valueRightEdge - (usedWidth + gap + totalWidth);
-        renderer->DrawTextWithShadow(usedX, cursorY, usedBuf, Colors::LabelPink, shadowColor);
+                // Right-align the whole "used + of total" composite so it always fits.
+                float usedWidth = 0, usedHeight = 0;
+                float totalWidth = 0;
+                renderer->CalcTextSize(usedBuf, &usedWidth, &usedHeight);
+                float smallScale = 0.75f;     // Smaller scale for superscript
+                float gap = 2.0f * dpiScale;  // Minimal gap between segments
+                renderer->CalcTextSizeScaled(totalBuf, &totalWidth, nullptr, smallScale);
+                float usedX = valueRightEdge - (usedWidth + gap + totalWidth);
+                renderer->DrawTextWithShadow(usedX, cursorY, usedBuf, Colors::LabelPink, shadowColor);
 
-        float raisedY = cursorY - usedHeight * 0.20f;  // Raised 20% of line height
-        renderer->DrawTextScaledWithShadow(usedX + usedWidth + gap, raisedY, totalBuf, textColor, shadowColor,
-                                           smallScale);
+                float raisedY = cursorY - usedHeight * 0.20f;  // Raised 20% of line height
+                renderer->DrawTextScaledWithShadow(usedX + usedWidth + gap, raisedY, totalBuf, textColor, shadowColor,
+                                                   smallScale);
 
-        cursorY += lineHeight;
+                cursorY += lineHeight;
+            }
+        }
     }
 
     // FPS Section
-    if (cfg.showFPS) {
+    if (rowFPS) {
         // Graphics API label (if set) with current FPS
         const char* apiLabel = graphicsAPI[0] ? graphicsAPI : "FPS";
         snprintf(buf, 64, "%.0f FPS", cachedFPS);
@@ -1133,32 +1185,17 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         cursorY += lineHeight;
 
         // Base/Display FPS when FG is active (shown first as in reference)
-        if (showFGDetails) {
-            float baseFPS = metrics->GetFGBaseFPS();
-            float outputFPS = metrics->GetFGOutputFPS();
-            int fgMult = metrics->GetFGMultiplier();
-
-            // When metrics haven't been computed (dormant mode or early startup),
-            // derive values from the live per-frame FPS and the known multiplier.
-            if (outputFPS < 1.0f)
-                outputFPS = cachedFPS;
-            if (baseFPS < 1.0f) {
-                if (fgMult >= 2)
-                    baseFPS = outputFPS / fgMult;
-                else
-                    baseFPS = cachedFPS;
+        if (rowFGRates) {
+            if (frameLayout.fgActive) {
+                snprintf(buf, 64, "%.0f / %.0f FPS", frameLayout.fgBaseFPS, frameLayout.fgOutputFPS);
+                renderer->DrawTextWithShadow(labelCol, cursorY, "Base/Display", Colors::LabelYellow, shadowColor);
+                renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, Colors::ValueYellow, shadowColor);
             }
-
-            snprintf(buf, 64, "%.0f / %.0f FPS", baseFPS, outputFPS);
-            renderer->DrawTextWithShadow(labelCol, cursorY, "Base/Display", Colors::LabelYellow, shadowColor);
-            renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, Colors::ValueYellow, shadowColor);
-            cursorY += lineHeight;
-        } else if (reserveFGDetailsSpace) {
             cursorY += lineHeight;
         }
 
         // Avg/1%/0.1%
-        if (cachedAvgFPS > 0 && cached1PercentLow > 0) {
+        if (rowFPSAverages) {
             snprintf(buf, 64, "%.0f / %.0f / %.0f", cachedAvgFPS, cached1PercentLow, cached01PercentLow);
             renderer->DrawTextWithShadow(labelCol, cursorY, "Avg/1%/0.1%", textColor, shadowColor);
             renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, Colors::ValueYellow, shadowColor);
@@ -1167,52 +1204,25 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     }
 
     // FG Status line
-    if (showFGDetails) {
-        int multiplier = metrics->GetFGMultiplier();
-        const char* fgLabel = metrics->GetFGTypeLabel();
-        snprintf(buf, 64, "%s %dx", fgLabel, multiplier);
-        renderer->DrawTextWithShadow(labelCol, cursorY, fgLabel, Colors::LabelCyan, shadowColor);
-        renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, Colors::LabelCyan, shadowColor);
-        cursorY += lineHeight;
-    } else if (reserveFGDetailsSpace) {
+    if (rowFGStatus) {
+        if (frameLayout.fgActive) {
+            snprintf(buf, 64, "%s %dx", frameLayout.fgLabel, frameLayout.fgMultiplier);
+            renderer->DrawTextWithShadow(labelCol, cursorY, frameLayout.fgLabel, Colors::LabelCyan, shadowColor);
+            renderer->DrawTextRightAligned(valueRightEdge, cursorY, buf, Colors::LabelCyan, shadowColor);
+        }
         cursorY += lineHeight;
     }
 
     // Recording status line
-    if (cfg.showRecording && isRecording) {
-        bool isAudioOnly = mem.runtimeState.audioOnly.load(std::memory_order_acquire);
-        const char* recLabel = isAudioOnly ? "AUDIO" : "REC";
+    if (rowRecording) {
+        const char* recLabel = frameLayout.recordingAudioOnly ? "AUDIO" : "REC";
+        int hours = (int)(frameLayout.recordingSeconds / 3600);
+        int minutes = (int)((frameLayout.recordingSeconds % 3600) / 60);
+        int seconds = (int)(frameLayout.recordingSeconds % 60);
 
-        int64_t startTime = mem.runtimeState.recordingStartTime.load(std::memory_order_acquire);
-        int64_t elapsed = 0;
-        if (startTime > 0) {
-            elapsed = (GetTickCount64() - startTime) / 1000;
-        }
-        int hours = (int)(elapsed / 3600);
-        int minutes = (int)((elapsed % 3600) / 60);
-        int seconds = (int)(elapsed % 60);
-
-        // Suppress encoder warnings while WGC is source/scheduler limited so
-        // variable-FPS games do not look like encoder failures.
-        uint32_t overloadFlags = mem.runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
-        const uint32_t captureHealthFlags = mem.runtimeState.wgcCaptureHealthFlags.load(std::memory_order_relaxed);
-        uint64_t nowTick = GetTickCount64();
-        const uint32_t warningKind = ce::capture_policy::SelectWgcOverlayWarningKind(overloadFlags, captureHealthFlags);
-        if (ce::capture_policy::IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
-            lastEncoderOverloadTick = 0;
-            lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
-        } else if (warningKind != ce::capture_policy::kOverlayWarningNone) {
-            lastEncoderOverloadTick = nowTick;
-            lastRecordingWarningKind = warningKind;
-        }
-
-        // Show overload warning if within 5 seconds of last detection
-        bool showOverloadWarning = (lastEncoderOverloadTick != 0) && ((nowTick - lastEncoderOverloadTick) <= 5000);
-
-        if (showOverloadWarning) {
-            const uint32_t targetFps = mem.runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
-            const uint32_t sustainFpsX100 = mem.runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
-            const std::string overloadLabel = FormatEncoderOverloadLabel(sustainFpsX100, targetFps);
+        if (frameLayout.showOverloadWarning) {
+            const std::string overloadLabel =
+                FormatEncoderOverloadLabel(frameLayout.recordingSustainFpsX100, frameLayout.recordingTargetFps);
             std::snprintf(buf, sizeof(buf), "%s %02d:%02d:%02d %s", recLabel, hours, minutes, seconds,
                           overloadLabel.c_str());
             renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);
@@ -1222,10 +1232,6 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);
         }
         cursorY += lineHeight;
-    } else {
-        // Reset overload tracking when not recording
-        lastEncoderOverloadTick = 0;
-        lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
     }
 
     // Frame time graph labels and markers

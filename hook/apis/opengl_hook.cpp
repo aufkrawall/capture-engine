@@ -194,6 +194,7 @@ static bool g_FunctionsLoaded = false;
 static bool g_NVInteropAvailable = false;
 static HDC g_CaptureHDC = NULL;
 static int g_SwapRecurse = 0;
+static thread_local int32_t g_LastOverlayUs = 0;
 static bool g_LegacyContext = false;
 static bool g_VersionChecked = false;
 static std::string g_OpenGLApiLabel = "OpenGL";
@@ -1387,10 +1388,6 @@ static void DrawOpenGLOverlay(HDC hdc) {
         int width = rect.right - rect.left;
         int height = rect.bottom - rect.top;
         if (width > 0 && height > 0) {
-            static int renderCount = 0;
-            if (renderCount++ % 60 == 0) {
-                HookLog("OpenGL: RenderOverlay called (%dx%d), count=%d", width, height, renderCount);
-            }
             g_OverlayAdapter.RenderOverlay(width, height);
         }
     }
@@ -1399,6 +1396,7 @@ static void DrawOpenGLOverlay(HDC hdc) {
 // Swap hook logic
 static void SwapBegin(HDC hdc) {
     if (g_SwapRecurse == 0) {
+        g_LastOverlayUs = 0;
         TrackOpenGLContext(hdc);
 
         if (!g_FunctionsLoaded) {
@@ -1495,10 +1493,6 @@ static void SwapBegin(HDC hdc) {
             // Lambda for overlay drawing
             auto doOverlay = [hdc, shouldDrawOverlay]() {
                 if (shouldDrawOverlay) {
-                    static int overlayCallCount = 0;
-                    if (overlayCallCount++ % 60 == 0) {
-                        HookLog("OpenGL: doOverlay lambda executing, count=%d", overlayCallCount);
-                    }
                     DrawOpenGLOverlay(hdc);
                 }
             };
@@ -1545,7 +1539,11 @@ static void SwapBegin(HDC hdc) {
                 doCapture();
             if (screenshotBeforeOverlay)
                 doScreenshot();
+            const int64_t overlayStartUs = PerfLogger::Get().IsEnabled() ? PerfLogger::GetQpcUs() : 0;
             doOverlay();
+            if (overlayStartUs != 0) {
+                g_LastOverlayUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayStartUs);
+            }
             if (!g_LegacyContext && captureIncludeOverlay)
                 doCapture();
             if (screenshotAfterOverlay)
@@ -1593,6 +1591,7 @@ static void SwapEnd(HDC hdc) {
                 perfMetrics.totalUs = static_cast<int32_t>(us - s_lastFrameUs);
             }
             s_lastFrameUs = us;
+            perfMetrics.overlayUs = g_LastOverlayUs;
             strncpy(perfMetrics.api, "OpenGL", sizeof(perfMetrics.api) - 1);
             perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
             PerfLogger::Get().LogFrame(perfMetrics);
@@ -1602,37 +1601,28 @@ static void SwapEnd(HDC hdc) {
 
 // Hook: SwapBuffers (GDI32)
 static BOOL WINAPI DetourSwapBuffers(HDC hdc) {
-    HookLog("OpenGL: DetourSwapBuffers(0x%p) entering", hdc);
     SwapBegin(hdc);
     if (g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
         LoadOpenGLExtensions();
     }
-    HookLog("OpenGL: DetourSwapBuffers calling original");
     BOOL result = oSwapBuffers(hdc);
     SwapEnd(hdc);
-    HookLog("OpenGL: DetourSwapBuffers returning %d", result);
     return result;
 }
 
 // Hook: wglSwapBuffers
 static BOOL WINAPI DetourWglSwapBuffers(HDC hdc) {
-    HookLog("OpenGL: DetourWglSwapBuffers(0x%p) entering", hdc);
     SwapBegin(hdc);
-    HookLog("OpenGL: DetourWglSwapBuffers calling original");
     BOOL result = oWglSwapBuffers(hdc);
     SwapEnd(hdc);
-    HookLog("OpenGL: DetourWglSwapBuffers returning %d", result);
     return result;
 }
 
 // Hook: wglSwapLayerBuffers
 static BOOL WINAPI DetourWglSwapLayerBuffers(HDC hdc, UINT fuPlanes) {
-    HookLog("OpenGL: DetourWglSwapLayerBuffers(0x%p) entering", hdc);
     SwapBegin(hdc);
-    HookLog("OpenGL: DetourWglSwapLayerBuffers calling original");
     BOOL result = oWglSwapLayerBuffers(hdc, fuPlanes);
     SwapEnd(hdc);
-    HookLog("OpenGL: DetourWglSwapLayerBuffers returning %d", result);
     return result;
 }
 
@@ -1694,8 +1684,6 @@ static BOOL WINAPI DetourWglSwapIntervalEXT(int interval) {
 }
 
 static BOOL WINAPI DetourWglMakeCurrent(HDC hdc, HGLRC hrc) {
-    if (hrc)
-        HookLog("OpenGL: wglMakeCurrent(HDC=0x%p, HGLRC=0x%p)", hdc, hrc);
     const BOOL result = oWglMakeCurrent(hdc, hrc);
     if (result) {
         ce::opengl_sampler_override::NotifyContextChanged();

@@ -92,5 +92,6 @@ private:
     char cachedLuidPart[64] = {};
 
     SystemMetrics current{};
+    bool ramCapacityQueryAttempted = false;
     std::mutex mutex;
 };

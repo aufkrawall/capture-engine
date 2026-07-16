@@ -107,12 +107,33 @@ public:
     void RenderOverlay(int viewportWidth, int viewportHeight);
 
 private:
+    struct FrameLayoutSnapshot {
+        uint32_t rowMask = 0;
+        uint32_t rowCount = 0;
+        bool fgActive = false;
+        bool reserveFGSpace = false;
+        int fgMultiplier = 1;
+        char fgLabel[16] = "";
+        float fgBaseFPS = 0.0f;
+        float fgOutputFPS = 0.0f;
+        bool recordingActive = false;
+        bool recordingAudioOnly = false;
+        uint64_t recordingSeconds = 0;
+        bool showOverloadWarning = false;
+        uint32_t recordingWarningKind = 0;
+        uint32_t recordingTargetFps = 0;
+        uint32_t recordingSustainFpsX100 = 0;
+        bool notificationVisible = false;
+        uint32_t notificationType = 0;
+    };
+
     bool InitializeBackendLocked(CustomOverlay::RendererBackend* newBackend, OverlayBackendType type,
                                  const char* backendName, float dpiScale);
     void ApplyShutdownModeLocked(bool skipRelease);
     void DestroyResourcesLocked(bool shutdownRenderer);
     void ResetStateLocked();
-    void RenderContent(int viewportWidth, int viewportHeight, const OverlayConfig& cfg, bool shouldUpdate);
+    void RenderContent(int viewportWidth, int viewportHeight, const OverlayConfig& cfg,
+                       const FrameLayoutSnapshot& frameLayout, bool refreshLayout);
     uint32_t GetLoadColor(float load);
 
     CustomOverlay::Renderer* renderer = nullptr;
@@ -141,7 +162,6 @@ private:
     // Encoder overload warning tracking (5-second display with extension)
     uint64_t lastEncoderOverloadTick = 0;
     uint32_t lastRecordingWarningKind = 0;
-    uint32_t lastRenderedRecordingWarningKind = 0;
 
     // Cached layout measurement (recomputed only on content updates, avoids
     // per-frame snprintf+CalcTextSize overhead)
@@ -158,12 +178,9 @@ private:
     int lastViewportHeight = 0;
     bool hasCachedFrame = false;
     bool hasRenderedConfig = false;
-    bool lastFGActive = false;
     bool reserveInactiveFGSpace = false;
-    bool lastReserveInactiveFGSpace = false;
-    bool lastRecordingActive = false;
-    bool lastShowOverloadWarning = false;
-    uint64_t lastRecordingSeconds = 0;
+    bool hasLastFrameLayout = false;
+    FrameLayoutSnapshot lastFrameLayout = {};
     OverlayConfig lastRenderedConfig = {};
 };
 extern OverlayAdapter g_OverlayAdapter;

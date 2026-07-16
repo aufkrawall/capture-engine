@@ -97,10 +97,16 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
     SetTextColor(hdc, RGB(255, 255, 255));
     SetBkMode(hdc, TRANSPARENT);
 
-    // Render each ASCII character
-    int cursorX = 1;
-    int cursorY = 1;
+    // Keep a transparent gutter around every glyph. Linear filtering can then
+    // never sample coverage from an adjacent cell when a glyph lands between
+    // pixels at fractional DPI scales.
+    constexpr int kGlyphPadding = 2;
+    int cursorX = kGlyphPadding;
+    int cursorY = kGlyphPadding;
     int maxRowHeight = 0;
+    MAT2 identityTransform = {};
+    identityTransform.eM11.value = 1;
+    identityTransform.eM22.value = 1;
 
     for (int c = 32; c < 127; c++) {
         char ch = (char)c;
@@ -108,32 +114,63 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
         SIZE charSize;
         GetTextExtentPoint32A(hdc, &ch, 1, &charSize);
 
+        // GDI's advance rectangle is not the glyph's ink rectangle: characters
+        // such as 'j', '/', '4', and 'R' can paint one or more pixels outside
+        // it. Pack the union so overhangs remain part of this glyph while the
+        // original advance and baseline placement stay unchanged.
+        int cellLeft = 0;
+        int cellTop = 0;
+        int cellRight = charSize.cx;
+        int cellBottom = charSize.cy;
+        GLYPHMETRICS glyphMetrics = {};
+        if (GetGlyphOutlineA(hdc, (UINT)(unsigned char)ch, GGO_METRICS, &glyphMetrics, 0, nullptr,
+                             &identityTransform) != GDI_ERROR &&
+            glyphMetrics.gmBlackBoxX > 0 && glyphMetrics.gmBlackBoxY > 0) {
+            const int inkLeft = glyphMetrics.gmptGlyphOrigin.x;
+            const int inkTop = tm.tmAscent - glyphMetrics.gmptGlyphOrigin.y;
+            const int inkRight = inkLeft + (int)glyphMetrics.gmBlackBoxX;
+            const int inkBottom = inkTop + (int)glyphMetrics.gmBlackBoxY;
+            cellLeft = (std::min)(cellLeft, inkLeft);
+            cellTop = (std::min)(cellTop, inkTop);
+            cellRight = (std::max)(cellRight, inkRight);
+            cellBottom = (std::max)(cellBottom, inkBottom);
+        }
+        const int cellWidth = (std::max)(1, cellRight - cellLeft);
+        const int cellHeight = (std::max)(1, cellBottom - cellTop);
+
         // Check if we need to wrap to next row
-        if (cursorX + charSize.cx + 1 >= atlasWidth) {
-            cursorX = 1;
-            cursorY += maxRowHeight + 1;
+        if (cursorX + cellWidth + kGlyphPadding >= atlasWidth) {
+            cursorX = kGlyphPadding;
+            cursorY += maxRowHeight + kGlyphPadding * 2;
             maxRowHeight = 0;
         }
 
         // Skip glyph if it would overflow the atlas vertically
-        if (cursorY + charSize.cy >= atlasHeight)
+        if (cursorY + cellHeight + kGlyphPadding >= atlasHeight)
             continue;
 
-        // Draw character
-        TextOutA(hdc, cursorX, cursorY, &ch, 1);
+        // Clip to the measured cell as a final isolation boundary. This guards
+        // against driver/font rasterizer overdraw without touching the two
+        // transparent texels between adjacent cells.
+        RECT cellRect = {cursorX, cursorY, cursorX + cellWidth, cursorY + cellHeight};
+        ExtTextOutA(hdc, cursorX - cellLeft, cursorY - cellTop, ETO_CLIPPED, &cellRect, &ch, 1, nullptr);
 
         // Store glyph info
         glyphs[c].x = (uint16_t)cursorX;
         glyphs[c].y = (uint16_t)cursorY;
-        glyphs[c].width = (uint16_t)charSize.cx;
-        glyphs[c].height = (uint16_t)charSize.cy;
-        glyphs[c].xOffset = 0;
-        glyphs[c].yOffset = 0;
+        glyphs[c].width = (uint16_t)cellWidth;
+        glyphs[c].height = (uint16_t)cellHeight;
+        glyphs[c].xOffset = (int16_t)cellLeft;
+        glyphs[c].yOffset = (int16_t)cellTop;
         glyphs[c].xAdvance = (uint16_t)charSize.cx;
 
-        cursorX += charSize.cx + 1;
-        maxRowHeight = (maxRowHeight > (int)charSize.cy) ? maxRowHeight : (int)charSize.cy;
+        cursorX += cellWidth + kGlyphPadding * 2;
+        maxRowHeight = (std::max)(maxRowHeight, cellHeight);
     }
+
+    // TextOut can be queued by GDI. Flush before consuming the DIB bits so an
+    // atlas upload can never observe a partially rasterized glyph.
+    GdiFlush();
 
     // Convert bitmap to RGBA texture data
     textureData.resize(atlasWidth * atlasHeight * 4);

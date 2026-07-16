@@ -103,6 +103,10 @@ void Renderer::EndFrame() {
     if (!initialized || !frameStarted)
         return;
 
+    if (backend) {
+        backend->OnDrawDataChanged();
+    }
+
     // Render accumulated geometry
     if (!commands.empty() && backend) {
         backend->Render(vertices, indices, commands, viewportWidth, viewportHeight);
@@ -162,14 +166,15 @@ void Renderer::AddTextQuadsScaled(float x, float y, const char* text, uint32_t c
 
     // Snap origin to nearest integer pixel so each glyph samples its atlas texel
     // center exactly under linear filtering — prevents sub-pixel blur.
-    float px = roundf(x);
+    const float originX = roundf(x);
+    float px = originX;
     float py = roundf(y);
 
     while (*text) {
         char c = *text++;
 
         if (c == '\n') {
-            px = x;
+            px = originX;
             py += fontAtlas.GetLineHeight() * scale;
             continue;
         }
@@ -292,16 +297,20 @@ void Renderer::DrawTextWithShadow(float x, float y, const char* text, uint32_t c
     if (!initialized || !text)
         return;
 
-    // Scale shadow offset by DPI so it is proportional at all DPI levels.
-    float off = shadowOffset * dpiScale;
+    // Snap once, then derive both origins from that same physical-pixel anchor.
+    // Independently rounded origins can alternate between a 1px and 2px shadow
+    // at fractional DPI and resemble a stray underline.
+    const float originX = roundf(x);
+    const float originY = roundf(y);
+    float off = roundf(shadowOffset * dpiScale);
     const bool solidText = backend && backend->PreferSolidTextGeometry();
     size_t prevVertCount = vertices.size();
     if (solidText) {
-        AddTextSolidQuads(x + off, y + off, text, shadowColor);
-        AddTextSolidQuads(x, y, text, color);
+        AddTextSolidQuads(originX + off, originY + off, text, shadowColor);
+        AddTextSolidQuads(originX, originY, text, color);
     } else {
-        AddTextQuads(x + off, y + off, text, shadowColor);
-        AddTextQuads(x, y, text, color);
+        AddTextQuads(originX + off, originY + off, text, shadowColor);
+        AddTextQuads(originX, originY, text, color);
     }
     if (vertices.size() > prevVertCount) {
         FlushBatch(!solidText);
@@ -330,15 +339,17 @@ void Renderer::DrawTextScaledWithShadow(float x, float y, const char* text, uint
     if (!initialized || !text)
         return;
 
-    float off = shadowOffset * dpiScale;
+    const float originX = roundf(x);
+    const float originY = roundf(y);
+    float off = roundf(shadowOffset * dpiScale);
     const bool solidText = backend && backend->PreferSolidTextGeometry();
     size_t prevVertCount = vertices.size();
     if (solidText) {
-        AddTextSolidQuadsScaled(x + off, y + off, text, shadowColor, scale);
-        AddTextSolidQuadsScaled(x, y, text, color, scale);
+        AddTextSolidQuadsScaled(originX + off, originY + off, text, shadowColor, scale);
+        AddTextSolidQuadsScaled(originX, originY, text, color, scale);
     } else {
-        AddTextQuadsScaled(x + off, y + off, text, shadowColor, scale);
-        AddTextQuadsScaled(x, y, text, color, scale);
+        AddTextQuadsScaled(originX + off, originY + off, text, shadowColor, scale);
+        AddTextQuadsScaled(originX, originY, text, color, scale);
     }
     if (vertices.size() > prevVertCount) {
         FlushBatch(!solidText);
@@ -432,65 +443,89 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
     if (count < 2)
         return;
 
-    // Wider AA fringe smooths sub-pixel coverage changes when the line moves,
-    // reducing shimmer/jitter while keeping the core line the same thickness.
-    const float AA_SIZE = 1.0f * dpiScale;
+    // Geometry coordinates are already physical backbuffer pixels. Keep the AA
+    // fringe exactly one pixel at every Windows DPI setting.
+    constexpr float AA_SIZE = 1.0f;
     const float halfThick = thickness * 0.5f;
     const uint32_t colorAA = color & 0x00FFFFFFu;
 
-    auto getNormal = [&](int i, float& nx, float& ny) {
-        if (i == 0) {
-            float dx = xs[1] - xs[0], dy = ys[1] - ys[0];
-            float len = std::sqrt(dx * dx + dy * dy);
-            if (len < 0.001f) {
-                nx = 0.0f;
-                ny = 1.0f;
-            } else {
-                nx = -dy / len;
-                ny = dx / len;
-            }
-        } else if (i == count - 1) {
-            float dx = xs[i] - xs[i - 1], dy = ys[i] - ys[i - 1];
-            float len = std::sqrt(dx * dx + dy * dy);
-            if (len < 0.001f) {
-                nx = 0.0f;
-                ny = 1.0f;
-            } else {
-                nx = -dy / len;
-                ny = dx / len;
-            }
+    struct CrossSection {
+        float x, y;
+        float nx, ny;
+        bool endpoint;
+    };
+    constexpr int kMaxSections = 2048;
+    CrossSection sections[kMaxSections];
+    int sectionCount = 0;
+
+    auto segmentNormal = [&](int first, int second, float& nx, float& ny) {
+        const float dx = xs[second] - xs[first];
+        const float dy = ys[second] - ys[first];
+        const float len = std::sqrt(dx * dx + dy * dy);
+        if (len < 0.001f) {
+            nx = 0.0f;
+            ny = 1.0f;
         } else {
-            float dx0 = xs[i] - xs[i - 1], dy0 = ys[i] - ys[i - 1];
-            float dx1 = xs[i + 1] - xs[i], dy1 = ys[i + 1] - ys[i];
-            float len0 = std::sqrt(dx0 * dx0 + dy0 * dy0);
-            float len1 = std::sqrt(dx1 * dx1 + dy1 * dy1);
-            if (len0 < 0.001f && len1 < 0.001f) {
-                nx = 0.0f;
-                ny = 1.0f;
-            } else if (len0 < 0.001f) {
-                nx = -dy1 / len1;
-                ny = dx1 / len1;
-            } else if (len1 < 0.001f) {
-                nx = -dy0 / len0;
-                ny = dx0 / len0;
-            } else {
-                float n0x = -dy0 / len0, n0y = dx0 / len0;
-                float n1x = -dy1 / len1, n1y = dx1 / len1;
-                float mx = n0x + n1x, my = n0y + n1y;
-                float mLen = std::sqrt(mx * mx + my * my);
-                if (mLen < 0.001f) {
-                    nx = n0x;
-                    ny = n0y;
-                } else {
-                    float dot = n0x * mx / mLen + n0y * my / mLen;
-                    float miterScale = (std::abs(dot) > 0.01f) ? 1.0f / dot : 1.0f;
-                    miterScale = (std::min)(miterScale, 4.0f);
-                    nx = mx / mLen * miterScale;
-                    ny = my / mLen * miterScale;
+            nx = -dy / len;
+            ny = dx / len;
+        }
+    };
+    auto addSection = [&](int point, float nx, float ny, bool endpoint) {
+        if (sectionCount < kMaxSections) {
+            sections[sectionCount++] = {xs[point], ys[point], nx, ny, endpoint};
+        }
+    };
+
+    constexpr float kMiterLimit = 2.0f;
+    for (int i = 0; i < count; ++i) {
+        if (i == 0) {
+            float nx, ny;
+            segmentNormal(0, 1, nx, ny);
+            addSection(i, nx, ny, true);
+            continue;
+        }
+        if (i == count - 1) {
+            float nx, ny;
+            segmentNormal(i - 1, i, nx, ny);
+            addSection(i, nx, ny, true);
+            continue;
+        }
+
+        float n0x, n0y, n1x, n1y;
+        segmentNormal(i - 1, i, n0x, n0y);
+        segmentNormal(i, i + 1, n1x, n1y);
+        float mx = n0x + n1x;
+        float my = n0y + n1y;
+        const float miterLength = std::sqrt(mx * mx + my * my);
+        bool useMiter = false;
+        float miterX = n1x;
+        float miterY = n1y;
+        if (miterLength > 0.001f) {
+            mx /= miterLength;
+            my /= miterLength;
+            const float denominator = mx * n1x + my * n1y;
+            if (denominator > 0.001f) {
+                const float scale = 1.0f / denominator;
+                if (scale <= kMiterLimit) {
+                    miterX = mx * scale;
+                    miterY = my * scale;
+                    useMiter = true;
                 }
             }
         }
-    };
+
+        if (useMiter) {
+            addSection(i, miterX, miterY, false);
+        } else {
+            // Two coincident cross-sections form a true bevel wedge while still
+            // remaining part of the same solid draw command.
+            addSection(i, n0x, n0y, false);
+            addSection(i, n1x, n1y, false);
+        }
+    }
+
+    if (sectionCount < 2 || vertices.size() > 0xFFFFu - (size_t)sectionCount * 4u)
+        return;
 
     // Build 4 vertices per point (outer+, inner+, inner-, outer-) so that
     // adjacent segments SHARE the joint vertices instead of duplicating them.
@@ -500,27 +535,30 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
     // perpendicular normal from extending the fringe inward into the graph,
     // which would make the edges appear thicker than the interior segments.
     const uint16_t firstIdx = (uint16_t)vertices.size();
-    for (int i = 0; i < count; i++) {
-        float nx, ny;
-        getNormal(i, nx, ny);
-        const bool isEndpoint = (i == 0 || i == count - 1);
+    for (int i = 0; i < sectionCount; i++) {
+        const CrossSection& section = sections[i];
+        const float nx = section.nx;
+        const float ny = section.ny;
+        const bool isEndpoint = section.endpoint;
         if (isEndpoint) {
             // No AA fringe at endpoints - just core vertices (flat cap)
-            vertices.push_back({xs[i] + nx * halfThick, ys[i] + ny * halfThick, 0, 0, color});
-            vertices.push_back({xs[i] + nx * halfThick, ys[i] + ny * halfThick, 0, 0, color});
-            vertices.push_back({xs[i] - nx * halfThick, ys[i] - ny * halfThick, 0, 0, color});
-            vertices.push_back({xs[i] - nx * halfThick, ys[i] - ny * halfThick, 0, 0, color});
+            vertices.push_back({section.x + nx * halfThick, section.y + ny * halfThick, 0, 0, color});
+            vertices.push_back({section.x + nx * halfThick, section.y + ny * halfThick, 0, 0, color});
+            vertices.push_back({section.x - nx * halfThick, section.y - ny * halfThick, 0, 0, color});
+            vertices.push_back({section.x - nx * halfThick, section.y - ny * halfThick, 0, 0, color});
         } else {
-            vertices.push_back({xs[i] + nx * (halfThick + AA_SIZE), ys[i] + ny * (halfThick + AA_SIZE), 0, 0, colorAA});
-            vertices.push_back({xs[i] + nx * halfThick, ys[i] + ny * halfThick, 0, 0, color});
-            vertices.push_back({xs[i] - nx * halfThick, ys[i] - ny * halfThick, 0, 0, color});
-            vertices.push_back({xs[i] - nx * (halfThick + AA_SIZE), ys[i] - ny * (halfThick + AA_SIZE), 0, 0, colorAA});
+            vertices.push_back({section.x + nx * (halfThick + AA_SIZE),
+                                section.y + ny * (halfThick + AA_SIZE), 0, 0, colorAA});
+            vertices.push_back({section.x + nx * halfThick, section.y + ny * halfThick, 0, 0, color});
+            vertices.push_back({section.x - nx * halfThick, section.y - ny * halfThick, 0, 0, color});
+            vertices.push_back({section.x - nx * (halfThick + AA_SIZE),
+                                section.y - ny * (halfThick + AA_SIZE), 0, 0, colorAA});
         }
     }
 
     // 3 quads per segment (top fringe, core, bottom fringe) referencing the
     // shared per-point vertices of adjacent points.
-    for (int i = 0; i < count - 1; i++) {
+    for (int i = 0; i < sectionCount - 1; i++) {
         const uint16_t p0 = firstIdx + (uint16_t)(i * 4);
         const uint16_t p1 = firstIdx + (uint16_t)((i + 1) * 4);
 
@@ -566,33 +604,12 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
     if (count > kMaxPoints)
         count = kMaxPoints;
 
-    // CRITICAL: Ensure stepX is an integer to eliminate vertical stripe artifacts.
-    // When stepX is fractional (e.g., 1.73px), rounding creates inconsistent segment
-    // widths (1px and 2px alternating), causing visible vertical stripes.
-    float safeWidth = width - 4.0f;  // 2px padding on each side for AA fringe
-    if (safeWidth < 10.0f)
-        safeWidth = width;
-
-    float rawStepX = safeWidth / (float)(count - 1);
-    float stepX = std::round(rawStepX);
-    if (stepX < 1.0f)
-        stepX = 1.0f;
-    float effectiveWidth = stepX * (float)(count - 1);
-
-    // Center the graph and compute symmetric edge insets.
-    // Snap first/last point positions to integers, then derive adjustedX from
-    // their midpoint. This ensures both edges have equal pixel inset, preventing
-    // asymmetric gaps that cause visible vertical stripe artifacts.
-    float tempFirst = x + (width - effectiveWidth) * 0.5f;
-    float tempLast = tempFirst + effectiveWidth;
-    float snappedFirst = std::round(tempFirst);
-    float snappedLast = std::round(tempLast);
-    float snappedWidth = snappedLast - snappedFirst;
-    float adjustedX = snappedFirst + (snappedWidth - stepX * (float)(count - 1)) * 0.5f;
-
-    // Clamp bounds - 2px inset from background edge for AA fringe clearance
-    float minX = x + 2.0f;
-    float maxX = x + width - 2.0f;
+    // Interpolate between exact endpoints. Rounding the step made 180 samples
+    // overrun narrow panels and then collapse onto the clamped right edge.
+    const float edgeInset = (std::min)(2.0f, width * 0.25f);
+    const float firstX = x + edgeInset;
+    const float lastX = x + width - edgeInset;
+    const float stepX = (lastX - firstX) / (float)(count - 1);
 
     float xs[kMaxPoints], ys[kMaxPoints];
     const float invRange = 1.0f / range;
@@ -600,16 +617,7 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
     for (int i = 0; i < count; i++) {
         float val = frameTimes[i];
         val = (std::max)(minVal, (std::min)(maxVal, val));
-        // Snap X to integer pixels for stable horizontal scrolling (eliminates
-        // temporal shimmer).  Leave Y as sub-pixel float so the AA fringe
-        // geometry produces smooth diagonal segments instead of stair-steps.
-        float px = std::round(adjustedX + (float)i * stepX);
-        // Clamp to prevent graph from extending beyond background box
-        if (px < minX)
-            px = minX;
-        if (px > maxX)
-            px = maxX;
-        xs[i] = px;
+        xs[i] = firstX + (float)i * stepX;
         ys[i] = y + height - ((val - minVal) * invRange) * height;
     }
 
@@ -624,7 +632,7 @@ void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, c
     const float* vxs = xs + firstValid;
     const float* vys = ys + firstValid;
 
-    // Connected polyline with round joins + 1px AA fringe.
+    // Connected polyline with bounded miter/bevel joins + 1px AA fringe.
     // 0.75 logical pixels at every DPI (e.g. 100%→0.75px, 200%→1.5px physical = same visual size).
     const float lineThickness = 0.75f * dpiScale;
     DrawGraphPolyline(vxs, vys, validCount, color, lineThickness);

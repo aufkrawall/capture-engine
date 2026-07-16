@@ -288,6 +288,19 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
 }
 
 void SystemMetricsCollector::Update() {
+    // The host publishes used RAM but the shared-memory format intentionally has
+    // no total-RAM field. Query the stable capacity locally once so the overlay
+    // can show an accurate "used of total" value without a fabricated fallback.
+    bool needRAMCapacity = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        needRAMCapacity = current.ramTotal == 0 && !ramCapacityQueryAttempted;
+        ramCapacityQueryAttempted = true;
+    }
+    if (needRAMCapacity) {
+        UpdateRAM();
+    }
+
     // Check if we have valid data from Host Process (IPC)
     if (g_IPC && g_IPC->GetSharedMem()) {
         auto& shmMetrics = g_IPC->GetSharedMem()->systemMetrics;
