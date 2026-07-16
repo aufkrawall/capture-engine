@@ -247,6 +247,26 @@ TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap)
               std::string::npos);
 }
 
+TEST(CrashHandlerSourceTest, FatalHookBootstrapPublishesTrampolinesBeforeIatRouting) {
+    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "main.cpp";
+    const std::string contents = ReadBinaryFile(source);
+    ASSERT_FALSE(contents.empty());
+
+    const size_t bootstrap = contents.find("void TryInstallFatalTerminationDumpHooks()");
+    const size_t inlineHooks = contents.find("std::vector<void*> inlineHookTargets", bootstrap);
+    const size_t iatRouting = contents.find("patchRaise(\"kernel32.dll\")", inlineHooks);
+    ASSERT_NE(bootstrap, std::string::npos);
+    ASSERT_NE(inlineHooks, std::string::npos);
+    ASSERT_NE(iatRouting, std::string::npos);
+    EXPECT_LT(inlineHooks, iatRouting);
+
+    const std::string bootstrapBody = contents.substr(bootstrap, iatRouting - bootstrap);
+    EXPECT_EQ(bootstrapBody.find("ResolveNtdllExport(\"RtlRaiseException\")"), std::string::npos);
+    EXPECT_EQ(bootstrapBody.find("installInlineHook(\"ntdll.dll\", \"RtlRaiseException\""), std::string::npos);
+    EXPECT_NE(contents.find("::RtlRaiseException(ExceptionRecord);"), std::string::npos);
+    EXPECT_NE(contents.find("::NtRaiseException(ExceptionRecord, ContextRecord, FirstChance)"), std::string::npos);
+}
+
 TEST(FreezeWatchdogPolicyTest, BackgroundFreezeSuppressionKeepsRuntimePresentationMonitored) {
     EXPECT_TRUE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, false, false, false));
     EXPECT_FALSE(ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(false, false, true, false));

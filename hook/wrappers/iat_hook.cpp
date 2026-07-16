@@ -45,7 +45,6 @@ struct DynamicHookEntry {
 
 static std::mutex g_DynamicHookLock;
 static std::unordered_map<std::string, DynamicHookEntry> g_DynamicHooks;
-static FARPROC(WINAPI* oGetProcAddress)(HMODULE, LPCSTR) = nullptr;
 
 static std::mutex g_PatchLock;
 static std::vector<PatchedEntry> g_PatchedEntries;
@@ -889,16 +888,15 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
     // atexit destructors. We must not access any static data that may have
     // been destroyed.
     if (IsProcessTerminating()) {
-        if (oGetProcAddress)
-            return oGetProcAddress(hModule, lpProcName);
-        return nullptr;
+        return ::GetProcAddress(hModule, lpProcName);
     }
 
-    // Call original first to get the real address
-    FARPROC proc = nullptr;
-    if (oGetProcAddress) {
-        proc = oGetProcAddress(hModule, lpProcName);
-    }
+    // Call through this module's unpatched static import. PatchIATAllModules()
+    // deliberately excludes capture_hook, so this cannot recurse. Do not cache a
+    // self-resolved kernel32!GetProcAddress pointer here: that export can be a
+    // suppressed CFG target and guarded indirect calls to it fast-fail in a
+    // CFG-enabled host even though ordinary IAT calls are valid.
+    FARPROC proc = ::GetProcAddress(hModule, lpProcName);
 
     // If getting address failed, or if name is invalid (ordinal), return result
     // immediately
@@ -1062,18 +1060,11 @@ void RegisterDynamicHookFiltered(const char* functionName, void* hookFunction, v
 void InitializeGetProcAddressHook() {
     WrapperLog("IAT: Initializing GetProcAddress hook for dynamic interception...");
 
-    HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
-    if (!hKernel32)
-        return;
-
-    oGetProcAddress = (FARPROC(WINAPI*)(HMODULE, LPCSTR))GetProcAddress(hKernel32, "GetProcAddress");
-
-    if (oGetProcAddress) {
-        void* dummy;
-        PatchIATAllModules("kernel32.dll", "GetProcAddress", (void*)DetourGetProcAddress, &dummy);
+    void* dummy = nullptr;
+    if (PatchIATAllModules("kernel32.dll", "GetProcAddress", (void*)DetourGetProcAddress, &dummy)) {
         WrapperLog("IAT: GetProcAddress hook initialized");
     } else {
-        WrapperLog("IAT: Failed to get GetProcAddress address");
+        WrapperLog("IAT: No eligible GetProcAddress imports found");
     }
 }
 

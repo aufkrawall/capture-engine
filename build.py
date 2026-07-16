@@ -5408,6 +5408,7 @@ def compile_project(
                 "-lavrt",
                 "-ldbghelp",
                 "-lbcrypt",
+                "-lntdll",
                 "-ladvapi32",
             ]
         )

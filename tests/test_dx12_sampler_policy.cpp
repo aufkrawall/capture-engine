@@ -268,6 +268,8 @@ TEST(DX12SamplerPolicyTest, RuntimeCoverageIncludesDynamicExportsAndPrecompiledR
 
     EXPECT_NE(iat.find("RegisterDynamicHook(\"D3D12CreateDevice\""), std::string::npos);
     EXPECT_NE(iat.find("RegisterDynamicHook(\"D3D12SerializeVersionedRootSignature\""), std::string::npos);
+    EXPECT_NE(iat.find("FARPROC proc = ::GetProcAddress(hModule, lpProcName);"), std::string::npos);
+    EXPECT_EQ(iat.find("oGetProcAddress"), std::string::npos);
     EXPECT_NE(hooks.find("D3D12CreateVersionedRootSignatureDeserializer"), std::string::npos);
     EXPECT_NE(hooks.find("D3D_ROOT_SIGNATURE_VERSION_1_0"), std::string::npos);
     EXPECT_NE(hooks.find("D3D_ROOT_SIGNATURE_VERSION_1_1"), std::string::npos);
