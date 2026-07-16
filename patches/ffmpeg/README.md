@@ -23,8 +23,11 @@ alternate between 8 ms and 9 ms — a ±8% timing variation that causes visible
 judder in video players.
 
 **Solution:** Setting `timestamp_precision=1000` (1 µs) changes the stream
-timebase to `{1, 1000000}`, producing frame intervals of 8333/8334 µs — only
-±0.008% variation, which is completely imperceptible.
+timebase to `{1000, 1000000000}` (reduced by FFmpeg where possible), producing
+frame intervals of 8333/8334 µs — only ±0.008% variation. The patch also scales
+early Duration metadata, track default-duration bounds, and cluster limits in
+the same exact timebase. Cluster rollover observes SimpleBlock's signed 16-bit
+relative-timecode range at sub-millisecond precision.
 
 **Usage (FFmpeg CLI):**
 ```
@@ -38,9 +41,21 @@ av_opt_set(fmtCtx->priv_data, "timestamp_precision", "1000", 0);
 
 ### 0002-nvenc-bframe-cfr-improvements.patch
 
-Carries the project NVENC behavior for B-frame references, game-capture
-lookahead depth, AV1 capability handling, unknown NVENC picture types, and
-encoder-flush draining.
+Makes explicit NVENC policy deterministic without overriding FFmpeg preset
+defaults for callers that omit an option:
+
+- `rc-lookahead=0`, `spatial-aq=0`, and `temporal-aq=0` explicitly disable a
+  preset-enabled feature; omitted options retain the preset behavior.
+- Automatic B-reference mode is resolved after querying the selected GPU and
+  uses `middle` only when B-frames and the corresponding capability are present.
+- AV1 exposes `max_qp_b` so CaptureEngine can bound leaf B-frame QP without
+  globally changing I/P-frame QP policy.
+- Known NVENC output picture types (`SKIPPED`, `INTRA_REFRESH`, `NONREF_P`, and
+  AV1 `SWITCH`) are mapped to FFmpeg picture types; genuinely unknown values
+  remain hard errors with the numeric value logged.
+
+The patch deliberately keeps FFmpeg's upstream lookahead surface margin,
+weighted-prediction capability checks, and normal send/receive flush contract.
 
 ## Applying Patches
 

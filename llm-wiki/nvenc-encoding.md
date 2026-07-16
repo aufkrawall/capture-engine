@@ -1,0 +1,91 @@
+# NVENC Encoding Policy and FFmpeg Patches
+
+Last cross-checked: 2026-07-16
+
+Primary sources:
+- `common/config.{h,cpp}`
+- `captureengine/config.ini.template`
+- `mediaengine/video_encoder.{h,cpp}`
+- `mediaengine/video_encoder_options.{h,cpp}`
+- `patches/ffmpeg/0001-matroska-add-timestamp-precision-option.patch`
+- `patches/ffmpeg/0002-nvenc-bframe-cfr-improvements.patch`
+- `tests/test_{config,video_encoder_options,video_encoder_source}.cpp`
+- `test_ffmpeg_patch_utils.py`
+
+## Summary
+
+NVENC input surfaces must be owned by the submitted `AVFrame`, not recycled by
+an application-sized ring. RGB-to-NV12/P010 conversion therefore allocates from
+the D3D11 `AVHWFramesContext`, whose textures include
+`D3D11_BIND_RENDER_TARGET`; video-processor output views are cached only as
+bindings for those texture/subresource pairs. FFmpeg/NVENC retains the frame
+until the input is no longer in flight, so B-frame reordering and lookahead
+cannot overwrite a surface still referenced by the encoder.
+
+CFR repeats always re-encode cached pixel content. A compressed packet is a
+reference-dependent bitstream unit and must never be cloned with rewritten PTS
+or DTS, even for H.264/HEVC. Packet replay can corrupt reference state, keyframe
+semantics, decoder timing, or codec-specific headers.
+
+## Configuration semantics
+
+- `lookahead=off|auto|1..31`: the application always emits an explicit NVENC
+  depth. `off` emits zero; `auto` selects 20; explicit depths are clamped to
+  `31 - b_frames`. Legacy `true`/`false` strings remain accepted.
+- `multipass=auto|disabled|qres|fullres`: `auto` selects `qres` for CBR or any
+  B-frame encode and `disabled` for VBR/CQ without B-frames. Explicit choices
+  are always emitted, including `disabled`.
+- `spatial_aq` and `temporal_aq` are independent explicit booleans.
+  `aq_strength=0` leaves strength selection to NVENC; values 1-15 are emitted
+  only with spatial AQ. Legacy `aq` supplies the default for either new key
+  only when that key is absent.
+- `b_ref_mode=auto|disabled|each|middle`: `auto` leaves FFmpeg's sentinel
+  untouched. The patched wrapper resolves it against the selected GPU after
+  capability discovery, choosing `middle` only with active B-frames and
+  capability bit 2; otherwise it chooses `disabled`. Explicit modes remain
+  authoritative when B-frames are active; a non-disabled explicit mode is
+  omitted with a warning when `b_frames=0` so an irrelevant capability cannot
+  make codec initialization fail.
+- AV1 VBR/CQ with B-frames emits `max_qp_b=200`. This bounds only B-frame QP;
+  global `qmin`/`qmax` are intentionally not used because they also alter I/P
+  bounds and initial rate-control QPs. CQP does not use the bound.
+
+The shipped conservative defaults are lookahead off and both AQ modes off.
+New configurations use automatic multipass and B-reference selection; existing
+explicit `disabled` values remain unchanged.
+
+## Bundled FFmpeg patch invariants
+
+The NVENC patch distinguishes an omitted preset-controlled option (`-1`) from
+an explicit disable (`0`) for lookahead and both AQ modes. It retains FFmpeg's
+upstream four-surface lookahead safety margin, weighted-prediction capability
+checks, and normal send/receive flush contract. It adds the AV1 B-only maximum
+QP option and maps documented NVENC output types (`SKIPPED`, `INTRA_REFRESH`,
+`NONREF_P`, and AV1 `SWITCH`) while still rejecting genuinely unknown numeric
+types.
+
+The Matroska patch expresses the requested nanosecond `TimecodeScale` as the
+exact stream timebase numerator/denominator instead of integer-dividing one
+second by the precision. Track default-duration bounds, early Duration metadata,
+and millisecond cluster limits use the same precision. Time-limit-based cluster
+rollover remains inside SimpleBlock's signed 16-bit relative-timecode range,
+including negative reordered timestamps.
+
+`test_ffmpeg_patch_utils.py` strictly applies both source-controlled patches to
+copies of their exact pinned FFmpeg target files. Semantic assertions guard the
+invariants above and reject the former unsafe lookahead-margin, capability-
+bypass, blanket-picture-type, and flush-drain behavior.
+
+## Diagnostics and runtime validation
+
+Startup logs show the configured lookahead, split AQ state/strength, B-frame
+mode, and multipass value. The patched wrapper logs the resolved automatic
+B-reference mode. The first hardware-frame VP output view logs its format and
+bind flags; failures log the texture format, bind flags, array size, and slice.
+
+Open runtime-validation boundary: compile/unit coverage cannot prove every
+driver/codec/GPU combination. Fresh high-load captures should cover H.264,
+HEVC, and AV1; B-frame counts 0 and 4; lookahead off/auto; split AQ modes;
+automatic and explicit B-reference modes; and stop/finalization. Check for
+NVENC initialization errors, device removal, picture-type errors, corrupted
+decodes, cadence regressions, and increased encode pressure.

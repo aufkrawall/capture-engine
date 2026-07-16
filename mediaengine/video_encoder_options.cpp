@@ -330,18 +330,42 @@ std::string CanonicalizeEnumValue(const std::string& value) {
 
 std::optional<std::string> CanonicalizeNvencBRefMode(const std::string& value) {
     const std::string lower = CanonicalizeEnumValue(value);
-    if (lower.empty() || lower == "disabled" || lower == "each" || lower == "middle") {
-        return lower.empty() ? std::optional<std::string>("disabled") : std::optional<std::string>(lower);
+    if (lower.empty() || lower == "auto" || lower == "disabled" || lower == "each" || lower == "middle") {
+        return lower.empty() ? std::optional<std::string>("auto") : std::optional<std::string>(lower);
     }
     return std::nullopt;
 }
 
 std::optional<std::string> CanonicalizeNvencMultipass(const std::string& value) {
     const std::string lower = CanonicalizeEnumValue(value);
-    if (lower.empty() || lower == "disabled" || lower == "qres" || lower == "fullres") {
-        return lower.empty() ? std::optional<std::string>("disabled") : std::optional<std::string>(lower);
+    if (lower.empty() || lower == "auto" || lower == "disabled" || lower == "qres" || lower == "fullres") {
+        return lower.empty() ? std::optional<std::string>("auto") : std::optional<std::string>(lower);
     }
     return std::nullopt;
+}
+
+std::optional<int> ResolveNvencLookaheadDepth(const std::string& value, int bFrames, EncoderOptionPlan* plan) {
+    const std::string lower = CanonicalizeEnumValue(value);
+    if (lower.empty() || lower == "off" || lower == "false" || lower == "disabled") {
+        return 0;
+    }
+
+    const int maximumDepth = std::max(0, 31 - bFrames);
+    if (lower == "auto" || lower == "on" || lower == "true") {
+        return std::min(20, maximumDepth);
+    }
+
+    int requestedDepth = 0;
+    const auto [end, error] = std::from_chars(lower.data(), lower.data() + lower.size(), requestedDepth);
+    if (error != std::errc() || end != lower.data() + lower.size() || requestedDepth < 0) {
+        return std::nullopt;
+    }
+    if (requestedDepth > maximumDepth) {
+        AddWarning(plan, "NVENC lookahead depth " + std::to_string(requestedDepth) + " exceeds 31 - b_frames; " +
+                             "clamping to " + std::to_string(maximumDepth));
+        requestedDepth = maximumDepth;
+    }
+    return requestedDepth;
 }
 
 std::optional<std::string> CanonicalizeNvencTune(const std::string& value) {
@@ -604,37 +628,35 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
 
     plan.maxBFrames = ClampBFrames(config.bFrames, &plan);
 
-    // NVENC with B-frames: auto-enable quarter-resolution multipass when the
-    // user left multipass disabled.  Without a pre-pass, the rate controller
-    // has no complexity information and may under-allocate B-frames badly
-    // (observed ~600 B for 4K AV1 leaf B-frames with p1 + multipass=disabled).
-    // Quarter-res multipass (qres) adds negligible overhead but significantly
-    // improves bit allocation for B-frames on all NVENC codecs.
-    // Only auto-enable when the user didn't set multipass at all — respect
-    // explicit "disabled" from config.ini.
-    bool autoMultipass = false;
-    if (kind.backend == EncoderBackend::kNVENC && plan.maxBFrames > 0 && config.multipass.empty()) {
-        autoMultipass = true;
-    }
-
     if (kind.backend == EncoderBackend::kNVENC) {
-        AddGeneratedOption(&plan, "rc-lookahead", config.lookahead ? "32" : "0");
-        if (config.aq) {
-            AddGeneratedOption(&plan, "spatial-aq", "1");
-            AddGeneratedOption(&plan, "temporal-aq", "1");
+        const auto lookaheadDepth = ResolveNvencLookaheadDepth(config.lookahead, plan.maxBFrames, &plan);
+        if (!lookaheadDepth.has_value()) {
+            AddError(&plan, "Unsupported NVENC lookahead value: " + config.lookahead);
+        } else {
+            AddGeneratedOption(&plan, "rc-lookahead", std::to_string(*lookaheadDepth));
         }
 
-        if (autoMultipass) {
-            AddGeneratedOption(&plan, "multipass", "qres");
-        } else if (!config.multipass.empty()) {
-            const auto multipass = CanonicalizeNvencMultipass(config.multipass);
-            if (multipass.has_value()) {
-                if (*multipass != "disabled") {
-                    AddGeneratedOption(&plan, "multipass", *multipass);
-                }
-            } else {
-                AddError(&plan, "Unsupported NVENC multipass value: " + config.multipass);
+        AddGeneratedOption(&plan, "spatial-aq", config.spatialAq ? "1" : "0");
+        AddGeneratedOption(&plan, "temporal-aq", config.temporalAq ? "1" : "0");
+        if (config.aqStrength < 0 || config.aqStrength > 15) {
+            AddError(&plan, "NVENC aq_strength must be between 0 and 15");
+        } else if (config.aqStrength > 0 && config.spatialAq) {
+            AddGeneratedOption(&plan, "aq-strength", std::to_string(config.aqStrength));
+        } else if (config.aqStrength > 0) {
+            AddWarning(&plan, "aq_strength is ignored when spatial_aq=false");
+        }
+
+        const auto multipass = CanonicalizeNvencMultipass(config.multipass);
+        if (!multipass.has_value()) {
+            AddError(&plan, "Unsupported NVENC multipass value: " + config.multipass);
+        } else {
+            std::string effectiveMultipass = *multipass;
+            if (effectiveMultipass == "auto") {
+                const std::string rateControl =
+                    CanonicalizeEnumValue(config.rateControl.empty() ? "vbr" : config.rateControl);
+                effectiveMultipass = (plan.maxBFrames > 0 || rateControl == "cbr") ? "qres" : "disabled";
             }
+            AddGeneratedOption(&plan, "multipass", effectiveMultipass);
         }
 
         // OBS Studio does NOT set weighted_pred for NVENC B-frames and their
@@ -643,49 +665,33 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
         // Leave weighted_pred at NVENC defaults (user can set it explicitly
         // via encoder_options if needed).
 
-        // AV1 NVENC B-frame note: b_ref_mode=middle is auto-enabled by our
-        // FFmpeg patch when B-frames are active and b_ref_mode is not set,
-        // which improves B-frame prediction quality.
-
-        if (config.bRefMode.empty()) {
-            // When user hasn't set b_ref_mode, don't emit any option.
-            // FFmpeg's patched NVENC wrapper will auto-enable b_ref_mode=middle
-            // when B-frames are active, giving better quality out of the box.
+        const auto bRefMode = CanonicalizeNvencBRefMode(config.bRefMode);
+        if (!bRefMode.has_value()) {
+            AddError(&plan, "Unsupported NVENC b_ref_mode value: " + config.bRefMode);
+        } else if (*bRefMode == "auto") {
+            // Leave FFmpeg's sentinel untouched. The bundled wrapper resolves
+            // auto to middle only after querying the selected GPU's capability.
         } else {
-            const auto bRefMode = CanonicalizeNvencBRefMode(config.bRefMode);
-            if (!bRefMode.has_value()) {
-                AddError(&plan, "Unsupported NVENC b_ref_mode value: " + config.bRefMode);
+            if (plan.maxBFrames == 0 && *bRefMode != "disabled") {
+                AddWarning(&plan, "b_ref_mode is ignored when b_frames=0");
             } else {
-                // ALWAYS emit the user's explicit choice (including "disabled").
-                // This prevents FFmpeg's auto-enable from overriding user intent.
-                if (plan.maxBFrames == 0 && *bRefMode != "disabled") {
-                    AddWarning(&plan, "b_ref_mode is ignored when b_frames=0");
-                }
                 AddGeneratedOption(&plan, "b_ref_mode", *bRefMode);
-                if (*bRefMode == "each" && plan.maxBFrames > 2) {
-                    AddWarning(&plan, "b_ref_mode=each with b_frames=" + std::to_string(plan.maxBFrames) +
-                                          " may be too slow for real-time capture at high FPS. "
-                                          "Consider b_ref_mode=middle if encoding latency is too high.");
-                }
+            }
+            if (*bRefMode == "each" && plan.maxBFrames > 2) {
+                AddWarning(&plan, "b_ref_mode=each with b_frames=" + std::to_string(plan.maxBFrames) +
+                                      " may be too slow for real-time capture at high FPS. "
+                                      "Consider b_ref_mode=middle if encoding latency is too high.");
             }
         }
 
-        // NVENC AV1 B-frame QP constraint: prevent extreme leaf-B starvation.
-        //
-        // NVENC's VBR rate controller is free to push leaf (non-reference)
-        // B-frame QP to extreme values (240+ out of 255 for AV1), producing
-        // packets of a few hundred bytes for 4K — a 1:300 ratio versus
-        // reference frames.  This causes severe visible quality oscillation.
-        //
-        // Setting qmin/qmax enables hard QP bounds that the rate controller
-        // must respect.  AV1 QP range is [0, 255]; we use qmax=200 to still
-        // allow aggressive compression while ensuring every frame carries
-        // meaningful visual data.  qmin=1 is harmless (no encoder uses QP 0
-        // at normal bitrates).  H.264/HEVC have a QP range of [0, 51], so
-        // the same values would be clamped and have no practical effect.
-        if (plan.maxBFrames > 0 && kind.family == CodecFamily::kAV1) {
-            AddGeneratedOption(&plan, "qmin", "1");
-            AddGeneratedOption(&plan, "qmax", "200");
+        // Bound only AV1 B-frame QP. Global qmin/qmax also constrain I/P
+        // frames and alter their initial RC QPs, which caused unintended
+        // quality policy changes outside the leaf-B starvation workaround.
+        const std::string rateControl =
+            CanonicalizeEnumValue(config.rateControl.empty() ? "vbr" : config.rateControl);
+        if (plan.maxBFrames > 0 && kind.family == CodecFamily::kAV1 && rateControl != "cqp" &&
+            rateControl != "constqp") {
+            AddGeneratedOption(&plan, "max_qp_b", "200");
         }
     }
 
@@ -700,18 +706,6 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
     }
 
     return plan;
-}
-
-bool SupportsEncodedPacketRepeat(std::string_view encoderName) {
-    switch (ClassifyEncoder(encoderName).family) {
-        case CodecFamily::kH264:
-        case CodecFamily::kHEVC:
-            return true;
-        case CodecFamily::kAV1:
-        case CodecFamily::kUnknown:
-        default:
-            return false;
-    }
 }
 
 }  // namespace ce::video

@@ -65,12 +65,14 @@ struct VideoConfig {
     int keyframeInterval;
     std::string preset;
     std::string tuning;
-    std::string multipass;
+    std::string multipass = "auto";
     std::string profile;
-    bool lookahead;
-    bool aq;
+    std::string lookahead = "off";  // off, auto, or explicit depth 1-31
+    bool spatialAq = false;
+    bool temporalAq = false;
+    int aqStrength = 0;  // 0 = NVENC automatic, otherwise 1-15
     int bFrames;
-    std::string bRefMode;
+    std::string bRefMode = "auto";
     std::string customOptions;
     bool captureCursor = true;  // Include mouse cursor in recording
 

@@ -66,7 +66,7 @@ TEST(VideoEncoderSourceTest, PostMuxProbeNeverOutlivesMediaEngineCode) {
     EXPECT_NE(source.find("Run on the already-owned writer/finalizer thread"), std::string::npos);
 }
 
-TEST(VideoEncoderSourceTest, CaptureSourceTransitionDropsEveryRepeatCacheLayer) {
+TEST(VideoEncoderSourceTest, CaptureSourceTransitionDropsCachedVisualContent) {
     const std::string source = ReadVideoEncoderSource();
     ASSERT_FALSE(source.empty());
 
@@ -77,7 +77,21 @@ TEST(VideoEncoderSourceTest, CaptureSourceTransitionDropsEveryRepeatCacheLayer) 
     const std::string body = source.substr(reset, end - reset);
     EXPECT_NE(body.find("repeatFrameTexture->Release()"), std::string::npos);
     EXPECT_NE(body.find("InvalidateRepeatSourceFrameTexture()"), std::string::npos);
-    EXPECT_NE(body.find("InvalidateRepeatPacketCache()"), std::string::npos);
+    EXPECT_EQ(source.find("cachedRepeatPacket_"), std::string::npos);
+    EXPECT_EQ(source.find("av_packet_ref(repeatPkt"), std::string::npos);
+}
+
+TEST(VideoEncoderSourceTest, VideoProcessorOutputsAreOwnedByFfmpegHardwareFrames) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("d11FramesHw->BindFlags |= D3D11_BIND_RENDER_TARGET"), std::string::npos);
+    EXPECT_NE(source.find("av_hwframe_get_buffer(d3d11FramesCtx, outputFrame, 0)"), std::string::npos);
+    EXPECT_NE(source.find("VideoProcessorBlt(videoProcessor, outputView, 0, 1, &stream)"), std::string::npos);
+    EXPECT_NE(source.find("outputViewCache.push_back({outputTexture, outputArraySlice, outputView})"),
+              std::string::npos);
+    EXPECT_EQ(source.find("nv12StagingTextures"), std::string::npos);
+    EXPECT_EQ(source.find("av_buffer_create(reinterpret_cast<uint8_t*>(nv12Tex)"), std::string::npos);
 }
 
 TEST(VideoEncoderSourceTest, MetadataDurationDiagnosticsRunAfterTrailerAndIgnoreUnavailableFields) {
@@ -130,8 +144,7 @@ TEST(VideoEncoderSourceTest, CursorPrecompositionBacksUpOnlyTouchedRgbRegionOnNo
     EXPECT_NE(source.find("CopySubresourceRegion(target, 0, destinationX, destinationY, 0, backup"),
               std::string::npos);
     EXPECT_NE(source.find("Point RGB precomposition before VP active"), std::string::npos);
-    EXPECT_NE(source.find("VideoProcessorBlt(videoProcessor, outputViews[bufIdx], 0, 1, &stream)"),
-              std::string::npos);
+    EXPECT_NE(source.find("VideoProcessorBlt(videoProcessor, outputView, 0, 1, &stream)"), std::string::npos);
 }
 
 TEST(VideoEncoderSourceTest, CursorPrecompositionFailureNeverFailsVideoConversion) {

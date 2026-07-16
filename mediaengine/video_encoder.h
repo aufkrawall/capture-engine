@@ -314,15 +314,6 @@ private:
     bool repeatSourceCacheKeyedMutexLogged = false;
     uint64_t repeatSourceCacheKeyedAcquireFailCount = 0;
 
-    // Cached last encoded video packet for zero-cost frame repeats.
-    // When RepeatLastFrame has a valid cache, it resubmits the cached encoded
-    // data with a new PTS instead of re-encoding via NVENC, eliminating
-    // duplicate encode overhead (e.g. 60fps source → 120fps target means
-    // every other frame is a repeat, saving ~50% NVENC workload).
-    AVPacket* cachedRepeatPacket_ = nullptr;
-
-    void CacheRepeatPacket(const AVPacket* pkt);
-    void InvalidateRepeatPacketCache();
     bool CacheRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture, uint32_t frameWidth, uint32_t frameHeight,
                                        bool isHDR, int captureOriginX, int captureOriginY);
     void InvalidateRepeatSourceFrameTexture();
@@ -363,12 +354,15 @@ private:
     ID3D11VideoProcessor* videoProcessor = nullptr;
     ID3D11VideoProcessorEnumerator* videoProcessorEnum = nullptr;
 
-    // NV12 staging texture pool (sized dynamically; NVENC lookahead can require
-    // many in-flight frames)
-    int nv12BufferCount = 3;
-    std::vector<ID3D11Texture2D*> nv12StagingTextures;
-    std::vector<ID3D11VideoProcessorOutputView*> outputViews;
-    int currentNV12Buffer = 0;
+    // Output views are cached per AVHWFrame texture/subresource. The AVFrame
+    // owns the texture for the complete NVENC in-flight lifetime; the view only
+    // avoids recreating the VideoProcessor binding whenever the pool recycles it.
+    struct CachedVideoProcessorOutputView {
+        ID3D11Texture2D* texture = nullptr;
+        UINT arraySlice = 0;
+        ID3D11VideoProcessorOutputView* view = nullptr;
+    };
+    std::vector<CachedVideoProcessorOutputView> outputViewCache;
 
     // BGRA staging texture for VideoProcessor input compatibility
     ID3D11Texture2D* bgraStagingTexture = nullptr;
@@ -458,7 +452,7 @@ private:
                                       int captureOriginX = 0, int captureOriginY = 0,
                                       bool allowCursorHandleVisibilityFallback = false,
                                       uint64_t keyedMutexAcquireKey = 0);
-    bool ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool overlayCursor = false,
+    bool ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outputFrame, bool overlayCursor = false,
                            bool allowDirectInputView = true, int captureOriginX = 0, int captureOriginY = 0,
                            uint64_t keyedMutexAcquireKey = 0);
     bool CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture);

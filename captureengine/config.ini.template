@@ -202,18 +202,23 @@ chroma_subsampling=auto
 preset=p1
 ; tuning - Values: hq, ll, ull, lossless
 tuning=hq
-; multipass - Values: disabled, qres, fullres
-multipass=disabled
+; multipass - Values: auto, disabled, qres, fullres
+; auto uses quarter-resolution multipass for B-frame or CBR encodes
+multipass=auto
 ; qp - Quality/QP value used by CQ and CQP rate control modes
 ;   CQ mode:  target quality (H.264/HEVC: 0-51, AV1: 0-63; lower = better)
 ;   CQP mode: fixed quantizer  (H.264/HEVC: 0-51, AV1: 0-255; lower = better)
 qp=23
-; lookahead - Values: true, false
-lookahead=false
-; aq - Values: true, false
-aq=false
-; b_ref_mode - Values: disabled, each, middle
-b_ref_mode=disabled
+; lookahead - Values: off, auto, or an explicit depth from 1 to 31
+; auto selects up to 20 frames while respecting NVENC's B-frame-dependent limit
+lookahead=off
+; Spatial and temporal AQ are independent. aq_strength=0 lets NVENC choose.
+spatial_aq=false
+temporal_aq=false
+aq_strength=0
+; b_ref_mode - Values: auto, disabled, each, middle
+; auto selects middle when both the GPU and codec support B references
+b_ref_mode=auto
 
 [MediaFoundation]
 ; rate_control - Values: cbr, pc_vbr, u_vbr, quality, ld_vbr, g_vbr

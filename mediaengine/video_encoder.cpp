@@ -464,6 +464,21 @@ int64_t ComputeTargetVideoPts(int64_t timestampUs, bool useVfr, int fps, int64_t
     return ComputeNextCfrFrameIndex(lastAssignedVideoPts);
 }
 
+bool IsConfiguredNvencLookaheadActive(const std::string& value) {
+    return !value.empty() && _stricmp(value.c_str(), "off") != 0 && _stricmp(value.c_str(), "false") != 0 &&
+           _stricmp(value.c_str(), "disabled") != 0 && value != "0";
+}
+
+bool IsConfiguredNvencMultipassActive(const VideoConfig& config) {
+    if (_stricmp(config.multipass.c_str(), "qres") == 0 || _stricmp(config.multipass.c_str(), "fullres") == 0) {
+        return true;
+    }
+    if (!config.multipass.empty() && _stricmp(config.multipass.c_str(), "auto") != 0) {
+        return false;
+    }
+    return config.bFrames > 0 || _stricmp(config.rateControl.c_str(), "cbr") == 0;
+}
+
 void LogFinalDurationSummary(AVFormatContext* fmtCtx, int64_t finalDurationUs, uint32_t muxBackpressureEvents,
                              uint32_t peakQueueBytes, uint32_t peakQueuePackets, bool encoderOverloaded,
                              bool muxOverloaded) {
@@ -1039,13 +1054,6 @@ static double g_totalEncode = 0;
 static double g_maxFrameTime = 0;
 static int g_slowFrameCount = 0;  // Frames taking > 2x expected time
 
-// Helper to release D3D11 Texture when AVFrame is freed
-static void FreeD3D11Tex(void* opaque, uint8_t* data) {
-    ID3D11Texture2D* tex = (ID3D11Texture2D*)data;
-    if (tex)
-        tex->Release();
-}
-
 static void FreeScopedAvFrame(AVFrame** frame) {
     if (frame && *frame) {
         av_frame_free(frame);
@@ -1082,7 +1090,6 @@ VideoEncoder::VideoEncoder()
       videoContext(nullptr),
       videoProcessor(nullptr),
       videoProcessorEnum(nullptr),
-      currentNV12Buffer(0),
       inputView(nullptr),
       videoProcessorInit(false) {}
 
@@ -1785,46 +1792,14 @@ bool VideoEncoder::PopulateD3D11FrameFromRepeatSource(AVFrame* d3d11Frame) {
             CursorCompositionActive(), repeatSourceCaptureOriginX, repeatSourceCaptureOriginY, true);
     }
 
-    ID3D11Texture2D* nv12Tex = nullptr;
-    if (!ConvertBGRAtoNV12(repeatSourceFrameTexture, &nv12Tex, CursorCompositionActive(), false,
+    if (!ConvertBGRAtoNV12(repeatSourceFrameTexture, d3d11Frame, CursorCompositionActive(), false,
                            repeatSourceCaptureOriginX, repeatSourceCaptureOriginY)) {
         return false;
     }
 
     d3d11Frame->width = scalingEnabled ? outputWidth : width;
     d3d11Frame->height = scalingEnabled ? outputHeight : height;
-    d3d11Frame->buf[0] = av_buffer_create(reinterpret_cast<uint8_t*>(nv12Tex), 0, FreeD3D11Tex, NULL, 0);
-    if (!d3d11Frame->buf[0]) {
-        FreeD3D11Tex(NULL, reinterpret_cast<uint8_t*>(nv12Tex));
-        return false;
-    }
-    d3d11Frame->data[0] = reinterpret_cast<uint8_t*>(nv12Tex);
-    d3d11Frame->data[1] = 0;
     return true;
-}
-
-void VideoEncoder::CacheRepeatPacket(const AVPacket* pkt) {
-    if (!ce::video::SupportsEncodedPacketRepeat(savedConfig.encoder)) {
-        InvalidateRepeatPacketCache();
-        return;
-    }
-
-    // Only cache video packets with valid encoded data
-    if (!pkt || !stream || pkt->stream_index != stream->index || pkt->size <= 0 || pkt->data == nullptr) {
-        return;
-    }
-    InvalidateRepeatPacketCache();
-    cachedRepeatPacket_ = av_packet_alloc();
-    if (cachedRepeatPacket_) {
-        av_packet_ref(cachedRepeatPacket_, pkt);
-    }
-}
-
-void VideoEncoder::InvalidateRepeatPacketCache() {
-    if (cachedRepeatPacket_) {
-        av_packet_free(&cachedRepeatPacket_);
-        cachedRepeatPacket_ = nullptr;
-    }
 }
 
 bool VideoEncoder::CreateSharedCaptureTextures(uint32_t w, uint32_t h, uint32_t fmt, SharedMemoryLayout* sharedMem) {
@@ -1970,8 +1945,9 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     DLL_Log("[VideoEncoder] bitrate=%s", savedConfig.bitrate.c_str());
     DLL_Log("[VideoEncoder] max_bitrate=%s", savedConfig.maxBitrate.c_str());
     DLL_Log("[VideoEncoder] profile=%s", savedConfig.profile.c_str());
-    DLL_Log("[VideoEncoder] lookahead=%s", savedConfig.lookahead ? "true" : "false");
-    DLL_Log("[VideoEncoder] aq=%s", savedConfig.aq ? "true" : "false");
+    DLL_Log("[VideoEncoder] lookahead=%s", savedConfig.lookahead.c_str());
+    DLL_Log("[VideoEncoder] spatial_aq=%s temporal_aq=%s aq_strength=%d", savedConfig.spatialAq ? "true" : "false",
+            savedConfig.temporalAq ? "true" : "false", savedConfig.aqStrength);
     DLL_Log("[VideoEncoder] b_frames=%d", savedConfig.bFrames);
     DLL_Log("[VideoEncoder] b_ref_mode=%s", savedConfig.bRefMode.empty() ? "(auto)" : savedConfig.bRefMode.c_str());
     DLL_Log("[VideoEncoder] multipass=%s", savedConfig.multipass.c_str());
@@ -2089,7 +2065,8 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     if (optionPlan.maxBFrames > 0) {
         codecCtx->b_quant_factor = 1.0f;
         codecCtx->b_quant_offset = 0.0f;
-        DLL_Log("[VideoEncoder] B-frame quality equalized (b_quant_factor=1.0, b_quant_offset=0.0)");
+        DLL_Log("[VideoEncoder] B-frame initial QP hint aligned with P-frames "
+                "(b_quant_factor=1.0, b_quant_offset=0.0)");
     }
 
     if (savedConfig.keyframeInterval > 0) {
@@ -2424,8 +2401,18 @@ bool VideoEncoder::EnsureDevice() {
         av_buffer_unref(&d3d11FramesCtx);
     }
     d3d11FramesCtx = av_hwframe_ctx_alloc(d3d11DeviceCtx);
+    if (!d3d11FramesCtx) {
+        DLL_Log("[VideoEncoder] Failed to allocate D3D11 frames context");
+        return false;
+    }
     AVHWFramesContext* d11Frames = (AVHWFramesContext*)d3d11FramesCtx->data;
+    AVD3D11VAFramesContext* d11FramesHw = (AVD3D11VAFramesContext*)d11Frames->hwctx;
     d11Frames->format = AV_PIX_FMT_D3D11;
+    // RGB->YUV output is written directly into AVHWFrame-owned textures by
+    // ID3D11VideoProcessor. NVENC then retains the AVFrame until that input is
+    // no longer in flight, so lookahead/B-frame depth cannot recycle a surface
+    // that the encoder still references.
+    d11FramesHw->BindFlags |= D3D11_BIND_RENDER_TARGET;
 
     d11Frames->sw_format = resolvedFormat.d3d11SwFormat;
     if (!DeviceSupportsHwFrameSwFormat(d3d11DeviceCtx, resolvedFormat.d3d11SwFormat)) {
@@ -2622,7 +2609,6 @@ void VideoEncoder::BeginDeferredRecording() {
         repeatFrameTexture = nullptr;
     }
     InvalidateRepeatSourceFrameTexture();
-    InvalidateRepeatPacketCache();
 
     audioPacketCount = 0;
     videoPacketCount = 0;
@@ -3144,6 +3130,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 // so EnsureDevice() reinitializes them at the correct resolution
                 // before the file header is written.
                 DLL_Log("[VideoEncoder] Reinitializing encoder at correct resolution (pre-file-open)");
+                CleanupVideoProcessor();
                 avcodec_free_context(&codecCtx);
                 if (d3d11FramesCtx) {
                     av_buffer_unref(&d3d11FramesCtx);
@@ -3845,8 +3832,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     } else {
         // 6. Point-composite a separate cursor in RGB, then convert the one
         // deterministic RGB stream to NV12/P010 on the GPU.
-        ID3D11Texture2D* nv12Tex = nullptr;
-        if (!ConvertBGRAtoNV12(bgraTex, &nv12Tex, CursorCompositionActive(), true)) {
+        if (!ConvertBGRAtoNV12(bgraTex, d3d11Frame, CursorCompositionActive(), true)) {
             DLL_Log("[VideoEncoder] Frame %d: GPU color conversion failed", encodeFrameCounter);
             bgraTex->Release();
             av_frame_free(&d3d11Frame);
@@ -3855,16 +3841,6 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
         d3d11Frame->width = scalingEnabled ? outputWidth : width;
         d3d11Frame->height = scalingEnabled ? outputHeight : height;
-        d3d11Frame->buf[0] = av_buffer_create((uint8_t*)nv12Tex, 0, FreeD3D11Tex, NULL, 0);
-        if (!d3d11Frame->buf[0]) {
-            FreeD3D11Tex(NULL, (uint8_t*)nv12Tex);
-            av_frame_free(&d3d11Frame);
-            bgraTex->Release();
-            return false;
-        }
-
-        d3d11Frame->data[0] = (uint8_t*)nv12Tex;
-        d3d11Frame->data[1] = 0;  // index
     }
 
     auto afterConvert = PerfTimer::now();
@@ -3932,7 +3908,6 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 pkt->duration = 1;
             }
 
-            CacheRepeatPacket(pkt);
             if (onPacket)
                 onPacket(pkt);
             av_packet_unref(pkt);
@@ -4058,13 +4033,13 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     // Log more frequently for performance tuning (every 30 frames)
     if (stats.totalMs > expectedFrameMs * 2 || encodeFrameCounter <= 5 || encodeFrameCounter % 30 == 0) {
         std::string features = "";
-        if (savedConfig.lookahead)
+        if (IsConfiguredNvencLookaheadActive(savedConfig.lookahead))
             features += "Lookahead ";
-        if (savedConfig.aq)
+        if (savedConfig.spatialAq || savedConfig.temporalAq)
             features += "AQ ";
         if (savedConfig.bFrames > 0)
             features += "B-Frames ";
-        if (!savedConfig.multipass.empty() && savedConfig.multipass != "disabled")
+        if (IsConfiguredNvencMultipassActive(savedConfig))
             features += "Multipass ";
 
         const char* slowLabel = (stats.totalMs > expectedFrameMs * 2) ? "(SLOW!)" : "";
@@ -4296,9 +4271,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     }
 
     const bool recomposeCursorForRepeats = CursorCompositionActive() && cursorRenderer;
-    if (recomposeCursorForRepeats) {
-        InvalidateRepeatPacketCache();
-    } else if (repeatSourceNeedsCursorRecompose) {
+    if (!recomposeCursorForRepeats && repeatSourceNeedsCursorRecompose) {
         InvalidateRepeatSourceFrameTexture();
     }
 
@@ -4331,10 +4304,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         // WGC/DXGI/inject keep a hardware cursor separate whenever Windows
         // permits it. Point-composite that cursor into RGB before the single
         // VP conversion so its filtering matches a Windows-embedded cursor.
-        ID3D11Texture2D* nv12Tex = nullptr;
-
         // Scoped Lock for D3D11 Immediate Context (protects Blt/CopyResource)
-        bool convertSuccess = ConvertBGRAtoNV12(bgraTexture, &nv12Tex, CursorCompositionActive(), true, captureLeft,
+        bool convertSuccess = ConvertBGRAtoNV12(bgraTexture, d3d11Frame, CursorCompositionActive(), true, captureLeft,
                                                 captureTop, 1);
 
         if (!convertSuccess) {
@@ -4345,14 +4316,6 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
         d3d11Frame->width = scalingEnabled ? outputWidth : width;
         d3d11Frame->height = scalingEnabled ? outputHeight : height;
-        d3d11Frame->buf[0] = av_buffer_create((uint8_t*)nv12Tex, 0, FreeD3D11Tex, NULL, 0);
-        if (!d3d11Frame->buf[0]) {
-            FreeD3D11Tex(NULL, (uint8_t*)nv12Tex);
-            av_frame_free(&d3d11Frame);
-            return false;
-        }
-        d3d11Frame->data[0] = (uint8_t*)nv12Tex;
-        d3d11Frame->data[1] = 0;
     }
 
     auto afterConvert = PerfTimer::now();
@@ -4397,9 +4360,6 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
                 pkt->duration = 1;
             }
 
-            if (!recomposeCursorForRepeats) {
-                CacheRepeatPacket(pkt);
-            }
             if (onPacket)
                 onPacket(pkt);
             av_packet_unref(pkt);
@@ -4479,13 +4439,13 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     // steady-state encode timing without flooding the log with routine single-frame spikes.
     if (totalMs > expectedFrameMs * 2.0) {
         std::string features = "";
-        if (savedConfig.lookahead)
+        if (IsConfiguredNvencLookaheadActive(savedConfig.lookahead))
             features += "Lookahead ";
-        if (savedConfig.aq)
+        if (savedConfig.spatialAq || savedConfig.temporalAq)
             features += "AQ ";
         if (savedConfig.bFrames > 0)
             features += "B-Frames ";
-        if (!savedConfig.multipass.empty() && savedConfig.multipass != "disabled")
+        if (IsConfiguredNvencMultipassActive(savedConfig))
             features += "Multipass ";
 
         DLL_Log(
@@ -4568,45 +4528,8 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
         stats.expectedPtsDiff = RoundUsToMs(static_cast<int64_t>(expectedFrameMs * 1000.0));
     }
 
-    // FAST PATH: Resubmit cached encoded packet with new PTS instead of
-    // re-encoding via NVENC. Eliminates duplicate encode overhead entirely
-    // (e.g., 60fps source → 120fps target means ~50% of frames are repeats,
-    // each of which now costs ~0ms instead of a full NVENC encode cycle).
-    //
-    // AV1 is intentionally excluded: replaying cached AV1 packets can produce
-    // invalid repeated-frame header OBUs in the output stream, so AV1 repeats
-    // must go through the cached-texture re-encode path below.
-    if (!recomposeCursorForRepeat && cachedRepeatPacket_ && !savedConfig.useVFR &&
-        ce::video::SupportsEncodedPacketRepeat(savedConfig.encoder)) {
-        const int64_t targetPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, savedConfig.fps, startPts,
-                                                        lastAssignedVideoPts, useExplicitCfrTimeline);
-
-        AVPacket* repeatPkt = av_packet_alloc();
-        if (repeatPkt) {
-            av_packet_ref(repeatPkt, cachedRepeatPacket_);
-            repeatPkt->pts = targetPts;
-            repeatPkt->dts = targetPts;
-            repeatPkt->stream_index = stream->index;
-            repeatPkt->duration = 1;
-
-            lastAssignedVideoPts = targetPts;
-            outputFrameCount++;
-            g_framesEncoded++;
-
-            if (onPacket) {
-                onPacket(repeatPkt);
-            }
-            av_packet_free(&repeatPkt);
-
-            lastEncodeTimeUs = 0;
-            lastFenceWaitUs = 0;
-            g_lastFramePts = timestamp;
-            return true;
-        }
-        // Packet allocation failed — fall through to slow path
-    }
-
-    // SLOW PATH: Full NVENC re-encode of cached texture
+    // Re-encode the cached texture. Encoded packets are reference-dependent
+    // bitstream units and cannot be replayed safely with rewritten timestamps.
     auto frameStart = PerfTimer::now();
 
     auto allocateD3D11RepeatFrame = [&]() -> AVFrame* {
@@ -4689,10 +4612,6 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
             packetCount++;
             pkt->stream_index = stream->index;
             pkt->duration = savedConfig.useVFR ? (1000000 / std::max(savedConfig.fps, 1)) : 1;
-            // Cache packet for fast-path repeats in CFR mode only (VFR timing is variable)
-            if (!savedConfig.useVFR && !recomposeCursorForRepeat) {
-                CacheRepeatPacket(pkt);
-            }
             if (onPacket) {
                 onPacket(pkt);
             }
@@ -4788,9 +4707,6 @@ void VideoEncoder::CleanupResources() {
     }
 
     currentQueueBytes = 0;
-
-    // Invalidate cached repeat packet before codec/format contexts are freed
-    InvalidateRepeatPacketCache();
 
     if (stream)
         stream = nullptr;
@@ -5333,132 +5249,21 @@ bool VideoEncoder::InitVideoProcessor() {
             outputRange == OutputRangeMode::kFull ? "Full" : "Limited",
             outputRange == OutputRangeMode::kFull ? "0-255" : "16-235");
 
-    // Create triple-buffered NV12/P010 output textures.
-    // IMPORTANT: Use OUTPUT dimensions for the textures (after scaling).
+    // AVHWFrame textures are the VP output surfaces. They are allocated on
+    // demand by libavutil and retained by NVENC for exactly as long as each
+    // submitted frame remains in flight.
     const bool use10BitOutput = ShouldUse10BitOutput();
     const DXGI_FORMAT outputFormat = use10BitOutput ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;
-    D3D11_TEXTURE2D_DESC nv12Desc = {};
-    nv12Desc.Width = outputWidth;
-    nv12Desc.Height = outputHeight;
-    nv12Desc.MipLevels = 1;
-    nv12Desc.ArraySize = 1;
-    nv12Desc.Format = outputFormat;
-    nv12Desc.SampleDesc.Count = 1;
-    nv12Desc.Usage = D3D11_USAGE_DEFAULT;
-
-    ID3D11Device* baseDevice = nullptr;
-    d3d11Device->QueryInterface(__uuidof(ID3D11Device), (void**)&baseDevice);
-    if (!baseDevice) {
-        DLL_Log("[VideoProcessor] Failed to query base D3D11 device");
-        CleanupVideoProcessor();
-        return false;
-    }
-
-    nv12BufferCount = savedConfig.lookahead ? 40 : 3;
-    if (nv12BufferCount < 3) {
-        nv12BufferCount = 3;
-    }
-    if (nv12BufferCount > 64) {
-        nv12BufferCount = 64;
-    }
-    nv12StagingTextures.assign(nv12BufferCount, nullptr);
-    outputViews.assign(nv12BufferCount, nullptr);
-    currentNV12Buffer = 0;
 
     UINT formatSupport = 0;
-    hr = baseDevice->CheckFormatSupport(outputFormat, &formatSupport);
+    hr = d3d11Device->CheckFormatSupport(outputFormat, &formatSupport);
     if (SUCCEEDED(hr)) {
         DLL_Log("[VideoProcessor] Output fmt=%d formatSupport=0x%x", outputFormat, formatSupport);
     } else {
         DLL_Log("[VideoProcessor] CheckFormatSupport(fmt=%d) failed. HR=%x", outputFormat, hr);
     }
-
-    auto releaseOutputPool = [&]() {
-        for (auto*& view : outputViews) {
-            if (view) {
-                view->Release();
-                view = nullptr;
-            }
-        }
-        for (auto*& tex : nv12StagingTextures) {
-            if (tex) {
-                tex->Release();
-                tex = nullptr;
-            }
-        }
-    };
-
-    struct OutputBindAttempt {
-        UINT bindFlags;
-        const char* name;
-    };
-    const OutputBindAttempt bindAttempts[] = {
-        {D3D11_BIND_RENDER_TARGET | D3D11_BIND_VIDEO_ENCODER, "render-target|video-encoder"},
-        {D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, "render-target|shader-resource"},
-        {D3D11_BIND_RENDER_TARGET, "render-target"},
-    };
-
-    bool outputPoolCreated = false;
-    HRESULT lastOutputHr = E_FAIL;
-    const char* lastOutputAttempt = "none";
-    for (const auto& bindAttempt : bindAttempts) {
-        nv12Desc.BindFlags = bindAttempt.bindFlags;
-        lastOutputAttempt = bindAttempt.name;
-        DLL_Log("[VideoProcessor] Trying output surfaces fmt=%d bind=%x (%s)", outputFormat, bindAttempt.bindFlags,
-                bindAttempt.name);
-
-        bool attemptSucceeded = true;
-        for (int i = 0; i < nv12BufferCount; i++) {
-            hr = baseDevice->CreateTexture2D(&nv12Desc, nullptr, &nv12StagingTextures[i]);
-            if (FAILED(hr)) {
-                DLL_Log("[VideoProcessor] Failed to create output texture %d (fmt=%d bind=%x %s). HR=%x", i,
-                        outputFormat, bindAttempt.bindFlags, bindAttempt.name, hr);
-                lastOutputHr = hr;
-                attemptSucceeded = false;
-                break;
-            }
-
-            D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC outputViewDesc = {};
-            outputViewDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
-            outputViewDesc.Texture2D.MipSlice = 0;
-
-            try {
-                hr = videoDevice->CreateVideoProcessorOutputView(nv12StagingTextures[i], videoProcessorEnum,
-                                                                 &outputViewDesc, &outputViews[i]);
-            } catch (...) {
-                hr = E_FAIL;
-                DLL_Log("[VideoProcessor] CreateVideoProcessorOutputView threw exception for view %d", i);
-            }
-            if (FAILED(hr)) {
-                DLL_Log("[VideoProcessor] Failed to create output view %d (fmt=%d bind=%x %s). HR=%x", i, outputFormat,
-                        bindAttempt.bindFlags, bindAttempt.name, hr);
-                lastOutputHr = hr;
-                attemptSucceeded = false;
-                break;
-            }
-        }
-
-        if (attemptSucceeded) {
-            if (bindAttempt.bindFlags != bindAttempts[0].bindFlags) {
-                DLL_Log("[VideoProcessor] Output surface fallback: fmt=%d primary=%s final=%s", outputFormat,
-                        bindAttempts[0].name, bindAttempt.name);
-            }
-            outputPoolCreated = true;
-            break;
-        }
-
-        releaseOutputPool();
-    }
-
-    baseDevice->Release();
-    if (!outputPoolCreated) {
-        DLL_Log("[VideoProcessor] Failed to create output surface pool fmt=%d after trying %s. Last HR=%x",
-                outputFormat, lastOutputAttempt, lastOutputHr);
-        CleanupVideoProcessor();
-        return false;
-    }
-    DLL_Log("[VideoProcessor] Created %d %s output textures at %dx%d (triple buffering)", nv12BufferCount,
-            use10BitOutput ? "P010" : "NV12", outputWidth, outputHeight);
+    DLL_Log("[VideoProcessor] Using AVHWFrame-owned %s output textures at %dx%d", use10BitOutput ? "P010" : "NV12",
+            outputWidth, outputHeight);
 
     // Create BGRA staging texture for Desktop Duplication
     // compatibility DD textures often have D3D11_BIND_RENDER_TARGET
@@ -5695,12 +5500,79 @@ bool VideoEncoder::PrepareVideoProcessorCursorInput(ID3D11Texture2D* source, boo
     return true;
 }
 
-bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture2D** nv12Output, bool overlayCursor,
+bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outputFrame, bool overlayCursor,
                                      bool allowDirectInputView, int captureOriginX, int captureOriginY,
                                      uint64_t keyedMutexAcquireKey) {
+    if (!bgraTexture || !outputFrame || !d3d11FramesCtx) {
+        DLL_Log("[VideoProcessor] Invalid RGB conversion input or output frame");
+        return false;
+    }
     if (!videoProcessorInit) {
         if (!InitVideoProcessor())
             return false;
+    }
+
+    if (!outputFrame->buf[0]) {
+        const int frameRet = av_hwframe_get_buffer(d3d11FramesCtx, outputFrame, 0);
+        if (frameRet < 0 || !outputFrame->data[0]) {
+            DLL_Log("[VideoProcessor] Failed to allocate AVHWFrame-owned output: %d", frameRet);
+            return false;
+        }
+    }
+    if (!outputFrame->data[0]) {
+        DLL_Log("[VideoProcessor] AVHWFrame output is missing its D3D11 texture");
+        return false;
+    }
+
+    auto* outputTexture = reinterpret_cast<ID3D11Texture2D*>(outputFrame->data[0]);
+    const UINT outputArraySlice = static_cast<UINT>(reinterpret_cast<uintptr_t>(outputFrame->data[1]));
+    ID3D11VideoProcessorOutputView* outputView = nullptr;
+    for (const auto& cached : outputViewCache) {
+        if (cached.texture == outputTexture && cached.arraySlice == outputArraySlice) {
+            outputView = cached.view;
+            break;
+        }
+    }
+
+    if (!outputView) {
+        D3D11_TEXTURE2D_DESC outputTextureDesc = {};
+        outputTexture->GetDesc(&outputTextureDesc);
+        if (outputArraySlice >= outputTextureDesc.ArraySize) {
+            DLL_Log("[VideoProcessor] Invalid AVHWFrame array slice %u for array size %u", outputArraySlice,
+                    outputTextureDesc.ArraySize);
+            return false;
+        }
+
+        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC outputViewDesc = {};
+        if (outputTextureDesc.ArraySize > 1) {
+            outputViewDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2DARRAY;
+            outputViewDesc.Texture2DArray.MipSlice = 0;
+            outputViewDesc.Texture2DArray.FirstArraySlice = outputArraySlice;
+            outputViewDesc.Texture2DArray.ArraySize = 1;
+        } else {
+            outputViewDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+            outputViewDesc.Texture2D.MipSlice = 0;
+        }
+
+        HRESULT outputViewHr = E_FAIL;
+        try {
+            outputViewHr = videoDevice->CreateVideoProcessorOutputView(outputTexture, videoProcessorEnum,
+                                                                       &outputViewDesc, &outputView);
+        } catch (...) {
+            outputViewHr = E_FAIL;
+        }
+        if (FAILED(outputViewHr) || !outputView) {
+            DLL_Log(
+                "[VideoProcessor] Failed to bind AVHWFrame output view: HR=%x fmt=%d bind=%x array=%u slice=%u",
+                outputViewHr, outputTextureDesc.Format, outputTextureDesc.BindFlags, outputTextureDesc.ArraySize,
+                outputArraySlice);
+            return false;
+        }
+        outputViewCache.push_back({outputTexture, outputArraySlice, outputView});
+        if (outputViewCache.size() == 1) {
+            DLL_Log("[VideoProcessor] AVHWFrame output-view cache active (fmt=%d bind=%x)", outputTextureDesc.Format,
+                    outputTextureDesc.BindFlags);
+        }
     }
 
     // Debug: Log texture descriptions on first call per recording
@@ -6018,9 +5890,7 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     stream.Enable = TRUE;
     stream.pInputSurface = localInputView;
 
-    // Perform the conversion using current buffer
-    int bufIdx = currentNV12Buffer;
-    hr = videoContext->VideoProcessorBlt(videoProcessor, outputViews[bufIdx], 0, 1, &stream);
+    hr = videoContext->VideoProcessorBlt(videoProcessor, outputView, 0, 1, &stream);
 
     localInputView->Release();
 
@@ -6031,10 +5901,10 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
             bgraTexture->GetDesc(&srcDesc);
             const HRESULT deviceReason = d3d11Device->GetDeviceRemovedReason();
             DLL_Log(
-                "[VideoProcessor] Blt failed. HR=%x streams=1 bufIdx=%d "
+                "[VideoProcessor] Blt failed. HR=%x streams=1 outputSlice=%u "
                 "srcFmt=%d srcW=%u srcH=%u srcBind=%x srcMisc=%x "
                 "inputW=%d inputH=%d outputW=%d outputH=%d deviceReason=%x",
-                hr, bufIdx, srcDesc.Format, srcDesc.Width, srcDesc.Height, srcDesc.BindFlags,
+                hr, outputArraySlice, srcDesc.Format, srcDesc.Width, srcDesc.Height, srcDesc.BindFlags,
                 srcDesc.MiscFlags, inputWidth, inputHeight, outputWidth, outputHeight, deviceReason);
         }
         if (needReleaseConverted)
@@ -6045,10 +5915,6 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, ID3D11Texture
     if (needReleaseConverted)
         vpInputTexture->Release();
 
-    // Return current buffer and advance to next
-    *nv12Output = nv12StagingTextures[bufIdx];
-    nv12StagingTextures[bufIdx]->AddRef();  // Caller will release
-    currentNV12Buffer = (currentNV12Buffer + 1) % nv12BufferCount;
     return true;
 }
 
@@ -6293,19 +6159,13 @@ ID3D11Texture2D* VideoEncoder::SwapRBChannels(ID3D11Texture2D* input, uint32_t w
 }
 
 void VideoEncoder::CleanupVideoProcessor() {
-    for (auto* view : outputViews) {
-        if (view) {
-            view->Release();
+    for (auto& cached : outputViewCache) {
+        if (cached.view) {
+            cached.view->Release();
+            cached.view = nullptr;
         }
     }
-    for (auto* tex : nv12StagingTextures) {
-        if (tex) {
-            tex->Release();
-        }
-    }
-    outputViews.clear();
-    nv12StagingTextures.clear();
-    currentNV12Buffer = 0;
+    outputViewCache.clear();
 
     CleanupCursorCompositionResources();
 
@@ -6449,14 +6309,12 @@ bool VideoEncoder::CanRepeatLastFrame() const {
 }
 
 void VideoEncoder::ResetRepeatFrameCache() {
-    const bool hadCachedContent =
-        repeatFrameTexture != nullptr || repeatSourceFrameTexture != nullptr || cachedRepeatPacket_ != nullptr;
+    const bool hadCachedContent = repeatFrameTexture != nullptr || repeatSourceFrameTexture != nullptr;
     if (repeatFrameTexture) {
         repeatFrameTexture->Release();
         repeatFrameTexture = nullptr;
     }
     InvalidateRepeatSourceFrameTexture();
-    InvalidateRepeatPacketCache();
     repeatSourceCacheFailureLogged = false;
     repeatCursorRecomposeFallbackLogged = false;
     repeatSourceCacheKeyedMutexLogged = false;

@@ -1,5 +1,5 @@
 diff --git a/libavformat/matroskaenc.c b/libavformat/matroskaenc.c
-index 97d66558f81d1db794967923801b1672e92d949a..5db3d85c624d48b7d203143778108ad48231a5e2 100644
+index 97d66558f81d1db794967923801b1672e92d949a..0b7c2adf55ae5387d079d491192bd9567f65561e 100644
 --- a/libavformat/matroskaenc.c
 +++ b/libavformat/matroskaenc.c
 @@ -263,6 +263,8 @@ typedef struct MatroskaMuxContext {
@@ -11,44 +11,48 @@ index 97d66558f81d1db794967923801b1672e92d949a..5db3d85c624d48b7d203143778108ad4
      uint32_t            segment_uid[4];
  } MatroskaMuxContext;
  
-@@ -1931,13 +1933,13 @@ static int mkv_write_track_video(AVFormatContext *s, MatroskaMuxContext *mkv,
+@@ -1931,13 +1933,16 @@ static int mkv_write_track_video(AVFormatContext *s, MatroskaMuxContext *mkv,
  }
  
  static void mkv_write_default_duration(mkv_track *track, AVIOContext *pb,
 -                                       AVRational duration)
-+                                       AVRational duration, int64_t tb_den)
++                                       AVRational duration, int64_t timestamp_precision)
  {
++    int64_t duration_den = (int64_t)duration.den * timestamp_precision;
++
      put_ebml_uint(pb, MATROSKA_ID_TRACKDEFAULTDURATION,
                    1000000000LL * duration.num / duration.den);
 -    track->default_duration_low  = 1000LL * duration.num / duration.den;
-+    track->default_duration_low  = tb_den * duration.num / duration.den;
-     track->default_duration_high = track->default_duration_low +
+-    track->default_duration_high = track->default_duration_low +
 -                                    !!(1000LL * duration.num % duration.den);
-+                                    !!(tb_den * duration.num % duration.den);
++    track->default_duration_low = av_rescale_rnd(duration.num, 1000000000LL,
++                                                 duration_den, AV_ROUND_DOWN);
++    track->default_duration_high = av_rescale_rnd(duration.num, 1000000000LL,
++                                                  duration_den, AV_ROUND_UP);
  }
  
  static int mkv_write_track(AVFormatContext *s, MatroskaMuxContext *mkv,
-@@ -2062,7 +2064,8 @@ static int mkv_write_track(AVFormatContext *s, MatroskaMuxContext *mkv,
+@@ -2062,7 +2067,8 @@ static int mkv_write_track(AVFormatContext *s, MatroskaMuxContext *mkv,
              frame_rate = st->r_frame_rate;
  
          if (frame_rate.num > 0)
 -            mkv_write_default_duration(track, pb, av_inv_q(frame_rate));
 +            mkv_write_default_duration(track, pb, av_inv_q(frame_rate),
-+                                       1000000000LL / mkv->timestamp_precision);
++                                       mkv->timestamp_precision);
  
          if (CONFIG_MATROSKA_MUXER && !native_id &&
              ff_codec_get_tag(ff_codec_movvideo_tags, par->codec_id) &&
-@@ -2121,7 +2124,8 @@ static int mkv_write_track(AVFormatContext *s, MatroskaMuxContext *mkv,
+@@ -2121,7 +2127,8 @@ static int mkv_write_track(AVFormatContext *s, MatroskaMuxContext *mkv,
              audio_frame_samples = par->frame_size;
          if (audio_frame_samples)
              mkv_write_default_duration(track, pb, (AVRational){ audio_frame_samples,
 -                                                                par->sample_rate });
 +                                                                par->sample_rate },
-+                                       1000000000LL / mkv->timestamp_precision);
++                                       mkv->timestamp_precision);
          if (!native_id)
              // no mkv-specific ID, use ACM mode
              put_ebml_string(pb, MATROSKA_ID_CODECID, "A_MS/ACM");
-@@ -2611,7 +2615,7 @@ static int mkv_write_info(AVFormatContext *s)
+@@ -2611,7 +2618,7 @@ static int mkv_write_info(AVFormatContext *s)
          return ret;
      pb = mkv->info.bc;
  
@@ -57,31 +61,64 @@ index 97d66558f81d1db794967923801b1672e92d949a..5db3d85c624d48b7d203143778108ad4
      if ((tag = av_dict_get(s->metadata, "title", NULL, 0)))
          put_ebml_string(pb, MATROSKA_ID_TITLE, tag->value);
      if (!(s->flags & AVFMT_FLAG_BITEXACT)) {
-@@ -2754,6 +2758,12 @@ static int mkv_write_header(AVFormatContext *s)
+@@ -2644,11 +2651,11 @@ static int mkv_write_info(AVFormatContext *s)
+         int64_t metadata_duration = get_metadata_duration(s);
+ 
+         if (s->duration > 0) {
+-            int64_t scaledDuration = av_rescale(s->duration, 1000, AV_TIME_BASE);
++            int64_t scaledDuration = av_rescale(s->duration, 1000, mkv->timestamp_precision);
+             put_ebml_float(pb, MATROSKA_ID_DURATION, scaledDuration);
+             av_log(s, AV_LOG_DEBUG, "Write early duration from recording time = %" PRIu64 "\n", scaledDuration);
+         } else if (metadata_duration > 0) {
+-            int64_t scaledDuration = av_rescale(metadata_duration, 1000, AV_TIME_BASE);
++            int64_t scaledDuration = av_rescale(metadata_duration, 1000, mkv->timestamp_precision);
+             put_ebml_float(pb, MATROSKA_ID_DURATION, scaledDuration);
+             av_log(s, AV_LOG_DEBUG, "Write early duration from metadata = %" PRIu64 "\n", scaledDuration);
+         } else if (s->pb->seekable & AVIO_SEEKABLE_NORMAL) {
+@@ -2754,6 +2761,16 @@ static int mkv_write_header(AVFormatContext *s)
              mkv->cluster_size_limit = 32 * 1024;
      }
  
-+    // Convert cluster_time_limit from ms to time_base units
++    // Convert milliseconds to timestamp ticks and keep time-limit-based clusters
++    // inside SimpleBlock's signed 16-bit relative-timecode range.
 +    {
-+        int64_t tb_den = 1000000000LL / mkv->timestamp_precision;
-+        mkv->cluster_time_limit = mkv->cluster_time_limit * tb_den / 1000;
++        int64_t max_limit_ms = av_rescale_rnd(INT16_MAX, mkv->timestamp_precision,
++                                              1000000, AV_ROUND_DOWN);
++        mkv->cluster_time_limit = mkv->cluster_time_limit > max_limit_ms ?
++                                  INT16_MAX : av_rescale(mkv->cluster_time_limit, 1000000,
++                                                        mkv->timestamp_precision);
 +    }
 +
      return 0;
  }
  
-@@ -3600,8 +3610,8 @@ static int mkv_init(struct AVFormatContext *s)
+@@ -3226,11 +3243,12 @@ static int mkv_write_packet(AVFormatContext *s, const AVPacket *pkt)
+             // we only create a Cluster on seeing key frames.
+             start_new_cluster = keyframe;
+         } else if (mkv->is_dash && codec_type == AVMEDIA_TYPE_AUDIO &&
+-                   cluster_time > mkv->cluster_time_limit) {
++                   (cluster_time < INT16_MIN || cluster_time > mkv->cluster_time_limit)) {
+             // For DASH audio, we create a Cluster based on cluster_time_limit.
+             start_new_cluster = 1;
+         } else if (!mkv->is_dash &&
+                    (cluster_size > mkv->cluster_size_limit ||
++                    cluster_time < INT16_MIN ||
+                     cluster_time > mkv->cluster_time_limit ||
+                     (codec_type == AVMEDIA_TYPE_VIDEO && keyframe &&
+                      cluster_size > 4 * 1024))) {
+@@ -3600,8 +3618,9 @@ static int mkv_init(struct AVFormatContext *s)
              track->uid = mkv_get_uid(mkv->tracks, i, &c);
          }
  
 -        // ms precision is the de-facto standard timescale for mkv files
 -        avpriv_set_pts_info(st, 64, 1, 1000);
-+        // Set timestamp precision based on TimecodeScale option.
-+        avpriv_set_pts_info(st, 64, 1, 1000000000LL / mkv->timestamp_precision);
++        // Preserve arbitrary nanosecond TimecodeScale values exactly; integer
++        // division would silently change the requested precision.
++        avpriv_set_pts_info(st, 64, (unsigned)mkv->timestamp_precision, 1000000000);
  
          if (st->codecpar->codec_type == AVMEDIA_TYPE_ATTACHMENT) {
              if (IS_WEBM(mkv)) {
-@@ -3685,6 +3695,7 @@ static const AVOption options[] = {
+@@ -3685,6 +3704,7 @@ static const AVOption options[] = {
      { "infer", "for each track type, mark each track of disposition default as default; if none exists, mark the first track as default", 0, AV_OPT_TYPE_CONST, { .i64 = DEFAULT_MODE_INFER }, 0, 0, FLAGS, .unit = "default_mode" },
      { "infer_no_subs", "for each track type, mark each track of disposition default as default; for audio and video: if none exists, mark the first track as default", 0, AV_OPT_TYPE_CONST, { .i64 = DEFAULT_MODE_INFER_NO_SUBS }, 0, 0, FLAGS, .unit = "default_mode" },
      { "passthrough", "use the disposition flag as-is", 0, AV_OPT_TYPE_CONST, { .i64 = DEFAULT_MODE_PASSTHROUGH }, 0, 0, FLAGS, .unit = "default_mode" },

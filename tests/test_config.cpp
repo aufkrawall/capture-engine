@@ -92,6 +92,12 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.video.gpuPriority, 7);
     EXPECT_EQ(config.gpuSchedulingPriority, "auto");
     EXPECT_EQ(config.video.profile, "auto");
+    EXPECT_EQ(config.video.multipass, "auto");
+    EXPECT_EQ(config.video.lookahead, "off");
+    EXPECT_FALSE(config.video.spatialAq);
+    EXPECT_FALSE(config.video.temporalAq);
+    EXPECT_EQ(config.video.aqStrength, 0);
+    EXPECT_EQ(config.video.bRefMode, "auto");
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_FALSE(config.graphics.forceMipBiasClamp);
     EXPECT_EQ(config.graphics.backbufferCount, -1);
@@ -112,6 +118,13 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("wgc_allow_lossy_bgra8_pool=false"), std::string::npos);
     EXPECT_NE(generatedText.find("gpu_scheduling_priority=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);
+    EXPECT_NE(generatedText.find("multipass=auto"), std::string::npos);
+    EXPECT_NE(generatedText.find("lookahead=off"), std::string::npos);
+    EXPECT_NE(generatedText.find("spatial_aq=false"), std::string::npos);
+    EXPECT_NE(generatedText.find("temporal_aq=false"), std::string::npos);
+    EXPECT_NE(generatedText.find("aq_strength=0"), std::string::npos);
+    EXPECT_NE(generatedText.find("b_ref_mode=auto"), std::string::npos);
+    EXPECT_EQ(generatedText.find("\naq="), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("; backbuffer_count, affecting vsync"), std::string::npos);
     EXPECT_NE(generatedText.find("backbuffer_count=-1"), std::string::npos);
@@ -148,6 +161,45 @@ TEST_F(ConfigTest, ParseValues) {
     EXPECT_EQ(config.video.encoder, "av1_nvenc");
     EXPECT_EQ(config.video.fps, 60);
     EXPECT_EQ(config.video.bitrate, "50Mbps");
+}
+
+TEST_F(ConfigTest, ParseIndependentNvencQualityPolicies) {
+    WriteConfig(
+        "[NVENC]\n"
+        "multipass=fullres\n"
+        "lookahead=13\n"
+        "spatial_aq=true\n"
+        "temporal_aq=false\n"
+        "aq_strength=9\n"
+        "b_ref_mode=middle\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.video.multipass, "fullres");
+    EXPECT_EQ(config.video.lookahead, "13");
+    EXPECT_TRUE(config.video.spatialAq);
+    EXPECT_FALSE(config.video.temporalAq);
+    EXPECT_EQ(config.video.aqStrength, 9);
+    EXPECT_EQ(config.video.bRefMode, "middle");
+}
+
+TEST_F(ConfigTest, LegacyNvencAqOnlySuppliesMissingSplitAqValues) {
+    WriteConfig("[NVENC]\naq=true\n");
+    AppConfig legacyOnly;
+    LoadConfig(tempConfigFile, legacyOnly);
+    EXPECT_TRUE(legacyOnly.video.spatialAq);
+    EXPECT_TRUE(legacyOnly.video.temporalAq);
+
+    WriteConfig(
+        "[NVENC]\n"
+        "aq=true\n"
+        "spatial_aq=false\n"
+        "temporal_aq=false\n");
+    AppConfig canonicalWins;
+    LoadConfig(tempConfigFile, canonicalWins);
+    EXPECT_FALSE(canonicalWins.video.spatialAq);
+    EXPECT_FALSE(canonicalWins.video.temporalAq);
 }
 
 TEST_F(ConfigTest, ParsePerformancePriorityValues) {

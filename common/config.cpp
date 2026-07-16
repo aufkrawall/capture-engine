@@ -563,18 +563,23 @@ chroma_subsampling=auto
 preset=p1
 ; tuning - Values: hq, ll, ull, lossless
 tuning=hq
-; multipass - Values: disabled, qres, fullres
-multipass=disabled
+; multipass - Values: auto, disabled, qres, fullres
+; auto uses quarter-resolution multipass for B-frame or CBR encodes
+multipass=auto
 ; qp - Quality/QP value used by CQ and CQP rate control modes
 ;   CQ mode:  target quality (H.264/HEVC: 0-51, AV1: 0-63; lower = better)
 ;   CQP mode: fixed quantizer  (H.264/HEVC: 0-51, AV1: 0-255; lower = better)
 qp=23
-; lookahead - Values: true, false
-lookahead=false
-; aq - Values: true, false
-aq=false
-; b_ref_mode - Values: disabled, each, middle
-b_ref_mode=disabled
+; lookahead - Values: off, auto, or an explicit depth from 1 to 31
+; auto selects up to 20 frames while respecting NVENC's B-frame-dependent limit
+lookahead=off
+; Spatial and temporal AQ are independent. aq_strength=0 lets NVENC choose.
+spatial_aq=false
+temporal_aq=false
+aq_strength=0
+; b_ref_mode - Values: auto, disabled, each, middle
+; auto selects middle when both the GPU and codec support B references
+b_ref_mode=auto
 
 [MediaFoundation]
 ; rate_control - Values: cbr, pc_vbr, u_vbr, quality, ld_vbr, g_vbr
@@ -1452,14 +1457,18 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.video.colorRange = GetStr("Video", "color_range", "auto");
     config.video.chromaSubsampling = GetStr("Video", "chroma_subsampling", "auto");
 
-    // NVENC settingsfic settings (from [NVENC] section)
+    // NVENC-specific settings (from [NVENC] section)
     config.video.preset = GetStr("NVENC", "preset", "p1");
     config.video.tuning = GetStr("NVENC", "tuning", "hq");
-    config.video.multipass = GetStr("NVENC", "multipass", "disabled");
+    config.video.multipass = GetStr("NVENC", "multipass", "auto");
     config.video.qp = GetInt("NVENC", "qp", 23);
-    config.video.lookahead = GetBool("NVENC", "lookahead", false);
-    config.video.aq = GetBool("NVENC", "aq", false);
-    config.video.bRefMode = GetStr("NVENC", "b_ref_mode", "");
+    config.video.lookahead = GetStr("NVENC", "lookahead", "off");
+    const std::string legacyAq = GetStr("NVENC", "aq", "");
+    const bool legacyAqEnabled = !legacyAq.empty() && ParseBool(legacyAq);
+    config.video.spatialAq = GetBool("NVENC", "spatial_aq", legacyAqEnabled);
+    config.video.temporalAq = GetBool("NVENC", "temporal_aq", legacyAqEnabled);
+    config.video.aqStrength = GetBoundedInt("NVENC", "aq_strength", 0, 0, 15);
+    config.video.bRefMode = GetStr("NVENC", "b_ref_mode", "auto");
 
     // Media Foundation encoder settings (from [MediaFoundation] section)
     config.video.mfRateControl = GetStr("MediaFoundation", "rate_control", "quality");

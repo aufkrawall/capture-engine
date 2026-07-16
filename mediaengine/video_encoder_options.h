@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include "../common/config.h"
@@ -31,6 +30,5 @@ bool ParseBitrateString(const std::string& input, int64_t* bitsPerSecond, std::s
 bool ParseCustomOptions(const std::string& input, std::vector<EncoderOption>* options, std::string* error);
 
 EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bit, const std::string& resolvedChroma);
-bool SupportsEncodedPacketRepeat(std::string_view encoderName);
 
 }  // namespace ce::video

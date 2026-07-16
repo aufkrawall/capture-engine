@@ -7,7 +7,95 @@ from pathlib import Path
 from ffmpeg_patch_utils import CustomPatchTargetError, normalize_custom_patch_targets
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+PATCH_DIR = PROJECT_ROOT / "patches" / "ffmpeg"
+PINNED_FFMPEG = PROJECT_ROOT / "ffmpeg_build" / "repos" / "ffmpeg"
+
+
+def added_patch_lines(patch_text: str) -> str:
+    return "\n".join(
+        line[1:]
+        for line in patch_text.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
+
+
 class FfmpegCustomPatchTest(unittest.TestCase):
+    def test_project_patches_apply_strictly_to_pinned_ffmpeg(self) -> None:
+        git = shutil.which("git")
+        if git is None:
+            self.fail("git is required to validate the project FFmpeg patches")
+
+        patches = [
+            PATCH_DIR / "0001-matroska-add-timestamp-precision-option.patch",
+            PATCH_DIR / "0002-nvenc-bframe-cfr-improvements.patch",
+        ]
+        targets = [
+            Path("libavformat/matroskaenc.c"),
+            Path("libavcodec/nvenc.c"),
+            Path("libavcodec/nvenc.h"),
+            Path("libavcodec/nvenc_av1.c"),
+            Path("libavcodec/nvenc_h264.c"),
+            Path("libavcodec/nvenc_hevc.c"),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "ffmpeg"
+            root.mkdir()
+            subprocess.run([git, "init", "--quiet"], cwd=root, check=True)
+            for relative in targets:
+                destination = root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(PINNED_FFMPEG / relative, destination)
+
+            normalize_custom_patch_targets(str(root), [str(patch) for patch in patches])
+            subprocess.run(
+                [git, "apply", "--check", "--verbose", *map(str, patches)],
+                cwd=root,
+                check=True,
+            )
+            subprocess.run([git, "apply", *map(str, patches)], cwd=root, check=True)
+
+            nvenc = (root / "libavcodec/nvenc.c").read_text(encoding="utf-8")
+            matroska = (root / "libavformat/matroskaenc.c").read_text(encoding="utf-8")
+            self.assertIn("Automatic B-reference mode", nvenc)
+            self.assertIn("max_qp_b is ignored in constant-QP mode", nvenc)
+            self.assertIn("timestamp_precision", matroska)
+
+    def test_matroska_patch_preserves_exact_timebase_and_block_range(self) -> None:
+        patch_text = (PATCH_DIR / "0001-matroska-add-timestamp-precision-option.patch").read_text(
+            encoding="utf-8"
+        )
+        added = added_patch_lines(patch_text)
+
+        self.assertIn("duration_den = (int64_t)duration.den * timestamp_precision", added)
+        self.assertIn("av_rescale(s->duration, 1000, mkv->timestamp_precision)", added)
+        self.assertIn(
+            "avpriv_set_pts_info(st, 64, (unsigned)mkv->timestamp_precision, 1000000000)",
+            added,
+        )
+        self.assertIn("cluster_time < INT16_MIN", added)
+        self.assertIn("INT16_MAX", added)
+        self.assertNotIn("1000000000LL / mkv->timestamp_precision", added)
+
+    def test_nvenc_patch_keeps_explicit_policy_distinct_from_preset_defaults(self) -> None:
+        patch_text = (PATCH_DIR / "0002-nvenc-bframe-cfr-improvements.patch").read_text(
+            encoding="utf-8"
+        )
+        added = added_patch_lines(patch_text)
+
+        self.assertIn("if (ctx->aq >= 0)", added)
+        self.assertIn("if (ctx->temporal_aq >= 0)", added)
+        self.assertIn("if (ctx->rc_lookahead == 0)", added)
+        self.assertIn("NV_ENC_CAPS_SUPPORT_BFRAME_REF_MODE", added)
+        self.assertIn("max_qp_b", added)
+        self.assertIn("NV_ENC_PIC_TYPE_INTRA_REFRESH", added)
+        self.assertIn("NV_ENC_PIC_TYPE_SWITCH", added)
+        self.assertNotIn("Reduced lookahead safety margin", added)
+        self.assertNotIn("ff_nvenc_receive_packet", added)
+        self.assertNotIn("capability not reported for AV1, attempting anyway", added)
+        self.assertNotIn("treating as P-frame", added)
+
     def test_crlf_target_is_normalized_before_strict_git_apply(self) -> None:
         git = shutil.which("git")
         if git is None:

@@ -11,7 +11,6 @@ using ce::video::BuildEncoderOptionPlan;
 using ce::video::EncoderOption;
 using ce::video::EncoderOptionPlan;
 using ce::video::ParseBitrateString;
-using ce::video::SupportsEncodedPacketRepeat;
 
 std::optional<std::string> FindOptionValue(const std::vector<EncoderOption>& options, const char* key) {
     for (const auto& option : options) {
@@ -42,8 +41,10 @@ VideoConfig MakeBaseVideoConfig(const std::string& encoder) {
     config.tuning = "hq";
     config.multipass = "disabled";
     config.qp = 23;
-    config.lookahead = false;
-    config.aq = false;
+    config.lookahead = "off";
+    config.spatialAq = false;
+    config.temporalAq = false;
+    config.aqStrength = 0;
     config.bFrames = 0;
     config.bRefMode = "disabled";
     return config;
@@ -78,11 +79,13 @@ TEST(VideoEncoderOptionsTest, NvencCQUsesTrueCQAndWiresMissingSettings) {
     config.maxBitrate = "150Mbps";
     config.profile = "auto";
     config.qp = 29;
-    config.lookahead = true;
-    config.aq = true;
+    config.lookahead = "auto";
+    config.spatialAq = true;
+    config.temporalAq = true;
+    config.aqStrength = 7;
     config.bFrames = 4;
     config.bRefMode = "middle";
-    config.multipass.clear();  // User didn't set multipass → auto-upgrade
+    config.multipass = "auto";
 
     const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
     const std::optional<std::string> preset = FindOptionValue(plan.generatedOptions, "preset");
@@ -92,6 +95,7 @@ TEST(VideoEncoderOptionsTest, NvencCQUsesTrueCQAndWiresMissingSettings) {
     const std::optional<std::string> lookahead = FindOptionValue(plan.generatedOptions, "rc-lookahead");
     const std::optional<std::string> spatialAq = FindOptionValue(plan.generatedOptions, "spatial-aq");
     const std::optional<std::string> temporalAq = FindOptionValue(plan.generatedOptions, "temporal-aq");
+    const std::optional<std::string> aqStrength = FindOptionValue(plan.generatedOptions, "aq-strength");
     const std::optional<std::string> bRefMode = FindOptionValue(plan.generatedOptions, "b_ref_mode");
     const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
 
@@ -103,14 +107,16 @@ TEST(VideoEncoderOptionsTest, NvencCQUsesTrueCQAndWiresMissingSettings) {
     ASSERT_TRUE(lookahead.has_value());
     ASSERT_TRUE(spatialAq.has_value());
     ASSERT_TRUE(temporalAq.has_value());
+    ASSERT_TRUE(aqStrength.has_value());
     ASSERT_TRUE(bRefMode.has_value());
     EXPECT_EQ(*preset, "p3");
     EXPECT_EQ(*tune, "hq");
     EXPECT_EQ(*rc, "vbr");
     EXPECT_EQ(*cq, "29");
-    EXPECT_EQ(*lookahead, "32");
+    EXPECT_EQ(*lookahead, "20");
     EXPECT_EQ(*spatialAq, "1");
     EXPECT_EQ(*temporalAq, "1");
+    EXPECT_EQ(*aqStrength, "7");
     EXPECT_EQ(*bRefMode, "middle");
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qp").has_value());
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "profile").has_value());
@@ -120,14 +126,13 @@ TEST(VideoEncoderOptionsTest, NvencCQUsesTrueCQAndWiresMissingSettings) {
     EXPECT_EQ(plan.maxBFrames, 4);
     EXPECT_TRUE(plan.isHardwareEncoder);
     EXPECT_TRUE(HasMessageContaining(plan.warnings, "bitrate is ignored"));
-    // multipass auto-upgraded since B-frames active and multipass=disabled
     ASSERT_TRUE(multipass.has_value());
     EXPECT_EQ(*multipass, "qres");
-    // AV1 B-frame QP constraints applied
-    ASSERT_TRUE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
-    ASSERT_TRUE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
-    EXPECT_EQ(*FindOptionValue(plan.generatedOptions, "qmin"), "1");
-    EXPECT_EQ(*FindOptionValue(plan.generatedOptions, "qmax"), "200");
+    const std::optional<std::string> maxQpB = FindOptionValue(plan.generatedOptions, "max_qp_b");
+    ASSERT_TRUE(maxQpB.has_value());
+    EXPECT_EQ(*maxQpB, "200");
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
 }
 
 TEST(VideoEncoderOptionsTest, AutoProfileChoosesCodecAwareDefaults) {
@@ -198,12 +203,11 @@ TEST(VideoEncoderOptionsTest, NvencWeightedPredNotAutoEnabledForH264BFrames) {
 
 TEST(VideoEncoderOptionsTest, NvencWeightedPredSkippedForAV1) {
     // NVENC AV1 does not support weighted_pred (returns ENOSYS), but
-    // B-frames themselves are allowed.  multipass should auto-upgrade
-    // when user didn't set it explicitly.
+    // B-frames themselves are allowed. Auto multipass should select qres.
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.bFrames = 4;
     config.bRefMode.clear();
-    config.multipass.clear();  // User didn't set multipass → auto-upgrade
+    config.multipass = "auto";
 
     const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
     const std::optional<std::string> weightedPred = FindOptionValue(plan.generatedOptions, "weighted_pred");
@@ -212,18 +216,8 @@ TEST(VideoEncoderOptionsTest, NvencWeightedPredSkippedForAV1) {
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_FALSE(weightedPred.has_value());
     EXPECT_EQ(plan.maxBFrames, 4);
-    // multipass auto-upgraded from disabled to qres
     ASSERT_TRUE(multipass.has_value());
     EXPECT_EQ(*multipass, "qres");
-}
-
-TEST(VideoEncoderOptionsTest, EncodedPacketRepeatDisabledForAV1) {
-    EXPECT_TRUE(SupportsEncodedPacketRepeat("h264_nvenc"));
-    EXPECT_TRUE(SupportsEncodedPacketRepeat("hevc_qsv"));
-    EXPECT_FALSE(SupportsEncodedPacketRepeat("av1_nvenc"));
-    EXPECT_FALSE(SupportsEncodedPacketRepeat("AV1_MF"));
-    EXPECT_FALSE(SupportsEncodedPacketRepeat("libsvtav1"));
-    EXPECT_FALSE(SupportsEncodedPacketRepeat("unknown_encoder"));
 }
 
 TEST(VideoEncoderOptionsTest, NvencWeightedPredNotSetWhenBFramesZero) {
@@ -238,6 +232,18 @@ TEST(VideoEncoderOptionsTest, NvencWeightedPredNotSetWhenBFramesZero) {
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_FALSE(bRefMode.has_value());
     EXPECT_FALSE(weightedPred.has_value());
+}
+
+TEST(VideoEncoderOptionsTest, NvencExplicitBRefIsNotSentWithoutBFrames) {
+    VideoConfig config = MakeBaseVideoConfig("hevc_nvenc");
+    config.bFrames = 0;
+    config.bRefMode = "middle";
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "ignored when b_frames=0"));
 }
 
 TEST(VideoEncoderOptionsTest, NvencExplicitBRefModeDisabledIsRespected) {
@@ -257,14 +263,24 @@ TEST(VideoEncoderOptionsTest, NvencExplicitBRefModeDisabledIsRespected) {
     EXPECT_EQ(plan.maxBFrames, 4);
 }
 
-TEST(VideoEncoderOptionsTest, NvencMultipassAutoUpgradeWithBFrames) {
-    // When B-frames are active and user didn't set multipass at all,
-    // auto-upgrade to qres for better B-frame bit allocation.
+TEST(VideoEncoderOptionsTest, NvencAutoBRefModeIsResolvedByPatchedFfmpeg) {
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.bFrames = 4;
-    config.multipass.clear();  // User didn't set multipass → auto-upgrade
+    config.bRefMode = "auto";
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
+}
+
+TEST(VideoEncoderOptionsTest, NvencMultipassAutoUpgradeWithBFrames) {
+    // Auto uses qres when B-frames need better bit allocation.
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.bFrames = 4;
+    config.multipass = "auto";
     config.bRefMode = "middle";
-    config.lookahead = true;
+    config.lookahead = "auto";
 
     const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
     const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
@@ -273,14 +289,13 @@ TEST(VideoEncoderOptionsTest, NvencMultipassAutoUpgradeWithBFrames) {
     EXPECT_EQ(plan.maxBFrames, 4);
     ASSERT_TRUE(multipass.has_value());
     EXPECT_EQ(*multipass, "qres");
-    EXPECT_FALSE(HasMessageContaining(plan.warnings, "multipass auto-upgraded"));
     // weighted_pred not set (OBS approach)
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "weighted_pred").has_value());
     // b_ref_mode still applied
     EXPECT_TRUE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
-    // AV1 B-frame QP constraints
-    EXPECT_EQ(*FindOptionValue(plan.generatedOptions, "qmin"), "1");
-    EXPECT_EQ(*FindOptionValue(plan.generatedOptions, "qmax"), "200");
+    const std::optional<std::string> maxQpB = FindOptionValue(plan.generatedOptions, "max_qp_b");
+    ASSERT_TRUE(maxQpB.has_value());
+    EXPECT_EQ(*maxQpB, "200");
 }
 
 TEST(VideoEncoderOptionsTest, NvencMultipassDisabledRespected) {
@@ -294,8 +309,8 @@ TEST(VideoEncoderOptionsTest, NvencMultipassDisabledRespected) {
     const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
 
     EXPECT_TRUE(plan.errors.empty());
-    EXPECT_FALSE(multipass.has_value());  // Not emitted → FFmpeg uses its default
-    EXPECT_FALSE(HasMessageContaining(plan.warnings, "multipass auto-upgraded"));
+    ASSERT_TRUE(multipass.has_value());
+    EXPECT_EQ(*multipass, "disabled");
 }
 
 TEST(VideoEncoderOptionsTest, NvencMultipassNotUpgradedWhenExplicitlySet) {
@@ -310,22 +325,102 @@ TEST(VideoEncoderOptionsTest, NvencMultipassNotUpgradedWhenExplicitlySet) {
     EXPECT_TRUE(plan.errors.empty());
     ASSERT_TRUE(multipass.has_value());
     EXPECT_EQ(*multipass, "fullres");
-    EXPECT_FALSE(HasMessageContaining(plan.warnings, "multipass auto-upgraded"));
 }
 
 TEST(VideoEncoderOptionsTest, NvencMultipassNotUpgradedWithoutBFrames) {
-    // multipass should NOT auto-upgrade when b_frames=0
+    // VBR without B-frames does not benefit enough to enable multipass by default.
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.bFrames = 0;
-    config.multipass = "disabled";
+    config.multipass = "auto";
 
     const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
     const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(plan.maxBFrames, 0);
-    EXPECT_FALSE(multipass.has_value());
-    EXPECT_FALSE(HasMessageContaining(plan.warnings, "multipass auto-upgraded"));
+    ASSERT_TRUE(multipass.has_value());
+    EXPECT_EQ(*multipass, "disabled");
+}
+
+TEST(VideoEncoderOptionsTest, NvencMultipassAutoUsesQresForCbrWithoutBFrames) {
+    VideoConfig config = MakeBaseVideoConfig("h264_nvenc");
+    config.rateControl = "CBR";
+    config.bFrames = 0;
+    config.multipass = "auto";
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
+
+    EXPECT_TRUE(plan.errors.empty());
+    ASSERT_TRUE(multipass.has_value());
+    EXPECT_EQ(*multipass, "qres");
+}
+
+TEST(VideoEncoderOptionsTest, NvencLookaheadOffAutoAndExplicitDepthAreDeterministic) {
+    VideoConfig config = MakeBaseVideoConfig("hevc_nvenc");
+    config.bFrames = 4;
+
+    config.lookahead = "off";
+    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "rc-lookahead").value_or(""), "0");
+
+    config.lookahead = "auto";
+    plan = BuildEncoderOptionPlan(config, false, "420");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "rc-lookahead").value_or(""), "20");
+
+    config.lookahead = "12";
+    plan = BuildEncoderOptionPlan(config, false, "420");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "rc-lookahead").value_or(""), "12");
+}
+
+TEST(VideoEncoderOptionsTest, NvencLookaheadClampsToBFrameDependentLimit) {
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.bFrames = 4;
+    config.lookahead = "31";
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const std::optional<std::string> lookahead = FindOptionValue(plan.generatedOptions, "rc-lookahead");
+
+    EXPECT_TRUE(plan.errors.empty());
+    ASSERT_TRUE(lookahead.has_value());
+    EXPECT_EQ(*lookahead, "27");
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "clamping to 27"));
+}
+
+TEST(VideoEncoderOptionsTest, NvencSpatialAndTemporalAqCanBeControlledIndependently) {
+    VideoConfig config = MakeBaseVideoConfig("h264_nvenc");
+    config.spatialAq = true;
+    config.temporalAq = false;
+    config.aqStrength = 11;
+
+    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "spatial-aq").value_or(""), "1");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "temporal-aq").value_or(""), "0");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "aq-strength").value_or(""), "11");
+
+    config.spatialAq = false;
+    config.temporalAq = true;
+    plan = BuildEncoderOptionPlan(config, false, "420");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "spatial-aq").value_or(""), "0");
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "temporal-aq").value_or(""), "1");
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "aq-strength").has_value());
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "aq_strength is ignored"));
+}
+
+TEST(VideoEncoderOptionsTest, InvalidNvencPolicyValuesAreRejected) {
+    VideoConfig config = MakeBaseVideoConfig("h264_nvenc");
+    config.lookahead = "many";
+    config.multipass = "sometimes";
+    config.bRefMode = "all";
+    config.aqStrength = 16;
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+
+    EXPECT_TRUE(HasMessageContaining(plan.errors, "lookahead"));
+    EXPECT_TRUE(HasMessageContaining(plan.errors, "multipass"));
+    EXPECT_TRUE(HasMessageContaining(plan.errors, "b_ref_mode"));
+    EXPECT_TRUE(HasMessageContaining(plan.errors, "aq_strength"));
 }
 
 TEST(VideoEncoderOptionsTest, IsHardwareEncoderFlagSetCorrectly) {
@@ -347,12 +442,12 @@ TEST(VideoEncoderOptionsTest, IsHardwareEncoderFlagSetCorrectly) {
 }
 
 TEST(VideoEncoderOptionsTest, NvencHEVCBFramesMultipassAutoUpgrade) {
-    // HEVC NVENC with B-frames and no multipass set → auto-upgrade to qres
+    // HEVC NVENC with B-frames selects qres in auto mode.
     VideoConfig config = MakeBaseVideoConfig("hevc_nvenc");
     config.bFrames = 4;
     config.bRefMode = "middle";
-    config.multipass.clear();  // User didn't set multipass → auto-upgrade
-    config.lookahead = true;
+    config.multipass = "auto";
+    config.lookahead = "auto";
 
     const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
 
@@ -370,8 +465,7 @@ TEST(VideoEncoderOptionsTest, NvencHEVCBFramesMultipassAutoUpgrade) {
 }
 
 TEST(VideoEncoderOptionsTest, NvencAV1BFramesGetQPConstraints) {
-    // NVENC AV1 with B-frames should get qmin/qmax to prevent the rate
-    // controller from pushing leaf B-frame QP to extreme values.
+    // Bound only B-frame QP; global qmin/qmax would also alter I/P policy.
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.bFrames = 4;
     config.bRefMode = "middle";
@@ -381,16 +475,15 @@ TEST(VideoEncoderOptionsTest, NvencAV1BFramesGetQPConstraints) {
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(plan.maxBFrames, 4);
-    const std::optional<std::string> qmin = FindOptionValue(plan.generatedOptions, "qmin");
-    const std::optional<std::string> qmax = FindOptionValue(plan.generatedOptions, "qmax");
-    ASSERT_TRUE(qmin.has_value());
-    ASSERT_TRUE(qmax.has_value());
-    EXPECT_EQ(*qmin, "1");
-    EXPECT_EQ(*qmax, "200");
+    const std::optional<std::string> maxQpB = FindOptionValue(plan.generatedOptions, "max_qp_b");
+    ASSERT_TRUE(maxQpB.has_value());
+    EXPECT_EQ(*maxQpB, "200");
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
 }
 
 TEST(VideoEncoderOptionsTest, NvencAV1NoBFramesNoQPConstraints) {
-    // Without B-frames, no qmin/qmax constraints needed.
+    // Without B-frames, no B-frame-only constraint is needed.
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.bFrames = 0;
 
@@ -398,8 +491,20 @@ TEST(VideoEncoderOptionsTest, NvencAV1NoBFramesNoQPConstraints) {
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(plan.maxBFrames, 0);
-    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
-    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "max_qp_b").has_value());
+}
+
+TEST(VideoEncoderOptionsTest, NvencAV1CqpDoesNotApplyRateControlQpBound) {
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.rateControl = "CQP";
+    config.qp = 180;
+    config.bFrames = 4;
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "qp").value_or(""), "180");
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "max_qp_b").has_value());
 }
 
 TEST(VideoEncoderOptionsTest, NvencHEVCBFramesNoQPConstraints) {
@@ -413,8 +518,7 @@ TEST(VideoEncoderOptionsTest, NvencHEVCBFramesNoQPConstraints) {
     const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
 
     EXPECT_TRUE(plan.errors.empty());
-    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
-    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "max_qp_b").has_value());
 }
 
 TEST(VideoEncoderOptionsTest, NvencAV1BRefModeDisabledWithBFramesGetsQP) {
@@ -431,8 +535,7 @@ TEST(VideoEncoderOptionsTest, NvencAV1BRefModeDisabledWithBFramesGetsQP) {
     EXPECT_EQ(plan.maxBFrames, 2);
     // b_ref_mode=disabled IS emitted to override FFmpeg's auto-enable
     ASSERT_TRUE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
-    EXPECT_EQ(*FindOptionValue(plan.generatedOptions, "b_ref_mode"), "disabled");
-    // QP constraints still apply since AV1 + B-frames
-    ASSERT_TRUE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
-    ASSERT_TRUE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "b_ref_mode").value_or(""), "disabled");
+    // B-frame QP bound still applies since this is AV1 with B-frames.
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "max_qp_b").value_or(""), "200");
 }

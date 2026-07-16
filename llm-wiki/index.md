@@ -78,6 +78,8 @@ Primary sources:
   - WGC and DXGI Desktop Duplication backends, including the max-rate variable-input CFR producer invariant, callback-rate aging, callback epochs, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and crash-safe straight-alpha point-sampled single-stream DPI/HDR cursor composition. Last verified 2026-07-15. Stale-risk: medium.
 - `cfr-capture-sync.md`
   - Shared WGC/DXGI/inject CFR and A/V invariants, including max-rate variable-input WGC production, transactional startup, 60 ms audio-ingestion look-ahead, 300 ms WGC/DXGI look-ahead, nearest monotonic source selection, causal inject transport, hysteretic overload recovery, and exact decoded stop/tail accounting. Last verified 2026-07-15. Stale-risk: medium.
+- `nvenc-encoding.md`
+  - NVENC hardware-frame ownership, safe CFR repeat encoding, lookahead/multipass/split-AQ/B-reference policy, and bundled FFmpeg patch invariants. Last verified 2026-07-16. Stale-risk: medium (fresh driver/GPU matrix remains necessary).
 - `performance-priority.md`
   - `[Performance]` priorities, adapter-aware HAGS auto resolution, D3D11 priority persistence/readback, capture/encoder MMCSS QoS, and D3D12 queue constraints. Last verified 2026-07-12. Stale-risk: medium.
 - `recording-output-paths.md`

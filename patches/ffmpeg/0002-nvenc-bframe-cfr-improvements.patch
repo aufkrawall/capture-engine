@@ -1,114 +1,218 @@
 diff --git a/libavcodec/nvenc.c b/libavcodec/nvenc.c
-index dffbb67652413e25468f8537409eb0b33b7b0da3..286a8dfbb5ada0060e38c65c40b735f99a255bb0 100644
+index dffbb67652413e25468f8537409eb0b33b7b0da3..5efd21cf2d6e47c5b38a040f930d438683231e38 100644
 --- a/libavcodec/nvenc.c
 +++ b/libavcodec/nvenc.c
-@@ -529,8 +529,16 @@ static int nvenc_check_capabilities(AVCodecContext *avctx)
+@@ -1076,18 +1076,38 @@ static av_cold int nvenc_setup_rate_control(AVCodecContext *avctx)
+         avctx->rc_buffer_size = ctx->encode_config.rcParams.vbvBufferSize = 2 * ctx->encode_config.rcParams.averageBitRate;
+     }
  
-     ret = nvenc_check_cap(avctx, NV_ENC_CAPS_SUPPORT_WEIGHTED_PREDICTION);
-     if (ctx->weighted_pred > 0 && ret <= 0) {
--        av_log (avctx, AV_LOG_WARNING, "Weighted Prediction not supported\n");
--        return AVERROR(ENOSYS);
-+        /* Patch: For AV1, skip the capability check failure. The NVENC API may
-+         * support weighted prediction for AV1 at the API level even though the
-+         * capability query returns 0. Let the NVENC API itself reject it if
-+         * truly unsupported (ENOSYS on nvEncInitializeEncoder). */
-+        if (avctx->codec->id != AV_CODEC_ID_AV1) {
-+            av_log(avctx, AV_LOG_WARNING, "Weighted Prediction not supported\n");
-+            return AVERROR(ENOSYS);
+-    if (ctx->aq) {
+-        ctx->encode_config.rcParams.enableAQ   = 1;
+-        ctx->encode_config.rcParams.aqStrength = ctx->aq_strength;
+-        av_log(avctx, AV_LOG_VERBOSE, "AQ enabled.\n");
++    if (avctx->codec->id == AV_CODEC_ID_AV1 && ctx->max_qp_b >= 0) {
++        NV_ENC_RC_PARAMS *rc = &ctx->encode_config.rcParams;
++        if (rc->rateControlMode == NV_ENC_PARAMS_RC_CONSTQP) {
++            av_log(avctx, AV_LOG_VERBOSE, "max_qp_b is ignored in constant-QP mode.\n");
++        } else if (rc->enableMaxQP) {
++            rc->maxQP.qpInterB = FFMIN((int)rc->maxQP.qpInterB, ctx->max_qp_b);
++        } else {
++            rc->enableMaxQP = 1;
++            rc->maxQP.qpIntra = 255;
++            rc->maxQP.qpInterP = 255;
++            rc->maxQP.qpInterB = ctx->max_qp_b;
 +        }
-+        av_log(avctx, AV_LOG_WARNING,
-+               "Weighted Prediction: capability not reported for AV1, attempting anyway.\n");
      }
  
-     ret = nvenc_check_cap(avctx, NV_ENC_CAPS_SUPPORT_CABAC);
-@@ -1088,8 +1096,12 @@ static av_cold int nvenc_setup_rate_control(AVCodecContext *avctx)
-     }
- 
-     if (ctx->rc_lookahead > 0) {
-+        /* Patch: Reduced lookahead safety margin from 4 to 2 for game capture.
-+         * The original -4 margin was conservative. With a known fixed pipeline
-+         * depth in game capture, -2 provides deeper lookahead without increasing
-+         * surface count, improving rate control accuracy for high-motion content. */
-         int lkd_bound = FFMIN(ctx->nb_surfaces, ctx->async_depth) -
--                        ctx->encode_config.frameIntervalP - 4;
-+                        ctx->encode_config.frameIntervalP - 2;
- 
-         if (lkd_bound < 0) {
-             ctx->encode_config.rcParams.enableLookahead = 0;
-@@ -1305,6 +1317,8 @@ static av_cold int nvenc_setup_h264_config(AVCodecContext *avctx)
-
-     if (ctx->b_ref_mode >= 0)
-         h264->useBFramesAsRef = ctx->b_ref_mode;
-+    else if (avctx->max_b_frames > 0)
-+        h264->useBFramesAsRef = NV_ENC_BFRAME_REF_MODE_MIDDLE;
- 
-     h264->numRefL0 = avctx->refs;
-     h264->numRefL1 = avctx->refs;
-@@ -1498,6 +1512,8 @@ static av_cold int nvenc_setup_hevc_config(AVCodecContext *avctx)
-
-     if (ctx->b_ref_mode >= 0)
-         hevc->useBFramesAsRef = ctx->b_ref_mode;
-+    else if (avctx->max_b_frames > 0)
-+        hevc->useBFramesAsRef = NV_ENC_BFRAME_REF_MODE_MIDDLE;
- 
-     hevc->numRefL0 = avctx->refs;
-     hevc->numRefL1 = avctx->refs;
-@@ -1609,6 +1625,13 @@ static av_cold int nvenc_setup_av1_config(AVCodecContext *avctx)
- 
-     if (ctx->b_ref_mode >= 0)
-         av1->useBFramesAsRef = ctx->b_ref_mode;
-+    /* Patch: Auto-enable b_ref_mode=middle when B-frames are active and the
-+     * user left b_ref_mode at default (-1). This gives better B-frame quality
-+     * by allowing every other B-frame as an AltRef2 reference, without the
-+     * latency/memory overhead of 'each' mode. Critical for AV1 NVENC which
-+     * lacks weighted_pred support. */
-+    else if (avctx->max_b_frames > 0)
-+        av1->useBFramesAsRef = NV_ENC_BFRAME_REF_MODE_MIDDLE;
- 
-     av1->numFwdRefs = avctx->refs;
-     av1->numBwdRefs = avctx->refs;
-@@ -2685,10 +2708,13 @@ static int process_output_surface(AVCodecContext *avctx, AVPacket *pkt, NvencSur
-         pict_type = AV_PICTURE_TYPE_BI;
-         break;
-     default:
--        av_log(avctx, AV_LOG_ERROR, "Unknown picture type encountered, expect the output to be broken.\n");
--        av_log(avctx, AV_LOG_ERROR, "Please report this error and include as much information on how to reproduce it as possible.\n");
--        res = AVERROR_EXTERNAL;
--        goto error;
-+        /* Patch: Gracefully handle unknown picture types (AV1 SEF/SKIPPED).
-+         * NVENC may return types not in this enum for AV1 show_existing_frame
-+         * or skipped frames. Treat as P-frame with warning instead of failing. */
-+        av_log(avctx, AV_LOG_WARNING, "Unknown picture type %d, treating as P-frame.\n",
-+               lock_params.pictureType);
-+        pict_type = AV_PICTURE_TYPE_P;
-+        break;
-     }
- 
-     ff_encode_add_stats_side_data(pkt,
-@@ -3228,6 +3254,26 @@ av_cold void ff_nvenc_encode_flush(AVCodecContext *avctx)
-     NvencContext *ctx = avctx->priv_data;
- 
-     nvenc_send_frame(avctx, NULL);
-+
-+    /* Patch: Drain all remaining packets from the B-frame reorder buffer
-+     * before resetting timestamps. Without this, B-frames buffered by the
-+     * encoder's internal reorder mechanism are lost when the caller flushes.
-+     * This is critical for game capture where recording stop must not lose
-+     * the last few frames. */
-+    while (1) {
-+        AVPacket *pkt = av_packet_alloc();
-+        if (!pkt)
-+            break;
-+        int ret = ff_nvenc_receive_packet(avctx, pkt);
-+        if (ret < 0) {
-+            av_packet_free(&pkt);
-+            break;
+-    if (ctx->temporal_aq) {
+-        ctx->encode_config.rcParams.enableTemporalAQ = 1;
+-        av_log(avctx, AV_LOG_VERBOSE, "Temporal AQ enabled.\n");
++    if (ctx->aq >= 0) {
++        ctx->encode_config.rcParams.enableAQ = ctx->aq;
++        if (ctx->aq) {
++            ctx->encode_config.rcParams.aqStrength = ctx->aq_strength;
++            av_log(avctx, AV_LOG_VERBOSE, "AQ enabled.\n");
 +        }
-+        /* Drop the packet — caller has already given up on output.
-+         * We only drain to ensure the encoder's internal state is clean. */
-+        av_packet_free(&pkt);
+     }
+ 
+-    if (ctx->rc_lookahead > 0) {
++    if (ctx->temporal_aq >= 0) {
++        ctx->encode_config.rcParams.enableTemporalAQ = ctx->temporal_aq;
++        if (ctx->temporal_aq)
++            av_log(avctx, AV_LOG_VERBOSE, "Temporal AQ enabled.\n");
 +    }
 +
-     av_fifo_reset2(ctx->timestamp_list);
-     ctx->output_frame_num = 0;
-     ctx->initial_delay_time = 0;
++    if (ctx->rc_lookahead == 0) {
++        ctx->encode_config.rcParams.enableLookahead = 0;
++        ctx->encode_config.rcParams.lookaheadDepth = 0;
++    } else if (ctx->rc_lookahead > 0) {
+         int lkd_bound = FFMIN(ctx->nb_surfaces, ctx->async_depth) -
+                         ctx->encode_config.frameIntervalP - 4;
+ 
+@@ -1747,11 +1767,16 @@ static av_cold int nvenc_setup_encoder(AVCodecContext *avctx)
+     ctx->init_encode_params.enableEncodeAsync = 0;
+     ctx->init_encode_params.enablePTD = 1;
+ 
+-    /* If lookahead isn't set from CLI, use value from preset.
++    /* If lookahead isn't set from CLI, use the value from the preset.
+      * P6 & P7 presets may enable lookahead for better quality.
+      * */
+-    if (ctx->rc_lookahead == 0 && ctx->encode_config.rcParams.enableLookahead)
+-        ctx->rc_lookahead = ctx->encode_config.rcParams.lookaheadDepth;
++    if (ctx->rc_lookahead < 0) {
++        ctx->rc_lookahead = ctx->encode_config.rcParams.enableLookahead ?
++                            ctx->encode_config.rcParams.lookaheadDepth : 0;
++    } else if (ctx->rc_lookahead == 0) {
++        ctx->encode_config.rcParams.enableLookahead = 0;
++        ctx->encode_config.rcParams.lookaheadDepth = 0;
++    }
+ 
+     if (ctx->weighted_pred == 1)
+         ctx->init_encode_params.enableWeightedPrediction = 1;
+@@ -1797,6 +1822,14 @@ static av_cold int nvenc_setup_encoder(AVCodecContext *avctx)
+     if(ctx->single_slice_intra_refresh)
+         ctx->intra_refresh = 1;
+ 
++    if (ctx->b_ref_mode < 0) {
++        int b_ref_caps = nvenc_check_cap(avctx, NV_ENC_CAPS_SUPPORT_BFRAME_REF_MODE);
++        ctx->b_ref_mode = ctx->encode_config.frameIntervalP > 1 && (b_ref_caps & 2) ?
++                          NV_ENC_BFRAME_REF_MODE_MIDDLE : NV_ENC_BFRAME_REF_MODE_DISABLED;
++        av_log(avctx, AV_LOG_VERBOSE, "Automatic B-reference mode: %s.\n",
++               ctx->b_ref_mode == NV_ENC_BFRAME_REF_MODE_MIDDLE ? "middle" : "disabled");
++    }
++
+     nvenc_recalc_surfaces(avctx);
+ 
+     res = nvenc_setup_rate_control(avctx);
+@@ -2684,8 +2717,17 @@ static int process_output_surface(AVCodecContext *avctx, AVPacket *pkt, NvencSur
+     case NV_ENC_PIC_TYPE_BI:
+         pict_type = AV_PICTURE_TYPE_BI;
+         break;
++    case NV_ENC_PIC_TYPE_SKIPPED:
++    case NV_ENC_PIC_TYPE_INTRA_REFRESH:
++    case NV_ENC_PIC_TYPE_NONREF_P:
++        pict_type = AV_PICTURE_TYPE_P;
++        break;
++    case NV_ENC_PIC_TYPE_SWITCH:
++        pict_type = AV_PICTURE_TYPE_I;
++        break;
+     default:
+-        av_log(avctx, AV_LOG_ERROR, "Unknown picture type encountered, expect the output to be broken.\n");
++        av_log(avctx, AV_LOG_ERROR, "Unknown picture type %d encountered, expect the output to be broken.\n",
++               lock_params.pictureType);
+         av_log(avctx, AV_LOG_ERROR, "Please report this error and include as much information on how to reproduce it as possible.\n");
+         res = AVERROR_EXTERNAL;
+         goto error;
+diff --git a/libavcodec/nvenc.h b/libavcodec/nvenc.h
+index acde2a42c149f6bba66fe650f125a6bb0e50f693..c4f6ec63c487d7d563f9ee499a5225596500269b 100644
+--- a/libavcodec/nvenc.h
++++ b/libavcodec/nvenc.h
+@@ -244,6 +244,7 @@ typedef struct NvencContext
+     int bluray_compat;
+     int qmin;
+     int qmax;
++    int max_qp_b;
+     int init_qp_p;
+     int init_qp_b;
+     int init_qp_i;
+diff --git a/libavcodec/nvenc_av1.c b/libavcodec/nvenc_av1.c
+index b687260ef7663130d4fdf5a77a9dbbba79bf44ad..d5460569f2a1f1c3ae3ff6cab51f0239fe935677 100644
+--- a/libavcodec/nvenc_av1.c
++++ b/libavcodec/nvenc_av1.c
+@@ -106,7 +106,7 @@ static const AVOption options[] = {
+     { "delay",        "Delay frame output by the given amount of frames",
+                                                             OFFSET(async_depth),  AV_OPT_TYPE_INT,   { .i64 = INT_MAX }, 0, INT_MAX, VE },
+     { "rc-lookahead", "Number of frames to look ahead for rate-control",
+-                                                            OFFSET(rc_lookahead), AV_OPT_TYPE_INT,   { .i64 = 0 }, 0, INT_MAX, VE },
++                                                            OFFSET(rc_lookahead), AV_OPT_TYPE_INT,   { .i64 = -1 }, -1, INT_MAX, VE },
+     { "cq",           "Set target quality level (0 to 63, 0 means automatic) for constant quality mode in VBR rate control",
+                                                             OFFSET(quality),      AV_OPT_TYPE_FLOAT, { .dbl = 0.}, 0., 63., VE },
+     { "init_qpP",     "Initial QP value for P frame",       OFFSET(init_qp_p),    AV_OPT_TYPE_INT,   { .i64 = -1 }, -1, 255, VE },
+@@ -128,8 +128,8 @@ static const AVOption options[] = {
+                                                             OFFSET(forced_idr),   AV_OPT_TYPE_BOOL,  { .i64 = 0 }, -1, 1, VE },
+     { "b_adapt",      "When lookahead is enabled, set this to 0 to disable adaptive B-frame decision",
+                                                             OFFSET(b_adapt),      AV_OPT_TYPE_BOOL,  { .i64 = 1 }, 0,  1, VE },
+-    { "spatial-aq",   "set to 1 to enable Spatial AQ",      OFFSET(aq),           AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, VE },
+-    { "temporal-aq",  "set to 1 to enable Temporal AQ",     OFFSET(temporal_aq),  AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, VE },
++    { "spatial-aq",   "set to 1 to enable Spatial AQ, 0 to disable, -1 for preset default", OFFSET(aq), AV_OPT_TYPE_BOOL, { .i64 = -1 }, -1, 1, VE },
++    { "temporal-aq",  "set to 1 to enable Temporal AQ, 0 to disable, -1 for preset default", OFFSET(temporal_aq), AV_OPT_TYPE_BOOL, { .i64 = -1 }, -1, 1, VE },
+     { "zerolatency",  "Set 1 to indicate zero latency operation (no reordering delay)",
+                                                             OFFSET(zerolatency),  AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, VE },
+     { "nonref_p",     "Set this to 1 to enable automatic insertion of non-reference P-frames",
+@@ -137,7 +137,9 @@ static const AVOption options[] = {
+     { "strict_gop",   "Set 1 to minimize GOP-to-GOP rate fluctuations",
+                                                             OFFSET(strict_gop),   AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, VE },
+     { "aq-strength",  "When Spatial AQ is enabled, this field is used to specify AQ strength. AQ strength scale is from 1 (low) - 15 (aggressive)",
+-                                                            OFFSET(aq_strength),  AV_OPT_TYPE_INT,   { .i64 = 8 }, 1, 15, VE },
++                                                            OFFSET(aq_strength),  AV_OPT_TYPE_INT,   { .i64 = 0 }, 0, 15, VE },
++    { "max_qp_b",     "Set maximum B-frame QP without constraining I/P frames",
++                                                            OFFSET(max_qp_b),     AV_OPT_TYPE_INT,   { .i64 = -1 }, -1, 255, VE },
+     { "weighted_pred","Enable weighted prediction",         OFFSET(weighted_pred),AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, VE },
+ #ifdef NVENC_HAVE_AV1_HGOP_SUPPORT
+     { "b_ref_mode",   "Use B frames as references",         OFFSET(b_ref_mode),   AV_OPT_TYPE_INT,   { .i64 = -1 }, -1, NV_ENC_BFRAME_REF_MODE_HIERARCHICAL, VE, .unit = "b_ref_mode" },
+diff --git a/libavcodec/nvenc_h264.c b/libavcodec/nvenc_h264.c
+index 103c9a95fdac79a57eab02b93a862e9a912f832a..2142491559b26f397087b72a21e04e02f8d5d11f 100644
+--- a/libavcodec/nvenc_h264.c
++++ b/libavcodec/nvenc_h264.c
+@@ -86,7 +86,7 @@ static const AVOption options[] = {
+     { "vbr",          "Variable bitrate mode",              0,                    AV_OPT_TYPE_CONST, { .i64 = NV_ENC_PARAMS_RC_VBR },                       0, 0, VE, .unit = "rc" },
+     { "cbr",          "Constant bitrate mode",              0,                    AV_OPT_TYPE_CONST, { .i64 = NV_ENC_PARAMS_RC_CBR },                       0, 0, VE, .unit = "rc" },
+     { "rc-lookahead", "Number of frames to look ahead for rate-control",
+-                                                            OFFSET(rc_lookahead), AV_OPT_TYPE_INT,   { .i64 = 0 }, 0, INT_MAX, VE },
++                                                            OFFSET(rc_lookahead), AV_OPT_TYPE_INT,   { .i64 = -1 }, -1, INT_MAX, VE },
+     { "surfaces",     "Number of concurrent surfaces",      OFFSET(nb_surfaces),  AV_OPT_TYPE_INT,   { .i64 = 0 }, 0, MAX_REGISTERED_FRAMES, VE },
+     { "gpu",          "Selects which NVENC capable GPU to use. First GPU is 0, second is 1, and so on.",
+                                                             OFFSET(device),       AV_OPT_TYPE_INT,   { .i64 = ANY_DEVICE },   -2, INT_MAX, VE, .unit = "gpu" },
+@@ -105,8 +105,8 @@ static const AVOption options[] = {
+                                                             OFFSET(forced_idr),   AV_OPT_TYPE_BOOL,  { .i64 = 0 }, -1, 1, VE },
+     { "b_adapt",      "When lookahead is enabled, set this to 0 to disable adaptive B-frame decision",
+                                                             OFFSET(b_adapt),      AV_OPT_TYPE_BOOL,  { .i64 = 1 }, 0,  1, VE },
+-    { "spatial-aq",   "set to 1 to enable Spatial AQ",      OFFSET(aq),           AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0,  1, VE },
+-    { "temporal-aq",  "set to 1 to enable Temporal AQ",     OFFSET(temporal_aq),  AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0,  1, VE },
++    { "spatial-aq",   "set to 1 to enable Spatial AQ, 0 to disable, -1 for preset default", OFFSET(aq), AV_OPT_TYPE_BOOL, { .i64 = -1 }, -1, 1, VE },
++    { "temporal-aq",  "set to 1 to enable Temporal AQ, 0 to disable, -1 for preset default", OFFSET(temporal_aq), AV_OPT_TYPE_BOOL, { .i64 = -1 }, -1, 1, VE },
+     { "zerolatency",  "Set 1 to indicate zero latency operation (no reordering delay)",
+                                                             OFFSET(zerolatency),  AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0,  1, VE },
+     { "nonref_p",     "Set this to 1 to enable automatic insertion of non-reference P-frames",
+@@ -114,7 +114,7 @@ static const AVOption options[] = {
+     { "strict_gop",   "Set 1 to minimize GOP-to-GOP rate fluctuations",
+                                                             OFFSET(strict_gop),   AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0,  1, VE },
+     { "aq-strength",  "When Spatial AQ is enabled, this field is used to specify AQ strength. AQ strength scale is from 1 (low) - 15 (aggressive)",
+-                                                            OFFSET(aq_strength),  AV_OPT_TYPE_INT,   { .i64 = 8 }, 1, 15, VE },
++                                                            OFFSET(aq_strength),  AV_OPT_TYPE_INT,   { .i64 = 0 }, 0, 15, VE },
+     { "cq",           "Set target quality level (0 to 51, 0 means automatic) for constant quality mode in VBR rate control",
+                                                             OFFSET(quality),      AV_OPT_TYPE_FLOAT, { .dbl = 0.}, 0., 51., VE },
+     { "aud",          "Use access unit delimiters",         OFFSET(aud),          AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, VE },
+diff --git a/libavcodec/nvenc_hevc.c b/libavcodec/nvenc_hevc.c
+index 94ba34c48b43289184974979219412876cf9b53e..32e3fbd70b6e572340e2fd5a33a4e355e03ebe3d 100644
+--- a/libavcodec/nvenc_hevc.c
++++ b/libavcodec/nvenc_hevc.c
+@@ -81,7 +81,7 @@ static const AVOption options[] = {
+     { "vbr",          "Variable bitrate mode",              0,                    AV_OPT_TYPE_CONST, { .i64 = NV_ENC_PARAMS_RC_VBR },                       0, 0, VE, .unit = "rc" },
+     { "cbr",          "Constant bitrate mode",              0,                    AV_OPT_TYPE_CONST, { .i64 = NV_ENC_PARAMS_RC_CBR },                       0, 0, VE, .unit = "rc" },
+     { "rc-lookahead", "Number of frames to look ahead for rate-control",
+-                                                            OFFSET(rc_lookahead), AV_OPT_TYPE_INT,   { .i64 = 0 }, 0, INT_MAX, VE },
++                                                            OFFSET(rc_lookahead), AV_OPT_TYPE_INT,   { .i64 = -1 }, -1, INT_MAX, VE },
+     { "surfaces",     "Number of concurrent surfaces",      OFFSET(nb_surfaces),  AV_OPT_TYPE_INT,   { .i64 = 0 }, 0, MAX_REGISTERED_FRAMES, VE },
+     { "gpu",          "Selects which NVENC capable GPU to use. First GPU is 0, second is 1, and so on.",
+                                                             OFFSET(device),       AV_OPT_TYPE_INT,   { .i64 = ANY_DEVICE }, -2, INT_MAX, VE, .unit = "gpu" },
+@@ -100,8 +100,8 @@ static const AVOption options[] = {
+                                                             OFFSET(forced_idr),   AV_OPT_TYPE_BOOL,  { .i64 = 0 }, -1, 1, VE },
+     { "b_adapt",      "When lookahead is enabled, set this to 0 to disable adaptive B-frame decision",
+                                                             OFFSET(b_adapt),      AV_OPT_TYPE_BOOL,  { .i64 = 1 }, 0, 1, VE },
+-    { "spatial-aq",   "set to 1 to enable Spatial AQ",      OFFSET(aq),           AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, VE },
+-    { "temporal-aq",  "set to 1 to enable Temporal AQ",     OFFSET(temporal_aq),  AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, VE },
++    { "spatial-aq",   "set to 1 to enable Spatial AQ, 0 to disable, -1 for preset default", OFFSET(aq), AV_OPT_TYPE_BOOL, { .i64 = -1 }, -1, 1, VE },
++    { "temporal-aq",  "set to 1 to enable Temporal AQ, 0 to disable, -1 for preset default", OFFSET(temporal_aq), AV_OPT_TYPE_BOOL, { .i64 = -1 }, -1, 1, VE },
+     { "zerolatency",  "Set 1 to indicate zero latency operation (no reordering delay)",
+                                                             OFFSET(zerolatency),  AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, VE },
+     { "nonref_p",     "Set this to 1 to enable automatic insertion of non-reference P-frames",
+@@ -109,7 +109,7 @@ static const AVOption options[] = {
+     { "strict_gop",   "Set 1 to minimize GOP-to-GOP rate fluctuations",
+                                                             OFFSET(strict_gop),   AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, VE },
+     { "aq-strength",  "When Spatial AQ is enabled, this field is used to specify AQ strength. AQ strength scale is from 1 (low) - 15 (aggressive)",
+-                                                            OFFSET(aq_strength),  AV_OPT_TYPE_INT,   { .i64 = 8 }, 1, 15, VE },
++                                                            OFFSET(aq_strength),  AV_OPT_TYPE_INT,   { .i64 = 0 }, 0, 15, VE },
+     { "cq",           "Set target quality level (0 to 51, 0 means automatic) for constant quality mode in VBR rate control",
+                                                             OFFSET(quality),      AV_OPT_TYPE_FLOAT, { .dbl = 0.}, 0., 51., VE },
+     { "aud",          "Use access unit delimiters",         OFFSET(aud),          AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, VE },

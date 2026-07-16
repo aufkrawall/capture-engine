@@ -86,8 +86,8 @@ Separate processes for isolation and stability:
 
 See [patches/ffmpeg/README.md](patches/ffmpeg/README.md) for details.
 
-- **`0001-matroska-add-timestamp-precision-option.patch`**: Adds a `timestamp_precision` option to the MKV muxer. At 120 fps, the default 1 ms TimecodeScale forces ±8% frame interval jitter; 1 µs precision reduces it to ±0.008%.
-- **`0002-nvenc-bframe-cfr-improvements.patch`**: NVENC improvements for game capture — weighted prediction for AV1, reduced lookahead margin, auto `b_ref_mode=middle`, graceful flush drain of B-frame reorder buffer.
+- **`0001-matroska-add-timestamp-precision-option.patch`**: Adds exact configurable MKV timestamp precision, including duration/default-duration scaling and signed-16-bit-safe cluster rollover. At 120 fps, 1 µs precision reduces timestamp quantization from alternating 8/9 ms intervals to 8333/8334 µs.
+- **`0002-nvenc-bframe-cfr-improvements.patch`**: Makes explicit lookahead/AQ disablement deterministic, resolves automatic B references from the selected GPU's capabilities, maps known NVENC picture types, and adds an AV1 B-frame-only maximum-QP control while preserving upstream safety checks and flush behavior.
 
 ## Smooth Video Capture
 
