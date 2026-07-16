@@ -39,6 +39,7 @@
 #include "dx12_fg_scene.h"
 #include "dx12_fg_taa.h"
 #include "fg_present_policy.h"
+#include "fg_switch_config.h"
 #include "fg_switch_transition.h"
 #include "fg_upscale_policy.h"
 #include "testapp_common.h"
@@ -85,57 +86,58 @@ static const char* SwapChainOwnerName(SwapChainOwner owner) {
     }
 }
 
-static int g_WindowWidth = 1920;
-static int g_WindowHeight = 1080;
-static int g_GpuLoadPasses = 40;
-static int g_VSync = 0;
-static int g_Fullscreen = 0;
-static bool g_FsrReloadRuntimeOnSwitch = true;
-static bool g_StreamlinePreloadInitialOff = false;
-static bool g_FsrKeepRuntimeLoadedInitialOff = false;
-static bool g_FsrStartupDisabledContextStress = false;
-static bool g_FsrSuspendResumeStress = true;
-static int g_FsrSuspendResumeIntervalSeconds = 3;
-static bool g_DlssSuspendResumeStress = false;
-static int g_DlssSuspendResumeIntervalSeconds = 3;
+static testapp::fg::FgSwitchConfig g_SwitchConfig;
+static int& g_WindowWidth = g_SwitchConfig.windowWidth;
+static int& g_WindowHeight = g_SwitchConfig.windowHeight;
+static int& g_GpuLoadPasses = g_SwitchConfig.gpuLoadPasses;
+static int& g_VSync = g_SwitchConfig.vsync;
+static int& g_Fullscreen = g_SwitchConfig.fullscreen;
+static bool& g_FsrReloadRuntimeOnSwitch = g_SwitchConfig.fsrReloadRuntimeOnSwitch;
+static bool& g_StreamlinePreloadInitialOff = g_SwitchConfig.streamlinePreloadInitialOff;
+static bool& g_FsrKeepRuntimeLoadedInitialOff = g_SwitchConfig.fsrKeepRuntimeLoadedInitialOff;
+static bool& g_FsrStartupDisabledContextStress = g_SwitchConfig.fsrStartupDisabledContextStress;
+static bool& g_FsrSuspendResumeStress = g_SwitchConfig.fsrSuspendResumeStress;
+static int& g_FsrSuspendResumeIntervalSeconds = g_SwitchConfig.fsrSuspendResumeIntervalSeconds;
+static bool& g_DlssSuspendResumeStress = g_SwitchConfig.dlssSuspendResumeStress;
+static int& g_DlssSuspendResumeIntervalSeconds = g_SwitchConfig.dlssSuspendResumeIntervalSeconds;
 static bool g_DlssStressDidSuspend = false;
-static bool g_DlssOffAfterActiveStress = false;
+static bool& g_DlssOffAfterActiveStress = g_SwitchConfig.dlssOffAfterActiveStress;
 static bool g_DlssStressDidRequestOff = false;
-static bool g_EnableDred = false;
-static bool g_FsrPresentCallbackStress = true;
-static int g_FsrPresentCallbackToggleIntervalSeconds = 6;
+static bool& g_EnableDred = g_SwitchConfig.apiDebug;
+static bool& g_FsrPresentCallbackStress = g_SwitchConfig.fsrPresentCallbackStress;
+static int& g_FsrPresentCallbackToggleIntervalSeconds = g_SwitchConfig.fsrPresentCallbackToggleIntervalSeconds;
 // Opt-in (default OFF): register a 1x1 UI placeholder instead of the full-size UI texture, mimicking GTA V
 // Enhanced's degenerate no-callback FSR FG UI resource. With CE injected this exercises the substitution path
 // (CE swaps in its own backbuffer-sized texture and composites the overlay onto it). [Stress]
 // fsr_degenerate_ui_resource=1 / --fsr-degenerate-ui.
-static bool g_FsrDegenerateUiResource = false;
+static bool& g_FsrDegenerateUiResource = g_SwitchConfig.fsrDegenerateUiResource;
 static ComPtr<ID3D12Resource> g_FsrDegenerateUiTexture;
-static bool g_DxgiVideoMemoryQueryStress = true;
-static int g_DxgiVideoMemoryQueryCountPerFrame = 96;
-static int g_BootstrapNativeSwapchainStressCount = 0;
-static int g_StartupNativeSwapchainRecreateCount = 0;
-static bool g_AsyncRuntimePreload = true;
-static int g_AutoExitSeconds = 0;
-static int g_AutoFsrStartSeconds = 3;
-static int g_AutoDlssStartSeconds = 12;
-static int g_AutoReturnFsrSeconds = 30;
+static bool& g_DxgiVideoMemoryQueryStress = g_SwitchConfig.videoMemoryQueryStress;
+static int& g_DxgiVideoMemoryQueryCountPerFrame = g_SwitchConfig.videoMemoryQueryCountPerFrame;
+static int& g_BootstrapNativeSwapchainStressCount = g_SwitchConfig.bootstrapNativeSwapchainStressCount;
+static int& g_StartupNativeSwapchainRecreateCount = g_SwitchConfig.startupNativeSwapchainRecreateCount;
+static bool& g_AsyncRuntimePreload = g_SwitchConfig.asyncRuntimePreload;
+static int& g_AutoExitSeconds = g_SwitchConfig.autoExitSeconds;
+static int& g_AutoFsrStartSeconds = g_SwitchConfig.autoFsrStartSeconds;
+static int& g_AutoDlssStartSeconds = g_SwitchConfig.autoDlssStartSeconds;
+static int& g_AutoReturnFsrSeconds = g_SwitchConfig.autoReturnFsrSeconds;
 
 // Super-resolution upscaling configuration (config-file/CLI driven, fixed for the run). Default:
 // ON at Quality (66.7% per dimension) so every soak exercises SR+FG together. The render
 // resolution derives from these in UpdateRenderResolution(); --no-upscaling reproduces the legacy
 // native-resolution behavior exactly.
-static bool g_UpscalingEnabled = true;
-static testapp::fg::UpscaleQuality g_UpscaleQuality = testapp::fg::UpscaleQuality::Quality;
-static int g_UpscaleScalePercent = 0;  // 0 = use the quality-mode ratio
-static char g_DlssPresetConfig = 0;    // 0 = SL default; 'j'/'k'/'l'/'m' = DLSS-4 transformer presets
+static bool& g_UpscalingEnabled = g_SwitchConfig.upscalingEnabled;
+static testapp::fg::UpscaleQuality& g_UpscaleQuality = g_SwitchConfig.upscaleQuality;
+static int& g_UpscaleScalePercent = g_SwitchConfig.upscaleScalePercent;  // 0 = use the quality-mode ratio
+static char& g_DlssPresetConfig = g_SwitchConfig.dlssPreset;  // 0 = SL default; 'j'/'k'/'l'/'m' = transformer
 // Color-space hint for DLSS SR. Our chain is display-referred SDR (values reach the screen
 // unchanged), so the truthful hint is eFalse. A/B-tested with no visible quality difference
 // (the preset-K gradient banding is model-side, unaffected by this hint); kept configurable
 // (dlss_hdr=1 / --dlss-hdr 1) for A/Bs against future DLSS updates.
-static bool g_DlssHdrInput = false;
-static int g_FsrUpscaleVersionConfig = 0;  // 0 = runtime default; 3/4 = force provider major version
-static bool g_FsrSharpeningEnabled = false;
-static int g_FsrSharpnessPercent = 80;
+static bool& g_DlssHdrInput = g_SwitchConfig.dlssHdrInput;
+static int& g_FsrUpscaleVersionConfig = g_SwitchConfig.fsrUpscaleVersion;  // 0 = default; 3/4 = provider
+static bool& g_FsrSharpeningEnabled = g_SwitchConfig.fsrSharpeningEnabled;
+static int& g_FsrSharpnessPercent = g_SwitchConfig.fsrSharpnessPercent;
 
 #include "dx12_fg_switch_config.inl"
 

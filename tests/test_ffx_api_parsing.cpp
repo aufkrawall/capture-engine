@@ -70,6 +70,47 @@ TEST(FFXApiParsingTest, ConfigureTypeRemainsDistinctFromCreateContextType) {
               ce::ffx_api::MakeEffectSubId(ce::ffx_api::kEffectIdFrameGeneration, 0x01u));
 }
 
+TEST(FFXApiParsingTest, ClassifiesGenericFrameGenerationBackendFromCreateChain) {
+    ce::ffx_api::ApiHeader create{};
+    create.type = ce::ffx_api::MakeEffectSubId(ce::ffx_api::kEffectIdFrameGeneration, 0x01u);
+    ce::ffx_api::ApiHeader backend{};
+    create.pNext = &backend;
+
+    backend.type = ce::ffx_api::kCreateContextDescTypeBackendVulkan;
+    EXPECT_EQ(ce::ffx_api::ParseCreateContextBackend(&create), ce::ffx_api::BackendApi::kVulkan);
+    EXPECT_FALSE(ce::ffx_api::ShouldUseDX12FrameGenerationInterop(
+        ce::ffx_api::ParseCreateContextBackend(&create)));
+
+    backend.type = ce::ffx_api::kCreateContextDescTypeBackendDX12;
+    EXPECT_EQ(ce::ffx_api::ParseCreateContextBackend(&create), ce::ffx_api::BackendApi::kDX12);
+    EXPECT_TRUE(ce::ffx_api::ShouldUseDX12FrameGenerationInterop(
+        ce::ffx_api::ParseCreateContextBackend(&create)));
+
+    backend.type = ce::ffx_api::kCreateContextDescTypeBackendVulkanModern;
+    EXPECT_EQ(ce::ffx_api::ParseCreateContextBackend(&create), ce::ffx_api::BackendApi::kVulkan);
+}
+
+TEST(FFXApiParsingTest, ClassifiesBackendSpecificFrameGenerationSwapchainFamilies) {
+    ce::ffx_api::ApiHeader dx12Swapchain{};
+    dx12Swapchain.type = ce::ffx_api::kCreateContextDescTypeFrameGenerationSwapChainWrapDX12;
+    EXPECT_EQ(ce::ffx_api::ParseCreateContextBackend(&dx12Swapchain), ce::ffx_api::BackendApi::kDX12);
+
+    ce::ffx_api::ApiHeader vulkanSwapchain{};
+    vulkanSwapchain.type =
+        ce::ffx_api::MakeEffectSubId(ce::ffx_api::kEffectIdFrameGenerationSwapchainVulkan, 0x01u);
+    EXPECT_EQ(ce::ffx_api::ParseCreateContextBackend(&vulkanSwapchain), ce::ffx_api::BackendApi::kVulkan);
+    EXPECT_TRUE(ce::ffx_api::IsFrameGenerationEffectType(vulkanSwapchain.type));
+}
+
+TEST(FFXApiParsingTest, UnknownBackendPreservesLegacyDX12Interop) {
+    ce::ffx_api::ApiHeader create{};
+    create.type = ce::ffx_api::MakeEffectSubId(ce::ffx_api::kEffectIdFrameGeneration, 0x01u);
+
+    EXPECT_EQ(ce::ffx_api::ParseCreateContextBackend(&create), ce::ffx_api::BackendApi::kUnknown);
+    EXPECT_TRUE(ce::ffx_api::ShouldUseDX12FrameGenerationInterop(
+        ce::ffx_api::ParseCreateContextBackend(&create)));
+}
+
 TEST(FFXApiParsingTest, ParsesAllDX12FrameGenerationSwapChainCreationQueues) {
     void* wrapSwapChain = reinterpret_cast<void*>(0x1100);
     ce::ffx_api::CreateContextDescFrameGenerationSwapChainWrapDX12 wrap{};

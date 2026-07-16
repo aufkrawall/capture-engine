@@ -78,6 +78,7 @@ std::once_flag g_DynamicHookRegistrationOnce;
 // CRITICAL FIX: Track context types to know if destroyed context is FG
 std::mutex g_ContextMapMutex;
 std::unordered_map<ffxContext, uint32_t> g_ContextTypeMap;
+std::unordered_set<ffxContext> g_VulkanContextSet;
 // Serializes post-provider transition publication with successful context destruction. The FFX provider may invoke
 // configure from multiple threads; CE's global routing/session mutations must never overlap or race context erasure.
 std::mutex g_FrameGenerationRoutingTransitionMutex;
@@ -282,6 +283,8 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* context, ffxCreateContextDes
     // the exact game/presentation queue is an input. Direct proxy-backbuffer work is legal only on this queue.
     const auto parsedSwapChainCreate =
         ce::ffx_api::ParseFrameGenerationSwapChainCreateState(reinterpret_cast<const ce::ffx_api::ApiHeader*>(desc));
+    const auto contextBackend =
+        ce::ffx_api::ParseCreateContextBackend(reinterpret_cast<const ce::ffx_api::ApiHeader*>(desc));
     const bool duringStreamlineStartup = DXGIShared::IsStreamlineStartupTransitionWindowActive();
 
     // Call original first
@@ -320,11 +323,22 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* context, ffxCreateContextDes
             if (!inserted) {
                 it->second = effectId;
             }
+            if (!ce::ffx_api::ShouldUseDX12FrameGenerationInterop(contextBackend)) {
+                g_VulkanContextSet.insert(context ? *context : nullptr);
+            } else {
+                g_VulkanContextSet.erase(context ? *context : nullptr);
+            }
         }
 
         // Check if this is a Frame Generation context
-        if (newlyTrackedContext &&
-            (effectId == FFX_API_EFFECT_ID_FRAMEGENERATION || effectId == FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN)) {
+        if (newlyTrackedContext && !ce::ffx_api::ShouldUseDX12FrameGenerationInterop(contextBackend) &&
+            ce::ffx_api::IsFrameGenerationEffectType(desc->type)) {
+            HookLogImportant(
+                "FFX Hook: Vulkan Frame Generation context CREATED; DXGI/DX12 interop intentionally bypassed "
+                "(context=%p type=0x%llx effectId=0x%x)",
+                context ? *context : nullptr, (unsigned long long)desc->type, effectId);
+        } else if (newlyTrackedContext && (effectId == FFX_API_EFFECT_ID_FRAMEGENERATION ||
+                                           effectId == FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN)) {
             int prevCount = g_FGContextCount.fetch_add(1, std::memory_order_acq_rel);
             HookLog(
                 "FFX Hook: Frame Generation context CREATED (type=0x%llx, "
@@ -350,13 +364,17 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
     // Inspect before forwarding but commit no bookkeeping changes until AMD confirms destruction succeeded.
     // This preserves callback delegation and queue ownership if the provider rejects the destroy.
     bool isFGContext = false;
+    bool isVulkanContext = false;
+    bool isVulkanFGContext = false;
     {
         std::lock_guard<std::mutex> lock(g_ContextMapMutex);
         auto it = g_ContextTypeMap.find(contextHandle);
         if (it != g_ContextTypeMap.end()) {
             uint32_t effectId = it->second;
-            isFGContext = (effectId == FFX_API_EFFECT_ID_FRAMEGENERATION ||
-                           effectId == FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN);
+            isVulkanContext = g_VulkanContextSet.find(contextHandle) != g_VulkanContextSet.end();
+            isVulkanFGContext = isVulkanContext && ce::ffx_api::IsFrameGenerationEffectType(effectId);
+            isFGContext = !isVulkanContext && (effectId == FFX_API_EFFECT_ID_FRAMEGENERATION ||
+                                               effectId == FFX_API_EFFECT_ID_FRAMEGENERATIONSWAPCHAIN);
         }
     }
 
@@ -369,15 +387,18 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
         {
             std::lock_guard<std::mutex> lock(g_ContextMapMutex);
             g_ContextTypeMap.erase(contextHandle);
+            g_VulkanContextSet.erase(contextHandle);
             g_FrameGenerationRoutingByContext.erase(contextHandle);
         }
-        {
-            std::lock_guard<std::mutex> lock(g_PresentCallbackBridgeMutex);
-            g_PresentCallbackBridgeKeys.erase(contextHandle);
+        if (!isVulkanContext) {
+            {
+                std::lock_guard<std::mutex> lock(g_PresentCallbackBridgeMutex);
+                g_PresentCallbackBridgeKeys.erase(contextHandle);
+            }
+            DX12_ClearFFXPresentCallbackBridge(contextHandle);
+            DX12_UnregisterNativeFSRSwapchainPresentationQueue(contextHandle, "FFX swapchain context destroyed");
+            ClearSubstituteUiReRegistrationForContext(contextHandle);
         }
-        DX12_ClearFFXPresentCallbackBridge(contextHandle);
-        DX12_UnregisterNativeFSRSwapchainPresentationQueue(contextHandle, "FFX swapchain context destroyed");
-        ClearSubstituteUiReRegistrationForContext(contextHandle);
     }
 
     // Only decrement if this was actually an FG context
@@ -410,6 +431,11 @@ ffxReturnCode_t Hooked_ffxDestroyContext(ffxContext* context, const ffxAllocatio
                                         "FFXHook::Hooked_ffxDestroyContext", context, nullptr,
                                         ce::fg_runtime::RuntimeMode::kOff, false, true);
         }
+    } else if (result == FFX_API_RETURN_OK && isVulkanFGContext) {
+        HookLogImportant(
+            "FFX Hook: Vulkan Frame Generation context destroyed; DXGI/DX12 teardown intentionally bypassed "
+            "(context=%p)",
+            contextHandle);
     } else if (result == FFX_API_RETURN_OK && !isFGContext) {
         HookLog("FFX Hook: Non-FG Context destroyed");
     }
@@ -467,6 +493,27 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* context, const ffxConfigureDescH
         return 1;  // Error
     }
     const ffxContext contextHandle = context ? *context : nullptr;
+
+    bool isVulkanContext = false;
+    {
+        std::lock_guard<std::mutex> lock(g_ContextMapMutex);
+        isVulkanContext = g_VulkanContextSet.find(contextHandle) != g_VulkanContextSet.end();
+    }
+    if (isVulkanContext) {
+        const ffxReturnCode_t result = CallFfxConfigureOriginalGuarded(originalConfigure, context, desc);
+        const auto parsed =
+            ce::ffx_api::ParseFrameGenerationConfigureState(reinterpret_cast<const ce::ffx_api::ApiHeader*>(desc));
+        static std::atomic<int> s_vulkanConfigureBypassLogCount{0};
+        const int logCount = s_vulkanConfigureBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (logCount <= 20 || (logCount % 600) == 0) {
+            HookLogImportant(
+                "FFX Hook: Vulkan ffxConfigure forwarded without DXGI/DX12 interop "
+                "(context=%p type=0x%llx frameGeneration=%d enabled=%d frameID=%llu result=%u log=%d)",
+                contextHandle, static_cast<unsigned long long>(desc ? desc->type : 0), parsed.recognized ? 1 : 0,
+                parsed.enabled ? 1 : 0, static_cast<unsigned long long>(parsed.frameId), result, logCount);
+        }
+        return result;
+    }
 
     // During the Streamline startup window, skip CE-side processing to avoid
     // accessing DX12 swapchain state (HDR, callback bridges) while SL's

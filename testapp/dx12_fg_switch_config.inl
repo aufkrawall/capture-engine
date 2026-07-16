@@ -120,9 +120,7 @@ static void LoadConfig() {
 }
 
 static void NormalizeAutoSequenceTimings() {
-    g_AutoFsrStartSeconds = ClampInt(g_AutoFsrStartSeconds, 0, 3598);
-    g_AutoDlssStartSeconds = ClampInt(g_AutoDlssStartSeconds, g_AutoFsrStartSeconds + 1, 3599);
-    g_AutoReturnFsrSeconds = ClampInt(g_AutoReturnFsrSeconds, g_AutoDlssStartSeconds + 1, 3600);
+    testapp::fg::NormalizeAutoSequenceTimings(&g_SwitchConfig);
 }
 
 static bool TryParseIntOption(const char* arg, const char* prefix, int* valueOut) {
@@ -206,6 +204,14 @@ static void ParseCommandLine(int argc, char* argv[]) {
             g_DlssSuspendResumeStress = true;
             continue;
         }
+        if (strcmp(argv[i], "--fsr-suspend-stress") == 0) {
+            g_FsrSuspendResumeStress = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--no-fsr-suspend-stress") == 0) {
+            g_FsrSuspendResumeStress = false;
+            continue;
+        }
         if (strcmp(argv[i], "--no-dlss-suspend-stress") == 0) {
             g_DlssSuspendResumeStress = false;
             continue;
@@ -220,6 +226,19 @@ static void ParseCommandLine(int argc, char* argv[]) {
         }
         if (strcmp(argv[i], "--dred") == 0) {
             g_EnableDred = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--vk-debug") == 0) {
+            // Vulkan compatibility spelling. Harmless on DX12 and keeps one shared command-line policy.
+            g_EnableDred = true;
+            continue;
+        }
+        if (strcmp(argv[i], "--fullscreen") == 0) {
+            g_Fullscreen = 1;
+            continue;
+        }
+        if (strcmp(argv[i], "--windowed") == 0) {
+            g_Fullscreen = 0;
             continue;
         }
         if (strcmp(argv[i], "--upscaling") == 0) {

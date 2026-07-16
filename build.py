@@ -217,6 +217,15 @@ FFX_SDK_URL = (
 FFX_SDK_ZIP_NAME = "FidelityFX-Samples-v2.2.0-prebuilt.zip"
 FFX_SDK_SOURCE_URL = "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/archive/refs/tags/v2.2.0.zip"
 FFX_SDK_SOURCE_ZIP_NAME = "FidelityFX-SDK-v2.2.0-source.zip"
+# FidelityFX SDK 2.2 deliberately has no Vulkan backend. The Vulkan FG switch app is therefore
+# pinned independently to AMD's signed 1.1.4 release (FSR 3.1.4 SR/FG) and never includes 2.2
+# headers in the same translation unit.
+FFX_VK_SDK_URL = (
+    "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/download/v1.1.4/"
+    "FidelityFX-SDK-v1.1.4.zip"
+)
+FFX_VK_SDK_ZIP_NAME = "FidelityFX-SDK-v1.1.4.zip"
+FFX_VK_SDK_SHA256 = "0216556bfb0e243cec30004a2a98d38f4e3f7406cb7938e3c1b85c758e95d952"
 STREAMLINE_SDK_URL = "https://github.com/NVIDIA-RTX/Streamline/releases/download/v2.11.1/streamline-sdk-v2.11.1.zip"
 STREAMLINE_SDK_ZIP_NAME = "streamline-sdk-v2.11.1.zip"
 FG_SDK_CACHE_DIR = os.path.join(BUILD_DIR, "fg_sdk_cache")
@@ -237,6 +246,37 @@ VERIFICATION_FINAL_EXIT_CODE = 0
 VERIFICATION_ATEXIT_REGISTERED = False
 VERIFICATION_FINALIZED = False
 WORKSPACE_TEMP_DIR = os.path.join(BUILD_DIR, "tmp")
+
+
+def sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as src:
+        for chunk in iter(lambda: src.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def pe_has_authenticode_certificate(path: str) -> bool:
+    """Return whether a PE image carries a non-empty Authenticode certificate table."""
+    try:
+        with open(path, "rb") as src:
+            image = src.read()
+        if len(image) < 0x40 or image[:2] != b"MZ":
+            return False
+        pe_offset = int.from_bytes(image[0x3C:0x40], "little")
+        if pe_offset + 26 > len(image) or image[pe_offset : pe_offset + 4] != b"PE\0\0":
+            return False
+        optional_offset = pe_offset + 24
+        magic = int.from_bytes(image[optional_offset : optional_offset + 2], "little")
+        data_directory_offset = optional_offset + (112 if magic == 0x20B else 96 if magic == 0x10B else 0)
+        if data_directory_offset == optional_offset or data_directory_offset + 40 > len(image):
+            return False
+        # IMAGE_DIRECTORY_ENTRY_SECURITY is directory index 4 and uses a file offset, not an RVA.
+        certificate_offset = int.from_bytes(image[data_directory_offset + 32 : data_directory_offset + 36], "little")
+        certificate_size = int.from_bytes(image[data_directory_offset + 36 : data_directory_offset + 40], "little")
+        return certificate_size >= 8 and certificate_offset + certificate_size <= len(image)
+    except OSError:
+        return False
 
 
 def append_linux_msys2_include(flags: List[str]) -> None:
@@ -1548,6 +1588,7 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
 
     streamline_include_dir = os.path.join(FG_SDK_INCLUDE_DIR, "streamline")
     fidelityfx_include_dir = os.path.join(FG_SDK_INCLUDE_DIR, "fidelityfx")
+    fidelityfx_vk_include_dir = os.path.join(FG_SDK_INCLUDE_DIR, "fidelityfx_vk_v1_1_4")
     streamline_header_probe = os.path.join(streamline_include_dir, "include", "sl.h")
     ffx_header_probe = os.path.join(
         fidelityfx_include_dir, "Kits", "FidelityFX", "framegeneration", "include", "ffx_framegeneration.h"
@@ -1557,6 +1598,9 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
     ffx_upscale_header_probe = os.path.join(
         fidelityfx_include_dir, "Kits", "FidelityFX", "upscalers", "include", "ffx_upscale.h"
     )
+    ffx_vk_header_probe = os.path.join(fidelityfx_vk_include_dir, "ffx_api", "vk", "ffx_api_vk.h")
+    ffx_vk_dll = os.path.join(testapp_dir, "amd_fidelityfx_vk.dll")
+    ffx_vk_license = os.path.join(testapp_dir, "FidelityFX-SDK-v1.1.4-LICENSE.txt")
 
     # -- Required DLLs by test app --
     # FSR FG + FSR upscaler (super resolution): core + companion AMD runtime DLLs
@@ -1590,17 +1634,28 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
         or not os.path.exists(ffx_header_probe)
         or not os.path.exists(ffx_upscale_header_probe)
     )
+    missing_vk = (
+        not os.path.exists(ffx_vk_dll)
+        or not os.path.exists(ffx_vk_header_probe)
+        or not os.path.exists(ffx_vk_license)
+        or not pe_has_authenticode_certificate(ffx_vk_dll)
+    )
 
-    if not missing_fsr and not missing_sl and not missing_nvngx and not missing_headers:
+    if not missing_fsr and not missing_sl and not missing_nvngx and not missing_headers and not missing_vk:
         log("FG SDK DLLs already present - skipping download")
         return
     log(
         f"FSR FG DLLs missing: {len(missing_fsr)}, Streamline DLLs missing: {len(missing_sl)}, "
-        f"headers missing: {1 if missing_headers else 0}"
+        f"headers missing: {1 if missing_headers else 0}, Vulkan FFX package missing: {1 if missing_vk else 0}"
     )
 
-    def _ensure_zip(url: str, zip_name: str) -> str:
+    def _ensure_zip(url: str, zip_name: str, expected_sha256: Optional[str] = None) -> str:
         zip_path = os.path.join(FG_SDK_CACHE_DIR, zip_name)
+        if os.path.exists(zip_path) and expected_sha256:
+            actual_sha256 = sha256_file(zip_path)
+            if actual_sha256.lower() != expected_sha256.lower():
+                log(f"Cached {zip_name} failed SHA-256 verification; replacing it")
+                os.remove(zip_path)
         if not os.path.exists(zip_path):
             log(f"Downloading {zip_name}...")
             temp_zip = zip_path + ".tmp"
@@ -1615,6 +1670,13 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
             log(f"Downloaded {zip_name}")
         else:
             log(f"Using cached {zip_name}")
+        if expected_sha256:
+            actual_sha256 = sha256_file(zip_path)
+            if actual_sha256.lower() != expected_sha256.lower():
+                raise RuntimeError(
+                    f"SHA-256 mismatch for {zip_name}: expected {expected_sha256}, got {actual_sha256}"
+                )
+            log(f"Verified {zip_name} SHA-256: {actual_sha256}")
         return zip_path
 
     def _extract_all_dlls_from_path(zip_path: str, inner_prefix: str, dest_dir: str) -> List[str]:
@@ -1728,6 +1790,43 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
                 extracted += 1
         log(f"Extracted {extracted} FidelityFX header(s)")
 
+    def _extract_fidelityfx_vulkan_package(zip_path: str) -> None:
+        import zipfile
+
+        extracted_headers = 0
+        extracted_dll = False
+        extracted_license = False
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for entry in zf.infolist():
+                normalized = entry.filename.replace("\\", "/")
+                if entry.is_dir():
+                    continue
+                if normalized.startswith("ffx-api/include/") and normalized.lower().endswith((".h", ".hpp")):
+                    rel_path = normalized[len("ffx-api/include/") :]
+                    dest_path = os.path.join(fidelityfx_vk_include_dir, *rel_path.split("/"))
+                    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                    with zf.open(entry, "r") as src, open(dest_path, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    extracted_headers += 1
+                elif normalized == "PrebuiltSignedDLL/amd_fidelityfx_vk.dll":
+                    with zf.open(entry, "r") as src, open(ffx_vk_dll, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    extracted_dll = True
+                elif normalized == "sdk/LICENSE.txt":
+                    with zf.open(entry, "r") as src, open(ffx_vk_license, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    extracted_license = True
+        if not os.path.exists(ffx_vk_header_probe):
+            raise RuntimeError("FidelityFX 1.1.4 Vulkan API headers were not found in the pinned archive")
+        if not os.path.exists(ffx_vk_dll) or not pe_has_authenticode_certificate(ffx_vk_dll):
+            raise RuntimeError("FidelityFX 1.1.4 Vulkan runtime is missing its Authenticode certificate")
+        if not os.path.exists(ffx_vk_license):
+            raise RuntimeError("FidelityFX 1.1.4 license was not found in the pinned archive")
+        log(
+            f"Prepared FidelityFX 1.1.4 Vulkan package: {extracted_headers} headers, "
+            f"DLL={'yes' if extracted_dll else 'cached'}, license={'yes' if extracted_license else 'cached'}"
+        )
+
     if missing_fsr:
         _download_and_extract(
             FFX_SDK_URL, FFX_SDK_ZIP_NAME, "Samples/Upscalers/FidelityFX_FSR/dx12/x64/Release/", fsr_dlls
@@ -1746,6 +1845,11 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
 
     if not os.path.exists(ffx_header_probe) or not os.path.exists(ffx_upscale_header_probe):
         _extract_fidelityfx_headers(_ensure_zip(FFX_SDK_SOURCE_URL, FFX_SDK_SOURCE_ZIP_NAME))
+
+    if missing_vk:
+        _extract_fidelityfx_vulkan_package(_ensure_zip(FFX_VK_SDK_URL, FFX_VK_SDK_ZIP_NAME, FFX_VK_SDK_SHA256))
+    elif not pe_has_authenticode_certificate(ffx_vk_dll):
+        raise RuntimeError("Cached FidelityFX 1.1.4 Vulkan runtime has no Authenticode certificate")
 
     # Copy _nvngx.dll from NVIDIA driver DriverStore if not present
     nvngx_dest = os.path.join(testapp_dir, "_nvngx.dll")
@@ -1786,6 +1890,65 @@ def get_fg_sdk_include_flags() -> List[str]:
         "-I" + os.path.join(fidelityfx_root, "framegeneration", "include"),
         "-I" + os.path.join(fidelityfx_root, "upscalers", "include"),
     ]
+
+
+def get_vulkan_fg_sdk_include_flags() -> List[str]:
+    """Return the isolated Streamline 2.11.1 + FidelityFX 1.1.4 Vulkan include paths."""
+    return [
+        "-I" + os.path.join(FG_SDK_INCLUDE_DIR, "streamline", "include"),
+        "-I" + os.path.join(FG_SDK_INCLUDE_DIR, "fidelityfx_vk_v1_1_4"),
+    ]
+
+
+def compile_vulkan_fg_shaders(env: Dict[str, str]) -> str:
+    """Compile, validate, and embed Vulkan FG shaders. Returns the generated include directory."""
+    shader_dir = os.path.join(PROJECT_ROOT, "testapp", "shaders")
+    output_dir = os.path.join(OBJ_DIR, "vulkan_fg_shaders")
+    os.makedirs(output_dir, exist_ok=True)
+    glslang = os.path.join(MSYS2_DIR, "clang64", "bin", "glslangValidator.exe")
+    spirv_val = os.path.join(MSYS2_DIR, "clang64", "bin", "spirv-val.exe")
+    if not os.path.exists(glslang) or not os.path.exists(spirv_val):
+        raise RuntimeError("Vulkan FG shader build requires bundled glslangValidator.exe and spirv-val.exe")
+
+    shader_specs = [
+        ("vulkan_fg_fullscreen.vert", "vert", "kFullscreenVertexSpirv"),
+        ("vulkan_fg_scene.frag", "frag", "kSceneFragmentSpirv"),
+        ("vulkan_fg_taa.frag", "frag", "kTaaFragmentSpirv"),
+        ("vulkan_fg_ui.frag", "frag", "kUiFragmentSpirv"),
+        ("vulkan_fg_compose.frag", "frag", "kComposeFragmentSpirv"),
+        ("vulkan_fg_present.frag", "frag", "kPresentFragmentSpirv"),
+    ]
+    embedded: List[tuple[str, bytes]] = []
+    for source_name, stage, symbol in shader_specs:
+        source_path = os.path.join(shader_dir, source_name)
+        spv_path = os.path.join(output_dir, source_name + ".spv")
+        if not os.path.exists(source_path):
+            raise RuntimeError(f"Missing Vulkan FG shader source: {source_path}")
+        run_command(
+            [glslang, "-V", "--target-env", "vulkan1.2", "-S", stage, source_path, "-o", spv_path],
+            env=env,
+        )
+        run_command([spirv_val, "--target-env", "vulkan1.2", spv_path], env=env)
+        with open(spv_path, "rb") as src:
+            payload = src.read()
+        if not payload or len(payload) % 4 != 0:
+            raise RuntimeError(f"Invalid SPIR-V payload generated for {source_name}")
+        embedded.append((symbol, payload))
+
+    header_path = os.path.join(output_dir, "vulkan_fg_shaders.h")
+    with open(header_path, "w", encoding="utf-8", newline="\n") as dst:
+        dst.write("// Generated by build.py from validated GLSL. Do not edit.\n#pragma once\n\n#include <cstdint>\n\n")
+        dst.write("namespace testapp::vkfg::shaders {\n")
+        for symbol, payload in embedded:
+            words = [int.from_bytes(payload[offset : offset + 4], "little") for offset in range(0, len(payload), 4)]
+            dst.write(f"inline constexpr uint32_t {symbol}[] = {{\n")
+            for offset in range(0, len(words), 8):
+                chunk = ", ".join(f"0x{word:08x}u" for word in words[offset : offset + 8])
+                dst.write(f"    {chunk},\n")
+            dst.write("};\n")
+        dst.write("}  // namespace testapp::vkfg::shaders\n")
+    log(f"Compiled and validated {len(shader_specs)} embedded Vulkan FG shaders")
+    return output_dir
 
 
 def check_python_lsp_tools():
@@ -4395,6 +4558,13 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
 
     tasks = []
     fg_sdk_cflags = cflags + get_fg_sdk_include_flags()
+    vulkan_fg_src = os.path.join(testapp_src_dir, "vulkan_fg_switch_test.cpp")
+    vulkan_fg_shader_include = None
+    if os.path.exists(vulkan_fg_src):
+        vulkan_fg_shader_include = compile_vulkan_fg_shaders(env)
+    vulkan_fg_cflags = cflags + get_vulkan_fg_sdk_include_flags()
+    if vulkan_fg_shader_include:
+        vulkan_fg_cflags.append("-I" + vulkan_fg_shader_include)
 
     ccache_exe = shutil.which("ccache", path=env.get("PATH", ""))
     if env.get("DISABLE_CCACHE"):
@@ -4647,6 +4817,29 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
             else:
                 log("Linux host: skipping vulkan_test.exe (x86) - Vulkan import library unavailable")
 
+    # DLSS/FSR FG Switching Vulkan Test App (the Vulkan FidelityFX/Streamline runtimes are x64-only).
+    vulkan_fg_exe = os.path.join(testapp_bin_dir, "vulkan_fg_switch_test.exe")
+    if os.path.exists(vulkan_fg_src):
+        if vulkan_lib is not None:
+            vulkan_fg_ldflags = [
+                "-static",
+                "-Wl,--subsystem,windows",
+                vulkan_lib,
+                "-lgdi32",
+                "-luser32",
+                "-lshcore",
+                "-lavrt",
+                "-lversion",
+            ]
+            add_task(
+                "vulkan_fg_switch_test.exe",
+                make_cmd(clang_exe, vulkan_fg_cflags, vulkan_fg_src, vulkan_fg_ldflags, vulkan_fg_exe),
+            )
+        elif IS_LINUX:
+            log("Linux host: skipping vulkan_fg_switch_test.exe - Vulkan import library unavailable")
+        if have_x86:
+            log("Skipping vulkan_fg_switch_test.exe (x86): FidelityFX/Streamline Vulkan runtimes are x64-only")
+
     # OpenGL Test App
     opengl_src = os.path.join(testapp_src_dir, "opengl_test.cpp")
     opengl_exe = os.path.join(testapp_bin_dir, "opengl_test.exe")
@@ -4889,6 +5082,15 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
 
     if errors:
         log(f"Warning: {len(errors)} test app(s) failed to compile")
+
+    stale_shader_sidecars = glob.glob(os.path.join(testapp_bin_dir, "vulkan_fg_*.spv"))
+    if stale_shader_sidecars:
+        raise RuntimeError(f"Vulkan FG runtime shader sidecars are forbidden: {stale_shader_sidecars}")
+    if os.path.exists(vulkan_fg_src):
+        if not os.path.exists(vulkan_fg_exe):
+            raise RuntimeError("vulkan_fg_switch_test.exe was not produced")
+        if IS_WINDOWS and not os.path.exists(pdb_path_for_binary(vulkan_fg_exe)):
+            raise RuntimeError("vulkan_fg_switch_test.pdb was not produced")
 
 
 def compile_vulkan_layer(env, clang_exe, cflags, arch):

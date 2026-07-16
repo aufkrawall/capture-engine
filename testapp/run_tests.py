@@ -43,7 +43,7 @@ RUN_LOG_DIR_RE = re.compile(r"^\d{8}_\d{6}$")
 CAPTURE_CONFIG = CAPTURE_BIN / "config.ini"
 CAPTURE_CONFIG_TEMPLATE = PROJECT_ROOT / "captureengine" / "config.ini.template"
 
-SUPPORTED_APIS = [
+DEFAULT_APIS = [
     "dx12",
     "dx11",
     "dx9",
@@ -56,6 +56,8 @@ SUPPORTED_APIS = [
     "opengl_legacy",
     "directdraw7",
 ]
+OPT_IN_APIS = ["vulkan_fg"]
+SUPPORTED_APIS = DEFAULT_APIS + OPT_IN_APIS
 API_EXECUTABLES = {
     "dx12": "dx12_test.exe",
     "dx11": "dx11_test.exe",
@@ -65,6 +67,7 @@ API_EXECUTABLES = {
     "dx7": "dx7_test.exe",
     "dx6": "dx6_test.exe",
     "vulkan": "vulkan_test.exe",
+    "vulkan_fg": "vulkan_fg_switch_test.exe",
     "opengl": "opengl_test.exe",
     "opengl_legacy": "opengl_legacy_test.exe",
     "directdraw7": "directdraw7_test.exe",
@@ -78,6 +81,7 @@ API_LOG_NAMES = {
     "dx7": {"dx7", "d3d7", "direct3d7", "ddraw", "directdraw"},
     "dx6": {"dx6", "d3d6", "direct3d6", "ddraw", "directdraw"},
     "vulkan": {"vulkan"},
+    "vulkan_fg": {"vulkan"},
     "opengl": {"opengl"},
     "opengl_legacy": {"opengl_legacy", "opengl"},
     "directdraw7": {"directdraw7", "directdraw", "ddraw"},
@@ -88,6 +92,7 @@ FATAL_LOG_PATTERNS = [
     (re.compile(r"DXGI_ERROR_DEVICE_HUNG", re.IGNORECASE), "DXGI device hung"),
     (re.compile(r"DEVICE_REMOVED", re.IGNORECASE), "device removed"),
     (re.compile(r"DEVICE_HUNG", re.IGNORECASE), "device hung"),
+    (re.compile(r"VK_ERROR_DEVICE_LOST", re.IGNORECASE), "Vulkan device lost"),
     (re.compile(r"unhandled exception", re.IGNORECASE), "unhandled exception"),
 ]
 
@@ -111,6 +116,11 @@ HOOK_RUNTIME_PATTERNS = {
         re.compile(r"DX12: Overlay frame #", re.IGNORECASE),
     ],
     "vulkan": [
+        re.compile(r"Vulkan Layer: Capture_vkCreateInstance END - success", re.IGNORECASE),
+        re.compile(r"Vulkan Layer: Overlay initialized successfully", re.IGNORECASE),
+        re.compile(r"RenderOverlay#", re.IGNORECASE),
+    ],
+    "vulkan_fg": [
         re.compile(r"Vulkan Layer: Capture_vkCreateInstance END - success", re.IGNORECASE),
         re.compile(r"Vulkan Layer: Overlay initialized successfully", re.IGNORECASE),
         re.compile(r"RenderOverlay#", re.IGNORECASE),
@@ -267,6 +277,7 @@ def kill_processes() -> None:
         "dx7_test.exe",
         "dx6_test.exe",
         "vulkan_test.exe",
+        "vulkan_fg_switch_test.exe",
         "opengl_test.exe",
         "opengl_legacy_test.exe",
         "directdraw7_test.exe",
@@ -569,7 +580,7 @@ def verify_runtime_hook_activity(api: str, run_log_dir: Optional[Path], since_un
     hook_debug_log = run_log_dir / "hook_debug.log"
     if hook_debug_log.exists():
         log_files.append(hook_debug_log)
-    if api == "vulkan":
+    if api in {"vulkan", "vulkan_fg"}:
         vulkan_layer_log = run_log_dir / "vulkan_layer.log"
         if vulkan_layer_log.exists():
             log_files.append(vulkan_layer_log)
@@ -890,6 +901,7 @@ def main() -> None:
             "dx7",
             "dx6",
             "vulkan",
+            "vulkan_fg",
             "opengl",
             "opengl_legacy",
             "directdraw7",
@@ -966,11 +978,14 @@ def main() -> None:
     print(f"Max >2x-budget spike percentage: {args.max_spike_pct:.1f}%")
 
     if args.api == "all":
-        apis_to_test = list(SUPPORTED_APIS)
+        apis_to_test = list(DEFAULT_APIS)
     elif args.api == "both":
         apis_to_test = ["dx12", "vulkan"]
     else:
         apis_to_test = [args.api]
+
+    if "vulkan_fg" in apis_to_test and args.arch != "x64":
+        parser.error("--api vulkan_fg is x64-only; use --arch x64")
 
     arches_to_test = ["x64", "x86"] if args.arch == "both" else [args.arch]
 

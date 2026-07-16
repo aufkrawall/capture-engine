@@ -122,6 +122,16 @@ Default quality mode currently:
 - On Linux, executing `unit_tests.exe` requires `wine64` or `wine` in `PATH`.
 
 ## Test App Build Behavior
+- `vulkan_fg_switch_test.exe` is x64-only and opt-in at runtime. Its build uses a distinct
+  `fidelityfx_vk_v1_1_4` include/cache tree plus the SHA-256-pinned official SDK 1.1.4 archive and
+  signed `PrebuiltSignedDLL/amd_fidelityfx_vk.dll`; the existing DX12 SDK 2.2 tree is untouched.
+- The Vulkan FG build compiles and validates six GLSL shaders, then embeds their SPIR-V from
+  `build/obj/vulkan_fg_shaders`. Packaging forbids shader sidecars and requires the executable PDB,
+  signed FFX DLL, and SDK license under `installed/testapp`.
+- `testapp/run_tests.py --api vulkan_fg` selects the opt-in Vulkan FG runtime target and rejects x86;
+  it is intentionally absent from default cross-API/x86 matrices. Runtime activity validation reads
+  the API-specific `vulkan_layer.log` in addition to `hook_debug.log`. See
+  `vulkan-fg-switch-test.md`.
 - On Windows, x86 test apps now use the same clang64 cross-driver and x86 sysroot/runtime flag set as the main x86 build instead of the old `mingw32/bin/clang++.exe` one-step path.
 - Each test-app task gets its own temp subdirectory under `build/tmp/testapps/` so parallel x64/x86 jobs do not fight over compiler temp files and stale rename collisions.
 - The x86 test-app linker path now carries the same `libgcc`/`libstdc++` runtime selection as the main x86 build, which avoids the old `libunwind.a` lookup failure.

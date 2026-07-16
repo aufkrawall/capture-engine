@@ -66,6 +66,16 @@ using PresentCallback = uint32_t (*)(CallbackDescFrameGenerationPresent*, void*)
 constexpr uint32_t kEffectMask = 0x00ff0000u;
 constexpr uint32_t kEffectIdFrameGeneration = 0x00020000u;
 constexpr uint32_t kEffectIdFrameGenerationSwapchain = 0x00030000u;
+constexpr uint32_t kEffectIdFrameGenerationSwapchainVulkan = 0x00040000u;
+constexpr StructType kCreateContextDescTypeBackendDX12 = 0x00000002ull;
+constexpr StructType kCreateContextDescTypeBackendVulkan = 0x00000003ull;
+constexpr StructType kCreateContextDescTypeBackendVulkanModern = 0x02000002ull;
+
+enum class BackendApi : uint8_t {
+    kUnknown,
+    kDX12,
+    kVulkan,
+};
 
 constexpr StructType MakeEffectSubId(uint32_t effectId, uint64_t subversion) {
     return (effectId & kEffectMask) | (subversion & ~static_cast<uint64_t>(kEffectMask));
@@ -182,7 +192,42 @@ inline uint32_t GetEffectId(StructType type) {
 
 inline bool IsFrameGenerationEffectType(StructType type) {
     const uint32_t effectId = GetEffectId(type);
-    return effectId == kEffectIdFrameGeneration || effectId == kEffectIdFrameGenerationSwapchain;
+    return effectId == kEffectIdFrameGeneration || effectId == kEffectIdFrameGenerationSwapchain ||
+           effectId == kEffectIdFrameGenerationSwapchainVulkan;
+}
+
+inline BackendApi ParseCreateContextBackend(const ApiHeader* desc) {
+    if (!desc) {
+        return BackendApi::kUnknown;
+    }
+
+    const uint32_t effectId = GetEffectId(desc->type);
+    if (effectId == kEffectIdFrameGenerationSwapchain) {
+        return BackendApi::kDX12;
+    }
+    if (effectId == kEffectIdFrameGenerationSwapchainVulkan) {
+        return BackendApi::kVulkan;
+    }
+
+    // Generic effects (including FrameGeneration itself) identify their graphics backend through pNext.
+    // Bound traversal so a malformed/cyclic extension chain cannot hang the process inside the hook.
+    const ApiHeader* extension = desc->pNext;
+    for (uint32_t inspected = 0; extension && inspected < 32; ++inspected, extension = extension->pNext) {
+        if (extension->type == kCreateContextDescTypeBackendDX12) {
+            return BackendApi::kDX12;
+        }
+        if (extension->type == kCreateContextDescTypeBackendVulkan ||
+            extension->type == kCreateContextDescTypeBackendVulkanModern) {
+            return BackendApi::kVulkan;
+        }
+    }
+    return BackendApi::kUnknown;
+}
+
+inline bool ShouldUseDX12FrameGenerationInterop(BackendApi backend) {
+    // Unknown preserves the established DX12/legacy behavior. Only positively identified Vulkan contexts bypass
+    // COM swapchain probing and the DX12 callback/queue bridge.
+    return backend != BackendApi::kVulkan;
 }
 
 inline ParsedFrameGenerationConfigureState ParseFrameGenerationConfigureState(const ApiHeader* desc) {
