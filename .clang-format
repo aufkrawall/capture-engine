@@ -23,9 +23,10 @@ BreakBeforeBraces: Attach
 PointerAlignment: Left
 ReferenceAlignment: Left
 
-# Include sorting (matches llm-wiki/codestyle.md guidance: preserve blocks, keep project-local patterns)
+# Keep explicit include order: some Windows SDK headers depend on windows.h.
+# Automatic lexical sorting can turn a compiling include order into SDK errors.
 IncludeBlocks: Preserve
-SortIncludes: CaseSensitive
+SortIncludes: Never
 
 # Access modifiers
 AccessModifierOffset: -4

@@ -147,13 +147,19 @@ def verify_tree(
     executables_only: bool = False,
 ) -> list[str]:
     failures: list[str] = []
+    allowed_runtime_names = {name.lower() for name in allowed_runtime_dlls}
     binaries = list(shipped_binaries(root, skip_x86=skip_x86, executables_only=executables_only))
     if not binaries:
         return [f"no shipped PE files found under {root}"]
     available_dlls = {path.name.lower() for path, _ in binaries if path.suffix.lower() == ".dll"}
-    available_dlls.update(name.lower() for name in allowed_runtime_dlls)
+    available_dlls.update(allowed_runtime_names)
     for path, first_party in binaries:
-        result = verify_binary(readobj, path, first_party, available_dlls, allow_missing_x86_cfg)
+        # Runtime DLLs may be copied into the product root for sanitizer or
+        # test execution, but they are not project-owned artifacts and do not
+        # ship with a matching first-party PDB. Keep all PE hardening and
+        # import-closure checks active for them.
+        require_pdb = first_party and path.name.lower() not in allowed_runtime_names
+        result = verify_binary(readobj, path, require_pdb, available_dlls, allow_missing_x86_cfg)
         if result.errors:
             failures.append(f"{path}: " + "; ".join(result.errors))
         else:

@@ -17,5 +17,8 @@ CheckOptions:
   - key:   bugprone-argument-comment.StrictMode
     value: '0'
 
-HeaderFilterRegex: '.*'
+# Analyze project headers, but do not report diagnostics from vendored or
+# generated/runtime trees. Those sources are not maintained by this project.
+HeaderFilterRegex: '(^|/)(common|hook|captureengine|mediaengine|testapp|tests)/'
+ExcludeHeaderFilterRegex: '(^|/)(external|build|installed|ffmpeg_build)/'
 FormatStyle: file

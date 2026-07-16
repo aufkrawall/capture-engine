@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 MODULE_PATH = Path(__file__).parent / "tools" / "verify_pe_hardening.py"
@@ -120,6 +121,22 @@ GuardCFFunctionCount: 1
             (root / "vendor.dll").touch()
             names = [path.name for path, _ in hardening.shipped_binaries(root, executables_only=True)]
         self.assertEqual(names, ["dx12_test.exe"])
+
+    def test_allowed_runtime_dll_does_not_require_first_party_pdb(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "captureengine.dll").touch()
+            (root / "libc++.dll").touch()
+            result = hardening.PeHardeningResult("x64", 1, ())
+            with patch.object(hardening, "verify_binary", return_value=result) as verify:
+                failures = hardening.verify_tree(
+                    Path("llvm-readobj"), root, allowed_runtime_dlls=("libc++.dll",)
+                )
+
+        self.assertEqual(failures, [])
+        require_pdb_by_name = {call.args[1].name: call.args[2] for call in verify.call_args_list}
+        self.assertTrue(require_pdb_by_name["captureengine.dll"])
+        self.assertFalse(require_pdb_by_name["libc++.dll"])
 
 
 if __name__ == "__main__":

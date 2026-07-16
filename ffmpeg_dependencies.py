@@ -669,10 +669,10 @@ class SourceDependencyBuilder:
         os.makedirs(self.recipe_dir, exist_ok=True)
         os.makedirs(self.staging_dir, exist_ok=True)
 
-    def ensure(self) -> str:
-        """Build all pinned dependencies when the private prefix is incomplete."""
+    def ensure(self, force_rebuild: bool = False) -> str:
+        """Build all pinned dependencies, optionally ignoring the verified cache."""
         fingerprint = dependency_manifest_fingerprint(self.manifest_path)
-        if self._is_complete(fingerprint):
+        if not force_rebuild and self._is_complete(fingerprint):
             try:
                 self._verify_runtime_guard_cf()
             except DependencyBuildError as error:
@@ -681,7 +681,10 @@ class SourceDependencyBuilder:
                 self._log(f"Private dependency prefix is current: {self.prefix}")
                 return self.prefix
 
-        self._log("Private dependency prefix is missing or stale; rebuilding all dependencies")
+        if force_rebuild:
+            self._log("Fresh source rebuild requested; rebuilding the complete dependency closure")
+        else:
+            self._log("Private dependency prefix is missing or stale; rebuilding all dependencies")
         self._reset_outputs()
         built_packages: List[str] = []
         for dependency in self.manifest["dependencies"]:

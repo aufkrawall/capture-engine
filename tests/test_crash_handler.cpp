@@ -237,7 +237,14 @@ TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap)
     EXPECT_NE(contents.find("__declspec(guard(nocf))"), std::string::npos);
     EXPECT_NE(contents.find("CallCfgRegistrationBootstrap(setProcessValidCallTargets"), std::string::npos);
     EXPECT_NE(contents.find("GetProcAddress(module, \"SetProcessValidCallTargets\")"), std::string::npos);
-    EXPECT_NE(contents.find("allocationSize, 1, &target"), std::string::npos);
+    const size_t registrationCall = contents.find("CallCfgRegistrationBootstrap(setProcessValidCallTargets");
+    ASSERT_NE(registrationCall, std::string::npos);
+    const size_t registrationCallEnd = contents.find(");", registrationCall);
+    ASSERT_NE(registrationCallEnd, std::string::npos);
+    const std::string registrationArguments = contents.substr(registrationCall, registrationCallEnd - registrationCall);
+    EXPECT_NE(registrationArguments.find("allocationBase"), std::string::npos);
+    EXPECT_NE(registrationArguments.find("allocationSize"), std::string::npos);
+    EXPECT_NE(registrationArguments.find("1, &target"), std::string::npos);
 
     const size_t allocatorStart = contents.find("static uint8_t* AllocateWritableTrampolinePage");
     const size_t allocatorEnd = contents.find("// Deep hook data structures", allocatorStart);

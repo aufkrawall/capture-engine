@@ -3163,10 +3163,11 @@ def ffmpeg_build_configuration_fingerprint():
 
 
 def compile_custom_ffmpeg(skip_updates=False):
-    """Build FFmpeg from git master. Check for updates and rebuild if needed.
+    """Build FFmpeg and its source dependency closure.
 
     Args:
-        skip_updates: If True, don't check for git updates, use existing repo as-is.
+        skip_updates: If True, reuse verified source-built outputs when they are current.
+            Plain builds intentionally rebuild the complete source closure.
     """
     if IS_LINUX:
         log("Running on Linux/WSL - using MSYS2 FFmpeg (downloaded from repo)")
@@ -3179,7 +3180,8 @@ def compile_custom_ffmpeg(skip_updates=False):
         logger=log,
     )
     try:
-        dependency_builder.ensure()
+        full_source_rebuild = not skip_updates
+        dependency_builder.ensure(force_rebuild=full_source_rebuild)
     except Exception as e:
         log(f"FFmpeg source dependency build failed: {e}")
         sys.exit(1)
@@ -3205,8 +3207,9 @@ def compile_custom_ffmpeg(skip_updates=False):
         with open(configuration_file, "r", encoding="utf-8") as f:
             previous_configuration = f.read().strip()
 
-    # Determine if rebuild is needed
-    needs_rebuild = False
+    # Plain builds are the explicit fresh-source path. --skip-updates retains the
+    # verified-cache path and only rebuilds when required for correctness.
+    needs_rebuild = full_source_rebuild
 
     if not os.path.exists(os.path.join(FFMPEG_DIR, "lib", "libavcodec.dll.a")):
         # No built FFmpeg - definitely need to build
@@ -3252,6 +3255,8 @@ def compile_custom_ffmpeg(skip_updates=False):
         if updated:
             needs_rebuild = True
             log("FFmpeg source updated - rebuilding...")
+        elif full_source_rebuild:
+            log("Plain python build.py requested a fresh FFmpeg source rebuild")
         else:
             # Check if last build matches current commit
             git_exe = builder.get_tool_path("git")
@@ -6085,9 +6090,16 @@ def compile_project(
     if env.get("CE_SANITIZE") == "1":
         # The sanitizer pass intentionally produces only x64 developer artifacts.
         # Ignore stale x86 outputs from the preceding product build and recognize
-        # the toolchain-resolved ASan runtime without copying it into the bundle.
+        # the toolchain-resolved runtimes. They remain subject to PE hardening
+        # and import-closure checks, but are not first-party PDB-bearing files.
         pe_verifier_command.extend(
-            ["--skip-x86", "--allow-runtime-dll", "libclang_rt.asan_dynamic-x86_64.dll"]
+            [
+                "--skip-x86",
+                "--allow-runtime-dll",
+                "libclang_rt.asan_dynamic-x86_64.dll",
+                "--allow-runtime-dll",
+                "libc++.dll",
+            ]
         )
     run_command(
         pe_verifier_command,

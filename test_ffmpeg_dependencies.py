@@ -55,6 +55,50 @@ class FfmpegDependencyManifestTest(unittest.TestCase):
             changed = dependencies.dependency_manifest_fingerprint(str(manifest_path))
         self.assertNotEqual(original, changed)
 
+    def test_force_rebuild_ignores_current_cached_prefix(self) -> None:
+        manifest_path = Path(__file__).with_name("ffmpeg_dependencies.json")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            builder = dependencies.SourceDependencyBuilder(
+                temp_dir,
+                os.path.join(temp_dir, "msys2"),
+                manifest_path=str(manifest_path),
+            )
+            runtime_dlls = dependencies.manifest_runtime_dlls(builder.manifest)
+            Path(builder.bin_dir).mkdir(parents=True)
+            for dll_name in runtime_dlls:
+                (Path(builder.bin_dir) / dll_name).touch()
+
+            with (
+                mock.patch.object(builder, "_is_complete", return_value=True) as is_complete,
+                mock.patch.object(builder, "_reset_outputs") as reset_outputs,
+                mock.patch.object(builder, "_build_dependency", return_value=[]) as build_dependency,
+                mock.patch.object(builder, "_verify_runtime_guard_cf", return_value={}),
+            ):
+                builder.ensure(force_rebuild=True)
+
+            is_complete.assert_not_called()
+            reset_outputs.assert_called_once_with()
+            self.assertEqual(build_dependency.call_count, len(builder.manifest["dependencies"]))
+
+    def test_reuses_current_cached_prefix_without_force_rebuild(self) -> None:
+        manifest_path = Path(__file__).with_name("ffmpeg_dependencies.json")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            builder = dependencies.SourceDependencyBuilder(
+                temp_dir,
+                os.path.join(temp_dir, "msys2"),
+                manifest_path=str(manifest_path),
+            )
+            with (
+                mock.patch.object(builder, "_is_complete", return_value=True),
+                mock.patch.object(builder, "_verify_runtime_guard_cf", return_value={}),
+                mock.patch.object(builder, "_reset_outputs") as reset_outputs,
+                mock.patch.object(builder, "_build_dependency") as build_dependency,
+            ):
+                self.assertEqual(builder.ensure(), builder.prefix)
+
+            reset_outputs.assert_not_called()
+            build_dependency.assert_not_called()
+
     def test_ffmpeg_libaom_component_and_cache_version_are_current(self) -> None:
         build_source = Path(__file__).with_name("build.py").read_text(encoding="utf-8")
         self.assertIn('"--enable-encoder=libaom_av1"', build_source)
@@ -109,7 +153,8 @@ class FfmpegDependencyPeHelperTest(unittest.TestCase):
         """
         self.assertEqual(dependencies.parse_guard_cf_function_count(output), 17)
         with self.assertRaises(dependencies.DependencyBuildError):
-            dependencies.parse_guard_cf_function_count(output.replace("GuardCFFunctionCount: 17", "GuardCFFunctionCount: 0"))
+            invalid_output = output.replace("GuardCFFunctionCount: 17", "GuardCFFunctionCount: 0")
+            dependencies.parse_guard_cf_function_count(invalid_output)
 
     def test_parses_imported_dll_names_case_insensitively(self) -> None:
         output = """

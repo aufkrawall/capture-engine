@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 import build
 
@@ -38,6 +39,34 @@ class BuildFlagPolicyTest(unittest.TestCase):
         with open(build.__file__, encoding="utf-8") as build_file:
             source = build_file.read()
         self.assertIn("-mguard=cf -fstack-protector-strong -D_FORTIFY_SOURCE=2", source)
+
+    def test_plain_build_forces_ffmpeg_source_closure_rebuild(self) -> None:
+        with open(build.__file__, encoding="utf-8") as build_file:
+            source = build_file.read()
+        self.assertIn("full_source_rebuild = not skip_updates", source)
+        self.assertIn("dependency_builder.ensure(force_rebuild=full_source_rebuild)", source)
+        self.assertIn("needs_rebuild = full_source_rebuild", source)
+
+    def test_windows_sdk_headers_are_in_safe_include_order(self) -> None:
+        project_root = Path(build.__file__).parent
+        format_config = (project_root / ".clang-format").read_text(encoding="utf-8")
+        self.assertIn("SortIncludes: Never", format_config)
+        for relative_path, dependent_header in (
+            ("common/module_enumeration.h", "#include <psapi.h>"),
+            ("tests/test_process_ipc.cpp", "#include <shellapi.h>"),
+        ):
+            lines = (project_root / relative_path).read_text(
+                encoding="utf-8"
+            ).splitlines()
+            windows_index = lines.index("#include <windows.h>")
+            dependent_index = lines.index(dependent_header)
+            self.assertLess(windows_index, dependent_index, relative_path)
+
+    def test_clang_tidy_excludes_external_and_generated_headers(self) -> None:
+        config = (Path(build.__file__).parent / ".clang-tidy").read_text(encoding="utf-8")
+        self.assertIn("HeaderFilterRegex:", config)
+        self.assertIn("ExcludeHeaderFilterRegex:", config)
+        self.assertIn("external|build|installed|ffmpeg_build", config)
 
     def test_vulkan_layer_build_has_no_registry_side_effects(self) -> None:
         with open(build.__file__, encoding="utf-8") as build_file:
