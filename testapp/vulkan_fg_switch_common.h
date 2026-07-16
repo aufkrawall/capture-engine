@@ -102,7 +102,6 @@ struct FrameContext {
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
-    VkSemaphore renderFinished = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
 };
 
@@ -136,6 +135,7 @@ struct SwapchainState {
     std::vector<VkFramebuffer> framebuffers;
     std::vector<VkImageLayout> layouts;
     std::vector<VkFence> imageFences;
+    std::vector<VkSemaphore> presentReadySemaphores;
 };
 
 struct RendererState {
@@ -196,6 +196,7 @@ struct StreamlineState {
     PFun_slDLSSGetOptimalSettings* dlssGetOptimalSettings = nullptr;
     PFun_slDLSSGSetOptions* dlssgSetOptions = nullptr;
     PFun_slDLSSGGetState* dlssgGetState = nullptr;
+    PFun_slReflexGetState* reflexGetState = nullptr;
     PFun_slReflexSetOptions* reflexSetOptions = nullptr;
     PFun_slReflexSleep* reflexSleep = nullptr;
     PFun_slPCLSetMarker* pclSetMarker = nullptr;
@@ -215,7 +216,13 @@ struct StreamlineState {
     bool dlssSrConfigured = false;
     bool dlssFgConfigured = false;
     bool reflexActive = false;
+    bool reflexOptionsConfigured = false;
+    bool reflexStateAvailable = false;
+    bool dlssgVsyncSupportKnown = false;
+    bool dlssgVsyncSupported = false;
     uint32_t frameTokenIndex = 0;
+    uint64_t reflexSleepCalls = 0;
+    uint64_t reflexSleepFailures = 0;
     uint64_t generatedPresentCount = 0;
 };
 
@@ -260,6 +267,7 @@ struct VulkanDeviceState {
     VkDevice device = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkQueue gameQueue = VK_NULL_HANDLE;
+    VkQueue asyncPresentQueue = VK_NULL_HANDLE;
     VkQueue ffxAsyncQueue = VK_NULL_HANDLE;
     VkQueue ffxPresentQueue = VK_NULL_HANDLE;
     VkQueue ffxAcquireQueue = VK_NULL_HANDLE;
@@ -273,6 +281,7 @@ struct VulkanDeviceState {
     bool memoryBudgetEnabled = false;
     bool deviceFaultEnabled = false;
     bool surfaceCreatedByStreamline = false;
+    bool asyncPresentActive = false;
     bool deviceLost = false;
 };
 
@@ -289,6 +298,7 @@ struct AppState {
     FgTransitionState transition;
     FgMode requestedMode = FgMode::Off;
     bool running = true;
+    bool asyncPresentRequested = false;
     bool resizePending = false;
     bool fullscreenPending = false;
     bool swapchainRecreatePending = false;
@@ -339,6 +349,8 @@ bool RecordStreamlineInputsAndUpscale(VkCommandBuffer commandBuffer, FrameResour
 void PollStreamlineState();
 
 bool InitializeVulkanDevice();
+VkQueue ApplicationPresentQueue();
+const VulkanQueueRef& ApplicationPresentQueueRef();
 void ReleaseVulkanSurfaceBeforeStreamlineShutdown();
 void ShutdownVulkanDevice();
 bool CreateOrReplaceSwapchain(SwapchainOwner owner, const char* reason);
@@ -346,7 +358,7 @@ bool RecreateCurrentSwapchain(const char* reason);
 void DestroySwapchainState(bool destroyHandle);
 bool DrainSwapchainBoundWork(const char* reason);
 VkResult AcquireSwapchainImage(FrameContext& frame, uint32_t* imageIndex);
-VkResult PresentSwapchainImage(FrameContext& frame, uint32_t imageIndex);
+VkResult PresentSwapchainImage(uint32_t imageIndex);
 void QueryMemoryBudgetStress();
 
 bool InitializeRenderer();

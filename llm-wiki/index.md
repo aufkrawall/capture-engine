@@ -63,7 +63,7 @@ Primary sources:
 - `frame-generation-switching.md`
   - Stub pointing to `frame-generation/guardrails.md` (invariants, including current stable Reflex suspend and Streamline startup transport rules) and `frame-generation/case-studies.md` (chronological deep-dive). Last verified 2026-07-15.
 - `vulkan-fg-switch-test.md`
-  - Vulkan DLSS/FSR switch-app architecture, dual FidelityFX SDK constraint, immutable WSI ownership, cross-owner bridge/pre-retirement rules, backend-safe injected FFX hooking, rendering inputs, diagnostics, and standalone/injected runtime validation. Last verified 2026-07-16.
+  - Vulkan DLSS/FSR switch-app architecture, dual FidelityFX SDK constraint, immutable WSI ownership, cross-owner bridge/pre-retirement rules, backend-safe injected FFX hooking, DirectFlip/present-queue and Reflex-pacing boundaries, rendering inputs, diagnostics, and standalone/injected runtime validation. Last verified 2026-07-16.
 - `overlay-fg-status.md`
   - Current visible FG status publication rules for the overlay, including authoritative stable Reflex-driven Streamline suspend edges. Last verified 2026-07-15.
 - `debug-tools.md`

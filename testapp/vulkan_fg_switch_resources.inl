@@ -526,8 +526,7 @@ bool CreateFrameContexts() {
             return false;
         }
         VkSemaphoreCreateInfo semaphoreInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        if (vkCreateSemaphore(g_App.vk.device, &semaphoreInfo, nullptr, &frame.imageAvailable) != VK_SUCCESS ||
-            vkCreateSemaphore(g_App.vk.device, &semaphoreInfo, nullptr, &frame.renderFinished) != VK_SUCCESS) {
+        if (vkCreateSemaphore(g_App.vk.device, &semaphoreInfo, nullptr, &frame.imageAvailable) != VK_SUCCESS) {
             return false;
         }
         VkFenceCreateInfo fenceInfo = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -542,7 +541,6 @@ bool CreateFrameContexts() {
 void DestroyFrameContexts() {
     for (FrameContext& frame : g_App.frames) {
         if (frame.fence) vkDestroyFence(g_App.vk.device, frame.fence, nullptr);
-        if (frame.renderFinished) vkDestroySemaphore(g_App.vk.device, frame.renderFinished, nullptr);
         if (frame.imageAvailable) vkDestroySemaphore(g_App.vk.device, frame.imageAvailable, nullptr);
         if (frame.commandPool) vkDestroyCommandPool(g_App.vk.device, frame.commandPool, nullptr);
         frame = {};

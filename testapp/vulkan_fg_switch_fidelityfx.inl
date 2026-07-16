@@ -447,13 +447,25 @@ bool CreateFidelityFxSwapchain(VkSwapchainKHR oldSwapchain,
         result.familyIndex = ref.familyIndex;
         return result;
     };
-    g_App.ffx.swapchainCreate.gameQueue = queueInfo(g_App.vk.gameQueue, g_App.vk.queuePlan.game);
+    g_App.ffx.swapchainCreate.gameQueue =
+        queueInfo(ApplicationPresentQueue(), ApplicationPresentQueueRef());
     g_App.ffx.swapchainCreate.asyncComputeQueue =
         queueInfo(g_App.vk.ffxAsyncQueue, g_App.vk.queuePlan.ffxAsyncCompute);
     g_App.ffx.swapchainCreate.presentQueue =
         queueInfo(g_App.vk.ffxPresentQueue, g_App.vk.queuePlan.ffxPresent);
     g_App.ffx.swapchainCreate.imageAcquireQueue =
         queueInfo(g_App.vk.ffxAcquireQueue, g_App.vk.queuePlan.ffxImageAcquire);
+    testapp::Log(
+        "[FG-DIAG] FidelityFX game/present-call queue family=%u index=%u separate=%d; "
+        "provider queues async=%u:%u present=%u:%u acquire=%u:%u\n",
+        g_App.ffx.swapchainCreate.gameQueue.familyIndex, ApplicationPresentQueueRef().queueIndex,
+        g_App.vk.asyncPresentActive ? 1 : 0,
+        g_App.ffx.swapchainCreate.asyncComputeQueue.familyIndex,
+        g_App.vk.queuePlan.ffxAsyncCompute.queueIndex,
+        g_App.ffx.swapchainCreate.presentQueue.familyIndex,
+        g_App.vk.queuePlan.ffxPresent.queueIndex,
+        g_App.ffx.swapchainCreate.imageAcquireQueue.familyIndex,
+        g_App.vk.queuePlan.ffxImageAcquire.queueIndex);
     const ffxReturnCode_t result = g_App.ffx.functions.CreateContext(
         &g_App.ffx.swapchainContext, &g_App.ffx.swapchainCreate.header, nullptr);
     // The pinned Vulkan provider retires/destroys a non-null incoming swapchain even when its

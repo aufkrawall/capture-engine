@@ -1,7 +1,8 @@
 # Vulkan FG Switch Test
 
 Last cross-checked: 2026-07-16 (standalone and CaptureEngine-injected NVIDIA runtime validation,
-all-direction switching, suspension/resume, callback-route stress, and windowed/borderless
+all-direction switching, suspension/resume without DLSS resource-flush stalls, callback-route
+stress, DirectFlip/forced-VSync behavior, separate-queue presentation, and windowed/borderless
 swapchain recreation)
 
 Primary sources:
@@ -61,6 +62,55 @@ Primary sources:
   one passthrough frame, prepare the target, commit owner-bound state, present one FG-off frame on
   the replacement, then activate FG. Transition/failure records flush immediately.
 
+## Presentation, DirectFlip, and Queue Separation
+
+- The application calls Vulkan WSI for all three owners. On Windows, PresentMon can report the
+  runtime as `DXGI` because the Vulkan ICD ultimately submits to the Windows display stack; this
+  does not mean the app bypassed `vkQueuePresentKHR` or owns an `IDXGISwapChain`.
+- With application VSync off, present-mode selection prefers `IMMEDIATE`, then `MAILBOX`,
+  `FIFO_RELAXED`, and `FIFO`. This matches the DX12 switch app's tearing-capable game path and lets
+  a driver-forced VSync/VRR profile own pacing. With application VSync on, `FIFO` remains the
+  required route. There is no application-side below-refresh limiter.
+- `[Vulkan] async_present=1` or `--vk-async-present` selects a distinct queue index in the game
+  queue family. That queue must support graphics, compute, and presentation: it is valid for Native
+  and Streamline and also satisfies FidelityFX's requirement that its replacement Present be
+  invoked on the supplied game queue. The provider retains its own distinct async-compute,
+  presentation, and image-acquire queues. A compute-only presentation family is not a universal
+  replacement because it violates the FidelityFX game-queue contract and would require explicit
+  cross-family swapchain ownership transfers.
+- Render completion is signaled with one binary semaphore per swapchain image, not one per frame
+  slot. Re-acquiring an image proves its prior presentation wait has retired before that semaphore
+  is reused, which is required when submission and presentation use different queues.
+- A focused PresentMon run spanning Native, Streamline active/suspended, FidelityFX
+  active/suspended, and return to Native recorded 5,591 of 5,594 Presents as independent flip; the
+  remaining three were compositor startup Presents. A focused borderless window is part of the
+  oracle because an unfocused/occluded window may legitimately compose instead of DirectFlip.
+
+## Reflex and DLSS Suspension
+
+- Reflex options are explicitly configured once after plugin load even for `eOff`, then switched
+  to low-latency only while the retained Streamline proxy is live. `slReflexSleep` is called at the
+  start of each available Streamline frame before fence/acquire waits. `frameLimitUs` remains zero;
+  the app logs requirement flags, Reflex state, DLSS-G VSync support, sleep failures, and CPU-stage
+  timing but never emulates the driver's automatic limiter.
+- On the current NVIDIA system, a foreground borderless `IMMEDIATE` run with application VSync off
+  and driver VSync forced held Native at about 144 real FPS and DLSS FG at about 72 real plus 72
+  generated FPS. DirectFlip, focus, driver-profile enforcement, successful Reflex sleep calls, and
+  `bIsVsyncSupportAvailable=1` were all observed, but the expected roughly 138.5 FPS VRR-headroom
+  cap did not engage. Streamline 2.11.1's public DLSS-G guide and its local plugin log still describe
+  VSync-with-FG as D3D12-only / unsupported on Vulkan, so the state bit and observed Vulkan behavior
+  are contradictory runtime evidence. Do not add a manual cap to disguise that driver/plugin
+  boundary.
+- Repeated-key DLSS suspension uses `DLSSGFlags::eRetainResourcesWhenOff`. Without it,
+  `slDLSSGSetOptions(eOff)` synchronously flushed/destroyed worker resources and caused a measured
+  multi-second hitch. With it, suspend and resume option calls each measured 0.001 ms, generated
+  frames stopped/resumed correctly, and the suspended proxy held about 144 real FPS. Calls slower
+  than 50 ms emit a dedicated pacing diagnostic.
+
+The external contracts above are cross-checked against NVIDIA's Streamline Reflex, DLSS-G, and
+manual-hooking guides and AMD's FidelityFX FSR 3.1 documentation; provider updates still require
+fresh runtime validation.
+
 ## Rendering and Vendor Inputs
 
 - Three frames in flight use explicit command pools, fences, semaphores, barriers, and tracked image
@@ -114,12 +164,20 @@ Primary sources:
   `frames=640`, `presented=640`, `generated=262`, `transitions=3`, `failures=0`,
   `validationErrors=0`, and `deviceLost=0`; the FFX hook logged Vulkan bypass forwards returning
   `FFX_API_RETURN_OK`, and no dump or lingering test/CaptureEngine process remained.
+- A debug-utils run with separate application presentation exercised OFF -> DLSS -> DLSS suspended
+  -> DLSS resumed -> FSR -> FSR suspended -> FSR resumed -> OFF while the borderless window was
+  explicitly foreground. All owners used queue `0:4`; FidelityFX received it as its game/present-
+  call queue and retained provider queues `2:2`, `0:2`, and `0:3`. It exited with
+  `frames=29001`, `presented=29001`, `generated=3969`, `transitions=3`, `failures=0`,
+  `validationErrors=0`, `deviceLost=0`, and zero Reflex sleep failures. Loader warnings about a
+  duplicate layer manifest from another checkout were environmental and did not increment the
+  validation-error counter.
 - The opt-in runner reads both `hook_debug.log` and `vulkan_layer.log` for `vulkan_fg`; Vulkan layer
   initialization/render evidence is not expected to live only in the generic hook log.
-- Focused Vulkan policy/build coverage contains 29 tests; the combined FFX parser/backend plus
-  Vulkan policy/build checkpoint contains 43 tests. AMD-hardware runtime validation remains a
+- Focused Vulkan policy/build coverage contains 34 tests; the combined FFX parser/backend plus
+  Vulkan policy/build checkpoint contains 48 tests. AMD-hardware runtime validation remains a
   separate hardware gate; DLSS unavailability on AMD must remain a graceful per-feature fallback.
-  The final no-build repository validation passed 1,617 native tests in 123 suites plus all Python
+  The final no-build repository validation passed 1,643 native tests in 126 suites plus all Python
   tool self-tests.
 
 ## Open Questions / Stale Risk
@@ -129,3 +187,10 @@ Primary sources:
   be generalized to a newer provider without runtime evidence.
 - Keep validation-layer and `VK_EXT_device_fault` runs in the NVIDIA matrix, and add a real AMD run
   before claiming cross-IHV runtime acceptance.
+- Recheck the Vulkan VSync/VRR automatic Reflex limiter with future Streamline/driver releases. The
+  current plugin state bit claims support while public 2.11.1 guidance, the plugin log, and measured
+  no-headroom behavior disagree. A game-side explicit cap is intentionally outside this test app's
+  contract.
+- The current display path is SDR `B8G8R8A8_SRGB` / sRGB nonlinear. `dlss_hdr` describes SR input
+  semantics, not HDR10 output. HDR validation needs an explicit RGB10/BT.2100/PQ swapchain and
+  matching DLSS-G/FSR color metadata; do not infer HDR acceptance from the SDR run.

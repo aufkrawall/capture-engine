@@ -8,6 +8,24 @@ struct LayoutAccess {
     VkAccessFlags access;
 };
 
+struct CpuTimingAccumulator {
+    double reflexStartMs = 0.0;
+    double frameFenceMs = 0.0;
+    double acquireMs = 0.0;
+    double imageFenceMs = 0.0;
+    double recordSubmitMs = 0.0;
+    double presentMs = 0.0;
+    double streamlinePollMs = 0.0;
+    uint64_t samples = 0;
+};
+
+CpuTimingAccumulator g_CpuTimings;
+
+double MillisecondsBetween(std::chrono::steady_clock::time_point begin,
+                           std::chrono::steady_clock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - begin).count();
+}
+
 LayoutAccess AccessForLayout(VkImageLayout layout, bool depth) {
     switch (layout) {
         case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
@@ -384,10 +402,13 @@ void LogHeartbeat() {
     } else if (g_App.transition.currentMode == FgMode::Fsr && g_App.ffx.upscaleSupported) {
         upscaler = "FSR 3.1.4 SR";
     }
+    const double timingSamples = static_cast<double>(std::max<uint64_t>(g_CpuTimings.samples, 1));
     testapp::Log(
         "[FG-HEARTBEAT] fps=%.2f intervalFps=%.2f frameID=%llu slot=%u upscaler='%s' "
         "requestedFG=%s suspended=%d effective(dlss=%d,fsr=%d) reflex=%s owner=%s route=%s "
-        "presented=%llu generated=%llu validationErrors=%llu pacingSpikes=%llu\n",
+        "presented=%llu generated=%llu validationErrors=%llu pacingSpikes=%llu "
+        "cpuMs(start=%.3f,frameFence=%.3f,acquire=%.3f,imageFence=%.3f,recordSubmit=%.3f,"
+        "present=%.3f,slPoll=%.3f)\n",
         g_App.fps, static_cast<float>(frameDelta) / std::max(seconds, 0.001f),
         static_cast<unsigned long long>(g_App.frameId), g_App.frameSlot, upscaler,
         ModeName(g_App.transition.currentMode), g_App.transition.suspended ? 1 : 0,
@@ -397,7 +418,15 @@ void LogHeartbeat() {
         static_cast<unsigned long long>(g_App.presentedFrames),
         static_cast<unsigned long long>(g_App.generatedFrames),
         static_cast<unsigned long long>(g_App.validationErrors),
-        static_cast<unsigned long long>(g_App.pacingSpikes));
+        static_cast<unsigned long long>(g_App.pacingSpikes),
+        g_CpuTimings.reflexStartMs / timingSamples,
+        g_CpuTimings.frameFenceMs / timingSamples,
+        g_CpuTimings.acquireMs / timingSamples,
+        g_CpuTimings.imageFenceMs / timingSamples,
+        g_CpuTimings.recordSubmitMs / timingSamples,
+        g_CpuTimings.presentMs / timingSamples,
+        g_CpuTimings.streamlinePollMs / timingSamples);
+    g_CpuTimings = {};
 }
 
 }  // namespace
@@ -407,14 +436,23 @@ bool RenderFrame() {
         return false;
     }
     UpdateFrameTiming();
+    // Reflex sleep belongs at the beginning of the application frame, before CPU/GPU availability
+    // waits. It is intentionally invoked even when Reflex mode is off; frameLimitUs remains zero.
+    const auto reflexStart = std::chrono::steady_clock::now();
+    sl::FrameToken* frameToken = BeginStreamlineFrame();
+    const auto reflexEnd = std::chrono::steady_clock::now();
     FrameContext& frame = g_App.frames[g_App.frameSlot];
+    const auto frameFenceStart = reflexEnd;
     VkResult result = vkWaitForFences(g_App.vk.device, 1, &frame.fence, VK_TRUE, UINT64_MAX);
+    const auto frameFenceEnd = std::chrono::steady_clock::now();
     if (result != VK_SUCCESS) {
         return HandleVulkanFailure(result, "vkWaitForFences(frame)");
     }
 
     uint32_t imageIndex = 0;
+    const auto acquireStart = frameFenceEnd;
     result = AcquireSwapchainImage(frame, &imageIndex);
+    const auto acquireEnd = std::chrono::steady_clock::now();
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         return true;
     }
@@ -424,6 +462,7 @@ bool RenderFrame() {
     if (imageIndex >= g_App.swapchain.imageFences.size()) {
         return HandleVulkanFailure(VK_ERROR_INITIALIZATION_FAILED, "acquired image index bounds");
     }
+    const auto imageFenceStart = acquireEnd;
     if (g_App.swapchain.imageFences[imageIndex] != VK_NULL_HANDLE &&
         g_App.swapchain.imageFences[imageIndex] != frame.fence) {
         result = vkWaitForFences(g_App.vk.device, 1, &g_App.swapchain.imageFences[imageIndex], VK_TRUE,
@@ -432,12 +471,13 @@ bool RenderFrame() {
             return HandleVulkanFailure(result, "vkWaitForFences(swapchain image)");
         }
     }
+    const auto imageFenceEnd = std::chrono::steady_clock::now();
     g_App.swapchain.imageFences[imageIndex] = frame.fence;
     vkResetFences(g_App.vk.device, 1, &frame.fence);
     vkResetCommandPool(g_App.vk.device, frame.commandPool, 0);
 
-    sl::FrameToken* frameToken = BeginStreamlineFrame();
     SetStreamlineMarker(frameToken, sl::PCLMarker::eSimulationStart, "SimulationStart");
+    const auto recordSubmitStart = imageFenceEnd;
     const JitterOffset jitter = CurrentJitter();
     const float timeSeconds = std::chrono::duration<float>(
         std::chrono::steady_clock::now() - g_App.startTime).count();
@@ -470,15 +510,18 @@ bool RenderFrame() {
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &frame.commandBuffer;
     submit.signalSemaphoreCount = 1;
-    submit.pSignalSemaphores = &frame.renderFinished;
+    submit.pSignalSemaphores = &g_App.swapchain.presentReadySemaphores[imageIndex];
     result = vkQueueSubmit(g_App.vk.gameQueue, 1, &submit, frame.fence);
     SetStreamlineMarker(frameToken, sl::PCLMarker::eRenderSubmitEnd, "RenderSubmitEnd");
     if (result != VK_SUCCESS) {
         return HandleVulkanFailure(result, "vkQueueSubmit");
     }
+    const auto recordSubmitEnd = std::chrono::steady_clock::now();
 
     SetStreamlineMarker(frameToken, sl::PCLMarker::ePresentStart, "PresentStart");
-    result = PresentSwapchainImage(frame, imageIndex);
+    const auto presentStart = recordSubmitEnd;
+    result = PresentSwapchainImage(imageIndex);
+    const auto presentEnd = std::chrono::steady_clock::now();
     SetStreamlineMarker(frameToken, sl::PCLMarker::ePresentEnd, "PresentEnd");
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR && result != VK_ERROR_OUT_OF_DATE_KHR) {
         return HandleVulkanFailure(result, "PresentSwapchainImage");
@@ -490,7 +533,18 @@ bool RenderFrame() {
             StartFidelityFxRuntimePreload("first visible FG-off present");
         }
     }
+    const auto streamlinePollStart = presentEnd;
     PollStreamlineState();
+    const auto streamlinePollEnd = std::chrono::steady_clock::now();
+    g_CpuTimings.reflexStartMs += MillisecondsBetween(reflexStart, reflexEnd);
+    g_CpuTimings.frameFenceMs += MillisecondsBetween(frameFenceStart, frameFenceEnd);
+    g_CpuTimings.acquireMs += MillisecondsBetween(acquireStart, acquireEnd);
+    g_CpuTimings.imageFenceMs += MillisecondsBetween(imageFenceStart, imageFenceEnd);
+    g_CpuTimings.recordSubmitMs += MillisecondsBetween(recordSubmitStart, recordSubmitEnd);
+    g_CpuTimings.presentMs += MillisecondsBetween(presentStart, presentEnd);
+    g_CpuTimings.streamlinePollMs +=
+        MillisecondsBetween(streamlinePollStart, streamlinePollEnd);
+    ++g_CpuTimings.samples;
     QueryMemoryBudgetStress();
     LogHeartbeat();
     g_App.previousTimeSeconds = timeSeconds;

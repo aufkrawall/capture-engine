@@ -135,4 +135,39 @@ TEST(VulkanFgBuildPolicyTest, StreamlineTagsBackbufferUiAndExplicitExtents) {
     ExpectContains(streamline, "VK_IMAGE_LAYOUT_PRESENT_SRC_KHR");
 }
 
+TEST(VulkanFgBuildPolicyTest, ReflexKeepsAutomaticDriverPacingUnmodified) {
+    const std::string streamline = ReadProjectFile("testapp/vulkan_fg_switch_streamline.inl");
+    const std::string renderer = ReadProjectFile("testapp/vulkan_fg_switch_renderer.inl");
+    ExpectContains(streamline, "slReflexGetState");
+    ExpectContains(streamline, "bIsVsyncSupportAvailable");
+    ExpectContains(streamline, "frameLimitUs=0");
+    ExpectContains(streamline, "automaticDriverPacing=unmodified");
+    ExpectContains(streamline, "sl::DLSSGFlags::eRetainResourcesWhenOff");
+    ExpectContains(streamline, "slow slDLSSGSetOptions");
+    EXPECT_EQ(streamline.find("frameLimitUs ="), std::string::npos)
+        << "the Vulkan test must never install an explicit Reflex frame cap";
+    EXPECT_EQ(streamline.find("g_App.sl.reflexSleep && g_App.sl.reflexActive"), std::string::npos)
+        << "slReflexSleep is required even while Reflex mode is off";
+    EXPECT_LT(renderer.find("BeginStreamlineFrame()"), renderer.find("vkWaitForFences(frame)"));
+}
+
+TEST(VulkanFgBuildPolicyTest, AsyncPresentUsesValidQueueAndPerImageSemaphoreOwnership) {
+    const std::string app = ReadProjectFile("testapp/vulkan_fg_switch_test.cpp");
+    const std::string device = ReadProjectFile("testapp/vulkan_fg_switch_device.inl");
+    const std::string fidelityfx = ReadProjectFile("testapp/vulkan_fg_switch_fidelityfx.inl");
+    const std::string wsi = ReadProjectFile("testapp/vulkan_fg_switch_wsi.inl");
+    const std::string renderer = ReadProjectFile("testapp/vulkan_fg_switch_renderer.inl");
+    ExpectContains(app, "--vk-async-present");
+    ExpectContains(app, "--no-vk-async-present");
+    ExpectContains(app, "--vk-no-vsync");
+    ExpectContains(app, "GetPrivateProfileIntA(\"Vulkan\", \"debug\"");
+    ExpectContains(device, "app-async-present");
+    ExpectContains(device, "ApplicationPresentQueue()");
+    ExpectContains(fidelityfx, "queueInfo(ApplicationPresentQueue(), ApplicationPresentQueueRef())");
+    ExpectContains(wsi, "queuePresent(ApplicationPresentQueue(), &presentInfo)");
+    ExpectContains(wsi, "presentReadySemaphores.resize(imageCount");
+    ExpectContains(wsi, "presentReadySemaphores[imageIndex]");
+    ExpectContains(renderer, "pSignalSemaphores = &g_App.swapchain.presentReadySemaphores[imageIndex]");
+}
+
 }  // namespace

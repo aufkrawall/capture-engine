@@ -387,8 +387,13 @@ bool CursorRenderer::ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32
     auto result = std::make_unique<uint8_t[]>(pixelCount * 4);
     auto drawOver = [&](uint32_t background) {
         std::fill_n(static_cast<uint32_t*>(dibPixels), pixelCount, background);
-        return DrawIconEx(dc, 0, 0, icon, static_cast<int>(width), static_cast<int>(height), 0, nullptr,
-                          DI_NORMAL) != FALSE;
+        if (DrawIconEx(dc, 0, 0, icon, static_cast<int>(width), static_cast<int>(height), 0, nullptr, DI_NORMAL) ==
+            FALSE) {
+            return false;
+        }
+        // DrawIconEx may be held in GDI's per-thread command batch. Flush before
+        // reading the DIB section through its directly mapped CPU pointer.
+        return GdiFlush() != FALSE;
     };
 
     bool rendered = drawOver(0xFF000000u);

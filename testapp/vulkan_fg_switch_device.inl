@@ -173,6 +173,7 @@ void LogQueuePlan(const std::vector<VulkanQueueFamilyCaps>& caps) {
                      ref.familyIndex, ref.queueIndex);
     };
     logRef("game", g_App.vk.queuePlan.game);
+    logRef("app-async-present", g_App.vk.queuePlan.asyncPresent);
     logRef("ffx-async-compute", g_App.vk.queuePlan.ffxAsyncCompute);
     logRef("ffx-present", g_App.vk.queuePlan.ffxPresent);
     logRef("ffx-image-acquire", g_App.vk.queuePlan.ffxImageAcquire);
@@ -353,6 +354,7 @@ bool InitializeVulkanDevice() {
     }
 
     VulkanQueueRequirements queueRequirements{};
+    queueRequirements.requestAsyncPresent = g_App.asyncPresentRequested;
     for (const SlFeatureRequirementCopy& requirement : g_App.sl.requirements) {
         if (!requirement.instanceExtensionsAvailable) {
             continue;
@@ -469,12 +471,20 @@ bool InitializeVulkanDevice() {
     }
     if (!dlssgRequirementsAvailable && g_App.vk.queuePlan.streamlineAvailable) {
         VulkanQueueRequirements ffxOnlyRequirements{};
+        ffxOnlyRequirements.requestAsyncPresent = g_App.asyncPresentRequested;
         g_App.vk.queuePlan = BuildVulkanQueuePlan(queueCaps, ffxOnlyRequirements);
         testapp::Log(
             "[FG-DIAG] Streamline DLSS-G requirements unavailable; released reserved queues "
             "and replanned FidelityFX availability=%d\n",
             g_App.vk.queuePlan.fidelityFxAvailable ? 1 : 0);
         LogQueuePlan(queueCaps);
+    }
+    g_App.vk.asyncPresentActive =
+        g_App.asyncPresentRequested && g_App.vk.queuePlan.asyncPresentAvailable;
+    if (g_App.asyncPresentRequested && !g_App.vk.asyncPresentActive) {
+        testapp::Log(
+            "[FG-DIAG] WARN separate application present queue requested but no distinct "
+            "graphics+compute+present queue exists in the game family; using game queue\n");
     }
 
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
@@ -519,10 +529,12 @@ bool InitializeVulkanDevice() {
     result = vkCreateDevice(g_App.vk.physicalDevice, &deviceCreateInfo, nullptr, &g_App.vk.device);
     testapp::Log(
         "[FG-DIAG] vkCreateDevice result=%s(%d) device=%p extensions=%u ffxQueues=%d slQueues=%d "
-        "memoryBudget=%d deviceFault=%d core13=%d opticalFlow=%d\n",
+        "asyncPresent(requested=%d,active=%d) memoryBudget=%d deviceFault=%d core13=%d "
+        "opticalFlow=%d\n",
         VkResultName(result), static_cast<int>(result), reinterpret_cast<void*>(g_App.vk.device),
         deviceCreateInfo.enabledExtensionCount, g_App.vk.queuePlan.fidelityFxAvailable ? 1 : 0,
-        g_App.vk.queuePlan.streamlineAvailable ? 1 : 0, g_App.vk.memoryBudgetEnabled ? 1 : 0,
+        g_App.vk.queuePlan.streamlineAvailable ? 1 : 0, g_App.asyncPresentRequested ? 1 : 0,
+        g_App.vk.asyncPresentActive ? 1 : 0, g_App.vk.memoryBudgetEnabled ? 1 : 0,
         g_App.vk.deviceFaultEnabled ? 1 : 0, useVulkan13Features ? 1 : 0,
         opticalExtensionEnabled && enabledOptical.opticalFlow ? 1 : 0);
     if (result != VK_SUCCESS) {
@@ -530,6 +542,7 @@ bool InitializeVulkanDevice() {
     }
 
     g_App.vk.gameQueue = QueueFromRef(g_App.vk.queuePlan.game);
+    g_App.vk.asyncPresentQueue = QueueFromRef(g_App.vk.queuePlan.asyncPresent);
     g_App.vk.ffxAsyncQueue = QueueFromRef(g_App.vk.queuePlan.ffxAsyncCompute);
     g_App.vk.ffxPresentQueue = QueueFromRef(g_App.vk.queuePlan.ffxPresent);
     g_App.vk.ffxAcquireQueue = QueueFromRef(g_App.vk.queuePlan.ffxImageAcquire);
@@ -556,6 +569,20 @@ bool InitializeVulkanDevice() {
     g_App.swapchain.owner = SwapchainOwner::Native;
     g_App.swapchain.wsi = LoaderWsiDispatch();
     return true;
+}
+
+VkQueue ApplicationPresentQueue() {
+    if (g_App.vk.asyncPresentActive && g_App.vk.asyncPresentQueue != VK_NULL_HANDLE) {
+        return g_App.vk.asyncPresentQueue;
+    }
+    return g_App.vk.gameQueue;
+}
+
+const VulkanQueueRef& ApplicationPresentQueueRef() {
+    if (g_App.vk.asyncPresentActive && g_App.vk.queuePlan.asyncPresent.Valid()) {
+        return g_App.vk.queuePlan.asyncPresent;
+    }
+    return g_App.vk.queuePlan.game;
 }
 
 void QueryMemoryBudgetStress() {
@@ -607,6 +634,9 @@ void ShutdownVulkanDevice() {
         vkDestroyDevice(g_App.vk.device, nullptr);
         g_App.vk.device = VK_NULL_HANDLE;
     }
+    g_App.vk.gameQueue = VK_NULL_HANDLE;
+    g_App.vk.asyncPresentQueue = VK_NULL_HANDLE;
+    g_App.vk.asyncPresentActive = false;
     if (g_App.vk.debugMessenger != VK_NULL_HANDLE) {
         auto destroyMessenger = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
             vkGetInstanceProcAddr(g_App.vk.instance, "vkDestroyDebugUtilsMessengerEXT"));

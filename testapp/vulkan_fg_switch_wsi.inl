@@ -97,6 +97,12 @@ void DestroySwapchainViews(SwapchainState* state) {
         }
     }
     state->framebuffers.clear();
+    for (VkSemaphore semaphore : state->presentReadySemaphores) {
+        if (semaphore != VK_NULL_HANDLE) {
+            vkDestroySemaphore(g_App.vk.device, semaphore, nullptr);
+        }
+    }
+    state->presentReadySemaphores.clear();
     for (VkImageView view : state->views) {
         if (view != VK_NULL_HANDLE) {
             vkDestroyImageView(g_App.vk.device, view, nullptr);
@@ -151,6 +157,8 @@ bool PopulateSwapchainImages(SwapchainState* state) {
     state->views.resize(imageCount, VK_NULL_HANDLE);
     state->layouts.resize(imageCount, VK_IMAGE_LAYOUT_UNDEFINED);
     state->imageFences.resize(imageCount, VK_NULL_HANDLE);
+    state->presentReadySemaphores.resize(imageCount, VK_NULL_HANDLE);
+    const VkSemaphoreCreateInfo semaphoreInfo = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     for (uint32_t index = 0; index < imageCount; ++index) {
         VkImageViewCreateInfo viewInfo = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         viewInfo.image = state->images[index];
@@ -163,6 +171,14 @@ bool PopulateSwapchainImages(SwapchainState* state) {
         if (result != VK_SUCCESS) {
             testapp::Log("[FG-DIAG] vkCreateImageView(swapchain index=%u) result=%s(%d)\n", index,
                          VkResultName(result), static_cast<int>(result));
+            return false;
+        }
+        result = vkCreateSemaphore(g_App.vk.device, &semaphoreInfo, nullptr,
+                                   &state->presentReadySemaphores[index]);
+        if (result != VK_SUCCESS) {
+            testapp::Log(
+                "[FG-DIAG] vkCreateSemaphore(present-ready image=%u) result=%s(%d)\n",
+                index, VkResultName(result), static_cast<int>(result));
             return false;
         }
     }
@@ -658,14 +674,23 @@ VkResult AcquireSwapchainImage(FrameContext& frame, uint32_t* imageIndex) {
     return result;
 }
 
-VkResult PresentSwapchainImage(FrameContext& frame, uint32_t imageIndex) {
+VkResult PresentSwapchainImage(uint32_t imageIndex) {
+    if (imageIndex >= g_App.swapchain.presentReadySemaphores.size()) {
+        testapp::Log(
+            "[FG-DIAG] ERROR present-ready semaphore index=%u count=%zu\n", imageIndex,
+            g_App.swapchain.presentReadySemaphores.size());
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    const VkSemaphore presentReady = g_App.swapchain.presentReadySemaphores[imageIndex];
     VkPresentInfoKHR presentInfo = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &frame.renderFinished;
+    presentInfo.pWaitSemaphores = &presentReady;
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = &g_App.swapchain.handle;
     presentInfo.pImageIndices = &imageIndex;
-    const VkResult result = g_App.swapchain.wsi.queuePresent(g_App.vk.gameQueue, &presentInfo);
+    const VulkanQueueRef& presentQueueRef = ApplicationPresentQueueRef();
+    const VkResult result =
+        g_App.swapchain.wsi.queuePresent(ApplicationPresentQueue(), &presentInfo);
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
         g_App.swapchainRecreatePending = true;
     } else if (result == VK_ERROR_DEVICE_LOST) {
@@ -676,10 +701,12 @@ VkResult PresentSwapchainImage(FrameContext& frame, uint32_t imageIndex) {
     if (result != VK_SUCCESS || g_App.frameId < 5 || (g_App.frameId % 240) == 0) {
         testapp::Log(
             "[FG-DIAG] queuePresent frameID=%llu image=%u owner=%s route=%s result=%s(%d) "
-            "requestedFG=%s effective(sl=%d,ffx=%d)\n",
+            "queue=%u:%u separate=%d requestedFG=%s effective(sl=%d,ffx=%d)\n",
             static_cast<unsigned long long>(g_App.frameId), imageIndex, OwnerName(g_App.swapchain.owner),
             WsiRouteName(g_App.swapchain.wsi.route), VkResultName(result), static_cast<int>(result),
-            ModeName(g_App.transition.currentMode), g_App.sl.dlssFgConfigured ? 1 : 0,
+            presentQueueRef.familyIndex, presentQueueRef.queueIndex,
+            g_App.vk.asyncPresentActive ? 1 : 0, ModeName(g_App.transition.currentMode),
+            g_App.sl.dlssFgConfigured ? 1 : 0,
             g_App.ffx.frameGenerationConfigured ? 1 : 0);
     }
     if ((result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) &&

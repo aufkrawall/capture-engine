@@ -97,7 +97,7 @@ TEST(VulkanFgPolicyTest, VulkanFsr4FallsBackWithoutDisablingNonMlFsr) {
 TEST(VulkanFgPolicyTest, PresentModeSelectionHonorsVsyncAndBestLowLatencyFallback) {
     const std::vector<PresentMode> all = {PresentMode::Fifo, PresentMode::Immediate, PresentMode::Mailbox};
     EXPECT_EQ(SelectPresentMode(true, all), PresentMode::Fifo);
-    EXPECT_EQ(SelectPresentMode(false, all), PresentMode::Mailbox);
+    EXPECT_EQ(SelectPresentMode(false, all), PresentMode::Immediate);
     EXPECT_EQ(SelectPresentMode(false, {PresentMode::Fifo, PresentMode::Immediate}), PresentMode::Immediate);
     EXPECT_EQ(SelectPresentMode(false, {PresentMode::FifoRelaxed, PresentMode::Fifo}), PresentMode::FifoRelaxed);
     EXPECT_EQ(SelectPresentMode(false, {}), PresentMode::Fifo);
@@ -159,6 +159,7 @@ TEST(VulkanFgPolicyTest, QueuePlannerKeepsAllRuntimeQueuesDistinct) {
         {2, 1, false, false, false, false, true},
     };
     VulkanQueueRequirements requirements{};
+    requirements.requestAsyncPresent = true;
     requirements.streamlineGraphicsQueues = 1;
     requirements.streamlineComputeQueues = 1;
     requirements.streamlineOpticalFlowQueues = 1;
@@ -166,7 +167,8 @@ TEST(VulkanFgPolicyTest, QueuePlannerKeepsAllRuntimeQueuesDistinct) {
     EXPECT_TRUE(plan.baseAvailable);
     EXPECT_TRUE(plan.fidelityFxAvailable);
     EXPECT_TRUE(plan.streamlineAvailable);
-    std::vector<VulkanQueueRef> queues = {plan.game, plan.ffxAsyncCompute, plan.ffxPresent,
+    ASSERT_TRUE(plan.asyncPresentAvailable);
+    std::vector<VulkanQueueRef> queues = {plan.game, plan.asyncPresent, plan.ffxAsyncCompute, plan.ffxPresent,
                                           plan.ffxImageAcquire};
     queues.insert(queues.end(), plan.streamlineGraphics.begin(), plan.streamlineGraphics.end());
     queues.insert(queues.end(), plan.streamlineCompute.begin(), plan.streamlineCompute.end());
@@ -178,6 +180,20 @@ TEST(VulkanFgPolicyTest, QueuePlannerKeepsAllRuntimeQueuesDistinct) {
         }
     }
     EXPECT_GE(plan.requestedQueueCounts[0], 4u);
+}
+
+TEST(VulkanFgPolicyTest, AsyncPresentFallsBackWithoutDisablingFeatureQueues) {
+    const std::vector<VulkanQueueFamilyCaps> caps = {
+        {0, 1, true, true, true, true, false},
+        {1, 3, false, true, true, true, false},
+    };
+    VulkanQueueRequirements requirements{};
+    requirements.requestFidelityFX = false;
+    requirements.requestAsyncPresent = true;
+    const VulkanQueuePlan plan = BuildVulkanQueuePlan(caps, requirements);
+    EXPECT_TRUE(plan.baseAvailable);
+    EXPECT_FALSE(plan.asyncPresentAvailable);
+    EXPECT_FALSE(plan.asyncPresent.Valid());
 }
 
 TEST(VulkanFgPolicyTest, MissingFfxQueuesDisablesOnlyFfx) {

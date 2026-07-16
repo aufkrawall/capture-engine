@@ -40,6 +40,8 @@ bool ResolveStreamlineFeatureFunctions() {
         SlFeatureFunction<PFun_slDLSSGSetOptions>(sl::kFeatureDLSS_G, "slDLSSGSetOptions");
     g_App.sl.dlssgGetState =
         SlFeatureFunction<PFun_slDLSSGGetState>(sl::kFeatureDLSS_G, "slDLSSGGetState");
+    g_App.sl.reflexGetState =
+        SlFeatureFunction<PFun_slReflexGetState>(sl::kFeatureReflex, "slReflexGetState");
     g_App.sl.reflexSetOptions =
         SlFeatureFunction<PFun_slReflexSetOptions>(sl::kFeatureReflex, "slReflexSetOptions");
     g_App.sl.reflexSleep = SlFeatureFunction<PFun_slReflexSleep>(sl::kFeatureReflex, "slReflexSleep");
@@ -138,20 +140,39 @@ bool SetReflexMode(bool enabled, const char* reason) {
     if (!g_App.sl.reflexSetOptions || !g_App.sl.reflexSupported) {
         return !enabled;
     }
-    if (g_App.sl.reflexActive == enabled) {
+    if (g_App.sl.reflexOptionsConfigured && g_App.sl.reflexActive == enabled) {
         return true;
     }
     sl::ReflexOptions options{};
     options.mode = enabled ? sl::ReflexMode::eLowLatency : sl::ReflexMode::eOff;
     const sl::Result result = g_App.sl.reflexSetOptions(options);
-    testapp::Log("[FG-DIAG] slReflexSetOptions requested=%s reason=%s result=%d(%s)\n",
-                 enabled ? "low-latency" : "off", reason ? reason : "unknown", static_cast<int>(result),
-                 SlResultName(result));
+    testapp::Log(
+        "[FG-DIAG] slReflexSetOptions requested=%s frameLimitUs=%u "
+        "automaticDriverPacing=unmodified reason=%s result=%d(%s)\n",
+        enabled ? "low-latency" : "off", options.frameLimitUs,
+        reason ? reason : "unknown", static_cast<int>(result), SlResultName(result));
     if (result == sl::Result::eOk) {
         g_App.sl.reflexActive = enabled;
+        g_App.sl.reflexOptionsConfigured = true;
     }
     testapp::LogFlush();
     return result == sl::Result::eOk;
+}
+
+void PollReflexState(bool force) {
+    if (!g_App.sl.reflexGetState || !g_App.sl.reflexSupported ||
+        (!force && (g_App.frameId % 120) != 0)) {
+        return;
+    }
+    sl::ReflexState state{};
+    const sl::Result result = g_App.sl.reflexGetState(state);
+    g_App.sl.reflexStateAvailable = result == sl::Result::eOk && state.lowLatencyAvailable;
+    testapp::Log(
+        "[FG-DIAG] slReflexGetState result=%d(%s) lowLatencyAvailable=%d "
+        "latencyReportAvailable=%d configuredMode=%s frameLimitUs=0\n",
+        static_cast<int>(result), SlResultName(result), state.lowLatencyAvailable ? 1 : 0,
+        state.latencyReportAvailable ? 1 : 0,
+        g_App.sl.reflexActive ? "low-latency" : "off");
 }
 
 }  // namespace
@@ -226,10 +247,16 @@ bool InitializeStreamlineBeforeVulkan() {
         sl::FeatureRequirements requirements{};
         const sl::Result requirementResult = g_App.sl.getFeatureRequirements(feature, requirements);
         testapp::Log(
-            "[FG-DIAG] slGetFeatureRequirements feature=%u result=%d(%s) flags=0x%x queues(g=%u,c=%u,of=%u) "
-            "extensions(instance=%u,device=%u) features(1.2=%u,1.3=%u)\n",
+            "[FG-DIAG] slGetFeatureRequirements feature=%u result=%d(%s) flags=0x%x "
+            "vulkan=%d vsyncOffRequired=%d hardwareSchedulingRequired=%d "
+            "queues(g=%u,c=%u,of=%u) extensions(instance=%u,device=%u) "
+            "features(1.2=%u,1.3=%u)\n",
             static_cast<unsigned>(feature), static_cast<int>(requirementResult), SlResultName(requirementResult),
-            static_cast<unsigned>(requirements.flags), requirements.vkNumGraphicsQueuesRequired,
+            static_cast<unsigned>(requirements.flags),
+            (requirements.flags & sl::FeatureRequirementFlags::eVulkanSupported) ? 1 : 0,
+            (requirements.flags & sl::FeatureRequirementFlags::eVSyncOffRequired) ? 1 : 0,
+            (requirements.flags & sl::FeatureRequirementFlags::eHardwareSchedulingRequired) ? 1 : 0,
+            requirements.vkNumGraphicsQueuesRequired,
             requirements.vkNumComputeQueuesRequired, requirements.vkNumOpticalFlowQueuesRequired,
             requirements.vkNumInstanceExtensions, requirements.vkNumDeviceExtensions, requirements.vkNumFeatures12,
             requirements.vkNumFeatures13);
@@ -343,6 +370,9 @@ bool ConfigureStreamlineAfterDevice() {
     querySupport(sl::kFeatureDLSS_G, &g_App.sl.dlssFgSupported);
     querySupport(sl::kFeatureReflex, &g_App.sl.reflexSupported);
     ResolveStreamlineFeatureFunctions();
+    g_App.sl.reflexOptionsConfigured = false;
+    SetReflexMode(false, "initial Reflex configuration");
+    PollReflexState(true);
     if (!wsiComplete || !g_App.vk.queuePlan.streamlineAvailable) {
         g_App.sl.dlssFgSupported = false;
         testapp::Log(
@@ -375,14 +405,22 @@ bool SetStreamlineFeaturesLoaded(bool loaded, const char* reason) {
         g_App.sl.featuresLoaded = loaded;
         if (loaded) {
             ResolveStreamlineFeatureFunctions();
+            g_App.sl.reflexOptionsConfigured = false;
+            SetReflexMode(false, "feature plugin reload baseline");
+            PollReflexState(true);
         } else {
             g_App.sl.dlssSetOptions = nullptr;
             g_App.sl.dlssGetOptimalSettings = nullptr;
             g_App.sl.dlssgSetOptions = nullptr;
             g_App.sl.dlssgGetState = nullptr;
+            g_App.sl.reflexGetState = nullptr;
             g_App.sl.reflexSetOptions = nullptr;
             g_App.sl.reflexSleep = nullptr;
             g_App.sl.reflexActive = false;
+            g_App.sl.reflexOptionsConfigured = false;
+            g_App.sl.reflexStateAvailable = false;
+            g_App.sl.dlssgVsyncSupportKnown = false;
+            g_App.sl.dlssgVsyncSupported = false;
             g_App.sl.dlssSrConfigured = false;
             g_App.sl.dlssFgConfigured = false;
         }
@@ -473,6 +511,10 @@ bool SetDlssFrameGeneration(bool enabled, const char* reason) {
     }
     sl::DLSSGOptions options{};
     options.mode = enabled ? sl::DLSSGMode::eOn : sl::DLSSGMode::eOff;
+    // Repeated-key suspension promises to retain this proxy and its contexts. Tell the plugin to
+    // retain its internal FG resources too; otherwise eOff synchronously flushes and destroys the
+    // worker state, causing a multi-second hitch before the passthrough frame can be presented.
+    options.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
     options.numFramesToGenerate = 1;
     options.numBackBuffers = static_cast<uint32_t>(g_App.swapchain.images.size());
     options.colorWidth = g_App.swapchain.extent.width;
@@ -486,24 +528,34 @@ bool SetDlssFrameGeneration(bool enabled, const char* reason) {
     options.uiBufferFormat = static_cast<uint32_t>(kUiFormat);
     options.queueParallelismMode = sl::DLSSGQueueParallelismMode::eBlockPresentingClientQueue;
     options.enableUserInterfaceRecomposition = sl::Boolean::eTrue;
+    const auto setOptionsStart = std::chrono::steady_clock::now();
     const sl::Result result = g_App.sl.dlssgSetOptions(g_App.sl.viewport, options);
+    const double setOptionsMs = std::chrono::duration<double, std::milli>(
+                                    std::chrono::steady_clock::now() - setOptionsStart)
+                                    .count();
     if (result == sl::Result::eOk) {
         g_App.sl.dlssFgConfigured = enabled;
     }
     testapp::Log(
         "[FG-DIAG] slDLSSGSetOptions requested=%d configured=%d reason=%s result=%d(%s) size=%ux%u "
-        "mvecDepth=%ux%u buffers=%u reflex=%d\n",
+        "mvecDepth=%ux%u buffers=%u flags=0x%x retainWhenOff=1 durationMs=%.3f reflex=%d\n",
         enabled ? 1 : 0, g_App.sl.dlssFgConfigured ? 1 : 0, reason ? reason : "unknown",
         static_cast<int>(result), SlResultName(result), options.colorWidth, options.colorHeight,
         options.mvecDepthWidth, options.mvecDepthHeight, options.numBackBuffers,
+        static_cast<unsigned>(options.flags), setOptionsMs,
         g_App.sl.reflexActive ? 1 : 0);
+    if (setOptionsMs > 50.0) {
+        testapp::Log(
+            "[FG-PACING] slow slDLSSGSetOptions requested=%d durationMs=%.3f "
+            "retainWhenOff=1 reason=%s\n",
+            enabled ? 1 : 0, setOptionsMs, reason ? reason : "unknown");
+    }
     testapp::LogFlush();
     return result == sl::Result::eOk;
 }
 
 sl::FrameToken* BeginStreamlineFrame() {
-    if (g_App.swapchain.owner != SwapchainOwner::Streamline || !g_App.sl.featuresLoaded ||
-        !g_App.sl.getNewFrameToken) {
+    if (!g_App.sl.initialized || !g_App.sl.featuresLoaded || !g_App.sl.getNewFrameToken) {
         return nullptr;
     }
     uint32_t frameIndex = g_App.sl.frameTokenIndex++;
@@ -514,11 +566,20 @@ sl::FrameToken* BeginStreamlineFrame() {
                      static_cast<int>(result), SlResultName(result), token);
         return nullptr;
     }
-    if (g_App.sl.reflexSleep && g_App.sl.reflexActive) {
+    if (g_App.sl.reflexSleep) {
         const sl::Result sleepResult = g_App.sl.reflexSleep(*token);
-        if (sleepResult != sl::Result::eOk || frameIndex < 5) {
-            testapp::Log("[FG-DIAG] slReflexSleep frame=%u result=%d(%s)\n", frameIndex,
-                         static_cast<int>(sleepResult), SlResultName(sleepResult));
+        ++g_App.sl.reflexSleepCalls;
+        if (sleepResult != sl::Result::eOk) {
+            ++g_App.sl.reflexSleepFailures;
+        }
+        if (sleepResult != sl::Result::eOk || frameIndex < 5 || (frameIndex % 240) == 0) {
+            testapp::Log(
+                "[FG-DIAG] slReflexSleep frame=%u mode=%s frameLimitUs=0 result=%d(%s) "
+                "calls=%llu failures=%llu\n",
+                frameIndex, g_App.sl.reflexActive ? "low-latency" : "off",
+                static_cast<int>(sleepResult), SlResultName(sleepResult),
+                static_cast<unsigned long long>(g_App.sl.reflexSleepCalls),
+                static_cast<unsigned long long>(g_App.sl.reflexSleepFailures));
         }
     }
     return token;
@@ -649,12 +710,29 @@ bool RecordStreamlineInputsAndUpscale(VkCommandBuffer commandBuffer, FrameResour
 }
 
 void PollStreamlineState() {
+    PollReflexState(false);
     if (!g_App.sl.dlssgGetState || g_App.swapchain.owner != SwapchainOwner::Streamline) {
         return;
     }
     sl::DLSSGState state{};
     const sl::Result result = g_App.sl.dlssgGetState(g_App.sl.viewport, state, nullptr);
     if (result == sl::Result::eOk) {
+        const bool vsyncSupported = state.bIsVsyncSupportAvailable == sl::Boolean::eTrue;
+        if (!g_App.sl.dlssgVsyncSupportKnown ||
+            g_App.sl.dlssgVsyncSupported != vsyncSupported) {
+            g_App.sl.dlssgVsyncSupportKnown = true;
+            g_App.sl.dlssgVsyncSupported = vsyncSupported;
+            testapp::Log(
+                "[FG-DIAG] DLSS-G Vulkan VSync support available=%d; frameLimitUs=0 "
+                "(no application-side limiter or emulation)\n",
+                vsyncSupported ? 1 : 0);
+            if (!vsyncSupported) {
+                testapp::Log(
+                    "[FG-DIAG] WARN automatic VSync/VRR below-refresh pacing is unavailable "
+                    "while Streamline Vulkan DLSS-G owns presentation\n");
+            }
+            testapp::LogFlush();
+        }
         const uint32_t presented = std::max(state.numFramesActuallyPresented, 1u);
         if (presented > 1) {
             g_App.generatedFrames += presented - 1;
@@ -664,10 +742,11 @@ void PollStreamlineState() {
     if (g_App.frameId < 5 || result != sl::Result::eOk || (g_App.frameId % 120) == 0) {
         testapp::Log(
             "[FG-DIAG] slDLSSGGetState result=%d(%s) status=0x%x presented=%u maxGenerated=%u "
-            "dynamicMFG=%d requested=%d configured=%d effective=%d\n",
+            "dynamicMFG=%d vsyncSupport=%d requested=%d configured=%d effective=%d\n",
             static_cast<int>(result), SlResultName(result), static_cast<unsigned>(state.status),
             state.numFramesActuallyPresented, state.numFramesToGenerateMax,
             state.bIsDynamicMFGSupported == sl::Boolean::eTrue ? 1 : 0,
+            state.bIsVsyncSupportAvailable == sl::Boolean::eTrue ? 1 : 0,
             g_App.transition.currentMode == FgMode::Dlss && !g_App.transition.suspended ? 1 : 0,
             g_App.sl.dlssFgConfigured ? 1 : 0,
             result == sl::Result::eOk && state.status == sl::DLSSGStatus::eOk &&

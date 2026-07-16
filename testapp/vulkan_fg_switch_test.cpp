@@ -64,6 +64,47 @@ static bool& g_FsrSharpeningEnabled = g_SwitchConfig.fsrSharpeningEnabled;
 static int& g_FsrSharpnessPercent = g_SwitchConfig.fsrSharpnessPercent;
 
 #include "dx12_fg_switch_config.inl"
+
+static std::string TestAppConfigPath() {
+    char path[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, path, MAX_PATH);
+    std::string configPath = path;
+    const size_t slash = configPath.find_last_of("\\/");
+    return slash == std::string::npos
+               ? std::string("testappconfig.ini")
+               : configPath.substr(0, slash + 1) + "testappconfig.ini";
+}
+
+static void ParseVulkanOptions(int argc, char* argv[]) {
+    const std::string configPath = TestAppConfigPath();
+    g_App.asyncPresentRequested =
+        GetPrivateProfileIntA("Vulkan", "async_present", g_App.asyncPresentRequested ? 1 : 0,
+                              configPath.c_str()) != 0;
+    g_App.config.apiDebug =
+        GetPrivateProfileIntA("Vulkan", "debug", g_App.config.apiDebug ? 1 : 0,
+                              configPath.c_str()) != 0;
+
+    // Feed the shared DX12/Vulkan parser only its own arguments so Vulkan-only switches cannot be
+    // mistaken for the legacy positional width/height/load arguments.
+    std::vector<char*> sharedArguments;
+    sharedArguments.reserve(static_cast<size_t>(argc));
+    sharedArguments.push_back(argv[0]);
+    for (int index = 1; index < argc; ++index) {
+        if (std::strcmp(argv[index], "--vk-async-present") == 0) {
+            g_App.asyncPresentRequested = true;
+        } else if (std::strcmp(argv[index], "--no-vk-async-present") == 0) {
+            g_App.asyncPresentRequested = false;
+        } else if (std::strcmp(argv[index], "--vk-vsync") == 0) {
+            g_App.config.vsync = 1;
+        } else if (std::strcmp(argv[index], "--vk-no-vsync") == 0) {
+            g_App.config.vsync = 0;
+        } else {
+            sharedArguments.push_back(argv[index]);
+        }
+    }
+    ParseCommandLine(static_cast<int>(sharedArguments.size()), sharedArguments.data());
+}
+
 #include "vulkan_fg_switch_diagnostics.inl"
 #include "vulkan_fg_switch_streamline.inl"
 #include "vulkan_fg_switch_device.inl"
@@ -350,7 +391,7 @@ int main(int argc, char* argv[]) {
     testapp::ApplyGameScheduling();
     testapp::OpenLogFile();
     LoadConfig();
-    ParseCommandLine(argc, argv);
+    ParseVulkanOptions(argc, argv);
     const testapp::vkfg::VulkanFsrVersionResolution fsrResolution =
         testapp::vkfg::ResolveVulkanFsrVersion(g_App.config.fsrUpscaleVersion);
 
@@ -361,6 +402,11 @@ int main(int argc, char* argv[]) {
         GetCurrentProcessId(), g_App.config.windowWidth, g_App.config.windowHeight,
         g_App.config.fullscreen, g_App.config.gpuLoadPasses, g_App.config.vsync,
         testapp::vkfg::kFramesInFlight);
+    testapp::Log(
+        "Presentation: requestedSeparateQueue=%d presentModePolicy=%s colorPath="
+        "SDR-8bit/sRGB-nonlinear (dlss_hdr configures SR input semantics, not HDR10 output)\n",
+        g_App.asyncPresentRequested ? 1 : 0,
+        g_App.config.vsync ? "FIFO" : "IMMEDIATE->MAILBOX->FIFO_RELAXED->FIFO");
     testapp::Log(
         "SDK policy: Streamline=2.11.1 FidelityFX Vulkan=1.1.4 FSR=3.1.4 "
         "requestedFsrVersion=%d resolved=%d mlFallback=%d\n",
@@ -398,7 +444,10 @@ int main(int argc, char* argv[]) {
         g_App.config.startupNativeSwapchainRecreateCount,
         g_App.config.bootstrapNativeSwapchainStressCount);
     testapp::Log("Keys: 1=OFF 2=DLSS FG 3=FSR FG (repeat 2/3=suspend/resume) F11/Alt+Enter=fullscreen ESC=exit\n");
-    testapp::Log("Debug: --vk-debug and --dred enable validation/debug-utils/device-fault diagnostics\n");
+    testapp::Log(
+        "Debug: --vk-debug/--dred enable validation/debug-utils/device-fault; "
+        "--vk-async-present selects a distinct same-family graphics+compute+present queue; "
+        "--vk-vsync/--vk-no-vsync override the INI for controlled WSI tests\n");
     testapp::LogFlush();
 
     bool initialized = CreateApplicationWindow();
@@ -496,7 +545,8 @@ int main(int argc, char* argv[]) {
     Cleanup();
     testapp::Log(
         "[FG-SUMMARY] frames=%llu presented=%llu generated=%llu transitions=%llu failures=%llu "
-        "validationErrors=%llu pacingSpikes=%llu deviceLost=%d callbacks(ffxPresent=%llu,ffxFG=%llu)\n",
+        "validationErrors=%llu pacingSpikes=%llu deviceLost=%d reflexSleep(calls=%llu,failures=%llu) "
+        "callbacks(ffxPresent=%llu,ffxFG=%llu)\n",
         static_cast<unsigned long long>(g_App.frameId),
         static_cast<unsigned long long>(g_App.presentedFrames),
         static_cast<unsigned long long>(g_App.generatedFrames),
@@ -504,6 +554,8 @@ int main(int argc, char* argv[]) {
         static_cast<unsigned long long>(g_App.transitionFailures),
         static_cast<unsigned long long>(g_App.validationErrors),
         static_cast<unsigned long long>(g_App.pacingSpikes), g_App.vk.deviceLost ? 1 : 0,
+        static_cast<unsigned long long>(g_App.sl.reflexSleepCalls),
+        static_cast<unsigned long long>(g_App.sl.reflexSleepFailures),
         static_cast<unsigned long long>(g_App.ffx.presentCallbackCount.load()),
         static_cast<unsigned long long>(g_App.ffx.frameGenerationCallbackCount.load()));
     testapp::LogFlush();

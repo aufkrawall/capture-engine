@@ -271,11 +271,11 @@ inline PresentMode SelectPresentMode(bool vsync, const std::vector<PresentMode>&
         return has(PresentMode::Fifo) ? PresentMode::Fifo
                                      : (available.empty() ? PresentMode::Fifo : available.front());
     }
-    if (has(PresentMode::Mailbox)) {
-        return PresentMode::Mailbox;
-    }
     if (has(PresentMode::Immediate)) {
         return PresentMode::Immediate;
+    }
+    if (has(PresentMode::Mailbox)) {
+        return PresentMode::Mailbox;
     }
     if (has(PresentMode::FifoRelaxed)) {
         return PresentMode::FifoRelaxed;
@@ -308,6 +308,7 @@ struct VulkanQueueRef {
 
 struct VulkanQueueRequirements {
     bool requestFidelityFX = true;
+    bool requestAsyncPresent = false;
     uint32_t streamlineGraphicsQueues = 0;
     uint32_t streamlineComputeQueues = 0;
     uint32_t streamlineOpticalFlowQueues = 0;
@@ -315,6 +316,7 @@ struct VulkanQueueRequirements {
 
 struct VulkanQueuePlan {
     VulkanQueueRef game;
+    VulkanQueueRef asyncPresent;
     VulkanQueueRef ffxAsyncCompute;
     VulkanQueueRef ffxPresent;
     VulkanQueueRef ffxImageAcquire;
@@ -323,6 +325,7 @@ struct VulkanQueuePlan {
     std::vector<VulkanQueueRef> streamlineOpticalFlow;
     std::vector<uint32_t> requestedQueueCounts;
     bool baseAvailable = false;
+    bool asyncPresentAvailable = false;
     bool fidelityFxAvailable = false;
     bool streamlineAvailable = false;
 };
@@ -440,7 +443,21 @@ inline VulkanQueuePlan BuildVulkanQueuePlan(const std::vector<VulkanQueueFamilyC
         }
     }
 
+    if (requirements.requestAsyncPresent) {
+        // Keep the application-owned present queue in the game queue family. This gives Native,
+        // Streamline, and FidelityFX one valid queue-separation stress path without swapchain
+        // ownership transfers. FidelityFX also requires the queue on which its replacement
+        // vkQueuePresentKHR is invoked to have both graphics and compute capability.
+        plan.asyncPresent = allocator.Take([gameFamily = plan.game.familyIndex](
+                                               const VulkanQueueFamilyCaps& family) {
+            return family.familyIndex == gameFamily && family.graphics && family.compute &&
+                   family.present;
+        });
+        plan.asyncPresentAvailable = plan.asyncPresent.Valid();
+    }
+
     detail::UpdateRequestedQueueCounts(caps, plan.game, &plan.requestedQueueCounts);
+    detail::UpdateRequestedQueueCounts(caps, plan.asyncPresent, &plan.requestedQueueCounts);
     detail::UpdateRequestedQueueCounts(caps, plan.ffxAsyncCompute, &plan.requestedQueueCounts);
     detail::UpdateRequestedQueueCounts(caps, plan.ffxPresent, &plan.requestedQueueCounts);
     detail::UpdateRequestedQueueCounts(caps, plan.ffxImageAcquire, &plan.requestedQueueCounts);
