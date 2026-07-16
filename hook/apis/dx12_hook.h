@@ -137,10 +137,10 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResource, uint32_t ffxState,
 // NEVER the substitute re-assert; see the deadlock boundary in dx12_overlay_policy.h). Returns true if composited.
 bool DX12_CompositeOverlayOntoCachedFFXUiResource();
 // --- FFX proxy-swapchain Present hook (game-thread composite driver) ---
-// Install CE's vtable hook on the game-facing FFX FrameInterpolation proxy swapchain (from
-// ffxConfigure(FrameGeneration).swapChain). ffxRuntimeAnchor is any address inside the FFX runtime module
-// (e.g. the forwarded ffxConfigure target) used to verify the Present entry actually resolves into that
-// module before patching. Idempotent; returns true when the hook is (already) installed.
+// Install CE's vtable hook on the game-facing FFX FrameInterpolation proxy swapchain (from the successful
+// swapchain-context create output or ffxConfigure(FrameGeneration).swapChain). ffxRuntimeAnchor is any address
+// inside the FFX runtime module (e.g. the forwarded create/configure target) used to verify the Present entry
+// actually resolves into that module before patching. Idempotent; returns true when already installed.
 bool DX12_TryInstallFFXProxyPresentHook(void* swapChain, void* ffxRuntimeAnchor, const char* source);
 void DX12_RemoveFFXProxyPresentHook(const char* reason);
 bool DX12_IsFFXProxyPresentHookInstalled();

@@ -295,6 +295,19 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* context, ffxCreateContextDes
             DX12_RegisterNativeFSRSwapchainPresentationQueue(
                 *context, *parsedSwapChainCreate.swapChainOutput,
                 static_cast<ID3D12CommandQueue*>(parsedSwapChainCreate.gameQueue));
+
+            // ffxCreateContext has already returned the game-facing proxy and
+            // its exact producer queue. Install the same module-validated
+            // proxy Present prework used by ffxConfigure now, before the first
+            // passthrough Present can race the later enabled configure. The
+            // protected inner real swapchain remains fully quiesced; only the
+            // proxy backbuffer receives CE work on the descriptor game queue.
+            void* runtimeAnchor = g_ffxCreateContextTarget.load(std::memory_order_acquire);
+            if (!runtimeAnchor) {
+                runtimeAnchor = reinterpret_cast<void*>(g_Original_ffxCreateContext);
+            }
+            DX12_TryInstallFFXProxyPresentHook(*parsedSwapChainCreate.swapChainOutput, runtimeAnchor,
+                                               "ffxCreateContext(FrameGenerationSwapChain)");
         }
 
         // Track successful context creation even during Streamline startup. This is passive bookkeeping only;

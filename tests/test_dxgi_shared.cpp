@@ -99,15 +99,17 @@ TEST(DXGISharedTest, StreamlineUiActivationCoverageSurvivesFrameTagsUntilPostSLC
     EXPECT_EQ(coverage.Remaining(), 0u);
 }
 
-TEST(DXGISharedTest, FirstProvenPostFSRPostSLOutputCannotTrustOfficialUiAlone) {
-    using ce::dx12_overlay_policy::ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup;
+TEST(DXGISharedTest, FirstProvenPostSLOutputCannotTrustOfficialUiAlone) {
+    using ce::dx12_overlay_policy::ShouldRequireExactPostSLBackbufferDrawForStartup;
 
-    EXPECT_TRUE(ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup(false, true, true, true));
-    EXPECT_TRUE(ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup(true, false, false, false));
+    EXPECT_TRUE(ShouldRequireExactPostSLBackbufferDrawForStartup(false, true, true, false, true));
+    EXPECT_TRUE(ShouldRequireExactPostSLBackbufferDrawForStartup(false, false, false, true, true));
+    EXPECT_TRUE(ShouldRequireExactPostSLBackbufferDrawForStartup(true, false, false, false, false));
 
-    EXPECT_FALSE(ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup(false, false, true, true));
-    EXPECT_FALSE(ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup(false, true, false, true));
-    EXPECT_FALSE(ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup(false, true, true, false));
+    EXPECT_FALSE(ShouldRequireExactPostSLBackbufferDrawForStartup(false, false, true, false, true));
+    EXPECT_FALSE(ShouldRequireExactPostSLBackbufferDrawForStartup(false, true, false, false, true));
+    EXPECT_FALSE(ShouldRequireExactPostSLBackbufferDrawForStartup(false, true, true, false, false));
+    EXPECT_FALSE(ShouldRequireExactPostSLBackbufferDrawForStartup(false, false, false, true, false));
 }
 
 TEST(DXGISharedTest, GameSwapchainCreationAfterExplicitDLSSOffProvesNativeReturn) {
@@ -131,6 +133,50 @@ TEST(DXGISharedTest, GameSwapchainCreationAfterExplicitDLSSOffProvesNativeReturn
     EXPECT_FALSE(ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn(
         /*gameCreatedSwapchain=*/true, /*postSLExplicitOffKeepAlive=*/false,
         /*actualFrameGenerationActive=*/false, /*streamlineFGRunning=*/false));
+}
+
+TEST(DXGISharedTest, AuthoritativeDLSSOffNativeReturnBypassesOnlyResidualRecentFGCooldown) {
+    using ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn;
+
+    EXPECT_TRUE(ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(
+        true, true, false, false, false, false, false, false));
+
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(
+        false, true, false, false, false, false, false, false));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(
+        true, false, false, false, false, false, false, false));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(
+        true, true, true, false, false, false, false, false));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(
+        true, true, false, true, false, false, false, false));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(
+        true, true, false, false, true, false, false, false));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(
+        true, true, false, false, false, true, false, false));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(
+        true, true, false, false, false, false, true, false));
+    EXPECT_FALSE(ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(
+        true, true, false, false, false, false, false, true));
+}
+
+TEST(DXGISharedTest, LateOuterStreamlineOffCannotTearDownNewlyRebuiltNativeReturn) {
+    using ce::dx12_overlay_policy::ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn;
+
+    EXPECT_TRUE(ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(
+        true, true, true, true, true, false));
+
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(
+        false, true, true, true, true, false));
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(
+        true, false, true, true, true, false));
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(
+        true, true, false, true, true, false));
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(
+        true, true, true, false, true, false));
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(
+        true, true, true, true, false, false));
+    EXPECT_FALSE(ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(
+        true, true, true, true, true, true));
 }
 
 TEST(DXGISharedTest, TransitionCooldownDoesNotHeavySuspendDrawableDX12Overlay) {
@@ -1572,6 +1618,47 @@ TEST(DXGISharedSourceTest, NormalSwapchainReturnRebaselinesBeforeFirstPresent) {
     EXPECT_NE(text.find("ShouldAwaitAuthoritativeQueueChangeBaseline(", processFrame), std::string::npos);
     EXPECT_NE(text.find("Established authoritative queue-change baseline after normal swapchain return", processFrame),
               std::string::npos);
+}
+
+TEST(DXGISharedSourceTest, AuthoritativeDLSSOffNativeReturnProofFeedsFirstMatchingPresent) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    ASSERT_TRUE(fs::exists(source));
+    std::ifstream stream(source, std::ios::binary);
+    ASSERT_TRUE(stream.good());
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    ASSERT_FALSE(text.empty());
+
+    const size_t handler = text.find("HandlePostSLRouteForNormalSwapchainReturn(");
+    ASSERT_NE(handler, std::string::npos);
+    EXPECT_NE(text.find("g_PostDLSSOffAuthoritativeNormalReturnSwapchain.store(returnedSwapchain", handler),
+              std::string::npos);
+
+    const size_t processFrame = text.find("void ProcessFrame(");
+    ASSERT_NE(processFrame, std::string::npos);
+    const size_t lifetimeDecision = text.find("ShouldProcessLogicalSwapchainReplacement(", processFrame);
+    const size_t decision = text.find(
+        "ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(", processFrame);
+    const size_t consume = text.find(
+        "g_PostDLSSOffAuthoritativeNormalReturnSwapchain.compare_exchange_strong(", processFrame);
+    const size_t preserve = text.find(
+        "ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(", processFrame);
+    ASSERT_NE(lifetimeDecision, std::string::npos);
+    ASSERT_NE(decision, std::string::npos);
+    ASSERT_NE(consume, std::string::npos);
+    ASSERT_NE(preserve, std::string::npos);
+    EXPECT_LT(lifetimeDecision, decision);
+    EXPECT_LT(decision, consume);
+    EXPECT_LT(consume, preserve);
+}
+
+TEST(DXGISharedTest, ExactCreationProofDefeatsSwapchainPointerABAReuse) {
+    using ce::dx12_overlay_policy::ShouldProcessLogicalSwapchainReplacement;
+
+    EXPECT_TRUE(ShouldProcessLogicalSwapchainReplacement(true, false));
+    EXPECT_TRUE(ShouldProcessLogicalSwapchainReplacement(false, true));
+    EXPECT_TRUE(ShouldProcessLogicalSwapchainReplacement(true, true));
+    EXPECT_FALSE(ShouldProcessLogicalSwapchainReplacement(false, false));
 }
 
 TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueueRouting) {
@@ -5881,6 +5968,15 @@ TEST(DXGISharedTest, OverlayVisibilityInterruptionAccountingStartsAfterFirstDraw
     EXPECT_TRUE(ce::dx12_overlay_policy::ShouldAccountOverlayVisibilityPresent(42));
 }
 
+TEST(DXGISharedTest, InlinePostSLKeepAliveDrawBelongsToEnclosingPresent) {
+    using ce::dx12_overlay_policy::ShouldAccountPostSLCallbackAsSeparatePresent;
+
+    EXPECT_TRUE(ShouldAccountPostSLCallbackAsSeparatePresent(true, false, false));
+    EXPECT_FALSE(ShouldAccountPostSLCallbackAsSeparatePresent(true, false, true));
+    EXPECT_FALSE(ShouldAccountPostSLCallbackAsSeparatePresent(false, false, false));
+    EXPECT_FALSE(ShouldAccountPostSLCallbackAsSeparatePresent(true, true, false));
+}
+
 TEST(DXGISharedTest, OverlayPresentCoverageFGComposedInheritance) {
     ce::dx12_overlay_policy::OverlayPresentCoverageTracker tracker;
 
@@ -5940,6 +6036,51 @@ TEST(DXGISharedTest, FreshPostFSRStreamlineHandoffPrewarmsBeforeDLSSActivation) 
     EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, true, true, true, true, true));
     EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, true, true, false, false, true));
     EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, true, true, false, true, false));
+}
+
+TEST(DXGISharedTest, ExactPrewarmedPostSLHandoffSurvivesItsFirstMatchingPresent) {
+    using ce::dx12_overlay_policy::ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent;
+
+    EXPECT_TRUE(ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(
+        true, true, true, true, true, true, true, true, false, false, false));
+    EXPECT_FALSE(ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(
+        false, true, true, true, true, true, true, true, false, false, false));
+    EXPECT_FALSE(ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(
+        true, false, true, true, true, true, true, true, false, false, false));
+    EXPECT_FALSE(ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(
+        true, true, false, true, true, true, true, true, false, false, false));
+    EXPECT_FALSE(ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(
+        true, true, true, true, true, true, true, false, false, false, false));
+    EXPECT_FALSE(ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(
+        true, true, true, true, true, true, true, true, true, false, false));
+    EXPECT_FALSE(ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(
+        true, true, true, true, true, true, true, true, false, true, false));
+    EXPECT_FALSE(ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(
+        true, true, true, true, true, true, true, true, false, false, true));
+}
+
+TEST(DXGISharedSourceTest, PrewarmedPostSLHandoffProofIsArmedAndConsumedBeforeGenericSwapchainCleanup) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    std::ifstream input(source, std::ios::binary);
+    ASSERT_TRUE(input.is_open()) << source.string();
+    const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+
+    const size_t prewarm = text.find("PrewarmPostSLOverlayForFreshStreamlineHandoff(pSwapChain, pQueue, context)");
+    const size_t arm = text.find("g_PrewarmedPostSLHandoffSwapchain.store(pSwapChain", prewarm);
+    const size_t lifetimeDecision = text.find("ShouldProcessLogicalSwapchainReplacement(", arm);
+    const size_t preserve = text.find(
+        "ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(", lifetimeDecision);
+    const size_t cleanup = text.find("CleanupRTVs();", preserve);
+    ASSERT_NE(prewarm, std::string::npos);
+    ASSERT_NE(arm, std::string::npos);
+    ASSERT_NE(lifetimeDecision, std::string::npos);
+    ASSERT_NE(preserve, std::string::npos);
+    ASSERT_NE(cleanup, std::string::npos);
+    EXPECT_LT(prewarm, arm);
+    EXPECT_LT(arm, lifetimeDecision);
+    EXPECT_LT(lifetimeDecision, preserve);
+    EXPECT_LT(preserve, cleanup);
 }
 
 TEST(DXGISharedTest, ExplicitEnablePureDLSSColdStartProofShape) {
@@ -6092,15 +6233,22 @@ TEST(DXGISharedSourceTest, OuterOffPreservesExactConfirmedPostSLProxyBeforeTrans
     ASSERT_NE(coverageGate, std::string::npos);
 
     const size_t drainGuard = text.find(
-        "if (g_State.fence && !preserveConfirmedPostSLProxyResourcesAcrossOuterOff)", outerOff);
+        "if (g_State.fence && !preserveConfirmedPostSLProxyResourcesAcrossOuterOff &&", outerOff);
+    const size_t drainNativeReturnGuard = text.find(
+        "!keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn)", drainGuard);
     const size_t reinitBranch =
         text.find("if (g_State.overlayInit && !keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover", drainGuard);
-    const size_t reinitGuard =
-        text.find("!preserveConfirmedPostSLProxyResourcesAcrossOuterOff) {", reinitBranch);
+    const size_t reinitGuard = text.find(
+        "!preserveConfirmedPostSLProxyResourcesAcrossOuterOff &&", reinitBranch);
+    const size_t reinitNativeReturnGuard = text.find(
+        "!keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn) {", reinitGuard);
     ASSERT_NE(drainGuard, std::string::npos);
+    ASSERT_NE(drainNativeReturnGuard, std::string::npos);
     ASSERT_NE(reinitBranch, std::string::npos);
     ASSERT_NE(reinitGuard, std::string::npos);
-    EXPECT_LT(reinitGuard - reinitBranch, static_cast<size_t>(240));
+    ASSERT_NE(reinitNativeReturnGuard, std::string::npos);
+    EXPECT_LT(drainNativeReturnGuard - drainGuard, static_cast<size_t>(240));
+    EXPECT_LT(reinitNativeReturnGuard - reinitBranch, static_cast<size_t>(320));
     EXPECT_LT(drainGuard, coverageGate);
     EXPECT_LT(reinitGuard, coverageGate);
 }
@@ -6447,6 +6595,17 @@ TEST(DXGISharedSourceTest, ProtectedCreateQueueRecoveryPrecedesFFXProxyPresentHo
     const std::string ffxText((std::istreambuf_iterator<char>(ffxStream)), std::istreambuf_iterator<char>());
     const std::string dx12Text((std::istreambuf_iterator<char>(dx12Stream)), std::istreambuf_iterator<char>());
 
+    const size_t createBlock = ffxText.find("if (parsedSwapChainCreate.recognized && context && *context");
+    ASSERT_NE(createBlock, std::string::npos);
+    const size_t createQueueRegistration =
+        ffxText.find("DX12_RegisterNativeFSRSwapchainPresentationQueue(", createBlock);
+    const size_t createHookInstall = ffxText.find(
+        "DX12_TryInstallFFXProxyPresentHook(*parsedSwapChainCreate.swapChainOutput", createBlock);
+    ASSERT_NE(createQueueRegistration, std::string::npos);
+    ASSERT_NE(createHookInstall, std::string::npos);
+    EXPECT_LT(createQueueRegistration, createHookInstall)
+        << "the exact descriptor producer queue must be registered before the first proxy Present can run";
+
     const size_t configureBlock = ffxText.find("if (recognizedFGConfigure && localConfig.swapChain) {");
     ASSERT_NE(configureBlock, std::string::npos);
     const size_t recovery =
@@ -6739,7 +6898,10 @@ TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceReassertOnlyFromProxyPr
     ASSERT_NE(guard, std::string::npos);
     ASSERT_NE(forward, std::string::npos);
     EXPECT_LT(guard, forward) << "the prework-context guard must run BEFORE the ffxConfigure forward";
-    // The proxy hook is captured from ffxConfigure(FrameGeneration).swapChain (GTA passes the proxy there).
+    // Context creation installs the hook before a first passthrough Present;
+    // configure remains the idempotent fallback for integrations such as GTA.
+    EXPECT_NE(ffx.find("DX12_TryInstallFFXProxyPresentHook(*parsedSwapChainCreate.swapChainOutput"),
+              std::string::npos);
     EXPECT_NE(ffx.find("DX12_TryInstallFFXProxyPresentHook(localConfig.swapChain"), std::string::npos);
 }
 

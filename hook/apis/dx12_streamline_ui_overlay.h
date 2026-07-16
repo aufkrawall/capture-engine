@@ -51,9 +51,10 @@ void AfterExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12Comma
 // resource and must not receive a duplicate output-backbuffer draw.
 bool ConsumePostSLCoverage();
 
-// A proven post-FSR PostSL route draws the exact output backbuffer. Retire the
-// remaining official-UI output budget at that make-before-break boundary so no
-// later proxy buffer is skipped on coverage that may belong to a prior source.
+// A proven startup PostSL route has drawn the exact output backbuffer. Retire
+// the remaining official-UI output budget only after that successful
+// make-before-break boundary so no later proxy buffer is skipped on coverage
+// that may belong to a prior source.
 bool RetirePostSLCoverageForExactBackbufferTakeover();
 
 // Coverage accounting can run before PostSL becomes render-capable. This reports that the latest

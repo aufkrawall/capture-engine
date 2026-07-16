@@ -325,6 +325,41 @@ inline bool ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn(
            !streamlineFGRunning;
 }
 
+inline bool ShouldProcessLogicalSwapchainReplacement(bool pointerAddressChanged,
+                                                     bool exactNewSwapchainLifetimeProof) {
+    // COM allocators may reuse the same interface address after a runtime-owned
+    // swapchain is destroyed. Creation-time proof identifies a new lifetime even
+    // when raw pointer comparison alone observes an ABA-equal address.
+    return pointerAddressChanged || exactNewSwapchainLifetimeProof;
+}
+
+// A game-created replacement swapchain after authoritative DLSS OFF is the
+// make-before-break boundary from the retired PostSL proxy to the native game
+// route. The exact swapchain/queue association is already proven at creation,
+// so a residual "FG was active one frame ago" bit must not impose the generic
+// 90-frame reinit cooldown on its first Present. Re-check every live ownership
+// and device guard so a resumed FG mode, FSR takeover, mismatched route, or
+// removed device still keeps the protective cooldown.
+inline bool ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(
+    bool exactNormalReturnSwapchainProof, bool normalRouteOwnershipProven, bool frameGenerationCurrentlyActive,
+    bool streamlineFGRunning, bool fsrFGApiActive, bool nativeFSRInternalNoCallbackComposition,
+    bool runtimeOwnsSwapchain, bool deviceRemoved) {
+    return exactNormalReturnSwapchainProof && normalRouteOwnershipProven && !frameGenerationCurrentlyActive &&
+           !streamlineFGRunning && !fsrFGApiActive && !nativeFSRInternalNoCallbackComposition &&
+           !runtimeOwnsSwapchain && !deviceRemoved;
+}
+
+inline bool ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(
+    bool streamlineTurnedOff, bool exactNormalReturnReinitializedThisPresent, bool normalRouteOwnershipProven,
+    bool overlayInit, bool syncInit, bool deviceRemoved) {
+    // The first native Present has already rebuilt RTV/sync state on the exact
+    // authoritative game swapchain. The late outer SL OFF observer must not
+    // immediately tear that new state down as if it still referenced the old
+    // proxy; doing so creates one uncovered Present before the next rebuild.
+    return streamlineTurnedOff && exactNormalReturnReinitializedThisPresent && normalRouteOwnershipProven &&
+           overlayInit && syncInit && !deviceRemoved;
+}
+
 inline bool ShouldRetirePostSLRouteForNormalSwapchainReturn(bool normalSwapchainReturn, bool postSLRouteArmed,
                                                             bool hasDistinctPostSLQueueProof) {
     return normalSwapchainReturn && postSLRouteArmed && hasDistinctPostSLQueueProof;
@@ -945,6 +980,22 @@ inline bool ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(bool freshAuthoritat
                                                             bool isDX12Swapchain) {
     return freshAuthoritativeStreamlineHandoff && hadFSRFGPhase && runtimeOwnsSwapchain && !streamlineFGRunning &&
            overlayWasLive && isDX12Swapchain;
+}
+
+inline bool ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(
+    bool exactPrewarmedSwapchainProof, bool overlayInit, bool syncInit, bool hasRTVHeap, bool hasCommandList,
+    bool runtimeOwnsSwapchain, bool hasSwapchainQueue, bool queueCaptureMatchesSwapchain, bool fsrFGApiActive,
+    bool nativeFSRPresentPathActive, bool deviceRemoved) {
+    // Prewarming has already rebuilt the swapchain-scoped RTV/sync state for
+    // this exact Streamline proxy and its captured queue. The proxy can issue a
+    // passthrough Present before slDLSSGSetOptions(ON); treating that first
+    // Present as an ordinary pointer change destroys the ready backend and
+    // creates an uncovered source/output seam. Consume the exact creation-time
+    // proof instead. A concurrent FSR takeover, stale queue association, partial
+    // prewarm, or removed device retains normal teardown.
+    return exactPrewarmedSwapchainProof && overlayInit && syncInit && hasRTVHeap && hasCommandList &&
+           runtimeOwnsSwapchain && hasSwapchainQueue && queueCaptureMatchesSwapchain && !fsrFGApiActive &&
+           !nativeFSRPresentPathActive && !deviceRemoved;
 }
 
 // PRINCIPLE: a live overlay is never blanked by an FG transition. The
@@ -3873,16 +3924,19 @@ private:
     uint32_t remainingOutputs_ = 0;
 };
 
-inline bool ShouldRequireExactPostSLBackbufferDrawForPostFSRStartup(
+inline bool ShouldRequireExactPostSLBackbufferDrawForStartup(
     bool forcedStartupTransportDraw, bool hadFSRFGPhase, bool safePostFSRBootstrapPath,
-    bool officialUiCoverageActive) {
+    bool explicitEnablePureDLSSColdStartProof, bool officialUiCoverageActive) {
     // Official UIColorAndAlpha coverage is useful for later generated outputs,
     // but some runtimes can expose their first proxy output before that tag is
-    // visible. The first proven post-FSR PostSL callback must therefore seed
-    // the exact output backbuffer itself and retire the bounded UI handoff so
-    // every later proxy buffer also receives an exact PostSL draw.
+    // visible. The first proven PostSL callback must therefore seed the exact
+    // output backbuffer itself after either a safe post-FSR handoff or an
+    // explicit pure-DLSS cold start, then retire the bounded UI handoff so every
+    // later proxy buffer also receives an exact PostSL draw. GetState-only
+    // activation does not provide enough provenance for the cold-start path.
     return forcedStartupTransportDraw ||
-           (hadFSRFGPhase && safePostFSRBootstrapPath && officialUiCoverageActive);
+           (officialUiCoverageActive &&
+            ((hadFSRFGPhase && safePostFSRBootstrapPath) || explicitEnablePureDLSSColdStartProof));
 }
 
 // ---------------------------------------------------------------------------
@@ -3913,6 +3967,14 @@ struct OverlayPresentCoverageResult {
 
 inline bool ShouldAccountOverlayVisibilityPresent(uint64_t overlayDrawCount) {
     return overlayDrawCount != 0;
+}
+
+inline bool ShouldAccountPostSLCallbackAsSeparatePresent(bool hasSwapchain, bool observerOnly,
+                                                         bool drawBelongsToEnclosingProcessFramePresent) {
+    // An inline exact-proxy keep-alive draw is part of the ProcessFrame Present
+    // that invoked it. Accounting both scopes consumes the draw in the inner
+    // callback and falsely classifies the enclosing Present as uncovered.
+    return hasSwapchain && !observerOnly && !drawBelongsToEnclosingProcessFramePresent;
 }
 
 class OverlayPresentCoverageTracker {
