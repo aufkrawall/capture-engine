@@ -113,10 +113,27 @@ TEST(CaptureCoordinatorSourceTest, FreshAndRepeatedCfrFramesShareScheduledCursor
     EXPECT_NE(repeatBody.find("selectCursorStateForScheduledQpc(scheduledQpc, g_LastFrame, \"repeat\")"),
               std::string::npos);
 
-    EXPECT_NE(source.find("selectCursorStateForScheduledQpc(scheduledSampleQpc, *frameToProcess, \"fresh\")"),
+    EXPECT_NE(source.find("selectCursorStateForScheduledQpc(scheduledOutputQpc, *frameToProcess, \"fresh\")"),
               std::string::npos);
     EXPECT_NE(source.find("selectCursorStateForScheduledQpc(repeatScheduledQpc, catchupFrame, \"fresh-catchup\")"),
               std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, InjectRecoverySeparatesOutputGridFromWakeDeadlineWithoutChangingScreenGrab) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("scheduledOutputQpc = ce::capture_policy::GetNextInjectCfrOutputQpc"),
+              std::string::npos);
+    EXPECT_NE(source.find("ShouldAdvanceWakeDeadlineForCfrCatchupTick(useScreenGrab,"), std::string::npos);
+    EXPECT_NE(source.find("scheduledOutputQpc + static_cast<int64_t>(extraTick) * targetIntervalTicks"),
+              std::string::npos);
+    EXPECT_EQ(source.find("scheduledSampleQpc + static_cast<int64_t>(extraTick) * targetIntervalTicks"),
+              std::string::npos);
+    EXPECT_NE(source.find("GetInjectCfrServiceMsPerOutputTick(cycleMs, outputTicksThisCycle)"),
+              std::string::npos);
+    EXPECT_NE(source.find("std::max(smoothedEncodeMs, smoothedInjectServiceMs)"), std::string::npos);
+    EXPECT_EQ(source.find("std::max(smoothedEncodeMs, smoothedEncCycleMs)"), std::string::npos);
 }
 
 TEST(CaptureCoordinatorSourceTest, AutoFallbackProvesWgcBeforeStoppingInject) {

@@ -446,6 +446,25 @@ TEST(AudioCaptureSourceTest, AudioWorkerExitAlwaysReleasesDrainWaiters) {
     EXPECT_EQ(source.find("std::thread(&MediaEngine::AudioLoop, this)"), std::string::npos);
 }
 
+TEST(AudioCaptureSourceTest, AudioWorkerSchedulingGapsAreRateLimitedDiagnosticsNotContinuityRecovery) {
+    const std::string source = ReadSource("mediaengine.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t loopBegin = source.find("void AudioLoop()");
+    const size_t loopEnd = source.find("MediaEngine: Audio thread stopped", loopBegin);
+    ASSERT_NE(loopBegin, std::string::npos);
+    ASSERT_NE(loopEnd, std::string::npos);
+    const std::string loopBody = source.substr(loopBegin, loopEnd - loopBegin);
+    EXPECT_NE(loopBody.find("kAudioWorkerSchedulingGapThresholdUs = 25000"), std::string::npos);
+    EXPECT_NE(loopBody.find("audioWorkerSchedulingDiagnosticsArmTime"), std::string::npos);
+    EXPECT_NE(loopBody.find("[AudioLoop] Scheduling gap:"), std::string::npos);
+    EXPECT_NE(loopBody.find("[AudioLoop] Scheduling summary:"), std::string::npos);
+    EXPECT_NE(loopBody.find("packet continuity counters remain "), std::string::npos);
+    EXPECT_NE(loopBody.find("authoritative for audible-loss classification"), std::string::npos);
+    EXPECT_EQ(loopBody.find("Skip("), std::string::npos);
+    EXPECT_EQ(loopBody.find("WriteSilence"), std::string::npos);
+}
+
 TEST(AudioCaptureSourceTest, MultiTrackRoutesShareOnePhysicalCaptureAndFanOutPackets) {
     const std::string source = ReadSource("mediaengine.cpp");
     ASSERT_FALSE(source.empty());

@@ -3120,6 +3120,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t injectWorstSourceJitterUs = 0;
     uint32_t injectWorstSelectionErrorUs = 0;
     double smoothedEncCycleMs = 0.0;
+    double smoothedInjectServiceMs = 0.0;
+    uint32_t injectServiceMaxUs = 0;
     uint32_t encCycleMaxMs = 0;
     uint32_t encodeSpikeCountThisSecond = 0;
     uint32_t dupTimestampCount = 0;
@@ -3150,6 +3152,12 @@ void EncoderThreadFunc(const AppConfig& config) {
     bool injectEncoderServiceTooSlowCurrent = false;
     uint32_t injectCfrRecoveryEpisodesThisWindow = 0;
     uint64_t injectCfrRecoveryEpisodesTotal = 0;
+    uint64_t injectCfrRecoveryStartTick = 0;
+    uint32_t injectCfrRecoveryStartDebt = 0;
+    uint32_t injectCfrRecoveryBestDebt = 0;
+    uint64_t injectCfrRecoveryStartFreshCatchup = 0;
+    uint64_t injectCfrRecoveryStartRepeatCatchup = 0;
+    uint64_t injectCfrRecoveryLastProgressLogTick = 0;
     uint64_t activePathMismatchDiscardTotal = 0;
     size_t pendingLiveInjectReadyFrames = 0;
     DWORD lastHealthLog = GetTickCount();
@@ -4189,6 +4197,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     while (g_EncoderRunning || g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) || g_FrameQueue.Size() > 0 ||
            !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
         LARGE_INTEGER cycleStartQpc;
+        const uint64_t cycleLiveTicksOutputStart = liveTicksOutput;
         // NOTE: cycleStartQpc is set after timer sleep below to measure
         // encode processing time, not the full loop including sleep.
         if (g_pSharedMem) {
@@ -4658,20 +4667,36 @@ void EncoderThreadFunc(const AppConfig& config) {
             encoderTooSlowForTargetCurrent = ce::capture_policy::IsEncoderTooSlowForTargetFps(
                 smoothedEncodeMs, frameIntervalMs, targetOutputFpsForPolicy);
             injectEncoderServiceTooSlowCurrent = ce::capture_policy::IsEncoderTooSlowForTargetFps(
-                std::max(smoothedEncodeMs, smoothedEncCycleMs), frameIntervalMs, targetOutputFpsForPolicy);
+                std::max(smoothedEncodeMs, smoothedInjectServiceMs), frameIntervalMs, targetOutputFpsForPolicy);
             const bool encoderCatchupBottleneckedCurrent =
                 encoderTooSlowForTargetCurrent || g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
             const bool nextInjectCfrRecoveryActive = ce::capture_policy::GetInjectCfrRecoveryActive(
                 injectCfrRecoveryActive, recordingOutputLive && !activeScreenGrab, config.video.useVFR,
                 outputShortfallTicks);
             if (nextInjectCfrRecoveryActive != injectCfrRecoveryActive) {
+                const uint64_t transitionTick = GetTickCount64();
+                const bool recoveryEntering = nextInjectCfrRecoveryActive;
+                const uint64_t recoveryDurationMs =
+                    !recoveryEntering && injectCfrRecoveryStartTick > 0 ? transitionTick - injectCfrRecoveryStartTick
+                                                                        : 0;
+                const uint64_t recoveryFreshCatchup =
+                    !recoveryEntering ? injectFreshCatchupTotal - injectCfrRecoveryStartFreshCatchup : 0;
+                const uint64_t recoveryRepeatCatchup =
+                    !recoveryEntering ? injectRepeatCatchupTotal - injectCfrRecoveryStartRepeatCatchup : 0;
                 injectCfrRecoveryActive = nextInjectCfrRecoveryActive;
                 if (injectCfrRecoveryActive) {
                     ++injectCfrRecoveryEpisodesThisWindow;
                     ++injectCfrRecoveryEpisodesTotal;
+                    injectCfrRecoveryStartTick = transitionTick;
+                    injectCfrRecoveryStartDebt = outputShortfallTicks;
+                    injectCfrRecoveryBestDebt = outputShortfallTicks;
+                    injectCfrRecoveryStartFreshCatchup = injectFreshCatchupTotal;
+                    injectCfrRecoveryStartRepeatCatchup = injectRepeatCatchupTotal;
+                    injectCfrRecoveryLastProgressLogTick = transitionTick;
                 }
                 LogInfo(
-                    "[Inject CFR] Recovery %s: shortfall=%u/%.1fms enc=%.2fms cycle=%.2fms bottleneck=%d. "
+                    "[Inject CFR] Recovery %s: shortfall=%u/%.1fms startDebt=%u bestDebt=%u duration=%llums "
+                    "fresh=%llu repeat=%llu enc=%.2fms service=%.2fms cycle=%.2fms bottleneck=%d. "
                     "exitDebt=%u tick(s)",
                     injectCfrRecoveryActive
                         ? "entered"
@@ -4680,9 +4705,34 @@ void EncoderThreadFunc(const AppConfig& config) {
                                : "disarmed"),
                     outputShortfallTicks,
                     ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
-                    smoothedEncodeMs, smoothedEncCycleMs,
+                    recoveryEntering ? outputShortfallTicks : injectCfrRecoveryStartDebt,
+                    recoveryEntering ? outputShortfallTicks : injectCfrRecoveryBestDebt,
+                    static_cast<unsigned long long>(recoveryDurationMs),
+                    static_cast<unsigned long long>(recoveryFreshCatchup),
+                    static_cast<unsigned long long>(recoveryRepeatCatchup), smoothedEncodeMs,
+                    smoothedInjectServiceMs, smoothedEncCycleMs,
                     g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0,
                     ce::capture_policy::kInjectCfrRecoveryExitShortfallTicks);
+            }
+            if (injectCfrRecoveryActive) {
+                injectCfrRecoveryBestDebt = std::min(injectCfrRecoveryBestDebt, outputShortfallTicks);
+                const uint64_t recoveryNowTick = GetTickCount64();
+                if (injectCfrRecoveryStartTick > 0 && recoveryNowTick - injectCfrRecoveryStartTick >= 5000 &&
+                    recoveryNowTick - injectCfrRecoveryLastProgressLogTick >= 5000) {
+                    LogWarn(
+                        "[Inject CFR] Recovery still active: duration=%llums debt=%u start=%u best=%u "
+                        "fresh=%llu repeat=%llu enc=%.2fms service=%.2fms cycle=%.2fms buffered=%zu credit=%.2f "
+                        "bottleneck=%d serviceSlow=%d",
+                        static_cast<unsigned long long>(recoveryNowTick - injectCfrRecoveryStartTick),
+                        outputShortfallTicks, injectCfrRecoveryStartDebt, injectCfrRecoveryBestDebt,
+                        static_cast<unsigned long long>(injectFreshCatchupTotal - injectCfrRecoveryStartFreshCatchup),
+                        static_cast<unsigned long long>(injectRepeatCatchupTotal - injectCfrRecoveryStartRepeatCatchup),
+                        smoothedEncodeMs, smoothedInjectServiceMs, smoothedEncCycleMs, bufferedInjectFrames.size(),
+                        frameCreditAccumulator,
+                        g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0,
+                        injectEncoderServiceTooSlowCurrent ? 1 : 0);
+                    injectCfrRecoveryLastProgressLogTick = recoveryNowTick;
+                }
             }
             const double shortfallDurationMs =
                 ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
@@ -4825,6 +4875,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
         }
 
+        int64_t scheduledOutputQpc = scheduledSampleQpc;
         const auto computeWgcSelectionTargetForTick = [&](int64_t scheduledQpcForTick, int64_t selectionGridTickForTick,
                                                           bool applyLiveDelay) {
             const int64_t fallbackTargetQpc =
@@ -8291,8 +8342,16 @@ void EncoderThreadFunc(const AppConfig& config) {
                 liveStartQpc = {};
                 wgcInputPredictor.Reset();
                 smoothedEncCycleMs = 0.0;
+                smoothedInjectServiceMs = 0.0;
+                injectServiceMaxUs = 0;
                 injectCfrRecoveryActive = false;
                 injectEncoderServiceTooSlowCurrent = false;
+                injectCfrRecoveryStartTick = 0;
+                injectCfrRecoveryStartDebt = 0;
+                injectCfrRecoveryBestDebt = 0;
+                injectCfrRecoveryStartFreshCatchup = injectFreshCatchupTotal;
+                injectCfrRecoveryStartRepeatCatchup = injectRepeatCatchupTotal;
+                injectCfrRecoveryLastProgressLogTick = 0;
                 encCycleMaxMs = 0;
                 dupTimestampCount = 0;
                 lastWgcDuplicateTimestampSkipCountForCadence =
@@ -8639,6 +8698,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                               static_cast<uint64_t>(wgcQueueTickSampleCount))
                                          : 0u;
         }
+        if (scheduledLiveCfrTick && !useScreenGrab) {
+            // Timer rebases keep the worker wake cadence near wall time, while liveTicksOutput owns the
+            // immutable CFR media grid. Keeping those clocks separate lets inject recovery submit an
+            // overdue extra slot without postponing the next normal 120 Hz wake by another tick.
+            scheduledOutputQpc = ce::capture_policy::GetNextInjectCfrOutputQpc(
+                liveStartQpc.QuadPart, liveTicksOutput, targetIntervalTicks, scheduledSampleQpc);
+        }
 
         auto recordDuplicate = [&](const QueuedFrame* duplicateFrame, const InjectFrameLineage* duplicateLineage,
                                    bool duplicateFromDrainReason, bool duplicateFromDeferredReason,
@@ -8685,6 +8751,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                     frameCreditAccumulator, smoothedInputPerTick, bufferedInjectFrames.size(),
                     bufferedWgcFrames.size());
                 s_lastDupLogTick = nowTick;
+            }
+        };
+        auto advanceWakeDeadlineForCatchupTick = [&]() {
+            if (ce::capture_policy::ShouldAdvanceWakeDeadlineForCfrCatchupTick(useScreenGrab,
+                                                                               injectCfrRecoveryActive)) {
+                nextSampleTime.QuadPart += targetIntervalTicks;
             }
         };
         auto emitCatchupRepeats = [&](const InjectFrameLineage* duplicateLineage) {
@@ -8756,7 +8828,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
 
                 const int64_t repeatScheduledQpc =
-                    scheduledSampleQpc + static_cast<int64_t>(extraTick) * targetIntervalTicks;
+                    scheduledOutputQpc + static_cast<int64_t>(extraTick) * targetIntervalTicks;
 
                 if (!useScreenGrab && !config.video.useVFR && MediaEngine_ProcessFrame) {
                     const size_t catchupInjectReserveFrames = ce::capture_policy::GetInjectReserveFrames(
@@ -8947,7 +9019,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                 ++cfrCatchupTicksExecuted;
                                 ++injectFreshCatchupThisWindow;
                                 ++injectFreshCatchupTotal;
-                                nextSampleTime.QuadPart += targetIntervalTicks;
+                                advanceWakeDeadlineForCatchupTick();
                                 continue;
                             }
 
@@ -9088,7 +9160,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                 ++liveTicksOutput;
                                 ++encoderGridTickCount;
                                 ++cfrCatchupTicksExecuted;
-                                nextSampleTime.QuadPart += targetIntervalTicks;
+                                advanceWakeDeadlineForCatchupTick();
                                 continue;
                             }
 
@@ -9173,7 +9245,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                             if (remainingFreshCatchupBudget > 0u) {
                                 --remainingFreshCatchupBudget;
                             }
-                            nextSampleTime.QuadPart += targetIntervalTicks;
+                            advanceWakeDeadlineForCatchupTick();
                             continue;
                         }
                     }
@@ -9237,7 +9309,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 ++liveTicksOutput;
                 ++encoderGridTickCount;
                 ++cfrCatchupTicksExecuted;
-                nextSampleTime.QuadPart += targetIntervalTicks;
+                advanceWakeDeadlineForCatchupTick();
             }
         };
 
@@ -9251,7 +9323,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 !useScreenGrab && lastSuccessfullyEncodedInjectLineage.IsValid()
                     ? lastSuccessfullyEncodedInjectLineage
                     : (g_HasLastFrame ? MakeInjectFrameLineage(g_LastFrame) : InjectFrameLineage{});
-            bool encodeSucceeded = repeatLastFrameForScheduledQpc(scheduledSampleQpc);
+            bool encodeSucceeded = repeatLastFrameForScheduledQpc(scheduledOutputQpc);
             bool encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
             QueryPerformanceCounter(&repeatEndEnc);
 
@@ -9342,9 +9414,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 frameAgeUs =
                     static_cast<uint64_t>((startEnc.QuadPart - frameToProcess->timestamp) * 1000000 / qpcFreq.QuadPart);
             }
-            if (scheduledLiveCfrTick && scheduledSampleQpc > 0) {
+            if (scheduledLiveCfrTick && scheduledOutputQpc > 0) {
                 const int64_t signedOutputScheduleErrorUs =
-                    ((startEnc.QuadPart - scheduledSampleQpc) * 1000000) / qpcFreq.QuadPart;
+                    ((startEnc.QuadPart - scheduledOutputQpc) * 1000000) / qpcFreq.QuadPart;
                 const uint64_t absoluteOutputScheduleErrorUs = static_cast<uint64_t>(
                     signedOutputScheduleErrorUs >= 0 ? signedOutputScheduleErrorUs : -signedOutputScheduleErrorUs);
                 cadenceCounters.outputScheduleErrorAccumUs += absoluteOutputScheduleErrorUs;
@@ -9366,9 +9438,9 @@ void EncoderThreadFunc(const AppConfig& config) {
             auto encodeCurrentFrame = [&]() {
                 ce::cursor::CaptureState scheduledCursorState;
                 const ce::cursor::CaptureState* cursorState = &frameToProcess->cursorState;
-                if (scheduledLiveCfrTick && scheduledSampleQpc > 0) {
+                if (scheduledLiveCfrTick && scheduledOutputQpc > 0) {
                     scheduledCursorState =
-                        selectCursorStateForScheduledQpc(scheduledSampleQpc, *frameToProcess, "fresh");
+                        selectCursorStateForScheduledQpc(scheduledOutputQpc, *frameToProcess, "fresh");
                     cursorState = &scheduledCursorState;
                 }
                 if (frameToProcess->isInjectMode) {
@@ -9381,7 +9453,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
                 } else {
                     const int64_t liveTimelineElapsedUs =
-                        scheduledLiveCfrTick ? computeLiveTimelineElapsedUs(scheduledSampleQpc) : -1;
+                        scheduledLiveCfrTick ? computeLiveTimelineElapsedUs(scheduledOutputQpc) : -1;
                     SyncDuplicationCursorSuppression(frameToProcess->wgcCursorEmbedded);
                     encodeSucceeded = MediaEngine_ProcessFrameD3D11(
                         frameToProcess->texture, frameToProcess->timestamp, frameToProcess->width,
@@ -9396,7 +9468,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             const bool recoveredFreshEncodeFailure =
                 !encodeSucceeded &&
                 recoverScheduledFreshEncodeFailure(scheduledLiveCfrTick, encodeSucceeded, encodeDeferred,
-                                                   scheduledSampleQpc, frameToProcess, "main fresh frame");
+                                                   scheduledOutputQpc, frameToProcess, "main fresh frame");
             if (recoveredFreshEncodeFailure) {
                 encodeSucceeded = true;
                 encodeDeferred = false;
@@ -9510,7 +9582,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     if (consumesCfrTick && isLivePhase && hasRepeatLastFramePath) {
                         isDuplicate = true;
                         duplicateFromDeferred = true;
-                        encodeSucceeded = repeatLastFrameForScheduledQpc(scheduledSampleQpc);
+                        encodeSucceeded = repeatLastFrameForScheduledQpc(scheduledOutputQpc);
                         encodeDeferred = MediaEngine_WasLastFrameDeferred && MediaEngine_WasLastFrameDeferred();
                         if (!encodeSucceeded || encodeDeferred) {
                             if (scheduledLiveCfrTick) {
@@ -9832,6 +9904,21 @@ void EncoderThreadFunc(const AppConfig& config) {
                 smoothedEncCycleMs = cycleMs;
             } else {
                 smoothedEncCycleMs = smoothedEncCycleMs * 0.85 + cycleMs * 0.15;
+            }
+            if (!activeScreenGrab && liveTicksOutput >= cycleLiveTicksOutputStart) {
+                const uint64_t outputTicksThisCycle64 = liveTicksOutput - cycleLiveTicksOutputStart;
+                const uint32_t outputTicksThisCycle = SaturatingToUint32(outputTicksThisCycle64);
+                const double injectServiceMs =
+                    ce::capture_policy::GetInjectCfrServiceMsPerOutputTick(cycleMs, outputTicksThisCycle);
+                if (injectServiceMs > 0.0) {
+                    if (smoothedInjectServiceMs < 0.001) {
+                        smoothedInjectServiceMs = injectServiceMs;
+                    } else {
+                        smoothedInjectServiceMs = smoothedInjectServiceMs * 0.85 + injectServiceMs * 0.15;
+                    }
+                    injectServiceMaxUs = std::max(
+                        injectServiceMaxUs, SaturatingToUint32(static_cast<uint64_t>(injectServiceMs * 1000.0)));
+                }
             }
             encCycleMaxMs = std::max(encCycleMaxMs, static_cast<uint32_t>(cycleMs * 1000.0));
             // Log encode spikes > 10ms (pure encode, not full cycle)
@@ -10428,14 +10515,16 @@ void EncoderThreadFunc(const AppConfig& config) {
                         "[Inject CFR] Repeat pressure: hardEncoderOverload=%d dup=%u srcLimited=%u fenceDeferred=%u "
                         "timer=%u freshCatchup=%u repeatCatchup=%u staleTrim=%u recovery=%d/%u requeued=%u "
                         "droppedDeferred=%u "
-                        "tickEmit=%u unique=%u sourceFps=%.2f enc=%.2fms sustain=%.1ffps overload=0x%X",
+                        "tickEmit=%u unique=%u sourceFps=%.2f enc=%.2fms service=%.2fms cycle=%.2fms "
+                        "sustain=%.1ffps overload=0x%X",
                         hardEncoderPressure ? 1 : 0, duplicateTicksThisWindow, sourceRepeatsThisWindow,
                         deferredRepeatsThisWindow, dupTimer - lastDuplicateReasonTimerRebase,
                         injectFreshCatchupThisWindow, injectRepeatCatchupThisWindow, injectLiveStaleTrimThisWindow,
                         injectCfrRecoveryActive ? 1 : 0, injectCfrRecoveryEpisodesThisWindow,
                         injectDeferredRequeuedThisWindow, injectDeferredDroppedThisWindow,
                         cadenceCounters.liveTickEmitCount, cadenceCounters.liveTickUniqueCount, srcFpsX100Val / 100.0,
-                        smoothedEncodeMs, sustainableOutputFps, overloadFlags);
+                        smoothedEncodeMs, smoothedInjectServiceMs, smoothedEncCycleMs, sustainableOutputFps,
+                        overloadFlags);
                     s_lastInjectRepeatPressureInfoTick = nowTick;
                 }
             } else {
@@ -11162,11 +11251,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(injectDeferredDroppedTotal));
             LogInfo(
                 "[Inject CFR SUMMARY] SourceFps=%.2f..%.2f JitterMax=%uus SelMax=%uus EncEmaMax=%.2fms "
-                "SustainMin=%.1ffps",
+                "ServiceEma=%.2fms ServiceMax=%uus SustainMin=%.1ffps",
                 injectWorstSourceFpsX100 == std::numeric_limits<uint32_t>::max() ? 0.0
                                                                                  : (injectWorstSourceFpsX100 / 100.0),
                 injectBestSourceFpsX100 / 100.0, injectWorstSourceJitterUs, injectWorstSelectionErrorUs,
-                captureSessionSummary.maxEncodeEmaMs,
+                captureSessionSummary.maxEncodeEmaMs, smoothedInjectServiceMs, injectServiceMaxUs,
                 captureSessionSummary.minEncoderSustainFps == std::numeric_limits<double>::max()
                     ? 0.0
                     : captureSessionSummary.minEncoderSustainFps);

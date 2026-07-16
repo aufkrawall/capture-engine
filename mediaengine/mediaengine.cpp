@@ -5213,6 +5213,12 @@ private:
         std::vector<std::deque<AudioPacket>> captureFanoutQueues(audioSources.size());
         std::vector<uint64_t> captureFanoutPacketCounts(audioSources.size(), 0);
         std::vector<uint64_t> batchedPreStartDiscardCounts(audioSources.size(), 0);
+        constexpr int64_t kAudioWorkerSchedulingGapThresholdUs = 25000;
+        auto lastAudioWorkerIteration = std::chrono::steady_clock::now();
+        auto audioWorkerSchedulingDiagnosticsArmTime = lastAudioWorkerIteration + std::chrono::seconds(1);
+        uint64_t audioWorkerSchedulingGapEvents = 0;
+        int64_t audioWorkerSchedulingGapMaxUs = 0;
+        int64_t lastAudioWorkerSchedulingGapLogMs = 0;
         int64_t sharedStartupRebaseOffsetSamples = -1;
         uint64_t appliedAudioResetGeneration = audioResetAcknowledgedGeneration.load(std::memory_order_acquire);
         bool audioOnlyStopTailFinalized = false;
@@ -5314,7 +5320,48 @@ private:
         };
 
         while (audioRunning) {
+            const auto audioWorkerIterationNow = std::chrono::steady_clock::now();
+            const int64_t audioWorkerSchedulingGapUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                                           audioWorkerIterationNow - lastAudioWorkerIteration)
+                                                           .count();
+            lastAudioWorkerIteration = audioWorkerIterationNow;
             const uint64_t requestedResetGeneration = audioResetRequestedGeneration.load(std::memory_order_acquire);
+            const bool audioTimelineCommitted =
+                requestedResetGeneration <= audioResetCommittedGeneration.load(std::memory_order_acquire);
+            if (audioTimelineCommitted && audioWorkerIterationNow >= audioWorkerSchedulingDiagnosticsArmTime &&
+                recordingStartSystemQPCMs.load(std::memory_order_acquire) > 0 &&
+                !audioStopDrainRequested.load(std::memory_order_acquire) &&
+                audioWorkerSchedulingGapUs >= kAudioWorkerSchedulingGapThresholdUs) {
+                ++audioWorkerSchedulingGapEvents;
+                audioWorkerSchedulingGapMaxUs =
+                    std::max(audioWorkerSchedulingGapMaxUs, audioWorkerSchedulingGapUs);
+                const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          audioWorkerIterationNow.time_since_epoch())
+                                          .count();
+                if (audioWorkerSchedulingGapEvents <= 5 || nowMs - lastAudioWorkerSchedulingGapLogMs >= 1000) {
+                    size_t maxRingSamples = 0;
+                    size_t pendingFanoutPackets = 0;
+                    size_t pendingEpochPacketCount = 0;
+                    for (size_t srcIdx = 0; srcIdx < audioSources.size(); ++srcIdx) {
+                        const auto& src = audioSources[srcIdx];
+                        if (src.ringBuffer) {
+                            const size_t channels = static_cast<size_t>(std::clamp(src.mixChannels, 1, 8));
+                            maxRingSamples = std::max(maxRingSamples, src.ringBuffer->GetAvailable() / channels);
+                        }
+                        pendingFanoutPackets += captureFanoutQueues[srcIdx].size();
+                        pendingEpochPacketCount += pendingEpochPackets[srcIdx].size();
+                    }
+                    DLL_Log(
+                        "[AudioLoop] Scheduling gap: gap=%lldus threshold=%lldus max=%lldus events=%llu "
+                        "maxRing=%zu samples fanoutPending=%zu epochPending=%zu; packet continuity counters remain "
+                        "authoritative for audible-loss classification",
+                        (long long)audioWorkerSchedulingGapUs, (long long)kAudioWorkerSchedulingGapThresholdUs,
+                        (long long)audioWorkerSchedulingGapMaxUs,
+                        static_cast<unsigned long long>(audioWorkerSchedulingGapEvents), maxRingSamples,
+                        pendingFanoutPackets, pendingEpochPacketCount);
+                    lastAudioWorkerSchedulingGapLogMs = nowMs;
+                }
+            }
             if (requestedResetGeneration > appliedAudioResetGeneration) {
                 const bool preserveResetPackets = audioResetPreservePackets.load(std::memory_order_acquire);
                 ApplyAudioTimelineReset(requestedResetGeneration,
@@ -5339,6 +5386,8 @@ private:
                 trackNextTimestamp.clear();
                 sharedStartupRebaseOffsetSamples = -1;
                 audioOnlyStopTailFinalized = false;
+                lastAudioWorkerIteration = std::chrono::steady_clock::now();
+                audioWorkerSchedulingDiagnosticsArmTime = lastAudioWorkerIteration + std::chrono::seconds(1);
                 appliedAudioResetGeneration = requestedResetGeneration;
                 audioResetAcknowledgedGeneration.store(requestedResetGeneration, std::memory_order_release);
                 audioDrainCv.notify_all();
@@ -6122,6 +6171,10 @@ private:
                 });
             }
         }
+
+        DLL_Log("[AudioLoop] Scheduling summary: events=%llu maxGap=%lldus threshold=%lldus",
+                static_cast<unsigned long long>(audioWorkerSchedulingGapEvents),
+                (long long)audioWorkerSchedulingGapMaxUs, (long long)kAudioWorkerSchedulingGapThresholdUs);
 
         for (size_t srcIdx = 0; srcIdx < audioSources.size(); ++srcIdx) {
             if (audioSources[srcIdx].captureFanoutOwnerIndex != srcIdx ||

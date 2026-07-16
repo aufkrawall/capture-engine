@@ -30,6 +30,8 @@ LOG_PATTERNS = {
     "audio_worker_start": re.compile(r"\[AppAudioWorker\] Started generation="),
     "audio_worker_exit": re.compile(r"\[AppAudioWorker\] Exit generation="),
     "audio_worker_overrun": re.compile(r"\[AppAudioWorker\].*(?:overrun=[1-9]|Overrun=[1-9])"),
+    "audio_worker_scheduling_stall": re.compile(r"\[AudioLoop\] Scheduling summary: events=[1-9]\d*"),
+    "inject_cfr_recovery_stalled": re.compile(r"\[Inject CFR\] Recovery still active:"),
     "audio_app_process_tree_selected": re.compile(r"\[AppAudioCapture\] Process-name tree resolution"),
     "audio_app_active_no_data": re.compile(
         r"\[AppAudioCapture\] WARNING: process-loopback stream is active but has delivered no data packets"
@@ -448,6 +450,7 @@ TRIAGE_VISUAL_FAULT_EVENTS = {
     "wgc_drain_duplicate_summary",
     "wgc_start_contract_error",
     "wgc_cfr_producer_contract_fault",
+    "inject_cfr_recovery_stalled",
 }
 
 TRIAGE_MUX_FAULT_EVENTS = {
@@ -5074,6 +5077,14 @@ def self_test():
         assert report["evidence"]["inject_pacing"]["summary_dup_src"] == 48
         assert report["evidence"]["inject_pacing"]["summary_recovery_episodes"] == 1
 
+        inject_recovery_stalled = make_session(
+            "inject_recovery_stalled",
+            media="[Inject CFR] Recovery still active: duration=5000ms debt=36 start=36 best=35\n",
+        )
+        report = classify_session_triage(inject_recovery_stalled)
+        assert report["evidence"]["visual_fault_counts"]["inject_cfr_recovery_stalled"] == 1
+        assert report["faults"]["visual_timeline"]
+
         inject_planned_source_stall = make_session(
             "inject_planned_source_stall",
             media=(
@@ -5089,6 +5100,14 @@ def self_test():
         report = classify_session_triage(inject_planned_source_stall)
         assert "ce_capture_pacer_limited" not in report["verdicts"]
         assert "ce_visual_timeline_fault" not in report["verdicts"]
+
+        audio_worker_scheduling_stall = make_session(
+            "audio_worker_scheduling_stall",
+            media="[AudioLoop] Scheduling summary: events=2 maxGap=38124us threshold=25000us\n",
+        )
+        report = classify_session_triage(audio_worker_scheduling_stall)
+        assert report["evidence"]["log_counts"]["audio_worker_scheduling_stall"] == 1
+        assert not report["faults"]["audio_timeline"]
 
         mux_overload = make_session(
             "mux_overload",

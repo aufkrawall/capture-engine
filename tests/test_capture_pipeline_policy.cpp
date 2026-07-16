@@ -2596,6 +2596,44 @@ TEST(CapturePipelinePolicyTest, InjectCfrRecoveryUsesHysteresisAndPausesWhileEnc
     EXPECT_EQ(policy::GetInjectCfrCatchupTicksThisLoop(100, true, true), 1u);
 }
 
+TEST(CapturePipelinePolicyTest, InjectCfrRecoveryRepaysDebtWithoutSelfThrottlingItsWakeCadence) {
+    constexpr double kFrameIntervalMs = 1000.0 / 120.0;
+    EXPECT_DOUBLE_EQ(policy::GetInjectCfrServiceMsPerOutputTick(12.0, 2), 6.0);
+    EXPECT_DOUBLE_EQ(policy::GetInjectCfrServiceMsPerOutputTick(6.0, 1), 6.0);
+    EXPECT_DOUBLE_EQ(policy::GetInjectCfrServiceMsPerOutputTick(12.0, 0), 0.0);
+    EXPECT_FALSE(policy::IsEncoderTooSlowForTargetFps(policy::GetInjectCfrServiceMsPerOutputTick(12.0, 2),
+                                                       kFrameIntervalMs, 120));
+    EXPECT_TRUE(policy::IsEncoderTooSlowForTargetFps(12.0, kFrameIntervalMs, 120));
+
+    EXPECT_FALSE(policy::ShouldAdvanceWakeDeadlineForCfrCatchupTick(false, true));
+    EXPECT_TRUE(policy::ShouldAdvanceWakeDeadlineForCfrCatchupTick(true, true));
+    EXPECT_TRUE(policy::ShouldAdvanceWakeDeadlineForCfrCatchupTick(false, false));
+
+    uint32_t scheduledTicks = policy::kCfrShortfallForceCatchupThresholdTicks;
+    uint32_t outputTicks = 0;
+    bool recoveryActive = false;
+    for (uint32_t loop = 0; loop < policy::kCfrShortfallForceCatchupThresholdTicks; ++loop) {
+        const uint32_t shortfall = policy::GetCfrOutputShortfallTicks(scheduledTicks, outputTicks);
+        recoveryActive = policy::GetInjectCfrRecoveryActive(recoveryActive, true, false, shortfall);
+        const bool serviceTooSlow = policy::IsEncoderTooSlowForTargetFps(
+            policy::GetInjectCfrServiceMsPerOutputTick(12.0, 2), kFrameIntervalMs, 120);
+        outputTicks += policy::GetInjectCfrCatchupTicksThisLoop(shortfall, recoveryActive, serviceTooSlow);
+        ++scheduledTicks;  // The normal 120 Hz wake cadence continues while one extra slot is serviced.
+    }
+
+    const uint32_t finalShortfall = policy::GetCfrOutputShortfallTicks(scheduledTicks, outputTicks);
+    EXPECT_LE(finalShortfall, policy::kInjectCfrRecoveryExitShortfallTicks);
+    EXPECT_FALSE(policy::GetInjectCfrRecoveryActive(recoveryActive, true, false, finalShortfall));
+}
+
+TEST(CapturePipelinePolicyTest, InjectRecoveryOutputQpcStaysOnTheImmutableCfrGrid) {
+    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(1000, 0, 100, 77), 1000);
+    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(1000, 3, 100, 77), 1300);
+    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(0, 3, 100, 77), 77);
+    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(1000, 3, 0, 77), 77);
+    EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(INT64_MAX - 10, 2, 10, 77), 77);
+}
+
 TEST(CapturePipelinePolicyTest, InjectFreshCatchupRequiresHealthyEncoderAndQueuedCredit) {
     EXPECT_TRUE(policy::ShouldUseFreshInjectCatchup(false, false, false, 4, 2, 1.0,
                                                     policy::kCfrShortfallForceCatchupThresholdTicks, true));
