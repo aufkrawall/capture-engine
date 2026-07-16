@@ -1,5 +1,6 @@
 #pragma once
 
+#include <d3d9.h>
 #include <d3d10.h>
 #include <d3d11.h>
 #include <d3d12.h>
@@ -51,6 +52,214 @@ inline bool IsD3D10SamplerOverrideEligible(const D3D10_SAMPLER_DESC& desc, const
         return true;
     return D3D11_DECODE_MIN_FILTER(static_cast<D3D11_FILTER>(desc.Filter)) == D3D11_FILTER_TYPE_LINEAR &&
            D3D11_DECODE_MAG_FILTER(static_cast<D3D11_FILTER>(desc.Filter)) == D3D11_FILTER_TYPE_LINEAR;
+}
+
+inline bool D3D10SamplerAllowsCreationTimeForcedAF(const D3D10_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
+    return IsAnisotropicOverrideEnabled(gfx) && IsD3D10SamplerOverrideEligible(desc, gfx);
+}
+
+struct D3D9SamplerForcedAFInfo {
+    DWORD minFilter = D3DTEXF_POINT;
+    DWORD magFilter = D3DTEXF_POINT;
+    DWORD mipFilter = D3DTEXF_NONE;
+    DWORD addressU = D3DTADDRESS_WRAP;
+    DWORD addressV = D3DTADDRESS_WRAP;
+    DWORD addressW = D3DTADDRESS_WRAP;
+    UINT textureMipLevels = 0;
+    UINT deviceMaxAnisotropy = 1;
+    bool textureBound = false;
+    bool usesAddressW = false;
+};
+
+enum class D3D9ForcedAFDecision {
+    Allow,
+    OverrideDisabled,
+    MissingTexture,
+    SingleMipTexture,
+    MipFilterDisabled,
+    BorderAddress,
+    NonMaterialAddress,
+    PointMinMag,
+    Unsupported,
+};
+
+inline D3D9ForcedAFDecision ClassifyD3D9SamplerForForcedAF(const D3D9SamplerForcedAFInfo& info,
+                                                           const GraphicsConfig& gfx) {
+    if (!IsAnisotropicOverrideEnabled(gfx)) {
+        return D3D9ForcedAFDecision::OverrideDisabled;
+    }
+    if (!info.textureBound) {
+        return D3D9ForcedAFDecision::MissingTexture;
+    }
+    if (info.textureMipLevels <= 1) {
+        return D3D9ForcedAFDecision::SingleMipTexture;
+    }
+    if (info.mipFilter == D3DTEXF_NONE) {
+        return D3D9ForcedAFDecision::MipFilterDisabled;
+    }
+    if (info.addressU == D3DTADDRESS_BORDER || info.addressV == D3DTADDRESS_BORDER ||
+        (info.usesAddressW && info.addressW == D3DTADDRESS_BORDER)) {
+        return D3D9ForcedAFDecision::BorderAddress;
+    }
+    if (info.deviceMaxAnisotropy < 2) {
+        return D3D9ForcedAFDecision::Unsupported;
+    }
+    if (gfx.samplerOverrideMode != "aggressive") {
+        const auto materialAddress = [](DWORD address) {
+            return address == D3DTADDRESS_WRAP || address == D3DTADDRESS_MIRROR || address == D3DTADDRESS_CLAMP;
+        };
+        if (!materialAddress(info.addressU) || !materialAddress(info.addressV) ||
+            (info.usesAddressW && !materialAddress(info.addressW))) {
+            return D3D9ForcedAFDecision::NonMaterialAddress;
+        }
+        const auto linearFilter = [](DWORD filter) {
+            return filter == D3DTEXF_LINEAR || filter == D3DTEXF_ANISOTROPIC;
+        };
+        if (!linearFilter(info.minFilter) || !linearFilter(info.magFilter)) {
+            return D3D9ForcedAFDecision::PointMinMag;
+        }
+    }
+    return D3D9ForcedAFDecision::Allow;
+}
+
+inline UINT ResolveD3D9ForcedAnisotropy(const D3D9SamplerForcedAFInfo& info, const GraphicsConfig& gfx) {
+    return std::max(1u, std::min(GetConfiguredMaxAnisotropy(gfx), info.deviceMaxAnisotropy));
+}
+
+struct LegacyD3DSamplerTraits {
+    DWORD pointMag = 1;
+    DWORD linearMag = 2;
+    DWORD anisotropicMag = 3;
+    DWORD pointMin = 1;
+    DWORD linearMin = 2;
+    DWORD anisotropicMin = 3;
+    DWORD mipNone = 0;
+    DWORD mipPoint = 1;
+    DWORD mipLinear = 2;
+};
+
+struct LegacyD3DSamplerForcedAFInfo {
+    DWORD minFilter = 1;
+    DWORD magFilter = 1;
+    DWORD mipFilter = 0;
+    DWORD addressU = 1;
+    DWORD addressV = 1;
+    DWORD addressW = 1;
+    UINT deviceMaxAnisotropy = 1;
+};
+
+enum class LegacyD3DForcedAFDecision {
+    Allow,
+    OverrideDisabled,
+    MipFilterDisabled,
+    BorderAddress,
+    NonMaterialAddress,
+    PointMinMag,
+    Unsupported,
+};
+
+inline LegacyD3DForcedAFDecision ClassifyLegacyD3DSamplerForForcedAF(
+    const LegacyD3DSamplerForcedAFInfo& info, const LegacyD3DSamplerTraits& traits, const GraphicsConfig& gfx) {
+    if (!IsAnisotropicOverrideEnabled(gfx)) {
+        return LegacyD3DForcedAFDecision::OverrideDisabled;
+    }
+    if (info.mipFilter == traits.mipNone) {
+        return LegacyD3DForcedAFDecision::MipFilterDisabled;
+    }
+    if (info.addressU == 4 || info.addressV == 4 || info.addressW == 4) {
+        return LegacyD3DForcedAFDecision::BorderAddress;
+    }
+    if (info.deviceMaxAnisotropy < 2) {
+        return LegacyD3DForcedAFDecision::Unsupported;
+    }
+    if (gfx.samplerOverrideMode != "aggressive") {
+        const auto materialAddress = [](DWORD address) { return address >= 1 && address <= 3; };
+        if (!materialAddress(info.addressU) || !materialAddress(info.addressV) ||
+            !materialAddress(info.addressW)) {
+            return LegacyD3DForcedAFDecision::NonMaterialAddress;
+        }
+        const bool linearMin = info.minFilter == traits.linearMin || info.minFilter == traits.anisotropicMin;
+        const bool linearMag = info.magFilter == traits.linearMag || info.magFilter == traits.anisotropicMag;
+        if (!linearMin || !linearMag) {
+            return LegacyD3DForcedAFDecision::PointMinMag;
+        }
+    }
+    return LegacyD3DForcedAFDecision::Allow;
+}
+
+inline UINT ResolveLegacyD3DForcedAnisotropy(const LegacyD3DSamplerForcedAFInfo& info,
+                                             const GraphicsConfig& gfx) {
+    return std::max(1u, std::min(GetConfiguredMaxAnisotropy(gfx), info.deviceMaxAnisotropy));
+}
+
+struct OpenGLSamplerForcedAFInfo {
+    int minFilter = 0x2703;   // GL_LINEAR_MIPMAP_LINEAR
+    int magFilter = 0x2601;   // GL_LINEAR
+    int wrapS = 0x2901;       // GL_REPEAT
+    int wrapT = 0x2901;
+    int wrapR = 0x2901;
+    int compareMode = 0;      // GL_NONE
+    int baseLevel = 0;
+    int maxLevel = 1000;
+    float deviceMaxAnisotropy = 1.0f;
+    float currentAnisotropy = 1.0f;
+    bool extensionSupported = false;
+    bool usesWrapT = true;
+    bool usesWrapR = true;
+};
+
+enum class OpenGLForcedAFDecision {
+    Allow,
+    OverrideDisabled,
+    ExtensionUnsupported,
+    NoMipRange,
+    NonMipFilter,
+    CompareSampler,
+    BorderAddress,
+    NonMaterialAddress,
+    PointMinMag,
+};
+
+inline OpenGLForcedAFDecision ClassifyOpenGLSamplerForForcedAF(const OpenGLSamplerForcedAFInfo& info,
+                                                               const GraphicsConfig& gfx) {
+    if (!IsAnisotropicOverrideEnabled(gfx)) {
+        return OpenGLForcedAFDecision::OverrideDisabled;
+    }
+    if (!info.extensionSupported || info.deviceMaxAnisotropy < 2.0f) {
+        return OpenGLForcedAFDecision::ExtensionUnsupported;
+    }
+    if (info.maxLevel <= info.baseLevel) {
+        return OpenGLForcedAFDecision::NoMipRange;
+    }
+    if (info.minFilter < 0x2700 || info.minFilter > 0x2703) {
+        return OpenGLForcedAFDecision::NonMipFilter;
+    }
+    if (info.compareMode != 0) {
+        return OpenGLForcedAFDecision::CompareSampler;
+    }
+    if (info.wrapS == 0x812D || info.wrapS == 0x2900 ||
+        (info.usesWrapT && (info.wrapT == 0x812D || info.wrapT == 0x2900)) ||
+        (info.usesWrapR && (info.wrapR == 0x812D || info.wrapR == 0x2900))) {
+        return OpenGLForcedAFDecision::BorderAddress;
+    }
+    if (gfx.samplerOverrideMode != "aggressive") {
+        const auto materialAddress = [](int address) {
+            return address == 0x2901 || address == 0x8370 || address == 0x812F || address == 0x8743;
+        };
+        if (!materialAddress(info.wrapS) || (info.usesWrapT && !materialAddress(info.wrapT)) ||
+            (info.usesWrapR && !materialAddress(info.wrapR))) {
+            return OpenGLForcedAFDecision::NonMaterialAddress;
+        }
+        if ((info.minFilter != 0x2701 && info.minFilter != 0x2703) || info.magFilter != 0x2601) {
+            return OpenGLForcedAFDecision::PointMinMag;
+        }
+    }
+    return OpenGLForcedAFDecision::Allow;
+}
+
+inline float ResolveOpenGLForcedAnisotropy(const OpenGLSamplerForcedAFInfo& info, const GraphicsConfig& gfx) {
+    return std::max(1.0f,
+                    std::min(static_cast<float>(GetConfiguredMaxAnisotropy(gfx)), info.deviceMaxAnisotropy));
 }
 
 inline bool IsD3D11ReductionFilter(D3D11_FILTER filter) {

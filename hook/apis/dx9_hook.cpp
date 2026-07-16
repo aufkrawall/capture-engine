@@ -1,4 +1,5 @@
 #include "dx9_hook.h"
+#include "dx9_sampler_state.h"
 
 #include <d3d11_4.h>
 #include <d3d9.h>
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -47,6 +49,8 @@ typedef HRESULT(STDMETHODCALLTYPE* PresentSwap_t)(IDirect3DSwapChain9*, CONST RE
 typedef HRESULT(STDMETHODCALLTYPE* Reset_t)(IDirect3DDevice9*, D3DPRESENT_PARAMETERS*);
 typedef HRESULT(STDMETHODCALLTYPE* ResetEx_t)(IDirect3DDevice9Ex*, D3DPRESENT_PARAMETERS*, D3DDISPLAYMODEEX*);
 typedef HRESULT(STDMETHODCALLTYPE* EndScene_t)(IDirect3DDevice9*);
+typedef HRESULT(STDMETHODCALLTYPE* SetTexture_t)(IDirect3DDevice9*, DWORD, IDirect3DBaseTexture9*);
+typedef HRESULT(STDMETHODCALLTYPE* GetSamplerState_t)(IDirect3DDevice9*, DWORD, D3DSAMPLERSTATETYPE, DWORD*);
 typedef HRESULT(STDMETHODCALLTYPE* SetSamplerState_t)(IDirect3DDevice9*, DWORD, D3DSAMPLERSTATETYPE, DWORD);
 typedef HRESULT(STDMETHODCALLTYPE* SetTextureStageState_t)(IDirect3DDevice9*, DWORD, D3DTEXTURESTAGESTATETYPE, DWORD);
 typedef IDirect3D9*(WINAPI* Direct3DCreate9Helper_t)(UINT);
@@ -59,8 +63,58 @@ static PresentSwap_t oPresentSwap = nullptr;
 static Reset_t oReset = nullptr;
 static ResetEx_t oResetEx = nullptr;
 static EndScene_t oEndScene = nullptr;
+static SetTexture_t oSetTexture = nullptr;
+static GetSamplerState_t oGetSamplerState = nullptr;
 static SetSamplerState_t oSetSamplerState = nullptr;
 static SetTextureStageState_t oSetTextureStageState = nullptr;
+
+struct D3D9SamplerVTableRecord {
+    uintptr_t* vtable = nullptr;
+    std::atomic<SetTexture_t> setTexture{nullptr};
+    std::atomic<GetSamplerState_t> getSamplerState{nullptr};
+    std::atomic<SetSamplerState_t> setSamplerState{nullptr};
+    bool setTextureHooked = false;
+    bool getSamplerStateHooked = false;
+    bool setSamplerStateHooked = false;
+};
+
+struct D3D9SamplerCallbacks {
+    SetTexture_t setTexture = nullptr;
+    GetSamplerState_t getSamplerState = nullptr;
+    SetSamplerState_t setSamplerState = nullptr;
+};
+
+static std::mutex g_D3D9SamplerVTableMutex;
+static std::vector<std::unique_ptr<D3D9SamplerVTableRecord>> g_D3D9SamplerVTables;
+static thread_local uintptr_t* t_D3D9SamplerVTable = nullptr;
+static thread_local D3D9SamplerVTableRecord* t_D3D9SamplerVTableRecord = nullptr;
+
+static D3D9SamplerCallbacks ResolveD3D9SamplerCallbacks(IDirect3DDevice9* device) {
+    uintptr_t* vtable = device ? *(uintptr_t**)device : nullptr;
+    D3D9SamplerVTableRecord* record = nullptr;
+    if (vtable && t_D3D9SamplerVTable == vtable && t_D3D9SamplerVTableRecord) {
+        record = t_D3D9SamplerVTableRecord;
+    } else if (vtable) {
+        std::lock_guard<std::mutex> lock(g_D3D9SamplerVTableMutex);
+        for (const auto& entry : g_D3D9SamplerVTables) {
+            if (entry->vtable == vtable) {
+                record = entry.get();
+                break;
+            }
+        }
+        t_D3D9SamplerVTable = vtable;
+        t_D3D9SamplerVTableRecord = record;
+    }
+
+    if (!record) {
+        return {oSetTexture, oGetSamplerState, oSetSamplerState};
+    }
+    return {
+        record->setTexture.load(std::memory_order_acquire),
+        record->getSamplerState.load(std::memory_order_acquire),
+        record->setSamplerState.load(std::memory_order_acquire),
+    };
+}
 
 // Inline hook trampoline function types
 typedef HRESULT(STDMETHODCALLTYPE* PFN_D3D9_Present_Inline)(IDirect3DDevice9*, const RECT*, const RECT*, HWND,
@@ -104,8 +158,6 @@ static DWORD g_RefreshHzLastTick = 0;
 static int64_t g_QpcFreqCached = 0;
 static thread_local int64_t g_LastPacedQpc = 0;
 static thread_local HANDLE g_PaceTimer = nullptr;
-static std::atomic<int> g_MipBiasDiagLogCount{0};
-static std::atomic<int> g_AnisoDiagLogCount{0};
 
 static bool IsDX9InternalHelperBypassActive() {
     return g_InternalHelperBypassDepth != 0;
@@ -245,14 +297,6 @@ static bool ShouldSkipDX9OverlayForVulkan() {
         overlaySkipLogCount++;
     }
     return true;
-}
-
-static float D3D9BitsToFloat(DWORD value) {
-    return std::bit_cast<float>(value);
-}
-
-static DWORD D3D9FloatToBits(float value) {
-    return std::bit_cast<DWORD>(value);
 }
 
 static void EnsureDwmFlushLoaded() {
@@ -929,6 +973,10 @@ static HRESULT STDMETHODCALLTYPE DetourPresent(IDirect3DDevice9* device, const R
                                                HWND hDestWindowOverride, const RGNDATA* pDirtyRegion);
 static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device, DWORD Sampler,
                                                        D3DSAMPLERSTATETYPE Type, DWORD Value);
+static HRESULT STDMETHODCALLTYPE DetourGetSamplerState(IDirect3DDevice9* device, DWORD Sampler,
+                                                       D3DSAMPLERSTATETYPE Type, DWORD* Value);
+static HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device, DWORD Stage,
+                                                  IDirect3DBaseTexture9* Texture);
 static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* device, DWORD Stage,
                                                             D3DTEXTURESTAGESTATETYPE Type, DWORD Value);
 
@@ -3647,7 +3695,7 @@ public:
 };
 
 static DX9Capture g_DX9Capture;
-static void InstallDeviceHooks(IDirect3DDevice9* device);
+static void InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice = false);
 static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device);
 
 // Draw overlay using CustomOverlay
@@ -3796,19 +3844,21 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 
     static std::atomic<bool> s_LiveHookBootstrapDone{false};
     bool expectedBootstrap = false;
-    if ((!oSetSamplerState || !oSetTextureStageState || !oReset || !oEndScene) &&
+    if ((!oSetSamplerState || !oGetSamplerState || !oSetTexture || !oSetTextureStageState || !oReset || !oEndScene) &&
         s_LiveHookBootstrapDone.compare_exchange_strong(expectedBootstrap, true, std::memory_order_acq_rel,
                                                         std::memory_order_relaxed)) {
         HookLogImportant(
             "DX9: Present bootstrap before install (device=%p, inline=%d, "
-            "oReset=%p, oEndScene=%p, oSetSamplerState=%p, oSetTextureStageState=%p)",
+            "oReset=%p, oEndScene=%p, oSetTexture=%p, oGetSamplerState=%p, oSetSamplerState=%p, "
+            "oSetTextureStageState=%p)",
             device, g_InlineHooksInstalled.load(std::memory_order_acquire) ? 1 : 0, (void*)oReset, (void*)oEndScene,
-            (void*)oSetSamplerState, (void*)oSetTextureStageState);
+            (void*)oSetTexture, (void*)oGetSamplerState, (void*)oSetSamplerState, (void*)oSetTextureStageState);
         InstallDeviceHooks(device);
         HookLogImportant(
-            "DX9: Present bootstrap after install (oReset=%p, oSetSamplerState=%p, "
-            "oSetTextureStageState=%p, oEndScene=%p)",
-            (void*)oReset, (void*)oSetSamplerState, (void*)oSetTextureStageState, (void*)oEndScene);
+            "DX9: Present bootstrap after install (oReset=%p, oSetTexture=%p, oGetSamplerState=%p, "
+            "oSetSamplerState=%p, oSetTextureStageState=%p, oEndScene=%p)",
+            (void*)oReset, (void*)oSetTexture, (void*)oGetSamplerState, (void*)oSetSamplerState,
+            (void*)oSetTextureStageState, (void*)oEndScene);
 
         IDirect3DSwapChain9* swapChain = nullptr;
         if (SUCCEEDED(device->GetSwapChain(0, &swapChain)) && swapChain) {
@@ -3852,6 +3902,9 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
     }
     // Update frame config cache once per frame to avoid overhead in hot hooks
     g_FrameConfig = GetActiveGraphicsConfig();
+    const D3D9SamplerCallbacks samplerCallbacks = ResolveD3D9SamplerCallbacks(device);
+    ce::dx9_sampler_state::RefreshConfiguration(device, samplerCallbacks.setSamplerState,
+                                                samplerCallbacks.getSamplerState);
 
     // Start timing
     static int64_t qpcFreq = 0;
@@ -4367,160 +4420,31 @@ static HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
 
 static HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device, DWORD Sampler,
                                                        D3DSAMPLERSTATETYPE Type, DWORD Value) {
-    if (ShouldBypassDX9HooksForDevice(device)) {
-        return oSetSamplerState(device, Sampler, Type, Value);
+    const D3D9SamplerCallbacks callbacks = ResolveD3D9SamplerCallbacks(device);
+    if (ShouldBypassDX9HooksForDevice(device) || g_InOverlayRender) {
+        return callbacks.setSamplerState(device, Sampler, Type, Value);
     }
-    if (g_InOverlayRender) {
-        return oSetSamplerState(device, Sampler, Type, Value);
+    return ce::dx9_sampler_state::SetSamplerState(device, Sampler, Type, Value, callbacks.setSamplerState,
+                                                  callbacks.getSamplerState);
+}
+
+static HRESULT STDMETHODCALLTYPE DetourGetSamplerState(IDirect3DDevice9* device, DWORD Sampler,
+                                                       D3DSAMPLERSTATETYPE Type, DWORD* Value) {
+    const D3D9SamplerCallbacks callbacks = ResolveD3D9SamplerCallbacks(device);
+    if (ShouldBypassDX9HooksForDevice(device) || g_InOverlayRender) {
+        return callbacks.getSamplerState(device, Sampler, Type, Value);
     }
+    return ce::dx9_sampler_state::GetSamplerState(device, Sampler, Type, Value, callbacks.getSamplerState);
+}
 
-    const DWORD originalValue = Value;
-    bool shouldOverride = true;
-    const char* skipReason = "not-evaluated";
-
-    if (g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-        if (g_IPC && g_IPC->GetSharedMem()) {
-            const auto& gfx = GetActiveGraphicsConfig();
-
-            // Start checking for exclusions (UI, non-mipmapped textures)
-            // For MIPMAPLODBIAS, skip runtime texture exclusions. Sampler state is
-            // persistent and many games set it before mipmapped textures are bound.
-            if (Type != D3DSAMP_MIPMAPLODBIAS) {
-                // Check 1: Current MipFilter state
-                // If the application has explicitly set MIPFILTER to NONE, it likely
-                // doesn't want mipmapping (e.g. UI) Note: We are hooking SetSamplerState,
-                // so we need to know the *current* state or the *intended* state? The
-                // user calls SetSamplerState to CHANGE a state. If they are changing
-                // MIN/MAG filter, we should respect if MIP filter is currently NONE. If
-                // they are changing MIP filter, we check the Value.
-                if (Type == D3DSAMP_MIPFILTER) {
-                    if (Value == D3DTEXF_NONE) {
-                        shouldOverride = false;
-                        skipReason = "requested_mipfilter_none";
-                    }
-                } else {
-                    DWORD currentMipFilter = D3DTEXF_NONE;
-                    device->GetSamplerState(Sampler, D3DSAMP_MIPFILTER, &currentMipFilter);
-                    if (currentMipFilter == D3DTEXF_NONE) {
-                        shouldOverride = false;
-                        skipReason = "current_mipfilter_none";
-                    }
-                }
-
-                // Check 2: Texture Mip Levels
-                // This is the most robust check. If the bound texture has only 1 level,
-                // it has no mipmaps.
-                if (shouldOverride) {
-                    IDirect3DBaseTexture9* pTex = nullptr;
-                    HRESULT hr = device->GetTexture(Sampler, &pTex);
-                    if (SUCCEEDED(hr) && pTex) {
-                        if (pTex->GetLevelCount() == 1) {
-                            shouldOverride = false;
-                            skipReason = "single_mip_texture";
-                        }
-                        pTex->Release();
-                    }
-                }
-
-                if (shouldOverride && gfx.samplerOverrideMode != "aggressive") {
-                    for (D3DSAMPLERSTATETYPE addressType :
-                         {D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_ADDRESSW}) {
-                        DWORD address = D3DTADDRESS_CLAMP;
-                        device->GetSamplerState(Sampler, addressType, &address);
-                        if (address != D3DTADDRESS_WRAP && address != D3DTADDRESS_MIRROR) {
-                            shouldOverride = false;
-                            skipReason = "non-material-address";
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (shouldOverride) {
-                skipReason = "applied";
-            }
-
-            if (shouldOverride) {
-                if (Type == D3DSAMP_MAXANISOTROPY) {
-                    const char* af = gfx.anisotropicFiltering.c_str();
-                    if (af[0] != 'd') {
-                        if (af[0] == 'o')
-                            Value = 1;
-                        else if (af[0] == '2')
-                            Value = 2;
-                        else if (af[0] == '4')
-                            Value = 4;
-                        else if (af[0] == '8')
-                            Value = 8;
-                        else
-                            Value = 16;
-                        if (af[0] != 'o') {
-                            oSetSamplerState(device, Sampler, D3DSAMP_MINFILTER, D3DTEXF_ANISOTROPIC);
-                            oSetSamplerState(device, Sampler, D3DSAMP_MAGFILTER, D3DTEXF_ANISOTROPIC);
-                        }
-                    }
-                } else if (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER || Type == D3DSAMP_MIPFILTER) {
-                    const char* mip = gfx.mipMapping.c_str();
-                    const bool isAniso =
-                        (gfx.anisotropicFiltering != "default" && gfx.anisotropicFiltering != "off");
-                    if (isAniso && (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER)) {
-                        Value = D3DTEXF_ANISOTROPIC;
-                    } else if (gfx.anisotropicFiltering == "off" &&
-                               (Type == D3DSAMP_MINFILTER || Type == D3DSAMP_MAGFILTER) &&
-                               Value == D3DTEXF_ANISOTROPIC) {
-                        Value = D3DTEXF_LINEAR;
-                    } else if (mip[0] != 'd') {
-
-                        if (mip[0] == 't') {  // trilinear
-                            Value = D3DTEXF_LINEAR;
-                        } else if (mip[0] == 'b') {  // bilinear
-                            if (Type == D3DSAMP_MIPFILTER)
-                                Value = D3DTEXF_POINT;
-                            else
-                                Value = D3DTEXF_LINEAR;
-                        } else if (mip[0] == 'n') {  // nearest
-                            Value = D3DTEXF_POINT;
-                        }
-
-                    }
-                } else if (Type == D3DSAMP_MIPMAPLODBIAS) {
-                    float finalBias = ApplyConfiguredMipBias(gfx, D3D9BitsToFloat(Value));
-
-                    // Auto-bias
-                    if (gfx.sgssaa && !gfx.disableAutoMipBias && !gfx.forceMipBiasClamp) {
-                        float sgBias = 0.0f;
-                        if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
-                            finalBias += sgBias;
-                        }
-                    }
-
-                    finalBias = FinalizeMipBias(gfx, finalBias);
-                    Value = D3D9FloatToBits(finalBias);
-                }
-            }
-
-            if (Type == D3DSAMP_MAXANISOTROPY) {
-                int anisoLogIdx = g_AnisoDiagLogCount.fetch_add(1, std::memory_order_relaxed);
-                if (anisoLogIdx < 24) {
-                    HookLogImportant(
-                        "DX9: SamplerAniso sampler=%u override=%d reason=%s cfg=%s in=%u "
-                        "out=%u",
-                        Sampler, shouldOverride ? 1 : 0, skipReason, gfx.anisotropicFiltering.c_str(), originalValue,
-                        Value);
-                }
-            } else if (Type == D3DSAMP_MIPMAPLODBIAS) {
-                int mipLogIdx = g_MipBiasDiagLogCount.fetch_add(1, std::memory_order_relaxed);
-                if (mipLogIdx < 48) {
-                    HookLogImportant(
-                        "DX9: SamplerMipBias sampler=%u override=%d reason=%s cfg=%s "
-                        "mode=%s in=%.3f out=%.3f",
-                        Sampler, shouldOverride ? 1 : 0, skipReason, gfx.mipBias.c_str(), gfx.mipBiasMode.c_str(),
-                        D3D9BitsToFloat(originalValue), D3D9BitsToFloat(Value));
-                }
-            }
-        }
+static HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device, DWORD Stage,
+                                                  IDirect3DBaseTexture9* Texture) {
+    const D3D9SamplerCallbacks callbacks = ResolveD3D9SamplerCallbacks(device);
+    if (ShouldBypassDX9HooksForDevice(device) || g_InOverlayRender) {
+        return callbacks.setTexture(device, Stage, Texture);
     }
-    return oSetSamplerState(device, Sampler, Type, Value);
+    return ce::dx9_sampler_state::SetTexture(device, Stage, Texture, callbacks.setTexture,
+                                             callbacks.setSamplerState, callbacks.getSamplerState);
 }
 
 static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* device, DWORD Stage,
@@ -4755,9 +4679,12 @@ static HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device, D3DPRESEN
 
     HRESULT hr = oReset(device, pPresentationParameters);
 
-    if (SUCCEEDED(hr) && pPresentationParameters) {
-        EarlyLog("DX9: Reset SUCCESS: Final MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType,
-                 pPresentationParameters->MultiSampleQuality);
+    if (SUCCEEDED(hr)) {
+        ce::dx9_sampler_state::ResetDevice(device);
+        if (pPresentationParameters) {
+            EarlyLog("DX9: Reset SUCCESS: Final MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType,
+                     pPresentationParameters->MultiSampleQuality);
+        }
     }
 
     return hr;
@@ -4828,9 +4755,12 @@ static HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device,
 
     HRESULT hr = oResetEx(device, pPresentationParameters, pFullscreenDisplayMode);
 
-    if (SUCCEEDED(hr) && pPresentationParameters) {
-        EarlyLog("DX9: ResetEx SUCCESS: Final MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType,
-                 pPresentationParameters->MultiSampleQuality);
+    if (SUCCEEDED(hr)) {
+        ce::dx9_sampler_state::ResetDevice(device);
+        if (pPresentationParameters) {
+            EarlyLog("DX9: ResetEx SUCCESS: Final MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType,
+                     pPresentationParameters->MultiSampleQuality);
+        }
     }
 
     return hr;
@@ -4860,7 +4790,79 @@ static HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* self, co
                                                    const RECT* pDestRect, HWND hDestWindowOverride,
                                                    const RGNDATA* pDirtyRegion, DWORD dwFlags);
 
-static void InstallDeviceHooks(IDirect3DDevice9* device) {
+static void InstallD3D9SamplerHooks(uintptr_t* vtable) {
+    if (!vtable)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_D3D9SamplerVTableMutex);
+    D3D9SamplerVTableRecord* record = nullptr;
+    for (const auto& entry : g_D3D9SamplerVTables) {
+        if (entry->vtable == vtable) {
+            record = entry.get();
+            break;
+        }
+    }
+    if (!record) {
+        auto entry = std::make_unique<D3D9SamplerVTableRecord>();
+        entry->vtable = vtable;
+        entry->setTexture.store(reinterpret_cast<SetTexture_t>(vtable[65]), std::memory_order_relaxed);
+        entry->getSamplerState.store(reinterpret_cast<GetSamplerState_t>(vtable[68]), std::memory_order_relaxed);
+        entry->setSamplerState.store(reinterpret_cast<SetSamplerState_t>(vtable[69]), std::memory_order_relaxed);
+        record = entry.get();
+        g_D3D9SamplerVTables.push_back(std::move(entry));
+    }
+
+    if (!record->setTextureHooked) {
+        SetTexture_t original = record->setTexture.load(std::memory_order_relaxed);
+        const VTableHook::Status status =
+            VTableHook::Create(&vtable[65], (void*)&DetourSetTexture, (void**)&original);
+        if (status == VTableHook::Success) {
+            record->setTexture.store(original, std::memory_order_release);
+            record->setTextureHooked = true;
+            if (!oSetTexture)
+                oSetTexture = original;
+            HookLogImportant("DX9: SetTexture sampler hook installed for vtable=%p (slot=%p)", vtable, vtable[65]);
+        } else {
+            HookLogImportant("DX9: SetTexture hook FAILED for vtable=%p (status=%d slot=%p)", vtable, (int)status,
+                             vtable[65]);
+        }
+    }
+
+    if (!record->getSamplerStateHooked) {
+        GetSamplerState_t original = record->getSamplerState.load(std::memory_order_relaxed);
+        const VTableHook::Status status =
+            VTableHook::Create(&vtable[68], (void*)&DetourGetSamplerState, (void**)&original);
+        if (status == VTableHook::Success) {
+            record->getSamplerState.store(original, std::memory_order_release);
+            record->getSamplerStateHooked = true;
+            if (!oGetSamplerState)
+                oGetSamplerState = original;
+            HookLogImportant("DX9: Logical GetSamplerState hook installed for vtable=%p (slot=%p)", vtable,
+                             vtable[68]);
+        } else {
+            HookLogImportant("DX9: GetSamplerState hook FAILED for vtable=%p (status=%d slot=%p)", vtable,
+                             (int)status, vtable[68]);
+        }
+    }
+
+    if (!record->setSamplerStateHooked) {
+        SetSamplerState_t original = record->setSamplerState.load(std::memory_order_relaxed);
+        const VTableHook::Status status =
+            VTableHook::Create(&vtable[69], (void*)&DetourSetSamplerState, (void**)&original);
+        if (status == VTableHook::Success) {
+            record->setSamplerState.store(original, std::memory_order_release);
+            record->setSamplerStateHooked = true;
+            if (!oSetSamplerState)
+                oSetSamplerState = original;
+            HookLogImportant("DX9: SetSamplerState hook installed for vtable=%p (slot=%p)", vtable, vtable[69]);
+        } else {
+            HookLogImportant("DX9: SetSamplerState hook FAILED for vtable=%p (status=%d slot=%p)", vtable,
+                             (int)status, vtable[69]);
+        }
+    }
+}
+
+static void InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice) {
     if (!device)
         return;
     if (ShouldBypassDX9HooksForDevice(device)) {
@@ -4870,6 +4872,7 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
         }
         return;
     }
+    ce::dx9_sampler_state::RegisterDevice(device, newDevice);
 
     uintptr_t* vtable = *(uintptr_t**)device;
 
@@ -4938,19 +4941,9 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
         }
     }
 
-    // High-frequency hooks enabled for parity
-    // 2. Hook SetSamplerState (69)
-    if (!oSetSamplerState) {
-        VTableHook::Status samplerStatus =
-            VTableHook::Create(&vtable[69], (void*)&DetourSetSamplerState, (void**)&oSetSamplerState);
-        if (samplerStatus == VTableHook::Success) {
-            EarlyLog("DX9: SetSamplerState hook installed");
-            HookLogImportant("DX9: SetSamplerState hook installed (vtable[69]=%p)", vtable[69]);
-        } else {
-            HookLogImportant("DX9: SetSamplerState hook FAILED (status=%d, vtable[69]=%p)", (int)samplerStatus,
-                             vtable[69]);
-        }
-    }
+    // Mutable D3D9 sampler state has one raw-device owner. Originals are kept
+    // per vtable so classic and Ex devices can coexist without misdispatch.
+    InstallD3D9SamplerHooks(vtable);
 
     // 2.5 Hook SetTextureStageState (67)
     if (!oSetTextureStageState) {
@@ -5010,6 +5003,10 @@ static void InstallDeviceHooks(IDirect3DDevice9* device) {
         }
     }
 
+}
+
+void DX9_InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice) {
+    InstallDeviceHooks(device, newDevice);
 }
 // Existing Device Scanner for Late Injection
 // ============================================================================
@@ -5220,7 +5217,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
         }
         if (ppReturnedDeviceInterface && *ppReturnedDeviceInterface) {
             EarlyLog("DX9: CreateDevice succeeded -> %p", *ppReturnedDeviceInterface);
-            InstallDeviceHooks(*ppReturnedDeviceInterface);
+            InstallDeviceHooks(*ppReturnedDeviceInterface, true);
         }
     }
     return hr;
@@ -5329,7 +5326,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(IDirect3D9Ex* self, UINT A
         }
         if (ppReturnedDeviceInterface && *ppReturnedDeviceInterface) {
             EarlyLog("DX9: CreateDeviceEx succeeded -> %p", *ppReturnedDeviceInterface);
-            InstallDeviceHooks(*ppReturnedDeviceInterface);
+            InstallDeviceHooks(*ppReturnedDeviceInterface, true);
         }
     }
     return hr;
@@ -5534,7 +5531,7 @@ void DX9Hook::Init() {
                     if (SUCCEEDED(d3d9ex->CreateDeviceEx(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hWnd,
                                                          D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, NULL, &deviceEx))) {
                         LogDirect("D3D9Ex device created, calling InstallDeviceHooks...");
-                        InstallDeviceHooks(deviceEx);
+                        InstallDeviceHooks(deviceEx, true);
                         LogDirect("InstallDeviceHooks returned, oPresent=%p", (void*)oPresent);
                         deviceEx->Release();
                     }
@@ -5562,7 +5559,7 @@ void DX9Hook::Init() {
                     if (SUCCEEDED(d3d9->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hWnd,
                                                      D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &device))) {
                         LogDirect("D3D9 device created, calling InstallDeviceHooks...");
-                        InstallDeviceHooks(device);
+                        InstallDeviceHooks(device, true);
                         LogDirect("InstallDeviceHooks returned, oPresent=%p", (void*)oPresent);
                         device->Release();
                     }
@@ -5583,6 +5580,7 @@ void DX9Hook::Init() {
 
 void DX9Hook::Shutdown() {
     EarlyLog("DX9Hook::Shutdown()");
+    ce::dx9_sampler_state::LogSummary();
 
     if (g_OverlayAdapter.IsInitialized()) {
         g_OverlayAdapter.Shutdown();

@@ -496,38 +496,12 @@ typedef HRESULT(STDMETHODCALLTYPE* CreateSamplerState10_t)(ID3D10Device* pDevice
                                                            const D3D10_SAMPLER_DESC* pSamplerDesc,
                                                            ID3D10SamplerState** ppSamplerState);
 static CreateSamplerState10_t oCreateSamplerState10 = NULL;
-
-// Forward declaration
-static void InstallRuntimeD3D10Hooks(ID3D10Device* pDevice);
-
-// Typedefs for D3D10 SetSamplers (used by hooks) for runtime sampler
-// replacement
-typedef void(STDMETHODCALLTYPE* PSSetSamplers10_t)(ID3D10Device* pDevice, UINT StartSlot, UINT NumSamplers,
-                                                   ID3D10SamplerState* const* ppSamplers);
-typedef void(STDMETHODCALLTYPE* VSSetSamplers10_t)(ID3D10Device* pDevice, UINT StartSlot, UINT NumSamplers,
-                                                   ID3D10SamplerState* const* ppSamplers);
-typedef void(STDMETHODCALLTYPE* GSSetSamplers10_t)(ID3D10Device* pDevice, UINT StartSlot, UINT NumSamplers,
-                                                   ID3D10SamplerState* const* ppSamplers);
-static PSSetSamplers10_t oPSSetSamplers10 = NULL;
-static VSSetSamplers10_t oVSSetSamplers10 = NULL;
-static GSSetSamplers10_t oGSSetSamplers10 = NULL;
-
-// Lock-free sampler replacement cache for D3D10
-// Maps original sampler -> our modified replacement sampler
 #include <algorithm>
 #include <atomic>
 #include <shared_mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-
-// Use vector instead of map to avoid STL template issues with Clang/MSVC
-// headers
-static std::vector<std::pair<ID3D10SamplerState*, ID3D10SamplerState*>> g_SamplerCache10;
-static std::shared_mutex g_SamplerCacheMutex10;
-static ID3D10Device* g_CachedD3D10Device = nullptr;
-static std::vector<ID3D10SamplerState*> g_ReplacementSamplers10;  // Prevent recursive replacements
-static uint64_t g_SamplerConfigHash10 = 0;
 
 struct D3D11SamplerCacheEntry {
     ID3D11Device* device;
@@ -580,65 +554,6 @@ enum class D3D11ShaderStage : uint32_t {
     Domain,
     Compute,
 };
-
-// Helper for linear search
-static ID3D10SamplerState* FindReplacementSampler(ID3D10SamplerState* original) {
-    std::shared_lock<std::shared_mutex> lock(g_SamplerCacheMutex10);
-    for (const auto& entry : g_SamplerCache10) {
-        if (entry.first == original)
-            return entry.second;
-    }
-    return nullptr;
-}
-
-static void AddReplacementSampler(ID3D10SamplerState* original, ID3D10SamplerState* replacement) {
-    std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex10);
-    for (auto& entry : g_SamplerCache10) {
-        if (entry.first == original) {
-            entry.second = replacement;
-            return;
-        }
-    }
-    g_SamplerCache10.push_back({original, replacement});
-}
-
-static bool IsReplacementSampler(ID3D10SamplerState* sampler) {
-    for (auto s : g_ReplacementSamplers10) {
-        if (s == sampler)
-            return true;
-    }
-    return false;
-}
-
-static void AddToReplacementSet(ID3D10SamplerState* sampler) {
-    g_ReplacementSamplers10.push_back(sampler);
-}
-
-static void ClearReplacementSamplerCache10Unlocked() {
-    for (auto* sampler : g_ReplacementSamplers10) {
-        if (sampler) {
-            sampler->Release();
-        }
-    }
-    g_ReplacementSamplers10.clear();
-    g_SamplerCache10.clear();
-    g_SamplerConfigHash10 = 0;
-}
-
-static void ClearReplacementSamplerCache10() {
-    std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex10);
-    ClearReplacementSamplerCache10Unlocked();
-}
-
-static void EnsureSamplerCacheFresh10(const GraphicsConfig& gfx) {
-    const uint64_t configHash = ce::sampler_override::HashSamplerOverrideConfig(gfx);
-    std::unique_lock<std::shared_mutex> lock(g_SamplerCacheMutex10);
-    if (g_SamplerConfigHash10 == configHash) {
-        return;
-    }
-    ClearReplacementSamplerCache10Unlocked();
-    g_SamplerConfigHash10 = configHash;
-}
 
 static bool SameSamplerDesc11(const D3D11_SAMPLER_DESC& a, const D3D11_SAMPLER_DESC& b) {
     return a.Filter == b.Filter && a.AddressU == b.AddressU && a.AddressV == b.AddressV && a.AddressW == b.AddressW &&
@@ -3010,21 +2925,6 @@ static void STDMETHODCALLTYPE DetourCSSetSamplers11(ID3D11DeviceContext* context
 static HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device* pDevice,
                                                             const D3D10_SAMPLER_DESC* pSamplerDesc,
                                                             ID3D10SamplerState** ppSamplerState);
-static void STDMETHODCALLTYPE DetourPSSetSamplers10(ID3D10Device* pDevice, UINT StartSlot, UINT NumSamplers,
-                                                    ID3D10SamplerState* const* ppSamplers);
-static void STDMETHODCALLTYPE DetourVSSetSamplers10(ID3D10Device* pDevice, UINT StartSlot, UINT NumSamplers,
-                                                    ID3D10SamplerState* const* ppSamplers);
-static void STDMETHODCALLTYPE DetourGSSetSamplers10(ID3D10Device* pDevice, UINT StartSlot, UINT NumSamplers,
-                                                    ID3D10SamplerState* const* ppSamplers);
-static void STDMETHODCALLTYPE DetourDraw10(ID3D10Device* pDevice, UINT VertexCount, UINT StartVertexLocation);
-static void STDMETHODCALLTYPE DetourDrawIndexed10(ID3D10Device* pDevice, UINT IndexCount, UINT StartIndexLocation,
-                                                  INT BaseVertexLocation);
-static void STDMETHODCALLTYPE DetourDrawInstanced10(ID3D10Device* pDevice, UINT VertexCountPerInstance,
-                                                    UINT InstanceCount, UINT StartVertexLocation,
-                                                    UINT StartInstanceLocation);
-static void STDMETHODCALLTYPE DetourDrawIndexedInstanced10(ID3D10Device* pDevice, UINT IndexCountPerInstance,
-                                                           UINT InstanceCount, UINT StartIndexLocation,
-                                                           INT BaseVertexLocation, UINT StartInstanceLocation);
 
 template <typename Fn>
 static bool EnsureVTableHookSlot11(void** vtable, UINT index, LPVOID detour, Fn& original, const char* name) {
@@ -4375,79 +4275,6 @@ void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     HandleDX11ProcessFrame(pSwapChain, true);
 }
 
-// Helper to force rebind of all samplers (triggering our DetourSetSamplers)
-// Returns true if any samplers were actually found and rebound
-static bool RebindSamplers10(ID3D10Device* pDevice) {
-    if (!pDevice)
-        return false;
-
-    bool foundAny = false;
-    ID3D10SamplerState* samplers[D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT] = {0};
-
-    // Pixel Shader
-    pDevice->PSGetSamplers(0, D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT, samplers);
-    int psCount = 0;
-    for (UINT i = 0; i < D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT; i++) {
-        if (samplers[i])
-            psCount++;
-    }
-
-    if (psCount > 0) {
-        pDevice->PSSetSamplers(0, D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT, samplers);
-        foundAny = true;
-    }
-
-    for (UINT i = 0; i < D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT; i++) {
-        if (samplers[i])
-            samplers[i]->Release();
-        samplers[i] = nullptr;  // Reset for next stage
-    }
-
-    // Vertex Shader
-    pDevice->VSGetSamplers(0, D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT, samplers);
-    int vsCount = 0;
-    for (UINT i = 0; i < D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT; i++) {
-        if (samplers[i])
-            vsCount++;
-    }
-
-    if (vsCount > 0) {
-        pDevice->VSSetSamplers(0, D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT, samplers);
-        foundAny = true;
-    }
-
-    for (UINT i = 0; i < D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT; i++) {
-        if (samplers[i])
-            samplers[i]->Release();
-        samplers[i] = nullptr;
-    }
-
-    // Geometry Shader
-    pDevice->GSGetSamplers(0, D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT, samplers);
-    int gsCount = 0;
-    for (UINT i = 0; i < D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT; i++) {
-        if (samplers[i])
-            gsCount++;
-    }
-
-    if (gsCount > 0) {
-        pDevice->GSSetSamplers(0, D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT, samplers);
-        foundAny = true;
-    }
-
-    for (UINT i = 0; i < D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT; i++) {
-        if (samplers[i])
-            samplers[i]->Release();
-        samplers[i] = nullptr;
-    }
-
-    if (foundAny) {
-        HookLog("DX10: Forced sampler rebind (Device=%p, PS=%d, VS=%d, GS=%d)", pDevice, psCount, vsCount, gsCount);
-    }
-
-    return foundAny;
-}
-
 static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int frameCount) {
     ID3D10Device* device = nullptr;
     if (FAILED(pSwapChain->GetDevice(__uuidof(ID3D10Device), (void**)&device))) {
@@ -4463,7 +4290,6 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
 
     // Capture/Hook on the real device seen in Present
     static ID3D10Device* s_HookedDevice = nullptr;
-    static bool s_DidRebind = false;
     static IDXGISwapChain* s_LastDX10OverlaySwapChain = nullptr;
     static UINT s_LastDX10OverlayBufferIndex = 0xFFFFFFFFu;
     static HWND s_LastDX10OverlayHwnd = nullptr;
@@ -4479,9 +4305,6 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
             HookLogImportant("DX10: Device changed, reinitializing overlay backend");
             g_OverlayAdapter.Shutdown();
         }
-        // Install runtime hooks on this device vtable if needed
-        InstallRuntimeD3D10Hooks(device);
-
         // Initialize System Metrics
         IDXGIDevice* dxgiDevice = nullptr;
         if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&dxgiDevice)))) {
@@ -4498,7 +4321,6 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
         }
 
         s_HookedDevice = device;
-        s_DidRebind = false;
     }
 
     if (s_LastDX10OverlayHwnd && s_LastDX10OverlayHwnd != currentHwnd && g_OverlayAdapter.IsInitialized()) {
@@ -4546,13 +4368,6 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
         s_LastDX10OverlaySwapChain = pSwapChain;
         s_LastDX10OverlayBufferIndex = bufferIndex;
         HookLogImportant("DX10: Overlay RTV ready for swapchain %p buffer=%u", pSwapChain, bufferIndex);
-    }
-
-    // One-time rebind for this device to ensure late initialization is caught
-    if (!s_DidRebind && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-        if (RebindSamplers10(device)) {
-            s_DidRebind = true;
-        }
     }
 
     // Render the overlay
@@ -5232,347 +5047,104 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
     return hr;
 }
 
-// Hook: D3D10 CreateSamplerState - Same logic as D3D11 version
-HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device* pDevice, const D3D10_SAMPLER_DESC* pSamplerDesc,
-                                                     ID3D10SamplerState** ppSamplerState) {
-    static int callCount = 0;
-    callCount++;
-    if (callCount <= 10) {
-        EarlyLog("DX10: DetourCreateSamplerState10 called (count=%d)", callCount);
+bool DX10Hook_ApplySamplerOverrides(D3D10_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
+    if (!ce::sampler_override::IsD3D10SamplerOverrideEligible(desc, gfx)) {
+        return false;
     }
 
+    bool modified = false;
+    const std::string& af = gfx.anisotropicFiltering;
+    if (af != "default" && !af.empty()) {
+        if (af == "off") {
+            if (ce::sampler_override::IsD3D10AnisotropicFilter(desc.Filter)) {
+                desc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
+                desc.MaxAnisotropy = 1;
+                modified = true;
+            }
+        } else if (ce::sampler_override::D3D10SamplerAllowsCreationTimeForcedAF(desc, gfx)) {
+            const D3D10_FILTER forcedFilter = ce::sampler_override::GetForcedAnisotropicFilter(desc.Filter);
+            const UINT forcedAnisotropy = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
+            if (desc.Filter != forcedFilter || desc.MaxAnisotropy != forcedAnisotropy) {
+                desc.Filter = forcedFilter;
+                desc.MaxAnisotropy = forcedAnisotropy;
+                modified = true;
+            }
+        }
+    }
+
+    if (!ce::sampler_override::IsD3D10AnisotropicFilter(desc.Filter)) {
+        D3D10_FILTER forcedFilter = desc.Filter;
+        if (gfx.mipMapping == "trilinear") {
+            forcedFilter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
+        } else if (gfx.mipMapping == "bilinear") {
+            forcedFilter = D3D10_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+        }
+        if (desc.Filter != forcedFilter) {
+            desc.Filter = forcedFilter;
+            modified = true;
+        }
+    }
+
+    float userBiasValue = 0.0f;
+    const bool userBiasActive = TryParseConfiguredMipBias(gfx, userBiasValue);
+    const float originalBias = desc.MipLODBias;
+    desc.MipLODBias = ApplyConfiguredMipBias(gfx, originalBias);
+
+    if (gfx.sgssaa && !gfx.disableAutoMipBias && !gfx.forceMipBiasClamp) {
+        float sgssaaBias = 0.0f;
+        if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgssaaBias)) {
+            desc.MipLODBias += sgssaaBias;
+        }
+    }
+    if (userBiasActive && userBiasValue < 0.0f && !gfx.sgssaa && IsUnityProcess() && !gfx.forceMipBiasClamp &&
+        desc.MipLODBias < -0.5f) {
+        desc.MipLODBias = -0.5f;
+    }
+    desc.MipLODBias = FinalizeMipBias(gfx, desc.MipLODBias);
+    modified = modified || desc.MipLODBias != originalBias;
+    return modified;
+}
+
+// D3D10 sampler descriptors are immutable. Apply the conservative policy once
+// at creation so there is no sampler-bind or draw-time override work.
+HRESULT STDMETHODCALLTYPE DetourCreateSamplerState10(ID3D10Device* pDevice, const D3D10_SAMPLER_DESC* pSamplerDesc,
+                                                     ID3D10SamplerState** ppSamplerState) {
     if (!pSamplerDesc)
         return oCreateSamplerState10(pDevice, pSamplerDesc, ppSamplerState);
     if (DX11Hook_IsWrapperSamplerForwarding())
         return oCreateSamplerState10(pDevice, pSamplerDesc, ppSamplerState);
-    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire))
-        return oCreateSamplerState10(pDevice, pSamplerDesc, ppSamplerState);
 
     D3D10_SAMPLER_DESC desc = *pSamplerDesc;
-    bool modified = false;
-    bool debug = false;
-    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
-        debug = true;
-    }
+    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
+    const bool modified = DX10Hook_ApplySamplerOverrides(desc, gfx);
 
-    const auto& gfx = GetActiveGraphicsConfig();
-    const bool overridesAllowed = ce::sampler_override::IsD3D10SamplerOverrideEligible(*pSamplerDesc, gfx);
-
-    if (overridesAllowed && g_IPC) {
-        // Anisotropic Filtering
-        std::string af = gfx.anisotropicFiltering;
-        if (af != "default") {
-            if (af == "off") {
-                if (ce::sampler_override::IsD3D10AnisotropicFilter(desc.Filter)) {
-                    bool isComparison = ce::sampler_override::IsD3D10ComparisonFilter(desc.Filter);
-                    desc.Filter =
-                        isComparison ? D3D10_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D10_FILTER_MIN_MAG_MIP_LINEAR;
-                    desc.MaxAnisotropy = 1;
-                    modified = true;
-                }
-            } else {
-                UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
-
-                if (desc.AddressU == D3D10_TEXTURE_ADDRESS_BORDER || desc.AddressV == D3D10_TEXTURE_ADDRESS_BORDER ||
-                    desc.AddressW == D3D10_TEXTURE_ADDRESS_BORDER) {
-                    // Skip AF override for Border address mode
-                } else {
-                    desc.Filter = ce::sampler_override::GetForcedAnisotropicFilter(desc.Filter);
-                    desc.MaxAnisotropy = maxAniso;
-                    modified = true;
-                }
-            }
+    HRESULT hr = oCreateSamplerState10(pDevice, modified ? &desc : pSamplerDesc, ppSamplerState);
+    if (modified && FAILED(hr)) {
+        if (ppSamplerState && *ppSamplerState) {
+            (*ppSamplerState)->Release();
+            *ppSamplerState = nullptr;
         }
-
-        // Mip Mapping
-        std::string mip = gfx.mipMapping;
-        bool isAniso = ce::sampler_override::IsD3D10AnisotropicFilter(desc.Filter);
-
-        if (mip != "default" && !isAniso) {
-            if (mip == "trilinear") {
-                desc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
-                modified = true;
-            } else if (mip == "bilinear") {
-                desc.Filter = D3D10_FILTER_MIN_MAG_LINEAR_MIP_POINT;
-                modified = true;
-            }
+        static std::atomic<int> s_fallbackLogCount{0};
+        const int logIndex = s_fallbackLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logIndex < 8) {
+            HookLogImportant(
+                "DX10: Modified sampler rejected; retrying original descriptor hr=0x%08X filter=0x%X aniso=%u "
+                "bias=%.2f (#%d)",
+                hr, desc.Filter, desc.MaxAnisotropy, desc.MipLODBias, logIndex + 1);
         }
-
-        // Mip Bias
-        float userBiasVal = 0.0f;
-        bool userBiasActive = TryParseConfiguredMipBias(gfx, userBiasVal);
-        float originalBias = pSamplerDesc->MipLODBias;
-        desc.MipLODBias = ApplyConfiguredMipBias(gfx, originalBias);
-        if (desc.MipLODBias != originalBias) {
-            modified = true;
-        }
-
-        // SGSSAA Auto-Bias
-        if (gfx.sgssaa && !gfx.disableAutoMipBias && !gfx.forceMipBiasClamp) {
-            float sgBias = 0.0f;
-            if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
-                desc.MipLODBias += sgBias;
-                modified = true;
-            }
-        }
-
-        if (userBiasActive && userBiasVal < 0.0f && !gfx.sgssaa && IsUnityProcess() && !gfx.forceMipBiasClamp) {
-            if (desc.MipLODBias < -0.5f) {
-                desc.MipLODBias = -0.5f;
-                modified = true;
-            }
-        }
-
-        float finalizedBias = FinalizeMipBias(gfx, desc.MipLODBias);
-        if (finalizedBias != desc.MipLODBias) {
-            desc.MipLODBias = finalizedBias;
-            modified = true;
-        }
-    }
-
-    HRESULT hr;
-    if (modified) {
-        hr = oCreateSamplerState10(pDevice, &desc, ppSamplerState);
-        if (FAILED(hr) && debug) {
-            EarlyLog(
-                "DX10: CreateSamplerState FAILED with modified desc "
-                "(hr=0x%08X). Filter=0x%X Bias=%.2f Aniso=%u",
-                hr, desc.Filter, desc.MipLODBias, desc.MaxAnisotropy);
-        } else if (debug) {
-            static int logCount = 0;
-            if (logCount++ < 5) {
-                EarlyLog(
-                    "DX10: CreateSamplerState overridden. Filter=0x%X Bias=%.2f "
-                    "Aniso=%u",
-                    desc.Filter, desc.MipLODBias, desc.MaxAnisotropy);
-            }
-        }
-    } else {
         hr = oCreateSamplerState10(pDevice, pSamplerDesc, ppSamplerState);
+    } else if (modified) {
+        static std::atomic<int> s_overrideLogCount{0};
+        const int logIndex = s_overrideLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logIndex < 32) {
+            HookLogImportant(
+                "DX10: Creation-time sampler override filter=0x%X->0x%X aniso=%u->%u bias=%.2f->%.2f "
+                "policy=%s (#%d)",
+                pSamplerDesc->Filter, desc.Filter, pSamplerDesc->MaxAnisotropy, desc.MaxAnisotropy,
+                pSamplerDesc->MipLODBias, desc.MipLODBias, gfx.samplerOverrideMode.c_str(), logIndex + 1);
+        }
     }
     return hr;
-}
-
-// Helper: Get or create a replacement sampler with our overrides applied
-static ID3D10SamplerState* GetOrCreateReplacementSampler10(ID3D10Device* pDevice, ID3D10SamplerState* pOriginal) {
-    if (!pOriginal)
-        return nullptr;
-
-    const auto& gfx = GetActiveGraphicsConfig();
-    EnsureSamplerCacheFresh10(gfx);
-
-    // 1. If it's already a replacement sampler, don't try to replace it again
-    if (IsReplacementSampler(pOriginal)) {
-        return pOriginal;
-    }
-
-    // 2. Check the cache
-    ID3D10SamplerState* cached = FindReplacementSampler(pOriginal);
-    if (cached) {
-        return cached;
-    }
-
-    // Get original sampler description
-    D3D10_SAMPLER_DESC originalDesc;
-    pOriginal->GetDesc(&originalDesc);
-
-    const bool overridesAllowed = ce::sampler_override::IsD3D10SamplerOverrideEligible(originalDesc, gfx);
-
-    if (!overridesAllowed || !g_IPC) {
-        AddReplacementSampler(pOriginal, pOriginal);  // Cache as no-op
-        return pOriginal;
-    }
-
-    D3D10_SAMPLER_DESC desc = originalDesc;
-    bool modified = false;
-
-    // Anisotropic Filtering
-    std::string af = gfx.anisotropicFiltering;
-    if (af != "default") {
-        if (af == "off") {
-            if (ce::sampler_override::IsD3D10AnisotropicFilter(desc.Filter)) {
-                bool isComparison = ce::sampler_override::IsD3D10ComparisonFilter(desc.Filter);
-                desc.Filter =
-                    isComparison ? D3D10_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D10_FILTER_MIN_MAG_MIP_LINEAR;
-                desc.MaxAnisotropy = 1;
-                modified = true;
-            }
-        } else {
-            UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
-
-            if (desc.AddressU != D3D10_TEXTURE_ADDRESS_BORDER && desc.AddressV != D3D10_TEXTURE_ADDRESS_BORDER &&
-                desc.AddressW != D3D10_TEXTURE_ADDRESS_BORDER) {
-                desc.Filter = ce::sampler_override::GetForcedAnisotropicFilter(desc.Filter);
-                desc.MaxAnisotropy = maxAniso;
-                modified = true;
-            }
-        }
-    }
-
-    // Mip Mapping
-    std::string mip = gfx.mipMapping;
-    bool isAniso = ce::sampler_override::IsD3D10AnisotropicFilter(desc.Filter);
-
-    if (mip != "default" && !isAniso) {
-        if (mip == "trilinear") {
-            desc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
-            modified = true;
-        } else if (mip == "bilinear") {
-            desc.Filter = D3D10_FILTER_MIN_MAG_LINEAR_MIP_POINT;
-            modified = true;
-        }
-    }
-
-    // Mip Bias
-    float originalBias = desc.MipLODBias;
-    desc.MipLODBias = ApplyConfiguredMipBias(gfx, originalBias);
-    if (desc.MipLODBias != originalBias) {
-        modified = true;
-    }
-
-    // SGSSAA Auto-Bias
-    if (gfx.sgssaa && !gfx.disableAutoMipBias && !gfx.forceMipBiasClamp) {
-        float sgBias = 0.0f;
-        if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgBias)) {
-            desc.MipLODBias += sgBias;
-            modified = true;
-        }
-    }
-
-    float finalizedBias = FinalizeMipBias(gfx, desc.MipLODBias);
-    if (finalizedBias != desc.MipLODBias) {
-        desc.MipLODBias = finalizedBias;
-        modified = true;
-    }
-
-    if (!modified) {
-        AddReplacementSampler(pOriginal, pOriginal);  // Cache as no-op
-        return pOriginal;
-    }
-
-    // Create the replacement sampler
-    ID3D10SamplerState* pReplacement = nullptr;
-    HRESULT hr = pDevice->CreateSamplerState(&desc, &pReplacement);
-    if (SUCCEEDED(hr)) {
-        AddReplacementSampler(pOriginal, pReplacement);
-        AddToReplacementSet(pReplacement);
-        static int logCount = 0;
-        if (logCount++ < 10) {
-            EarlyLog("DX10: Created replacement sampler %p -> %p (AF=%d, Bias=%.2f)", pOriginal, pReplacement,
-                     desc.MaxAnisotropy, desc.MipLODBias);
-        }
-        return pReplacement;
-    } else {
-        AddReplacementSampler(pOriginal, pOriginal);  // Failed, use original
-        return pOriginal;
-    }
-}
-
-// D3D10 PSSetSamplers detour
-static void STDMETHODCALLTYPE DetourPSSetSamplers10(ID3D10Device* pDevice, UINT StartSlot, UINT NumSamplers,
-                                                    ID3D10SamplerState* const* ppSamplers) {
-    static int callCount = 0;
-    callCount++;
-    if (callCount <= 5) {
-        EarlyLog("DX10: DetourPSSetSamplers10 called (StartSlot=%u, NumSamplers=%u)", StartSlot, NumSamplers);
-    }
-
-    if (!ppSamplers || NumSamplers == 0 || !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-        oPSSetSamplers10(pDevice, StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-
-    // Cache device for later sampler creation
-    if (!g_CachedD3D10Device)
-        g_CachedD3D10Device = pDevice;
-
-    // Clamp NumSamplers to avoid stack overflow
-    UINT actualNum =
-        (NumSamplers > D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT) ? D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT : NumSamplers;
-
-    ID3D10SamplerState* replacedSamplers[D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT];
-    for (UINT i = 0; i < actualNum; i++) {
-        replacedSamplers[i] = GetOrCreateReplacementSampler10(pDevice, ppSamplers[i]);
-    }
-
-    // For anything beyond actualNum, we don't care about replacedSamplers
-
-    oPSSetSamplers10(pDevice, StartSlot, NumSamplers, replacedSamplers);
-}
-
-// D3D10 VSSetSamplers detour
-static void STDMETHODCALLTYPE DetourVSSetSamplers10(ID3D10Device* pDevice, UINT StartSlot, UINT NumSamplers,
-                                                    ID3D10SamplerState* const* ppSamplers) {
-    if (!ppSamplers || NumSamplers == 0 || !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-        oVSSetSamplers10(pDevice, StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-
-    if (!g_CachedD3D10Device)
-        g_CachedD3D10Device = pDevice;
-
-    // Clamp NumSamplers to avoid stack overflow
-    UINT actualNum =
-        (NumSamplers > D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT) ? D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT : NumSamplers;
-
-    ID3D10SamplerState* replacedSamplers[D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT];
-    for (UINT i = 0; i < actualNum; i++) {
-        replacedSamplers[i] = GetOrCreateReplacementSampler10(pDevice, ppSamplers[i]);
-    }
-
-    oVSSetSamplers10(pDevice, StartSlot, NumSamplers, replacedSamplers);
-}
-
-// D3D10 GSSetSamplers detour
-static void STDMETHODCALLTYPE DetourGSSetSamplers10(ID3D10Device* pDevice, UINT StartSlot, UINT NumSamplers,
-                                                    ID3D10SamplerState* const* ppSamplers) {
-    if (!ppSamplers || NumSamplers == 0 || !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-        oGSSetSamplers10(pDevice, StartSlot, NumSamplers, ppSamplers);
-        return;
-    }
-
-    if (!g_CachedD3D10Device)
-        g_CachedD3D10Device = pDevice;
-
-    // Clamp NumSamplers to avoid stack overflow
-    UINT actualNum =
-        (NumSamplers > D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT) ? D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT : NumSamplers;
-
-    ID3D10SamplerState* replacedSamplers[D3D10_COMMONSHADER_SAMPLER_SLOT_COUNT];
-    for (UINT i = 0; i < actualNum; i++) {
-        replacedSamplers[i] = GetOrCreateReplacementSampler10(pDevice, ppSamplers[i]);
-    }
-
-    oGSSetSamplers10(pDevice, StartSlot, NumSamplers, replacedSamplers);
-}
-
-// Helper: Install hooks on a specific D3D10 device VTable at runtime
-// This ensures we catch the correct VTable even if it differs from our temp
-// device
-static void InstallRuntimeD3D10Hooks(ID3D10Device* pDevice) {
-    if (!pDevice)
-        return;
-
-    void** pVTable = *(void***)pDevice;
-    VTableHook::Status status;
-
-    // PSSetSamplers (Index 6)
-    status = VTableHook::Create(&pVTable[6], (LPVOID)&DetourPSSetSamplers10, (LPVOID*)&oPSSetSamplers10);
-    if (status == VTableHook::Success) {
-        HookLog("DX10: Runtime PSSetSamplers hook installed");
-    }
-
-    // VSSetSamplers (Index 20)
-    status = VTableHook::Create(&pVTable[20], (LPVOID)&DetourVSSetSamplers10, (LPVOID*)&oVSSetSamplers10);
-    if (status == VTableHook::Success) {
-        HookLog("DX10: Runtime VSSetSamplers hook installed");
-    }
-
-    // GSSetSamplers (Index 23)
-    status = VTableHook::Create(&pVTable[23], (LPVOID)&DetourGSSetSamplers10, (LPVOID*)&oGSSetSamplers10);
-    if (status == VTableHook::Success) {
-        HookLog("DX10: Runtime GSSetSamplers hook installed");
-    }
 }
 
 void DX11Hook::ProcessDeferredReleases() {
@@ -5813,7 +5385,6 @@ void DX11Hook::Shutdown() {
 
     // CRITICAL FIX: Clear sampler caches to prevent unbounded memory growth
     // These caches accumulate replacement samplers over time
-    ClearReplacementSamplerCache10();
     ClearReplacementSamplerCache11();
     ReleaseTrackedShaderResources11();
     ClearDeferredAFBootstraps11();
@@ -5912,7 +5483,6 @@ void DX11Hook::OnHostDisconnect() {
     HookLog("DX11Hook::OnHostDisconnect() - ready for reconnection");
     // DX11 capture is synchronous, nothing to stop
     // Just cleanup for potential new session
-    ClearReplacementSamplerCache10();
     ClearReplacementSamplerCache11();
     ReleaseTrackedShaderResources11();
     ClearDeferredAFBootstraps11();

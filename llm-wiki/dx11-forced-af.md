@@ -1,6 +1,6 @@
 # DX11 Forced Anisotropic Filtering
 
-Last cross-checked: 2026-07-15
+Last cross-checked: 2026-07-16
 
 Primary sources:
 - `hook/common/sampler_override_utils.h`
@@ -115,15 +115,15 @@ instructions because interception and a cached version/dirty check still exist.
 
 ## Open questions / stale-risk
 
-- Fresh 32-bit BioShock Infinite validation on the installed x86 hook is still
-  required. Compare the same traversal with the limiter inactive: GPU utilization
-  should no longer collapse, effective sampler calls should occur only on real
-  state transitions, and BC5/array/cube/bias/gradient material sampling should no
-  longer remain silently blurry.
-- Fresh Blackwell scene validation remains required to prove no red/green-dot
-  artifact regression. Any remaining blurry draw should be attributable to an
-  explicit structural veto (for example `sample_l`, depth, integer, border,
-  comparison, or one visible mip), not temporal warm-up.
+- Installed x86 build `0.1.4878` was validated in 32-bit BioShock Infinite session
+  `20260716_001012`. The trace sustained roughly 25,000 Presents with ordinary
+  3-5 ms heartbeat gaps and no device-removal/stall signature. The user confirmed
+  visually correct AF coverage, good performance, and no visible Blackwell
+  corruption. This closes the original supplied-scene regression.
+- Broader Blackwell and non-BioShock validation remains useful. Any future blurry
+  draw should be attributable to an explicit structural veto (for example
+  `sample_l`, depth, integer, border, comparison, or one visible mip), not temporal
+  warm-up.
 - The parser still consumes D3D disassembly text. A token-level DXBC parser would
   reduce dependence on text shape, but current parsing has focused regression
   coverage and is not part of the clean-draw cost.

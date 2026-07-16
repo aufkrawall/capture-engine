@@ -12,6 +12,7 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer);
 void DX9_RegisterInternalHelperDevice(IDirect3DDevice9* device);
 void DX9_UnregisterInternalHelperDevice(IDirect3DDevice9* device);
 bool IsDXVKD3D9WrapperLoaded();
+void DX9_InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice = false);
 
 class DX9InternalBypassScope {
 public:

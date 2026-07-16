@@ -210,5 +210,4 @@ private:
     LONG m_RefCount;
     bool m_IsDevice1;
 
-    void ApplySamplerOverrides(D3D10_SAMPLER_DESC* pDesc);
 };

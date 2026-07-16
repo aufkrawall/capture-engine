@@ -5,8 +5,6 @@
 #include "d3d10_device_wrap.h"
 #include <cstdlib>
 #include "../apis/dx11_hook.h"
-#include "../apis/lod_helper.h"
-#include "../common/sampler_override_utils.h"
 #include "dxgi_device_wrap.h"
 #include "hook_common.h"
 
@@ -34,51 +32,6 @@ CWrapD3D10Device::~CWrapD3D10Device() {
         m_pReal1->Release();
     if (m_pReal)
         m_pReal->Release();
-}
-
-void CWrapD3D10Device::ApplySamplerOverrides(D3D10_SAMPLER_DESC* pDesc) {
-    if (!pDesc)
-        return;
-    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire))
-        return;
-
-    const auto& gfx = GetActiveGraphicsConfig();
-    if (!ce::sampler_override::IsD3D10SamplerOverrideEligible(*pDesc, gfx))
-        return;
-
-    const std::string& af = gfx.anisotropicFiltering;
-    if (af != "default" && !af.empty()) {
-        if (af == "off") {
-            if (ce::sampler_override::IsD3D10AnisotropicFilter(pDesc->Filter)) {
-                bool comparison = ce::sampler_override::IsD3D10ComparisonFilter(pDesc->Filter);
-                pDesc->Filter =
-                    comparison ? D3D10_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR : D3D10_FILTER_MIN_MAG_MIP_LINEAR;
-                pDesc->MaxAnisotropy = 1;
-            }
-        } else {
-            UINT maxAniso = ce::sampler_override::GetConfiguredMaxAnisotropy(gfx);
-
-            if (pDesc->AddressU != D3D10_TEXTURE_ADDRESS_BORDER && pDesc->AddressV != D3D10_TEXTURE_ADDRESS_BORDER &&
-                pDesc->AddressW != D3D10_TEXTURE_ADDRESS_BORDER) {
-                pDesc->Filter = ce::sampler_override::GetForcedAnisotropicFilter(pDesc->Filter);
-                pDesc->MaxAnisotropy = maxAniso;
-            }
-        }
-    }
-
-    const std::string& bias = gfx.mipBias;
-    if (!ce::sampler_override::IsD3D10AnisotropicFilter(pDesc->Filter)) {
-        if (gfx.mipMapping == "trilinear")
-            pDesc->Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
-        else if (gfx.mipMapping == "bilinear")
-            pDesc->Filter = D3D10_FILTER_MIN_MAG_LINEAR_MIP_POINT;
-    }
-
-    if ((bias != "default" && !bias.empty()) || gfx.forceMipBiasClamp) {
-        float originalBias = pDesc->MipLODBias;
-        pDesc->MipLODBias = ApplyConfiguredMipBias(gfx, originalBias);
-        pDesc->MipLODBias = FinalizeMipBias(gfx, pDesc->MipLODBias);
-    }
 }
 
 // ============================================================================
@@ -513,15 +466,24 @@ HRESULT STDMETHODCALLTYPE CWrapD3D10Device::CreateRasterizerState(const D3D10_RA
 // KEY METHOD: Sampler creation with AF/mip override
 HRESULT STDMETHODCALLTYPE CWrapD3D10Device::CreateSamplerState(const D3D10_SAMPLER_DESC* pSamplerDesc,
                                                                ID3D10SamplerState** ppSamplerState) {
-    if (pSamplerDesc) {
-        D3D10_SAMPLER_DESC desc = *pSamplerDesc;
-        ApplySamplerOverrides(&desc);
-        DX11Hook_BeginWrapperSamplerForwarding();
-        const HRESULT hr = m_pReal->CreateSamplerState(&desc, ppSamplerState);
-        DX11Hook_EndWrapperSamplerForwarding();
-        return hr;
+    if (!pSamplerDesc)
+        return m_pReal->CreateSamplerState(pSamplerDesc, ppSamplerState);
+
+    D3D10_SAMPLER_DESC desc = *pSamplerDesc;
+    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
+    const bool modified = DX10Hook_ApplySamplerOverrides(desc, gfx);
+    DX11Hook_BeginWrapperSamplerForwarding();
+    HRESULT hr = m_pReal->CreateSamplerState(modified ? &desc : pSamplerDesc, ppSamplerState);
+    if (modified && FAILED(hr)) {
+        if (ppSamplerState && *ppSamplerState) {
+            (*ppSamplerState)->Release();
+            *ppSamplerState = nullptr;
+        }
+        WrapperLog("D3D10: Modified sampler rejected; retrying original descriptor (hr=0x%08X)", hr);
+        hr = m_pReal->CreateSamplerState(pSamplerDesc, ppSamplerState);
     }
-    return m_pReal->CreateSamplerState(pSamplerDesc, ppSamplerState);
+    DX11Hook_EndWrapperSamplerForwarding();
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE CWrapD3D10Device::CreateQuery(const D3D10_QUERY_DESC* pQueryDesc, ID3D10Query** ppQuery) {

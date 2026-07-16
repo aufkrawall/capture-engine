@@ -205,3 +205,56 @@ TEST(InjectCaptureSourceTest, ClassicD3D9CapturePreservesDeviceTypeAndUsesShared
     EXPECT_NE(source.find("d3d11Device->OpenSharedResource"), std::string::npos);
     EXPECT_NE(source.find("Direct D3D9 shared ring zero-copy path active"), std::string::npos);
 }
+
+TEST(InjectCaptureSourceTest, ForcedAFPathsAvoidDrawTimeReplacementAndCoverMutableLegacyState) {
+    const std::string dx10 = ReadSource("hook/apis/dx11_hook.cpp");
+    const std::string dx9 = ReadSource("hook/apis/dx9_hook.cpp");
+    const std::string dx9State = ReadSource("hook/apis/dx9_sampler_state.cpp");
+    const std::string legacyState = ReadSource("hook/apis/legacy_d3d_sampler_state.cpp");
+    ASSERT_FALSE(dx10.empty());
+    ASSERT_FALSE(dx9.empty());
+    ASSERT_FALSE(dx9State.empty());
+    ASSERT_FALSE(legacyState.empty());
+
+    EXPECT_EQ(dx10.find("DetourPSSetSamplers10"), std::string::npos);
+    EXPECT_EQ(dx10.find("g_SamplerCache10"), std::string::npos);
+    EXPECT_NE(dx10.find("Modified sampler rejected; retrying original descriptor"), std::string::npos);
+
+    EXPECT_NE(dx9.find("D3D9SamplerVTableRecord"), std::string::npos);
+    EXPECT_NE(dx9.find("InstallD3D9SamplerHooks(vtable)"), std::string::npos);
+    EXPECT_NE(dx9State.find("texture->GetLevelCount()"), std::string::npos);
+    EXPECT_NE(dx9State.find("D3DUSAGE_AUTOGENMIPMAP"), std::string::npos);
+    EXPECT_NE(dx9State.find("D3DPTFILTERCAPS_MINFANISOTROPIC"), std::string::npos);
+    EXPECT_NE(dx9State.find("bootstrapAttempted"), std::string::npos);
+    EXPECT_EQ(dx9State.find("DrawPrimitive"), std::string::npos);
+
+    EXPECT_NE(legacyState.find("traits.anisotropicMag = 5"), std::string::npos);
+    EXPECT_NE(legacyState.find("combinedAddress"), std::string::npos);
+    EXPECT_NE(legacyState.find("bootstrapSweepPending"), std::string::npos);
+    EXPECT_EQ(legacyState.find("DrawPrimitive"), std::string::npos);
+
+    const std::string ddraw = ReadSource("hook/apis/ddraw_hook.cpp");
+    EXPECT_NE(ddraw.find("#define D3D7_VTABLE_GETTEXTURESTAGESTATE 36"), std::string::npos);
+    EXPECT_NE(ddraw.find("#define D3D7_VTABLE_SETTEXTURESTAGESTATE 37"), std::string::npos);
+    EXPECT_NE(ddraw.find("#define D3D7_VTABLE_SETRENDERSTATE 20"), std::string::npos);
+}
+
+TEST(InjectCaptureSourceTest, OpenGLForcedAFCoversParameterAndMipAllocationEventsWithoutBindHooks) {
+    const std::string sampler = ReadSource("hook/apis/opengl_sampler_override.cpp");
+    const std::string storage = ReadSource("hook/apis/opengl_texture_storage_override.cpp");
+    ASSERT_FALSE(sampler.empty());
+    ASSERT_FALSE(storage.empty());
+
+    EXPECT_NE(sampler.find("GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT"), std::string::npos);
+    EXPECT_NE(sampler.find("glSamplerParameteriv"), std::string::npos);
+    EXPECT_NE(sampler.find("glTextureParameterfEXT"), std::string::npos);
+    EXPECT_NE(sampler.find("glGetTextureLevelParameteriv"), std::string::npos);
+    EXPECT_EQ(sampler.find("glBindTexture"), std::string::npos);
+
+    EXPECT_NE(storage.find("glCompressedTexImage2D"), std::string::npos);
+    EXPECT_NE(storage.find("glCopyTexImage2D"), std::string::npos);
+    EXPECT_NE(storage.find("glTexStorage2D"), std::string::npos);
+    EXPECT_NE(storage.find("glGenerateTextureMipmap"), std::string::npos);
+    EXPECT_NE(storage.find("glTextureView"), std::string::npos);
+    EXPECT_EQ(storage.find("glBindTexture"), std::string::npos);
+}

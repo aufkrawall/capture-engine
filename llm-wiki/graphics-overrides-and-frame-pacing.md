@@ -1,13 +1,13 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-07-15
+Last cross-checked: 2026-07-16
 
 Primary sources:
 - `common/config.{h,cpp}`
 - `common/strict_float_parse.h`
 - `common/shared_defs.h`
 - `hook/common/{hook_common,dxgi_shared,fps_limiter,fps_limiter_policy,sampler_override_utils}.*`
-- `hook/apis/{dx9_hook,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,opengl_hook}.cpp`
+- `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,opengl_hook,opengl_sampler_override,opengl_texture_storage_override}.cpp`
 - `hook/vulkan_layer/vulkan_layer.{h,cpp}`
 - `tests/{test_config,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter}.cpp`
 
@@ -31,9 +31,12 @@ Primary sources:
 ## Sampler invariants
 
 - DX9 forces MIN/MAG anisotropy independently of `mip_mapping`; MAXANISOTROPY alone is reconciled by setting MIN/MAG
-  on the same eligible sampler. Safe mode requires mipmapped material addressing.
+  on the same eligible sampler. Safe mode requires a bound, filter-capable texture with more than one visible mip and
+  material addressing. Mutable state is reconciled only on SetTexture/SetSampler/config events; bootstrap getters are
+  one-shot, including pure-device failure, and there is no draw hook.
 - D3D10/11 wrapper-to-real `CreateSamplerState` forwarding is explicitly marked so the raw vtable hook cannot apply
-  offset/base bias twice. D3D11 creation and bind replacement use one shared policy.
+  offset/base bias twice. D3D10 is creation-time-only and transactionally retries the original descriptor; D3D11 uses
+  its shader/resource-aware dirty-slot replacement policy.
 - DX12 has one mutation boundary for static samplers: `ID3D12Device::CreateRootSignature`. Serializer detours observe
   dynamic resolution coverage but pass descriptors through, preventing offset/base bias from being applied once at
   serialization and again at root creation. Coverage includes sampler v1/v2, root signatures 1.0/1.1/1.2, raw
@@ -42,7 +45,11 @@ Primary sources:
   structures directly, and retries the original descriptor transactionally if an override is rejected. All modes
   preserve clamp-to-border, unnormalized-coordinate, comparison, special-reduction, and nonstandard-filter samplers.
   The decision occurs only at `vkCreateSampler`; there is no draw/dispatch cost.
-- OpenGL intercepts both texture parameters and modern sampler objects. CPU prerender sync rings are owned per HGLRC.
+- D3D6-8 use event-driven texture-stage-state reconciliation. D3D7 MAG anisotropy is value 5, and its sampler vtable
+  slots are 36/37; D3D5 and older have no anisotropic filter value to force generically.
+- OpenGL intercepts bound texture parameters, sampler objects, core/EXT DSA, mip allocation/storage/copy, and mip
+  generation. It verifies actual mip storage and device limits at those mutation boundaries and has no bind/draw hook.
+  CPU prerender sync rings remain owned per HGLRC.
 
 ## Queue-depth and limiter invariants
 

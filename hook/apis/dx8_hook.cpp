@@ -1,5 +1,6 @@
 #include "dx8_hook.h"
 #include "dx9_hook.h"
+#include "legacy_d3d_sampler_state.h"
 
 #include <d3d11_4.h>
 #include <d3d9.h>
@@ -20,7 +21,6 @@
 #include "../wrappers/inline_hook.h"
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
-#include "lod_helper.h"
 #include "performance_metrics.h"
 
 // D3D8 interface definitions (minimal subset needed for hooking)
@@ -35,6 +35,7 @@
 #define D3D8_VTABLE_CREATEIMAGESURFACE 27
 #define D3D8_VTABLE_COPYRECTS 28
 #define D3D8_VTABLE_GETFRONTBUFFER 30
+#define D3D8_VTABLE_GETTEXTURESTAGESTATE 62
 #define D3D8_VTABLE_SETTEXTURESTAGESTATE 63
 
 #define D3D8_SURFACE_VTABLE_RELEASE 2
@@ -72,6 +73,8 @@ typedef HRESULT(STDMETHODCALLTYPE* D3D8GetFrontBuffer_t)(IDirect3DDevice8* devic
 
 typedef HRESULT(STDMETHODCALLTYPE* D3D8SetTextureStageState_t)(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
                                                                DWORD Value);
+typedef HRESULT(STDMETHODCALLTYPE* D3D8GetTextureStageState_t)(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
+                                                               DWORD* pValue);
 
 typedef HRESULT(STDMETHODCALLTYPE* D3D8SurfaceGetDesc_t)(IDirect3DSurface8* surface, void* pDesc);
 
@@ -121,6 +124,8 @@ typedef HRESULT(STDMETHODCALLTYPE* D3D8CreateDevice_t)(IDirect3D8* d3d, UINT Ada
 
 static HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
                                                                 DWORD Value);
+static HRESULT STDMETHODCALLTYPE DetourD3D8GetTextureStageState(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
+                                                                DWORD* pValue);
 static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, const RECT* pSourceRect,
                                                    const RECT* pDestRect, HWND hDestWindowOverride,
                                                    const RGNDATA* pDirtyRegion);
@@ -136,11 +141,23 @@ static Direct3DCreate8_t oDirect3DCreate8 = nullptr;
 static D3D8Present_t oD3D8Present = nullptr;
 static D3D8Reset_t oD3D8Reset = nullptr;
 static D3D8SetTextureStageState_t oD3D8SetTextureStageState = nullptr;
+static D3D8GetTextureStageState_t oD3D8GetTextureStageState = nullptr;
 static D3D8CreateDevice_t oD3D8CreateDevice = nullptr;
 
 static bool g_DX8HooksInitialized = false;
 static std::mutex g_DX8InitMutex;
 static bool g_HooksInitialized = false;
+
+static UINT QueryD3D8MaxAnisotropy(void* opaqueDevice) {
+    if (!opaqueDevice)
+        return 1;
+    auto* device = static_cast<IDirect3DDevice8*>(opaqueDevice);
+    void** vtable = *(void***)device;
+    using GetDeviceCaps8_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice8*, D3DCAPS9*);
+    auto getCaps = reinterpret_cast<GetDeviceCaps8_t>(vtable[7]);
+    D3DCAPS9 caps = {};
+    return getCaps && SUCCEEDED(getCaps(device, &caps)) ? std::max<UINT>(1, caps.MaxAnisotropy) : 1;
+}
 
 static DWORD ParseD3D8MSAA(const char* msaa) {
     if (strcmp(msaa, "2x") == 0)
@@ -203,6 +220,10 @@ static void InstallD3D8DeviceHooks(IDirect3DDevice8* device) {
                            (LPVOID*)&oD3D8SetTextureStageState) == VTableHook::Success) {
         g_DX8HooksInitialized = true;
         HookLog("DX8: SetTextureStageState hook installed");
+    }
+    if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_GETTEXTURESTAGESTATE], (LPVOID)&DetourD3D8GetTextureStageState,
+                           (LPVOID*)&oD3D8GetTextureStageState) == VTableHook::Success) {
+        HookLog("DX8: Logical GetTextureStageState hook installed");
     }
 }
 
@@ -1377,6 +1398,8 @@ static void DrawDX8Overlay(IDirect3DDevice8* device, HWND hwnd) {
             void** vTable = *(void***)device;
             VTableHook::Create(&vTable[D3D8_VTABLE_SETTEXTURESTAGESTATE], (LPVOID)&DetourD3D8SetTextureStageState,
                                (LPVOID*)&oD3D8SetTextureStageState);
+            VTableHook::Create(&vTable[D3D8_VTABLE_GETTEXTURESTAGESTATE], (LPVOID)&DetourD3D8GetTextureStageState,
+                               (LPVOID*)&oD3D8GetTextureStageState);
             g_DX8HooksInitialized = true;
             HookLog("DX8: State hooks initialized");
         }
@@ -1407,6 +1430,11 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, con
                                                    const RGNDATA* pDirtyRegion) {
     if (HookIsShuttingDown())
         return D3D_OK;
+    ce::legacy_d3d_sampler_state::RefreshConfiguration(
+        ce::legacy_d3d_sampler_state::Api::D3D8, device,
+        reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(oD3D8SetTextureStageState),
+        reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(oD3D8GetTextureStageState),
+        QueryD3D8MaxAnisotropy);
     // Update performance metrics
     static int64_t qpcFreq = 0;
     if (qpcFreq == 0) {
@@ -1521,7 +1549,11 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Reset(IDirect3DDevice8* device, void*
         }
     }
 
-    return oD3D8Reset(device, pPresentationParameters);
+    const HRESULT hr = oD3D8Reset(device, pPresentationParameters);
+    if (SUCCEEDED(hr)) {
+        ce::legacy_d3d_sampler_state::ResetDevice(ce::legacy_d3d_sampler_state::Api::D3D8, device);
+    }
+    return hr;
 }
 
 // Hook: D3D8 SetTextureStageState
@@ -1530,57 +1562,23 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(IDirect3DDevice8
     if (g_DX8StateHookBypassDepth > 0) {
         return oD3D8SetTextureStageState(device, Stage, Type, Value);
     }
+    return ce::legacy_d3d_sampler_state::SetTextureStageState(
+        ce::legacy_d3d_sampler_state::Api::D3D8, device, Stage, Type, Value,
+        reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(oD3D8SetTextureStageState),
+        reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(oD3D8GetTextureStageState),
+        QueryD3D8MaxAnisotropy);
+}
 
-    if (g_IPC) {
-        const auto& gfx = GetActiveGraphicsConfig();
-        // Anisotropy
-        std::string af = gfx.anisotropicFiltering;
-        if (af != "default") {
-            // D3DTSS_MAGFILTER = 16, MINFILTER = 17
-            if (Type == 16 || Type == 17) {
-                if (af == "off") {
-                    if (Value == 3)
-                        Value = 2;  // ANISOTROPIC -> LINEAR
-                } else {
-                    Value = 3;  // ANISOTROPIC
-                }
-            }
-            // D3DTSS_MAXANISOTROPY = 21
-            if (Type == 21) {
-                if (af == "off")
-                    Value = 1;
-                else if (af == "2x")
-                    Value = 2;
-                else if (af == "4x")
-                    Value = 4;
-                else if (af == "8x")
-                    Value = 8;
-                else
-                    Value = 16;
-            }
-        }
-
-        // Mip Mapping
-        std::string mip = gfx.mipMapping;
-        if (mip != "default") {
-            // D3DTSS_MIPFILTER = 18
-            if (Type == 18) {
-                if (mip == "trilinear")
-                    Value = 2;  // LINEAR (Linear Mip Linear)
-                else if (mip == "bilinear")
-                    Value = 1;  // POINT (Linear Mip Nearest if Mag/Min are Linear)
-            }
-        }
-
-        // Mip Bias
-        if (Type == 19 /*D3DTSS_MIPMAPLODBIAS*/) {
-            float originalBias = *((float*)&Value);
-            float finalBias = ApplyConfiguredMipBias(gfx, originalBias);
-            finalBias = FinalizeMipBias(gfx, finalBias);
-            Value = *((DWORD*)&finalBias);
-        }
+static HRESULT STDMETHODCALLTYPE DetourD3D8GetTextureStageState(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
+                                                                DWORD* pValue) {
+    if (g_DX8StateHookBypassDepth > 0) {
+        return oD3D8GetTextureStageState(device, Stage, Type, pValue);
     }
-    return oD3D8SetTextureStageState(device, Stage, Type, Value);
+    return ce::legacy_d3d_sampler_state::GetTextureStageState(
+        ce::legacy_d3d_sampler_state::Api::D3D8, device, Stage, Type, pValue,
+        reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(oD3D8GetTextureStageState),
+        reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(oD3D8SetTextureStageState),
+        QueryD3D8MaxAnisotropy);
 }
 
 // Hook: D3D8 CreateDevice
@@ -1618,6 +1616,8 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8CreateDevice(IDirect3D8* d3d, UINT Ad
         oD3D8CreateDevice(d3d, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, ppDevice);
 
     if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
+        ce::legacy_d3d_sampler_state::RegisterDevice(ce::legacy_d3d_sampler_state::Api::D3D8, *ppDevice, true,
+                                                     QueryD3D8MaxAnisotropy);
         InstallD3D8DeviceHooks(*ppDevice);
     }
 
@@ -1638,6 +1638,7 @@ void DX8Hook::Init() {
 
 void DX8Hook::Shutdown() {
     HookLog("DX8Hook::Shutdown()");
+    ce::legacy_d3d_sampler_state::LogSummary(ce::legacy_d3d_sampler_state::Api::D3D8);
 
     if (g_OverlayAdapter.IsInitialized()) {
         g_OverlayAdapter.Shutdown();

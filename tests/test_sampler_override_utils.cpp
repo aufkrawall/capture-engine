@@ -61,6 +61,105 @@ TEST(SamplerOverrideUtilsTest, D3D10SafeAndAggressiveEligibilityProtectSpecialSa
     EXPECT_FALSE(IsD3D10SamplerOverrideEligible(desc, gfx));
 }
 
+TEST(SamplerOverrideUtilsTest, D3D10CreationTimeForcedAFAllowsClampButProtectsSpecialSamplers) {
+    GraphicsConfig gfx;
+    gfx.anisotropicFiltering = "16x";
+    D3D10_SAMPLER_DESC desc = {};
+    desc.Filter = D3D10_FILTER_MIN_MAG_MIP_LINEAR;
+    desc.AddressU = D3D10_TEXTURE_ADDRESS_WRAP;
+    desc.AddressV = D3D10_TEXTURE_ADDRESS_MIRROR;
+    desc.AddressW = D3D10_TEXTURE_ADDRESS_WRAP;
+    desc.MinLOD = 0.0f;
+    desc.MaxLOD = D3D10_FLOAT32_MAX;
+
+    EXPECT_TRUE(D3D10SamplerAllowsCreationTimeForcedAF(desc, gfx));
+    desc.AddressU = D3D10_TEXTURE_ADDRESS_CLAMP;
+    EXPECT_TRUE(D3D10SamplerAllowsCreationTimeForcedAF(desc, gfx));
+    desc.AddressU = D3D10_TEXTURE_ADDRESS_BORDER;
+    EXPECT_FALSE(D3D10SamplerAllowsCreationTimeForcedAF(desc, gfx));
+}
+
+TEST(SamplerOverrideUtilsTest, D3D9ForcedAFRequiresMipmappedFilterableTexturesAndClampsToCaps) {
+    GraphicsConfig gfx;
+    gfx.anisotropicFiltering = "16x";
+    D3D9SamplerForcedAFInfo info = {};
+    info.textureBound = true;
+    info.textureMipLevels = 8;
+    info.minFilter = D3DTEXF_LINEAR;
+    info.magFilter = D3DTEXF_LINEAR;
+    info.mipFilter = D3DTEXF_LINEAR;
+    info.addressU = D3DTADDRESS_CLAMP;
+    info.addressV = D3DTADDRESS_WRAP;
+    info.addressW = D3DTADDRESS_BORDER;
+    info.deviceMaxAnisotropy = 8;
+
+    EXPECT_EQ(ClassifyD3D9SamplerForForcedAF(info, gfx), D3D9ForcedAFDecision::Allow);
+    EXPECT_EQ(ResolveD3D9ForcedAnisotropy(info, gfx), 8u);
+
+    info.usesAddressW = true;
+    EXPECT_EQ(ClassifyD3D9SamplerForForcedAF(info, gfx), D3D9ForcedAFDecision::BorderAddress);
+    info.usesAddressW = false;
+    info.textureMipLevels = 1;
+    EXPECT_EQ(ClassifyD3D9SamplerForForcedAF(info, gfx), D3D9ForcedAFDecision::SingleMipTexture);
+    info.textureMipLevels = 8;
+    info.minFilter = D3DTEXF_POINT;
+    EXPECT_EQ(ClassifyD3D9SamplerForForcedAF(info, gfx), D3D9ForcedAFDecision::PointMinMag);
+    gfx.samplerOverrideMode = "aggressive";
+    EXPECT_EQ(ClassifyD3D9SamplerForForcedAF(info, gfx), D3D9ForcedAFDecision::Allow);
+}
+
+TEST(SamplerOverrideUtilsTest, LegacyD3DPolicyModelsDistinctD3D7MagFilterValues) {
+    GraphicsConfig gfx;
+    gfx.anisotropicFiltering = "16x";
+    LegacyD3DSamplerTraits d3d7Traits = {};
+    d3d7Traits.anisotropicMag = 5;
+    d3d7Traits.mipNone = 1;
+    d3d7Traits.mipPoint = 2;
+    d3d7Traits.mipLinear = 3;
+    LegacyD3DSamplerForcedAFInfo info = {};
+    info.minFilter = d3d7Traits.linearMin;
+    info.magFilter = d3d7Traits.linearMag;
+    info.mipFilter = d3d7Traits.mipLinear;
+    info.addressU = 3;
+    info.addressV = 1;
+    info.addressW = 1;
+    info.deviceMaxAnisotropy = 16;
+
+    EXPECT_EQ(ClassifyLegacyD3DSamplerForForcedAF(info, d3d7Traits, gfx), LegacyD3DForcedAFDecision::Allow);
+    info.magFilter = d3d7Traits.anisotropicMag;
+    EXPECT_EQ(ClassifyLegacyD3DSamplerForForcedAF(info, d3d7Traits, gfx), LegacyD3DForcedAFDecision::Allow);
+    info.addressU = 4;
+    EXPECT_EQ(ClassifyLegacyD3DSamplerForForcedAF(info, d3d7Traits, gfx),
+              LegacyD3DForcedAFDecision::BorderAddress);
+}
+
+TEST(SamplerOverrideUtilsTest, OpenGLForcedAFUsesAllocatedMipAndMaterialAddressSafety) {
+    GraphicsConfig gfx;
+    gfx.anisotropicFiltering = "16x";
+    OpenGLSamplerForcedAFInfo info = {};
+    info.extensionSupported = true;
+    info.deviceMaxAnisotropy = 8.0f;
+    info.minFilter = 0x2703;
+    info.magFilter = 0x2601;
+    info.wrapS = 0x812F;
+    info.wrapT = 0x2901;
+    info.wrapR = 0x812D;
+    info.usesWrapR = false;
+
+    EXPECT_EQ(ClassifyOpenGLSamplerForForcedAF(info, gfx), OpenGLForcedAFDecision::Allow);
+    EXPECT_FLOAT_EQ(ResolveOpenGLForcedAnisotropy(info, gfx), 8.0f);
+    info.usesWrapR = true;
+    EXPECT_EQ(ClassifyOpenGLSamplerForForcedAF(info, gfx), OpenGLForcedAFDecision::BorderAddress);
+    info.usesWrapR = false;
+    info.maxLevel = info.baseLevel;
+    EXPECT_EQ(ClassifyOpenGLSamplerForForcedAF(info, gfx), OpenGLForcedAFDecision::NoMipRange);
+    info.maxLevel = 8;
+    info.minFilter = 0x2700;
+    EXPECT_EQ(ClassifyOpenGLSamplerForForcedAF(info, gfx), OpenGLForcedAFDecision::PointMinMag);
+    gfx.samplerOverrideMode = "aggressive";
+    EXPECT_EQ(ClassifyOpenGLSamplerForForcedAF(info, gfx), OpenGLForcedAFDecision::Allow);
+}
+
 TEST(SamplerOverrideUtilsTest, HashChangesWhenSamplerOverrideInputsChange) {
     GraphicsConfig base;
     base.anisotropicFiltering = "16x";

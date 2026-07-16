@@ -253,6 +253,5 @@ private:
     bool m_IsEx;
 
     // Override settings
-    DWORD m_MaxAnisotropy;
     bool m_ForceVSync;
 };

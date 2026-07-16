@@ -1,4 +1,5 @@
 #include "opengl_hook.h"
+#include "opengl_sampler_override.h"
 #include <d3d11.h>
 #include <d3d11_4.h>
 #include <dxgi.h>
@@ -98,12 +99,6 @@ typedef void(WINAPI* glGenTextures_t)(GLsizei, GLuint*);
 typedef void(WINAPI* glDeleteTextures_t)(GLsizei, const GLuint*);
 typedef void(WINAPI* glBindTexture_t)(GLenum, GLuint);
 typedef void(WINAPI* glTexImage2D_t)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const GLvoid*);
-typedef void(WINAPI* glTexParameteri_t)(GLenum, GLenum, GLint);
-typedef void(WINAPI* glTexParameterf_t)(GLenum, GLenum, GLfloat);
-typedef void(WINAPI* glTexParameteriv_t)(GLenum, GLenum, const GLint*);
-typedef void(WINAPI* glTexParameterfv_t)(GLenum, GLenum, const GLfloat*);
-typedef void(WINAPI* glSamplerParameteri_t)(GLuint, GLenum, GLint);
-typedef void(WINAPI* glSamplerParameterf_t)(GLuint, GLenum, GLfloat);
 typedef void(WINAPI* glGenFramebuffers_t)(GLsizei, GLuint*);
 typedef void(WINAPI* glDeleteFramebuffers_t)(GLsizei, const GLuint*);
 typedef void(WINAPI* glBindFramebuffer_t)(GLenum, GLuint);
@@ -153,12 +148,6 @@ static glGenTextures_t pglGenTextures = nullptr;
 static glDeleteTextures_t pglDeleteTextures = nullptr;
 static glBindTexture_t pglBindTexture = nullptr;
 static glTexImage2D_t pglTexImage2D = nullptr;
-static glTexParameteri_t pglTexParameteri = nullptr;
-static glTexParameterf_t pglTexParameterf = nullptr;
-static glTexParameteriv_t pglTexParameteriv = nullptr;
-static glTexParameterfv_t pglTexParameterfv = nullptr;
-static glSamplerParameteri_t pglSamplerParameteri = nullptr;
-static glSamplerParameterf_t pglSamplerParameterf = nullptr;
 static glGenFramebuffers_t pglGenFramebuffers = nullptr;
 static glDeleteFramebuffers_t pglDeleteFramebuffers = nullptr;
 static glBindFramebuffer_t pglBindFramebuffer = nullptr;
@@ -1210,10 +1199,6 @@ static bool LoadGLFunctions() {
     LOAD_GL(glDeleteTextures);
     LOAD_GL(glBindTexture);
     LOAD_GL(glTexImage2D);
-    LOAD_GL(glTexParameteri);
-    LOAD_GL(glTexParameterf);
-    LOAD_GL(glTexParameteriv);
-    LOAD_GL(glTexParameterfv);
     LOAD_GL(glGenFramebuffers);
     LOAD_GL(glDeleteFramebuffers);
     LOAD_GL(glBindFramebuffer);
@@ -1688,125 +1673,14 @@ static BOOL WINAPI DetourWglSwapIntervalEXT(int interval) {
     return FALSE;
 }
 
-// Hook: glTexParameter
-static void WINAPI DetourGlTexParameteri(GLenum target, GLenum pname, GLint param) {
-    if (g_IPC) {
-        const auto& gfx = GetActiveGraphicsConfig();
-        // Anisotropy
-        const auto& af = gfx.anisotropicFiltering;
-        if (af != "default" && !af.empty()) {
-            // GL_TEXTURE_MAX_ANISOTROPY_EXT = 0x84FE
-            if (pname == 0x84FE) {
-                if (af == "off")
-                    param = 1;
-                else if (af == "2x")
-                    param = 2;
-                else if (af == "4x")
-                    param = 4;
-                else if (af == "8x")
-                    param = 8;
-                else
-                    param = 16;
-            }
-        }
-        if (pname == 0x2801 /*GL_TEXTURE_MIN_FILTER*/ && param >= 0x2700 && param <= 0x2703 &&
-            af != "default" && af != "off" && pglTexParameterf) {
-            pglTexParameterf(target, 0x84FE /*GL_TEXTURE_MAX_ANISOTROPY_EXT*/,
-                             static_cast<GLfloat>(ce::sampler_override::GetConfiguredMaxAnisotropy(gfx)));
-        }
-
-        // Mip Mapping
-        const auto& mip = gfx.mipMapping;
-        if (mip != "default" && !mip.empty()) {
-            if (pname == 0x2801 /*GL_TEXTURE_MIN_FILTER*/) {
-                if (mip == "trilinear") {
-                    if (param == 0x2700 /*NEAREST_MIPMAP_NEAREST*/ || param == 0x2701 /*LINEAR_MIPMAP_NEAREST*/ ||
-                        param == 0x2702 /*NEAREST_MIPMAP_LINEAR*/) {
-                        param = 0x2703 /*LINEAR_MIPMAP_LINEAR*/;
-                    }
-                } else if (mip == "bilinear") {
-                    if (param == 0x2703 || param == 0x2702) {
-                        param = 0x2701 /*LINEAR_MIPMAP_NEAREST*/;
-                    }
-                }
-            }
-        }
-    }
-    if (pglTexParameteri)
-        pglTexParameteri(target, pname, param);
-}
-
-static void WINAPI DetourGlSamplerParameteri(GLuint sampler, GLenum pname, GLint param) {
-    if (g_IPC) {
-        const auto& gfx = GetActiveGraphicsConfig();
-        if (pname == 0x84FE && gfx.anisotropicFiltering != "default") {
-            param = gfx.anisotropicFiltering == "off"
-                        ? 1
-                        : static_cast<GLint>(ce::sampler_override::GetConfiguredMaxAnisotropy(gfx));
-        }
-        if (pname == 0x2801 /*GL_TEXTURE_MIN_FILTER*/) {
-            if (gfx.mipMapping == "trilinear" && param >= 0x2700 && param <= 0x2702)
-                param = 0x2703;
-            else if (gfx.mipMapping == "bilinear" && (param == 0x2702 || param == 0x2703))
-                param = 0x2701;
-            if (param >= 0x2700 && param <= 0x2703 && gfx.anisotropicFiltering != "default" &&
-                gfx.anisotropicFiltering != "off" && pglSamplerParameterf) {
-                pglSamplerParameterf(
-                    sampler, 0x84FE,
-                    static_cast<GLfloat>(ce::sampler_override::GetConfiguredMaxAnisotropy(gfx)));
-            }
-        }
-    }
-    if (pglSamplerParameteri)
-        pglSamplerParameteri(sampler, pname, param);
-}
-
-static void WINAPI DetourGlSamplerParameterf(GLuint sampler, GLenum pname, GLfloat param) {
-    if (g_IPC) {
-        const auto& gfx = GetActiveGraphicsConfig();
-        if (pname == 0x8501 /*GL_TEXTURE_LOD_BIAS*/ && (gfx.forceMipBiasClamp || HasConfiguredMipBias(gfx)))
-            param = FinalizeMipBias(gfx, ApplyConfiguredMipBias(gfx, param));
-        if (pname == 0x84FE && gfx.anisotropicFiltering != "default")
-            param = gfx.anisotropicFiltering == "off"
-                        ? 1.0f
-                        : static_cast<GLfloat>(ce::sampler_override::GetConfiguredMaxAnisotropy(gfx));
-    }
-    if (pglSamplerParameterf)
-        pglSamplerParameterf(sampler, pname, param);
-}
-
-static void WINAPI DetourGlTexParameterf(GLenum target, GLenum pname, GLfloat param) {
-    if (g_IPC) {
-        const auto& gfx = GetActiveGraphicsConfig();
-        // Mip Bias: GL_TEXTURE_LOD_BIAS = 0x8501
-        if (pname == 0x8501 && (gfx.forceMipBiasClamp || HasConfiguredMipBias(gfx))) {
-            float finalBias = ApplyConfiguredMipBias(gfx, param);
-            param = FinalizeMipBias(gfx, finalBias);
-        }
-
-        // Anisotropy (floats allowed)
-        const auto& af = gfx.anisotropicFiltering;
-        if (af != "default" && !af.empty() && pname == 0x84FE) {
-            if (af == "off")
-                param = 1.0f;
-            else if (af == "2x")
-                param = 2.0f;
-            else if (af == "4x")
-                param = 4.0f;
-            else if (af == "8x")
-                param = 8.0f;
-            else
-                param = 16.0f;
-        }
-    }
-    if (pglTexParameterf)
-        pglTexParameterf(target, pname, param);
-}
-
 static BOOL WINAPI DetourWglMakeCurrent(HDC hdc, HGLRC hrc) {
     if (hrc)
         HookLog("OpenGL: wglMakeCurrent(HDC=0x%p, HGLRC=0x%p)", hdc, hrc);
-    return oWglMakeCurrent(hdc, hrc);
+    const BOOL result = oWglMakeCurrent(hdc, hrc);
+    if (result) {
+        ce::opengl_sampler_override::NotifyContextChanged();
+    }
+    return result;
 }
 
 // Hook: wglGetProcAddress
@@ -1828,15 +1702,6 @@ static PROC WINAPI DetourWglGetProcAddress(LPCSTR lpszProc) {
         return (PROC)DetourWglSwapIntervalEXT;
     }
 
-    if (strcmp(lpszProc, "glSamplerParameteri") == 0) {
-        pglSamplerParameteri = reinterpret_cast<glSamplerParameteri_t>(oWglGetProcAddress(lpszProc));
-        return reinterpret_cast<PROC>(&DetourGlSamplerParameteri);
-    }
-    if (strcmp(lpszProc, "glSamplerParameterf") == 0) {
-        pglSamplerParameterf = reinterpret_cast<glSamplerParameterf_t>(oWglGetProcAddress(lpszProc));
-        return reinterpret_cast<PROC>(&DetourGlSamplerParameterf);
-    }
-
     if (strcmp(lpszProc, "glRenderbufferStorageMultisample") == 0) {
         PROC proc = oWglGetProcAddress(lpszProc);
         if (proc)
@@ -1851,7 +1716,8 @@ static PROC WINAPI DetourWglGetProcAddress(LPCSTR lpszProc) {
         return (PROC)DetourGlTexImage2DMultisample;
     }
 
-    return oWglGetProcAddress(lpszProc);
+    PROC original = oWglGetProcAddress(lpszProc);
+    return ce::opengl_sampler_override::InterceptProcAddress(lpszProc, original, oWglGetProcAddress);
 }
 
 void OpenGLHook::Init() {
@@ -1896,14 +1762,7 @@ void OpenGLHook::Init() {
     IATHook::PatchIATAllModules("opengl32.dll", "wglGetProcAddress", (LPVOID)&DetourWglGetProcAddress,
                                 (LPVOID*)&oWglGetProcAddress);
 
-    // Hook Core GL functions (glTexParameter)
-    IATHook::RegisterDynamicHook("glTexParameteri", (LPVOID)&DetourGlTexParameteri, (LPVOID*)&pglTexParameteri);
-    IATHook::PatchIATAllModules("opengl32.dll", "glTexParameteri", (LPVOID)&DetourGlTexParameteri,
-                                (LPVOID*)&pglTexParameteri);
-
-    IATHook::RegisterDynamicHook("glTexParameterf", (LPVOID)&DetourGlTexParameterf, (LPVOID*)&pglTexParameterf);
-    IATHook::PatchIATAllModules("opengl32.dll", "glTexParameterf", (LPVOID)&DetourGlTexParameterf,
-                                (LPVOID*)&pglTexParameterf);
+    ce::opengl_sampler_override::Initialize();
 
     // Hook wglMakeCurrent
     IATHook::RegisterDynamicHook("wglMakeCurrent", (LPVOID)&DetourWglMakeCurrent, (LPVOID*)&oWglMakeCurrent);
@@ -1916,6 +1775,7 @@ void OpenGLHook::Init() {
 
 void OpenGLHook::Shutdown() {
     HookLog("OpenGLHook::Shutdown()");
+    ce::opengl_sampler_override::Shutdown();
     ResetTrackedOpenGLState(NULL);
 
     {
