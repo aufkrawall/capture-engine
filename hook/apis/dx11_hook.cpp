@@ -170,8 +170,8 @@ void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const ch
     }
     if (updated != previous) {
         const std::string label = ce::graphics_api_identity::D3D11Label(updated, false);
-        HookLogImportant("[GraphicsAPI] D3D11 API use device=%p api=%s evidence=%s", device,
-                         label.c_str(), evidence ? evidence : "unknown");
+        HookLogImportant("[GraphicsAPI] D3D11 API use device=%p api=%s evidence=%s", device, label.c_str(),
+                         evidence ? evidence : "unknown");
     }
 }
 
@@ -263,8 +263,7 @@ static void InstallD3D11IdentityQueryHook(IUnknown* object, const char* source) 
         return;
 
     D3D11QueryInterface_t original = nullptr;
-    if (VTableHook::Create(&vtable[0], (LPVOID)&DetourD3D11QueryInterface, (LPVOID*)&original) !=
-            VTableHook::Success ||
+    if (VTableHook::Create(&vtable[0], (LPVOID)&DetourD3D11QueryInterface, (LPVOID*)&original) != VTableHook::Success ||
         !original) {
         HookLog("[GraphicsAPI] D3D11 QueryInterface hook failed object=%p source=%s", object,
                 source ? source : "unknown");
@@ -934,8 +933,8 @@ static uint32_t PixelSamplerDirtyMaskForResourceRange11Locked(const D3D11PerCont
     const UINT actualViews = (numViews < maxViews) ? numViews : maxViews;
     uint32_t mask = 0;
     for (UINT i = 0; i < actualViews; ++i) {
-        mask |= ce::sampler_override::D3D11ShaderSamplerMaskForTextureSlot(state.pixelShaderMetadata.usage,
-                                                                           startSlot + i);
+        mask |=
+            ce::sampler_override::D3D11ShaderSamplerMaskForTextureSlot(state.pixelShaderMetadata.usage, startSlot + i);
     }
     return mask & TrackedPixelSamplerMask11Locked(state);
 }
@@ -1592,9 +1591,8 @@ bool DX11Hook_ApplySamplerOverrides(D3D11_SAMPLER_DESC& desc, const GraphicsConf
 
     if (desc.MaxLOD <= 0.0f || desc.MinLOD >= desc.MaxLOD ||
         ce::sampler_override::IsD3D11ComparisonFilter(desc.Filter) ||
-        ce::sampler_override::IsD3D11ReductionFilter(desc.Filter) ||
-        desc.AddressU == D3D11_TEXTURE_ADDRESS_BORDER || desc.AddressV == D3D11_TEXTURE_ADDRESS_BORDER ||
-        desc.AddressW == D3D11_TEXTURE_ADDRESS_BORDER) {
+        ce::sampler_override::IsD3D11ReductionFilter(desc.Filter) || desc.AddressU == D3D11_TEXTURE_ADDRESS_BORDER ||
+        desc.AddressV == D3D11_TEXTURE_ADDRESS_BORDER || desc.AddressW == D3D11_TEXTURE_ADDRESS_BORDER) {
         return false;
     }
     if (gfx.samplerOverrideMode != "aggressive") {
@@ -2868,8 +2866,7 @@ static HRESULT WINAPI DetourD3D10CreateDevice(IDXGIAdapter* pAdapter, D3D10_DRIV
 static HRESULT WINAPI DetourD3D10CreateDevice1(IDXGIAdapter* pAdapter, D3D10_DRIVER_TYPE DriverType, HMODULE Software,
                                                UINT Flags, D3D10_FEATURE_LEVEL1 HardwareLevel, UINT SDKVersion,
                                                ID3D10Device1** ppDevice) {
-    const HRESULT hr =
-        oD3D10CreateDevice1(pAdapter, DriverType, Software, Flags, HardwareLevel, SDKVersion, ppDevice);
+    const HRESULT hr = oD3D10CreateDevice1(pAdapter, DriverType, Software, Flags, HardwareLevel, SDKVersion, ppDevice);
     if (SUCCEEDED(hr) && ppDevice && *ppDevice)
         DX10Hook_RegisterDeviceIdentity(*ppDevice, true, "D3D10CreateDevice1");
     return hr;
@@ -4403,8 +4400,7 @@ static void CaptureDX10Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout
             if (SUCCEEDED(staging->Map(0, D3D10_MAP_READ, 0, &mapped))) {
                 ScreenshotPixelFormat pixelFormat = ScreenshotPixelFormat::BGRA8;
                 ScreenshotColorEncoding colorEncoding = ScreenshotColorEncoding::SRGB;
-                if (bbDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
-                    bbDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) {
+                if (bbDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || bbDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) {
                     pixelFormat = ScreenshotPixelFormat::RGBA8;
                 } else if (bbDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM) {
                     pixelFormat = ScreenshotPixelFormat::R10G10B10A2;
@@ -4413,9 +4409,8 @@ static void CaptureDX10Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout
                     pixelFormat = ScreenshotPixelFormat::RGBA16F;
                     colorEncoding = ScreenshotColorEncoding::LinearScRGB;
                 }
-                queued = QueueScreenshotPixels(shm, requestId, static_cast<const uint8_t*>(mapped.pData),
-                                               bbDesc.Width, bbDesc.Height, mapped.RowPitch, pixelFormat,
-                                               colorEncoding);
+                queued = QueueScreenshotPixels(shm, requestId, static_cast<const uint8_t*>(mapped.pData), bbDesc.Width,
+                                               bbDesc.Height, mapped.RowPitch, pixelFormat, colorEncoding);
                 staging->Unmap(0);
             }
             staging->Release();
@@ -4606,8 +4601,7 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
         g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
         g_OverlayAdapter.SetIPCClient(g_IPC);
         const bool is10_1 = ResolveD3D10Is10_1(device, pSwapChain);
-        const std::string apiLabel =
-            ce::graphics_api_identity::D3D10Label(is10_1, IsDXVKD3D10OrD3D11Loaded());
+        const std::string apiLabel = ce::graphics_api_identity::D3D10Label(is10_1, IsDXVKD3D10OrD3D11Loaded());
         g_OverlayAdapter.SetGraphicsAPI(apiLabel.c_str(), "active D3D10 swapchain device");
 
         RECT rect;
@@ -4798,8 +4792,8 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     ID3D11Device* activeIdentityDevice =
         (g_D3D11IdentitySwapChain == pSwapChain && g_D3D11IdentityDevice) ? g_D3D11IdentityDevice : device;
     DX11Hook_RegisterDeviceIdentity(activeIdentityDevice, "active D3D11 swapchain device");
-    const std::string apiLabel = ce::graphics_api_identity::D3D11Label(
-        ResolveD3D11MinorUse(activeIdentityDevice), IsDXVKD3D10OrD3D11Loaded());
+    const std::string apiLabel =
+        ce::graphics_api_identity::D3D11Label(ResolveD3D11MinorUse(activeIdentityDevice), IsDXVKD3D10OrD3D11Loaded());
 
     if (g_OverlayAdapter.IsInitialized() && currentHwnd != g_CachedHwnd) {
         HookLog("DX11: HWND changed, shutting down OverlayAdapter");
@@ -5199,7 +5193,6 @@ void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
         }
         g_PrerenderFrameIndex++;
         g_DiagPrerenderFrames.fetch_add(1, std::memory_order_relaxed);
-
     }
 
     ctx->Release();
@@ -5613,11 +5606,11 @@ void DX11Hook::Shutdown() {
             "contextVTables=%d contextHookSkips=%d deferredContexts=%d executeCommandLists=%d "
             "mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
             afAllowed, afApplied, afReplaced, afRuntimeHooks, afNoMips, afBorder, afReduction, afComparison, afStage,
-            afNoShader, afNoShaderMeta, afShaderUnused, afExplicitSample, afNoSRV,
-            afFormat, afSingleMip, afNonColor, afUnsafe, afAllowLod, afBindDeferred, afEffectiveBindCalls,
-            afEffectiveBinds, afEffectiveBindSkips, afDrawReconcile, afReconcileSlots,
-            afBootstrapComplete, afBootstrapRetry, afBootstrapDisabled, afContextVTables, afContextHookSkips,
-            afDeferredContexts, afExecuteCommandLists, mipBias, mipOverride, prerenderFrames, prerenderWaits);
+            afNoShader, afNoShaderMeta, afShaderUnused, afExplicitSample, afNoSRV, afFormat, afSingleMip, afNonColor,
+            afUnsafe, afAllowLod, afBindDeferred, afEffectiveBindCalls, afEffectiveBinds, afEffectiveBindSkips,
+            afDrawReconcile, afReconcileSlots, afBootstrapComplete, afBootstrapRetry, afBootstrapDisabled,
+            afContextVTables, afContextHookSkips, afDeferredContexts, afExecuteCommandLists, mipBias, mipOverride,
+            prerenderFrames, prerenderWaits);
     }
 
     // Cleanup OverlayAdapter
@@ -5716,11 +5709,11 @@ void DX11Hook::OnHostDisconnect() {
             "contextVTables=%d contextHookSkips=%d deferredContexts=%d executeCommandLists=%d "
             "mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
             afAllowed, afApplied, afReplaced, afRuntimeHooks, afNoMips, afBorder, afReduction, afComparison, afStage,
-            afNoShader, afNoShaderMeta, afShaderUnused, afExplicitSample, afNoSRV,
-            afFormat, afSingleMip, afNonColor, afUnsafe, afAllowLod, afBindDeferred, afEffectiveBindCalls,
-            afEffectiveBinds, afEffectiveBindSkips, afDrawReconcile, afReconcileSlots,
-            afBootstrapComplete, afBootstrapRetry, afBootstrapDisabled, afContextVTables, afContextHookSkips,
-            afDeferredContexts, afExecuteCommandLists, mipBias, mipOverride, prerenderFrames, prerenderWaits);
+            afNoShader, afNoShaderMeta, afShaderUnused, afExplicitSample, afNoSRV, afFormat, afSingleMip, afNonColor,
+            afUnsafe, afAllowLod, afBindDeferred, afEffectiveBindCalls, afEffectiveBinds, afEffectiveBindSkips,
+            afDrawReconcile, afReconcileSlots, afBootstrapComplete, afBootstrapRetry, afBootstrapDisabled,
+            afContextVTables, afContextHookSkips, afDeferredContexts, afExecuteCommandLists, mipBias, mipOverride,
+            prerenderFrames, prerenderWaits);
     }
     HookLog("DX11Hook::OnHostDisconnect() - ready for reconnection");
     // DX11 capture is synchronous, nothing to stop

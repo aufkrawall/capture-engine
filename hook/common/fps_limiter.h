@@ -75,7 +75,7 @@ private:
         }
         const auto NextIntervalTicks = [&]() {
             return ce::fps_limiter_policy::NextRationalIntervalTicks(qpcFrequency, effectiveTargetFps,
-                                                                      localIntervalRemainder_);
+                                                                     localIntervalRemainder_);
         };
 
         LARGE_INTEGER now;
@@ -1206,9 +1206,7 @@ private:
 
         std::array<int64_t, 64> sorted = timerOvershootUs_;
         std::sort(sorted.begin(), sorted.begin() + timerOvershootSampleCount_);
-        const size_t p99Index = timerOvershootSampleCount_ > 1
-                                    ? ((timerOvershootSampleCount_ * 99 + 99) / 100) - 1
-                                    : 0;
+        const size_t p99Index = timerOvershootSampleCount_ > 1 ? ((timerOvershootSampleCount_ * 99 + 99) / 100) - 1 : 0;
         adaptiveFineMarginUs_ = std::clamp<int64_t>(sorted[p99Index] + 25, 50, 250);
     }
 

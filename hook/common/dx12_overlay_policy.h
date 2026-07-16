@@ -312,21 +312,20 @@ inline bool ShouldTreatOriginalQueueCreateWithStreamlineStackAsNormalReturn(
            !streamlineEnableCallInFlight && hasOriginalGameQueue && queueMatchesOriginalGameQueue;
 }
 
-inline bool ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn(
-    bool gameCreatedSwapchain, bool postSLExplicitOffKeepAlive, bool actualFrameGenerationActive,
-    bool streamlineFGRunning) {
+inline bool ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn(bool gameCreatedSwapchain,
+                                                                             bool postSLExplicitOffKeepAlive,
+                                                                             bool actualFrameGenerationActive,
+                                                                             bool streamlineFGRunning) {
     // Explicit OFF alone is not a normal-route boundary: menu suspension can
     // leave the proven Streamline proxy presenting indefinitely. A swapchain
     // created by the game after that OFF edge is stronger evidence. It proves
     // that the app has replaced the proxy with a native Present topology, even
     // when the app also rebuilt its device/queue and therefore cannot return to
     // the retired original queue pointer.
-    return gameCreatedSwapchain && postSLExplicitOffKeepAlive && !actualFrameGenerationActive &&
-           !streamlineFGRunning;
+    return gameCreatedSwapchain && postSLExplicitOffKeepAlive && !actualFrameGenerationActive && !streamlineFGRunning;
 }
 
-inline bool ShouldProcessLogicalSwapchainReplacement(bool pointerAddressChanged,
-                                                     bool exactNewSwapchainLifetimeProof) {
+inline bool ShouldProcessLogicalSwapchainReplacement(bool pointerAddressChanged, bool exactNewSwapchainLifetimeProof) {
     // COM allocators may reuse the same interface address after a runtime-owned
     // swapchain is destroyed. Creation-time proof identifies a new lifetime even
     // when raw pointer comparison alone observes an ABA-equal address.
@@ -349,9 +348,11 @@ inline bool ShouldReinitOverlayImmediatelyAfterAuthoritativeDLSSOffNormalReturn(
            !runtimeOwnsSwapchain && !deviceRemoved;
 }
 
-inline bool ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(
-    bool streamlineTurnedOff, bool exactNormalReturnReinitializedThisPresent, bool normalRouteOwnershipProven,
-    bool overlayInit, bool syncInit, bool deviceRemoved) {
+inline bool ShouldKeepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn(bool streamlineTurnedOff,
+                                                                        bool exactNormalReturnReinitializedThisPresent,
+                                                                        bool normalRouteOwnershipProven,
+                                                                        bool overlayInit, bool syncInit,
+                                                                        bool deviceRemoved) {
     // The first native Present has already rebuilt RTV/sync state on the exact
     // authoritative game swapchain. The late outer SL OFF observer must not
     // immediately tear that new state down as if it still referenced the old
@@ -745,16 +746,15 @@ inline bool IsPostFSRNormalRouteOwnershipProven(bool hasSwapchainQueue, bool has
     // creating a new swapchain at that boundary. Accept only a fresh captured
     // original-queue association, or the exact swapchain identity whose
     // original-queue association was proven before FG took ownership.
-    return hasOriginalGameQueue &&
-           ((hasSwapchainQueue && swapchainQueueMatchesOriginalGameQueue &&
-             currentSwapchainMatchesCapturedSwapchainQueue) ||
-            currentSwapchainMatchesProvenOriginalQueueSwapchain);
+    return hasOriginalGameQueue && ((hasSwapchainQueue && swapchainQueueMatchesOriginalGameQueue &&
+                                     currentSwapchainMatchesCapturedSwapchainQueue) ||
+                                    currentSwapchainMatchesProvenOriginalQueueSwapchain);
 }
 
 inline InactiveDLSSPresentRoute DecideInactiveDLSSPresentRoute(
-    bool routeProtectionPending, bool actualFGActive, bool streamlineFGRunning,
-    bool normalRouteOwnershipProven, bool postSLKeepAliveArmed, bool postSLCallbackReady,
-    bool hasPostSLRenderQueue, bool currentSwapchainMatchesLastSuccessfulPostSLSwapchain) {
+    bool routeProtectionPending, bool actualFGActive, bool streamlineFGRunning, bool normalRouteOwnershipProven,
+    bool postSLKeepAliveArmed, bool postSLCallbackReady, bool hasPostSLRenderQueue,
+    bool currentSwapchainMatchesLastSuccessfulPostSLSwapchain) {
     if (!routeProtectionPending || actualFGActive || streamlineFGRunning || normalRouteOwnershipProven) {
         return InactiveDLSSPresentRoute::kNormal;
     }
@@ -786,8 +786,7 @@ inline bool ShouldRejectPostSLKeepAliveRenderForUnprovenSwapchain(
 inline SwapchainOverlayRoutingDecision DecideSwapchainOverlayRouting(
     bool runtimeOwnsSwapchain, bool streamlineFGActive, bool fsrFGActive, bool hadFSRFGPhase, bool hasSwapchainQueue,
     bool hasOriginalGameQueue, bool hasPostSLLastWorkingQueue, bool postFSRInactiveRecoveryPending,
-    bool commandQueueMatchesPrimaryGameQueue,
-    bool explicitNativeFSROffPendingRuntimeOwnedTeardown = false,
+    bool commandQueueMatchesPrimaryGameQueue, bool explicitNativeFSROffPendingRuntimeOwnedTeardown = false,
     bool nativeFSRInternalNoCallbackCompositionLive = false) {
     if (streamlineFGActive && hadFSRFGPhase) {
         return hasSwapchainQueue ? SwapchainOverlayRoutingDecision::kUsePostFSRStreamlineQueue
@@ -975,10 +974,10 @@ inline bool CanReuseWarmDX12OverlayBackend(bool preserveRequested, bool adapterI
 // and first PostSL Present both inherit a ready backend. Post-FSR handoffs have this proof through FSR history.
 // Repeated pure-DLSS activation has equivalent proof only after this process already completed a device-healthy
 // PostSL submit; first-ever pure-DLSS cold start retains its stricter initialization guards.
-inline bool ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(bool freshAuthoritativeStreamlineHandoff,
-                                                           bool hadFSRFGPhase, bool hadSuccessfulPostSLPhase,
-                                                           bool runtimeOwnsSwapchain, bool streamlineFGRunning,
-                                                           bool overlayWasLive, bool isDX12Swapchain) {
+inline bool ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(bool freshAuthoritativeStreamlineHandoff, bool hadFSRFGPhase,
+                                                           bool hadSuccessfulPostSLPhase, bool runtimeOwnsSwapchain,
+                                                           bool streamlineFGRunning, bool overlayWasLive,
+                                                           bool isDX12Swapchain) {
     const bool hasPriorRuntimeRouteProof = hadFSRFGPhase || hadSuccessfulPostSLPhase;
     return freshAuthoritativeStreamlineHandoff && hasPriorRuntimeRouteProof && runtimeOwnsSwapchain &&
            !streamlineFGRunning && overlayWasLive && isDX12Swapchain;
@@ -2211,9 +2210,10 @@ inline bool ShouldRequestImmediateDumpForD3D12FocusTransitionDeviceRemoval(bool 
 // path uses this telemetry only to log the legacy edge counter and widen the DRED
 // capture window; it must never gate overlay rendering. FG/runtime-owned/
 // dedicated-queue/Steam-deferred routes retain separate diagnostics.
-inline bool IsD3D12FocusTransitionTelemetryActive(
-    bool isWindowed, int transitionFramesRemaining, bool frameGenerationActive, bool runtimeOwnedPresentation,
-    bool usingDedicatedQueue, bool steamDeferredOverlaySubmit, bool deviceLost, bool hasQueue) {
+inline bool IsD3D12FocusTransitionTelemetryActive(bool isWindowed, int transitionFramesRemaining,
+                                                  bool frameGenerationActive, bool runtimeOwnedPresentation,
+                                                  bool usingDedicatedQueue, bool steamDeferredOverlaySubmit,
+                                                  bool deviceLost, bool hasQueue) {
     return isWindowed && transitionFramesRemaining > 0 && !frameGenerationActive && !runtimeOwnedPresentation &&
            !usingDedicatedQueue && !steamDeferredOverlaySubmit && !deviceLost && hasQueue;
 }
@@ -3127,10 +3127,12 @@ inline bool ShouldAllowPostSLKeepAliveRenderAfterExplicitOff(bool keepAliveLatch
     return keepAliveLatched && !streamlineFGRunning && streamlineModulesLoaded;
 }
 
-inline bool ShouldDriveExactPostSLOffKeepAliveBeforePresent(
-    bool keepAliveLatched, bool streamlineFGRunning, bool fsrFGApiActive, bool runtimeOwnedNativeFGPresentPath,
-    bool protectedOfficialFFXStartup, bool streamlineModulesLoaded, bool callbackExecutionEnabled, bool callbackInstalled,
-    bool hasPostSLRenderQueue, bool currentSwapchainMatchesLastSuccessfulPostSLSwapchain) {
+inline bool ShouldDriveExactPostSLOffKeepAliveBeforePresent(bool keepAliveLatched, bool streamlineFGRunning,
+                                                            bool fsrFGApiActive, bool runtimeOwnedNativeFGPresentPath,
+                                                            bool protectedOfficialFFXStartup,
+                                                            bool streamlineModulesLoaded, bool callbackExecutionEnabled,
+                                                            bool callbackInstalled, bool hasPostSLRenderQueue,
+                                                            bool currentSwapchainMatchesLastSuccessfulPostSLSwapchain) {
     // A runtime proxy may keep issuing Present after DLSS-G is explicitly OFF
     // while bypassing every ordinary ProcessFrame entry (for example, through a
     // wrapped/pass-through Present). Drive the already-proven PostSL route before
@@ -3141,9 +3143,11 @@ inline bool ShouldDriveExactPostSLOffKeepAliveBeforePresent(
            hasPostSLRenderQueue && currentSwapchainMatchesLastSuccessfulPostSLSwapchain;
 }
 
-inline bool ShouldPreserveConfirmedPostSLProxyResourcesAcrossOuterOff(
-    bool streamlineTurnedOff, bool postSLExplicitOffKeepAlive, bool currentSwapchainMatchesLastSuccessfulPostSL,
-    bool hasOverlayBackend, bool hasSyncBackend, bool deviceRemoved) {
+inline bool ShouldPreserveConfirmedPostSLProxyResourcesAcrossOuterOff(bool streamlineTurnedOff,
+                                                                      bool postSLExplicitOffKeepAlive,
+                                                                      bool currentSwapchainMatchesLastSuccessfulPostSL,
+                                                                      bool hasOverlayBackend, bool hasSyncBackend,
+                                                                      bool deviceRemoved) {
     // The keep-alive is make-before-break only if the outer ProcessFrame path
     // leaves the exact, already-proven proxy backend intact. Rebuilding the same
     // RTV/fence state after first destroying it creates a one-present blank and
@@ -3597,12 +3601,10 @@ inline bool ShouldPreserveConfirmedPostSLBackendDuringActiveFGSwapchainChange(
     if (!streamlineFGRunning || !postSLConfirmedRendering || fsrFGApiActive || runtimeOwnedNativeFGPresentPath) {
         return false;
     }
-    const bool runtimeQueueProof = confirmedPostSLBackendWarmupProtected && runtimeOwnsSwapchain &&
-                                   hasSwapchainQueue && hasOriginalGameQueue &&
-                                   swapchainQueueDiffersFromOriginalGameQueue;
-    const bool retainedSuccessfulRouteProof = hasConfirmedPostSLRenderQueue &&
-                                              (currentSwapchainMatchesLastSuccessfulPostSL ||
-                                               warmResumePreservationPending);
+    const bool runtimeQueueProof = confirmedPostSLBackendWarmupProtected && runtimeOwnsSwapchain && hasSwapchainQueue &&
+                                   hasOriginalGameQueue && swapchainQueueDiffersFromOriginalGameQueue;
+    const bool retainedSuccessfulRouteProof =
+        hasConfirmedPostSLRenderQueue && (currentSwapchainMatchesLastSuccessfulPostSL || warmResumePreservationPending);
     return runtimeQueueProof || retainedSuccessfulRouteProof;
 }
 
@@ -3922,9 +3924,10 @@ private:
     uint32_t remainingOutputs_ = 0;
 };
 
-inline bool ShouldRequireExactPostSLBackbufferDrawForStartup(
-    bool forcedStartupTransportDraw, bool hadFSRFGPhase, bool safePostFSRBootstrapPath,
-    bool explicitEnablePureDLSSColdStartProof, bool officialUiCoverageActive) {
+inline bool ShouldRequireExactPostSLBackbufferDrawForStartup(bool forcedStartupTransportDraw, bool hadFSRFGPhase,
+                                                             bool safePostFSRBootstrapPath,
+                                                             bool explicitEnablePureDLSSColdStartProof,
+                                                             bool officialUiCoverageActive) {
     // Official UIColorAndAlpha coverage is useful for later generated outputs,
     // but some runtimes can expose their first proxy output before that tag is
     // visible. The first proven PostSL callback must therefore seed the exact
@@ -3932,9 +3935,8 @@ inline bool ShouldRequireExactPostSLBackbufferDrawForStartup(
     // explicit pure-DLSS cold start, then retire the bounded UI handoff so every
     // later proxy buffer also receives an exact PostSL draw. GetState-only
     // activation does not provide enough provenance for the cold-start path.
-    return forcedStartupTransportDraw ||
-           (officialUiCoverageActive &&
-            ((hadFSRFGPhase && safePostFSRBootstrapPath) || explicitEnablePureDLSSColdStartProof));
+    return forcedStartupTransportDraw || (officialUiCoverageActive && ((hadFSRFGPhase && safePostFSRBootstrapPath) ||
+                                                                       explicitEnablePureDLSSColdStartProof));
 }
 
 // ---------------------------------------------------------------------------

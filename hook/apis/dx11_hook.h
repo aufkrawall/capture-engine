@@ -67,6 +67,5 @@ bool DX11Hook_IsWrapperContextForwarding();
 void DX11Hook_BeginWrapperSamplerForwarding();
 void DX11Hook_EndWrapperSamplerForwarding();
 bool DX11Hook_IsWrapperSamplerForwarding();
-bool DX11Hook_ApplySamplerOverrides(D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx,
-                                    bool allowAnisotropicOverride);
+bool DX11Hook_ApplySamplerOverrides(D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx, bool allowAnisotropicOverride);
 bool DX10Hook_ApplySamplerOverrides(D3D10_SAMPLER_DESC& desc, const GraphicsConfig& gfx);

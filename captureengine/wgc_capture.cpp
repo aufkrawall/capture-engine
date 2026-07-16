@@ -1927,9 +1927,9 @@ public:
             }
 
             if (FAILED(readbackHr)) {
-                LogWarn(
-                    "[WGC] MinUpdateInterval readback unavailable: requested=%lld (100ns) targetFps=%u hr=0x%08lX",
-                    static_cast<long long>(interval100ns), producerTargetFps_, static_cast<unsigned long>(readbackHr));
+                LogWarn("[WGC] MinUpdateInterval readback unavailable: requested=%lld (100ns) targetFps=%u hr=0x%08lX",
+                        static_cast<long long>(interval100ns), producerTargetFps_,
+                        static_cast<unsigned long>(readbackHr));
                 return;
             }
             if (readback100ns != interval100ns) {
@@ -4257,11 +4257,10 @@ uint64_t WGCCapture::GetSourceEpoch() const {
 #endif
 }
 
-void WGCCapture::SetDirectFrameCallback(std::function<void(
-                                            ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, bool,
-                                            const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint64_t,
-                                            WgcPoolSlotLease&&)>
-                                            callback) {
+void WGCCapture::SetDirectFrameCallback(
+    std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, bool,
+                       const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint64_t, WgcPoolSlotLease&&)>
+        callback) {
 #if HAS_WGC
     if (impl_) {
         // Extract the raw function pointer from std::function.

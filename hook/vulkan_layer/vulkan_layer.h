@@ -335,6 +335,6 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
                   const VkSemaphore* waitSemaphores, uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore);
 VkSemaphore GetCaptureSemaphore(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex);
 
-bool TakeVulkanScreenshot(struct DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage,
-                          uint32_t width, uint32_t height, VkFormat format, const VkSemaphore* waitSemaphores,
+bool TakeVulkanScreenshot(struct DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage, uint32_t width,
+                          uint32_t height, VkFormat format, const VkSemaphore* waitSemaphores,
                           uint32_t waitSemaphoreCount, SharedMemoryLayout* sharedMemory, uint64_t requestId);

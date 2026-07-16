@@ -613,8 +613,7 @@ void LaunchGameSuspended(const std::string& path) {
 
 // Spawn authenticates IPC synchronously; there is no reconnect-by-name phase.
 bool ConnectToChildProcesses(DWORD) {
-    return (!g_hInjectProcess || g_InjectClient->IsConnected()) &&
-           (!g_hMediaProcess || g_MediaClient->IsConnected()) &&
+    return (!g_hInjectProcess || g_InjectClient->IsConnected()) && (!g_hMediaProcess || g_MediaClient->IsConnected()) &&
            (!g_hLimiterProcess || g_LimiterClient->IsConnected());
 }
 
@@ -1030,8 +1029,7 @@ void CheckChildProcessHealth() {
     static bool injectRecoveryFailure = false;
     static bool mediaRecoveryFailure = false;
     static bool limiterRecoveryFailure = false;
-    recoverProcess(ProcessMode::Inject, g_hInjectProcess, g_InjectClient.get(), "inject", true,
-                   injectRecoveryFailure);
+    recoverProcess(ProcessMode::Inject, g_hInjectProcess, g_InjectClient.get(), "inject", true, injectRecoveryFailure);
     recoverProcess(ProcessMode::Media, g_hMediaProcess, g_MediaClient.get(), "media", g_hMediaProcess != nullptr,
                    mediaRecoveryFailure);
     recoverProcess(ProcessMode::Limiter, g_hLimiterProcess, g_LimiterClient.get(), "limiter",

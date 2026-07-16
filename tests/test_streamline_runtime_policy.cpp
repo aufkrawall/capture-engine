@@ -493,9 +493,8 @@ TEST(StreamlineRuntimePolicyTest, RepeatedMenuSuspendCannotBeReclassifiedAsStart
     // Reproduce session 20260715_141520 after a successful menu resume: the
     // previous startup OFF-churn latch lacks fresh active proof, so the generic
     // stale-startup policy alone would incorrectly keep DLSS-G ON forever.
-    const bool staleStartupPolicyWouldDefer =
-        ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
-            false, false, true, false, false, false, true, false, true);
+    const bool staleStartupPolicyWouldDefer = ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
+        false, false, true, false, false, false, true, false, true);
     ASSERT_TRUE(staleStartupPolicyWouldDefer);
 
     const bool reflexSuspendIsAuthoritative =

@@ -6,9 +6,9 @@
 
 #include "../testapp/fg_switch_transition.h"
 
+using testapp::fg::CanCommitFsrPresentationBreak;
 using testapp::fg::FsrExitTransitionAction;
 using testapp::fg::FsrExitTransitionStage;
-using testapp::fg::CanCommitFsrPresentationBreak;
 using testapp::fg::IsDlssReplacementSurfaceStage;
 using testapp::fg::ResolveFsrExitTransitionAction;
 using testapp::fg::ShouldDeferDlssActivationUntilReplacementPresent;
@@ -36,38 +36,32 @@ TEST(FsrExitTransitionTest, NonFsrAndCancelledExitsDoNotStagePassthrough) {
 }
 
 TEST(FsrExitTransitionTest, DlssRuntimeMustBePreparedBeforeBreakingPresentedFsrSurface) {
-    EXPECT_TRUE(ShouldPrepareDlssBeforeFsrPresentationBreak(
-        true, true, false, FsrExitTransitionStage::PassthroughPresented));
-    EXPECT_FALSE(CanCommitFsrPresentationBreak(true, true, false,
-                                               FsrExitTransitionStage::PassthroughPresented));
-    EXPECT_TRUE(CanCommitFsrPresentationBreak(true, true, true,
-                                              FsrExitTransitionStage::PassthroughPresented));
+    EXPECT_TRUE(
+        ShouldPrepareDlssBeforeFsrPresentationBreak(true, true, false, FsrExitTransitionStage::PassthroughPresented));
+    EXPECT_FALSE(CanCommitFsrPresentationBreak(true, true, false, FsrExitTransitionStage::PassthroughPresented));
+    EXPECT_TRUE(CanCommitFsrPresentationBreak(true, true, true, FsrExitTransitionStage::PassthroughPresented));
 }
 
 TEST(FsrExitTransitionTest, OffTargetCanCommitWithoutPreparingDlss) {
-    EXPECT_FALSE(ShouldPrepareDlssBeforeFsrPresentationBreak(
-        true, false, false, FsrExitTransitionStage::PassthroughPresented));
-    EXPECT_TRUE(CanCommitFsrPresentationBreak(true, false, false,
-                                              FsrExitTransitionStage::PassthroughPresented));
-    EXPECT_FALSE(CanCommitFsrPresentationBreak(false, true, true,
-                                               FsrExitTransitionStage::PassthroughPresented));
+    EXPECT_FALSE(
+        ShouldPrepareDlssBeforeFsrPresentationBreak(true, false, false, FsrExitTransitionStage::PassthroughPresented));
+    EXPECT_TRUE(CanCommitFsrPresentationBreak(true, false, false, FsrExitTransitionStage::PassthroughPresented));
+    EXPECT_FALSE(CanCommitFsrPresentationBreak(false, true, true, FsrExitTransitionStage::PassthroughPresented));
 }
 
 TEST(FsrExitTransitionTest, DlssActivationWaitsForSuccessfulReplacementPresent) {
     EXPECT_TRUE(IsDlssReplacementSurfaceStage(FsrExitTransitionStage::ReplacementPresentPending));
     EXPECT_TRUE(IsDlssReplacementSurfaceStage(FsrExitTransitionStage::ReplacementPresented));
     EXPECT_FALSE(IsDlssReplacementSurfaceStage(FsrExitTransitionStage::PassthroughPresented));
-    EXPECT_TRUE(ShouldDeferDlssActivationUntilReplacementPresent(
-        true, FsrExitTransitionStage::ReplacementPresentPending));
-    EXPECT_FALSE(ShouldDeferDlssActivationUntilReplacementPresent(
-        true, FsrExitTransitionStage::ReplacementPresented));
-    EXPECT_FALSE(ShouldDeferDlssActivationUntilReplacementPresent(
-        false, FsrExitTransitionStage::ReplacementPresentPending));
+    EXPECT_TRUE(
+        ShouldDeferDlssActivationUntilReplacementPresent(true, FsrExitTransitionStage::ReplacementPresentPending));
+    EXPECT_FALSE(ShouldDeferDlssActivationUntilReplacementPresent(true, FsrExitTransitionStage::ReplacementPresented));
+    EXPECT_FALSE(
+        ShouldDeferDlssActivationUntilReplacementPresent(false, FsrExitTransitionStage::ReplacementPresentPending));
 }
 
 TEST(FsrExitTransitionSourceTest, ReplacementIsPreparedBeforeFsrPresentationBreak) {
-    const std::filesystem::path source =
-        std::filesystem::current_path() / "testapp" / "dx12_fg_switch_test.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "testapp" / "dx12_fg_switch_test.cpp";
     ASSERT_TRUE(std::filesystem::exists(source));
     std::ifstream stream(source, std::ios::binary);
     ASSERT_TRUE(stream.good());
@@ -130,8 +124,7 @@ TEST(FsrExitTransitionSourceTest, ReplacementIsPreparedBeforeFsrPresentationBrea
     const size_t replacementTransitionPresent =
         text.find("const bool dlssReplacementPassthroughPresent", transitionPresent);
     const size_t replacementPresent = text.find("g_SwapChain->Present(", replacementTransitionPresent);
-    const size_t replacementPresented =
-        text.find("FsrExitTransitionStage::ReplacementPresented", replacementPresent);
+    const size_t replacementPresented = text.find("FsrExitTransitionStage::ReplacementPresented", replacementPresent);
     const size_t fsrRetirement =
         text.find("MaybeUnloadFSRRuntimeAfterSwitch(\"after first active DLSS Present\"", replacementPresented);
     ASSERT_NE(replacementTransitionPresent, std::string::npos);

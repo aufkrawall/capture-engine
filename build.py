@@ -221,8 +221,7 @@ FFX_SDK_SOURCE_ZIP_NAME = "FidelityFX-SDK-v2.2.0-source.zip"
 # pinned independently to AMD's signed 1.1.4 release (FSR 3.1.4 SR/FG) and never includes 2.2
 # headers in the same translation unit.
 FFX_VK_SDK_URL = (
-    "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/download/v1.1.4/"
-    "FidelityFX-SDK-v1.1.4.zip"
+    "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/download/v1.1.4/" "FidelityFX-SDK-v1.1.4.zip"
 )
 FFX_VK_SDK_ZIP_NAME = "FidelityFX-SDK-v1.1.4.zip"
 FFX_VK_SDK_SHA256 = "0216556bfb0e243cec30004a2a98d38f4e3f7406cb7938e3c1b85c758e95d952"
@@ -1689,9 +1688,7 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
         if expected_sha256:
             actual_sha256 = sha256_file(zip_path)
             if actual_sha256.lower() != expected_sha256.lower():
-                raise RuntimeError(
-                    f"SHA-256 mismatch for {zip_name}: expected {expected_sha256}, got {actual_sha256}"
-                )
+                raise RuntimeError(f"SHA-256 mismatch for {zip_name}: expected {expected_sha256}, got {actual_sha256}")
             log(f"Verified {zip_name} SHA-256: {actual_sha256}")
         return zip_path
 
@@ -2401,9 +2398,7 @@ FFMPEG_RUNTIME_DLL_PATTERNS = [
     "swscale-*.dll",
 ]
 WINDOWS_FFMPEG_RUNTIME_DEPS = manifest_runtime_dlls(FFMPEG_DEPENDENCY_MANIFEST_DATA)
-WINDOWS_FFMPEG_OPTIONAL_RUNTIME_DEPS = manifest_runtime_dlls(
-    FFMPEG_DEPENDENCY_MANIFEST_DATA, optional=True
-)
+WINDOWS_FFMPEG_OPTIONAL_RUNTIME_DEPS = manifest_runtime_dlls(FFMPEG_DEPENDENCY_MANIFEST_DATA, optional=True)
 WINDOWS_SANITIZER_RUNTIME_DEPS = [
     "libclang_rt.asan_dynamic-x86_64.dll",
     "libc++.dll",  # Required by ASan runtime; shared with FFmpeg via libvpl-2.dll
@@ -2526,8 +2521,7 @@ def sync_ffmpeg_runtime_dlls(
     if missing_deps:
         if required_runtime_deps:
             raise RuntimeError(
-                "Required source-built FFmpeg runtime dependencies are missing: "
-                + ", ".join(sorted(missing_deps))
+                "Required source-built FFmpeg runtime dependencies are missing: " + ", ".join(sorted(missing_deps))
             )
         log(
             "[FFmpeg] Optional runtime dependencies not found in configured search paths: "
@@ -2889,10 +2883,7 @@ class FFmpegBuilder:
             f"-ffunction-sections -fdata-sections -I{dependency_inc} "
             f"-I{self.prefix}/include -I{msys_inc}"
         )
-        env["LDFLAGS"] = (
-            f"-Wl,--gc-sections -Wl,--guard-cf "
-            f"-L{dependency_lib} -L{self.prefix}/lib -L{msys_lib}"
-        )
+        env["LDFLAGS"] = f"-Wl,--gc-sections -Wl,--guard-cf " f"-L{dependency_lib} -L{self.prefix}/lib -L{msys_lib}"
         env["PKG_CONFIG"] = f"{pkg_config} --static"
         # pkg-config here is a native Windows binary, so it expects Windows-style paths.
         # Using /c/... MSYS paths makes the NVCodec probe fail to locate ffnvcodec.pc.
@@ -4031,10 +4022,7 @@ def copy_test_runtime_dlls(tests_dir):
 
     msys_bin = os.path.join(get_host_msys2_dir(), "clang64", "bin")
     ffmpeg_bin = os.path.join(PROJECT_ROOT, "installed", "captureengine", "ffmpeg")
-    source_built_names = {
-        name.lower()
-        for name in WINDOWS_FFMPEG_RUNTIME_DEPS + WINDOWS_FFMPEG_OPTIONAL_RUNTIME_DEPS
-    }
+    source_built_names = {name.lower() for name in WINDOWS_FFMPEG_RUNTIME_DEPS + WINDOWS_FFMPEG_OPTIONAL_RUNTIME_DEPS}
     copied = []
     for dll_dir in [msys_bin, ffmpeg_bin]:
         if not os.path.isdir(dll_dir):
@@ -4051,6 +4039,7 @@ def copy_test_runtime_dlls(tests_dir):
                 copied.append(dll)
     if copied:
         log(f"Copied {len(copied)} runtime DLLs to tests/ for direct execution")
+
 
 def record_unit_test_failure_output(cmd, result):
     """Persist failed unit-test stdout/stderr so an exit code is actionable."""
@@ -5212,11 +5201,14 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     else:
         hook_opt_flags = HOOK_OPT_FLAGS_X86
 
-    hook_cflags = make_cpp_cflags(
-        hook_opt_flags,
-        suppress_microsoft_exception_spec=True,
-        enable_cfg=arch == "x64",
-    ) + layer_extra_flags
+    hook_cflags = (
+        make_cpp_cflags(
+            hook_opt_flags,
+            suppress_microsoft_exception_spec=True,
+            enable_cfg=arch == "x64",
+        )
+        + layer_extra_flags
+    )
     layer_cflags = cflags + layer_extra_flags
 
     # x86 cross-compilation from clang64: need --target, --sysroot, and
@@ -5860,9 +5852,7 @@ def compile_project(
                 # captureengine process. This tiny loader inherits only the shared
                 # packet mapping and its two synchronization events, loads the just-
                 # built mediaengine.dll, and exits after each capture worker lifetime.
-                process_loopback_helper_src = os.path.join(
-                    PROJECT_ROOT, "helpers", "process_loopback_helper_main.cpp"
-                )
+                process_loopback_helper_src = os.path.join(PROJECT_ROOT, "helpers", "process_loopback_helper_main.cpp")
                 secure_dll_loading_src = os.path.join(PROJECT_ROOT, "common", "secure_dll_loading.cpp")
                 process_loopback_helper = os.path.join(BIN_DIR, "process_loopback_helper.exe")
                 temp_process_loopback_helper = os.path.join(curr_obj_dir, "process_loopback_helper.tmp.exe")
@@ -6012,8 +6002,7 @@ def compile_project(
         if not IS_LINUX:
             ffmpeg_runtime_names = resolve_ffmpeg_runtime_dll_names(os.path.join(FFMPEG_DIR, "bin"))
             ce_ldflags.extend(
-                f"-Wl,--delayload={ffmpeg_runtime_names[prefix]}"
-                for prefix in ("avformat", "avcodec", "avutil")
+                f"-Wl,--delayload={ffmpeg_runtime_names[prefix]}" for prefix in ("avformat", "avcodec", "avutil")
             )
         if env.get("CE_DISABLE_LTO") != "1":
             ce_ldflags.append("-flto")
@@ -6429,8 +6418,10 @@ def main():
         log("Verbose command logging enabled (--verbose-commands)")
 
     if sanitize_x86_flag:
-        log("ERROR: x86 ASan/UBSan coverage was explicitly requested, but the required MinGW x86 sanitizer "
-            "runtime is unavailable. Refusing to silently skip x86 coverage.")
+        log(
+            "ERROR: x86 ASan/UBSan coverage was explicitly requested, but the required MinGW x86 sanitizer "
+            "runtime is unavailable. Refusing to silently skip x86 coverage."
+        )
         sys.exit(2)
 
     if sanitize_regression_child:

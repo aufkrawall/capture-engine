@@ -144,17 +144,17 @@ private:
     int streamIndex;  // Stream index in the muxer
 
     bool initDone;
-    AVCodecID savedCodecId;                  // Store codec ID for recreation between recordings
-    std::string savedCodecName;              // Store codec name to ensure same encoder is found
-    AudioConfig savedConfig;                 // Store full config for reinit
-    int64_t firstTimestamp;                  // Timestamp of first audio packet (ms) - for sync
-    int64_t recordingStartUs;                // When recording started (us video pts)
-    int64_t recordingEndUs;                  // When video ended (us video pts)
-    int64_t lastPacketTimestampMs;           // Last packet timestamp (ms) for PTS sync with
-                                             // video
+    AVCodecID savedCodecId;         // Store codec ID for recreation between recordings
+    std::string savedCodecName;     // Store codec name to ensure same encoder is found
+    AudioConfig savedConfig;        // Store full config for reinit
+    int64_t firstTimestamp;         // Timestamp of first audio packet (ms) - for sync
+    int64_t recordingStartUs;       // When recording started (us video pts)
+    int64_t recordingEndUs;         // When video ended (us video pts)
+    int64_t lastPacketTimestampMs;  // Last packet timestamp (ms) for PTS sync with
+                                    // video
     uint64_t recordingResetGeneration = 0;
-    int fifoCapacity = 32768;                // Capacity set during Init()
-    int64_t resampledSamplesTotal = 0;       // Total samples output from resampler (for drift calculation)
+    int fifoCapacity = 32768;           // Capacity set during Init()
+    int64_t resampledSamplesTotal = 0;  // Total samples output from resampler (for drift calculation)
 
     // Callback to get video elapsed time for clock drift compensation
     VideoTimeGetter videoTimeGetter;

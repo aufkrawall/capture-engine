@@ -687,8 +687,7 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
         // Bound only AV1 B-frame QP. Global qmin/qmax also constrain I/P
         // frames and alter their initial RC QPs, which caused unintended
         // quality policy changes outside the leaf-B starvation workaround.
-        const std::string rateControl =
-            CanonicalizeEnumValue(config.rateControl.empty() ? "vbr" : config.rateControl);
+        const std::string rateControl = CanonicalizeEnumValue(config.rateControl.empty() ? "vbr" : config.rateControl);
         if (plan.maxBFrames > 0 && kind.family == CodecFamily::kAV1 && rateControl != "cqp" &&
             rateControl != "constqp") {
             AddGeneratedOption(&plan, "max_qp_b", "200");

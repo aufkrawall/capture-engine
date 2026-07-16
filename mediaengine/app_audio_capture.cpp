@@ -1162,8 +1162,8 @@ void AppAudioCapture::CaptureLoop() {
             const uint64_t activationElapsedMs =
                 noPacketNow >= currentActivationStartTick ? noPacketNow - currentActivationStartTick : 0;
             const bool eventDriven = (activeStreamFlags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) != 0;
-            if (ce::audio::ShouldFallbackUnqualifiedEventCapture(
-                    eventDriven, currentActivationQualified, activationElapsedMs, recoveryCfg) &&
+            if (ce::audio::ShouldFallbackUnqualifiedEventCapture(eventDriven, currentActivationQualified,
+                                                                 activationElapsedMs, recoveryCfg) &&
                 ce::audio::RecoveryBackoffElapsed(noPacketNow, lastReactivateTick, recoveryBackoffMs)) {
                 ++eventFallbackAttempts;
                 DLL_Log(

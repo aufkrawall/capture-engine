@@ -259,8 +259,7 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     if (FAILED(stateBlockHr)) {
         static int stateCaptureFailureCount = 0;
         if (stateCaptureFailureCount < 4) {
-            HookLogImportant("[Overlay] DX9::Render: state-block capture failed hr=0x%08X",
-                             (unsigned)stateBlockHr);
+            HookLogImportant("[Overlay] DX9::Render: state-block capture failed hr=0x%08X", (unsigned)stateBlockHr);
             stateCaptureFailureCount++;
         }
         if (stateBlock) {

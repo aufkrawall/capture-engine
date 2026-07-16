@@ -110,7 +110,7 @@ void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain);
 // queue owns direct work. If it is proven to be a Streamline wrapper, CE may use the already-validated real
 // original game queue on the target resource's device (the wrapper's underlying submission path).
 void DX12_RegisterNativeFSRSwapchainPresentationQueue(void* context, void* swapChain,
-                                                       ID3D12CommandQueue* presentationQueue);
+                                                      ID3D12CommandQueue* presentationQueue);
 // Recover the descriptor-equivalent owner from the retained pre-FSR original game queue when ffxCreateContext
 // was already in flight before CE routed a cached export pointer. The protected inner DXGI create is required
 // evidence only: its queue is FFX's internal present queue and must never be used as the owner binding.

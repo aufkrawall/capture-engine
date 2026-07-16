@@ -32,8 +32,7 @@ typedef void (*MediaEngine_ResetRepeatFrameCache_t)();
 typedef bool (*MediaEngine_PrepareFrameD3D11_t)(void* texture, uint32_t width, uint32_t height, bool isHDR);
 typedef bool (*MediaEngine_ProcessFrameD3D11_t)(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
                                                 bool isHDR, int32_t captureLeft, int32_t captureTop,
-                                                int64_t timelineElapsedUs,
-                                                const ce::cursor::CaptureState* cursorState);
+                                                int64_t timelineElapsedUs, const ce::cursor::CaptureState* cursorState);
 typedef bool (*MediaEngine_StartRecording_t)();
 typedef void (*MediaEngine_StopRecording_t)();
 typedef void (*MediaEngine_ReleaseEncoderTextures_t)();

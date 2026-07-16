@@ -7,8 +7,8 @@
 #include "../common/secure_dll_loading.h"
 #include "../common/shared_defs.h"
 #include "audio_time_utils.h"  // For ce::audio::ParseSampleRateOr
-#include "mediaengine.h"
 #include "matroska_timing.h"
+#include "mediaengine.h"
 #include "mux_invariants.h"
 #include "video_encoder_options.h"
 #include "video_format_policy.h"
@@ -347,8 +347,7 @@ bool LogPostMuxDurationProbe(const std::string& filename, int64_t finalDurationU
             totalInitialPaddingSamples += initialPaddingSamples;
             totalTerminalPaddingSamples += endPaddingSamples;
             codecPaddedAudioStreamCount += (initialPaddingSamples > 0 || endPaddingSamples > 0) ? 1u : 0u;
-            maxAudioDeltaUs =
-                std::max(maxAudioDeltaUs, ce::mux::ComputeDurationDeltaUs(decodedEndUs, finalDurationUs));
+            maxAudioDeltaUs = std::max(maxAudioDeltaUs, ce::mux::ComputeDurationDeltaUs(decodedEndUs, finalDurationUs));
             maxAudioRoundingToleranceUs = std::max(
                 maxAudioRoundingToleranceUs,
                 ce::mux::ComputeAudioMuxRoundingToleranceUs(probedStream->codecpar->sample_rate,
@@ -1203,8 +1202,7 @@ void VideoEncoder::RecordWrittenPacketTimeline(int streamIndex, int64_t pts, int
 
     const int64_t packetStartUs = av_rescale_q(packetPts, timeBase, AVRational{1, 1000000});
     const int64_t packetDurationUs = duration > 0 ? av_rescale_q(duration, timeBase, AVRational{1, 1000000}) : 0;
-    const int64_t terminalDiscardUs =
-        ce::mux::ComputeAudioPaddingDurationUs(terminalDiscardSamples, sampleRate);
+    const int64_t terminalDiscardUs = ce::mux::ComputeAudioPaddingDurationUs(terminalDiscardSamples, sampleRate);
     ce::mux::ObservePacketTimeline(writtenPacketTimelines[streamIndex], packetStartUs, packetDurationUs,
                                    terminalDiscardUs);
 }
@@ -1595,9 +1593,9 @@ bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3
                 cursorInitLogged = true;
             }
         } else {
-            const CursorColorMode cursorColorMode =
-                currentIsHDR && dstDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM ? CursorColorMode::Hdr10Pq
-                                                                                : CursorColorMode::Sdr;
+            const CursorColorMode cursorColorMode = currentIsHDR && dstDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM
+                                                        ? CursorColorMode::Hdr10Pq
+                                                        : CursorColorMode::Sdr;
             cursorRenderer->CompositeOntoFrame(normalizedTexture, (int)dstDesc.Width, (int)dstDesc.Height,
                                                cursorCaptureState, cursorColorMode);
         }
@@ -2065,8 +2063,9 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     if (optionPlan.maxBFrames > 0) {
         codecCtx->b_quant_factor = 1.0f;
         codecCtx->b_quant_offset = 0.0f;
-        DLL_Log("[VideoEncoder] B-frame initial QP hint aligned with P-frames "
-                "(b_quant_factor=1.0, b_quant_offset=0.0)");
+        DLL_Log(
+            "[VideoEncoder] B-frame initial QP hint aligned with P-frames "
+            "(b_quant_factor=1.0, b_quant_offset=0.0)");
     }
 
     if (savedConfig.keyframeInterval > 0) {
@@ -3195,7 +3194,6 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         // or show correct duration without reading the whole file first.
         if (fmtCtx->priv_data) {
             av_opt_set(fmtCtx->priv_data, "reserve_index_space", "2000000", 0);  // 2MB
-
         }
         if (!ce::media::RequireMicrosecondMatroskaTimestampPrecision(fmtCtx)) {
             DLL_Log("[VideoEncoder] ERROR: Matroska timestamp_precision=1000 is required but unavailable");
@@ -4305,8 +4303,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         // permits it. Point-composite that cursor into RGB before the single
         // VP conversion so its filtering matches a Windows-embedded cursor.
         // Scoped Lock for D3D11 Immediate Context (protects Blt/CopyResource)
-        bool convertSuccess = ConvertBGRAtoNV12(bgraTexture, d3d11Frame, CursorCompositionActive(), true, captureLeft,
-                                                captureTop, 1);
+        bool convertSuccess =
+            ConvertBGRAtoNV12(bgraTexture, d3d11Frame, CursorCompositionActive(), true, captureLeft, captureTop, 1);
 
         if (!convertSuccess) {
             DLL_Log("[VideoEncoder] Frame %d: GPU color conversion failed", encodeFrameCounter);
@@ -5332,8 +5330,7 @@ void VideoEncoder::CleanupCursorCompositionResources() {
 }
 
 bool VideoEncoder::PrepareVideoProcessorCursorInput(ID3D11Texture2D* source, bool overlayCursor,
-                                                    CursorSourceRestore* restore,
-                                                    ID3D11Texture2D** preparedSource) {
+                                                    CursorSourceRestore* restore, ID3D11Texture2D** preparedSource) {
     if (!source || !restore || !preparedSource || !d3d11Device || !d3d11Context) {
         return false;
     }
@@ -5382,8 +5379,8 @@ bool VideoEncoder::PrepareVideoProcessorCursorInput(ID3D11Texture2D* source, boo
         if (cursorRestoreTexture) {
             D3D11_TEXTURE2D_DESC existing = {};
             cursorRestoreTexture->GetDesc(&existing);
-            recreateRestore = existing.Format != sourceDesc.Format || existing.Width < regionWidth ||
-                              existing.Height < regionHeight;
+            recreateRestore =
+                existing.Format != sourceDesc.Format || existing.Width < regionWidth || existing.Height < regionHeight;
         }
         if (recreateRestore) {
             if (cursorRestoreTexture) {
@@ -5402,8 +5399,8 @@ bool VideoEncoder::PrepareVideoProcessorCursorInput(ID3D11Texture2D* source, boo
             if (FAILED(restoreHr)) {
                 useSmallRestore = false;
                 if (cursorPrecompositionFailureLogs++ < 5) {
-                    DLL_Log("[Cursor] Small RGB restore texture creation failed: fmt=%d %ux%u HR=%x",
-                            sourceDesc.Format, regionWidth, regionHeight, restoreHr);
+                    DLL_Log("[Cursor] Small RGB restore texture creation failed: fmt=%d %ux%u HR=%x", sourceDesc.Format,
+                            regionWidth, regionHeight, restoreHr);
                 }
             }
         }
@@ -5411,12 +5408,8 @@ bool VideoEncoder::PrepareVideoProcessorCursorInput(ID3D11Texture2D* source, boo
 
     if (useSmallRestore) {
         const D3D11_BOX sourceBox = {
-            static_cast<UINT>(clippedLeft),
-            static_cast<UINT>(clippedTop),
-            0,
-            static_cast<UINT>(clippedRight),
-            static_cast<UINT>(clippedBottom),
-            1,
+            static_cast<UINT>(clippedLeft),  static_cast<UINT>(clippedTop),    0,
+            static_cast<UINT>(clippedRight), static_cast<UINT>(clippedBottom), 1,
         };
         d3d11Context->CopySubresourceRegion(cursorRestoreTexture, 0, 0, 0, 0, source, 0, &sourceBox);
         restore->context = d3d11Context;
@@ -5448,8 +5441,7 @@ bool VideoEncoder::PrepareVideoProcessorCursorInput(ID3D11Texture2D* source, boo
             compositeDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
             compositeDesc.CPUAccessFlags = 0;
             compositeDesc.MiscFlags = 0;
-            const HRESULT compositeHr =
-                d3d11Device->CreateTexture2D(&compositeDesc, nullptr, &cursorCompositeTexture);
+            const HRESULT compositeHr = d3d11Device->CreateTexture2D(&compositeDesc, nullptr, &cursorCompositeTexture);
             if (FAILED(compositeHr)) {
                 if (cursorPrecompositionFailureLogs++ < 5) {
                     DLL_Log(
@@ -5562,10 +5554,9 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
             outputViewHr = E_FAIL;
         }
         if (FAILED(outputViewHr) || !outputView) {
-            DLL_Log(
-                "[VideoProcessor] Failed to bind AVHWFrame output view: HR=%x fmt=%d bind=%x array=%u slice=%u",
-                outputViewHr, outputTextureDesc.Format, outputTextureDesc.BindFlags, outputTextureDesc.ArraySize,
-                outputArraySlice);
+            DLL_Log("[VideoProcessor] Failed to bind AVHWFrame output view: HR=%x fmt=%d bind=%x array=%u slice=%u",
+                    outputViewHr, outputTextureDesc.Format, outputTextureDesc.BindFlags, outputTextureDesc.ArraySize,
+                    outputArraySlice);
             return false;
         }
         outputViewCache.push_back({outputTexture, outputArraySlice, outputView});

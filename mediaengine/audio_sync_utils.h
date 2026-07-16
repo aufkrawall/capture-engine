@@ -757,9 +757,9 @@ inline bool IsSourceBootstrapReady(bool sourceBootstrapComplete, bool sourceTime
     return sourceIsPrimed || bufferedRealSamples >= requiredRealSamples;
 }
 
-inline bool IsSourceBootstrapTimelineReady(bool sourceBootstrapComplete, bool optionalUnstartedSource,
-                                           bool sourceReady, bool packetlessSilenceReady,
-                                           size_t bufferedTimelineSamples, int64_t targetTimelineSamples) {
+inline bool IsSourceBootstrapTimelineReady(bool sourceBootstrapComplete, bool optionalUnstartedSource, bool sourceReady,
+                                           bool packetlessSilenceReady, size_t bufferedTimelineSamples,
+                                           int64_t targetTimelineSamples) {
     if (!sourceReady && !packetlessSilenceReady) {
         return false;
     }

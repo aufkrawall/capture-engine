@@ -102,8 +102,8 @@ bool ValidatePixelLayout(uint32_t width, uint32_t height, uint32_t rowPitch, Scr
                          ScreenshotColorEncoding encoding, uint64_t& payloadSize) {
     payloadSize = 0;
     const uint32_t bytesPerPixel = BytesPerPixel(format);
-    if (width == 0 || height == 0 || width > kMaximumScreenshotDimension ||
-        height > kMaximumScreenshotDimension || bytesPerPixel == 0 || !IsFormatEncodingPairValid(format, encoding)) {
+    if (width == 0 || height == 0 || width > kMaximumScreenshotDimension || height > kMaximumScreenshotDimension ||
+        bytesPerPixel == 0 || !IsFormatEncodingPairValid(format, encoding)) {
         return false;
     }
 
@@ -195,7 +195,7 @@ bool WriteTaskPayload(const ScreenshotTask& task, uint32_t& error) {
 }
 
 class ScreenshotWorkerQueue {
-  public:
+public:
     ScreenshotWorkerQueue() : thread_(&ScreenshotWorkerQueue::Run, this) {}
 
     ~ScreenshotWorkerQueue() {
@@ -218,7 +218,7 @@ class ScreenshotWorkerQueue {
         return true;
     }
 
-  private:
+private:
     void Run() {
         for (;;) {
             ScreenshotTask task;
@@ -252,8 +252,7 @@ class ScreenshotWorkerQueue {
                 CompleteScreenshotRequestForEvent(
                     task.sharedMemory, task.requestId,
                     success ? ScreenshotRequestStatus::Succeeded : ScreenshotRequestStatus::Failed, error,
-                    success ? ScreenshotPayloadKind::RawV2 : ScreenshotPayloadKind::None,
-                    task.completionEventName);
+                    success ? ScreenshotPayloadKind::RawV2 : ScreenshotPayloadKind::None, task.completionEventName);
             }
         }
     }
@@ -332,15 +331,15 @@ void CompleteScreenshotRequest(SharedMemoryLayout* sharedMemory, uint64_t reques
         return;
     char eventName[128]{};
     const size_t length = BoundedStringLength(sharedMemory->runtimeState.screenshotCompletionEventName,
-                                               sizeof(sharedMemory->runtimeState.screenshotCompletionEventName));
+                                              sizeof(sharedMemory->runtimeState.screenshotCompletionEventName));
     if (length < sizeof(eventName)) {
         std::copy_n(sharedMemory->runtimeState.screenshotCompletionEventName, length, eventName);
     }
     CompleteScreenshotRequestForEvent(sharedMemory, requestId, status, error, payloadKind, eventName);
 }
 
-bool QueueScreenshotPixels(SharedMemoryLayout* sharedMemory, uint64_t requestId, const uint8_t* pixels,
-                           uint32_t width, uint32_t height, uint32_t rowPitch, ScreenshotPixelFormat pixelFormat,
+bool QueueScreenshotPixels(SharedMemoryLayout* sharedMemory, uint64_t requestId, const uint8_t* pixels, uint32_t width,
+                           uint32_t height, uint32_t rowPitch, ScreenshotPixelFormat pixelFormat,
                            ScreenshotColorEncoding colorEncoding) {
     if (!sharedMemory || requestId == 0 || !pixels || GetPendingScreenshotRequestId(sharedMemory) != requestId) {
         return false;
@@ -348,9 +347,9 @@ bool QueueScreenshotPixels(SharedMemoryLayout* sharedMemory, uint64_t requestId,
 
     uint64_t payloadSize = 0;
     const size_t pathLength = BoundedStringLength(sharedMemory->runtimeState.screenshotPath,
-                                                   sizeof(sharedMemory->runtimeState.screenshotPath));
+                                                  sizeof(sharedMemory->runtimeState.screenshotPath));
     const size_t eventLength = BoundedStringLength(sharedMemory->runtimeState.screenshotCompletionEventName,
-                                                    sizeof(sharedMemory->runtimeState.screenshotCompletionEventName));
+                                                   sizeof(sharedMemory->runtimeState.screenshotCompletionEventName));
     ScreenshotTask task;
     try {
         if (!ValidatePixelLayout(width, height, rowPitch, pixelFormat, colorEncoding, payloadSize) || pathLength == 0 ||
@@ -451,8 +450,9 @@ bool SaveD3D11TextureAsScreenshotRaw(ID3D11Device* device, ID3D11DeviceContext* 
     hr = context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
     bool queued = false;
     if (SUCCEEDED(hr)) {
-        queued = QueueScreenshotPixels(sharedMemory, requestId, static_cast<const uint8_t*>(mapped.pData),
-                                       sourceDesc.Width, sourceDesc.Height, mapped.RowPitch, pixelFormat, colorEncoding);
+        queued =
+            QueueScreenshotPixels(sharedMemory, requestId, static_cast<const uint8_t*>(mapped.pData), sourceDesc.Width,
+                                  sourceDesc.Height, mapped.RowPitch, pixelFormat, colorEncoding);
         context->Unmap(staging, 0);
     } else {
         HookLog("[Screenshot] D3D11 staging map failed: hr=0x%08X", static_cast<unsigned>(hr));
@@ -509,8 +509,7 @@ bool SaveDX12TextureAsScreenshotRaw(ID3D12Device* device, ID3D12CommandQueue* qu
         return false;
     }
     ID3D12GraphicsCommandList* commandList = nullptr;
-    hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator, nullptr,
-                                   IID_PPV_ARGS(&commandList));
+    hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator, nullptr, IID_PPV_ARGS(&commandList));
     if (FAILED(hr)) {
         allocator->Release();
         readback->Release();

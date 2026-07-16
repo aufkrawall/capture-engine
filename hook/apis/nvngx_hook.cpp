@@ -614,19 +614,19 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
                 return true;
             };
 
-            const bool installed =
-                Install(ce::nvngx_parameter_abi::kSetI, (LPVOID)&Hooked_SetI, originals.setI) &&
-                Install(ce::nvngx_parameter_abi::kSetUI, (LPVOID)&Hooked_SetUI, originals.setUI) &&
-                Install(ce::nvngx_parameter_abi::kSetF, (LPVOID)&Hooked_SetF, originals.setF) &&
-                Install(ce::nvngx_parameter_abi::kGetI, (LPVOID)&Hooked_GetI, originals.getI) &&
-                Install(ce::nvngx_parameter_abi::kGetUI, (LPVOID)&Hooked_GetUI, originals.getUI);
+            const bool installed = Install(ce::nvngx_parameter_abi::kSetI, (LPVOID)&Hooked_SetI, originals.setI) &&
+                                   Install(ce::nvngx_parameter_abi::kSetUI, (LPVOID)&Hooked_SetUI, originals.setUI) &&
+                                   Install(ce::nvngx_parameter_abi::kSetF, (LPVOID)&Hooked_SetF, originals.setF) &&
+                                   Install(ce::nvngx_parameter_abi::kGetI, (LPVOID)&Hooked_GetI, originals.getI) &&
+                                   Install(ce::nvngx_parameter_abi::kGetUI, (LPVOID)&Hooked_GetUI, originals.getUI);
             if (!installed) {
                 static std::atomic<uint32_t> failureLogs{0};
                 if (failureLogs.fetch_add(1, std::memory_order_relaxed) < 8) {
-                    HookLogImportant("NVNGX: parameter vtable hook incomplete vtable=%p setI=%d setUI=%d setF=%d "
-                                     "getI=%d getUI=%d",
-                                     vtable, originals.setI ? 1 : 0, originals.setUI ? 1 : 0,
-                                     originals.setF ? 1 : 0, originals.getI ? 1 : 0, originals.getUI ? 1 : 0);
+                    HookLogImportant(
+                        "NVNGX: parameter vtable hook incomplete vtable=%p setI=%d setUI=%d setF=%d "
+                        "getI=%d getUI=%d",
+                        vtable, originals.setI ? 1 : 0, originals.setUI ? 1 : 0, originals.setF ? 1 : 0,
+                        originals.getI ? 1 : 0, originals.getUI ? 1 : 0);
                 }
             }
         }

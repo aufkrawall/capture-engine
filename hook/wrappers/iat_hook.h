@@ -9,8 +9,8 @@
 
 #include <windows.h>
 #include <algorithm>
-#include <cwctype>
 #include <cstring>
+#include <cwctype>
 #include <string>
 #include <vector>
 

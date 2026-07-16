@@ -58,10 +58,11 @@ inline bool IsStreamlineReflexPacingSignalActive(int32_t mode, uint32_t frameLim
     return IsStreamlineReflexLowLatencyModeEnabled(mode) || IsStreamlineReflexFrameLimitActive(frameLimitUs);
 }
 
-inline bool ShouldArmConfirmedDLSSReflexSuspendIntent(
-    bool reflexDeactivationEdge, bool dlssFGApiActive, bool streamlineFGRunning, bool postSLConfirmedRendering,
-    bool startupActivationPending, bool postSLActiveButUnconfirmed, bool postSLConfirmedButStartupSettling,
-    bool postSLConfirmedButRuntimeStateStabilizing) {
+inline bool ShouldArmConfirmedDLSSReflexSuspendIntent(bool reflexDeactivationEdge, bool dlssFGApiActive,
+                                                      bool streamlineFGRunning, bool postSLConfirmedRendering,
+                                                      bool startupActivationPending, bool postSLActiveButUnconfirmed,
+                                                      bool postSLConfirmedButStartupSettling,
+                                                      bool postSLConfirmedButRuntimeStateStabilizing) {
     // A Reflex OFF edge during a stable confirmed DLSS-G epoch is the runtime's
     // suspend intent (for example a menu that temporarily disables generation).
     // Do not arm during cold-start churn: Reflex can briefly bounce OFF before
@@ -549,13 +550,10 @@ inline bool ShouldAcceptOffSignalDuringActivatedUnconfirmedStreamlineResume(
            !postSLConfirmedButRuntimeStateStabilizing;
 }
 
-inline bool ShouldTreatExplicitSetOptionsDisableAsAuthoritative(bool requestedInactive, bool sourceWasSetOptions,
-                                                                bool postSLConfirmedRendering,
-                                                                bool startupActivationPending,
-                                                                bool postSLActiveButUnconfirmed,
-                                                                bool postSLConfirmedButStartupSettling,
-                                                                bool postSLConfirmedButRuntimeStateStabilizing,
-                                                                bool acceptedRuntimeOffAwaitingSetOptions = false) {
+inline bool ShouldTreatExplicitSetOptionsDisableAsAuthoritative(
+    bool requestedInactive, bool sourceWasSetOptions, bool postSLConfirmedRendering, bool startupActivationPending,
+    bool postSLActiveButUnconfirmed, bool postSLConfirmedButStartupSettling,
+    bool postSLConfirmedButRuntimeStateStabilizing, bool acceptedRuntimeOffAwaitingSetOptions = false) {
     // Once PostSL has actually rendered through the current topology and no
     // startup/proof window is still settling, an explicit slDLSSGSetOptions(OFF)
     // is the app's real FG mode switch. Keep the early stale-OFF guard for

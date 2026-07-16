@@ -94,8 +94,7 @@ TEST(AudioCaptureSourceTest, ProcessLoopbackComStateLivesInDisposableInheritedHa
 
     EXPECT_NE(mediaSource.find("std::unique_ptr<ProcessLoopbackCapture> appCapture"), std::string::npos);
     EXPECT_NE(proxySource.find("LaunchRestrictedChildProcess"), std::string::npos);
-    EXPECT_NE(proxySource.find("{worker->mappingHandle, worker->packetEvent, worker->stopEvent}"),
-              std::string::npos);
+    EXPECT_NE(proxySource.find("{worker->mappingHandle, worker->packetEvent, worker->stopEvent}"), std::string::npos);
     EXPECT_NE(proxySource.find("retiredWorkers_.push_back(std::move(activeWorker_))"), std::string::npos);
     EXPECT_NE(workerSource.find("AppAudioCapture capture"), std::string::npos);
     EXPECT_NE(workerSource.find("Recycling after process-loopback reactivation"), std::string::npos);
@@ -128,8 +127,7 @@ TEST(AudioCaptureSourceTest, AppAudioCaptureEndMarkerOrdersEveryFanoutRouteBefor
     EXPECT_LT(routeEnd, routeResume);
     EXPECT_NE(mediaSource.find("src.appCaptureRouteEnded->store(true", routeEnd), std::string::npos);
     EXPECT_NE(mediaSource.find("src.timelineValid = true", routeEnd), std::string::npos);
-    EXPECT_NE(mediaSource.find("src.sourceType != AudioConfig::AppAudio || appCaptureRouteEnded"),
-              std::string::npos);
+    EXPECT_NE(mediaSource.find("src.sourceType != AudioConfig::AppAudio || appCaptureRouteEnded"), std::string::npos);
 }
 
 TEST(AudioCaptureSourceTest, AppAudioStopDrainsAlreadyCommittedPacketsWithoutRecovery) {

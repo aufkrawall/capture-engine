@@ -48,8 +48,7 @@ Decision Classify(const D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
     if (ce::sampler_override::IsD3D12ReductionFilter(desc.Filter)) {
         return Decision::ReductionFilter;
     }
-    if (desc.AddressU == D3D12_TEXTURE_ADDRESS_MODE_BORDER ||
-        desc.AddressV == D3D12_TEXTURE_ADDRESS_MODE_BORDER ||
+    if (desc.AddressU == D3D12_TEXTURE_ADDRESS_MODE_BORDER || desc.AddressV == D3D12_TEXTURE_ADDRESS_MODE_BORDER ||
         desc.AddressW == D3D12_TEXTURE_ADDRESS_MODE_BORDER) {
         return Decision::BorderAddress;
     }
@@ -90,13 +89,13 @@ Result ApplyImpl(D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
     const float originalBias = desc.MipLODBias;
 
     if (gfx.mipMapping == "bilinear") {
-        desc.Filter = D3D12_ENCODE_BASIC_FILTER(D3D12_DECODE_MIN_FILTER(desc.Filter),
-                                                D3D12_DECODE_MAG_FILTER(desc.Filter), D3D12_FILTER_TYPE_POINT,
-                                                D3D12_DECODE_FILTER_REDUCTION(desc.Filter));
+        desc.Filter =
+            D3D12_ENCODE_BASIC_FILTER(D3D12_DECODE_MIN_FILTER(desc.Filter), D3D12_DECODE_MAG_FILTER(desc.Filter),
+                                      D3D12_FILTER_TYPE_POINT, D3D12_DECODE_FILTER_REDUCTION(desc.Filter));
     } else if (gfx.mipMapping == "trilinear") {
-        desc.Filter = D3D12_ENCODE_BASIC_FILTER(D3D12_DECODE_MIN_FILTER(desc.Filter),
-                                                D3D12_DECODE_MAG_FILTER(desc.Filter), D3D12_FILTER_TYPE_LINEAR,
-                                                D3D12_DECODE_FILTER_REDUCTION(desc.Filter));
+        desc.Filter =
+            D3D12_ENCODE_BASIC_FILTER(D3D12_DECODE_MIN_FILTER(desc.Filter), D3D12_DECODE_MAG_FILTER(desc.Filter),
+                                      D3D12_FILTER_TYPE_LINEAR, D3D12_DECODE_FILTER_REDUCTION(desc.Filter));
     }
 
     const D3D12_FILTER filterAfterMipMapping = desc.Filter;

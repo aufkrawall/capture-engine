@@ -167,14 +167,14 @@ bool Bootstrap(DeviceState& deviceState, DWORD stage, StageState& state, GetText
 }
 
 std::array<DWORD, kStateCount> BuildDesired(const DeviceState& deviceState, const StageState& state,
-                                             const GraphicsConfig& gfx,
-                                             sampler_override::LegacyD3DForcedAFDecision* decision) {
+                                            const GraphicsConfig& gfx,
+                                            sampler_override::LegacyD3DForcedAFDecision* decision) {
     const auto traits = TraitsFor(deviceState.api);
     std::array<DWORD, kStateCount> desired = state.logical;
     const auto materialAddress = [](DWORD address) { return address >= 1 && address <= 3; };
-    const bool safeAddress = gfx.samplerOverrideMode == "aggressive" ||
-                             (materialAddress(desired[0]) && materialAddress(desired[1]) &&
-                              materialAddress(desired[2]));
+    const bool safeAddress =
+        gfx.samplerOverrideMode == "aggressive" ||
+        (materialAddress(desired[0]) && materialAddress(desired[1]) && materialAddress(desired[2]));
 
     if (desired[5] != traits.mipNone && safeAddress) {
         if (gfx.mipMapping == "trilinear") {
@@ -272,8 +272,8 @@ bool ReconcileStage(DeviceState& deviceState, DWORD stageIndex, StageState& stat
     return succeeded && state.physical == desired;
 }
 
-void RefreshConfigLocked(DeviceState& deviceState, SetTextureStageStateFn setState,
-                         GetTextureStageStateFn getState, bool sweepUnknownStages) {
+void RefreshConfigLocked(DeviceState& deviceState, SetTextureStageStateFn setState, GetTextureStageStateFn getState,
+                         bool sweepUnknownStages) {
     const uint32_t version = GetActiveGraphicsConfigVersion();
     const bool sweepNeeded = sweepUnknownStages && deviceState.bootstrapSweepPending &&
                              deviceState.overrideActive.load(std::memory_order_relaxed);
@@ -351,8 +351,8 @@ HRESULT SetTextureStageState(Api api, void* device, DWORD stage, DWORD type, DWO
 
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
     const bool overrideConfigured = HasOverride(gfx);
-    DeviceState* deviceState = overrideConfigured ? FindOrCreate(api, device, queryMaxAnisotropy)
-                                                   : FindExisting(api, device);
+    DeviceState* deviceState =
+        overrideConfigured ? FindOrCreate(api, device, queryMaxAnisotropy) : FindExisting(api, device);
     if (!deviceState || (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire)))
         return setState(device, stage, type, value);
     std::lock_guard<std::mutex> lock(deviceState->mutex);
@@ -414,8 +414,8 @@ HRESULT GetTextureStageState(Api api, void* device, DWORD stage, DWORD type, DWO
         return getState ? getState(device, stage, type, value) : E_INVALIDARG;
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
     const bool overrideConfigured = HasOverride(gfx);
-    DeviceState* deviceState = overrideConfigured ? FindOrCreate(api, device, queryMaxAnisotropy)
-                                                   : FindExisting(api, device);
+    DeviceState* deviceState =
+        overrideConfigured ? FindOrCreate(api, device, queryMaxAnisotropy) : FindExisting(api, device);
     if (!deviceState || (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire)))
         return getState(device, stage, type, value);
     std::lock_guard<std::mutex> lock(deviceState->mutex);
@@ -433,14 +433,14 @@ HRESULT GetTextureStageState(Api api, void* device, DWORD stage, DWORD type, DWO
     return S_OK;
 }
 
-void RefreshConfiguration(Api api, void* device, SetTextureStageStateFn setState,
-                          GetTextureStageStateFn getState, QueryMaxAnisotropyFn queryMaxAnisotropy) {
+void RefreshConfiguration(Api api, void* device, SetTextureStageStateFn setState, GetTextureStageStateFn getState,
+                          QueryMaxAnisotropyFn queryMaxAnisotropy) {
     if (!device || !setState)
         return;
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
     const bool overrideConfigured = HasOverride(gfx);
-    DeviceState* deviceState = overrideConfigured ? FindOrCreate(api, device, queryMaxAnisotropy)
-                                                   : FindExisting(api, device);
+    DeviceState* deviceState =
+        overrideConfigured ? FindOrCreate(api, device, queryMaxAnisotropy) : FindExisting(api, device);
     if (!deviceState)
         return;
     const uint32_t version = GetActiveGraphicsConfigVersion();

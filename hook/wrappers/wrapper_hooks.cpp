@@ -865,10 +865,10 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
     return hr;
 }
 
-HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain1(
-    IDXGIAdapter* pAdapter, D3D10_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags,
-    D3D10_FEATURE_LEVEL1 HardwareLevel, UINT SDKVersion, DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
-    IDXGISwapChain** ppSwapChain, ID3D10Device1** ppDevice) {
+HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain1(IDXGIAdapter* pAdapter, D3D10_DRIVER_TYPE DriverType,
+                                                      HMODULE Software, UINT Flags, D3D10_FEATURE_LEVEL1 HardwareLevel,
+                                                      UINT SDKVersion, DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
+                                                      IDXGISwapChain** ppSwapChain, ID3D10Device1** ppDevice) {
     WrapperLog("Wrapper: D3D10CreateDeviceAndSwapChain1 called");
     g_D3D11Or10DeviceCreated.store(true, std::memory_order_release);
 

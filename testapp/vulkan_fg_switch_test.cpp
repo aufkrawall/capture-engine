@@ -42,8 +42,7 @@ static int& g_DlssSuspendResumeIntervalSeconds = g_SwitchConfig.dlssSuspendResum
 static bool& g_DlssOffAfterActiveStress = g_SwitchConfig.dlssOffAfterActiveStress;
 static bool& g_EnableDred = g_SwitchConfig.apiDebug;
 static bool& g_FsrPresentCallbackStress = g_SwitchConfig.fsrPresentCallbackStress;
-static int& g_FsrPresentCallbackToggleIntervalSeconds =
-    g_SwitchConfig.fsrPresentCallbackToggleIntervalSeconds;
+static int& g_FsrPresentCallbackToggleIntervalSeconds = g_SwitchConfig.fsrPresentCallbackToggleIntervalSeconds;
 static bool& g_FsrDegenerateUiResource = g_SwitchConfig.fsrDegenerateUiResource;
 static bool& g_DxgiVideoMemoryQueryStress = g_SwitchConfig.videoMemoryQueryStress;
 static int& g_DxgiVideoMemoryQueryCountPerFrame = g_SwitchConfig.videoMemoryQueryCountPerFrame;
@@ -70,19 +69,16 @@ static std::string TestAppConfigPath() {
     GetModuleFileNameA(nullptr, path, MAX_PATH);
     std::string configPath = path;
     const size_t slash = configPath.find_last_of("\\/");
-    return slash == std::string::npos
-               ? std::string("testappconfig.ini")
-               : configPath.substr(0, slash + 1) + "testappconfig.ini";
+    return slash == std::string::npos ? std::string("testappconfig.ini")
+                                      : configPath.substr(0, slash + 1) + "testappconfig.ini";
 }
 
 static void ParseVulkanOptions(int argc, char* argv[]) {
     const std::string configPath = TestAppConfigPath();
     g_App.asyncPresentRequested =
-        GetPrivateProfileIntA("Vulkan", "async_present", g_App.asyncPresentRequested ? 1 : 0,
-                              configPath.c_str()) != 0;
+        GetPrivateProfileIntA("Vulkan", "async_present", g_App.asyncPresentRequested ? 1 : 0, configPath.c_str()) != 0;
     g_App.config.apiDebug =
-        GetPrivateProfileIntA("Vulkan", "debug", g_App.config.apiDebug ? 1 : 0,
-                              configPath.c_str()) != 0;
+        GetPrivateProfileIntA("Vulkan", "debug", g_App.config.apiDebug ? 1 : 0, configPath.c_str()) != 0;
 
     // Feed the shared DX12/Vulkan parser only its own arguments so Vulkan-only switches cannot be
     // mistaken for the legacy positional width/height/load arguments.
@@ -131,13 +127,11 @@ void UpdateWindowTitle() {
         return;
     }
     wchar_t title[320] = {};
-    std::swprintf(
-        title, std::size(title),
-        L"Vulkan FG Switch Test - %ux%u (render %ux%u) - %hs%hs - %hs - Reflex %hs",
-        g_App.swapchain.extent.width, g_App.swapchain.extent.height, g_App.renderer.renderWidth,
-        g_App.renderer.renderHeight, testapp::vkfg::ModeName(g_App.transition.currentMode),
-        g_App.transition.suspended ? " (suspended)" : "",
-        testapp::vkfg::OwnerName(g_App.swapchain.owner), g_App.sl.reflexActive ? "low-latency" : "off");
+    std::swprintf(title, std::size(title), L"Vulkan FG Switch Test - %ux%u (render %ux%u) - %hs%hs - %hs - Reflex %hs",
+                  g_App.swapchain.extent.width, g_App.swapchain.extent.height, g_App.renderer.renderWidth,
+                  g_App.renderer.renderHeight, testapp::vkfg::ModeName(g_App.transition.currentMode),
+                  g_App.transition.suspended ? " (suspended)" : "", testapp::vkfg::OwnerName(g_App.swapchain.owner),
+                  g_App.sl.reflexActive ? "low-latency" : "off");
     SetWindowTextW(g_App.hwnd, title);
 }
 
@@ -239,14 +233,12 @@ bool CreateApplicationWindow() {
         g_App.config.windowHeight = monitor.bottom - monitor.top;
     }
     const DWORD style = g_App.config.fullscreen ? WS_POPUP : WS_OVERLAPPEDWINDOW;
-    RECT windowRect = testapp::AdjustWindowRectForClientSize(
-        style, 0, g_App.config.windowWidth, g_App.config.windowHeight);
+    RECT windowRect =
+        testapp::AdjustWindowRectForClientSize(style, 0, g_App.config.windowWidth, g_App.config.windowHeight);
     g_App.hwnd = CreateWindowExW(
-        0, kWindowClass, L"Vulkan FG Switch Test", style,
-        g_App.config.fullscreen ? monitor.left : CW_USEDEFAULT,
-        g_App.config.fullscreen ? monitor.top : CW_USEDEFAULT,
-        windowRect.right - windowRect.left, windowRect.bottom - windowRect.top, nullptr, nullptr,
-        g_App.instanceHandle, nullptr);
+        0, kWindowClass, L"Vulkan FG Switch Test", style, g_App.config.fullscreen ? monitor.left : CW_USEDEFAULT,
+        g_App.config.fullscreen ? monitor.top : CW_USEDEFAULT, windowRect.right - windowRect.left,
+        windowRect.bottom - windowRect.top, nullptr, nullptr, g_App.instanceHandle, nullptr);
     if (!g_App.hwnd) {
         testapp::Log("[FG-DIAG] CreateWindowExW failed error=%lu\n", GetLastError());
         return false;
@@ -266,14 +258,11 @@ void UpdateAutomaticSequenceAndStress() {
         }
         if (!g_AutoDlssRequested && elapsed >= static_cast<float>(g_App.config.autoDlssStartSeconds)) {
             g_AutoDlssRequested = true;
-            testapp::vkfg::RequestMode(testapp::vkfg::FgMode::Dlss,
-                                       "automatic DLSS stage after FSR residency");
+            testapp::vkfg::RequestMode(testapp::vkfg::FgMode::Dlss, "automatic DLSS stage after FSR residency");
         }
-        if (!g_AutoReturnFsrRequested &&
-            elapsed >= static_cast<float>(g_App.config.autoReturnFsrSeconds)) {
+        if (!g_AutoReturnFsrRequested && elapsed >= static_cast<float>(g_App.config.autoReturnFsrSeconds)) {
             g_AutoReturnFsrRequested = true;
-            testapp::vkfg::RequestMode(testapp::vkfg::FgMode::Fsr,
-                                       "automatic return-to-FSR stage");
+            testapp::vkfg::RequestMode(testapp::vkfg::FgMode::Fsr, "automatic return-to-FSR stage");
         }
     }
 
@@ -304,8 +293,7 @@ void UpdateAutomaticSequenceAndStress() {
         g_App.transition.currentMode == testapp::vkfg::FgMode::Dlss &&
         std::chrono::duration<float>(now - g_LastStressToggle).count() >= interval) {
         g_DlssOffStressRequested = true;
-        testapp::vkfg::RequestMode(testapp::vkfg::FgMode::Off,
-                                   "DLSS off-after-active stress");
+        testapp::vkfg::RequestMode(testapp::vkfg::FgMode::Off, "DLSS off-after-active stress");
     }
 }
 
@@ -322,18 +310,16 @@ bool ProcessPendingSwapchainRecreation() {
     if (g_App.transition.stage == TransitionStage::OldPassthroughPending ||
         g_App.transition.stage == TransitionStage::PreparingReplacement) {
         const testapp::vkfg::FgMode queuedTarget = g_App.transition.targetMode;
-        testapp::vkfg::RequestMode(g_App.transition.currentMode,
-                                   "cancel owner switch for surface recreation");
+        testapp::vkfg::RequestMode(g_App.transition.currentMode, "cancel owner switch for surface recreation");
         g_App.requestedMode = queuedTarget;
     }
     bool recreated = false;
     if (g_App.transition.stage == TransitionStage::ReplacementPresentPending) {
         recreated = testapp::vkfg::DrainSwapchainBoundWork("recreate replacement surface") &&
-            testapp::vkfg::CreateOrReplaceSwapchain(g_App.swapchain.owner,
-                                                    "recreate replacement surface");
+                    testapp::vkfg::CreateOrReplaceSwapchain(g_App.swapchain.owner, "recreate replacement surface");
     } else if (g_App.transition.stage == TransitionStage::Idle) {
-        recreated = testapp::vkfg::RecreateCurrentSwapchain(
-            g_App.resizePending ? "window resize/out-of-date" : "fullscreen/suboptimal");
+        recreated = testapp::vkfg::RecreateCurrentSwapchain(g_App.resizePending ? "window resize/out-of-date"
+                                                                                : "fullscreen/suboptimal");
     } else {
         return true;
     }
@@ -369,8 +355,7 @@ void Cleanup() {
         testapp::vkfg::ShutdownRenderer();
     }
     if (g_App.swapchain.owner == testapp::vkfg::SwapchainOwner::Streamline) {
-        testapp::vkfg::RetireStreamlinePresentation(testapp::vkfg::SwapchainOwner::Native,
-                                                    "final cleanup");
+        testapp::vkfg::RetireStreamlinePresentation(testapp::vkfg::SwapchainOwner::Native, "final cleanup");
     }
     // Surface creation/destruction is a mandatory Streamline Vulkan manual hook. Retire it while
     // the interposer is callable, then shut down the core while the device and instance remain live.
@@ -397,16 +382,13 @@ int main(int argc, char* argv[]) {
 
     testapp::Log("Vulkan FG Switch Test App\n");
     testapp::Log("=========================\n");
-    testapp::Log(
-        "Process=%lu resolution=%dx%d fullscreen=%d gpuLoad=%d vsync=%d framesInFlight=%u\n",
-        GetCurrentProcessId(), g_App.config.windowWidth, g_App.config.windowHeight,
-        g_App.config.fullscreen, g_App.config.gpuLoadPasses, g_App.config.vsync,
-        testapp::vkfg::kFramesInFlight);
+    testapp::Log("Process=%lu resolution=%dx%d fullscreen=%d gpuLoad=%d vsync=%d framesInFlight=%u\n",
+                 GetCurrentProcessId(), g_App.config.windowWidth, g_App.config.windowHeight, g_App.config.fullscreen,
+                 g_App.config.gpuLoadPasses, g_App.config.vsync, testapp::vkfg::kFramesInFlight);
     testapp::Log(
         "Presentation: requestedSeparateQueue=%d presentModePolicy=%s colorPath="
         "SDR-8bit/sRGB-nonlinear (dlss_hdr configures SR input semantics, not HDR10 output)\n",
-        g_App.asyncPresentRequested ? 1 : 0,
-        g_App.config.vsync ? "FIFO" : "IMMEDIATE->MAILBOX->FIFO_RELAXED->FIFO");
+        g_App.asyncPresentRequested ? 1 : 0, g_App.config.vsync ? "FIFO" : "IMMEDIATE->MAILBOX->FIFO_RELAXED->FIFO");
     testapp::Log(
         "SDK policy: Streamline=2.11.1 FidelityFX Vulkan=1.1.4 FSR=3.1.4 "
         "requestedFsrVersion=%d resolved=%d mlFallback=%d\n",
@@ -416,33 +398,24 @@ int main(int argc, char* argv[]) {
             "[FG-DIAG] WARN fsr_version=4 requests ML SR/FG, which is unsupported by Vulkan; "
             "falling back to non-ML FSR 3.1.4 from FidelityFX SDK 1.1.4\n");
     } else if (fsrResolution.invalidRequest) {
-        testapp::Log("[FG-DIAG] WARN invalid Vulkan fsr_version=%d; using FSR 3.1.4\n",
-                     fsrResolution.requested);
+        testapp::Log("[FG-DIAG] WARN invalid Vulkan fsr_version=%d; using FSR 3.1.4\n", fsrResolution.requested);
     }
-    testapp::Log(
-        "Upscaling enabled=%d quality=%s scale=%d%% DLSS preset=%c hdr=%d FSR sharpening=%d/%d%%\n",
-        g_App.config.upscalingEnabled ? 1 : 0,
-        testapp::fg::UpscaleQualityName(g_App.config.upscaleQuality),
-        g_App.config.upscaleScalePercent, g_App.config.dlssPreset ? g_App.config.dlssPreset : '-',
-        g_App.config.dlssHdrInput ? 1 : 0, g_App.config.fsrSharpeningEnabled ? 1 : 0,
-        g_App.config.fsrSharpnessPercent);
-    testapp::Log(
-        "Automatic sequence: OFF -> FSR at %ds -> DLSS at %ds -> FSR at %ds; exit=%ds\n",
-        g_App.config.autoFsrStartSeconds, g_App.config.autoDlssStartSeconds,
-        g_App.config.autoReturnFsrSeconds, g_App.config.autoExitSeconds);
+    testapp::Log("Upscaling enabled=%d quality=%s scale=%d%% DLSS preset=%c hdr=%d FSR sharpening=%d/%d%%\n",
+                 g_App.config.upscalingEnabled ? 1 : 0, testapp::fg::UpscaleQualityName(g_App.config.upscaleQuality),
+                 g_App.config.upscaleScalePercent, g_App.config.dlssPreset ? g_App.config.dlssPreset : '-',
+                 g_App.config.dlssHdrInput ? 1 : 0, g_App.config.fsrSharpeningEnabled ? 1 : 0,
+                 g_App.config.fsrSharpnessPercent);
+    testapp::Log("Automatic sequence: OFF -> FSR at %ds -> DLSS at %ds -> FSR at %ds; exit=%ds\n",
+                 g_App.config.autoFsrStartSeconds, g_App.config.autoDlssStartSeconds, g_App.config.autoReturnFsrSeconds,
+                 g_App.config.autoExitSeconds);
     testapp::Log(
         "Stress: FSR suspend=%d/%ds DLSS suspend=%d/%ds callbackToggle=%d/%ds "
         "memoryBudget=%d/%d startupRecreates=%d bootstrapSwaps=%d\n",
-        g_App.config.fsrSuspendResumeStress ? 1 : 0,
-        g_App.config.fsrSuspendResumeIntervalSeconds,
-        g_App.config.dlssSuspendResumeStress ? 1 : 0,
-        g_App.config.dlssSuspendResumeIntervalSeconds,
-        g_App.config.fsrPresentCallbackStress ? 1 : 0,
-        g_App.config.fsrPresentCallbackToggleIntervalSeconds,
-        g_App.config.videoMemoryQueryStress ? 1 : 0,
-        g_App.config.videoMemoryQueryCountPerFrame,
-        g_App.config.startupNativeSwapchainRecreateCount,
-        g_App.config.bootstrapNativeSwapchainStressCount);
+        g_App.config.fsrSuspendResumeStress ? 1 : 0, g_App.config.fsrSuspendResumeIntervalSeconds,
+        g_App.config.dlssSuspendResumeStress ? 1 : 0, g_App.config.dlssSuspendResumeIntervalSeconds,
+        g_App.config.fsrPresentCallbackStress ? 1 : 0, g_App.config.fsrPresentCallbackToggleIntervalSeconds,
+        g_App.config.videoMemoryQueryStress ? 1 : 0, g_App.config.videoMemoryQueryCountPerFrame,
+        g_App.config.startupNativeSwapchainRecreateCount, g_App.config.bootstrapNativeSwapchainStressCount);
     testapp::Log("Keys: 1=OFF 2=DLSS FG 3=FSR FG (repeat 2/3=suspend/resume) F11/Alt+Enter=fullscreen ESC=exit\n");
     testapp::Log(
         "Debug: --vk-debug/--dred enable validation/debug-utils/device-fault; "
@@ -457,24 +430,23 @@ int main(int argc, char* argv[]) {
         initialized = testapp::vkfg::InitializeVulkanDevice();
     }
     if (initialized) {
-        initialized = testapp::vkfg::CreateOrReplaceSwapchain(
-            testapp::vkfg::SwapchainOwner::Native, "initial native owner");
+        initialized =
+            testapp::vkfg::CreateOrReplaceSwapchain(testapp::vkfg::SwapchainOwner::Native, "initial native owner");
     }
     if (initialized) {
         initialized = testapp::vkfg::InitializeRenderer();
     }
-    const int startupRecreates = g_App.config.startupNativeSwapchainRecreateCount +
-                                 g_App.config.bootstrapNativeSwapchainStressCount;
+    const int startupRecreates =
+        g_App.config.startupNativeSwapchainRecreateCount + g_App.config.bootstrapNativeSwapchainStressCount;
     for (int index = 0; initialized && index < startupRecreates; ++index) {
         initialized = testapp::vkfg::DrainSwapchainBoundWork("startup native recreate stress") &&
-            testapp::vkfg::CreateOrReplaceSwapchain(testapp::vkfg::SwapchainOwner::Native,
-                                                    "startup native recreate stress");
+                      testapp::vkfg::CreateOrReplaceSwapchain(testapp::vkfg::SwapchainOwner::Native,
+                                                              "startup native recreate stress");
     }
     if (initialized && !g_App.config.streamlinePreloadInitialOff && g_App.sl.featuresLoaded) {
         testapp::vkfg::SetStreamlineFeaturesLoaded(false, "initial OFF preload disabled");
     }
-    if (initialized && (g_App.config.fsrKeepRuntimeLoadedInitialOff ||
-                        g_App.config.fsrStartupDisabledContextStress)) {
+    if (initialized && (g_App.config.fsrKeepRuntimeLoadedInitialOff || g_App.config.fsrStartupDisabledContextStress)) {
         initialized = testapp::vkfg::LoadFidelityFxRuntime("initial OFF preload");
         if (initialized && g_App.config.fsrStartupDisabledContextStress) {
             initialized = testapp::vkfg::PrepareFidelityFxMode();
@@ -503,8 +475,8 @@ int main(int argc, char* argv[]) {
     testapp::Log(
         "[FG-DIAG] Startup complete owner=native route=loader; automatic clock begins now "
         "support(dlssSR=%d dlssFG=%d reflex=%d ffxQueues=%d)\n",
-        g_App.sl.dlssSrSupported ? 1 : 0, g_App.sl.dlssFgSupported ? 1 : 0,
-        g_App.sl.reflexSupported ? 1 : 0, g_App.vk.queuePlan.fidelityFxAvailable ? 1 : 0);
+        g_App.sl.dlssSrSupported ? 1 : 0, g_App.sl.dlssFgSupported ? 1 : 0, g_App.sl.reflexSupported ? 1 : 0,
+        g_App.vk.queuePlan.fidelityFxAvailable ? 1 : 0);
     testapp::LogFlush();
 
     MSG message{};
@@ -547,14 +519,11 @@ int main(int argc, char* argv[]) {
         "[FG-SUMMARY] frames=%llu presented=%llu generated=%llu transitions=%llu failures=%llu "
         "validationErrors=%llu pacingSpikes=%llu deviceLost=%d reflexSleep(calls=%llu,failures=%llu) "
         "callbacks(ffxPresent=%llu,ffxFG=%llu)\n",
-        static_cast<unsigned long long>(g_App.frameId),
-        static_cast<unsigned long long>(g_App.presentedFrames),
-        static_cast<unsigned long long>(g_App.generatedFrames),
-        static_cast<unsigned long long>(g_App.transition.epoch),
+        static_cast<unsigned long long>(g_App.frameId), static_cast<unsigned long long>(g_App.presentedFrames),
+        static_cast<unsigned long long>(g_App.generatedFrames), static_cast<unsigned long long>(g_App.transition.epoch),
         static_cast<unsigned long long>(g_App.transitionFailures),
-        static_cast<unsigned long long>(g_App.validationErrors),
-        static_cast<unsigned long long>(g_App.pacingSpikes), g_App.vk.deviceLost ? 1 : 0,
-        static_cast<unsigned long long>(g_App.sl.reflexSleepCalls),
+        static_cast<unsigned long long>(g_App.validationErrors), static_cast<unsigned long long>(g_App.pacingSpikes),
+        g_App.vk.deviceLost ? 1 : 0, static_cast<unsigned long long>(g_App.sl.reflexSleepCalls),
         static_cast<unsigned long long>(g_App.sl.reflexSleepFailures),
         static_cast<unsigned long long>(g_App.ffx.presentCallbackCount.load()),
         static_cast<unsigned long long>(g_App.ffx.frameGenerationCallbackCount.load()));

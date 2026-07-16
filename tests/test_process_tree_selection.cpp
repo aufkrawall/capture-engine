@@ -6,11 +6,8 @@ namespace policy = ce::process_loopback;
 
 TEST(ProcessTreeSelectionTest, SelectsSameNameTreeRootInsteadOfFirstEnumeratedChild) {
     const std::vector<policy::ProcessTreeEntry> processes = {
-        {2116, 7000, "Brave.exe"},
-        {5264, 20928, "brave.EXE"},
-        {7000, 20928, "BRAVE.exe"},
-        {20928, 400, "Brave.exe"},
-        {400, 4, "explorer.exe"},
+        {2116, 7000, "Brave.exe"}, {5264, 20928, "brave.EXE"}, {7000, 20928, "BRAVE.exe"},
+        {20928, 400, "Brave.exe"}, {400, 4, "explorer.exe"},
     };
 
     const auto selection = policy::SelectProcessTreeRootByName(processes, "brave.exe");
@@ -26,12 +23,8 @@ TEST(ProcessTreeSelectionTest, SelectsSameNameTreeRootInsteadOfFirstEnumeratedCh
 
 TEST(ProcessTreeSelectionTest, SelectsLargestIndependentSameNameTreeDeterministically) {
     const std::vector<policy::ProcessTreeEntry> processes = {
-        {100, 4, "browser.exe"},
-        {101, 100, "browser.exe"},
-        {200, 4, "browser.exe"},
-        {201, 200, "browser.exe"},
-        {202, 200, "browser.exe"},
-        {4, 0, "System"},
+        {100, 4, "browser.exe"},   {101, 100, "browser.exe"}, {200, 4, "browser.exe"},
+        {201, 200, "browser.exe"}, {202, 200, "browser.exe"}, {4, 0, "System"},
     };
 
     const auto selection = policy::SelectProcessTreeRootByName(processes, "Browser.exe");

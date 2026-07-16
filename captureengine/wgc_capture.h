@@ -142,10 +142,10 @@ public:
 
     // OBS-style direct callback: frames processed directly in WinRT callback
     // Callback receives: texture, width, height, QPC timestamp, HDR flag, capture origin
-    void SetDirectFrameCallback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool,
-                                                   bool, const ce::cursor::SourcePointerObservation&, int32_t, int32_t,
-                                                   uint64_t, WgcPoolSlotLease&&)>
-                                    callback);
+    void SetDirectFrameCallback(
+        std::function<void(ID3D11Texture2D*, uint32_t, uint32_t, int64_t, int64_t, bool, bool, bool,
+                           const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint64_t, WgcPoolSlotLease&&)>
+            callback);
 
     // Get count of frames processed via direct callback
     uint32_t GetCallbackFrameCount() const;

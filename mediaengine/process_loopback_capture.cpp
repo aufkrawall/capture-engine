@@ -1,9 +1,9 @@
 #include "process_loopback_capture.h"
 
+#include "../common/restricted_child_process.h"
 #include "app_audio_capture.h"
 #include "mediaengine.h"
 #include "process_loopback_protocol.h"
-#include "../common/restricted_child_process.h"
 
 #include <algorithm>
 #include <bit>
@@ -84,10 +84,9 @@ void ProcessLoopbackCapture::SetRequestedFormat(int sampleRate, int channels, ui
     requestedSampleRate_ = sampleRate;
     requestedChannels_ = channels;
     requestedChannelMask_ = channelMask != 0 ? channelMask
-                                             : channels == 1 ? SPEAKER_FRONT_CENTER
-                                                             : channels == 2
-                                                                   ? SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
-                                                                   : 0;
+                            : channels == 1  ? SPEAKER_FRONT_CENTER
+                            : channels == 2  ? SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT
+                                             : 0;
 }
 
 bool ProcessLoopbackCapture::StartByPID(DWORD processId) {
@@ -145,8 +144,8 @@ std::wstring ProcessLoopbackCapture::Utf8ToWide(const std::string& value) {
     if (value.empty()) {
         return {};
     }
-    const int chars = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.c_str(), static_cast<int>(value.size()),
-                                          nullptr, 0);
+    const int chars =
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.c_str(), static_cast<int>(value.size()), nullptr, 0);
     if (chars <= 0) {
         return std::wstring(value.begin(), value.end());
     }
@@ -185,12 +184,10 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
     SECURITY_ATTRIBUTES inheritable{};
     inheritable.nLength = sizeof(inheritable);
     inheritable.bInheritHandle = TRUE;
-    const uint64_t mappingBytes =
-        ce::process_loopback::MappingBytes(static_cast<uint32_t>(requestedSampleRate_),
-                                           static_cast<uint32_t>(requestedChannels_), 32);
+    const uint64_t mappingBytes = ce::process_loopback::MappingBytes(static_cast<uint32_t>(requestedSampleRate_),
+                                                                     static_cast<uint32_t>(requestedChannels_), 32);
     if (mappingBytes == 0 || mappingBytes > std::numeric_limits<SIZE_T>::max()) {
-        DLL_Log("[AppAudioWorker] Invalid shared mapping size for %dHz/%dch", requestedSampleRate_,
-                requestedChannels_);
+        DLL_Log("[AppAudioWorker] Invalid shared mapping size for %dHz/%dch", requestedSampleRate_, requestedChannels_);
         return false;
     }
     worker->mappingHandle =
@@ -204,10 +201,9 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
         return false;
     }
     worker->mapping = MapViewOfFile(worker->mappingHandle, FILE_MAP_ALL_ACCESS, 0, 0, mappingBytes);
-    if (!worker->mapping ||
-        !ce::process_loopback::Initialize(worker->mapping, worker->generation,
-                                          static_cast<uint32_t>(requestedSampleRate_),
-                                          static_cast<uint32_t>(requestedChannels_), 32)) {
+    if (!worker->mapping || !ce::process_loopback::Initialize(worker->mapping, worker->generation,
+                                                              static_cast<uint32_t>(requestedSampleRate_),
+                                                              static_cast<uint32_t>(requestedChannels_), 32)) {
         DLL_Log("[AppAudioWorker] Shared mapping failed generation=%llu bytes=%llu error=0x%lx",
                 static_cast<unsigned long long>(worker->generation), static_cast<unsigned long long>(mappingBytes),
                 GetLastError());
@@ -229,11 +225,10 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
 
     const auto handleValue = [](HANDLE handle) { return std::to_wstring(reinterpret_cast<uintptr_t>(handle)); };
     std::wstring commandLine = QuoteCommandArgument(helperPath.wstring()) + L" " + handleValue(worker->mappingHandle) +
-                               L" " + handleValue(worker->packetEvent) + L" " + handleValue(worker->stopEvent) +
-                               L" " + std::to_wstring(worker->generation) + L" " +
-                               std::to_wstring(targetProcessId_) + L" " + std::to_wstring(requestedSampleRate_) +
-                               L" " + std::to_wstring(requestedChannels_) + L" " +
-                               std::to_wstring(requestedChannelMask_) + L" " +
+                               L" " + handleValue(worker->packetEvent) + L" " + handleValue(worker->stopEvent) + L" " +
+                               std::to_wstring(worker->generation) + L" " + std::to_wstring(targetProcessId_) + L" " +
+                               std::to_wstring(requestedSampleRate_) + L" " + std::to_wstring(requestedChannels_) +
+                               L" " + std::to_wstring(requestedChannelMask_) + L" " +
                                QuoteCommandArgument(Utf8ToWide(targetProcessName_));
     ce::process::RestrictedChildProcess process;
     DWORD createError = ERROR_SUCCESS;
@@ -241,8 +236,7 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
     // CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT so no unrelated parent handle is inherited.
     if (!ce::process::LaunchRestrictedChildProcess(
             helperPath.wstring(), commandLine, helperPath.parent_path().wstring(),
-            {worker->mappingHandle, worker->packetEvent, worker->stopEvent}, CREATE_NO_WINDOW, process,
-            createError)) {
+            {worker->mappingHandle, worker->packetEvent, worker->stopEvent}, CREATE_NO_WINDOW, process, createError)) {
         DLL_Log("[AppAudioWorker] CreateProcess failed generation=%llu error=0x%lx",
                 static_cast<unsigned long long>(worker->generation), createError);
         return false;
@@ -261,9 +255,9 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
         "[AppAudioWorker] Started generation=%llu helperPid=%lu targetMode=%s targetPid=%lu targetName=%s "
         "format=%dHz/%dch/0x%x mappingBytes=%llu restart=%d",
         static_cast<unsigned long long>(activeWorker_->generation), activeWorker_->processId,
-        targetByName_ ? "name" : "pid", targetProcessId_, targetProcessName_.empty() ? "<none>" : targetProcessName_.c_str(),
-        requestedSampleRate_, requestedChannels_, requestedChannelMask_, static_cast<unsigned long long>(mappingBytes),
-        restart ? 1 : 0);
+        targetByName_ ? "name" : "pid", targetProcessId_,
+        targetProcessName_.empty() ? "<none>" : targetProcessName_.c_str(), requestedSampleRate_, requestedChannels_,
+        requestedChannelMask_, static_cast<unsigned long long>(mappingBytes), restart ? 1 : 0);
     return true;
 }
 
@@ -310,8 +304,8 @@ void ProcessLoopbackCapture::RetireActiveWorkerLocked(bool unexpectedExit, DWORD
     if (unexpectedExit && desiredRunning_) {
         restartDesired_ = true;
         ++consecutiveRestartFailures_;
-        nextRestartTick_ = GetTickCount64() +
-                           ce::process_loopback::ComputeWorkerRestartDelayMs(consecutiveRestartFailures_);
+        nextRestartTick_ =
+            GetTickCount64() + ce::process_loopback::ComputeWorkerRestartDelayMs(consecutiveRestartFailures_);
     }
 }
 
@@ -353,8 +347,7 @@ void ProcessLoopbackCapture::RefreshWorkerLocked() {
             const bool transportFailure = ce::process_loopback::HasFatalTransportFailure(activeWorker_->mapping);
             const bool restartAfterExit = ce::process_loopback::ClassifyWorkerExit(
                                               desiredRunning_, activeWorker_->stopRequested, clean, recycle,
-                                              transportFailure) ==
-                                          ce::process_loopback::WorkerExitDisposition::Restart;
+                                              transportFailure) == ce::process_loopback::WorkerExitDisposition::Restart;
             RetireActiveWorkerLocked(restartAfterExit && !recycle, exitCode);
             if (recycle && desiredRunning_) {
                 // A clean recycle is the process-lifetime containment policy, not a crash. Restart
@@ -373,8 +366,8 @@ void ProcessLoopbackCapture::RefreshWorkerLocked() {
     if (!activeWorker_ && desiredRunning_ && restartDesired_ && GetTickCount64() >= nextRestartTick_) {
         if (!StartWorkerLocked(true)) {
             ++consecutiveRestartFailures_;
-            nextRestartTick_ = GetTickCount64() +
-                               ce::process_loopback::ComputeWorkerRestartDelayMs(consecutiveRestartFailures_);
+            nextRestartTick_ =
+                GetTickCount64() + ce::process_loopback::ComputeWorkerRestartDelayMs(consecutiveRestartFailures_);
             DLL_Log("[AppAudioWorker] WARNING: restart failed attempt=%u nextAttemptInMs=%llu",
                     consecutiveRestartFailures_,
                     static_cast<unsigned long long>(
@@ -497,8 +490,7 @@ void ProcessLoopbackCapture::Stop(bool discardPendingPackets) {
         discardPendingPackets ? 1 : 0, static_cast<unsigned long long>(workerRestartCount_),
         static_cast<unsigned long long>(accumulatedOverrunPackets_),
         static_cast<unsigned long long>(accumulatedOverrunFrames_),
-        static_cast<unsigned long long>(accumulatedDiagnosticOverruns_), retiredWorkers_.size(),
-        [&]() {
+        static_cast<unsigned long long>(accumulatedDiagnosticOverruns_), retiredWorkers_.size(), [&]() {
             size_t pending = 0;
             for (const auto& worker : retiredWorkers_) {
                 pending += ce::process_loopback::PendingPacketCount(worker->mapping);

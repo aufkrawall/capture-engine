@@ -17,13 +17,11 @@ using GLuint = unsigned int;
 
 using TexImage1DFn = void(WINAPI*)(GLenum, GLint, GLint, GLsizei, GLint, GLenum, GLenum, const void*);
 using TexImage2DFn = void(WINAPI*)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*);
-using TexImage3DFn =
-    void(WINAPI*)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*);
+using TexImage3DFn = void(WINAPI*)(GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*);
 using CompressedTexImage1DFn = void(WINAPI*)(GLenum, GLint, GLenum, GLsizei, GLint, GLsizei, const void*);
-using CompressedTexImage2DFn =
-    void(WINAPI*)(GLenum, GLint, GLenum, GLsizei, GLsizei, GLint, GLsizei, const void*);
-using CompressedTexImage3DFn =
-    void(WINAPI*)(GLenum, GLint, GLenum, GLsizei, GLsizei, GLsizei, GLint, GLsizei, const void*);
+using CompressedTexImage2DFn = void(WINAPI*)(GLenum, GLint, GLenum, GLsizei, GLsizei, GLint, GLsizei, const void*);
+using CompressedTexImage3DFn = void(WINAPI*)(GLenum, GLint, GLenum, GLsizei, GLsizei, GLsizei, GLint, GLsizei,
+                                             const void*);
 using CopyTexImage1DFn = void(WINAPI*)(GLenum, GLint, GLenum, GLint, GLint, GLsizei, GLint);
 using CopyTexImage2DFn = void(WINAPI*)(GLenum, GLint, GLenum, GLint, GLint, GLsizei, GLsizei, GLint);
 
@@ -105,135 +103,131 @@ void WINAPI DetourCompressedTexImage1D(GLenum target, GLint level, GLenum intern
     ReconcileBoundMipChain(target, level);
 }
 
-void WINAPI DetourCompressedTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLsizei width,
-                                       GLsizei height, GLint border, GLsizei imageSize, const void* data) {
+void WINAPI DetourCompressedTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLsizei width, GLsizei height,
+                                       GLint border, GLsizei imageSize, const void* data) {
     if (g_compressedTexImage2D)
         g_compressedTexImage2D(target, level, internalFormat, width, height, border, imageSize, data);
     ReconcileBoundMipChain(target, level);
 }
 
-void WINAPI DetourCompressedTexImage3D(GLenum target, GLint level, GLenum internalFormat, GLsizei width,
-                                       GLsizei height, GLsizei depth, GLint border, GLsizei imageSize,
-                                       const void* data) {
+void WINAPI DetourCompressedTexImage3D(GLenum target, GLint level, GLenum internalFormat, GLsizei width, GLsizei height,
+                                       GLsizei depth, GLint border, GLsizei imageSize, const void* data) {
     if (g_compressedTexImage3D)
         g_compressedTexImage3D(target, level, internalFormat, width, height, depth, border, imageSize, data);
     ReconcileBoundMipChain(target, level);
 }
 
-void WINAPI DetourCopyTexImage1D(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y,
-                                 GLsizei width, GLint border) {
+void WINAPI DetourCopyTexImage1D(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y, GLsizei width,
+                                 GLint border) {
     if (g_copyTexImage1D)
         g_copyTexImage1D(target, level, internalFormat, x, y, width, border);
     ReconcileBoundMipChain(target, level);
 }
 
-void WINAPI DetourCopyTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y,
-                                 GLsizei width, GLsizei height, GLint border) {
+void WINAPI DetourCopyTexImage2D(GLenum target, GLint level, GLenum internalFormat, GLint x, GLint y, GLsizei width,
+                                 GLsizei height, GLint border) {
     if (g_copyTexImage2D)
         g_copyTexImage2D(target, level, internalFormat, x, y, width, height, border);
     ReconcileBoundMipChain(target, level);
 }
 
-#define DEFINE_BOUND_STORAGE_DETOUR_1D(name, original)                                                        \
-    void WINAPI name(GLenum target, GLsizei levels, GLenum format, GLsizei width) {                           \
-        if (original)                                                                                         \
-            original(target, levels, format, width);                                                          \
-        if (levels > 1) {                                                                                     \
-            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                          \
-            ce::opengl_sampler_override::ReconcileBoundTexture(target);                                      \
-        }                                                                                                     \
+#define DEFINE_BOUND_STORAGE_DETOUR_1D(name, original)                              \
+    void WINAPI name(GLenum target, GLsizei levels, GLenum format, GLsizei width) { \
+        if (original)                                                               \
+            original(target, levels, format, width);                                \
+        if (levels > 1) {                                                           \
+            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                \
+            ce::opengl_sampler_override::ReconcileBoundTexture(target);             \
+        }                                                                           \
     }
 
-#define DEFINE_BOUND_STORAGE_DETOUR_2D(name, original)                                                        \
-    void WINAPI name(GLenum target, GLsizei levels, GLenum format, GLsizei width, GLsizei height) {           \
-        if (original)                                                                                         \
-            original(target, levels, format, width, height);                                                  \
-        if (levels > 1) {                                                                                     \
-            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                          \
-            ce::opengl_sampler_override::ReconcileBoundTexture(target);                                      \
-        }                                                                                                     \
+#define DEFINE_BOUND_STORAGE_DETOUR_2D(name, original)                                              \
+    void WINAPI name(GLenum target, GLsizei levels, GLenum format, GLsizei width, GLsizei height) { \
+        if (original)                                                                               \
+            original(target, levels, format, width, height);                                        \
+        if (levels > 1) {                                                                           \
+            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                \
+            ce::opengl_sampler_override::ReconcileBoundTexture(target);                             \
+        }                                                                                           \
     }
 
-#define DEFINE_BOUND_STORAGE_DETOUR_3D(name, original)                                                        \
-    void WINAPI name(GLenum target, GLsizei levels, GLenum format, GLsizei width, GLsizei height,             \
-                     GLsizei depth) {                                                                         \
-        if (original)                                                                                         \
-            original(target, levels, format, width, height, depth);                                           \
-        if (levels > 1) {                                                                                     \
-            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                          \
-            ce::opengl_sampler_override::ReconcileBoundTexture(target);                                      \
-        }                                                                                                     \
+#define DEFINE_BOUND_STORAGE_DETOUR_3D(name, original)                                                             \
+    void WINAPI name(GLenum target, GLsizei levels, GLenum format, GLsizei width, GLsizei height, GLsizei depth) { \
+        if (original)                                                                                              \
+            original(target, levels, format, width, height, depth);                                                \
+        if (levels > 1) {                                                                                          \
+            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                               \
+            ce::opengl_sampler_override::ReconcileBoundTexture(target);                                            \
+        }                                                                                                          \
     }
 
 DEFINE_BOUND_STORAGE_DETOUR_1D(DetourTexStorage1D, g_texStorage1D)
 DEFINE_BOUND_STORAGE_DETOUR_2D(DetourTexStorage2D, g_texStorage2D)
 DEFINE_BOUND_STORAGE_DETOUR_3D(DetourTexStorage3D, g_texStorage3D)
 
-#define DEFINE_TEXTURE_STORAGE_DETOUR_1D(name, original)                                                      \
-    void WINAPI name(GLuint texture, GLsizei levels, GLenum format, GLsizei width) {                          \
-        if (original)                                                                                         \
-            original(texture, levels, format, width);                                                         \
-        if (levels > 1) {                                                                                     \
-            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                          \
-            ce::opengl_sampler_override::ReconcileTexture(texture);                                          \
-        }                                                                                                     \
+#define DEFINE_TEXTURE_STORAGE_DETOUR_1D(name, original)                             \
+    void WINAPI name(GLuint texture, GLsizei levels, GLenum format, GLsizei width) { \
+        if (original)                                                                \
+            original(texture, levels, format, width);                                \
+        if (levels > 1) {                                                            \
+            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                 \
+            ce::opengl_sampler_override::ReconcileTexture(texture);                  \
+        }                                                                            \
     }
 
-#define DEFINE_TEXTURE_STORAGE_DETOUR_2D(name, original)                                                      \
-    void WINAPI name(GLuint texture, GLsizei levels, GLenum format, GLsizei width, GLsizei height) {          \
-        if (original)                                                                                         \
-            original(texture, levels, format, width, height);                                                 \
-        if (levels > 1) {                                                                                     \
-            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                          \
-            ce::opengl_sampler_override::ReconcileTexture(texture);                                          \
-        }                                                                                                     \
+#define DEFINE_TEXTURE_STORAGE_DETOUR_2D(name, original)                                             \
+    void WINAPI name(GLuint texture, GLsizei levels, GLenum format, GLsizei width, GLsizei height) { \
+        if (original)                                                                                \
+            original(texture, levels, format, width, height);                                        \
+        if (levels > 1) {                                                                            \
+            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                 \
+            ce::opengl_sampler_override::ReconcileTexture(texture);                                  \
+        }                                                                                            \
     }
 
-#define DEFINE_TEXTURE_STORAGE_DETOUR_3D(name, original)                                                      \
-    void WINAPI name(GLuint texture, GLsizei levels, GLenum format, GLsizei width, GLsizei height,            \
-                     GLsizei depth) {                                                                         \
-        if (original)                                                                                         \
-            original(texture, levels, format, width, height, depth);                                          \
-        if (levels > 1) {                                                                                     \
-            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                          \
-            ce::opengl_sampler_override::ReconcileTexture(texture);                                          \
-        }                                                                                                     \
+#define DEFINE_TEXTURE_STORAGE_DETOUR_3D(name, original)                                                            \
+    void WINAPI name(GLuint texture, GLsizei levels, GLenum format, GLsizei width, GLsizei height, GLsizei depth) { \
+        if (original)                                                                                               \
+            original(texture, levels, format, width, height, depth);                                                \
+        if (levels > 1) {                                                                                           \
+            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                                \
+            ce::opengl_sampler_override::ReconcileTexture(texture);                                                 \
+        }                                                                                                           \
     }
 
 DEFINE_TEXTURE_STORAGE_DETOUR_1D(DetourTextureStorage1D, g_textureStorage1D)
 DEFINE_TEXTURE_STORAGE_DETOUR_2D(DetourTextureStorage2D, g_textureStorage2D)
 DEFINE_TEXTURE_STORAGE_DETOUR_3D(DetourTextureStorage3D, g_textureStorage3D)
 
-#define DEFINE_TEXTURE_STORAGE_EXT_DETOUR_1D(name, original)                                                  \
-    void WINAPI name(GLuint texture, GLenum target, GLsizei levels, GLenum format, GLsizei width) {           \
-        if (original)                                                                                         \
-            original(texture, target, levels, format, width);                                                 \
-        if (levels > 1) {                                                                                     \
-            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                          \
-            ce::opengl_sampler_override::ReconcileTextureExt(texture, target);                               \
-        }                                                                                                     \
+#define DEFINE_TEXTURE_STORAGE_EXT_DETOUR_1D(name, original)                                        \
+    void WINAPI name(GLuint texture, GLenum target, GLsizei levels, GLenum format, GLsizei width) { \
+        if (original)                                                                               \
+            original(texture, target, levels, format, width);                                       \
+        if (levels > 1) {                                                                           \
+            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                \
+            ce::opengl_sampler_override::ReconcileTextureExt(texture, target);                      \
+        }                                                                                           \
     }
 
-#define DEFINE_TEXTURE_STORAGE_EXT_DETOUR_2D(name, original)                                                  \
-    void WINAPI name(GLuint texture, GLenum target, GLsizei levels, GLenum format, GLsizei width,             \
-                     GLsizei height) {                                                                        \
-        if (original)                                                                                         \
-            original(texture, target, levels, format, width, height);                                         \
-        if (levels > 1) {                                                                                     \
-            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                          \
-            ce::opengl_sampler_override::ReconcileTextureExt(texture, target);                               \
-        }                                                                                                     \
+#define DEFINE_TEXTURE_STORAGE_EXT_DETOUR_2D(name, original)                                                        \
+    void WINAPI name(GLuint texture, GLenum target, GLsizei levels, GLenum format, GLsizei width, GLsizei height) { \
+        if (original)                                                                                               \
+            original(texture, target, levels, format, width, height);                                               \
+        if (levels > 1) {                                                                                           \
+            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                                \
+            ce::opengl_sampler_override::ReconcileTextureExt(texture, target);                                      \
+        }                                                                                                           \
     }
 
-#define DEFINE_TEXTURE_STORAGE_EXT_DETOUR_3D(name, original)                                                  \
-    void WINAPI name(GLuint texture, GLenum target, GLsizei levels, GLenum format, GLsizei width,             \
-                     GLsizei height, GLsizei depth) {                                                         \
-        if (original)                                                                                         \
-            original(texture, target, levels, format, width, height, depth);                                  \
-        if (levels > 1) {                                                                                     \
-            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                          \
-            ce::opengl_sampler_override::ReconcileTextureExt(texture, target);                               \
-        }                                                                                                     \
+#define DEFINE_TEXTURE_STORAGE_EXT_DETOUR_3D(name, original)                                                      \
+    void WINAPI name(GLuint texture, GLenum target, GLsizei levels, GLenum format, GLsizei width, GLsizei height, \
+                     GLsizei depth) {                                                                             \
+        if (original)                                                                                             \
+            original(texture, target, levels, format, width, height, depth);                                      \
+        if (levels > 1) {                                                                                         \
+            g_storageEvents.fetch_add(1, std::memory_order_relaxed);                                              \
+            ce::opengl_sampler_override::ReconcileTextureExt(texture, target);                                    \
+        }                                                                                                         \
     }
 
 DEFINE_TEXTURE_STORAGE_EXT_DETOUR_1D(DetourTextureStorage1DExt, g_textureStorage1DExt)
@@ -305,21 +299,18 @@ PROC InterceptProcAddress(const char* name, PROC original, ce::opengl_sampler_ov
         return original;
     }
 
-#define INTERCEPT(procName, storage, type, detour)                \
-    if (!std::strcmp(name, procName)) {                            \
-        storage = std::bit_cast<type>(original);                   \
-        return std::bit_cast<PROC>(&detour);                       \
+#define INTERCEPT(procName, storage, type, detour) \
+    if (!std::strcmp(name, procName)) {            \
+        storage = std::bit_cast<type>(original);   \
+        return std::bit_cast<PROC>(&detour);       \
     }
 
     INTERCEPT("glTexImage1D", g_texImage1D, TexImage1DFn, DetourTexImage1D)
     INTERCEPT("glTexImage2D", g_texImage2D, TexImage2DFn, DetourTexImage2D)
     INTERCEPT("glTexImage3D", g_texImage3D, TexImage3DFn, DetourTexImage3D)
-    INTERCEPT("glCompressedTexImage1D", g_compressedTexImage1D, CompressedTexImage1DFn,
-              DetourCompressedTexImage1D)
-    INTERCEPT("glCompressedTexImage2D", g_compressedTexImage2D, CompressedTexImage2DFn,
-              DetourCompressedTexImage2D)
-    INTERCEPT("glCompressedTexImage3D", g_compressedTexImage3D, CompressedTexImage3DFn,
-              DetourCompressedTexImage3D)
+    INTERCEPT("glCompressedTexImage1D", g_compressedTexImage1D, CompressedTexImage1DFn, DetourCompressedTexImage1D)
+    INTERCEPT("glCompressedTexImage2D", g_compressedTexImage2D, CompressedTexImage2DFn, DetourCompressedTexImage2D)
+    INTERCEPT("glCompressedTexImage3D", g_compressedTexImage3D, CompressedTexImage3DFn, DetourCompressedTexImage3D)
     INTERCEPT("glCopyTexImage1D", g_copyTexImage1D, CopyTexImage1DFn, DetourCopyTexImage1D)
     INTERCEPT("glCopyTexImage2D", g_copyTexImage2D, CopyTexImage2DFn, DetourCopyTexImage2D)
     INTERCEPT("glTexStorage1D", g_texStorage1D, TexStorage1DFn, DetourTexStorage1D)
@@ -333,8 +324,7 @@ PROC InterceptProcAddress(const char* name, PROC original, ce::opengl_sampler_ov
     INTERCEPT("glTextureStorage3DEXT", g_textureStorage3DExt, TextureStorage3DExtFn, DetourTextureStorage3DExt)
     INTERCEPT("glGenerateMipmap", g_generateMipmap, GenerateMipmapFn, DetourGenerateMipmap)
     INTERCEPT("glGenerateMipmapEXT", g_generateMipmapExt, GenerateMipmapFn, DetourGenerateMipmapExt)
-    INTERCEPT("glGenerateTextureMipmap", g_generateTextureMipmap, GenerateTextureMipmapFn,
-              DetourGenerateTextureMipmap)
+    INTERCEPT("glGenerateTextureMipmap", g_generateTextureMipmap, GenerateTextureMipmapFn, DetourGenerateTextureMipmap)
     INTERCEPT("glGenerateTextureMipmapEXT", g_generateTextureMipmapExt, GenerateTextureMipmapExtFn,
               DetourGenerateTextureMipmapExt)
     INTERCEPT("glTextureView", g_textureView, TextureViewFn, DetourTextureView)

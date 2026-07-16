@@ -526,15 +526,16 @@ TEST(AudioEncoderContractTest, BoundaryLengthsFinalizeExactlyForEveryCodec) {
         for (int targetSamples : lengths) {
             AudioEncoder localEncoder;
             std::vector<AVPacket*> packets;
-            ASSERT_TRUE(localEncoder.Init(config, [&packets](AVPacket* packet) {
-                if (AVPacket* clone = av_packet_clone(packet)) {
-                    packets.push_back(clone);
-                }
-            })) << codec << " target=" << targetSamples;
+            ASSERT_TRUE(localEncoder.Init(config,
+                                          [&packets](AVPacket* packet) {
+                                              if (AVPacket* clone = av_packet_clone(packet)) {
+                                                  packets.push_back(clone);
+                                              }
+                                          }))
+                << codec << " target=" << targetSamples;
             localEncoder.SetStreamIndex(1);
             ASSERT_TRUE(localEncoder.ResetForRecordingStart(0, generation++));
-            const int64_t targetUs =
-                (static_cast<int64_t>(targetSamples) * 1000000ll + 24000ll) / 48000ll;
+            const int64_t targetUs = (static_cast<int64_t>(targetSamples) * 1000000ll + 24000ll) / 48000ll;
             localEncoder.SetRecordingEndUs(targetUs);
             localEncoder.Stop();
             const auto& report = localEncoder.GetFinalizationReport();
@@ -542,8 +543,7 @@ TEST(AudioEncoderContractTest, BoundaryLengthsFinalizeExactlyForEveryCodec) {
             EXPECT_EQ(report.expectedDecodedSamples, targetSamples) << codec << " target=" << targetSamples;
             EXPECT_GE(report.codecSubmittedSamples, targetSamples) << codec << " target=" << targetSamples;
             EXPECT_EQ(report.durationlessPacketCount, 0u) << codec << " target=" << targetSamples;
-            EXPECT_EQ(report.controlPacketCount, codec == "flac" ? 1u : 0u)
-                << codec << " target=" << targetSamples;
+            EXPECT_EQ(report.controlPacketCount, codec == "flac" ? 1u : 0u) << codec << " target=" << targetSamples;
             EXPECT_TRUE(report.drainReachedEof) << codec << " target=" << targetSamples;
             EXPECT_FALSE(report.protocolError) << codec << " target=" << targetSamples;
             EXPECT_FALSE(packets.empty()) << codec << " target=" << targetSamples;
@@ -605,11 +605,9 @@ TEST(AudioEncoderContractTest, LosslessBitDepthAndSampleRateAreResolvedBeforeOpe
         int expectedRate;
     };
     const Case cases[] = {
-        {"alac", "16", "44100", 16, 44100}, {"alac", "24", "48000", 24, 48000},
-        {"alac", "32", "96000", 24, 96000}, {"flac", "16", "44100", 16, 44100},
-        {"flac", "24", "48000", 24, 48000}, {"flac", "32", "96000", 32, 96000},
-        {"pcm", "16", "44100", 16, 44100}, {"pcm", "24", "48000", 24, 48000},
-        {"pcm", "32", "96000", 32, 96000},
+        {"alac", "16", "44100", 16, 44100}, {"alac", "24", "48000", 24, 48000}, {"alac", "32", "96000", 24, 96000},
+        {"flac", "16", "44100", 16, 44100}, {"flac", "24", "48000", 24, 48000}, {"flac", "32", "96000", 32, 96000},
+        {"pcm", "16", "44100", 16, 44100},  {"pcm", "24", "48000", 24, 48000},  {"pcm", "32", "96000", 32, 96000},
     };
     for (const auto& item : cases) {
         AudioEncoder localEncoder;

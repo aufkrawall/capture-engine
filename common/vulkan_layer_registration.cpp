@@ -246,8 +246,7 @@ bool DeleteRegistryTarget(const RegistryTarget& target) {
         return true;
     }
     if (openResult != ERROR_SUCCESS) {
-        LogError("[VulkanReg] Failed to open %s for unregistration (error=%ld, %s)",
-                 DescribeLocation(location).c_str(),
+        LogError("[VulkanReg] Failed to open %s for unregistration (error=%ld, %s)", DescribeLocation(location).c_str(),
                  openResult, FormatWindowsError(openResult).c_str());
         return false;
     }

@@ -51,15 +51,14 @@ TEST(ProcessLoopbackProtocolTest, OrderedRecordsRoundTripWithExactMetadata) {
     ProtocolMapping mapping;
     ASSERT_NE(mapping.data, nullptr);
     ASSERT_NE(ce::process_loopback::Initialize(mapping.data, 17), nullptr);
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 9)));
+    ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 9)));
     AudioPacket input = DataPacket(0x5a, 48);
     input.captureEpoch = 9;
     input.qpcPosition = 123456;
     input.channelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
     ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, input));
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        mapping.data, LifecyclePacket(AudioPacketRecordType::EndOfStream, 9)));
+    ASSERT_TRUE(
+        ce::process_loopback::WritePacket(mapping.data, LifecyclePacket(AudioPacketRecordType::EndOfStream, 9)));
 
     AudioPacket output;
     ASSERT_TRUE(ce::process_loopback::ReadPacket(mapping.data, output));
@@ -94,8 +93,7 @@ TEST(ProcessLoopbackProtocolTest, ConsumedSlotsWrapWithoutOverrunOrReordering) {
     ProtocolMapping mapping;
     ASSERT_NE(ce::process_loopback::Initialize(mapping.data, 2), nullptr);
     AudioPacket output;
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 3)));
+    ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 3)));
     ASSERT_TRUE(ce::process_loopback::ReadPacket(mapping.data, output));
     for (uint32_t cycle = 0; cycle < 3; ++cycle) {
         for (uint32_t sequence = 0; sequence < ce::process_loopback::kDescriptorCount; ++sequence) {
@@ -118,8 +116,7 @@ TEST(ProcessLoopbackProtocolTest, ConsumedSlotsWrapWithoutOverrunOrReordering) {
 TEST(ProcessLoopbackProtocolTest, FullRingNeverDropsAnOrderedLifecycleHeadForNewData) {
     ProtocolMapping mapping;
     ASSERT_NE(ce::process_loopback::Initialize(mapping.data, 4), nullptr);
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 2)));
+    ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 2)));
     for (uint32_t index = 1; index < ce::process_loopback::kDescriptorCount; ++index) {
         ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, DataPacket(static_cast<uint8_t>(index))));
     }
@@ -206,8 +203,7 @@ TEST(ProcessLoopbackProtocolTest, MaximumLegalEightChannelPacketRoundTrips) {
     packet.isFloat = true;
     packet.captureEpoch = 1;
     packet.data.assign(48000u * 2u * 32u, 0x6d);
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 1)));
+    ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 1)));
     ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, packet));
     AudioPacket decoded;
     ASSERT_TRUE(ce::process_loopback::ReadPacket(mapping.data, decoded));
@@ -223,15 +219,15 @@ TEST(ProcessLoopbackProtocolTest, VariableByteRingWrapPreservesPayload) {
     const size_t packetBytes = 700u * 1024u;
     ASSERT_LT(packetBytes, header->maximumPacketBytes);
     AudioPacket decoded;
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 3)));
+    ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 3)));
     ASSERT_TRUE(ce::process_loopback::ReadPacket(mapping.data, decoded));
     bool wrapped = false;
     uint32_t previousOffset = 0;
     for (uint32_t index = 0; index < 24; ++index) {
         AudioPacket packet = DataPacket(static_cast<uint8_t>(index), packetBytes / 8);
         ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, packet));
-        const auto& descriptor = ce::process_loopback::Descriptors(mapping.data)[index % ce::process_loopback::kDescriptorCount];
+        const auto& descriptor =
+            ce::process_loopback::Descriptors(mapping.data)[index % ce::process_loopback::kDescriptorCount];
         if (index > 0 && descriptor.payloadOffset < previousOffset) {
             wrapped = true;
         }
@@ -278,8 +274,8 @@ TEST(ProcessLoopbackProtocolTest, InvalidChannelMaskAndLifecycleMetadataAreFatal
 
     ProtocolMapping consumerValidation;
     ASSERT_NE(ce::process_loopback::Initialize(consumerValidation.data, 15), nullptr);
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        consumerValidation.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 1)));
+    ASSERT_TRUE(ce::process_loopback::WritePacket(consumerValidation.data,
+                                                  LifecyclePacket(AudioPacketRecordType::EpochStart, 1)));
     ce::process_loopback::Descriptors(consumerValidation.data)[0].channelMask = SPEAKER_FRONT_LEFT;
     AudioPacket decoded;
     EXPECT_FALSE(ce::process_loopback::ReadPacket(consumerValidation.data, decoded));
@@ -289,8 +285,7 @@ TEST(ProcessLoopbackProtocolTest, InvalidChannelMaskAndLifecycleMetadataAreFatal
 TEST(ProcessLoopbackProtocolTest, LifecycleEpochMismatchIsFatal) {
     ProtocolMapping mapping;
     ASSERT_NE(ce::process_loopback::Initialize(mapping.data, 13), nullptr);
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 1)));
+    ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 1)));
     AudioPacket mismatched = DataPacket(2, 48);
     mismatched.captureEpoch = 2;
     ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, mismatched));
@@ -310,8 +305,8 @@ TEST(ProcessLoopbackProtocolTest, DataAndEndOfStreamRequireAnOpenEpoch) {
 
     ProtocolMapping endMapping;
     ASSERT_NE(ce::process_loopback::Initialize(endMapping.data, 17), nullptr);
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        endMapping.data, LifecyclePacket(AudioPacketRecordType::EndOfStream, 1)));
+    ASSERT_TRUE(
+        ce::process_loopback::WritePacket(endMapping.data, LifecyclePacket(AudioPacketRecordType::EndOfStream, 1)));
     EXPECT_FALSE(ce::process_loopback::ReadPacket(endMapping.data, decoded));
     EXPECT_TRUE(ce::process_loopback::HasFatalTransportFailure(endMapping.data));
 }
@@ -319,12 +314,10 @@ TEST(ProcessLoopbackProtocolTest, DataAndEndOfStreamRequireAnOpenEpoch) {
 TEST(ProcessLoopbackProtocolTest, CompletedEpochCannotBeReused) {
     ProtocolMapping mapping;
     ASSERT_NE(ce::process_loopback::Initialize(mapping.data, 18), nullptr);
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 4)));
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        mapping.data, LifecyclePacket(AudioPacketRecordType::EndOfStream, 4)));
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 4)));
+    ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 4)));
+    ASSERT_TRUE(
+        ce::process_loopback::WritePacket(mapping.data, LifecyclePacket(AudioPacketRecordType::EndOfStream, 4)));
+    ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 4)));
     AudioPacket decoded;
     ASSERT_TRUE(ce::process_loopback::ReadPacket(mapping.data, decoded));
     ASSERT_TRUE(ce::process_loopback::ReadPacket(mapping.data, decoded));
@@ -336,8 +329,7 @@ TEST(ProcessLoopbackProtocolTest, DiscardPreservesLifecycleStateForContinuingCap
     ProtocolMapping mapping;
     auto* header = ce::process_loopback::Initialize(mapping.data, 19);
     ASSERT_NE(header, nullptr);
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 7)));
+    ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 7)));
     AudioPacket beforeDiscard = DataPacket(0x31);
     beforeDiscard.captureEpoch = 7;
     ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, beforeDiscard));
@@ -355,12 +347,11 @@ TEST(ProcessLoopbackProtocolTest, DiscardPreservesLifecycleStateForContinuingCap
     ASSERT_TRUE(ce::process_loopback::ReadPacket(mapping.data, decoded));
     EXPECT_EQ(decoded.data, afterDiscard.data);
 
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        mapping.data, LifecyclePacket(AudioPacketRecordType::EndOfStream, 7)));
+    ASSERT_TRUE(
+        ce::process_loopback::WritePacket(mapping.data, LifecyclePacket(AudioPacketRecordType::EndOfStream, 7)));
     ce::process_loopback::DiscardPackets(mapping.data);
     EXPECT_EQ(header->consumerEpoch.load(), 0u);
-    ASSERT_TRUE(ce::process_loopback::WritePacket(
-        mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 8)));
+    ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, 8)));
     ASSERT_TRUE(ce::process_loopback::ReadPacket(mapping.data, decoded));
     EXPECT_EQ(decoded.captureEpoch, 8u);
 }

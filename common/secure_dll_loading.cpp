@@ -76,9 +76,9 @@ HMODULE LoadLibraryFromSecurePath(const std::filesystem::path& path, DWORD* erro
         return nullptr;
     }
     const std::wstring normalized = path.lexically_normal().wstring();
-    HMODULE module = LoadLibraryExW(normalized.c_str(), nullptr,
-                                    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS |
-                                        LOAD_LIBRARY_SEARCH_SYSTEM32);
+    HMODULE module =
+        LoadLibraryExW(normalized.c_str(), nullptr,
+                       LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_SYSTEM32);
     SetError(module ? ERROR_SUCCESS : GetLastError(), error);
     return module;
 }

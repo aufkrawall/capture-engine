@@ -12,8 +12,8 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
-#include "../apis/dx12_sampler_hooks.h"
 #include "../apis/dx11_hook.h"
+#include "../apis/dx12_sampler_hooks.h"
 #include "../apis/lod_helper.h"
 #include "../common/module_enumeration.h"
 #include "../common/overlay_compat.h"
@@ -525,8 +525,7 @@ bool InitializeD3D12Hooks() {
     oSerializeVersionedRootSignature = reinterpret_cast<D3D12SerializeVersionedRootSignaturePtr>(
         GetProcAddress(hD3D12, "D3D12SerializeVersionedRootSignature"));
 
-    oD3D12CreateDeviceRaw =
-        reinterpret_cast<D3D12CreateDeviceRawPtr>(GetProcAddress(hD3D12, "D3D12CreateDevice"));
+    oD3D12CreateDeviceRaw = reinterpret_cast<D3D12CreateDeviceRawPtr>(GetProcAddress(hD3D12, "D3D12CreateDevice"));
     oD3D12GetInterface = reinterpret_cast<D3D12GetInterfacePtr>(GetProcAddress(hD3D12, "D3D12GetInterface"));
 
     void* dummy;
@@ -599,8 +598,7 @@ bool InitializeD3D12Hooks() {
     bool patchResult = false;
     if (oD3D12CreateDeviceRaw) {
         patchResult = PatchIATAllModules("d3d12.dll", "D3D12CreateDevice", (void*)DetourD3D12CreateDeviceRaw, &dummy);
-        RegisterDynamicHook("D3D12CreateDevice", (void*)DetourD3D12CreateDeviceRaw,
-                            (void**)&oD3D12CreateDeviceRaw);
+        RegisterDynamicHook("D3D12CreateDevice", (void*)DetourD3D12CreateDeviceRaw, (void**)&oD3D12CreateDeviceRaw);
     }
     WrapperLog("IAT: D3D12 raw device/sampler/root-signature hooks initialized (patchResult=%d)", patchResult);
 #endif
@@ -688,8 +686,8 @@ bool InitializeD3D10Hooks() {
         HMODULE hD3D10_1 = GetModuleHandleA("d3d10_1.dll");
         if (hD3D10_1) {
             ::oD3D10CreateDevice1 = (PFN_D3D10CreateDevice1)GetProcAddress(hD3D10_1, "D3D10CreateDevice1");
-            ::oD3D10CreateDeviceAndSwapChain1 = (PFN_D3D10CreateDeviceAndSwapChain1)GetProcAddress(
-                hD3D10_1, "D3D10CreateDeviceAndSwapChain1");
+            ::oD3D10CreateDeviceAndSwapChain1 =
+                (PFN_D3D10CreateDeviceAndSwapChain1)GetProcAddress(hD3D10_1, "D3D10CreateDeviceAndSwapChain1");
             PatchIATAllModules("d3d10_1.dll", "D3D10CreateDevice1", (void*)::Wrapped_D3D10CreateDevice1, &dummy);
             PatchIATAllModules("d3d10_1.dll", "D3D10CreateDeviceAndSwapChain1",
                                (void*)::Wrapped_D3D10CreateDeviceAndSwapChain1, &dummy);

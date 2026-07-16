@@ -44,9 +44,11 @@ std::string WideToUtf8(const wchar_t* value) {
 
 }  // namespace
 
-extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(
-    uint64_t mappingHandleValue, uint64_t packetEventValue, uint64_t stopEventValue, uint64_t workerGeneration,
-    uint32_t targetPid, const wchar_t* targetProcessName, int sampleRate, int channels, uint32_t channelMask) {
+extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(uint64_t mappingHandleValue,
+                                                                    uint64_t packetEventValue, uint64_t stopEventValue,
+                                                                    uint64_t workerGeneration, uint32_t targetPid,
+                                                                    const wchar_t* targetProcessName, int sampleRate,
+                                                                    int channels, uint32_t channelMask) {
     const HANDLE mappingHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(mappingHandleValue));
     const HANDLE packetEvent = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(packetEventValue));
     const HANDLE stopEvent = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(stopEventValue));
@@ -89,10 +91,9 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(
                                       std::memory_order_release);
             RelayWorkerLog("[Worker] Process-loopback capture failed to start or has no packet-ready event");
         } else {
-            header->workerState.store(
-                static_cast<uint32_t>(byName ? ce::process_loopback::WorkerState::Monitoring
-                                             : ce::process_loopback::WorkerState::Starting),
-                std::memory_order_release);
+            header->workerState.store(static_cast<uint32_t>(byName ? ce::process_loopback::WorkerState::Monitoring
+                                                                   : ce::process_loopback::WorkerState::Starting),
+                                      std::memory_order_release);
             HANDLE waitHandles[] = {stopEvent, capture.GetPacketReadyEvent()};
             bool stopping = false;
             bool sawEndOfStream = false;
@@ -146,11 +147,9 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(
                 header->heartbeatTick.store(GetTickCount64(), std::memory_order_release);
                 if (!stopping) {
                     header->workerState.store(
-                        static_cast<uint32_t>(capture.IsCapturing()
-                                                  ? ce::process_loopback::WorkerState::Capturing
-                                                  : capture.IsMonitoring()
-                                                        ? ce::process_loopback::WorkerState::Monitoring
-                                                        : ce::process_loopback::WorkerState::Starting),
+                        static_cast<uint32_t>(capture.IsCapturing()    ? ce::process_loopback::WorkerState::Capturing
+                                              : capture.IsMonitoring() ? ce::process_loopback::WorkerState::Monitoring
+                                                                       : ce::process_loopback::WorkerState::Starting),
                         std::memory_order_release);
                 }
                 if (!byName && !sawEndOfStream && !capture.IsCapturing() && capture.GetTargetPID() == 0) {

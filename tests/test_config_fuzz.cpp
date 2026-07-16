@@ -21,8 +21,7 @@ static std::string TempPath(const char* suffix) {
 }
 
 static void WriteFuzzFile(const std::string& path, const std::vector<char>& data) {
-    HANDLE h = CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE h = CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     ASSERT_NE(h, INVALID_HANDLE_VALUE);
     DWORD written = 0;
     if (!data.empty())
@@ -40,8 +39,7 @@ TEST(ConfigFuzzTest, RandomByteSequencesDoNotCrash) {
         WriteFuzzFile(path, buf);
 
         AppConfig config;
-        EXPECT_NO_THROW(LoadConfig(path, config))
-            << "Failed on iteration " << i;
+        EXPECT_NO_THROW(LoadConfig(path, config)) << "Failed on iteration " << i;
     }
     DeleteFileA(path.c_str());
 }

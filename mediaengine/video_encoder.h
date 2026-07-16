@@ -426,8 +426,8 @@ private:
     uint32_t cursorPrecompositionFailureLogs = 0;
     ce::cursor::CaptureState cursorCaptureState;
 
-    bool PrepareVideoProcessorCursorInput(ID3D11Texture2D* source, bool overlayCursor,
-                                          CursorSourceRestore* restore, ID3D11Texture2D** preparedSource);
+    bool PrepareVideoProcessorCursorInput(ID3D11Texture2D* source, bool overlayCursor, CursorSourceRestore* restore,
+                                          ID3D11Texture2D** preparedSource);
     void CleanupCursorCompositionResources();
     bool ConfigureAndOpenCodec();
     bool ShouldUse10BitOutput() const {

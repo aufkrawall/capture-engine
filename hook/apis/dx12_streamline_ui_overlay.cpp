@@ -9,8 +9,8 @@
 
 #include <wrl/client.h>
 
-#include "../common/dxgi_shared.h"
 #include "../common/dx12_overlay_policy.h"
+#include "../common/dxgi_shared.h"
 #include "../common/hook_common.h"
 #include "../common/ipc_client.h"
 #include "../common/overlay_adapter.h"
@@ -408,8 +408,7 @@ bool OnFrameTag(const void* frameToken) {
     }
 
     if (g_AdoptedStandbyNeedsActivationFrameRecord &&
-        (g_Phase == BootstrapPhase::kActivationPendingSubmission ||
-         g_Phase == BootstrapPhase::kActivationSubmitted)) {
+        (g_Phase == BootstrapPhase::kActivationPendingSubmission || g_Phase == BootstrapPhase::kActivationSubmitted)) {
         // Standby resources use eValidUntilPresent. An activation reported after the standby
         // frame's Present can provisionally adopt that record, but a different frame token proves
         // that its lifetime ended. Record into this first real activation frame instead of
@@ -430,8 +429,7 @@ bool OnFrameTag(const void* frameToken) {
         return true;
     }
 
-    if ((g_Phase == BootstrapPhase::kActivationSubmitted ||
-         g_Phase == BootstrapPhase::kActivationIdle) &&
+    if ((g_Phase == BootstrapPhase::kActivationSubmitted || g_Phase == BootstrapPhase::kActivationIdle) &&
         g_CoverageBudget.NeedsCurrentFrameRecord()) {
         // The prior UIColorAndAlpha record ended at its source-frame Present.
         // Re-record on this tag until PostSL consumes the output handoff budget;

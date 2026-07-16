@@ -47,8 +47,7 @@ bool LaunchRestrictedChildProcess(const std::wstring& executablePath, const std:
     }
 
     STARTUPINFOEXW startup{};
-    startup.StartupInfo.cb =
-        inheritedHandles.empty() ? sizeof(STARTUPINFOW) : static_cast<DWORD>(sizeof(startup));
+    startup.StartupInfo.cb = inheritedHandles.empty() ? sizeof(STARTUPINFOW) : static_cast<DWORD>(sizeof(startup));
     std::vector<uint8_t> attributeStorage;
     if (!inheritedHandles.empty()) {
         SIZE_T attributeBytes = 0;
@@ -75,11 +74,10 @@ bool LaunchRestrictedChildProcess(const std::wstring& executablePath, const std:
     std::vector<wchar_t> mutableCommandLine(commandLine.begin(), commandLine.end());
     mutableCommandLine.push_back(L'\0');
     PROCESS_INFORMATION process{};
-    const BOOL created =
-        CreateProcessW(executablePath.c_str(), mutableCommandLine.data(), nullptr, nullptr,
-                       inheritedHandles.empty() ? FALSE : TRUE,
-                       creationFlags | (inheritedHandles.empty() ? 0 : EXTENDED_STARTUPINFO_PRESENT), nullptr,
-                       workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startup.StartupInfo, &process);
+    const BOOL created = CreateProcessW(
+        executablePath.c_str(), mutableCommandLine.data(), nullptr, nullptr, inheritedHandles.empty() ? FALSE : TRUE,
+        creationFlags | (inheritedHandles.empty() ? 0 : EXTENDED_STARTUPINFO_PRESENT), nullptr,
+        workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startup.StartupInfo, &process);
     error = created ? ERROR_SUCCESS : GetLastError();
     if (startup.lpAttributeList)
         DeleteProcThreadAttributeList(startup.lpAttributeList);

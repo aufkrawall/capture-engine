@@ -1894,8 +1894,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
     BeginPostSLOffKeepAlivePresentScope();
-    auto postSLOffKeepAlivePresentScopeGuard =
-        ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
+    auto postSLOffKeepAlivePresentScopeGuard = ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
 
     // Capture the caller here, not in a helper. We need the code that called
     // into DetourPresent, not the helper's own return address inside this DLL.
@@ -1992,8 +1991,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             recentLargePresentGap, matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
     const bool startupTopLevelCandidate = DXGIShared::ShouldUseStreamlineStartupTopLevelCandidate(
         observerOnlyMode, streamlineSyntheticReentrant, callerFromStreamlineModule, api == APIType::D3D12,
-        streamlineFGRunning, streamlineStartupHandoffInProgress, recentLargePresentGap,
-        matchesExpectedPresentThread, postSLConfirmedRendering);
+        streamlineFGRunning, streamlineStartupHandoffInProgress, recentLargePresentGap, matchesExpectedPresentThread,
+        postSLConfirmedRendering);
     const bool stalePostFSRStartupHandoffPresentHookRisk =
         api == APIType::D3D12 && ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(
                                      presentBypassAvailable, steamOverlayLoaded, api == APIType::D3D12,
@@ -2279,8 +2278,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             postSLCallback(pSwapChain);
         } else if (postSLCallback) {
             static std::atomic<int> s_postSLOffKeepAliveNestedDedupLogCount{0};
-            const int logCount =
-                s_postSLOffKeepAliveNestedDedupLogCount.fetch_add(1, std::memory_order_relaxed);
+            const int logCount = s_postSLOffKeepAliveNestedDedupLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 300) == 0) {
                 HookLogImportant(
                     "DetourPresent: Skipping nested PostSL callback because the exact-proxy explicit-OFF "
@@ -2424,8 +2422,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             postSLCallback(pSwapChain);
         } else if (postSLCallback) {
             static std::atomic<int> s_postSLOffKeepAliveRecursiveDedupLogCount{0};
-            const int logCount =
-                s_postSLOffKeepAliveRecursiveDedupLogCount.fetch_add(1, std::memory_order_relaxed);
+            const int logCount = s_postSLOffKeepAliveRecursiveDedupLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 300) == 0) {
                 HookLogImportant(
                     "DetourPresent: Skipping re-entrant PostSL callback because the exact-proxy explicit-OFF "
@@ -3031,8 +3028,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
     BeginPostSLOffKeepAlivePresentScope();
-    auto postSLOffKeepAlivePresentScopeGuard =
-        ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
+    auto postSLOffKeepAlivePresentScopeGuard = ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
 
     const void* detourCallerAddress = CE_CAPTURE_RETURN_ADDRESS();
     char detourCallerModulePath[MAX_PATH] = {};
@@ -3106,8 +3102,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             recentLargePresentGap, matchesExpectedPresentThread, startupTopLevelPresentAlreadyConsumed);
     const bool startupTopLevelCandidate = DXGIShared::ShouldUseStreamlineStartupTopLevelCandidate(
         observerOnlyMode, streamlineSyntheticReentrant, callerFromStreamlineModule, api == APIType::D3D12,
-        streamlineFGRunning, streamlineStartupHandoffInProgress, recentLargePresentGap,
-        matchesExpectedPresentThread, postSLConfirmedRendering);
+        streamlineFGRunning, streamlineStartupHandoffInProgress, recentLargePresentGap, matchesExpectedPresentThread,
+        postSLConfirmedRendering);
     const bool stalePostFSRStartupHandoffPresentHookRisk =
         api == APIType::D3D12 && ShouldTreatSteamDX12PresentHookChainAsStaleForPostFSRStartupHandoff(
                                      present1BypassAvailable, steamOverlayLoaded, api == APIType::D3D12,
@@ -3364,8 +3360,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             postSLCallback(pSwapChain);
         } else if (postSLCallback) {
             static std::atomic<int> s_postSLOffKeepAliveNestedDedupLogCount1{0};
-            const int logCount =
-                s_postSLOffKeepAliveNestedDedupLogCount1.fetch_add(1, std::memory_order_relaxed);
+            const int logCount = s_postSLOffKeepAliveNestedDedupLogCount1.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 300) == 0) {
                 HookLogImportant(
                     "DetourPresent1: Skipping nested PostSL callback because the exact-proxy explicit-OFF "
@@ -3473,8 +3468,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             postSLCallback(pSwapChain);
         } else if (postSLCallback) {
             static std::atomic<int> s_postSLOffKeepAliveRecursiveDedupLogCount1{0};
-            const int logCount =
-                s_postSLOffKeepAliveRecursiveDedupLogCount1.fetch_add(1, std::memory_order_relaxed);
+            const int logCount = s_postSLOffKeepAliveRecursiveDedupLogCount1.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 20 || (logCount % 300) == 0) {
                 HookLogImportant(
                     "DetourPresent1: Skipping re-entrant PostSL callback because the exact-proxy explicit-OFF "

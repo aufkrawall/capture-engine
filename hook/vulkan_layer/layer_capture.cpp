@@ -2399,22 +2399,20 @@ bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
     bool queued = false;
     if (waitResult == VK_SUCCESS) {
         void* mappedData = nullptr;
-        if (disp->fp_vkMapMemory(device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &mappedData) == VK_SUCCESS &&
-            mappedData) {
+        if (disp->fp_vkMapMemory(device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &mappedData) == VK_SUCCESS && mappedData) {
             if (swapPackedRedBlue) {
                 std::vector<uint32_t> converted(static_cast<size_t>(width) * height);
                 const auto* sourcePixels = static_cast<const uint32_t*>(mappedData);
                 for (size_t i = 0; i < converted.size(); ++i) {
                     const uint32_t value = sourcePixels[i];
-                    converted[i] = (value & 0xC00FFC00u) | ((value >> 20) & 0x3FFu) |
-                                   ((value & 0x3FFu) << 20);
+                    converted[i] = (value & 0xC00FFC00u) | ((value >> 20) & 0x3FFu) | ((value & 0x3FFu) << 20);
                 }
-                queued = QueueScreenshotPixels(sharedMemory, requestId,
-                                               reinterpret_cast<const uint8_t*>(converted.data()), width, height,
-                                               rowPitch, pixelFormat, colorEncoding);
+                queued =
+                    QueueScreenshotPixels(sharedMemory, requestId, reinterpret_cast<const uint8_t*>(converted.data()),
+                                          width, height, rowPitch, pixelFormat, colorEncoding);
             } else {
-                queued = QueueScreenshotPixels(sharedMemory, requestId, static_cast<const uint8_t*>(mappedData),
-                                               width, height, rowPitch, pixelFormat, colorEncoding);
+                queued = QueueScreenshotPixels(sharedMemory, requestId, static_cast<const uint8_t*>(mappedData), width,
+                                               height, rowPitch, pixelFormat, colorEncoding);
             }
             disp->fp_vkUnmapMemory(device, stagingMemory);
         }

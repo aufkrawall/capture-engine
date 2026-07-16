@@ -172,7 +172,7 @@ inline bool ShouldDrainOutstandingCfrTicksAtStop(bool useScreenGrab, bool useVFR
 }
 
 inline bool ShouldAbortCfrStopDrainBeforeOutputIsLive(bool recording, bool recordingOutputLive,
-                                                       bool drainOutstandingCfrTicks) {
+                                                      bool drainOutstandingCfrTicks) {
     // A recording that never committed its first video frame has no CFR output
     // prefix or accrued output debt to close.  Keeping the drain armed in this
     // state also prevents the encoder worker from observing shutdown.
@@ -838,7 +838,7 @@ struct CfrTimelineStartContract {
 };
 
 inline CfrTimelineStartContract BuildCfrTimelineStartContract(int64_t videoOriginQpc, int64_t liveQpc,
-                                                               int64_t renderLoopbackLatencyQpc) {
+                                                              int64_t renderLoopbackLatencyQpc) {
     CfrTimelineStartContract contract;
     contract.videoOriginQpc = videoOriginQpc;
     contract.liveQpc = liveQpc;
@@ -859,7 +859,7 @@ inline CfrTimelineStartContract BuildCfrTimelineStartContract(int64_t videoOrigi
 }
 
 inline CfrTimelineStartContract RebaseCfrTimelineStartContract(const CfrTimelineStartContract& contract,
-                                                                int64_t videoOriginQpc) {
+                                                               int64_t videoOriginQpc) {
     if (!contract.valid || videoOriginQpc <= 0 || contract.contentDelayQpc < 0 ||
         videoOriginQpc > INT64_MAX - contract.contentDelayQpc) {
         return {};
@@ -887,8 +887,7 @@ inline size_t SelectNearestMonotonicTimestampIndex(const int64_t* timestamps, si
             continue;
         }
         const uint64_t distance = signedDistance(timestamps[i], targetQpc);
-        if (!found || distance < bestDistance ||
-            (distance == bestDistance && timestamps[i] > timestamps[bestIndex])) {
+        if (!found || distance < bestDistance || (distance == bestDistance && timestamps[i] > timestamps[bestIndex])) {
             bestIndex = i;
             bestDistance = distance;
             found = true;
@@ -992,9 +991,9 @@ inline uint32_t EstimateWgcMinUpdateIntervalDeliveryFps(uint32_t sourceFps, uint
     if (sourceFps == 0 || producerTargetFps == 0 || producerTargetFps >= sourceFps) {
         return sourceFps;
     }
-    const uint32_t acceptedEvery = static_cast<uint32_t>(
-        (static_cast<uint64_t>(sourceFps) + static_cast<uint64_t>(producerTargetFps) - 1ull) /
-        static_cast<uint64_t>(producerTargetFps));
+    const uint32_t acceptedEvery =
+        static_cast<uint32_t>((static_cast<uint64_t>(sourceFps) + static_cast<uint64_t>(producerTargetFps) - 1ull) /
+                              static_cast<uint64_t>(producerTargetFps));
     return sourceFps / acceptedEvery;
 }
 
@@ -1883,8 +1882,7 @@ inline int64_t ClampWgcSelectionTargetToLiveQpc(
     }
 
     const int64_t visualDebtFloorQpc = GetWgcLiveVisualDebtFloorQpcForMode(
-        liveNowQpc, targetIntervalTicks, qpcTicksPerSecond, encoderLimitedSmoothnessMode,
-        intentionalContentDelayQpc);
+        liveNowQpc, targetIntervalTicks, qpcTicksPerSecond, encoderLimitedSmoothnessMode, intentionalContentDelayQpc);
     if (visualDebtFloorQpc <= 0 || selectionTargetQpc >= visualDebtFloorQpc) {
         return selectionTargetQpc;
     }
@@ -2814,8 +2812,7 @@ inline bool IsWgcFrameWithinLiveVisualDebtWindow(int64_t frameSelectionQpc, int6
     }
 
     const int64_t visualDebtFloorQpc = GetWgcLiveVisualDebtFloorQpcForMode(
-        liveNowQpc, targetIntervalTicks, qpcTicksPerSecond, encoderLimitedSmoothnessMode,
-        intentionalContentDelayQpc);
+        liveNowQpc, targetIntervalTicks, qpcTicksPerSecond, encoderLimitedSmoothnessMode, intentionalContentDelayQpc);
     return visualDebtFloorQpc <= 0 || frameSelectionQpc >= visualDebtFloorQpc;
 }
 

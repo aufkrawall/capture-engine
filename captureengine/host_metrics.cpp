@@ -213,8 +213,7 @@ bool ReadGpuEngineValues(HostMetricsState& state, std::vector<GpuEngineValue>& v
 
         const bool valueValid = IsPdhValueValid(items[i].FmtValue.CStatus);
         const double utilization = valueValid ? items[i].FmtValue.doubleValue : 0.0;
-        values.push_back(
-            {itemLuid, utilization, metrics_policy::IsVideoEngine(items[i].szName), valueValid});
+        values.push_back({itemLuid, utilization, metrics_policy::IsVideoEngine(items[i].szName), valueValid});
 
         metrics_policy::GpuEngineSample processSample;
         if (metrics_policy::ParseGpuEngineSample(items[i].szName, utilization, processSample))
@@ -318,8 +317,8 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t ho
         g_HostMetrics.processResolvedPid = targetPid;
         g_HostMetrics.processResolvedLuid = 0;
     }
-    const metrics_policy::AdapterResolution adapter = metrics_policy::ResolveAdapterLuid(
-        hookLuid, targetPid, processSamples, g_HostMetrics.processResolvedLuid);
+    const metrics_policy::AdapterResolution adapter =
+        metrics_policy::ResolveAdapterLuid(hookLuid, targetPid, processSamples, g_HostMetrics.processResolvedLuid);
     if (adapter.source == metrics_policy::AdapterResolutionSource::ProcessGpuEngine && adapter.adapterLuid != 0)
         g_HostMetrics.processResolvedLuid = adapter.adapterLuid;
 

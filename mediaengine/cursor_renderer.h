@@ -57,8 +57,7 @@ public:
 
     // Loads the best Windows cursor resource for the requested monitor-DPI
     // size. Larger custom/accessibility cursors are never downscaled.
-    bool LoadCursorBitmap(HCURSOR cursor, uint32_t requestedWidth, uint32_t requestedHeight,
-                          CursorBitmapData* result);
+    bool LoadCursorBitmap(HCURSOR cursor, uint32_t requestedWidth, uint32_t requestedHeight, CursorBitmapData* result);
 
 private:
     bool ExtractCursorBitmap(HICON icon, uint8_t** outBitmap, uint32_t* outWidth, uint32_t* outHeight,
@@ -69,8 +68,7 @@ private:
 
     // Create D3D11 resources for rendering
     bool CreateRenderingResources();
-    ID3D11RenderTargetView* GetTargetRenderView(ID3D11Texture2D* targetTexture,
-                                                const D3D11_TEXTURE2D_DESC& targetDesc);
+    ID3D11RenderTargetView* GetTargetRenderView(ID3D11Texture2D* targetTexture, const D3D11_TEXTURE2D_DESC& targetDesc);
     void ClearTargetRenderViewCache();
 
     // D3D11 resources

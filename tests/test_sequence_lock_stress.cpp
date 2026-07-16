@@ -130,8 +130,8 @@ TEST(SequenceLockStressTest, CWrapperAtomicSequence) {
             uint32_t desired = seq + 1;
             if ((desired & 1) == 0)
                 ++desired;
-            while (!header.sequence.compare_exchange_weak(seq, desired,
-                std::memory_order_acq_rel, std::memory_order_relaxed)) {
+            while (!header.sequence.compare_exchange_weak(seq, desired, std::memory_order_acq_rel,
+                                                          std::memory_order_relaxed)) {
                 desired = seq + 1;
                 if ((desired & 1) == 0)
                     ++desired;

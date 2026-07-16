@@ -3,8 +3,8 @@
 #include "audio_encoder.h"
 #include "matroska_timing.h"
 
-#include <windows.h>
 #include <mmreg.h>
+#include <windows.h>
 
 #include <algorithm>
 #include <cmath>
@@ -56,9 +56,9 @@ std::vector<float> MakeDeterministicStereoSignal(int samples, int sampleRate) {
         noiseState = noiseState * 1664525u + 1013904223u;
         const float noise = (static_cast<float>((noiseState >> 8) & 0xffffu) / 32767.5f) - 1.0f;
         const double time = static_cast<double>(sample) / sampleRate;
-        const float value = static_cast<float>(0.22 * std::sin(2.0 * 3.141592653589793 * 437.0 * time) +
-                                               0.11 * std::sin(2.0 * 3.141592653589793 * 1231.0 * time) +
-                                               0.025 * noise);
+        const float value =
+            static_cast<float>(0.22 * std::sin(2.0 * 3.141592653589793 * 437.0 * time) +
+                               0.11 * std::sin(2.0 * 3.141592653589793 * 1231.0 * time) + 0.025 * noise);
         signal[static_cast<size_t>(sample) * 2] = value;
         signal[static_cast<size_t>(sample) * 2 + 1] = value;
     }
@@ -94,9 +94,9 @@ bool AppendDecodedFrames(AVCodecContext* decoder, SwrContext* resampler, AVFrame
             return DecodeFailure(decoded, "avcodec_receive_frame", receiveResult);
         }
         decoded.samples += frame->nb_samples;
-        const int outputCapacity = static_cast<int>(
-            av_rescale_rnd(swr_get_delay(resampler, decoder->sample_rate) + frame->nb_samples, 48000,
-                           decoder->sample_rate, AV_ROUND_UP));
+        const int outputCapacity =
+            static_cast<int>(av_rescale_rnd(swr_get_delay(resampler, decoder->sample_rate) + frame->nb_samples, 48000,
+                                            decoder->sample_rate, AV_ROUND_UP));
         std::vector<float> converted(static_cast<size_t>(std::max(outputCapacity, 0)));
         uint8_t* output[] = {reinterpret_cast<uint8_t*>(converted.data())};
         const uint8_t* const* input = const_cast<const uint8_t* const*>(frame->extended_data);
@@ -156,9 +156,9 @@ bool DecodeAudioStream(const std::filesystem::path& path, int audioOrdinal, Deco
     SwrContext* resampler = nullptr;
     AVChannelLayout mono = AV_CHANNEL_LAYOUT_MONO;
     if (ok) {
-        const int allocateResamplerResult = swr_alloc_set_opts2(
-            &resampler, &mono, AV_SAMPLE_FMT_FLT, 48000, &decoder->ch_layout, decoder->sample_fmt,
-            decoder->sample_rate, 0, nullptr);
+        const int allocateResamplerResult =
+            swr_alloc_set_opts2(&resampler, &mono, AV_SAMPLE_FMT_FLT, 48000, &decoder->ch_layout, decoder->sample_fmt,
+                                decoder->sample_rate, 0, nullptr);
         ok = allocateResamplerResult >= 0 || DecodeFailure(decoded, "swr_alloc_set_opts2", allocateResamplerResult);
     }
     if (ok) {
@@ -290,9 +290,9 @@ TEST(AudioMuxIntegrationTest, FiveCodecsDecodeToTheSameExactEndpointThroughMatro
     uint64_t generation = 1;
     for (auto& track : tracks) {
         ASSERT_TRUE(track->encoder->ResetForRecordingStart(0, generation++));
-        const auto result = track->encoder->EncodeSamples(
-            reinterpret_cast<const uint8_t*>(source.data()), static_cast<int>(source.size() * sizeof(float)), 2,
-            48000, 32, 32, 8, true, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT, 0);
+        const auto result = track->encoder->EncodeSamples(reinterpret_cast<const uint8_t*>(source.data()),
+                                                          static_cast<int>(source.size() * sizeof(float)), 2, 48000, 32,
+                                                          32, 8, true, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT, 0);
         ASSERT_FALSE(result.failed) << track->codec;
         track->encoder->SetRecordingEndUs(100000);
         track->encoder->Stop();

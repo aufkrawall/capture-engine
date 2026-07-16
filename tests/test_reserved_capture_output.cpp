@@ -13,9 +13,9 @@ namespace {
 class ReservedCaptureOutputTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        directory = std::filesystem::temp_directory_path() /
-                    (L"capture_output_test_" + std::to_wstring(GetCurrentProcessId()) + L"_" +
-                     std::to_wstring(GetTickCount64()));
+        directory =
+            std::filesystem::temp_directory_path() / (L"capture_output_test_" + std::to_wstring(GetCurrentProcessId()) +
+                                                      L"_" + std::to_wstring(GetTickCount64()));
         ASSERT_TRUE(std::filesystem::create_directories(directory));
     }
 
@@ -34,8 +34,7 @@ class ReservedCaptureOutputCollisionTest : public ReservedCaptureOutputTest,
 
 TEST_P(ReservedCaptureOutputCollisionTest, IdenticalSeedsRetryWithoutChangingExistingFile) {
     const ce::capture_output::OutputNameSeed seed{13380163200123ull, 42, 7};
-    auto first =
-        ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"capture", GetParam(), seed);
+    auto first = ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"capture", GetParam(), seed);
     ASSERT_TRUE(first);
     const std::filesystem::path sentinelPath = first.Path();
     ASSERT_TRUE(first.ReleaseToWriter());
@@ -45,8 +44,7 @@ TEST_P(ReservedCaptureOutputCollisionTest, IdenticalSeedsRetryWithoutChangingExi
     }
     first.Publish();
 
-    auto second =
-        ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"capture", GetParam(), seed);
+    auto second = ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"capture", GetParam(), seed);
     ASSERT_TRUE(second);
     EXPECT_NE(second.Path(), sentinelPath);
 
@@ -84,8 +82,8 @@ TEST_F(ReservedCaptureOutputTest, AtomicCommitPublishesOnlyOwnedStagingReservati
     const ce::capture_output::OutputNameSeed stagingSeed{13380163200456ull, 43, 10};
     auto output =
         ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"capture", L"avif", finalSeed);
-    auto staging = ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"capture_stage", L"part",
-                                                                                stagingSeed);
+    auto staging =
+        ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"capture_stage", L"part", stagingSeed);
     ASSERT_TRUE(output);
     ASSERT_TRUE(staging);
     const std::filesystem::path outputPath = output.Path();
@@ -106,9 +104,7 @@ TEST_F(ReservedCaptureOutputTest, AtomicCommitPublishesOnlyOwnedStagingReservati
 
 TEST_F(ReservedCaptureOutputTest, RejectsFilenameComponentsThatCouldEscapeTheCaptureDirectory) {
     const ce::capture_output::OutputNameSeed seed{13380163200456ull, 43, 11};
-    EXPECT_FALSE(ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"../capture", L"mkv",
-                                                                              seed));
-    EXPECT_FALSE(ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"capture", L"../mkv",
-                                                                              seed));
+    EXPECT_FALSE(ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"../capture", L"mkv", seed));
+    EXPECT_FALSE(ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"capture", L"../mkv", seed));
     EXPECT_TRUE(std::filesystem::is_empty(directory));
 }

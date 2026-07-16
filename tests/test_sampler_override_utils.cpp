@@ -129,8 +129,7 @@ TEST(SamplerOverrideUtilsTest, LegacyD3DPolicyModelsDistinctD3D7MagFilterValues)
     info.magFilter = d3d7Traits.anisotropicMag;
     EXPECT_EQ(ClassifyLegacyD3DSamplerForForcedAF(info, d3d7Traits, gfx), LegacyD3DForcedAFDecision::Allow);
     info.addressU = 4;
-    EXPECT_EQ(ClassifyLegacyD3DSamplerForForcedAF(info, d3d7Traits, gfx),
-              LegacyD3DForcedAFDecision::BorderAddress);
+    EXPECT_EQ(ClassifyLegacyD3DSamplerForForcedAF(info, d3d7Traits, gfx), LegacyD3DForcedAFDecision::BorderAddress);
 }
 
 TEST(SamplerOverrideUtilsTest, OpenGLForcedAFUsesAllocatedMipAndMaterialAddressSafety) {
@@ -414,10 +413,9 @@ TEST(SamplerOverrideUtilsTest, D3D11ForcedAFTexturePolicyAllowsFilterableMipmapp
     EXPECT_EQ(ClassifyD3D11Texture2DForForcedAF(info), D3D11ForcedAFResourceDecision::Allow);
 
     const DXGI_FORMAT materialFormats[] = {
-        DXGI_FORMAT_BC1_UNORM,  DXGI_FORMAT_BC3_UNORM_SRGB, DXGI_FORMAT_BC4_UNORM,
-        DXGI_FORMAT_BC5_SNORM, DXGI_FORMAT_BC6H_UF16,      DXGI_FORMAT_BC7_UNORM,
-        DXGI_FORMAT_R8_UNORM,  DXGI_FORMAT_R8G8_SNORM,     DXGI_FORMAT_R16G16_FLOAT,
-        DXGI_FORMAT_R8G8B8A8_UNORM,
+        DXGI_FORMAT_BC1_UNORM,    DXGI_FORMAT_BC3_UNORM_SRGB, DXGI_FORMAT_BC4_UNORM, DXGI_FORMAT_BC5_SNORM,
+        DXGI_FORMAT_BC6H_UF16,    DXGI_FORMAT_BC7_UNORM,      DXGI_FORMAT_R8_UNORM,  DXGI_FORMAT_R8G8_SNORM,
+        DXGI_FORMAT_R16G16_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
     };
     for (DXGI_FORMAT format : materialFormats) {
         info.format = format;

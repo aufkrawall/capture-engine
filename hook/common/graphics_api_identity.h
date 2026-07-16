@@ -121,8 +121,8 @@ inline unsigned MergeD3D11Minor(unsigned currentMinor, unsigned observedMinor) {
 
 inline const char* D3D11Label(unsigned minorVersion, bool isDxvk) {
     static constexpr const char* kNativeLabels[] = {"DX11", "DX11.1", "DX11.2", "DX11.3", "DX11.4"};
-    static constexpr const char* kDxvkLabels[] = {"DX11 (DXVK)", "DX11.1 (DXVK)", "DX11.2 (DXVK)",
-                                                  "DX11.3 (DXVK)", "DX11.4 (DXVK)"};
+    static constexpr const char* kDxvkLabels[] = {"DX11 (DXVK)", "DX11.1 (DXVK)", "DX11.2 (DXVK)", "DX11.3 (DXVK)",
+                                                  "DX11.4 (DXVK)"};
     const unsigned clampedVersion = (std::min)(minorVersion, 4u);
     return isDxvk ? kDxvkLabels[clampedVersion] : kNativeLabels[clampedVersion];
 }

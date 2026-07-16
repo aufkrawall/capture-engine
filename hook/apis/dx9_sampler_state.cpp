@@ -19,16 +19,13 @@ namespace {
 constexpr size_t kSamplerCount = 21;
 constexpr size_t kStateCount = 9;
 constexpr std::array<D3DSAMPLERSTATETYPE, kStateCount> kTrackedTypes = {
-    D3DSAMP_ADDRESSU,       D3DSAMP_ADDRESSV,  D3DSAMP_ADDRESSW,
-    D3DSAMP_MAGFILTER,      D3DSAMP_MINFILTER, D3DSAMP_MIPFILTER,
-    D3DSAMP_MIPMAPLODBIAS,  D3DSAMP_MAXMIPLEVEL,
-    D3DSAMP_MAXANISOTROPY,
+    D3DSAMP_ADDRESSU,  D3DSAMP_ADDRESSV,      D3DSAMP_ADDRESSW,    D3DSAMP_MAGFILTER,     D3DSAMP_MINFILTER,
+    D3DSAMP_MIPFILTER, D3DSAMP_MIPMAPLODBIAS, D3DSAMP_MAXMIPLEVEL, D3DSAMP_MAXANISOTROPY,
 };
 
 struct SamplerState {
     std::array<DWORD, kStateCount> logical = {
-        D3DTADDRESS_WRAP, D3DTADDRESS_WRAP, D3DTADDRESS_WRAP, D3DTEXF_POINT, D3DTEXF_POINT,
-        D3DTEXF_NONE,     0,                  0,                  1,
+        D3DTADDRESS_WRAP, D3DTADDRESS_WRAP, D3DTADDRESS_WRAP, D3DTEXF_POINT, D3DTEXF_POINT, D3DTEXF_NONE, 0, 0, 1,
     };
     std::array<DWORD, kStateCount> physical = logical;
     UINT textureMipLevels = 0;
@@ -244,14 +241,14 @@ std::array<DWORD, kStateCount> BuildDesiredState(const SamplerState& state, UINT
                                                  const GraphicsConfig& gfx,
                                                  sampler_override::D3D9ForcedAFDecision* afDecision) {
     std::array<DWORD, kStateCount> desired = state.logical;
-    const bool textureHasMips = state.textureBound && desired[7] < state.textureMipLevels &&
-                                state.textureMipLevels - desired[7] > 1;
+    const bool textureHasMips =
+        state.textureBound && desired[7] < state.textureMipLevels && state.textureMipLevels - desired[7] > 1;
     const auto materialAddress = [](DWORD address) {
         return address == D3DTADDRESS_WRAP || address == D3DTADDRESS_MIRROR || address == D3DTADDRESS_CLAMP;
     };
-    const bool safeAddress = gfx.samplerOverrideMode == "aggressive" ||
-                             (materialAddress(desired[0]) && materialAddress(desired[1]) &&
-                              (!state.textureUsesAddressW || materialAddress(desired[2])));
+    const bool safeAddress =
+        gfx.samplerOverrideMode == "aggressive" || (materialAddress(desired[0]) && materialAddress(desired[1]) &&
+                                                    (!state.textureUsesAddressW || materialAddress(desired[2])));
 
     if (textureHasMips && desired[5] != D3DTEXF_NONE && safeAddress) {
         if (gfx.mipMapping == "trilinear") {
@@ -332,8 +329,8 @@ bool WriteCompanionStates(IDirect3DDevice9* device, DWORD sampler, SamplerState&
             succeeded = false;
             const int logIndex = g_failureLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logIndex < 12) {
-                HookLogImportant("DX9: Sampler companion write failed s%u type=%u value=%u hr=0x%08X (#%d)",
-                                 sampler, static_cast<unsigned>(kTrackedTypes[i]), desired[i], hr, logIndex + 1);
+                HookLogImportant("DX9: Sampler companion write failed s%u type=%u value=%u hr=0x%08X (#%d)", sampler,
+                                 static_cast<unsigned>(kTrackedTypes[i]), desired[i], hr, logIndex + 1);
             }
         }
     }
@@ -378,8 +375,8 @@ void RefreshConfigLocked(DeviceState& deviceState, SetSamplerStateFn setState, G
         }
         bool reconciled = true;
         if (sampler.initialized) {
-            reconciled = ReconcileSampler(deviceState.device, samplerIndex, sampler, gfx,
-                                          deviceState.maxAnisotropy, setState);
+            reconciled =
+                ReconcileSampler(deviceState.device, samplerIndex, sampler, gfx, deviceState.maxAnisotropy, setState);
             complete = reconciled && complete;
         }
         if (!active && reconciled) {
@@ -451,8 +448,7 @@ HRESULT SetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATE
     const HRESULT hr = setState(device, sampler, type, desired[static_cast<size_t>(stateIndex)]);
     if (SUCCEEDED(hr)) {
         state.physical[static_cast<size_t>(stateIndex)] = desired[static_cast<size_t>(stateIndex)];
-        const bool companionsSucceeded =
-            WriteCompanionStates(device, sampler, state, desired, stateIndex, setState);
+        const bool companionsSucceeded = WriteCompanionStates(device, sampler, state, desired, stateIndex, setState);
         if (!companionsSucceeded) {
             deviceState->configHash.store(0, std::memory_order_relaxed);
             deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
@@ -562,12 +558,13 @@ void ResetDevice(IDirect3DDevice9* device) {
 }
 
 void LogSummary() {
-    HookLog("DX9: Sampler override summary reconciliations=%llu driverWrites=%llu bootstrapQueries=%llu "
-            "configChanges=%llu",
-            static_cast<unsigned long long>(g_reconciliations.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(g_driverWrites.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(g_bootstrapQueries.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(g_configChanges.load(std::memory_order_relaxed)));
+    HookLog(
+        "DX9: Sampler override summary reconciliations=%llu driverWrites=%llu bootstrapQueries=%llu "
+        "configChanges=%llu",
+        static_cast<unsigned long long>(g_reconciliations.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_driverWrites.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_bootstrapQueries.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_configChanges.load(std::memory_order_relaxed)));
 }
 
 }  // namespace ce::dx9_sampler_state

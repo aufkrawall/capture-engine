@@ -18,8 +18,7 @@ inline bool RequireMicrosecondMatroskaTimestampPrecision(AVFormatContext* format
     if (!IsMatroskaMuxer(formatContext)) {
         return true;
     }
-    if (!formatContext->priv_data ||
-        av_opt_set(formatContext->priv_data, "timestamp_precision", "1000", 0) < 0) {
+    if (!formatContext->priv_data || av_opt_set(formatContext->priv_data, "timestamp_precision", "1000", 0) < 0) {
         return false;
     }
     int64_t timestampPrecision = 0;

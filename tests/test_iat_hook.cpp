@@ -22,10 +22,8 @@ TEST(IATHookDynamicFilterTest, UnfilteredDynamicHookStillRoutesAllModules) {
 }
 
 TEST(IATHookTargetFilterTest, WindowsRuntimeDirectoriesAreExcludedCaseInsensitively) {
-    EXPECT_TRUE(IATHook::IsWindowsSystemModulePathUnderRoot(L"C:\\Windows\\System32\\KERNELBASE.dll",
-                                                            L"C:\\Windows"));
-    EXPECT_TRUE(IATHook::IsWindowsSystemModulePathUnderRoot(L"c:\\windows\\SYSWOW64\\kernel32.dll",
-                                                            L"C:\\WINDOWS\\"));
+    EXPECT_TRUE(IATHook::IsWindowsSystemModulePathUnderRoot(L"C:\\Windows\\System32\\KERNELBASE.dll", L"C:\\Windows"));
+    EXPECT_TRUE(IATHook::IsWindowsSystemModulePathUnderRoot(L"c:\\windows\\SYSWOW64\\kernel32.dll", L"C:\\WINDOWS\\"));
     EXPECT_FALSE(IATHook::IsWindowsSystemModulePathUnderRoot(L"C:\\Games\\System32\\mod.dll", L"C:\\Windows"));
     EXPECT_FALSE(IATHook::IsWindowsSystemModulePathUnderRoot(L"C:\\Games\\test.exe", L"C:\\Windows"));
     EXPECT_FALSE(IATHook::IsWindowsSystemModulePathUnderRoot(nullptr, L"C:\\Windows"));

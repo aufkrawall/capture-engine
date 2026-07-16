@@ -30,13 +30,12 @@ inline bool ProcessExecutableNamesEqual(const std::string& lhs, const std::strin
     if (lhs.size() != rhs.size()) {
         return false;
     }
-    return std::equal(lhs.begin(), lhs.end(), rhs.begin(), [](unsigned char a, unsigned char b) {
-        return std::tolower(a) == std::tolower(b);
-    });
+    return std::equal(lhs.begin(), lhs.end(), rhs.begin(),
+                      [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); });
 }
 
 inline ProcessNameSelection SelectProcessTreeRootByName(const std::vector<ProcessTreeEntry>& processes,
-                                                         const std::string& executableName) {
+                                                        const std::string& executableName) {
     ProcessNameSelection result;
     if (executableName.empty()) {
         return result;
@@ -82,8 +81,7 @@ inline ProcessNameSelection SelectProcessTreeRootByName(const std::vector<Proces
     size_t largestTreeSize = 0;
     uint32_t selectedProcessId = 0;
     for (const auto& [rootProcessId, treeSize] : membersByRoot) {
-        if (treeSize > largestTreeSize ||
-            (treeSize == largestTreeSize && rootProcessId < selectedProcessId)) {
+        if (treeSize > largestTreeSize || (treeSize == largestTreeSize && rootProcessId < selectedProcessId)) {
             selectedProcessId = rootProcessId;
             largestTreeSize = treeSize;
         }

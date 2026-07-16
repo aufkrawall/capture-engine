@@ -5,9 +5,9 @@
 #define _WIN32_WINNT 0x0A00
 #define VK_USE_PLATFORM_WIN32_KHR
 
-#include <windows.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_win32.h>
+#include <windows.h>
 
 #include <ffx_api/ffx_api.h>
 #include <ffx_api/ffx_api_loader.h>
@@ -37,10 +37,10 @@
 
 namespace testapp::vkfg {
 
-using testapp::fg::JitterOffset;
-using testapp::fg::UpscaleQuality;
 using testapp::fg::ComputeJitter;
+using testapp::fg::JitterOffset;
 using testapp::fg::JitterPhaseCount;
+using testapp::fg::UpscaleQuality;
 
 template <typename T>
 inline void* NativeHandleToVoid(T handle) {
@@ -344,8 +344,7 @@ void SetStreamlineMarker(sl::FrameToken* token, sl::PCLMarker marker, const char
 bool SetDlssFrameGeneration(bool enabled, const char* reason);
 bool ConfigureDlssSuperResolution(bool enabled);
 bool RecordStreamlineInputsAndUpscale(VkCommandBuffer commandBuffer, FrameResources& resources,
-                                     sl::FrameToken* frameToken, const JitterOffset& jitter,
-                                     uint32_t backbufferIndex);
+                                      sl::FrameToken* frameToken, const JitterOffset& jitter, uint32_t backbufferIndex);
 void PollStreamlineState();
 
 bool InitializeVulkanDevice();
@@ -372,11 +371,9 @@ void JoinFidelityFxRuntimePreload(const char* reason);
 bool PrepareFidelityFxMode();
 bool CreateFidelityFxSwapchain(VkSwapchainKHR oldSwapchain, const VkSwapchainCreateInfoKHR& createInfo,
                                VkSwapchainKHR* replacement, bool* oldSwapchainConsumed);
-void DestroyFidelityFxContexts(bool unloadRuntime, const char* reason,
-                               bool presentationAlreadyRetired = false);
+void DestroyFidelityFxContexts(bool unloadRuntime, const char* reason, bool presentationAlreadyRetired = false);
 bool SetFsrFrameGeneration(bool enabled, const char* reason, bool forceLog = true);
-bool RecordFsrUpscaleAndPrepare(VkCommandBuffer commandBuffer, FrameResources& resources,
-                              const JitterOffset& jitter);
+bool RecordFsrUpscaleAndPrepare(VkCommandBuffer commandBuffer, FrameResources& resources, const JitterOffset& jitter);
 void ReleaseFidelityFxEffectsForExtent(const char* reason);
 bool RecreateFidelityFxEffectsForExtent();
 void RegisterFsrUiResource(FrameResources& resources);

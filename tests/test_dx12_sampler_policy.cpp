@@ -68,10 +68,8 @@ TEST(DX12SamplerPolicyTest, NormalFilterIgnoresComparisonFunc) {
 }
 
 TEST(DX12SamplerPolicyTest, PreservesComparisonAndReductionFilters) {
-    for (D3D12_FILTER filter : {D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR,
-                                D3D12_FILTER_COMPARISON_ANISOTROPIC,
-                                D3D12_FILTER_MINIMUM_MIN_MAG_MIP_LINEAR,
-                                D3D12_FILTER_MAXIMUM_MIN_MAG_MIP_LINEAR}) {
+    for (D3D12_FILTER filter : {D3D12_FILTER_COMPARISON_MIN_MAG_MIP_LINEAR, D3D12_FILTER_COMPARISON_ANISOTROPIC,
+                                D3D12_FILTER_MINIMUM_MIN_MAG_MIP_LINEAR, D3D12_FILTER_MAXIMUM_MIN_MAG_MIP_LINEAR}) {
         D3D12_SAMPLER_DESC desc = MaterialSampler(filter);
         const D3D12_SAMPLER_DESC original = desc;
         const auto result = ce::dx12_sampler_policy::Apply(desc, ForcedAf());
@@ -88,8 +86,7 @@ TEST(DX12SamplerPolicyTest, PreservesComparisonAndReductionFilters) {
 }
 
 TEST(DX12SamplerPolicyTest, PreservesNonMaterialAddressModes) {
-    for (D3D12_TEXTURE_ADDRESS_MODE mode : {D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
-                                            D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+    for (D3D12_TEXTURE_ADDRESS_MODE mode : {D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_BORDER,
                                             D3D12_TEXTURE_ADDRESS_MODE_MIRROR_ONCE}) {
         D3D12_SAMPLER_DESC desc = MaterialSampler();
         desc.AddressU = mode;
@@ -126,8 +123,7 @@ TEST(DX12SamplerPolicyTest, RejectsInvalidLodRangesWithoutChangingBytes) {
         EXPECT_EQ(0, std::memcmp(&desc, &original, sizeof(desc)));
     }
 
-    for (const auto [bits, writeMinLod] :
-         {std::pair{0x7FC00000u, true}, std::pair{0x7F800000u, false}}) {
+    for (const auto [bits, writeMinLod] : {std::pair{0x7FC00000u, true}, std::pair{0x7F800000u, false}}) {
         D3D12_SAMPLER_DESC desc = MaterialSampler();
         SetFloatBits(writeMinLod ? desc.MinLOD : desc.MaxLOD, bits);
         const D3D12_SAMPLER_DESC original = desc;

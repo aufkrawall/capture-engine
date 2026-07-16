@@ -60,11 +60,11 @@ public:
 
     // Multi-source audio support
     struct AudioSource {
-        std::unique_ptr<AudioCapture> capture;        // For system/mic audio
+        std::unique_ptr<AudioCapture> capture;               // For system/mic audio
         std::unique_ptr<ProcessLoopbackCapture> appCapture;  // Disposable worker for per-app audio
-        std::unique_ptr<AudioEncoder> encoder;        // Owned encoder (if first source for this track)
-        AudioEncoder* sharedEncoderPtr = nullptr;     // Always points to the encoder to use
-        std::unique_ptr<AudioRingBuffer> ringBuffer;  // Pull Model Buffer (Writer=Capture, Reader=Encoder)
+        std::unique_ptr<AudioEncoder> encoder;               // Owned encoder (if first source for this track)
+        AudioEncoder* sharedEncoderPtr = nullptr;            // Always points to the encoder to use
+        std::unique_ptr<AudioRingBuffer> ringBuffer;         // Pull Model Buffer (Writer=Capture, Reader=Encoder)
         size_t fullRingBufferCapacityFloats = 0;  // Target capacity; app sources start small and grow on first capture
         std::unique_ptr<AudioResampler> resampler;  // Resampler for this source (to standard format)
         int mixChannels = 2;
@@ -146,17 +146,15 @@ public:
         int64_t appAudioBacklogTargetSamples = 0;
         int64_t appAudioBacklogExcessSamples = 0;
         int32_t appAudioBacklogCompensationDelta = 0;
-        uint64_t catastrophicResyncSamples = 0;   // Legacy log-schema sentinel; CFR destructive resync is prohibited
-        uint32_t catastrophicResyncEvents = 0;    // Legacy log-schema sentinel; must remain zero
+        uint64_t catastrophicResyncSamples = 0;  // Legacy log-schema sentinel; CFR destructive resync is prohibited
+        uint32_t catastrophicResyncEvents = 0;   // Legacy log-schema sentinel; must remain zero
         double wgcCoverageLossTrimAccumulator = 0.0;  // Fractional carry for paced overload micro-trims
         uint64_t timelineResetGeneration = 0;         // Last atomic startup reset acknowledged by this route
         // Epoch transitions are a two-owner hand-off. AudioLoop owns format conversion and the ring writer;
         // PullAndEncodeAudio owns syncResampler/postResampleBuffer. Shared atomics let the writer stop at the
         // epoch boundary until the pull side has encoded the old tail and reset only its own state.
-        std::shared_ptr<std::atomic<uint64_t>> epochResetRequested =
-            std::make_shared<std::atomic<uint64_t>>(0);
-        std::shared_ptr<std::atomic<uint64_t>> epochResetAcknowledged =
-            std::make_shared<std::atomic<uint64_t>>(0);
+        std::shared_ptr<std::atomic<uint64_t>> epochResetRequested = std::make_shared<std::atomic<uint64_t>>(0);
+        std::shared_ptr<std::atomic<uint64_t>> epochResetAcknowledged = std::make_shared<std::atomic<uint64_t>>(0);
         uint64_t epochSyncTailFlushedGeneration = 0;  // Pull-thread-owned generation
         uint64_t lastEpochTransitionWaitLogTick = 0;
 
@@ -538,15 +536,14 @@ public:
                     src.appCaptureRouteEnded && src.appCaptureRouteEnded->load(std::memory_order_acquire);
                 const bool inactiveStartedAppSourceMaySilence =
                     ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(
-                        true, isAppAudioSource, src.timelineValid || src.sawSyncPendingPackets,
-                        !appCaptureRouteEnded);
+                        true, isAppAudioSource, src.timelineValid || src.sawSyncPendingPackets, !appCaptureRouteEnded);
                 const bool sparseStartedSourceCanSilence = ce::audio::ShouldTreatSparseStartedSourceAsSilence(
                     true, src.timelineValid, src.bootstrapComplete, optionalUnstarted, true);
                 const bool strictSource = src.sourceType != AudioConfig::Microphone;
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
                 const bool sparseStartedSourceMaySilence =
-                    ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(
-                    sparseStartedSourceCanSilence, bufferedTimelineSamples) ||
+                    ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(sparseStartedSourceCanSilence,
+                                                                                  bufferedTimelineSamples) ||
                     inactiveStartedAppSourceMaySilence;
                 if (ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, strictSource, optionalUnstarted,
                                                                   sparseStartedSourceMaySilence, requestedSamples,
@@ -799,14 +796,13 @@ public:
             DLL_Log(
                 "[A/V START] Audio route acknowledged reset: generation=%llu src=%zu track=%d type=%d "
                 "startMs=%lld timelineValid=%d captureLatencyMs=%.3f",
-                static_cast<unsigned long long>(generation),
-                static_cast<size_t>(&src - audioSources.data()), src.track, static_cast<int>(src.sourceType),
-                startQpcMs, src.timelineValid ? 1 : 0, static_cast<double>(src.config.captureLatencyMs));
+                static_cast<unsigned long long>(generation), static_cast<size_t>(&src - audioSources.data()), src.track,
+                static_cast<int>(src.sourceType), startQpcMs, src.timelineValid ? 1 : 0,
+                static_cast<double>(src.config.captureLatencyMs));
         }
-        DLL_Log(
-            "[A/V START] Reset generation=%llu applied atomically: routes=%zu encoders=%zu preservePending=%d",
-            static_cast<unsigned long long>(generation), audioSources.size(), resetEncoders.size(),
-            preservePendingPackets ? 1 : 0);
+        DLL_Log("[A/V START] Reset generation=%llu applied atomically: routes=%zu encoders=%zu preservePending=%d",
+                static_cast<unsigned long long>(generation), audioSources.size(), resetEncoders.size(),
+                preservePendingPackets ? 1 : 0);
     }
 
     void SyncAudioToFirstVideoFrame(int64_t startQpcMs, int64_t startQpc100ns, bool preservePendingPackets = false) {
@@ -829,8 +825,7 @@ public:
                 return audioResetAcknowledgedGeneration.load(std::memory_order_acquire) >= generation ||
                        !audioRunning.load(std::memory_order_acquire);
             });
-            resetAppliedByWorker =
-                audioResetAcknowledgedGeneration.load(std::memory_order_acquire) >= generation;
+            resetAppliedByWorker = audioResetAcknowledgedGeneration.load(std::memory_order_acquire) >= generation;
         }
         if (!resetAppliedByWorker) {
             ApplyAudioTimelineReset(generation, startQpcMs, preservePendingPackets);
@@ -842,9 +837,8 @@ public:
         audioSyncPending.store(false, std::memory_order_release);
         preservePendingStartupAudioPackets.store(false, std::memory_order_release);
         audioDrainCv.notify_all();
-        DLL_Log(
-            "[A/V START] Shared startup reset committed: generation=%llu routeAcks=%zu encoderAndPullState=ready",
-            static_cast<unsigned long long>(generation), audioSources.size());
+        DLL_Log("[A/V START] Shared startup reset committed: generation=%llu routeAcks=%zu encoderAndPullState=ready",
+                static_cast<unsigned long long>(generation), audioSources.size());
     }
 
     // Pull Model: source counters are diagnostic/source-local; each exported
@@ -961,8 +955,7 @@ public:
         audioOnlyOutputReservation =
             ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_audio", L"mka");
         if (!audioOnlyOutputReservation) {
-            DLL_Log("MediaEngine: Failed to reserve collision-safe audio-only output in %s",
-                    outDir.string().c_str());
+            DLL_Log("MediaEngine: Failed to reserve collision-safe audio-only output in %s", outDir.string().c_str());
             audioOnlyFmtCtx = nullptr;
             return;
         }
@@ -1255,8 +1248,8 @@ public:
             return true;
         processLoopbackIntegrityFailureSignaled = false;
         if (sharedMemLayout) {
-            sharedMemLayout->runtimeState.recordingFailureCode.store(
-                static_cast<uint32_t>(RecordingFailureCode::None), std::memory_order_release);
+            sharedMemLayout->runtimeState.recordingFailureCode.store(static_cast<uint32_t>(RecordingFailureCode::None),
+                                                                     std::memory_order_release);
         }
 
         // Audio-only: open muxer, write header, skip video pipeline entirely
@@ -1730,8 +1723,7 @@ public:
             for (auto& [si, enc] : streamEnc2) {
                 for (const auto& src : audioSources) {
                     if (src.encoder.get() == enc) {
-                        enc->SetExpectedSourceSilenceSamples(
-                            static_cast<int64_t>(trackFullSilenceSamples[src.track]));
+                        enc->SetExpectedSourceSilenceSamples(static_cast<int64_t>(trackFullSilenceSamples[src.track]));
                         break;
                     }
                 }
@@ -2077,8 +2069,7 @@ public:
                 src.appCapture->Stop();
             }
             if (src.encoder) {
-                src.encoder->SetExpectedSourceSilenceSamples(
-                    static_cast<int64_t>(trackFullSilenceSamples[src.track]));
+                src.encoder->SetExpectedSourceSilenceSamples(static_cast<int64_t>(trackFullSilenceSamples[src.track]));
                 src.encoder->Stop();
             }
 
@@ -2356,8 +2347,7 @@ public:
             }
         }
         const int64_t frameQuantum = ce::mux::ComputeCfrAudioLatticeFrameQuantum(fps, sampleRates);
-        const int64_t extensionFrames =
-            ce::mux::ComputeCfrAudioLatticeExtensionFrames(frameCount, frameQuantum);
+        const int64_t extensionFrames = ce::mux::ComputeCfrAudioLatticeExtensionFrames(frameCount, frameQuantum);
         DLL_Log(
             "[FinalizationLattice] CFR endpoint contract fps=%d frames=%lld quantum=%lld extension=%lld "
             "audioRates=%zu expectedDurationUs=%lld",
@@ -2420,9 +2410,8 @@ public:
     bool PrepareFrameD3D11(void* texture, uint32_t width, uint32_t height, bool isHDR) {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
         if (!videoEnc || !recording || !texture || width == 0 || height == 0) {
-            DLL_Log(
-                "[VideoPrewarm] D3D11 prepare rejected: encoder=%d recording=%d texture=%d dimensions=%ux%u",
-                videoEnc ? 1 : 0, recording ? 1 : 0, texture ? 1 : 0, width, height);
+            DLL_Log("[VideoPrewarm] D3D11 prepare rejected: encoder=%d recording=%d texture=%d dimensions=%ux%u",
+                    videoEnc ? 1 : 0, recording ? 1 : 0, texture ? 1 : 0, width, height);
             return false;
         }
 
@@ -2430,10 +2419,11 @@ public:
         const bool prepared = videoEnc->PrepareFrameD3D11(static_cast<ID3D11Texture2D*>(texture), width, height, isHDR);
         const int64_t elapsedUs =
             std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
-        DLL_Log("[VideoPrewarm] D3D11 deferred encoder/mux prepare %s: dimensions=%ux%u hdr=%d elapsed=%lldus "
-                "firstFrameCommitted=%d",
-                prepared ? "complete" : "FAILED", width, height, isHDR ? 1 : 0,
-                static_cast<long long>(elapsedUs), firstVideoFrameMs != 0 ? 1 : 0);
+        DLL_Log(
+            "[VideoPrewarm] D3D11 deferred encoder/mux prepare %s: dimensions=%ux%u hdr=%d elapsed=%lldus "
+            "firstFrameCommitted=%d",
+            prepared ? "complete" : "FAILED", width, height, isHDR ? 1 : 0, static_cast<long long>(elapsedUs),
+            firstVideoFrameMs != 0 ? 1 : 0);
         return prepared;
     }
 
@@ -2714,8 +2704,8 @@ public:
             DLL_Log(
                 "[AudioEpoch] ERROR: Capture-resampler tail size overflow src=%zu track=%d epoch=%llu->%llu "
                 "delay=%lld channels=%zu",
-                srcIdx, src.track, static_cast<unsigned long long>(oldEpoch),
-                static_cast<unsigned long long>(newEpoch), static_cast<long long>(delayedSamples), channels);
+                srcIdx, src.track, static_cast<unsigned long long>(oldEpoch), static_cast<unsigned long long>(newEpoch),
+                static_cast<long long>(delayedSamples), channels);
             return false;
         }
 
@@ -2868,8 +2858,7 @@ public:
         src.pendingUnderrunRecoveryFade = true;
         src.appAudioBacklogDrainInitialized = false;
         src.appAudioBacklogDrainActive = false;
-        src.appAudioBacklogDrainReason =
-            static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::WithinSlack);
+        src.appAudioBacklogDrainReason = static_cast<uint32_t>(ce::audio::CfrAppAudioBacklogDrainReason::WithinSlack);
         src.appAudioBacklogTargetSamples = 0;
         src.appAudioBacklogExcessSamples = 0;
         src.appAudioBacklogCompensationDelta = 0;
@@ -3254,8 +3243,8 @@ public:
                     isCfrRecording, src.timelineValid, bufferedRealSamples, targetSamples, requiredBootstrapSamples);
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
                 const bool srcTimelineReady = ce::audio::IsSourceBootstrapTimelineReady(
-                    src.bootstrapComplete, optionalUnstarted, srcReady, packetlessSilenceReady,
-                    bufferedTimelineSamples, targetSamples);
+                    src.bootstrapComplete, optionalUnstarted, srcReady, packetlessSilenceReady, bufferedTimelineSamples,
+                    targetSamples);
                 trackReadyForBootstrap = trackReadyForBootstrap && srcTimelineReady;
             }
 
@@ -3375,8 +3364,8 @@ public:
                 const size_t bufferedTimelineSamples = GetBufferedTimelineSamples(src);
                 const bool sparseStartedSourceMaySilence =
                     ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(
-                    sparseStartedSourceCanSilence, bufferedTimelineSamples, samplesToEncode,
-                    kSparseStartedPartialSilenceThresholdSamples) ||
+                        sparseStartedSourceCanSilence, bufferedTimelineSamples, samplesToEncode,
+                        kSparseStartedPartialSilenceThresholdSamples) ||
                     inactiveStartedAppSourceMaySilence;
                 if (!trackLargeBacklogDrain &&
                     ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(isCfrRecording, forceDrain, optionalUnstarted,
@@ -3399,8 +3388,8 @@ public:
                         "[PullAudio] Timeline source gap silence: track=%d src=%zu buffered=%zu requested=%lld "
                         "target=%lldms encoded=%lld lookahead=%lldms inactiveApp=%d. Source contributes available "
                         "samples plus silence for missing range after the ingestion reservoir.",
-                        track, srcIdx, bufferedTimelineSamples, samplesToEncode, trackAudioTargetMs,
-                        trackCursorSamples, trackAudioPullLatencyMs, inactiveStartedAppSourceMaySilence ? 1 : 0);
+                        track, srcIdx, bufferedTimelineSamples, samplesToEncode, trackAudioTargetMs, trackCursorSamples,
+                        trackAudioPullLatencyMs, inactiveStartedAppSourceMaySilence ? 1 : 0);
                 }
             }
             if (deferForSourceBuffer) {
@@ -3418,9 +3407,8 @@ public:
                 const bool isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
                 const bool optionalUnstarted = ce::audio::IsOptionalUnstartedAppAudioSource(
                     isAppAudioSource, src.timelineValid, src.sawSyncPendingPackets);
-                const bool appCaptureRouteEnded =
-                    isAppAudioSource && src.appCaptureRouteEnded &&
-                    src.appCaptureRouteEnded->load(std::memory_order_acquire);
+                const bool appCaptureRouteEnded = isAppAudioSource && src.appCaptureRouteEnded &&
+                                                  src.appCaptureRouteEnded->load(std::memory_order_acquire);
                 const bool inactiveStartedAppSourceMaySilence =
                     ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(
                         isCfrRecording, isAppAudioSource, src.timelineValid || src.sawSyncPendingPackets,
@@ -4325,8 +4313,7 @@ public:
                         src.pendingStartupJoinFade = true;
                     }
                     if (!startupPadding && !expectedTimelineSilence && src.alignedStartMs >= 0 &&
-                        padSamples >= (size_t)(SAMPLE_RATE / 200) &&
-                        dropLogCounter++ % 100 == 0) {
+                        padSamples >= (size_t)(SAMPLE_RATE / 200) && dropLogCounter++ % 100 == 0) {
                         DLL_Log(
                             "[PullAudio] WARNING: Source underrun - src %d padding %zu samples with silence "
                             "(available=%zu needed=%zu forceDrain=%d)",
@@ -5227,8 +5214,7 @@ private:
         std::vector<uint64_t> captureFanoutPacketCounts(audioSources.size(), 0);
         std::vector<uint64_t> batchedPreStartDiscardCounts(audioSources.size(), 0);
         int64_t sharedStartupRebaseOffsetSamples = -1;
-        uint64_t appliedAudioResetGeneration =
-            audioResetAcknowledgedGeneration.load(std::memory_order_acquire);
+        uint64_t appliedAudioResetGeneration = audioResetAcknowledgedGeneration.load(std::memory_order_acquire);
         bool audioOnlyStopTailFinalized = false;
 
         // Per-source A/V equalization: delay each audio source so every source sits at the same
@@ -5328,8 +5314,7 @@ private:
         };
 
         while (audioRunning) {
-            const uint64_t requestedResetGeneration =
-                audioResetRequestedGeneration.load(std::memory_order_acquire);
+            const uint64_t requestedResetGeneration = audioResetRequestedGeneration.load(std::memory_order_acquire);
             if (requestedResetGeneration > appliedAudioResetGeneration) {
                 const bool preserveResetPackets = audioResetPreservePackets.load(std::memory_order_acquire);
                 ApplyAudioTimelineReset(requestedResetGeneration,
@@ -5359,14 +5344,12 @@ private:
                 audioDrainCv.notify_all();
             }
 
-            if (requestedResetGeneration >
-                    audioResetCommittedGeneration.load(std::memory_order_acquire) &&
+            if (requestedResetGeneration > audioResetCommittedGeneration.load(std::memory_order_acquire) &&
                 !audioStopDrainRequested.load(std::memory_order_acquire)) {
                 std::unique_lock<std::mutex> lock(audioDrainMutex);
                 audioDrainCv.wait(lock, [this, requestedResetGeneration]() {
                     return !audioRunning.load(std::memory_order_acquire) ||
-                           audioResetCommittedGeneration.load(std::memory_order_acquire) >=
-                               requestedResetGeneration ||
+                           audioResetCommittedGeneration.load(std::memory_order_acquire) >= requestedResetGeneration ||
                            audioStopDrainRequested.load(std::memory_order_acquire);
                 });
                 continue;
@@ -5401,10 +5384,8 @@ private:
                 bool gotPacket = false;
                 bool gotDeferredFirstTimelinePacket = false;
 
-                const uint64_t requestedEpochReset =
-                    src.epochResetRequested->load(std::memory_order_acquire);
-                const uint64_t acknowledgedEpochReset =
-                    src.epochResetAcknowledged->load(std::memory_order_acquire);
+                const uint64_t requestedEpochReset = src.epochResetRequested->load(std::memory_order_acquire);
+                const uint64_t acknowledgedEpochReset = src.epochResetAcknowledged->load(std::memory_order_acquire);
                 if (requestedEpochReset != 0 && requestedEpochReset != acknowledgedEpochReset) {
                     // The pull owner is still encoding the previous epoch's ring/sync/post tail.
                     // Do not poll new capture data into route state until it acknowledges the reset.
@@ -5450,11 +5431,10 @@ private:
                                     srcIdx, src.track, status);
                                 if (sharedMemLayout) {
                                     sharedMemLayout->runtimeState.recordingFailureCode.store(
-                                        static_cast<uint32_t>(
-                                            RecordingFailureCode::ProcessLoopbackTransportIntegrity),
+                                        static_cast<uint32_t>(RecordingFailureCode::ProcessLoopbackTransportIntegrity),
                                         std::memory_order_release);
                                     sharedMemLayout->runtimeState.cmdStopRecording.store(true,
-                                                                                       std::memory_order_release);
+                                                                                         std::memory_order_release);
                                 }
                             }
                         } else if (src.capture) {
@@ -5575,14 +5555,13 @@ private:
                         srcIdx, src.track, static_cast<int>(src.sourceType),
                         static_cast<unsigned long long>(packet.captureEpoch),
                         static_cast<unsigned long long>(previousCaptureEpoch),
-                        src.ringBuffer ? src.ringBuffer->GetAvailable() /
-                                             static_cast<size_t>(std::clamp(src.mixChannels, 1, 8))
-                                       : 0);
+                        src.ringBuffer
+                            ? src.ringBuffer->GetAvailable() / static_cast<size_t>(std::clamp(src.mixChannels, 1, 8))
+                            : 0);
                     continue;
                 }
 
-                if (gotPacket &&
-                    (packet.recordType == AudioPacketRecordType::EndOfStream || packet.endOfStream)) {
+                if (gotPacket && (packet.recordType == AudioPacketRecordType::EndOfStream || packet.endOfStream)) {
                     if (src.appCaptureRouteEnded) {
                         src.appCaptureRouteEnded->store(true, std::memory_order_release);
                     }
@@ -5591,12 +5570,11 @@ private:
                     DLL_Log(
                         "[AudioRoute] Ordered app capture end reached src=%zu track=%d process=%s epoch=%llu "
                         "buffered=%zu; future source gaps are timeline silence until a new epoch live-joins",
-                        srcIdx, src.track,
-                        src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
+                        srcIdx, src.track, src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
                         static_cast<unsigned long long>(packet.captureEpoch),
-                        src.ringBuffer ? src.ringBuffer->GetAvailable() /
-                                             static_cast<size_t>(std::clamp(src.mixChannels, 1, 8))
-                                       : 0);
+                        src.ringBuffer
+                            ? src.ringBuffer->GetAvailable() / static_cast<size_t>(std::clamp(src.mixChannels, 1, 8))
+                            : 0);
                     continue;
                 }
 
@@ -5659,8 +5637,7 @@ private:
                             src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
                             static_cast<unsigned long long>(previousCaptureEpoch),
                             static_cast<unsigned long long>(packet.captureEpoch),
-                            static_cast<unsigned long long>(requested),
-                            static_cast<unsigned long long>(acknowledged),
+                            static_cast<unsigned long long>(requested), static_cast<unsigned long long>(acknowledged),
                             static_cast<long long>(trackTimelineSamples[src.track]),
                             static_cast<unsigned long long>(src.qpcAlignedWrittenSamples));
                     }

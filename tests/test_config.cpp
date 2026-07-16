@@ -717,9 +717,10 @@ TEST(ConfigHelpersTest, DlssSharpeningParsingRejectsMalformedAndOutOfRangeValues
 }
 
 TEST_F(ConfigTest, GraphicsQueueAndSamplerModesAreValidated) {
-    WriteConfig("[Graphics]\n"
-                "sampler_override_mode=AGGRESSIVE\n"
-                "cpu_prerender_limit=2.5\n");
+    WriteConfig(
+        "[Graphics]\n"
+        "sampler_override_mode=AGGRESSIVE\n"
+        "cpu_prerender_limit=2.5\n");
 
     AppConfig config;
     LoadConfig(tempConfigFile, config);

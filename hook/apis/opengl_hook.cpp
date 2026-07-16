@@ -1,5 +1,4 @@
 #include "opengl_hook.h"
-#include "opengl_sampler_override.h"
 #include <d3d11.h>
 #include <d3d11_4.h>
 #include <dxgi.h>
@@ -24,6 +23,7 @@
 #include "../wrappers/iat_hook.h"
 #include "hook_common.h"
 #include "lod_helper.h"
+#include "opengl_sampler_override.h"
 #include "performance_metrics.h"
 
 // Check if Vulkan is primary API (to avoid double FPS limiting/Overlay)
@@ -1515,8 +1515,7 @@ static void SwapBegin(HDC hdc) {
                                 std::vector<uint8_t> row(rowPitch);
                                 for (int y = 0; y < h / 2; ++y) {
                                     uint8_t* top = pixels.data() + static_cast<size_t>(y) * rowPitch;
-                                    uint8_t* bottom =
-                                        pixels.data() + static_cast<size_t>(h - 1 - y) * rowPitch;
+                                    uint8_t* bottom = pixels.data() + static_cast<size_t>(h - 1 - y) * rowPitch;
                                     memcpy(row.data(), top, rowPitch);
                                     memcpy(top, bottom, rowPitch);
                                     memcpy(bottom, row.data(), rowPitch);

@@ -2117,9 +2117,8 @@ TEST(CapturePipelinePolicyTest, WgcLiveSelectionTargetClampsOnlyBeyondVisualDebt
     // allowance may be clamped away.
     EXPECT_EQ(policy::GetWgcLiveVisualDebtFloorQpcForMode(1600, 100, 1000, false, 400), 950);
     EXPECT_EQ(policy::GetWgcLiveVisualDebtFloorQpcForMode(1600, 100, 1000, true, 400), 1150);
-    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(
-                  1000, 1600, 100, 1000, false, true, 20, true,
-                  policy::kCfrShortfallCatchupThresholdTicks, false, 400),
+    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, true, 20, true,
+                                                       policy::kCfrShortfallCatchupThresholdTicks, false, 400),
               1000);
     EXPECT_FALSE(
         policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, true, true, true, true));
@@ -2582,14 +2581,13 @@ TEST(CapturePipelinePolicyTest, CfrCatchupTicksGradualBelowForceThreshold) {
 }
 
 TEST(CapturePipelinePolicyTest, InjectCfrRecoveryUsesHysteresisAndPausesWhileEncoderIsSlow) {
-    EXPECT_FALSE(policy::GetInjectCfrRecoveryActive(false, true, false,
-                                                    policy::kCfrShortfallForceCatchupThresholdTicks - 1));
-    EXPECT_TRUE(policy::GetInjectCfrRecoveryActive(false, true, false,
-                                                   policy::kCfrShortfallForceCatchupThresholdTicks));
-    EXPECT_TRUE(policy::GetInjectCfrRecoveryActive(true, true, false,
-                                                  policy::kInjectCfrRecoveryExitShortfallTicks + 1));
-    EXPECT_FALSE(policy::GetInjectCfrRecoveryActive(true, true, false,
-                                                   policy::kInjectCfrRecoveryExitShortfallTicks));
+    EXPECT_FALSE(
+        policy::GetInjectCfrRecoveryActive(false, true, false, policy::kCfrShortfallForceCatchupThresholdTicks - 1));
+    EXPECT_TRUE(
+        policy::GetInjectCfrRecoveryActive(false, true, false, policy::kCfrShortfallForceCatchupThresholdTicks));
+    EXPECT_TRUE(
+        policy::GetInjectCfrRecoveryActive(true, true, false, policy::kInjectCfrRecoveryExitShortfallTicks + 1));
+    EXPECT_FALSE(policy::GetInjectCfrRecoveryActive(true, true, false, policy::kInjectCfrRecoveryExitShortfallTicks));
     EXPECT_FALSE(policy::GetInjectCfrRecoveryActive(true, false, false, 100));
     EXPECT_FALSE(policy::GetInjectCfrRecoveryActive(true, true, true, 100));
 

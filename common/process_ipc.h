@@ -79,7 +79,7 @@ ProcessMode ParseProcessMode(LPSTR commandLine);
 const char* GetLogFileName(ProcessMode mode);
 
 class ProcessIPCServer {
-  public:
+public:
     explicit ProcessIPCServer(ProcessMode mode);
     ~ProcessIPCServer();
 
@@ -98,7 +98,7 @@ class ProcessIPCServer {
         return fatalDisconnect_.load(std::memory_order_acquire);
     }
 
-  private:
+private:
     bool ReadStartupArguments();
     bool SendStartupHandshake();
     void MarkDisconnected(DWORD error, const char* operation);
@@ -114,7 +114,7 @@ class ProcessIPCServer {
 };
 
 class ProcessIPCClient {
-  public:
+public:
     explicit ProcessIPCClient(ProcessMode targetMode);
     ~ProcessIPCClient();
 
@@ -124,14 +124,14 @@ class ProcessIPCClient {
     bool PrepareChildEndpoint(HANDLE& childEndpoint, std::wstring& childArguments);
     bool CompleteChildSpawn(uint32_t childPid, DWORD timeoutMs = 5000);
     void Disconnect();
-    bool SendCommand(ProcessCommand command, const char* payload = nullptr,
-                     ProcessResponse* response = nullptr, DWORD timeoutMs = 1000);
+    bool SendCommand(ProcessCommand command, const char* payload = nullptr, ProcessResponse* response = nullptr,
+                     DWORD timeoutMs = 1000);
 
     bool IsConnected() const {
         return connected_.load(std::memory_order_acquire);
     }
 
-  private:
+private:
     bool ReadMessageWithTimeout(ProcessMessage& message, DWORD& bytesRead, DWORD timeoutMs);
     bool WriteMessageWithTimeout(const ProcessMessage& message, DWORD timeoutMs);
 

@@ -1,10 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <cerrno>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <cstring>
 #include <limits>
 #include <optional>
 #include <string>
@@ -68,8 +68,8 @@ std::optional<uintptr_t> CommandLineHandle(const wchar_t* prefix) {
 
 TEST(ProcessIPCTest, AcceptsExactAuthenticatedCommand) {
     const ProcessMessage message = ValidCommand();
-    EXPECT_TRUE(ValidateProcessMessage(message, message.totalSize, ProcessMessageKind::Command,
-                                       ProcessMode::Controller, 1234, TestNonce(), 8, false));
+    EXPECT_TRUE(ValidateProcessMessage(message, message.totalSize, ProcessMessageKind::Command, ProcessMode::Controller,
+                                       1234, TestNonce(), 8, false));
 }
 
 TEST(ProcessIPCTest, RejectsShortOversizedAndInconsistentFraming) {
@@ -124,8 +124,8 @@ TEST(ProcessIPCTest, EnforcesOpcodeSpecificPayloads) {
     memcpy(message.payload, "audio_only", sizeof("audio_only"));
     message.payloadSize = sizeof("audio_only");
     message.totalSize = message.headerSize + message.payloadSize;
-    EXPECT_TRUE(ValidateProcessMessage(message, message.totalSize, ProcessMessageKind::Command,
-                                       ProcessMode::Controller, 1234, TestNonce(), 8, false));
+    EXPECT_TRUE(ValidateProcessMessage(message, message.totalSize, ProcessMessageKind::Command, ProcessMode::Controller,
+                                       1234, TestNonce(), 8, false));
 }
 
 TEST(ProcessIPCTest, StartupHandshakeRequiresExactPidNonceAndZeroSequence) {
@@ -232,9 +232,8 @@ TEST(ProcessIPCTest, RestrictedLauncherActuallyExcludesUnlistedInheritableHandle
 
     ce::process::RestrictedChildProcess child;
     DWORD error = ERROR_SUCCESS;
-    ASSERT_TRUE(ce::process::LaunchRestrictedChildProcess(executable, commandLine,
-                                                          std::filesystem::current_path().wstring(), {allowed},
-                                                          CREATE_NO_WINDOW, child, error))
+    ASSERT_TRUE(ce::process::LaunchRestrictedChildProcess(
+        executable, commandLine, std::filesystem::current_path().wstring(), {allowed}, CREATE_NO_WINDOW, child, error))
         << error;
     ASSERT_EQ(WaitForSingleObject(child.processHandle, 15000), WAIT_OBJECT_0);
     DWORD exitCode = ERROR_PROCESS_ABORTED;

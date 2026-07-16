@@ -151,11 +151,12 @@ struct FpsLimiterConfig {
 };
 
 struct GraphicsConfig {
-    std::string vsyncMode;               // "off", "fifo" (on), "adaptive", "mailbox"
-    std::string anisotropicFiltering;    // "off", "2x", "4x", "8x", "16x"
-    std::string samplerOverrideMode = "safe";  // "safe" protects special-purpose samplers; "aggressive" forces all ordinary samplers
-    std::string mipMapping;              // "bilinear", "trilinear"
-    std::string mipBias;                 // "default", "0", "0.5", "-0.5", etc.
+    std::string vsyncMode;             // "off", "fifo" (on), "adaptive", "mailbox"
+    std::string anisotropicFiltering;  // "off", "2x", "4x", "8x", "16x"
+    std::string samplerOverrideMode =
+        "safe";              // "safe" protects special-purpose samplers; "aggressive" forces all ordinary samplers
+    std::string mipMapping;  // "bilinear", "trilinear"
+    std::string mipBias;     // "default", "0", "0.5", "-0.5", etc.
     std::string mipBiasMode = "strict";  // "strict", "offset", "base"
     bool forceMipBiasClamp = false;      // Force all texture mip bias values to 0
     std::string msaaSamples;             // "off", "2x", "4x", "8x"

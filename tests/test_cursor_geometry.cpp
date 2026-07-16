@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "../mediaengine/cursor_geometry.h"
 #include "../common/cursor_capture_state.h"
+#include "../mediaengine/cursor_geometry.h"
 
 namespace cg = ce::cursor_geometry;
 
@@ -75,8 +75,7 @@ TEST(CursorGeometryTest, RejectsEmptyOrFullyInvisibleGeometry) {
 
 TEST(CursorGeometryTest, MapsNegativeMonitorOriginAndHotspotIntoFrame) {
     cg::Rect result;
-    ASSERT_TRUE(cg::MapScreenCursorToFrame(-1860, 120, 8, 12, 48, 48, -1920, 0, 1920, 1080, 1920, 1080,
-                                           &result));
+    ASSERT_TRUE(cg::MapScreenCursorToFrame(-1860, 120, 8, 12, 48, 48, -1920, 0, 1920, 1080, 1920, 1080, &result));
 
     EXPECT_EQ(result.left, 52);
     EXPECT_EQ(result.top, 108);
@@ -118,8 +117,7 @@ TEST(CursorGeometryTest, HotspotAndShapeTopLeftCoordinatesMapToTheSameRectangle)
 TEST(CursorCaptureStateTest, AppliesAuthoritativeShapeTopLeftPointerObservation) {
     ce::cursor::CaptureState state;
     state.handle = 1;
-    state.flags = ce::cursor::kStateValid | ce::cursor::kStateVisible |
-                  ce::cursor::kStateHandleVisibilityFallback;
+    state.flags = ce::cursor::kStateValid | ce::cursor::kStateVisible | ce::cursor::kStateHandleVisibilityFallback;
     state.associationQpc = 100;
     state.observedQpc = 110;
     state.screenX = 117;
@@ -147,8 +145,8 @@ TEST(CursorCaptureStateTest, AppliesAuthoritativeShapeTopLeftPointerObservation)
 TEST(CursorCaptureStateTest, AuthoritativeHiddenPointerClearsHandleVisibilityFallback) {
     ce::cursor::CaptureState state;
     state.handle = 1;
-    state.flags = ce::cursor::kStateValid | ce::cursor::kStateVisible |
-                  ce::cursor::kStateHandleVisibilityFallback | ce::cursor::kStatePositionIsShapeTopLeft;
+    state.flags = ce::cursor::kStateValid | ce::cursor::kStateVisible | ce::cursor::kStateHandleVisibilityFallback |
+                  ce::cursor::kStatePositionIsShapeTopLeft;
 
     ce::cursor::SourcePointerObservation observation;
     observation.valid = true;

@@ -20,14 +20,13 @@ std::atomic<uint32_t> g_sequence{1};
 std::string WideToUtf8(const std::wstring& value) {
     if (value.empty())
         return {};
-    const int required =
-        WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0,
-                            nullptr, nullptr);
+    const int required = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+                                             static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
     if (required <= 0)
         return {};
     std::string result(static_cast<size_t>(required), '\0');
-    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
-                            result.data(), required, nullptr, nullptr) != required) {
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), result.data(),
+                            required, nullptr, nullptr) != required) {
         return {};
     }
     return result;
@@ -45,7 +44,7 @@ std::string UniqueEventName() {
 }
 
 class ScreenshotWorkerTest : public testing::Test {
-  protected:
+protected:
     void TearDown() override {
         ShutdownScreenshotWorker();
         if (!directory_.empty()) {
@@ -99,8 +98,8 @@ TEST_F(ScreenshotWorkerTest, PublishesExactRawPayloadBeforeSignalingSuccess) {
     ASSERT_TRUE(PrepareRequest(partPath, requestId));
 
     const std::array<uint8_t, 16> pixels{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
-    ASSERT_TRUE(QueueScreenshotPixels(&shared_, requestId, pixels.data(), 2, 2, 8,
-                                      ScreenshotPixelFormat::BGRA8, ScreenshotColorEncoding::SRGB));
+    ASSERT_TRUE(QueueScreenshotPixels(&shared_, requestId, pixels.data(), 2, 2, 8, ScreenshotPixelFormat::BGRA8,
+                                      ScreenshotColorEncoding::SRGB));
     ASSERT_EQ(WaitForSingleObject(event_.get(), 5000), WAIT_OBJECT_0);
 
     EXPECT_EQ(shared_.runtimeState.screenshotCompletedRequestId.load(std::memory_order_acquire), requestId);
@@ -130,8 +129,8 @@ TEST_F(ScreenshotWorkerTest, ReportsWorkerPublicationFailureWithoutLeavingPartFi
     ASSERT_TRUE(PrepareRequest(partPath, requestId));
 
     const std::array<uint8_t, 4> pixel{1, 2, 3, 4};
-    ASSERT_TRUE(QueueScreenshotPixels(&shared_, requestId, pixel.data(), 1, 1, 4,
-                                      ScreenshotPixelFormat::BGRA8, ScreenshotColorEncoding::SRGB));
+    ASSERT_TRUE(QueueScreenshotPixels(&shared_, requestId, pixel.data(), 1, 1, 4, ScreenshotPixelFormat::BGRA8,
+                                      ScreenshotColorEncoding::SRGB));
     ASSERT_EQ(WaitForSingleObject(event_.get(), 5000), WAIT_OBJECT_0);
 
     EXPECT_EQ(shared_.runtimeState.screenshotCompletedRequestId.load(std::memory_order_acquire), requestId);

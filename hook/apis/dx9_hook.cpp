@@ -282,7 +282,6 @@ void DX9_UnregisterInternalHelperDevice(IDirect3DDevice9* device) {
     }
 }
 
-
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
@@ -1723,11 +1722,10 @@ public:
         const HRESULT sharedFmtHr =
             direct3D->CheckDeviceFormat(params.AdapterOrdinal, params.DeviceType, adapterFormat, D3DUSAGE_RENDERTARGET,
                                         D3DRTYPE_TEXTURE, d3d9SharedFormat);
-        const HRESULT conversionHr =
-            d3d9Format == d3d9SharedFormat
-                ? D3D_OK
-                : direct3D->CheckDeviceFormatConversion(params.AdapterOrdinal, params.DeviceType, d3d9Format,
-                                                        d3d9SharedFormat);
+        const HRESULT conversionHr = d3d9Format == d3d9SharedFormat
+                                         ? D3D_OK
+                                         : direct3D->CheckDeviceFormatConversion(
+                                               params.AdapterOrdinal, params.DeviceType, d3d9Format, d3d9SharedFormat);
         bool advertisesExSharing = false;
 #ifdef D3DCAPS2_CANSHARERESOURCE
         advertisesExSharing = SUCCEEDED(capsHr) && ((caps.Caps2 & D3DCAPS2_CANSHARERESOURCE) != 0);
@@ -1745,9 +1743,10 @@ public:
             SUCCEEDED(identHr) ? identifier.DeviceId : 0u, SUCCEEDED(identHr) ? identifier.Driver : "?");
 
         if (!isEx && !advertisesExSharing) {
-            HookLogImportant("DX9: %s classic-device share capability is probe-only; the Ex-only caps bit is not "
-                             "used as a gate",
-                             label);
+            HookLogImportant(
+                "DX9: %s classic-device share capability is probe-only; the Ex-only caps bit is not "
+                "used as a gate",
+                label);
         }
 
         direct3D->Release();
@@ -2643,10 +2642,9 @@ public:
         LUID targetLuid = {};
         bool hasTargetLuid = false;
         IDirect3D9Ex* gameFactoryEx = nullptr;
-        if (d3d9 && SUCCEEDED(d3d9->QueryInterface(__uuidof(IDirect3D9Ex), (void**)&gameFactoryEx)) &&
-            gameFactoryEx) {
-            hasTargetLuid = hasCreationParams &&
-                            SUCCEEDED(gameFactoryEx->GetAdapterLUID(targetAdapterOrdinal, &targetLuid));
+        if (d3d9 && SUCCEEDED(d3d9->QueryInterface(__uuidof(IDirect3D9Ex), (void**)&gameFactoryEx)) && gameFactoryEx) {
+            hasTargetLuid =
+                hasCreationParams && SUCCEEDED(gameFactoryEx->GetAdapterLUID(targetAdapterOrdinal, &targetLuid));
             gameFactoryEx->Release();
         }
         if (!hasTargetLuid && !IsDXVKD3D9WrapperLoaded()) {
@@ -2658,21 +2656,21 @@ public:
                 const HRESULT factoryHr = create9Ex(D3D_SDK_VERSION, &directSharedFactoryEx);
                 if (FAILED(factoryHr)) {
                     directSharedFactoryEx = nullptr;
-                    HookLogImportant("DX9: Private D3D9Ex helper factory unavailable for adapter mapping "
-                                     "(hr=0x%08x)",
-                                     (unsigned)factoryHr);
+                    HookLogImportant(
+                        "DX9: Private D3D9Ex helper factory unavailable for adapter mapping "
+                        "(hr=0x%08x)",
+                        (unsigned)factoryHr);
                 }
             }
             if (directSharedFactoryEx && hasCreationParams) {
-                hasTargetLuid =
-                    SUCCEEDED(directSharedFactoryEx->GetAdapterLUID(targetAdapterOrdinal, &targetLuid));
+                hasTargetLuid = SUCCEEDED(directSharedFactoryEx->GetAdapterLUID(targetAdapterOrdinal, &targetLuid));
             }
         }
         if (d3d9)
             d3d9->Release();
         if (hasTargetLuid) {
-            HookLogImportant("DX9: Resolved native device adapter LUID %08x:%08x (ordinal=%u)",
-                             targetLuid.HighPart, targetLuid.LowPart, targetAdapterOrdinal);
+            HookLogImportant("DX9: Resolved native device adapter LUID %08x:%08x (ordinal=%u)", targetLuid.HighPart,
+                             targetLuid.LowPart, targetAdapterOrdinal);
         } else {
             HookLogImportant("DX9: Exact adapter LUID unavailable; using D3D9 adapter ordinal %u",
                              targetAdapterOrdinal);
@@ -3830,10 +3828,9 @@ static void CaptureDX9Screenshot(IDirect3DDevice9* device, SharedMemoryLayout* s
                 D3DLOCKED_RECT locked;
                 if (SUCCEEDED(staging->LockRect(&locked, NULL, D3DLOCK_READONLY))) {
                     if (locked.Pitch > 0) {
-                        queued = QueueScreenshotPixels(
-                            shm, requestId, static_cast<const uint8_t*>(locked.pBits), bbDesc.Width, bbDesc.Height,
-                            static_cast<uint32_t>(locked.Pitch), ScreenshotPixelFormat::BGRA8,
-                            ScreenshotColorEncoding::SRGB);
+                        queued = QueueScreenshotPixels(shm, requestId, static_cast<const uint8_t*>(locked.pBits),
+                                                       bbDesc.Width, bbDesc.Height, static_cast<uint32_t>(locked.Pitch),
+                                                       ScreenshotPixelFormat::BGRA8, ScreenshotColorEncoding::SRGB);
                     }
                     staging->UnlockRect();
                 }
@@ -4471,8 +4468,8 @@ static HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device, DWOR
     if (ShouldBypassDX9HooksForDevice(device) || g_InOverlayRender) {
         return callbacks.setTexture(device, Stage, Texture);
     }
-    return ce::dx9_sampler_state::SetTexture(device, Stage, Texture, callbacks.setTexture,
-                                             callbacks.setSamplerState, callbacks.getSamplerState);
+    return ce::dx9_sampler_state::SetTexture(device, Stage, Texture, callbacks.setTexture, callbacks.setSamplerState,
+                                             callbacks.getSamplerState);
 }
 
 static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* device, DWORD Stage,
@@ -4842,8 +4839,7 @@ static void InstallD3D9SamplerHooks(uintptr_t* vtable) {
 
     if (!record->setTextureHooked) {
         SetTexture_t original = record->setTexture.load(std::memory_order_relaxed);
-        const VTableHook::Status status =
-            VTableHook::Create(&vtable[65], (void*)&DetourSetTexture, (void**)&original);
+        const VTableHook::Status status = VTableHook::Create(&vtable[65], (void*)&DetourSetTexture, (void**)&original);
         if (status == VTableHook::Success) {
             record->setTexture.store(original, std::memory_order_release);
             record->setTextureHooked = true;
@@ -4865,11 +4861,10 @@ static void InstallD3D9SamplerHooks(uintptr_t* vtable) {
             record->getSamplerStateHooked = true;
             if (!oGetSamplerState)
                 oGetSamplerState = original;
-            HookLogImportant("DX9: Logical GetSamplerState hook installed for vtable=%p (slot=%p)", vtable,
-                             vtable[68]);
+            HookLogImportant("DX9: Logical GetSamplerState hook installed for vtable=%p (slot=%p)", vtable, vtable[68]);
         } else {
-            HookLogImportant("DX9: GetSamplerState hook FAILED for vtable=%p (status=%d slot=%p)", vtable,
-                             (int)status, vtable[68]);
+            HookLogImportant("DX9: GetSamplerState hook FAILED for vtable=%p (status=%d slot=%p)", vtable, (int)status,
+                             vtable[68]);
         }
     }
 
@@ -4884,8 +4879,8 @@ static void InstallD3D9SamplerHooks(uintptr_t* vtable) {
                 oSetSamplerState = original;
             HookLogImportant("DX9: SetSamplerState hook installed for vtable=%p (slot=%p)", vtable, vtable[69]);
         } else {
-            HookLogImportant("DX9: SetSamplerState hook FAILED for vtable=%p (status=%d slot=%p)", vtable,
-                             (int)status, vtable[69]);
+            HookLogImportant("DX9: SetSamplerState hook FAILED for vtable=%p (status=%d slot=%p)", vtable, (int)status,
+                             vtable[69]);
         }
     }
 }
@@ -5030,7 +5025,6 @@ static void InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice) {
             swapChain->Release();
         }
     }
-
 }
 
 void DX9_InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice) {
@@ -5230,9 +5224,8 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
 
     static_assert(!ShouldPromoteClassicD3D9Device());
     HookLogImportant("DX9: Creating native classic D3D9 device; helper-owned shared capture will be probed later");
-    HRESULT hr =
-        oCreateDevice(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters,
-                      ppReturnedDeviceInterface);
+    HRESULT hr = oCreateDevice(self, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters,
+                               ppReturnedDeviceInterface);
 
     if (SUCCEEDED(hr)) {
         if (pPresentationParameters) {

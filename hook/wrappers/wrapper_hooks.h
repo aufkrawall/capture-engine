@@ -75,10 +75,10 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
                                                      HMODULE Software, UINT Flags, UINT SDKVersion,
                                                      DXGI_SWAP_CHAIN_DESC* pSwapChainDesc, IDXGISwapChain** ppSwapChain,
                                                      ID3D10Device** ppDevice);
-HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain1(
-    IDXGIAdapter* pAdapter, D3D10_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags,
-    D3D10_FEATURE_LEVEL1 HardwareLevel, UINT SDKVersion, DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
-    IDXGISwapChain** ppSwapChain, ID3D10Device1** ppDevice);
+HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain1(IDXGIAdapter* pAdapter, D3D10_DRIVER_TYPE DriverType,
+                                                      HMODULE Software, UINT Flags, D3D10_FEATURE_LEVEL1 HardwareLevel,
+                                                      UINT SDKVersion, DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
+                                                      IDXGISwapChain** ppSwapChain, ID3D10Device1** ppDevice);
 
 // ============================================================================
 // D3D11 Wrapper Hook

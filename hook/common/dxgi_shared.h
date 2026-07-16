@@ -552,10 +552,12 @@ inline bool ShouldTreatStreamlinePresentAsSyntheticReentrant(
     return true;
 }
 
-inline bool ShouldUseStreamlineStartupTopLevelCandidate(
-    bool observerOnlyMode, bool streamlineSyntheticReentrant, bool callerFromStreamlineModule,
-    bool isD3D12SwapChain, bool streamlineFGRunning, bool streamlineStartupHandoffInProgress,
-    bool recentLargePresentGap, bool matchesExpectedPresentThread, bool postSLConfirmedRendering) {
+inline bool ShouldUseStreamlineStartupTopLevelCandidate(bool observerOnlyMode, bool streamlineSyntheticReentrant,
+                                                        bool callerFromStreamlineModule, bool isD3D12SwapChain,
+                                                        bool streamlineFGRunning,
+                                                        bool streamlineStartupHandoffInProgress,
+                                                        bool recentLargePresentGap, bool matchesExpectedPresentThread,
+                                                        bool postSLConfirmedRendering) {
     // The large-gap promotion is a one-shot bootstrap route. Once PostSL has
     // already submitted successfully, reclassifying later standalone output
     // Presents as the original handoff bypass suppresses the proven PostSL
@@ -566,9 +568,11 @@ inline bool ShouldUseStreamlineStartupTopLevelCandidate(
            matchesExpectedPresentThread && !postSLConfirmedRendering;
 }
 
-inline bool ShouldRenderExactPostSLBeforeStartupHandoffTransport(
-    bool isD3D12SwapChain, bool hadFSRFGPhase, bool safePostFSRBootstrapPath, bool streamlineFGRunning,
-    bool startupTopLevelCandidate, bool postSLConfirmedRendering) {
+inline bool ShouldRenderExactPostSLBeforeStartupHandoffTransport(bool isD3D12SwapChain, bool hadFSRFGPhase,
+                                                                 bool safePostFSRBootstrapPath,
+                                                                 bool streamlineFGRunning,
+                                                                 bool startupTopLevelCandidate,
+                                                                 bool postSLConfirmedRendering) {
     // The first runtime-owned Present after FSR can precede the ordinary PostSL
     // callback by one output. Once the post-FSR queue topology is proven safe,
     // draw onto that exact proxy backbuffer before forwarding it. Cold DLSS and

@@ -121,8 +121,8 @@ TEST(SharedSystemMetricsTest, ZeroGpuAndVramSamplesHaveIndependentValidity) {
     SharedMemoryLayout sharedMemory;
     sharedMemory.systemMetrics.gpuUsage.store(0.0f, std::memory_order_relaxed);
     sharedMemory.systemMetrics.vramUsage.store(0.0f, std::memory_order_relaxed);
-    sharedMemory.systemMetrics.validityMask.store(
-        SYSTEM_METRIC_GPU_USAGE_VALID | SYSTEM_METRIC_VRAM_USAGE_VALID, std::memory_order_release);
+    sharedMemory.systemMetrics.validityMask.store(SYSTEM_METRIC_GPU_USAGE_VALID | SYSTEM_METRIC_VRAM_USAGE_VALID,
+                                                  std::memory_order_release);
 
     const uint32_t validity = sharedMemory.systemMetrics.validityMask.load(std::memory_order_acquire);
     EXPECT_EQ(sharedMemory.systemMetrics.gpuUsage.load(std::memory_order_relaxed), 0.0f);
@@ -162,8 +162,8 @@ TEST(HostMetricsSourceInvariantTest, SensorAcceptsOnlyLuidStampedByCurrentSource
 }
 
 TEST(HostMetricsSourceInvariantTest, GraphicsLuidPublishersStampCurrentProcessProvenance) {
-    for (const char* path : {"common/capture_base.h", "hook/common/hook_common.cpp",
-                             "hook/common/system_metrics.cpp", "hook/vulkan_layer/layer_ipc.cpp"}) {
+    for (const char* path : {"common/capture_base.h", "hook/common/hook_common.cpp", "hook/common/system_metrics.cpp",
+                             "hook/vulkan_layer/layer_ipc.cpp"}) {
         const std::string source = ReadProjectSource(path);
         SCOPED_TRACE(path);
         ASSERT_FALSE(source.empty());

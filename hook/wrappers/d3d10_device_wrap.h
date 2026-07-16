@@ -209,5 +209,4 @@ private:
     ID3D10Device1* m_pReal1;
     LONG m_RefCount;
     bool m_IsDevice1;
-
 };

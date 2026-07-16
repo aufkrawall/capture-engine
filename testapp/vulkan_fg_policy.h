@@ -41,10 +41,8 @@ inline SceneCameraPolicy BuildSceneCameraPolicy(float aspect) {
     const float forwardX = target[0] - camera.position[0];
     const float forwardY = target[1] - camera.position[1];
     const float forwardZ = target[2] - camera.position[2];
-    const float forwardLength = std::sqrt(forwardX * forwardX + forwardY * forwardY +
-                                          forwardZ * forwardZ);
-    camera.forward = {forwardX / forwardLength, forwardY / forwardLength,
-                      forwardZ / forwardLength};
+    const float forwardLength = std::sqrt(forwardX * forwardX + forwardY * forwardY + forwardZ * forwardZ);
+    camera.forward = {forwardX / forwardLength, forwardY / forwardLength, forwardZ / forwardLength};
     // cross(worldUp, forward) is exactly +X for this centered camera.
     camera.right = {1.0f, 0.0f, 0.0f};
     camera.up = {0.0f, camera.forward[2], -camera.forward[1]};
@@ -57,16 +55,11 @@ inline SceneProjectionPolicy BuildSceneProjectionPolicy(const SceneCameraPolicy&
     const float yScale = 1.0f / std::tan(camera.verticalFov * 0.5f);
     const float xScale = yScale / camera.aspect;
     const float zScale = camera.farPlane / (camera.farPlane - camera.nearPlane);
-    const float zOffset = -camera.nearPlane * camera.farPlane /
-                          (camera.farPlane - camera.nearPlane);
-    projection.viewToClip = {xScale, 0.0f, 0.0f, 0.0f,
-                             0.0f, yScale, 0.0f, 0.0f,
-                             0.0f, 0.0f, zScale, 1.0f,
-                             0.0f, 0.0f, zOffset, 0.0f};
-    projection.clipToView = {1.0f / xScale, 0.0f, 0.0f, 0.0f,
-                             0.0f, 1.0f / yScale, 0.0f, 0.0f,
-                             0.0f, 0.0f, 0.0f, 1.0f / zOffset,
-                             0.0f, 0.0f, 1.0f, -zScale / zOffset};
+    const float zOffset = -camera.nearPlane * camera.farPlane / (camera.farPlane - camera.nearPlane);
+    projection.viewToClip = {xScale, 0.0f, 0.0f,   0.0f, 0.0f, yScale, 0.0f,    0.0f,
+                             0.0f,   0.0f, zScale, 1.0f, 0.0f, 0.0f,   zOffset, 0.0f};
+    projection.clipToView = {1.0f / xScale, 0.0f, 0.0f, 0.0f,           0.0f, 1.0f / yScale, 0.0f, 0.0f,
+                             0.0f,          0.0f, 0.0f, 1.0f / zOffset, 0.0f, 0.0f,          1.0f, -zScale / zOffset};
     return projection;
 }
 
@@ -141,10 +134,8 @@ inline bool IsOwnerDispatchPairValid(SwapchainOwner owner, VulkanWsiRoute route)
 // The FFX API replacement function also requires its current wrapper to be destroyed before the
 // same context can create another one. Native and Streamline handles remain ordinary Vulkan
 // handles and can participate directly in each other's standard oldSwapchain replacement path.
-inline bool ShouldForwardOldSwapchain(SwapchainOwner currentOwner,
-                                      SwapchainOwner replacementOwner) {
-    return currentOwner != SwapchainOwner::FidelityFX &&
-           replacementOwner != SwapchainOwner::FidelityFX;
+inline bool ShouldForwardOldSwapchain(SwapchainOwner currentOwner, SwapchainOwner replacementOwner) {
+    return currentOwner != SwapchainOwner::FidelityFX && replacementOwner != SwapchainOwner::FidelityFX;
 }
 
 struct VulkanFsrVersionResolution {
@@ -231,8 +222,7 @@ struct FfxResourceStateBits {
     uint32_t pixelComputeRead = 0;
 };
 
-inline VulkanImageLayoutClass ResolveFfxResourceLayout(uint32_t state,
-                                                       const FfxResourceStateBits& bits) {
+inline VulkanImageLayoutClass ResolveFfxResourceLayout(uint32_t state, const FfxResourceStateBits& bits) {
     if ((state & bits.present) != 0) {
         return VulkanImageLayoutClass::Present;
     }
@@ -257,8 +247,7 @@ inline VulkanImageLayoutClass ResolveFfxResourceLayout(uint32_t state,
 // A failed transition may preserve a genuinely newer request, but the request which caused the
 // failure must be consumed. Otherwise rollback immediately launches the same failing preparation
 // again on every frame.
-inline FgMode ResolveRequestedModeAfterTransitionFailure(FgMode requestedMode,
-                                                         FgMode failedTarget,
+inline FgMode ResolveRequestedModeAfterTransitionFailure(FgMode requestedMode, FgMode failedTarget,
                                                          FgMode currentMode) {
     return requestedMode == failedTarget ? currentMode : requestedMode;
 }
@@ -268,8 +257,7 @@ inline PresentMode SelectPresentMode(bool vsync, const std::vector<PresentMode>&
         return std::find(available.begin(), available.end(), mode) != available.end();
     };
     if (vsync) {
-        return has(PresentMode::Fifo) ? PresentMode::Fifo
-                                     : (available.empty() ? PresentMode::Fifo : available.front());
+        return has(PresentMode::Fifo) ? PresentMode::Fifo : (available.empty() ? PresentMode::Fifo : available.front());
     }
     if (has(PresentMode::Immediate)) {
         return PresentMode::Immediate;
@@ -384,16 +372,14 @@ inline VulkanQueuePlan BuildVulkanQueuePlan(const std::vector<VulkanQueueFamilyC
     VulkanQueuePlan plan{};
     plan.requestedQueueCounts.assign(caps.size(), 0);
     detail::QueueAllocator allocator(caps);
-    plan.game = allocator.Take([](const VulkanQueueFamilyCaps& family) {
-        return family.graphics && family.present;
-    });
+    plan.game = allocator.Take([](const VulkanQueueFamilyCaps& family) { return family.graphics && family.present; });
     plan.baseAvailable = plan.game.Valid();
     if (!plan.baseAvailable) {
         return plan;
     }
 
-    auto takeMany = [](detail::QueueAllocator* source, uint32_t count, auto predicate,
-                       bool preferDedicated, std::vector<VulkanQueueRef>* output) {
+    auto takeMany = [](detail::QueueAllocator* source, uint32_t count, auto predicate, bool preferDedicated,
+                       std::vector<VulkanQueueRef>* output) {
         for (uint32_t i = 0; i < count; ++i) {
             VulkanQueueRef ref = source->Take(predicate, preferDedicated);
             if (!ref.Valid()) {
@@ -416,8 +402,7 @@ inline VulkanQueuePlan BuildVulkanQueuePlan(const std::vector<VulkanQueueFamilyC
         [](const VulkanQueueFamilyCaps& family) { return family.compute; }, true, &plan.streamlineCompute);
     const bool slOptical = takeMany(
         &streamlineAllocator, requirements.streamlineOpticalFlowQueues,
-        [](const VulkanQueueFamilyCaps& family) { return family.opticalFlow; }, false,
-        &plan.streamlineOpticalFlow);
+        [](const VulkanQueueFamilyCaps& family) { return family.opticalFlow; }, false, &plan.streamlineOpticalFlow);
     plan.streamlineAvailable = slGraphics && slCompute && slOptical;
     if (plan.streamlineAvailable) {
         allocator = std::move(streamlineAllocator);
@@ -428,11 +413,9 @@ inline VulkanQueuePlan BuildVulkanQueuePlan(const std::vector<VulkanQueueFamilyC
     }
 
     if (requirements.requestFidelityFX) {
-        plan.ffxAsyncCompute = allocator.Take(
-            [](const VulkanQueueFamilyCaps& family) { return family.compute; }, true);
-        plan.ffxPresent = allocator.Take([](const VulkanQueueFamilyCaps& family) {
-            return family.transfer && family.present;
-        });
+        plan.ffxAsyncCompute = allocator.Take([](const VulkanQueueFamilyCaps& family) { return family.compute; }, true);
+        plan.ffxPresent =
+            allocator.Take([](const VulkanQueueFamilyCaps& family) { return family.transfer && family.present; });
         plan.ffxImageAcquire = allocator.Take([](const VulkanQueueFamilyCaps&) { return true; });
         plan.fidelityFxAvailable =
             plan.ffxAsyncCompute.Valid() && plan.ffxPresent.Valid() && plan.ffxImageAcquire.Valid();
@@ -448,10 +431,8 @@ inline VulkanQueuePlan BuildVulkanQueuePlan(const std::vector<VulkanQueueFamilyC
         // Streamline, and FidelityFX one valid queue-separation stress path without swapchain
         // ownership transfers. FidelityFX also requires the queue on which its replacement
         // vkQueuePresentKHR is invoked to have both graphics and compute capability.
-        plan.asyncPresent = allocator.Take([gameFamily = plan.game.familyIndex](
-                                               const VulkanQueueFamilyCaps& family) {
-            return family.familyIndex == gameFamily && family.graphics && family.compute &&
-                   family.present;
+        plan.asyncPresent = allocator.Take([gameFamily = plan.game.familyIndex](const VulkanQueueFamilyCaps& family) {
+            return family.familyIndex == gameFamily && family.graphics && family.compute && family.present;
         });
         plan.asyncPresentAvailable = plan.asyncPresent.Valid();
     }

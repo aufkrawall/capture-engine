@@ -170,8 +170,8 @@ void CreateSamplerPolicySmokeObjects() {
         g_Device->CreateRootSignature(0, rootBlob->GetBufferPointer(), rootBlob->GetBufferSize(),
                                       IID_PPV_ARGS(&rootSignature11));
     }
-    printf("DX12 sampler-policy smoke: dynamic=5 static-v1.0=%s static-v1.1=%s\n",
-           SUCCEEDED(hr) ? "ok" : "failed", rootSignature11 ? "ok" : "failed");
+    printf("DX12 sampler-policy smoke: dynamic=5 static-v1.0=%s static-v1.1=%s\n", SUCCEEDED(hr) ? "ok" : "failed",
+           rootSignature11 ? "ok" : "failed");
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {

@@ -6,9 +6,9 @@
 #include <new>
 #include "../common/raii_helpers.h"
 #include "../common/secure_dll_loading.h"
-#include "mediaengine.h"
 #include "cursor_bitmap_utils.h"
 #include "cursor_geometry.h"
+#include "mediaengine.h"
 #include "video_format_policy.h"
 
 // Simple vertex/pixel shader for alpha-blended cursor overlay
@@ -472,9 +472,8 @@ bool CursorRenderer::LoadCursorBitmap(HCURSOR cursor, uint32_t requestedWidth, u
     const uint32_t targetWidth = std::max(result->width, requestedWidth);
     const uint32_t targetHeight = std::max(result->height, requestedHeight);
     if (targetWidth != result->width || targetHeight != result->height) {
-        HICON resourceSized = reinterpret_cast<HICON>(
-            CopyImage(cursor, IMAGE_CURSOR, static_cast<int>(targetWidth), static_cast<int>(targetHeight),
-                      LR_COPYFROMRESOURCE));
+        HICON resourceSized = reinterpret_cast<HICON>(CopyImage(cursor, IMAGE_CURSOR, static_cast<int>(targetWidth),
+                                                                static_cast<int>(targetHeight), LR_COPYFROMRESOURCE));
         if (resourceSized) {
             CursorBitmapData resource;
             uint8_t* resourcePixels = nullptr;
@@ -495,15 +494,13 @@ bool CursorRenderer::LoadCursorBitmap(HCURSOR cursor, uint32_t requestedWidth, u
     if (finalWidth != result->width || finalHeight != result->height) {
         const uint32_t sourceWidth = result->width;
         const uint32_t sourceHeight = result->height;
-        auto scaled = ScaleBitmapNearestNeighbor(result->pixels.get(), sourceWidth, sourceHeight, finalWidth,
-                                                 finalHeight);
+        auto scaled =
+            ScaleBitmapNearestNeighbor(result->pixels.get(), sourceWidth, sourceHeight, finalWidth, finalHeight);
         if (scaled) {
-            result->hotspotX = static_cast<int32_t>((static_cast<int64_t>(result->hotspotX) * finalWidth +
-                                                     sourceWidth / 2) /
-                                                    sourceWidth);
-            result->hotspotY = static_cast<int32_t>((static_cast<int64_t>(result->hotspotY) * finalHeight +
-                                                     sourceHeight / 2) /
-                                                    sourceHeight);
+            result->hotspotX = static_cast<int32_t>(
+                (static_cast<int64_t>(result->hotspotX) * finalWidth + sourceWidth / 2) / sourceWidth);
+            result->hotspotY = static_cast<int32_t>(
+                (static_cast<int64_t>(result->hotspotY) * finalHeight + sourceHeight / 2) / sourceHeight);
             result->pixels = std::move(scaled);
             result->width = finalWidth;
             result->height = finalHeight;
@@ -593,10 +590,10 @@ bool CursorRenderer::GetCursorFrameRect(int frameWidth, int frameHeight, const c
     const int positionHotspotY =
         ce::cursor_geometry::ResolveHotspotForPosition(hotspotY, state.PositionIsShapeTopLeft());
     ce::cursor_geometry::Rect cursorRect;
-    if (!ce::cursor_geometry::MapScreenCursorToFrame(
-            state.screenX, state.screenY, positionHotspotX, positionHotspotY, static_cast<int>(cursorWidth),
-            static_cast<int>(cursorHeight), state.captureLeft, state.captureTop, captureWidth, captureHeight,
-            frameWidth, frameHeight, &cursorRect)) {
+    if (!ce::cursor_geometry::MapScreenCursorToFrame(state.screenX, state.screenY, positionHotspotX, positionHotspotY,
+                                                     static_cast<int>(cursorWidth), static_cast<int>(cursorHeight),
+                                                     state.captureLeft, state.captureTop, captureWidth, captureHeight,
+                                                     frameWidth, frameHeight, &cursorRect)) {
         return false;
     }
 

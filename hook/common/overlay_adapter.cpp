@@ -565,8 +565,8 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     if (frameLayout.fgOutputFPS < 1.0f)
         frameLayout.fgOutputFPS = cachedFPS;
     if (frameLayout.fgBaseFPS < 1.0f) {
-        frameLayout.fgBaseFPS = frameLayout.fgMultiplier >= 2 ? frameLayout.fgOutputFPS / frameLayout.fgMultiplier
-                                                              : cachedFPS;
+        frameLayout.fgBaseFPS =
+            frameLayout.fgMultiplier >= 2 ? frameLayout.fgOutputFPS / frameLayout.fgMultiplier : cachedFPS;
     }
 
     frameLayout.recordingActive = sharedMem->runtimeState.isRecording.load(std::memory_order_acquire);
@@ -592,17 +592,13 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         lastEncoderOverloadTick = 0;
         lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
     }
-    frameLayout.showOverloadWarning =
-        (lastEncoderOverloadTick != 0) && ((nowTick64 - lastEncoderOverloadTick) <= 5000);
-    frameLayout.recordingWarningKind = frameLayout.showOverloadWarning
-                                           ? lastRecordingWarningKind
-                                           : ce::capture_policy::kOverlayWarningNone;
+    frameLayout.showOverloadWarning = (lastEncoderOverloadTick != 0) && ((nowTick64 - lastEncoderOverloadTick) <= 5000);
+    frameLayout.recordingWarningKind =
+        frameLayout.showOverloadWarning ? lastRecordingWarningKind : ce::capture_policy::kOverlayWarningNone;
     frameLayout.recordingTargetFps = sharedMem->runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
-    frameLayout.recordingSustainFpsX100 =
-        sharedMem->runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
+    frameLayout.recordingSustainFpsX100 = sharedMem->runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
 
-    const uint64_t notificationExpiry =
-        sharedMem->runtimeState.notificationExpiry.load(std::memory_order_acquire);
+    const uint64_t notificationExpiry = sharedMem->runtimeState.notificationExpiry.load(std::memory_order_acquire);
     frameLayout.notificationType = sharedMem->runtimeState.notificationType.load(std::memory_order_relaxed);
     frameLayout.notificationVisible = notificationExpiry > nowTick64 && frameLayout.notificationType != 0;
 
@@ -628,20 +624,19 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     bool viewportChanged = (viewportWidth != lastViewportWidth) || (viewportHeight != lastViewportHeight);
     bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);
     const bool rowSetChanged = !hasLastFrameLayout || frameLayout.rowMask != lastFrameLayout.rowMask;
-    const bool fgIdentityChanged =
-        !hasLastFrameLayout || frameLayout.fgActive != lastFrameLayout.fgActive ||
-        frameLayout.reserveFGSpace != lastFrameLayout.reserveFGSpace ||
-        frameLayout.fgMultiplier != lastFrameLayout.fgMultiplier ||
-        std::strcmp(frameLayout.fgLabel, lastFrameLayout.fgLabel) != 0;
-    const bool recordingChanged =
-        !hasLastFrameLayout || frameLayout.recordingActive != lastFrameLayout.recordingActive ||
-        frameLayout.recordingAudioOnly != lastFrameLayout.recordingAudioOnly ||
-        frameLayout.recordingSeconds != lastFrameLayout.recordingSeconds ||
-        frameLayout.showOverloadWarning != lastFrameLayout.showOverloadWarning ||
-        frameLayout.recordingWarningKind != lastFrameLayout.recordingWarningKind;
-    const bool notificationChanged =
-        !hasLastFrameLayout || frameLayout.notificationVisible != lastFrameLayout.notificationVisible ||
-        frameLayout.notificationType != lastFrameLayout.notificationType;
+    const bool fgIdentityChanged = !hasLastFrameLayout || frameLayout.fgActive != lastFrameLayout.fgActive ||
+                                   frameLayout.reserveFGSpace != lastFrameLayout.reserveFGSpace ||
+                                   frameLayout.fgMultiplier != lastFrameLayout.fgMultiplier ||
+                                   std::strcmp(frameLayout.fgLabel, lastFrameLayout.fgLabel) != 0;
+    const bool recordingChanged = !hasLastFrameLayout ||
+                                  frameLayout.recordingActive != lastFrameLayout.recordingActive ||
+                                  frameLayout.recordingAudioOnly != lastFrameLayout.recordingAudioOnly ||
+                                  frameLayout.recordingSeconds != lastFrameLayout.recordingSeconds ||
+                                  frameLayout.showOverloadWarning != lastFrameLayout.showOverloadWarning ||
+                                  frameLayout.recordingWarningKind != lastFrameLayout.recordingWarningKind;
+    const bool notificationChanged = !hasLastFrameLayout ||
+                                     frameLayout.notificationVisible != lastFrameLayout.notificationVisible ||
+                                     frameLayout.notificationType != lastFrameLayout.notificationType;
     bool dynamicStateChanged = rowSetChanged || fgIdentityChanged || recordingChanged || notificationChanged;
     bool needRebuild = !hasCachedFrame || shouldUpdate || shouldRefreshGraph || viewportChanged || configChanged ||
                        dynamicStateChanged || layoutDirty;
@@ -815,9 +810,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         if (rowRAM) {
             float gbUsed = (float)cachedSystemMetrics.ramUsed / (1024.0f * 1024.0f * 1024.0f);
             float gbTotal = (float)cachedSystemMetrics.ramTotal / (1024.0f * 1024.0f * 1024.0f);
-            const MemoryValueMode memoryMode =
-                SelectMemoryValueMode(cachedSystemMetrics.ramUsed != 0, cachedSystemMetrics.ramUsed,
-                                      cachedSystemMetrics.ramTotal);
+            const MemoryValueMode memoryMode = SelectMemoryValueMode(
+                cachedSystemMetrics.ramUsed != 0, cachedSystemMetrics.ramUsed, cachedSystemMetrics.ramTotal);
             char usedBuf[32], totalBuf[32];
             float valueWidth = MeasureTextWidth("--") + kShadowPad;
             if (memoryMode != MemoryValueMode::Unavailable) {
@@ -852,8 +846,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                          cached01PercentLow);
                 maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth("Avg/1%/0.1%"));
                 maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth(measureBuf) + kShadowPad);
-                maxValueWidth =
-                    (std::max)(maxValueWidth, MeasureTextWidth("9999 / 9999 / 9999") + kShadowPad);
+                maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth("9999 / 9999 / 9999") + kShadowPad);
             }
         }
         if (rowFGStatus) {
@@ -1095,8 +1088,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     if (rowVRAM) {
         float gbUsed = (float)cachedSystemMetrics.vramUsed / (1024.0f * 1024.0f * 1024.0f);
         float gbTotal = (float)cachedSystemMetrics.vramTotal / (1024.0f * 1024.0f * 1024.0f);
-        const MemoryValueMode memoryMode = SelectMemoryValueMode(
-            vramTelemetryAvailable, cachedSystemMetrics.vramUsed, cachedSystemMetrics.vramTotal);
+        const MemoryValueMode memoryMode =
+            SelectMemoryValueMode(vramTelemetryAvailable, cachedSystemMetrics.vramUsed, cachedSystemMetrics.vramTotal);
 
         renderer->DrawTextWithShadow(labelCol, cursorY, "VRAM", Colors::LabelOrange, shadowColor);
 
@@ -1137,9 +1130,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     if (rowRAM) {
         float gbUsed = (float)cachedSystemMetrics.ramUsed / (1024.0f * 1024.0f * 1024.0f);
         float gbTotal = (float)cachedSystemMetrics.ramTotal / (1024.0f * 1024.0f * 1024.0f);
-        const MemoryValueMode memoryMode =
-            SelectMemoryValueMode(cachedSystemMetrics.ramUsed != 0, cachedSystemMetrics.ramUsed,
-                                  cachedSystemMetrics.ramTotal);
+        const MemoryValueMode memoryMode = SelectMemoryValueMode(
+            cachedSystemMetrics.ramUsed != 0, cachedSystemMetrics.ramUsed, cachedSystemMetrics.ramTotal);
 
         renderer->DrawTextWithShadow(labelCol, cursorY, "RAM", Colors::LabelPink, shadowColor);
 

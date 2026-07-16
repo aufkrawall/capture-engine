@@ -36,8 +36,7 @@ TEST(D3D11ContextWrapperSourceTest, PromotesInheritedContextInterfacesIndependen
 
 TEST(D3D11ContextWrapperSourceTest, ForcedAFHotPathUsesObjectOwnedCachesAndDirtyState) {
     const auto root = std::filesystem::current_path();
-    const std::string context =
-        ReadTextFile(root / "hook" / "wrappers" / "d3d11_devicecontext_wrap.cpp");
+    const std::string context = ReadTextFile(root / "hook" / "wrappers" / "d3d11_devicecontext_wrap.cpp");
     const std::string device = ReadTextFile(root / "hook" / "wrappers" / "d3d11_device_wrap.cpp");
     const std::string rawHook = ReadTextFile(root / "hook" / "apis" / "dx11_hook.cpp");
 
@@ -64,8 +63,7 @@ TEST(D3D11ContextWrapperSourceTest, ForcedAFHotPathUsesObjectOwnedCachesAndDirty
     EXPECT_NE(context.find("ClearForcedAFTracking();"), std::string::npos);
     EXPECT_NE(context.find("ppSamplers[i] != logical"), std::string::npos);
 
-    EXPECT_NE(rawHook.find("g_D3D11DirtyContextCount.load(std::memory_order_acquire) == 0"),
-              std::string::npos);
+    EXPECT_NE(rawHook.find("g_D3D11DirtyContextCount.load(std::memory_order_acquire) == 0"), std::string::npos);
     EXPECT_NE(rawHook.find("ClearTrackedContextState11(context);"), std::string::npos);
     const size_t rawStateErase = rawHook.find("g_D3D11ContextStates.erase(it);");
     const size_t rawStateRelease = rawHook.find("ReleaseTrackedContextState11(retiredState);");

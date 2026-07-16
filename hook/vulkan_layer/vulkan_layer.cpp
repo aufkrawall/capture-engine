@@ -7,12 +7,12 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan_layer.h"
 
-#include "../../common/strict_float_parse.h"
 #include <algorithm>
 #include <cstring>
 #include <deque>
 #include <mutex>
 #include <vector>
+#include "../../common/strict_float_parse.h"
 #include "../common/capture_pacing.h"
 #include "../common/fps_limiter.h"
 #include "../common/perf_logger.h"
@@ -107,8 +107,8 @@ static void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limi
             VkFence fence = state.fences[index];
             const VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
             if (waitResult != VK_SUCCESS) {
-                LayerLog("Vulkan Prerender: mode-change drain failed result=%d queue=%p",
-                         static_cast<int>(waitResult), queue);
+                LayerLog("Vulkan Prerender: mode-change drain failed result=%d queue=%p", static_cast<int>(waitResult),
+                         queue);
                 return;
             }
             disp->fp_vkResetFences(device, 1, &fence);
@@ -124,8 +124,8 @@ static void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limi
         VkFence oldFence = state.fences[oldIndex];
         const VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &oldFence, VK_TRUE, UINT64_MAX);
         if (waitResult != VK_SUCCESS) {
-            LayerLog("Vulkan Prerender: wait failed result=%d queue=%p frame=%llu", static_cast<int>(waitResult),
-                     queue, static_cast<unsigned long long>(state.frameIndex));
+            LayerLog("Vulkan Prerender: wait failed result=%d queue=%p frame=%llu", static_cast<int>(waitResult), queue,
+                     static_cast<unsigned long long>(state.frameIndex));
             return;
         }
         disp->fp_vkResetFences(device, 1, &oldFence);
@@ -469,8 +469,8 @@ void VulkanLayerState::UpdateFromSharedMemory(IPCClient* ipc) {
     LayerLog(
         "VulkanLayerState: Updated from config - policy=%s AF=%d, MipBias=%.1f, "
         "MipMap=%s, Clamp=%d, VSync=%s, BBCount=%d",
-        m_SamplerOverrideMode.c_str(), m_MaxAnisotropy, m_MipLodBias, m_MipMapping.c_str(),
-        m_ForceMipBiasClamp ? 1 : 0, m_VsyncMode.c_str(), m_BackbufferCount);
+        m_SamplerOverrideMode.c_str(), m_MaxAnisotropy, m_MipLodBias, m_MipMapping.c_str(), m_ForceMipBiasClamp ? 1 : 0,
+        m_VsyncMode.c_str(), m_BackbufferCount);
 }
 
 // ============================================================================
@@ -1381,9 +1381,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 bool waitsConsumed = false;
                 DeviceDispatch* vkDisp = VulkanLayerState::Get().GetDeviceDispatch(sd->device);
                 if (vkDisp && idx < sd->images.size()) {
-                    waitsConsumed = TakeVulkanScreenshot(
-                        vkDisp, sd->device, queue, sd->images[idx], sd->extent.width, sd->extent.height, sd->format,
-                        currentWaitSemaphores, currentWaitSemaphoreCount, shm, screenshotRequestId);
+                    waitsConsumed = TakeVulkanScreenshot(vkDisp, sd->device, queue, sd->images[idx], sd->extent.width,
+                                                         sd->extent.height, sd->format, currentWaitSemaphores,
+                                                         currentWaitSemaphoreCount, shm, screenshotRequestId);
                 }
                 if (waitsConsumed) {
                     currentWaitSemaphores = nullptr;
@@ -1499,10 +1499,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const Vk
         const bool standardMinMag =
             (modified.minFilter == VK_FILTER_NEAREST || modified.minFilter == VK_FILTER_LINEAR) &&
             (modified.magFilter == VK_FILTER_NEAREST || modified.magFilter == VK_FILTER_LINEAR);
-        const bool overridesAllowed =
-            mipmapped && modified.compareEnable == VK_FALSE && !specialReduction && !borderAddress &&
-            modified.unnormalizedCoordinates == VK_FALSE && standardMinMag &&
-            (state.IsAggressiveSamplerOverride() || (materialAddress && linearMinMag));
+        const bool overridesAllowed = mipmapped && modified.compareEnable == VK_FALSE && !specialReduction &&
+                                      !borderAddress && modified.unnormalizedCoordinates == VK_FALSE &&
+                                      standardMinMag &&
+                                      (state.IsAggressiveSamplerOverride() || (materialAddress && linearMinMag));
 
         if (overridesAllowed) {
             // Anisotropic filtering override
@@ -1519,8 +1519,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const Vk
                 } else {
                     static std::atomic<int> s_anisotropyFeatureLogCount{0};
                     if (s_anisotropyFeatureLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-                        LayerLog("Vulkan sampler: forced AF skipped because samplerAnisotropy was not enabled at "
-                                 "vkCreateDevice");
+                        LayerLog(
+                            "Vulkan sampler: forced AF skipped because samplerAnisotropy was not enabled at "
+                            "vkCreateDevice");
                     }
                 }
             }

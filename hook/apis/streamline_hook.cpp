@@ -1091,9 +1091,8 @@ void HandleStreamlineReflexPacingSignal(const char* sourceName, int32_t mode, ui
             }
         }
         if (clearedSuspendIntent) {
-            HookLogImportant(
-                "Streamline Hook: Cleared confirmed Reflex suspend intent on pacing reactivation via %s",
-                sourceName ? sourceName : "unknown");
+            HookLogImportant("Streamline Hook: Cleared confirmed Reflex suspend intent on pacing reactivation via %s",
+                             sourceName ? sourceName : "unknown");
         }
         g_ReflexLimiter.SetGameActivated(true);
         g_ReflexLimiter.MarkNativePacingSignal();
@@ -2962,12 +2961,10 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport, const slDLSS
                     "Streamline Hook: Accepting explicit slDLSSGSetOptions(OFF) as authoritative after confirmed "
                     "PostSL rendering (viewport=%u startupWindow=%d hadFSR=%d safeBootstrap=%d pending=%d "
                     "unconfirmed=%d settling=%d stabilizing=%d activeProofPending=%d log=%llu)",
-                    viewportKey, startupWindowActive ? 1 : 0, hadFSRFGPhase ? 1 : 0,
-                    safePostFSRBootstrapPath ? 1 : 0, startupActivationPending ? 1 : 0,
-                    postSLActiveButUnconfirmed ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
-                    effectivePostSLRuntimeStateStabilizing ? 1 : 0,
-                    postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0,
-                    static_cast<unsigned long long>(logCount));
+                    viewportKey, startupWindowActive ? 1 : 0, hadFSRFGPhase ? 1 : 0, safePostFSRBootstrapPath ? 1 : 0,
+                    startupActivationPending ? 1 : 0, postSLActiveButUnconfirmed ? 1 : 0,
+                    postSLConfirmedButStartupSettling ? 1 : 0, effectivePostSLRuntimeStateStabilizing ? 1 : 0,
+                    postSLConfirmedButOffChurnAwaitingActiveProof ? 1 : 0, static_cast<unsigned long long>(logCount));
             }
             ResetStartupProtectedOffChurnActiveProof("forwarded authoritative SetOptions disable");
         }

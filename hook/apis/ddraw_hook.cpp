@@ -111,18 +111,16 @@ typedef HRESULT(STDMETHODCALLTYPE* DDraw7CreateSurface_t)(IDirectDraw7* pThis, D
 typedef HRESULT(STDMETHODCALLTYPE* DDraw4CreateSurface_t)(IDirectDraw4* pThis, DDSURFACEDESC2* pDesc,
                                                           IDirectDrawSurface4** ppSurface, IUnknown* pUnkOuter);
 typedef HRESULT(STDMETHODCALLTYPE* DDrawLegacyCreateSurface_t)(IDirectDraw* pThis, DDSURFACEDESC* pDesc,
-                                                               IDirectDrawSurface** ppSurface,
-                                                               IUnknown* pUnkOuter);
-typedef HRESULT(STDMETHODCALLTYPE* DDSurfaceLegacyFlip_t)(IDirectDrawSurface* surface,
-                                                          IDirectDrawSurface* destOverride, DWORD flags);
+                                                               IDirectDrawSurface** ppSurface, IUnknown* pUnkOuter);
+typedef HRESULT(STDMETHODCALLTYPE* DDSurfaceLegacyFlip_t)(IDirectDrawSurface* surface, IDirectDrawSurface* destOverride,
+                                                          DWORD flags);
 typedef HRESULT(STDMETHODCALLTYPE* DDSurfaceLegacyBlt_t)(IDirectDrawSurface* surface, LPRECT destRect,
                                                          IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD flags,
                                                          DDBLTFX* bltFx);
 typedef HRESULT(STDMETHODCALLTYPE* DDSurfaceLegacyLock_t)(IDirectDrawSurface* surface, LPRECT destRect,
                                                           DDSURFACEDESC* surfaceDesc, DWORD flags, HANDLE event);
 typedef HRESULT(STDMETHODCALLTYPE* DDSurfaceLegacyUnlock_t)(IDirectDrawSurface* surface, LPVOID surfaceData);
-typedef HRESULT(STDMETHODCALLTYPE* D3D7CreateDevice_t)(IDirect3D7*, REFCLSID, IDirectDrawSurface7*,
-                                                       IDirect3DDevice7**);
+typedef HRESULT(STDMETHODCALLTYPE* D3D7CreateDevice_t)(IDirect3D7*, REFCLSID, IDirectDrawSurface7*, IDirect3DDevice7**);
 typedef HRESULT(STDMETHODCALLTYPE* D3D3CreateDevice_t)(IUnknown*, REFCLSID, IDirectDrawSurface4*, IUnknown**,
                                                        IUnknown*);
 
@@ -177,8 +175,7 @@ static std::atomic<unsigned> g_LegacyD3DCallbackVersion{0};
 
 struct LegacyDDrawVTableRecord {
     DDrawLegacyCreateSurface_t createSurface = nullptr;
-    ce::graphics_api_identity::DirectDrawVersion version =
-        ce::graphics_api_identity::DirectDrawVersion::Unknown;
+    ce::graphics_api_identity::DirectDrawVersion version = ce::graphics_api_identity::DirectDrawVersion::Unknown;
 };
 
 struct LegacySurfaceVTableRecord {
@@ -219,8 +216,7 @@ static uintptr_t DirectDrawObjectIdentity(IUnknown* object) {
     return value;
 }
 
-static void AssociateDirectDrawSurface(IUnknown* surface,
-                                       ce::graphics_api_identity::DirectDrawVersion version) {
+static void AssociateDirectDrawSurface(IUnknown* surface, ce::graphics_api_identity::DirectDrawVersion version) {
     const uintptr_t identity = DirectDrawObjectIdentity(surface);
     if (!identity)
         return;
@@ -236,8 +232,7 @@ static void AssociateLegacyD3DSurface(IUnknown* surface, unsigned d3dVersion) {
     g_SurfaceLegacyD3DVersions[identity] = d3dVersion;
 }
 
-static void ActivateDirectDrawSurface(IUnknown* surface,
-                                      ce::graphics_api_identity::DirectDrawVersion fallbackVersion) {
+static void ActivateDirectDrawSurface(IUnknown* surface, ce::graphics_api_identity::DirectDrawVersion fallbackVersion) {
     auto version = fallbackVersion;
     unsigned d3dVersion = 0;
     const uintptr_t identity = DirectDrawObjectIdentity(surface);
@@ -403,12 +398,12 @@ static HRESULT STDMETHODCALLTYPE DetourDirectDrawLegacyCreateSurface(IDirectDraw
                                                                      IDirectDrawSurface** ppSurface,
                                                                      IUnknown* pUnkOuter);
 static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface,
-                                                            IDirectDrawSurface* destOverride, DWORD flags);
+                                                           IDirectDrawSurface* destOverride, DWORD flags);
 static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, LPRECT destRect,
-                                                           IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD flags,
-                                                           DDBLTFX* bltFx);
+                                                          IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD flags,
+                                                          DDBLTFX* bltFx);
 static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyLock(IDirectDrawSurface* surface, LPRECT destRect,
-                                                            DDSURFACEDESC* surfaceDesc, DWORD flags, HANDLE event);
+                                                           DDSURFACEDESC* surfaceDesc, DWORD flags, HANDLE event);
 static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyUnlock(IDirectDrawSurface* surface, LPVOID surfaceData);
 static HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface, IDirectDrawSurface7* destOverride,
                                                       DWORD flags);
@@ -432,11 +427,9 @@ static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(IDirect3DDevice7* d
 static HRESULT STDMETHODCALLTYPE DetourGetTextureStageState7(IDirect3DDevice7* device, DWORD Stage, DWORD Type,
                                                              DWORD* pValue);
 static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState6(IUnknown* device, DWORD Stage, DWORD Type, DWORD Value);
-static HRESULT STDMETHODCALLTYPE DetourGetTextureStageState6(IUnknown* device, DWORD Stage, DWORD Type,
-                                                             DWORD* pValue);
+static HRESULT STDMETHODCALLTYPE DetourGetTextureStageState6(IUnknown* device, DWORD Stage, DWORD Type, DWORD* pValue);
 static HRESULT STDMETHODCALLTYPE DetourD3D7CreateDevice(IDirect3D7* d3d, REFCLSID deviceClass,
-                                                        IDirectDrawSurface7* target,
-                                                        IDirect3DDevice7** device);
+                                                        IDirectDrawSurface7* target, IDirect3DDevice7** device);
 static HRESULT STDMETHODCALLTYPE DetourD3D3CreateDevice(IUnknown* d3d, REFCLSID deviceClass,
                                                         IDirectDrawSurface4* target, IUnknown** device,
                                                         IUnknown* outer);
@@ -449,8 +442,9 @@ static void InstallSurfaceHooksForSurface4(IDirectDrawSurface4* surface, const c
                                            bool markPrototype = false);
 static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* reason);
 static void InstallDirectDraw4HooksForInstance(IDirectDraw4* ddraw4, const char* reason);
-static void InstallLegacyDirectDrawHooksForInstance(
-    IDirectDraw* ddraw, ce::graphics_api_identity::DirectDrawVersion version, const char* reason);
+static void InstallLegacyDirectDrawHooksForInstance(IDirectDraw* ddraw,
+                                                    ce::graphics_api_identity::DirectDrawVersion version,
+                                                    const char* reason);
 static void InstallD3D3FactoryIdentityHook(IUnknown* directDrawObject, const char* reason);
 static void InstallLegacyD3DFactoryIdentityHooks(IDirectDraw7* ddraw7, const char* reason);
 static void InstallDirectDrawCreateInlineHook(DirectDrawCreate_t directDrawCreate);
@@ -754,8 +748,7 @@ static void BootstrapDirectDrawHooksOnCurrentThread(const char* reason) {
                     HookLog("DDraw: Logical GetTextureStageState hook installed");
                 }
 
-                if (VTableHook::Create(&d3d7DeviceVTable[D3D7_VTABLE_SETRENDERSTATE],
-                                       (LPVOID)&DetourSetRenderState7,
+                if (VTableHook::Create(&d3d7DeviceVTable[D3D7_VTABLE_SETRENDERSTATE], (LPVOID)&DetourSetRenderState7,
                                        (LPVOID*)&oSetRenderState7) == VTableHook::Success) {
                     HookLog("DDraw: SetRenderState hook installed");
                 }
@@ -771,8 +764,8 @@ static void BootstrapDirectDrawHooksOnCurrentThread(const char* reason) {
         IUnknown* d3d3 = nullptr;
         if (SUCCEEDED(dummySurface->QueryInterface(IID_IDirectDrawSurface4, (void**)&dummySurface4)) &&
             SUCCEEDED(ddraw7->QueryInterface(kIID_IDirect3D3, (void**)&d3d3))) {
-            using CreateDevice3_t = HRESULT(STDMETHODCALLTYPE*)(IUnknown*, REFCLSID, IDirectDrawSurface4*, IUnknown**,
-                                                                IUnknown*);
+            using CreateDevice3_t =
+                HRESULT(STDMETHODCALLTYPE*)(IUnknown*, REFCLSID, IDirectDrawSurface4*, IUnknown**, IUnknown*);
             void** d3d3VTable = *(void***)d3d3;
             auto createDevice3 = reinterpret_cast<CreateDevice3_t>(d3d3VTable[8]);
             IUnknown* d3d6Device = nullptr;
@@ -1656,32 +1649,27 @@ static void InstallSurfaceHooksForLegacySurface(IDirectDrawSurface* surface, con
 
     LegacySurfaceVTableRecord record;
     const VTableHook::Status flipStatus =
-        VTableHook::Create(&vtable[DDSURFACE7_VTABLE_FLIP], (LPVOID)&DetourDDSurfaceLegacyFlip,
-                           (LPVOID*)&record.flip);
+        VTableHook::Create(&vtable[DDSURFACE7_VTABLE_FLIP], (LPVOID)&DetourDDSurfaceLegacyFlip, (LPVOID*)&record.flip);
     const VTableHook::Status bltStatus =
-        VTableHook::Create(&vtable[DDSURFACE7_VTABLE_BLT], (LPVOID)&DetourDDSurfaceLegacyBlt,
-                           (LPVOID*)&record.blt);
+        VTableHook::Create(&vtable[DDSURFACE7_VTABLE_BLT], (LPVOID)&DetourDDSurfaceLegacyBlt, (LPVOID*)&record.blt);
     const VTableHook::Status lockStatus =
-        VTableHook::Create(&vtable[DDSURFACE7_VTABLE_LOCK], (LPVOID)&DetourDDSurfaceLegacyLock,
-                           (LPVOID*)&record.lock);
-    const VTableHook::Status unlockStatus =
-        VTableHook::Create(&vtable[DDSURFACE7_VTABLE_UNLOCK], (LPVOID)&DetourDDSurfaceLegacyUnlock,
-                           (LPVOID*)&record.unlock);
+        VTableHook::Create(&vtable[DDSURFACE7_VTABLE_LOCK], (LPVOID)&DetourDDSurfaceLegacyLock, (LPVOID*)&record.lock);
+    const VTableHook::Status unlockStatus = VTableHook::Create(
+        &vtable[DDSURFACE7_VTABLE_UNLOCK], (LPVOID)&DetourDDSurfaceLegacyUnlock, (LPVOID*)&record.unlock);
     g_LegacySurfaceVTables.emplace(vtable, record);
-    if (flipStatus == VTableHook::Success && bltStatus == VTableHook::Success &&
-        lockStatus == VTableHook::Success && unlockStatus == VTableHook::Success && record.flip && record.blt &&
-        record.lock && record.unlock) {
+    if (flipStatus == VTableHook::Success && bltStatus == VTableHook::Success && lockStatus == VTableHook::Success &&
+        unlockStatus == VTableHook::Success && record.flip && record.blt && record.lock && record.unlock) {
         HookLog("DDraw: Legacy surface hooks installed via %s (surface=%p, vtable=%p)", reason, surface, vtable);
     } else {
-        HookLogImportant(
-            "DDraw: Legacy surface hook installation incomplete via %s (flip=%s blt=%s lock=%s unlock=%s)",
-            reason, VTableHook::StatusToString(flipStatus), VTableHook::StatusToString(bltStatus),
-            VTableHook::StatusToString(lockStatus), VTableHook::StatusToString(unlockStatus));
+        HookLogImportant("DDraw: Legacy surface hook installation incomplete via %s (flip=%s blt=%s lock=%s unlock=%s)",
+                         reason, VTableHook::StatusToString(flipStatus), VTableHook::StatusToString(bltStatus),
+                         VTableHook::StatusToString(lockStatus), VTableHook::StatusToString(unlockStatus));
     }
 }
 
-static void InstallLegacyDirectDrawHooksForInstance(
-    IDirectDraw* ddraw, ce::graphics_api_identity::DirectDrawVersion version, const char* reason) {
+static void InstallLegacyDirectDrawHooksForInstance(IDirectDraw* ddraw,
+                                                    ce::graphics_api_identity::DirectDrawVersion version,
+                                                    const char* reason) {
     if (!ddraw)
         return;
     void** vtable = *(void***)ddraw;
@@ -1858,8 +1846,8 @@ static void InstallDirectDraw4HooksForInstance(IDirectDraw4* ddraw4, const char*
 
     DDraw4CreateSurface_t originalCreateSurface = nullptr;
     std::lock_guard<std::mutex> identityLock(g_DDrawIdentityMutex);
-    VTableHook::Status createSurfaceStatus = VTableHook::Create(
-        &ddraw4VTable[6], (LPVOID)&DetourDirectDraw4CreateSurface, (LPVOID*)&originalCreateSurface);
+    VTableHook::Status createSurfaceStatus =
+        VTableHook::Create(&ddraw4VTable[6], (LPVOID)&DetourDirectDraw4CreateSurface, (LPVOID*)&originalCreateSurface);
     if (createSurfaceStatus == VTableHook::Success) {
         g_DDraw4CreateSurfaceOriginals.emplace(ddraw4VTable, originalCreateSurface);
         HookLog("DDraw: CreateSurface4 hook installed via %s", reason);
@@ -1948,22 +1936,20 @@ static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* 
 
     IDirectDraw* ddraw1 = nullptr;
     if (SUCCEEDED(ddraw7->QueryInterface(IID_IDirectDraw, reinterpret_cast<void**>(&ddraw1))) && ddraw1) {
-        InstallLegacyDirectDrawHooksForInstance(
-            ddraw1, ce::graphics_api_identity::DirectDrawVersion::DirectDraw, reason);
+        InstallLegacyDirectDrawHooksForInstance(ddraw1, ce::graphics_api_identity::DirectDrawVersion::DirectDraw,
+                                                reason);
         ddraw1->Release();
     }
     IDirectDraw2* ddraw2 = nullptr;
     if (SUCCEEDED(ddraw7->QueryInterface(IID_IDirectDraw2, reinterpret_cast<void**>(&ddraw2))) && ddraw2) {
-        InstallLegacyDirectDrawHooksForInstance(
-            reinterpret_cast<IDirectDraw*>(ddraw2), ce::graphics_api_identity::DirectDrawVersion::DirectDraw2,
-            reason);
+        InstallLegacyDirectDrawHooksForInstance(reinterpret_cast<IDirectDraw*>(ddraw2),
+                                                ce::graphics_api_identity::DirectDrawVersion::DirectDraw2, reason);
         ddraw2->Release();
     }
     IDirectDraw3* ddraw3 = nullptr;
     if (SUCCEEDED(ddraw7->QueryInterface(kIID_IDirectDraw3, reinterpret_cast<void**>(&ddraw3))) && ddraw3) {
-        InstallLegacyDirectDrawHooksForInstance(
-            reinterpret_cast<IDirectDraw*>(ddraw3), ce::graphics_api_identity::DirectDrawVersion::DirectDraw3,
-            reason);
+        InstallLegacyDirectDrawHooksForInstance(reinterpret_cast<IDirectDraw*>(ddraw3),
+                                                ce::graphics_api_identity::DirectDrawVersion::DirectDraw3, reason);
         ddraw3->Release();
     }
 
@@ -1977,8 +1963,8 @@ static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* 
 
     DDraw7CreateSurface_t originalCreateSurface = nullptr;
     std::lock_guard<std::mutex> identityLock(g_DDrawIdentityMutex);
-    VTableHook::Status createSurfaceStatus = VTableHook::Create(
-        &ddraw7VTable[6], (LPVOID)&DetourDirectDraw7CreateSurface, (LPVOID*)&originalCreateSurface);
+    VTableHook::Status createSurfaceStatus =
+        VTableHook::Create(&ddraw7VTable[6], (LPVOID)&DetourDirectDraw7CreateSurface, (LPVOID*)&originalCreateSurface);
     if (createSurfaceStatus == VTableHook::Success) {
         g_DDraw7CreateSurfaceOriginals.emplace(ddraw7VTable, originalCreateSurface);
         HookLog("DDraw: CreateSurface hook installed via %s", reason);
@@ -2024,8 +2010,8 @@ bool HookDirectDrawObject(void* directDrawObject, REFIID iid) {
     if (requestedVersion != ce::graphics_api_identity::DirectDrawVersion::Unknown && g_DDrawBootstrapDepth == 0) {
         g_LegacyD3DCallbackVersion.store(0, std::memory_order_release);
         g_ActiveLegacyD3DVersion.store(0, std::memory_order_release);
-        const int previous = g_ActiveDirectDrawVersion.exchange(static_cast<int>(requestedVersion),
-                                                                 std::memory_order_acq_rel);
+        const int previous =
+            g_ActiveDirectDrawVersion.exchange(static_cast<int>(requestedVersion), std::memory_order_acq_rel);
         if (previous != static_cast<int>(requestedVersion)) {
             HookLogImportant("[GraphicsAPI] DirectDraw interface accepted api=%s evidence=application creation",
                              ce::graphics_api_identity::DirectDrawLabel(requestedVersion));
@@ -2203,8 +2189,7 @@ static HRESULT STDMETHODCALLTYPE DetourDirectDrawLegacyCreateSurface(IDirectDraw
 
     if (pDesc && g_IPC) {
         const int count = g_IPC->GetSharedMem()->graphicsConfig.backbufferCount;
-        if (count >= 2 && count <= 6 && IsPrimarySurfaceDesc(pDesc) &&
-            (pDesc->ddsCaps.dwCaps & DDSCAPS_COMPLEX)) {
+        if (count >= 2 && count <= 6 && IsPrimarySurfaceDesc(pDesc) && (pDesc->ddsCaps.dwCaps & DDSCAPS_COMPLEX)) {
             pDesc->dwFlags |= DDSD_BACKBUFFERCOUNT;
             pDesc->dwBackBufferCount = static_cast<DWORD>(count - 1);
         }
@@ -2230,7 +2215,7 @@ static LegacySurfaceVTableRecord ResolveLegacySurfaceRecord(IDirectDrawSurface* 
 }
 
 static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface,
-                                                            IDirectDrawSurface* destOverride, DWORD flags) {
+                                                           IDirectDrawSurface* destOverride, DWORD flags) {
     const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
     if (!record.flip)
         return DDERR_GENERIC;
@@ -2243,8 +2228,8 @@ static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* s
 }
 
 static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, LPRECT destRect,
-                                                           IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD flags,
-                                                           DDBLTFX* bltFx) {
+                                                          IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD flags,
+                                                          DDBLTFX* bltFx) {
     const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
     if (!record.blt)
         return DDERR_GENERIC;
@@ -2258,7 +2243,7 @@ static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* su
 }
 
 static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyLock(IDirectDrawSurface* surface, LPRECT destRect,
-                                                            DDSURFACEDESC* surfaceDesc, DWORD flags, HANDLE event) {
+                                                           DDSURFACEDESC* surfaceDesc, DWORD flags, HANDLE event) {
     const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
     return record.lock ? record.lock(surface, destRect, surfaceDesc, flags, event) : DDERR_GENERIC;
 }
@@ -2494,8 +2479,7 @@ static void ReportLegacyD3DUse(unsigned version, const char* evidence) {
 }
 
 static HRESULT STDMETHODCALLTYPE DetourD3D7CreateDevice(IDirect3D7* d3d, REFCLSID deviceClass,
-                                                        IDirectDrawSurface7* target,
-                                                        IDirect3DDevice7** device) {
+                                                        IDirectDrawSurface7* target, IDirect3DDevice7** device) {
     D3D7CreateDevice_t original = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_DDrawIdentityMutex);
@@ -2576,8 +2560,7 @@ static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState6(IUnknown* device, D
         QueryD3D6MaxAnisotropy);
 }
 
-static HRESULT STDMETHODCALLTYPE DetourGetTextureStageState6(IUnknown* device, DWORD Stage, DWORD Type,
-                                                             DWORD* pValue) {
+static HRESULT STDMETHODCALLTYPE DetourGetTextureStageState6(IUnknown* device, DWORD Stage, DWORD Type, DWORD* pValue) {
     ReportLegacyD3DUse(6, "IDirect3DDevice3::GetTextureStageState");
     return ce::legacy_d3d_sampler_state::GetTextureStageState(
         ce::legacy_d3d_sampler_state::Api::D3D6, device, Stage, Type, pValue,

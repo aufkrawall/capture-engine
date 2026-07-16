@@ -126,8 +126,7 @@ inline bool IsVideoEngine(std::string_view instanceName) {
 inline bool ParseGpuEngineSample(std::string_view instanceName, double utilization, GpuEngineSample& sample) {
     const std::string_view pidMarker = "pid_";
     const size_t pidPos = FindAsciiInsensitive(instanceName, pidMarker);
-    if (pidPos == std::string_view::npos ||
-        !ParseDecimal(instanceName, pidPos + pidMarker.size(), sample.processId) ||
+    if (pidPos == std::string_view::npos || !ParseDecimal(instanceName, pidPos + pidMarker.size(), sample.processId) ||
         !ParseLuid(instanceName, sample.adapterLuid)) {
         return false;
     }
@@ -182,8 +181,7 @@ inline AdapterResolution ResolveAdapterLuid(int64_t hookLuid, uint32_t targetPid
     }
 
     for (const Candidate& candidate : candidates) {
-        if (candidate.luid == previousProcessLuid &&
-            std::fabs(candidate.nonVideoLoad - bestLoad) <= kLoadTieEpsilon) {
+        if (candidate.luid == previousProcessLuid && std::fabs(candidate.nonVideoLoad - bestLoad) <= kLoadTieEpsilon) {
             return {candidate.luid, AdapterResolutionSource::ProcessGpuEngine};
         }
     }

@@ -1,9 +1,9 @@
 #pragma once
 
-#include <d3d9.h>
 #include <d3d10.h>
 #include <d3d11.h>
 #include <d3d12.h>
+#include <d3d9.h>
 #include <algorithm>
 #include <array>
 #include <climits>
@@ -158,8 +158,9 @@ enum class LegacyD3DForcedAFDecision {
     Unsupported,
 };
 
-inline LegacyD3DForcedAFDecision ClassifyLegacyD3DSamplerForForcedAF(
-    const LegacyD3DSamplerForcedAFInfo& info, const LegacyD3DSamplerTraits& traits, const GraphicsConfig& gfx) {
+inline LegacyD3DForcedAFDecision ClassifyLegacyD3DSamplerForForcedAF(const LegacyD3DSamplerForcedAFInfo& info,
+                                                                     const LegacyD3DSamplerTraits& traits,
+                                                                     const GraphicsConfig& gfx) {
     if (!IsAnisotropicOverrideEnabled(gfx)) {
         return LegacyD3DForcedAFDecision::OverrideDisabled;
     }
@@ -174,8 +175,7 @@ inline LegacyD3DForcedAFDecision ClassifyLegacyD3DSamplerForForcedAF(
     }
     if (gfx.samplerOverrideMode != "aggressive") {
         const auto materialAddress = [](DWORD address) { return address >= 1 && address <= 3; };
-        if (!materialAddress(info.addressU) || !materialAddress(info.addressV) ||
-            !materialAddress(info.addressW)) {
+        if (!materialAddress(info.addressU) || !materialAddress(info.addressV) || !materialAddress(info.addressW)) {
             return LegacyD3DForcedAFDecision::NonMaterialAddress;
         }
         const bool linearMin = info.minFilter == traits.linearMin || info.minFilter == traits.anisotropicMin;
@@ -187,18 +187,17 @@ inline LegacyD3DForcedAFDecision ClassifyLegacyD3DSamplerForForcedAF(
     return LegacyD3DForcedAFDecision::Allow;
 }
 
-inline UINT ResolveLegacyD3DForcedAnisotropy(const LegacyD3DSamplerForcedAFInfo& info,
-                                             const GraphicsConfig& gfx) {
+inline UINT ResolveLegacyD3DForcedAnisotropy(const LegacyD3DSamplerForcedAFInfo& info, const GraphicsConfig& gfx) {
     return std::max(1u, std::min(GetConfiguredMaxAnisotropy(gfx), info.deviceMaxAnisotropy));
 }
 
 struct OpenGLSamplerForcedAFInfo {
-    int minFilter = 0x2703;   // GL_LINEAR_MIPMAP_LINEAR
-    int magFilter = 0x2601;   // GL_LINEAR
-    int wrapS = 0x2901;       // GL_REPEAT
+    int minFilter = 0x2703;  // GL_LINEAR_MIPMAP_LINEAR
+    int magFilter = 0x2601;  // GL_LINEAR
+    int wrapS = 0x2901;      // GL_REPEAT
     int wrapT = 0x2901;
     int wrapR = 0x2901;
-    int compareMode = 0;      // GL_NONE
+    int compareMode = 0;  // GL_NONE
     int baseLevel = 0;
     int maxLevel = 1000;
     float deviceMaxAnisotropy = 1.0f;
@@ -258,8 +257,7 @@ inline OpenGLForcedAFDecision ClassifyOpenGLSamplerForForcedAF(const OpenGLSampl
 }
 
 inline float ResolveOpenGLForcedAnisotropy(const OpenGLSamplerForcedAFInfo& info, const GraphicsConfig& gfx) {
-    return std::max(1.0f,
-                    std::min(static_cast<float>(GetConfiguredMaxAnisotropy(gfx)), info.deviceMaxAnisotropy));
+    return std::max(1.0f, std::min(static_cast<float>(GetConfiguredMaxAnisotropy(gfx)), info.deviceMaxAnisotropy));
 }
 
 inline bool IsD3D11ReductionFilter(D3D11_FILTER filter) {
@@ -744,9 +742,8 @@ inline D3D11ForcedAFSamplerDecision ClassifyD3D11SamplerForForcedAF(const D3D11_
     if (IsD3D11ComparisonFilter(desc.Filter)) {
         return D3D11ForcedAFSamplerDecision::ComparisonFilter;
     }
-    if (gfx.samplerOverrideMode != "aggressive" &&
-        (D3D11_DECODE_MIN_FILTER(desc.Filter) != D3D11_FILTER_TYPE_LINEAR ||
-         D3D11_DECODE_MAG_FILTER(desc.Filter) != D3D11_FILTER_TYPE_LINEAR)) {
+    if (gfx.samplerOverrideMode != "aggressive" && (D3D11_DECODE_MIN_FILTER(desc.Filter) != D3D11_FILTER_TYPE_LINEAR ||
+                                                    D3D11_DECODE_MAG_FILTER(desc.Filter) != D3D11_FILTER_TYPE_LINEAR)) {
         return D3D11ForcedAFSamplerDecision::PointMinMag;
     }
     return D3D11ForcedAFSamplerDecision::Allow;

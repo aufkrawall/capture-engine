@@ -69,7 +69,8 @@ double QpcDeltaToMs(int64_t deltaUs) {
 
 // Read a null-terminated string from a remote process.
 static bool ReadRemoteString(HANDLE hProc, LPCVOID address, char* buffer, size_t bufferSize) {
-    if (!buffer || bufferSize == 0) return false;
+    if (!buffer || bufferSize == 0)
+        return false;
     buffer[0] = '\0';
     size_t offset = 0;
     while (offset < bufferSize - 1) {
@@ -77,7 +78,8 @@ static bool ReadRemoteString(HANDLE hProc, LPCVOID address, char* buffer, size_t
         if (!ReadProcessMemory(hProc, static_cast<const char*>(address) + offset, &c, 1, NULL))
             return false;
         buffer[offset++] = c;
-        if (c == '\0') return true;
+        if (c == '\0')
+            return true;
     }
     buffer[bufferSize - 1] = '\0';
     return true;
@@ -124,8 +126,7 @@ static LPVOID GetRemoteProcAddress(HANDLE hProc, HMODULE hModule, const char* fu
                     return nullptr;
 
                 DWORD funcRVA;
-                if (!ReadProcessMemory(hProc,
-                                       (BYTE*)hModule + exportDir.AddressOfFunctions + (ordinal * sizeof(DWORD)),
+                if (!ReadProcessMemory(hProc, (BYTE*)hModule + exportDir.AddressOfFunctions + (ordinal * sizeof(DWORD)),
                                        &funcRVA, sizeof(DWORD), NULL))
                     return nullptr;
 
@@ -152,7 +153,8 @@ static LPVOID GetRemoteModuleProcAddress(HANDLE hProc, const wchar_t* moduleName
 
                     // Convert wide module name to lower for comparison
                     char narrowModuleName[MAX_PATH];
-                    WideCharToMultiByte(CP_UTF8, 0, moduleName, -1, narrowModuleName, sizeof(narrowModuleName), NULL, NULL);
+                    WideCharToMultiByte(CP_UTF8, 0, moduleName, -1, narrowModuleName, sizeof(narrowModuleName), NULL,
+                                        NULL);
                     std::string lowerTarget = narrowModuleName;
                     std::transform(lowerTarget.begin(), lowerTarget.end(), lowerTarget.begin(),
                                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -724,7 +726,10 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG lObj
 
             struct TargetCaseGuard {
                 IWbemClassObject* obj;
-                ~TargetCaseGuard() { if (obj) obj->Release(); }
+                ~TargetCaseGuard() {
+                    if (obj)
+                        obj->Release();
+                }
             } guard{pTargetCase};
 
             // Get Name
@@ -1269,8 +1274,7 @@ void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
 
         auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
-            LogWarn(
-                "[Injection] Timeout waiting for delayed injection thread; detaching to avoid indefinite block");
+            LogWarn("[Injection] Timeout waiting for delayed injection thread; detaching to avoid indefinite block");
             t.detach();
             continue;
         }
@@ -1284,7 +1288,8 @@ void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
             t.join();
         } else {
             if (waitResult == WAIT_TIMEOUT) {
-                LogWarn("[Injection] Timeout waiting for delayed injection thread; detaching to avoid indefinite block");
+                LogWarn(
+                    "[Injection] Timeout waiting for delayed injection thread; detaching to avoid indefinite block");
             } else {
                 LogWarn("[Injection] WaitForSingleObject failed for delayed injection thread (error=%lu); detaching",
                         GetLastError());

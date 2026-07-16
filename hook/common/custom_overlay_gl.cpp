@@ -830,8 +830,7 @@ void OpenGLBackend::RenderLegacy(const std::vector<DrawVertex>& vertices, const 
             const GLenum arrayErr = pglGetError ? pglGetError() : GL_NO_ERROR;
             legacyArrayProbeSucceeded = (arrayErr == GL_NO_ERROR);
             if (!legacyArrayProbeSucceeded) {
-                HookLog("OpenGLBackend: Legacy array preflight failed (err=0x%X); using immediate fallback",
-                        arrayErr);
+                HookLog("OpenGLBackend: Legacy array preflight failed (err=0x%X); using immediate fallback", arrayErr);
             } else {
                 HookLog("OpenGLBackend: Legacy using batched vertex arrays");
             }

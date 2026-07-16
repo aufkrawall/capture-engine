@@ -87,7 +87,7 @@ inline uint64_t ComputeWorkerRestartDelayMs(uint32_t consecutiveFailures) {
 }
 
 inline WorkerExitDisposition ClassifyWorkerExit(bool captureDesired, bool stopRequested, bool cleanExit,
-                                                 bool recycleRequested = false, bool integrityFailure = false) {
+                                                bool recycleRequested = false, bool integrityFailure = false) {
     if (integrityFailure) {
         return WorkerExitDisposition::Final;
     }
@@ -187,8 +187,8 @@ inline bool ComputeTransportLayout(uint32_t sampleRate, uint32_t channels, uint3
         byteRingBytes > std::numeric_limits<uint32_t>::max()) {
         return false;
     }
-    layout = {sampleRate, channels, bitsPerSample, static_cast<uint32_t>(blockAlign), maximumPacketBytes,
-              byteRingBytes, mappingBytes};
+    layout = {sampleRate,         channels,      bitsPerSample, static_cast<uint32_t>(blockAlign),
+              maximumPacketBytes, byteRingBytes, mappingBytes};
     return true;
 }
 
@@ -303,10 +303,9 @@ inline bool ValidatePacketForTransport(const SharedHeader& header, const AudioPa
         return false;
     }
     return packet.data.empty() && packet.captureEpoch != 0 && packet.timestamp == 0 && packet.channels == 0 &&
-           packet.sampleRate == 0 &&
-           packet.bitsPerSample == 0 && packet.blockAlign == 0 && packet.validBitsPerSample == 0 &&
-           packet.channelMask == 0 && !packet.isFloat && packet.devicePosition == 0 && packet.qpcPosition == 0 &&
-           packet.rawQpcPosition == 0 && packet.streamLatency == 0 &&
+           packet.sampleRate == 0 && packet.bitsPerSample == 0 && packet.blockAlign == 0 &&
+           packet.validBitsPerSample == 0 && packet.channelMask == 0 && !packet.isFloat && packet.devicePosition == 0 &&
+           packet.qpcPosition == 0 && packet.rawQpcPosition == 0 && packet.streamLatency == 0 &&
            (packet.recordType == AudioPacketRecordType::EndOfStream) == packet.endOfStream;
 }
 
@@ -426,8 +425,7 @@ inline bool ValidateDescriptor(const SharedHeader& header, const PacketDescripto
         if (descriptor.channels < 1 || descriptor.channels > static_cast<int>(kMaximumChannels) ||
             descriptor.channels != static_cast<int>(header.requestedChannels) ||
             descriptor.sampleRate != static_cast<int>(header.requestedSampleRate) ||
-            (descriptor.bitsPerSample != 16 && descriptor.bitsPerSample != 24 &&
-             descriptor.bitsPerSample != 32) ||
+            (descriptor.bitsPerSample != 16 && descriptor.bitsPerSample != 24 && descriptor.bitsPerSample != 32) ||
             descriptor.bitsPerSample != static_cast<int>(header.requestedBitsPerSample)) {
             return false;
         }

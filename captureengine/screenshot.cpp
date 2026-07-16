@@ -14,8 +14,8 @@
 // clang-format on
 
 #include <atomic>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <iterator>
@@ -45,7 +45,7 @@ void SafeRelease(T*& object) {
 }
 
 class HandleGuard {
-  public:
+public:
     HandleGuard() = default;
     explicit HandleGuard(HANDLE handle) : handle_(handle) {}
     ~HandleGuard() {
@@ -58,24 +58,24 @@ class HandleGuard {
         return handle_;
     }
 
-  private:
+private:
     HANDLE handle_ = nullptr;
 };
 
 class MappedViewGuard {
-  public:
+public:
     explicit MappedViewGuard(void* view) : view_(view) {}
     ~MappedViewGuard() {
         if (view_)
             UnmapViewOfFile(view_);
     }
 
-  private:
+private:
     void* view_ = nullptr;
 };
 
 class ComInitializer {
-  public:
+public:
     ComInitializer() : result_(CoInitializeEx(nullptr, COINIT_MULTITHREADED)) {}
     ~ComInitializer() {
         if (SUCCEEDED(result_))
@@ -85,7 +85,7 @@ class ComInitializer {
         return SUCCEEDED(result_) || result_ == RPC_E_CHANGED_MODE;
     }
 
-  private:
+private:
     HRESULT result_ = E_FAIL;
 };
 
@@ -197,8 +197,8 @@ bool TryHookScreenshot(const std::filesystem::path& outputDirectory, RawScreensh
     if (!ValidateSharedMemory(sharedMemory) || sharedMemory->GetVersion() != SHARED_MEMORY_VERSION)
         return false;
 
-    const auto currentStatus =
-        static_cast<ScreenshotRequestStatus>(sharedMemory->runtimeState.screenshotStatus.load(std::memory_order_acquire));
+    const auto currentStatus = static_cast<ScreenshotRequestStatus>(
+        sharedMemory->runtimeState.screenshotStatus.load(std::memory_order_acquire));
     if (currentStatus == ScreenshotRequestStatus::Pending || currentStatus == ScreenshotRequestStatus::Writing)
         return false;
 
@@ -236,9 +236,9 @@ bool TryHookScreenshot(const std::filesystem::path& outputDirectory, RawScreensh
         sharedMemory->runtimeState.screenshotRequestId.store(requestId, std::memory_order_release);
 
         const DWORD waitResult = WaitForSingleObject(completionEvent.Get(), kHookScreenshotTimeoutMs);
-        const bool completed = waitResult == WAIT_OBJECT_0 &&
-                               sharedMemory->runtimeState.screenshotCompletedRequestId.load(std::memory_order_acquire) ==
-                                   requestId;
+        const bool completed =
+            waitResult == WAIT_OBJECT_0 &&
+            sharedMemory->runtimeState.screenshotCompletedRequestId.load(std::memory_order_acquire) == requestId;
         const auto status = static_cast<ScreenshotRequestStatus>(
             sharedMemory->runtimeState.screenshotStatus.load(std::memory_order_acquire));
         const auto payloadKind = static_cast<ScreenshotPayloadKind>(
@@ -247,8 +247,7 @@ bool TryHookScreenshot(const std::filesystem::path& outputDirectory, RawScreensh
         if (sharedMemory->runtimeState.screenshotRequestId.load(std::memory_order_acquire) == requestId)
             sharedMemory->runtimeState.screenshotRequestId.store(0, std::memory_order_release);
 
-        if (!completed || status != ScreenshotRequestStatus::Succeeded ||
-            payloadKind != ScreenshotPayloadKind::RawV2) {
+        if (!completed || status != ScreenshotRequestStatus::Succeeded || payloadKind != ScreenshotPayloadKind::RawV2) {
             LogWarn("[Screenshot] Hook request %llu failed (wait=%lu status=%u error=%u)",
                     static_cast<unsigned long long>(requestId), waitResult, static_cast<unsigned>(status), error);
             CleanupHookPayload(partPath);

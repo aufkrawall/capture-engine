@@ -7,14 +7,12 @@ namespace {
 
 using namespace testapp::vkfg;
 
-std::array<float, 16> MultiplyMatrices(const std::array<float, 16>& left,
-                                       const std::array<float, 16>& right) {
+std::array<float, 16> MultiplyMatrices(const std::array<float, 16>& left, const std::array<float, 16>& right) {
     std::array<float, 16> result{};
     for (size_t row = 0; row < 4; ++row) {
         for (size_t column = 0; column < 4; ++column) {
             for (size_t inner = 0; inner < 4; ++inner) {
-                result[row * 4 + column] +=
-                    left[row * 4 + inner] * right[inner * 4 + column];
+                result[row * 4 + column] += left[row * 4 + inner] * right[inner * 4 + column];
             }
         }
     }
@@ -34,22 +32,14 @@ TEST(VulkanFgPolicyTest, OwnerAndDispatchTablesRemainPermanentlyPaired) {
 
 TEST(VulkanFgPolicyTest, OldSwapchainNeverCrossesOwnerDispatchBoundaries) {
     EXPECT_TRUE(ShouldForwardOldSwapchain(SwapchainOwner::Native, SwapchainOwner::Native));
-    EXPECT_TRUE(ShouldForwardOldSwapchain(SwapchainOwner::Native,
-                                          SwapchainOwner::Streamline));
-    EXPECT_TRUE(ShouldForwardOldSwapchain(SwapchainOwner::Streamline,
-                                          SwapchainOwner::Native));
-    EXPECT_TRUE(ShouldForwardOldSwapchain(SwapchainOwner::Streamline,
-                                          SwapchainOwner::Streamline));
-    EXPECT_FALSE(ShouldForwardOldSwapchain(SwapchainOwner::FidelityFX,
-                                           SwapchainOwner::FidelityFX));
-    EXPECT_FALSE(ShouldForwardOldSwapchain(SwapchainOwner::Native,
-                                           SwapchainOwner::FidelityFX));
-    EXPECT_FALSE(ShouldForwardOldSwapchain(SwapchainOwner::Streamline,
-                                           SwapchainOwner::FidelityFX));
-    EXPECT_FALSE(ShouldForwardOldSwapchain(SwapchainOwner::FidelityFX,
-                                           SwapchainOwner::Native));
-    EXPECT_FALSE(ShouldForwardOldSwapchain(SwapchainOwner::FidelityFX,
-                                           SwapchainOwner::Streamline));
+    EXPECT_TRUE(ShouldForwardOldSwapchain(SwapchainOwner::Native, SwapchainOwner::Streamline));
+    EXPECT_TRUE(ShouldForwardOldSwapchain(SwapchainOwner::Streamline, SwapchainOwner::Native));
+    EXPECT_TRUE(ShouldForwardOldSwapchain(SwapchainOwner::Streamline, SwapchainOwner::Streamline));
+    EXPECT_FALSE(ShouldForwardOldSwapchain(SwapchainOwner::FidelityFX, SwapchainOwner::FidelityFX));
+    EXPECT_FALSE(ShouldForwardOldSwapchain(SwapchainOwner::Native, SwapchainOwner::FidelityFX));
+    EXPECT_FALSE(ShouldForwardOldSwapchain(SwapchainOwner::Streamline, SwapchainOwner::FidelityFX));
+    EXPECT_FALSE(ShouldForwardOldSwapchain(SwapchainOwner::FidelityFX, SwapchainOwner::Native));
+    EXPECT_FALSE(ShouldForwardOldSwapchain(SwapchainOwner::FidelityFX, SwapchainOwner::Streamline));
 }
 
 TEST(VulkanFgPolicyTest, SceneCameraAndProjectionMatchDx12SdkInputs) {
@@ -70,8 +60,7 @@ TEST(VulkanFgPolicyTest, SceneCameraAndProjectionMatchDx12SdkInputs) {
     EXPECT_GT(projection.viewToClip[5], projection.viewToClip[0]);
     EXPECT_FLOAT_EQ(projection.viewToClip[11], 1.0f);
     EXPECT_LT(projection.viewToClip[14], 0.0f);
-    const std::array<float, 16> identity =
-        MultiplyMatrices(projection.viewToClip, projection.clipToView);
+    const std::array<float, 16> identity = MultiplyMatrices(projection.viewToClip, projection.clipToView);
     for (size_t row = 0; row < 4; ++row) {
         for (size_t column = 0; column < 4; ++column) {
             EXPECT_NEAR(identity[row * 4 + column], row == column ? 1.0f : 0.0f, 0.0001f);
@@ -134,22 +123,15 @@ TEST(VulkanFgPolicyTest, ResourceMetadataMatchesSdkInputChain) {
 }
 
 TEST(VulkanFgPolicyTest, FidelityFxResourceStatesMapToRequiredVulkanLayouts) {
-    const FfxResourceStateBits bits{1u << 0, 1u << 1, 1u << 2,
-                                    1u << 3, 1u << 4, 1u << 5};
+    const FfxResourceStateBits bits{1u << 0, 1u << 1, 1u << 2, 1u << 3, 1u << 4, 1u << 5};
     EXPECT_EQ(ResolveFfxResourceLayout(bits.present, bits), VulkanImageLayoutClass::Present);
-    EXPECT_EQ(ResolveFfxResourceLayout(bits.copySource, bits),
-              VulkanImageLayoutClass::TransferSource);
-    EXPECT_EQ(ResolveFfxResourceLayout(bits.copyDestination, bits),
-              VulkanImageLayoutClass::TransferDestination);
-    EXPECT_EQ(ResolveFfxResourceLayout(bits.renderTarget, bits),
-              VulkanImageLayoutClass::ColorAttachment);
-    EXPECT_EQ(ResolveFfxResourceLayout(bits.unorderedAccess, bits),
-              VulkanImageLayoutClass::General);
-    EXPECT_EQ(ResolveFfxResourceLayout(bits.pixelComputeRead, bits),
-              VulkanImageLayoutClass::ShaderRead);
+    EXPECT_EQ(ResolveFfxResourceLayout(bits.copySource, bits), VulkanImageLayoutClass::TransferSource);
+    EXPECT_EQ(ResolveFfxResourceLayout(bits.copyDestination, bits), VulkanImageLayoutClass::TransferDestination);
+    EXPECT_EQ(ResolveFfxResourceLayout(bits.renderTarget, bits), VulkanImageLayoutClass::ColorAttachment);
+    EXPECT_EQ(ResolveFfxResourceLayout(bits.unorderedAccess, bits), VulkanImageLayoutClass::General);
+    EXPECT_EQ(ResolveFfxResourceLayout(bits.pixelComputeRead, bits), VulkanImageLayoutClass::ShaderRead);
     EXPECT_EQ(ResolveFfxResourceLayout(0, bits), VulkanImageLayoutClass::General);
-    EXPECT_EQ(ResolveFfxResourceLayout(bits.present | bits.unorderedAccess, bits),
-              VulkanImageLayoutClass::Present);
+    EXPECT_EQ(ResolveFfxResourceLayout(bits.present | bits.unorderedAccess, bits), VulkanImageLayoutClass::Present);
 }
 
 TEST(VulkanFgPolicyTest, QueuePlannerKeepsAllRuntimeQueuesDistinct) {
@@ -287,12 +269,8 @@ TEST(VulkanFgPolicyTest, FailedPreparationRollsBackToVisibleOldOwner) {
 }
 
 TEST(VulkanFgPolicyTest, FailedTransitionConsumesOnlyItsOwnRequest) {
-    EXPECT_EQ(ResolveRequestedModeAfterTransitionFailure(
-                  FgMode::Fsr, FgMode::Fsr, FgMode::Off),
-              FgMode::Off);
-    EXPECT_EQ(ResolveRequestedModeAfterTransitionFailure(
-                  FgMode::Dlss, FgMode::Fsr, FgMode::Off),
-              FgMode::Dlss);
+    EXPECT_EQ(ResolveRequestedModeAfterTransitionFailure(FgMode::Fsr, FgMode::Fsr, FgMode::Off), FgMode::Off);
+    EXPECT_EQ(ResolveRequestedModeAfterTransitionFailure(FgMode::Dlss, FgMode::Fsr, FgMode::Off), FgMode::Dlss);
 }
 
 TEST(VulkanFgPolicyTest, FailedPassthroughCannotBreakOldSurface) {

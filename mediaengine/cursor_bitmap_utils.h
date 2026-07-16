@@ -21,8 +21,7 @@ inline int MedianOfThree(int a, int b, int c) {
 // HCURSOR's color bitmap stores straight, premultiplied, or absent alpha.
 inline Bgra8 ReconstructStraightAlpha(Bgra8 overBlack, Bgra8 overWhite) {
     const int backgroundContribution = std::clamp(
-        MedianOfThree(static_cast<int>(overWhite.b) - overBlack.b,
-                      static_cast<int>(overWhite.g) - overBlack.g,
+        MedianOfThree(static_cast<int>(overWhite.b) - overBlack.b, static_cast<int>(overWhite.g) - overBlack.g,
                       static_cast<int>(overWhite.r) - overBlack.r),
         0, 255);
     const int alpha = 255 - backgroundContribution;

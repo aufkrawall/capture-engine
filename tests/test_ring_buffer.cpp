@@ -291,8 +291,8 @@ TEST_F(DynamicRingBufferTest, OverwritePolicyKeepsSizeBounded) {
 }
 
 TEST_F(DynamicRingBufferTest, ZeroCapacityRejectsPushForEveryPolicy) {
-    for (RingBufferPolicy policy : {RingBufferPolicy::DropNew, RingBufferPolicy::DropOld,
-                                    RingBufferPolicy::Overwrite, RingBufferPolicy::Block}) {
+    for (RingBufferPolicy policy :
+         {RingBufferPolicy::DropNew, RingBufferPolicy::DropOld, RingBufferPolicy::Overwrite, RingBufferPolicy::Block}) {
         DynamicRingBuffer<int> zeroCapacity(0, policy);
         EXPECT_TRUE(zeroCapacity.Empty());
         EXPECT_TRUE(zeroCapacity.Full());

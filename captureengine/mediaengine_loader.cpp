@@ -158,5 +158,4 @@ void MediaEngine_Unload() {
     MediaEngine_SetSourcePrefers10Bit = nullptr;
     MediaEngine_SetCursorCompositionSuppressed = nullptr;
     MediaEngine_MeasureRenderEndpointLatency = nullptr;
-
 }

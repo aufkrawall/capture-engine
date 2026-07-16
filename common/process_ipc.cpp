@@ -218,8 +218,8 @@ std::wstring NonceToHex(const ProcessChannelNonce& nonce) {
 }
 
 bool FillNonce(ProcessChannelNonce& nonce) {
-    return BCryptGenRandom(nullptr, nonce.data(), static_cast<ULONG>(nonce.size()),
-                           BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+    return BCryptGenRandom(nullptr, nonce.data(), static_cast<ULONG>(nonce.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG) ==
+           0;
 }
 
 struct PipeSecurity {
@@ -251,7 +251,7 @@ bool BuildPipeSecurity(PipeSecurity& security) {
     const std::wstring sddl = L"D:P(A;;GA;;;SY)(A;;GA;;;" + std::wstring(sid) + L")";
     LocalFree(sid);
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &security.descriptor,
-                                                               nullptr)) {
+                                                              nullptr)) {
         return false;
     }
     security.attributes.nLength = sizeof(security.attributes);
@@ -410,17 +410,16 @@ bool ProcessIPCServer::ReadStartupArguments() {
         constexpr wchar_t pidPrefix[] = L"--ipc-controller-pid=";
         constexpr wchar_t noncePrefix[] = L"--ipc-nonce=";
         if (wcsncmp(arguments[index], handlePrefix, std::size(handlePrefix) - 1) == 0) {
-            if (haveHandle ||
-                !ParseUnsigned(arguments[index] + std::size(handlePrefix) - 1, 0,
-                               std::numeric_limits<uintptr_t>::max(), handleValue)) {
+            if (haveHandle || !ParseUnsigned(arguments[index] + std::size(handlePrefix) - 1, 0,
+                                             std::numeric_limits<uintptr_t>::max(), handleValue)) {
                 invalid = true;
             } else {
                 haveHandle = true;
             }
         } else if (wcsncmp(arguments[index], pidPrefix, std::size(pidPrefix) - 1) == 0) {
             if (haveControllerPid ||
-                !ParseUnsigned(arguments[index] + std::size(pidPrefix) - 1, 10,
-                               std::numeric_limits<uint32_t>::max(), controllerPid) ||
+                !ParseUnsigned(arguments[index] + std::size(pidPrefix) - 1, 10, std::numeric_limits<uint32_t>::max(),
+                               controllerPid) ||
                 controllerPid == 0) {
                 invalid = true;
             } else {
@@ -450,8 +449,7 @@ bool ProcessIPCServer::ReadStartupArguments() {
         !GetNamedPipeInfo(pipe_, &endpointFlags, nullptr, nullptr, nullptr) ||
         !GetNamedPipeHandleStateW(pipe_, &pipeState, nullptr, nullptr, nullptr, nullptr, 0) ||
         (handleFlags & HANDLE_FLAG_INHERIT) == 0 || (endpointFlags & PIPE_SERVER_END) != 0 ||
-        (pipeState & PIPE_READMODE_MESSAGE) == 0 ||
-        !GetNamedPipeServerProcessId(pipe_, &serverPid) ||
+        (pipeState & PIPE_READMODE_MESSAGE) == 0 || !GetNamedPipeServerProcessId(pipe_, &serverPid) ||
         serverPid != controllerPid_) {
         CloseHandle(pipe_);
         pipe_ = INVALID_HANDLE_VALUE;
@@ -590,8 +588,7 @@ bool ProcessIPCClient::PrepareChildEndpoint(HANDLE& childEndpoint, std::wstring&
         return false;
     const std::wstring nonceHex = NonceToHex(nonce_);
     wchar_t pipeName[256]{};
-    _snwprintf_s(pipeName, std::size(pipeName), _TRUNCATE, L"\\\\.\\pipe\\CE_%08X_%016llX_%ls",
-                 GetCurrentProcessId(),
+    _snwprintf_s(pipeName, std::size(pipeName), _TRUNCATE, L"\\\\.\\pipe\\CE_%08X_%016llX_%ls", GetCurrentProcessId(),
                  static_cast<unsigned long long>(g_pipeNameSequence.fetch_add(1, std::memory_order_relaxed)),
                  nonceHex.c_str());
     pipe_ = CreateNamedPipeW(pipeName, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
@@ -616,8 +613,8 @@ bool ProcessIPCClient::PrepareChildEndpoint(HANDLE& childEndpoint, std::wstring&
         return false;
     }
 
-    childEndpoint = CreateFileW(pipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
-                                FILE_ATTRIBUTE_NORMAL, nullptr);
+    childEndpoint =
+        CreateFileW(pipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     DWORD childReadMode = PIPE_READMODE_MESSAGE;
     if (childEndpoint == INVALID_HANDLE_VALUE ||
         !SetNamedPipeHandleState(childEndpoint, &childReadMode, nullptr, nullptr) ||

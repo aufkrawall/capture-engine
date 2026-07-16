@@ -56,7 +56,7 @@ private:
 enum class LegacyGLDrawPath { Arrays, Immediate };
 
 inline LegacyGLDrawPath SelectLegacyGLDrawPath(bool matrixPathValid, bool arrayFunctionsAvailable,
-                                                bool arrayProbeSucceeded) {
+                                               bool arrayProbeSucceeded) {
     return matrixPathValid && arrayFunctionsAvailable && arrayProbeSucceeded ? LegacyGLDrawPath::Arrays
                                                                              : LegacyGLDrawPath::Immediate;
 }

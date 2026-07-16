@@ -33,8 +33,7 @@ bool IsSafeFilenameComponent(const std::wstring& value, size_t maximumLength, bo
         return false;
     for (wchar_t character : value) {
         const bool alphaNumeric = (character >= L'a' && character <= L'z') ||
-                                  (character >= L'A' && character <= L'Z') ||
-                                  (character >= L'0' && character <= L'9');
+                                  (character >= L'A' && character <= L'Z') || (character >= L'0' && character <= L'9');
         if (!alphaNumeric && character != L'_' && character != L'-')
             return false;
     }
@@ -46,8 +45,7 @@ std::optional<std::wstring> BuildFilename(const std::wstring& prefix, const std:
     std::wstring normalizedExtension = extension;
     if (!normalizedExtension.empty() && normalizedExtension.front() == L'.')
         normalizedExtension.erase(normalizedExtension.begin());
-    if (!IsSafeFilenameComponent(prefix, 64, false) ||
-        !IsSafeFilenameComponent(normalizedExtension, 16, true) ||
+    if (!IsSafeFilenameComponent(prefix, 64, false) || !IsSafeFilenameComponent(normalizedExtension, 16, true) ||
         seed.utcMilliseconds > std::numeric_limits<uint64_t>::max() / 10000ull) {
         return std::nullopt;
     }
@@ -61,12 +59,12 @@ std::optional<std::wstring> BuildFilename(const std::wstring& prefix, const std:
     const unsigned milliseconds = static_cast<unsigned>(seed.utcMilliseconds % 1000ull);
 
     std::array<wchar_t, 192> buffer{};
-    const int written = _snwprintf_s(
-        buffer.data(), buffer.size(), _TRUNCATE, L"%ls_%04u%02u%02uT%02u%02u%02u%03uZ_p%lu_s%llu%ls%ls%ls",
-        prefix.c_str(), utc.wYear, utc.wMonth, utc.wDay, utc.wHour, utc.wMinute, utc.wSecond, milliseconds,
-        static_cast<unsigned long>(seed.processId), static_cast<unsigned long long>(seed.sequence),
-        collisionAttempt == 0 ? L"" : (L"_c" + std::to_wstring(collisionAttempt)).c_str(),
-        normalizedExtension.empty() ? L"" : L".", normalizedExtension.c_str());
+    const int written =
+        _snwprintf_s(buffer.data(), buffer.size(), _TRUNCATE, L"%ls_%04u%02u%02uT%02u%02u%02u%03uZ_p%lu_s%llu%ls%ls%ls",
+                     prefix.c_str(), utc.wYear, utc.wMonth, utc.wDay, utc.wHour, utc.wMinute, utc.wSecond, milliseconds,
+                     static_cast<unsigned long>(seed.processId), static_cast<unsigned long long>(seed.sequence),
+                     collisionAttempt == 0 ? L"" : (L"_c" + std::to_wstring(collisionAttempt)).c_str(),
+                     normalizedExtension.empty() ? L"" : L".", normalizedExtension.c_str());
     if (written <= 0 || static_cast<size_t>(written) >= buffer.size())
         return std::nullopt;
     return buffer.data();
@@ -127,8 +125,7 @@ ReservedCaptureOutput& ReservedCaptureOutput::operator=(ReservedCaptureOutput&& 
     return *this;
 }
 
-ReservedCaptureOutput ReservedCaptureOutput::Reserve(const std::filesystem::path& directory,
-                                                     const std::wstring& prefix,
+ReservedCaptureOutput ReservedCaptureOutput::Reserve(const std::filesystem::path& directory, const std::wstring& prefix,
                                                      const std::wstring& extension) {
     return ReserveWithSeed(directory, prefix, extension, CurrentSeed());
 }
@@ -141,8 +138,7 @@ ReservedCaptureOutput ReservedCaptureOutput::ReserveForTesting(const std::filesy
 }
 
 ReservedCaptureOutput ReservedCaptureOutput::ReserveWithSeed(const std::filesystem::path& directory,
-                                                             const std::wstring& prefix,
-                                                             const std::wstring& extension,
+                                                             const std::wstring& prefix, const std::wstring& extension,
                                                              const OutputNameSeed& seed) {
     ReservedCaptureOutput output;
     std::error_code error;
@@ -226,9 +222,9 @@ bool ReservedCaptureOutput::CurrentPathMatchesReservation() const {
     if (path_.empty() || !identity_.valid) {
         return false;
     }
-    HANDLE handle = CreateFileW(path_.c_str(), FILE_READ_ATTRIBUTES,
-                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                                FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    HANDLE handle =
+        CreateFileW(path_.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (handle == INVALID_HANDLE_VALUE) {
         return false;
     }
@@ -280,8 +276,8 @@ bool ReservedCaptureOutput::CleanupOwnedFile() {
     const bool matches = QueryIdentity(handle, current) && current.valid &&
                          current.volumeSerial == identity_.volumeSerial && current.fileIndex == identity_.fileIndex;
     FILE_DISPOSITION_INFO disposition{TRUE};
-    const bool removed = matches && SetFileInformationByHandle(handle, FileDispositionInfo, &disposition,
-                                                               sizeof(disposition)) != FALSE;
+    const bool removed =
+        matches && SetFileInformationByHandle(handle, FileDispositionInfo, &disposition, sizeof(disposition)) != FALSE;
     CloseHandle(handle);
     if (removed) {
         path_.clear();

@@ -288,11 +288,9 @@ TEST(AudioSyncUtilsTest, SharedCaptureSiblingBacklogMustNotDriveHealthyRouteComp
     constexpr int64_t kDeadband = kRate * 10 / 1000;
 
     const auto healthyRoute = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
-        true, true, false, true, false, kHealthyRouteBuffer, kTarget, kRate / 64, kRate * 10, 0.5, kSlack,
-        kDeadband);
+        true, true, false, true, false, kHealthyRouteBuffer, kTarget, kRate / 64, kRate * 10, 0.5, kSlack, kDeadband);
     const auto delayedSibling = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
-        true, true, false, true, false, kDelayedSiblingBuffer, kTarget, kRate / 64, kRate * 10, 0.5, kSlack,
-        kDeadband);
+        true, true, false, true, false, kDelayedSiblingBuffer, kTarget, kRate / 64, kRate * 10, 0.5, kSlack, kDeadband);
 
     EXPECT_FALSE(healthyRoute.active);
     EXPECT_EQ(healthyRoute.compensationDelta, 0);
@@ -473,12 +471,12 @@ TEST(AudioSyncUtilsTest, BootstrapStartedSourceMustCoverFirstRequestedTimelineRa
     EXPECT_FALSE(ce::audio::IsSourceBootstrapTimelineReady(
         /*sourceBootstrapComplete*/ false, /*optionalUnstartedSource*/ false, /*sourceReady*/ true,
         /*packetlessSilenceReady*/ false, /*bufferedTimelineSamples*/ 1920, /*targetTimelineSamples*/ 2000));
-    EXPECT_TRUE(ce::audio::IsSourceBootstrapTimelineReady(
-        false, false, true, false, /*bufferedTimelineSamples*/ 2000, /*targetTimelineSamples*/ 2000));
-    EXPECT_TRUE(ce::audio::IsSourceBootstrapTimelineReady(
-        false, false, false, true, /*bufferedTimelineSamples*/ 0, /*targetTimelineSamples*/ 2000));
-    EXPECT_TRUE(ce::audio::IsSourceBootstrapTimelineReady(
-        false, true, true, false, /*bufferedTimelineSamples*/ 0, /*targetTimelineSamples*/ 2000));
+    EXPECT_TRUE(ce::audio::IsSourceBootstrapTimelineReady(false, false, true, false, /*bufferedTimelineSamples*/ 2000,
+                                                          /*targetTimelineSamples*/ 2000));
+    EXPECT_TRUE(ce::audio::IsSourceBootstrapTimelineReady(false, false, false, true, /*bufferedTimelineSamples*/ 0,
+                                                          /*targetTimelineSamples*/ 2000));
+    EXPECT_TRUE(ce::audio::IsSourceBootstrapTimelineReady(false, true, true, false, /*bufferedTimelineSamples*/ 0,
+                                                          /*targetTimelineSamples*/ 2000));
 }
 
 TEST(AudioSyncUtilsTest, SilentStartedSystemSourceIsTimelineReadyAtSampleZero) {
@@ -658,14 +656,14 @@ TEST(AudioSyncUtilsTest, InactiveStartedAppCaptureBecomesNonBlockingTimelineSile
     EXPECT_FALSE(ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(false, true, true, false));
     EXPECT_FALSE(ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(true, false, true, false));
 
-    const bool inactiveSourceMaySilence = ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(
-        true, true, true, false);
-    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(
-        true, false, false, inactiveSourceMaySilence, /*requestedSamples*/ 48000 * 2,
-        /*bufferedTimelineSamples*/ 0));
-    EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(
-        true, true, false, inactiveSourceMaySilence, /*requestedSamples*/ 48000 * 2,
-        /*bufferedTimelineSamples*/ 0));
+    const bool inactiveSourceMaySilence =
+        ce::audio::ShouldTreatInactiveStartedAppCaptureAsSilence(true, true, true, false);
+    EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(true, false, false, inactiveSourceMaySilence,
+                                                                   /*requestedSamples*/ 48000 * 2,
+                                                                   /*bufferedTimelineSamples*/ 0));
+    EXPECT_FALSE(ce::audio::ShouldWaitForFinalCfrSourceCatchup(true, true, false, inactiveSourceMaySilence,
+                                                               /*requestedSamples*/ 48000 * 2,
+                                                               /*bufferedTimelineSamples*/ 0));
 }
 
 TEST(AudioSyncUtilsTest, PacketlessTimelineSourceCanBootstrapAsSilence) {
@@ -689,8 +687,7 @@ TEST(AudioSyncUtilsTest, StartedSparseTimelinePartialShortfallSilencesOnlyLargeL
         /*sparseStartedSourceMaySilence*/ true, /*bufferedTimelineSamples*/ 320, /*requestedSamples*/ 13600,
         thresholdSamples));
 
-    const bool sparsePartialLargePullMaySilence =
-        ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(
+    const bool sparsePartialLargePullMaySilence = ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(
         /*sparseStartedSourceMaySilence*/ true, /*bufferedTimelineSamples*/ 320, /*requestedSamples*/ 13600,
         thresholdSamples);
     EXPECT_FALSE(ce::audio::ShouldDeferCfrAudioPullForSourceBuffer(

@@ -31,9 +31,8 @@ public:
 
     static ReservedCaptureOutput Reserve(const std::filesystem::path& directory, const std::wstring& prefix,
                                          const std::wstring& extension);
-    static ReservedCaptureOutput ReserveForTesting(const std::filesystem::path& directory,
-                                                   const std::wstring& prefix, const std::wstring& extension,
-                                                   const OutputNameSeed& seed);
+    static ReservedCaptureOutput ReserveForTesting(const std::filesystem::path& directory, const std::wstring& prefix,
+                                                   const std::wstring& extension, const OutputNameSeed& seed);
 
     explicit operator bool() const {
         return reservationHandle_ != INVALID_HANDLE_VALUE && !path_.empty();
@@ -69,9 +68,8 @@ private:
         bool valid = false;
     };
 
-    static ReservedCaptureOutput ReserveWithSeed(const std::filesystem::path& directory,
-                                                 const std::wstring& prefix, const std::wstring& extension,
-                                                 const OutputNameSeed& seed);
+    static ReservedCaptureOutput ReserveWithSeed(const std::filesystem::path& directory, const std::wstring& prefix,
+                                                 const std::wstring& extension, const OutputNameSeed& seed);
     static bool QueryIdentity(HANDLE handle, FileIdentity& identity);
     bool CurrentPathMatchesReservation() const;
     void Reset() noexcept;

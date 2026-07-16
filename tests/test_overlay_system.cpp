@@ -97,8 +97,7 @@ TEST_F(FontAtlasTest, GlyphSpansReconstructQuantizedCoverageForPrintableAscii) {
             ASSERT_LT(span.y, glyph->height);
             ASSERT_LE((uint32_t)span.x + (uint32_t)span.width, (uint32_t)glyph->width);
             ASSERT_GT(span.width, 0u);
-            EXPECT_TRUE(span.alpha == 255 ||
-                        (span.alpha >= 16 && span.alpha <= 240 && span.alpha % 16 == 0));
+            EXPECT_TRUE(span.alpha == 255 || (span.alpha >= 16 && span.alpha <= 240 && span.alpha % 16 == 0));
 
             for (uint16_t x = 0; x < span.width; ++x) {
                 uint8_t& coverage = reconstructed[(size_t)span.y * glyph->width + span.x + x];

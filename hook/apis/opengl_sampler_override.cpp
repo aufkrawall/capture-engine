@@ -431,9 +431,9 @@ void LogDecision(ce::sampler_override::OpenGLForcedAFDecision decision, float de
                  const char* objectKind) {
     const int index = g_decisionLogCount.fetch_add(1, std::memory_order_relaxed);
     if (index < 48) {
-        HookLogImportant("OpenGL: AF reconcile object=%s decision=%d desired=%.1f max=%.1f policy=%s (#%d)",
-                         objectKind, static_cast<int>(decision), desired, t_caps.maxAnisotropy,
-                         gfx.samplerOverrideMode.c_str(), index + 1);
+        HookLogImportant("OpenGL: AF reconcile object=%s decision=%d desired=%.1f max=%.1f policy=%s (#%d)", objectKind,
+                         static_cast<int>(decision), desired, t_caps.maxAnisotropy, gfx.samplerOverrideMode.c_str(),
+                         index + 1);
     }
 }
 
@@ -593,32 +593,32 @@ void WINAPI DetourTexParameterfv(GLenum target, GLenum pname, const GLfloat* val
     ApplyTargetAF(target, CurrentResolver());
 }
 
-#define DEFINE_SAMPLER_SCALAR_DETOUR(name, type, original, overrideFn)                                       \
-    void WINAPI name(GLuint sampler, GLenum pname, type value) {                                             \
-        ++g_parameterCalls;                                                                                   \
-        const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();                                         \
-        if (original)                                                                                         \
-            original(sampler, pname, overrideFn(pname, value, gfx, CurrentResolver()));                      \
-        if (IsControlledParameter(pname))                                                                     \
-            ApplySamplerAF(sampler, CurrentResolver());                                                      \
+#define DEFINE_SAMPLER_SCALAR_DETOUR(name, type, original, overrideFn)                  \
+    void WINAPI name(GLuint sampler, GLenum pname, type value) {                        \
+        ++g_parameterCalls;                                                             \
+        const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();                    \
+        if (original)                                                                   \
+            original(sampler, pname, overrideFn(pname, value, gfx, CurrentResolver())); \
+        if (IsControlledParameter(pname))                                               \
+            ApplySamplerAF(sampler, CurrentResolver());                                 \
     }
 
 DEFINE_SAMPLER_SCALAR_DETOUR(DetourSamplerParameteri, GLint, g_samplerParameteri, OverrideIntegerValue)
 DEFINE_SAMPLER_SCALAR_DETOUR(DetourSamplerParameterf, GLfloat, g_samplerParameterf, OverrideFloatValue)
 
-#define DEFINE_SAMPLER_VECTOR_DETOUR(name, type, original, overrideFn)                                        \
-    void WINAPI name(GLuint sampler, GLenum pname, const type* values) {                                      \
-        ++g_parameterCalls;                                                                                   \
-        if (!values || !IsControlledParameter(pname)) {                                                       \
-            if (original)                                                                                     \
-                original(sampler, pname, values);                                                             \
-            return;                                                                                           \
-        }                                                                                                     \
-        const type value = static_cast<type>(                                                                 \
-            overrideFn(pname, values[0], GetActiveGraphicsConfigCached(), CurrentResolver()));               \
-        if (original)                                                                                         \
-            original(sampler, pname, &value);                                                                 \
-        ApplySamplerAF(sampler, CurrentResolver());                                                          \
+#define DEFINE_SAMPLER_VECTOR_DETOUR(name, type, original, overrideFn)                                           \
+    void WINAPI name(GLuint sampler, GLenum pname, const type* values) {                                         \
+        ++g_parameterCalls;                                                                                      \
+        if (!values || !IsControlledParameter(pname)) {                                                          \
+            if (original)                                                                                        \
+                original(sampler, pname, values);                                                                \
+            return;                                                                                              \
+        }                                                                                                        \
+        const type value =                                                                                       \
+            static_cast<type>(overrideFn(pname, values[0], GetActiveGraphicsConfigCached(), CurrentResolver())); \
+        if (original)                                                                                            \
+            original(sampler, pname, &value);                                                                    \
+        ApplySamplerAF(sampler, CurrentResolver());                                                              \
     }
 
 DEFINE_SAMPLER_VECTOR_DETOUR(DetourSamplerParameteriv, GLint, g_samplerParameteriv, OverrideIntegerValue)
@@ -626,32 +626,32 @@ DEFINE_SAMPLER_VECTOR_DETOUR(DetourSamplerParameterfv, GLfloat, g_samplerParamet
 DEFINE_SAMPLER_VECTOR_DETOUR(DetourSamplerParameterIiv, GLint, g_samplerParameterIiv, OverrideIntegerValue)
 DEFINE_SAMPLER_VECTOR_DETOUR(DetourSamplerParameterIuiv, GLuint, g_samplerParameterIuiv, OverrideIntegerValue)
 
-#define DEFINE_TEXTURE_SCALAR_DETOUR(name, type, original, overrideFn)                                        \
-    void WINAPI name(GLuint texture, GLenum pname, type value) {                                              \
-        ++g_parameterCalls;                                                                                   \
-        const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();                                         \
-        if (original)                                                                                         \
-            original(texture, pname, overrideFn(pname, value, gfx, CurrentResolver()));                      \
-        if (IsControlledParameter(pname))                                                                     \
-            ApplyTextureAF(texture, CurrentResolver());                                                      \
+#define DEFINE_TEXTURE_SCALAR_DETOUR(name, type, original, overrideFn)                  \
+    void WINAPI name(GLuint texture, GLenum pname, type value) {                        \
+        ++g_parameterCalls;                                                             \
+        const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();                    \
+        if (original)                                                                   \
+            original(texture, pname, overrideFn(pname, value, gfx, CurrentResolver())); \
+        if (IsControlledParameter(pname))                                               \
+            ApplyTextureAF(texture, CurrentResolver());                                 \
     }
 
 DEFINE_TEXTURE_SCALAR_DETOUR(DetourTextureParameteri, GLint, g_textureParameteri, OverrideIntegerValue)
 DEFINE_TEXTURE_SCALAR_DETOUR(DetourTextureParameterf, GLfloat, g_textureParameterf, OverrideFloatValue)
 
-#define DEFINE_TEXTURE_VECTOR_DETOUR(name, type, original, overrideFn)                                        \
-    void WINAPI name(GLuint texture, GLenum pname, const type* values) {                                      \
-        ++g_parameterCalls;                                                                                   \
-        if (!values || !IsControlledParameter(pname)) {                                                       \
-            if (original)                                                                                     \
-                original(texture, pname, values);                                                             \
-            return;                                                                                           \
-        }                                                                                                     \
-        const type value = static_cast<type>(                                                                 \
-            overrideFn(pname, values[0], GetActiveGraphicsConfigCached(), CurrentResolver()));               \
-        if (original)                                                                                         \
-            original(texture, pname, &value);                                                                 \
-        ApplyTextureAF(texture, CurrentResolver());                                                          \
+#define DEFINE_TEXTURE_VECTOR_DETOUR(name, type, original, overrideFn)                                           \
+    void WINAPI name(GLuint texture, GLenum pname, const type* values) {                                         \
+        ++g_parameterCalls;                                                                                      \
+        if (!values || !IsControlledParameter(pname)) {                                                          \
+            if (original)                                                                                        \
+                original(texture, pname, values);                                                                \
+            return;                                                                                              \
+        }                                                                                                        \
+        const type value =                                                                                       \
+            static_cast<type>(overrideFn(pname, values[0], GetActiveGraphicsConfigCached(), CurrentResolver())); \
+        if (original)                                                                                            \
+            original(texture, pname, &value);                                                                    \
+        ApplyTextureAF(texture, CurrentResolver());                                                              \
     }
 
 DEFINE_TEXTURE_VECTOR_DETOUR(DetourTextureParameteriv, GLint, g_textureParameteriv, OverrideIntegerValue)
@@ -659,40 +659,38 @@ DEFINE_TEXTURE_VECTOR_DETOUR(DetourTextureParameterfv, GLfloat, g_textureParamet
 DEFINE_TEXTURE_VECTOR_DETOUR(DetourTextureParameterIiv, GLint, g_textureParameterIiv, OverrideIntegerValue)
 DEFINE_TEXTURE_VECTOR_DETOUR(DetourTextureParameterIuiv, GLuint, g_textureParameterIuiv, OverrideIntegerValue)
 
-#define DEFINE_TEXTURE_EXT_SCALAR_DETOUR(name, type, original, overrideFn)                                    \
-    void WINAPI name(GLuint texture, GLenum target, GLenum pname, type value) {                               \
-        ++g_parameterCalls;                                                                                   \
-        const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();                                         \
-        if (original)                                                                                         \
-            original(texture, target, pname, overrideFn(pname, value, gfx, CurrentResolver()));              \
-        if (IsControlledParameter(pname))                                                                     \
-            ApplyTextureAFExt(texture, target, CurrentResolver());                                           \
+#define DEFINE_TEXTURE_EXT_SCALAR_DETOUR(name, type, original, overrideFn)                      \
+    void WINAPI name(GLuint texture, GLenum target, GLenum pname, type value) {                 \
+        ++g_parameterCalls;                                                                     \
+        const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();                            \
+        if (original)                                                                           \
+            original(texture, target, pname, overrideFn(pname, value, gfx, CurrentResolver())); \
+        if (IsControlledParameter(pname))                                                       \
+            ApplyTextureAFExt(texture, target, CurrentResolver());                              \
     }
 
 DEFINE_TEXTURE_EXT_SCALAR_DETOUR(DetourTextureParameteriExt, GLint, g_textureParameteriExt, OverrideIntegerValue)
 DEFINE_TEXTURE_EXT_SCALAR_DETOUR(DetourTextureParameterfExt, GLfloat, g_textureParameterfExt, OverrideFloatValue)
 
-#define DEFINE_TEXTURE_EXT_VECTOR_DETOUR(name, type, original, overrideFn)                                    \
-    void WINAPI name(GLuint texture, GLenum target, GLenum pname, const type* values) {                       \
-        ++g_parameterCalls;                                                                                   \
-        if (!values || !IsControlledParameter(pname)) {                                                       \
-            if (original)                                                                                     \
-                original(texture, target, pname, values);                                                     \
-            return;                                                                                           \
-        }                                                                                                     \
-        const type value = static_cast<type>(                                                                 \
-            overrideFn(pname, values[0], GetActiveGraphicsConfigCached(), CurrentResolver()));               \
-        if (original)                                                                                         \
-            original(texture, target, pname, &value);                                                        \
-        ApplyTextureAFExt(texture, target, CurrentResolver());                                               \
+#define DEFINE_TEXTURE_EXT_VECTOR_DETOUR(name, type, original, overrideFn)                                       \
+    void WINAPI name(GLuint texture, GLenum target, GLenum pname, const type* values) {                          \
+        ++g_parameterCalls;                                                                                      \
+        if (!values || !IsControlledParameter(pname)) {                                                          \
+            if (original)                                                                                        \
+                original(texture, target, pname, values);                                                        \
+            return;                                                                                              \
+        }                                                                                                        \
+        const type value =                                                                                       \
+            static_cast<type>(overrideFn(pname, values[0], GetActiveGraphicsConfigCached(), CurrentResolver())); \
+        if (original)                                                                                            \
+            original(texture, target, pname, &value);                                                            \
+        ApplyTextureAFExt(texture, target, CurrentResolver());                                                   \
     }
 
 DEFINE_TEXTURE_EXT_VECTOR_DETOUR(DetourTextureParameterivExt, GLint, g_textureParameterivExt, OverrideIntegerValue)
 DEFINE_TEXTURE_EXT_VECTOR_DETOUR(DetourTextureParameterfvExt, GLfloat, g_textureParameterfvExt, OverrideFloatValue)
-DEFINE_TEXTURE_EXT_VECTOR_DETOUR(DetourTextureParameterIivExt, GLint, g_textureParameterIivExt,
-                                 OverrideIntegerValue)
-DEFINE_TEXTURE_EXT_VECTOR_DETOUR(DetourTextureParameterIuivExt, GLuint, g_textureParameterIuivExt,
-                                 OverrideIntegerValue)
+DEFINE_TEXTURE_EXT_VECTOR_DETOUR(DetourTextureParameterIivExt, GLint, g_textureParameterIivExt, OverrideIntegerValue)
+DEFINE_TEXTURE_EXT_VECTOR_DETOUR(DetourTextureParameterIuivExt, GLuint, g_textureParameterIuivExt, OverrideIntegerValue)
 
 }  // namespace
 
@@ -749,10 +747,10 @@ PROC InterceptProcAddress(const char* name, PROC original, ProcResolver resolver
         return storageProc;
     }
 
-#define INTERCEPT(procName, storage, type, detour)                \
-    if (!std::strcmp(name, procName)) {                            \
-        storage = std::bit_cast<type>(original);                   \
-        return std::bit_cast<PROC>(&detour);                       \
+#define INTERCEPT(procName, storage, type, detour) \
+    if (!std::strcmp(name, procName)) {            \
+        storage = std::bit_cast<type>(original);   \
+        return std::bit_cast<PROC>(&detour);       \
     }
 
     INTERCEPT("glTexParameteri", g_texParameteri, TexParameteriFn, DetourTexParameteri)
@@ -773,10 +771,8 @@ PROC InterceptProcAddress(const char* name, PROC original, ProcResolver resolver
     INTERCEPT("glTextureParameterIuiv", g_textureParameterIuiv, TextureParameterIuivFn, DetourTextureParameterIuiv)
     INTERCEPT("glTextureParameteriEXT", g_textureParameteriExt, TextureParameteriExtFn, DetourTextureParameteriExt)
     INTERCEPT("glTextureParameterfEXT", g_textureParameterfExt, TextureParameterfExtFn, DetourTextureParameterfExt)
-    INTERCEPT("glTextureParameterivEXT", g_textureParameterivExt, TextureParameterivExtFn,
-              DetourTextureParameterivExt)
-    INTERCEPT("glTextureParameterfvEXT", g_textureParameterfvExt, TextureParameterfvExtFn,
-              DetourTextureParameterfvExt)
+    INTERCEPT("glTextureParameterivEXT", g_textureParameterivExt, TextureParameterivExtFn, DetourTextureParameterivExt)
+    INTERCEPT("glTextureParameterfvEXT", g_textureParameterfvExt, TextureParameterfvExtFn, DetourTextureParameterfvExt)
     INTERCEPT("glTextureParameterIivEXT", g_textureParameterIivExt, TextureParameterIivExtFn,
               DetourTextureParameterIivExt)
     INTERCEPT("glTextureParameterIuivEXT", g_textureParameterIuivExt, TextureParameterIuivExtFn,
@@ -812,12 +808,13 @@ void NotifyContextChanged() {
 
 void Shutdown() {
     ce::opengl_texture_storage_override::Shutdown();
-    HookLog("OpenGL: Sampler override summary parameterCalls=%llu afApplications=%llu unchanged=%llu "
-            "safetyRestores=%llu",
-            static_cast<unsigned long long>(g_parameterCalls.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(g_afApplications.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(g_afUnchanged.load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(g_afSafetyRestores.load(std::memory_order_relaxed)));
+    HookLog(
+        "OpenGL: Sampler override summary parameterCalls=%llu afApplications=%llu unchanged=%llu "
+        "safetyRestores=%llu",
+        static_cast<unsigned long long>(g_parameterCalls.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_afApplications.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_afUnchanged.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_afSafetyRestores.load(std::memory_order_relaxed)));
 }
 
 }  // namespace ce::opengl_sampler_override

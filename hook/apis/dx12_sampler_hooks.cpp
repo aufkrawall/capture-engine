@@ -51,8 +51,7 @@ struct RootSignatureDesc2Compat {
     const StaticSamplerDesc1Compat* pStaticSamplers;
     D3D12_ROOT_SIGNATURE_FLAGS Flags;
 };
-using CreateSampler2Ptr = void(STDMETHODCALLTYPE*)(IUnknown*, const SamplerDesc2Compat*,
-                                                   D3D12_CPU_DESCRIPTOR_HANDLE);
+using CreateSampler2Ptr = void(STDMETHODCALLTYPE*)(IUnknown*, const SamplerDesc2Compat*, D3D12_CPU_DESCRIPTOR_HANDLE);
 using CreateRootSignaturePtr = HRESULT(STDMETHODCALLTYPE*)(ID3D12Device*, UINT, const void*, SIZE_T, REFIID, void**);
 
 struct DeviceOriginals {
@@ -125,15 +124,15 @@ void RecordDecision(DecisionCounters& counters, const char* source, const Desc& 
         }
     }
     if (shouldLog) {
-        HookLog("DX12 AF: %s sampler fingerprint=0x%llX decision=%s afChanged=%d mipChanged=%d biasChanged=%d "
-                "filter=0x%X address=%u/%u/%u aniso=%u lod=%.3f..%.3f bias=%.3f",
-                source, static_cast<unsigned long long>(fingerprint),
-                ce::dx12_sampler_policy::DecisionName(result.decision), result.anisotropyModified ? 1 : 0,
-                result.mipMappingModified ? 1 : 0, result.mipBiasModified ? 1 : 0,
-                static_cast<unsigned>(original.Filter),
-                static_cast<unsigned>(original.AddressU), static_cast<unsigned>(original.AddressV),
-                static_cast<unsigned>(original.AddressW), original.MaxAnisotropy, original.MinLOD, original.MaxLOD,
-                original.MipLODBias);
+        HookLog(
+            "DX12 AF: %s sampler fingerprint=0x%llX decision=%s afChanged=%d mipChanged=%d biasChanged=%d "
+            "filter=0x%X address=%u/%u/%u aniso=%u lod=%.3f..%.3f bias=%.3f",
+            source, static_cast<unsigned long long>(fingerprint),
+            ce::dx12_sampler_policy::DecisionName(result.decision), result.anisotropyModified ? 1 : 0,
+            result.mipMappingModified ? 1 : 0, result.mipBiasModified ? 1 : 0, static_cast<unsigned>(original.Filter),
+            static_cast<unsigned>(original.AddressU), static_cast<unsigned>(original.AddressV),
+            static_cast<unsigned>(original.AddressW), original.MaxAnisotropy, original.MinLOD, original.MaxLOD,
+            original.MipLODBias);
     }
 }
 
@@ -162,8 +161,7 @@ DeviceOriginals FindOriginals(ID3D12Device* device) {
 }
 
 HRESULT STDMETHODCALLTYPE DetourFactoryCreateDevice(IUnknown* factory, IUnknown* adapter,
-                                                     D3D_FEATURE_LEVEL minimumFeatureLevel, REFIID riid,
-                                                     void** device) {
+                                                    D3D_FEATURE_LEVEL minimumFeatureLevel, REFIID riid, void** device) {
     FactoryCreateDevicePtr original = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_deviceHookMutex);
@@ -177,8 +175,7 @@ HRESULT STDMETHODCALLTYPE DetourFactoryCreateDevice(IUnknown* factory, IUnknown*
     if (SUCCEEDED(hr) && device && *device) {
         ID3D12Device* baseDevice = nullptr;
         auto* unknown = reinterpret_cast<IUnknown*>(*device);
-        if (SUCCEEDED(unknown->QueryInterface(IID_ID3D12Device, reinterpret_cast<void**>(&baseDevice))) &&
-            baseDevice) {
+        if (SUCCEEDED(unknown->QueryInterface(IID_ID3D12Device, reinterpret_cast<void**>(&baseDevice))) && baseDevice) {
             DX12_HookDeviceVTable(baseDevice);
             baseDevice->Release();
         }
@@ -200,8 +197,7 @@ void HookDeviceFactory(IUnknown* factory) {
         &vtable[9], reinterpret_cast<void*>(&DetourFactoryCreateDevice), reinterpret_cast<void**>(&original));
     if (status == VTableHook::Success && original) {
         g_factoryOriginals.emplace(vtable, original);
-        HookLogImportant("DX12 AF: ID3D12DeviceFactory::CreateDevice hook ready factory=%p vtable=%p", factory,
-                         vtable);
+        HookLogImportant("DX12 AF: ID3D12DeviceFactory::CreateDevice hook ready factory=%p vtable=%p", factory, vtable);
     } else {
         HookLogImportant("DX12 AF: ID3D12DeviceFactory hook failed factory=%p status=%s", factory,
                          VTableHook::StatusToString(status));
@@ -326,9 +322,8 @@ bool RewriteRootSignatureBlob(const void* blob, SIZE_T blobSize, ID3DBlob** rewr
         if (FAILED(serializeHr) || !*rewrittenBlob) {
             static std::atomic<uint32_t> failureLogs{0};
             if (failureLogs.fetch_add(1, std::memory_order_relaxed) < 8) {
-                HookLogImportant(
-                    "DX12 AF: root-signature reserialization failed hr=0x%08X version=%u; passing through",
-                    static_cast<unsigned>(serializeHr), static_cast<unsigned>(modified.Version));
+                HookLogImportant("DX12 AF: root-signature reserialization failed hr=0x%08X version=%u; passing through",
+                                 static_cast<unsigned>(serializeHr), static_cast<unsigned>(modified.Version));
             }
             if (*rewrittenBlob) {
                 (*rewrittenBlob)->Release();
@@ -343,7 +338,7 @@ bool RewriteRootSignatureBlob(const void* blob, SIZE_T blobSize, ID3DBlob** rewr
 }
 
 void STDMETHODCALLTYPE DetourCreateSampler(ID3D12Device* device, const D3D12_SAMPLER_DESC* desc,
-                                            D3D12_CPU_DESCRIPTOR_HANDLE destination) {
+                                           D3D12_CPU_DESCRIPTOR_HANDLE destination) {
     const DeviceOriginals originals = FindOriginals(device);
     if (!originals.createSampler) {
         HookLogImportant("DX12 AF: CreateSampler detour has no per-vtable original for device=%p", device);
@@ -360,7 +355,7 @@ void STDMETHODCALLTYPE DetourCreateSampler(ID3D12Device* device, const D3D12_SAM
 }
 
 void STDMETHODCALLTYPE DetourCreateSampler2(IUnknown* device, const SamplerDesc2Compat* desc,
-                                             D3D12_CPU_DESCRIPTOR_HANDLE destination) {
+                                            D3D12_CPU_DESCRIPTOR_HANDLE destination) {
     const DeviceOriginals originals = FindOriginals(reinterpret_cast<ID3D12Device*>(device));
     if (!originals.createSampler2) {
         HookLogImportant("DX12 AF: CreateSampler2 detour has no per-vtable original for device=%p", device);
@@ -380,7 +375,7 @@ void STDMETHODCALLTYPE DetourCreateSampler2(IUnknown* device, const SamplerDesc2
 }
 
 HRESULT STDMETHODCALLTYPE DetourCreateRootSignature(ID3D12Device* device, UINT nodeMask, const void* blob,
-                                                     SIZE_T blobSize, REFIID riid, void** rootSignature) {
+                                                    SIZE_T blobSize, REFIID riid, void** rootSignature) {
     const DeviceOriginals originals = FindOriginals(device);
     if (!originals.createRootSignature) {
         HookLogImportant("DX12 AF: CreateRootSignature detour has no per-vtable original for device=%p", device);
@@ -392,7 +387,8 @@ HRESULT STDMETHODCALLTYPE DetourCreateRootSignature(ID3D12Device* device, UINT n
     const bool modified = RewriteRootSignatureBlob(blob, blobSize, &rewritten);
     const void* forwardedBlob = modified ? rewritten->GetBufferPointer() : blob;
     const SIZE_T forwardedSize = modified ? rewritten->GetBufferSize() : blobSize;
-    const HRESULT hr = originals.createRootSignature(device, nodeMask, forwardedBlob, forwardedSize, riid, rootSignature);
+    const HRESULT hr =
+        originals.createRootSignature(device, nodeMask, forwardedBlob, forwardedSize, riid, rootSignature);
     if (rewritten) {
         rewritten->Release();
     }
@@ -421,8 +417,8 @@ bool HookDevice(ID3D12Device* device) {
     bool success = true;
     if (vtable[16] != reinterpret_cast<void*>(&DetourCreateRootSignature)) {
         CreateRootSignaturePtr original = nullptr;
-        const VTableHook::Status status = VTableHook::Create(&vtable[16], reinterpret_cast<void*>(&DetourCreateRootSignature),
-                                                             reinterpret_cast<void**>(&original));
+        const VTableHook::Status status = VTableHook::Create(
+            &vtable[16], reinterpret_cast<void*>(&DetourCreateRootSignature), reinterpret_cast<void**>(&original));
         if (status == VTableHook::Success && original) {
             originals.createRootSignature = original;
         } else {
@@ -567,8 +563,7 @@ HRESULT WINAPI DetourD3D12GetInterface(REFCLSID clsid, REFIID riid, void** objec
 }
 
 HRESULT WINAPI DetourSerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC* rootSignature,
-                                             D3D_ROOT_SIGNATURE_VERSION version, ID3DBlob** blob,
-                                             ID3DBlob** errorBlob) {
+                                            D3D_ROOT_SIGNATURE_VERSION version, ID3DBlob** blob, ID3DBlob** errorBlob) {
     if (!oSerializeRootSignature) {
         return E_FAIL;
     }
@@ -579,7 +574,7 @@ HRESULT WINAPI DetourSerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC* roo
 }
 
 HRESULT WINAPI DetourSerializeVersionedRootSignature(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC* rootSignature,
-                                                      ID3DBlob** blob, ID3DBlob** errorBlob) {
+                                                     ID3DBlob** blob, ID3DBlob** errorBlob) {
     if (!oSerializeVersionedRootSignature) {
         return E_FAIL;
     }

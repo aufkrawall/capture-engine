@@ -8,9 +8,9 @@ namespace {
 using ce::mux::ChoosePostMuxStreamStartUs;
 using ce::mux::ComputeAudioMuxRoundingToleranceUs;
 using ce::mux::ComputeAudioPaddingDurationUs;
-using ce::mux::ComputeDecodedAudioDurationUs;
 using ce::mux::ComputeCfrAudioLatticeExtensionFrames;
 using ce::mux::ComputeCfrAudioLatticeFrameQuantum;
+using ce::mux::ComputeDecodedAudioDurationUs;
 using ce::mux::ComputeDurationDeltaUs;
 using ce::mux::ComputePacketEndUs;
 using ce::mux::HeaderValidationIssue;

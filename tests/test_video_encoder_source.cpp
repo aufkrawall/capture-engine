@@ -125,8 +125,7 @@ TEST(VideoEncoderSourceTest, VideoProcessorUsesOneDeterministicPrecompositedRgbS
     EXPECT_NE(source.find("VideoProcessorSetStreamFrameFormat(videoProcessor, 0, "
                           "D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE)"),
               std::string::npos);
-    EXPECT_NE(source.find("VideoProcessorSetStreamAutoProcessingMode(videoProcessor, 0, FALSE)"),
-              std::string::npos);
+    EXPECT_NE(source.find("VideoProcessorSetStreamAutoProcessingMode(videoProcessor, 0, FALSE)"), std::string::npos);
     EXPECT_NE(source.find("[VideoProcessor] Deterministic single-stream processing"), std::string::npos);
     EXPECT_EQ(source.find("VideoProcessorSetStreamFrameFormat(videoProcessor, 1"), std::string::npos);
     EXPECT_EQ(source.find("VideoProcessorSetStreamAutoProcessingMode(videoProcessor, 1"), std::string::npos);
@@ -141,8 +140,7 @@ TEST(VideoEncoderSourceTest, CursorPrecompositionBacksUpOnlyTouchedRgbRegionOnNo
     EXPECT_NE(source.find("PrepareVideoProcessorCursorInput(bgraTexture, overlayCursor"), std::string::npos);
     EXPECT_NE(source.find("(sourceDesc.BindFlags & D3D11_BIND_RENDER_TARGET) != 0"), std::string::npos);
     EXPECT_NE(source.find("CopySubresourceRegion(cursorRestoreTexture, 0, 0, 0, 0, source"), std::string::npos);
-    EXPECT_NE(source.find("CopySubresourceRegion(target, 0, destinationX, destinationY, 0, backup"),
-              std::string::npos);
+    EXPECT_NE(source.find("CopySubresourceRegion(target, 0, destinationX, destinationY, 0, backup"), std::string::npos);
     EXPECT_NE(source.find("Point RGB precomposition before VP active"), std::string::npos);
     EXPECT_NE(source.find("VideoProcessorBlt(videoProcessor, outputView, 0, 1, &stream)"), std::string::npos);
 }

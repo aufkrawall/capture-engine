@@ -31,8 +31,8 @@
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
 #include "../common/rate_window_utils.h"
-#include "../common/shared_defs.h"
 #include "../common/secure_dll_loading.h"
+#include "../common/shared_defs.h"
 #include "../common/thread_power_throttling_compat.h"
 #include "mediaengine_loader.h"
 #include "wgc_capture.h"
@@ -147,14 +147,13 @@ static UINT GetCursorDpiAtPoint(POINT point) {
 static int GetCursorMetricForDpi(int metric, UINT dpi) {
     using GetSystemMetricsForDpiFn = int(WINAPI*)(int, UINT);
     static const HMODULE user32 = GetModuleHandleW(L"user32.dll");
-    static const auto getSystemMetricsForDpi = reinterpret_cast<GetSystemMetricsForDpiFn>(
-        user32 ? GetProcAddress(user32, "GetSystemMetricsForDpi") : nullptr);
+    static const auto getSystemMetricsForDpi =
+        reinterpret_cast<GetSystemMetricsForDpiFn>(user32 ? GetProcAddress(user32, "GetSystemMetricsForDpi") : nullptr);
     return getSystemMetricsForDpi ? getSystemMetricsForDpi(metric, dpi) : GetSystemMetrics(metric);
 }
 
-static ce::cursor::CaptureState CaptureCursorSnapshot(int64_t associationQpc, int32_t captureLeft,
-                                                       int32_t captureTop, uint32_t captureWidth,
-                                                       uint32_t captureHeight, bool suppressed) {
+static ce::cursor::CaptureState CaptureCursorSnapshot(int64_t associationQpc, int32_t captureLeft, int32_t captureTop,
+                                                      uint32_t captureWidth, uint32_t captureHeight, bool suppressed) {
     ce::cursor::CaptureState state;
     state.associationQpc = associationQpc;
     state.captureLeft = captureLeft;
@@ -614,8 +613,8 @@ bool MediaVideoConfigEquals(const VideoConfig& lhs, const VideoConfig& rhs) {
            lhs.maxBitrate == rhs.maxBitrate && lhs.keyframeInterval == rhs.keyframeInterval &&
            lhs.preset == rhs.preset && lhs.tuning == rhs.tuning && lhs.multipass == rhs.multipass &&
            lhs.profile == rhs.profile && lhs.lookahead == rhs.lookahead && lhs.spatialAq == rhs.spatialAq &&
-           lhs.temporalAq == rhs.temporalAq && lhs.aqStrength == rhs.aqStrength &&
-           lhs.bFrames == rhs.bFrames && lhs.bRefMode == rhs.bRefMode && lhs.customOptions == rhs.customOptions &&
+           lhs.temporalAq == rhs.temporalAq && lhs.aqStrength == rhs.aqStrength && lhs.bFrames == rhs.bFrames &&
+           lhs.bRefMode == rhs.bRefMode && lhs.customOptions == rhs.customOptions &&
            lhs.captureCursor == rhs.captureCursor && lhs.qp == rhs.qp && lhs.mfRateControl == rhs.mfRateControl &&
            lhs.mfQuality == rhs.mfQuality && lhs.mfScenario == rhs.mfScenario && lhs.mfHwEncoding == rhs.mfHwEncoding &&
            lhs.gpuPriority == rhs.gpuPriority && lhs.bitDepth == rhs.bitDepth && lhs.colorSpace == rhs.colorSpace &&
@@ -2422,10 +2421,10 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     }
                     qf.captureLeft = captureBounds.left;
                     qf.captureTop = captureBounds.top;
-                    qf.cursorState = CaptureCursorSnapshot(
-                        qf.timestamp, captureBounds.left, captureBounds.top,
-                        static_cast<uint32_t>(captureBounds.right - captureBounds.left),
-                        static_cast<uint32_t>(captureBounds.bottom - captureBounds.top), false);
+                    qf.cursorState =
+                        CaptureCursorSnapshot(qf.timestamp, captureBounds.left, captureBounds.top,
+                                              static_cast<uint32_t>(captureBounds.right - captureBounds.left),
+                                              static_cast<uint32_t>(captureBounds.bottom - captureBounds.top), false);
                     g_InjectCursorTimeline.Publish(qf.cursorState);
 
                     // Per-recording state (reset on thread creation)
@@ -4553,8 +4552,8 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
         const bool recordingActive = g_Recording.load(std::memory_order_acquire);
         const bool drainOutstandingCfrTicks = g_DrainOutstandingCfrTicks.load(std::memory_order_acquire);
-        if (ce::capture_policy::ShouldAbortCfrStopDrainBeforeOutputIsLive(
-                recordingActive, recordingOutputLive, drainOutstandingCfrTicks)) {
+        if (ce::capture_policy::ShouldAbortCfrStopDrainBeforeOutputIsLive(recordingActive, recordingOutputLive,
+                                                                          drainOutstandingCfrTicks)) {
             LogWarn(
                 "[EncoderThread] CFR stop drain skipped before first live video frame; no output timeline or "
                 "captured frame exists to drain");
@@ -6349,8 +6348,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                             "[WGC CFR] ERROR: producer contract violation: backend=%s outputFps=%u "
                             "producerTargetFps=%u; forcing MinUpdateInterval=0 because finite producer intervals "
                             "alias variable-rate input",
-                            g_WgcCap->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc", outputFps,
-                            currentTargetFps);
+                            g_WgcCap->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc", outputFps, currentTargetFps);
                         g_WgcCap->SetProducerTargetFps(0);
                         g_WgcProducerTargetFps.store(0, std::memory_order_relaxed);
                         ++wgcProducerRateRetuneCount;
@@ -7466,7 +7464,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             !config.video.useVFR &&
             ((useScreenGrab && MediaEngine_RepeatLastFrameWithTimeline) || MediaEngine_RepeatLastFrame);
         auto selectCursorStateForScheduledQpc = [&](int64_t scheduledQpc, const QueuedFrame& referenceFrame,
-                                                     const char* outputKind) {
+                                                    const char* outputKind) {
             ce::cursor::CaptureState cursorState = referenceFrame.cursorState;
             if (config.video.captureCursor && scheduledQpc > 0) {
                 const uint32_t captureWidth = referenceFrame.cursorState.captureWidth != 0
@@ -7526,8 +7524,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 cursorState = selectCursorStateForScheduledQpc(scheduledQpc, g_LastFrame, "repeat");
             }
             if (useScreenGrab && !config.video.useVFR && MediaEngine_RepeatLastFrameWithTimeline) {
-                return MediaEngine_RepeatLastFrameWithTimeline(scheduledQpc,
-                                                               computeLiveTimelineElapsedUs(scheduledQpc),
+                return MediaEngine_RepeatLastFrameWithTimeline(scheduledQpc, computeLiveTimelineElapsedUs(scheduledQpc),
                                                                &cursorState);
             }
             return MediaEngine_RepeatLastFrame && MediaEngine_RepeatLastFrame(scheduledQpc, &cursorState);
@@ -7743,9 +7740,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                             "[EncoderThread] WGC transactional video prewarm %s: elapsed=%lldus frameQpc=%lld "
                             "dimensions=%ux%u hdr=%d queuedAfter=%zu bufferedAfter=%zu; frame zero remains pending",
                             wgcEncoderPrewarmSucceeded ? "complete" : "FAILED",
-                            static_cast<long long>(wgcEncoderPrewarmElapsedUs),
-                            static_cast<long long>(frame.timestamp), frame.width, frame.height, frame.isHDR ? 1 : 0,
-                            g_FrameQueue.Size(), bufferedWgcFrames.size());
+                            static_cast<long long>(wgcEncoderPrewarmElapsedUs), static_cast<long long>(frame.timestamp),
+                            frame.width, frame.height, frame.isHDR ? 1 : 0, g_FrameQueue.Size(),
+                            bufferedWgcFrames.size());
                     }
 
                     size_t startupBufferedExamined = 0;
@@ -8105,9 +8102,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                         actualStartupDelayQpc = latestStartupSelectionQpc > selectedStartupSelectionQpc
                                                     ? latestStartupSelectionQpc - selectedStartupSelectionQpc
                                                     : 0;
-                        wgcSmoothnessActiveDelayQpc =
-                            ce::capture_policy::SelectWgcStartupSmoothnessExtraDelayQpc(
-                                actualStartupDelayQpc, avContentDelayQpc, smoothnessTargetDelayQpc);
+                        wgcSmoothnessActiveDelayQpc = ce::capture_policy::SelectWgcStartupSmoothnessExtraDelayQpc(
+                            actualStartupDelayQpc, avContentDelayQpc, smoothnessTargetDelayQpc);
                         LogInfo(
                             "[EncoderThread] WGC partial reservoir contract recalculated: oldIndex=%zu newIndex=%zu "
                             "latestQpc=%lld targetQpc=%lld selectedQpc=%lld realizedContentDelayUs=%lld "
@@ -8129,8 +8125,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                             static_cast<long long>(qpcDeltaToUs(pileupSmoothnessActiveDelayQpc)),
                             static_cast<long long>(qpcDeltaToUs(wgcSmoothnessActiveDelayQpc)),
                             static_cast<long long>(qpcDeltaToUs(wgcSmoothnessFloorDelayQpc)),
-                            startupMinWindowSourceAtOrAboveCfr ? 1 : 0,
-                            startupCandidateCadenceAtOrAboveCfr ? 1 : 0, startupCandidates.size(),
+                            startupMinWindowSourceAtOrAboveCfr ? 1 : 0, startupCandidateCadenceAtOrAboveCfr ? 1 : 0,
+                            startupCandidates.size(),
                             static_cast<long long>(qpcDeltaToUs(startupReserveSelection.reserveSpanQpc)),
                             wgcStartupReserveReason.c_str());
                     } else if (startupPartialReserveFallback) {
@@ -9387,11 +9383,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const int64_t liveTimelineElapsedUs =
                         scheduledLiveCfrTick ? computeLiveTimelineElapsedUs(scheduledSampleQpc) : -1;
                     SyncDuplicationCursorSuppression(frameToProcess->wgcCursorEmbedded);
-                    encodeSucceeded = MediaEngine_ProcessFrameD3D11(frameToProcess->texture, frameToProcess->timestamp,
-                                                                    frameToProcess->width, frameToProcess->height,
-                                                                    frameToProcess->isHDR, frameToProcess->captureLeft,
-                                                                    frameToProcess->captureTop, liveTimelineElapsedUs,
-                                                                    cursorState);
+                    encodeSucceeded = MediaEngine_ProcessFrameD3D11(
+                        frameToProcess->texture, frameToProcess->timestamp, frameToProcess->width,
+                        frameToProcess->height, frameToProcess->isHDR, frameToProcess->captureLeft,
+                        frameToProcess->captureTop, liveTimelineElapsedUs, cursorState);
                     encodeDeferred = false;
                 }
             };
@@ -9698,9 +9693,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                         LARGE_INTEGER afterInit;
                         QueryPerformanceCounter(&afterInit);
                         ce::capture_policy::CfrTimelineStartContract committedStartContract{};
-                        const bool canCommitTransactionalWgcStart =
-                            useScreenGrab && !recoveredFreshEncodeFailure && frameToProcess &&
-                            !frameToProcess->isInjectMode && pendingWgcStartContract.valid;
+                        const bool canCommitTransactionalWgcStart = useScreenGrab && !recoveredFreshEncodeFailure &&
+                                                                    frameToProcess && !frameToProcess->isInjectMode &&
+                                                                    pendingWgcStartContract.valid;
                         if (canCommitTransactionalWgcStart) {
                             committedStartContract = ce::capture_policy::RebaseCfrTimelineStartContract(
                                 pendingWgcStartContract, frameToProcess->timestamp);
@@ -9721,8 +9716,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                 static_cast<long long>(selectionOriginQpc), static_cast<long long>(selectionOffsetUs),
                                 static_cast<long long>(liveStartQpc.QuadPart),
                                 static_cast<long long>(qpcToUs(committedStartContract.contentDelayQpc)),
-                                static_cast<long long>(commitLatenessUs),
-                                wgcEncoderPrewarmSucceeded ? "ok" : "failed",
+                                static_cast<long long>(commitLatenessUs), wgcEncoderPrewarmSucceeded ? "ok" : "failed",
                                 static_cast<long long>(wgcEncoderPrewarmElapsedUs));
                         } else {
                             liveStartQpc = afterInit;
@@ -9798,8 +9792,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                                     static_cast<long long>(frameToProcess ? frameToProcess->timestamp : 0),
                                     static_cast<long long>(liveStartQpc.QuadPart),
                                     static_cast<long long>(qpcToUs(avContentDelayQpc)),
-                                    static_cast<long long>(qpcToUs(
-                                        liveStartQpc.QuadPart - (frameToProcess ? frameToProcess->timestamp : 0))));
+                                    static_cast<long long>(qpcToUs(liveStartQpc.QuadPart -
+                                                                   (frameToProcess ? frameToProcess->timestamp : 0))));
                             }
                         }
                         pendingWgcStartContract = {};
@@ -10878,13 +10872,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<long long>(wgcStartupReserveSpanUs), static_cast<long long>(wgcStartupDelayTargetUs),
                 wgcStartupSelectedByDelayReserve ? 1 : 0, wgcStartupReserveReason.c_str(),
                 g_WgcCap ? g_WgcCap->GetProducerTargetFps() : 0u,
-                static_cast<unsigned long long>(wgcProducerRateRetuneTotal),
-                config.wgcSmoothnessBufferEnabled ? 1 : 0, config.wgcSmoothnessBufferMaxMs, wgcSmoothnessActualFrames,
-                wgcSmoothnessRetainedFrames, wgcSmoothnessDesiredFrames,
-                static_cast<double>(wgcSummarySmoothActualDelayUs) / 1000.0, wgcSmoothnessPoolSlots,
-                wgcSummarySourceFramePoolBuffers, wgcSummaryBudgetSurfaces, wgcSummarySyncFrames, wgcSummaryExtraFrames,
-                wgcSummaryRetainedCap, wgcSummaryReservedFreeSlots, wgcSummarySafetySlots,
-                static_cast<unsigned long long>(wgcRetainedCapTrimTotal),
+                static_cast<unsigned long long>(wgcProducerRateRetuneTotal), config.wgcSmoothnessBufferEnabled ? 1 : 0,
+                config.wgcSmoothnessBufferMaxMs, wgcSmoothnessActualFrames, wgcSmoothnessRetainedFrames,
+                wgcSmoothnessDesiredFrames, static_cast<double>(wgcSummarySmoothActualDelayUs) / 1000.0,
+                wgcSmoothnessPoolSlots, wgcSummarySourceFramePoolBuffers, wgcSummaryBudgetSurfaces,
+                wgcSummarySyncFrames, wgcSummaryExtraFrames, wgcSummaryRetainedCap, wgcSummaryReservedFreeSlots,
+                wgcSummarySafetySlots, static_cast<unsigned long long>(wgcRetainedCapTrimTotal),
                 g_WgcCap ? g_WgcCap->GetIngressAcceptedCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetIngressDecimatedCount() : 0u,
                 g_WgcCap ? g_WgcCap->GetIngressAcceptedUniformPlayoutSoftReserveCount() : 0u,
@@ -10919,10 +10912,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 g_pSharedMem ? g_pSharedMem->runtimeState.muxBackpressureCount.load(std::memory_order_relaxed) : 0u;
             const bool wgcSummaryPoolPressure = wgcSummaryPoolSaturatedDrops > 0 || wgcSummaryIngressHard > 0 ||
                                                 wgcSummaryIngressDecimated > 0 || wgcSummaryPoolFreeMin == 0;
-            const bool wgcSummaryEncoderMuxPressure =
-                ce::capture_policy::HasRecordingEncoderOrMuxPressure(wgcSummaryOverloadFlags,
-                                                                     wgcSummaryMuxBackpressure,
-                                                                     wgcEncoderLimitedSourceDropTotal);
+            const bool wgcSummaryEncoderMuxPressure = ce::capture_policy::HasRecordingEncoderOrMuxPressure(
+                wgcSummaryOverloadFlags, wgcSummaryMuxBackpressure, wgcEncoderLimitedSourceDropTotal);
             const char* wgcSummaryLimiter = wgcSummaryEncoderMuxPressure                       ? "encoder_or_mux"
                                             : wgcSummaryPoolPressure                           ? "wgc_pool_pressure"
                                             : captureSessionSummary.duplicateNoSourceTicks > 0 ? "source_limited"
@@ -11163,8 +11154,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(captureSessionSummary.duplicateDrainTicks),
                 static_cast<unsigned long long>(injectFreshCatchupTotal),
                 static_cast<unsigned long long>(injectRepeatCatchupTotal),
-                static_cast<unsigned long long>(injectLiveStaleTrimTotal),
-                injectCfrRecoveryActive ? 1 : 0,
+                static_cast<unsigned long long>(injectLiveStaleTrimTotal), injectCfrRecoveryActive ? 1 : 0,
                 static_cast<unsigned long long>(injectCfrRecoveryEpisodesTotal),
                 static_cast<unsigned long long>(activePathMismatchDiscardTotal),
                 static_cast<unsigned long long>(g_ActivePathMismatchFramesDiscarded.load(std::memory_order_relaxed)),

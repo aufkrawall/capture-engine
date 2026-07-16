@@ -72,8 +72,7 @@ inline void ApplySourcePointerObservation(CaptureState* state, const SourcePoint
     state->associationQpc = observation.updateQpc;
     state->observedQpc = observation.updateQpc;
     state->flags |= kStateValid;
-    state->flags &= ~(kStateVisible | kStateSuppressed | kStateHandleVisibilityFallback |
-                      kStatePositionIsShapeTopLeft);
+    state->flags &= ~(kStateVisible | kStateSuppressed | kStateHandleVisibilityFallback | kStatePositionIsShapeTopLeft);
 
     if (observation.embedded) {
         state->flags |= kStateSuppressed;

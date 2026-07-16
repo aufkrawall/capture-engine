@@ -47,8 +47,8 @@ struct WrapperPixelShaderAFMetadataHandle final : IUnknown {
     uint32_t candidateSamplerMask = 0;
     uint32_t textureSamplerMasks[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
     uint16_t samplerTextureCounts[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
-    uint8_t samplerTextureSlots[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT]
-                               [D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
+    uint8_t samplerTextureSlots[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT][D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] =
+        {};
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object) override {
         if (!object) {
@@ -79,8 +79,7 @@ struct WrapperPixelShaderAFMetadataHandle final : IUnknown {
         if (!metadata.available) {
             return;
         }
-        candidateSamplerMask =
-            ce::sampler_override::D3D11ShaderAFSafeSamplerMaskForAnyTexture(metadata.usage);
+        candidateSamplerMask = ce::sampler_override::D3D11ShaderAFSafeSamplerMaskForAnyTexture(metadata.usage);
         for (UINT samplerSlot = 0; samplerSlot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++samplerSlot) {
             if ((candidateSamplerMask & (1u << samplerSlot)) == 0) {
                 continue;
@@ -100,8 +99,7 @@ private:
     std::atomic<ULONG> m_RefCount{1};
 };
 
-static WrapperPixelShaderAFMetadataHandle* AcquireWrapperPixelShaderAFMetadata(
-    ID3D11PixelShader* shader) {
+static WrapperPixelShaderAFMetadataHandle* AcquireWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader) {
     if (!shader) {
         return nullptr;
     }
@@ -175,8 +173,8 @@ void RegisterWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader, const void*
     if (FAILED(storeHr)) {
         const int idx = g_WrapperPixelShaderMetadataFailed.fetch_add(1, std::memory_order_relaxed);
         if (idx < 12) {
-            WrapperLog("Wrapper: AF pixel-shader metadata store failed hr=0x%08X shader=%p (#%d)", storeHr,
-                       shader, idx + 1);
+            WrapperLog("Wrapper: AF pixel-shader metadata store failed hr=0x%08X shader=%p (#%d)", storeHr, shader,
+                       idx + 1);
         }
         handle->Release();
         return;
@@ -438,9 +436,9 @@ ce::sampler_override::D3D11ForcedAFResourceDecision GetWrapperForcedAFViewMetada
             WrapperLog(
                 "Wrapper: AF view classified decision=%s format=%d textureFormat=%d dimension=%d size=%ux%u "
                 "mips=%u viewMips=%u array=%u bind=0x%X (#%d)",
-                ce::sampler_override::D3D11ForcedAFResourceDecisionName(decision), info.format,
-                info.textureFormat, info.viewDimension, info.width, info.height, info.mipLevels,
-                info.viewMipLevels, info.arraySize, info.bindFlags, idx + 1);
+                ce::sampler_override::D3D11ForcedAFResourceDecisionName(decision), info.format, info.textureFormat,
+                info.viewDimension, info.width, info.height, info.mipLevels, info.viewMipLevels, info.arraySize,
+                info.bindFlags, idx + 1);
         }
         if (outInfo) {
             *outInfo = info;
@@ -511,8 +509,7 @@ void RegisterWrapperForcedAFViewMetadata(ID3D11ShaderResourceView* view) {
 // Returns an acquired replacement reference, or null when the original must be
 // used. Positive and negative decisions are cached on the original sampler, so
 // repeated binds never enter a global lock or recreate/query descriptors.
-static ID3D11SamplerState* AcquireWrapperReplacementSampler(ID3D11Device* realDevice,
-                                                            ID3D11SamplerState* original,
+static ID3D11SamplerState* AcquireWrapperReplacementSampler(ID3D11Device* realDevice, ID3D11SamplerState* original,
                                                             const GraphicsConfig& gfx) {
     if (!realDevice || !original) {
         return nullptr;
@@ -566,9 +563,8 @@ static ID3D11SamplerState* AcquireWrapperReplacementSampler(ID3D11Device* realDe
     const HRESULT cacheHr = original->SetPrivateDataInterface(variantGuid, replacement);
     const int idx = g_WrapperAFReplaced.fetch_add(1, std::memory_order_relaxed);
     if (idx < 48) {
-        WrapperLog(
-            "Wrapper: Created sampler-owned AF variant Filter=0x%X Aniso=%u Bias=%.2f cacheHr=0x%08X (#%d)",
-            desc.Filter, desc.MaxAnisotropy, desc.MipLODBias, cacheHr, idx + 1);
+        WrapperLog("Wrapper: Created sampler-owned AF variant Filter=0x%X Aniso=%u Bias=%.2f cacheHr=0x%08X (#%d)",
+                   desc.Filter, desc.MaxAnisotropy, desc.MipLODBias, cacheHr, idx + 1);
     }
     return replacement;
 }
@@ -780,10 +776,9 @@ void CWrapD3D11DeviceContext::TrackShaderResources(UINT stageIndex, UINT startSl
         m_PixelSRVAFState[slot] = view ? 0u : 1u;
         if (view && m_AFEnabled && m_pAFRealDevice) {
             const auto decision = GetWrapperForcedAFViewMetadata(view);
-            m_PixelSRVAFState[slot] =
-                decision == ce::sampler_override::D3D11ForcedAFResourceDecision::Allow
-                    ? kWrapperAFViewEligible
-                    : kWrapperAFViewIneligible;
+            m_PixelSRVAFState[slot] = decision == ce::sampler_override::D3D11ForcedAFResourceDecision::Allow
+                                          ? kWrapperAFViewEligible
+                                          : kWrapperAFViewIneligible;
         }
     }
     if (dirtyMask != 0) {
@@ -865,8 +860,8 @@ void CWrapD3D11DeviceContext::RefreshPixelShader() {
 }
 
 void CWrapD3D11DeviceContext::RefreshShaderResources(UINT stageIndex, UINT startSlot, UINT numViews) {
-    if (!m_pReal || stageIndex != kWrapperStagePS ||
-        startSlot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT || numViews == 0)
+    if (!m_pReal || stageIndex != kWrapperStagePS || startSlot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT ||
+        numViews == 0)
         return;
     const UINT maxViews = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - startSlot;
     const UINT actualViews = (numViews < maxViews) ? numViews : maxViews;
@@ -908,12 +903,10 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
     if (!m_CurrentPixelShaderAFMetadata || !m_CurrentPixelShaderAFMetadata->metadata.available) {
         int idx = g_WrapperAFSkipNoShaderMetadata.fetch_add(1, std::memory_order_relaxed);
         if (idx < 24)
-            WrapperLog("Wrapper: AF skip (no pixel-shader sample metadata slot=%u has=%d failed=%d)", slot,
-                       m_CurrentPixelShaderAFMetadata ? 1 : 0,
-                       m_CurrentPixelShaderAFMetadata &&
-                               m_CurrentPixelShaderAFMetadata->metadata.disassembleFailed
-                           ? 1
-                           : 0);
+            WrapperLog(
+                "Wrapper: AF skip (no pixel-shader sample metadata slot=%u has=%d failed=%d)", slot,
+                m_CurrentPixelShaderAFMetadata ? 1 : 0,
+                m_CurrentPixelShaderAFMetadata && m_CurrentPixelShaderAFMetadata->metadata.disassembleFailed ? 1 : 0);
         return original;
     }
 
@@ -940,10 +933,9 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
 
         if (m_PixelSRVAFState[textureSlot] == kWrapperAFViewUnknown) {
             const auto decision = GetWrapperForcedAFViewMetadata(view);
-            m_PixelSRVAFState[textureSlot] =
-                decision == ce::sampler_override::D3D11ForcedAFResourceDecision::Allow
-                    ? kWrapperAFViewEligible
-                    : kWrapperAFViewIneligible;
+            m_PixelSRVAFState[textureSlot] = decision == ce::sampler_override::D3D11ForcedAFResourceDecision::Allow
+                                                 ? kWrapperAFViewEligible
+                                                 : kWrapperAFViewIneligible;
         }
         if (m_PixelSRVAFState[textureSlot] != kWrapperAFViewEligible) {
             return original;
@@ -1040,10 +1032,9 @@ void CWrapD3D11DeviceContext::ReconcileSamplers(UINT stageIndex, UINT startSlot,
             continue;
         }
         ID3D11SamplerState* logicalSampler = m_TrackedSamplers[stageIndex][slot];
-        ID3D11SamplerState* desiredSampler =
-            logicalSampler
-                ? ResolveForcedAFSampler(stageIndex, slot, m_pAFRealDevice, logicalSampler, m_AFGraphicsConfig)
-                : nullptr;
+        ID3D11SamplerState* desiredSampler = logicalSampler ? ResolveForcedAFSampler(stageIndex, slot, m_pAFRealDevice,
+                                                                                     logicalSampler, m_AFGraphicsConfig)
+                                                            : nullptr;
         if (m_RealSamplers[stageIndex][slot] != desiredSampler) {
             desiredSamplers[i] = desiredSampler;
             changedSlots[i] = true;
@@ -1110,16 +1101,14 @@ void CWrapD3D11DeviceContext::BindTrackedSamplers(UINT stageIndex, UINT startSlo
         }
     };
 
-    if (stageIndex != kWrapperStagePS || numSamplers == 0 ||
-        startSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
+    if (stageIndex != kWrapperStagePS || numSamplers == 0 || startSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
         forwardUntrackedSamplerRange();
         return;
     }
 
-    const UINT actualSamplers =
-        (numSamplers < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - startSlot)
-            ? numSamplers
-            : D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - startSlot;
+    const UINT actualSamplers = (numSamplers < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - startSlot)
+                                    ? numSamplers
+                                    : D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - startSlot;
     const uint32_t rangeMask = WrapperSamplerRangeMask(startSlot, actualSamplers);
     const uint32_t changedMask = TrackSamplers(stageIndex, startSlot, actualSamplers, samplers);
     RefreshForcedAFConfig();
@@ -1149,8 +1138,7 @@ void CWrapD3D11DeviceContext::BindTrackedSamplers(UINT stageIndex, UINT startSlo
             while (i < actualSamplers && changedSlots[i]) {
                 ++i;
             }
-            SetRealSamplerRange(kWrapperStagePS, startSlot + runStart, i - runStart,
-                                &logicalSamplers[runStart]);
+            SetRealSamplerRange(kWrapperStagePS, startSlot + runStart, i - runStart, &logicalSamplers[runStart]);
         }
         m_PixelSamplerDirtyMask &= ~rangeMask;
         return;
@@ -1162,7 +1150,6 @@ void CWrapD3D11DeviceContext::BindTrackedSamplers(UINT stageIndex, UINT startSlo
         ReconcileSamplers(kWrapperStagePS, startSlot, actualSamplers, resolveMask);
     }
     return;
-
 }
 
 // ============================================================================
@@ -1672,10 +1659,9 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::PSGetSamplers(UINT StartSlot, UI
     if (!ppSamplers || StartSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
         return;
     }
-    const UINT actualSamplers =
-        (NumSamplers < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot)
-            ? NumSamplers
-            : D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot;
+    const UINT actualSamplers = (NumSamplers < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot)
+                                    ? NumSamplers
+                                    : D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot;
     for (UINT i = 0; i < actualSamplers; ++i) {
         const UINT slot = StartSlot + i;
         ID3D11SamplerState* logical = m_TrackedSamplers[kWrapperStagePS][slot];

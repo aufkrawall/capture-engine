@@ -102,8 +102,7 @@ TEST(VulkanLayerRegistrationTest, PlanSkipsMissingArchitectureArtifacts) {
 }
 
 TEST(VulkanLayerRegistrationSourceTest, NormalLifecycleNeverEnumeratesOrRepairsRegistryEntries) {
-    const std::filesystem::path source =
-        std::filesystem::current_path() / "common" / "vulkan_layer_registration.cpp";
+    const std::filesystem::path source = std::filesystem::current_path() / "common" / "vulkan_layer_registration.cpp";
     std::ifstream input(source, std::ios::binary);
     ASSERT_TRUE(input.is_open()) << source.string();
     const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
@@ -112,8 +111,7 @@ TEST(VulkanLayerRegistrationSourceTest, NormalLifecycleNeverEnumeratesOrRepairsR
     EXPECT_EQ(text.find("VK_LAYER_CAPTURE_overlay"), std::string::npos);
 
     const size_t deleteTarget = text.find("bool DeleteRegistryTarget(const RegistryTarget& target)");
-    const size_t exactManifestLoop =
-        text.find("for (const LayerManifest& manifest : target.manifests)", deleteTarget);
+    const size_t exactManifestLoop = text.find("for (const LayerManifest& manifest : target.manifests)", deleteTarget);
     const size_t exactValue = text.find("manifest.manifestPath.wstring()", exactManifestLoop);
     const size_t apply = text.find("bool ApplyRegistrationPlan(const RegistrationPlan& plan, bool install)");
     const size_t exactUnregister = text.find("DeleteRegistryTarget(target)", apply);

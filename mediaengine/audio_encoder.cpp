@@ -1,8 +1,8 @@
 #include "audio_encoder.h"
 #include <mmreg.h>
+#include "../common/strict_integer_parse.h"
 #include "audio_sync_utils.h"
 #include "audio_time_utils.h"  // For ce::audio::ParseSampleRateOr
-#include "../common/strict_integer_parse.h"
 #include "mediaengine.h"       // For DLL_Log
 
 extern "C" {
@@ -523,11 +523,11 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
     runtimeContract.frameSize = codecCtx->frame_size;
     runtimeContract.capabilities = codec->capabilities;
     runtimeContract.initialPadding = codecCtx->initial_padding;
-    runtimeContract.finalFramePolicy =
-        isPcm ? FinalFramePolicy::BlockAlignedPcm
-              : (allowShortFinalFrame && (supportsVariableFrame || supportsSmallLastFrame)
-                     ? FinalFramePolicy::ExactShortFrame
-                     : FinalFramePolicy::PadAndSignalDiscard);
+    runtimeContract.finalFramePolicy = isPcm
+                                           ? FinalFramePolicy::BlockAlignedPcm
+                                           : (allowShortFinalFrame && (supportsVariableFrame || supportsSmallLastFrame)
+                                                  ? FinalFramePolicy::ExactShortFrame
+                                                  : FinalFramePolicy::PadAndSignalDiscard);
     runtimeContract.requiresMatroskaCodecDelay = codec->id == AV_CODEC_ID_OPUS || codec->id == AV_CODEC_ID_AAC;
     runtimeContract.requiresMatroskaDiscardPadding =
         runtimeContract.finalFramePolicy == FinalFramePolicy::PadAndSignalDiscard;
@@ -686,9 +686,8 @@ void AudioEncoder::ApplyPacketDuration(AVPacket* pkt) {
     const uint8_t* newExtradata = av_packet_get_side_data(pkt, AV_PKT_DATA_NEW_EXTRADATA, &newExtradataSize);
     if (pkt->duration <= 0 && pkt->size == 0 && newExtradata && newExtradataSize > 0) {
         ++finalizationReport.controlPacketCount;
-        DLL_Log(
-            "[AudioEncoder] Encoder EOF control packet: encoder=%s stream=%d pts=%lld newExtradata=%zu bytes",
-            runtimeContract.encoderName.c_str(), streamIndex, static_cast<long long>(pkt->pts), newExtradataSize);
+        DLL_Log("[AudioEncoder] Encoder EOF control packet: encoder=%s stream=%d pts=%lld newExtradata=%zu bytes",
+                runtimeContract.encoderName.c_str(), streamIndex, static_cast<long long>(pkt->pts), newExtradataSize);
         return;
     }
     if (pkt->duration <= 0) {

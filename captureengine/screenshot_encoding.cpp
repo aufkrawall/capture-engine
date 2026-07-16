@@ -40,7 +40,7 @@ void SafeRelease(T*& object) {
 }
 
 class HandleGuard {
-  public:
+public:
     explicit HandleGuard(HANDLE handle) : handle_(handle) {}
     ~HandleGuard() {
         if (handle_ && handle_ != INVALID_HANDLE_VALUE)
@@ -52,7 +52,7 @@ class HandleGuard {
         return handle_;
     }
 
-  private:
+private:
     HANDLE handle_ = nullptr;
 };
 
@@ -160,8 +160,8 @@ bool SavePixelsAsPng(ReservedCaptureOutput& finalOutput, const RawScreenshot& sc
         if (FAILED(frame->SetPixelFormat(&pixelFormat)) || pixelFormat != GUID_WICPixelFormat32bppBGRA)
             break;
         const UINT rowPitch = screenshot.header.width * 4;
-        if (FAILED(frame->WritePixels(screenshot.header.height, rowPitch, static_cast<UINT>(bgra.size()),
-                                      bgra.data())) ||
+        if (FAILED(
+                frame->WritePixels(screenshot.header.height, rowPitch, static_cast<UINT>(bgra.size()), bgra.data())) ||
             FAILED(frame->Commit()) || FAILED(encoder->Commit()) || FAILED(stream->Commit(STGC_DEFAULT))) {
             break;
         }
@@ -485,8 +485,7 @@ bool SaveHdrAvif(ReservedCaptureOutput& finalOutput, const RawScreenshot& screen
         return false;
     }
     if (!finalOutput.CommitStagingFile(staging)) {
-        LogError("[Screenshot] AVIF atomic publication failed: win32=%lu",
-                 static_cast<unsigned long>(GetLastError()));
+        LogError("[Screenshot] AVIF atomic publication failed: win32=%lu", static_cast<unsigned long>(GetLastError()));
         return false;
     }
     return true;
@@ -577,8 +576,7 @@ bool MakeRawScreenshot(const uint8_t* pixels, uint32_t width, uint32_t height, u
     const uint32_t bytesPerPixel = BytesPerPixel(format);
     if (!pixels || bytesPerPixel == 0 || !IsValidFormatEncoding(format, encoding) || width == 0 || height == 0 ||
         width > kMaximumScreenshotDimension || height > kMaximumScreenshotDimension ||
-        rowPitch < static_cast<uint64_t>(width) * bytesPerPixel ||
-        rowPitch % bytesPerPixel != 0 ||
+        rowPitch < static_cast<uint64_t>(width) * bytesPerPixel || rowPitch % bytesPerPixel != 0 ||
         static_cast<uint64_t>(rowPitch) - static_cast<uint64_t>(width) * bytesPerPixel > 65535ULL ||
         rowPitch > std::numeric_limits<uint64_t>::max() / height) {
         return false;
@@ -630,12 +628,12 @@ bool ConvertHdrPixelToYuv10(ScreenshotPixelFormat format, const uint8_t* pixel, 
         constexpr double greenFromGreen = 0.9195403951;
         constexpr double blueFromRed = 0.0163914389;
         constexpr double blueFromGreen = 0.0880133079;
-        const double red2020 = redFromRed * red709 + redFromGreen * green709 +
-                               (1.0 - redFromRed - redFromGreen) * blue709;
-        const double green2020 = greenFromRed * red709 + greenFromGreen * green709 +
-                                 (1.0 - greenFromRed - greenFromGreen) * blue709;
-        const double blue2020 = blueFromRed * red709 + blueFromGreen * green709 +
-                                (1.0 - blueFromRed - blueFromGreen) * blue709;
+        const double red2020 =
+            redFromRed * red709 + redFromGreen * green709 + (1.0 - redFromRed - redFromGreen) * blue709;
+        const double green2020 =
+            greenFromRed * red709 + greenFromGreen * green709 + (1.0 - greenFromRed - greenFromGreen) * blue709;
+        const double blue2020 =
+            blueFromRed * red709 + blueFromGreen * green709 + (1.0 - blueFromRed - blueFromGreen) * blue709;
         red = EncodeSt2084(red2020 * 80.0);
         green = EncodeSt2084(green2020 * 80.0);
         blue = EncodeSt2084(blue2020 * 80.0);

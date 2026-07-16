@@ -20,8 +20,7 @@ enum class FsrExitTransitionAction {
 // runtime is ready. Destroying the proxy after only the passthrough Present can remove the DWM
 // presentation surface while a cold replacement runtime is still loading.
 inline FsrExitTransitionAction ResolveFsrExitTransitionAction(bool currentModeIsFsr, bool targetModeIsFsr,
-                                                              bool fsrLogicallyEnabled,
-                                                              FsrExitTransitionStage stage) {
+                                                              bool fsrLogicallyEnabled, FsrExitTransitionStage stage) {
     if (!currentModeIsFsr || targetModeIsFsr) {
         return FsrExitTransitionAction::ContinueSwitch;
     }
@@ -56,8 +55,7 @@ inline bool IsDlssReplacementSurfaceStage(FsrExitTransitionStage stage) {
 // Creating the Streamline proxy is not enough to preserve the displayed surface: its first
 // DLSS-G-active Present lazily initializes substantial feature resources. First make the new proxy
 // visible with one ordinary FG-off Present, then allow DLSS-G activation on the following frame.
-inline bool ShouldDeferDlssActivationUntilReplacementPresent(bool targetModeIsDlss,
-                                                              FsrExitTransitionStage stage) {
+inline bool ShouldDeferDlssActivationUntilReplacementPresent(bool targetModeIsDlss, FsrExitTransitionStage stage) {
     return targetModeIsDlss && stage == FsrExitTransitionStage::ReplacementPresentPending;
 }
 

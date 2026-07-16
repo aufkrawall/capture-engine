@@ -52,8 +52,7 @@ struct StreamRecoveryConfig {
 };
 
 inline bool ShouldFallbackUnqualifiedEventCapture(bool eventDriven, bool activationQualified,
-                                                   uint64_t activationElapsedMs,
-                                                   const StreamRecoveryConfig& cfg) {
+                                                  uint64_t activationElapsedMs, const StreamRecoveryConfig& cfg) {
     return eventDriven && !activationQualified && activationElapsedMs >= cfg.firstPacketEventFallbackMs;
 }
 

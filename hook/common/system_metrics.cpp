@@ -281,9 +281,8 @@ bool SystemMetricsCollector::UpdateFromHost() {
     current.gpuUsageValid = (publication.validityMask & SYSTEM_METRIC_GPU_USAGE_VALID) != 0;
     current.gpuUsage = current.gpuUsageValid ? publication.gpuUsage : 0.0f;
     current.vramUsageValid = (publication.validityMask & SYSTEM_METRIC_VRAM_USAGE_VALID) != 0;
-    current.vramUsed = current.vramUsageValid
-                           ? static_cast<uint64_t>((std::max)(0.0f, publication.vramUsageMB) * 1024.0 * 1024.0)
-                           : 0;
+    current.vramUsed =
+        current.vramUsageValid ? static_cast<uint64_t>((std::max)(0.0f, publication.vramUsageMB) * 1024.0 * 1024.0) : 0;
     if ((publication.validityMask & SYSTEM_METRIC_VRAM_TOTAL_VALID) != 0)
         current.vramTotal = publication.vramTotal;
     return true;
@@ -340,8 +339,7 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
             bool needLocalVramTotal = false;
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                needLocalVramTotal = current.vramTotal == 0 &&
-                                     (adapterLuid.LowPart != 0 || adapterLuid.HighPart != 0);
+                needLocalVramTotal = current.vramTotal == 0 && (adapterLuid.LowPart != 0 || adapterLuid.HighPart != 0);
             }
             if (needLocalVramTotal)
                 UpdateVRAMTotal();

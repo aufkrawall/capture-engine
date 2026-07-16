@@ -1061,8 +1061,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.graphics.backbufferCount = GetInt("Graphics", "backbuffer_count", -1);
     if (config.graphics.backbufferCount != -1 &&
         (config.graphics.backbufferCount < 2 || config.graphics.backbufferCount > 6)) {
-        LogInvalidConfigBoundary("Graphics", "backbuffer_count", std::to_string(config.graphics.backbufferCount),
-                                 "-1");
+        LogInvalidConfigBoundary("Graphics", "backbuffer_count", std::to_string(config.graphics.backbufferCount), "-1");
         config.graphics.backbufferCount = -1;
     }
     config.graphics.sgssaa = GetBool("Graphics", "sgssaa", false);
@@ -1142,8 +1141,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     // FPS Limiter
     config.fpsLimiter.captureSyncEnabled = GetBool("FpsLimiter", "capture_sync_enabled", false);
-    config.fpsLimiter.captureSyncMultiplier =
-        GetBoundedInt("FpsLimiter", "capture_sync_multiplier", 1, 1, 8);
+    config.fpsLimiter.captureSyncMultiplier = GetBoundedInt("FpsLimiter", "capture_sync_multiplier", 1, 1, 8);
     config.fpsLimiter.captureSyncLimiterMode =
         ParseLimiterMode(GetStr("FpsLimiter", "capture_sync_limiter_mode", "auto"));
     config.fpsLimiter.generalEnabled = GetBool("FpsLimiter", "general_enabled", false);
@@ -1484,8 +1482,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.video.scaling.quality = GetStr("Scaling", "quality", "normal");
     std::string sharpnessValue = GetStr("Scaling", "sharpness", "");
     bool hasExplicitSharpness = !sharpnessValue.empty();
-    config.video.scaling.sharpness =
-        hasExplicitSharpness ? GetBoundedInt("Scaling", "sharpness", 100, 0, 100) : 100;
+    config.video.scaling.sharpness = hasExplicitSharpness ? GetBoundedInt("Scaling", "sharpness", 100, 0, 100) : 100;
 
     // Backward compatibility: Convert "filter" to quality/sharpness if "filter"
     // is set and "sharpness" was not explicitly configured.

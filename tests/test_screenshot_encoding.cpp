@@ -44,7 +44,7 @@ std::filesystem::path UniqueRawPath() {
 }
 
 class TemporaryRawFile {
-  public:
+public:
     TemporaryRawFile() : path_(UniqueRawPath()) {}
     ~TemporaryRawFile() {
         std::error_code error;
@@ -54,21 +54,20 @@ class TemporaryRawFile {
         return path_;
     }
 
-  private:
+private:
     std::filesystem::path path_;
 };
 
 std::string WideToUtf8(const std::wstring& value) {
     if (value.empty())
         return {};
-    const int required =
-        WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0,
-                            nullptr, nullptr);
+    const int required = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(),
+                                             static_cast<int>(value.size()), nullptr, 0, nullptr, nullptr);
     if (required <= 0)
         return {};
     std::string result(static_cast<size_t>(required), '\0');
-    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
-                            result.data(), required, nullptr, nullptr) != required) {
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), result.data(),
+                            required, nullptr, nullptr) != required) {
         return {};
     }
     return result;
@@ -238,9 +237,9 @@ TEST(ScreenshotRawHeaderTest, CreatesOnlySupportedCheckedLayouts) {
     EXPECT_TRUE(ce::screenshot::MakeRawScreenshot(pixels.data(), 2, 2, 8, ScreenshotPixelFormat::BGRA8,
                                                   ScreenshotColorEncoding::SRGB, screenshot));
     EXPECT_EQ(screenshot.header.payloadSize, 16u);
-    EXPECT_FALSE(ce::screenshot::MakeRawScreenshot(
-        pixels.data(), ce::screenshot::kMaximumScreenshotDimension + 1, 1, 8, ScreenshotPixelFormat::BGRA8,
-        ScreenshotColorEncoding::SRGB, screenshot));
+    EXPECT_FALSE(ce::screenshot::MakeRawScreenshot(pixels.data(), ce::screenshot::kMaximumScreenshotDimension + 1, 1, 8,
+                                                   ScreenshotPixelFormat::BGRA8, ScreenshotColorEncoding::SRGB,
+                                                   screenshot));
     EXPECT_FALSE(ce::screenshot::MakeRawScreenshot(pixels.data(), 2, 2, 7, ScreenshotPixelFormat::BGRA8,
                                                    ScreenshotColorEncoding::SRGB, screenshot));
     EXPECT_FALSE(ce::screenshot::MakeRawScreenshot(pixels.data(), 2, 2, 8, ScreenshotPixelFormat::BGRA8,
@@ -290,8 +289,8 @@ TEST(ScreenshotColorTest, ConvertsFullRangeBt2020PqR10Fixtures) {
 TEST(ScreenshotColorTest, ConvertsLinearScRgbAtEightyNitsPerUnit) {
     const std::array<uint16_t, 4> linearGray{0x3C00u, 0x3C00u, 0x3C00u, 0x3C00u};
     ce::screenshot::Yuv10Pixel converted{};
-    ASSERT_TRUE(ce::screenshot::ConvertHdrPixelToYuv10(
-        ScreenshotPixelFormat::RGBA16F, reinterpret_cast<const uint8_t*>(linearGray.data()), converted));
+    ASSERT_TRUE(ce::screenshot::ConvertHdrPixelToYuv10(ScreenshotPixelFormat::RGBA16F,
+                                                       reinterpret_cast<const uint8_t*>(linearGray.data()), converted));
     EXPECT_EQ(converted.y, 497);
     EXPECT_EQ(converted.u, 512);
     EXPECT_EQ(converted.v, 512);
@@ -300,8 +299,8 @@ TEST(ScreenshotColorTest, ConvertsLinearScRgbAtEightyNitsPerUnit) {
 TEST(ScreenshotColorTest, SanitizesNonFiniteScRgbAndRejectsUnsupportedInput) {
     const std::array<uint16_t, 4> nanPixel{0x7E00u, 0x7E00u, 0x7E00u, 0x3C00u};
     ce::screenshot::Yuv10Pixel converted{};
-    ASSERT_TRUE(ce::screenshot::ConvertHdrPixelToYuv10(
-        ScreenshotPixelFormat::RGBA16F, reinterpret_cast<const uint8_t*>(nanPixel.data()), converted));
+    ASSERT_TRUE(ce::screenshot::ConvertHdrPixelToYuv10(ScreenshotPixelFormat::RGBA16F,
+                                                       reinterpret_cast<const uint8_t*>(nanPixel.data()), converted));
     EXPECT_EQ(converted.y, 0);
     EXPECT_EQ(converted.u, 512);
     EXPECT_EQ(converted.v, 512);
@@ -321,9 +320,9 @@ TEST(ScreenshotAvifTest, SourceBuiltLibaomEncodesTenBit444WithHdrMetadata) {
     pixels[2] = 0x000FFC00u;
     pixels[3] = 0x3FF00000u;
     ce::screenshot::RawScreenshot screenshot;
-    ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(
-        reinterpret_cast<const uint8_t*>(pixels.data()), 4, 4, 16, ScreenshotPixelFormat::R10G10B10A2,
-        ScreenshotColorEncoding::BT2020_PQ, screenshot));
+    ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(reinterpret_cast<const uint8_t*>(pixels.data()), 4, 4, 16,
+                                                  ScreenshotPixelFormat::R10G10B10A2,
+                                                  ScreenshotColorEncoding::BT2020_PQ, screenshot));
 
     std::filesystem::path publishedPath;
     const std::filesystem::path logPath = directory / L"encode.log";
@@ -347,8 +346,8 @@ TEST(ScreenshotAvifTest, SourceBuiltLibaomEncodesTenBit444WithHdrMetadata) {
     EXPECT_EQ(decoded.colorRange, AVCOL_RANGE_JPEG);
     for (size_t index = 0; index < decoded.firstRow.size(); ++index) {
         ce::screenshot::Yuv10Pixel expected{};
-        ASSERT_TRUE(ce::screenshot::ConvertHdrPixelToYuv10(
-            ScreenshotPixelFormat::R10G10B10A2, reinterpret_cast<const uint8_t*>(&pixels[index]), expected));
+        ASSERT_TRUE(ce::screenshot::ConvertHdrPixelToYuv10(ScreenshotPixelFormat::R10G10B10A2,
+                                                           reinterpret_cast<const uint8_t*>(&pixels[index]), expected));
         const auto error = [](uint16_t actual, uint16_t reference) {
             return actual > reference ? actual - reference : reference - actual;
         };

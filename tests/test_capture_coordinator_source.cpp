@@ -214,8 +214,8 @@ TEST(CaptureCoordinatorSourceTest, StopBeforeFirstLiveFrameDisarmsCfrDrainBefore
 
     const size_t drainAbort = source.find("ShouldAbortCfrStopDrainBeforeOutputIsLive");
     const size_t drainClear = source.find("g_DrainOutstandingCfrTicks.store(false", drainAbort);
-    const size_t stopDrain = source.find("if (!recordingActive && recordingOutputLive && drainOutstandingCfrTicks)",
-                                         drainClear);
+    const size_t stopDrain =
+        source.find("if (!recordingActive && recordingOutputLive && drainOutstandingCfrTicks)", drainClear);
     ASSERT_NE(drainAbort, std::string::npos);
     ASSERT_NE(drainClear, std::string::npos);
     ASSERT_NE(stopDrain, std::string::npos);
@@ -232,8 +232,8 @@ TEST(CaptureCoordinatorSourceTest, WgcAndDuplicationStartupPrewarmsBeforeTransac
     const size_t startupBarrier = source.find("IsWgcFramePastStartupBarrier");
     const size_t prewarm = source.find("MediaEngine_PrepareFrameD3D11", startupBarrier);
     const size_t contractSelection = source.find("WGC CFR start contract selected", prewarm);
-    const size_t firstEncodeCommit = source.find("WGC CFR start contract committed after first successful encode",
-                                                 contractSelection);
+    const size_t firstEncodeCommit =
+        source.find("WGC CFR start contract committed after first successful encode", contractSelection);
     ASSERT_NE(startupBarrier, std::string::npos);
     ASSERT_NE(prewarm, std::string::npos);
     ASSERT_NE(contractSelection, std::string::npos);

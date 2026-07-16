@@ -502,10 +502,9 @@ static bool IsControlFlowGuardEnabled();
 
 static uint8_t* AllocateWritableTrampolinePage(void* preferredAddress) {
     const bool cfgEnabled = IsControlFlowGuardEnabled();
-    const DWORD initialProtection =
-        cfgEnabled ? PAGE_EXECUTE_READ | PAGE_TARGETS_INVALID : PAGE_READWRITE;
-    void* allocation = VirtualAlloc(preferredAddress, TRAMPOLINE_POOL_SIZE, MEM_COMMIT | MEM_RESERVE,
-                                    initialProtection);
+    const DWORD initialProtection = cfgEnabled ? PAGE_EXECUTE_READ | PAGE_TARGETS_INVALID : PAGE_READWRITE;
+    void* allocation =
+        VirtualAlloc(preferredAddress, TRAMPOLINE_POOL_SIZE, MEM_COMMIT | MEM_RESERVE, initialProtection);
     if (!allocation || !cfgEnabled)
         return static_cast<uint8_t*>(allocation);
 
@@ -627,8 +626,8 @@ using SetProcessValidCallTargetsFn = BOOL(WINAPI*)(HANDLE, PVOID, SIZE_T, ULONG,
 #ifdef _WIN64
 __declspec(guard(nocf))
 #endif
-static BOOL CallCfgRegistrationBootstrap(SetProcessValidCallTargetsFn function, HANDLE process, PVOID base,
-                                         SIZE_T size, ULONG count, PCFG_CALL_TARGET_INFO targets) {
+static BOOL CallCfgRegistrationBootstrap(SetProcessValidCallTargetsFn function, HANDLE process, PVOID base, SIZE_T size,
+                                         ULONG count, PCFG_CALL_TARGET_INFO targets) {
     // MinGW's Kernel32 import library does not expose this Windows API. This
     // one trusted export call must bootstrap registration without first
     // requiring its dynamically resolved address to pass the host CFG bitmap.
@@ -659,8 +658,8 @@ static bool RegisterOnlyTrampolineEntrypoint(void* allocationBase, size_t alloca
         HookLogImportant("InlineHook: SetProcessValidCallTargets is unavailable for CFG-enabled target");
         return false;
     }
-    if (!CallCfgRegistrationBootstrap(setProcessValidCallTargets, GetCurrentProcess(), allocationBase,
-                                      allocationSize, 1, &target)) {
+    if (!CallCfgRegistrationBootstrap(setProcessValidCallTargets, GetCurrentProcess(), allocationBase, allocationSize,
+                                      1, &target)) {
         HookLogImportant("InlineHook: SetProcessValidCallTargets failed for entry=%p page=%p error=%lu", entrypoint,
                          allocationBase, GetLastError());
         return false;
@@ -674,8 +673,7 @@ static bool FinalizeExecutableTrampoline(void* allocationBase, size_t allocation
         return false;
     FlushInstructionCache(GetCurrentProcess(), entrypoint, usedBytes);
     DWORD oldProtect = 0;
-    const DWORD executeProtection = PAGE_EXECUTE_READ |
-                                    (IsControlFlowGuardEnabled() ? PAGE_TARGETS_NO_UPDATE : 0);
+    const DWORD executeProtection = PAGE_EXECUTE_READ | (IsControlFlowGuardEnabled() ? PAGE_TARGETS_NO_UPDATE : 0);
     if (!VirtualProtect(allocationBase, allocationSize, executeProtection, &oldProtect)) {
         HookLogImportant("InlineHook: Failed to seal trampoline RX entry=%p error=%lu", entrypoint, GetLastError());
         return false;
