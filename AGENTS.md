@@ -21,6 +21,14 @@ Copyright (c) 2026 aufkrawall
 - When fixing a bug or implementing a feature, generally always add new regression test units, or adjust existing ones!
 - When fixing a bug or implementing a feature, add or improve high-signal, rate-limited debug logging when it materially helps diagnose state transitions, failures, or regressions; do not add unconditional hot-path noise!
 - The llm-wiki might not get updated after every change; the git commit history might be more up to date!
+- Always keep the user informed when the harness (Codex, Claude Code, OpenCode etc.) auto-approval feature denied some steps or caused additional required steps!
+- Under the Codex managed filesystem sandbox, including “Approve for me” mode, do not first attempt project build or test commands with default sandbox permissions. MSYS2 child processes cannot reliably create their prefix files there.
+    - Invoke these commands with escalated permissions on the first attempt:
+        - `python build.py --skip-updates`
+        - `python build.py --no-build --run-tests --skip-updates`
+    - Keep escalation scoped to the exact command; never request blanket approval for `python` or arbitrary scripts.
+    - If automatic escalation review denies the command, report the denial immediately; do not skip or weaken verification.
+- When you run tools and test programs in an agentic manner, make sure they run sufficiently long, but not unnecessarily long, and make also sure no unnecessary lingering processes are left behind!
 
 ## Engineering rules
 
