@@ -39,6 +39,13 @@ class BuildFlagPolicyTest(unittest.TestCase):
             source = build_file.read()
         self.assertIn("-mguard=cf -fstack-protector-strong -D_FORTIFY_SOURCE=2", source)
 
+    def test_vulkan_layer_build_has_no_registry_side_effects(self) -> None:
+        with open(build.__file__, encoding="utf-8") as build_file:
+            source = build_file.read()
+        self.assertNotIn("cleanup_vulkan_layer_registry", source)
+        self.assertNotIn("import winreg", source)
+        self.assertNotIn("winreg.", source)
+
 
 if __name__ == "__main__":
     unittest.main()

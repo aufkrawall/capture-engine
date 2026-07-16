@@ -3528,73 +3528,6 @@ def write_json_atomic(path: str, payload: Any) -> None:
                 pass
 
 
-def cleanup_vulkan_layer_registry(manifest_paths: List[str]) -> None:
-    """Remove stale/global CE Vulkan layer registrations from supported registry views."""
-    if not IS_WINDOWS:
-        return
-
-    try:
-        import winreg
-    except Exception as e:
-        log(f"Warning: Failed to import winreg for Vulkan layer cleanup: {e}")
-        return
-
-    key_path = r"Software\Khronos\Vulkan\ImplicitLayers"
-    owned_names = {
-        "vk_layer_ce_overlay.json",
-        "vk_layer_ce_overlay_x86.json",
-        "vk_layer_capture_overlay.json",
-    }
-    normalized_manifest_paths = {os.path.normcase(os.path.normpath(path)) for path in manifest_paths}
-    targets = [
-        ("HKCU", winreg.HKEY_CURRENT_USER, 0),
-        ("HKLM64", winreg.HKEY_LOCAL_MACHINE, getattr(winreg, "KEY_WOW64_64KEY", 0)),
-        ("HKLM32", winreg.HKEY_LOCAL_MACHINE, getattr(winreg, "KEY_WOW64_32KEY", 0)),
-    ]
-
-    for target_name, root, view_flag in targets:
-        try:
-            key = winreg.OpenKey(root, key_path, 0, winreg.KEY_SET_VALUE | winreg.KEY_READ | view_flag)
-        except FileNotFoundError:
-            continue
-        except PermissionError:
-            log(f"Info: Skipping {target_name} Vulkan layer cleanup (insufficient permissions)")
-            continue
-        except OSError as e:
-            log(f"Warning: Failed to open {target_name} Vulkan layer registry key: {e}")
-            continue
-
-        try:
-            index = 0
-            value_names = []
-            while True:
-                try:
-                    value_name, _, _ = winreg.EnumValue(key, index)
-                    value_names.append(value_name)
-                    index += 1
-                except OSError:
-                    break
-
-            for value_name in value_names:
-                normalized_value = os.path.normcase(os.path.normpath(value_name))
-                if (
-                    os.path.basename(value_name).lower() not in owned_names
-                    and normalized_value not in normalized_manifest_paths
-                ):
-                    continue
-                try:
-                    winreg.DeleteValue(key, value_name)
-                    log(f"Cleaned Vulkan layer registry entry from {target_name}: {value_name}")
-                except FileNotFoundError:
-                    pass
-                except PermissionError:
-                    log(f"Info: Skipping protected Vulkan layer registry entry in {target_name}: {value_name}")
-                except OSError as e:
-                    log(f"Warning: Failed to delete Vulkan layer registry entry in {target_name}: {value_name} ({e})")
-        finally:
-            winreg.CloseKey(key)
-
-
 def detect_clang_resource_dir(env: Dict[str, str], clang_exe: str) -> Optional[str]:
     """Detect clang resource-dir via compiler query, then fallback to local scan."""
     if clang_exe and is_clang_compiler(clang_exe):
@@ -5200,10 +5133,6 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
             json.dump(manifest, f, indent=4)
 
         log(f"Generated Manifest: {manifest_path}")
-
-        # CLEANUP: Ensure this layer is NOT registered globally in the registry.
-        # It should ONLY be registered ephemerally by captureengine.exe at runtime.
-        cleanup_vulkan_layer_registry([manifest_path])
 
     except Exception as e:
         log(f"Error linking layer: {e}")

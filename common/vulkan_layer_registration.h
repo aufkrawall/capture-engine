@@ -61,9 +61,6 @@ bool GetCurrentExecutableDirectory(std::filesystem::path* outDir);
 RegistrationPlan BuildRegistrationPlan(const std::filesystem::path& baseDir, RegistrationMode requestedMode,
                                        bool processElevated);
 
-bool IsCaptureEngineLayerManifestPath(const std::filesystem::path& path);
-bool ShouldDeleteRegistryValueForTarget(const RegistrationPlan& plan, RegistryRoot root, RegistryView view,
-                                        const std::filesystem::path& valuePath, bool manifestExists);
 std::string PathToUtf8ForLogging(const std::filesystem::path& path);
 
 void LogRegistrationPlan(const RegistrationPlan& plan);

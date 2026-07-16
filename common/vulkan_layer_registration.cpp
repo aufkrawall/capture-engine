@@ -2,11 +2,10 @@
 
 #include <windows.h>
 
-#include <algorithm>
 #include <cctype>
-#include <cwctype>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "logging.h"
@@ -21,7 +20,6 @@ constexpr wchar_t kLayer64Name[] = L"VK_LAYER_CE_overlay";
 constexpr wchar_t kManifest32Name[] = L"VK_LAYER_CE_overlay_x86.json";
 constexpr wchar_t kLibrary32Name[] = L"VK_LAYER_CE_overlay_x86.dll";
 constexpr wchar_t kLayer32Name[] = L"VK_LAYER_CE_overlay_x86";
-constexpr wchar_t kLegacyManifestName[] = L"VK_LAYER_CAPTURE_overlay.json";
 
 struct RegistryLocation {
     RegistryRoot root;
@@ -70,18 +68,6 @@ public:
 private:
     HKEY key_ = nullptr;
 };
-
-std::wstring ToLower(std::wstring value) {
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
-    return value;
-}
-
-std::wstring NormalizePathForComparison(const std::filesystem::path& path) {
-    std::wstring normalized = path.lexically_normal().wstring();
-    std::replace(normalized.begin(), normalized.end(), L'/', L'\\');
-    return ToLower(normalized);
-}
 
 std::string WideToUtf8(const std::wstring& value) {
     if (value.empty()) {
@@ -174,32 +160,6 @@ std::string DescribeLocation(const RegistryLocation& location) {
     return std::string(ToString(location.root)) + "/" + ToString(location.view);
 }
 
-bool MatchesCurrentManifestPath(const RegistrationPlan& plan, const std::filesystem::path& path) {
-    const std::wstring normalized = NormalizePathForComparison(path);
-    for (const LayerManifest& manifest : plan.manifests) {
-        if (NormalizePathForComparison(manifest.manifestPath) == normalized) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool TargetContainsManifestPath(const RegistrationPlan& plan, RegistryRoot root, RegistryView view,
-                                const std::filesystem::path& path) {
-    const std::wstring normalized = NormalizePathForComparison(path);
-    for (const RegistryTarget& target : plan.installTargets) {
-        if (target.root != root || target.view != view) {
-            continue;
-        }
-        for (const LayerManifest& manifest : target.manifests) {
-            if (NormalizePathForComparison(manifest.manifestPath) == normalized) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 LONG OpenRegistryKey(const RegistryLocation& location, REGSAM access, bool create, RegistryKeyGuard* outKey) {
     HKEY rawKey = nullptr;
     const REGSAM sam = access | GetViewFlags(location.view);
@@ -216,44 +176,6 @@ LONG OpenRegistryKey(const RegistryLocation& location, REGSAM access, bool creat
         outKey->Reset(rawKey);
     }
     return result;
-}
-
-std::vector<std::wstring> EnumerateValueNames(HKEY key) {
-    std::vector<std::wstring> valueNames;
-    std::vector<wchar_t> buffer(32768, L'\0');
-    DWORD index = 0;
-
-    while (true) {
-        DWORD valueNameLength = static_cast<DWORD>(buffer.size());
-        LONG result = RegEnumValueW(key, index, buffer.data(), &valueNameLength, nullptr, nullptr, nullptr, nullptr);
-        if (result == ERROR_NO_MORE_ITEMS) {
-            break;
-        }
-        if (result == ERROR_MORE_DATA) {
-            buffer.resize(buffer.size() * 2, L'\0');
-            continue;
-        }
-        if (result != ERROR_SUCCESS) {
-            LogWarn("[VulkanReg] Failed to enumerate registry value %lu: %ld (%s)", index, result,
-                    FormatWindowsError(result).c_str());
-            break;
-        }
-
-        valueNames.emplace_back(buffer.data(), valueNameLength);
-        ++index;
-    }
-
-    return valueNames;
-}
-
-std::vector<RegistryLocation> GetWritableCleanupLocations(const RegistrationPlan& plan) {
-    std::vector<RegistryLocation> locations;
-    locations.push_back({RegistryRoot::CurrentUser, RegistryView::Default});
-    if (plan.processElevated) {
-        locations.push_back({RegistryRoot::LocalMachine, RegistryView::Registry64});
-        locations.push_back({RegistryRoot::LocalMachine, RegistryView::Registry32});
-    }
-    return locations;
 }
 
 std::vector<RegistryTarget> BuildStatusTargets(const RegistrationPlan& plan) {
@@ -297,9 +219,12 @@ std::vector<RegistryTarget> BuildStatusTargets(const RegistrationPlan& plan) {
 bool DeleteRegistryValue(HKEY key, const std::wstring& valueName, const char* reason,
                          const RegistryLocation& location) {
     const LONG result = RegDeleteValueW(key, valueName.c_str());
-    if (result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND) {
+    if (result == ERROR_SUCCESS) {
         LogInfo("[VulkanReg] Removed %s entry from %s: %s", reason, DescribeLocation(location).c_str(),
                 WideToUtf8(valueName).c_str());
+        return true;
+    }
+    if (result == ERROR_FILE_NOT_FOUND) {
         return true;
     }
 
@@ -309,39 +234,27 @@ bool DeleteRegistryValue(HKEY key, const std::wstring& valueName, const char* re
     return false;
 }
 
-bool CleanupRegistryLocation(const RegistrationPlan& plan, const RegistryLocation& location,
-                             bool removeCurrentManifests) {
+bool DeleteRegistryTarget(const RegistryTarget& target) {
+    if (target.manifests.empty()) {
+        return true;
+    }
+
+    const RegistryLocation location{target.root, target.view};
     RegistryKeyGuard key;
-    const LONG openResult = OpenRegistryKey(location, KEY_QUERY_VALUE | KEY_SET_VALUE, false, &key);
+    const LONG openResult = OpenRegistryKey(location, KEY_SET_VALUE, false, &key);
     if (openResult == ERROR_FILE_NOT_FOUND) {
         return true;
     }
     if (openResult != ERROR_SUCCESS) {
-        LogError("[VulkanReg] Failed to open %s for cleanup (error=%ld, %s)", DescribeLocation(location).c_str(),
+        LogError("[VulkanReg] Failed to open %s for unregistration (error=%ld, %s)",
+                 DescribeLocation(location).c_str(),
                  openResult, FormatWindowsError(openResult).c_str());
         return false;
     }
 
     bool success = true;
-    for (const std::wstring& valueName : EnumerateValueNames(key.Get())) {
-        const std::filesystem::path valuePath(valueName);
-        const bool isCurrentManifest = MatchesCurrentManifestPath(plan, valuePath);
-        const bool manifestExists = IsRegularFile(valuePath);
-
-        if (removeCurrentManifests && isCurrentManifest) {
-            success &= DeleteRegistryValue(key.Get(), valueName, "current manifest", location);
-            continue;
-        }
-
-        if (!ShouldDeleteRegistryValueForTarget(plan, location.root, location.view, valuePath, manifestExists)) {
-            continue;
-        }
-
-        const bool intendedForTarget = TargetContainsManifestPath(plan, location.root, location.view, valuePath);
-        const char* reason = (!manifestExists && !isCurrentManifest)
-                                 ? "stale manifest"
-                                 : (intendedForTarget ? "inactive manifest" : "duplicate manifest");
-        success &= DeleteRegistryValue(key.Get(), valueName, reason, location);
+    for (const LayerManifest& manifest : target.manifests) {
+        success &= DeleteRegistryValue(key.Get(), manifest.manifestPath.wstring(), "owned manifest", location);
     }
 
     return success;
@@ -522,27 +435,8 @@ RegistrationPlan BuildRegistrationPlan(const std::filesystem::path& baseDir, Reg
     return plan;
 }
 
-bool IsCaptureEngineLayerManifestPath(const std::filesystem::path& path) {
-    const std::wstring fileName = ToLower(path.filename().wstring());
-    return fileName == ToLower(kManifest64Name) || fileName == ToLower(kManifest32Name) ||
-           fileName == ToLower(kLegacyManifestName);
-}
-
 std::string PathToUtf8ForLogging(const std::filesystem::path& path) {
     return PathToUtf8(path);
-}
-
-bool ShouldDeleteRegistryValueForTarget(const RegistrationPlan& plan, RegistryRoot root, RegistryView view,
-                                        const std::filesystem::path& valuePath, bool manifestExists) {
-    if (!IsCaptureEngineLayerManifestPath(valuePath)) {
-        return false;
-    }
-
-    if (!TargetContainsManifestPath(plan, root, view, valuePath)) {
-        return true;
-    }
-
-    return !manifestExists;
 }
 
 void LogRegistrationPlan(const RegistrationPlan& plan) {
@@ -583,22 +477,22 @@ void LogRegistrationPlan(const RegistrationPlan& plan) {
 }
 
 bool ApplyRegistrationPlan(const RegistrationPlan& plan, bool install) {
-    bool success = true;
-    for (const RegistryLocation& location : GetWritableCleanupLocations(plan)) {
-        success &= CleanupRegistryLocation(plan, location, !install);
-    }
+    if (install) {
+        if (plan.installTargets.empty()) {
+            LogWarn("[VulkanReg] Skipping Vulkan layer registration because there are no usable manifests.");
+            return false;
+        }
 
-    if (!install) {
+        bool success = true;
+        for (const RegistryTarget& target : plan.installTargets) {
+            success &= WriteRegistryTarget(target);
+        }
         return success;
     }
 
-    if (plan.installTargets.empty()) {
-        LogWarn("[VulkanReg] Skipping Vulkan layer registration because there are no usable manifests.");
-        return false;
-    }
-
+    bool success = true;
     for (const RegistryTarget& target : plan.installTargets) {
-        success &= WriteRegistryTarget(target);
+        success &= DeleteRegistryTarget(target);
     }
     return success;
 }

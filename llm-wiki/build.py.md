@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-07-15 (AOM/libwinpthread dependency closure, PE mitigation verification, baseline CPU/strict-FP policy, sanitizer coverage, signed MSYS2 provenance, and strict CRLF-safe custom-patch application)
+Last cross-checked: 2026-07-16 (registry-side-effect-free Vulkan manifest builds, AOM/libwinpthread dependency closure, PE mitigation verification, baseline CPU/strict-FP policy, sanitizer coverage, signed MSYS2 provenance, and strict CRLF-safe custom-patch application)
 
 Primary sources:
 - `AGENTS.md`
@@ -146,6 +146,7 @@ Default quality mode currently:
 
 ## Operational Notes
 - The script always rewrites `compile_commands.json` at the end of a successful build.
+- Vulkan layer compilation only writes the DLLs and portable relative-path manifests. `build.py` never imports `winreg`, enumerates Vulkan registrations, or mutates HKCU/HKLM. Registration ownership belongs to the running controller; repair/uninstall policy must not be hidden in an ordinary build.
 - Canonical verification now writes a compact verification bundle under `build/verification/<timestamp>_build_<n>/` containing:
   - `verification_summary.txt`
   - `verification_manifest.json`

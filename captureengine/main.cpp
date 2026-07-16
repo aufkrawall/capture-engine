@@ -6,13 +6,13 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <timeapi.h>
-#include <winreg.h>
 // clang-format on
 #include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -1169,35 +1169,40 @@ static ce::vulkan_layer::RegistrationPlan BuildControllerVulkanRegistrationPlan(
                                                    ce::vulkan_layer::IsCurrentProcessElevated());
 }
 
-static bool Registry_ManageImplicitLayer(bool install) {
-    const ce::vulkan_layer::RegistrationPlan plan = BuildControllerVulkanRegistrationPlan();
-    ce::vulkan_layer::LogRegistrationPlan(plan);
-    const bool success = ce::vulkan_layer::ApplyRegistrationPlan(plan, install);
-    if (!success) {
-        LogError("[Controller] Vulkan layer %s failed", install ? "registration" : "cleanup");
-    }
-    return success;
-}
-
-// RAII Wrapper for guaranteed cleanup
+// RAII wrapper for exact registration ownership. The startup plan is retained
+// so teardown never enumerates or derives ownership from ambient registry state.
 class ScopedVulkanRegistration {
 public:
-    ScopedVulkanRegistration() {
-        active_ = Registry_ManageImplicitLayer(true);
+    ScopedVulkanRegistration() : plan_(BuildControllerVulkanRegistrationPlan()) {
+        ce::vulkan_layer::LogRegistrationPlan(plan_);
+        active_ = ce::vulkan_layer::ApplyRegistrationPlan(plan_, true);
+        if (!active_) {
+            LogError("[Controller] Vulkan layer registration failed");
+        }
     }
     ~ScopedVulkanRegistration() {
-        Registry_ManageImplicitLayer(false);
+        Unregister();
     }
 
     bool IsActive() const {
         return active_;
     }
 
+    void Unregister() {
+        std::call_once(unregistrationOnce_, [this]() {
+            if (!ce::vulkan_layer::ApplyRegistrationPlan(plan_, false)) {
+                LogError("[Controller] Vulkan layer unregistration failed");
+            }
+        });
+    }
+
 private:
+    ce::vulkan_layer::RegistrationPlan plan_;
+    std::once_flag unregistrationOnce_;
     bool active_ = false;
 };
 
-// Global pointer for emergency cleanup
+// Global pointer for emergency unregistration
 static ScopedVulkanRegistration* g_VulkanReg = nullptr;
 
 BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
@@ -1205,7 +1210,7 @@ BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
         ctrlType == CTRL_LOGOFF_EVENT || ctrlType == CTRL_SHUTDOWN_EVENT) {
         LogInfo("[Controller] Console event %lu received. Cleaning up...", ctrlType);
         if (g_VulkanReg) {
-            Registry_ManageImplicitLayer(false);  // Force cleanup
+            g_VulkanReg->Unregister();
         }
         g_Running = false;
         return TRUE;
@@ -1494,8 +1499,9 @@ int ControllerMain(HINSTANCE hInstance) {
 
     ShutdownChildProcesses();
 
-    // Reset global pointer (destructor of ScopedVulkanRegistration will handle
-    // cleanup)
+    // Complete exact unregistration before invalidating the console handler's
+    // non-owning pointer. The destructor is idempotent through call_once.
+    vulkanReg.Unregister();
     g_VulkanReg = nullptr;
 
     // Now remove tray icon after shutdown is complete
