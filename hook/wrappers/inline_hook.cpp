@@ -1069,7 +1069,8 @@ static bool IsAlreadyHooked(const uint8_t* code, bool is64bit) {
     return true;
 }
 
-bool Install(void* target, void* detour, void** outTrampoline) {
+static bool InstallImpl(void* target, void* detour, void** outTrampoline, TrampolinePublisher publisher,
+                        void* publisherContext) {
     // Use existing optional hook logger; avoid absolute-path file writes from injected code.
     auto LogDirect = [](const char* fmt, ...) {
         va_list args;
@@ -1369,6 +1370,9 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                             if (outTrampoline) {
                                 *outTrampoline = chainTrampoline;
                             }
+                            if (publisher) {
+                                publisher(chainTrampoline, publisherContext);
+                            }
 
                             // Patch chain target: use WriteJump for proper x64 support
                             // (14-byte FF25+addr on x64, 5-byte E9 rel32 on x86)
@@ -1396,6 +1400,9 @@ bool Install(void* target, void* detour, void** outTrampoline) {
                                 return true;
                             } else {
                                 LogDirect("FAILED: VirtualProtect failed for chain target");
+                                if (publisher) {
+                                    publisher(nullptr, publisherContext);
+                                }
                                 *outTrampoline = nullptr;
                                 ReleaseSealedTrampoline(chainTrampoline);
                             }
@@ -1628,12 +1635,22 @@ bool Install(void* target, void* detour, void** outTrampoline) {
     entry.installed = true;
     memcpy(entry.origBytes, code, copySize);
 
+    if (publisher) {
+        // Publish the only safe bypass before any thread can observe the live
+        // detour. Publication is harmless while the original entry remains
+        // unpatched and closes the installer-return race for fatal hooks.
+        publisher(trampoline, publisherContext);
+    }
+
     LogDirect("Patching target function...");
     // Patch the target function
     DWORD oldProtect;
     if (!VirtualProtect(target, copySize, PAGE_EXECUTE_READWRITE, &oldProtect)) {
         LogDirect("FAILED: VirtualProtect failed (error=%lu)", GetLastError());
         HookLog("InlineHook: VirtualProtect failed (error=%lu)", GetLastError());
+        if (publisher) {
+            publisher(nullptr, publisherContext);
+        }
         ReleaseSealedTrampoline(trampoline);
         return false;
     }
@@ -1695,6 +1712,18 @@ bool Install(void* target, void* detour, void** outTrampoline) {
     LogDirect("SUCCESS: Hook installed at %p -> %p (trampoline=%p)", target, detour, trampoline);
     HookLog("InlineHook: Installed hook at %p -> %p (trampoline=%p)", target, detour, trampoline);
     return true;
+}
+
+bool Install(void* target, void* detour, void** outTrampoline) {
+    return InstallImpl(target, detour, outTrampoline, nullptr, nullptr);
+}
+
+bool InstallPublished(void* target, void* detour, void** outTrampoline, TrampolinePublisher publisher,
+                      void* publisherContext) {
+    if (!publisher) {
+        return false;
+    }
+    return InstallImpl(target, detour, outTrampoline, publisher, publisherContext);
 }
 
 bool Remove(void* target) {

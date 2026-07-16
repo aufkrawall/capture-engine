@@ -8,6 +8,8 @@
 #pragma once
 
 #include <windows.h>
+#include <algorithm>
+#include <cwctype>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -15,6 +17,48 @@
 namespace IATHook {
 
 using DynamicHookModuleFilter = bool (*)(const char* moduleBaseName, HMODULE module);
+using IATTargetModuleFilter = bool (*)(HMODULE module, const wchar_t* modulePath);
+
+inline bool IsPathUnderDirectoryRoot(const wchar_t* modulePath, const wchar_t* directory) {
+    if (!modulePath || !*modulePath || !directory || !*directory) {
+        return false;
+    }
+    std::wstring lowerPath(modulePath);
+    std::wstring lowerDirectory(directory);
+    std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
+                   [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+    std::transform(lowerDirectory.begin(), lowerDirectory.end(), lowerDirectory.begin(),
+                   [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+    while (!lowerDirectory.empty() && (lowerDirectory.back() == L'\\' || lowerDirectory.back() == L'/')) {
+        lowerDirectory.pop_back();
+    }
+    return !lowerDirectory.empty() && lowerPath.rfind(lowerDirectory + L"\\", 0) == 0;
+}
+
+inline bool IsWindowsSystemModulePathUnderRoot(const wchar_t* modulePath, const wchar_t* windowsDirectory) {
+    if (!IsPathUnderDirectoryRoot(modulePath, windowsDirectory)) {
+        return false;
+    }
+    std::wstring lowerPath(modulePath);
+    std::wstring lowerWindowsDirectory(windowsDirectory);
+    std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(),
+                   [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+    std::transform(lowerWindowsDirectory.begin(), lowerWindowsDirectory.end(), lowerWindowsDirectory.begin(),
+                   [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+    while (!lowerWindowsDirectory.empty() &&
+           (lowerWindowsDirectory.back() == L'\\' || lowerWindowsDirectory.back() == L'/')) {
+        lowerWindowsDirectory.pop_back();
+    }
+    const std::wstring system32Prefix = lowerWindowsDirectory + L"\\system32\\";
+    const std::wstring syswow64Prefix = lowerWindowsDirectory + L"\\syswow64\\";
+    return lowerPath.rfind(system32Prefix, 0) == 0 || lowerPath.rfind(syswow64Prefix, 0) == 0;
+}
+
+inline bool IsWindowsSystemModulePath(const wchar_t* modulePath) {
+    wchar_t windowsDirectory[MAX_PATH] = {};
+    return GetWindowsDirectoryW(windowsDirectory, MAX_PATH) != 0 &&
+           IsWindowsSystemModulePathUnderRoot(modulePath, windowsDirectory);
+}
 
 inline bool ShouldApplyDynamicHookForModule(DynamicHookModuleFilter moduleFilter, const char* moduleBaseName,
                                             HMODULE module) {
@@ -100,6 +144,11 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
  * Useful for hooking functions across DLLs
  */
 bool PatchIATAllModules(const char* sourceModule, const char* functionName, void* hookFunction, void** outOriginal);
+
+// Patch a function in loaded modules accepted by targetFilter. Modules whose
+// path cannot be resolved are rejected when a filter is supplied.
+bool PatchIATAllModulesFiltered(const char* sourceModule, const char* functionName, void* hookFunction,
+                                void** outOriginal, IATTargetModuleFilter targetFilter);
 
 /**
  * Restore original IAT entry

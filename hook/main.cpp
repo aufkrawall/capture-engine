@@ -54,6 +54,7 @@
 extern "C" {
 NTSYSAPI VOID NTAPI RtlRaiseException(PEXCEPTION_RECORD ExceptionRecord);
 NTSYSAPI VOID NTAPI RtlRaiseStatus(NTSTATUS Status);
+NTSYSAPI VOID NTAPI RtlExitUserProcess(NTSTATUS ExitStatus);
 NTSYSAPI NTSTATUS NTAPI NtRaiseException(PEXCEPTION_RECORD ExceptionRecord, PCONTEXT ContextRecord,
                                          BOOLEAN FirstChance);
 NTSYSAPI NTSTATUS NTAPI NtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus);
@@ -148,6 +149,18 @@ bool IsUcrtDynamicHookModule(const char* moduleBaseName, HMODULE module) {
     }
   }
   return isUcrtBaseName(baseName);
+}
+
+bool IsApplicationFatalIatModule(HMODULE, const wchar_t* modulePath) {
+  // VEH and the narrow inline termination hooks cover Windows' internal
+  // exception/exit paths. Rewriting imports inside the Windows directory creates
+  // process-wide cycles between forwarded APIs and is unnecessary for
+  // observing application-requested fatal exits.
+  wchar_t windowsDirectory[MAX_PATH] = {};
+  if (GetWindowsDirectoryW(windowsDirectory, MAX_PATH) == 0) {
+    return false;
+  }
+  return !IATHook::IsPathUnderDirectoryRoot(modulePath, windowsDirectory);
 }
 
 bool IsCurrentProcessHandle(HANDLE processHandle) {
@@ -518,7 +531,12 @@ VOID NTAPI HookedRtlExitUserProcess(NTSTATUS ExitStatus) {
     return;
   }
 
-  ExitProcess(static_cast<UINT>(ExitStatus));
+  // Preserve the full ntdll exit sequence through this DLL's deliberately
+  // unpatched static import. Calling ExitProcess here re-enters
+  // RtlExitUserProcess through KernelBase and recurses when no dedicated Rtl
+  // trampoline was installed (for example when it aliases another exit
+  // target).
+  ::RtlExitUserProcess(ExitStatus);
 }
 
 NTSTATUS NTAPI HookedNtTerminateProcess(HANDLE ProcessHandle, NTSTATUS ExitStatus) {
@@ -606,91 +624,109 @@ int __cdecl HookedPurecall() {
   return 0;
 }
 
+template <typename Function>
+void PublishFatalHookTrampoline(void* trampoline, void* context) {
+  auto* originalSlot = static_cast<std::atomic<Function>*>(context);
+  originalSlot->store(reinterpret_cast<Function>(trampoline), std::memory_order_release);
+}
+
 void TryInstallFatalTerminationDumpHooks() {
   std::call_once(g_FatalTerminationDumpHookOnce, []() {
     bool patchedAny = false;
     auto patchRaise = [&patchedAny](const char* sourceModule) {
       void* patchedOriginal = nullptr;
-      if (IATHook::PatchIATAllModules(sourceModule, "RaiseFailFastException",
-                                      reinterpret_cast<void*>(&HookedRaiseFailFastException), &patchedOriginal)) {
+      if (IATHook::PatchIATAllModulesFiltered(sourceModule, "RaiseFailFastException",
+                                              reinterpret_cast<void*>(&HookedRaiseFailFastException),
+                                              &patchedOriginal, &IsApplicationFatalIatModule)) {
         patchedAny = true;
       }
     };
 
     auto patchTerminate = [&patchedAny](const char* sourceModule) {
       void* patchedOriginal = nullptr;
-      if (IATHook::PatchIATAllModules(sourceModule, "TerminateProcess",
-                                      reinterpret_cast<void*>(&HookedTerminateProcess), &patchedOriginal)) {
+      if (IATHook::PatchIATAllModulesFiltered(sourceModule, "TerminateProcess",
+                                              reinterpret_cast<void*>(&HookedTerminateProcess), &patchedOriginal,
+                                              &IsApplicationFatalIatModule)) {
         patchedAny = true;
       }
     };
 
     auto patchExit = [&patchedAny](const char* sourceModule) {
       void* patchedOriginal = nullptr;
-      if (IATHook::PatchIATAllModules(sourceModule, "ExitProcess", reinterpret_cast<void*>(&HookedExitProcess),
-                                      &patchedOriginal)) {
+      if (IATHook::PatchIATAllModulesFiltered(sourceModule, "ExitProcess",
+                                              reinterpret_cast<void*>(&HookedExitProcess), &patchedOriginal,
+                                              &IsApplicationFatalIatModule)) {
         patchedAny = true;
       }
     };
 
     auto patchRtlExit = [&patchedAny](const char* sourceModule) {
       void* patchedOriginal = nullptr;
-      if (IATHook::PatchIATAllModules(sourceModule, "RtlExitUserProcess",
-                                      reinterpret_cast<void*>(&HookedRtlExitUserProcess), &patchedOriginal)) {
+      if (IATHook::PatchIATAllModulesFiltered(sourceModule, "RtlExitUserProcess",
+                                              reinterpret_cast<void*>(&HookedRtlExitUserProcess), &patchedOriginal,
+                                              &IsApplicationFatalIatModule)) {
         patchedAny = true;
       }
     };
 
     auto patchNtTerminate = [&patchedAny](const char* sourceModule, const char* functionName = "NtTerminateProcess") {
       void* patchedOriginal = nullptr;
-      if (IATHook::PatchIATAllModules(sourceModule, functionName, reinterpret_cast<void*>(&HookedNtTerminateProcess),
-                                      &patchedOriginal)) {
+      if (IATHook::PatchIATAllModulesFiltered(sourceModule, functionName,
+                                              reinterpret_cast<void*>(&HookedNtTerminateProcess), &patchedOriginal,
+                                              &IsApplicationFatalIatModule)) {
         patchedAny = true;
       }
     };
 
     auto patchRaiseException = [&patchedAny](const char* sourceModule) {
       void* patchedOriginal = nullptr;
-      if (IATHook::PatchIATAllModules(sourceModule, "RaiseException", reinterpret_cast<void*>(&HookedRaiseException),
-                                      &patchedOriginal)) {
+      if (IATHook::PatchIATAllModulesFiltered(sourceModule, "RaiseException",
+                                              reinterpret_cast<void*>(&HookedRaiseException), &patchedOriginal,
+                                              &IsApplicationFatalIatModule)) {
         patchedAny = true;
       }
     };
 
     auto patchRtlRaiseException = [&patchedAny](const char* sourceModule) {
       void* patchedOriginal = nullptr;
-      if (IATHook::PatchIATAllModules(sourceModule, "RtlRaiseException",
-                                      reinterpret_cast<void*>(&HookedRtlRaiseException), &patchedOriginal)) {
+      if (IATHook::PatchIATAllModulesFiltered(sourceModule, "RtlRaiseException",
+                                              reinterpret_cast<void*>(&HookedRtlRaiseException), &patchedOriginal,
+                                              &IsApplicationFatalIatModule)) {
         patchedAny = true;
       }
     };
 
     auto patchRtlRaiseStatus = [&patchedAny](const char* sourceModule) {
       void* patchedOriginal = nullptr;
-      if (IATHook::PatchIATAllModules(sourceModule, "RtlRaiseStatus",
-                                      reinterpret_cast<void*>(&HookedRtlRaiseStatus), &patchedOriginal)) {
+      if (IATHook::PatchIATAllModulesFiltered(sourceModule, "RtlRaiseStatus",
+                                              reinterpret_cast<void*>(&HookedRtlRaiseStatus), &patchedOriginal,
+                                              &IsApplicationFatalIatModule)) {
         patchedAny = true;
       }
     };
 
     auto patchNtRaiseException = [&patchedAny](const char* sourceModule, const char* functionName = "NtRaiseException") {
       void* patchedOriginal = nullptr;
-      if (IATHook::PatchIATAllModules(sourceModule, functionName, reinterpret_cast<void*>(&HookedNtRaiseException),
-                                      &patchedOriginal)) {
+      if (IATHook::PatchIATAllModulesFiltered(sourceModule, functionName,
+                                              reinterpret_cast<void*>(&HookedNtRaiseException), &patchedOriginal,
+                                              &IsApplicationFatalIatModule)) {
         patchedAny = true;
       }
     };
 
     auto patchCrtFatal = [&patchedAny](const char* functionName, void* hookFunction) {
       void* patchedOriginal = nullptr;
-      if (IATHook::PatchIATAllModules("ucrtbase.dll", functionName, hookFunction, &patchedOriginal)) {
+      if (IATHook::PatchIATAllModulesFiltered("ucrtbase.dll", functionName, hookFunction, &patchedOriginal,
+                                              &IsApplicationFatalIatModule)) {
         patchedAny = true;
       }
     };
 
     std::vector<void*> inlineHookTargets;
     auto installInlineHook = [&patchedAny, &inlineHookTargets](const char* moduleName, const char* functionName,
-                                                               void* hookFunction) -> void* {
+                                                               void* hookFunction,
+                                                               InlineHook::TrampolinePublisher publisher,
+                                                               void* publisherContext) -> void* {
       void* target = ResolveModuleExport(moduleName, functionName);
       if (!target || target == hookFunction) {
         return nullptr;
@@ -700,7 +736,7 @@ void TryInstallFatalTerminationDumpHooks() {
       }
 
       void* trampoline = nullptr;
-      if (!InlineHook::Install(target, hookFunction, &trampoline)) {
+      if (!InlineHook::InstallPublished(target, hookFunction, &trampoline, publisher, publisherContext)) {
         HookLog("FatalExitDump: Inline pre-termination hook failed for %s!%s at %p", moduleName, functionName,
                 target);
         return nullptr;
@@ -713,62 +749,43 @@ void TryInstallFatalTerminationDumpHooks() {
       return trampoline;
     };
 
-    if (void* trampoline = installInlineHook("KERNELBASE.dll", "RaiseFailFastException",
-                                             reinterpret_cast<void*>(&HookedRaiseFailFastException))) {
-      g_OriginalRaiseFailFastException.store(reinterpret_cast<RaiseFailFastException_t>(trampoline),
-                                             std::memory_order_release);
-    } else if (void* trampoline = installInlineHook("kernel32.dll", "RaiseFailFastException",
-                                                    reinterpret_cast<void*>(&HookedRaiseFailFastException))) {
-      g_OriginalRaiseFailFastException.store(reinterpret_cast<RaiseFailFastException_t>(trampoline),
-                                             std::memory_order_release);
+    if (!installInlineHook("KERNELBASE.dll", "RaiseFailFastException",
+                           reinterpret_cast<void*>(&HookedRaiseFailFastException),
+                           &PublishFatalHookTrampoline<RaiseFailFastException_t>,
+                           &g_OriginalRaiseFailFastException)) {
+      installInlineHook("kernel32.dll", "RaiseFailFastException",
+                        reinterpret_cast<void*>(&HookedRaiseFailFastException),
+                        &PublishFatalHookTrampoline<RaiseFailFastException_t>, &g_OriginalRaiseFailFastException);
     }
-    if (void* trampoline =
-            installInlineHook("KERNELBASE.dll", "TerminateProcess", reinterpret_cast<void*>(&HookedTerminateProcess))) {
-      g_OriginalTerminateProcess.store(reinterpret_cast<TerminateProcess_t>(trampoline), std::memory_order_release);
-    } else if (void* trampoline = installInlineHook("kernel32.dll", "TerminateProcess",
-                                                    reinterpret_cast<void*>(&HookedTerminateProcess))) {
-      g_OriginalTerminateProcess.store(reinterpret_cast<TerminateProcess_t>(trampoline), std::memory_order_release);
+    if (!installInlineHook("KERNELBASE.dll", "TerminateProcess", reinterpret_cast<void*>(&HookedTerminateProcess),
+                           &PublishFatalHookTrampoline<TerminateProcess_t>, &g_OriginalTerminateProcess)) {
+      installInlineHook("kernel32.dll", "TerminateProcess", reinterpret_cast<void*>(&HookedTerminateProcess),
+                        &PublishFatalHookTrampoline<TerminateProcess_t>, &g_OriginalTerminateProcess);
     }
-    if (void* trampoline =
-            installInlineHook("KERNELBASE.dll", "ExitProcess", reinterpret_cast<void*>(&HookedExitProcess))) {
-      g_OriginalExitProcess.store(reinterpret_cast<ExitProcess_t>(trampoline), std::memory_order_release);
-    } else if (void* trampoline =
-                   installInlineHook("kernel32.dll", "ExitProcess", reinterpret_cast<void*>(&HookedExitProcess))) {
-      g_OriginalExitProcess.store(reinterpret_cast<ExitProcess_t>(trampoline), std::memory_order_release);
+    if (!installInlineHook("KERNELBASE.dll", "ExitProcess", reinterpret_cast<void*>(&HookedExitProcess),
+                           &PublishFatalHookTrampoline<ExitProcess_t>, &g_OriginalExitProcess)) {
+      installInlineHook("kernel32.dll", "ExitProcess", reinterpret_cast<void*>(&HookedExitProcess),
+                        &PublishFatalHookTrampoline<ExitProcess_t>, &g_OriginalExitProcess);
     }
-    if (void* trampoline =
-            installInlineHook("ntdll.dll", "RtlExitUserProcess", reinterpret_cast<void*>(&HookedRtlExitUserProcess))) {
-      g_OriginalRtlExitUserProcess.store(reinterpret_cast<RtlExitUserProcess_t>(trampoline),
-                                         std::memory_order_release);
+    installInlineHook("ntdll.dll", "RtlExitUserProcess", reinterpret_cast<void*>(&HookedRtlExitUserProcess),
+                      &PublishFatalHookTrampoline<RtlExitUserProcess_t>, &g_OriginalRtlExitUserProcess);
+    if (!installInlineHook("ntdll.dll", "NtTerminateProcess", reinterpret_cast<void*>(&HookedNtTerminateProcess),
+                           &PublishFatalHookTrampoline<NtTerminateProcess_t>, &g_OriginalNtTerminateProcess)) {
+      installInlineHook("ntdll.dll", "ZwTerminateProcess", reinterpret_cast<void*>(&HookedNtTerminateProcess),
+                        &PublishFatalHookTrampoline<NtTerminateProcess_t>, &g_OriginalNtTerminateProcess);
     }
-    if (void* trampoline =
-            installInlineHook("ntdll.dll", "NtTerminateProcess", reinterpret_cast<void*>(&HookedNtTerminateProcess))) {
-      g_OriginalNtTerminateProcess.store(reinterpret_cast<NtTerminateProcess_t>(trampoline),
-                                         std::memory_order_release);
-    }
-    if (void* trampoline =
-            installInlineHook("ntdll.dll", "ZwTerminateProcess", reinterpret_cast<void*>(&HookedNtTerminateProcess))) {
-      g_OriginalNtTerminateProcess.store(reinterpret_cast<NtTerminateProcess_t>(trampoline),
-                                         std::memory_order_release);
-    }
-    if (void* trampoline = installInlineHook("ucrtbase.dll", "_invalid_parameter_noinfo_noreturn",
-                                             reinterpret_cast<void*>(&HookedInvalidParameterNoInfoNoReturn))) {
-      g_OriginalInvalidParameterNoInfoNoReturn.store(
-          reinterpret_cast<InvalidParameterNoInfoNoReturn_t>(trampoline), std::memory_order_release);
-    }
-    if (void* trampoline =
-            installInlineHook("ucrtbase.dll", "_invoke_watson", reinterpret_cast<void*>(&HookedInvokeWatson))) {
-      g_OriginalInvokeWatson.store(reinterpret_cast<InvokeWatson_t>(trampoline), std::memory_order_release);
-    }
-    if (void* trampoline = installInlineHook("ucrtbase.dll", "abort", reinterpret_cast<void*>(&HookedAbort))) {
-      g_OriginalAbort.store(reinterpret_cast<Abort_t>(trampoline), std::memory_order_release);
-    }
-    if (void* trampoline = installInlineHook("ucrtbase.dll", "terminate", reinterpret_cast<void*>(&HookedTerminate))) {
-      g_OriginalTerminate.store(reinterpret_cast<Terminate_t>(trampoline), std::memory_order_release);
-    }
-    if (void* trampoline = installInlineHook("ucrtbase.dll", "_purecall", reinterpret_cast<void*>(&HookedPurecall))) {
-      g_OriginalPurecall.store(reinterpret_cast<Purecall_t>(trampoline), std::memory_order_release);
-    }
+    installInlineHook("ucrtbase.dll", "_invalid_parameter_noinfo_noreturn",
+                      reinterpret_cast<void*>(&HookedInvalidParameterNoInfoNoReturn),
+                      &PublishFatalHookTrampoline<InvalidParameterNoInfoNoReturn_t>,
+                      &g_OriginalInvalidParameterNoInfoNoReturn);
+    installInlineHook("ucrtbase.dll", "_invoke_watson", reinterpret_cast<void*>(&HookedInvokeWatson),
+                      &PublishFatalHookTrampoline<InvokeWatson_t>, &g_OriginalInvokeWatson);
+    installInlineHook("ucrtbase.dll", "abort", reinterpret_cast<void*>(&HookedAbort),
+                      &PublishFatalHookTrampoline<Abort_t>, &g_OriginalAbort);
+    installInlineHook("ucrtbase.dll", "terminate", reinterpret_cast<void*>(&HookedTerminate),
+                      &PublishFatalHookTrampoline<Terminate_t>, &g_OriginalTerminate);
+    installInlineHook("ucrtbase.dll", "_purecall", reinterpret_cast<void*>(&HookedPurecall),
+                      &PublishFatalHookTrampoline<Purecall_t>, &g_OriginalPurecall);
 
     // Publish every callable trampoline before routing any imports to our
     // wrappers. Exception/termination paths can run on arbitrary threads while

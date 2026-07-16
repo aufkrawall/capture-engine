@@ -18,6 +18,8 @@
 
 namespace InlineHook {
 
+using TrampolinePublisher = void (*)(void* trampoline, void* context);
+
 // Install an inline hook on the target function.
 // - target: address of the function to hook
 // - detour: address of the detour function
@@ -25,6 +27,12 @@ namespace InlineHook {
 //   the original function without re-entering the detour)
 // Returns true on success.
 bool Install(void* target, void* detour, void** outTrampoline);
+
+// Install while publishing the callable trampoline before the target becomes
+// live. The publisher receives nullptr if installation fails after publication.
+// This is intended for hooks that may run concurrently during bootstrap.
+bool InstallPublished(void* target, void* detour, void** outTrampoline, TrampolinePublisher publisher,
+                      void* publisherContext);
 
 // Remove a previously installed inline hook, restoring the original bytes.
 // - target: the same target address passed to Install()

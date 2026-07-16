@@ -282,7 +282,8 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
     return false;
 }
 
-bool PatchIATAllModules(const char* sourceModule, const char* functionName, void* hookFunction, void** outOriginal) {
+bool PatchIATAllModulesFiltered(const char* sourceModule, const char* functionName, void* hookFunction,
+                                void** outOriginal, IATTargetModuleFilter targetFilter) {
     bool anyPatched = false;
     void* firstOriginal = nullptr;
 
@@ -295,6 +296,9 @@ bool PatchIATAllModules(const char* sourceModule, const char* functionName, void
             // helpful for debugging - see which modules we actually scan
             WCHAR szModName[MAX_PATH];
             if (GetModuleFileNameExW(GetCurrentProcess(), modules[i], szModName, MAX_PATH)) {
+                if (targetFilter && !targetFilter(modules[i], szModName)) {
+                    continue;
+                }
                 std::wstring wsModName(szModName);
                 if (wsModName.find(L"capture_hook") != std::wstring::npos ||
                     wsModName.find(L"d3d12_wrappers") != std::wstring::npos ||
@@ -318,6 +322,8 @@ bool PatchIATAllModules(const char* sourceModule, const char* functionName, void
                      ce::overlay_compat::IsFFXFrameGenerationModulePath(szModName))) {
                     continue;
                 }
+            } else if (targetFilter) {
+                continue;
             }
 
             if (PatchIAT(modules[i], sourceModule, functionName, hookFunction, &orig)) {
@@ -343,6 +349,10 @@ bool PatchIATAllModules(const char* sourceModule, const char* functionName, void
     }
 
     return anyPatched;
+}
+
+bool PatchIATAllModules(const char* sourceModule, const char* functionName, void* hookFunction, void** outOriginal) {
+    return PatchIATAllModulesFiltered(sourceModule, functionName, hookFunction, outOriginal, nullptr);
 }
 
 bool RestoreIAT(HMODULE targetModule, const char* sourceModule, const char* functionName, void* originalFunction) {

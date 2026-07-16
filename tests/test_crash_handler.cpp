@@ -265,6 +265,19 @@ TEST(CrashHandlerSourceTest, FatalHookBootstrapPublishesTrampolinesBeforeIatRout
     EXPECT_EQ(bootstrapBody.find("installInlineHook(\"ntdll.dll\", \"RtlRaiseException\""), std::string::npos);
     EXPECT_NE(contents.find("::RtlRaiseException(ExceptionRecord);"), std::string::npos);
     EXPECT_NE(contents.find("::NtRaiseException(ExceptionRecord, ContextRecord, FirstChance)"), std::string::npos);
+    EXPECT_NE(contents.find("::RtlExitUserProcess(ExitStatus);"), std::string::npos);
+    EXPECT_EQ(contents.find("ExitProcess(static_cast<UINT>(ExitStatus));"), std::string::npos);
+    EXPECT_NE(bootstrapBody.find("PatchIATAllModulesFiltered"), std::string::npos);
+
+    const std::filesystem::path inlineSource =
+        std::filesystem::current_path() / "hook" / "wrappers" / "inline_hook.cpp";
+    const std::string inlineContents = ReadBinaryFile(inlineSource);
+    ASSERT_FALSE(inlineContents.empty());
+    const size_t livePatch = inlineContents.find("LogDirect(\"Patching target function...\");");
+    const size_t publish = inlineContents.rfind("publisher(trampoline, publisherContext);", livePatch);
+    ASSERT_NE(publish, std::string::npos);
+    ASSERT_NE(livePatch, std::string::npos);
+    EXPECT_LT(publish, livePatch);
 }
 
 TEST(FreezeWatchdogPolicyTest, BackgroundFreezeSuppressionKeepsRuntimePresentationMonitored) {
