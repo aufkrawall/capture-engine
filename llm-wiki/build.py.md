@@ -183,6 +183,7 @@ Default quality mode currently:
 - The nested sanitizer regression child reuses the parent build number instead of incrementing the shared `common/build_version.h`; this keeps the final product DLL metadata, version verification, and verification manifest on one build identity.
 - MSYS2 package install now uses an explicit timeout and logs partial stdout/stderr on timeout instead of silently waiting forever.
 - Parallel compile now emits progress lines and a summary, and `run_tests()` logs the test launch plus elapsed time so long builds/tests no longer look idle.
+- `run_tests()` captures native test stdout/stderr and writes `unit_tests_failure.log` plus a bounded diagnostic tail when the executable returns nonzero; a bare exit code is insufficient for diagnosing intermittent failures.
 - Full verification/build runs now fail on lint errors even when lint is only one phase of a larger run. Earlier behavior only failed the process for standalone `--lint` invocations.
 - `--jobs` is now applied after environment initialization, fixing the earlier `env`-before-initialization bug in `main()`.
 - On Windows hosts, the build now emits CodeView debug info plus sidecar `.pdb` files for the built PE outputs while staying on the existing clang/lld toolchain.

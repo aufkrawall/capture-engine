@@ -4052,6 +4052,38 @@ def copy_test_runtime_dlls(tests_dir):
     if copied:
         log(f"Copied {len(copied)} runtime DLLs to tests/ for direct execution")
 
+def record_unit_test_failure_output(cmd, result):
+    """Persist failed unit-test stdout/stderr so an exit code is actionable."""
+    stdout = result.stdout if isinstance(result.stdout, str) else ""
+    stderr = result.stderr if isinstance(result.stderr, str) else ""
+    failure_text = "\n".join(
+        [
+            f"command: {subprocess.list2cmdline(cmd)}",
+            "",
+            "[stdout]",
+            stdout or "<empty>",
+            "",
+            "[stderr]",
+            stderr or "<empty>",
+            "",
+        ]
+    )
+    failure_path = verification_artifact_path("unit_tests_failure.log")
+    if not failure_path:
+        return None
+    write_text_atomic(failure_path, failure_text)
+    record_verification_artifact("unit_tests_failure_log", failure_path)
+    return failure_path
+
+
+def log_unit_test_output_tail(label, output, max_lines=80):
+    """Log only the diagnostic tail; the complete output is kept as an artifact."""
+    if not isinstance(output, str) or not output:
+        return
+    lines = output.splitlines()
+    for line in lines[-max_lines:]:
+        log(f"[unit_tests:{label}] {line}")
+
 
 def run_tests(env, test_exe, gtest_filter=None):
     log("=== Running Unit Tests ===")
@@ -4078,12 +4110,24 @@ def run_tests(env, test_exe, gtest_filter=None):
         log(f"Applying unit test filter: {gtest_filter}")
     log("Launching unit_tests.exe...")
     start = time.time()
-    result = subprocess.run(cmd, env=test_env)
+    result = subprocess.run(
+        cmd,
+        env=test_env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     elapsed = time.time() - start
     log(f"unit_tests.exe finished in {elapsed:.1f}s")
     record_verification_artifact("unit_test_exe", test_exe)
     if result.returncode != 0:
+        failure_path = record_unit_test_failure_output(cmd, result)
         log(f"=== Unit Tests FAILED (exit code {result.returncode}) ===")
+        if failure_path:
+            log(f"Unit-test diagnostics saved to {failure_path}")
+        log_unit_test_output_tail("stdout", result.stdout)
+        log_unit_test_output_tail("stderr", result.stderr)
         record_verification_step(
             "unit_tests",
             "failed",

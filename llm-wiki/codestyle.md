@@ -57,3 +57,17 @@ This page records the style rules that are either tool-backed or strongly reflec
 - Formatter configuration values are high confidence as style guidance, but automatic whole-file conformance is intentionally not assumed.
 - Naming and local-pattern guidance is medium confidence and should be re-checked against the files you touch.
 - If formatter output, local file style, and this page disagree, preserve the local subsystem's established pattern unless the user explicitly requested a formatting migration.
+
+### Current clang-tidy debt and triage
+
+The 2026-07-17 inventory ran against the existing `compile_commands.json` (217 C++ entries) with the project header boundary in `.clang-tidy`. It found 1,159 project findings: 541 in `hook`, 269 in `tests`, 215 in `testapp`, 82 in `mediaengine`, 43 in `captureengine`, and 9 in `common`. External, generated, installed, and FFmpeg trees are excluded and are not part of this debt.
+
+Use these dispositions; they are triage buckets, not blanket suppressions:
+
+| Disposition | Checks and counts | Required handling |
+| --- | --- | --- |
+| Correctness/design review (380) | `invalid-enum-default-initialization` 137; `throwing-static-initialization` 62; `unchecked-string-to-number-conversion` 42; `exception-escape` 26; `unchecked-optional-access` 26; `incorrect-roundings` 19; `inc-dec-in-conditions` 10; `switch-missing-default-case` 9; `nondeterministic-pointer-iteration-order` 8; `misplaced-widening-cast` 7; `suspicious-memory-comparison` 6; `signed-char-misuse` 4; `sizeof-expression` 4; `use-after-move` 10; `empty-catch` 3; `unused-return-value` 3; `integer-division` 2; `raw-memory-call-on-non-trivial-type` 1; `redundant-branch-condition` 1 | Inspect behavior and add focused regression coverage before changing or documenting the finding. Never globally disable these checks. |
+| Conversion/ABI/intent review (762) | `narrowing-conversions` 337; `multi-level-implicit-pointer-conversion` 183; `argument-comment` 165; `bitwise-pointer-cast` 44; `branch-clone` 25; `macro-parentheses` 7; `casting-through-void` 1 | Verify range/ABI/lifetime assumptions. Use explicit local conversions, wrappers, or narrow documented suppressions only when the intent is proven. |
+| Performance review (17) | `inefficient-vector-operation` 6; `unnecessary-value-param` 7; `no-automatic-move` 4 | Change only when ownership and measured behavior support it; do not trade hot-path correctness for warning count. |
+
+`run_tests()` captures the executable's stdout/stderr and, on failure, writes `unit_tests_failure.log` into the verification bundle while logging the diagnostic tail. This is required because an exit code without the failing GoogleTest name is not actionable.

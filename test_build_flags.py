@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+from unittest.mock import patch
 from pathlib import Path
 
 import build
@@ -58,6 +59,31 @@ class BuildFlagPolicyTest(unittest.TestCase):
             source = build_file.read()
         self.assertIn("if sanitize_regression_child:", source)
         self.assertIn("current_build_number = read_build_version_number()", source)
+
+    def test_failed_unit_tests_capture_diagnostics(self) -> None:
+        previous_context = build.VERIFICATION_CONTEXT
+        with tempfile.TemporaryDirectory() as temporary:
+            test_exe = Path(temporary) / "unit_tests.exe"
+            test_exe.write_bytes(b"")
+            build.VERIFICATION_CONTEXT = {"run_dir": temporary, "artifacts": {}}
+            failure = build.subprocess.CompletedProcess(
+                args=[str(test_exe)],
+                returncode=1,
+                stdout="[  FAILED  ] ExampleTest.Fails\n",
+                stderr="diagnostic stderr\n",
+            )
+            try:
+                with patch.object(build.subprocess, "run", return_value=failure) as run, patch.object(build, "log"):
+                    self.assertFalse(build.run_tests({}, str(test_exe)))
+                failure_log = Path(temporary) / "unit_tests_failure.log"
+                self.assertTrue(failure_log.exists())
+                diagnostics = failure_log.read_text(encoding="utf-8")
+                self.assertIn("ExampleTest.Fails", diagnostics)
+                self.assertIn("diagnostic stderr", diagnostics)
+                self.assertTrue(run.call_args.kwargs["capture_output"])
+                self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+            finally:
+                build.VERIFICATION_CONTEXT = previous_context
 
     def test_windows_sdk_headers_are_in_safe_include_order(self) -> None:
         project_root = Path(build.__file__).parent
