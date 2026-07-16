@@ -184,10 +184,11 @@ float4 main(PS_INPUT input) : SV_Target {
 
 # Descriptor-free textured pixel shader:
 # Uses StructuredBuffer<uint> (root SRV at t0) instead of Texture2D, so
-# SetDescriptorHeaps is never needed.  Avoids the NVIDIA driver stall
-# caused by SetDescriptorHeaps + OMSetRenderTargets(swapchain) in the
-# same command list.  The structured uint load keeps element addressing
-# explicit; x86 primary text rendering routes through the Texture2D backend.
+# SetDescriptorHeaps is never needed. Historical x86/NVIDIA investigation later
+# reproduced the text hang with both descriptor-free and Texture2D resource
+# reads, so avoiding descriptor heaps is not itself the root-cause fix. The
+# structured uint load keeps element addressing explicit; x86 primary text
+# rendering uses resource-free solid glyph geometry.
 # Manual bilinear filtering matches the static sampler quality of the standard
 # textured PS.
 PS_TEXTURED_DESCFREE_SRC = b"""

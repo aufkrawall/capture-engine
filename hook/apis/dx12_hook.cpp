@@ -18265,7 +18265,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     // widens the DRED dump window. It does NOT gate the overlay.
     const int focusTransitionHoldRemaining = g_FocusTransitionHoldFrames.load(std::memory_order_acquire);
     const bool focusTransitionActive =
-        ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkDuringFocusTransition(
+        ce::dx12_overlay_policy::IsD3D12FocusTransitionTelemetryActive(
             frameDesc.Windowed != 0, focusTransitionHoldRemaining, focusLossBackgroundFrameGenerationActive,
             focusLossBackgroundRuntimeOwnedPresentation, focusLossBackgroundUsingDedicatedQueue,
             focusLossBackgroundSteamDeferredSubmit, focusLossBackgroundDeviceLost, gameQueue != nullptr);

@@ -1,11 +1,13 @@
-# HAND-OFF: 32-bit DX12 inject-overlay crash/freeze (FIXED)
+# HAND-OFF: 32-bit DX12 inject-overlay crash/freeze (FIXED; vendor cause unconfirmed)
 
-Last cross-checked: 2026-06-09. Build/runtime validation used build `0.1.3822`.
+Last cross-checked: 2026-07-16 against current code and Git history. Build/runtime validation remains from build `0.1.3822` on 2026-06-09.
 
 ## Summary
 Injected 32-bit `dx12_test.exe` with CE overlay enabled and `vsync=0` used to hit a primary GPU hang/TDR (`DXGI_ERROR_DEVICE_HUNG`, `0x887A0006`) within a few seconds. The visible `nvwgf2um` access violation was secondary, after the device was already removed and the app kept submitting command lists.
 
-The decisive isolation was the draw shape, not focus state: all paths that sampled CE-owned font resources for text could still hang on x86, while an all-solid diagnostic path stayed stable. Full DRED in the failing builds showed the first solid draw completing and the first textured/font-resource draw hanging.
+The decisive isolation was the draw shape, not focus state: all paths that sampled CE-owned font resources for text could still hang on x86, while an all-solid diagnostic path stayed stable. Full DRED in the failing builds showed the first solid draw completing and the first textured/font-resource draw hanging. After the test app's uncapped mode was corrected, the same failure reproduced in steady rendering without an Alt+Tab edge; focus/independent-flip transitions were a high-probability trigger, not a required cause.
+
+The strongest explanation is an NVIDIA x86/WoW64 native-DX12 driver interaction with CE-owned pixel-shader resource reads. Treat that attribution as probable, not proven: the repository has no vendor confirmation, standalone non-injected reproducer, cross-vendor/driver matrix, or currently retained copies of the referenced raw runtime logs. The proven compatibility boundary is narrower: x86 DX12 font-resource sampling triggered the hang in the recorded CE paths, while resource-free solid text did not.
 
 ## Fix
 - 32-bit DX12 still uses the native DX12 overlay path. There is no pseudo overlay, DirectPresent overlay, D3D11On12, or focus-transition copy fallback for this fix.
@@ -18,8 +20,9 @@ The decisive isolation was the draw shape, not focus state: all paths that sampl
 
 ## Validation
 - `python build.py --skip-updates` succeeded for build `0.1.3822`.
+- The 2026-07-16 code/history audit passed the required full build as `0.1.4935` and six focused CPU/unit tests, including all-printable-ASCII glyph coverage reconstruction. It did not launch a graphics test app or replace the historical runtime validation below.
 - Focused tests passed:
-  - `FontAtlasTest.GlyphSpansStayInsideGlyphBounds`
+  - `FontAtlasTest.GlyphSpansReconstructQuantizedCoverageForPrintableAscii`
   - `RendererSolidTextTest.PreferredSolidTextEmitsOnlySolidCommands`
   - `DXGISharedTest.X86Dx12OverlayUsesStandardNativeBackendRoute`
   - `DXGISharedTest.X86Dx12TextUsesSolidGeometry`
@@ -29,6 +32,7 @@ The decisive isolation was the draw shape, not focus state: all paths that sampl
   - First pass: three 30 s runs in one controller session, all alive at 30 s, zero not-responding samples, no device removal.
   - Second pass: three fresh CaptureEngine sessions, each alive at 30 s, zero not-responding samples, no device removal.
 - Fresh-session logs: `installed/captureengine/logs/20260609_000749`, `20260609_000823`, `20260609_000858`.
+- Those six runs exercised the faster uncapped steady-state reproducer. They establish that the accepted path removed that deterministic hang, but they are not a cross-driver/vendor or renewed Alt+Tab validation matrix.
 - Healthy log markers:
   - `DX12 focus-loss sync policy=v13 draw-every-frame + x86 solid-span text + upload-slot per-frame fence`
   - `DX12 Overlay: x86 solid-span text path enabled`
@@ -36,6 +40,7 @@ The decisive isolation was the draw shape, not focus state: all paths that sampl
 
 ## Invariants
 - Do not reintroduce x86 DX12 font-resource sampling as the default text path without a fresh 32-bit no-vsync stress run.
+- Keep reports precise: font-resource sampling is the isolated trigger; NVIDIA driver ownership of the underlying defect remains an unconfirmed explanation.
 - Do not fix this family by hiding/suspending the overlay, pseudo overlay, DirectPresent overlay, D3D11On12, sleeps, or focus-transition copy/composite fallbacks.
 - The upload-slot fence is still required. It fixes the older upload-ring reuse hazard and remains part of the v13 policy marker.
 - 64-bit DX12 remains on the normal textured text path unless a separate 64-bit issue proves otherwise.

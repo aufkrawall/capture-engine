@@ -31,7 +31,7 @@ Primary sources:
 
 ## Content Catalog
 - `handoff-dx12-32bit-crash.md`
-  - Fixed-state pickup note for the 32-bit DX12 inject-overlay crash/freeze: root-cause isolation, solid glyph-span text fix, runtime validation logs, invariants, and source anchors.
+  - Fixed-state pickup note for the 32-bit DX12 inject-overlay crash/freeze: proven font-resource trigger, unconfirmed NVIDIA/WoW64 attribution, solid glyph-span text fix, runtime validation boundary, invariants, and source anchors. Last verified 2026-07-16.
 - `current.md`
   - Compact current-state summary, current logging model, and token-efficient routing into the longer wiki pages.
 - `codestyle.md`
@@ -49,7 +49,7 @@ Primary sources:
 - `dx12-injection-bootstrap.md`
   - Current DX12 injection timing, capture-method/injection independence, active inject-video publication gating, CFG-safe hook bootstrap, and pseudo-overlay handoff behavior. Last verified 2026-07-16.
 - `dx12-overlay-third-party-coexistence.md`
-  - Current DX12 overlay coexistence rules for third-party overlays such as Steam, Rockstar Social Club, and Epic EOS.
+  - Current DX12 overlay coexistence rules for third-party overlays such as Steam, Rockstar Social Club, and Epic EOS, including the audited x86 solid-text compatibility boundary. Last verified 2026-07-16.
 - `dx11-forced-af.md`
   - Current Blackwell-safe D3D11 forced anisotropic filtering policy: immutable shader/SRV/sampler object caches, dirty-slot-only reconciliation, zero-lock clean draws, broader material coverage, state-boundary handling, diagnostics, and runtime-validation stale-risk. Last verified 2026-07-16.
 - `cross-api-forced-af.md`
@@ -67,7 +67,7 @@ Primary sources:
 - `pseudo-overlay.md`
   - Controller-side pseudo-overlay for WGC capture: architecture, modes, foreground detection, process_list config parsing, known pitfalls (Trim charset, `;` comment skipping), debug logging, source anchors.
 - `regression-testing-and-logging.md`
-  - Regression coverage expectations and deterministic capture runners, including the fast zero-drift gate, overload/long-soak profiles, and HAGS-on 4K120 contention gate. Last verified 2026-07-12.
+  - Regression coverage expectations and deterministic capture runners, including the fast zero-drift gate, overload/long-soak profiles, HAGS-on 4K120 contention gate, and x86 DX12 solid-text/focus-visibility boundary. Last verified 2026-07-16.
 - `multi-audio-capture.md`
   - Multi system/microphone/app capture, including process-loopback protocol 2 descriptor/byte rings, fatal transport-integrity propagation, polling-first activation, render-session recovery, ordered epochs, disposable helper isolation/recycle, the 60 ms CFR ingestion reservoir, exact finalization, and route-local compensation. Last verified 2026-07-15. Stale-risk: medium (fresh device/runtime validation remains necessary).
 - `wgc-capture.md`

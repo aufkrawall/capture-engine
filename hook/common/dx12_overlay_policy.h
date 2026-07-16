@@ -2160,10 +2160,11 @@ inline bool ShouldUseTextureDx12OverlayBackendForProcess(bool is32BitProcess) {
 }
 
 inline bool ShouldUseSolidDx12TextGeometryForProcess(bool is32BitProcess) {
-    // x86/WoW64 NVIDIA can hang on native DX12 overlay text draws that sample a
-    // CE-owned font resource.  Preserve the native overlay and direct backbuffer
-    // path, but encode glyph coverage as solid alpha geometry so text uses the
-    // same proven solid PSO path as rectangles/graphs.
+    // Native DX12 font-resource reads were observed hanging on the tested
+    // x86/WoW64 NVIDIA path. Driver ownership of the underlying defect is not
+    // vendor-confirmed, so keep the conservative architecture-wide policy.
+    // Preserve the native direct overlay, but encode glyph coverage as solid
+    // alpha geometry so text uses the proven resource-free solid PSO path.
     return is32BitProcess;
 }
 
@@ -2195,28 +2196,23 @@ inline bool ShouldRequestImmediateDumpForD3D12FocusTransitionDeviceRemoval(bool 
     return deviceLost && focusTransitionRecentlyActive && !dumpAlreadyRequested;
 }
 
-// v10 focus-transition backbuffer-work hold.
+// Historical v10 focus-transition predicate, retained as v13 telemetry only.
 //
-// DRED proved the x86 DX12 Alt+Tab device-hung is a PURE GPU hang (pageFaultVA=0)
-// inside CE's OWN overlay command list, and that it happens for ANY backbuffer
-// touch during the iflip<->composited mode switch around a focus change:
+// Early DRED runs showed pure GPU hangs (pageFaultVA=0) after both a direct draw
+// and an experimental backbuffer copy during Alt+Tab:
 //   - v8 direct draw: hung on DRAWINDEXEDINSTANCED (logs/20260603_020053).
 //   - v9 offscreen composite: hung on the bb->offscreen COPYTEXTUREREGION
 //     (logs/20260603_150241) — the offscreen path still reads the live backbuffer.
-// The hangs were observed at the refocus edge (composited->iflip). So during the
-// brief transition window after a foreground-change edge, CE must not touch the
-// swapchain backbuffer AT ALL (no draw, no copy) — this matches v7, which never
-// hung. Unlike v7, the hold is armed only by the focus-change EDGE and clears after
-// the mode switch settles, so steady states (focused AND unfocused-but-visible)
-// render directly, exactly like a lightweight inject overlay, and the overlay is only briefly absent during
-// the actual mode switch (when the screen is transitioning anyway). FG /
-// runtime-owned / dedicated-queue / Steam-deferred routes manage their own
-// submission and are excluded. `transitionHoldFramesRemaining` is the edge-armed
-// per-Present countdown (see g_FocusTransitionHoldFrames).
-inline bool ShouldHoldD3D12OverlayBackbufferWorkDuringFocusTransition(
-    bool isWindowed, int transitionHoldFramesRemaining, bool frameGenerationActive, bool runtimeOwnedPresentation,
+// That initially motivated hiding backbuffer work around the focus edge. Later
+// v13 investigation reproduced the hang without a focus transition, isolated it
+// to x86 font-resource text draws, and rejected the visible hold. The production
+// path uses this telemetry only to log the legacy edge counter and widen the DRED
+// capture window; it must never gate overlay rendering. FG/runtime-owned/
+// dedicated-queue/Steam-deferred routes retain separate diagnostics.
+inline bool IsD3D12FocusTransitionTelemetryActive(
+    bool isWindowed, int transitionFramesRemaining, bool frameGenerationActive, bool runtimeOwnedPresentation,
     bool usingDedicatedQueue, bool steamDeferredOverlaySubmit, bool deviceLost, bool hasQueue) {
-    return isWindowed && transitionHoldFramesRemaining > 0 && !frameGenerationActive && !runtimeOwnedPresentation &&
+    return isWindowed && transitionFramesRemaining > 0 && !frameGenerationActive && !runtimeOwnedPresentation &&
            !usingDedicatedQueue && !steamDeferredOverlaySubmit && !deviceLost && hasQueue;
 }
 

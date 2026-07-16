@@ -443,28 +443,27 @@ TEST(DXGISharedTest, D3D12UnfocusedButVisibleSwapchainKeepsOverlayVisible) {
     EXPECT_FALSE(hold);
 }
 
-TEST(DXGISharedTest, D3D12FocusTransitionHoldGatesOnlyTheModeSwitchWindow) {
-    auto hold = [](bool windowed = true, int transitionRemaining = 30, bool fgActive = false, bool runtimeOwned = false,
-                   bool dedicated = false, bool steamDeferred = false, bool deviceLost = false, bool hasQueue = true) {
-        return ce::dx12_overlay_policy::ShouldHoldD3D12OverlayBackbufferWorkDuringFocusTransition(
+TEST(DXGISharedTest, D3D12FocusTransitionTelemetryTracksOnlyTheModeSwitchWindow) {
+    auto active = [](bool windowed = true, int transitionRemaining = 30, bool fgActive = false,
+                     bool runtimeOwned = false, bool dedicated = false, bool steamDeferred = false,
+                     bool deviceLost = false, bool hasQueue = true) {
+        return ce::dx12_overlay_policy::IsD3D12FocusTransitionTelemetryActive(
             windowed, transitionRemaining, fgActive, runtimeOwned, dedicated, steamDeferred, deviceLost, hasQueue);
     };
 
-    // During the transition window (counter > 0) on a windowed swapchain -> hold all
-    // backbuffer work (any draw/copy pure-hangs the GPU mid mode-switch; DRED-proven).
-    EXPECT_TRUE(hold());
-    // Outside the transition window (counter == 0) -> render directly (steady focused
-    // OR steady unfocused-but-visible). This is the no-hide guarantee.
-    EXPECT_FALSE(hold(true, 0));
+    // The legacy edge counter remains useful for bounded logging and DRED capture,
+    // but this result is telemetry only and must not gate overlay rendering.
+    EXPECT_TRUE(active());
+    EXPECT_FALSE(active(true, 0));
 
-    // Negating conditions never hold (these routes manage their own submission).
-    EXPECT_FALSE(hold(false, 30));                                           // exclusive fullscreen
-    EXPECT_FALSE(hold(true, 30, true));                                      // FG active
-    EXPECT_FALSE(hold(true, 30, false, true));                               // runtime-owned
-    EXPECT_FALSE(hold(true, 30, false, false, true));                        // dedicated queue
-    EXPECT_FALSE(hold(true, 30, false, false, false, true));                 // steam deferred
-    EXPECT_FALSE(hold(true, 30, false, false, false, false, true));          // device lost
-    EXPECT_FALSE(hold(true, 30, false, false, false, false, false, false));  // no queue
+    // Negating conditions belong to routes with separate diagnostics.
+    EXPECT_FALSE(active(false, 30));                                           // exclusive fullscreen
+    EXPECT_FALSE(active(true, 30, true));                                      // FG active
+    EXPECT_FALSE(active(true, 30, false, true));                               // runtime-owned
+    EXPECT_FALSE(active(true, 30, false, false, true));                        // dedicated queue
+    EXPECT_FALSE(active(true, 30, false, false, false, true));                 // steam deferred
+    EXPECT_FALSE(active(true, 30, false, false, false, false, true));          // device lost
+    EXPECT_FALSE(active(true, 30, false, false, false, false, false, false));  // no queue
 }
 
 TEST(DXGISharedTest, D3D12NonPresentableHoldPolicyIsPresentPathAgnostic) {
@@ -546,15 +545,11 @@ TEST(DXGISharedTest, X86Dx12TextUsesSolidGeometry) {
     EXPECT_FALSE(pol::ShouldUseSolidDx12TextGeometryForProcess(false));
 }
 
-// Models the x86 Alt+Tab freeze root cause: during the iflip<->composited mode
-// switch the GPU stops retiring for a stretch while the CPU keeps drawing the
-// overlay every frame.  The DescFree backend round-robins kPoolSize UPLOAD
-// vertex/index buffers; without a per-slot guard the CPU wraps and overwrites a
-// slot the GPU is still reading (the data race that corrupted the draw and hung
-// the device).  With the guard the present thread waits before reuse, so no slot
-// is ever stomped.  The unguarded branch reproduces the pre-fix behavior and must
-// stomp; the guarded branch must not.
-TEST(DXGISharedTest, OverlayUploadRingGuardPreventsModeSwitchStomp) {
+// Models the independent upload-ring reuse hazard that an extended GPU pause can
+// expose. The guard remains required, but later DRED work disproved ring reuse as
+// the cause of the deterministic x86 font-resource hang: that failure reproduced
+// with correct fencing. The unguarded model must stomp; the guarded model must not.
+TEST(DXGISharedTest, OverlayUploadRingGuardPreventsStompDuringGpuPause) {
     namespace pol = ce::dx12_overlay_policy;
     constexpr int kPoolSize = 4;
 

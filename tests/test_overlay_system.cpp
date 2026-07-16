@@ -6,6 +6,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <cstring>
 #include <vector>
 #include "../hook/common/custom_font.h"
@@ -51,19 +52,46 @@ TEST_F(FontAtlasTest, TextureDataNonEmpty) {
     EXPECT_TRUE(hasPixel) << "Font atlas texture has no visible pixels";
 }
 
-TEST_F(FontAtlasTest, GlyphSpansStayInsideGlyphBounds) {
-    const Glyph* glyph = atlas.GetGlyph('A');
-    ASSERT_NE(glyph, nullptr);
+TEST_F(FontAtlasTest, GlyphSpansReconstructQuantizedCoverageForPrintableAscii) {
+    const uint8_t* textureData = atlas.GetTextureData();
+    ASSERT_NE(textureData, nullptr);
+    const int textureWidth = atlas.GetTextureWidth();
+    const int textureHeight = atlas.GetTextureHeight();
 
-    const auto& spans = atlas.GetGlyphSpans('A');
-    ASSERT_FALSE(spans.empty()) << "Visible glyph should have alpha spans";
+    for (int c = 32; c <= 126; ++c) {
+        SCOPED_TRACE(::testing::Message() << "ASCII " << c);
+        const Glyph* glyph = atlas.GetGlyph((char)c);
+        ASSERT_NE(glyph, nullptr);
+        ASSERT_LE((int)glyph->x + (int)glyph->width, textureWidth);
+        ASSERT_LE((int)glyph->y + (int)glyph->height, textureHeight);
 
-    for (const auto& span : spans) {
-        EXPECT_LT(span.x, glyph->width);
-        EXPECT_LT(span.y, glyph->height);
-        EXPECT_LE((uint32_t)span.x + (uint32_t)span.width, (uint32_t)glyph->width);
-        EXPECT_GT(span.width, 0u);
-        EXPECT_GT(span.alpha, 0u);
+        std::vector<uint8_t> reconstructed((size_t)glyph->width * (size_t)glyph->height, 0);
+        const auto& spans = atlas.GetGlyphSpans((char)c);
+        for (const auto& span : spans) {
+            ASSERT_LT(span.x, glyph->width);
+            ASSERT_LT(span.y, glyph->height);
+            ASSERT_LE((uint32_t)span.x + (uint32_t)span.width, (uint32_t)glyph->width);
+            ASSERT_GT(span.width, 0u);
+            EXPECT_TRUE(span.alpha == 255 ||
+                        (span.alpha >= 16 && span.alpha <= 240 && span.alpha % 16 == 0));
+
+            for (uint16_t x = 0; x < span.width; ++x) {
+                uint8_t& coverage = reconstructed[(size_t)span.y * glyph->width + span.x + x];
+                EXPECT_EQ((unsigned)coverage, 0u) << "glyph spans overlap";
+                coverage = span.alpha;
+            }
+        }
+
+        for (uint16_t y = 0; y < glyph->height; ++y) {
+            for (uint16_t x = 0; x < glyph->width; ++x) {
+                const size_t atlasIndex =
+                    ((size_t)(glyph->y + y) * (size_t)textureWidth + (size_t)(glyph->x + x)) * 4 + 3;
+                const uint8_t sourceAlpha = textureData[atlasIndex];
+                const int roundedAlpha = sourceAlpha == 0 ? 0 : (((int)sourceAlpha + 15) & ~15);
+                const uint8_t expectedAlpha = (uint8_t)((std::min)(255, roundedAlpha));
+                EXPECT_EQ((unsigned)reconstructed[(size_t)y * glyph->width + x], (unsigned)expectedAlpha);
+            }
+        }
     }
 }
 
