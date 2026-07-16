@@ -15,6 +15,7 @@ struct SystemMetrics {
     uint64_t vramTotal;     // Bytes
     float gpuUsage;         // 0-100%
     bool gpuUsageValid;     // True if gpuUsage is real
+    bool vramUsageValid;    // True if vramUsed is real, including a valid zero
 };
 
 class SystemMetricsCollector {
@@ -59,6 +60,7 @@ private:
     void UpdateRAM();
     void UpdateGPU();
     void UpdateVRAMTotal();
+    bool UpdateFromHost();
     void BackgroundUpdateLoop();
 
     // Threading
@@ -83,6 +85,8 @@ private:
 
     // GPU (DXGI for VRAM)
     LUID adapterLuid = {0, 0};
+    LUID hostMetricsAdapterLuid = {0, 0};
+    uint32_t hostMetricsSourcePid = 0;
     void* cachedFactory = nullptr;  // IDXGIFactory4*
     void* cachedAdapter = nullptr;  // IDXGIAdapter3*
 

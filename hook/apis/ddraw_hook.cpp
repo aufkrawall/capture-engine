@@ -1102,6 +1102,17 @@ public:
             return false;
         }
 
+        LUID helperLuid = {};
+        const HRESULT luidHr = d3d9Ex->GetAdapterLUID(D3DADAPTER_DEFAULT, &helperLuid);
+        if (SUCCEEDED(luidHr) && (helperLuid.LowPart != 0 || helperLuid.HighPart != 0)) {
+            luidLow = helperLuid.LowPart;
+            luidHigh = helperLuid.HighPart;
+            ReportLUID(luidLow, luidHigh);
+            HookLog("DDraw: Published D3D9Ex overlay-helper LUID %08x:%08x", luidHigh, luidLow);
+        } else {
+            HookLog("DDraw: D3D9Ex overlay-helper LUID unavailable (hr=0x%08x)", luidHr);
+        }
+
         HookLog("DDraw: Created D3D9Ex helper device with %s swap effect", d3d9UsesFlipEx ? "FLIPEX" : "DISCARD");
 
         d3d9DeviceEx->SetMaximumFrameLatency(1);

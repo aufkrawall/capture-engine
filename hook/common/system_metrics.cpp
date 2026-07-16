@@ -50,6 +50,45 @@ bool JoinThreadWithTimeout(std::thread& thread, DWORD timeoutMs, const char* con
     }
     return false;
 }
+
+struct HostMetricsPublication {
+    float cpuUsage = 0.0f;
+    float ramUsageGB = 0.0f;
+    float gpuUsage = 0.0f;
+    float vramUsageMB = 0.0f;
+    uint64_t vramTotal = 0;
+    uint32_t maxCoreLoad = 0;
+    uint32_t validityMask = 0;
+    uint32_t sourcePid = 0;
+    LUID adapterLuid = {0, 0};
+};
+
+bool ReadHostMetricsPublication(SharedMemoryLayout* sharedMem, HostMetricsPublication& publication) {
+    if (!sharedMem)
+        return false;
+    auto& metrics = sharedMem->systemMetrics;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        const uint32_t sequenceBefore = metrics.publicationSequence.load(std::memory_order_acquire);
+        if ((sequenceBefore & 1u) != 0)
+            continue;
+        publication.sourcePid = metrics.sourcePid.load(std::memory_order_relaxed);
+        publication.cpuUsage = metrics.cpuUsage.load(std::memory_order_relaxed);
+        publication.ramUsageGB = metrics.ramUsage.load(std::memory_order_relaxed);
+        publication.gpuUsage = metrics.gpuUsage.load(std::memory_order_relaxed);
+        publication.vramUsageMB = metrics.vramUsage.load(std::memory_order_relaxed);
+        publication.vramTotal = metrics.vramTotal.load(std::memory_order_relaxed);
+        publication.maxCoreLoad = metrics.maxCoreLoad.load(std::memory_order_relaxed);
+        publication.adapterLuid.LowPart = static_cast<DWORD>(metrics.adapterLuidLow.load(std::memory_order_relaxed));
+        publication.adapterLuid.HighPart = static_cast<LONG>(metrics.adapterLuidHigh.load(std::memory_order_relaxed));
+        publication.validityMask = metrics.validityMask.load(std::memory_order_relaxed);
+        const uint32_t sequenceAfter = metrics.publicationSequence.load(std::memory_order_acquire);
+        if (sequenceBefore == sequenceAfter) {
+            const uint32_t activeSourcePid = sharedMem->GetSourcePid();
+            return publication.sourcePid != 0 && publication.sourcePid == activeSourcePid;
+        }
+    }
+    return false;
+}
 }  // namespace
 
 SystemMetricsCollector& SystemMetricsCollector::Get() {
@@ -169,6 +208,11 @@ void SystemMetricsCollector::Initialize(int32_t luidLow, int32_t luidHigh) {
         // New LUID
         adapterLuid.LowPart = luidLow;
         adapterLuid.HighPart = luidHigh;
+        current.gpuUsage = 0.0f;
+        current.gpuUsageValid = false;
+        current.vramUsed = 0;
+        current.vramUsageValid = false;
+        current.vramTotal = 0;
         snprintf(cachedLuidPart, sizeof(cachedLuidPart), "luid_0x%08X_0x%08X", (unsigned int)luidHigh,
                  (unsigned int)luidLow);
 
@@ -182,6 +226,7 @@ void SystemMetricsCollector::Initialize(int32_t luidLow, int32_t luidHigh) {
         if (g_IPC && g_IPC->GetSharedMem()) {
             g_IPC->GetSharedMem()->SetLuidLowPart(luidLow);
             g_IPC->GetSharedMem()->SetLuidHighPart(luidHigh);
+            g_IPC->GetSharedMem()->SetLuidSourcePid(GetCurrentProcessId());
             // EarlyLog("SystemMetricsCollector: Published LUID to Shared Memory:
             // %08X-%08X", luidHigh, luidLow);
         }
@@ -206,6 +251,44 @@ void SystemMetricsCollector::Initialize(int32_t luidLow, int32_t luidHigh) {
     }
 }
 
+bool SystemMetricsCollector::UpdateFromHost() {
+    if (!g_IPC || !g_IPC->GetSharedMem())
+        return false;
+
+    HostMetricsPublication publication;
+    if (!ReadHostMetricsPublication(g_IPC->GetSharedMem(), publication))
+        return false;
+
+    std::lock_guard<std::mutex> lock(mutex);
+    const bool sourceChanged = hostMetricsSourcePid != publication.sourcePid;
+    const bool adapterChanged = hostMetricsAdapterLuid.LowPart != publication.adapterLuid.LowPart ||
+                                hostMetricsAdapterLuid.HighPart != publication.adapterLuid.HighPart;
+    if (sourceChanged || adapterChanged) {
+        current.gpuUsage = 0.0f;
+        current.gpuUsageValid = false;
+        current.vramUsed = 0;
+        current.vramUsageValid = false;
+        if (adapterChanged)
+            current.vramTotal = 0;
+        hostMetricsSourcePid = publication.sourcePid;
+        hostMetricsAdapterLuid = publication.adapterLuid;
+    }
+
+    current.cpuUsage = publication.cpuUsage;
+    current.cpuMaxCoreUsage = static_cast<float>(publication.maxCoreLoad);
+    current.ramUsed = static_cast<uint64_t>((std::max)(0.0f, publication.ramUsageGB) * 1024.0 * 1024.0 * 1024.0);
+
+    current.gpuUsageValid = (publication.validityMask & SYSTEM_METRIC_GPU_USAGE_VALID) != 0;
+    current.gpuUsage = current.gpuUsageValid ? publication.gpuUsage : 0.0f;
+    current.vramUsageValid = (publication.validityMask & SYSTEM_METRIC_VRAM_USAGE_VALID) != 0;
+    current.vramUsed = current.vramUsageValid
+                           ? static_cast<uint64_t>((std::max)(0.0f, publication.vramUsageMB) * 1024.0 * 1024.0)
+                           : 0;
+    if ((publication.validityMask & SYSTEM_METRIC_VRAM_TOTAL_VALID) != 0)
+        current.vramTotal = publication.vramTotal;
+    return true;
+}
+
 void SystemMetricsCollector::BackgroundUpdateLoop() {
     EarlyLog("SystemMetricsCollector: Background thread started");
     static bool loggedIPCMode = false;
@@ -223,39 +306,20 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
             // Ensure LUID is published (handles late IPC connection)
             {
                 std::lock_guard<std::mutex> lock(mutex);
-                if (g_IPC->GetSharedMem()->GetLuidLowPart() != (int32_t)adapterLuid.LowPart) {
-                    g_IPC->GetSharedMem()->SetLuidLowPart(adapterLuid.LowPart);
-                    g_IPC->GetSharedMem()->SetLuidHighPart(adapterLuid.HighPart);
+                if (adapterLuid.LowPart != 0 || adapterLuid.HighPart != 0) {
+                    if (g_IPC->GetSharedMem()->GetLuidLowPart() != (int32_t)adapterLuid.LowPart ||
+                        g_IPC->GetSharedMem()->GetLuidHighPart() != (int32_t)adapterLuid.HighPart) {
+                        g_IPC->GetSharedMem()->SetLuidLowPart(adapterLuid.LowPart);
+                        g_IPC->GetSharedMem()->SetLuidHighPart(adapterLuid.HighPart);
+                    }
+                    g_IPC->GetSharedMem()->SetLuidSourcePid(GetCurrentProcessId());
                 }
             }
 
-            auto& shm = g_IPC->GetSharedMem()->systemMetrics;
-            float cpu = shm.cpuUsage.load(std::memory_order_relaxed);
-            float gpu = shm.gpuUsage.load(std::memory_order_relaxed);
-            float vramMB = shm.vramUsage.load(std::memory_order_relaxed);
-            // Heuristic: host always provides CPU/RAM; only trust GPU/VRAM when
-            // non-zero
-            if (cpu > 0.0f) {
-                if (!loggedIPCMode) {
-                    EarlyLog("SystemMetricsCollector: Using Host (IPC) metrics");
-                    loggedIPCMode = true;
-                }
-                std::lock_guard<std::mutex> lock(mutex);
-                current.cpuUsage = cpu;
-                current.ramUsed =
-                    (uint64_t)(shm.ramUsage.load(std::memory_order_relaxed) * 1024.0f * 1024.0f * 1024.0f);
-                if (gpu > 0.0f || vramMB > 0.0f) {
-                    current.gpuUsage = gpu;
-                    current.vramUsed = (uint64_t)(vramMB * 1024.0f * 1024.0f);
-                    current.gpuUsageValid = true;
-                    usedIPC = true;
-                }
-
-                uint64_t vTotal = shm.vramTotal.load(std::memory_order_relaxed);
-                if (vTotal > 0)
-                    current.vramTotal = vTotal;
-
-                current.cpuMaxCoreUsage = (float)shm.maxCoreLoad.load(std::memory_order_relaxed);
+            usedIPC = UpdateFromHost();
+            if (usedIPC && !loggedIPCMode) {
+                EarlyLog("SystemMetricsCollector: Using Host (IPC) metrics");
+                loggedIPCMode = true;
             }
         }
 
@@ -271,10 +335,16 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
             // This ensures zero overhead in the game process if the host is
             // dead/disconnected. We simply report 0 until IPC is restored.
         } else {
-            // IPC Active: We still need VRAM Total if missing (Host doesn't send it)
-            if (current.vramTotal == 0) {
-                UpdateVRAMTotal();
+            // An exact hook LUID can still supply total capacity if the host's
+            // transient DXGI query has not published it yet.
+            bool needLocalVramTotal = false;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                needLocalVramTotal = current.vramTotal == 0 &&
+                                     (adapterLuid.LowPart != 0 || adapterLuid.HighPart != 0);
             }
+            if (needLocalVramTotal)
+                UpdateVRAMTotal();
         }
 
         // Sleep for 200ms (Faster updates for better stability)
@@ -301,32 +371,7 @@ void SystemMetricsCollector::Update() {
         UpdateRAM();
     }
 
-    // Check if we have valid data from Host Process (IPC)
-    if (g_IPC && g_IPC->GetSharedMem()) {
-        auto& shmMetrics = g_IPC->GetSharedMem()->systemMetrics;
-        float cpu = shmMetrics.cpuUsage.load(std::memory_order_relaxed);
-        float gpu = shmMetrics.gpuUsage.load(std::memory_order_relaxed);
-        float vramMB = shmMetrics.vramUsage.load(std::memory_order_relaxed);
-
-        if (cpu > 0.0f) {
-            std::lock_guard<std::mutex> lock(mutex);
-            current.cpuUsage = cpu;
-            current.ramUsed =
-                (uint64_t)(shmMetrics.ramUsage.load(std::memory_order_relaxed) * 1024.0 * 1024.0 * 1024.0);
-            if (gpu > 0.0f || vramMB > 0.0f) {
-                current.gpuUsage = gpu;
-                current.vramUsed = (uint64_t)(vramMB * 1024.0 * 1024.0);
-                current.gpuUsageValid = true;
-            }
-
-            uint64_t vramTotal = shmMetrics.vramTotal.load(std::memory_order_relaxed);
-            if (vramTotal > 0)
-                current.vramTotal = vramTotal;
-
-            current.cpuMaxCoreUsage = (float)shmMetrics.maxCoreLoad.load(std::memory_order_relaxed);
-            return;
-        }
-    }
+    UpdateFromHost();
 }
 
 void SystemMetricsCollector::SetVRAMTotal(uint64_t totalBytes) {
@@ -600,6 +645,7 @@ void SystemMetricsCollector::UpdateGPU() {
         }
         if (haveVramUsed) {
             current.vramUsed = newVramUsed;
+            current.vramUsageValid = true;
         }
     }
 }

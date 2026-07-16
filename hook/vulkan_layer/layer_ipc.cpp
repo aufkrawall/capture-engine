@@ -312,6 +312,7 @@ void LayerIPC_SetLUID(int32_t low, int32_t high) {
 
     mem->SetLuidLowPart(low);
     mem->SetLuidHighPart(high);
+    mem->SetLuidSourcePid(GetCurrentProcessId());
     // LayerLog("Layer IPC: Set LUID %08x:%08x", high, low);
 }
 

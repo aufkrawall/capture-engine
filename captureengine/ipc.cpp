@@ -242,6 +242,7 @@ bool IPCManager::GetLatestFrame(SharedMemoryLayout& outState) {
     outState.SetIsHDR(pSharedMem->GetIsHDR());
     outState.SetLuidLowPart(pSharedMem->GetLuidLowPart());
     outState.SetLuidHighPart(pSharedMem->GetLuidHighPart());
+    outState.SetLuidSourcePid(pSharedMem->GetLuidSourcePid());
     outState.SetSourcePid(pSharedMem->GetSourcePid());
     // Copy CaptureState fields individually (can't copy struct with atomics)
     outState.runtimeState.captureRequested = pSharedMem->runtimeState.captureRequested.load();

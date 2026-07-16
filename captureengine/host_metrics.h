@@ -41,6 +41,11 @@ struct HostMetricsState {
     int64_t lastLoggedMissingDxgiLuid = 0;
     int64_t lastLoggedVramTotalLuid = 0;
     uint64_t lastLoggedVramTotal = 0;
+    uint32_t processResolvedPid = 0;
+    int64_t processResolvedLuid = 0;
+    uint32_t lastPublishedPid = 0;
+    int64_t lastPublishedLuid = 0;
+    uint32_t lastPublishedAdapterSource = 0;
 
     // Helper
     void Initialize(bool includeGpuMetrics);

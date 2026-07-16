@@ -381,6 +381,7 @@ void ReportLUID(uint32_t low, uint32_t high) {
             g_IPC->GetSharedMem()->SetLuidHighPart((int32_t)high);
             HookLog("Common: Reported LUID to SHM: 0x%08X_%08X", high, low);
         }
+        g_IPC->GetSharedMem()->SetLuidSourcePid(GetCurrentProcessId());
     }
 }
 

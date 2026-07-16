@@ -43,7 +43,8 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 29: Expanded hook->host shared texture slots from 8 to 16 for high-rate CFR inject selection
 // Version 30: Added inject producer contention and frame-ready wake diagnostics
 // Version 32: Added generation-based screenshot completion and recording-integrity failure state
-static constexpr uint32_t SHARED_MEMORY_VERSION = 32;
+// Version 33: Added explicit host GPU/VRAM telemetry validity and adapter provenance
+static constexpr uint32_t SHARED_MEMORY_VERSION = 33;
 
 // Minimum supported version for backward compatibility
 static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
@@ -659,6 +660,19 @@ struct ShmemBuffer {
     }
 };
 
+enum SharedSystemMetricsValidity : uint32_t {
+    SYSTEM_METRIC_GPU_USAGE_VALID = 1u << 0,
+    SYSTEM_METRIC_VRAM_USAGE_VALID = 1u << 1,
+    SYSTEM_METRIC_VRAM_TOTAL_VALID = 1u << 2,
+};
+
+enum SharedSystemMetricsAdapterSource : uint32_t {
+    SYSTEM_METRICS_ADAPTER_UNAVAILABLE = 0,
+    SYSTEM_METRICS_ADAPTER_HOOK_LUID = 1,
+    SYSTEM_METRICS_ADAPTER_PROCESS_ENGINE = 2,
+    SYSTEM_METRICS_ADAPTER_RETAINED_PROCESS_ENGINE = 3,
+};
+
 // Main Shared Memory Structure
 struct SharedMemoryLayout {
     // ============================================================================
@@ -915,6 +929,7 @@ private:
     std::atomic<uint32_t> isHDR_{0};
     std::atomic<int32_t> luidLowPart_{0};
     std::atomic<int32_t> luidHighPart_{0};
+    std::atomic<uint32_t> luidSourcePid_{0};
     std::atomic<uint32_t> sourcePid_{0};
 
 public:
@@ -1000,6 +1015,13 @@ public:
         luidHighPart_.store(val, std::memory_order_release);
     }
 
+    uint32_t GetLuidSourcePid() const {
+        return luidSourcePid_.load(std::memory_order_acquire);
+    }
+    void SetLuidSourcePid(uint32_t val) {
+        luidSourcePid_.store(val, std::memory_order_release);
+    }
+
     uint32_t GetSourcePid() const {
         return sourcePid_.load(std::memory_order_acquire);
     }
@@ -1012,12 +1034,19 @@ public:
     // System Metrics (Host -> Hook)
     // Collected by Host Process to avoid Anti-Cheat interference in Hook
     struct SharedSystemMetrics {
+        // Even while stable, odd while the host is publishing a new snapshot.
+        std::atomic<uint32_t> publicationSequence{0};
         std::atomic<float> cpuUsage{0.0f};
         std::atomic<float> ramUsage{0.0f};  // GB
         std::atomic<float> gpuUsage{0.0f};
         std::atomic<float> vramUsage{0.0f};    // MB
         std::atomic<uint64_t> vramTotal{0};    // Bytes
         std::atomic<uint32_t> maxCoreLoad{0};  // NEW: Max single core load
+        std::atomic<uint32_t> validityMask{0};
+        std::atomic<uint32_t> sourcePid{0};
+        std::atomic<int32_t> adapterLuidLow{0};
+        std::atomic<int32_t> adapterLuidHigh{0};
+        std::atomic<uint32_t> adapterSource{0};
     } systemMetrics;
 
     // DLSS State (Hook -> Host)

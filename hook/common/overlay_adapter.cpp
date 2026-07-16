@@ -743,7 +743,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     const bool rowFGStatus = (frameLayout.rowMask & kRowFGStatus) != 0;
     const bool rowRecording = (frameLayout.rowMask & kRowRecording) != 0;
     const bool rowNotification = (frameLayout.rowMask & kRowNotification) != 0;
-    const bool vramTelemetryAvailable = cachedSystemMetrics.gpuUsageValid || cachedSystemMetrics.vramUsed != 0;
+    const bool vramTelemetryAvailable = cachedSystemMetrics.vramUsageValid;
 
     // Adaptive overlay width: measure visible labels/values and size to content.
     const float kShadowPad = 1.0f;

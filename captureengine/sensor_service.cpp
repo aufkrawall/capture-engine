@@ -19,6 +19,22 @@ struct SensorSession {
     uint32_t updatesSinceSummary = 0;
 };
 
+static void ResetGpuTelemetryForSource(SharedMemoryLayout* shm, uint32_t sourcePid) {
+    if (!shm)
+        return;
+    auto& metrics = shm->systemMetrics;
+    metrics.publicationSequence.fetch_add(1, std::memory_order_acq_rel);
+    metrics.validityMask.store(0, std::memory_order_release);
+    metrics.gpuUsage.store(0.0f, std::memory_order_relaxed);
+    metrics.vramUsage.store(0.0f, std::memory_order_relaxed);
+    metrics.vramTotal.store(0, std::memory_order_relaxed);
+    metrics.adapterLuidLow.store(0, std::memory_order_relaxed);
+    metrics.adapterLuidHigh.store(0, std::memory_order_relaxed);
+    metrics.adapterSource.store(SYSTEM_METRICS_ADAPTER_UNAVAILABLE, std::memory_order_relaxed);
+    metrics.sourcePid.store(sourcePid, std::memory_order_release);
+    metrics.publicationSequence.fetch_add(1, std::memory_order_release);
+}
+
 int SensorProcessMain(const AppConfig& config) {
     Log_SetLevel(config.logLevel);
     LogInfo("[Sensors] Dedicated sensor service started");
@@ -108,7 +124,7 @@ int SensorProcessMain(const AppConfig& config) {
                             CloseHandle(hSM);
                         }
                     } else {
-                        LogError("[Sensors] Failed to open shared memory for PID %u: %d", pid, GetLastError());
+                        LogError("[Sensors] Failed to open shared memory for PID %u: %lu", pid, GetLastError());
                     }
                 }
             }
@@ -126,11 +142,33 @@ int SensorProcessMain(const AppConfig& config) {
             // keep checking shared memory so metrics come online quickly once a game
             // is attached.
             if (sourcePid == 0) {
+                if (s.lastSourcePid != 0) {
+                    s.cachedLuid = 0;
+                    s.lastEffectiveLuid = 0;
+                    s.lastSourcePid = 0;
+                    ResetGpuTelemetryForSource(s.shm, 0);
+                    LogInfo("[Sensors] Session source cleared: injectPid=%u", it->first);
+                }
                 ++it;
                 continue;
             }
-            // Read LUID from shared memory
-            int64_t luid = ((int64_t)s.shm->GetLuidHighPart() << 32) | (uint32_t)s.shm->GetLuidLowPart();
+
+            if (sourcePid != s.lastSourcePid) {
+                s.cachedLuid = 0;
+                s.lastEffectiveLuid = 0;
+                ResetGpuTelemetryForSource(s.shm, sourcePid);
+            }
+
+            // A LUID belongs to this source only when the publishing hook stamped
+            // the same process ID. Otherwise it may be stale from an earlier game
+            // in the controller session, and host-side PID inference must resolve it.
+            const uint32_t luidSourcePid = s.shm->GetLuidSourcePid();
+            int64_t luid = 0;
+            if (luidSourcePid == sourcePid) {
+                const uint64_t high = static_cast<uint32_t>(s.shm->GetLuidHighPart());
+                const uint64_t low = static_cast<uint32_t>(s.shm->GetLuidLowPart());
+                luid = static_cast<int64_t>((high << 32) | low);
+            }
 
             // Cache valid LUID once discovered (it may reset during game restart)
             if (luid != 0) {
@@ -141,8 +179,8 @@ int SensorProcessMain(const AppConfig& config) {
             int64_t effectiveLuid = (luid != 0) ? luid : s.cachedLuid;
 
             if (sourcePid != s.lastSourcePid || effectiveLuid != s.lastEffectiveLuid) {
-                LogInfo("[Sensors] Session update: injectPid=%u gamePid=%u luid=0x%llX", it->first, sourcePid,
-                        effectiveLuid);
+                LogInfo("[Sensors] Session update: injectPid=%u gamePid=%u hookLuid=0x%llX luidPublisherPid=%u",
+                        it->first, sourcePid, effectiveLuid, luidSourcePid);
                 s.lastSourcePid = sourcePid;
                 s.lastEffectiveLuid = effectiveLuid;
             }

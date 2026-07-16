@@ -240,6 +240,7 @@ public:
         sharedMem->SetFormat(format);
         sharedMem->SetLuidLowPart(luidLow);
         sharedMem->SetLuidHighPart(luidHigh);
+        sharedMem->SetLuidSourcePid(GetCurrentProcessId());
         sharedMem->SetSourcePid(GetCurrentProcessId());
     }
 

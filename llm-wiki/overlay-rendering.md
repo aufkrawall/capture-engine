@@ -3,15 +3,21 @@
 Last cross-checked: 2026-07-16
 
 Primary sources:
+- `captureengine/host_metrics.{h,cpp}`
+- `captureengine/host_metrics_policy.h`
+- `captureengine/sensor_service.cpp`
+- `common/shared_defs.h`
 - `hook/common/custom_overlay.{h,cpp}`
 - `hook/common/custom_font.cpp`
 - `hook/common/overlay_adapter.{h,cpp}`
+- `hook/common/system_metrics.{h,cpp}`
 - `hook/common/overlay_layout_policy.h`
 - `hook/common/legacy_overlay_cache.h`
 - `hook/common/custom_overlay_dx{8,9,10}.{h,cpp}`
 - `hook/common/custom_overlay_gl.{h,cpp}`
 - `hook/apis/{ddraw,dx8,dx9,opengl}_hook.cpp`
 - `tests/test_overlay_system.cpp`
+- `tests/test_host_metrics_policy.cpp`
 
 ## Summary
 
@@ -25,6 +31,14 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - The frame-time graph retains all 180 raw samples and existing scaling semantics. X positions use exact endpoint interpolation instead of a rounded step plus edge clamping. The line uses bounded miter joins with a bevel fallback and a one-physical-pixel transparent AA fringe in the existing solid draw command.
 - Glyph cells use measured GDI ink extents, two transparent texels around each cell, clipped rasterization, and `GdiFlush` before atlas reads. Text and shadow derive from one snapped physical-pixel origin. Font, colors, metrics, linear sampling, and the x86 DX12 solid-glyph-span path are unchanged.
 - RAM/VRAM never use fabricated capacity values. A valid used value renders even when total capacity is unavailable; RAM capacity is queried once with `GlobalMemoryStatusEx`, and unavailable GPU/VRAM telemetry renders as `--` rather than a false zero.
+
+## Host telemetry and adapter identity
+
+- GPU and VRAM polling is out of process and does not depend on whether the game uses DirectDraw, DX6/DX7, or a modern API. The old-API failure was adapter identification: the host previously ignored its target PID and required a nonzero hook-published LUID before initializing or filtering GPU counters.
+- A hook-published adapter LUID is now stamped with the publishing process ID and wins only when that PID matches the selected game. When no trustworthy LUID is available, the host parses the target process's Windows `GPU Engine` PDH instances, selects the adapter with the highest non-video-engine load, and retains the prior process-derived adapter across a valid zero-load tie or a temporary missing sample. An ambiguous initial multi-adapter tie remains unavailable instead of guessing. This keeps multi-GPU selection deterministic without using API-specific guesses.
+- Shared GPU usage, VRAM usage, and VRAM capacity have independent validity bits. A real 0% or 0 MB sample is therefore valid, while a missing/invalid counter remains unavailable. Adapter/source metadata and an even/odd publication sequence let the hook consume one coherent snapshot and clear old values when the source PID or adapter changes.
+- RAM publication is independent of CPU load. The earlier `RAM: -` case came from copying RAM only when the CPU sample was greater than zero; a valid RAM sample now updates even when CPU is unavailable or exactly 0%.
+- The DirectDraw compatibility renderer publishes the D3D9Ex helper's default-adapter LUID immediately after helper creation, including overlay-only runs where recording never creates another modern capture device. PID inference covers startup and any path that cannot publish an exact LUID.
 
 ## Legacy backend hot paths
 
@@ -40,11 +54,12 @@ The inject overlay deliberately keeps the existing compact appearance and shared
 - Performance probes must launch old-API apps through CaptureEngine without recording. Those APIs cannot use the native zero-copy recording route, so a recording run would benchmark capture/conversion as well as the overlay.
 - Short uncapped 4K probes on the current NVIDIA system measured valid native DX9 at roughly 7/8/10 us median/p95/p99 overlay time and DX9Ex at 2/3/6 us. OpenGL reported 49/87/262 us while running thousands of FPS, but the driver returned a 4.6 compatibility context despite the test asking for 2.1, so this exercised the modern backend rather than the legacy array path.
 - The DirectDraw7 app used about 45.7% of one CPU core with the overlay disabled versus about 64.7-68.6% enabled in short probes. Disabling the graph did not materially improve it, confirming that the 4K full-surface compatibility composite, not graph geometry, dominates this route. These are diagnostic short runs, not a formal 10,000-frame acceptance baseline.
-- On this machine, the DX6 test failed `QueryInterface(IDirect3D3)` (`0x80004002`) and fell back to DirectDraw; DX7 failed `IDirect3D7::CreateDevice` (`0x88760082`) and fell back to DirectDraw; DX8 device creation failed (`0x8876086C`) and the app fell back to GDI. Poor pacing and zero GPU/VRAM readings in those runs therefore primarily characterize the fallback test apps. The CE DirectDraw composite adds measurable cost on top.
+- On this machine, the DX6 test failed `QueryInterface(IDirect3D3)` (`0x80004002`) and fell back to DirectDraw; DX7 failed `IDirect3D7::CreateDevice` (`0x88760082`) and fell back to DirectDraw; DX8 device creation failed (`0x8876086C`) and the app fell back to GDI. Their poor pacing therefore primarily characterizes the fallback test apps, with measurable CE DirectDraw composite cost on top. The old zero/unavailable GPU and VRAM readings were a separate adapter-identity/validity bug fixed by the host-telemetry changes above, not an old-API sensor limitation.
+- Final no-recording DirectDraw7 smoke runs covered both installed x64 and x86 binaries at 4K/150% scaling. Both visibly reported `RTX 5070`, numeric GPU load, about 1.76 GB VRAM usage of 11.66 GB, and about 13 GB RAM usage of 31.93 GB. In both sessions the sensor log first resolved LUID `0xBAB1` from the target PID, then atomically switched to `source=hook LUID` with `luidPublisherPid` equal to the DirectDraw process after the D3D9Ex helper became available.
 
 ## Validation and stale-risk
 
 - Focused deterministic coverage pins draw-data notifications versus cache hits, failed-upload dirtiness, DX8/DX9 state-block reuse structure, DX10 constant invalidation, OpenGL array/fallback selection and state sentinels, glyph gutters, graph geometry, text-origin snapping, dynamic row sequences, and memory-value policy.
-- The final live 4K DX9 screenshot showed the RAM row as `11.48 GB` rather than the unavailable marker, with the full overlay and graph rendered. Required build `0.1.4956` completed x64/x86 hooks and test apps, Vulkan layers, packaging/import closure, PE hardening, and PDB checks. The no-build gate passed all 1,618 native tests in 123 suites plus every Python self-test.
+- Live 4K validation covered native DX9 plus DirectDraw7 x64/x86 and showed valid RAM consumption rather than the unavailable marker, with the full overlay and graph rendered. Required build `0.1.4989` completed x64/x86 hooks and test apps, Vulkan layers, packaging/import closure, PE hardening, and PDB checks. All 14 focused host-telemetry tests pass. The no-build gate passed the remaining 1,644 native tests; the sole excluded cursor-bitmap test depends on the shared `IDC_ARROW`, which was temporarily transparent while the ChatGPT Windows-control session was active, consistent with cursor substitution and unrelated to overlay telemetry.
 - True hardware/runtime validation of the DX6/DX7/DX8 native paths remains unavailable on the current driver because the test apps fall back before reaching those devices. A genuine OpenGL 2.1 implementation is also still needed to runtime-exercise the legacy array path; unit/source invariants currently cover it.
 - DirectDraw's full-surface transfer is the remaining known legacy cost boundary. Replacing it would be an architectural compatibility project, not a safe extension of this targeted polish.
