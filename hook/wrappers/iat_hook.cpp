@@ -688,9 +688,15 @@ bool InitializeD3D10Hooks() {
         HMODULE hD3D10_1 = GetModuleHandleA("d3d10_1.dll");
         if (hD3D10_1) {
             ::oD3D10CreateDevice1 = (PFN_D3D10CreateDevice1)GetProcAddress(hD3D10_1, "D3D10CreateDevice1");
+            ::oD3D10CreateDeviceAndSwapChain1 = (PFN_D3D10CreateDeviceAndSwapChain1)GetProcAddress(
+                hD3D10_1, "D3D10CreateDeviceAndSwapChain1");
             PatchIATAllModules("d3d10_1.dll", "D3D10CreateDevice1", (void*)::Wrapped_D3D10CreateDevice1, &dummy);
+            PatchIATAllModules("d3d10_1.dll", "D3D10CreateDeviceAndSwapChain1",
+                               (void*)::Wrapped_D3D10CreateDeviceAndSwapChain1, &dummy);
             RegisterDynamicHook("D3D10CreateDevice1", (void*)::Wrapped_D3D10CreateDevice1,
                                 (void**)&::oD3D10CreateDevice1);
+            RegisterDynamicHook("D3D10CreateDeviceAndSwapChain1", (void*)::Wrapped_D3D10CreateDeviceAndSwapChain1,
+                                (void**)&::oD3D10CreateDeviceAndSwapChain1);
         }
 
         WrapperLog("IAT: D3D10 hooks initialized");
@@ -761,15 +767,22 @@ bool InitializeDDrawHooks() {
         return false;
     }
 
+    oDirectDrawCreate = reinterpret_cast<PFN_DirectDrawCreate>(GetProcAddress(hDDraw, "DirectDrawCreate"));
     oDirectDrawCreateEx = reinterpret_cast<PFN_DirectDrawCreateEx>(GetProcAddress(hDDraw, "DirectDrawCreateEx"));
 
     void* dummy = nullptr;
+    if (PatchIATAllModules("ddraw.dll", "DirectDrawCreate", (void*)Wrapped_DirectDrawCreate, &dummy)) {
+        WrapperLog("IAT: Patched DirectDrawCreate");
+    } else {
+        WrapperLog("IAT: DirectDrawCreate not found in IAT");
+    }
     if (PatchIATAllModules("ddraw.dll", "DirectDrawCreateEx", (void*)Wrapped_DirectDrawCreateEx, &dummy)) {
         WrapperLog("IAT: Patched DirectDrawCreateEx");
     } else {
         WrapperLog("IAT: DirectDrawCreateEx not found in IAT");
     }
 
+    RegisterDynamicHook("DirectDrawCreate", (void*)Wrapped_DirectDrawCreate, (void**)&oDirectDrawCreate);
     RegisterDynamicHook("DirectDrawCreateEx", (void*)Wrapped_DirectDrawCreateEx, (void**)&oDirectDrawCreateEx);
     WrapperLog("IAT: DirectDraw hooks initialized");
     return true;

@@ -18,6 +18,7 @@
 #include "../common/dll_utils.h"
 #include "../common/fg_detection.h"
 #include "../common/fps_limiter.h"
+#include "../common/graphics_api_identity.h"
 #include "../common/hook_common.h"
 #include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
@@ -69,6 +70,8 @@ extern void DX12_InvalidateSwapchain();
 static ID3D11Device* g_pd3dDevice = NULL;
 static ID3D11DeviceContext* g_pd3dDeviceContext = NULL;
 static ID3D11RenderTargetView* g_mainRenderTargetView = NULL;
+static IDXGISwapChain* g_D3D11IdentitySwapChain = NULL;
+static ID3D11Device* g_D3D11IdentityDevice = NULL;
 
 static ID3D10Device* g_pd3d10Device = NULL;
 static ID3D10RenderTargetView* g_mainRenderTargetView10 = NULL;
@@ -77,6 +80,200 @@ static IDXGISwapChain* g_pSwapChain = NULL;
 
 static bool g_IsDX10Device = false;
 static const char* g_DetectedAPI = "DX11";
+static std::mutex g_GraphicsApiIdentityMutex;
+static std::unordered_map<ID3D10Device*, bool> g_D3D10DeviceIdentities;
+static std::unordered_map<IDXGISwapChain*, bool> g_D3D10SwapChainIdentities;
+static ce::graphics_api_identity::ScopedIdentityRegistry<unsigned> g_D3D11MinorUse;
+thread_local unsigned g_D3D11InternalIdentityProbeDepth = 0;
+
+void DX11Hook_BeginInternalIdentityProbe() {
+    ++g_D3D11InternalIdentityProbeDepth;
+}
+
+void DX11Hook_EndInternalIdentityProbe() {
+    if (g_D3D11InternalIdentityProbeDepth != 0)
+        --g_D3D11InternalIdentityProbeDepth;
+}
+
+class D3D11InternalIdentityProbeScope {
+public:
+    D3D11InternalIdentityProbeScope() {
+        DX11Hook_BeginInternalIdentityProbe();
+    }
+    ~D3D11InternalIdentityProbeScope() {
+        DX11Hook_EndInternalIdentityProbe();
+    }
+};
+
+void DX10Hook_RegisterDeviceIdentity(ID3D10Device* device, bool is10_1, const char* evidence) {
+    if (!device)
+        return;
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(g_GraphicsApiIdentityMutex);
+        const auto it = g_D3D10DeviceIdentities.find(device);
+        changed = it == g_D3D10DeviceIdentities.end() || it->second != is10_1;
+        g_D3D10DeviceIdentities[device] = is10_1;
+    }
+    if (changed) {
+        HookLogImportant("[GraphicsAPI] D3D10 device identity device=%p api=%s evidence=%s", device,
+                         is10_1 ? "DX10.1" : "DX10", evidence ? evidence : "unknown");
+    }
+}
+
+void DX10Hook_RegisterSwapChainIdentity(IDXGISwapChain* swapChain, bool is10_1, const char* evidence) {
+    if (!swapChain)
+        return;
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(g_GraphicsApiIdentityMutex);
+        const auto it = g_D3D10SwapChainIdentities.find(swapChain);
+        changed = it == g_D3D10SwapChainIdentities.end() || it->second != is10_1;
+        g_D3D10SwapChainIdentities[swapChain] = is10_1;
+    }
+    if (changed) {
+        HookLogImportant("[GraphicsAPI] D3D10 swapchain identity swapChain=%p api=%s evidence=%s", swapChain,
+                         is10_1 ? "DX10.1" : "DX10", evidence ? evidence : "unknown");
+    }
+}
+
+void DX11Hook_RegisterDeviceIdentity(ID3D11Device* device, const char* evidence, bool newDevice) {
+    if (!device)
+        return;
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(g_GraphicsApiIdentityMutex);
+        if (newDevice) {
+            unsigned previous = 0;
+            changed = !g_D3D11MinorUse.TryGet(device, &previous) || previous != 0;
+            g_D3D11MinorUse.Set(device, 0u);
+        } else {
+            changed = g_D3D11MinorUse.Ensure(device, 0u);
+        }
+    }
+    if (changed) {
+        HookLogImportant("[GraphicsAPI] D3D11 device identity device=%p api=DX11 evidence=%s", device,
+                         evidence ? evidence : "unknown");
+    }
+}
+
+void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const char* evidence) {
+    if (!device || minorVersion == 0)
+        return;
+    unsigned previous = 0;
+    unsigned updated = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_GraphicsApiIdentityMutex);
+        g_D3D11MinorUse.TryGet(device, &previous);
+        updated = ce::graphics_api_identity::MergeD3D11Minor(previous, minorVersion);
+        g_D3D11MinorUse.Set(device, updated);
+    }
+    if (updated != previous) {
+        const std::string label = ce::graphics_api_identity::D3D11Label(updated, false);
+        HookLogImportant("[GraphicsAPI] D3D11 API use device=%p api=%s evidence=%s", device,
+                         label.c_str(), evidence ? evidence : "unknown");
+    }
+}
+
+static bool ResolveD3D10Is10_1(ID3D10Device* device, IDXGISwapChain* swapChain) {
+    std::lock_guard<std::mutex> lock(g_GraphicsApiIdentityMutex);
+    if (device) {
+        const auto deviceIt = g_D3D10DeviceIdentities.find(device);
+        if (deviceIt != g_D3D10DeviceIdentities.end())
+            return deviceIt->second;
+    }
+    const auto swapChainIt = g_D3D10SwapChainIdentities.find(swapChain);
+    return swapChainIt != g_D3D10SwapChainIdentities.end() && swapChainIt->second;
+}
+
+static unsigned ResolveD3D11MinorUse(ID3D11Device* device) {
+    std::lock_guard<std::mutex> lock(g_GraphicsApiIdentityMutex);
+    unsigned identity = 0;
+    g_D3D11MinorUse.TryGet(device, &identity);
+    return identity;
+}
+
+typedef HRESULT(STDMETHODCALLTYPE* D3D11QueryInterface_t)(IUnknown*, REFIID, void**);
+static std::unordered_map<void**, D3D11QueryInterface_t> g_D3D11QueryInterfaceOriginals;
+
+static unsigned D3D11DeviceMinorFromIID(REFIID iid) {
+    if (iid == IID_ID3D11Device1)
+        return 1;
+    if (iid == IID_ID3D11Device2)
+        return 2;
+    if (iid == IID_ID3D11Device3)
+        return 3;
+    if (iid == IID_ID3D11Device4 || iid == IID_ID3D11Device5)
+        return 4;
+    return 0;
+}
+
+static unsigned D3D11ContextMinorFromIID(REFIID iid) {
+    if (iid == IID_ID3D11DeviceContext1)
+        return 1;
+    if (iid == IID_ID3D11DeviceContext2)
+        return 2;
+    if (iid == IID_ID3D11DeviceContext3)
+        return 3;
+    if (iid == IID_ID3D11DeviceContext4)
+        return 4;
+    return 0;
+}
+
+static HRESULT STDMETHODCALLTYPE DetourD3D11QueryInterface(IUnknown* object, REFIID iid, void** result) {
+    D3D11QueryInterface_t original = nullptr;
+    void** vtable = object ? *(void***)object : nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_GraphicsApiIdentityMutex);
+        const auto it = g_D3D11QueryInterfaceOriginals.find(vtable);
+        if (it != g_D3D11QueryInterfaceOriginals.end())
+            original = it->second;
+    }
+    if (!original)
+        return E_NOINTERFACE;
+
+    const HRESULT hr = original(object, iid, result);
+    if (FAILED(hr) || !result || !*result || g_D3D11InternalIdentityProbeDepth != 0)
+        return hr;
+
+    const unsigned deviceMinor = D3D11DeviceMinorFromIID(iid);
+    if (deviceMinor != 0) {
+        DX11Hook_ReportApiUse(reinterpret_cast<ID3D11Device*>(object), deviceMinor,
+                              "external D3D11 device QueryInterface");
+        return hr;
+    }
+
+    const unsigned contextMinor = D3D11ContextMinorFromIID(iid);
+    if (contextMinor != 0) {
+        ID3D11Device* device = nullptr;
+        reinterpret_cast<ID3D11DeviceContext*>(object)->GetDevice(&device);
+        DX11Hook_ReportApiUse(device, contextMinor, "external D3D11 context QueryInterface");
+        if (device)
+            device->Release();
+    }
+    return hr;
+}
+
+static void InstallD3D11IdentityQueryHook(IUnknown* object, const char* source) {
+    if (!object)
+        return;
+    void** vtable = *(void***)object;
+    std::lock_guard<std::mutex> lock(g_GraphicsApiIdentityMutex);
+    if (g_D3D11QueryInterfaceOriginals.find(vtable) != g_D3D11QueryInterfaceOriginals.end())
+        return;
+
+    D3D11QueryInterface_t original = nullptr;
+    if (VTableHook::Create(&vtable[0], (LPVOID)&DetourD3D11QueryInterface, (LPVOID*)&original) !=
+            VTableHook::Success ||
+        !original) {
+        HookLog("[GraphicsAPI] D3D11 QueryInterface hook failed object=%p source=%s", object,
+                source ? source : "unknown");
+        return;
+    }
+    g_D3D11QueryInterfaceOriginals.emplace(vtable, original);
+    HookLog("[GraphicsAPI] D3D11 QueryInterface evidence hook installed object=%p source=%s", object,
+            source ? source : "unknown");
+}
 
 // Prerender Limit Fencing
 static std::vector<ID3D11Query*> g_PrerenderQueries;
@@ -2478,6 +2675,7 @@ static HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter
                               pFinalDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
 
     if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
+        DX11Hook_RegisterDeviceIdentity(*ppDevice, "D3D11CreateDeviceAndSwapChain", true);
         const GraphicsConfig& gfx = GetActiveGraphicsConfig();
         if (ppSwapChain && *ppSwapChain && HasBackbufferCountOverride(gfx.backbufferCount)) {
             DXGI_SWAP_CHAIN_DESC actualDesc = {};
@@ -2607,7 +2805,11 @@ static HRESULT WINAPI DetourD3D10CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter
     HRESULT hr = oD3D10CreateDeviceAndSwapChain(pAdapter, DriverType, Software, Flags, SDKVersion, pFinalDesc,
                                                 ppSwapChain, ppDevice);
 
+    if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
+        DX10Hook_RegisterDeviceIdentity(*ppDevice, false, "D3D10CreateDeviceAndSwapChain");
+    }
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        DX10Hook_RegisterSwapChainIdentity(*ppSwapChain, false, "D3D10CreateDeviceAndSwapChain");
         InstallVTableHooks(NULL, NULL, *ppSwapChain);
     }
     return hr;
@@ -2645,7 +2847,11 @@ static HRESULT WINAPI DetourD3D10CreateDeviceAndSwapChain1(IDXGIAdapter* pAdapte
     HRESULT hr = oD3D10CreateDeviceAndSwapChain1(pAdapter, DriverType, Software, Flags, HardwareLevel, SDKVersion,
                                                  pFinalDesc, ppSwapChain, ppDevice);
 
+    if (SUCCEEDED(hr) && ppDevice && *ppDevice) {
+        DX10Hook_RegisterDeviceIdentity(*ppDevice, true, "D3D10CreateDeviceAndSwapChain1");
+    }
     if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
+        DX10Hook_RegisterSwapChainIdentity(*ppSwapChain, true, "D3D10CreateDeviceAndSwapChain1");
         InstallVTableHooks(NULL, NULL, *ppSwapChain);
     }
     return hr;
@@ -2653,13 +2859,20 @@ static HRESULT WINAPI DetourD3D10CreateDeviceAndSwapChain1(IDXGIAdapter* pAdapte
 
 static HRESULT WINAPI DetourD3D10CreateDevice(IDXGIAdapter* pAdapter, D3D10_DRIVER_TYPE DriverType, HMODULE Software,
                                               UINT Flags, UINT SDKVersion, ID3D10Device** ppDevice) {
-    return oD3D10CreateDevice(pAdapter, DriverType, Software, Flags, SDKVersion, ppDevice);
+    const HRESULT hr = oD3D10CreateDevice(pAdapter, DriverType, Software, Flags, SDKVersion, ppDevice);
+    if (SUCCEEDED(hr) && ppDevice && *ppDevice)
+        DX10Hook_RegisterDeviceIdentity(*ppDevice, false, "D3D10CreateDevice");
+    return hr;
 }
 
 static HRESULT WINAPI DetourD3D10CreateDevice1(IDXGIAdapter* pAdapter, D3D10_DRIVER_TYPE DriverType, HMODULE Software,
                                                UINT Flags, D3D10_FEATURE_LEVEL1 HardwareLevel, UINT SDKVersion,
                                                ID3D10Device1** ppDevice) {
-    return oD3D10CreateDevice1(pAdapter, DriverType, Software, Flags, HardwareLevel, SDKVersion, ppDevice);
+    const HRESULT hr =
+        oD3D10CreateDevice1(pAdapter, DriverType, Software, Flags, HardwareLevel, SDKVersion, ppDevice);
+    if (SUCCEEDED(hr) && ppDevice && *ppDevice)
+        DX10Hook_RegisterDeviceIdentity(*ppDevice, true, "D3D10CreateDevice1");
+    return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE DetourCreateSwapChain(IDXGIFactory* pFactory, IUnknown* pDevice,
@@ -3088,6 +3301,8 @@ static void InstallContextVTableHooks11(ID3D11DeviceContext* context, const char
 static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext, IDXGISwapChain* pSwapChain) {
     // Hook D3D11 Device methods
     if (pDevice) {
+        DX11Hook_RegisterDeviceIdentity(pDevice, "D3D11 device hook installation");
+        InstallD3D11IdentityQueryHook(pDevice, "device");
         void** pDeviceVTable = *(void***)pDevice;
         EnsureVTableHookSlot11(pDeviceVTable, 15, (LPVOID)&DetourCreatePixelShader11, oCreatePixelShader11,
                                "CreatePixelShader");
@@ -3098,6 +3313,7 @@ static void InstallVTableHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pCont
                                "CreateDeferredContext");
     }
 
+    InstallD3D11IdentityQueryHook(pContext, "context");
     InstallContextVTableHooks11(pContext, "immediate");
 
     // Some DX11 implementations expose D3D10 compatibility interfaces too.
@@ -3165,9 +3381,16 @@ void CleanupDX11Resources(bool releaseDeviceContext) {
             g_pd3dDevice->Release();
             g_pd3dDevice = nullptr;
         }
+        if (g_D3D11IdentityDevice) {
+            g_D3D11IdentityDevice->Release();
+            g_D3D11IdentityDevice = nullptr;
+        }
+        g_D3D11IdentitySwapChain = nullptr;
     } else {
         g_pd3dDeviceContext = nullptr;
         g_pd3dDevice = nullptr;
+        g_D3D11IdentityDevice = nullptr;
+        g_D3D11IdentitySwapChain = nullptr;
     }
 }
 
@@ -3649,6 +3872,7 @@ public:
         // Skip for DXVK: fence lives in system D3D11 device but copy happens via
         // DXVK context - fence can't be signaled cross-device from DXVK.
         ID3D11Device5* device5 = nullptr;
+        D3D11InternalIdentityProbeScope identityProbeScope;
         if (!isDXVKMode && SUCCEEDED(captureDevice->QueryInterface(IID_PPV_ARGS(&device5)))) {
             HRESULT hr = device5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence));
             if (SUCCEEDED(hr)) {
@@ -3753,6 +3977,7 @@ public:
             // original system D3D11 NT handles normally.
             if (isDXVKMode) {
                 ID3D11Device1* dxvkDevice1 = nullptr;
+                D3D11InternalIdentityProbeScope identityProbeScope;
                 if (SUCCEEDED(cachedDevice->QueryInterface(IID_PPV_ARGS(&dxvkDevice1)))) {
                     for (int i = 0; i < CAPTURE_TEXTURE_COUNT && success; i++) {
                         HANDLE ntHandle = sharedTextureHandles[i].load();
@@ -4380,7 +4605,10 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
     if (g_OverlayAdapter.IsInitialized()) {
         g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
         g_OverlayAdapter.SetIPCClient(g_IPC);
-        g_OverlayAdapter.SetGraphicsAPI("DX10");
+        const bool is10_1 = ResolveD3D10Is10_1(device, pSwapChain);
+        const std::string apiLabel =
+            ce::graphics_api_identity::D3D10Label(is10_1, IsDXVKD3D10OrD3D11Loaded());
+        g_OverlayAdapter.SetGraphicsAPI(apiLabel.c_str(), "active D3D10 swapchain device");
 
         RECT rect;
         if (GetClientRect(currentHwnd, &rect)) {
@@ -4558,6 +4786,20 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
 
     ID3D11Device* device = g_pd3dDevice;
     ID3D11DeviceContext* context = g_pd3dDeviceContext;
+    if (g_D3D11IdentitySwapChain != pSwapChain) {
+        ID3D11Device* identityDevice = nullptr;
+        if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&identityDevice))) && identityDevice) {
+            if (g_D3D11IdentityDevice)
+                g_D3D11IdentityDevice->Release();
+            g_D3D11IdentityDevice = identityDevice;
+            g_D3D11IdentitySwapChain = pSwapChain;
+        }
+    }
+    ID3D11Device* activeIdentityDevice =
+        (g_D3D11IdentitySwapChain == pSwapChain && g_D3D11IdentityDevice) ? g_D3D11IdentityDevice : device;
+    DX11Hook_RegisterDeviceIdentity(activeIdentityDevice, "active D3D11 swapchain device");
+    const std::string apiLabel = ce::graphics_api_identity::D3D11Label(
+        ResolveD3D11MinorUse(activeIdentityDevice), IsDXVKD3D10OrD3D11Loaded());
 
     if (g_OverlayAdapter.IsInitialized() && currentHwnd != g_CachedHwnd) {
         HookLog("DX11: HWND changed, shutting down OverlayAdapter");
@@ -4604,7 +4846,7 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     g_OverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
-    g_OverlayAdapter.SetGraphicsAPI(g_DetectedAPI);
+    g_OverlayAdapter.SetGraphicsAPI(apiLabel.c_str(), "active D3D11 swapchain device");
 
     ID3D11RenderTargetView* overlayRTV = nullptr;
     bool usingBoundRTV = false;

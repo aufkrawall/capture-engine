@@ -17,6 +17,7 @@
 #include <mutex>
 #include <set>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include "../../common/frame_timing.h"
@@ -25,6 +26,7 @@
 #include "../common/d3d9_capture_policy.h"
 #include "../common/fps_limiter.h"
 #include "../common/freeze_watchdog.h"
+#include "../common/graphics_api_identity.h"
 #include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
@@ -149,6 +151,8 @@ static std::atomic<UINT> g_LivePresentInterval{0};
 static std::atomic<bool> g_DX9StagingCaptureActive{false};
 static std::mutex g_InternalHelperDeviceMutex;
 static std::unordered_set<IDirect3DDevice9*> g_InternalHelperDevices;
+static std::mutex g_D3D9IdentityMutex;
+static std::unordered_map<IDirect3DDevice9*, bool> g_D3D9ExDevices;
 static thread_local uint32_t g_InternalHelperBypassDepth = 0;
 
 typedef HRESULT(WINAPI* DwmFlush_t)();
@@ -174,6 +178,41 @@ static bool IsDX9InternalHelperDevice(IDirect3DDevice9* device) {
 
 static bool ShouldBypassDX9HooksForDevice(IDirect3DDevice9* device) {
     return IsDX9InternalHelperBypassActive() || IsDX9InternalHelperDevice(device);
+}
+
+static void RegisterD3D9DeviceIdentity(IDirect3DDevice9* device, bool isEx, const char* evidence) {
+    if (!device || IsDX9InternalHelperBypassActive() || IsDX9InternalHelperDevice(device))
+        return;
+
+    bool changed = false;
+    {
+        std::lock_guard<std::mutex> lock(g_D3D9IdentityMutex);
+        const auto it = g_D3D9ExDevices.find(device);
+        changed = it == g_D3D9ExDevices.end() || it->second != isEx;
+        g_D3D9ExDevices[device] = isEx;
+    }
+    if (changed) {
+        HookLogImportant("[GraphicsAPI] D3D9 device identity device=%p api=%s evidence=%s", device,
+                         isEx ? "DX9Ex" : "DX9", evidence ? evidence : "unknown");
+    }
+}
+
+static bool ResolveD3D9DeviceIsEx(IDirect3DDevice9* device) {
+    if (!device)
+        return false;
+    {
+        std::lock_guard<std::mutex> lock(g_D3D9IdentityMutex);
+        const auto it = g_D3D9ExDevices.find(device);
+        if (it != g_D3D9ExDevices.end())
+            return it->second;
+    }
+
+    IDirect3DDevice9Ex* deviceEx = nullptr;
+    const bool isEx = SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&deviceEx))) && deviceEx;
+    if (deviceEx)
+        deviceEx->Release();
+    RegisterD3D9DeviceIdentity(device, isEx, "late-device-interface-probe");
+    return isEx;
 }
 
 static bool ShouldBypassDX9HooksForSwapChain(IDirect3DSwapChain9* swapChain) {
@@ -214,6 +253,10 @@ void DX9_RegisterInternalHelperDevice(IDirect3DDevice9* device) {
     {
         std::lock_guard<std::mutex> lock(g_InternalHelperDeviceMutex);
         inserted = g_InternalHelperDevices.insert(device).second;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_D3D9IdentityMutex);
+        g_D3D9ExDevices.erase(device);
     }
 
     static std::atomic<int> s_registerLogCount{0};
@@ -3758,8 +3801,9 @@ static void DrawDX9Overlay(IDirect3DDevice9* device) {
     g_OverlayAdapter.SetMetrics(&g_PerfMetrics);
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(g_DX9Capture.droppedFrames.load(std::memory_order_relaxed));
-    const char* finalApi = IsDXVKD3D9WrapperLoaded() ? "DX9 (DXVK)" : "DX9";
-    g_OverlayAdapter.SetGraphicsAPI(finalApi);
+    const bool isEx = ResolveD3D9DeviceIsEx(device);
+    const char* finalApi = ce::graphics_api_identity::D3D9Label(isEx, IsDXVKD3D9WrapperLoaded());
+    g_OverlayAdapter.SetGraphicsAPI(finalApi, isEx ? "active IDirect3DDevice9Ex" : "active IDirect3DDevice9");
 
     // Render Custom Overlay
     // Note: RenderOverlay calls BeginFrame/RenderContent/EndFrame.
@@ -5217,6 +5261,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self, UINT Adapt
         }
         if (ppReturnedDeviceInterface && *ppReturnedDeviceInterface) {
             EarlyLog("DX9: CreateDevice succeeded -> %p", *ppReturnedDeviceInterface);
+            RegisterD3D9DeviceIdentity(*ppReturnedDeviceInterface, false, "IDirect3D9::CreateDevice");
             InstallDeviceHooks(*ppReturnedDeviceInterface, true);
         }
     }
@@ -5326,6 +5371,7 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(IDirect3D9Ex* self, UINT A
         }
         if (ppReturnedDeviceInterface && *ppReturnedDeviceInterface) {
             EarlyLog("DX9: CreateDeviceEx succeeded -> %p", *ppReturnedDeviceInterface);
+            RegisterD3D9DeviceIdentity(*ppReturnedDeviceInterface, true, "IDirect3D9Ex::CreateDeviceEx");
             InstallDeviceHooks(*ppReturnedDeviceInterface, true);
         }
     }

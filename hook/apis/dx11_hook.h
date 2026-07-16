@@ -35,6 +35,12 @@ void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
 // Install vtable hooks on D3D11 device and context immediately (for wrapper path)
 void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext,
                                            IDXGISwapChain* pSwapChain);
+void DX10Hook_RegisterDeviceIdentity(ID3D10Device* device, bool is10_1, const char* evidence);
+void DX10Hook_RegisterSwapChainIdentity(IDXGISwapChain* swapChain, bool is10_1, const char* evidence);
+void DX11Hook_RegisterDeviceIdentity(ID3D11Device* device, const char* evidence, bool newDevice = false);
+void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const char* evidence);
+void DX11Hook_BeginInternalIdentityProbe();
+void DX11Hook_EndInternalIdentityProbe();
 
 // Update metrics for wrapper calls
 #include <cstdint>

@@ -9,6 +9,7 @@
 #include "custom_font.h"
 #include "custom_overlay.h"
 #include "fg_detection.h"
+#include "graphics_api_identity.h"
 #include "hook_common.h"
 #include "perf_logger.h"
 
@@ -177,11 +178,21 @@ OverlayAdapter::~OverlayAdapter() {
     ResetStateLocked();
 }
 
-void OverlayAdapter::SetGraphicsAPI(const char* api) {
+void OverlayAdapter::SetGraphicsAPI(const char* api, const char* evidenceSource) {
     std::lock_guard<std::mutex> lock(stateMutex);
+    if (!api)
+        api = "";
+    if (!ce::graphics_api_identity::LabelsDiffer(graphicsAPI, api))
+        return;
+
+    char previousAPI[sizeof(graphicsAPI)] = {};
+    strncpy(previousAPI, graphicsAPI, sizeof(previousAPI) - 1);
     strncpy(graphicsAPI, api, sizeof(graphicsAPI) - 1);
     graphicsAPI[sizeof(graphicsAPI) - 1] = '\0';
     layoutDirty = true;
+    hasCachedFrame = false;
+    HookLogImportant("[GraphicsAPI] label transition '%s' -> '%s' evidence=%s", previousAPI[0] ? previousAPI : "unset",
+                     graphicsAPI[0] ? graphicsAPI : "unset", evidenceSource ? evidenceSource : "unspecified");
 }
 
 void OverlayAdapter::SetReserveInactiveFGSpace(bool reserve) {

@@ -9,11 +9,13 @@
 #include <cstdio>
 #include <limits>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include "../common/capture_base.h"
 #include "../common/capture_pacing.h"
 #include "../common/fps_limiter.h"
 #include "../common/frame_timing.h"
+#include "../common/graphics_api_identity.h"
 #include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
 #include "../common/perf_logger.h"
@@ -75,6 +77,7 @@ typedef uint64_t GLuint64;
 #define GL_TIMEOUT_EXPIRED 0x911B
 #define GL_CONDITION_SATISFIED 0x911C
 #define GL_WAIT_FAILED 0x911D
+#define GL_CONTEXT_PROFILE_MASK 0x9126
 
 // Function pointer typedefs for WGL hooks
 typedef BOOL(WINAPI* SwapBuffers_t)(HDC);
@@ -193,6 +196,7 @@ static HDC g_CaptureHDC = NULL;
 static int g_SwapRecurse = 0;
 static bool g_LegacyContext = false;
 static bool g_VersionChecked = false;
+static std::string g_OpenGLApiLabel = "OpenGL";
 static bool g_LuidReported = false;
 static HGLRC g_CurrentTrackedContext = NULL;
 static HGLRC g_OverlayContext = NULL;
@@ -1135,6 +1139,7 @@ static void ResetTrackedOpenGLState(HGLRC contextToReset) {
         g_CurrentTrackedContext = NULL;
         g_VersionChecked = false;
         g_LegacyContext = false;
+        g_OpenGLApiLabel = "OpenGL";
     }
 
     if (switchedToCaptureContext) {
@@ -1371,7 +1376,7 @@ static void DrawOpenGLOverlay(HDC hdc) {
     g_OverlayAdapter.SetMetrics(&g_PerfMetrics);
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(g_OpenGLCapture.droppedFrames.load(std::memory_order_relaxed));
-    g_OverlayAdapter.SetGraphicsAPI("OpenGL");
+    g_OverlayAdapter.SetGraphicsAPI(g_OpenGLApiLabel.c_str(), "active OpenGL context version/profile");
 
     HWND targetHwnd = WindowFromDC(hdc);
     if (!targetHwnd)
@@ -1409,15 +1414,29 @@ static void SwapBegin(HDC hdc) {
                 const GLubyte* verStr = pglGetString(0x1F02 /*GL_VERSION*/);
                 if (verStr) {
                     HookLog("OpenGL: Version String: %s", (const char*)verStr);
-                    int major = verStr[0] - '0';
-                    if (major < 3) {
-                        g_LegacyContext = true;
+                    const auto parsedWithoutProfile =
+                        ce::graphics_api_identity::ResolveOpenGLIdentity((const char*)verStr, 0);
+                    unsigned profileMask = 0;
+                    if (parsedWithoutProfile.valid &&
+                        (parsedWithoutProfile.major > 3 ||
+                         (parsedWithoutProfile.major == 3 && parsedWithoutProfile.minor >= 2)) &&
+                        pglGetIntegerv) {
+                        GLint queriedProfileMask = 0;
+                        pglGetIntegerv(GL_CONTEXT_PROFILE_MASK, &queriedProfileMask);
+                        profileMask = static_cast<unsigned>(queriedProfileMask);
+                    }
+                    const auto identity =
+                        ce::graphics_api_identity::ResolveOpenGLIdentity((const char*)verStr, profileMask);
+                    g_OpenGLApiLabel = ce::graphics_api_identity::FormatOpenGLLabel(identity);
+                    g_LegacyContext = !identity.valid || identity.major < 3;
+                    if (g_LegacyContext) {
                         HookLog(
-                            "OpenGL: Legacy Context detected (%s). Switching to GL2 "
+                            "OpenGL: Legacy Context detected (%s, label=%s). Switching to GL2 "
                             "backend.",
-                            (const char*)verStr);
+                            (const char*)verStr, g_OpenGLApiLabel.c_str());
                     } else {
-                        HookLog("OpenGL: Modern Context detected (%s). Using GL3 backend.", (const char*)verStr);
+                        HookLog("OpenGL: Modern Context detected (%s, label=%s). Using GL3 backend.",
+                                (const char*)verStr, g_OpenGLApiLabel.c_str());
                     }
                     g_VersionChecked = true;
                 } else {
@@ -1429,6 +1448,7 @@ static void SwapBegin(HDC hdc) {
             } else {
                 HookLog("OpenGL: Failed to get glGetString address!");
                 g_LegacyContext = true;  // Assume legacy if we can't check
+                g_OpenGLApiLabel = "OpenGL";
                 g_VersionChecked = true;
             }
         }

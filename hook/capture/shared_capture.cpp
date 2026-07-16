@@ -10,6 +10,7 @@
 #include <string>
 #include <unordered_map>
 #include "../../common/capture_base.h"
+#include "../apis/dx11_hook.h"
 #include "../common/hook_common.h"
 
 // ============================================================================
@@ -141,7 +142,10 @@ bool SharedCaptureD3D11::Initialize(ID3D11Device* pDevice, IDXGISwapChain* pSwap
     m_pSwapChain = pSwapChain;
 
     // Get ID3D11Device1 for shared resources
-    if (FAILED(pDevice->QueryInterface(IID_PPV_ARGS(&m_pDevice1)))) {
+    DX11Hook_BeginInternalIdentityProbe();
+    const HRESULT device1Hr = pDevice->QueryInterface(IID_PPV_ARGS(&m_pDevice1));
+    DX11Hook_EndInternalIdentityProbe();
+    if (FAILED(device1Hr)) {
         // Fallback to non-1 device
         m_pDevice1 = nullptr;
     }

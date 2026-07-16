@@ -28,6 +28,7 @@ CWrapD3D11Device::CWrapD3D11Device(ID3D11Device* pReal)
       m_pWrappedContext(nullptr) {
     if (pReal) {
         pReal->AddRef();
+        DX11Hook_RegisterDeviceIdentity(pReal, "wrapped D3D11 device");
         PromoteInterfaces();
     }
     WrapperLog("D3D11 Device Wrapper: Created (real=%p, version=%d)", pReal, m_Version);
@@ -58,6 +59,7 @@ void CWrapD3D11Device::PromoteInterfaces() {
     if (!m_pReal)
         return;
 
+    DX11Hook_BeginInternalIdentityProbe();
     if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal5))))
         m_Version = 5;
     else if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal4))))
@@ -68,6 +70,7 @@ void CWrapD3D11Device::PromoteInterfaces() {
         m_Version = 2;
     else if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1))))
         m_Version = 1;
+    DX11Hook_EndInternalIdentityProbe();
 }
 
 void CWrapD3D11Device::ApplySamplerOverrides(D3D11_SAMPLER_DESC* pDesc) {
@@ -101,11 +104,12 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::QueryInterface(REFIID riid, void** p
         return S_OK;
     }
 
-#define CHECK_DEVICE_VERSION(N, IFACE)                   \
-    if (riid == IID_ID3D11Device##N && m_Version >= N) { \
-        AddRef();                                        \
-        *ppvObj = static_cast<IFACE*>(this);             \
-        return S_OK;                                     \
+#define CHECK_DEVICE_VERSION(N, IFACE)                                                \
+    if (riid == IID_ID3D11Device##N && m_Version >= N) {                              \
+        DX11Hook_ReportApiUse(m_pReal, (N < 4) ? N : 4, "ID3D11Device" #N " QI"); \
+        AddRef();                                                                     \
+        *ppvObj = static_cast<IFACE*>(this);                                           \
+        return S_OK;                                                                  \
     }
 
     CHECK_DEVICE_VERSION(1, ID3D11Device1)

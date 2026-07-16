@@ -20,11 +20,13 @@ typedef float D3DVALUE;
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 #include "../common/capture_base.h"
 #include "../common/fps_limiter.h"
 #include "../common/frame_timing.h"
 #include "../common/freeze_watchdog.h"
+#include "../common/graphics_api_identity.h"
 #include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
 #include "../common/overlay_compat.h"
@@ -48,6 +50,7 @@ struct IDirect3DDevice7 : public IUnknown {};
 
 static const GUID kIID_IDirect3D7 = {0xf5049e77, 0x4861, 0x11d2, {0xa4, 0x07, 0x00, 0xa0, 0xc9, 0x06, 0x29, 0xa8}};
 static const GUID kIID_IDirect3D3 = {0xbb223240, 0xe72b, 0x11d0, {0xa9, 0xb4, 0x00, 0xaa, 0x00, 0xc0, 0x99, 0x3e}};
+static const GUID kIID_IDirectDraw3 = {0x618f8ad4, 0x8b7a, 0x11d0, {0x8f, 0xcc, 0x00, 0xc0, 0x4f, 0xd9, 0x18, 0x9d}};
 static const GUID kIID_IDirect3DHALDevice = {
     0x84E63dE0, 0x46AA, 0x11CF, {0x81, 0x6F, 0x00, 0x00, 0xC0, 0x20, 0x15, 0x6E}};
 
@@ -107,7 +110,23 @@ typedef HRESULT(STDMETHODCALLTYPE* DDraw7CreateSurface_t)(IDirectDraw7* pThis, D
 
 typedef HRESULT(STDMETHODCALLTYPE* DDraw4CreateSurface_t)(IDirectDraw4* pThis, DDSURFACEDESC2* pDesc,
                                                           IDirectDrawSurface4** ppSurface, IUnknown* pUnkOuter);
+typedef HRESULT(STDMETHODCALLTYPE* DDrawLegacyCreateSurface_t)(IDirectDraw* pThis, DDSURFACEDESC* pDesc,
+                                                               IDirectDrawSurface** ppSurface,
+                                                               IUnknown* pUnkOuter);
+typedef HRESULT(STDMETHODCALLTYPE* DDSurfaceLegacyFlip_t)(IDirectDrawSurface* surface,
+                                                          IDirectDrawSurface* destOverride, DWORD flags);
+typedef HRESULT(STDMETHODCALLTYPE* DDSurfaceLegacyBlt_t)(IDirectDrawSurface* surface, LPRECT destRect,
+                                                         IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD flags,
+                                                         DDBLTFX* bltFx);
+typedef HRESULT(STDMETHODCALLTYPE* DDSurfaceLegacyLock_t)(IDirectDrawSurface* surface, LPRECT destRect,
+                                                          DDSURFACEDESC* surfaceDesc, DWORD flags, HANDLE event);
+typedef HRESULT(STDMETHODCALLTYPE* DDSurfaceLegacyUnlock_t)(IDirectDrawSurface* surface, LPVOID surfaceData);
+typedef HRESULT(STDMETHODCALLTYPE* D3D7CreateDevice_t)(IDirect3D7*, REFCLSID, IDirectDrawSurface7*,
+                                                       IDirect3DDevice7**);
+typedef HRESULT(STDMETHODCALLTYPE* D3D3CreateDevice_t)(IUnknown*, REFCLSID, IDirectDrawSurface4*, IUnknown**,
+                                                       IUnknown*);
 
+typedef HRESULT(WINAPI* DirectDrawCreate_t)(GUID* lpGuid, IDirectDraw** lplpDD, IUnknown* pUnkOuter);
 typedef HRESULT(WINAPI* DirectDrawCreateEx_t)(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* pUnkOuter);
 
 // Original function pointers
@@ -119,13 +138,12 @@ static DDSurface7Lock_t oDDSurface7Lock = nullptr;
 static DDSurface4Lock_t oDDSurface4Lock = nullptr;
 static DDSurface7Unlock_t oDDSurface7Unlock = nullptr;
 static DDSurface4Unlock_t oDDSurface4Unlock = nullptr;
-static DDraw7CreateSurface_t oDDraw7CreateSurface = nullptr;
-static DDraw4CreateSurface_t oDDraw4CreateSurface = nullptr;
 static SetTextureStageState7_t oSetTextureStageState7 = nullptr;
 static GetTextureStageState7_t oGetTextureStageState7 = nullptr;
 static SetTextureStageState6_t oSetTextureStageState6 = nullptr;
 static GetTextureStageState6_t oGetTextureStageState6 = nullptr;
 static SetRenderState7_t oSetRenderState7 = nullptr;
+static DirectDrawCreate_t oDirectDrawCreate = nullptr;
 static DirectDrawCreateEx_t oDirectDrawCreateEx = nullptr;
 
 // Globals
@@ -146,11 +164,97 @@ static IDirect3DDevice7* g_D3D7Device = nullptr;
 static IDirectDrawSurface7* g_LastPresentedSourceSurface = nullptr;
 static DWORD g_LastPresentedSourceTick = 0;
 static bool g_DirectDrawCreateExInlineInstalled = false;
+static bool g_DirectDrawCreateInlineInstalled = false;
 static HHOOK g_DDrawBootstrapHook = nullptr;
 static HWND g_DDrawBootstrapWindow = NULL;
 static DWORD g_DDrawBootstrapThreadId = 0;
 static std::atomic<bool> g_DDrawBootstrapQueued{false};
 static std::atomic<bool> g_DDrawBootstrapRunning{false};
+static thread_local unsigned g_DDrawBootstrapDepth = 0;
+static std::atomic<int> g_ActiveDirectDrawVersion{0};
+static std::atomic<unsigned> g_ActiveLegacyD3DVersion{0};
+static std::atomic<unsigned> g_LegacyD3DCallbackVersion{0};
+
+struct LegacyDDrawVTableRecord {
+    DDrawLegacyCreateSurface_t createSurface = nullptr;
+    ce::graphics_api_identity::DirectDrawVersion version =
+        ce::graphics_api_identity::DirectDrawVersion::Unknown;
+};
+
+struct LegacySurfaceVTableRecord {
+    DDSurfaceLegacyFlip_t flip = nullptr;
+    DDSurfaceLegacyBlt_t blt = nullptr;
+    DDSurfaceLegacyLock_t lock = nullptr;
+    DDSurfaceLegacyUnlock_t unlock = nullptr;
+};
+
+static std::mutex g_DDrawIdentityMutex;
+static std::unordered_map<void**, LegacyDDrawVTableRecord> g_LegacyDDrawVTables;
+static std::unordered_map<void**, LegacySurfaceVTableRecord> g_LegacySurfaceVTables;
+static std::unordered_map<void**, DDraw4CreateSurface_t> g_DDraw4CreateSurfaceOriginals;
+static std::unordered_map<void**, DDraw7CreateSurface_t> g_DDraw7CreateSurfaceOriginals;
+static std::unordered_map<void**, D3D7CreateDevice_t> g_D3D7CreateDeviceOriginals;
+static std::unordered_map<void**, D3D3CreateDevice_t> g_D3D3CreateDeviceOriginals;
+static std::unordered_map<uintptr_t, ce::graphics_api_identity::DirectDrawVersion> g_SurfaceDirectDrawVersions;
+static std::unordered_map<uintptr_t, unsigned> g_SurfaceLegacyD3DVersions;
+
+class DirectDrawBootstrapScope {
+public:
+    DirectDrawBootstrapScope() {
+        ++g_DDrawBootstrapDepth;
+    }
+    ~DirectDrawBootstrapScope() {
+        --g_DDrawBootstrapDepth;
+    }
+};
+
+static uintptr_t DirectDrawObjectIdentity(IUnknown* object) {
+    if (!object)
+        return 0;
+    IUnknown* identity = nullptr;
+    if (FAILED(object->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&identity))) || !identity)
+        return reinterpret_cast<uintptr_t>(object);
+    const uintptr_t value = reinterpret_cast<uintptr_t>(identity);
+    identity->Release();
+    return value;
+}
+
+static void AssociateDirectDrawSurface(IUnknown* surface,
+                                       ce::graphics_api_identity::DirectDrawVersion version) {
+    const uintptr_t identity = DirectDrawObjectIdentity(surface);
+    if (!identity)
+        return;
+    std::lock_guard<std::mutex> lock(g_DDrawIdentityMutex);
+    g_SurfaceDirectDrawVersions[identity] = version;
+}
+
+static void AssociateLegacyD3DSurface(IUnknown* surface, unsigned d3dVersion) {
+    const uintptr_t identity = DirectDrawObjectIdentity(surface);
+    if (!identity)
+        return;
+    std::lock_guard<std::mutex> lock(g_DDrawIdentityMutex);
+    g_SurfaceLegacyD3DVersions[identity] = d3dVersion;
+}
+
+static void ActivateDirectDrawSurface(IUnknown* surface,
+                                      ce::graphics_api_identity::DirectDrawVersion fallbackVersion) {
+    auto version = fallbackVersion;
+    unsigned d3dVersion = 0;
+    const uintptr_t identity = DirectDrawObjectIdentity(surface);
+    {
+        std::lock_guard<std::mutex> lock(g_DDrawIdentityMutex);
+        const auto ddIt = g_SurfaceDirectDrawVersions.find(identity);
+        if (ddIt != g_SurfaceDirectDrawVersions.end())
+            version = ddIt->second;
+        const auto d3dIt = g_SurfaceLegacyD3DVersions.find(identity);
+        if (d3dIt != g_SurfaceLegacyD3DVersions.end())
+            d3dVersion = d3dIt->second;
+    }
+    g_ActiveDirectDrawVersion.store(static_cast<int>(version), std::memory_order_release);
+    if (d3dVersion == 0)
+        d3dVersion = g_LegacyD3DCallbackVersion.load(std::memory_order_acquire);
+    g_ActiveLegacyD3DVersion.store(d3dVersion, std::memory_order_release);
+}
 
 static UINT QueryD3D7MaxAnisotropy(void* opaqueDevice) {
     if (!opaqueDevice)
@@ -210,6 +314,17 @@ static bool HasHookedVTable(const std::vector<void**>& hookedVTables, void** vta
 
 static bool IsPrimarySurfaceDesc(const DDSURFACEDESC2* surfaceDesc) {
     return surfaceDesc && (surfaceDesc->dwFlags & DDSD_CAPS) && (surfaceDesc->ddsCaps.dwCaps & DDSCAPS_PRIMARYSURFACE);
+}
+
+static bool IsPrimarySurfaceDesc(const DDSURFACEDESC* surfaceDesc) {
+    return surfaceDesc && (surfaceDesc->dwFlags & DDSD_CAPS) && (surfaceDesc->ddsCaps.dwCaps & DDSCAPS_PRIMARYSURFACE);
+}
+
+static bool SurfaceHasCaps(IDirectDrawSurface* surface, DWORD capsMask) {
+    if (!surface)
+        return false;
+    DDSCAPS caps = {};
+    return SUCCEEDED(surface->GetCaps(&caps)) && (caps.dwCaps & capsMask) != 0;
 }
 
 static bool SurfaceHasCaps(IDirectDrawSurface7* surface, DWORD capsMask) {
@@ -284,6 +399,17 @@ static HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pT
                                                                 IDirectDrawSurface7** ppSurface, IUnknown* pUnkOuter);
 static HRESULT STDMETHODCALLTYPE DetourDirectDraw4CreateSurface(IDirectDraw4* pThis, DDSURFACEDESC2* pDesc,
                                                                 IDirectDrawSurface4** ppSurface, IUnknown* pUnkOuter);
+static HRESULT STDMETHODCALLTYPE DetourDirectDrawLegacyCreateSurface(IDirectDraw* pThis, DDSURFACEDESC* pDesc,
+                                                                     IDirectDrawSurface** ppSurface,
+                                                                     IUnknown* pUnkOuter);
+static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface,
+                                                            IDirectDrawSurface* destOverride, DWORD flags);
+static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, LPRECT destRect,
+                                                           IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD flags,
+                                                           DDBLTFX* bltFx);
+static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyLock(IDirectDrawSurface* surface, LPRECT destRect,
+                                                            DDSURFACEDESC* surfaceDesc, DWORD flags, HANDLE event);
+static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyUnlock(IDirectDrawSurface* surface, LPVOID surfaceData);
 static HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface, IDirectDrawSurface7* destOverride,
                                                       DWORD flags);
 static HRESULT STDMETHODCALLTYPE DetourDDSurface4Flip(IDirectDrawSurface4* surface, IDirectDrawSurface4* destOverride,
@@ -308,13 +434,26 @@ static HRESULT STDMETHODCALLTYPE DetourGetTextureStageState7(IDirect3DDevice7* d
 static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState6(IUnknown* device, DWORD Stage, DWORD Type, DWORD Value);
 static HRESULT STDMETHODCALLTYPE DetourGetTextureStageState6(IUnknown* device, DWORD Stage, DWORD Type,
                                                              DWORD* pValue);
+static HRESULT STDMETHODCALLTYPE DetourD3D7CreateDevice(IDirect3D7* d3d, REFCLSID deviceClass,
+                                                        IDirectDrawSurface7* target,
+                                                        IDirect3DDevice7** device);
+static HRESULT STDMETHODCALLTYPE DetourD3D3CreateDevice(IUnknown* d3d, REFCLSID deviceClass,
+                                                        IDirectDrawSurface4* target, IUnknown** device,
+                                                        IUnknown* outer);
+static HRESULT WINAPI DetourDirectDrawCreate(GUID* lpGuid, IDirectDraw** lplpDD, IUnknown* pUnkOuter);
 static HRESULT WINAPI DetourDirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* pUnkOuter);
 
+static void InstallSurfaceHooksForLegacySurface(IDirectDrawSurface* surface, const char* reason);
 static void InstallSurfaceHooksForSurface(IDirectDrawSurface7* surface, const char* reason, bool markPrototype = false);
 static void InstallSurfaceHooksForSurface4(IDirectDrawSurface4* surface, const char* reason,
                                            bool markPrototype = false);
 static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* reason);
 static void InstallDirectDraw4HooksForInstance(IDirectDraw4* ddraw4, const char* reason);
+static void InstallLegacyDirectDrawHooksForInstance(
+    IDirectDraw* ddraw, ce::graphics_api_identity::DirectDrawVersion version, const char* reason);
+static void InstallD3D3FactoryIdentityHook(IUnknown* directDrawObject, const char* reason);
+static void InstallLegacyD3DFactoryIdentityHooks(IDirectDraw7* ddraw7, const char* reason);
+static void InstallDirectDrawCreateInlineHook(DirectDrawCreate_t directDrawCreate);
 static void InstallDirectDrawCreateExInlineHook(DirectDrawCreateEx_t directDrawCreateEx);
 static void BootstrapDirectDrawHooksOnCurrentThread(const char* reason);
 static bool QueueDirectDrawBootstrapOnWindowThread();
@@ -417,6 +556,20 @@ static void ApplyPrerenderLimitDDraw(IDirectDrawSurface7* surface, float limit) 
                 idleGapUs = 10000;  // Cap at 10ms
             PrecisionSleep(idleGapUs);
         }
+    }
+}
+
+static void InstallDirectDrawCreateInlineHook(DirectDrawCreate_t directDrawCreate) {
+    if (!directDrawCreate || g_DirectDrawCreateInlineInstalled)
+        return;
+
+    void* trampoline = nullptr;
+    if (InlineHook::Install((void*)directDrawCreate, (void*)DetourDirectDrawCreate, &trampoline)) {
+        oDirectDrawCreate = reinterpret_cast<DirectDrawCreate_t>(trampoline);
+        g_DirectDrawCreateInlineInstalled = true;
+        HookLog("DDraw: DirectDrawCreate inline hook installed");
+    } else {
+        HookLog("DDraw: DirectDrawCreate inline hook failed");
     }
 }
 
@@ -524,6 +677,7 @@ static bool QueueDirectDrawBootstrapOnWindowThread() {
 static void BootstrapDirectDrawHooksOnCurrentThread(const char* reason) {
     if (g_HooksInitialized)
         return;
+    DirectDrawBootstrapScope bootstrapScope;
 
     HookLog("DDraw: BootstrapDirectDrawHooksOnCurrentThread starting via %s", reason);
 
@@ -538,6 +692,8 @@ static void BootstrapDirectDrawHooksOnCurrentThread(const char* reason) {
         HookLog("DDraw: DirectDrawCreateEx not found during bootstrap");
         return;
     }
+    DirectDrawCreate_t pDirectDrawCreate = (DirectDrawCreate_t)GetProcAddress(ddrawModule, "DirectDrawCreate");
+    InstallDirectDrawCreateInlineHook(pDirectDrawCreate);
 
     DirectDrawCreateEx_t createFunction = oDirectDrawCreateEx ? oDirectDrawCreateEx : pDirectDrawCreateEx;
     HookLog("DDraw: Bootstrap create function=%p (export=%p, trampoline=%p)", createFunction, pDirectDrawCreateEx,
@@ -647,6 +803,7 @@ static void BootstrapDirectDrawHooksOnCurrentThread(const char* reason) {
     }
 
     ddraw7->Release();
+    InstallDirectDrawCreateInlineHook(pDirectDrawCreate);
     InstallDirectDrawCreateExInlineHook(pDirectDrawCreateEx);
 
     DestroyWindow(dummyHwnd);
@@ -1431,7 +1588,11 @@ static void DrawDDrawOverlay(IDirectDrawSurface7* overlaySourceSurface) {
     g_OverlayAdapter.SetMetrics(&g_PerfMetrics);
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(g_DDrawCapture.droppedFrames.load(std::memory_order_relaxed));
-    g_OverlayAdapter.SetGraphicsAPI(g_D3D7Device ? "D3D7" : "DDraw");
+    const auto directDrawVersion = static_cast<ce::graphics_api_identity::DirectDrawVersion>(
+        g_ActiveDirectDrawVersion.load(std::memory_order_acquire));
+    const unsigned d3dVersion = g_ActiveLegacyD3DVersion.load(std::memory_order_acquire);
+    g_OverlayAdapter.SetGraphicsAPI(ce::graphics_api_identity::LegacyDirectXLabel(directDrawVersion, d3dVersion),
+                                    "active DirectDraw presentation surface");
 
     if (g_OverlayAdapter.IsInitialized() && g_DDrawCapture.width > 0 && g_DDrawCapture.height > 0) {
         g_DDrawCapture.CopyPrimarySurfaceToOverlayBackbuffer(overlaySourceSurface);
@@ -1475,6 +1636,69 @@ static bool GetSurfaceSize(IDirectDrawSurface7* surface, uint32_t& w, uint32_t& 
         return true;
     }
     return false;
+}
+
+static void InstallSurfaceHooksForLegacySurface(IDirectDrawSurface* surface, const char* reason) {
+    if (!surface)
+        return;
+    void** vtable = *(void***)surface;
+    if (!vtable)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_DDrawIdentityMutex);
+    if (g_LegacySurfaceVTables.find(vtable) != g_LegacySurfaceVTables.end())
+        return;
+
+    LegacySurfaceVTableRecord record;
+    const VTableHook::Status flipStatus =
+        VTableHook::Create(&vtable[DDSURFACE7_VTABLE_FLIP], (LPVOID)&DetourDDSurfaceLegacyFlip,
+                           (LPVOID*)&record.flip);
+    const VTableHook::Status bltStatus =
+        VTableHook::Create(&vtable[DDSURFACE7_VTABLE_BLT], (LPVOID)&DetourDDSurfaceLegacyBlt,
+                           (LPVOID*)&record.blt);
+    const VTableHook::Status lockStatus =
+        VTableHook::Create(&vtable[DDSURFACE7_VTABLE_LOCK], (LPVOID)&DetourDDSurfaceLegacyLock,
+                           (LPVOID*)&record.lock);
+    const VTableHook::Status unlockStatus =
+        VTableHook::Create(&vtable[DDSURFACE7_VTABLE_UNLOCK], (LPVOID)&DetourDDSurfaceLegacyUnlock,
+                           (LPVOID*)&record.unlock);
+    g_LegacySurfaceVTables.emplace(vtable, record);
+    if (flipStatus == VTableHook::Success && bltStatus == VTableHook::Success &&
+        lockStatus == VTableHook::Success && unlockStatus == VTableHook::Success && record.flip && record.blt &&
+        record.lock && record.unlock) {
+        HookLog("DDraw: Legacy surface hooks installed via %s (surface=%p, vtable=%p)", reason, surface, vtable);
+    } else {
+        HookLogImportant(
+            "DDraw: Legacy surface hook installation incomplete via %s (flip=%s blt=%s lock=%s unlock=%s)",
+            reason, VTableHook::StatusToString(flipStatus), VTableHook::StatusToString(bltStatus),
+            VTableHook::StatusToString(lockStatus), VTableHook::StatusToString(unlockStatus));
+    }
+}
+
+static void InstallLegacyDirectDrawHooksForInstance(
+    IDirectDraw* ddraw, ce::graphics_api_identity::DirectDrawVersion version, const char* reason) {
+    if (!ddraw)
+        return;
+    void** vtable = *(void***)ddraw;
+    if (!vtable)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_DDrawIdentityMutex);
+    if (g_LegacyDDrawVTables.find(vtable) != g_LegacyDDrawVTables.end())
+        return;
+
+    DDrawLegacyCreateSurface_t original = nullptr;
+    const VTableHook::Status status =
+        VTableHook::Create(&vtable[6], (LPVOID)&DetourDirectDrawLegacyCreateSurface, (LPVOID*)&original);
+    if (status == VTableHook::Success && original) {
+        g_LegacyDDrawVTables.emplace(vtable, LegacyDDrawVTableRecord{original, version});
+        HookLog("DDraw: %s CreateSurface identity hook installed via %s (object=%p, vtable=%p)",
+                ce::graphics_api_identity::DirectDrawLabel(version), reason, ddraw, vtable);
+    } else {
+        HookLogImportant("DDraw: %s CreateSurface identity hook failed via %s (%s)",
+                         ce::graphics_api_identity::DirectDrawLabel(version), reason,
+                         VTableHook::StatusToString(status));
+    }
 }
 
 static void InstallSurfaceHooksForSurface4(IDirectDrawSurface4* surface, const char* reason, bool markPrototype) {
@@ -1625,15 +1849,74 @@ static void InstallDirectDraw4HooksForInstance(IDirectDraw4* ddraw4, const char*
     g_HookedDDrawVTables.push_back(ddraw4VTable);
     HookLog("DDraw: Installing DirectDraw4 hooks via %s (object=%p, vtable=%p)", reason, ddraw4, ddraw4VTable);
 
-    VTableHook::Status createSurfaceStatus =
-        VTableHook::Create(&ddraw4VTable[6], (LPVOID)&DetourDirectDraw4CreateSurface,
-                           oDDraw4CreateSurface ? nullptr : (LPVOID*)&oDDraw4CreateSurface);
+    InstallD3D3FactoryIdentityHook(ddraw4, reason);
+
+    DDraw4CreateSurface_t originalCreateSurface = nullptr;
+    std::lock_guard<std::mutex> identityLock(g_DDrawIdentityMutex);
+    VTableHook::Status createSurfaceStatus = VTableHook::Create(
+        &ddraw4VTable[6], (LPVOID)&DetourDirectDraw4CreateSurface, (LPVOID*)&originalCreateSurface);
     if (createSurfaceStatus == VTableHook::Success) {
+        g_DDraw4CreateSurfaceOriginals.emplace(ddraw4VTable, originalCreateSurface);
         HookLog("DDraw: CreateSurface4 hook installed via %s", reason);
     } else {
         HookLog("DDraw: CreateSurface4 hook install via %s returned %s", reason,
                 VTableHook::StatusToString(createSurfaceStatus));
     }
+}
+
+static void InstallD3D3FactoryIdentityHook(IUnknown* directDrawObject, const char* reason) {
+    if (!directDrawObject)
+        return;
+
+    IUnknown* d3d3 = nullptr;
+    if (FAILED(directDrawObject->QueryInterface(kIID_IDirect3D3, reinterpret_cast<void**>(&d3d3))) || !d3d3)
+        return;
+
+    void** vtable = *(void***)d3d3;
+    {
+        std::lock_guard<std::mutex> lock(g_DDrawIdentityMutex);
+        if (g_D3D3CreateDeviceOriginals.find(vtable) == g_D3D3CreateDeviceOriginals.end()) {
+            D3D3CreateDevice_t original = nullptr;
+            const VTableHook::Status status =
+                VTableHook::Create(&vtable[8], (LPVOID)&DetourD3D3CreateDevice, (LPVOID*)&original);
+            if (status == VTableHook::Success && original) {
+                g_D3D3CreateDeviceOriginals.emplace(vtable, original);
+                HookLog("DDraw: D3D6 CreateDevice identity hook installed via %s", reason);
+            } else {
+                HookLogImportant("DDraw: D3D6 CreateDevice identity hook failed via %s (%s)", reason,
+                                 VTableHook::StatusToString(status));
+            }
+        }
+    }
+    d3d3->Release();
+}
+
+static void InstallLegacyD3DFactoryIdentityHooks(IDirectDraw7* ddraw7, const char* reason) {
+    if (!ddraw7)
+        return;
+
+    IDirect3D7* d3d7 = nullptr;
+    if (SUCCEEDED(ddraw7->QueryInterface(kIID_IDirect3D7, reinterpret_cast<void**>(&d3d7))) && d3d7) {
+        void** vtable = *(void***)d3d7;
+        {
+            std::lock_guard<std::mutex> lock(g_DDrawIdentityMutex);
+            if (g_D3D7CreateDeviceOriginals.find(vtable) == g_D3D7CreateDeviceOriginals.end()) {
+                D3D7CreateDevice_t original = nullptr;
+                const VTableHook::Status status =
+                    VTableHook::Create(&vtable[4], (LPVOID)&DetourD3D7CreateDevice, (LPVOID*)&original);
+                if (status == VTableHook::Success && original) {
+                    g_D3D7CreateDeviceOriginals.emplace(vtable, original);
+                    HookLog("DDraw: D3D7 CreateDevice identity hook installed via %s", reason);
+                } else {
+                    HookLogImportant("DDraw: D3D7 CreateDevice identity hook failed via %s (%s)", reason,
+                                     VTableHook::StatusToString(status));
+                }
+            }
+        }
+        d3d7->Release();
+    }
+
+    InstallD3D3FactoryIdentityHook(ddraw7, reason);
 }
 
 static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* reason) {
@@ -1658,21 +1941,60 @@ static void InstallDirectDrawHooksForInstance(IDirectDraw7* ddraw7, const char* 
     g_HookedDDrawVTables.push_back(ddraw7VTable);
     HookLog("DDraw: Installing DirectDraw hooks via %s (object=%p, vtable=%p)", reason, ddraw7, ddraw7VTable);
 
+    IDirectDraw* ddraw1 = nullptr;
+    if (SUCCEEDED(ddraw7->QueryInterface(IID_IDirectDraw, reinterpret_cast<void**>(&ddraw1))) && ddraw1) {
+        InstallLegacyDirectDrawHooksForInstance(
+            ddraw1, ce::graphics_api_identity::DirectDrawVersion::DirectDraw, reason);
+        ddraw1->Release();
+    }
+    IDirectDraw2* ddraw2 = nullptr;
+    if (SUCCEEDED(ddraw7->QueryInterface(IID_IDirectDraw2, reinterpret_cast<void**>(&ddraw2))) && ddraw2) {
+        InstallLegacyDirectDrawHooksForInstance(
+            reinterpret_cast<IDirectDraw*>(ddraw2), ce::graphics_api_identity::DirectDrawVersion::DirectDraw2,
+            reason);
+        ddraw2->Release();
+    }
+    IDirectDraw3* ddraw3 = nullptr;
+    if (SUCCEEDED(ddraw7->QueryInterface(kIID_IDirectDraw3, reinterpret_cast<void**>(&ddraw3))) && ddraw3) {
+        InstallLegacyDirectDrawHooksForInstance(
+            reinterpret_cast<IDirectDraw*>(ddraw3), ce::graphics_api_identity::DirectDrawVersion::DirectDraw3,
+            reason);
+        ddraw3->Release();
+    }
+
     IDirectDraw4* ddraw4 = nullptr;
     if (SUCCEEDED(ddraw7->QueryInterface(IID_IDirectDraw4, reinterpret_cast<void**>(&ddraw4))) && ddraw4) {
         InstallDirectDraw4HooksForInstance(ddraw4, reason);
         ddraw4->Release();
     }
 
-    VTableHook::Status createSurfaceStatus =
-        VTableHook::Create(&ddraw7VTable[6], (LPVOID)&DetourDirectDraw7CreateSurface,
-                           oDDraw7CreateSurface ? nullptr : (LPVOID*)&oDDraw7CreateSurface);
+    InstallLegacyD3DFactoryIdentityHooks(ddraw7, reason);
+
+    DDraw7CreateSurface_t originalCreateSurface = nullptr;
+    std::lock_guard<std::mutex> identityLock(g_DDrawIdentityMutex);
+    VTableHook::Status createSurfaceStatus = VTableHook::Create(
+        &ddraw7VTable[6], (LPVOID)&DetourDirectDraw7CreateSurface, (LPVOID*)&originalCreateSurface);
     if (createSurfaceStatus == VTableHook::Success) {
+        g_DDraw7CreateSurfaceOriginals.emplace(ddraw7VTable, originalCreateSurface);
         HookLog("DDraw: CreateSurface hook installed via %s", reason);
     } else {
         HookLog("DDraw: CreateSurface hook install via %s returned %s", reason,
                 VTableHook::StatusToString(createSurfaceStatus));
     }
+}
+
+static ce::graphics_api_identity::DirectDrawVersion DirectDrawVersionFromIID(REFIID iid) {
+    if (IsEqualIID(iid, IID_IDirectDraw7))
+        return ce::graphics_api_identity::DirectDrawVersion::DirectDraw7;
+    if (IsEqualIID(iid, IID_IDirectDraw4))
+        return ce::graphics_api_identity::DirectDrawVersion::DirectDraw4;
+    if (IsEqualIID(iid, kIID_IDirectDraw3))
+        return ce::graphics_api_identity::DirectDrawVersion::DirectDraw3;
+    if (IsEqualIID(iid, IID_IDirectDraw2))
+        return ce::graphics_api_identity::DirectDrawVersion::DirectDraw2;
+    if (IsEqualIID(iid, IID_IDirectDraw))
+        return ce::graphics_api_identity::DirectDrawVersion::DirectDraw;
+    return ce::graphics_api_identity::DirectDrawVersion::Unknown;
 }
 
 bool HookDirectDrawObject(void* directDrawObject, REFIID iid) {
@@ -1684,6 +2006,25 @@ bool HookDirectDrawObject(void* directDrawObject, REFIID iid) {
 
     if (ShouldSuppressDirectDrawHooking()) {
         return false;
+    }
+
+    const auto requestedVersion = DirectDrawVersionFromIID(iid);
+    if (requestedVersion != ce::graphics_api_identity::DirectDrawVersion::Unknown && g_DDrawBootstrapDepth != 0) {
+        static std::atomic<int> s_ignoredBootstrapIdentityLogs{0};
+        if (s_ignoredBootstrapIdentityLogs.fetch_add(1, std::memory_order_relaxed) < 4) {
+            HookLog("[GraphicsAPI] ignored synthetic DirectDraw bootstrap interface api=%s",
+                    ce::graphics_api_identity::DirectDrawLabel(requestedVersion));
+        }
+    }
+    if (requestedVersion != ce::graphics_api_identity::DirectDrawVersion::Unknown && g_DDrawBootstrapDepth == 0) {
+        g_LegacyD3DCallbackVersion.store(0, std::memory_order_release);
+        g_ActiveLegacyD3DVersion.store(0, std::memory_order_release);
+        const int previous = g_ActiveDirectDrawVersion.exchange(static_cast<int>(requestedVersion),
+                                                                 std::memory_order_acq_rel);
+        if (previous != static_cast<int>(requestedVersion)) {
+            HookLogImportant("[GraphicsAPI] DirectDraw interface accepted api=%s evidence=application creation",
+                             ce::graphics_api_identity::DirectDrawLabel(requestedVersion));
+        }
     }
 
     if (IsEqualIID(iid, IID_IDirectDraw7)) {
@@ -1698,6 +2039,20 @@ bool HookDirectDrawObject(void* directDrawObject, REFIID iid) {
         IDirectDraw7* ddraw7 = nullptr;
         if (SUCCEEDED(ddraw4->QueryInterface(IID_IDirectDraw7, reinterpret_cast<void**>(&ddraw7))) && ddraw7) {
             InstallDirectDrawHooksForInstance(ddraw7, "wrapper CreateEx upgrade");
+            ddraw7->Release();
+        }
+        return true;
+    }
+
+    if (requestedVersion == ce::graphics_api_identity::DirectDrawVersion::DirectDraw ||
+        requestedVersion == ce::graphics_api_identity::DirectDrawVersion::DirectDraw2 ||
+        requestedVersion == ce::graphics_api_identity::DirectDrawVersion::DirectDraw3) {
+        auto* legacy = reinterpret_cast<IDirectDraw*>(directDrawObject);
+        InstallLegacyDirectDrawHooksForInstance(legacy, requestedVersion, "wrapper creation");
+
+        IDirectDraw7* ddraw7 = nullptr;
+        if (SUCCEEDED(legacy->QueryInterface(IID_IDirectDraw7, reinterpret_cast<void**>(&ddraw7))) && ddraw7) {
+            InstallDirectDrawHooksForInstance(ddraw7, "wrapper creation upgrade");
             ddraw7->Release();
         }
         return true;
@@ -1811,6 +2166,110 @@ static void HandleCaptureSurface4(IDirectDrawSurface4* primarySurface,
     primarySurface7->Release();
 }
 
+static void HandleCaptureLegacySurface(IDirectDrawSurface* primarySurface,
+                                       IDirectDrawSurface* explicitSourceSurface = nullptr) {
+    IDirectDrawSurface7* primarySurface7 = QuerySurface7(primarySurface);
+    if (!primarySurface7) {
+        static std::atomic<int> s_upgradeFailureLogCount{0};
+        if (s_upgradeFailureLogCount.fetch_add(1, std::memory_order_relaxed) < 4) {
+            HookLogImportant("DDraw: Failed to upgrade legacy primary surface to Surface7 for capture/overlay");
+        }
+        return;
+    }
+    IDirectDrawSurface7* explicitSourceSurface7 = QuerySurface7(explicitSourceSurface);
+    HandleCapture(primarySurface7, explicitSourceSurface7);
+    if (explicitSourceSurface7)
+        explicitSourceSurface7->Release();
+    primarySurface7->Release();
+}
+
+static HRESULT STDMETHODCALLTYPE DetourDirectDrawLegacyCreateSurface(IDirectDraw* pThis, DDSURFACEDESC* pDesc,
+                                                                     IDirectDrawSurface** ppSurface,
+                                                                     IUnknown* pUnkOuter) {
+    LegacyDDrawVTableRecord record;
+    {
+        std::lock_guard<std::mutex> lock(g_DDrawIdentityMutex);
+        const auto it = g_LegacyDDrawVTables.find(pThis ? *(void***)pThis : nullptr);
+        if (it != g_LegacyDDrawVTables.end())
+            record = it->second;
+    }
+    if (!record.createSurface)
+        return DDERR_GENERIC;
+
+    if (pDesc && g_IPC) {
+        const int count = g_IPC->GetSharedMem()->graphicsConfig.backbufferCount;
+        if (count >= 2 && count <= 6 && IsPrimarySurfaceDesc(pDesc) &&
+            (pDesc->ddsCaps.dwCaps & DDSCAPS_COMPLEX)) {
+            pDesc->dwFlags |= DDSD_BACKBUFFERCOUNT;
+            pDesc->dwBackBufferCount = static_cast<DWORD>(count - 1);
+        }
+    }
+
+    const HRESULT hr = record.createSurface(pThis, pDesc, ppSurface, pUnkOuter);
+    if (SUCCEEDED(hr) && ppSurface && *ppSurface) {
+        AssociateDirectDrawSurface(*ppSurface, record.version);
+        InstallSurfaceHooksForLegacySurface(*ppSurface, ce::graphics_api_identity::DirectDrawLabel(record.version));
+        if (g_DDrawBootstrapDepth == 0) {
+            HookLog("DDraw: %s CreateSurface accepted surface=%p primary=%d",
+                    ce::graphics_api_identity::DirectDrawLabel(record.version), *ppSurface,
+                    IsPrimarySurfaceDesc(pDesc) ? 1 : 0);
+        }
+    }
+    return hr;
+}
+
+static LegacySurfaceVTableRecord ResolveLegacySurfaceRecord(IDirectDrawSurface* surface) {
+    std::lock_guard<std::mutex> lock(g_DDrawIdentityMutex);
+    const auto it = g_LegacySurfaceVTables.find(surface ? *(void***)surface : nullptr);
+    return it != g_LegacySurfaceVTables.end() ? it->second : LegacySurfaceVTableRecord{};
+}
+
+static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface,
+                                                            IDirectDrawSurface* destOverride, DWORD flags) {
+    const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
+    if (!record.flip)
+        return DDERR_GENERIC;
+    const HRESULT hr = record.flip(surface, destOverride, flags);
+    if (SUCCEEDED(hr) && g_DDrawBootstrapDepth == 0) {
+        ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
+        HandleCaptureLegacySurface(surface);
+    }
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, LPRECT destRect,
+                                                           IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD flags,
+                                                           DDBLTFX* bltFx) {
+    const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
+    if (!record.blt)
+        return DDERR_GENERIC;
+    const HRESULT hr = record.blt(surface, destRect, srcSurface, srcRect, flags, bltFx);
+    if (SUCCEEDED(hr) && g_DDrawBootstrapDepth == 0 &&
+        SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)) {
+        ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
+        HandleCaptureLegacySurface(surface, srcSurface);
+    }
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyLock(IDirectDrawSurface* surface, LPRECT destRect,
+                                                            DDSURFACEDESC* surfaceDesc, DWORD flags, HANDLE event) {
+    const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
+    return record.lock ? record.lock(surface, destRect, surfaceDesc, flags, event) : DDERR_GENERIC;
+}
+
+static HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyUnlock(IDirectDrawSurface* surface, LPVOID surfaceData) {
+    const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
+    if (!record.unlock)
+        return DDERR_GENERIC;
+    const HRESULT hr = record.unlock(surface, surfaceData);
+    if (SUCCEEDED(hr) && g_DDrawBootstrapDepth == 0 && SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE)) {
+        ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw);
+        HandleCaptureLegacySurface(surface);
+    }
+    return hr;
+}
+
 // Hook: IDirectDraw7::CreateSurface
 static HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis, DDSURFACEDESC2* pDesc,
                                                                 IDirectDrawSurface7** ppSurface, IUnknown* pUnkOuter) {
@@ -1828,10 +2287,18 @@ static HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pT
         }
     }
 
-    HRESULT hr = oDDraw7CreateSurface ? oDDraw7CreateSurface(pThis, pDesc, ppSurface, pUnkOuter) : DDERR_GENERIC;
+    DDraw7CreateSurface_t original = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_DDrawIdentityMutex);
+        const auto it = g_DDraw7CreateSurfaceOriginals.find(pThis ? *(void***)pThis : nullptr);
+        if (it != g_DDraw7CreateSurfaceOriginals.end())
+            original = it->second;
+    }
+    HRESULT hr = original ? original(pThis, pDesc, ppSurface, pUnkOuter) : DDERR_GENERIC;
     HookLog("DDraw: DetourDirectDraw7CreateSurface returned hr=0x%08x, surface=%p", hr,
             (ppSurface && SUCCEEDED(hr)) ? *ppSurface : nullptr);
     if (SUCCEEDED(hr) && ppSurface && *ppSurface) {
+        AssociateDirectDrawSurface(*ppSurface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
         InstallSurfaceHooksForSurface(*ppSurface, "CreateSurface");
         if (IsPrimarySurfaceDesc(pDesc)) {
             g_PrimarySurface = *ppSurface;
@@ -1861,10 +2328,18 @@ static HRESULT STDMETHODCALLTYPE DetourDirectDraw4CreateSurface(IDirectDraw4* pT
         }
     }
 
-    HRESULT hr = oDDraw4CreateSurface ? oDDraw4CreateSurface(pThis, pDesc, ppSurface, pUnkOuter) : DDERR_GENERIC;
+    DDraw4CreateSurface_t original = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_DDrawIdentityMutex);
+        const auto it = g_DDraw4CreateSurfaceOriginals.find(pThis ? *(void***)pThis : nullptr);
+        if (it != g_DDraw4CreateSurfaceOriginals.end())
+            original = it->second;
+    }
+    HRESULT hr = original ? original(pThis, pDesc, ppSurface, pUnkOuter) : DDERR_GENERIC;
     HookLog("DDraw: DetourDirectDraw4CreateSurface returned hr=0x%08x, surface=%p", hr,
             (ppSurface && SUCCEEDED(hr)) ? *ppSurface : nullptr);
     if (SUCCEEDED(hr) && ppSurface && *ppSurface) {
+        AssociateDirectDrawSurface(*ppSurface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
         InstallSurfaceHooksForSurface4(*ppSurface, "CreateSurface4");
         if (IsPrimarySurfaceDesc(pDesc)) {
             g_PrimarySurface4 = *ppSurface;
@@ -1879,6 +2354,7 @@ static HRESULT STDMETHODCALLTYPE DetourDirectDraw4CreateSurface(IDirectDraw4* pT
 
 static HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface, IDirectDrawSurface7* destOverride,
                                                       DWORD flags) {
+    ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
     MaybeTrackPrimarySurface(surface, "Flip");
 
     if (g_IPC) {
@@ -1916,6 +2392,7 @@ static HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surfa
 
 static HRESULT STDMETHODCALLTYPE DetourDDSurface4Flip(IDirectDrawSurface4* surface, IDirectDrawSurface4* destOverride,
                                                       DWORD flags) {
+    ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
     MaybeTrackPrimarySurface4(surface, "Flip4");
 
     HRESULT hr = oDDSurface4Flip(surface, destOverride, flags);
@@ -1928,6 +2405,7 @@ static HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surfac
                                                      IDirectDrawSurface7* srcSurface, LPRECT srcRect, DWORD flags,
                                                      void* bltFx) {
     HRESULT hr = oDDSurface7Blt(surface, destRect, srcSurface, srcRect, flags, bltFx);
+    ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
 
     if (SUCCEEDED(hr) && srcSurface && SurfaceHasCaps(surface, DDSCAPS_PRIMARYSURFACE | DDSCAPS_BACKBUFFER)) {
         RememberPresentedSourceSurface(srcSurface);
@@ -1949,6 +2427,7 @@ static HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surfac
                                                      IDirectDrawSurface4* srcSurface, LPRECT srcRect, DWORD flags,
                                                      void* bltFx) {
     HRESULT hr = oDDSurface4Blt(surface, destRect, srcSurface, srcRect, flags, bltFx);
+    ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
 
     if (surface != g_HookSurfacePrototype4 && !g_PrimarySurface4) {
         MaybeTrackPrimarySurface4(surface, "Blt4");
@@ -1983,6 +2462,7 @@ static HRESULT STDMETHODCALLTYPE DetourDDSurface4Lock(IDirectDrawSurface4* surfa
 static HRESULT STDMETHODCALLTYPE DetourDDSurface7Unlock(IDirectDrawSurface7* surface, LPRECT rect) {
     HRESULT hr = oDDSurface7Unlock(surface, rect);
     if (SUCCEEDED(hr) && surface && surface == g_PrimarySurface) {
+        ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw7);
         HandleCapture(surface);
     }
     return hr;
@@ -1991,12 +2471,62 @@ static HRESULT STDMETHODCALLTYPE DetourDDSurface7Unlock(IDirectDrawSurface7* sur
 static HRESULT STDMETHODCALLTYPE DetourDDSurface4Unlock(IDirectDrawSurface4* surface, LPRECT rect) {
     HRESULT hr = oDDSurface4Unlock(surface, rect);
     if (SUCCEEDED(hr) && surface && surface == g_PrimarySurface4) {
+        ActivateDirectDrawSurface(surface, ce::graphics_api_identity::DirectDrawVersion::DirectDraw4);
         HandleCaptureSurface4(surface);
     }
     return hr;
 }
 
+static void ReportLegacyD3DUse(unsigned version, const char* evidence) {
+    if (g_DDrawBootstrapDepth != 0)
+        return;
+    const unsigned previous = g_LegacyD3DCallbackVersion.exchange(version, std::memory_order_acq_rel);
+    g_ActiveLegacyD3DVersion.store(version, std::memory_order_release);
+    if (previous != version) {
+        HookLogImportant("[GraphicsAPI] legacy Direct3D use accepted api=DX%u evidence=%s", version,
+                         evidence ? evidence : "unknown");
+    }
+}
+
+static HRESULT STDMETHODCALLTYPE DetourD3D7CreateDevice(IDirect3D7* d3d, REFCLSID deviceClass,
+                                                        IDirectDrawSurface7* target,
+                                                        IDirect3DDevice7** device) {
+    D3D7CreateDevice_t original = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_DDrawIdentityMutex);
+        const auto it = g_D3D7CreateDeviceOriginals.find(d3d ? *(void***)d3d : nullptr);
+        if (it != g_D3D7CreateDeviceOriginals.end())
+            original = it->second;
+    }
+    const HRESULT hr = original ? original(d3d, deviceClass, target, device) : DDERR_GENERIC;
+    if (SUCCEEDED(hr) && device && *device && g_DDrawBootstrapDepth == 0) {
+        g_D3D7Device = *device;
+        AssociateLegacyD3DSurface(target, 7);
+        ReportLegacyD3DUse(7, "IDirect3D7::CreateDevice");
+    }
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE DetourD3D3CreateDevice(IUnknown* d3d, REFCLSID deviceClass,
+                                                        IDirectDrawSurface4* target, IUnknown** device,
+                                                        IUnknown* outer) {
+    D3D3CreateDevice_t original = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_DDrawIdentityMutex);
+        const auto it = g_D3D3CreateDeviceOriginals.find(d3d ? *(void***)d3d : nullptr);
+        if (it != g_D3D3CreateDeviceOriginals.end())
+            original = it->second;
+    }
+    const HRESULT hr = original ? original(d3d, deviceClass, target, device, outer) : DDERR_GENERIC;
+    if (SUCCEEDED(hr) && device && *device && g_DDrawBootstrapDepth == 0) {
+        AssociateLegacyD3DSurface(target, 6);
+        ReportLegacyD3DUse(6, "IDirect3D3::CreateDevice");
+    }
+    return hr;
+}
+
 static HRESULT STDMETHODCALLTYPE DetourSetRenderState7(IDirect3DDevice7* device, DWORD Type, DWORD Value) {
+    ReportLegacyD3DUse(7, "IDirect3DDevice7::SetRenderState");
     if (g_IPC) {
         const char* msaa = g_IPC->GetSharedMem()->graphicsConfig.msaaSamples;
         if (msaa[0] != 'd') {
@@ -2013,6 +2543,7 @@ static HRESULT STDMETHODCALLTYPE DetourSetRenderState7(IDirect3DDevice7* device,
 
 static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(IDirect3DDevice7* device, DWORD Stage, DWORD Type,
                                                              DWORD Value) {
+    ReportLegacyD3DUse(7, "IDirect3DDevice7::SetTextureStageState");
     g_D3D7Device = device;  // Capture device for proactive use
     return ce::legacy_d3d_sampler_state::SetTextureStageState(
         ce::legacy_d3d_sampler_state::Api::D3D7, device, Stage, Type, Value,
@@ -2023,6 +2554,7 @@ static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState7(IDirect3DDevice7* d
 
 static HRESULT STDMETHODCALLTYPE DetourGetTextureStageState7(IDirect3DDevice7* device, DWORD Stage, DWORD Type,
                                                              DWORD* pValue) {
+    ReportLegacyD3DUse(7, "IDirect3DDevice7::GetTextureStageState");
     return ce::legacy_d3d_sampler_state::GetTextureStageState(
         ce::legacy_d3d_sampler_state::Api::D3D7, device, Stage, Type, pValue,
         reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(oGetTextureStageState7),
@@ -2031,6 +2563,7 @@ static HRESULT STDMETHODCALLTYPE DetourGetTextureStageState7(IDirect3DDevice7* d
 }
 
 static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState6(IUnknown* device, DWORD Stage, DWORD Type, DWORD Value) {
+    ReportLegacyD3DUse(6, "IDirect3DDevice3::SetTextureStageState");
     return ce::legacy_d3d_sampler_state::SetTextureStageState(
         ce::legacy_d3d_sampler_state::Api::D3D6, device, Stage, Type, Value,
         reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(oSetTextureStageState6),
@@ -2040,11 +2573,19 @@ static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState6(IUnknown* device, D
 
 static HRESULT STDMETHODCALLTYPE DetourGetTextureStageState6(IUnknown* device, DWORD Stage, DWORD Type,
                                                              DWORD* pValue) {
+    ReportLegacyD3DUse(6, "IDirect3DDevice3::GetTextureStageState");
     return ce::legacy_d3d_sampler_state::GetTextureStageState(
         ce::legacy_d3d_sampler_state::Api::D3D6, device, Stage, Type, pValue,
         reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(oGetTextureStageState6),
         reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(oSetTextureStageState6),
         QueryD3D6MaxAnisotropy);
+}
+
+static HRESULT WINAPI DetourDirectDrawCreate(GUID* lpGuid, IDirectDraw** lplpDD, IUnknown* pUnkOuter) {
+    const HRESULT hr = oDirectDrawCreate ? oDirectDrawCreate(lpGuid, lplpDD, pUnkOuter) : DDERR_GENERIC;
+    if (SUCCEEDED(hr) && lplpDD && *lplpDD)
+        HookDirectDrawObject(*lplpDD, IID_IDirectDraw);
+    return hr;
 }
 
 static HRESULT WINAPI DetourDirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* pUnkOuter) {
@@ -2097,6 +2638,8 @@ void DDrawHook::Init() {
         return;
     }
 
+    DirectDrawCreate_t pDirectDrawCreate = (DirectDrawCreate_t)GetProcAddress(ddrawModule, "DirectDrawCreate");
+    InstallDirectDrawCreateInlineHook(pDirectDrawCreate);
     InstallDirectDrawCreateExInlineHook(pDirectDrawCreateEx);
 
     if (!QueueDirectDrawBootstrapOnWindowThread()) {

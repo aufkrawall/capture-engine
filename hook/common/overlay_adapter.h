@@ -83,7 +83,7 @@ public:
     }
     // Remember a known-valid game window for cross-adapter DPI resolution (file-static; see .cpp).
     static void RememberDpiReferenceHwnd(void* hwnd);
-    void SetGraphicsAPI(const char* api);
+    void SetGraphicsAPI(const char* api, const char* evidenceSource = nullptr);
     void SetReserveInactiveFGSpace(bool reserve);
     void InvalidateCachedFrame();
     void SetDroppedFrames(uint32_t count) {

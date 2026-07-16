@@ -11,6 +11,10 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#ifndef DIRECTDRAW_VERSION
+#define DIRECTDRAW_VERSION 0x0700
+#endif
+#include <ddraw.h>
 #define CE_WRAPPER_RETURN_ADDRESS() __builtin_return_address(0)
 
 // Forward declaration from dx12_hook.cpp
@@ -19,6 +23,7 @@ struct IDXGISwapChain;
 // Forward declaration from dx11_hook.cpp
 extern void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
 #include "../apis/ddraw_hook.h"
+#include "../apis/dx11_hook.h"
 #include "../apis/dx12_hook.h"  // Access to g_DX12Hook implementation
 #include "../common/dx12_dred.h"
 #include "../common/dx12_overlay_policy.h"
@@ -210,6 +215,7 @@ PFN_D3D11CreateDevice oD3D11CreateDevice = nullptr;
 PFN_D3D10CreateDevice oD3D10CreateDevice = nullptr;
 PFN_D3D10CreateDevice1 oD3D10CreateDevice1 = nullptr;
 PFN_D3D10CreateDeviceAndSwapChain oD3D10CreateDeviceAndSwapChain = nullptr;
+PFN_D3D10CreateDeviceAndSwapChain1 oD3D10CreateDeviceAndSwapChain1 = nullptr;
 
 // D3D9 function pointers
 typedef IDirect3D9*(WINAPI* PFN_Direct3DCreate9)(UINT SDKVersion);
@@ -217,6 +223,7 @@ typedef HRESULT(WINAPI* PFN_Direct3DCreate9Ex)(UINT SDKVersion, IDirect3D9Ex** p
 
 PFN_Direct3DCreate9 oDirect3DCreate9 = nullptr;
 PFN_Direct3DCreate9Ex oDirect3DCreate9Ex = nullptr;
+PFN_DirectDrawCreate oDirectDrawCreate = nullptr;
 PFN_DirectDrawCreateEx oDirectDrawCreateEx = nullptr;
 
 static bool g_WrappersActive = false;
@@ -627,6 +634,7 @@ HRESULT WINAPI Wrapped_D3D11CreateDevice(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE
 
     CWrapD3D11Device* pWrapper = nullptr;
     if (SUCCEEDED(hr) && pRealDevice && ppDevice) {
+        DX11Hook_RegisterDeviceIdentity(pRealDevice, "D3D11CreateDevice", true);
         pWrapper = new CWrapD3D11Device(pRealDevice);
         *ppDevice = pWrapper;
         pRealDevice->Release();
@@ -707,6 +715,9 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
     WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Original returned hr=0x%08X", hr);
 
     if (SUCCEEDED(hr)) {
+        if (ppDevice && *ppDevice) {
+            DX11Hook_RegisterDeviceIdentity(*ppDevice, "D3D11CreateDeviceAndSwapChain", true);
+        }
         const auto& gfx = GetActiveGraphicsConfig();
         if (ppSwapChain && *ppSwapChain && HasBackbufferCountOverride(gfx.backbufferCount)) {
             DXGI_SWAP_CHAIN_DESC actualDesc = {};
@@ -769,6 +780,7 @@ HRESULT WINAPI Wrapped_D3D10CreateDevice(IDXGIAdapter* pAdapter, D3D10_DRIVER_TY
     HRESULT hr = oD3D10CreateDevice(DeWrap(pAdapter), DriverType, Software, Flags, SDKVersion, &pRealDevice);
 
     if (SUCCEEDED(hr) && pRealDevice && ppDevice) {
+        DX10Hook_RegisterDeviceIdentity(pRealDevice, false, "D3D10CreateDevice");
         auto* pWrapper = new CWrapD3D10Device(pRealDevice);
         *ppDevice = pWrapper;
         pRealDevice->Release();
@@ -796,6 +808,7 @@ HRESULT WINAPI Wrapped_D3D10CreateDevice1(IDXGIAdapter* pAdapter, D3D10_DRIVER_T
         oD3D10CreateDevice1(DeWrap(pAdapter), DriverType, Software, Flags, HardwareLevel, SDKVersion, &pRealDevice);
 
     if (SUCCEEDED(hr) && pRealDevice && ppDevice) {
+        DX10Hook_RegisterDeviceIdentity(pRealDevice, true, "D3D10CreateDevice1");
         // Cast to base and wrap
         auto* pWrapper = new CWrapD3D10Device(pRealDevice);
         *ppDevice = static_cast<ID3D10Device1*>(pWrapper);
@@ -828,6 +841,12 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
                                        ppSwapChain ? &pRealSwapChain : nullptr, ppDevice ? &pRealDevice : nullptr);
 
     if (SUCCEEDED(hr)) {
+        if (pRealDevice) {
+            DX10Hook_RegisterDeviceIdentity(pRealDevice, false, "D3D10CreateDeviceAndSwapChain");
+        }
+        if (pRealSwapChain) {
+            DX10Hook_RegisterSwapChainIdentity(pRealSwapChain, false, "D3D10CreateDeviceAndSwapChain");
+        }
         // D3D10 runtime compatibility: return raw objects.
         // Wrapping D3D10 swapchains/devices has caused invalid vtable pointers in
         // both x64 and x86 test coverage.
@@ -841,6 +860,44 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
         }
         WrapperLog("Wrapper: D3D10 compatibility mode - returning unwrapped objects");
         return hr;
+    }
+
+    return hr;
+}
+
+HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain1(
+    IDXGIAdapter* pAdapter, D3D10_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags,
+    D3D10_FEATURE_LEVEL1 HardwareLevel, UINT SDKVersion, DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
+    IDXGISwapChain** ppSwapChain, ID3D10Device1** ppDevice) {
+    WrapperLog("Wrapper: D3D10CreateDeviceAndSwapChain1 called");
+    g_D3D11Or10DeviceCreated.store(true, std::memory_order_release);
+
+    if (!oD3D10CreateDeviceAndSwapChain1)
+        return E_FAIL;
+
+    D3D10CreateScope d3d10CreateScope;
+    ID3D10Device1* pRealDevice = nullptr;
+    IDXGISwapChain* pRealSwapChain = nullptr;
+    const HRESULT hr = oD3D10CreateDeviceAndSwapChain1(
+        DeWrap(pAdapter), DriverType, Software, Flags, HardwareLevel, SDKVersion, pSwapChainDesc,
+        ppSwapChain ? &pRealSwapChain : nullptr, ppDevice ? &pRealDevice : nullptr);
+
+    if (SUCCEEDED(hr)) {
+        if (pRealDevice) {
+            DX10Hook_RegisterDeviceIdentity(pRealDevice, true, "D3D10CreateDeviceAndSwapChain1");
+        }
+        if (pRealSwapChain) {
+            DX10Hook_RegisterSwapChainIdentity(pRealSwapChain, true, "D3D10CreateDeviceAndSwapChain1");
+        }
+        if (pRealDevice && ppDevice) {
+            *ppDevice = pRealDevice;
+            pRealDevice = nullptr;
+        }
+        if (pRealSwapChain && ppSwapChain) {
+            *ppSwapChain = pRealSwapChain;
+            pRealSwapChain = nullptr;
+        }
+        WrapperLog("Wrapper: D3D10.1 compatibility mode - returning unwrapped objects");
     }
 
     return hr;
@@ -904,6 +961,17 @@ HRESULT WINAPI Wrapped_DirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REFIID i
         WrapperLog("Wrapper: HookDirectDrawObject returned %d for object=%p", hooked ? 1 : 0, *lplpDD);
     }
 
+    return hr;
+}
+
+HRESULT WINAPI Wrapped_DirectDrawCreate(GUID* lpGuid, LPVOID* lplpDD, IUnknown* pUnkOuter) {
+    WrapperLog("Wrapper: DirectDrawCreate called (out=%p)", lplpDD);
+    if (!oDirectDrawCreate)
+        return E_FAIL;
+
+    const HRESULT hr = oDirectDrawCreate(lpGuid, lplpDD, pUnkOuter);
+    if (SUCCEEDED(hr) && lplpDD && *lplpDD)
+        HookDirectDrawObject(*lplpDD, IID_IDirectDraw);
     return hr;
 }
 

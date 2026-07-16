@@ -1408,7 +1408,7 @@ static void DrawDX8Overlay(IDirect3DDevice8* device, HWND hwnd) {
     g_OverlayAdapter.SetMetrics(&g_PerfMetrics);
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(g_DX8Capture.droppedFrames.load(std::memory_order_relaxed));
-    g_OverlayAdapter.SetGraphicsAPI("DX8");
+    g_OverlayAdapter.SetGraphicsAPI("DX8", "active IDirect3DDevice8");
 
     {
         DX8StateHookBypassScope bypassScope;

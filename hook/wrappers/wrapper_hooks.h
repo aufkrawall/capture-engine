@@ -56,10 +56,14 @@ typedef HRESULT(WINAPI* PFN_D3D10CreateDevice1)(IDXGIAdapter*, D3D10_DRIVER_TYPE
                                                 UINT, ID3D10Device1**);
 typedef HRESULT(WINAPI* PFN_D3D10CreateDeviceAndSwapChain)(IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT, UINT,
                                                            DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**, ID3D10Device**);
+typedef HRESULT(WINAPI* PFN_D3D10CreateDeviceAndSwapChain1)(IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT,
+                                                            D3D10_FEATURE_LEVEL1, UINT, DXGI_SWAP_CHAIN_DESC*,
+                                                            IDXGISwapChain**, ID3D10Device1**);
 
 extern PFN_D3D10CreateDevice oD3D10CreateDevice;
 extern PFN_D3D10CreateDevice1 oD3D10CreateDevice1;
 extern PFN_D3D10CreateDeviceAndSwapChain oD3D10CreateDeviceAndSwapChain;
+extern PFN_D3D10CreateDeviceAndSwapChain1 oD3D10CreateDeviceAndSwapChain1;
 
 // Wrapped functions
 HRESULT WINAPI Wrapped_D3D10CreateDevice(IDXGIAdapter* pAdapter, D3D10_DRIVER_TYPE DriverType, HMODULE Software,
@@ -71,6 +75,10 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
                                                      HMODULE Software, UINT Flags, UINT SDKVersion,
                                                      DXGI_SWAP_CHAIN_DESC* pSwapChainDesc, IDXGISwapChain** ppSwapChain,
                                                      ID3D10Device** ppDevice);
+HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain1(
+    IDXGIAdapter* pAdapter, D3D10_DRIVER_TYPE DriverType, HMODULE Software, UINT Flags,
+    D3D10_FEATURE_LEVEL1 HardwareLevel, UINT SDKVersion, DXGI_SWAP_CHAIN_DESC* pSwapChainDesc,
+    IDXGISwapChain** ppSwapChain, ID3D10Device1** ppDevice);
 
 // ============================================================================
 // D3D11 Wrapper Hook
@@ -124,9 +132,12 @@ IDirect3D9* WINAPI Wrapped_Direct3DCreate9(UINT SDKVersion);
 HRESULT WINAPI Wrapped_Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex** ppD3D);
 
 typedef HRESULT(WINAPI* PFN_DirectDrawCreateEx)(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* pUnkOuter);
+typedef HRESULT(WINAPI* PFN_DirectDrawCreate)(GUID* lpGuid, LPVOID* lplpDD, IUnknown* pUnkOuter);
 
+extern PFN_DirectDrawCreate oDirectDrawCreate;
 extern PFN_DirectDrawCreateEx oDirectDrawCreateEx;
 
+HRESULT WINAPI Wrapped_DirectDrawCreate(GUID* lpGuid, LPVOID* lplpDD, IUnknown* pUnkOuter);
 HRESULT WINAPI Wrapped_DirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REFIID iid, IUnknown* pUnkOuter);
 
 // ============================================================================
