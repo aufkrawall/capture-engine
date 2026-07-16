@@ -969,17 +969,19 @@ inline bool CanReuseWarmDX12OverlayBackend(bool preserveRequested, bool adapterI
     return preserveRequested && adapterInitialized && deviceMatches && formatMatches;
 }
 
-// A fresh Streamline proxy created after an FSR phase has a short, uniquely safe preparation window: the
-// authoritative proxy queue and buffers already exist, but DLSS FG has not been enabled yet. If the overlay was
-// live on the retiring route, prepare the new swapchain-scoped RTV/synchronization objects in that window so the
-// first PostSL Present only records the overlay draw. This is intentionally limited to the proven post-FSR
-// handoff; cold pure-DLSS startup must retain its stricter initialization guards.
-inline bool ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(bool freshAuthoritativeStreamlineHandoff,
-                                                            bool hadFSRFGPhase, bool runtimeOwnsSwapchain,
-                                                            bool streamlineFGRunning, bool overlayWasLive,
-                                                            bool isDX12Swapchain) {
-    return freshAuthoritativeStreamlineHandoff && hadFSRFGPhase && runtimeOwnsSwapchain && !streamlineFGRunning &&
-           overlayWasLive && isDX12Swapchain;
+// A fresh Streamline proxy has a short, uniquely safe preparation window: the authoritative proxy queue and
+// buffers already exist, but DLSS FG has not been enabled yet. If the overlay was live on the retiring route,
+// prepare the new swapchain-scoped RTV/synchronization objects in that window so its FG-off passthrough Present
+// and first PostSL Present both inherit a ready backend. Post-FSR handoffs have this proof through FSR history.
+// Repeated pure-DLSS activation has equivalent proof only after this process already completed a device-healthy
+// PostSL submit; first-ever pure-DLSS cold start retains its stricter initialization guards.
+inline bool ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(bool freshAuthoritativeStreamlineHandoff,
+                                                           bool hadFSRFGPhase, bool hadSuccessfulPostSLPhase,
+                                                           bool runtimeOwnsSwapchain, bool streamlineFGRunning,
+                                                           bool overlayWasLive, bool isDX12Swapchain) {
+    const bool hasPriorRuntimeRouteProof = hadFSRFGPhase || hadSuccessfulPostSLPhase;
+    return freshAuthoritativeStreamlineHandoff && hasPriorRuntimeRouteProof && runtimeOwnsSwapchain &&
+           !streamlineFGRunning && overlayWasLive && isDX12Swapchain;
 }
 
 inline bool ShouldPreserveExactPrewarmedPostSLHandoffBackendOnFirstPresent(

@@ -743,6 +743,12 @@ static ID3D12CommandQueue* g_PostSLLockedQueue = nullptr;
 // Once set, origGame is assumed corrupted (NVIDIA driver internal state broken
 // after FSR FG phase) and PostSL uses g_CommandQueue (SL's wrapper) instead.
 static std::atomic<bool> g_HadFSRFGPhase{false};
+// Durable process-lifetime proof that PostSL completed at least one real,
+// device-healthy submit. Unlike current-route confirmation, this survives an
+// authoritative DLSS OFF/native return so a later pure-DLSS proxy can prewarm
+// before its FG-off passthrough Present. Exact device/queue/backend guards are
+// still revalidated at every handoff.
+static std::atomic<bool> g_HadSuccessfulPostSLPhase{false};
 
 bool HookHasFSRFGHistory() {
     return g_HadFSRFGPhase;
@@ -8978,8 +8984,11 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
             }
             const bool retiredLiveOverlayState = InvalidatePostSLProofForFreshAuthoritativeStreamlineHandoff(
                 context, pQueue, currentSwapchainQueue, currentOriginalGameQueue);
-            const bool prewarmPostSL = ce::dx12_overlay_policy::ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(
-                freshAuthoritativeStreamlineHandoff, g_HadFSRFGPhase, DXGIShared::DoesFGRuntimeOwnSwapchain(),
+            const bool hadSuccessfulPostSLPhase =
+                g_HadSuccessfulPostSLPhase.load(std::memory_order_acquire);
+            const bool prewarmPostSL = ce::dx12_overlay_policy::ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(
+                freshAuthoritativeStreamlineHandoff, g_HadFSRFGPhase, hadSuccessfulPostSLPhase,
+                DXGIShared::DoesFGRuntimeOwnSwapchain(),
                 DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire), retiredLiveOverlayState,
                 IsDX12Swapchain(pSwapChain));
             g_PrewarmedPostSLHandoffSwapchain.store(nullptr, std::memory_order_release);
@@ -8989,8 +8998,8 @@ static void CaptureSwapchainQueueFromCreateDevice(IUnknown* pDevice, IDXGISwapCh
                     g_PrewarmedPostSLHandoffSwapchain.store(pSwapChain, std::memory_order_release);
                     HookLogImportant(
                         "[OVERLAY VISIBILITY] Armed exact prewarmed PostSL handoff backend for its first Present "
-                        "(swapchain=%p queue=%p)",
-                        pSwapChain, pQueue);
+                        "(swapchain=%p queue=%p hadFSR=%d priorPostSL=%d)",
+                        pSwapChain, pQueue, g_HadFSRFGPhase ? 1 : 0, hadSuccessfulPostSLPhase ? 1 : 0);
                 }
             }
             DXGIShared::g_SharedState.streamlineStartupHandoffPending.store(true, std::memory_order_release);
@@ -15064,6 +15073,12 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
 
     if (SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue) {
         ++s_PostSLSuccessfulSubmitSequence;
+        if (!g_HadSuccessfulPostSLPhase.exchange(true, std::memory_order_acq_rel)) {
+            HookLogImportant(
+                "DX12: Latched first device-healthy PostSL submit for future repeated pure-DLSS handoff prewarm "
+                "(swapchain=%p queue=%p)",
+                pSwapChain, submittedQueue);
+        }
         if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire) &&
             g_PostSLWarmResumePreservationPending.exchange(false, std::memory_order_acq_rel)) {
             HookLogImportant(
@@ -23485,6 +23500,7 @@ void DX12Hook::Shutdown() {
         g_LastSwapChain = nullptr;
     }
     g_LastSuccessfulPostSLSwapchain.store(nullptr, std::memory_order_release);
+    g_HadSuccessfulPostSLPhase.store(false, std::memory_order_release);
     g_LastSwapchainQueueCaptureSwapchain.store(nullptr, std::memory_order_release);
     g_LastProvenOriginalQueueSwapchain.store(nullptr, std::memory_order_release);
     g_LastKnownSwapchainHDRStateValid.store(false, std::memory_order_release);

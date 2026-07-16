@@ -6016,21 +6016,27 @@ TEST(DXGISharedTest, WarmDX12OverlayBackendReuseIsDeviceAndFormatScoped) {
     EXPECT_FALSE(CanReuseWarmDX12OverlayBackend(true, true, true, false));
 }
 
-TEST(DXGISharedTest, FreshPostFSRStreamlineHandoffPrewarmsBeforeDLSSActivation) {
-    using ce::dx12_overlay_policy::ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff;
+TEST(DXGISharedTest, FreshProvenStreamlineHandoffPrewarmsBeforeDLSSActivation) {
+    using ce::dx12_overlay_policy::ShouldPrewarmPostSLOverlayAtFreshProvenHandoff;
 
     // The replacement Streamline proxy queue and buffers exist, the retiring FSR route had a fully live overlay,
     // and DLSS has not been enabled yet: prepare the new swapchain-scoped state before its first generated Present.
-    EXPECT_TRUE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, true, true, false, true, true));
+    EXPECT_TRUE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, true, false, true, false, true, true));
 
-    // Pure-DLSS cold start retains its stricter guards. A non-authoritative/reused queue, already-running DLSS,
-    // no live prior overlay, non-runtime ownership, or a non-DX12 swapchain cannot use this preparation window.
-    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, false, true, false, true, true));
-    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(false, true, true, false, true, true));
-    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, true, false, false, true, true));
-    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, true, true, true, true, true));
-    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, true, true, false, false, true));
-    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshPostFSRHandoff(true, true, true, false, true, false));
+    // Session 20260716_135326: after a successful pure-DLSS phase and authoritative OFF/native return, the next
+    // fresh proxy issued its FG-off passthrough Present before SetOptions(ON). Prior healthy PostSL submission is
+    // equivalent route-history proof for prewarm without weakening first-ever pure-DLSS cold start.
+    EXPECT_TRUE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, false, true, true, false, true, true));
+
+    // First-ever pure-DLSS cold start retains its stricter guards. A non-authoritative/reused queue,
+    // already-running DLSS, no live prior overlay, non-runtime ownership, or a non-DX12 swapchain cannot use this
+    // preparation window.
+    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, false, false, true, false, true, true));
+    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(false, true, false, true, false, true, true));
+    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, true, false, false, false, true, true));
+    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, true, false, true, true, true, true));
+    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, true, false, true, false, false, true));
+    EXPECT_FALSE(ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(true, true, false, true, false, true, false));
 }
 
 TEST(DXGISharedTest, ExactPrewarmedPostSLHandoffSurvivesItsFirstMatchingPresent) {
@@ -6076,6 +6082,28 @@ TEST(DXGISharedSourceTest, PrewarmedPostSLHandoffProofIsArmedAndConsumedBeforeGe
     EXPECT_LT(arm, lifetimeDecision);
     EXPECT_LT(lifetimeDecision, preserve);
     EXPECT_LT(preserve, cleanup);
+}
+
+TEST(DXGISharedSourceTest, RepeatedPureDLSSHandoffUsesOnlyPriorHealthyPostSLProof) {
+    namespace fs = std::filesystem;
+    const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
+    std::ifstream input(source, std::ios::binary);
+    ASSERT_TRUE(input.is_open()) << source.string();
+    const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+
+    const size_t successfulSubmit = text.find("if (SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue)");
+    const size_t latch = text.find("g_HadSuccessfulPostSLPhase.exchange(true", successfulSubmit);
+    const size_t handoffLoad = text.find("g_HadSuccessfulPostSLPhase.load(std::memory_order_acquire)");
+    const size_t prewarmDecision = text.find("ShouldPrewarmPostSLOverlayAtFreshProvenHandoff(", handoffLoad);
+    const size_t prewarm = text.find("PrewarmPostSLOverlayForFreshStreamlineHandoff(", prewarmDecision);
+    ASSERT_NE(successfulSubmit, std::string::npos);
+    ASSERT_NE(latch, std::string::npos);
+    ASSERT_NE(handoffLoad, std::string::npos);
+    ASSERT_NE(prewarmDecision, std::string::npos);
+    ASSERT_NE(prewarm, std::string::npos);
+    EXPECT_LT(successfulSubmit, latch);
+    EXPECT_LT(handoffLoad, prewarmDecision);
+    EXPECT_LT(prewarmDecision, prewarm);
 }
 
 TEST(DXGISharedTest, ExplicitEnablePureDLSSColdStartProofShape) {
