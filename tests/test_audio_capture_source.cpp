@@ -76,6 +76,8 @@ TEST(AudioCaptureSourceTest, EveryCaptureRouteUsesOwnerAcknowledgedEpochRejoin) 
     EXPECT_NE(mediaSource.find("FlushCaptureResamplerForEpoch("), std::string::npos);
     EXPECT_NE(mediaSource.find("ServiceAudioEpochResetOnPull("), std::string::npos);
     EXPECT_NE(mediaSource.find("epochResetRequested->store(packet.captureEpoch"), std::string::npos);
+    EXPECT_NE(mediaSource.find("const uint64_t deferredCaptureEpoch = packet.captureEpoch;"), std::string::npos);
+    EXPECT_NE(mediaSource.find("static_cast<unsigned long long>(deferredCaptureEpoch)"), std::string::npos);
     EXPECT_NE(mediaSource.find("epochResetAcknowledged->store(requested"), std::string::npos);
     EXPECT_NE(mediaSource.find("sourceTimestamps[srcIdx] = 0"), std::string::npos);
 }

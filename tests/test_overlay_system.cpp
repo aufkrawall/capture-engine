@@ -141,6 +141,9 @@ TEST_F(FontAtlasTest, GetGlyphNonPrintableFallsBackToQuestion) {
     ASSERT_NE(question, nullptr);
     EXPECT_EQ(nonPrintable->x, question->x);
     EXPECT_EQ(nonPrintable->y, question->y);
+    const char highBit = static_cast<char>(0xFF);
+    EXPECT_EQ(atlas.GetGlyph(highBit), question);
+    EXPECT_EQ(&atlas.GetGlyphSpans(highBit), &atlas.GetGlyphSpans('?'));
 }
 
 TEST_F(FontAtlasTest, CalcTextSizeSingleChar) {

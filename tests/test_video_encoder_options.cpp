@@ -109,28 +109,28 @@ TEST(VideoEncoderOptionsTest, NvencCQUsesTrueCQAndWiresMissingSettings) {
     ASSERT_TRUE(temporalAq.has_value());
     ASSERT_TRUE(aqStrength.has_value());
     ASSERT_TRUE(bRefMode.has_value());
-    EXPECT_EQ(*preset, "p3");
-    EXPECT_EQ(*tune, "hq");
-    EXPECT_EQ(*rc, "vbr");
-    EXPECT_EQ(*cq, "29");
-    EXPECT_EQ(*lookahead, "20");
-    EXPECT_EQ(*spatialAq, "1");
-    EXPECT_EQ(*temporalAq, "1");
-    EXPECT_EQ(*aqStrength, "7");
-    EXPECT_EQ(*bRefMode, "middle");
+    EXPECT_EQ(preset.value_or(""), "p3");
+    EXPECT_EQ(tune.value_or(""), "hq");
+    EXPECT_EQ(rc.value_or(""), "vbr");
+    EXPECT_EQ(cq.value_or(""), "29");
+    EXPECT_EQ(lookahead.value_or(""), "20");
+    EXPECT_EQ(spatialAq.value_or(""), "1");
+    EXPECT_EQ(temporalAq.value_or(""), "1");
+    EXPECT_EQ(aqStrength.value_or(""), "7");
+    EXPECT_EQ(bRefMode.value_or(""), "middle");
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qp").has_value());
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "profile").has_value());
     EXPECT_FALSE(plan.bitRate.has_value());
     ASSERT_TRUE(plan.maxBitRate.has_value());
-    EXPECT_EQ(*plan.maxBitRate, 150000000);
+    EXPECT_EQ(plan.maxBitRate.value_or(0), 150000000);
     EXPECT_EQ(plan.maxBFrames, 4);
     EXPECT_TRUE(plan.isHardwareEncoder);
     EXPECT_TRUE(HasMessageContaining(plan.warnings, "bitrate is ignored"));
     ASSERT_TRUE(multipass.has_value());
-    EXPECT_EQ(*multipass, "qres");
+    EXPECT_EQ(multipass.value_or(""), "qres");
     const std::optional<std::string> maxQpB = FindOptionValue(plan.generatedOptions, "max_qp_b");
     ASSERT_TRUE(maxQpB.has_value());
-    EXPECT_EQ(*maxQpB, "200");
+    EXPECT_EQ(maxQpB.value_or(""), "200");
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
 }
@@ -144,7 +144,7 @@ TEST(VideoEncoderOptionsTest, AutoProfileChoosesCodecAwareDefaults) {
     const EncoderOptionPlan h264Plan = BuildEncoderOptionPlan(h264, false, "420");
     const std::optional<std::string> h264Profile = FindOptionValue(h264Plan.generatedOptions, "profile");
     ASSERT_TRUE(h264Profile.has_value());
-    EXPECT_EQ(*h264Profile, "high");
+    EXPECT_EQ(h264Profile.value_or(""), "high");
 
     VideoConfig hevc = MakeBaseVideoConfig("hevc_nvenc");
     hevc.preset.clear();
@@ -154,7 +154,7 @@ TEST(VideoEncoderOptionsTest, AutoProfileChoosesCodecAwareDefaults) {
     const EncoderOptionPlan hevcPlan = BuildEncoderOptionPlan(hevc, true, "420");
     const std::optional<std::string> hevcProfile = FindOptionValue(hevcPlan.generatedOptions, "profile");
     ASSERT_TRUE(hevcProfile.has_value());
-    EXPECT_EQ(*hevcProfile, "main10");
+    EXPECT_EQ(hevcProfile.value_or(""), "main10");
 
     VideoConfig av1Qsv = MakeBaseVideoConfig("av1_qsv");
     av1Qsv.preset.clear();
@@ -164,7 +164,7 @@ TEST(VideoEncoderOptionsTest, AutoProfileChoosesCodecAwareDefaults) {
     const EncoderOptionPlan av1QsvPlan = BuildEncoderOptionPlan(av1Qsv, false, "420");
     const std::optional<std::string> av1QsvProfile = FindOptionValue(av1QsvPlan.generatedOptions, "profile");
     ASSERT_TRUE(av1QsvProfile.has_value());
-    EXPECT_EQ(*av1QsvProfile, "main");
+    EXPECT_EQ(av1QsvProfile.value_or(""), "main");
 }
 
 TEST(VideoEncoderOptionsTest, CustomOptionsParseAndValidate) {
@@ -217,7 +217,7 @@ TEST(VideoEncoderOptionsTest, NvencWeightedPredSkippedForAV1) {
     EXPECT_FALSE(weightedPred.has_value());
     EXPECT_EQ(plan.maxBFrames, 4);
     ASSERT_TRUE(multipass.has_value());
-    EXPECT_EQ(*multipass, "qres");
+    EXPECT_EQ(multipass.value_or(""), "qres");
 }
 
 TEST(VideoEncoderOptionsTest, NvencWeightedPredNotSetWhenBFramesZero) {
@@ -259,7 +259,7 @@ TEST(VideoEncoderOptionsTest, NvencExplicitBRefModeDisabledIsRespected) {
 
     EXPECT_TRUE(plan.errors.empty());
     ASSERT_TRUE(bRefMode.has_value());
-    EXPECT_EQ(*bRefMode, "disabled");
+    EXPECT_EQ(bRefMode.value_or(""), "disabled");
     EXPECT_EQ(plan.maxBFrames, 4);
 }
 
@@ -288,14 +288,14 @@ TEST(VideoEncoderOptionsTest, NvencMultipassAutoUpgradeWithBFrames) {
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(plan.maxBFrames, 4);
     ASSERT_TRUE(multipass.has_value());
-    EXPECT_EQ(*multipass, "qres");
+    EXPECT_EQ(multipass.value_or(""), "qres");
     // weighted_pred not set (OBS approach)
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "weighted_pred").has_value());
     // b_ref_mode still applied
     EXPECT_TRUE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
     const std::optional<std::string> maxQpB = FindOptionValue(plan.generatedOptions, "max_qp_b");
     ASSERT_TRUE(maxQpB.has_value());
-    EXPECT_EQ(*maxQpB, "200");
+    EXPECT_EQ(maxQpB.value_or(""), "200");
 }
 
 TEST(VideoEncoderOptionsTest, NvencMultipassDisabledRespected) {
@@ -310,7 +310,7 @@ TEST(VideoEncoderOptionsTest, NvencMultipassDisabledRespected) {
 
     EXPECT_TRUE(plan.errors.empty());
     ASSERT_TRUE(multipass.has_value());
-    EXPECT_EQ(*multipass, "disabled");
+    EXPECT_EQ(multipass.value_or(""), "disabled");
 }
 
 TEST(VideoEncoderOptionsTest, NvencMultipassNotUpgradedWhenExplicitlySet) {
@@ -324,7 +324,7 @@ TEST(VideoEncoderOptionsTest, NvencMultipassNotUpgradedWhenExplicitlySet) {
 
     EXPECT_TRUE(plan.errors.empty());
     ASSERT_TRUE(multipass.has_value());
-    EXPECT_EQ(*multipass, "fullres");
+    EXPECT_EQ(multipass.value_or(""), "fullres");
 }
 
 TEST(VideoEncoderOptionsTest, NvencMultipassNotUpgradedWithoutBFrames) {
@@ -339,7 +339,7 @@ TEST(VideoEncoderOptionsTest, NvencMultipassNotUpgradedWithoutBFrames) {
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(plan.maxBFrames, 0);
     ASSERT_TRUE(multipass.has_value());
-    EXPECT_EQ(*multipass, "disabled");
+    EXPECT_EQ(multipass.value_or(""), "disabled");
 }
 
 TEST(VideoEncoderOptionsTest, NvencMultipassAutoUsesQresForCbrWithoutBFrames) {
@@ -353,7 +353,7 @@ TEST(VideoEncoderOptionsTest, NvencMultipassAutoUsesQresForCbrWithoutBFrames) {
 
     EXPECT_TRUE(plan.errors.empty());
     ASSERT_TRUE(multipass.has_value());
-    EXPECT_EQ(*multipass, "qres");
+    EXPECT_EQ(multipass.value_or(""), "qres");
 }
 
 TEST(VideoEncoderOptionsTest, NvencLookaheadOffAutoAndExplicitDepthAreDeterministic) {
@@ -383,7 +383,7 @@ TEST(VideoEncoderOptionsTest, NvencLookaheadClampsToBFrameDependentLimit) {
 
     EXPECT_TRUE(plan.errors.empty());
     ASSERT_TRUE(lookahead.has_value());
-    EXPECT_EQ(*lookahead, "27");
+    EXPECT_EQ(lookahead.value_or(""), "27");
     EXPECT_TRUE(HasMessageContaining(plan.warnings, "clamping to 27"));
 }
 
@@ -458,7 +458,7 @@ TEST(VideoEncoderOptionsTest, NvencHEVCBFramesMultipassAutoUpgrade) {
     EXPECT_TRUE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
     const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
     ASSERT_TRUE(multipass.has_value());
-    EXPECT_EQ(*multipass, "qres");
+    EXPECT_EQ(multipass.value_or(""), "qres");
     // HEVC should NOT get qmin/qmax (only AV1 has the 0-255 starvation issue)
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
@@ -477,7 +477,7 @@ TEST(VideoEncoderOptionsTest, NvencAV1BFramesGetQPConstraints) {
     EXPECT_EQ(plan.maxBFrames, 4);
     const std::optional<std::string> maxQpB = FindOptionValue(plan.generatedOptions, "max_qp_b");
     ASSERT_TRUE(maxQpB.has_value());
-    EXPECT_EQ(*maxQpB, "200");
+    EXPECT_EQ(maxQpB.value_or(""), "200");
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmin").has_value());
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "qmax").has_value());
 }

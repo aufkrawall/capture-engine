@@ -220,18 +220,14 @@ void FontAtlas::Shutdown() {
 }
 
 const Glyph* FontAtlas::GetGlyph(char c) const {
-    if (c < 32 || c > 126)
-        c = '?';
-    return &glyphs[(int)c];
+    const unsigned char code = static_cast<unsigned char>(c);
+    const unsigned char index = code >= 32 && code <= 126 ? code : static_cast<unsigned char>('?');
+    return &glyphs[index];
 }
 
 const std::vector<GlyphSpan>& FontAtlas::GetGlyphSpans(char c) const {
-    static const std::vector<GlyphSpan> empty;
-    if (c < 32 || c > 126)
-        c = '?';
-    const int index = (int)c;
-    if (index < 0 || index >= 128)
-        return empty;
+    const unsigned char code = static_cast<unsigned char>(c);
+    const unsigned char index = code >= 32 && code <= 126 ? code : static_cast<unsigned char>('?');
     return glyphSpans[index];
 }
 

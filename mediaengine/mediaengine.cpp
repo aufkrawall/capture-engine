@@ -5617,6 +5617,7 @@ private:
                             }
                             src.epochResetRequested->store(packet.captureEpoch, std::memory_order_release);
                             audioDrainCv.notify_all();
+                            const uint64_t deferredCaptureEpoch = packet.captureEpoch;
                             pendingEpochPackets[srcIdx].push_back(std::move(packet));
                             gotAnyPacket = true;
                             DLL_Log(
@@ -5624,7 +5625,7 @@ private:
                                 "pull reset and deferred data src=%zu track=%d type=%d epoch=%llu->%llu",
                                 srcIdx, src.track, static_cast<int>(src.sourceType),
                                 static_cast<unsigned long long>(previousCaptureEpoch),
-                                static_cast<unsigned long long>(packet.captureEpoch));
+                                static_cast<unsigned long long>(deferredCaptureEpoch));
                             continue;
                         }
                         if (acknowledged != packet.captureEpoch) {

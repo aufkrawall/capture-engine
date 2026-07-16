@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 #include <atomic>
 #include <cstdint>
-#include <cstring>
 
 #include "../common/capture_base.h"
 
@@ -22,7 +21,6 @@ public:
 };
 
 static void InitShm(SharedMemoryLayout& shm) {
-    std::memset(&shm, 0, sizeof(shm));
     shm.SetMagic(SHM_MAGIC);
     shm.SetVersion(31);
     shm.structSize.store(sizeof(SharedMemoryLayout), std::memory_order_release);
@@ -36,7 +34,7 @@ TEST(CaptureBaseShmTest, PublishToSharedMemoryCopiesMetadata) {
     capture.luidLow = 123;
     capture.luidHigh = 456;
 
-    SharedMemoryLayout shm;
+    SharedMemoryLayout shm{};
     InitShm(shm);
 
     capture.PublishToSharedMemory(&shm);
@@ -76,7 +74,7 @@ TEST(CaptureBaseShmTest, CleanupSharedHandlesClearsUnownedFence) {
 TEST(CaptureBaseShmTest, SignalFrameReadyWritesRingWithValidFlag) {
     MockCapture capture;
 
-    SharedMemoryLayout shm;
+    SharedMemoryLayout shm{};
     InitShm(shm);
 
     bool transitioned = false;
@@ -91,7 +89,7 @@ TEST(CaptureBaseShmTest, SignalFrameReadyWritesRingWithValidFlag) {
 }
 
 TEST(CaptureBaseShmTest, OutstandingSlotScanDetectsValidSlots) {
-    SharedMemoryLayout shm;
+    SharedMemoryLayout shm{};
     InitShm(shm);
 
     shm.frameRing.slots[0].valid.store(1, std::memory_order_release);
