@@ -1294,6 +1294,22 @@ def bump_and_write_build_version():
     return build_number  # Return for use by caller
 
 
+def read_build_version_number(version_header_path: Optional[str] = None) -> int:
+    """Read the parent build number without changing the shared build metadata."""
+    if version_header_path is None:
+        version_header_path = os.path.join(PROJECT_ROOT, "common", "build_version.h")
+    try:
+        with open(version_header_path, "r", encoding="utf-8") as version_header:
+            contents = version_header.read()
+    except OSError as error:
+        raise RuntimeError(f"Unable to read {version_header_path}: {error}") from error
+
+    match = re.search(r"#define\s+BUILD_NUMBER\s+(\d+)", contents)
+    if not match:
+        raise RuntimeError(f"No BUILD_NUMBER definition found in {version_header_path}")
+    return int(match.group(1))
+
+
 def get_mingw_compilers():
     """Get mingw-w64 compiler paths based on platform."""
     if IS_LINUX:
@@ -6373,7 +6389,15 @@ def main():
             "runtime is unavailable. Refusing to silently skip x86 coverage.")
         sys.exit(2)
 
-    current_build_number = bump_and_write_build_version()
+    if sanitize_regression_child:
+        try:
+            current_build_number = read_build_version_number()
+        except RuntimeError as error:
+            log(f"ERROR: Sanitizer regression child cannot reuse parent build version: {error}")
+            sys.exit(1)
+        log(f"Reusing parent build version: 0.1.{current_build_number}")
+    else:
+        current_build_number = bump_and_write_build_version()
     # Store for use by compile_project
     global CURRENT_BUILD_NUMBER
     CURRENT_BUILD_NUMBER = current_build_number

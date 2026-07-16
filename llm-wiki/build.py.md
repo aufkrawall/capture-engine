@@ -180,6 +180,7 @@ Default quality mode currently:
 - The Windows hook DLL links `ntdll` explicitly so CFG-sensitive fatal-dump fallbacks use normal static imports instead of dynamically resolved, export-suppressed targets. Keep this link when changing hook libraries; it supports bootstrap/crash paths and adds no frame-path work.
 - On Windows, `--skip-updates` now also skips the old unconditional MSYS2 `pacman -S --needed ...` package-install step. Earlier behavior still entered pacman even on focused test runs and could hang on mirrors or stale package-manager state before any compile/test work started.
 - The nested sanitizer regression child now writes to its own log file inside the parent verification bundle instead of clobbering the parent top-level `build.log`.
+- The nested sanitizer regression child reuses the parent build number instead of incrementing the shared `common/build_version.h`; this keeps the final product DLL metadata, version verification, and verification manifest on one build identity.
 - MSYS2 package install now uses an explicit timeout and logs partial stdout/stderr on timeout instead of silently waiting forever.
 - Parallel compile now emits progress lines and a summary, and `run_tests()` logs the test launch plus elapsed time so long builds/tests no longer look idle.
 - Full verification/build runs now fail on lint errors even when lint is only one phase of a larger run. Earlier behavior only failed the process for standalone `--lint` invocations.

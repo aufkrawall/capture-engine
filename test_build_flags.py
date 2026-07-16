@@ -1,4 +1,5 @@
 import unittest
+import tempfile
 from pathlib import Path
 
 import build
@@ -47,6 +48,17 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertIn("dependency_builder.ensure(force_rebuild=full_source_rebuild)", source)
         self.assertIn("needs_rebuild = full_source_rebuild", source)
 
+    def test_sanitizer_child_reuses_parent_build_version(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            header = Path(temporary) / "build_version.h"
+            header.write_text("#define BUILD_NUMBER 1234\n", encoding="utf-8")
+            self.assertEqual(build.read_build_version_number(str(header)), 1234)
+
+        with open(build.__file__, encoding="utf-8") as build_file:
+            source = build_file.read()
+        self.assertIn("if sanitize_regression_child:", source)
+        self.assertIn("current_build_number = read_build_version_number()", source)
+
     def test_windows_sdk_headers_are_in_safe_include_order(self) -> None:
         project_root = Path(build.__file__).parent
         format_config = (project_root / ".clang-format").read_text(encoding="utf-8")
@@ -61,6 +73,14 @@ class BuildFlagPolicyTest(unittest.TestCase):
             windows_index = lines.index("#include <windows.h>")
             dependent_index = lines.index(dependent_header)
             self.assertLess(windows_index, dependent_index, relative_path)
+
+    def test_vulkan_fg_embedded_sources_keep_dependency_order(self) -> None:
+        project_root = Path(build.__file__).parent
+        source = (project_root / "testapp/vulkan_fg_switch_test.cpp").read_text(encoding="utf-8")
+        self.assertLess(
+            source.index('#include "vulkan_fg_switch_wsi.inl"'),
+            source.index('#include "vulkan_fg_switch_resources.inl"'),
+        )
 
     def test_clang_tidy_excludes_external_and_generated_headers(self) -> None:
         config = (Path(build.__file__).parent / ".clang-tidy").read_text(encoding="utf-8")
