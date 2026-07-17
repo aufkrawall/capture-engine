@@ -48,6 +48,7 @@ private:
         uint32_t statsWaitedFrames = 0;
         uint32_t statsLateFrames = 0;
         uint32_t statsResetFrames = 0;
+        uint32_t statsSkippedGridSlots = 0;
         int64_t statsAvgLateUs = 0;
         int64_t statsMaxLateUs = 0;
         bool emitStats = false;
@@ -57,7 +58,7 @@ private:
         double instantFps = 0;
     };
 
-    LocalCadenceResult RunLocalCadence(int effectiveTargetFps) {
+    LocalCadenceResult RunLocalCadence(int effectiveTargetFps, bool preserveCaptureSyncPhase) {
         LocalCadenceResult result;
         if (effectiveTargetFps <= 0) {
             return result;
@@ -92,6 +93,7 @@ private:
             localStatsWaitedFrames_ = 0;
             localStatsLateFrames_ = 0;
             localStatsResetFrames_ = 0;
+            localStatsSkippedGridSlots_ = 0;
             localStatsLateUsSum_ = 0;
             localStatsMaxLateUs_ = 0;
         }
@@ -120,9 +122,18 @@ private:
 
         QueryPerformanceCounter(&now);
         if (waitTicks <= 0) {
-            // Never emit a short catch-up interval after a hitch or an over-budget
-            // frame. Rebase the rational grid at the actual present boundary.
-            localTargetTime_ = now.QuadPart + NextIntervalTicks();
+            // Capture sync owns a cadence grid, not merely a frequency. Preserve that grid's phase
+            // through a hitch so the source and immutable CFR timelines do not remain half a frame
+            // apart afterward. General limiting keeps its established now-relative behavior.
+            if (preserveCaptureSyncPhase) {
+                const auto advance = ce::fps_limiter_policy::AdvanceCaptureSyncDeadlineAfterLateFrame(
+                    localTargetTime_, now.QuadPart, qpcFrequency, effectiveTargetFps, localIntervalRemainder_);
+                localTargetTime_ = advance.nextTargetQpc;
+                result.statsSkippedGridSlots = advance.skippedGridSlots;
+                localStatsSkippedGridSlots_ += advance.skippedGridSlots;
+            } else {
+                localTargetTime_ = now.QuadPart + NextIntervalTicks();
+            }
             result.resetCadence = true;
             ++localStatsResetFrames_;
         } else {
@@ -143,6 +154,7 @@ private:
             result.statsWaitedFrames = localStatsWaitedFrames_;
             result.statsLateFrames = localStatsLateFrames_;
             result.statsResetFrames = localStatsResetFrames_;
+            result.statsSkippedGridSlots = localStatsSkippedGridSlots_;
             result.statsMaxLateUs = localStatsMaxLateUs_;
             result.statsAvgLateUs =
                 (localStatsLateFrames_ > 0) ? (localStatsLateUsSum_ / static_cast<int64_t>(localStatsLateFrames_)) : 0;
@@ -152,6 +164,7 @@ private:
             localStatsWaitedFrames_ = 0;
             localStatsLateFrames_ = 0;
             localStatsResetFrames_ = 0;
+            localStatsSkippedGridSlots_ = 0;
             localStatsLateUsSum_ = 0;
             localStatsMaxLateUs_ = 0;
         }
@@ -363,13 +376,14 @@ public:
 
         reflexPostPresentCadencePending_ = false;
         const int targetFps = reflexPostPresentTargetFps_;
+        const bool preserveCaptureSyncPhase = reflexPostPresentCaptureSync_;
         if (targetFps <= 0) {
             return;
         }
 
         isActivelyLimiting_.store(true, std::memory_order_relaxed);
 
-        const auto cadence = RunLocalCadence(targetFps);
+        const auto cadence = RunLocalCadence(targetFps, preserveCaptureSyncPhase);
 
         LARGE_INTEGER sleepStart;
         LARGE_INTEGER sleepEnd;
@@ -596,6 +610,7 @@ public:
                 localStatsWaitedFrames_ = 0;
                 localStatsLateFrames_ = 0;
                 localStatsResetFrames_ = 0;
+                localStatsSkippedGridSlots_ = 0;
                 localStatsLateUsSum_ = 0;
                 localStatsMaxLateUs_ = 0;
             }
@@ -734,12 +749,14 @@ public:
             localStatsWaitedFrames_ = 0;
             localStatsLateFrames_ = 0;
             localStatsResetFrames_ = 0;
+            localStatsSkippedGridSlots_ = 0;
             localStatsLateUsSum_ = 0;
             localStatsMaxLateUs_ = 0;
             lastApplyEntryQpc_ = 0;
             applyInterFrameSum_ = 0;
             applyInterFrameCount_ = 0;
             reflexPostPresentCadencePending_ = false;
+            reflexPostPresentCaptureSync_ = false;
             reflexPostPresentSkipSleep_ = false;
             reflexPostPresentArmedLogged_ = false;
 
@@ -868,6 +885,7 @@ public:
                             reflexDecision, allowPostPresentReflexCadence)) {
                         reflexPostPresentCadencePending_ = true;
                         reflexPostPresentTargetFps_ = effectiveTargetFps;
+                        reflexPostPresentCaptureSync_ = usingCaptureSync;
                         reflexPostPresentPushOk_ = reflexPushOk;
                         reflexPostPresentDeviceReady_ = reflexDeviceReady;
                         reflexPostPresentRecentGap_ = recentPresentGap;
@@ -894,7 +912,7 @@ public:
                         lastApplyReturnQpc = retQpc.QuadPart;
                         return;
                     }
-                    const auto cadence = RunLocalCadence(effectiveTargetFps);
+                    const auto cadence = RunLocalCadence(effectiveTargetFps, usingCaptureSync);
 
                     LARGE_INTEGER sleepStart;
                     LARGE_INTEGER sleepEnd;
@@ -1097,7 +1115,7 @@ public:
         // the helper process here is fragile because per-game config can enable
         // the limiter after startup; an unanswered event used to cost one full
         // timeout per frame before local fallback ran.
-        const auto cadence = RunLocalCadence(effectiveTargetFps);
+        const auto cadence = RunLocalCadence(effectiveTargetFps, usingCaptureSync);
         if (localCadenceFirstFrame) {
             TraceLog(
                 "Apply: LOCAL timer start sync=%s mode=%u configured=%u target=%d effective=%d events=%d/%d "
@@ -1111,17 +1129,17 @@ public:
             TraceLog(
                 "Apply: LOCAL timer stats frames=%u scheduledWaitUs=%lld actualWaitUs=%lld lateUs=%lld "
                 "avgFps=%.1f instFps=%.1f target=%d waited=%u late=%u avgLateUs=%lld maxLateUs=%lld "
-                "resets=%u dedup=%u activeDedup=%u",
+                "resets=%u phaseSkipped=%u dedup=%u activeDedup=%u",
                 cadence.frameCount, cadence.scheduledWaitUs, cadence.actualWaitUs, cadence.lateUs, cadence.avgFps,
                 cadence.instantFps, effectiveTargetFps, cadence.statsWaitedFrames, cadence.statsLateFrames,
-                cadence.statsAvgLateUs, cadence.statsMaxLateUs, cadence.statsResetFrames, applyDedupCount_,
-                applyActiveDedupCount_);
+                cadence.statsAvgLateUs, cadence.statsMaxLateUs, cadence.statsResetFrames,
+                cadence.statsSkippedGridSlots, applyDedupCount_, applyActiveDedupCount_);
             HookLog(
                 "FPS Limiter: Local timer stats (%u frames): lastWait=%lldus late=%lldus avgFps=%.1f "
-                "instFps=%.1f target=%d waited=%u lateFrames=%u resets=%u activeDedup=%u",
+                "instFps=%.1f target=%d waited=%u lateFrames=%u resets=%u phaseSkipped=%u activeDedup=%u",
                 cadence.frameCount, cadence.actualWaitUs, cadence.lateUs, cadence.avgFps, cadence.instantFps,
                 effectiveTargetFps, cadence.statsWaitedFrames, cadence.statsLateFrames, cadence.statsResetFrames,
-                applyActiveDedupCount_);
+                cadence.statsSkippedGridSlots, applyActiveDedupCount_);
         }
 
         // Record time Apply() returned so sequential duplicate presents
@@ -1181,6 +1199,7 @@ public:
         localStatsWaitedFrames_ = 0;
         localStatsLateFrames_ = 0;
         localStatsResetFrames_ = 0;
+        localStatsSkippedGridSlots_ = 0;
         localStatsLateUsSum_ = 0;
         localStatsMaxLateUs_ = 0;
         nativeApiRecheckCounter_ = 0;
@@ -1243,6 +1262,7 @@ private:
         reflexNativeSleepActive_ = false;
         reflexPostPresentCadencePending_ = false;
         reflexPostPresentTargetFps_ = 0;
+        reflexPostPresentCaptureSync_ = false;
         reflexPostPresentPushOk_ = false;
         reflexPostPresentDeviceReady_ = false;
         reflexPostPresentRecentGap_ = false;
@@ -1282,6 +1302,7 @@ private:
     bool loggedNativeFallback_ = false;                      // Avoid spam when native mode falls back to timer
     bool reflexPostPresentCadencePending_ = false;           // True when explicit Reflex waits after Present returns
     int reflexPostPresentTargetFps_ = 0;                     // Target for pending post-present Reflex cadence
+    bool reflexPostPresentCaptureSync_ = false;              // Pending cadence owns the capture grid phase
     bool reflexPostPresentPushOk_ = false;                   // Pre-present push state captured for diagnostics
     bool reflexPostPresentDeviceReady_ = false;              // Device state captured for diagnostics
     bool reflexPostPresentRecentGap_ = false;                // Present-gap state captured for diagnostics
@@ -1302,6 +1323,7 @@ private:
     uint32_t localStatsWaitedFrames_ = 0;          // Frames in current interval where local cadence waited
     uint32_t localStatsLateFrames_ = 0;            // Frames in current interval that arrived after the target
     uint32_t localStatsResetFrames_ = 0;           // Cadence resets caused by long gaps or slow frames
+    uint32_t localStatsSkippedGridSlots_ = 0;      // Whole capture-grid slots skipped without changing phase
     int64_t localStatsLateUsSum_ = 0;              // Sum of late frame time in current interval
     int64_t localStatsMaxLateUs_ = 0;              // Worst late frame time in current interval
     int64_t lastActualWaitUs_ = 0;                 // Last Apply() actual wait time in μs

@@ -233,6 +233,17 @@ TEST(FpsLimiterPolicyTest, RationalIntervalsPreserveExactLongTermCadence) {
     EXPECT_EQ(remainder, 0);
 }
 
+TEST(FpsLimiterPolicyTest, CaptureSyncLateAdvancePreservesGridPhaseWithoutImmediateCatchup) {
+    int64_t remainder = 0;
+    const auto result = ce::fps_limiter_policy::AdvanceCaptureSyncDeadlineAfterLateFrame(
+        /*currentTargetQpc=*/1000, /*nowQpc=*/1350, /*frequency=*/1000, /*fps=*/10, remainder);
+
+    EXPECT_EQ(result.nextTargetQpc, 1400);
+    EXPECT_EQ(result.skippedGridSlots, 4u);
+    EXPECT_EQ(result.nextTargetQpc % 100, 0);
+    EXPECT_GE(result.nextTargetQpc - 1350, 50);
+}
+
 // Test that limiter mode config values are stored/read correctly in shared memory
 TEST_F(FpsLimiterTest, LimiterMode_SharedMemory) {
     mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kFGFallback));

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <climits>
 #include <cstdint>
 
 namespace ce::fps_limiter_policy {
@@ -56,6 +58,40 @@ inline int64_t NextRationalIntervalTicks(int64_t frequency, int fps, int64_t& re
         ++ticks;
     }
     return ticks > 0 ? ticks : 1;
+}
+
+struct PhasePreservingLateAdvance {
+    int64_t nextTargetQpc = 0;
+    uint32_t skippedGridSlots = 0;
+};
+
+inline PhasePreservingLateAdvance AdvanceCaptureSyncDeadlineAfterLateFrame(int64_t currentTargetQpc,
+                                                                           int64_t nowQpc, int64_t frequency,
+                                                                           int fps, int64_t& remainder) {
+    PhasePreservingLateAdvance result{currentTargetQpc, 0};
+    if (currentTargetQpc <= 0 || nowQpc <= 0 || frequency <= 0 || fps <= 0) {
+        result.nextTargetQpc = nowQpc + NextRationalIntervalTicks(frequency, fps, remainder);
+        result.skippedGridSlots = 1;
+        return result;
+    }
+
+    // Keep the original rational-grid phase after a hitch. A half-interval guard prevents an
+    // immediate short catch-up Present, while advancing by whole grid slots avoids the permanent
+    // phase rebase that otherwise makes a matched capture/output cadence straddle the CFR
+    // selector's half-frame boundary for the rest of the recording.
+    const int64_t halfInterval = std::max<int64_t>(1, (frequency / fps) / 2);
+    const int64_t minimumNextQpc = nowQpc <= INT64_MAX - halfInterval ? nowQpc + halfInterval : INT64_MAX;
+    do {
+        const int64_t step = NextRationalIntervalTicks(frequency, fps, remainder);
+        if (result.nextTargetQpc > INT64_MAX - step) {
+            result.nextTargetQpc = minimumNextQpc;
+            ++result.skippedGridSlots;
+            break;
+        }
+        result.nextTargetQpc += step;
+        ++result.skippedGridSlots;
+    } while (result.nextTargetQpc < minimumNextQpc);
+    return result;
 }
 
 }  // namespace ce::fps_limiter_policy

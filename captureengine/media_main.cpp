@@ -3030,6 +3030,12 @@ void EncoderThreadFunc(const AppConfig& config) {
     LARGE_INTEGER qpcFreq;
     QueryPerformanceFrequency(&qpcFreq);
     int64_t targetIntervalTicks = qpcFreq.QuadPart / config.video.fps;
+    const uint32_t captureSyncMultiplier =
+        static_cast<uint32_t>(std::clamp(config.fpsLimiter.captureSyncMultiplier, 1, 8));
+    const bool captureSyncPhaseLockEnabled =
+        config.fpsLimiter.captureSyncEnabled && !config.video.useVFR && targetIntervalTicks > 0;
+    const int64_t captureSyncSourceIntervalTicks = ce::capture_policy::GetCfrCaptureSyncSourceIntervalQpc(
+        targetIntervalTicks, captureSyncMultiplier);
     LARGE_INTEGER nextSampleTime;
     QueryPerformanceCounter(&nextSampleTime);
 
@@ -3098,10 +3104,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t pendingInjectTrimmedLogCount = 0;
     size_t maxBufferedInjectDepthSinceLog = 0;
     DWORD lastInjectTrimLog = GetTickCount();
-    // Bresenham credit-based frame pacing state: distributes duplicates evenly
-    // when source fps < recording target fps instead of clustering them at
-    // frame-timing jitter boundaries. When source fps > target fps, selection
-    // stays timestamp-aware against the encoder output grid.
+    // Source-rate EMA is telemetry/recovery context only. Live CFR source choice is timestamp-driven.
     uint32_t pacingInputThisWindow = 0;
     uint32_t pacingTicksThisWindow = 0;
     uint32_t pacingEmaUpdates = 0;
@@ -3121,6 +3124,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     CadenceHealthCounters cadenceCounters;
     InputFrameRatePredictor wgcInputPredictor;
     InputFrameRatePredictor injectInputPredictor;
+    ce::capture_policy::CfrCadencePhaseLockState injectCfrPhaseLock;
+    ce::capture_policy::CfrCadencePhaseLockState wgcCfrPhaseLock;
     uint32_t injectWorstSourceFpsX100 = std::numeric_limits<uint32_t>::max();
     uint32_t injectBestSourceFpsX100 = 0;
     uint32_t injectWorstSourceJitterUs = 0;
@@ -3914,6 +3919,47 @@ void EncoderThreadFunc(const AppConfig& config) {
     const auto qpcToUs = [&](int64_t qpcDelta) -> int64_t {
         return qpcFreq.QuadPart > 0 ? (qpcDelta * 1000000) / qpcFreq.QuadPart : 0;
     };
+    const auto observeCaptureSyncPhaseSource = [&](const char* backend,
+                                                    ce::capture_policy::CfrCadencePhaseLockState& state,
+                                                    int64_t sourceTimestampQpc) {
+        if (!captureSyncPhaseLockEnabled) {
+            return;
+        }
+        const uint64_t releasesBefore = state.releases;
+        ce::capture_policy::ObserveCfrCaptureSyncSourceTimestamp(state, sourceTimestampQpc,
+                                                                 captureSyncSourceIntervalTicks);
+        if (state.releases != releasesBefore) {
+            LogInfo(
+                "[CFR PhaseLock] backend=%s state=released reason=variable_source stable=%u unstable=%u "
+                "multiplier=%u releases=%llu",
+                backend, state.stableSourceIntervals, state.unstableSourceIntervals, captureSyncMultiplier,
+                static_cast<unsigned long long>(state.releases));
+        }
+    };
+    const auto applyCaptureSyncPhaseTarget = [&](const char* backend,
+                                                 ce::capture_policy::CfrCadencePhaseLockState& state,
+                                                 int64_t baseTargetQpc, int64_t sourceReferenceQpc) -> int64_t {
+        const uint64_t acquisitionsBefore = state.acquisitions;
+        const uint64_t releasesBefore = state.releases;
+        const uint64_t rephasesBefore = state.rephases;
+        const int64_t adjustedTargetQpc = ce::capture_policy::ApplyCfrCaptureSyncPhaseLock(
+            state, baseTargetQpc, sourceReferenceQpc, captureSyncSourceIntervalTicks,
+            captureSyncPhaseLockEnabled);
+        if (state.acquisitions != acquisitionsBefore || state.releases != releasesBefore ||
+            state.rephases != rephasesBefore) {
+            const char* transition = state.acquisitions != acquisitionsBefore
+                                         ? "acquired"
+                                         : (state.rephases != rephasesBefore ? "rephased" : "released");
+            LogInfo(
+                "[CFR PhaseLock] backend=%s state=%s offset=%lldus stable=%u unstable=%u multiplier=%u "
+                "transitions=%llu/%llu/%llu",
+                backend, transition, static_cast<long long>(qpcToUs(state.lockedPhaseQpc)),
+                state.stableSourceIntervals, state.unstableSourceIntervals, captureSyncMultiplier,
+                static_cast<unsigned long long>(state.acquisitions),
+                static_cast<unsigned long long>(state.rephases), static_cast<unsigned long long>(state.releases));
+        }
+        return adjustedTargetQpc;
+    };
     const auto getWgcRawSelectionTimestamp = [](const QueuedFrame& frame) -> int64_t {
         return frame.rawTimestamp > 0 ? frame.rawTimestamp : frame.timestamp;
     };
@@ -4303,6 +4349,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             lastEmittedWgcSelectionQpc = 0;
             lastWarmupWgcSourceQpc = 0;
             wgcInputPredictor.Reset();
+            wgcCfrPhaseLock.Reset();
             wgcRecentDeliveredFps = 0;
             wgcRecentDeliveredMin250Fps = 0;
             wgcRecentDeliveredMin500Fps = 0;
@@ -6068,6 +6115,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                             // The raw timestamp stays untouched for sync validation/diagnostics.
                             drainedFrame.selectionTimestamp =
                                 wgcInputPredictor.SmoothMonotonicTimestamp(drainedFrame.timestamp, targetIntervalTicks);
+                            observeCaptureSyncPhaseSource(
+                                "wgc", wgcCfrPhaseLock,
+                                GetFrameSelectionTimestamp(drainedFrame));
                             if (drainedFrame.selectionTimestamp > 0 && qpcFreq.QuadPart > 0) {
                                 const int64_t devQpc =
                                     AbsoluteTimestampDistance(drainedFrame.selectionTimestamp, drainedFrame.timestamp);
@@ -6502,6 +6552,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const bool useInjectParityDelayPacing = wgcSelectionDelayAppliedThisTick &&
                                                             isWgcEffectiveContentDelayActive() &&
                                                             config.wgcActiveDelayUniformCadence;
+                    if (!useInjectParityDelayPacing) {
+                        const int64_t phaseReferenceQpc = bufferedWgcFrames.empty()
+                                                                  ? 0
+                                                                  : GetFrameSelectionTimestamp(bufferedWgcFrames.back());
+                        effectiveSelectionTargetQpc = applyCaptureSyncPhaseTarget(
+                            "wgc", wgcCfrPhaseLock, effectiveSelectionTargetQpc, phaseReferenceQpc);
+                    }
                     if (useInjectParityDelayPacing) {
                         // Fixed-latency jitter-buffer playout for the active A/V content delay. WGC
                         // delivery is bursty/gappy under a GPU-bound VRR borderless source: DWM hands
@@ -6541,6 +6598,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                         int64_t playoutTargetQpc = (encoderGridStartQpc > 0 && targetIntervalTicks > 0)
                                                        ? computeDelayedWgcSelectionTargetQpc()
                                                        : 0;
+                        const int64_t phaseReferenceQpc = bufferedWgcFrames.empty()
+                                                                  ? 0
+                                                                  : GetFrameSelectionTimestamp(bufferedWgcFrames.back());
+                        playoutTargetQpc = applyCaptureSyncPhaseTarget(
+                            "wgc", wgcCfrPhaseLock, playoutTargetQpc, phaseReferenceQpc);
                         const int64_t playoutLeadToleranceQpc =
                             ce::capture_policy::GetWgcActiveDelayResidualToleranceQpc(targetIntervalTicks);
                         // Anti-freeze floor: if the encoder grid has drifted so far behind wall-clock
@@ -7192,6 +7254,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                     if (temp.isInjectMode && temp.timestamp > 0) {
                         injectInputPredictor.Update(temp.timestamp, qpcFreq.QuadPart);
+                        observeCaptureSyncPhaseSource("inject", injectCfrPhaseLock, temp.timestamp);
                     }
                     drainedInjectFrames.push_back(std::move(temp));
                 }
@@ -7326,8 +7389,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                         scheduledOutputQpc > 0
                             ? scheduledOutputQpc
                             : ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTick, targetIntervalTicks);
-                    const int64_t playoutTargetQpc =
+                    const int64_t basePlayoutTargetQpc =
                         ComputeDelayedContentGridStartQpc(liveTargetQpc, avContentDelayQpc);
+                    const int64_t phaseReferenceQpc =
+                        bufferedInjectFrames.empty() ? 0 : bufferedInjectFrames.back().timestamp;
+                    const int64_t playoutTargetQpc = applyCaptureSyncPhaseTarget(
+                        "inject", injectCfrPhaseLock, basePlayoutTargetQpc, phaseReferenceQpc);
                     const int64_t leadToleranceQpc =
                         ce::capture_policy::GetInjectCfrSelectionLeadToleranceQpc(targetIntervalTicks);
                     auto isAllowedCandidate = [&](const QueuedFrame& candidate) {
@@ -8280,6 +8347,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcStopDrainHeldFrameLogged = false;
                 liveStartQpc = {};
                 wgcInputPredictor.Reset();
+                wgcCfrPhaseLock.Reset();
                 smoothedEncCycleMs = 0.0;
                 smoothedInjectServiceMs = 0.0;
                 injectServiceMaxUs = 0;
@@ -8790,8 +8858,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                         injectCfrRecoveryActive);
                     if (allowFreshInjectCatchup) {
                         size_t availableCount = bufferedInjectFrames.size() - catchupMinBufferedInjectFrames;
-                        const int64_t catchupPlayoutTargetQpc =
+                        const int64_t baseCatchupPlayoutTargetQpc =
                             ComputeDelayedContentGridStartQpc(repeatScheduledQpc, avContentDelayQpc);
+                        const int64_t catchupPhaseReferenceQpc =
+                            bufferedInjectFrames.empty() ? 0 : bufferedInjectFrames.back().timestamp;
+                        const int64_t catchupPlayoutTargetQpc = applyCaptureSyncPhaseTarget(
+                            "inject", injectCfrPhaseLock, baseCatchupPlayoutTargetQpc,
+                            catchupPhaseReferenceQpc);
                         const int64_t catchupLeadToleranceQpc =
                             ce::capture_policy::GetInjectCfrSelectionLeadToleranceQpc(targetIntervalTicks);
                         auto isFreshInjectCandidate = [&](const QueuedFrame& candidate) {
@@ -9016,9 +9089,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const int64_t catchupGridTick = encoderGridTickCount + 1;
                     LARGE_INTEGER catchupNowQpc;
                     QueryPerformanceCounter(&catchupNowQpc);
-                    const int64_t catchupSelectionTargetQpc = clampWgcSelectionTargetQpc(
+                    const int64_t baseCatchupSelectionTargetQpc = clampWgcSelectionTargetQpc(
                         computeWgcSelectionTargetForTick(repeatScheduledQpc, catchupGridTick, false),
                         catchupNowQpc.QuadPart);
+                    const int64_t catchupPhaseReferenceQpc =
+                        GetFrameSelectionTimestamp(bufferedWgcFrames.back());
+                    const int64_t catchupSelectionTargetQpc = applyCaptureSyncPhaseTarget(
+                        "wgc", wgcCfrPhaseLock, baseCatchupSelectionTargetQpc, catchupPhaseReferenceQpc);
                     QueuedFrame catchupFrame;
                     if (tryPopBufferedWgcFrameForTarget(catchupSelectionTargetQpc, catchupSelectionTargetQpc,
                                                         catchupNowQpc.QuadPart, false, &catchupFrame)) {
@@ -10682,7 +10759,8 @@ void EncoderThreadFunc(const AppConfig& config) {
 
     if (liveTicksOutput > 0) {
         const uint64_t duplicatePermille = (captureSessionSummary.duplicateTicks * 1000ull) / liveTicksOutput;
-        if (IsActiveScreenGrab()) {
+        const bool summaryUsesScreenGrab = IsActiveScreenGrab();
+        if (summaryUsesScreenGrab) {
             const uint64_t noFreshPermille =
                 captureSessionSummary.queueTickSamples > 0
                     ? (captureSessionSummary.noFreshTicks * 1000ull) / captureSessionSummary.queueTickSamples
@@ -11248,6 +11326,17 @@ void EncoderThreadFunc(const AppConfig& config) {
                     contention.injectFrameReadySignals.load(std::memory_order_relaxed));
             }
         }
+        const auto& phaseLockSummary = summaryUsesScreenGrab ? wgcCfrPhaseLock : injectCfrPhaseLock;
+        LogInfo(
+            "[CFR PHASE LOCK SUMMARY] Backend=%s Enabled=%d Locked=%d Offset=%lldus Stable=%u Unstable=%u "
+            "Acquire=%llu Rephase=%llu Release=%llu Multiplier=%u",
+            summaryUsesScreenGrab ? "wgc" : "inject", captureSyncPhaseLockEnabled ? 1 : 0,
+            phaseLockSummary.locked ? 1 : 0,
+            static_cast<long long>(qpcToUs(phaseLockSummary.lockedPhaseQpc)),
+            phaseLockSummary.stableSourceIntervals, phaseLockSummary.unstableSourceIntervals,
+            static_cast<unsigned long long>(phaseLockSummary.acquisitions),
+            static_cast<unsigned long long>(phaseLockSummary.rephases),
+            static_cast<unsigned long long>(phaseLockSummary.releases), captureSyncMultiplier);
     }
 
     SetCapturePipelinePhase(CapturePipelinePhase::kIdle);

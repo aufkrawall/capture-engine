@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-17 (exact shared-memory ABI 36/build isolation, session-scoped shared and integration logs, telemetry/frame-ring corruption rejection, non-elevating Vulkan registration repair, full-depth Vulkan capture leases, project-header content signatures, and the existing current graphics/audio/build/security state; see process-ipc.md, overlay-rendering.md, build.py.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-17 (capture-sync/CFR phase preservation with variable-cadence fallback, exact shared-memory ABI 36/build isolation, session-scoped shared and integration logs, telemetry/frame-ring corruption rejection, non-elevating Vulkan registration repair, full-depth Vulkan capture leases, project-header content signatures, and the existing current graphics/audio/build/security state; see cfr-capture-sync.md, graphics-overrides-and-frame-pacing.md, process-ipc.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -59,7 +59,7 @@ Primary sources:
 - `dx12-forced-af.md`
   - Conservative-by-default creation-time DX12 sampler policy, early raw/factory-device interception, dynamic/static and precompiled root-signature 1.0-1.2 coverage, per-vtable chaining, diagnostics, and Kena/Blackwell validation requirements.
 - `graphics-overrides-and-frame-pacing.md`
-  - Cross-API sampler/config semantics, CPU/present queue-depth enforcement, adaptive rational FPS limiting, capture-sync/FG rules, diagnostics, and runtime validation matrix. Last verified 2026-07-12.
+  - Cross-API sampler/config semantics, CPU/present queue-depth enforcement, adaptive rational FPS limiting, phase-preserving capture-sync/FG rules, diagnostics, and runtime validation matrix. Last verified 2026-07-17.
 - `frame-generation-switching.md`
   - Stub pointing to `frame-generation/guardrails.md` (invariants, including current stable Reflex suspend and Streamline startup transport rules) and `frame-generation/case-studies.md` (chronological deep-dive). Last verified 2026-07-15.
 - `vulkan-fg-switch-test.md`
@@ -77,7 +77,7 @@ Primary sources:
 - `wgc-capture.md`
   - WGC and DXGI Desktop Duplication backends, including the max-rate variable-input CFR producer invariant, callback-rate aging, callback epochs, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and crash-safe straight-alpha point-sampled single-stream DPI/HDR cursor composition. Last verified 2026-07-15. Stale-risk: medium.
 - `cfr-capture-sync.md`
-  - Shared WGC/DXGI/inject CFR and A/V invariants, including contiguous screen-grab packet PTS under overload, packet-only video validation, encoder-latency-independent inject audio targeting, max-rate variable-input WGC production, transactional startup, 60 ms audio-ingestion look-ahead, 300 ms WGC/DXGI look-ahead, nearest monotonic source selection, causal inject transport, convergent per-output overload recovery, and exact decoded stop/tail accounting. Last verified 2026-07-17. Stale-risk: medium.
+  - Shared WGC/DXGI/inject CFR and A/V invariants, including capture-sync/CFR selection phase preservation with varying-cadence fallback, contiguous screen-grab packet PTS under overload, packet-only video validation, encoder-latency-independent inject audio targeting, max-rate variable-input WGC production, transactional startup, 60 ms audio-ingestion look-ahead, 300 ms WGC/DXGI look-ahead, nearest monotonic source selection, causal inject transport, convergent per-output overload recovery, and exact decoded stop/tail accounting. Last verified 2026-07-17. Stale-risk: medium.
 - `nvenc-encoding.md`
   - NVENC hardware-frame ownership, safe CFR repeat encoding, lookahead/multipass/split-AQ/B-reference policy, AV1 S12M metadata safety, and bundled FFmpeg patch invariants. Last verified 2026-07-17. Stale-risk: medium (fresh driver/GPU matrix remains necessary).
 - `performance-priority.md`

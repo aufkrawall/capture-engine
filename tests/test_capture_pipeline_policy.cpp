@@ -1172,6 +1172,117 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutEmitHoldDecision) {
     EXPECT_TRUE(policy::DecideWgcNearestPlayout(/*front=*/700, target, leadTol, /*lastEmitted=*/650).emit);
 }
 
+TEST(CapturePipelinePolicyTest, CaptureSyncPhaseLockAcquiresAcrossHalfFrameWrap) {
+    policy::CfrCadencePhaseLockState state;
+    constexpr int64_t interval = 100;
+    int64_t adjustedTarget = 0;
+
+    for (int tick = 0; tick < 80; ++tick) {
+        const int64_t jitter = (tick & 1) == 0 ? -2 : 2;
+        const int64_t source = 10000 + static_cast<int64_t>(tick) * interval + 49 + jitter;
+        const int64_t target = 10000 + static_cast<int64_t>(tick) * interval;
+        policy::ObserveCfrCaptureSyncSourceTimestamp(state, source, interval);
+        adjustedTarget = policy::ApplyCfrCaptureSyncPhaseLock(state, target, source, interval, true);
+    }
+
+    EXPECT_TRUE(state.locked);
+    EXPECT_EQ(state.acquisitions, 1u);
+    EXPECT_EQ(state.releases, 0u);
+    EXPECT_NEAR(state.lockedPhaseQpc, 49, 3);
+    EXPECT_NEAR(adjustedTarget - (10000 + 79 * interval), 49, 3);
+}
+
+TEST(CapturePipelinePolicyTest, CaptureSyncPhaseLockFallsBackForGenuinelyVaryingCadence) {
+    policy::CfrCadencePhaseLockState state;
+    constexpr int64_t interval = 100;
+    int64_t source = 10000;
+    for (int tick = 0; tick < 40; ++tick) {
+        source += interval;
+        policy::ObserveCfrCaptureSyncSourceTimestamp(state, source, interval);
+        policy::ApplyCfrCaptureSyncPhaseLock(state, 10000 + tick * interval, source, interval, true);
+    }
+    ASSERT_TRUE(state.locked);
+
+    for (int tick = 0; tick < 6; ++tick) {
+        source += (tick & 1) == 0 ? 70 : 130;
+        policy::ObserveCfrCaptureSyncSourceTimestamp(state, source, interval);
+    }
+    const int64_t baseTarget = 20000;
+    const int64_t adjusted = policy::ApplyCfrCaptureSyncPhaseLock(state, baseTarget, source, interval, true);
+
+    EXPECT_FALSE(state.locked);
+    EXPECT_EQ(state.releases, 1u);
+    EXPECT_EQ(adjusted, baseTarget);
+}
+
+TEST(CapturePipelinePolicyTest, CaptureSyncPhaseLockReleasesWhenCadencePhaseWanders) {
+    policy::CfrCadencePhaseLockState state;
+    constexpr int64_t interval = 100;
+    int64_t source = 10020;
+    for (int tick = 0; tick < 40; ++tick) {
+        source += interval;
+        policy::ObserveCfrCaptureSyncSourceTimestamp(state, source, interval);
+        policy::ApplyCfrCaptureSyncPhaseLock(state, 10000 + tick * interval, source, interval, true);
+    }
+    ASSERT_TRUE(state.locked);
+
+    int64_t adjusted = 0;
+    for (int tick = 40; tick < 64; ++tick) {
+        // Each delta is close enough to the nominal interval to exercise phase-coherence fallback,
+        // but the accumulated phase deliberately wanders instead of settling at a new limiter phase.
+        source += 115;
+        policy::ObserveCfrCaptureSyncSourceTimestamp(state, source, interval);
+        adjusted = policy::ApplyCfrCaptureSyncPhaseLock(
+            state, 10000 + static_cast<int64_t>(tick) * interval, source, interval, true);
+    }
+
+    EXPECT_FALSE(state.locked);
+    EXPECT_EQ(state.releases, 1u);
+    EXPECT_EQ(adjusted, 10000 + 63 * interval);
+}
+
+TEST(CapturePipelinePolicyTest, CaptureSyncPhaseLockSupportsStableUnderfeedAndMultiplier) {
+    policy::CfrCadencePhaseLockState state;
+    constexpr int64_t outputInterval = 200;
+    const int64_t sourceInterval = policy::GetCfrCaptureSyncSourceIntervalQpc(outputInterval, 2);
+    ASSERT_EQ(sourceInterval, 100);
+
+    int64_t source = 10025;
+    for (int tick = 0; tick < 60; ++tick) {
+        // A stable half-rate source is still phase coherent: every interval spans two source-grid slots.
+        source += 2 * sourceInterval;
+        policy::ObserveCfrCaptureSyncSourceTimestamp(state, source, sourceInterval);
+        policy::ApplyCfrCaptureSyncPhaseLock(state, 10000 + tick * outputInterval, source, sourceInterval, true);
+    }
+
+    EXPECT_TRUE(state.locked);
+    EXPECT_EQ(state.releases, 0u);
+}
+
+TEST(CapturePipelinePolicyTest, CaptureSyncPhaseLockRephasesAfterStableSourcePhaseTransition) {
+    policy::CfrCadencePhaseLockState state;
+    constexpr int64_t interval = 100;
+    int64_t source = 10020;
+    for (int tick = 0; tick < 40; ++tick) {
+        source += interval;
+        policy::ObserveCfrCaptureSyncSourceTimestamp(state, source, interval);
+        policy::ApplyCfrCaptureSyncPhaseLock(state, 10000 + tick * interval, source, interval, true);
+    }
+    ASSERT_TRUE(state.locked);
+    const int64_t originalPhase = state.lockedPhaseQpc;
+
+    source += 30;  // one discontinuity, followed by a new stable cadence phase
+    for (int tick = 40; tick < 60; ++tick) {
+        source += interval;
+        policy::ObserveCfrCaptureSyncSourceTimestamp(state, source, interval);
+        policy::ApplyCfrCaptureSyncPhaseLock(state, 10000 + tick * interval, source, interval, true);
+    }
+
+    EXPECT_TRUE(state.locked);
+    EXPECT_GE(state.rephases, 1u);
+    EXPECT_GT(policy::GetCfrTimestampDistanceQpc(state.lockedPhaseQpc, originalPhase), 20u);
+}
+
 namespace {
 // Minimal nearest-target playout driver mirroring the media_main integration: per output tick it
 // stale-drops already-past frames, then emits the slot frame or holds. Returns realized-delay and
@@ -1388,6 +1499,72 @@ PlayoutStats RunInjectTargetPlayout(int ticks, int64_t outputInterval, int64_t i
     return s;
 }
 
+PlayoutStats RunCaptureSyncPhaseBoundaryPlayout(int ticks, bool enablePhaseLock) {
+    PlayoutStats s;
+    constexpr int64_t outputInterval = 100;
+    constexpr int64_t contentDelay = 400;
+    constexpr int64_t timeBase = 100000;
+    const int64_t leadTolerance = policy::GetInjectCfrSelectionLeadToleranceQpc(outputInterval);
+    policy::CfrCadencePhaseLockState phaseLock;
+    std::deque<int64_t> buffer;
+    int64_t nextSourceIndex = -10;
+    int64_t lastEmitted = 0;
+    int holdRun = 0;
+    const auto sourceTimestamp = [=](int64_t index) {
+        const int64_t phase = (index & 1) == 0 ? 47 : 53;
+        return timeBase - contentDelay + index * outputInterval + phase;
+    };
+
+    for (int tick = 0; tick < ticks; ++tick) {
+        const int64_t now = timeBase + static_cast<int64_t>(tick) * outputInterval;
+        while (sourceTimestamp(nextSourceIndex) <= now) {
+            const int64_t timestamp = sourceTimestamp(nextSourceIndex++);
+            buffer.push_back(timestamp);
+            policy::ObserveCfrCaptureSyncSourceTimestamp(phaseLock, timestamp, outputInterval);
+        }
+        while (!buffer.empty() && buffer.front() <= lastEmitted) {
+            buffer.pop_front();
+        }
+
+        const int64_t baseTarget = now - contentDelay;
+        const int64_t reference = buffer.empty() ? 0 : buffer.back();
+        const int64_t target =
+            policy::ApplyCfrCaptureSyncPhaseLock(phaseLock, baseTarget, reference, outputInterval, enablePhaseLock);
+        size_t best = buffer.size();
+        uint64_t bestDistance = UINT64_MAX;
+        for (size_t index = 0; index < buffer.size(); ++index) {
+            const uint64_t distance = policy::GetCfrTimestampDistanceQpc(buffer[index], target);
+            if (distance <= bestDistance) {
+                bestDistance = distance;
+                best = index;
+            }
+        }
+
+        bool held = true;
+        if (best < buffer.size()) {
+            const auto decision = policy::DecideCfrNearestPlayout(buffer[best], target, leadTolerance, lastEmitted);
+            if (decision.emit) {
+                for (size_t index = 0; index < best; ++index) {
+                    buffer.pop_front();
+                    ++s.staleDrops;
+                }
+                lastEmitted = buffer.front();
+                buffer.pop_front();
+                ++s.emits;
+                held = false;
+            }
+        }
+        if (held) {
+            ++s.holds;
+            ++holdRun;
+            s.longestHoldRun = std::max(s.longestHoldRun, holdRun);
+        } else {
+            holdRun = 0;
+        }
+    }
+    return s;
+}
+
 // Encoder-overload grid drift: the CFR encoder grid runs slower than wall-clock (it cannot sustain the
 // output rate) so the grid-anchored playout target sits a fixed `gridLag` behind the real-time frame
 // timestamps, on top of the content delay. A bounded reservoir keeps only the newest `reservoirFrames`
@@ -1580,6 +1757,17 @@ TEST(CapturePipelinePolicyTest, InjectTargetPlayoutUsesNormalDepthForPerfectMatc
     EXPECT_EQ(s.dropDupSameTickViolations, 0);
     EXPECT_GE(s.minRealizedDelay, 350);
     EXPECT_LE(s.maxRealizedDelay, 450);
+}
+
+TEST(CapturePipelinePolicyTest, CaptureSyncPhaseLockEliminatesHalfFrameBoundaryChurn) {
+    const auto unlocked = RunCaptureSyncPhaseBoundaryPlayout(/*ticks=*/1200, /*enablePhaseLock=*/false);
+    const auto locked = RunCaptureSyncPhaseBoundaryPlayout(/*ticks=*/1200, /*enablePhaseLock=*/true);
+
+    EXPECT_GT(unlocked.holds, 500);
+    EXPECT_GT(unlocked.staleDrops, 500);
+    EXPECT_LT(locked.holds, 16);
+    EXPECT_LT(locked.staleDrops, 16);
+    EXPECT_EQ(locked.longestHoldRun, 1);
 }
 
 TEST(CapturePipelinePolicyTest, InjectTargetPlayoutResamplesLowHighAndVaryingSourceRatesWithoutChurn) {

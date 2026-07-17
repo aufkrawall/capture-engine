@@ -351,6 +351,12 @@ INJECT_CFR_QUALITY_SUMMARY_RE = re.compile(
     r"HoldWithCandidate=(\d+) BufferCapTrim=(\d+) TargetResidualMax=(\d+)us",
     re.IGNORECASE,
 )
+INJECT_CFR_REPEAT_PRESSURE_RE = re.compile(r"\[Inject CFR\] Repeat pressure:\s*(.*)", re.IGNORECASE)
+CFR_PHASE_LOCK_SUMMARY_RE = re.compile(
+    r"\[CFR PHASE LOCK SUMMARY\] Backend=(\w+) Enabled=(\d+) Locked=(\d+) Offset=(-?\d+)us "
+    r"Stable=(\d+) Unstable=(\d+) Acquire=(\d+) Rephase=(\d+) Release=(\d+) Multiplier=(\d+)",
+    re.IGNORECASE,
+)
 FINAL_PACKET_TIMELINE_RE = re.compile(
     r"Final packet timeline: target=(\d+) us videoEnd=(\d+) us audioMinEnd=(\d+) us audioMaxEnd=(\d+) us "
     r"maxPacketDelta=(\d+) us.*audioPastTarget=(\d+)",
@@ -537,6 +543,15 @@ def parse_int(value, default=0):
         return default
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_base0_int(value, default=0):
+    if value in (None, "", "N/A"):
+        return default
+    try:
+        return int(str(value), 0)
     except (TypeError, ValueError):
         return default
 
@@ -1895,6 +1910,7 @@ def merge_window_media_evidence(window_evidence, full_evidence):
         "inject_summary",
         "inject_source_summary",
         "inject_quality_summary",
+        "cfr_phase_lock_summary",
         "inject_contention",
         "final_packet_timelines",
         "final_metadata",
@@ -2208,6 +2224,8 @@ def parse_media_triage(media_text):
     inject_summary = []
     inject_source_summary = []
     inject_quality_summary = []
+    inject_repeat_pressure = []
+    cfr_phase_lock_summary = []
     inject_contention = []
     app_latency_warnings = []
     final_packet_timelines = []
@@ -2253,6 +2271,25 @@ def parse_media_triage(media_text):
             wgc_cadence_events.append(event)
         if INJECT_PERF_RE.search(line):
             inject_perf.append(parse_inject_perf_line(line))
+        repeat_pressure_match = INJECT_CFR_REPEAT_PRESSURE_RE.search(line)
+        if repeat_pressure_match:
+            values = parse_attribution_payload(repeat_pressure_match.group(1))
+            inject_repeat_pressure.append(
+                {
+                    "duplicate": parse_int(values.get("dup")),
+                    "source_limited": parse_int(values.get("srcLimited")),
+                    "target_select": parse_int(values.get("targetSelect")),
+                    "target_superseded": parse_int(values.get("targetSuperseded")),
+                    "target_hold": parse_int(values.get("targetHold")),
+                    "hold_with_candidate": parse_int(values.get("holdWithCandidate")),
+                    "tick_emit": parse_int(values.get("tickEmit")),
+                    "unique": parse_int(values.get("unique")),
+                    "source_fps": parse_float(values.get("sourceFps")),
+                    "overload_flags": parse_base0_int(values.get("overload")),
+                    "timestamp_us": parse_log_timestamp_us(line),
+                    "line": line,
+                }
+            )
         contention_match = INJECT_CONTENTION_RE.search(line)
         if contention_match:
             inject_contention.append(
@@ -2492,6 +2529,23 @@ def parse_media_triage(media_text):
                     "line": line,
                 }
             )
+        phase_lock_match = CFR_PHASE_LOCK_SUMMARY_RE.search(line)
+        if phase_lock_match:
+            cfr_phase_lock_summary.append(
+                {
+                    "backend": phase_lock_match.group(1).lower(),
+                    "enabled": parse_int(phase_lock_match.group(2)),
+                    "locked": parse_int(phase_lock_match.group(3)),
+                    "offset_us": parse_int(phase_lock_match.group(4)),
+                    "stable": parse_int(phase_lock_match.group(5)),
+                    "unstable": parse_int(phase_lock_match.group(6)),
+                    "acquisitions": parse_int(phase_lock_match.group(7)),
+                    "rephases": parse_int(phase_lock_match.group(8)),
+                    "releases": parse_int(phase_lock_match.group(9)),
+                    "multiplier": parse_int(phase_lock_match.group(10)),
+                    "line": line,
+                }
+            )
         packet_match = FINAL_PACKET_TIMELINE_RE.search(line)
         if packet_match:
             final_packet_timelines.append(
@@ -2672,6 +2726,8 @@ def parse_media_triage(media_text):
         "inject_summary": inject_summary,
         "inject_source_summary": inject_source_summary,
         "inject_quality_summary": inject_quality_summary,
+        "inject_repeat_pressure": inject_repeat_pressure,
+        "cfr_phase_lock_summary": cfr_phase_lock_summary,
         "inject_contention": inject_contention,
         "app_latency_warnings": app_latency_warnings,
         "final_packet_timelines": final_packet_timelines,
@@ -2700,7 +2756,14 @@ def parse_hook_triage(session_dir):
         for line in text.splitlines():
             gap_match = PRESENT_HEARTBEAT_GAP_RE.search(line)
             if gap_match:
-                gaps.append({"path": str(path), "gap_ms": parse_float(gap_match.group(1)), "line": line})
+                gaps.append(
+                    {
+                        "path": str(path),
+                        "gap_ms": parse_float(gap_match.group(1)),
+                        "timestamp_us": parse_log_timestamp_us(line),
+                        "line": line,
+                    }
+                )
             if "Present STALLED" in line:
                 present_stalled_lines.append({"path": str(path), "line": line})
             if EXTERNAL_OVERLAY_RE.search(line) and ("overlay" in line.lower() or "streamline" in line.lower()):
@@ -2715,7 +2778,7 @@ def parse_hook_triage(session_dir):
     }
 
 
-def parse_perf_csvs(session_dir, recording_window=None):
+def parse_perf_csvs(session_dir, recording_window=None, live_source_only=False):
     summaries = []
     window_bounds = None
     if recording_window and recording_window.get("active"):
@@ -2726,6 +2789,23 @@ def parse_perf_csvs(session_dir, recording_window=None):
                 rows = list(csv.DictReader(handle))
         except OSError:
             continue
+        live_source_bounds = None
+        if live_source_only:
+            first_live_row = None
+            last_live_row = None
+            previous_source_frame = 0
+            for row_index, row in enumerate(rows):
+                source_frame = parse_int(row.get("source_frame_index"), 0)
+                if source_frame <= 0:
+                    continue
+                if first_live_row is None:
+                    first_live_row = row_index
+                    last_live_row = row_index
+                elif source_frame != previous_source_frame:
+                    last_live_row = row_index
+                previous_source_frame = source_frame
+            if first_live_row is not None and last_live_row is not None:
+                live_source_bounds = (first_live_row, last_live_row)
         previous_qpc = None
         max_qpc_delta_us = 0
         large_gaps = []
@@ -2737,12 +2817,18 @@ def parse_perf_csvs(session_dir, recording_window=None):
         min_qpc_us = 0
         max_qpc_us = 0
         rows_in_window = 0
-        for row in rows:
+        for row_index, row in enumerate(rows):
             qpc = parse_int(row.get("qpc_us"), 0)
             if qpc > 0:
                 min_qpc_us = qpc if min_qpc_us == 0 else min(min_qpc_us, qpc)
                 max_qpc_us = max(max_qpc_us, qpc)
             if window_bounds and (qpc < window_bounds[0] or qpc > window_bounds[1]):
+                continue
+            if live_source_only and (
+                live_source_bounds is None
+                or row_index < live_source_bounds[0]
+                or row_index > live_source_bounds[1]
+            ):
                 continue
             rows_in_window += 1
             if previous_qpc is None:
@@ -2780,12 +2866,13 @@ def parse_perf_csvs(session_dir, recording_window=None):
         summaries.append(
             {
                 "path": str(path),
-                "rows": rows_in_window if window_bounds else len(rows),
+                "rows": rows_in_window if (window_bounds or live_source_only) else len(rows),
                 "rows_total": len(rows),
                 "min_qpc_us": min_qpc_us,
                 "max_qpc_us": max_qpc_us,
                 "window_start_qpc_us": window_bounds[0] if window_bounds else 0,
                 "window_end_qpc_us": window_bounds[1] if window_bounds else 0,
+                "live_source_filter": bool(live_source_only and live_source_bounds is not None),
                 "max_qpc_delta_us": max_qpc_delta_us,
                 "large_qpc_gaps": large_gaps[:20],
                 "max_total_us": max_total_us,
@@ -2844,6 +2931,43 @@ def summarize_inject_pacing(media_evidence):
     summary_rows = media_evidence["inject_summary"]
     source_rows = media_evidence["inject_source_summary"]
     quality_rows = media_evidence.get("inject_quality_summary", [])
+    pressure_rows = media_evidence.get("inject_repeat_pressure", [])
+    matched_pressure_rows = []
+    for row in pressure_rows:
+        expected_fps = row.get("tick_emit", 0)
+        source_fps = row.get("source_fps", 0.0)
+        rate_tolerance = max(3.0, expected_fps * 0.05)
+        if (
+            expected_fps >= 30
+            and source_fps > 0.0
+            and abs(source_fps - expected_fps) <= rate_tolerance
+            and row.get("hold_with_candidate", 0) > 0
+            and row.get("target_superseded", 0) > 0
+            and row.get("overload_flags", 0) == 0
+        ):
+            matched_pressure_rows.append(row)
+
+    longest_matched_run = 0
+    current_matched_run = 0
+    previous_timestamp_us = -1
+    matched_ids = {id(row) for row in matched_pressure_rows}
+    for row in pressure_rows:
+        if id(row) not in matched_ids:
+            current_matched_run = 0
+            previous_timestamp_us = -1
+            continue
+        timestamp_us = row.get("timestamp_us", -1)
+        if (
+            current_matched_run > 0
+            and timestamp_us >= 0
+            and previous_timestamp_us >= 0
+            and timestamp_us - previous_timestamp_us > 7500000
+        ):
+            current_matched_run = 0
+        current_matched_run += 1
+        longest_matched_run = max(longest_matched_run, current_matched_run)
+        previous_timestamp_us = timestamp_us
+
     return {
         "perf_rows": len(perf_rows),
         "input": sum(row["input"] for row in perf_rows),
@@ -2872,6 +2996,14 @@ def summarize_inject_pacing(media_evidence):
         "target_hold_with_candidate": sum(row["hold_with_candidate"] for row in quality_rows),
         "buffer_cap_trim": sum(row["buffer_cap_trim"] for row in quality_rows),
         "target_residual_max_us": max((row["target_residual_max_us"] for row in quality_rows), default=0),
+        "pressure_rows": len(pressure_rows),
+        "pressure_hold_with_candidate": sum(row.get("hold_with_candidate", 0) for row in pressure_rows),
+        "matched_rate_pressure_rows": len(matched_pressure_rows),
+        "matched_rate_hold_with_candidate": sum(
+            row.get("hold_with_candidate", 0) for row in matched_pressure_rows
+        ),
+        "matched_rate_superseded": sum(row.get("target_superseded", 0) for row in matched_pressure_rows),
+        "matched_rate_longest_run": longest_matched_run,
     }
 
 
@@ -2925,9 +3057,17 @@ def has_inject_cfr_playout_churn(inject_pacing):
 def has_inject_target_policy_hold_fault(inject_pacing):
     live = inject_pacing["summary_live"]
     hold_with_candidate = inject_pacing["target_hold_with_candidate"]
-    if live <= 0 or not has_stable_inject_source_rate(inject_pacing):
+    paired_churn = min(hold_with_candidate, inject_pacing["target_superseded"])
+    if live <= 0 or hold_with_candidate < max(3, math.ceil(live * 0.005)) or paired_churn < 3:
         return False
-    return hold_with_candidate >= max(3, math.ceil(live * 0.005))
+    # Session-wide min/max is invalid after a real source hitch: one slow window hides a long stable
+    # segment. Require repeated per-window hold/drop pairs while the measured source rate matches the
+    # output tick rate. Honest low/varying-FPS resampling therefore remains context, not a policy fault.
+    return (
+        inject_pacing["matched_rate_longest_run"] >= 3
+        and inject_pacing["matched_rate_hold_with_candidate"] >= 6
+        and inject_pacing["matched_rate_superseded"] >= 3
+    )
 
 
 def summarize_inject_contention_context(media_evidence, live_start_wall_us):
@@ -3745,6 +3885,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     full_media_evidence = parse_media_triage(media_text)
     hook_evidence = parse_hook_triage(session_dir)
     perf_summaries_all = parse_perf_csvs(session_dir)
+    perf_summaries_live_source = parse_perf_csvs(session_dir, live_source_only=True)
     recording_window_info = build_recording_window_info(media_text, recording_window, perf_summaries_all)
     if media_text and recording_window_info and recording_window_info.get("active"):
         windowed_media_text = filter_media_text_for_recording_window(media_text, recording_window_info)
@@ -3766,14 +3907,37 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
 
     verdicts = []
     contexts = []
-    if recording_window_info:
+    if recording_window_info and recording_window_info.get("active"):
         max_present_gap_ms = max((item["max_qpc_delta_us"] for item in perf_summaries), default=0) / 1000.0
         present_gap_evidence = []
         for item in perf_summaries:
             present_gap_evidence.extend(item["large_qpc_gaps"])
+        present_gap_source = "perf_recording_window"
+    elif any(item.get("rows", 0) > 1 and item.get("live_source_filter") for item in perf_summaries_live_source):
+        max_present_gap_ms = (
+            max((item["max_qpc_delta_us"] for item in perf_summaries_live_source), default=0) / 1000.0
+        )
+        present_gap_evidence = []
+        for item in perf_summaries_live_source:
+            present_gap_evidence.extend(item["large_qpc_gaps"])
+        present_gap_source = "perf_live_source"
     else:
-        max_present_gap_ms = max((item["gap_ms"] for item in hook_evidence["present_gaps"]), default=0.0)
-        present_gap_evidence = hook_evidence["present_gaps"][:20]
+        timestamped_hook_gaps = [
+            item for item in hook_evidence["present_gaps"] if item.get("timestamp_us", -1) >= 0
+        ]
+        live_hook_gaps = [
+            item
+            for item in timestamped_hook_gaps
+            if live_start_wall_us >= 0
+            and item["timestamp_us"] >= live_start_wall_us
+            and (stop_start_wall_us < 0 or item["timestamp_us"] < stop_start_wall_us)
+        ]
+        selected_hook_gaps = live_hook_gaps if live_start_wall_us >= 0 and timestamped_hook_gaps else hook_evidence[
+            "present_gaps"
+        ]
+        max_present_gap_ms = max((item["gap_ms"] for item in selected_hook_gaps), default=0.0)
+        present_gap_evidence = selected_hook_gaps[:20]
+        present_gap_source = "hook_live_window" if selected_hook_gaps is live_hook_gaps else "hook_logs"
     if max_present_gap_ms >= 100.0:
         verdicts.append("source_present_gap")
     if has_source_starvation(media_evidence):
@@ -4093,7 +4257,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
         "evidence": {
             "recording_window": recording_window_info,
             "max_present_gap_ms": max_present_gap_ms,
-            "present_gap_source": "perf_recording_window" if recording_window_info else "hook_logs",
+            "present_gap_source": present_gap_source,
             "present_gaps": present_gap_evidence[:20],
             "present_stalled_lines": hook_evidence["present_stalled_lines"][:20],
             "external_overlay_lines": hook_evidence["external_overlay_lines"],
@@ -4102,6 +4266,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "wgc_source_starved_episodes": media_evidence["source_starved_episodes"],
             "wgc_source_limits": wgc_source_limits,
             "inject_pacing": inject_pacing,
+            "cfr_phase_lock_summary": media_evidence["cfr_phase_lock_summary"],
             "wgc_attribution": media_evidence["wgc_attribution"],
             "wgc_summary": media_evidence["wgc_summary"],
             "wgc_quality": media_evidence["wgc_quality"],
@@ -4390,7 +4555,8 @@ def print_triage_report(report):
             "  inject_drop_pace={drop_pace} inject_dup_src={dup_src} stale_trim={stale_trim} "
             "target_select={target_select} superseded={superseded} target_hold={target_hold} "
             "hold_with_candidate={hold_candidate} cap_trim={cap_trim} residual_max={residual}us "
-            "inject_source_fps={fps_min:.2f}..{fps_max:.2f}".format(
+            "inject_source_fps={fps_min:.2f}..{fps_max:.2f} matched_pressure={matched_rows}/{matched_run} "
+            "matched_hold_drop={matched_hold}/{matched_superseded}".format(
                 drop_pace=inject_pacing["drop_pace"],
                 dup_src=inject_pacing["summary_dup_src"],
                 stale_trim=inject_pacing["summary_stale_trim"],
@@ -4402,6 +4568,27 @@ def print_triage_report(report):
                 residual=inject_pacing["target_residual_max_us"],
                 fps_min=inject_pacing["source_fps_min"],
                 fps_max=inject_pacing["source_fps_max"],
+                matched_rows=inject_pacing["matched_rate_pressure_rows"],
+                matched_run=inject_pacing["matched_rate_longest_run"],
+                matched_hold=inject_pacing["matched_rate_hold_with_candidate"],
+                matched_superseded=inject_pacing["matched_rate_superseded"],
+            )
+        )
+    if evidence["cfr_phase_lock_summary"]:
+        phase_lock = evidence["cfr_phase_lock_summary"][-1]
+        print(
+            "  cfr_phase_lock backend={backend} enabled={enabled} locked={locked} offset={offset}us "
+            "stable={stable} unstable={unstable} transitions={acquire}/{rephase}/{release} multiplier={multiplier}".format(
+                backend=phase_lock["backend"],
+                enabled=phase_lock["enabled"],
+                locked=phase_lock["locked"],
+                offset=phase_lock["offset_us"],
+                stable=phase_lock["stable"],
+                unstable=phase_lock["unstable"],
+                acquire=phase_lock["acquisitions"],
+                rephase=phase_lock["rephases"],
+                release=phase_lock["releases"],
+                multiplier=phase_lock["multiplier"],
             )
         )
     if evidence["wgc_smoothness_summary"]:
@@ -4779,6 +4966,44 @@ def self_test():
         report = classify_session_triage(source_gap)
         assert "source_present_gap" in report["verdicts"]
         assert "ce_encoder_or_mux_backpressure" not in report["verdicts"]
+
+        pre_live_gap = make_session(
+            "pre_live_gap",
+            media=(
+                "[2026-07-17 16:52:14.000] [INFO] [EncoderThread] Recording live (inject)\n"
+                "[2026-07-17 16:52:16.000] [INFO] [Media] Stopping recording...\n"
+            ),
+            perf=(
+                "frame,qpc_us,total_us,capture_us,present_call_us,mux_queue_kb,overload_flags,api,"
+                "source_frame_index,qpc_delta_us\n"
+                "1,1000000,100,20,40,0,0,DX12,0,0\n"
+                "2,1500000,100,20,40,0,0,DX12,0,500000\n"
+                "3,2000000,100,20,40,0,0,DX12,1,500000\n"
+                "4,2010000,100,20,40,0,0,DX12,2,10000\n"
+                "5,2020000,100,20,40,0,0,DX12,3,10000\n"
+                "6,2520000,100,20,40,0,0,DX12,3,500000\n"
+            ),
+        )
+        report = classify_session_triage(pre_live_gap)
+        assert "source_present_gap" not in report["verdicts"]
+        assert report["evidence"]["present_gap_source"] == "perf_live_source"
+        assert report["evidence"]["max_present_gap_ms"] == 10.0
+
+        live_source_gap = make_session(
+            "live_source_gap",
+            media="[2026-07-17 16:52:14.000] [INFO] [EncoderThread] Recording live (inject)\n",
+            perf=(
+                "frame,qpc_us,total_us,capture_us,present_call_us,mux_queue_kb,overload_flags,api,"
+                "source_frame_index,qpc_delta_us\n"
+                "1,1000000,100,20,40,0,0,DX12,0,0\n"
+                "2,1500000,100,20,40,0,0,DX12,1,500000\n"
+                "3,1510000,100,20,40,0,0,DX12,2,10000\n"
+                "4,1710000,100,20,40,0,0,DX12,3,200000\n"
+            ),
+        )
+        report = classify_session_triage(live_source_gap)
+        assert "source_present_gap" in report["verdicts"]
+        assert report["evidence"]["max_present_gap_ms"] == 200.0
 
         contention_attribution = make_session(
             "contention_attribution",
@@ -5366,6 +5591,57 @@ def self_test():
         assert "inject_cfr_target_policy_hold" not in report["verdicts"]
         assert report["evidence"]["inject_pacing"]["target_select"] == 12000
         assert report["evidence"]["inject_pacing"]["target_residual_max_us"] == 100
+
+        inject_post_hitch_phase_churn = make_session(
+            "inject_post_hitch_phase_churn",
+            media=(
+                "[Inject CFR SUMMARY] Live=13545 Dup=354 DupPct=2.6% "
+                "DupReason(src=354 def=0 timer=0 drain=0) FreshCatchup=0 RepeatCatchup=0 "
+                "StaleTrim=0 Recovery=0/0\n"
+                "[Inject CFR SUMMARY] SourceFps=98.08..122.39 JitterMax=796us SelMax=33907us\n"
+                "[Inject CFR QUALITY SUMMARY] TargetSelect=13190 Superseded=255 TargetHold=354 "
+                "HoldWithCandidate=267 BufferCapTrim=0 TargetResidualMax=220577us\n"
+                "[2026-07-17 16:53:45.000] [INFO] [Inject CFR] Repeat pressure: dup=5 srcLimited=5 "
+                "targetSelect=115 targetSuperseded=5 targetHold=5 holdWithCandidate=5 tickEmit=120 "
+                "unique=115 sourceFps=119.95 overload=0x0\n"
+                "[2026-07-17 16:53:50.000] [INFO] [Inject CFR] Repeat pressure: dup=6 srcLimited=6 "
+                "targetSelect=114 targetSuperseded=5 targetHold=6 holdWithCandidate=6 tickEmit=120 "
+                "unique=114 sourceFps=120.78 overload=0x0\n"
+                "[2026-07-17 16:53:55.000] [INFO] [Inject CFR] Repeat pressure: dup=4 srcLimited=4 "
+                "targetSelect=116 targetSuperseded=4 targetHold=4 holdWithCandidate=4 tickEmit=120 "
+                "unique=116 sourceFps=121.22 overload=0x0\n"
+                "[CFR PHASE LOCK SUMMARY] Backend=inject Enabled=1 Locked=1 Offset=4012us Stable=900 "
+                "Unstable=0 Acquire=1 Rephase=1 Release=0 Multiplier=1\n"
+            ),
+        )
+        report = classify_session_triage(inject_post_hitch_phase_churn)
+        assert "inject_cfr_target_policy_hold" in report["verdicts"]
+        assert report["evidence"]["inject_pacing"]["matched_rate_longest_run"] == 3
+        assert report["evidence"]["cfr_phase_lock_summary"][0]["offset_us"] == 4012
+
+        inject_variable_rate_resampling = make_session(
+            "inject_variable_rate_resampling",
+            media=(
+                "[Inject CFR SUMMARY] Live=12000 Dup=2200 DupPct=18.3% "
+                "DupReason(src=2200 def=0 timer=0 drain=0) FreshCatchup=0 RepeatCatchup=0 "
+                "StaleTrim=0 Recovery=0/0\n"
+                "[Inject CFR SUMMARY] SourceFps=72.00..119.00 JitterMax=5000us SelMax=8000us\n"
+                "[Inject CFR QUALITY SUMMARY] TargetSelect=9800 Superseded=1800 TargetHold=2200 "
+                "HoldWithCandidate=1800 BufferCapTrim=0 TargetResidualMax=8000us\n"
+                "[2026-07-17 16:53:45.000] [INFO] [Inject CFR] Repeat pressure: dup=35 srcLimited=35 "
+                "targetSelect=85 targetSuperseded=20 targetHold=35 holdWithCandidate=20 tickEmit=120 "
+                "unique=85 sourceFps=85.00 overload=0x0\n"
+                "[2026-07-17 16:53:50.000] [INFO] [Inject CFR] Repeat pressure: dup=20 srcLimited=20 "
+                "targetSelect=100 targetSuperseded=15 targetHold=20 holdWithCandidate=15 tickEmit=120 "
+                "unique=100 sourceFps=100.00 overload=0x0\n"
+                "[2026-07-17 16:53:55.000] [INFO] [Inject CFR] Repeat pressure: dup=12 srcLimited=12 "
+                "targetSelect=108 targetSuperseded=8 targetHold=12 holdWithCandidate=8 tickEmit=120 "
+                "unique=108 sourceFps=108.00 overload=0x0\n"
+            ),
+        )
+        report = classify_session_triage(inject_variable_rate_resampling)
+        assert "inject_cfr_target_policy_hold" not in report["verdicts"]
+        assert report["evidence"]["inject_pacing"]["matched_rate_pressure_rows"] == 0
 
         audio_worker_scheduling_stall = make_session(
             "audio_worker_scheduling_stall",

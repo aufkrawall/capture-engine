@@ -16,6 +16,14 @@ constexpr uint32_t kInjectCfrPublicationHeadroomPermille = 4000;
 constexpr int64_t kInjectCfrPublicationEarlySlackMinUs = 250;
 constexpr int64_t kInjectCfrPublicationEarlySlackMaxUs = 1500;
 constexpr uint32_t kInjectCfrSelectionLeadTolerancePermille = 500;
+constexpr uint32_t kCfrPhaseLockCadenceTolerancePermille = 180;
+constexpr uint32_t kCfrPhaseLockPhaseTolerancePermille = 200;
+constexpr uint32_t kCfrPhaseLockRephaseTolerancePermille = 100;
+constexpr uint32_t kCfrPhaseLockMinStableIntervals = 12;
+constexpr uint32_t kCfrPhaseLockConfirmations = 8;
+constexpr uint32_t kCfrPhaseLockReleaseIntervals = 4;
+constexpr uint32_t kCfrPhaseLockRephaseConfirmations = 8;
+constexpr uint32_t kCfrPhaseLockIncoherentReleaseIntervals = 3;
 constexpr uint32_t kInjectLiveHealthyMaxFrameAgeTicks = 3;
 constexpr uint32_t kInjectLivePressureMaxFrameAgeTicks = 12;
 constexpr uint64_t kEncoderStartupWindowMs = 1500;
@@ -3072,6 +3080,193 @@ inline int64_t GetInjectCfrSelectionLeadToleranceQpc(int64_t targetIntervalTicks
 
 inline uint64_t GetCfrTimestampDistanceQpc(int64_t lhs, int64_t rhs) {
     return lhs >= rhs ? static_cast<uint64_t>(lhs - rhs) : static_cast<uint64_t>(rhs - lhs);
+}
+
+inline int64_t GetCfrCaptureSyncSourceIntervalQpc(int64_t outputIntervalQpc, uint32_t captureSyncMultiplier) {
+    if (outputIntervalQpc <= 0 || captureSyncMultiplier == 0) {
+        return 0;
+    }
+    return std::max<int64_t>(1, outputIntervalQpc / static_cast<int64_t>(captureSyncMultiplier));
+}
+
+inline int64_t NormalizeCfrCadencePhaseQpc(int64_t phaseQpc, int64_t sourceIntervalQpc) {
+    if (sourceIntervalQpc <= 0) {
+        return 0;
+    }
+    phaseQpc %= sourceIntervalQpc;
+    const int64_t halfInterval = sourceIntervalQpc / 2;
+    if (phaseQpc > halfInterval) {
+        phaseQpc -= sourceIntervalQpc;
+    } else if (phaseQpc < -halfInterval) {
+        phaseQpc += sourceIntervalQpc;
+    }
+    return phaseQpc;
+}
+
+struct CfrCadencePhaseLockState {
+    int64_t lastSourceTimestampQpc = 0;
+    int64_t lastPhaseReferenceQpc = 0;
+    int64_t candidatePhaseQpc = 0;
+    int64_t lockedPhaseQpc = 0;
+    uint32_t stableSourceIntervals = 0;
+    uint32_t unstableSourceIntervals = 0;
+    uint32_t phaseConfirmations = 0;
+    uint32_t phaseMismatchConfirmations = 0;
+    uint32_t phaseIncoherentConfirmations = 0;
+    bool locked = false;
+    uint64_t acquisitions = 0;
+    uint64_t releases = 0;
+    uint64_t rephases = 0;
+
+    void Reset() {
+        *this = {};
+    }
+};
+
+inline void ObserveCfrCaptureSyncSourceTimestamp(CfrCadencePhaseLockState& state, int64_t sourceTimestampQpc,
+                                                 int64_t sourceIntervalQpc) {
+    if (sourceTimestampQpc <= 0 || sourceIntervalQpc <= 0) {
+        return;
+    }
+    if (state.lastSourceTimestampQpc <= 0) {
+        state.lastSourceTimestampQpc = sourceTimestampQpc;
+        return;
+    }
+    if (sourceTimestampQpc == state.lastSourceTimestampQpc) {
+        return;
+    }
+
+    bool cadenceStable = false;
+    if (sourceTimestampQpc > state.lastSourceTimestampQpc) {
+        const uint64_t delta = static_cast<uint64_t>(sourceTimestampQpc - state.lastSourceTimestampQpc);
+        const uint64_t interval = static_cast<uint64_t>(sourceIntervalQpc);
+        const uint64_t nearestSteps = std::max<uint64_t>(1, (delta + interval / 2) / interval);
+        if (nearestSteps <= 64 && nearestSteps <= static_cast<uint64_t>(INT64_MAX / sourceIntervalQpc)) {
+            const uint64_t expected = nearestSteps * interval;
+            const uint64_t error = delta >= expected ? delta - expected : expected - delta;
+            const uint64_t tolerance =
+                (interval * static_cast<uint64_t>(kCfrPhaseLockCadenceTolerancePermille)) / 1000ull;
+            cadenceStable = error <= tolerance;
+        }
+    }
+    state.lastSourceTimestampQpc = sourceTimestampQpc;
+
+    if (cadenceStable) {
+        state.stableSourceIntervals = std::min<uint32_t>(state.stableSourceIntervals + 1, 1000000u);
+        state.unstableSourceIntervals = 0;
+        return;
+    }
+
+    state.unstableSourceIntervals = std::min<uint32_t>(state.unstableSourceIntervals + 1, 1000000u);
+    state.stableSourceIntervals = state.stableSourceIntervals > 2 ? state.stableSourceIntervals - 2 : 0;
+    if (state.unstableSourceIntervals >= kCfrPhaseLockReleaseIntervals) {
+        if (state.locked) {
+            ++state.releases;
+        }
+        state.locked = false;
+        state.phaseConfirmations = 0;
+        state.phaseMismatchConfirmations = 0;
+        state.phaseIncoherentConfirmations = 0;
+        state.lastPhaseReferenceQpc = 0;
+    }
+}
+
+inline int64_t ApplyCfrCaptureSyncPhaseLock(CfrCadencePhaseLockState& state, int64_t baseTargetQpc,
+                                            int64_t sourceReferenceQpc, int64_t sourceIntervalQpc, bool enabled) {
+    if (!enabled || baseTargetQpc <= 0 || sourceIntervalQpc <= 0) {
+        if (state.locked) {
+            ++state.releases;
+        }
+        state.locked = false;
+        state.phaseConfirmations = 0;
+        state.phaseMismatchConfirmations = 0;
+        state.phaseIncoherentConfirmations = 0;
+        return baseTargetQpc;
+    }
+
+    if (sourceReferenceQpc > 0 && sourceReferenceQpc != state.lastPhaseReferenceQpc &&
+        state.stableSourceIntervals >= kCfrPhaseLockMinStableIntervals) {
+        state.lastPhaseReferenceQpc = sourceReferenceQpc;
+        const int64_t observedPhase =
+            NormalizeCfrCadencePhaseQpc(sourceReferenceQpc - baseTargetQpc, sourceIntervalQpc);
+        const int64_t phaseTolerance = std::max<int64_t>(
+            1, (sourceIntervalQpc * static_cast<int64_t>(kCfrPhaseLockPhaseTolerancePermille)) / 1000);
+        const int64_t rephaseTolerance = std::max<int64_t>(
+            1, (sourceIntervalQpc * static_cast<int64_t>(kCfrPhaseLockRephaseTolerancePermille)) / 1000);
+
+        if (!state.locked) {
+            if (state.phaseConfirmations == 0) {
+                state.candidatePhaseQpc = observedPhase;
+                state.phaseConfirmations = 1;
+            } else {
+                const int64_t error = NormalizeCfrCadencePhaseQpc(
+                    observedPhase - state.candidatePhaseQpc, sourceIntervalQpc);
+                if (GetCfrTimestampDistanceQpc(error, 0) <= static_cast<uint64_t>(phaseTolerance)) {
+                    state.candidatePhaseQpc = NormalizeCfrCadencePhaseQpc(
+                        state.candidatePhaseQpc + error / 4, sourceIntervalQpc);
+                    ++state.phaseConfirmations;
+                } else {
+                    state.candidatePhaseQpc = observedPhase;
+                    state.phaseConfirmations = 1;
+                }
+            }
+            if (state.phaseConfirmations >= kCfrPhaseLockConfirmations) {
+                state.lockedPhaseQpc = state.candidatePhaseQpc;
+                state.locked = true;
+                state.phaseMismatchConfirmations = 0;
+                state.phaseIncoherentConfirmations = 0;
+                ++state.acquisitions;
+            }
+        } else {
+            const int64_t error =
+                NormalizeCfrCadencePhaseQpc(observedPhase - state.lockedPhaseQpc, sourceIntervalQpc);
+            if (GetCfrTimestampDistanceQpc(error, 0) <= static_cast<uint64_t>(phaseTolerance)) {
+                state.lockedPhaseQpc =
+                    NormalizeCfrCadencePhaseQpc(state.lockedPhaseQpc + error / 16, sourceIntervalQpc);
+                state.phaseMismatchConfirmations = 0;
+                state.phaseIncoherentConfirmations = 0;
+            } else if (state.phaseMismatchConfirmations == 0) {
+                state.candidatePhaseQpc = observedPhase;
+                state.phaseMismatchConfirmations = 1;
+            } else {
+                const int64_t candidateError = NormalizeCfrCadencePhaseQpc(
+                    observedPhase - state.candidatePhaseQpc, sourceIntervalQpc);
+                if (GetCfrTimestampDistanceQpc(candidateError, 0) <= static_cast<uint64_t>(rephaseTolerance)) {
+                    state.candidatePhaseQpc = NormalizeCfrCadencePhaseQpc(
+                        state.candidatePhaseQpc + candidateError / 4, sourceIntervalQpc);
+                    state.phaseIncoherentConfirmations = 0;
+                    if (++state.phaseMismatchConfirmations >= kCfrPhaseLockRephaseConfirmations) {
+                        state.lockedPhaseQpc = state.candidatePhaseQpc;
+                        state.phaseMismatchConfirmations = 0;
+                        ++state.rephases;
+                    }
+                } else {
+                    // A real limiter phase transition converges on one new phase. Wandering source
+                    // phases are varying cadence, so release instead of repeatedly moving the CFR
+                    // selection boundary and making variable-FPS resampling less predictable.
+                    state.candidatePhaseQpc = observedPhase;
+                    state.phaseMismatchConfirmations = 1;
+                    if (++state.phaseIncoherentConfirmations >= kCfrPhaseLockIncoherentReleaseIntervals) {
+                        state.locked = false;
+                        state.phaseConfirmations = 0;
+                        state.phaseMismatchConfirmations = 0;
+                        state.phaseIncoherentConfirmations = 0;
+                        state.lastPhaseReferenceQpc = 0;
+                        ++state.releases;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!state.locked || state.lockedPhaseQpc == 0) {
+        return baseTargetQpc;
+    }
+    if ((state.lockedPhaseQpc > 0 && baseTargetQpc > INT64_MAX - state.lockedPhaseQpc) ||
+        (state.lockedPhaseQpc < 0 && baseTargetQpc < INT64_MIN - state.lockedPhaseQpc)) {
+        return baseTargetQpc;
+    }
+    return baseTargetQpc + state.lockedPhaseQpc;
 }
 
 // Should the current front be dropped in favour of `nextTimestampQpc`? True when the successor is

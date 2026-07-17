@@ -1,6 +1,6 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-07-16
+Last cross-checked: 2026-07-17
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -62,8 +62,10 @@ Primary sources:
 - Flip-model latency waitables are requested at creation whenever `backbuffer_count` is active. Wrapped DXGI waits at
   the post-Present/next-frame boundary so simulation/render work cannot begin behind a full vsync queue.
 - The timer limiter uses a rational QPC/Bresenham grid, never emits a short catch-up interval after a missed deadline,
-  and arms a high-resolution timer before the deadline. The fine margin is `clamp(p99 timer wake overshoot + 25us,
-  50us, 250us)`; only the final 50us is a tight spin.
+  and arms a high-resolution timer before the deadline. Capture-sync late recovery advances by whole rational-grid slots
+  until the next deadline has at least half an interval of headroom, preserving source/CFR phase through a hitch;
+  general limiting retains now-relative recovery. The fine margin is `clamp(p99 timer wake overshoot + 25us, 50us,
+  250us)`; only the final 50us is a tight spin.
 - Concurrent/re-entrant Present streams cannot advance one cadence: the first caller owns the cadence mutex and other
   callers skip without blocking. VFR disables capture-grid synchronization only, not an independently configured
   general cap.
@@ -75,7 +77,8 @@ Primary sources:
 ## Diagnostics and stale-risk
 
 - Sampler logs are bounded by fingerprint/reason. Queue/fence rebinding and failed waits are high-signal and rate
-  limited. The limiter's periodic stats report waited/late/reset frames and actual wait time.
+  limited. The limiter's periodic stats report waited/late/reset frames, whole capture-grid slots skipped while
+  preserving phase, and actual wait time.
 - Runtime validation remains required across representative native/DXVK D3D9, D3D10/11, D3D12, Vulkan, and OpenGL
   games, plus WGC and inject CFR capture. In particular, validate Kena/Blackwell, multi-swapchain engines, asynchronous
   Vulkan present queues, and OpenGL shared-context applications.
