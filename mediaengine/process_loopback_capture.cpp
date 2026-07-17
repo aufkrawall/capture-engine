@@ -287,7 +287,7 @@ void ProcessLoopbackCapture::RetireActiveWorkerLocked(bool unexpectedExit, DWORD
     DLL_Log(
         "[AppAudioWorker] Exit generation=%llu helperPid=%lu exitCode=0x%lx unexpected=%d state=%u "
         "pending=%llu produced=%llu consumed=%llu overrun=%llu/%llu lifecycleOverrun=%llu transport=%u "
-        "integrityFailures=%llu clean=%llu recycle=%llu",
+        "stage=%u failureSeq=%llu lastError=0x%x integrityFailures=%llu clean=%llu recycle=%llu",
         static_cast<unsigned long long>(activeWorker_->generation), activeWorker_->processId, exitCode,
         unexpectedExit ? 1 : 0, header->workerState.load(std::memory_order_relaxed),
         static_cast<unsigned long long>(pending),
@@ -297,6 +297,9 @@ void ProcessLoopbackCapture::RetireActiveWorkerLocked(bool unexpectedExit, DWORD
         static_cast<unsigned long long>(header->overrunFrames.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(header->lifecycleOverrunPackets.load(std::memory_order_relaxed)),
         header->transportStatus.load(std::memory_order_relaxed),
+        header->transportFailureStage.load(std::memory_order_relaxed),
+        static_cast<unsigned long long>(header->transportFailureSequence.load(std::memory_order_relaxed)),
+        header->lastError.load(std::memory_order_relaxed),
         static_cast<unsigned long long>(header->integrityFailureCount.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(header->workerCleanExitCount.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(header->workerRecycleCount.load(std::memory_order_relaxed)));
@@ -316,9 +319,13 @@ void ProcessLoopbackCapture::HandleIntegrityFailureLocked(WorkerInstance& worker
     const uint32_t status = worker.Header()->transportStatus.load(std::memory_order_acquire);
     if (!integrityFailure_) {
         DLL_Log(
-            "[AppAudioWorker] FATAL: transport integrity failed generation=%llu helperPid=%lu status=%u; "
+            "[AppAudioWorker] FATAL: transport integrity failed generation=%llu helperPid=%lu status=%u stage=%u "
+            "sequence=%llu lastError=0x%x; "
             "disabling helper restart and requesting recording failure",
-            static_cast<unsigned long long>(worker.generation), worker.processId, status);
+            static_cast<unsigned long long>(worker.generation), worker.processId, status,
+            worker.Header()->transportFailureStage.load(std::memory_order_acquire),
+            static_cast<unsigned long long>(worker.Header()->transportFailureSequence.load(std::memory_order_acquire)),
+            worker.Header()->lastError.load(std::memory_order_acquire));
     }
     integrityFailure_ = true;
     fatalTransportStatus_ = status;

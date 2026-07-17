@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cstdio>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -99,6 +100,7 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(uint64_t map
             bool sawEndOfStream = false;
             bool recycleWorker = false;
             bool recoveryRecycleLogged = false;
+            bool formatCanonicalizationLogged = false;
             while (true) {
                 AudioPacket packet;
                 while (capture.GetNextPacket(packet)) {
@@ -111,13 +113,50 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(uint64_t map
                         sawEndOfStream = true;
                         recycleWorker = recycleWorker || byName;
                     }
+                    const int originalValidBitsPerSample = packet.validBitsPerSample;
+                    const uint32_t originalChannelMask = packet.channelMask;
+                    const bool originalIsFloat = packet.isFloat;
+                    bool metadataChanged = false;
+                    if (packet.recordType == AudioPacketRecordType::Data &&
+                        ce::process_loopback::CanonicalizeProcessLoopbackDataPacket(*header, channelMask, packet,
+                                                                                   &metadataChanged) &&
+                        metadataChanged && !formatCanonicalizationLogged) {
+                        formatCanonicalizationLogged = true;
+                        char canonicalization[256]{};
+                        std::snprintf(
+                            canonicalization, sizeof(canonicalization),
+                            "[Worker] Canonicalized process-loopback packet metadata to requested format: "
+                            "valid=%d->%d mask=0x%x->0x%x float=%d->%d",
+                            originalValidBitsPerSample, packet.validBitsPerSample, originalChannelMask,
+                            packet.channelMask, originalIsFloat ? 1 : 0, packet.isFloat ? 1 : 0);
+                        RelayWorkerLog(canonicalization);
+                    }
                     if (!ce::process_loopback::WritePacket(mapping, packet)) {
-                        header->lastError.store(ERROR_BUFFER_OVERFLOW, std::memory_order_release);
+                        char failure[512]{};
+                        std::snprintf(
+                            failure, sizeof(failure),
+                            "[Worker] Shared transport failure: status=%u stage=%u sequence=%llu lastError=0x%x "
+                            "record=%u bytes=%zu epoch=%llu format=%dHz/%dch/%dbit align=%d valid=%d mask=0x%x "
+                            "float=%d eos=%d requested=%uHz/%uch/%ubit",
+                            header->transportStatus.load(std::memory_order_acquire),
+                            header->transportFailureStage.load(std::memory_order_acquire),
+                            static_cast<unsigned long long>(
+                                header->transportFailureSequence.load(std::memory_order_acquire)),
+                            header->lastError.load(std::memory_order_acquire), static_cast<unsigned>(packet.recordType),
+                            packet.data.size(), static_cast<unsigned long long>(packet.captureEpoch), packet.sampleRate,
+                            packet.channels, packet.bitsPerSample, packet.blockAlign, packet.validBitsPerSample,
+                            packet.channelMask, packet.isFloat ? 1 : 0, packet.endOfStream ? 1 : 0,
+                            header->requestedSampleRate, header->requestedChannels, header->requestedBitsPerSample);
+                        RelayWorkerLog(failure);
                         header->workerState.store(static_cast<uint32_t>(ce::process_loopback::WorkerState::Failed),
                                                   std::memory_order_release);
                         RelayWorkerLog(
-                            "[Worker] Shared transport integrity failure; stopping without a silent helper restart");
-                        exitCode = ERROR_BUFFER_OVERFLOW;
+                            "[Worker] Process-loopback transport contract failure; stopping without a silent "
+                            "helper restart");
+                        exitCode = static_cast<int>(header->lastError.load(std::memory_order_acquire));
+                        if (exitCode == ERROR_SUCCESS) {
+                            exitCode = ERROR_INVALID_DATA;
+                        }
                         stopping = true;
                         break;
                     } else {
@@ -184,8 +223,12 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(uint64_t map
             AudioPacket tailPacket;
             while (capture.GetNextPacket(tailPacket)) {
                 if (!ce::process_loopback::WritePacket(mapping, tailPacket)) {
-                    exitCode = ERROR_BUFFER_OVERFLOW;
-                    header->lastError.store(ERROR_BUFFER_OVERFLOW, std::memory_order_release);
+                    if (exitCode == ERROR_SUCCESS) {
+                        exitCode = static_cast<int>(header->lastError.load(std::memory_order_acquire));
+                        if (exitCode == ERROR_SUCCESS) {
+                            exitCode = ERROR_INVALID_DATA;
+                        }
+                    }
                     break;
                 }
                 SetEvent(packetEvent);

@@ -75,6 +75,50 @@ TEST(ProcessLoopbackProtocolTest, OrderedRecordsRoundTripWithExactMetadata) {
     EXPECT_FALSE(ce::process_loopback::ReadPacket(mapping.data, output));
 }
 
+TEST(ProcessLoopbackProtocolTest, LateJoinPacketUsesImmutableRequestedFormatMetadata) {
+    ProtocolMapping mapping;
+    auto* header = ce::process_loopback::Initialize(mapping.data, 21);
+    ASSERT_NE(header, nullptr);
+
+    AudioPacket lateJoin = DataPacket(0, 480);
+    lateJoin.captureEpoch = 1;
+    lateJoin.validBitsPerSample = 0;
+    lateJoin.channelMask = SPEAKER_FRONT_LEFT;
+    lateJoin.isFloat = false;
+    bool changed = false;
+    ASSERT_TRUE(ce::process_loopback::CanonicalizeProcessLoopbackDataPacket(
+        *header, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT, lateJoin, &changed));
+    EXPECT_TRUE(changed);
+    EXPECT_EQ(lateJoin.blockAlign, 8);
+    EXPECT_EQ(lateJoin.validBitsPerSample, 32);
+    EXPECT_EQ(lateJoin.channelMask, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
+    EXPECT_TRUE(lateJoin.isFloat);
+
+    ASSERT_TRUE(ce::process_loopback::WritePacket(
+        mapping.data, LifecyclePacket(AudioPacketRecordType::EpochStart, lateJoin.captureEpoch)));
+    ASSERT_TRUE(ce::process_loopback::WritePacket(mapping.data, lateJoin));
+    AudioPacket decoded;
+    ASSERT_TRUE(ce::process_loopback::ReadPacket(mapping.data, decoded));
+    EXPECT_EQ(decoded.recordType, AudioPacketRecordType::EpochStart);
+    ASSERT_TRUE(ce::process_loopback::ReadPacket(mapping.data, decoded));
+    EXPECT_EQ(decoded.data, lateJoin.data);
+    EXPECT_FALSE(ce::process_loopback::HasFatalTransportFailure(mapping.data));
+}
+
+TEST(ProcessLoopbackProtocolTest, PayloadLayoutMismatchIsNotCanonicalized) {
+    ProtocolMapping mapping;
+    auto* header = ce::process_loopback::Initialize(mapping.data, 22);
+    ASSERT_NE(header, nullptr);
+
+    AudioPacket malformed = DataPacket(0, 480);
+    malformed.blockAlign = 1;
+    bool changed = false;
+    EXPECT_FALSE(ce::process_loopback::CanonicalizeProcessLoopbackDataPacket(
+        *header, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT, malformed, &changed));
+    EXPECT_FALSE(changed);
+    EXPECT_EQ(malformed.blockAlign, 1);
+}
+
 TEST(ProcessLoopbackProtocolTest, DescriptorExhaustionLatchesFatalIntegrityFailure) {
     ProtocolMapping mapping;
     ASSERT_NE(ce::process_loopback::Initialize(mapping.data, 1), nullptr);
@@ -249,6 +293,9 @@ TEST(ProcessLoopbackProtocolTest, CorruptCommittedDescriptorIsFatal) {
     EXPECT_FALSE(ce::process_loopback::ReadPacket(mapping.data, decoded));
     EXPECT_EQ(static_cast<ce::process_loopback::SharedHeader*>(mapping.data)->transportStatus.load(),
               static_cast<uint32_t>(ce::process_loopback::TransportStatus::CorruptCommittedMetadata));
+    EXPECT_EQ(static_cast<ce::process_loopback::SharedHeader*>(mapping.data)->transportFailureStage.load(),
+              static_cast<uint32_t>(ce::process_loopback::TransportFailureStage::ConsumerDescriptorValidation));
+    EXPECT_EQ(static_cast<ce::process_loopback::SharedHeader*>(mapping.data)->lastError.load(), ERROR_INVALID_DATA);
 }
 
 TEST(ProcessLoopbackProtocolTest, ExtremeCorruptFormatFieldsAreRejectedBeforeArithmetic) {
@@ -271,6 +318,10 @@ TEST(ProcessLoopbackProtocolTest, InvalidChannelMaskAndLifecycleMetadataAreFatal
     invalidMask.channelMask = SPEAKER_FRONT_LEFT;
     EXPECT_FALSE(ce::process_loopback::WritePacket(producerValidation.data, invalidMask));
     EXPECT_TRUE(ce::process_loopback::HasFatalTransportFailure(producerValidation.data));
+    EXPECT_EQ(static_cast<ce::process_loopback::SharedHeader*>(producerValidation.data)->transportStatus.load(),
+              static_cast<uint32_t>(ce::process_loopback::TransportStatus::ProducerPacketRejected));
+    EXPECT_EQ(static_cast<ce::process_loopback::SharedHeader*>(producerValidation.data)->transportFailureStage.load(),
+              static_cast<uint32_t>(ce::process_loopback::TransportFailureStage::ProducerPacketValidation));
 
     ProtocolMapping consumerValidation;
     ASSERT_NE(ce::process_loopback::Initialize(consumerValidation.data, 15), nullptr);

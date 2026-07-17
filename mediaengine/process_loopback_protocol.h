@@ -16,7 +16,7 @@
 namespace ce::process_loopback {
 
 constexpr uint32_t kProtocolMagic = 0x504C4345;  // "ECLP"
-constexpr uint32_t kProtocolVersion = 2;
+constexpr uint32_t kProtocolVersion = 3;
 constexpr uint32_t kDescriptorCount = 32768;  // 30 seconds at a 1 ms packet cadence plus lifecycle records.
 constexpr uint32_t kRetentionSeconds = 30;
 constexpr uint32_t kMaximumPacketSeconds = 2;
@@ -45,6 +45,21 @@ enum class TransportStatus : uint32_t {
     ByteRingExhausted,
     CorruptCommittedMetadata,
     ConsumerAllocationFailed,
+    ProducerPacketRejected,
+};
+
+enum class TransportFailureStage : uint32_t {
+    None,
+    ProducerPacketValidation,
+    ProducerDescriptorCapacity,
+    ProducerByteCapacity,
+    ConsumerSequenceWindow,
+    ConsumerDescriptorValidation,
+    ConsumerEpochValidation,
+    ConsumerAllocation,
+    DiscardSequenceWindow,
+    DiscardDescriptorValidation,
+    DiscardEpochValidation,
 };
 
 enum class WorkerExitDisposition : uint8_t {
@@ -130,7 +145,9 @@ struct alignas(64) SharedHeader {
     std::atomic<uint64_t> activeTargetPid{0};
     std::atomic<uint32_t> workerState{static_cast<uint32_t>(WorkerState::Empty)};
     std::atomic<uint32_t> lastError{0};
+    std::atomic<uint32_t> transportFailureStage{static_cast<uint32_t>(TransportFailureStage::None)};
     std::atomic<uint32_t> transportStatus{static_cast<uint32_t>(TransportStatus::Healthy)};
+    std::atomic<uint64_t> transportFailureSequence{0};
 };
 
 struct alignas(64) PacketDescriptor {
@@ -264,11 +281,17 @@ inline bool Validate(const void* mapping, uint64_t workerGeneration) {
            header->mappingBytes == layout.mappingBytes && header->workerGeneration == workerGeneration;
 }
 
-inline void LatchTransportFailure(SharedHeader* header, TransportStatus status) {
-    uint32_t expected = static_cast<uint32_t>(TransportStatus::Healthy);
-    if (header->transportStatus.compare_exchange_strong(expected, static_cast<uint32_t>(status),
-                                                        std::memory_order_acq_rel)) {
+inline void LatchTransportFailure(SharedHeader* header, TransportStatus status, TransportFailureStage stage,
+                                  uint64_t sequence, uint32_t error) {
+    uint32_t expected = static_cast<uint32_t>(TransportFailureStage::None);
+    if (header->transportFailureStage.compare_exchange_strong(expected, static_cast<uint32_t>(stage),
+                                                              std::memory_order_acq_rel)) {
+        header->transportFailureSequence.store(sequence, std::memory_order_relaxed);
+        header->lastError.store(error, std::memory_order_relaxed);
         header->integrityFailureCount.fetch_add(1, std::memory_order_relaxed);
+        // Publish status last. A consumer that observes the fatal status can
+        // rely on the stage/sequence/error evidence already being complete.
+        header->transportStatus.store(static_cast<uint32_t>(status), std::memory_order_release);
     }
 }
 
@@ -309,6 +332,42 @@ inline bool ValidatePacketForTransport(const SharedHeader& header, const AudioPa
            (packet.recordType == AudioPacketRecordType::EndOfStream) == packet.endOfStream;
 }
 
+// Process-loopback capture explicitly initializes WASAPI with the shared
+// transport's format. Metadata copied back out of the mutable WAVEFORMATEX must
+// therefore not redefine the packet contract after a process has joined late or
+// the disposable helper has restarted. Canonicalize only non-payload metadata;
+// a block-align or payload-shape mismatch remains fatal at the strict producer
+// boundary below.
+inline bool CanonicalizeProcessLoopbackDataPacket(const SharedHeader& header, uint32_t requestedChannelMask,
+                                                  AudioPacket& packet, bool* changed = nullptr) {
+    if (changed) {
+        *changed = false;
+    }
+    if (packet.recordType != AudioPacketRecordType::Data) {
+        return true;
+    }
+    if (header.requestedBitsPerSample != 32 || packet.channels != static_cast<int>(header.requestedChannels) ||
+        packet.sampleRate != static_cast<int>(header.requestedSampleRate) || packet.bitsPerSample != 32 ||
+        packet.data.empty()) {
+        return false;
+    }
+    const uint32_t expectedBlockAlign = header.requestedChannels * (header.requestedBitsPerSample / 8u);
+    if (expectedBlockAlign == 0 || packet.blockAlign != static_cast<int32_t>(expectedBlockAlign) ||
+        packet.data.size() % expectedBlockAlign != 0 ||
+        (requestedChannelMask != 0 && std::popcount(requestedChannelMask) != header.requestedChannels)) {
+        return false;
+    }
+    const bool metadataChanged = packet.validBitsPerSample != 32 || packet.channelMask != requestedChannelMask ||
+                                 !packet.isFloat;
+    packet.validBitsPerSample = 32;
+    packet.channelMask = requestedChannelMask;
+    packet.isFloat = true;
+    if (changed) {
+        *changed = metadataChanged;
+    }
+    return true;
+}
+
 inline void CopyIntoByteRing(void* mapping, uint32_t offset, const uint8_t* data, uint32_t size) {
     const uint32_t ringBytes = static_cast<SharedHeader*>(mapping)->byteRingBytes;
     const uint32_t first = std::min<uint32_t>(size, ringBytes - offset);
@@ -337,12 +396,15 @@ inline bool WritePacket(void* mapping, const AudioPacket& packet) {
     }
     if (packet.data.size() > header->maximumPacketBytes) {
         header->oversizedPackets.fetch_add(1, std::memory_order_relaxed);
-        LatchTransportFailure(header, TransportStatus::ByteRingExhausted);
+        LatchTransportFailure(header, TransportStatus::ByteRingExhausted,
+                              TransportFailureStage::ProducerByteCapacity,
+                              header->writeSequence.load(std::memory_order_relaxed), ERROR_BUFFER_OVERFLOW);
         return false;
     }
     if (!ValidatePacketForTransport(*header, packet)) {
-        LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata);
-        header->lastError.store(ERROR_INVALID_DATA, std::memory_order_release);
+        LatchTransportFailure(header, TransportStatus::ProducerPacketRejected,
+                              TransportFailureStage::ProducerPacketValidation,
+                              header->writeSequence.load(std::memory_order_relaxed), ERROR_INVALID_DATA);
         return false;
     }
 
@@ -357,7 +419,9 @@ inline bool WritePacket(void* mapping, const AudioPacket& packet) {
             header->overrunFrames.fetch_add(packet.data.size() / static_cast<size_t>(packet.blockAlign),
                                             std::memory_order_relaxed);
         }
-        LatchTransportFailure(header, TransportStatus::DescriptorExhausted);
+        LatchTransportFailure(header, TransportStatus::DescriptorExhausted,
+                              TransportFailureStage::ProducerDescriptorCapacity, writeSequence,
+                              ERROR_BUFFER_OVERFLOW);
         return false;
     }
 
@@ -375,7 +439,8 @@ inline bool WritePacket(void* mapping, const AudioPacket& packet) {
         } else {
             header->lifecycleOverrunPackets.fetch_add(1, std::memory_order_relaxed);
         }
-        LatchTransportFailure(header, TransportStatus::ByteRingExhausted);
+        LatchTransportFailure(header, TransportStatus::ByteRingExhausted,
+                              TransportFailureStage::ProducerByteCapacity, writeSequence, ERROR_BUFFER_OVERFLOW);
         return false;
     }
 
@@ -463,7 +528,8 @@ inline bool ReadPacket(void* mapping, AudioPacket& packet) {
         return false;
     }
     if (writeSequence - readSequence > kDescriptorCount) {
-        LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata);
+        LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata,
+                              TransportFailureStage::ConsumerSequenceWindow, readSequence, ERROR_INVALID_DATA);
         return false;
     }
 
@@ -472,8 +538,8 @@ inline bool ReadPacket(void* mapping, AudioPacket& packet) {
     const uint64_t writeByteSequence = header->writeByteSequence.load(std::memory_order_acquire);
     if (descriptor.committedSequence.load(std::memory_order_acquire) != readSequence + 1 ||
         !ValidateDescriptor(*header, descriptor, readByteSequence, writeByteSequence)) {
-        LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata);
-        header->lastError.store(ERROR_INVALID_DATA, std::memory_order_release);
+        LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata,
+                              TransportFailureStage::ConsumerDescriptorValidation, readSequence, ERROR_INVALID_DATA);
         return false;
     }
 
@@ -496,8 +562,8 @@ inline bool ReadPacket(void* mapping, AudioPacket& packet) {
     try {
         decoded.data.resize(descriptor.dataSize);
     } catch (...) {
-        LatchTransportFailure(header, TransportStatus::ConsumerAllocationFailed);
-        header->lastError.store(ERROR_NOT_ENOUGH_MEMORY, std::memory_order_release);
+        LatchTransportFailure(header, TransportStatus::ConsumerAllocationFailed,
+                              TransportFailureStage::ConsumerAllocation, readSequence, ERROR_NOT_ENOUGH_MEMORY);
         return false;
     }
     if (descriptor.dataSize > 0) {
@@ -521,8 +587,8 @@ inline bool ReadPacket(void* mapping, AudioPacket& packet) {
             header->consumerEpoch.store(0, std::memory_order_relaxed);
     }
     if (!epochValid) {
-        LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata);
-        header->lastError.store(ERROR_INVALID_DATA, std::memory_order_release);
+        LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata,
+                              TransportFailureStage::ConsumerEpochValidation, readSequence, ERROR_INVALID_DATA);
         return false;
     }
 
@@ -562,8 +628,8 @@ inline void DiscardPackets(void* mapping) {
     uint64_t currentEpoch = header->consumerEpoch.load(std::memory_order_relaxed);
     uint64_t lastEpoch = header->lastConsumerEpoch.load(std::memory_order_relaxed);
     if (writeSequence < readSequence || writeSequence - readSequence > kDescriptorCount) {
-        LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata);
-        header->lastError.store(ERROR_INVALID_DATA, std::memory_order_release);
+        LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata,
+                              TransportFailureStage::DiscardSequenceWindow, readSequence, ERROR_INVALID_DATA);
         return;
     }
 
@@ -571,8 +637,8 @@ inline void DiscardPackets(void* mapping) {
         const PacketDescriptor& descriptor = Descriptors(mapping)[sequence % kDescriptorCount];
         if (descriptor.committedSequence.load(std::memory_order_acquire) != sequence + 1 ||
             !ValidateDescriptor(*header, descriptor, readByteSequence, writeByteSequence)) {
-            LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata);
-            header->lastError.store(ERROR_INVALID_DATA, std::memory_order_release);
+            LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata,
+                                  TransportFailureStage::DiscardDescriptorValidation, sequence, ERROR_INVALID_DATA);
             return;
         }
 
@@ -593,8 +659,8 @@ inline void DiscardPackets(void* mapping) {
             }
         }
         if (!epochValid) {
-            LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata);
-            header->lastError.store(ERROR_INVALID_DATA, std::memory_order_release);
+            LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata,
+                                  TransportFailureStage::DiscardEpochValidation, sequence, ERROR_INVALID_DATA);
             return;
         }
         readByteSequence += descriptor.dataSize;
