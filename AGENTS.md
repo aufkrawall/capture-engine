@@ -31,6 +31,7 @@ Copyright (c) 2026 aufkrawall
     - Invoke `build.py` build/test commands with escalated permissions on the first attempt, including the canonical incremental, clean, resume, focused-test, and no-build commands above.
     - Keep escalation scoped to the exact command; never request blanket approval for `python` or arbitrary scripts.
     - If automatic escalation review denies the command, report the denial immediately; do not skip or weaken verification.
+- When inspecting a Windows network share, use Get-Item / Get-ChildItem -LiteralPath ... -Force and request scoped escalated read access on the first attempt when the path is outside the workspace. If a mapped drive reports access denied or path not found, do not conclude that the files are absent: resolve the drive to its UNC path using Get-SmbMapping, Get-PSDrive, or Win32_LogicalDisk.ProviderName, then retry the exact UNC path with scoped escalation. Do not remap drives, copy share contents, or modify the share unless explicitly authorized.
 - When you run tools and test programs in an agentic manner, make sure they run sufficiently long, but not unnecessarily long, and make also sure no unnecessary lingering processes are left behind!
 
 ## Engineering rules
