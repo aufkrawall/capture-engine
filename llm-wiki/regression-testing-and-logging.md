@@ -1,6 +1,6 @@
 # Regression Testing And Logging
 
-Last cross-checked: 2026-07-16 (x86 DX12 solid-glyph compatibility and focus-transition telemetry audit)
+Last cross-checked: 2026-07-17 (safe incremental/clean verification decision rule, concise build diagnostics, and x86 DX12 solid-glyph compatibility/focus-transition telemetry audit)
 
 Primary sources:
 - `AGENTS.md`
@@ -198,8 +198,8 @@ Primary sources:
   - Emits `FG SNAPSHOT`, `FG INVARIANT`, `FG EVENT`, `FG PLAN`, `FG PLAN DIFF`, `FG TRANSITION`, and `FG LEGACY DECISION` lines, and updates `session_manifest.txt` with planner/session metadata.
 
 ## Practical Regression Checklist
-- After code changes, the required baseline is `python build.py --skip-updates`, followed by relevant focused tests or `python build.py --no-build --run-tests --skip-updates` before committing.
-- For broader one-shot validation when time warrants, `python build.py --verify --skip-updates` is still useful. After that run finishes, read `build/verification/latest_summary.txt` first and `build/verification/latest_manifest.json` second instead of scraping the full build log unless the summary says a step failed and you need the larger log.
+- After ordinary source changes, the required final product baseline is `python build.py --incremental --skip-updates --concise`, followed by relevant focused tests or `python build.py --no-build --run-tests --skip-updates --concise` before committing. Use the clean/default `python build.py --skip-updates --concise` gate for `build.py`, compiler/linker/hardening, dependency/toolchain/FFmpeg, generated-build, shared-ABI/layout, or cache-suspicion work. Use guarded `python build.py --resume --skip-updates --concise` only for the immediately preceding failed top-level build when its identity and build-script fingerprint still match. `build.py.md` is the canonical detailed decision rule.
+- For broader one-shot validation when time warrants, `python build.py --verify --skip-updates --concise` is still useful. After that run finishes, read `build/verification/latest_summary.txt` first and `build/verification/latest_manifest.json` second instead of scraping the full build log unless the summary says a step failed and you need the larger log.
 - Do not leave a shell sitting in a passive watch loop waiting for that run to finish. Re-read `build/verification/latest_summary.txt` or `latest_manifest.json` directly when you need status; those files are the explicit completion contract for long-running verification/build work.
 - If you need the full top-level log from the last verification/build run, use `build/verification/latest_build.log`; the nested sanitizer child now writes to its own dedicated log inside the same verification bundle.
 - If you touch runtime classification, queue routing, startup bypass, or overlay publication, add or update unit tests in the closest policy or replay suite.

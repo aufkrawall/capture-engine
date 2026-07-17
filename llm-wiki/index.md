@@ -71,7 +71,7 @@ Primary sources:
 - `pseudo-overlay.md`
   - Controller-side pseudo-overlay for WGC capture: architecture, modes, foreground detection, process_list config parsing, known pitfalls (Trim charset, `;` comment skipping), debug logging, source anchors.
 - `regression-testing-and-logging.md`
-  - Regression coverage expectations and deterministic capture runners, including the fast zero-drift gate, overload/long-soak profiles, HAGS-on 4K120 contention gate, and x86 DX12 solid-text/focus-visibility boundary. Last verified 2026-07-16.
+  - Regression coverage expectations, the incremental/clean/resume build decision rule, concise verification diagnostics, and deterministic capture runners, including the fast zero-drift gate, overload/long-soak profiles, HAGS-on 4K120 contention gate, and x86 DX12 solid-text/focus-visibility boundary. Last verified 2026-07-17.
 - `multi-audio-capture.md`
   - Multi system/microphone/app capture, including encoder-latency-independent inject CFR source-clock targets, rate-limited worker scheduling evidence, process-loopback protocol 2 descriptor/byte rings, fatal transport-integrity propagation, polling-first activation, render-session recovery, ordered epochs, disposable helper isolation/recycle, the 60 ms CFR ingestion reservoir, exact finalization, and route-local compensation. Last verified 2026-07-17. Stale-risk: medium (fresh device/runtime validation remains necessary).
 - `wgc-capture.md`
