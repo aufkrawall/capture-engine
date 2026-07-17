@@ -31,6 +31,13 @@ class BuildFlagPolicyTest(unittest.TestCase):
             self.assertIn("-D_FORTIFY_SOURCE=2", flags)
         self.assertIn("-fcf-protection=full", x64_flags)
         self.assertNotIn("-fcf-protection=full", x86_flags)
+        self.assertFalse(any(flag.startswith("-flto") for flag in build.TESTAPP_OPT_FLAGS_X64))
+
+    def test_validation_binaries_do_not_change_product_lto_policy(self) -> None:
+        self.assertIn("-flto", build.OPT_FLAGS_X64)
+        self.assertIn("-flto", build.HOOK_OPT_FLAGS_X64)
+        self.assertFalse(any(flag.startswith("-flto") for flag in build.UNIT_TEST_OPT_FLAGS_X64))
+        self.assertFalse(any(flag.startswith("-flto") for flag in build.TESTAPP_OPT_FLAGS_X64))
 
     def test_captureengine_x64_policy_still_has_cfg(self) -> None:
         captureengine_flags = build.make_cpp_cflags(build.OPT_FLAGS_X64)
@@ -38,8 +45,12 @@ class BuildFlagPolicyTest(unittest.TestCase):
 
     def test_independent_architecture_environments_inherit_force_rebuild(self) -> None:
         target = {"PATH": "x86-tools"}
-        build.propagate_build_control_environment({"FORCE_REBUILD": "1"}, target)
+        build.propagate_build_control_environment(
+            {"FORCE_REBUILD": "1", "CE_BUILD_JOBS": "7", "CE_PRODUCTION_BUILD": "1"}, target
+        )
         self.assertEqual(target["FORCE_REBUILD"], "1")
+        self.assertEqual(target["CE_BUILD_JOBS"], "7")
+        self.assertEqual(target["CE_PRODUCTION_BUILD"], "1")
 
     def test_unit_test_objects_are_isolated_from_product_and_sanitizer_objects(self) -> None:
         product_dir = os.path.normpath(os.path.join(build.OBJ_DIR, "x64"))
@@ -148,6 +159,59 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertEqual(selected, 4321)
         read_version.assert_called_once_with()
         bump_version.assert_not_called()
+
+    def test_tests_only_reuses_product_version_without_bumping(self) -> None:
+        with patch.object(build, "read_build_version_number", return_value=4321) as read_version, patch.object(
+            build, "bump_and_write_build_version"
+        ) as bump_version:
+            selected = build.resolve_build_number_for_invocation(
+                sanitize_regression_child=False,
+                resume_failed_build=False,
+                no_build=False,
+                tests_only=True,
+            )
+
+        self.assertEqual(selected, 4321)
+        read_version.assert_called_once_with()
+        bump_version.assert_not_called()
+
+    def test_link_cache_validates_inputs_and_outputs_by_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            compiler = Path(temporary) / "clang++.exe"
+            object_file = Path(temporary) / "input.o"
+            output = Path(temporary) / "unit_tests.exe"
+            compiler.write_bytes(b"compiler")
+            object_file.write_bytes(b"object-a")
+            output.write_bytes(b"output-a")
+            command = [str(compiler), str(object_file), "-o", str(output)]
+            env = {"PATH": "tools"}
+
+            build.compute_compiler_fingerprint.cache_clear()
+            build.compute_link_input_fingerprint.cache_clear()
+            build.get_link_resource_dir.cache_clear()
+            with patch.object(build, "detect_clang_resource_dir", return_value=None):
+                signature, inputs = build.compute_link_signature(command, env)
+                manifest = {
+                    "schema": build.LINK_CACHE_SCHEMA_VERSION,
+                    "command": command,
+                    "cwd": None,
+                    "input_signature": signature,
+                    "input_count": len(inputs),
+                    "outputs": {str(output.resolve()): build.sha256_file(str(output))},
+                }
+                Path(build.link_cache_manifest_path(str(output))).write_text(
+                    json.dumps(manifest), encoding="utf-8"
+                )
+                self.assertTrue(build.validate_cached_link_output(str(output), env))
+
+                object_file.write_bytes(b"object-b")
+                build.compute_link_input_fingerprint.cache_clear()
+                self.assertFalse(build.validate_cached_link_output(str(output), env))
+
+                object_file.write_bytes(b"object-a")
+                output.write_bytes(b"output-b")
+                build.compute_link_input_fingerprint.cache_clear()
+                self.assertFalse(build.validate_cached_link_output(str(output), env))
 
     def test_resume_requires_matching_immediately_failed_build_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-17 (validated incremental/failure-resume builds with concise verification output, capture-sync/CFR phase preservation with variable-cadence fallback, exact shared-memory ABI 36/build isolation, session-scoped shared and integration logs, telemetry/frame-ring corruption rejection, non-elevating Vulkan registration repair, full-depth Vulkan capture leases, and the existing current graphics/audio/build/security state; see build.py.md, cfr-capture-sync.md, process-ipc.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-17 (validated object/link caches and deterministic validation-only build profiles with unchanged production LTO, incremental/failure-resume builds with concise verification output, capture-sync/CFR phase preservation with variable-cadence fallback, exact shared-memory ABI 36/build isolation, session-scoped shared and integration logs, telemetry/frame-ring corruption rejection, non-elevating Vulkan registration repair, full-depth Vulkan capture leases, and the existing current graphics/audio/build/security state; see build.py.md, cfr-capture-sync.md, process-ipc.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -39,7 +39,7 @@ Primary sources:
 - `codestyle.md`
   - Style/tooling rules, the no-whole-file-in-place-formatter constraint for existing sources, Python tooling config, and common tree conventions. Last verified 2026-07-12.
 - `build.py.md`
-  - Supported `build.py` flags, validated incremental and failed-build resume workflow, compiler/project-header content signatures, isolated generated-version fan-out and product/test/sanitizer object variants, no-build identity reuse, concise agent output, source-built dependency closure, PE verification, scoped hardening/DLL-search policy, sanitizer/FP/CPU policy, FFmpeg fingerprints, operational notes, and MinGW pitfalls. Last verified 2026-07-17.
+  - Supported `build.py` flags, validated object/link caches, deterministic non-LTO unit-test/test-app profiles with unchanged production LTO, incremental and failed-build resume workflow, isolated product/test/sanitizer variants, no-build freshness validation, concise agent output, source-built dependency closure, PE verification, scoped hardening/DLL-search policy, sanitizer/FP/CPU policy, FFmpeg fingerprints, operational notes, and MinGW pitfalls. Last verified 2026-07-17.
 - `screenshots.md`
   - Shared ABI 32 screenshot requests, raw payload v2, managed hook worker, strict payload validation, PNG/10-bit 4:4:4 AVIF encoding, color conversion, and atomic publication. Last verified 2026-07-15.
 - `process-ipc.md`

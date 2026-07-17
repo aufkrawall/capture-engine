@@ -147,10 +147,13 @@ HOOK_OPT_FLAGS_X86 = [
     "-fno-strict-aliasing",  # Same aliasing concerns as x64 hook DLL
 ] + COMMON_HARDENING_FLAGS
 
-# Test apps are also CFG/injection compatibility stimuli. Keep x64 on the
-# production hardening baseline. The x86 cross-link exception below is limited
-# to CFG; stack protection and fortified headers remain valid on that path.
-TESTAPP_OPT_FLAGS_X64 = list(OPT_FLAGS_X64)
+# Unit tests and the single-translation-unit test apps retain the optimized
+# hardening baseline but do not use LTO. Product binaries keep their existing
+# full-LTO policy; using it for validation-only binaries adds substantial link
+# work without improving the shipped artifacts or cross-TU coverage of a
+# one-source test app.
+UNIT_TEST_OPT_FLAGS_X64 = [flag for flag in OPT_FLAGS_X64 if not flag.startswith("-flto")]
+TESTAPP_OPT_FLAGS_X64 = list(UNIT_TEST_OPT_FLAGS_X64)
 TESTAPP_OPT_FLAGS_X86 = [
     "-O3",
     "-march=i686",
@@ -433,6 +436,18 @@ def write_text_atomic(path: str, text: str) -> None:
                 os.remove(tmp_path)
             except OSError:
                 pass
+
+
+def write_text_atomic_if_changed(path: str, text: str) -> bool:
+    """Atomically update a text file only when its contents changed."""
+    try:
+        with open(path, "r", encoding="utf-8") as existing:
+            if existing.read() == text:
+                return False
+    except OSError:
+        pass
+    write_text_atomic(path, text)
+    return True
 
 
 def verification_artifact_path(filename: str) -> Optional[str]:
@@ -1084,6 +1099,20 @@ def safe_copy_file(src: str, dst: str) -> bool:
         return False
 
 
+def safe_copy_file_if_changed(src: str, dst: str) -> tuple[bool, bool]:
+    """Return (success, copied), preserving an identical destination in place."""
+    try:
+        if (
+            os.path.isfile(dst)
+            and os.path.getsize(src) == os.path.getsize(dst)
+            and sha256_file(src) == sha256_file(dst)
+        ):
+            return True, False
+    except OSError:
+        pass
+    return safe_copy_file(src, dst), True
+
+
 def safe_remove_tree(path: str, max_retries: int = 3) -> bool:
     """Safely remove a directory tree, handling locked files."""
     if not os.path.exists(path):
@@ -1349,13 +1378,13 @@ def read_failed_build_resume_version(
 
 
 def resolve_build_number_for_invocation(
-    *, sanitize_regression_child: bool, resume_failed_build: bool, no_build: bool
+    *, sanitize_regression_child: bool, resume_failed_build: bool, no_build: bool, tests_only: bool = False
 ) -> int:
     if sanitize_regression_child:
         return read_build_version_number()
     if resume_failed_build:
         return read_failed_build_resume_version()
-    if no_build:
+    if no_build or tests_only:
         return read_build_version_number()
     return bump_and_write_build_version()
 
@@ -1983,15 +2012,41 @@ def compile_vulkan_fg_shaders(env: Dict[str, str]) -> str:
         ("vulkan_fg_present.frag", "frag", "kPresentFragmentSpirv"),
     ]
     embedded: List[tuple[str, bytes]] = []
+    compiled_count = 0
     for source_name, stage, symbol in shader_specs:
         source_path = os.path.join(shader_dir, source_name)
         spv_path = os.path.join(output_dir, source_name + ".spv")
+        cache_path = spv_path + ".build-cache.json"
         if not os.path.exists(source_path):
             raise RuntimeError(f"Missing Vulkan FG shader source: {source_path}")
-        run_command(
-            [glslang, "-V", "--target-env", "vulkan1.2", "-S", stage, source_path, "-o", spv_path],
-            env=env,
-        )
+        compile_command = [glslang, "-V", "--target-env", "vulkan1.2", "-S", stage, source_path, "-o", spv_path]
+        signature_digest = hashlib.sha256()
+        signature_digest.update(sha256_file(source_path).encode("ascii"))
+        signature_digest.update(fingerprint_link_input(glslang).encode("ascii"))
+        signature_digest.update(fingerprint_link_input(spirv_val).encode("ascii"))
+        signature_digest.update("\0".join(compile_command[1:]).encode("utf-8", errors="surrogatepass"))
+        input_signature = signature_digest.hexdigest()
+        cache_valid = False
+        if env.get("FORCE_REBUILD") != "1" and os.path.isfile(spv_path):
+            try:
+                with open(cache_path, "r", encoding="utf-8") as cache_file:
+                    cache = json.load(cache_file)
+                cache_valid = (
+                    cache.get("input_signature") == input_signature
+                    and cache.get("output_sha256") == sha256_file(spv_path)
+                )
+            except (OSError, json.JSONDecodeError):
+                cache_valid = False
+        if not cache_valid:
+            run_command(compile_command, env=env)
+            write_json_atomic(
+                cache_path,
+                {
+                    "input_signature": input_signature,
+                    "output_sha256": sha256_file(spv_path),
+                },
+            )
+            compiled_count += 1
         run_command([spirv_val, "--target-env", "vulkan1.2", spv_path], env=env)
         with open(spv_path, "rb") as src:
             payload = src.read()
@@ -1999,19 +2054,24 @@ def compile_vulkan_fg_shaders(env: Dict[str, str]) -> str:
             raise RuntimeError(f"Invalid SPIR-V payload generated for {source_name}")
         embedded.append((symbol, payload))
 
+    header_lines = [
+        "// Generated by build.py from validated GLSL. Do not edit.\n#pragma once\n\n#include <cstdint>\n\n",
+        "namespace testapp::vkfg::shaders {\n",
+    ]
+    for symbol, payload in embedded:
+        words = [int.from_bytes(payload[offset : offset + 4], "little") for offset in range(0, len(payload), 4)]
+        header_lines.append(f"inline constexpr uint32_t {symbol}[] = {{\n")
+        for offset in range(0, len(words), 8):
+            chunk = ", ".join(f"0x{word:08x}u" for word in words[offset : offset + 8])
+            header_lines.append(f"    {chunk},\n")
+        header_lines.append("};\n")
+    header_lines.append("}  // namespace testapp::vkfg::shaders\n")
     header_path = os.path.join(output_dir, "vulkan_fg_shaders.h")
-    with open(header_path, "w", encoding="utf-8", newline="\n") as dst:
-        dst.write("// Generated by build.py from validated GLSL. Do not edit.\n#pragma once\n\n#include <cstdint>\n\n")
-        dst.write("namespace testapp::vkfg::shaders {\n")
-        for symbol, payload in embedded:
-            words = [int.from_bytes(payload[offset : offset + 4], "little") for offset in range(0, len(payload), 4)]
-            dst.write(f"inline constexpr uint32_t {symbol}[] = {{\n")
-            for offset in range(0, len(words), 8):
-                chunk = ", ".join(f"0x{word:08x}u" for word in words[offset : offset + 8])
-                dst.write(f"    {chunk},\n")
-            dst.write("};\n")
-        dst.write("}  // namespace testapp::vkfg::shaders\n")
-    log(f"Compiled and validated {len(shader_specs)} embedded Vulkan FG shaders")
+    header_changed = write_text_atomic_if_changed(header_path, "".join(header_lines))
+    log(
+        f"Vulkan FG shaders: {compiled_count} compiled, {len(shader_specs) - compiled_count} cached, "
+        f"{len(shader_specs)} validated, header {'updated' if header_changed else 'unchanged'}"
+    )
     return output_dir
 
 
@@ -2599,20 +2659,30 @@ def sync_ffmpeg_runtime_dlls(
         else:
             log(f"WARNING: Could not remove stale FFmpeg/runtime DLL {os.path.basename(existing)}")
 
+    copied_count = 0
+    cached_count = 0
     for dll in ffmpeg_dlls:
         dst = os.path.join(ffmpeg_bin_dst, os.path.basename(dll))
-        if not safe_copy_file(dll, dst):
+        success, copied = safe_copy_file_if_changed(dll, dst)
+        if not success:
             raise RuntimeError(f"Failed to copy {os.path.basename(dll)} to {ffmpeg_bin_dst}")
-        log(f"Copied {os.path.basename(dll)} to ffmpeg dir")
+        copied_count += int(copied)
+        cached_count += int(not copied)
+        log(f"{'Copied' if copied else 'Kept'} {os.path.basename(dll)} in ffmpeg dir", detail=True)
 
     for dep in runtime_deps:
         src = dep_sources.get(dep)
         if not src:
             continue
         dst = os.path.join(ffmpeg_bin_dst, dep)
-        if not safe_copy_file(src, dst):
+        success, copied = safe_copy_file_if_changed(src, dst)
+        if not success:
             raise RuntimeError(f"Failed to copy runtime dependency {dep} to {ffmpeg_bin_dst}")
-        log(f"Copied runtime dep {dep} to ffmpeg dir")
+        copied_count += int(copied)
+        cached_count += int(not copied)
+        log(f"{'Copied' if copied else 'Kept'} runtime dep {dep} in ffmpeg dir", detail=True)
+
+    log(f"FFmpeg runtime sync: {copied_count} copied, {cached_count} unchanged")
 
     if private_runtime_root:
         objdump_exe = os.path.join(MSYS2_DIR, "clang64", "bin", "llvm-objdump.exe")
@@ -3460,9 +3530,29 @@ def get_env_x86():
 
 def propagate_build_control_environment(source_env: Dict[str, str], target_env: Dict[str, str]) -> None:
     """Copy build-mode controls into independently constructed architecture environments."""
-    for flag in ("FORCE_REBUILD",):
+    for flag in (
+        "FORCE_REBUILD",
+        "CE_BUILD_JOBS",
+        "CE_PRODUCTION_BUILD",
+        "CE_SANITIZE",
+        "CE_DISABLE_LTO",
+        "DISABLE_CCACHE",
+    ):
         if flag in source_env:
             target_env[flag] = source_env[flag]
+
+
+def get_parallel_job_count(env: Dict[str, str], task_count: int) -> int:
+    requested_workers = env.get("CE_BUILD_JOBS", "").strip()
+    if requested_workers:
+        try:
+            workers = int(requested_workers)
+        except ValueError:
+            log(f"Warning: invalid CE_BUILD_JOBS={requested_workers!r}; using auto worker count")
+            workers = cpu_count()
+    else:
+        workers = cpu_count()
+    return max(1, min(workers, task_count or 1))
 
 
 def ensure_dirs():
@@ -3538,6 +3628,217 @@ def compute_build_signature(
         dependency_hash.update(absolute_dependency.encode("utf-8", errors="surrogatepass"))
         dependency_hash.update(compute_file_content_hash(absolute_dependency).encode("ascii"))
     return f"{src_hash}:{tool_hash}:{dependency_hash.hexdigest()[:16]}"
+
+
+LINK_CACHE_SCHEMA_VERSION = 1
+
+
+@lru_cache(maxsize=None)
+def compute_link_input_fingerprint(path: str, size: int, mtime_ns: int) -> str:
+    del size, mtime_ns
+    return sha256_file(path)
+
+
+def fingerprint_link_input(path: str) -> str:
+    stat_result = os.stat(path)
+    return compute_link_input_fingerprint(os.path.abspath(path), stat_result.st_size, stat_result.st_mtime_ns)
+
+
+@lru_cache(maxsize=8)
+def get_link_resource_dir(clang_exe: str) -> Optional[str]:
+    return detect_clang_resource_dir(os.environ.copy(), clang_exe)
+
+
+def get_link_search_directories(command: List[str], clang_exe: str) -> List[str]:
+    directories: List[str] = []
+
+    def add_directory(path: str) -> None:
+        normalized = os.path.abspath(path)
+        if os.path.isdir(normalized) and normalized not in directories:
+            directories.append(normalized)
+
+    index = 1
+    while index < len(command):
+        argument = command[index]
+        if argument == "-L" and index + 1 < len(command):
+            add_directory(command[index + 1])
+            index += 2
+            continue
+        if argument.startswith("-L") and len(argument) > 2:
+            add_directory(argument[2:])
+        if argument.startswith("--sysroot="):
+            sysroot = argument.split("=", 1)[1]
+            add_directory(os.path.join(sysroot, "lib"))
+        index += 1
+
+    compiler_dir = os.path.dirname(os.path.abspath(clang_exe))
+    add_directory(os.path.join(compiler_dir, "..", "lib"))
+    if IS_WINDOWS:
+        add_directory(os.path.join(MSYS2_DIR, "clang64", "lib"))
+        if is_x86_compile_command(command):
+            add_directory(os.path.join(MSYS2_DIR, "mingw32", "lib"))
+    resource_dir = get_link_resource_dir(clang_exe)
+    if resource_dir:
+        add_directory(os.path.join(resource_dir, "lib", "windows"))
+    return directories
+
+
+def collect_link_dependency_paths(command: List[str], clang_exe: str, cwd: Optional[str] = None) -> List[str]:
+    base_dir = os.path.abspath(cwd or PROJECT_ROOT)
+    dependencies: set[str] = set()
+
+    skip_path = False
+    for argument in command[1:]:
+        if skip_path:
+            skip_path = False
+            continue
+        if argument == "-o":
+            skip_path = True
+            continue
+        if argument.startswith("-"):
+            continue
+        candidate = argument if os.path.isabs(argument) else os.path.join(base_dir, argument)
+        if os.path.isfile(candidate):
+            dependencies.add(os.path.abspath(candidate))
+
+    search_directories = get_link_search_directories(command, clang_exe)
+    library_names = [argument[2:] for argument in command if argument.startswith("-l") and len(argument) > 2]
+    implicit_runtime_names = [
+        "c++",
+        "c++abi",
+        "unwind",
+        "stdc++",
+        "gcc",
+        "gcc_eh",
+        "winpthread",
+        "pthread",
+        "mingw32",
+        "mingwex",
+        "msvcrt",
+        "ucrt",
+    ]
+    for library_name in library_names + implicit_runtime_names:
+        for directory in search_directories:
+            for filename in (
+                f"lib{library_name}.a",
+                f"lib{library_name}.dll.a",
+                f"{library_name}.lib",
+            ):
+                candidate = os.path.join(directory, filename)
+                if os.path.isfile(candidate):
+                    dependencies.add(os.path.abspath(candidate))
+
+    compiler_dir = os.path.dirname(os.path.abspath(clang_exe))
+    for linker_name in ("ld.lld.exe", "lld-link.exe", "ld.exe") if IS_WINDOWS else ("ld.lld", "ld"):
+        candidate = os.path.join(compiler_dir, linker_name)
+        if os.path.isfile(candidate):
+            dependencies.add(os.path.abspath(candidate))
+    return sorted(dependencies, key=os.path.normcase)
+
+
+def compute_link_signature(
+    command: List[str], env: Dict[str, str], cwd: Optional[str] = None
+) -> tuple[str, List[str]]:
+    if not command:
+        raise ValueError("Cannot fingerprint an empty link command")
+    clang_exe = command[0]
+    digest = hashlib.sha256()
+    digest.update(f"schema={LINK_CACHE_SCHEMA_VERSION}\n".encode("ascii"))
+    digest.update(compute_compiler_fingerprint(clang_exe).encode("utf-8", errors="surrogatepass"))
+    digest.update(b"\0")
+    for argument in command[1:]:
+        digest.update(argument.encode("utf-8", errors="surrogatepass"))
+        digest.update(b"\0")
+    for variable in ("PATH", "LIB", "LIBRARY_PATH"):
+        digest.update(variable.encode("ascii") + b"=")
+        digest.update(env.get(variable, "").encode("utf-8", errors="surrogatepass"))
+        digest.update(b"\0")
+
+    dependencies = collect_link_dependency_paths(command, clang_exe, cwd)
+    for dependency in dependencies:
+        digest.update(os.path.normcase(dependency).encode("utf-8", errors="surrogatepass"))
+        digest.update(b"\0")
+        digest.update(fingerprint_link_input(dependency).encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest(), dependencies
+
+
+def link_cache_manifest_path(output_path: str) -> str:
+    return output_path + ".link-cache.json"
+
+
+def load_link_cache_manifest(output_path: str) -> Optional[Dict[str, Any]]:
+    try:
+        with open(link_cache_manifest_path(output_path), "r", encoding="utf-8") as manifest_file:
+            manifest = json.load(manifest_file)
+        return manifest if isinstance(manifest, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def link_cache_manifest_matches(manifest: Optional[Dict[str, Any]], input_signature: str) -> bool:
+    try:
+        if not manifest or manifest.get("schema") != LINK_CACHE_SCHEMA_VERSION:
+            return False
+        if manifest.get("input_signature") != input_signature:
+            return False
+        for required_output, expected_hash in manifest["outputs"].items():
+            if not os.path.isfile(required_output) or sha256_file(required_output) != expected_hash:
+                return False
+        return True
+    except (OSError, KeyError, TypeError):
+        return False
+
+
+def validate_cached_link_output(output_path: str, env: Dict[str, str]) -> bool:
+    try:
+        manifest = load_link_cache_manifest(output_path)
+        if not manifest:
+            return False
+        command = manifest["command"]
+        cwd = manifest.get("cwd")
+        current_signature, _ = compute_link_signature(command, env, cwd)
+        return link_cache_manifest_matches(manifest, current_signature)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def run_cached_link(
+    command: List[str],
+    env: Dict[str, str],
+    output_path: str,
+    *,
+    required_outputs: Optional[List[str]] = None,
+    cwd: Optional[str] = None,
+) -> bool:
+    required = [os.path.abspath(path) for path in (required_outputs or [output_path])]
+    output_path = os.path.abspath(output_path)
+    manifest_path = link_cache_manifest_path(output_path)
+    input_signature, dependencies = compute_link_signature(command, env, cwd)
+    if env.get("FORCE_REBUILD") != "1" and link_cache_manifest_matches(
+        load_link_cache_manifest(output_path), input_signature
+    ):
+        log(f"Link cache hit: {os.path.relpath(output_path, PROJECT_ROOT)}", detail=True)
+        return False
+
+    try:
+        os.remove(manifest_path)
+    except FileNotFoundError:
+        pass
+    run_command(command, env=env, cwd=cwd)
+    missing_outputs = [path for path in required if not os.path.isfile(path)]
+    if missing_outputs:
+        raise RuntimeError("Link did not produce required output(s): " + ", ".join(missing_outputs))
+    manifest = {
+        "schema": LINK_CACHE_SCHEMA_VERSION,
+        "command": command,
+        "cwd": os.path.abspath(cwd) if cwd else None,
+        "input_signature": input_signature,
+        "input_count": len(dependencies),
+        "outputs": {path: sha256_file(path) for path in required},
+    }
+    write_json_atomic(manifest_path, manifest)
+    return True
 
 
 def should_recompile(
@@ -3877,33 +4178,24 @@ def compile_object(env: Dict[str, str], clang_exe: str, cflags: List[str], src: 
     return True
 
 
-def parallel_compile(env, clang_exe, cflags, src_obj_pairs):
-    """Compile multiple source files in parallel."""
+def parallel_compile_varied(env, clang_exe, compile_tasks):
+    """Compile (flags, source, object) tasks through one bounded worker pool."""
     # Populate this once before worker threads race through object signatures; otherwise an empty
     # functools cache can hash the same large compiler executable concurrently in several workers.
     compute_compiler_fingerprint(clang_exe)
-    requested_workers = env.get("CE_BUILD_JOBS", "").strip()
-    if requested_workers:
-        try:
-            num_workers = int(requested_workers)
-        except ValueError:
-            log(f"Warning: invalid CE_BUILD_JOBS={requested_workers!r}; using auto worker count")
-            num_workers = cpu_count()
-    else:
-        num_workers = cpu_count()
-    num_workers = max(1, min(num_workers, len(src_obj_pairs) or 1))
+    num_workers = get_parallel_job_count(env, len(compile_tasks))
     compiled = 0
     skipped = 0
-    total = len(src_obj_pairs)
+    total = len(compile_tasks)
     completed = 0
 
     def compile_one(args):
-        src, obj = args
+        cflags, src, obj = args
         os.makedirs(os.path.dirname(obj), exist_ok=True)
         return compile_object(env, clang_exe, cflags, src, obj), src, obj
 
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = {executor.submit(compile_one, pair): pair for pair in src_obj_pairs}
+        futures = {executor.submit(compile_one, task): task for task in compile_tasks}
         for future in as_completed(futures):
             was_compiled, src, obj = future.result()
             completed += 1
@@ -3923,6 +4215,11 @@ def parallel_compile(env, clang_exe, cflags, src_obj_pairs):
     return compiled, skipped
 
 
+def parallel_compile(env, clang_exe, cflags, src_obj_pairs):
+    """Compile multiple same-flag source files in parallel."""
+    return parallel_compile_varied(env, clang_exe, [(cflags, src, obj) for src, obj in src_obj_pairs])
+
+
 def get_unit_test_object_dir(env: Dict[str, str]) -> str:
     """Keep unit-test variants separate from objects linked into product binaries."""
     variant = "x64-tests-sanitize" if env.get("CE_SANITIZE") == "1" else "x64-tests"
@@ -3930,7 +4227,8 @@ def get_unit_test_object_dir(env: Dict[str, str]) -> str:
 
 
 def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
-    log(f"Compiling Tests (parallel, {cpu_count()} threads)...")
+    test_base_cflags = [flag for flag in cflags if not flag.startswith("-flto")]
+    log(f"Compiling Tests (parallel, {get_parallel_job_count(env, 1_000_000)} threads, non-LTO)...")
     src_files = glob.glob(os.path.join(PROJECT_ROOT, "tests", "*.cpp"))
     if not src_files:
         log("No test files found.")
@@ -3939,6 +4237,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     tests_dir = os.path.join(PROJECT_ROOT, "tests")
     os.makedirs(tests_dir, exist_ok=True)
     test_exe = os.path.join(tests_dir, "unit_tests.exe")
+    compile_tasks = []
 
     # 1. Get FFmpeg flags
     if IS_LINUX:
@@ -3974,11 +4273,13 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     common_objs = []
     common_src_obj_pairs = []
     for src in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp")):
+        if os.path.basename(src) == "build_identity.cpp":
+            continue
         rel_path = os.path.relpath(src, PROJECT_ROOT)
         obj = os.path.join(obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
         common_src_obj_pairs.append((src, obj))
         common_objs.append(obj)
-    parallel_compile(env, clang_exe, cflags, common_src_obj_pairs)
+    compile_tasks.extend((test_base_cflags, src, obj) for src, obj in common_src_obj_pairs)
 
     # Link against gtest, common, hook/common sources, mediaengine, and FFmpeg.
     # Keep this aligned with the actual hook/mediaengine linker inputs to avoid
@@ -4038,7 +4339,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     # We need to compile MediaEngine with MEDIAENGINE_EXPORTS or similar if needed,
     # but for static linking in tests, we just need the symbols.
     # Note: AudioEncoder.cpp might rely on specific defines.
-    me_cflags = cflags + ffmpeg_cflags + ["-DMEDIAENGINE_EXPORTS"]
+    me_cflags = test_base_cflags + ffmpeg_cflags + ["-DMEDIAENGINE_EXPORTS"]
 
     for src in me_src:
         rel_path = os.path.relpath(src, PROJECT_ROOT)
@@ -4049,12 +4350,12 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
             src_obj_pairs.append((src, obj))
         me_objs.append(obj)
 
-    parallel_compile(env, clang_exe, me_cflags, src_obj_pairs)
-    parallel_compile(env, clang_exe, me_cflags + STRICT_FP_FLAGS, strict_fp_src_obj_pairs)
+    compile_tasks.extend((me_cflags, src, obj) for src, obj in src_obj_pairs)
+    compile_tasks.extend((me_cflags + STRICT_FP_FLAGS, src, obj) for src, obj in strict_fp_src_obj_pairs)
 
     # 3. Compile Tests
     test_cflags = (
-        cflags
+        test_base_cflags
         + ffmpeg_cflags
         + [
             "-DCE_UNIT_TESTS",
@@ -4072,16 +4373,11 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         src_obj_pairs.append((src, obj))
         test_objs.append(obj)
 
-    parallel_compile(env, clang_exe, test_cflags, src_obj_pairs)
+    compile_tasks.extend((test_cflags, src, obj) for src, obj in src_obj_pairs)
 
     screenshot_encoding_src = os.path.join(PROJECT_ROOT, "captureengine", "screenshot_encoding.cpp")
     screenshot_encoding_obj = os.path.join(obj_dir, "captureengine", "screenshot_encoding.test.o").replace("\\", "/")
-    parallel_compile(
-        env,
-        clang_exe,
-        test_cflags + STRICT_FP_FLAGS,
-        [(screenshot_encoding_src, screenshot_encoding_obj)],
-    )
+    compile_tasks.append((test_cflags + STRICT_FP_FLAGS, screenshot_encoding_src, screenshot_encoding_obj))
 
     # 4. Compile hook/common for tests
     hook_common_src = glob.glob(os.path.join(PROJECT_ROOT, "hook", "common", "*.cpp"))
@@ -4092,7 +4388,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         obj = os.path.join(obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
         src_obj_pairs.append((src, obj))
         hook_common_objs.append(obj)
-    parallel_compile(env, clang_exe, cflags, src_obj_pairs)
+    compile_tasks.extend((test_base_cflags, src, obj) for src, obj in src_obj_pairs)
 
     hook_wrapper_test_src = [os.path.join(PROJECT_ROOT, "hook", "wrappers", "hook_system.cpp")]
     hook_wrapper_test_objs = []
@@ -4102,7 +4398,9 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         obj = os.path.join(obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
         src_obj_pairs.append((src, obj))
         hook_wrapper_test_objs.append(obj)
-    parallel_compile(env, clang_exe, test_cflags, src_obj_pairs)
+    compile_tasks.extend((test_cflags, src, obj) for src, obj in src_obj_pairs)
+
+    parallel_compile_varied(env, clang_exe, compile_tasks)
 
     log("Linking Unit Tests...")
     # Order: Tests -> Common -> MediaEngine -> HookCommon -> HookWrappers -> Libs
@@ -4117,7 +4415,12 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         + ldflags_test
         + ["-o", test_exe]
     )
-    run_command(cmd, env=env)
+    required_outputs = [test_exe]
+    if IS_WINDOWS:
+        required_outputs.append(pdb_path_for_binary(test_exe))
+    linked = run_cached_link(cmd, env, test_exe, required_outputs=required_outputs)
+    if not linked:
+        log("Unit test link cache hit")
     copy_test_runtime_dlls(tests_dir)
     return test_exe
 
@@ -4267,17 +4570,41 @@ def run_python_tool_self_tests(env):
             [sys.executable, os.path.join(PROJECT_ROOT, "tools", "run_av_sync_matrix.py"), "--self-test"],
         ),
     ]
-    ok = True
-    for name, command in tool_tests:
+    def run_one(tool_test):
+        name, command = tool_test
         start = time.time()
-        result = subprocess.run(command, env=env)
+        result = subprocess.run(
+            command,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         elapsed = time.time() - start
+        return name, command, result, elapsed
+
+    worker_count = get_parallel_job_count(env, len(tool_tests))
+    results = []
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [executor.submit(run_one, tool_test) for tool_test in tool_tests]
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    result_by_name = {result[0]: result for result in results}
+    ok = True
+    for expected_name, _ in tool_tests:
+        name, command, result, elapsed = result_by_name[expected_name]
         record_verification_step(
             f"python_tool_self_test.{name}",
             "passed" if result.returncode == 0 else "failed",
             duration_seconds=elapsed,
             details={"exit_code": result.returncode, "command": command},
         )
+        if result.stdout:
+            log(f"[python_tool_self_test:{name}:stdout]\n{result.stdout.rstrip()}", detail=True)
+        if result.stderr:
+            log(f"[python_tool_self_test:{name}:stderr]\n{result.stderr.rstrip()}", detail=result.returncode == 0)
         if result.returncode != 0:
             log(f"Python tool self-test failed: {name} (exit code {result.returncode})")
             ok = False
@@ -4726,11 +5053,9 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     if vulkan_fg_shader_include:
         vulkan_fg_cflags.append("-I" + vulkan_fg_shader_include)
 
-    ccache_exe = shutil.which("ccache", path=env.get("PATH", ""))
-    if env.get("DISABLE_CCACHE"):
-        ccache_exe = None
-
-    def add_task(desc, cmd, cwd=None, task_env=env):
+    def add_task(desc, cmd, cwd=None, task_env=None):
+        if task_env is None:
+            task_env = x86_env if x86_env is not None and is_x86_compile_command(cmd) else env
         tasks.append((desc, cmd, cwd, make_task_temp_environment(task_env, desc)))
 
     def make_cmd(compiler, flags, source, linker_flags, output, *, arch="x64"):
@@ -4740,10 +5065,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         else:
             effective_linker_flags.extend(TESTAPP_X86_CFG_LINK_FLAGS)
         append_windows_pdb_linker_flag(effective_linker_flags, output)
-        cmd_base = [compiler] + flags + [source] + effective_linker_flags + ["-o", output]
-        if ccache_exe:
-            return [ccache_exe, os.path.basename(compiler)] + flags + [source] + effective_linker_flags + ["-o", output]
-        return cmd_base
+        return [compiler] + flags + [source] + effective_linker_flags + ["-o", output]
 
     def make_cmd_x86(compiler, flags, source, linker_flags, output):
         return make_cmd(compiler, flags, source, x86_linker_prefix + list(linker_flags), output, arch="x86")
@@ -5197,51 +5519,66 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
 
     log("Test app compiler temp directories are isolated per task to avoid parallel temp-file collisions")
 
-    # Record tasks for compile_commands.json
-    for desc, cmd, cwd, tenv in tasks:
-        # Find the source file in the command arguments
-        src_file = None
-        for arg in cmd:
-            if arg.endswith(".cpp"):
-                src_file = arg
-                break
-
-        if src_file:
-            normalized_dir = os.path.abspath(PROJECT_ROOT).replace("\\", "/")
-            normalized_file = os.path.abspath(src_file).replace("\\", "/")
-            normalized_args = [normalize_compile_command_arg(arg) for arg in cmd]
-            COMPILE_COMMANDS.append(
-                {
-                    "directory": normalized_dir,
-                    "arguments": normalized_args,
-                    "file": normalized_file,
-                }
-            )
-
     def compile_app(t):
         desc, cmd, cwd, tenv = t
-        log(f"Compiling {desc}...")
-        try:
-            subprocess.run(cmd, env=tenv, cwd=cwd, check=True, capture_output=True, text=True)
-            log(f"Built: {desc}")
-        except subprocess.CalledProcessError as e:
-            log(f"ERROR compiling {desc}:")
-            log(e.stdout)
-            log(e.stderr)
-            raise e
+        source_index = next(index for index, argument in enumerate(cmd) if argument.endswith(".cpp"))
+        output_index = cmd.index("-o", source_index + 1)
+        compiler = cmd[0]
+        compile_flags = cmd[1:source_index]
+        source = cmd[source_index]
+        linker_flags = cmd[source_index + 1 : output_index]
+        output = cmd[output_index + 1]
+        arch = "x86" if is_x86_compile_command(cmd) else "x64"
+        object_dir = os.path.join(OBJ_DIR, "testapps", arch)
+        object_path = os.path.join(object_dir, os.path.splitext(os.path.basename(output))[0] + ".o")
+        os.makedirs(object_dir, exist_ok=True)
 
-    log(f"Compiling {len(tasks)} Test Apps in parallel...")
+        log(f"Building {desc}...", detail=True)
+        compiled = compile_object(tenv, compiler, compile_flags, source, object_path)
+        link_driver_flags = [
+            flag
+            for flag in compile_flags
+            if flag.startswith(("--target=", "--sysroot=", "-stdlib=", "-fsanitize="))
+            or flag in ("-m32", "-m64")
+        ]
+        link_command = [compiler] + link_driver_flags + [object_path] + linker_flags + ["-o", output]
+        required_outputs = [output]
+        if IS_WINDOWS:
+            required_outputs.append(pdb_path_for_binary(output))
+        linked = run_cached_link(
+            link_command,
+            tenv,
+            output,
+            required_outputs=required_outputs,
+            cwd=cwd,
+        )
+        state = "built" if compiled or linked else "cached"
+        log(f"Test app {state}: {desc}", detail=True)
+        return compiled, linked
+
+    for _, command, _, _ in tasks:
+        compute_compiler_fingerprint(command[0])
+
+    worker_count = get_parallel_job_count(env, len(tasks))
+    log(f"Building {len(tasks)} Test Apps in parallel ({worker_count} workers)...")
     errors = []
-    with ThreadPoolExecutor(max_workers=cpu_count()) as executor:
+    built_count = 0
+    cached_count = 0
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = [executor.submit(compile_app, t) for t in tasks]
         for future in as_completed(futures):
             try:
-                future.result()
-            except Exception as e:
+                compiled, linked = future.result()
+                if compiled or linked:
+                    built_count += 1
+                else:
+                    cached_count += 1
+            except BaseException as e:
                 errors.append(e)
 
     if errors:
-        log(f"Warning: {len(errors)} test app(s) failed to compile")
+        raise RuntimeError(f"{len(errors)} test app(s) failed to build; first error: {errors[0]}")
+    log(f"Test app summary: {built_count} built, {cached_count} cached, {len(tasks)} total")
 
     stale_shader_sidecars = glob.glob(os.path.join(testapp_bin_dir, "vulkan_fg_*.spv"))
     if stale_shader_sidecars:
@@ -6136,20 +6473,13 @@ def compile_project(
             if safe_delete_file(stale_layer_register_exe):
                 log("Removed stale vulkan_layer_register.exe")
 
-    # Copy FFmpeg runtime DLLs only to ffmpeg/ so CaptureEngine stays uncluttered.
+    # compile_custom_ffmpeg() already synchronized the complete runtime closure
+    # before compilation. Re-verify that final bundle here without deleting and
+    # recopying the same DLLs a second time.
     if not IS_LINUX:
-        ffmpeg_bin_src = os.path.join(FFMPEG_DIR, "bin")
         ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
-        runtime_bin = os.path.join(FFMPEG_DEPENDENCY_PREFIX, "bin")
-        runtime_deps = get_windows_ffmpeg_runtime_deps(runtime_bin)
-        sync_ffmpeg_runtime_dlls(
-            ffmpeg_bin_src,
-            ffmpeg_bin_dst,
-            runtime_deps,
-            [runtime_bin],
-            required_runtime_deps=True,
-            private_runtime_root=FFMPEG_DEPENDENCY_PREFIX,
-        )
+        objdump_exe = os.path.join(MSYS2_DIR, "clang64", "bin", "llvm-objdump.exe")
+        verify_pe_import_closure(ffmpeg_bin_dst, objdump_exe, logger=log)
         remove_redundant_root_runtime_dlls(
             BIN_DIR,
             WINDOWS_FFMPEG_RUNTIME_DEPS + WINDOWS_FFMPEG_OPTIONAL_RUNTIME_DEPS,
@@ -6167,6 +6497,7 @@ def compile_project(
     x86_env_for_tests = None
     if not IS_LINUX or has_linux_x86_compiler():
         x86_env_for_tests, _ = get_env_x86()
+        propagate_build_control_environment(env, x86_env_for_tests)
     compile_testapps(env, x86_env_for_tests, clang_exe, cflags)
 
     # 8. Compile Vulkan Layer (VK_LAYER_CE_overlay)
@@ -6546,6 +6877,7 @@ def main():
             sanitize_regression_child=sanitize_regression_child,
             resume_failed_build=resume_flag,
             no_build=no_build_flag,
+            tests_only=tests_only_flag,
         )
     except RuntimeError as error:
         action = "resume failed build" if resume_flag else "reuse current build version"
@@ -6557,6 +6889,8 @@ def main():
         log(f"Resuming failed build version: 0.1.{current_build_number}")
     elif no_build_flag:
         log(f"No-build verification reuses current build version: 0.1.{current_build_number}")
+    elif tests_only_flag:
+        log(f"Tests-only build reuses current product version: 0.1.{current_build_number}")
     # Store for use by compile_project
     global CURRENT_BUILD_NUMBER
     CURRENT_BUILD_NUMBER = current_build_number
@@ -6700,6 +7034,9 @@ def main():
             test_exe = os.path.join(tests_dir, "unit_tests.exe")
             if not os.path.exists(test_exe):
                 log(f"Error: {test_exe} not found. Build first without --no-build.")
+                sys.exit(1)
+            if not validate_cached_link_output(test_exe, env):
+                log("Error: unit_tests.exe is stale or lacks a valid link-cache manifest. Rebuild tests first.")
                 sys.exit(1)
             copy_test_runtime_dlls(tests_dir)
             if not run_tests(env, test_exe, gtest_filter=gtest_filter):

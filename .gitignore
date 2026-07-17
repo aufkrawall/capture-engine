@@ -18,6 +18,7 @@
 *.lib
 *.map
 *.exe
+*.link-cache.json
 *.mkv
 *.old
 *.xz

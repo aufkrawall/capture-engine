@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-07-17 (validated incremental/failure-resume workflow, compiler/project-header content signatures, isolated product/test/sanitizer object variants, no-build version reuse, concise agent output, and existing source-closure, packaging, hardening, sanitizer, and provenance policy)
+Last cross-checked: 2026-07-17 (validated object and validation-link caches, deterministic non-LTO test identity/profile, cached split test-app builds, failure-resume/no-build freshness workflow, concise agent output, and existing production LTO, source-closure, packaging, hardening, sanitizer, and provenance policy)
 
 Primary sources:
 - `AGENTS.md`
@@ -71,10 +71,10 @@ Default quality mode currently:
 | --- | --- | --- | --- |
 | `--verify` | user-facing | Run the broader combined verification flow | Enables lint, unit tests, and sanitizer regression cadence in one top-level run and emits a compact verification bundle under `build/verification/`. Use when explicitly requested or when the additional quality/sanitizer scope is warranted; ordinary agent work uses the validated incremental gate, with the documented clean-build triggers. |
 | `--skip-updates` | user-facing | Reuse current FFmpeg source-built outputs when possible | On Windows, if the private dependency prefix and FFmpeg outputs are complete/current and `installed/captureengine/ffmpeg` exists, the script skips the FFmpeg rebuild and just syncs runtime DLLs. Missing, stale, or configuration-mismatched outputs still rebuild. On Linux and WSL, FFmpeg comes from MSYS2 packages. |
-| `--run-tests` | user-facing | Build and run `tests/unit_tests.exe` | Unit test sources are compiled on every build anyway so `compile_commands.json` stays useful. This flag controls execution. |
+| `--run-tests` | user-facing | Build and run `tests/unit_tests.exe` | Unit test sources are compiled on every build so compile failures and `compile_commands.json` stay current. The non-LTO validation link is content-cached; this flag controls execution. |
 | `--gtest-filter=<expr>` | user-facing | Pass a GoogleTest filter through to `tests/unit_tests.exe` | Useful together with `--run-tests` for focused iteration on one suite or a few cases. |
-| `--tests-only` | user-facing | Stop after building/running unit-test dependencies and `tests/unit_tests.exe` | Skips the later CaptureEngine, hook DLL, mediaengine DLL, Vulkan layer, and testapp build phases. Best paired with `--run-tests`. |
-| `--no-build` | user-facing | Run requested checks against existing binaries without compiling | Reuses the current build identity instead of changing `build_version.h`; fails if a requested test binary is missing. |
+| `--tests-only` | user-facing | Stop after building/running unit-test dependencies and `tests/unit_tests.exe` | Reuses the current product identity because it emits no product binary. Skips the later CaptureEngine, hook DLL, mediaengine DLL, Vulkan layer, and testapp build phases. Best paired with `--run-tests`. |
+| `--no-build` | user-facing | Run requested checks against existing binaries without compiling | Reuses the current build identity instead of changing `build_version.h`; refuses a missing, stale, corrupted, or pre-manifest unit-test executable. |
 | `--run-integration-tests` | user-facing | Run smoke integration tests after the build | Also implies `--run-tests`. Before running, the script forces at least `log_level=debug` in `installed/captureengine/config.ini` if that file exists. |
 | `--full-integration` | user-facing | Run the full integration matrix | Implies `--run-integration-tests`, which also implies `--run-tests`. |
 | `--lint` | user-facing | Run `clang-format --dry-run -Werror`, `flake8`, and `pyright` | If passed alone, the script exits after linting. |
@@ -102,7 +102,7 @@ Default quality mode currently:
 - `--sanitize-regression-child` disables spawning another nested sanitizer regression pass.
 - `--incremental` turns off the script's default force-rebuild mode; unchanged-object reuse is signature validated and failure to evaluate a signature recompiles the object.
 - `--resume` implies incremental mode and reuses the latest failed top-level build number only after its manifest, recorded `build.py` SHA-256, current `build.py`, and `build_version.h` agree. It requires `--skip-updates` and is mutually exclusive with `--no-build`/`--force-rebuild`.
-- `--no-build` and the sanitizer child reuse the current build version instead of bumping `build_version.h`.
+- `--no-build`, `--tests-only`, and the sanitizer child reuse the current build version instead of bumping `build_version.h`; only product-producing ordinary builds mint a new exact identity.
 - `--concise` affects console verbosity only; it does not remove `build.log` detail or weaken a stage.
 - `--skip-updates` no longer triggers optional Python tooling bootstrap by itself; build-only runs stay quiet unless the active mode explicitly requests lint / format / default-quality checks.
 - `--lint` alone exits after linting.
@@ -137,8 +137,10 @@ Default quality mode currently:
 - Python lint currently targets `build.py`, `ffmpeg_dependencies.py`, `ffmpeg_patch_utils.py`, their focused tests, and `testapp`. Automatic Python formatting remains limited to `build.py` and `testapp`.
 
 ## Unit Test Behavior
-- `compile_tests()` runs on every build so `compile_commands.json` contains authoritative entries for tests even if tests are not executed.
+- `compile_tests()` runs on every build so test compile failures are caught and `compile_commands.json` contains authoritative entries even if tests are not executed. Its formerly fragmented common/media/test/hook batches now share one bounded mixed-flag worker pool.
 - Unit-test dependencies use `build/obj/x64-tests`; sanitizer unit-test dependencies use `build/obj/x64-tests-sanitize`. Neither shares paths with `build/obj/x64` product objects. This is required because test and product compile flags differ: sharing paths caused the cache to alternate variants on every build and allowed the later CaptureEngine link to consume common objects most recently compiled by the test phase.
+- Ordinary unit tests retain `-O3`, CFG/CET, stack protection, fortified headers, strict-FP source exceptions, CodeView/PDB diagnostics, and the existing sanitizer variant, but intentionally omit LTO. Product hook/controller/Vulkan binaries retain their existing full-LTO flags. Tests link a deterministic test-only implementation of `build_identity.h`, so product build-number changes do not invalidate the validation executable.
+- Unit-test links use a fail-closed manifest over the compiler and linker binaries, full command/environment search boundary, object and resolved library contents, and resulting EXE/PDB hashes. A clean build always relinks. Incremental builds reuse only an exact valid match. `--no-build --run-tests` recomputes and validates that manifest before execution and refuses older/stale/corrupted outputs.
 - `--run-tests` controls whether `tests/unit_tests.exe` is executed.
 - `--gtest-filter` is passed through as `--gtest_filter=...` when `tests/unit_tests.exe` is executed.
 - `--tests-only` now takes effect before the normal product build phases, so focused test runs do not also rebuild the hook DLL, mediaengine DLL, captureengine.exe, Vulkan layer, and test apps.
@@ -159,7 +161,10 @@ Default quality mode currently:
   `vulkan-fg-switch-test.md`.
 - On Windows, x86 test apps now use the same clang64 cross-driver and x86 sysroot/runtime flag set as the main x86 build instead of the old `mingw32/bin/clang++.exe` one-step path.
 - Each test-app task gets its own temp subdirectory under `build/tmp/testapps/` so parallel x64/x86 jobs do not fight over compiler temp files and stale rename collisions.
+- Single-source test apps intentionally omit LTO: `-O3` already optimizes their complete first-party translation unit, while production binaries retain full LTO. Each app now compiles to a dependency-tracked object under `build/obj/testapps/<arch>` and uses the same fail-closed content-validated link cache as unit tests. Clean builds always rebuild; incremental cache hits still undergo final PE/PDB/hardening verification. Any app build failure is fatal and cannot be hidden by an older executable.
 - The x86 test-app linker path now carries the same `libgcc`/`libstdc++` runtime selection as the main x86 build, which avoids the old `libunwind.a` lookup failure.
+- `--jobs`/`CE_BUILD_JOBS` now propagates into independently created x86, test-app, and Vulkan environments and controls test-app and Python self-test worker pools as well as ordinary compilation.
+- Vulkan FG shader inputs and tool binaries have content-validated SPIR-V caches. Every build still runs `spirv-val` over all six outputs, and the generated header is rewritten only when its exact content changes, avoiding false dependency invalidation.
 - x64 test apps use the same CFG/CET-codegen/stack-protector/fortify baseline as first-party x64 product code so they exercise injection into an effectively CFG-instrumented host. The clang64-to-mingw32 x86 CRT still produces an invalid empty Guard CF load config and can fault at startup, so only x86 CFG remains explicitly disabled; x86 test apps retain stack protector, fortify, ASLR, and NX.
 
 ## Integration Test Behavior
@@ -181,9 +186,11 @@ Default quality mode currently:
 
 ## Operational Notes
 - The script always rewrites `compile_commands.json` at the end of a successful build.
+- Python tool self-tests execute concurrently through the bounded job policy, capture complete output, and replay diagnostics deterministically on failure. Native unit tests remain the preceding isolation boundary.
+- FFmpeg runtime DLL synchronization preserves byte-identical destinations instead of deleting/recopying them, verifies equality by SHA-256, and still verifies the PE import closure both after initial synchronization and at the final product boundary.
 - Incremental object signatures hash source content, the compiler executable contents, compile flags, and the content of compiler-reported project dependencies. Dependency mtimes remain a second signal for toolchain/system headers. Signature calculation now fails closed to recompilation instead of falling back to timestamps. This prevents an older-mtime checkout/restore of `common/shared_defs.h` (or another project header), a same-path compiler replacement, or an unreadable signature input from retaining an unproven object; `test_build_flags.py` covers each case.
 - Independently constructed x86 environments, including the late Vulkan-layer environment, inherit `FORCE_REBUILD` from the main build. The clean/default gate therefore recompiles every x64 and x86 object consistently; `--force-rebuild` additionally deletes the object tree first.
-- Every compiling invocation normally mints one build identity. Generated `build_version.h` is included only by `common/build_identity.cpp`; stable accessors provide the number/version/timestamp to discovery validation, logging, manifests, and Vulkan naming. It is deliberately absent from high-fanout `shared_defs.h` and `config.h`, so minting an identity invalidates only the identity translation unit in each relevant object namespace rather than nearly every hook/media/controller/test translation unit. `--resume` is the sole guarded exception for an immediately preceding failed top-level product build, and `--no-build`/the sanitizer child reuse the current identity because they do not create a new ordinary product build. This avoids duplicate successful identities, no-build-induced invalidation, and generated-version fan-out.
+- Every ordinary product-producing invocation normally mints one build identity. Generated `build_version.h` is included only by `common/build_identity.cpp`; stable accessors provide the number/version/timestamp to discovery validation, logging, manifests, and Vulkan naming. It is deliberately absent from high-fanout `shared_defs.h` and `config.h`, so minting an identity invalidates only the identity translation unit in each relevant product object namespace rather than nearly every hook/media/controller translation unit. `--resume` is the guarded exception for an immediately preceding failed top-level product build, while `--tests-only`, `--no-build`, and the sanitizer child reuse the current identity because they do not create a new ordinary product build. Unit tests instead link a deterministic test-only identity implementation. This avoids duplicate successful identities, test/no-build-induced product invalidation, and generated-version fan-out.
 - Vulkan layer compilation only writes the DLLs and portable relative-path manifests. Each manifest layer name and implementation version includes the current build number, preventing an older installation's duplicate identity from shadowing it. `build.py` never imports `winreg`, enumerates Vulkan registrations, or mutates HKCU/HKLM. Registration ownership and repair belong to the running controller: ordinary startup repairs only HKCU and never requests elevation; an already-elevated controller may also repair HKLM.
 - Canonical verification now writes a compact verification bundle under `build/verification/<timestamp>_build_<n>/` containing:
   - `verification_summary.txt`
