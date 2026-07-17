@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-17 (single-preparation sanitizer/product builds, current-database lint with summary/detail artifacts and managed Python tools, validated object/link caches and deterministic validation-only profiles with unchanged production LTO, incremental/failure-resume builds, capture-sync/CFR phase preservation with variable-cadence fallback, exact shared-memory ABI 36/build isolation, session-scoped logs, telemetry/frame-ring corruption rejection, non-elevating Vulkan registration repair, full-depth Vulkan capture leases, and the existing current graphics/audio/build/security state; see build.py.md, cfr-capture-sync.md, process-ipc.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-18 (first-confirmed game-owned Reflex suspend during FSR-to-DLSS startup settling, single-preparation sanitizer/product builds, current-database lint with summary/detail artifacts and managed Python tools, validated object/link caches and deterministic validation-only profiles with unchanged production LTO, incremental/failure-resume builds, capture-sync/CFR phase preservation with variable-cadence fallback, exact shared-memory ABI 36/build isolation, session-scoped logs, telemetry/frame-ring corruption rejection, non-elevating Vulkan registration repair, full-depth Vulkan capture leases, and the existing current graphics/audio/build/security state; see frame-generation/guardrails.md, overlay-fg-status.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -61,11 +61,11 @@ Primary sources:
 - `graphics-overrides-and-frame-pacing.md`
   - Cross-API sampler/config semantics, CPU/present queue-depth enforcement, adaptive rational FPS limiting, phase-preserving capture-sync/FG rules, diagnostics, and runtime validation matrix. Last verified 2026-07-17.
 - `frame-generation-switching.md`
-  - Stub pointing to `frame-generation/guardrails.md` (invariants, including current stable Reflex suspend and Streamline startup transport rules) and `frame-generation/case-studies.md` (chronological deep-dive). Last verified 2026-07-15.
+  - Stub pointing to `frame-generation/guardrails.md` (invariants, including current first-confirmed Reflex suspend and Streamline startup transport rules) and `frame-generation/case-studies.md` (chronological deep-dive). Last verified 2026-07-18.
 - `vulkan-fg-switch-test.md`
   - Vulkan DLSS/FSR switch-app architecture, dual FidelityFX SDK constraint, immutable WSI ownership, cross-owner bridge/pre-retirement rules, backend-safe injected FFX hooking, DirectFlip/present-queue and Reflex-pacing boundaries, rendering inputs, diagnostics, and standalone/injected runtime validation. Last verified 2026-07-16.
 - `overlay-fg-status.md`
-  - Current visible FG status publication rules for the overlay, including authoritative stable Reflex-driven Streamline suspend edges. Last verified 2026-07-15.
+  - Current visible FG status publication rules for the overlay, including authoritative first-confirmed Reflex-driven Streamline suspend edges. Last verified 2026-07-18.
 - `debug-tools.md`
   - Available Windows debug tools and paths plus always-on DX12 present/ProcessFrame stage diagnostics, including wrapper-initialization overlap. Last verified 2026-07-17.
 - `pseudo-overlay.md`

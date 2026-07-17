@@ -60,16 +60,15 @@ inline bool IsStreamlineReflexPacingSignalActive(int32_t mode, uint32_t frameLim
 
 inline bool ShouldArmConfirmedDLSSReflexSuspendIntent(bool reflexDeactivationEdge, bool dlssFGApiActive,
                                                       bool streamlineFGRunning, bool postSLConfirmedRendering,
-                                                      bool startupActivationPending, bool postSLActiveButUnconfirmed,
-                                                      bool postSLConfirmedButStartupSettling,
-                                                      bool postSLConfirmedButRuntimeStateStabilizing) {
-    // A Reflex OFF edge during a stable confirmed DLSS-G epoch is the runtime's
-    // suspend intent (for example a menu that temporarily disables generation).
-    // Do not arm during cold-start churn: Reflex can briefly bounce OFF before
-    // PostSL has confirmed, and that historical family still needs protection.
+                                                      bool startupActivationPending,
+                                                      bool postSLActiveButUnconfirmed) {
+    // Once the current DLSS-G epoch has produced a confirmed PostSL render, a
+    // game-owned Reflex OFF edge is the runtime's suspend intent even if CE's
+    // bookkeeping is still settling. Keeping DLSS-G active without Reflex can
+    // expose Streamline's REFLEX-NOT-DETECTED debug output. Pre-confirmation
+    // Reflex churn remains protected.
     return reflexDeactivationEdge && dlssFGApiActive && streamlineFGRunning && postSLConfirmedRendering &&
-           !startupActivationPending && !postSLActiveButUnconfirmed && !postSLConfirmedButStartupSettling &&
-           !postSLConfirmedButRuntimeStateStabilizing;
+           !startupActivationPending && !postSLActiveButUnconfirmed;
 }
 
 inline bool ShouldAcceptInactiveStreamlineSignalAfterConfirmedReflexSuspend(bool confirmedReflexSuspendPending,

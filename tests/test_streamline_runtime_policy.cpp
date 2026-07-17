@@ -454,19 +454,44 @@ TEST(StreamlineRuntimePolicyTest, ReflexFrameLimitForwardingKeepsIncomingSignalO
     EXPECT_TRUE(ce::streamline_runtime_policy::IsStreamlineReflexFrameLimitActive(overridden.frameLimitUs));
 }
 
-TEST(StreamlineRuntimePolicyTest, StableConfirmedReflexOffArmsAuthoritativeDLSSSuspendOnlyAfterStartup) {
+TEST(StreamlineRuntimePolicyTest, ConfirmedReflexOffArmsAuthoritativeDLSSSuspendAfterFirstPostSLRender) {
     using ce::streamline_runtime_policy::ShouldArmConfirmedDLSSReflexSuspendIntent;
 
-    EXPECT_TRUE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, true, false, false, false, false));
+    EXPECT_TRUE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, true, false, false));
 
-    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(false, true, true, true, false, false, false, false));
-    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, false, true, true, false, false, false, false));
-    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, false, true, false, false, false, false));
-    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, false, false, false, false, false));
-    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, true, true, false, false, false));
-    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, true, false, true, false, false));
-    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, true, false, false, true, false));
-    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, true, false, false, false, true));
+    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(false, true, true, true, false, false));
+    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, false, true, true, false, false));
+    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, false, true, false, false));
+    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, false, false, false));
+    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, true, true, false));
+    EXPECT_FALSE(ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, true, false, true));
+}
+
+TEST(StreamlineRuntimePolicyTest, FirstConfirmedPostFSRReflexSuspendOverridesStartupOffChurnGuard) {
+    using ce::streamline_runtime_policy::ResolveCombinedRuntimeSignalUpdate;
+    using ce::streamline_runtime_policy::ShouldAcceptInactiveStreamlineSignalAfterConfirmedReflexSuspend;
+    using ce::streamline_runtime_policy::ShouldArmConfirmedDLSSReflexSuspendIntent;
+    using ce::streamline_runtime_policy::ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback;
+
+    // GTA session 20260717_235919 switched FSR FG -> DLSS FG in the menu. After
+    // the first confirmed PostSL render, GTA turned Reflex OFF and requested
+    // DLSSG OFF while CE's startup window was still active. The generic guard
+    // must remain true for unrelated stale churn, but the paired game-owned
+    // Reflex suspend makes this inactive edge authoritative.
+    const bool startupPolicyWouldDefer = ShouldKeepOffChurnDeferredForStartupProtectedStreamlineComeback(
+        true, true, true, true, false, false, true, true, true);
+    ASSERT_TRUE(startupPolicyWouldDefer);
+
+    const bool suspendIntent =
+        ShouldArmConfirmedDLSSReflexSuspendIntent(true, true, true, true, false, false);
+    ASSERT_TRUE(suspendIntent);
+    const bool reflexSuspendIsAuthoritative =
+        ShouldAcceptInactiveStreamlineSignalAfterConfirmedReflexSuspend(suspendIntent, true, true);
+    const auto update = ResolveCombinedRuntimeSignalUpdate(
+        false, startupPolicyWouldDefer && !reflexSuspendIsAuthoritative, true, 0);
+    EXPECT_FALSE(update.deferredOffDuringStartupWindow);
+    EXPECT_FALSE(update.effectiveActive);
+    EXPECT_EQ(0, update.effectiveMultiplier);
 }
 
 TEST(StreamlineRuntimePolicyTest, ConfirmedReflexSuspendBypassesOnlyNextActiveToInactiveRuntimeEdge) {

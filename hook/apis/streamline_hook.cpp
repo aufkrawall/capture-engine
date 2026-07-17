@@ -1107,16 +1107,21 @@ void HandleStreamlineReflexPacingSignal(const char* sourceName, int32_t mode, ui
                 DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
                 HookIsPostSLOverlayConfirmedRendering(),
                 DXGIShared::g_SharedState.postSLSyntheticStartupActivationPending.load(std::memory_order_acquire),
-                HookIsPostSLOverlayActiveButUnconfirmed(), HookIsPostSLOverlayConfirmedButStartupSettling(),
-                HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() ||
-                    HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected())) {
+                HookIsPostSLOverlayActiveButUnconfirmed())) {
             const bool wasPending = g_ConfirmedDLSSReflexSuspendPending.exchange(true, std::memory_order_acq_rel);
-            ResetStartupProtectedOffChurnActiveProof("stable confirmed Reflex suspend intent");
+            const bool startupSettling = HookIsPostSLOverlayConfirmedButStartupSettling();
+            const bool runtimeStabilizing = HookIsPostSLOverlayConfirmedButRuntimeStateStabilizing() ||
+                                            HookIsPostSLOverlayConfirmedButStaleOffWarmupProtected();
+            ResetStartupProtectedOffChurnActiveProof("confirmed Reflex suspend intent");
             if (!wasPending) {
                 HookLogImportant(
-                    "Streamline Hook: Stable confirmed DLSS-G epoch observed Reflex OFF via %s — next inactive "
-                    "GetState/SetOptions edge is authoritative (manual limiter target remains unchanged)",
-                    sourceName ? sourceName : "unknown");
+                    "Streamline Hook: Confirmed DLSS-G epoch observed game-owned Reflex OFF via %s "
+                    "(startupWindow=%d settling=%d stabilizing=%d) — next inactive GetState/SetOptions edge is "
+                    "authoritative so DLSS-G cannot remain active without Reflex (manual limiter target remains "
+                    "unchanged)",
+                    sourceName ? sourceName : "unknown",
+                    DXGIShared::IsStreamlineStartupTransitionWindowActive() ? 1 : 0, startupSettling ? 1 : 0,
+                    runtimeStabilizing ? 1 : 0);
             }
         }
         g_ReflexLimiter.SetGameActivated(false);
@@ -1272,7 +1277,7 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
         ResetStartupProtectedOffChurnActiveProof("accepted confirmed Reflex suspend runtime OFF");
         if (consumedSuspendIntent) {
             HookLogImportant(
-                "Streamline Hook: Accepted %s OFF as authoritative after stable confirmed Reflex suspend — "
+                "Streamline Hook: Accepted %s OFF as authoritative after confirmed Reflex suspend — "
                 "startup churn protection remains armed for future cold starts",
                 source ? source : "runtime-state");
         }
