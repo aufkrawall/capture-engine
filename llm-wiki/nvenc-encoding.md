@@ -1,6 +1,6 @@
 # NVENC Encoding Policy and FFmpeg Patches
 
-Last cross-checked: 2026-07-16
+Last cross-checked: 2026-07-17
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -9,8 +9,10 @@ Primary sources:
 - `mediaengine/video_encoder_options.{h,cpp}`
 - `patches/ffmpeg/0001-matroska-add-timestamp-precision-option.patch`
 - `patches/ffmpeg/0002-nvenc-bframe-cfr-improvements.patch`
+- `ffmpeg_build/working/ffmpeg/libavcodec/{nvenc.c,nvenc_av1.c,utils.c}`
 - `tests/test_{config,video_encoder_options,video_encoder_source}.cpp`
 - `test_ffmpeg_patch_utils.py`
+- NVIDIA developer forum: `https://forums.developer.nvidia.com/t/ffmpeg-av1-nvenc-encoder-sometimes-generates-undecodeable-bitstreams/364011`
 
 ## Summary
 
@@ -49,6 +51,12 @@ semantics, decoder timing, or codec-specific headers.
 - AV1 VBR/CQ with B-frames emits `max_qp_b=200`. This bounds only B-frame QP;
   global `qmin`/`qmax` are intentionally not used because they also alter I/P
   bounds and initial rate-control QPs. CQP does not use the bound.
+- AV1 NVENC forces `s12m_tc=0` as a required option after custom options. The
+  current FFmpeg/NVENC path can write malformed AV1 timecode metadata, while
+  CaptureEngine does not create `AV_FRAME_DATA_S12M_TIMECODE` side data. The
+  guard is therefore inert for current captures except for closing that future
+  metadata hazard. It does not disable `extra_sei`, A53 closed captions, or HDR
+  metadata and does not affect pixels, rate control, timestamps, or latency.
 
 The shipped conservative defaults are lookahead off and both AQ modes off.
 New configurations use automatic multipass and B-reference selection; existing
@@ -63,6 +71,17 @@ checks, and normal send/receive flush contract. It adds the AV1 B-only maximum
 QP option and maps documented NVENC output types (`SKIPPED`, `INTRA_REFRESH`,
 `NONREF_P`, and AV1 `SWITCH`) while still rejecting genuinely unknown numeric
 types.
+
+Neither bundled source patch changes FFmpeg's S12M/timecode metadata path. The
+pinned FFmpeg 8.1.2 `av1_nvenc` option still defaults `s12m_tc` to true and the
+shared encoder code still passes `ff_alloc_timecode_sei()` output as AV1
+timecode metadata. NVIDIA's public diagnosis separates an FFmpeg payload-syntax
+error from a driver byte-alignment limitation; disabling this unused metadata
+feature in the application avoids both. A prior application block attempted
+`repeat_pps=1` after `avcodec_open2`; it was removed because AV1 has no PPS, the
+option is not exposed by `av1_nvenc`, and post-open dictionary writes cannot
+change encoder state. Do not add a broader FFmpeg patch unless CaptureEngine
+actually needs AV1 S12M timecodes and both failure layers can be validated.
 
 The Matroska patch expresses the requested nanosecond `TimecodeScale` as the
 exact stream timebase numerator/denominator instead of integer-dividing one
@@ -79,7 +98,8 @@ bypass, blanket-picture-type, and flush-drain behavior.
 ## Diagnostics and runtime validation
 
 Startup logs show the configured lookahead, split AQ state/strength, B-frame
-mode, and multipass value. The patched wrapper logs the resolved automatic
+mode, multipass value, and the last-applied AV1 NVENC `s12m_tc=0` safety option.
+The patched wrapper logs the resolved automatic
 B-reference mode. The first hardware-frame VP output view logs its format and
 bind flags; failures log the texture format, bind flags, array size, and slice.
 

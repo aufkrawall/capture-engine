@@ -187,6 +187,29 @@ TEST(VideoEncoderOptionsTest, CustomOptionsParseAndValidate) {
     EXPECT_TRUE(HasMessageContaining(invalidPlan.errors, "missing '='"));
 }
 
+TEST(VideoEncoderOptionsTest, Av1NvencDisablesUnusedS12mTimecodeAfterCustomOptions) {
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.customOptions = "foo=bar:s12m_tc=1";
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, true, "420");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(FindOptionValue(plan.customOptions, "s12m_tc").value_or(""), "1");
+    EXPECT_EQ(FindOptionValue(plan.requiredOptions, "s12m_tc").value_or(""), "0");
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "s12m_tc=1 is overridden to 0"));
+}
+
+TEST(VideoEncoderOptionsTest, S12mTimecodeSafetyOverrideIsScopedToAv1Nvenc) {
+    VideoConfig av1Nvenc = MakeBaseVideoConfig("av1_nvenc");
+    const EncoderOptionPlan av1NvencPlan = BuildEncoderOptionPlan(av1Nvenc, false, "420");
+    EXPECT_EQ(FindOptionValue(av1NvencPlan.requiredOptions, "s12m_tc").value_or(""), "0");
+
+    for (const char* encoder : {"hevc_nvenc", "h264_nvenc", "av1_amf", "av1_qsv", "av1_mf"}) {
+        const EncoderOptionPlan plan = BuildEncoderOptionPlan(MakeBaseVideoConfig(encoder), false, "420");
+        EXPECT_FALSE(FindOptionValue(plan.requiredOptions, "s12m_tc").has_value()) << encoder;
+    }
+}
+
 TEST(VideoEncoderOptionsTest, NvencWeightedPredNotAutoEnabledForH264BFrames) {
     // OBS Studio does not set weighted_pred and works smoothly.
     // We follow the same approach — leave at NVENC defaults.

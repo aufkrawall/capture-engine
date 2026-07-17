@@ -100,6 +100,22 @@ TEST(VideoEncoderSourceTest, CaptureSourceTransitionDropsCachedVisualContent) {
     EXPECT_EQ(source.find("av_packet_ref(repeatPkt"), std::string::npos);
 }
 
+TEST(VideoEncoderSourceTest, Av1NvencSafetyOptionsOverrideCustomOptionsBeforeCodecOpen) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t customApply = source.find("for (const auto& option : optionPlan.customOptions)",
+                                           source.find("if (isMF)"));
+    const size_t requiredApply = source.find("for (const auto& option : optionPlan.requiredOptions)", customApply);
+    const size_t codecOpen = source.find("avcodec_open2(codecCtx, codec, &opts)", requiredApply);
+    ASSERT_NE(customApply, std::string::npos);
+    ASSERT_NE(requiredApply, std::string::npos);
+    ASSERT_NE(codecOpen, std::string::npos);
+    EXPECT_LT(customApply, requiredApply);
+    EXPECT_LT(requiredApply, codecOpen);
+    EXPECT_EQ(source.find("repeat_pps"), std::string::npos);
+}
+
 TEST(VideoEncoderSourceTest, VideoProcessorOutputsAreOwnedByFfmpegHardwareFrames) {
     const std::string source = ReadVideoEncoderSource();
     ASSERT_FALSE(source.empty());

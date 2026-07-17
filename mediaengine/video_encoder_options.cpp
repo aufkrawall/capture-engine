@@ -143,6 +143,17 @@ void AddCustomOption(EncoderOptionPlan* plan, std::string key, std::string value
     }
 }
 
+void AddRequiredOption(EncoderOptionPlan* plan, std::string key, std::string value) {
+    if (plan) {
+        plan->requiredOptions.push_back({std::move(key), std::move(value)});
+    }
+}
+
+bool IsDisabledBooleanValue(std::string_view value) {
+    const std::string lower = ToLowerAscii(TrimAscii(value));
+    return lower == "0" || lower == "false" || lower == "off" || lower == "no";
+}
+
 std::string GetAutoProfile(const EncoderKind& kind, bool use10Bit, std::string_view resolvedChroma,
                            std::vector<std::string>* warnings) {
     switch (kind.family) {
@@ -702,6 +713,24 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
         for (const auto& option : customOptions) {
             AddCustomOption(&plan, option.key, option.value);
         }
+    }
+
+    if (kind.family == CodecFamily::kAV1 && kind.backend == EncoderBackend::kNVENC) {
+        std::optional<std::string> customS12mValue;
+        for (const auto& option : plan.customOptions) {
+            if (ToLowerAscii(option.key) == "s12m_tc") {
+                customS12mValue = option.value;
+            }
+        }
+        if (customS12mValue.has_value() && !IsDisabledBooleanValue(*customS12mValue)) {
+            AddWarning(&plan, "custom s12m_tc=" + *customS12mValue +
+                                  " is overridden to 0 for AV1 NVENC bitstream safety");
+        }
+
+        // CaptureEngine does not attach SMPTE ST 12-1 timecode side data. Keep
+        // FFmpeg/NVENC's unsafe, unused AV1 metadata path disabled even if a
+        // custom option attempts to re-enable it.
+        AddRequiredOption(&plan, "s12m_tc", "0");
     }
 
     return plan;

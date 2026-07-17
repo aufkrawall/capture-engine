@@ -2043,6 +2043,12 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
             DLL_Log("[VideoEncoder]   %s=%s (custom)", option.key.c_str(), option.value.c_str());
         }
     }
+    if (!optionPlan.requiredOptions.empty()) {
+        DLL_Log("[VideoEncoder]   --- required safety overrides (applied last) ---");
+        for (const auto& option : optionPlan.requiredOptions) {
+            DLL_Log("[VideoEncoder]   %s=%s (required)", option.key.c_str(), option.value.c_str());
+        }
+    }
     DLL_Log("[VideoEncoder]   bitRate=%lld maxBitRate=%lld maxBFrames=%d", optionPlan.bitRate.value_or(0),
             optionPlan.maxBitRate.value_or(0), optionPlan.maxBFrames);
     DLL_Log("[VideoEncoder] ======================================");
@@ -2084,6 +2090,9 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     }
 
     for (const auto& option : optionPlan.customOptions) {
+        av_dict_set(&opts, option.key.c_str(), option.value.c_str(), 0);
+    }
+    for (const auto& option : optionPlan.requiredOptions) {
         av_dict_set(&opts, option.key.c_str(), option.value.c_str(), 0);
     }
 
@@ -2135,17 +2144,7 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     DLL_Log("[VideoEncoder]   has_b_frames=%d (encoder-reported reorder depth)", codecCtx->has_b_frames);
     DLL_Log("[VideoEncoder] ================================");
 
-    // AV1 NVENC driver warning: known driver bug (FFmpeg #11390, March 2026) where
-    // the encoder sometimes writes HEVC time_code SEI messages into AV1 bitstreams,
-    // producing undecodeable output.  Log a warning so users can correlate issues.
-    // Mitigation: set repeat_pps=1 to force PPS repetition which avoids the buggy
-    // code path in some driver versions.
-    if (codec && codec->name && strstr(codec->name, "av1") != nullptr) {
-        DLL_Log(
-            "[VideoEncoder] NOTE: av1_nvenc has a known driver bug (FFmpeg #11390) that can "
-            "produce undecodeable bitstreams. If video artifacts occur, update GPU driver.");
-        av_dict_set_int(&opts, "repeat_pps", 1, 0);
-        DLL_Log("[VideoEncoder] Applied av1_nvenc mitigation: repeat_pps=1");
+    if (codec && codec->id == AV_CODEC_ID_AV1) {
         DLL_Log(
             "[VideoEncoder] AV1 duplicate frames will be re-encoded from the cached texture (packet replay disabled)");
     }

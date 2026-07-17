@@ -17,6 +17,8 @@ struct EncoderOption {
 struct EncoderOptionPlan {
     std::vector<EncoderOption> generatedOptions;
     std::vector<EncoderOption> customOptions;
+    // Invariants that must win over user-provided options. Apply these last.
+    std::vector<EncoderOption> requiredOptions;
     std::optional<int64_t> bitRate;
     std::optional<int64_t> maxBitRate;
     int maxBFrames = 0;

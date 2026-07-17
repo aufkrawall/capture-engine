@@ -57,6 +57,23 @@ defaults for callers that omit an option:
 The patch deliberately keeps FFmpeg's upstream lookahead surface margin,
 weighted-prediction capability checks, and normal send/receive flush contract.
 
+### AV1 NVENC timecode safety boundary
+
+The source patches above do not modify FFmpeg's SMPTE ST 12-1 timecode metadata
+path. In the pinned FFmpeg 8.1.2 source, `av1_nvenc` defaults `s12m_tc` on and
+routes timecode side data through a payload builder whose syntax is not valid
+for an AV1 timecode metadata OBU. Current NVIDIA drivers also have a separate
+byte-alignment limitation in that metadata path. CaptureEngine does not attach
+S12M timecode side data, so `mediaengine/video_encoder_options.cpp` explicitly
+forces `s12m_tc=0` for AV1 NVENC after custom options. This avoids the unsafe,
+unused path without disabling generic SEI, closed-caption, or future HDR
+metadata handling and without changing video quality, cadence, or latency.
+
+Do not replace this guard with `repeat_pps`: AV1 has no PPS, FFmpeg's
+`av1_nvenc` does not expose that option, and an option applied after
+`avcodec_open2` cannot affect the encoder. A future FFmpeg/driver fix should be
+verified against both sides of the metadata issue before removing the guard.
+
 ## Applying Patches
 
 Patches are automatically applied by `build.py` during the FFmpeg build step.
