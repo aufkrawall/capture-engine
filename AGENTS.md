@@ -22,6 +22,7 @@ Copyright (c) 2026 aufkrawall
 - Always consult `llm-wiki/` for code, bug, build, test, config, debugging, or behavior work; for trivial localized work, read only the directly relevant page(s) when needed!
 - Keep `llm-wiki/` linted / quality-checked and update it when durable project knowledge changes. For trivial edits with no future-useful context, perform the semantic check but do not edit the wiki!
 - Mistrust code, code annotations and llm-wiki! Each of them might be stale or outdated! Come to your own conclusion and act based on that!
+- When inspecting an explicitly supplied logs/session/generated-artifact directory, do not use rg --files as the sole file inventory because Git ignore rules can hide relevant .log, .csv, dump, media, or installed-tree files! Enumerate literally with Get-ChildItem -Force (or use rg --files --no-ignore) before selecting files to inspect. Ignore rules govern discovery/staging defaults, not diagnostic relevance!
 - When fixing a bug or implementing a feature, generally always add new regression test units, or adjust existing ones!
 - When fixing a bug or implementing a feature, add or improve high-signal, rate-limited debug logging when it materially helps diagnose state transitions, failures, or regressions; do not add unconditional hot-path noise!
 - The llm-wiki might not get updated after every change; the git commit history might be more up to date!

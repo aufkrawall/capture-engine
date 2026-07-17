@@ -69,7 +69,7 @@ Primary sources:
 
 ## Core Expectations
 - `python tools/run_av_sync_matrix.py --contention-gate` is the long HAGS-on capture-contention profile. It requires `hagsEnabled=1` log evidence; runs DXGI duplication, WGC, and DX12 inject at 4K120 true 10-bit/high-entropy p1/p5/p6/p7 pressure; repeats every combination three times; and starts deterministic CPU contention workers only during each scenario. Dry-run/self-test validates construction but is not hardware acceptance evidence.
-- Contention triage names are `wgc_upstream_producer_starvation`, `duplication_consumer_starvation`, `capture_gpu_queue_starvation`, `hardware_encoder_starvation`, and `media_cpu_starvation`. Interpret HAGS and video-memory budgets as context rather than causal proof.
+- Contention triage uses backend-prefixed upstream names (`wgc_upstream_producer_starvation` or `dxgi_dup_upstream_producer_starvation`) plus `duplication_consumer_starvation`, `capture_gpu_queue_starvation`, `hardware_encoder_starvation`, and `media_cpu_starvation`. A DXGI `DupMissed` count alone is `dxgi_dup_delivery_gap` context; `duplication_consumer_starvation` additionally requires overload, pool exhaustion, or ingress pressure. Interpret HAGS and video-memory budgets as context rather than causal proof.
 - The repo is regression-paranoid. Fixes for one overlay or FG case are expected not to regress another one.
 - When changing risky logic, add or update focused regression tests where feasible.
 - Add enough debug logging to avoid making decisions from insufficient evidence.
