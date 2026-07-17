@@ -67,7 +67,7 @@ Primary sources:
 - `overlay-fg-status.md`
   - Current visible FG status publication rules for the overlay, including authoritative stable Reflex-driven Streamline suspend edges. Last verified 2026-07-15.
 - `debug-tools.md`
-  - Available Windows debug tools (cdb, windbg, Sysinternals) and their installed paths.
+  - Available Windows debug tools and paths plus always-on DX12 present/ProcessFrame stage diagnostics, including wrapper-initialization overlap. Last verified 2026-07-17.
 - `pseudo-overlay.md`
   - Controller-side pseudo-overlay for WGC capture: architecture, modes, foreground detection, process_list config parsing, known pitfalls (Trim charset, `;` comment skipping), debug logging, source anchors.
 - `regression-testing-and-logging.md`

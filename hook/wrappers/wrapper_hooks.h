@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "../common/dx12_process_frame_diagnostics.h"
 #include "dxgi_factory_wrap.h"
 #include "dxgi_swapchain_wrap.h"
 #include "wrapper_base.h"
@@ -146,6 +147,10 @@ HRESULT WINAPI Wrapped_DirectDrawCreateEx(GUID* lpGuid, LPVOID* lplpDD, REFIID i
 
 // Initialize wrapper hooks (replaces parts of current MinHook setup)
 bool InitializeWrapperHooks();
+
+// Lock-free activity snapshot used only to correlate an independently detected
+// render-thread stall with wrapper initialization/retry work on another thread.
+ce::dx12_process_frame_diagnostics::ConcurrentActivitySnapshot GetWrapperHookActivitySnapshot();
 
 // Shutdown wrapper hooks
 void ShutdownWrapperHooks();

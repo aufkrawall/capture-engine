@@ -3,8 +3,11 @@
  */
 
 #include <atomic>
+#include <cstdint>
 #include <cstdarg>
 #include <cstdio>
+
+#include "../../common/raii_helpers.h"
 
 // Include Windows header for MinGW compatibility
 #ifndef WIN32_LEAN_AND_MEAN
@@ -27,6 +30,7 @@ extern void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
 #include "../apis/dx12_hook.h"  // Access to g_DX12Hook implementation
 #include "../common/dx12_dred.h"
 #include "../common/dx12_overlay_policy.h"
+#include "../common/dx12_process_frame_diagnostics.h"
 #include "../common/fg_detection.h"
 #include "../common/hook_common.h"
 #include "../common/overlay_compat.h"
@@ -985,8 +989,24 @@ static bool s_D3D11Initialized = false;
 static bool s_D3D12Initialized = false;
 static bool s_D3D9Initialized = false;
 static bool s_DDrawInitialized = false;
+static std::atomic<uint64_t> s_WrapperHookActivityGeneration{0};
+static std::atomic<uint32_t> s_WrapperHookActiveCalls{0};
+
+ce::dx12_process_frame_diagnostics::ConcurrentActivitySnapshot GetWrapperHookActivitySnapshot() {
+    ce::dx12_process_frame_diagnostics::ConcurrentActivitySnapshot snapshot;
+    snapshot.generation = s_WrapperHookActivityGeneration.load(std::memory_order_relaxed);
+    snapshot.activeCalls = s_WrapperHookActiveCalls.load(std::memory_order_relaxed);
+    return snapshot;
+}
 
 bool InitializeWrapperHooks() {
+    s_WrapperHookActivityGeneration.fetch_add(1, std::memory_order_relaxed);
+    s_WrapperHookActiveCalls.fetch_add(1, std::memory_order_relaxed);
+    auto activityGuard = ce::make_scope_guard([]() {
+        s_WrapperHookActiveCalls.fetch_sub(1, std::memory_order_relaxed);
+        s_WrapperHookActivityGeneration.fetch_add(1, std::memory_order_relaxed);
+    });
+
     // Do NOT return early when g_WrappersActive is true from a previous
     // partial initialization (e.g. DllMain ran before D3D11.dll was loaded).
     // The per-category !s_*Initialized guards below let us retry categories

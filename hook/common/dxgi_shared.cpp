@@ -2833,21 +2833,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
                     DX12_ProcessFrameMinimal(pSwapChain);
                 }
             } else {
-                LARGE_INTEGER diagPfT0, diagPfT1, diagPfFreq;
-                QueryPerformanceCounter(&diagPfT0);
                 HandleDX12ProcessFrame(pSwapChain, true);
-                QueryPerformanceCounter(&diagPfT1);
-                QueryPerformanceFrequency(&diagPfFreq);
-                const double diagPfMs =
-                    (double)(diagPfT1.QuadPart - diagPfT0.QuadPart) * 1000.0 / (double)diagPfFreq.QuadPart;
-                if (diagPfMs >= 5.0) {
-                    static std::atomic<int> s_diagPfLog{0};
-                    const int n = s_diagPfLog.fetch_add(1, std::memory_order_relaxed);
-                    if (n < 200 || (n % 50) == 0) {
-                        HookLogImportant("DX12 DIAG: ProcessFrame (overlay) SLOW %.1fms (tid=0x%04X)", diagPfMs,
-                                         GetCurrentThreadId());
-                    }
-                }
             }
         } else if (!steamOnlyTest && DXGIShared::ShouldRunSharedD3D10Or11ProcessFrame(api)) {
             if (api == APIType::D3D10) {

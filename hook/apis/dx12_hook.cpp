@@ -27,6 +27,7 @@
 #include "../common/capture_base.h"
 #include "../common/capture_pacing.h"
 #include "../common/custom_overlay_dx12.h"
+#include "../common/dx12_process_frame_diagnostics.h"
 #include "../common/dx12_fg_transition_model.h"
 #include "../common/fg_detection.h"
 #include "../common/fg_session_state.h"
@@ -16074,12 +16075,16 @@ static void DX12_UpdateFocusAnalysis(SharedMemoryLayout* shm) {
 }
 // ===================== end DX12 focus/mode-switch analysis =====================
 
-void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture) {
+void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture,
+                  ce::dx12_process_frame_diagnostics::StageTimings* diagnostics = nullptr) {
     // Re-entrancy guard: NVIDIA driver can pump window messages during
     // ExecuteCommandLists (via WaitImpl → DefWindowProc), which can re-enter
     // our overlay code.  Detect and skip the re-entrant call.
     static thread_local bool s_inProcessFrame = false;
     if (s_inProcessFrame) {
+        if (diagnostics) {
+            diagnostics->reentrantInnerSkipped = true;
+        }
         return;
     }
     s_inProcessFrame = true;
@@ -19968,7 +19973,11 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
         if (captureBeforeOverlay) {
             int64_t captureStartUs = PerfLogger::GetQpcUs();
             PublishDX12CapturedFrame(pSwapChain, captureShm, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx);
-            perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
+            const int64_t captureUs = PerfLogger::GetQpcUs() - captureStartUs;
+            perfMetrics.captureUs = static_cast<int32_t>(captureUs);
+            if (diagnostics) {
+                diagnostics->captureUs += captureUs;
+            }
         }
 
         if (!skipOverlayDraw) {
@@ -21298,6 +21307,20 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                     }
 
                                     QueryPerformanceCounter(&perfEnd);
+                                    if (diagnostics && perfFreq.QuadPart > 0) {
+                                        const auto toUs = [&](LONGLONG ticks) {
+                                            return (ticks * 1000000) / perfFreq.QuadPart;
+                                        };
+                                        diagnostics->overlayAcquireUs =
+                                            toUs(perfGetBuf.QuadPart - perfQI.QuadPart);
+                                        diagnostics->overlayRecordUs =
+                                            toUs(perfRecord.QuadPart - perfGetBuf.QuadPart);
+                                        diagnostics->overlaySubmitUs =
+                                            toUs(perfSubmit.QuadPart - perfRecord.QuadPart);
+                                        diagnostics->overlayPostSubmitUs =
+                                            toUs(perfEnd.QuadPart - perfSubmit.QuadPart);
+                                        diagnostics->overlayBreakdownValid = true;
+                                    }
                                     // Periodic perf dump every 300 frames
                                     static int s_perfDumpCounter = 0;
                                     if (++s_perfDumpCounter % 300 == 0) {
@@ -21377,7 +21400,11 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
     if (captureAfterOverlay) {
         int64_t captureStartUs = PerfLogger::GetQpcUs();
         PublishDX12CapturedFrame(pSwapChain, captureShm, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx);
-        perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - captureStartUs);
+        const int64_t captureUs = PerfLogger::GetQpcUs() - captureStartUs;
+        perfMetrics.captureUs = static_cast<int32_t>(captureUs);
+        if (diagnostics) {
+            diagnostics->captureUs += captureUs;
+        }
     }
 }
 
@@ -21439,7 +21466,18 @@ void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain) {
     sc3->Release();
 }
 
-void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
+void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain,
+                               ce::dx12_process_frame_diagnostics::StageTimings* diagnostics) {
+    const int64_t diagnosticStartUs = diagnostics ? PerfLogger::GetQpcUs() : 0;
+    if (diagnostics) {
+        *diagnostics = {};
+    }
+    auto diagnosticGuard = ce::make_scope_guard([&]() {
+        if (diagnostics) {
+            diagnostics->totalUs = PerfLogger::GetQpcUs() - diagnosticStartUs;
+        }
+    });
+
     // CRITICAL: Skip all rendering during shutdown to prevent crashes
     if (HookIsShuttingDown()) {
         return;
@@ -21638,7 +21676,12 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
 
     ID3D12CommandQueue* currentSwapchainQueue = nullptr;
     {
-        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        std::unique_lock<std::recursive_mutex> lock(g_CommandQueueMutex, std::defer_lock);
+        const int64_t lockStartUs = diagnostics ? PerfLogger::GetQpcUs() : 0;
+        lock.lock();
+        if (diagnostics) {
+            diagnostics->commandQueueLockWaitUs += PerfLogger::GetQpcUs() - lockStartUs;
+        }
         currentSwapchainQueue = g_SwapchainQueue;
     }
     {
@@ -21814,7 +21857,12 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
 
     ID3D12CommandQueue* currentCommandQueueForStaleRuntimeOwnedCheck = nullptr;
     {
-        std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+        std::unique_lock<std::recursive_mutex> lock(g_CommandQueueMutex, std::defer_lock);
+        const int64_t lockStartUs = diagnostics ? PerfLogger::GetQpcUs() : 0;
+        lock.lock();
+        if (diagnostics) {
+            diagnostics->commandQueueLockWaitUs += PerfLogger::GetQpcUs() - lockStartUs;
+        }
         currentCommandQueueForStaleRuntimeOwnedCheck = g_CommandQueue.load(std::memory_order_acquire);
     }
     const bool staleRuntimeOwnedStreamlineNoFGRun =
@@ -21841,7 +21889,12 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
                 streamlineFGRunning ? 1 : 0);
         }
         {
-            std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
+            std::unique_lock<std::recursive_mutex> lock(g_CommandQueueMutex, std::defer_lock);
+            const int64_t lockStartUs = diagnostics ? PerfLogger::GetQpcUs() : 0;
+            lock.lock();
+            if (diagnostics) {
+                diagnostics->commandQueueLockWaitUs += PerfLogger::GetQpcUs() - lockStartUs;
+            }
             if (g_FGRuntimeOwnsSwapchain) {
                 g_FGRuntimeOwnsSwapchain = false;
                 DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.store(false, std::memory_order_release);
@@ -21911,18 +21964,70 @@ void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
     const bool screenshotUsePostSL =
         screenshotWantsOverlay && ShouldUseConfirmedPostSLForOverlayIncludedWork(screenshotOverlayCfg);
     if (screenshotRequested && !screenshotWantsOverlay) {
+        const int64_t screenshotStartUs = diagnostics ? PerfLogger::GetQpcUs() : 0;
         CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
+        if (diagnostics) {
+            diagnostics->screenshotUs += PerfLogger::GetQpcUs() - screenshotStartUs;
+        }
     }
 
     // For interpolated frames, only render overlay (no capture processing) since
     // the backbuffer content is from the FG engine, not a real game frame.
-    ProcessFrame(sc3, processCapture);
+    const int64_t innerStartUs = diagnostics ? PerfLogger::GetQpcUs() : 0;
+    if (diagnostics) {
+        diagnostics->innerCalled = true;
+    }
+    ProcessFrame(sc3, processCapture, diagnostics);
+    if (diagnostics) {
+        diagnostics->innerUs = PerfLogger::GetQpcUs() - innerStartUs;
+    }
 
     if (screenshotWantsOverlay && !screenshotUsePostSL) {
+        const int64_t screenshotStartUs = diagnostics ? PerfLogger::GetQpcUs() : 0;
         CaptureRequestedDX12Screenshot(sc3, screenshotShm, screenshotRequestId);
+        if (diagnostics) {
+            diagnostics->screenshotUs += PerfLogger::GetQpcUs() - screenshotStartUs;
+        }
     }
 
     sc3->Release();
+}
+
+void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain) {
+    ce::dx12_process_frame_diagnostics::StageTimings timings;
+    const auto wrapperActivityBefore = GetWrapperHookActivitySnapshot();
+    DX12_ProcessFrameExternal(pSwapChain, &timings);
+    if (timings.totalUs >= 5000) {
+        const auto wrapperActivityAfter = GetWrapperHookActivitySnapshot();
+        static std::atomic<int> s_slowProcessFrameLogCount{0};
+        const int logCount = s_slowProcessFrameLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logCount < 200 || (logCount % 50) == 0) {
+            const auto breakdown = ce::dx12_process_frame_diagnostics::ComputeBreakdown(timings);
+            const bool wrapperActivityOverlap = ce::dx12_process_frame_diagnostics::DidActivityOverlap(
+                wrapperActivityBefore, wrapperActivityAfter);
+            HookLogImportant(
+                "DX12 DIAG: ProcessFrame (overlay) SLOW %.1fms breakdown external=%.3fms inner=%.3fms "
+                "innerOther=%.3fms capture=%.3fms overlay=%.3fms "
+                "[valid=%d acquire=%.3fms record=%.3fms submit=%.3fms post=%.3fms] screenshot=%.3fms "
+                "queueLockWait=%.3fms wrapperInitOverlap=%d wrapperActivity=%llu/%u->%llu/%u "
+                "innerCalled=%d reentrantSkip=%d tid=0x%04X",
+                static_cast<double>(timings.totalUs) / 1000.0,
+                static_cast<double>(breakdown.externalUs) / 1000.0,
+                static_cast<double>(timings.innerUs) / 1000.0,
+                static_cast<double>(breakdown.innerOtherUs) / 1000.0,
+                static_cast<double>(timings.captureUs) / 1000.0,
+                static_cast<double>(breakdown.overlayUs) / 1000.0, timings.overlayBreakdownValid ? 1 : 0,
+                static_cast<double>(timings.overlayAcquireUs) / 1000.0,
+                static_cast<double>(timings.overlayRecordUs) / 1000.0,
+                static_cast<double>(timings.overlaySubmitUs) / 1000.0,
+                static_cast<double>(timings.overlayPostSubmitUs) / 1000.0,
+                static_cast<double>(timings.screenshotUs) / 1000.0,
+                static_cast<double>(timings.commandQueueLockWaitUs) / 1000.0, wrapperActivityOverlap ? 1 : 0,
+                static_cast<unsigned long long>(wrapperActivityBefore.generation), wrapperActivityBefore.activeCalls,
+                static_cast<unsigned long long>(wrapperActivityAfter.generation), wrapperActivityAfter.activeCalls,
+                timings.innerCalled ? 1 : 0, timings.reentrantInnerSkipped ? 1 : 0, GetCurrentThreadId());
+        }
+    }
 }
 
 namespace DXGIShared {
