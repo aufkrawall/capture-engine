@@ -134,9 +134,9 @@ TEST(SharedDefsTest, DiscoveryRequiresExactPublishedBuildIdentity) {
     discovery.SetMagic(DISCOVERY_MAGIC);
     EXPECT_TRUE(ValidateDiscoveryInfo(&discovery));
 
-    discovery.SetBuildNumber(BUILD_NUMBER ^ 1u);
+    discovery.SetBuildNumber(GetCurrentBuildNumber() ^ 1u);
     EXPECT_FALSE(ValidateDiscoveryInfo(&discovery));
-    discovery.SetBuildNumber(BUILD_NUMBER);
+    discovery.SetBuildNumber(GetCurrentBuildNumber());
     EXPECT_TRUE(ValidateDiscoveryInfo(&discovery));
 
     discovery.SetMagic(0);

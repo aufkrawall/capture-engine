@@ -9,8 +9,6 @@
 #include <vector>
 #include "shared_defs.h"
 
-#include "build_version.h"
-
 static constexpr int kMaxAudioSections = 8;
 
 struct AudioConfig {

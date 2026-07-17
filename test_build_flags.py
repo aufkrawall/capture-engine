@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import time
@@ -35,6 +36,20 @@ class BuildFlagPolicyTest(unittest.TestCase):
         captureengine_flags = build.make_cpp_cflags(build.OPT_FLAGS_X64)
         self.assertIn(build.CFG_COMPILE_FLAG, captureengine_flags)
 
+    def test_independent_architecture_environments_inherit_force_rebuild(self) -> None:
+        target = {"PATH": "x86-tools"}
+        build.propagate_build_control_environment({"FORCE_REBUILD": "1"}, target)
+        self.assertEqual(target["FORCE_REBUILD"], "1")
+
+    def test_unit_test_objects_are_isolated_from_product_and_sanitizer_objects(self) -> None:
+        product_dir = os.path.normpath(os.path.join(build.OBJ_DIR, "x64"))
+        test_dir = os.path.normpath(build.get_unit_test_object_dir({}))
+        sanitizer_dir = os.path.normpath(build.get_unit_test_object_dir({"CE_SANITIZE": "1"}))
+
+        self.assertNotEqual(test_dir, product_dir)
+        self.assertNotEqual(sanitizer_dir, product_dir)
+        self.assertNotEqual(sanitizer_dir, test_dir)
+
     def test_cfg_link_flag_is_x64_only(self) -> None:
         self.assertNotIn(build.CFG_LINK_FLAG, build.LD_OPT_FLAGS)
         self.assertIn(build.CFG_LINK_FLAG, build.LD_OPT_FLAGS_X64)
@@ -56,18 +71,132 @@ class BuildFlagPolicyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "source.cpp"
             header = Path(temporary) / "shared_layout.h"
+            compiler = Path(temporary) / "clang++.exe"
             source.write_text('#include "shared_layout.h"\n', encoding="utf-8")
             header.write_text("#define SHARED_VERSION 33\n", encoding="utf-8")
+            compiler.write_bytes(b"compiler")
 
             with patch.object(build, "PROJECT_ROOT", temporary):
                 build.compute_file_content_hash.cache_clear()
-                original = build.compute_build_signature(str(source), "clang++", ["-std=c++20"], [str(header)])
+                build.compute_compiler_fingerprint.cache_clear()
+                original = build.compute_build_signature(
+                    str(source), str(compiler), ["-std=c++20"], [str(header)]
+                )
                 header.write_text("#define SHARED_VERSION 34\n", encoding="utf-8")
                 os.utime(header, (1, 1))
                 build.compute_file_content_hash.cache_clear()
-                changed = build.compute_build_signature(str(source), "clang++", ["-std=c++20"], [str(header)])
+                changed = build.compute_build_signature(
+                    str(source), str(compiler), ["-std=c++20"], [str(header)]
+                )
 
             self.assertNotEqual(original, changed)
+
+    def test_compile_signature_tracks_compiler_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source.cpp"
+            compiler = Path(temporary) / "clang++.exe"
+            source.write_text("int value = 1;\n", encoding="utf-8")
+            compiler.write_bytes(b"compiler-a")
+
+            build.compute_compiler_fingerprint.cache_clear()
+            original = build.compute_build_signature(str(source), str(compiler), ["-std=c++20"])
+            compiler.write_bytes(b"compiler-b")
+            os.utime(compiler, (1, 1))
+            build.compute_compiler_fingerprint.cache_clear()
+            changed = build.compute_build_signature(str(source), str(compiler), ["-std=c++20"])
+
+            self.assertNotEqual(original, changed)
+
+    def test_generated_build_version_isolated_from_fanout_headers(self) -> None:
+        project_root = Path(build.__file__).parent
+        for relative_path in ("common/shared_defs.h", "common/config.h"):
+            source = (project_root / relative_path).read_text(encoding="utf-8")
+            self.assertNotIn('"build_version.h"', source, relative_path)
+
+        identity_source = (project_root / "common/build_identity.cpp").read_text(encoding="utf-8")
+        self.assertIn('#include "build_version.h"', identity_source)
+        build_source = (project_root / "build.py").read_text(encoding="utf-8")
+        self.assertIn('os.path.join(PROJECT_ROOT, "common", "build_identity.cpp")', build_source)
+
+    def test_incremental_signature_failure_recompiles_instead_of_trusting_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source.cpp"
+            obj = Path(temporary) / "source.o"
+            dep = Path(str(obj) + ".d")
+            source.write_text("int value = 1;\n", encoding="utf-8")
+            obj.write_bytes(b"object")
+            dep.write_text(f"{obj}: {source}\n", encoding="utf-8")
+            os.utime(source, (1, 1))
+            os.utime(dep, (1, 1))
+            os.utime(obj, (2, 2))
+
+            with patch.object(build, "compute_build_signature", side_effect=OSError("unreadable")):
+                self.assertTrue(
+                    build.should_recompile(
+                        str(source), str(obj), str(dep), {"FORCE_REBUILD": "0"}, "clang++", ["-std=c++20"]
+                    )
+                )
+
+    def test_no_build_verification_reuses_version_without_bumping(self) -> None:
+        with patch.object(build, "read_build_version_number", return_value=4321) as read_version, patch.object(
+            build, "bump_and_write_build_version"
+        ) as bump_version:
+            selected = build.resolve_build_number_for_invocation(
+                sanitize_regression_child=False, resume_failed_build=False, no_build=True
+            )
+
+        self.assertEqual(selected, 4321)
+        read_version.assert_called_once_with()
+        bump_version.assert_not_called()
+
+    def test_resume_requires_matching_immediately_failed_build_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            header = Path(temporary) / "build_version.h"
+            manifest = Path(temporary) / "latest_manifest.json"
+            header.write_text("#define BUILD_NUMBER 8765\n", encoding="utf-8")
+            failed_state = {
+                "top_level": True,
+                "success": False,
+                "build_number": 8765,
+                "build_script_sha256": build.sha256_file(build.__file__),
+                "args": ["--skip-updates"],
+            }
+            manifest.write_text(json.dumps(failed_state), encoding="utf-8")
+
+            self.assertEqual(build.read_failed_build_resume_version(str(manifest), str(header)), 8765)
+
+            failed_state["success"] = True
+            manifest.write_text(json.dumps(failed_state), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "did not fail"):
+                build.read_failed_build_resume_version(str(manifest), str(header))
+
+            failed_state["success"] = False
+            failed_state["build_script_sha256"] = "stale"
+            manifest.write_text(json.dumps(failed_state), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "build.py changed"):
+                build.read_failed_build_resume_version(str(manifest), str(header))
+
+    def test_concise_logging_hides_detail_only_from_console(self) -> None:
+        previous_log = build.LOG_FILE
+        previous_concise = build.CONCISE_OUTPUT
+        previous_verbose = build.VERBOSE_COMMANDS
+        with tempfile.TemporaryDirectory() as temporary:
+            build.LOG_FILE = str(Path(temporary) / "build.log")
+            build.CONCISE_OUTPUT = True
+            build.VERBOSE_COMMANDS = False
+            try:
+                with patch("builtins.print") as print_output:
+                    build.log("compile detail", detail=True)
+                    print_output.assert_not_called()
+                    build.log("stage summary")
+                    print_output.assert_called_once()
+                log_text = Path(build.LOG_FILE).read_text(encoding="utf-8")
+                self.assertIn("compile detail", log_text)
+                self.assertIn("stage summary", log_text)
+            finally:
+                build.LOG_FILE = previous_log
+                build.CONCISE_OUTPUT = previous_concise
+                build.VERBOSE_COMMANDS = previous_verbose
 
     def test_sanitizer_child_reuses_parent_build_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -75,10 +204,16 @@ class BuildFlagPolicyTest(unittest.TestCase):
             header.write_text("#define BUILD_NUMBER 1234\n", encoding="utf-8")
             self.assertEqual(build.read_build_version_number(str(header)), 1234)
 
-        with open(build.__file__, encoding="utf-8") as build_file:
-            source = build_file.read()
-        self.assertIn("if sanitize_regression_child:", source)
-        self.assertIn("current_build_number = read_build_version_number()", source)
+        with patch.object(build, "read_build_version_number", return_value=1234) as read_version, patch.object(
+            build, "bump_and_write_build_version"
+        ) as bump_version:
+            selected = build.resolve_build_number_for_invocation(
+                sanitize_regression_child=True, resume_failed_build=False, no_build=False
+            )
+
+        self.assertEqual(selected, 1234)
+        read_version.assert_called_once_with()
+        bump_version.assert_not_called()
 
     def test_vulkan_manifests_use_build_specific_layer_identity(self) -> None:
         with open(build.__file__, encoding="utf-8") as build_file:

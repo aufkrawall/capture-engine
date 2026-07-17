@@ -8,7 +8,7 @@
 #include <cstring>  // for memcpy in seqlock helpers
 #include <type_traits>
 
-#include "build_version.h"
+#include "build_identity.h"
 
 #ifndef MAX_PATH
 #define MAX_PATH 260
@@ -86,7 +86,7 @@ inline int StreamlineGeneratedFramesToDLSSFGMultiplier(uint32_t generatedFrames)
 struct DiscoveryInfo {
     std::atomic<uint32_t> injectPid{0};  // PID of inject process
     std::atomic<uint32_t> magic{0};      // Magic number (0xCE12CAFE)
-    std::atomic<uint32_t> buildNumber{BUILD_NUMBER};
+    std::atomic<uint32_t> buildNumber{GetCurrentBuildNumber()};
 
     // Whitelist Cache - Null-separated strings, double-null terminated
     char processWhitelist[1024]{};
@@ -117,7 +117,8 @@ struct DiscoveryInfo {
 static const uint32_t DISCOVERY_MAGIC = 0xCE12CAFE;
 
 inline bool ValidateDiscoveryInfo(const DiscoveryInfo* discovery) {
-    return discovery && discovery->GetMagic() == DISCOVERY_MAGIC && discovery->GetBuildNumber() == BUILD_NUMBER;
+    return discovery && discovery->GetMagic() == DISCOVERY_MAGIC &&
+           discovery->GetBuildNumber() == GetCurrentBuildNumber();
 }
 
 // Generate a version-isolated IPC name. An older DLL must fail to open the

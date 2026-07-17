@@ -4,7 +4,7 @@
 #include <fstream>
 #include <string>
 
-#include "../common/build_version.h"
+#include "../common/build_identity.h"
 #include "../common/vulkan_layer_registration.h"
 
 namespace {
@@ -53,9 +53,9 @@ TEST(VulkanLayerRegistrationTest, CurrentUserPlanSplitsHKCUViewsByArchitecture) 
     EXPECT_EQ(x64Target->manifests[0].manifestPath, manifest64);
     EXPECT_EQ(x86Target->manifests[0].manifestPath, manifest32);
     EXPECT_EQ(x64Target->manifests[0].layerName,
-              std::wstring(L"VK_LAYER_CE_overlay_b") + std::to_wstring(BUILD_NUMBER));
+              std::wstring(L"VK_LAYER_CE_overlay_b") + std::to_wstring(GetCurrentBuildNumber()));
     EXPECT_EQ(x86Target->manifests[0].layerName,
-              std::wstring(L"VK_LAYER_CE_overlay_x86_b") + std::to_wstring(BUILD_NUMBER));
+              std::wstring(L"VK_LAYER_CE_overlay_x86_b") + std::to_wstring(GetCurrentBuildNumber()));
 
     std::filesystem::remove_all(baseDir);
 }

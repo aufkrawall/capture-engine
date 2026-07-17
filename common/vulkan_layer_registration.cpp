@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-#include "build_version.h"
+#include "build_identity.h"
 #include "logging.h"
 
 namespace ce::vulkan_layer {
@@ -106,7 +106,7 @@ bool IsOwnedManifestPath(const std::filesystem::path& path) {
 }
 
 std::wstring BuildVersionedLayerName(const wchar_t* baseName) {
-    return std::wstring(baseName) + L"_b" + std::to_wstring(BUILD_NUMBER);
+    return std::wstring(baseName) + L"_b" + std::to_wstring(GetCurrentBuildNumber());
 }
 
 class HandleCloser {

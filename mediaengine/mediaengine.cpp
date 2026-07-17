@@ -6270,7 +6270,7 @@ MEDIAENGINE_API void MediaEngine_SetLogCallback(LogCallback callback) {
 
 MEDIAENGINE_API bool MediaEngine_Init(const AppConfig* config) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
-    DLL_Log("[Media] MediaEngine_Init Called. Version: %s (Built: %s)", CAPTURE_VERSION, BUILD_TIMESTAMP);
+    DLL_Log("[Media] MediaEngine_Init Called. Version: %s (Built: %s)", GetCaptureVersion(), GetBuildTimestamp());
     if (!g_Engine) {
         g_Engine = std::make_unique<MediaEngine>();
     }

@@ -8,8 +8,12 @@ Copyright (c) 2026 aufkrawall
 ## Critical workflow
 
 - Windows-first project: prefer PowerShell 7.6, Windows-native paths, and installed project tools unless there is a clear reason not to!
-- After the final code change set is complete, run `python build.py --skip-updates`; do not rebuild after every small intermediate edit, and do not use `python build.py --version`!
-- For test-only runs without recompilation, use `python build.py --no-build --run-tests --skip-updates`
+- After the final code change set is complete, normally run `python build.py --incremental --skip-updates --concise`. This reuses an object only when its source, compiler binary, flags, dependency file, and project-header content signatures remain valid; it still relinks, packages, and runs the normal binary/PE verification stages. Do not rebuild after every small intermediate edit, and do not use `python build.py --version`!
+- Use the clean/default `python build.py --skip-updates --concise` gate instead when the task touches `build.py`, compiler/linker or hardening policy, dependency/toolchain/FFmpeg configuration, generated-build machinery, or shared ABI/layout; when investigating possible stale artifacts; or when explicitly requested. `--force-rebuild` remains the stronger recovery that physically removes `build/obj` first.
+- If a final product build fails after it has started, fix the cause and use `python build.py --resume --skip-updates --concise`. Resume is accepted only for the immediately preceding failed top-level build, keeps that failed attempt's build identity, and validates cached objects normally. If resume refuses, the toolchain/dependency boundary changed, cache correctness is in doubt, or the previous run succeeded, use the applicable normal incremental or clean gate instead.
+- For focused C++ iteration, prefer `python build.py --incremental --tests-only --run-tests --gtest-filter=<suite-or-test> --skip-updates --concise`. The final product build and complete relevant test gate are still required.
+- For test-only runs without recompilation, use `python build.py --no-build --run-tests --skip-updates --concise`. No-build verification reuses the current build identity and must not invalidate version-dependent objects.
+- Prefer `--concise` for agent runs: routine command/progress detail remains in `build.log`, while the console retains stage summaries and all errors. Use `build/verification/latest_summary.txt` or `latest_manifest.json` for status and inspect full logs only when diagnosing a failure.
 - Always git commit after code changes!
 - Never run `clang-format.exe -i`, `python build.py --format`, or any whole-file automatic formatter on existing source files unless explicitly requested. Preserve existing formatting and line endings; keep edits narrowly scoped and inspect `git diff --check` / `git diff` before building!
 - Before committing, run relevant tests/unit tests and ensure build/test results succeed.
@@ -23,9 +27,7 @@ Copyright (c) 2026 aufkrawall
 - The llm-wiki might not get updated after every change; the git commit history might be more up to date!
 - Always keep the user informed when the harness (Codex, Claude Code, OpenCode etc.) auto-approval feature denied some steps or caused additional required steps!
 - Under the Codex managed filesystem sandbox, including “Approve for me” mode, do not first attempt project build or test commands with default sandbox permissions. MSYS2 child processes cannot reliably create their prefix files there.
-    - Invoke these commands with escalated permissions on the first attempt:
-        - `python build.py --skip-updates`
-        - `python build.py --no-build --run-tests --skip-updates`
+    - Invoke `build.py` build/test commands with escalated permissions on the first attempt, including the canonical incremental, clean, resume, focused-test, and no-build commands above.
     - Keep escalation scoped to the exact command; never request blanket approval for `python` or arbitrary scripts.
     - If automatic escalation review denies the command, report the denial immediately; do not skip or weaken verification.
 - When you run tools and test programs in an agentic manner, make sure they run sufficiently long, but not unnecessarily long, and make also sure no unnecessary lingering processes are left behind!

@@ -310,8 +310,8 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
                 sz.QuadPart = 0;
                 if (GetFileSizeEx(hFile, &sz) && sz.QuadPart == 0) {
                     char header[512];
-                    int hlen = snprintf(header, sizeof(header), "[BUILD] Version=%s Built=%s\r\n", CAPTURE_VERSION,
-                                        BUILD_TIMESTAMP);
+                    int hlen = snprintf(header, sizeof(header), "[BUILD] Version=%s Built=%s\r\n",
+                                        GetCaptureVersion(), GetBuildTimestamp());
                     if (hlen > 0) {
                         DWORD hwritten;
                         WriteFile(hFile, header, (DWORD)hlen, &hwritten, NULL);

@@ -330,9 +330,9 @@ static bool PerformEarlyWhitelistCheck() {
     }
 
     g_LayerState.whitelisted = false;
-    if (pDisc->GetMagic() == DISCOVERY_MAGIC && pDisc->GetBuildNumber() != BUILD_NUMBER) {
+    if (pDisc->GetMagic() == DISCOVERY_MAGIC && pDisc->GetBuildNumber() != GetCurrentBuildNumber()) {
         EarlyLog("Stale layer build %u does not match active CaptureEngine build %u - layer dormant",
-                 static_cast<unsigned>(BUILD_NUMBER), static_cast<unsigned>(pDisc->GetBuildNumber()));
+                 static_cast<unsigned>(GetCurrentBuildNumber()), static_cast<unsigned>(pDisc->GetBuildNumber()));
     }
     if (ValidateDiscoveryInfo(pDisc)) {
         const char* pw = pDisc->processWhitelist;

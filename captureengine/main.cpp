@@ -171,8 +171,8 @@ void WriteSessionManifest(const std::string& logsDir, const AppConfig& config, P
         return;
     }
 
-    manifest << "build_version=" << CAPTURE_VERSION << "\n";
-    manifest << "build_timestamp=" << BUILD_TIMESTAMP << "\n";
+    manifest << "build_version=" << GetCaptureVersion() << "\n";
+    manifest << "build_timestamp=" << GetBuildTimestamp() << "\n";
     manifest << "session_dir=" << logsDir << "\n";
     manifest << "process_mode="
              << (mode == ProcessMode::Controller ? "Controller"
@@ -1654,7 +1654,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     if (IsAnyLoggingEnabled(g_Config.logLevel)) {
         Log_Init(logPath, g_Config.logLevel);
-        LogInfo("CaptureEngine Starting... Version: %s (Built: %s)", CAPTURE_VERSION, BUILD_TIMESTAMP);
+        LogInfo("CaptureEngine Starting... Version: %s (Built: %s)", GetCaptureVersion(), GetBuildTimestamp());
         LogInfo("Process Mode: %s", mode == ProcessMode::Controller ? "Controller"
                                     : mode == ProcessMode::Inject   ? "Inject"
                                     : mode == ProcessMode::Media    ? "Media"

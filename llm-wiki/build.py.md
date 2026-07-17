@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-07-17 (project-header content signatures plus existing source-closure, packaging, hardening, sanitizer, and provenance policy)
+Last cross-checked: 2026-07-17 (validated incremental/failure-resume workflow, compiler/project-header content signatures, isolated product/test/sanitizer object variants, no-build version reuse, concise agent output, and existing source-closure, packaging, hardening, sanitizer, and provenance policy)
 
 Primary sources:
 - `AGENTS.md`
@@ -23,19 +23,35 @@ Running `python build.py` is the full default-quality path. On Windows it update
 - This establishes strong, reproducible provenance checks for the new dependency closure, not a claim of 100% trust for every project input. The precompiled MSYS2 toolchain/build environment and the existing FFmpeg Git source still require trust in their official distribution/repository; this change does not add a signed-commit/tag policy for that FFmpeg checkout. Hardware-specific oneVPL/QSV runtime validation remains an external validation step.
 
 ## Required Agent Post-Change Verification
-After the final code change set is complete, run the required full product build once:
+For ordinary source changes, the required final product gate is a validated incremental compile followed by the unchanged link, package, shader, PE/import/PDB, and other product-verification stages:
 
 ```powershell
-python build.py --skip-updates
+python build.py --incremental --skip-updates --concise
 ```
+
+Use the clean/default compile gate instead when the task touches `build.py`, compile/link/hardening policy, the dependency/toolchain/FFmpeg configuration, generated-build machinery, or shared ABI/layout; when stale artifacts are under investigation; or when explicitly requested:
+
+```powershell
+python build.py --skip-updates --concise
+```
+
+If a product build fails after starting, correct the failure and resume the immediately preceding failed top-level identity without recompiling proven-unchanged units:
+
+```powershell
+python build.py --resume --skip-updates --concise
+```
+
+`--resume` refuses a successful/no-build/non-top-level predecessor, a header/manifest identity mismatch, any `build.py` content change since the failed attempt, `--no-build`, `--force-rebuild`, or a run without `--skip-updates`. A refused or cache-suspect resume falls back to the applicable normal incremental or clean gate. A clean attempt followed by a successful guarded resume constitutes one complete clean build transaction: every object was either compiled by the clean attempt or revalidated/recompiled after the fix, and all final link/package/verification stages completed on the resumed run.
 
 Then run relevant tests against the freshly built binaries. The canonical full test-only command is:
 
 ```powershell
-python build.py --no-build --run-tests --skip-updates
+python build.py --no-build --run-tests --skip-updates --concise
 ```
 
-Do not repeat the full build after every small intermediate edit; use focused tests during iteration and perform the required full build on the final code set. `--verify` remains available as an explicit broader quality/sanitizer workflow, but it is not the default agent command required by `AGENTS.md`.
+No-build verification reuses `common/build_version.h`; it does not mint an identity for binaries it did not compile or invalidate version-dependent objects for the next build. During C++ iteration, use `--incremental --tests-only --run-tests --gtest-filter=<expr> --skip-updates --concise` where applicable. Do not repeat a clean build after every small edit. `--verify` remains available as an explicit broader quality/sanitizer workflow, but it is not the default agent command required by `AGENTS.md`.
+
+`--concise` suppresses routine command and per-file progress lines from the console only. Complete detail remains in `build.log` and the verification bundle; errors and stage summaries remain visible. This reduces agent context consumption without discarding diagnostics.
 
 Default quality mode currently:
 - bootstraps toolchain state as needed
@@ -53,16 +69,18 @@ Default quality mode currently:
 ### User-facing and advanced flags
 | Flag | Tier | Effect | Notes |
 | --- | --- | --- | --- |
-| `--verify` | user-facing | Run the broader combined verification flow | Enables lint, unit tests, and sanitizer regression cadence in one top-level run and emits a compact verification bundle under `build/verification/`. Use when explicitly requested or when the additional quality/sanitizer scope is warranted; the required default agent build remains `python build.py --skip-updates`. |
+| `--verify` | user-facing | Run the broader combined verification flow | Enables lint, unit tests, and sanitizer regression cadence in one top-level run and emits a compact verification bundle under `build/verification/`. Use when explicitly requested or when the additional quality/sanitizer scope is warranted; ordinary agent work uses the validated incremental gate, with the documented clean-build triggers. |
 | `--skip-updates` | user-facing | Reuse current FFmpeg source-built outputs when possible | On Windows, if the private dependency prefix and FFmpeg outputs are complete/current and `installed/captureengine/ffmpeg` exists, the script skips the FFmpeg rebuild and just syncs runtime DLLs. Missing, stale, or configuration-mismatched outputs still rebuild. On Linux and WSL, FFmpeg comes from MSYS2 packages. |
 | `--run-tests` | user-facing | Build and run `tests/unit_tests.exe` | Unit test sources are compiled on every build anyway so `compile_commands.json` stays useful. This flag controls execution. |
 | `--gtest-filter=<expr>` | user-facing | Pass a GoogleTest filter through to `tests/unit_tests.exe` | Useful together with `--run-tests` for focused iteration on one suite or a few cases. |
 | `--tests-only` | user-facing | Stop after building/running unit-test dependencies and `tests/unit_tests.exe` | Skips the later CaptureEngine, hook DLL, mediaengine DLL, Vulkan layer, and testapp build phases. Best paired with `--run-tests`. |
+| `--no-build` | user-facing | Run requested checks against existing binaries without compiling | Reuses the current build identity instead of changing `build_version.h`; fails if a requested test binary is missing. |
 | `--run-integration-tests` | user-facing | Run smoke integration tests after the build | Also implies `--run-tests`. Before running, the script forces at least `log_level=debug` in `installed/captureengine/config.ini` if that file exists. |
 | `--full-integration` | user-facing | Run the full integration matrix | Implies `--run-integration-tests`, which also implies `--run-tests`. |
 | `--lint` | user-facing | Run `clang-format --dry-run -Werror`, `flake8`, and `pyright` | If passed alone, the script exits after linting. |
 | `--format` | user-facing | Run `clang-format -i` and `black` | If passed alone, the script exits after formatting. Do not use it on existing source files unless explicitly requested; whole-file formatting creates unrelated churn in the current tree. |
-| `--incremental` | user-facing | Reuse cached objects when possible | Default behavior is force rebuild. This flag disables that default. |
+| `--incremental` | user-facing | Reuse signature-proven unchanged objects | Default behavior remains force rebuild. Source, compiler-binary, flags, dependency-file, and project-header content signatures fail closed to recompilation; normal link/package/verification stages still run. |
+| `--resume` | user-facing | Resume the immediately preceding failed top-level product build | Implies incremental object validation and reuses the failed attempt's build identity. Requires `--skip-updates`; refuses successful/no-build/sanitizer-child predecessors, identity or build-script mismatch, `--no-build`, and `--force-rebuild`. |
 | `--force-rebuild` | advanced | Delete `build/obj` before the normal build flow starts | Separate from the default `FORCE_REBUILD=1` behavior; this does an early physical cleanup of objects. |
 | `--sanitize` | user-facing | Build x64 with ASan + UBSan | Disables LTO, sets sanitizer env flags, covers captureengine, mediaengine, x64 hook, Vulkan, and the process-loopback helper, and skips x86 artifacts whose sanitizer runtime is unavailable. |
 | `--sanitize-x86` | advanced | Require x86 sanitizer coverage | Fails explicitly because the required MinGW x86 sanitizer runtime is unavailable; coverage is never silently claimed or skipped. |
@@ -72,6 +90,7 @@ Default quality mode currently:
 | `--jobs N` | user-facing | Override parallel compile worker count | Stored as `CE_BUILD_JOBS`. |
 | `--jobs=N` | user-facing | Same as `--jobs N` | Inline form supported. |
 | `--verbose-commands` | advanced | Enable verbose compile and link command logging | Useful for toolchain diagnosis. |
+| `--concise` | user-facing | Keep routine command/per-file progress off the console | Full detail is still written to `build.log`; stage summaries and errors remain visible. Overrides no diagnostics and propagates to the sanitizer child. `--verbose-commands` makes command detail visible again. |
 | `--sanitize-regression-child` | internal | Internal flag for the nested sanitizer child build | Not a normal day-to-day user flag. |
 
 ## Flag Interactions
@@ -81,7 +100,10 @@ Default quality mode currently:
 - `--run-integration-tests` implies `--run-tests`.
 - `--tests-only` does not imply `--run-tests` by itself; it only short-circuits the build after the unit-test build path. Use both when you want focused test execution.
 - `--sanitize-regression-child` disables spawning another nested sanitizer regression pass.
-- `--incremental` turns off the script's default force-rebuild mode.
+- `--incremental` turns off the script's default force-rebuild mode; unchanged-object reuse is signature validated and failure to evaluate a signature recompiles the object.
+- `--resume` implies incremental mode and reuses the latest failed top-level build number only after its manifest, recorded `build.py` SHA-256, current `build.py`, and `build_version.h` agree. It requires `--skip-updates` and is mutually exclusive with `--no-build`/`--force-rebuild`.
+- `--no-build` and the sanitizer child reuse the current build version instead of bumping `build_version.h`.
+- `--concise` affects console verbosity only; it does not remove `build.log` detail or weaken a stage.
 - `--skip-updates` no longer triggers optional Python tooling bootstrap by itself; build-only runs stay quiet unless the active mode explicitly requests lint / format / default-quality checks.
 - `--lint` alone exits after linting.
 - `--format` alone exits after formatting.
@@ -116,6 +138,7 @@ Default quality mode currently:
 
 ## Unit Test Behavior
 - `compile_tests()` runs on every build so `compile_commands.json` contains authoritative entries for tests even if tests are not executed.
+- Unit-test dependencies use `build/obj/x64-tests`; sanitizer unit-test dependencies use `build/obj/x64-tests-sanitize`. Neither shares paths with `build/obj/x64` product objects. This is required because test and product compile flags differ: sharing paths caused the cache to alternate variants on every build and allowed the later CaptureEngine link to consume common objects most recently compiled by the test phase.
 - `--run-tests` controls whether `tests/unit_tests.exe` is executed.
 - `--gtest-filter` is passed through as `--gtest_filter=...` when `tests/unit_tests.exe` is executed.
 - `--tests-only` now takes effect before the normal product build phases, so focused test runs do not also rebuild the hook DLL, mediaengine DLL, captureengine.exe, Vulkan layer, and test apps.
@@ -158,7 +181,9 @@ Default quality mode currently:
 
 ## Operational Notes
 - The script always rewrites `compile_commands.json` at the end of a successful build.
-- Incremental object signatures hash source content, compiler/flags, and the content of compiler-reported project dependencies. Dependency mtimes remain a second signal. This specifically prevents an older-mtime checkout/restore of `common/shared_defs.h` (or another project header) from retaining an ABI-skewed object; `test_build_flags.py` changes a dependency while forcing its mtime backward to cover the policy.
+- Incremental object signatures hash source content, the compiler executable contents, compile flags, and the content of compiler-reported project dependencies. Dependency mtimes remain a second signal for toolchain/system headers. Signature calculation now fails closed to recompilation instead of falling back to timestamps. This prevents an older-mtime checkout/restore of `common/shared_defs.h` (or another project header), a same-path compiler replacement, or an unreadable signature input from retaining an unproven object; `test_build_flags.py` covers each case.
+- Independently constructed x86 environments, including the late Vulkan-layer environment, inherit `FORCE_REBUILD` from the main build. The clean/default gate therefore recompiles every x64 and x86 object consistently; `--force-rebuild` additionally deletes the object tree first.
+- Every compiling invocation normally mints one build identity. Generated `build_version.h` is included only by `common/build_identity.cpp`; stable accessors provide the number/version/timestamp to discovery validation, logging, manifests, and Vulkan naming. It is deliberately absent from high-fanout `shared_defs.h` and `config.h`, so minting an identity invalidates only the identity translation unit in each relevant object namespace rather than nearly every hook/media/controller/test translation unit. `--resume` is the sole guarded exception for an immediately preceding failed top-level product build, and `--no-build`/the sanitizer child reuse the current identity because they do not create a new ordinary product build. This avoids duplicate successful identities, no-build-induced invalidation, and generated-version fan-out.
 - Vulkan layer compilation only writes the DLLs and portable relative-path manifests. Each manifest layer name and implementation version includes the current build number, preventing an older installation's duplicate identity from shadowing it. `build.py` never imports `winreg`, enumerates Vulkan registrations, or mutates HKCU/HKLM. Registration ownership and repair belong to the running controller: ordinary startup repairs only HKCU and never requests elevation; an already-elevated controller may also repair HKLM.
 - Canonical verification now writes a compact verification bundle under `build/verification/<timestamp>_build_<n>/` containing:
   - `verification_summary.txt`
@@ -166,13 +191,13 @@ Default quality mode currently:
   - a copy of the top-level `build.log`
   - paths to important artifacts such as `compile_commands.json`, `tests/unit_tests.exe`, sanitizer child log, and built binaries when available
 - `build/verification/latest_summary.txt`, `latest_manifest.json`, `latest_run_dir.txt`, and `latest_build.log` always point at the most recent top-level verification/build run.
-- For long-running verification/build commands, prefer re-reading `build/verification/latest_summary.txt` or `latest_manifest.json` to check completion/status instead of leaving a shell in a passive polling/watch loop. The summary/manifest pair is the intended status contract.
+- For long-running verification/build commands, use `--concise` and prefer re-reading `build/verification/latest_summary.txt` or `latest_manifest.json` to check completion/status instead of dumping the full build log or leaving a shell in a passive polling/watch loop. The summary/manifest pair is the intended status contract; `build.log` retains full routine command detail for failure diagnosis.
 - On Windows, the script bootstraps MSYS2 and manages a custom FFmpeg build path.
 - On Windows, dependency builds use the newest resolved official MSYS2 base archive and the installed/current clang64 toolchain; `python build.py` updates the toolchain and forces a fresh source build, while `--skip-updates` deliberately skips pacman updates and reuses a verified dependency prefix when possible.
 - The source-built dependency manifest participates in the FFmpeg configuration fingerprint. Plain `python build.py` bypasses both the private dependency-prefix cache and the FFmpeg commit/configuration reuse path, so every pinned dependency package and custom FFmpeg DLL is rebuilt from source. Deleting `ffmpeg_build/dependencies/prefix` and the FFmpeg output remains a valid clean-state recovery; the verification pass should then confirm source-package signatures, upstream hashes, PE imports/exports, and runtime provenance.
 - Dependency recipe cleanup tolerates read-only extracted/Git object files by clearing the Windows read-only bit before retrying a failed tree removal. Other removal failures remain fatal and are covered by `test_ffmpeg_dependencies.py`.
 - FFmpeg runtime DLL names are resolved from the current install tree, rather than hard-coded. The Windows CaptureEngine link therefore delay-loads the installed major versions (for example `avcodec-63.dll`, `avformat-63.dll`, and `avutil-61.dll`), while bundle synchronization selects the highest numeric version and removes stale copies. Missing optional runtime dependencies are logged with their configured search paths.
-- `compile_tests()` recompiles the shared `common/*.cpp` objects with the active test flags before linking. This prevents a sanitizer child build from leaving ASan/UBSan objects in the shared object directory for a later non-sanitizer test-only link.
+- `compile_tests()` compiles `common/*.cpp` and other test dependencies into the active dedicated test namespace. Separate ordinary and sanitizer namespaces prevent either test variant from replacing product objects or each other.
 - The custom Windows FFmpeg recipe is part of audio codec support. Its own C/C++ sources use CFG, `-fstack-protector-strong`, and `_FORTIFY_SOURCE=2`. The source-package dependency policy explicitly and fingerprintably adds the same stack/fortify flags after makepkg configuration, alongside project CFG and generic-x64 flags, so a changed MSYS2 default cannot silently weaken a reused dependency closure. Upstream libaom deliberately appends `-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0` to Release compilation; preserve that codec-hot-path exception unless performance validation justifies carrying an upstream patch. libaom still retains stack protection and effective CFG. The expected audio encoder set includes `aac`, `alac`, `flac`, `libopus`, `pcm_s16le`, `pcm_s24le`, and `pcm_f32le`; matching audio decoders are enabled for completed-file integration verification, and runtime DLL copying includes `libopus-0.dll`.
 - `FFMPEG_BUILD_CONFIGURATION_VERSION` plus the contents of `patches/ffmpeg/*.patch` form the local FFmpeg configuration fingerprint stored in `last_build_configuration.txt`. Even with `--skip-updates`, a fingerprint change rebuilds the already-pinned FFmpeg source instead of silently reusing stale DLLs. Bump the configuration version whenever configure flags/codec sets change; patch content is detected automatically.
 - General first-party x64 and source-dependency code targets baseline `x86-64`/generic rather than AVX2 or `x86-64-v3`; codec libraries retain their own runtime dispatch. First-party and FFmpeg flags omit `-ffast-math`. Audio timing/mixing/resampling and screenshot color conversion compile with strict floating-point semantics. The pinned native AAC encoder defaults to the new NMR coder, and CE explicitly selects `aac_coder=nmr,aac_nmr_speed=0`; NMR's numerical guards require defined NaN/Inf behavior. Before applying the local Matroska microsecond-precision and NVENC CFR patches, the disposable FFmpeg copy parses their standard text headers, validates that every old/new target remains inside the copy, and normalizes CRLF only in those target files. Strict `git apply --verbose` remains authoritative; do not substitute whitespace-ignore flags. Both patches must be refreshed against the exact pinned commit when upstream context changes.
@@ -200,19 +225,20 @@ Default quality mode currently:
 
 ## Common Commands
 ```powershell
-python build.py --verify --skip-updates
+python build.py --incremental --skip-updates --concise
+python build.py --skip-updates --concise
+python build.py --resume --skip-updates --concise
+python build.py --incremental --tests-only --run-tests --gtest-filter=DXGISharedTest.* --skip-updates --concise
+python build.py --no-build --run-tests --skip-updates --concise
+python build.py --verify --skip-updates --concise
 python build.py
-python build.py --skip-updates
-python build.py --incremental --skip-updates
-python build.py --run-tests --skip-updates
-python build.py --run-tests --tests-only --skip-updates --gtest-filter=DXGISharedTest.*
-python build.py --sanitize --run-tests --skip-updates
-python build.py --run-integration-tests --skip-updates
-python build.py --full-integration --skip-updates
+python build.py --sanitize --run-tests --skip-updates --concise
+python build.py --run-integration-tests --skip-updates --concise
+python build.py --full-integration --skip-updates --concise
 python build.py --lint
 python build.py --format
-python build.py --jobs 8 --skip-updates
-python build.py --production --skip-updates
+python build.py --jobs 8 --skip-updates --concise
+python build.py --production --skip-updates --concise
 ```
 
 ## Open Questions / Stale-Risk

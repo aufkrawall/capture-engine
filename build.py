@@ -240,6 +240,7 @@ DEFAULT_LOG_FILE = os.path.join(PROJECT_ROOT, "build.log")
 LOG_FILE = DEFAULT_LOG_FILE
 VERIFICATION_DIR = os.path.join(BUILD_DIR, "verification")
 VERBOSE_COMMANDS = False
+CONCISE_OUTPUT = False
 VERIFICATION_CONTEXT: Optional[Dict[str, Any]] = None
 VERIFICATION_FINAL_EXIT_CODE = 0
 VERIFICATION_ATEXIT_REGISTERED = False
@@ -369,10 +370,11 @@ PACKAGES = [
 ]
 
 
-def log(msg: str) -> None:
+def log(msg: str, *, detail: bool = False) -> None:
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
     formatted = f"[{timestamp}] {msg}"
-    print(formatted)
+    if not (CONCISE_OUTPUT and detail and not VERBOSE_COMMANDS):
+        print(formatted)
     try:
         with open(LOG_FILE, "a") as f:
             f.write(formatted + "\n")
@@ -475,6 +477,7 @@ def init_verification_context(args: List[str], build_number: int, verify_mode: b
         "mode": "verify" if verify_mode else "build",
         "build_number": build_number,
         "build_version": f"0.1.{build_number}",
+        "build_script_sha256": sha256_file(os.path.abspath(__file__)),
         "command": [sys.executable, os.path.abspath(__file__), *args],
         "args": list(args),
         "start_time": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -1113,7 +1116,7 @@ def run_command(
     cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
 
     if VERBOSE_COMMANDS or not isinstance(cmd, list):
-        log(f"Running: {cmd_str}")
+        log(f"Running: {cmd_str}", detail=True)
     else:
         exe_name = os.path.basename(cmd[0]) if cmd else "command"
         output_path = None
@@ -1138,14 +1141,15 @@ def run_command(
             if is_compile_like and source_path and output_path:
                 log(
                     f"Running: {exe_name} compile {os.path.relpath(source_path, PROJECT_ROOT)} -> "
-                    f"{os.path.relpath(output_path, PROJECT_ROOT)}"
+                    f"{os.path.relpath(output_path, PROJECT_ROOT)}",
+                    detail=True,
                 )
             elif output_path:
-                log(f"Running: {exe_name} link -> {os.path.relpath(output_path, PROJECT_ROOT)}")
+                log(f"Running: {exe_name} link -> {os.path.relpath(output_path, PROJECT_ROOT)}", detail=True)
             else:
-                log(f"Running: {exe_name}")
+                log(f"Running: {exe_name}", detail=True)
         else:
-            log(f"Running: {cmd_str}")
+            log(f"Running: {cmd_str}", detail=True)
     try:
         input_bytes = input_str.encode("utf-8") if input_str is not None else None
         result = subprocess.run(
@@ -1307,6 +1311,53 @@ def read_build_version_number(version_header_path: Optional[str] = None) -> int:
     if not match:
         raise RuntimeError(f"No BUILD_NUMBER definition found in {version_header_path}")
     return int(match.group(1))
+
+
+def read_failed_build_resume_version(
+    manifest_path: Optional[str] = None, version_header_path: Optional[str] = None
+) -> int:
+    """Return the reusable identity of the immediately preceding failed top-level build."""
+    if manifest_path is None:
+        manifest_path = os.path.join(VERIFICATION_DIR, "latest_manifest.json")
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as manifest_file:
+            manifest = json.load(manifest_file)
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Unable to read failed-build resume state from {manifest_path}: {error}") from error
+
+    if manifest.get("success") is not False or not manifest.get("top_level"):
+        raise RuntimeError("The latest top-level build did not fail; refusing to reuse its build identity")
+    previous_args = manifest.get("args", [])
+    if not isinstance(previous_args, list) or "--no-build" in previous_args:
+        raise RuntimeError("The latest failed run was not a compilable product build")
+    if "--sanitize-regression-child" in previous_args:
+        raise RuntimeError("A sanitizer child cannot be resumed as a top-level product build")
+    expected_build_script_hash = manifest.get("build_script_sha256")
+    current_build_script_hash = sha256_file(os.path.abspath(__file__))
+    if not isinstance(expected_build_script_hash, str) or expected_build_script_hash != current_build_script_hash:
+        raise RuntimeError("build.py changed since the failed attempt; a clean build is required")
+
+    build_number = manifest.get("build_number")
+    if not isinstance(build_number, int) or build_number <= 0:
+        raise RuntimeError("The latest failed build has no valid build number")
+    header_build_number = read_build_version_number(version_header_path)
+    if header_build_number != build_number:
+        raise RuntimeError(
+            f"Failed-build identity mismatch: manifest={build_number}, build_version.h={header_build_number}"
+        )
+    return build_number
+
+
+def resolve_build_number_for_invocation(
+    *, sanitize_regression_child: bool, resume_failed_build: bool, no_build: bool
+) -> int:
+    if sanitize_regression_child:
+        return read_build_version_number()
+    if resume_failed_build:
+        return read_failed_build_resume_version()
+    if no_build:
+        return read_build_version_number()
+    return bump_and_write_build_version()
 
 
 def get_mingw_compilers():
@@ -3407,6 +3458,13 @@ def get_env_x86():
     return env, mingw32_bin
 
 
+def propagate_build_control_environment(source_env: Dict[str, str], target_env: Dict[str, str]) -> None:
+    """Copy build-mode controls into independently constructed architecture environments."""
+    for flag in ("FORCE_REBUILD",):
+        if flag in source_env:
+            target_env[flag] = source_env[flag]
+
+
 def ensure_dirs():
     os.makedirs(OBJ_DIR, exist_ok=True)
     os.makedirs(CAPTURE_BIN_DIR, exist_ok=True)
@@ -3448,13 +3506,22 @@ def compute_file_content_hash(path: str) -> str:
         return hashlib.md5(f.read()).hexdigest()[:16]
 
 
+@lru_cache(maxsize=None)
+def compute_compiler_fingerprint(clang_exe: str) -> str:
+    resolved_compiler = clang_exe if os.path.isfile(clang_exe) else shutil.which(clang_exe)
+    if not resolved_compiler or not os.path.isfile(resolved_compiler):
+        raise FileNotFoundError(f"Unable to fingerprint compiler: {clang_exe}")
+    absolute_compiler = os.path.abspath(resolved_compiler)
+    return f"{absolute_compiler}:{sha256_file(absolute_compiler)}"
+
+
 def compute_build_signature(
     src: str, clang_exe: str, compile_flags: List[str], dependencies: Optional[List[str]] = None
 ) -> str:
     """Create a stable signature from source, project headers, compiler, and flags."""
     with open(src, "rb") as f:
         src_hash = hashlib.md5(f.read()).hexdigest()[:16]
-    tool_fingerprint = "\n".join([os.path.abspath(clang_exe)] + compile_flags)
+    tool_fingerprint = "\n".join([compute_compiler_fingerprint(clang_exe)] + compile_flags)
     tool_hash = hashlib.md5(tool_fingerprint.encode("utf-8")).hexdigest()[:16]
 
     dependency_hash = hashlib.md5()
@@ -3519,7 +3586,9 @@ def should_recompile(
             # No hash file, need to create one (first compile or old build)
             return True
     except Exception:
-        pass  # Fall back to timestamp check only
+        # Incremental reuse is a correctness feature, not a best-effort optimization. If its
+        # content signature cannot be proven, rebuild the object instead of trusting timestamps.
+        return True
 
     # Check dependency timestamps as a cheap second signal, including toolchain
     # headers outside the project root that are intentionally not content-hashed.
@@ -3810,6 +3879,9 @@ def compile_object(env: Dict[str, str], clang_exe: str, cflags: List[str], src: 
 
 def parallel_compile(env, clang_exe, cflags, src_obj_pairs):
     """Compile multiple source files in parallel."""
+    # Populate this once before worker threads race through object signatures; otherwise an empty
+    # functools cache can hash the same large compiler executable concurrently in several workers.
+    compute_compiler_fingerprint(clang_exe)
     requested_workers = env.get("CE_BUILD_JOBS", "").strip()
     if requested_workers:
         try:
@@ -3841,14 +3913,23 @@ def parallel_compile(env, clang_exe, cflags, src_obj_pairs):
                 skipped += 1
             if completed <= 10 or completed == total or (completed % 50) == 0:
                 state = "compiled" if was_compiled else "cached"
-                log(f"Compile progress: {completed}/{total} ({state}) - {os.path.relpath(src, PROJECT_ROOT)}")
+                log(
+                    f"Compile progress: {completed}/{total} ({state}) - {os.path.relpath(src, PROJECT_ROOT)}",
+                    detail=True,
+                )
 
     log(f"Compile summary: {compiled} compiled, {skipped} cached, {total} total")
 
     return compiled, skipped
 
 
-def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
+def get_unit_test_object_dir(env: Dict[str, str]) -> str:
+    """Keep unit-test variants separate from objects linked into product binaries."""
+    variant = "x64-tests-sanitize" if env.get("CE_SANITIZE") == "1" else "x64-tests"
+    return os.path.join(OBJ_DIR, variant)
+
+
+def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     log(f"Compiling Tests (parallel, {cpu_count()} threads)...")
     src_files = glob.glob(os.path.join(PROJECT_ROOT, "tests", "*.cpp"))
     if not src_files:
@@ -3887,9 +3968,9 @@ def compile_tests(env, clang_exe, cflags, common_objs, pkg_config, obj_dir):
     msys2_dir = get_linux_msys2_dir() if IS_LINUX else MSYS2_DIR
     vulkan_lib = os.path.join(msys2_dir, "clang64", "lib", "libvulkan-1.dll.a")
 
-    # Tests can run after a sanitizer child or independently of the product
-    # build. Always compile the common objects here with the current flags so
-    # sanitizer and non-sanitizer object files can never be mixed at link time.
+    # Tests use a dedicated object directory. Their flags intentionally differ
+    # from product flags, so sharing object paths would make every build switch
+    # the cache back and forth and could link test-flag objects into CaptureEngine.
     common_objs = []
     common_src_obj_pairs = []
     for src in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp")):
@@ -5181,7 +5262,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     obj_dir = os.path.join(PROJECT_ROOT, "build", "obj", arch, "vulkan_layer")
     os.makedirs(obj_dir, exist_ok=True)
 
-    # Layer source files - split into layer-specific and hook/common sources
+    # Layer source files - split into layer/support and hook/common sources
     # hook/common sources are shared with the hook DLL and must use the same
     # optimization flags (HOOK_OPT_FLAGS_X64/X86) to maintain consistency.
     layer_only_sources = [
@@ -5192,6 +5273,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(layer_dir, "layer_capture.cpp"),
         os.path.join(layer_dir, "layer_bridge.cpp"),
         os.path.join(layer_dir, "layer_hooks.cpp"),
+        # The Vulkan layer intentionally links a selected source set instead of all common objects.
+        os.path.join(PROJECT_ROOT, "common", "build_identity.cpp"),
     ]
     hook_common_sources = [
         os.path.join(PROJECT_ROOT, "hook", "common", "fg_detection.cpp"),
@@ -5446,17 +5529,12 @@ def compile_project(
 
     if tests_only:
         log("Tests-only mode: building only unit test dependencies/executable")
-        x64_common_objs = [
-            os.path.join(OBJ_DIR, "x64", os.path.relpath(s, PROJECT_ROOT).replace(".cpp", ".o"))
-            for s in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp"))
-        ]
         test_exe = compile_tests(
             env,
             clang_exe,
             cflags,
-            x64_common_objs,
             pkg_config,
-            os.path.join(OBJ_DIR, "x64"),
+            get_unit_test_object_dir(env),
         )
         if should_run_tests and test_exe:
             if not run_tests(env, test_exe, gtest_filter=gtest_filter):
@@ -5488,9 +5566,7 @@ def compile_project(
             curr_env, curr_clang_bin = get_env_x86()
             # Propagate build flags that are set on the main env but not copied
             # by get_env_x86() (which starts from a fresh os.environ.copy()).
-            for _flag in ("FORCE_REBUILD",):
-                if _flag in env:
-                    curr_env[_flag] = env[_flag]
+            propagate_build_control_environment(env, curr_env)
 
         curr_clang_exe = get_compiler_exe(arch)
         if curr_clang_exe is None:
@@ -5926,17 +6002,12 @@ def compile_project(
     # Always compile unit-test sources so compile_commands.json contains
     # authoritative entries for tests even on non-test builds. Execute the test
     # binary only when explicitly requested.
-    x64_common_objs = [
-        os.path.join(OBJ_DIR, "x64", os.path.relpath(s, PROJECT_ROOT).replace(".cpp", ".o"))
-        for s in glob.glob(os.path.join(PROJECT_ROOT, "common", "*.cpp"))
-    ]
     test_exe = compile_tests(
         env,
         clang_exe,
         cflags,
-        x64_common_objs,
         pkg_config,
-        os.path.join(OBJ_DIR, "x64"),
+        get_unit_test_object_dir(env),
     )
     if should_run_tests and test_exe:
         if not run_tests(env, test_exe, gtest_filter=gtest_filter):
@@ -6107,6 +6178,7 @@ def compile_project(
             log("Linux host: skipping x86 Vulkan layer (x86 compiler unavailable)")
         else:
             x86_env, x86_clang_bin = get_env_x86()
+            propagate_build_control_environment(env, x86_env)
             x86_clang = get_compiler_exe("x86")
             # Check if x86 compiler exists (on Linux it might not)
             if x86_clang and (IS_LINUX or os.path.exists(x86_clang)):
@@ -6310,6 +6382,8 @@ def run_sanitizer_regression_pass(skip_updates: bool, ccache_flag: bool) -> None
         cmd.append("--skip-updates")
     if ccache_flag:
         cmd.append("--ccache")
+    if CONCISE_OUTPUT:
+        cmd.append("--concise")
 
     log("=== Running sanitizer regression cadence pass ===")
     sanitizer_log = verification_artifact_path("sanitize_regression.log")
@@ -6344,9 +6418,10 @@ def main():
     os.chdir(script_dir)
     apply_workspace_temp_environment()
 
-    global LOG_FILE, VERIFICATION_FINAL_EXIT_CODE
+    global LOG_FILE, VERIFICATION_FINAL_EXIT_CODE, CONCISE_OUTPUT
 
     args = sys.argv[1:]
+    CONCISE_OUTPUT = "--concise" in args
     log_file_override = parse_flag_value("--log-file")
     if log_file_override:
         LOG_FILE = os.path.abspath(log_file_override)
@@ -6364,6 +6439,10 @@ def main():
 
     # Parse flags early for force rebuild
     force_rebuild = "--force-rebuild" in sys.argv
+    resume_requested = "--resume" in sys.argv
+    if force_rebuild and resume_requested:
+        log("ERROR: --resume and --force-rebuild are mutually exclusive")
+        sys.exit(2)
     if force_rebuild:
         log("FORCE REBUILD: Cleaning all object files...")
         if os.path.exists(OBJ_DIR):
@@ -6424,8 +6503,16 @@ def main():
     # Dev builds do NOT pass this flag; signature verification is a warning only.
     production_flag = "--production" in sys.argv or "CE_PRODUCTION_BUILD" in os.environ
     # --force is now DEFAULT behavior for reliability (disable with --incremental)
-    incremental_flag = "--incremental" in sys.argv
+    resume_flag = "--resume" in sys.argv
+    incremental_flag = "--incremental" in sys.argv or resume_flag
     force_flag = not incremental_flag  # Force rebuild by default
+
+    if resume_flag and no_build_flag:
+        log("ERROR: --resume requires a build and cannot be combined with --no-build")
+        sys.exit(2)
+    if resume_flag and not skip_updates:
+        log("ERROR: --resume requires --skip-updates so the toolchain/dependency boundary stays unchanged")
+        sys.exit(2)
 
     # --jobs N: override parallel compilation worker count (default: all CPU cores)
     jobs_flag = None
@@ -6444,6 +6531,8 @@ def main():
             break
     if VERBOSE_COMMANDS:
         log("Verbose command logging enabled (--verbose-commands)")
+    if CONCISE_OUTPUT:
+        log("Concise console output enabled; full command detail remains in build.log")
 
     if sanitize_x86_flag:
         log(
@@ -6452,15 +6541,22 @@ def main():
         )
         sys.exit(2)
 
+    try:
+        current_build_number = resolve_build_number_for_invocation(
+            sanitize_regression_child=sanitize_regression_child,
+            resume_failed_build=resume_flag,
+            no_build=no_build_flag,
+        )
+    except RuntimeError as error:
+        action = "resume failed build" if resume_flag else "reuse current build version"
+        log(f"ERROR: Cannot {action}: {error}")
+        sys.exit(1)
     if sanitize_regression_child:
-        try:
-            current_build_number = read_build_version_number()
-        except RuntimeError as error:
-            log(f"ERROR: Sanitizer regression child cannot reuse parent build version: {error}")
-            sys.exit(1)
         log(f"Reusing parent build version: 0.1.{current_build_number}")
-    else:
-        current_build_number = bump_and_write_build_version()
+    elif resume_flag:
+        log(f"Resuming failed build version: 0.1.{current_build_number}")
+    elif no_build_flag:
+        log(f"No-build verification reuses current build version: 0.1.{current_build_number}")
     # Store for use by compile_project
     global CURRENT_BUILD_NUMBER
     CURRENT_BUILD_NUMBER = current_build_number
@@ -6520,7 +6616,8 @@ def main():
         log("DEV BUILD: DLL signature verification is advisory only")
 
     if incremental_flag:
-        log("Incremental build (--incremental) - may use cached objects")
+        mode = "failed-build resume" if resume_flag else "incremental build"
+        log(f"Validated {mode} - unchanged objects may be reused by content signature")
     else:
         log("Force rebuild (default) - ensuring clean build for reliability")
 
@@ -6626,6 +6723,7 @@ def main():
             "skip_updates": skip_updates,
             "sanitize": sanitize_flag,
             "no_build": no_build_flag,
+            "resume": resume_flag,
         },
     )
 

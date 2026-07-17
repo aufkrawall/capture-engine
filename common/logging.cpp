@@ -23,7 +23,7 @@ void Log_Init(const std::string& filename, LogLevel level) {
         // Line-buffered: each newline flushes the buffer without a blocking
         // fflush() call on the render thread.
         setvbuf(g_LogFile, nullptr, _IOLBF, 4096);
-        fprintf(g_LogFile, "[BUILD] Version=%s Built=%s\n", CAPTURE_VERSION, BUILD_TIMESTAMP);
+        fprintf(g_LogFile, "[BUILD] Version=%s Built=%s\n", GetCaptureVersion(), GetBuildTimestamp());
     }
     g_LogLevel.store(level, std::memory_order_release);
     g_LoggingEnabled.store(g_LogFile != nullptr, std::memory_order_release);

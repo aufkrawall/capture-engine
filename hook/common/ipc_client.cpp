@@ -79,7 +79,7 @@ bool IPCClient::Connect() {
                 UnmapViewOfFile(pDiscovery);
             } else {
                 EarlyLog("IPC: Discovery found but invalid identity. Magic=%X, Build=%u, ExpectedBuild=%u, PID=%d",
-                         magic, buildNumber, static_cast<unsigned>(BUILD_NUMBER), pid);
+                         magic, buildNumber, static_cast<unsigned>(GetCurrentBuildNumber()), pid);
                 UnmapViewOfFile(pDiscovery);
             }
         } else {
