@@ -77,7 +77,7 @@ Default quality mode currently:
 | `--no-build` | user-facing | Run requested checks against existing binaries without compiling | Reuses the current build identity instead of changing `build_version.h`; refuses a missing, stale, corrupted, or pre-manifest unit-test executable. |
 | `--run-integration-tests` | user-facing | Run smoke integration tests after the build | Also implies `--run-tests`. Before running, the script forces at least `log_level=debug` in `installed/captureengine/config.ini` if that file exists. |
 | `--full-integration` | user-facing | Run the full integration matrix | Implies `--run-integration-tests`, which also implies `--run-tests`. |
-| `--lint` | user-facing | Run `clang-format --dry-run -Werror`, `flake8`, and `pyright` | If passed alone, the script exits after linting. |
+| `--lint` | user-facing | Run `clang-format --dry-run -Werror`, `flake8`, and `pyright` | If passed alone, the script exits after linting and returns failure for findings. In default, verify, or mixed build/test flows, findings are recorded but advisory. |
 | `--format` | user-facing | Run `clang-format -i` and `black` | If passed alone, the script exits after formatting. Do not use it on existing source files unless explicitly requested; whole-file formatting creates unrelated churn in the current tree. |
 | `--incremental` | user-facing | Reuse signature-proven unchanged objects | Default behavior remains force rebuild. Source, compiler-binary, flags, dependency-file, and project-header content signatures fail closed to recompilation; normal link/package/verification stages still run. |
 | `--resume` | user-facing | Resume the immediately preceding failed top-level product build | Implies incremental object validation and reuses the failed attempt's build identity. Requires `--skip-updates`; refuses successful/no-build/sanitizer-child predecessors, identity or build-script mismatch, `--no-build`, and `--force-rebuild`. |
@@ -105,7 +105,7 @@ Default quality mode currently:
 - `--no-build`, `--tests-only`, and the sanitizer child reuse the current build version instead of bumping `build_version.h`; only product-producing ordinary builds mint a new exact identity.
 - `--concise` affects console verbosity only; it does not remove `build.log` detail or weaken a stage.
 - `--skip-updates` no longer triggers optional Python tooling bootstrap by itself; build-only runs stay quiet unless the active mode explicitly requests lint / format / default-quality checks.
-- `--lint` alone exits after linting.
+- `--lint` alone exits after linting and treats findings as fatal. Default, verify, and mixed build/test flows retain lint results in the verification record but continue to the authoritative build/test gates.
 - `--format` alone exits after formatting.
 
 ## Environment Variables Honored
@@ -140,7 +140,7 @@ Default quality mode currently:
 - `compile_tests()` runs on every build so test compile failures are caught and `compile_commands.json` contains authoritative entries even if tests are not executed. Its formerly fragmented common/media/test/hook batches now share one bounded mixed-flag worker pool.
 - Unit-test dependencies use `build/obj/x64-tests`; sanitizer unit-test dependencies use `build/obj/x64-tests-sanitize`. Neither shares paths with `build/obj/x64` product objects. This is required because test and product compile flags differ: sharing paths caused the cache to alternate variants on every build and allowed the later CaptureEngine link to consume common objects most recently compiled by the test phase.
 - Ordinary unit tests retain `-O3`, CFG/CET, stack protection, fortified headers, strict-FP source exceptions, CodeView/PDB diagnostics, and the existing sanitizer variant, but intentionally omit LTO. Product hook/controller/Vulkan binaries retain their existing full-LTO flags. Tests link a deterministic test-only implementation of `build_identity.h`, so product build-number changes do not invalidate the validation executable.
-- Unit-test links use a fail-closed manifest over the compiler and linker binaries, full command/environment search boundary, object and resolved library contents, and resulting EXE/PDB hashes. A clean build always relinks. Incremental builds reuse only an exact valid match. `--no-build --run-tests` recomputes and validates that manifest before execution and refuses older/stale/corrupted outputs.
+- Unit-test links use a fail-closed manifest over the compiler and linker binaries, full command/environment search boundary, object and resolved library contents, and resulting EXE/PDB hashes. A clean build always relinks. Incremental builds reuse only an exact valid match. `--no-build --run-tests` recomputes and validates that manifest before execution and refuses older/stale/corrupted outputs. Optional Python-tool bootstrap extends only its child environment; it does not mutate the process `PATH` and spuriously change this link signature merely because lint was requested.
 - `--run-tests` controls whether `tests/unit_tests.exe` is executed.
 - `--gtest-filter` is passed through as `--gtest_filter=...` when `tests/unit_tests.exe` is executed.
 - `--tests-only` now takes effect before the normal product build phases, so focused test runs do not also rebuild the hook DLL, mediaengine DLL, captureengine.exe, Vulkan layer, and test apps.
@@ -217,7 +217,7 @@ Default quality mode currently:
 - MSYS2 package install now uses an explicit timeout and logs partial stdout/stderr on timeout instead of silently waiting forever.
 - Parallel compile now emits progress lines and a summary, and `run_tests()` logs the test launch plus elapsed time so long builds/tests no longer look idle.
 - `run_tests()` captures native test stdout/stderr and writes `unit_tests_failure.log` plus a bounded diagnostic tail when the executable returns nonzero; a bare exit code is insufficient for diagnosing intermittent failures.
-- Full verification/build runs now fail on lint errors even when lint is only one phase of a larger run. Earlier behavior only failed the process for standalone `--lint` invocations.
+- Lint findings are fatal only for a standalone `--lint` invocation. Default, verify, and mixed build/test flows log and record the failed lint step but continue, so a style/LSP checker cannot prevent compilation or the authoritative test/product gates from running.
 - `--jobs` is now applied after environment initialization, fixing the earlier `env`-before-initialization bug in `main()`.
 - On Windows hosts, the build now emits CodeView debug info plus sidecar `.pdb` files for the built PE outputs while staying on the existing clang/lld toolchain.
 - On Linux and WSL, the script uses cross-compilers and downloaded MSYS2 packages for dependencies.

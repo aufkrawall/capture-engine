@@ -240,6 +240,21 @@ class BuildFlagPolicyTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "build.py changed"):
                 build.read_failed_build_resume_version(str(manifest), str(header))
 
+    def test_lint_findings_are_only_fatal_for_standalone_lint_invocation(self) -> None:
+        self.assertTrue(build.is_standalone_lint_invocation(["--lint"]))
+        self.assertFalse(build.is_standalone_lint_invocation([]))
+        self.assertFalse(build.is_standalone_lint_invocation(["--verify"]))
+        self.assertFalse(build.is_standalone_lint_invocation(["--lint", "--run-tests"]))
+        self.assertFalse(build.is_standalone_lint_invocation(["--lint", "--skip-updates"]))
+
+    def test_python_tool_bootstrap_does_not_mutate_link_environment(self) -> None:
+        completed = build.subprocess.CompletedProcess(args=[], returncode=0)
+        with patch.dict(os.environ, {"PATH": "host-tools"}), patch.object(
+            build.subprocess, "run", return_value=completed
+        ):
+            build.check_python_lsp_tools()
+            self.assertEqual(os.environ["PATH"], "host-tools")
+
     def test_concise_logging_hides_detail_only_from_console(self) -> None:
         previous_log = build.LOG_FILE
         previous_concise = build.CONCISE_OUTPUT

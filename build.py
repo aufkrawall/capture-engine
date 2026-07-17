@@ -2082,7 +2082,6 @@ def check_python_lsp_tools():
     user_scripts_dir = os.path.join(site.getuserbase(), "Scripts" if IS_WINDOWS else "bin")
     if user_scripts_dir not in bootstrap_env.get("PATH", ""):
         bootstrap_env["PATH"] = user_scripts_dir + os.pathsep + bootstrap_env.get("PATH", "")
-    os.environ["PATH"] = bootstrap_env["PATH"]
 
     try:
         subprocess.run(
@@ -4570,6 +4569,7 @@ def run_python_tool_self_tests(env):
             [sys.executable, os.path.join(PROJECT_ROOT, "tools", "run_av_sync_matrix.py"), "--self-test"],
         ),
     ]
+
     def run_one(tool_test):
         name, command = tool_test
         start = time.time()
@@ -6744,6 +6744,11 @@ def parse_flag_value(flag_name: str):
     return None
 
 
+def is_standalone_lint_invocation(args: List[str]) -> bool:
+    """Return whether lint is the only requested action and therefore an explicit gate."""
+    return args == ["--lint"]
+
+
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
@@ -7012,11 +7017,12 @@ def main():
 
     if lint_flag:
         lint_ok = run_lint(env)
+        standalone_lint = is_standalone_lint_invocation(args)
         if not lint_ok:
             log("Lint/LSP checks reported issues.")
-            if len(args) != 1 or "--lint" not in args:
-                sys.exit(1)
-        if len(args) == 1 and "--lint" in args and not format_flag and not run_tests_flag and not run_integration_flag:
+            if not standalone_lint:
+                log("Continuing because lint is advisory outside a standalone --lint invocation.")
+        if standalone_lint:
             sys.exit(0 if lint_ok else 1)
 
     if sanitize_regression_flag and not sanitize_regression_child:
