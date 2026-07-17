@@ -483,6 +483,26 @@ def run_command(command, text=True):
     return result
 
 
+def split_decoder_stderr(stderr):
+    actionable = []
+    ignored_environment = []
+    for raw_line in stderr.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        is_missing_windows_app_manifest = (
+            "GLib-GIO-WARNING" in line
+            and "Failed to open application manifest" in line
+            and "C:\\Windows\\SystemApps\\" in line
+            and "error code 0x2" in line
+        )
+        if is_missing_windows_app_manifest:
+            ignored_environment.append(line)
+        else:
+            actionable.append(line)
+    return "\n".join(actionable), "\n".join(ignored_environment)
+
+
 def run_ffprobe_json(ffprobe, args):
     result = run_command([str(ffprobe), "-v", "error", *args, "-of", "json"])
     try:
@@ -749,6 +769,10 @@ def summarize_cfr_packet_coverage(packet_pts, packet_durations, nominal_fps):
             "expected_packets": 0,
             "missing_packets": 0,
             "max_gap_ticks": 0.0,
+            "first_pts": 0.0,
+            "last_pts": 0.0,
+            "packet_end": 0.0,
+            "span": 0.0,
             "complete": False,
         }
     # ffprobe reports packets in decode/mux order; codecs with B-frame
@@ -769,6 +793,10 @@ def summarize_cfr_packet_coverage(packet_pts, packet_durations, nominal_fps):
         "expected_packets": expected_packets,
         "missing_packets": missing_packets,
         "max_gap_ticks": max_gap_ticks,
+        "first_pts": ordered_pts[0],
+        "last_pts": ordered_pts[-1],
+        "packet_end": ordered_pts[-1] + last_duration,
+        "span": span,
         "complete": complete,
     }
 
@@ -1031,10 +1059,12 @@ def analyze_audio_decode(ffmpeg, capture_path, audio_ordinal):
         errors="replace",
         check=False,
     )
+    actionable_stderr, ignored_stderr = split_decoder_stderr(result.stderr)
     return {
         "audio_ordinal": audio_ordinal,
         "returncode": result.returncode,
-        "stderr": result.stderr.strip(),
+        "stderr": actionable_stderr,
+        "ignored_environment_stderr": ignored_stderr,
     }
 
 
@@ -1141,6 +1171,7 @@ def analyze_audio_tail_marker(ffmpeg, capture_path, audio_ordinal, stream_info, 
     else:
         tail_silence_ms = None
         last_marker_time = None
+    actionable_stderr, ignored_stderr = split_decoder_stderr(stderr.decode("utf-8", errors="replace"))
     return {
         "audio_ordinal": audio_ordinal,
         "sample_rate": sample_rate,
@@ -1150,7 +1181,8 @@ def analyze_audio_tail_marker(ffmpeg, capture_path, audio_ordinal, stream_info, 
         "last_marker_sample": last_marker_sample,
         "last_marker_time": last_marker_time,
         "tail_silence_ms": tail_silence_ms,
-        "stderr": stderr.decode("utf-8", errors="replace").strip(),
+        "stderr": actionable_stderr,
+        "ignored_environment_stderr": ignored_stderr,
         "returncode": returncode,
         "peak": peak_sample,
         "clipping_samples": clipping_samples,
@@ -1217,10 +1249,10 @@ def analyze_completed_capture_exact(ffprobe, ffmpeg, capture_path, threshold=1e-
     fps_text = video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate")
     fps_fraction = parse_ratio_fraction(fps_text)
     nominal_fps = float(fps_fraction) if fps_fraction > 0 else 0.0
-    video_timing = analyze_video_timing(ffprobe, capture_path, nominal_fps=nominal_fps)
     packet_coverage = analyze_cfr_packet_coverage(ffprobe, capture_path, nominal_fps)
-    frame_count = video_timing["frame_count"]
-    target_duration = Fraction(frame_count, 1) / fps_fraction if fps_fraction > 0 else Fraction(0, 1)
+    frame_count = packet_coverage["packet_count"]
+    target_frame_count = packet_coverage["expected_packets"]
+    target_duration = Fraction(target_frame_count, 1) / fps_fraction if fps_fraction > 0 else Fraction(0, 1)
     decoded_tracks = [
         analyze_audio_tail_marker(ffmpeg, capture_path, ordinal, stream_info, threshold)
         for ordinal, stream_info in enumerate(audio_streams)
@@ -1251,6 +1283,7 @@ def analyze_completed_capture_exact(ffprobe, ffmpeg, capture_path, threshold=1e-
                 "decoder_clean": decoder_clean,
                 "decoder_returncode": decoded["returncode"],
                 "decoder_stderr": decoded["stderr"],
+                "decoder_environment_stderr": decoded.get("ignored_environment_stderr", ""),
                 "first_content_sample": decoded["first_marker_sample"],
                 "last_content_sample": decoded["last_marker_sample"],
                 "tail_silence_ms": decoded["tail_silence_ms"],
@@ -1272,9 +1305,10 @@ def analyze_completed_capture_exact(ffprobe, ffmpeg, capture_path, threshold=1e-
             "codec": video_stream.get("codec_name", ""),
             "fps": fps_text,
             "frame_count": frame_count,
+            "target_frame_count": target_frame_count,
             "target_duration_numerator": target_duration.numerator,
             "target_duration_denominator": target_duration.denominator,
-            "decoded_duration": video_timing["duration"],
+            "packet_duration": packet_coverage["span"],
             "packet_coverage": packet_coverage,
         },
         "tracks": track_reports,
@@ -4514,6 +4548,19 @@ def self_test():
     assert sparse_coverage["expected_packets"] == 7
     assert sparse_coverage["missing_packets"] == 4
     assert math.isclose(sparse_coverage["max_gap_ticks"], 5.0, abs_tol=1e-9)
+    assert sparse_coverage["packet_count"] == 3
+    assert Fraction(sparse_coverage["expected_packets"], 120) * 48000 == 2800
+
+    manifest_warning = (
+        "(process:42): GLib-GIO-WARNING **: Failed to open application manifest "
+        "`C:\\Windows\\SystemApps\\Example\\AppxManifest.xml' for package #1: error code 0x2"
+    )
+    actionable_stderr, ignored_stderr = split_decoder_stderr(manifest_warning)
+    assert actionable_stderr == ""
+    assert ignored_stderr == manifest_warning
+    actionable_stderr, ignored_stderr = split_decoder_stderr(manifest_warning + "\n[aac] invalid data")
+    assert actionable_stderr == "[aac] invalid data"
+    assert ignored_stderr == manifest_warning
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

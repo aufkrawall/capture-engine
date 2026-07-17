@@ -450,16 +450,15 @@ int64_t ComputeTargetVideoPts(int64_t timestampUs, bool useVfr, int fps, int64_t
     }
 
     if (useExplicitCfrTimeline) {
-        int64_t elapsedUs = timestampUs;
-        if (elapsedUs < 0) {
-            elapsedUs = 0;
-        }
-        return ComputeCfrFrameIndexForElapsedUs(elapsedUs, fps, lastAssignedVideoPts);
+        // The explicit screen-grab timestamp selects content on the immutable
+        // wall grid; it must never punch a hole in the encoded CFR PTS prefix.
+        // Late ticks are represented by fresh/held-frame choice and bounded
+        // catch-up submissions, each of which still owns exactly one next PTS.
+        return ComputeNextCfrFrameIndex(lastAssignedVideoPts);
     }
 
-    // Generic CFR/inject mode still owns one explicit encoder call per output
-    // slot here. Screen capture passes useExplicitCfrTimeline because its
-    // caller computes the immutable live CFR slot elapsed time.
+    // Generic CFR/inject mode also owns one explicit encoder call per output
+    // slot here.
     return ComputeNextCfrFrameIndex(lastAssignedVideoPts);
 }
 

@@ -66,6 +66,25 @@ TEST(VideoEncoderSourceTest, PostMuxProbeNeverOutlivesMediaEngineCode) {
     EXPECT_NE(source.find("Run on the already-owned writer/finalizer thread"), std::string::npos);
 }
 
+TEST(VideoEncoderSourceTest, EveryCfrSubmissionAdvancesOneContiguousPacketTick) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t function = source.find("int64_t ComputeTargetVideoPts");
+    const size_t nextFunction = source.find("bool IsConfiguredNvencLookaheadActive", function);
+    ASSERT_NE(function, std::string::npos);
+    ASSERT_NE(nextFunction, std::string::npos);
+    const std::string body = source.substr(function, nextFunction - function);
+    EXPECT_NE(body.find("if (useExplicitCfrTimeline)"), std::string::npos);
+    EXPECT_EQ(body.find("ComputeCfrFrameIndexForElapsedUs"), std::string::npos);
+    const std::string contiguousCall = "ComputeNextCfrFrameIndex(lastAssignedVideoPts)";
+    const size_t firstCall = body.find(contiguousCall);
+    const size_t secondCall = body.find(contiguousCall, firstCall + 1);
+    ASSERT_NE(firstCall, std::string::npos);
+    ASSERT_NE(secondCall, std::string::npos);
+    EXPECT_EQ(body.find(contiguousCall, secondCall + 1), std::string::npos);
+}
+
 TEST(VideoEncoderSourceTest, CaptureSourceTransitionDropsCachedVisualContent) {
     const std::string source = ReadVideoEncoderSource();
     ASSERT_FALSE(source.empty());

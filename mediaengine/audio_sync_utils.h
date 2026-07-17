@@ -514,6 +514,28 @@ inline int32_t ComputeTier1CompensationDeltaWithDeadband(int64_t trueDriftSample
     return ComputeTier1CompensationDelta(adjustedDrift, compensationWindowSamples, maxPitchPercent);
 }
 
+inline int64_t ResolveAudioSourceClockDriftLagMs(bool isCfrRecording, bool isScreenGrabCfrRecording,
+                                                 int64_t screenGrabDriftLagMs, int64_t videoPipelineLagMs,
+                                                 int64_t timelineShortfallMs) {
+    if (!isCfrRecording) {
+        return std::max<int64_t>(0, videoPipelineLagMs) + std::max<int64_t>(0, timelineShortfallMs);
+    }
+
+    // Encoder/lookahead latency is downstream of capture and says nothing about
+    // the source clock. Screen capture has its own measured content-lag target;
+    // inject CFR must therefore keep only the base ingestion reservoir.
+    return isScreenGrabCfrRecording ? std::max<int64_t>(0, screenGrabDriftLagMs) : 0;
+}
+
+inline int64_t ResolveAudioTargetBufferLagMs(bool isCfrRecording, bool isScreenGrabCfrRecording,
+                                              int64_t screenGrabTargetLagMs, int64_t videoPipelineLagMs) {
+    if (!isCfrRecording) {
+        return std::max<int64_t>(0, videoPipelineLagMs);
+    }
+
+    return isScreenGrabCfrRecording ? std::max<int64_t>(0, screenGrabTargetLagMs) : 0;
+}
+
 enum class CfrAppAudioBacklogDrainReason : uint8_t {
     Active = 0,
     NotCfr,

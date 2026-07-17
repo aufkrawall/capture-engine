@@ -3108,11 +3108,13 @@ public:
         // In WGC CFR mode the scheduled audio timeline is authoritative. When repeated
         // video frames are the preferred recovery mechanism, keep audio targets tied to
         // actual buffered-video lag rather than raw wall-clock encoder lag.
-        const int64_t effectiveWgcDriftLagMs =
+        const int64_t screenGrabDriftLagMs =
             isWgcCfrRecording
                 ? ce::audio::ComputeWgcCfrDriftLagMs(wgcAudioLagTargets, kWgcPreferVideoRepeatsOverAudioCuts,
                                                      wgcEncoderShortfallBufferedLagMs)
-                : videoPipelineLagMs + timelineShortfallMs;
+                : 0;
+        const int64_t effectiveSourceClockDriftLagMs = ce::audio::ResolveAudioSourceClockDriftLagMs(
+            isCfrRecording, isWgcCfrRecording, screenGrabDriftLagMs, videoPipelineLagMs, timelineShortfallMs);
         const int64_t wgcSelectedContentLeadMs =
             isWgcCfrRecording ? ce::audio::ComputeWgcSelectedContentLeadMs(wgcSelectionBiasUs) : 0;
         const int64_t wgcSelectedContentLagMs =
@@ -3122,14 +3124,15 @@ public:
                 ? ce::audio::ComputeWgcVisualContentLagMs(timelineShortfallMs, wgcSelectedContentLeadMs,
                                                           wgcSelectedContentLagMs, kWgcVisualSyncMaxBufferedLagMs)
                 : 0;
-        const int64_t baseEffectiveWgcTargetBufferLagMs =
+        const int64_t screenGrabTargetBufferLagMs =
             isWgcCfrRecording ? ce::audio::ComputeWgcCfrTargetBufferLagMs(
                                     wgcAudioLagTargets, wgcSteadyStateBufferedAudioLagMs,
                                     kWgcPreferVideoRepeatsOverAudioCuts, wgcEncoderShortfallBufferedLagMs)
-                              : videoPipelineLagMs + timelineShortfallMs;
-        const int64_t effectiveWgcTargetBufferLagMs = baseEffectiveWgcTargetBufferLagMs;
+                              : 0;
+        const int64_t effectiveAudioTargetBufferLagMs = ce::audio::ResolveAudioTargetBufferLagMs(
+            isCfrRecording, isWgcCfrRecording, screenGrabTargetBufferLagMs, videoPipelineLagMs);
         const int64_t targetBufferedLagCapMs =
-            isWgcCfrRecording ? std::max<int64_t>(kWgcCoverageLossMaxBufferedLagMs, effectiveWgcTargetBufferLagMs)
+            isWgcCfrRecording ? std::max<int64_t>(kWgcCoverageLossMaxBufferedLagMs, effectiveAudioTargetBufferLagMs)
                               : kMaxPipelineLagContributionMs;
         uint32_t maxWgcAudioLeadExcessSamples = 0;
 
@@ -3218,8 +3221,7 @@ public:
 
             const int64_t targetSamples = ce::audio::ComputeDurationUsToSamples(trackAudioTargetUs, SAMPLE_RATE);
             const int64_t targetBufferedSamples = ce::audio::ComputeBufferedAudioTargetSamples(
-                SAMPLE_RATE, kBaseTargetLatencySamples,
-                isWgcCfrRecording ? effectiveWgcTargetBufferLagMs : videoPipelineLagMs, targetBufferedLagCapMs);
+                SAMPLE_RATE, kBaseTargetLatencySamples, effectiveAudioTargetBufferLagMs, targetBufferedLagCapMs);
 
             bool trackReadyForBootstrap = true;
             constexpr size_t kMinBootstrapRealSamples = static_cast<size_t>(SAMPLE_RATE / 40);  // 25ms
@@ -3476,7 +3478,8 @@ public:
                     size_t rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                     const int64_t expectedLeadSamplesForCorrection =
                         std::max<int64_t>(targetLatencySamples,
-                                          kBaseTargetLatencySamples + (effectiveWgcDriftLagMs * SAMPLE_RATE / 1000));
+                                          kBaseTargetLatencySamples +
+                                              (effectiveSourceClockDriftLagMs * SAMPLE_RATE / 1000));
                     const int64_t appDrainBudgetSamples = static_cast<int64_t>(rbAvailable);
                     const auto appAudioDrainBudgetDecision = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
                         isCfrRecording, src.sourceType == AudioConfig::AppAudio, forceDrain, trackStartupSettled,
@@ -3890,8 +3893,8 @@ public:
                                             "pipelineLag=%lldms) "
                                             "tier1=%d (%.4f%%) "
                                             "tier2=%d tier2Applied=%d encBottleneck=%d",
-                                            srcIdx, trueDrift, rbLevel, expectedLead, effectiveWgcDriftLagMs, newDelta,
-                                            compensationPercent, tier2WouldActivate ? 1 : 0,
+                                            srcIdx, trueDrift, rbLevel, expectedLead, effectiveSourceClockDriftLagMs,
+                                            newDelta, compensationPercent, tier2WouldActivate ? 1 : 0,
                                             (tier2WouldActivate && tier2TrimEnabled) ? 1 : 0,
                                             wgcEncoderBottlenecked ? 1 : 0);
                                     }
@@ -4143,7 +4146,8 @@ public:
                     const bool starvedWithRingData = (realCopiedSamples == 0 && rbAvailSamples > 0);
                     const int64_t appTargetSamples =
                         std::max<int64_t>(targetLatencySamples,
-                                          kBaseTargetLatencySamples + (effectiveWgcDriftLagMs * SAMPLE_RATE / 1000));
+                                          kBaseTargetLatencySamples +
+                                              (effectiveSourceClockDriftLagMs * SAMPLE_RATE / 1000));
                     const int64_t appExcessSamples =
                         std::max<int64_t>(0, static_cast<int64_t>(rbAvailSamples) - appTargetSamples);
                     const uint32_t appTargetMs =

@@ -21,6 +21,21 @@ TEST(AudioSyncUtilsTest, BufferedAudioTargetFallsBackToBaseLatencyForInvalidSamp
     EXPECT_EQ(ce::audio::ComputeBufferedAudioTargetSamples(-1, 960, 325), 960);
 }
 
+TEST(AudioSyncUtilsTest, InjectCfrSourceClockTargetsIgnoreDownstreamEncoderLatency) {
+    EXPECT_EQ(ce::audio::ResolveAudioSourceClockDriftLagMs(true, false, 0, 253, 41), 0);
+    EXPECT_EQ(ce::audio::ResolveAudioTargetBufferLagMs(true, false, 0, 253), 0);
+}
+
+TEST(AudioSyncUtilsTest, ScreenGrabCfrRetainsMeasuredAudioLagTargets) {
+    EXPECT_EQ(ce::audio::ResolveAudioSourceClockDriftLagMs(true, true, 236, 253, 41), 236);
+    EXPECT_EQ(ce::audio::ResolveAudioTargetBufferLagMs(true, true, 292, 253), 292);
+}
+
+TEST(AudioSyncUtilsTest, NonCfrAudioLagTargetsRetainHistoricalPipelinePolicy) {
+    EXPECT_EQ(ce::audio::ResolveAudioSourceClockDriftLagMs(false, false, 0, 253, 41), 294);
+    EXPECT_EQ(ce::audio::ResolveAudioTargetBufferLagMs(false, false, 0, 253), 253);
+}
+
 TEST(AudioSyncUtilsTest, AudioPullLatencyUsesStartupSlackUntilSourcesPrime) {
     constexpr int64_t kSteadyPullLatencyMs = ce::audio::kDefaultSteadyAudioPullLatencyMs;
     EXPECT_EQ(ce::audio::ComputeAudioPullLatencyMs(kSteadyPullLatencyMs, true, 0), kSteadyPullLatencyMs);
