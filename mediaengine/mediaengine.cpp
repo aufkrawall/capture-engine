@@ -135,6 +135,9 @@ public:
         uint64_t appLatencyExcessSumMs = 0;
         uint32_t appLatencyExcessMaxMs = 0;
         uint32_t appLatencyDrainingSamples = 0;  // observations while backlog drain was active
+        uint64_t appLatencyStopDrainSampleCount = 0;  // stop-time forced-drain observations (context only)
+        uint64_t appLatencyStopDrainSumMs = 0;
+        uint32_t appLatencyStopDrainMaxMs = 0;
         uint64_t appLatencyDrainTransitions = 0;
         uint32_t appLatencyMaxAbsCompDelta = 0;
         uint64_t lastAppLatencyWarnTick = 0;  // throttle the elevated-latency warning
@@ -765,6 +768,9 @@ public:
             src.appLatencyExcessSumMs = 0;
             src.appLatencyExcessMaxMs = 0;
             src.appLatencyDrainingSamples = 0;
+            src.appLatencyStopDrainSampleCount = 0;
+            src.appLatencyStopDrainSumMs = 0;
+            src.appLatencyStopDrainMaxMs = 0;
             src.appLatencyDrainTransitions = 0;
             src.appLatencyMaxAbsCompDelta = 0;
             src.lastAppLatencyWarnTick = 0;
@@ -1534,6 +1540,9 @@ public:
                 src.appLatencyExcessSumMs = 0;
                 src.appLatencyExcessMaxMs = 0;
                 src.appLatencyDrainingSamples = 0;
+                src.appLatencyStopDrainSampleCount = 0;
+                src.appLatencyStopDrainSumMs = 0;
+                src.appLatencyStopDrainMaxMs = 0;
                 src.appLatencyDrainTransitions = 0;
                 src.appLatencyMaxAbsCompDelta = 0;
                 src.lastAppLatencyWarnTick = 0;
@@ -1909,19 +1918,29 @@ public:
             // significant time in 300-600ms means the drain is not keeping latency near live.
             for (size_t i = 0; i < audioSources.size(); i++) {
                 const AudioSource& s = audioSources[i];
-                if (s.sourceType != AudioConfig::AppAudio || s.appLatencySampleCount == 0) {
+                if (s.sourceType != AudioConfig::AppAudio ||
+                    (s.appLatencySampleCount == 0 && s.appLatencyStopDrainSampleCount == 0)) {
                     continue;
                 }
                 const uint64_t n = s.appLatencySampleCount;
-                const double avgMs = static_cast<double>(s.appLatencySumMs) / static_cast<double>(n);
-                const double targetAvgMs = static_cast<double>(s.appLatencyTargetSumMs) / static_cast<double>(n);
-                const double excessAvgMs = static_cast<double>(s.appLatencyExcessSumMs) / static_cast<double>(n);
+                const double avgMs = n > 0 ? static_cast<double>(s.appLatencySumMs) / static_cast<double>(n) : 0.0;
+                const double targetAvgMs =
+                    n > 0 ? static_cast<double>(s.appLatencyTargetSumMs) / static_cast<double>(n) : 0.0;
+                const double excessAvgMs =
+                    n > 0 ? static_cast<double>(s.appLatencyExcessSumMs) / static_cast<double>(n) : 0.0;
+                const double stopDrainAvgMs =
+                    s.appLatencyStopDrainSampleCount > 0
+                        ? static_cast<double>(s.appLatencyStopDrainSumMs) /
+                              static_cast<double>(s.appLatencyStopDrainSampleCount)
+                        : 0.0;
                 const double maxCompPercent = static_cast<double>(s.appLatencyMaxAbsCompDelta) * 100.0 /
                                               (static_cast<double>(kStopSampleRate) * 10.0);
                 const double elevatedPct =
-                    100.0 *
-                    static_cast<double>(s.appLatencyBuckets[2] + s.appLatencyBuckets[3] + s.appLatencyBuckets[4]) /
-                    static_cast<double>(n);
+                    n > 0
+                        ? 100.0 * static_cast<double>(s.appLatencyBuckets[2] + s.appLatencyBuckets[3] +
+                                                     s.appLatencyBuckets[4]) /
+                              static_cast<double>(n)
+                        : 0.0;
                 ProcessLoopbackCapture* routedCapture = GetAppCaptureForRoute(i);
                 const uint64_t queueOverrunPackets = routedCapture ? routedCapture->GetQueueOverrunPacketCount() : 0;
                 const uint64_t queueOverrunFrames = routedCapture ? routedCapture->GetQueueOverrunFrameCount() : 0;
@@ -1930,14 +1949,19 @@ public:
                     "targetAvg=%.0fms excessAvg=%.0fms excessMax=%ums "
                     "buckets(<50/50-150/150-300/300-600/>600ms)=%.0f%%/%.0f%%/%.0f%%/%.0f%%/%.0f%% "
                     ">=150ms=%.0f%% drainObservations=%u/%llu transitions=%llu maxComp=%.4f%% "
+                    "liveObservations=%llu stopDrainObservations=%llu stopDrainAvg=%.0fms stopDrainMax=%ums "
                     "queueOverrun=%llu/%llu underruns=%u trims(lat=%llu normal=%llu cat=%u/%llu). "
                     "Lower/more-uniform excess is better; high excess means audio content ran behind video.",
                     i, s.track, avgMs, s.appLatencyMaxMs, targetAvgMs, excessAvgMs, s.appLatencyExcessMaxMs,
-                    100.0 * s.appLatencyBuckets[0] / n, 100.0 * s.appLatencyBuckets[1] / n,
-                    100.0 * s.appLatencyBuckets[2] / n, 100.0 * s.appLatencyBuckets[3] / n,
-                    100.0 * s.appLatencyBuckets[4] / n, elevatedPct, s.appLatencyDrainingSamples,
+                    n > 0 ? 100.0 * s.appLatencyBuckets[0] / n : 0.0,
+                    n > 0 ? 100.0 * s.appLatencyBuckets[1] / n : 0.0,
+                    n > 0 ? 100.0 * s.appLatencyBuckets[2] / n : 0.0,
+                    n > 0 ? 100.0 * s.appLatencyBuckets[3] / n : 0.0,
+                    n > 0 ? 100.0 * s.appLatencyBuckets[4] / n : 0.0, elevatedPct, s.appLatencyDrainingSamples,
                     static_cast<unsigned long long>(n), static_cast<unsigned long long>(s.appLatencyDrainTransitions),
-                    maxCompPercent, static_cast<unsigned long long>(queueOverrunPackets),
+                    maxCompPercent, static_cast<unsigned long long>(n),
+                    static_cast<unsigned long long>(s.appLatencyStopDrainSampleCount), stopDrainAvgMs,
+                    s.appLatencyStopDrainMaxMs, static_cast<unsigned long long>(queueOverrunPackets),
                     static_cast<unsigned long long>(queueOverrunFrames), s.ringBufferUnderrunCount,
                     static_cast<unsigned long long>(s.latencyTrimSamples),
                     static_cast<unsigned long long>(s.latencyTrimSamples >= s.catastrophicResyncSamples
@@ -2140,6 +2164,9 @@ public:
             src.appLatencyExcessSumMs = 0;
             src.appLatencyExcessMaxMs = 0;
             src.appLatencyDrainingSamples = 0;
+            src.appLatencyStopDrainSampleCount = 0;
+            src.appLatencyStopDrainSumMs = 0;
+            src.appLatencyStopDrainMaxMs = 0;
             src.appLatencyDrainTransitions = 0;
             src.appLatencyMaxAbsCompDelta = 0;
             src.lastAppLatencyWarnTick = 0;
@@ -4168,73 +4195,82 @@ public:
                     // logs rather than needing manual reconstruction from raw cursor values.
                     const uint32_t appDelayMs =
                         static_cast<uint32_t>(static_cast<uint64_t>(rbAvailSamples) * 1000ull / SAMPLE_RATE);
-                    const int latBucket = appDelayMs < 50    ? 0
-                                          : appDelayMs < 150 ? 1
-                                          : appDelayMs < 300 ? 2
-                                          : appDelayMs < 600 ? 3
-                                                             : 4;
-                    src.appLatencyBuckets[latBucket]++;
-                    src.appLatencySampleCount++;
-                    src.appLatencySumMs += appDelayMs;
-                    src.appLatencyTargetSumMs += appTargetMs;
-                    src.appLatencyExcessSumMs += appExcessMs;
-                    if (appDelayMs > src.appLatencyMaxMs) {
-                        src.appLatencyMaxMs = appDelayMs;
-                    }
-                    if (appExcessMs > src.appLatencyExcessMaxMs) {
-                        src.appLatencyExcessMaxMs = appExcessMs;
-                    }
-                    if (src.appAudioBacklogDrainActive) {
-                        src.appLatencyDrainingSamples++;
+                    if (forceDrain) {
+                        // Stop finalization intentionally consumes the remaining route backlog in large
+                        // pulls. Keep it visible, but do not mix those artificial observations into the
+                        // live distribution or emit a live-capture latency warning.
+                        ++src.appLatencyStopDrainSampleCount;
+                        src.appLatencyStopDrainSumMs += appDelayMs;
+                        src.appLatencyStopDrainMaxMs = std::max(src.appLatencyStopDrainMaxMs, appDelayMs);
+                    } else {
+                        const int latBucket = appDelayMs < 50    ? 0
+                                              : appDelayMs < 150 ? 1
+                                              : appDelayMs < 300 ? 2
+                                              : appDelayMs < 600 ? 3
+                                                                 : 4;
+                        src.appLatencyBuckets[latBucket]++;
+                        src.appLatencySampleCount++;
+                        src.appLatencySumMs += appDelayMs;
+                        src.appLatencyTargetSumMs += appTargetMs;
+                        src.appLatencyExcessSumMs += appExcessMs;
+                        if (appDelayMs > src.appLatencyMaxMs) {
+                            src.appLatencyMaxMs = appDelayMs;
+                        }
+                        if (appExcessMs > src.appLatencyExcessMaxMs) {
+                            src.appLatencyExcessMaxMs = appExcessMs;
+                        }
+                        if (src.appAudioBacklogDrainActive) {
+                            src.appLatencyDrainingSamples++;
+                        }
+
+                        // Flag clearly-elevated latency loudly WHILE it happens (the signal that was missing).
+                        // Post-fix the drain should keep this rare; frequent firing means latency is not draining.
+                        constexpr uint32_t kAppLatencyWarnMs = 250;
+                        const bool appLatencyElevated =
+                            appExcessSamples >= kAppAudioLatencyWarnExcessSamples || appDelayMs >= kAppLatencyWarnMs;
+                        const bool appLatencyWarnChanged = appLatencyElevated != src.appLatencyWarnActive;
+                        if (appLatencyWarnChanged) {
+                            ProcessLoopbackCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
+                            const size_t pendingPackets = routedCapture ? routedCapture->PendingPacketCount() : 0;
+                            const uint64_t queueOverrunPackets =
+                                routedCapture ? routedCapture->GetQueueOverrunPacketCount() : 0;
+                            const uint64_t queueOverrunFrames =
+                                routedCapture ? routedCapture->GetQueueOverrunFrameCount() : 0;
+                            DLL_Log(
+                                "[AppLatency] state src=%zu track=%d elevated=%d delayMs=%u targetMs=%u excessMs=%u "
+                                "drain=%d reason=%s compDelta=%d comp=%.4f%% rbAvail=%zu queuePending=%zu "
+                                "queueOverrun=%llu/%llu underruns=%u",
+                                srcIdx, track, appLatencyElevated ? 1 : 0, appDelayMs, appTargetMs, appExcessMs,
+                                src.appAudioBacklogDrainActive ? 1 : 0,
+                                ce::audio::CfrAppAudioBacklogDrainReasonName(appDrainReason), src.currentRateDelta,
+                                appCompPct, rbAvailSamples, pendingPackets,
+                                static_cast<unsigned long long>(queueOverrunPackets),
+                                static_cast<unsigned long long>(queueOverrunFrames), src.ringBufferUnderrunCount);
+                            src.appLatencyWarnActive = appLatencyElevated;
+                        }
+                        if (appLatencyElevated && nowConsumeTick - src.lastAppLatencyWarnTick >= 5000) {
+                            ProcessLoopbackCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
+                            const size_t pendingPackets = routedCapture ? routedCapture->PendingPacketCount() : 0;
+                            const uint64_t queueOverrunPackets =
+                                routedCapture ? routedCapture->GetQueueOverrunPacketCount() : 0;
+                            const uint64_t queueOverrunFrames =
+                                routedCapture ? routedCapture->GetQueueOverrunFrameCount() : 0;
+                            DLL_Log(
+                                "[AppLatency] WARNING: app audio src=%zu track=%d delayMs=%u targetMs=%u excessMs=%u "
+                                "rbAvail=%zu drain=%d reason=%s compDelta=%d comp=%.4f%% rateCompActive=%d "
+                                "underruns=%u queuePending=%zu queueOverrun=%llu/%llu. Content backlog should drain "
+                                "toward the video target without trims.",
+                                srcIdx, track, appDelayMs, appTargetMs, appExcessMs, rbAvailSamples,
+                                src.appAudioBacklogDrainActive ? 1 : 0,
+                                ce::audio::CfrAppAudioBacklogDrainReasonName(appDrainReason), src.currentRateDelta,
+                                appCompPct, src.rateCompActive ? 1 : 0, src.ringBufferUnderrunCount, pendingPackets,
+                                static_cast<unsigned long long>(queueOverrunPackets),
+                                static_cast<unsigned long long>(queueOverrunFrames));
+                            src.lastAppLatencyWarnTick = nowConsumeTick;
+                        }
                     }
 
-                    // Flag clearly-elevated latency loudly WHILE it happens (the signal that was missing).
-                    // Post-fix the drain should keep this rare; frequent firing means latency is not draining.
-                    constexpr uint32_t kAppLatencyWarnMs = 250;
-                    const bool appLatencyElevated =
-                        appExcessSamples >= kAppAudioLatencyWarnExcessSamples || appDelayMs >= kAppLatencyWarnMs;
-                    const bool appLatencyWarnChanged = appLatencyElevated != src.appLatencyWarnActive;
-                    if (appLatencyWarnChanged) {
-                        ProcessLoopbackCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
-                        const size_t pendingPackets = routedCapture ? routedCapture->PendingPacketCount() : 0;
-                        const uint64_t queueOverrunPackets =
-                            routedCapture ? routedCapture->GetQueueOverrunPacketCount() : 0;
-                        const uint64_t queueOverrunFrames =
-                            routedCapture ? routedCapture->GetQueueOverrunFrameCount() : 0;
-                        DLL_Log(
-                            "[AppLatency] state src=%zu track=%d elevated=%d delayMs=%u targetMs=%u excessMs=%u "
-                            "drain=%d reason=%s compDelta=%d comp=%.4f%% rbAvail=%zu queuePending=%zu "
-                            "queueOverrun=%llu/%llu underruns=%u",
-                            srcIdx, track, appLatencyElevated ? 1 : 0, appDelayMs, appTargetMs, appExcessMs,
-                            src.appAudioBacklogDrainActive ? 1 : 0,
-                            ce::audio::CfrAppAudioBacklogDrainReasonName(appDrainReason), src.currentRateDelta,
-                            appCompPct, rbAvailSamples, pendingPackets,
-                            static_cast<unsigned long long>(queueOverrunPackets),
-                            static_cast<unsigned long long>(queueOverrunFrames), src.ringBufferUnderrunCount);
-                        src.appLatencyWarnActive = appLatencyElevated;
-                    }
-                    if (appLatencyElevated && nowConsumeTick - src.lastAppLatencyWarnTick >= 5000) {
-                        ProcessLoopbackCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
-                        const size_t pendingPackets = routedCapture ? routedCapture->PendingPacketCount() : 0;
-                        const uint64_t queueOverrunPackets =
-                            routedCapture ? routedCapture->GetQueueOverrunPacketCount() : 0;
-                        const uint64_t queueOverrunFrames =
-                            routedCapture ? routedCapture->GetQueueOverrunFrameCount() : 0;
-                        DLL_Log(
-                            "[AppLatency] WARNING: app audio src=%zu track=%d delayMs=%u targetMs=%u excessMs=%u "
-                            "rbAvail=%zu drain=%d reason=%s compDelta=%d comp=%.4f%% rateCompActive=%d "
-                            "underruns=%u queuePending=%zu queueOverrun=%llu/%llu. Content backlog should drain "
-                            "toward the video target without trims.",
-                            srcIdx, track, appDelayMs, appTargetMs, appExcessMs, rbAvailSamples,
-                            src.appAudioBacklogDrainActive ? 1 : 0,
-                            ce::audio::CfrAppAudioBacklogDrainReasonName(appDrainReason), src.currentRateDelta,
-                            appCompPct, src.rateCompActive ? 1 : 0, src.ringBufferUnderrunCount, pendingPackets,
-                            static_cast<unsigned long long>(queueOverrunPackets),
-                            static_cast<unsigned long long>(queueOverrunFrames));
-                        src.lastAppLatencyWarnTick = nowConsumeTick;
-                    }
-
-                    if (nowConsumeTick - src.lastAppConsumeDiagTick >= 1000) {
+                    if (!forceDrain && nowConsumeTick - src.lastAppConsumeDiagTick >= 1000) {
                         ProcessLoopbackCapture* routedCapture = GetAppCaptureForRoute(srcIdx);
                         const size_t pendingPackets = routedCapture ? routedCapture->PendingPacketCount() : 0;
                         const uint64_t queueOverrunPackets =

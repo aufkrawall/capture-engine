@@ -15,6 +15,7 @@ constexpr uint32_t kMaxInjectDeferredFrameRetries = 3;
 constexpr uint32_t kInjectCfrPublicationHeadroomPermille = 4000;
 constexpr int64_t kInjectCfrPublicationEarlySlackMinUs = 250;
 constexpr int64_t kInjectCfrPublicationEarlySlackMaxUs = 1500;
+constexpr uint32_t kInjectCfrSelectionLeadTolerancePermille = 500;
 constexpr uint32_t kInjectLiveHealthyMaxFrameAgeTicks = 3;
 constexpr uint32_t kInjectLivePressureMaxFrameAgeTicks = 12;
 constexpr uint64_t kEncoderStartupWindowMs = 1500;
@@ -685,8 +686,7 @@ inline uint32_t GetInjectCfrCatchupTicksThisLoop(uint32_t outputShortfallTicks, 
 
 inline bool ShouldUseFreshInjectCatchup(bool useVFR, bool encoderBottlenecked, bool encoderActivelyTooSlow,
                                         size_t bufferedInjectFrames, size_t minBufferedInjectFrames,
-                                        double frameCreditAccumulator, uint32_t outputShortfallTicks,
-                                        bool recoveryActive) {
+                                        uint32_t outputShortfallTicks, bool recoveryActive) {
     if (useVFR || encoderBottlenecked || encoderActivelyTooSlow) {
         return false;
     }
@@ -695,7 +695,7 @@ inline bool ShouldUseFreshInjectCatchup(bool useVFR, bool encoderBottlenecked, b
         return false;
     }
 
-    if (bufferedInjectFrames <= minBufferedInjectFrames || frameCreditAccumulator < 1.0) {
+    if (bufferedInjectFrames <= minBufferedInjectFrames) {
         return false;
     }
 
@@ -1414,6 +1414,14 @@ inline size_t GetInjectReserveFrames(bool useVFR, double smoothedInjectFenceMs, 
 inline size_t GetWarmupInjectKeepCount(double smoothedInjectFenceMs, double frameIntervalMs) {
     return std::max(GetInjectReserveFrames(false, smoothedInjectFenceMs, frameIntervalMs) + 1,
                     kInjectWarmupCommitFloorFrames);
+}
+
+// Inject CFR startup needs enough source history to cover the fixed A/V content-delay target while
+// still retaining the physical GPU/fence safety tail. This count is a startup readiness condition
+// only; contentDelayFrames must never be subtracted from the live timestamp selector's candidate set.
+inline size_t GetInjectCfrStartupReadyFrames(size_t injectReserveFrames, size_t contentDelayFrames) {
+    const size_t required = injectReserveFrames + contentDelayFrames + 1;
+    return std::max(required, kInjectWarmupCommitFloorFrames);
 }
 
 inline size_t GetMinBufferedInjectFrames(size_t injectReserveFrames, bool recordingOutputLive) {
@@ -2955,13 +2963,13 @@ inline size_t GetWgcActiveDelayPaceMaxDepthFrames(int64_t contentDelayQpc, int64
     return target + static_cast<size_t>(kWgcActiveDelayPaceMaxExcessFrames);
 }
 
-// Decide whether to advance/drop/hold for one WGC active-delay output tick. Mirrors the inject
-// Bresenham pacer: with the credit already incremented by the source unique-frames-per-tick rate,
-// decimate evenly while the source is ahead (credit >= 2, keep floor+1), advance one unique frame
-// when credit >= 1 and the buffer is above the delay floor, otherwise hold (an evenly distributed
-// source-limited repeat). The delay floor (frames kept) is what realizes the content delay, so the
-// emitted frame is always ~floor source-frames old; it can never be "too new" for the slot, which
-// is why this path needs no per-tick reserve defense.
+// Decide whether to advance/drop/hold for the legacy WGC active-delay source-rate matcher. With
+// credit already incremented by the source unique-frames-per-tick rate, decimate evenly while the
+// source is ahead (credit >= 2, keep floor+1), advance one unique frame when credit >= 1 and the
+// buffer is above the delay floor, otherwise hold (an evenly distributed source-limited repeat).
+// The delay floor (frames kept) realizes the content delay, so the emitted frame is always ~floor
+// source-frames old; it can never be "too new" for the slot, which is why this policy needs no
+// per-tick reserve defense. The live timestamp-target paths below do not use this count model.
 //
 // Setpoint restoring drain (maxDepthFrames): the pure source-rate matcher has NO restoring force
 // toward the floor, so any transient where the source outran the output (a VRR / GPU-bound present
@@ -3019,7 +3027,7 @@ inline bool ShouldPreferEarlierFreshWgcFrameForReserveDefense(int64_t earlierFra
         reservePressureActive, lowSourceMode, deepUnderfeed, liveRecoveryMode);
 }
 
-// ---- WGC active-delay nearest-target playout (fixed-latency jitter-buffer resampling) -------------
+// ---- Backend-neutral nearest-target CFR playout (fixed-latency jitter-buffer resampling) ----------
 //
 // The Bresenham source-rate pacer (DecideWgcActiveDelayPace) emits the OLDEST buffered frame and
 // bounds the buffer by COUNT (the depth cap). Under bursty WGC delivery -- DWM hands frames to the
@@ -3048,15 +3056,30 @@ inline bool ShouldPreferEarlierFreshWgcFrameForReserveDefense(int64_t earlierFra
 // rather than replaying it as a rubber-band; the unavoidable in-gap freeze stays a clean freeze.
 //
 // `leadToleranceQpc` is how far past (newer than) the target a frame may be and still count as the
-// slot frame -- reuse GetWgcActiveDelayResidualToleranceQpc so the playout boundary matches the
-// active-delay "too new for slot" boundary used elsewhere.
+// slot frame. Backends may use different bounds: inject uses half an output interval for true
+// nearest-neighbour resampling, while WGC/DXGI keep their wider compositor-jitter tolerance.
+
+inline int64_t GetCfrNearestPlayoutLeadToleranceQpc(int64_t targetIntervalTicks, uint32_t tolerancePermille) {
+    if (targetIntervalTicks <= 0 || tolerancePermille == 0) {
+        return 0;
+    }
+    return (targetIntervalTicks * static_cast<int64_t>(tolerancePermille)) / 1000;
+}
+
+inline int64_t GetInjectCfrSelectionLeadToleranceQpc(int64_t targetIntervalTicks) {
+    return GetCfrNearestPlayoutLeadToleranceQpc(targetIntervalTicks, kInjectCfrSelectionLeadTolerancePermille);
+}
+
+inline uint64_t GetCfrTimestampDistanceQpc(int64_t lhs, int64_t rhs) {
+    return lhs >= rhs ? static_cast<uint64_t>(lhs - rhs) : static_cast<uint64_t>(rhs - lhs);
+}
 
 // Should the current front be dropped in favour of `nextTimestampQpc`? True when the successor is
 // strictly newer (monotonic safety) and is still at-or-before the playout slot within the lead
 // tolerance, i.e. it is a closer representative of the target than the older front, so the front is
 // already-past surplus history. Stops naturally at the newest not-too-new frame, leaving any future
 // frames as reserve.
-inline bool ShouldDropWgcFrontForNearerPlayout(int64_t frontTimestampQpc, int64_t nextTimestampQpc,
+inline bool ShouldDropCfrFrontForNearerPlayout(int64_t frontTimestampQpc, int64_t nextTimestampQpc,
                                                int64_t playoutTargetQpc, int64_t leadToleranceQpc) {
     if (frontTimestampQpc <= 0 || nextTimestampQpc <= 0 || playoutTargetQpc <= 0) {
         return false;
@@ -3064,7 +3087,19 @@ inline bool ShouldDropWgcFrontForNearerPlayout(int64_t frontTimestampQpc, int64_
     if (nextTimestampQpc <= frontTimestampQpc) {
         return false;  // not strictly newer -> never advance past (duplicate/non-monotonic safety)
     }
-    return nextTimestampQpc <= playoutTargetQpc + leadToleranceQpc;
+    if (nextTimestampQpc > playoutTargetQpc + leadToleranceQpc) {
+        return false;
+    }
+    // Choose the actual nearest source sample. Ties go to the newer frame so a surplus source is
+    // deterministically decimated without retaining already-superseded history.
+    return GetCfrTimestampDistanceQpc(nextTimestampQpc, playoutTargetQpc) <=
+           GetCfrTimestampDistanceQpc(frontTimestampQpc, playoutTargetQpc);
+}
+
+inline bool ShouldDropWgcFrontForNearerPlayout(int64_t frontTimestampQpc, int64_t nextTimestampQpc,
+                                               int64_t playoutTargetQpc, int64_t leadToleranceQpc) {
+    return ShouldDropCfrFrontForNearerPlayout(frontTimestampQpc, nextTimestampQpc, playoutTargetQpc,
+                                              leadToleranceQpc);
 }
 
 inline bool ShouldSkipDeliveredDuplicateWgcSourceTimestamp(bool duplicateSourceTimestamp, int64_t rawSourceFrameQpc,
@@ -3075,7 +3110,7 @@ inline bool ShouldSkipDeliveredDuplicateWgcSourceTimestamp(bool duplicateSourceT
     return rawSourceFrameQpc == lastDeliveredRawSourceQpc;
 }
 
-struct WgcNearestPlayoutDecision {
+struct CfrNearestPlayoutDecision {
     bool emit = false;  // pop and emit the (post-stale-drop) front frame for this slot
     bool hold = false;  // repeat the previous frame: the slot frame has not been delivered yet
 };
@@ -3087,9 +3122,9 @@ struct WgcNearestPlayoutDecision {
 // source-limited / delivery-gap repeat). A lone frame older than the target is still emitted (it is
 // the freshest available content and strictly newer than the last emit), which makes an in-gap freeze
 // a clean monotonic hold instead of a backward rubber-band.
-inline WgcNearestPlayoutDecision DecideWgcNearestPlayout(int64_t frontTimestampQpc, int64_t playoutTargetQpc,
+inline CfrNearestPlayoutDecision DecideCfrNearestPlayout(int64_t frontTimestampQpc, int64_t playoutTargetQpc,
                                                          int64_t leadToleranceQpc, int64_t lastEmittedTimestampQpc) {
-    WgcNearestPlayoutDecision decision;
+    CfrNearestPlayoutDecision decision;
     if (frontTimestampQpc <= 0 || playoutTargetQpc <= 0) {
         return decision;  // no usable timing -> caller falls back / holds
     }
@@ -3103,6 +3138,13 @@ inline WgcNearestPlayoutDecision DecideWgcNearestPlayout(int64_t frontTimestampQ
         decision.hold = true;  // front still in the future beyond tolerance -> slot not aged in
     }
     return decision;
+}
+
+using WgcNearestPlayoutDecision = CfrNearestPlayoutDecision;
+
+inline WgcNearestPlayoutDecision DecideWgcNearestPlayout(int64_t frontTimestampQpc, int64_t playoutTargetQpc,
+                                                         int64_t leadToleranceQpc, int64_t lastEmittedTimestampQpc) {
+    return DecideCfrNearestPlayout(frontTimestampQpc, playoutTargetQpc, leadToleranceQpc, lastEmittedTimestampQpc);
 }
 
 // Anti-freeze floor for the uniform active-delay playout slot target.

@@ -346,6 +346,11 @@ INJECT_CFR_SOURCE_RE = re.compile(
     r"\[Inject CFR SUMMARY\] SourceFps=([0-9.]+)\.\.([0-9.]+) JitterMax=(\d+)us SelMax=(\d+)us",
     re.IGNORECASE,
 )
+INJECT_CFR_QUALITY_SUMMARY_RE = re.compile(
+    r"\[Inject CFR QUALITY SUMMARY\] TargetSelect=(\d+) Superseded=(\d+) TargetHold=(\d+) "
+    r"HoldWithCandidate=(\d+) BufferCapTrim=(\d+) TargetResidualMax=(\d+)us",
+    re.IGNORECASE,
+)
 FINAL_PACKET_TIMELINE_RE = re.compile(
     r"Final packet timeline: target=(\d+) us videoEnd=(\d+) us audioMinEnd=(\d+) us audioMaxEnd=(\d+) us "
     r"maxPacketDelta=(\d+) us.*audioPastTarget=(\d+)",
@@ -1794,6 +1799,15 @@ def parse_live_start_wall_us(media_text):
     return -1
 
 
+def parse_stop_start_wall_us(media_text):
+    for line in media_text.splitlines():
+        if "[Media] Stopping recording" in line:
+            timestamp_us = parse_log_timestamp_us(line)
+            if timestamp_us >= 0:
+                return timestamp_us
+    return -1
+
+
 def choose_perf_qpc_us_from_live_start(live_start_qpc, perf_summaries):
     if live_start_qpc <= 0:
         return 0
@@ -1880,6 +1894,7 @@ def merge_window_media_evidence(window_evidence, full_evidence):
         "wgc_smoothness_summary",
         "inject_summary",
         "inject_source_summary",
+        "inject_quality_summary",
         "inject_contention",
         "final_packet_timelines",
         "final_metadata",
@@ -2192,7 +2207,9 @@ def parse_media_triage(media_text):
     inject_perf = []
     inject_summary = []
     inject_source_summary = []
+    inject_quality_summary = []
     inject_contention = []
+    app_latency_warnings = []
     final_packet_timelines = []
     final_metadata = []
     post_mux_audio_mismatches = []
@@ -2247,9 +2264,13 @@ def parse_media_triage(media_text):
                     "event_signals": parse_int(contention_match.group(5)),
                     "publication_to_ingest_avg_us": parse_int(contention_match.group(6)),
                     "publication_to_ingest_max_us": parse_int(contention_match.group(7)),
+                    "timestamp_us": parse_log_timestamp_us(line),
+                    "is_summary": "SUMMARY" in line,
                     "line": line,
                 }
             )
+        if LOG_PATTERNS["audio_app_latency_elevated"].search(line):
+            app_latency_warnings.append({"timestamp_us": parse_log_timestamp_us(line), "line": line})
         summary_match = WGC_SUMMARY_RE.search(line)
         if summary_match:
             wgc_summary.append(
@@ -2458,6 +2479,19 @@ def parse_media_triage(media_text):
                     "line": line,
                 }
             )
+        inject_quality_match = INJECT_CFR_QUALITY_SUMMARY_RE.search(line)
+        if inject_quality_match:
+            inject_quality_summary.append(
+                {
+                    "target_select": parse_int(inject_quality_match.group(1)),
+                    "superseded": parse_int(inject_quality_match.group(2)),
+                    "target_hold": parse_int(inject_quality_match.group(3)),
+                    "hold_with_candidate": parse_int(inject_quality_match.group(4)),
+                    "buffer_cap_trim": parse_int(inject_quality_match.group(5)),
+                    "target_residual_max_us": parse_int(inject_quality_match.group(6)),
+                    "line": line,
+                }
+            )
         packet_match = FINAL_PACKET_TIMELINE_RE.search(line)
         if packet_match:
             final_packet_timelines.append(
@@ -2592,6 +2626,13 @@ def parse_media_triage(media_text):
                     "excess_max_ms": parse_named_int_field(line, "excessMax"),
                     "drain_observations": parse_int(drain_match.group(1)) if drain_match else 0,
                     "observation_count": parse_int(drain_match.group(2)) if drain_match else 0,
+                    "live_observations": parse_named_int_field(
+                        line, "liveObservations", parse_int(drain_match.group(2)) if drain_match else 0
+                    ),
+                    "phase_split": "liveObservations=" in line,
+                    "stop_drain_observations": parse_named_int_field(line, "stopDrainObservations", 0),
+                    "stop_drain_avg_ms": parse_named_float_field(line, "stopDrainAvg", 0.0),
+                    "stop_drain_max_ms": parse_named_int_field(line, "stopDrainMax", 0),
                     "transitions": parse_named_int_field(line, "transitions", 0),
                     "max_comp_percent": parse_named_float_field(line, "maxComp", 0.0),
                     "queue_overrun_packets": parse_int(queue_match.group(1)) if queue_match else 0,
@@ -2630,7 +2671,9 @@ def parse_media_triage(media_text):
         "inject_perf": inject_perf,
         "inject_summary": inject_summary,
         "inject_source_summary": inject_source_summary,
+        "inject_quality_summary": inject_quality_summary,
         "inject_contention": inject_contention,
+        "app_latency_warnings": app_latency_warnings,
         "final_packet_timelines": final_packet_timelines,
         "final_metadata": final_metadata,
         "post_mux_audio_mismatch_delta_us": post_mux_audio_mismatches,
@@ -2800,6 +2843,7 @@ def summarize_inject_pacing(media_evidence):
     perf_rows = media_evidence["inject_perf"]
     summary_rows = media_evidence["inject_summary"]
     source_rows = media_evidence["inject_source_summary"]
+    quality_rows = media_evidence.get("inject_quality_summary", [])
     return {
         "perf_rows": len(perf_rows),
         "input": sum(row["input"] for row in perf_rows),
@@ -2815,12 +2859,19 @@ def summarize_inject_pacing(media_evidence):
         "summary_dup_def": sum(row["dup_def"] for row in summary_rows),
         "summary_dup_timer": sum(row["dup_timer"] for row in summary_rows),
         "summary_dup_drain": sum(row["dup_drain"] for row in summary_rows),
+        "summary_stale_trim": sum(row["stale_trim"] for row in summary_rows),
         "summary_recovery_active": max((row["recovery_active"] for row in summary_rows), default=0),
         "summary_recovery_episodes": sum(row["recovery_episodes"] for row in summary_rows),
         "source_fps_min": min((row["source_fps_min"] for row in source_rows), default=0.0),
         "source_fps_max": max((row["source_fps_max"] for row in source_rows), default=0.0),
         "jitter_max_us": max((row["jitter_max_us"] for row in source_rows), default=0),
         "selection_max_us": max((row["selection_max_us"] for row in source_rows), default=0),
+        "target_select": sum(row["target_select"] for row in quality_rows),
+        "target_superseded": sum(row["superseded"] for row in quality_rows),
+        "target_hold": sum(row["target_hold"] for row in quality_rows),
+        "target_hold_with_candidate": sum(row["hold_with_candidate"] for row in quality_rows),
+        "buffer_cap_trim": sum(row["buffer_cap_trim"] for row in quality_rows),
+        "target_residual_max_us": max((row["target_residual_max_us"] for row in quality_rows), default=0),
     }
 
 
@@ -2846,6 +2897,69 @@ def has_inject_capture_pacer_limit(inject_pacing):
             return False
 
     return True
+
+
+def has_stable_inject_source_rate(inject_pacing):
+    source_min = inject_pacing["source_fps_min"]
+    source_max = inject_pacing["source_fps_max"]
+    if source_min <= 0.0 or source_max <= 0.0 or source_max < source_min:
+        return False
+    return (source_max - source_min) <= max(3.0, source_max * 0.05)
+
+
+def has_inject_cfr_playout_churn(inject_pacing):
+    duplicates = inject_pacing["summary_dup_src"]
+    stale_trim = inject_pacing["summary_stale_trim"]
+    if (
+        duplicates < 3
+        or stale_trim < 3
+        or inject_pacing["summary_dup_def"] != 0
+        or inject_pacing["summary_dup_timer"] != 0
+        or inject_pacing["summary_dup_drain"] != 0
+        or not has_stable_inject_source_rate(inject_pacing)
+    ):
+        return False
+    return stale_trim >= math.ceil(duplicates * 0.5)
+
+
+def has_inject_target_policy_hold_fault(inject_pacing):
+    live = inject_pacing["summary_live"]
+    hold_with_candidate = inject_pacing["target_hold_with_candidate"]
+    if live <= 0 or not has_stable_inject_source_rate(inject_pacing):
+        return False
+    return hold_with_candidate >= max(3, math.ceil(live * 0.005))
+
+
+def summarize_inject_contention_context(media_evidence, live_start_wall_us):
+    all_rows = [
+        item
+        for item in media_evidence.get("inject_contention", [])
+        if item.get("publication_to_ingest_max_us", 0) > 0
+    ]
+    periodic_rows = [item for item in all_rows if not item.get("is_summary")]
+    rows = periodic_rows if periodic_rows else all_rows
+    startup_cutoff_us = live_start_wall_us + 2000000 if live_start_wall_us >= 0 else -1
+    startup_rows = [
+        item
+        for item in rows
+        if startup_cutoff_us >= 0 and 0 <= item.get("timestamp_us", -1) < startup_cutoff_us
+    ]
+    settled_rows = [item for item in rows if item not in startup_rows]
+    evaluated_rows = settled_rows if settled_rows else rows
+    settled_starvation = any(item.get("publication_to_ingest_max_us", 0) >= 20000 for item in evaluated_rows)
+    startup_backlog_only = (
+        bool(settled_rows)
+        and any(item.get("publication_to_ingest_max_us", 0) >= 20000 for item in startup_rows)
+        and not settled_starvation
+    )
+    return {
+        "startup_rows": len(startup_rows),
+        "settled_rows": len(settled_rows),
+        "startup_max_us": max((item.get("publication_to_ingest_max_us", 0) for item in startup_rows), default=0),
+        "settled_max_us": max((item.get("publication_to_ingest_max_us", 0) for item in settled_rows), default=0),
+        "settled_starvation": settled_starvation,
+        "startup_backlog_only": startup_backlog_only,
+    }
 
 
 def has_encoder_or_mux_backpressure(media_evidence, perf_summaries, windowed=False):
@@ -3569,10 +3683,22 @@ def summarize_started_app_source_health(media_evidence, log_summary):
     }
 
 
-def summarize_app_audio_latency(media_evidence, log_summary):
-    warning_count = log_summary["counts"].get("audio_app_latency_elevated", 0) if log_summary else 0
+def summarize_app_audio_latency(media_evidence, log_summary, stop_start_wall_us=-1):
+    warning_rows = media_evidence.get("app_latency_warnings", [])
+    if warning_rows:
+        stop_warning_count = sum(
+            1
+            for item in warning_rows
+            if stop_start_wall_us >= 0 and item.get("timestamp_us", -1) >= stop_start_wall_us
+        )
+        warning_count = len(warning_rows) - stop_warning_count
+    else:
+        stop_warning_count = 0
+        warning_count = log_summary["counts"].get("audio_app_latency_elevated", 0) if log_summary else 0
+    stop_drain_only = stop_warning_count > 0 and warning_count == 0
     sources = media_evidence.get("stop_app_audio_latency", [])
     elevated_sources = []
+    stop_context_sources = []
     for item in sources:
         excess_avg = item.get("excess_avg_ms")
         excess_max = item.get("excess_max_ms")
@@ -3580,11 +3706,15 @@ def summarize_app_audio_latency(media_evidence, log_summary):
             elevated = excess_avg >= 40.0 or excess_max >= 80
         else:
             elevated = item.get("avg_ms", 0.0) >= 250.0 or item.get("max_ms", 0) >= 300
-        if elevated:
+        if elevated and stop_drain_only and not item.get("phase_split", False):
+            stop_context_sources.append(item)
+        elif elevated:
             elevated_sources.append(item)
 
     return {
         "warning_count": warning_count,
+        "stop_drain_warning_count": stop_warning_count,
+        "stop_drain_only": stop_drain_only and not elevated_sources,
         "source_count": len(sources),
         "elevated_source_count": len(elevated_sources),
         "worst_avg_ms": max((item.get("avg_ms", 0.0) for item in sources), default=0.0),
@@ -3604,6 +3734,7 @@ def summarize_app_audio_latency(media_evidence, log_summary):
         "catastrophic_resync_events": sum(item.get("catastrophic_resync_events", 0) for item in sources),
         "sources": sources,
         "elevated_sources": elevated_sources,
+        "stop_context_sources": stop_context_sources,
     }
 
 
@@ -3628,9 +3759,13 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     inject_pacing = summarize_inject_pacing(media_evidence)
     stop_audio_shortfalls = summarize_stop_audio_shortfalls(media_evidence)
     started_app_source_health = summarize_started_app_source_health(media_evidence, log_summary)
-    app_audio_latency = summarize_app_audio_latency(media_evidence, log_summary)
+    live_start_wall_us = parse_live_start_wall_us(media_text)
+    stop_start_wall_us = parse_stop_start_wall_us(media_text)
+    app_audio_latency = summarize_app_audio_latency(media_evidence, log_summary, stop_start_wall_us)
+    inject_contention_context = summarize_inject_contention_context(media_evidence, live_start_wall_us)
 
     verdicts = []
+    contexts = []
     if recording_window_info:
         max_present_gap_ms = max((item["max_qpc_delta_us"] for item in perf_summaries), default=0) / 1000.0
         present_gap_evidence = []
@@ -3651,8 +3786,10 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
         verdicts.append("duplication_consumer_starvation")
     if any(item.get("gpu_busy", 0) > 0 for item in media_evidence["inject_contention"]):
         verdicts.append("capture_gpu_queue_starvation")
-    if any(item.get("publication_to_ingest_max_us", 0) >= 20000 for item in media_evidence["inject_contention"]):
+    if inject_contention_context["settled_starvation"]:
         verdicts.append("media_cpu_starvation")
+    elif inject_contention_context["startup_backlog_only"]:
+        contexts.append("inject_startup_publication_backlog")
     wgc_delivery_gap = has_wgc_delivery_gap(media_evidence)
     if wgc_delivery_gap:
         verdicts.append("wgc_delivery_gap")
@@ -3663,6 +3800,12 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
         verdicts.append("wgc_framepool_pressure")
     if has_inject_capture_pacer_limit(inject_pacing):
         verdicts.append("ce_capture_pacer_limited")
+    inject_cfr_playout_churn = has_inject_cfr_playout_churn(inject_pacing)
+    inject_target_policy_hold_fault = has_inject_target_policy_hold_fault(inject_pacing)
+    if inject_cfr_playout_churn:
+        verdicts.append("inject_cfr_playout_churn")
+    if inject_target_policy_hold_fault:
+        verdicts.append("inject_cfr_target_policy_hold")
 
     audio_fault_counts = {}
     visual_fault_counts = {}
@@ -3812,6 +3955,8 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             verdicts.append("started_app_source_underrun")
     if app_audio_latency["warning_count"] > 0 or app_audio_latency["elevated_source_count"] > 0:
         verdicts.append("audio_app_latency_elevated")
+    elif app_audio_latency["stop_drain_only"]:
+        contexts.append("app_audio_stop_drain_latency")
     if post_mux_probe_hang:
         verdicts.append("post_mux_probe_hang")
     elif post_mux_probe_timeout:
@@ -3858,6 +4003,8 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     if (
         any(visual_fault_counts.values())
         or "ce_capture_pacer_limited" in verdicts
+        or inject_cfr_playout_churn
+        or inject_target_policy_hold_fault
         or wgc_encoder_limited_judder
         or wgc_encoder_overload_policy_fault
         or wgc_av_sync_delay_risk
@@ -3878,7 +4025,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     ):
         verdicts.append("ce_visual_timeline_fault")
     if hook_evidence["external_overlay_lines"]:
-        verdicts.append("external_overlay_context")
+        contexts.append("external_overlay_present")
     if hook_evidence["crash_events"]:
         verdicts.append("ce_process_crash")
     if not verdicts:
@@ -3905,6 +4052,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "session_manifest": str(session_dir / "session_manifest.txt") if (session_dir / "session_manifest.txt").exists() else None,
         },
         "verdicts": verdicts,
+        "contexts": contexts,
         "faults": {
             "encoder_or_mux_backpressure": "ce_encoder_or_mux_backpressure" in verdicts,
             "audio_timeline": "ce_audio_timeline_fault" in verdicts,
@@ -3936,6 +4084,8 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "started_app_source_underrun": "started_app_source_underrun" in verdicts,
             "sparse_app_source_silence": "sparse_app_source_silence" in verdicts,
             "audio_app_latency_elevated": "audio_app_latency_elevated" in verdicts,
+            "inject_cfr_playout_churn": inject_cfr_playout_churn,
+            "inject_cfr_target_policy_hold": inject_target_policy_hold_fault,
             "post_mux_probe_hang": post_mux_probe_hang,
             "post_mux_probe_timeout": post_mux_probe_timeout,
             "ce_process_crash": bool(hook_evidence["crash_events"]),
@@ -3947,6 +4097,7 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
             "present_gaps": present_gap_evidence[:20],
             "present_stalled_lines": hook_evidence["present_stalled_lines"][:20],
             "external_overlay_lines": hook_evidence["external_overlay_lines"],
+            "inject_contention_context": inject_contention_context,
             "crash_events": hook_evidence["crash_events"],
             "wgc_source_starved_episodes": media_evidence["source_starved_episodes"],
             "wgc_source_limits": wgc_source_limits,
@@ -4067,6 +4218,8 @@ def print_triage_report(report):
             )
         )
     print(f"  verdicts={','.join(report['verdicts'])}")
+    if report.get("contexts"):
+        print(f"  contexts={','.join(report['contexts'])}")
     print(
         "  faults encoder_or_mux={enc} audio={audio} visual={visual}".format(
             enc=int(report["faults"]["encoder_or_mux_backpressure"]),
@@ -4199,12 +4352,14 @@ def print_triage_report(report):
     app_latency = evidence["app_audio_latency"]
     if app_latency["warning_count"] or app_latency["source_count"]:
         print(
-            "  app_audio_latency warnings={warnings} sources={sources} elevated={elevated} "
+            "  app_audio_latency warnings={warnings} stop_drain_warnings={stop_warnings} "
+            "sources={sources} elevated={elevated} "
             "worst_delay_avg={avg:.1f}ms worst_delay_max={max_ms}ms "
             "worst_excess_avg={excess_avg:.1f}ms worst_excess_max={excess_max}ms "
             "max_comp={comp:.4f}% queue_overrun={queue_packets}/{queue_frames} "
             "underruns={underruns} catastrophic={cat_events}".format(
                 warnings=app_latency["warning_count"],
+                stop_warnings=app_latency["stop_drain_warning_count"],
                 sources=app_latency["source_count"],
                 elevated=app_latency["elevated_source_count"],
                 avg=app_latency["worst_avg_ms"],
@@ -4230,12 +4385,21 @@ def print_triage_report(report):
         if mux_faults:
             print(f"  mux_faults={mux_faults}")
     inject_pacing = evidence["inject_pacing"]
-    if inject_pacing["perf_rows"] or inject_pacing["summary_duplicate"]:
+    if inject_pacing["perf_rows"] or inject_pacing["summary_live"] or inject_pacing["target_select"]:
         print(
-            "  inject_drop_pace={drop_pace} inject_dup_src={dup_src} "
+            "  inject_drop_pace={drop_pace} inject_dup_src={dup_src} stale_trim={stale_trim} "
+            "target_select={target_select} superseded={superseded} target_hold={target_hold} "
+            "hold_with_candidate={hold_candidate} cap_trim={cap_trim} residual_max={residual}us "
             "inject_source_fps={fps_min:.2f}..{fps_max:.2f}".format(
                 drop_pace=inject_pacing["drop_pace"],
                 dup_src=inject_pacing["summary_dup_src"],
+                stale_trim=inject_pacing["summary_stale_trim"],
+                target_select=inject_pacing["target_select"],
+                superseded=inject_pacing["target_superseded"],
+                target_hold=inject_pacing["target_hold"],
+                hold_candidate=inject_pacing["target_hold_with_candidate"],
+                cap_trim=inject_pacing["buffer_cap_trim"],
+                residual=inject_pacing["target_residual_max_us"],
                 fps_min=inject_pacing["source_fps_min"],
                 fps_max=inject_pacing["source_fps_max"],
             )
@@ -4638,6 +4802,32 @@ def self_test():
             "media_cpu_starvation",
         ):
             assert verdict in contention_report["verdicts"]
+
+        startup_contention = make_session(
+            "startup_contention",
+            media=(
+                "[2026-07-17 15:54:31.784] [INFO] [EncoderThread] Recording live (inject)\n"
+                "[2026-07-17 15:54:32.540] [INFO] [Inject Contention] CaptureLock=0 CpuLease=1 GpuBusy=0 "
+                "RingFull=0 EventSignals=78 PubToIngest=16237/291415us\n"
+                "[2026-07-17 15:54:34.541] [INFO] [Inject Contention] CaptureLock=0 CpuLease=1 GpuBusy=0 "
+                "RingFull=0 EventSignals=309 PubToIngest=33/59us\n"
+            ),
+        )
+        report = classify_session_triage(startup_contention)
+        assert "media_cpu_starvation" not in report["verdicts"]
+        assert "inject_startup_publication_backlog" in report["contexts"]
+        assert report["evidence"]["inject_contention_context"]["startup_max_us"] == 291415
+        assert report["evidence"]["inject_contention_context"]["settled_max_us"] == 59
+
+        overlay_context = make_session(
+            "overlay_context",
+            media="[VideoEncoder] Final packet timeline: target=1000 us videoEnd=1000 us audioMinEnd=1000 us "
+            "audioMaxEnd=1000 us maxPacketDelta=0 us streams(v=1 a=1) audioPastTarget=0\n",
+            hook="[2026-07-17 15:54:31.000] Steam overlay module detected\n",
+        )
+        report = classify_session_triage(overlay_context)
+        assert "external_overlay_context" not in report["verdicts"]
+        assert "external_overlay_present" in report["contexts"]
 
         smooth_buffer_item = {}
         update_wgc_smoothness_item_from_line(
@@ -5147,6 +5337,35 @@ def self_test():
         report = classify_session_triage(inject_planned_source_stall)
         assert "ce_capture_pacer_limited" not in report["verdicts"]
         assert "ce_visual_timeline_fault" not in report["verdicts"]
+
+        inject_playout_churn = make_session(
+            "inject_playout_churn",
+            media=(
+                "[Inject CFR SUMMARY] Live=14239 Dup=882 DupPct=6.1% "
+                "DupReason(src=882 def=0 timer=0 drain=0) FreshCatchup=0 RepeatCatchup=0 "
+                "StaleTrim=783 Recovery=0/0\n"
+                "[Inject CFR SUMMARY] SourceFps=116.20..122.08 JitterMax=8000us SelMax=7000us\n"
+            ),
+        )
+        report = classify_session_triage(inject_playout_churn)
+        assert "inject_cfr_playout_churn" in report["verdicts"]
+        assert "ce_visual_timeline_fault" in report["verdicts"]
+
+        inject_target_quality = make_session(
+            "inject_target_quality",
+            media=(
+                "[Inject CFR SUMMARY] Live=12000 Dup=0 DupPct=0.0% "
+                "DupReason(src=0 def=0 timer=0 drain=0) FreshCatchup=0 RepeatCatchup=0 "
+                "StaleTrim=0 Recovery=0/0\n"
+                "[Inject CFR SUMMARY] SourceFps=119.80..120.20 JitterMax=300us SelMax=100us\n"
+                "[Inject CFR QUALITY SUMMARY] TargetSelect=12000 Superseded=0 TargetHold=0 "
+                "HoldWithCandidate=0 BufferCapTrim=0 TargetResidualMax=100us\n"
+            ),
+        )
+        report = classify_session_triage(inject_target_quality)
+        assert "inject_cfr_target_policy_hold" not in report["verdicts"]
+        assert report["evidence"]["inject_pacing"]["target_select"] == 12000
+        assert report["evidence"]["inject_pacing"]["target_residual_max_us"] == 100
 
         audio_worker_scheduling_stall = make_session(
             "audio_worker_scheduling_stall",
@@ -6502,6 +6721,27 @@ def self_test():
         assert "ce_audio_timeline_fault" not in report["verdicts"]
         assert report["evidence"]["app_audio_latency"]["warning_count"] == 1
         assert report["evidence"]["app_audio_latency"]["elevated_source_count"] == 1
+
+        app_latency_stop_drain_context = make_session(
+            "app_latency_stop_drain_context",
+            media=(
+                "[2026-07-17 15:55:00.000] [INFO] [EncoderThread] Recording live (inject)\n"
+                "[2026-07-17 15:56:30.690] [INFO] [Media] Stopping recording...\n"
+                "[2026-07-17 15:56:31.000] [WARN] [AppLatency] WARNING: app audio src=6 track=2 "
+                "delayMs=351 targetMs=60 excessMs=291\n"
+                "[2026-07-17 15:56:31.033] [INFO] [STOP AUDIO LATENCY] Source 6 track=2 "
+                "appAudioDelay avg=329ms max=527ms buckets(<50/50-150/150-300/300-600/>600ms)="
+                "0%/0%/0%/100%/0% >=150ms=100% drainingSamples=0/100\n"
+                "[VideoEncoder] Final packet timeline: target=51441667 us videoEnd=51441667 us "
+                "audioMinEnd=51441667 us audioMaxEnd=51441667 us maxPacketDelta=0 us "
+                "streams(v=1 a=3) audioPastTarget=0\n"
+            ),
+        )
+        report = classify_session_triage(app_latency_stop_drain_context)
+        assert "audio_app_latency_elevated" not in report["verdicts"]
+        assert "app_audio_stop_drain_latency" in report["contexts"]
+        assert report["evidence"]["app_audio_latency"]["warning_count"] == 0
+        assert report["evidence"]["app_audio_latency"]["stop_drain_warning_count"] == 1
 
         crash_session = make_session(
             "crash_session",

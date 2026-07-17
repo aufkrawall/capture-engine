@@ -174,6 +174,8 @@ TEST(CapturePipelinePolicyTest, WgcCoverageLossSuppressionHonorsEncoderOnlyShort
 TEST(CapturePipelinePolicyTest, WarmupKeepCountAndMinimumBufferedFramesFollowReserve) {
     EXPECT_EQ(policy::GetWarmupInjectKeepCount(0.0, 8.333), 3u);
     EXPECT_EQ(policy::GetWarmupInjectKeepCount(19.0, 8.0), 5u);
+    EXPECT_EQ(policy::GetInjectCfrStartupReadyFrames(/*reserve=*/1, /*contentDelay=*/4), 6u);
+    EXPECT_EQ(policy::GetInjectCfrStartupReadyFrames(/*reserve=*/0, /*contentDelay=*/0), 3u);
     EXPECT_EQ(policy::GetMinBufferedInjectFrames(0, false), 0u);
     EXPECT_EQ(policy::GetMinBufferedInjectFrames(1, true), 1u);
     EXPECT_EQ(policy::GetMinBufferedInjectFrames(3, false), 3u);
@@ -1120,6 +1122,9 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutDropsAlreadyPastFramesForCloser
     // older front is already-past history -> drop it.
     EXPECT_TRUE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/900, /*next=*/980, target, leadTol));
     EXPECT_TRUE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/900, /*next=*/target + leadTol, target, leadTol));
+    // The successor may be within the backend's broad lead tolerance yet still be farther from the
+    // slot than an exact/closer front. True nearest-neighbour playout must retain the front.
+    EXPECT_FALSE(policy::ShouldDropWgcFrontForNearerPlayout(/*front=*/target, /*next=*/target + 50, target, leadTol));
     // The successor is in the future beyond tolerance -> keep the front (it is the slot frame) and
     // hold the future frame as reserve.
     EXPECT_FALSE(
@@ -1311,6 +1316,78 @@ PlayoutStats RunNearestPlayoutResample(int ticks, int64_t outputInterval, int64_
     return s;
 }
 
+PlayoutStats RunInjectTargetPlayout(int ticks, int64_t outputInterval, int64_t initialSourceInterval,
+                                    int64_t contentDelay, bool varySourceRate = false) {
+    PlayoutStats s;
+    constexpr size_t kFenceTailFrames = 1;
+    const int64_t leadTol = policy::GetInjectCfrSelectionLeadToleranceQpc(outputInterval);
+    const int64_t timeBase = 100000;
+    std::deque<int64_t> buffer;
+    int64_t sourceInterval = initialSourceInterval;
+    int64_t nextSourceTimestamp = timeBase - contentDelay - 3 * sourceInterval;
+    while (nextSourceTimestamp <= timeBase) {
+        buffer.push_back(nextSourceTimestamp);
+        nextSourceTimestamp += sourceInterval;
+    }
+    int64_t lastEmitted = 0;
+    int holdRun = 0;
+    for (int tick = 0; tick < ticks; ++tick) {
+        if (varySourceRate) {
+            sourceInterval = tick < ticks / 3 ? 133 : (tick < (ticks * 2) / 3 ? 83 : 167);
+        }
+        const int64_t now = timeBase + static_cast<int64_t>(tick) * outputInterval;
+        while (nextSourceTimestamp <= now) {
+            buffer.push_back(nextSourceTimestamp);
+            nextSourceTimestamp += sourceInterval;
+        }
+        while (buffer.size() > kFenceTailFrames && buffer.front() <= lastEmitted) {
+            buffer.pop_front();
+        }
+        const size_t available = buffer.size() > kFenceTailFrames ? buffer.size() - kFenceTailFrames : 0;
+        const int64_t target = now - contentDelay;
+        size_t best = available;
+        uint64_t bestDistance = UINT64_MAX;
+        for (size_t index = 0; index < available; ++index) {
+            const uint64_t distance = policy::GetCfrTimestampDistanceQpc(buffer[index], target);
+            if (distance <= bestDistance) {
+                bestDistance = distance;
+                best = index;
+            }
+        }
+        bool droppedThisTick = false;
+        bool held = true;
+        if (best < available) {
+            const auto decision = policy::DecideCfrNearestPlayout(buffer[best], target, leadTol, lastEmitted);
+            if (decision.emit) {
+                for (size_t index = 0; index < best; ++index) {
+                    buffer.pop_front();
+                    ++s.staleDrops;
+                    droppedThisTick = true;
+                }
+                const int64_t timestamp = buffer.front();
+                buffer.pop_front();
+                lastEmitted = timestamp;
+                ++s.emits;
+                held = false;
+                const int64_t realizedDelay = now - timestamp;
+                s.maxRealizedDelay = std::max(s.maxRealizedDelay, realizedDelay);
+                s.minRealizedDelay = std::min(s.minRealizedDelay, realizedDelay);
+            }
+        }
+        if (held) {
+            ++s.holds;
+            ++holdRun;
+            s.longestHoldRun = std::max(s.longestHoldRun, holdRun);
+            if (droppedThisTick) {
+                ++s.dropDupSameTickViolations;
+            }
+        } else {
+            holdRun = 0;
+        }
+    }
+    return s;
+}
+
 // Encoder-overload grid drift: the CFR encoder grid runs slower than wall-clock (it cannot sustain the
 // output rate) so the grid-anchored playout target sits a fixed `gridLag` behind the real-time frame
 // timestamps, on top of the content delay. A bounded reservoir keeps only the newest `reservoirFrames`
@@ -1492,6 +1569,39 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutDropsSurplus144HzFor120FpsWitho
     EXPECT_EQ(s.dropDupSameTickViolations, 0);
     EXPECT_GE(s.minRealizedDelay, 3000 - 120);
     EXPECT_LE(s.maxRealizedDelay, 3000 + 120);
+}
+
+TEST(CapturePipelinePolicyTest, InjectTargetPlayoutUsesNormalDepthForPerfectMatchedCadence) {
+    auto s = RunInjectTargetPlayout(/*ticks=*/1200, /*outputInterval=*/100, /*sourceInterval=*/100,
+                                    /*contentDelay=*/400);
+    EXPECT_EQ(s.emits, 1200);
+    EXPECT_EQ(s.holds, 0);
+    EXPECT_EQ(s.staleDrops, 3);  // one-time pre-roll history older than the first delayed target
+    EXPECT_EQ(s.dropDupSameTickViolations, 0);
+    EXPECT_GE(s.minRealizedDelay, 350);
+    EXPECT_LE(s.maxRealizedDelay, 450);
+}
+
+TEST(CapturePipelinePolicyTest, InjectTargetPlayoutResamplesLowHighAndVaryingSourceRatesWithoutChurn) {
+    auto low = RunInjectTargetPlayout(/*ticks=*/1200, /*outputInterval=*/100, /*sourceInterval=*/200,
+                                      /*contentDelay=*/600);
+    EXPECT_GT(low.holds, 0);
+    EXPECT_LE(low.longestHoldRun, 2);
+    EXPECT_EQ(low.dropDupSameTickViolations, 0);
+
+    auto high = RunInjectTargetPlayout(/*ticks=*/1200, /*outputInterval=*/100, /*sourceInterval=*/80,
+                                       /*contentDelay=*/600);
+    EXPECT_EQ(high.holds, 0);
+    EXPECT_GT(high.staleDrops, 0);
+    EXPECT_EQ(high.dropDupSameTickViolations, 0);
+
+    auto varying = RunInjectTargetPlayout(/*ticks=*/1800, /*outputInterval=*/100, /*sourceInterval=*/133,
+                                          /*contentDelay=*/800, /*varySourceRate=*/true);
+    EXPECT_GT(varying.emits, 0);
+    EXPECT_GT(varying.holds, 0);
+    EXPECT_GT(varying.staleDrops, 0);
+    EXPECT_LE(varying.longestHoldRun, 2);
+    EXPECT_EQ(varying.dropDupSameTickViolations, 0);
 }
 
 TEST(CapturePipelinePolicyTest, WgcSmoothnessBufferBudgetCapsRetainedFrames) {
@@ -2358,7 +2468,7 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutRepeatRescueCanUseSyncSafeFutur
 // quantized under VRR/composed presentation. Recurring >8.3 ms artificial raw gaps starved output
 // slots (hold) while the surrounding surplus was dropped. The SAME playout decisions driven by the
 // monotonic bounded-deviation smoothed selection timestamps consume the surplus with zero repeats.
-TEST(CapturePipelinePolicyTest, WgcUniformPlayoutQuantizedSurplusSourceHoldsOnlyWithRawTimestamps) {
+TEST(CapturePipelinePolicyTest, WgcUniformPlayoutUsesActualNearestSampleForRawAndSmoothedTimestamps) {
     constexpr int64_t kQpcFreq = 1000000;        // 1 tick == 1 us
     constexpr int64_t kOutputIntervalUs = 8333;  // 120 fps CFR
     constexpr double kTrueIntervalUs = 1000000.0 / 140.0;
@@ -2418,9 +2528,10 @@ TEST(CapturePipelinePolicyTest, WgcUniformPlayoutQuantizedSurplusSourceHoldsOnly
     const int rawHolds = runUniformPlayout(raw);
     const int smoothedHolds = runUniformPlayout(smoothed);
 
-    // Before the fix: constant visible stutter manufactured from a healthy surplus source.
-    EXPECT_GT(rawHolds, 10);
-    // After the fix: pure surplus decimation, zero repeats.
+    // Actual nearest-neighbour selection no longer skips an exact/closer raw sample merely because
+    // a later successor is inside WGC's broad compositor tolerance. Both domains therefore consume
+    // this healthy surplus as pure decimation with no CE-manufactured repeat.
+    EXPECT_EQ(rawHolds, 0);
     EXPECT_EQ(smoothedHolds, 0);
 }
 
@@ -2634,20 +2745,20 @@ TEST(CapturePipelinePolicyTest, InjectRecoveryOutputQpcStaysOnTheImmutableCfrGri
     EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(INT64_MAX - 10, 2, 10, 77), 77);
 }
 
-TEST(CapturePipelinePolicyTest, InjectFreshCatchupRequiresHealthyEncoderAndQueuedCredit) {
-    EXPECT_TRUE(policy::ShouldUseFreshInjectCatchup(false, false, false, 4, 2, 1.0,
+TEST(CapturePipelinePolicyTest, InjectFreshCatchupRequiresHealthyEncoderAndTargetCandidate) {
+    EXPECT_TRUE(policy::ShouldUseFreshInjectCatchup(false, false, false, 4, 2,
                                                     policy::kCfrShortfallForceCatchupThresholdTicks, true));
-    EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(true, false, false, 4, 2, 1.0,
+    EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(true, false, false, 4, 2,
                                                      policy::kCfrShortfallForceCatchupThresholdTicks, true));
-    EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, true, false, 4, 2, 1.0,
+    EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, true, false, 4, 2,
                                                      policy::kCfrShortfallForceCatchupThresholdTicks, true));
-    EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, false, true, 4, 2, 1.0,
+    EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, false, true, 4, 2,
                                                      policy::kCfrShortfallForceCatchupThresholdTicks, true));
-    EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, false, false, 2, 2, 1.0,
+    EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, false, false, 2, 2,
                                                      policy::kCfrShortfallForceCatchupThresholdTicks, true));
-    EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, false, false, 4, 2, 0.99,
-                                                     policy::kCfrShortfallForceCatchupThresholdTicks, true));
-    EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, false, false, 4, 2, 1.0,
+    EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, false, false, 4, 2,
+                                                     policy::kInjectCfrRecoveryExitShortfallTicks, true));
+    EXPECT_FALSE(policy::ShouldUseFreshInjectCatchup(false, false, false, 4, 2,
                                                      policy::kCfrShortfallForceCatchupThresholdTicks, false));
 }
 
