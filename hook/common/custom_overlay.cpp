@@ -175,7 +175,7 @@ void Renderer::AddTextQuadsScaled(float x, float y, const char* text, uint32_t c
 
         if (c == '\n') {
             px = originX;
-            py += fontAtlas.GetLineHeight() * scale;
+            py += static_cast<float>(fontAtlas.GetLineHeight()) * scale;
             continue;
         }
 
@@ -183,19 +183,19 @@ void Renderer::AddTextQuadsScaled(float x, float y, const char* text, uint32_t c
         if (!g || g->width == 0)
             continue;
 
-        float gx = px + g->xOffset * scale;
-        float gy = py + g->yOffset * scale;
+        float gx = px + static_cast<float>(g->xOffset) * scale;
+        float gy = py + static_cast<float>(g->yOffset) * scale;
         float gw = (float)g->width * scale;
         float gh = (float)g->height * scale;
 
-        float u0 = g->x / atlasW;
-        float u1 = (g->x + g->width) / atlasW;
-        float v0 = g->y / atlasH;
-        float v1 = (g->y + g->height) / atlasH;
+        float u0 = static_cast<float>(g->x) / atlasW;
+        float u1 = static_cast<float>(g->x + g->width) / atlasW;
+        float v0 = static_cast<float>(g->y) / atlasH;
+        float v1 = static_cast<float>(g->y + g->height) / atlasH;
 
         AddQuad(gx, gy, gw, gh, u0, v0, u1, v1, color);
 
-        px += g->xAdvance * scale;
+        px += static_cast<float>(g->xAdvance) * scale;
     }
 }
 
@@ -216,7 +216,7 @@ void Renderer::AddTextSolidQuadsScaled(float x, float y, const char* text, uint3
 
         if (c == '\n') {
             px = originX;
-            py += fontAtlas.GetLineHeight() * scale;
+            py += static_cast<float>(fontAtlas.GetLineHeight()) * scale;
             continue;
         }
 
@@ -226,8 +226,8 @@ void Renderer::AddTextSolidQuadsScaled(float x, float y, const char* text, uint3
 
         const auto& spans = fontAtlas.GetGlyphSpans(c);
         if (!spans.empty()) {
-            const float gx = px + g->xOffset * scale;
-            const float gy = py + g->yOffset * scale;
+            const float gx = px + static_cast<float>(g->xOffset) * scale;
+            const float gy = py + static_cast<float>(g->yOffset) * scale;
             const float rowHeight = scale;
 
             for (const auto& span : spans) {
@@ -240,7 +240,7 @@ void Renderer::AddTextSolidQuadsScaled(float x, float y, const char* text, uint3
             }
         }
 
-        px += g->xAdvance * scale;
+        px += static_cast<float>(g->xAdvance) * scale;
     }
 }
 
@@ -668,7 +668,7 @@ void Renderer::TableRow(const char* label, const char* value, uint32_t labelColo
     if (!initialized || !inTable)
         return;
 
-    float colWidth = 100 * dpiScale;  // Fixed column width for label
+    float colWidth = 100.0f * dpiScale;  // Fixed column width for label
 
     // Draw label
     DrawText(cursorX, cursorY, label, labelColor);
@@ -677,7 +677,7 @@ void Renderer::TableRow(const char* label, const char* value, uint32_t labelColo
     DrawText(cursorX + colWidth, cursorY, value, valueColor);
 
     // Move to next row
-    cursorY += fontAtlas.GetLineHeight();
+    cursorY += static_cast<float>(fontAtlas.GetLineHeight());
 }
 
 void Renderer::EndTable() {

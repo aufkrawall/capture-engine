@@ -12,7 +12,6 @@
 #include "logging.h"
 #include "secure_dll_loading.h"
 
-static std::string g_DumpDir = ".\\logs";
 static std::mutex g_DumpDirMutex;
 static char g_ProcessName[256] = "unknown";
 static HMODULE g_hDbgHelp = NULL;
@@ -36,6 +35,13 @@ static MINIDUMPWRITEDUMP g_pMiniDumpWriteDump = NULL;
 void TraceCrash(const char* msg);
 
 namespace {
+
+std::string& CrashDumpDirectoryStorage() {
+    // Function-local construction can report allocation failure to the first
+    // caller instead of terminating during namespace-scope initialization.
+    static std::string dumpDir = ".\\logs";
+    return dumpDir;
+}
 
 LONG DispatchCrashExecutionFaultHandler(EXCEPTION_POINTERS* pExceptionPointers) {
     if (!pExceptionPointers || !pExceptionPointers->ExceptionRecord) {
@@ -278,7 +284,7 @@ bool WriteSupplementalCrashDump(const char* fileNameHint, HANDLE hProcess, DWORD
     std::string dumpDir;
     {
         std::lock_guard<std::mutex> dirLock(g_DumpDirMutex);
-        dumpDir = g_DumpDir;
+        dumpDir = CrashDumpDirectoryStorage();
     }
     if (dumpDir.empty()) {
         return false;
@@ -382,7 +388,7 @@ static void RegisterWithWER() {
         if (pfnWerRegisterFile) {
             // Register our dump directory as a file to include in WER reports
             wchar_t dumpDirW[MAX_PATH];
-            MultiByteToWideChar(CP_UTF8, 0, g_DumpDir.c_str(), -1, dumpDirW, MAX_PATH);
+            MultiByteToWideChar(CP_UTF8, 0, CrashDumpDirectoryStorage().c_str(), -1, dumpDirW, MAX_PATH);
             pfnWerRegisterFile(dumpDirW, 1 /*WER_FILE_ANOTHER*/, 0);
         }
 
@@ -392,7 +398,7 @@ static void RegisterWithWER() {
         auto pfnWerAddNamedDumpStore = (PFN_WerAddNamedDumpStore)GetProcAddress(hWer, "WerAddNamedDumpStore");
         if (pfnWerAddNamedDumpStore) {
             wchar_t dumpDirW[MAX_PATH];
-            MultiByteToWideChar(CP_UTF8, 0, g_DumpDir.c_str(), -1, dumpDirW, MAX_PATH);
+            MultiByteToWideChar(CP_UTF8, 0, CrashDumpDirectoryStorage().c_str(), -1, dumpDirW, MAX_PATH);
             pfnWerAddNamedDumpStore(L"CaptureEngine", dumpDirW);
         }
     }
@@ -414,7 +420,7 @@ static void RegisterWithWER() {
         DWORD dumpType = 2;  // MiniDumpWithFullMemory
         DWORD dumpCount = 10;
         wchar_t dumpDirW[MAX_PATH];
-        MultiByteToWideChar(CP_UTF8, 0, g_DumpDir.c_str(), -1, dumpDirW, MAX_PATH);
+        MultiByteToWideChar(CP_UTF8, 0, CrashDumpDirectoryStorage().c_str(), -1, dumpDirW, MAX_PATH);
         RegSetValueExW(hKey, L"DumpType", 0, REG_DWORD, (BYTE*)&dumpType, sizeof(dumpType));
         RegSetValueExW(hKey, L"DumpCount", 0, REG_DWORD, (BYTE*)&dumpCount, sizeof(dumpCount));
         RegSetValueExW(hKey, L"DumpFolder", 0, REG_EXPAND_SZ, (BYTE*)dumpDirW,
@@ -429,7 +435,7 @@ static void RegisterWithWER() {
         DWORD dumpType = 2;
         DWORD dumpCount = 10;
         wchar_t dumpDirW2[MAX_PATH];
-        MultiByteToWideChar(CP_UTF8, 0, g_DumpDir.c_str(), -1, dumpDirW2, MAX_PATH);
+        MultiByteToWideChar(CP_UTF8, 0, CrashDumpDirectoryStorage().c_str(), -1, dumpDirW2, MAX_PATH);
         RegSetValueExW(hKey, L"DumpType", 0, REG_DWORD, (BYTE*)&dumpType, sizeof(dumpType));
         RegSetValueExW(hKey, L"DumpCount", 0, REG_DWORD, (BYTE*)&dumpCount, sizeof(dumpCount));
         RegSetValueExW(hKey, L"DumpFolder", 0, REG_EXPAND_SZ, (BYTE*)dumpDirW2,
@@ -441,7 +447,7 @@ static void RegisterWithWER() {
 void SetCrashDumpDirectory(const std::string& dir) {
     {
         std::lock_guard<std::mutex> lock(g_DumpDirMutex);
-        g_DumpDir = dir;
+        CrashDumpDirectoryStorage() = dir;
     }
     DeleteStaleEmptyInProgressDumpArtifactsForDirectory(dir);
     ArchiveInstalledCrashArtifactsForDumpDirectory(dir);
@@ -449,7 +455,7 @@ void SetCrashDumpDirectory(const std::string& dir) {
 
 std::string GetCrashDumpDirectory() {
     std::lock_guard<std::mutex> lock(g_DumpDirMutex);
-    return g_DumpDir;
+    return CrashDumpDirectoryStorage();
 }
 
 void SetCrashProcessName(const char* name) {
@@ -477,7 +483,7 @@ void TraceCrash(const char* msg) {
     std::string dumpDir;
     {
         std::lock_guard<std::mutex> dirLock(g_DumpDirMutex);
-        dumpDir = g_DumpDir;
+        dumpDir = CrashDumpDirectoryStorage();
     }
     char path[MAX_PATH];
     snprintf(path, sizeof(path), "%s\\crash.log", dumpDir.c_str());
@@ -507,7 +513,7 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
     std::string dumpDir;
     {
         std::lock_guard<std::mutex> dirLock(g_DumpDirMutex);
-        dumpDir = g_DumpDir;
+        dumpDir = CrashDumpDirectoryStorage();
     }
 
     SYSTEMTIME st;
@@ -720,7 +726,7 @@ LONG WINAPI CrashHandlerExceptionFilter(EXCEPTION_POINTERS* pExceptionPointers) 
     {
         std::unique_lock<std::mutex> dirLock(g_DumpDirMutex, std::try_to_lock);
         if (dirLock.owns_lock()) {
-            dumpDir = g_DumpDir;
+            dumpDir = CrashDumpDirectoryStorage();
         } else {
             dumpDir = ".\\logs";  // Fallback default if mutex is contended
         }

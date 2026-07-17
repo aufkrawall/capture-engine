@@ -242,25 +242,49 @@ class BuildFlagPolicyTest(unittest.TestCase):
 
     def test_lint_findings_are_only_fatal_for_standalone_lint_invocation(self) -> None:
         self.assertTrue(build.is_standalone_lint_invocation(["--lint"]))
+        self.assertTrue(build.is_standalone_lint_invocation(["--lint", "--concise", "--jobs=4"]))
         self.assertFalse(build.is_standalone_lint_invocation([]))
         self.assertFalse(build.is_standalone_lint_invocation(["--verify"]))
         self.assertFalse(build.is_standalone_lint_invocation(["--lint", "--run-tests"]))
         self.assertFalse(build.is_standalone_lint_invocation(["--lint", "--skip-updates"]))
+
+    def test_presentation_options_preserve_default_quality_mode(self) -> None:
+        self.assertTrue(build.is_default_quality_invocation([]))
+        self.assertTrue(build.is_default_quality_invocation(["--concise"]))
+        self.assertTrue(build.is_default_quality_invocation(["--jobs", "6", "--log-file=custom.log"]))
+        self.assertTrue(build.is_default_quality_invocation(["--verbose-commands", "--detail-log", "detail.log"]))
+        self.assertFalse(build.is_default_quality_invocation(["--skip-updates", "--concise"]))
+        self.assertFalse(build.is_default_quality_invocation(["--incremental", "--jobs=3"]))
+        self.assertFalse(build.is_default_quality_invocation(["--jobs", "--skip-updates"]))
+
+    def test_sanitizer_child_always_reuses_prepared_externals_and_stays_concise(self) -> None:
+        command = build.sanitizer_regression_command(ccache_flag=False)
+        self.assertIn("--skip-updates", command)
+        self.assertIn("--concise", command)
+        self.assertIn("--sanitize-regression-child", command)
 
     def test_python_tool_bootstrap_does_not_mutate_link_environment(self) -> None:
         completed = build.subprocess.CompletedProcess(args=[], returncode=0)
         with patch.dict(os.environ, {"PATH": "host-tools"}), patch.object(
             build.subprocess, "run", return_value=completed
         ):
-            build.check_python_lsp_tools()
+            self.assertTrue(build.check_python_lsp_tools())
             self.assertEqual(os.environ["PATH"], "host-tools")
 
-    def test_concise_logging_hides_detail_only_from_console(self) -> None:
+    def test_lint_modes_bootstrap_their_own_python_tools(self) -> None:
+        self.assertTrue(build.should_bootstrap_python_tools(True, False, False, False))
+        self.assertTrue(build.should_bootstrap_python_tools(False, True, False, False))
+        self.assertTrue(build.should_bootstrap_python_tools(False, False, True, False))
+        self.assertFalse(build.should_bootstrap_python_tools(False, False, False, False))
+
+    def test_concise_logging_splits_summary_and_complete_detail_logs(self) -> None:
         previous_log = build.LOG_FILE
+        previous_detail_log = build.DETAIL_LOG_FILE
         previous_concise = build.CONCISE_OUTPUT
         previous_verbose = build.VERBOSE_COMMANDS
         with tempfile.TemporaryDirectory() as temporary:
             build.LOG_FILE = str(Path(temporary) / "build.log")
+            build.DETAIL_LOG_FILE = str(Path(temporary) / "build.details.log")
             build.CONCISE_OUTPUT = True
             build.VERBOSE_COMMANDS = False
             try:
@@ -270,12 +294,39 @@ class BuildFlagPolicyTest(unittest.TestCase):
                     build.log("stage summary")
                     print_output.assert_called_once()
                 log_text = Path(build.LOG_FILE).read_text(encoding="utf-8")
-                self.assertIn("compile detail", log_text)
+                detail_text = Path(build.DETAIL_LOG_FILE).read_text(encoding="utf-8")
+                self.assertNotIn("compile detail", log_text)
                 self.assertIn("stage summary", log_text)
+                self.assertIn("compile detail", detail_text)
+                self.assertIn("stage summary", detail_text)
             finally:
                 build.LOG_FILE = previous_log
+                build.DETAIL_LOG_FILE = previous_detail_log
                 build.CONCISE_OUTPUT = previous_concise
                 build.VERBOSE_COMMANDS = previous_verbose
+
+    def test_run_command_preserves_successful_stderr_in_detail_log(self) -> None:
+        previous_log = build.LOG_FILE
+        previous_detail_log = build.DETAIL_LOG_FILE
+        previous_concise = build.CONCISE_OUTPUT
+        with tempfile.TemporaryDirectory() as temporary:
+            build.LOG_FILE = str(Path(temporary) / "build.log")
+            build.DETAIL_LOG_FILE = str(Path(temporary) / "build.details.log")
+            build.CONCISE_OUTPUT = True
+            result = build.subprocess.CompletedProcess(
+                args=["tool"], returncode=0, stdout=b"normal output\n", stderr=b"warning output\n"
+            )
+            try:
+                with patch.object(build.subprocess, "run", return_value=result):
+                    self.assertEqual(build.run_command(["tool"]), "normal output\n")
+                detail_text = Path(build.DETAIL_LOG_FILE).read_text(encoding="utf-8")
+                summary_text = Path(build.LOG_FILE).read_text(encoding="utf-8") if Path(build.LOG_FILE).exists() else ""
+                self.assertIn("warning output", detail_text)
+                self.assertNotIn("warning output", summary_text)
+            finally:
+                build.LOG_FILE = previous_log
+                build.DETAIL_LOG_FILE = previous_detail_log
+                build.CONCISE_OUTPUT = previous_concise
 
     def test_sanitizer_child_reuses_parent_build_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -45,7 +45,7 @@ TEST(InjectFrameRingLeaseTest, MovedLeaseCompletesExactlyOnce) {
 
     auto original = state->Acquire(0);
     ce::InjectFrameRingLease moved = std::move(original);
-    EXPECT_FALSE(static_cast<bool>(original));
+    EXPECT_FALSE(static_cast<bool>(original));  // NOLINT(bugprone-use-after-move): verifies moved-from emptiness.
     EXPECT_TRUE(static_cast<bool>(moved));
 
     moved.Reset();

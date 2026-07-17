@@ -36,6 +36,8 @@ import platform
 import shlex
 import site
 import stat
+import threading
+from collections import Counter, deque
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from multiprocessing import cpu_count
@@ -241,9 +243,12 @@ TESTAPP_BIN_DIR = os.path.join(INSTALLED_DIR, "testapp")
 BIN_DIR = CAPTURE_BIN_DIR  # output captureengine binaries to installed\captureengine
 DEFAULT_LOG_FILE = os.path.join(PROJECT_ROOT, "build.log")
 LOG_FILE = DEFAULT_LOG_FILE
+DETAIL_LOG_FILE: Optional[str] = None
 VERIFICATION_DIR = os.path.join(BUILD_DIR, "verification")
 VERBOSE_COMMANDS = False
 CONCISE_OUTPUT = False
+LOG_LOCK = threading.Lock()
+FAILURE_OUTPUT_TAIL_LINES = 80
 VERIFICATION_CONTEXT: Optional[Dict[str, Any]] = None
 VERIFICATION_FINAL_EXIT_CODE = 0
 VERIFICATION_ATEXIT_REGISTERED = False
@@ -378,11 +383,39 @@ def log(msg: str, *, detail: bool = False) -> None:
     formatted = f"[{timestamp}] {msg}"
     if not (CONCISE_OUTPUT and detail and not VERBOSE_COMMANDS):
         print(formatted)
-    try:
-        with open(LOG_FILE, "a") as f:
-            f.write(formatted + "\n")
-    except Exception:
-        pass
+    with LOG_LOCK:
+        if DETAIL_LOG_FILE:
+            try:
+                with open(DETAIL_LOG_FILE, "a", encoding="utf-8") as detail_log:
+                    detail_log.write(formatted + "\n")
+            except Exception:
+                pass
+        if not detail or not DETAIL_LOG_FILE or os.path.abspath(DETAIL_LOG_FILE) == os.path.abspath(LOG_FILE):
+            try:
+                with open(LOG_FILE, "a", encoding="utf-8") as summary_log:
+                    summary_log.write(formatted + "\n")
+            except Exception:
+                pass
+
+
+def log_captured_output(label: str, output: str, *, detail: bool) -> None:
+    """Log captured subprocess output line-by-line without losing stream identity."""
+    if not output:
+        return
+    for line in output.splitlines():
+        log(f"[{label}] {line}", detail=detail)
+
+
+def log_failure_output_tail(label: str, output: str, max_lines: int = FAILURE_OUTPUT_TAIL_LINES) -> None:
+    """Expose a bounded diagnostic tail while the complete output remains in the detail log."""
+    if not output:
+        return
+    lines = output.splitlines()
+    omitted = max(0, len(lines) - max_lines)
+    if omitted:
+        log(f"[{label}] ... {omitted} earlier line(s) are in the detailed log")
+    for line in lines[-max_lines:]:
+        log(f"[{label}] {line}")
 
 
 def get_workspace_temp_dir() -> str:
@@ -462,6 +495,21 @@ def record_verification_artifact(name: str, path: Optional[str]) -> None:
     VERIFICATION_CONTEXT.setdefault("artifacts", {})[name] = os.path.abspath(path)
 
 
+def write_verification_artifact(name: str, filename: str, text: str) -> Optional[str]:
+    path = verification_artifact_path(filename)
+    if not path:
+        return None
+    write_text_atomic(path, text)
+    record_verification_artifact(name, path)
+    return path
+
+
+def record_verification_coverage(name: str, value: Any) -> None:
+    if not VERIFICATION_CONTEXT:
+        return
+    VERIFICATION_CONTEXT.setdefault("coverage", {})[name] = value
+
+
 def record_verification_step(
     name: str,
     status: str,
@@ -480,11 +528,20 @@ def record_verification_step(
 
 
 def init_verification_context(args: List[str], build_number: int, verify_mode: bool, top_level: bool) -> None:
-    global VERIFICATION_CONTEXT, VERIFICATION_FINAL_EXIT_CODE, VERIFICATION_ATEXIT_REGISTERED
+    global DETAIL_LOG_FILE, VERIFICATION_CONTEXT, VERIFICATION_FINAL_EXIT_CODE, VERIFICATION_ATEXIT_REGISTERED
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = os.path.join(VERIFICATION_DIR, f"{timestamp}_build_{build_number}")
     os.makedirs(run_dir, exist_ok=True)
+    if not DETAIL_LOG_FILE:
+        DETAIL_LOG_FILE = os.path.join(run_dir, "build.details.log")
+    assert DETAIL_LOG_FILE is not None
+    if os.path.abspath(DETAIL_LOG_FILE) != os.path.abspath(LOG_FILE) and not os.path.exists(DETAIL_LOG_FILE):
+        try:
+            if os.path.exists(LOG_FILE):
+                shutil.copy2(LOG_FILE, DETAIL_LOG_FILE)
+        except OSError:
+            pass
 
     VERIFICATION_CONTEXT = {
         "run_dir": os.path.abspath(run_dir),
@@ -495,12 +552,14 @@ def init_verification_context(args: List[str], build_number: int, verify_mode: b
         "build_script_sha256": sha256_file(os.path.abspath(__file__)),
         "command": [sys.executable, os.path.abspath(__file__), *args],
         "args": list(args),
-        "start_time": datetime.datetime.now().isoformat(timespec="seconds"),
+        "start_time": datetime.datetime.now().isoformat(timespec="milliseconds"),
         "success": None,
         "exit_code": None,
         "steps": {},
+        "coverage": {},
         "artifacts": {
             "live_build_log": os.path.abspath(LOG_FILE),
+            "detailed_build_log": os.path.abspath(DETAIL_LOG_FILE),
         },
     }
     VERIFICATION_FINAL_EXIT_CODE = 1
@@ -520,7 +579,7 @@ def finalize_verification_on_exit() -> None:
     success = VERIFICATION_FINAL_EXIT_CODE == 0
     VERIFICATION_CONTEXT["success"] = success
     VERIFICATION_CONTEXT["exit_code"] = VERIFICATION_FINAL_EXIT_CODE
-    VERIFICATION_CONTEXT["end_time"] = datetime.datetime.now().isoformat(timespec="seconds")
+    VERIFICATION_CONTEXT["end_time"] = datetime.datetime.now().isoformat(timespec="milliseconds")
 
     start_ts = VERIFICATION_CONTEXT.get("start_time")
     try:
@@ -558,6 +617,7 @@ def finalize_verification_on_exit() -> None:
         f"build_version={VERIFICATION_CONTEXT['build_version']}",
         f"run_dir={run_dir}",
         f"live_build_log={VERIFICATION_CONTEXT['artifacts'].get('live_build_log', '')}",
+        f"duration_seconds={VERIFICATION_CONTEXT.get('duration_seconds', '')}",
     ]
     if VERIFICATION_CONTEXT.get("artifacts", {}).get("build_log"):
         summary_lines.append(f"build_log_copy={VERIFICATION_CONTEXT['artifacts']['build_log']}")
@@ -566,6 +626,9 @@ def finalize_verification_on_exit() -> None:
         duration = step.get("duration_seconds")
         duration_suffix = f" ({duration:.3f}s)" if isinstance(duration, (int, float)) else ""
         summary_lines.append(f"step.{step_name}={step.get('status', 'unknown')}{duration_suffix}")
+
+    for coverage_name, coverage_value in VERIFICATION_CONTEXT.get("coverage", {}).items():
+        summary_lines.append(f"coverage.{coverage_name}={coverage_value}")
 
     for artifact_name, artifact_path in VERIFICATION_CONTEXT.get("artifacts", {}).items():
         summary_lines.append(f"artifact.{artifact_name}={artifact_path}")
@@ -587,6 +650,8 @@ def finalize_verification_on_exit() -> None:
             write_text_atomic(os.path.join(VERIFICATION_DIR, "latest_run_dir.txt"), run_dir + "\n")
             if os.path.exists(build_log_copy):
                 shutil.copy2(build_log_copy, os.path.join(VERIFICATION_DIR, "latest_build.log"))
+            if DETAIL_LOG_FILE and os.path.exists(DETAIL_LOG_FILE):
+                shutil.copy2(DETAIL_LOG_FILE, os.path.join(VERIFICATION_DIR, "latest_build.details.log"))
     except Exception:
         pass
 
@@ -1142,43 +1207,8 @@ def run_command(
     fail_exit: bool = True,
     timeout: Optional[int] = None,
 ) -> str:
-    cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
-
-    if VERBOSE_COMMANDS or not isinstance(cmd, list):
-        log(f"Running: {cmd_str}", detail=True)
-    else:
-        exe_name = os.path.basename(cmd[0]) if cmd else "command"
-        output_path = None
-        if "-o" in cmd:
-            try:
-                output_path = cmd[cmd.index("-o") + 1]
-            except (ValueError, IndexError):
-                output_path = None
-
-        is_compile_like = any(arg == "-c" for arg in cmd)
-        source_path = None
-        if is_compile_like:
-            for arg in cmd:
-                if arg.endswith((".cpp", ".cc", ".c", ".cxx")):
-                    source_path = arg
-                    break
-
-        if exe_name.startswith(("clang", "gcc", "g++")) or exe_name in {
-            "link.exe",
-            "lld-link.exe",
-        }:
-            if is_compile_like and source_path and output_path:
-                log(
-                    f"Running: {exe_name} compile {os.path.relpath(source_path, PROJECT_ROOT)} -> "
-                    f"{os.path.relpath(output_path, PROJECT_ROOT)}",
-                    detail=True,
-                )
-            elif output_path:
-                log(f"Running: {exe_name} link -> {os.path.relpath(output_path, PROJECT_ROOT)}", detail=True)
-            else:
-                log(f"Running: {exe_name}", detail=True)
-        else:
-            log(f"Running: {cmd_str}", detail=True)
+    cmd_str = subprocess.list2cmdline(cmd) if isinstance(cmd, list) else cmd
+    log(f"Running: {cmd_str}", detail=True)
     try:
         input_bytes = input_str.encode("utf-8") if input_str is not None else None
         result = subprocess.run(
@@ -1191,10 +1221,12 @@ def run_command(
         )
         stdout = result.stdout.decode("utf-8", errors="replace") if result.stdout else ""
         stderr = result.stderr.decode("utf-8", errors="replace") if result.stderr else ""
+        log_captured_output("stdout", stdout, detail=True)
+        log_captured_output("stderr", stderr, detail=True)
         if result.returncode != 0:
             log(f"ERROR: Command failed with code {result.returncode}")
-            log(f"STDOUT: {stdout}")
-            log(f"STDERR: {stderr}")
+            log_failure_output_tail("stdout", stdout)
+            log_failure_output_tail("stderr", stderr)
             if fail_exit:
                 sys.exit(1)
         return stdout
@@ -1202,10 +1234,10 @@ def run_command(
         log(f"TIMEOUT: Command exceeded {timeout}s: {cmd_str}")
         stdout = e.stdout.decode("utf-8", errors="replace") if e.stdout else ""
         stderr = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
-        if stdout:
-            log(f"PARTIAL STDOUT: {stdout}")
-        if stderr:
-            log(f"PARTIAL STDERR: {stderr}")
+        log_captured_output("partial stdout", stdout, detail=True)
+        log_captured_output("partial stderr", stderr, detail=True)
+        log_failure_output_tail("partial stdout", stdout)
+        log_failure_output_tail("partial stderr", stderr)
         if fail_exit:
             sys.exit(1)
         return ""
@@ -1214,6 +1246,45 @@ def run_command(
         if fail_exit:
             sys.exit(1)
         return ""
+
+
+def run_logged_subprocess(
+    command,
+    *,
+    cwd=None,
+    env=None,
+    check=False,
+    shell=False,
+):
+    """Stream a subprocess into the durable detail log and keep console output concise."""
+    command_list = list(command) if not isinstance(command, str) else command
+    command_text = subprocess.list2cmdline(command_list) if isinstance(command_list, list) else command_list
+    log(f"Running: {command_text}", detail=True)
+    process = subprocess.Popen(
+        command_list,
+        cwd=cwd,
+        env=env,
+        shell=shell,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    output_lines = deque(maxlen=FAILURE_OUTPUT_TAIL_LINES)
+    assert process.stdout is not None
+    for raw_line in process.stdout:
+        line = raw_line.rstrip("\r\n")
+        output_lines.append(line)
+        log(f"[subprocess] {line}", detail=True)
+    return_code = process.wait()
+    output = "\n".join(output_lines)
+    if return_code != 0:
+        log(f"ERROR: Command failed with code {return_code}: {command_text}")
+        log_failure_output_tail("subprocess", output)
+        if check:
+            raise subprocess.CalledProcessError(return_code, command_list, output=output)
+    return subprocess.CompletedProcess(command_list, return_code, stdout=output, stderr=None)
 
 
 def is_windows_process_running(image_name: str) -> bool:
@@ -2075,9 +2146,10 @@ def compile_vulkan_fg_shaders(env: Dict[str, str]) -> str:
     return output_dir
 
 
-def check_python_lsp_tools():
+def check_python_lsp_tools() -> bool:
     """Check and install Python LSP/lint/format tools for better IDE support."""
     bootstrap_env = apply_workspace_temp_environment(os.environ.copy())
+    bootstrap_ok = True
 
     user_scripts_dir = os.path.join(site.getuserbase(), "Scripts" if IS_WINDOWS else "bin")
     if user_scripts_dir not in bootstrap_env.get("PATH", ""):
@@ -2093,11 +2165,15 @@ def check_python_lsp_tools():
     except (subprocess.CalledProcessError, FileNotFoundError):
         log("pip not found. Bootstrapping with ensurepip...")
         try:
-            subprocess.run([sys.executable, "-m", "ensurepip", "--upgrade"], check=True, env=bootstrap_env)
+            run_logged_subprocess(
+                [sys.executable, "-m", "ensurepip", "--upgrade"],
+                check=True,
+                env=bootstrap_env,
+            )
         except subprocess.CalledProcessError as e:
             log(f"Warning: Failed to bootstrap pip: {e}")
-            log("  Optional Python tooling bootstrap skipped.")
-            return
+            log("Python lint tooling cannot be prepared; the lint stage will report the missing tools.")
+            return False
 
     tools = ["pyright", "flake8", "black"]
 
@@ -2126,17 +2202,13 @@ def check_python_lsp_tools():
                 if IS_LINUX and not is_virtual_environment():
                     cmd.append("--break-system-packages")
                 cmd.append(tool)
-                subprocess.run(cmd, check=True, env=bootstrap_env)
+                run_logged_subprocess(cmd, check=True, env=bootstrap_env)
                 log(f"{tool} installed successfully.")
             except subprocess.CalledProcessError as e:
+                bootstrap_ok = False
                 log(f"Warning: Failed to install {tool}: {e}")
-                manual_flags = []
-                if not is_virtual_environment():
-                    manual_flags.append("--user")
-                if IS_LINUX and not is_virtual_environment():
-                    manual_flags.append("--break-system-packages")
-                suffix = " " + " ".join(manual_flags) if manual_flags else ""
-                log(f"  Install manually: python -m pip install{suffix} {tool}")
+                log(f"{tool} remains unavailable; the lint stage will report the missing managed tool.")
+    return bootstrap_ok
 
 
 def get_linux_ffmpeg_root() -> str:
@@ -3039,14 +3111,14 @@ class FFmpegBuilder:
         else:
             cmd_list = shlex.split(cmd, posix=False)
             cmd_str = cmd
-        log(f"[FFmpeg] EXEC: {cmd_str}")
+        log(f"[FFmpeg] EXEC: {cmd_str}", detail=True)
         try:
             if env is None:
                 env = os.environ.copy()
             if env and "PATH" not in env:
                 env["PATH"] = os.environ["PATH"]
 
-            subprocess.run(cmd_list, cwd=cwd, env=env, check=check, shell=False)
+            run_logged_subprocess(cmd_list, cwd=cwd, env=env, check=check, shell=False)
         except subprocess.CalledProcessError as e:
             log(f"[FFmpeg] FAILED: {cmd_str}")
             raise e
@@ -3300,11 +3372,15 @@ def compile_custom_ffmpeg(skip_updates=False):
         log("Running on Linux/WSL - using MSYS2 FFmpeg (downloaded from repo)")
         return  # FFmpeg is downloaded as part of MSYS2 packages
 
+    def dependency_log(message: str) -> None:
+        log(message, detail="] EXEC:" in message)
+
     dependency_builder = SourceDependencyBuilder(
         project_root=PROJECT_ROOT,
         msys2_dir=MSYS2_DIR,
         manifest_path=FFMPEG_DEPENDENCY_MANIFEST,
-        logger=log,
+        logger=dependency_log,
+        runner=run_logged_subprocess,
     )
     try:
         full_source_rebuild = not skip_updates
@@ -4044,7 +4120,7 @@ def enrich_compile_command_for_clangd(command: Dict[str, Any]) -> Dict[str, Any]
     return command
 
 
-def write_compile_commands_json() -> None:
+def write_compile_commands_json() -> Optional[str]:
     """Write compile_commands.json from the global COMPILE_COMMANDS list.
 
     Registered with atexit so the compilation database is always persisted,
@@ -4052,7 +4128,7 @@ def write_compile_commands_json() -> None:
     better than a stale database for LSP diagnostics.
     """
     if not COMPILE_COMMANDS:
-        return
+        return None
     try:
         seen_files = set()
         unique_commands = []
@@ -4069,12 +4145,18 @@ def write_compile_commands_json() -> None:
                         unique_commands[i] = enriched_cmd
                         break
         compile_commands_path = os.path.join(PROJECT_ROOT, "compile_commands.json")
-        write_json_atomic(compile_commands_path, unique_commands)
-        log(f"Generated compile_commands.json ({len(unique_commands)} entries)")
+        payload = json.dumps(unique_commands, indent=4) + "\n"
+        changed = write_text_atomic_if_changed(compile_commands_path, payload)
+        log(
+            f"{'Generated' if changed else 'Validated'} compile_commands.json ({len(unique_commands)} entries)",
+            detail=not changed,
+        )
         if os.path.exists(os.path.join(PROJECT_ROOT, ".clangd")):
-            log("LSP: leaving .clangd unchanged; compile_commands.json is authoritative")
+            log("LSP: leaving .clangd unchanged; compile_commands.json is authoritative", detail=True)
+        return compile_commands_path
     except Exception as e:
         log(f"Error writing compile_commands.json: {e}")
+        return None
 
 
 atexit.register(write_compile_commands_json)
@@ -4482,7 +4564,7 @@ def log_unit_test_output_tail(label, output, max_lines=80):
         log(f"[unit_tests:{label}] {line}")
 
 
-def run_tests(env, test_exe, gtest_filter=None):
+def run_tests(env, test_exe, gtest_filter=None, run_python_tools=True):
     log("=== Running Unit Tests ===")
     if not os.path.exists(test_exe):
         log("Error: Test executable not found.")
@@ -4540,7 +4622,10 @@ def run_tests(env, test_exe, gtest_filter=None):
         duration_seconds=elapsed,
         details={"exit_code": result.returncode, "gtest_filter": gtest_filter},
     )
-    if gtest_filter:
+    if gtest_filter or not run_python_tools:
+        if not run_python_tools:
+            log("Skipping duplicate Python tool self-tests in sanitizer child")
+            record_verification_step("python_tool_self_tests", "skipped", details={"reason": "sanitizer_child"})
         return True
     return run_python_tool_self_tests(env)
 
@@ -4683,7 +4768,29 @@ def run_integration_tests(env, full_matrix=False):
     )
 
 
-def run_lint(env):
+def write_process_diagnostics_artifact(
+    artifact_name: str,
+    filename: str,
+    command: List[str],
+    result: subprocess.CompletedProcess,
+) -> Optional[str]:
+    text = "\n".join(
+        [
+            f"command: {subprocess.list2cmdline(command)}",
+            f"exit_code: {result.returncode}",
+            "",
+            "[stdout]",
+            result.stdout or "<empty>",
+            "",
+            "[stderr]",
+            result.stderr or "<empty>",
+            "",
+        ]
+    )
+    return write_verification_artifact(artifact_name, filename, text)
+
+
+def run_lint(env, *, advisory=False):
     log("=== Running Linting ===")
     lint_start = time.time()
     checks_ok = True
@@ -4722,22 +4829,42 @@ def run_lint(env):
         if files:
             chunk_size = 50
             issues_found = 0
+            format_outputs: List[str] = []
+            format_issue_files = set()
 
             for i in range(0, len(files), chunk_size):
                 chunk = files[i : i + chunk_size]
                 cmd = [clang_format, "--dry-run", "-Werror"] + chunk
                 res = subprocess.run(cmd, capture_output=True, text=True, env=env)
+                combined_output = "\n".join(part for part in (res.stdout, res.stderr) if part)
+                if combined_output:
+                    format_outputs.append(f"$ {subprocess.list2cmdline(cmd)}\n{combined_output}")
+                    for line in combined_output.splitlines():
+                        match = re.match(r"^(.+?):\d+:\d+:\s+(?:error|warning):", line)
+                        if match:
+                            format_issue_files.add(os.path.normpath(match.group(1)))
                 if res.returncode != 0:
                     issues_found += 1
 
+            write_verification_artifact(
+                "clang_format_diagnostics",
+                "clang_format.log",
+                "\n\n".join(format_outputs) + ("\n" if format_outputs else "clang-format: no diagnostics\n"),
+            )
+
             if issues_found > 0:
-                log(f"WARNING: C++ Style issues found in {issues_found} batches.")
+                log(
+                    f"WARNING: C++ style issues found in {len(format_issue_files)} file(s) "
+                    f"across {issues_found} batch(es)."
+                )
                 log("Run 'python build.py --format' to fix them automatically.")
                 checks_ok = False
                 lint_details["clang_format_batches_with_issues"] = issues_found
+                lint_details["clang_format_files_with_issues"] = len(format_issue_files)
             else:
                 log("C++ Style: OK")
                 lint_details["clang_format_batches_with_issues"] = 0
+                lint_details["clang_format_files_with_issues"] = 0
     else:
         log("Error: clang-format not found.")
         checks_ok = False
@@ -4770,10 +4897,10 @@ def run_lint(env):
 
         cmd = [sys.executable, "-m", "flake8"] + py_targets
         res = subprocess.run(cmd, capture_output=True, text=True)
+        write_process_diagnostics_artifact("flake8_diagnostics", "flake8.log", cmd, res)
 
         if res.returncode != 0:
-            log("Python Style Issues:")
-            log(res.stdout)
+            log_failure_output_tail("flake8", "\n".join(part for part in (res.stdout, res.stderr) if part))
             log("Python Style: FAILED")
             checks_ok = False
             lint_details["flake8_exit_code"] = res.returncode
@@ -4806,12 +4933,9 @@ def run_lint(env):
             os.path.join(PROJECT_ROOT, "pyrightconfig.json"),
         ]
         res = subprocess.run(cmd, capture_output=True, text=True)
+        write_process_diagnostics_artifact("pyright_diagnostics", "pyright.log", cmd, res)
         if res.returncode != 0:
-            log("Python Type Issues:")
-            if res.stdout:
-                log(res.stdout)
-            if res.stderr:
-                log(res.stderr)
+            log_failure_output_tail("pyright", "\n".join(part for part in (res.stdout, res.stderr) if part))
             log("Python Types: FAILED")
             checks_ok = False
             lint_details["pyright_exit_code"] = res.returncode
@@ -4833,6 +4957,14 @@ def run_lint(env):
         run_clang_tidy_script = os.path.join(MSYS2_DIR, "clang64", "bin", "run-clang-tidy")
         compile_db = os.path.join(PROJECT_ROOT, "compile_commands.json")
         if os.path.exists(run_clang_tidy_script) and os.path.exists(compile_db):
+            try:
+                with open(compile_db, "r", encoding="utf-8") as compile_db_file:
+                    compile_db_entries = len(json.load(compile_db_file))
+                lint_details["compile_database_entries"] = compile_db_entries
+                lint_details["compile_database_sha256"] = sha256_file(compile_db)
+                record_verification_artifact("compile_commands", compile_db)
+            except Exception as error:
+                lint_details["compile_database_error"] = str(error)
             num_workers = cpu_count()
             cmd = [
                 sys.executable,
@@ -4845,6 +4977,7 @@ def run_lint(env):
                 "-extra-arg=-w",
             ]
             res = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            write_process_diagnostics_artifact("clang_tidy_diagnostics", "clang_tidy.log", cmd, res)
             # Count warnings from stdout (non-fatal for now: existing codebase has
             # many latent issues). We report them so developers can see them without
             # breaking the build.
@@ -4856,13 +4989,34 @@ def run_lint(env):
             warning_count = len(warning_lines)
             lint_details["clang_tidy_warnings"] = warning_count
             lint_details["clang_tidy_exit_code"] = res.returncode
+            check_counts = Counter()
+            subsystem_counts = Counter()
+            for line in warning_lines:
+                check_match = re.search(r"\[([^\]]+)\]\s*$", line)
+                if check_match:
+                    check_counts[check_match.group(1)] += 1
+                path_match = re.match(r"^(.+?):\d+:\d+:\s+warning:", line)
+                if path_match:
+                    try:
+                        relative_path = os.path.relpath(path_match.group(1), PROJECT_ROOT)
+                    except ValueError:
+                        relative_path = path_match.group(1)
+                    subsystem_counts[relative_path.replace("\\", "/").split("/", 1)[0]] += 1
+            lint_details["clang_tidy_checks"] = dict(check_counts.most_common())
+            lint_details["clang_tidy_subsystems"] = dict(subsystem_counts.most_common())
             if res.returncode != 0 or warning_count > 0:
                 log(f"clang-tidy: {warning_count} warning(s) found (non-fatal)")
-                # Emit a compact sample of actual warnings (skip progress noise)
-                for line in warning_lines[:15]:
-                    log(line)
-                if len(warning_lines) > 15:
-                    log(f"... ({len(warning_lines) - 15} more warnings)")
+                if check_counts:
+                    top_checks = ", ".join(f"{name}={count}" for name, count in check_counts.most_common(8))
+                    log(f"clang-tidy top checks: {top_checks}")
+                if subsystem_counts:
+                    top_subsystems = ", ".join(
+                        f"{name}={count}" for name, count in subsystem_counts.most_common(8)
+                    )
+                    log(f"clang-tidy affected subsystems: {top_subsystems}")
+                diagnostics_path = verification_artifact_path("clang_tidy.log")
+                if diagnostics_path:
+                    log(f"Complete clang-tidy diagnostics: {diagnostics_path}")
             else:
                 log("clang-tidy: OK")
         else:
@@ -4872,11 +5026,19 @@ def run_lint(env):
         log("clang-tidy not found. Install via MSYS2: " "pacman -S mingw-w64-clang-x86_64-clang-tools-extra")
         lint_details["clang_tidy_missing"] = True
 
+    clang_tidy_has_findings = bool(lint_details.get("clang_tidy_warnings")) or bool(
+        lint_details.get("clang_tidy_exit_code")
+    )
+    lint_status = "passed"
+    if not checks_ok:
+        lint_status = "warning" if advisory else "failed"
+    elif clang_tidy_has_findings:
+        lint_status = "warning"
     record_verification_step(
         "lint",
-        "passed" if checks_ok else "failed",
+        lint_status,
         duration_seconds=time.time() - lint_start,
-        details=lint_details,
+        details={**lint_details, "advisory": advisory},
     )
 
     return checks_ok
@@ -5852,10 +6014,22 @@ def compile_project(
     should_run_tests=False,
     gtest_filter=None,
     tests_only=False,
+    externals_prepared=False,
+    run_python_tools=True,
 ):
     ensure_dirs()
 
-    compile_custom_ffmpeg(skip_updates=skip_updates)
+    if externals_prepared:
+        log("Reusing external dependency and FFmpeg preparation completed before sanitizer validation")
+    else:
+        external_start = time.time()
+        compile_custom_ffmpeg(skip_updates=skip_updates)
+        record_verification_step(
+            "external_preparation",
+            "passed",
+            duration_seconds=time.time() - external_start,
+            details={"skip_updates": skip_updates},
+        )
     clang_exe = get_compiler_exe("x64")
     if clang_exe is None:
         log("ERROR: Compiler for x64 not found")
@@ -5874,7 +6048,7 @@ def compile_project(
             get_unit_test_object_dir(env),
         )
         if should_run_tests and test_exe:
-            if not run_tests(env, test_exe, gtest_filter=gtest_filter):
+            if not run_tests(env, test_exe, gtest_filter=gtest_filter, run_python_tools=run_python_tools):
                 sys.exit(1)
         log("Tests-only mode: stopping after unit test build/run")
         return
@@ -6347,7 +6521,7 @@ def compile_project(
         get_unit_test_object_dir(env),
     )
     if should_run_tests and test_exe:
-        if not run_tests(env, test_exe, gtest_filter=gtest_filter):
+        if not run_tests(env, test_exe, gtest_filter=gtest_filter, run_python_tools=run_python_tools):
             sys.exit(1)
 
     # 5. CaptureEngine (x64 only for now)
@@ -6699,8 +6873,8 @@ def ensure_debug_logging():
         log(f"Warning: Failed to update config.ini: {e}")
 
 
-def run_sanitizer_regression_pass(skip_updates: bool, ccache_flag: bool) -> None:
-    """Run a second validation pass with ASan/UBSan + unit tests."""
+def sanitizer_regression_command(ccache_flag: bool) -> List[str]:
+    """Build the isolated sanitizer command; external inputs are already prepared by the parent."""
     cmd = [
         sys.executable,
         os.path.abspath(__file__),
@@ -6708,45 +6882,88 @@ def run_sanitizer_regression_pass(skip_updates: bool, ccache_flag: bool) -> None
         "--sanitize",
         "--incremental",
         "--sanitize-regression-child",
+        "--skip-updates",
+        "--concise",
     ]
-    if skip_updates:
-        cmd.append("--skip-updates")
     if ccache_flag:
         cmd.append("--ccache")
-    if CONCISE_OUTPUT:
-        cmd.append("--concise")
+    return cmd
+
+
+def run_sanitizer_regression_pass(ccache_flag: bool) -> None:
+    """Run a second validation pass with ASan/UBSan + unit tests."""
+    cmd = sanitizer_regression_command(ccache_flag)
 
     log("=== Running sanitizer regression cadence pass ===")
+    sanitizer_start = time.time()
     sanitizer_log = verification_artifact_path("sanitize_regression.log")
+    sanitizer_detail_log = verification_artifact_path("sanitize_regression.details.log")
     if sanitizer_log:
         cmd.append(f"--log-file={sanitizer_log}")
-    result = subprocess.run(cmd, cwd=PROJECT_ROOT)
+    if sanitizer_detail_log:
+        cmd.append(f"--detail-log={sanitizer_detail_log}")
+    result = run_logged_subprocess(cmd, cwd=PROJECT_ROOT)
+    elapsed = time.time() - sanitizer_start
     if result.returncode != 0:
         log(f"ERROR: Sanitizer regression pass failed (exit code {result.returncode})")
         record_verification_step(
             "sanitize_regression",
             "failed",
+            duration_seconds=elapsed,
             details={"exit_code": result.returncode},
         )
         sys.exit(result.returncode)
     log("=== Sanitizer regression cadence pass: OK ===")
     if sanitizer_log:
         record_verification_artifact("sanitize_regression_log", sanitizer_log)
-    record_verification_step("sanitize_regression", "passed")
+    if sanitizer_detail_log:
+        record_verification_artifact("sanitize_regression_detail_log", sanitizer_detail_log)
+    record_verification_step("sanitize_regression", "passed", duration_seconds=elapsed)
 
 
 def parse_flag_value(flag_name: str):
     for i, arg in enumerate(sys.argv):
         if arg == flag_name and i + 1 < len(sys.argv):
-            return sys.argv[i + 1]
+            value = sys.argv[i + 1]
+            return None if value.startswith("--") else value
         if arg.startswith(flag_name + "="):
             return arg.split("=", 1)[1]
     return None
 
 
+PRESENTATION_FLAGS = {"--concise", "--verbose-commands"}
+PRESENTATION_VALUE_FLAGS = {"--jobs", "--log-file", "--detail-log"}
+
+
+def action_args(args: List[str]) -> List[str]:
+    """Remove presentation-only options without changing the requested build policy."""
+    actions: List[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in PRESENTATION_FLAGS:
+            index += 1
+            continue
+        if arg in PRESENTATION_VALUE_FLAGS:
+            index += 1
+            if index < len(args) and not args[index].startswith("--"):
+                index += 1
+            continue
+        if any(arg.startswith(flag + "=") for flag in PRESENTATION_VALUE_FLAGS):
+            index += 1
+            continue
+        actions.append(arg)
+        index += 1
+    return actions
+
+
+def is_default_quality_invocation(args: List[str]) -> bool:
+    return not action_args(args)
+
+
 def is_standalone_lint_invocation(args: List[str]) -> bool:
     """Return whether lint is the only requested action and therefore an explicit gate."""
-    return args == ["--lint"]
+    return action_args(args) == ["--lint"]
 
 
 def main():
@@ -6754,13 +6971,20 @@ def main():
     os.chdir(script_dir)
     apply_workspace_temp_environment()
 
-    global LOG_FILE, VERIFICATION_FINAL_EXIT_CODE, CONCISE_OUTPUT
+    global DETAIL_LOG_FILE, LOG_FILE, VERIFICATION_FINAL_EXIT_CODE, CONCISE_OUTPUT, VERBOSE_COMMANDS
 
     args = sys.argv[1:]
-    CONCISE_OUTPUT = "--concise" in args
+    VERBOSE_COMMANDS = "--verbose-commands" in args
+    CONCISE_OUTPUT = not VERBOSE_COMMANDS
     log_file_override = parse_flag_value("--log-file")
     if log_file_override:
         LOG_FILE = os.path.abspath(log_file_override)
+    detail_log_override = parse_flag_value("--detail-log")
+    if detail_log_override:
+        DETAIL_LOG_FILE = os.path.abspath(detail_log_override)
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+    if DETAIL_LOG_FILE:
+        os.makedirs(os.path.dirname(DETAIL_LOG_FILE), exist_ok=True)
 
     # 0. Backup Sources - DISABLED per user request
     # backup_sources(script_dir)
@@ -6768,6 +6992,13 @@ def main():
     if os.path.exists(LOG_FILE):
         try:
             os.remove(LOG_FILE)
+        except Exception:
+            pass
+    if DETAIL_LOG_FILE and os.path.abspath(DETAIL_LOG_FILE) != os.path.abspath(LOG_FILE) and os.path.exists(
+        DETAIL_LOG_FILE
+    ):
+        try:
+            os.remove(DETAIL_LOG_FILE)
         except Exception:
             pass
 
@@ -6816,10 +7047,8 @@ def main():
             except Exception:
                 pass
 
-    global VERBOSE_COMMANDS
-    VERBOSE_COMMANDS = "--verbose-commands" in sys.argv
     # Parse flags
-    default_quality_mode = len(args) == 0
+    default_quality_mode = is_default_quality_invocation(args)
     verify_flag = "--verify" in sys.argv
     skip_updates = "--skip-updates" in sys.argv
     run_tests_flag = "--run-tests" in sys.argv
@@ -6867,8 +7096,8 @@ def main():
             break
     if VERBOSE_COMMANDS:
         log("Verbose command logging enabled (--verbose-commands)")
-    if CONCISE_OUTPUT:
-        log("Concise console output enabled; full command detail remains in build.log")
+    else:
+        log("Concise console output enabled; complete commands and subprocess output go to the detailed log")
 
     if sanitize_x86_flag:
         log(
@@ -6913,11 +7142,22 @@ def main():
     if tests_only_flag:
         log("Tests-only build mode enabled (--tests-only)")
 
+    setup_start = time.time()
     setup_msys2(skip_updates=skip_updates)
-    record_verification_step("toolchain_setup", "passed", details={"skip_updates": skip_updates})
+    record_verification_step(
+        "toolchain_setup",
+        "passed",
+        duration_seconds=time.time() - setup_start,
+        details={"skip_updates": skip_updates},
+    )
     if should_bootstrap_python_tools(default_quality_mode, verify_flag, lint_flag, format_flag):
-        check_python_lsp_tools()
-        record_verification_step("python_tool_bootstrap", "passed")
+        python_bootstrap_start = time.time()
+        python_bootstrap_ok = check_python_lsp_tools()
+        record_verification_step(
+            "python_tool_bootstrap",
+            "passed" if python_bootstrap_ok else "warning",
+            duration_seconds=time.time() - python_bootstrap_start,
+        )
     else:
         log("Skipping optional Python tooling bootstrap for this build")
         record_verification_step("python_tool_bootstrap", "skipped")
@@ -6945,6 +7185,28 @@ def main():
         run_tests_flag = True
     if sanitize_regression_child:
         sanitize_regression_flag = False
+
+    integration_coverage = "full" if full_integration_flag else "smoke" if run_integration_flag else "not_run"
+    record_verification_coverage("integration_tests", integration_coverage)
+    if tests_only_flag or no_build_flag:
+        signature_coverage = "not_applicable"
+    else:
+        signature_coverage = "enforced" if production_flag else "advisory"
+    record_verification_coverage("production_signatures", signature_coverage)
+    record_verification_coverage(
+        "sanitizers",
+        "x64_asan_ubsan" if sanitize_flag or sanitize_regression_flag else "not_run",
+    )
+    record_verification_coverage("x86_sanitizers", "unavailable")
+    if run_integration_flag:
+        test_app_coverage = "executed"
+    elif tests_only_flag:
+        test_app_coverage = "not_built"
+    elif no_build_flag:
+        test_app_coverage = "not_run"
+    else:
+        test_app_coverage = "compiled_not_executed"
+    record_verification_coverage("test_apps", test_app_coverage)
 
     # Store flags in env for access in compile functions
     env["FORCE_REBUILD"] = "1" if force_flag else "0"
@@ -7012,18 +7274,31 @@ def main():
         format_ok = run_format(env)
         if not format_ok:
             log("Auto-format completed with issues.")
-        if len(args) == 1 and "--format" in args and not lint_flag and not run_tests_flag and not run_integration_flag:
-            sys.exit(0 if format_ok else 1)
+        if action_args(args) == ["--format"] and not lint_flag and not run_tests_flag and not run_integration_flag:
+            VERIFICATION_FINAL_EXIT_CODE = 0 if format_ok else 1
+            sys.exit(VERIFICATION_FINAL_EXIT_CODE)
 
-    if lint_flag:
-        lint_ok = run_lint(env)
-        standalone_lint = is_standalone_lint_invocation(args)
+    standalone_lint = lint_flag and is_standalone_lint_invocation(args)
+    if standalone_lint:
+        lint_ok = run_lint(env, advisory=False)
         if not lint_ok:
             log("Lint/LSP checks reported issues.")
-            if not standalone_lint:
-                log("Continuing because lint is advisory outside a standalone --lint invocation.")
-        if standalone_lint:
-            sys.exit(0 if lint_ok else 1)
+        VERIFICATION_FINAL_EXIT_CODE = 0 if lint_ok else 1
+        sys.exit(VERIFICATION_FINAL_EXIT_CODE)
+
+    externals_prepared = False
+    if sanitize_regression_flag and not sanitize_regression_child and not sanitize_flag and not no_build_flag:
+        # The sanitizer child and final product build use the same non-instrumented
+        # source dependency/FFmpeg closure. Prepare it once before either pass.
+        external_start = time.time()
+        compile_custom_ffmpeg(skip_updates=skip_updates)
+        externals_prepared = True
+        record_verification_step(
+            "external_preparation",
+            "passed",
+            duration_seconds=time.time() - external_start,
+            details={"skip_updates": skip_updates, "consumers": ["sanitizer", "product"]},
+        )
 
     if sanitize_regression_flag and not sanitize_regression_child:
         if sanitize_flag:
@@ -7031,8 +7306,9 @@ def main():
         else:
             # Run sanitizer validation first so final installed artifacts remain
             # non-sanitized unless --sanitize was explicitly requested.
-            run_sanitizer_regression_pass(skip_updates=skip_updates, ccache_flag=ccache_flag)
+            run_sanitizer_regression_pass(ccache_flag=ccache_flag)
 
+    build_start = time.time()
     if no_build_flag:
         log("Build skipped (--no-build)")
         if run_tests_flag:
@@ -7045,7 +7321,12 @@ def main():
                 log("Error: unit_tests.exe is stale or lacks a valid link-cache manifest. Rebuild tests first.")
                 sys.exit(1)
             copy_test_runtime_dlls(tests_dir)
-            if not run_tests(env, test_exe, gtest_filter=gtest_filter):
+            if not run_tests(
+                env,
+                test_exe,
+                gtest_filter=gtest_filter,
+                run_python_tools=not sanitize_regression_child,
+            ):
                 sys.exit(1)
     else:
         compile_project(
@@ -7055,10 +7336,13 @@ def main():
             should_run_tests=run_tests_flag,
             gtest_filter=gtest_filter,
             tests_only=tests_only_flag,
+            externals_prepared=externals_prepared,
+            run_python_tools=not sanitize_regression_child,
         )
     record_verification_step(
         "build",
         "passed",
+        duration_seconds=time.time() - build_start,
         details={
             "tests_only": tests_only_flag,
             "run_tests": run_tests_flag,
@@ -7070,18 +7354,29 @@ def main():
         },
     )
 
-    # compile_commands.json is written by the atexit-registered
-    # write_compile_commands_json() so it is always persisted, even on failure.
-    # Record the artifact/step here for the verification manifest.
+    # Publish the database before advisory lint so clang-tidy sees this build's
+    # exact compiler, flags, and sources. The atexit hook still preserves a
+    # partial database when compilation fails before reaching this point.
+    if COMPILE_COMMANDS:
+        write_compile_commands_json()
     compile_commands_path = os.path.join(PROJECT_ROOT, "compile_commands.json")
     if os.path.exists(compile_commands_path):
         record_verification_artifact("compile_commands", compile_commands_path)
         try:
             with open(compile_commands_path, "r", encoding="utf-8") as f:
                 cc_data = json.load(f)
-            record_verification_step("compile_commands", "passed", details={"entries": len(cc_data)})
+            record_verification_step(
+                "compile_commands",
+                "passed",
+                details={"entries": len(cc_data), "sha256": sha256_file(compile_commands_path)},
+            )
         except Exception:
             record_verification_step("compile_commands", "passed")
+
+    if lint_flag:
+        lint_ok = run_lint(env, advisory=True)
+        if not lint_ok:
+            log("Lint/LSP checks reported advisory issues; complete diagnostics were retained as artifacts.")
 
     if run_integration_flag:
         ensure_debug_logging()

@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-07-17 (validated object and validation-link caches, deterministic non-LTO test identity/profile, cached split test-app builds, failure-resume/no-build freshness workflow, concise agent output, and existing production LTO, source-closure, packaging, hardening, sanitizer, and provenance policy)
+Last cross-checked: 2026-07-17 (single-preparation default-quality flow, current-database lint, summary/detail artifact split, managed Python lint tooling, validated object/link caches, and existing production LTO, source-closure, packaging, hardening, sanitizer, and provenance policy)
 
 Primary sources:
 - `AGENTS.md`
@@ -51,18 +51,18 @@ python build.py --no-build --run-tests --skip-updates --concise
 
 No-build verification reuses `common/build_version.h`; it does not mint an identity for binaries it did not compile or invalidate version-dependent objects for the next build. During C++ iteration, use `--incremental --tests-only --run-tests --gtest-filter=<expr> --skip-updates --concise` where applicable. Do not repeat a clean build after every small edit. `--verify` remains available as an explicit broader quality/sanitizer workflow, but it is not the default agent command required by `AGENTS.md`.
 
-`--concise` suppresses routine command and per-file progress lines from the console only. Complete detail remains in `build.log` and the verification bundle; errors and stage summaries remain visible. This reduces agent context consumption without discarding diagnostics.
+Console output is concise by default. `build.log` is the durable stage-summary/warning log; complete commands and successful/failed subprocess output go to `build/verification/<run>/build.details.log`, with bounded failure tails kept visible. `--verbose-commands` mirrors detail to the console for diagnosis. `--concise` remains accepted and is presentation-only: adding it, `--jobs`, or log-path overrides to an otherwise no-argument invocation cannot disable default-quality work.
 
 Default quality mode currently:
 - bootstraps toolchain state as needed
-- runs lint and Python LSP checks
+- prepares the source dependency/FFmpeg closure once for both sanitizer and product consumers
+- runs the extra sanitizer regression cadence pass without rebuilding that closure or repeating Python tool self-tests
 - builds the project
 - compiles unit tests
 - executes unit tests
-- runs the extra sanitizer regression cadence pass
+- writes the current build's `compile_commands.json`, then runs lint/Python LSP checks against it
 - does not run integration tests by default
-- rewrites `compile_commands.json` at the end of the build
-- Plain build-only runs such as `python build.py --skip-updates` now skip optional Python tooling bootstrap unless they are part of the default quality / verify / lint / format flows.
+- Plain build-only runs such as `python build.py --skip-updates` skip Python lint-tool bootstrap unless they are part of default quality / verify / lint / format flows. Those linting flows automatically install missing `flake8`, `pyright`, and `black` through the active Python interpreter; users are not expected to preinstall them manually.
 
 ## Supported Flags
 
@@ -89,8 +89,9 @@ Default quality mode currently:
 | `--production` | advanced | Enable production build mode | Also enabled by `CE_PRODUCTION_BUILD=1`. Build logs say signature verification becomes enforced. |
 | `--jobs N` | user-facing | Override parallel compile worker count | Stored as `CE_BUILD_JOBS`. |
 | `--jobs=N` | user-facing | Same as `--jobs N` | Inline form supported. |
-| `--verbose-commands` | advanced | Enable verbose compile and link command logging | Useful for toolchain diagnosis. |
-| `--concise` | user-facing | Keep routine command/per-file progress off the console | Full detail is still written to `build.log`; stage summaries and errors remain visible. Overrides no diagnostics and propagates to the sanitizer child. `--verbose-commands` makes command detail visible again. |
+| `--log-file PATH` / `--detail-log PATH` | advanced | Override summary/detail log destinations | Primarily used to isolate sanitizer-child artifacts. Missing separate values do not consume a following action flag. |
+| `--verbose-commands` | advanced | Mirror detailed commands/subprocess output to the console | Complete detail is always retained in the run artifact; use this only for live toolchain diagnosis. |
+| `--concise` | user-facing | Explicitly request the default concise console presentation | `build.log` keeps summaries/warnings and the run's `build.details.log` keeps complete detail. This flag is presentation-only and propagates to the sanitizer child. |
 | `--sanitize-regression-child` | internal | Internal flag for the nested sanitizer child build | Not a normal day-to-day user flag. |
 
 ## Flag Interactions
@@ -103,7 +104,7 @@ Default quality mode currently:
 - `--incremental` turns off the script's default force-rebuild mode; unchanged-object reuse is signature validated and failure to evaluate a signature recompiles the object.
 - `--resume` implies incremental mode and reuses the latest failed top-level build number only after its manifest, recorded `build.py` SHA-256, current `build.py`, and `build_version.h` agree. It requires `--skip-updates` and is mutually exclusive with `--no-build`/`--force-rebuild`.
 - `--no-build`, `--tests-only`, and the sanitizer child reuse the current build version instead of bumping `build_version.h`; only product-producing ordinary builds mint a new exact identity.
-- `--concise` affects console verbosity only; it does not remove `build.log` detail or weaken a stage.
+- `--concise`, `--verbose-commands`, `--jobs`, `--log-file`, and `--detail-log` are presentation/execution-shaping options for default-mode classification; they do not by themselves suppress default-quality actions.
 - `--skip-updates` no longer triggers optional Python tooling bootstrap by itself; build-only runs stay quiet unless the active mode explicitly requests lint / format / default-quality checks.
 - `--lint` alone exits after linting and treats findings as fatal. Default, verify, and mixed build/test flows retain lint results in the verification record but continue to the authoritative build/test gates.
 - `--format` alone exits after formatting.
@@ -134,6 +135,7 @@ Default quality mode currently:
 - C and C++ lint and format target these directories: `common`, `hook`, `captureengine`, `mediaengine`, `testapp`, and `tests`.
 - `.clang-format` preserves explicit include order because Windows SDK dependent headers such as `psapi.h` and `shellapi.h` require `windows.h` first; lexical include sorting can create real compile failures.
 - `.clang-tidy` analyzes project source/header trees while excluding `external`, `build`, `installed`, and `ffmpeg_build`; vendored/generated headers are not project-maintained warning debt. Its `bugprone-*` and `performance-*` findings remain informational until each project-owned category is reviewed and fixed.
+- Mixed/default lint runs after the current compilation database is written. Full `clang-format`, `flake8`, `pyright`, and `clang-tidy` output is retained as a per-stage artifact; the manifest records exact format-file/batch counts, compile-database hash/entry count, and clang-tidy check/subsystem aggregation. An advisory finding uses step status `warning`, not the ambiguous combination of a failed lint step and successful build.
 - Python lint currently targets `build.py`, `ffmpeg_dependencies.py`, `ffmpeg_patch_utils.py`, their focused tests, and `testapp`. Automatic Python formatting remains limited to `build.py` and `testapp`.
 
 ## Unit Test Behavior
@@ -185,7 +187,7 @@ Default quality mode currently:
   - `--max-spike-pct 5.0`
 
 ## Operational Notes
-- The script always rewrites `compile_commands.json` at the end of a successful build.
+- The script writes `compile_commands.json` before mixed/default lint so clang-tidy uses the current build's commands; unchanged JSON remains in place, and the atexit fallback still preserves partial commands after a failed compile.
 - Python tool self-tests execute concurrently through the bounded job policy, capture complete output, and replay diagnostics deterministically on failure. Native unit tests remain the preceding isolation boundary.
 - FFmpeg runtime DLL synchronization preserves byte-identical destinations instead of deleting/recopying them, verifies equality by SHA-256, and still verifies the PE import closure both after initial synchronization and at the final product boundary.
 - Incremental object signatures hash source content, the compiler executable contents, compile flags, and the content of compiler-reported project dependencies. Dependency mtimes remain a second signal for toolchain/system headers. Signature calculation now fails closed to recompilation instead of falling back to timestamps. This prevents an older-mtime checkout/restore of `common/shared_defs.h` (or another project header), a same-path compiler replacement, or an unreadable signature input from retaining an unproven object; `test_build_flags.py` covers each case.
@@ -196,9 +198,10 @@ Default quality mode currently:
   - `verification_summary.txt`
   - `verification_manifest.json`
   - a copy of the top-level `build.log`
-  - paths to important artifacts such as `compile_commands.json`, `tests/unit_tests.exe`, sanitizer child log, and built binaries when available
-- `build/verification/latest_summary.txt`, `latest_manifest.json`, `latest_run_dir.txt`, and `latest_build.log` always point at the most recent top-level verification/build run.
-- For long-running verification/build commands, use `--concise` and prefer re-reading `build/verification/latest_summary.txt` or `latest_manifest.json` to check completion/status instead of dumping the full build log or leaving a shell in a passive polling/watch loop. The summary/manifest pair is the intended status contract; `build.log` retains full routine command detail for failure diagnosis.
+  - `build.details.log` with every command and captured subprocess stream
+  - per-stage lint diagnostics and paths to important artifacts such as `compile_commands.json`, `tests/unit_tests.exe`, sanitizer child logs, and built binaries when available
+- `build/verification/latest_summary.txt`, `latest_manifest.json`, `latest_run_dir.txt`, `latest_build.log`, and `latest_build.details.log` point at the most recent top-level verification/build run. The summary includes total/stage durations and explicit coverage boundaries for integration tests, signatures, sanitizers, and test-app execution.
+- For long-running verification/build commands, prefer `latest_summary.txt` or `latest_manifest.json` for status. Inspect summary `build.log` next, then detailed/per-stage artifacts only for diagnosis; do not dump the full detail log into agent context by default.
 - On Windows, the script bootstraps MSYS2 and manages a custom FFmpeg build path.
 - On Windows, dependency builds use the newest resolved official MSYS2 base archive and the installed/current clang64 toolchain; `python build.py` updates the toolchain and forces a fresh source build, while `--skip-updates` deliberately skips pacman updates and reuses a verified dependency prefix when possible.
 - The source-built dependency manifest participates in the FFmpeg configuration fingerprint. Plain `python build.py` bypasses both the private dependency-prefix cache and the FFmpeg commit/configuration reuse path, so every pinned dependency package and custom FFmpeg DLL is rebuilt from source. Deleting `ffmpeg_build/dependencies/prefix` and the FFmpeg output remains a valid clean-state recovery; the verification pass should then confirm source-package signatures, upstream hashes, PE imports/exports, and runtime provenance.
@@ -212,12 +215,13 @@ Default quality mode currently:
 - CaptureEngine and the process-loopback helper no longer use process-global `SetDllDirectory` windows. `common/secure_dll_loading.*` permanently restricts each participating process to the application directory, explicitly registered private directories, and System32; delay-loaded FFmpeg imports keep a process-lifetime private-directory registration, explicit product loads use `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|USER_DIRS|SYSTEM32`, and named Windows components use System32-only loading. This is startup/load-time policy and adds no capture or encode hot-path work.
 - The Windows hook DLL links `ntdll` explicitly so CFG-sensitive fatal-dump fallbacks use normal static imports instead of dynamically resolved, export-suppressed targets. Keep this link when changing hook libraries; it supports bootstrap/crash paths and adds no frame-path work.
 - On Windows, `--skip-updates` now also skips the old unconditional MSYS2 `pacman -S --needed ...` package-install step. Earlier behavior still entered pacman even on focused test runs and could hang on mirrors or stale package-manager state before any compile/test work started.
-- The nested sanitizer regression child now writes to its own log file inside the parent verification bundle instead of clobbering the parent top-level `build.log`.
+- Default/verify flows prepare the non-instrumented source dependency and custom FFmpeg closure once before sanitizer validation. The sanitizer child always uses `--skip-updates`, and the final product pass reuses the same preparation, removing the former duplicate fresh source build while retaining runtime/import verification.
+- The nested sanitizer regression child writes separate summary/detail logs inside the parent verification bundle instead of clobbering the parent logs.
 - The nested sanitizer regression child reuses the parent build number instead of incrementing the shared `common/build_version.h`; this keeps the final product DLL metadata, version verification, and verification manifest on one build identity.
 - MSYS2 package install now uses an explicit timeout and logs partial stdout/stderr on timeout instead of silently waiting forever.
 - Parallel compile now emits progress lines and a summary, and `run_tests()` logs the test launch plus elapsed time so long builds/tests no longer look idle.
 - `run_tests()` captures native test stdout/stderr and writes `unit_tests_failure.log` plus a bounded diagnostic tail when the executable returns nonzero; a bare exit code is insufficient for diagnosing intermittent failures.
-- Lint findings are fatal only for a standalone `--lint` invocation. Default, verify, and mixed build/test flows log and record the failed lint step but continue, so a style/LSP checker cannot prevent compilation or the authoritative test/product gates from running.
+- Lint findings are fatal only for a standalone `--lint` invocation. Default, verify, and mixed build/test flows record a `warning` lint step and continue, so a style/LSP checker cannot prevent compilation or the authoritative test/product gates from running.
 - `--jobs` is now applied after environment initialization, fixing the earlier `env`-before-initialization bug in `main()`.
 - On Windows hosts, the build now emits CodeView debug info plus sidecar `.pdb` files for the built PE outputs while staying on the existing clang/lld toolchain.
 - On Linux and WSL, the script uses cross-compilers and downloaded MSYS2 packages for dependencies.
