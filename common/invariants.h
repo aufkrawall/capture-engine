@@ -35,12 +35,7 @@ inline void CheckSharedMemoryInvariants([[maybe_unused]] const SharedMemoryLayou
     if (!g_DebugLoggingEnabled || !shm)
         return;
 
-    // Magic number check
-    CE_ASSERT_MSG(shm->magic == SHARED_MEMORY_MAGIC, "shared memory magic mismatch");
-
-    // Version check
-    CE_ASSERT_MSG(shm->version >= SHARED_MEMORY_MIN_VERSION, "shared memory version too old");
-    CE_ASSERT_MSG(shm->version <= SHARED_MEMORY_VERSION, "shared memory version too new");
+    CE_ASSERT_MSG(ValidateSharedMemory(shm), "shared memory ABI validation failed");
 
     // Ring buffer check
     CheckRingBufferInvariants(shm->frameRing);

@@ -10,11 +10,13 @@
 #include "../common/logging.h"
 #include "../common/shared_defs.h"
 #include "../common/strict_integer_parse.h"
+#include "logger_service_policy.h"
 
 struct LoggerSession {
     HANDLE hMap;
     SharedMemoryLayout* shm;
     uint32_t lastReadIndex;
+    std::string logsDirectory;
 };
 
 int LoggerProcessMain(const AppConfig& config) {
@@ -61,21 +63,22 @@ int LoggerProcessMain(const AppConfig& config) {
 
     std::map<uint32_t, LoggerSession> sessions;
     std::map<std::string, HANDLE> openFiles;
-    char logsDir[MAX_PATH];
+    char fallbackLogsDir[MAX_PATH]{};
 
     // Get logs directory
-    GetModuleFileNameA(NULL, logsDir, MAX_PATH);
-    char* lastSlash = strrchr(logsDir, '\\');
+    GetModuleFileNameA(NULL, fallbackLogsDir, MAX_PATH);
+    char* lastSlash = strrchr(fallbackLogsDir, '\\');
     if (lastSlash) {
         *lastSlash = '\0';
         char tmpDir[MAX_PATH];
-        int written = snprintf(tmpDir, sizeof(tmpDir), "%s\\logs", logsDir);
+        int written = snprintf(tmpDir, sizeof(tmpDir), "%s\\logs", fallbackLogsDir);
         if (written > 0 && written < (int)sizeof(tmpDir)) {
             CreateDirectoryA(tmpDir, NULL);
-            strncpy(logsDir, tmpDir, sizeof(logsDir) - 1);
-            logsDir[sizeof(logsDir) - 1] = '\0';
+            strncpy(fallbackLogsDir, tmpDir, sizeof(fallbackLogsDir) - 1);
+            fallbackLogsDir[sizeof(fallbackLogsDir) - 1] = '\0';
         }
     }
+    const std::string fallbackDirectory = fallbackLogsDir;
 
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
     while (g_LoggerRunning.load(std::memory_order_acquire)) {
@@ -101,24 +104,40 @@ int LoggerProcessMain(const AppConfig& config) {
         if (hDisc) {
             DiscoveryInfo* info = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
             if (info) {
-                if (info->magic == DISCOVERY_MAGIC) {
-                    uint32_t pid = info->injectPid;
+                if (ValidateDiscoveryInfo(info)) {
+                    uint32_t pid = info->GetInjectPid();
                     if (sessions.find(pid) == sessions.end()) {
+                        const std::string sessionLogsDirectory = logger_service_policy::SelectSessionLogsDirectory(
+                            info->logsPath, sizeof(info->logsPath), fallbackDirectory);
                         wchar_t smName[64];
                         GenerateSharedMemName(smName, 64, pid);
                         HANDLE hSM = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, smName);
                         if (hSM) {
                             SharedMemoryLayout* shm = (SharedMemoryLayout*)MapViewOfFile(hSM, FILE_MAP_ALL_ACCESS, 0, 0,
                                                                                          sizeof(SharedMemoryLayout));
-                            if (shm) {
-                                LogInfo("[Logger] Discovered new session: PID %u", pid);
+                            if (shm && ValidateSharedMemory(shm)) {
+                                if (!CreateDirectoryA(sessionLogsDirectory.c_str(), NULL) &&
+                                    GetLastError() != ERROR_ALREADY_EXISTS) {
+                                    LogError("[Logger] Failed to create session logs directory '%s': %lu",
+                                             sessionLogsDirectory.c_str(), GetLastError());
+                                }
+                                LogInfo("[Logger] Discovered new session: PID %u, logs=%s, ABI=0x%08X", pid,
+                                        sessionLogsDirectory.c_str(), SHARED_MEMORY_ABI_SIGNATURE);
                                 // Initialize readIndex to current writeIndex to skip stale data
                                 // from previous sessions. The hook writes early logs directly to
                                 // file before IPC connects, so SHM may contain old data.
                                 uint32_t currentWriteIdx = shm->logs.writeIndex.load(std::memory_order_acquire);
-                                sessions[pid] = {hSM, shm, currentWriteIdx};
+                                sessions[pid] = {hSM, shm, currentWriteIdx, sessionLogsDirectory};
                                 LogInfo("[Logger] Session PID %u initialized at writeIndex=%u", pid, currentWriteIdx);
                             } else {
+                                if (shm) {
+                                    LogError(
+                                        "[Logger] Rejected incompatible shared memory for PID %u "
+                                        "(version=%u size=%u abi=0x%08X)",
+                                        pid, shm->GetVersion(), shm->structSize.load(std::memory_order_acquire),
+                                        shm->abiSignature.load(std::memory_order_acquire));
+                                    UnmapViewOfFile(shm);
+                                }
                                 CloseHandle(hSM);
                             }
                         }
@@ -159,26 +178,34 @@ int LoggerProcessMain(const AppConfig& config) {
                 const char* entry = s.shm->logs.buffer[slotIdx];
 
                 // Format: [FILENAME] Message
-                const char* filename = "hook_debug.log";
+                std::string filename = "hook_debug.log";
                 const char* message = entry;
 
                 if (entry[0] == '[') {
                     const char* endBracket = strchr(entry, ']');
                     if (endBracket) {
-                        char fnBuffer[64];
                         size_t fnLen = endBracket - entry - 1;
-                        if (fnLen < 63) {
-                            strncpy(fnBuffer, entry + 1, fnLen);
-                            fnBuffer[fnLen] = '\0';
-                            filename = fnBuffer;
-                            message = endBracket + 2;  // Skip "] "
+                        const std::string_view candidate(entry + 1, fnLen);
+                        if (logger_service_policy::IsSafeLogFilename(candidate)) {
+                            filename.assign(candidate);
+                            message = endBracket + 1;
+                            if (*message == ' ')
+                                ++message;
                         }
                     }
                 }
 
                 if (message[0] != '\0') {
                     char fullPath[MAX_PATH];
-                    snprintf(fullPath, sizeof(fullPath), "%s\\%s", logsDir, filename);
+                    const int pathLength = snprintf(fullPath, sizeof(fullPath), "%s\\%s", s.logsDirectory.c_str(),
+                                                    filename.c_str());
+                    if (pathLength <= 0 || pathLength >= static_cast<int>(sizeof(fullPath))) {
+                        LogError("[Logger] Log path too long for PID %u: directory=%s file=%s", it->first,
+                                 s.logsDirectory.c_str(), filename.c_str());
+                        s.shm->logs.committed[slotIdx].store(0, std::memory_order_release);
+                        ++readIdx;
+                        continue;
+                    }
 
                     HANDLE hFile = INVALID_HANDLE_VALUE;
                     auto itFile = openFiles.find(fullPath);
@@ -235,6 +262,15 @@ int LoggerProcessMain(const AppConfig& config) {
         }
     }
     openFiles.clear();
+
+    for (auto& [pid, session] : sessions) {
+        (void)pid;
+        if (session.shm)
+            UnmapViewOfFile(session.shm);
+        if (session.hMap)
+            CloseHandle(session.hMap);
+    }
+    sessions.clear();
 
     return 0;
 }

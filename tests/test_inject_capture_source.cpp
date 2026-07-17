@@ -90,6 +90,16 @@ TEST(InjectCaptureSourceTest, VulkanSwapchainInitIsNonPollingAndGenerationScoped
     EXPECT_NE(body.find("requires an exportable timeline fence"), std::string::npos);
 }
 
+TEST(InjectCaptureSourceTest, VulkanCaptureUsesTheFullSharedTextureLeaseSpace) {
+    const std::string source = ReadSource("hook/vulkan_layer/layer_capture.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_EQ(source.find("kTextureCount = 4"), std::string::npos);
+    EXPECT_NE(source.find("kTextureCount = SHARED_TEXTURE_SLOT_COUNT"), std::string::npos);
+    EXPECT_EQ(source.find("HANDLE kmtHandles[4]"), std::string::npos);
+    EXPECT_NE(source.find("HANDLE kmtHandles[ENCODER_TEXTURE_SLOT_COUNT]"), std::string::npos);
+}
+
 TEST(InjectCaptureSourceTest, OpenGLFallbackCleansPartialInteropAndTracksResizeAndFenceCompletion) {
     const std::string source = ReadSource("hook/apis/opengl_hook.cpp");
     ASSERT_FALSE(source.empty());

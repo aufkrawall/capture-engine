@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <string_view>
@@ -25,6 +26,23 @@ struct AdapterResolution {
     int64_t adapterLuid = 0;
     AdapterResolutionSource source = AdapterResolutionSource::Unavailable;
 };
+
+inline uint32_t CalculateProcessorUsagePercent(uint64_t previousIdle, uint64_t previousKernel,
+                                               uint64_t previousUser, uint64_t currentIdle, uint64_t currentKernel,
+                                               uint64_t currentUser) {
+    if (currentIdle < previousIdle || currentKernel < previousKernel || currentUser < previousUser)
+        return 0;
+    const uint64_t idle = currentIdle - previousIdle;
+    const uint64_t kernel = currentKernel - previousKernel;
+    const uint64_t user = currentUser - previousUser;
+    if (kernel > UINT64_MAX - user)
+        return 0;
+    const uint64_t total = kernel + user;
+    if (total == 0 || idle >= total)
+        return 0;
+    const double usage = static_cast<double>(total - idle) * 100.0 / static_cast<double>(total);
+    return static_cast<uint32_t>((std::min)(100.0, (std::max)(0.0, usage)));
+}
 
 inline char LowerAscii(char value) {
     return value >= 'A' && value <= 'Z' ? static_cast<char>(value + ('a' - 'A')) : value;

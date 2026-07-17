@@ -22,8 +22,9 @@ public:
 
 static void InitShm(SharedMemoryLayout& shm) {
     shm.SetMagic(SHM_MAGIC);
-    shm.SetVersion(31);
+    shm.SetVersion(SHARED_MEMORY_VERSION);
     shm.structSize.store(sizeof(SharedMemoryLayout), std::memory_order_release);
+    shm.abiSignature.store(SHARED_MEMORY_ABI_SIGNATURE, std::memory_order_release);
 }
 
 TEST(CaptureBaseShmTest, PublishToSharedMemoryCopiesMetadata) {
@@ -101,6 +102,11 @@ TEST(CaptureBaseShmTest, OutstandingSlotScanDetectsValidSlots) {
 
     EXPECT_TRUE(IsCaptureTextureSlotOutstanding(&shm, 0));
     EXPECT_FALSE(IsCaptureTextureSlotOutstanding(&shm, 1));
+}
+
+TEST(CaptureBaseShmTest, VulkanProducerPoolsCoverTheFullSharedTextureLeaseSpace) {
+    EXPECT_EQ(ENCODER_TEXTURE_SLOT_COUNT, SHARED_TEXTURE_SLOT_COUNT);
+    EXPECT_EQ(SHARED_TEXTURE_SLOT_COUNT, 16);
 }
 
 }  // namespace

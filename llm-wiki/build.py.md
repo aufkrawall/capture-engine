@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-07-16 (plain-build FFmpeg source-closure rebuild policy, registry-side-effect-free Vulkan manifest builds, AOM/libwinpthread dependency closure, PE mitigation verification, baseline CPU/strict-FP policy, sanitizer coverage, signed MSYS2 provenance, and strict CRLF-safe custom-patch application)
+Last cross-checked: 2026-07-17 (project-header content signatures plus existing source-closure, packaging, hardening, sanitizer, and provenance policy)
 
 Primary sources:
 - `AGENTS.md`
@@ -158,7 +158,8 @@ Default quality mode currently:
 
 ## Operational Notes
 - The script always rewrites `compile_commands.json` at the end of a successful build.
-- Vulkan layer compilation only writes the DLLs and portable relative-path manifests. `build.py` never imports `winreg`, enumerates Vulkan registrations, or mutates HKCU/HKLM. Registration ownership belongs to the running controller; repair/uninstall policy must not be hidden in an ordinary build.
+- Incremental object signatures hash source content, compiler/flags, and the content of compiler-reported project dependencies. Dependency mtimes remain a second signal. This specifically prevents an older-mtime checkout/restore of `common/shared_defs.h` (or another project header) from retaining an ABI-skewed object; `test_build_flags.py` changes a dependency while forcing its mtime backward to cover the policy.
+- Vulkan layer compilation only writes the DLLs and portable relative-path manifests. Each manifest layer name and implementation version includes the current build number, preventing an older installation's duplicate identity from shadowing it. `build.py` never imports `winreg`, enumerates Vulkan registrations, or mutates HKCU/HKLM. Registration ownership and repair belong to the running controller: ordinary startup repairs only HKCU and never requests elevation; an already-elevated controller may also repair HKLM.
 - Canonical verification now writes a compact verification bundle under `build/verification/<timestamp>_build_<n>/` containing:
   - `verification_summary.txt`
   - `verification_manifest.json`

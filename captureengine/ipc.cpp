@@ -53,6 +53,7 @@ bool IPCManager::Init() {
                                   0,                                     // Maximum object size (high-order DWORD)
                                   sizeof(SharedMemoryLayout),            // Maximum object size (low-order DWORD)
                                   sharedMemName);                        // Name of mapping object
+    const DWORD mappingCreateError = GetLastError();
 
     if (sa.lpSecurityDescriptor) {
         LocalFree(sa.lpSecurityDescriptor);
@@ -60,6 +61,12 @@ bool IPCManager::Init() {
 
     if (hMapFile == NULL) {
         OutputDebugStringA("Could not create file mapping object.");
+        return false;
+    }
+    if (mappingCreateError == ERROR_ALREADY_EXISTS) {
+        LogError("[IPC] Refusing pre-existing shared memory mapping '%ls'", sharedMemName);
+        CloseHandle(hMapFile);
+        hMapFile = NULL;
         return false;
     }
 
@@ -79,9 +86,9 @@ bool IPCManager::Init() {
 
     // CRITICAL: Initialize with proper ordering (version first, magic last as
     // signal)
-    pSharedMem->structSize = sizeof(SharedMemoryLayout);
+    pSharedMem->structSize.store(sizeof(SharedMemoryLayout), std::memory_order_relaxed);
+    pSharedMem->abiSignature.store(SHARED_MEMORY_ABI_SIGNATURE, std::memory_order_relaxed);
     pSharedMem->SetVersion(SHARED_MEMORY_VERSION);
-    pSharedMem->SetMagic(SHARED_MEMORY_MAGIC);  // Write last as signal - release semantics
 
     pSharedMem->SetHostPID(GetCurrentProcessId());
 
@@ -105,6 +112,7 @@ bool IPCManager::Init() {
 
     // Set initial config
     UpdateConfig(config);
+    pSharedMem->SetMagic(SHARED_MEMORY_MAGIC);  // Write last as the publication signal
 
     return true;
 }

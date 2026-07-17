@@ -3332,7 +3332,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
             sharedCaptureTexturesCreated) {
             // Find which encoder texture matches by KMT handle
             int matchIdx = -1;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; i++) {
                 if (sharedCaptureKmtHandles[i] == sharedHandle) {
                     matchIdx = i;
                     break;

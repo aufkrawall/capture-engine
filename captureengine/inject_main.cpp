@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cctype>
 #include <filesystem>
+#include <new>
 #include "../common/config.h"
 #include "../common/crash_handler.h"
 #include "../common/inject_overlay_policy.h"
@@ -302,9 +303,16 @@ int InjectProcessMain(const AppConfig& config) {
 
     HANDLE hMapFile =
         CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(SharedMemoryLayout), sharedMemName);
+    const DWORD sharedMemoryCreateError = GetLastError();
 
     if (hMapFile == NULL) {
         LogError("[Inject] Failed to create shared memory: %lu", GetLastError());
+        return 1;
+    }
+    if (sharedMemoryCreateError == ERROR_ALREADY_EXISTS) {
+        LogError("[Inject] Refusing pre-existing shared memory '%ls'; a stale process still owns this session name",
+                 sharedMemName);
+        CloseHandle(hMapFile);
         return 1;
     }
 
@@ -319,28 +327,74 @@ int InjectProcessMain(const AppConfig& config) {
         return 1;
     }
 
+    // Construct every atomic member before use. Keep magic unpublished until
+    // all fields and auxiliary mappings are ready.
+    new (pSharedMem) SharedMemoryLayout();
+
     // Discovery shared memory
     HANDLE hDiscoveryFile =
         CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, sizeof(DiscoveryInfo), SHARED_MEM_DISCOVERY);
+    const DWORD discoveryCreateError = GetLastError();
     DiscoveryInfo* pDiscovery = nullptr;
-    if (hDiscoveryFile) {
-        pDiscovery = (DiscoveryInfo*)MapViewOfFile(hDiscoveryFile, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(DiscoveryInfo));
-        if (pDiscovery) {
-            pDiscovery->injectPid = GetCurrentProcessId();
-            pDiscovery->magic = DISCOVERY_MAGIC;
-            PopulateWhitelistCache(pDiscovery, currentConfig);
-            // Set logs path for hook DLL and Vulkan layer to use (session-specific)
-            std::string logsDir = baseDir + "\\logs";
-            if (!g_SessionDirName.empty())
-                logsDir += "\\" + g_SessionDirName;
-            strncpy(pDiscovery->logsPath, logsDir.c_str(), sizeof(pDiscovery->logsPath) - 1);
-            pDiscovery->logsPath[sizeof(pDiscovery->logsPath) - 1] = '\0';
-            LogInfo("[Inject] Created discovery memory with whitelist cache (logsPath=%s)", logsDir.c_str());
-        }
+    if (!hDiscoveryFile) {
+        LogError("[Inject] Failed to create discovery mapping: %lu", GetLastError());
+        UnmapViewOfFile(pSharedMem);
+        CloseHandle(hMapFile);
+        return 1;
     }
+    pDiscovery = (DiscoveryInfo*)MapViewOfFile(hDiscoveryFile, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(DiscoveryInfo));
+    if (!pDiscovery) {
+        LogError("[Inject] Failed to map discovery memory: %lu", GetLastError());
+        CloseHandle(hDiscoveryFile);
+        UnmapViewOfFile(pSharedMem);
+        CloseHandle(hMapFile);
+        return 1;
+    }
+    if (discoveryCreateError == ERROR_ALREADY_EXISTS) {
+        const uint32_t existingMagic = pDiscovery->GetMagic();
+        const uint32_t existingPid = pDiscovery->GetInjectPid();
+        bool existingOwnerRunning = false;
+        if (existingMagic == DISCOVERY_MAGIC && existingPid != 0) {
+            HANDLE existingProcess = OpenProcess(SYNCHRONIZE, FALSE, existingPid);
+            if (existingProcess) {
+                existingOwnerRunning = WaitForSingleObject(existingProcess, 0) == WAIT_TIMEOUT;
+                CloseHandle(existingProcess);
+            } else {
+                const DWORD openError = GetLastError();
+                // ERROR_INVALID_PARAMETER is OpenProcess' documented result for
+                // a PID that no longer exists. Other failures cannot prove that
+                // the advertised owner is stale.
+                existingOwnerRunning = openError != ERROR_INVALID_PARAMETER;
+            }
+        }
+        if (existingOwnerRunning) {
+            LogError("[Inject] Refusing discovery mapping owned by active inject PID %u", existingPid);
+            UnmapViewOfFile(pDiscovery);
+            CloseHandle(hDiscoveryFile);
+            UnmapViewOfFile(pSharedMem);
+            CloseHandle(hMapFile);
+            return 1;
+        }
+        pDiscovery->SetMagic(0);
+        pDiscovery->SetInjectPid(0);
+        pDiscovery->SetBuildNumber(BUILD_NUMBER);
+        memset(pDiscovery->processWhitelist, 0, sizeof(pDiscovery->processWhitelist));
+        memset(pDiscovery->logsPath, 0, sizeof(pDiscovery->logsPath));
+        LogInfo("[Inject] Reusing stale discovery mapping retained by another process (previous PID %u)",
+                existingPid);
+    } else {
+        new (pDiscovery) DiscoveryInfo();
+    }
+    PopulateWhitelistCache(pDiscovery, currentConfig);
+    // Set logs path for hook DLL and Vulkan layer to use (session-specific).
+    // Discovery magic remains zero until the main layout is fully published.
+    std::string logsDir = baseDir + "\\logs";
+    if (!g_SessionDirName.empty())
+        logsDir += "\\" + g_SessionDirName;
+    strncpy(pDiscovery->logsPath, logsDir.c_str(), sizeof(pDiscovery->logsPath) - 1);
+    pDiscovery->logsPath[sizeof(pDiscovery->logsPath) - 1] = '\0';
 
     // Initialize shared memory
-    ZeroMemory(pSharedMem, sizeof(SharedMemoryLayout));
     pSharedMem->SetHostPID(GetCurrentProcessId());
     pSharedMem->SetDebugLogging(IsDebugLoggingEnabled(currentConfig.logLevel));
     pSharedMem->SetLogLevel(currentConfig.logLevel);
@@ -348,6 +402,7 @@ int InjectProcessMain(const AppConfig& config) {
     // Copy log path
     std::string logPath = currentConfig.logFilePath;
     strncpy(pSharedMem->logFilePath, logPath.c_str(), sizeof(pSharedMem->logFilePath) - 1);
+    pSharedMem->logFilePath[sizeof(pSharedMem->logFilePath) - 1] = '\0';
 
     // Copy priority settings
     pSharedMem->SetGpuPriority(currentConfig.video.gpuPriority);
@@ -420,7 +475,19 @@ int InjectProcessMain(const AppConfig& config) {
         LogInfo("[Inject] Created limiter events");
     }
 
-    LogInfo("[Inject] Shared memory created and initialized");
+    pSharedMem->structSize.store(sizeof(SharedMemoryLayout), std::memory_order_relaxed);
+    pSharedMem->abiSignature.store(SHARED_MEMORY_ABI_SIGNATURE, std::memory_order_relaxed);
+    pSharedMem->SetVersion(SHARED_MEMORY_VERSION);
+    pSharedMem->SetMagic(SHARED_MEMORY_MAGIC);
+
+    // Publish discovery only after ValidateSharedMemory() can succeed. This
+    // prevents consumers from observing a partially initialized frame/log ring.
+    pDiscovery->SetBuildNumber(BUILD_NUMBER);
+    pDiscovery->SetInjectPid(GetCurrentProcessId());
+    pDiscovery->SetMagic(DISCOVERY_MAGIC);
+    LogInfo("[Inject] Shared memory initialized: version=%u size=%zu abi=0x%08X mapping=%ls", SHARED_MEMORY_VERSION,
+            sizeof(SharedMemoryLayout), SHARED_MEMORY_ABI_SIGNATURE, sharedMemName);
+    LogInfo("[Inject] Published discovery memory with whitelist cache (logsPath=%s)", logsDir.c_str());
 
     // Injection and video acquisition are independent. Explicit screen-grab
     // methods keep the full game whitelist active for overlays and graphics
@@ -634,6 +701,12 @@ int InjectProcessMain(const AppConfig& config) {
     // (CancelAsyncCall + drain) completes while COM is still initialized.
     LogInfo("[Inject] Cleaning up...");
     injector.reset();
+    // Withdraw discovery before closing the main mapping so new consumers
+    // cannot observe a valid advertisement for a disappearing session.
+    if (pDiscovery) {
+        pDiscovery->SetMagic(0);
+        pDiscovery->SetInjectPid(0);
+    }
     if (pShmem)
         UnmapViewOfFile(pShmem);
     if (hMapShmem)

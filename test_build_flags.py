@@ -1,9 +1,12 @@
-import unittest
+import os
 import tempfile
+import time
+import unittest
 from unittest.mock import patch
 from pathlib import Path
 
 import build
+from testapp import run_tests as integration_runner
 
 
 class BuildFlagPolicyTest(unittest.TestCase):
@@ -49,6 +52,23 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertIn("dependency_builder.ensure(force_rebuild=full_source_rebuild)", source)
         self.assertIn("needs_rebuild = full_source_rebuild", source)
 
+    def test_compile_signature_tracks_project_header_contents(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source.cpp"
+            header = Path(temporary) / "shared_layout.h"
+            source.write_text('#include "shared_layout.h"\n', encoding="utf-8")
+            header.write_text("#define SHARED_VERSION 33\n", encoding="utf-8")
+
+            with patch.object(build, "PROJECT_ROOT", temporary):
+                build.compute_file_content_hash.cache_clear()
+                original = build.compute_build_signature(str(source), "clang++", ["-std=c++20"], [str(header)])
+                header.write_text("#define SHARED_VERSION 34\n", encoding="utf-8")
+                os.utime(header, (1, 1))
+                build.compute_file_content_hash.cache_clear()
+                changed = build.compute_build_signature(str(source), "clang++", ["-std=c++20"], [str(header)])
+
+            self.assertNotEqual(original, changed)
+
     def test_sanitizer_child_reuses_parent_build_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             header = Path(temporary) / "build_version.h"
@@ -59,6 +79,12 @@ class BuildFlagPolicyTest(unittest.TestCase):
             source = build_file.read()
         self.assertIn("if sanitize_regression_child:", source)
         self.assertIn("current_build_number = read_build_version_number()", source)
+
+    def test_vulkan_manifests_use_build_specific_layer_identity(self) -> None:
+        with open(build.__file__, encoding="utf-8") as build_file:
+            source = build_file.read()
+        self.assertIn('layer_name = f"{layer_name_base}_b{CURRENT_BUILD_NUMBER}"', source)
+        self.assertIn('"implementation_version": str(CURRENT_BUILD_NUMBER)', source)
 
     def test_failed_unit_tests_capture_diagnostics(self) -> None:
         previous_context = build.VERIFICATION_CONTEXT
@@ -120,6 +146,29 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertNotIn("cleanup_vulkan_layer_registry", source)
         self.assertNotIn("import winreg", source)
         self.assertNotIn("winreg.", source)
+
+    def test_integration_runner_requires_recorded_encoder_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            media_log = Path(temporary) / "media.log"
+            media_log.write_text(
+                "[2026-07-17 15:02:00] [VideoEncoder] Recording stats: input=4 output=0\n"
+                "[2026-07-17 15:02:01] [VideoEncoder] Recording stats: input=123 output=120\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(integration_runner.parse_recorded_output_frames(media_log, 0.0), 120)
+
+    def test_integration_results_default_to_latest_session_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            capture_bin = Path(temporary) / "captureengine"
+            session_dir = capture_bin / "logs" / "20260717_150205"
+            session_dir.mkdir(parents=True)
+            since = time.time() - 1.0
+
+            with patch.object(integration_runner, "CAPTURE_BIN", capture_bin):
+                output_path = integration_runner.default_results_json_path(since)
+
+            self.assertEqual(output_path, session_dir / "integration_results.json")
 
 
 if __name__ == "__main__":

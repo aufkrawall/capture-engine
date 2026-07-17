@@ -64,6 +64,7 @@ RegistrationPlan BuildRegistrationPlan(const std::filesystem::path& baseDir, Reg
 std::string PathToUtf8ForLogging(const std::filesystem::path& path);
 
 void LogRegistrationPlan(const RegistrationPlan& plan);
+bool RepairOwnedRegistrations(const RegistrationPlan& plan);
 bool ApplyRegistrationPlan(const RegistrationPlan& plan, bool install);
 bool IsRegistrationActive(const RegistrationPlan& plan);
 

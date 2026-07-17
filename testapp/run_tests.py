@@ -38,7 +38,7 @@ if not CAPTURE_BIN.exists():
 
 FRAME_TIMES_CSV = CAPTURE_BIN / "logs" / "frame_times.csv"
 MEDIA_LOG = CAPTURE_BIN / "logs" / "media.log"
-DEFAULT_RESULTS_JSON = CAPTURE_BIN / "logs" / "integration_results.json"
+DEFAULT_RESULTS_JSON_NAME = "integration_results.json"
 RUN_LOG_DIR_RE = re.compile(r"^\d{8}_\d{6}$")
 CAPTURE_CONFIG = CAPTURE_BIN / "config.ini"
 CAPTURE_CONFIG_TEMPLATE = PROJECT_ROOT / "captureengine" / "config.ini.template"
@@ -506,6 +506,44 @@ def parse_media_log_frame_times(media_log_path: Path, since_unix_ts: float) -> T
     return frame_times, max_frame_num
 
 
+def parse_recorded_output_frames(media_log_path: Path, since_unix_ts: float) -> Optional[int]:
+    """Return the final encoder output count for this recording, or None when no completion stats exist."""
+    if not media_log_path.exists():
+        return None
+
+    output_frames: Optional[int] = None
+    time_pattern = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]")
+    recording_stats_pattern = re.compile(r"Recording stats: input=(\d+) output=(\d+)")
+    try:
+        with open(media_log_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                time_match = time_pattern.search(line)
+                if time_match:
+                    try:
+                        line_ts = datetime.strptime(time_match.group(1), "%Y-%m-%d %H:%M:%S").timestamp()
+                        if line_ts + 1.0 < since_unix_ts:
+                            continue
+                    except ValueError:
+                        pass
+
+                recording_stats_match = recording_stats_pattern.search(line)
+                if recording_stats_match:
+                    output_frames = int(recording_stats_match.group(2))
+    except (OSError, ValueError):
+        return None
+
+    return output_frames
+
+
+def default_results_json_path(since_unix_ts: float) -> Path:
+    """Keep harness diagnostics beside the CE session logs they describe."""
+    run_log_dir = find_latest_run_log_dir(since_unix_ts)
+    if run_log_dir is None:
+        run_id = datetime.fromtimestamp(since_unix_ts).strftime("%Y%m%d_%H%M%S")
+        run_log_dir = CAPTURE_BIN / "logs" / run_id
+    return run_log_dir / DEFAULT_RESULTS_JSON_NAME
+
+
 def analyze_frame_times(frame_times: List[float], target_fps: int, name: str = "") -> Dict[str, Any]:
     """Analyze frame times and return stats dictionary."""
     if not frame_times:
@@ -660,7 +698,9 @@ def print_stats(stats: Dict[str, Any]) -> None:
         return
 
     print(f"  Frames: {stats['count']}")
-    if "effective_count" in stats and int(stats["effective_count"]) != int(stats["count"]):
+    if "recorded_output_frames" in stats:
+        print(f"  Recorded output frames: {stats['recorded_output_frames']}")
+    elif "effective_count" in stats and int(stats["effective_count"]) != int(stats["count"]):
         print(f"  Estimated total frames: {stats['effective_count']}")
     if "source" in stats:
         print(f"  Source: {stats['source']}")
@@ -764,6 +804,7 @@ def run_single_test(
     run_log_dir = find_latest_run_log_dir(test_start_unix_ts)
     frame_times_csv = (run_log_dir / "frame_times.csv") if run_log_dir else FRAME_TIMES_CSV
     media_log_path = (run_log_dir / "media.log") if run_log_dir else MEDIA_LOG
+    recorded_output_frames = parse_recorded_output_frames(media_log_path, test_start_unix_ts)
 
     frame_times = parse_frame_times(frame_times_csv)
     frame_source = "frame_times.csv"
@@ -779,7 +820,10 @@ def run_single_test(
     stats = analyze_frame_times(frame_times, target_fps, test_name)
     if "error" not in stats:
         stats["source"] = frame_source
-        if estimated_frame_count > 0:
+        if recorded_output_frames is not None:
+            stats["recorded_output_frames"] = recorded_output_frames
+            stats["effective_count"] = recorded_output_frames
+        elif estimated_frame_count > 0:
             stats["effective_count"] = estimated_frame_count
 
     print("\nResults:")
@@ -792,6 +836,11 @@ def run_single_test(
     hook_runtime_error = verify_runtime_hook_activity(api, run_log_dir, test_start_unix_ts)
     if hook_runtime_error:
         return stats, hook_runtime_error
+
+    if recorded_output_frames is None:
+        return stats, "Recording completion stats missing from media.log"
+    if recorded_output_frames == 0:
+        return stats, "Recording produced zero encoded video frames"
 
     quality_error = evaluate_quality(
         stats,
@@ -925,8 +974,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--results-json",
-        default=str(DEFAULT_RESULTS_JSON),
-        help=f"Path to write machine-readable JSON results (default: {DEFAULT_RESULTS_JSON})",
+        default=None,
+        help="Path to write machine-readable JSON results (default: latest run log directory)",
     )
     parser.add_argument(
         "--target-fps",
@@ -959,6 +1008,7 @@ def main() -> None:
         help="Maximum allowed percentage of >2x-budget spikes (default: 5.0)",
     )
     args = parser.parse_args()
+    suite_start_unix_ts = time.time()
 
     width, height = args.resolution
 
@@ -1073,8 +1123,11 @@ def main() -> None:
             for failure in failures:
                 print(f"  {failure['name']}: {failure['error'] or 'Unknown failure'}")
 
+        results_json_path = (
+            Path(args.results_json) if args.results_json else default_results_json_path(suite_start_unix_ts)
+        )
         write_results_json(
-            output_path=Path(args.results_json),
+            output_path=results_json_path,
             args=args,
             apis_to_test=apis_to_test,
             arches_to_test=arches_to_test,

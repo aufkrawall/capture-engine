@@ -2,12 +2,15 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cctype>
+#include <cwctype>
 #include <string>
 #include <system_error>
 #include <utility>
 #include <vector>
 
+#include "build_version.h"
 #include "logging.h"
 
 namespace ce::vulkan_layer {
@@ -20,6 +23,7 @@ constexpr wchar_t kLayer64Name[] = L"VK_LAYER_CE_overlay";
 constexpr wchar_t kManifest32Name[] = L"VK_LAYER_CE_overlay_x86.json";
 constexpr wchar_t kLibrary32Name[] = L"VK_LAYER_CE_overlay_x86.dll";
 constexpr wchar_t kLayer32Name[] = L"VK_LAYER_CE_overlay_x86";
+constexpr wchar_t kLegacyManifestName[] = L"VK_LAYER_CAPTURE_overlay.json";
 
 struct RegistryLocation {
     RegistryRoot root;
@@ -89,6 +93,22 @@ std::string PathToUtf8(const std::filesystem::path& path) {
     return WideToUtf8(path.wstring());
 }
 
+std::wstring ToLower(std::wstring value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
+    return value;
+}
+
+bool IsOwnedManifestPath(const std::filesystem::path& path) {
+    const std::wstring fileName = ToLower(path.filename().wstring());
+    return fileName == ToLower(kManifest64Name) || fileName == ToLower(kManifest32Name) ||
+           fileName == ToLower(kLegacyManifestName);
+}
+
+std::wstring BuildVersionedLayerName(const wchar_t* baseName) {
+    return std::wstring(baseName) + L"_b" + std::to_wstring(BUILD_NUMBER);
+}
+
 class HandleCloser {
 public:
     explicit HandleCloser(HANDLE handle) : handle_(handle) {}
@@ -133,7 +153,7 @@ LayerManifest BuildManifest(const std::filesystem::path& baseDir, const wchar_t*
     LayerManifest manifest;
     manifest.manifestPath = baseDir / manifestName;
     manifest.libraryPath = baseDir / libraryName;
-    manifest.layerName = layerName;
+    manifest.layerName = BuildVersionedLayerName(layerName);
     manifest.is32Bit = is32Bit;
     manifest.manifestExists = IsRegularFile(manifest.manifestPath);
     manifest.libraryExists = IsRegularFile(manifest.libraryPath);
@@ -178,6 +198,45 @@ LONG OpenRegistryKey(const RegistryLocation& location, REGSAM access, bool creat
     return result;
 }
 
+std::vector<std::wstring> EnumerateRegistryValueNames(HKEY key) {
+    std::vector<std::wstring> names;
+    std::vector<wchar_t> buffer(512, L'\0');
+    DWORD index = 0;
+
+    while (true) {
+        DWORD length = static_cast<DWORD>(buffer.size());
+        const LONG result = RegEnumValueW(key, index, buffer.data(), &length, nullptr, nullptr, nullptr, nullptr);
+        if (result == ERROR_NO_MORE_ITEMS) {
+            break;
+        }
+        if (result == ERROR_MORE_DATA) {
+            buffer.resize(buffer.size() * 2, L'\0');
+            continue;
+        }
+        if (result != ERROR_SUCCESS) {
+            LogWarn("[VulkanReg] Failed to enumerate %s value %lu (error=%ld, %s)",
+                    WideToUtf8(kImplicitLayersKey).c_str(), index, result, FormatWindowsError(result).c_str());
+            break;
+        }
+
+        names.emplace_back(buffer.data(), length);
+        ++index;
+    }
+    return names;
+}
+
+std::vector<RegistryLocation> BuildRepairLocations(const RegistrationPlan& plan) {
+    std::vector<RegistryLocation> locations = {
+        {RegistryRoot::CurrentUser, RegistryView::Registry64},
+        {RegistryRoot::CurrentUser, RegistryView::Registry32},
+    };
+    if (plan.processElevated) {
+        locations.push_back({RegistryRoot::LocalMachine, RegistryView::Registry64});
+        locations.push_back({RegistryRoot::LocalMachine, RegistryView::Registry32});
+    }
+    return locations;
+}
+
 std::vector<RegistryTarget> BuildStatusTargets(const RegistrationPlan& plan) {
     std::vector<RegistryTarget> targets;
 
@@ -206,12 +265,24 @@ std::vector<RegistryTarget> BuildStatusTargets(const RegistrationPlan& plan) {
         return targets;
     }
 
-    RegistryTarget currentUserTarget;
-    currentUserTarget.root = RegistryRoot::CurrentUser;
-    currentUserTarget.view = RegistryView::Default;
-    currentUserTarget.manifests = plan.manifests;
-    if (!currentUserTarget.manifests.empty()) {
-        targets.push_back(std::move(currentUserTarget));
+    RegistryTarget x64Target;
+    x64Target.root = RegistryRoot::CurrentUser;
+    x64Target.view = RegistryView::Registry64;
+    RegistryTarget x86Target;
+    x86Target.root = RegistryRoot::CurrentUser;
+    x86Target.view = RegistryView::Registry32;
+    for (const LayerManifest& manifest : plan.manifests) {
+        if (manifest.is32Bit) {
+            x86Target.manifests.push_back(manifest);
+        } else {
+            x64Target.manifests.push_back(manifest);
+        }
+    }
+    if (!x64Target.manifests.empty()) {
+        targets.push_back(std::move(x64Target));
+    }
+    if (!x86Target.manifests.empty()) {
+        targets.push_back(std::move(x86Target));
     }
     return targets;
 }
@@ -419,23 +490,59 @@ RegistrationPlan BuildRegistrationPlan(const std::filesystem::path& baseDir, Reg
         return plan;
     }
 
-    RegistryTarget currentUserTarget;
-    currentUserTarget.root = RegistryRoot::CurrentUser;
-    currentUserTarget.view = RegistryView::Default;
+    RegistryTarget x64Target;
+    x64Target.root = RegistryRoot::CurrentUser;
+    x64Target.view = RegistryView::Registry64;
+    RegistryTarget x86Target;
+    x86Target.root = RegistryRoot::CurrentUser;
+    x86Target.view = RegistryView::Registry32;
     for (const LayerManifest& manifest : plan.manifests) {
-        if (manifest.IsUsable()) {
-            currentUserTarget.manifests.push_back(manifest);
+        if (!manifest.IsUsable()) {
+            continue;
+        }
+        if (manifest.is32Bit) {
+            x86Target.manifests.push_back(manifest);
+        } else {
+            x64Target.manifests.push_back(manifest);
         }
     }
 
-    if (!currentUserTarget.manifests.empty()) {
-        plan.installTargets.push_back(std::move(currentUserTarget));
+    if (!x64Target.manifests.empty()) {
+        plan.installTargets.push_back(std::move(x64Target));
+    }
+    if (!x86Target.manifests.empty()) {
+        plan.installTargets.push_back(std::move(x86Target));
     }
     return plan;
 }
 
 std::string PathToUtf8ForLogging(const std::filesystem::path& path) {
     return PathToUtf8(path);
+}
+
+bool RepairOwnedRegistrations(const RegistrationPlan& plan) {
+    bool success = true;
+    for (const RegistryLocation& location : BuildRepairLocations(plan)) {
+        RegistryKeyGuard key;
+        const LONG openResult = OpenRegistryKey(location, KEY_QUERY_VALUE | KEY_SET_VALUE, false, &key);
+        if (openResult == ERROR_FILE_NOT_FOUND) {
+            continue;
+        }
+        if (openResult != ERROR_SUCCESS) {
+            LogError("[VulkanReg] Failed to open %s for owned-entry repair (error=%ld, %s)",
+                     DescribeLocation(location).c_str(), openResult, FormatWindowsError(openResult).c_str());
+            success = false;
+            continue;
+        }
+
+        for (const std::wstring& valueName : EnumerateRegistryValueNames(key.Get())) {
+            if (!IsOwnedManifestPath(std::filesystem::path(valueName))) {
+                continue;
+            }
+            success &= DeleteRegistryValue(key.Get(), valueName, "superseded CE manifest", location);
+        }
+    }
+    return success;
 }
 
 void LogRegistrationPlan(const RegistrationPlan& plan) {
@@ -459,6 +566,7 @@ void LogRegistrationPlan(const RegistrationPlan& plan) {
         LogInfo("[VulkanReg] Manifest %s: json=%s dll=%s usable=%s", PathToUtf8(manifest.manifestPath).c_str(),
                 manifest.manifestExists ? "present" : "missing", manifest.libraryExists ? "present" : "missing",
                 manifest.IsUsable() ? "true" : "false");
+        LogInfo("[VulkanReg]   layer identity: %s", WideToUtf8(manifest.layerName).c_str());
     }
 
     if (plan.installTargets.empty()) {

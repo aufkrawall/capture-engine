@@ -637,7 +637,7 @@ static bool WithInjectSharedMem(std::function<void(SharedMemoryLayout*)> fn) {
     if (!hDisc)
         return false;
     DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-    if (!pDisc || pDisc->GetMagic() != DISCOVERY_MAGIC) {
+    if (!ValidateDiscoveryInfo(pDisc)) {
         if (pDisc)
             UnmapViewOfFile(pDisc);
         CloseHandle(hDisc);
@@ -657,6 +657,14 @@ static bool WithInjectSharedMem(std::function<void(SharedMemoryLayout*)> fn) {
     auto* pShm =
         (SharedMemoryLayout*)MapViewOfFile(hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
     if (!pShm) {
+        CloseHandle(hShm);
+        return false;
+    }
+    if (!ValidateSharedMemory(pShm)) {
+        LogError("[Controller] Rejected inject shared memory with incompatible ABI (version=%u size=%u abi=0x%08X)",
+                 pShm->GetVersion(), pShm->structSize.load(std::memory_order_acquire),
+                 pShm->abiSignature.load(std::memory_order_acquire));
+        UnmapViewOfFile(pShm);
         CloseHandle(hShm);
         return false;
     }
@@ -1167,12 +1175,16 @@ static ce::vulkan_layer::RegistrationPlan BuildControllerVulkanRegistrationPlan(
                                                    ce::vulkan_layer::IsCurrentProcessElevated());
 }
 
-// RAII wrapper for exact registration ownership. The startup plan is retained
-// so teardown never enumerates or derives ownership from ambient registry state.
+// RAII wrapper for exact registration ownership. Startup repairs superseded CE
+// entries only in registry scopes already writable by this process; the retained
+// plan then lets teardown remove only this instance's exact registrations.
 class ScopedVulkanRegistration {
 public:
     ScopedVulkanRegistration() : plan_(BuildControllerVulkanRegistrationPlan()) {
         ce::vulkan_layer::LogRegistrationPlan(plan_);
+        if (!ce::vulkan_layer::RepairOwnedRegistrations(plan_)) {
+            LogWarn("[Controller] Vulkan layer registration repair was incomplete");
+        }
         active_ = ce::vulkan_layer::ApplyRegistrationPlan(plan_, true);
         if (!active_) {
             LogError("[Controller] Vulkan layer registration failed");
@@ -1327,7 +1339,7 @@ int ControllerMain(HINSTANCE hInstance) {
                             if (hDisc) {
                                 DiscoveryInfo* pDisc =
                                     (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-                                if (pDisc && pDisc->GetMagic() == DISCOVERY_MAGIC) {
+                                if (ValidateDiscoveryInfo(pDisc)) {
                                     uint32_t injPid = pDisc->GetInjectPid();
                                     UnmapViewOfFile(pDisc);
                                     CloseHandle(hDisc);
@@ -1338,10 +1350,15 @@ int ControllerMain(HINSTANCE hInstance) {
                                         if (hShm) {
                                             auto* pShm = (SharedMemoryLayout*)MapViewOfFile(
                                                 hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
-                                            if (pShm) {
+                                            if (pShm && ValidateSharedMemory(pShm)) {
                                                 pShm->runtimeState.notificationType.store(1, std::memory_order_release);
                                                 pShm->runtimeState.notificationExpiry.store(GetTickCount64() + 2000ULL,
                                                                                             std::memory_order_release);
+                                            } else if (pShm) {
+                                                LogError("[Controller] Screenshot notification rejected incompatible "
+                                                         "inject shared memory ABI");
+                                            }
+                                            if (pShm) {
                                                 UnmapViewOfFile(pShm);
                                             }
                                             CloseHandle(hShm);

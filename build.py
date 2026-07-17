@@ -3442,13 +3442,35 @@ def parse_dep_file(dep_path: str) -> List[str]:
     return deps
 
 
-def compute_build_signature(src: str, clang_exe: str, compile_flags: List[str]) -> str:
-    """Create a stable signature from source contents + compiler/flags."""
+@lru_cache(maxsize=None)
+def compute_file_content_hash(path: str) -> str:
+    with open(path, "rb") as f:
+        return hashlib.md5(f.read()).hexdigest()[:16]
+
+
+def compute_build_signature(
+    src: str, clang_exe: str, compile_flags: List[str], dependencies: Optional[List[str]] = None
+) -> str:
+    """Create a stable signature from source, project headers, compiler, and flags."""
     with open(src, "rb") as f:
         src_hash = hashlib.md5(f.read()).hexdigest()[:16]
     tool_fingerprint = "\n".join([os.path.abspath(clang_exe)] + compile_flags)
     tool_hash = hashlib.md5(tool_fingerprint.encode("utf-8")).hexdigest()[:16]
-    return f"{src_hash}:{tool_hash}"
+
+    dependency_hash = hashlib.md5()
+    project_root = os.path.normcase(os.path.abspath(PROJECT_ROOT))
+    for dependency in sorted(set(dependencies or [])):
+        absolute_dependency = os.path.normcase(os.path.abspath(dependency))
+        try:
+            if os.path.commonpath([project_root, absolute_dependency]) != project_root:
+                continue
+        except ValueError:
+            continue
+        if not os.path.isfile(absolute_dependency):
+            continue
+        dependency_hash.update(absolute_dependency.encode("utf-8", errors="surrogatepass"))
+        dependency_hash.update(compute_file_content_hash(absolute_dependency).encode("ascii"))
+    return f"{src_hash}:{tool_hash}:{dependency_hash.hexdigest()[:16]}"
 
 
 def should_recompile(
@@ -3474,11 +3496,20 @@ def should_recompile(
     except OSError:
         return True  # Error accessing files, safer to recompile
 
-    # Also check if source content or compile settings changed (hash-based).
-    # This catches stale objects when flags/compiler change across incremental runs.
+    if not os.path.exists(dep_file):
+        # If object exists but dep file is missing, recompile to generate dep file.
+        return True
+    deps = parse_dep_file(dep_file)
+    if not deps:
+        # Invalid/empty dep file can miss header changes and cause ABI skew.
+        return True
+
+    # Also check if source, project-header content, or compile settings changed.
+    # Header content hashing prevents ABI-skewed objects even when a checkout or
+    # restore gives a changed header an older timestamp.
     hash_file = obj + ".hash"
     try:
-        signature = compute_build_signature(src, clang_exe, compile_flags)
+        signature = compute_build_signature(src, clang_exe, compile_flags, deps)
         if os.path.exists(hash_file):
             with open(hash_file, "r") as f:
                 stored_hash = f.read().strip()
@@ -3490,22 +3521,15 @@ def should_recompile(
     except Exception:
         pass  # Fall back to timestamp check only
 
-    # Check dependencies
-    if os.path.exists(dep_file):
-        deps = parse_dep_file(dep_file)
-        if not deps:
-            # Invalid/empty dep file can miss header changes and cause ABI skew.
-            return True
-        obj_mtime = os.path.getmtime(obj)
-        for dep in deps:
-            try:
-                if os.path.exists(dep) and os.path.getmtime(dep) > obj_mtime:
-                    return True
-            except OSError:
-                return True  # Error accessing dependency, safer to recompile
-    else:
-        # If object exists but dep file is missing, recompile to generate dep file
-        return True
+    # Check dependency timestamps as a cheap second signal, including toolchain
+    # headers outside the project root that are intentionally not content-hashed.
+    obj_mtime = os.path.getmtime(obj)
+    for dep in deps:
+        try:
+            if os.path.exists(dep) and os.path.getmtime(dep) > obj_mtime:
+                return True
+        except OSError:
+            return True  # Error accessing dependency, safer to recompile
 
     return False
 
@@ -3775,8 +3799,9 @@ def compile_object(env: Dict[str, str], clang_exe: str, cflags: List[str], src: 
     # Save compile signature after successful compilation.
     hash_file = obj + ".hash"
     try:
+        dependencies = parse_dep_file(dep_file)
         with open(hash_file, "w") as f:
-            f.write(compute_build_signature(src, clang_exe, compile_flags))
+            f.write(compute_build_signature(src, clang_exe, compile_flags, dependencies))
     except Exception:
         pass  # Non-critical, ignore errors
 
@@ -5366,9 +5391,12 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         # Bare DLL names are resolved via process DLL search paths and can fail.
         manifest_dll_name = f".\\{os.path.basename(layer_dll)}"
 
-        # Use different layer names for x64 vs x86 to avoid "wrong bit-type" conflicts
-        # Both 32-bit and 64-bit apps read from HKCU (no WOW64 redirection for HKCU)
-        layer_name = "VK_LAYER_CE_overlay" if arch == "x64" else "VK_LAYER_CE_overlay_x86"
+        # Give every packaged build its own loader identity. The Windows loader
+        # keeps only the first occurrence of a layer name, so a stale manifest
+        # from another build must not shadow the current one. Discovery also
+        # carries this build number, keeping older layers dormant if both load.
+        layer_name_base = "VK_LAYER_CE_overlay" if arch == "x64" else "VK_LAYER_CE_overlay_x86"
+        layer_name = f"{layer_name_base}_b{CURRENT_BUILD_NUMBER}"
 
         manifest = {
             "file_format_version": "1.2.0",
@@ -5377,7 +5405,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
                 "type": "GLOBAL",
                 "library_path": manifest_dll_name,
                 "api_version": "1.3.0",
-                "implementation_version": "1",
+                "implementation_version": str(CURRENT_BUILD_NUMBER),
                 "description": "CaptureEngine Overlay and Recording Layer",
                 "functions": {
                     "vkGetInstanceProcAddr": "vkGetInstanceProcAddr",

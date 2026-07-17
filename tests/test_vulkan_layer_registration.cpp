@@ -4,6 +4,7 @@
 #include <fstream>
 #include <string>
 
+#include "../common/build_version.h"
 #include "../common/vulkan_layer_registration.h"
 
 namespace {
@@ -21,7 +22,7 @@ void TouchFile(const std::filesystem::path& path) {
 
 }  // namespace
 
-TEST(VulkanLayerRegistrationTest, CurrentUserPlanKeepsUsableManifestsInSharedHKCU) {
+TEST(VulkanLayerRegistrationTest, CurrentUserPlanSplitsHKCUViewsByArchitecture) {
     const std::filesystem::path baseDir = std::filesystem::current_path() / "vk_reg_plan_hkcu";
     std::filesystem::create_directories(baseDir);
 
@@ -37,12 +38,24 @@ TEST(VulkanLayerRegistrationTest, CurrentUserPlanKeepsUsableManifestsInSharedHKC
 
     const auto plan = BuildRegistrationPlan(baseDir, RegistrationMode::CurrentUser, false);
     ASSERT_EQ(plan.effectiveMode, RegistrationMode::CurrentUser);
-    ASSERT_EQ(plan.installTargets.size(), 1u);
-    EXPECT_EQ(plan.installTargets[0].root, RegistryRoot::CurrentUser);
-    EXPECT_EQ(plan.installTargets[0].view, RegistryView::Default);
-    ASSERT_EQ(plan.installTargets[0].manifests.size(), 2u);
-    EXPECT_EQ(plan.installTargets[0].manifests[0].manifestPath, manifest64);
-    EXPECT_EQ(plan.installTargets[0].manifests[1].manifestPath, manifest32);
+    ASSERT_EQ(plan.installTargets.size(), 2u);
+
+    const auto& first = plan.installTargets[0];
+    const auto& second = plan.installTargets[1];
+    EXPECT_EQ(first.root, RegistryRoot::CurrentUser);
+    EXPECT_EQ(second.root, RegistryRoot::CurrentUser);
+    EXPECT_NE(first.view, second.view);
+
+    const auto* x64Target = first.view == RegistryView::Registry64 ? &first : &second;
+    const auto* x86Target = first.view == RegistryView::Registry32 ? &first : &second;
+    ASSERT_EQ(x64Target->manifests.size(), 1u);
+    ASSERT_EQ(x86Target->manifests.size(), 1u);
+    EXPECT_EQ(x64Target->manifests[0].manifestPath, manifest64);
+    EXPECT_EQ(x86Target->manifests[0].manifestPath, manifest32);
+    EXPECT_EQ(x64Target->manifests[0].layerName,
+              std::wstring(L"VK_LAYER_CE_overlay_b") + std::to_wstring(BUILD_NUMBER));
+    EXPECT_EQ(x86Target->manifests[0].layerName,
+              std::wstring(L"VK_LAYER_CE_overlay_x86_b") + std::to_wstring(BUILD_NUMBER));
 
     std::filesystem::remove_all(baseDir);
 }
@@ -101,14 +114,32 @@ TEST(VulkanLayerRegistrationTest, PlanSkipsMissingArchitectureArtifacts) {
     std::filesystem::remove_all(baseDir);
 }
 
-TEST(VulkanLayerRegistrationSourceTest, NormalLifecycleNeverEnumeratesOrRepairsRegistryEntries) {
+TEST(VulkanLayerRegistrationSourceTest, RepairTargetsOwnedManifestNamesInWritableScopes) {
     const std::filesystem::path source = std::filesystem::current_path() / "common" / "vulkan_layer_registration.cpp";
     std::ifstream input(source, std::ios::binary);
     ASSERT_TRUE(input.is_open()) << source.string();
     const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
 
-    EXPECT_EQ(text.find("RegEnumValue"), std::string::npos);
-    EXPECT_EQ(text.find("VK_LAYER_CAPTURE_overlay"), std::string::npos);
+    EXPECT_NE(text.find("RegEnumValueW"), std::string::npos);
+    EXPECT_NE(text.find("VK_LAYER_CAPTURE_overlay.json"), std::string::npos);
+    EXPECT_NE(text.find("IsOwnedManifestPath"), std::string::npos);
+
+    const size_t locations = text.find("BuildRepairLocations(const RegistrationPlan& plan)");
+    const size_t hkcu64 = text.find("RegistryRoot::CurrentUser, RegistryView::Registry64", locations);
+    const size_t hkcu32 = text.find("RegistryRoot::CurrentUser, RegistryView::Registry32", locations);
+    const size_t elevatedGate = text.find("if (plan.processElevated)", locations);
+    const size_t hklm64 = text.find("RegistryRoot::LocalMachine, RegistryView::Registry64", locations);
+    const size_t hklm32 = text.find("RegistryRoot::LocalMachine, RegistryView::Registry32", locations);
+    ASSERT_NE(locations, std::string::npos);
+    ASSERT_NE(hkcu64, std::string::npos);
+    ASSERT_NE(hkcu32, std::string::npos);
+    ASSERT_NE(elevatedGate, std::string::npos);
+    ASSERT_NE(hklm64, std::string::npos);
+    ASSERT_NE(hklm32, std::string::npos);
+    EXPECT_LT(hkcu64, elevatedGate);
+    EXPECT_LT(hkcu32, elevatedGate);
+    EXPECT_LT(elevatedGate, hklm64);
+    EXPECT_LT(elevatedGate, hklm32);
 
     const size_t deleteTarget = text.find("bool DeleteRegistryTarget(const RegistryTarget& target)");
     const size_t exactManifestLoop = text.find("for (const LayerManifest& manifest : target.manifests)", deleteTarget);
@@ -133,6 +164,11 @@ TEST(VulkanLayerRegistrationSourceTest, ControllerRetainsOneExactPlanThroughUnre
 
     EXPECT_NE(text.find("ScopedVulkanRegistration() : plan_(BuildControllerVulkanRegistrationPlan())"),
               std::string::npos);
+    const size_t repair = text.find("RepairOwnedRegistrations(plan_)");
+    const size_t apply = text.find("ApplyRegistrationPlan(plan_, true)");
+    ASSERT_NE(repair, std::string::npos);
+    ASSERT_NE(apply, std::string::npos);
+    EXPECT_LT(repair, apply);
     EXPECT_NE(text.find("ApplyRegistrationPlan(plan_, true)"), std::string::npos);
     EXPECT_NE(text.find("ApplyRegistrationPlan(plan_, false)"), std::string::npos);
     EXPECT_NE(text.find("std::call_once(unregistrationOnce_"), std::string::npos);

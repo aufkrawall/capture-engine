@@ -375,14 +375,14 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t ho
             float currentMaxCoreLoad = 0.0f;
             if (!prevCpuInfo.empty() && prevCpuInfo[0].IdleTime.QuadPart != 0) {
                 for (int i = 0; i < numProcs; ++i) {
-                    const uint64_t idle = currCpuInfo[i].IdleTime.QuadPart - prevCpuInfo[i].IdleTime.QuadPart;
-                    const uint64_t kernel = currCpuInfo[i].KernelTime.QuadPart - prevCpuInfo[i].KernelTime.QuadPart;
-                    const uint64_t user = currCpuInfo[i].UserTime.QuadPart - prevCpuInfo[i].UserTime.QuadPart;
-                    const uint64_t total = kernel + user;
-                    if (total > 0) {
-                        const float usage = static_cast<float>(total - idle) / static_cast<float>(total) * 100.0f;
-                        currentMaxCoreLoad = (std::max)(currentMaxCoreLoad, usage);
-                    }
+                    const uint32_t usage = metrics_policy::CalculateProcessorUsagePercent(
+                        static_cast<uint64_t>(prevCpuInfo[i].IdleTime.QuadPart),
+                        static_cast<uint64_t>(prevCpuInfo[i].KernelTime.QuadPart),
+                        static_cast<uint64_t>(prevCpuInfo[i].UserTime.QuadPart),
+                        static_cast<uint64_t>(currCpuInfo[i].IdleTime.QuadPart),
+                        static_cast<uint64_t>(currCpuInfo[i].KernelTime.QuadPart),
+                        static_cast<uint64_t>(currCpuInfo[i].UserTime.QuadPart));
+                    currentMaxCoreLoad = (std::max)(currentMaxCoreLoad, static_cast<float>(usage));
                 }
             }
             prevCpuInfo = currCpuInfo;

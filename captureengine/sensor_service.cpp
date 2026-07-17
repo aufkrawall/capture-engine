@@ -100,8 +100,8 @@ int SensorProcessMain(const AppConfig& config) {
             }
         }
         if (hDisc != INVALID_HANDLE_VALUE && pDisc) {
-            if (pDisc->magic == DISCOVERY_MAGIC) {
-                uint32_t pid = pDisc->injectPid;
+            if (ValidateDiscoveryInfo(pDisc)) {
+                uint32_t pid = pDisc->GetInjectPid();
                 if (!loggedDiscoveryAttempt) {
                     LogInfo("[Sensors] Discovery found inject PID %u", pid);
                     loggedDiscoveryAttempt = true;
@@ -113,14 +113,23 @@ int SensorProcessMain(const AppConfig& config) {
                     if (hSM) {
                         SharedMemoryLayout* shm = (SharedMemoryLayout*)MapViewOfFile(hSM, FILE_MAP_ALL_ACCESS, 0, 0,
                                                                                      sizeof(SharedMemoryLayout));
-                        if (shm) {
+                        if (shm && ValidateSharedMemory(shm)) {
                             LogInfo(
                                 "[Sensors] Discovered new session: Inject PID %u, Game "
-                                "PID %u",
-                                pid, shm->GetSourcePid());
+                                "PID %u, ABI 0x%08X",
+                                pid, shm->GetSourcePid(), SHARED_MEMORY_ABI_SIGNATURE);
                             sessions[pid] = {hSM, shm};
                         } else {
-                            LogError("[Sensors] Failed to map shared memory for PID %u", pid);
+                            if (shm) {
+                                LogError(
+                                    "[Sensors] Rejected incompatible shared memory for PID %u "
+                                    "(version=%u size=%u abi=0x%08X)",
+                                    pid, shm->GetVersion(), shm->structSize.load(std::memory_order_acquire),
+                                    shm->abiSignature.load(std::memory_order_acquire));
+                                UnmapViewOfFile(shm);
+                            } else {
+                                LogError("[Sensors] Failed to map shared memory for PID %u", pid);
+                            }
                             CloseHandle(hSM);
                         }
                     } else {
@@ -187,8 +196,17 @@ int SensorProcessMain(const AppConfig& config) {
 
             s.updatesSinceSummary++;
             if (IsDebugLoggingEnabled(config.logLevel) && s.updatesSinceSummary >= 30) {
-                LogInfo("[Sensors] Summary: injectPid=%u gamePid=%u luid=0x%llX updates=%u", it->first, sourcePid,
-                        effectiveLuid, s.updatesSinceSummary);
+                const auto& metrics = s.shm->systemMetrics;
+                LogInfo(
+                    "[Sensors] Summary: injectPid=%u gamePid=%u luid=0x%llX updates=%u cpu=%.1f maxCore=%u "
+                    "gpu=%.1f vramMB=%.1f vramTotalMB=%llu validity=0x%X",
+                    it->first, sourcePid, effectiveLuid, s.updatesSinceSummary,
+                    metrics.cpuUsage.load(std::memory_order_relaxed),
+                    metrics.maxCoreLoad.load(std::memory_order_relaxed),
+                    metrics.gpuUsage.load(std::memory_order_relaxed),
+                    metrics.vramUsage.load(std::memory_order_relaxed),
+                    metrics.vramTotal.load(std::memory_order_relaxed) / (1024 * 1024),
+                    metrics.validityMask.load(std::memory_order_relaxed));
                 s.updatesSinceSummary = 0;
             }
 

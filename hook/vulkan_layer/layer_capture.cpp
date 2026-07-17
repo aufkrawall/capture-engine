@@ -280,7 +280,7 @@ static VkFormat NormalizeVkFormat(VkFormat fmt) {
 static bool CreateSharedTextures(D3D11InteropDevice* interopDev, VkDevice vkDev, DeviceDispatch* disp,
                                  VkPhysicalDevice physDev, const LUID& luid, uint32_t width, uint32_t height,
                                  uint32_t vkFormat, SharedTextureEntry& entry) {
-    const uint32_t kTextureCount = 4;
+    const uint32_t kTextureCount = SHARED_TEXTURE_SLOT_COUNT;
 
     entry.vkDevice = vkDev;
     entry.luidKey = MakeLuidKey(luid);
@@ -657,7 +657,7 @@ static bool CreateSharedTextures(D3D11InteropDevice* interopDev, VkDevice vkDev,
 static bool CreateVulkanNativeSharedTextures(VkDevice vkDev, DeviceDispatch* disp, VkPhysicalDevice physDev,
                                              const LUID& luid, uint32_t width, uint32_t height, uint32_t vkFormat,
                                              SharedTextureEntry& entry) {
-    const uint32_t kTextureCount = 4;
+    const uint32_t kTextureCount = SHARED_TEXTURE_SLOT_COUNT;
 
     entry.vkDevice = vkDev;
     entry.luidKey = MakeLuidKey(luid);
@@ -1123,7 +1123,8 @@ static bool GetLUIDFromPhysicalDevice(VkPhysicalDevice physDev, LUID* outLuid) {
 
 static bool ImportEncoderKmtTextures(VkDevice device, DeviceDispatch* disp, uint64_t luidKey, uint32_t width,
                                      uint32_t height, uint32_t vkFormat, SharedMemoryLayout* mem,
-                                     SharedTextureEntry* outEntry, HANDLE outKmtHandles[4]) {
+                                     SharedTextureEntry* outEntry,
+                                     HANDLE outKmtHandles[ENCODER_TEXTURE_SLOT_COUNT]) {
     if (!disp || !mem || !outEntry || !outKmtHandles)
         return false;
 
@@ -1146,7 +1147,7 @@ static bool ImportEncoderKmtTextures(VkDevice device, DeviceDispatch* disp, uint
     }
 
     bool allValid = true;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; i++) {
         outKmtHandles[i] = (HANDLE)mem->encoderTextures.GetKmtTextureHandle(i);
         if (!outKmtHandles[i]) {
             allValid = false;
@@ -1157,7 +1158,7 @@ static bool ImportEncoderKmtTextures(VkDevice device, DeviceDispatch* disp, uint
         return false;
 
     LayerLog("Vulkan Layer: Encoder KMT handles received, importing into Vulkan");
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; i++) {
         LayerLog("Vulkan Layer: Encoder KMT handle %d = %p", i, outKmtHandles[i]);
     }
 
@@ -1167,9 +1168,9 @@ static bool ImportEncoderKmtTextures(VkDevice device, DeviceDispatch* disp, uint
     newEntry.width = width;
     newEntry.height = height;
     newEntry.vkFormat = vkFormat;
-    newEntry.vkImages.assign(4, VK_NULL_HANDLE);
-    newEntry.vkMemories.assign(4, VK_NULL_HANDLE);
-    newEntry.textureHandles.assign(4, nullptr);
+    newEntry.vkImages.assign(ENCODER_TEXTURE_SLOT_COUNT, VK_NULL_HANDLE);
+    newEntry.vkMemories.assign(ENCODER_TEXTURE_SLOT_COUNT, VK_NULL_HANDLE);
+    newEntry.textureHandles.assign(ENCODER_TEXTURE_SLOT_COUNT, nullptr);
     newEntry.textureHandlesAreNt = false;
     newEntry.hasIpcRelay = false;
 
@@ -1186,7 +1187,7 @@ static bool ImportEncoderKmtTextures(VkDevice device, DeviceDispatch* disp, uint
         }
     };
 
-    for (uint32_t i = 0; i < 4; i++) {
+    for (int i = 0; i < ENCODER_TEXTURE_SLOT_COUNT; i++) {
         VkExternalMemoryImageCreateInfo extInfo = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
         extInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_KMT_BIT;
 
@@ -1409,7 +1410,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         // published the textures, so an immediate interop fallback is lossless.
         if (mem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
             SharedTextureEntry encoderEntry;
-            HANDLE kmtHandles[4] = {};
+            HANDLE kmtHandles[ENCODER_TEXTURE_SLOT_COUNT] = {};
             if (ImportEncoderKmtTextures(device, disp, luidKey, extent.width, extent.height,
                                          NormalizeVkFormat((VkFormat)format), mem, &encoderEntry, kmtHandles)) {
                 std::lock_guard<std::mutex> texLock(g_InteropMutex);
@@ -1417,11 +1418,13 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
                 sharedTextures = &g_TextureCache.back();
 
                 // Publish encoder KMT handles to ring buffer
-                LayerIPC_SetTextures(kmtHandles, 4, extent.width, extent.height, VkFormatToDXGI(format));
+                LayerIPC_SetTextures(kmtHandles, ENCODER_TEXTURE_SLOT_COUNT, extent.width, extent.height,
+                                     VkFormatToDXGI(format));
                 // Tell encoder to use its own textures directly
                 mem->useEncoderTextures.store(true, std::memory_order_release);
                 usingEncoderTextures = true;
-                LayerLog("Vulkan Layer: DXVK d3d11 zero-copy: imported %d encoder KMT textures into Vulkan", 4);
+                LayerLog("Vulkan Layer: DXVK d3d11 zero-copy: imported %d encoder KMT textures into Vulkan",
+                         ENCODER_TEXTURE_SLOT_COUNT);
             } else {
                 LayerLog("Vulkan Layer: [Warn] Failed to import encoder KMT textures, falling back to interop");
             }
@@ -1844,7 +1847,7 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
         return false;
     if (encoderAdoptionRequested) {
         SharedTextureEntry encoderEntry;
-        HANDLE kmtHandles[4] = {};
+        HANDLE kmtHandles[ENCODER_TEXTURE_SLOT_COUNT] = {};
         if (ImportEncoderKmtTextures(device, disp, state.luidKey, state.captureWidth, state.captureHeight,
                                      state.captureFormat, mem, &encoderEntry, kmtHandles)) {
             {
@@ -1862,7 +1865,7 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
                 g_TextureCache.push_back(std::move(encoderEntry));
             }
 
-            LayerIPC_SetTextures(kmtHandles, 4, state.captureWidth, state.captureHeight,
+            LayerIPC_SetTextures(kmtHandles, ENCODER_TEXTURE_SLOT_COUNT, state.captureWidth, state.captureHeight,
                                  VkFormatToDXGI((VkFormat)state.captureFormat));
             mem->useEncoderTextures.store(true, std::memory_order_release);
             state.sharedImageInitialized.fill(false);

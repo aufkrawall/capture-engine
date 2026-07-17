@@ -2,10 +2,13 @@
 
 #include <intrin.h>  // for _mm_pause
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>  // for memcpy in seqlock helpers
 #include <type_traits>
+
+#include "build_version.h"
 
 #ifndef MAX_PATH
 #define MAX_PATH 260
@@ -44,23 +47,23 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 30: Added inject producer contention and frame-ready wake diagnostics
 // Version 32: Added generation-based screenshot completion and recording-integrity failure state
 // Version 33: Added explicit host GPU/VRAM telemetry validity and adapter provenance
-static constexpr uint32_t SHARED_MEMORY_VERSION = 33;
-
-// Minimum supported version for backward compatibility
-static constexpr uint32_t SHARED_MEMORY_MIN_VERSION = 1;
+// Version 34: Added an ABI fingerprint and isolated the mapping name from older layouts
+// Version 35: Added exact build identity to discovery so stale Vulkan layers stay dormant
+// Version 36: Expanded Vulkan encoder-owned texture publication to the full shared texture slot count
+static constexpr uint32_t SHARED_MEMORY_VERSION = 36;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_36_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_36";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
 static constexpr int FRAME_RING_SIZE = 32;
 static constexpr int SHARED_TEXTURE_SLOT_COUNT = 16;
-static constexpr int ENCODER_TEXTURE_SLOT_COUNT = 4;
+static constexpr int ENCODER_TEXTURE_SLOT_COUNT = SHARED_TEXTURE_SLOT_COUNT;
 
 inline bool HasBackbufferCountOverride(int32_t backbufferCount) {
     return backbufferCount >= 2 && backbufferCount <= 6;
@@ -83,12 +86,13 @@ inline int StreamlineGeneratedFramesToDLSSFGMultiplier(uint32_t generatedFrames)
 struct DiscoveryInfo {
     std::atomic<uint32_t> injectPid{0};  // PID of inject process
     std::atomic<uint32_t> magic{0};      // Magic number (0xCE12CAFE)
+    std::atomic<uint32_t> buildNumber{BUILD_NUMBER};
 
     // Whitelist Cache - Null-separated strings, double-null terminated
-    char processWhitelist[1024];
+    char processWhitelist[1024]{};
 
     // Logs directory path (set by captureengine host)
-    char logsPath[MAX_PATH];
+    char logsPath[MAX_PATH]{};
 
     // Atomic accessor methods
     uint32_t GetMagic() const {
@@ -103,12 +107,23 @@ struct DiscoveryInfo {
     void SetInjectPid(uint32_t val) {
         injectPid.store(val, std::memory_order_release);
     }
+    uint32_t GetBuildNumber() const {
+        return buildNumber.load(std::memory_order_acquire);
+    }
+    void SetBuildNumber(uint32_t val) {
+        buildNumber.store(val, std::memory_order_release);
+    }
 };
 static const uint32_t DISCOVERY_MAGIC = 0xCE12CAFE;
 
-// Generate unique IPC name with process ID for anti-cheat transparency
+inline bool ValidateDiscoveryInfo(const DiscoveryInfo* discovery) {
+    return discovery && discovery->GetMagic() == DISCOVERY_MAGIC && discovery->GetBuildNumber() == BUILD_NUMBER;
+}
+
+// Generate a version-isolated IPC name. An older DLL must fail to open the
+// mapping instead of interpreting a newer in-process ABI.
 inline void GenerateSharedMemName(wchar_t* outName, size_t maxLen, uint32_t pid) {
-    swprintf(outName, maxLen, L"Local\\CE_SM_%08X", pid);
+    swprintf(outName, maxLen, L"%ls%08X", SHARED_MEM_BASE_NAME, pid);
 }
 
 // Generate shutdown event name for Logger/Sensor processes keyed to controller PID
@@ -190,6 +205,7 @@ enum class LogLevel : int { Off = 0, Error = 1, Warn = 2, Info = 3, Debug = 4, T
 enum class RecordingFailureCode : uint32_t {
     None = 0,
     ProcessLoopbackTransportIntegrity = 1,
+    SharedMemoryProtocolIntegrity = 2,
 };
 
 enum class ScreenshotRequestStatus : uint32_t {
@@ -677,13 +693,13 @@ enum SharedSystemMetricsAdapterSource : uint32_t {
 struct SharedMemoryLayout {
     // ============================================================================
     // Header - MUST be first for version validation before accessing other fields
-    // NOTE: Layout must remain compatible - offsets are validated by
-    // static_assert
+    // NOTE: Layout changes require a version/name bump. Runtime consumers
+    // validate the complete compiled ABI before dereferencing the payload.
     // ============================================================================
-    std::atomic<uint32_t> magic{SHARED_MEMORY_MAGIC};      // Offset 0: Magic number for validation
+    std::atomic<uint32_t> magic{0};                        // Offset 0: Published last after initialization
     std::atomic<uint32_t> version{SHARED_MEMORY_VERSION};  // Offset 4: Layout version
     std::atomic<uint32_t> structSize{0};                   // Offset 8: sizeof(SharedMemoryLayout) for ABI check
-    uint32_t _headerPadding = 0;                           // Offset 12: Alignment padding
+    std::atomic<uint32_t> abiSignature{0};                 // Offset 12: Compiled layout fingerprint
 
     // Atomic access helpers for header fields
     uint32_t GetMagic() const {
@@ -1076,7 +1092,8 @@ public:
     // VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT.
     struct EncoderTextures {
     private:
-        std::atomic<uint64_t> textureHandles_[4]{};  // NT handles from D3D11 CreateSharedHandle
+        std::atomic<uint64_t>
+            textureHandles_[ENCODER_TEXTURE_SLOT_COUNT]{};  // NT handles from D3D11 CreateSharedHandle
         std::atomic<uint64_t>
             kmtTextureHandles_[ENCODER_TEXTURE_SLOT_COUNT]{};  // KMT handles from IDXGIResource::GetSharedHandle
         std::atomic<uint64_t> fenceHandle_{0};
@@ -1087,24 +1104,24 @@ public:
     public:
         // Atomic accessors for texture handles
         uint64_t GetTextureHandle(int index) const {
-            if (index < 0 || index >= 4)
+            if (index < 0 || index >= ENCODER_TEXTURE_SLOT_COUNT)
                 return 0;
             return textureHandles_[index].load(std::memory_order_acquire);
         }
         void SetTextureHandle(int index, uint64_t val) {
-            if (index < 0 || index >= 4)
+            if (index < 0 || index >= ENCODER_TEXTURE_SLOT_COUNT)
                 return;
             textureHandles_[index].store(val, std::memory_order_release);
         }
 
         // KMT handle accessors (global WDDM handles for cross-process Vulkan import)
         uint64_t GetKmtTextureHandle(int index) const {
-            if (index < 0 || index >= 4)
+            if (index < 0 || index >= ENCODER_TEXTURE_SLOT_COUNT)
                 return 0;
             return kmtTextureHandles_[index].load(std::memory_order_acquire);
         }
         void SetKmtTextureHandle(int index, uint64_t val) {
-            if (index < 0 || index >= 4)
+            if (index < 0 || index >= ENCODER_TEXTURE_SLOT_COUNT)
                 return;
             kmtTextureHandles_[index].store(val, std::memory_order_release);
         }
@@ -1184,6 +1201,55 @@ public:
     std::atomic<uint32_t> configVersion{0};  // Incremented when config changes
 };
 
+constexpr uint32_t MixSharedMemoryAbiValue(uint32_t hash, uint64_t value) {
+    for (unsigned byte = 0; byte < sizeof(value); ++byte) {
+        hash ^= static_cast<uint8_t>(value >> (byte * 8));
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Winvalid-offsetof"
+#endif
+constexpr uint32_t ComputeSharedMemoryAbiSignature() {
+    uint32_t hash = 2166136261u;
+    hash = MixSharedMemoryAbiValue(hash, SHARED_MEMORY_VERSION);
+    hash = MixSharedMemoryAbiValue(hash, sizeof(SharedMemoryLayout));
+    hash = MixSharedMemoryAbiValue(hash, alignof(SharedMemoryLayout));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, overlayConfig));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, graphicsConfig));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, logFilePath));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, runtimeState));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, systemMetrics));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, encoderTextures));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, frameRing));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, logs));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, configVersion));
+    hash = MixSharedMemoryAbiValue(hash, sizeof(SharedMemoryLayout::SharedSystemMetrics));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, publicationSequence));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, vramTotal));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::SharedSystemMetrics, maxCoreLoad));
+    hash = MixSharedMemoryAbiValue(hash, sizeof(FrameRingBuffer));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(FrameRingBuffer, writeIndex));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(FrameRingBuffer, readIndex));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(FrameRingBuffer, ingestIndex));
+    hash = MixSharedMemoryAbiValue(hash, sizeof(SharedMemoryLayout::LogBuffer));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::LogBuffer, writeIndex));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::LogBuffer, readIndex));
+    return hash;
+}
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+
+static constexpr uint32_t SHARED_MEMORY_ABI_SIGNATURE = ComputeSharedMemoryAbiSignature();
+
+inline bool IsFrameRingWindowValid(uint32_t writeIndex, uint32_t readIndex) {
+    return static_cast<uint32_t>(writeIndex - readIndex) <= static_cast<uint32_t>(FRAME_RING_SIZE);
+}
+
 // Generate unique Shmem mapping name
 inline void GenerateShmemName(wchar_t* outName, size_t maxLen, uint32_t pid) {
     swprintf(outName, maxLen, L"Local\\CE_SHM_%08X", pid);
@@ -1228,6 +1294,8 @@ static_assert(sizeof(FrameSlot) == 40, "FrameSlot should be 40 bytes - update if
 #endif
 static_assert(offsetof(SharedMemoryLayout, magic) == 0, "magic must be at offset 0 for version validation");
 static_assert(offsetof(SharedMemoryLayout, version) == 4, "version must be at offset 4");
+static_assert(offsetof(SharedMemoryLayout, structSize) == 8, "structSize must be at offset 8");
+static_assert(offsetof(SharedMemoryLayout, abiSignature) == 12, "abiSignature must be at offset 12");
 #if defined(__clang__)
 #pragma clang diagnostic pop
 #endif
@@ -1240,12 +1308,12 @@ inline bool ValidateSharedMemory(const SharedMemoryLayout* shm) {
     // Use atomic loads through accessor methods
     if (shm->GetMagic() != SHARED_MEMORY_MAGIC)
         return false;
-    if (shm->GetVersion() < SHARED_MEMORY_MIN_VERSION)
+    if (shm->GetVersion() != SHARED_MEMORY_VERSION)
         return false;
-    if (shm->GetVersion() > SHARED_MEMORY_VERSION)
+    if (shm->structSize.load(std::memory_order_acquire) != sizeof(SharedMemoryLayout)) {
         return false;
-    if (shm->GetVersion() == SHARED_MEMORY_VERSION &&
-        shm->structSize.load(std::memory_order_acquire) != sizeof(SharedMemoryLayout)) {
+    }
+    if (shm->abiSignature.load(std::memory_order_acquire) != SHARED_MEMORY_ABI_SIGNATURE) {
         return false;
     }
     return true;

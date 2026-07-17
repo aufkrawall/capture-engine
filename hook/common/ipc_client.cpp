@@ -27,9 +27,10 @@ bool IPCClient::Connect() {
         if (pDiscovery) {
             // CRITICAL FIX: Use atomic accessors for thread-safe reads
             uint32_t magic = pDiscovery->GetMagic();
+            uint32_t buildNumber = pDiscovery->GetBuildNumber();
             uint32_t pid = pDiscovery->GetInjectPid();
 
-            if (magic == DISCOVERY_MAGIC && pid != 0) {
+            if (ValidateDiscoveryInfo(pDiscovery) && pid != 0) {
                 // CRITICAL FIX: Use 'pid' variable (atomically loaded) instead of
                 // pDiscovery->injectPid (raw field) to avoid TOCTOU race condition.
                 // The raw field could change between validation and use.
@@ -45,11 +46,22 @@ bool IPCClient::Connect() {
                     // local sizeof differs (e.g., 32-bit layer reading 64-bit shared memory).
                     pSharedMem = (SharedMemoryLayout*)MapViewOfFile(hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, 0);
 
-                    if (pSharedMem && pSharedMem->GetHostPID() != 0) {
+                    if (pSharedMem && ValidateSharedMemory(pSharedMem) && pSharedMem->GetHostPID() != 0) {
                         UnmapViewOfFile(pDiscovery);
                         CloseHandle(hDiscovery);
-                        EarlyLog("IPC: Connected! HostPID=%d", pSharedMem->GetHostPID());
+                        EarlyLog("IPC: Connected! HostPID=%d ABI=0x%08X", pSharedMem->GetHostPID(),
+                                 SHARED_MEMORY_ABI_SIGNATURE);
                         return true;
+                    }
+
+                    if (pSharedMem) {
+                        EarlyLog(
+                            "IPC: Rejected shared memory header magic=0x%08X version=%u size=%u abi=0x%08X "
+                            "(expected version=%u size=%zu abi=0x%08X)",
+                            pSharedMem->GetMagic(), pSharedMem->GetVersion(),
+                            pSharedMem->structSize.load(std::memory_order_acquire),
+                            pSharedMem->abiSignature.load(std::memory_order_acquire), SHARED_MEMORY_VERSION,
+                            sizeof(SharedMemoryLayout), SHARED_MEMORY_ABI_SIGNATURE);
                     }
 
                     // Failed to map - cleanup
@@ -66,7 +78,8 @@ bool IPCClient::Connect() {
 
                 UnmapViewOfFile(pDiscovery);
             } else {
-                EarlyLog("IPC: Discovery found but invalid magic/pid. Magic=%X, PID=%d", magic, pid);
+                EarlyLog("IPC: Discovery found but invalid identity. Magic=%X, Build=%u, ExpectedBuild=%u, PID=%d",
+                         magic, buildNumber, static_cast<unsigned>(BUILD_NUMBER), pid);
                 UnmapViewOfFile(pDiscovery);
             }
         } else {

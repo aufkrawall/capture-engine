@@ -117,6 +117,16 @@ TEST(HostMetricsPolicyTest, EvidenceFromOldPidCannotResolveReplacementSource) {
     EXPECT_EQ(resolution.source, AdapterResolutionSource::Unavailable);
 }
 
+TEST(HostMetricsPolicyTest, ProcessorUsageRejectsCounterRegressionAndIdleUnderflow) {
+    EXPECT_EQ(scan_host::metrics_policy::CalculateProcessorUsagePercent(100, 200, 300, 90, 240, 360), 0u);
+    EXPECT_EQ(scan_host::metrics_policy::CalculateProcessorUsagePercent(100, 200, 300, 180, 240, 320), 0u);
+}
+
+TEST(HostMetricsPolicyTest, ProcessorUsageUsesKernelPlusUserIncludingIdle) {
+    // total delta=100, idle delta=25, therefore busy=75%.
+    EXPECT_EQ(scan_host::metrics_policy::CalculateProcessorUsagePercent(100, 200, 300, 125, 260, 340), 75u);
+}
+
 TEST(SharedSystemMetricsTest, ZeroGpuAndVramSamplesHaveIndependentValidity) {
     SharedMemoryLayout sharedMemory;
     sharedMemory.systemMetrics.gpuUsage.store(0.0f, std::memory_order_relaxed);

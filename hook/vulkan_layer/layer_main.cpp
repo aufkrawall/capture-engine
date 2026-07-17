@@ -35,7 +35,7 @@ static std::string GetSessionLogsDirectory() {
     HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
     if (hDisc) {
         DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-        if (pDisc && pDisc->GetMagic() == DISCOVERY_MAGIC && pDisc->logsPath[0] != '\0') {
+        if (ValidateDiscoveryInfo(pDisc) && pDisc->logsPath[0] != '\0') {
             std::string dir(pDisc->logsPath);
             UnmapViewOfFile(pDisc);
             CloseHandle(hDisc);
@@ -64,7 +64,7 @@ static bool IsLayerDebugLoggingEnabled() {
 
     bool debugLoggingEnabled = false;
     DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-    if (pDisc && pDisc->GetMagic() == DISCOVERY_MAGIC) {
+    if (ValidateDiscoveryInfo(pDisc)) {
         const uint32_t hostPid = pDisc->GetInjectPid();
         if (hostPid != 0) {
             wchar_t sharedMemName[64] = {};
@@ -74,8 +74,7 @@ static bool IsLayerDebugLoggingEnabled() {
             if (hSharedMem) {
                 SharedMemoryLayout* pSharedMem =
                     (SharedMemoryLayout*)MapViewOfFile(hSharedMem, FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
-                if (pSharedMem && pSharedMem->GetMagic() == SHARED_MEMORY_MAGIC &&
-                    pSharedMem->GetVersion() >= SHARED_MEMORY_MIN_VERSION) {
+                if (pSharedMem && ValidateSharedMemory(pSharedMem)) {
                     debugLoggingEnabled = pSharedMem->GetDebugLogging();
                 }
                 if (pSharedMem) {
@@ -331,7 +330,11 @@ static bool PerformEarlyWhitelistCheck() {
     }
 
     g_LayerState.whitelisted = false;
-    if (pDisc->GetMagic() == DISCOVERY_MAGIC) {
+    if (pDisc->GetMagic() == DISCOVERY_MAGIC && pDisc->GetBuildNumber() != BUILD_NUMBER) {
+        EarlyLog("Stale layer build %u does not match active CaptureEngine build %u - layer dormant",
+                 static_cast<unsigned>(BUILD_NUMBER), static_cast<unsigned>(pDisc->GetBuildNumber()));
+    }
+    if (ValidateDiscoveryInfo(pDisc)) {
         const char* pw = pDisc->processWhitelist;
         const char* end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
 

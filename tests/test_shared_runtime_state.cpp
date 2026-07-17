@@ -120,9 +120,27 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     GenerateShutdownEventName(shutdownEventName, std::size(shutdownEventName), 0x89ABCDEFu);
     GenerateShmemName(shmemName, std::size(shmemName), 0x00ABCDEFu);
 
-    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_36_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_36"), 0);
     EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
     EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
+}
+
+TEST(SharedDefsTest, DiscoveryRequiresExactPublishedBuildIdentity) {
+    DiscoveryInfo discovery;
+    EXPECT_FALSE(ValidateDiscoveryInfo(&discovery));
+
+    discovery.SetInjectPid(1234);
+    discovery.SetMagic(DISCOVERY_MAGIC);
+    EXPECT_TRUE(ValidateDiscoveryInfo(&discovery));
+
+    discovery.SetBuildNumber(BUILD_NUMBER ^ 1u);
+    EXPECT_FALSE(ValidateDiscoveryInfo(&discovery));
+    discovery.SetBuildNumber(BUILD_NUMBER);
+    EXPECT_TRUE(ValidateDiscoveryInfo(&discovery));
+
+    discovery.SetMagic(0);
+    EXPECT_FALSE(ValidateDiscoveryInfo(&discovery));
 }
 
 TEST(SharedDefsTest, CapturePipelinePhaseStringCoversKnownAndUnknownValues) {
@@ -161,9 +179,13 @@ TEST(SharedDefsTest, OverlayConfigSeqlockPublishesStableSnapshot) {
     EXPECT_FLOAT_EQ(snapshot.fontSize, 22.5f);
 }
 
-TEST(SharedDefsTest, ValidateSharedMemoryRejectsBadHeaderAndAcceptsDefaultLayout) {
+TEST(SharedDefsTest, ValidateSharedMemoryRequiresExplicitAbiPublication) {
     SharedMemoryLayout sharedMemory;
+    EXPECT_FALSE(ValidateSharedMemory(&sharedMemory));
+
     sharedMemory.structSize.store(sizeof(SharedMemoryLayout), std::memory_order_relaxed);
+    sharedMemory.abiSignature.store(SHARED_MEMORY_ABI_SIGNATURE, std::memory_order_relaxed);
+    sharedMemory.SetMagic(SHARED_MEMORY_MAGIC);
 
     EXPECT_TRUE(ValidateSharedMemory(&sharedMemory));
 
@@ -177,6 +199,18 @@ TEST(SharedDefsTest, ValidateSharedMemoryRejectsBadHeaderAndAcceptsDefaultLayout
 
     sharedMemory.structSize.store(sizeof(SharedMemoryLayout) - 1, std::memory_order_relaxed);
     EXPECT_FALSE(ValidateSharedMemory(&sharedMemory));
+    sharedMemory.structSize.store(sizeof(SharedMemoryLayout), std::memory_order_relaxed);
+
+    sharedMemory.abiSignature.store(SHARED_MEMORY_ABI_SIGNATURE ^ 1u, std::memory_order_relaxed);
+    EXPECT_FALSE(ValidateSharedMemory(&sharedMemory));
+}
+
+TEST(SharedDefsTest, FrameRingWindowValidationHandlesWrapAndRejectsCorruption) {
+    EXPECT_TRUE(IsFrameRingWindowValid(10, 10));
+    EXPECT_TRUE(IsFrameRingWindowValid(20, 10));
+    EXPECT_TRUE(IsFrameRingWindowValid(5, UINT32_MAX - 4));
+    EXPECT_FALSE(IsFrameRingWindowValid(1000, 10));
+    EXPECT_FALSE(IsFrameRingWindowValid(0x6C75765Bu, 0x6579616Cu));
 }
 
 TEST(InjectOverlayPolicyTest, WgcKeepsFullInjectionWhitelistIndependentOfVideoMethod) {

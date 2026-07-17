@@ -181,7 +181,7 @@ bool TryHookScreenshot(const std::filesystem::path& outputDirectory, RawScreensh
     if (!discoveryInfo)
         return false;
     MappedViewGuard discoveryView(discoveryInfo);
-    if (discoveryInfo->GetMagic() != DISCOVERY_MAGIC || discoveryInfo->GetInjectPid() == 0)
+    if (!ValidateDiscoveryInfo(discoveryInfo) || discoveryInfo->GetInjectPid() == 0)
         return false;
 
     wchar_t sharedMemoryName[64]{};

@@ -3,6 +3,7 @@
 #include <pdh.h>
 #include <pdhmsg.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <map>
 #include <string>
@@ -63,6 +64,37 @@ struct HostMetricsPublication {
     LUID adapterLuid = {0, 0};
 };
 
+bool IsSaneHostMetricsPublication(const HostMetricsPublication& publication) {
+    constexpr uint32_t kKnownValidity = SYSTEM_METRIC_GPU_USAGE_VALID | SYSTEM_METRIC_VRAM_USAGE_VALID |
+                                        SYSTEM_METRIC_VRAM_TOTAL_VALID;
+    if (!std::isfinite(publication.cpuUsage) || publication.cpuUsage < 0.0f || publication.cpuUsage > 100.0f ||
+        !std::isfinite(publication.ramUsageGB) || publication.ramUsageGB < 0.0f ||
+        publication.ramUsageGB > 1048576.0f || publication.maxCoreLoad > 100u ||
+        (publication.validityMask & ~kKnownValidity) != 0) {
+        return false;
+    }
+    if ((publication.validityMask & SYSTEM_METRIC_GPU_USAGE_VALID) != 0 &&
+        (!std::isfinite(publication.gpuUsage) || publication.gpuUsage < 0.0f || publication.gpuUsage > 100.0f)) {
+        return false;
+    }
+    if ((publication.validityMask & SYSTEM_METRIC_VRAM_USAGE_VALID) != 0 &&
+        (!std::isfinite(publication.vramUsageMB) || publication.vramUsageMB < 0.0f ||
+         publication.vramUsageMB > 1073741824.0f)) {
+        return false;
+    }
+    if ((publication.validityMask & SYSTEM_METRIC_VRAM_TOTAL_VALID) != 0 &&
+        (publication.vramTotal == 0 || publication.vramTotal > (1ull << 60))) {
+        return false;
+    }
+    if ((publication.validityMask & (SYSTEM_METRIC_VRAM_USAGE_VALID | SYSTEM_METRIC_VRAM_TOTAL_VALID)) ==
+        (SYSTEM_METRIC_VRAM_USAGE_VALID | SYSTEM_METRIC_VRAM_TOTAL_VALID)) {
+        const double usedBytes = static_cast<double>(publication.vramUsageMB) * 1024.0 * 1024.0;
+        if (usedBytes > static_cast<double>(publication.vramTotal) * 1.25)
+            return false;
+    }
+    return true;
+}
+
 bool ReadHostMetricsPublication(SharedMemoryLayout* sharedMem, HostMetricsPublication& publication) {
     if (!sharedMem)
         return false;
@@ -84,7 +116,22 @@ bool ReadHostMetricsPublication(SharedMemoryLayout* sharedMem, HostMetricsPublic
         const uint32_t sequenceAfter = metrics.publicationSequence.load(std::memory_order_acquire);
         if (sequenceBefore == sequenceAfter) {
             const uint32_t activeSourcePid = sharedMem->GetSourcePid();
-            return publication.sourcePid != 0 && publication.sourcePid == activeSourcePid;
+            if (publication.sourcePid == 0 || publication.sourcePid != activeSourcePid)
+                return false;
+            if (IsSaneHostMetricsPublication(publication))
+                return true;
+
+            static std::atomic<uint32_t> rejectedPublications{0};
+            const uint32_t rejected = rejectedPublications.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (rejected <= 4 || rejected % 100u == 0u) {
+                EarlyLog(
+                    "SystemMetricsCollector: Rejected invalid host publication "
+                    "cpu=%.3f maxCore=%u ramGB=%.3f gpu=%.3f vramMB=%.3f vramTotal=%llu validity=0x%X count=%u",
+                    publication.cpuUsage, publication.maxCoreLoad, publication.ramUsageGB, publication.gpuUsage,
+                    publication.vramUsageMB, static_cast<unsigned long long>(publication.vramTotal),
+                    publication.validityMask, rejected);
+            }
+            return false;
         }
     }
     return false;

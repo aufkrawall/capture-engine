@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-17 (contiguous DXGI/WGC CFR packet PTS under overload, inject audio targets independent of encoder/lookahead latency, packet-only completed-capture video validation, convergent inject CFR overload recovery and audio-worker scheduling evidence, registry-side-effect-free builds and exact-plan Vulkan registration lifetime, CFG-safe and recursion-free dynamic/fatal hook bootstrap, cross-API event/creation-time forced AF, scoped x64/test-app/FFmpeg hardening and restricted DLL search, zero-lock clean-draw D3D11 forced AF and hardened DX12/Vulkan sampler policy, module-enumeration/ring-buffer/input-byte hardening, strict-log-gated exact PostSL proxy-buffer takeover and pre-SetOptions prewarm ownership for FSR->DLSS and repeated pure-DLSS activation, creation-time FFX proxy-Present binding for the first protected OFF->FSR frame, strict overlay-visibility interruption logging, pointer-ABA-safe first-Present authoritative DLSS-off native return, authoritative PostSL/normal presentation ownership and warm-resume wrapper catch-up, wrapped-Present exact-proxy coverage during DLSS-G suspension, switch-app transactional FSR->DLSS presentation, GTA stable Reflex-driven DLSS-G menu suspension and exact-proxy continuity, generation-bound screenshot publication, collision-safe capture outputs, restricted process IPC, variable-length process-loopback transport, source-built libaom closure, strict config boundaries, and existing graphics/audio state; see cross-api-forced-af.md, dx11-forced-af.md, dx12-forced-af.md, graphics-overrides-and-frame-pacing.md, frame-generation/guardrails.md, overlay-fg-status.md, screenshots.md, recording-output-paths.md, process-ipc.md, multi-audio-capture.md, cfr-capture-sync.md, build.py.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-17 (exact shared-memory ABI 36/build isolation, session-scoped shared and integration logs, telemetry/frame-ring corruption rejection, non-elevating Vulkan registration repair, full-depth Vulkan capture leases, project-header content signatures, and the existing current graphics/audio/build/security state; see process-ipc.md, overlay-rendering.md, build.py.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -31,7 +31,7 @@ Primary sources:
 
 ## Content Catalog
 - `overlay-rendering.md`
-  - Shared overlay layout/graph/font invariants, legacy DX8/DX9/DX10/OpenGL cache and state-isolation policy, truthful memory telemetry, DirectDraw performance boundary, and runtime-validation stale-risk. Last verified 2026-07-16.
+  - Shared overlay layout/graph/font invariants, exact-ABI and sanity-checked telemetry, legacy DX8/DX9/DX10/OpenGL cache/state isolation, DirectDraw performance boundary, and runtime-validation stale-risk. Last verified 2026-07-17.
 - `handoff-dx12-32bit-crash.md`
   - Fixed-state pickup note for the 32-bit DX12 inject-overlay crash/freeze: proven font-resource trigger, unconfirmed NVIDIA/WoW64 attribution, solid glyph-span text fix, runtime validation boundary, invariants, and source anchors. Last verified 2026-07-16.
 - `current.md`
@@ -39,11 +39,11 @@ Primary sources:
 - `codestyle.md`
   - Style/tooling rules, the no-whole-file-in-place-formatter constraint for existing sources, Python tooling config, and common tree conventions. Last verified 2026-07-12.
 - `build.py.md`
-  - Supported `build.py` flags, source-built dependency closure, PE verification, scoped CFG/stack/fortify and DLL-search policy, sanitizer/FP/CPU policy, FFmpeg configuration/patch fingerprinting, environment variables, operational notes, and MinGW cross-compile pitfalls. Last verified 2026-07-16.
+  - Supported `build.py` flags, project-header content signatures, source-built dependency closure, PE verification, scoped hardening/DLL-search policy, sanitizer/FP/CPU policy, FFmpeg fingerprints, operational notes, and MinGW pitfalls. Last verified 2026-07-17.
 - `screenshots.md`
   - Shared ABI 32 screenshot requests, raw payload v2, managed hook worker, strict payload validation, PNG/10-bit 4:4:4 AVIF encoding, color conversion, and atomic publication. Last verified 2026-07-15.
 - `process-ipc.md`
-  - Restricted handle-list child launcher, private per-spawn controller channels, PID/nonce startup identity, exact versioned messages, and malformed-message rejection. Last verified 2026-07-15.
+  - Restricted private child channels plus exact shared-memory ABI publication/isolation, session log routing, shared-ring integrity, and malformed/incompatible-message rejection. Last verified 2026-07-17.
 - `repo-map.md`
   - Top-level repo layout and subsystem ownership.
 - `d3d9-capture.md`

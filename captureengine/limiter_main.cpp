@@ -272,18 +272,24 @@ int LimiterProcessMain(const AppConfig& config) {
         DiscoveryInfo* pDiscovery =
             (DiscoveryInfo*)MapViewOfFile(hDiscovery, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
 
-        if (pDiscovery && pDiscovery->magic == DISCOVERY_MAGIC && pDiscovery->injectPid.load() != 0) {
+        if (ValidateDiscoveryInfo(pDiscovery) && pDiscovery->GetInjectPid() != 0) {
             wchar_t sharedMemName[64];
-            GenerateSharedMemName(sharedMemName, 64, pDiscovery->injectPid.load());
+            GenerateSharedMemName(sharedMemName, 64, pDiscovery->GetInjectPid());
 
             hMapFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, sharedMemName);
             if (hMapFile) {
                 shm =
                     (SharedMemoryLayout*)MapViewOfFile(hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedMemoryLayout));
 
-                if (shm && shm->GetHostPID() != 0) {
-                    LogInfo("[Limiter] Connected via discovery (inject PID: %u)", pDiscovery->injectPid.load());
+                if (shm && ValidateSharedMemory(shm) && shm->GetHostPID() != 0) {
+                    LogInfo("[Limiter] Connected via discovery (inject PID: %u, ABI: 0x%08X)",
+                            pDiscovery->GetInjectPid(), SHARED_MEMORY_ABI_SIGNATURE);
                 } else {
+                    if (shm) {
+                        LogError("[Limiter] Rejected incompatible shared memory ABI (version=%u size=%u abi=0x%08X)",
+                                 shm->GetVersion(), shm->structSize.load(std::memory_order_acquire),
+                                 shm->abiSignature.load(std::memory_order_acquire));
+                    }
                     if (shm) {
                         UnmapViewOfFile(shm);
                         shm = nullptr;
@@ -292,8 +298,9 @@ int LimiterProcessMain(const AppConfig& config) {
                     hMapFile = NULL;
                 }
             }
-            UnmapViewOfFile(pDiscovery);
         }
+        if (pDiscovery)
+            UnmapViewOfFile(pDiscovery);
         CloseHandle(hDiscovery);
     }
 
@@ -314,23 +321,25 @@ int LimiterProcessMain(const AppConfig& config) {
         if (hDisc) {
             DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
 
-            if (pDisc && pDisc->magic == DISCOVERY_MAGIC && pDisc->injectPid != 0) {
+            if (ValidateDiscoveryInfo(pDisc) && pDisc->GetInjectPid() != 0) {
                 wchar_t sharedMemName[64];
-                GenerateSharedMemName(sharedMemName, 64, pDisc->injectPid);
+                GenerateSharedMemName(sharedMemName, 64, pDisc->GetInjectPid());
 
                 hMapFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, sharedMemName);
                 if (hMapFile) {
                     shm = (SharedMemoryLayout*)MapViewOfFile(hMapFile, FILE_MAP_ALL_ACCESS, 0, 0,
                                                              sizeof(SharedMemoryLayout));
-                    if (shm && shm->GetHostPID() == 0) {
+                    if (shm && (!ValidateSharedMemory(shm) || shm->GetHostPID() == 0)) {
+                        LogError("[Limiter] Retry rejected invalid or incompatible shared memory");
                         UnmapViewOfFile(shm);
                         shm = nullptr;
                         CloseHandle(hMapFile);
                         hMapFile = NULL;
                     }
                 }
-                UnmapViewOfFile(pDisc);
             }
+            if (pDisc)
+                UnmapViewOfFile(pDisc);
             CloseHandle(hDisc);
         }
         if (!shm) {

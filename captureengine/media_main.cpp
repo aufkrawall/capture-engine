@@ -1221,6 +1221,12 @@ static void ResetInjectFrameRingToLatest(const char* reason) {
     FrameRingBuffer& ring = g_pSharedMem->frameRing;
     uint32_t readIndex = ring.readIndex.load(std::memory_order_acquire);
     uint32_t writeIndex = ring.writeIndex.load(std::memory_order_acquire);
+    if (!IsFrameRingWindowValid(writeIndex, readIndex)) {
+        LogError("[Media] Refusing corrupt inject frame ring reset before %s (write=%u read=%u distance=%u)",
+                 reason ? reason : "unknown transition", writeIndex, readIndex,
+                 static_cast<uint32_t>(writeIndex - readIndex));
+        return;
+    }
     if (readIndex == writeIndex) {
         return;
     }
@@ -11335,6 +11341,24 @@ void StartRecording(const AppConfig& config) {
         return;
     }
 
+    if (!useScreenGrab && g_pSharedMem) {
+        const uint32_t writeIndex = g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
+        const uint32_t readIndex = g_pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
+        if (!IsFrameRingWindowValid(writeIndex, readIndex)) {
+            LogError(
+                "[Media] Inject recording rejected corrupt shared frame ring "
+                "(write=%u read=%u distance=%u version=%u ABI=0x%08X)",
+                writeIndex, readIndex, static_cast<uint32_t>(writeIndex - readIndex),
+                g_pSharedMem->GetVersion(), g_pSharedMem->abiSignature.load(std::memory_order_acquire));
+            StoreRelease(g_pSharedMem->runtimeState.recordingFailureCode,
+                         static_cast<uint32_t>(RecordingFailureCode::SharedMemoryProtocolIntegrity));
+            SetCaptureRequestedState(false);
+            SetRecordingVisibleState(false);
+            timeEndPeriod(1);
+            return;
+        }
+    }
+
     // Clear any stale shared memory commands/state from previous (possibly crashed)
     // recording sessions. If a previous media process crashed, cmdStopRecording
     // may still be true, causing the new recording to stop immediately.
@@ -11696,20 +11720,31 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             DiscoveryInfo* pDiscovery =
                 (DiscoveryInfo*)MapViewOfFile(hDiscovery, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
 
-            if (pDiscovery && pDiscovery->magic == DISCOVERY_MAGIC && pDiscovery->injectPid.load() != 0) {
+            if (ValidateDiscoveryInfo(pDiscovery) && pDiscovery->GetInjectPid() != 0) {
                 wchar_t sharedMemName[64];
-                GenerateSharedMemName(sharedMemName, 64, pDiscovery->injectPid.load());
+                GenerateSharedMemName(sharedMemName, 64, pDiscovery->GetInjectPid());
 
                 g_hMapFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, sharedMemName);
                 if (g_hMapFile) {
                     g_pSharedMem = (SharedMemoryLayout*)MapViewOfFile(g_hMapFile, FILE_MAP_ALL_ACCESS, 0, 0,
                                                                       sizeof(SharedMemoryLayout));
 
-                    if (g_pSharedMem && g_pSharedMem->GetHostPID() != 0) {
-                        LogInfo("[Media] Connected via discovery (inject PID: %u)", pDiscovery->injectPid.load());
+                    if (g_pSharedMem && ValidateSharedMemory(g_pSharedMem) && g_pSharedMem->GetHostPID() != 0) {
+                        LogInfo("[Media] Connected via discovery (inject PID: %u, ABI: 0x%08X)",
+                                pDiscovery->injectPid.load(), SHARED_MEMORY_ABI_SIGNATURE);
                         UnmapViewOfFile(pDiscovery);
                         CloseHandle(hDiscovery);
                         break;
+                    }
+
+                    if (g_pSharedMem) {
+                        LogError(
+                            "[Media] Rejected shared memory header: magic=0x%08X version=%u size=%u abi=0x%08X "
+                            "expected=(0x%08X,%u,%zu,0x%08X)",
+                            g_pSharedMem->GetMagic(), g_pSharedMem->GetVersion(),
+                            g_pSharedMem->structSize.load(std::memory_order_acquire),
+                            g_pSharedMem->abiSignature.load(std::memory_order_acquire), SHARED_MEMORY_MAGIC,
+                            SHARED_MEMORY_VERSION, sizeof(SharedMemoryLayout), SHARED_MEMORY_ABI_SIGNATURE);
                     }
 
                     if (g_pSharedMem) {

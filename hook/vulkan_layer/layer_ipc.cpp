@@ -139,7 +139,7 @@ bool LayerIPC_Init() {
         if (hDisc) {
             DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
             if (pDisc) {
-                if (pDisc->magic == DISCOVERY_MAGIC) {
+                if (ValidateDiscoveryInfo(pDisc)) {
                     const char* pw = pDisc->processWhitelist;
                     const char* end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
 
@@ -181,7 +181,7 @@ bool LayerIPC_Init() {
             HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
             if (hDisc) {
                 DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-                if (pDisc && pDisc->magic == DISCOVERY_MAGIC && pDisc->logsPath[0] != '\0') {
+                if (ValidateDiscoveryInfo(pDisc) && pDisc->logsPath[0] != '\0') {
                     CreateDirectoryA(pDisc->logsPath, nullptr);
                     snprintf(logPath, sizeof(logPath), "%s\\perf_metrics_%d.csv", pDisc->logsPath,
                              GetCurrentProcessId());
@@ -233,6 +233,22 @@ bool LayerIPC_IsConnected() {
 
 // Global texture count
 static uint32_t g_PublishedTextureCount = 2;
+
+static void LogFrameRingFull(uint32_t writeIndex, uint32_t readIndex) {
+    static std::atomic<uint32_t> fullCount{0};
+    const uint32_t count = fullCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 4 || count % 1000u == 0u) {
+        LayerLog("Layer IPC: Frame ring full (w=%u r=%u distance=%u count=%u)", writeIndex, readIndex,
+                 static_cast<uint32_t>(writeIndex - readIndex), count);
+    }
+}
+
+static void LogPublishedFrame(uint32_t writeIndex, uint32_t readIndex, int32_t textureIndex, uint64_t fenceValue) {
+    if (writeIndex <= 3 || writeIndex % 10000u == 0u) {
+        LayerLog("Layer IPC: Published capture frame (w=%u r=%u texture=%d fence=%llu)", writeIndex, readIndex,
+                 textureIndex, static_cast<unsigned long long>(fenceValue));
+    }
+}
 
 // Update shared texture handles (called when swapchain created)
 void LayerIPC_SetTextures(HANDLE* handles, uint32_t count, uint32_t width, uint32_t height, uint32_t format) {
@@ -336,6 +352,7 @@ void LayerIPC_IncrementWriteIndex(uint64_t timestamp) {
     if ((uint32_t)(wIdx - rIdx) >= (uint32_t)FRAME_RING_SIZE) {
         ring.droppedFrames.fetch_add(1, std::memory_order_relaxed);
         mem->runtimeState.injectProducerMetadataFullDrops.fetch_add(1, std::memory_order_relaxed);
+        LogFrameRingFull(wIdx, rIdx);
         return;
     }
     const bool ringWasEmpty = wIdx == mem->frameRing.ingestIndex.load(std::memory_order_acquire);
@@ -351,6 +368,7 @@ void LayerIPC_IncrementWriteIndex(uint64_t timestamp) {
 
     // Increment write index to signal new frame
     ring.writeIndex.store(wIdx + 1, std::memory_order_release);
+    LogPublishedFrame(wIdx + 1, rIdx, static_cast<int32_t>(ring.slots[slot].textureIndex), 0);
     if (ringWasEmpty) {
         g_IPCClient.SignalInjectFrameReady();
     }
@@ -396,6 +414,7 @@ void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue, int64_
     if ((uint32_t)(wIdx - rIdx) >= (uint32_t)FRAME_RING_SIZE) {
         ring.droppedFrames.fetch_add(1, std::memory_order_relaxed);
         mem->runtimeState.injectProducerMetadataFullDrops.fetch_add(1, std::memory_order_relaxed);
+        LogFrameRingFull(wIdx, rIdx);
         return;
     }
     const bool ringWasEmpty = wIdx == mem->frameRing.ingestIndex.load(std::memory_order_acquire);
@@ -416,6 +435,7 @@ void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue, int64_
     ring.slots[slot].valid.store(1, std::memory_order_release);
 
     ring.writeIndex.store(wIdx + 1, std::memory_order_release);
+    LogPublishedFrame(wIdx + 1, rIdx, textureIndex, fenceValue);
     if (ringWasEmpty) {
         g_IPCClient.SignalInjectFrameReady();
     }
@@ -455,18 +475,27 @@ void LayerIPC_Log(const char* fmt, ...) {
     if (len > 0) {
         auto& logs = mem->logs;
         uint32_t wIdx = logs.writeIndex.load(std::memory_order_relaxed);
-        uint32_t rIdx = logs.readIndex.load(std::memory_order_acquire);
+        bool reservedSlot = false;
+        for (;;) {
+            const uint32_t rIdx = logs.readIndex.load(std::memory_order_acquire);
+            if ((uint32_t)(wIdx - rIdx) >= SharedMemoryLayout::LogBuffer::SLOT_COUNT) {
+                logs.overflowCount.fetch_add(1, std::memory_order_relaxed);
+                break;
+            }
+            if (logs.writeIndex.compare_exchange_weak(wIdx, wIdx + 1, std::memory_order_acq_rel,
+                                                       std::memory_order_relaxed)) {
+                reservedSlot = true;
+                break;
+            }
+        }
 
-        if ((uint32_t)(wIdx - rIdx) < SharedMemoryLayout::LogBuffer::SLOT_COUNT) {
+        if (reservedSlot) {
             uint32_t slotIdx = wIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT;
             char* slot = logs.buffer[slotIdx];
             // Uses fixed baseFilename "vulkan-layer.log" for identification on host
             // side
             snprintf(slot, SharedMemoryLayout::LogBuffer::SLOT_SIZE, "[vulkan-layer.log] %s", s_lineBuffer);
             logs.committed[slotIdx].store(1, std::memory_order_release);
-            logs.writeIndex.store(wIdx + 1, std::memory_order_release);
-        } else {
-            logs.overflowCount.fetch_add(1, std::memory_order_relaxed);
         }
     }
 }

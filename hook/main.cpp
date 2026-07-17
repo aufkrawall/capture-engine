@@ -1487,7 +1487,7 @@ bool ShouldInjectChild(const char *exePath) {
       hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
   bool whitelisted = false;
   if (pDisc) {
-    if (pDisc->GetMagic() == DISCOVERY_MAGIC) {
+    if (ValidateDiscoveryInfo(pDisc)) {
       const char *p = pDisc->processWhitelist;
       const char *end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
       while (p < end && *p != '\0') {
@@ -2808,7 +2808,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       if (hDisc) {
         DiscoveryInfo *pDisc = (DiscoveryInfo *)MapViewOfFile(
             hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-        if (pDisc && pDisc->GetMagic() == DISCOVERY_MAGIC && pDisc->logsPath[0]) {
+        if (ValidateDiscoveryInfo(pDisc) && pDisc->logsPath[0]) {
           sessionLogsDir = pDisc->logsPath;
         }
         if (pDisc) UnmapViewOfFile(pDisc);
@@ -3157,7 +3157,7 @@ static bool isProcessWhitelistedFast(const char *name) {
         hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
     bool found = false;
     if (pDisc) {
-      if (pDisc->GetMagic() == DISCOVERY_MAGIC) {
+      if (ValidateDiscoveryInfo(pDisc)) {
         const char *p = pDisc->processWhitelist;
         const char *end =
             pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
@@ -3281,7 +3281,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       if (hDisc) {
         DiscoveryInfo *pDisc = (DiscoveryInfo *)MapViewOfFile(
             hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-        if (pDisc && pDisc->GetMagic() == DISCOVERY_MAGIC && pDisc->logsPath[0]) {
+        if (ValidateDiscoveryInfo(pDisc) && pDisc->logsPath[0]) {
           crashDir = pDisc->logsPath;
         }
         if (pDisc) UnmapViewOfFile(pDisc);

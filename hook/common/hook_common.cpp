@@ -109,7 +109,7 @@ bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName,
     HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
     if (hDisc) {
         DiscoveryInfo* pDisc = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-        if (pDisc && pDisc->GetMagic() == DISCOVERY_MAGIC && pDisc->logsPath[0]) {
+        if (ValidateDiscoveryInfo(pDisc) && pDisc->logsPath[0]) {
             strncpy(logDir, pDisc->logsPath, sizeof(logDir) - 1);
         }
         if (pDisc)

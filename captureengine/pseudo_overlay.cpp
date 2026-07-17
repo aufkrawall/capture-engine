@@ -469,7 +469,7 @@ bool PseudoOverlay::EnsureSharedMemoryMapping() {
         }
     }
 
-    if (pDiscovery_->GetMagic() != DISCOVERY_MAGIC) {
+    if (!ValidateDiscoveryInfo(pDiscovery_)) {
         return false;
     }
 
@@ -510,6 +510,17 @@ bool PseudoOverlay::EnsureSharedMemoryMapping() {
 
     pSharedMem_ = (SharedMemoryLayout*)MapViewOfFile(hSharedMemMap_, FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
     if (!pSharedMem_) {
+        CloseHandle(hSharedMemMap_);
+        hSharedMemMap_ = NULL;
+        mappedInjectPid_ = 0;
+        return false;
+    }
+    if (!ValidateSharedMemory(pSharedMem_)) {
+        LogError("[PseudoOverlay] Rejected incompatible inject shared memory ABI (version=%u size=%u abi=0x%08X)",
+                 pSharedMem_->GetVersion(), pSharedMem_->structSize.load(std::memory_order_acquire),
+                 pSharedMem_->abiSignature.load(std::memory_order_acquire));
+        UnmapViewOfFile(pSharedMem_);
+        pSharedMem_ = nullptr;
         CloseHandle(hSharedMemMap_);
         hSharedMemMap_ = NULL;
         mappedInjectPid_ = 0;
