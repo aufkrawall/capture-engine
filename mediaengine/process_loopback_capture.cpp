@@ -33,6 +33,7 @@ struct ProcessLoopbackCapture::WorkerInstance {
     DWORD processId = 0;
     bool stopRequested = false;
     mutable uint64_t lastDiagnosticOverruns = 0;
+    ce::process_loopback::ConsumerState consumerState;
 
     ~WorkerInstance() {
         if (processHandle) {
@@ -280,10 +281,16 @@ void ProcessLoopbackCapture::RetireActiveWorkerLocked(bool unexpectedExit, DWORD
     DrainWorkerDiagnosticsLocked(*activeWorker_);
     const SharedHeader* header = activeWorker_->Header();
     const uint64_t pending = ce::process_loopback::PendingPacketCount(activeWorker_->mapping);
+    const auto transportStatus =
+        static_cast<ce::process_loopback::TransportStatus>(header->transportStatus.load(std::memory_order_acquire));
+    const auto failureStage = static_cast<ce::process_loopback::TransportFailureStage>(
+        header->transportFailureStage.load(std::memory_order_acquire));
     DLL_Log(
         "[AppAudioWorker] Exit generation=%llu workerPid=%lu exitCode=0x%lx unexpected=%d state=%u "
         "pending=%llu produced=%llu consumed=%llu overrun=%llu/%llu lifecycleOverrun=%llu transport=%u "
-        "stage=%u failureSeq=%llu lastError=0x%x integrityFailures=%llu clean=%llu recycle=%llu",
+        "statusName=%s stage=%u stageName=%s failureSeq=%llu lastError=0x%x "
+        "failureCursors=%llu/%llu failureBytes=%llu/%llu failureEpoch=%llu/%llu packetEpoch=%llu "
+        "record=%u committed=%llu integrityFailures=%llu clean=%llu recycle=%llu",
         static_cast<unsigned long long>(activeWorker_->generation), activeWorker_->processId, exitCode,
         unexpectedExit ? 1 : 0, header->workerState.load(std::memory_order_relaxed),
         static_cast<unsigned long long>(pending),
@@ -292,10 +299,19 @@ void ProcessLoopbackCapture::RetireActiveWorkerLocked(bool unexpectedExit, DWORD
         static_cast<unsigned long long>(header->overrunPackets.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(header->overrunFrames.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(header->lifecycleOverrunPackets.load(std::memory_order_relaxed)),
-        header->transportStatus.load(std::memory_order_relaxed),
-        header->transportFailureStage.load(std::memory_order_relaxed),
+        static_cast<uint32_t>(transportStatus), ce::process_loopback::TransportStatusName(transportStatus),
+        static_cast<uint32_t>(failureStage), ce::process_loopback::TransportFailureStageName(failureStage),
         static_cast<unsigned long long>(header->transportFailureSequence.load(std::memory_order_relaxed)),
         header->lastError.load(std::memory_order_relaxed),
+        static_cast<unsigned long long>(header->failureReadSequence.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(header->failureWriteSequence.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(header->failureReadByteSequence.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(header->failureWriteByteSequence.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(header->failureCurrentEpoch.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(header->failureLastEpoch.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(header->failurePacketEpoch.load(std::memory_order_relaxed)),
+        header->failureRecordType.load(std::memory_order_relaxed),
+        static_cast<unsigned long long>(header->failureCommittedSequence.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(header->integrityFailureCount.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(header->workerCleanExitCount.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(header->workerRecycleCount.load(std::memory_order_relaxed)));
@@ -313,15 +329,30 @@ void ProcessLoopbackCapture::HandleIntegrityFailureLocked(WorkerInstance& worker
         return;
     }
     const uint32_t status = worker.Header()->transportStatus.load(std::memory_order_acquire);
+    const uint32_t stage = worker.Header()->transportFailureStage.load(std::memory_order_acquire);
     if (!integrityFailure_) {
         DLL_Log(
-            "[AppAudioWorker] FATAL: transport integrity failed generation=%llu workerPid=%lu status=%u stage=%u "
-            "sequence=%llu lastError=0x%x; "
+            "[AppAudioWorker] FATAL: transport integrity failed generation=%llu workerPid=%lu status=%u/%s "
+            "stage=%u/%s sequence=%llu lastError=0x%x cursors=%llu/%llu bytes=%llu/%llu "
+            "lifecycle=%llu/%llu packetEpoch=%llu record=%u committed=%llu; "
             "disabling worker restart and requesting recording failure",
             static_cast<unsigned long long>(worker.generation), worker.processId, status,
-            worker.Header()->transportFailureStage.load(std::memory_order_acquire),
+            ce::process_loopback::TransportStatusName(static_cast<ce::process_loopback::TransportStatus>(status)),
+            stage,
+            ce::process_loopback::TransportFailureStageName(
+                static_cast<ce::process_loopback::TransportFailureStage>(stage)),
             static_cast<unsigned long long>(worker.Header()->transportFailureSequence.load(std::memory_order_acquire)),
-            worker.Header()->lastError.load(std::memory_order_acquire));
+            worker.Header()->lastError.load(std::memory_order_acquire),
+            static_cast<unsigned long long>(worker.Header()->failureReadSequence.load(std::memory_order_acquire)),
+            static_cast<unsigned long long>(worker.Header()->failureWriteSequence.load(std::memory_order_acquire)),
+            static_cast<unsigned long long>(worker.Header()->failureReadByteSequence.load(std::memory_order_acquire)),
+            static_cast<unsigned long long>(worker.Header()->failureWriteByteSequence.load(std::memory_order_acquire)),
+            static_cast<unsigned long long>(worker.Header()->failureCurrentEpoch.load(std::memory_order_acquire)),
+            static_cast<unsigned long long>(worker.Header()->failureLastEpoch.load(std::memory_order_acquire)),
+            static_cast<unsigned long long>(worker.Header()->failurePacketEpoch.load(std::memory_order_acquire)),
+            worker.Header()->failureRecordType.load(std::memory_order_acquire),
+            static_cast<unsigned long long>(
+                worker.Header()->failureCommittedSequence.load(std::memory_order_acquire)));
     }
     integrityFailure_ = true;
     fatalTransportStatus_ = status;
@@ -403,7 +434,7 @@ bool ProcessLoopbackCapture::GetNextPacket(AudioPacket& packet) {
     std::lock_guard<std::mutex> lock(mutex_);
     RefreshWorkerLocked();
     WorkerInstance* selected = !retiredWorkers_.empty() ? retiredWorkers_.front().get() : activeWorker_.get();
-    if (!selected || !ce::process_loopback::ReadPacket(selected->mapping, packet)) {
+    if (!selected || !ce::process_loopback::ReadPacket(selected->mapping, selected->consumerState, packet)) {
         if (selected) {
             HandleIntegrityFailureLocked(*selected);
         }
@@ -438,7 +469,7 @@ size_t ProcessLoopbackCapture::PendingPacketCount() {
 void ProcessLoopbackCapture::DiscardPendingPackets() {
     std::lock_guard<std::mutex> lock(mutex_);
     auto discard = [](WorkerInstance& worker) {
-        ce::process_loopback::DiscardPackets(worker.mapping);
+        ce::process_loopback::DiscardPackets(worker.mapping, worker.consumerState);
         if (worker.packetEvent) {
             ResetEvent(worker.packetEvent);
         }
@@ -477,7 +508,7 @@ void ProcessLoopbackCapture::Stop(bool discardPendingPackets) {
     }
     if (discardPendingPackets) {
         for (auto& worker : retiredWorkers_) {
-            ce::process_loopback::DiscardPackets(worker->mapping);
+            ce::process_loopback::DiscardPackets(worker->mapping, worker->consumerState);
         }
     }
     CleanupDrainedWorkersLocked();

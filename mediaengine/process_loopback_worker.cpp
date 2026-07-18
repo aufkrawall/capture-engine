@@ -101,6 +101,7 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(uint64_t map
             bool recycleWorker = false;
             bool recoveryRecycleLogged = false;
             bool formatCanonicalizationLogged = false;
+            ce::process_loopback::ProducerState producerState;
             while (true) {
                 AudioPacket packet;
                 while (capture.GetNextPacket(packet)) {
@@ -131,22 +132,42 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(uint64_t map
                             packet.channelMask, originalIsFloat ? 1 : 0, packet.isFloat ? 1 : 0);
                         RelayWorkerLog(canonicalization);
                     }
-                    if (!ce::process_loopback::WritePacket(mapping, packet)) {
-                        char failure[512]{};
+                    if (!ce::process_loopback::WritePacket(mapping, producerState, packet)) {
+                        char failure[1024]{};
+                        const auto status = static_cast<ce::process_loopback::TransportStatus>(
+                            header->transportStatus.load(std::memory_order_acquire));
+                        const auto stage = static_cast<ce::process_loopback::TransportFailureStage>(
+                            header->transportFailureStage.load(std::memory_order_acquire));
                         std::snprintf(
                             failure, sizeof(failure),
-                            "[Worker] Shared transport failure: status=%u stage=%u sequence=%llu lastError=0x%x "
+                            "[Worker] Shared transport failure: status=%u/%s stage=%u/%s sequence=%llu "
+                            "lastError=0x%x cursors=%llu/%llu bytes=%llu/%llu lifecycle=%llu/%llu "
+                            "failedRecord=%u failedEpoch=%llu committed=%llu "
                             "record=%u bytes=%zu epoch=%llu format=%dHz/%dch/%dbit align=%d valid=%d mask=0x%x "
                             "float=%d eos=%d requested=%uHz/%uch/%ubit",
-                            header->transportStatus.load(std::memory_order_acquire),
-                            header->transportFailureStage.load(std::memory_order_acquire),
+                            static_cast<uint32_t>(status), ce::process_loopback::TransportStatusName(status),
+                            static_cast<uint32_t>(stage), ce::process_loopback::TransportFailureStageName(stage),
                             static_cast<unsigned long long>(
                                 header->transportFailureSequence.load(std::memory_order_acquire)),
-                            header->lastError.load(std::memory_order_acquire), static_cast<unsigned>(packet.recordType),
-                            packet.data.size(), static_cast<unsigned long long>(packet.captureEpoch), packet.sampleRate,
-                            packet.channels, packet.bitsPerSample, packet.blockAlign, packet.validBitsPerSample,
-                            packet.channelMask, packet.isFloat ? 1 : 0, packet.endOfStream ? 1 : 0,
-                            header->requestedSampleRate, header->requestedChannels, header->requestedBitsPerSample);
+                            header->lastError.load(std::memory_order_acquire),
+                            static_cast<unsigned long long>(header->failureReadSequence.load(std::memory_order_acquire)),
+                            static_cast<unsigned long long>(header->failureWriteSequence.load(std::memory_order_acquire)),
+                            static_cast<unsigned long long>(
+                                header->failureReadByteSequence.load(std::memory_order_acquire)),
+                            static_cast<unsigned long long>(
+                                header->failureWriteByteSequence.load(std::memory_order_acquire)),
+                            static_cast<unsigned long long>(
+                                header->failureCurrentEpoch.load(std::memory_order_acquire)),
+                            static_cast<unsigned long long>(header->failureLastEpoch.load(std::memory_order_acquire)),
+                            header->failureRecordType.load(std::memory_order_acquire),
+                            static_cast<unsigned long long>(header->failurePacketEpoch.load(std::memory_order_acquire)),
+                            static_cast<unsigned long long>(
+                                header->failureCommittedSequence.load(std::memory_order_acquire)),
+                            static_cast<unsigned>(packet.recordType), packet.data.size(),
+                            static_cast<unsigned long long>(packet.captureEpoch), packet.sampleRate, packet.channels,
+                            packet.bitsPerSample, packet.blockAlign, packet.validBitsPerSample, packet.channelMask,
+                            packet.isFloat ? 1 : 0, packet.endOfStream ? 1 : 0, header->requestedSampleRate,
+                            header->requestedChannels, header->requestedBitsPerSample);
                         RelayWorkerLog(failure);
                         header->workerState.store(static_cast<uint32_t>(ce::process_loopback::WorkerState::Failed),
                                                   std::memory_order_release);
@@ -222,7 +243,7 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(uint64_t map
             capture.Stop(false);
             AudioPacket tailPacket;
             while (capture.GetNextPacket(tailPacket)) {
-                if (!ce::process_loopback::WritePacket(mapping, tailPacket)) {
+                if (!ce::process_loopback::WritePacket(mapping, producerState, tailPacket)) {
                     if (exitCode == ERROR_SUCCESS) {
                         exitCode = static_cast<int>(header->lastError.load(std::memory_order_acquire));
                         if (exitCode == ERROR_SUCCESS) {

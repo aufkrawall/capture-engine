@@ -9,14 +9,16 @@
 #include <limits>
 #include <new>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 #include "audio_capture.h"
+#include "process_loopback_protocol_types.h"
 
 namespace ce::process_loopback {
 
 constexpr uint32_t kProtocolMagic = 0x504C4345;  // "ECLP"
-constexpr uint32_t kProtocolVersion = 3;
+constexpr uint32_t kProtocolVersion = 4;
 constexpr uint32_t kDescriptorCount = 32768;  // 30 seconds at a 1 ms packet cadence plus lifecycle records.
 constexpr uint32_t kRetentionSeconds = 30;
 constexpr uint32_t kMaximumPacketSeconds = 2;
@@ -28,44 +30,6 @@ constexpr uint32_t kDiagnosticPayloadBytes = 1024;
 
 static_assert(std::atomic<uint64_t>::is_always_lock_free,
               "The process-loopback shared-memory protocol requires lock-free 64-bit atomics");
-
-enum class WorkerState : uint32_t {
-    Empty,
-    Starting,
-    Monitoring,
-    Capturing,
-    Stopping,
-    CleanExit,
-    Failed,
-};
-
-enum class TransportStatus : uint32_t {
-    Healthy,
-    DescriptorExhausted,
-    ByteRingExhausted,
-    CorruptCommittedMetadata,
-    ConsumerAllocationFailed,
-    ProducerPacketRejected,
-};
-
-enum class TransportFailureStage : uint32_t {
-    None,
-    ProducerPacketValidation,
-    ProducerDescriptorCapacity,
-    ProducerByteCapacity,
-    ConsumerSequenceWindow,
-    ConsumerDescriptorValidation,
-    ConsumerEpochValidation,
-    ConsumerAllocation,
-    DiscardSequenceWindow,
-    DiscardDescriptorValidation,
-    DiscardEpochValidation,
-};
-
-enum class WorkerExitDisposition : uint8_t {
-    Final,
-    Restart,
-};
 
 struct TransportLayout {
     uint32_t sampleRate = 0;
@@ -125,8 +89,6 @@ struct alignas(64) SharedHeader {
     std::atomic<uint64_t> readSequence{0};
     std::atomic<uint64_t> writeByteSequence{0};
     std::atomic<uint64_t> readByteSequence{0};
-    std::atomic<uint64_t> consumerEpoch{0};
-    std::atomic<uint64_t> lastConsumerEpoch{0};
     std::atomic<uint64_t> producedPackets{0};
     std::atomic<uint64_t> consumedPackets{0};
     std::atomic<uint64_t> overrunPackets{0};
@@ -148,6 +110,15 @@ struct alignas(64) SharedHeader {
     std::atomic<uint32_t> transportFailureStage{static_cast<uint32_t>(TransportFailureStage::None)};
     std::atomic<uint32_t> transportStatus{static_cast<uint32_t>(TransportStatus::Healthy)};
     std::atomic<uint64_t> transportFailureSequence{0};
+    std::atomic<uint64_t> failureReadSequence{0};
+    std::atomic<uint64_t> failureWriteSequence{0};
+    std::atomic<uint64_t> failureReadByteSequence{0};
+    std::atomic<uint64_t> failureWriteByteSequence{0};
+    std::atomic<uint64_t> failureCurrentEpoch{0};
+    std::atomic<uint64_t> failureLastEpoch{0};
+    std::atomic<uint64_t> failurePacketEpoch{0};
+    std::atomic<uint64_t> failureCommittedSequence{0};
+    std::atomic<uint32_t> failureRecordType{std::numeric_limits<uint32_t>::max()};
 };
 
 struct alignas(64) PacketDescriptor {
@@ -281,23 +252,104 @@ inline bool Validate(const void* mapping, uint64_t workerGeneration) {
            header->mappingBytes == layout.mappingBytes && header->workerGeneration == workerGeneration;
 }
 
+inline TransportFailureEvidence SnapshotTransportFailureEvidence(const SharedHeader& header,
+                                                                  uint64_t currentEpoch = 0,
+                                                                  uint64_t lastEpoch = 0,
+                                                                  uint64_t packetEpoch = 0,
+                                                                  uint32_t recordType =
+                                                                      std::numeric_limits<uint32_t>::max(),
+                                                                  uint64_t committedSequence = 0) {
+    TransportFailureEvidence evidence;
+    evidence.readSequence = header.readSequence.load(std::memory_order_acquire);
+    evidence.writeSequence = header.writeSequence.load(std::memory_order_acquire);
+    evidence.readByteSequence = header.readByteSequence.load(std::memory_order_acquire);
+    evidence.writeByteSequence = header.writeByteSequence.load(std::memory_order_acquire);
+    evidence.currentEpoch = currentEpoch;
+    evidence.lastEpoch = lastEpoch;
+    evidence.packetEpoch = packetEpoch;
+    evidence.committedSequence = committedSequence;
+    evidence.recordType = recordType;
+    return evidence;
+}
+
 inline void LatchTransportFailure(SharedHeader* header, TransportStatus status, TransportFailureStage stage,
-                                  uint64_t sequence, uint32_t error) {
-    uint32_t expected = static_cast<uint32_t>(TransportFailureStage::None);
-    if (header->transportFailureStage.compare_exchange_strong(expected, static_cast<uint32_t>(stage),
-                                                              std::memory_order_acq_rel)) {
-        header->transportFailureSequence.store(sequence, std::memory_order_relaxed);
-        header->lastError.store(error, std::memory_order_relaxed);
-        header->integrityFailureCount.fetch_add(1, std::memory_order_relaxed);
-        // Publish status last. A consumer that observes the fatal status can
-        // rely on the stage/sequence/error evidence already being complete.
-        header->transportStatus.store(static_cast<uint32_t>(status), std::memory_order_release);
+                                  uint64_t sequence, uint32_t error,
+                                  const TransportFailureEvidence& evidence) {
+    uint32_t expected = static_cast<uint32_t>(TransportStatus::Healthy);
+    if (!header->transportStatus.compare_exchange_strong(
+            expected, static_cast<uint32_t>(TransportStatus::PublishingFailure), std::memory_order_acq_rel)) {
+        return;
     }
+    header->transportFailureSequence.store(sequence, std::memory_order_relaxed);
+    header->lastError.store(error, std::memory_order_relaxed);
+    header->failureReadSequence.store(evidence.readSequence, std::memory_order_relaxed);
+    header->failureWriteSequence.store(evidence.writeSequence, std::memory_order_relaxed);
+    header->failureReadByteSequence.store(evidence.readByteSequence, std::memory_order_relaxed);
+    header->failureWriteByteSequence.store(evidence.writeByteSequence, std::memory_order_relaxed);
+    header->failureCurrentEpoch.store(evidence.currentEpoch, std::memory_order_relaxed);
+    header->failureLastEpoch.store(evidence.lastEpoch, std::memory_order_relaxed);
+    header->failurePacketEpoch.store(evidence.packetEpoch, std::memory_order_relaxed);
+    header->failureCommittedSequence.store(evidence.committedSequence, std::memory_order_relaxed);
+    header->failureRecordType.store(evidence.recordType, std::memory_order_relaxed);
+    header->integrityFailureCount.fetch_add(1, std::memory_order_relaxed);
+    header->transportFailureStage.store(static_cast<uint32_t>(stage), std::memory_order_release);
+    // PublishingFailure is itself fatal if the publisher exits halfway through.
+    // Replacing it with the final status is the evidence-complete publication edge.
+    header->transportStatus.store(static_cast<uint32_t>(status), std::memory_order_release);
 }
 
 inline bool HasFatalTransportFailure(const void* mapping) {
     return mapping && static_cast<const SharedHeader*>(mapping)->transportStatus.load(std::memory_order_acquire) !=
                           static_cast<uint32_t>(TransportStatus::Healthy);
+}
+
+inline bool ComputeNextEpochState(AudioPacketRecordType recordType, uint64_t packetEpoch, uint64_t currentEpoch,
+                                  uint64_t lastEpoch, uint64_t& nextCurrentEpoch, uint64_t& nextLastEpoch) {
+    nextCurrentEpoch = currentEpoch;
+    nextLastEpoch = lastEpoch;
+    if (recordType == AudioPacketRecordType::EpochStart) {
+        if (currentEpoch != 0 || packetEpoch <= lastEpoch) {
+            return false;
+        }
+        nextCurrentEpoch = packetEpoch;
+        nextLastEpoch = packetEpoch;
+        return true;
+    }
+    if (recordType == AudioPacketRecordType::Data) {
+        return currentEpoch != 0 && packetEpoch == currentEpoch;
+    }
+    if (recordType == AudioPacketRecordType::EndOfStream && currentEpoch != 0 && packetEpoch == currentEpoch) {
+        nextCurrentEpoch = 0;
+        return true;
+    }
+    return false;
+}
+
+inline bool BindAndValidateProducerState(SharedHeader& header, ProducerState& state) {
+    if (state.workerGeneration == 0) {
+        if (state.nextSequence != 0 || state.nextByteSequence != 0 || state.currentEpoch != 0 ||
+            state.lastEpoch != 0) {
+            return false;
+        }
+        state.workerGeneration = header.workerGeneration;
+    }
+    return state.workerGeneration == header.workerGeneration &&
+           state.nextSequence == header.writeSequence.load(std::memory_order_relaxed) &&
+           state.nextByteSequence == header.writeByteSequence.load(std::memory_order_relaxed);
+}
+
+inline bool BindAndValidateConsumerState(SharedHeader& header, ConsumerState& state) {
+    if (state.workerGeneration == 0) {
+        if (state.nextSequence != 0 || state.nextByteSequence != 0 || state.currentEpoch != 0 ||
+            state.lastEpoch != 0 || header.readSequence.load(std::memory_order_relaxed) != 0 ||
+            header.readByteSequence.load(std::memory_order_relaxed) != 0) {
+            return false;
+        }
+        state.workerGeneration = header.workerGeneration;
+    }
+    return state.workerGeneration == header.workerGeneration &&
+           state.nextSequence == header.readSequence.load(std::memory_order_relaxed) &&
+           state.nextByteSequence == header.readByteSequence.load(std::memory_order_relaxed);
 }
 
 inline bool ValidateDataFormat(const SharedHeader& header, const AudioPacket& packet) {
@@ -386,7 +438,7 @@ inline void CopyFromByteRing(const void* mapping, uint32_t offset, uint8_t* data
     }
 }
 
-inline bool WritePacket(void* mapping, const AudioPacket& packet) {
+inline bool WritePacket(void* mapping, ProducerState& state, const AudioPacket& packet) {
     if (!mapping) {
         return false;
     }
@@ -394,21 +446,48 @@ inline bool WritePacket(void* mapping, const AudioPacket& packet) {
     if (!Validate(mapping, header->workerGeneration) || HasFatalTransportFailure(mapping)) {
         return false;
     }
+    if (!BindAndValidateProducerState(*header, state)) {
+        LatchTransportFailure(
+            header, TransportStatus::ProducerPacketRejected, TransportFailureStage::ProducerStateValidation,
+            header->writeSequence.load(std::memory_order_relaxed), ERROR_INVALID_STATE,
+            SnapshotTransportFailureEvidence(*header, state.currentEpoch, state.lastEpoch, packet.captureEpoch,
+                                             static_cast<uint32_t>(packet.recordType)));
+        return false;
+    }
     if (packet.data.size() > header->maximumPacketBytes) {
         header->oversizedPackets.fetch_add(1, std::memory_order_relaxed);
         LatchTransportFailure(header, TransportStatus::ByteRingExhausted,
                               TransportFailureStage::ProducerByteCapacity,
-                              header->writeSequence.load(std::memory_order_relaxed), ERROR_BUFFER_OVERFLOW);
+                              header->writeSequence.load(std::memory_order_relaxed), ERROR_BUFFER_OVERFLOW,
+                              SnapshotTransportFailureEvidence(*header, state.currentEpoch, state.lastEpoch,
+                                                               packet.captureEpoch,
+                                                               static_cast<uint32_t>(packet.recordType)));
         return false;
     }
     if (!ValidatePacketForTransport(*header, packet)) {
         LatchTransportFailure(header, TransportStatus::ProducerPacketRejected,
                               TransportFailureStage::ProducerPacketValidation,
-                              header->writeSequence.load(std::memory_order_relaxed), ERROR_INVALID_DATA);
+                              header->writeSequence.load(std::memory_order_relaxed), ERROR_INVALID_DATA,
+                              SnapshotTransportFailureEvidence(*header, state.currentEpoch, state.lastEpoch,
+                                                               packet.captureEpoch,
+                                                               static_cast<uint32_t>(packet.recordType)));
         return false;
     }
 
-    const uint64_t writeSequence = header->writeSequence.load(std::memory_order_relaxed);
+    uint64_t nextCurrentEpoch = 0;
+    uint64_t nextLastEpoch = 0;
+    if (!ComputeNextEpochState(packet.recordType, packet.captureEpoch, state.currentEpoch, state.lastEpoch,
+                               nextCurrentEpoch, nextLastEpoch)) {
+        LatchTransportFailure(header, TransportStatus::ProducerPacketRejected,
+                              TransportFailureStage::ProducerEpochValidation,
+                              header->writeSequence.load(std::memory_order_relaxed), ERROR_INVALID_DATA,
+                              SnapshotTransportFailureEvidence(*header, state.currentEpoch, state.lastEpoch,
+                                                               packet.captureEpoch,
+                                                               static_cast<uint32_t>(packet.recordType)));
+        return false;
+    }
+
+    const uint64_t writeSequence = state.nextSequence;
     const uint64_t readSequence = header->readSequence.load(std::memory_order_acquire);
     if (writeSequence == std::numeric_limits<uint64_t>::max() || writeSequence < readSequence ||
         writeSequence - readSequence >= kDescriptorCount) {
@@ -421,11 +500,14 @@ inline bool WritePacket(void* mapping, const AudioPacket& packet) {
         }
         LatchTransportFailure(header, TransportStatus::DescriptorExhausted,
                               TransportFailureStage::ProducerDescriptorCapacity, writeSequence,
-                              ERROR_BUFFER_OVERFLOW);
+                              ERROR_BUFFER_OVERFLOW,
+                              SnapshotTransportFailureEvidence(*header, state.currentEpoch, state.lastEpoch,
+                                                               packet.captureEpoch,
+                                                               static_cast<uint32_t>(packet.recordType)));
         return false;
     }
 
-    const uint64_t writeByteSequence = header->writeByteSequence.load(std::memory_order_relaxed);
+    const uint64_t writeByteSequence = state.nextByteSequence;
     const uint64_t readByteSequence = header->readByteSequence.load(std::memory_order_acquire);
     const uint64_t occupiedBytes =
         writeByteSequence >= readByteSequence ? writeByteSequence - readByteSequence : header->byteRingBytes + 1ULL;
@@ -440,7 +522,10 @@ inline bool WritePacket(void* mapping, const AudioPacket& packet) {
             header->lifecycleOverrunPackets.fetch_add(1, std::memory_order_relaxed);
         }
         LatchTransportFailure(header, TransportStatus::ByteRingExhausted,
-                              TransportFailureStage::ProducerByteCapacity, writeSequence, ERROR_BUFFER_OVERFLOW);
+                              TransportFailureStage::ProducerByteCapacity, writeSequence, ERROR_BUFFER_OVERFLOW,
+                              SnapshotTransportFailureEvidence(*header, state.currentEpoch, state.lastEpoch,
+                                                               packet.captureEpoch,
+                                                               static_cast<uint32_t>(packet.recordType)));
         return false;
     }
 
@@ -472,6 +557,10 @@ inline bool WritePacket(void* mapping, const AudioPacket& packet) {
     descriptor.committedSequence.store(writeSequence + 1, std::memory_order_release);
     header->writeSequence.store(writeSequence + 1, std::memory_order_release);
     header->producedPackets.fetch_add(1, std::memory_order_relaxed);
+    state.nextSequence = writeSequence + 1;
+    state.nextByteSequence = writeByteSequence + packet.data.size();
+    state.currentEpoch = nextCurrentEpoch;
+    state.lastEpoch = nextLastEpoch;
     return true;
 }
 
@@ -514,7 +603,7 @@ inline bool ValidateDescriptor(const SharedHeader& header, const PacketDescripto
            (recordType == AudioPacketRecordType::EndOfStream) == (descriptor.endOfStream != 0);
 }
 
-inline bool ReadPacket(void* mapping, AudioPacket& packet) {
+inline bool ReadPacket(void* mapping, ConsumerState& state, AudioPacket& packet) {
     if (!mapping) {
         return false;
     }
@@ -522,24 +611,36 @@ inline bool ReadPacket(void* mapping, AudioPacket& packet) {
     if (!Validate(mapping, header->workerGeneration) || HasFatalTransportFailure(mapping)) {
         return false;
     }
-    const uint64_t readSequence = header->readSequence.load(std::memory_order_relaxed);
+    if (!BindAndValidateConsumerState(*header, state)) {
+        LatchTransportFailure(
+            header, TransportStatus::CorruptCommittedMetadata, TransportFailureStage::ConsumerStateValidation,
+            header->readSequence.load(std::memory_order_relaxed), ERROR_INVALID_STATE,
+            SnapshotTransportFailureEvidence(*header, state.currentEpoch, state.lastEpoch));
+        return false;
+    }
+    const uint64_t readSequence = state.nextSequence;
     const uint64_t writeSequence = header->writeSequence.load(std::memory_order_acquire);
     if (readSequence >= writeSequence) {
         return false;
     }
     if (writeSequence - readSequence > kDescriptorCount) {
         LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata,
-                              TransportFailureStage::ConsumerSequenceWindow, readSequence, ERROR_INVALID_DATA);
+                              TransportFailureStage::ConsumerSequenceWindow, readSequence, ERROR_INVALID_DATA,
+                              SnapshotTransportFailureEvidence(*header, state.currentEpoch, state.lastEpoch));
         return false;
     }
 
     const PacketDescriptor& descriptor = Descriptors(mapping)[readSequence % kDescriptorCount];
-    const uint64_t readByteSequence = header->readByteSequence.load(std::memory_order_relaxed);
+    const uint64_t readByteSequence = state.nextByteSequence;
     const uint64_t writeByteSequence = header->writeByteSequence.load(std::memory_order_acquire);
-    if (descriptor.committedSequence.load(std::memory_order_acquire) != readSequence + 1 ||
+    const uint64_t committedSequence = descriptor.committedSequence.load(std::memory_order_acquire);
+    if (committedSequence != readSequence + 1 ||
         !ValidateDescriptor(*header, descriptor, readByteSequence, writeByteSequence)) {
         LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata,
-                              TransportFailureStage::ConsumerDescriptorValidation, readSequence, ERROR_INVALID_DATA);
+                              TransportFailureStage::ConsumerDescriptorValidation, readSequence, ERROR_INVALID_DATA,
+                              SnapshotTransportFailureEvidence(*header, state.currentEpoch, state.lastEpoch,
+                                                               descriptor.captureEpoch, descriptor.recordType,
+                                                               committedSequence));
         return false;
     }
 
@@ -563,39 +664,42 @@ inline bool ReadPacket(void* mapping, AudioPacket& packet) {
         decoded.data.resize(descriptor.dataSize);
     } catch (...) {
         LatchTransportFailure(header, TransportStatus::ConsumerAllocationFailed,
-                              TransportFailureStage::ConsumerAllocation, readSequence, ERROR_NOT_ENOUGH_MEMORY);
+                              TransportFailureStage::ConsumerAllocation, readSequence, ERROR_NOT_ENOUGH_MEMORY,
+                              SnapshotTransportFailureEvidence(*header, state.currentEpoch, state.lastEpoch,
+                                                               descriptor.captureEpoch, descriptor.recordType,
+                                                               committedSequence));
         return false;
     }
     if (descriptor.dataSize > 0) {
         CopyFromByteRing(mapping, descriptor.payloadOffset, decoded.data.data(), descriptor.dataSize);
     }
 
-    const uint64_t currentEpoch = header->consumerEpoch.load(std::memory_order_relaxed);
-    bool epochValid = true;
-    const uint64_t lastEpoch = header->lastConsumerEpoch.load(std::memory_order_relaxed);
-    if (decoded.recordType == AudioPacketRecordType::EpochStart) {
-        epochValid = currentEpoch == 0 && decoded.captureEpoch > lastEpoch;
-        if (epochValid) {
-            header->consumerEpoch.store(decoded.captureEpoch, std::memory_order_relaxed);
-            header->lastConsumerEpoch.store(decoded.captureEpoch, std::memory_order_relaxed);
-        }
-    } else if (decoded.recordType == AudioPacketRecordType::Data) {
-        epochValid = currentEpoch != 0 && decoded.captureEpoch == currentEpoch;
-    } else {
-        epochValid = currentEpoch != 0 && decoded.captureEpoch == currentEpoch;
-        if (epochValid)
-            header->consumerEpoch.store(0, std::memory_order_relaxed);
-    }
-    if (!epochValid) {
+    uint64_t nextCurrentEpoch = 0;
+    uint64_t nextLastEpoch = 0;
+    if (!ComputeNextEpochState(decoded.recordType, decoded.captureEpoch, state.currentEpoch, state.lastEpoch,
+                               nextCurrentEpoch, nextLastEpoch)) {
         LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata,
-                              TransportFailureStage::ConsumerEpochValidation, readSequence, ERROR_INVALID_DATA);
+                              TransportFailureStage::ConsumerEpochValidation, readSequence, ERROR_INVALID_DATA,
+                              SnapshotTransportFailureEvidence(*header, state.currentEpoch, state.lastEpoch,
+                                                               decoded.captureEpoch,
+                                                               static_cast<uint32_t>(decoded.recordType),
+                                                               committedSequence));
         return false;
     }
 
+    static_assert(std::is_nothrow_move_assignable_v<AudioPacket>);
     packet = std::move(decoded);
-    header->readByteSequence.store(readByteSequence + descriptor.dataSize, std::memory_order_release);
+    const uint64_t nextReadByteSequence = readByteSequence + descriptor.dataSize;
+    // Publish ring capacity only after the output packet is fully materialized.
+    // Lifecycle state is process-local and advances after both shared cursors, so
+    // no other process can observe an applied epoch paired with the old cursor.
+    header->readByteSequence.store(nextReadByteSequence, std::memory_order_release);
     header->readSequence.store(readSequence + 1, std::memory_order_release);
     header->consumedPackets.fetch_add(1, std::memory_order_relaxed);
+    state.nextSequence = readSequence + 1;
+    state.nextByteSequence = nextReadByteSequence;
+    state.currentEpoch = nextCurrentEpoch;
+    state.lastEpoch = nextLastEpoch;
     return true;
 }
 
@@ -612,7 +716,7 @@ inline size_t PendingPacketCount(const void* mapping) {
     return static_cast<size_t>(std::min<uint64_t>(writeSequence - readSequence, kDescriptorCount));
 }
 
-inline void DiscardPackets(void* mapping) {
+inline void DiscardPackets(void* mapping, ConsumerState& state) {
     if (!mapping) {
         return;
     }
@@ -620,56 +724,63 @@ inline void DiscardPackets(void* mapping) {
     if (!Validate(mapping, header->workerGeneration) || HasFatalTransportFailure(mapping)) {
         return;
     }
+    if (!BindAndValidateConsumerState(*header, state)) {
+        LatchTransportFailure(
+            header, TransportStatus::CorruptCommittedMetadata, TransportFailureStage::ConsumerStateValidation,
+            header->readSequence.load(std::memory_order_relaxed), ERROR_INVALID_STATE,
+            SnapshotTransportFailureEvidence(*header, state.currentEpoch, state.lastEpoch));
+        return;
+    }
 
-    const uint64_t readSequence = header->readSequence.load(std::memory_order_relaxed);
+    const uint64_t readSequence = state.nextSequence;
     const uint64_t writeSequence = header->writeSequence.load(std::memory_order_acquire);
     const uint64_t writeByteSequence = header->writeByteSequence.load(std::memory_order_acquire);
-    uint64_t readByteSequence = header->readByteSequence.load(std::memory_order_relaxed);
-    uint64_t currentEpoch = header->consumerEpoch.load(std::memory_order_relaxed);
-    uint64_t lastEpoch = header->lastConsumerEpoch.load(std::memory_order_relaxed);
+    uint64_t readByteSequence = state.nextByteSequence;
+    uint64_t currentEpoch = state.currentEpoch;
+    uint64_t lastEpoch = state.lastEpoch;
     if (writeSequence < readSequence || writeSequence - readSequence > kDescriptorCount) {
         LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata,
-                              TransportFailureStage::DiscardSequenceWindow, readSequence, ERROR_INVALID_DATA);
+                              TransportFailureStage::DiscardSequenceWindow, readSequence, ERROR_INVALID_DATA,
+                              SnapshotTransportFailureEvidence(*header, currentEpoch, lastEpoch));
         return;
     }
 
     for (uint64_t sequence = readSequence; sequence < writeSequence; ++sequence) {
         const PacketDescriptor& descriptor = Descriptors(mapping)[sequence % kDescriptorCount];
-        if (descriptor.committedSequence.load(std::memory_order_acquire) != sequence + 1 ||
+        const uint64_t committedSequence = descriptor.committedSequence.load(std::memory_order_acquire);
+        if (committedSequence != sequence + 1 ||
             !ValidateDescriptor(*header, descriptor, readByteSequence, writeByteSequence)) {
             LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata,
-                                  TransportFailureStage::DiscardDescriptorValidation, sequence, ERROR_INVALID_DATA);
+                                  TransportFailureStage::DiscardDescriptorValidation, sequence, ERROR_INVALID_DATA,
+                                  SnapshotTransportFailureEvidence(*header, currentEpoch, lastEpoch,
+                                                                   descriptor.captureEpoch, descriptor.recordType,
+                                                                   committedSequence));
             return;
         }
 
         const auto recordType = static_cast<AudioPacketRecordType>(descriptor.recordType);
-        bool epochValid = true;
-        if (recordType == AudioPacketRecordType::EpochStart) {
-            epochValid = currentEpoch == 0 && descriptor.captureEpoch > lastEpoch;
-            if (epochValid) {
-                currentEpoch = descriptor.captureEpoch;
-                lastEpoch = descriptor.captureEpoch;
-            }
-        } else if (recordType == AudioPacketRecordType::Data) {
-            epochValid = currentEpoch != 0 && descriptor.captureEpoch == currentEpoch;
-        } else {
-            epochValid = currentEpoch != 0 && descriptor.captureEpoch == currentEpoch;
-            if (epochValid) {
-                currentEpoch = 0;
-            }
-        }
-        if (!epochValid) {
+        uint64_t nextCurrentEpoch = 0;
+        uint64_t nextLastEpoch = 0;
+        if (!ComputeNextEpochState(recordType, descriptor.captureEpoch, currentEpoch, lastEpoch, nextCurrentEpoch,
+                                   nextLastEpoch)) {
             LatchTransportFailure(header, TransportStatus::CorruptCommittedMetadata,
-                                  TransportFailureStage::DiscardEpochValidation, sequence, ERROR_INVALID_DATA);
+                                  TransportFailureStage::DiscardEpochValidation, sequence, ERROR_INVALID_DATA,
+                                  SnapshotTransportFailureEvidence(*header, currentEpoch, lastEpoch,
+                                                                   descriptor.captureEpoch, descriptor.recordType,
+                                                                   committedSequence));
             return;
         }
+        currentEpoch = nextCurrentEpoch;
+        lastEpoch = nextLastEpoch;
         readByteSequence += descriptor.dataSize;
     }
 
-    header->consumerEpoch.store(currentEpoch, std::memory_order_relaxed);
-    header->lastConsumerEpoch.store(lastEpoch, std::memory_order_relaxed);
     header->readByteSequence.store(readByteSequence, std::memory_order_release);
     header->readSequence.store(writeSequence, std::memory_order_release);
+    state.nextSequence = writeSequence;
+    state.nextByteSequence = readByteSequence;
+    state.currentEpoch = currentEpoch;
+    state.lastEpoch = lastEpoch;
 }
 
 inline bool WriteDiagnostic(void* mapping, const char* message) {
