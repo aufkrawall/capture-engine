@@ -515,11 +515,9 @@ void AppAudioCapture::FinalizePendingAsyncStart() {
 }
 
 bool AppAudioCapture::StartCaptureThreadForCurrentClient() {
-    // Clear any stale packets
-    {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        packetQueue.clear();
-    }
+    // ActivateClientForPID has already committed the epoch-start marker. Never
+    // clear the queue here: the worker must observe that lifecycle record before
+    // the first data packet from the thread launched below.
     queueOverrunPackets.store(0, std::memory_order_relaxed);
     queueOverrunFrames.store(0, std::memory_order_relaxed);
 
@@ -533,10 +531,53 @@ bool AppAudioCapture::StartCaptureThreadForCurrentClient() {
     } catch (const std::exception& error) {
         DLL_Log("[AppAudioCapture] Failed to create capture thread for PID %lu: %s", targetPID.load(), error.what());
         isCapturing.store(false, std::memory_order_release);
+        (void)QueueCaptureEpochMarker(AudioPacketRecordType::EndOfStream,
+                                      captureEpoch.load(std::memory_order_acquire), "capture thread creation failure");
         CleanupCapture();
         return false;
     }
     return true;
+}
+
+bool AppAudioCapture::QueueCaptureEpochMarker(AudioPacketRecordType recordType, uint64_t epoch, const char* reason) {
+    if ((recordType != AudioPacketRecordType::EpochStart && recordType != AudioPacketRecordType::EndOfStream) ||
+        epoch == 0) {
+        DLL_Log("[AppAudioCapture] ERROR: Refusing invalid capture epoch marker: record=%u epoch=%llu reason=%s",
+                static_cast<unsigned>(recordType), static_cast<unsigned long long>(epoch), reason ? reason : "unknown");
+        return false;
+    }
+
+    try {
+        AudioPacket marker;
+        marker.captureEpoch = epoch;
+        marker.recordType = recordType;
+        marker.endOfStream = recordType == AudioPacketRecordType::EndOfStream;
+        size_t markerQueueDepth = 0;
+        DWORD signalError = ERROR_SUCCESS;
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            // Lifecycle markers are ordered with data and are never subject to
+            // the bounded data-packet retention policy.
+            packetQueue.emplace_back(std::move(marker));
+            if (packetReadyEvent_ && !SetEvent(packetReadyEvent_)) {
+                signalError = GetLastError();
+            }
+            markerQueueDepth = packetQueue.size();
+        }
+        DLL_Log("[AppAudioCapture] Queued ordered capture-%s marker: epoch=%llu queueDepth=%zu reason=%s",
+                recordType == AudioPacketRecordType::EpochStart ? "start" : "end",
+                static_cast<unsigned long long>(epoch), markerQueueDepth, reason ? reason : "unknown");
+        if (signalError != ERROR_SUCCESS) {
+            DLL_Log("[AppAudioCapture] ERROR: Failed to signal queued capture epoch marker: error=0x%lx",
+                    signalError);
+        }
+        return true;
+    } catch (const std::exception& error) {
+        DLL_Log("[AppAudioCapture] ERROR: Failed to queue capture epoch marker: record=%u epoch=%llu reason=%s: %s",
+                static_cast<unsigned>(recordType), static_cast<unsigned long long>(epoch), reason ? reason : "unknown",
+                error.what());
+        return false;
+    }
 }
 
 bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
@@ -843,15 +884,11 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid, bool allowEventDriven) {
         return false;
     }
     const uint64_t activatedEpoch = captureEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
-    {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        AudioPacket epochStart;
-        epochStart.captureEpoch = activatedEpoch;
-        epochStart.recordType = AudioPacketRecordType::EpochStart;
-        packetQueue.emplace_back(std::move(epochStart));
-        if (packetReadyEvent_) {
-            SetEvent(packetReadyEvent_);
-        }
+    if (!QueueCaptureEpochMarker(AudioPacketRecordType::EpochStart, activatedEpoch, "audio client started")) {
+        DLL_Log("[AppAudioCapture] Failed to publish epoch start for PID %lu; abandoning the unpublishable client",
+                pid);
+        CleanupCapture();
+        return false;
     }
 
     const uint64_t bufferDurationUs =
@@ -971,6 +1008,7 @@ void AppAudioCapture::CaptureLoop() {
     uint64_t eventFallbackSuccesses = 0;
     uint64_t reactivateAttempts = 0;
     uint64_t reactivateSuccesses = 0;
+    bool captureEpochOpen = true;
     // Per-session throttled error logging (NOT static: must reset every session, or
     // a long-lived process silently swallows every error after the first session).
     int fatalErrLogCount = 0;
@@ -1003,6 +1041,16 @@ void AppAudioCapture::CaptureLoop() {
             "attempt=%llu nextBackoffMs=%llu)",
             pid, reason, static_cast<unsigned long>(hrCode), static_cast<unsigned long long>(reactivateAttempts),
             static_cast<unsigned long long>(recoveryBackoffMs));
+        if (captureEpochOpen) {
+            const uint64_t closingEpoch = captureEpoch.load(std::memory_order_acquire);
+            if (!QueueCaptureEpochMarker(AudioPacketRecordType::EndOfStream, closingEpoch, reason)) {
+                DLL_Log(
+                    "[AppAudioCapture] Re-activation deferred because epoch %llu could not be closed transactionally",
+                    static_cast<unsigned long long>(closingEpoch));
+                return false;
+            }
+            captureEpochOpen = false;
+        }
         const bool ok = ReactivateClientForPID(pid, allowEventDriven);
         // A successful replacement must qualify with its own first packet before
         // another silent-stall recovery can arm. A failed/null client still retries
@@ -1012,6 +1060,7 @@ void AppAudioCapture::CaptureLoop() {
         currentActivationQualified = false;
         if (ok) {
             ++reactivateSuccesses;
+            captureEpochOpen = true;
             firstSet = false;
             DLL_Log("[AppAudioCapture] Re-activation succeeded for PID %lu (attempt=%llu mode=%s)", pid,
                     static_cast<unsigned long long>(reactivateAttempts),
@@ -1600,26 +1649,13 @@ void AppAudioCapture::CaptureLoop() {
                 targetPID.load(), static_cast<unsigned long long>(queueDropPackets),
                 static_cast<unsigned long long>(queueDropFrames));
     }
-    try {
-        AudioPacket endMarker;
-        endMarker.captureEpoch = captureEpoch.load(std::memory_order_acquire);
-        endMarker.recordType = AudioPacketRecordType::EndOfStream;
-        endMarker.endOfStream = true;
-        size_t markerQueueDepth = 0;
-        {
-            std::lock_guard<std::mutex> lock(queueMutex);
-            // The marker is ordered after every captured packet and is not subject to the data-packet
-            // retention bound. Downstream fan-out observes it only after every route has received the tail.
-            packetQueue.emplace_back(std::move(endMarker));
-            if (packetReadyEvent_) {
-                SetEvent(packetReadyEvent_);
-            }
-            markerQueueDepth = packetQueue.size();
+    if (captureEpochOpen) {
+        const uint64_t closingEpoch = captureEpoch.load(std::memory_order_acquire);
+        if (QueueCaptureEpochMarker(AudioPacketRecordType::EndOfStream, closingEpoch, "capture loop exit")) {
+            captureEpochOpen = false;
         }
-        DLL_Log("[AppAudioCapture] Queued ordered capture-end marker: epoch=%llu queueDepth=%zu",
-                static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)), markerQueueDepth);
-    } catch (const std::exception& error) {
-        DLL_Log("[AppAudioCapture] ERROR: Failed to queue ordered capture-end marker: %s", error.what());
+    } else {
+        DLL_Log("[AppAudioCapture] Capture loop exit found the current epoch already closed by stream recovery");
     }
     isCapturing.store(false);
     startPendingValid.store(false, std::memory_order_release);

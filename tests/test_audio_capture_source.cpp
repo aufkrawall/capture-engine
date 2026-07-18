@@ -82,6 +82,53 @@ TEST(AudioCaptureSourceTest, EveryCaptureRouteUsesOwnerAcknowledgedEpochRejoin) 
     EXPECT_NE(mediaSource.find("sourceTimestamps[srcIdx] = 0"), std::string::npos);
 }
 
+TEST(AudioCaptureSourceTest, InitialProcessLoopbackEpochMarkerSurvivesUntilWorkerConsumption) {
+    const std::string source = ReadSource("app_audio_capture.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t threadStart = source.find("bool AppAudioCapture::StartCaptureThreadForCurrentClient()");
+    const size_t initialize = source.find("bool AppAudioCapture::InitializeCaptureForPID", threadStart);
+    ASSERT_NE(threadStart, std::string::npos);
+    ASSERT_NE(initialize, std::string::npos);
+    const std::string threadStartBody = source.substr(threadStart, initialize - threadStart);
+    EXPECT_EQ(threadStartBody.find("packetQueue.clear()"), std::string::npos);
+
+    const size_t initializeEnd = source.find("bool AppAudioCapture::ReactivateClientForPID", initialize);
+    ASSERT_NE(initializeEnd, std::string::npos);
+    const std::string initializeBody = source.substr(initialize, initializeEnd - initialize);
+    const size_t activationCall = initializeBody.find("ActivateClientForPID(pid, true)");
+    const size_t threadStartCall = initializeBody.find("StartCaptureThreadForCurrentClient()");
+    ASSERT_NE(activationCall, std::string::npos);
+    ASSERT_NE(threadStartCall, std::string::npos);
+    EXPECT_LT(activationCall, threadStartCall);
+
+    const size_t activate = source.find("bool AppAudioCapture::ActivateClientForPID");
+    const size_t captureLoop = source.find("void AppAudioCapture::CaptureLoop()", activate);
+    ASSERT_NE(activate, std::string::npos);
+    ASSERT_NE(captureLoop, std::string::npos);
+    const std::string activateBody = source.substr(activate, captureLoop - activate);
+    EXPECT_NE(activateBody.find("QueueCaptureEpochMarker(AudioPacketRecordType::EpochStart"), std::string::npos);
+}
+
+TEST(AudioCaptureSourceTest, ProcessLoopbackReactivationClosesPriorEpochBeforePublishingReplacement) {
+    const std::string source = ReadSource("app_audio_capture.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t loopBegin = source.find("void AppAudioCapture::CaptureLoop()");
+    const size_t reactivate = source.find("const bool ok = ReactivateClientForPID", loopBegin);
+    const size_t loopEnd = source.find("void AppAudioCapture::ProcessMonitorLoop()", reactivate);
+    ASSERT_NE(loopBegin, std::string::npos);
+    ASSERT_NE(reactivate, std::string::npos);
+    ASSERT_NE(loopEnd, std::string::npos);
+
+    const std::string beforeReactivate = source.substr(loopBegin, reactivate - loopBegin);
+    EXPECT_NE(beforeReactivate.find("QueueCaptureEpochMarker(AudioPacketRecordType::EndOfStream"), std::string::npos);
+    const std::string afterReactivate = source.substr(reactivate, loopEnd - reactivate);
+    EXPECT_NE(afterReactivate.find("captureEpochOpen = true"), std::string::npos);
+    EXPECT_NE(afterReactivate.find("if (captureEpochOpen)"), std::string::npos);
+    EXPECT_NE(afterReactivate.find("\"capture loop exit\""), std::string::npos);
+}
+
 TEST(AudioCaptureSourceTest, ProcessLoopbackComStateLivesInDisposableInheritedHandleWorker) {
     const std::string mediaSource = ReadSource("mediaengine.cpp");
     const std::string proxySource = ReadSource("process_loopback_capture.cpp");
@@ -114,14 +161,18 @@ TEST(AudioCaptureSourceTest, AppAudioCaptureEndMarkerOrdersEveryFanoutRouteBefor
     ASSERT_FALSE(appSource.empty());
     ASSERT_FALSE(mediaSource.empty());
 
-    const size_t dataQueue = appSource.find("packetQueue.emplace_back(std::move(packet));");
-    const size_t endMarker = appSource.find("endMarker.endOfStream = true");
-    const size_t endMarkerQueue = appSource.find("packetQueue.emplace_back(std::move(endMarker));", endMarker);
+    const size_t endMarker = appSource.find("marker.endOfStream = recordType == AudioPacketRecordType::EndOfStream");
+    const size_t endMarkerQueue = appSource.find("packetQueue.emplace_back(std::move(marker));", endMarker);
+    const size_t captureLoop = appSource.find("void AppAudioCapture::CaptureLoop()");
+    const size_t dataQueue = appSource.find("packetQueue.emplace_back(std::move(packet));", captureLoop);
+    const size_t orderedEndCall =
+        appSource.find("QueueCaptureEpochMarker(AudioPacketRecordType::EndOfStream", dataQueue);
     ASSERT_NE(dataQueue, std::string::npos);
     ASSERT_NE(endMarker, std::string::npos);
     ASSERT_NE(endMarkerQueue, std::string::npos);
-    EXPECT_LT(dataQueue, endMarker);
     EXPECT_LT(endMarker, endMarkerQueue);
+    ASSERT_NE(orderedEndCall, std::string::npos);
+    EXPECT_LT(dataQueue, orderedEndCall);
 
     const size_t fanout = mediaSource.find("captureFanoutQueues[routeIdx].push_back(packet)");
     const size_t routeEnd = mediaSource.find("packet.recordType == AudioPacketRecordType::EndOfStream");

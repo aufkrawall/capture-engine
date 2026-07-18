@@ -148,6 +148,7 @@ private:
     bool ReactivateClientForPID(DWORD pid, bool allowEventDriven);
     bool ActivateAudioInterfaceForPID(DWORD pid, IAudioClient** audioClient);
     bool StartCaptureThreadForCurrentClient();
+    bool QueueCaptureEpochMarker(AudioPacketRecordType recordType, uint64_t epoch, const char* reason);
     bool BeginAsyncStartForPID(DWORD pid);
     void FinalizePendingAsyncStart();
 
