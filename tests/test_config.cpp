@@ -170,6 +170,14 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     ASSERT_NE(profileExample, std::string::npos);
     EXPECT_GT(profileExample, diagnosticsSection);
     EXPECT_NE(generatedText.find(";video_capture=global", profileExample), std::string::npos);
+    const size_t practicalProfileExample = generatedText.find(";[Profile.hots]", profileExample);
+    ASSERT_NE(practicalProfileExample, std::string::npos);
+    EXPECT_NE(generatedText.find(";process=HeroesOfTheStorm_x64.exe", practicalProfileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";injection_mode=none", practicalProfileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";video_capture=dxgi_dup", practicalProfileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";DesktopOverlay.enabled=true", practicalProfileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";audio_enabled=true", practicalProfileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";audio_track=1,2", practicalProfileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";injection_mode=capture", profileExample), std::string::npos);
     EXPECT_EQ(generatedText.find(";injection=normal", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find("capture = allow injected video", profileExample), std::string::npos);

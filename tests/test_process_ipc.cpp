@@ -229,6 +229,50 @@ TEST(ProcessIPCTest, ControllerRecoversChildrenOnlyThroughFreshAuthenticatedSpaw
     EXPECT_NE(source.find("EnsureChildProcessConnected(mode, process, client"), std::string::npos);
 }
 
+TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndpointRelease) {
+    const std::string controllerSource = ReadSource("captureengine/main.cpp");
+    const std::string mediaSource = ReadSource("captureengine/media_main.cpp");
+    ASSERT_FALSE(controllerSource.empty());
+    ASSERT_FALSE(mediaSource.empty());
+
+    const size_t helperBegin = controllerSource.find("static void RequestRecordingStopAndReleaseMedia(");
+    const size_t helperEnd = controllerSource.find("void CheckRecordingFailureState()", helperBegin);
+    ASSERT_NE(helperBegin, std::string::npos);
+    ASSERT_NE(helperEnd, std::string::npos);
+    const std::string helper = controllerSource.substr(helperBegin, helperEnd - helperBegin);
+    const size_t mediaRequest = helper.find("RequestChildRecordingStop(g_MediaClient.get()");
+    const size_t injectFallback = helper.find("RequestChildRecordingStop(g_InjectClient.get()");
+    const size_t endpointRelease = helper.find("g_MediaClient->Disconnect()");
+    ASSERT_NE(mediaRequest, std::string::npos);
+    ASSERT_NE(injectFallback, std::string::npos);
+    ASSERT_NE(endpointRelease, std::string::npos);
+    EXPECT_LT(mediaRequest, injectFallback);
+    EXPECT_LT(injectFallback, endpointRelease);
+    EXPECT_NE(helper.find("mediaAccepted || RequestChildRecordingStop"), std::string::npos);
+
+    EXPECT_NE(controllerSource.find("RequestRecordingStopAndReleaseMedia(\"record hotkey\", 5000)"),
+              std::string::npos);
+    EXPECT_NE(controllerSource.find("RequestRecordingStopAndReleaseMedia(\"audio-only hotkey\", 5000)"),
+              std::string::npos);
+    EXPECT_EQ(controllerSource.find("Stop failed - retrying once"), std::string::npos);
+
+    const size_t stopCase = mediaSource.find("case ProcessCommand::StopRecording:");
+    const size_t nextCase = mediaSource.find("case ProcessCommand::Ping:", stopCase);
+    ASSERT_NE(stopCase, std::string::npos);
+    ASSERT_NE(nextCase, std::string::npos);
+    const std::string stopBlock = mediaSource.substr(stopCase, nextCase - stopCase);
+    const size_t sharedStateClear = stopBlock.find("SetCaptureRequestedState(false)");
+    const size_t accepted = stopBlock.find("ipc.SendResponse(ProcessResponse::Ack)");
+    const size_t finalization = stopBlock.find("StopRecording();");
+    ASSERT_NE(sharedStateClear, std::string::npos);
+    ASSERT_NE(accepted, std::string::npos);
+    ASSERT_NE(finalization, std::string::npos);
+    EXPECT_LT(sharedStateClear, accepted);
+    EXPECT_LT(accepted, finalization);
+    EXPECT_EQ(stopBlock.find("ProcessResponse::RecordingStopped"), std::string::npos);
+    EXPECT_NE(stopBlock.find("g_Running = false"), std::string::npos);
+}
+
 TEST(RestrictedChildLauncherProbe, InheritsOnlyAllowlistedMapping) {
     const auto allowedValue = CommandLineHandle(L"--probe-allowed=");
     const auto blockedValue = CommandLineHandle(L"--probe-blocked=");

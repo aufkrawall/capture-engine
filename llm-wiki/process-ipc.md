@@ -1,6 +1,6 @@
 # Process IPC And Restricted Children
 
-Last cross-checked: 2026-07-18 (restricted process channels, private same-image process-loopback workers, GUI launch-feedback suppression, and exact shared-memory ABI/build publication/isolation)
+Last cross-checked: 2026-07-18 (restricted process channels, accept-before-finalize media stops, private same-image process-loopback workers, GUI launch-feedback suppression, and exact shared-memory ABI/build publication/isolation)
 
 Primary sources:
 - `common/restricted_child_process.{h,cpp}`
@@ -15,6 +15,8 @@ Primary sources:
 ## Summary
 
 Controller-to-inject/media/limiter commands use a private channel created for each spawned child. The controller creates a unique connected duplex named-pipe pair, marks only the child endpoint inheritable, and launches through `RestrictedChildProcess` with `STARTUPINFOEX` plus `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. Production children no longer reconnect to a public fixed pipe name. A broken channel is terminal for that child instance and the controller performs a clean respawn.
+
+An ordinary video or audio-only stop is an authenticated media command, not an intentional broken pipe. Media clears every hook-facing recording flag and any older shared stop/start command, acknowledges acceptance before encoder/mux finalization, then finalizes and exits as a disposable child. The controller can release its endpoint immediately without blocking tray/hotkey work on trailer writing or the post-mux probe. It asks inject to publish the shared-memory stop only when media did not accept the private command. Therefore `media channel failed during peek` remains evidence of a real channel failure, not normal stop noise, and an inject fallback cannot leave a stale `cmdStopRecording` for the next media child.
 
 The pipe security descriptor grants access only to SYSTEM and the current user. The child verifies that the inherited pipe's server PID is the controller. The controller accepts startup only when the versioned handshake contains the exact spawned child PID, expected mode, and per-channel cryptographically generated 128-bit nonce.
 
@@ -42,6 +44,8 @@ CaptureEngine is linked as a Windows GUI-subsystem image even when the same exec
 
 Protocol 2 has an exact 52-byte packed header and at most 256 payload bytes. Validation covers magic, version, header size, exact read and total sizes, message kind, opcode, sender mode, sender PID, sequence, nonce, payload termination, and opcode-specific payload shape. Short, oversized, stale, unknown, mismatched, and malformed messages are rejected. Invalid-message logging is rate limited.
 
+`StopRecording` accepts `Ack` as an acceptance response as well as the legacy completion response. The disposable media child intentionally uses `Ack` before finalization; completion is proven by its finalization logs/process exit rather than by holding the controller command call open.
+
 The private pipe name is only a transient rendezvous used while the controller already holds the connected endpoint; it is not a stable production API. The child receives the endpoint handle, controller PID, and nonce on its command line and strictly parses their complete values before using the channel.
 
 ## Child Launcher Invariants
@@ -55,7 +59,9 @@ The private pipe name is only a transient rendezvous used while the controller a
 
 ## Tests And Diagnostics
 
-`tests/test_process_ipc.cpp` covers exact message validation, valid commands/responses, bad kind/opcode/mode/PID/nonce/sequence/size/payload, strict startup arguments, private-pipe source invariants, restricted handle-list spawning, delivery of the launch-feedback opt-out to a real child probe, and earliest Controller-only cursor/tray ordering. `tests/test_crash_handler.cpp` locks the hidden dump-helper feedback opt-out. Shared-memory tests cover explicit ABI publication/rejection, version-isolated names, wrap-safe frame windows, session log directory selection, and filename containment. Runtime diagnostics identify rejected headers/messages, channel disconnects, corrupt frame indices, early/periodic Vulkan frame publication, and rate-limited ring-full events without logging secrets.
+`tests/test_process_ipc.cpp` covers exact message validation, valid commands/responses, bad kind/opcode/mode/PID/nonce/sequence/size/payload, strict startup arguments, private-pipe source invariants, restricted handle-list spawning, accept-before-finalize media stop ordering and fallback placement, delivery of the launch-feedback opt-out to a real child probe, and earliest Controller-only cursor/tray ordering. `tests/test_crash_handler.cpp` locks the hidden dump-helper feedback opt-out. Shared-memory tests cover explicit ABI publication/rejection, version-isolated names, wrap-safe frame windows, session log directory selection, and filename containment. Runtime diagnostics identify rejected headers/messages, channel disconnects, corrupt frame indices, early/periodic Vulkan frame publication, and rate-limited ring-full events without logging secrets.
+
+The focused `ProcessIPCTest.*:AudioCaptureSourceTest.*:ConfigTest.*` gate passed 89 tests. Incremental product build `0.1.5085` passed both hook architectures, CaptureEngine/MediaEngine, packaging, both Vulkan layers, import closure, PE mitigations, and PDB checks. The exact-build no-build gate passed all 1,728 native tests in 132 suites and all five Python tool self-tests.
 
 ## Open Questions / Stale-risk
 

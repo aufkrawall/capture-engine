@@ -487,8 +487,12 @@ bool AudioCapture::ActivateAndStartClientOnDevice() {
     hr = pAudioClient->GetStreamLatency(&streamLatency);
     if (SUCCEEDED(hr)) {
         streamLatency100ns_ = static_cast<uint64_t>(std::max<REFERENCE_TIME>(0, streamLatency));
+    } else if (hr == E_NOTIMPL) {
+        DLL_Log("[AudioCapture] GetStreamLatency is not implemented for this capture client; continuing without "
+                "client-reported latency");
+        streamLatency100ns_ = 0;
     } else {
-        DLL_Log("[AudioCapture] GetStreamLatency failed: 0x%x", hr);
+        DLL_Log("[AudioCapture] GetStreamLatency unavailable: 0x%x; continuing without client-reported latency", hr);
         streamLatency100ns_ = 0;
     }
     REFERENCE_TIME defaultPeriod = 0;

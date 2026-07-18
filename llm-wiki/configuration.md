@@ -36,6 +36,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 - `video_capture=global|inject|wgc|dxgi_dup|none` chooses the application's video route. `global` follows `[Capture] capture_method`; in `auto`, capture injection profiles use inject and other explicit global profiles use WGC. `inject` is accepted only with `injection_mode=capture`; an invalid combination is logged and receives no video route rather than silently injecting or switching backends. `none` contributes no target. Existing profiles that omit `video_capture` retain their prior routing behavior instead of being migrated implicitly.
 - `injection_mode=capture|overlay|none` independently controls DLL injection. `capture` permits injected video plus the injected overlay/graphics overrides, `overlay` permits only the latter features, and `none` does not inject. The older profile key `injection` and its `normal`/`inject` values remain aliases, with `injection_mode` winning. Legacy `[App.*]` sections still imply capture injection.
 - Fresh configs no longer contain `[Injection] whitelist`, `overlay_whitelist`, or `wgc_window_detection`. The loader still reads them for compatibility and converts profile routes into the same internal runtime lists. A canonical profile removes legacy entries for the same process/window before its route is added, including a `none` route. Overlapping profiles are diagnosed and the later profile wins; a canonical profile wins over an overlapping legacy `[App.*]` section.
+- The profile reference remains fully commented and is followed by one compact practical example: Heroes of the Storm captured with DXGI Desktop Duplication, no injection, DesktopOverlay enabled, and application audio routed to tracks 1 and 2. It is documentation only and does not create an active default profile.
 
 ## Important user-facing semantics
 
@@ -72,5 +73,6 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 ## Verification
 
 - The focused config/profile/pseudo-overlay gate passed 101 tests across six suites, including exact template/resource/generated-file parity, exact canonical process selection, named routes, qualified DesktopOverlay overrides, automatic process-backed warning targets, compatibility-list fallback, visibility policy, and dedicated-thread shutdown.
-- Final clean build `0.1.5084` passed x64/x86 hooks, MediaEngine/CaptureEngine, 145 unit-test objects, 30 test apps, both Vulkan layers, packaging, import closure, PE mitigations, and PDB checks.
-- The exact `0.1.5084` no-build gate passed all 1,726 native tests in 132 suites and all five Python tool self-tests.
+- The follow-up config/IPC/audio-source gate passed 89 tests across three suites, including exact presence of the compact practical profile example.
+- Final incremental build `0.1.5085` passed x64/x86 hooks, MediaEngine/CaptureEngine, 145 unit-test objects, 30 test apps, both Vulkan layers, packaging, import closure, PE mitigations, and PDB checks.
+- The exact `0.1.5085` no-build gate passed all 1,728 native tests in 132 suites and all five Python tool self-tests.

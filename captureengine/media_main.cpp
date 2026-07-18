@@ -12654,9 +12654,23 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     break;
                 }
                 case ProcessCommand::StopRecording:
+                    // A direct stop owns all hook-facing state. Do this even if
+                    // startup had not yet reached g_Recording, and consume any
+                    // older shared-memory command before this process exits.
+                    if (g_pSharedMem) {
+                        StoreRelease(g_pSharedMem->runtimeState.cmdStartRecording, false);
+                        StoreRelease(g_pSharedMem->runtimeState.cmdStopRecording, false);
+                    }
+                    SetInjectVideoCaptureRequestedState(false, "authenticated stop request");
+                    SetCaptureRequestedState(false);
+                    SetRecordingVisibleState(false);
+                    // Accept the authenticated request before potentially lengthy
+                    // encoder/mux finalization. The controller may then release its
+                    // endpoint while this disposable media process finishes and exits.
+                    if (!ipc.SendResponse(ProcessResponse::Ack))
+                        LogWarn("[Media] Failed to acknowledge graceful recording stop; finalizing anyway");
                     StopRecording();
                     releaseIdleWgcResources();
-                    ipc.SendResponse(ProcessResponse::RecordingStopped);
                     // Exit after recording stops to free GPU VRAM.
                     // Controller respawns on next recording via EnsureMediaProcessReady.
                     LogInfo("[Media] Recording finished, exiting to release GPU resources");

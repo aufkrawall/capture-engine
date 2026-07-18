@@ -60,6 +60,31 @@ TEST(AudioCaptureSourceTest, PacketAllocationFailureCannotEscapeCaptureThread) {
     EXPECT_NE(appSource.find("packetQueue.emplace_back(std::move(packet));"), std::string::npos);
 }
 
+TEST(AudioCaptureSourceTest, UnsupportedStreamLatencyIsReportedAsExpectedTelemetry) {
+    const std::string endpointSource = ReadSource("audio_capture.cpp");
+    const std::string appSource = ReadSource("app_audio_capture.cpp");
+    ASSERT_FALSE(endpointSource.empty());
+    ASSERT_FALSE(appSource.empty());
+
+    for (const std::string* source : {&endpointSource, &appSource}) {
+        const size_t query = source->find("GetStreamLatency(&streamLatency)");
+        const size_t unsupported = source->find("else if (hr == E_NOTIMPL)", query);
+        const size_t zeroFallback = source->find("streamLatency100ns", unsupported);
+        ASSERT_NE(query, std::string::npos);
+        ASSERT_NE(unsupported, std::string::npos);
+        ASSERT_NE(zeroFallback, std::string::npos);
+        EXPECT_LT(query, unsupported);
+    }
+
+    EXPECT_NE(endpointSource.find("GetStreamLatency is not implemented for this capture client"),
+              std::string::npos);
+    EXPECT_NE(appSource.find("GetStreamLatency is not implemented for this process-loopback client"),
+              std::string::npos);
+    EXPECT_NE(appSource.find("automatic render-endpoint latency probing remains authoritative"), std::string::npos);
+    EXPECT_EQ(endpointSource.find("GetStreamLatency failed"), std::string::npos);
+    EXPECT_EQ(appSource.find("GetStreamLatency failed"), std::string::npos);
+}
+
 TEST(AudioCaptureSourceTest, EveryCaptureRouteUsesOwnerAcknowledgedEpochRejoin) {
     const std::string appSource = ReadSource("app_audio_capture.cpp");
     const std::string endpointSource = ReadSource("audio_capture.cpp");

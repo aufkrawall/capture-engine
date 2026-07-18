@@ -852,8 +852,14 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid, bool allowEventDriven) {
     hr = pAudioClient->GetStreamLatency(&streamLatency);
     if (SUCCEEDED(hr)) {
         streamLatency100ns = static_cast<uint64_t>(std::max<REFERENCE_TIME>(0, streamLatency));
+    } else if (hr == E_NOTIMPL) {
+        DLL_Log("[AppAudioCapture] GetStreamLatency is not implemented for this process-loopback client; "
+                "automatic render-endpoint latency probing remains authoritative");
+        streamLatency100ns = 0;
     } else {
-        DLL_Log("[AppAudioCapture] GetStreamLatency failed: 0x%x", hr);
+        DLL_Log("[AppAudioCapture] GetStreamLatency unavailable: 0x%x; automatic render-endpoint latency probing "
+                "remains authoritative",
+                hr);
         streamLatency100ns = 0;
     }
     REFERENCE_TIME defaultPeriod = 0;

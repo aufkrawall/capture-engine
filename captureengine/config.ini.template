@@ -468,3 +468,13 @@ dx12_focus_analysis=false
 ;DesktopOverlay.enabled=true
 ;DesktopOverlay.mode=2
 ;DesktopOverlay.pos=0
+
+; Example: capture Heroes of the Storm through DXGI Desktop Duplication without
+; injection, show the desktop warning, and record its audio to tracks 1 and 2.
+;[Profile.hots]
+;process=HeroesOfTheStorm_x64.exe
+;injection_mode=none
+;video_capture=dxgi_dup
+;DesktopOverlay.enabled=true
+;audio_enabled=true
+;audio_track=1,2

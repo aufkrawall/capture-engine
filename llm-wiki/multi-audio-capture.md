@@ -1,6 +1,6 @@
 # Multi Audio Capture
 
-Last cross-checked: 2026-07-18 (inject CFR source-clock targets independent of encoder/lookahead latency, rate-limited audio-worker scheduling-gap evidence, process-loopback protocol 4 descriptor/byte rings with private endpoint lifecycle state, transactional cursor advancement, preserved initial activation markers, ordered close-before-reactivation, immutable producer-format normalization, and evidence-complete fatal publication, polling-first capture and first-packet qualification, render-session-notification recovery, disposable worker recycle, 60 ms CFR ingestion reservoir, exact finalization, route-local packetless silence, non-destructive CFR backlog preservation, and lossless stop-tail preservation)
+Last cross-checked: 2026-07-18 (inject CFR source-clock targets independent of encoder/lookahead latency, expected unsupported client-latency telemetry, rate-limited audio-worker scheduling-gap evidence, process-loopback protocol 4 descriptor/byte rings with private endpoint lifecycle state, transactional cursor advancement, preserved initial activation markers, ordered close-before-reactivation, immutable producer-format normalization, and evidence-complete fatal publication, polling-first capture and first-packet qualification, render-session-notification recovery, disposable worker recycle, 60 ms CFR ingestion reservoir, exact finalization, route-local packetless silence, non-destructive CFR backlog preservation, and lossless stop-tail preservation)
 Stale-risk: medium
 
 Primary sources:
@@ -59,6 +59,8 @@ The precise startup exception is a target render session created after an activa
 Endpoint capture owns COM initialization, device enumeration, activation, `IAudioClient`/`IAudioCaptureClient`, start, reactivation, and release entirely on its worker thread. The controlling thread only signals, waits for the startup handshake, and joins. Reactivation is serialized with stop and every partial failure clears the capture interface before retry. Process-loopback async activation has an explicit cancellation event and does not pay the same mode-independent timeout twice.
 
 Both endpoint and process-loopback workers validate the announced/actual frame count, endpoint-buffer bound, sample rate, checked frame-to-byte multiplication, and non-silent data pointer before allocating or copying. Allocation and queue-insertion failures are contained and logged. Queue replacement is transactional: a new packet is inserted before the oldest packet is removed, so allocation failure cannot lose both. `AUDCLNT_S_BUFFER_EMPTY` never calls `ReleaseBuffer` because no packet was acquired.
+
+`IAudioClient::GetStreamLatency` may return `E_NOTIMPL` for a valid process-loopback client. That means client-reported latency telemetry is unavailable, not that capture initialization failed. Process loopback records this in plain language, keeps the value at zero, and continues to use the automatic render-endpoint probe as the authoritative latency model. Endpoint capture uses the same explicit unsupported/unavailable distinction and continues without client-reported latency. Neither case changes packets, synchronization, or recovery policy.
 
 Stop performs exactly one no-wait/no-reactivation final drain of already committed WASAPI packets, bounded by the endpoint buffer (or the universal two-second packet bound when buffer telemetry is unavailable). Capture sources stop while `AudioLoop` is still consuming; a drain request/complete handshake empties their queues before the loop exits. Audio-only recording also flushes source and track resamplers and pulls every exported track to a common final cursor. Any exception escaping `AudioLoop` stops producers, marks the loop stopped, completes the drain handshake, and wakes all waiters, preventing shutdown deadlock.
 
@@ -225,6 +227,8 @@ Useful logs for this area:
 ## Validation
 
 Focused regression coverage lives in:
+
+- The 2026-07-18 latency-diagnostic/stop-lifecycle follow-up passed the combined 89-test `ProcessIPCTest.*:AudioCaptureSourceTest.*:ConfigTest.*` gate, incremental product build `0.1.5085`, and the exact 1,728-test/132-suite native gate plus all five Python tool self-tests.
 
 - `tests/test_config.cpp`
   - Inheritance and override behavior for `downmix`, `bitrate`, `sample_rate`, and `bit_depth`.

@@ -754,6 +754,43 @@ static bool PublishRecordingStartIntent(RecordingStartIntent intent, const char*
     return published;
 }
 
+static bool RequestChildRecordingStop(ProcessIPCClient* client, const char* childName, const char* reason,
+                                      DWORD timeoutMs) {
+    if (!client || !client->IsConnected())
+        return false;
+
+    ProcessResponse response = ProcessResponse::Error;
+    if (!client->SendCommand(ProcessCommand::StopRecording, nullptr, &response, timeoutMs) ||
+        response == ProcessResponse::Error) {
+        LogWarn("[Controller] %s did not accept the recording stop (%s)", childName,
+                reason ? reason : "unspecified");
+        return false;
+    }
+
+    LogInfo("[Controller] %s accepted the recording stop (%s)", childName, reason ? reason : "unspecified");
+    return true;
+}
+
+static void RequestRecordingStopAndReleaseMedia(const char* reason, DWORD timeoutMs) {
+    // Ask media first. It acknowledges before finalization, so controller UI work
+    // does not wait for trailer writing or the post-mux probe. Media clears the
+    // hook-facing shared state before acknowledging. The inject command is only a
+    // fallback when the private media channel cannot accept the request.
+    const bool mediaAccepted = RequestChildRecordingStop(g_MediaClient.get(), "Media", reason, timeoutMs);
+    const bool stopAccepted =
+        mediaAccepted || RequestChildRecordingStop(g_InjectClient.get(), "Inject fallback", reason, timeoutMs);
+    if (!stopAccepted) {
+        LogWarn("[Controller] No recording child accepted the stop (%s); process teardown is the final fallback",
+                reason ? reason : "unspecified");
+    }
+
+    // Media self-exits after finalization. Drop the controller's reference now so
+    // the next recording creates a fresh authenticated child.
+    if (g_MediaClient)
+        g_MediaClient->Disconnect();
+    CloseProcessHandle(g_hMediaProcess);
+}
+
 void CheckRecordingFailureState() {
     if (!g_Recording)
         return;
@@ -767,15 +804,7 @@ void CheckRecordingFailureState() {
     }
 
     LogError("[Controller] Recording failed with code %u; stopping all recording state", failureCode);
-    if (g_InjectClient && g_InjectClient->IsConnected()) {
-        ProcessResponse response = ProcessResponse::Ack;
-        if (!g_InjectClient->SendCommand(ProcessCommand::StopRecording, nullptr, &response, 1000)) {
-            LogWarn("[Controller] Failed to deliver the recording-failure stop to inject");
-        }
-    }
-    if (g_MediaClient)
-        g_MediaClient->Disconnect();
-    CloseProcessHandle(g_hMediaProcess);
+    RequestRecordingStopAndReleaseMedia("recording failure", 1000);
 
     g_Recording = false;
     PublishRecordingStartIntent(RecordingStartIntent::Idle, "recording failure");
@@ -845,23 +874,7 @@ void ToggleRecording() {
         PublishRecordingStartIntent(RecordingStartIntent::Idle, "record stop hotkey");
         LogInfo("[Controller] Stopping recording...");
 
-        // Notify inject process - it clears shared memory recording flag
-        if (g_InjectClient && g_InjectClient->IsConnected()) {
-            ProcessResponse resp;
-            if (!g_InjectClient->SendCommand(ProcessCommand::StopRecording, nullptr, &resp, 5000)) {
-                LogError("[Controller] Stop failed - retrying once");
-                g_InjectClient->SendCommand(ProcessCommand::StopRecording, nullptr, &resp, 5000);
-            }
-        }
-
-        // Media process self-exits after recording stops to free GPU VRAM.
-        // Pre-clear handle so EnsureChildProcessConnected spawns fresh next time.
-        if (g_MediaClient)
-            g_MediaClient->Disconnect();
-        if (g_hMediaProcess) {
-            CloseHandle(g_hMediaProcess);
-            g_hMediaProcess = NULL;
-        }
+        RequestRecordingStopAndReleaseMedia("record hotkey", 5000);
 
         LogInfo("[Controller] Recording stopped");
     }
@@ -926,28 +939,7 @@ void ToggleAudioOnlyRecording() {
         PublishRecordingStartIntent(RecordingStartIntent::Idle, "audio-only stop hotkey");
         LogInfo("[Controller] Stopping audio-only recording...");
 
-        // Notify inject process to stop
-        if (g_InjectClient && g_InjectClient->IsConnected()) {
-            ProcessResponse resp;
-            if (!g_InjectClient->SendCommand(ProcessCommand::StopRecording, nullptr, &resp, 5000)) {
-                LogError("[Controller] Stop failed - retrying once");
-                g_InjectClient->SendCommand(ProcessCommand::StopRecording, nullptr, &resp, 5000);
-            }
-        }
-
-        // Also notify media process directly (in case inject is not active)
-        if (g_MediaClient && g_MediaClient->IsConnected()) {
-            ProcessResponse resp;
-            g_MediaClient->SendCommand(ProcessCommand::StopRecording, nullptr, &resp, 5000);
-        }
-
-        // Media process self-exits after recording stops.
-        if (g_MediaClient)
-            g_MediaClient->Disconnect();
-        if (g_hMediaProcess) {
-            CloseHandle(g_hMediaProcess);
-            g_hMediaProcess = NULL;
-        }
+        RequestRecordingStopAndReleaseMedia("audio-only hotkey", 5000);
 
         LogInfo("[Controller] Audio-only recording stopped");
     }
@@ -1123,15 +1115,7 @@ void CheckChildProcessHealth() {
         const char* failedChild = mediaUnavailable ? "media" : (injectUnavailable ? "inject" : "limiter");
         LogError("[Controller] Required %s process/channel exited before recording became live; cancelling start intent",
                  failedChild);
-        if (!mediaUnavailable && g_MediaClient && g_MediaClient->IsConnected()) {
-            ProcessResponse response = ProcessResponse::Error;
-            if (!g_MediaClient->SendCommand(ProcessCommand::StopRecording, nullptr, &response, 1000)) {
-                LogWarn("[Controller] Failed to deliver pre-live cancellation to media after %s loss", failedChild);
-            }
-        }
-        if (g_MediaClient)
-            g_MediaClient->Disconnect();
-        CloseProcessHandle(g_hMediaProcess);
+        RequestRecordingStopAndReleaseMedia("required child exited before recording live", 1000);
         g_Recording = false;
         PublishRecordingStartIntent(RecordingStartIntent::Idle, "required child exited before recording live");
         if (g_Tray) {

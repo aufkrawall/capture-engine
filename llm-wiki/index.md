@@ -45,7 +45,7 @@ Primary sources:
 - `screenshots.md`
   - Shared ABI 32 screenshot requests, raw payload v2, managed hook worker, strict payload validation, PNG/10-bit 4:4:4 AVIF encoding, color conversion, and atomic publication. Last verified 2026-07-15.
 - `process-ipc.md`
-  - Restricted private child channels, internal GUI launch-feedback suppression, exact shared-memory ABI publication/isolation, session log routing, shared-ring integrity, and malformed/incompatible-message rejection. Last verified 2026-07-18.
+  - Restricted private child channels, accept-before-finalize disposable media stops, internal GUI launch-feedback suppression, exact shared-memory ABI publication/isolation, session log routing, shared-ring integrity, and malformed/incompatible-message rejection. Last verified 2026-07-18.
 - `repo-map.md`
   - Top-level repo layout and subsystem ownership.
 - `d3d9-capture.md`
