@@ -463,8 +463,18 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
         std::string injectionMode = "normal";
         if (!legacyProfile) {
-            GetPrivateProfileStringA(selectedSection, "injection", "none", buffer, 4096, path.c_str());
+            constexpr const char* kMissingProfileValue = "\x1d";
+            GetPrivateProfileStringA(selectedSection, "injection_mode", kMissingProfileValue, buffer, 4096,
+                                     path.c_str());
             injectionMode = Trim(buffer);
+            if (injectionMode == kMissingProfileValue) {
+                // Compatibility with profiles written before injection_mode became
+                // the documented name.
+                GetPrivateProfileStringA(selectedSection, "injection", "none", buffer, 4096, path.c_str());
+                injectionMode = Trim(buffer);
+            }
+            if (injectionMode.empty())
+                injectionMode = "none";
             std::transform(injectionMode.begin(), injectionMode.end(), injectionMode.begin(),
                            [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
         }
@@ -474,7 +484,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         } else if (injectionMode == "overlay" || injectionMode == "overlay_only") {
             profileOverlayEntries.push_back(profileEntry);
         } else if (injectionMode != "none" && injectionMode != "off" && injectionMode != "disabled") {
-            LogInvalidConfigBoundary(selectedSection, "injection", injectionMode, "none");
+            LogInvalidConfigBoundary(selectedSection, "injection_mode", injectionMode, "none");
         }
 
         if (!procNameLower.empty()) {

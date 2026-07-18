@@ -169,6 +169,10 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     ASSERT_NE(diagnosticsSection, std::string::npos);
     ASSERT_NE(profileExample, std::string::npos);
     EXPECT_GT(profileExample, diagnosticsSection);
+    EXPECT_NE(generatedText.find(";injection_mode=capture", profileExample), std::string::npos);
+    EXPECT_EQ(generatedText.find(";injection=normal", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find("capture = allow injected video capture", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find("none = do not inject", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";audio_enabled=true", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("Other valid values are 2-6"), std::string::npos);

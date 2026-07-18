@@ -267,7 +267,7 @@ def write_scenario_config(scenario, output_dir, include_microphone, include_mixe
         secondary_app_section = f"""
 [Profile.2]
 Process={SECONDARY_PROCESS_NAME}
-injection=none
+injection_mode=none
 audio_enabled=true
 audio_track=2
 """
@@ -343,7 +343,7 @@ track={system_tracks}
 
 [Profile.1]
 Process={PROCESS_NAME}
-injection=none
+injection_mode=none
 audio_enabled=true
 audio_track={app_tracks}
 audio_capture_latency_ms={app_capture_latency_ms}

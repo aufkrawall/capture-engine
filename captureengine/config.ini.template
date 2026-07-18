@@ -393,10 +393,7 @@ dx12_focus_analysis=false
 ; Profiles keep one application's injection mode, app-audio capture, and setting
 ; overrides together. You can create [Profile.1] through [Profile.8].
 ;
-; Process is the executable name. injection defaults to none. normal permits
-; injected video capture; overlay injects without using injected video capture;
-; none does not inject. Graphics overrides need either normal/overlay here or a
-; matching entry under [Injection].
+; Process is the executable name.
 ;
 ; audio_enabled=true records audio from Process. audio_track accepts IDs from 1
 ; to 255 and can contain a comma-separated list. The other audio_* fields are
@@ -409,7 +406,11 @@ dx12_focus_analysis=false
 ;
 ;[Profile.1]
 ;Process=game.exe
-;injection=normal
+; How CaptureEngine injects this application:
+; capture = allow injected video capture, the injected overlay, and graphics overrides.
+; overlay = inject the overlay and graphics overrides, but do not capture video by injection.
+; none = do not inject. App-audio capture still works. Omitted also means none.
+;injection_mode=capture
 ;audio_enabled=true
 ;audio_track=3
 ;audio_codec=aac

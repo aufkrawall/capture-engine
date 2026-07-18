@@ -141,13 +141,14 @@ TEST_F(ConfigOverrideTest, ProfilesUseExplicitInjectionModes) {
         ")\n"
         "[Profile.1]\n"
         "Process=normal.exe\n"
-        "injection=normal\n"
+        "injection_mode=capture\n"
+        "injection=overlay\n"
         "[Profile.2]\n"
         "Process=overlay.exe\n"
-        "injection=overlay\n"
+        "injection_mode=overlay\n"
         "[Profile.3]\n"
         "Process=none.exe\n"
-        "injection=none\n"
+        "injection_mode=none\n"
         "Video.fps=77\n");
 
     AppConfig config;
@@ -164,6 +165,20 @@ TEST_F(ConfigOverrideTest, ProfilesUseExplicitInjectionModes) {
     EXPECT_TRUE(HasProcess(config.overlayWhitelist, "overlay.exe"));
     EXPECT_FALSE(HasProcess(config.overlayWhitelist, "normal.exe"));
     EXPECT_EQ(config.video.fps, 77);
+}
+
+TEST_F(ConfigOverrideTest, LegacyProfileInjectionKeyRemainsSupported) {
+    WriteConfig(
+        "[Profile.1]\n"
+        "Process=legacy-key.exe\n"
+        "injection=normal\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    ASSERT_EQ(config.gameWhitelist.size(), 1u);
+    EXPECT_EQ(config.gameWhitelist.front().pattern, "legacy-key.exe");
+    EXPECT_TRUE(config.overlayWhitelist.empty());
 }
 
 TEST_F(ConfigOverrideTest, ProfileWithoutInjectionModeDoesNotInject) {
@@ -192,7 +207,7 @@ TEST_F(ConfigOverrideTest, ProfilesCombineAppAudioAndQualifiedOverrides) {
         "enabled=false\n"
         "[Profile.1]\n"
         "Process=game1.exe\n"
-        "injection=none\n"
+        "injection_mode=none\n"
         "audio_enabled=true\n"
         "audio_track=3,4\n"
         "audio_codec=opus\n"
