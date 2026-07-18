@@ -29,11 +29,11 @@ struct AudioConfig {
     uint32_t outputChannelMask = 0;  // WAVEFORMATEXTENSIBLE/FFmpeg-compatible channel mask
     // Per-source capture latency in ms (this source's audio lands this late vs the video
     // content clock). Latency is a per-DEVICE-DOMAIN property, not really per-source:
-    //   Domain 1 = default render endpoint: the system loopback ([Audio]/[Audio.N]) AND every
-    //              [AppAudio.N] process-loopback source capture the same endpoint, so they all
-    //              share ONE latency = the render-endpoint value ([General] audio_capture_latency_ms,
-    //              optionally auto-measured; see audio_latency_probe).
-    //   Domain 2 = each microphone/input device: its own latency ([General] mic_capture_latency_ms
+    //   Domain 1 = default render endpoint: system loopback ([SystemAudio]/[SystemAudio.N]) AND
+    //              every profile/legacy app process-loopback source capture the same endpoint, so
+    //              they share ONE latency = [AudioSync] audio_capture_latency_ms (optionally
+    //              auto-measured; see audio_latency_probe).
+    //   Domain 2 = each microphone/input device: its own latency ([AudioSync] mic_capture_latency_ms
     //              or a per-mic capture_latency_ms override); it must NOT inherit the loopback value.
     // Override per section with capture_latency_ms. Used to equalize sources and delay video to
     // match. Measure with run_av_sync_matrix.py --raw-offset-gate (120 fps).

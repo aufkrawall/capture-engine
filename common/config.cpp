@@ -1435,8 +1435,90 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             config.audioSources.push_back(cfg);
     }
 
-    // --- Parse [AppAudio.1] .. [AppAudio.8] sections (unchanged) ---
+    // Profile-local audio is the canonical per-application form. Read these
+    // values literally: applying the currently matched profile's override
+    // fallback while walking every profile would copy one profile's audio keys
+    // into the others. [AppAudio.N] remains the compatibility form.
+    auto GetLiteralStr = [&](const char* section, const char* key, const char* def) {
+        GetPrivateProfileStringA(section, key, def, buffer, 4096, path.c_str());
+        return Trim(buffer);
+    };
+    auto GetLiteralBool = [&](const char* section, const char* key, bool def) {
+        std::string value = GetLiteralStr(section, key, def ? "true" : "false");
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (value == "true" || value == "1" || value == "yes" || value == "on")
+            return true;
+        if (value == "false" || value == "0" || value == "no" || value == "off")
+            return false;
+        LogInvalidConfigBoundary(section, key, value, def ? "true" : "false");
+        return def;
+    };
+    auto GetLiteralInt = [&](const char* section, const char* key, int def) {
+        const std::string value = GetLiteralStr(section, key, "");
+        if (value.empty())
+            return def;
+        int parsed = def;
+        if (!TryParseInt(value, parsed)) {
+            LogInvalidConfigBoundary(section, key, value, std::to_string(def));
+            return def;
+        }
+        return parsed;
+    };
+    auto GetLiteralFloat = [&](const char* section, const char* key, float def) {
+        std::string value = GetLiteralStr(section, key, "");
+        if (value.empty())
+            return def;
+        std::replace(value.begin(), value.end(), ',', '.');
+        float parsed = 0.0f;
+        if (!ce::TryParseFiniteFloat(value, parsed)) {
+            LogInvalidConfigBoundary(section, key, value, std::to_string(def));
+            return def;
+        }
+        return parsed;
+    };
+
+    // --- Parse [Profile.1] .. [Profile.8] audio and legacy [AppAudio.N] ---
     for (int appIdx = 1; appIdx <= kMaxAudioSections; appIdx++) {
+        char profileSection[32];
+        snprintf(profileSection, sizeof(profileSection), "Profile.%d", appIdx);
+        const std::string profileAudioEnabled = GetLiteralStr(profileSection, "audio_enabled", kMissingConfigValue);
+        if (profileAudioEnabled != kMissingConfigValue) {
+            AudioConfig appAudio;
+            appAudio.enabled = GetLiteralBool(profileSection, "audio_enabled", false);
+
+            std::string processSpec = GetLiteralStr(profileSection, "Process", "");
+            if (processSpec.empty())
+                processSpec = GetLiteralStr(profileSection, "ProcessName", "");
+            appAudio.processName = ParseEntry(processSpec).pattern;
+            appAudio.tracks = ParseIntList(GetLiteralStr(profileSection, "audio_track", ""), profileSection,
+                                           "audio_track", appIdx + 2);
+            appAudio.codec = GetLiteralStr(profileSection, "audio_codec", sysAudio.codec.c_str());
+            appAudio.bitrate = GetLiteralInt(profileSection, "audio_bitrate", sysAudio.bitrate);
+            appAudio.sampleRate = NormalizeSampleRate(
+                GetLiteralStr(profileSection, "audio_sample_rate", sysAudio.sampleRate.c_str()), profileSection);
+            appAudio.bitDepth = GetLiteralStr(profileSection, "audio_bit_depth", sysAudio.bitDepth.c_str());
+            appAudio.downmix = GetLiteralBool(profileSection, "audio_downmix", sysAudio.downmix);
+            appAudio.captureLatencyMs =
+                GetLiteralFloat(profileSection, "audio_capture_latency_ms", config.audioCaptureLatencyMs);
+            appAudio.sourceType = AudioConfig::AppAudio;
+
+            if (appAudio.enabled && !appAudio.processName.empty()) {
+                std::string trackList;
+                for (size_t t = 0; t < appAudio.tracks.size(); ++t) {
+                    if (t)
+                        trackList += ",";
+                    trackList += std::to_string(appAudio.tracks[t]);
+                }
+                LogInfo("Config: [%s] app-audio source process='%s' tracks=[%s]", profileSection,
+                        appAudio.processName.c_str(), trackList.c_str());
+                config.audioSources.push_back(appAudio);
+            } else if (appAudio.enabled) {
+                LogInvalidConfigBoundary(profileSection, "Process", processSpec, "executable name");
+            }
+            continue;
+        }
+
         char section[32];
         snprintf(section, sizeof(section), "AppAudio.%d", appIdx);
 

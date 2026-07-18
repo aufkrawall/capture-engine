@@ -93,11 +93,16 @@ tuning=hq
 multipass=auto
 ; Lower values mean higher quality. H.264/HEVC use 0-51. AV1 CQ uses 0-63.
 qp=23
-; off, auto, or a depth from 1 to 31.
+; This is not a true/false switch. off disables lookahead, auto chooses a useful
+; depth, or you can enter a depth from 1 to 31. Lookahead can improve frame
+; decisions, but it adds some encoding delay and GPU work.
 lookahead=off
+; Spatial AQ spends more bits on detailed parts of each frame.
 spatial_aq=false
+; Temporal AQ shifts bits between frames based on motion.
 temporal_aq=false
-; 0 lets NVENC choose. Otherwise use 1-15.
+; Strength used by spatial_aq. 0 lets NVENC choose; otherwise use 1-15. This has
+; no effect while spatial_aq=false.
 aq_strength=0
 ; auto, disabled, each, or middle.
 b_ref_mode=auto
@@ -127,8 +132,13 @@ sharpness=100
 codec=alac
 ; Kbps. Lossless codecs ignore this value.
 bitrate=192
+; default uses 48000 Hz. You can also enter a positive sample rate such as 44100,
+; 48000, or 96000. Opus always uses 48000 Hz.
 sample_rate=default
+; default uses 24-bit audio for ALAC, FLAC, and PCM. AAC and Opus ignore this
+; setting.
 bit_depth=default
+; false keeps the source's channel layout. true converts the output to stereo.
 downmix=false
 
 [SystemAudio]
@@ -163,21 +173,6 @@ track=2
 ;enabled=true
 ;device=Microphone (USB)
 ;track=21
-;capture_latency_ms=0
-
-; Capture one application's audio with [AppAudio.1] through [AppAudio.8]. Use an
-; executable name or a decimal process ID. Recording the same app through system
-; audio and app audio into one track can sound hollow or metallic.
-;[AppAudio.1]
-;enabled=true
-;process=game.exe
-;process_id=
-;track=3
-;codec=aac
-;bitrate=192
-;sample_rate=default
-;bit_depth=default
-;downmix=false
 ;capture_latency_ms=0
 
 [Hotkeys]
@@ -313,9 +308,6 @@ mip_mapping=default
 mip_bias=default
 mip_bias_mode=strict
 force_mip_bias_clamp=false
-msaa_samples=default
-sgssaa=false
-disable_auto_mip_bias=false
 ; -1 leaves the application alone. Other valid values are 0-6.
 cpu_prerender_limit=-1
 ; -1 leaves the application alone. Other valid values are 2-6.
@@ -370,19 +362,6 @@ audio_latency_autodetect=true
 audio_capture_latency_ms=0
 mic_capture_latency_ms=0
 
-; Per-process profiles can override settings for up to eight executables.
-; injection must be normal, overlay, or none. normal adds the process to the normal
-; injection list. overlay adds it to the overlay-only list. none does not inject it.
-; Use Section.key names so it is clear which setting is being changed.
-;[Profile.1]
-;Process=game.exe
-;injection=none
-;Video.encoder=hevc_nvenc
-;Video.fps=60
-;Graphics.vsync_mode=off
-;FpsLimiter.general_enabled=true
-;FpsLimiter.general_fps=120
-
 [Logging]
 ; off, error, warn, info, debug, or trace. trace also writes the most diagnostic data.
 log_level=debug
@@ -406,3 +385,41 @@ overlay_observer_only=false
 overlay_observer_policy_only=false
 overlay_observer_startup_present_only=false
 dx12_focus_analysis=false
+
+; =============================================================================
+; APPLICATION PROFILES
+; =============================================================================
+
+; Profiles keep one application's injection mode, app-audio capture, and setting
+; overrides together. You can create [Profile.1] through [Profile.8].
+;
+; Process is the executable name. injection defaults to none. normal permits
+; injected video capture; overlay injects without using injected video capture;
+; none does not inject. Graphics overrides need either normal/overlay here or a
+; matching entry under [Injection].
+;
+; audio_enabled=true records audio from Process. audio_track accepts IDs from 1
+; to 255 and can contain a comma-separated list. The other audio_* fields are
+; optional; when omitted, they use [Audio]. Do not put the same application on
+; the same track through both system audio and app audio, or it may sound hollow
+; or metallic.
+;
+; Per-app setting overrides use Section.key names. This avoids confusion between
+; settings such as Video.bitrate and Audio.bitrate.
+;
+;[Profile.1]
+;Process=game.exe
+;injection=normal
+;audio_enabled=true
+;audio_track=3
+;audio_codec=aac
+;audio_bitrate=192
+;audio_sample_rate=default
+;audio_bit_depth=default
+;audio_downmix=false
+;audio_capture_latency_ms=0
+;Video.encoder=hevc_nvenc
+;Video.fps=60
+;Graphics.vsync_mode=off
+;FpsLimiter.general_enabled=true
+;FpsLimiter.general_fps=120

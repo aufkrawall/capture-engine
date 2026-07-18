@@ -180,6 +180,72 @@ TEST_F(ConfigOverrideTest, ProfileWithoutInjectionModeDoesNotInject) {
     EXPECT_EQ(config.video.fps, 75);
 }
 
+TEST_F(ConfigOverrideTest, ProfilesCombineAppAudioAndQualifiedOverrides) {
+    WriteConfig(
+        "[Audio]\n"
+        "codec=alac\n"
+        "bitrate=192\n"
+        "sample_rate=default\n"
+        "bit_depth=default\n"
+        "downmix=false\n"
+        "[SystemAudio]\n"
+        "enabled=false\n"
+        "[Profile.1]\n"
+        "Process=game1.exe\n"
+        "injection=none\n"
+        "audio_enabled=true\n"
+        "audio_track=3,4\n"
+        "audio_codec=opus\n"
+        "audio_bitrate=256\n"
+        "audio_sample_rate=48000\n"
+        "audio_bit_depth=16\n"
+        "audio_downmix=true\n"
+        "audio_capture_latency_ms=12.5\n"
+        "Graphics.vsync_mode=fifo\n"
+        "[Profile.2]\n"
+        "Process=game2.exe\n"
+        "audio_enabled=true\n"
+        "audio_track=5\n"
+        "audio_codec=flac\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "game1.exe");
+
+    EXPECT_EQ(config.graphics.vsyncMode, "fifo");
+    ASSERT_EQ(config.audioSources.size(), 2u);
+    EXPECT_EQ(config.audioSources[0].sourceType, AudioConfig::AppAudio);
+    EXPECT_EQ(config.audioSources[0].processName, "game1.exe");
+    EXPECT_EQ(config.audioSources[0].tracks, (std::vector<int>{3, 4}));
+    EXPECT_EQ(config.audioSources[0].codec, "opus");
+    EXPECT_EQ(config.audioSources[0].bitrate, 256);
+    EXPECT_EQ(config.audioSources[0].sampleRate, "48000");
+    EXPECT_EQ(config.audioSources[0].bitDepth, "16");
+    EXPECT_TRUE(config.audioSources[0].downmix);
+    EXPECT_FLOAT_EQ(config.audioSources[0].captureLatencyMs, 12.5f);
+    EXPECT_EQ(config.audioSources[1].processName, "game2.exe");
+    EXPECT_EQ(config.audioSources[1].tracks, (std::vector<int>{5}));
+    EXPECT_EQ(config.audioSources[1].codec, "flac");
+    EXPECT_FALSE(config.audioSources[1].downmix);
+}
+
+TEST_F(ConfigOverrideTest, ProfileAudioSettingTakesPrecedenceOverSameNumberedLegacySection) {
+    WriteConfig(
+        "[SystemAudio]\n"
+        "enabled=false\n"
+        "[Profile.1]\n"
+        "Process=canonical.exe\n"
+        "audio_enabled=false\n"
+        "[AppAudio.1]\n"
+        "enabled=true\n"
+        "process=legacy.exe\n"
+        "track=3\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_TRUE(config.audioSources.empty());
+}
+
 TEST_F(ConfigOverrideTest, LegacyAppProfileStillAddsNormalInjectionTarget) {
     WriteConfig(
         "[App.1]\n"

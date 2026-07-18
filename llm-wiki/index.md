@@ -31,7 +31,7 @@ Primary sources:
 
 ## Content Catalog
 - `configuration.md`
-  - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, explicit profile injection modes, audio/output semantics, validation rules, and maintenance invariants. Last verified 2026-07-18.
+  - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, unified application profiles for injection/audio/overrides, audio/output semantics, validation rules, and maintenance invariants. Last verified 2026-07-18.
 - `overlay-rendering.md`
   - Shared overlay layout/graph/font invariants, instant amber recording-start intent and live-state handoff, exact-ABI and sanity-checked telemetry, legacy DX8/DX9/DX10/OpenGL cache/state isolation, DirectDraw performance boundary, and runtime-validation stale-risk. Last verified 2026-07-18.
 - `handoff-dx12-32bit-crash.md`

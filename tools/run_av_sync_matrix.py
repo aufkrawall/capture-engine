@@ -265,10 +265,11 @@ def write_scenario_config(scenario, output_dir, include_microphone, include_mixe
     secondary_app_section = ""
     if scenario.secondary_app_audio:
         secondary_app_section = f"""
-[AppAudio.2]
-enabled=true
-process={SECONDARY_PROCESS_NAME}
-track=2
+[Profile.2]
+Process={SECONDARY_PROCESS_NAME}
+injection=none
+audio_enabled=true
+audio_track=2
 """
     # Smoothness floor override: when set, exercises the WGC baseline jitter buffer (use with
     # audio_capture_latency_ms=0 to validate the video-only / low-confidence floor path: the realized
@@ -324,8 +325,9 @@ b_frames=0
 preset={scenario.nvenc_preset}
 tuning=hq
 multipass=disabled
-lookahead=false
-aq=false
+lookahead=off
+spatial_aq=false
+temporal_aq=false
 
 [Audio]
 codec={scenario.audio_codec}
@@ -339,11 +341,12 @@ enabled=true
 device=
 track={system_tracks}
 
-[AppAudio.1]
-enabled=true
-process={PROCESS_NAME}
-track={app_tracks}
-capture_latency_ms={app_capture_latency_ms}
+[Profile.1]
+Process={PROCESS_NAME}
+injection=none
+audio_enabled=true
+audio_track={app_tracks}
+audio_capture_latency_ms={app_capture_latency_ms}
 {secondary_app_section}
 
 [Microphone]
