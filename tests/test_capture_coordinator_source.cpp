@@ -136,6 +136,21 @@ TEST(CaptureCoordinatorSourceTest, InjectRecoverySeparatesOutputGridFromWakeDead
     EXPECT_EQ(source.find("std::max(smoothedEncodeMs, smoothedEncCycleMs)"), std::string::npos);
 }
 
+TEST(CaptureCoordinatorSourceTest, EncoderCapacityWarningUsesStartupGuard) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t warningDecision = source.find("ShouldWarnEncoderApproachingCapacity(");
+    const size_t warningLog = source.find("LogWarn(\"Encoder approaching capacity", warningDecision);
+    ASSERT_NE(warningDecision, std::string::npos);
+    ASSERT_NE(warningLog, std::string::npos);
+
+    const std::string warningBlock = source.substr(warningDecision, warningLog - warningDecision);
+    EXPECT_NE(warningBlock.find("encoderStartupWindowActive"), std::string::npos);
+    EXPECT_EQ(source.find("smoothedEncodeMs > frameIntervalMs * 0.85"), std::string::npos);
+    EXPECT_EQ(source.find("LogInfo(\"[WARN] Encoder approaching capacity"), std::string::npos);
+}
+
 TEST(CaptureCoordinatorSourceTest, AutoFallbackProvesWgcBeforeStoppingInject) {
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());

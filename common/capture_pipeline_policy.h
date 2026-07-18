@@ -27,6 +27,7 @@ constexpr uint32_t kCfrPhaseLockIncoherentReleaseIntervals = 3;
 constexpr uint32_t kInjectLiveHealthyMaxFrameAgeTicks = 3;
 constexpr uint32_t kInjectLivePressureMaxFrameAgeTicks = 12;
 constexpr uint64_t kEncoderStartupWindowMs = 1500;
+constexpr double kEncoderCapacityWarningRatio = 0.85;
 constexpr uint32_t kAutoWgcFallbackDelayNoPidMs = 100;
 constexpr uint32_t kAutoWgcFallbackDelayWithPidMs = 200;
 constexpr uint32_t kWgcLowSourceEmptyTickPermille = 80;
@@ -1444,6 +1445,12 @@ inline bool IsEncoderStartupWindow(bool recordingOutputLive, uint64_t recordingL
         return true;
     }
     return (nowTick - recordingLiveTick) < kEncoderStartupWindowMs;
+}
+
+inline bool ShouldWarnEncoderApproachingCapacity(double smoothedEncodeMs, double frameIntervalMs,
+                                                  bool startupWindowActive) {
+    return !startupWindowActive && smoothedEncodeMs > 0.0 && frameIntervalMs > 0.0 &&
+           smoothedEncodeMs > frameIntervalMs * kEncoderCapacityWarningRatio;
 }
 
 inline bool IsInjectEncoderStartup(bool recordingOutputLive, uint64_t recordingLiveTick, uint64_t nowTick) {

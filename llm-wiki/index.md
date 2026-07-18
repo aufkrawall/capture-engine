@@ -81,7 +81,7 @@ Primary sources:
 - `cfr-capture-sync.md`
   - Shared WGC/DXGI/inject CFR and A/V invariants, including canonical WGC/AudioSync/SystemAudio config locations, capture-sync/CFR selection phase preservation with varying-cadence fallback, contiguous screen-grab packet PTS under overload, packet-only video validation, encoder-latency-independent inject audio targeting, max-rate variable-input WGC production, transactional startup, 60 ms audio-ingestion look-ahead, 300 ms WGC/DXGI look-ahead, nearest monotonic source selection, causal inject transport, convergent per-output overload recovery, and exact decoded stop/tail accounting. Last verified 2026-07-18. Stale-risk: medium.
 - `nvenc-encoding.md`
-  - NVENC hardware-frame ownership, safe CFR repeat encoding, lookahead/multipass/split-AQ/B-reference policy, AV1 S12M metadata safety, and bundled FFmpeg patch invariants. Last verified 2026-07-17. Stale-risk: medium (fresh driver/GPU matrix remains necessary).
+  - NVENC hardware-frame ownership, safe CFR repeat encoding, startup capacity-warning suppression, lookahead/multipass/split-AQ/B-reference policy, AV1 S12M metadata safety, and bundled FFmpeg patch invariants. Last verified 2026-07-18. Stale-risk: medium (fresh driver/GPU matrix remains necessary).
 - `performance-priority.md`
   - `[Performance]` priorities, `[Overlay]` queue priority, adapter-aware HAGS auto resolution, D3D11 priority persistence/readback, capture/encoder MMCSS QoS, and D3D12 queue constraints. Last verified 2026-07-18. Stale-risk: medium.
 - `recording-output-paths.md`

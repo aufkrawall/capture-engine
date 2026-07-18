@@ -9602,9 +9602,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                     smoothedEncodeMs = smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) + pureEncodeMs * kEncodeEmaAlpha;
                 }
             }
-            UpdateEncoderBottleneckFlag(
-                smoothedEncodeMs, frameIntervalMs,
-                ce::capture_policy::IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick, GetTickCount64()));
+            const bool encoderStartupWindowActive =
+                ce::capture_policy::IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick, GetTickCount64());
+            UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs, encoderStartupWindowActive);
 
             if (popped && frameToProcess->isInjectMode) {
                 if (encodeDeferred) {
@@ -9682,10 +9682,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                 }
                 static DWORD lastWarningTime = 0;
-                if (smoothedEncodeMs > frameIntervalMs * 0.85) {
+                if (ce::capture_policy::ShouldWarnEncoderApproachingCapacity(
+                        smoothedEncodeMs, frameIntervalMs, encoderStartupWindowActive)) {
                     DWORD now = GetTickCount();
                     if (now - lastWarningTime > 5000) {
-                        LogInfo("[WARN] Encoder approaching capacity: %.2fms avg vs %.2fms budget", smoothedEncodeMs,
+                        LogWarn("Encoder approaching capacity: %.2fms avg vs %.2fms budget", smoothedEncodeMs,
                                 frameIntervalMs);
                         lastWarningTime = now;
                     }

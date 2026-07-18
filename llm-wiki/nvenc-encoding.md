@@ -1,6 +1,6 @@
 # NVENC Encoding Policy and FFmpeg Patches
 
-Last cross-checked: 2026-07-17
+Last cross-checked: 2026-07-18
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -102,6 +102,10 @@ mode, multipass value, and the last-applied AV1 NVENC `s12m_tc=0` safety option.
 The patched wrapper logs the resolved automatic
 B-reference mode. The first hardware-frame VP output view logs its format and
 bind flags; failures log the texture format, bind flags, array size, and slice.
+The encoder still learns its encode-time average during the first 1.5 seconds
+of live output, but one-time priming samples cannot raise the bottleneck flag or
+the `Encoder approaching capacity` warning. Sustained post-startup pressure
+continues to use the same 85% warning threshold and five-second rate limit.
 
 Open runtime-validation boundary: compile/unit coverage cannot prove every
 driver/codec/GPU combination. Fresh high-load captures should cover H.264,

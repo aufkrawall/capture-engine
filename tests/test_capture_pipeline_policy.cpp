@@ -215,6 +215,15 @@ TEST(CapturePipelinePolicyTest, StartupHeadroomUsesStartupWindow) {
     EXPECT_EQ(policy::GetMaxBufferedInjectFrames(3, true, 1000, 2600), 3u + policy::kMaxInjectBufferedHeadroomFrames);
 }
 
+TEST(CapturePipelinePolicyTest, EncoderCapacityWarningIgnoresStartupPriming) {
+    constexpr double frameIntervalMs = 1000.0 / 120.0;
+
+    EXPECT_FALSE(policy::ShouldWarnEncoderApproachingCapacity(20.19, frameIntervalMs, true));
+    EXPECT_FALSE(policy::ShouldWarnEncoderApproachingCapacity(7.0, frameIntervalMs, false));
+    EXPECT_TRUE(policy::ShouldWarnEncoderApproachingCapacity(7.2, frameIntervalMs, false));
+    EXPECT_FALSE(policy::ShouldWarnEncoderApproachingCapacity(7.2, 0.0, false));
+}
+
 TEST(CapturePipelinePolicyTest, InjectLiveAgeTrimPreservesReserveAndExpandsUnderPressure) {
     EXPECT_EQ(policy::GetInjectLiveMaxFrameAgeQpc(false, false, false, false, 100), 0);
     EXPECT_EQ(policy::GetInjectLiveMaxFrameAgeQpc(true, false, false, false, 100),
