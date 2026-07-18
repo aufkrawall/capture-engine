@@ -96,9 +96,9 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
 
     LoadConfig(missingFile, config);
 
-    // log_level=trace in default
+    // The shipped config keeps useful debug logging without trace-only CSV noise.
     EXPECT_TRUE(config.debugLogging);
-    EXPECT_EQ(config.logLevel, LogLevel::Trace);
+    EXPECT_EQ(config.logLevel, LogLevel::Debug);
     EXPECT_EQ(config.captureMethod, "auto");
     EXPECT_FALSE(config.wgcSkipSplitDeviceFlush);
     EXPECT_TRUE(config.wgcSameDeviceCapture);
@@ -132,6 +132,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.pseudoOverlay.foregroundAcquireGraceMs, 2000);
     ASSERT_EQ(config.audioSources.size(), 1u);
     EXPECT_EQ(config.audioSources.front().sourceType, AudioConfig::SystemAudio);
+    EXPECT_EQ(config.audioSources.front().tracks, (std::vector<int>{1}));
 
     std::string generatedText = ReadTextFile(missingFile);
     ASSERT_FALSE(generatedText.empty());
@@ -157,7 +158,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("b_ref_mode=auto"), std::string::npos);
     EXPECT_EQ(generatedText.find("\naq="), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
-    EXPECT_NE(generatedText.find("valid overrides are 2-6"), std::string::npos);
+    EXPECT_NE(generatedText.find("Other valid values are 2-6"), std::string::npos);
     EXPECT_NE(generatedText.find("backbuffer_count=-1"), std::string::npos);
     EXPECT_NE(generatedText.find("capture_include_overlay=true"), std::string::npos);
     EXPECT_NE(generatedText.find("screenshot_include_overlay=true"), std::string::npos);
@@ -165,8 +166,18 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("foreground_acquire_grace_ms=2000"), std::string::npos);
     EXPECT_NE(generatedText.find("enabled=false\n"), std::string::npos);
     EXPECT_EQ(generatedText.find("perf_metrics_logging="), std::string::npos);
-    EXPECT_NE(generatedText.find("log_level=trace"), std::string::npos);
-    EXPECT_EQ(generatedText.find("nvidia_smooth_motion_compat="), std::string::npos);
+    EXPECT_NE(generatedText.find("log_level=debug"), std::string::npos);
+    EXPECT_NE(generatedText.find("nvidia_smooth_motion_compat=auto"), std::string::npos);
+    EXPECT_NE(generatedText.find("\n[Capture]\n"), std::string::npos);
+    EXPECT_NE(generatedText.find("\n[WGC]\n"), std::string::npos);
+    EXPECT_NE(generatedText.find("\n[Output]\n"), std::string::npos);
+    EXPECT_NE(generatedText.find("\n[SystemAudio]\n"), std::string::npos);
+    EXPECT_NE(generatedText.find("\n[DesktopOverlay]\n"), std::string::npos);
+    EXPECT_NE(generatedText.find("\n[Diagnostics]\n"), std::string::npos);
+    EXPECT_EQ(generatedText.find("\n[General]\n"), std::string::npos);
+    EXPECT_EQ(generatedText.find("\n[Scaling]\n"), std::string::npos);
+    EXPECT_EQ(generatedText.find("\n[pseudo-overlay]\n"), std::string::npos);
+    EXPECT_EQ(generatedText.find("\n[Screenshot]\n"), std::string::npos);
     EXPECT_EQ(generatedText.find("\nvfr="), std::string::npos);
     EXPECT_EQ(generatedText.find("\nvfr_audio_sync="), std::string::npos);
 
@@ -301,6 +312,104 @@ TEST_F(ConfigTest, ParseExplicitWgcCaptureMethod) {
     LoadConfig(tempConfigFile, config);
 
     EXPECT_EQ(config.captureMethod, "wgc");
+}
+
+TEST_F(ConfigTest, CanonicalSectionLayoutParsesAndTakesPrecedence) {
+    WriteConfig(
+        "[General]\n"
+        "capture_method=inject\n"
+        "log_level=trace\n"
+        "wgc_same_device_capture=true\n"
+        "audio_capture_latency_ms=99\n"
+        "[Capture]\n"
+        "capture_method=wgc\n"
+        "auto_fullscreen_capture=wgc_window\n"
+        "[WGC]\n"
+        "wgc_same_device_capture=false\n"
+        "wgc_smoothness_buffer_max_ms=111\n"
+        "wgc_smoothness_buffer_vram_budget_mb=222\n"
+        "wgc_smoothness_floor_ms=33\n"
+        "wgc_allow_lossy_bgra8_pool=true\n"
+        "[Diagnostics]\n"
+        "wgc_skip_split_device_flush=true\n"
+        "wgc_video_memory_reservation=full\n"
+        "overlay_observer_only=true\n"
+        "overlay_observer_policy_only=true\n"
+        "overlay_observer_startup_present_only=true\n"
+        "dx12_focus_analysis=true\n"
+        "[AudioSync]\n"
+        "audio_capture_latency_ms=4.25\n"
+        "mic_capture_latency_ms=7.5\n"
+        "audio_latency_autodetect=false\n"
+        "[Logging]\n"
+        "log_level=info\n"
+        "crash_dump_dir=extra-dumps\n"
+        "[Output]\n"
+        "output_dir=recordings\n"
+        "screenshot_dir=stills\n"
+        "container=mov\n"
+        "[VideoScaling]\n"
+        "enabled=true\n"
+        "output_resolution=720p\n"
+        "quality=normal\n"
+        "sharpness=42\n"
+        "[DLSS]\n"
+        "dlss_fg_factor=3x\n"
+        "nvidia_smooth_motion_compat=on\n"
+        "[Overlay]\n"
+        "copy_queue_priority=high\n"
+        "[DesktopOverlay]\n"
+        "enabled=true\n"
+        "mode=1\n"
+        "process_list=game.exe|other.exe\n"
+        "[Audio]\n"
+        "codec=aac\n"
+        "bitrate=320\n"
+        "[SystemAudio]\n"
+        "enabled=true\n"
+        "device=Speakers\n"
+        "track=4,5\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.captureMethod, "wgc");
+    EXPECT_FALSE(config.autoFullscreenPrefersDxgiDup);
+    EXPECT_FALSE(config.wgcSameDeviceCapture);
+    EXPECT_TRUE(config.wgcSkipSplitDeviceFlush);
+    EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 111u);
+    EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 222u);
+    EXPECT_FALSE(config.wgcSmoothnessFloorAuto);
+    EXPECT_EQ(config.wgcSmoothnessFloorMs, 33u);
+    EXPECT_TRUE(config.wgcAllowLossyBgra8Pool);
+    EXPECT_EQ(config.wgcVideoMemoryReservation, "full");
+    EXPECT_FLOAT_EQ(config.audioCaptureLatencyMs, 4.25f);
+    EXPECT_FLOAT_EQ(config.micCaptureLatencyMs, 7.5f);
+    EXPECT_FALSE(config.audioLatencyAutodetect);
+    EXPECT_EQ(config.logLevel, LogLevel::Info);
+    EXPECT_EQ(config.crashDumpDir, "extra-dumps");
+    EXPECT_EQ(config.video.outputDir, "recordings");
+    EXPECT_EQ(config.screenshotDir, "stills");
+    EXPECT_EQ(config.video.container, "mov");
+    EXPECT_TRUE(config.video.scaling.enabled);
+    EXPECT_EQ(config.video.scaling.outputResolution, "720p");
+    EXPECT_EQ(config.video.scaling.sharpness, 42);
+    EXPECT_EQ(config.graphics.dlssFgFactor, "3x");
+    EXPECT_EQ(config.graphics.parsed.nvidiaSmoothMotionCompat, 1);
+    EXPECT_EQ(config.copyQueuePriority, "high");
+    EXPECT_TRUE(config.overlay.observerOnly);
+    EXPECT_TRUE(config.overlay.observerPolicyOnly);
+    EXPECT_TRUE(config.overlay.observerStartupPresentOnly);
+    EXPECT_TRUE(config.overlay.dx12FocusAnalysis);
+    EXPECT_TRUE(config.pseudoOverlay.enabled);
+    EXPECT_EQ(config.pseudoOverlay.mode, 1);
+    EXPECT_EQ(config.pseudoOverlay.processList, "game.exe|other.exe");
+    ASSERT_EQ(config.audioSources.size(), 1u);
+    EXPECT_EQ(config.audioSources.front().device, "Speakers");
+    EXPECT_EQ(config.audioSources.front().tracks, (std::vector<int>{4, 5}));
+    EXPECT_EQ(config.audioSources.front().codec, "aac");
+    EXPECT_EQ(config.audioSources.front().bitrate, 320);
+    EXPECT_FLOAT_EQ(config.audioSources.front().captureLatencyMs, 4.25f);
 }
 
 TEST_F(ConfigTest, ParseWgcExperimentalFlags) {
@@ -503,9 +612,9 @@ TEST_F(ConfigTest, PseudoOverlayProcessListIsNormalized) {
     EXPECT_EQ(config.pseudoOverlay.processList, "FortniteClient-Win64-Shipping.exe|StrangeBrigade_DX12.exe");
 }
 
-TEST_F(ConfigTest, PseudoOverlayProcessListMultiLine) {
+TEST_F(ConfigTest, DesktopOverlayProcessListMultiLine) {
     std::string iniContent =
-        "[pseudo-overlay]\n"
+        "[DesktopOverlay]\n"
         "enabled=true\n"
         "mode=2\n"
         "process_list=(\n"
@@ -1027,6 +1136,11 @@ TEST_F(ConfigTest, ParseNumberedAudioSections) {
         "enabled=true\n"
         "device=Speakers\n"
         "track=11\n"
+        "codec=flac\n"
+        "bitrate=999\n"
+        "sample_rate=48000\n"
+        "bit_depth=24\n"
+        "downmix=true\n"
         "\n"
         "[Audio.2]\n"
         "enabled=true\n"
@@ -1058,6 +1172,10 @@ TEST_F(ConfigTest, ParseNumberedAudioSections) {
                 foundSpeakers = true;
                 EXPECT_EQ(src.device, "Speakers");
                 EXPECT_EQ(src.codec, "flac");
+                EXPECT_EQ(src.bitrate, 999);
+                EXPECT_EQ(src.sampleRate, "48000");
+                EXPECT_EQ(src.bitDepth, "24");
+                EXPECT_TRUE(src.downmix);
             }
             if (src.tracks[0] == 12) {
                 foundHeadphones = true;
@@ -1068,6 +1186,42 @@ TEST_F(ConfigTest, ParseNumberedAudioSections) {
     }
     EXPECT_TRUE(foundSpeakers);
     EXPECT_TRUE(foundHeadphones);
+}
+
+TEST_F(ConfigTest, ParseNumberedSystemAudioSections) {
+    WriteConfig(
+        "[Audio]\n"
+        "codec=opus\n"
+        "bitrate=256\n"
+        "[SystemAudio.1]\n"
+        "enabled=true\n"
+        "device=Speakers\n"
+        "track=11\n"
+        "codec=flac\n"
+        "bitrate=999\n"
+        "sample_rate=48000\n"
+        "bit_depth=24\n"
+        "downmix=true\n"
+        "[SystemAudio.2]\n"
+        "enabled=true\n"
+        "device=Headphones\n"
+        "track=12,13\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    ASSERT_EQ(config.audioSources.size(), 2u);
+    EXPECT_EQ(config.audioSources[0].device, "Speakers");
+    EXPECT_EQ(config.audioSources[0].tracks, (std::vector<int>{11}));
+    EXPECT_EQ(config.audioSources[1].device, "Headphones");
+    EXPECT_EQ(config.audioSources[1].tracks, (std::vector<int>{12, 13}));
+    EXPECT_EQ(config.audioSources[0].codec, "flac");
+    EXPECT_EQ(config.audioSources[0].bitrate, 999);
+    EXPECT_EQ(config.audioSources[0].sampleRate, "48000");
+    EXPECT_EQ(config.audioSources[0].bitDepth, "24");
+    EXPECT_TRUE(config.audioSources[0].downmix);
+    EXPECT_EQ(config.audioSources[1].codec, "opus");
+    EXPECT_EQ(config.audioSources[1].bitrate, 256);
 }
 
 TEST_F(ConfigTest, ParseNumberedMicrophoneSections) {

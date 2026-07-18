@@ -37,8 +37,8 @@ std::string Trim(const std::string& s, const char* chars = " \t\r\n\"()") {
     return res;
 }
 
-// Reserved [App.N] override-section keys. These identify *which* process an
-// [App.N] override section applies to (its selector), so they must never be
+// Reserved per-process profile keys. These identify which process a profile
+// applies to, so they must never be
 // reused as override *values* for another section's same-named key. In
 // particular the per-source process name in [AppAudio.N] must not be rewritten
 // to the running game: doing so collapsed every app-audio source onto one PID
@@ -420,42 +420,69 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         }
     }
 
-    // Find matching App override section
+    // Find the matching per-process profile and collect its injection target.
+    // [Profile.N] requires an explicit injection mode. Legacy [App.N] sections
+    // keep their historical implicit normal-injection behavior.
     std::string overrideSection;
-    if (!currentProcessName.empty()) {
-        // Normalize to lower case for comparison
-        std::string procNameLower = currentProcessName;
-        std::transform(procNameLower.begin(), procNameLower.end(), procNameLower.begin(),
-                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    std::vector<WhitelistEntry> profileGameEntries;
+    std::vector<WhitelistEntry> profileOverlayEntries;
+    std::string procNameLower = currentProcessName;
+    std::transform(procNameLower.begin(), procNameLower.end(), procNameLower.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
 
-        for (int i = 1; i <= 8; ++i) {
-            char appSec[32];
-            snprintf(appSec, sizeof(appSec), "App.%d", i);
+    for (int i = 1; i <= 8; ++i) {
+        char profileSec[32];
+        char legacyAppSec[32];
+        snprintf(profileSec, sizeof(profileSec), "Profile.%d", i);
+        snprintf(legacyAppSec, sizeof(legacyAppSec), "App.%d", i);
 
-            // Check process name in this section (try Process then ProcessName)
-            GetPrivateProfileStringA(appSec, "Process", "", buffer, 4096, path.c_str());
-            std::string configProc = Trim(buffer);
+        const char* selectedSection = profileSec;
+        bool legacyProfile = false;
+        GetPrivateProfileStringA(selectedSection, "Process", "", buffer, 4096, path.c_str());
+        std::string configProc = Trim(buffer);
+        if (configProc.empty()) {
+            GetPrivateProfileStringA(selectedSection, "ProcessName", "", buffer, 4096, path.c_str());
+            configProc = Trim(buffer);
+        }
+        if (configProc.empty()) {
+            selectedSection = legacyAppSec;
+            legacyProfile = true;
+            GetPrivateProfileStringA(selectedSection, "Process", "", buffer, 4096, path.c_str());
+            configProc = Trim(buffer);
             if (configProc.empty()) {
-                GetPrivateProfileStringA(appSec, "ProcessName", "", buffer, 4096, path.c_str());
+                GetPrivateProfileStringA(selectedSection, "ProcessName", "", buffer, 4096, path.c_str());
                 configProc = Trim(buffer);
             }
+        }
+        if (configProc.empty())
+            continue;
 
-            if (!configProc.empty()) {
-                // Support x:x:x format in [App.N] process= field
-                WhitelistEntry autoEntry = ParseEntry(configProc);
-                if (std::find(config.gameWhitelist.begin(), config.gameWhitelist.end(), autoEntry) ==
-                    config.gameWhitelist.end()) {
-                    config.gameWhitelist.push_back(autoEntry);
-                }
+        WhitelistEntry profileEntry = ParseEntry(configProc);
+        if (profileEntry.pattern.empty() && profileEntry.windowName.empty())
+            continue;
 
-                // Match by process name for override section selection
-                std::string matchName = autoEntry.pattern;
-                std::transform(matchName.begin(), matchName.end(), matchName.begin(),
-                               [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-                if (matchName == procNameLower) {
-                    overrideSection = appSec;
-                }
-            }
+        std::string injectionMode = "normal";
+        if (!legacyProfile) {
+            GetPrivateProfileStringA(selectedSection, "injection", "none", buffer, 4096, path.c_str());
+            injectionMode = Trim(buffer);
+            std::transform(injectionMode.begin(), injectionMode.end(), injectionMode.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        }
+
+        if (injectionMode == "normal" || injectionMode == "inject" || injectionMode == "capture") {
+            profileGameEntries.push_back(profileEntry);
+        } else if (injectionMode == "overlay" || injectionMode == "overlay_only") {
+            profileOverlayEntries.push_back(profileEntry);
+        } else if (injectionMode != "none" && injectionMode != "off" && injectionMode != "disabled") {
+            LogInvalidConfigBoundary(selectedSection, "injection", injectionMode, "none");
+        }
+
+        if (!procNameLower.empty()) {
+            std::string matchName = profileEntry.pattern;
+            std::transform(matchName.begin(), matchName.end(), matchName.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            if (matchName == procNameLower)
+                overrideSection = selectedSection;
         }
     }
 
@@ -463,24 +490,24 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         LogInfo("Config: applying per-process override section [%s] for process '%s'", overrideSection.c_str(),
                 currentProcessName.c_str());
     } else if (!currentProcessName.empty()) {
-        LogDebug("Config: no [App.N] override section matched process '%s'", currentProcessName.c_str());
+        LogDebug("Config: no per-process profile matched process '%s'", currentProcessName.c_str());
     }
 
     // Helper macro for GetPrivateProfileString with Override Support
     auto GetStr = [&](const char* section, const char* key, const char* def) {
         if (!overrideSection.empty()) {
-            // 1. Try Override Explicit: [App.N] Section.Key=Value
+            // 1. Try an explicit profile override: Section.Key=Value
             std::string explicitKey = std::string(section) + "." + key;
             GetPrivateProfileStringA(overrideSection.c_str(), explicitKey.c_str(), "", buffer, 4096, path.c_str());
             std::string val = Trim(buffer);
             if (!val.empty())
                 return val;
 
-            // 2. Try Override Simplified: [App.N] Key=Value
+            // 2. Try the legacy bare-key form: Key=Value
             //    But never let the override section's reserved selector keys
             //    ("Process"/"ProcessName") leak as a value for another section's
             //    same-named key (e.g. [AppAudio.N] process=). Those keys identify
-            //    the target process of the [App.N] section; treating them as
+            //    the target process of the profile; treating them as
             //    overridable collapsed every app-audio source onto the running
             //    game and summed identical captures into one track (metallic audio).
             if (!IsReservedOverrideSelectorKey(key)) {
@@ -493,6 +520,17 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         // 3. Fallback to global
         GetPrivateProfileStringA(section, key, def, buffer, 4096, path.c_str());
         return Trim(buffer);
+    };
+
+    // New section names take precedence, including an intentionally empty
+    // value. The old locations remain readable so existing configs keep working.
+    constexpr const char* kMissingConfigValue = "\x1d";
+    auto GetStrCompat = [&](const char* section, const char* key, const char* legacySection, const char* legacyKey,
+                            const char* def) {
+        std::string value = GetStr(section, key, kMissingConfigValue);
+        if (value != kMissingConfigValue)
+            return value;
+        return GetStr(legacySection, legacyKey, def);
     };
 
     auto GetInt = [&](const char* section, const char* key, int def) {
@@ -553,46 +591,111 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         return value;
     };
 
-    // General
-    const std::string logLevelRaw = GetStr("General", "log_level", "");
+    auto GetIntCompat = [&](const char* section, const char* key, const char* legacySection, const char* legacyKey,
+                            int def) {
+        std::string value = GetStrCompat(section, key, legacySection, legacyKey, "");
+        if (value.empty())
+            return def;
+        int parsed = def;
+        if (!TryParseInt(value, parsed)) {
+            LogInvalidConfigBoundary(section, key, value, std::to_string(def));
+            return def;
+        }
+        return parsed;
+    };
+
+    auto GetBoundedIntCompat = [&](const char* section, const char* key, const char* legacySection,
+                                   const char* legacyKey, int def, int minimum, int maximum) {
+        const int value = GetIntCompat(section, key, legacySection, legacyKey, def);
+        if (value < minimum || value > maximum) {
+            LogInvalidConfigBoundary(section, key, std::to_string(value), std::to_string(def));
+            return def;
+        }
+        return value;
+    };
+
+    auto GetBoolCompat = [&](const char* section, const char* key, const char* legacySection, const char* legacyKey,
+                             bool def) {
+        std::string value = GetStrCompat(section, key, legacySection, legacyKey, def ? "true" : "false");
+        std::transform(value.begin(), value.end(), value.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (value == "true" || value == "1" || value == "yes" || value == "on")
+            return true;
+        if (value == "false" || value == "0" || value == "no" || value == "off")
+            return false;
+        LogInvalidConfigBoundary(section, key, value, def ? "true" : "false");
+        return def;
+    };
+
+    auto GetFloatCompat = [&](const char* section, const char* key, const char* legacySection, const char* legacyKey,
+                              float def) {
+        std::string value = GetStrCompat(section, key, legacySection, legacyKey, "");
+        if (value.empty())
+            return def;
+        std::replace(value.begin(), value.end(), ',', '.');
+        float parsed = 0.0f;
+        if (!ce::TryParseFiniteFloat(value, parsed)) {
+            LogInvalidConfigBoundary(section, key, value, std::to_string(def));
+            return def;
+        }
+        return parsed;
+    };
+
+    // Logging
+    const std::string canonicalLogLevelRaw = GetStr("Logging", "log_level", kMissingConfigValue);
+    const bool hasCanonicalLogLevel = canonicalLogLevelRaw != kMissingConfigValue;
+    const std::string logLevelRaw = hasCanonicalLogLevel ? canonicalLogLevelRaw : GetStr("General", "log_level", "");
     config.logLevel = ParseLogLevelString(logLevelRaw, LogLevel::Debug);
 
-    const std::string debugLoggingRaw = GetStr("General", "debug_logging", "");
-    if (!debugLoggingRaw.empty()) {
-        config.logLevel = ParseBool(debugLoggingRaw) ? LogLevel::Debug : LogLevel::Off;
-    }
-    std::string legacyPerfMetricsLogging = GetStr("General", "perf_metrics_logging", "");
-    if (!legacyPerfMetricsLogging.empty() && ParseBool(legacyPerfMetricsLogging)) {
-        config.logLevel = LogLevel::Trace;
+    if (!hasCanonicalLogLevel) {
+        const std::string debugLoggingRaw = GetStr("General", "debug_logging", "");
+        if (!debugLoggingRaw.empty()) {
+            config.logLevel = ParseBool(debugLoggingRaw) ? LogLevel::Debug : LogLevel::Off;
+        }
+        std::string legacyPerfMetricsLogging = GetStr("General", "perf_metrics_logging", "");
+        if (!legacyPerfMetricsLogging.empty() && ParseBool(legacyPerfMetricsLogging)) {
+            config.logLevel = LogLevel::Trace;
+        }
     }
     config.debugLogging = IsDebugLoggingEnabled(config.logLevel);
-    config.captureMethod = NormalizeCaptureMethod(GetStr("General", "capture_method", "auto"));
+    config.captureMethod =
+        NormalizeCaptureMethod(GetStrCompat("Capture", "capture_method", "General", "capture_method", "auto"));
     {
-        std::string autoFullscreen = Trim(GetStr("General", "auto_fullscreen_capture", "dxgi_dup"));
+        std::string autoFullscreen =
+            Trim(GetStrCompat("Capture", "auto_fullscreen_capture", "General", "auto_fullscreen_capture", "dxgi_dup"));
         std::transform(autoFullscreen.begin(), autoFullscreen.end(), autoFullscreen.begin(),
                        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
         config.autoFullscreenPrefersDxgiDup = !(autoFullscreen == "wgc_window" || autoFullscreen == "wgc");
     }
-    config.wgcSkipSplitDeviceFlush = GetBool("General", "wgc_skip_split_device_flush", false);
-    config.wgcSameDeviceCapture = GetBool("General", "wgc_same_device_capture", true);
-    config.wgcActiveDelayUniformCadence = GetBool("General", "wgc_active_delay_uniform_cadence", true);
-    config.wgcSmoothnessBufferEnabled = GetBool("General", "wgc_smoothness_buffer_enabled", true);
-    config.wgcSmoothnessBufferMaxMs =
-        static_cast<uint32_t>(std::max(0, GetInt("General", "wgc_smoothness_buffer_max_ms", 300)));
-    config.wgcSmoothnessBufferVramBudgetMb =
-        static_cast<uint32_t>(std::max(0, GetInt("General", "wgc_smoothness_buffer_vram_budget_mb", 3000)));
-    config.wgcVideoMemoryReservation = Trim(GetStr("General", "wgc_video_memory_reservation", "off"));
+    config.wgcSkipSplitDeviceFlush =
+        GetBoolCompat("Diagnostics", "wgc_skip_split_device_flush", "General", "wgc_skip_split_device_flush", false);
+    config.wgcSameDeviceCapture =
+        GetBoolCompat("WGC", "wgc_same_device_capture", "General", "wgc_same_device_capture", true);
+    config.wgcActiveDelayUniformCadence = GetBoolCompat(
+        "WGC", "wgc_active_delay_uniform_cadence", "General", "wgc_active_delay_uniform_cadence", true);
+    config.wgcSmoothnessBufferEnabled = GetBoolCompat(
+        "WGC", "wgc_smoothness_buffer_enabled", "General", "wgc_smoothness_buffer_enabled", true);
+    config.wgcSmoothnessBufferMaxMs = static_cast<uint32_t>(std::max(
+        0, GetIntCompat("WGC", "wgc_smoothness_buffer_max_ms", "General", "wgc_smoothness_buffer_max_ms", 300)));
+    config.wgcSmoothnessBufferVramBudgetMb = static_cast<uint32_t>(std::max(
+        0, GetIntCompat("WGC", "wgc_smoothness_buffer_vram_budget_mb", "General",
+                        "wgc_smoothness_buffer_vram_budget_mb", 3000)));
+    config.wgcVideoMemoryReservation = Trim(GetStrCompat(
+        "Diagnostics", "wgc_video_memory_reservation", "General", "wgc_video_memory_reservation", "off"));
     std::transform(config.wgcVideoMemoryReservation.begin(), config.wgcVideoMemoryReservation.end(),
                    config.wgcVideoMemoryReservation.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (config.wgcVideoMemoryReservation != "off" && config.wgcVideoMemoryReservation != "mandatory" &&
         config.wgcVideoMemoryReservation != "full") {
+        LogInvalidConfigBoundary("Diagnostics", "wgc_video_memory_reservation", config.wgcVideoMemoryReservation,
+                                 "off");
         config.wgcVideoMemoryReservation = "off";
     }
     {
         // wgc_smoothness_floor_ms: "auto" (default) -> derive from measured startup delivery jitter;
         // "0" -> disabled (exact prior behavior); "N" -> explicit floor in ms. Robust to case/spacing.
-        std::string floorRaw = Trim(GetStr("General", "wgc_smoothness_floor_ms", "auto"));
+        std::string floorRaw =
+            Trim(GetStrCompat("WGC", "wgc_smoothness_floor_ms", "General", "wgc_smoothness_floor_ms", "auto"));
         std::transform(floorRaw.begin(), floorRaw.end(), floorRaw.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (floorRaw.empty() || floorRaw == "auto") {
@@ -602,7 +705,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             int parsedFloor = 0;
             if (!TryParseInt(floorRaw, parsedFloor) || parsedFloor < 0 ||
                 static_cast<uint32_t>(parsedFloor) > config.wgcSmoothnessBufferMaxMs) {
-                LogInvalidConfigBoundary("General", "wgc_smoothness_floor_ms", floorRaw, "auto");
+                LogInvalidConfigBoundary("WGC", "wgc_smoothness_floor_ms", floorRaw, "auto");
                 config.wgcSmoothnessFloorAuto = true;
                 config.wgcSmoothnessFloorMs = 0;
             } else {
@@ -612,8 +715,10 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         }
     }
     {
-        const std::string canonical = GetStr("General", "wgc_allow_lossy_bgra8_pool", "");
-        const std::string legacy = GetStr("General", "wgc_prefer_compact_10bit_pool", "");
+        const std::string canonical =
+            GetStrCompat("WGC", "wgc_allow_lossy_bgra8_pool", "General", "wgc_allow_lossy_bgra8_pool", "");
+        const std::string legacy = GetStrCompat("WGC", "wgc_prefer_compact_10bit_pool", "General",
+                                                "wgc_prefer_compact_10bit_pool", "");
         if (!canonical.empty()) {
             config.wgcAllowLossyBgra8Pool = ParseBool(canonical);
             if (!legacy.empty()) {
@@ -628,10 +733,13 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                 "wgc_allow_lossy_bgra8_pool instead");
         }
     }
-    config.crashDumpDir = GetStr("General", "crash_dump_dir", "");
-    config.audioCaptureLatencyMs = GetFloat("General", "audio_capture_latency_ms", 0.0f);
-    config.micCaptureLatencyMs = GetFloat("General", "mic_capture_latency_ms", 0.0f);
-    config.audioLatencyAutodetect = GetBool("General", "audio_latency_autodetect", true);
+    config.crashDumpDir = GetStrCompat("Logging", "crash_dump_dir", "General", "crash_dump_dir", "");
+    config.audioCaptureLatencyMs = GetFloatCompat("AudioSync", "audio_capture_latency_ms", "General",
+                                                  "audio_capture_latency_ms", 0.0f);
+    config.micCaptureLatencyMs =
+        GetFloatCompat("AudioSync", "mic_capture_latency_ms", "General", "mic_capture_latency_ms", 0.0f);
+    config.audioLatencyAutodetect = GetBoolCompat("AudioSync", "audio_latency_autodetect", "General",
+                                                  "audio_latency_autodetect", true);
 
     // Performance (Priority Settings)
     config.processPriority =
@@ -639,12 +747,13 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.video.gpuPriority = GetBoundedInt("Performance", "gpu_priority", 7, -7, 7);
     config.gpuSchedulingPriority =
         NormalizePriorityString(GetStr("Performance", "gpu_scheduling_priority", "auto"), "off", true);
-    config.copyQueuePriority = GetStr("Performance", "copy_queue_priority", "normal");
+    config.copyQueuePriority =
+        GetStrCompat("Overlay", "copy_queue_priority", "Performance", "copy_queue_priority", "normal");
     std::transform(config.copyQueuePriority.begin(), config.copyQueuePriority.end(), config.copyQueuePriority.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (config.copyQueuePriority != "low" && config.copyQueuePriority != "normal" &&
         config.copyQueuePriority != "high") {
-        LogInvalidConfigBoundary("Performance", "copy_queue_priority", config.copyQueuePriority, "normal");
+        LogInvalidConfigBoundary("Overlay", "copy_queue_priority", config.copyQueuePriority, "normal");
         config.copyQueuePriority = "normal";
     }
 
@@ -690,37 +799,58 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     }
     config.graphics.sgssaa = GetBool("Graphics", "sgssaa", false);
     config.graphics.disableAutoMipBias = GetBool("Graphics", "disable_auto_mip_bias", false);
-    config.graphics.dlssAutoExposure = GetStr("Graphics", "dlss_auto_exposure", "default");
-    config.graphics.dlssExposureNormalization = GetStr("Graphics", "dlss_exposure_normalization", "default");
+    config.graphics.dlssAutoExposure =
+        GetStrCompat("DLSS", "dlss_auto_exposure", "Graphics", "dlss_auto_exposure", "default");
+    config.graphics.dlssExposureNormalization = GetStrCompat(
+        "DLSS", "dlss_exposure_normalization", "Graphics", "dlss_exposure_normalization", "default");
 
     // DLSS Presets
-    config.graphics.dlssPresetDLAA = GetStr("Graphics", "dlss_preset_dlaa", "default");
-    config.graphics.dlssPresetQuality = GetStr("Graphics", "dlss_preset_quality", "default");
-    config.graphics.dlssPresetBalanced = GetStr("Graphics", "dlss_preset_balanced", "default");
-    config.graphics.dlssPresetPerformance = GetStr("Graphics", "dlss_preset_performance", "default");
-    config.graphics.dlssPresetUltraPerformance = GetStr("Graphics", "dlss_preset_ultra_performance", "default");
-    config.graphics.dlssPresetUltraQuality = GetStr("Graphics", "dlss_preset_ultra_quality", "default");
-    config.graphics.dlssSRPreset = GetStr("Graphics", "dlss_sr_preset", "default");
+    config.graphics.dlssPresetDLAA =
+        GetStrCompat("DLSS", "dlss_preset_dlaa", "Graphics", "dlss_preset_dlaa", "default");
+    config.graphics.dlssPresetQuality =
+        GetStrCompat("DLSS", "dlss_preset_quality", "Graphics", "dlss_preset_quality", "default");
+    config.graphics.dlssPresetBalanced =
+        GetStrCompat("DLSS", "dlss_preset_balanced", "Graphics", "dlss_preset_balanced", "default");
+    config.graphics.dlssPresetPerformance =
+        GetStrCompat("DLSS", "dlss_preset_performance", "Graphics", "dlss_preset_performance", "default");
+    config.graphics.dlssPresetUltraPerformance = GetStrCompat(
+        "DLSS", "dlss_preset_ultra_performance", "Graphics", "dlss_preset_ultra_performance", "default");
+    config.graphics.dlssPresetUltraQuality = GetStrCompat(
+        "DLSS", "dlss_preset_ultra_quality", "Graphics", "dlss_preset_ultra_quality", "default");
+    config.graphics.dlssSRPreset =
+        GetStrCompat("DLSS", "dlss_sr_preset", "Graphics", "dlss_sr_preset", "default");
 
     // RR Presets
-    config.graphics.dlssRRPresetDLAA = GetStr("Graphics", "dlss_rr_preset_dlaa", "default");
-    config.graphics.dlssRRPresetQuality = GetStr("Graphics", "dlss_rr_preset_quality", "default");
-    config.graphics.dlssRRPresetBalanced = GetStr("Graphics", "dlss_rr_preset_balanced", "default");
-    config.graphics.dlssRRPresetPerformance = GetStr("Graphics", "dlss_rr_preset_performance", "default");
-    config.graphics.dlssRRPresetUltraPerformance = GetStr("Graphics", "dlss_rr_preset_ultra_performance", "default");
-    config.graphics.dlssRRPresetUltraQuality = GetStr("Graphics", "dlss_rr_preset_ultra_quality", "default");
-    config.graphics.dlssRRPreset = GetStr("Graphics", "dlss_rr_preset", "default");
-    config.graphics.dlssSharpening = GetStr("Graphics", "dlss_sharpening", "default");
-    config.graphics.dlssFgFactor = GetStr("Graphics", "dlss_fg_factor", "default");
-    config.graphics.nvidiaSmoothMotionCompat = GetStr("Graphics", "nvidia_smooth_motion_compat", "auto");
+    config.graphics.dlssRRPresetDLAA =
+        GetStrCompat("DLSS", "dlss_rr_preset_dlaa", "Graphics", "dlss_rr_preset_dlaa", "default");
+    config.graphics.dlssRRPresetQuality =
+        GetStrCompat("DLSS", "dlss_rr_preset_quality", "Graphics", "dlss_rr_preset_quality", "default");
+    config.graphics.dlssRRPresetBalanced =
+        GetStrCompat("DLSS", "dlss_rr_preset_balanced", "Graphics", "dlss_rr_preset_balanced", "default");
+    config.graphics.dlssRRPresetPerformance = GetStrCompat(
+        "DLSS", "dlss_rr_preset_performance", "Graphics", "dlss_rr_preset_performance", "default");
+    config.graphics.dlssRRPresetUltraPerformance = GetStrCompat(
+        "DLSS", "dlss_rr_preset_ultra_performance", "Graphics", "dlss_rr_preset_ultra_performance", "default");
+    config.graphics.dlssRRPresetUltraQuality = GetStrCompat(
+        "DLSS", "dlss_rr_preset_ultra_quality", "Graphics", "dlss_rr_preset_ultra_quality", "default");
+    config.graphics.dlssRRPreset =
+        GetStrCompat("DLSS", "dlss_rr_preset", "Graphics", "dlss_rr_preset", "default");
+    config.graphics.dlssSharpening =
+        GetStrCompat("DLSS", "dlss_sharpening", "Graphics", "dlss_sharpening", "default");
+    config.graphics.dlssFgFactor =
+        GetStrCompat("DLSS", "dlss_fg_factor", "Graphics", "dlss_fg_factor", "default");
+    config.graphics.nvidiaSmoothMotionCompat = GetStrCompat(
+        "DLSS", "nvidia_smooth_motion_compat", "Graphics", "nvidia_smooth_motion_compat", "auto");
 
     // DLL Overrides
-    config.graphics.dlssSrDllPath = GetStr("Graphics", "dlss_sr_dll_path", "");
-    config.graphics.dlssRrDllPath = GetStr("Graphics", "dlss_rr_dll_path", "");
-    config.graphics.dlssFgDllPath = GetStr("Graphics", "dlss_fg_dll_path", "");
-    config.graphics.streamlineDllPath = GetStr("Graphics", "streamline_dll_path", "");
+    config.graphics.dlssSrDllPath = GetStrCompat("DLSS", "dlss_sr_dll_path", "Graphics", "dlss_sr_dll_path", "");
+    config.graphics.dlssRrDllPath = GetStrCompat("DLSS", "dlss_rr_dll_path", "Graphics", "dlss_rr_dll_path", "");
+    config.graphics.dlssFgDllPath = GetStrCompat("DLSS", "dlss_fg_dll_path", "Graphics", "dlss_fg_dll_path", "");
+    config.graphics.streamlineDllPath =
+        GetStrCompat("DLSS", "streamline_dll_path", "Graphics", "streamline_dll_path", "");
 
-    config.graphics.dlssDebugOverlay = GetStr("Graphics", "dlss_debug_overlay", "default");
+    config.graphics.dlssDebugOverlay =
+        GetStrCompat("DLSS", "dlss_debug_overlay", "Graphics", "dlss_debug_overlay", "default");
 
     // Fill parsed versions for efficiency
     config.graphics.parsed.presetDLAA = ParseDlssPreset(config.graphics.dlssPresetDLAA);
@@ -774,6 +904,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     // Whitelist
     config.gameWhitelist.clear();
+    config.overlayWhitelist.clear();
+    config.wgcWindowTitles.clear();
     // We use a manual pass to support both comma-separated (legacy) and
     // newline-separated entries
     bool pseudoProcessListSet = false;
@@ -815,8 +947,11 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                 continue;
 
             if (trimmed[0] == '[') {
-                inInjection = (trimmed.find("[Injection]") != std::string::npos);
-                inPseudoOverlay = (trimmed.find("[pseudo-overlay]") != std::string::npos);
+                std::string sectionName = trimmed;
+                std::transform(sectionName.begin(), sectionName.end(), sectionName.begin(),
+                               [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                inInjection = (sectionName == "[injection]");
+                inPseudoOverlay = (sectionName == "[desktopoverlay]" || sectionName == "[pseudo-overlay]");
                 inWhitelist = false;
                 inOverlayWhitelist = false;
                 inWgcWindowDetection = false;
@@ -824,7 +959,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                 continue;
             }
 
-            // wgc_window_detection is in [General], not [Injection] - parse outside section check
+            // This list is parsed manually so its parenthesized multi-line form works.
             if (trimmed.find("wgc-window-detection=") == 0 || trimmed.find("wgc_window_detection=") == 0) {
                 size_t eqPos = trimmed.find('=');
                 std::string rest = trimmed.substr(eqPos + 1);
@@ -849,7 +984,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                 }
             }
 
-            // process_list in [pseudo-overlay] supports multi-line parenthesized format
+            // Desktop overlay process_list supports a multi-line parenthesized format.
             if (inPseudoOverlay && trimmed.find("process_list=") == 0) {
                 std::string rest = trimmed.substr(trimmed.find('=') + 1);
                 rest = Trim(rest, " \t\r\n\"");
@@ -925,15 +1060,23 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         }
     }
 
+    auto MergeProfileEntries = [](const std::vector<WhitelistEntry>& source, std::vector<WhitelistEntry>& target) {
+        for (const WhitelistEntry& entry : source) {
+            if (std::find(target.begin(), target.end(), entry) == target.end())
+                target.push_back(entry);
+        }
+    };
+    MergeProfileEntries(profileGameEntries, config.gameWhitelist);
+    MergeProfileEntries(profileOverlayEntries, config.overlayWhitelist);
+
     // Helper for comma-separated ints
-    auto GetIntList = [&](const char* section, const char* key, int def) {
-        std::string s = GetStr(section, key, "");
+    auto ParseIntList = [&](const std::string& value, const char* section, const char* key, int def) {
         std::vector<int> res;
-        if (s.empty()) {
+        if (value.empty()) {
             res.push_back(def);
             return res;
         }
-        std::stringstream ss(s);
+        std::stringstream ss(value);
         std::string seg;
         while (std::getline(ss, seg, ',')) {
             // trim
@@ -952,6 +1095,13 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         if (res.empty())
             res.push_back(def);
         return res;
+    };
+    auto GetIntList = [&](const char* section, const char* key, int def) {
+        return ParseIntList(GetStr(section, key, ""), section, key, def);
+    };
+    auto GetIntListCompat = [&](const char* section, const char* key, const char* legacySection,
+                                const char* legacyKey, int def) {
+        return ParseIntList(GetStrCompat(section, key, legacySection, legacyKey, ""), section, key, def);
     };
 
     // Helper to parse Hex Color (RRGGBB -> 0xAABBGGRR for overlay)
@@ -978,10 +1128,14 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     // Overlay
     config.overlay.showOverlay = GetBool("Overlay", "enabled", true);
-    config.overlay.observerOnly = GetBool("Overlay", "observer_only", false);
-    config.overlay.observerPolicyOnly = GetBool("Overlay", "observer_policy_only", false);
-    config.overlay.observerStartupPresentOnly = GetBool("Overlay", "observer_startup_present_only", false);
-    config.overlay.dx12FocusAnalysis = GetBool("Overlay", "dx12_focus_analysis", false);
+    config.overlay.observerOnly =
+        GetBoolCompat("Diagnostics", "overlay_observer_only", "Overlay", "observer_only", false);
+    config.overlay.observerPolicyOnly =
+        GetBoolCompat("Diagnostics", "overlay_observer_policy_only", "Overlay", "observer_policy_only", false);
+    config.overlay.observerStartupPresentOnly = GetBoolCompat(
+        "Diagnostics", "overlay_observer_startup_present_only", "Overlay", "observer_startup_present_only", false);
+    config.overlay.dx12FocusAnalysis =
+        GetBoolCompat("Diagnostics", "dx12_focus_analysis", "Overlay", "dx12_focus_analysis", false);
     config.overlay.captureIncludeOverlay = GetBool("Overlay", "capture_include_overlay", true);
     config.overlay.screenshotIncludeOverlay = GetBool("Overlay", "screenshot_include_overlay", true);
 
@@ -1072,8 +1226,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     // Video
     config.video.encoder = GetStr("Video", "encoder", "av1_nvenc");
     config.video.fps = GetBoundedInt("Video", "fps", 120, 1, 1000);
-    config.video.container = GetStr("Video", "container", "mkv");
-    config.video.outputDir = GetStr("Video", "output_dir", "");
+    config.video.container = GetStrCompat("Output", "container", "Video", "container", "mkv");
+    config.video.outputDir = GetStrCompat("Output", "output_dir", "Video", "output_dir", "");
     config.video.rateControl = GetStr("Video", "rate_control", "VBR");
     config.video.bitrate = GetStr("Video", "bitrate", "75Mbps");
     config.video.maxBitrate = GetStr("Video", "max_bitrate", "150Mbps");
@@ -1110,19 +1264,23 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.video.mfScenario = GetStr("MediaFoundation", "scenario", "live_streaming");
     config.video.mfHwEncoding = GetBool("MediaFoundation", "hw_encoding", true);
 
-    // GPU Scaling settings (from [Scaling] section)
-    config.video.scaling.enabled = GetBool("Scaling", "enabled", false);
-    config.video.scaling.outputResolution = GetStr("Scaling", "output_resolution", "native");
+    // GPU scaling
+    config.video.scaling.enabled = GetBoolCompat("VideoScaling", "enabled", "Scaling", "enabled", false);
+    config.video.scaling.outputResolution =
+        GetStrCompat("VideoScaling", "output_resolution", "Scaling", "output_resolution", "native");
 
     // NEW: Honest configuration
-    config.video.scaling.quality = GetStr("Scaling", "quality", "normal");
-    std::string sharpnessValue = GetStr("Scaling", "sharpness", "");
+    config.video.scaling.quality = GetStrCompat("VideoScaling", "quality", "Scaling", "quality", "normal");
+    std::string sharpnessValue = GetStrCompat("VideoScaling", "sharpness", "Scaling", "sharpness", "");
     bool hasExplicitSharpness = !sharpnessValue.empty();
-    config.video.scaling.sharpness = hasExplicitSharpness ? GetBoundedInt("Scaling", "sharpness", 100, 0, 100) : 100;
+    config.video.scaling.sharpness =
+        hasExplicitSharpness
+            ? GetBoundedIntCompat("VideoScaling", "sharpness", "Scaling", "sharpness", 100, 0, 100)
+            : 100;
 
     // Backward compatibility: Convert "filter" to quality/sharpness if "filter"
     // is set and "sharpness" was not explicitly configured.
-    std::string legacyFilter = GetStr("Scaling", "filter", "");
+    std::string legacyFilter = GetStrCompat("VideoScaling", "filter", "Scaling", "filter", "");
     if (!legacyFilter.empty() && legacyFilter != "auto" && !hasExplicitSharpness) {
         std::transform(legacyFilter.begin(), legacyFilter.end(), legacyFilter.begin(),
                        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -1175,53 +1333,62 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     config.audioSources.clear();
 
-    // --- Parse legacy [Audio] section (always, for inheritance + backward compat) ---
+    // Common encoding defaults live in [Audio]. System output capture has its
+    // own [SystemAudio] section; the old source keys in [Audio] still work.
     AudioConfig sysAudio;
-    std::string legacyAudioEnabledStr = GetStr("Audio", "enabled", "");
-    bool legacyAudioExplicitlySet = !legacyAudioEnabledStr.empty();
-    sysAudio.enabled = GetBool("Audio", "enabled", true);
-    sysAudio.tracks = GetIntList("Audio", "track", 1);
-    sysAudio.device = GetStr("Audio", "device", "");
-    sysAudio.codec = GetStr("Audio", "codec", "alac");
-    sysAudio.bitrate = GetInt("Audio", "bitrate", 192);
-    sysAudio.sampleRate = NormalizeSampleRate(GetStr("Audio", "sample_rate", "default"), "Audio");
-    sysAudio.bitDepth = GetStr("Audio", "bit_depth", "default");
-    sysAudio.downmix = GetBool("Audio", "downmix", false);
-    sysAudio.captureLatencyMs = GetFloat("Audio", "capture_latency_ms", config.audioCaptureLatencyMs);
+    std::string systemAudioEnabledStr = GetStrCompat("SystemAudio", "enabled", "Audio", "enabled", "");
+    bool systemAudioExplicitlySet = !systemAudioEnabledStr.empty();
+    sysAudio.enabled = GetBoolCompat("SystemAudio", "enabled", "Audio", "enabled", true);
+    sysAudio.tracks = GetIntListCompat("SystemAudio", "track", "Audio", "track", 1);
+    sysAudio.device = GetStrCompat("SystemAudio", "device", "Audio", "device", "");
+    sysAudio.codec = GetStrCompat("SystemAudio", "codec", "Audio", "codec", "alac");
+    sysAudio.bitrate = GetIntCompat("SystemAudio", "bitrate", "Audio", "bitrate", 192);
+    sysAudio.sampleRate = NormalizeSampleRate(
+        GetStrCompat("SystemAudio", "sample_rate", "Audio", "sample_rate", "default"), "SystemAudio");
+    sysAudio.bitDepth = GetStrCompat("SystemAudio", "bit_depth", "Audio", "bit_depth", "default");
+    sysAudio.downmix = GetBoolCompat("SystemAudio", "downmix", "Audio", "downmix", false);
+    sysAudio.captureLatencyMs = GetFloatCompat("SystemAudio", "capture_latency_ms", "Audio", "capture_latency_ms",
+                                               config.audioCaptureLatencyMs);
     sysAudio.sourceType = AudioConfig::SystemAudio;
 
-    // Detect if any [Audio.N] sections exist
-    bool hasNumberedAudio = false;
-    for (int idx = 1; idx <= kMaxAudioSections && !hasNumberedAudio; idx++) {
+    // Detect numbered system-output sections in either layout.
+    bool hasNumberedSystemAudio = false;
+    for (int idx = 1; idx <= kMaxAudioSections && !hasNumberedSystemAudio; idx++) {
         char section[32];
-        snprintf(section, sizeof(section), "Audio.%d", idx);
-        hasNumberedAudio = !GetStr(section, "enabled", "").empty();
+        char legacySection[32];
+        snprintf(section, sizeof(section), "SystemAudio.%d", idx);
+        snprintf(legacySection, sizeof(legacySection), "Audio.%d", idx);
+        hasNumberedSystemAudio = !GetStrCompat(section, "enabled", legacySection, "enabled", "").empty();
     }
 
-    // Only add legacy [Audio] when no numbered sections exist, or when user explicitly enabled it
-    bool addLegacyAudio = (!hasNumberedAudio) || legacyAudioExplicitlySet;
-    if (addLegacyAudio && sysAudio.enabled) {
+    // An explicit main source stays active alongside numbered sources.
+    bool addMainSystemAudio = (!hasNumberedSystemAudio) || systemAudioExplicitlySet;
+    if (addMainSystemAudio && sysAudio.enabled) {
         config.audioSources.push_back(sysAudio);
     }
 
-    // --- Parse [Audio.1] .. [Audio.8] sections ---
+    // Parse [SystemAudio.1] .. [SystemAudio.8], with [Audio.N] as a legacy alias.
     for (int idx = 1; idx <= kMaxAudioSections; idx++) {
         char section[32];
-        snprintf(section, sizeof(section), "Audio.%d", idx);
-        std::string enabledStr = GetStr(section, "enabled", "");
+        char legacySection[32];
+        snprintf(section, sizeof(section), "SystemAudio.%d", idx);
+        snprintf(legacySection, sizeof(legacySection), "Audio.%d", idx);
+        std::string enabledStr = GetStrCompat(section, "enabled", legacySection, "enabled", "");
         if (enabledStr.empty())
             continue;
 
         AudioConfig cfg;
-        cfg.enabled = GetBool(section, "enabled", false);
-        cfg.device = GetStr(section, "device", "");
-        cfg.tracks = GetIntList(section, "track", idx + 10);
-        cfg.codec = sysAudio.codec;
-        cfg.bitrate = sysAudio.bitrate;
-        cfg.sampleRate = sysAudio.sampleRate;
-        cfg.bitDepth = sysAudio.bitDepth;
-        cfg.downmix = sysAudio.downmix;
-        cfg.captureLatencyMs = GetFloat(section, "capture_latency_ms", sysAudio.captureLatencyMs);
+        cfg.enabled = GetBoolCompat(section, "enabled", legacySection, "enabled", false);
+        cfg.device = GetStrCompat(section, "device", legacySection, "device", "");
+        cfg.tracks = GetIntListCompat(section, "track", legacySection, "track", idx + 10);
+        cfg.codec = GetStrCompat(section, "codec", legacySection, "codec", sysAudio.codec.c_str());
+        cfg.bitrate = GetIntCompat(section, "bitrate", legacySection, "bitrate", sysAudio.bitrate);
+        cfg.sampleRate = NormalizeSampleRate(
+            GetStrCompat(section, "sample_rate", legacySection, "sample_rate", sysAudio.sampleRate.c_str()), section);
+        cfg.bitDepth = GetStrCompat(section, "bit_depth", legacySection, "bit_depth", sysAudio.bitDepth.c_str());
+        cfg.downmix = GetBoolCompat(section, "downmix", legacySection, "downmix", sysAudio.downmix);
+        cfg.captureLatencyMs =
+            GetFloatCompat(section, "capture_latency_ms", legacySection, "capture_latency_ms", sysAudio.captureLatencyMs);
         cfg.sourceType = AudioConfig::SystemAudio;
         if (cfg.enabled)
             config.audioSources.push_back(cfg);
@@ -1232,11 +1399,12 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     micAudio.enabled = GetBool("Microphone", "enabled", false);
     micAudio.device = GetStr("Microphone", "device", "");
     micAudio.tracks = GetIntList("Microphone", "track", 2);
-    micAudio.codec = sysAudio.codec;
-    micAudio.bitrate = sysAudio.bitrate;
-    micAudio.sampleRate = sysAudio.sampleRate;
-    micAudio.bitDepth = sysAudio.bitDepth;
-    micAudio.downmix = sysAudio.downmix;
+    micAudio.codec = GetStr("Microphone", "codec", sysAudio.codec.c_str());
+    micAudio.bitrate = GetInt("Microphone", "bitrate", sysAudio.bitrate);
+    micAudio.sampleRate =
+        NormalizeSampleRate(GetStr("Microphone", "sample_rate", sysAudio.sampleRate.c_str()), "Microphone");
+    micAudio.bitDepth = GetStr("Microphone", "bit_depth", sysAudio.bitDepth.c_str());
+    micAudio.downmix = GetBool("Microphone", "downmix", sysAudio.downmix);
     // Domain 2 (input device): mics do NOT inherit the render-endpoint loopback latency.
     micAudio.captureLatencyMs = GetFloat("Microphone", "capture_latency_ms", config.micCaptureLatencyMs);
     micAudio.sourceType = AudioConfig::Microphone;
@@ -1255,11 +1423,11 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         cfg.enabled = GetBool(section, "enabled", false);
         cfg.device = GetStr(section, "device", "");
         cfg.tracks = GetIntList(section, "track", idx + 20);
-        cfg.codec = sysAudio.codec;
-        cfg.bitrate = sysAudio.bitrate;
-        cfg.sampleRate = sysAudio.sampleRate;
-        cfg.bitDepth = sysAudio.bitDepth;
-        cfg.downmix = sysAudio.downmix;
+        cfg.codec = GetStr(section, "codec", micAudio.codec.c_str());
+        cfg.bitrate = GetInt(section, "bitrate", micAudio.bitrate);
+        cfg.sampleRate = NormalizeSampleRate(GetStr(section, "sample_rate", micAudio.sampleRate.c_str()), section);
+        cfg.bitDepth = GetStr(section, "bit_depth", micAudio.bitDepth.c_str());
+        cfg.downmix = GetBool(section, "downmix", micAudio.downmix);
         // Domain 2 (input device): mics do NOT inherit the render-endpoint loopback latency.
         cfg.captureLatencyMs = GetFloat(section, "capture_latency_ms", config.micCaptureLatencyMs);
         cfg.sourceType = AudioConfig::Microphone;
@@ -1297,7 +1465,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
         // Diagnostic: surface any override that rewrote this source's process name.
         // The literal section value is read directly (bypassing override fallback);
-        // if it differs from the resolved name, an [App.N] override leaked into it.
+        // if it differs from the resolved name, a profile override leaked into it.
         {
             char rawProc[4096];
             GetPrivateProfileStringA(section, "process", "", rawProc, sizeof(rawProc), path.c_str());
@@ -1325,20 +1493,29 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         }
     }
 
-    // Pseudo-overlay (for WGC capture, no injection)
-    config.pseudoOverlay.enabled = GetBool("pseudo-overlay", "enabled", false);
-    config.pseudoOverlay.size = GetBoundedInt("pseudo-overlay", "size", 30, 10, 200);
-    config.pseudoOverlay.pad = GetBoundedInt("pseudo-overlay", "pad", 20, 0, 100);
-    config.pseudoOverlay.pos = GetBoundedInt("pseudo-overlay", "pos", 0, 0, 3);
-    config.pseudoOverlay.mode = GetBoundedInt("pseudo-overlay", "mode", 0, 0, 2);
-    config.pseudoOverlay.alwaysRender = GetBool("pseudo-overlay", "always_render", false);
-    config.pseudoOverlay.alwaysRenderOnlyWhenGame = GetBool("pseudo-overlay", "always_render_only_when_game", false);
-    config.pseudoOverlay.showEncoderOverloadWarn = GetBool("pseudo-overlay", "show_encoder_overload_warnings", true);
-    config.pseudoOverlay.foregroundAcquireGraceMs =
-        GetBoundedInt("pseudo-overlay", "foreground_acquire_grace_ms", 2000, 0, 10000);
+    // Desktop overlay (for WGC capture, no injection)
+    config.pseudoOverlay.enabled = GetBoolCompat("DesktopOverlay", "enabled", "pseudo-overlay", "enabled", false);
+    config.pseudoOverlay.size =
+        GetBoundedIntCompat("DesktopOverlay", "size", "pseudo-overlay", "size", 30, 10, 200);
+    config.pseudoOverlay.pad =
+        GetBoundedIntCompat("DesktopOverlay", "pad", "pseudo-overlay", "pad", 20, 0, 100);
+    config.pseudoOverlay.pos = GetBoundedIntCompat("DesktopOverlay", "pos", "pseudo-overlay", "pos", 0, 0, 3);
+    config.pseudoOverlay.mode =
+        GetBoundedIntCompat("DesktopOverlay", "mode", "pseudo-overlay", "mode", 0, 0, 2);
+    config.pseudoOverlay.alwaysRender =
+        GetBoolCompat("DesktopOverlay", "always_render", "pseudo-overlay", "always_render", false);
+    config.pseudoOverlay.alwaysRenderOnlyWhenGame = GetBoolCompat(
+        "DesktopOverlay", "always_render_only_when_game", "pseudo-overlay", "always_render_only_when_game", false);
+    config.pseudoOverlay.showEncoderOverloadWarn =
+        GetBoolCompat("DesktopOverlay", "show_encoder_overload_warnings", "pseudo-overlay",
+                      "show_encoder_overload_warnings", true);
+    config.pseudoOverlay.foregroundAcquireGraceMs = GetBoundedIntCompat(
+        "DesktopOverlay", "foreground_acquire_grace_ms", "pseudo-overlay", "foreground_acquire_grace_ms", 2000, 0,
+        10000);
     {
         if (!pseudoProcessListSet) {
-            std::string procList = GetStr("pseudo-overlay", "process_list", "");
+            std::string procList =
+                GetStrCompat("DesktopOverlay", "process_list", "pseudo-overlay", "process_list", "");
             if (procList.size() > 2048)
                 procList.resize(2048);
             config.pseudoOverlay.processList = NormalizePseudoOverlayProcessList(procList);
@@ -1372,8 +1549,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         config.hotkeyAudioOnly = ParseHotkey(audioOnlyKey);
     }
 
-    // Screenshot
-    config.screenshotDir = GetStr("Screenshot", "screenshot_dir", "");
+    config.screenshotDir = GetStrCompat("Output", "screenshot_dir", "Screenshot", "screenshot_dir", "");
 }
 
 // Parse hotkey string (e.g., "Ctrl+Shift+F9", "Alt+R", "F10")

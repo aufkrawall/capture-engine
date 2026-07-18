@@ -6864,16 +6864,15 @@ def ensure_debug_logging():
         if not saw_log_level:
             inserted = False
             for i, line in enumerate(new_lines):
-                if line.strip() == "[General]":
+                if line.strip().lower() == "[logging]":
                     new_lines.insert(i + 1, "log_level=debug\n")
                     inserted = True
                     changed = True
                     break
             if not inserted:
                 new_lines = [
-                    "[General]\n",
+                    "[Logging]\n",
                     "log_level=debug\n",
-                    "debug_logging=true\n",
                     "\n",
                     *new_lines,
                 ]

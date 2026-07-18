@@ -1,103 +1,228 @@
 ; =============================================================================
 ; CaptureEngine Configuration
 ; =============================================================================
-; This is the authoritative first-run profile. CaptureEngine writes this exact
-; UTF-8 file when config.ini does not exist. Existing files are never replaced.
-; Lines beginning with ';' are comments. Restart CaptureEngine after editing.
+; CaptureEngine creates this file when config.ini is missing. It does not replace
+; an existing file. Lines beginning with ';' are comments.
+; Restart CaptureEngine after changing this file.
 
-[General]
-; Logging: off/none, error, warn/warning, info, debug, trace.
-; trace is most useful for diagnostics, but writes the most data (including CSVs).
-log_level=trace
+; =============================================================================
+; BASIC SETTINGS
+; =============================================================================
 
-; Video acquisition: inject, wgc, dxgi_dup, auto.
-;   inject    = injected shared-memory video capture.
-;   wgc       = Windows Graphics Capture for a selected window or monitor.
-;   dxgi_dup  = DXGI Desktop Duplication monitor capture. Explicit 10-bit capture
-;               requires a true R10/FP16 source.
-;   auto      = injected capture for injection targets; otherwise WGC for a
-;               detected target window and the fullscreen backend selected below.
-; This controls video acquisition only. Processes in [Injection] may still be
-; injected for the overlay/graphics overrides while wgc or dxgi_dup is selected;
-; unused injected video copies remain disabled.
+[Capture]
+; Choose how video is captured: auto, inject, wgc, or dxgi_dup.
+; auto uses injected capture for normal injection targets. Other targets use WGC,
+; with the fullscreen fallback selected below.
+; inject captures through the injected DLL.
+; wgc captures a window or monitor with Windows Graphics Capture.
+; dxgi_dup captures a monitor with DXGI Desktop Duplication.
 capture_method=auto
 
-; Fullscreen/monitor backend used by auto: dxgi_dup or wgc_window.
+; Fullscreen fallback used by auto: dxgi_dup or wgc_window.
 auto_fullscreen_capture=dxgi_dup
 
-; WGC target detection. This selects a window; it does not enable injection.
-; Entries use process:window:mode, documented under [Injection]. A plain .exe
-; searches for that process's window. Capture falls back to the screen if it closes.
+[WGC]
+; Windows and processes that WGC should look for. A plain .exe finds that
+; process's window. Entry formats are described under [Injection].
 wgc_window_detection=(
 ;game.exe
 )
 
-; WGC performance/cadence policy. Same-device capture normally has least overhead.
+; Same-device capture usually has the lowest overhead.
 wgc_same_device_capture=true
-; Diagnostic experiment only; do not enable without controlled A/B evidence.
-wgc_skip_split_device_flush=false
-; Keep CFR output uniform while an A/V content delay is active.
+
+; Keep frame delivery even while CaptureEngine is delaying video to match audio.
 wgc_active_delay_uniform_cadence=true
-; Bounded startup reservoir for absorbing VRR/DWM delivery dips without A/V drift.
+
+; This buffer absorbs short WGC delivery gaps. The size and VRAM limit are upper
+; bounds; CaptureEngine does not reserve the full amount up front.
 wgc_smoothness_buffer_enabled=true
 wgc_smoothness_buffer_max_ms=300
-; Approximate WGC frame-pool plus retained-frame VRAM budget.
 wgc_smoothness_buffer_vram_budget_mb=3000
-; auto derives a safe minimum reservoir from startup delivery jitter; 0 disables it;
-; an integer requests that many ms, capped by wgc_smoothness_buffer_max_ms.
+; auto learns a useful minimum at startup. 0 disables the minimum. You can also
+; enter a number of milliseconds up to wgc_smoothness_buffer_max_ms.
 wgc_smoothness_floor_ms=auto
-; Diagnostic only: off, mandatory, full.
-wgc_video_memory_reservation=off
-; false preserves >8-bit sources with FP16 when an R10 WGC pool is unavailable.
-; true permits a lossy BGRA8 pool only for auto/non-explicit bit depth; explicit
-; bit_depth=10 still requires FP16/R10.
+
+; Leave this false to preserve HDR and other sources above 8-bit. true permits a
+; smaller 8-bit pool when an R10 pool is unavailable. bit_depth=10 still requires
+; a 10-bit or FP16 source.
 wgc_allow_lossy_bgra8_pool=false
 
-; Render-domain A/V offset in ms. This applies to system loopback and all default
-; app-process loopback sources together; CaptureEngine delays video, never advances
-; live audio. 0 allows endpoint-specific auto measurement when enabled below.
-; Do not give default-render [Audio] and [AppAudio.N] sources different offsets:
-; they share one timing domain. A genuinely different physical [Audio.N] endpoint
-; may use its own capture_latency_ms.
-audio_capture_latency_ms=0
-audio_latency_autodetect=true
-; Microphones are a separate input timing domain and do not inherit render latency.
-mic_capture_latency_ms=0
+[Output]
+; Empty paths use the captures folder next to CaptureEngine.exe. Relative paths
+; start from the CaptureEngine installation folder.
+output_dir=
+screenshot_dir=
+; mkv, mp4, or mov. MKV is the safest choice if recording is interrupted.
+container=mkv
 
-; Optional relative subfolder beneath logs for crash dumps. Empty uses logs itself.
-; Absolute paths and parent traversal are intentionally ignored.
-crash_dump_dir=
+[Video]
+; Choose an encoder supported by your GPU. CaptureEngine does not silently switch
+; to another encoder. Examples: av1_nvenc, hevc_amf, h264_qsv, av1_mf.
+encoder=av1_nvenc
+; Output frame rate, from 1 to 1000. Recordings use a constant frame rate.
+fps=120
+; VBR and CBR use bitrate and max_bitrate. CQ uses qp as its quality target and
+; max_bitrate as a ceiling. CQP uses qp only.
+rate_control=VBR
+bitrate=125Mbps
+max_bitrate=200Mbps
+keyframe_interval=2
+; auto, or an encoder profile such as main, high, high10, main10, or rext.
+profile=auto
+; 0-4.
+b_frames=0
+; Extra FFmpeg options in key=value:key=value form. Empty means none.
+custom_options=
+capture_cursor=true
+; auto, 8, or 10. Explicit 10-bit needs a compatible source and encoder.
+bit_depth=8
+; auto, bt709, or bt2020.
+color_space=auto
+; auto, full, or limited.
+color_range=limited
+; auto or 420. 422 and 444 are not supported yet.
+chroma_subsampling=auto
+
+[NVENC]
+; p1 is fastest; p7 spends the most time on quality.
+preset=p1
+; hq, ll, ull, or lossless.
+tuning=hq
+; auto, disabled, qres, or fullres.
+multipass=auto
+; Lower values mean higher quality. H.264/HEVC use 0-51. AV1 CQ uses 0-63.
+qp=23
+; off, auto, or a depth from 1 to 31.
+lookahead=off
+spatial_aq=false
+temporal_aq=false
+; 0 lets NVENC choose. Otherwise use 1-15.
+aq_strength=0
+; auto, disabled, each, or middle.
+b_ref_mode=auto
+
+[MediaFoundation]
+; Used by encoders ending in _mf.
+; cbr, pc_vbr, u_vbr, quality, ld_vbr, or g_vbr.
+rate_control=quality
+quality=80
+; live_streaming, archive, camera_record, or video_conference.
+scenario=live_streaming
+hw_encoding=true
+
+[VideoScaling]
+enabled=false
+; native, 720p, 1080p, 1440p, 4k, or a size such as 1920x1080.
+output_resolution=1080p
+; normal or best.
+quality=best
+; 0-100. Reduce this if edges look too sharp.
+sharpness=100
+
+[Audio]
+; These are the shared encoding defaults for system audio, microphones, and app
+; audio. Individual sources can override them.
+; aac, alac, flac, opus, or pcm.
+codec=alac
+; Kbps. Lossless codecs ignore this value.
+bitrate=192
+sample_rate=default
+bit_depth=default
+downmix=false
+
+[SystemAudio]
+; Records the default Windows output device. Set device to a Windows device name
+; to use a specific output instead.
+enabled=true
+device=
+; Track IDs are 1-255. A list sends this source to more than one track. Sources
+; with the same ID are mixed together.
+track=1
+; Usually omit this. See [AudioSync] before changing it.
+;capture_latency_ms=0
+
+; [SystemAudio.1] through [SystemAudio.8] add more output devices. Their encoding
+; settings come from [Audio] unless overridden.
+;[SystemAudio.1]
+;enabled=true
+;device=Speakers (Realtek)
+;track=11
+;capture_latency_ms=0
+
+[Microphone]
+; Disabled by default so a new installation never records a microphone by surprise.
+enabled=false
+device=
+track=2
+; Usually omit this. See [AudioSync] before changing it.
+;capture_latency_ms=0
+
+; [Microphone.1] through [Microphone.8] add more input devices.
+;[Microphone.1]
+;enabled=true
+;device=Microphone (USB)
+;track=21
+;capture_latency_ms=0
+
+; Capture one application's audio with [AppAudio.1] through [AppAudio.8]. Use an
+; executable name or a decimal process ID. Recording the same app through system
+; audio and app audio into one track can sound hollow or metallic.
+;[AppAudio.1]
+;enabled=true
+;process=game.exe
+;process_id=
+;track=3
+;codec=aac
+;bitrate=192
+;sample_rate=default
+;bit_depth=default
+;downmix=false
+;capture_latency_ms=0
+
+[Hotkeys]
+; Combinations such as Ctrl+Shift+F10 are supported. Empty disables a hotkey.
+start_stop=F9
+toggle_fps=
+screenshot=
+audio_only=
+
+; =============================================================================
+; OPTIONAL FEATURES
+; =============================================================================
 
 [Injection]
+; Injecting a DLL can trigger anti-cheat systems. Do not inject into multiplayer
+; games unless you know the game allows it.
+;
 ; Entry format: process:window:mode
-;   process  - executable name; quote names containing colons or spaces.
-;   window   - window title; quote names containing colons or spaces.
-;   mode     - exact (default), title_executable, or title_type.
-; At least one of process/window is required. Plain game.exe remains valid.
+; process is an executable name. window is a window title. mode is exact,
+; title_executable, or title_type. At least one of process and window is required.
+; Quote a name if it contains spaces or colons.
 ; Examples:
 ;   game.exe
 ;   game.exe:My Game:title_executable
 ;   :My Game Window:title_type
 ;   "Game: Special.exe":"Game: Special":exact
 ;
-; Normal injection enables injected video capability, the overlay, and graphics
-; overrides. Injection can trigger anti-cheat; do not use it in multiplayer games.
+; Normal injection allows injected video capture, the injected overlay, and
+; graphics overrides.
 whitelist=(
 ;game.exe
 )
 
-; Overlay-only injection: no injected video capture, but still an injected DLL.
-; Useful with WGC/DXGI capture. The same multiplayer/anti-cheat warning applies.
+; Overlay-only injection does not capture injected video, but it still injects a
+; DLL. Use this when WGC or DXGI capture should include the injected overlay.
 overlay_whitelist=(
 ;game.exe
 )
 
 [Overlay]
+; This is the overlay drawn inside injected applications.
 enabled=true
-; Include the injected overlay in recordings and screenshots, respectively.
 capture_include_overlay=true
 screenshot_include_overlay=true
-; TopLeft, TopRight, BottomLeft, BottomRight.
+; TopLeft, TopRight, BottomLeft, or BottomRight.
 position=TopLeft
 ; 0-4096 pixels.
 padding=10
@@ -109,16 +234,15 @@ show_ram=true
 show_vram=true
 show_recording=true
 show_fg=true
-
-; Layout and update cadence. font_size=0 selects automatic sizing.
 compact_mode=false
 horizontal_mode=false
+; 0 chooses the size automatically.
 font_size=0
 rounded_corners=8
-; 0-60000 ms; 0 updates text every rendered frame.
+; Milliseconds. 0 updates text every rendered frame.
 text_update_interval=500
 
-; Styling colors are exactly six RGB hex digits, with an optional leading '#'.
+; Colors use six RGB hex digits. A leading # is optional.
 bg_color=000000
 bg_alpha=0.50
 fps_color=B8FA05
@@ -134,166 +258,56 @@ text_outline_thickness=1.5
 load_color_low=2E9762
 load_color_med=FFCF00
 load_color_high=FF0000
-; auto follows the current HDR output; otherwise use 1-10000 nits.
+; auto follows the current HDR output. Otherwise enter 1-10000 nits.
 hdr_paper_white=auto
-
-; Diagnostics only.
-;observer_only=false
-;observer_policy_only=false
-;observer_startup_present_only=false
-;dx12_focus_analysis=false
-
-[Hotkeys]
-; Key strings support combinations such as Ctrl+Shift+F10. Empty disables a hotkey.
-start_stop=F9
-toggle_fps=
-screenshot=
-; Start/stop an audio-only recording.
-audio_only=
-
-[Video]
-; No automatic encoder fallback is performed: select one supported by your hardware.
-; Values: av1/hevc/h264 combined with _nvenc, _amf, _qsv, or _mf.
-encoder=av1_nvenc
-; 1-1000 CFR output frames per second.
-fps=120
-; mkv, mp4, mov. MKV is resilient to interrupted recordings.
-container=mkv
-; Empty uses the captures subfolder next to CaptureEngine.exe. Relative paths are
-; resolved from the CaptureEngine installation directory.
-output_dir=
-; VBR/CBR use bitrate and max_bitrate; CQ uses qp as target quality plus
-; max_bitrate as a ceiling; CQP uses qp only and has no bitrate ceiling.
-rate_control=VBR
-bitrate=125Mbps
-max_bitrate=200Mbps
-keyframe_interval=2
-; auto, or an encoder-specific profile such as main, high, high10, main10, rext.
-profile=auto
-; 0-4.
-b_frames=0
-; FFmpeg options in key=value:key=value form. Empty means none.
-custom_options=
-capture_cursor=true
-; auto, 8, 10. Explicit 10-bit requires a compatible source and encoder.
-bit_depth=8
-; auto, bt709, bt2020.
-color_space=auto
-; auto, full, limited.
-color_range=limited
-; auto or 420. 422/444 are reserved but not currently supported.
-chroma_subsampling=auto
-
-[NVENC]
-; p1 is fastest; p7 is highest quality/slowest.
-preset=p1
-; hq, ll, ull, lossless.
-tuning=hq
-; auto, disabled, qres, fullres. auto uses quarter-resolution multipass for
-; B-frame or CBR encodes.
-multipass=auto
-; CQ target / CQP quantizer. Lower is better quality.
-; H.264/HEVC: 0-51; AV1 CQ: 0-63; AV1 CQP: 0-255.
-qp=23
-; off, auto, or explicit depth 1-31.
-lookahead=off
-; Spatial and temporal adaptive quantization are independent; strength 0 lets
-; NVENC choose, otherwise 1-15.
-spatial_aq=false
-temporal_aq=false
-aq_strength=0
-; auto, disabled, each, middle.
-b_ref_mode=auto
-
-[MediaFoundation]
-; cbr, pc_vbr, u_vbr, quality, ld_vbr, g_vbr.
-rate_control=quality
-quality=80
-; live_streaming, archive, camera_record, video_conference.
-scenario=live_streaming
-hw_encoding=true
-
-[Scaling]
-enabled=false
-; native, 720p, 1080p, 1440p, 4k, or WxH.
-output_resolution=1080p
-; normal or best.
-quality=best
-; 0-100 edge enhancement; 100 is maximum. Reduce it if edges look oversharpened.
-sharpness=100
-
-[Audio]
-; Default system-output loopback.
-enabled=true
-device=
-; Logical output track IDs are 1-255, not limited to eight. A list fans one
-; source out to multiple tracks. Sources sharing an ID are mixed into that track.
-; Avoid capturing an app through both system loopback and [AppAudio.N] on the same
-; track, because the duplicate signal can comb-filter.
-track=1,2
-; aac, alac, flac, opus, pcm.
-codec=alac
-; Kbps; ignored by lossless codecs.
-bitrate=192
-sample_rate=default
-bit_depth=default
-downmix=false
-; Normally omit: default-render loopback shares General.audio_capture_latency_ms.
-;capture_latency_ms=0
-
-; [Audio.1] through [Audio.8] add physical render endpoints. Quality settings
-; inherit from [Audio]. Their default track IDs are 11 through 18.
-;[Audio.1]
-;enabled=true
-;device=Speakers (Realtek)
-;track=11
-;capture_latency_ms=0
-
-[Microphone]
-; Disabled by default so a first recording never captures a microphone unexpectedly.
-enabled=false
-device=
-track=2,3
-; Input-device override; otherwise General.mic_capture_latency_ms applies.
-;capture_latency_ms=0
-
-; [Microphone.1] through [Microphone.8] add input devices. Quality settings inherit
-; from [Audio]. Their default track IDs are 21 through 28.
-;[Microphone.1]
-;enabled=true
-;device=Microphone (USB)
-;track=21
-;capture_latency_ms=0
-
-[Performance]
-; Media-process CPU priority: idle, below_normal, normal, above_normal, high, realtime.
-process_priority=high
-; IDXGIDevice GPU thread priority for CaptureEngine D3D11 devices: -7..7; 0=adaptive.
-gpu_priority=7
-; Media-process D3DKMT scheduling class: auto, off, idle, below_normal, normal,
-; above_normal, high, realtime. high/realtime may require elevation.
-gpu_scheduling_priority=auto
-; D3D12 injected-overlay DIRECT command-queue priority (historical option name):
-; low, normal, or high. This does not control a copy queue.
+; D3D12 command-queue priority used by the injected overlay: low, normal, or high.
 copy_queue_priority=normal
+
+[DesktopOverlay]
+; This small screen-corner window works without injection and is useful with WGC
+; or DXGI capture.
+; mode 0 shows a recording indicator.
+; mode 1 also shows a NOT RECORDING warning.
+; mode 2 shows only the warning.
+enabled=true
+size=20
+pad=20
+; 0=BottomRight, 1=BottomLeft, 2=TopRight, 3=TopLeft.
+pos=0
+mode=2
+; These two settings keep an invisible window present. They can help in a few
+; window/VRR cases, but normally remain false.
+always_render=false
+always_render_only_when_game=false
+show_encoder_overload_warnings=false
+; Time allowed to recognize the intended foreground window, from 0 to 10000 ms.
+foreground_acquire_grace_ms=2000
+; Processes that trigger the NOT RECORDING warning. Separate names with | on one
+; line, or use the one-name-per-line form shown here.
+process_list=(
+;game.exe
+)
 
 [FpsLimiter]
 capture_sync_enabled=false
-; 1-8; e.g. 2 limits a game to 120 fps while capturing 60 fps.
+; 1-8. For example, 2 limits a game to 120 fps while recording at 60 fps.
 capture_sync_multiplier=2
-; auto, basic, fg_fallback, reflex, anti_lag2, xell.
-; auto tries supported game-integrated limiters, then FG fallback, then basic.
+; auto, basic, fg_fallback, reflex, anti_lag2, or xell.
 capture_sync_limiter_mode=basic
 general_enabled=false
 general_fps=60
 general_limiter_mode=basic
 
+; =============================================================================
+; ADVANCED SETTINGS
+; =============================================================================
+
 [Graphics]
-; These are injected graphics overrides and therefore require [Injection] or an
-; [App.N] profile. default leaves application behavior unchanged.
+; These settings affect injected applications only. default leaves the
+; application's setting alone.
 vsync_mode=default
 anisotropic_filtering=default
-; safe protects special-purpose samplers; aggressive modifies more samplers.
+; safe avoids special-purpose samplers. aggressive changes more samplers.
 sampler_override_mode=safe
 mip_mapping=default
 mip_bias=default
@@ -302,21 +316,23 @@ force_mip_bias_clamp=false
 msaa_samples=default
 sgssaa=false
 disable_auto_mip_bias=false
-; -1 leaves application behavior unchanged; valid overrides are 0-6.
+; -1 leaves the application alone. Other valid values are 0-6.
 cpu_prerender_limit=-1
-; -1 leaves application behavior unchanged; valid overrides are 2-6.
+; -1 leaves the application alone. Other valid values are 2-6.
 backbuffer_count=-1
 
-; Global DLSS overrides; each can also be qualified in an [App.N] profile.
+[DLSS]
+; DLSS overrides affect injected applications only. default leaves the game alone.
 dlss_auto_exposure=default
 dlss_exposure_normalization=default
+; Presets accept A-Z or default.
 dlss_preset_dlaa=default
 dlss_preset_quality=default
 dlss_preset_balanced=default
 dlss_preset_performance=default
 dlss_preset_ultra_performance=default
 dlss_preset_ultra_quality=default
-; Legacy all-quality SR/RR presets remain supported; A-Z or default.
+; These two older all-quality settings remain supported.
 dlss_sr_preset=default
 dlss_rr_preset_dlaa=default
 dlss_rr_preset_quality=default
@@ -327,66 +343,66 @@ dlss_rr_preset_ultra_quality=default
 dlss_rr_preset=default
 dlss_sharpening=default
 dlss_fg_factor=default
+; auto, on, or off.
+nvidia_smooth_motion_compat=auto
 dlss_debug_overlay=default
-; Empty uses the normal DLL search path. Supply an absolute DLL or directory path.
+; Empty uses the normal DLL search path. Use an absolute DLL or folder path here.
 dlss_sr_dll_path=
 dlss_rr_dll_path=
 dlss_fg_dll_path=
 streamline_dll_path=
 
-[pseudo-overlay]
-; Non-injected screen-corner window, primarily for WGC/DXGI capture.
-; mode 0: steady recording indicator only.
-; mode 1: recording indicator plus NOT RECORDING warning.
-; mode 2: warning only; the shipped profile therefore has no steady recording dot.
-enabled=true
-size=20
-pad=20
-; 0=BottomRight, 1=BottomLeft, 2=TopRight, 3=TopLeft.
-pos=0
-mode=2
-; Keeping an invisible window present can reduce some VRR/window-change effects,
-; but is unreliable; mode 2 normally makes this unnecessary.
-always_render=false
-always_render_only_when_game=false
-show_encoder_overload_warnings=false
-; 0-10000 ms allowed to acquire the intended foreground window.
-foreground_acquire_grace_ms=2000
-; Processes that trigger NOT RECORDING warnings. Separate inline names with '|',
-; or use the parenthesized one-name-per-line form below.
-process_list=(
-;game.exe
-)
+[Performance]
+; CaptureEngine process priority: idle, below_normal, normal, above_normal, high,
+; or realtime.
+process_priority=high
+; GPU thread priority for CaptureEngine's D3D11 devices, from -7 to 7. 0 is adaptive.
+gpu_priority=7
+; auto, off, idle, below_normal, normal, above_normal, high, or realtime.
+; high and realtime may require administrator rights.
+gpu_scheduling_priority=auto
 
-[Screenshot]
-; Empty uses the captures subfolder (the same base folder as Video.output_dir),
-; not a separate screenshots folder. Relative paths resolve from the install dir.
-screenshot_dir=
+[AudioSync]
+; Usually leave these settings alone. CaptureEngine can measure how late system
+; and app audio arrives and delay video to match it. It never moves live audio
+; earlier. Microphones have a separate timing value.
+audio_latency_autodetect=true
+audio_capture_latency_ms=0
+mic_capture_latency_ms=0
 
-; Per-application audio capture: [AppAudio.1] through [AppAudio.8].
-; Select either process=<exe name> or process_id=<decimal PID>. Codec, bitrate,
-; sample_rate, bit_depth, downmix, and render-domain latency inherit from [Audio]
-; unless explicitly overridden here.
-;[AppAudio.1]
-;enabled=true
-;process=game.exe
-;process_id=
-;track=3
-;codec=aac
-;bitrate=192
-;sample_rate=default
-;bit_depth=default
-;downmix=false
-;capture_latency_ms=0
-
-; Per-process overrides: [App.1] through [App.8]. Merely setting Process also adds
-; that target to the normal injection whitelist, so the multiplayer/anti-cheat
-; warning applies. Prefer explicit Section.key names; bare keys are accepted for
-; compatibility but can be ambiguous when multiple sections share a key.
-;[App.1]
+; Per-process profiles can override settings for up to eight executables.
+; injection must be normal, overlay, or none. normal adds the process to the normal
+; injection list. overlay adds it to the overlay-only list. none does not inject it.
+; Use Section.key names so it is clear which setting is being changed.
+;[Profile.1]
 ;Process=game.exe
+;injection=none
 ;Video.encoder=hevc_nvenc
 ;Video.fps=60
 ;Graphics.vsync_mode=off
 ;FpsLimiter.general_enabled=true
 ;FpsLimiter.general_fps=120
+
+[Logging]
+; off, error, warn, info, debug, or trace. trace also writes the most diagnostic data.
+log_level=debug
+; Optional subfolder below logs for crash dumps. Empty puts dumps directly in logs.
+; Absolute paths and .. are ignored here.
+crash_dump_dir=
+
+; =============================================================================
+; TROUBLESHOOTING
+; =============================================================================
+
+[Diagnostics]
+; Leave these at their defaults unless you are investigating a specific problem.
+; Skip a WGC producer flush when capture and encoding use different devices.
+wgc_skip_split_device_flush=false
+; off, mandatory, or full. Changes WGC video-memory reservation experiments.
+wgc_video_memory_reservation=off
+
+; Passive and staged injected-overlay tests used by developers.
+overlay_observer_only=false
+overlay_observer_policy_only=false
+overlay_observer_startup_present_only=false
+dx12_focus_analysis=false

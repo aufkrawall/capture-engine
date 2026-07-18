@@ -112,7 +112,7 @@ the game window (a likely Windows MPO bug, not a CE code bug).
 
 **Config:**
 ```ini
-[pseudo-overlay]
+[DesktopOverlay]
 foreground_acquire_grace_ms=2000   ; 0 disables, 10s max
 ```
 

@@ -1,6 +1,6 @@
 # Recording Output Paths
 
-Last cross-checked: 2026-07-15 (shared collision-safe reservation and atomic publication for video, audio-only, PNG, and AVIF outputs)
+Last cross-checked: 2026-07-18 (canonical Output config section plus shared collision-safe reservation and atomic publication for video, audio-only, PNG, and AVIF outputs)
 
 ## Summary
 
@@ -10,7 +10,7 @@ All capture outputs use `ce::capture_output::ReservedCaptureOutput`:
 - Audio-only recordings reserve through `MediaEngine::InitAudioOnlyMuxer()` in `mediaengine/mediaengine.cpp`.
 - SDR PNG and HDR AVIF screenshots reserve and atomically publish through `captureengine/screenshot_encoding.cpp`.
 
-`[Video] output_dir` may be empty, relative, absolute local, UNC, or a mapped-drive path. Empty video, audio-only, and screenshot output writes to the `captures` subfolder next to the executable. Relative output is resolved below the executable directory. All three paths preserve the mapped-drive behavior below.
+`[Output] output_dir` may be empty, relative, absolute local, UNC, or a mapped-drive path. `[Output] screenshot_dir` follows the same rules. Empty video, audio-only, and screenshot output writes to the `captures` subfolder next to the executable. Relative output is resolved below the executable directory. All three paths preserve the mapped-drive behavior below. Legacy `[Video] output_dir` and `[Screenshot] screenshot_dir` remain readable.
 
 ## Reservation And Publication Invariants
 

@@ -276,14 +276,24 @@ track=2
     smoothness_floor_line = (
         f"wgc_smoothness_floor_ms={wgc_smoothness_floor_ms}\n" if wgc_smoothness_floor_ms is not None else ""
     )
-    text = f"""[General]
-log_level=trace
+    text = f"""[Capture]
 capture_method={scenario.capture_method}
-audio_capture_latency_ms={audio_capture_latency_ms}
-audio_latency_autodetect=false
+
+[WGC]
 {smoothness_floor_line}wgc_window_detection=(
 {PROCESS_NAME}
 )
+
+[AudioSync]
+audio_capture_latency_ms={audio_capture_latency_ms}
+audio_latency_autodetect=false
+
+[Logging]
+log_level=trace
+
+[Output]
+container=mkv
+output_dir={output_dir}
 
 [Injection]
 whitelist=(
@@ -298,8 +308,6 @@ screenshot_include_overlay=false
 [Video]
 encoder={video_encoder}
 fps={scenario.fps}
-container=mkv
-output_dir={output_dir}
 vfr=false
 capture_cursor=false
 bit_depth={scenario.bit_depth}
@@ -320,14 +328,16 @@ lookahead=false
 aq=false
 
 [Audio]
-enabled=true
-device=
-track={system_tracks}
 codec={scenario.audio_codec}
 bitrate=192
 sample_rate=default
 bit_depth=default
 downmix=false
+
+[SystemAudio]
+enabled=true
+device=
+track={system_tracks}
 
 [AppAudio.1]
 enabled=true
@@ -345,7 +355,7 @@ track=4
 capture_sync_enabled=false
 general_enabled=false
 
-[pseudo-overlay]
+[DesktopOverlay]
 enabled=false
 """
     CAPTURE_CONFIG.write_text(text, encoding="utf-8")
@@ -1482,13 +1492,13 @@ def build_parser():
         type=float,
         default=0.0,
         help="CE-side loopback audio capture latency compensation written to the scenario config "
-        "(General/audio_capture_latency_ms). Use with --raw-offset-gate to validate the fix: 0 measures "
+        "([AudioSync] audio_capture_latency_ms). Use with --raw-offset-gate to validate the fix: 0 measures "
         "the raw capture differential, the measured value drives it toward 0.",
     )
     parser.add_argument(
         "--wgc-smoothness-floor-ms",
         default=None,
-        help="Override [General] wgc_smoothness_floor_ms in the scenario config (\"auto\", \"0\", or an "
+        help="Override [WGC] wgc_smoothness_floor_ms in the scenario config (\"auto\", \"0\", or an "
         "explicit ms value). Pair with --audio-capture-latency-ms 0 to validate the WGC baseline "
         "jitter-buffer floor (video-only / low-confidence path): the realized delay should pin near the "
         "floor and A/V sync must stay clean (no realized-delay rubber-band, no ghost-image judder). "

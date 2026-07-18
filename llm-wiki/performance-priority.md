@@ -1,15 +1,15 @@
 # Performance Priority Settings
 
-Last cross-checked: 2026-07-12 (adapter-aware HAGS auto policy, priority readback/persistence, and capture-thread QoS)
+Last cross-checked: 2026-07-18 (overlay queue option relocation, adapter-aware HAGS auto policy, priority readback/persistence, and capture-thread QoS)
 
 ## Overview
 
-The `[Performance]` section controls three independent priority mechanisms plus one legacy-named D3D12 overlay queue setting. They are not interchangeable:
+The `[Performance]` section controls three independent priority mechanisms. The injected overlay's queue setting now lives with `[Overlay]`. They are not interchangeable:
 
 - `process_priority`: media process CPU priority via `SetPriorityClass`.
 - `gpu_priority`: D3D11 device GPU thread priority via `IDXGIDevice::SetGPUThreadPriority`.
 - `gpu_scheduling_priority`: media process GPU scheduling class via `D3DKMTSetProcessSchedulingPriorityClass` resolved from `gdi32.dll`.
-- `copy_queue_priority`: D3D12 overlay DIRECT queue priority. Despite the name, it is not a COPY queue and no D3D12 COPY queue is currently created by CE.
+- `[Overlay] copy_queue_priority`: D3D12 overlay DIRECT queue priority. Despite the name, it is not a COPY queue and no D3D12 COPY queue is currently created by CE.
 
 ## `process_priority` (CPU Process Priority)
 
@@ -76,7 +76,7 @@ The requested D3D11 relative priority is retained and reapplied after WGC shared
 
 ## `copy_queue_priority` (D3D12 Overlay Queue Priority)
 
-**Config:** `[Performance] copy_queue_priority`
+**Config:** `[Overlay] copy_queue_priority` (legacy `[Performance]` location remains supported)
 **Default:** `normal`
 **Values:** `low`, `normal`, `high`
 

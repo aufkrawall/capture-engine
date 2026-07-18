@@ -31,7 +31,7 @@ Primary sources:
 
 ## Content Catalog
 - `configuration.md`
-  - Authoritative resource-backed first-run template, existing-file compatibility boundary, injection/profile/audio/output semantics, validation rules, and maintenance invariants. Last verified 2026-07-18.
+  - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, explicit profile injection modes, audio/output semantics, validation rules, and maintenance invariants. Last verified 2026-07-18.
 - `overlay-rendering.md`
   - Shared overlay layout/graph/font invariants, instant amber recording-start intent and live-state handoff, exact-ABI and sanity-checked telemetry, legacy DX8/DX9/DX10/OpenGL cache/state isolation, DirectDraw performance boundary, and runtime-validation stale-risk. Last verified 2026-07-18.
 - `handoff-dx12-32bit-crash.md`
@@ -77,15 +77,15 @@ Primary sources:
 - `multi-audio-capture.md`
   - Multi system/microphone/app capture, including encoder-latency-independent inject CFR source-clock targets, rate-limited worker scheduling evidence, process-loopback protocol 4 descriptor/byte rings with private lifecycle state and transactional cursors, immutable safe producer-format normalization, evidence-complete fatal transport propagation, preserved startup markers, ordered close-before-reactivation, polling-first activation, render-session recovery, private disposable CaptureEngine worker isolation/recycle, the 60 ms CFR ingestion reservoir, exact finalization, and route-local compensation. Last verified 2026-07-18. Stale-risk: medium (fresh device/runtime validation remains necessary).
 - `wgc-capture.md`
-  - WGC and DXGI Desktop Duplication backends, including the max-rate variable-input CFR producer invariant, callback-rate aging, callback epochs, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and crash-safe straight-alpha point-sampled single-stream DPI/HDR cursor composition. Last verified 2026-07-15. Stale-risk: medium.
+  - WGC and DXGI Desktop Duplication backends, including canonical WGC/Diagnostics config locations, the max-rate variable-input CFR producer invariant, callback-rate aging, callback epochs, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and crash-safe straight-alpha point-sampled single-stream DPI/HDR cursor composition. Last verified 2026-07-18. Stale-risk: medium.
 - `cfr-capture-sync.md`
-  - Shared WGC/DXGI/inject CFR and A/V invariants, including capture-sync/CFR selection phase preservation with varying-cadence fallback, contiguous screen-grab packet PTS under overload, packet-only video validation, encoder-latency-independent inject audio targeting, max-rate variable-input WGC production, transactional startup, 60 ms audio-ingestion look-ahead, 300 ms WGC/DXGI look-ahead, nearest monotonic source selection, causal inject transport, convergent per-output overload recovery, and exact decoded stop/tail accounting. Last verified 2026-07-17. Stale-risk: medium.
+  - Shared WGC/DXGI/inject CFR and A/V invariants, including canonical WGC/AudioSync/SystemAudio config locations, capture-sync/CFR selection phase preservation with varying-cadence fallback, contiguous screen-grab packet PTS under overload, packet-only video validation, encoder-latency-independent inject audio targeting, max-rate variable-input WGC production, transactional startup, 60 ms audio-ingestion look-ahead, 300 ms WGC/DXGI look-ahead, nearest monotonic source selection, causal inject transport, convergent per-output overload recovery, and exact decoded stop/tail accounting. Last verified 2026-07-18. Stale-risk: medium.
 - `nvenc-encoding.md`
   - NVENC hardware-frame ownership, safe CFR repeat encoding, lookahead/multipass/split-AQ/B-reference policy, AV1 S12M metadata safety, and bundled FFmpeg patch invariants. Last verified 2026-07-17. Stale-risk: medium (fresh driver/GPU matrix remains necessary).
 - `performance-priority.md`
-  - `[Performance]` priorities, adapter-aware HAGS auto resolution, D3D11 priority persistence/readback, capture/encoder MMCSS QoS, and D3D12 queue constraints. Last verified 2026-07-12. Stale-risk: medium.
+  - `[Performance]` priorities, `[Overlay]` queue priority, adapter-aware HAGS auto resolution, D3D11 priority persistence/readback, capture/encoder MMCSS QoS, and D3D12 queue constraints. Last verified 2026-07-18. Stale-risk: medium.
 - `recording-output-paths.md`
-  - Shared collision-safe video/audio/screenshot output reservation, identity-owned cleanup, atomic screenshot publication, executable-relative/default paths, and elevated mapped-drive handling. Last verified 2026-07-15. Stale-risk: low.
+  - Canonical `[Output]` settings, shared collision-safe video/audio/screenshot output reservation, identity-owned cleanup, atomic screenshot publication, executable-relative/default paths, and elevated mapped-drive handling. Last verified 2026-07-18. Stale-risk: low.
 - `log.md`
   - Stub pointing to `log/recent.md` (recent activity) and `log/archive-YYYY-Www*.md` (weekly archives).
 

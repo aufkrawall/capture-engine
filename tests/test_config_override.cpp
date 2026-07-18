@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -130,6 +131,68 @@ TEST_F(ConfigOverrideTest, MultipleAppSections) {
 
     LoadConfig(tempConfigFile, config, "game2.exe");
     EXPECT_TRUE(config.overlay.showOverlay);
+}
+
+TEST_F(ConfigOverrideTest, ProfilesUseExplicitInjectionModes) {
+    WriteConfig(
+        "[Injection]\n"
+        "whitelist=(\n"
+        "manual.exe\n"
+        ")\n"
+        "[Profile.1]\n"
+        "Process=normal.exe\n"
+        "injection=normal\n"
+        "[Profile.2]\n"
+        "Process=overlay.exe\n"
+        "injection=overlay\n"
+        "[Profile.3]\n"
+        "Process=none.exe\n"
+        "injection=none\n"
+        "Video.fps=77\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "none.exe");
+
+    auto HasProcess = [](const std::vector<WhitelistEntry>& entries, const char* process) {
+        return std::any_of(entries.begin(), entries.end(),
+                           [&](const WhitelistEntry& entry) { return entry.pattern == process; });
+    };
+    EXPECT_TRUE(HasProcess(config.gameWhitelist, "manual.exe"));
+    EXPECT_TRUE(HasProcess(config.gameWhitelist, "normal.exe"));
+    EXPECT_FALSE(HasProcess(config.gameWhitelist, "overlay.exe"));
+    EXPECT_FALSE(HasProcess(config.gameWhitelist, "none.exe"));
+    EXPECT_TRUE(HasProcess(config.overlayWhitelist, "overlay.exe"));
+    EXPECT_FALSE(HasProcess(config.overlayWhitelist, "normal.exe"));
+    EXPECT_EQ(config.video.fps, 77);
+}
+
+TEST_F(ConfigOverrideTest, ProfileWithoutInjectionModeDoesNotInject) {
+    WriteConfig(
+        "[Profile.1]\n"
+        "Process=game.exe\n"
+        "Video.fps=75\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "game.exe");
+
+    EXPECT_TRUE(config.gameWhitelist.empty());
+    EXPECT_TRUE(config.overlayWhitelist.empty());
+    EXPECT_EQ(config.video.fps, 75);
+}
+
+TEST_F(ConfigOverrideTest, LegacyAppProfileStillAddsNormalInjectionTarget) {
+    WriteConfig(
+        "[App.1]\n"
+        "Process=legacy.exe\n"
+        "Video.fps=75\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "legacy.exe");
+
+    ASSERT_EQ(config.gameWhitelist.size(), 1u);
+    EXPECT_EQ(config.gameWhitelist.front().pattern, "legacy.exe");
+    EXPECT_TRUE(config.overlayWhitelist.empty());
+    EXPECT_EQ(config.video.fps, 75);
 }
 
 TEST_F(ConfigOverrideTest, PerAppDLSSFGFactorOverride) {

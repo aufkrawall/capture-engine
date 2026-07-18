@@ -249,6 +249,9 @@ TEST(ScreenshotRawHeaderTest, CreatesOnlySupportedCheckedLayouts) {
 TEST(ScreenshotRawHeaderTest, RefusesToEncodeAnInconsistentInMemoryPayload) {
     std::filesystem::path directory = UniqueRawPath();
     directory.replace_extension();
+    std::error_code staleCleanupError;
+    std::filesystem::remove_all(directory, staleCleanupError);
+    ASSERT_FALSE(staleCleanupError);
     ASSERT_TRUE(std::filesystem::create_directories(directory));
 
     std::array<uint8_t, 16> pixels{};
@@ -312,6 +315,9 @@ TEST(ScreenshotColorTest, SanitizesNonFiniteScRgbAndRejectsUnsupportedInput) {
 TEST(ScreenshotAvifTest, SourceBuiltLibaomEncodesTenBit444WithHdrMetadata) {
     std::filesystem::path directory = UniqueRawPath();
     directory.replace_extension();
+    std::error_code staleCleanupError;
+    std::filesystem::remove_all(directory, staleCleanupError);
+    ASSERT_FALSE(staleCleanupError);
     ASSERT_TRUE(std::filesystem::create_directories(directory));
 
     std::vector<uint32_t> pixels(16, 0x3FFFFFFFu);
