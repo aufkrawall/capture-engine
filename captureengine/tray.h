@@ -31,8 +31,9 @@ public:
 
 private:
     HINSTANCE hInstance;
-    HWND hWnd;
-    NOTIFYICONDATAA nid;
+    HWND hWnd = nullptr;
+    NOTIFYICONDATAA nid{};
+    UINT taskbarCreatedMessage = 0;
     std::function<void()> onQuit;
     std::function<void()> onOpenConfig;
 
@@ -42,10 +43,13 @@ private:
 
     bool shuttingDown = false;
     bool blinkState = false;
+    bool iconInitialized = false;
+    bool iconRemovalRequested = false;
     UINT_PTR blinkTimerId = 0;
 
     static LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
     void InitWindow();
     void InitIcon();
+    void RestoreAfterTaskbarCreated();
     void UpdateBlinkState();
 };

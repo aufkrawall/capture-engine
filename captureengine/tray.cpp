@@ -1,4 +1,5 @@
 #include "tray.h"
+#include "../common/logging.h"
 #include <shellapi.h>
 
 static constexpr UINT_PTR BLINK_TIMER_ID = 1001;
@@ -13,15 +14,16 @@ TrayIcon::TrayIcon(HINSTANCE hInstance, std::function<void()> onQuit, std::funct
 }
 
 TrayIcon::~TrayIcon() {
-    if (blinkTimerId) {
-        KillTimer(hWnd, blinkTimerId);
-        blinkTimerId = 0;
-    }
-    Shell_NotifyIconA(NIM_DELETE, &nid);
-    DestroyWindow(hWnd);
+    Remove();
+    if (hWnd)
+        DestroyWindow(hWnd);
 }
 
 void TrayIcon::InitWindow() {
+    taskbarCreatedMessage = RegisterWindowMessageA("TaskbarCreated");
+    if (taskbarCreatedMessage == 0)
+        LogWarn("[Tray] Failed to register Explorer taskbar recreation message (error=%lu)", GetLastError());
+
     WNDCLASSEXA wc = {0};
     wc.cbSize = sizeof(WNDCLASSEX);
     wc.lpfnWndProc = WndProc;
@@ -34,14 +36,13 @@ void TrayIcon::InitWindow() {
     // Explorer can observe a real UI window during launch and clear the startup
     // wait cursor promptly.
     hWnd = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, "CaptureEngineTray", "CaptureEngine", WS_POPUP, 0, 0, 0,
-                           0, NULL, NULL, hInstance, NULL);
-    if (!hWnd)
+                           0, NULL, NULL, hInstance, this);
+    if (!hWnd) {
+        LogError("[Tray] Failed to create notification window (error=%lu)", GetLastError());
         return;
+    }
     ShowWindow(hWnd, SW_HIDE);
     UpdateWindow(hWnd);
-
-    // Store 'this' pointer
-    SetWindowLongPtr(hWnd, GWLP_USERDATA, (LONG_PTR)this);
 }
 
 void TrayIcon::InitIcon() {
@@ -60,8 +61,26 @@ void TrayIcon::InitIcon() {
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = hIconIdle ? hIconIdle : LoadIcon(NULL, IDI_APPLICATION);
     strcpy_s(nid.szTip, "Capture Engine");
+    iconInitialized = true;
 
-    Shell_NotifyIconA(NIM_ADD, &nid);
+    SetLastError(ERROR_SUCCESS);
+    if (!Shell_NotifyIconA(NIM_ADD, &nid))
+        LogError("[Tray] Failed to add tray icon (error=%lu)", GetLastError());
+    else
+        LogInfo("[Tray] Tray icon added");
+}
+
+void TrayIcon::RestoreAfterTaskbarCreated() {
+    if (iconRemovalRequested || !iconInitialized)
+        return;
+
+    LogInfo("[Tray] Explorer taskbar was recreated; restoring tray icon");
+    SetLastError(ERROR_SUCCESS);
+    if (!Shell_NotifyIconA(NIM_ADD, &nid)) {
+        LogError("[Tray] Failed to restore tray icon after taskbar recreation (error=%lu)", GetLastError());
+        return;
+    }
+    LogInfo("[Tray] Tray icon restored after taskbar recreation");
 }
 
 void TrayIcon::SetRecordingState(bool recording) {
@@ -75,8 +94,16 @@ void TrayIcon::SetRecordingState(bool recording) {
 
 LRESULT CALLBACK TrayIcon::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     TrayIcon* pThis = (TrayIcon*)GetWindowLongPtr(hWnd, GWLP_USERDATA);
+    if (message == WM_NCCREATE) {
+        const auto* create = reinterpret_cast<const CREATESTRUCTA*>(lParam);
+        pThis = static_cast<TrayIcon*>(create->lpCreateParams);
+        SetWindowLongPtr(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pThis));
+    }
 
-    if (message == WM_TRAYICON) {
+    if (pThis && pThis->taskbarCreatedMessage != 0 && message == pThis->taskbarCreatedMessage) {
+        pThis->RestoreAfterTaskbarCreated();
+        return 0;
+    } else if (message == WM_TRAYICON) {
         if (pThis && pThis->shuttingDown) {
             // Ignore all clicks during shutdown
             return 0;
@@ -142,9 +169,14 @@ void TrayIcon::UpdateBlinkState() {
 }
 
 void TrayIcon::Remove() {
+    if (iconRemovalRequested)
+        return;
+    iconRemovalRequested = true;
+
     if (blinkTimerId) {
         KillTimer(hWnd, blinkTimerId);
         blinkTimerId = 0;
     }
-    Shell_NotifyIconA(NIM_DELETE, &nid);
+    if (iconInitialized)
+        Shell_NotifyIconA(NIM_DELETE, &nid);
 }

@@ -1,6 +1,6 @@
 # Process IPC And Restricted Children
 
-Last cross-checked: 2026-07-18 (restricted process channels, accept-before-finalize media stops, private same-image process-loopback workers, GUI launch-feedback suppression, and exact shared-memory ABI/build publication/isolation)
+Last cross-checked: 2026-07-18 (restricted process channels, accept-before-finalize media stops, private same-image process-loopback workers, GUI launch-feedback suppression, Explorer tray recovery, and exact shared-memory ABI/build publication/isolation)
 
 Primary sources:
 - `common/restricted_child_process.{h,cpp}`
@@ -8,8 +8,10 @@ Primary sources:
 - `common/shared_defs.h`
 - `captureengine/{main,inject_main,media_main,limiter_main}.cpp`
 - `captureengine/{ipc,logger_service,sensor_service}.cpp`
+- `captureengine/tray.{h,cpp}`
 - `hook/common/ipc_client.cpp`
 - `tests/test_process_ipc.cpp`
+- `tests/test_tray_source.cpp`
 - `tests/{test_shared_runtime_state,test_logger_service_policy}.cpp`
 
 ## Summary
@@ -23,6 +25,8 @@ The pipe security descriptor grants access only to SYSTEM and the current user. 
 The separate high-volume inject shared-memory transport is also an exact internal ABI, not a backward-compatible prefix protocol. ABI 36 uses version-isolated main/discovery mapping names and publishes magic only after construction and full header/config initialization. Consumers must validate exact version, `sizeof(SharedMemoryLayout)`, and a compiled fingerprint of major/nested sizes and offsets before dereferencing any payload.
 
 CaptureEngine is linked as a Windows GUI-subsystem image even when the same executable runs a windowless internal role. Every restricted internal spawn therefore sets `STARTF_FORCEOFFFEEDBACK`; `CREATE_NO_WINDOW` alone does not suppress GUI process-start cursor feedback. This covers ordinary media/logger/sensor/limiter/inject children and disposable process-loopback workers, while explicit user game/launcher starts retain normal Windows feedback. The controller also clears any external launch feedback at its earliest controller-only dispatch and creates its hidden tray owner before Vulkan registration or child startup can extend the busy cursor. The hook's hidden same-image dump helper uses the same feedback opt-out.
+
+That tray owner is a hidden top-level tool window so it receives Explorer's registered `TaskbarCreated` broadcast. Explorer owns notification-area state and discards it when Explorer exits or crashes; the controller therefore republishes the existing `NOTIFYICONDATA` with `NIM_ADD` when the taskbar is recreated. This preserves the current idle, recording, or shutdown icon and tooltip rather than resetting presentation state. The window binds its `TrayIcon` instance during `WM_NCCREATE`, before broadcasts can be dispatched, and intentional removal permanently disarms recovery. Restore success/failure is logged without adding polling or steady-state work.
 
 ## Shared-Memory Contract
 
@@ -59,13 +63,14 @@ The private pipe name is only a transient rendezvous used while the controller a
 
 ## Tests And Diagnostics
 
-`tests/test_process_ipc.cpp` covers exact message validation, valid commands/responses, bad kind/opcode/mode/PID/nonce/sequence/size/payload, strict startup arguments, private-pipe source invariants, restricted handle-list spawning, accept-before-finalize media stop ordering and fallback placement, delivery of the launch-feedback opt-out to a real child probe, and earliest Controller-only cursor/tray ordering. `tests/test_crash_handler.cpp` locks the hidden dump-helper feedback opt-out. Shared-memory tests cover explicit ABI publication/rejection, version-isolated names, wrap-safe frame windows, session log directory selection, and filename containment. Runtime diagnostics identify rejected headers/messages, channel disconnects, corrupt frame indices, early/periodic Vulkan frame publication, and rate-limited ring-full events without logging secrets.
+`tests/test_process_ipc.cpp` covers exact message validation, valid commands/responses, bad kind/opcode/mode/PID/nonce/sequence/size/payload, strict startup arguments, private-pipe source invariants, restricted handle-list spawning, accept-before-finalize media stop ordering and fallback placement, delivery of the launch-feedback opt-out to a real child probe, and earliest Controller-only cursor/tray ordering. `tests/test_tray_source.cpp` locks the registered `TaskbarCreated` wiring, construction-time instance binding, state-preserving `NIM_ADD`, and no-restore-after-remove guard. `tests/test_crash_handler.cpp` locks the hidden dump-helper feedback opt-out. Shared-memory tests cover explicit ABI publication/rejection, version-isolated names, wrap-safe frame windows, session log directory selection, and filename containment. Runtime diagnostics identify tray add/recovery results, rejected headers/messages, channel disconnects, corrupt frame indices, early/periodic Vulkan frame publication, and rate-limited ring-full events without logging secrets.
 
-The focused `ProcessIPCTest.*:AudioCaptureSourceTest.*:ConfigTest.*` gate passed 89 tests. Incremental product build `0.1.5085` passed both hook architectures, CaptureEngine/MediaEngine, packaging, both Vulkan layers, import closure, PE mitigations, and PDB checks. The exact-build no-build gate passed all 1,728 native tests in 132 suites and all five Python tool self-tests.
+The focused `TrayIconSourceTest.*` gate passed. Incremental product build `0.1.5089` passed both hook architectures, CaptureEngine/MediaEngine, packaging, both Vulkan layers, import closure, PE mitigations, architecture, and PDB checks. The exact-build no-build gate passed the complete native suite and all five Python tool self-tests.
 
 ## Open Questions / Stale-risk
 
 - Logger and sensor process behavior remains outside the private pipe-command set, but both are strict consumers of the shared-memory ABI.
 - Real anti-malware/injection-heavy runtime testing remains useful because inherited-handle launch behavior can be affected by third-party process instrumentation.
 - CaptureEngine cannot prevent feedback that an external shell applies before `WinMain` begins; it minimizes that interval with the earliest Controller-only cursor reset and hidden UI owner. Fresh ordinary startup/application-audio churn observation remains the runtime confirmation boundary.
+- Session `20260718_223556` proved Explorer changed from PID 9084 to PID 16712 while the controller remained healthy, but it was captured on build `0.1.5088`, before tray recovery existed. A real Explorer restart on `0.1.5089` or later remains the runtime confirmation boundary for the restored-icon diagnostics.
 - ABI 36 intentionally requires a fresh target process after installation; an already injected older DLL cannot hot-upgrade its compiled mapping name/layout/build identity. Fresh ordinary-account Vulkan session `20260717_152124` confirmed exact-build discovery, session logging, 16-texture publication, overlay rendering, and 534 encoded output frames after the 2026-07-17 fix.
