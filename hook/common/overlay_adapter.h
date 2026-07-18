@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <mutex>
+#include "../../common/recording_indicator_policy.h"
 #include "custom_overlay.h"
 #include "ipc_client.h"
 #include "performance_metrics.h"
@@ -116,6 +117,7 @@ private:
         char fgLabel[16] = "";
         float fgBaseFPS = 0.0f;
         float fgOutputFPS = 0.0f;
+        ce::recording_indicator::State recordingState = ce::recording_indicator::State::Idle;
         bool recordingActive = false;
         bool recordingAudioOnly = false;
         uint64_t recordingSeconds = 0;

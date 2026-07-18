@@ -2,10 +2,13 @@
 
 #include <windows.h>
 #include <atomic>
+#include <mutex>
 #include <string>
+#include <thread>
 
 #include "../common/config.h"
 #include "../common/pseudo_overlay_focus_grace.h"
+#include "../common/recording_indicator_policy.h"
 #include "../common/shared_defs.h"
 
 // Controller-side pseudo-overlay indicator for WGC capture.
@@ -29,8 +32,11 @@ public:
     // Update configuration (applied on next overlay refresh).
     void UpdateConfig(const PseudoOverlayConfig& cfg);
 
-    // Notify recording state change.
-    void SetRecordingState(bool recording);
+    // Publish controller intent immediately, before child-process readiness waits.
+    void SetRecordingStartIntent(RecordingStartIntent intent);
+
+    // Ask the UI thread to re-read shared live/pending state.
+    void RequestRefresh();
 
     // Notify encoder overload (warning shown for 5 seconds).
     void TriggerEncoderOverloadWarning(uint32_t sustainFpsX100 = 0);
@@ -38,12 +44,16 @@ public:
     // Show brief screenshot notification (2 seconds).
     void ShowScreenshotNotification();
 
-    // Force an immediate overlay update (called from timer or state changes).
-    void UpdateOverlay();
-
     bool IsInitialized() const {
-        return initialized_;
+        return initialized_.load(std::memory_order_acquire);
     }
+
+#ifdef CE_UNIT_TESTS
+    bool WaitForUiIdleForTesting(DWORD timeoutMs = 2000);
+    ce::recording_indicator::State GetRecordingIndicatorStateForTesting() const {
+        return publishedRecordingIndicatorState_.load(std::memory_order_acquire);
+    }
+#endif
 
 private:
     struct AnchorInfo {
@@ -76,6 +86,13 @@ private:
     AnchorInfo ResolveAnchorInfo();
     void UpdateScaleForDpi(UINT dpi);
     void OnTimerTick();
+    void UpdateOverlay();
+    void ThreadMain();
+    bool InitializeOnUiThread();
+    void ShutdownOnUiThread();
+    void ApplyPendingConfig();
+    bool RefreshRecordingState();
+    void PostRefresh();
     // Evaluate focus-acquire grace for the current tick, update tracking state, and
     // log transitions. Called once per timer tick.
     void UpdateForegroundGraceState(bool currentHadTarget, uint32_t currentPid);
@@ -90,16 +107,28 @@ private:
     void CleanupGDI();
 
     // Overlay state
-    bool initialized_ = false;
+    std::atomic<bool> initialized_{false};
     HINSTANCE hInstance_ = NULL;
     PseudoOverlayConfig config_;
+    std::mutex pendingConfigMutex_;
+    PseudoOverlayConfig pendingConfig_;
+    std::atomic<uint64_t> pendingConfigGeneration_{0};
+    uint64_t appliedConfigGeneration_ = 0;
+    std::thread uiThread_;
+    std::atomic<DWORD> uiThreadId_{0};
+    HANDLE uiReadyEvent_ = NULL;
+    std::atomic<bool> uiInitSucceeded_{false};
     float scale_ = 1.0f;
 
     // Scale helper
     int S(int v) const;
 
-    // Atomic recording state
+    // Cross-thread desired intent plus UI-thread-resolved live state.
+    std::atomic<RecordingStartIntent> requestedStartIntent_{RecordingStartIntent::Idle};
     std::atomic<bool> isRecording_{false};
+    ce::recording_indicator::State recordingIndicatorState_ = ce::recording_indicator::State::Idle;
+    std::atomic<ce::recording_indicator::State> publishedRecordingIndicatorState_{
+        ce::recording_indicator::State::Idle};
     std::atomic<ULONGLONG> overloadWarnUntil_{0};
     std::atomic<uint32_t> overloadWarnSustainFpsX100_{0};
     std::atomic<ULONGLONG> screenshotNotifyUntil_{0};
@@ -121,7 +150,7 @@ private:
     ULONGLONG lastForegroundAcquireTick_ = 0;
     uint32_t lastForegroundAcquirePid_ = 0;
     bool hadForegroundTarget_ = false;
-    bool prevIsRecording_ = false;
+    ce::recording_indicator::State prevRecordingIndicatorState_ = ce::recording_indicator::State::Idle;
     bool prevGraceActive_ = false;
     bool foregroundGraceEverStarted_ = false;
 
@@ -162,6 +191,9 @@ private:
     // Window class names
     static constexpr const char* kIndicatorClass = "CE_PseudoOv";
     static constexpr const char* kWarningClass = "CE_PseudoWarn";
+    static constexpr UINT kMsgRefresh = WM_APP + 0x41;
+    static constexpr UINT kMsgShutdown = WM_APP + 0x42;
+    static constexpr UINT kMsgTestBarrier = WM_APP + 0x43;
 
     // Window procedures
     static LRESULT CALLBACK IndicatorWndProc(HWND h, UINT m, WPARAM w, LPARAM l);

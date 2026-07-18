@@ -1,6 +1,6 @@
 # Pseudo-Overlay
 
-Last cross-checked: 2026-06-23 (mode-2 record-start visibility leak fix + pump-stall diagnostics)
+Last cross-checked: 2026-07-18 (instant recording-start feedback + dedicated UI thread)
 
 Primary sources:
 - `captureengine/pseudo_overlay.h`
@@ -8,15 +8,19 @@ Primary sources:
 - `common/pseudo_overlay_focus_grace.h`
 - `common/pseudo_overlay_focus_grace.cpp`
 - `common/pseudo_overlay_visibility.h` (`ShouldPseudoOverlayBeVisible` pure policy)
+- `common/recording_indicator_policy.h`
+- `common/shared_defs.h` (`RecordingStartIntent` runtime flags)
 - `common/config.h` (`PseudoOverlayConfig`)
 - `common/config.cpp` (`process_list` parsing, `foreground_acquire_grace_ms`)
+- `tests/test_pseudo_overlay_thread.cpp`
+- `tests/test_pseudo_overlay_visibility.cpp`
 
 ## Overview
 
-Controller-side overlay for WGC capture (no injection required). Uses two layered top-level popup windows (`WS_EX_LAYERED | WS_EX_TOPMOST`) running entirely in `captureengine.exe`.
+Controller-side overlay for WGC capture (no injection required). It uses two layered top-level popup windows (`WS_EX_LAYERED | WS_EX_TOPMOST`) running entirely in `captureengine.exe`. A dedicated pseudo-overlay message thread owns window classes, windows, GDI resources, the timer, shared-memory mappings, and every render/update call. Controller calls only publish synchronized desired state and post refresh messages.
 
-- `hOv_` (`CE_PseudoOv` class): Indicator circle (red=recording, blue=idle)
-- `hWarn_` (`CE_PseudoWarn` class): Warning text overlay ("NOT RECORDING", "Encoder overloaded!", "Screenshot saved!")
+- `hOv_` (`CE_PseudoOv` class): indicator circle (amber=start pending, red=recording)
+- `hWarn_` (`CE_PseudoWarn` class): status/notification text (`STARTING RECORDING...`, `STARTING AUDIO...`, `NOT RECORDING`, encoder overload, or screenshot saved)
 
 Both windows have `WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` to prevent focus stealing.
 
@@ -24,14 +28,15 @@ Both windows have `WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` to p
 
 | Mode | Value | Behavior |
 |------|-------|----------|
-| `InformationIndicator` | 0 | Recording indicator circle only, no warning |
-| `WarningAndIndicator` | 1 | Indicator + "NOT RECORDING" warning |
-| `WarningOnly` | 2 | "NOT RECORDING" warning only, no indicator |
+| `InformationIndicator` | 0 | Amber pending or red live indicator circle only |
+| `WarningAndIndicator` | 1 | Indicator plus amber startup text or `NOT RECORDING` warning |
+| `WarningOnly` | 2 | Amber startup text or `NOT RECORDING`; windowless during established recording except sanctioned notifications |
 
 ## Timer
 
-- Single `WM_TIMER` fires every **500ms** (`kTimerInterval`, `pseudo_overlay.h:152`)
-- `TimerProc` calls `OnTimerTick()` which drives all state checks and `UpdateOverlay()`
+- A thread timer fires every **500ms** and drives shared-state polling, focus/anchor policy, warning blinking, notifications, and rendering.
+- Controller intent, config, screenshot, and overload changes post `kMsgRefresh` to the UI thread, so hotkey feedback does not wait for the next timer tick.
+- `Init` waits at most five seconds for a readiness event after the thread creates its message queue and UI resources. `Shutdown` posts `kMsgShutdown`, joins the thread, and leaves all window/GDI/shared-memory teardown on the owning thread.
 
 ## Visibility Policy & Mode-2 "Inactive While Recording" Contract
 
@@ -41,8 +46,9 @@ Whether the overlay should have ANY visible window this update is decided by the
 wrapper in `pseudo_overlay.cpp` just fills the inputs and delegates.
 
 Visibility terms:
-- **Indicator** — `isRecording && mode != 2`.
-- **NOT-RECORDING warning** — `warnVisible && !isRecording` (gated on `!isRecording`; see below).
+- **Indicator** — pending or live recording state and `mode != 2`.
+- **Startup text** — pending video/audio state and `mode != 0`.
+- **NOT-RECORDING warning** — `warnVisible` only while the resolved state is idle.
 - **Encoder-overload warning** — `showEncoderOverloadWarn && now < overloadWarnUntil`.
 - **Screenshot notification** — `now < screenshotNotifyUntil`.
 - **Ghost keepalive** — `alwaysRender` (explicit opt-in).
@@ -53,40 +59,23 @@ notifications: encoder-overload and screenshot-saved. Those may spawn a short-li
 window mid-recording (accepted as singular slight-stutter events). The steady-state timer does NOT
 call `UpdateOverlay` in this state; only lightweight CPU polling runs (no window/plane work).
 
-**Record-start leak fix (2026-06-23):** the NOT-RECORDING warning is mutually exclusive with
-recording, but `warnVisible_` used to be cleared only by the next 500 ms timer tick. Starting a
-recording while the warning was visible therefore left the layered topmost warning window up (and
-re-rendered "NOT RECORDING") for up to ~500 ms into the recording. Fixed two ways: `SetRecordingState(true)`
-now clears `warnActive_/warnVisible_` synchronously before `UpdateOverlay()`, and the policy helper
-gates the warning term on `!isRecording` (single source of truth; the `showW` term in `UpdateOverlay`
-is also gated defensively).
+## Recording-Start State Contract
 
-## Message-Pump Health (Finding B — game-freeze risk, diagnostics only so far)
+- The controller publishes `RecordingStartIntent::Video` or `AudioOnly` before media/limiter readiness waits and posts an immediate refresh. The shared intent stays active through encoder calibration and hidden-frame warm-up; it has no timeout and does not start the timer.
+- The UI thread resolves shared `isRecording`, `audioOnly`, and start intent through `recording_indicator::SelectState`. Live state wins over a stale pending bit.
+- Pending video renders amber `STARTING RECORDING...`; pending audio renders amber `STARTING AUDIO...`. A pending transition clears the blinking `NOT RECORDING` state and aborts foreground-acquire grace so feedback can render immediately.
+- Pending startup text has priority over screenshot, overload, and `NOT RECORDING` text. Encoder-overload polling remains gated on established recording.
+- Media clears the intent only when it publishes live recording, stop/cancel occurs, or startup fails. The controller also clears its direct-thread fallback on every readiness/command/child-exit/shutdown terminal path.
+- Inject-overlay handoff suppression, `enabled`, mode, process list, anchoring, foreground behavior, and `alwaysRender` keepalive still apply.
 
-The two overlay windows are `WS_EX_TOPMOST | WS_EX_LAYERED` and are owned by the controller's
-**single main thread** (the timer is `SetTimer(NULL, …)` armed in `Init`; the windows are created
-from `OnTimerTick` on that thread and pumped by the main `PeekMessage`/`DispatchMessage` loop). That
-thread also performs multi-second **non-pumping** `WaitForSingleObject` waits:
+## Message-Pump Health
+
+The two topmost layered windows are now owned and pumped by a dedicated UI thread. Multi-second controller waits such as:
 - record-start: `EnsureLimiterProcessReady(10000)` (`main.cpp` ~679, only if `captureSyncEnabled`)
 - config-reload: `SyncLoggerAndSensorProcesses` (5s+5s) + `SyncLimiterProcess` (10s) (`main.cpp` ~1341)
 - process teardown/sync: `ShutdownIpcChildProcess(…,5000)`, `WaitForSingleObject(processHandle,…)`
 
-While blocked, the topmost overlay windows stop pumping. A non-responsive topmost window on the
-game's output can wedge a foreground / MPO fullscreen transition and present as a frozen game window
-(fits the reported freeze "with and without WGC"; also explains why a mode-2 recording feels safe —
-no topmost overlay window is alive then). Hotkeys (`RegisterHotKey(NULL,…)`) are on the same thread,
-so they are also unresponsive during these waits.
-
-Diagnostics added (no behavior change yet):
-- `[PseudoOverlay] Message-pump stall: Nms between timer ticks` — emitted in `OnTimerTick` when the
-  inter-tick gap ≥ `kPumpStallWarnMs` (1500 ms, 3× the 500 ms interval). Proves the pump was starved.
-- `[Controller] Main-thread blocked Nms in <label>` — RAII `MainThreadBlockTimer` in `main.cpp`
-  around the record-start limiter wait and the config-reload service sync (warns at ≥250 ms).
-
-**Stale-risk / open:** the root-cause fix (dedicated never-blocking overlay UI thread, or pumped
-controller waits) is **deferred** pending a real-hardware trace correlating a freeze with a pump
-stall — the MPO freeze cannot be reproduced in-repo and the threading refactor must not introduce
-races. This is a hypothesis with strong code evidence, not a confirmed-and-fixed bug.
+can still delay tray work and global-hotkey handling on the controller thread, but cannot starve pseudo-overlay windows after the hotkey has been handled. `[Controller] Main-thread blocked ...` now describes tray/hotkey impact. `[PseudoOverlay] UI-thread stall ...` reports a gap on the dedicated thread itself; it is no longer evidence of controller starvation. The disabled-window lifecycle test verifies cross-thread refresh and joined shutdown without timing sleeps.
 
 ## Foreground-Acquire Grace Period (Alt+Tab-in settle)
 
@@ -109,7 +98,7 @@ the game window (a likely Windows MPO bug, not a CE code bug).
 - All internal state transitions (warnActive_, lastOv_, etc.)
 
 **Abort signals (commit immediately even during grace):**
-- Recording state change (user toggles start/stop during the grace window) — the
+- Recording indicator state change, including the initial pending transition — the
   `recordingStateChanged` flag in the helper short-circuits to `suppressVisibleOverlay=false`
 - `foreground_acquire_grace_ms` config change — `UpdateConfig` resets the in-flight grace
   so the new value is honored on the next acquire
@@ -140,9 +129,9 @@ focus-IN path is debounced, which is the direction that races MPO / fullscreen r
 Every timer tick in `OnTimerTick()`:
 
 1. If mode 1 or 2: call `IsForegroundTarget()`
-2. If foreground process matches `process_list` AND not recording → activate blinking warning
+2. If foreground process matches `process_list` AND the recording state is idle → activate blinking warning
 3. Blink pattern: 2s visible / 1s hidden (3000ms cycle)
-4. If match lost or recording starts → deactivate warning
+4. If match is lost or recording becomes pending/live → deactivate warning
 5. Foreground-grace tracking is updated first; the warning blink phase is advanced
    during grace so the first visible frame after grace is in-phase.
 
@@ -186,11 +175,11 @@ First-pass parser enters multi-line mode when `rest == "("` after Trim.
 - **`;` comments inside multi-line blocks are skipped** at `config.cpp:938-939` before reaching the pseudo-process-list handler. Entries starting with `;` are silently ignored.
 - **Empty multi-line block**: If all entries are `;`-commented, `pseudoProcessList` stays empty, `pseudoProcessListSet` is true, and the `GetStr` fallback is blocked. Process list remains empty — no warning possible.
 - **Grace transition tick renders**: On a mid-session PID change, the very first tick after the transition renders normally (so the overlay repositions onto the new monitor), and the *next* tick starts suppressing. This is the only intentional "violation" of the soft wait — a true 2-second freeze on PID change would make monitor-switch feel laggy. The focus-IN-from-another-app case (no prior whitelisted focus) is the one that always suppresses on the transition tick.
-- **Grace never blocks recording aborts**: The `recordingStateChanged` flag in the helper always commits immediately, so the user never sees a "I pressed the hotkey but no indicator" regression.
+- **Grace never blocks startup feedback**: the resolved pending/live state change is passed to the helper as an abort signal, so the hotkey's pending indicator is committed immediately.
 
 ## Debug Logging
 
-All pseudo-overlay diagnostic logging uses `LogDebug` (only visible at debug/trace log levels):
+High-frequency pseudo-overlay diagnostic logging uses `LogDebug` (only visible at debug/trace log levels):
 - `IsForegroundTarget`: processList value, foreground PID, OpenProcess/QueryFullProcessImageNameA errors, normalized exe name vs list items, match result, cache hit/miss
 - `OnTimerTick`: warning activation/deactivation with reason
 - `UpdateOverlay`: mode/isRecording/warnVisible/ghost/shouldHaveVisible, suppression reason, warning window position/size
@@ -198,6 +187,7 @@ All pseudo-overlay diagnostic logging uses `LogDebug` (only visible at debug/tra
 `LogInfo` breadcrumbs for grace transitions (visible at info level):
 - grace started, grace elapsed (with waited ms), grace aborted (focus_lost),
   grace reset (config change), grace skipped (grace_ms=0).
+- resolved recording-indicator transitions and dedicated-thread startup/shutdown.
 
 ## Source Anchors
 
@@ -209,8 +199,10 @@ All pseudo-overlay diagnostic logging uses `LogDebug` (only visible at debug/tra
 | Grace policy implementation | `common/pseudo_overlay_focus_grace.cpp` | full |
 | Visibility policy (pure) | `common/pseudo_overlay_visibility.h` | full |
 | Visibility tests | `tests/test_pseudo_overlay_visibility.cpp` | full |
-| Record-start warn-clear | `captureengine/pseudo_overlay.cpp` | `SetRecordingState` |
-| Pump-stall diagnostic | `captureengine/pseudo_overlay.cpp` | `OnTimerTick` (`lastTimerTickMs_`, `kPumpStallWarnMs`) |
+| Recording-state policy | `common/recording_indicator_policy.h` | full |
+| Instant intent publication | `captureengine/main.cpp` | `PublishRecordingStartIntent`, recording hotkey paths |
+| Thread lifecycle / refresh | `captureengine/pseudo_overlay.cpp` | `Init`, `ThreadMain`, `PostRefresh`, `Shutdown` |
+| UI-thread stall diagnostic | `captureengine/pseudo_overlay.cpp` | `OnTimerTick` (`lastTimerTickMs_`, `kPumpStallWarnMs`) |
 | Controller block timer | `captureengine/main.cpp` | `MainThreadBlockTimer` + record-start/config-reload wraps |
 | Pseudo-overlay header | `captureengine/pseudo_overlay.h` | full |
 | Pseudo-overlay implementation | `captureengine/pseudo_overlay.cpp` | full |
@@ -218,11 +210,12 @@ All pseudo-overlay diagnostic logging uses `LogDebug` (only visible at debug/tra
 | Grace gate inside `UpdateOverlay` | `captureengine/pseudo_overlay.cpp` | after the inject suppression check, before `EnsureOverlayWindows` |
 | Tests (config) | `tests/test_config.cpp` | 221-289 |
 | Tests (grace policy) | `tests/test_pseudo_overlay_focus_grace.cpp` | full |
+| Tests (thread lifecycle) | `tests/test_pseudo_overlay_thread.cpp` | full |
 
 ## Open Questions / Stale-risk
 
-- Stale-risk: low. Core logic is stable. Grace period added 2026-06-01.
-- `SetTimer(NULL, ... TimerProc)` — timer fires correctly via `PeekMessage`/`DispatchMessage`. Verified by timer message counts in diagnostic logs.
+- Stale-risk: medium until the dedicated-thread/pending presentation receives fresh game/runtime validation. Pure policy, lifecycle smoke, focused native tests, product compilation, and full automated tests are authoritative for the covered boundaries.
+- `SetTimer(NULL, ... TimerProc)` is created and destroyed on the dedicated thread and dispatched by that thread's `GetMessage` loop.
 - 2s default is a heuristic. If the MPO/buffer rebind is observed to take longer on
   specific games/drivers, the user can raise `foreground_acquire_grace_ms` up to 10s.
   No upper bound beyond 10s to avoid hiding the indicator for a full minute if someone

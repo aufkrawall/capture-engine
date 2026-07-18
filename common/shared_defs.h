@@ -207,6 +207,7 @@ enum class RecordingFailureCode : uint32_t {
     None = 0,
     ProcessLoopbackTransportIntegrity = 1,
     SharedMemoryProtocolIntegrity = 2,
+    RecordingStartFailed = 3,
 };
 
 enum class ScreenshotRequestStatus : uint32_t {
@@ -372,6 +373,17 @@ enum CaptureRuntimeFlags : uint32_t {
     // capture-synced limiting, overlays, and graphics overrides without doing
     // unused hook-side texture copies.
     kCaptureRuntimeFlagInjectVideoCaptureRequested = 1u << 3,
+    // Controller-owned recording intent. These bits become visible before any
+    // child-process readiness wait and stay published until file output is live
+    // or the start attempt reaches a terminal failure/cancel path.
+    kCaptureRuntimeFlagRecordingStartPending = 1u << 4,
+    kCaptureRuntimeFlagRecordingStartAudioOnly = 1u << 5,
+};
+
+enum class RecordingStartIntent : uint8_t {
+    Idle = 0,
+    Video = 1,
+    AudioOnly = 2,
 };
 
 enum class CapturePipelinePhase : uint32_t {
@@ -536,6 +548,36 @@ struct alignas(8) CaptureState {
     bool IsInjectVideoCaptureRequested() const {
         return captureRequested.load(std::memory_order_acquire) &&
                HasRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested);
+    }
+
+    RecordingStartIntent GetRecordingStartIntent() const {
+        const uint32_t flags = runtimeFlags.load(std::memory_order_acquire);
+        if ((flags & kCaptureRuntimeFlagRecordingStartPending) == 0) {
+            return RecordingStartIntent::Idle;
+        }
+        return (flags & kCaptureRuntimeFlagRecordingStartAudioOnly) != 0 ? RecordingStartIntent::AudioOnly
+                                                                        : RecordingStartIntent::Video;
+    }
+
+    void SetRecordingStartIntent(RecordingStartIntent intent) {
+        constexpr uint32_t intentMask =
+            kCaptureRuntimeFlagRecordingStartPending | kCaptureRuntimeFlagRecordingStartAudioOnly;
+        uint32_t intentFlags = 0;
+        if (intent != RecordingStartIntent::Idle) {
+            intentFlags |= kCaptureRuntimeFlagRecordingStartPending;
+            if (intent == RecordingStartIntent::AudioOnly) {
+                intentFlags |= kCaptureRuntimeFlagRecordingStartAudioOnly;
+            }
+        }
+
+        uint32_t current = runtimeFlags.load(std::memory_order_acquire);
+        for (;;) {
+            const uint32_t desired = (current & ~intentMask) | intentFlags;
+            if (runtimeFlags.compare_exchange_weak(current, desired, std::memory_order_acq_rel,
+                                                   std::memory_order_acquire)) {
+                return;
+            }
+        }
     }
 
     void SetRuntimeFlag(uint32_t flag, bool enabled) {

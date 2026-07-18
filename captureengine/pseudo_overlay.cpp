@@ -36,6 +36,7 @@ void EnsureDwmApi() {
 // ---- Palette (matching OBSIndicator exactly) ----
 static constexpr COLORREF kColWarnText = RGB(255, 20, 20);
 static constexpr COLORREF kColScreenshotText = RGB(20, 255, 20);
+static constexpr COLORREF kColStarting = RGB(255, 191, 0);
 
 namespace {
 std::string NormalizeProcessName(std::string value) {
@@ -235,14 +236,15 @@ HWND GetMainWindowForProcess(DWORD pid) {
     return search.hwnd;
 }
 
-bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, bool isRecording, bool warnVisible,
+bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, ce::recording_indicator::State recordingState,
+                            bool warnVisible,
                             ULONGLONG overloadWarnUntil, ULONGLONG screenshotNotifyUntil, bool ghostActive) {
     // Delegate to the pure, unit-tested policy helper. The helper gates the NOT-RECORDING
-    // warning on !isRecording so it can never leak into an active recording (see
+    // warning on the resolved idle state so it can never leak into pending or active recording (see
     // common/pseudo_overlay_visibility.h and tests/test_pseudo_overlay_visibility.cpp).
     ce::pseudo_overlay::OverlayVisibilityInputs in;
     in.mode = config.mode;
-    in.isRecording = isRecording;
+    in.recordingState = recordingState;
     in.warnVisible = warnVisible;
     in.showEncoderOverloadWarn = config.showEncoderOverloadWarn;
     in.ghostActive = ghostActive;
@@ -426,8 +428,8 @@ void PseudoOverlay::UpdateForegroundGraceState(bool currentHadTarget, uint32_t c
 
 ce::pseudo_overlay::FocusGraceDecision PseudoOverlay::EvaluateForegroundGrace(bool currentHadTarget,
                                                                               uint32_t currentPid, ULONGLONG now) {
-    const bool recordingChanged = prevIsRecording_ != isRecording_.load(std::memory_order_relaxed);
-    prevIsRecording_ = isRecording_.load(std::memory_order_relaxed);
+    const bool recordingChanged = prevRecordingIndicatorState_ != recordingIndicatorState_;
+    prevRecordingIndicatorState_ = recordingIndicatorState_;
 
     auto decision = ce::pseudo_overlay::ComputeFocusGraceDecision(
         now, lastForegroundAcquireTick_, lastForegroundAcquirePid_, currentPid, hadForegroundTarget_, currentHadTarget,
@@ -541,6 +543,43 @@ bool PseudoOverlay::IsInjectOverlayPending() {
            pSharedMem_->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayPending);
 }
 
+bool PseudoOverlay::RefreshRecordingState() {
+    bool recordingActive = false;
+    bool recordingAudioOnly = false;
+    RecordingStartIntent sharedIntent = RecordingStartIntent::Idle;
+    const bool haveSharedState = EnsureSharedMemoryMapping() && pSharedMem_;
+    if (haveSharedState) {
+        recordingActive = pSharedMem_->runtimeState.isRecording.load(std::memory_order_acquire);
+        recordingAudioOnly = pSharedMem_->runtimeState.audioOnly.load(std::memory_order_acquire);
+        sharedIntent = pSharedMem_->runtimeState.GetRecordingStartIntent();
+    }
+
+    RecordingStartIntent startIntent = sharedIntent;
+    if (startIntent == RecordingStartIntent::Idle) {
+        startIntent = requestedStartIntent_.load(std::memory_order_acquire);
+    }
+    const auto nextState =
+        ce::recording_indicator::SelectState(recordingActive, recordingAudioOnly, startIntent);
+    if (recordingActive) {
+        requestedStartIntent_.store(RecordingStartIntent::Idle, std::memory_order_release);
+    }
+
+    if (nextState == recordingIndicatorState_) {
+        return false;
+    }
+
+    LogInfo("[PseudoOverlay] Recording indicator state %u -> %u",
+            static_cast<unsigned>(recordingIndicatorState_), static_cast<unsigned>(nextState));
+    recordingIndicatorState_ = nextState;
+    publishedRecordingIndicatorState_.store(nextState, std::memory_order_release);
+    isRecording_.store(ce::recording_indicator::IsRecording(nextState), std::memory_order_release);
+    if (nextState != ce::recording_indicator::State::Idle) {
+        warnActive_ = false;
+        warnVisible_ = false;
+    }
+    return true;
+}
+
 PseudoOverlay::AnchorInfo PseudoOverlay::ResolveAnchorInfo() {
     AnchorInfo anchor;
 
@@ -629,28 +668,22 @@ void PseudoOverlay::InitGDI() {
 }
 
 void PseudoOverlay::OnTimerTick() {
-    if (!initialized_) {
+    if (!initialized_.load(std::memory_order_acquire)) {
         return;
     }
 
     const int64_t tickStartUs = Log_GetQpcUs();
     ULONGLONG now = GetTickCount64();
+    ApplyPendingConfig();
+    const bool recordingStateChanged = RefreshRecordingState();
 
-    // Pump-health diagnostic (Finding B). This timer only fires every kTimerInterval ms
-    // while the thread that owns the (topmost, layered) overlay windows keeps pumping
-    // messages. A large gap between ticks means that thread was blocked for that long
-    // (e.g. a multi-second controller WaitForSingleObject on a child process), during which
-    // the topmost overlay windows are unresponsive. A non-pumping topmost window on the
-    // game's output can wedge a foreground / MPO fullscreen transition and present as a
-    // frozen game window. Correlate this with the controller's "Main-thread blocked ..ms"
-    // warning to localize which blocking section starved the pump.
+    // The pseudo-overlay owns this dedicated message thread. A large timer gap now
+    // diagnoses work on this thread itself; controller readiness waits cannot starve it.
     if (lastTimerTickMs_ != 0 && now > lastTimerTickMs_) {
         const ULONGLONG tickGapMs = now - lastTimerTickMs_;
         if (tickGapMs >= kPumpStallWarnMs) {
             LogWarn(
-                "[PseudoOverlay] Message-pump stall: %llums between timer ticks (interval=%ums) — "
-                "topmost overlay windows were unresponsive this long; a foreground/MPO transition "
-                "during this window can freeze the game window",
+                "[PseudoOverlay] UI-thread stall: %llums between timer ticks (interval=%ums)",
                 static_cast<unsigned long long>(tickGapMs), kTimerInterval);
         }
     }
@@ -665,10 +698,15 @@ void PseudoOverlay::OnTimerTick() {
     UpdateForegroundGraceState(currentHadTarget, currentHadTarget ? rawFgPid : 0u);
     (void)now;
 
+    if (recordingStateChanged) {
+        UpdateOverlay();
+    }
+
     if (config_.mode == 1 || config_.mode == 2) {
         bool warnTargetFocused = IsForegroundTarget();
-        bool isRecording = isRecording_.load();
-        bool condition = warnTargetFocused && !isRecording;
+        const bool isRecording = ce::recording_indicator::IsRecording(recordingIndicatorState_);
+        const bool isStarting = ce::recording_indicator::IsStarting(recordingIndicatorState_);
+        bool condition = warnTargetFocused && !isRecording && !isStarting;
 
         if (condition) {
             if (!warnActive_) {
@@ -722,14 +760,15 @@ void PseudoOverlay::OnTimerTick() {
     }
     lastScreenshotNotifyUntil = currentScreenshot;
 
-    if (config_.showEncoderOverloadWarn && EnsureSharedMemoryMapping() && pSharedMem_) {
+    if (config_.showEncoderOverloadWarn && ce::recording_indicator::IsRecording(recordingIndicatorState_) &&
+        EnsureSharedMemoryMapping() && pSharedMem_) {
         const uint32_t overloadFlags = pSharedMem_->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
         const uint32_t captureHealthFlags =
             pSharedMem_->runtimeState.wgcCaptureHealthFlags.load(std::memory_order_relaxed);
         const uint32_t warningKind = ce::capture_policy::SelectWgcOverlayWarningKind(overloadFlags, captureHealthFlags);
         if (ce::capture_policy::IsWgcCaptureLimitedForOverlay(captureHealthFlags)) {
             const ULONGLONG previousWarnUntil = overloadWarnUntil_.exchange(0, std::memory_order_relaxed);
-            if (previousWarnUntil != 0 && initialized_) {
+            if (previousWarnUntil != 0 && initialized_.load(std::memory_order_acquire)) {
                 UpdateOverlay();
             }
         } else if (warningKind == ce::capture_policy::kOverlayWarningEncoderOverload) {
@@ -782,18 +821,22 @@ void PseudoOverlay::CleanupGDI() {
 // ---- Main overlay update (ported from OBSIndicator UpdateOv) ----
 
 void PseudoOverlay::UpdateOverlay() {
-    if (!initialized_)
+    if (!initialized_.load(std::memory_order_acquire))
         return;
 
-    const bool isRecording = isRecording_.load();
+    const auto recordingState = recordingIndicatorState_;
+    const bool isRecording = ce::recording_indicator::IsRecording(recordingState);
+    const bool isStarting = ce::recording_indicator::IsStarting(recordingState);
     const bool ghostActive = config_.alwaysRender && (!config_.alwaysRenderOnlyWhenGame || IsForegroundTarget());
 
     const bool shouldHaveVisibleOverlay = ShouldOverlayBeVisible(
-        config_, isRecording, warnVisible_, overloadWarnUntil_.load(), screenshotNotifyUntil_.load(), ghostActive);
+        config_, recordingState, warnVisible_, overloadWarnUntil_.load(), screenshotNotifyUntil_.load(), ghostActive);
 
-    LogDebug("[PseudoOverlay] UpdateOverlay: mode=%d isRecording=%d warnVisible=%d ghost=%d shouldHaveVisible=%d",
-             config_.mode, isRecording ? 1 : 0, warnVisible_ ? 1 : 0, ghostActive ? 1 : 0,
-             shouldHaveVisibleOverlay ? 1 : 0);
+    LogDebug(
+        "[PseudoOverlay] UpdateOverlay: mode=%d recordingState=%u isRecording=%d warnVisible=%d ghost=%d "
+        "shouldHaveVisible=%d",
+        config_.mode, static_cast<unsigned>(recordingState), isRecording ? 1 : 0, warnVisible_ ? 1 : 0,
+        ghostActive ? 1 : 0, shouldHaveVisibleOverlay ? 1 : 0);
 
     if (!config_.enabled) {
         DestroyOverlayWindows();
@@ -942,9 +985,8 @@ void PseudoOverlay::UpdateOverlay() {
         pixY = fullS - 1;
     }  // BR
 
-    bool rec = isRecording_.load();
     bool showInd = false;
-    if (rec && config_.mode != 2)  // MODE_WARN_ONLY
+    if (ce::recording_indicator::IsVisible(recordingState) && config_.mode != 2)  // MODE_WARN_ONLY
         showInd = true;
 
     BYTE indAlpha = 0;
@@ -955,7 +997,7 @@ void PseudoOverlay::UpdateOverlay() {
     }
 
     // Determine color
-    COLORREF curCol = rec ? RGB(255, 0, 0) : RGB(0, 100, 255);
+    COLORREF curCol = isStarting ? kColStarting : (isRecording ? RGB(255, 0, 0) : RGB(0, 100, 255));
 
     // Change detection
     bool doUpdateInd = false;
@@ -1042,12 +1084,19 @@ void PseudoOverlay::UpdateOverlay() {
 
     // ---- Warning overlay update ----
     ULONGLONG now = GetTickCount64();
-    bool showScreenshot = now < screenshotNotifyUntil_.load();
-    bool showOverload = !showScreenshot && config_.showEncoderOverloadWarn && (now < overloadWarnUntil_.load());
-    // Gate the NOT-RECORDING term on !isRecording (defense-in-depth alongside the
-    // ShouldOverlayBeVisible policy) so a stale warnVisible_ can never render the warning
-    // window during an active recording.
-    bool showW = (warnVisible_ && !isRecording) || showOverload || showScreenshot;
+    ce::pseudo_overlay::OverlayVisibilityInputs textInputs;
+    textInputs.mode = config_.mode;
+    textInputs.recordingState = recordingState;
+    textInputs.warnVisible = warnVisible_;
+    textInputs.showEncoderOverloadWarn = config_.showEncoderOverloadWarn;
+    textInputs.overloadWarnUntilMs = overloadWarnUntil_.load();
+    textInputs.screenshotNotifyUntilMs = screenshotNotifyUntil_.load();
+    textInputs.nowMs = now;
+    const auto textKind = ce::pseudo_overlay::SelectPseudoOverlayText(textInputs);
+    const bool showStarting = textKind == ce::pseudo_overlay::OverlayTextKind::Starting;
+    const bool showScreenshot = textKind == ce::pseudo_overlay::OverlayTextKind::Screenshot;
+    const bool showOverload = textKind == ce::pseudo_overlay::OverlayTextKind::EncoderOverload;
+    const bool showW = textKind != ce::pseudo_overlay::OverlayTextKind::None;
     BYTE warnAlpha = 0;
     bool doUpdateWarn = false;
 
@@ -1057,7 +1106,10 @@ void PseudoOverlay::UpdateOverlay() {
         overloadTargetFps = pSharedMem_->runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
     }
     const std::string overloadMsg = FormatEncoderOverloadMessage(overloadWarnSustainFpsX100, overloadTargetFps);
-    const char* msg = showScreenshot ? "Screenshot saved!" : (showOverload ? overloadMsg.c_str() : "NOT RECORDING");
+    const char* msg = showStarting ? ce::recording_indicator::GetStartingText(recordingState)
+                      : showScreenshot ? "Screenshot saved!"
+                      : showOverload   ? overloadMsg.c_str()
+                                       : "NOT RECORDING";
     bool isScreenshotMsg = showScreenshot;
 
     if (ghostActive) {
@@ -1138,7 +1190,7 @@ void PseudoOverlay::UpdateOverlay() {
             DeleteObject(hK);
 
             SelectObject(hdcWarn_, fontWarn_);
-            SetTextColor(hdcWarn_, isScreenshotMsg ? kColScreenshotText : kColWarnText);
+            SetTextColor(hdcWarn_, showStarting ? kColStarting : (isScreenshotMsg ? kColScreenshotText : kColWarnText));
             SetBkMode(hdcWarn_, TRANSPARENT);
 
             RECT rT = {S(10), S(5), warnW, warnH};
@@ -1205,7 +1257,8 @@ LRESULT CALLBACK PseudoOverlay::IndicatorWndProc(HWND h, UINT m, WPARAM w, LPARA
     if (m == WM_NCHITTEST) {
         return HTTRANSPARENT;
     }
-    if (m == WM_TIMER && w == kTimerId && instance_ && instance_->initialized_) {
+    if (m == WM_TIMER && w == kTimerId && instance_ &&
+        instance_->initialized_.load(std::memory_order_acquire)) {
         instance_->OnTimerTick();
         return 0;
     }
@@ -1233,7 +1286,7 @@ LRESULT CALLBACK PseudoOverlay::WarningWndProc(HWND h, UINT m, WPARAM w, LPARAM 
 }
 
 VOID CALLBACK PseudoOverlay::TimerProc(HWND, UINT, UINT_PTR timerId, DWORD) {
-    if (timerId != 0 && instance_ && instance_->initialized_) {
+    if (timerId != 0 && instance_ && instance_->initialized_.load(std::memory_order_acquire)) {
         instance_->OnTimerTick();
     }
 }
@@ -1241,11 +1294,88 @@ VOID CALLBACK PseudoOverlay::TimerProc(HWND, UINT, UINT_PTR timerId, DWORD) {
 // ---- Init / Shutdown ----
 
 bool PseudoOverlay::Init(HINSTANCE hInstance) {
-    if (initialized_)
+    if (initialized_.load(std::memory_order_acquire))
         return true;
 
-    instance_ = this;
+    if (uiThread_.joinable()) {
+        return false;
+    }
+
     hInstance_ = hInstance;
+    uiReadyEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!uiReadyEvent_) {
+        LogError("[PseudoOverlay] Failed to create UI-thread readiness event");
+        return false;
+    }
+
+    uiInitSucceeded_.store(false, std::memory_order_release);
+    uiThread_ = std::thread([this]() { ThreadMain(); });
+    const DWORD readyResult = WaitForSingleObject(uiReadyEvent_, 5000);
+    const bool ready = readyResult == WAIT_OBJECT_0 && uiInitSucceeded_.load(std::memory_order_acquire);
+    if (!ready) {
+        LogError("[PseudoOverlay] UI thread failed to initialize (wait=%lu)", readyResult);
+        const DWORD threadId = uiThreadId_.load(std::memory_order_acquire);
+        if (threadId != 0) {
+            PostThreadMessageW(threadId, kMsgShutdown, 0, 0);
+        }
+        if (uiThread_.joinable()) {
+            uiThread_.join();
+        }
+        CloseHandle(uiReadyEvent_);
+        uiReadyEvent_ = NULL;
+        uiThreadId_.store(0, std::memory_order_release);
+        hInstance_ = NULL;
+        return false;
+    }
+
+    CloseHandle(uiReadyEvent_);
+    uiReadyEvent_ = NULL;
+    return true;
+}
+
+void PseudoOverlay::ThreadMain() {
+    uiThreadId_.store(GetCurrentThreadId(), std::memory_order_release);
+    MSG msg = {};
+    PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+
+    const bool initialized = InitializeOnUiThread();
+    uiInitSucceeded_.store(initialized, std::memory_order_release);
+    if (uiReadyEvent_) {
+        SetEvent(uiReadyEvent_);
+    }
+    if (!initialized) {
+        instance_ = nullptr;
+        uiThreadId_.store(0, std::memory_order_release);
+        return;
+    }
+
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        if (msg.message == kMsgShutdown) {
+            break;
+        }
+        if (msg.message == kMsgRefresh) {
+            ApplyPendingConfig();
+            RefreshRecordingState();
+            UpdateOverlay();
+            continue;
+        }
+#ifdef CE_UNIT_TESTS
+        if (msg.message == kMsgTestBarrier) {
+            SetEvent(reinterpret_cast<HANDLE>(msg.wParam));
+            continue;
+        }
+#endif
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    ShutdownOnUiThread();
+    uiThreadId_.store(0, std::memory_order_release);
+}
+
+bool PseudoOverlay::InitializeOnUiThread() {
+    instance_ = this;
+
     currentDpi_ = 96;
     scale_ = 1.0f;
     UpdateScaleForDpi(GetDpiForSystem());
@@ -1255,7 +1385,7 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
     // Register indicator window class
     WNDCLASSA wcInd = {};
     wcInd.lpfnWndProc = IndicatorWndProc;
-    wcInd.hInstance = hInstance;
+    wcInd.hInstance = hInstance_;
     wcInd.lpszClassName = kIndicatorClass;
     if (!RegisterClassA(&wcInd) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         LogError("[PseudoOverlay] Failed to register indicator window class");
@@ -1266,7 +1396,7 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
     // Register warning window class
     WNDCLASSA wcWarn = {};
     wcWarn.lpfnWndProc = WarningWndProc;
-    wcWarn.hInstance = hInstance;
+    wcWarn.hInstance = hInstance_;
     wcWarn.lpszClassName = kWarningClass;
     if (!RegisterClassA(&wcWarn) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         LogError("[PseudoOverlay] Failed to register warning window class");
@@ -1282,7 +1412,7 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
     }
 
     const AnchorInfo anchor = ResolveAnchorInfo();
-    initialized_ = true;
+    initialized_.store(true, std::memory_order_release);
     LogInfo("[PseudoOverlay] Initialized (scale=%.2f)", scale_);
     LogInfo("[PseudoOverlay] Initial anchor: monitor=%p window=%p dpi=%u fullscreenLike=%d", anchor.monitor,
             anchor.window, currentDpi_, anchor.fullscreenLike ? 1 : 0);
@@ -1294,7 +1424,20 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
 }
 
 void PseudoOverlay::Shutdown() {
-    if (!initialized_)
+    if (!uiThread_.joinable())
+        return;
+
+    const DWORD threadId = uiThreadId_.load(std::memory_order_acquire);
+    if (threadId != 0) {
+        PostThreadMessageW(threadId, kMsgShutdown, 0, 0);
+    }
+    uiThread_.join();
+    uiThreadId_.store(0, std::memory_order_release);
+    hInstance_ = NULL;
+}
+
+void PseudoOverlay::ShutdownOnUiThread() {
+    if (!initialized_.load(std::memory_order_acquire))
         return;
 
     if (timerHandle_ != 0) {
@@ -1345,12 +1488,13 @@ void PseudoOverlay::Shutdown() {
     lastForegroundAcquireTick_ = 0;
     lastForegroundAcquirePid_ = 0;
     hadForegroundTarget_ = false;
-    prevIsRecording_ = false;
+    prevRecordingIndicatorState_ = ce::recording_indicator::State::Idle;
     prevGraceActive_ = false;
     foregroundGraceEverStarted_ = false;
-    hInstance_ = NULL;
-
-    initialized_ = false;
+    recordingIndicatorState_ = ce::recording_indicator::State::Idle;
+    publishedRecordingIndicatorState_.store(ce::recording_indicator::State::Idle, std::memory_order_release);
+    isRecording_.store(false, std::memory_order_release);
+    initialized_.store(false, std::memory_order_release);
     instance_ = nullptr;
 
     LogInfo("[PseudoOverlay] Shutdown complete");
@@ -1359,9 +1503,29 @@ void PseudoOverlay::Shutdown() {
 // ---- State updates ----
 
 void PseudoOverlay::UpdateConfig(const PseudoOverlayConfig& cfg) {
+    {
+        std::lock_guard<std::mutex> lock(pendingConfigMutex_);
+        pendingConfig_ = cfg;
+        pendingConfigGeneration_.fetch_add(1, std::memory_order_release);
+    }
+    PostRefresh();
+}
+
+void PseudoOverlay::ApplyPendingConfig() {
+    const uint64_t generation = pendingConfigGeneration_.load(std::memory_order_acquire);
+    if (generation == appliedConfigGeneration_) {
+        return;
+    }
+
+    PseudoOverlayConfig cfg;
+    {
+        std::lock_guard<std::mutex> lock(pendingConfigMutex_);
+        cfg = pendingConfig_;
+    }
     bool wasEnabled = config_.enabled;
     const uint32_t prevGraceMs = static_cast<uint32_t>(config_.foregroundAcquireGraceMs);
     config_ = cfg;
+    appliedConfigGeneration_ = generation;
     lastWarnMsg_.clear();
     sizeWarn_ = {0, 0};
 
@@ -1384,45 +1548,50 @@ void PseudoOverlay::UpdateConfig(const PseudoOverlayConfig& cfg) {
                 static_cast<uint32_t>(cfg.foregroundAcquireGraceMs));
     }
 
-    if (cfg.enabled && initialized_) {
-        UpdateOverlay();
-    }
 }
 
-void PseudoOverlay::SetRecordingState(bool recording) {
-    isRecording_.store(recording);
-    if (recording) {
-        // Recording and the NOT-RECORDING warning are mutually exclusive. Clear the blink
-        // state synchronously here so UpdateOverlay() tears the warning window down on this
-        // call instead of leaving it up until the next 500 ms timer tick. Without this, a
-        // recording started while the warning was visible kept a layered topmost window up
-        // (and showed "NOT RECORDING") for up to ~500 ms into the recording, violating the
-        // mode-2 "inactive while recording" contract (overload/screenshot notifications stay
-        // the only sanctioned exceptions).
-        warnActive_ = false;
-        warnVisible_ = false;
+void PseudoOverlay::SetRecordingStartIntent(RecordingStartIntent intent) {
+    requestedStartIntent_.store(intent, std::memory_order_release);
+    PostRefresh();
+}
+
+void PseudoOverlay::RequestRefresh() {
+    PostRefresh();
+}
+
+#ifdef CE_UNIT_TESTS
+bool PseudoOverlay::WaitForUiIdleForTesting(DWORD timeoutMs) {
+    const DWORD threadId = uiThreadId_.load(std::memory_order_acquire);
+    if (threadId == 0) {
+        return false;
     }
-    if (initialized_) {
-        UpdateOverlay();
-        if (hOv_) {
-            InvalidateRect(hOv_, NULL, FALSE);
-        }
+    HANDLE barrier = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!barrier) {
+        return false;
+    }
+    const bool posted = PostThreadMessageW(threadId, kMsgTestBarrier, reinterpret_cast<WPARAM>(barrier), 0) != FALSE;
+    const bool signaled = posted && WaitForSingleObject(barrier, timeoutMs) == WAIT_OBJECT_0;
+    CloseHandle(barrier);
+    return signaled;
+}
+#endif
+
+void PseudoOverlay::PostRefresh() {
+    const DWORD threadId = uiThreadId_.load(std::memory_order_acquire);
+    if (threadId != 0) {
+        PostThreadMessageW(threadId, kMsgRefresh, 0, 0);
     }
 }
 
 void PseudoOverlay::TriggerEncoderOverloadWarning(uint32_t sustainFpsX100) {
     overloadWarnSustainFpsX100_.store(sustainFpsX100, std::memory_order_relaxed);
     overloadWarnUntil_.store(GetTickCount64() + 5000ULL);
-    if (initialized_) {
-        UpdateOverlay();
-    }
+    PostRefresh();
 }
 
 void PseudoOverlay::ShowScreenshotNotification() {
     screenshotNotifyUntil_.store(GetTickCount64() + 2000ULL);
-    if (initialized_) {
-        UpdateOverlay();
-    }
+    PostRefresh();
 }
 bool PseudoOverlay::EnsureOverlayWindows() {
     if (hOv_ && hWarn_) {

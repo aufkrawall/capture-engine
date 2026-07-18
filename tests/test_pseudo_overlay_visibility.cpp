@@ -10,7 +10,7 @@ namespace {
 pov::OverlayVisibilityInputs Base() {
     pov::OverlayVisibilityInputs in;
     in.mode = 0;
-    in.isRecording = false;
+    in.recordingState = ce::recording_indicator::State::Idle;
     in.warnVisible = false;
     in.showEncoderOverloadWarn = true;
     in.ghostActive = false;
@@ -31,7 +31,7 @@ TEST(PseudoOverlayVisibilityTest, Mode2RecordingWithStaleWarnIsInactive) {
     // ~500 ms into the recording.
     auto in = Base();
     in.mode = 2;
-    in.isRecording = true;
+    in.recordingState = ce::recording_indicator::State::RecordingVideo;
     in.warnVisible = true;  // stale: not yet cleared by the next timer tick
     EXPECT_FALSE(pov::ShouldPseudoOverlayBeVisible(in));
 }
@@ -42,7 +42,7 @@ TEST(PseudoOverlayVisibilityTest, Mode1RecordingWithStaleWarnStillShowsIndicator
     // is not coming from the stale warning.
     auto in = Base();
     in.mode = 1;
-    in.isRecording = true;
+    in.recordingState = ce::recording_indicator::State::RecordingVideo;
     in.warnVisible = true;
     EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));  // indicator
     // Prove it's the indicator, not the warning: drop the indicator (mode 2) and the
@@ -56,7 +56,7 @@ TEST(PseudoOverlayVisibilityTest, Mode1RecordingWithStaleWarnStillShowsIndicator
 TEST(PseudoOverlayVisibilityTest, Mode2RecordingOverloadWarningStillShows) {
     auto in = Base();
     in.mode = 2;
-    in.isRecording = true;
+    in.recordingState = ce::recording_indicator::State::RecordingVideo;
     in.warnVisible = false;
     in.overloadWarnUntilMs = in.nowMs + 5000;  // overload active
     EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));
@@ -65,7 +65,7 @@ TEST(PseudoOverlayVisibilityTest, Mode2RecordingOverloadWarningStillShows) {
 TEST(PseudoOverlayVisibilityTest, Mode2RecordingOverloadSuppressedWhenWarningDisabled) {
     auto in = Base();
     in.mode = 2;
-    in.isRecording = true;
+    in.recordingState = ce::recording_indicator::State::RecordingVideo;
     in.showEncoderOverloadWarn = false;  // user disabled the overload warning
     in.overloadWarnUntilMs = in.nowMs + 5000;
     EXPECT_FALSE(pov::ShouldPseudoOverlayBeVisible(in));
@@ -74,7 +74,7 @@ TEST(PseudoOverlayVisibilityTest, Mode2RecordingOverloadSuppressedWhenWarningDis
 TEST(PseudoOverlayVisibilityTest, Mode2RecordingScreenshotNotificationStillShows) {
     auto in = Base();
     in.mode = 2;
-    in.isRecording = true;
+    in.recordingState = ce::recording_indicator::State::RecordingVideo;
     in.screenshotNotifyUntilMs = in.nowMs + 2000;
     EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));
 }
@@ -82,7 +82,7 @@ TEST(PseudoOverlayVisibilityTest, Mode2RecordingScreenshotNotificationStillShows
 TEST(PseudoOverlayVisibilityTest, ExpiredOverloadAndScreenshotDoNotShow) {
     auto in = Base();
     in.mode = 2;
-    in.isRecording = true;
+    in.recordingState = ce::recording_indicator::State::RecordingVideo;
     in.overloadWarnUntilMs = in.nowMs;          // expired (now < until is false)
     in.screenshotNotifyUntilMs = in.nowMs - 1;  // expired
     EXPECT_FALSE(pov::ShouldPseudoOverlayBeVisible(in));
@@ -93,7 +93,7 @@ TEST(PseudoOverlayVisibilityTest, ExpiredOverloadAndScreenshotDoNotShow) {
 TEST(PseudoOverlayVisibilityTest, NotRecordingWarningShowsWhenWarnVisible) {
     auto in = Base();
     in.mode = 2;
-    in.isRecording = false;
+    in.recordingState = ce::recording_indicator::State::Idle;
     in.warnVisible = true;
     EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));
 }
@@ -101,7 +101,7 @@ TEST(PseudoOverlayVisibilityTest, NotRecordingWarningShowsWhenWarnVisible) {
 TEST(PseudoOverlayVisibilityTest, NotRecordingWarningHiddenDuringBlinkOffPhase) {
     auto in = Base();
     in.mode = 2;
-    in.isRecording = false;
+    in.recordingState = ce::recording_indicator::State::Idle;
     in.warnVisible = false;  // blink "off" phase
     EXPECT_FALSE(pov::ShouldPseudoOverlayBeVisible(in));
 }
@@ -111,15 +111,80 @@ TEST(PseudoOverlayVisibilityTest, NotRecordingWarningHiddenDuringBlinkOffPhase) 
 TEST(PseudoOverlayVisibilityTest, Mode0RecordingShowsIndicator) {
     auto in = Base();
     in.mode = 0;
-    in.isRecording = true;
+    in.recordingState = ce::recording_indicator::State::RecordingVideo;
     EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));
 }
 
 TEST(PseudoOverlayVisibilityTest, Mode2RecordingNoExceptionsIsInactive) {
     auto in = Base();
     in.mode = 2;
-    in.isRecording = true;
+    in.recordingState = ce::recording_indicator::State::RecordingVideo;
     EXPECT_FALSE(pov::ShouldPseudoOverlayBeVisible(in));
+}
+
+TEST(PseudoOverlayVisibilityTest, StartingVideoUsesIndicatorInMode0) {
+    auto in = Base();
+    in.mode = 0;
+    in.recordingState = ce::recording_indicator::State::StartingVideo;
+    EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));
+}
+
+TEST(PseudoOverlayVisibilityTest, StartingAudioUsesIndicatorAndTextInMode1) {
+    auto in = Base();
+    in.mode = 1;
+    in.recordingState = ce::recording_indicator::State::StartingAudio;
+    EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));
+}
+
+TEST(PseudoOverlayVisibilityTest, StartingVideoUsesTextInWarningOnlyMode) {
+    auto in = Base();
+    in.mode = 2;
+    in.recordingState = ce::recording_indicator::State::StartingVideo;
+    EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));
+}
+
+TEST(PseudoOverlayVisibilityTest, StartingStateSuppressesStaleNotRecordingWarning) {
+    auto in = Base();
+    in.mode = 2;
+    in.recordingState = ce::recording_indicator::State::StartingVideo;
+    in.warnVisible = true;
+    EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));
+    in.recordingState = ce::recording_indicator::State::RecordingVideo;
+    EXPECT_FALSE(pov::ShouldPseudoOverlayBeVisible(in));
+}
+
+TEST(PseudoOverlayVisibilityTest, StartingStateOwnsTextPriorityAcrossModes) {
+    auto in = Base();
+    in.recordingState = ce::recording_indicator::State::StartingAudio;
+    in.warnVisible = true;
+    in.overloadWarnUntilMs = in.nowMs + 5000;
+    in.screenshotNotifyUntilMs = in.nowMs + 2000;
+
+    in.mode = 0;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::None);
+    EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));  // amber circle only
+
+    in.mode = 1;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::Starting);
+    in.mode = 2;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::Starting);
+}
+
+TEST(PseudoOverlayVisibilityTest, IdleAndLiveNotificationsRetainExistingPriority) {
+    auto in = Base();
+    in.mode = 2;
+    in.warnVisible = true;
+    in.overloadWarnUntilMs = in.nowMs + 5000;
+    in.screenshotNotifyUntilMs = in.nowMs + 2000;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::Screenshot);
+
+    in.screenshotNotifyUntilMs = 0;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::EncoderOverload);
+    in.overloadWarnUntilMs = 0;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::NotRecording);
+
+    in.recordingState = ce::recording_indicator::State::RecordingVideo;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::None);
 }
 
 TEST(PseudoOverlayVisibilityTest, IdleNothingPendingIsInactive) {
@@ -140,7 +205,7 @@ TEST(PseudoOverlayVisibilityTest, GhostKeepaliveDuringMode2RecordingKeepsAlive) 
     // leak fix (the leak fix only targets the NOT-RECORDING warning term).
     auto in = Base();
     in.mode = 2;
-    in.isRecording = true;
+    in.recordingState = ce::recording_indicator::State::RecordingVideo;
     in.ghostActive = true;
     EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));
 }

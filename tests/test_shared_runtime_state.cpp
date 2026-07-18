@@ -4,6 +4,7 @@
 
 #include "../common/config.h"
 #include "../common/inject_overlay_policy.h"
+#include "../common/recording_indicator_policy.h"
 #include "../common/shared_defs.h"
 
 TEST(CaptureStateTest, RuntimeFlagsRoundTrip) {
@@ -16,6 +17,41 @@ TEST(CaptureStateTest, RuntimeFlagsRoundTrip) {
 
     state.SetRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive, false);
     EXPECT_FALSE(state.HasRuntimeFlag(kCaptureRuntimeFlagVulkanOverlayActive));
+}
+
+TEST(CaptureStateTest, RecordingStartIntentUpdatesAtomicallyAndPreservesUnrelatedFlags) {
+    CaptureState state;
+    state.SetRuntimeFlag(kCaptureRuntimeFlagInjectOverlayActive, true);
+
+    EXPECT_EQ(state.GetRecordingStartIntent(), RecordingStartIntent::Idle);
+    state.SetRecordingStartIntent(RecordingStartIntent::Video);
+    EXPECT_EQ(state.GetRecordingStartIntent(), RecordingStartIntent::Video);
+    EXPECT_TRUE(state.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayActive));
+
+    state.SetRecordingStartIntent(RecordingStartIntent::AudioOnly);
+    EXPECT_EQ(state.GetRecordingStartIntent(), RecordingStartIntent::AudioOnly);
+    EXPECT_TRUE(state.HasRuntimeFlag(kCaptureRuntimeFlagRecordingStartPending));
+    EXPECT_TRUE(state.HasRuntimeFlag(kCaptureRuntimeFlagRecordingStartAudioOnly));
+    EXPECT_TRUE(state.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayActive));
+
+    state.SetRecordingStartIntent(RecordingStartIntent::Idle);
+    EXPECT_EQ(state.GetRecordingStartIntent(), RecordingStartIntent::Idle);
+    EXPECT_FALSE(state.HasRuntimeFlag(kCaptureRuntimeFlagRecordingStartPending));
+    EXPECT_FALSE(state.HasRuntimeFlag(kCaptureRuntimeFlagRecordingStartAudioOnly));
+    EXPECT_TRUE(state.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayActive));
+}
+
+TEST(RecordingIndicatorPolicyTest, LiveRecordingTakesPrecedenceOverStaleStartIntent) {
+    using ce::recording_indicator::SelectState;
+    using ce::recording_indicator::State;
+
+    EXPECT_EQ(SelectState(false, false, RecordingStartIntent::Idle), State::Idle);
+    EXPECT_EQ(SelectState(false, false, RecordingStartIntent::Video), State::StartingVideo);
+    EXPECT_EQ(SelectState(false, false, RecordingStartIntent::AudioOnly), State::StartingAudio);
+    EXPECT_EQ(SelectState(true, false, RecordingStartIntent::AudioOnly), State::RecordingVideo);
+    EXPECT_EQ(SelectState(true, true, RecordingStartIntent::Video), State::RecordingAudio);
+    EXPECT_STREQ(ce::recording_indicator::GetStartingText(State::StartingVideo), "STARTING RECORDING...");
+    EXPECT_STREQ(ce::recording_indicator::GetStartingText(State::StartingAudio), "STARTING AUDIO...");
 }
 
 TEST(CaptureStateTest, CaptureRequestAndRecordingVisibilityAreIndependent) {

@@ -4493,6 +4493,10 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     screenshot_encoding_obj = os.path.join(obj_dir, "captureengine", "screenshot_encoding.test.o").replace("\\", "/")
     compile_tasks.append((test_cflags + STRICT_FP_FLAGS, screenshot_encoding_src, screenshot_encoding_obj))
 
+    pseudo_overlay_src = os.path.join(PROJECT_ROOT, "captureengine", "pseudo_overlay.cpp")
+    pseudo_overlay_obj = os.path.join(obj_dir, "captureengine", "pseudo_overlay.test.o").replace("\\", "/")
+    compile_tasks.append((test_cflags, pseudo_overlay_src, pseudo_overlay_obj))
+
     # 4. Compile hook/common for tests
     hook_common_src = glob.glob(os.path.join(PROJECT_ROOT, "hook", "common", "*.cpp"))
     hook_common_objs = []
@@ -4523,7 +4527,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         + test_objs
         + common_objs
         + me_objs
-        + [screenshot_encoding_obj]
+        + [screenshot_encoding_obj, pseudo_overlay_obj]
         + hook_common_objs
         + hook_wrapper_test_objs
         + ldflags_test

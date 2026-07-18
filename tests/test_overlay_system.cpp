@@ -595,6 +595,13 @@ TEST(OverlayLayoutPolicyTest, FrameGenerationRowsAppearAndDisappearAtomicallyAcr
     input.notificationVisible = true;
     const uint32_t expandedMask = ce::overlay_layout::BuildOverlayRowMask(input);
     EXPECT_EQ(ce::overlay_layout::CountOverlayRows(expandedMask), 10u);
+
+    input.recordingActive = false;
+    input.recordingStarting = true;
+    EXPECT_EQ(ce::overlay_layout::BuildOverlayRowMask(input), expandedMask);
+
+    input.showRecording = false;
+    EXPECT_EQ(ce::overlay_layout::BuildOverlayRowMask(input) & ce::overlay_layout::kRowRecording, 0u);
 }
 
 TEST(OverlayLayoutPolicyTest, MemoryValuesNeverRequireFabricatedCapacity) {

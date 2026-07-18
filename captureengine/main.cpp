@@ -49,6 +49,7 @@ extern int SensorProcessMain(const AppConfig& config);
 // Controller state
 static bool g_Running = true;
 static bool g_Recording = false;
+static std::atomic<RecordingStartIntent> g_RecordingStartIntent{RecordingStartIntent::Idle};
 static AppConfig g_Config;
 static std::string g_ConfigPath;
 
@@ -125,11 +126,9 @@ bool IsProcessRunning(HANDLE hProcess) {
     return GetExitCodeProcess(hProcess, &exitCode) && exitCode == STILL_ACTIVE;
 }
 
-// Diagnostic (Finding B): measures how long the controller's main thread spends inside a
-// blocking section. While this thread blocks, the topmost pseudo-overlay windows it owns
-// (and the global record/screenshot hotkeys) stop pumping messages. A long stall here can
-// wedge a game foreground / MPO fullscreen transition and present as a frozen game window.
-// Pairs with the "[PseudoOverlay] Message-pump stall" warning to localize the cause.
+// Measures how long the controller's main thread spends inside a blocking section. The
+// pseudo-overlay owns a dedicated message thread, but the tray and global hotkeys still
+// depend on this controller thread and remain useful diagnostics when it is starved.
 struct MainThreadBlockTimer {
     const char* label_;
     ULONGLONG startMs_;
@@ -138,8 +137,7 @@ struct MainThreadBlockTimer {
         const ULONGLONG elapsedMs = GetTickCount64() - startMs_;
         if (elapsedMs >= 250) {
             LogWarn(
-                "[Controller] Main-thread blocked %llums in %s — topmost overlay + global hotkeys "
-                "were unresponsive this long (can wedge a game MPO/foreground transition)",
+                "[Controller] Main-thread blocked %llums in %s — tray + global hotkeys were unresponsive this long",
                 static_cast<unsigned long long>(elapsedMs), label_);
         }
     }
@@ -675,6 +673,27 @@ static bool WithInjectSharedMem(std::function<void(SharedMemoryLayout*)> fn) {
     return true;
 }
 
+static bool PublishRecordingStartIntent(RecordingStartIntent intent, const char* reason) {
+    g_RecordingStartIntent.store(intent, std::memory_order_release);
+    const bool published = WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
+        sharedMemory->runtimeState.SetRecordingStartIntent(intent);
+        if (intent != RecordingStartIntent::AudioOnly) {
+            sharedMemory->runtimeState.audioOnly.store(false, std::memory_order_release);
+        } else {
+            sharedMemory->runtimeState.audioOnly.store(true, std::memory_order_release);
+        }
+    });
+    if (g_PseudoOverlay) {
+        g_PseudoOverlay->SetRecordingStartIntent(intent);
+    }
+    LogInfo("[Controller] Recording start intent=%s published=%d reason=%s",
+            intent == RecordingStartIntent::Video       ? "video"
+            : intent == RecordingStartIntent::AudioOnly ? "audio-only"
+                                                        : "idle",
+            published ? 1 : 0, reason ? reason : "unspecified");
+    return published;
+}
+
 void CheckRecordingFailureState() {
     if (!g_Recording)
         return;
@@ -687,7 +706,7 @@ void CheckRecordingFailureState() {
         return;
     }
 
-    LogError("[Controller] Recording failed with integrity code %u; stopping all recording state", failureCode);
+    LogError("[Controller] Recording failed with code %u; stopping all recording state", failureCode);
     if (g_InjectClient && g_InjectClient->IsConnected()) {
         ProcessResponse response = ProcessResponse::Ack;
         if (!g_InjectClient->SendCommand(ProcessCommand::StopRecording, nullptr, &response, 1000)) {
@@ -699,6 +718,7 @@ void CheckRecordingFailureState() {
     CloseProcessHandle(g_hMediaProcess);
 
     g_Recording = false;
+    PublishRecordingStartIntent(RecordingStartIntent::Idle, "recording failure");
     if (g_AutoRecordEnabled) {
         LogError("[Controller] Auto-record disabled after a recording-integrity failure");
         g_AutoRecordEnabled = false;
@@ -706,8 +726,6 @@ void CheckRecordingFailureState() {
     }
     if (g_Tray)
         g_Tray->SetRecordingState(false);
-    if (g_PseudoOverlay)
-        g_PseudoOverlay->SetRecordingState(false);
 }
 
 // Toggle recording - controller notifies inject which sets shared memory
@@ -716,6 +734,7 @@ void ToggleRecording() {
     g_Recording = !g_Recording;
 
     if (g_Recording) {
+        PublishRecordingStartIntent(RecordingStartIntent::Video, "record hotkey");
         LogInfo("[Controller] Starting recording...");
 
         if (!EnsureMediaProcessReady(10000)) {
@@ -723,14 +742,9 @@ void ToggleRecording() {
             g_Recording = false;
             if (g_Tray)
                 g_Tray->SetRecordingState(false);
-            if (g_PseudoOverlay)
-                g_PseudoOverlay->SetRecordingState(false);
+            PublishRecordingStartIntent(RecordingStartIntent::Idle, "media readiness failure");
             return;
         }
-
-        // Ensure audio-only flag is cleared for normal recording
-        WithInjectSharedMem(
-            [](SharedMemoryLayout* shm) { shm->runtimeState.audioOnly.store(false, std::memory_order_release); });
 
         bool limiterReady = true;
         if (g_Config.fpsLimiter.captureSyncEnabled) {
@@ -742,8 +756,7 @@ void ToggleRecording() {
             g_Recording = false;
             if (g_Tray)
                 g_Tray->SetRecordingState(false);
-            if (g_PseudoOverlay)
-                g_PseudoOverlay->SetRecordingState(false);
+            PublishRecordingStartIntent(RecordingStartIntent::Idle, "limiter readiness failure");
             return;
         }
 
@@ -760,12 +773,16 @@ void ToggleRecording() {
                 } else {
                     LogError("[Controller] Recording start failed");
                     g_Recording = false;
-                    if (g_PseudoOverlay)
-                        g_PseudoOverlay->SetRecordingState(false);
+                    PublishRecordingStartIntent(RecordingStartIntent::Idle, "inject start command failure");
                 }
             }
+        } else {
+            LogError("[Controller] Inject process is not connected, cannot start recording");
+            g_Recording = false;
+            PublishRecordingStartIntent(RecordingStartIntent::Idle, "inject unavailable");
         }
     } else {
+        PublishRecordingStartIntent(RecordingStartIntent::Idle, "record stop hotkey");
         LogInfo("[Controller] Stopping recording...");
 
         // Notify inject process - it clears shared memory recording flag
@@ -791,9 +808,6 @@ void ToggleRecording() {
 
     if (g_Tray)
         g_Tray->SetRecordingState(g_Recording);
-
-    if (g_PseudoOverlay)
-        g_PseudoOverlay->SetRecordingState(g_Recording);
 }
 
 // Audio-only recording toggle (no video capture/encoding)
@@ -801,6 +815,8 @@ void ToggleAudioOnlyRecording() {
     g_Recording = !g_Recording;
 
     if (g_Recording) {
+        const bool audioOnlySet =
+            PublishRecordingStartIntent(RecordingStartIntent::AudioOnly, "audio-only hotkey");
         LogInfo("[Controller] Starting audio-only recording...");
 
         if (!EnsureMediaProcessReady(10000)) {
@@ -808,38 +824,46 @@ void ToggleAudioOnlyRecording() {
             g_Recording = false;
             if (g_Tray)
                 g_Tray->SetRecordingState(false);
-            if (g_PseudoOverlay)
-                g_PseudoOverlay->SetRecordingState(false);
+            PublishRecordingStartIntent(RecordingStartIntent::Idle, "audio-only media readiness failure");
             return;
         }
 
-        // Set audioOnly flag in shared memory BEFORE notifying inject
-        bool audioOnlySet = WithInjectSharedMem(
-            [](SharedMemoryLayout* shm) { shm->runtimeState.audioOnly.store(true, std::memory_order_release); });
-
         if (!audioOnlySet) {
             LogWarn("[Controller] No inject shared memory found for audio-only flag - media will use separate IPC");
+            PublishRecordingStartIntent(RecordingStartIntent::AudioOnly, "audio-only shared-state retry");
         }
 
-        // Notify inject process - it sets cmdStartRecording in shared memory
-        // The audioOnly flag was already set in shared memory above
+        bool startCommandDelivered = false;
+
+        // Notify inject process - it sets cmdStartRecording in shared memory.
+        // The audio-only flag and pending intent were already published above.
         if (g_InjectClient && g_InjectClient->IsConnected()) {
             ProcessResponse resp;
             if (g_InjectClient->SendCommand(ProcessCommand::StartRecording, nullptr, &resp, 5000)) {
-                LogInfo("[Controller] Audio-only recording started");
+                startCommandDelivered = true;
+                LogInfo("[Controller] Audio-only recording request delivered through inject");
             } else {
-                LogError("[Controller] Failed to notify inject for audio-only recording");
-                g_Recording = false;
-                if (g_PseudoOverlay)
-                    g_PseudoOverlay->SetRecordingState(false);
+                LogWarn("[Controller] Failed to notify inject for audio-only recording; trying media directly");
             }
         }
-        // Also notify media process directly via IPC payload as a backup path
+
+        // Also notify media directly. This is authoritative when inject is unavailable
+        // and harmless when the shared-memory request won the race first.
         if (g_MediaClient && g_MediaClient->IsConnected()) {
-            ProcessResponse resp;
-            g_MediaClient->SendCommand(ProcessCommand::StartRecording, "audio_only", &resp, 5000);
+            ProcessResponse resp = ProcessResponse::Error;
+            if (g_MediaClient->SendCommand(ProcessCommand::StartRecording, "audio_only", &resp, 5000) &&
+                resp != ProcessResponse::Error) {
+                startCommandDelivered = true;
+                LogInfo("[Controller] Audio-only recording request accepted by media");
+            }
+        }
+        if (!startCommandDelivered) {
+            LogError("[Controller] Audio-only recording start failed");
+            g_Recording = false;
+            PublishRecordingStartIntent(RecordingStartIntent::Idle, "audio-only start command failure");
         }
     } else {
+        PublishRecordingStartIntent(RecordingStartIntent::Idle, "audio-only stop hotkey");
         LogInfo("[Controller] Stopping audio-only recording...");
 
         // Notify inject process to stop
@@ -870,14 +894,12 @@ void ToggleAudioOnlyRecording() {
 
     if (g_Tray)
         g_Tray->SetRecordingState(g_Recording);
-
-    if (g_PseudoOverlay)
-        g_PseudoOverlay->SetRecordingState(g_Recording);
 }
 
 // Shutdown all child processes gracefully
 void ShutdownChildProcesses() {
     LogInfo("[Controller] Shutting down child processes...");
+    PublishRecordingStartIntent(RecordingStartIntent::Idle, "controller shutdown");
 
     // Signal Logger and Sensor processes to exit via named event
     wchar_t shutdownEventName[64];
@@ -1015,6 +1037,48 @@ void CheckChildProcessHealth() {
         return;  // Check once per second
     lastCheck = GetTickCount();
 
+    RecordingStartIntent recordingStartIntent = g_RecordingStartIntent.load(std::memory_order_acquire);
+    if (g_Recording && recordingStartIntent != RecordingStartIntent::Idle) {
+        WithInjectSharedMem([&](SharedMemoryLayout* sharedMemory) {
+            if (sharedMemory->runtimeState.isRecording.load(std::memory_order_acquire)) {
+                recordingStartIntent = RecordingStartIntent::Idle;
+                g_RecordingStartIntent.store(RecordingStartIntent::Idle, std::memory_order_release);
+            }
+        });
+    }
+
+    const bool recordingStartPending = g_Recording && recordingStartIntent != RecordingStartIntent::Idle;
+    const bool mediaUnavailable = recordingStartPending &&
+                                  (!g_hMediaProcess || !IsProcessRunning(g_hMediaProcess) || !g_MediaClient ||
+                                   !g_MediaClient->IsConnected());
+    const bool injectUnavailable = recordingStartPending && recordingStartIntent == RecordingStartIntent::Video &&
+                                   (!g_hInjectProcess || !IsProcessRunning(g_hInjectProcess) || !g_InjectClient ||
+                                    !g_InjectClient->IsConnected());
+    const bool limiterUnavailable =
+        recordingStartPending && recordingStartIntent == RecordingStartIntent::Video &&
+        g_Config.fpsLimiter.captureSyncEnabled &&
+        (!g_hLimiterProcess || !IsProcessRunning(g_hLimiterProcess) || !g_LimiterClient ||
+         !g_LimiterClient->IsConnected());
+    if (mediaUnavailable || injectUnavailable || limiterUnavailable) {
+        const char* failedChild = mediaUnavailable ? "media" : (injectUnavailable ? "inject" : "limiter");
+        LogError("[Controller] Required %s process/channel exited before recording became live; cancelling start intent",
+                 failedChild);
+        if (!mediaUnavailable && g_MediaClient && g_MediaClient->IsConnected()) {
+            ProcessResponse response = ProcessResponse::Error;
+            if (!g_MediaClient->SendCommand(ProcessCommand::StopRecording, nullptr, &response, 1000)) {
+                LogWarn("[Controller] Failed to deliver pre-live cancellation to media after %s loss", failedChild);
+            }
+        }
+        if (g_MediaClient)
+            g_MediaClient->Disconnect();
+        CloseProcessHandle(g_hMediaProcess);
+        g_Recording = false;
+        PublishRecordingStartIntent(RecordingStartIntent::Idle, "required child exited before recording live");
+        if (g_Tray) {
+            g_Tray->SetRecordingState(false);
+        }
+    }
+
     auto recoverProcess = [](ProcessMode mode, HANDLE& process, ProcessIPCClient* client, const char* name,
                              bool expected, bool& recoveryFailureReported) {
         if (!expected)
@@ -1136,7 +1200,7 @@ bool CompleteControllerStartup() {
         HMODULE hMod = GetModuleHandle(NULL);
         if (g_PseudoOverlay->Init(reinterpret_cast<HINSTANCE>(hMod))) {
             g_PseudoOverlay->UpdateConfig(g_Config.pseudoOverlay);
-            g_PseudoOverlay->SetRecordingState(g_Recording);
+            g_PseudoOverlay->RequestRefresh();
             LogInfo("[Controller] Pseudo-overlay initialized");
         } else {
             LogError("[Controller] Failed to initialize pseudo-overlay");
@@ -1449,7 +1513,7 @@ int ControllerMain(HINSTANCE hInstance) {
                         HMODULE hMod = GetModuleHandle(NULL);
                         if (g_PseudoOverlay->Init(reinterpret_cast<HINSTANCE>(hMod))) {
                             g_PseudoOverlay->UpdateConfig(g_Config.pseudoOverlay);
-                            g_PseudoOverlay->SetRecordingState(g_Recording);
+                            g_PseudoOverlay->RequestRefresh();
                             LogInfo("[Controller] Pseudo-overlay enabled via config hot-reload");
                         } else {
                             LogError("[Controller] Failed to init pseudo-overlay on hot-reload");

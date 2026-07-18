@@ -361,7 +361,7 @@ struct WgcRetargetRequest {
 void InjectCaptureThreadFunc(const AppConfig& config);
 void WgcCaptureThreadFunc(const AppConfig& config);
 void StopRecording();
-void StartRecording(const AppConfig& config);
+bool StartRecording(const AppConfig& config);
 
 // --- Auto-detected render-endpoint audio latency (per-device latency model, Part B) -----------
 // Measured once per media process via the WASAPI render->loopback probe (mediaengine export), then
@@ -822,11 +822,23 @@ void SetRecordingVisibleState(bool enabled) {
         }
         // Propagate audio-only flag so overlay can show AUDIO vs REC
         g_pSharedMem->runtimeState.audioOnly.store(g_AudioOnly, std::memory_order_release);
+        g_pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
     } else {
         g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
         g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
         g_pSharedMem->runtimeState.audioOnly.store(false, std::memory_order_release);
     }
+}
+
+void PublishRecordingStartFailure(RecordingFailureCode failureCode, const char* reason) {
+    if (g_pSharedMem) {
+        g_pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
+        g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
+        g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
+        StoreRelease(g_pSharedMem->runtimeState.recordingFailureCode, static_cast<uint32_t>(failureCode));
+    }
+    LogError("[Media] Recording start failed: %s (code=%u)", reason ? reason : "unspecified",
+             static_cast<uint32_t>(failureCode));
 }
 
 bool GetWindowClientRectInScreen(HWND hwnd, RECT& rect) {
@@ -7800,6 +7812,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                             static_cast<long long>(wgcEncoderPrewarmElapsedUs), static_cast<long long>(frame.timestamp),
                             frame.width, frame.height, frame.isHDR ? 1 : 0, g_FrameQueue.Size(),
                             bufferedWgcFrames.size());
+                        if (!wgcEncoderPrewarmSucceeded) {
+                            PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed,
+                                                         "WGC deferred encoder/mux initialization");
+                            g_EncoderRunning = false;
+                            DiscardQueuedFrame(frame);
+                            break;
+                        }
                     }
 
                     size_t startupBufferedExamined = 0;
@@ -11344,9 +11363,9 @@ void EncoderThreadFunc(const AppConfig& config) {
     LogInfo("[EncoderThread] Stopped");
 }
 
-void StartRecording(const AppConfig& config) {
+bool StartRecording(const AppConfig& config) {
     if (g_Recording)
-        return;
+        return true;
 
     LogInfo("[Media] Starting recording...");
 
@@ -11371,9 +11390,11 @@ void StartRecording(const AppConfig& config) {
         if (!MediaEngine_StartRecording || !MediaEngine_StartRecording()) {
             LogError("[Media] Failed to start MediaEngine audio-only recording");
             SetRecordingVisibleState(false);
+            PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed,
+                                         "MediaEngine audio-only initialization");
             timeEndPeriod(1);
             g_AudioOnly = false;
-            return;
+            return false;
         }
 
         g_Recording = true;
@@ -11381,7 +11402,7 @@ void StartRecording(const AppConfig& config) {
         SetCapturePipelinePhase(CapturePipelinePhase::kLive);
 
         LogInfo("[Media] Audio-only recording active");
-        return;
+        return true;
     }
 
     bool useScreenGrab = IsPreferredScreenGrab();
@@ -11397,8 +11418,9 @@ void StartRecording(const AppConfig& config) {
         SetActiveScreenGrab(false);
         SetCaptureRequestedState(false);
         SetRecordingVisibleState(false);
+        PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed, "WGC target unavailable");
         timeEndPeriod(1);
-        return;
+        return false;
     }
 
     if (!useScreenGrab && g_pSharedMem) {
@@ -11414,8 +11436,10 @@ void StartRecording(const AppConfig& config) {
                          static_cast<uint32_t>(RecordingFailureCode::SharedMemoryProtocolIntegrity));
             SetCaptureRequestedState(false);
             SetRecordingVisibleState(false);
+            PublishRecordingStartFailure(RecordingFailureCode::SharedMemoryProtocolIntegrity,
+                                         "corrupt shared frame ring");
             timeEndPeriod(1);
-            return;
+            return false;
         }
     }
 
@@ -11470,8 +11494,9 @@ void StartRecording(const AppConfig& config) {
         SetInjectVideoCaptureRequestedState(false, "recording start failure");
         SetCaptureRequestedState(false);
         SetRecordingVisibleState(false);
+        PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed, "MediaEngine initialization");
         timeEndPeriod(1);
-        return;
+        return false;
     }
 
     g_Recording = true;
@@ -11498,8 +11523,9 @@ void StartRecording(const AppConfig& config) {
             SetRecordingVisibleState(false);
             MediaEngine_StopRecording();
             SetActiveScreenGrab(false);
+            PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed, "WGC capture initialization");
             timeEndPeriod(1);
-            return;
+            return false;
         }
         LogInfo("[Media] Active recording path: %s bounded pull-drain CFR (%d fps output)",
                 g_WgcCap->IsUsingDesktopDuplication() ? "DXGI-duplication" : "WGC", config.video.fps);
@@ -11520,9 +11546,13 @@ void StartRecording(const AppConfig& config) {
     }
 
     LogInfo("[Media] Recording warmup armed");
+    return true;
 }
 
 void StopRecording() {
+    if (g_pSharedMem) {
+        g_pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
+    }
     if (!g_Recording)
         return;
 
@@ -12519,18 +12549,23 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     g_Running = false;
                     ipc.SendResponse(ProcessResponse::Ack);
                     break;
-                case ProcessCommand::StartRecording:
+                case ProcessCommand::StartRecording: {
                     g_AudioOnly = (strcmp(cmdPayload, "audio_only") == 0);
                     if (!ensureMediaEngineReady()) {
                         LogError("[Media] Failed to reinitialize MediaEngine for recording start");
-                        ipc.SendResponse(ProcessResponse::Ack);
+                        PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed,
+                                                     "MediaEngine reinitialization");
+                        g_AudioOnly = false;
+                        ipc.SendResponse(ProcessResponse::Error, "recording_start_failed");
                         break;
                     }
                     prepareCaptureForRecordingStart();
-                    StartRecording(config);
+                    const bool started = StartRecording(config);
                     g_AudioOnly = false;  // Reset after StartRecording consumed it
-                    ipc.SendResponse(ProcessResponse::RecordingStarted);
+                    ipc.SendResponse(started ? ProcessResponse::RecordingStarted : ProcessResponse::Error,
+                                     started ? nullptr : "recording_start_failed");
                     break;
+                }
                 case ProcessCommand::StopRecording:
                     StopRecording();
                     releaseIdleWgcResources();
@@ -12592,11 +12627,15 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     StoreRelease(g_pSharedMem->runtimeState.audioOnly, false);
                     if (!ensureMediaEngineReady()) {
                         LogError("[Media] Failed to reinitialize MediaEngine for shared-memory recording start");
+                        PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed,
+                                                     "shared-memory MediaEngine reinitialization");
                     } else {
                         prepareCaptureForRecordingStart();
-                        StartRecording(config);
+                        const bool started = StartRecording(config);
                         g_AudioOnly = false;
-                        g_pSharedMem->runtimeState.ackRecordingStarted.store(true, std::memory_order_release);
+                        if (started) {
+                            g_pSharedMem->runtimeState.ackRecordingStarted.store(true, std::memory_order_release);
+                        }
                     }
                 }
             }

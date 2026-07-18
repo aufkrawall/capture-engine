@@ -41,6 +41,7 @@ struct RowInputs {
     bool reserveFGSpace = false;
     bool showRecording = false;
     bool recordingActive = false;
+    bool recordingStarting = false;
     bool notificationVisible = false;
 };
 
@@ -63,7 +64,7 @@ inline uint32_t BuildOverlayRowMask(const RowInputs& input) {
     }
     if (input.showFG && (input.fgActive || input.reserveFGSpace))
         mask |= kRowFGStatus;
-    if (input.showRecording && input.recordingActive)
+    if (input.showRecording && (input.recordingActive || input.recordingStarting))
         mask |= kRowRecording;
     if (input.notificationVisible)
         mask |= kRowNotification;

@@ -571,6 +571,9 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
 
     frameLayout.recordingActive = sharedMem->runtimeState.isRecording.load(std::memory_order_acquire);
     frameLayout.recordingAudioOnly = sharedMem->runtimeState.audioOnly.load(std::memory_order_acquire);
+    const RecordingStartIntent recordingStartIntent = sharedMem->runtimeState.GetRecordingStartIntent();
+    frameLayout.recordingState = ce::recording_indicator::SelectState(
+        frameLayout.recordingActive, frameLayout.recordingAudioOnly, recordingStartIntent);
     uint64_t nowTick64 = GetTickCount64();
     if (cfg.showRecording && frameLayout.recordingActive) {
         int64_t startTime = sharedMem->runtimeState.recordingStartTime.load(std::memory_order_acquire);
@@ -614,6 +617,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     rowInputs.reserveFGSpace = frameLayout.reserveFGSpace;
     rowInputs.showRecording = cfg.showRecording;
     rowInputs.recordingActive = frameLayout.recordingActive;
+    rowInputs.recordingStarting = ce::recording_indicator::IsStarting(frameLayout.recordingState);
     rowInputs.notificationVisible = frameLayout.notificationVisible;
     frameLayout.rowMask = ce::overlay_layout::BuildOverlayRowMask(rowInputs);
     frameLayout.rowCount = CountOverlayRows(frameLayout.rowMask);
@@ -629,6 +633,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                                    frameLayout.fgMultiplier != lastFrameLayout.fgMultiplier ||
                                    std::strcmp(frameLayout.fgLabel, lastFrameLayout.fgLabel) != 0;
     const bool recordingChanged = !hasLastFrameLayout ||
+                                  frameLayout.recordingState != lastFrameLayout.recordingState ||
                                   frameLayout.recordingActive != lastFrameLayout.recordingActive ||
                                   frameLayout.recordingAudioOnly != lastFrameLayout.recordingAudioOnly ||
                                   frameLayout.recordingSeconds != lastFrameLayout.recordingSeconds ||
@@ -869,6 +874,10 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         // so the result is stable regardless of elapsed time (digits are tabular).
         if (rowRecording) {
             char recBuf[96];
+            snprintf(recBuf, sizeof(recBuf), "STARTING RECORDING...");
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
+            snprintf(recBuf, sizeof(recBuf), "STARTING AUDIO...");
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
             snprintf(recBuf, sizeof(recBuf), "REC 00:00:00");
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
             snprintf(recBuf, sizeof(recBuf), "REC 00:00:00 !ENCODER OVERLOAD!");
@@ -1207,21 +1216,27 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     // Recording status line
     if (rowRecording) {
-        const char* recLabel = frameLayout.recordingAudioOnly ? "AUDIO" : "REC";
-        int hours = (int)(frameLayout.recordingSeconds / 3600);
-        int minutes = (int)((frameLayout.recordingSeconds % 3600) / 60);
-        int seconds = (int)(frameLayout.recordingSeconds % 60);
-
-        if (frameLayout.showOverloadWarning) {
-            const std::string overloadLabel =
-                FormatEncoderOverloadLabel(frameLayout.recordingSustainFpsX100, frameLayout.recordingTargetFps);
-            std::snprintf(buf, sizeof(buf), "%s %02d:%02d:%02d %s", recLabel, hours, minutes, seconds,
-                          overloadLabel.c_str());
-            renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);
+        if (ce::recording_indicator::IsStarting(frameLayout.recordingState)) {
+            renderer->DrawTextWithShadow(labelCol, cursorY,
+                                         ce::recording_indicator::GetStartingText(frameLayout.recordingState),
+                                         Colors::LabelYellow, shadowColor);
         } else {
-            // Normal recording display
-            snprintf(buf, 64, "%s %02d:%02d:%02d", recLabel, hours, minutes, seconds);
-            renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);
+            const char* recLabel = frameLayout.recordingAudioOnly ? "AUDIO" : "REC";
+            int hours = (int)(frameLayout.recordingSeconds / 3600);
+            int minutes = (int)((frameLayout.recordingSeconds % 3600) / 60);
+            int seconds = (int)(frameLayout.recordingSeconds % 60);
+
+            if (frameLayout.showOverloadWarning) {
+                const std::string overloadLabel =
+                    FormatEncoderOverloadLabel(frameLayout.recordingSustainFpsX100, frameLayout.recordingTargetFps);
+                std::snprintf(buf, sizeof(buf), "%s %02d:%02d:%02d %s", recLabel, hours, minutes, seconds,
+                              overloadLabel.c_str());
+                renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);
+            } else {
+                // Normal recording display
+                snprintf(buf, 64, "%s %02d:%02d:%02d", recLabel, hours, minutes, seconds);
+                renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);
+            }
         }
         cursorY += lineHeight;
     }

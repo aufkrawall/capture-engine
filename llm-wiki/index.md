@@ -31,7 +31,7 @@ Primary sources:
 
 ## Content Catalog
 - `overlay-rendering.md`
-  - Shared overlay layout/graph/font invariants, exact-ABI and sanity-checked telemetry, legacy DX8/DX9/DX10/OpenGL cache/state isolation, DirectDraw performance boundary, and runtime-validation stale-risk. Last verified 2026-07-17.
+  - Shared overlay layout/graph/font invariants, instant amber recording-start intent and live-state handoff, exact-ABI and sanity-checked telemetry, legacy DX8/DX9/DX10/OpenGL cache/state isolation, DirectDraw performance boundary, and runtime-validation stale-risk. Last verified 2026-07-18.
 - `handoff-dx12-32bit-crash.md`
   - Fixed-state pickup note for the 32-bit DX12 inject-overlay crash/freeze: proven font-resource trigger, unconfirmed NVIDIA/WoW64 attribution, solid glyph-span text fix, runtime validation boundary, invariants, and source anchors. Last verified 2026-07-16.
 - `current.md`
@@ -69,7 +69,7 @@ Primary sources:
 - `debug-tools.md`
   - Available Windows debug tools and paths plus always-on DX12 present/ProcessFrame stage diagnostics, including wrapper-initialization overlap. Last verified 2026-07-17.
 - `pseudo-overlay.md`
-  - Controller-side pseudo-overlay for WGC capture: architecture, modes, foreground detection, process_list config parsing, known pitfalls (Trim charset, `;` comment skipping), debug logging, source anchors.
+  - Controller-side pseudo-overlay for WGC capture: dedicated UI-thread ownership, instant amber recording-start state, modes, inject handoff, foreground detection/grace, process_list parsing, diagnostics, and source anchors. Last verified 2026-07-18.
 - `regression-testing-and-logging.md`
   - Regression coverage expectations, the incremental/clean/resume build decision rule, concise verification diagnostics, and deterministic capture runners, including the fast zero-drift gate, overload/long-soak profiles, HAGS-on 4K120 contention gate, and x86 DX12 solid-text/focus-visibility boundary. Last verified 2026-07-17.
 - `multi-audio-capture.md`

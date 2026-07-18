@@ -573,6 +573,15 @@ int InjectProcessMain(const AppConfig& config) {
                             pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
                             pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
                         }
+                        // The controller normally publishes this before readiness waits. Preserve
+                        // that exact intent, but recover a missing publication for direct/legacy
+                        // command senders using the already-published audio-only bit.
+                        if (pSharedMem->runtimeState.GetRecordingStartIntent() == RecordingStartIntent::Idle) {
+                            const bool audioOnly =
+                                pSharedMem->runtimeState.audioOnly.load(std::memory_order_acquire);
+                            pSharedMem->runtimeState.SetRecordingStartIntent(
+                                audioOnly ? RecordingStartIntent::AudioOnly : RecordingStartIntent::Video);
+                        }
                         // Set command flag for media process to poll (use atomic store)
                         // Note: audioOnly flag is managed by the controller — do NOT clear
                         // it here — the controller may have set it for audio-only recording.
@@ -580,6 +589,7 @@ int InjectProcessMain(const AppConfig& config) {
                         ipc.SendResponse(ProcessResponse::Ack);
                         break;
                     case ProcessCommand::StopRecording:
+                        pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
                         pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, false);
                         pSharedMem->runtimeState.captureRequested.store(false, std::memory_order_release);
                         pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
