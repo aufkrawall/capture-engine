@@ -253,9 +253,9 @@ inline const char* MatchModeToString(MatchMode mode) {
 }
 
 inline MatchMode ParseMatchMode(const std::string& val) {
-    if (val == "title_executable" || val == "title_exec")
+    if (val == "contains" || val == "title_executable" || val == "title_exec")
         return MatchMode::kTitleExecutable;
-    if (val == "title_type" || val == "title_class")
+    if (val == "contains_or_class" || val == "title_type" || val == "title_class")
         return MatchMode::kTitleType;
     return MatchMode::kExact;
 }
@@ -283,6 +283,32 @@ struct WhitelistEntry {
     }
 };
 
+enum class ApplicationVideoCapture : uint8_t {
+    kGlobal = 0,
+    kInject,
+    kWgc,
+    kDxgiDup,
+    kNone
+};
+
+enum class ApplicationInjectionMode : uint8_t {
+    kCapture = 0,
+    kOverlay,
+    kNone
+};
+
+// Canonical [Profile.*] application routing. The legacy whitelist vectors below
+// remain the runtime adapters used by the injector and WGC code.
+struct ApplicationProfile {
+    std::string section;
+    WhitelistEntry target;
+    ApplicationVideoCapture videoCapture = ApplicationVideoCapture::kNone;
+    ApplicationVideoCapture resolvedVideoCapture = ApplicationVideoCapture::kNone;
+    ApplicationInjectionMode injectionMode = ApplicationInjectionMode::kNone;
+    bool videoCaptureExplicit = false;
+    bool legacy = false;
+};
+
 // Controller-side pseudo-overlay for WGC capture (no injection required).
 // Uses layered desktop windows. The implementation keeps the legacy ghost
 // keepalive and animated warning text behavior, while trying to avoid extra z-order
@@ -306,7 +332,7 @@ struct AppConfig {
     // General
     bool debugLogging = true;  // Legacy compatibility view: true when logLevel >= Debug
     LogLevel logLevel = LogLevel::Debug;
-    std::string captureMethod;  // "inject", "wgc", "dxgi_dup", "auto"
+    std::string captureMethod;  // "inject", "wgc", "dxgi_dup", "auto", or profile-local "none"
     // auto_fullscreen_capture: backend for UNHOOKED fullscreen-like game
     // targets in auto mode. true ("dxgi_dup", default) captures the game's
     // monitor via DXGI duplication so the live hardware cursor plane is
@@ -348,6 +374,9 @@ struct AppConfig {
     std::vector<WhitelistEntry> gameWhitelist;
     std::vector<WhitelistEntry> overlayWhitelist;
     std::vector<WhitelistEntry> wgcWindowTitles;
+    std::vector<WhitelistEntry> profileWgcTargets;
+    std::vector<WhitelistEntry> profileDxgiDupTargets;
+    std::vector<ApplicationProfile> applicationProfiles;
 
     // Graphics Overrides
     GraphicsConfig graphics;
@@ -517,6 +546,7 @@ inline LogLevel ParseLogLevelString(const std::string& rawValue, LogLevel defaul
 void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName = "");
 
 // capture_method accepts canonical values "inject", "wgc", "dxgi_dup", and "auto".
+// "none" is used by application profiles that deliberately have no video route.
 // Legacy explicit-WGC aliases ("screengrab", "framegrab") normalize to "wgc".
 // DXGI Desktop Duplication aliases ("desktop_dup", "duplication",
 // "dxgi_duplication") normalize to "dxgi_dup".
@@ -527,6 +557,7 @@ bool IsDxgiDupCaptureMethod(const std::string& val);
 // True for any non-inject desktop/window grab family method (wgc or dxgi_dup).
 bool IsScreenGrabCaptureMethod(const std::string& val);
 bool IsAutoCaptureMethod(const std::string& val);
+bool IsVideoCaptureDisabledMethod(const std::string& val);
 
 // Parsing helpers
 uint32_t ParseDlssPreset(const std::string& val);

@@ -7,7 +7,9 @@
 #include <cerrno>
 #include <climits>
 #include <cmath>
+#include <cstring>
 #include <cstdlib>
+#include <set>
 #include <sstream>
 #include "logging.h"
 #include "strict_float_parse.h"
@@ -22,6 +24,16 @@ static void LogInvalidConfigBoundary(const char* section, const char* key, const
                 fallback.c_str());
     } else if (index == 64) {
         LogWarn("Config: further invalid-value diagnostics are suppressed for this process");
+    }
+}
+
+static void LogApplicationProfileWarning(const std::string& section, const std::string& message) {
+    static std::atomic<uint32_t> logged{0};
+    const uint32_t index = logged.fetch_add(1, std::memory_order_relaxed);
+    if (index < 32) {
+        LogWarn("Config: [%s] %s", section.c_str(), message.c_str());
+    } else if (index == 32) {
+        LogWarn("Config: further application-profile diagnostics are suppressed for this process");
     }
 }
 
@@ -112,6 +124,10 @@ std::string NormalizeCaptureMethod(const std::string& val) {
         return "dxgi_dup";
     }
 
+    if (normalized == "none") {
+        return "none";
+    }
+
     return "auto";
 }
 
@@ -134,6 +150,10 @@ bool IsScreenGrabCaptureMethod(const std::string& val) {
 
 bool IsAutoCaptureMethod(const std::string& val) {
     return NormalizeCaptureMethod(val) == "auto";
+}
+
+bool IsVideoCaptureDisabledMethod(const std::string& val) {
+    return NormalizeCaptureMethod(val) == "none";
 }
 
 // Split string by unquoted colons (quotes prevent splitting)
@@ -170,7 +190,8 @@ static bool IsMatchModeKeyword(const std::string& s) {
     std::string lower = s;
     std::transform(lower.begin(), lower.end(), lower.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return lower == "exact" || lower == "title_executable" || lower == "title_exec" || lower == "title_type" ||
+    return lower == "exact" || lower == "contains" || lower == "contains_or_class" ||
+           lower == "title_executable" || lower == "title_exec" || lower == "title_type" ||
            lower == "title_class";
 }
 
@@ -217,6 +238,96 @@ static WhitelistEntry ParseEntry(const std::string& raw) {
     }
     entry.mode = mode;
     return entry;
+}
+
+static std::string Lowercase(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+static std::vector<std::string> EnumerateIniSections(const std::string& path) {
+    std::vector<char> names(4096, '\0');
+    DWORD copied = 0;
+    for (;;) {
+        copied = GetPrivateProfileSectionNamesA(names.data(), static_cast<DWORD>(names.size()), path.c_str());
+        if (copied < names.size() - 2 || names.size() >= 1024 * 1024)
+            break;
+        names.assign(names.size() * 2, '\0');
+    }
+
+    std::vector<std::string> sections;
+    for (const char* current = names.data(); current && *current; current += strlen(current) + 1) {
+        sections.emplace_back(current);
+    }
+    return sections;
+}
+
+static std::string ReadLiteralIniValue(const std::string& path, const std::string& section, const char* key,
+                                       const char* fallback) {
+    char value[4096];
+    GetPrivateProfileStringA(section.c_str(), key, fallback, value, sizeof(value), path.c_str());
+    return Trim(value);
+}
+
+static bool TargetsOverlap(const WhitelistEntry& lhs, const WhitelistEntry& rhs) {
+    if (lhs.HasProcess() && rhs.HasProcess()) {
+        if (_stricmp(lhs.pattern.c_str(), rhs.pattern.c_str()) == 0)
+            return true;
+    }
+    if (lhs.HasWindow() && rhs.HasWindow()) {
+        return _stricmp(lhs.windowName.c_str(), rhs.windowName.c_str()) == 0;
+    }
+    return false;
+}
+
+static ApplicationInjectionMode ParseApplicationInjectionMode(const std::string& section, std::string value,
+                                                               bool legacy) {
+    if (legacy)
+        return ApplicationInjectionMode::kCapture;
+
+    value = Lowercase(Trim(value));
+    if (value == "capture" || value == "normal" || value == "inject")
+        return ApplicationInjectionMode::kCapture;
+    if (value == "overlay" || value == "overlay_only")
+        return ApplicationInjectionMode::kOverlay;
+    if (value.empty() || value == "none" || value == "off" || value == "disabled")
+        return ApplicationInjectionMode::kNone;
+
+    LogInvalidConfigBoundary(section.c_str(), "injection_mode", value, "none");
+    return ApplicationInjectionMode::kNone;
+}
+
+static ApplicationVideoCapture ParseApplicationVideoCapture(const std::string& section, std::string value,
+                                                             ApplicationVideoCapture fallback) {
+    value = Lowercase(Trim(value));
+    std::replace(value.begin(), value.end(), '-', '_');
+    if (value == "global" || value == "default")
+        return ApplicationVideoCapture::kGlobal;
+    if (value == "inject")
+        return ApplicationVideoCapture::kInject;
+    if (value == "wgc" || value == "screengrab" || value == "framegrab")
+        return ApplicationVideoCapture::kWgc;
+    if (value == "dxgi_dup" || value == "desktop_dup" || value == "duplication" || value == "dxgi_duplication")
+        return ApplicationVideoCapture::kDxgiDup;
+    if (value == "none" || value == "off" || value == "disabled")
+        return ApplicationVideoCapture::kNone;
+
+    const char* fallbackName = fallback == ApplicationVideoCapture::kGlobal ? "global" : "none";
+    LogInvalidConfigBoundary(section.c_str(), "video_capture", value, fallbackName);
+    return fallback;
+}
+
+static ApplicationVideoCapture CaptureMethodToApplicationMode(const std::string& method) {
+    if (IsInjectCaptureMethod(method))
+        return ApplicationVideoCapture::kInject;
+    if (IsWgcCaptureMethod(method))
+        return ApplicationVideoCapture::kWgc;
+    if (IsDxgiDupCaptureMethod(method))
+        return ApplicationVideoCapture::kDxgiDup;
+    if (IsVideoCaptureDisabledMethod(method))
+        return ApplicationVideoCapture::kNone;
+    return ApplicationVideoCapture::kGlobal;
 }
 
 // Helper to parse bool
@@ -420,79 +531,127 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         }
     }
 
-    // Find the matching per-process profile and collect its injection target.
-    // [Profile.N] requires an explicit injection mode. Legacy [App.N] sections
-    // keep their historical implicit normal-injection behavior.
+    // Enumerate named [Profile.*] sections. Numeric names remain valid, but are
+    // no longer capped at eight. Legacy [App.*] sections are retained as
+    // compatibility profiles unless a [Profile.*] section with the same suffix
+    // exists.
     std::string overrideSection;
-    std::vector<WhitelistEntry> profileGameEntries;
-    std::vector<WhitelistEntry> profileOverlayEntries;
     std::string procNameLower = currentProcessName;
     std::transform(procNameLower.begin(), procNameLower.end(), procNameLower.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    config.applicationProfiles.clear();
+    const std::vector<std::string> iniSections = EnumerateIniSections(path);
+    std::set<std::string> canonicalSuffixes;
 
-    for (int i = 1; i <= 8; ++i) {
-        char profileSec[32];
-        char legacyAppSec[32];
-        snprintf(profileSec, sizeof(profileSec), "Profile.%d", i);
-        snprintf(legacyAppSec, sizeof(legacyAppSec), "App.%d", i);
+    auto AddApplicationProfile = [&](const std::string& section, bool legacyProfile) -> bool {
+        constexpr const char* kMissingProfileValue = "\x1d";
+        std::string processSpec = ReadLiteralIniValue(path, section, "Process", kMissingProfileValue);
+        if (processSpec == kMissingProfileValue)
+            processSpec = ReadLiteralIniValue(path, section, "ProcessName", "");
 
-        const char* selectedSection = profileSec;
-        bool legacyProfile = false;
-        GetPrivateProfileStringA(selectedSection, "Process", "", buffer, 4096, path.c_str());
-        std::string configProc = Trim(buffer);
-        if (configProc.empty()) {
-            GetPrivateProfileStringA(selectedSection, "ProcessName", "", buffer, 4096, path.c_str());
-            configProc = Trim(buffer);
-        }
-        if (configProc.empty()) {
-            selectedSection = legacyAppSec;
-            legacyProfile = true;
-            GetPrivateProfileStringA(selectedSection, "Process", "", buffer, 4096, path.c_str());
-            configProc = Trim(buffer);
-            if (configProc.empty()) {
-                GetPrivateProfileStringA(selectedSection, "ProcessName", "", buffer, 4096, path.c_str());
-                configProc = Trim(buffer);
+        WhitelistEntry target;
+        if (!processSpec.empty()) {
+            if (processSpec.find(':') != std::string::npos) {
+                target = ParseEntry(processSpec);
+            } else {
+                target.pattern = Trim(StripOuterQuotes(processSpec));
             }
         }
-        if (configProc.empty())
-            continue;
 
-        WhitelistEntry profileEntry = ParseEntry(configProc);
-        if (profileEntry.pattern.empty() && profileEntry.windowName.empty())
-            continue;
-
-        std::string injectionMode = "normal";
         if (!legacyProfile) {
-            constexpr const char* kMissingProfileValue = "\x1d";
-            GetPrivateProfileStringA(selectedSection, "injection_mode", kMissingProfileValue, buffer, 4096,
-                                     path.c_str());
-            injectionMode = Trim(buffer);
-            if (injectionMode == kMissingProfileValue) {
-                // Compatibility with profiles written before injection_mode became
-                // the documented name.
-                GetPrivateProfileStringA(selectedSection, "injection", "none", buffer, 4096, path.c_str());
-                injectionMode = Trim(buffer);
+            const std::string windowTitle =
+                ReadLiteralIniValue(path, section, "window_title", kMissingProfileValue);
+            if (windowTitle != kMissingProfileValue)
+                target.windowName = Trim(StripOuterQuotes(windowTitle));
+
+            std::string windowMatch = ReadLiteralIniValue(path, section, "window_match", kMissingProfileValue);
+            if (windowMatch != kMissingProfileValue && !windowMatch.empty()) {
+                windowMatch = Lowercase(windowMatch);
+                if (IsMatchModeKeyword(windowMatch)) {
+                    target.mode = ParseMatchMode(windowMatch);
+                } else {
+                    LogInvalidConfigBoundary(section.c_str(), "window_match", windowMatch, "exact");
+                    target.mode = MatchMode::kExact;
+                }
             }
-            if (injectionMode.empty())
-                injectionMode = "none";
-            std::transform(injectionMode.begin(), injectionMode.end(), injectionMode.begin(),
-                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
         }
 
-        if (injectionMode == "normal" || injectionMode == "inject" || injectionMode == "capture") {
-            profileGameEntries.push_back(profileEntry);
-        } else if (injectionMode == "overlay" || injectionMode == "overlay_only") {
-            profileOverlayEntries.push_back(profileEntry);
-        } else if (injectionMode != "none" && injectionMode != "off" && injectionMode != "disabled") {
-            LogInvalidConfigBoundary(selectedSection, "injection_mode", injectionMode, "none");
+        if (!target.HasProcess() && !target.HasWindow()) {
+            LogInvalidConfigBoundary(section.c_str(), "process/window_title", "", "an application target");
+            return false;
         }
 
-        if (!procNameLower.empty()) {
-            std::string matchName = profileEntry.pattern;
-            std::transform(matchName.begin(), matchName.end(), matchName.begin(),
-                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-            if (matchName == procNameLower)
-                overrideSection = selectedSection;
+        std::string injectionValue = "capture";
+        if (!legacyProfile) {
+            injectionValue = ReadLiteralIniValue(path, section, "injection_mode", kMissingProfileValue);
+            if (injectionValue == kMissingProfileValue) {
+                // Compatibility with profiles written before injection_mode
+                // became the documented name.
+                injectionValue = ReadLiteralIniValue(path, section, "injection", "none");
+            }
+        }
+
+        ApplicationProfile profile;
+        profile.section = section;
+        profile.target = std::move(target);
+        profile.legacy = legacyProfile;
+        profile.injectionMode = ParseApplicationInjectionMode(section, injectionValue, legacyProfile);
+        if (!profile.target.HasProcess() && profile.injectionMode != ApplicationInjectionMode::kNone) {
+            LogApplicationProfileWarning(section, "cannot inject without a process name; using injection_mode=none");
+            profile.injectionMode = ApplicationInjectionMode::kNone;
+        }
+
+        const std::string videoValue =
+            legacyProfile ? kMissingProfileValue
+                          : ReadLiteralIniValue(path, section, "video_capture", kMissingProfileValue);
+        profile.videoCaptureExplicit = videoValue != kMissingProfileValue;
+        const ApplicationVideoCapture compatibilityFallback =
+            (legacyProfile || profile.injectionMode != ApplicationInjectionMode::kNone)
+                ? ApplicationVideoCapture::kGlobal
+                : ApplicationVideoCapture::kNone;
+        profile.videoCapture = profile.videoCaptureExplicit
+                                   ? ParseApplicationVideoCapture(section, videoValue, compatibilityFallback)
+                                   : compatibilityFallback;
+
+        auto duplicate = std::find_if(config.applicationProfiles.begin(), config.applicationProfiles.end(),
+                                      [&](const ApplicationProfile& existing) {
+                                          return TargetsOverlap(existing.target, profile.target);
+                                      });
+        if (duplicate != config.applicationProfiles.end()) {
+            if (legacyProfile && !duplicate->legacy) {
+                LogApplicationProfileWarning(
+                    section, "overlaps canonical [" + duplicate->section + "]; ignoring the legacy profile");
+                return false;
+            }
+            LogApplicationProfileWarning(section,
+                                         "overlaps [" + duplicate->section + "]; the later profile wins");
+            *duplicate = std::move(profile);
+        } else {
+            config.applicationProfiles.push_back(std::move(profile));
+        }
+        return true;
+    };
+
+    for (const std::string& section : iniSections) {
+        const std::string lowered = Lowercase(section);
+        if (lowered.rfind("profile.", 0) == 0 && lowered.size() > strlen("profile.") &&
+            AddApplicationProfile(section, false)) {
+            canonicalSuffixes.insert(lowered.substr(strlen("profile.")));
+        }
+    }
+    for (const std::string& section : iniSections) {
+        const std::string lowered = Lowercase(section);
+        if (lowered.rfind("app.", 0) != 0 || lowered.size() <= strlen("app."))
+            continue;
+        const std::string suffix = lowered.substr(strlen("app."));
+        if (canonicalSuffixes.find(suffix) == canonicalSuffixes.end())
+            AddApplicationProfile(section, true);
+    }
+
+    for (const ApplicationProfile& profile : config.applicationProfiles) {
+        if (!procNameLower.empty() && profile.target.HasProcess() &&
+            Lowercase(profile.target.pattern) == procNameLower) {
+            overrideSection = profile.section;
         }
     }
 
@@ -668,8 +827,55 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         }
     }
     config.debugLogging = IsDebugLoggingEnabled(config.logLevel);
+    constexpr const char* kMissingLiteralValue = "\x1d";
+    std::string globalCaptureMethod =
+        ReadLiteralIniValue(path, "Capture", "capture_method", kMissingLiteralValue);
+    if (globalCaptureMethod == kMissingLiteralValue)
+        globalCaptureMethod = ReadLiteralIniValue(path, "General", "capture_method", "auto");
+    globalCaptureMethod = NormalizeCaptureMethod(globalCaptureMethod);
+
     config.captureMethod =
         NormalizeCaptureMethod(GetStrCompat("Capture", "capture_method", "General", "capture_method", "auto"));
+    for (ApplicationProfile& profile : config.applicationProfiles) {
+        std::string profileCaptureMethod = globalCaptureMethod;
+        std::string profileOverride =
+            ReadLiteralIniValue(path, profile.section, "Capture.capture_method", kMissingLiteralValue);
+        if (profileOverride == kMissingLiteralValue)
+            profileOverride = ReadLiteralIniValue(path, profile.section, "capture_method", kMissingLiteralValue);
+        if (profileOverride != kMissingLiteralValue)
+            profileCaptureMethod = NormalizeCaptureMethod(profileOverride);
+
+        ApplicationVideoCapture resolved = profile.videoCapture;
+        if (resolved == ApplicationVideoCapture::kGlobal) {
+            resolved = CaptureMethodToApplicationMode(profileCaptureMethod);
+            if (resolved == ApplicationVideoCapture::kGlobal) {
+                resolved = profile.injectionMode == ApplicationInjectionMode::kCapture
+                               ? ApplicationVideoCapture::kInject
+                               : ApplicationVideoCapture::kWgc;
+            }
+        }
+
+        if (resolved == ApplicationVideoCapture::kInject &&
+            profile.injectionMode != ApplicationInjectionMode::kCapture) {
+            LogApplicationProfileWarning(
+                profile.section,
+                "requests injected video but injection_mode is not capture; this profile has no video route");
+            resolved = ApplicationVideoCapture::kNone;
+        }
+        profile.resolvedVideoCapture = resolved;
+
+        if (_stricmp(profile.section.c_str(), overrideSection.c_str()) != 0)
+            continue;
+
+        if (profile.resolvedVideoCapture == ApplicationVideoCapture::kNone)
+            config.captureMethod = "none";
+        else if (profile.videoCapture == ApplicationVideoCapture::kInject)
+            config.captureMethod = "inject";
+        else if (profile.videoCapture == ApplicationVideoCapture::kWgc)
+            config.captureMethod = "wgc";
+        else if (profile.videoCapture == ApplicationVideoCapture::kDxgiDup)
+            config.captureMethod = "dxgi_dup";
+    }
     {
         std::string autoFullscreen =
             Trim(GetStrCompat("Capture", "auto_fullscreen_capture", "General", "auto_fullscreen_capture", "dxgi_dup"));
@@ -916,6 +1122,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.gameWhitelist.clear();
     config.overlayWhitelist.clear();
     config.wgcWindowTitles.clear();
+    config.profileWgcTargets.clear();
+    config.profileDxgiDupTargets.clear();
     // We use a manual pass to support both comma-separated (legacy) and
     // newline-separated entries
     bool pseudoProcessListSet = false;
@@ -1070,14 +1278,48 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         }
     }
 
-    auto MergeProfileEntries = [](const std::vector<WhitelistEntry>& source, std::vector<WhitelistEntry>& target) {
-        for (const WhitelistEntry& entry : source) {
-            if (std::find(target.begin(), target.end(), entry) == target.end())
-                target.push_back(entry);
-        }
+    auto AddUniqueEntry = [](const WhitelistEntry& entry, std::vector<WhitelistEntry>& target) {
+        if (std::find(target.begin(), target.end(), entry) == target.end())
+            target.push_back(entry);
     };
-    MergeProfileEntries(profileGameEntries, config.gameWhitelist);
-    MergeProfileEntries(profileOverlayEntries, config.overlayWhitelist);
+    auto RemoveOverlappingLegacyEntry = [](const WhitelistEntry& profileTarget,
+                                           std::vector<WhitelistEntry>& legacyEntries) {
+        legacyEntries.erase(std::remove_if(legacyEntries.begin(), legacyEntries.end(),
+                                           [&](const WhitelistEntry& legacyTarget) {
+                                               return TargetsOverlap(profileTarget, legacyTarget);
+                                           }),
+                            legacyEntries.end());
+    };
+
+    // Canonical profiles win over an old list entry for the same process or
+    // window, including an explicit "none" route. This makes the old lists
+    // compatibility inputs rather than a second, conflicting policy layer.
+    for (const ApplicationProfile& profile : config.applicationProfiles) {
+        if (profile.legacy)
+            continue;
+        RemoveOverlappingLegacyEntry(profile.target, config.gameWhitelist);
+        RemoveOverlappingLegacyEntry(profile.target, config.overlayWhitelist);
+        RemoveOverlappingLegacyEntry(profile.target, config.wgcWindowTitles);
+    }
+
+    for (const ApplicationProfile& profile : config.applicationProfiles) {
+        WhitelistEntry injectionTarget = profile.target;
+        if (!profile.legacy)
+            injectionTarget.mode = MatchMode::kExact;
+        if (profile.injectionMode == ApplicationInjectionMode::kCapture) {
+            AddUniqueEntry(injectionTarget, config.gameWhitelist);
+        } else if (profile.injectionMode == ApplicationInjectionMode::kOverlay) {
+            AddUniqueEntry(injectionTarget, config.overlayWhitelist);
+        }
+
+        if (profile.videoCaptureExplicit && profile.resolvedVideoCapture == ApplicationVideoCapture::kWgc) {
+            AddUniqueEntry(profile.target, config.profileWgcTargets);
+            AddUniqueEntry(profile.target, config.wgcWindowTitles);
+        } else if (profile.videoCaptureExplicit &&
+                   profile.resolvedVideoCapture == ApplicationVideoCapture::kDxgiDup) {
+            AddUniqueEntry(profile.target, config.profileDxgiDupTargets);
+        }
+    }
 
     // Helper for comma-separated ints
     auto ParseIntList = [&](const std::string& value, const char* section, const char* key, int def) {
@@ -1488,47 +1730,64 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         return parsed;
     };
 
-    // --- Parse [Profile.1] .. [Profile.8] audio and legacy [AppAudio.N] ---
-    for (int appIdx = 1; appIdx <= kMaxAudioSections; appIdx++) {
-        char profileSection[32];
-        snprintf(profileSection, sizeof(profileSection), "Profile.%d", appIdx);
-        const std::string profileAudioEnabled = GetLiteralStr(profileSection, "audio_enabled", kMissingConfigValue);
-        if (profileAudioEnabled != kMissingConfigValue) {
-            AudioConfig appAudio;
-            appAudio.enabled = GetLiteralBool(profileSection, "audio_enabled", false);
-
-            std::string processSpec = GetLiteralStr(profileSection, "Process", "");
-            if (processSpec.empty())
-                processSpec = GetLiteralStr(profileSection, "ProcessName", "");
-            appAudio.processName = ParseEntry(processSpec).pattern;
-            appAudio.tracks = ParseIntList(GetLiteralStr(profileSection, "audio_track", ""), profileSection,
-                                           "audio_track", appIdx + 2);
-            appAudio.codec = GetLiteralStr(profileSection, "audio_codec", sysAudio.codec.c_str());
-            appAudio.bitrate = GetLiteralInt(profileSection, "audio_bitrate", sysAudio.bitrate);
-            appAudio.sampleRate = NormalizeSampleRate(
-                GetLiteralStr(profileSection, "audio_sample_rate", sysAudio.sampleRate.c_str()), profileSection);
-            appAudio.bitDepth = GetLiteralStr(profileSection, "audio_bit_depth", sysAudio.bitDepth.c_str());
-            appAudio.downmix = GetLiteralBool(profileSection, "audio_downmix", sysAudio.downmix);
-            appAudio.captureLatencyMs =
-                GetLiteralFloat(profileSection, "audio_capture_latency_ms", config.audioCaptureLatencyMs);
-            appAudio.sourceType = AudioConfig::AppAudio;
-
-            if (appAudio.enabled && !appAudio.processName.empty()) {
-                std::string trackList;
-                for (size_t t = 0; t < appAudio.tracks.size(); ++t) {
-                    if (t)
-                        trackList += ",";
-                    trackList += std::to_string(appAudio.tracks[t]);
-                }
-                LogInfo("Config: [%s] app-audio source process='%s' tracks=[%s]", profileSection,
-                        appAudio.processName.c_str(), trackList.c_str());
-                config.audioSources.push_back(appAudio);
-            } else if (appAudio.enabled) {
-                LogInvalidConfigBoundary(profileSection, "Process", processSpec, "executable name");
-            }
+    // Parse app audio from every named canonical profile. A numeric profile
+    // with an explicit audio_enabled key shadows the same-numbered legacy
+    // [AppAudio.N] section, matching the former Profile.N behavior.
+    std::set<int> shadowedLegacyAppAudio;
+    int profileAudioOrdinal = 0;
+    for (const ApplicationProfile& profile : config.applicationProfiles) {
+        if (profile.legacy)
             continue;
+        ++profileAudioOrdinal;
+        const char* profileSection = profile.section.c_str();
+        const std::string profileAudioEnabled = GetLiteralStr(profileSection, "audio_enabled", kMissingConfigValue);
+        if (profileAudioEnabled == kMissingConfigValue)
+            continue;
+
+        int numericSuffix = 0;
+        const size_t dot = profile.section.find('.');
+        if (dot != std::string::npos && TryParseInt(profile.section.substr(dot + 1), numericSuffix) &&
+            numericSuffix >= 1 && numericSuffix <= kMaxAudioSections) {
+            shadowedLegacyAppAudio.insert(numericSuffix);
+        } else {
+            numericSuffix = 0;
         }
 
+        AudioConfig appAudio;
+        appAudio.enabled = GetLiteralBool(profileSection, "audio_enabled", false);
+        appAudio.processName = profile.target.pattern;
+        const int defaultTrack = numericSuffix > 0 ? numericSuffix + 2 : std::min(profileAudioOrdinal + 2, 255);
+        appAudio.tracks = ParseIntList(GetLiteralStr(profileSection, "audio_track", ""), profileSection,
+                                       "audio_track", defaultTrack);
+        appAudio.codec = GetLiteralStr(profileSection, "audio_codec", sysAudio.codec.c_str());
+        appAudio.bitrate = GetLiteralInt(profileSection, "audio_bitrate", sysAudio.bitrate);
+        appAudio.sampleRate = NormalizeSampleRate(
+            GetLiteralStr(profileSection, "audio_sample_rate", sysAudio.sampleRate.c_str()), profileSection);
+        appAudio.bitDepth = GetLiteralStr(profileSection, "audio_bit_depth", sysAudio.bitDepth.c_str());
+        appAudio.downmix = GetLiteralBool(profileSection, "audio_downmix", sysAudio.downmix);
+        appAudio.captureLatencyMs =
+            GetLiteralFloat(profileSection, "audio_capture_latency_ms", config.audioCaptureLatencyMs);
+        appAudio.sourceType = AudioConfig::AppAudio;
+
+        if (appAudio.enabled && !appAudio.processName.empty()) {
+            std::string trackList;
+            for (size_t t = 0; t < appAudio.tracks.size(); ++t) {
+                if (t)
+                    trackList += ",";
+                trackList += std::to_string(appAudio.tracks[t]);
+            }
+            LogInfo("Config: [%s] app-audio source process='%s' tracks=[%s]", profileSection,
+                    appAudio.processName.c_str(), trackList.c_str());
+            config.audioSources.push_back(appAudio);
+        } else if (appAudio.enabled) {
+            LogInvalidConfigBoundary(profileSection, "process", profile.target.windowName, "executable name");
+        }
+    }
+
+    // Compatibility-only [AppAudio.1] .. [AppAudio.8].
+    for (int appIdx = 1; appIdx <= kMaxAudioSections; appIdx++) {
+        if (shadowedLegacyAppAudio.find(appIdx) != shadowedLegacyAppAudio.end())
+            continue;
         char section[32];
         snprintf(section, sizeof(section), "AppAudio.%d", appIdx);
 

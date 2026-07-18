@@ -169,87 +169,35 @@ def ensure_capture_config_exists() -> str:
     return text
 
 
-def add_whitelist_entries_to_config_text(config_text: str, executable_names: List[str]) -> str:
-    lines = config_text.splitlines(keepends=True)
+def add_test_profiles_to_config_text(config_text: str, executable_names: List[str]) -> str:
     executable_names = [name for name in executable_names if name]
     if not executable_names:
         return config_text
 
-    injection_start = None
-    for idx, line in enumerate(lines):
-        if line.strip().lower() == "[injection]":
-            injection_start = idx
-            break
-
-    if injection_start is None:
-        if lines and not lines[-1].endswith("\n"):
-            lines[-1] += "\n"
-        if lines and lines[-1].strip():
-            lines.append("\n")
-        lines.extend(["[Injection]\n", "whitelist=(\n", ")\n"])
-        injection_start = len(lines) - 3
-
-    section_end = len(lines)
-    for idx in range(injection_start + 1, len(lines)):
-        stripped = lines[idx].strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            section_end = idx
-            break
-
-    whitelist_start = None
-    for idx in range(injection_start + 1, section_end):
-        if lines[idx].strip().lower().startswith("whitelist=("):
-            whitelist_start = idx
-            break
-
-    if whitelist_start is None:
-        insert_idx = injection_start + 1
-        block = ["whitelist=(\n", ")\n"]
-        lines[insert_idx:insert_idx] = block
-        whitelist_start = insert_idx
-        section_end += len(block)
-
-    whitelist_end = None
-    for idx in range(whitelist_start + 1, section_end):
-        if lines[idx].strip() == ")":
-            whitelist_end = idx
-            break
-
-    if whitelist_end is None:
-        whitelist_end = section_end
-        lines.insert(whitelist_end, ")\n")
-
-    existing_entries = {
-        lines[idx].strip().lower()
-        for idx in range(whitelist_start + 1, whitelist_end)
-        if lines[idx].strip() and not lines[idx].lstrip().startswith(";")
-    }
-
-    new_lines = []
-    for executable_name in executable_names:
-        if executable_name.lower() not in existing_entries:
-            new_lines.append(f"{executable_name}\n")
-            existing_entries.add(executable_name.lower())
-
-    if not new_lines:
-        return config_text
-
-    lines[whitelist_end:whitelist_end] = new_lines
-    return "".join(lines)
+    suffix = "" if not config_text or config_text.endswith("\n") else "\n"
+    blocks = []
+    for index, executable_name in enumerate(executable_names, start=1):
+        blocks.append(
+            f"\n[Profile.CE Test {index}]\n"
+            f"process={executable_name}\n"
+            "video_capture=inject\n"
+            "injection_mode=capture\n"
+        )
+    return config_text + suffix + "".join(blocks)
 
 
-def ensure_testapp_whitelist_entries(
+def ensure_testapp_profiles(
     executable_names: List[str],
 ) -> Optional[Tuple[bool, str]]:
     config_existed = CAPTURE_CONFIG.exists()
     original_text = ensure_capture_config_exists()
-    updated_text = add_whitelist_entries_to_config_text(original_text, executable_names)
+    updated_text = add_test_profiles_to_config_text(original_text, executable_names)
     if updated_text == original_text:
         return None
 
     CAPTURE_CONFIG.write_text(updated_text, encoding="utf-8")
     added_names = ", ".join(executable_names)
-    print(f"Temporarily added capture whitelist entries: {added_names}")
+    print(f"Temporarily added CaptureEngine test profiles: {added_names}")
     return config_existed, original_text
 
 
@@ -1042,7 +990,7 @@ def main() -> None:
     print(f"Architectures under test: {', '.join(a.upper() for a in arches_to_test)}")
 
     ensure_binaries_exist(apis_to_test, arches_to_test)
-    config_snapshot = ensure_testapp_whitelist_entries([API_EXECUTABLES[api] for api in apis_to_test])
+    config_snapshot = ensure_testapp_profiles([API_EXECUTABLES[api] for api in apis_to_test])
 
     try:
         print("\nCleaning up existing processes...")

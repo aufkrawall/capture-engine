@@ -167,6 +167,133 @@ TEST_F(ConfigOverrideTest, ProfilesUseExplicitInjectionModes) {
     EXPECT_EQ(config.video.fps, 77);
 }
 
+TEST_F(ConfigOverrideTest, NamedProfilesProvideAllApplicationRoutesWithoutANumericLimit) {
+    WriteConfig(
+        "[Capture]\n"
+        "capture_method=auto\n"
+        "[SystemAudio]\n"
+        "enabled=false\n"
+        "[Profile.Inject Game]\n"
+        "process=inject-game.exe\n"
+        "video_capture=inject\n"
+        "injection_mode=capture\n"
+        "[Profile.Window Game]\n"
+        "process=window-game.exe\n"
+        "window_title=The Window Game\n"
+        "window_match=contains\n"
+        "video_capture=wgc\n"
+        "injection_mode=overlay\n"
+        "audio_enabled=true\n"
+        "audio_track=9\n"
+        "[Profile.Desktop Game]\n"
+        "process=desktop-game.exe\n"
+        "video_capture=dxgi_dup\n"
+        "injection_mode=none\n"
+        "[Profile.Audio Only]\n"
+        "process=audio-only.exe\n"
+        "video_capture=none\n"
+        "injection_mode=none\n"
+        "audio_enabled=true\n"
+        "audio_track=10\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    auto HasProcess = [](const std::vector<WhitelistEntry>& entries, const char* process) {
+        return std::any_of(entries.begin(), entries.end(),
+                           [&](const WhitelistEntry& entry) { return entry.pattern == process; });
+    };
+    ASSERT_EQ(config.applicationProfiles.size(), 4u);
+    EXPECT_TRUE(HasProcess(config.gameWhitelist, "inject-game.exe"));
+    EXPECT_TRUE(HasProcess(config.overlayWhitelist, "window-game.exe"));
+    EXPECT_TRUE(HasProcess(config.profileWgcTargets, "window-game.exe"));
+    EXPECT_TRUE(HasProcess(config.wgcWindowTitles, "window-game.exe"));
+    EXPECT_TRUE(HasProcess(config.profileDxgiDupTargets, "desktop-game.exe"));
+    EXPECT_FALSE(HasProcess(config.gameWhitelist, "audio-only.exe"));
+    ASSERT_EQ(config.profileWgcTargets.size(), 1u);
+    ASSERT_EQ(config.overlayWhitelist.size(), 1u);
+    EXPECT_EQ(config.overlayWhitelist.front().mode, MatchMode::kExact);
+    EXPECT_EQ(config.profileWgcTargets.front().windowName, "The Window Game");
+    EXPECT_EQ(config.profileWgcTargets.front().mode, MatchMode::kTitleExecutable);
+    ASSERT_EQ(config.audioSources.size(), 2u);
+    EXPECT_EQ(config.audioSources[0].processName, "window-game.exe");
+    EXPECT_EQ(config.audioSources[1].processName, "audio-only.exe");
+
+    LoadConfig(tempConfigFile, config, "window-game.exe");
+    EXPECT_EQ(config.captureMethod, "wgc");
+    LoadConfig(tempConfigFile, config, "desktop-game.exe");
+    EXPECT_EQ(config.captureMethod, "dxgi_dup");
+    LoadConfig(tempConfigFile, config, "audio-only.exe");
+    EXPECT_EQ(config.captureMethod, "none");
+}
+
+TEST_F(ConfigOverrideTest, CanonicalProfileOverridesEveryLegacyRouteForTheSameTarget) {
+    WriteConfig(
+        "[Injection]\n"
+        "whitelist=(\n"
+        "game.exe\n"
+        ")\n"
+        "overlay_whitelist=(\n"
+        "game.exe\n"
+        ")\n"
+        "wgc_window_detection=(\n"
+        "game.exe\n"
+        ")\n"
+        "[Profile.Game]\n"
+        "process=game.exe\n"
+        "video_capture=none\n"
+        "injection_mode=none\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "game.exe");
+
+    EXPECT_TRUE(config.gameWhitelist.empty());
+    EXPECT_TRUE(config.overlayWhitelist.empty());
+    EXPECT_TRUE(config.wgcWindowTitles.empty());
+    EXPECT_TRUE(config.profileWgcTargets.empty());
+    EXPECT_TRUE(config.profileDxgiDupTargets.empty());
+    EXPECT_EQ(config.captureMethod, "none");
+}
+
+TEST_F(ConfigOverrideTest, InjectVideoRequiresCaptureInjectionPermission) {
+    WriteConfig(
+        "[Profile.Game]\n"
+        "process=game.exe\n"
+        "video_capture=inject\n"
+        "injection_mode=none\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "game.exe");
+
+    ASSERT_EQ(config.applicationProfiles.size(), 1u);
+    EXPECT_EQ(config.applicationProfiles.front().resolvedVideoCapture, ApplicationVideoCapture::kNone);
+    EXPECT_TRUE(config.gameWhitelist.empty());
+    EXPECT_EQ(config.captureMethod, "none");
+}
+
+TEST_F(ConfigOverrideTest, LaterOverlappingNamedProfileWinsDeterministically) {
+    WriteConfig(
+        "[Profile.First]\n"
+        "process=game.exe\n"
+        "video_capture=wgc\n"
+        "injection_mode=overlay\n"
+        "[Profile.Second]\n"
+        "process=GAME.EXE\n"
+        "video_capture=dxgi_dup\n"
+        "injection_mode=none\n"
+        "Video.fps=81\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "game.exe");
+
+    ASSERT_EQ(config.applicationProfiles.size(), 1u);
+    EXPECT_EQ(config.applicationProfiles.front().section, "Profile.Second");
+    EXPECT_TRUE(config.profileWgcTargets.empty());
+    ASSERT_EQ(config.profileDxgiDupTargets.size(), 1u);
+    EXPECT_EQ(config.captureMethod, "dxgi_dup");
+    EXPECT_EQ(config.video.fps, 81);
+}
+
 TEST_F(ConfigOverrideTest, LegacyProfileInjectionKeyRemainsSupported) {
     WriteConfig(
         "[Profile.1]\n"
@@ -273,6 +400,24 @@ TEST_F(ConfigOverrideTest, LegacyAppProfileStillAddsNormalInjectionTarget) {
     ASSERT_EQ(config.gameWhitelist.size(), 1u);
     EXPECT_EQ(config.gameWhitelist.front().pattern, "legacy.exe");
     EXPECT_TRUE(config.overlayWhitelist.empty());
+    EXPECT_EQ(config.video.fps, 75);
+}
+
+TEST_F(ConfigOverrideTest, EmptyCanonicalNumberedSectionStillFallsBackToLegacyApp) {
+    WriteConfig(
+        "[Profile.1]\n"
+        "Video.fps=90\n"
+        "[App.1]\n"
+        "Process=legacy.exe\n"
+        "Video.fps=75\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "legacy.exe");
+
+    ASSERT_EQ(config.applicationProfiles.size(), 1u);
+    EXPECT_TRUE(config.applicationProfiles.front().legacy);
+    ASSERT_EQ(config.gameWhitelist.size(), 1u);
+    EXPECT_EQ(config.gameWhitelist.front().pattern, "legacy.exe");
     EXPECT_EQ(config.video.fps, 75);
 }
 

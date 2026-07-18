@@ -165,14 +165,17 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(generatedText.find("\ndisable_auto_mip_bias="), std::string::npos);
     EXPECT_EQ(generatedText.find(";[AppAudio.1]"), std::string::npos);
     const size_t diagnosticsSection = generatedText.find("\n[Diagnostics]\n");
-    const size_t profileExample = generatedText.find(";[Profile.1]");
+    const size_t profileExample = generatedText.find(";[Profile.My Game]");
     ASSERT_NE(diagnosticsSection, std::string::npos);
     ASSERT_NE(profileExample, std::string::npos);
     EXPECT_GT(profileExample, diagnosticsSection);
+    EXPECT_NE(generatedText.find(";video_capture=global", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";injection_mode=capture", profileExample), std::string::npos);
     EXPECT_EQ(generatedText.find(";injection=normal", profileExample), std::string::npos);
-    EXPECT_NE(generatedText.find("capture = allow injected video capture", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find("capture = allow injected video", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find("none = do not inject", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";window_title=", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";window_match=exact", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";audio_enabled=true", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("Other valid values are 2-6"), std::string::npos);
@@ -195,6 +198,9 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(generatedText.find("\n[Scaling]\n"), std::string::npos);
     EXPECT_EQ(generatedText.find("\n[pseudo-overlay]\n"), std::string::npos);
     EXPECT_EQ(generatedText.find("\n[Screenshot]\n"), std::string::npos);
+    EXPECT_EQ(generatedText.find("\n[Injection]\n"), std::string::npos);
+    EXPECT_EQ(generatedText.find("whitelist="), std::string::npos);
+    EXPECT_EQ(generatedText.find("wgc_window_detection="), std::string::npos);
     EXPECT_EQ(generatedText.find("\nvfr="), std::string::npos);
     EXPECT_EQ(generatedText.find("\nvfr_audio_sync="), std::string::npos);
 
@@ -568,6 +574,9 @@ TEST_F(ConfigTest, CaptureMethodPredicateFamilies) {
     EXPECT_TRUE(IsScreenGrabCaptureMethod("desktop_dup"));
     EXPECT_FALSE(IsScreenGrabCaptureMethod("inject"));
     EXPECT_FALSE(IsScreenGrabCaptureMethod("auto"));
+    EXPECT_FALSE(IsScreenGrabCaptureMethod("none"));
+    EXPECT_TRUE(IsVideoCaptureDisabledMethod("none"));
+    EXPECT_FALSE(IsVideoCaptureDisabledMethod("auto"));
 
     // dxgi_dup must not be mistaken for wgc or auto.
     EXPECT_FALSE(IsWgcCaptureMethod("dxgi_dup"));
@@ -981,6 +990,8 @@ TEST_F(ConfigTest, GraphicsQueueAndSamplerModesAreValidated) {
 
 TEST(ConfigHelpersTest, MatchModeParsing) {
     EXPECT_EQ(ParseMatchMode("exact"), MatchMode::kExact);
+    EXPECT_EQ(ParseMatchMode("contains"), MatchMode::kTitleExecutable);
+    EXPECT_EQ(ParseMatchMode("contains_or_class"), MatchMode::kTitleType);
     EXPECT_EQ(ParseMatchMode("title_executable"), MatchMode::kTitleExecutable);
     EXPECT_EQ(ParseMatchMode("title_exec"), MatchMode::kTitleExecutable);
     EXPECT_EQ(ParseMatchMode("title_type"), MatchMode::kTitleType);

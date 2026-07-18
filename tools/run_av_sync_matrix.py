@@ -267,6 +267,7 @@ def write_scenario_config(scenario, output_dir, include_microphone, include_mixe
         secondary_app_section = f"""
 [Profile.2]
 Process={SECONDARY_PROCESS_NAME}
+video_capture=none
 injection_mode=none
 audio_enabled=true
 audio_track=2
@@ -281,9 +282,7 @@ audio_track=2
 capture_method={scenario.capture_method}
 
 [WGC]
-{smoothness_floor_line}wgc_window_detection=(
-{PROCESS_NAME}
-)
+{smoothness_floor_line}
 
 [AudioSync]
 audio_capture_latency_ms={audio_capture_latency_ms}
@@ -295,11 +294,6 @@ log_level=trace
 [Output]
 container=mkv
 output_dir={output_dir}
-
-[Injection]
-whitelist=(
-{PROCESS_NAME}
-)
 
 [Overlay]
 enabled=false
@@ -343,7 +337,8 @@ track={system_tracks}
 
 [Profile.1]
 Process={PROCESS_NAME}
-injection_mode=none
+video_capture=global
+injection_mode=capture
 audio_enabled=true
 audio_track={app_tracks}
 audio_capture_latency_ms={app_capture_latency_ms}

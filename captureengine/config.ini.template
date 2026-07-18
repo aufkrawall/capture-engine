@@ -11,8 +11,9 @@
 
 [Capture]
 ; Choose how video is captured: auto, inject, wgc, or dxgi_dup.
-; auto uses injected capture for normal injection targets. Other targets use WGC,
-; with the fullscreen fallback selected below.
+; auto follows the application profiles at the end of this file. Applications
+; allowed to use injected capture use it; other windows use WGC, with the
+; fullscreen fallback selected below.
 ; inject captures through the injected DLL.
 ; wgc captures a window or monitor with Windows Graphics Capture.
 ; dxgi_dup captures a monitor with DXGI Desktop Duplication.
@@ -22,12 +23,6 @@ capture_method=auto
 auto_fullscreen_capture=dxgi_dup
 
 [WGC]
-; Windows and processes that WGC should look for. A plain .exe finds that
-; process's window. Entry formats are described under [Injection].
-wgc_window_detection=(
-;game.exe
-)
-
 ; Same-device capture usually has the lowest overhead.
 wgc_same_device_capture=true
 
@@ -185,32 +180,6 @@ audio_only=
 ; =============================================================================
 ; OPTIONAL FEATURES
 ; =============================================================================
-
-[Injection]
-; Injecting a DLL can trigger anti-cheat systems. Do not inject into multiplayer
-; games unless you know the game allows it.
-;
-; Entry format: process:window:mode
-; process is an executable name. window is a window title. mode is exact,
-; title_executable, or title_type. At least one of process and window is required.
-; Quote a name if it contains spaces or colons.
-; Examples:
-;   game.exe
-;   game.exe:My Game:title_executable
-;   :My Game Window:title_type
-;   "Game: Special.exe":"Game: Special":exact
-;
-; Normal injection allows injected video capture, the injected overlay, and
-; graphics overrides.
-whitelist=(
-;game.exe
-)
-
-; Overlay-only injection does not capture injected video, but it still injects a
-; DLL. Use this when WGC or DXGI capture should include the injected overlay.
-overlay_whitelist=(
-;game.exe
-)
 
 [Overlay]
 ; This is the overlay drawn inside injected applications.
@@ -390,12 +359,17 @@ dx12_focus_analysis=false
 ; APPLICATION PROFILES
 ; =============================================================================
 
-; Profiles keep one application's injection mode, app-audio capture, and setting
-; overrides together. You can create [Profile.1] through [Profile.8].
+; Profiles keep one application's video route, injection mode, app audio, and
+; setting overrides together. Use any clear name after "Profile.". There is no
+; fixed limit.
 ;
-; Process is the executable name.
+; process is the executable name. It is needed for injection, app audio, and
+; per-app overrides. window_title is optional and helps select the right window
+; when one process owns several. It can also be used alone for WGC or DXGI capture.
+; window_match can be exact, contains, or contains_or_class. It is ignored when
+; window_title is empty.
 ;
-; audio_enabled=true records audio from Process. audio_track accepts IDs from 1
+; audio_enabled=true records audio from process. audio_track accepts IDs from 1
 ; to 255 and can contain a comma-separated list. The other audio_* fields are
 ; optional; when omitted, they use [Audio]. Do not put the same application on
 ; the same track through both system audio and app audio, or it may sound hollow
@@ -404,12 +378,21 @@ dx12_focus_analysis=false
 ; Per-app setting overrides use Section.key names. This avoids confusion between
 ; settings such as Video.bitrate and Audio.bitrate.
 ;
-;[Profile.1]
-;Process=game.exe
-; How CaptureEngine injects this application:
-; capture = allow injected video capture, the injected overlay, and graphics overrides.
-; overlay = inject the overlay and graphics overrides, but do not capture video by injection.
-; none = do not inject. App-audio capture still works. Omitted also means none.
+;[Profile.My Game]
+;process=game.exe
+;window_title=
+;window_match=exact
+; How video is captured for this application:
+; global = follow capture_method in [Capture].
+; inject = capture through the injected DLL. This requires injection_mode=capture.
+; wgc = capture this window with Windows Graphics Capture.
+; dxgi_dup = capture this window's monitor with DXGI Desktop Duplication.
+; none = this profile does not provide a video target.
+;video_capture=global
+; Whether CaptureEngine injects its DLL into this application:
+; capture = allow injected video, the injected overlay, and graphics overrides.
+; overlay = inject the overlay and graphics overrides, without injected video.
+; none = do not inject. App audio still works.
 ;injection_mode=capture
 ;audio_enabled=true
 ;audio_track=3

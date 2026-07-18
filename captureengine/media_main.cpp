@@ -1639,13 +1639,34 @@ static bool MatchesProcessEntries(const std::vector<WhitelistEntry>& entries, co
     return false;
 }
 
+static const ApplicationProfile* FindApplicationProfileForProcess(const AppConfig& config,
+                                                                  const std::string& processName) {
+    if (processName.empty())
+        return nullptr;
+
+    std::string lowerName = processName;
+    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    for (const ApplicationProfile& profile : config.applicationProfiles) {
+        if (!profile.target.HasProcess())
+            continue;
+        std::string lowerTarget = profile.target.pattern;
+        std::transform(lowerTarget.begin(), lowerTarget.end(), lowerTarget.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if ((!profile.legacy && lowerName == lowerTarget) ||
+            (profile.legacy && MatchesProcessEntry(profile.target, lowerName)))
+            return &profile;
+    }
+    return nullptr;
+}
+
 static int64_t RectArea(const RECT& rect) {
     const int64_t width = std::max<LONG>(0, rect.right - rect.left);
     const int64_t height = std::max<LONG>(0, rect.bottom - rect.top);
     return width * height;
 }
 
-static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets) {
+static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, int* selectedScore = nullptr) {
     struct WgcSearchContext {
         const std::vector<WhitelistEntry>* targets;
         HWND result;
@@ -1784,6 +1805,9 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets) {
             ctx.result, static_cast<unsigned long>(pid), IsWindowFullscreenLike(ctx.result) ? 1 : 0, ctx.bestScore,
             ctx.matched, ctx.checked, (ctx.foregroundRoot && ctx.result == ctx.foregroundRoot) ? 1 : 0);
     }
+
+    if (selectedScore)
+        *selectedScore = ctx.result ? ctx.bestScore : std::numeric_limits<int>::min();
 
     return ctx.result;
 }
@@ -11405,6 +11429,16 @@ bool StartRecording(const AppConfig& config) {
         return true;
     }
 
+    if (IsVideoCaptureDisabledMethod(config.captureMethod)) {
+        LogError("[Media] Video recording is disabled by the active application profile");
+        SetCaptureRequestedState(false);
+        SetRecordingVisibleState(false);
+        PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed,
+                                     "active profile has video_capture=none");
+        timeEndPeriod(1);
+        return false;
+    }
+
     bool useScreenGrab = IsPreferredScreenGrab();
     if (IsScreenGrabCaptureMethod(config.captureMethod)) {
         useScreenGrab = true;
@@ -11778,6 +11812,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         SetPreferredScreenGrab(isExplicitScreenGrabConfig() || isAutoCaptureConfig());
     };
     auto isInjectCaptureTarget = [&](const std::string& processName) -> bool {
+        if (const ApplicationProfile* profile = FindApplicationProfileForProcess(config, processName)) {
+            return profile->resolvedVideoCapture == ApplicationVideoCapture::kInject;
+        }
         const bool gameWhitelistMatched =
             !processName.empty() && MatchesProcessEntries(config.gameWhitelist, processName);
         return ce::capture_policy::ShouldUseInjectCaptureForAutoTarget(isExplicitInjectConfig(), isAutoCaptureConfig(),
@@ -11880,13 +11917,14 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             SetPreferredScreenGrab(false);
             LogInfo("[Media] Connected to shared memory - using inject mode");
         }
-    } else if (isExplicitInjectConfig()) {
+    } else if (isExplicitInjectConfig() && config.profileWgcTargets.empty() &&
+               config.profileDxgiDupTargets.empty()) {
         LogError("[Media] Failed to connect to shared memory in inject mode!");
         unloadMediaEngineIdle();
         return 1;
     } else {
         SetPreferredScreenGrab(true);
-        LogInfo("[Media] Shared memory not available - using WGC mode");
+        LogInfo("[Media] Shared memory not available - using a configured screen-grab route");
     }
 
     auto applyWgcOptions = [&](WGCCapture* capture) {
@@ -12004,7 +12042,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 targetMonitor, pendingWgcRetarget.preferMonitor ? 1 : 0);
     };
 
-    auto refreshActiveConfig = [&](bool forceReload) -> std::string {
+    auto refreshActiveConfig = [&](bool forceReload, HWND targetWindow = NULL) -> std::string {
         uint32_t sourcePid = 0;
         std::string processName;
         if (g_pSharedMem) {
@@ -12014,6 +12052,29 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 if (processName == "unknown") {
                     processName.clear();
                 }
+            }
+        }
+        if (sourcePid == 0) {
+            HWND resolvedWindow = targetWindow;
+            if (!resolvedWindow && currentCapturedWindow && IsWindow(currentCapturedWindow))
+                resolvedWindow = currentCapturedWindow;
+            if (resolvedWindow) {
+                DWORD resolvedPid = 0;
+                GetWindowThreadProcessId(resolvedWindow, &resolvedPid);
+                sourcePid = resolvedPid;
+            }
+            if (sourcePid != 0) {
+                processName = GetProcessNameFromPID(sourcePid);
+                if (processName == "unknown")
+                    processName.clear();
+            }
+        }
+        if (sourcePid == 0 && g_Recording && activeConfigSourcePid != 0) {
+            processName = GetProcessNameFromPID(activeConfigSourcePid);
+            if (!processName.empty() && processName != "unknown") {
+                sourcePid = activeConfigSourcePid;
+            } else {
+                processName.clear();
             }
         }
 
@@ -12318,14 +12379,49 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     };
 
     auto prepareCaptureForRecordingStart = [&]() {
-        const std::string processName = refreshActiveConfig(false);
-        const uint32_t sourcePid = g_pSharedMem ? g_pSharedMem->GetSourcePid() : 0;
-        const bool injectWhitelisted = isInjectCaptureTarget(processName);
+        std::string processName = refreshActiveConfig(false);
+        uint32_t sourcePid = g_pSharedMem ? g_pSharedMem->GetSourcePid() : 0;
+        bool injectWhitelisted = isInjectCaptureTarget(processName);
 
         autoWgcHandoff.Reset();
         autoWgcHandoffBaselineFrames = 0;
         autoWgcHandoffDeadlineTick = 0;
         g_AutoWgcFallbackArmed.store(false, std::memory_order_release);
+
+        int profileWgcScore = std::numeric_limits<int>::min();
+        int profileDxgiScore = std::numeric_limits<int>::min();
+        HWND profileWgcWindow = FindMatchingWgcWindow(config.profileWgcTargets, &profileWgcScore);
+        HWND profileDxgiWindow = FindMatchingWgcWindow(config.profileDxgiDupTargets, &profileDxgiScore);
+        const bool useProfileDxgi = profileDxgiWindow && (!profileWgcWindow || profileDxgiScore > profileWgcScore);
+        HWND profileWindow = useProfileDxgi ? profileDxgiWindow : profileWgcWindow;
+        if (profileWindow) {
+            if (sourcePid == 0) {
+                DWORD profilePid = 0;
+                GetWindowThreadProcessId(profileWindow, &profilePid);
+                sourcePid = profilePid;
+            }
+            processName = refreshActiveConfig(false, profileWindow);
+            injectWhitelisted = isInjectCaptureTarget(processName);
+            if (useProfileDxgi) {
+                if (primeDxgiDupForWindowMonitor(profileWindow, "application profile")) {
+                    LogInfo("[Media] Application profile selected DXGI duplication (process=%s hwnd=0x%p)",
+                            processName.empty() ? "unknown" : processName.c_str(), profileWindow);
+                    return;
+                }
+                if (primeWgcWindowTarget(profileWindow, false, false)) {
+                    LogWarn("[Media] Application profile DXGI target unavailable; using WGC window capture");
+                    return;
+                }
+                LogWarn("[Media] Application profile DXGI and WGC targets failed; continuing fallback selection");
+            } else {
+                if (primeWgcWindowTarget(profileWindow, false, false)) {
+                    LogInfo("[Media] Application profile selected WGC window capture (process=%s hwnd=0x%p)",
+                            processName.empty() ? "unknown" : processName.c_str(), profileWindow);
+                    return;
+                }
+                LogWarn("[Media] Application profile WGC target failed to initialize; continuing fallback selection");
+            }
+        }
 
         if (isExplicitInjectConfig()) {
             SetPreferredScreenGrab(false);
