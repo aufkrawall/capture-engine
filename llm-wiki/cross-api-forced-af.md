@@ -1,22 +1,24 @@
 # Cross-API Forced Anisotropic Filtering
 
-Last cross-checked: 2026-07-16
+Last cross-checked: 2026-07-18
 
 Primary sources:
 - `hook/common/sampler_override_utils.h`
+- `common/mip_mapping_policy.h`
 - `hook/apis/{dx9_sampler_state,legacy_d3d_sampler_state,opengl_sampler_override,opengl_texture_storage_override}.*`
 - `hook/apis/{ddraw_hook,dx8_hook,dx9_hook,dx11_hook,opengl_hook}.cpp`
 - `hook/wrappers/{d3d9_device_wrap,d3d10_device_wrap}.*`
-- `tests/{test_sampler_override_utils,test_inject_capture_source}.cpp`
+- `tests/{test_mip_mapping_policy,test_sampler_override_utils,test_inject_capture_source}.cpp`
 - `llm-wiki/{dx11-forced-af,dx12-forced-af}.md`
 
 ## Summary
 
 Forced AF now follows each API's native state model instead of using one replacement strategy everywhere. D3D10,
 D3D12, and Vulkan mutate immutable sampler descriptions only at creation. D3D9 and D3D6-8 reconcile mutable sampler
-state only when the application changes a texture or sampler state, plus a configuration-version boundary. OpenGL
-reconciles at texture/sampler-parameter and mip-storage events. None of these paths adds a draw/dispatch hook, a
-per-draw resource query, a GPU wait, or a sampler-object replacement cache.
+state when the application changes a texture or sampler state, at a configuration-version boundary, and immediately
+after a state block restores physical state. OpenGL reconciles at texture/sampler-parameter, mip-storage, and cached
+object-bind events. None of these paths adds a draw/dispatch hook, a per-draw resource query, a GPU wait, or a
+sampler-object replacement cache.
 
 D3D11 remains the exceptional shader/resource-aware implementation documented in `dx11-forced-af.md`. Runtime session
 `installed/captureengine/logs/20260716_001012` used build `0.1.4878` in 32-bit BioShock Infinite. The trace sustained
@@ -38,19 +40,23 @@ that material textures received the intended AF effect, performance was good, an
 - **D3D9 late injection:** getter/resource bootstrap is attempted once per sampler, never on every draw or repeatedly
   after a pure-device getter failure. New/reset devices start from documented defaults. Present performs only a cached
   configuration-version check after initialization; a real config change reconciles tracked state and restores logical
-  state when the override is disabled.
+  state when the override is disabled. Per-vtable Create/EndStateBlock interception covers state blocks created before
+  and after injection; Apply performs one bounded getter refresh of physical state and then reapplies the policy.
 - **D3D8/D3D7/D3D6:** a shared event-driven texture-stage-state owner provides the same logical/physical split and
-  bounded one-time bootstrap. D3D8 also refreshes config state at Present with a version fast path. D3D7 uses the actual
-  vtable slots 36/37 for Get/SetTextureStageState and slot 20 for SetRenderState. D3D6 uses Device3 slots 39/40. Legacy
-  MAG anisotropy is value 5 (`D3DTFG_ANISOTROPIC`), not MIN's value 3; using 3 as MAG selects flat-cubic filtering.
-  D3D5 and older expose no anisotropic value in their pre-stage `D3DTEXTUREFILTER` render states, so there is no generic
-  AF action to take there.
+  bounded one-time bootstrap. Returned DX6/7/8 device classes retain originals per vtable instead of assuming the
+  bootstrap HAL class. D3D6/7 refresh config at EndScene and D3D8 at Present with a version fast path; D3D7/8
+  ApplyStateBlock performs a bounded physical-state refresh and immediate reconciliation. D3D7 uses slots 36/37 for
+  Get/SetTextureStageState and slot 39 for ApplyStateBlock. D3D6 uses Device3 slots 39/40. Legacy MAG anisotropy is
+  value 5 (`D3DTFG_ANISOTROPIC`), not MIN's value 3; using 3 as MAG selects flat-cubic filtering. D3D5 and older expose
+  no anisotropic value in their pre-stage `D3DTEXTUREFILTER` render states, so there is no generic AF action to take.
+  Pure DirectDraw 2D exposes no mip sampler; DirectDraw-hosted sampler overrides are the D3D6/7 device paths.
 - **OpenGL:** core bound-texture APIs, sampler objects, core DSA, and EXT DSA parameter variants share one policy.
   Texture image/compressed image/copy-image allocation, immutable storage, texture-view creation, and mip-generation
-  entry points trigger reconciliation only when mip availability can change. Actual level `base+1` allocation is queried before safe-mode AF
-  is enabled. The implementation recognizes EXT/ARB anisotropy, clamps to `GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT`, protects
-  compare/border/non-mip/point-filter objects, handles dimensional wrap relevance, and excludes rectangle, buffer,
-  multisample, and proxy targets.
+  entry points trigger reconciliation when mip availability can change. Texture/sampler binds reconcile each object
+  once per context/config/object-generation; deletion advances the generation across contexts so reused names are not
+  skipped. Actual level `base+1` allocation is queried before safe-mode AF is enabled. The implementation recognizes
+  EXT/ARB anisotropy, clamps to `GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT`, protects compare/border/non-mip/point-filter
+  objects, handles dimensional wrap relevance, and excludes rectangle, buffer, multisample, and proxy targets.
 - **D3D12/Vulkan:** their existing creation-time implementations already match the no-draw-overhead requirement and
   were intentionally left unchanged. D3D12 covers dynamic and static samplers/root signatures; Vulkan requires the
   device feature, clamps to physical limits, and transactionally retries rejected modified descriptors. See
@@ -59,30 +65,34 @@ that material textures received the intended AF effect, performance was good, an
 ## Performance and diagnostics
 
 - D3D10, D3D12, and Vulkan have no bind/draw work after sampler creation.
-- D3D9 and D3D6-8 do constant-size bookkeeping only on mutable state events. Driver getters are bootstrap-only;
-  config hashes are computed only when the shared config version changes; companion writes are skipped when the
-  physical value is already correct.
-- OpenGL does no `glBindTexture` or draw interception. Additional GL queries/writes occur only at parameter or storage
-  mutation boundaries, not while sampling; an already-correct anisotropy value skips the redundant driver write.
+- D3D9 and D3D6-8 do constant-size bookkeeping only on mutable state/config events. Driver getters are bootstrap-only
+  except for a bounded state-block Apply refresh; config hashes are computed only when the shared config version
+  changes; companion writes are skipped when the physical value is already correct.
+- OpenGL has no draw interception. Bind interception queries an object only once per context/config/object generation;
+  parameter/storage mutation events reconcile directly, and an already-correct filter or anisotropy value skips the
+  redundant driver write.
 - Transition, bootstrap failure, descriptor retry, and safety-decision logs are rate-limited. Shutdown summaries report
   reconciliations, driver writes, bootstrap attempts, and OpenGL storage/parameter events.
 
 ## Verification
 
-- Required `python build.py --skip-updates` passed end to end as installed build `0.1.4892`, including x64/x86 hooks,
-  Vulkan layers, packaging, import closure, PE mitigations/architecture, and PDB checks.
-- Canonical `python build.py --no-build --run-tests --skip-updates` passed all 1,546 native tests in 111 suites plus
-  all Python tool self-tests at metadata `0.1.4893`.
+- Required incremental installed product build `0.1.5088` passed x64/x86 hooks, both Vulkan layers, CaptureEngine,
+  MediaEngine, test applications, packaging, import closure, PE mitigations/architecture, and PDB checks.
+- The exact-build `python build.py --no-build --run-tests --skip-updates --concise` gate passed the complete native
+  suite and all five Python tool self-tests. Focused policy/config/source coverage exercises the shared filter triples,
+  all four OpenGL mip MIN enums, Vulkan's independent mip/AF eligibility, legacy per-vtable/state-block wiring, and
+  transactional fallback.
 - Native runtime validation remains intentionally separate for the APIs listed below; the existing BioShock result
-  establishes the D3D11 behavior, not legacy/OpenGL driver behavior.
+  establishes the D3D11 behavior, not legacy/OpenGL/Vulkan driver behavior.
 
 ## Open questions / stale-risk
 
 - Native runtime validation is still required for D3D10, classic/Ex D3D9, D3D8, D3D7, D3D6, and representative OpenGL
   core/DSA/shared-context applications on both x86 and x64. Source and policy tests do not prove vendor-driver behavior.
-- A state block created before late injection can restore sampler state without calling the public mutable-state setter.
-  The current design deliberately has no draw-time fallback; validate state-block-heavy legacy games before considering
-  state-block metadata interception, because getter sweeps at every Apply would violate the performance invariant.
+- State-block-heavy legacy games still need native validation. Apply reconciliation deliberately preserves the
+  current tracked logical state while refreshing the physical state; exact logical `Get*State` emulation for an older
+  partial state block would require recording per-block logical masks/snapshots and remains a stale-risk separate from
+  reliably keeping the configured physical filter override active.
 - D3D10 samplers created before a late injection cannot be enumerated or safely replaced without retaining a bind-time
   indirection. Creation-time interception is the intentional zero-steady-state-overhead tradeoff.
 - OpenGL extension function pointers are driver/context supplied. Multi-ICD or unusual context migration remains a

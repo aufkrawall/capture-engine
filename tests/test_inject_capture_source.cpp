@@ -232,6 +232,8 @@ TEST(InjectCaptureSourceTest, ForcedAFPathsAvoidDrawTimeReplacementAndCoverMutab
 
     EXPECT_NE(dx9.find("D3D9SamplerVTableRecord"), std::string::npos);
     EXPECT_NE(dx9.find("InstallD3D9SamplerHooks(vtable)"), std::string::npos);
+    EXPECT_NE(dx9.find("DetourStateBlockApply"), std::string::npos);
+    EXPECT_NE(dx9.find("ReconcileAfterExternalStateChange"), std::string::npos);
     EXPECT_NE(dx9State.find("texture->GetLevelCount()"), std::string::npos);
     EXPECT_NE(dx9State.find("D3DUSAGE_AUTOGENMIPMAP"), std::string::npos);
     EXPECT_NE(dx9State.find("D3DPTFILTERCAPS_MINFANISOTROPIC"), std::string::npos);
@@ -247,9 +249,16 @@ TEST(InjectCaptureSourceTest, ForcedAFPathsAvoidDrawTimeReplacementAndCoverMutab
     EXPECT_NE(ddraw.find("#define D3D7_VTABLE_GETTEXTURESTAGESTATE 36"), std::string::npos);
     EXPECT_NE(ddraw.find("#define D3D7_VTABLE_SETTEXTURESTAGESTATE 37"), std::string::npos);
     EXPECT_NE(ddraw.find("#define D3D7_VTABLE_SETRENDERSTATE 20"), std::string::npos);
+    EXPECT_NE(ddraw.find("InstallLegacyD3DDeviceHooks"), std::string::npos);
+    EXPECT_NE(ddraw.find("D3D7_VTABLE_APPLYSTATEBLOCK 39"), std::string::npos);
+
+    const std::string dx8 = ReadSource("hook/apis/dx8_hook.cpp");
+    EXPECT_NE(dx8.find("D3D8_VTABLE_APPLYSTATEBLOCK 54"), std::string::npos);
+    EXPECT_NE(dx8.find("D3D8SamplerVTableRecord"), std::string::npos);
+    EXPECT_NE(dx8.find("ReconcileAfterExternalStateChange"), std::string::npos);
 }
 
-TEST(InjectCaptureSourceTest, OpenGLForcedAFCoversParameterAndMipAllocationEventsWithoutBindHooks) {
+TEST(InjectCaptureSourceTest, OpenGLSamplerOverridesCoverParameterAllocationAndBindEvents) {
     const std::string sampler = ReadSource("hook/apis/opengl_sampler_override.cpp");
     const std::string storage = ReadSource("hook/apis/opengl_texture_storage_override.cpp");
     ASSERT_FALSE(sampler.empty());
@@ -259,7 +268,12 @@ TEST(InjectCaptureSourceTest, OpenGLForcedAFCoversParameterAndMipAllocationEvent
     EXPECT_NE(sampler.find("glSamplerParameteriv"), std::string::npos);
     EXPECT_NE(sampler.find("glTextureParameterfEXT"), std::string::npos);
     EXPECT_NE(sampler.find("glGetTextureLevelParameteriv"), std::string::npos);
-    EXPECT_EQ(sampler.find("glBindTexture"), std::string::npos);
+    EXPECT_NE(sampler.find("glBindTexture"), std::string::npos);
+    EXPECT_NE(sampler.find("glBindSampler"), std::string::npos);
+    EXPECT_NE(sampler.find("glDeleteTextures"), std::string::npos);
+    EXPECT_NE(sampler.find("glDeleteSamplers"), std::string::npos);
+    EXPECT_NE(sampler.find("ApplyOpenGLMinFilter"), std::string::npos);
+    EXPECT_NE(sampler.find("OverrideFloatValue"), std::string::npos);
 
     EXPECT_NE(storage.find("glCompressedTexImage2D"), std::string::npos);
     EXPECT_NE(storage.find("glCopyTexImage2D"), std::string::npos);

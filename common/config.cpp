@@ -1,4 +1,5 @@
 #include "config.h"
+#include "mip_mapping_policy.h"
 #include "config_resource.h"
 #include <windows.h>
 #include <algorithm>
@@ -989,6 +990,14 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         config.graphics.samplerOverrideMode = "safe";
     }
     config.graphics.mipMapping = GetStr("Graphics", "mip_mapping", "default");
+    std::transform(config.graphics.mipMapping.begin(), config.graphics.mipMapping.end(),
+                   config.graphics.mipMapping.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    ce::mip_mapping::Mode mipMappingMode = ce::mip_mapping::Mode::Default;
+    if (!ce::mip_mapping::TryParseMode(config.graphics.mipMapping, mipMappingMode)) {
+        LogInvalidConfigBoundary("Graphics", "mip_mapping", config.graphics.mipMapping, "default");
+        config.graphics.mipMapping = "default";
+    }
     config.graphics.mipBias = GetStr("Graphics", "mip_bias", "default");
     if (!config.graphics.mipBias.empty() && config.graphics.mipBias != "default") {
         float parsedMipBias = 0.0f;

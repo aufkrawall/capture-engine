@@ -324,7 +324,7 @@ struct SharedGraphicsConfig {
     char vsyncMode[32];                  // "default", "off", "fifo", "mailbox", "adaptive"
     char anisotropicFiltering[32];       // "default", "off", "2x", "4x", "8x", "16x"
     char samplerOverrideMode[16];        // "safe" (default) or "aggressive"
-    char mipMapping[32];                 // "default", "bilinear", "trilinear"
+    char mipMapping[32];                 // "default", "nearest", "bilinear", "trilinear"
     char mipBias[32];                    // "default", "0.0", "-0.5", etc.
     char mipBiasMode[32];                // "strict", "offset", "base"
     bool forceMipBiasClamp;              // Force all texture mip bias values to 0

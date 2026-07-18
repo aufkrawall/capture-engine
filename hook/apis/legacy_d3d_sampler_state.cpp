@@ -8,6 +8,7 @@
 #include <mutex>
 #include <vector>
 
+#include "../../common/mip_mapping_policy.h"
 #include "../common/sampler_override_utils.h"
 #include "hook_common.h"
 #include "lod_helper.h"
@@ -43,6 +44,7 @@ std::vector<std::unique_ptr<DeviceState>> g_devices;
 std::array<std::atomic<uint64_t>, 3> g_reconciliations{};
 std::array<std::atomic<uint64_t>, 3> g_driverWrites{};
 std::array<std::atomic<uint64_t>, 3> g_bootstraps{};
+std::array<std::atomic<uint64_t>, 3> g_externalResyncs{};
 std::array<std::atomic<int>, 3> g_transitionLogs{};
 std::array<std::atomic<int>, 3> g_failureLogs{};
 
@@ -166,6 +168,25 @@ bool Bootstrap(DeviceState& deviceState, DWORD stage, StageState& state, GetText
     return succeeded;
 }
 
+bool RefreshPhysicalStageState(DeviceState& deviceState, DWORD stage, StageState& state,
+                               GetTextureStageStateFn getState) {
+    if (!state.initialized)
+        return Bootstrap(deviceState, stage, state, getState);
+
+    bool succeeded = true;
+    for (size_t i = 0; i < kTrackedTypes.size(); ++i) {
+        if (i == 2 && deviceState.api != Api::D3D8)
+            continue;
+        DWORD value = state.physical[i];
+        if (SUCCEEDED(getState(deviceState.device, stage, kTrackedTypes[i], &value))) {
+            state.physical[i] = value;
+        } else {
+            succeeded = false;
+        }
+    }
+    return succeeded;
+}
+
 std::array<DWORD, kStateCount> BuildDesired(const DeviceState& deviceState, const StageState& state,
                                             const GraphicsConfig& gfx,
                                             sampler_override::LegacyD3DForcedAFDecision* decision) {
@@ -177,19 +198,9 @@ std::array<DWORD, kStateCount> BuildDesired(const DeviceState& deviceState, cons
         (materialAddress(desired[0]) && materialAddress(desired[1]) && materialAddress(desired[2]));
 
     if (desired[5] != traits.mipNone && safeAddress) {
-        if (gfx.mipMapping == "trilinear") {
-            desired[3] = traits.linearMag;
-            desired[4] = traits.linearMin;
-            desired[5] = traits.mipLinear;
-        } else if (gfx.mipMapping == "bilinear") {
-            desired[3] = traits.linearMag;
-            desired[4] = traits.linearMin;
-            desired[5] = traits.mipPoint;
-        } else if (gfx.mipMapping == "nearest") {
-            desired[3] = traits.pointMag;
-            desired[4] = traits.pointMin;
-            desired[5] = traits.mipPoint;
-        }
+        ce::mip_mapping::ApplyDiscreteFilters(ce::mip_mapping::ParseMode(gfx.mipMapping), traits.pointMag,
+                                              traits.linearMag, traits.pointMin, traits.linearMin, traits.mipPoint,
+                                              traits.mipLinear, desired[3], desired[4], desired[5]);
     }
 
     sampler_override::LegacyD3DSamplerForcedAFInfo info = {};
@@ -265,9 +276,12 @@ bool ReconcileStage(DeviceState& deviceState, DWORD stageIndex, StageState& stat
     g_reconciliations[ApiIndex(deviceState.api)].fetch_add(1, std::memory_order_relaxed);
     const int logIndex = g_transitionLogs[ApiIndex(deviceState.api)].fetch_add(1, std::memory_order_relaxed);
     if (logIndex < 24) {
-        HookLogImportant("%s: Event-driven sampler reconcile stage=%u decision=%d aniso=%u policy=%s (#%d)",
-                         ApiName(deviceState.api), stageIndex, static_cast<int>(decision), desired[8],
-                         gfx.samplerOverrideMode.c_str(), logIndex + 1);
+        HookLogImportant(
+            "%s: Event-driven sampler reconcile stage=%u decision=%d min=%u->%u mag=%u->%u mip=%u->%u "
+            "aniso=%u policy=%s (#%d)",
+            ApiName(deviceState.api), stageIndex, static_cast<int>(decision), state.logical[4], desired[4],
+            state.logical[3], desired[3], state.logical[5], desired[5], desired[8], gfx.samplerOverrideMode.c_str(),
+            logIndex + 1);
     }
     return succeeded && state.physical == desired;
 }
@@ -396,9 +410,11 @@ HRESULT SetTextureStageState(Api api, void* device, DWORD stage, DWORD type, DWO
         g_reconciliations[ApiIndex(api)].fetch_add(1, std::memory_order_relaxed);
         const int logIndex = g_transitionLogs[ApiIndex(api)].fetch_add(1, std::memory_order_relaxed);
         if (logIndex < 24) {
-            HookLogImportant("%s: Event-driven sampler reconcile stage=%u decision=%d aniso=%u policy=%s (#%d)",
-                             ApiName(api), stage, static_cast<int>(decision), desired[8],
-                             gfx.samplerOverrideMode.c_str(), logIndex + 1);
+            HookLogImportant(
+                "%s: Event-driven sampler reconcile stage=%u decision=%d min=%u->%u mag=%u->%u mip=%u->%u "
+                "aniso=%u policy=%s (#%d)",
+                ApiName(api), stage, static_cast<int>(decision), state.logical[4], desired[4], state.logical[3],
+                desired[3], state.logical[5], desired[5], desired[8], gfx.samplerOverrideMode.c_str(), logIndex + 1);
         }
     }
     return hr;
@@ -453,6 +469,33 @@ void RefreshConfiguration(Api api, void* device, SetTextureStageStateFn setState
     RefreshConfigLocked(*deviceState, setState, getState, true);
 }
 
+void ReconcileAfterExternalStateChange(Api api, void* device, SetTextureStageStateFn setState,
+                                       GetTextureStageStateFn getState, QueryMaxAnisotropyFn queryMaxAnisotropy) {
+    if (!device || !setState || !getState)
+        return;
+    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
+    DeviceState* deviceState = HasOverride(gfx) ? FindOrCreate(api, device, queryMaxAnisotropy)
+                                                : FindExisting(api, device);
+    if (!deviceState)
+        return;
+
+    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    bool complete = true;
+    for (size_t i = 0; i < deviceState->stages.size(); ++i) {
+        StageState& stage = deviceState->stages[i];
+        complete = RefreshPhysicalStageState(*deviceState, static_cast<DWORD>(i), stage, getState) && complete;
+    }
+    deviceState->bootstrapSweepPending = false;
+    deviceState->configHash.store(0, std::memory_order_relaxed);
+    deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
+    RefreshConfigLocked(*deviceState, setState, getState, false);
+    if (!complete) {
+        deviceState->configHash.store(0, std::memory_order_relaxed);
+        deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
+    }
+    g_externalResyncs[ApiIndex(api)].fetch_add(1, std::memory_order_relaxed);
+}
+
 void ResetDevice(Api api, void* device) {
     if (!device)
         return;
@@ -468,10 +511,12 @@ void ResetDevice(Api api, void* device) {
 
 void LogSummary(Api api) {
     const size_t index = ApiIndex(api);
-    HookLog("%s: Sampler override summary reconciliations=%llu driverWrites=%llu bootstraps=%llu", ApiName(api),
+    HookLog("%s: Sampler override summary reconciliations=%llu driverWrites=%llu bootstraps=%llu externalResyncs=%llu",
+            ApiName(api),
             static_cast<unsigned long long>(g_reconciliations[index].load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(g_driverWrites[index].load(std::memory_order_relaxed)),
-            static_cast<unsigned long long>(g_bootstraps[index].load(std::memory_order_relaxed)));
+            static_cast<unsigned long long>(g_bootstraps[index].load(std::memory_order_relaxed)),
+            static_cast<unsigned long long>(g_externalResyncs[index].load(std::memory_order_relaxed)));
 }
 
 }  // namespace ce::legacy_d3d_sampler_state

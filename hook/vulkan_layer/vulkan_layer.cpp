@@ -6,12 +6,14 @@
 
 #define VK_USE_PLATFORM_WIN32_KHR
 #include "vulkan_layer.h"
+#include "vulkan_sampler_policy.h"
 
 #include <algorithm>
 #include <cstring>
 #include <deque>
 #include <mutex>
 #include <vector>
+#include "../../common/mip_mapping_policy.h"
 #include "../../common/strict_float_parse.h"
 #include "../common/capture_pacing.h"
 #include "../common/fps_limiter.h"
@@ -1499,12 +1501,19 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const Vk
         const bool standardMinMag =
             (modified.minFilter == VK_FILTER_NEAREST || modified.minFilter == VK_FILTER_LINEAR) &&
             (modified.magFilter == VK_FILTER_NEAREST || modified.magFilter == VK_FILTER_LINEAR);
-        const bool overridesAllowed = mipmapped && modified.compareEnable == VK_FALSE && !specialReduction &&
-                                      !borderAddress && modified.unnormalizedCoordinates == VK_FALSE &&
-                                      standardMinMag &&
-                                      (state.IsAggressiveSamplerOverride() || (materialAddress && linearMinMag));
+        ce::vulkan_sampler_policy::Input policyInput = {};
+        policyInput.mipmapped = mipmapped;
+        policyInput.comparison = modified.compareEnable != VK_FALSE;
+        policyInput.specialReduction = specialReduction;
+        policyInput.borderAddress = borderAddress;
+        policyInput.unnormalizedCoordinates = modified.unnormalizedCoordinates != VK_FALSE;
+        policyInput.standardMinMag = standardMinMag;
+        policyInput.linearMinMag = linearMinMag;
+        policyInput.materialAddress = materialAddress;
+        policyInput.aggressive = state.IsAggressiveSamplerOverride();
+        const ce::vulkan_sampler_policy::Decision policy = ce::vulkan_sampler_policy::Classify(policyInput);
 
-        if (overridesAllowed) {
+        if (policy.allowAnisotropy) {
             // Anisotropic filtering override
             if (state.IsAnisotropyOverrideActive()) {
                 uint32_t maxAniso = state.GetMaxAnisotropy();
@@ -1524,17 +1533,6 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const Vk
                             "vkCreateDevice");
                     }
                 }
-            }
-
-            const char* mipMapping = state.GetMipMapping();
-            if (strcmp(mipMapping, "trilinear") == 0) {
-                modified.minFilter = VK_FILTER_LINEAR;
-                modified.magFilter = VK_FILTER_LINEAR;
-                modified.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-            } else if (strcmp(mipMapping, "bilinear") == 0) {
-                modified.minFilter = VK_FILTER_LINEAR;
-                modified.magFilter = VK_FILTER_LINEAR;
-                modified.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
             }
 
             // Mip bias override with mode support
@@ -1559,6 +1557,37 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSampler(VkDevice device, const Vk
 
                 const float maxBias = disp->maxSamplerLodBias > 0.0f ? disp->maxSamplerLodBias : 16.0f;
                 modified.mipLodBias = std::clamp(modified.mipLodBias, -maxBias, maxBias);
+            }
+        }
+
+        const ce::mip_mapping::Mode mipMode = ce::mip_mapping::ParseMode(state.GetMipMapping());
+        if (ce::mip_mapping::IsExplicit(mipMode)) {
+            static std::atomic<int> s_mipAppliedLogCount{0};
+            static std::atomic<int> s_mipSkippedLogCount{0};
+            if (policy.allowMipMapping) {
+                if (mipMode == ce::mip_mapping::Mode::Nearest) {
+                    modified.minFilter = VK_FILTER_NEAREST;
+                    modified.magFilter = VK_FILTER_NEAREST;
+                    modified.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+                } else {
+                    modified.minFilter = VK_FILTER_LINEAR;
+                    modified.magFilter = VK_FILTER_LINEAR;
+                    modified.mipmapMode = mipMode == ce::mip_mapping::Mode::Trilinear
+                                              ? VK_SAMPLER_MIPMAP_MODE_LINEAR
+                                              : VK_SAMPLER_MIPMAP_MODE_NEAREST;
+                }
+                const int logIndex = s_mipAppliedLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logIndex < 24) {
+                    LayerLog("Vulkan sampler: mip override mode=%s min=%d mag=%d mip=%d (#%d)",
+                             state.GetMipMapping(), static_cast<int>(modified.minFilter),
+                             static_cast<int>(modified.magFilter), static_cast<int>(modified.mipmapMode), logIndex + 1);
+                }
+            } else {
+                const int logIndex = s_mipSkippedLogCount.fetch_add(1, std::memory_order_relaxed);
+                if (logIndex < 24) {
+                    LayerLog("Vulkan sampler: mip override mode=%s skipped reason=%s (#%d)", state.GetMipMapping(),
+                             ce::vulkan_sampler_policy::ReasonName(policy.mipMappingReason), logIndex + 1);
+                }
             }
         }
     }

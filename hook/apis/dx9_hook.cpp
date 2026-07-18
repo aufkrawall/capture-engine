@@ -55,6 +55,9 @@ typedef HRESULT(STDMETHODCALLTYPE* SetTexture_t)(IDirect3DDevice9*, DWORD, IDire
 typedef HRESULT(STDMETHODCALLTYPE* GetSamplerState_t)(IDirect3DDevice9*, DWORD, D3DSAMPLERSTATETYPE, DWORD*);
 typedef HRESULT(STDMETHODCALLTYPE* SetSamplerState_t)(IDirect3DDevice9*, DWORD, D3DSAMPLERSTATETYPE, DWORD);
 typedef HRESULT(STDMETHODCALLTYPE* SetTextureStageState_t)(IDirect3DDevice9*, DWORD, D3DTEXTURESTAGESTATETYPE, DWORD);
+typedef HRESULT(STDMETHODCALLTYPE* CreateStateBlock_t)(IDirect3DDevice9*, D3DSTATEBLOCKTYPE, IDirect3DStateBlock9**);
+typedef HRESULT(STDMETHODCALLTYPE* EndStateBlock_t)(IDirect3DDevice9*, IDirect3DStateBlock9**);
+typedef HRESULT(STDMETHODCALLTYPE* StateBlockApply_t)(IDirect3DStateBlock9*);
 typedef IDirect3D9*(WINAPI* Direct3DCreate9Helper_t)(UINT);
 typedef HRESULT(WINAPI* Direct3DCreate9Ex_t)(UINT, IDirect3D9Ex**);
 
@@ -75,19 +78,33 @@ struct D3D9SamplerVTableRecord {
     std::atomic<SetTexture_t> setTexture{nullptr};
     std::atomic<GetSamplerState_t> getSamplerState{nullptr};
     std::atomic<SetSamplerState_t> setSamplerState{nullptr};
+    std::atomic<CreateStateBlock_t> createStateBlock{nullptr};
+    std::atomic<EndStateBlock_t> endStateBlock{nullptr};
     bool setTextureHooked = false;
     bool getSamplerStateHooked = false;
     bool setSamplerStateHooked = false;
+    bool createStateBlockHooked = false;
+    bool endStateBlockHooked = false;
+    bool stateBlockPrototypesCreated = false;
 };
 
 struct D3D9SamplerCallbacks {
     SetTexture_t setTexture = nullptr;
     GetSamplerState_t getSamplerState = nullptr;
     SetSamplerState_t setSamplerState = nullptr;
+    CreateStateBlock_t createStateBlock = nullptr;
+    EndStateBlock_t endStateBlock = nullptr;
+};
+
+struct D3D9StateBlockVTableRecord {
+    uintptr_t* vtable = nullptr;
+    StateBlockApply_t apply = nullptr;
 };
 
 static std::mutex g_D3D9SamplerVTableMutex;
 static std::vector<std::unique_ptr<D3D9SamplerVTableRecord>> g_D3D9SamplerVTables;
+static std::mutex g_D3D9StateBlockVTableMutex;
+static std::vector<D3D9StateBlockVTableRecord> g_D3D9StateBlockVTables;
 static thread_local uintptr_t* t_D3D9SamplerVTable = nullptr;
 static thread_local D3D9SamplerVTableRecord* t_D3D9SamplerVTableRecord = nullptr;
 
@@ -109,12 +126,14 @@ static D3D9SamplerCallbacks ResolveD3D9SamplerCallbacks(IDirect3DDevice9* device
     }
 
     if (!record) {
-        return {oSetTexture, oGetSamplerState, oSetSamplerState};
+        return {oSetTexture, oGetSamplerState, oSetSamplerState, nullptr, nullptr};
     }
     return {
         record->setTexture.load(std::memory_order_acquire),
         record->getSamplerState.load(std::memory_order_acquire),
         record->setSamplerState.load(std::memory_order_acquire),
+        record->createStateBlock.load(std::memory_order_acquire),
+        record->endStateBlock.load(std::memory_order_acquire),
     };
 }
 
@@ -1021,6 +1040,11 @@ static HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device, DWOR
                                                   IDirect3DBaseTexture9* Texture);
 static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* device, DWORD Stage,
                                                             D3DTEXTURESTAGESTATETYPE Type, DWORD Value);
+static HRESULT STDMETHODCALLTYPE DetourCreateStateBlock(IDirect3DDevice9* device, D3DSTATEBLOCKTYPE type,
+                                                        IDirect3DStateBlock9** stateBlock);
+static HRESULT STDMETHODCALLTYPE DetourEndStateBlock(IDirect3DDevice9* device, IDirect3DStateBlock9** stateBlock);
+static HRESULT STDMETHODCALLTYPE DetourStateBlockApply(IDirect3DStateBlock9* stateBlock);
+static void InstallD3D9StateBlockHooks(IDirect3DStateBlock9* stateBlock, const char* reason);
 
 static const char* D3D9FormatName(D3DFORMAT format) {
     switch (format) {
@@ -4459,7 +4483,8 @@ static HRESULT STDMETHODCALLTYPE DetourGetSamplerState(IDirect3DDevice9* device,
     if (ShouldBypassDX9HooksForDevice(device) || g_InOverlayRender) {
         return callbacks.getSamplerState(device, Sampler, Type, Value);
     }
-    return ce::dx9_sampler_state::GetSamplerState(device, Sampler, Type, Value, callbacks.getSamplerState);
+    return ce::dx9_sampler_state::GetSamplerState(device, Sampler, Type, Value, callbacks.getSamplerState,
+                                                  callbacks.setSamplerState);
 }
 
 static HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device, DWORD Stage,
@@ -4480,6 +4505,58 @@ static HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* de
     // D3D9 does not use SetTextureStageState for filtering/mipbias overrides.
     // Those have moved to SetSamplerState.
     return oSetTextureStageState(device, Stage, Type, Value);
+}
+
+static HRESULT STDMETHODCALLTYPE DetourCreateStateBlock(IDirect3DDevice9* device, D3DSTATEBLOCKTYPE type,
+                                                        IDirect3DStateBlock9** stateBlock) {
+    const D3D9SamplerCallbacks callbacks = ResolveD3D9SamplerCallbacks(device);
+    if (!callbacks.createStateBlock)
+        return D3DERR_INVALIDCALL;
+    const HRESULT hr = callbacks.createStateBlock(device, type, stateBlock);
+    if (SUCCEEDED(hr) && stateBlock && *stateBlock)
+        InstallD3D9StateBlockHooks(*stateBlock, "CreateStateBlock");
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE DetourEndStateBlock(IDirect3DDevice9* device, IDirect3DStateBlock9** stateBlock) {
+    const D3D9SamplerCallbacks callbacks = ResolveD3D9SamplerCallbacks(device);
+    if (!callbacks.endStateBlock)
+        return D3DERR_INVALIDCALL;
+    const HRESULT hr = callbacks.endStateBlock(device, stateBlock);
+    if (SUCCEEDED(hr) && stateBlock && *stateBlock)
+        InstallD3D9StateBlockHooks(*stateBlock, "EndStateBlock");
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE DetourStateBlockApply(IDirect3DStateBlock9* stateBlock) {
+    StateBlockApply_t apply = nullptr;
+    uintptr_t* vtable = stateBlock ? *(uintptr_t**)stateBlock : nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_D3D9StateBlockVTableMutex);
+        for (const auto& record : g_D3D9StateBlockVTables) {
+            if (record.vtable == vtable) {
+                apply = record.apply;
+                break;
+            }
+        }
+    }
+    if (!apply)
+        return D3DERR_INVALIDCALL;
+
+    const HRESULT hr = apply(stateBlock);
+    if (FAILED(hr) || g_InOverlayRender)
+        return hr;
+
+    IDirect3DDevice9* device = nullptr;
+    if (SUCCEEDED(stateBlock->GetDevice(&device)) && device) {
+        if (!ShouldBypassDX9HooksForDevice(device)) {
+            const D3D9SamplerCallbacks callbacks = ResolveD3D9SamplerCallbacks(device);
+            ce::dx9_sampler_state::ReconcileAfterExternalStateChange(device, callbacks.setSamplerState,
+                                                                     callbacks.getSamplerState);
+        }
+        device->Release();
+    }
+    return hr;
 }
 
 // Hook: IDirect3DDevice9::Present
@@ -4815,6 +4892,30 @@ static HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* self, co
                                                    const RECT* pDestRect, HWND hDestWindowOverride,
                                                    const RGNDATA* pDirtyRegion, DWORD dwFlags);
 
+static void InstallD3D9StateBlockHooks(IDirect3DStateBlock9* stateBlock, const char* reason) {
+    if (!stateBlock)
+        return;
+    uintptr_t* vtable = *(uintptr_t**)stateBlock;
+    std::lock_guard<std::mutex> lock(g_D3D9StateBlockVTableMutex);
+    for (const auto& record : g_D3D9StateBlockVTables) {
+        if (record.vtable == vtable)
+            return;
+    }
+
+    StateBlockApply_t original = reinterpret_cast<StateBlockApply_t>(vtable[5]);
+    const VTableHook::Status status =
+        VTableHook::Create(&vtable[5], reinterpret_cast<void*>(&DetourStateBlockApply),
+                           reinterpret_cast<void**>(&original));
+    if (status == VTableHook::Success) {
+        g_D3D9StateBlockVTables.push_back({vtable, original});
+        HookLogImportant("DX9: StateBlock::Apply sampler reconciliation hook installed vtable=%p reason=%s", vtable,
+                         reason ? reason : "unknown");
+    } else {
+        HookLogImportant("DX9: StateBlock::Apply hook FAILED vtable=%p status=%d reason=%s", vtable,
+                         static_cast<int>(status), reason ? reason : "unknown");
+    }
+}
+
 static void InstallD3D9SamplerHooks(uintptr_t* vtable) {
     if (!vtable)
         return;
@@ -4833,6 +4934,8 @@ static void InstallD3D9SamplerHooks(uintptr_t* vtable) {
         entry->setTexture.store(reinterpret_cast<SetTexture_t>(vtable[65]), std::memory_order_relaxed);
         entry->getSamplerState.store(reinterpret_cast<GetSamplerState_t>(vtable[68]), std::memory_order_relaxed);
         entry->setSamplerState.store(reinterpret_cast<SetSamplerState_t>(vtable[69]), std::memory_order_relaxed);
+        entry->createStateBlock.store(reinterpret_cast<CreateStateBlock_t>(vtable[59]), std::memory_order_relaxed);
+        entry->endStateBlock.store(reinterpret_cast<EndStateBlock_t>(vtable[61]), std::memory_order_relaxed);
         record = entry.get();
         g_D3D9SamplerVTables.push_back(std::move(entry));
     }
@@ -4881,6 +4984,65 @@ static void InstallD3D9SamplerHooks(uintptr_t* vtable) {
         } else {
             HookLogImportant("DX9: SetSamplerState hook FAILED for vtable=%p (status=%d slot=%p)", vtable, (int)status,
                              vtable[69]);
+        }
+    }
+
+    if (!record->createStateBlockHooked) {
+        CreateStateBlock_t original = record->createStateBlock.load(std::memory_order_relaxed);
+        const VTableHook::Status status =
+            VTableHook::Create(&vtable[59], reinterpret_cast<void*>(&DetourCreateStateBlock),
+                               reinterpret_cast<void**>(&original));
+        if (status == VTableHook::Success) {
+            record->createStateBlock.store(original, std::memory_order_release);
+            record->createStateBlockHooked = true;
+            HookLogImportant("DX9: CreateStateBlock hook installed for vtable=%p", vtable);
+        } else {
+            HookLogImportant("DX9: CreateStateBlock hook FAILED for vtable=%p status=%d", vtable,
+                             static_cast<int>(status));
+        }
+    }
+
+    if (!record->endStateBlockHooked) {
+        EndStateBlock_t original = record->endStateBlock.load(std::memory_order_relaxed);
+        const VTableHook::Status status =
+            VTableHook::Create(&vtable[61], reinterpret_cast<void*>(&DetourEndStateBlock),
+                               reinterpret_cast<void**>(&original));
+        if (status == VTableHook::Success) {
+            record->endStateBlock.store(original, std::memory_order_release);
+            record->endStateBlockHooked = true;
+            HookLogImportant("DX9: EndStateBlock hook installed for vtable=%p", vtable);
+        } else {
+            HookLogImportant("DX9: EndStateBlock hook FAILED for vtable=%p status=%d", vtable,
+                             static_cast<int>(status));
+        }
+    }
+}
+
+static void EnsureD3D9StateBlockPrototypes(IDirect3DDevice9* device, uintptr_t* deviceVTable) {
+    bool shouldCreate = false;
+    {
+        std::lock_guard<std::mutex> lock(g_D3D9SamplerVTableMutex);
+        for (const auto& record : g_D3D9SamplerVTables) {
+            if (record->vtable == deviceVTable && !record->stateBlockPrototypesCreated) {
+                record->stateBlockPrototypesCreated = true;
+                shouldCreate = true;
+                break;
+            }
+        }
+    }
+    if (!shouldCreate)
+        return;
+
+    const D3DSTATEBLOCKTYPE types[] = {D3DSBT_ALL, D3DSBT_PIXELSTATE, D3DSBT_VERTEXSTATE};
+    for (D3DSTATEBLOCKTYPE type : types) {
+        IDirect3DStateBlock9* stateBlock = nullptr;
+        const HRESULT hr = device->CreateStateBlock(type, &stateBlock);
+        if (SUCCEEDED(hr) && stateBlock) {
+            InstallD3D9StateBlockHooks(stateBlock, "prototype");
+            stateBlock->Release();
+        } else {
+            HookLogImportant("DX9: State-block prototype creation failed type=%d hr=0x%08x", static_cast<int>(type),
+                             static_cast<unsigned>(hr));
         }
     }
 }
@@ -4967,6 +5129,7 @@ static void InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice) {
     // Mutable D3D9 sampler state has one raw-device owner. Originals are kept
     // per vtable so classic and Ex devices can coexist without misdispatch.
     InstallD3D9SamplerHooks(vtable);
+    EnsureD3D9StateBlockPrototypes(device, vtable);
 
     // 2.5 Hook SetTextureStageState (67)
     if (!oSetTextureStageState) {

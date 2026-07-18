@@ -931,6 +931,18 @@ TEST_F(ConfigTest, ParseGraphicsOverrideOptions) {
     EXPECT_TRUE(config.graphics.forceMipBiasClamp);
 }
 
+TEST_F(ConfigTest, NormalizesAndValidatesMipMappingMode) {
+    WriteConfig("[Graphics]\nmip_mapping=BiLiNeAr\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.graphics.mipMapping, "bilinear");
+
+    WriteConfig("[Graphics]\nmip_mapping=unsupported\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.graphics.mipMapping, "default");
+}
+
 TEST_F(ConfigTest, LegacyBackbufferZeroRemainsAppControlled) {
     std::string iniContent =
         "[Graphics]\n"

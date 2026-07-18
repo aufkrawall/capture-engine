@@ -12,10 +12,12 @@ void RegisterDevice(IDirect3DDevice9* device, bool newDevice);
 HRESULT SetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATETYPE type, DWORD value,
                         SetSamplerStateFn setState, GetSamplerStateFn getState);
 HRESULT GetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATETYPE type, DWORD* value,
-                        GetSamplerStateFn getState);
+                        GetSamplerStateFn getState, SetSamplerStateFn setState);
 HRESULT SetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9* texture, SetTextureFn setTexture,
                    SetSamplerStateFn setState, GetSamplerStateFn getState);
 void RefreshConfiguration(IDirect3DDevice9* device, SetSamplerStateFn setState, GetSamplerStateFn getState);
+void ReconcileAfterExternalStateChange(IDirect3DDevice9* device, SetSamplerStateFn setState,
+                                       GetSamplerStateFn getState);
 void InvalidateDevice(IDirect3DDevice9* device);
 void ResetDevice(IDirect3DDevice9* device);
 void LogSummary();

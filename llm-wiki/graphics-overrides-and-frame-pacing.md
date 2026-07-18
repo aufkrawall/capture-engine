@@ -1,15 +1,17 @@
 # Graphics Overrides And Frame Pacing
 
-Last cross-checked: 2026-07-17
+Last cross-checked: 2026-07-18
 
 Primary sources:
 - `common/config.{h,cpp}`
+- `common/mip_mapping_policy.h`
 - `common/strict_float_parse.h`
 - `common/shared_defs.h`
 - `hook/common/{hook_common,dxgi_shared,fps_limiter,fps_limiter_policy,sampler_override_utils}.*`
 - `hook/apis/{dx9_hook,dx9_sampler_state,legacy_d3d_sampler_state,dx11_hook,dx12_hook,dx12_sampler_hooks,nvngx_hook,opengl_hook,opengl_sampler_override,opengl_texture_storage_override}.cpp`
 - `hook/vulkan_layer/vulkan_layer.{h,cpp}`
-- `tests/{test_config,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter}.cpp`
+- `hook/vulkan_layer/vulkan_sampler_policy.h`
+- `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_fps_limiter}.cpp`
 
 ## Configuration contract
 
@@ -18,6 +20,10 @@ Primary sources:
   D3D10/11 can accept clamp/mirror-once when shader/resource evidence is available). Aggressive mode expands ordinary
   sampler coverage but still preserves comparison/reduction, invalid, fixed-LOD, border, Vulkan non-normalized, and
   other structurally special samplers.
+- `mip_mapping=default|nearest|bilinear|trilinear` is case-normalized and invalid values fail back to `default` with a
+  bounded configuration diagnostic. On a mipmapped ordinary sampler, nearest means point MIN/MAG plus nearest-mip,
+  bilinear means linear MIN/MAG plus nearest-mip, and trilinear means linear MIN/MAG plus linear-mip. The override
+  never enables mipmapping for an application state or object that has no usable mip range.
 - `cpu_prerender_limit` has integer semantics only: `-1`, `0`, or `1-6`. Fractional, non-finite, trailing-junk, and
   out-of-range inputs normalize to `-1`.
 - `backbuffer_count=N` retains physical count changes where safe. A flip-model reduction that would violate the game's
@@ -33,7 +39,9 @@ Primary sources:
 - DX9 forces MIN/MAG anisotropy independently of `mip_mapping`; MAXANISOTROPY alone is reconciled by setting MIN/MAG
   on the same eligible sampler. Safe mode requires a bound, filter-capable texture with more than one visible mip and
   material addressing. Mutable state is reconciled only on SetTexture/SetSampler/config events; bootstrap getters are
-  one-shot, including pure-device failure, and there is no draw hook.
+  one-shot, including pure-device failure, and there is no draw hook. Create/EndStateBlock install per-vtable Apply
+  interception; a successful Apply refreshes physical sampler state while retaining the tracked logical application
+  state, then immediately reapplies the configured override.
 - D3D10/11 wrapper-to-real `CreateSamplerState` forwarding is explicitly marked so the raw vtable hook cannot apply
   offset/base bias twice. D3D10 is creation-time-only and transactionally retries the original descriptor; D3D11 uses
   its shader/resource-aware dirty-slot replacement policy.
@@ -42,14 +50,22 @@ Primary sources:
   serialization and again at root creation. Coverage includes sampler v1/v2, root signatures 1.0/1.1/1.2, raw
   `D3D12CreateDevice`, and `D3D12GetInterface`/`ID3D12DeviceFactory::CreateDevice`.
 - Vulkan uses only device-enabled anisotropy, clamps to physical-device limits, recognizes sampler-reduction pNext
-  structures directly, and retries the original descriptor transactionally if an override is rejected. All modes
-  preserve clamp-to-border, unnormalized-coordinate, comparison, special-reduction, and nonstandard-filter samplers.
-  The decision occurs only at `vkCreateSampler`; there is no draw/dispatch cost.
-- D3D6-8 use event-driven texture-stage-state reconciliation. D3D7 MAG anisotropy is value 5, and its sampler vtable
-  slots are 36/37; D3D5 and older have no anisotropic filter value to force generically.
+  structures directly, and retries the original descriptor transactionally if an override is rejected. Mip-filter
+  eligibility is independent from the stricter safe-AF material heuristic, so ordinary point and clamp-to-edge
+  samplers still receive the selected mip technique. All modes preserve clamp-to-border, unnormalized-coordinate,
+  comparison, special-reduction, nonstandard-filter, and no-mip-range samplers. The decision occurs only at
+  `vkCreateSampler`; there is no draw/dispatch cost.
+- D3D6-8 use event-driven texture-stage-state reconciliation. Actual returned devices install per-vtable callbacks;
+  DX6/7 refresh at EndScene and DX8 at Present. D3D7/8 ApplyStateBlock interception refreshes physical state and
+  immediately reapplies the policy. D3D7 MAG anisotropy is value 5, and its sampler vtable slots are 36/37; D3D5 and
+  older have no anisotropic filter value to force generically. Pure DirectDraw 2D has no mip sampler state; the
+  DirectDraw-hosted mip override is the D3D6/7 path.
 - OpenGL intercepts bound texture parameters, sampler objects, core/EXT DSA, mip allocation/storage/copy, and mip
-  generation. It verifies actual mip storage and device limits at those mutation boundaries and has no bind/draw hook.
-  CPU prerender sync rings remain owned per HGLRC.
+  generation. Version-cached texture/sampler bind hooks reconcile late/default objects without adding draw hooks;
+  texture/sampler deletion invalidates caches across contexts so reused GL names cannot inherit a stale decision.
+  Integer, vector, and float parameter entry points share the same filter mapping, including
+  `GL_NEAREST_MIPMAP_NEAREST`. It verifies actual mip storage and device limits at those mutation boundaries. CPU
+  prerender sync rings remain owned per HGLRC.
 
 ## Queue-depth and limiter invariants
 

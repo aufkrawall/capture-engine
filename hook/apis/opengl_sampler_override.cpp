@@ -5,9 +5,12 @@
 #include <atomic>
 #include <bit>
 #include <cctype>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <unordered_set>
 
+#include "../../common/mip_mapping_policy.h"
 #include "../common/sampler_override_utils.h"
 #include "../wrappers/iat_hook.h"
 #include "hook_common.h"
@@ -57,6 +60,13 @@ using GetFloatvFn = void(WINAPI*)(GLenum, GLfloat*);
 using GetIntegervFn = void(WINAPI*)(GLenum, GLint*);
 using GetStringFn = const GLubyte*(WINAPI*)(GLenum);
 using GetStringiFn = const GLubyte*(WINAPI*)(GLenum, GLuint);
+using BindTextureFn = void(WINAPI*)(GLenum, GLuint);
+using BindSamplerFn = void(WINAPI*)(GLuint, GLuint);
+using BindTextureUnitFn = void(WINAPI*)(GLuint, GLuint);
+using BindTexturesFn = void(WINAPI*)(GLuint, GLsizei, const GLuint*);
+using BindSamplersFn = void(WINAPI*)(GLuint, GLsizei, const GLuint*);
+using DeleteTexturesFn = void(WINAPI*)(GLsizei, const GLuint*);
+using DeleteSamplersFn = void(WINAPI*)(GLsizei, const GLuint*);
 
 using SamplerParameteriFn = void(WINAPI*)(GLuint, GLenum, GLint);
 using SamplerParameterfFn = void(WINAPI*)(GLuint, GLenum, GLfloat);
@@ -94,6 +104,13 @@ GetFloatvFn g_getFloatv = nullptr;
 GetIntegervFn g_getIntegerv = nullptr;
 GetStringFn g_getString = nullptr;
 GetStringiFn g_getStringi = nullptr;
+BindTextureFn g_bindTexture = nullptr;
+BindSamplerFn g_bindSampler = nullptr;
+BindTextureUnitFn g_bindTextureUnit = nullptr;
+BindTexturesFn g_bindTextures = nullptr;
+BindSamplersFn g_bindSamplers = nullptr;
+DeleteTexturesFn g_deleteTextures = nullptr;
+DeleteSamplersFn g_deleteSamplers = nullptr;
 
 SamplerParameteriFn g_samplerParameteri = nullptr;
 SamplerParameterfFn g_samplerParameterf = nullptr;
@@ -135,7 +152,23 @@ std::atomic<uint64_t> g_parameterCalls{0};
 std::atomic<uint64_t> g_afApplications{0};
 std::atomic<uint64_t> g_afUnchanged{0};
 std::atomic<uint64_t> g_afSafetyRestores{0};
+std::atomic<uint64_t> g_filterApplications{0};
+std::atomic<uint64_t> g_filterUnchanged{0};
+std::atomic<uint64_t> g_bindReconciliations{0};
+std::atomic<uint64_t> g_objectGeneration{1};
 std::atomic<int> g_decisionLogCount{0};
+std::atomic<int> g_filterLogCount{0};
+
+struct BindReconcileCache {
+    HGLRC context = nullptr;
+    uint32_t configVersion = 0xFFFFFFFFu;
+    uint64_t objectGeneration = 0;
+    std::unordered_set<uint64_t> boundTextures;
+    std::unordered_set<GLuint> textureObjects;
+    std::unordered_set<GLuint> samplerObjects;
+};
+
+thread_local BindReconcileCache t_bindCache;
 
 bool IsValidProc(PROC proc) {
     const intptr_t value = reinterpret_cast<intptr_t>(proc);
@@ -282,19 +315,15 @@ bool IsControlledParameter(GLenum pname) {
 }
 
 GLint OverrideMinFilter(GLint value, const GraphicsConfig& gfx) {
-    if (gfx.mipMapping == "trilinear" && value >= 0x2700 && value <= 0x2702) {
-        return 0x2703;
-    }
-    if (gfx.mipMapping == "bilinear" && (value == 0x2702 || value == 0x2703)) {
-        return 0x2701;
-    }
-    if (gfx.mipMapping == "nearest" && value >= 0x2700 && value <= 0x2703) {
-        return 0x2700;
-    }
-    return value;
+    return ce::mip_mapping::ApplyOpenGLMinFilter(ce::mip_mapping::ParseMode(gfx.mipMapping), value);
 }
 
 GLfloat OverrideFloatValue(GLenum pname, GLfloat value, const GraphicsConfig& gfx, ProcResolver) {
+    if (pname == GL_TEXTURE_MIN_FILTER) {
+        const GLint enumValue = static_cast<GLint>(value);
+        if (value == static_cast<GLfloat>(enumValue))
+            value = static_cast<GLfloat>(OverrideMinFilter(enumValue, gfx));
+    }
     if (pname == GL_TEXTURE_LOD_BIAS && (gfx.forceMipBiasClamp || HasConfiguredMipBias(gfx))) {
         value = FinalizeMipBias(gfx, ApplyConfiguredMipBias(gfx, value));
     }
@@ -330,9 +359,11 @@ void QueryTargetInfo(GLenum target, ce::sampler_override::OpenGLSamplerForcedAFI
     if (t_caps.major > 1 || (t_caps.major == 1 && t_caps.minor >= 4)) {
         g_getTexParameteriv(target, GL_TEXTURE_COMPARE_MODE, &info.compareMode);
     }
-    GLint currentAnisotropy = 1;
-    g_getTexParameteriv(target, GL_TEXTURE_MAX_ANISOTROPY_EXT, &currentAnisotropy);
-    info.currentAnisotropy = static_cast<float>(currentAnisotropy);
+    if (t_caps.anisotropySupported) {
+        GLint currentAnisotropy = 1;
+        g_getTexParameteriv(target, GL_TEXTURE_MAX_ANISOTROPY_EXT, &currentAnisotropy);
+        info.currentAnisotropy = static_cast<float>(currentAnisotropy);
+    }
     if (info.maxLevel > info.baseLevel && g_getTexLevelParameteriv) {
         GLint mipWidth = 0;
         const GLenum levelTarget = target == GL_TEXTURE_CUBE_MAP ? GL_TEXTURE_CUBE_MAP_POSITIVE_X : target;
@@ -355,9 +386,11 @@ void QuerySamplerInfo(GLuint sampler, ce::sampler_override::OpenGLSamplerForcedA
     g_getSamplerParameteriv(sampler, GL_TEXTURE_WRAP_T, &info.wrapT);
     g_getSamplerParameteriv(sampler, GL_TEXTURE_WRAP_R, &info.wrapR);
     g_getSamplerParameteriv(sampler, GL_TEXTURE_COMPARE_MODE, &info.compareMode);
-    GLint currentAnisotropy = 1;
-    g_getSamplerParameteriv(sampler, GL_TEXTURE_MAX_ANISOTROPY_EXT, &currentAnisotropy);
-    info.currentAnisotropy = static_cast<float>(currentAnisotropy);
+    if (t_caps.anisotropySupported) {
+        GLint currentAnisotropy = 1;
+        g_getSamplerParameteriv(sampler, GL_TEXTURE_MAX_ANISOTROPY_EXT, &currentAnisotropy);
+        info.currentAnisotropy = static_cast<float>(currentAnisotropy);
+    }
 }
 
 void QueryTextureInfo(GLuint texture, ce::sampler_override::OpenGLSamplerForcedAFInfo& info) {
@@ -375,9 +408,11 @@ void QueryTextureInfo(GLuint texture, ce::sampler_override::OpenGLSamplerForcedA
     g_getTextureParameteriv(texture, GL_TEXTURE_BASE_LEVEL, &info.baseLevel);
     g_getTextureParameteriv(texture, GL_TEXTURE_MAX_LEVEL, &info.maxLevel);
     g_getTextureParameteriv(texture, GL_TEXTURE_COMPARE_MODE, &info.compareMode);
-    GLint currentAnisotropy = 1;
-    g_getTextureParameteriv(texture, GL_TEXTURE_MAX_ANISOTROPY_EXT, &currentAnisotropy);
-    info.currentAnisotropy = static_cast<float>(currentAnisotropy);
+    if (t_caps.anisotropySupported) {
+        GLint currentAnisotropy = 1;
+        g_getTextureParameteriv(texture, GL_TEXTURE_MAX_ANISOTROPY_EXT, &currentAnisotropy);
+        info.currentAnisotropy = static_cast<float>(currentAnisotropy);
+    }
     if (info.maxLevel > info.baseLevel && g_getTextureLevelParameteriv) {
         GLint mipWidth = 0;
         g_getTextureLevelParameteriv(texture, info.baseLevel + 1, GL_TEXTURE_WIDTH, &mipWidth);
@@ -404,9 +439,11 @@ void QueryTextureInfoExt(GLuint texture, GLenum target, ce::sampler_override::Op
     g_getTextureParameterivExt(texture, target, GL_TEXTURE_BASE_LEVEL, &info.baseLevel);
     g_getTextureParameterivExt(texture, target, GL_TEXTURE_MAX_LEVEL, &info.maxLevel);
     g_getTextureParameterivExt(texture, target, GL_TEXTURE_COMPARE_MODE, &info.compareMode);
-    GLint currentAnisotropy = 1;
-    g_getTextureParameterivExt(texture, target, GL_TEXTURE_MAX_ANISOTROPY_EXT, &currentAnisotropy);
-    info.currentAnisotropy = static_cast<float>(currentAnisotropy);
+    if (t_caps.anisotropySupported) {
+        GLint currentAnisotropy = 1;
+        g_getTextureParameterivExt(texture, target, GL_TEXTURE_MAX_ANISOTROPY_EXT, &currentAnisotropy);
+        info.currentAnisotropy = static_cast<float>(currentAnisotropy);
+    }
     if (info.maxLevel > info.baseLevel && g_getTextureLevelParameterivExt) {
         GLint mipWidth = 0;
         const GLenum levelTarget = target == GL_TEXTURE_CUBE_MAP ? GL_TEXTURE_CUBE_MAP_POSITIVE_X : target;
@@ -437,9 +474,29 @@ void LogDecision(ce::sampler_override::OpenGLForcedAFDecision decision, float de
     }
 }
 
-void ApplyTargetAF(GLenum target, ProcResolver resolver) {
+void LogFilterDecision(const char* objectKind, GLint originalMin, GLint desiredMin, GLint originalMag,
+                       GLint desiredMag, const GraphicsConfig& gfx) {
+    const int index = g_filterLogCount.fetch_add(1, std::memory_order_relaxed);
+    if (index < 48) {
+        HookLogImportant("OpenGL: Mip reconcile object=%s mode=%s min=0x%X->0x%X mag=0x%X->0x%X (#%d)",
+                         objectKind, gfx.mipMapping.c_str(), originalMin, desiredMin, originalMag, desiredMag,
+                         index + 1);
+    }
+}
+
+void ResolveDesiredFilters(const ce::sampler_override::OpenGLSamplerForcedAFInfo& info, const GraphicsConfig& gfx,
+                           GLint& desiredMin, GLint& desiredMag) {
+    const ce::mip_mapping::Mode mode = ce::mip_mapping::ParseMode(gfx.mipMapping);
+    const bool mipmappingEnabled = ce::mip_mapping::IsOpenGLMipFilter(info.minFilter);
+    desiredMin = ce::mip_mapping::ApplyOpenGLMinFilter(mode, info.minFilter);
+    desiredMag = ce::mip_mapping::ApplyOpenGLMagFilter(mode, info.magFilter, mipmappingEnabled);
+}
+
+void ApplyTargetOverrides(GLenum target, ProcResolver resolver) {
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    if (gfx.anisotropicFiltering.empty() || gfx.anisotropicFiltering == "default") {
+    const ce::mip_mapping::Mode mipMode = ce::mip_mapping::ParseMode(gfx.mipMapping);
+    const bool afConfigured = !gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default";
+    if (!ce::mip_mapping::IsExplicit(mipMode) && !afConfigured) {
         return;
     }
     if (!IsMipCapableTarget(target)) {
@@ -449,11 +506,35 @@ void ApplyTargetAF(GLenum target, ProcResolver resolver) {
         target = GL_TEXTURE_CUBE_MAP;
     }
     EnsureCapabilities(resolver);
-    if (!t_caps.anisotropySupported || !g_texParameterf) {
+    if (!g_getTexParameteriv) {
         return;
     }
     ce::sampler_override::OpenGLSamplerForcedAFInfo info = {};
     QueryTargetInfo(target, info);
+    if (ce::mip_mapping::IsExplicit(mipMode) && g_texParameteri) {
+        GLint desiredMin = info.minFilter;
+        GLint desiredMag = info.magFilter;
+        ResolveDesiredFilters(info, gfx, desiredMin, desiredMag);
+        bool changed = false;
+        if (desiredMin != info.minFilter) {
+            g_texParameteri(target, GL_TEXTURE_MIN_FILTER, desiredMin);
+            changed = true;
+        }
+        if (desiredMag != info.magFilter) {
+            g_texParameteri(target, GL_TEXTURE_MAG_FILTER, desiredMag);
+            changed = true;
+        }
+        if (changed) {
+            g_filterApplications.fetch_add(1, std::memory_order_relaxed);
+            LogFilterDecision("bound-texture", info.minFilter, desiredMin, info.magFilter, desiredMag, gfx);
+        } else {
+            g_filterUnchanged.fetch_add(1, std::memory_order_relaxed);
+        }
+        info.minFilter = desiredMin;
+        info.magFilter = desiredMag;
+    }
+    if (!afConfigured || !t_caps.anisotropySupported || !g_texParameterf)
+        return;
     ce::sampler_override::OpenGLForcedAFDecision decision;
     const float desired = ResolveDesiredAF(info, gfx, decision);
     if (info.currentAnisotropy != desired) {
@@ -467,17 +548,43 @@ void ApplyTargetAF(GLenum target, ProcResolver resolver) {
     LogDecision(decision, desired, gfx, "bound-texture");
 }
 
-void ApplySamplerAF(GLuint sampler, ProcResolver resolver) {
+void ApplySamplerOverrides(GLuint sampler, ProcResolver resolver) {
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    if (gfx.anisotropicFiltering.empty() || gfx.anisotropicFiltering == "default") {
+    const ce::mip_mapping::Mode mipMode = ce::mip_mapping::ParseMode(gfx.mipMapping);
+    const bool afConfigured = !gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default";
+    if (!ce::mip_mapping::IsExplicit(mipMode) && !afConfigured) {
         return;
     }
     EnsureCapabilities(resolver);
-    if (!t_caps.anisotropySupported || !g_samplerParameterf) {
+    if (!g_getSamplerParameteriv) {
         return;
     }
     ce::sampler_override::OpenGLSamplerForcedAFInfo info = {};
     QuerySamplerInfo(sampler, info);
+    if (ce::mip_mapping::IsExplicit(mipMode) && g_samplerParameteri) {
+        GLint desiredMin = info.minFilter;
+        GLint desiredMag = info.magFilter;
+        ResolveDesiredFilters(info, gfx, desiredMin, desiredMag);
+        bool changed = false;
+        if (desiredMin != info.minFilter) {
+            g_samplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, desiredMin);
+            changed = true;
+        }
+        if (desiredMag != info.magFilter) {
+            g_samplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, desiredMag);
+            changed = true;
+        }
+        if (changed) {
+            g_filterApplications.fetch_add(1, std::memory_order_relaxed);
+            LogFilterDecision("sampler", info.minFilter, desiredMin, info.magFilter, desiredMag, gfx);
+        } else {
+            g_filterUnchanged.fetch_add(1, std::memory_order_relaxed);
+        }
+        info.minFilter = desiredMin;
+        info.magFilter = desiredMag;
+    }
+    if (!afConfigured || !t_caps.anisotropySupported || !g_samplerParameterf)
+        return;
     ce::sampler_override::OpenGLForcedAFDecision decision;
     const float desired = ResolveDesiredAF(info, gfx, decision);
     if (info.currentAnisotropy != desired) {
@@ -491,17 +598,43 @@ void ApplySamplerAF(GLuint sampler, ProcResolver resolver) {
     LogDecision(decision, desired, gfx, "sampler");
 }
 
-void ApplyTextureAF(GLuint texture, ProcResolver resolver) {
+void ApplyTextureOverrides(GLuint texture, ProcResolver resolver) {
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    if (gfx.anisotropicFiltering.empty() || gfx.anisotropicFiltering == "default") {
+    const ce::mip_mapping::Mode mipMode = ce::mip_mapping::ParseMode(gfx.mipMapping);
+    const bool afConfigured = !gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default";
+    if (!ce::mip_mapping::IsExplicit(mipMode) && !afConfigured) {
         return;
     }
     EnsureCapabilities(resolver);
-    if (!t_caps.anisotropySupported || !g_textureParameterf) {
+    if (!g_getTextureParameteriv) {
         return;
     }
     ce::sampler_override::OpenGLSamplerForcedAFInfo info = {};
     QueryTextureInfo(texture, info);
+    if (ce::mip_mapping::IsExplicit(mipMode) && g_textureParameteri) {
+        GLint desiredMin = info.minFilter;
+        GLint desiredMag = info.magFilter;
+        ResolveDesiredFilters(info, gfx, desiredMin, desiredMag);
+        bool changed = false;
+        if (desiredMin != info.minFilter) {
+            g_textureParameteri(texture, GL_TEXTURE_MIN_FILTER, desiredMin);
+            changed = true;
+        }
+        if (desiredMag != info.magFilter) {
+            g_textureParameteri(texture, GL_TEXTURE_MAG_FILTER, desiredMag);
+            changed = true;
+        }
+        if (changed) {
+            g_filterApplications.fetch_add(1, std::memory_order_relaxed);
+            LogFilterDecision("texture-dsa", info.minFilter, desiredMin, info.magFilter, desiredMag, gfx);
+        } else {
+            g_filterUnchanged.fetch_add(1, std::memory_order_relaxed);
+        }
+        info.minFilter = desiredMin;
+        info.magFilter = desiredMag;
+    }
+    if (!afConfigured || !t_caps.anisotropySupported || !g_textureParameterf)
+        return;
     ce::sampler_override::OpenGLForcedAFDecision decision;
     const float desired = ResolveDesiredAF(info, gfx, decision);
     if (info.currentAnisotropy != desired) {
@@ -515,20 +648,46 @@ void ApplyTextureAF(GLuint texture, ProcResolver resolver) {
     LogDecision(decision, desired, gfx, "texture-dsa");
 }
 
-void ApplyTextureAFExt(GLuint texture, GLenum target, ProcResolver resolver) {
+void ApplyTextureOverridesExt(GLuint texture, GLenum target, ProcResolver resolver) {
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    if (gfx.anisotropicFiltering.empty() || gfx.anisotropicFiltering == "default") {
+    const ce::mip_mapping::Mode mipMode = ce::mip_mapping::ParseMode(gfx.mipMapping);
+    const bool afConfigured = !gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default";
+    if (!ce::mip_mapping::IsExplicit(mipMode) && !afConfigured) {
         return;
     }
     if (!IsMipCapableTarget(target)) {
         return;
     }
     EnsureCapabilities(resolver);
-    if (!t_caps.anisotropySupported || !g_textureParameterfExt) {
+    if (!g_getTextureParameterivExt) {
         return;
     }
     ce::sampler_override::OpenGLSamplerForcedAFInfo info = {};
     QueryTextureInfoExt(texture, target, info);
+    if (ce::mip_mapping::IsExplicit(mipMode) && g_textureParameteriExt) {
+        GLint desiredMin = info.minFilter;
+        GLint desiredMag = info.magFilter;
+        ResolveDesiredFilters(info, gfx, desiredMin, desiredMag);
+        bool changed = false;
+        if (desiredMin != info.minFilter) {
+            g_textureParameteriExt(texture, target, GL_TEXTURE_MIN_FILTER, desiredMin);
+            changed = true;
+        }
+        if (desiredMag != info.magFilter) {
+            g_textureParameteriExt(texture, target, GL_TEXTURE_MAG_FILTER, desiredMag);
+            changed = true;
+        }
+        if (changed) {
+            g_filterApplications.fetch_add(1, std::memory_order_relaxed);
+            LogFilterDecision("texture-ext-dsa", info.minFilter, desiredMin, info.magFilter, desiredMag, gfx);
+        } else {
+            g_filterUnchanged.fetch_add(1, std::memory_order_relaxed);
+        }
+        info.minFilter = desiredMin;
+        info.magFilter = desiredMag;
+    }
+    if (!afConfigured || !t_caps.anisotropySupported || !g_textureParameterfExt)
+        return;
     ce::sampler_override::OpenGLForcedAFDecision decision;
     const float desired = ResolveDesiredAF(info, gfx, decision);
     if (info.currentAnisotropy != desired) {
@@ -555,7 +714,7 @@ void WINAPI DetourTexParameteri(GLenum target, GLenum pname, GLint value) {
     if (g_texParameteri)
         g_texParameteri(target, pname, OverrideIntegerValue(pname, value, gfx, CurrentResolver()));
     if (IsControlledParameter(pname))
-        ApplyTargetAF(target, CurrentResolver());
+        ApplyTargetOverrides(target, CurrentResolver());
 }
 
 void WINAPI DetourTexParameterf(GLenum target, GLenum pname, GLfloat value) {
@@ -564,7 +723,7 @@ void WINAPI DetourTexParameterf(GLenum target, GLenum pname, GLfloat value) {
     if (g_texParameterf)
         g_texParameterf(target, pname, OverrideFloatValue(pname, value, gfx, CurrentResolver()));
     if (IsControlledParameter(pname))
-        ApplyTargetAF(target, CurrentResolver());
+        ApplyTargetOverrides(target, CurrentResolver());
 }
 
 void WINAPI DetourTexParameteriv(GLenum target, GLenum pname, const GLint* values) {
@@ -577,7 +736,7 @@ void WINAPI DetourTexParameteriv(GLenum target, GLenum pname, const GLint* value
     const GLint value = OverrideIntegerValue(pname, values[0], GetActiveGraphicsConfigCached(), CurrentResolver());
     if (g_texParameteriv)
         g_texParameteriv(target, pname, &value);
-    ApplyTargetAF(target, CurrentResolver());
+    ApplyTargetOverrides(target, CurrentResolver());
 }
 
 void WINAPI DetourTexParameterfv(GLenum target, GLenum pname, const GLfloat* values) {
@@ -590,7 +749,7 @@ void WINAPI DetourTexParameterfv(GLenum target, GLenum pname, const GLfloat* val
     const GLfloat value = OverrideFloatValue(pname, values[0], GetActiveGraphicsConfigCached(), CurrentResolver());
     if (g_texParameterfv)
         g_texParameterfv(target, pname, &value);
-    ApplyTargetAF(target, CurrentResolver());
+    ApplyTargetOverrides(target, CurrentResolver());
 }
 
 #define DEFINE_SAMPLER_SCALAR_DETOUR(name, type, original, overrideFn)                  \
@@ -600,7 +759,7 @@ void WINAPI DetourTexParameterfv(GLenum target, GLenum pname, const GLfloat* val
         if (original)                                                                   \
             original(sampler, pname, overrideFn(pname, value, gfx, CurrentResolver())); \
         if (IsControlledParameter(pname))                                               \
-            ApplySamplerAF(sampler, CurrentResolver());                                 \
+            ApplySamplerOverrides(sampler, CurrentResolver());                          \
     }
 
 DEFINE_SAMPLER_SCALAR_DETOUR(DetourSamplerParameteri, GLint, g_samplerParameteri, OverrideIntegerValue)
@@ -618,7 +777,7 @@ DEFINE_SAMPLER_SCALAR_DETOUR(DetourSamplerParameterf, GLfloat, g_samplerParamete
             static_cast<type>(overrideFn(pname, values[0], GetActiveGraphicsConfigCached(), CurrentResolver())); \
         if (original)                                                                                            \
             original(sampler, pname, &value);                                                                    \
-        ApplySamplerAF(sampler, CurrentResolver());                                                              \
+        ApplySamplerOverrides(sampler, CurrentResolver());                                                       \
     }
 
 DEFINE_SAMPLER_VECTOR_DETOUR(DetourSamplerParameteriv, GLint, g_samplerParameteriv, OverrideIntegerValue)
@@ -633,7 +792,7 @@ DEFINE_SAMPLER_VECTOR_DETOUR(DetourSamplerParameterIuiv, GLuint, g_samplerParame
         if (original)                                                                   \
             original(texture, pname, overrideFn(pname, value, gfx, CurrentResolver())); \
         if (IsControlledParameter(pname))                                               \
-            ApplyTextureAF(texture, CurrentResolver());                                 \
+            ApplyTextureOverrides(texture, CurrentResolver());                          \
     }
 
 DEFINE_TEXTURE_SCALAR_DETOUR(DetourTextureParameteri, GLint, g_textureParameteri, OverrideIntegerValue)
@@ -651,7 +810,7 @@ DEFINE_TEXTURE_SCALAR_DETOUR(DetourTextureParameterf, GLfloat, g_textureParamete
             static_cast<type>(overrideFn(pname, values[0], GetActiveGraphicsConfigCached(), CurrentResolver())); \
         if (original)                                                                                            \
             original(texture, pname, &value);                                                                    \
-        ApplyTextureAF(texture, CurrentResolver());                                                              \
+        ApplyTextureOverrides(texture, CurrentResolver());                                                       \
     }
 
 DEFINE_TEXTURE_VECTOR_DETOUR(DetourTextureParameteriv, GLint, g_textureParameteriv, OverrideIntegerValue)
@@ -666,7 +825,7 @@ DEFINE_TEXTURE_VECTOR_DETOUR(DetourTextureParameterIuiv, GLuint, g_textureParame
         if (original)                                                                           \
             original(texture, target, pname, overrideFn(pname, value, gfx, CurrentResolver())); \
         if (IsControlledParameter(pname))                                                       \
-            ApplyTextureAFExt(texture, target, CurrentResolver());                              \
+            ApplyTextureOverridesExt(texture, target, CurrentResolver());                       \
     }
 
 DEFINE_TEXTURE_EXT_SCALAR_DETOUR(DetourTextureParameteriExt, GLint, g_textureParameteriExt, OverrideIntegerValue)
@@ -684,13 +843,121 @@ DEFINE_TEXTURE_EXT_SCALAR_DETOUR(DetourTextureParameterfExt, GLfloat, g_textureP
             static_cast<type>(overrideFn(pname, values[0], GetActiveGraphicsConfigCached(), CurrentResolver())); \
         if (original)                                                                                            \
             original(texture, target, pname, &value);                                                            \
-        ApplyTextureAFExt(texture, target, CurrentResolver());                                                   \
+        ApplyTextureOverridesExt(texture, target, CurrentResolver());                                            \
     }
 
 DEFINE_TEXTURE_EXT_VECTOR_DETOUR(DetourTextureParameterivExt, GLint, g_textureParameterivExt, OverrideIntegerValue)
 DEFINE_TEXTURE_EXT_VECTOR_DETOUR(DetourTextureParameterfvExt, GLfloat, g_textureParameterfvExt, OverrideFloatValue)
 DEFINE_TEXTURE_EXT_VECTOR_DETOUR(DetourTextureParameterIivExt, GLint, g_textureParameterIivExt, OverrideIntegerValue)
 DEFINE_TEXTURE_EXT_VECTOR_DETOUR(DetourTextureParameterIuivExt, GLuint, g_textureParameterIuivExt, OverrideIntegerValue)
+
+bool BindReconciliationEnabled() {
+    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
+    return ce::mip_mapping::IsExplicit(ce::mip_mapping::ParseMode(gfx.mipMapping)) ||
+           (!gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default");
+}
+
+void RefreshBindCacheIdentity() {
+    const HGLRC context = wglGetCurrentContext();
+    const uint32_t configVersion = GetActiveGraphicsConfigVersion();
+    const uint64_t objectGeneration = g_objectGeneration.load(std::memory_order_acquire);
+    if (t_bindCache.context == context && t_bindCache.configVersion == configVersion &&
+        t_bindCache.objectGeneration == objectGeneration)
+        return;
+    t_bindCache = {};
+    t_bindCache.context = context;
+    t_bindCache.configVersion = configVersion;
+    t_bindCache.objectGeneration = objectGeneration;
+}
+
+bool MarkBoundTextureForReconcile(GLenum target, GLuint texture) {
+    if (!BindReconciliationEnabled() || !IsMipCapableTarget(target))
+        return false;
+    RefreshBindCacheIdentity();
+    const uint64_t key = (static_cast<uint64_t>(target) << 32) | texture;
+    return t_bindCache.boundTextures.insert(key).second;
+}
+
+bool MarkTextureObjectForReconcile(GLuint texture) {
+    if (!texture || !BindReconciliationEnabled())
+        return false;
+    RefreshBindCacheIdentity();
+    return t_bindCache.textureObjects.insert(texture).second;
+}
+
+bool MarkSamplerObjectForReconcile(GLuint sampler) {
+    if (!sampler || !BindReconciliationEnabled())
+        return false;
+    RefreshBindCacheIdentity();
+    return t_bindCache.samplerObjects.insert(sampler).second;
+}
+
+void WINAPI DetourBindTexture(GLenum target, GLuint texture) {
+    if (g_bindTexture)
+        g_bindTexture(target, texture);
+    if (MarkBoundTextureForReconcile(target, texture)) {
+        g_bindReconciliations.fetch_add(1, std::memory_order_relaxed);
+        ApplyTargetOverrides(target, CurrentResolver());
+    }
+}
+
+void WINAPI DetourBindSampler(GLuint unit, GLuint sampler) {
+    if (g_bindSampler)
+        g_bindSampler(unit, sampler);
+    if (MarkSamplerObjectForReconcile(sampler)) {
+        g_bindReconciliations.fetch_add(1, std::memory_order_relaxed);
+        ApplySamplerOverrides(sampler, CurrentResolver());
+    }
+}
+
+void WINAPI DetourBindTextureUnit(GLuint unit, GLuint texture) {
+    if (g_bindTextureUnit)
+        g_bindTextureUnit(unit, texture);
+    if (MarkTextureObjectForReconcile(texture)) {
+        g_bindReconciliations.fetch_add(1, std::memory_order_relaxed);
+        ApplyTextureOverrides(texture, CurrentResolver());
+    }
+}
+
+void WINAPI DetourBindTextures(GLuint first, GLsizei count, const GLuint* textures) {
+    if (g_bindTextures)
+        g_bindTextures(first, count, textures);
+    if (!textures || count <= 0)
+        return;
+    for (GLsizei i = 0; i < count; ++i) {
+        if (MarkTextureObjectForReconcile(textures[i])) {
+            g_bindReconciliations.fetch_add(1, std::memory_order_relaxed);
+            ApplyTextureOverrides(textures[i], CurrentResolver());
+        }
+    }
+}
+
+void WINAPI DetourBindSamplers(GLuint first, GLsizei count, const GLuint* samplers) {
+    if (g_bindSamplers)
+        g_bindSamplers(first, count, samplers);
+    if (!samplers || count <= 0)
+        return;
+    for (GLsizei i = 0; i < count; ++i) {
+        if (MarkSamplerObjectForReconcile(samplers[i])) {
+            g_bindReconciliations.fetch_add(1, std::memory_order_relaxed);
+            ApplySamplerOverrides(samplers[i], CurrentResolver());
+        }
+    }
+}
+
+void WINAPI DetourDeleteTextures(GLsizei count, const GLuint* textures) {
+    if (g_deleteTextures)
+        g_deleteTextures(count, textures);
+    if (count > 0 && textures)
+        g_objectGeneration.fetch_add(1, std::memory_order_acq_rel);
+}
+
+void WINAPI DetourDeleteSamplers(GLsizei count, const GLuint* samplers) {
+    if (g_deleteSamplers)
+        g_deleteSamplers(count, samplers);
+    if (count > 0 && samplers)
+        g_objectGeneration.fetch_add(1, std::memory_order_acq_rel);
+}
 
 }  // namespace
 
@@ -715,6 +982,14 @@ void Initialize() {
                                  reinterpret_cast<LPVOID*>(&g_texParameterfv));
     IATHook::PatchIATAllModules("opengl32.dll", "glTexParameterfv", reinterpret_cast<LPVOID>(&DetourTexParameterfv),
                                 reinterpret_cast<LPVOID*>(&g_texParameterfv));
+    IATHook::RegisterDynamicHook("glBindTexture", reinterpret_cast<LPVOID>(&DetourBindTexture),
+                                 reinterpret_cast<LPVOID*>(&g_bindTexture));
+    IATHook::PatchIATAllModules("opengl32.dll", "glBindTexture", reinterpret_cast<LPVOID>(&DetourBindTexture),
+                                reinterpret_cast<LPVOID*>(&g_bindTexture));
+    IATHook::RegisterDynamicHook("glDeleteTextures", reinterpret_cast<LPVOID>(&DetourDeleteTextures),
+                                 reinterpret_cast<LPVOID*>(&g_deleteTextures));
+    IATHook::PatchIATAllModules("opengl32.dll", "glDeleteTextures", reinterpret_cast<LPVOID>(&DetourDeleteTextures),
+                                reinterpret_cast<LPVOID*>(&g_deleteTextures));
     ce::opengl_texture_storage_override::Initialize();
 }
 
@@ -737,10 +1012,16 @@ PROC InterceptProcAddress(const char* name, PROC original, ProcResolver resolver
             ResolveProc<GetTextureLevelParameterivExtFn>(resolver, "glGetTextureLevelParameterivEXT");
     if (!g_samplerParameterf)
         g_samplerParameterf = ResolveProc<SamplerParameterfFn>(resolver, "glSamplerParameterf");
+    if (!g_samplerParameteri)
+        g_samplerParameteri = ResolveProc<SamplerParameteriFn>(resolver, "glSamplerParameteri");
     if (!g_textureParameterf)
         g_textureParameterf = ResolveProc<TextureParameterfFn>(resolver, "glTextureParameterf");
+    if (!g_textureParameteri)
+        g_textureParameteri = ResolveProc<TextureParameteriFn>(resolver, "glTextureParameteri");
     if (!g_textureParameterfExt)
         g_textureParameterfExt = ResolveProc<TextureParameterfExtFn>(resolver, "glTextureParameterfEXT");
+    if (!g_textureParameteriExt)
+        g_textureParameteriExt = ResolveProc<TextureParameteriExtFn>(resolver, "glTextureParameteriEXT");
 
     const PROC storageProc = ce::opengl_texture_storage_override::InterceptProcAddress(name, original, resolver);
     if (storageProc != original) {
@@ -757,6 +1038,7 @@ PROC InterceptProcAddress(const char* name, PROC original, ProcResolver resolver
     INTERCEPT("glTexParameterf", g_texParameterf, TexParameterfFn, DetourTexParameterf)
     INTERCEPT("glTexParameteriv", g_texParameteriv, TexParameterivFn, DetourTexParameteriv)
     INTERCEPT("glTexParameterfv", g_texParameterfv, TexParameterfvFn, DetourTexParameterfv)
+    INTERCEPT("glBindTexture", g_bindTexture, BindTextureFn, DetourBindTexture)
     INTERCEPT("glSamplerParameteri", g_samplerParameteri, SamplerParameteriFn, DetourSamplerParameteri)
     INTERCEPT("glSamplerParameterf", g_samplerParameterf, SamplerParameterfFn, DetourSamplerParameterf)
     INTERCEPT("glSamplerParameteriv", g_samplerParameteriv, SamplerParameterivFn, DetourSamplerParameteriv)
@@ -777,41 +1059,52 @@ PROC InterceptProcAddress(const char* name, PROC original, ProcResolver resolver
               DetourTextureParameterIivExt)
     INTERCEPT("glTextureParameterIuivEXT", g_textureParameterIuivExt, TextureParameterIuivExtFn,
               DetourTextureParameterIuivExt)
+    INTERCEPT("glBindSampler", g_bindSampler, BindSamplerFn, DetourBindSampler)
+    INTERCEPT("glBindTextureUnit", g_bindTextureUnit, BindTextureUnitFn, DetourBindTextureUnit)
+    INTERCEPT("glBindTextures", g_bindTextures, BindTexturesFn, DetourBindTextures)
+    INTERCEPT("glBindSamplers", g_bindSamplers, BindSamplersFn, DetourBindSamplers)
+    INTERCEPT("glDeleteTextures", g_deleteTextures, DeleteTexturesFn, DetourDeleteTextures)
+    INTERCEPT("glDeleteSamplers", g_deleteSamplers, DeleteSamplersFn, DetourDeleteSamplers)
 #undef INTERCEPT
     return original;
 }
 
 void ReconcileBoundTexture(unsigned int target) {
-    ApplyTargetAF(target, CurrentResolver());
+    ApplyTargetOverrides(target, CurrentResolver());
 }
 
 void ReconcileTexture(unsigned int texture) {
-    ApplyTextureAF(texture, CurrentResolver());
+    ApplyTextureOverrides(texture, CurrentResolver());
 }
 
 void ReconcileTextureExt(unsigned int texture, unsigned int target) {
-    ApplyTextureAFExt(texture, target, CurrentResolver());
+    ApplyTextureOverridesExt(texture, target, CurrentResolver());
 }
 
 void ReconcileTextureView(unsigned int texture, unsigned int target) {
-    if (g_getTextureParameteriv && g_getTextureLevelParameteriv && g_textureParameterf) {
-        ApplyTextureAF(texture, CurrentResolver());
+    if (g_getTextureParameteriv && g_getTextureLevelParameteriv && g_textureParameteri) {
+        ApplyTextureOverrides(texture, CurrentResolver());
     } else {
-        ApplyTextureAFExt(texture, target, CurrentResolver());
+        ApplyTextureOverridesExt(texture, target, CurrentResolver());
     }
 }
 
 void NotifyContextChanged() {
     t_caps = {};
     t_resolver = nullptr;
+    t_bindCache = {};
 }
 
 void Shutdown() {
     ce::opengl_texture_storage_override::Shutdown();
     HookLog(
-        "OpenGL: Sampler override summary parameterCalls=%llu afApplications=%llu unchanged=%llu "
-        "safetyRestores=%llu",
+        "OpenGL: Sampler override summary parameterCalls=%llu filterApplications=%llu filterUnchanged=%llu "
+        "bindReconciliations=%llu objectInvalidations=%llu afApplications=%llu afUnchanged=%llu safetyRestores=%llu",
         static_cast<unsigned long long>(g_parameterCalls.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_filterApplications.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_filterUnchanged.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_bindReconciliations.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_objectGeneration.load(std::memory_order_relaxed) - 1),
         static_cast<unsigned long long>(g_afApplications.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(g_afUnchanged.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(g_afSafetyRestores.load(std::memory_order_relaxed)));

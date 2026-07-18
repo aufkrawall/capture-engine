@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -35,6 +36,7 @@
 #define D3D8_VTABLE_CREATEIMAGESURFACE 27
 #define D3D8_VTABLE_COPYRECTS 28
 #define D3D8_VTABLE_GETFRONTBUFFER 30
+#define D3D8_VTABLE_APPLYSTATEBLOCK 54
 #define D3D8_VTABLE_GETTEXTURESTAGESTATE 62
 #define D3D8_VTABLE_SETTEXTURESTAGESTATE 63
 
@@ -74,7 +76,8 @@ typedef HRESULT(STDMETHODCALLTYPE* D3D8GetFrontBuffer_t)(IDirect3DDevice8* devic
 typedef HRESULT(STDMETHODCALLTYPE* D3D8SetTextureStageState_t)(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
                                                                DWORD Value);
 typedef HRESULT(STDMETHODCALLTYPE* D3D8GetTextureStageState_t)(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
-                                                               DWORD* pValue);
+                                                                DWORD* pValue);
+typedef HRESULT(STDMETHODCALLTYPE* D3D8ApplyStateBlock_t)(IDirect3DDevice8* device, DWORD Token);
 
 typedef HRESULT(STDMETHODCALLTYPE* D3D8SurfaceGetDesc_t)(IDirect3DSurface8* surface, void* pDesc);
 
@@ -125,7 +128,8 @@ typedef HRESULT(STDMETHODCALLTYPE* D3D8CreateDevice_t)(IDirect3D8* d3d, UINT Ada
 static HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
                                                                 DWORD Value);
 static HRESULT STDMETHODCALLTYPE DetourD3D8GetTextureStageState(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
-                                                                DWORD* pValue);
+                                                                 DWORD* pValue);
+static HRESULT STDMETHODCALLTYPE DetourD3D8ApplyStateBlock(IDirect3DDevice8* device, DWORD Token);
 static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, const RECT* pSourceRect,
                                                    const RECT* pDestRect, HWND hDestWindowOverride,
                                                    const RGNDATA* pDirtyRegion);
@@ -142,11 +146,42 @@ static D3D8Present_t oD3D8Present = nullptr;
 static D3D8Reset_t oD3D8Reset = nullptr;
 static D3D8SetTextureStageState_t oD3D8SetTextureStageState = nullptr;
 static D3D8GetTextureStageState_t oD3D8GetTextureStageState = nullptr;
+static D3D8ApplyStateBlock_t oD3D8ApplyStateBlock = nullptr;
 static D3D8CreateDevice_t oD3D8CreateDevice = nullptr;
 
 static bool g_DX8HooksInitialized = false;
 static std::mutex g_DX8InitMutex;
 static bool g_HooksInitialized = false;
+
+struct D3D8SamplerVTableRecord {
+    void** vtable = nullptr;
+    std::atomic<D3D8SetTextureStageState_t> setState{nullptr};
+    std::atomic<D3D8GetTextureStageState_t> getState{nullptr};
+    std::atomic<D3D8ApplyStateBlock_t> applyStateBlock{nullptr};
+    bool setHooked = false;
+    bool getHooked = false;
+    bool applyHooked = false;
+};
+
+static std::mutex g_D3D8SamplerVTableMutex;
+static std::vector<std::unique_ptr<D3D8SamplerVTableRecord>> g_D3D8SamplerVTables;
+static thread_local void** t_D3D8SamplerVTable = nullptr;
+static thread_local D3D8SamplerVTableRecord* t_D3D8SamplerRecord = nullptr;
+
+static D3D8SamplerVTableRecord* ResolveD3D8SamplerVTable(IDirect3DDevice8* device) {
+    void** vtable = device ? *(void***)device : nullptr;
+    if (vtable && t_D3D8SamplerVTable == vtable)
+        return t_D3D8SamplerRecord;
+    std::lock_guard<std::mutex> lock(g_D3D8SamplerVTableMutex);
+    for (const auto& record : g_D3D8SamplerVTables) {
+        if (record->vtable == vtable) {
+            t_D3D8SamplerVTable = vtable;
+            t_D3D8SamplerRecord = record.get();
+            return t_D3D8SamplerRecord;
+        }
+    }
+    return nullptr;
+}
 
 static UINT QueryD3D8MaxAnisotropy(void* opaqueDevice) {
     if (!opaqueDevice)
@@ -157,6 +192,71 @@ static UINT QueryD3D8MaxAnisotropy(void* opaqueDevice) {
     auto getCaps = reinterpret_cast<GetDeviceCaps8_t>(vtable[7]);
     D3DCAPS9 caps = {};
     return getCaps && SUCCEEDED(getCaps(device, &caps)) ? std::max<UINT>(1, caps.MaxAnisotropy) : 1;
+}
+
+static void InstallD3D8SamplerHooks(IDirect3DDevice8* device) {
+    if (!device)
+        return;
+    void** vtable = *(void***)device;
+    std::lock_guard<std::mutex> lock(g_D3D8SamplerVTableMutex);
+    D3D8SamplerVTableRecord* record = nullptr;
+    for (const auto& candidate : g_D3D8SamplerVTables) {
+        if (candidate->vtable == vtable) {
+            record = candidate.get();
+            break;
+        }
+    }
+    if (!record) {
+        auto newRecord = std::make_unique<D3D8SamplerVTableRecord>();
+        newRecord->vtable = vtable;
+        newRecord->setState.store(reinterpret_cast<D3D8SetTextureStageState_t>(
+                                      vtable[D3D8_VTABLE_SETTEXTURESTAGESTATE]),
+                                  std::memory_order_relaxed);
+        newRecord->getState.store(reinterpret_cast<D3D8GetTextureStageState_t>(
+                                      vtable[D3D8_VTABLE_GETTEXTURESTAGESTATE]),
+                                  std::memory_order_relaxed);
+        newRecord->applyStateBlock.store(
+            reinterpret_cast<D3D8ApplyStateBlock_t>(vtable[D3D8_VTABLE_APPLYSTATEBLOCK]),
+            std::memory_order_relaxed);
+        record = newRecord.get();
+        g_D3D8SamplerVTables.push_back(std::move(newRecord));
+    }
+
+    if (!record->setHooked) {
+        D3D8SetTextureStageState_t original = record->setState.load(std::memory_order_relaxed);
+        if (VTableHook::Create(&vtable[D3D8_VTABLE_SETTEXTURESTAGESTATE],
+                               reinterpret_cast<LPVOID>(&DetourD3D8SetTextureStageState),
+                               reinterpret_cast<LPVOID*>(&original)) == VTableHook::Success) {
+            record->setState.store(original, std::memory_order_release);
+            record->setHooked = true;
+            if (!oD3D8SetTextureStageState)
+                oD3D8SetTextureStageState = original;
+        }
+    }
+    if (!record->getHooked) {
+        D3D8GetTextureStageState_t original = record->getState.load(std::memory_order_relaxed);
+        if (VTableHook::Create(&vtable[D3D8_VTABLE_GETTEXTURESTAGESTATE],
+                               reinterpret_cast<LPVOID>(&DetourD3D8GetTextureStageState),
+                               reinterpret_cast<LPVOID*>(&original)) == VTableHook::Success) {
+            record->getState.store(original, std::memory_order_release);
+            record->getHooked = true;
+            if (!oD3D8GetTextureStageState)
+                oD3D8GetTextureStageState = original;
+        }
+    }
+    if (!record->applyHooked) {
+        D3D8ApplyStateBlock_t original = record->applyStateBlock.load(std::memory_order_relaxed);
+        if (VTableHook::Create(&vtable[D3D8_VTABLE_APPLYSTATEBLOCK],
+                               reinterpret_cast<LPVOID>(&DetourD3D8ApplyStateBlock),
+                               reinterpret_cast<LPVOID*>(&original)) == VTableHook::Success) {
+            record->applyStateBlock.store(original, std::memory_order_release);
+            record->applyHooked = true;
+            if (!oD3D8ApplyStateBlock)
+                oD3D8ApplyStateBlock = original;
+        }
+    }
+    g_DX8HooksInitialized = record->setHooked && record->getHooked;
+    HookLog("DX8: Sampler hooks reconciled for vtable=%p", vtable);
 }
 
 static DWORD ParseD3D8MSAA(const char* msaa) {
@@ -216,15 +316,7 @@ static void InstallD3D8DeviceHooks(IDirect3DDevice8* device) {
         HookLog("DX8: Reset hook installed");
     }
 
-    if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_SETTEXTURESTAGESTATE], (LPVOID)&DetourD3D8SetTextureStageState,
-                           (LPVOID*)&oD3D8SetTextureStageState) == VTableHook::Success) {
-        g_DX8HooksInitialized = true;
-        HookLog("DX8: SetTextureStageState hook installed");
-    }
-    if (VTableHook::Create(&deviceVTable[D3D8_VTABLE_GETTEXTURESTAGESTATE], (LPVOID)&DetourD3D8GetTextureStageState,
-                           (LPVOID*)&oD3D8GetTextureStageState) == VTableHook::Success) {
-        HookLog("DX8: Logical GetTextureStageState hook installed");
-    }
+    InstallD3D8SamplerHooks(device);
 }
 
 static void InstallD3D8CreateDeviceHook(IDirect3D8* d3d8) {
@@ -1392,12 +1484,7 @@ static void DrawDX8Overlay(IDirect3DDevice8* device, HWND hwnd) {
         }
 
         if (!g_DX8HooksInitialized && device) {
-            void** vTable = *(void***)device;
-            VTableHook::Create(&vTable[D3D8_VTABLE_SETTEXTURESTAGESTATE], (LPVOID)&DetourD3D8SetTextureStageState,
-                               (LPVOID*)&oD3D8SetTextureStageState);
-            VTableHook::Create(&vTable[D3D8_VTABLE_GETTEXTURESTAGESTATE], (LPVOID)&DetourD3D8GetTextureStageState,
-                               (LPVOID*)&oD3D8GetTextureStageState);
-            g_DX8HooksInitialized = true;
+            InstallD3D8SamplerHooks(device);
             HookLog("DX8: State hooks initialized");
         }
     }
@@ -1424,11 +1511,17 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device, con
                                                    const RGNDATA* pDirtyRegion) {
     if (HookIsShuttingDown())
         return D3D_OK;
+    D3D8SamplerVTableRecord* samplerRecord = ResolveD3D8SamplerVTable(device);
+    const D3D8SetTextureStageState_t setState = samplerRecord
+                                                   ? samplerRecord->setState.load(std::memory_order_acquire)
+                                                   : oD3D8SetTextureStageState;
+    const D3D8GetTextureStageState_t getState = samplerRecord
+                                                   ? samplerRecord->getState.load(std::memory_order_acquire)
+                                                   : oD3D8GetTextureStageState;
     ce::legacy_d3d_sampler_state::RefreshConfiguration(
         ce::legacy_d3d_sampler_state::Api::D3D8, device,
-        reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(oD3D8SetTextureStageState),
-        reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(oD3D8GetTextureStageState),
-        QueryD3D8MaxAnisotropy);
+        reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(setState),
+        reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(getState), QueryD3D8MaxAnisotropy);
     // Update performance metrics
     static int64_t qpcFreq = 0;
     if (qpcFreq == 0) {
@@ -1553,26 +1646,54 @@ static HRESULT STDMETHODCALLTYPE DetourD3D8Reset(IDirect3DDevice8* device, void*
 // Hook: D3D8 SetTextureStageState
 static HRESULT STDMETHODCALLTYPE DetourD3D8SetTextureStageState(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
                                                                 DWORD Value) {
+    D3D8SamplerVTableRecord* record = ResolveD3D8SamplerVTable(device);
+    const D3D8SetTextureStageState_t setState =
+        record ? record->setState.load(std::memory_order_acquire) : oD3D8SetTextureStageState;
+    const D3D8GetTextureStageState_t getState =
+        record ? record->getState.load(std::memory_order_acquire) : oD3D8GetTextureStageState;
     if (g_DX8StateHookBypassDepth > 0) {
-        return oD3D8SetTextureStageState(device, Stage, Type, Value);
+        return setState(device, Stage, Type, Value);
     }
     return ce::legacy_d3d_sampler_state::SetTextureStageState(
         ce::legacy_d3d_sampler_state::Api::D3D8, device, Stage, Type, Value,
-        reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(oD3D8SetTextureStageState),
-        reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(oD3D8GetTextureStageState),
-        QueryD3D8MaxAnisotropy);
+        reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(setState),
+        reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(getState), QueryD3D8MaxAnisotropy);
 }
 
 static HRESULT STDMETHODCALLTYPE DetourD3D8GetTextureStageState(IDirect3DDevice8* device, DWORD Stage, DWORD Type,
-                                                                DWORD* pValue) {
+                                                                 DWORD* pValue) {
+    D3D8SamplerVTableRecord* record = ResolveD3D8SamplerVTable(device);
+    const D3D8SetTextureStageState_t setState =
+        record ? record->setState.load(std::memory_order_acquire) : oD3D8SetTextureStageState;
+    const D3D8GetTextureStageState_t getState =
+        record ? record->getState.load(std::memory_order_acquire) : oD3D8GetTextureStageState;
     if (g_DX8StateHookBypassDepth > 0) {
-        return oD3D8GetTextureStageState(device, Stage, Type, pValue);
+        return getState(device, Stage, Type, pValue);
     }
     return ce::legacy_d3d_sampler_state::GetTextureStageState(
         ce::legacy_d3d_sampler_state::Api::D3D8, device, Stage, Type, pValue,
-        reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(oD3D8GetTextureStageState),
-        reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(oD3D8SetTextureStageState),
-        QueryD3D8MaxAnisotropy);
+        reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(getState),
+        reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(setState), QueryD3D8MaxAnisotropy);
+}
+
+static HRESULT STDMETHODCALLTYPE DetourD3D8ApplyStateBlock(IDirect3DDevice8* device, DWORD Token) {
+    D3D8SamplerVTableRecord* record = ResolveD3D8SamplerVTable(device);
+    const D3D8ApplyStateBlock_t applyStateBlock =
+        record ? record->applyStateBlock.load(std::memory_order_acquire) : oD3D8ApplyStateBlock;
+    if (!applyStateBlock)
+        return E_FAIL;
+    const HRESULT hr = applyStateBlock(device, Token);
+    if (SUCCEEDED(hr) && g_DX8StateHookBypassDepth == 0) {
+        const D3D8SetTextureStageState_t setState =
+            record ? record->setState.load(std::memory_order_acquire) : oD3D8SetTextureStageState;
+        const D3D8GetTextureStageState_t getState =
+            record ? record->getState.load(std::memory_order_acquire) : oD3D8GetTextureStageState;
+        ce::legacy_d3d_sampler_state::ReconcileAfterExternalStateChange(
+            ce::legacy_d3d_sampler_state::Api::D3D8, device,
+            reinterpret_cast<ce::legacy_d3d_sampler_state::SetTextureStageStateFn>(setState),
+            reinterpret_cast<ce::legacy_d3d_sampler_state::GetTextureStageStateFn>(getState), QueryD3D8MaxAnisotropy);
+    }
+    return hr;
 }
 
 // Hook: D3D8 CreateDevice

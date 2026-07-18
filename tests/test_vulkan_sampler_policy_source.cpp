@@ -5,6 +5,8 @@
 #include <sstream>
 #include <string>
 
+#include "../hook/vulkan_layer/vulkan_sampler_policy.h"
+
 namespace {
 
 std::string ReadVulkanLayerSource() {
@@ -18,14 +20,22 @@ std::string ReadVulkanLayerSource() {
 }  // namespace
 
 TEST(VulkanSamplerPolicySourceTest, ProtectsStructurallyUnsafeSamplersInAllModes) {
-    const std::string source = ReadVulkanLayerSource();
-    ASSERT_FALSE(source.empty());
+    ce::vulkan_sampler_policy::Input input = {};
+    input.mipmapped = true;
+    input.standardMinMag = true;
+    EXPECT_TRUE(ce::vulkan_sampler_policy::Classify(input).allowMipMapping);
 
-    EXPECT_NE(source.find("!borderAddress"), std::string::npos);
-    EXPECT_NE(source.find("modified.unnormalizedCoordinates == VK_FALSE"), std::string::npos);
-    EXPECT_NE(source.find("standardMinMag"), std::string::npos);
-    EXPECT_NE(source.find("modified.compareEnable == VK_FALSE"), std::string::npos);
-    EXPECT_NE(source.find("!specialReduction"), std::string::npos);
+    input.borderAddress = true;
+    EXPECT_EQ(ce::vulkan_sampler_policy::Classify(input).mipMappingReason,
+              ce::vulkan_sampler_policy::RejectReason::BorderAddress);
+    input.borderAddress = false;
+    input.unnormalizedCoordinates = true;
+    EXPECT_EQ(ce::vulkan_sampler_policy::Classify(input).mipMappingReason,
+              ce::vulkan_sampler_policy::RejectReason::UnnormalizedCoordinates);
+    input.unnormalizedCoordinates = false;
+    input.specialReduction = true;
+    EXPECT_EQ(ce::vulkan_sampler_policy::Classify(input).mipMappingReason,
+              ce::vulkan_sampler_policy::RejectReason::SpecialReduction);
 }
 
 TEST(VulkanSamplerPolicySourceTest, RetriesOriginalDescriptorTransactionally) {

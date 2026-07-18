@@ -23,6 +23,8 @@ HRESULT GetTextureStageState(Api api, void* device, DWORD stage, DWORD type, DWO
                              QueryMaxAnisotropyFn queryMaxAnisotropy);
 void RefreshConfiguration(Api api, void* device, SetTextureStageStateFn setState, GetTextureStageStateFn getState,
                           QueryMaxAnisotropyFn queryMaxAnisotropy);
+void ReconcileAfterExternalStateChange(Api api, void* device, SetTextureStageStateFn setState,
+                                       GetTextureStageStateFn getState, QueryMaxAnisotropyFn queryMaxAnisotropy);
 void ResetDevice(Api api, void* device);
 void LogSummary(Api api);
 
