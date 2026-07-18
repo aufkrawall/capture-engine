@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-18 (immutable recording-scoped media logs/manifests, analyzer multi-recording selection and legacy evidence-deficit detection, limited-query retained process identity, exact ABI 37 non-inject WGC/DXGI sensor attribution, Explorer tray recovery, current capture-sync/CFR variable-cadence behavior, exact build isolation, and the existing current graphics/audio/build/security state; see process-ipc.md, wgc-capture.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-18 (source-relative screen-capture and target-relative app-latency analyzer attribution, immutable recording-scoped media logs/manifests, analyzer multi-recording selection and legacy evidence-deficit detection, limited-query retained process identity, exact ABI 37 non-inject WGC/DXGI sensor attribution, Explorer tray recovery, current capture-sync/CFR variable-cadence behavior, exact build isolation, and the existing current graphics/audio/build/security state; see cfr-capture-sync.md, regression-testing-and-logging.md, wgc-capture.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -73,7 +73,7 @@ Primary sources:
 - `pseudo-overlay.md`
   - Controller-side pseudo-overlay for WGC capture: dedicated UI-thread ownership, application-profile setting selection/pinning, automatic video-profile warning targets, instant amber recording-start state, modes, inject handoff, foreground detection/grace, compatibility process_list parsing, diagnostics, and source anchors. Last verified 2026-07-18.
 - `regression-testing-and-logging.md`
-  - Regression coverage expectations, the incremental/clean/resume build decision rule, concise verification diagnostics, and deterministic capture runners, including the fast zero-drift gate, overload/long-soak profiles, HAGS-on 4K120 contention gate, and x86 DX12 solid-text/focus-visibility boundary. Last verified 2026-07-17.
+  - Regression coverage expectations, recording-scoped/source-relative analyzer attribution, target-relative app-latency classification, the incremental/clean/resume build decision rule, concise verification diagnostics, and deterministic capture runners, including the fast zero-drift gate, overload/long-soak profiles, HAGS-on 4K120 contention gate, and x86 DX12 solid-text/focus-visibility boundary. Last verified 2026-07-18.
 - `multi-audio-capture.md`
   - Multi system/microphone/app capture, including encoder-latency-independent inject CFR source-clock targets, rate-limited worker scheduling evidence, process-loopback protocol 4 descriptor/byte rings with private lifecycle state and transactional cursors, immutable safe producer-format normalization, evidence-complete fatal transport propagation, preserved startup markers, ordered close-before-reactivation, polling-first activation, render-session recovery, private disposable CaptureEngine worker isolation/recycle, the 60 ms CFR ingestion reservoir, exact finalization, and route-local compensation. Last verified 2026-07-18. Stale-risk: medium (fresh device/runtime validation remains necessary).
 - `wgc-capture.md`

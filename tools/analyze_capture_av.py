@@ -65,9 +65,9 @@ LOG_PATTERNS = {
     # Read-stall recovery fired (alt-tab/DPC/encoder freeze drove an app-source backlog past the
     # catastrophic threshold). Expected only after a real multi-second stall; never in a clean run.
     "audio_catastrophic_resync": re.compile(r"\[PullAudio\] App source catastrophic backlog resync"),
-    # App audio ran >=250ms behind video (read-stall backlog not yet drained). Zero in a clean run,
-    # but legitimately fires in late-join/stall scenarios, so it is an explicit-gate signal (gate it
-    # per scenario with --max-log-event audio_app_latency_elevated=0), NOT in the strict-zero set.
+    # App-audio latency crossed the live warning threshold. This remains an explicit-gate event for
+    # scenario-local validation, but session triage adjudicates it against the final target-relative
+    # excess/integrity summary: warnings that stayed within target slack are context, not a fault.
     "audio_app_latency_elevated": re.compile(r"\[AppLatency\] WARNING: app audio"),
     "audio_underrun": re.compile(r"\[PullAudio\] WARNING: Source underrun(?!.*forceDrain=1)"),
     "audio_stop_tail_padding": re.compile(r"\[PullAudio\] WARNING: Source underrun.*forceDrain=1"),
@@ -3631,6 +3631,8 @@ def has_wgc_av_sync_delay_residual_fault(media_evidence):
             return True
         if not residual_logged:
             continue
+        if wgc_source_limited_delay_is_context(media_evidence, item):
+            continue
 
         if item.get("delay_residual_avg_abs_us", 0) > 5000:
             return True
@@ -3673,6 +3675,8 @@ def has_wgc_audio_late_risk(media_evidence):
 
         soft_late_accepted = item.get("delay_soft_late_accepted", 0)
         near_cap_accepted = item.get("delay_near_cap_accepted", 0)
+        if wgc_source_limited_delay_is_context(media_evidence, item):
+            continue
         source_limited_ceiling = wgc_is_sync_protected_source_limited_ceiling(media_evidence, item)
         if soft_late_accepted >= WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT:
             return True
@@ -3855,6 +3859,74 @@ def has_wgc_source_limited_playout_maximal(media_evidence):
     return False
 
 
+def wgc_source_delivery_period_us(media_evidence):
+    worst_delivered_fps = min(
+        (
+            item.get("worst_delivered_fps", 0)
+            for item in media_evidence["wgc_summary"]
+            if item.get("worst_delivered_fps", 0) > 0
+        ),
+        default=0,
+    )
+    if worst_delivered_fps <= 0:
+        return 0
+    return int(math.ceil(1000000.0 / worst_delivered_fps))
+
+
+def wgc_source_limited_delay_is_context(media_evidence, item):
+    """True when delay variation is bounded by proven source delivery holes, not CE policy.
+
+    A low-cadence desktop/variable-FPS source can make selected-frame age vary by its own
+    delivery interval even though CFR output, A/V endpoints, and CE's lower-bound playout are
+    exact. Keep genuinely actionable policy/safe-candidate/timestamp evidence strict, while
+    scaling the context ceiling to the worst observed delivered-source interval.
+    """
+    source_period_us = wgc_source_delivery_period_us(media_evidence)
+    if source_period_us <= 0:
+        return False
+    if not (
+        has_wgc_source_limited_playout_maximal(media_evidence)
+        and wgc_active_delay_matches_request(item)
+        and wgc_has_source_limited_delay_context(media_evidence, item)
+        and item.get("wgc_smoothness_verdict_complete", 0) > 0
+        and item.get("source_repeat_lower_bound", 0) > 0
+        and item.get("policy_added_repeats", 0) == 0
+        and item.get("smoothness_not_maximal", 0) == 0
+        and item.get("mixed_policy_fault", 0) == 0
+        and item.get("sync_delay_policy_holds", 0) == 0
+        and item.get("delay_post_selection_rejected_sync", 0) == 0
+        and item.get("wgc_smoothness_evidence_incomplete", 0) == 0
+        and item.get("delay_soft_late_accepted", 0) == 0
+        and item.get("delay_near_cap_accepted", 0) < WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT
+        and item.get("delay_repeat_soft_safe_candidate", 0) == 0
+        and item.get("delay_sync_protected_repeats", 0) > 0
+    ):
+        return False
+
+    avg_limit_us = max(5000, int(math.ceil(source_period_us / 2.0)))
+    p95_limit_us = max(10000, source_period_us)
+    late_max_limit_us = max(WGC_RESIDUAL_ISOLATED_MAX_FAULT_US, source_period_us * 2)
+    spread_limit_us = max(WGC_REALIZED_DELAY_INSTABILITY_SPREAD_US, source_period_us * 2)
+    if item.get("delay_residual_avg_abs_us", 0) > avg_limit_us:
+        return False
+    if item.get("delay_residual_p95_us", 0) > p95_limit_us:
+        return False
+    if item.get("delay_residual_late_max_us", 0) > late_max_limit_us:
+        return False
+    if wgc_has_raw_delay_residual_evidence(item):
+        if item.get("raw_residual_avg_abs_us", 0) > avg_limit_us:
+            return False
+        if item.get("raw_residual_p95_us", 0) > p95_limit_us:
+            return False
+        if item.get("raw_residual_late_max_us", 0) > late_max_limit_us:
+            return False
+    if item.get("predicted_residual_p95_us", 0) > p95_limit_us:
+        return False
+    if item.get("predicted_residual_late_max_us", 0) > late_max_limit_us:
+        return False
+    return wgc_realized_delay_spread_us(item) <= spread_limit_us
+
+
 def wgc_realized_delay_spread_us(item):
     """Realized content-delay spread (max - min) for an active-delay smoothness summary item.
 
@@ -3875,28 +3947,7 @@ def wgc_realized_delay_spread_us(item):
 
 
 def wgc_active_delay_variation_is_source_context(media_evidence, item):
-    if not has_wgc_source_limited_playout_maximal(media_evidence):
-        return False
-    coverage_items = [
-        coverage
-        for coverage in media_evidence["wgc_source_coverage"]
-        if coverage.get("source_repeat_lower_bound", 0) > 0 and coverage.get("output_fps", 0) > 0
-    ]
-    output_fps = max((coverage.get("output_fps", 0) for coverage in coverage_items), default=0)
-    if output_fps <= 0:
-        return False
-    source_context_limit_us = max(
-        WGC_REALIZED_DELAY_INSTABILITY_SPREAD_US,
-        int(math.ceil(2000000.0 / output_fps)),
-    )
-    return (
-        wgc_realized_delay_spread_us(item) <= source_context_limit_us
-        and wgc_late_residual_is_bounded(item)
-        and item.get("sync_delay_policy_holds", 0) == 0
-        and item.get("policy_added_repeats", 0) == 0
-        and item.get("smoothness_not_maximal", 0) == 0
-        and item.get("delay_post_selection_rejected_sync", 0) == 0
-    )
+    return wgc_source_limited_delay_is_context(media_evidence, item)
 
 
 def has_wgc_active_delay_realized_delay_unstable(media_evidence):
@@ -4137,6 +4188,23 @@ def summarize_app_audio_latency(media_evidence, log_summary, stop_start_wall_us=
         elif elevated:
             elevated_sources.append(item)
 
+    queue_overrun_packets = sum(item.get("queue_overrun_packets", 0) for item in sources)
+    queue_overrun_frames = sum(item.get("queue_overrun_frames", 0) for item in sources)
+    underruns = sum(item.get("underruns", 0) for item in sources)
+    catastrophic_resync_events = sum(item.get("catastrophic_resync_events", 0) for item in sources)
+    integrity_fault = (
+        queue_overrun_packets > 0
+        or queue_overrun_frames > 0
+        or underruns > 0
+        or catastrophic_resync_events > 0
+    )
+    # Legacy logs without a final latency distribution cannot prove that live warnings stayed
+    # inside the moving video-delay target. Preserve their strict classification. Current logs can
+    # clear warning chatter only with an explicit, non-elevated, integrity-clean stop summary.
+    warning_without_summary = warning_count > 0 and not sources
+    fault_evidence = bool(elevated_sources) or integrity_fault or warning_without_summary
+    warning_only_context = warning_count > 0 and not fault_evidence
+
     return {
         "warning_count": warning_count,
         "stop_drain_warning_count": stop_warning_count,
@@ -4154,10 +4222,14 @@ def summarize_app_audio_latency(media_evidence, log_summary, stop_start_wall_us=
             default=0,
         ),
         "max_comp_percent": max((item.get("max_comp_percent", 0.0) for item in sources), default=0.0),
-        "queue_overrun_packets": sum(item.get("queue_overrun_packets", 0) for item in sources),
-        "queue_overrun_frames": sum(item.get("queue_overrun_frames", 0) for item in sources),
-        "underruns": sum(item.get("underruns", 0) for item in sources),
-        "catastrophic_resync_events": sum(item.get("catastrophic_resync_events", 0) for item in sources),
+        "queue_overrun_packets": queue_overrun_packets,
+        "queue_overrun_frames": queue_overrun_frames,
+        "underruns": underruns,
+        "catastrophic_resync_events": catastrophic_resync_events,
+        "integrity_fault": integrity_fault,
+        "warning_without_summary": warning_without_summary,
+        "fault_evidence": fault_evidence,
+        "warning_only_context": warning_only_context,
         "sources": sources,
         "elevated_sources": elevated_sources,
         "stop_context_sources": stop_context_sources,
@@ -4470,8 +4542,10 @@ def classify_session_triage(
             verdicts.append("sparse_app_source_silence")
         else:
             verdicts.append("started_app_source_underrun")
-    if app_audio_latency["warning_count"] > 0 or app_audio_latency["elevated_source_count"] > 0:
+    if app_audio_latency["fault_evidence"]:
         verdicts.append("audio_app_latency_elevated")
+    elif app_audio_latency["warning_only_context"]:
+        contexts.append("app_audio_latency_within_slack")
     elif app_audio_latency["stop_drain_only"]:
         contexts.append("app_audio_stop_drain_latency")
     if post_mux_probe_hang:
@@ -4902,7 +4976,7 @@ def print_triage_report(report):
     if app_latency["warning_count"] or app_latency["source_count"]:
         print(
             "  app_audio_latency warnings={warnings} stop_drain_warnings={stop_warnings} "
-            "sources={sources} elevated={elevated} "
+            "sources={sources} elevated={elevated} fault={fault} warning_only={warning_only} "
             "worst_delay_avg={avg:.1f}ms worst_delay_max={max_ms}ms "
             "worst_excess_avg={excess_avg:.1f}ms worst_excess_max={excess_max}ms "
             "max_comp={comp:.4f}% queue_overrun={queue_packets}/{queue_frames} "
@@ -4911,6 +4985,8 @@ def print_triage_report(report):
                 stop_warnings=app_latency["stop_drain_warning_count"],
                 sources=app_latency["source_count"],
                 elevated=app_latency["elevated_source_count"],
+                fault=int(app_latency["fault_evidence"]),
+                warning_only=int(app_latency["warning_only_context"]),
                 avg=app_latency["worst_avg_ms"],
                 max_ms=app_latency["worst_max_ms"],
                 excess_avg=app_latency["worst_excess_avg_ms"],
@@ -5786,6 +5862,82 @@ def self_test():
         assert "dxgi_dup_source_limited_delay_variation" in report["contexts"]
         assert "dxgi_dup_av_sync_delay_residual" not in report["verdicts"]
         assert "dxgi_dup_timestamp_domain_mismatch" not in report["verdicts"]
+        assert "dxgi_dup_active_delay_realized_delay_unstable" not in report["verdicts"]
+        assert "ce_visual_timeline_fault" not in report["verdicts"]
+        assert not report["faults"]["visual_timeline"]
+        assert report["faults"]["wgc_clean_source_limited_coverage"]
+        assert report["faults"]["wgc_source_limited_delay_variation_context"]
+
+        dxgi_desktop_source_limited = make_session(
+            "dxgi_desktop_source_limited",
+            capture_method="dxgi_dup",
+            media=(
+                "[WGC CFR SUMMARY] Live=47626 Dup=31350 DupPct=65.8% NoFresh=658pm NoReserve=972pm "
+                "DupReason(src=31347 def=0 timer=3 drain=0) SourceLimitedRepeats=31347 StarvedEpisodes=8 "
+                "AntiFreezeFloor=1 AntiFreezeFloorSkippedSync=6130 BiasClampCount=0 "
+                "longest=236828ms longestDup=19031 longestContiguousDup=15 (125ms) worstIn=8 worstDel=8\n"
+                "[WGC CFR SMOOTHNESS SUMMARY] encoderLimitedDrops=0 maxDropTicks=0 cadenceEvents=394 "
+                "phaseErrorMax=274760us shortfallMax=0.0ms staleDebtDrops=32 liveRebase=0/0 "
+                "tooNewRepeats=31350 syncDelayHolds=31350 tooNewLeadMax=0us avDelay=28.5ms "
+                "startupDelay=256.5ms scheduleOffset=227966us effectiveDelay=256.5ms "
+                "lowSourceBypass=0 modeMismatch=0 sourceBacktrack=0 "
+                "syncDelaySourceLimitedHolds=31350 syncDelayPolicyHolds=0 startupReserveFrames=11 "
+                "startupReserveSpan=256479us startupDelayTarget=328511us startupReserveSelected=0 "
+                "startupReserveReason=partial_span_timeout smoothBuf=1 smoothTargetMs=300 "
+                "smoothFrames=27/45/45 smoothDelay=228.0ms smoothPoolSlots=64 sourceFramePoolBuffers=0 "
+                "budgetSurfaces=94 syncFrames=5 extraFrames=45 retainedCap=58 reservedFreeSlots=6 "
+                "safetySlots=4 retainedCapTrim=0 ingressAccepted=16745 ingressDecimated=0 "
+                "ingressPlaySoft=0 ingressPlayCredit=0 ingressRetained=30/58 ingressLowWater=31 "
+                "leasedMax=39 freeNow=64 freeMin=25 poolPressureTrim=0 poolSaturatedDrops=0 "
+                "overwritePrevented=0 leaseMismatches=0 smoothVramMB=2025.0 smoothCapLimited=0 "
+                "smoothReason=startup_attempt_source_rate_low\n"
+                "[WGC CFR SMOOTHNESS BUFFER] smoothTargetDelay=299998us smoothActualDelay=227966us "
+                "smoothDelayDeficit=72032us startupDelayTarget=328511us effectiveDelay=256479us "
+                "startupDelayDeficit=72032us finalAvSync=exported_tracks_authoritative\n"
+                "[WGC CFR SMOOTHNESS DELAY] delayReservoirLowWaterFrames=31 delayReservoirTargetFrames=32 "
+                "delayReservoirLowWaterTicks=46304 realizedDelayAvg=253512us realizedDelayMin=229874us "
+                "realizedDelayMax=261339us delayResidualAvg=2966/3255us delayResidualMax=26605us "
+                "delayResidualP95=7000us delayResidualLateMax=26605us delayResidualEarlyMax=4860us "
+                "rawResidualAvg=3360/5376us rawResidualMax=29286us rawResidualP95=11000us "
+                "rawResidualLateMax=29286us rawResidualEarlyMax=10746us "
+                "predictedResidualAvg=2966/3255us predictedResidualP95=7000us "
+                "predictedResidualLateMax=26605us rawMinusPredictedAvg=393/393us "
+                "rawMinusPredictedMax=6250us\n"
+                "[WGC CFR SMOOTHNESS REPEAT] delaySoftLateAccepted=0 delayNearCapAccepted=1 "
+                "delayRepeatSoftSafeCandidate=0 delaySyncProtectedRepeats=31350 "
+                "delayPostSelectionRejectedSync=0\n"
+                "[WGC CFR SMOOTHNESS VERDICT] delayPostSelectionRejectedSync=0 "
+                "delayPostSelectionRescuedSync=0 sourceRepeatLowerBound=31350 excessRepeats=0 "
+                "policyAddedRepeats=0 excessRepeatClusters=0 excessRepeatClusterMax=0 "
+                "smoothnessNotMaximal=0 mixedPolicyFault=0 syncSourceRepeatLowerBound=31350 "
+                "deliveryRepeatLowerBound=31347 policyNoSourceRepeats=0\n"
+                "[WGC CFR QUALITY] duplicatePct=65.8 duplicates=31350/47626 worst1sUnique=10 "
+                "worst1sRepeats=122 worst1sEmit=132 limiter=source_limited sourceLimitedRepeats=31347 "
+                "poolPressure=0 freeMin=25 poolSaturatedDrops=0 ingressHard=0 ingressSoft=0 "
+                "ingressDecimated=0 policyAddedRepeats=0 excessRepeats=0 smoothDelayDeficitUs=72032 "
+                "startupDelayDeficitUs=72032 encoderOverload=0x0 muxBackpressure=0 backend=dxgi_dup "
+                "finalAvSync=exported_tracks_authoritative\n"
+                "[WGC CFR SOURCE COVERAGE] coverage=limited reason=source_and_delivery_holes bestEffort=1 "
+                "outputFps=120 duplicates=31350/47626 sourceLimitedRepeats=31347 "
+                "sourceRepeatLowerBound=31350 syncSourceRepeatLowerBound=31350 "
+                "deliveryRepeatLowerBound=31347 excessRepeats=0 policyAddedRepeats=0 "
+                "policyNoSourceRepeats=0 cleanEncoderMux=1 cleanPool=1 cleanSelection=1 "
+                "encoderOverload=0x0 muxBackpressure=0 poolPressure=0 poolFreeMin=25 "
+                "finalAvSync=exported_tracks_authoritative\n"
+                "[VideoEncoder] Final packet timeline: target=396891667 us videoEnd=396891667 us "
+                "audioMinEnd=396891666 us audioMaxEnd=396891666 us maxPacketDelta=1 us "
+                "streams(v=1 a=3) audioPastTarget=0\n"
+                "[VideoEncoder] Final metadata durations: target=396891667 us video=396891667 us "
+                "audioMin=396891666 us audioMax=396891666 us maxDelta=1 us streams(v=1 a=3) "
+                "overload(encoder=0 mux=0) backpressure=0\n"
+            ),
+        )
+        report = classify_session_triage(dxgi_desktop_source_limited)
+        assert "dxgi_dup_source_starvation" in report["verdicts"]
+        assert "dxgi_dup_source_coverage_best_effort" in report["verdicts"]
+        assert "dxgi_dup_source_limited_delay_variation" in report["contexts"]
+        assert "dxgi_dup_av_sync_delay_residual" not in report["verdicts"]
+        assert "dxgi_dup_audio_late_risk" not in report["verdicts"]
         assert "dxgi_dup_active_delay_realized_delay_unstable" not in report["verdicts"]
         assert "ce_visual_timeline_fault" not in report["verdicts"]
         assert not report["faults"]["visual_timeline"]
@@ -7489,6 +7641,49 @@ def self_test():
         assert report["faults"]["audio_app_latency_elevated"]
         assert report["evidence"]["app_audio_latency"]["elevated_source_count"] == 1
         assert report["evidence"]["app_audio_latency"]["worst_excess_avg_ms"] == 85.0
+
+        app_latency_warning_within_slack = make_session(
+            "app_latency_warning_within_slack",
+            media=(
+                "[2026-07-18 23:30:00.000] [INFO] [AppLatency] WARNING: app audio src=9 track=1 "
+                "delayMs=289 targetMs=299 excessMs=0 rbAvail=13912 drain=0 reason=within_slack "
+                "compDelta=0 comp=0.0000% rateCompActive=0 underruns=0 queuePending=0 "
+                "queueOverrun=0/0. Content backlog should drain toward the video target without trims.\n"
+                "[STOP AUDIO LATENCY] Source 9 track=1 appAudioDelay avg=243ms max=289ms "
+                "targetAvg=292ms excessAvg=1ms excessMax=77ms "
+                "buckets(<50/50-150/150-300/300-600/>600ms)=0%/0%/100%/0%/0% "
+                ">=150ms=100% drainObservations=1267/47620 transitions=529 maxComp=0.3125% "
+                "liveObservations=47620 stopDrainObservations=1 stopDrainAvg=1131ms "
+                "stopDrainMax=1131ms queueOverrun=0/0 underruns=0 trims(lat=0 normal=0 cat=0/0). "
+                "Lower/more-uniform excess is better; high excess means audio content ran behind video.\n"
+                "[VideoEncoder] Final packet timeline: target=396891667 us videoEnd=396891667 us "
+                "audioMinEnd=396891666 us audioMaxEnd=396891666 us maxPacketDelta=1 us "
+                "streams(v=1 a=3) audioPastTarget=0\n"
+            ),
+        )
+        report = classify_session_triage(app_latency_warning_within_slack)
+        assert "audio_app_latency_elevated" not in report["verdicts"]
+        assert "app_audio_latency_within_slack" in report["contexts"]
+        assert not report["faults"]["audio_app_latency_elevated"]
+        assert report["evidence"]["app_audio_latency"]["warning_count"] == 1
+        assert report["evidence"]["app_audio_latency"]["elevated_source_count"] == 0
+        assert report["evidence"]["app_audio_latency"]["warning_only_context"]
+        assert not report["evidence"]["app_audio_latency"]["fault_evidence"]
+
+        app_latency_integrity_fault = make_session(
+            "app_latency_integrity_fault",
+            media=read_text_if_exists(app_latency_warning_within_slack / "media.log").replace(
+                "queueOverrun=0/0 underruns=0 trims(lat=0 normal=0 cat=0/0)",
+                "queueOverrun=1/480 underruns=0 trims(lat=0 normal=0 cat=0/0)",
+            ),
+        )
+        report = classify_session_triage(app_latency_integrity_fault)
+        assert "audio_app_latency_elevated" in report["verdicts"]
+        assert "app_audio_latency_within_slack" not in report["contexts"]
+        assert report["faults"]["audio_app_latency_elevated"]
+        assert report["evidence"]["app_audio_latency"]["integrity_fault"]
+        assert report["evidence"]["app_audio_latency"]["queue_overrun_packets"] == 1
+        assert report["evidence"]["app_audio_latency"]["queue_overrun_frames"] == 480
 
         app_latency_old_fallback = make_session(
             "app_latency_old_fallback",
