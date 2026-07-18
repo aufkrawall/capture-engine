@@ -141,6 +141,18 @@ TEST(ProcessIPCTest, StartupHandshakeRequiresExactPidNonceAndZeroSequence) {
                                         4321, TestNonce(), 0, true));
 }
 
+TEST(ProcessIPCTest, RecordingIdentityIsStrictAndProducesImmutableMediaLogNames) {
+    char valid[] = "--mode=media --recording-id=r0042";
+    char traversal[] = "--recording-id=..\\escape";
+    char empty[] = "--recording-id=";
+    EXPECT_EQ(ParseRecordingId(valid), "r0042");
+    EXPECT_TRUE(ParseRecordingId(traversal).empty());
+    EXPECT_TRUE(ParseRecordingId(empty).empty());
+    EXPECT_EQ(GetProcessLogFileName(ProcessMode::Media, "r0042", 1234), "media_r0042_1234.log");
+    EXPECT_EQ(GetProcessLogFileName(ProcessMode::Media, "", 1234), "media_unscoped_1234.log");
+    EXPECT_EQ(GetProcessLogFileName(ProcessMode::Inject, "r0042", 1234), "inject.log");
+}
+
 TEST(ProcessIPCTest, ProductionUsesInheritedEndpointsWithoutFixedPipeConstants) {
     const std::string header = ReadSource("common/process_ipc.h");
     const std::string source = ReadSource("common/process_ipc.cpp");

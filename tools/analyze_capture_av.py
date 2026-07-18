@@ -1573,15 +1573,110 @@ def read_text_if_exists(path):
         return ""
 
 
-def parse_session_manifest(session_dir):
+def parse_key_value_manifest(path):
     manifest = {}
-    path = session_dir / "session_manifest.txt"
     for line in read_text_if_exists(path).splitlines():
         if "=" not in line:
             continue
         key, value = line.split("=", 1)
         manifest[key.strip()] = value.strip()
     return manifest
+
+
+def parse_session_manifest(session_dir):
+    return parse_key_value_manifest(session_dir / "session_manifest.txt")
+
+
+MEDIA_LOG_RE = re.compile(r"^media_(?P<recording_id>[A-Za-z0-9_-]+)_(?P<pid>[0-9]+)\.log$", re.IGNORECASE)
+
+
+def is_media_log_path(path):
+    lower_name = path.name.lower()
+    return lower_name == "media.log" or MEDIA_LOG_RE.match(path.name) is not None
+
+
+def discover_recording_evidence(session_dir):
+    manifests_by_log = {}
+    for path in sorted(session_dir.glob("recording_*.manifest")):
+        manifest = parse_key_value_manifest(path)
+        media_name = manifest.get("media_log", "")
+        if media_name:
+            manifests_by_log[media_name.lower()] = (path, manifest)
+
+    recordings = []
+    for path in sorted(session_dir.glob("*.log")):
+        if not is_media_log_path(path):
+            continue
+        match = MEDIA_LOG_RE.match(path.name)
+        recording_id = match.group("recording_id") if match else "legacy"
+        media_pid = int(match.group("pid")) if match else None
+        manifest_path = None
+        recording_manifest = {}
+        manifest_entry = manifests_by_log.get(path.name.lower())
+        if manifest_entry:
+            manifest_path, recording_manifest = manifest_entry
+            recording_id = recording_manifest.get("recording_id", recording_id)
+            try:
+                media_pid = int(recording_manifest.get("media_pid", media_pid))
+            except (TypeError, ValueError):
+                pass
+        recordings.append(
+            {
+                "recording_id": recording_id,
+                "media_pid": media_pid,
+                "media_log": path,
+                "manifest_path": manifest_path,
+                "manifest": recording_manifest,
+            }
+        )
+    return recordings
+
+
+def resolve_recording_evidence(session_dir, recording_id=None, media_log=None):
+    recordings = discover_recording_evidence(session_dir)
+    if media_log is not None:
+        selected_path = Path(media_log)
+        if not selected_path.is_absolute():
+            selected_path = session_dir / selected_path
+        if not selected_path.exists():
+            raise ValueError(f"media log not found: {selected_path}")
+        for recording in recordings:
+            if recording["media_log"].resolve() == selected_path.resolve():
+                return recording, recordings
+        return {
+            "recording_id": recording_id or "explicit",
+            "media_pid": None,
+            "media_log": selected_path,
+            "manifest_path": None,
+            "manifest": {},
+        }, recordings
+
+    if recording_id:
+        matching = [item for item in recordings if item["recording_id"].lower() == recording_id.lower()]
+        if len(matching) != 1:
+            detail = ", ".join(
+                f"{item['recording_id']}:{item['media_log'].name}" for item in recordings
+            ) or "none"
+            raise ValueError(
+                f"recording id {recording_id!r} matched {len(matching)} media logs; available: {detail}"
+            )
+        return matching[0], recordings
+
+    if len(recordings) > 1:
+        detail = ", ".join(f"{item['recording_id']}:{item['media_log'].name}" for item in recordings)
+        raise ValueError(
+            "multiple recordings exist in this controller session; select one with --recording-id or "
+            f"--media-log, or use --all-recordings. Available: {detail}"
+        )
+    if recordings:
+        return recordings[0], recordings
+    return {
+        "recording_id": None,
+        "media_pid": None,
+        "media_log": session_dir / "media.log",
+        "manifest_path": None,
+        "manifest": {},
+    }, recordings
 
 
 def normalize_screen_capture_backend(value):
@@ -1843,6 +1938,15 @@ def parse_live_start_wall_us(media_text):
     return -1
 
 
+def parse_live_start_qpc_wall_us(media_text):
+    for line in media_text.splitlines():
+        if "liveStartQpc=" in line:
+            timestamp_us = parse_log_timestamp_us(line)
+            if timestamp_us >= 0:
+                return timestamp_us
+    return parse_live_start_wall_us(media_text)
+
+
 def parse_stop_start_wall_us(media_text):
     for line in media_text.splitlines():
         if "[Media] Stopping recording" in line:
@@ -1911,6 +2015,31 @@ def build_recording_window_info(media_text, recording_window_spec, perf_summarie
         "end_wall_us": live_start_wall_us + end_offset_us if live_start_wall_us >= 0 else -1,
         "active": True,
         "reason": "ok",
+    }
+
+
+def build_full_recording_perf_window_info(media_text, perf_summaries):
+    live_start_qpc = parse_live_start_qpc(media_text)
+    live_start_qpc_us = choose_perf_qpc_us_from_live_start(live_start_qpc, perf_summaries)
+    live_start_wall_us = parse_live_start_qpc_wall_us(media_text)
+    stop_wall_us = parse_stop_start_wall_us(media_text)
+    if live_start_qpc_us <= 0 or live_start_wall_us < 0 or stop_wall_us <= live_start_wall_us:
+        return None
+    duration_us = stop_wall_us - live_start_wall_us
+    return {
+        "spec": "full-recording",
+        "start_s": 0.0,
+        "end_s": duration_us / 1000000.0,
+        "live_start_qpc": live_start_qpc,
+        "live_start_qpc_us": live_start_qpc_us,
+        "start_qpc_us": live_start_qpc_us,
+        "end_qpc_us": live_start_qpc_us + duration_us,
+        "live_start_wall_us": live_start_wall_us,
+        "start_wall_us": live_start_wall_us,
+        "end_wall_us": stop_wall_us,
+        "active": True,
+        "reason": "derived_selected_recording_bounds",
+        "automatic": True,
     }
 
 
@@ -2779,7 +2908,7 @@ def parse_hook_triage(session_dir):
     present_stalled_lines = []
     crash_events = []
     for path in sorted(session_dir.glob("*.log")):
-        if path.name.lower() == "media.log":
+        if is_media_log_path(path):
             continue
         text = read_text_if_exists(path)
         for line in text.splitlines():
@@ -4035,8 +4164,13 @@ def summarize_app_audio_latency(media_evidence, log_summary, stop_start_wall_us=
     }
 
 
-def classify_session_triage(session_dir, capture_path=None, recording_window=None):
-    media_log = session_dir / "media.log"
+def classify_session_triage(
+    session_dir, capture_path=None, recording_window=None, recording_id=None, media_log_path=None
+):
+    selected_recording, discovered_recordings = resolve_recording_evidence(
+        session_dir, recording_id=recording_id, media_log=media_log_path
+    )
+    media_log = selected_recording["media_log"]
     media_text = read_text_if_exists(media_log)
     full_log_summary = analyze_log(media_log) if media_text else None
     full_media_evidence = parse_media_triage(media_text)
@@ -4044,15 +4178,30 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     perf_summaries_all = parse_perf_csvs(session_dir)
     perf_summaries_live_source = parse_perf_csvs(session_dir, live_source_only=True)
     recording_window_info = build_recording_window_info(media_text, recording_window, perf_summaries_all)
-    if media_text and recording_window_info and recording_window_info.get("active"):
+    multi_recording_session = len(discovered_recordings) > 1
+    if not recording_window_info and multi_recording_session:
+        recording_window_info = build_full_recording_perf_window_info(media_text, perf_summaries_all)
+    perf_scope_unavailable = multi_recording_session and not (
+        recording_window_info and recording_window_info.get("active")
+    )
+    if perf_scope_unavailable:
+        perf_summaries_live_source = []
+        hook_evidence["present_gaps"] = []
+    if media_text and recording_window and recording_window_info and recording_window_info.get("active"):
         windowed_media_text = filter_media_text_for_recording_window(media_text, recording_window_info)
         log_summary = analyze_log_text(windowed_media_text)
         media_evidence = merge_window_media_evidence(parse_media_triage(windowed_media_text), full_media_evidence)
     else:
         log_summary = full_log_summary
         media_evidence = full_media_evidence
-    perf_summaries = parse_perf_csvs(session_dir, recording_window_info) if recording_window_info else perf_summaries_all
+    if perf_scope_unavailable:
+        perf_summaries = []
+    else:
+        perf_summaries = (
+            parse_perf_csvs(session_dir, recording_window_info) if recording_window_info else perf_summaries_all
+        )
     manifest = parse_session_manifest(session_dir)
+    recording_manifest = selected_recording.get("manifest", {})
     screen_capture_backend = resolve_screen_capture_backend(manifest, media_evidence)
 
     def screen_capture_diagnostic(suffix):
@@ -4069,6 +4218,15 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
 
     verdicts = []
     contexts = []
+    controller_text = read_text_if_exists(session_dir / "captureengine.log")
+    controller_recording_starts = len(
+        re.findall(r"\[Controller\] Starting (?:audio-only )?recording\.\.\.", controller_text)
+    )
+    recording_evidence_incomplete = controller_recording_starts > len(discovered_recordings)
+    if recording_evidence_incomplete:
+        contexts.append("recording_evidence_missing_or_overwritten")
+    if perf_scope_unavailable:
+        contexts.append("recording_perf_evidence_unscoped")
     if recording_window_info and recording_window_info.get("active"):
         max_present_gap_ms = max((item["max_qpc_delta_us"] for item in perf_summaries), default=0) / 1000.0
         present_gap_evidence = []
@@ -4401,14 +4559,20 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
     report = {
         "schema": "ce-session-av-triage-v1",
         "session_dir": str(session_dir),
+        "recording_id": selected_recording.get("recording_id"),
+        "media_pid": selected_recording.get("media_pid"),
         "capture": str(capture_path) if capture_path else None,
         "recording_window": recording_window_info,
         "manifest": manifest,
+        "recording_manifest": recording_manifest,
         "paths": {
             "media_log": str(media_log) if media_log.exists() else None,
-            "hook_logs": [str(path) for path in sorted(session_dir.glob("*.log")) if path.name.lower() != "media.log"],
+            "hook_logs": [str(path) for path in sorted(session_dir.glob("*.log")) if not is_media_log_path(path)],
             "perf_csv": [item["path"] for item in perf_summaries],
             "session_manifest": str(session_dir / "session_manifest.txt") if (session_dir / "session_manifest.txt").exists() else None,
+            "recording_manifest": str(selected_recording["manifest_path"])
+            if selected_recording.get("manifest_path")
+            else None,
         },
         "verdicts": verdicts,
         "contexts": contexts,
@@ -4455,6 +4619,18 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
         },
         "evidence": {
             "screen_capture_backend": screen_capture_backend,
+            "controller_recording_start_count": controller_recording_starts,
+            "discovered_recording_evidence_count": len(discovered_recordings),
+            "recording_evidence_incomplete": recording_evidence_incomplete,
+            "recording_perf_scope_unavailable": perf_scope_unavailable,
+            "discovered_recordings": [
+                {
+                    "recording_id": item["recording_id"],
+                    "media_pid": item["media_pid"],
+                    "media_log": str(item["media_log"]),
+                }
+                for item in discovered_recordings
+            ],
             "recording_window": recording_window_info,
             "max_present_gap_ms": max_present_gap_ms,
             "present_gap_source": present_gap_source,
@@ -4568,6 +4744,8 @@ def classify_session_triage(session_dir, capture_path=None, recording_window=Non
 def print_triage_report(report):
     print("session_av_triage:")
     print(f"  session_dir={report['session_dir']}")
+    if report.get("recording_id"):
+        print(f"  recording_id={report['recording_id']} media_pid={report.get('media_pid')}")
     if report.get("capture"):
         print(f"  capture={report['capture']}")
     if report.get("recording_window"):
@@ -7396,6 +7574,53 @@ def self_test():
         assert "ce_audio_timeline_fault" not in report["verdicts"]
         assert report["evidence"]["rounding_evidence"]["post_mux_one_us_or_less_is_info"]
 
+        multi_recording = root / "multi_recording"
+        multi_recording.mkdir()
+        (multi_recording / "captureengine.log").write_text(
+            "[Controller] Starting recording...\n[Controller] Starting recording...\n", encoding="utf-8"
+        )
+        for recording_id, pid in (("r0001", 101), ("r0002", 202)):
+            media_name = f"media_{recording_id}_{pid}.log"
+            media_text = "[Media] Starting recording...\n"
+            if recording_id == "r0001":
+                media_text += (
+                    "[2026-07-18 12:00:00.000] [INFO] [AVSyncApply] liveStartQpc=1000000\n"
+                    "[2026-07-18 12:00:02.000] [INFO] [Media] Stopping recording...\n"
+                )
+            (multi_recording / media_name).write_text(media_text, encoding="utf-8")
+            (multi_recording / f"recording_{recording_id}_{pid}.manifest").write_text(
+                f"recording_id={recording_id}\nmedia_pid={pid}\nmedia_log={media_name}\n", encoding="utf-8"
+            )
+        (multi_recording / "perf_metrics_42.csv").write_text(
+            "qpc_us,qpc_delta_us,total_us,capture_us,present_call_us,mux_queue_kb,overload_flags\n"
+            "1100000,1000,0,0,0,0,0\n"
+            "1500000,400000,0,0,0,0,0\n"
+            "5000000,3500000,0,0,0,0,0\n",
+            encoding="utf-8",
+        )
+        try:
+            classify_session_triage(multi_recording)
+            raise AssertionError("ambiguous multi-recording session was silently accepted")
+        except ValueError as exc:
+            assert "multiple recordings" in str(exc)
+        report = classify_session_triage(multi_recording, recording_id="r0001")
+        assert report["recording_id"] == "r0001"
+        assert report["media_pid"] == 101
+        assert not report["evidence"]["recording_evidence_incomplete"]
+        assert report["recording_window"]["reason"] == "derived_selected_recording_bounds"
+        assert report["evidence"]["max_present_gap_ms"] == 400.0
+
+        overwritten_legacy = root / "overwritten_legacy"
+        overwritten_legacy.mkdir()
+        (overwritten_legacy / "captureengine.log").write_text(
+            "[Controller] Starting recording...\n[Controller] Starting recording...\n", encoding="utf-8"
+        )
+        (overwritten_legacy / "media.log").write_text("[Media] Starting recording...\n", encoding="utf-8")
+        report = classify_session_triage(overwritten_legacy)
+        assert "recording_evidence_missing_or_overwritten" in report["contexts"]
+        assert report["evidence"]["controller_recording_start_count"] == 2
+        assert report["evidence"]["discovered_recording_evidence_count"] == 1
+
     print("self-test: PASS")
 
 
@@ -7406,6 +7631,13 @@ def main():
     parser.add_argument("capture", nargs="?", type=Path, help="Capture file to analyze")
     parser.add_argument("--capture", dest="capture_option", type=Path, help="Capture file to attach to session triage")
     parser.add_argument("--session-dir", type=Path, help="Analyze a CE logs session for stutter attribution")
+    parser.add_argument("--recording-id", help="Select one immutable recording within a multi-recording session")
+    parser.add_argument("--media-log", type=Path, help="Select an exact media log within a session")
+    parser.add_argument(
+        "--all-recordings",
+        action="store_true",
+        help="Analyze every preserved recording in the session (cannot attach one capture file)",
+    )
     parser.add_argument(
         "--recording-window",
         help="Restrict session perf/present-gap triage to live recording seconds START:END, for example 25:45",
@@ -7528,21 +7760,54 @@ def main():
             fail(f"session dir not found: {args.session_dir}")
         if effective_capture and not effective_capture.exists():
             fail(f"capture file not found: {effective_capture}")
+        if args.all_recordings and (args.recording_id or args.media_log):
+            fail("--all-recordings cannot be combined with --recording-id or --media-log")
+        if args.all_recordings and effective_capture:
+            fail("--all-recordings cannot attach one --capture to multiple recordings")
         try:
-            report = classify_session_triage(args.session_dir, effective_capture, args.recording_window)
+            if args.all_recordings:
+                recordings = discover_recording_evidence(args.session_dir)
+                if not recordings:
+                    fail(f"no media recording evidence found in session: {args.session_dir}")
+                reports = [
+                    classify_session_triage(
+                        args.session_dir,
+                        recording_window=args.recording_window,
+                        media_log_path=item["media_log"],
+                    )
+                    for item in recordings
+                ]
+            else:
+                reports = [
+                    classify_session_triage(
+                        args.session_dir,
+                        effective_capture,
+                        args.recording_window,
+                        recording_id=args.recording_id,
+                        media_log_path=args.media_log,
+                    )
+                ]
         except ValueError as exc:
             fail(str(exc))
         if effective_capture:
             attach_completed_capture_report(
-                report,
+                reports[0],
                 analyze_completed_capture_exact(
                     args.ffprobe, args.ffmpeg, effective_capture, args.tail_threshold
                 ),
             )
-        print_triage_report(report)
+        for index, report in enumerate(reports):
+            if index:
+                print()
+            print_triage_report(report)
         if args.json_out:
             args.json_out.parent.mkdir(parents=True, exist_ok=True)
-            args.json_out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+            json_report = (
+                {"schema": "ce-session-av-triage-set-v1", "session_dir": str(args.session_dir), "reports": reports}
+                if args.all_recordings
+                else reports[0]
+            )
+            args.json_out.write_text(json.dumps(json_report, indent=2), encoding="utf-8")
         return
 
     if args.capture_option:

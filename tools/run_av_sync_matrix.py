@@ -443,20 +443,27 @@ def find_latest_capture(output_dir, since_unix):
     return candidates[0]
 
 
+MEDIA_LOG_NAME_RE = re.compile(r"^media_[A-Za-z0-9_-]+_[0-9]+\.log$", re.IGNORECASE)
+
+
+def is_media_log_name(name):
+    return name.lower() == "media.log" or MEDIA_LOG_NAME_RE.match(name) is not None
+
+
 def list_hook_logs(session_dir):
     if not session_dir or not session_dir.exists():
         return []
     logs = []
     for path in session_dir.glob("*.log"):
-        if path.name.lower() != "media.log":
+        if not is_media_log_name(path.name):
             logs.append(str(path))
     return sorted(logs)
 
 
 def snapshot_session_logs(session_dir, destination_dir):
     if not session_dir or not session_dir.exists():
-        return None, None, [], [], None
-    media_log = None
+        return None, [], [], [], None
+    media_logs = []
     hook_logs = []
     perf_csvs = []
     session_manifest = None
@@ -471,6 +478,7 @@ def snapshot_session_logs(session_dir, destination_dir):
         should_copy = (
             lower_name.endswith(".log")
             or lower_name == "session_manifest.txt"
+            or (lower_name.startswith("recording_") and lower_name.endswith(".manifest"))
             or (lower_name.startswith("perf_metrics_") and lower_name.endswith(".csv"))
         )
         if not should_copy:
@@ -479,8 +487,8 @@ def snapshot_session_logs(session_dir, destination_dir):
         if not snapshot:
             continue
         copied_any = True
-        if lower_name == "media.log":
-            media_log = snapshot
+        if is_media_log_name(path.name):
+            media_logs.append(snapshot)
         elif lower_name.endswith(".log"):
             hook_logs.append(str(snapshot))
         elif lower_name.startswith("perf_metrics_") and lower_name.endswith(".csv"):
@@ -488,8 +496,8 @@ def snapshot_session_logs(session_dir, destination_dir):
         elif lower_name == "session_manifest.txt":
             session_manifest = snapshot
     if not copied_any:
-        return None, None, [], [], None
-    return destination_dir, media_log, hook_logs, perf_csvs, session_manifest
+        return None, [], [], [], None
+    return destination_dir, media_logs, hook_logs, perf_csvs, session_manifest
 
 
 def run_process(command, timeout, secondary_command=None, secondary_delay_sec=0.0):
@@ -969,12 +977,14 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe, preflight_info=None)
     secondary_app_log_snapshot = snapshot_artifact(secondary_app_log, scenario_dir / "dx12_av_sync_late.log")
     capture = find_latest_capture(captures_dir, start_unix)
     session_dir = find_latest_run_log_dir(start_unix)
-    media_log = (session_dir / "media.log") if session_dir else CAPTURE_BIN / "logs" / "media.log"
-    log_snapshot_dir, media_log_snapshot, hook_log_snapshots, perf_csv_snapshots, session_manifest_snapshot = (
+    legacy_media_log = (session_dir / "media.log") if session_dir else CAPTURE_BIN / "logs" / "media.log"
+    log_snapshot_dir, media_log_snapshots, hook_log_snapshots, perf_csv_snapshots, session_manifest_snapshot = (
         snapshot_session_logs(session_dir, scenario_dir / "ce_logs")
     )
-    analysis_session_dir = log_snapshot_dir if media_log_snapshot else session_dir
-    analysis_media_log = media_log_snapshot if media_log_snapshot else media_log
+    media_log_ambiguous = len(media_log_snapshots) > 1
+    media_log_snapshot = media_log_snapshots[0] if len(media_log_snapshots) == 1 else None
+    analysis_session_dir = log_snapshot_dir if log_snapshot_dir else session_dir
+    analysis_media_log = media_log_snapshot if media_log_snapshot else legacy_media_log
     media_text = analysis_media_log.read_text(encoding="utf-8", errors="replace") if analysis_media_log.exists() else ""
     hags_enabled_evidence = bool(re.search(r"hagsEnabled=1\b", media_text, re.IGNORECASE))
 
@@ -1027,6 +1037,7 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe, preflight_info=None)
             "ce_session_dir": str(analysis_session_dir) if analysis_session_dir else None,
             "ce_session_dir_original": str(session_dir) if session_dir else None,
             "media_log": str(analysis_media_log) if analysis_media_log and analysis_media_log.exists() else None,
+            "media_logs": [str(path) for path in media_log_snapshots],
             "hook_logs": hook_log_snapshots if hook_log_snapshots else list_hook_logs(session_dir),
             "perf_csv": perf_csv_snapshots,
             "session_manifest": str(session_manifest_snapshot) if session_manifest_snapshot else None,
@@ -1063,6 +1074,8 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe, preflight_info=None)
         result["failure"] = "stimulus manifest not found"
     elif not app_log_snapshot:
         result["failure"] = "stimulus app log not found"
+    elif media_log_ambiguous:
+        result["failure"] = "multiple CE media logs found in one matrix scenario"
     elif not analysis_media_log.exists():
         result["failure"] = "CE media log not found"
     elif args.profile == "contention" and not hags_enabled_evidence:

@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include "../common/shared_defs.h"
+#include "host_metrics_policy.h"
 
 #ifdef _MSC_VER
 #pragma comment(lib, "pdh.lib")
@@ -57,7 +58,9 @@ struct HostMetricsState {
 
 // Main update function called by CaptureEngine loop
 // targetPid: The process ID we are capturing (to filter GPU usage if possible)
-// luid: The LUID of the GPU we are capturing
-void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t luid);
+// knownLuid: A directly observed capture/hook adapter, or zero for process-engine inference.
+void UpdateSystemMetrics(
+    SharedMemoryLayout* shm, uint32_t targetPid, int64_t knownLuid,
+    metrics_policy::AdapterResolutionSource knownSource = metrics_policy::AdapterResolutionSource::HookLuid);
 
 }  // namespace scan_host

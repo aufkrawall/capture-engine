@@ -6,6 +6,7 @@
 #include "../common/capture_pipeline_policy.h"
 #include "../common/inject_overlay_policy.h"
 #include "../common/logging.h"
+#include "../common/process_identity.h"
 #include "../common/pseudo_overlay_profile_policy.h"
 #include "../common/pseudo_overlay_visibility.h"
 #include "../common/secure_dll_loading.h"
@@ -54,25 +55,8 @@ std::string NormalizeProcessName(std::string value) {
 }
 
 std::string QueryProcessName(DWORD pid) {
-    if (pid == 0)
-        return {};
-
-    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!process)
-        return {};
-
-    char path[MAX_PATH] = {};
-    DWORD size = MAX_PATH;
-    std::string processName;
-    if (QueryFullProcessImageNameA(process, 0, path, &size)) {
-        processName.assign(path, size);
-        const size_t lastSlash = processName.find_last_of("\\/");
-        if (lastSlash != std::string::npos)
-            processName = processName.substr(lastSlash + 1);
-        processName = NormalizeProcessName(std::move(processName));
-    }
-    CloseHandle(process);
-    return processName;
+    const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(pid);
+    return NormalizeProcessName(identity.imageName);
 }
 
 bool PseudoOverlayConfigsEqual(const PseudoOverlayConfig& lhs, const PseudoOverlayConfig& rhs) {

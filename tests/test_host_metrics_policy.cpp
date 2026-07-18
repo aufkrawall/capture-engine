@@ -52,6 +52,14 @@ TEST(HostMetricsPolicyTest, ExactHookLuidAlwaysWinsOverProcessInference) {
     EXPECT_EQ(resolution.source, AdapterResolutionSource::HookLuid);
 }
 
+TEST(HostMetricsPolicyTest, ExactCaptureDeviceLuidRetainsNonInjectProvenance) {
+    const std::vector<GpuEngineSample> samples = {Sample(42, 0x2222, 100.0)};
+    const auto resolution = scan_host::metrics_policy::ResolveAdapterLuid(
+        0x1111, 42, samples, 0x2222, AdapterResolutionSource::CaptureDeviceLuid);
+    EXPECT_EQ(resolution.adapterLuid, 0x1111);
+    EXPECT_EQ(resolution.source, AdapterResolutionSource::CaptureDeviceLuid);
+}
+
 TEST(HostMetricsPolicyTest, MissingLegacyLuidResolvesFromTargetProcessEngines) {
     const std::vector<GpuEngineSample> samples = {
         Sample(7, 0x1111, 80.0),
@@ -169,6 +177,8 @@ TEST(HostMetricsSourceInvariantTest, SensorAcceptsOnlyLuidStampedByCurrentSource
     EXPECT_NE(source.find("luidSourcePid == sourcePid"), std::string::npos);
     EXPECT_NE(source.find("ResetGpuTelemetryForSource(s.shm, sourcePid)"), std::string::npos);
     EXPECT_NE(source.find("s.cachedLuid = 0"), std::string::npos);
+    EXPECT_NE(source.find("ReadScreenGrabTarget"), std::string::npos);
+    EXPECT_NE(source.find("CaptureDeviceLuid"), std::string::npos);
 }
 
 TEST(HostMetricsSourceInvariantTest, GraphicsLuidPublishersStampCurrentProcessProvenance) {

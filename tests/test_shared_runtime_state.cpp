@@ -41,6 +41,44 @@ TEST(CaptureStateTest, RecordingStartIntentUpdatesAtomicallyAndPreservesUnrelate
     EXPECT_TRUE(state.HasRuntimeFlag(kCaptureRuntimeFlagInjectOverlayActive));
 }
 
+TEST(CaptureStateTest, ScreenGrabTargetSnapshotIsSeparateAndClearsAtomically) {
+    CaptureState state;
+    ScreenGrabTargetSnapshot snapshot;
+
+    ASSERT_TRUE(state.ReadScreenGrabTarget(snapshot));
+    EXPECT_FALSE(snapshot.active);
+    EXPECT_EQ(snapshot.processId, 0u);
+
+    state.PublishScreenGrabTarget(4242, static_cast<int32_t>(0x89ABCDEFu), 0x01234567, true);
+    ASSERT_TRUE(state.ReadScreenGrabTarget(snapshot));
+    EXPECT_TRUE(snapshot.active);
+    EXPECT_EQ(snapshot.processId, 4242u);
+    EXPECT_EQ(static_cast<uint32_t>(snapshot.adapterLuidLow), 0x89ABCDEFu);
+    EXPECT_EQ(snapshot.adapterLuidHigh, 0x01234567);
+
+    state.PublishScreenGrabTarget(0, 0, 0, false);
+    ASSERT_TRUE(state.ReadScreenGrabTarget(snapshot));
+    EXPECT_FALSE(snapshot.active);
+    EXPECT_EQ(snapshot.processId, 0u);
+    EXPECT_EQ(snapshot.adapterLuidLow, 0);
+    EXPECT_EQ(snapshot.adapterLuidHigh, 0);
+}
+
+TEST(CaptureStateTest, ScreenGrabTargetPublicationCannotMasqueradeAsAHookSource) {
+    SharedMemoryLayout sharedMemory;
+    sharedMemory.SetSourcePid(0);
+    sharedMemory.SetLuidSourcePid(0);
+
+    sharedMemory.runtimeState.PublishScreenGrabTarget(4242, 0x11223344, 0x55667788, true);
+
+    EXPECT_EQ(sharedMemory.GetSourcePid(), 0u);
+    EXPECT_EQ(sharedMemory.GetLuidSourcePid(), 0u);
+    ScreenGrabTargetSnapshot snapshot;
+    ASSERT_TRUE(sharedMemory.runtimeState.ReadScreenGrabTarget(snapshot));
+    EXPECT_TRUE(snapshot.active);
+    EXPECT_EQ(snapshot.processId, 4242u);
+}
+
 TEST(RecordingIndicatorPolicyTest, LiveRecordingTakesPrecedenceOverStaleStartIntent) {
     using ce::recording_indicator::SelectState;
     using ce::recording_indicator::State;
@@ -156,8 +194,8 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     GenerateShutdownEventName(shutdownEventName, std::size(shutdownEventName), 0x89ABCDEFu);
     GenerateShmemName(shmemName, std::size(shmemName), 0x00ABCDEFu);
 
-    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_36_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_36"), 0);
+    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_37_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_37"), 0);
     EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
     EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
 }

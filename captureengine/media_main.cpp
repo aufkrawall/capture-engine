@@ -1655,7 +1655,8 @@ static int64_t RectArea(const RECT& rect) {
 }
 
 static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, int* selectedScore = nullptr,
-                                  bool requireExactProcessNames = false) {
+                                  bool requireExactProcessNames = false, uint32_t* selectedPid = nullptr,
+                                  std::string* selectedProcessName = nullptr) {
     struct WgcSearchContext {
         const std::vector<WhitelistEntry>* targets;
         HWND result;
@@ -1664,6 +1665,8 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, in
         int matched;
         int bestScore;
         bool requireExactProcessNames;
+        uint32_t bestPid;
+        std::string bestProcessName;
     };
 
     HWND foregroundRoot = GetForegroundWindow();
@@ -1675,7 +1678,7 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, in
     }
 
     WgcSearchContext ctx = {&targets, NULL, foregroundRoot, 0, 0, std::numeric_limits<int>::min(),
-                            requireExactProcessNames};
+                            requireExactProcessNames, 0, {}};
     EnumWindows(
         [](HWND hwnd, LPARAM lParam) -> BOOL {
             WgcSearchContext* context = (WgcSearchContext*)lParam;
@@ -1709,21 +1712,9 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, in
             GetWindowThreadProcessId(hwnd, &pid);
             std::string procName;
             if (pid != 0) {
-                HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-                if (hProcess) {
-                    char exePath[MAX_PATH];
-                    DWORD size = MAX_PATH;
-                    if (QueryFullProcessImageNameA(hProcess, 0, exePath, &size)) {
-                        procName = exePath;
-                        auto pos = procName.find_last_of("\\/");
-                        if (pos != std::string::npos) {
-                            procName = procName.substr(pos + 1);
-                        }
-                        std::transform(procName.begin(), procName.end(), procName.begin(),
-                                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-                    }
-                    CloseHandle(hProcess);
-                }
+                procName = GetProcessNameFromPID(pid);
+                std::transform(procName.begin(), procName.end(), procName.begin(),
+                               [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
             }
 
             for (const auto& entry : *context->targets) {
@@ -1779,6 +1770,8 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, in
                     if (!context->result || score > context->bestScore) {
                         context->result = hwnd;
                         context->bestScore = score;
+                        context->bestPid = pid;
+                        context->bestProcessName = procName;
                     }
                     break;
                 }
@@ -1799,6 +1792,10 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, in
 
     if (selectedScore)
         *selectedScore = ctx.result ? ctx.bestScore : std::numeric_limits<int>::min();
+    if (selectedPid)
+        *selectedPid = ctx.result ? ctx.bestPid : 0;
+    if (selectedProcessName)
+        *selectedProcessName = ctx.result ? ctx.bestProcessName : std::string{};
 
     return ctx.result;
 }
@@ -2177,6 +2174,21 @@ static bool ApplyMediaGpuSchedulingPriorityForSharedAdapter(const AppConfig& con
     }
     ApplyMediaGpuSchedulingPriority(config, &luid);
     return true;
+}
+
+static void PublishMediaScreenGrabTarget(uint32_t processId, ID3D11Device* device, bool active,
+                                         const char* reason) {
+    if (!g_pSharedMem)
+        return;
+
+    LUID luid{};
+    const bool haveLuid = active && device && ce::windows_gpu_scheduling::GetAdapterLuid(device, luid);
+    g_pSharedMem->runtimeState.PublishScreenGrabTarget(
+        processId, haveLuid ? static_cast<int32_t>(luid.LowPart) : 0, haveLuid ? luid.HighPart : 0, active);
+    LogInfo("[Media] Screen-grab sensor target %s (pid=%lu adapter=%08lX:%08lX reason=%s)",
+            active ? "published" : "cleared", static_cast<unsigned long>(active ? processId : 0),
+            static_cast<unsigned long>(active && haveLuid ? static_cast<uint32_t>(luid.HighPart) : 0),
+            static_cast<unsigned long>(active && haveLuid ? luid.LowPart : 0), reason ? reason : "unspecified");
 }
 
 // =================================================================================================
@@ -12034,16 +12046,16 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 targetMonitor, pendingWgcRetarget.preferMonitor ? 1 : 0);
     };
 
-    auto refreshActiveConfig = [&](bool forceReload, HWND targetWindow = NULL) -> std::string {
+    auto refreshActiveConfig = [&](bool forceReload, HWND targetWindow = NULL, uint32_t confirmedPid = 0,
+                                   const std::string& confirmedProcessName = std::string{}) -> std::string {
         uint32_t sourcePid = 0;
         std::string processName;
         if (g_pSharedMem) {
             sourcePid = g_pSharedMem->GetSourcePid();
             if (sourcePid != 0) {
                 processName = GetProcessNameFromPID(sourcePid);
-                if (processName == "unknown") {
-                    processName.clear();
-                }
+                if (processName.empty() && sourcePid == activeConfigSourcePid)
+                    processName = activeConfigProcessName;
             }
         }
         if (sourcePid == 0) {
@@ -12056,18 +12068,17 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 sourcePid = resolvedPid;
             }
             if (sourcePid != 0) {
-                processName = GetProcessNameFromPID(sourcePid);
-                if (processName == "unknown")
-                    processName.clear();
+                if (sourcePid == confirmedPid && !confirmedProcessName.empty())
+                    processName = confirmedProcessName;
+                else
+                    processName = GetProcessNameFromPID(sourcePid);
+                if (processName.empty() && sourcePid == activeConfigSourcePid)
+                    processName = activeConfigProcessName;
             }
         }
         if (sourcePid == 0 && g_Recording && activeConfigSourcePid != 0) {
-            processName = GetProcessNameFromPID(activeConfigSourcePid);
-            if (!processName.empty() && processName != "unknown") {
-                sourcePid = activeConfigSourcePid;
-            } else {
-                processName.clear();
-            }
+            sourcePid = activeConfigSourcePid;
+            processName = activeConfigProcessName;
         }
 
         if (!forceReload && sourcePid == activeConfigSourcePid && processName == activeConfigProcessName) {
@@ -12090,6 +12101,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         Log_SetLevel(config.logLevel);
         activeConfigSourcePid = sourcePid;
         activeConfigProcessName = processName;
+
+        if (g_Recording && IsActiveScreenGrab())
+            PublishMediaScreenGrabTarget(activeConfigSourcePid, d3dDevice, true, "active profile refresh");
 
         ApplyMediaPrioritySettings(config);
         if (d3dDevice) {
@@ -12382,17 +12396,24 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
         int profileWgcScore = std::numeric_limits<int>::min();
         int profileDxgiScore = std::numeric_limits<int>::min();
-        HWND profileWgcWindow = FindMatchingWgcWindow(config.profileWgcTargets, &profileWgcScore, true);
-        HWND profileDxgiWindow = FindMatchingWgcWindow(config.profileDxgiDupTargets, &profileDxgiScore, true);
+        uint32_t profileWgcPid = 0;
+        uint32_t profileDxgiPid = 0;
+        std::string profileWgcProcessName;
+        std::string profileDxgiProcessName;
+        HWND profileWgcWindow = FindMatchingWgcWindow(config.profileWgcTargets, &profileWgcScore, true,
+                                                      &profileWgcPid, &profileWgcProcessName);
+        HWND profileDxgiWindow = FindMatchingWgcWindow(config.profileDxgiDupTargets, &profileDxgiScore, true,
+                                                       &profileDxgiPid, &profileDxgiProcessName);
         const bool useProfileDxgi = profileDxgiWindow && (!profileWgcWindow || profileDxgiScore > profileWgcScore);
         HWND profileWindow = useProfileDxgi ? profileDxgiWindow : profileWgcWindow;
         if (profileWindow) {
+            const uint32_t profilePid = useProfileDxgi ? profileDxgiPid : profileWgcPid;
+            const std::string& profileProcessName =
+                useProfileDxgi ? profileDxgiProcessName : profileWgcProcessName;
             if (sourcePid == 0) {
-                DWORD profilePid = 0;
-                GetWindowThreadProcessId(profileWindow, &profilePid);
                 sourcePid = profilePid;
             }
-            processName = refreshActiveConfig(false, profileWindow);
+            processName = refreshActiveConfig(false, profileWindow, profilePid, profileProcessName);
             injectWhitelisted = isInjectCaptureTarget(processName);
             if (useProfileDxgi) {
                 if (primeDxgiDupForWindowMonitor(profileWindow, "application profile")) {
@@ -12648,7 +12669,11 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                         break;
                     }
                     prepareCaptureForRecordingStart();
+                    PublishMediaScreenGrabTarget(activeConfigSourcePid, d3dDevice,
+                                                 !g_AudioOnly && IsPreferredScreenGrab(), "recording start");
                     const bool started = StartRecording(config);
+                    if (!started)
+                        PublishMediaScreenGrabTarget(0, nullptr, false, "recording start failure");
                     g_AudioOnly = false;  // Reset after StartRecording consumed it
                     ipc.SendResponse(started ? ProcessResponse::RecordingStarted : ProcessResponse::Error,
                                      started ? nullptr : "recording_start_failed");
@@ -12665,6 +12690,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     SetInjectVideoCaptureRequestedState(false, "authenticated stop request");
                     SetCaptureRequestedState(false);
                     SetRecordingVisibleState(false);
+                    PublishMediaScreenGrabTarget(0, nullptr, false, "authenticated stop request");
                     // Accept the authenticated request before potentially lengthy
                     // encoder/mux finalization. The controller may then release its
                     // endpoint while this disposable media process finishes and exits.
@@ -12733,7 +12759,12 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                                                      "shared-memory MediaEngine reinitialization");
                     } else {
                         prepareCaptureForRecordingStart();
+                        PublishMediaScreenGrabTarget(activeConfigSourcePid, d3dDevice,
+                                                     !g_AudioOnly && IsPreferredScreenGrab(),
+                                                     "shared-memory recording start");
                         const bool started = StartRecording(config);
+                        if (!started)
+                            PublishMediaScreenGrabTarget(0, nullptr, false, "shared-memory start failure");
                         g_AudioOnly = false;
                         if (started) {
                             g_pSharedMem->runtimeState.ackRecordingStarted.store(true, std::memory_order_release);
@@ -12744,6 +12775,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             if (LoadAcquire(g_pSharedMem->runtimeState.cmdStopRecording)) {
                 StoreRelease(g_pSharedMem->runtimeState.cmdStopRecording, false);
                 if (g_Recording) {
+                    PublishMediaScreenGrabTarget(0, nullptr, false, "shared-memory stop request");
                     StopRecording();
                     releaseIdleWgcResources();
                     g_pSharedMem->runtimeState.ackRecordingStopped.store(true, std::memory_order_release);
@@ -13105,6 +13137,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
     }
 
+    PublishMediaScreenGrabTarget(0, nullptr, false, "media process exit");
     StopRecording();
 
     if (auto capture = g_WgcCap.LockExclusive()) {

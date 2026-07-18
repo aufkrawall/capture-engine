@@ -13,6 +13,7 @@ enum class AdapterResolutionSource : uint32_t {
     HookLuid = 1,
     ProcessGpuEngine = 2,
     RetainedProcessGpuEngine = 3,
+    CaptureDeviceLuid = 4,
 };
 
 struct GpuEngineSample {
@@ -153,11 +154,12 @@ inline bool ParseGpuEngineSample(std::string_view instanceName, double utilizati
     return true;
 }
 
-inline AdapterResolution ResolveAdapterLuid(int64_t hookLuid, uint32_t targetPid,
+inline AdapterResolution ResolveAdapterLuid(int64_t knownLuid, uint32_t targetPid,
                                             const std::vector<GpuEngineSample>& samples,
-                                            int64_t previousProcessLuid = 0) {
-    if (hookLuid != 0)
-        return {hookLuid, AdapterResolutionSource::HookLuid};
+                                            int64_t previousProcessLuid = 0,
+                                            AdapterResolutionSource knownSource = AdapterResolutionSource::HookLuid) {
+    if (knownLuid != 0)
+        return {knownLuid, knownSource};
     if (targetPid == 0)
         return {};
 

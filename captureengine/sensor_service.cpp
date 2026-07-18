@@ -16,6 +16,7 @@ struct SensorSession {
     int64_t cachedLuid = 0;  // Cache valid LUID once discovered
     uint32_t lastSourcePid = 0;
     int64_t lastEffectiveLuid = 0;
+    bool lastSourceWasScreenGrab = false;
     uint32_t updatesSinceSummary = 0;
 };
 
@@ -145,24 +146,31 @@ int SensorProcessMain(const AppConfig& config) {
         // 2. Poll metrics for all active sessions
         for (auto it = sessions.begin(); it != sessions.end();) {
             SensorSession& s = it->second;
-            uint32_t sourcePid = s.shm->GetSourcePid();
+            const uint32_t hookSourcePid = s.shm->GetSourcePid();
+            ScreenGrabTargetSnapshot screenGrabTarget;
+            const bool haveScreenGrabSnapshot = s.shm->runtimeState.ReadScreenGrabTarget(screenGrabTarget);
+            const bool useScreenGrabTarget =
+                hookSourcePid == 0 && haveScreenGrabSnapshot && screenGrabTarget.active;
+            const uint32_t sourcePid = useScreenGrabTarget ? screenGrabTarget.processId : hookSourcePid;
+            const bool haveTarget = hookSourcePid != 0 || useScreenGrabTarget;
 
             // No hooked source yet: skip expensive PDH/DXGI work while idle, but
             // keep checking shared memory so metrics come online quickly once a game
             // is attached.
-            if (sourcePid == 0) {
-                if (s.lastSourcePid != 0) {
+            if (!haveTarget) {
+                if (s.lastSourcePid != 0 || s.lastSourceWasScreenGrab) {
                     s.cachedLuid = 0;
                     s.lastEffectiveLuid = 0;
                     s.lastSourcePid = 0;
+                    s.lastSourceWasScreenGrab = false;
                     ResetGpuTelemetryForSource(s.shm, 0);
-                    LogInfo("[Sensors] Session source cleared: injectPid=%u", it->first);
+                    LogInfo("[Sensors] Session target cleared: injectPid=%u", it->first);
                 }
                 ++it;
                 continue;
             }
 
-            if (sourcePid != s.lastSourcePid) {
+            if (sourcePid != s.lastSourcePid || useScreenGrabTarget != s.lastSourceWasScreenGrab) {
                 s.cachedLuid = 0;
                 s.lastEffectiveLuid = 0;
                 ResetGpuTelemetryForSource(s.shm, sourcePid);
@@ -178,6 +186,11 @@ int SensorProcessMain(const AppConfig& config) {
                 const uint64_t low = static_cast<uint32_t>(s.shm->GetLuidLowPart());
                 luid = static_cast<int64_t>((high << 32) | low);
             }
+            if (useScreenGrabTarget) {
+                const uint64_t high = static_cast<uint32_t>(screenGrabTarget.adapterLuidHigh);
+                const uint64_t low = static_cast<uint32_t>(screenGrabTarget.adapterLuidLow);
+                luid = static_cast<int64_t>((high << 32) | low);
+            }
 
             // Cache valid LUID once discovered (it may reset during game restart)
             if (luid != 0) {
@@ -187,11 +200,16 @@ int SensorProcessMain(const AppConfig& config) {
             // Use cached LUID if current is 0
             int64_t effectiveLuid = (luid != 0) ? luid : s.cachedLuid;
 
-            if (sourcePid != s.lastSourcePid || effectiveLuid != s.lastEffectiveLuid) {
-                LogInfo("[Sensors] Session update: injectPid=%u gamePid=%u hookLuid=0x%llX luidPublisherPid=%u",
-                        it->first, sourcePid, effectiveLuid, luidSourcePid);
+            if (sourcePid != s.lastSourcePid || effectiveLuid != s.lastEffectiveLuid ||
+                useScreenGrabTarget != s.lastSourceWasScreenGrab) {
+                LogInfo(
+                    "[Sensors] Session update: injectPid=%u targetPid=%u targetSource=%s adapterLuid=0x%llX "
+                    "hookLuidPublisherPid=%u",
+                    it->first, sourcePid, useScreenGrabTarget ? "screen-grab-media" : "inject-hook", effectiveLuid,
+                    luidSourcePid);
                 s.lastSourcePid = sourcePid;
                 s.lastEffectiveLuid = effectiveLuid;
+                s.lastSourceWasScreenGrab = useScreenGrabTarget;
             }
 
             s.updatesSinceSummary++;
@@ -211,7 +229,10 @@ int SensorProcessMain(const AppConfig& config) {
             }
 
             // Update metrics using the existing host_metrics logic
-            scan_host::UpdateSystemMetrics(s.shm, sourcePid, effectiveLuid);
+            scan_host::UpdateSystemMetrics(
+                s.shm, sourcePid, effectiveLuid,
+                useScreenGrabTarget ? scan_host::metrics_policy::AdapterResolutionSource::CaptureDeviceLuid
+                                    : scan_host::metrics_policy::AdapterResolutionSource::HookLuid);
 
             ++it;
         }

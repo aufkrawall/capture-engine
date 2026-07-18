@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cctype>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -19,6 +20,7 @@
 #include <vector>
 
 std::string g_SessionDirName;
+std::string g_RecordingId;
 
 namespace {
 
@@ -371,6 +373,26 @@ std::string ParseSessionDir(LPSTR commandLine) {
     return std::string(value, end);
 }
 
+std::string ParseRecordingId(LPSTR commandLine) {
+    if (!commandLine)
+        return {};
+    const char* value = strstr(commandLine, "--recording-id=");
+    if (!value)
+        return {};
+    value += 15;
+    const char* end = value;
+    while (*end && *end != ' ' && *end != '\t') {
+        const unsigned char character = static_cast<unsigned char>(*end);
+        if (!(std::isalnum(character) || character == '_' || character == '-'))
+            return {};
+        ++end;
+    }
+    const size_t length = static_cast<size_t>(end - value);
+    if (length == 0 || length > 64)
+        return {};
+    return std::string(value, end);
+}
+
 const char* GetLogFileName(ProcessMode mode) {
     switch (mode) {
         case ProcessMode::Inject:
@@ -386,6 +408,15 @@ const char* GetLogFileName(ProcessMode mode) {
         default:
             return "captureengine.log";
     }
+}
+
+std::string GetProcessLogFileName(ProcessMode mode, const std::string& recordingId, uint32_t processId) {
+    if (mode != ProcessMode::Media)
+        return GetLogFileName(mode);
+
+    char processSuffix[24]{};
+    snprintf(processSuffix, sizeof(processSuffix), "_%lu.log", static_cast<unsigned long>(processId));
+    return std::string("media_") + (recordingId.empty() ? "unscoped" : recordingId) + processSuffix;
 }
 
 ProcessIPCServer::ProcessIPCServer(ProcessMode mode) : mode_(mode) {}
@@ -801,6 +832,8 @@ HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCCli
         commandLine += L" --parent-pid=" + std::to_wstring(GetCurrentProcessId());
     if (!g_SessionDirName.empty())
         commandLine += L" --session-dir=" + QuoteCommandLineArgument(Utf8ToWide(g_SessionDirName.c_str()));
+    if (mode == ProcessMode::Media && !g_RecordingId.empty())
+        commandLine += L" --recording-id=" + QuoteCommandLineArgument(Utf8ToWide(g_RecordingId.c_str()));
     if (!ipcArguments.empty())
         commandLine += L" " + ipcArguments;
 

@@ -159,6 +159,8 @@ static_assert(static_cast<uint32_t>(metrics_policy::AdapterResolutionSource::Pro
               SYSTEM_METRICS_ADAPTER_PROCESS_ENGINE);
 static_assert(static_cast<uint32_t>(metrics_policy::AdapterResolutionSource::RetainedProcessGpuEngine) ==
               SYSTEM_METRICS_ADAPTER_RETAINED_PROCESS_ENGINE);
+static_assert(static_cast<uint32_t>(metrics_policy::AdapterResolutionSource::CaptureDeviceLuid) ==
+              SYSTEM_METRICS_ADAPTER_CAPTURE_DEVICE);
 
 struct GpuEngineValue {
     int64_t adapterLuid = 0;
@@ -269,6 +271,8 @@ const char* AdapterSourceName(metrics_policy::AdapterResolutionSource source) {
             return "target PID GPU Engine";
         case metrics_policy::AdapterResolutionSource::RetainedProcessGpuEngine:
             return "retained target PID GPU Engine";
+        case metrics_policy::AdapterResolutionSource::CaptureDeviceLuid:
+            return "media capture-device LUID";
         default:
             return "unavailable";
     }
@@ -277,17 +281,20 @@ const char* AdapterSourceName(metrics_policy::AdapterResolutionSource source) {
 uint32_t AdapterSourceClass(metrics_policy::AdapterResolutionSource source) {
     if (source == metrics_policy::AdapterResolutionSource::HookLuid)
         return 1;
+    if (source == metrics_policy::AdapterResolutionSource::CaptureDeviceLuid)
+        return 4;
     return source == metrics_policy::AdapterResolutionSource::Unavailable ? 0 : 2;
 }
 
 }  // namespace
 
-void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t hookLuid) {
+void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t knownLuid,
+                         metrics_policy::AdapterResolutionSource knownSource) {
     if (!shm)
         return;
 
     std::lock_guard<std::mutex> lock(g_MetricsMutex);
-    g_HostMetrics.Initialize(targetPid != 0 || hookLuid != 0);
+    g_HostMetrics.Initialize(targetPid != 0 || knownLuid != 0);
     const bool debugLogging = shm->GetDebugLogging();
 
     float cpuUsage = shm->systemMetrics.cpuUsage.load(std::memory_order_relaxed);
@@ -317,8 +324,8 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t ho
         g_HostMetrics.processResolvedPid = targetPid;
         g_HostMetrics.processResolvedLuid = 0;
     }
-    const metrics_policy::AdapterResolution adapter =
-        metrics_policy::ResolveAdapterLuid(hookLuid, targetPid, processSamples, g_HostMetrics.processResolvedLuid);
+    const metrics_policy::AdapterResolution adapter = metrics_policy::ResolveAdapterLuid(
+        knownLuid, targetPid, processSamples, g_HostMetrics.processResolvedLuid, knownSource);
     if (adapter.source == metrics_policy::AdapterResolutionSource::ProcessGpuEngine && adapter.adapterLuid != 0)
         g_HostMetrics.processResolvedLuid = adapter.adapterLuid;
 

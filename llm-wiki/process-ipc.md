@@ -1,16 +1,18 @@
 # Process IPC And Restricted Children
 
-Last cross-checked: 2026-07-18 (restricted process channels, accept-before-finalize media stops, private same-image process-loopback workers, GUI launch-feedback suppression, Explorer tray recovery, and exact shared-memory ABI/build publication/isolation)
+Last cross-checked: 2026-07-18 (restricted process channels, immutable per-recording media evidence, limited-query process identity, non-inject sensor targets, accept-before-finalize media stops, Explorer tray recovery, and exact shared-memory ABI/build publication/isolation)
 
 Primary sources:
 - `common/restricted_child_process.{h,cpp}`
 - `common/process_ipc.{h,cpp}`
+- `common/process_identity.{h,cpp}`
 - `common/shared_defs.h`
 - `captureengine/{main,inject_main,media_main,limiter_main}.cpp`
 - `captureengine/{ipc,logger_service,sensor_service}.cpp`
 - `captureengine/tray.{h,cpp}`
 - `hook/common/ipc_client.cpp`
 - `tests/test_process_ipc.cpp`
+- `tests/test_process_identity.cpp`
 - `tests/test_tray_source.cpp`
 - `tests/{test_shared_runtime_state,test_logger_service_policy}.cpp`
 
@@ -22,7 +24,9 @@ An ordinary video or audio-only stop is an authenticated media command, not an i
 
 The pipe security descriptor grants access only to SYSTEM and the current user. The child verifies that the inherited pipe's server PID is the controller. The controller accepts startup only when the versioned handshake contains the exact spawned child PID, expected mode, and per-channel cryptographically generated 128-bit nonce.
 
-The separate high-volume inject shared-memory transport is also an exact internal ABI, not a backward-compatible prefix protocol. ABI 36 uses version-isolated main/discovery mapping names and publishes magic only after construction and full header/config initialization. Consumers must validate exact version, `sizeof(SharedMemoryLayout)`, and a compiled fingerprint of major/nested sizes and offsets before dereferencing any payload.
+The separate high-volume inject shared-memory transport is also an exact internal ABI, not a backward-compatible prefix protocol. ABI 37 uses version-isolated main/discovery mapping names and publishes magic only after construction and full header/config initialization. Consumers must validate exact version, `sizeof(SharedMemoryLayout)`, and a compiled fingerprint of major/nested sizes and offsets before dereferencing any payload. ABI 37 also carries a media-owned seqlocked screen-grab target PID/LUID snapshot; it is deliberately separate from the hook-owned `sourcePid` and cannot trigger injection or hook configuration.
+
+Process identity uses only `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` plus `QueryFullProcessImageName`. A failed query returns an empty result with the real Windows error; it can never leak a partially overwritten `unknown` sentinel into profile selection. Exact application-profile window matching retains the PID/name established by the selected window, so a later transient query failure cannot demote a confirmed WGC/DXGI profile. This is ordinary documented out-of-process inspection: no target-memory read, injection, concealment, or anti-cheat bypass is involved.
 
 CaptureEngine is linked as a Windows GUI-subsystem image even when the same executable runs a windowless internal role. Every restricted internal spawn therefore sets `STARTF_FORCEOFFFEEDBACK`; `CREATE_NO_WINDOW` alone does not suppress GUI process-start cursor feedback. This covers ordinary media/logger/sensor/limiter/inject children and disposable process-loopback workers, while explicit user game/launcher starts retain normal Windows feedback. The controller also clears any external launch feedback at its earliest controller-only dispatch and creates its hidden tray owner before Vulkan registration or child startup can extend the busy cursor. The hook's hidden same-image dump helper uses the same feedback opt-out.
 
@@ -40,6 +44,7 @@ That tray owner is a hidden top-level tool window so it receives Explorer's regi
 
 - Shared log producers reserve slots with a CAS on the monotonic write index, write the bounded slot, then release-publish its committed flag. The host logger stops at the first uncommitted reservation and clears slots after append.
 - Logger output uses the immutable per-session `DiscoveryInfo.logsPath`; executable-relative `logs` is only a no-discovery fallback. The filename prefix is copied into owned storage and restricted to a single safe basename, so every accepted IPC log stays inside the corresponding session ID directory.
+- The controller alone writes `session_manifest.txt`. Each disposable media child inherits a strict controller-issued recording ID and writes `media_<recording-id>_<pid>.log` plus `recording_<recording-id>_<pid>.manifest`; a later recording therefore cannot truncate earlier evidence or replace controller session metadata. `tools/analyze_capture_av.py` refuses ambiguous multi-recording sessions unless a recording ID/media log is selected (or `--all-recordings` is used), derives the selected recording's QPC bounds before consuming session-spanning performance CSVs, and suppresses unscoped gap attribution when those bounds are unavailable. It reports `recording_evidence_missing_or_overwritten` when legacy controller start counts exceed surviving media logs.
 - Integration summaries default to the latest corresponding session directory rather than the global log root. An explicit `--results-json` path remains an intentional caller override.
 - The frame-ring producer window must remain at most `FRAME_RING_SIZE`. Media refuses an inject start/reset with a corrupt window and publishes a recording-integrity failure instead of silently creating a zero-frame recording.
 - Vulkan layer-owned and encoder-owned producer pools use all 16 shared texture lease slots. Four slots can deadlock when the media scheduler retains five or more frames for measured loopback A/V delay and fence headroom: every texture remains leased while the consumer waits for one additional frame. The integration runner therefore requires final nonzero encoder output statistics; overlay/performance samples alone cannot prove recording success.
@@ -63,7 +68,7 @@ The private pipe name is only a transient rendezvous used while the controller a
 
 ## Tests And Diagnostics
 
-`tests/test_process_ipc.cpp` covers exact message validation, valid commands/responses, bad kind/opcode/mode/PID/nonce/sequence/size/payload, strict startup arguments, private-pipe source invariants, restricted handle-list spawning, accept-before-finalize media stop ordering and fallback placement, delivery of the launch-feedback opt-out to a real child probe, and earliest Controller-only cursor/tray ordering. `tests/test_tray_source.cpp` locks the registered `TaskbarCreated` wiring, construction-time instance binding, state-preserving `NIM_ADD`, and no-restore-after-remove guard. `tests/test_crash_handler.cpp` locks the hidden dump-helper feedback opt-out. Shared-memory tests cover explicit ABI publication/rejection, version-isolated names, wrap-safe frame windows, session log directory selection, and filename containment. Runtime diagnostics identify tray add/recovery results, rejected headers/messages, channel disconnects, corrupt frame indices, early/periodic Vulkan frame publication, and rate-limited ring-full events without logging secrets.
+`tests/test_process_ipc.cpp` covers exact message validation, strict recording-ID parsing/naming, valid commands/responses, bad kind/opcode/mode/PID/nonce/sequence/size/payload, strict startup arguments, private-pipe source invariants, restricted handle-list spawning, accept-before-finalize media stop ordering and fallback placement, delivery of the launch-feedback opt-out to a real child probe, and earliest Controller-only cursor/tray ordering. `tests/test_process_identity.cpp` locks limited-query-only identity and empty-on-failure behavior. Shared-memory/host-metrics tests cover ABI 37's screen-grab target snapshot and capture-device LUID provenance. Analyzer self-tests cover multi-recording refusal/selection and legacy overwritten-evidence classification.
 
 The focused `TrayIconSourceTest.*` gate passed. Incremental product build `0.1.5089` passed both hook architectures, CaptureEngine/MediaEngine, packaging, both Vulkan layers, import closure, PE mitigations, architecture, and PDB checks. The exact-build no-build gate passed the complete native suite and all five Python tool self-tests.
 
@@ -73,4 +78,4 @@ The focused `TrayIconSourceTest.*` gate passed. Incremental product build `0.1.5
 - Real anti-malware/injection-heavy runtime testing remains useful because inherited-handle launch behavior can be affected by third-party process instrumentation.
 - CaptureEngine cannot prevent feedback that an external shell applies before `WinMain` begins; it minimizes that interval with the earliest Controller-only cursor reset and hidden UI owner. Fresh ordinary startup/application-audio churn observation remains the runtime confirmation boundary.
 - Session `20260718_223556` proved Explorer changed from PID 9084 to PID 16712 while the controller remained healthy, but it was captured on build `0.1.5088`, before tray recovery existed. A real Explorer restart on `0.1.5089` or later remains the runtime confirmation boundary for the restored-icon diagnostics.
-- ABI 36 intentionally requires a fresh target process after installation; an already injected older DLL cannot hot-upgrade its compiled mapping name/layout/build identity. Fresh ordinary-account Vulkan session `20260717_152124` confirmed exact-build discovery, session logging, 16-texture publication, overlay rendering, and 534 encoded output frames after the 2026-07-17 fix.
+- ABI 37 intentionally requires a fresh target process after installation; an already injected older DLL cannot hot-upgrade its compiled mapping name/layout/build identity. Fresh runtime validation of the new immutable media filenames and non-inject sensor publication remains pending.

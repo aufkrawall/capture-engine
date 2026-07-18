@@ -49,6 +49,7 @@ extern int SensorProcessMain(const AppConfig& config);
 // Controller state
 static bool g_Running = true;
 static bool g_Recording = false;
+static uint32_t g_RecordingSerial = 0;
 static std::atomic<RecordingStartIntent> g_RecordingStartIntent{RecordingStartIntent::Idle};
 static AppConfig g_Config;
 static std::string g_ConfigPath;
@@ -145,6 +146,16 @@ struct MainThreadBlockTimer {
 
 bool ShouldStartMediaProcessAtStartup() {
     return g_AutoRecordEnabled;
+}
+
+void PrepareRecordingDiagnosticIdentity() {
+    if (g_hMediaProcess && IsProcessRunning(g_hMediaProcess) && !g_RecordingId.empty())
+        return;
+
+    char recordingId[24]{};
+    snprintf(recordingId, sizeof(recordingId), "r%04lu", static_cast<unsigned long>(++g_RecordingSerial));
+    g_RecordingId = recordingId;
+    LogInfo("[Controller] Recording diagnostic identity allocated: %s", g_RecordingId.c_str());
 }
 
 bool ShouldStartLimiterProcessAtStartup(const AppConfig& config) {
@@ -257,7 +268,30 @@ void WriteSessionManifest(const std::string& logsDir, const AppConfig& config, P
     manifest << "game_whitelist_entries=" << config.gameWhitelist.size() << "\n";
     manifest << "overlay_whitelist_entries=" << config.overlayWhitelist.size() << "\n";
     manifest << "logs=" << GetLogFileName(mode) << "\n";
+    manifest << "media_logs=media_*.log\n";
+    manifest << "recording_manifests=recording_*.manifest\n";
     manifest << "notes=Use this file as the compact session entrypoint before reading detailed logs.\n";
+}
+
+void WriteRecordingManifest(const std::string& logsDir, const AppConfig& config, const std::string& mediaLog) {
+    if (g_RecordingId.empty())
+        return;
+
+    const DWORD processId = GetCurrentProcessId();
+    const std::string path = logsDir + "\\recording_" + g_RecordingId + "_" + std::to_string(processId) +
+                             ".manifest";
+    std::ofstream manifest(path, std::ios::out | std::ios::trunc);
+    if (!manifest.is_open())
+        return;
+
+    manifest << "build_version=" << GetCaptureVersion() << "\n";
+    manifest << "build_timestamp=" << GetBuildTimestamp() << "\n";
+    manifest << "recording_id=" << g_RecordingId << "\n";
+    manifest << "media_pid=" << processId << "\n";
+    manifest << "media_log=" << mediaLog << "\n";
+    manifest << "base_capture_method=" << config.captureMethod << "\n";
+    manifest << "status=media_process_started\n";
+    manifest << "notes=Recording-specific evidence; correlate by recording_id and media_pid.\n";
 }
 
 DWORD GetControllerLoopWaitMs(DWORD lastConfigCheck) {
@@ -823,6 +857,7 @@ void ToggleRecording() {
     g_Recording = !g_Recording;
 
     if (g_Recording) {
+        PrepareRecordingDiagnosticIdentity();
         PublishRecordingStartIntent(RecordingStartIntent::Video, "record hotkey");
         LogInfo("[Controller] Starting recording...");
 
@@ -888,6 +923,7 @@ void ToggleAudioOnlyRecording() {
     g_Recording = !g_Recording;
 
     if (g_Recording) {
+        PrepareRecordingDiagnosticIdentity();
         const bool audioOnlySet =
             PublishRecordingStartIntent(RecordingStartIntent::AudioOnly, "audio-only hotkey");
         LogInfo("[Controller] Starting audio-only recording...");
@@ -1171,6 +1207,7 @@ bool CompleteControllerStartup() {
 
     int64_t mediaSpawnUs = 0;
     if (ShouldStartMediaProcessAtStartup()) {
+        PrepareRecordingDiagnosticIdentity();
         const int64_t mediaSpawnStartUs = Log_GetQpcUs();
         g_hMediaProcess = SpawnChildProcess(ProcessMode::Media, g_ConfigPath.c_str(), g_MediaClient.get());
         mediaSpawnUs = Log_GetQpcUs() - mediaSpawnStartUs;
@@ -1658,6 +1695,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
     } else {
         g_SessionDirName = ParseSessionDir(lpCmdLine);
+        g_RecordingId = ParseRecordingId(lpCmdLine);
     }
 
     std::string earlyLogsDir;
@@ -1736,11 +1774,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Setup logging with process-specific log file in session logs subfolder
     std::string logsDir = earlyLogsDir;
-    std::string logPath = logsDir + "\\" + GetLogFileName(mode);
+    const std::string processLogName = GetProcessLogFileName(mode, g_RecordingId, GetCurrentProcessId());
+    std::string logPath = logsDir + "\\" + processLogName;
     g_Config.logFilePath = logPath;
     if (IsAnyLoggingEnabled(g_Config.logLevel)) {
         CreateDirectoryA(logsDir.c_str(), NULL);
-        WriteSessionManifest(logsDir, g_Config, mode);
+        if (mode == ProcessMode::Controller)
+            WriteSessionManifest(logsDir, g_Config, mode);
+        else if (mode == ProcessMode::Media)
+            WriteRecordingManifest(logsDir, g_Config, processLogName);
     }
 
     if (IsAnyLoggingEnabled(g_Config.logLevel)) {

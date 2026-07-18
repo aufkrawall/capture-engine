@@ -77,6 +77,7 @@ bool ValidateProcessMessage(const ProcessMessage& message, size_t bytesRead, Pro
 ProcessMode ParseProcessMode(int argc, char* argv[]);
 ProcessMode ParseProcessMode(LPSTR commandLine);
 const char* GetLogFileName(ProcessMode mode);
+std::string GetProcessLogFileName(ProcessMode mode, const std::string& recordingId, uint32_t processId);
 
 class ProcessIPCServer {
 public:
@@ -145,7 +146,9 @@ private:
 };
 
 extern std::string g_SessionDirName;
+extern std::string g_RecordingId;
 std::string ParseSessionDir(LPSTR commandLine);
+std::string ParseRecordingId(LPSTR commandLine);
 
 HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCClient* ipcClient = nullptr);
 bool WaitForChildExit(HANDLE process, DWORD timeoutMs);

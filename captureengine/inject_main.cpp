@@ -11,6 +11,7 @@
 #include "../common/crash_handler.h"
 #include "../common/inject_overlay_policy.h"
 #include "../common/logging.h"
+#include "../common/process_identity.h"
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
 #include "host_metrics.h"
@@ -64,21 +65,15 @@ BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType) {
 
 // Helper: Get process name from PID
 std::string GetProcessNameFromPID(DWORD pid) {
-    char buffer[MAX_PATH] = "unknown";
-    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-    if (hProcess) {
-        if (GetModuleBaseNameA(hProcess, NULL, buffer, MAX_PATH)) {
-            // Success
+    const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(pid);
+    if (!identity) {
+        static std::atomic<uint32_t> failureLogs{0};
+        if (failureLogs.fetch_add(1, std::memory_order_relaxed) < 16) {
+            LogDebug("[Identity] Limited process-name query failed (pid=%lu error=%lu)",
+                     static_cast<unsigned long>(pid), identity.error);
         }
-        CloseHandle(hProcess);
     }
-    // Strip path if present
-    std::string name = buffer;
-    size_t lastSlash = name.find_last_of("\\/");
-    if (lastSlash != std::string::npos) {
-        name = name.substr(lastSlash + 1);
-    }
-    return name;
+    return identity.imageName;
 }
 
 static AppConfig ResolveActiveTargetConfig(const std::string& configPath, SharedMemoryLayout* pSharedMem,
@@ -94,7 +89,7 @@ static AppConfig ResolveActiveTargetConfig(const std::string& configPath, Shared
     }
 
     const std::string processName = GetProcessNameFromPID(sourcePid);
-    if (!processName.empty() && processName != "unknown") {
+    if (!processName.empty()) {
         LoadConfig(configPath, activeConfig, processName);
     }
 
@@ -658,26 +653,36 @@ int InjectProcessMain(const AppConfig& config) {
 
         // Monitor sourcePid for config reloads (CBT hook support)
         static uint32_t lastSourcePid = 0;
+        static DWORD lastIdentityWarningTick = 0;
         uint32_t currentSourcePid = pSharedMem->GetSourcePid();
         if (currentSourcePid != 0 && currentSourcePid != lastSourcePid) {
-            lastSourcePid = currentSourcePid;
             std::string procName = GetProcessNameFromPID(currentSourcePid);
-            LogInfo(
-                "[Inject] Hook detected in process: %s (PID: %d). Applying "
-                "overrides...",
-                procName.c_str(), currentSourcePid);
+            if (procName.empty()) {
+                const DWORD warningNow = GetTickCount();
+                if (lastIdentityWarningTick == 0 || warningNow - lastIdentityWarningTick >= 5000) {
+                    LogWarn("[Inject] Hook source identity unavailable (PID: %u); retaining current configuration",
+                            currentSourcePid);
+                    lastIdentityWarningTick = warningNow;
+                }
+            } else {
+                lastSourcePid = currentSourcePid;
+                LogInfo(
+                    "[Inject] Hook detected in process: %s (PID: %d). Applying "
+                    "overrides...",
+                    procName.c_str(), currentSourcePid);
 
-            // Reload config for this process
-            AppConfig targetConfig;
-            LoadConfig(configPath, targetConfig, procName);
+                // Reload config for this process
+                AppConfig targetConfig;
+                LoadConfig(configPath, targetConfig, procName);
 
-            // The hook is live now, so hide the controller-side layered pseudo
-            // overlay immediately before the regular injector state poll runs.
-            SetInjectOverlayRuntimeFlag(pSharedMem, kCaptureRuntimeFlagInjectOverlayPending, true,
-                                        "sourcePid:hook-detected");
+                // The hook is live now, so hide the controller-side layered pseudo
+                // overlay immediately before the regular injector state poll runs.
+                SetInjectOverlayRuntimeFlag(pSharedMem, kCaptureRuntimeFlagInjectOverlayPending, true,
+                                            "sourcePid:hook-detected");
 
-            // Update Shared Memory
-            UpdateSharedMemoryFromConfig(pSharedMem, targetConfig);
+                // Update Shared Memory
+                UpdateSharedMemoryFromConfig(pSharedMem, targetConfig);
+            }
         }
 
         // Update injector (scan for games, inject)

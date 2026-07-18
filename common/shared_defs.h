@@ -50,14 +50,15 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 34: Added an ABI fingerprint and isolated the mapping name from older layouts
 // Version 35: Added exact build identity to discovery so stale Vulkan layers stay dormant
 // Version 36: Expanded Vulkan encoder-owned texture publication to the full shared texture slot count
-static constexpr uint32_t SHARED_MEMORY_VERSION = 36;
+// Version 37: Added a media-owned screen-grab target snapshot for non-injected sensor attribution
+static constexpr uint32_t SHARED_MEMORY_VERSION = 37;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_36_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_37_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_36";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_37";
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -394,6 +395,13 @@ enum class CapturePipelinePhase : uint32_t {
     kStopping = 4,
 };
 
+struct ScreenGrabTargetSnapshot {
+    uint32_t processId = 0;
+    int32_t adapterLuidLow = 0;
+    int32_t adapterLuidHigh = 0;
+    bool active = false;
+};
+
 inline const char* CapturePipelinePhaseToString(CapturePipelinePhase phase) {
     switch (phase) {
         case CapturePipelinePhase::kIdle:
@@ -516,6 +524,15 @@ struct alignas(8) CaptureState {
     std::atomic<bool> ackRecordingStopped{false};
     std::atomic<uint32_t> recordingFailureCode{static_cast<uint32_t>(RecordingFailureCode::None)};
 
+    // Media -> sensor service. This is deliberately separate from sourcePid_,
+    // which remains hook-owned and continues to drive injection/config behavior.
+    // A seqlock prevents a PID/LUID pair from being observed across retargets.
+    std::atomic<uint32_t> screenGrabTargetSequence{0};
+    std::atomic<uint32_t> screenGrabTargetPid{0};
+    std::atomic<int32_t> screenGrabAdapterLuidLow{0};
+    std::atomic<int32_t> screenGrabAdapterLuidHigh{0};
+    std::atomic<uint32_t> screenGrabTargetActive{0};
+
     // Screenshot request/result protocol (host -> hook -> host). screenshotPath is
     // the request-owned .part path; the hook atomically publishes the matching
     // .ready payload before completing and signaling screenshotCompletionEventName.
@@ -586,6 +603,34 @@ struct alignas(8) CaptureState {
         } else {
             runtimeFlags.fetch_and(~flag, std::memory_order_acq_rel);
         }
+    }
+
+    void PublishScreenGrabTarget(uint32_t processId, int32_t adapterLuidLow, int32_t adapterLuidHigh, bool active) {
+        screenGrabTargetSequence.fetch_add(1, std::memory_order_acq_rel);
+        screenGrabTargetPid.store(active ? processId : 0, std::memory_order_relaxed);
+        screenGrabAdapterLuidLow.store(active ? adapterLuidLow : 0, std::memory_order_relaxed);
+        screenGrabAdapterLuidHigh.store(active ? adapterLuidHigh : 0, std::memory_order_relaxed);
+        screenGrabTargetActive.store(active ? 1u : 0u, std::memory_order_release);
+        screenGrabTargetSequence.fetch_add(1, std::memory_order_release);
+    }
+
+    bool ReadScreenGrabTarget(ScreenGrabTargetSnapshot& snapshot) const {
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            const uint32_t before = screenGrabTargetSequence.load(std::memory_order_acquire);
+            if ((before & 1u) != 0)
+                continue;
+            ScreenGrabTargetSnapshot candidate;
+            candidate.processId = screenGrabTargetPid.load(std::memory_order_relaxed);
+            candidate.adapterLuidLow = screenGrabAdapterLuidLow.load(std::memory_order_relaxed);
+            candidate.adapterLuidHigh = screenGrabAdapterLuidHigh.load(std::memory_order_relaxed);
+            candidate.active = screenGrabTargetActive.load(std::memory_order_acquire) != 0;
+            const uint32_t after = screenGrabTargetSequence.load(std::memory_order_acquire);
+            if (before == after && (after & 1u) == 0) {
+                snapshot = candidate;
+                return true;
+            }
+        }
+        return false;
     }
 };
 
@@ -730,6 +775,7 @@ enum SharedSystemMetricsAdapterSource : uint32_t {
     SYSTEM_METRICS_ADAPTER_HOOK_LUID = 1,
     SYSTEM_METRICS_ADAPTER_PROCESS_ENGINE = 2,
     SYSTEM_METRICS_ADAPTER_RETAINED_PROCESS_ENGINE = 3,
+    SYSTEM_METRICS_ADAPTER_CAPTURE_DEVICE = 4,
 };
 
 // Main Shared Memory Structure
@@ -1265,6 +1311,8 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, graphicsConfig));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, logFilePath));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, runtimeState));
+    hash = MixSharedMemoryAbiValue(hash, sizeof(CaptureState));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(CaptureState, screenGrabTargetSequence));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, systemMetrics));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, encoderTextures));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout, frameRing));
