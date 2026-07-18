@@ -302,9 +302,12 @@ python .\tools\run_av_sync_matrix.py --full-matrix --include-source-stall --keep
 python .\tools\run_av_sync_matrix.py --long-soak --long-soak-minutes 40
 python .\tools\run_av_sync_matrix.py --capture-methods wgc,inject --codecs alac --fps 60 --duration-sec 7
 python .\tools\analyze_capture_av.py --session-dir .\installed\captureengine\logs\<session> --json-out .\installed\captureengine\logs\<session>\av_triage_report.json
+python .\tools\analyze_capture_av.py --session-dir .\installed\captureengine\logs\<session> --recording-id r0001 --capture <capture.mkv> --metadata-only --ffprobe .\build\msys64\clang64\bin\ffprobe.exe
 
 powershell -ExecutionPolicy Bypass -File .\analysis\analyze_dump.ps1 .\installed\captureengine\logs\<session>\<dump>.dmp
 ```
+
+For a multi-recording session, select the immutable recording ID or exact media log before attaching one capture. Attached captures honor the same scan mode as standalone analysis: the default/full scan performs authoritative packet coverage and decoded-audio endpoint checks, while `--metadata-only` performs only the fast stream/container probe and is explicitly non-authoritative. Metadata-only results must not create audio/visual timeline faults or claim exact endpoints; use the full scan or decoded matrix gate when exact capture integrity is required.
 
 ## Dump Analysis Notes
 - Windows-host builds now emit sidecar `.pdb` files via clang CodeView debug info plus `lld` PDB emission, so `cdb.exe`, WinDbg, and Visual Studio can load native symbols without switching the build to MSVC.

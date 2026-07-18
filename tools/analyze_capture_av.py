@@ -422,6 +422,7 @@ WGC_CFR_SMOOTHNESS_POLICY_REPEAT_NOTICE_MIN_COUNT = 24
 WGC_CFR_SMOOTHNESS_POLICY_REPEAT_NOTICE_PERMILLE = 5
 WGC_CFR_SMOOTHNESS_EXCESS_REPEAT_CLUSTER_FAULT_TICKS = 24
 WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT = 10
+WGC_AUDIO_LATE_RISK_WINDOW_US = 10 * 1000 * 1000
 WGC_AUDIO_LATE_RISK_P95_US = 7000
 WGC_AUDIO_LATE_RISK_NEAR_CAP_US = 9500
 # A single residual maximum slightly above 10 ms is normal evidence at a 120 Hz
@@ -1323,6 +1324,8 @@ def analyze_completed_capture_exact(ffprobe, ffmpeg, capture_path, threshold=1e-
     all_tracks_exact = all(track["endpoint_exact"] and track["decoder_clean"] for track in track_reports)
     correlations = analyze_inter_track_correlations(decoded_tracks)
     return {
+        "analysis_mode": "exact",
+        "authoritative": True,
         "capture": str(capture_path),
         "container_duration": parse_float(format_info.get("duration")),
         "video": {
@@ -1345,8 +1348,62 @@ def analyze_completed_capture_exact(ffprobe, ffmpeg, capture_path, threshold=1e-
     }
 
 
+def analyze_completed_capture_metadata(ffprobe, capture_path):
+    format_info, video_streams, audio_streams = analyze_streams(ffprobe, capture_path)
+    video_stream = video_streams[0]
+    format_duration = parse_float(format_info.get("duration"))
+    video_timing = analyze_video_stream_metadata(video_stream, format_duration)
+    fps_text = video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate") or "0/0"
+    tracks = []
+    for ordinal, stream_info in enumerate(audio_streams):
+        metadata = analyze_audio_stream_metadata(ordinal, stream_info, format_duration)
+        tracks.append(
+            {
+                "audio_ordinal": ordinal,
+                "stream_index": metadata["stream_index"],
+                "codec": metadata["codec"],
+                "sample_rate": metadata["sample_rate"],
+                "channels": metadata["channels"],
+                "metadata_samples": metadata["sample_total"],
+                "metadata_duration": metadata["decoded_duration"],
+                "frame_start": metadata["frame_start"],
+                "frame_end": metadata["frame_end"],
+            }
+        )
+    return {
+        "analysis_mode": "metadata",
+        "authoritative": False,
+        "capture": str(capture_path),
+        "container_duration": format_duration,
+        "video": {
+            "codec": video_stream.get("codec_name", ""),
+            "fps": fps_text,
+            "frame_count": video_timing["frame_count"],
+            "metadata_duration": video_timing["duration"],
+            "frame_start": video_timing["first_pts"],
+            "frame_end": video_timing["frame_end"],
+        },
+        "tracks": tracks,
+        "correlations": [],
+        "endpoint_durations_identical": None,
+        "all_tracks_exact": None,
+        "decoder_clean": None,
+        "cfr_packet_coverage_exact": None,
+        "probe_succeeded": True,
+        "passed": None,
+    }
+
+
+def analyze_completed_capture(ffprobe, ffmpeg, capture_path, full_scan, threshold=1e-4):
+    if full_scan:
+        return analyze_completed_capture_exact(ffprobe, ffmpeg, capture_path, threshold)
+    return analyze_completed_capture_metadata(ffprobe, capture_path)
+
+
 def attach_completed_capture_report(report, completed_capture):
     report["completed_capture"] = completed_capture
+    if not completed_capture.get("authoritative", True):
+        return
     if not completed_capture["all_tracks_exact"] or not completed_capture["endpoint_durations_identical"]:
         if "ce_audio_timeline_fault" not in report["verdicts"]:
             report["verdicts"].append("ce_audio_timeline_fault")
@@ -2425,6 +2482,7 @@ def parse_media_triage(media_text):
         if cadence_event_match:
             event = parse_attribution_payload(cadence_event_match.group(2))
             event["mode"] = cadence_event_match.group(1)
+            event["timestamp_us"] = parse_log_timestamp_us(line)
             event["line"] = line
             wgc_cadence_events.append(event)
         if INJECT_PERF_RE.search(line):
@@ -3873,6 +3931,62 @@ def wgc_source_delivery_period_us(media_evidence):
     return int(math.ceil(1000000.0 / worst_delivered_fps))
 
 
+def wgc_near_cap_window_pressure(media_evidence, window_us=WGC_AUDIO_LATE_RISK_WINDOW_US):
+    samples = []
+    day_offset_us = 0
+    previous_raw_timestamp_us = -1
+    for event in media_evidence["wgc_cadence_events"]:
+        if "nearCap" not in event:
+            continue
+        raw_timestamp_us = parse_int(event.get("timestamp_us"), -1)
+        if raw_timestamp_us < 0:
+            raw_timestamp_us = parse_log_timestamp_us(event.get("line", ""))
+        if raw_timestamp_us < 0:
+            continue
+        if (
+            previous_raw_timestamp_us >= 0
+            and previous_raw_timestamp_us - raw_timestamp_us > 12 * 60 * 60 * 1000 * 1000
+        ):
+            day_offset_us += 24 * 60 * 60 * 1000 * 1000
+        previous_raw_timestamp_us = raw_timestamp_us
+        timestamp_us = raw_timestamp_us + day_offset_us
+        samples.append((timestamp_us, max(0, parse_int(event.get("nearCap"), 0))))
+    samples.sort()
+
+    accepted_total = sum(count for _timestamp_us, count in samples)
+    max_accepted = 0
+    max_start_us = -1
+    left = 0
+    rolling = 0
+    for right, (timestamp_us, count) in enumerate(samples):
+        rolling += count
+        while left <= right and timestamp_us - samples[left][0] >= window_us:
+            rolling -= samples[left][1]
+            left += 1
+        if rolling > max_accepted:
+            max_accepted = rolling
+            max_start_us = samples[left][0]
+    return {
+        "window_us": window_us,
+        "timestamped_windows": len(samples),
+        "accepted_total": accepted_total,
+        "max_accepted": max_accepted,
+        "max_start_us": max_start_us,
+    }
+
+
+def wgc_near_cap_acceptance_is_isolated(media_evidence, item):
+    accepted_total = item.get("delay_near_cap_accepted", 0)
+    if accepted_total < WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT:
+        return True
+    pressure = wgc_near_cap_window_pressure(media_evidence)
+    return (
+        pressure["timestamped_windows"] > 0
+        and pressure["accepted_total"] >= accepted_total
+        and pressure["max_accepted"] < WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT
+    )
+
+
 def wgc_source_limited_delay_is_context(media_evidence, item):
     """True when delay variation is bounded by proven source delivery holes, not CE policy.
 
@@ -3897,7 +4011,7 @@ def wgc_source_limited_delay_is_context(media_evidence, item):
         and item.get("delay_post_selection_rejected_sync", 0) == 0
         and item.get("wgc_smoothness_evidence_incomplete", 0) == 0
         and item.get("delay_soft_late_accepted", 0) == 0
-        and item.get("delay_near_cap_accepted", 0) < WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT
+        and wgc_near_cap_acceptance_is_isolated(media_evidence, item)
         and item.get("delay_repeat_soft_safe_candidate", 0) == 0
         and item.get("delay_sync_protected_repeats", 0) > 0
     ):
@@ -4483,6 +4597,7 @@ def classify_session_triage(
     wgc_active_delay_realized_delay_unstable = has_wgc_active_delay_realized_delay_unstable(media_evidence)
     if wgc_active_delay_realized_delay_unstable:
         verdicts.append(screen_capture_diagnostic("active_delay_realized_delay_unstable"))
+    wgc_near_cap_window = wgc_near_cap_window_pressure(media_evidence)
     wgc_source_limited_delay_variation_context = has_wgc_source_limited_delay_variation_context(media_evidence)
     if wgc_source_limited_delay_variation_context:
         contexts.append(screen_capture_diagnostic("source_limited_delay_variation"))
@@ -4723,6 +4838,7 @@ def classify_session_triage(
             "wgc_quality": media_evidence["wgc_quality"],
             "wgc_source_coverage": media_evidence["wgc_source_coverage"],
             "wgc_cadence_events": media_evidence["wgc_cadence_events"][:20],
+            "wgc_near_cap_window_pressure": wgc_near_cap_window,
             "wgc_smoothness_summary": media_evidence["wgc_smoothness_summary"],
             "wgc_perf_worst": {
                 "max_fresh_miss_pm": max((item["fresh_miss_pm"] for item in media_evidence["wgc_perf"]), default=0),
@@ -5072,7 +5188,8 @@ def print_triage_report(report):
                 "relaxed={relaxed} better={relaxed_better} cluster={relaxed_cluster} "
                 "reject_sync={reject_sync} reject_headroom={reject_headroom} reject_cost={reject_cost} "
                 "soft_late={soft_late_reject}/{soft_late_accept} older_frame={older_frame} "
-                "near_cap={near_cap} hard_only={hard_only} sync_protected={sync_protected} "
+                "near_cap={near_cap} near_cap_10s={near_cap_window}/{near_cap_accounted} "
+                "hard_only={hard_only} sync_protected={sync_protected} "
                 "source_limited_repeat={source_limited_repeat} "
                 "repeat_rescue={repeat_rescue_success}/{repeat_rescue_attempts} "
                 "repeat_promote={repeat_promote}/{repeat_promote_attempts} "
@@ -5132,6 +5249,8 @@ def print_triage_report(report):
                     soft_late_accept=worst_sync_delay.get("delay_soft_late_accepted", 0),
                     older_frame=worst_sync_delay.get("delay_older_frame_avoided_repeat", 0),
                     near_cap=worst_sync_delay.get("delay_near_cap_accepted", 0),
+                    near_cap_window=evidence["wgc_near_cap_window_pressure"]["max_accepted"],
+                    near_cap_accounted=evidence["wgc_near_cap_window_pressure"]["accepted_total"],
                     hard_only=worst_sync_delay.get("delay_hard_only_candidates", 0),
                     sync_protected=worst_sync_delay.get("delay_sync_protected_repeats", 0),
                     source_limited_repeat=worst_sync_delay.get("delay_source_limited_repeats", 0),
@@ -5183,6 +5302,18 @@ def print_triage_report(report):
     completed = report.get("completed_capture")
     if completed:
         video = completed["video"]
+        if not completed.get("authoritative", True):
+            print(
+                "  completed_capture mode=metadata authoritative=0 container={duration:.6f}s "
+                "video={codec} fps={fps} estimated_frames={frames} audio_tracks={tracks}".format(
+                    duration=completed["container_duration"],
+                    codec=video["codec"],
+                    fps=video["fps"],
+                    frames=video["frame_count"],
+                    tracks=len(completed["tracks"]),
+                )
+            )
+            return
         print(
             "  completed_capture passed={passed} cfr={cfr} frames={frames} fps={fps} "
             "endpoints_identical={identical} decoder_clean={decoder}".format(
@@ -5972,6 +6103,88 @@ def self_test():
         assert has_wgc_source_limited_playout_maximal(near_lower_bound_evidence)
         assert has_wgc_source_limited_delay_variation_context(near_lower_bound_evidence)
         assert not has_wgc_active_delay_realized_delay_unstable(near_lower_bound_evidence)
+
+        mixed_content_delay_evidence = parse_media_triage(
+            read_text_if_exists(dxgi_variable_fps_source_limited / "media.log")
+        )
+        mixed_content_delay_summary = mixed_content_delay_evidence["wgc_smoothness_summary"][0]
+        mixed_content_delay_summary.update(
+            {
+                "delay_near_cap_accepted": 22,
+                "realized_delay_min_us": 38133,
+                "realized_delay_max_us": 53972,
+            }
+        )
+        mixed_near_cap_samples = (
+            (1, 2),
+            (45, 1),
+            (46, 1),
+            (170, 1),
+            (174, 1),
+            (360, 1),
+            (373, 1),
+            (406, 1),
+            (420, 1),
+            (750, 1),
+            (953, 1),
+            (955, 2),
+            (960, 1),
+            (964, 1),
+            (967, 1),
+            (968, 1),
+            (970, 1),
+            (972, 3),
+        )
+
+        def parse_near_cap_windows(samples):
+            lines = []
+            for second, count in samples:
+                hour = second // 3600
+                minute = (second % 3600) // 60
+                second_of_minute = second % 60
+                lines.append(
+                    f"[2026-07-19 {hour:02d}:{minute:02d}:{second_of_minute:02d}.000] [INFO] "
+                    f"[WGC CFR CADENCE EVENT] mode=normal_pressure nearCap={count}"
+                )
+            return parse_media_triage("\n".join(lines))["wgc_cadence_events"]
+
+        mixed_content_delay_evidence["wgc_cadence_events"] = parse_near_cap_windows(
+            mixed_near_cap_samples
+        )
+        assert mixed_content_delay_evidence["wgc_cadence_events"][0]["timestamp_us"] == 1000000
+        mixed_window_pressure = wgc_near_cap_window_pressure(mixed_content_delay_evidence)
+        assert mixed_window_pressure["accepted_total"] == 22
+        assert mixed_window_pressure["max_accepted"] == 7
+        assert wgc_near_cap_acceptance_is_isolated(
+            mixed_content_delay_evidence, mixed_content_delay_summary
+        )
+        assert has_wgc_source_limited_delay_variation_context(mixed_content_delay_evidence)
+        assert not has_wgc_active_delay_realized_delay_unstable(mixed_content_delay_evidence)
+        mixed_content_delay_evidence["wgc_cadence_events"].pop()
+        assert not wgc_near_cap_acceptance_is_isolated(
+            mixed_content_delay_evidence, mixed_content_delay_summary
+        )
+
+        sustained_delay_evidence = parse_media_triage(
+            read_text_if_exists(dxgi_variable_fps_source_limited / "media.log")
+        )
+        sustained_delay_summary = sustained_delay_evidence["wgc_smoothness_summary"][0]
+        sustained_delay_summary.update(
+            {
+                "delay_near_cap_accepted": 12,
+                "realized_delay_min_us": 38133,
+                "realized_delay_max_us": 53972,
+            }
+        )
+        sustained_delay_evidence["wgc_cadence_events"] = parse_near_cap_windows(
+            (second, 2) for second in range(100, 106)
+        )
+        sustained_window_pressure = wgc_near_cap_window_pressure(sustained_delay_evidence)
+        assert sustained_window_pressure["accepted_total"] == 12
+        assert sustained_window_pressure["max_accepted"] == 12
+        assert not wgc_near_cap_acceptance_is_isolated(sustained_delay_evidence, sustained_delay_summary)
+        assert not has_wgc_source_limited_delay_variation_context(sustained_delay_evidence)
+        assert has_wgc_active_delay_realized_delay_unstable(sustained_delay_evidence)
 
         wgc_pool_lifetime_fault = make_session(
             "wgc_pool_lifetime_fault",
@@ -7816,6 +8029,52 @@ def self_test():
         assert report["evidence"]["controller_recording_start_count"] == 2
         assert report["evidence"]["discovered_recording_evidence_count"] == 1
 
+        analyzer_globals = globals()
+        original_exact_analyzer = analyzer_globals["analyze_completed_capture_exact"]
+        original_metadata_analyzer = analyzer_globals["analyze_completed_capture_metadata"]
+        completed_capture_calls = []
+
+        def fake_exact_analyzer(_ffprobe, _ffmpeg, _capture_path, _threshold):
+            completed_capture_calls.append("exact")
+            return {"analysis_mode": "exact"}
+
+        def fake_metadata_analyzer(_ffprobe, _capture_path):
+            completed_capture_calls.append("metadata")
+            return {"analysis_mode": "metadata"}
+
+        try:
+            analyzer_globals["analyze_completed_capture_exact"] = fake_exact_analyzer
+            analyzer_globals["analyze_completed_capture_metadata"] = fake_metadata_analyzer
+            metadata_dispatch = analyze_completed_capture(
+                Path("ffprobe"), Path("ffmpeg"), Path("capture.mkv"), False
+            )
+            exact_dispatch = analyze_completed_capture(
+                Path("ffprobe"), Path("ffmpeg"), Path("capture.mkv"), True
+            )
+        finally:
+            analyzer_globals["analyze_completed_capture_exact"] = original_exact_analyzer
+            analyzer_globals["analyze_completed_capture_metadata"] = original_metadata_analyzer
+        assert metadata_dispatch["analysis_mode"] == "metadata"
+        assert exact_dispatch["analysis_mode"] == "exact"
+        assert completed_capture_calls == ["metadata", "exact"]
+
+        metadata_attachment = {
+            "analysis_mode": "metadata",
+            "authoritative": False,
+            "all_tracks_exact": None,
+            "endpoint_durations_identical": None,
+            "cfr_packet_coverage_exact": None,
+        }
+        metadata_report = {
+            "verdicts": ["unknown"],
+            "faults": {"audio_timeline": False, "visual_timeline": False},
+        }
+        attach_completed_capture_report(metadata_report, metadata_attachment)
+        assert metadata_report["completed_capture"] is metadata_attachment
+        assert metadata_report["verdicts"] == ["unknown"]
+        assert not metadata_report["faults"]["audio_timeline"]
+        assert not metadata_report["faults"]["visual_timeline"]
+
     print("self-test: PASS")
 
 
@@ -7987,8 +8246,12 @@ def main():
         if effective_capture:
             attach_completed_capture_report(
                 reports[0],
-                analyze_completed_capture_exact(
-                    args.ffprobe, args.ffmpeg, effective_capture, args.tail_threshold
+                analyze_completed_capture(
+                    args.ffprobe,
+                    args.ffmpeg,
+                    effective_capture,
+                    args.full_scan,
+                    args.tail_threshold,
                 ),
             )
         for index, report in enumerate(reports):
