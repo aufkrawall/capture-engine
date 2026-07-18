@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "../common/pseudo_overlay_profile_policy.h"
 #include "../common/pseudo_overlay_visibility.h"
 
 namespace pov = ce::pseudo_overlay;
@@ -208,4 +209,36 @@ TEST(PseudoOverlayVisibilityTest, GhostKeepaliveDuringMode2RecordingKeepsAlive) 
     in.recordingState = ce::recording_indicator::State::RecordingVideo;
     in.ghostActive = true;
     EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));
+}
+
+TEST(PseudoOverlayProfilePolicyTest, ProfileMatchingIsExactAndCaseInsensitive) {
+    PseudoOverlayApplicationConfig first;
+    first.section = "Profile.First";
+    first.processName = "Game.exe";
+    PseudoOverlayApplicationConfig second;
+    second.section = "Profile.Second";
+    second.processName = "OtherGame.exe";
+    const std::vector<PseudoOverlayApplicationConfig> profiles = {first, second};
+
+    const auto* matched = pov::FindApplicationConfig(profiles, "  GAME.EXE  ");
+    ASSERT_NE(matched, nullptr);
+    EXPECT_EQ(matched->section, "Profile.First");
+    EXPECT_EQ(pov::FindApplicationConfig(profiles, "mygame.exe"), nullptr);
+}
+
+TEST(PseudoOverlayProfilePolicyTest, VideoProfileReplacesProcessListForWarnings) {
+    PseudoOverlayApplicationConfig videoProfile;
+    videoProfile.processName = "profiled.exe";
+    videoProfile.warningTarget = true;
+    EXPECT_TRUE(pov::IsForegroundWarningTarget(&videoProfile, "", "profiled.exe"));
+
+    videoProfile.warningTarget = false;
+    EXPECT_FALSE(pov::IsForegroundWarningTarget(&videoProfile, "", "profiled.exe"));
+    EXPECT_TRUE(pov::IsForegroundWarningTarget(&videoProfile, "legacy.exe|profiled.exe", "profiled.exe"));
+}
+
+TEST(PseudoOverlayProfilePolicyTest, GlobalProcessListRemainsCaseInsensitiveFallback) {
+    EXPECT_TRUE(pov::ProcessListContains(" first.exe | GAME.EXE ", "game.exe"));
+    EXPECT_FALSE(pov::ProcessListContains("first.exe|game.exe", "other.exe"));
+    EXPECT_FALSE(pov::ProcessListContains("", "game.exe"));
 }

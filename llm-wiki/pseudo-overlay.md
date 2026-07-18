@@ -1,10 +1,11 @@
 # Pseudo-Overlay
 
-Last cross-checked: 2026-07-18 (instant recording-start feedback + dedicated UI thread)
+Last cross-checked: 2026-07-18 (application-profile settings + instant recording-start feedback + dedicated UI thread)
 
 Primary sources:
 - `captureengine/pseudo_overlay.h`
 - `captureengine/pseudo_overlay.cpp`
+- `common/pseudo_overlay_profile_policy.h`
 - `common/pseudo_overlay_focus_grace.h`
 - `common/pseudo_overlay_focus_grace.cpp`
 - `common/pseudo_overlay_visibility.h` (`ShouldPseudoOverlayBeVisible` pure policy)
@@ -18,6 +19,8 @@ Primary sources:
 ## Overview
 
 Controller-side overlay for WGC capture (no injection required). It uses two layered top-level popup windows (`WS_EX_LAYERED | WS_EX_TOPMOST`) running entirely in `captureengine.exe`. A dedicated pseudo-overlay message thread owns window classes, windows, GDI resources, the timer, shared-memory mappings, and every render/update call. Controller calls only publish synchronized desired state and post refresh messages.
+
+The controller pre-resolves `[DesktopOverlay]` once for each process-backed `[Profile.*]` and publishes those compact settings to the overlay thread. While idle, the foreground process selects the effective settings. At the recording-start edge that profile is pinned so focus changes do not alter the active indicator; for injected video, the hook's actual source PID can replace the provisional foreground choice. Title-only profiles do not own setting overrides because the general profile override contract requires `process`.
 
 - `hOv_` (`CE_PseudoOv` class): indicator circle (amber=start pending, red=recording)
 - `hWarn_` (`CE_PseudoWarn` class): status/notification text (`STARTING RECORDING...`, `STARTING AUDIO...`, `NOT RECORDING`, encoder overload, or screenshot saved)
@@ -66,7 +69,7 @@ call `UpdateOverlay` in this state; only lightweight CPU polling runs (no window
 - Pending video renders amber `STARTING RECORDING...`; pending audio renders amber `STARTING AUDIO...`. A pending transition clears the blinking `NOT RECORDING` state and aborts foreground-acquire grace so feedback can render immediately.
 - Pending startup text has priority over screenshot, overload, and `NOT RECORDING` text. Encoder-overload polling remains gated on established recording.
 - Media clears the intent only when it publishes live recording, stop/cancel occurs, or startup fails. The controller also clears its direct-thread fallback on every readiness/command/child-exit/shutdown terminal path.
-- Inject-overlay handoff suppression, `enabled`, mode, process list, anchoring, foreground behavior, and `alwaysRender` keepalive still apply.
+- Inject-overlay handoff suppression, profile/global `enabled` and mode, anchoring, foreground behavior, and `alwaysRender` keepalive still apply.
 
 ## Message-Pump Health
 
@@ -79,7 +82,7 @@ can still delay tray work and global-hotkey handling on the controller thread, b
 
 ## Foreground-Acquire Grace Period (Alt+Tab-in settle)
 
-When the whitelisted PID (re)acquires foreground focus, the visible pseudo-overlay is
+When a profiled or compatibility-listed target PID (re)acquires foreground focus, the visible pseudo-overlay is
 suppressed for `foreground_acquire_grace_ms` (default **2000ms**) before the first
 `ShowWindow` / `SetWindowPos` / `UpdateLayeredWindow` call. This avoids racing Windows
 MPO / DXGI fullscreen buffer rebinds on Alt+Tab-in, which on some drivers can freeze
@@ -128,31 +131,26 @@ focus-IN path is debounced, which is the direction that races MPO / fullscreen r
 
 Every timer tick in `OnTimerTick()`:
 
-1. If mode 1 or 2: call `IsForegroundTarget()`
-2. If foreground process matches `process_list` AND the recording state is idle → activate blinking warning
-3. Blink pattern: 2s visible / 1s hidden (3000ms cycle)
-4. If match is lost or recording becomes pending/live → deactivate warning
-5. Foreground-grace tracking is updated first; the warning blink phase is advanced
+1. Resolve the foreground process and its effective application-profile settings
+2. Treat a video profile as a warning target automatically; otherwise check the global compatibility `process_list`
+3. If that target is focused and the recording state is idle → activate blinking warning
+4. Blink pattern: 2s visible / 1s hidden (3000ms cycle)
+5. If match is lost or recording becomes pending/live → deactivate warning
+6. Foreground-grace tracking is updated first; the warning blink phase is advanced
    during grace so the first visible frame after grace is in-phase.
 
 ## Foreground Process Detection (`IsForegroundTarget`)
 
-`pseudo_overlay.cpp:293-369`:
-1. Returns false immediately if `processList` empty
-2. Gets foreground window via `GetForegroundWindow()`
-3. Gets PID via `GetWindowThreadProcessId()`
-4. Caches result per PID for 2 seconds (function-level statics)
-5. Opens process with `PROCESS_QUERY_LIMITED_INFORMATION`
-6. Gets exe name via `QueryFullProcessImageNameA`
-7. Normalizes (lowercases, trims quotes/whitespace)
-8. Compares against pipe-delimited `config_.processList` items
+`RefreshActiveProfileConfig()` obtains the foreground HWND/PID, caches the normalized executable name while that PID remains foreground, and performs an exact case-insensitive lookup in the pre-resolved profile settings. A video profile is a warning target without another whitelist. If there is no video-profile match, the pure policy helper checks the global pipe-delimited `process_list`. `IsForegroundTarget()` then returns the cached result without repeating process queries several times in one overlay update.
+
+While a recording is pending/live, the selected profile remains pinned. A matching source PID from an injected-video profile is stronger evidence and can replace the foreground selection. WGC/DXGI routes retain the profile chosen at the hotkey edge because they do not publish an injected source PID.
 
 `GetForegroundTargetPid()` is a lighter-weight variant that returns the raw foreground
 PID without consulting the whitelisted process list — used to feed the grace policy.
 
-## process_list Config Parsing
+## process_list Compatibility Parsing
 
-`common/config.cpp:978-1003` — supports two formats:
+`common/config.cpp:1205-1221` — supports two formats:
 
 **Pipe-delimited (single line):**
 ```
@@ -174,13 +172,14 @@ First-pass parser enters multi-line mode when `rest == "("` after Trim.
 - **Trim charset**: `Trim()` default chars = `" \t\r\n\"()"`. For the process_list opener check, use `Trim(rest, " \t\r\n\"")` — omitting `()` — so `"("` is preserved as the comparison value.
 - **`;` comments inside multi-line blocks are skipped** at `config.cpp:938-939` before reaching the pseudo-process-list handler. Entries starting with `;` are silently ignored.
 - **Empty multi-line block**: If all entries are `;`-commented, `pseudoProcessList` stays empty, `pseudoProcessListSet` is true, and the `GetStr` fallback is blocked. Process list remains empty — no warning possible.
+- **Profile replacement:** a process-backed video profile is already a warning target. Keep `process_list` only for unprofiled extra processes or existing configs; profile-local `DesktopOverlay.process_list` is intentionally not used as a second routing mechanism.
 - **Grace transition tick renders**: On a mid-session PID change, the very first tick after the transition renders normally (so the overlay repositions onto the new monitor), and the *next* tick starts suppressing. This is the only intentional "violation" of the soft wait — a true 2-second freeze on PID change would make monitor-switch feel laggy. The focus-IN-from-another-app case (no prior whitelisted focus) is the one that always suppresses on the transition tick.
 - **Grace never blocks startup feedback**: the resolved pending/live state change is passed to the helper as an abort signal, so the hotkey's pending indicator is committed immediately.
 
 ## Debug Logging
 
 High-frequency pseudo-overlay diagnostic logging uses `LogDebug` (only visible at debug/trace log levels):
-- `IsForegroundTarget`: processList value, foreground PID, OpenProcess/QueryFullProcessImageNameA errors, normalized exe name vs list items, match result, cache hit/miss
+- foreground PID/process changes and the controller's count of resolved DesktopOverlay application profiles
 - `OnTimerTick`: warning activation/deactivation with reason
 - `UpdateOverlay`: mode/isRecording/warnVisible/ghost/shouldHaveVisible, suppression reason, warning window position/size
 
@@ -188,12 +187,14 @@ High-frequency pseudo-overlay diagnostic logging uses `LogDebug` (only visible a
 - grace started, grace elapsed (with waited ms), grace aborted (focus_lost),
   grace reset (config change), grace skipped (grace_ms=0).
 - resolved recording-indicator transitions and dedicated-thread startup/shutdown.
+- active DesktopOverlay setting source changes (`global` or the profile section), emitted only on transitions.
 
 ## Source Anchors
 
 | Component | File | Lines |
 |-----------|------|-------|
 | Config struct | `common/config.h` | 274-289 |
+| Profile selection policy | `common/pseudo_overlay_profile_policy.h` | full |
 | `foreground_acquire_grace_ms` config | `common/config.cpp` | ~1389 |
 | Grace policy header | `common/pseudo_overlay_focus_grace.h` | full |
 | Grace policy implementation | `common/pseudo_overlay_focus_grace.cpp` | full |
@@ -215,6 +216,7 @@ High-frequency pseudo-overlay diagnostic logging uses `LogDebug` (only visible a
 ## Open Questions / Stale-risk
 
 - Stale-risk: medium until the dedicated-thread/pending presentation receives fresh game/runtime validation. Pure policy, lifecycle smoke, focused native tests, product compilation, and full automated tests are authoritative for the covered boundaries.
+- Process-backed foreground/profile selection and injected-source correction are automated; a fresh runtime pass should still confirm WGC profile pinning and Alt+Tab behavior with two differently configured profiles.
 - `SetTimer(NULL, ... TimerProc)` is created and destroyed on the dedicated thread and dispatched by that thread's `GetMessage` loop.
 - 2s default is a heuristic. If the MPO/buffer rebind is observed to take longer on
   specific games/drivers, the user can raise `foreground_acquire_grace_ms` up to 10s.
@@ -224,3 +226,9 @@ High-frequency pseudo-overlay diagnostic logging uses `LogDebug` (only visible a
   has its own well-tested focus-loss/focus-acquire handling in
   `hook/common/dx12_overlay_policy.h` and the D3D12 wrapper. The two layers are
   intentionally independent.
+
+## Verification
+
+- The focused config/profile/visibility/thread gate passed all 101 selected tests across six suites.
+- Clean product build `0.1.5084` passed both hook architectures, CaptureEngine/MediaEngine, packaging, both Vulkan layers, and binary/PDB verification.
+- Exact-build no-build validation passed all 1,726 native tests in 132 suites plus all five Python tool self-tests.

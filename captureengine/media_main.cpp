@@ -1606,19 +1606,7 @@ static ForegroundWgcWindowCandidate GetForegroundWgcWindowCandidate() {
 }
 
 static bool MatchesProcessEntry(const WhitelistEntry& entry, const std::string& lowerProcessName) {
-    if (!entry.HasProcess() || lowerProcessName.empty()) {
-        return false;
-    }
-
-    std::string lowerItem = entry.pattern;
-    std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
-    if (entry.mode == MatchMode::kExact) {
-        return lowerProcessName == lowerItem;
-    }
-
-    return lowerProcessName == lowerItem || lowerProcessName.find(lowerItem) != std::string::npos;
+    return MatchesProcessName(entry, lowerProcessName);
 }
 
 static bool MatchesProcessEntries(const std::vector<WhitelistEntry>& entries, const std::string& processName) {
@@ -1666,7 +1654,8 @@ static int64_t RectArea(const RECT& rect) {
     return width * height;
 }
 
-static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, int* selectedScore = nullptr) {
+static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, int* selectedScore = nullptr,
+                                  bool requireExactProcessNames = false) {
     struct WgcSearchContext {
         const std::vector<WhitelistEntry>* targets;
         HWND result;
@@ -1674,6 +1663,7 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, in
         int checked;
         int matched;
         int bestScore;
+        bool requireExactProcessNames;
     };
 
     HWND foregroundRoot = GetForegroundWindow();
@@ -1684,7 +1674,8 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, in
         }
     }
 
-    WgcSearchContext ctx = {&targets, NULL, foregroundRoot, 0, 0, std::numeric_limits<int>::min()};
+    WgcSearchContext ctx = {&targets, NULL, foregroundRoot, 0, 0, std::numeric_limits<int>::min(),
+                            requireExactProcessNames};
     EnumWindows(
         [](HWND hwnd, LPARAM lParam) -> BOOL {
             WgcSearchContext* context = (WgcSearchContext*)lParam;
@@ -1757,7 +1748,7 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, in
                     matchedByTitleOrClass = matched;
                 }
 
-                if (!matched && MatchesProcessEntry(entry, procName)) {
+                if (!matched && MatchesProcessName(entry, procName, context->requireExactProcessNames)) {
                     matched = true;
                     matchedByProcess = true;
                 }
@@ -12390,8 +12381,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
         int profileWgcScore = std::numeric_limits<int>::min();
         int profileDxgiScore = std::numeric_limits<int>::min();
-        HWND profileWgcWindow = FindMatchingWgcWindow(config.profileWgcTargets, &profileWgcScore);
-        HWND profileDxgiWindow = FindMatchingWgcWindow(config.profileDxgiDupTargets, &profileDxgiScore);
+        HWND profileWgcWindow = FindMatchingWgcWindow(config.profileWgcTargets, &profileWgcScore, true);
+        HWND profileDxgiWindow = FindMatchingWgcWindow(config.profileDxgiDupTargets, &profileDxgiScore, true);
         const bool useProfileDxgi = profileDxgiWindow && (!profileWgcWindow || profileDxgiScore > profileWgcScore);
         HWND profileWindow = useProfileDxgi ? profileDxgiWindow : profileWgcWindow;
         if (profileWindow) {

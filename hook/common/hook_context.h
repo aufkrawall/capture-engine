@@ -438,9 +438,6 @@ inline GraphicsConfig HookContext::GetActiveGraphicsConfig() const {
         result.backbufferCount = sharedMem->graphicsConfig.backbufferCount;
         result.frameLatency = sharedMem->graphicsConfig.frameLatency;
         result.sgssaa = sharedMem->graphicsConfig.sgssaa;
-        // NVIDIA Smooth Motion compatibility
-        int smCompat = sharedMem->graphicsConfig.nvidiaSmoothMotionCompat;
-        result.nvidiaSmoothMotionCompat = (smCompat == 1) ? "on" : (smCompat == 2) ? "off" : "auto";
         return result;
     }
     return GraphicsConfig{};

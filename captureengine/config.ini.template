@@ -3,7 +3,8 @@
 ; =============================================================================
 ; CaptureEngine creates this file when config.ini is missing. It does not replace
 ; an existing file. Lines beginning with ';' are comments.
-; Restart CaptureEngine after changing this file.
+; Changes are reloaded automatically. Settings used to start a recording take
+; effect the next time recording starts.
 
 ; =============================================================================
 ; BASIC SETTINGS
@@ -46,6 +47,8 @@ wgc_allow_lossy_bgra8_pool=false
 [Output]
 ; Empty paths use the captures folder next to CaptureEngine.exe. Relative paths
 ; start from the CaptureEngine installation folder.
+; output_dir and screenshot_dir are independent. Set both to use the same custom
+; folder for recordings and screenshots.
 output_dir=
 screenshot_dir=
 ; mkv, mp4, or mov. MKV is the safest choice if recording is interrupted.
@@ -57,11 +60,12 @@ container=mkv
 encoder=av1_nvenc
 ; Output frame rate, from 1 to 1000. Recordings use a constant frame rate.
 fps=120
-; VBR and CBR use bitrate and max_bitrate. CQ uses qp as its quality target and
-; max_bitrate as a ceiling. CQP uses qp only.
+; VBR, CBR, CQ, or CQP. VBR and CBR use bitrate and max_bitrate. CQ uses qp as
+; its quality target and max_bitrate as a ceiling. CQP uses qp only.
 rate_control=VBR
 bitrate=125Mbps
 max_bitrate=200Mbps
+; Seconds between keyframes. 0 lets the encoder choose.
 keyframe_interval=2
 ; auto, or an encoder profile such as main, high, high10, main10, or rext.
 profile=auto
@@ -99,16 +103,18 @@ temporal_aq=false
 ; Strength used by spatial_aq. 0 lets NVENC choose; otherwise use 1-15. This has
 ; no effect while spatial_aq=false.
 aq_strength=0
-; auto, disabled, each, or middle.
+; B-frame reference mode: auto, disabled, each, or middle.
 b_ref_mode=auto
 
 [MediaFoundation]
 ; Used by encoders ending in _mf.
 ; cbr, pc_vbr, u_vbr, quality, ld_vbr, or g_vbr.
 rate_control=quality
+; Quality target from 0 to 100. Higher values favor image quality.
 quality=80
 ; live_streaming, archive, camera_record, or video_conference.
 scenario=live_streaming
+; true requests hardware encoding. false allows software encoding instead.
 hw_encoding=true
 
 [VideoScaling]
@@ -148,7 +154,8 @@ track=1
 ;capture_latency_ms=0
 
 ; [SystemAudio.1] through [SystemAudio.8] add more output devices. Their encoding
-; settings come from [Audio] unless overridden.
+; settings come from [Audio] unless overridden. codec, bitrate, sample_rate,
+; bit_depth, and downmix can also be set in any source section.
 ;[SystemAudio.1]
 ;enabled=true
 ;device=Speakers (Realtek)
@@ -163,7 +170,8 @@ track=2
 ; Usually omit this. See [AudioSync] before changing it.
 ;capture_latency_ms=0
 
-; [Microphone.1] through [Microphone.8] add more input devices.
+; [Microphone.1] through [Microphone.8] add more input devices. Microphone source
+; sections can override the same encoding settings as system-audio sources.
 ;[Microphone.1]
 ;enabled=true
 ;device=Microphone (USB)
@@ -171,10 +179,12 @@ track=2
 ;capture_latency_ms=0
 
 [Hotkeys]
-; Combinations such as Ctrl+Shift+F10 are supported. Empty disables a hotkey.
+; Combinations such as Ctrl+Shift+F10 are supported. Empty disables a hotkey,
+; except start_stop, which falls back to F9 so recording always has a toggle.
 start_stop=F9
 toggle_fps=
 screenshot=
+; Starts or stops a recording that contains audio but no video.
 audio_only=
 
 ; =============================================================================
@@ -184,6 +194,7 @@ audio_only=
 [Overlay]
 ; This is the overlay drawn inside injected applications.
 enabled=true
+; Include that overlay in recordings and screenshots, respectively.
 capture_include_overlay=true
 screenshot_include_overlay=true
 ; TopLeft, TopRight, BottomLeft, or BottomRight.
@@ -191,22 +202,28 @@ position=TopLeft
 ; 0-4096 pixels.
 padding=10
 show_fps=true
+; Shows the frame-time graph.
 show_frametime=true
 show_cpu=true
 show_gpu=true
 show_ram=true
 show_vram=true
 show_recording=true
+; Shows whether supported frame generation is active.
 show_fg=true
+; compact_mode reduces spacing. horizontal_mode puts metrics in a row instead of
+; a vertical list.
 compact_mode=false
 horizontal_mode=false
 ; 0 chooses the size automatically.
 font_size=0
+; Corner radius in pixels. 0 makes square corners.
 rounded_corners=8
 ; Milliseconds. 0 updates text every rendered frame.
 text_update_interval=500
 
-; Colors use six RGB hex digits. A leading # is optional.
+; Colors use six RGB hex digits. A leading # is optional. bg_alpha uses 0 for a
+; transparent background and 1 for an opaque one.
 bg_color=000000
 bg_alpha=0.50
 fps_color=B8FA05
@@ -218,13 +235,16 @@ frametime_color=00FF00
 text_color=FFFFFF
 text_outline=true
 text_outline_color=000000
+; Outline thickness from 0 to 32 pixels.
 text_outline_thickness=1.5
 load_color_low=2E9762
 load_color_med=FFCF00
 load_color_high=FF0000
 ; auto follows the current HDR output. Otherwise enter 1-10000 nits.
 hdr_paper_white=auto
-; D3D12 command-queue priority used by the injected overlay: low, normal, or high.
+; D3D12 DIRECT command-queue priority used by the injected overlay: low, normal,
+; or high. The historical setting name says copy, but this does not control a copy
+; queue.
 copy_queue_priority=normal
 
 [DesktopOverlay]
@@ -234,32 +254,46 @@ copy_queue_priority=normal
 ; mode 1 also shows a NOT RECORDING warning.
 ; mode 2 shows only the warning.
 enabled=true
+; Indicator size is 10-200 pixels. pad is its distance from the screen edges,
+; from 0 to 100 pixels.
 size=20
 pad=20
 ; 0=BottomRight, 1=BottomLeft, 2=TopRight, 3=TopLeft.
 pos=0
 mode=2
-; These two settings keep an invisible window present. They can help in a few
-; window/VRR cases, but normally remain false.
+; always_render keeps a nearly invisible window present even when there is no
+; indicator to show. It can help in a few window/VRR cases, but normally stays
+; false. always_render_only_when_game limits that keepalive to warning targets and
+; has no effect unless always_render is true.
 always_render=false
 always_render_only_when_game=false
+; Shows ENCODER OVERLOADED while a recording cannot be encoded quickly enough.
 show_encoder_overload_warnings=false
-; Time allowed to recognize the intended foreground window, from 0 to 10000 ms.
+; After focus changes, wait this many milliseconds for the intended window before
+; deciding whether to show NOT RECORDING. Valid range: 0-10000.
 foreground_acquire_grace_ms=2000
-; Processes that trigger the NOT RECORDING warning. Separate names with | on one
-; line, or use the one-name-per-line form shown here.
+; Profiles that have both process and a video route trigger the NOT RECORDING
+; warning automatically. Use process_list only for extra processes that have no
+; profile, or to keep an older config working. Separate names with | on one line,
+; or use the one-name-per-line form shown here.
 process_list=(
 ;game.exe
 )
 
 [FpsLimiter]
+; Capture sync limits an injected application to a multiple of the recording frame
+; rate while recording.
 capture_sync_enabled=false
 ; 1-8. For example, 2 limits a game to 120 fps while recording at 60 fps.
 capture_sync_multiplier=2
 ; auto, basic, fg_fallback, reflex, anti_lag2, or xell.
 capture_sync_limiter_mode=basic
+; The general limiter applies whenever CaptureEngine is injected, including while
+; no recording is running.
 general_enabled=false
+; General limit from 1 to 1000 fps.
 general_fps=60
+; Accepts the same modes as capture_sync_limiter_mode.
 general_limiter_mode=basic
 
 ; =============================================================================
@@ -269,13 +303,20 @@ general_limiter_mode=basic
 [Graphics]
 ; These settings affect injected applications only. default leaves the
 ; application's setting alone.
+; vsync_mode: default, off, fifo, adaptive, or mailbox. fifo is normal V-Sync.
 vsync_mode=default
+; anisotropic_filtering: default, off, 2x, 4x, 8x, or 16x.
 anisotropic_filtering=default
 ; safe avoids special-purpose samplers. aggressive changes more samplers.
 sampler_override_mode=safe
+; mip_mapping: default, nearest, bilinear, or trilinear.
 mip_mapping=default
+; mip_bias is default or a number from -16 to 15.99. Negative values sharpen
+; distant textures. strict replaces the application's bias, offset adds to it,
+; and base adjusts only negative application bias.
 mip_bias=default
 mip_bias_mode=strict
+; true forces mip bias to zero and takes precedence over the two settings above.
 force_mip_bias_clamp=false
 ; -1 leaves the application alone. Other valid values are 0-6.
 cpu_prerender_limit=-1
@@ -284,6 +325,7 @@ backbuffer_count=-1
 
 [DLSS]
 ; DLSS overrides affect injected applications only. default leaves the game alone.
+; auto exposure and exposure normalization accept default, on, or off.
 dlss_auto_exposure=default
 dlss_exposure_normalization=default
 ; Presets accept A-Z or default.
@@ -293,7 +335,8 @@ dlss_preset_balanced=default
 dlss_preset_performance=default
 dlss_preset_ultra_performance=default
 dlss_preset_ultra_quality=default
-; These two older all-quality settings remain supported.
+; This older setting is a fallback for all SR quality modes. A per-mode setting
+; above takes precedence.
 dlss_sr_preset=default
 dlss_rr_preset_dlaa=default
 dlss_rr_preset_quality=default
@@ -301,11 +344,14 @@ dlss_rr_preset_balanced=default
 dlss_rr_preset_performance=default
 dlss_rr_preset_ultra_performance=default
 dlss_rr_preset_ultra_quality=default
+; This older setting is a fallback for all Ray Reconstruction quality modes. A
+; per-mode setting above takes precedence.
 dlss_rr_preset=default
+; Sharpening accepts default, off, or a value from 0 to 1.
 dlss_sharpening=default
+; Frame-generation multiplier: default, 2x, 3x, or 4x.
 dlss_fg_factor=default
-; auto, on, or off.
-nvidia_smooth_motion_compat=auto
+; default, on, or off.
 dlss_debug_overlay=default
 ; Empty uses the normal DLL search path. Use an absolute DLL or folder path here.
 dlss_sr_dll_path=
@@ -315,7 +361,8 @@ streamline_dll_path=
 
 [Performance]
 ; CaptureEngine process priority: idle, below_normal, normal, above_normal, high,
-; or realtime.
+; or realtime. Avoid realtime for normal use because it can make Windows less
+; responsive.
 process_priority=high
 ; GPU thread priority for CaptureEngine's D3D11 devices, from -7 to 7. 0 is adaptive.
 gpu_priority=7
@@ -327,8 +374,11 @@ gpu_scheduling_priority=auto
 ; Usually leave these settings alone. CaptureEngine can measure how late system
 ; and app audio arrives and delay video to match it. It never moves live audio
 ; earlier. Microphones have a separate timing value.
+; With autodetect enabled, audio_capture_latency_ms=0 measures the default output
+; device. A positive value is a manual delay in milliseconds and skips that test.
 audio_latency_autodetect=true
 audio_capture_latency_ms=0
+; Manual microphone timing adjustment in milliseconds. 0 leaves it unchanged.
 mic_capture_latency_ms=0
 
 [Logging]
@@ -366,8 +416,9 @@ dx12_focus_analysis=false
 ; process is the executable name. It is needed for injection, app audio, and
 ; per-app overrides. window_title is optional and helps select the right window
 ; when one process owns several. It can also be used alone for WGC or DXGI capture.
-; window_match can be exact, contains, or contains_or_class. It is ignored when
-; window_title is empty.
+; window_match controls window_title only: exact matches the whole title, contains
+; finds the text anywhere in the title, and contains_or_class also checks the
+; window's class name. It is ignored when window_title is empty.
 ;
 ; audio_enabled=true records audio from process. audio_track accepts IDs from 1
 ; to 255 and can contain a comma-separated list. The other audio_* fields are
@@ -377,6 +428,9 @@ dx12_focus_analysis=false
 ;
 ; Per-app setting overrides use Section.key names. This avoids confusion between
 ; settings such as Video.bitrate and Audio.bitrate.
+; Any [DesktopOverlay] setting can also be overridden this way. A process profile
+; with a video route is automatically a NOT RECORDING warning target, so it does
+; not also need to be listed in DesktopOverlay.process_list.
 ;
 ;[Profile.My Game]
 ;process=game.exe
@@ -384,6 +438,8 @@ dx12_focus_analysis=false
 ;window_match=exact
 ; How video is captured for this application:
 ; global = follow capture_method in [Capture].
+;          When capture_method=auto, this uses injection if injection_mode=capture;
+;          otherwise it uses WGC.
 ; inject = capture through the injected DLL. This requires injection_mode=capture.
 ; wgc = capture this window with Windows Graphics Capture.
 ; dxgi_dup = capture this window's monitor with DXGI Desktop Duplication.
@@ -393,6 +449,8 @@ dx12_focus_analysis=false
 ; capture = allow injected video, the injected overlay, and graphics overrides.
 ; overlay = inject the overlay and graphics overrides, without injected video.
 ; none = do not inject. App audio still works.
+; Injection can trigger anti-cheat protection. Do not use capture or overlay mode
+; with multiplayer or anti-cheat software unless you know it is permitted.
 ;injection_mode=capture
 ;audio_enabled=true
 ;audio_track=3
@@ -407,3 +465,6 @@ dx12_focus_analysis=false
 ;Graphics.vsync_mode=off
 ;FpsLimiter.general_enabled=true
 ;FpsLimiter.general_fps=120
+;DesktopOverlay.enabled=true
+;DesktopOverlay.mode=2
+;DesktopOverlay.pos=0

@@ -177,6 +177,19 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find(";window_title=", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";window_match=exact", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";audio_enabled=true", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";DesktopOverlay.enabled=true", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find("automatically a NOT RECORDING warning target"), std::string::npos);
+    EXPECT_NE(generatedText.find("Injection can trigger anti-cheat protection"), std::string::npos);
+    EXPECT_NE(generatedText.find("output_dir and screenshot_dir are independent"), std::string::npos);
+    EXPECT_NE(generatedText.find("start_stop, which falls back to F9"), std::string::npos);
+    EXPECT_NE(generatedText.find("Seconds between keyframes"), std::string::npos);
+    EXPECT_NE(generatedText.find("Quality target from 0 to 100"), std::string::npos);
+    EXPECT_NE(generatedText.find("always_render_only_when_game limits that keepalive"), std::string::npos);
+    EXPECT_NE(generatedText.find("Capture sync limits an injected application"), std::string::npos);
+    EXPECT_NE(generatedText.find("Shows the frame-time graph"), std::string::npos);
+    EXPECT_NE(generatedText.find("vsync_mode: default, off, fifo"), std::string::npos);
+    EXPECT_NE(generatedText.find("Sharpening accepts default, off"), std::string::npos);
+    EXPECT_NE(generatedText.find("audio_capture_latency_ms=0 measures"), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
     EXPECT_NE(generatedText.find("Other valid values are 2-6"), std::string::npos);
     EXPECT_NE(generatedText.find("backbuffer_count=-1"), std::string::npos);
@@ -184,10 +197,11 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("screenshot_include_overlay=true"), std::string::npos);
     EXPECT_NE(generatedText.find("audio_only="), std::string::npos);
     EXPECT_NE(generatedText.find("foreground_acquire_grace_ms=2000"), std::string::npos);
+    EXPECT_NE(generatedText.find("Use process_list only for extra processes"), std::string::npos);
     EXPECT_NE(generatedText.find("enabled=false\n"), std::string::npos);
     EXPECT_EQ(generatedText.find("perf_metrics_logging="), std::string::npos);
     EXPECT_NE(generatedText.find("log_level=debug"), std::string::npos);
-    EXPECT_NE(generatedText.find("nvidia_smooth_motion_compat=auto"), std::string::npos);
+    EXPECT_EQ(generatedText.find("nvidia_smooth_motion_compat="), std::string::npos);
     EXPECT_NE(generatedText.find("\n[Capture]\n"), std::string::npos);
     EXPECT_NE(generatedText.find("\n[WGC]\n"), std::string::npos);
     EXPECT_NE(generatedText.find("\n[Output]\n"), std::string::npos);
@@ -378,7 +392,6 @@ TEST_F(ConfigTest, CanonicalSectionLayoutParsesAndTakesPrecedence) {
         "sharpness=42\n"
         "[DLSS]\n"
         "dlss_fg_factor=3x\n"
-        "nvidia_smooth_motion_compat=on\n"
         "[Overlay]\n"
         "copy_queue_priority=high\n"
         "[DesktopOverlay]\n"
@@ -418,7 +431,6 @@ TEST_F(ConfigTest, CanonicalSectionLayoutParsesAndTakesPrecedence) {
     EXPECT_EQ(config.video.scaling.outputResolution, "720p");
     EXPECT_EQ(config.video.scaling.sharpness, 42);
     EXPECT_EQ(config.graphics.dlssFgFactor, "3x");
-    EXPECT_EQ(config.graphics.parsed.nvidiaSmoothMotionCompat, 1);
     EXPECT_EQ(config.copyQueuePriority, "high");
     EXPECT_TRUE(config.overlay.observerOnly);
     EXPECT_TRUE(config.overlay.observerPolicyOnly);
@@ -998,6 +1010,16 @@ TEST(ConfigHelpersTest, MatchModeParsing) {
     EXPECT_EQ(ParseMatchMode("title_class"), MatchMode::kTitleType);
     EXPECT_EQ(ParseMatchMode("invalid"), MatchMode::kExact);
     EXPECT_EQ(ParseMatchMode(""), MatchMode::kExact);
+}
+
+TEST(ConfigHelpersTest, CanonicalProfileProcessNamesStayExactAcrossWindowMatchModes) {
+    WhitelistEntry entry;
+    entry.pattern = "game.exe";
+    entry.mode = MatchMode::kTitleExecutable;
+
+    EXPECT_TRUE(MatchesProcessName(entry, "GAME.EXE", true));
+    EXPECT_FALSE(MatchesProcessName(entry, "mygame.exe", true));
+    EXPECT_TRUE(MatchesProcessName(entry, "mygame.exe", false));
 }
 
 TEST(ConfigHelpersTest, MatchModeToString) {

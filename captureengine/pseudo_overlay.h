@@ -5,6 +5,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "../common/config.h"
 #include "../common/pseudo_overlay_focus_grace.h"
@@ -29,8 +30,10 @@ public:
     // Destroy overlay windows and free resources.
     void Shutdown();
 
-    // Update configuration (applied on next overlay refresh).
-    void UpdateConfig(const PseudoOverlayConfig& cfg);
+    // Update global configuration plus settings resolved for process-backed
+    // application profiles (applied on the next overlay refresh).
+    void UpdateConfig(const PseudoOverlayConfig& cfg,
+                      const std::vector<PseudoOverlayApplicationConfig>& profiles = {});
 
     // Publish controller intent immediately, before child-process readiness waits.
     void SetRecordingStartIntent(RecordingStartIntent intent);
@@ -71,7 +74,8 @@ private:
         bool ghost = false;
     };
 
-    // Foreground process detection
+    // Foreground process/profile detection
+    void RefreshActiveProfileConfig();
     bool IsForegroundTarget();
     // Returns the raw foreground PID (0 if none) without consulting the whitelisted
     // process list. Used to feed the focus-grace policy helper.
@@ -91,6 +95,7 @@ private:
     bool InitializeOnUiThread();
     void ShutdownOnUiThread();
     void ApplyPendingConfig();
+    void ApplyEffectiveConfig(const PseudoOverlayConfig& cfg, const std::string& profileSection);
     bool RefreshRecordingState();
     void PostRefresh();
     // Evaluate focus-acquire grace for the current tick, update tracking state, and
@@ -112,8 +117,18 @@ private:
     PseudoOverlayConfig config_;
     std::mutex pendingConfigMutex_;
     PseudoOverlayConfig pendingConfig_;
+    std::vector<PseudoOverlayApplicationConfig> pendingProfileConfigs_;
     std::atomic<uint64_t> pendingConfigGeneration_{0};
     uint64_t appliedConfigGeneration_ = 0;
+    PseudoOverlayConfig baseConfig_;
+    std::vector<PseudoOverlayApplicationConfig> profileConfigs_;
+    std::string activeProfileSection_;
+    std::string pinnedProfileSection_;
+    std::string foregroundProcessName_;
+    uint32_t foregroundPid_ = 0;
+    std::string sourceProcessName_;
+    uint32_t sourceProfilePid_ = 0;
+    bool foregroundIsTarget_ = false;
     std::thread uiThread_;
     std::atomic<DWORD> uiThreadId_{0};
     HANDLE uiReadyEvent_ = NULL;

@@ -1055,9 +1055,6 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         GetStrCompat("DLSS", "dlss_sharpening", "Graphics", "dlss_sharpening", "default");
     config.graphics.dlssFgFactor =
         GetStrCompat("DLSS", "dlss_fg_factor", "Graphics", "dlss_fg_factor", "default");
-    config.graphics.nvidiaSmoothMotionCompat = GetStrCompat(
-        "DLSS", "nvidia_smooth_motion_compat", "Graphics", "nvidia_smooth_motion_compat", "auto");
-
     // DLL Overrides
     config.graphics.dlssSrDllPath = GetStrCompat("DLSS", "dlss_sr_dll_path", "Graphics", "dlss_sr_dll_path", "");
     config.graphics.dlssRrDllPath = GetStrCompat("DLSS", "dlss_rr_dll_path", "Graphics", "dlss_rr_dll_path", "");
@@ -1087,17 +1084,6 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
     config.graphics.parsed.dlssSharpening = ParseDlssSharpening(config.graphics.dlssSharpening);
     config.graphics.parsed.dlssFGFactor = ParseDlssFGFactor(config.graphics.dlssFgFactor);
-
-    // Parse NVIDIA Smooth Motion compatibility
-    if (config.graphics.nvidiaSmoothMotionCompat == "on" || config.graphics.nvidiaSmoothMotionCompat == "1" ||
-        config.graphics.nvidiaSmoothMotionCompat == "true") {
-        config.graphics.parsed.nvidiaSmoothMotionCompat = 1;
-    } else if (config.graphics.nvidiaSmoothMotionCompat == "off" || config.graphics.nvidiaSmoothMotionCompat == "2" ||
-               config.graphics.nvidiaSmoothMotionCompat == "false") {
-        config.graphics.parsed.nvidiaSmoothMotionCompat = 2;
-    } else {
-        config.graphics.parsed.nvidiaSmoothMotionCompat = 0;  // auto
-    }
 
     // Log parsed presets for debugging
     if (IsDebugLoggingEnabled(config.logLevel)) {

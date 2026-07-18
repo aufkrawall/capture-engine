@@ -192,9 +192,6 @@ struct GraphicsConfig {
     std::string dlssSharpening;
     std::string dlssFgFactor;  // "default", "2x", "3x", "4x"
 
-    // NVIDIA Smooth Motion compatibility: "auto", "on", "off"
-    std::string nvidiaSmoothMotionCompat = "auto";
-
     // Internal parsed versions for efficiency
     struct {
         uint32_t presetDLAA = 0;
@@ -217,9 +214,6 @@ struct GraphicsConfig {
         float dlssSharpening = -2.0f;  // -2.0 = default, -1.0 = off, else value
         int dlssFGFactor = 0;          // 0 = default, 2/3/4 = Frame Generation multiplier override
 
-        // NVIDIA Smooth Motion compatibility
-        // 0 = auto (detect and adapt), 1 = force on, 2 = force off
-        int nvidiaSmoothMotionCompat = 0;
     } parsed;
 
     // DLL Overrides
@@ -283,6 +277,22 @@ struct WhitelistEntry {
     }
 };
 
+inline bool MatchesProcessName(const WhitelistEntry& entry, const std::string& processName,
+                               bool requireExactName = false) {
+    if (!entry.HasProcess() || processName.empty())
+        return false;
+
+    std::string normalizedTarget = entry.pattern;
+    std::string normalizedProcess = processName;
+    std::transform(normalizedTarget.begin(), normalizedTarget.end(), normalizedTarget.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    std::transform(normalizedProcess.begin(), normalizedProcess.end(), normalizedProcess.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (requireExactName || entry.mode == MatchMode::kExact)
+        return normalizedProcess == normalizedTarget;
+    return normalizedProcess == normalizedTarget || normalizedProcess.find(normalizedTarget) != std::string::npos;
+}
+
 enum class ApplicationVideoCapture : uint8_t {
     kGlobal = 0,
     kInject,
@@ -326,6 +336,17 @@ struct PseudoOverlayConfig {
                                           // game (re)acquires foreground focus. Avoids racing Windows
                                           // MPO / fullscreen buffer rebinds on Alt+Tab-in. 0 = off.
     std::string processList;              // Pipe-delimited process names for foreground detection
+};
+
+// Controller-ready DesktopOverlay settings resolved for one process-backed
+// application profile. Profile selectors remain in ApplicationProfile; this
+// compact view is what the dedicated pseudo-overlay thread needs at runtime.
+struct PseudoOverlayApplicationConfig {
+    std::string section;
+    std::string processName;
+    PseudoOverlayConfig settings;
+    bool warningTarget = false;
+    bool captureUsesInjection = false;
 };
 
 struct AppConfig {

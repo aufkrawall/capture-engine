@@ -359,9 +359,9 @@ struct SharedGraphicsConfig {
     float dlssSharpening;  // -2.0 = default, -1.0 = off, else value
     int32_t dlssFGFactor;  // 0 = default, 2/3/4 = Frame Generation multiplier override
 
-    // NVIDIA Smooth Motion compatibility
-    // 0 = auto (detect and adapt), 1 = force on, 2 = force off
-    int32_t nvidiaSmoothMotionCompat;
+    // Retained padding. Smooth Motion compatibility is always detected and applied
+    // automatically; it is not a user setting.
+    int32_t reservedGraphicsConfig0;
 };
 
 enum CaptureRuntimeFlags : uint32_t {

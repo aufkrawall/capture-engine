@@ -6,6 +6,7 @@
 #include "../common/capture_pipeline_policy.h"
 #include "../common/inject_overlay_policy.h"
 #include "../common/logging.h"
+#include "../common/pseudo_overlay_profile_policy.h"
 #include "../common/pseudo_overlay_visibility.h"
 #include "../common/secure_dll_loading.h"
 
@@ -30,7 +31,6 @@ void EnsureDwmApi() {
 #include <algorithm>
 #include <cctype>
 #include <cstring>
-#include <sstream>
 #include <string>
 
 // ---- Palette (matching OBSIndicator exactly) ----
@@ -53,25 +53,34 @@ std::string NormalizeProcessName(std::string value) {
     return value;
 }
 
-bool GetMonitorRectForWindow(HWND hwnd, RECT* rect) {
-    if (!rect) {
-        return false;
-    }
+std::string QueryProcessName(DWORD pid) {
+    if (pid == 0)
+        return {};
 
-    HMONITOR monitor = hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
-                            : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
-    if (!monitor) {
-        return false;
-    }
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process)
+        return {};
 
-    MONITORINFO monitorInfo = {};
-    monitorInfo.cbSize = sizeof(monitorInfo);
-    if (!GetMonitorInfo(monitor, &monitorInfo)) {
-        return false;
+    char path[MAX_PATH] = {};
+    DWORD size = MAX_PATH;
+    std::string processName;
+    if (QueryFullProcessImageNameA(process, 0, path, &size)) {
+        processName.assign(path, size);
+        const size_t lastSlash = processName.find_last_of("\\/");
+        if (lastSlash != std::string::npos)
+            processName = processName.substr(lastSlash + 1);
+        processName = NormalizeProcessName(std::move(processName));
     }
+    CloseHandle(process);
+    return processName;
+}
 
-    *rect = monitorInfo.rcMonitor;
-    return true;
+bool PseudoOverlayConfigsEqual(const PseudoOverlayConfig& lhs, const PseudoOverlayConfig& rhs) {
+    return lhs.enabled == rhs.enabled && lhs.size == rhs.size && lhs.pad == rhs.pad && lhs.pos == rhs.pos &&
+           lhs.mode == rhs.mode && lhs.alwaysRender == rhs.alwaysRender &&
+           lhs.alwaysRenderOnlyWhenGame == rhs.alwaysRenderOnlyWhenGame &&
+           lhs.showEncoderOverloadWarn == rhs.showEncoderOverloadWarn &&
+           lhs.foregroundAcquireGraceMs == rhs.foregroundAcquireGraceMs && lhs.processList == rhs.processList;
 }
 
 bool GetMonitorRectForMonitor(HMONITOR monitor, RECT* rect) {
@@ -180,7 +189,8 @@ bool IsWindowFullscreenLike(HWND hwnd) {
         return false;
     }
 
-    MONITORINFO monitorInfo = {sizeof(monitorInfo)};
+    MONITORINFO monitorInfo = {};
+    monitorInfo.cbSize = sizeof(monitorInfo);
     if (!GetMonitorInfo(monitor, &monitorInfo)) {
         return false;
     }
@@ -300,95 +310,79 @@ void PseudoOverlay::UpdateScaleForDpi(UINT dpi) {
         CreateFontA(-S(40), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, ANTIALIASED_QUALITY, 0, 0, 0, "Segoe UI");
 }
 
-// ---- Foreground process detection (ported from OBSIndicator) ----
+// ---- Foreground process/profile detection ----
+
+void PseudoOverlay::RefreshActiveProfileConfig() {
+    HWND foregroundWindow = GetForegroundWindow();
+    DWORD foregroundPid = 0;
+    if (foregroundWindow)
+        GetWindowThreadProcessId(foregroundWindow, &foregroundPid);
+
+    if (foregroundPid != foregroundPid_ || (foregroundPid != 0 && foregroundProcessName_.empty())) {
+        foregroundPid_ = foregroundPid;
+        foregroundProcessName_ = QueryProcessName(foregroundPid);
+        LogDebug("[PseudoOverlay] Foreground process changed: pid=%lu process=%s", foregroundPid,
+                 foregroundProcessName_.empty() ? "unknown" : foregroundProcessName_.c_str());
+    }
+
+    const PseudoOverlayApplicationConfig* foregroundProfile =
+        ce::pseudo_overlay::FindApplicationConfig(profileConfigs_, foregroundProcessName_);
+    foregroundIsTarget_ = ce::pseudo_overlay::IsForegroundWarningTarget(
+        foregroundProfile, baseConfig_.processList, foregroundProcessName_);
+
+    const bool recordingActive = ce::recording_indicator::IsVisible(recordingIndicatorState_);
+    if (!recordingActive) {
+        pinnedProfileSection_.clear();
+    } else {
+        // Once a hook has published the actual source PID, it is stronger evidence
+        // than whichever process happened to own foreground at the hotkey edge.
+        const PseudoOverlayApplicationConfig* sourceProfile = nullptr;
+        if (EnsureSharedMemoryMapping() && pSharedMem_) {
+            const uint32_t sourcePid = pSharedMem_->GetSourcePid();
+            if (sourcePid != 0) {
+                if (sourcePid != sourceProfilePid_ || sourceProcessName_.empty()) {
+                    sourceProfilePid_ = sourcePid;
+                    sourceProcessName_ = QueryProcessName(sourcePid);
+                }
+                sourceProfile = ce::pseudo_overlay::FindApplicationConfig(profileConfigs_, sourceProcessName_);
+                if (sourceProfile && !sourceProfile->captureUsesInjection)
+                    sourceProfile = nullptr;
+            }
+        }
+        if (sourceProfile && (!foregroundProfile || foregroundProfile->captureUsesInjection)) {
+            pinnedProfileSection_ = sourceProfile->section;
+        } else if (pinnedProfileSection_.empty() && foregroundProfile) {
+            // WGC/DXGI routes have no injected source PID. Pin the foreground
+            // profile selected at recording start so Alt+Tab does not change the
+            // recording indicator's appearance midway through the session.
+            pinnedProfileSection_ = foregroundProfile->section;
+        }
+    }
+
+    const PseudoOverlayApplicationConfig* activeProfile = nullptr;
+    if (!pinnedProfileSection_.empty()) {
+        const auto pinned = std::find_if(
+            profileConfigs_.begin(), profileConfigs_.end(), [&](const PseudoOverlayApplicationConfig& profile) {
+                return _stricmp(profile.section.c_str(), pinnedProfileSection_.c_str()) == 0;
+            });
+        if (pinned != profileConfigs_.end())
+            activeProfile = &*pinned;
+        else
+            pinnedProfileSection_.clear();
+    }
+    if (!activeProfile && !recordingActive)
+        activeProfile = foregroundProfile;
+
+    ApplyEffectiveConfig(activeProfile ? activeProfile->settings : baseConfig_,
+                         activeProfile ? activeProfile->section : std::string{});
+}
 
 bool PseudoOverlay::IsForegroundTarget() {
-    if (config_.processList.empty()) {
-        LogDebug("[PseudoOverlay] IsForegroundTarget: processList empty");
-        return false;
-    }
-
-    LogDebug("[PseudoOverlay] IsForegroundTarget: processList='%s'", config_.processList.c_str());
-
-    HWND hFg = GetForegroundWindow();
-    if (!hFg) {
-        LogDebug("[PseudoOverlay] IsForegroundTarget: GetForegroundWindow returned NULL");
-        return false;
-    }
-
-    DWORD pid = 0;
-    GetWindowThreadProcessId(hFg, &pid);
-    if (pid == 0) {
-        LogDebug("[PseudoOverlay] IsForegroundTarget: GetWindowThreadProcessId returned pid=0");
-        return false;
-    }
-
-    // Cache results to avoid overhead while the same window is focused
-    static DWORD lastPid = 0;
-    static bool lastRes = false;
-    static ULONGLONG lastCheckTime = 0;
-
-    // Re-validate every 2 seconds in case config changed
-    if (pid == lastPid && (GetTickCount64() - lastCheckTime < 2000)) {
-        LogDebug("[PseudoOverlay] IsForegroundTarget: cache hit pid=%lu result=%d (%.1fs left)", pid, lastRes,
-                 (2000.0 - (GetTickCount64() - lastCheckTime)) / 1000.0);
-        return lastRes;
-    }
-
-    bool match = false;
-    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (hProcess) {
-        char exePath[MAX_PATH];
-        DWORD size = MAX_PATH;
-        if (QueryFullProcessImageNameA(hProcess, 0, exePath, &size)) {
-            std::string exeName = exePath;
-            size_t lastSlash = exeName.find_last_of("\\/");
-            if (lastSlash != std::string::npos)
-                exeName = exeName.substr(lastSlash + 1);
-            exeName = NormalizeProcessName(exeName);
-
-            LogDebug("[PseudoOverlay] IsForegroundTarget: pid=%lu exe='%s'", pid, exeName.c_str());
-
-            std::stringstream ss(config_.processList);
-            std::string item;
-            while (std::getline(ss, item, '|')) {
-                std::string normalizedItem = NormalizeProcessName(item);
-                if (normalizedItem.empty())
-                    continue;
-
-                if (exeName == normalizedItem) {
-                    LogDebug("[PseudoOverlay] IsForegroundTarget: MATCH pid=%lu exe='%s' == '%s'", pid, exeName.c_str(),
-                             normalizedItem.c_str());
-                    match = true;
-                    break;
-                }
-                LogDebug("[PseudoOverlay] IsForegroundTarget: no match exe='%s' != '%s'", exeName.c_str(),
-                         normalizedItem.c_str());
-            }
-        } else {
-            LogDebug("[PseudoOverlay] IsForegroundTarget: QueryFullProcessImageNameA failed pid=%lu error=%lu", pid,
-                     GetLastError());
-        }
-        CloseHandle(hProcess);
-    } else {
-        LogDebug("[PseudoOverlay] IsForegroundTarget: OpenProcess failed pid=%lu error=%lu", pid, GetLastError());
-    }
-
-    lastPid = pid;
-    lastRes = match;
-    lastCheckTime = GetTickCount64();
-    LogDebug("[PseudoOverlay] IsForegroundTarget: result=%d for pid=%lu", match, pid);
-    return match;
+    return foregroundIsTarget_;
 }
 
 uint32_t PseudoOverlay::GetForegroundTargetPid() {
-    HWND hFg = GetForegroundWindow();
-    if (!hFg) {
-        return 0;
-    }
-    DWORD pid = 0;
-    GetWindowThreadProcessId(hFg, &pid);
-    return static_cast<uint32_t>(pid);
+    return foregroundPid_;
 }
 
 void PseudoOverlay::UpdateForegroundGraceState(bool currentHadTarget, uint32_t currentPid) {
@@ -408,10 +402,12 @@ void PseudoOverlay::UpdateForegroundGraceState(bool currentHadTarget, uint32_t c
         if (config_.foregroundAcquireGraceMs > 0) {
             foregroundGraceEverStarted_ = true;
             LogInfo("[PseudoOverlay] Foreground grace started pid=%lu grace=%ums (was: hadTarget=%d, prevPid=%lu)",
-                    currentPid, config_.foregroundAcquireGraceMs, hadForegroundTarget_ ? 1 : 0,
+                    static_cast<unsigned long>(currentPid), config_.foregroundAcquireGraceMs,
+                    hadForegroundTarget_ ? 1 : 0,
                     static_cast<unsigned long>(lastForegroundAcquirePid_));
         } else {
-            LogDebug("[PseudoOverlay] Foreground grace skipped: grace_ms=0 (pid=%lu)", currentPid);
+            LogDebug("[PseudoOverlay] Foreground grace skipped: grace_ms=0 (pid=%lu)",
+                     static_cast<unsigned long>(currentPid));
         }
     } else if (!currentHadTarget) {
         if (hadForegroundTarget_) {
@@ -440,7 +436,8 @@ ce::pseudo_overlay::FocusGraceDecision PseudoOverlay::EvaluateForegroundGrace(bo
         if (lastForegroundAcquireTick_ != 0 && now >= lastForegroundAcquireTick_) {
             waited = now - lastForegroundAcquireTick_;
         }
-        LogInfo("[PseudoOverlay] Foreground grace elapsed pid=%lu waited=%lums", currentPid,
+        LogInfo("[PseudoOverlay] Foreground grace elapsed pid=%lu waited=%lums",
+                static_cast<unsigned long>(currentPid),
                 static_cast<unsigned long>(waited));
         foregroundGraceEverStarted_ = false;
     }
@@ -676,6 +673,7 @@ void PseudoOverlay::OnTimerTick() {
     ULONGLONG now = GetTickCount64();
     ApplyPendingConfig();
     const bool recordingStateChanged = RefreshRecordingState();
+    RefreshActiveProfileConfig();
 
     // The pseudo-overlay owns this dedicated message thread. A large timer gap now
     // diagnoses work on this thread itself; controller readiness waits cannot starve it.
@@ -1062,6 +1060,7 @@ void PseudoOverlay::UpdateOverlay() {
                     if (hBm && pBits) {
                         HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hBm);
                         memset(pBits, 0, fullS * fullS * 4);
+                        static_cast<DWORD*>(pBits)[pixY * fullS + pixX] = 0xFFFFFFFFu;
 
                         POINT ptDst = {winX, winY};
                         SIZE szWnd = {fullS, fullS};
@@ -1356,6 +1355,7 @@ void PseudoOverlay::ThreadMain() {
         if (msg.message == kMsgRefresh) {
             ApplyPendingConfig();
             RefreshRecordingState();
+            RefreshActiveProfileConfig();
             UpdateOverlay();
             continue;
         }
@@ -1413,6 +1413,9 @@ bool PseudoOverlay::InitializeOnUiThread() {
 
     const AnchorInfo anchor = ResolveAnchorInfo();
     initialized_.store(true, std::memory_order_release);
+    ApplyPendingConfig();
+    RefreshRecordingState();
+    RefreshActiveProfileConfig();
     LogInfo("[PseudoOverlay] Initialized (scale=%.2f)", scale_);
     LogInfo("[PseudoOverlay] Initial anchor: monitor=%p window=%p dpi=%u fullscreenLike=%d", anchor.monitor,
             anchor.window, currentDpi_, anchor.fullscreenLike ? 1 : 0);
@@ -1488,6 +1491,13 @@ void PseudoOverlay::ShutdownOnUiThread() {
     lastForegroundAcquireTick_ = 0;
     lastForegroundAcquirePid_ = 0;
     hadForegroundTarget_ = false;
+    activeProfileSection_.clear();
+    pinnedProfileSection_.clear();
+    foregroundProcessName_.clear();
+    foregroundPid_ = 0;
+    sourceProcessName_.clear();
+    sourceProfilePid_ = 0;
+    foregroundIsTarget_ = false;
     prevRecordingIndicatorState_ = ce::recording_indicator::State::Idle;
     prevGraceActive_ = false;
     foregroundGraceEverStarted_ = false;
@@ -1502,10 +1512,12 @@ void PseudoOverlay::ShutdownOnUiThread() {
 
 // ---- State updates ----
 
-void PseudoOverlay::UpdateConfig(const PseudoOverlayConfig& cfg) {
+void PseudoOverlay::UpdateConfig(const PseudoOverlayConfig& cfg,
+                                 const std::vector<PseudoOverlayApplicationConfig>& profiles) {
     {
         std::lock_guard<std::mutex> lock(pendingConfigMutex_);
         pendingConfig_ = cfg;
+        pendingProfileConfigs_ = profiles;
         pendingConfigGeneration_.fetch_add(1, std::memory_order_release);
     }
     PostRefresh();
@@ -1517,22 +1529,34 @@ void PseudoOverlay::ApplyPendingConfig() {
         return;
     }
 
-    PseudoOverlayConfig cfg;
     {
         std::lock_guard<std::mutex> lock(pendingConfigMutex_);
-        cfg = pendingConfig_;
+        baseConfig_ = pendingConfig_;
+        profileConfigs_ = pendingProfileConfigs_;
     }
+    appliedConfigGeneration_ = generation;
+}
+
+void PseudoOverlay::ApplyEffectiveConfig(const PseudoOverlayConfig& cfg, const std::string& profileSection) {
+    if (PseudoOverlayConfigsEqual(config_, cfg) && activeProfileSection_ == profileSection)
+        return;
+
     bool wasEnabled = config_.enabled;
     const uint32_t prevGraceMs = static_cast<uint32_t>(config_.foregroundAcquireGraceMs);
+    const std::string previousProfile = activeProfileSection_;
     config_ = cfg;
-    appliedConfigGeneration_ = generation;
+    activeProfileSection_ = profileSection;
     lastWarnMsg_.clear();
     sizeWarn_ = {0, 0};
+
+    if (_stricmp(previousProfile.c_str(), activeProfileSection_.c_str()) != 0) {
+        LogInfo("[PseudoOverlay] Active DesktopOverlay settings: %s",
+                activeProfileSection_.empty() ? "global" : activeProfileSection_.c_str());
+    }
 
     if (wasEnabled && !cfg.enabled) {
         // Disable overlay: hide windows
         DestroyOverlayWindows();
-        return;
     }
 
     // If the grace length changed, drop any in-flight grace so the new value is used
@@ -1547,7 +1571,6 @@ void PseudoOverlay::ApplyPendingConfig() {
         LogInfo("[PseudoOverlay] Foreground grace reset: grace_ms changed %u -> %u", prevGraceMs,
                 static_cast<uint32_t>(cfg.foregroundAcquireGraceMs));
     }
-
 }
 
 void PseudoOverlay::SetRecordingStartIntent(RecordingStartIntent intent) {

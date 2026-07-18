@@ -227,6 +227,47 @@ TEST_F(ConfigOverrideTest, NamedProfilesProvideAllApplicationRoutesWithoutANumer
     EXPECT_EQ(config.captureMethod, "none");
 }
 
+TEST_F(ConfigOverrideTest, DesktopOverlaySettingsCanBeOverriddenByApplicationProfile) {
+    WriteConfig(
+        "[DesktopOverlay]\n"
+        "enabled=false\n"
+        "size=20\n"
+        "pad=10\n"
+        "pos=0\n"
+        "mode=0\n"
+        "show_encoder_overload_warnings=false\n"
+        "foreground_acquire_grace_ms=2000\n"
+        "process_list=legacy.exe\n"
+        "[Profile.Game]\n"
+        "process=game.exe\n"
+        "video_capture=wgc\n"
+        "injection_mode=none\n"
+        "DesktopOverlay.enabled=true\n"
+        "DesktopOverlay.size=28\n"
+        "DesktopOverlay.pad=16\n"
+        "DesktopOverlay.pos=3\n"
+        "DesktopOverlay.mode=2\n"
+        "DesktopOverlay.show_encoder_overload_warnings=true\n"
+        "DesktopOverlay.foreground_acquire_grace_ms=750\n");
+
+    AppConfig globalConfig;
+    LoadConfig(tempConfigFile, globalConfig);
+    EXPECT_FALSE(globalConfig.pseudoOverlay.enabled);
+    EXPECT_EQ(globalConfig.pseudoOverlay.size, 20);
+    EXPECT_EQ(globalConfig.pseudoOverlay.processList, "legacy.exe");
+
+    AppConfig gameConfig;
+    LoadConfig(tempConfigFile, gameConfig, "GAME.EXE");
+    EXPECT_TRUE(gameConfig.pseudoOverlay.enabled);
+    EXPECT_EQ(gameConfig.pseudoOverlay.size, 28);
+    EXPECT_EQ(gameConfig.pseudoOverlay.pad, 16);
+    EXPECT_EQ(gameConfig.pseudoOverlay.pos, 3);
+    EXPECT_EQ(gameConfig.pseudoOverlay.mode, 2);
+    EXPECT_TRUE(gameConfig.pseudoOverlay.showEncoderOverloadWarn);
+    EXPECT_EQ(gameConfig.pseudoOverlay.foregroundAcquireGraceMs, 750);
+    EXPECT_EQ(gameConfig.pseudoOverlay.processList, "legacy.exe");
+}
+
 TEST_F(ConfigOverrideTest, CanonicalProfileOverridesEveryLegacyRouteForTheSameTarget) {
     WriteConfig(
         "[Injection]\n"

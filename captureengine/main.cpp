@@ -164,6 +164,65 @@ bool ShouldStartSensorProcess(const AppConfig& config) {
     return config.overlay.showCPU || config.overlay.showGPU || config.overlay.showRAM || config.overlay.showVRAM;
 }
 
+std::vector<PseudoOverlayApplicationConfig> ResolvePseudoOverlayApplicationConfigs(const AppConfig& baseConfig) {
+    std::vector<PseudoOverlayApplicationConfig> profiles;
+    profiles.reserve(baseConfig.applicationProfiles.size());
+
+    for (const ApplicationProfile& profile : baseConfig.applicationProfiles) {
+        // Per-app overrides use process identity. A title-only profile can route
+        // WGC/DXGI video, but it cannot safely own arbitrary setting overrides.
+        if (!profile.target.HasProcess())
+            continue;
+
+        AppConfig resolvedConfig;
+        LoadConfig(g_ConfigPath, resolvedConfig, profile.target.pattern);
+
+        PseudoOverlayApplicationConfig overlayProfile;
+        overlayProfile.section = profile.section;
+        overlayProfile.processName = profile.target.pattern;
+        overlayProfile.settings = resolvedConfig.pseudoOverlay;
+        // process_list is a global compatibility fallback. A canonical video
+        // profile is already its own warning target and does not need a second list.
+        overlayProfile.settings.processList = baseConfig.pseudoOverlay.processList;
+        overlayProfile.warningTarget = profile.resolvedVideoCapture != ApplicationVideoCapture::kNone;
+        overlayProfile.captureUsesInjection =
+            profile.resolvedVideoCapture == ApplicationVideoCapture::kInject;
+        profiles.push_back(std::move(overlayProfile));
+    }
+
+    LogDebug("[Controller] Resolved DesktopOverlay settings for %zu process-backed application profiles",
+             profiles.size());
+    return profiles;
+}
+
+void SyncPseudoOverlayConfiguration(const char* reason) {
+    std::vector<PseudoOverlayApplicationConfig> profiles = ResolvePseudoOverlayApplicationConfigs(g_Config);
+    const bool anyProfileEnabled =
+        std::any_of(profiles.begin(), profiles.end(), [](const PseudoOverlayApplicationConfig& profile) {
+            return profile.settings.enabled;
+        });
+
+    if (!g_PseudoOverlay && !g_Config.pseudoOverlay.enabled && !anyProfileEnabled)
+        return;
+
+    if (!g_PseudoOverlay) {
+        LogInfo("[Controller] Initializing pseudo-overlay (%s)...", reason ? reason : "configuration");
+        auto overlay = std::make_unique<PseudoOverlay>();
+        overlay->UpdateConfig(g_Config.pseudoOverlay, profiles);
+        overlay->SetRecordingStartIntent(g_RecordingStartIntent.load(std::memory_order_acquire));
+        HMODULE hMod = GetModuleHandle(NULL);
+        if (!overlay->Init(reinterpret_cast<HINSTANCE>(hMod))) {
+            LogError("[Controller] Failed to initialize pseudo-overlay");
+            return;
+        }
+        g_PseudoOverlay = std::move(overlay);
+        LogInfo("[Controller] Pseudo-overlay initialized");
+        return;
+    }
+
+    g_PseudoOverlay->UpdateConfig(g_Config.pseudoOverlay, profiles);
+}
+
 void WriteSessionManifest(const std::string& logsDir, const AppConfig& config, ProcessMode mode) {
     std::ofstream manifest(logsDir + "\\session_manifest.txt", std::ios::out | std::ios::trunc);
     if (!manifest.is_open()) {
@@ -504,8 +563,9 @@ bool ParseDeferredLaunchCommand(const std::string& command, DeferredLaunchComman
 // just start it normally and let WMI + CreateProcess hooks in already-injected
 // processes catch the real game
 void LaunchGameSuspended(const std::string& path) {
-    STARTUPINFOA si = {sizeof(si)};
-    PROCESS_INFORMATION pi = {0};
+    STARTUPINFOA si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {};
 
     DeferredLaunchCommand launchCommand = {};
     if (!ParseDeferredLaunchCommand(path, &launchCommand)) {
@@ -1193,20 +1253,7 @@ bool CompleteControllerStartup() {
     }
     const int64_t hotkeyUs = Log_GetQpcUs() - hotkeyStartUs;
 
-    // Initialize pseudo-overlay for WGC capture
-    if (g_Config.pseudoOverlay.enabled) {
-        LogInfo("[Controller] Initializing pseudo-overlay...");
-        g_PseudoOverlay = std::make_unique<PseudoOverlay>();
-        HMODULE hMod = GetModuleHandle(NULL);
-        if (g_PseudoOverlay->Init(reinterpret_cast<HINSTANCE>(hMod))) {
-            g_PseudoOverlay->UpdateConfig(g_Config.pseudoOverlay);
-            g_PseudoOverlay->RequestRefresh();
-            LogInfo("[Controller] Pseudo-overlay initialized");
-        } else {
-            LogError("[Controller] Failed to initialize pseudo-overlay");
-            g_PseudoOverlay.reset();
-        }
-    }
+    SyncPseudoOverlayConfiguration("startup");
 
     LogInfo("[Controller] Ready. Press hotkey to start recording.");
     PrimeStartupCursor();
@@ -1504,22 +1551,7 @@ int ControllerMain(HINSTANCE hInstance) {
                         SendCommandToAll(ProcessCommand::ReloadConfig);
                     }
 
-                    // Pseudo-overlay config hot-reload
-                    if (g_PseudoOverlay) {
-                        g_PseudoOverlay->UpdateConfig(g_Config.pseudoOverlay);
-                    } else if (g_Config.pseudoOverlay.enabled) {
-                        // Enable pseudo-overlay at runtime
-                        g_PseudoOverlay = std::make_unique<PseudoOverlay>();
-                        HMODULE hMod = GetModuleHandle(NULL);
-                        if (g_PseudoOverlay->Init(reinterpret_cast<HINSTANCE>(hMod))) {
-                            g_PseudoOverlay->UpdateConfig(g_Config.pseudoOverlay);
-                            g_PseudoOverlay->RequestRefresh();
-                            LogInfo("[Controller] Pseudo-overlay enabled via config hot-reload");
-                        } else {
-                            LogError("[Controller] Failed to init pseudo-overlay on hot-reload");
-                            g_PseudoOverlay.reset();
-                        }
-                    }
+                    SyncPseudoOverlayConfiguration("config reload");
                 }
             }
             lastConfigCheck = GetTickCount();

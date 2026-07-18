@@ -31,7 +31,7 @@ Primary sources:
 
 ## Content Catalog
 - `configuration.md`
-  - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, unlimited named application profiles for video/injection/window/audio/override routing, audio/output semantics, validation rules, and maintenance invariants. Last verified 2026-07-18.
+  - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, unlimited named application profiles for video/injection/window/audio/DesktopOverlay/override routing, audio/output semantics, validation rules, and maintenance invariants. Last verified 2026-07-18.
 - `overlay-rendering.md`
   - Shared overlay layout/graph/font invariants, instant amber recording-start intent and live-state handoff, exact-ABI and sanity-checked telemetry, legacy DX8/DX9/DX10/OpenGL cache/state isolation, DirectDraw performance boundary, and runtime-validation stale-risk. Last verified 2026-07-18.
 - `handoff-dx12-32bit-crash.md`
@@ -71,7 +71,7 @@ Primary sources:
 - `debug-tools.md`
   - Available Windows debug tools and paths plus always-on DX12 present/ProcessFrame stage diagnostics, including wrapper-initialization overlap. Last verified 2026-07-17.
 - `pseudo-overlay.md`
-  - Controller-side pseudo-overlay for WGC capture: dedicated UI-thread ownership, instant amber recording-start state, modes, inject handoff, foreground detection/grace, process_list parsing, diagnostics, and source anchors. Last verified 2026-07-18.
+  - Controller-side pseudo-overlay for WGC capture: dedicated UI-thread ownership, application-profile setting selection/pinning, automatic video-profile warning targets, instant amber recording-start state, modes, inject handoff, foreground detection/grace, compatibility process_list parsing, diagnostics, and source anchors. Last verified 2026-07-18.
 - `regression-testing-and-logging.md`
   - Regression coverage expectations, the incremental/clean/resume build decision rule, concise verification diagnostics, and deterministic capture runners, including the fast zero-drift gate, overload/long-soak profiles, HAGS-on 4K120 contention gate, and x86 DX12 solid-text/focus-visibility boundary. Last verified 2026-07-17.
 - `multi-audio-capture.md`
