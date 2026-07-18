@@ -11,6 +11,38 @@ from testapp import run_tests as integration_runner
 
 
 class BuildFlagPolicyTest(unittest.TestCase):
+    def test_obsolete_process_loopback_helper_outputs_are_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            installed = Path(temporary) / "installed"
+            objects = Path(temporary) / "build" / "obj" / "x64"
+            installed.mkdir(parents=True)
+            objects.mkdir(parents=True)
+            stale_outputs = (
+                installed / "process_loopback_helper.exe",
+                installed / "process_loopback_helper.pdb",
+                objects / "process_loopback_helper.tmp.exe",
+                objects / "process_loopback_helper.pdb.old.1.1234",
+            )
+            for output in stale_outputs:
+                output.write_bytes(b"stale")
+
+            roots = (str(installed), str(Path(temporary) / "build"))
+            build.remove_obsolete_process_loopback_helper_artifacts(roots)
+
+            self.assertEqual(build.find_obsolete_process_loopback_helper_artifacts(roots), [])
+            self.assertTrue(all(not output.exists() for output in stale_outputs))
+
+    def test_locked_obsolete_process_loopback_helper_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            stale = Path(temporary) / "process_loopback_helper.exe"
+            stale.write_bytes(b"locked")
+            with patch.object(build, "safe_delete_file", return_value=False):
+                with self.assertRaisesRegex(RuntimeError, "Obsolete process-loopback helper artifact remains"):
+                    build.remove_obsolete_process_loopback_helper_artifacts((temporary,))
+            self.assertTrue(stale.exists())
+            with self.assertRaisesRegex(RuntimeError, "Obsolete process-loopback helper artifact present"):
+                build.assert_no_obsolete_process_loopback_helper_artifacts((temporary,))
+
     def test_testapp_policy_limits_cfg_exception_to_x86(self) -> None:
         x86_arch_flags = [
             "--target=i686-w64-mingw32",

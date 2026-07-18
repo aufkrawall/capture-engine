@@ -19,7 +19,7 @@ struct AudioSessionCreation {
 // Watches every active render endpoint for newly-created Windows audio
 // sessions. Process-loopback clients can remain permanently empty when they are
 // activated before the target creates its first render session; the capture
-// owner uses these notifications to recycle into a fresh helper generation at
+// owner uses these notifications to recycle into a fresh worker generation at
 // that exact topology change instead of guessing with a timeout.
 class ProcessAudioSessionMonitor {
 public:

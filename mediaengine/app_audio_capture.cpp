@@ -471,7 +471,7 @@ bool AppAudioCapture::BeginAsyncStartForPID(DWORD pid) {
             startPendingResult.store(ok, std::memory_order_release);
             startPendingValid.store(true, std::memory_order_release);
             asyncStartInProgress.store(false, std::memory_order_release);
-            // Wake the process-loopback helper even when activation failed and
+            // Wake the process-loopback worker even when activation failed and
             // therefore produced no epoch/data record. This keeps worker state
             // transitions event-driven instead of requiring an activation poll.
             if (packetReadyEvent_) {
@@ -879,11 +879,11 @@ void AppAudioCapture::AbandonClientInterfaces() {
     // Process loopback is backed by AudioSes' CLoopbackMixer. On current Windows 11
     // builds the mixer can crash in AudioLimiterAPO cleanup when the process-loopback
     // COM interfaces are released, especially with duplicate process-loopback
-    // captures. This object runs in a disposable process-loopback helper, so leave
-    // these OS-owned interfaces for helper teardown instead of touching the
+    // captures. This object runs in a disposable CaptureEngine worker, so leave
+    // these OS-owned interfaces for process teardown instead of touching the
     // crash-prone AudioSes cleanup path. A re-activation emits a new epoch; the
-    // worker then recycles the helper immediately, bounding abandoned wrappers to
-    // one helper generation even during a long recording.
+    // worker then exits for immediate recycling, bounding abandoned wrappers to
+    // one worker generation even during a long recording.
     if (pCaptureClient || pAudioClient) {
         DLL_Log(
             "[AppAudioCapture] Abandoning process-loopback COM interfaces "
@@ -1126,7 +1126,7 @@ void AppAudioCapture::CaptureLoop() {
                         "[AppAudioCapture] Target render session requires a fresh process-loopback binding: "
                         "targetPID=%lu sessionPID=%lu notificationGeneration=%llu activationGeneration=%llu "
                         "activationQualified=%d targetSessionObservedAtActivation=%d epoch=%llu; recycling the "
-                        "disposable helper",
+                        "disposable worker",
                         activePid, creation.processId, static_cast<unsigned long long>(creation.generation),
                         static_cast<unsigned long long>(activationGeneration), currentActivationQualified ? 1 : 0,
                         activationHadObservedTargetSession ? 1 : 0,
@@ -1168,7 +1168,7 @@ void AppAudioCapture::CaptureLoop() {
                 ++eventFallbackAttempts;
                 DLL_Log(
                     "[AppAudioCapture] WARNING: event-driven activation failed first-packet qualification for "
-                    "PID %lu after %llu ms (epoch=%llu); re-activating polling-only and recycling the helper "
+                    "PID %lu after %llu ms (epoch=%llu); re-activating polling-only and recycling the worker "
                     "generation to bound abandoned AudioSes state",
                     targetPID.load(), static_cast<unsigned long long>(activationElapsedMs),
                     static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)));

@@ -1,6 +1,6 @@
 # Process IPC And Restricted Children
 
-Last cross-checked: 2026-07-17 (restricted process channels plus exact shared-memory ABI/build publication and isolation)
+Last cross-checked: 2026-07-18 (restricted process channels, private same-image process-loopback workers, and exact shared-memory ABI/build publication/isolation)
 
 Primary sources:
 - `common/restricted_child_process.{h,cpp}`
@@ -46,7 +46,7 @@ The private pipe name is only a transient rendezvous used while the controller a
 
 - Only handles listed in the attribute list are inherited.
 - Invalid handles, attribute-list setup failure, or process creation failure abort the spawn and close owned resources.
-- The same launcher is used by normal process IPC and the process-loopback helper boundary.
+- The same launcher is used by normal process IPC and the private disposable `captureengine.exe --process-loopback-worker` boundary; the latter inherits exactly its mapping, packet event, and stop event.
 - Internal controller/child binaries are shipped atomically; protocol compatibility with independently upgraded binaries is not supported.
 
 ## Tests And Diagnostics

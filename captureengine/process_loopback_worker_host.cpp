@@ -1,17 +1,22 @@
-#include <windows.h>
+#include "process_loopback_worker_host.h"
 
-#include "../mediaengine/process_loopback_protocol.h"
+#include <windows.h>
+#include <shellapi.h>
+
 #include "../common/secure_dll_loading.h"
+#include "../mediaengine/process_loopback_protocol.h"
 
 #include <bit>
-#include <cstdint>
 #include <cerrno>
+#include <cstdint>
 #include <cstdlib>
 #include <cwchar>
 #include <filesystem>
 #include <limits>
 
 namespace {
+
+constexpr wchar_t kProcessLoopbackWorkerCommand[] = L"--process-loopback-worker";
 
 using WorkerEntry = int (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint32_t, const wchar_t*, int, int, uint32_t);
 
@@ -85,10 +90,8 @@ bool ValidateInheritedTransport(uint64_t mappingValue, uint64_t packetEventValue
     return valid;
 }
 
-}  // namespace
-
-int wmain(int argc, wchar_t** argv) {
-    if (argc != 10) {
+int RunProcessLoopbackWorkerHost(int argumentCount, wchar_t** arguments) {
+    if (argumentCount != 11) {
         return ERROR_BAD_ARGUMENTS;
     }
     uint64_t mappingHandle = 0;
@@ -99,15 +102,16 @@ int wmain(int argc, wchar_t** argv) {
     uint64_t sampleRate = 0;
     uint64_t channels = 0;
     uint64_t channelMask = 0;
-    if (!ParseUnsigned(argv[1], 1, std::numeric_limits<uintptr_t>::max(), mappingHandle) ||
-        !ParseUnsigned(argv[2], 1, std::numeric_limits<uintptr_t>::max(), packetEvent) ||
-        !ParseUnsigned(argv[3], 1, std::numeric_limits<uintptr_t>::max(), stopEvent) ||
-        !ParseUnsigned(argv[4], 1, std::numeric_limits<uint64_t>::max(), generation) ||
-        !ParseUnsigned(argv[5], 0, std::numeric_limits<uint32_t>::max(), targetPid) ||
-        !ParseUnsigned(argv[6], 8000, 384000, sampleRate) || !ParseUnsigned(argv[7], 1, 8, channels) ||
-        !ParseUnsigned(argv[8], 0, std::numeric_limits<uint32_t>::max(), channelMask) ||
-        (targetPid == 0) == (argv[9] && *argv[9] == L'\0') || (targetPid == 0 && !IsValidProcessName(argv[9])) ||
-        mappingHandle == packetEvent ||
+    if (!ParseUnsigned(arguments[2], 1, std::numeric_limits<uintptr_t>::max(), mappingHandle) ||
+        !ParseUnsigned(arguments[3], 1, std::numeric_limits<uintptr_t>::max(), packetEvent) ||
+        !ParseUnsigned(arguments[4], 1, std::numeric_limits<uintptr_t>::max(), stopEvent) ||
+        !ParseUnsigned(arguments[5], 1, std::numeric_limits<uint64_t>::max(), generation) ||
+        !ParseUnsigned(arguments[6], 0, std::numeric_limits<uint32_t>::max(), targetPid) ||
+        !ParseUnsigned(arguments[7], 8000, 384000, sampleRate) ||
+        !ParseUnsigned(arguments[8], 1, 8, channels) ||
+        !ParseUnsigned(arguments[9], 0, std::numeric_limits<uint32_t>::max(), channelMask) ||
+        (targetPid == 0) == (arguments[10] && *arguments[10] == L'\0') ||
+        (targetPid == 0 && !IsValidProcessName(arguments[10])) || mappingHandle == packetEvent ||
         mappingHandle == stopEvent || packetEvent == stopEvent || !IsInheritedHandle(mappingHandle) ||
         !IsInheritedHandle(packetEvent) || !IsInheritedHandle(stopEvent) ||
         (channelMask != 0 && std::popcount(static_cast<uint32_t>(channelMask)) != channels) ||
@@ -130,8 +134,7 @@ int wmain(int argc, wchar_t** argv) {
     if (!ce::security::EnsureSecureDllSearchDirectory(executableDir / L"ffmpeg", &loadError)) {
         return static_cast<int>(loadError);
     }
-    HMODULE mediaEngine =
-        ce::security::LoadLibraryFromSecurePath(executableDir / L"mediaengine.dll", &loadError);
+    HMODULE mediaEngine = ce::security::LoadLibraryFromSecurePath(executableDir / L"mediaengine.dll", &loadError);
     if (!mediaEngine) {
         return static_cast<int>(loadError);
     }
@@ -142,8 +145,25 @@ int wmain(int argc, wchar_t** argv) {
         return error;
     }
     const int result = entry(mappingHandle, packetEvent, stopEvent, generation, static_cast<uint32_t>(targetPid),
-                             argv[9], static_cast<int>(sampleRate), static_cast<int>(channels),
+                             arguments[10], static_cast<int>(sampleRate), static_cast<int>(channels),
                              static_cast<uint32_t>(channelMask));
     FreeLibrary(mediaEngine);
+    return result;
+}
+
+}  // namespace
+
+std::optional<int> TryRunProcessLoopbackWorkerHost() {
+    int argumentCount = 0;
+    wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+    if (!arguments) {
+        return ERROR_BAD_ARGUMENTS;
+    }
+    if (argumentCount < 2 || wcscmp(arguments[1], kProcessLoopbackWorkerCommand) != 0) {
+        LocalFree(arguments);
+        return std::nullopt;
+    }
+    const int result = RunProcessLoopbackWorkerHost(argumentCount, arguments);
+    LocalFree(arguments);
     return result;
 }

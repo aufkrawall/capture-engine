@@ -39,13 +39,14 @@ TEST(SecureDllLoadingSourceTest, PrivateRuntimeLoadersNeverMutateTheLegacyDllDir
     const std::filesystem::path root = std::filesystem::current_path();
     const std::string loader = ReadSource(root / "captureengine" / "mediaengine_loader.cpp");
     const std::string screenshot = ReadSource(root / "captureengine" / "screenshot.cpp");
-    const std::string helper = ReadSource(root / "helpers" / "process_loopback_helper_main.cpp");
+    const std::string workerHost = ReadSource(root / "captureengine" / "process_loopback_worker_host.cpp");
 
-    for (const std::string* source : {&loader, &screenshot, &helper}) {
+    for (const std::string* source : {&loader, &screenshot, &workerHost}) {
         ASSERT_FALSE(source->empty());
         EXPECT_EQ(source->find("SetDllDirectory"), std::string::npos);
         EXPECT_NE(source->find("EnsureSecureDllSearchDirectory"), std::string::npos);
     }
     EXPECT_NE(loader.find("LoadLibraryFromSecurePath"), std::string::npos);
-    EXPECT_NE(helper.find("LoadLibraryFromSecurePath"), std::string::npos);
+    EXPECT_NE(workerHost.find("LoadLibraryFromSecurePath"), std::string::npos);
+    EXPECT_NE(workerHost.find("mediaengine.dll"), std::string::npos);
 }

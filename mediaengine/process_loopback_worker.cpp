@@ -152,7 +152,7 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(uint64_t map
                                                   std::memory_order_release);
                         RelayWorkerLog(
                             "[Worker] Process-loopback transport contract failure; stopping without a silent "
-                            "helper restart");
+                            "worker restart");
                         exitCode = static_cast<int>(header->lastError.load(std::memory_order_acquire));
                         if (exitCode == ERROR_SUCCESS) {
                             exitCode = ERROR_INVALID_DATA;

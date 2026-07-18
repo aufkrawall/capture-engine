@@ -1094,6 +1094,39 @@ def safe_delete_file(filepath: str, max_retries: int = 3, retry_delay: float = 0
     return False
 
 
+def find_obsolete_process_loopback_helper_artifacts(search_roots=None) -> List[str]:
+    """Return stale standalone process-loopback helper outputs below product build roots."""
+    roots = search_roots if search_roots is not None else (BIN_DIR, OBJ_DIR)
+    artifacts = set()
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        pattern = os.path.join(root, "**", "process_loopback_helper*")
+        for candidate in glob.glob(pattern, recursive=True):
+            if os.path.isfile(candidate) or os.path.islink(candidate):
+                artifacts.add(os.path.normpath(candidate))
+    return sorted(artifacts, key=str.casefold)
+
+
+def remove_obsolete_process_loopback_helper_artifacts(search_roots=None) -> None:
+    """Remove obsolete helper outputs and fail if any locked/renamed artifact remains."""
+    artifacts = find_obsolete_process_loopback_helper_artifacts(search_roots)
+    failed = [artifact for artifact in artifacts if not safe_delete_file(artifact)]
+    remaining = find_obsolete_process_loopback_helper_artifacts(search_roots)
+    if failed or remaining:
+        paths = sorted(set(failed + remaining), key=str.casefold)
+        raise RuntimeError("Obsolete process-loopback helper artifact remains: " + ", ".join(paths))
+    if artifacts:
+        log(f"Removed {len(artifacts)} obsolete process-loopback helper artifact(s)")
+
+
+def assert_no_obsolete_process_loopback_helper_artifacts(search_roots=None) -> None:
+    """Fail product verification if a standalone helper output reappeared."""
+    artifacts = find_obsolete_process_loopback_helper_artifacts(search_roots)
+    if artifacts:
+        raise RuntimeError("Obsolete process-loopback helper artifact present: " + ", ".join(artifacts))
+
+
 def clear_stale_hook_pdb_cache() -> None:
     """Remove cached hook PDBs from the system symbol cache so cdb uses fresh ones."""
     if not IS_WINDOWS:
@@ -6018,6 +6051,7 @@ def compile_project(
     run_python_tools=True,
 ):
     ensure_dirs()
+    remove_obsolete_process_loopback_helper_artifacts()
 
     if externals_prepared:
         log("Reusing external dependency and FFmpeg preparation completed before sanitizer validation")
@@ -6463,41 +6497,6 @@ def compile_project(
                 # Note: mediaengine.dll is output directly to BIN_DIR (main folder)
                 # It acts as a bridge to FFmpeg DLLs in ffmpeg/ subfolder
 
-                # Keep process-loopback AudioSes COM state outside the long-lived
-                # captureengine process. This tiny loader inherits only the shared
-                # packet mapping and its two synchronization events, loads the just-
-                # built mediaengine.dll, and exits after each capture worker lifetime.
-                process_loopback_helper_src = os.path.join(PROJECT_ROOT, "helpers", "process_loopback_helper_main.cpp")
-                secure_dll_loading_src = os.path.join(PROJECT_ROOT, "common", "secure_dll_loading.cpp")
-                process_loopback_helper = os.path.join(BIN_DIR, "process_loopback_helper.exe")
-                temp_process_loopback_helper = os.path.join(curr_obj_dir, "process_loopback_helper.tmp.exe")
-                helper_cflags = [f for f in curr_cflags if not f.startswith("-flto")]
-                helper_ldflags = [
-                    "-municode",
-                    "-static",
-                    "-static-libgcc",
-                    "-static-libstdc++",
-                    "-Wl,--subsystem,windows",
-                    "-lkernel32",
-                ]
-                helper_ldflags.extend(LD_OPT_FLAGS)
-                helper_ldflags.extend(LD_OPT_FLAGS_X64)
-                append_windows_pdb_linker_flag(helper_ldflags, process_loopback_helper)
-                safe_delete_file(temp_process_loopback_helper)
-                run_command(
-                    [curr_clang_exe]
-                    + helper_cflags
-                    + [process_loopback_helper_src, secure_dll_loading_src]
-                    + helper_ldflags
-                    + ["-o", temp_process_loopback_helper],
-                    env=curr_env,
-                )
-                if not safe_copy_file(temp_process_loopback_helper, process_loopback_helper):
-                    log("ERROR: Failed to place process_loopback_helper.exe")
-                    sys.exit(1)
-                safe_delete_file(temp_process_loopback_helper)
-                record_verification_artifact("process_loopback_helper_exe", process_loopback_helper)
-
                 # Copy FFmpeg DLLs to bin/ffmpeg/ for runtime (Linux)
                 if IS_LINUX:
                     log("Copying FFmpeg DLLs to bin/ffmpeg/...")
@@ -6721,6 +6720,8 @@ def compile_project(
         shutil.copytree(licenses_src, licenses_dst)
         copy_bundled_runtime_licenses(licenses_dst, os.path.join(BIN_DIR, "ffmpeg"))
         log("Copied licenses/ directory to installed/captureengine/")
+
+    assert_no_obsolete_process_loopback_helper_artifacts()
 
     # Keep runtime DLLs in tests/ current so unit_tests.exe can run directly
     tests_dir = os.path.join(PROJECT_ROOT, "tests")

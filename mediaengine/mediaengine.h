@@ -19,8 +19,9 @@ typedef void (*LogCallback)(const char* msg);
 MEDIAENGINE_API void MediaEngine_SetLogCallback(LogCallback cb);
 MEDIAENGINE_API void DLL_Log(const char* fmt, ...);
 
-// Entry point used only by process_loopback_helper.exe. All values are inherited
-// handles or immutable startup parameters; the helper exits after ordered EOS.
+// Entry point used only by the private CaptureEngine process-loopback worker. All
+// values are inherited handles or immutable startup parameters; the worker exits
+// after ordered EOS.
 MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(uint64_t mappingHandle, uint64_t packetEvent,
                                                          uint64_t stopEvent, uint64_t workerGeneration,
                                                          uint32_t targetPid, const wchar_t* targetProcessName,

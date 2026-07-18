@@ -166,6 +166,30 @@ TEST(ProcessIPCTest, RestrictedLauncherUsesAnExplicitHandleList) {
     EXPECT_NE(source.find("inheritedHandles.empty() ? FALSE : TRUE"), std::string::npos);
 }
 
+TEST(ProcessIPCTest, ProcessLoopbackWorkerDispatchesBeforeEveryNormalStartupPath) {
+    const std::string mainSource = ReadSource("captureengine/main.cpp");
+    const std::string workerHost = ReadSource("captureengine/process_loopback_worker_host.cpp");
+    const std::string processHeader = ReadSource("common/process_ipc.h");
+    ASSERT_FALSE(mainSource.empty());
+    ASSERT_FALSE(workerHost.empty());
+    ASSERT_FALSE(processHeader.empty());
+
+    const size_t workerDispatch = mainSource.find("TryRunProcessLoopbackWorkerHost()");
+    const size_t dumpDispatch = mainSource.find("IsDumpHelperCommandLine(lpCmdLine)");
+    const size_t modeParsing = mainSource.find("ParseProcessMode(lpCmdLine)");
+    ASSERT_NE(workerDispatch, std::string::npos);
+    ASSERT_NE(dumpDispatch, std::string::npos);
+    ASSERT_NE(modeParsing, std::string::npos);
+    EXPECT_LT(workerDispatch, dumpDispatch);
+    EXPECT_LT(workerDispatch, modeParsing);
+
+    EXPECT_NE(workerHost.find("CommandLineToArgvW(GetCommandLineW()"), std::string::npos);
+    EXPECT_NE(workerHost.find("wcscmp(arguments[1], kProcessLoopbackWorkerCommand)"), std::string::npos);
+    EXPECT_NE(workerHost.find("argumentCount != 11"), std::string::npos);
+    EXPECT_NE(workerHost.find("return ERROR_BAD_ARGUMENTS"), std::string::npos);
+    EXPECT_EQ(processHeader.find("ProcessLoopbackWorker"), std::string::npos);
+}
+
 TEST(ProcessIPCTest, ControllerRecoversChildrenOnlyThroughFreshAuthenticatedSpawns) {
     const std::string source = ReadSource("captureengine/main.cpp");
     ASSERT_FALSE(source.empty());

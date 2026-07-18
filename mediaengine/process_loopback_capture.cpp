@@ -216,16 +216,12 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
         DLL_Log("[AppAudioWorker] Cannot resolve executable directory: error=0x%lx", GetLastError());
         return false;
     }
-    const std::filesystem::path helperPath =
-        std::filesystem::path(executablePath).parent_path() / L"process_loopback_helper.exe";
-    if (!std::filesystem::exists(helperPath)) {
-        DLL_Log("[AppAudioWorker] Helper executable is missing: %ls", helperPath.c_str());
-        return false;
-    }
+    const std::filesystem::path workerExecutablePath = std::filesystem::absolute(executablePath);
 
     const auto handleValue = [](HANDLE handle) { return std::to_wstring(reinterpret_cast<uintptr_t>(handle)); };
-    std::wstring commandLine = QuoteCommandArgument(helperPath.wstring()) + L" " + handleValue(worker->mappingHandle) +
-                               L" " + handleValue(worker->packetEvent) + L" " + handleValue(worker->stopEvent) + L" " +
+    std::wstring commandLine = QuoteCommandArgument(workerExecutablePath.wstring()) +
+                               L" --process-loopback-worker " + handleValue(worker->mappingHandle) + L" " +
+                               handleValue(worker->packetEvent) + L" " + handleValue(worker->stopEvent) + L" " +
                                std::to_wstring(worker->generation) + L" " + std::to_wstring(targetProcessId_) + L" " +
                                std::to_wstring(requestedSampleRate_) + L" " + std::to_wstring(requestedChannels_) +
                                L" " + std::to_wstring(requestedChannelMask_) + L" " +
@@ -235,7 +231,7 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
     // The shared launcher installs PROC_THREAD_ATTRIBUTE_HANDLE_LIST and combines
     // CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT so no unrelated parent handle is inherited.
     if (!ce::process::LaunchRestrictedChildProcess(
-            helperPath.wstring(), commandLine, helperPath.parent_path().wstring(),
+            workerExecutablePath.wstring(), commandLine, workerExecutablePath.parent_path().wstring(),
             {worker->mappingHandle, worker->packetEvent, worker->stopEvent}, CREATE_NO_WINDOW, process, createError)) {
         DLL_Log("[AppAudioWorker] CreateProcess failed generation=%llu error=0x%lx",
                 static_cast<unsigned long long>(worker->generation), createError);
@@ -252,7 +248,7 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
         consecutiveRestartFailures_ = 0;
     }
     DLL_Log(
-        "[AppAudioWorker] Started generation=%llu helperPid=%lu targetMode=%s targetPid=%lu targetName=%s "
+        "[AppAudioWorker] Started generation=%llu workerPid=%lu targetMode=%s targetPid=%lu targetName=%s "
         "format=%dHz/%dch/0x%x mappingBytes=%llu restart=%d",
         static_cast<unsigned long long>(activeWorker_->generation), activeWorker_->processId,
         targetByName_ ? "name" : "pid", targetProcessId_,
@@ -285,7 +281,7 @@ void ProcessLoopbackCapture::RetireActiveWorkerLocked(bool unexpectedExit, DWORD
     const SharedHeader* header = activeWorker_->Header();
     const uint64_t pending = ce::process_loopback::PendingPacketCount(activeWorker_->mapping);
     DLL_Log(
-        "[AppAudioWorker] Exit generation=%llu helperPid=%lu exitCode=0x%lx unexpected=%d state=%u "
+        "[AppAudioWorker] Exit generation=%llu workerPid=%lu exitCode=0x%lx unexpected=%d state=%u "
         "pending=%llu produced=%llu consumed=%llu overrun=%llu/%llu lifecycleOverrun=%llu transport=%u "
         "stage=%u failureSeq=%llu lastError=0x%x integrityFailures=%llu clean=%llu recycle=%llu",
         static_cast<unsigned long long>(activeWorker_->generation), activeWorker_->processId, exitCode,
@@ -319,9 +315,9 @@ void ProcessLoopbackCapture::HandleIntegrityFailureLocked(WorkerInstance& worker
     const uint32_t status = worker.Header()->transportStatus.load(std::memory_order_acquire);
     if (!integrityFailure_) {
         DLL_Log(
-            "[AppAudioWorker] FATAL: transport integrity failed generation=%llu helperPid=%lu status=%u stage=%u "
+            "[AppAudioWorker] FATAL: transport integrity failed generation=%llu workerPid=%lu status=%u stage=%u "
             "sequence=%llu lastError=0x%x; "
-            "disabling helper restart and requesting recording failure",
+            "disabling worker restart and requesting recording failure",
             static_cast<unsigned long long>(worker.generation), worker.processId, status,
             worker.Header()->transportFailureStage.load(std::memory_order_acquire),
             static_cast<unsigned long long>(worker.Header()->transportFailureSequence.load(std::memory_order_acquire)),
@@ -467,7 +463,7 @@ void ProcessLoopbackCapture::Stop(bool discardPendingPackets) {
         SetEvent(activeWorker_->stopEvent);
         DWORD wait = WaitForSingleObject(activeWorker_->processHandle, kWorkerShutdownDeadlineMs);
         if (wait == WAIT_TIMEOUT) {
-            DLL_Log("[AppAudioWorker] ERROR: shutdown deadline exceeded generation=%llu helperPid=%lu; terminating",
+            DLL_Log("[AppAudioWorker] ERROR: shutdown deadline exceeded generation=%llu workerPid=%lu; terminating",
                     static_cast<unsigned long long>(activeWorker_->generation), activeWorker_->processId);
             TerminateProcess(activeWorker_->processHandle, ERROR_TIMEOUT);
             WaitForSingleObject(activeWorker_->processHandle, kWorkerForcedExitDeadlineMs);

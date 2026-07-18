@@ -25,6 +25,7 @@
 #include "../common/vulkan_layer_registration.h"
 #include "dump_helper.h"
 #include "injection.h"
+#include "process_loopback_worker_host.h"
 #include "pseudo_overlay.h"
 #include "screenshot.h"
 #include "tray.h"
@@ -1532,6 +1533,10 @@ int ControllerMain(HINSTANCE hInstance) {
 
 // Main entry point
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    if (const std::optional<int> workerResult = TryRunProcessLoopbackWorkerHost()) {
+        return *workerResult;
+    }
+
     if (IsDumpHelperCommandLine(lpCmdLine)) {
         return RunDumpHelperFromCommandLine();
     }

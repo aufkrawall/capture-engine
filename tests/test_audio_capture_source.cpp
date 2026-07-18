@@ -86,20 +86,26 @@ TEST(AudioCaptureSourceTest, ProcessLoopbackComStateLivesInDisposableInheritedHa
     const std::string mediaSource = ReadSource("mediaengine.cpp");
     const std::string proxySource = ReadSource("process_loopback_capture.cpp");
     const std::string workerSource = ReadSource("process_loopback_worker.cpp");
-    const std::string helperSource = ReadProjectSource("helpers/process_loopback_helper_main.cpp");
+    const std::string workerHostSource = ReadProjectSource("captureengine/process_loopback_worker_host.cpp");
     ASSERT_FALSE(mediaSource.empty());
     ASSERT_FALSE(proxySource.empty());
     ASSERT_FALSE(workerSource.empty());
-    ASSERT_FALSE(helperSource.empty());
+    ASSERT_FALSE(workerHostSource.empty());
 
     EXPECT_NE(mediaSource.find("std::unique_ptr<ProcessLoopbackCapture> appCapture"), std::string::npos);
+    EXPECT_NE(proxySource.find("GetModuleFileNameW(nullptr, executablePath"), std::string::npos);
+    EXPECT_NE(proxySource.find("--process-loopback-worker"), std::string::npos);
     EXPECT_NE(proxySource.find("LaunchRestrictedChildProcess"), std::string::npos);
     EXPECT_NE(proxySource.find("{worker->mappingHandle, worker->packetEvent, worker->stopEvent}"), std::string::npos);
+    EXPECT_EQ(proxySource.find("process_loopback_helper.exe"), std::string::npos);
     EXPECT_NE(proxySource.find("retiredWorkers_.push_back(std::move(activeWorker_))"), std::string::npos);
     EXPECT_NE(workerSource.find("AppAudioCapture capture"), std::string::npos);
     EXPECT_NE(workerSource.find("Recycling after process-loopback reactivation"), std::string::npos);
-    EXPECT_NE(helperSource.find("MediaEngine_RunProcessLoopbackWorker"), std::string::npos);
-    EXPECT_NE(helperSource.find("IsUnsignaledEvent"), std::string::npos);
+    EXPECT_NE(workerHostSource.find("MediaEngine_RunProcessLoopbackWorker"), std::string::npos);
+    EXPECT_NE(workerHostSource.find("IsInheritedHandle"), std::string::npos);
+    EXPECT_NE(workerHostSource.find("IsUnsignaledEvent"), std::string::npos);
+    EXPECT_NE(workerHostSource.find("ValidateInheritedTransport"), std::string::npos);
+    EXPECT_NE(workerHostSource.find("SetHandleInformation"), std::string::npos);
 }
 
 TEST(AudioCaptureSourceTest, AppAudioCaptureEndMarkerOrdersEveryFanoutRouteBeforeTimelineSilence) {

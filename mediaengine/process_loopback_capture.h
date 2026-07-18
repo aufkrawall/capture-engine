@@ -11,8 +11,8 @@
 #include "audio_capture.h"
 
 // Host-side proxy for process-loopback WASAPI capture. The unsafe AudioSes COM
-// graph lives in a disposable helper process; only ordered packet records cross
-// this boundary.
+// graph lives in a disposable CaptureEngine worker process; only ordered packet
+// records cross this boundary.
 class ProcessLoopbackCapture {
 public:
     ProcessLoopbackCapture();

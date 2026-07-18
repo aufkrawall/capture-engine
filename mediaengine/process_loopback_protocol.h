@@ -335,7 +335,7 @@ inline bool ValidatePacketForTransport(const SharedHeader& header, const AudioPa
 // Process-loopback capture explicitly initializes WASAPI with the shared
 // transport's format. Metadata copied back out of the mutable WAVEFORMATEX must
 // therefore not redefine the packet contract after a process has joined late or
-// the disposable helper has restarted. Canonicalize only non-payload metadata;
+// the disposable worker has restarted. Canonicalize only non-payload metadata;
 // a block-align or payload-shape mismatch remains fatal at the strict producer
 // boundary below.
 inline bool CanonicalizeProcessLoopbackDataPacket(const SharedHeader& header, uint32_t requestedChannelMask,
