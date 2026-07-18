@@ -13,6 +13,25 @@ std::string MakeTestPath(const char* filename) {
     return buffer;
 }
 
+std::string DefaultTemplatePath() {
+    char modulePath[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameA(nullptr, modulePath, MAX_PATH);
+    EXPECT_GT(length, 0u);
+    EXPECT_LT(length, static_cast<DWORD>(MAX_PATH));
+    std::string path(modulePath, length);
+    const size_t testsSeparator = path.find_last_of("\\/");
+    EXPECT_NE(testsSeparator, std::string::npos);
+    if (testsSeparator == std::string::npos)
+        return {};
+    path.resize(testsSeparator);
+    const size_t rootSeparator = path.find_last_of("\\/");
+    EXPECT_NE(rootSeparator, std::string::npos);
+    if (rootSeparator == std::string::npos)
+        return {};
+    path.resize(rootSeparator);
+    return path + "\\captureengine\\config.ini.template";
+}
+
 void WriteTextFile(const std::string& path, const std::string& content) {
     HANDLE file = CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     ASSERT_NE(file, INVALID_HANDLE_VALUE);
@@ -87,10 +106,12 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 300u);
     EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 3000u);
     EXPECT_EQ(config.wgcVideoMemoryReservation, "off");
+    EXPECT_TRUE(config.wgcSmoothnessFloorAuto);
     EXPECT_FALSE(config.wgcAllowLossyBgra8Pool);
     EXPECT_EQ(config.processPriority, "high");
     EXPECT_EQ(config.video.gpuPriority, 7);
     EXPECT_EQ(config.gpuSchedulingPriority, "auto");
+    EXPECT_EQ(config.copyQueuePriority, "normal");
     EXPECT_EQ(config.video.profile, "auto");
     EXPECT_EQ(config.video.multipass, "auto");
     EXPECT_EQ(config.video.lookahead, "off");
@@ -103,11 +124,20 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.graphics.backbufferCount, -1);
     EXPECT_TRUE(config.overlay.captureIncludeOverlay);
     EXPECT_TRUE(config.overlay.screenshotIncludeOverlay);
+    EXPECT_FLOAT_EQ(config.overlay.bgAlpha, 0.5f);
+    EXPECT_EQ(config.overlay.fpsColor, 0xFF05FAB8u);
+    EXPECT_TRUE(config.pseudoOverlay.enabled);
+    EXPECT_EQ(config.pseudoOverlay.mode, 2);
+    EXPECT_FALSE(config.pseudoOverlay.showEncoderOverloadWarn);
+    EXPECT_EQ(config.pseudoOverlay.foregroundAcquireGraceMs, 2000);
+    ASSERT_EQ(config.audioSources.size(), 1u);
+    EXPECT_EQ(config.audioSources.front().sourceType, AudioConfig::SystemAudio);
 
     std::string generatedText = ReadTextFile(missingFile);
     ASSERT_FALSE(generatedText.empty());
-    EXPECT_NE(generatedText.find("; capture_method - Values: inject, wgc, dxgi_dup, auto"), std::string::npos);
-    EXPECT_NE(generatedText.find("This selects only the video acquisition path"), std::string::npos);
+    const std::string sourceTemplate = ReadTextFile(DefaultTemplatePath());
+    ASSERT_FALSE(sourceTemplate.empty());
+    EXPECT_EQ(generatedText, sourceTemplate);
     EXPECT_NE(generatedText.find("capture_method=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_skip_split_device_flush=false"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_same_device_capture=true"), std::string::npos);
@@ -117,6 +147,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("wgc_video_memory_reservation=off"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_allow_lossy_bgra8_pool=false"), std::string::npos);
     EXPECT_NE(generatedText.find("gpu_scheduling_priority=auto"), std::string::npos);
+    EXPECT_NE(generatedText.find("copy_queue_priority=normal"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("multipass=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("lookahead=off"), std::string::npos);
@@ -126,10 +157,13 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("b_ref_mode=auto"), std::string::npos);
     EXPECT_EQ(generatedText.find("\naq="), std::string::npos);
     EXPECT_NE(generatedText.find("sharpness=100"), std::string::npos);
-    EXPECT_NE(generatedText.find("; backbuffer_count, affecting vsync"), std::string::npos);
+    EXPECT_NE(generatedText.find("valid overrides are 2-6"), std::string::npos);
     EXPECT_NE(generatedText.find("backbuffer_count=-1"), std::string::npos);
     EXPECT_NE(generatedText.find("capture_include_overlay=true"), std::string::npos);
     EXPECT_NE(generatedText.find("screenshot_include_overlay=true"), std::string::npos);
+    EXPECT_NE(generatedText.find("audio_only="), std::string::npos);
+    EXPECT_NE(generatedText.find("foreground_acquire_grace_ms=2000"), std::string::npos);
+    EXPECT_NE(generatedText.find("enabled=false\n"), std::string::npos);
     EXPECT_EQ(generatedText.find("perf_metrics_logging="), std::string::npos);
     EXPECT_NE(generatedText.find("log_level=trace"), std::string::npos);
     EXPECT_EQ(generatedText.find("nvidia_smooth_motion_compat="), std::string::npos);
@@ -223,13 +257,15 @@ TEST_F(ConfigTest, InvalidPerformancePriorityValuesFallBackConservatively) {
     WriteConfig(
         "[Performance]\n"
         "process_priority=definitely_not_valid\n"
-        "gpu_scheduling_priority=also_invalid\n");
+        "gpu_scheduling_priority=also_invalid\n"
+        "copy_queue_priority=urgent\n");
 
     AppConfig config;
     LoadConfig(tempConfigFile, config);
 
     EXPECT_EQ(config.processPriority, "above_normal");
     EXPECT_EQ(config.gpuSchedulingPriority, "off");
+    EXPECT_EQ(config.copyQueuePriority, "normal");
 }
 
 TEST_F(ConfigTest, ParseLogLevelValues) {
@@ -635,6 +671,94 @@ TEST_F(ConfigTest, InvalidValuesFallBack) {
     EXPECT_EQ(config.wgcSmoothnessFloorMs, 0u);
     ASSERT_EQ(config.audioSources.size(), 1u);
     EXPECT_EQ(config.audioSources.front().sourceType, AudioConfig::SystemAudio);
+}
+
+TEST_F(ConfigTest, BooleanTyposUseDocumentedFallbacks) {
+    WriteConfig(
+        "[Overlay]\n"
+        "enabled=perhaps\n"
+        "capture_include_overlay=perhaps\n"
+        "[Video]\n"
+        "capture_cursor=perhaps\n"
+        "[Audio]\n"
+        "enabled=perhaps\n"
+        "[Microphone]\n"
+        "enabled=perhaps\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_TRUE(config.overlay.showOverlay);
+    EXPECT_TRUE(config.overlay.captureIncludeOverlay);
+    EXPECT_TRUE(config.video.captureCursor);
+    ASSERT_EQ(config.audioSources.size(), 1u);
+    EXPECT_EQ(config.audioSources.front().sourceType, AudioConfig::SystemAudio);
+}
+
+TEST_F(ConfigTest, TrackIdsAreBoundedAndDeduplicated) {
+    WriteConfig(
+        "[Audio]\n"
+        "enabled=true\n"
+        "track=1, 0, 256, invalid, 1, 3\n"
+        "[Microphone]\n"
+        "enabled=true\n"
+        "track=-1, 2, 2, 999\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    ASSERT_EQ(config.audioSources.size(), 2u);
+    EXPECT_EQ(config.audioSources[0].tracks, (std::vector<int>{1, 3}));
+    EXPECT_EQ(config.audioSources[1].tracks, (std::vector<int>{2}));
+}
+
+TEST_F(ConfigTest, EntirelyInvalidTrackListUsesSectionDefault) {
+    WriteConfig(
+        "[Audio]\n"
+        "enabled=true\n"
+        "track=0, 256, invalid\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    ASSERT_EQ(config.audioSources.size(), 1u);
+    EXPECT_EQ(config.audioSources.front().tracks, (std::vector<int>{1}));
+}
+
+TEST_F(ConfigTest, OverlayAndPseudoOverlayValuesRespectDocumentedBounds) {
+    WriteConfig(
+        "[Overlay]\n"
+        "padding=-1\n"
+        "font_size=-2\n"
+        "rounded_corners=-3\n"
+        "bg_alpha=1.5\n"
+        "bg_color=1234567\n"
+        "fps_color=#112233\n"
+        "text_outline_thickness=-1\n"
+        "text_update_interval=-1\n"
+        "[pseudo-overlay]\n"
+        "size=0\n"
+        "pad=101\n"
+        "pos=4\n"
+        "mode=3\n"
+        "foreground_acquire_grace_ms=10001\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.overlay.padding, 10);
+    EXPECT_FLOAT_EQ(config.overlay.fontSize, 0.0f);
+    EXPECT_FLOAT_EQ(config.overlay.roundedCorners, 8.0f);
+    EXPECT_FLOAT_EQ(config.overlay.bgAlpha, 0.5f);
+    EXPECT_EQ(config.overlay.bgColor, 0xFF000000u);
+    EXPECT_EQ(config.overlay.fpsColor, 0xFF332211u);
+    EXPECT_FLOAT_EQ(config.overlay.textOutlineThickness, 1.5f);
+    EXPECT_EQ(config.overlay.textUpdateInterval, 500u);
+    EXPECT_EQ(config.pseudoOverlay.size, 30);
+    EXPECT_EQ(config.pseudoOverlay.pad, 20);
+    EXPECT_EQ(config.pseudoOverlay.pos, 0);
+    EXPECT_EQ(config.pseudoOverlay.mode, 0);
+    EXPECT_EQ(config.pseudoOverlay.foregroundAcquireGraceMs, 2000);
 }
 
 TEST_F(ConfigTest, ParseGraphicsOverrideOptions) {

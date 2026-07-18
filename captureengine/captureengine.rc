@@ -1,5 +1,6 @@
 #include <winuser.h>
 #include "resource.h"
+#include "../common/config_resource.h"
 
 // Manifest resource - ID 1 is for EXE main manifest
 1 RT_MANIFEST "captureengine.manifest"
@@ -8,3 +9,6 @@
 IDI_ICON_IDLE      ICON "icon_idle.ico"
 IDI_ICON_RECORDING ICON "icon_recording.ico"
 IDI_ICON_SHUTDOWN  ICON "icon_shutdown.ico"
+
+// Authoritative first-run config, loaded by common/config.cpp.
+IDR_DEFAULT_CONFIG RCDATA "config.ini.template"

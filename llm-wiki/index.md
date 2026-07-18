@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-18 (private same-image disposable process-loopback workers, protocol 4 private lifecycle state, transactional cursor advancement, producer/consumer epoch validation, activation-marker preservation across initial thread launch, ordered close-before-reactivation, and evidence-complete fatal publication, first-confirmed game-owned Reflex suspend during FSR-to-DLSS startup settling, single-preparation sanitizer/product builds, current-database lint with summary/detail artifacts and managed Python tools, validated object/link caches and deterministic validation-only profiles with unchanged production LTO, incremental/failure-resume builds, capture-sync/CFR phase preservation with variable-cadence fallback, exact shared-memory ABI 36/build isolation, session-scoped logs, telemetry/frame-ring corruption rejection, non-elevating Vulkan registration repair, full-depth Vulkan capture leases, and the existing current graphics/audio/build/security state; see multi-audio-capture.md, frame-generation/guardrails.md, overlay-fg-status.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-18 (single-source resource-backed first-run configuration and validated user-facing config boundaries, private same-image disposable process-loopback workers, protocol 4 private lifecycle state, transactional cursor advancement, producer/consumer epoch validation, activation-marker preservation across initial thread launch, ordered close-before-reactivation, and evidence-complete fatal publication, first-confirmed game-owned Reflex suspend during FSR-to-DLSS startup settling, single-preparation sanitizer/product builds, current-database lint with summary/detail artifacts and managed Python tools, validated object/link caches and deterministic validation-only profiles with unchanged production LTO, incremental/failure-resume builds, capture-sync/CFR phase preservation with variable-cadence fallback, exact shared-memory ABI 36/build isolation, session-scoped logs, telemetry/frame-ring corruption rejection, non-elevating Vulkan registration repair, full-depth Vulkan capture leases, and the existing current graphics/audio/build/security state; see configuration.md, multi-audio-capture.md, frame-generation/guardrails.md, overlay-fg-status.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -30,6 +30,8 @@ Primary sources:
 - For DX12 overlay, injection, or FG work, read `dx12-injection-bootstrap.md`, `dx12-overlay-third-party-coexistence.md`, `frame-generation/guardrails.md`, `frame-generation/case-studies.md`, `overlay-fg-status.md`, and `regression-testing-and-logging.md`.
 
 ## Content Catalog
+- `configuration.md`
+  - Authoritative resource-backed first-run template, existing-file compatibility boundary, injection/profile/audio/output semantics, validation rules, and maintenance invariants. Last verified 2026-07-18.
 - `overlay-rendering.md`
   - Shared overlay layout/graph/font invariants, instant amber recording-start intent and live-state handoff, exact-ABI and sanity-checked telemetry, legacy DX8/DX9/DX10/OpenGL cache/state isolation, DirectDraw performance boundary, and runtime-validation stale-risk. Last verified 2026-07-18.
 - `handoff-dx12-32bit-crash.md`

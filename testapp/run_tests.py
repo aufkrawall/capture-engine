@@ -160,10 +160,9 @@ def ensure_capture_config_exists() -> str:
     if CAPTURE_CONFIG.exists():
         return CAPTURE_CONFIG.read_text(encoding="utf-8")
 
-    if CAPTURE_CONFIG_TEMPLATE.exists():
-        text = CAPTURE_CONFIG_TEMPLATE.read_text(encoding="utf-8")
-    else:
-        text = "[General]\ndebug_logging=true\n\n[Injection]\nwhitelist=(\n)\n"
+    if not CAPTURE_CONFIG_TEMPLATE.exists():
+        raise RuntimeError(f"Authoritative config template is missing: {CAPTURE_CONFIG_TEMPLATE}")
+    text = CAPTURE_CONFIG_TEMPLATE.read_text(encoding="utf-8")
 
     CAPTURE_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     CAPTURE_CONFIG.write_text(text, encoding="utf-8")

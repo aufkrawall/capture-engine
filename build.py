@@ -4520,6 +4520,14 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
 
     parallel_compile_varied(env, clang_exe, compile_tasks)
 
+    config_resource_obj = os.path.join(obj_dir, "tests", "config_template.res.o").replace("\\", "/")
+    os.makedirs(os.path.dirname(config_resource_obj), exist_ok=True)
+    run_command(
+        [get_windres_exe("x64"), os.path.join(tests_dir, "config_template.rc"), "-o", config_resource_obj],
+        env=env,
+        cwd=tests_dir,
+    )
+
     log("Linking Unit Tests...")
     # Order: Tests -> Common -> MediaEngine -> HookCommon -> HookWrappers -> Libs
     cmd = (
@@ -4528,6 +4536,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         + common_objs
         + me_objs
         + [screenshot_encoding_obj, pseudo_overlay_obj]
+        + [config_resource_obj]
         + hook_common_objs
         + hook_wrapper_test_objs
         + ldflags_test

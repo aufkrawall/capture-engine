@@ -1,0 +1,3 @@
+#include "../common/config_resource.h"
+
+IDR_DEFAULT_CONFIG RCDATA "../captureengine/config.ini.template"

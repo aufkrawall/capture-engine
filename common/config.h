@@ -337,7 +337,7 @@ struct AppConfig {
     bool wgcAllowLossyBgra8Pool = false;
     std::string logFilePath;  // Path to captureengine.log
 
-    std::string crashDumpDir;  // Directory for crash dumps
+    std::string crashDumpDir;  // Optional relative subdirectory beneath logs/ for crash dumps
 
     // Performance (Priority Settings)
     std::string processPriority;        // idle, below_normal, normal, above_normal, high, realtime
@@ -387,7 +387,7 @@ struct AppConfig {
     HotkeyConfig hotkeyAudioOnly;
 
     // Screenshot
-    std::string screenshotDir;  // Output directory (empty = "screenshots" next to exe)
+    std::string screenshotDir;  // Output directory (empty = "captures" next to exe)
 
     // FPS Limiter
     FpsLimiterConfig fpsLimiter;
