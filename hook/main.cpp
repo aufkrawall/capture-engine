@@ -291,7 +291,7 @@ ExternalPreTerminationDumpResult TryCapturePreTerminationDumpWithExternalHelper(
 
   STARTUPINFOA si = {};
   si.cb = sizeof(si);
-  si.dwFlags = STARTF_USESHOWWINDOW;
+  si.dwFlags = STARTF_USESHOWWINDOW | STARTF_FORCEOFFFEEDBACK;
   si.wShowWindow = SW_HIDE;
   PROCESS_INFORMATION pi = {};
 

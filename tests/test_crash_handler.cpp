@@ -225,6 +225,13 @@ TEST(CrashHandlerBinaryTest, HookDllContainsCfgSealedTrampolineRegressionStrings
     EXPECT_NE(contents.find("Skipping app ExecuteCommandLists forward"), std::string::npos);
 }
 
+TEST(CrashHandlerSourceTest, ExternalDumpHelperSuppressesGuiLaunchFeedback) {
+    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "main.cpp";
+    const std::string contents = ReadBinaryFile(source);
+    ASSERT_FALSE(contents.empty());
+    EXPECT_NE(contents.find("si.dwFlags = STARTF_USESHOWWINDOW | STARTF_FORCEOFFFEEDBACK;"), std::string::npos);
+}
+
 TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap) {
     const std::filesystem::path source = std::filesystem::current_path() / "hook" / "wrappers" / "inline_hook.cpp";
     const std::string contents = ReadBinaryFile(source);

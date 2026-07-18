@@ -48,6 +48,10 @@ bool LaunchRestrictedChildProcess(const std::wstring& executablePath, const std:
 
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = inheritedHandles.empty() ? sizeof(STARTUPINFOW) : static_cast<DWORD>(sizeof(startup));
+    // CaptureEngine is a GUI-subsystem image even for its windowless internal
+    // roles. Without this opt-out Windows applies the process-start feedback
+    // cursor to every media/logger/sensor/limiter/app-audio worker spawn.
+    startup.StartupInfo.dwFlags = STARTF_FORCEOFFFEEDBACK;
     std::vector<uint8_t> attributeStorage;
     if (!inheritedHandles.empty()) {
         SIZE_T attributeBytes = 0;

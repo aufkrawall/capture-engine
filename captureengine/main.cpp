@@ -1237,6 +1237,18 @@ int ControllerMain(HINSTANCE hInstance) {
 
     SetConsoleCtrlHandler(ControllerConsoleHandler, TRUE);
 
+    // Give Explorer a real UI owner before registration or child startup can
+    // extend the launch-feedback cursor. The window remains hidden and inactive.
+    LogInfo("[Controller] Creating tray icon...");
+    const int64_t trayCreateStartUs = Log_GetQpcUs();
+    auto tray = std::make_unique<TrayIcon>(
+        hInstance, []() { g_Running = false; },
+        []() { ShellExecuteA(NULL, "open", g_ConfigPath.c_str(), NULL, NULL, SW_SHOW); });
+    const int64_t trayCreateUs = Log_GetQpcUs() - trayCreateStartUs;
+    g_Tray = tray.get();
+    PrimeStartupCursor();
+    PumpStartupMessages();
+
     // Ephemeral Registration (RAII)
     const int64_t vulkanRegStartUs = Log_GetQpcUs();
     ScopedVulkanRegistration vulkanReg;
@@ -1251,18 +1263,6 @@ int ControllerMain(HINSTANCE hInstance) {
     g_InjectClient = std::make_unique<ProcessIPCClient>(ProcessMode::Inject);
     g_MediaClient = std::make_unique<ProcessIPCClient>(ProcessMode::Media);
     g_LimiterClient = std::make_unique<ProcessIPCClient>(ProcessMode::Limiter);
-
-    // Create tray icon early so Explorer can clear the launch wait cursor even
-    // while child processes are still spinning up.
-    LogInfo("[Controller] Creating tray icon...");
-    const int64_t trayCreateStartUs = Log_GetQpcUs();
-    auto tray = std::make_unique<TrayIcon>(
-        hInstance, []() { g_Running = false; },
-        []() { ShellExecuteA(NULL, "open", g_ConfigPath.c_str(), NULL, NULL, SW_SHOW); });
-    const int64_t trayCreateUs = Log_GetQpcUs() - trayCreateStartUs;
-    g_Tray = tray.get();
-    PrimeStartupCursor();
-    PumpStartupMessages();
 
     g_ControllerStartupTiming.controllerStartUs = controllerStartUs;
     g_ControllerStartupTiming.vulkanRegUs = vulkanRegUs;
@@ -1543,6 +1543,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Parse process mode from command line
     ProcessMode mode = ParseProcessMode(lpCmdLine);
+    if (mode == ProcessMode::Controller) {
+        // An external launcher may have requested process-start feedback. Clear
+        // it before config, logging, registration, or child startup; internal
+        // roles must never change the user's current cursor themselves.
+        PrimeStartupCursor();
+    }
 
     // Get paths
     char buffer[MAX_PATH];
@@ -1668,8 +1674,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                                     : mode == ProcessMode::Sensors  ? "Sensors"
                                                                     : "Unknown");
     }
-
-    PrimeStartupCursor();
 
     // Opt out of Windows 11 EcoQoS / power throttling for all sub-processes.
     // This tells the scheduler to prefer P-cores over E-cores on hybrid CPUs.

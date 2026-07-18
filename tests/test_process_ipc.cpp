@@ -164,6 +164,36 @@ TEST(ProcessIPCTest, RestrictedLauncherUsesAnExplicitHandleList) {
     EXPECT_NE(source.find("PROC_THREAD_ATTRIBUTE_HANDLE_LIST"), std::string::npos);
     EXPECT_NE(source.find("EXTENDED_STARTUPINFO_PRESENT"), std::string::npos);
     EXPECT_NE(source.find("inheritedHandles.empty() ? FALSE : TRUE"), std::string::npos);
+    EXPECT_NE(source.find("startup.StartupInfo.dwFlags = STARTF_FORCEOFFFEEDBACK"), std::string::npos);
+}
+
+TEST(ProcessIPCTest, ControllerClearsLaunchFeedbackBeforeSlowStartupAndChildrenNeverSetTheCursor) {
+    const std::string source = ReadSource("captureengine/main.cpp");
+    ASSERT_FALSE(source.empty());
+
+    const size_t modeParsing = source.find("ProcessMode mode = ParseProcessMode(lpCmdLine)");
+    const size_t controllerOnlyCursor = source.find("if (mode == ProcessMode::Controller)", modeParsing);
+    const size_t earlyCursor = source.find("PrimeStartupCursor();", controllerOnlyCursor);
+    const size_t pathResolution = source.find("// Get paths", earlyCursor);
+    const size_t processDispatch = source.find("switch (mode)", pathResolution);
+    ASSERT_NE(modeParsing, std::string::npos);
+    ASSERT_NE(controllerOnlyCursor, std::string::npos);
+    ASSERT_NE(earlyCursor, std::string::npos);
+    ASSERT_NE(pathResolution, std::string::npos);
+    ASSERT_NE(processDispatch, std::string::npos);
+    EXPECT_LT(modeParsing, controllerOnlyCursor);
+    EXPECT_LT(controllerOnlyCursor, earlyCursor);
+    EXPECT_LT(earlyCursor, pathResolution);
+    EXPECT_EQ(source.substr(pathResolution, processDispatch - pathResolution).find("PrimeStartupCursor();"),
+              std::string::npos);
+
+    const size_t controllerMain = source.find("int ControllerMain(HINSTANCE hInstance)");
+    const size_t trayCreation = source.find("auto tray = std::make_unique<TrayIcon>", controllerMain);
+    const size_t vulkanRegistration = source.find("ScopedVulkanRegistration vulkanReg", controllerMain);
+    ASSERT_NE(controllerMain, std::string::npos);
+    ASSERT_NE(trayCreation, std::string::npos);
+    ASSERT_NE(vulkanRegistration, std::string::npos);
+    EXPECT_LT(trayCreation, vulkanRegistration);
 }
 
 TEST(ProcessIPCTest, ProcessLoopbackWorkerDispatchesBeforeEveryNormalStartupPath) {
@@ -206,6 +236,11 @@ TEST(RestrictedChildLauncherProbe, InheritsOnlyAllowlistedMapping) {
         SUCCEED();
         return;
     }
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    GetStartupInfoW(&startup);
+    EXPECT_NE(startup.dwFlags & STARTF_FORCEOFFFEEDBACK, 0u);
 
     constexpr uint32_t kAllowedMagic = 0xA110CA7Eu;
     constexpr uint32_t kBlockedMagic = 0xB10CCEDu;

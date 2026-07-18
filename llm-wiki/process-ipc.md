@@ -1,6 +1,6 @@
 # Process IPC And Restricted Children
 
-Last cross-checked: 2026-07-18 (restricted process channels, private same-image process-loopback workers, and exact shared-memory ABI/build publication/isolation)
+Last cross-checked: 2026-07-18 (restricted process channels, private same-image process-loopback workers, GUI launch-feedback suppression, and exact shared-memory ABI/build publication/isolation)
 
 Primary sources:
 - `common/restricted_child_process.{h,cpp}`
@@ -19,6 +19,8 @@ Controller-to-inject/media/limiter commands use a private channel created for ea
 The pipe security descriptor grants access only to SYSTEM and the current user. The child verifies that the inherited pipe's server PID is the controller. The controller accepts startup only when the versioned handshake contains the exact spawned child PID, expected mode, and per-channel cryptographically generated 128-bit nonce.
 
 The separate high-volume inject shared-memory transport is also an exact internal ABI, not a backward-compatible prefix protocol. ABI 36 uses version-isolated main/discovery mapping names and publishes magic only after construction and full header/config initialization. Consumers must validate exact version, `sizeof(SharedMemoryLayout)`, and a compiled fingerprint of major/nested sizes and offsets before dereferencing any payload.
+
+CaptureEngine is linked as a Windows GUI-subsystem image even when the same executable runs a windowless internal role. Every restricted internal spawn therefore sets `STARTF_FORCEOFFFEEDBACK`; `CREATE_NO_WINDOW` alone does not suppress GUI process-start cursor feedback. This covers ordinary media/logger/sensor/limiter/inject children and disposable process-loopback workers, while explicit user game/launcher starts retain normal Windows feedback. The controller also clears any external launch feedback at its earliest controller-only dispatch and creates its hidden tray owner before Vulkan registration or child startup can extend the busy cursor. The hook's hidden same-image dump helper uses the same feedback opt-out.
 
 ## Shared-Memory Contract
 
@@ -47,14 +49,17 @@ The private pipe name is only a transient rendezvous used while the controller a
 - Only handles listed in the attribute list are inherited.
 - Invalid handles, attribute-list setup failure, or process creation failure abort the spawn and close owned resources.
 - The same launcher is used by normal process IPC and the private disposable `captureengine.exe --process-loopback-worker` boundary; the latter inherits exactly its mapping, packet event, and stop event.
+- Restricted internal children are noninteractive GUI-subsystem processes and must launch with `STARTF_FORCEOFFFEEDBACK`. Do not substitute `CREATE_NO_WINDOW`, which Windows ignores for GUI applications, and do not apply this policy to an explicitly user-launched game or launcher.
+- Only Controller mode may reset the cursor to an arrow. Worker/private modes must not change the user's current cursor; their parent launcher suppresses feedback instead.
 - Internal controller/child binaries are shipped atomically; protocol compatibility with independently upgraded binaries is not supported.
 
 ## Tests And Diagnostics
 
-`tests/test_process_ipc.cpp` covers exact message validation, valid commands/responses, bad kind/opcode/mode/PID/nonce/sequence/size/payload, strict startup arguments, private-pipe source invariants, and restricted handle-list spawning. Shared-memory tests cover explicit ABI publication/rejection, version-isolated names, wrap-safe frame windows, session log directory selection, and filename containment. Runtime diagnostics identify rejected headers/messages, channel disconnects, corrupt frame indices, early/periodic Vulkan frame publication, and rate-limited ring-full events without logging secrets.
+`tests/test_process_ipc.cpp` covers exact message validation, valid commands/responses, bad kind/opcode/mode/PID/nonce/sequence/size/payload, strict startup arguments, private-pipe source invariants, restricted handle-list spawning, delivery of the launch-feedback opt-out to a real child probe, and earliest Controller-only cursor/tray ordering. `tests/test_crash_handler.cpp` locks the hidden dump-helper feedback opt-out. Shared-memory tests cover explicit ABI publication/rejection, version-isolated names, wrap-safe frame windows, session log directory selection, and filename containment. Runtime diagnostics identify rejected headers/messages, channel disconnects, corrupt frame indices, early/periodic Vulkan frame publication, and rate-limited ring-full events without logging secrets.
 
 ## Open Questions / Stale-risk
 
 - Logger and sensor process behavior remains outside the private pipe-command set, but both are strict consumers of the shared-memory ABI.
 - Real anti-malware/injection-heavy runtime testing remains useful because inherited-handle launch behavior can be affected by third-party process instrumentation.
+- CaptureEngine cannot prevent feedback that an external shell applies before `WinMain` begins; it minimizes that interval with the earliest Controller-only cursor reset and hidden UI owner. Fresh ordinary startup/application-audio churn observation remains the runtime confirmation boundary.
 - ABI 36 intentionally requires a fresh target process after installation; an already injected older DLL cannot hot-upgrade its compiled mapping name/layout/build identity. Fresh ordinary-account Vulkan session `20260717_152124` confirmed exact-build discovery, session logging, 16-texture publication, overlay rendering, and 534 encoded output frames after the 2026-07-17 fix.
