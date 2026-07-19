@@ -321,7 +321,7 @@ struct ApplicationProfile {
     WhitelistEntry target;
     ApplicationVideoCapture videoCapture = ApplicationVideoCapture::kNone;
     ApplicationVideoCapture resolvedVideoCapture = ApplicationVideoCapture::kNone;
-    ApplicationDllInjection dllInjection = ApplicationDllInjection::kNever;
+    ApplicationDllInjection dllInjection = ApplicationDllInjection::kWhenNeeded;
     ApplicationInjectionMode injectionMode = ApplicationInjectionMode::kNone;
     bool videoCaptureExplicit = false;
     bool legacyInjectionSyntax = false;

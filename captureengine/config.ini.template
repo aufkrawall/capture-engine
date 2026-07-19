@@ -440,30 +440,27 @@ dx12_focus_analysis=false
 ;window_match=contains
 ;
 ; Choose the video source for this application:
-; inherit = use capture_method from [Capture]. With auto, when_needed or always
-;           uses injected capture; never uses WGC.
-; inject = capture through the injected DLL. This requires dll_injection to be
-;          when_needed or always.
+; inherit = use capture_method from [Capture]. With capture_method=auto, this
+;           normally uses injected capture.
+; inject = capture through the injected DLL. This also enables the injected
+;          overlay and graphics overrides; no second setting is needed.
 ; wgc = capture this window with Windows Graphics Capture.
 ; dxgi_dup = capture this window's monitor with DXGI Desktop Duplication.
 ; none = do not capture video for this profile.
 ;video_capture=inherit
 ;
-; Choose when CaptureEngine may inject its DLL. This is separate from the video
-; source above:
-; when_needed = inject only when the selected video source is inject.
-; always = also inject with WGC, DXGI Duplication, or no video so the injected
-;          overlay and graphics overrides can work.
-; never = do not inject. App audio and non-injected video still work.
-;dll_injection=never
+; DLL injection normally follows the selected video source: inject loads the DLL;
+; wgc, dxgi_dup, and none do not. inherit follows whichever source [Capture]
+; selects. dll_injection is only needed to override that behavior:
+; always = also load the DLL with WGC, DXGI Duplication, or no video so the
+;          injected overlay and graphics overrides can work.
+; never = block DLL loading. If the selected video source is inject, this profile
+;         has no video route.
+; when_needed = the normal behavior described above. This value remains accepted,
+;               but the setting can simply be left out.
 ;
-; DLL injection can trigger anti-cheat protection. Use never for multiplayer or
-; anti-cheat software unless you know injection is permitted.
-;
-; Common combinations:
-; video_capture=inject   + dll_injection=when_needed = injected capture.
-; video_capture=wgc      + dll_injection=never       = WGC without injection.
-; video_capture=wgc      + dll_injection=always      = WGC with the injected overlay.
+; Choosing inject or always can trigger anti-cheat protection. Do not use either
+; with multiplayer or anti-cheat software unless you know injection is permitted.
 ;
 ;audio_enabled=true
 ;audio_track=3
@@ -482,8 +479,9 @@ dx12_focus_analysis=false
 ;DesktopOverlay.mode=2
 ;DesktopOverlay.pos=0
 
-; Example: capture Heroes of the Storm through DXGI Desktop Duplication without
-; injection, show the desktop warning, and record its audio to tracks 1 and 2.
+; Example: capture Heroes of the Storm through DXGI Desktop Duplication, show the
+; desktop warning, and record its audio to tracks 1 and 2. DXGI Duplication does
+; not normally inject; never is an optional safety lock here.
 ;[Profile.hots]
 ;process=HeroesOfTheStorm_x64.exe
 ;video_capture=dxgi_dup
@@ -494,11 +492,10 @@ dx12_focus_analysis=false
 
 ; Example: capture through the injected DLL. Injection is used because the
 ; selected video source needs it; the injected overlay and graphics overrides
-; are available as well.
+; are available as well. No dll_injection setting is needed.
 ;[Profile.Injected Example]
 ;process=InjectedGame.exe
 ;video_capture=inject
-;dll_injection=when_needed
 
 ; Example: capture a game's monitor through DXGI Desktop Duplication while
 ; keeping DLL injection enabled for the injected overlay and graphics overrides.

@@ -176,7 +176,6 @@ TEST_F(ConfigOverrideTest, NamedProfilesProvideAllApplicationRoutesWithoutANumer
         "[Profile.Inject Game]\n"
         "process=inject-game.exe\n"
         "video_capture=inject\n"
-        "dll_injection=when_needed\n"
         "[Profile.Window Game]\n"
         "process=window-game.exe\n"
         "window_title=The Window Game\n"
@@ -188,11 +187,9 @@ TEST_F(ConfigOverrideTest, NamedProfilesProvideAllApplicationRoutesWithoutANumer
         "[Profile.Desktop Game]\n"
         "process=desktop-game.exe\n"
         "video_capture=dxgi_dup\n"
-        "dll_injection=never\n"
         "[Profile.Audio Only]\n"
         "process=audio-only.exe\n"
         "video_capture=none\n"
-        "dll_injection=never\n"
         "audio_enabled=true\n"
         "audio_track=10\n");
 
@@ -241,7 +238,6 @@ TEST_F(ConfigOverrideTest, DesktopOverlaySettingsCanBeOverriddenByApplicationPro
         "[Profile.Game]\n"
         "process=game.exe\n"
         "video_capture=wgc\n"
-        "dll_injection=never\n"
         "DesktopOverlay.enabled=true\n"
         "DesktopOverlay.size=28\n"
         "DesktopOverlay.pad=16\n"
@@ -282,8 +278,7 @@ TEST_F(ConfigOverrideTest, CanonicalProfileOverridesEveryLegacyRouteForTheSameTa
         ")\n"
         "[Profile.Game]\n"
         "process=game.exe\n"
-        "video_capture=none\n"
-        "dll_injection=never\n");
+        "video_capture=none\n");
 
     AppConfig config;
     LoadConfig(tempConfigFile, config, "game.exe");
@@ -296,7 +291,25 @@ TEST_F(ConfigOverrideTest, CanonicalProfileOverridesEveryLegacyRouteForTheSameTa
     EXPECT_EQ(config.captureMethod, "none");
 }
 
-TEST_F(ConfigOverrideTest, InjectVideoRequiresDllInjectionPermission) {
+TEST_F(ConfigOverrideTest, InjectVideoImpliesFullDllInjectionWithoutASecondSetting) {
+    WriteConfig(
+        "[Profile.Game]\n"
+        "process=game.exe\n"
+        "video_capture=inject\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "game.exe");
+
+    ASSERT_EQ(config.applicationProfiles.size(), 1u);
+    EXPECT_EQ(config.applicationProfiles.front().dllInjection, ApplicationDllInjection::kWhenNeeded);
+    EXPECT_EQ(config.applicationProfiles.front().resolvedVideoCapture, ApplicationVideoCapture::kInject);
+    ASSERT_EQ(config.gameWhitelist.size(), 1u);
+    EXPECT_EQ(config.gameWhitelist.front().pattern, "game.exe");
+    EXPECT_TRUE(config.overlayWhitelist.empty());
+    EXPECT_EQ(config.captureMethod, "inject");
+}
+
+TEST_F(ConfigOverrideTest, DllInjectionNeverBlocksInjectedVideo) {
     WriteConfig(
         "[Profile.Game]\n"
         "process=game.exe\n"
@@ -321,7 +334,6 @@ TEST_F(ConfigOverrideTest, LaterOverlappingNamedProfileWinsDeterministically) {
         "[Profile.Second]\n"
         "process=GAME.EXE\n"
         "video_capture=dxgi_dup\n"
-        "dll_injection=never\n"
         "Video.fps=81\n");
 
     AppConfig config;
@@ -349,22 +361,20 @@ TEST_F(ConfigOverrideTest, LegacyProfileInjectionKeyRemainsSupported) {
     EXPECT_TRUE(config.overlayWhitelist.empty());
 }
 
-TEST_F(ConfigOverrideTest, DllInjectionPolicyIsIndependentFromTheVideoSource) {
+TEST_F(ConfigOverrideTest, VideoSourceDrivesInjectionUnlessDllPolicyOverridesIt) {
     WriteConfig(
         "[Capture]\n"
         "capture_method=auto\n"
         "[Profile.Inherit]\n"
         "process=inherit.exe\n"
         "video_capture=inherit\n"
-        "dll_injection=when_needed\n"
         "[Profile.Global Alias]\n"
         "process=global-alias.exe\n"
         "video_capture=global\n"
         "dll_injection=when_needed\n"
-        "[Profile.Screen When Needed]\n"
-        "process=screen-needed.exe\n"
+        "[Profile.Screen Default]\n"
+        "process=screen-default.exe\n"
         "video_capture=wgc\n"
-        "dll_injection=when_needed\n"
         "[Profile.Screen Always]\n"
         "process=screen-always.exe\n"
         "video_capture=wgc\n"
@@ -392,8 +402,8 @@ TEST_F(ConfigOverrideTest, DllInjectionPolicyIsIndependentFromTheVideoSource) {
 
     EXPECT_TRUE(HasProcess(config.gameWhitelist, "inherit.exe"));
     EXPECT_TRUE(HasProcess(config.gameWhitelist, "global-alias.exe"));
-    EXPECT_FALSE(HasProcess(config.gameWhitelist, "screen-needed.exe"));
-    EXPECT_FALSE(HasProcess(config.overlayWhitelist, "screen-needed.exe"));
+    EXPECT_FALSE(HasProcess(config.gameWhitelist, "screen-default.exe"));
+    EXPECT_FALSE(HasProcess(config.overlayWhitelist, "screen-default.exe"));
     EXPECT_TRUE(HasProcess(config.overlayWhitelist, "screen-always.exe"));
     EXPECT_TRUE(HasProcess(config.overlayWhitelist, "dxgi-always.exe"));
     EXPECT_TRUE(HasProcess(config.overlayWhitelist, "overlay-only.exe"));
@@ -475,7 +485,6 @@ TEST_F(ConfigOverrideTest, ProfilesCombineAppAudioAndQualifiedOverrides) {
         "enabled=false\n"
         "[Profile.1]\n"
         "Process=game1.exe\n"
-        "dll_injection=never\n"
         "audio_enabled=true\n"
         "audio_track=3,4\n"
         "audio_codec=opus\n"

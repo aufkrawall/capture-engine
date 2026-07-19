@@ -621,10 +621,10 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             }
         }
 
-        const bool injectionRequested =
+        const bool unconditionalInjectionRequested =
             profile.legacyInjectionSyntax ? profile.injectionMode != ApplicationInjectionMode::kNone
-                                          : profile.dllInjection != ApplicationDllInjection::kNever;
-        if (!profile.target.HasProcess() && injectionRequested) {
+                                          : profile.dllInjection == ApplicationDllInjection::kAlways;
+        if (!profile.target.HasProcess() && unconditionalInjectionRequested) {
             const char* fallback = profile.legacyInjectionSyntax ? "injection_mode=none" : "dll_injection=never";
             LogApplicationProfileWarning(section,
                                          std::string("cannot inject without a process name; using ") + fallback);
@@ -879,8 +879,9 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 
         ApplicationVideoCapture resolved = profile.videoCapture;
         const bool injectedVideoAllowed =
-            profile.legacyInjectionSyntax ? profile.injectionMode == ApplicationInjectionMode::kCapture
-                                          : profile.dllInjection != ApplicationDllInjection::kNever;
+            profile.target.HasProcess() &&
+            (profile.legacyInjectionSyntax ? profile.injectionMode == ApplicationInjectionMode::kCapture
+                                           : profile.dllInjection != ApplicationDllInjection::kNever);
         if (resolved == ApplicationVideoCapture::kInherit) {
             resolved = CaptureMethodToApplicationMode(profileCaptureMethod);
             if (resolved == ApplicationVideoCapture::kInherit) {
@@ -888,12 +889,16 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             }
         }
 
-        if (resolved == ApplicationVideoCapture::kInject && !injectedVideoAllowed) {
-            const char* permission = profile.legacyInjectionSyntax ? "injection_mode=capture"
-                                                                   : "dll_injection=when_needed or always";
+        if (resolved == ApplicationVideoCapture::kInject && !profile.target.HasProcess()) {
             LogApplicationProfileWarning(
-                profile.section, std::string("requests injected video but requires ") + permission +
-                                     "; this profile has no video route");
+                profile.section, "requests injected video but has no process name; this profile has no video route");
+            resolved = ApplicationVideoCapture::kNone;
+        } else if (resolved == ApplicationVideoCapture::kInject && !injectedVideoAllowed) {
+            const char* reason = profile.legacyInjectionSyntax ? "requires injection_mode=capture"
+                                                                : "is blocked by dll_injection=never";
+            LogApplicationProfileWarning(
+                profile.section,
+                std::string("requests injected video but ") + reason + "; this profile has no video route");
             resolved = ApplicationVideoCapture::kNone;
         }
         profile.resolvedVideoCapture = resolved;
