@@ -1461,7 +1461,7 @@ int ControllerMain(HINSTANCE hInstance) {
                 } else if (msg.wParam == HOTKEY_ID_AUDIO_ONLY) {
                     ToggleAudioOnlyRecording();
                 } else if (msg.wParam == HOTKEY_ID_SCREENSHOT) {
-                    if (TakeScreenshot(g_Config.screenshotDir)) {
+                    if (TakeScreenshot(g_Config.screenshotDir, g_Config.screenshotColorSpace)) {
                         // Show notification in pseudo-overlay (WGC/desktop)
                         if (g_PseudoOverlay) {
                             g_PseudoOverlay->ShowScreenshotNotification();

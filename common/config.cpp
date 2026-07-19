@@ -1947,6 +1947,11 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     }
 
     config.screenshotDir = GetStrCompat("Output", "screenshot_dir", "Screenshot", "screenshot_dir", "");
+    config.screenshotColorSpace = Lowercase(Trim(GetStr("Screenshot", "color_space", "auto")));
+    if (config.screenshotColorSpace != "auto" && config.screenshotColorSpace != "bt709") {
+        LogInvalidConfigBoundary("Screenshot", "color_space", config.screenshotColorSpace, "auto");
+        config.screenshotColorSpace = "auto";
+    }
 }
 
 // Parse hotkey string (e.g., "Ctrl+Shift+F9", "Alt+R", "F10")

@@ -60,6 +60,39 @@ TEST(VideoEncoderSourceTest, CursorShaderCompilesAndCompilerModuleOutlivesReturn
     EXPECT_EQ(source.find("FreeLibrary(d3dCompiler)", createResources), std::string::npos);
 }
 
+TEST(VideoEncoderSourceTest, RgbConversionCompilerModuleOutlivesReturnedBlobs) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t function = source.find("bool VideoEncoder::EnsureSwapRBShader()");
+    const size_t functionEnd = source.find("ID3D11Texture2D* VideoEncoder::RenderFullscreenCopy", function);
+    ASSERT_NE(function, std::string::npos);
+    ASSERT_NE(functionEnd, std::string::npos);
+    const std::string body = source.substr(function, functionEnd - function);
+
+    const size_t moduleGuard = body.find("ce::ModuleGuard d3dCompiler");
+    const size_t vertexBlob = body.find("ce::ComGuard<ID3DBlob> vsBlob");
+    const size_t createVertexShader = body.find("CreateVertexShader(vsBlob->GetBufferPointer()");
+    ASSERT_NE(moduleGuard, std::string::npos);
+    ASSERT_NE(vertexBlob, std::string::npos);
+    ASSERT_NE(createVertexShader, std::string::npos);
+    EXPECT_LT(moduleGuard, vertexBlob);
+    EXPECT_LT(vertexBlob, createVertexShader);
+    EXPECT_EQ(body.find("FreeLibrary(d3dCompiler)"), std::string::npos);
+    EXPECT_NE(body.find("GetProcAddress(d3dCompiler.get(), \"D3DCompile\")"), std::string::npos);
+}
+
+TEST(VideoEncoderSourceTest, PerformanceLogsDoNotMislabelCpuSubmissionAsGpuDuration) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("[PERF] Frame %d:"), std::string::npos);
+    EXPECT_NE(source.find("[PERF SUMMARY] Frames=%lld"), std::string::npos);
+    EXPECT_NE(source.find("[Framegrab PERF] Frame %d:"), std::string::npos);
+    EXPECT_NE(source.find("timing=cpu-wall-or-submit"), std::string::npos);
+    EXPECT_EQ(source.find("timing=gpu"), std::string::npos);
+}
+
 TEST(VideoEncoderSourceTest, RealTimeGpuPathsNeverUseSleepRetries) {
     const std::string source = ReadVideoEncoderSource();
     ASSERT_FALSE(source.empty());

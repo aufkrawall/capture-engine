@@ -19,11 +19,15 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <vector>
 
 namespace ce::screenshot {
@@ -219,6 +223,47 @@ double EncodeSt2084(double nits) {
     return std::pow((c1 + c2 * powered) / (1.0 + c3 * powered), m2);
 }
 
+double DecodeSt2084(double pq) {
+    constexpr double m1 = 2610.0 / 16384.0;
+    constexpr double m2 = 2523.0 / 32.0;
+    constexpr double c1 = 3424.0 / 4096.0;
+    constexpr double c2 = 2413.0 / 128.0;
+    constexpr double c3 = 2392.0 / 128.0;
+    const double powered = std::pow(std::clamp(pq, 0.0, 1.0), 1.0 / m2);
+    const double denominator = std::max(c2 - c3 * powered, 0.000001);
+    return std::pow(std::max(powered - c1, 0.0) / denominator, 1.0 / m1) * 10000.0;
+}
+
+double LinearToSrgb(double value) {
+    value = std::max(value, 0.0);
+    return value < 0.0031308 ? value * 12.92 : 1.055 * std::pow(value, 1.0 / 2.4) - 0.055;
+}
+
+void CompressRec709Gamut(double& red, double& green, double& blue, double luminance) {
+    const double minimum = std::min(red, std::min(green, blue));
+    if (minimum < 0.0) {
+        const double scale = std::clamp(luminance / std::max(luminance - minimum, 0.000001), 0.0, 1.0);
+        red = luminance + (red - luminance) * scale;
+        green = luminance + (green - luminance) * scale;
+        blue = luminance + (blue - luminance) * scale;
+    }
+    const double maximum = std::max(red, std::max(green, blue));
+    if (maximum > 1.0) {
+        const double scale =
+            std::clamp((1.0 - luminance) / std::max(maximum - luminance, 0.000001), 0.0, 1.0);
+        red = luminance + (red - luminance) * scale;
+        green = luminance + (green - luminance) * scale;
+        blue = luminance + (blue - luminance) * scale;
+    }
+    red = std::clamp(red, 0.0, 1.0);
+    green = std::clamp(green, 0.0, 1.0);
+    blue = std::clamp(blue, 0.0, 1.0);
+}
+
+uint8_t Quantize8(double value) {
+    return static_cast<uint8_t>(std::lround(std::clamp(value, 0.0, 1.0) * 255.0));
+}
+
 uint16_t Quantize10(double value) {
     return static_cast<uint16_t>(std::lround(std::clamp(value, 0.0, 1.0) * 1023.0));
 }
@@ -258,6 +303,70 @@ bool FillHdrYuvFrame(const RawScreenshot& screenshot, AVFrame* frame) {
         }
     }
     return true;
+}
+
+bool ConvertHdrToSdrScreenshot(const RawScreenshot& screenshot, float sdrWhiteNits, RawScreenshot& converted) {
+    const auto format = static_cast<ScreenshotPixelFormat>(screenshot.header.pixelFormat);
+    const size_t pixelSize = BytesPerPixel(format);
+    if ((format != ScreenshotPixelFormat::R10G10B10A2 && format != ScreenshotPixelFormat::RGBA16F) ||
+        pixelSize == 0) {
+        return false;
+    }
+
+    const uint32_t outputRowPitch = screenshot.header.width * 4;
+    std::vector<uint8_t> pixels(static_cast<size_t>(outputRowPitch) * screenshot.header.height);
+    std::atomic<bool> success{true};
+    const unsigned hardwareThreads = std::max(1u, std::thread::hardware_concurrency());
+    const unsigned workerCount =
+        std::min<unsigned>({16u, hardwareThreads, std::max(1u, screenshot.header.height)});
+    std::vector<std::thread> workers;
+    workers.reserve(workerCount);
+    const auto started = std::chrono::steady_clock::now();
+    try {
+        struct ThreadJoinGuard {
+            std::vector<std::thread>& threads;
+            ~ThreadJoinGuard() {
+                for (std::thread& thread : threads) {
+                    if (thread.joinable())
+                        thread.join();
+                }
+            }
+        } joinGuard{workers};
+        for (unsigned workerIndex = 0; workerIndex < workerCount; ++workerIndex) {
+            workers.emplace_back([&, workerIndex]() {
+                const uint32_t firstRow = static_cast<uint32_t>(
+                    (static_cast<uint64_t>(screenshot.header.height) * workerIndex) / workerCount);
+                const uint32_t endRow = static_cast<uint32_t>(
+                    (static_cast<uint64_t>(screenshot.header.height) * (workerIndex + 1)) / workerCount);
+                for (uint32_t row = firstRow; row < endRow && success.load(std::memory_order_relaxed); ++row) {
+                    const uint8_t* source =
+                        screenshot.pixels.data() + static_cast<size_t>(row) * screenshot.header.rowPitch;
+                    auto* destination = reinterpret_cast<Bgra8Pixel*>(
+                        pixels.data() + static_cast<size_t>(row) * outputRowPitch);
+                    for (uint32_t column = 0; column < screenshot.header.width; ++column) {
+                        if (!ConvertHdrPixelToSdrBgra(format, source + static_cast<size_t>(column) * pixelSize,
+                                                      sdrWhiteNits, destination[column])) {
+                            success.store(false, std::memory_order_relaxed);
+                            return;
+                        }
+                    }
+                }
+            });
+        }
+    } catch (const std::system_error& error) {
+        LogError("[Screenshot] HDR->SDR worker creation failed: %s", error.what());
+        return false;
+    }
+    if (!success.load(std::memory_order_relaxed))
+        return false;
+
+    const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                                                                 started)
+                               .count();
+    LogInfo("[Screenshot] HDR->SDR conversion: %ux%u white=%.1f-nit workers=%u duration=%.3fms",
+            screenshot.header.width, screenshot.header.height, sdrWhiteNits, workerCount, elapsedUs / 1000.0);
+    return MakeRawScreenshot(pixels.data(), screenshot.header.width, screenshot.header.height, outputRowPitch,
+                             ScreenshotPixelFormat::BGRA8, ScreenshotColorEncoding::SRGB, converted);
 }
 
 bool EncoderSupportsYuv444p10(const AVCodec* codec) {
@@ -644,8 +753,66 @@ bool ConvertHdrPixelToYuv10(ScreenshotPixelFormat format, const uint8_t* pixel, 
     return true;
 }
 
+bool ConvertHdrPixelToSdrBgra(ScreenshotPixelFormat format, const uint8_t* pixel, float sdrWhiteNits,
+                              Bgra8Pixel& converted) {
+    if (!pixel)
+        return false;
+
+    double redNits = 0.0;
+    double greenNits = 0.0;
+    double blueNits = 0.0;
+    if (format == ScreenshotPixelFormat::R10G10B10A2) {
+        uint32_t packed = 0;
+        memcpy(&packed, pixel, sizeof(packed));
+        const double red2020 = DecodeSt2084(static_cast<double>(packed & 0x3FFu) / 1023.0);
+        const double green2020 = DecodeSt2084(static_cast<double>((packed >> 10) & 0x3FFu) / 1023.0);
+        const double blue2020 = DecodeSt2084(static_cast<double>((packed >> 20) & 0x3FFu) / 1023.0);
+        redNits = 1.6604910 * red2020 - 0.5876411 * green2020 - 0.0728499 * blue2020;
+        greenNits = -0.1245505 * red2020 + 1.1328999 * green2020 - 0.0083494 * blue2020;
+        blueNits = -0.0181508 * red2020 - 0.1005789 * green2020 + 1.1187297 * blue2020;
+    } else if (format == ScreenshotPixelFormat::RGBA16F) {
+        uint16_t components[4]{};
+        memcpy(components, pixel, sizeof(components));
+        redNits = static_cast<double>(HalfToFloat(components[0])) * 80.0;
+        greenNits = static_cast<double>(HalfToFloat(components[1])) * 80.0;
+        blueNits = static_cast<double>(HalfToFloat(components[2])) * 80.0;
+    } else {
+        return false;
+    }
+    if (!std::isfinite(redNits))
+        redNits = 0.0;
+    if (!std::isfinite(greenNits))
+        greenNits = 0.0;
+    if (!std::isfinite(blueNits))
+        blueNits = 0.0;
+
+    const double whiteNits = std::clamp(std::isfinite(sdrWhiteNits) ? static_cast<double>(sdrWhiteNits) : 203.0,
+                                        80.0, 1000.0);
+    double red = redNits / whiteNits;
+    double green = greenNits / whiteNits;
+    double blue = blueNits / whiteNits;
+    const double luminance = std::max(0.2126 * red + 0.7152 * green + 0.0722 * blue, 0.0);
+    double mappedLuminance = luminance * 0.8;
+    if (luminance > 1.0) {
+        const double highlight = luminance - 1.0;
+        mappedLuminance = 0.8 + 0.2 * highlight / (highlight + 1.0);
+    }
+    const double scale = luminance > 0.000001 ? mappedLuminance / luminance : 0.0;
+    red *= scale;
+    green *= scale;
+    blue *= scale;
+    CompressRec709Gamut(red, green, blue, mappedLuminance);
+
+    converted.r = Quantize8(LinearToSrgb(red));
+    converted.g = Quantize8(LinearToSrgb(green));
+    converted.b = Quantize8(LinearToSrgb(blue));
+    converted.a = 255;
+    return true;
+}
+
 bool SaveRawScreenshot(const std::filesystem::path& outputDirectory, const RawScreenshot& screenshot,
-                       std::filesystem::path& publishedPath) {
+                       std::filesystem::path& publishedPath, ScreenshotOutputColorSpace outputColorSpace,
+                       float sdrWhiteNits) {
     publishedPath.clear();
     if (screenshot.pixels.size() != screenshot.header.payloadSize ||
         !ValidateRawHeader(screenshot.header, screenshot.header.totalSize, screenshot.header.requestId)) {
@@ -662,6 +829,17 @@ bool SaveRawScreenshot(const std::filesystem::path& outputDirectory, const RawSc
     }
     if (format != ScreenshotPixelFormat::R10G10B10A2 && format != ScreenshotPixelFormat::RGBA16F)
         return false;
+    if (outputColorSpace == ScreenshotOutputColorSpace::Bt709) {
+        RawScreenshot converted;
+        if (!ConvertHdrToSdrScreenshot(screenshot, sdrWhiteNits, converted))
+            return false;
+        ReservedCaptureOutput output = ReservedCaptureOutput::Reserve(outputDirectory, L"screenshot", L".png");
+        if (output && SavePixelsAsPng(output, converted)) {
+            publishedPath = output.Path();
+            return true;
+        }
+        return false;
+    }
     ReservedCaptureOutput output = ReservedCaptureOutput::Reserve(outputDirectory, L"screenshot", L".avif");
     if (output && SaveHdrAvif(output, screenshot)) {
         publishedPath = output.Path();

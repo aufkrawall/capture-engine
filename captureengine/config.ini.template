@@ -54,6 +54,12 @@ screenshot_dir=
 ; mkv, mp4, or mov. MKV is the safest choice if recording is interrupted.
 container=mkv
 
+[Screenshot]
+; auto saves an HDR source as a native 10-bit BT.2020/PQ AVIF and an SDR source
+; as PNG. bt709 always saves PNG and tone-maps HDR using the Windows SDR white
+; level, matching forced-SDR video capture.
+color_space=auto
+
 [Video]
 ; Choose an encoder supported by your GPU. CaptureEngine does not silently switch
 ; to another encoder. Examples: av1_nvenc, hevc_amf, h264_qsv, av1_mf.

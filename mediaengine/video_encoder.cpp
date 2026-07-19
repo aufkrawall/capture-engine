@@ -4168,7 +4168,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
         DLL_Log(
             "[PERF] Frame %d: TOTAL=%.2fms %s fence=%.2f convert=%.2f "
-            "encode=%.2f pts=%lldms packets=%d [Features: %s]",
+            "encode=%.2f pts=%lldms packets=%d [Features: %s] timing=cpu-wall-or-submit",
             encodeFrameCounter, stats.totalMs, slowLabel, stats.fenceWaitMs, stats.colorConvertMs, stats.encodeMs,
             stats.ptsMs, stats.packetsProduced, features.c_str());
     }
@@ -4195,7 +4195,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         DLL_Log(
             "[PERF SUMMARY] Frames=%lld Avg: total=%.2fms fence=%.2f "
             "convert=%.2f "
-            "encode=%.2f | Max=%.2fms SlowFrames=%d | Bottleneck=%s",
+            "encode=%.2f | Max=%.2fms SlowFrames=%d | Bottleneck=%s | timing=cpu-wall-or-submit",
             g_framesEncoded, avgTotal, avgFence, avgConvert, avgEncode, g_maxFrameTime, g_slowFrameCount, bottleneck);
 
         // Frame timing analysis for smoothness
@@ -4572,7 +4572,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
         DLL_Log(
             "[Framegrab PERF] Frame %d: total=%.2fms (%s) convert=%.2f "
-            "encode=%.2f packets=%d [Features: %s]",
+            "encode=%.2f packets=%d [Features: %s] timing=cpu-wall-or-submit",
             encodeFrameCounter, totalMs, "SLOW!", convertMs, encodeMs, packetCount, features.c_str());
     }
 
@@ -4580,7 +4580,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     if (encodeFrameCounter % fpsLogIntervalFrames == 0) {
         DLL_Log(
             "[Framegrab PERF] Frame %d: total=%.2fms convert=%.2f "
-            "encode=%.2f packets=%d skipped=%lld duplicated=%lld",
+            "encode=%.2f packets=%d skipped=%lld duplicated=%lld timing=cpu-wall-or-submit",
             encodeFrameCounter, totalMs, convertMs, encodeMs, packetCount, skippedFrameCount, duplicatedFrameCount);
         if (stats.actualPtsDiff > 0) {
             const double jitter = static_cast<double>(stats.actualPtsDiff - stats.expectedPtsDiff);
@@ -6104,7 +6104,10 @@ bool VideoEncoder::EnsureSwapRBShader() {
     if (swapRBShaderCreated)
         return true;
 
-    HMODULE d3dCompiler = ce::security::LoadSystemLibrary(L"d3dcompiler_47.dll");
+    // ID3DBlob's implementation and vtable live in d3dcompiler_47.dll. Keep the
+    // module loaded until every compiler-owned blob below has been consumed and
+    // released (ModuleGuard is declared first, so it is destroyed last).
+    ce::ModuleGuard d3dCompiler(ce::security::LoadSystemLibrary(L"d3dcompiler_47.dll"));
     if (!d3dCompiler) {
         DLL_Log("[SwapRB] Failed to load d3dcompiler_47.dll");
         return false;
@@ -6112,10 +6115,9 @@ bool VideoEncoder::EnsureSwapRBShader() {
 
     typedef HRESULT(WINAPI * pD3DCompile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR,
                                           LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
-    pD3DCompile d3dCompile = (pD3DCompile)GetProcAddress(d3dCompiler, "D3DCompile");
+    pD3DCompile d3dCompile = (pD3DCompile)GetProcAddress(d3dCompiler.get(), "D3DCompile");
     if (!d3dCompile) {
         DLL_Log("[SwapRB] Failed to get D3DCompile");
-        FreeLibrary(d3dCompiler);
         return false;
     }
 
@@ -6143,7 +6145,6 @@ bool VideoEncoder::EnsureSwapRBShader() {
         hr = compileShader("PS_P010Y", "ps_4_0", p010YBlob);
     if (SUCCEEDED(hr))
         hr = compileShader("PS_P010UV", "ps_4_0", p010UvBlob);
-    FreeLibrary(d3dCompiler);
     if (FAILED(hr)) {
         DLL_Log("[RGBConvert] Runtime shader compilation failed: HR=%x", hr);
         return false;
@@ -6206,7 +6207,7 @@ bool VideoEncoder::EnsureSwapRBShader() {
     hdrP010Sampler = p010Sampler.release();
     swapRBShaderCB = constants.release();
     swapRBShaderCreated = true;
-    DLL_Log("[RGBConvert] Copy/scRGB/P010 shaders created successfully");
+    DLL_Log("[RGBConvert] Copy/scRGB/P010 shaders created successfully (compiler lifetime blob-scoped)");
     return true;
 }
 

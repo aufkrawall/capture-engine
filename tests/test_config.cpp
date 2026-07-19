@@ -213,6 +213,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("automatically a NOT RECORDING warning target"), std::string::npos);
     EXPECT_NE(generatedText.find("Choosing inject or always can trigger anti-cheat protection"), std::string::npos);
     EXPECT_NE(generatedText.find("output_dir and screenshot_dir are independent"), std::string::npos);
+    EXPECT_NE(generatedText.find("auto saves an HDR source as a native 10-bit BT.2020/PQ AVIF"), std::string::npos);
     EXPECT_NE(generatedText.find("start_stop, which falls back to F9"), std::string::npos);
     EXPECT_NE(generatedText.find("Seconds between keyframes"), std::string::npos);
     EXPECT_NE(generatedText.find("Quality target from 0 to 100"), std::string::npos);
@@ -243,7 +244,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(generatedText.find("\n[General]\n"), std::string::npos);
     EXPECT_EQ(generatedText.find("\n[Scaling]\n"), std::string::npos);
     EXPECT_EQ(generatedText.find("\n[pseudo-overlay]\n"), std::string::npos);
-    EXPECT_EQ(generatedText.find("\n[Screenshot]\n"), std::string::npos);
+    EXPECT_NE(generatedText.find("\n[Screenshot]\n"), std::string::npos);
     EXPECT_EQ(generatedText.find("\n[Injection]\n"), std::string::npos);
     EXPECT_EQ(generatedText.find("whitelist="), std::string::npos);
     EXPECT_EQ(generatedText.find("wgc_window_detection="), std::string::npos);
@@ -419,6 +420,8 @@ TEST_F(ConfigTest, CanonicalSectionLayoutParsesAndTakesPrecedence) {
         "output_dir=recordings\n"
         "screenshot_dir=stills\n"
         "container=mov\n"
+        "[Screenshot]\n"
+        "color_space=bt709\n"
         "[VideoScaling]\n"
         "enabled=true\n"
         "output_resolution=720p\n"
@@ -460,6 +463,7 @@ TEST_F(ConfigTest, CanonicalSectionLayoutParsesAndTakesPrecedence) {
     EXPECT_EQ(config.crashDumpDir, "extra-dumps");
     EXPECT_EQ(config.video.outputDir, "recordings");
     EXPECT_EQ(config.screenshotDir, "stills");
+    EXPECT_EQ(config.screenshotColorSpace, "bt709");
     EXPECT_EQ(config.video.container, "mov");
     EXPECT_TRUE(config.video.scaling.enabled);
     EXPECT_EQ(config.video.scaling.outputResolution, "720p");
@@ -827,6 +831,8 @@ TEST_F(ConfigTest, InvalidValuesFallBack) {
         "[Video]\n"
         "fps=0\n"
         "b_frames=5\n"
+        "[Screenshot]\n"
+        "color_space=display-p3\n"
         "[MediaFoundation]\n"
         "quality=101\n"
         "[Scaling]\n"
@@ -846,6 +852,7 @@ TEST_F(ConfigTest, InvalidValuesFallBack) {
     EXPECT_FLOAT_EQ(config.overlay.hdrPaperWhite, 0.0f);
     EXPECT_EQ(config.video.fps, 120);
     EXPECT_EQ(config.video.bFrames, 0);
+    EXPECT_EQ(config.screenshotColorSpace, "auto");
     EXPECT_EQ(config.video.mfQuality, 80);
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_TRUE(config.wgcSmoothnessFloorAuto);

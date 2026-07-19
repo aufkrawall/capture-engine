@@ -312,6 +312,59 @@ TEST(ScreenshotColorTest, SanitizesNonFiniteScRgbAndRejectsUnsupportedInput) {
     EXPECT_FALSE(ce::screenshot::ConvertHdrPixelToYuv10(ScreenshotPixelFormat::RGBA16F, nullptr, converted));
 }
 
+TEST(ScreenshotColorTest, ToneMapsHdrToSdrWithTheVideoPaperWhiteContract) {
+    const std::array<uint16_t, 4> linearGray{0x3C00u, 0x3C00u, 0x3C00u, 0x3C00u};
+    ce::screenshot::Bgra8Pixel converted{};
+    ASSERT_TRUE(ce::screenshot::ConvertHdrPixelToSdrBgra(
+        ScreenshotPixelFormat::RGBA16F, reinterpret_cast<const uint8_t*>(linearGray.data()), 80.0f, converted));
+    EXPECT_NEAR(converted.r, 231, 1);
+    EXPECT_NEAR(converted.g, 231, 1);
+    EXPECT_NEAR(converted.b, 231, 1);
+    EXPECT_EQ(converted.a, 255);
+
+    const std::array<uint16_t, 4> nanPixel{0x7E00u, 0x7E00u, 0x7E00u, 0x3C00u};
+    ASSERT_TRUE(ce::screenshot::ConvertHdrPixelToSdrBgra(
+        ScreenshotPixelFormat::RGBA16F, reinterpret_cast<const uint8_t*>(nanPixel.data()), 203.0f, converted));
+    EXPECT_EQ(converted.r, 0);
+    EXPECT_EQ(converted.g, 0);
+    EXPECT_EQ(converted.b, 0);
+    EXPECT_FALSE(ce::screenshot::ConvertHdrPixelToSdrBgra(
+        ScreenshotPixelFormat::BGRA8, reinterpret_cast<const uint8_t*>(linearGray.data()), 203.0f, converted));
+    EXPECT_FALSE(ce::screenshot::ConvertHdrPixelToSdrBgra(ScreenshotPixelFormat::RGBA16F, nullptr, 203.0f,
+                                                          converted));
+}
+
+TEST(ScreenshotColorTest, ExplicitBt709PublishesAnHdrSourceAsPng) {
+    std::filesystem::path directory = UniqueRawPath();
+    directory.replace_extension();
+    std::error_code staleCleanupError;
+    std::filesystem::remove_all(directory, staleCleanupError);
+    ASSERT_FALSE(staleCleanupError);
+    ASSERT_TRUE(std::filesystem::create_directories(directory));
+
+    std::vector<uint16_t> pixels(4 * 4 * 4, 0x3C00u);
+    ce::screenshot::RawScreenshot screenshot;
+    ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(reinterpret_cast<const uint8_t*>(pixels.data()), 4, 4, 32,
+                                                  ScreenshotPixelFormat::RGBA16F,
+                                                  ScreenshotColorEncoding::LinearScRGB, screenshot));
+
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    ASSERT_TRUE(SUCCEEDED(comResult) || comResult == RPC_E_CHANGED_MODE);
+    std::filesystem::path publishedPath;
+    const bool saved = ce::screenshot::SaveRawScreenshot(
+        directory, screenshot, publishedPath, ce::screenshot::ScreenshotOutputColorSpace::Bt709, 80.0f);
+    if (SUCCEEDED(comResult))
+        CoUninitialize();
+    EXPECT_TRUE(saved);
+    EXPECT_EQ(publishedPath.extension(), L".png");
+    EXPECT_TRUE(std::filesystem::exists(publishedPath));
+    if (std::filesystem::exists(publishedPath))
+        EXPECT_GT(std::filesystem::file_size(publishedPath), 64u);
+
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+}
+
 TEST(ScreenshotAvifTest, SourceBuiltLibaomEncodesTenBit444WithHdrMetadata) {
     std::filesystem::path directory = UniqueRawPath();
     directory.replace_extension();

@@ -1,6 +1,7 @@
 #include "screenshot.h"
 
 #include "../common/logging.h"
+#include "../common/raii_helpers.h"
 #include "../common/reserved_capture_output.h"
 #include "../common/secure_dll_loading.h"
 #include "../common/shared_defs.h"
@@ -14,6 +15,7 @@
 // clang-format on
 
 #include <atomic>
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -30,6 +32,7 @@ using ce::screenshot::MakeRawScreenshot;
 using ce::screenshot::RawScreenshot;
 using ce::screenshot::ReadRawScreenshot;
 using ce::screenshot::SaveRawScreenshot;
+using ce::screenshot::ScreenshotOutputColorSpace;
 
 constexpr DWORD kHookScreenshotTimeoutMs = 15000;
 
@@ -104,10 +107,59 @@ std::string WideToUtf8(const std::wstring& text) {
     return result;
 }
 
-bool CaptureD3D11Texture(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* texture,
-                         RawScreenshot& screenshot) {
-    if (!device || !context || !texture)
+bool CaptureD3D11Texture(ID3D11Texture2D* texture, RawScreenshot& screenshot) {
+    if (!texture)
         return false;
+
+    // Split-device WGC publishes each completed frame by releasing keyed
+    // mutex key 1. Reading the consumer-side shared texture without acquiring
+    // that key races the GPU handoff and commonly returns its initial black
+    // contents even though CopyResource and Map both succeed.
+    struct KeyedMutexReadGuard {
+        IDXGIKeyedMutex* mutex = nullptr;
+        bool acquired = false;
+
+        ~KeyedMutexReadGuard() {
+            if (!mutex)
+                return;
+            if (acquired) {
+                const HRESULT releaseResult = mutex->ReleaseSync(0);
+                if (FAILED(releaseResult))
+                    LogError("[Screenshot] WGC keyed mutex ReleaseSync(0) failed: 0x%08X",
+                             static_cast<unsigned>(releaseResult));
+            }
+            mutex->Release();
+        }
+    } keyedMutex;
+    const HRESULT mutexQueryResult = texture->QueryInterface(IID_PPV_ARGS(&keyedMutex.mutex));
+    if (FAILED(mutexQueryResult) && mutexQueryResult != E_NOINTERFACE) {
+        LogError("[Screenshot] WGC keyed mutex query failed: 0x%08X",
+                 static_cast<unsigned>(mutexQueryResult));
+        return false;
+    }
+    if (keyedMutex.mutex) {
+        const HRESULT acquireResult = keyedMutex.mutex->AcquireSync(1, 1000);
+        if (acquireResult != S_OK) {
+            LogError("[Screenshot] WGC keyed mutex AcquireSync(1) failed: 0x%08X",
+                     static_cast<unsigned>(acquireResult));
+            return false;
+        }
+        keyedMutex.acquired = true;
+    }
+
+    // WGCCapture may own a dedicated D3D11 device. A texture from that path
+    // cannot be copied with the bootstrap device passed to WGCCapture::Init;
+    // cross-device CopyResource is invalid and can silently leave a zero-filled
+    // staging texture. Always read on the texture-owning device/context.
+    ce::ComGuard<ID3D11Device> textureDevice;
+    ce::ComGuard<ID3D11DeviceContext> textureContext;
+    texture->GetDevice(textureDevice.addressof());
+    if (!textureDevice)
+        return false;
+    textureDevice->GetImmediateContext(textureContext.addressof());
+    if (!textureContext)
+        return false;
+
     D3D11_TEXTURE2D_DESC description{};
     texture->GetDesc(&description);
     ScreenshotPixelFormat format{};
@@ -140,19 +192,21 @@ bool CaptureD3D11Texture(ID3D11Device* device, ID3D11DeviceContext* context, ID3
     stagingDescription.BindFlags = 0;
     stagingDescription.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
     stagingDescription.MiscFlags = 0;
-    ID3D11Texture2D* staging = nullptr;
-    if (FAILED(device->CreateTexture2D(&stagingDescription, nullptr, &staging)))
+    ce::ComGuard<ID3D11Texture2D> staging;
+    if (FAILED(textureDevice->CreateTexture2D(&stagingDescription, nullptr, staging.addressof())))
         return false;
-    context->CopyResource(staging, texture);
+    textureContext->CopyResource(staging.get(), texture);
     D3D11_MAPPED_SUBRESOURCE mapped{};
-    const HRESULT mapResult = context->Map(staging, 0, D3D11_MAP_READ, 0, &mapped);
+    const HRESULT mapResult = textureContext->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped);
     bool copied = false;
     if (SUCCEEDED(mapResult)) {
         copied = MakeRawScreenshot(static_cast<const uint8_t*>(mapped.pData), description.Width, description.Height,
                                    mapped.RowPitch, format, encoding, screenshot);
-        context->Unmap(staging, 0);
+        textureContext->Unmap(staging.get(), 0);
     }
-    staging->Release();
+    LogInfo("[Screenshot] Texture-owned D3D11 readback: %ux%u format=%u keyed_mutex=%s result=%s",
+            description.Width, description.Height, static_cast<unsigned>(description.Format),
+            keyedMutex.mutex ? "acquired" : "none", copied ? "ok" : "failed");
     return copied;
 }
 
@@ -196,6 +250,11 @@ bool TryHookScreenshot(const std::filesystem::path& outputDirectory, RawScreensh
     MappedViewGuard sharedMemoryView(sharedMemory);
     if (!ValidateSharedMemory(sharedMemory) || sharedMemory->GetVersion() != SHARED_MEMORY_VERSION)
         return false;
+    const uint32_t sourcePid = sharedMemory->GetSourcePid();
+    if (sourcePid == 0) {
+        LogInfo("[Screenshot] No active injected source; selecting desktop capture without a hook wait");
+        return false;
+    }
 
     const auto currentStatus = static_cast<ScreenshotRequestStatus>(
         sharedMemory->runtimeState.screenshotStatus.load(std::memory_order_acquire));
@@ -273,6 +332,58 @@ bool IsHdrDesktop() {
            WGCCapture::IsHdrOutputColorSpace(description.ColorSpace);
 }
 
+float QueryPrimarySdrWhiteNits() {
+    constexpr float kFallbackNits = 203.0f;
+    HMONITOR monitor = MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFOEXW monitorInfo{};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    if (!monitor || !GetMonitorInfoW(monitor, &monitorInfo))
+        return kFallbackNits;
+
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        UINT32 pathCount = 0;
+        UINT32 modeCount = 0;
+        LONG result = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount);
+        if (result != ERROR_SUCCESS || pathCount == 0)
+            break;
+        std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+        std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+        result = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr);
+        if (result == ERROR_INSUFFICIENT_BUFFER)
+            continue;
+        if (result != ERROR_SUCCESS)
+            break;
+        paths.resize(pathCount);
+        for (const DISPLAYCONFIG_PATH_INFO& path : paths) {
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME sourceName{};
+            sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            sourceName.header.size = sizeof(sourceName);
+            sourceName.header.adapterId = path.sourceInfo.adapterId;
+            sourceName.header.id = path.sourceInfo.id;
+            if (DisplayConfigGetDeviceInfo(&sourceName.header) != ERROR_SUCCESS ||
+                lstrcmpiW(sourceName.viewGdiDeviceName, monitorInfo.szDevice) != 0) {
+                continue;
+            }
+            DISPLAYCONFIG_SDR_WHITE_LEVEL whiteLevel{};
+            whiteLevel.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+            whiteLevel.header.size = sizeof(whiteLevel);
+            whiteLevel.header.adapterId = path.targetInfo.adapterId;
+            whiteLevel.header.id = path.targetInfo.id;
+            if (DisplayConfigGetDeviceInfo(&whiteLevel.header) == ERROR_SUCCESS && whiteLevel.SDRWhiteLevel != 0) {
+                const float nits = std::clamp(static_cast<float>(whiteLevel.SDRWhiteLevel) * (80.0f / 1000.0f),
+                                              80.0f, 1000.0f);
+                LogInfo("[Screenshot] Windows SDR white level: raw=%lu nits=%.1f",
+                        static_cast<unsigned long>(whiteLevel.SDRWhiteLevel), nits);
+                return nits;
+            }
+            break;
+        }
+        break;
+    }
+    LogWarn("[Screenshot] Windows SDR white-level query unavailable; using %.1f-nit fallback", kFallbackNits);
+    return kFallbackNits;
+}
+
 bool TryWgcScreenshot(RawScreenshot& screenshot) {
     ID3D11Device* device = nullptr;
     ID3D11DeviceContext* context = nullptr;
@@ -293,7 +404,7 @@ bool TryWgcScreenshot(RawScreenshot& screenshot) {
         if (event && WaitForSingleObject(event, 2000) == WAIT_OBJECT_0) {
             WGCCapturedFrame frame;
             if (wgc.GetNextFrame(frame) && frame.texture) {
-                captured = CaptureD3D11Texture(device, context, frame.texture, screenshot);
+                captured = CaptureD3D11Texture(frame.texture, screenshot);
                 frame.texture->Release();
             }
         }
@@ -349,7 +460,7 @@ bool TakeGdiScreenshot(RawScreenshot& screenshot) {
 
 }  // namespace
 
-bool TakeScreenshot(const std::string& screenshotDirectory) {
+bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& colorSpace) {
     std::lock_guard<std::mutex> lock(g_screenshotMutex);
     const std::filesystem::path executableDirectory = ce::capture_output::GetExecutableDirectory();
     DWORD dllSearchError = ERROR_SUCCESS;
@@ -368,8 +479,14 @@ bool TakeScreenshot(const std::string& screenshotDirectory) {
 
     RawScreenshot screenshot;
     std::filesystem::path publishedPath;
+    const auto outputColorSpace = colorSpace == "bt709" ? ScreenshotOutputColorSpace::Bt709
+                                                         : ScreenshotOutputColorSpace::PreserveSource;
+    const float sdrWhiteNits =
+        outputColorSpace == ScreenshotOutputColorSpace::Bt709 ? QueryPrimarySdrWhiteNits() : 203.0f;
+    LogInfo("[Screenshot] Output color policy: requested=%s resolved=%s", colorSpace.c_str(),
+            outputColorSpace == ScreenshotOutputColorSpace::Bt709 ? "BT.709 SDR PNG" : "preserve source");
     if (TryHookScreenshot(outputDirectory, screenshot)) {
-        if (SaveRawScreenshot(outputDirectory, screenshot, publishedPath)) {
+        if (SaveRawScreenshot(outputDirectory, screenshot, publishedPath, outputColorSpace, sdrWhiteNits)) {
             LogInfo("[Screenshot] Saved (hook): %s", WideToUtf8(publishedPath.wstring()).c_str());
             return true;
         }
@@ -379,15 +496,19 @@ bool TakeScreenshot(const std::string& screenshotDirectory) {
 
     if (IsHdrDesktop()) {
         LogInfo("[Screenshot] HDR desktop detected; using WGC readback");
-        if (TryWgcScreenshot(screenshot) && SaveRawScreenshot(outputDirectory, screenshot, publishedPath)) {
-            LogInfo("[Screenshot] Saved (WGC HDR): %s", WideToUtf8(publishedPath.wstring()).c_str());
+        if (TryWgcScreenshot(screenshot) &&
+            SaveRawScreenshot(outputDirectory, screenshot, publishedPath, outputColorSpace, sdrWhiteNits)) {
+            LogInfo("[Screenshot] Saved (WGC %s): %s",
+                    outputColorSpace == ScreenshotOutputColorSpace::Bt709 ? "HDR->SDR" : "HDR",
+                    WideToUtf8(publishedPath.wstring()).c_str());
             return true;
         }
         LogError("[Screenshot] HDR WGC capture failed; refusing to publish a clipped SDR fallback");
         return false;
     }
 
-    if (!TakeGdiScreenshot(screenshot) || !SaveRawScreenshot(outputDirectory, screenshot, publishedPath)) {
+    if (!TakeGdiScreenshot(screenshot) ||
+        !SaveRawScreenshot(outputDirectory, screenshot, publishedPath, outputColorSpace, sdrWhiteNits)) {
         LogError("[Screenshot] GDI capture failed; no partial output was published");
         return false;
     }
