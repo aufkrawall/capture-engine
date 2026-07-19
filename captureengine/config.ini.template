@@ -76,7 +76,8 @@ custom_options=
 capture_cursor=true
 ; auto, 8, or 10. Explicit 10-bit needs a compatible source and encoder.
 bit_depth=8
-; auto, bt709, or bt2020.
+; auto follows the captured source. bt709 forces SDR and tone-maps HDR input;
+; bt2020 preserves HDR input as BT.2020/PQ (and selects BT.2020 for SDR input).
 color_space=auto
 ; auto, full, or limited.
 color_range=limited

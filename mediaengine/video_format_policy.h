@@ -2,6 +2,7 @@
 
 #include <dxgiformat.h>
 #include <cstdint>
+#include <string_view>
 
 namespace ce::video_format {
 
@@ -9,7 +10,27 @@ enum class RgbColorTransform : uint32_t {
     kNone = 0,
     kLinearToSrgb = 1,
     kScRgbToHdr10 = 2,
+    kScRgbToSdr = 3,
+    kHdr10ToSdr = 4,
 };
+
+inline bool EqualsAsciiCaseInsensitive(std::string_view lhs, std::string_view rhs) {
+    if (lhs.size() != rhs.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < lhs.size(); ++i) {
+        const char lhsChar = lhs[i] >= 'A' && lhs[i] <= 'Z' ? static_cast<char>(lhs[i] - 'A' + 'a') : lhs[i];
+        const char rhsChar = rhs[i] >= 'A' && rhs[i] <= 'Z' ? static_cast<char>(rhs[i] - 'A' + 'a') : rhs[i];
+        if (lhsChar != rhsChar) {
+            return false;
+        }
+    }
+    return true;
+}
+
+inline bool ShouldEncodeHdrOutput(bool sourceIsHdr, std::string_view configuredColorSpace) {
+    return sourceIsHdr && !EqualsAsciiCaseInsensitive(configuredColorSpace, "bt709");
+}
 
 inline bool IsTypelessDxgiFormat(DXGI_FORMAT format) {
     switch (format) {
@@ -25,6 +46,10 @@ inline bool IsTypelessDxgiFormat(DXGI_FORMAT format) {
 
 inline bool IsFp16RgbInputFormat(DXGI_FORMAT format) {
     return format == DXGI_FORMAT_R16G16B16A16_FLOAT || format == DXGI_FORMAT_R16G16B16A16_TYPELESS;
+}
+
+inline bool IsHdr10RgbInputFormat(DXGI_FORMAT format) {
+    return format == DXGI_FORMAT_R10G10B10A2_UNORM || format == DXGI_FORMAT_R10G10B10A2_TYPELESS;
 }
 
 inline bool IsHighPrecisionRgbInputFormat(DXGI_FORMAT format) {
@@ -59,11 +84,27 @@ inline bool IsOutputBitDepthCompatibleWithHdr(bool isHdr, bool use10Bit) {
     return !isHdr || use10Bit;
 }
 
+inline RgbColorTransform GetRgbColorTransform(DXGI_FORMAT textureFormat, bool sourceIsHdr, bool outputIsHdr) {
+    if (!sourceIsHdr) {
+        return IsFp16RgbInputFormat(textureFormat) ? RgbColorTransform::kLinearToSrgb : RgbColorTransform::kNone;
+    }
+    if (outputIsHdr) {
+        return IsFp16RgbInputFormat(textureFormat) ? RgbColorTransform::kScRgbToHdr10 : RgbColorTransform::kNone;
+    }
+    if (IsFp16RgbInputFormat(textureFormat)) {
+        return RgbColorTransform::kScRgbToSdr;
+    }
+    if (IsHdr10RgbInputFormat(textureFormat)) {
+        return RgbColorTransform::kHdr10ToSdr;
+    }
+    return RgbColorTransform::kNone;
+}
+
 inline RgbColorTransform GetRgbColorTransform(DXGI_FORMAT textureFormat, bool isHdr) {
     if (!IsFp16RgbInputFormat(textureFormat)) {
         return RgbColorTransform::kNone;
     }
-    return isHdr ? RgbColorTransform::kScRgbToHdr10 : RgbColorTransform::kLinearToSrgb;
+    return GetRgbColorTransform(textureFormat, isHdr, isHdr);
 }
 
 inline const char* DescribeRgbColorTransform(RgbColorTransform transform) {
@@ -72,6 +113,10 @@ inline const char* DescribeRgbColorTransform(RgbColorTransform transform) {
             return "scRGB-linear-to-sRGB";
         case RgbColorTransform::kScRgbToHdr10:
             return "scRGB-linear-P709-to-PQ-P2020";
+        case RgbColorTransform::kScRgbToSdr:
+            return "scRGB-linear-P709-tone-map-to-SDR-P709";
+        case RgbColorTransform::kHdr10ToSdr:
+            return "PQ-P2020-tone-map-to-SDR-P709";
         case RgbColorTransform::kNone:
         default:
             return "passthrough";

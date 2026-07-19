@@ -929,6 +929,65 @@ DXGI_COLOR_SPACE_TYPE GetVideoProcessorOutputColorSpace(bool use10Bit, bool isHD
     return outputRange == OutputRangeMode::kFull ? DXGI_COLOR_SPACE_YCBCR_FULL_G22_LEFT_P709
                                                  : DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709;
 }
+
+bool QuerySdrWhiteLevelNits(HMONITOR monitor, float* nits, ULONG* rawLevel) {
+    if (!monitor || !nits || !rawLevel) {
+        return false;
+    }
+
+    MONITORINFOEXW monitorInfo = {};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    if (!GetMonitorInfoW(monitor, &monitorInfo)) {
+        return false;
+    }
+
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        UINT32 pathCount = 0;
+        UINT32 modeCount = 0;
+        LONG result = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount);
+        if (result != ERROR_SUCCESS || pathCount == 0) {
+            return false;
+        }
+
+        std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+        std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+        result = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr);
+        if (result == ERROR_INSUFFICIENT_BUFFER) {
+            continue;
+        }
+        if (result != ERROR_SUCCESS) {
+            return false;
+        }
+
+        paths.resize(pathCount);
+        for (const DISPLAYCONFIG_PATH_INFO& path : paths) {
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME sourceName = {};
+            sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            sourceName.header.size = sizeof(sourceName);
+            sourceName.header.adapterId = path.sourceInfo.adapterId;
+            sourceName.header.id = path.sourceInfo.id;
+            if (DisplayConfigGetDeviceInfo(&sourceName.header) != ERROR_SUCCESS ||
+                lstrcmpiW(sourceName.viewGdiDeviceName, monitorInfo.szDevice) != 0) {
+                continue;
+            }
+
+            DISPLAYCONFIG_SDR_WHITE_LEVEL whiteLevel = {};
+            whiteLevel.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+            whiteLevel.header.size = sizeof(whiteLevel);
+            whiteLevel.header.adapterId = path.targetInfo.adapterId;
+            whiteLevel.header.id = path.targetInfo.id;
+            if (DisplayConfigGetDeviceInfo(&whiteLevel.header) != ERROR_SUCCESS || whiteLevel.SDRWhiteLevel == 0) {
+                return false;
+            }
+
+            *rawLevel = whiteLevel.SDRWhiteLevel;
+            *nits = static_cast<float>(whiteLevel.SDRWhiteLevel) * (80.0f / 1000.0f);
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
 }  // namespace
 
 static HANDLE NormalizeSourceHandleForWow64(HANDLE handle, uint32_t sourcePid) {
@@ -1113,6 +1172,38 @@ VideoEncoder::~VideoEncoder() {
     if (fenceEvent) {
         CloseHandle(fenceEvent);
         fenceEvent = nullptr;
+    }
+}
+
+bool VideoEncoder::ShouldEncodeHdrOutput() const {
+    return ce::video_format::ShouldEncodeHdrOutput(currentIsHDR, savedConfig.colorSpace);
+}
+
+void VideoEncoder::UpdateSdrWhiteLevelForCaptureArea(int captureOriginX, int captureOriginY, UINT captureWidth,
+                                                     UINT captureHeight) {
+    if (!currentIsHDR) {
+        return;
+    }
+
+    POINT center = {captureOriginX + static_cast<LONG>(captureWidth / 2),
+                    captureOriginY + static_cast<LONG>(captureHeight / 2)};
+    HMONITOR monitor = MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST);
+    if (!monitor || monitor == sdrWhiteMonitor) {
+        return;
+    }
+
+    sdrWhiteMonitor = monitor;
+    float queriedNits = 0.0f;
+    ULONG rawLevel = 0;
+    if (QuerySdrWhiteLevelNits(monitor, &queriedNits, &rawLevel)) {
+        sdrWhiteNits = std::clamp(queriedNits, 80.0f, 1000.0f);
+        DLL_Log("[HDR Color] Windows SDR white level: raw=%lu nits=%.1f captureCenter=(%ld,%ld)", rawLevel,
+                sdrWhiteNits, center.x, center.y);
+    } else {
+        sdrWhiteNits = 203.0f;
+        DLL_Log(
+            "[HDR Color] Windows SDR white-level query unavailable; using %.1f-nit fallback for captureCenter=(%ld,%ld)",
+            sdrWhiteNits, center.x, center.y);
     }
 }
 
@@ -1513,6 +1604,15 @@ bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3
         return false;
     }
 
+    D3D11_TEXTURE2D_DESC srcDesc = {};
+    srcTexture->GetDesc(&srcDesc);
+    UpdateSdrWhiteLevelForCaptureArea(captureOriginX, captureOriginY, srcDesc.Width, srcDesc.Height);
+    if (currentIsHDR && !ce::video_format::IsFp16RgbInputFormat(srcDesc.Format) &&
+        !ce::video_format::IsHdr10RgbInputFormat(srcDesc.Format)) {
+        DLL_Log("[HDR Color] Direct encode path refuses unsupported HDR source format %d", srcDesc.Format);
+        return false;
+    }
+
     struct KeyedMutexGuard {
         IDXGIKeyedMutex* mutex = nullptr;
         bool acquired = false;
@@ -1540,16 +1640,13 @@ bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3
         keyedMutexGuard.acquired = true;
     }
 
-    D3D11_TEXTURE2D_DESC srcDesc = {};
-    srcTexture->GetDesc(&srcDesc);
-
     const DXGI_FORMAT inputSrvFormat = ce::video_format::GetRgbShaderResourceViewFormat(srcDesc.Format);
     if (inputSrvFormat == DXGI_FORMAT_UNKNOWN) {
         DLL_Log("[VideoEncoder] Direct D3D11 encode path does not support source format %d", srcDesc.Format);
         return false;
     }
     const ce::video_format::RgbColorTransform colorTransform =
-        ce::video_format::GetRgbColorTransform(srcDesc.Format, currentIsHDR);
+        ce::video_format::GetRgbColorTransform(srcDesc.Format, currentIsHDR, ShouldEncodeHdrOutput());
 
     ID3D11Texture2D* srvSourceTexture = srcTexture;
     ID3D11Texture2D* srvCompatTexture = nullptr;
@@ -1576,12 +1673,14 @@ bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3
     if (dstDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM) {
         normalizedTexture = RenderFullscreenCopy(srvSourceTexture, dstDesc.Width, dstDesc.Height, inputSrvFormat,
                                                  DXGI_FORMAT_B8G8R8A8_UNORM, swapRBTexture, swapRBTextureRTV,
-                                                 swapRBTexWidth, swapRBTexHeight, "RGB444-BGRA", colorTransform);
+                                                 swapRBTexWidth, swapRBTexHeight, "RGB444-BGRA", colorTransform,
+                                                 sdrWhiteNits);
     } else if (dstDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM) {
         normalizedTexture =
             RenderFullscreenCopy(srvSourceTexture, dstDesc.Width, dstDesc.Height, inputSrvFormat,
                                  DXGI_FORMAT_R10G10B10A2_UNORM, rgb10IntermediateTexture, rgb10IntermediateRTV,
-                                 rgb10IntermediateWidth, rgb10IntermediateHeight, "RGB444-RGB10", colorTransform);
+                                 rgb10IntermediateWidth, rgb10IntermediateHeight, "RGB444-RGB10", colorTransform,
+                                 sdrWhiteNits);
     } else {
         DLL_Log("[VideoEncoder] Direct D3D11 encode path encountered unsupported destination format %d",
                 dstDesc.Format);
@@ -1602,9 +1701,9 @@ bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3
                 cursorInitLogged = true;
             }
         } else {
-            const CursorColorMode cursorColorMode = currentIsHDR && dstDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM
-                                                        ? CursorColorMode::Hdr10Pq
-                                                        : CursorColorMode::Sdr;
+            const CursorColorMode cursorColorMode =
+                ShouldEncodeHdrOutput() && dstDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM ? CursorColorMode::Hdr10Pq
+                                                                                           : CursorColorMode::Sdr;
             cursorRenderer->CompositeOntoFrame(normalizedTexture, (int)dstDesc.Width, (int)dstDesc.Height,
                                                cursorCaptureState, cursorColorMode);
         }
@@ -1974,21 +2073,27 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     // Set color properties from config (with auto-detection defaults)
     // Color space
     std::string cs = savedConfig.colorSpace;
-    if (currentIsHDR && !cs.empty() && _stricmp(cs.c_str(), "auto") != 0 &&
+    if (!cs.empty() && _stricmp(cs.c_str(), "auto") != 0 && _stricmp(cs.c_str(), "bt709") != 0 &&
         _stricmp(cs.c_str(), "bt2020") != 0) {
-        DLL_Log(
-            "[VideoEncoder] HDR capture requires color_space=auto or bt2020; refusing mismatched metadata '%s'",
-            cs.c_str());
+        DLL_Log("[VideoEncoder] Unsupported color_space='%s'; expected auto, bt709, or bt2020", cs.c_str());
         return false;
     }
-    if (currentIsHDR) {
+    const bool outputIsHDR = ShouldEncodeHdrOutput();
+    if (cs.empty() || _stricmp(cs.c_str(), "auto") == 0) {
+        cs = outputIsHDR ? "bt2020" : "bt709";
+    } else if (_stricmp(cs.c_str(), "bt2020") == 0) {
         cs = "bt2020";
-    } else if (cs == "auto" || cs.empty()) {
-        cs = currentIsHDR ? "bt2020" : "bt709";
+    } else {
+        cs = "bt709";
+    }
+    if (currentIsHDR && !outputIsHDR) {
+        DLL_Log(
+            "[HDR->SDR] color_space=bt709 explicitly requests SDR; enabling whole-frame GPU tone mapping and SDR "
+            "metadata");
     }
     if (cs == "bt2020") {
         codecCtx->color_primaries = AVCOL_PRI_BT2020;
-        codecCtx->color_trc = currentIsHDR ? AVCOL_TRC_SMPTE2084 : AVCOL_TRC_BT2020_10;
+        codecCtx->color_trc = outputIsHDR ? AVCOL_TRC_SMPTE2084 : AVCOL_TRC_BT2020_10;
         codecCtx->colorspace = AVCOL_SPC_BT2020_NCL;
     } else {
         codecCtx->color_primaries = AVCOL_PRI_BT709;
@@ -1998,8 +2103,8 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
 
     // Color range
     std::string cr = savedConfig.colorRange;
-    const OutputRangeMode outputRange = GetEffectiveOutputRange(cr, currentIsHDR);
-    if (WantsFullOutputRange(cr) && currentIsHDR) {
+    const OutputRangeMode outputRange = GetEffectiveOutputRange(cr, outputIsHDR);
+    if (WantsFullOutputRange(cr) && outputIsHDR) {
         DLL_Log("[VideoEncoder] color_range=full requested for HDR, but VP/YCbCr output stays limited-range");
     }
     codecCtx->color_range = GetAVColorRange(outputRange);
@@ -2017,7 +2122,7 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     ResolvedVideoFormat resolvedFormat;
     std::string resolvedError;
     std::string resolvedWarning;
-    if (!ResolveVideoFormat(savedConfig, currentIsHDR, ShouldUse10BitOutput(), codec, &resolvedFormat, &resolvedError,
+    if (!ResolveVideoFormat(savedConfig, outputIsHDR, ShouldUse10BitOutput(), codec, &resolvedFormat, &resolvedError,
                             &resolvedWarning)) {
         DLL_Log("%s", resolvedError.c_str());
         return false;
@@ -2033,10 +2138,10 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
 
     DLL_Log(
         "[VideoEncoder] Color config: space=%s range=%s bitDepth=%s chroma=%s "
-        "pixFmt=%d hwSwFmt=%s path=%s hdr=%d",
+        "pixFmt=%d hwSwFmt=%s path=%s sourceHdr=%d outputHdr=%d",
         cs.c_str(), DescribeOutputRange(outputRange), bd.c_str(), chroma.c_str(), codecCtx->pix_fmt,
         GetPixFmtNameSafe(resolvedFormat.d3d11SwFormat), resolvedFormat.usesVideoProcessor ? "vp-yuv" : "direct-rgb",
-        currentIsHDR);
+        currentIsHDR ? 1 : 0, outputIsHDR ? 1 : 0);
 
     const ce::video::EncoderOptionPlan optionPlan = ce::video::BuildEncoderOptionPlan(savedConfig, use10bit, chroma);
     for (const auto& warning : optionPlan.warnings) {
@@ -2398,7 +2503,8 @@ bool VideoEncoder::EnsureDevice() {
     ResolvedVideoFormat resolvedFormat;
     std::string resolvedError;
     std::string resolvedWarning;
-    if (!ResolveVideoFormat(savedConfig, currentIsHDR, ShouldUse10BitOutput(), codec, &resolvedFormat, &resolvedError,
+    if (!ResolveVideoFormat(savedConfig, ShouldEncodeHdrOutput(), ShouldUse10BitOutput(), codec, &resolvedFormat,
+                            &resolvedError,
                             &resolvedWarning)) {
         DLL_Log("%s", resolvedError.c_str());
         return false;
@@ -2717,7 +2823,7 @@ bool VideoEncoder::Start() {
         ResolvedVideoFormat resolvedFormat;
         std::string resolvedError;
         std::string resolvedWarning;
-        if (!ResolveVideoFormat(savedConfig, currentIsHDR, ShouldUse10BitOutput(), codec, &resolvedFormat,
+        if (!ResolveVideoFormat(savedConfig, ShouldEncodeHdrOutput(), ShouldUse10BitOutput(), codec, &resolvedFormat,
                                 &resolvedError, &resolvedWarning)) {
             DLL_Log("%s", resolvedError.c_str());
             avcodec_free_context(&codecCtx);
@@ -5091,6 +5197,7 @@ bool VideoEncoder::InitVideoProcessor() {
     }
 
     HRESULT hr;
+    const bool outputIsHDR = ShouldEncodeHdrOutput();
 
     // Get video device interface
     hr = d3d11Device->QueryInterface(__uuidof(ID3D11VideoDevice), (void**)&videoDevice);
@@ -5108,14 +5215,10 @@ bool VideoEncoder::InitVideoProcessor() {
     hr = videoContext->QueryInterface(__uuidof(ID3D11VideoContext1), (void**)&videoContext1);
     if (FAILED(hr)) {
         videoContext1 = nullptr;
-        if (currentIsHDR) {
-            DLL_Log(
-                "[VideoProcessor] HDR conversion requires ID3D11VideoContext1 color-space control; refusing an "
-                "incorrect legacy BT.709 conversion (HR=%x)",
-                hr);
-            CleanupVideoProcessor();
-            return false;
-        }
+        DLL_Log(
+            "[VideoProcessor] ID3D11VideoContext1 unavailable (HR=%x); SDR uses the legacy VP contract and HDR "
+            "output uses the direct P010 shader without VideoProcessor color conversion",
+            hr);
     }
 
     // Store input dimensions (captured frame size)
@@ -5143,10 +5246,10 @@ bool VideoEncoder::InitVideoProcessor() {
     // Check if scaling is actually needed (input != output)
     scalingEnabled = (inputWidth != outputWidth || inputHeight != outputHeight);
 
-    if (scalingEnabled) {
+    if (scalingEnabled && !outputIsHDR) {
         DLL_Log("[VideoProcessor] GPU SCALING ENABLED: %dx%d -> %dx%d", inputWidth, inputHeight, outputWidth,
                 outputHeight);
-    } else {
+    } else if (!scalingEnabled) {
         DLL_Log("[VideoProcessor] Scaling disabled (input matches output: %dx%d)", inputWidth, inputHeight);
     }
 
@@ -5197,7 +5300,7 @@ bool VideoEncoder::InitVideoProcessor() {
             mainFrameFormat == D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE ? 1 : 0, mainAutoProcessing ? 1 : 0);
 
     // Configure scaling filter if scaling is enabled
-    if (scalingEnabled) {
+    if (scalingEnabled && !outputIsHDR) {
         // Map sharpness (0-100) directly to D3D11 VP edge enhancement
         bool enableEdgeEnhancement = (savedConfig.scaling.sharpness > 0);
         int edgeEnhancementLevel = savedConfig.scaling.sharpness;
@@ -5248,9 +5351,13 @@ bool VideoEncoder::InitVideoProcessor() {
 
         DLL_Log("[VideoProcessor] Scaling rects: source=%dx%d dest=%dx%d", inputWidth, inputHeight, outputWidth,
                 outputHeight);
+    } else if (scalingEnabled) {
+        DLL_Log(
+            "[HDR P010] Shader scaling configured: source=%dx%d dest=%dx%d filter=bilinear lumaSharpness=%d",
+            inputWidth, inputHeight, outputWidth, outputHeight, savedConfig.scaling.sharpness);
     }
 
-    const OutputRangeMode outputRange = GetEffectiveOutputRange(savedConfig.colorRange, currentIsHDR);
+    const OutputRangeMode outputRange = GetEffectiveOutputRange(savedConfig.colorRange, outputIsHDR);
 
     // Configure color space: Full-range RGB input from capture -> requested YCbCr output range.
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE inputColorSpace = {};
@@ -5269,10 +5376,12 @@ bool VideoEncoder::InitVideoProcessor() {
 
     videoContext->VideoProcessorSetStreamColorSpace(videoProcessor, 0, &inputColorSpace);
     videoContext->VideoProcessorSetOutputColorSpace(videoProcessor, &outputColorSpace);
+    const char* colorConversionSuffix =
+        outputIsHDR ? "; HDR output bypasses VideoProcessor color conversion via direct P010 plane shaders"
+                    : (videoContext1 ? "; ColorSpace1 overrides this per frame" : "");
     DLL_Log("[VideoProcessor] Legacy color-space baseline: Full RGB (0-255) -> %s YCbCr (%s, BT.709)%s",
             outputRange == OutputRangeMode::kFull ? "Full" : "Limited",
-            outputRange == OutputRangeMode::kFull ? "0-255" : "16-235",
-            videoContext1 ? "; ColorSpace1 overrides this per frame" : "");
+            outputRange == OutputRangeMode::kFull ? "0-255" : "16-235", colorConversionSuffix);
 
     // AVHWFrame textures are the VP output surfaces. They are allocated on
     // demand by libavutil and retained by NVENC for exactly as long as each
@@ -5290,42 +5399,38 @@ bool VideoEncoder::InitVideoProcessor() {
     DLL_Log("[VideoProcessor] Using AVHWFrame-owned %s output textures at %dx%d", use10BitOutput ? "P010" : "NV12",
             outputWidth, outputHeight);
 
-    // Create BGRA staging texture for Desktop Duplication
-    // compatibility DD textures often have D3D11_BIND_RENDER_TARGET
-    // only, which is incompatible with CreateVideoProcessorInputView.
-    // This staging texture allows CopyResource.
-    // Use INPUT dimensions for BGRA staging (before scaling)
-    D3D11_TEXTURE2D_DESC bgraDesc = {};
-    bgraDesc.Width = inputWidth;
-    bgraDesc.Height = inputHeight;
-    bgraDesc.MipLevels = 1;
-    bgraDesc.ArraySize = 1;
-    bgraDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    bgraDesc.SampleDesc.Count = 1;
-    bgraDesc.Usage = D3D11_USAGE_DEFAULT;
-    bgraDesc.BindFlags = 0;  // No bind flags = compatible with
-                             // CopyResource + VideoProcessor
+    if (!outputIsHDR) {
+        // Desktop Duplication textures may not support direct VP input views.
+        // SDR output retains the compatibility staging copy; HDR output writes P010 planes
+        // directly and deliberately does not allocate this legacy surface.
+        D3D11_TEXTURE2D_DESC bgraDesc = {};
+        bgraDesc.Width = inputWidth;
+        bgraDesc.Height = inputHeight;
+        bgraDesc.MipLevels = 1;
+        bgraDesc.ArraySize = 1;
+        bgraDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        bgraDesc.SampleDesc.Count = 1;
+        bgraDesc.Usage = D3D11_USAGE_DEFAULT;
+        bgraDesc.BindFlags = 0;
 
-    ID3D11Device* baseDevice2 = nullptr;
-    d3d11Device->QueryInterface(__uuidof(ID3D11Device), (void**)&baseDevice2);
-    hr = baseDevice2->CreateTexture2D(&bgraDesc, nullptr, &bgraStagingTexture);
-    baseDevice2->Release();
+        hr = d3d11Device->CreateTexture2D(&bgraDesc, nullptr, &bgraStagingTexture);
 
-    if (FAILED(hr)) {
-        DLL_Log(
-            "[VideoProcessor] Failed to create BGRA staging "
-            "texture. HR=%x",
-            hr);
-        return false;
+        if (FAILED(hr)) {
+            DLL_Log("[VideoProcessor] Failed to create BGRA staging texture. HR=%x", hr);
+            return false;
+        }
+        DLL_Log("[VideoProcessor] Created BGRA staging texture at %dx%d for DD compatibility", inputWidth,
+                inputHeight);
+    } else {
+        DLL_Log("[HDR P010] Legacy BGRA/VideoProcessor staging allocation skipped");
     }
-    DLL_Log(
-        "[VideoProcessor] Created BGRA staging texture at %dx%d for DD "
-        "compatibility",
-        inputWidth, inputHeight);
 
     videoProcessorInit = true;
 
-    if (scalingEnabled) {
+    if (outputIsHDR) {
+        DLL_Log("[HDR P010] Initialized direct shader target for %dx%d -> %dx%d RGB10/PQ -> limited P010",
+                inputWidth, inputHeight, outputWidth, outputHeight);
+    } else if (scalingEnabled) {
         DLL_Log(
             "[VideoProcessor] Initialized with SCALING: %dx%d -> %dx%d "
             "RGB→%s",
@@ -5492,7 +5597,7 @@ bool VideoEncoder::PrepareVideoProcessorCursorInput(ID3D11Texture2D* source, boo
     const CursorColorMode colorMode = ce::video_format::IsFp16RgbInputFormat(sourceDesc.Format)
                                           ? CursorColorMode::ScRgb
                                           : (currentIsHDR ? CursorColorMode::Hdr10Pq : CursorColorMode::Sdr);
-    const float cursorPaperWhiteNits = currentIsHDR ? 200.0f : 80.0f;
+    const float cursorPaperWhiteNits = currentIsHDR ? sdrWhiteNits : 80.0f;
     if (!cursorRenderer->CompositeOntoFrame(compositionTarget, static_cast<int>(sourceDesc.Width),
                                             static_cast<int>(sourceDesc.Height), cursorCaptureState, colorMode,
                                             cursorPaperWhiteNits)) {
@@ -5526,6 +5631,10 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
         DLL_Log("[VideoProcessor] Invalid RGB conversion input or output frame");
         return false;
     }
+    D3D11_TEXTURE2D_DESC captureDesc = {};
+    bgraTexture->GetDesc(&captureDesc);
+    UpdateSdrWhiteLevelForCaptureArea(captureOriginX, captureOriginY, captureDesc.Width, captureDesc.Height);
+    const bool outputIsHDR = ShouldEncodeHdrOutput();
     if (!videoProcessorInit) {
         if (!InitVideoProcessor())
             return false;
@@ -5546,50 +5655,53 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
     auto* outputTexture = reinterpret_cast<ID3D11Texture2D*>(outputFrame->data[0]);
     const UINT outputArraySlice = static_cast<UINT>(reinterpret_cast<uintptr_t>(outputFrame->data[1]));
     ID3D11VideoProcessorOutputView* outputView = nullptr;
-    for (const auto& cached : outputViewCache) {
-        if (cached.texture == outputTexture && cached.arraySlice == outputArraySlice) {
-            outputView = cached.view;
-            break;
-        }
-    }
-
-    if (!outputView) {
-        D3D11_TEXTURE2D_DESC outputTextureDesc = {};
-        outputTexture->GetDesc(&outputTextureDesc);
-        if (outputArraySlice >= outputTextureDesc.ArraySize) {
-            DLL_Log("[VideoProcessor] Invalid AVHWFrame array slice %u for array size %u", outputArraySlice,
-                    outputTextureDesc.ArraySize);
-            return false;
+    if (!outputIsHDR) {
+        for (const auto& cached : outputViewCache) {
+            if (cached.texture == outputTexture && cached.arraySlice == outputArraySlice) {
+                outputView = cached.view;
+                break;
+            }
         }
 
-        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC outputViewDesc = {};
-        if (outputTextureDesc.ArraySize > 1) {
-            outputViewDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2DARRAY;
-            outputViewDesc.Texture2DArray.MipSlice = 0;
-            outputViewDesc.Texture2DArray.FirstArraySlice = outputArraySlice;
-            outputViewDesc.Texture2DArray.ArraySize = 1;
-        } else {
-            outputViewDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
-            outputViewDesc.Texture2D.MipSlice = 0;
-        }
+        if (!outputView) {
+            D3D11_TEXTURE2D_DESC outputTextureDesc = {};
+            outputTexture->GetDesc(&outputTextureDesc);
+            if (outputArraySlice >= outputTextureDesc.ArraySize) {
+                DLL_Log("[VideoProcessor] Invalid AVHWFrame array slice %u for array size %u", outputArraySlice,
+                        outputTextureDesc.ArraySize);
+                return false;
+            }
 
-        HRESULT outputViewHr = E_FAIL;
-        try {
-            outputViewHr = videoDevice->CreateVideoProcessorOutputView(outputTexture, videoProcessorEnum,
-                                                                       &outputViewDesc, &outputView);
-        } catch (...) {
-            outputViewHr = E_FAIL;
-        }
-        if (FAILED(outputViewHr) || !outputView) {
-            DLL_Log("[VideoProcessor] Failed to bind AVHWFrame output view: HR=%x fmt=%d bind=%x array=%u slice=%u",
+            D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC outputViewDesc = {};
+            if (outputTextureDesc.ArraySize > 1) {
+                outputViewDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2DARRAY;
+                outputViewDesc.Texture2DArray.MipSlice = 0;
+                outputViewDesc.Texture2DArray.FirstArraySlice = outputArraySlice;
+                outputViewDesc.Texture2DArray.ArraySize = 1;
+            } else {
+                outputViewDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+                outputViewDesc.Texture2D.MipSlice = 0;
+            }
+
+            HRESULT outputViewHr = E_FAIL;
+            try {
+                outputViewHr = videoDevice->CreateVideoProcessorOutputView(outputTexture, videoProcessorEnum,
+                                                                           &outputViewDesc, &outputView);
+            } catch (...) {
+                outputViewHr = E_FAIL;
+            }
+            if (FAILED(outputViewHr) || !outputView) {
+                DLL_Log(
+                    "[VideoProcessor] Failed to bind AVHWFrame output view: HR=%x fmt=%d bind=%x array=%u slice=%u",
                     outputViewHr, outputTextureDesc.Format, outputTextureDesc.BindFlags, outputTextureDesc.ArraySize,
                     outputArraySlice);
-            return false;
-        }
-        outputViewCache.push_back({outputTexture, outputArraySlice, outputView});
-        if (outputViewCache.size() == 1) {
-            DLL_Log("[VideoProcessor] AVHWFrame output-view cache active (fmt=%d bind=%x)", outputTextureDesc.Format,
-                    outputTextureDesc.BindFlags);
+                return false;
+            }
+            outputViewCache.push_back({outputTexture, outputArraySlice, outputView});
+            if (outputViewCache.size() == 1) {
+                DLL_Log("[VideoProcessor] AVHWFrame output-view cache active (fmt=%d bind=%x)",
+                        outputTextureDesc.Format, outputTextureDesc.BindFlags);
+            }
         }
     }
 
@@ -5682,11 +5794,12 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
             return false;
         }
         const ce::video_format::RgbColorTransform colorTransform =
-            ce::video_format::GetRgbColorTransform(sourceFormat, currentIsHDR);
+            ce::video_format::GetRgbColorTransform(sourceFormat, currentIsHDR, outputIsHDR);
         ID3D11Texture2D* converted =
             RenderFullscreenCopy(vpInputTexture, vpInputDesc.Width, vpInputDesc.Height, inputSrvFormat,
                                  DXGI_FORMAT_R10G10B10A2_UNORM, rgb10IntermediateTexture, rgb10IntermediateRTV,
-                                 rgb10IntermediateWidth, rgb10IntermediateHeight, "RGB10", colorTransform);
+                                 rgb10IntermediateWidth, rgb10IntermediateHeight, "RGB10", colorTransform,
+                                 sdrWhiteNits);
         if (!converted) {
             DLL_Log("[VP] Failed to convert high-precision input to RGB10A2 before VP (srcFmt=%d srvFmt=%d)",
                     sourceFormat, inputSrvFormat);
@@ -5708,6 +5821,14 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
                 priorHr, sourceFormat, inputSrvFormat, ce::video_format::DescribeRgbColorTransform(colorTransform),
                 ShouldUse10BitOutput() ? "P010" : "NV12");
             vpFp16CompatLogged = true;
+        }
+        if (!outputIsHDR && currentIsHDR && !hdrToSdrLogged) {
+            DLL_Log(
+                "[HDR->SDR] Whole-frame shader tone map active: transform=%s sourceWhite=%.1f-nit "
+                "output=BT709-G22 headroom=80%% passes=1 intermediate=RGB10 gamut=luminance-preserving "
+                "driverVPTransfer=0 cpuWait=0",
+                ce::video_format::DescribeRgbColorTransform(colorTransform), sdrWhiteNits);
+            hdrToSdrLogged = true;
         }
         return true;
     };
@@ -5731,9 +5852,18 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
         // and MinGW catch(...) CANNOT catch SEH exceptions (__fastfail).
         // We must prevent the call by checking format compatibility first.
         vpInputTexture->GetDesc(&vpInputDesc);
-        const bool normalizeHdrScRgb =
-            currentIsHDR && ce::video_format::IsFp16RgbInputFormat(vpInputDesc.Format);
-        if (normalizeHdrScRgb && !prepareHighPrecisionRgb10CompatInput(S_OK)) {
+        const ce::video_format::RgbColorTransform requiredHdrTransform =
+            ce::video_format::GetRgbColorTransform(vpInputDesc.Format, currentIsHDR, outputIsHDR);
+        if (currentIsHDR && !ce::video_format::IsFp16RgbInputFormat(vpInputDesc.Format) &&
+            !ce::video_format::IsHdr10RgbInputFormat(vpInputDesc.Format)) {
+            DLL_Log("[HDR Color] Unsupported HDR source format %d; refusing an unconverted output",
+                    vpInputDesc.Format);
+            releaseConvertedInput();
+            return false;
+        }
+        const bool normalizeHdrForOutput = currentIsHDR &&
+                                           requiredHdrTransform != ce::video_format::RgbColorTransform::kNone;
+        if (normalizeHdrForOutput && !prepareHighPrecisionRgb10CompatInput(S_OK)) {
             releaseConvertedInput();
             return false;
         }
@@ -5744,6 +5874,17 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
                 releaseConvertedInput();
                 return false;
             }
+        }
+        if (outputIsHDR) {
+            const bool converted = ConvertHdrRgb10ToP010(vpInputTexture, outputTexture, outputArraySlice);
+            releaseConvertedInput();
+            if (!converted) {
+                DLL_Log(
+                    "[HDR P010] Direct shader conversion failed; refusing the driver VideoProcessor PQ fallback "
+                    "that produced corrupt colors");
+            }
+            vpFirstCallLogged = true;
+            return converted;
         }
         bool vpCompatible =
             (vpInputDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || vpInputDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
@@ -5902,22 +6043,27 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
 
     if (videoContext1) {
         std::string configuredColorSpace = savedConfig.colorSpace;
-        if (configuredColorSpace == "auto" || configuredColorSpace.empty()) {
-            configuredColorSpace = currentIsHDR ? "bt2020" : "bt709";
+        if (_stricmp(configuredColorSpace.c_str(), "auto") == 0 || configuredColorSpace.empty()) {
+            configuredColorSpace = outputIsHDR ? "bt2020" : "bt709";
+        } else if (_stricmp(configuredColorSpace.c_str(), "bt2020") == 0) {
+            configuredColorSpace = "bt2020";
+        } else {
+            configuredColorSpace = "bt709";
         }
-        const OutputRangeMode outputRange = GetEffectiveOutputRange(savedConfig.colorRange, currentIsHDR);
+        const OutputRangeMode outputRange = GetEffectiveOutputRange(savedConfig.colorRange, outputIsHDR);
         const DXGI_COLOR_SPACE_TYPE inputColorSpace =
-            GetVideoProcessorInputColorSpace(vpInputDesc.Format, currentIsHDR, vpInputIsLinear);
+            GetVideoProcessorInputColorSpace(vpInputDesc.Format, outputIsHDR, vpInputIsLinear);
         const DXGI_COLOR_SPACE_TYPE outputColorSpace =
-            GetVideoProcessorOutputColorSpace(ShouldUse10BitOutput(), currentIsHDR, configuredColorSpace, outputRange);
+            GetVideoProcessorOutputColorSpace(ShouldUse10BitOutput(), outputIsHDR, configuredColorSpace, outputRange);
         videoContext1->VideoProcessorSetStreamColorSpace1(videoProcessor, 0, inputColorSpace);
         videoContext1->VideoProcessorSetOutputColorSpace1(videoProcessor, outputColorSpace);
         if (!vpColorContractLogged) {
             DLL_Log(
-                "[VideoProcessor] ColorSpace1 contract: input=%d output=%d inputFmt=%d hdr=%d bitDepth=%s "
-                "range=%s",
+                "[VideoProcessor] ColorSpace1 contract: input=%d output=%d inputFmt=%d sourceHdr=%d outputHdr=%d "
+                "bitDepth=%s range=%s",
                 static_cast<int>(inputColorSpace), static_cast<int>(outputColorSpace), vpInputDesc.Format,
-                currentIsHDR ? 1 : 0, ShouldUse10BitOutput() ? "10" : "8", DescribeOutputRange(outputRange));
+                currentIsHDR ? 1 : 0, outputIsHDR ? 1 : 0, ShouldUse10BitOutput() ? "10" : "8",
+                DescribeOutputRange(outputRange));
             vpColorContractLogged = true;
         }
     }
@@ -5973,74 +6119,94 @@ bool VideoEncoder::EnsureSwapRBShader() {
         return false;
     }
 
-    ID3DBlob* vsBlob = nullptr;
-    ID3DBlob* psBlob = nullptr;
-    ID3DBlob* errBlob = nullptr;
-
-    HRESULT hr = d3dCompile(ce::video_color::kRgbColorConversionShaderSource,
-                            strlen(ce::video_color::kRgbColorConversionShaderSource), nullptr, nullptr, nullptr,
-                            "VS_Main", "vs_4_0", 0, 0, &vsBlob, &errBlob);
-    if (FAILED(hr)) {
-        if (errBlob) {
-            DLL_Log("[SwapRB] VS error: %s", (char*)errBlob->GetBufferPointer());
-            errBlob->Release();
+    auto compileShader = [&](const char* entry, const char* target, ce::ComGuard<ID3DBlob>& output) -> HRESULT {
+        ce::ComGuard<ID3DBlob> errors;
+        const HRESULT compileHr = d3dCompile(
+            ce::video_color::kRgbColorConversionShaderSource,
+            strlen(ce::video_color::kRgbColorConversionShaderSource), nullptr, nullptr, nullptr, entry, target, 0, 0,
+            output.addressof(), errors.addressof());
+        if (errors) {
+            DLL_Log("[RGBConvert] %s/%s compiler output: %s", entry, target,
+                    static_cast<const char*>(errors->GetBufferPointer()));
         }
-        FreeLibrary(d3dCompiler);
-        return false;
-    }
+        return compileHr;
+    };
 
-    hr = d3dCompile(ce::video_color::kRgbColorConversionShaderSource,
-                    strlen(ce::video_color::kRgbColorConversionShaderSource), nullptr, nullptr, nullptr, "PS_Main",
-                    "ps_4_0", 0, 0, &psBlob, &errBlob);
-    if (FAILED(hr)) {
-        if (errBlob) {
-            DLL_Log("[SwapRB] PS error: %s", (char*)errBlob->GetBufferPointer());
-            errBlob->Release();
-        }
-        vsBlob->Release();
-        FreeLibrary(d3dCompiler);
-        return false;
-    }
-
-    hr = d3d11Device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &swapRBShaderVS);
-    vsBlob->Release();
-    if (FAILED(hr)) {
-        DLL_Log("[SwapRB] CreateVertexShader failed: HR=%x", hr);
-        psBlob->Release();
-        FreeLibrary(d3dCompiler);
-        return false;
-    }
-
-    hr = d3d11Device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &swapRBShaderPS);
-    psBlob->Release();
+    ce::ComGuard<ID3DBlob> vsBlob;
+    ce::ComGuard<ID3DBlob> copyPsBlob;
+    ce::ComGuard<ID3DBlob> p010YBlob;
+    ce::ComGuard<ID3DBlob> p010UvBlob;
+    HRESULT hr = compileShader("VS_Main", "vs_4_0", vsBlob);
+    if (SUCCEEDED(hr))
+        hr = compileShader("PS_Main", "ps_4_0", copyPsBlob);
+    if (SUCCEEDED(hr))
+        hr = compileShader("PS_P010Y", "ps_4_0", p010YBlob);
+    if (SUCCEEDED(hr))
+        hr = compileShader("PS_P010UV", "ps_4_0", p010UvBlob);
     FreeLibrary(d3dCompiler);
     if (FAILED(hr)) {
-        DLL_Log("[SwapRB] CreatePixelShader failed: HR=%x", hr);
+        DLL_Log("[RGBConvert] Runtime shader compilation failed: HR=%x", hr);
+        return false;
+    }
+
+    ce::ComGuard<ID3D11VertexShader> copyVs;
+    ce::ComGuard<ID3D11PixelShader> copyPs;
+    ce::ComGuard<ID3D11PixelShader> p010Y;
+    ce::ComGuard<ID3D11PixelShader> p010Uv;
+    hr = d3d11Device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr,
+                                         copyVs.addressof());
+    if (SUCCEEDED(hr))
+        hr = d3d11Device->CreatePixelShader(copyPsBlob->GetBufferPointer(), copyPsBlob->GetBufferSize(), nullptr,
+                                            copyPs.addressof());
+    if (SUCCEEDED(hr))
+        hr = d3d11Device->CreatePixelShader(p010YBlob->GetBufferPointer(), p010YBlob->GetBufferSize(), nullptr,
+                                            p010Y.addressof());
+    if (SUCCEEDED(hr))
+        hr = d3d11Device->CreatePixelShader(p010UvBlob->GetBufferPointer(), p010UvBlob->GetBufferSize(), nullptr,
+                                            p010Uv.addressof());
+    if (FAILED(hr)) {
+        DLL_Log("[RGBConvert] Runtime shader creation failed: HR=%x", hr);
         return false;
     }
 
     D3D11_SAMPLER_DESC sampDesc = {};
     sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
     sampDesc.AddressU = sampDesc.AddressV = sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    hr = d3d11Device->CreateSamplerState(&sampDesc, &swapRBSampler);
+    ce::ComGuard<ID3D11SamplerState> copySampler;
+    hr = d3d11Device->CreateSamplerState(&sampDesc, copySampler.addressof());
     if (FAILED(hr)) {
         DLL_Log("[SwapRB] CreateSamplerState failed: HR=%x", hr);
         return false;
     }
+    sampDesc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    ce::ComGuard<ID3D11SamplerState> p010Sampler;
+    hr = d3d11Device->CreateSamplerState(&sampDesc, p010Sampler.addressof());
+    if (FAILED(hr)) {
+        DLL_Log("[HDR P010] CreateSamplerState failed: HR=%x", hr);
+        return false;
+    }
 
     D3D11_BUFFER_DESC cbDesc = {};
-    cbDesc.ByteWidth = 16;
+    cbDesc.ByteWidth = 32;
     cbDesc.Usage = D3D11_USAGE_DYNAMIC;
     cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     cbDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    hr = d3d11Device->CreateBuffer(&cbDesc, nullptr, &swapRBShaderCB);
+    ce::ComGuard<ID3D11Buffer> constants;
+    hr = d3d11Device->CreateBuffer(&cbDesc, nullptr, constants.addressof());
     if (FAILED(hr)) {
         DLL_Log("[SwapRB] Create constant buffer failed: HR=%x", hr);
         return false;
     }
 
+    swapRBShaderVS = copyVs.release();
+    swapRBShaderPS = copyPs.release();
+    hdrP010LumaPS = p010Y.release();
+    hdrP010ChromaPS = p010Uv.release();
+    swapRBSampler = copySampler.release();
+    hdrP010Sampler = p010Sampler.release();
+    swapRBShaderCB = constants.release();
     swapRBShaderCreated = true;
-    DLL_Log("[SwapRB] Shader created successfully");
+    DLL_Log("[RGBConvert] Copy/scRGB/P010 shaders created successfully");
     return true;
 }
 
@@ -6049,7 +6215,8 @@ ID3D11Texture2D* VideoEncoder::RenderFullscreenCopy(ID3D11Texture2D* input, uint
                                                     ID3D11Texture2D*& cachedTexture, ID3D11RenderTargetView*& cachedRTV,
                                                     uint32_t& cachedWidth, uint32_t& cachedHeight,
                                                     const char* logPrefix,
-                                                    ce::video_format::RgbColorTransform colorTransform) {
+                                                    ce::video_format::RgbColorTransform colorTransform,
+                                                    float toneMapSdrWhiteNits) {
     if (!EnsureSwapRBShader())
         return nullptr;
 
@@ -6115,11 +6282,11 @@ ID3D11Texture2D* VideoEncoder::RenderFullscreenCopy(ID3D11Texture2D* input, uint
         srv->Release();
         return nullptr;
     }
+    memset(mapped.pData, 0, 32);
     uint32_t* cbData = static_cast<uint32_t*>(mapped.pData);
     cbData[0] = static_cast<uint32_t>(colorTransform);
-    cbData[1] = 0;
-    cbData[2] = 0;
-    cbData[3] = 0;
+    float* cbFloats = static_cast<float*>(mapped.pData);
+    cbFloats[5] = std::clamp(toneMapSdrWhiteNits, 80.0f, 1000.0f);
     d3d11Context->Unmap(swapRBShaderCB, 0);
 
     D3D11_VIEWPORT vp = {};
@@ -6148,6 +6315,149 @@ ID3D11Texture2D* VideoEncoder::RenderFullscreenCopy(ID3D11Texture2D* input, uint
     return cachedTexture;
 }
 
+bool VideoEncoder::ConvertHdrRgb10ToP010(ID3D11Texture2D* input, ID3D11Texture2D* output, UINT outputArraySlice) {
+    if (!input || !output || !EnsureSwapRBShader()) {
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC inputDesc = {};
+    D3D11_TEXTURE2D_DESC outputDesc = {};
+    input->GetDesc(&inputDesc);
+    output->GetDesc(&outputDesc);
+    if (inputDesc.Format != DXGI_FORMAT_R10G10B10A2_UNORM || outputDesc.Format != DXGI_FORMAT_P010 ||
+        outputArraySlice >= outputDesc.ArraySize || (outputDesc.Width & 1) != 0 || (outputDesc.Height & 1) != 0) {
+        DLL_Log(
+            "[HDR P010] Invalid direct conversion surfaces: inputFmt=%d outputFmt=%d output=%ux%u array=%u slice=%u",
+            inputDesc.Format, outputDesc.Format, outputDesc.Width, outputDesc.Height, outputDesc.ArraySize,
+            outputArraySlice);
+        return false;
+    }
+
+    CachedHdrP010OutputViews* outputViews = nullptr;
+    for (auto& cached : hdrP010OutputViewCache) {
+        if (cached.texture == output && cached.arraySlice == outputArraySlice) {
+            outputViews = &cached;
+            break;
+        }
+    }
+    if (!outputViews) {
+        CachedHdrP010OutputViews cached = {};
+        cached.texture = output;
+        cached.arraySlice = outputArraySlice;
+
+        auto createPlaneView = [&](DXGI_FORMAT format, UINT plane,
+                                   ID3D11RenderTargetView1** view) -> HRESULT {
+            D3D11_RENDER_TARGET_VIEW_DESC1 desc = {};
+            desc.Format = format;
+            if (outputDesc.ArraySize > 1) {
+                desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
+                desc.Texture2DArray.MipSlice = 0;
+                desc.Texture2DArray.FirstArraySlice = outputArraySlice;
+                desc.Texture2DArray.ArraySize = 1;
+                desc.Texture2DArray.PlaneSlice = plane;
+            } else {
+                desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+                desc.Texture2D.MipSlice = 0;
+                desc.Texture2D.PlaneSlice = plane;
+            }
+            return d3d11Device->CreateRenderTargetView1(output, &desc, view);
+        };
+
+        HRESULT hr = createPlaneView(DXGI_FORMAT_R16_UNORM, 0, &cached.lumaView);
+        if (SUCCEEDED(hr)) {
+            hr = createPlaneView(DXGI_FORMAT_R16G16_UNORM, 1, &cached.chromaView);
+        }
+        if (FAILED(hr) || !cached.lumaView || !cached.chromaView) {
+            DLL_Log(
+                "[HDR P010] Failed to create plane RTVs: HR=%x bind=%x array=%u slice=%u; refusing corrupt VP "
+                "fallback",
+                hr, outputDesc.BindFlags, outputDesc.ArraySize, outputArraySlice);
+            if (cached.lumaView)
+                cached.lumaView->Release();
+            if (cached.chromaView)
+                cached.chromaView->Release();
+            return false;
+        }
+        hdrP010OutputViewCache.push_back(cached);
+        outputViews = &hdrP010OutputViewCache.back();
+    }
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+    srvDesc.Texture2D.MipLevels = 1;
+    ID3D11ShaderResourceView* inputView = nullptr;
+    HRESULT hr = d3d11Device->CreateShaderResourceView(input, &srvDesc, &inputView);
+    if (FAILED(hr) || !inputView) {
+        DLL_Log("[HDR P010] Failed to create RGB10 input SRV: HR=%x bind=%x", hr, inputDesc.BindFlags);
+        return false;
+    }
+
+    struct CopyConstants {
+        uint32_t colorTransform;
+        uint32_t padding;
+        float outputInvWidth;
+        float outputInvHeight;
+        float lumaSharpenStrength;
+        float padding2[3];
+    };
+    static_assert(sizeof(CopyConstants) == 32);
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    hr = d3d11Context->Map(swapRBShaderCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    if (FAILED(hr) || !mapped.pData) {
+        DLL_Log("[HDR P010] Failed to map shader constants: HR=%x", hr);
+        inputView->Release();
+        return false;
+    }
+    const float lumaSharpenStrength =
+        scalingEnabled ? std::clamp(savedConfig.scaling.sharpness / 400.0f, 0.0f, 0.25f) : 0.0f;
+    *static_cast<CopyConstants*>(mapped.pData) = {
+        0, 0, 1.0f / static_cast<float>(outputDesc.Width), 1.0f / static_cast<float>(outputDesc.Height),
+        lumaSharpenStrength, {0.0f, 0.0f, 0.0f}};
+    d3d11Context->Unmap(swapRBShaderCB, 0);
+
+    d3d11Context->VSSetShader(swapRBShaderVS, nullptr, 0);
+    d3d11Context->PSSetShaderResources(0, 1, &inputView);
+    d3d11Context->PSSetSamplers(0, 1, &hdrP010Sampler);
+    d3d11Context->PSSetConstantBuffers(0, 1, &swapRBShaderCB);
+    d3d11Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    d3d11Context->IASetInputLayout(nullptr);
+
+    D3D11_VIEWPORT viewport = {};
+    viewport.Width = static_cast<float>(outputDesc.Width);
+    viewport.Height = static_cast<float>(outputDesc.Height);
+    viewport.MaxDepth = 1.0f;
+    d3d11Context->RSSetViewports(1, &viewport);
+    ID3D11RenderTargetView* lumaView = outputViews->lumaView;
+    d3d11Context->OMSetRenderTargets(1, &lumaView, nullptr);
+    d3d11Context->PSSetShader(hdrP010LumaPS, nullptr, 0);
+    d3d11Context->Draw(3, 0);
+
+    viewport.Width = static_cast<float>(outputDesc.Width / 2);
+    viewport.Height = static_cast<float>(outputDesc.Height / 2);
+    d3d11Context->RSSetViewports(1, &viewport);
+    ID3D11RenderTargetView* chromaView = outputViews->chromaView;
+    d3d11Context->OMSetRenderTargets(1, &chromaView, nullptr);
+    d3d11Context->PSSetShader(hdrP010ChromaPS, nullptr, 0);
+    d3d11Context->Draw(3, 0);
+
+    ID3D11RenderTargetView* nullRtv = nullptr;
+    d3d11Context->OMSetRenderTargets(1, &nullRtv, nullptr);
+    ID3D11ShaderResourceView* nullSrv = nullptr;
+    d3d11Context->PSSetShaderResources(0, 1, &nullSrv);
+    inputView->Release();
+
+    if (!hdrP010DirectLogged) {
+        DLL_Log(
+            "[HDR P010] Direct shader conversion active: input=RGB10_PQ_P2020 output=P010_BT2020NCL_LIMITED "
+            "matrix=shader planes=R16/R16G16 scaling=%ux%u->%ux%u lumaSharpen=%.3f driverVP=0 cpuWait=0",
+            inputDesc.Width, inputDesc.Height, outputDesc.Width, outputDesc.Height, lumaSharpenStrength);
+        hdrP010DirectLogged = true;
+    }
+    return true;
+}
+
 ID3D11Texture2D* VideoEncoder::SwapRBChannels(ID3D11Texture2D* input, uint32_t w, uint32_t h) {
     return RenderFullscreenCopy(input, w, h, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, swapRBTexture,
                                 swapRBTextureRTV, swapRBTexWidth, swapRBTexHeight, "SwapRB");
@@ -6161,6 +6471,17 @@ void VideoEncoder::CleanupVideoProcessor() {
         }
     }
     outputViewCache.clear();
+    for (auto& cached : hdrP010OutputViewCache) {
+        if (cached.lumaView) {
+            cached.lumaView->Release();
+            cached.lumaView = nullptr;
+        }
+        if (cached.chromaView) {
+            cached.chromaView->Release();
+            cached.chromaView = nullptr;
+        }
+    }
+    hdrP010OutputViewCache.clear();
 
     CleanupCursorCompositionResources();
 
@@ -6223,6 +6544,10 @@ void VideoEncoder::CleanupVideoProcessor() {
         swapRBSampler->Release();
         swapRBSampler = nullptr;
     }
+    if (hdrP010Sampler) {
+        hdrP010Sampler->Release();
+        hdrP010Sampler = nullptr;
+    }
     if (swapRBShaderCB) {
         swapRBShaderCB->Release();
         swapRBShaderCB = nullptr;
@@ -6230,6 +6555,14 @@ void VideoEncoder::CleanupVideoProcessor() {
     if (swapRBShaderPS) {
         swapRBShaderPS->Release();
         swapRBShaderPS = nullptr;
+    }
+    if (hdrP010LumaPS) {
+        hdrP010LumaPS->Release();
+        hdrP010LumaPS = nullptr;
+    }
+    if (hdrP010ChromaPS) {
+        hdrP010ChromaPS->Release();
+        hdrP010ChromaPS = nullptr;
     }
     if (swapRBShaderVS) {
         swapRBShaderVS->Release();
@@ -6247,6 +6580,10 @@ void VideoEncoder::CleanupVideoProcessor() {
     vpInputViewLogged = false;
     vpFp16CompatLogged = false;
     vpColorContractLogged = false;
+    hdrP010DirectLogged = false;
+    hdrToSdrLogged = false;
+    sdrWhiteMonitor = nullptr;
+    sdrWhiteNits = 203.0f;
     fp16VpInputStrategy = Fp16VpInputStrategy::kUnknown;
     cursorPrecompositionLogged = false;
     cursorFullCopyFallbackLogged = false;

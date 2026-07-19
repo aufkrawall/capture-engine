@@ -2,12 +2,15 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <d3d11_4.h>
 #include <d3dcompiler.h>
+#include <mmsystem.h>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
 
+#include "../common/raii_helpers.h"
 #include "../mediaengine/video_color_conversion_shader.h"
 
 namespace {
@@ -210,7 +213,7 @@ TEST(VideoEncoderSourceTest, CursorPrecompositionFailureNeverFailsVideoConversio
     EXPECT_NE(cursorBody.find("video conversion continues without this"), std::string::npos);
 }
 
-TEST(VideoEncoderSourceTest, HdrScRgbIsConvertedToHdr10BeforeVideoProcessorQuantization) {
+TEST(VideoEncoderSourceTest, HdrScRgbIsConvertedDirectlyToDeterministicP010) {
     const std::string source = ReadVideoEncoderSource();
     const std::string shader = ReadVideoColorShaderSource();
     ASSERT_FALSE(source.empty());
@@ -220,15 +223,47 @@ TEST(VideoEncoderSourceTest, HdrScRgbIsConvertedToHdr10BeforeVideoProcessorQuant
     EXPECT_NE(shader.find("rec2020.r * 80.0"), std::string::npos);
     EXPECT_NE(shader.find("LinearNitsToPQ"), std::string::npos);
     EXPECT_NE(shader.find("colorTransform == 2"), std::string::npos);
+    EXPECT_NE(shader.find("float3 PqP2020ToLimitedYcbcr(float3 rgb)"), std::string::npos);
+    EXPECT_NE(shader.find("64.0 + 876.0 * y"), std::string::npos);
+    EXPECT_NE(shader.find("512.0 + 896.0 * cb"), std::string::npos);
+    EXPECT_NE(shader.find("512.0 + 896.0 * cr"), std::string::npos);
+    EXPECT_NE(shader.find("float4 PS_P010Y"), std::string::npos);
+    EXPECT_NE(shader.find("float4 PS_P010UV"), std::string::npos);
 
     const size_t conversion = source.find("bool VideoEncoder::ConvertBGRAtoNV12");
-    const size_t normalize = source.find("const bool normalizeHdrScRgb", conversion);
+    const size_t normalize = source.find("const bool normalizeHdrForOutput", conversion);
+    const size_t directP010 = source.find("ConvertHdrRgb10ToP010(vpInputTexture", normalize);
     const size_t inputView = source.find("CreateVideoProcessorInputView(vpInputTexture", normalize);
     ASSERT_NE(conversion, std::string::npos);
     ASSERT_NE(normalize, std::string::npos);
+    ASSERT_NE(directP010, std::string::npos);
     ASSERT_NE(inputView, std::string::npos);
     EXPECT_LT(normalize, inputView);
-    EXPECT_NE(source.find("HDR conversion requires ID3D11VideoContext1 color-space control"), std::string::npos);
+    EXPECT_LT(directP010, inputView);
+    EXPECT_NE(source.find("driverVP=0 cpuWait=0"), std::string::npos);
+    EXPECT_NE(source.find("refusing the driver VideoProcessor PQ fallback"), std::string::npos);
+    EXPECT_EQ(source.find("HDR conversion requires ID3D11VideoContext1 color-space control"), std::string::npos);
+}
+
+TEST(VideoEncoderSourceTest, ExplicitBt709ToneMapsHdrBeforeSdrVideoProcessorConversion) {
+    const std::string source = ReadVideoEncoderSource();
+    const std::string shader = ReadVideoColorShaderSource();
+    ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(shader.empty());
+
+    EXPECT_NE(source.find("const bool outputIsHDR = ShouldEncodeHdrOutput()"), std::string::npos);
+    EXPECT_NE(source.find("color_space=bt709 explicitly requests SDR"), std::string::npos);
+    EXPECT_NE(source.find("QuerySdrWhiteLevelNits"), std::string::npos);
+    EXPECT_NE(source.find("DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL"), std::string::npos);
+    EXPECT_NE(source.find("[HDR->SDR] Whole-frame shader tone map active"), std::string::npos);
+    EXPECT_NE(shader.find("float3 AbsoluteNitsToSdr(float3 rec709Nits)"), std::string::npos);
+    EXPECT_NE(shader.find("float3 CompressRec709Gamut(float3 rgb, float luminance)"), std::string::npos);
+    EXPECT_NE(shader.find("lerp(neutral, rgb, saturate(chromaScale))"), std::string::npos);
+    EXPECT_NE(shader.find("float3 ScRgbToSdr(float3 scRgb)"), std::string::npos);
+    EXPECT_NE(shader.find("float3 Hdr10ToSdr(float3 pqRec2020)"), std::string::npos);
+    EXPECT_NE(shader.find("colorTransform == 3"), std::string::npos);
+    EXPECT_NE(shader.find("colorTransform == 4"), std::string::npos);
+    EXPECT_NE(source.find("passes=1 intermediate=RGB10 gamut=luminance-preserving"), std::string::npos);
 }
 
 TEST(VideoEncoderSourceTest, RgbColorConversionShaderCompilesForRuntimeProfiles) {
@@ -244,7 +279,8 @@ TEST(VideoEncoderSourceTest, RgbColorConversionShaderCompilesForRuntimeProfiles)
         const char* entry;
         const char* target;
     };
-    const ShaderProfile profiles[] = {{"VS_Main", "vs_4_0"}, {"PS_Main", "ps_4_0"}};
+    const ShaderProfile profiles[] = {{"VS_Main", "vs_4_0"},       {"PS_Main", "ps_4_0"},
+                                      {"PS_P010Y", "ps_4_0"},      {"PS_P010UV", "ps_4_0"}};
     for (const ShaderProfile& profile : profiles) {
         ID3DBlob* blob = nullptr;
         ID3DBlob* errors = nullptr;
@@ -263,4 +299,288 @@ TEST(VideoEncoderSourceTest, RgbColorConversionShaderCompilesForRuntimeProfiles)
     }
 
     FreeLibrary(compilerModule);
+}
+
+TEST(VideoEncoderSourceTest, ForcedSdrToneMapPlacesConfiguredPaperWhiteAtSdrHeadroom) {
+    ce::ComGuard<ID3D11Device> device;
+    ce::ComGuard<ID3D11DeviceContext> context;
+    D3D_FEATURE_LEVEL featureLevel = {};
+    const HRESULT deviceHr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                                D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+                                                device.addressof(), &featureLevel, context.addressof());
+    ASSERT_TRUE(SUCCEEDED(deviceHr)) << std::hex << deviceHr;
+    ASSERT_GE(featureLevel, D3D_FEATURE_LEVEL_11_0);
+
+    constexpr float kSdrWhiteNits = 203.0f;
+    const float sourcePixel[4] = {kSdrWhiteNits / 80.0f, kSdrWhiteNits / 80.0f, kSdrWhiteNits / 80.0f, 1.0f};
+    D3D11_TEXTURE2D_DESC sourceDesc = {};
+    sourceDesc.Width = 1;
+    sourceDesc.Height = 1;
+    sourceDesc.MipLevels = 1;
+    sourceDesc.ArraySize = 1;
+    sourceDesc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+    sourceDesc.SampleDesc.Count = 1;
+    sourceDesc.Usage = D3D11_USAGE_IMMUTABLE;
+    sourceDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA sourceData = {};
+    sourceData.pSysMem = sourcePixel;
+    sourceData.SysMemPitch = sizeof(sourcePixel);
+    ce::ComGuard<ID3D11Texture2D> sourceTexture;
+    ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&sourceDesc, &sourceData, sourceTexture.addressof())));
+
+    D3D11_TEXTURE2D_DESC outputDesc = sourceDesc;
+    outputDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+    outputDesc.Usage = D3D11_USAGE_DEFAULT;
+    outputDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    ce::ComGuard<ID3D11Texture2D> outputTexture;
+    ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&outputDesc, nullptr, outputTexture.addressof())));
+    ce::ComGuard<ID3D11ShaderResourceView> sourceView;
+    ce::ComGuard<ID3D11RenderTargetView> outputView;
+    ASSERT_TRUE(SUCCEEDED(device->CreateShaderResourceView(sourceTexture.get(), nullptr, sourceView.addressof())));
+    ASSERT_TRUE(SUCCEEDED(device->CreateRenderTargetView(outputTexture.get(), nullptr, outputView.addressof())));
+
+    ce::ComGuard<ID3DBlob> vertexBlob;
+    ce::ComGuard<ID3DBlob> pixelBlob;
+    ce::ComGuard<ID3DBlob> errors;
+    ASSERT_TRUE(SUCCEEDED(D3DCompile(ce::video_color::kRgbColorConversionShaderSource,
+                                     sizeof(ce::video_color::kRgbColorConversionShaderSource) - 1, nullptr, nullptr,
+                                     nullptr, "VS_Main", "vs_4_0", 0, 0, vertexBlob.addressof(), errors.addressof())));
+    errors.reset();
+    ASSERT_TRUE(SUCCEEDED(D3DCompile(ce::video_color::kRgbColorConversionShaderSource,
+                                     sizeof(ce::video_color::kRgbColorConversionShaderSource) - 1, nullptr, nullptr,
+                                     nullptr, "PS_Main", "ps_4_0", 0, 0, pixelBlob.addressof(), errors.addressof())));
+    ce::ComGuard<ID3D11VertexShader> vertexShader;
+    ce::ComGuard<ID3D11PixelShader> pixelShader;
+    ASSERT_TRUE(SUCCEEDED(device->CreateVertexShader(vertexBlob->GetBufferPointer(), vertexBlob->GetBufferSize(),
+                                                     nullptr, vertexShader.addressof())));
+    ASSERT_TRUE(SUCCEEDED(device->CreatePixelShader(pixelBlob->GetBufferPointer(), pixelBlob->GetBufferSize(), nullptr,
+                                                    pixelShader.addressof())));
+
+    D3D11_SAMPLER_DESC samplerDesc = {};
+    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+    samplerDesc.AddressU = samplerDesc.AddressV = samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    ce::ComGuard<ID3D11SamplerState> sampler;
+    ASSERT_TRUE(SUCCEEDED(device->CreateSamplerState(&samplerDesc, sampler.addressof())));
+    struct CopyConstants {
+        uint32_t colorTransform;
+        uint32_t padding;
+        float outputInvWidth;
+        float outputInvHeight;
+        float lumaSharpenStrength;
+        float sdrWhiteNits;
+        float padding2[2];
+    };
+    const CopyConstants constants = {3, 0, 1.0f, 1.0f, 0.0f, kSdrWhiteNits, {0.0f, 0.0f}};
+    D3D11_BUFFER_DESC constantsDesc = {};
+    constantsDesc.ByteWidth = sizeof(constants);
+    constantsDesc.Usage = D3D11_USAGE_IMMUTABLE;
+    constantsDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_SUBRESOURCE_DATA constantsData = {};
+    constantsData.pSysMem = &constants;
+    ce::ComGuard<ID3D11Buffer> constantsBuffer;
+    ASSERT_TRUE(SUCCEEDED(device->CreateBuffer(&constantsDesc, &constantsData, constantsBuffer.addressof())));
+
+    D3D11_VIEWPORT viewport = {0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};
+    ID3D11RenderTargetView* outputViewRaw = outputView.get();
+    ID3D11ShaderResourceView* sourceViewRaw = sourceView.get();
+    ID3D11SamplerState* samplerRaw = sampler.get();
+    ID3D11Buffer* constantsRaw = constantsBuffer.get();
+    context->RSSetViewports(1, &viewport);
+    context->OMSetRenderTargets(1, &outputViewRaw, nullptr);
+    context->VSSetShader(vertexShader.get(), nullptr, 0);
+    context->PSSetShader(pixelShader.get(), nullptr, 0);
+    context->PSSetShaderResources(0, 1, &sourceViewRaw);
+    context->PSSetSamplers(0, 1, &samplerRaw);
+    context->PSSetConstantBuffers(0, 1, &constantsRaw);
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context->Draw(3, 0);
+    ID3D11RenderTargetView* nullRtv = nullptr;
+    ID3D11ShaderResourceView* nullSrv = nullptr;
+    context->OMSetRenderTargets(1, &nullRtv, nullptr);
+    context->PSSetShaderResources(0, 1, &nullSrv);
+
+    D3D11_TEXTURE2D_DESC stagingDesc = outputDesc;
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ce::ComGuard<ID3D11Texture2D> stagingTexture;
+    ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&stagingDesc, nullptr, stagingTexture.addressof())));
+    context->CopyResource(stagingTexture.get(), outputTexture.get());
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    ASSERT_TRUE(SUCCEEDED(context->Map(stagingTexture.get(), 0, D3D11_MAP_READ, 0, &mapped)));
+    const uint32_t packed = *static_cast<const uint32_t*>(mapped.pData);
+    context->Unmap(stagingTexture.get(), 0);
+
+    const int red = packed & 0x3ff;
+    const int green = (packed >> 10) & 0x3ff;
+    const int blue = (packed >> 20) & 0x3ff;
+    EXPECT_NEAR(red, 927, 1);
+    EXPECT_NEAR(green, 927, 1);
+    EXPECT_NEAR(blue, 927, 1);
+    EXPECT_EQ(packed >> 30, 3u);
+}
+
+TEST(VideoEncoderSourceTest, DirectHdrP010ShaderWritesCanonicalRedCodes) {
+    ce::ComGuard<ID3D11Device> baseDevice;
+    ce::ComGuard<ID3D11DeviceContext> context;
+    D3D_FEATURE_LEVEL featureLevel = {};
+    const HRESULT deviceHr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                                D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+                                                baseDevice.addressof(), &featureLevel, context.addressof());
+    ASSERT_TRUE(SUCCEEDED(deviceHr)) << std::hex << deviceHr;
+    ASSERT_GE(featureLevel, D3D_FEATURE_LEVEL_11_0);
+
+    ce::ComGuard<ID3D11Device3> device;
+    ASSERT_TRUE(SUCCEEDED(baseDevice->QueryInterface(IID_PPV_ARGS(device.addressof()))));
+
+    constexpr UINT kWidth = 2;
+    constexpr UINT kHeight = 2;
+    constexpr uint32_t kOpaqueRedRgb10 = 0xc00003ffu;
+    const uint32_t sourcePixels[kWidth * kHeight] = {kOpaqueRedRgb10, kOpaqueRedRgb10, kOpaqueRedRgb10,
+                                                     kOpaqueRedRgb10};
+    D3D11_TEXTURE2D_DESC sourceDesc = {};
+    sourceDesc.Width = kWidth;
+    sourceDesc.Height = kHeight;
+    sourceDesc.MipLevels = 1;
+    sourceDesc.ArraySize = 1;
+    sourceDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+    sourceDesc.SampleDesc.Count = 1;
+    sourceDesc.Usage = D3D11_USAGE_IMMUTABLE;
+    sourceDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA sourceData = {};
+    sourceData.pSysMem = sourcePixels;
+    sourceData.SysMemPitch = kWidth * sizeof(uint32_t);
+    ce::ComGuard<ID3D11Texture2D> sourceTexture;
+    ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&sourceDesc, &sourceData, sourceTexture.addressof())));
+
+    D3D11_TEXTURE2D_DESC outputDesc = {};
+    outputDesc.Width = kWidth;
+    outputDesc.Height = kHeight;
+    outputDesc.MipLevels = 1;
+    outputDesc.ArraySize = 1;
+    outputDesc.Format = DXGI_FORMAT_P010;
+    outputDesc.SampleDesc.Count = 1;
+    outputDesc.Usage = D3D11_USAGE_DEFAULT;
+    outputDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    ce::ComGuard<ID3D11Texture2D> outputTexture;
+    ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&outputDesc, nullptr, outputTexture.addressof())));
+
+    auto createPlaneView = [&](DXGI_FORMAT format, UINT plane, ce::ComGuard<ID3D11RenderTargetView1>& view) {
+        D3D11_RENDER_TARGET_VIEW_DESC1 desc = {};
+        desc.Format = format;
+        desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        desc.Texture2D.MipSlice = 0;
+        desc.Texture2D.PlaneSlice = plane;
+        return device->CreateRenderTargetView1(outputTexture.get(), &desc, view.addressof());
+    };
+    ce::ComGuard<ID3D11RenderTargetView1> lumaView;
+    ce::ComGuard<ID3D11RenderTargetView1> chromaView;
+    ASSERT_TRUE(SUCCEEDED(createPlaneView(DXGI_FORMAT_R16_UNORM, 0, lumaView)));
+    ASSERT_TRUE(SUCCEEDED(createPlaneView(DXGI_FORMAT_R16G16_UNORM, 1, chromaView)));
+
+    ce::ComGuard<ID3D11ShaderResourceView> sourceView;
+    ASSERT_TRUE(SUCCEEDED(device->CreateShaderResourceView(sourceTexture.get(), nullptr, sourceView.addressof())));
+
+    ce::ComGuard<ID3DBlob> vertexBlob;
+    ce::ComGuard<ID3DBlob> lumaBlob;
+    ce::ComGuard<ID3DBlob> chromaBlob;
+    auto compile = [&](const char* entry, const char* target, ce::ComGuard<ID3DBlob>& blob) {
+        ce::ComGuard<ID3DBlob> errors;
+        const HRESULT hr = D3DCompile(ce::video_color::kRgbColorConversionShaderSource,
+                                      sizeof(ce::video_color::kRgbColorConversionShaderSource) - 1, nullptr, nullptr,
+                                      nullptr, entry, target, 0, 0, blob.addressof(), errors.addressof());
+        const std::string diagnostic =
+            errors ? std::string(static_cast<const char*>(errors->GetBufferPointer()), errors->GetBufferSize()) : "";
+        EXPECT_TRUE(SUCCEEDED(hr)) << entry << "/" << target << ": " << diagnostic;
+        return hr;
+    };
+    ASSERT_TRUE(SUCCEEDED(compile("VS_Main", "vs_4_0", vertexBlob)));
+    ASSERT_TRUE(SUCCEEDED(compile("PS_P010Y", "ps_4_0", lumaBlob)));
+    ASSERT_TRUE(SUCCEEDED(compile("PS_P010UV", "ps_4_0", chromaBlob)));
+
+    ce::ComGuard<ID3D11VertexShader> vertexShader;
+    ce::ComGuard<ID3D11PixelShader> lumaShader;
+    ce::ComGuard<ID3D11PixelShader> chromaShader;
+    ASSERT_TRUE(SUCCEEDED(device->CreateVertexShader(vertexBlob->GetBufferPointer(), vertexBlob->GetBufferSize(),
+                                                     nullptr, vertexShader.addressof())));
+    ASSERT_TRUE(SUCCEEDED(device->CreatePixelShader(lumaBlob->GetBufferPointer(), lumaBlob->GetBufferSize(), nullptr,
+                                                    lumaShader.addressof())));
+    ASSERT_TRUE(SUCCEEDED(device->CreatePixelShader(chromaBlob->GetBufferPointer(), chromaBlob->GetBufferSize(),
+                                                    nullptr, chromaShader.addressof())));
+
+    D3D11_SAMPLER_DESC samplerDesc = {};
+    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    samplerDesc.AddressU = samplerDesc.AddressV = samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    ce::ComGuard<ID3D11SamplerState> sampler;
+    ASSERT_TRUE(SUCCEEDED(device->CreateSamplerState(&samplerDesc, sampler.addressof())));
+
+    struct CopyConstants {
+        uint32_t colorTransform;
+        uint32_t padding;
+        float outputInvWidth;
+        float outputInvHeight;
+        float lumaSharpenStrength;
+        float sdrWhiteNits;
+        float padding2[2];
+    };
+    const CopyConstants constants = {0, 0, 1.0f / kWidth, 1.0f / kHeight, 0.0f, 203.0f, {0.0f, 0.0f}};
+    D3D11_BUFFER_DESC constantsDesc = {};
+    constantsDesc.ByteWidth = sizeof(constants);
+    constantsDesc.Usage = D3D11_USAGE_IMMUTABLE;
+    constantsDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_SUBRESOURCE_DATA constantsData = {};
+    constantsData.pSysMem = &constants;
+    ce::ComGuard<ID3D11Buffer> constantsBuffer;
+    ASSERT_TRUE(SUCCEEDED(device->CreateBuffer(&constantsDesc, &constantsData, constantsBuffer.addressof())));
+
+    ID3D11ShaderResourceView* sourceViewRaw = sourceView.get();
+    ID3D11SamplerState* samplerRaw = sampler.get();
+    ID3D11Buffer* constantsRaw = constantsBuffer.get();
+    context->VSSetShader(vertexShader.get(), nullptr, 0);
+    context->PSSetShaderResources(0, 1, &sourceViewRaw);
+    context->PSSetSamplers(0, 1, &samplerRaw);
+    context->PSSetConstantBuffers(0, 1, &constantsRaw);
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    D3D11_VIEWPORT viewport = {0.0f, 0.0f, static_cast<float>(kWidth), static_cast<float>(kHeight), 0.0f, 1.0f};
+    ID3D11RenderTargetView* lumaViewRaw = lumaView.get();
+    context->RSSetViewports(1, &viewport);
+    context->OMSetRenderTargets(1, &lumaViewRaw, nullptr);
+    context->PSSetShader(lumaShader.get(), nullptr, 0);
+    context->Draw(3, 0);
+
+    viewport.Width = static_cast<float>(kWidth / 2);
+    viewport.Height = static_cast<float>(kHeight / 2);
+    ID3D11RenderTargetView* chromaViewRaw = chromaView.get();
+    context->RSSetViewports(1, &viewport);
+    context->OMSetRenderTargets(1, &chromaViewRaw, nullptr);
+    context->PSSetShader(chromaShader.get(), nullptr, 0);
+    context->Draw(3, 0);
+    ID3D11RenderTargetView* nullRtv = nullptr;
+    ID3D11ShaderResourceView* nullSrv = nullptr;
+    context->OMSetRenderTargets(1, &nullRtv, nullptr);
+    context->PSSetShaderResources(0, 1, &nullSrv);
+
+    D3D11_TEXTURE2D_DESC stagingDesc = outputDesc;
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ce::ComGuard<ID3D11Texture2D> stagingTexture;
+    ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&stagingDesc, nullptr, stagingTexture.addressof())));
+    context->CopyResource(stagingTexture.get(), outputTexture.get());
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    ASSERT_TRUE(SUCCEEDED(context->Map(stagingTexture.get(), 0, D3D11_MAP_READ, 0, &mapped)));
+
+    const auto* bytes = static_cast<const uint8_t*>(mapped.pData);
+    constexpr uint16_t kExpectedY = 294u << 6;
+    constexpr uint16_t kExpectedCb = 387u << 6;
+    constexpr uint16_t kExpectedCr = 960u << 6;
+    EXPECT_EQ(*reinterpret_cast<const uint16_t*>(bytes), kExpectedY);
+    EXPECT_EQ(*reinterpret_cast<const uint16_t*>(bytes + sizeof(uint16_t)), kExpectedY);
+    EXPECT_EQ(*reinterpret_cast<const uint16_t*>(bytes + mapped.RowPitch), kExpectedY);
+    EXPECT_EQ(*reinterpret_cast<const uint16_t*>(bytes + mapped.RowPitch + sizeof(uint16_t)), kExpectedY);
+    const auto* chroma = reinterpret_cast<const uint16_t*>(bytes + mapped.RowPitch * kHeight);
+    EXPECT_EQ(chroma[0], kExpectedCb);
+    EXPECT_EQ(chroma[1], kExpectedCr);
+    context->Unmap(stagingTexture.get(), 0);
 }

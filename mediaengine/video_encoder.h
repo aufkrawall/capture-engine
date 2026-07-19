@@ -365,6 +365,17 @@ private:
     };
     std::vector<CachedVideoProcessorOutputView> outputViewCache;
 
+    // HDR bypasses driver-owned RGB/PQ color conversion. Plane-specific RTVs
+    // write the AVHWFrame P010 texture directly and remain cached with the
+    // encoder-owned texture pool just like VideoProcessor output views.
+    struct CachedHdrP010OutputViews {
+        ID3D11Texture2D* texture = nullptr;
+        UINT arraySlice = 0;
+        ID3D11RenderTargetView1* lumaView = nullptr;
+        ID3D11RenderTargetView1* chromaView = nullptr;
+    };
+    std::vector<CachedHdrP010OutputViews> hdrP010OutputViewCache;
+
     // BGRA staging texture for VideoProcessor input compatibility
     ID3D11Texture2D* bgraStagingTexture = nullptr;
 
@@ -374,7 +385,10 @@ private:
     // Fullscreen copy shader reused for RGBA→BGRA and FP16→RGB10A2
     ID3D11VertexShader* swapRBShaderVS = nullptr;
     ID3D11PixelShader* swapRBShaderPS = nullptr;
+    ID3D11PixelShader* hdrP010LumaPS = nullptr;
+    ID3D11PixelShader* hdrP010ChromaPS = nullptr;
     ID3D11SamplerState* swapRBSampler = nullptr;
+    ID3D11SamplerState* hdrP010Sampler = nullptr;
     ID3D11Buffer* swapRBShaderCB = nullptr;
     ID3D11Texture2D* swapRBTexture = nullptr;
     ID3D11RenderTargetView* swapRBTextureRTV = nullptr;
@@ -396,6 +410,10 @@ private:
     bool vpInputViewLogged = false;
     bool vpFp16CompatLogged = false;
     bool vpColorContractLogged = false;
+    bool hdrP010DirectLogged = false;
+    bool hdrToSdrLogged = false;
+    HMONITOR sdrWhiteMonitor = nullptr;
+    float sdrWhiteNits = 203.0f;
     enum class Fp16VpInputStrategy {
         kUnknown,
         kUseStaging,
@@ -432,6 +450,9 @@ private:
                                           ID3D11Texture2D** preparedSource);
     void CleanupCursorCompositionResources();
     bool ConfigureAndOpenCodec();
+    bool ShouldEncodeHdrOutput() const;
+    void UpdateSdrWhiteLevelForCaptureArea(int captureOriginX, int captureOriginY, UINT captureWidth,
+                                           UINT captureHeight);
     bool ShouldUse10BitOutput() const {
         if (savedConfig.bitDepth == "10") {
             return true;
@@ -459,12 +480,14 @@ private:
                            uint64_t keyedMutexAcquireKey = 0);
     bool CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture);
     bool EnsureSwapRBShader();
+    bool ConvertHdrRgb10ToP010(ID3D11Texture2D* input, ID3D11Texture2D* output, UINT outputArraySlice);
     ID3D11Texture2D* RenderFullscreenCopy(ID3D11Texture2D* input, uint32_t w, uint32_t h, DXGI_FORMAT inputSrvFormat,
                                           DXGI_FORMAT outputFormat, ID3D11Texture2D*& cachedTexture,
                                           ID3D11RenderTargetView*& cachedRTV, uint32_t& cachedWidth,
                                           uint32_t& cachedHeight, const char* logPrefix,
                                           ce::video_format::RgbColorTransform colorTransform =
-                                              ce::video_format::RgbColorTransform::kNone);
+                                              ce::video_format::RgbColorTransform::kNone,
+                                          float toneMapSdrWhiteNits = 203.0f);
     ID3D11Texture2D* SwapRBChannels(ID3D11Texture2D* input, uint32_t w, uint32_t h);
 
     // ASYNC PACKET WRITER
