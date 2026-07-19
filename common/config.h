@@ -64,6 +64,7 @@ struct VideoConfig {
     std::string preset;
     std::string tuning;
     std::string multipass = "auto";
+    std::string splitEncode = "auto";
     std::string profile;
     std::string lookahead = "off";  // off, auto, or explicit depth 1-31
     bool spatialAq = false;

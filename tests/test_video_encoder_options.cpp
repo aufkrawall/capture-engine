@@ -40,6 +40,7 @@ VideoConfig MakeBaseVideoConfig(const std::string& encoder) {
     config.preset = "p3";
     config.tuning = "hq";
     config.multipass = "disabled";
+    config.splitEncode = "auto";
     config.qp = 23;
     config.lookahead = "off";
     config.spatialAq = false;
@@ -379,6 +380,78 @@ TEST(VideoEncoderOptionsTest, NvencMultipassAutoUsesQresForCbrWithoutBFrames) {
     EXPECT_EQ(multipass.value_or(""), "qres");
 }
 
+TEST(VideoEncoderOptionsTest, NvencSplitEncodeMapsSupportedModesForHevcAndAv1) {
+    struct SplitModeCase {
+        const char* configured;
+        const char* expected;
+    };
+    const SplitModeCase modes[] = {{" auto ", "auto"}, {"disabled", "disabled"}, {"forced", "forced"},
+                                   {"2", "2"},         {"3", "3"},               {"4", "4"}};
+
+    for (const char* encoder : {"hevc_nvenc", "av1_nvenc"}) {
+        for (const SplitModeCase& mode : modes) {
+            VideoConfig config = MakeBaseVideoConfig(encoder);
+            config.splitEncode = mode.configured;
+
+            const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+
+            EXPECT_TRUE(plan.errors.empty()) << encoder << " " << mode.configured;
+            EXPECT_EQ(FindOptionValue(plan.generatedOptions, "split_encode_mode").value_or(""), mode.expected)
+                << encoder << " " << mode.configured;
+        }
+    }
+}
+
+TEST(VideoEncoderOptionsTest, NvencSplitEncodeRejectsForcedModesForH264) {
+    VideoConfig config = MakeBaseVideoConfig("h264_nvenc");
+
+    config.splitEncode = "auto";
+    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "split_encode_mode").has_value());
+
+    config.splitEncode = "disabled";
+    plan = BuildEncoderOptionPlan(config, false, "420");
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "split_encode_mode").has_value());
+
+    config.splitEncode = "forced";
+    plan = BuildEncoderOptionPlan(config, false, "420");
+    EXPECT_TRUE(HasMessageContaining(plan.errors, "supported only for HEVC and AV1"));
+}
+
+TEST(VideoEncoderOptionsTest, NvencSplitEncodeCustomOverrideRemainsCompatible) {
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.splitEncode = "auto";
+    config.customOptions = "split_encode_mode=3";
+
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "split_encode_mode").value_or(""), "auto");
+    EXPECT_EQ(FindOptionValue(plan.customOptions, "split_encode_mode").value_or(""), "3");
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "overrides [NVENC] split_encode=auto"));
+}
+
+TEST(VideoEncoderOptionsTest, NvencSplitEncodeRejectsForcedHevcWeightedPredictionAndWarnsForAuto) {
+    VideoConfig config = MakeBaseVideoConfig("hevc_nvenc");
+    config.splitEncode = "forced";
+    config.customOptions = "weighted_pred=1";
+
+    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    EXPECT_TRUE(HasMessageContaining(plan.errors, "cannot be combined with forced split-frame encoding"));
+
+    config.splitEncode = "auto";
+    plan = BuildEncoderOptionPlan(config, false, "420");
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "prevents automatic split-frame encoding"));
+
+    config.splitEncode = "disabled";
+    plan = BuildEncoderOptionPlan(config, false, "420");
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_FALSE(HasMessageContaining(plan.warnings, "split-frame encoding"));
+}
+
 TEST(VideoEncoderOptionsTest, NvencLookaheadOffAutoAndExplicitDepthAreDeterministic) {
     VideoConfig config = MakeBaseVideoConfig("hevc_nvenc");
     config.bFrames = 4;
@@ -435,6 +508,7 @@ TEST(VideoEncoderOptionsTest, InvalidNvencPolicyValuesAreRejected) {
     VideoConfig config = MakeBaseVideoConfig("h264_nvenc");
     config.lookahead = "many";
     config.multipass = "sometimes";
+    config.splitEncode = "wide";
     config.bRefMode = "all";
     config.aqStrength = 16;
 
@@ -442,6 +516,7 @@ TEST(VideoEncoderOptionsTest, InvalidNvencPolicyValuesAreRejected) {
 
     EXPECT_TRUE(HasMessageContaining(plan.errors, "lookahead"));
     EXPECT_TRUE(HasMessageContaining(plan.errors, "multipass"));
+    EXPECT_TRUE(HasMessageContaining(plan.errors, "split_encode"));
     EXPECT_TRUE(HasMessageContaining(plan.errors, "b_ref_mode"));
     EXPECT_TRUE(HasMessageContaining(plan.errors, "aq_strength"));
 }

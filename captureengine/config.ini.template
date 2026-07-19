@@ -90,6 +90,11 @@ preset=p1
 tuning=hq
 ; auto, disabled, qres, or fullres.
 multipass=auto
+; Split-frame encoding uses multiple physical NVENC engines for one HEVC/AV1
+; stream. auto keeps NVIDIA's resolution/preset policy; forced lets the driver
+; choose the split, while 2, 3, or 4 request that many strips when available.
+; It can make slower presets real-time at a small compression-efficiency cost.
+split_encode=auto
 ; Lower values mean higher quality. H.264/HEVC use 0-51. AV1 CQ uses 0-63.
 qp=23
 ; This is not a true/false switch. off disables lookahead, auto chooses a useful

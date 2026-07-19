@@ -1948,6 +1948,7 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     DLL_Log("[VideoEncoder] b_frames=%d", savedConfig.bFrames);
     DLL_Log("[VideoEncoder] b_ref_mode=%s", savedConfig.bRefMode.empty() ? "(auto)" : savedConfig.bRefMode.c_str());
     DLL_Log("[VideoEncoder] multipass=%s", savedConfig.multipass.c_str());
+    DLL_Log("[VideoEncoder] split_encode=%s", savedConfig.splitEncode.c_str());
     DLL_Log("[VideoEncoder] keyframe_interval=%d", savedConfig.keyframeInterval);
     DLL_Log("[VideoEncoder] qp=%d", savedConfig.qp);
     DLL_Log("[VideoEncoder] bit_depth=%s color_space=%s color_range=%s chroma=%s", savedConfig.bitDepth.c_str(),

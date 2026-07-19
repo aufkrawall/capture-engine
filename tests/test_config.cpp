@@ -114,6 +114,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.copyQueuePriority, "normal");
     EXPECT_EQ(config.video.profile, "auto");
     EXPECT_EQ(config.video.multipass, "auto");
+    EXPECT_EQ(config.video.splitEncode, "auto");
     EXPECT_EQ(config.video.lookahead, "off");
     EXPECT_FALSE(config.video.spatialAq);
     EXPECT_FALSE(config.video.temporalAq);
@@ -151,6 +152,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("copy_queue_priority=normal"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("multipass=auto"), std::string::npos);
+    EXPECT_NE(generatedText.find("split_encode=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("lookahead=off"), std::string::npos);
     EXPECT_NE(generatedText.find("spatial_aq=false"), std::string::npos);
     EXPECT_NE(generatedText.find("temporal_aq=false"), std::string::npos);
@@ -279,6 +281,7 @@ TEST_F(ConfigTest, ParseIndependentNvencQualityPolicies) {
     WriteConfig(
         "[NVENC]\n"
         "multipass=fullres\n"
+        "split_encode=3\n"
         "lookahead=13\n"
         "spatial_aq=true\n"
         "temporal_aq=false\n"
@@ -289,6 +292,7 @@ TEST_F(ConfigTest, ParseIndependentNvencQualityPolicies) {
     LoadConfig(tempConfigFile, config);
 
     EXPECT_EQ(config.video.multipass, "fullres");
+    EXPECT_EQ(config.video.splitEncode, "3");
     EXPECT_EQ(config.video.lookahead, "13");
     EXPECT_TRUE(config.video.spatialAq);
     EXPECT_FALSE(config.video.temporalAq);

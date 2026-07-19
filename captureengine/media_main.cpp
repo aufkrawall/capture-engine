@@ -612,9 +612,10 @@ bool MediaVideoConfigEquals(const VideoConfig& lhs, const VideoConfig& rhs) {
            lhs.outputDir == rhs.outputDir && lhs.rateControl == rhs.rateControl && lhs.bitrate == rhs.bitrate &&
            lhs.maxBitrate == rhs.maxBitrate && lhs.keyframeInterval == rhs.keyframeInterval &&
            lhs.preset == rhs.preset && lhs.tuning == rhs.tuning && lhs.multipass == rhs.multipass &&
-           lhs.profile == rhs.profile && lhs.lookahead == rhs.lookahead && lhs.spatialAq == rhs.spatialAq &&
-           lhs.temporalAq == rhs.temporalAq && lhs.aqStrength == rhs.aqStrength && lhs.bFrames == rhs.bFrames &&
-           lhs.bRefMode == rhs.bRefMode && lhs.customOptions == rhs.customOptions &&
+           lhs.splitEncode == rhs.splitEncode && lhs.profile == rhs.profile && lhs.lookahead == rhs.lookahead &&
+           lhs.spatialAq == rhs.spatialAq && lhs.temporalAq == rhs.temporalAq &&
+           lhs.aqStrength == rhs.aqStrength && lhs.bFrames == rhs.bFrames && lhs.bRefMode == rhs.bRefMode &&
+           lhs.customOptions == rhs.customOptions &&
            lhs.captureCursor == rhs.captureCursor && lhs.qp == rhs.qp && lhs.mfRateControl == rhs.mfRateControl &&
            lhs.mfQuality == rhs.mfQuality && lhs.mfScenario == rhs.mfScenario && lhs.mfHwEncoding == rhs.mfHwEncoding &&
            lhs.gpuPriority == rhs.gpuPriority && lhs.bitDepth == rhs.bitDepth && lhs.colorSpace == rhs.colorSpace &&

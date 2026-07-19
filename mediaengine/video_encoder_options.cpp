@@ -355,6 +355,30 @@ std::optional<std::string> CanonicalizeNvencMultipass(const std::string& value) 
     return std::nullopt;
 }
 
+std::optional<std::string> CanonicalizeNvencSplitEncode(const std::string& value) {
+    const std::string lower = CanonicalizeEnumValue(value);
+    if (lower.empty() || lower == "auto" || lower == "disabled" || lower == "forced" || lower == "2" ||
+        lower == "3" || lower == "4") {
+        return lower.empty() ? std::optional<std::string>("auto") : std::optional<std::string>(lower);
+    }
+    return std::nullopt;
+}
+
+bool SupportsNvencSplitEncoding(const EncoderKind& kind) {
+    return kind.backend == EncoderBackend::kNVENC &&
+           (kind.family == CodecFamily::kHEVC || kind.family == CodecFamily::kAV1);
+}
+
+bool IsNvencSplitEncodingDisabled(std::string_view value) {
+    const std::string lower = CanonicalizeEnumValue(std::string(value));
+    return lower == "disabled" || lower == "15";
+}
+
+bool IsNvencSplitEncodingForced(std::string_view value) {
+    const std::string lower = CanonicalizeEnumValue(std::string(value));
+    return lower == "forced" || lower == "1" || lower == "2" || lower == "3" || lower == "4";
+}
+
 std::optional<int> ResolveNvencLookaheadDepth(const std::string& value, int bFrames, EncoderOptionPlan* plan) {
     const std::string lower = CanonicalizeEnumValue(value);
     if (lower.empty() || lower == "off" || lower == "false" || lower == "disabled") {
@@ -670,6 +694,15 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
             AddGeneratedOption(&plan, "multipass", effectiveMultipass);
         }
 
+        const auto splitEncode = CanonicalizeNvencSplitEncode(config.splitEncode);
+        if (!splitEncode.has_value()) {
+            AddError(&plan, "Unsupported NVENC split_encode value: " + config.splitEncode);
+        } else if (SupportsNvencSplitEncoding(kind)) {
+            AddGeneratedOption(&plan, "split_encode_mode", *splitEncode);
+        } else if (*splitEncode != "auto" && *splitEncode != "disabled") {
+            AddError(&plan, "NVENC split_encode=" + *splitEncode + " is supported only for HEVC and AV1");
+        }
+
         // OBS Studio does NOT set weighted_pred for NVENC B-frames and their
         // recordings work smoothly.  Our previous auto-enable of weighted_pred=1
         // for H.264/HEVC could cause driver issues on some configurations.
@@ -712,6 +745,36 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
     } else {
         for (const auto& option : customOptions) {
             AddCustomOption(&plan, option.key, option.value);
+        }
+    }
+
+    if (SupportsNvencSplitEncoding(kind)) {
+        std::optional<std::string> customSplitEncode;
+        std::optional<std::string> customWeightedPrediction;
+        for (const auto& option : plan.customOptions) {
+            const std::string key = ToLowerAscii(option.key);
+            if (key == "split_encode_mode") {
+                customSplitEncode = option.value;
+            } else if (key == "weighted_pred") {
+                customWeightedPrediction = option.value;
+            }
+        }
+
+        if (customSplitEncode.has_value()) {
+            AddWarning(&plan, "custom split_encode_mode=" + *customSplitEncode + " overrides [NVENC] split_encode=" +
+                                  config.splitEncode + "; migrate to the dedicated setting when possible");
+        }
+
+        const std::string effectiveSplitEncode = customSplitEncode.value_or(config.splitEncode);
+        if (kind.family == CodecFamily::kHEVC && !IsNvencSplitEncodingDisabled(effectiveSplitEncode) &&
+            customWeightedPrediction.has_value() && !IsDisabledBooleanValue(*customWeightedPrediction)) {
+            if (IsNvencSplitEncodingForced(effectiveSplitEncode)) {
+                AddError(&plan, "HEVC weighted_pred=" + *customWeightedPrediction +
+                                    " cannot be combined with forced split-frame encoding");
+            } else {
+                AddWarning(&plan, "HEVC weighted_pred=" + *customWeightedPrediction +
+                                      " prevents automatic split-frame encoding from activating");
+            }
         }
     }
 
