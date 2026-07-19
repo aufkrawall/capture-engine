@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-18 (source-relative screen-capture and target-relative app-latency analyzer attribution, immutable recording-scoped media logs/manifests, analyzer multi-recording selection and legacy evidence-deficit detection, limited-query retained process identity, exact ABI 37 non-inject WGC/DXGI sensor attribution, Explorer tray recovery, current capture-sync/CFR variable-cadence behavior, exact build isolation, and the existing current graphics/audio/build/security state; see cfr-capture-sync.md, regression-testing-and-logging.md, wgc-capture.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-19 (Linux/Windows compiler-specific build hardening and PE verification, source-relative screen-capture and target-relative app-latency analyzer attribution, immutable recording-scoped media logs/manifests, analyzer multi-recording selection and legacy evidence-deficit detection, limited-query retained process identity, exact ABI 37 non-inject WGC/DXGI sensor attribution, Explorer tray recovery, current capture-sync/CFR variable-cadence behavior, exact build isolation, and the existing current graphics/audio/security state; see build.py.md, cfr-capture-sync.md, regression-testing-and-logging.md, wgc-capture.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -41,7 +41,7 @@ Primary sources:
 - `codestyle.md`
   - Style/tooling rules, the no-whole-file-in-place-formatter constraint for existing sources, Python tooling config, and common tree conventions. Last verified 2026-07-12.
 - `build.py.md`
-  - Supported `build.py` flags, single-preparation sanitizer/product flow, current-database advisory lint, managed Python lint tools, summary/detail artifacts, validated object/link caches, deterministic non-LTO unit-test/test-app profiles with unchanged production LTO, incremental/resume/no-build workflow, isolated object variants, source-built dependency closure, PE verification, scoped hardening/DLL-search policy, sanitizer/FP/CPU policy, FFmpeg fingerprints, operational notes, and MinGW pitfalls. Last verified 2026-07-17.
+  - Supported `build.py` flags, Windows Clang/Linux MinGW GCC hardening and strict-FP selection, host-native PE/debug-info verification, single-preparation sanitizer/product flow, current-database advisory lint, managed Python lint tools, summary/detail artifacts, validated object/link caches, deterministic non-LTO unit-test/test-app profiles with unchanged production LTO, incremental/resume/no-build workflow, isolated object variants, source-built dependency closure, scoped DLL-search policy, sanitizer/CPU policy, FFmpeg fingerprints, operational notes, and MinGW pitfalls. Last verified 2026-07-19.
 - `screenshots.md`
   - Shared ABI 32 screenshot requests, raw payload v2, managed hook worker, strict payload validation, PNG/10-bit 4:4:4 AVIF encoding, color conversion, and atomic publication. Last verified 2026-07-15.
 - `process-ipc.md`

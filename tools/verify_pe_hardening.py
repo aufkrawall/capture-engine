@@ -95,6 +95,7 @@ def verify_binary(
     require_pdb: bool,
     available_dlls: set[str],
     allow_missing_x86_cfg: bool = False,
+    allow_missing_x64_cfg: bool = False,
 ) -> PeHardeningResult:
     completed = subprocess.run(
         [str(readobj), "--file-headers", "--sections", "--coff-load-config", "--coff-imports", str(path)],
@@ -108,7 +109,10 @@ def verify_binary(
     result = parse_llvm_readobj_hardening(
         completed.stdout,
         architecture,
-        require_cfg=not (allow_missing_x86_cfg and architecture == "x86"),
+        require_cfg=not (
+            (allow_missing_x86_cfg and architecture == "x86")
+            or (allow_missing_x64_cfg and architecture == "x64")
+        ),
     )
     errors = list(result.errors)
     unresolved = sorted(
@@ -144,6 +148,8 @@ def verify_tree(
     allowed_runtime_dlls: Iterable[str] = (),
     skip_x86: bool = False,
     allow_missing_x86_cfg: bool = False,
+    allow_missing_x64_cfg: bool = False,
+    allow_missing_pdb: bool = False,
     executables_only: bool = False,
 ) -> list[str]:
     failures: list[str] = []
@@ -158,16 +164,24 @@ def verify_tree(
         # test execution, but they are not project-owned artifacts and do not
         # ship with a matching first-party PDB. Keep all PE hardening and
         # import-closure checks active for them.
-        require_pdb = first_party and path.name.lower() not in allowed_runtime_names
-        result = verify_binary(readobj, path, require_pdb, available_dlls, allow_missing_x86_cfg)
+        require_pdb = not allow_missing_pdb and first_party and path.name.lower() not in allowed_runtime_names
+        result = verify_binary(
+            readobj,
+            path,
+            require_pdb,
+            available_dlls,
+            allow_missing_x86_cfg=allow_missing_x86_cfg,
+            allow_missing_x64_cfg=allow_missing_x64_cfg,
+        )
         if result.errors:
             failures.append(f"{path}: " + "; ".join(result.errors))
         else:
-            cfg_status = (
-                "CFG deferred"
-                if allow_missing_x86_cfg and expected_architecture(path) == "x86" and result.guard_function_count == 0
-                else f"{result.guard_function_count} CFG targets"
+            architecture = expected_architecture(path)
+            cfg_deferred = result.guard_function_count == 0 and (
+                (allow_missing_x86_cfg and architecture == "x86")
+                or (allow_missing_x64_cfg and architecture == "x64")
             )
+            cfg_status = "CFG deferred" if cfg_deferred else f"{result.guard_function_count} CFG targets"
             print(f"PE hardening OK: {path.name} ({result.architecture}, {cfg_status})")
     return failures
 
@@ -179,15 +193,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--allow-runtime-dll", action="append", default=[])
     parser.add_argument("--skip-x86", action="store_true")
     parser.add_argument("--allow-missing-x86-cfg", action="store_true")
+    parser.add_argument("--allow-missing-x64-cfg", action="store_true")
+    parser.add_argument("--allow-missing-pdb", action="store_true")
     parser.add_argument("--executables-only", action="store_true")
     args = parser.parse_args(argv)
     failures = verify_tree(
         args.llvm_readobj,
         args.root,
-        args.allow_runtime_dll,
-        args.skip_x86,
-        args.allow_missing_x86_cfg,
-        args.executables_only,
+        allowed_runtime_dlls=args.allow_runtime_dll,
+        skip_x86=args.skip_x86,
+        allow_missing_x86_cfg=args.allow_missing_x86_cfg,
+        allow_missing_x64_cfg=args.allow_missing_x64_cfg,
+        allow_missing_pdb=args.allow_missing_pdb,
+        executables_only=args.executables_only,
     )
     if failures:
         for failure in failures:

@@ -52,9 +52,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             g++-mingw-w64-x86-64 \
             g++-mingw-w64-i686 \
+            llvm \
             pkg-config \
             zstd
 
       - name: Cross-compile on Linux
         shell: pwsh
-        run: python build.py --skip-updates
+        run: |
+          python -m unittest -v test_build_flags.py test_pe_hardening.py
+          python build.py --skip-updates

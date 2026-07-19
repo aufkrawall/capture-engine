@@ -98,6 +98,42 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertIn(build.CFG_LINK_FLAG, build.LD_OPT_FLAGS_X64)
         self.assertEqual(build.TESTAPP_X86_CFG_LINK_FLAGS, ["-Wl,--no-guard-cf"])
 
+    def test_linux_mingw_gcc_uses_only_supported_hardening_flags(self) -> None:
+        gcc = "/usr/bin/x86_64-w64-mingw32-g++"
+        flags = build.make_cpp_cflags(
+            build.OPT_FLAGS_X64,
+            compiler_exe=gcc,
+            suppress_microsoft_exception_spec=True,
+        )
+
+        self.assertNotIn(build.CFG_COMPILE_FLAG, flags)
+        self.assertNotIn("-Wno-microsoft-exception-spec", flags)
+        self.assertNotIn(build.CFG_LINK_FLAG, build.get_x64_linker_flags(gcc))
+        self.assertNotIn("-Wl,--no-guard-cf", build.get_x86_testapp_cfg_link_flags(gcc))
+        self.assertNotIn("-ffp-model=strict", build.get_strict_fp_flags(gcc))
+        self.assertIn("-ffp-contract=off", build.get_strict_fp_flags(gcc))
+        self.assertIn("-fstack-protector-strong", flags)
+        self.assertIn("-D_FORTIFY_SOURCE=2", flags)
+        self.assertIn("-fcf-protection=full", flags)
+        self.assertIn("-Wl,--high-entropy-va", build.get_x64_linker_flags(gcc))
+
+    def test_native_clang_keeps_cfg_and_strict_fp_policy(self) -> None:
+        clang = r"C:\msys64\clang64\bin\clang++.exe"
+        flags = build.make_cpp_cflags(build.OPT_FLAGS_X64, compiler_exe=clang)
+
+        self.assertIn(build.CFG_COMPILE_FLAG, flags)
+        self.assertIn(build.CFG_LINK_FLAG, build.get_x64_linker_flags(clang))
+        self.assertEqual(build.get_x86_testapp_cfg_link_flags(clang), build.TESTAPP_X86_CFG_LINK_FLAGS)
+        self.assertEqual(build.get_strict_fp_flags(clang), build.CLANG_STRICT_FP_FLAGS)
+
+    def test_linux_llvm_readobj_resolution_uses_host_executable(self) -> None:
+        with patch.object(build, "IS_LINUX", True), patch.object(
+            build.shutil,
+            "which",
+            side_effect=lambda executable: "/usr/bin/llvm-readobj" if executable == "llvm-readobj" else None,
+        ):
+            self.assertEqual(build.get_llvm_readobj_exe(), "/usr/bin/llvm-readobj")
+
     def test_ffmpeg_policy_includes_stack_and_object_size_hardening(self) -> None:
         with open(build.__file__, encoding="utf-8") as build_file:
             source = build_file.read()

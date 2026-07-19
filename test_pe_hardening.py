@@ -75,6 +75,28 @@ GuardCFFunctionCount: 0
         )
         self.assertIn("missing IMAGE_DLL_CHARACTERISTICS_NX_COMPAT", missing_nx.errors)
 
+    def test_x64_cfg_can_be_deferred_without_weakening_other_checks(self) -> None:
+        output = """
+Arch: x86_64
+  IMAGE_DLL_CHARACTERISTICS_DYNAMIC_BASE
+  IMAGE_DLL_CHARACTERISTICS_HIGH_ENTROPY_VA
+  IMAGE_DLL_CHARACTERISTICS_NX_COMPAT
+Section {
+  Name: .text
+  IMAGE_SCN_MEM_EXECUTE
+  IMAGE_SCN_MEM_READ
+}
+GuardCFFunctionTable: 0x0
+GuardCFFunctionCount: 0
+"""
+        deferred = hardening.parse_llvm_readobj_hardening(output, "x64", require_cfg=False)
+        self.assertEqual(deferred.errors, ())
+
+        missing_high_entropy = hardening.parse_llvm_readobj_hardening(
+            output.replace("IMAGE_DLL_CHARACTERISTICS_HIGH_ENTROPY_VA", ""), "x64", require_cfg=False
+        )
+        self.assertIn("missing IMAGE_DLL_CHARACTERISTICS_HIGH_ENTROPY_VA", missing_high_entropy.errors)
+
     def test_extracts_runtime_import_names_case_insensitively(self) -> None:
         output = """
 Import {
@@ -137,6 +159,23 @@ GuardCFFunctionCount: 1
         require_pdb_by_name = {call.args[1].name: call.args[2] for call in verify.call_args_list}
         self.assertTrue(require_pdb_by_name["captureengine.dll"])
         self.assertFalse(require_pdb_by_name["libc++.dll"])
+
+    def test_cross_build_can_defer_pdb_without_disabling_other_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "captureengine.exe").touch()
+            result = hardening.PeHardeningResult("x64", 0, ())
+            with patch.object(hardening, "verify_binary", return_value=result) as verify:
+                failures = hardening.verify_tree(
+                    Path("llvm-readobj"),
+                    root,
+                    allow_missing_x64_cfg=True,
+                    allow_missing_pdb=True,
+                )
+
+        self.assertEqual(failures, [])
+        self.assertFalse(verify.call_args.args[2])
+        self.assertTrue(verify.call_args.kwargs["allow_missing_x64_cfg"])
 
 
 if __name__ == "__main__":

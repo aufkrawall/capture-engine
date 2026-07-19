@@ -81,11 +81,11 @@ COMMON_WARNING_FLAGS = [
     "-Wundef",
     "-Wno-unused-parameter",
 ]
-# CFG is reliable for the native x64 toolchain. The Windows clang64 ->
-# mingw32 x86 cross-link currently emits the CFG image bit without a usable
-# target table, and those x86 images can fault during MinGW CRT startup. Keep
-# the x86 test apps and inject/layer binaries on the ordinary baseline policy
-# until the x86 linker can produce valid CFG metadata.
+# CFG is reliable for the native x64 Clang/LLD toolchain. GCC does not support
+# Clang's -mguard=cf instrumentation, while the Windows clang64 -> mingw32 x86
+# cross-link currently emits the CFG image bit without a usable target table.
+# Keep compiler-specific selection centralized below so unsupported MinGW GCC
+# flags never leak into Linux cross-compilation.
 CFG_COMPILE_FLAG = "-mguard=cf"
 CFG_LINK_FLAG = "-Wl,--guard-cf"
 COMMON_WINDOWS_COMPILE_FLAGS = ["-D_WIN32_WINNT=0x0A00", "-DNOMINMAX"]
@@ -184,7 +184,9 @@ LD_OPT_FLAGS_X64 = [
 ]
 
 # Floating-point state that affects timestamps, mixing, resampling, or HDR color
-# conversion must not vary with contraction/reassociation decisions.
+# conversion must not vary with contraction/reassociation decisions. Clang's
+# aggregate strict model has no GCC spelling, so use its explicit GCC
+# equivalents when Linux selects the system MinGW GCC toolchain.
 STRICT_FP_MEDIA_SOURCES = {
     "app_audio_capture.cpp",
     "audio_capture.cpp",
@@ -196,7 +198,8 @@ STRICT_FP_MEDIA_SOURCES = {
     "process_loopback_worker.cpp",
     "video_encoder.cpp",
 }
-STRICT_FP_FLAGS = ["-ffp-model=strict"]
+CLANG_STRICT_FP_FLAGS = ["-ffp-model=strict"]
+GCC_STRICT_FP_FLAGS = ["-fno-fast-math", "-ffp-contract=off", "-frounding-math", "-fsignaling-nans"]
 
 # --- Configuration ---
 BUILD_DIR_NAME = "build"
@@ -312,9 +315,44 @@ def append_windows_pdb_linker_flag(ldflags: List[str], binary_path: str) -> None
         ldflags.append(pdb_flag)
 
 
+def compiler_supports_windows_cfg(compiler_exe: Optional[str]) -> bool:
+    """Return whether the selected compiler supports the project's CFG flags."""
+    return is_clang_compiler(compiler_exe)
+
+
+def get_x64_linker_flags(compiler_exe: Optional[str]) -> List[str]:
+    """Select x64 mitigation flags without passing Clang CFG options to GCC."""
+    if compiler_supports_windows_cfg(compiler_exe):
+        return list(LD_OPT_FLAGS_X64)
+    return [flag for flag in LD_OPT_FLAGS_X64 if flag != CFG_LINK_FLAG]
+
+
+def get_x86_testapp_cfg_link_flags(compiler_exe: Optional[str]) -> List[str]:
+    """Disable x86 CFG only on linkers that understand the CFG option family."""
+    return list(TESTAPP_X86_CFG_LINK_FLAGS) if compiler_supports_windows_cfg(compiler_exe) else []
+
+
+def get_strict_fp_flags(compiler_exe: Optional[str]) -> List[str]:
+    """Return equivalent strict floating-point flags for Clang or GCC."""
+    return list(CLANG_STRICT_FP_FLAGS if is_clang_compiler(compiler_exe) else GCC_STRICT_FP_FLAGS)
+
+
+def get_llvm_readobj_exe() -> str:
+    """Resolve a host-native llvm-readobj instead of a target Windows binary."""
+    if not IS_LINUX:
+        return os.path.join(MSYS2_DIR, "clang64", "bin", "llvm-readobj.exe")
+
+    for executable in ["llvm-readobj"] + [f"llvm-readobj-{version}" for version in range(22, 13, -1)]:
+        resolved = shutil.which(executable)
+        if resolved:
+            return resolved
+    raise RuntimeError("llvm-readobj is required for Linux PE verification; install the 'llvm' package")
+
+
 def make_cpp_cflags(
     opt_flags: List[str],
     *,
+    compiler_exe: Optional[str] = None,
     arch_flags: Optional[List[str]] = None,
     extra_flags: Optional[List[str]] = None,
     suppress_microsoft_exception_spec: bool = False,
@@ -322,10 +360,10 @@ def make_cpp_cflags(
     enable_cfg: bool = True,
 ) -> List[str]:
     flags = CPP_STD_FLAGS + opt_flags + COMMON_DEBUG_INFO_FLAGS + (arch_flags or []) + COMMON_WARNING_FLAGS
-    if suppress_microsoft_exception_spec:
+    if suppress_microsoft_exception_spec and (compiler_exe is None or is_clang_compiler(compiler_exe)):
         flags.append("-Wno-microsoft-exception-spec")
     flags += COMMON_WINDOWS_COMPILE_FLAGS
-    if enable_cfg:
+    if enable_cfg and (compiler_exe is None or compiler_supports_windows_cfg(compiler_exe)):
         flags.append(CFG_COMPILE_FLAG)
     flags.append("-I" + os.path.join(PROJECT_ROOT, "common"))
     if production_build:
@@ -4342,6 +4380,7 @@ def get_unit_test_object_dir(env: Dict[str, str]) -> str:
 
 def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     test_base_cflags = [flag for flag in cflags if not flag.startswith("-flto")]
+    strict_fp_flags = get_strict_fp_flags(clang_exe)
     log(f"Compiling Tests (parallel, {get_parallel_job_count(env, 1_000_000)} threads, non-LTO)...")
     src_files = glob.glob(os.path.join(PROJECT_ROOT, "tests", "*.cpp"))
     if not src_files:
@@ -4443,6 +4482,8 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     )
     if any(flag.startswith("-fsanitize=") for flag in cflags):
         ldflags_test.append("-fsanitize=address,undefined")
+    ldflags_test.extend(LD_OPT_FLAGS)
+    ldflags_test.extend(get_x64_linker_flags(clang_exe))
     append_windows_pdb_linker_flag(ldflags_test, test_exe)
 
     # 2. Compile MediaEngine objects for tests
@@ -4465,7 +4506,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         me_objs.append(obj)
 
     compile_tasks.extend((me_cflags, src, obj) for src, obj in src_obj_pairs)
-    compile_tasks.extend((me_cflags + STRICT_FP_FLAGS, src, obj) for src, obj in strict_fp_src_obj_pairs)
+    compile_tasks.extend((me_cflags + strict_fp_flags, src, obj) for src, obj in strict_fp_src_obj_pairs)
 
     # 3. Compile Tests
     test_cflags = (
@@ -4491,7 +4532,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
 
     screenshot_encoding_src = os.path.join(PROJECT_ROOT, "captureengine", "screenshot_encoding.cpp")
     screenshot_encoding_obj = os.path.join(obj_dir, "captureengine", "screenshot_encoding.test.o").replace("\\", "/")
-    compile_tasks.append((test_cflags + STRICT_FP_FLAGS, screenshot_encoding_src, screenshot_encoding_obj))
+    compile_tasks.append((test_cflags + strict_fp_flags, screenshot_encoding_src, screenshot_encoding_obj))
 
     pseudo_overlay_src = os.path.join(PROJECT_ROOT, "captureengine", "pseudo_overlay.cpp")
     pseudo_overlay_obj = os.path.join(obj_dir, "captureengine", "pseudo_overlay.test.o").replace("\\", "/")
@@ -4686,6 +4727,10 @@ def run_python_tool_self_tests(env):
         (
             "build_flag_policy",
             [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_build_flags.py")],
+        ),
+        (
+            "pe_hardening_policy",
+            [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_pe_hardening.py")],
         ),
         (
             "analyze_av_sync_stimulus",
@@ -5179,7 +5224,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     # x64 test apps intentionally exercise injection into an effectively
     # CFG-instrumented process. Only the broken i686 CRT/load-config path is
     # exempted below.
-    cflags = make_cpp_cflags(TESTAPP_OPT_FLAGS_X64)
+    cflags = make_cpp_cflags(TESTAPP_OPT_FLAGS_X64, compiler_exe=clang_exe)
 
     testapp_src_dir = os.path.join(PROJECT_ROOT, "testapp")
     testapp_bin_dir = TESTAPP_BIN_DIR
@@ -5212,6 +5257,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         f
         for f in make_cpp_cflags(
             TESTAPP_OPT_FLAGS_X86,
+            compiler_exe=clang_exe_x86,
             arch_flags=x86_arch_flags,
             suppress_microsoft_exception_spec=True,
             enable_cfg=False,
@@ -5269,9 +5315,9 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     def make_cmd(compiler, flags, source, linker_flags, output, *, arch="x64"):
         effective_linker_flags = list(linker_flags) + list(LD_OPT_FLAGS)
         if arch == "x64":
-            effective_linker_flags.extend(LD_OPT_FLAGS_X64)
+            effective_linker_flags.extend(get_x64_linker_flags(compiler))
         else:
-            effective_linker_flags.extend(TESTAPP_X86_CFG_LINK_FLAGS)
+            effective_linker_flags.extend(get_x86_testapp_cfg_link_flags(compiler))
         append_windows_pdb_linker_flag(effective_linker_flags, output)
         return [compiler] + flags + [source] + effective_linker_flags + ["-o", output]
 
@@ -5857,6 +5903,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     hook_cflags = (
         make_cpp_cflags(
             hook_opt_flags,
+            compiler_exe=clang_exe,
             suppress_microsoft_exception_spec=True,
             enable_cfg=arch == "x64",
         )
@@ -5956,7 +6003,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     if arch == "x86" and IS_LINUX:
         ldflags.append("-Wl,--allow-multiple-definition")
     if arch == "x64":
-        ldflags.extend(LD_OPT_FLAGS_X64)  # High-entropy ASLR (x64 only)
+        ldflags.extend(get_x64_linker_flags(clang_exe))  # High-entropy ASLR and supported CFG
     if arch == "x86":
         ldflags.append("-Wl,--kill-at")
         if not IS_LINUX:
@@ -6083,7 +6130,16 @@ def compile_project(
         sys.exit(1)
     pkg_config = shutil.which("pkg-config") if IS_LINUX else os.path.join(clang_bin, "pkg-config.exe")
 
-    cflags = make_cpp_cflags(OPT_FLAGS_X64, production_build=env.get("CE_PRODUCTION_BUILD") == "1")
+    cflags = make_cpp_cflags(
+        OPT_FLAGS_X64,
+        compiler_exe=clang_exe,
+        production_build=env.get("CE_PRODUCTION_BUILD") == "1",
+    )
+    if not compiler_supports_windows_cfg(clang_exe):
+        log(
+            "Linux MinGW GCC does not support Windows CFG; retaining CET, stack protection, fortify, "
+            "ASLR, NX, high-entropy VA, and W^X verification"
+        )
 
     if tests_only:
         log("Tests-only mode: building only unit test dependencies/executable")
@@ -6133,7 +6189,11 @@ def compile_project(
         curr_pkg_config = shutil.which("pkg-config") if IS_LINUX else os.path.join(curr_clang_bin, "pkg-config.exe")
 
         if arch == "x64":
-            curr_cflags = make_cpp_cflags(OPT_FLAGS_X64, suppress_microsoft_exception_spec=True)
+            curr_cflags = make_cpp_cflags(
+                OPT_FLAGS_X64,
+                compiler_exe=curr_clang_exe,
+                suppress_microsoft_exception_spec=True,
+            )
         else:  # x86
             x86_arch_flags = []
             if not IS_LINUX:
@@ -6145,6 +6205,7 @@ def compile_project(
                 ]
             curr_cflags = make_cpp_cflags(
                 OPT_FLAGS_X86,
+                compiler_exe=curr_clang_exe,
                 arch_flags=x86_arch_flags,
                 suppress_microsoft_exception_spec=True,
                 enable_cfg=False,
@@ -6268,7 +6329,7 @@ def compile_project(
         if arch == "x86" and IS_LINUX:
             ldflags_hook.append("-Wl,--allow-multiple-definition")
         if arch == "x64":
-            ldflags_hook.extend(LD_OPT_FLAGS_X64)  # High-entropy ASLR (x64 only)
+            ldflags_hook.extend(get_x64_linker_flags(curr_clang_exe))
 
         # LLD linker - use on Windows MSYS2, fallback to default on Linux
         if not IS_LINUX:
@@ -6291,10 +6352,15 @@ def compile_project(
         # Hook DLL must use conservative arch flags (injected into game processes
         # with unknown CPU support). Replace curr_cflags march/ffast-math flags.
         if arch == "x64":
-            hook_base_cflags = make_cpp_cflags(HOOK_OPT_FLAGS_X64, suppress_microsoft_exception_spec=True)
+            hook_base_cflags = make_cpp_cflags(
+                HOOK_OPT_FLAGS_X64,
+                compiler_exe=curr_clang_exe,
+                suppress_microsoft_exception_spec=True,
+            )
         else:
             hook_base_cflags = make_cpp_cflags(
                 HOOK_OPT_FLAGS_X86,
+                compiler_exe=curr_clang_exe,
                 arch_flags=(
                     [
                         "--target=i686-w64-mingw32",
@@ -6462,7 +6528,7 @@ def compile_project(
                     "-lgdi32",
                 ]
                 me_ldflags.extend(LD_OPT_FLAGS)
-                me_ldflags.extend(LD_OPT_FLAGS_X64)
+                me_ldflags.extend(get_x64_linker_flags(curr_clang_exe))
                 if curr_env.get("CE_DISABLE_LTO") != "1":
                     # LTO disabled for mediaengine: on MinGW/clang, LTO can strip
                     # exception handling tables needed for D3D11 SEH exception catching
@@ -6492,7 +6558,12 @@ def compile_project(
                         src_obj_pairs.append((src, obj))
                     me_objs.append(obj)
                 parallel_compile(curr_env, curr_clang_exe, me_cflags, src_obj_pairs)
-                parallel_compile(curr_env, curr_clang_exe, me_cflags + STRICT_FP_FLAGS, strict_fp_src_obj_pairs)
+                parallel_compile(
+                    curr_env,
+                    curr_clang_exe,
+                    me_cflags + get_strict_fp_flags(curr_clang_exe),
+                    strict_fp_src_obj_pairs,
+                )
 
                 log("Linking MediaEngine x64...")
                 temp_me_dll = os.path.join(curr_obj_dir, "mediaengine.tmp.dll")
@@ -6571,7 +6642,12 @@ def compile_project(
                 src_obj_pairs.append((src, obj))
             ce_objs.append(obj)
         parallel_compile(env, clang_exe, cflags + ce_ffmpeg_cflags, src_obj_pairs)
-        parallel_compile(env, clang_exe, cflags + ce_ffmpeg_cflags + STRICT_FP_FLAGS, strict_fp_src_obj_pairs)
+        parallel_compile(
+            env,
+            clang_exe,
+            cflags + ce_ffmpeg_cflags + get_strict_fp_flags(clang_exe),
+            strict_fp_src_obj_pairs,
+        )
 
         # Resource file
         rc_file = os.path.join(PROJECT_ROOT, "captureengine", "captureengine.rc")
@@ -6592,7 +6668,7 @@ def compile_project(
             "-static-libstdc++",
         ]
         ce_ldflags.extend(LD_OPT_FLAGS)
-        ce_ldflags.extend(LD_OPT_FLAGS_X64)
+        ce_ldflags.extend(get_x64_linker_flags(clang_exe))
         ce_ldflags.extend(
             [
                 "-ld3d11",
@@ -6701,6 +6777,7 @@ def compile_project(
             if x86_clang and (IS_LINUX or os.path.exists(x86_clang)):
                 x86_cflags = make_cpp_cflags(
                     ["-O3"],
+                    compiler_exe=x86_clang,
                     arch_flags=(
                         []
                         if IS_LINUX
@@ -6742,7 +6819,17 @@ def compile_project(
         copy_test_runtime_dlls(tests_dir)
 
     pe_hardening_verifier = os.path.join(PROJECT_ROOT, "tools", "verify_pe_hardening.py")
-    llvm_readobj = os.path.join(MSYS2_DIR, "clang64", "bin", "llvm-readobj.exe")
+    llvm_readobj = get_llvm_readobj_exe()
+    pe_verifier_host_flags: List[str] = []
+    if not compiler_supports_windows_cfg(clang_exe):
+        # Debian/Ubuntu MinGW GCC cannot emit Clang/LLD's Windows CFG metadata.
+        # Defer only CFG while retaining every other PE mitigation and import
+        # check for both first-party binaries and the packaged runtime closure.
+        pe_verifier_host_flags.append("--allow-missing-x64-cfg")
+    if not IS_WINDOWS:
+        # Linux cross-builds retain DWARF in the PE images instead of producing
+        # native CodeView/PDB sidecars.
+        pe_verifier_host_flags.append("--allow-missing-pdb")
     pe_verifier_command = [
         sys.executable,
         pe_hardening_verifier,
@@ -6754,7 +6841,7 @@ def compile_project(
         # but cannot populate their target tables. Keep all other x86 PE checks
         # active while effective x86 CFG is deferred.
         "--allow-missing-x86-cfg",
-    ]
+    ] + pe_verifier_host_flags
     if env.get("CE_SANITIZE") == "1":
         # The sanitizer pass intentionally produces only x64 developer artifacts.
         # Ignore stale x86 outputs from the preceding product build and recognize
@@ -6786,7 +6873,8 @@ def compile_project(
                     testapp_root,
                     "--executables-only",
                     "--allow-missing-x86-cfg",
-                ],
+                ]
+                + pe_verifier_host_flags,
                 cwd=PROJECT_ROOT,
                 env=env,
             )
