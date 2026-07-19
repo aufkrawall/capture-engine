@@ -499,6 +499,31 @@ TEST(LegacyOverlayCacheTest, OpenGL21PrefersArraysAndRetainsImmediateFallback) {
     EXPECT_EQ(SelectLegacyGLDrawPath(true, true, false), LegacyGLDrawPath::Immediate);
 }
 
+TEST(OverlayHdrSourceTest, DirectXAndVulkanApplyTheSameRec709ToRec2020Transform) {
+    const std::string hlsl = ReadOverlaySource("tools/compile_shaders.py");
+    const std::string textured = ReadOverlaySource("hook/vulkan_layer/shaders/overlay_textured.frag");
+    const std::string solid = ReadOverlaySource("hook/vulkan_layer/shaders/overlay_solid.frag");
+    const std::string matrixRow = "0.6274038959, 0.3292830384, 0.0433130657";
+    for (const auto* source : {&hlsl, &textured, &solid}) {
+        ASSERT_FALSE(source->empty());
+        EXPECT_NE(source->find(matrixRow), std::string::npos);
+        EXPECT_NE(source->find("Rec2020"), std::string::npos);
+        EXPECT_NE(source->find("10000.0"), std::string::npos);
+    }
+    EXPECT_EQ(CountOccurrences(hlsl, "Rec709ToRec2020(lin) * paperWhiteNits"), 3u);
+    EXPECT_NE(textured.find("rec709ToRec2020(lin) * pc.paperWhiteNits"), std::string::npos);
+    EXPECT_NE(solid.find("rec709ToRec2020(lin) * pc.paperWhiteNits"), std::string::npos);
+}
+
+TEST(OverlayHdrSourceTest, AutoPaperWhiteUsesWindowsPerMonitorCalibration) {
+    const std::string source = ReadOverlaySource("hook/common/overlay_adapter.cpp");
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL"), std::string::npos);
+    EXPECT_NE(source.find("80.0f / 1000.0f"), std::string::npos);
+    EXPECT_NE(source.find("resolvedHdrPaperWhiteNits = 203.0f"), std::string::npos);
+    EXPECT_NE(source.find("MonitorFromWindow(referenceHwnd, MONITOR_DEFAULTTONEAREST)"), std::string::npos);
+}
+
 TEST(LegacyOverlayBackendSourceTest, DX8AndDX9ReuseStateBlocksButCaptureAndApplyEveryDraw) {
     const std::string dx8 = ReadOverlaySource("hook/common/custom_overlay_dx8.cpp");
     const std::string dx9 = ReadOverlaySource("hook/common/custom_overlay_dx9.cpp");

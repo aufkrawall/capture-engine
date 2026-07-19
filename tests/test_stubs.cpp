@@ -10,6 +10,23 @@
 #include "../hook/apis/streamline_hook.h"
 #include "../hook/common/fg_runtime_state.h"
 #include "../hook/common/hook_common.h"
+#include "../hook/common/custom_overlay_vk.h"
+
+namespace CustomOverlay {
+VulkanBackend::VulkanBackend(VkDevice device, VkPhysicalDevice physDevice, VkQueue queue, uint32_t queueFamily)
+    : device(device), physicalDevice(physDevice), queue(queue), queueFamilyIndex(queueFamily) {}
+VulkanBackend::~VulkanBackend() = default;
+void VulkanBackend::SetDispatchTable(void* deviceTable, void* instanceTable) {
+    deviceDispatch = deviceTable;
+    instanceDispatch = instanceTable;
+}
+bool VulkanBackend::Initialize(int, int, const uint8_t*) {
+    return false;
+}
+void VulkanBackend::Shutdown() {}
+void VulkanBackend::Render(const std::vector<DrawVertex>&, const std::vector<uint16_t>&,
+                           const std::vector<DrawCommand>&, int, int) {}
+}  // namespace CustomOverlay
 
 // Stubs for dxgi_shared.cpp dependencies
 bool IsInWrapperPresent() {

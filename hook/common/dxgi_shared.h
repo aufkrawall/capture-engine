@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <mutex>
 
+#include "dxgi_presentation_color.h"
 #include "fg_runtime_state.h"
 
 // Forward declaration
@@ -161,6 +162,12 @@ void RepairVTableHooksIfNeeded();
 
 // Common helpers
 bool IsVulkanPrimary();
+void RecordSwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE colorSpace);
+bool QuerySwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE& colorSpace);
+ce::presentation_color::Encoding ResolveSwapChainPresentationEncoding(IDXGISwapChain* swapChain,
+                                                                      DXGI_FORMAT format,
+                                                                      DXGI_COLOR_SPACE_TYPE* trackedColorSpace = nullptr,
+                                                                      bool* hasTrackedColorSpace = nullptr);
 PerformanceMetrics* GetPerformanceMetrics();
 uint32_t GetLatestSourceFrameIndex();
 void SetLatestSourceFrameIndex(uint32_t frameIndex);

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <vector>
 #include "hook_common.h"
+#include "overlay_shader_spirv.h"
 
 // Include dispatch table structures from vulkan_layer.h
 // This is safe because the Vulkan layer build includes this file
@@ -17,6 +18,7 @@ namespace CustomOverlay {
 
 // SPIR-V shaders (compiled from hook/vulkan_layer/shaders/)
 // Vertex shader: transforms screen coords to NDC using push constants
+#if 0  // Historical embedded payloads; generated payloads below are authoritative.
 static const uint32_t g_VertexShaderSpv[] = {
     0x07230203, 0x00010000, 0x000d000b, 0x0000003d, 0x00000000, 0x00020011, 0x00000001, 0x0006000b, 0x00000001,
     0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001, 0x000b000f, 0x00000000,
@@ -281,6 +283,7 @@ static const uint32_t g_FragmentShaderSolidSpv[] = {
     0x00000076, 0x00000075, 0x0003003e, 0x00000074, 0x00000076, 0x00050039, 0x00000006, 0x00000077, 0x0000000d,
     0x00000074, 0x00060050, 0x0000000f, 0x00000078, 0x0000006f, 0x00000073, 0x00000077, 0x000200fe, 0x00000078,
     0x000200f8, 0x0000005d, 0x000100ff, 0x00010038};
+#endif
 
 VulkanBackend::VulkanBackend(VkDevice dev, VkPhysicalDevice physDev, VkQueue q, uint32_t queueFamily)
     : device(dev),

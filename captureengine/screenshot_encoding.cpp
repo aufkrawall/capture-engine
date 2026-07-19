@@ -103,10 +103,23 @@ ReservedCaptureOutput ReserveStagingOutput(const ReservedCaptureOutput& finalOut
                                           finalOutput.Path().stem().wstring() + L"_stage", L".part");
 }
 
+double LinearToSrgb(double value);
+uint8_t Quantize8(double value);
+float HalfToFloat(uint16_t half);
+
 bool ConvertSdrToTightBgra(const RawScreenshot& screenshot, std::vector<uint8_t>& bgra) {
     const auto format = static_cast<ScreenshotPixelFormat>(screenshot.header.pixelFormat);
-    if ((format != ScreenshotPixelFormat::BGRA8 && format != ScreenshotPixelFormat::RGBA8) ||
-        screenshot.header.colorEncoding != static_cast<uint32_t>(ScreenshotColorEncoding::SRGB)) {
+    const auto encoding = static_cast<ScreenshotColorEncoding>(screenshot.header.colorEncoding);
+    const bool isEightBitSrgb =
+        (format == ScreenshotPixelFormat::BGRA8 || format == ScreenshotPixelFormat::RGBA8) &&
+        encoding == ScreenshotColorEncoding::SRGB;
+    const bool isTenBitGamma22 =
+        format == ScreenshotPixelFormat::R10G10B10A2 && encoding == ScreenshotColorEncoding::BT709_G22;
+    const bool isTenBitSrgb =
+        format == ScreenshotPixelFormat::R10G10B10A2 && encoding == ScreenshotColorEncoding::SRGB;
+    const bool isLinearFp16Sdr =
+        format == ScreenshotPixelFormat::RGBA16F && encoding == ScreenshotColorEncoding::LinearScRGBSdr;
+    if (!isEightBitSrgb && !isTenBitGamma22 && !isTenBitSrgb && !isLinearFp16Sdr) {
         return false;
     }
     const uint64_t tightRowPitch = static_cast<uint64_t>(screenshot.header.width) * 4;
@@ -120,12 +133,36 @@ bool ConvertSdrToTightBgra(const RawScreenshot& screenshot, std::vector<uint8_t>
         uint8_t* destination = bgra.data() + static_cast<size_t>(y) * tightRowPitch;
         if (format == ScreenshotPixelFormat::BGRA8) {
             memcpy(destination, source, static_cast<size_t>(tightRowPitch));
-        } else {
+        } else if (format == ScreenshotPixelFormat::RGBA8) {
             for (uint32_t x = 0; x < screenshot.header.width; ++x) {
                 destination[x * 4 + 0] = source[x * 4 + 2];
                 destination[x * 4 + 1] = source[x * 4 + 1];
                 destination[x * 4 + 2] = source[x * 4 + 0];
                 destination[x * 4 + 3] = source[x * 4 + 3];
+            }
+        } else if (format == ScreenshotPixelFormat::R10G10B10A2) {
+            for (uint32_t x = 0; x < screenshot.header.width; ++x) {
+                uint32_t packed = 0;
+                memcpy(&packed, source + static_cast<size_t>(x) * 4, sizeof(packed));
+                const double red = static_cast<double>(packed & 0x3FFu) / 1023.0;
+                const double green = static_cast<double>((packed >> 10) & 0x3FFu) / 1023.0;
+                const double blue = static_cast<double>((packed >> 20) & 0x3FFu) / 1023.0;
+                destination[x * 4 + 0] =
+                    Quantize8(isTenBitGamma22 ? LinearToSrgb(std::pow(blue, 2.2)) : blue);
+                destination[x * 4 + 1] =
+                    Quantize8(isTenBitGamma22 ? LinearToSrgb(std::pow(green, 2.2)) : green);
+                destination[x * 4 + 2] =
+                    Quantize8(isTenBitGamma22 ? LinearToSrgb(std::pow(red, 2.2)) : red);
+                destination[x * 4 + 3] = 255;
+            }
+        } else {
+            for (uint32_t x = 0; x < screenshot.header.width; ++x) {
+                uint16_t components[4]{};
+                memcpy(components, source + static_cast<size_t>(x) * 8, sizeof(components));
+                destination[x * 4 + 0] = Quantize8(LinearToSrgb(HalfToFloat(components[2])));
+                destination[x * 4 + 1] = Quantize8(LinearToSrgb(HalfToFloat(components[1])));
+                destination[x * 4 + 2] = Quantize8(LinearToSrgb(HalfToFloat(components[0])));
+                destination[x * 4 + 3] = 255;
             }
         }
     }
@@ -621,9 +658,11 @@ bool IsValidFormatEncoding(ScreenshotPixelFormat format, ScreenshotColorEncoding
         case ScreenshotPixelFormat::RGBA8:
             return encoding == ScreenshotColorEncoding::SRGB;
         case ScreenshotPixelFormat::R10G10B10A2:
-            return encoding == ScreenshotColorEncoding::BT2020_PQ;
+            return encoding == ScreenshotColorEncoding::BT2020_PQ ||
+                   encoding == ScreenshotColorEncoding::BT709_G22 || encoding == ScreenshotColorEncoding::SRGB;
         case ScreenshotPixelFormat::RGBA16F:
-            return encoding == ScreenshotColorEncoding::LinearScRGB;
+            return encoding == ScreenshotColorEncoding::LinearScRGB ||
+                   encoding == ScreenshotColorEncoding::LinearScRGBSdr;
         default:
             return false;
     }
@@ -819,7 +858,11 @@ bool SaveRawScreenshot(const std::filesystem::path& outputDirectory, const RawSc
         return false;
     }
     const auto format = static_cast<ScreenshotPixelFormat>(screenshot.header.pixelFormat);
-    if (format == ScreenshotPixelFormat::BGRA8 || format == ScreenshotPixelFormat::RGBA8) {
+    const auto encoding = static_cast<ScreenshotColorEncoding>(screenshot.header.colorEncoding);
+    if (format == ScreenshotPixelFormat::BGRA8 || format == ScreenshotPixelFormat::RGBA8 ||
+        (format == ScreenshotPixelFormat::R10G10B10A2 &&
+         (encoding == ScreenshotColorEncoding::BT709_G22 || encoding == ScreenshotColorEncoding::SRGB)) ||
+        (format == ScreenshotPixelFormat::RGBA16F && encoding == ScreenshotColorEncoding::LinearScRGBSdr)) {
         ReservedCaptureOutput output = ReservedCaptureOutput::Reserve(outputDirectory, L"screenshot", L".png");
         if (output && SavePixelsAsPng(output, screenshot)) {
             publishedPath = output.Path();

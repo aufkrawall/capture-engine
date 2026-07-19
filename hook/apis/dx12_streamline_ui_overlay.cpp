@@ -137,6 +137,15 @@ public:
         return SameComObject(device.Get(), candidateDevice) && format == candidateFormat;
     }
 
+    void UpdateHdr(bool newHdr) {
+        if (hdr != newHdr) {
+            hdr = newHdr;
+            overlay.SetHDR(hdr, static_cast<int>(format));
+            HookLogImportant("DX12: Streamline UI bootstrap overlay HDR state changed (fmt=%d hdr=%d)",
+                             static_cast<int>(format), hdr ? 1 : 0);
+        }
+    }
+
     bool IsGpuComplete() const {
         if (!fence) {
             return true;
@@ -520,6 +529,8 @@ bool TryRecordBootstrap(const RecordRequest& request) {
             return false;
         }
         g_Renderer = std::move(renderer);
+    } else {
+        g_Renderer->UpdateHdr(request.hdr);
     }
 
     size_t slot = 0;

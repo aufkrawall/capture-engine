@@ -148,6 +148,7 @@ struct SwapchainData {
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
+    VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     VkExtent2D extent = {0, 0};
     uint32_t imageCount = 0;
     std::vector<VkImage> images;
@@ -319,14 +320,16 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateWin32SurfaceKHR(VkInstance instan
 }
 
 // Functional entry points defined in other files but needed by hooks
-void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent,
+void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
+                       VkExtent2D extent,
                        uint32_t imageCount, VkImage* images, HWND window);
 void CleanupOverlay(VkDevice device);
 bool RenderOverlay(VkDevice device, VkQueue queue, uint32_t imageIndex, const VkSemaphore* waitSemaphores,
                    uint32_t waitSemaphoreCount, VkSemaphore signalSemaphore, int32_t* fenceWaitUs = nullptr);
 VkSemaphore GetOverlaySemaphore(VkDevice device, uint32_t imageIndex);
 PerformanceMetrics* GetOverlayPerformanceMetrics(VkDevice device);
-void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent,
+void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
+                       VkExtent2D extent,
                        uint32_t imageCount);
 void NoteCaptureSwapchainImagePresented(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex);
 void RetireCaptureSwapchain(VkDevice device, VkSwapchainKHR swapchain);
@@ -336,5 +339,6 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
 VkSemaphore GetCaptureSemaphore(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageIndex);
 
 bool TakeVulkanScreenshot(struct DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage, uint32_t width,
-                          uint32_t height, VkFormat format, const VkSemaphore* waitSemaphores,
+                          uint32_t height, VkFormat format, VkColorSpaceKHR colorSpace,
+                          const VkSemaphore* waitSemaphores,
                           uint32_t waitSemaphoreCount, SharedMemoryLayout* sharedMemory, uint64_t requestId);

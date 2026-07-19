@@ -90,7 +90,8 @@ bool IsFormatEncodingPairValid(ScreenshotPixelFormat format, ScreenshotColorEnco
         case ScreenshotPixelFormat::RGBA8:
             return encoding == ScreenshotColorEncoding::SRGB;
         case ScreenshotPixelFormat::R10G10B10A2:
-            return encoding == ScreenshotColorEncoding::BT2020_PQ;
+            return encoding == ScreenshotColorEncoding::BT2020_PQ ||
+                   encoding == ScreenshotColorEncoding::BT709_G22 || encoding == ScreenshotColorEncoding::SRGB;
         case ScreenshotPixelFormat::RGBA16F:
             return encoding == ScreenshotColorEncoding::LinearScRGB;
         default:
@@ -281,26 +282,40 @@ bool EnqueueOnWorker(ScreenshotTask&& task) {
     return g_worker->Enqueue(std::move(task));
 }
 
-bool GetD3D11PixelDescription(DXGI_FORMAT format, ScreenshotPixelFormat& pixelFormat,
+bool GetD3D11PixelDescription(DXGI_FORMAT format, ce::presentation_color::Encoding presentationEncoding,
+                              ScreenshotPixelFormat& pixelFormat,
                               ScreenshotColorEncoding& colorEncoding) {
     switch (format) {
         case DXGI_FORMAT_B8G8R8A8_UNORM:
         case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
         case DXGI_FORMAT_B8G8R8X8_UNORM:
         case DXGI_FORMAT_B8G8R8X8_UNORM_SRGB:
+            if (presentationEncoding != ce::presentation_color::Encoding::Sdr709)
+                return false;
             pixelFormat = ScreenshotPixelFormat::BGRA8;
             colorEncoding = ScreenshotColorEncoding::SRGB;
             return true;
         case DXGI_FORMAT_R8G8B8A8_UNORM:
         case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+            if (presentationEncoding != ce::presentation_color::Encoding::Sdr709)
+                return false;
             pixelFormat = ScreenshotPixelFormat::RGBA8;
             colorEncoding = ScreenshotColorEncoding::SRGB;
             return true;
         case DXGI_FORMAT_R10G10B10A2_UNORM:
             pixelFormat = ScreenshotPixelFormat::R10G10B10A2;
-            colorEncoding = ScreenshotColorEncoding::BT2020_PQ;
-            return true;
+            if (presentationEncoding == ce::presentation_color::Encoding::Hdr10Pq) {
+                colorEncoding = ScreenshotColorEncoding::BT2020_PQ;
+                return true;
+            }
+            if (presentationEncoding == ce::presentation_color::Encoding::Sdr709) {
+                colorEncoding = ScreenshotColorEncoding::BT709_G22;
+                return true;
+            }
+            return false;
         case DXGI_FORMAT_R16G16B16A16_FLOAT:
+            if (presentationEncoding != ce::presentation_color::Encoding::LinearScRgb)
+                return false;
             pixelFormat = ScreenshotPixelFormat::RGBA16F;
             colorEncoding = ScreenshotColorEncoding::LinearScRGB;
             return true;
@@ -398,7 +413,8 @@ bool QueueScreenshotPixels(SharedMemoryLayout* sharedMemory, uint64_t requestId,
 }
 
 bool SaveD3D11TextureAsScreenshotRaw(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* texture,
-                                     SharedMemoryLayout* sharedMemory, uint64_t requestId) {
+                                     SharedMemoryLayout* sharedMemory, uint64_t requestId,
+                                     ce::presentation_color::Encoding presentationEncoding) {
     if (!device || !context || !texture || !sharedMemory || requestId == 0)
         return false;
 
@@ -406,8 +422,9 @@ bool SaveD3D11TextureAsScreenshotRaw(ID3D11Device* device, ID3D11DeviceContext* 
     texture->GetDesc(&sourceDesc);
     ScreenshotPixelFormat pixelFormat{};
     ScreenshotColorEncoding colorEncoding{};
-    if (!GetD3D11PixelDescription(sourceDesc.Format, pixelFormat, colorEncoding)) {
-        HookLog("[Screenshot] Unsupported D3D11 format: %u", static_cast<unsigned>(sourceDesc.Format));
+    if (!GetD3D11PixelDescription(sourceDesc.Format, presentationEncoding, pixelFormat, colorEncoding)) {
+        HookLog("[Screenshot] Unsupported D3D11 presentation contract: format=%u encoding=%s",
+                static_cast<unsigned>(sourceDesc.Format), ce::presentation_color::Describe(presentationEncoding));
         return false;
     }
 
@@ -464,7 +481,8 @@ bool SaveD3D11TextureAsScreenshotRaw(ID3D11Device* device, ID3D11DeviceContext* 
 }
 
 bool SaveDX12TextureAsScreenshotRaw(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* backBuffer,
-                                    SharedMemoryLayout* sharedMemory, uint64_t requestId) {
+                                    SharedMemoryLayout* sharedMemory, uint64_t requestId,
+                                    ce::presentation_color::Encoding presentationEncoding) {
     if (!device || !queue || !backBuffer || !sharedMemory || requestId == 0)
         return false;
 
@@ -473,8 +491,9 @@ bool SaveDX12TextureAsScreenshotRaw(ID3D12Device* device, ID3D12CommandQueue* qu
         return false;
     ScreenshotPixelFormat pixelFormat{};
     ScreenshotColorEncoding colorEncoding{};
-    if (!GetD3D11PixelDescription(sourceDesc.Format, pixelFormat, colorEncoding)) {
-        HookLog("[Screenshot] Unsupported D3D12 format: %u", static_cast<unsigned>(sourceDesc.Format));
+    if (!GetD3D11PixelDescription(sourceDesc.Format, presentationEncoding, pixelFormat, colorEncoding)) {
+        HookLog("[Screenshot] Unsupported D3D12 presentation contract: format=%u encoding=%s",
+                static_cast<unsigned>(sourceDesc.Format), ce::presentation_color::Describe(presentationEncoding));
         return false;
     }
 

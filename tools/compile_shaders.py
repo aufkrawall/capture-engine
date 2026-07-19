@@ -105,15 +105,21 @@ float SRGBToLinear(float s) {
     return (s <= 0.04045) ? (s / 12.92) : pow((s + 0.055) / 1.055, 2.4);
 }
 float LinearToPQ(float L) {
-    float Lp = pow(L / 10000.0, 0.1593017578125);
+    float Lp = pow(clamp(L, 0.0, 10000.0) / 10000.0, 0.1593017578125);
     return pow((0.8359375 + 18.8515625 * Lp) / (1.0 + 18.6875 * Lp), 78.84375);
+}
+float3 Rec709ToRec2020(float3 color) {
+    return mul(float3x3(
+        0.6274038959, 0.3292830384, 0.0433130657,
+        0.0690972894, 0.9195403951, 0.0113623155,
+        0.0163914389, 0.0880133079, 0.8955952532), color);
 }
 float3 ApplyHDR(float3 srgb) {
     float3 lin = float3(SRGBToLinear(srgb.r), SRGBToLinear(srgb.g), SRGBToLinear(srgb.b));
     if (hdrMode < 1.5) {
         return lin * (paperWhiteNits / 80.0);
     } else {
-        float3 nits = lin * paperWhiteNits;
+        float3 nits = Rec709ToRec2020(lin) * paperWhiteNits;
         return float3(LinearToPQ(nits.r), LinearToPQ(nits.g), LinearToPQ(nits.b));
     }
 }
@@ -161,15 +167,21 @@ float SRGBToLinear(float s) {
     return (s <= 0.04045) ? (s / 12.92) : pow((s + 0.055) / 1.055, 2.4);
 }
 float LinearToPQ(float L) {
-    float Lp = pow(L / 10000.0, 0.1593017578125);
+    float Lp = pow(clamp(L, 0.0, 10000.0) / 10000.0, 0.1593017578125);
     return pow((0.8359375 + 18.8515625 * Lp) / (1.0 + 18.6875 * Lp), 78.84375);
+}
+float3 Rec709ToRec2020(float3 color) {
+    return mul(float3x3(
+        0.6274038959, 0.3292830384, 0.0433130657,
+        0.0690972894, 0.9195403951, 0.0113623155,
+        0.0163914389, 0.0880133079, 0.8955952532), color);
 }
 float3 ApplyHDR(float3 srgb) {
     float3 lin = float3(SRGBToLinear(srgb.r), SRGBToLinear(srgb.g), SRGBToLinear(srgb.b));
     if (hdrMode < 1.5) {
         return lin * (paperWhiteNits / 80.0);
     } else {
-        float3 nits = lin * paperWhiteNits;
+        float3 nits = Rec709ToRec2020(lin) * paperWhiteNits;
         return float3(LinearToPQ(nits.r), LinearToPQ(nits.g), LinearToPQ(nits.b));
     }
 }
@@ -208,15 +220,21 @@ float SRGBToLinear(float s) {
     return (s <= 0.04045) ? (s / 12.92) : pow((s + 0.055) / 1.055, 2.4);
 }
 float LinearToPQ(float L) {
-    float Lp = pow(L / 10000.0, 0.1593017578125);
+    float Lp = pow(clamp(L, 0.0, 10000.0) / 10000.0, 0.1593017578125);
     return pow((0.8359375 + 18.8515625 * Lp) / (1.0 + 18.6875 * Lp), 78.84375);
+}
+float3 Rec709ToRec2020(float3 color) {
+    return mul(float3x3(
+        0.6274038959, 0.3292830384, 0.0433130657,
+        0.0690972894, 0.9195403951, 0.0113623155,
+        0.0163914389, 0.0880133079, 0.8955952532), color);
 }
 float3 ApplyHDR(float3 srgb) {
     float3 lin = float3(SRGBToLinear(srgb.r), SRGBToLinear(srgb.g), SRGBToLinear(srgb.b));
     if (hdrMode < 1.5) {
         return lin * (paperWhiteNits / 80.0);
     } else {
-        float3 nits = lin * paperWhiteNits;
+        float3 nits = Rec709ToRec2020(lin) * paperWhiteNits;
         return float3(LinearToPQ(nits.r), LinearToPQ(nits.g), LinearToPQ(nits.b));
     }
 }
@@ -319,7 +337,7 @@ def main():
     # Write output
     out_path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                            "hook", "common", "overlay_shader_bytecode.h")
-    with open(out_path, "w") as f:
+    with open(out_path, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(output))
 
     print(f"Written to {out_path}", file=sys.stderr)

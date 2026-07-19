@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "../../common/shared_defs.h"
+#include "presentation_color.h"
 
 struct ID3D11Device;
 struct ID3D11DeviceContext;
@@ -21,9 +22,11 @@ bool QueueScreenshotPixels(SharedMemoryLayout* sharedMemory, uint64_t requestId,
                            ScreenshotColorEncoding colorEncoding);
 
 bool SaveD3D11TextureAsScreenshotRaw(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* texture,
-                                     SharedMemoryLayout* sharedMemory, uint64_t requestId);
+                                     SharedMemoryLayout* sharedMemory, uint64_t requestId,
+                                     ce::presentation_color::Encoding presentationEncoding);
 
 bool SaveDX12TextureAsScreenshotRaw(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* backBuffer,
-                                    SharedMemoryLayout* sharedMemory, uint64_t requestId);
+                                    SharedMemoryLayout* sharedMemory, uint64_t requestId,
+                                    ce::presentation_color::Encoding presentationEncoding);
 
 void ShutdownScreenshotWorker();

@@ -3315,8 +3315,7 @@ bool TryRecordOfficialUiResourceTag(const void* frameToken, const slResourceTag&
         tag.extent.height != 0 ? tag.extent.height : (tag.resource->height != 0 ? tag.resource->height : desc.Height);
     const DXGI_FORMAT format =
         tag.resource->nativeFormat != 0 ? static_cast<DXGI_FORMAT>(tag.resource->nativeFormat) : desc.Format;
-    const bool hdr = format == DXGI_FORMAT_R10G10B10A2_UNORM || format == DXGI_FORMAT_R10G10B10A2_TYPELESS ||
-                     format == DXGI_FORMAT_R16G16B16A16_FLOAT || format == DXGI_FORMAT_R16G16B16A16_TYPELESS;
+    const bool hdr = DX12_ResolveRuntimeOwnedOverlayTargetHDRState(format);
     ID3D12CommandQueue* initializationQueue = DX12_AcquireOriginalGameQueueForOverlay();
     if (!initializationQueue) {
         return false;

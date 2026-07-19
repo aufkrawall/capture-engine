@@ -29,9 +29,11 @@
 #endif
 #include "custom_overlay_vk.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <vector>
 
 // Global adapter instance
 OverlayAdapter g_OverlayAdapter;
@@ -110,6 +112,65 @@ std::string FormatEncoderOverloadLabel(uint32_t sustainFpsX100, uint32_t targetF
 // of the Windows scale.
 static std::atomic<HWND> g_SharedOverlayDpiHwnd{nullptr};
 
+static HWND ResolveOverlayReferenceHwnd(HWND targetHwnd) {
+    HWND resolved = targetHwnd;
+    if (!IsWindow(resolved))
+        resolved = g_SharedOverlayDpiHwnd.load(std::memory_order_acquire);
+    if (!IsWindow(resolved))
+        resolved = GetForegroundWindow();
+    if (!IsWindow(resolved))
+        resolved = GetDesktopWindow();
+    return resolved;
+}
+
+static bool QueryWindowsSdrWhiteNits(HMONITOR monitor, float& nits, ULONG& rawLevel) {
+    if (!monitor)
+        return false;
+    MONITORINFOEXW monitorInfo{};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    if (!GetMonitorInfoW(monitor, &monitorInfo))
+        return false;
+
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        UINT32 pathCount = 0;
+        UINT32 modeCount = 0;
+        LONG result = GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &pathCount, &modeCount);
+        if (result != ERROR_SUCCESS || pathCount == 0)
+            return false;
+        std::vector<DISPLAYCONFIG_PATH_INFO> paths(pathCount);
+        std::vector<DISPLAYCONFIG_MODE_INFO> modes(modeCount);
+        result = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &pathCount, paths.data(), &modeCount, modes.data(), nullptr);
+        if (result == ERROR_INSUFFICIENT_BUFFER)
+            continue;
+        if (result != ERROR_SUCCESS)
+            return false;
+        paths.resize(pathCount);
+        for (const DISPLAYCONFIG_PATH_INFO& path : paths) {
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME sourceName{};
+            sourceName.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+            sourceName.header.size = sizeof(sourceName);
+            sourceName.header.adapterId = path.sourceInfo.adapterId;
+            sourceName.header.id = path.sourceInfo.id;
+            if (DisplayConfigGetDeviceInfo(&sourceName.header) != ERROR_SUCCESS ||
+                lstrcmpiW(sourceName.viewGdiDeviceName, monitorInfo.szDevice) != 0) {
+                continue;
+            }
+            DISPLAYCONFIG_SDR_WHITE_LEVEL whiteLevel{};
+            whiteLevel.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SDR_WHITE_LEVEL;
+            whiteLevel.header.size = sizeof(whiteLevel);
+            whiteLevel.header.adapterId = path.targetInfo.adapterId;
+            whiteLevel.header.id = path.targetInfo.id;
+            if (DisplayConfigGetDeviceInfo(&whiteLevel.header) != ERROR_SUCCESS || whiteLevel.SDRWhiteLevel == 0)
+                return false;
+            rawLevel = whiteLevel.SDRWhiteLevel;
+            nits = std::clamp(static_cast<float>(rawLevel) * (80.0f / 1000.0f), 80.0f, 1000.0f);
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
 void OverlayAdapter::RememberDpiReferenceHwnd(void* hwnd) {
     HWND h = reinterpret_cast<HWND>(hwnd);
     if (IsWindow(h)) {
@@ -118,19 +179,9 @@ void OverlayAdapter::RememberDpiReferenceHwnd(void* hwnd) {
 }
 
 static float GetWindowsDpiScale(HWND targetHwnd) {
-    // Prefer the target game window if available.
-    HWND hwnd = targetHwnd;
-    if (!IsWindow(hwnd)) {
-        // Fall back to a real game window seen by another adapter before the foreground window — the
-        // foreground can be a non-game / pre-DPI-aware window during startup (yields 96 DPI = 1.0).
-        hwnd = g_SharedOverlayDpiHwnd.load(std::memory_order_acquire);
-    }
-    if (!IsWindow(hwnd)) {
-        hwnd = GetForegroundWindow();
-    }
-    if (!IsWindow(hwnd)) {
-        hwnd = GetDesktopWindow();
-    }
+    // Prefer the target game window. Adapters without one reuse a known game
+    // window before falling back to foreground/desktop state.
+    HWND hwnd = ResolveOverlayReferenceHwnd(targetHwnd);
 
     ScopedThreadDpiAwareness dpiAwarenessScope;
 
@@ -283,6 +334,8 @@ void OverlayAdapter::ResetStateLocked() {
     lastEncoderOverloadTick = 0;
     lastRecordingWarningKind = ce::capture_policy::kOverlayWarningNone;
     layoutDirty = true;
+    hdrPaperWhiteMonitor = nullptr;
+    resolvedHdrPaperWhiteNits = 203.0f;
     memset(&lastRenderedConfig, 0, sizeof(lastRenderedConfig));
 }
 
@@ -658,8 +711,25 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     // Pass HDR params to backend for shader constants
     if (backend) {
         float paperWhite = cfg.hdrPaperWhite;
-        if (paperWhite <= 0.0f)
-            paperWhite = 200.0f;  // Default paper white nits
+        if (paperWhite <= 0.0f) {
+            const HWND referenceHwnd = ResolveOverlayReferenceHwnd(reinterpret_cast<HWND>(hwnd));
+            HMONITOR monitor = MonitorFromWindow(referenceHwnd, MONITOR_DEFAULTTONEAREST);
+            if (monitor != reinterpret_cast<HMONITOR>(hdrPaperWhiteMonitor)) {
+                ULONG rawLevel = 0;
+                float queriedNits = 0.0f;
+                if (QueryWindowsSdrWhiteNits(monitor, queriedNits, rawLevel)) {
+                    resolvedHdrPaperWhiteNits = queriedNits;
+                    HookLogImportant("[Overlay] Windows SDR white: monitor=%p raw=%lu nits=%.1f", monitor,
+                                     static_cast<unsigned long>(rawLevel), resolvedHdrPaperWhiteNits);
+                } else {
+                    resolvedHdrPaperWhiteNits = 203.0f;
+                    HookLogImportant("[Overlay] Windows SDR white unavailable for monitor=%p; using %.1f nits",
+                                     monitor, resolvedHdrPaperWhiteNits);
+                }
+                hdrPaperWhiteMonitor = monitor;
+            }
+            paperWhite = resolvedHdrPaperWhiteNits;
+        }
         int mode = 0;             // SDR
         if (isHDR) {
             // Detect HDR10/PQ (R10G10B10A2) vs scRGB (FP16) from render target format

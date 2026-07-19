@@ -236,6 +236,8 @@ enum class ScreenshotColorEncoding : uint32_t {
     SRGB = 1,
     BT2020_PQ = 2,
     LinearScRGB = 3,
+    BT709_G22 = 4,
+    LinearScRGBSdr = 5,
 };
 
 #pragma pack(push, 1)

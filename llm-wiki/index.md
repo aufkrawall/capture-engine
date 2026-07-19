@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-19 (live-validated driver-independent Windows-HDR FP16 scRGB-to-P010 and Windows-SDR-white-calibrated HDR-to-SDR video, native-HDR/forced-SDR screenshot policy plus split-device readback, Linux/Windows compiler-, hook/test-app D3D12-header-, intrinsic-declaration-, build-host-tool-, FG-SDK-header-, and Vulkan-stage-specific compatibility plus PE verification, source-relative screen-capture and target-relative app-latency analyzer attribution, immutable recording-scoped media logs/manifests, analyzer multi-recording selection and legacy evidence-deficit detection, limited-query retained process identity, exact ABI 37 non-inject WGC/DXGI sensor attribution, Explorer tray recovery, current capture-sync/CFR variable-cadence behavior, exact build isolation, and the existing current graphics/audio/security state; see screenshots.md, build.py.md, cfr-capture-sync.md, regression-testing-and-logging.md, wgc-capture.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-19 (presentation-contract-aware inject HDR/SDR video, screenshots, and overlay rendering; HDR10 Rec.709-to-Rec.2020 overlay conversion and Windows SDR-white calibration; live-validated driver-independent Windows-HDR FP16 scRGB-to-P010 and Windows-SDR-white-calibrated HDR-to-SDR video; native-HDR/forced-SDR screenshot policy plus split-device readback; and the existing current build/graphics/audio/security state; see overlay-rendering.md, screenshots.md, wgc-capture.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -33,7 +33,7 @@ Primary sources:
 - `configuration.md`
   - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, unlimited named application profiles with separate video-source and DLL-injection policies, window/audio/DesktopOverlay/override routing, validation rules, and maintenance invariants. Last verified 2026-07-19.
 - `overlay-rendering.md`
-  - Shared overlay layout/graph/font invariants, instant amber recording-start intent and live-state handoff, exact-ABI and sanity-checked telemetry, legacy DX8/DX9/DX10/OpenGL cache/state isolation, DirectDraw performance boundary, and runtime-validation stale-risk. Last verified 2026-07-18.
+  - Shared overlay layout/graph/font invariants, DXGI/Vulkan presentation-color contracts, HDR10 gamut/transfer and per-monitor paper-white rules, runtime-owned FG UI transitions, exact-ABI telemetry, legacy cache/state isolation, DirectDraw/PQ-alpha performance boundaries, and runtime-validation stale-risk. Last verified 2026-07-19.
 - `handoff-dx12-32bit-crash.md`
   - Fixed-state pickup note for the 32-bit DX12 inject-overlay crash/freeze: proven font-resource trigger, unconfirmed NVIDIA/WoW64 attribution, solid glyph-span text fix, runtime validation boundary, invariants, and source anchors. Last verified 2026-07-16.
 - `current.md`
@@ -43,7 +43,7 @@ Primary sources:
 - `build.py.md`
   - Supported `build.py` flags, Windows Clang/Linux MinGW GCC hardening and strict-FP selection, older-MinGW hook/test-app D3D12-header and intrinsic-declaration compatibility, host-native PE/shader-tool/debug-info verification, cross-host FG SDK header preparation, fail-closed required x64 Vulkan stages and duplicate-object protection, single-preparation sanitizer/product flow, current-database advisory lint, managed Python lint tools, summary/detail artifacts, validated object/link caches, deterministic non-LTO unit-test/test-app profiles with unchanged production LTO, incremental/resume/no-build workflow, isolated object variants, source-built dependency closure, scoped DLL-search policy, sanitizer/CPU policy, FFmpeg fingerprints, operational notes, and MinGW pitfalls. Last verified 2026-07-19.
 - `screenshots.md`
-  - Shared ABI 37 screenshot requests, native-HDR versus forced-SDR output policy, split-device WGC readback ownership, idle-inject fallback, raw payload v2, managed hook worker, strict payload validation, PNG/10-bit 4:4:4 AVIF encoding, color conversion, and atomic publication. Last verified 2026-07-19.
+  - Shared ABI 37 screenshot requests, presentation-contract-aware SDR-R10/scRGB/HDR10 classification, native-HDR versus forced-SDR output policy, split-device WGC readback ownership, managed hook worker, strict payload validation, PNG/10-bit 4:4:4 AVIF encoding, and atomic publication. Last verified 2026-07-19.
 - `process-ipc.md`
   - Restricted private child channels, accept-before-finalize disposable media stops, internal GUI launch-feedback suppression, Explorer tray recovery, exact shared-memory ABI publication/isolation, session log routing, shared-ring integrity, and malformed/incompatible-message rejection. Last verified 2026-07-18.
 - `repo-map.md`

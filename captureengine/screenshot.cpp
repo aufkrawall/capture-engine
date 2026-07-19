@@ -107,7 +107,7 @@ std::string WideToUtf8(const std::wstring& text) {
     return result;
 }
 
-bool CaptureD3D11Texture(ID3D11Texture2D* texture, RawScreenshot& screenshot) {
+bool CaptureD3D11Texture(ID3D11Texture2D* texture, bool isHdrPresentation, RawScreenshot& screenshot) {
     if (!texture)
         return false;
 
@@ -177,11 +177,13 @@ bool CaptureD3D11Texture(ID3D11Texture2D* texture, RawScreenshot& screenshot) {
             break;
         case DXGI_FORMAT_R10G10B10A2_UNORM:
             format = ScreenshotPixelFormat::R10G10B10A2;
-            encoding = ScreenshotColorEncoding::BT2020_PQ;
+            encoding = isHdrPresentation ? ScreenshotColorEncoding::BT2020_PQ
+                                         : ScreenshotColorEncoding::BT709_G22;
             break;
         case DXGI_FORMAT_R16G16B16A16_FLOAT:
             format = ScreenshotPixelFormat::RGBA16F;
-            encoding = ScreenshotColorEncoding::LinearScRGB;
+            encoding = isHdrPresentation ? ScreenshotColorEncoding::LinearScRGB
+                                         : ScreenshotColorEncoding::LinearScRGBSdr;
             break;
         default:
             return false;
@@ -204,9 +206,10 @@ bool CaptureD3D11Texture(ID3D11Texture2D* texture, RawScreenshot& screenshot) {
                                    mapped.RowPitch, format, encoding, screenshot);
         textureContext->Unmap(staging.get(), 0);
     }
-    LogInfo("[Screenshot] Texture-owned D3D11 readback: %ux%u format=%u keyed_mutex=%s result=%s",
+    LogInfo("[Screenshot] Texture-owned D3D11 readback: %ux%u format=%u hdr=%s keyed_mutex=%s result=%s",
             description.Width, description.Height, static_cast<unsigned>(description.Format),
-            keyedMutex.mutex ? "acquired" : "none", copied ? "ok" : "failed");
+            isHdrPresentation ? "yes" : "no", keyedMutex.mutex ? "acquired" : "none",
+            copied ? "ok" : "failed");
     return copied;
 }
 
@@ -404,7 +407,7 @@ bool TryWgcScreenshot(RawScreenshot& screenshot) {
         if (event && WaitForSingleObject(event, 2000) == WAIT_OBJECT_0) {
             WGCCapturedFrame frame;
             if (wgc.GetNextFrame(frame) && frame.texture) {
-                captured = CaptureD3D11Texture(frame.texture, screenshot);
+                captured = CaptureD3D11Texture(frame.texture, frame.isHDR, screenshot);
                 frame.texture->Release();
             }
         }

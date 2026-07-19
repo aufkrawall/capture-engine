@@ -244,6 +244,64 @@ TEST(ScreenshotRawHeaderTest, CreatesOnlySupportedCheckedLayouts) {
                                                    ScreenshotColorEncoding::SRGB, screenshot));
     EXPECT_FALSE(ce::screenshot::MakeRawScreenshot(pixels.data(), 2, 2, 8, ScreenshotPixelFormat::BGRA8,
                                                    ScreenshotColorEncoding::BT2020_PQ, screenshot));
+    EXPECT_TRUE(ce::screenshot::MakeRawScreenshot(pixels.data(), 2, 2, 8,
+                                                  ScreenshotPixelFormat::R10G10B10A2,
+                                                  ScreenshotColorEncoding::BT709_G22, screenshot));
+    EXPECT_TRUE(ce::screenshot::MakeRawScreenshot(pixels.data(), 2, 2, 16,
+                                                  ScreenshotPixelFormat::RGBA16F,
+                                                  ScreenshotColorEncoding::LinearScRGBSdr, screenshot));
+}
+
+TEST(ScreenshotRawHeaderTest, SavesTenBitSdrPresentationAsRegularPng) {
+    std::filesystem::path directory = UniqueRawPath();
+    directory.replace_extension();
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+    ASSERT_FALSE(error);
+    ASSERT_TRUE(std::filesystem::create_directories(directory));
+
+    const std::array<uint32_t, 2> pixels{0u, 0x3FFFFFFFu};
+    ce::screenshot::RawScreenshot screenshot;
+    ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(
+        reinterpret_cast<const uint8_t*>(pixels.data()), 2, 1, 8, ScreenshotPixelFormat::R10G10B10A2,
+        ScreenshotColorEncoding::BT709_G22, screenshot));
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    ASSERT_TRUE(SUCCEEDED(comResult) || comResult == RPC_E_CHANGED_MODE);
+    std::filesystem::path publishedPath;
+    const bool saved = ce::screenshot::SaveRawScreenshot(directory, screenshot, publishedPath);
+    if (SUCCEEDED(comResult))
+        CoUninitialize();
+    EXPECT_TRUE(saved);
+    EXPECT_EQ(publishedPath.extension(), L".png");
+    EXPECT_TRUE(std::filesystem::exists(publishedPath));
+
+    std::filesystem::remove_all(directory, error);
+}
+
+TEST(ScreenshotRawHeaderTest, SavesLinearFp16SdrPresentationAsRegularPng) {
+    std::filesystem::path directory = UniqueRawPath();
+    directory.replace_extension();
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+    ASSERT_FALSE(error);
+    ASSERT_TRUE(std::filesystem::create_directories(directory));
+
+    const std::array<uint16_t, 8> pixels{0u, 0u, 0u, 0x3C00u, 0x3C00u, 0x3C00u, 0x3C00u, 0x3C00u};
+    ce::screenshot::RawScreenshot screenshot;
+    ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(
+        reinterpret_cast<const uint8_t*>(pixels.data()), 2, 1, 16, ScreenshotPixelFormat::RGBA16F,
+        ScreenshotColorEncoding::LinearScRGBSdr, screenshot));
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    ASSERT_TRUE(SUCCEEDED(comResult) || comResult == RPC_E_CHANGED_MODE);
+    std::filesystem::path publishedPath;
+    const bool saved = ce::screenshot::SaveRawScreenshot(directory, screenshot, publishedPath);
+    if (SUCCEEDED(comResult))
+        CoUninitialize();
+    EXPECT_TRUE(saved);
+    EXPECT_EQ(publishedPath.extension(), L".png");
+    EXPECT_TRUE(std::filesystem::exists(publishedPath));
+
+    std::filesystem::remove_all(directory, error);
 }
 
 TEST(ScreenshotRawHeaderTest, RefusesToEncodeAnInconsistentInMemoryPayload) {

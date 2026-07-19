@@ -149,6 +149,8 @@ private:
     uint32_t droppedFrames = 0;
     bool isHDR = false;
     int renderTargetFormat = 0;
+    void* hdrPaperWhiteMonitor = nullptr;
+    float resolvedHdrPaperWhiteNits = 203.0f;
     std::atomic<bool> initialized{false};
     bool skipDeviceRelease = false;  // When true, Shutdown won't release device refs (app is closing)
     mutable std::mutex stateMutex;

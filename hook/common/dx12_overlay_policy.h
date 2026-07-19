@@ -6,6 +6,7 @@
 
 #include <dxgi1_6.h>
 
+#include "dxgi_presentation_color.h"
 #include "fg_runtime_state.h"
 
 struct ID3D12CommandQueue;
@@ -1770,11 +1771,15 @@ inline bool ShouldMirrorFFXPresentCallbackOverlayToCurrentBackBuffer(bool genera
 }
 
 inline bool ShouldTreatFormatAsDefinitelyHDR(int dxgiFormat) {
-    return dxgiFormat == static_cast<int>(DXGI_FORMAT_R16G16B16A16_FLOAT);
+    (void)dxgiFormat;
+    return false;
 }
 
-inline bool ShouldProbeDisplayColorSpaceForHDR(int dxgiFormat) {
-    return dxgiFormat == static_cast<int>(DXGI_FORMAT_R10G10B10A2_UNORM);
+inline bool IsPresentationContractDependentFormat(int dxgiFormat) {
+    return dxgiFormat == static_cast<int>(DXGI_FORMAT_R10G10B10A2_UNORM) ||
+           dxgiFormat == static_cast<int>(DXGI_FORMAT_R10G10B10A2_TYPELESS) ||
+           dxgiFormat == static_cast<int>(DXGI_FORMAT_R16G16B16A16_FLOAT) ||
+           dxgiFormat == static_cast<int>(DXGI_FORMAT_R16G16B16A16_TYPELESS);
 }
 
 inline bool IsHDRColorSpace(int colorSpace) {
@@ -1791,25 +1796,15 @@ inline bool IsHDRColorSpace(int colorSpace) {
     }
 }
 
-inline bool ResolveActualHDRStateForOverlayTarget(int dxgiFormat, bool hasDisplayColorSpace, int colorSpace) {
-    if (ShouldTreatFormatAsDefinitelyHDR(dxgiFormat)) {
-        return true;
-    }
-
-    if (!ShouldProbeDisplayColorSpaceForHDR(dxgiFormat)) {
-        return false;
-    }
-
-    return hasDisplayColorSpace && IsHDRColorSpace(colorSpace);
+inline bool ResolveActualHDRStateForOverlayTarget(int dxgiFormat, bool hasSwapChainColorSpace, int colorSpace) {
+    return ce::presentation_color::IsHDR(ce::presentation_color::ResolveDXGI(
+        static_cast<DXGI_FORMAT>(dxgiFormat), hasSwapChainColorSpace,
+        static_cast<DXGI_COLOR_SPACE_TYPE>(colorSpace)));
 }
 
 inline bool ResolveRuntimeOwnedCallbackHDRStateFromCachedState(int dxgiFormat, bool hasCachedHDRState,
                                                                bool cachedHDRState) {
-    if (ShouldTreatFormatAsDefinitelyHDR(dxgiFormat)) {
-        return true;
-    }
-
-    if (!ShouldProbeDisplayColorSpaceForHDR(dxgiFormat)) {
+    if (!IsPresentationContractDependentFormat(dxgiFormat)) {
         return false;
     }
 

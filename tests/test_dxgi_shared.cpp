@@ -3211,16 +3211,18 @@ TEST(DXGISharedTest, FFXUiBundleCachedTextureNullSkip) {
     EXPECT_EQ(cachedTexture, nullptr);
 }
 
-TEST(DXGISharedTest, HDRDetectionTreatsFP16AsDefinitelyHDR) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldTreatFormatAsDefinitelyHDR(DXGI_FORMAT_R16G16B16A16_FLOAT));
+TEST(DXGISharedTest, HDRDetectionNeverTreatsStorageFormatAsDefinitive) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatFormatAsDefinitelyHDR(DXGI_FORMAT_R16G16B16A16_FLOAT));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatFormatAsDefinitelyHDR(DXGI_FORMAT_R10G10B10A2_UNORM));
     EXPECT_FALSE(ce::dx12_overlay_policy::ShouldTreatFormatAsDefinitelyHDR(DXGI_FORMAT_R8G8B8A8_UNORM));
 }
 
-TEST(DXGISharedTest, HDRDetectionOnlyProbesDisplayColorSpaceForTenBitUNormOutputs) {
-    EXPECT_TRUE(ce::dx12_overlay_policy::ShouldProbeDisplayColorSpaceForHDR(DXGI_FORMAT_R10G10B10A2_UNORM));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldProbeDisplayColorSpaceForHDR(DXGI_FORMAT_R16G16B16A16_FLOAT));
-    EXPECT_FALSE(ce::dx12_overlay_policy::ShouldProbeDisplayColorSpaceForHDR(DXGI_FORMAT_R8G8B8A8_UNORM));
+TEST(DXGISharedTest, HDRDetectionRequiresPresentationContractForHDRCapableStorage) {
+    EXPECT_TRUE(ce::dx12_overlay_policy::IsPresentationContractDependentFormat(DXGI_FORMAT_R10G10B10A2_UNORM));
+    EXPECT_TRUE(ce::dx12_overlay_policy::IsPresentationContractDependentFormat(DXGI_FORMAT_R10G10B10A2_TYPELESS));
+    EXPECT_TRUE(ce::dx12_overlay_policy::IsPresentationContractDependentFormat(DXGI_FORMAT_R16G16B16A16_FLOAT));
+    EXPECT_TRUE(ce::dx12_overlay_policy::IsPresentationContractDependentFormat(DXGI_FORMAT_R16G16B16A16_TYPELESS));
+    EXPECT_FALSE(ce::dx12_overlay_policy::IsPresentationContractDependentFormat(DXGI_FORMAT_R8G8B8A8_UNORM));
 }
 
 TEST(DXGISharedTest, HDRDetectionRecognizesHDRAndSDRTenBitColorSpaces) {
@@ -3231,8 +3233,10 @@ TEST(DXGISharedTest, HDRDetectionRecognizesHDRAndSDRTenBitColorSpaces) {
 }
 
 TEST(DXGISharedTest, HDRDetectionResolvesActualOverlayTargetStateFromFormatAndColorSpace) {
-    EXPECT_TRUE(
+    EXPECT_FALSE(
         ce::dx12_overlay_policy::ResolveActualHDRStateForOverlayTarget(DXGI_FORMAT_R16G16B16A16_FLOAT, false, -1));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ResolveActualHDRStateForOverlayTarget(
+        DXGI_FORMAT_R16G16B16A16_FLOAT, true, DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709));
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ResolveActualHDRStateForOverlayTarget(DXGI_FORMAT_R10G10B10A2_UNORM, false, -1));
     EXPECT_TRUE(ce::dx12_overlay_policy::ResolveActualHDRStateForOverlayTarget(
@@ -3244,17 +3248,79 @@ TEST(DXGISharedTest, HDRDetectionResolvesActualOverlayTargetStateFromFormatAndCo
 }
 
 TEST(DXGISharedTest, RuntimeOwnedCallbackHDRFallbackUsesCachedKnownState) {
+    EXPECT_FALSE(ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(
+        DXGI_FORMAT_R16G16B16A16_FLOAT, false, true));
     EXPECT_TRUE(ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(
-        DXGI_FORMAT_R16G16B16A16_FLOAT, false, false));
+        DXGI_FORMAT_R16G16B16A16_FLOAT, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(DXGI_FORMAT_R8G8B8A8_UNORM,
                                                                                              true, true));
 
     EXPECT_TRUE(ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(
         DXGI_FORMAT_R10G10B10A2_UNORM, true, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(
+        DXGI_FORMAT_R10G10B10A2_TYPELESS, true, true));
+    EXPECT_TRUE(ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(
+        DXGI_FORMAT_R16G16B16A16_TYPELESS, true, true));
     EXPECT_FALSE(ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(
         DXGI_FORMAT_R10G10B10A2_UNORM, true, false));
     EXPECT_FALSE(ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(
         DXGI_FORMAT_R10G10B10A2_UNORM, false, true));
+}
+
+TEST(DXGISharedTest, PresentationEncodingUsesColorSpaceRatherThanStorageFormat) {
+    using ce::presentation_color::Encoding;
+    EXPECT_EQ(Encoding::Sdr709,
+              ce::presentation_color::ResolveDXGI(DXGI_FORMAT_R10G10B10A2_UNORM, false,
+                                                  DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020));
+    EXPECT_EQ(Encoding::Sdr709,
+              ce::presentation_color::ResolveDXGI(DXGI_FORMAT_R10G10B10A2_UNORM, true,
+                                                  DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709));
+    EXPECT_EQ(Encoding::Hdr10Pq,
+              ce::presentation_color::ResolveDXGI(DXGI_FORMAT_R10G10B10A2_UNORM, true,
+                                                  DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020));
+    EXPECT_EQ(Encoding::LinearScRgb,
+              ce::presentation_color::ResolveDXGI(DXGI_FORMAT_R16G16B16A16_FLOAT, true,
+                                                  DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709));
+    EXPECT_EQ(Encoding::Unsupported,
+              ce::presentation_color::ResolveDXGI(DXGI_FORMAT_R16G16B16A16_FLOAT, true,
+                                                  DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709));
+}
+
+TEST(DXGISharedTest, SwapchainColorSpaceCallsAreTrackedOnWrappedAndVtablePaths) {
+    const auto readSource = [](const std::filesystem::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    };
+    const std::string shared =
+        readSource(std::filesystem::current_path() / "hook" / "common" / "dxgi_shared.cpp");
+    const std::string wrapper =
+        readSource(std::filesystem::current_path() / "hook" / "wrappers" / "dxgi_swapchain_wrap.cpp");
+    ASSERT_FALSE(shared.empty());
+    ASSERT_FALSE(wrapper.empty());
+    EXPECT_NE(shared.find("DetourSetColorSpace1"), std::string::npos);
+    EXPECT_NE(shared.find("vtable[38] = (void*)DetourSetColorSpace1"), std::string::npos);
+    EXPECT_NE(shared.find("RecordSwapChainColorSpace(pSwapChain, colorSpace)"), std::string::npos);
+    EXPECT_NE(wrapper.find("DXGIShared::RecordSwapChainColorSpace(m_pReal, ColorSpace)"), std::string::npos);
+}
+
+TEST(DXGISharedTest, RuntimeOwnedOverlayRoutesUseCachedPresentationContractAndRefreshTransitions) {
+    const auto readSource = [](const std::filesystem::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    };
+    const auto root = std::filesystem::current_path();
+    const std::string dx12 = readSource(root / "hook" / "apis" / "dx12_hook.cpp");
+    const std::string streamlineHook = readSource(root / "hook" / "apis" / "streamline_hook.cpp");
+    const std::string streamlineRenderer =
+        readSource(root / "hook" / "apis" / "dx12_streamline_ui_overlay.cpp");
+    ASSERT_FALSE(dx12.empty());
+    ASSERT_FALSE(streamlineHook.empty());
+    ASSERT_FALSE(streamlineRenderer.empty());
+    EXPECT_NE(dx12.find("request.hdr = DX12_ResolveRuntimeOwnedOverlayTargetHDRState"), std::string::npos);
+    EXPECT_NE(dx12.find("DX12: Presentation color state changed"), std::string::npos);
+    EXPECT_NE(streamlineHook.find("DX12_ResolveRuntimeOwnedOverlayTargetHDRState(format)"), std::string::npos);
+    EXPECT_NE(streamlineRenderer.find("g_Renderer->UpdateHdr(request.hdr)"), std::string::npos);
+    EXPECT_EQ(streamlineHook.find("const bool hdr = format == DXGI_FORMAT_R10G10B10A2"), std::string::npos);
 }
 
 TEST(DXGISharedTest, AuthoritativeFSRRealFrameOnlyRunTracksOnlyQualifiedFrames) {

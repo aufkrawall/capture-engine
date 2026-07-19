@@ -2177,13 +2177,12 @@ static IDXGISwapChain* g_StreamlineStartupActivationSwapchain = nullptr;
 static std::atomic<uint64_t> g_StreamlineStartupActivationSwapchainGeneration{0};
 static std::atomic<bool> g_PostSLStartupActivationServiceInProgress{false};
 
-static void UpdateLastKnownSwapchainHDRStateCache(DXGI_FORMAT format, bool isActualHDR, int outputColorSpace) {
-    const bool trustedHDRState =
-        !ce::dx12_overlay_policy::ShouldProbeDisplayColorSpaceForHDR(static_cast<int>(format)) ||
-        outputColorSpace != -1;
-    g_LastKnownSwapchainColorSpace.store(outputColorSpace, std::memory_order_release);
+static void UpdateLastKnownSwapchainHDRStateCache(DXGI_FORMAT format, bool isActualHDR, int swapChainColorSpace,
+                                                   bool presentationContractSupported) {
+    (void)format;
+    g_LastKnownSwapchainColorSpace.store(swapChainColorSpace, std::memory_order_release);
     g_LastKnownSwapchainIsHDR.store(isActualHDR, std::memory_order_release);
-    g_LastKnownSwapchainHDRStateValid.store(trustedHDRState, std::memory_order_release);
+    g_LastKnownSwapchainHDRStateValid.store(presentationContractSupported, std::memory_order_release);
 }
 
 static bool IsReadableSwapchainPointer(const void* ptr) {
@@ -3727,7 +3726,11 @@ static void CaptureRequestedDX12Screenshot(IDXGISwapChain3* sc3, SharedMemoryLay
         UINT bbIdx = sc3->GetCurrentBackBufferIndex();
         ID3D12Resource* backBuffer = nullptr;
         if (SUCCEEDED(sc3->GetBuffer(bbIdx, IID_PPV_ARGS(&backBuffer)))) {
-            queued = SaveDX12TextureAsScreenshotRaw(dx12Device, dx12Queue, backBuffer, shm, requestId);
+            const D3D12_RESOURCE_DESC resourceDesc = backBuffer->GetDesc();
+            const auto presentationEncoding = DXGIShared::ResolveSwapChainPresentationEncoding(
+                static_cast<IDXGISwapChain*>(sc3), resourceDesc.Format);
+            queued = SaveDX12TextureAsScreenshotRaw(dx12Device, dx12Queue, backBuffer, shm, requestId,
+                                                    presentationEncoding);
             backBuffer->Release();
         }
     }
@@ -3742,6 +3745,14 @@ static void PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLay
         return;
     if (shm->throttleCapture.load(std::memory_order_acquire))
         return;
+
+    DXGI_SWAP_CHAIN_DESC swapChainDesc{};
+    auto presentationEncoding = ce::presentation_color::Encoding::Unsupported;
+    if (SUCCEEDED(pSwapChain->GetDesc(&swapChainDesc))) {
+        presentationEncoding =
+            DXGIShared::ResolveSwapChainPresentationEncoding(pSwapChain, swapChainDesc.BufferDesc.Format);
+    }
+    shm->SetIsHDR(ce::presentation_color::IsHDR(presentationEncoding));
 
     std::lock_guard<std::recursive_mutex> capLock(g_DX12CaptureMutex);
     ID3D12Device* captureDevice = g_Device.load(std::memory_order_acquire);
@@ -4565,19 +4576,19 @@ static D3D12_RESOURCE_STATES GetDX12StateFromFFXResourceState(uint32_t state) {
     return dx12State == static_cast<D3D12_RESOURCE_STATES>(0) ? D3D12_RESOURCE_STATE_COMMON : dx12State;
 }
 
-static bool ResolveRuntimeOwnedFFXPresentCallbackHDRState(DXGI_FORMAT format) {
+bool DX12_ResolveRuntimeOwnedOverlayTargetHDRState(DXGI_FORMAT format) {
     const bool cachedHDRStateValid = g_LastKnownSwapchainHDRStateValid.load(std::memory_order_acquire);
     const bool cachedHDRState = g_LastKnownSwapchainIsHDR.load(std::memory_order_acquire);
     const int cachedColorSpace = g_LastKnownSwapchainColorSpace.load(std::memory_order_acquire);
     const bool resolvedHDR = ce::dx12_overlay_policy::ResolveRuntimeOwnedCallbackHDRStateFromCachedState(
         static_cast<int>(format), cachedHDRStateValid, cachedHDRState);
 
-    if (ce::dx12_overlay_policy::ShouldProbeDisplayColorSpaceForHDR(static_cast<int>(format))) {
+    if (ce::dx12_overlay_policy::IsPresentationContractDependentFormat(static_cast<int>(format))) {
         static std::atomic<int> s_ffxPresentCachedHDRLogCount{0};
         const int logCount = s_ffxPresentCachedHDRLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || !cachedHDRStateValid) {
             HookLogImportant(
-                "DX12: FFX present callback using cached HDR state instead of probing weak swapchain COM state "
+                "DX12: Runtime-owned overlay target using cached presentation HDR state "
                 "(fmt=%d cachedValid=%d cachedHDR=%d cachedColorSpace=%d resolvedHDR=%d)",
                 static_cast<int>(format), cachedHDRStateValid ? 1 : 0, cachedHDRState ? 1 : 0, cachedColorSpace,
                 resolvedHDR ? 1 : 0);
@@ -4588,44 +4599,27 @@ static bool ResolveRuntimeOwnedFFXPresentCallbackHDRState(DXGI_FORMAT format) {
 }
 
 static bool ResolveSwapchainOutputHDRState(IDXGISwapChain* swapchain, DXGI_FORMAT format, const char* logPrefix,
-                                           int* outColorSpace = nullptr) {
+                                           int* outColorSpace = nullptr, bool* outSupported = nullptr) {
     if (outColorSpace) {
         *outColorSpace = -1;
     }
+    if (outSupported)
+        *outSupported = false;
 
-    if (!ce::dx12_overlay_policy::ShouldProbeDisplayColorSpaceForHDR(static_cast<int>(format)) || !swapchain) {
-        return ce::dx12_overlay_policy::ResolveActualHDRStateForOverlayTarget(static_cast<int>(format), false, -1);
-    }
-
-    IDXGISwapChain3* sc3 = nullptr;
-    if (FAILED(swapchain->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) {
-        return false;
-    }
-
-    bool hasDisplayColorSpace = false;
-    int colorSpace = -1;
-    IDXGIOutput* output = nullptr;
-    if (SUCCEEDED(sc3->GetContainingOutput(&output)) && output) {
-        IDXGIOutput6* output6 = nullptr;
-        if (SUCCEEDED(output->QueryInterface(IID_PPV_ARGS(&output6))) && output6) {
-            DXGI_OUTPUT_DESC1 desc1 = {};
-            if (SUCCEEDED(output6->GetDesc1(&desc1))) {
-                colorSpace = static_cast<int>(desc1.ColorSpace);
-                hasDisplayColorSpace = true;
-                if (outColorSpace) {
-                    *outColorSpace = colorSpace;
-                }
-            }
-            output6->Release();
-        }
-        output->Release();
-    }
-
-    sc3->Release();
-    const bool isActualHDR = ce::dx12_overlay_policy::ResolveActualHDRStateForOverlayTarget(
-        static_cast<int>(format), hasDisplayColorSpace, colorSpace);
-    if (logPrefix && hasDisplayColorSpace) {
-        HookLog("%s - colorSpace=%d, isHDR=%d", logPrefix, colorSpace, isActualHDR ? 1 : 0);
+    DXGI_COLOR_SPACE_TYPE colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    bool hasTrackedColorSpace = false;
+    const auto encoding = DXGIShared::ResolveSwapChainPresentationEncoding(
+        swapchain, format, &colorSpace, &hasTrackedColorSpace);
+    const bool supported = encoding != ce::presentation_color::Encoding::Unsupported;
+    const bool isActualHDR = ce::presentation_color::IsHDR(encoding);
+    if (outColorSpace && hasTrackedColorSpace)
+        *outColorSpace = static_cast<int>(colorSpace);
+    if (outSupported)
+        *outSupported = supported;
+    if (logPrefix) {
+        HookLogImportant("%s - format=%d tracked=%d colorSpace=%d encoding=%s isHDR=%d", logPrefix,
+                         static_cast<int>(format), hasTrackedColorSpace ? 1 : 0, static_cast<int>(colorSpace),
+                         ce::presentation_color::Describe(encoding), isActualHDR ? 1 : 0);
     }
     return isActualHDR;
 }
@@ -4643,9 +4637,12 @@ void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain) {
     }
 
     int outputColorSpace = -1;
+    bool presentationContractSupported = false;
     const bool isActualHDR = ResolveSwapchainOutputHDRState(
-        dxgiSwapChain, desc.BufferDesc.Format, "DX12: Cached runtime-owned callback HDR source", &outputColorSpace);
-    UpdateLastKnownSwapchainHDRStateCache(desc.BufferDesc.Format, isActualHDR, outputColorSpace);
+        dxgiSwapChain, desc.BufferDesc.Format, "DX12: Cached runtime-owned callback HDR source", &outputColorSpace,
+        &presentationContractSupported);
+    UpdateLastKnownSwapchainHDRStateCache(desc.BufferDesc.Format, isActualHDR, outputColorSpace,
+                                          presentationContractSupported);
 
     // Cache backbuffer geometry for the no-callback FSR FG UI-resource substitution path: CE sizes its own
     // substitute UI texture to the backbuffer and uses these dims to tell a usable game UI texture apart from
@@ -4746,7 +4743,7 @@ static bool EnsureOverlayAdapterReadyForFFXPresentCallback(
             return false;
         }
 
-        const bool callbackOutputHDR = ResolveRuntimeOwnedFFXPresentCallbackHDRState(resourceDesc.Format);
+        const bool callbackOutputHDR = DX12_ResolveRuntimeOwnedOverlayTargetHDRState(resourceDesc.Format);
         g_FFXPresentOverlayAdapter.SetHDR(callbackOutputHDR, static_cast<int>(resourceDesc.Format));
         g_FFXPresentOverlayDevice = dx12Device;
         g_FFXPresentOverlayFormat = resourceDesc.Format;
@@ -5970,12 +5967,13 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
                                  static_cast<int>(rtvFormat));
                 return false;
             }
-            g_FFXPresentOverlayAdapter.SetHDR(false, static_cast<int>(rtvFormat));
+            const bool uiTargetHDR = DX12_ResolveRuntimeOwnedOverlayTargetHDRState(rtvFormat);
+            g_FFXPresentOverlayAdapter.SetHDR(uiTargetHDR, static_cast<int>(rtvFormat));
             g_FFXPresentOverlayDevice = device;
             g_FFXPresentOverlayFormat = rtvFormat;
             g_FFXUiCompositeAdapterFormat = rtvFormat;
-            HookLogImportant("DX12: FFX UI-composite initialized overlay adapter (fmt=%d %dx%d)",
-                             static_cast<int>(rtvFormat), width, height);
+            HookLogImportant("DX12: FFX UI-composite initialized overlay adapter (fmt=%d hdr=%d %dx%d)",
+                             static_cast<int>(rtvFormat), uiTargetHDR ? 1 : 0, width, height);
         }
     }
 
@@ -6620,7 +6618,7 @@ static bool DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(IDXGISwapCh
             : "active-ui-resource";
     request.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;
     request.signalFence = &SignalNativeFSROwnerQueueOverlayFence;
-    request.hdr = false;
+    request.hdr = DX12_ResolveRuntimeOwnedOverlayTargetHDRState(uiTexture->GetDesc().Format);
     const bool rendered = ce::dx12_ffx_suspend_overlay::Render(request);
     ownerQueue.queue->Release();
     uiTexture->Release();
@@ -16275,6 +16273,36 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture,
         return;
     }
 
+    {
+        DXGI_COLOR_SPACE_TYPE colorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+        bool hasTrackedColorSpace = false;
+        const auto encoding = DXGIShared::ResolveSwapChainPresentationEncoding(
+            pSwapChain, frameDesc.BufferDesc.Format, &colorSpace, &hasTrackedColorSpace);
+        const bool dependsOnPresentationContract = ce::dx12_overlay_policy::IsPresentationContractDependentFormat(
+            static_cast<int>(frameDesc.BufferDesc.Format));
+        const bool reliableState = encoding != ce::presentation_color::Encoding::Unsupported &&
+                                   (!dependsOnPresentationContract || hasTrackedColorSpace);
+        if (reliableState) {
+            const bool isHdr = ce::presentation_color::IsHDR(encoding);
+            const int recordedColorSpace = hasTrackedColorSpace ? static_cast<int>(colorSpace) : -1;
+            const bool previousValid = g_LastKnownSwapchainHDRStateValid.load(std::memory_order_acquire);
+            const bool stateChanged = !previousValid ||
+                                      g_LastKnownSwapchainIsHDR.load(std::memory_order_acquire) != isHdr ||
+                                      g_LastKnownSwapchainColorSpace.load(std::memory_order_acquire) !=
+                                          recordedColorSpace;
+            UpdateLastKnownSwapchainHDRStateCache(frameDesc.BufferDesc.Format, isHdr, recordedColorSpace, true);
+            g_OverlayAdapter.SetHDR(isHdr, static_cast<int>(frameDesc.BufferDesc.Format));
+            if (g_pSharedMem)
+                g_pSharedMem->SetIsHDR(isHdr);
+            if (stateChanged) {
+                HookLogImportant("DX12: Presentation color state changed format=%d tracked=%d colorSpace=%d "
+                                 "encoding=%s hdr=%d",
+                                 static_cast<int>(frameDesc.BufferDesc.Format), hasTrackedColorSpace ? 1 : 0,
+                                 recordedColorSpace, ce::presentation_color::Describe(encoding), isHdr ? 1 : 0);
+            }
+        }
+    }
+
     const bool hasOutputWindow = frameDesc.OutputWindow != nullptr;
     const bool outputWindowVisible = hasOutputWindow && IsWindowVisible(frameDesc.OutputWindow) != FALSE;
     if (ce::dx12_overlay_policy::ShouldSkipDX12PresentProcessingForInvisibleWindowSwapchain(hasOutputWindow,
@@ -17942,10 +17970,13 @@ void ProcessFrame(IDXGISwapChain* pSwapChain, bool processCapture,
                     s_nextRetryFrame = 0;
 
                     int outputColorSpace = -1;
+                    bool presentationContractSupported = false;
                     const bool isActualHDR =
                         ResolveSwapchainOutputHDRState(static_cast<IDXGISwapChain*>(sc3), desc.BufferDesc.Format,
-                                                       "DX12: Display HDR check", &outputColorSpace);
-                    UpdateLastKnownSwapchainHDRStateCache(desc.BufferDesc.Format, isActualHDR, outputColorSpace);
+                                                       "DX12: Swapchain color contract", &outputColorSpace,
+                                                       &presentationContractSupported);
+                    UpdateLastKnownSwapchainHDRStateCache(desc.BufferDesc.Format, isActualHDR, outputColorSpace,
+                                                          presentationContractSupported);
                     g_OverlayAdapter.SetHDR(isActualHDR, (int)desc.BufferDesc.Format);
 
                     // Propagate HDR state to media engine via shared memory

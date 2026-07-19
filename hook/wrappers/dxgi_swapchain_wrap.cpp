@@ -1833,7 +1833,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::CheckColorSpaceSupport(DXGI_COLOR_
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetColorSpace1(DXGI_COLOR_SPACE_TYPE ColorSpace) {
     if (!m_pReal3)
         return DXGI_ERROR_UNSUPPORTED;
-    return m_pReal3->SetColorSpace1(ColorSpace);
+    const HRESULT result = m_pReal3->SetColorSpace1(ColorSpace);
+    if (SUCCEEDED(result)) {
+        DXGIShared::RecordSwapChainColorSpace(m_pReal, ColorSpace);
+    }
+    return result;
 }
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::ResizeBuffers1(UINT BufferCount, UINT Width, UINT Height,

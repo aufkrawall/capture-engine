@@ -4358,7 +4358,12 @@ static void CaptureDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout
             ID3D11DeviceContext* context = nullptr;
             device->GetImmediateContext(&context);
             if (context) {
-                queued = SaveD3D11TextureAsScreenshotRaw(device, context, backbuffer, shm, requestId);
+                D3D11_TEXTURE2D_DESC textureDesc{};
+                backbuffer->GetDesc(&textureDesc);
+                const auto presentationEncoding =
+                    DXGIShared::ResolveSwapChainPresentationEncoding(pSwapChain, textureDesc.Format);
+                queued = SaveD3D11TextureAsScreenshotRaw(device, context, backbuffer, shm, requestId,
+                                                         presentationEncoding);
                 context->Release();
             }
             device->Release();
@@ -4400,17 +4405,24 @@ static void CaptureDX10Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout
             if (SUCCEEDED(staging->Map(0, D3D10_MAP_READ, 0, &mapped))) {
                 ScreenshotPixelFormat pixelFormat = ScreenshotPixelFormat::BGRA8;
                 ScreenshotColorEncoding colorEncoding = ScreenshotColorEncoding::SRGB;
+                const auto presentationEncoding =
+                    DXGIShared::ResolveSwapChainPresentationEncoding(pSwapChain, bbDesc.Format);
                 if (bbDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || bbDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) {
                     pixelFormat = ScreenshotPixelFormat::RGBA8;
                 } else if (bbDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM) {
                     pixelFormat = ScreenshotPixelFormat::R10G10B10A2;
-                    colorEncoding = ScreenshotColorEncoding::BT2020_PQ;
+                    colorEncoding = presentationEncoding == ce::presentation_color::Encoding::Hdr10Pq
+                                        ? ScreenshotColorEncoding::BT2020_PQ
+                                        : ScreenshotColorEncoding::BT709_G22;
                 } else if (bbDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT) {
                     pixelFormat = ScreenshotPixelFormat::RGBA16F;
                     colorEncoding = ScreenshotColorEncoding::LinearScRGB;
                 }
-                queued = QueueScreenshotPixels(shm, requestId, static_cast<const uint8_t*>(mapped.pData), bbDesc.Width,
-                                               bbDesc.Height, mapped.RowPitch, pixelFormat, colorEncoding);
+                if (presentationEncoding != ce::presentation_color::Encoding::Unsupported) {
+                    queued = QueueScreenshotPixels(shm, requestId, static_cast<const uint8_t*>(mapped.pData),
+                                                   bbDesc.Width, bbDesc.Height, mapped.RowPitch, pixelFormat,
+                                                   colorEncoding);
+                }
                 staging->Unmap(0);
             }
             staging->Release();
@@ -4451,6 +4463,15 @@ static void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain) {
     auto indexGuard = ce::make_scope_guard([]() { g_ForcedCaptureBackBufferIndex = -1; });
 
     SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    DXGI_SWAP_CHAIN_DESC swapChainDesc{};
+    if (shm) {
+        auto presentationEncoding = ce::presentation_color::Encoding::Unsupported;
+        if (SUCCEEDED(pSwapChain->GetDesc(&swapChainDesc))) {
+            presentationEncoding =
+                DXGIShared::ResolveSwapChainPresentationEncoding(pSwapChain, swapChainDesc.BufferDesc.Format);
+        }
+        shm->SetIsHDR(ce::presentation_color::IsHDR(presentationEncoding));
+    }
     OverlayConfig overlayCfg = GetActiveDX11OverlayConfig(shm);
     const bool shouldDrawOverlay = shm && overlayCfg.showOverlay;
     const bool captureAfterOverlay = shouldDrawOverlay && overlayCfg.captureIncludeOverlay;
@@ -4603,6 +4624,10 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
         const bool is10_1 = ResolveD3D10Is10_1(device, pSwapChain);
         const std::string apiLabel = ce::graphics_api_identity::D3D10Label(is10_1, IsDXVKD3D10OrD3D11Loaded());
         g_OverlayAdapter.SetGraphicsAPI(apiLabel.c_str(), "active D3D10 swapchain device");
+        const auto presentationEncoding =
+            DXGIShared::ResolveSwapChainPresentationEncoding(pSwapChain, desc.BufferDesc.Format);
+        g_OverlayAdapter.SetHDR(ce::presentation_color::IsHDR(presentationEncoding),
+                                static_cast<int>(desc.BufferDesc.Format));
 
         RECT rect;
         if (GetClientRect(currentHwnd, &rect)) {
@@ -4827,9 +4852,9 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         lastHwnd = currentHwnd;
     }
 
-    // Determine if HDR is active
-    bool isHDR = (desc.BufferDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
-                  desc.BufferDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
+    const auto presentationEncoding =
+        DXGIShared::ResolveSwapChainPresentationEncoding(pSwapChain, desc.BufferDesc.Format);
+    const bool isHDR = ce::presentation_color::IsHDR(presentationEncoding);
     g_OverlayAdapter.SetHDR(isHDR, (int)desc.BufferDesc.Format);
 
     // Propagate HDR state to media engine via shared memory

@@ -1130,6 +1130,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
         sd->swapchain = *pSwapchain;
         sd->device = device;
         sd->format = pCreateInfo->imageFormat;
+        sd->colorSpace = pCreateInfo->imageColorSpace;
         sd->extent = pCreateInfo->imageExtent;
 
         uint32_t count = 0;
@@ -1152,7 +1153,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
                 // DXVK d3d9: skip overlay (DX9 hook handles it) but still init capture for zero-copy
                 LayerLog("Vulkan Layer: DXVK d3d9 - skipping overlay, initializing Vulkan capture (%ux%u)",
                          sd->extent.width, sd->extent.height);
-                InitializeCapture(device, *pSwapchain, sd->format, sd->extent, count);
+                InitializeCapture(device, *pSwapchain, sd->format, sd->colorSpace, sd->extent, count);
                 // Ensure vulkanLayerActive is set: may have been missed at vkCreateInstance if IPC
                 // wasn't ready yet. DX9 hook checks this flag to decide whether to use Vulkan
                 // capture vs its own staging path. Setting it here (before any Present) guarantees
@@ -1165,11 +1166,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
                     shmPtr->runtimeState.vulkanLayerActive.store(true, std::memory_order_release);
                 }
             } else {
-                InitializeOverlay(device, *pSwapchain, sd->format, sd->extent, count, sd->images.data(), window);
+                InitializeOverlay(device, *pSwapchain, sd->format, sd->colorSpace, sd->extent, count,
+                                  sd->images.data(), window);
                 LayerLog(
                     "Vulkan Layer: InitializeOverlay returned, registering "
                     "swapchain");
-                InitializeCapture(device, *pSwapchain, sd->format, sd->extent, count);
+                InitializeCapture(device, *pSwapchain, sd->format, sd->colorSpace, sd->extent, count);
             }
         }
 
@@ -1358,7 +1360,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                     // Initialization may have been deferred while the previous
                     // swapchain generation's media leases drained. Retry without
                     // blocking the present path.
-                    InitializeCapture(sd->device, sd->swapchain, sd->format, sd->extent, sd->imageCount);
+                    InitializeCapture(sd->device, sd->swapchain, sd->format, sd->colorSpace, sd->extent,
+                                      sd->imageCount);
                     captureDone = GetCaptureSemaphore(sd->device, sd->swapchain, idx);
                 }
                 NoteCaptureSwapchainImagePresented(sd->device, sd->swapchain, idx);
@@ -1384,7 +1387,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 DeviceDispatch* vkDisp = VulkanLayerState::Get().GetDeviceDispatch(sd->device);
                 if (vkDisp && idx < sd->images.size()) {
                     waitsConsumed = TakeVulkanScreenshot(vkDisp, sd->device, queue, sd->images[idx], sd->extent.width,
-                                                         sd->extent.height, sd->format, currentWaitSemaphores,
+                                                         sd->extent.height, sd->format, sd->colorSpace,
+                                                         currentWaitSemaphores,
                                                          currentWaitSemaphoreCount, shm, screenshotRequestId);
                 }
                 if (waitsConsumed) {

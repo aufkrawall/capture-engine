@@ -6,6 +6,7 @@
 
 #include "../common/build_identity.h"
 #include "../common/vulkan_layer_registration.h"
+#include "../hook/vulkan_layer/vulkan_presentation_color.h"
 
 namespace {
 
@@ -21,6 +22,22 @@ void TouchFile(const std::filesystem::path& path) {
 }
 
 }  // namespace
+
+TEST(VulkanPresentationColorTest, UsesSwapchainColorSpaceInsteadOfTenBitFormat) {
+    using ce::presentation_color::Encoding;
+    EXPECT_EQ(Encoding::Sdr709,
+              ce::presentation_color::ResolveVulkan(VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+                                                    VK_COLOR_SPACE_SRGB_NONLINEAR_KHR));
+    EXPECT_EQ(Encoding::Hdr10Pq,
+              ce::presentation_color::ResolveVulkan(VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+                                                    VK_COLOR_SPACE_HDR10_ST2084_EXT));
+    EXPECT_EQ(Encoding::LinearScRgb,
+              ce::presentation_color::ResolveVulkan(VK_FORMAT_R16G16B16A16_SFLOAT,
+                                                    VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT));
+    EXPECT_EQ(Encoding::Unsupported,
+              ce::presentation_color::ResolveVulkan(VK_FORMAT_R16G16B16A16_SFLOAT,
+                                                    VK_COLOR_SPACE_SRGB_NONLINEAR_KHR));
+}
 
 TEST(VulkanLayerRegistrationTest, CurrentUserPlanSplitsHKCUViewsByArchitecture) {
     const std::filesystem::path baseDir = std::filesystem::current_path() / "vk_reg_plan_hkcu";

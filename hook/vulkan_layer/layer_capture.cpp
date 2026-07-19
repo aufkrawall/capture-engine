@@ -23,6 +23,7 @@
 #include "../common/screenshot_hook.h"
 #include "layer_main.h"
 #include "vulkan_layer.h"
+#include "vulkan_presentation_color.h"
 using Microsoft::WRL::ComPtr;
 
 // ============================================================================
@@ -921,6 +922,7 @@ struct VulkanCaptureState {
     uint32_t captureWidth = 0;
     uint32_t captureHeight = 0;
     uint32_t captureFormat = 0;
+    VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
 
     struct CommandResources {
         VkCommandPool pool = VK_NULL_HANDLE;
@@ -1259,7 +1261,8 @@ static bool ImportEncoderKmtTextures(VkDevice device, DeviceDispatch* disp, uint
     return true;
 }
 
-void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent,
+void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
+                       VkExtent2D extent,
                        uint32_t imageCount) {
     LayerLog(
         "Vulkan Layer: InitializeCapture(device=%p, images=%d, size=%dx%d, "
@@ -1292,6 +1295,18 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         LayerLog("Vulkan Layer: [Error] Capture format %d has no byte-compatible DXGI shared format", format);
         return;
     }
+    auto* mem = g_IPCClient.GetSharedMem();
+    const auto presentationEncoding = ce::presentation_color::ResolveVulkan(format, colorSpace);
+    if (mem) {
+        mem->SetIsHDR(ce::presentation_color::IsHDR(presentationEncoding));
+    }
+    if (presentationEncoding == ce::presentation_color::Encoding::Unsupported) {
+        LayerLog("Vulkan Layer: [Error] Unsupported capture presentation contract format=%d colorSpace=%d", format,
+                 colorSpace);
+        return;
+    }
+    LayerLog("Vulkan Layer: Capture presentation contract format=%d colorSpace=%d encoding=%s", format, colorSpace,
+             ce::presentation_color::Describe(presentationEncoding));
 
     // Get LUID for GPU identification
     LUID luid = {};
@@ -1303,7 +1318,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
 
     uint64_t luidKey = MakeLuidKey(luid);
 
-    SharedMemoryLayout* generationSharedMem = g_IPCClient.GetSharedMem();
+    SharedMemoryLayout* generationSharedMem = mem;
     const bool retiredLeasesDrained =
         !generationSharedMem || generationSharedMem->frameRing.readIndex.load(std::memory_order_acquire) ==
                                     generationSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
@@ -1320,7 +1335,8 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         const size_t expectedSubmissionCount = std::max<size_t>(imageCount, SHARED_TEXTURE_SLOT_COUNT);
         if (it->second.initialized && it->second.luidKey == luidKey && it->second.swapchain == swapchain &&
             it->second.captureWidth == extent.width && it->second.captureHeight == extent.height &&
-            it->second.captureFormat == normalizedFormat && it->second.copyFences.size() == expectedSubmissionCount &&
+            it->second.captureFormat == normalizedFormat && it->second.colorSpace == colorSpace &&
+            it->second.copyFences.size() == expectedSubmissionCount &&
             it->second.signalSemaphores.size() == imageCount) {
             return;
         }
@@ -1366,7 +1382,6 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     // Get shared textures (creates if needed)
     // For DXVK, we'll try encoder-created KMT textures first (imported into Vulkan)
     SharedTextureEntry* sharedTextures = nullptr;
-    auto* mem = g_IPCClient.GetSharedMem();
     bool usingEncoderTextures = false;
     const VulkanCaptureInteropMode interopMode = DetectVulkanInteropMode();
     const bool allowDxvkEncoderTextures = (interopMode == VulkanCaptureInteropMode::kDxvkD3D11);
@@ -1382,11 +1397,6 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         mem->SetWidth(extent.width);
         mem->SetHeight(extent.height);
         mem->SetFormat(VkFormatToDXGI(format));
-
-        // Propagate HDR state to encoder
-        bool isHDR = (format == VK_FORMAT_R16G16B16A16_SFLOAT || format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
-                      format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
-        mem->SetIsHDR(isHDR);
 
         // If existing KMT textures have a different format, clear kmtReady to
         // force the encoder to recreate them with the correct format.
@@ -1477,6 +1487,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     state.captureWidth = extent.width;
     state.captureHeight = extent.height;
     state.captureFormat = NormalizeVkFormat((VkFormat)format);
+    state.colorSpace = colorSpace;
     state.interopMode = interopMode;
     state.initialized = false;
 
@@ -2180,7 +2191,8 @@ bool CaptureFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue queue, VkIm
 // Reads pixels from the swapchain image using a staging buffer.
 // Uses the Vulkan dispatch table and creates a one-shot command buffer.
 bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, VkImage srcImage, uint32_t width,
-                          uint32_t height, VkFormat format, const VkSemaphore* waitSemaphores,
+                          uint32_t height, VkFormat format, VkColorSpaceKHR colorSpace,
+                          const VkSemaphore* waitSemaphores,
                           uint32_t waitSemaphoreCount, SharedMemoryLayout* sharedMemory, uint64_t requestId) {
     if (!disp || !device || !srcImage || !sharedMemory || requestId == 0 || width == 0 || height == 0 ||
         width > 16384 || height > 16384) {
@@ -2191,6 +2203,7 @@ bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
     ScreenshotPixelFormat pixelFormat{};
     ScreenshotColorEncoding colorEncoding{};
     bool swapPackedRedBlue = false;
+    const auto presentationEncoding = ce::presentation_color::ResolveVulkan(format, colorSpace);
     switch (format) {
         case VK_FORMAT_B8G8R8A8_UNORM:
         case VK_FORMAT_B8G8R8A8_SRGB:
@@ -2207,12 +2220,16 @@ bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
         case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
             bytesPerPixel = 4;
             pixelFormat = ScreenshotPixelFormat::R10G10B10A2;
-            colorEncoding = ScreenshotColorEncoding::BT2020_PQ;
+            colorEncoding = presentationEncoding == ce::presentation_color::Encoding::Hdr10Pq
+                                ? ScreenshotColorEncoding::BT2020_PQ
+                                : ScreenshotColorEncoding::SRGB;
             break;
         case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
             bytesPerPixel = 4;
             pixelFormat = ScreenshotPixelFormat::R10G10B10A2;
-            colorEncoding = ScreenshotColorEncoding::BT2020_PQ;
+            colorEncoding = presentationEncoding == ce::presentation_color::Encoding::Hdr10Pq
+                                ? ScreenshotColorEncoding::BT2020_PQ
+                                : ScreenshotColorEncoding::SRGB;
             swapPackedRedBlue = true;
             break;
         case VK_FORMAT_R16G16B16A16_SFLOAT:
@@ -2223,6 +2240,11 @@ bool TakeVulkanScreenshot(DeviceDispatch* disp, VkDevice device, VkQueue queue, 
         default:
             HookLog("[Screenshot] Vulkan: Unsupported format %u", static_cast<unsigned>(format));
             return false;
+    }
+    if (presentationEncoding == ce::presentation_color::Encoding::Unsupported) {
+        HookLog("[Screenshot] Vulkan: Unsupported presentation contract format=%u colorSpace=%u",
+                static_cast<unsigned>(format), static_cast<unsigned>(colorSpace));
+        return false;
     }
 
     const uint32_t queueFamilyIndex = VulkanLayerState::Get().GetQueueFamilyIndex(queue);

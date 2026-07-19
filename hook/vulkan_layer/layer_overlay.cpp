@@ -18,6 +18,7 @@
 #include "../common/system_metrics.h"
 #include "layer_main.h"
 #include "vulkan_layer.h"
+#include "vulkan_presentation_color.h"
 
 #include "../common/input_manager.h"
 
@@ -60,6 +61,7 @@ struct OverlayState {
     std::vector<VkImage> swapchainImages;
     VkExtent2D extent = {0, 0};
     VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
+    VkColorSpaceKHR colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     PerformanceMetrics* metrics = nullptr;
     bool needsWindowHook = false;
     uint32_t queueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -193,7 +195,8 @@ static void CleanupOverlayState(OverlayState& state, VkDevice device, DeviceDisp
     LayerLog("Vulkan Layer: Partial cleanup complete");
 }
 
-void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkExtent2D extent,
+void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat format, VkColorSpaceKHR colorSpace,
+                       VkExtent2D extent,
                        uint32_t imageCount, VkImage* images, HWND window) {
     LayerLog(
         "Vulkan Layer: InitializeOverlay ENTRY(device=%p, images=%d, window=%p, "
@@ -229,6 +232,12 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
         g_OverlayStates.erase(existing);
         SyncOverlayActiveFlagLocked();
     }
+    const auto presentationEncoding = ce::presentation_color::ResolveVulkan(format, colorSpace);
+    if (presentationEncoding == ce::presentation_color::Encoding::Unsupported) {
+        LayerLog("Vulkan Layer: [Error] Unsupported overlay presentation contract format=%d colorSpace=%d", format,
+                 colorSpace);
+        return;
+    }
 
     LayerLog("Vulkan Layer: InitializeOverlay - Getting instance dispatch...");
     InstanceDispatch* instDisp = VulkanLayerState::Get().GetInstanceDispatch(
@@ -241,6 +250,7 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     state.physicalDevice = disp->physicalDevice;
     state.instance = VulkanLayerState::Get().GetInstanceFromPhysicalDevice(disp->physicalDevice);
     state.format = format;
+    state.colorSpace = colorSpace;
     state.extent = extent;
     state.swapchainImages.assign(images, images + imageCount);
     state.needsWindowHook = (window == nullptr);
@@ -402,13 +412,13 @@ void InitializeOverlay(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
     const char* apiName = DetectTranslatedGraphicsAPIName();
     state.overlayAdapter->SetGraphicsAPI(apiName);
 
-    // Detect HDR from swapchain format
-    bool isHDR = (state.format == VK_FORMAT_R16G16B16A16_SFLOAT || state.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 ||
-                  state.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+    const bool isHDR = ce::presentation_color::IsHDR(presentationEncoding);
     int rtvFormat = 0;
     if (state.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || state.format == VK_FORMAT_A2R10G10B10_UNORM_PACK32)
         rtvFormat = 24;  // Maps to DXGI_FORMAT_R10G10B10A2_UNORM for HDR10/PQ
     state.overlayAdapter->SetHDR(isHDR, rtvFormat);
+    LayerLog("Vulkan Layer: Overlay presentation contract format=%d colorSpace=%d encoding=%s", state.format,
+             state.colorSpace, ce::presentation_color::Describe(presentationEncoding));
 
     LayerLog("Vulkan Layer: InitializeOverlay - Graphics API set");
 

@@ -106,6 +106,10 @@ bool DX12_HasFFXPresentCallbackBridgeWithOriginal(void* bridgeKey);
 bool DX12_IsFFXPresentCallbackBridgeCallback(ce::ffx_api::PresentCallback callback);
 void DX12_ClearFFXPresentCallbackBridge(void* bridgeKey);
 void DX12_TryCacheRuntimeOwnedCallbackHDRStateFromSwapchain(void* swapChain);
+// Runtime-owned FG/UI resources do not carry a DXGI color space. Resolve their
+// HDR interpretation from the last validated real-swapchain presentation
+// contract instead of inferring content from an R10/FP16 storage format.
+bool DX12_ResolveRuntimeOwnedOverlayTargetHDRState(DXGI_FORMAT format);
 // Capture the queue supplied in an FFX FrameGenerationSwapChain DX12 creation descriptor. Normally this exact
 // queue owns direct work. If it is proven to be a Streamline wrapper, CE may use the already-validated real
 // original game queue on the target resource's device (the wrapper's underlying submission path).

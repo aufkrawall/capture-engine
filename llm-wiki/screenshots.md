@@ -1,6 +1,6 @@
 # Screenshot Capture And Publication
 
-Last cross-checked: 2026-07-19 (native HDR versus forced-SDR output policy, split-device WGC readback ownership, idle-inject fallback, shared ABI 37/request-specific completion, raw payload v2, WIC PNG, and libaom 10-bit 4:4:4 AVIF)
+Last cross-checked: 2026-07-19 (presentation-contract-aware inject/WGC source encoding, native HDR versus forced-SDR output policy, split-device WGC readback ownership, idle-inject fallback, shared ABI 37/request-specific completion, WIC PNG, and libaom 10-bit 4:4:4 AVIF)
 
 Primary sources:
 - `common/shared_defs.h`
@@ -25,13 +25,15 @@ The request state is explicit: request ID, completed request ID, `Idle|Pending|W
 
 - BGRA8 or RGBA8 with sRGB.
 - R10G10B10A2 with BT.2020/PQ.
-- RGBA16F with linear scRGB.
+- R10G10B10A2 with SDR BT.709/G2.2 or sRGB.
+- RGBA16F with linear scRGB, distinguished as HDR scene content or an SDR presentation.
 
 Both producer and consumer require dimensions `1..16384`, checked 64-bit size arithmetic, a format-aligned row pitch no smaller than the packed row, bounded extra pitch, an exact payload size, and an exact file size. Reads must be complete. Corrupt, truncated, mismatched-request, unknown-format, and overflowed payloads are rejected before allocation or encoding.
 
 ## Encoding And Color
 
 - SDR payloads are encoded through WIC as PNG.
+- SDR R10 is converted from its declared G2.2 or sRGB transfer to a normal sRGB PNG; SDR FP16 is interpreted as linear Rec.709 and converted directly to sRGB. Neither is mislabeled as HDR merely because its storage has 10-bit/FP16 precision.
 - HDR payloads are converted under strict floating-point flags into `YUV444P10LE` and encoded as AVIF with source-built `libaom-av1`.
 - Packed R10 input is treated as full-range BT.2020/PQ RGB and converted directly to full-range BT.2020/PQ YUV.
 - FP16 scRGB is interpreted as linear BT.709, transformed to linear BT.2020, scaled at 80 nits per scRGB unit, then encoded with ST.2084 before YUV conversion.
@@ -43,6 +45,8 @@ PNG/AVIF files use the shared collision-safe output reservation described in `re
 ## Backend Invariants
 
 D3D9, D3D10/11, D3D12, OpenGL, and Vulkan all route mapped pixels through the same request-ID worker boundary. Graphics readback may remain synchronous, but filesystem work is not detached and the mapped memory is never referenced after the backend returns. There is no file-size polling, stable-size heuristic, fixed sleep, unchecked BMP parsing, or replace-existing write to an unreserved destination.
+
+Modern inject backends resolve the presentation contract rather than the texture format alone: successful DXGI `SetColorSpace1` calls distinguish SDR R10, HDR10/PQ R10, and linear scRGB; Vulkan uses the swapchain's `VkColorSpaceKHR`. The WGC fallback passes the captured frame's HDR state into R10/FP16 payload classification. Unsupported format/color-space combinations fail instead of publishing a wrong-color file.
 
 Desktop fallback must not wait 15 seconds merely because the injector service exists. The host validates the shared mapping and skips the hook request immediately when `GetSourcePid()==0`. HDR desktop fallback uses WGC. A split-device WGC frame is a consumer-side shared texture published at keyed-mutex key 1: screenshot readback queries the texture's owning D3D11 device/context, acquires key 1 before `CopyResource`/`Map`, and releases key 0 afterward. Using the bootstrap device or omitting mutex ownership can report a successful readback of the allocation's initial all-black contents.
 
