@@ -294,13 +294,20 @@ inline bool MatchesProcessName(const WhitelistEntry& entry, const std::string& p
 }
 
 enum class ApplicationVideoCapture : uint8_t {
-    kGlobal = 0,
+    kInherit = 0,
     kInject,
     kWgc,
     kDxgiDup,
     kNone
 };
 
+enum class ApplicationDllInjection : uint8_t {
+    kWhenNeeded = 0,
+    kAlways,
+    kNever
+};
+
+// Internal adapter for the injector's established full/overlay-only lists.
 enum class ApplicationInjectionMode : uint8_t {
     kCapture = 0,
     kOverlay,
@@ -314,8 +321,10 @@ struct ApplicationProfile {
     WhitelistEntry target;
     ApplicationVideoCapture videoCapture = ApplicationVideoCapture::kNone;
     ApplicationVideoCapture resolvedVideoCapture = ApplicationVideoCapture::kNone;
+    ApplicationDllInjection dllInjection = ApplicationDllInjection::kNever;
     ApplicationInjectionMode injectionMode = ApplicationInjectionMode::kNone;
     bool videoCaptureExplicit = false;
+    bool legacyInjectionSyntax = false;
     bool legacy = false;
 };
 

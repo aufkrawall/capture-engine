@@ -282,8 +282,8 @@ static bool TargetsOverlap(const WhitelistEntry& lhs, const WhitelistEntry& rhs)
     return false;
 }
 
-static ApplicationInjectionMode ParseApplicationInjectionMode(const std::string& section, std::string value,
-                                                               bool legacy) {
+static ApplicationInjectionMode ParseLegacyApplicationInjectionMode(const std::string& section, std::string value,
+                                                                     bool legacy) {
     if (legacy)
         return ApplicationInjectionMode::kCapture;
 
@@ -299,12 +299,26 @@ static ApplicationInjectionMode ParseApplicationInjectionMode(const std::string&
     return ApplicationInjectionMode::kNone;
 }
 
+static ApplicationDllInjection ParseApplicationDllInjection(const std::string& section, std::string value) {
+    value = Lowercase(Trim(value));
+    std::replace(value.begin(), value.end(), '-', '_');
+    if (value == "when_needed")
+        return ApplicationDllInjection::kWhenNeeded;
+    if (value == "always")
+        return ApplicationDllInjection::kAlways;
+    if (value.empty() || value == "never")
+        return ApplicationDllInjection::kNever;
+
+    LogInvalidConfigBoundary(section.c_str(), "dll_injection", value, "never");
+    return ApplicationDllInjection::kNever;
+}
+
 static ApplicationVideoCapture ParseApplicationVideoCapture(const std::string& section, std::string value,
                                                              ApplicationVideoCapture fallback) {
     value = Lowercase(Trim(value));
     std::replace(value.begin(), value.end(), '-', '_');
-    if (value == "global" || value == "default")
-        return ApplicationVideoCapture::kGlobal;
+    if (value == "inherit" || value == "global" || value == "default")
+        return ApplicationVideoCapture::kInherit;
     if (value == "inject")
         return ApplicationVideoCapture::kInject;
     if (value == "wgc" || value == "screengrab" || value == "framegrab")
@@ -314,7 +328,7 @@ static ApplicationVideoCapture ParseApplicationVideoCapture(const std::string& s
     if (value == "none" || value == "off" || value == "disabled")
         return ApplicationVideoCapture::kNone;
 
-    const char* fallbackName = fallback == ApplicationVideoCapture::kGlobal ? "global" : "none";
+    const char* fallbackName = fallback == ApplicationVideoCapture::kInherit ? "inherit" : "none";
     LogInvalidConfigBoundary(section.c_str(), "video_capture", value, fallbackName);
     return fallback;
 }
@@ -328,7 +342,7 @@ static ApplicationVideoCapture CaptureMethodToApplicationMode(const std::string&
         return ApplicationVideoCapture::kDxgiDup;
     if (IsVideoCaptureDisabledMethod(method))
         return ApplicationVideoCapture::kNone;
-    return ApplicationVideoCapture::kGlobal;
+    return ApplicationVideoCapture::kInherit;
 }
 
 // Helper to parse bool
@@ -582,24 +596,40 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             return false;
         }
 
-        std::string injectionValue = "capture";
-        if (!legacyProfile) {
-            injectionValue = ReadLiteralIniValue(path, section, "injection_mode", kMissingProfileValue);
-            if (injectionValue == kMissingProfileValue) {
-                // Compatibility with profiles written before injection_mode
-                // became the documented name.
-                injectionValue = ReadLiteralIniValue(path, section, "injection", "none");
-            }
-        }
-
         ApplicationProfile profile;
         profile.section = section;
         profile.target = std::move(target);
         profile.legacy = legacyProfile;
-        profile.injectionMode = ParseApplicationInjectionMode(section, injectionValue, legacyProfile);
-        if (!profile.target.HasProcess() && profile.injectionMode != ApplicationInjectionMode::kNone) {
-            LogApplicationProfileWarning(section, "cannot inject without a process name; using injection_mode=none");
+        if (legacyProfile) {
+            profile.legacyInjectionSyntax = true;
+            profile.injectionMode = ParseLegacyApplicationInjectionMode(section, "capture", true);
+        } else {
+            const std::string dllInjectionValue =
+                ReadLiteralIniValue(path, section, "dll_injection", kMissingProfileValue);
+            if (dllInjectionValue != kMissingProfileValue) {
+                profile.dllInjection = ParseApplicationDllInjection(section, dllInjectionValue);
+            } else {
+                std::string injectionValue =
+                    ReadLiteralIniValue(path, section, "injection_mode", kMissingProfileValue);
+                if (injectionValue == kMissingProfileValue)
+                    injectionValue = ReadLiteralIniValue(path, section, "injection", kMissingProfileValue);
+                if (injectionValue != kMissingProfileValue) {
+                    profile.legacyInjectionSyntax = true;
+                    profile.injectionMode =
+                        ParseLegacyApplicationInjectionMode(section, injectionValue, false);
+                }
+            }
+        }
+
+        const bool injectionRequested =
+            profile.legacyInjectionSyntax ? profile.injectionMode != ApplicationInjectionMode::kNone
+                                          : profile.dllInjection != ApplicationDllInjection::kNever;
+        if (!profile.target.HasProcess() && injectionRequested) {
+            const char* fallback = profile.legacyInjectionSyntax ? "injection_mode=none" : "dll_injection=never";
+            LogApplicationProfileWarning(section,
+                                         std::string("cannot inject without a process name; using ") + fallback);
             profile.injectionMode = ApplicationInjectionMode::kNone;
+            profile.dllInjection = ApplicationDllInjection::kNever;
         }
 
         const std::string videoValue =
@@ -607,8 +637,9 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
                           : ReadLiteralIniValue(path, section, "video_capture", kMissingProfileValue);
         profile.videoCaptureExplicit = videoValue != kMissingProfileValue;
         const ApplicationVideoCapture compatibilityFallback =
-            (legacyProfile || profile.injectionMode != ApplicationInjectionMode::kNone)
-                ? ApplicationVideoCapture::kGlobal
+            (legacyProfile ||
+             (profile.legacyInjectionSyntax && profile.injectionMode != ApplicationInjectionMode::kNone))
+                ? ApplicationVideoCapture::kInherit
                 : ApplicationVideoCapture::kNone;
         profile.videoCapture = profile.videoCaptureExplicit
                                    ? ParseApplicationVideoCapture(section, videoValue, compatibilityFallback)
@@ -847,23 +878,37 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             profileCaptureMethod = NormalizeCaptureMethod(profileOverride);
 
         ApplicationVideoCapture resolved = profile.videoCapture;
-        if (resolved == ApplicationVideoCapture::kGlobal) {
+        const bool injectedVideoAllowed =
+            profile.legacyInjectionSyntax ? profile.injectionMode == ApplicationInjectionMode::kCapture
+                                          : profile.dllInjection != ApplicationDllInjection::kNever;
+        if (resolved == ApplicationVideoCapture::kInherit) {
             resolved = CaptureMethodToApplicationMode(profileCaptureMethod);
-            if (resolved == ApplicationVideoCapture::kGlobal) {
-                resolved = profile.injectionMode == ApplicationInjectionMode::kCapture
-                               ? ApplicationVideoCapture::kInject
-                               : ApplicationVideoCapture::kWgc;
+            if (resolved == ApplicationVideoCapture::kInherit) {
+                resolved = injectedVideoAllowed ? ApplicationVideoCapture::kInject : ApplicationVideoCapture::kWgc;
             }
         }
 
-        if (resolved == ApplicationVideoCapture::kInject &&
-            profile.injectionMode != ApplicationInjectionMode::kCapture) {
+        if (resolved == ApplicationVideoCapture::kInject && !injectedVideoAllowed) {
+            const char* permission = profile.legacyInjectionSyntax ? "injection_mode=capture"
+                                                                   : "dll_injection=when_needed or always";
             LogApplicationProfileWarning(
-                profile.section,
-                "requests injected video but injection_mode is not capture; this profile has no video route");
+                profile.section, std::string("requests injected video but requires ") + permission +
+                                     "; this profile has no video route");
             resolved = ApplicationVideoCapture::kNone;
         }
         profile.resolvedVideoCapture = resolved;
+
+        if (!profile.legacyInjectionSyntax) {
+            if (profile.dllInjection == ApplicationDllInjection::kNever) {
+                profile.injectionMode = ApplicationInjectionMode::kNone;
+            } else if (resolved == ApplicationVideoCapture::kInject) {
+                profile.injectionMode = ApplicationInjectionMode::kCapture;
+            } else if (profile.dllInjection == ApplicationDllInjection::kAlways) {
+                profile.injectionMode = ApplicationInjectionMode::kOverlay;
+            } else {
+                profile.injectionMode = ApplicationInjectionMode::kNone;
+            }
+        }
 
         if (_stricmp(profile.section.c_str(), overrideSection.c_str()) != 0)
             continue;

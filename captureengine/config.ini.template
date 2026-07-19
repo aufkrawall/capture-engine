@@ -409,7 +409,7 @@ dx12_focus_analysis=false
 ; APPLICATION PROFILES
 ; =============================================================================
 
-; Profiles keep one application's video route, injection mode, app audio, and
+; Profiles keep one application's video source, DLL injection policy, app audio, and
 ; setting overrides together. Use any clear name after "Profile.". There is no
 ; fixed limit.
 ;
@@ -434,24 +434,37 @@ dx12_focus_analysis=false
 ;
 ;[Profile.My Game]
 ;process=game.exe
-;window_title=
-;window_match=exact
-; How video is captured for this application:
-; global = follow capture_method in [Capture].
-;          When capture_method=auto, this uses injection if injection_mode=capture;
-;          otherwise it uses WGC.
-; inject = capture through the injected DLL. This requires injection_mode=capture.
+; Optional. Use these only when the process name alone does not identify the
+; right window.
+;window_title=My Game
+;window_match=contains
+;
+; Choose the video source for this application:
+; inherit = use capture_method from [Capture]. With auto, when_needed or always
+;           uses injected capture; never uses WGC.
+; inject = capture through the injected DLL. This requires dll_injection to be
+;          when_needed or always.
 ; wgc = capture this window with Windows Graphics Capture.
 ; dxgi_dup = capture this window's monitor with DXGI Desktop Duplication.
-; none = this profile does not provide a video target.
-;video_capture=global
-; Whether CaptureEngine injects its DLL into this application:
-; capture = allow injected video, the injected overlay, and graphics overrides.
-; overlay = inject the overlay and graphics overrides, without injected video.
-; none = do not inject. App audio still works.
-; Injection can trigger anti-cheat protection. Do not use capture or overlay mode
-; with multiplayer or anti-cheat software unless you know it is permitted.
-;injection_mode=capture
+; none = do not capture video for this profile.
+;video_capture=inherit
+;
+; Choose when CaptureEngine may inject its DLL. This is separate from the video
+; source above:
+; when_needed = inject only when the selected video source is inject.
+; always = also inject with WGC, DXGI Duplication, or no video so the injected
+;          overlay and graphics overrides can work.
+; never = do not inject. App audio and non-injected video still work.
+;dll_injection=never
+;
+; DLL injection can trigger anti-cheat protection. Use never for multiplayer or
+; anti-cheat software unless you know injection is permitted.
+;
+; Common combinations:
+; video_capture=inject   + dll_injection=when_needed = injected capture.
+; video_capture=wgc      + dll_injection=never       = WGC without injection.
+; video_capture=wgc      + dll_injection=always      = WGC with the injected overlay.
+;
 ;audio_enabled=true
 ;audio_track=3
 ;audio_codec=aac
@@ -473,8 +486,23 @@ dx12_focus_analysis=false
 ; injection, show the desktop warning, and record its audio to tracks 1 and 2.
 ;[Profile.hots]
 ;process=HeroesOfTheStorm_x64.exe
-;injection_mode=none
 ;video_capture=dxgi_dup
+;dll_injection=never
 ;DesktopOverlay.enabled=true
 ;audio_enabled=true
 ;audio_track=1,2
+
+; Example: capture through the injected DLL. Injection is used because the
+; selected video source needs it; the injected overlay and graphics overrides
+; are available as well.
+;[Profile.Injected Example]
+;process=InjectedGame.exe
+;video_capture=inject
+;dll_injection=when_needed
+
+; Example: capture a game's monitor through DXGI Desktop Duplication while
+; keeping DLL injection enabled for the injected overlay and graphics overrides.
+;[Profile.DXGI Overlay Example]
+;process=DxgiOverlayGame.exe
+;video_capture=dxgi_dup
+;dll_injection=always

@@ -176,23 +176,23 @@ TEST_F(ConfigOverrideTest, NamedProfilesProvideAllApplicationRoutesWithoutANumer
         "[Profile.Inject Game]\n"
         "process=inject-game.exe\n"
         "video_capture=inject\n"
-        "injection_mode=capture\n"
+        "dll_injection=when_needed\n"
         "[Profile.Window Game]\n"
         "process=window-game.exe\n"
         "window_title=The Window Game\n"
         "window_match=contains\n"
         "video_capture=wgc\n"
-        "injection_mode=overlay\n"
+        "dll_injection=always\n"
         "audio_enabled=true\n"
         "audio_track=9\n"
         "[Profile.Desktop Game]\n"
         "process=desktop-game.exe\n"
         "video_capture=dxgi_dup\n"
-        "injection_mode=none\n"
+        "dll_injection=never\n"
         "[Profile.Audio Only]\n"
         "process=audio-only.exe\n"
         "video_capture=none\n"
-        "injection_mode=none\n"
+        "dll_injection=never\n"
         "audio_enabled=true\n"
         "audio_track=10\n");
 
@@ -241,7 +241,7 @@ TEST_F(ConfigOverrideTest, DesktopOverlaySettingsCanBeOverriddenByApplicationPro
         "[Profile.Game]\n"
         "process=game.exe\n"
         "video_capture=wgc\n"
-        "injection_mode=none\n"
+        "dll_injection=never\n"
         "DesktopOverlay.enabled=true\n"
         "DesktopOverlay.size=28\n"
         "DesktopOverlay.pad=16\n"
@@ -283,7 +283,7 @@ TEST_F(ConfigOverrideTest, CanonicalProfileOverridesEveryLegacyRouteForTheSameTa
         "[Profile.Game]\n"
         "process=game.exe\n"
         "video_capture=none\n"
-        "injection_mode=none\n");
+        "dll_injection=never\n");
 
     AppConfig config;
     LoadConfig(tempConfigFile, config, "game.exe");
@@ -296,12 +296,12 @@ TEST_F(ConfigOverrideTest, CanonicalProfileOverridesEveryLegacyRouteForTheSameTa
     EXPECT_EQ(config.captureMethod, "none");
 }
 
-TEST_F(ConfigOverrideTest, InjectVideoRequiresCaptureInjectionPermission) {
+TEST_F(ConfigOverrideTest, InjectVideoRequiresDllInjectionPermission) {
     WriteConfig(
         "[Profile.Game]\n"
         "process=game.exe\n"
         "video_capture=inject\n"
-        "injection_mode=none\n");
+        "dll_injection=never\n");
 
     AppConfig config;
     LoadConfig(tempConfigFile, config, "game.exe");
@@ -317,11 +317,11 @@ TEST_F(ConfigOverrideTest, LaterOverlappingNamedProfileWinsDeterministically) {
         "[Profile.First]\n"
         "process=game.exe\n"
         "video_capture=wgc\n"
-        "injection_mode=overlay\n"
+        "dll_injection=always\n"
         "[Profile.Second]\n"
         "process=GAME.EXE\n"
         "video_capture=dxgi_dup\n"
-        "injection_mode=none\n"
+        "dll_injection=never\n"
         "Video.fps=81\n");
 
     AppConfig config;
@@ -349,7 +349,107 @@ TEST_F(ConfigOverrideTest, LegacyProfileInjectionKeyRemainsSupported) {
     EXPECT_TRUE(config.overlayWhitelist.empty());
 }
 
-TEST_F(ConfigOverrideTest, ProfileWithoutInjectionModeDoesNotInject) {
+TEST_F(ConfigOverrideTest, DllInjectionPolicyIsIndependentFromTheVideoSource) {
+    WriteConfig(
+        "[Capture]\n"
+        "capture_method=auto\n"
+        "[Profile.Inherit]\n"
+        "process=inherit.exe\n"
+        "video_capture=inherit\n"
+        "dll_injection=when_needed\n"
+        "[Profile.Global Alias]\n"
+        "process=global-alias.exe\n"
+        "video_capture=global\n"
+        "dll_injection=when_needed\n"
+        "[Profile.Screen When Needed]\n"
+        "process=screen-needed.exe\n"
+        "video_capture=wgc\n"
+        "dll_injection=when_needed\n"
+        "[Profile.Screen Always]\n"
+        "process=screen-always.exe\n"
+        "video_capture=wgc\n"
+        "dll_injection=always\n"
+        "[Profile.DXGI Always]\n"
+        "process=dxgi-always.exe\n"
+        "video_capture=dxgi_dup\n"
+        "dll_injection=always\n"
+        "[Profile.Overlay Only]\n"
+        "process=overlay-only.exe\n"
+        "dll_injection=always\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    auto HasProcess = [](const std::vector<WhitelistEntry>& entries, const char* process) {
+        return std::any_of(entries.begin(), entries.end(),
+                           [&](const WhitelistEntry& entry) { return entry.pattern == process; });
+    };
+    auto FindProfile = [&](const char* section) -> const ApplicationProfile* {
+        const auto found = std::find_if(config.applicationProfiles.begin(), config.applicationProfiles.end(),
+                                        [&](const ApplicationProfile& profile) { return profile.section == section; });
+        return found == config.applicationProfiles.end() ? nullptr : &*found;
+    };
+
+    EXPECT_TRUE(HasProcess(config.gameWhitelist, "inherit.exe"));
+    EXPECT_TRUE(HasProcess(config.gameWhitelist, "global-alias.exe"));
+    EXPECT_FALSE(HasProcess(config.gameWhitelist, "screen-needed.exe"));
+    EXPECT_FALSE(HasProcess(config.overlayWhitelist, "screen-needed.exe"));
+    EXPECT_TRUE(HasProcess(config.overlayWhitelist, "screen-always.exe"));
+    EXPECT_TRUE(HasProcess(config.overlayWhitelist, "dxgi-always.exe"));
+    EXPECT_TRUE(HasProcess(config.overlayWhitelist, "overlay-only.exe"));
+
+    const ApplicationProfile* overlayOnly = FindProfile("Profile.Overlay Only");
+    ASSERT_NE(overlayOnly, nullptr);
+    EXPECT_FALSE(overlayOnly->videoCaptureExplicit);
+    EXPECT_EQ(overlayOnly->resolvedVideoCapture, ApplicationVideoCapture::kNone);
+
+    LoadConfig(tempConfigFile, config, "dxgi-always.exe");
+    EXPECT_EQ(config.captureMethod, "dxgi_dup");
+
+    LoadConfig(tempConfigFile, config, "overlay-only.exe");
+    EXPECT_EQ(config.captureMethod, "none");
+}
+
+TEST_F(ConfigOverrideTest, DllInjectionWinsOverCompatibilityInjectionKeys) {
+    WriteConfig(
+        "[Profile.Game]\n"
+        "process=game.exe\n"
+        "video_capture=inject\n"
+        "dll_injection=never\n"
+        "injection_mode=capture\n"
+        "injection=normal\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "game.exe");
+
+    ASSERT_EQ(config.applicationProfiles.size(), 1u);
+    EXPECT_EQ(config.applicationProfiles.front().dllInjection, ApplicationDllInjection::kNever);
+    EXPECT_FALSE(config.applicationProfiles.front().legacyInjectionSyntax);
+    EXPECT_EQ(config.applicationProfiles.front().resolvedVideoCapture, ApplicationVideoCapture::kNone);
+    EXPECT_TRUE(config.gameWhitelist.empty());
+    EXPECT_TRUE(config.overlayWhitelist.empty());
+    EXPECT_EQ(config.captureMethod, "none");
+}
+
+TEST_F(ConfigOverrideTest, InvalidDllInjectionFailsSafe) {
+    WriteConfig(
+        "[Profile.Game]\n"
+        "process=game.exe\n"
+        "video_capture=inject\n"
+        "dll_injection=sometimes\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "game.exe");
+
+    ASSERT_EQ(config.applicationProfiles.size(), 1u);
+    EXPECT_EQ(config.applicationProfiles.front().dllInjection, ApplicationDllInjection::kNever);
+    EXPECT_EQ(config.applicationProfiles.front().resolvedVideoCapture, ApplicationVideoCapture::kNone);
+    EXPECT_TRUE(config.gameWhitelist.empty());
+    EXPECT_TRUE(config.overlayWhitelist.empty());
+    EXPECT_EQ(config.captureMethod, "none");
+}
+
+TEST_F(ConfigOverrideTest, ProfileWithoutDllInjectionDoesNotInject) {
     WriteConfig(
         "[Profile.1]\n"
         "Process=game.exe\n"
@@ -375,7 +475,7 @@ TEST_F(ConfigOverrideTest, ProfilesCombineAppAudioAndQualifiedOverrides) {
         "enabled=false\n"
         "[Profile.1]\n"
         "Process=game1.exe\n"
-        "injection_mode=none\n"
+        "dll_injection=never\n"
         "audio_enabled=true\n"
         "audio_track=3,4\n"
         "audio_codec=opus\n"

@@ -31,7 +31,7 @@ Primary sources:
 
 ## Content Catalog
 - `configuration.md`
-  - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, unlimited named application profiles for video/injection/window/audio/DesktopOverlay/override routing, audio/output semantics, validation rules, and maintenance invariants. Last verified 2026-07-18.
+  - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, unlimited named application profiles with separate video-source and DLL-injection policies, window/audio/DesktopOverlay/override routing, validation rules, and maintenance invariants. Last verified 2026-07-19.
 - `overlay-rendering.md`
   - Shared overlay layout/graph/font invariants, instant amber recording-start intent and live-state handoff, exact-ABI and sanity-checked telemetry, legacy DX8/DX9/DX10/OpenGL cache/state isolation, DirectDraw performance boundary, and runtime-validation stale-risk. Last verified 2026-07-18.
 - `handoff-dx12-32bit-crash.md`

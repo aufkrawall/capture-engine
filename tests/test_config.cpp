@@ -169,25 +169,45 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     ASSERT_NE(diagnosticsSection, std::string::npos);
     ASSERT_NE(profileExample, std::string::npos);
     EXPECT_GT(profileExample, diagnosticsSection);
-    EXPECT_NE(generatedText.find(";video_capture=global", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";video_capture=inherit", profileExample), std::string::npos);
+    EXPECT_EQ(generatedText.find(";video_capture=global", profileExample), std::string::npos);
     const size_t practicalProfileExample = generatedText.find(";[Profile.hots]", profileExample);
     ASSERT_NE(practicalProfileExample, std::string::npos);
     EXPECT_NE(generatedText.find(";process=HeroesOfTheStorm_x64.exe", practicalProfileExample), std::string::npos);
-    EXPECT_NE(generatedText.find(";injection_mode=none", practicalProfileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";dll_injection=never", practicalProfileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";video_capture=dxgi_dup", practicalProfileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";DesktopOverlay.enabled=true", practicalProfileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";audio_enabled=true", practicalProfileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";audio_track=1,2", practicalProfileExample), std::string::npos);
-    EXPECT_NE(generatedText.find(";injection_mode=capture", profileExample), std::string::npos);
+    const size_t injectedProfileExample = generatedText.find(";[Profile.Injected Example]", practicalProfileExample);
+    ASSERT_NE(injectedProfileExample, std::string::npos);
+    EXPECT_NE(generatedText.find(";process=InjectedGame.exe", injectedProfileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";video_capture=inject", injectedProfileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";dll_injection=when_needed", injectedProfileExample), std::string::npos);
+    const size_t dxgiOverlayProfileExample =
+        generatedText.find(";[Profile.DXGI Overlay Example]", injectedProfileExample);
+    ASSERT_NE(dxgiOverlayProfileExample, std::string::npos);
+    EXPECT_NE(generatedText.find(";process=DxgiOverlayGame.exe", dxgiOverlayProfileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";video_capture=dxgi_dup", dxgiOverlayProfileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";dll_injection=always", dxgiOverlayProfileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";dll_injection=never", profileExample), std::string::npos);
+    EXPECT_EQ(generatedText.find(";injection_mode=", profileExample), std::string::npos);
     EXPECT_EQ(generatedText.find(";injection=normal", profileExample), std::string::npos);
-    EXPECT_NE(generatedText.find("capture = allow injected video", profileExample), std::string::npos);
-    EXPECT_NE(generatedText.find("none = do not inject", profileExample), std::string::npos);
-    EXPECT_NE(generatedText.find(";window_title=", profileExample), std::string::npos);
-    EXPECT_NE(generatedText.find(";window_match=exact", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find("when_needed = inject only", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find("always = also inject", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find("never = do not inject", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find("video_capture=inject   + dll_injection=when_needed", profileExample),
+              std::string::npos);
+    EXPECT_NE(generatedText.find("video_capture=wgc      + dll_injection=never", profileExample),
+              std::string::npos);
+    EXPECT_NE(generatedText.find("video_capture=wgc      + dll_injection=always", profileExample),
+              std::string::npos);
+    EXPECT_NE(generatedText.find(";window_title=My Game", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";window_match=contains", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";audio_enabled=true", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";DesktopOverlay.enabled=true", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find("automatically a NOT RECORDING warning target"), std::string::npos);
-    EXPECT_NE(generatedText.find("Injection can trigger anti-cheat protection"), std::string::npos);
+    EXPECT_NE(generatedText.find("DLL injection can trigger anti-cheat protection"), std::string::npos);
     EXPECT_NE(generatedText.find("output_dir and screenshot_dir are independent"), std::string::npos);
     EXPECT_NE(generatedText.find("start_stop, which falls back to F9"), std::string::npos);
     EXPECT_NE(generatedText.find("Seconds between keyframes"), std::string::npos);
