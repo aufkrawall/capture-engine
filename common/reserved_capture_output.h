@@ -57,6 +57,14 @@ public:
     // handles are closed for the atomic ReplaceFile operation.
     bool CommitStagingFile(ReservedCaptureOutput& staging);
 
+    // Atomically rename this completely written staging reservation to a fresh,
+    // collision-safe output name. Unlike CommitStagingFile(), this does not expose a
+    // zero-byte final-extension placeholder while a slow encoder is still running.
+    bool PublishToNewPath(const std::filesystem::path& directory, const std::wstring& prefix,
+                          const std::wstring& extension);
+    bool PublishToNewPathForTesting(const std::filesystem::path& directory, const std::wstring& prefix,
+                                    const std::wstring& extension, const OutputNameSeed& seed);
+
     // Removes the output only if its current Windows file identity still matches the
     // placeholder created by this reservation.
     bool CleanupOwnedFile();
@@ -70,6 +78,8 @@ private:
 
     static ReservedCaptureOutput ReserveWithSeed(const std::filesystem::path& directory, const std::wstring& prefix,
                                                  const std::wstring& extension, const OutputNameSeed& seed);
+    bool PublishToNewPathWithSeed(const std::filesystem::path& directory, const std::wstring& prefix,
+                                  const std::wstring& extension, const OutputNameSeed& seed);
     static bool QueryIdentity(HANDLE handle, FileIdentity& identity);
     bool CurrentPathMatchesReservation() const;
     void Reset() noexcept;

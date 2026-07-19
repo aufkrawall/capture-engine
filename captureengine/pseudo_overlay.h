@@ -44,8 +44,8 @@ public:
     // Notify encoder overload (warning shown for 5 seconds).
     void TriggerEncoderOverloadWarning(uint32_t sustainFpsX100 = 0);
 
-    // Show brief screenshot notification (2 seconds).
-    void ShowScreenshotNotification();
+    // Show a brief screenshot result notification (2 seconds).
+    void ShowScreenshotNotification(bool succeeded);
 
     bool IsInitialized() const {
         return initialized_.load(std::memory_order_acquire);
@@ -147,6 +147,7 @@ private:
     std::atomic<ULONGLONG> overloadWarnUntil_{0};
     std::atomic<uint32_t> overloadWarnSustainFpsX100_{0};
     std::atomic<ULONGLONG> screenshotNotifyUntil_{0};
+    std::atomic<bool> screenshotNotificationSucceeded_{true};
     // Warning blink state
     bool warnActive_ = false;
     bool warnVisible_ = false;

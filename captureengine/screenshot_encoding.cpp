@@ -31,6 +31,20 @@ extern "C" {
 #include <vector>
 
 namespace ce::screenshot {
+
+AvifEncodingPlan SelectAvifEncodingPlan(uint32_t width, uint32_t height, uint32_t hardwareThreads) {
+    AvifEncodingPlan plan;
+    plan.threadCount = std::min<uint32_t>({16u, std::max(1u, hardwareThreads), std::max(1u, height)});
+    if (width >= 3840 && plan.threadCount >= 8) {
+        plan.tileColumnsLog2 = 2;
+    } else if (width >= 1920 && plan.threadCount >= 4) {
+        plan.tileColumnsLog2 = 1;
+    }
+    if (height >= 2160 && plan.threadCount >= 8)
+        plan.tileRowsLog2 = 1;
+    return plan;
+}
+
 namespace {
 
 using ce::capture_output::ReservedCaptureOutput;
@@ -98,9 +112,8 @@ bool FlushPath(const std::filesystem::path& path) {
     return flushed && closed;
 }
 
-ReservedCaptureOutput ReserveStagingOutput(const ReservedCaptureOutput& finalOutput) {
-    return ReservedCaptureOutput::Reserve(finalOutput.Path().parent_path(),
-                                          finalOutput.Path().stem().wstring() + L"_stage", L".part");
+ReservedCaptureOutput ReserveScreenshotStaging(const std::filesystem::path& outputDirectory) {
+    return ReservedCaptureOutput::Reserve(outputDirectory, L"screenshot_stage", L".part");
 }
 
 double LinearToSrgb(double value);
@@ -169,14 +182,17 @@ bool ConvertSdrToTightBgra(const RawScreenshot& screenshot, std::vector<uint8_t>
     return true;
 }
 
-bool SavePixelsAsPng(ReservedCaptureOutput& finalOutput, const RawScreenshot& screenshot) {
+bool SavePixelsAsPng(const std::filesystem::path& outputDirectory, const RawScreenshot& screenshot,
+                     std::filesystem::path& publishedPath) {
     std::vector<uint8_t> bgra;
-    if (!finalOutput || !ConvertSdrToTightBgra(screenshot, bgra))
+    if (!ConvertSdrToTightBgra(screenshot, bgra))
         return false;
 
-    ReservedCaptureOutput staging = ReserveStagingOutput(finalOutput);
-    if (!staging || !staging.ReleaseToWriter())
+    ReservedCaptureOutput staging = ReserveScreenshotStaging(outputDirectory);
+    if (!staging || !staging.ReleaseToWriter()) {
+        LogError("[Screenshot] PNG staging reservation failed: win32=%lu", static_cast<unsigned long>(GetLastError()));
         return false;
+    }
 
     IWICImagingFactory* factory = nullptr;
     IWICStream* stream = nullptr;
@@ -184,28 +200,70 @@ bool SavePixelsAsPng(ReservedCaptureOutput& finalOutput, const RawScreenshot& sc
     IWICBitmapFrameEncode* frame = nullptr;
     IPropertyBag2* options = nullptr;
     bool encoded = false;
+    const char* failureStage = "initialize WIC";
+    HRESULT failureResult = E_FAIL;
 
     do {
-        const HRESULT result =
+        failureStage = "create WIC factory";
+        failureResult =
             CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
-        if (FAILED(result) || FAILED(factory->CreateStream(&stream)) ||
-            FAILED(stream->InitializeFromFilename(staging.Path().c_str(), GENERIC_WRITE)) ||
-            FAILED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) ||
-            FAILED(encoder->Initialize(stream, WICBitmapEncoderNoCache)) ||
-            FAILED(encoder->CreateNewFrame(&frame, &options)) || FAILED(frame->Initialize(options)) ||
-            FAILED(frame->SetSize(screenshot.header.width, screenshot.header.height))) {
+        if (FAILED(failureResult))
             break;
-        }
+        failureStage = "create WIC stream";
+        failureResult = factory->CreateStream(&stream);
+        if (FAILED(failureResult))
+            break;
+        failureStage = "open PNG staging stream";
+        failureResult = stream->InitializeFromFilename(staging.Path().c_str(), GENERIC_WRITE);
+        if (FAILED(failureResult))
+            break;
+        failureStage = "create PNG encoder";
+        failureResult = factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder);
+        if (FAILED(failureResult))
+            break;
+        failureStage = "initialize PNG encoder";
+        failureResult = encoder->Initialize(stream, WICBitmapEncoderNoCache);
+        if (FAILED(failureResult))
+            break;
+        failureStage = "create PNG frame";
+        failureResult = encoder->CreateNewFrame(&frame, &options);
+        if (FAILED(failureResult))
+            break;
+        failureStage = "initialize PNG frame";
+        failureResult = frame->Initialize(options);
+        if (FAILED(failureResult))
+            break;
+        failureStage = "set PNG dimensions";
+        failureResult = frame->SetSize(screenshot.header.width, screenshot.header.height);
+        if (FAILED(failureResult))
+            break;
 
         WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat32bppBGRA;
-        if (FAILED(frame->SetPixelFormat(&pixelFormat)) || pixelFormat != GUID_WICPixelFormat32bppBGRA)
-            break;
-        const UINT rowPitch = screenshot.header.width * 4;
-        if (FAILED(
-                frame->WritePixels(screenshot.header.height, rowPitch, static_cast<UINT>(bgra.size()), bgra.data())) ||
-            FAILED(frame->Commit()) || FAILED(encoder->Commit()) || FAILED(stream->Commit(STGC_DEFAULT))) {
+        failureStage = "set PNG pixel format";
+        failureResult = frame->SetPixelFormat(&pixelFormat);
+        if (FAILED(failureResult) || pixelFormat != GUID_WICPixelFormat32bppBGRA) {
+            if (SUCCEEDED(failureResult))
+                failureResult = WINCODEC_ERR_UNSUPPORTEDPIXELFORMAT;
             break;
         }
+        const UINT rowPitch = screenshot.header.width * 4;
+        failureStage = "write PNG pixels";
+        failureResult =
+            frame->WritePixels(screenshot.header.height, rowPitch, static_cast<UINT>(bgra.size()), bgra.data());
+        if (FAILED(failureResult))
+            break;
+        failureStage = "commit PNG frame";
+        failureResult = frame->Commit();
+        if (FAILED(failureResult))
+            break;
+        failureStage = "commit PNG encoder";
+        failureResult = encoder->Commit();
+        if (FAILED(failureResult))
+            break;
+        failureStage = "commit PNG stream";
+        failureResult = stream->Commit(STGC_DEFAULT);
+        if (FAILED(failureResult))
+            break;
         encoded = true;
     } while (false);
 
@@ -215,10 +273,20 @@ bool SavePixelsAsPng(ReservedCaptureOutput& finalOutput, const RawScreenshot& sc
     SafeRelease(stream);
     SafeRelease(factory);
 
-    if (!encoded || !FlushPath(staging.Path()) || !finalOutput.CommitStagingFile(staging)) {
-        LogError("[Screenshot] PNG encoding or atomic publication failed");
+    if (!encoded) {
+        LogError("[Screenshot] PNG encode failed at '%s': 0x%08X", failureStage,
+                 static_cast<unsigned>(failureResult));
         return false;
     }
+    if (!FlushPath(staging.Path())) {
+        LogError("[Screenshot] PNG staging flush failed: win32=%lu", static_cast<unsigned long>(GetLastError()));
+        return false;
+    }
+    if (!staging.PublishToNewPath(outputDirectory, L"screenshot", L".png")) {
+        LogError("[Screenshot] PNG atomic publication failed: win32=%lu", static_cast<unsigned long>(GetLastError()));
+        return false;
+    }
+    publishedPath = staging.Path();
     return true;
 }
 
@@ -317,19 +385,50 @@ void RgbPqToYuv(double red, double green, double blue, Yuv10Pixel& converted) {
     converted.v = Quantize10(cr);
 }
 
-bool FillHdrYuvFrame(const RawScreenshot& screenshot, AVFrame* frame) {
+template <typename RowFunction>
+bool RunParallelRows(uint32_t height, uint32_t workerCount, const char* operation, RowFunction& processRow) {
+    std::atomic<bool> success{true};
+    std::vector<std::thread> workers;
+    workers.reserve(workerCount);
+    try {
+        for (uint32_t workerIndex = 0; workerIndex < workerCount; ++workerIndex) {
+            workers.emplace_back([&, workerIndex]() {
+                const uint32_t firstRow = static_cast<uint32_t>((static_cast<uint64_t>(height) * workerIndex) /
+                                                                workerCount);
+                const uint32_t endRow = static_cast<uint32_t>((static_cast<uint64_t>(height) * (workerIndex + 1)) /
+                                                              workerCount);
+                for (uint32_t row = firstRow; row < endRow && success.load(std::memory_order_relaxed); ++row) {
+                    if (!processRow(row)) {
+                        success.store(false, std::memory_order_relaxed);
+                        return;
+                    }
+                }
+            });
+        }
+    } catch (const std::system_error& error) {
+        success.store(false, std::memory_order_relaxed);
+        LogError("[Screenshot] %s worker creation failed: %s", operation, error.what());
+    }
+    for (std::thread& worker : workers) {
+        if (worker.joinable())
+            worker.join();
+    }
+    return success.load(std::memory_order_relaxed);
+}
+
+bool FillHdrYuvFrame(const RawScreenshot& screenshot, AVFrame* frame, uint32_t workerCount) {
     if (!frame)
         return false;
     const auto format = static_cast<ScreenshotPixelFormat>(screenshot.header.pixelFormat);
     if (format != ScreenshotPixelFormat::R10G10B10A2 && format != ScreenshotPixelFormat::RGBA16F)
         return false;
 
-    for (uint32_t row = 0; row < screenshot.header.height; ++row) {
+    const size_t pixelSize = BytesPerPixel(format);
+    auto convertRow = [&](uint32_t row) {
         const uint8_t* source = screenshot.pixels.data() + static_cast<size_t>(row) * screenshot.header.rowPitch;
         auto* yPlane = reinterpret_cast<uint16_t*>(frame->data[0] + static_cast<size_t>(row) * frame->linesize[0]);
         auto* uPlane = reinterpret_cast<uint16_t*>(frame->data[1] + static_cast<size_t>(row) * frame->linesize[1]);
         auto* vPlane = reinterpret_cast<uint16_t*>(frame->data[2] + static_cast<size_t>(row) * frame->linesize[2]);
-        const size_t pixelSize = BytesPerPixel(format);
         for (uint32_t column = 0; column < screenshot.header.width; ++column) {
             Yuv10Pixel converted{};
             if (!ConvertHdrPixelToYuv10(format, source + static_cast<size_t>(column) * pixelSize, converted))
@@ -338,7 +437,17 @@ bool FillHdrYuvFrame(const RawScreenshot& screenshot, AVFrame* frame) {
             uPlane[column] = converted.u;
             vPlane[column] = converted.v;
         }
-    }
+        return true;
+    };
+    const auto started = std::chrono::steady_clock::now();
+    if (!RunParallelRows(screenshot.header.height, workerCount, "HDR-to-PQ conversion", convertRow))
+        return false;
+    const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                                                                 started)
+                               .count();
+    LogInfo("[Screenshot] HDR-to-PQ conversion: %ux%u format=%u workers=%u duration=%.3fms",
+            screenshot.header.width, screenshot.header.height, static_cast<unsigned>(format), workerCount,
+            elapsedUs / 1000.0);
     return true;
 }
 
@@ -352,49 +461,23 @@ bool ConvertHdrToSdrScreenshot(const RawScreenshot& screenshot, float sdrWhiteNi
 
     const uint32_t outputRowPitch = screenshot.header.width * 4;
     std::vector<uint8_t> pixels(static_cast<size_t>(outputRowPitch) * screenshot.header.height);
-    std::atomic<bool> success{true};
     const unsigned hardwareThreads = std::max(1u, std::thread::hardware_concurrency());
     const unsigned workerCount =
         std::min<unsigned>({16u, hardwareThreads, std::max(1u, screenshot.header.height)});
-    std::vector<std::thread> workers;
-    workers.reserve(workerCount);
-    const auto started = std::chrono::steady_clock::now();
-    try {
-        struct ThreadJoinGuard {
-            std::vector<std::thread>& threads;
-            ~ThreadJoinGuard() {
-                for (std::thread& thread : threads) {
-                    if (thread.joinable())
-                        thread.join();
-                }
+    auto convertRow = [&](uint32_t row) {
+        const uint8_t* source = screenshot.pixels.data() + static_cast<size_t>(row) * screenshot.header.rowPitch;
+        auto* destination =
+            reinterpret_cast<Bgra8Pixel*>(pixels.data() + static_cast<size_t>(row) * outputRowPitch);
+        for (uint32_t column = 0; column < screenshot.header.width; ++column) {
+            if (!ConvertHdrPixelToSdrBgra(format, source + static_cast<size_t>(column) * pixelSize, sdrWhiteNits,
+                                          destination[column])) {
+                return false;
             }
-        } joinGuard{workers};
-        for (unsigned workerIndex = 0; workerIndex < workerCount; ++workerIndex) {
-            workers.emplace_back([&, workerIndex]() {
-                const uint32_t firstRow = static_cast<uint32_t>(
-                    (static_cast<uint64_t>(screenshot.header.height) * workerIndex) / workerCount);
-                const uint32_t endRow = static_cast<uint32_t>(
-                    (static_cast<uint64_t>(screenshot.header.height) * (workerIndex + 1)) / workerCount);
-                for (uint32_t row = firstRow; row < endRow && success.load(std::memory_order_relaxed); ++row) {
-                    const uint8_t* source =
-                        screenshot.pixels.data() + static_cast<size_t>(row) * screenshot.header.rowPitch;
-                    auto* destination = reinterpret_cast<Bgra8Pixel*>(
-                        pixels.data() + static_cast<size_t>(row) * outputRowPitch);
-                    for (uint32_t column = 0; column < screenshot.header.width; ++column) {
-                        if (!ConvertHdrPixelToSdrBgra(format, source + static_cast<size_t>(column) * pixelSize,
-                                                      sdrWhiteNits, destination[column])) {
-                            success.store(false, std::memory_order_relaxed);
-                            return;
-                        }
-                    }
-                }
-            });
         }
-    } catch (const std::system_error& error) {
-        LogError("[Screenshot] HDR->SDR worker creation failed: %s", error.what());
-        return false;
-    }
-    if (!success.load(std::memory_order_relaxed))
+        return true;
+    };
+    const auto started = std::chrono::steady_clock::now();
+    if (!RunParallelRows(screenshot.header.height, workerCount, "HDR-to-SDR conversion", convertRow))
         return false;
 
     const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
@@ -425,18 +508,20 @@ bool EncoderSupportsYuv444p10(const AVCodec* codec) {
     return false;
 }
 
-bool SaveHdrAvif(ReservedCaptureOutput& finalOutput, const RawScreenshot& screenshot) {
-    if (!finalOutput)
-        return false;
+bool SaveHdrAvif(const std::filesystem::path& outputDirectory, const RawScreenshot& screenshot,
+                 std::filesystem::path& publishedPath) {
+    const auto overallStarted = std::chrono::steady_clock::now();
     const AVCodec* codec = avcodec_find_encoder_by_name("libaom-av1");
     if (!EncoderSupportsYuv444p10(codec)) {
         LogError("[Screenshot] Source-built libaom-av1 10-bit 4:4:4 encoder is unavailable");
         return false;
     }
 
-    ReservedCaptureOutput staging = ReserveStagingOutput(finalOutput);
-    if (!staging || !staging.ReleaseToWriter())
+    ReservedCaptureOutput staging = ReserveScreenshotStaging(outputDirectory);
+    if (!staging || !staging.ReleaseToWriter()) {
+        LogError("[Screenshot] AVIF staging reservation failed: win32=%lu", static_cast<unsigned long>(GetLastError()));
         return false;
+    }
     const std::string stagingPath = WideToUtf8(staging.Path().wstring());
     if (stagingPath.empty())
         return false;
@@ -449,6 +534,9 @@ bool SaveHdrAvif(ReservedCaptureOutput& finalOutput, const RawScreenshot& screen
     bool success = false;
     const char* failureStage = "initialize";
     int failureCode = 0;
+    int64_t encodeElapsedUs = 0;
+    const AvifEncodingPlan encodingPlan = SelectAvifEncodingPlan(
+        screenshot.header.width, screenshot.header.height, std::max(1u, std::thread::hardware_concurrency()));
 
     do {
         failureStage = "allocate AVIF muxer";
@@ -465,6 +553,7 @@ bool SaveHdrAvif(ReservedCaptureOutput& finalOutput, const RawScreenshot& screen
         codecContext->time_base = AVRational{1, 1};
         codecContext->framerate = AVRational{1, 1};
         codecContext->pix_fmt = AV_PIX_FMT_YUV444P10LE;
+        codecContext->thread_count = static_cast<int>(encodingPlan.threadCount);
         codecContext->gop_size = 1;
         codecContext->max_b_frames = 0;
         codecContext->color_primaries = AVCOL_PRI_BT2020;
@@ -478,18 +567,34 @@ bool SaveHdrAvif(ReservedCaptureOutput& finalOutput, const RawScreenshot& screen
         failureCode = av_dict_set(&options, "still-picture", "1", 0);
         if (failureCode < 0)
             break;
+        failureStage = "set libaom realtime usage option";
+        failureCode = av_dict_set(&options, "usage", "realtime", 0);
+        if (failureCode < 0)
+            break;
         failureStage = "set libaom cpu-used option";
-        failureCode = av_dict_set(&options, "cpu-used", "6", 0);
+        failureCode = av_dict_set(&options, "cpu-used", "8", 0);
         if (failureCode < 0)
             break;
         failureStage = "set libaom CRF option";
-        failureCode = av_dict_set(&options, "crf", "12", 0);
+        failureCode = av_dict_set(&options, "crf", "8", 0);
         if (failureCode < 0)
             break;
         failureStage = "set libaom row-mt option";
         failureCode = av_dict_set(&options, "row-mt", "1", 0);
         if (failureCode < 0)
             break;
+        if (encodingPlan.tileColumnsLog2 != 0) {
+            failureStage = "set libaom tile-columns option";
+            failureCode = av_dict_set_int(&options, "tile-columns", encodingPlan.tileColumnsLog2, 0);
+            if (failureCode < 0)
+                break;
+        }
+        if (encodingPlan.tileRowsLog2 != 0) {
+            failureStage = "set libaom tile-rows option";
+            failureCode = av_dict_set_int(&options, "tile-rows", encodingPlan.tileRowsLog2, 0);
+            if (failureCode < 0)
+                break;
+        }
         failureStage = "open libaom encoder";
         failureCode = avcodec_open2(codecContext, codec, &options);
         if (failureCode < 0)
@@ -534,7 +639,7 @@ bool SaveHdrAvif(ReservedCaptureOutput& finalOutput, const RawScreenshot& screen
             break;
         failureStage = "convert HDR pixels";
         failureCode = 0;
-        if (!FillHdrYuvFrame(screenshot, frame))
+        if (!FillHdrYuvFrame(screenshot, frame, encodingPlan.threadCount))
             break;
         failureStage = "open AVIF staging file";
         failureCode = avio_open(&formatContext->pb, stagingPath.c_str(), AVIO_FLAG_WRITE);
@@ -544,6 +649,7 @@ bool SaveHdrAvif(ReservedCaptureOutput& finalOutput, const RawScreenshot& screen
         failureCode = avformat_write_header(formatContext, nullptr);
         if (failureCode < 0)
             break;
+        const auto encodeStarted = std::chrono::steady_clock::now();
         failureStage = "submit AVIF frame";
         failureCode = avcodec_send_frame(codecContext, frame);
         if (failureCode < 0) {
@@ -606,6 +712,9 @@ bool SaveHdrAvif(ReservedCaptureOutput& finalOutput, const RawScreenshot& screen
         failureCode = avio_closep(&formatContext->pb);
         if (failureCode < 0)
             break;
+        encodeElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - encodeStarted)
+                              .count();
         success = true;
     } while (false);
 
@@ -630,10 +739,19 @@ bool SaveHdrAvif(ReservedCaptureOutput& finalOutput, const RawScreenshot& screen
         LogError("[Screenshot] AVIF staging flush failed: win32=%lu", static_cast<unsigned long>(GetLastError()));
         return false;
     }
-    if (!finalOutput.CommitStagingFile(staging)) {
+    if (!staging.PublishToNewPath(outputDirectory, L"screenshot", L".avif")) {
         LogError("[Screenshot] AVIF atomic publication failed: win32=%lu", static_cast<unsigned long>(GetLastError()));
         return false;
     }
+    publishedPath = staging.Path();
+    const auto totalElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                                    std::chrono::steady_clock::now() - overallStarted)
+                                    .count();
+    LogInfo("[Screenshot] AVIF pipeline: %ux%u mode=realtime cpu=8 crf=8 threads=%u tiles=%ux%u "
+            "encode=%.3fms total=%.3fms",
+            screenshot.header.width, screenshot.header.height, encodingPlan.threadCount,
+            1u << encodingPlan.tileColumnsLog2, 1u << encodingPlan.tileRowsLog2, encodeElapsedUs / 1000.0,
+            totalElapsedUs / 1000.0);
     return true;
 }
 
@@ -863,12 +981,7 @@ bool SaveRawScreenshot(const std::filesystem::path& outputDirectory, const RawSc
         (format == ScreenshotPixelFormat::R10G10B10A2 &&
          (encoding == ScreenshotColorEncoding::BT709_G22 || encoding == ScreenshotColorEncoding::SRGB)) ||
         (format == ScreenshotPixelFormat::RGBA16F && encoding == ScreenshotColorEncoding::LinearScRGBSdr)) {
-        ReservedCaptureOutput output = ReservedCaptureOutput::Reserve(outputDirectory, L"screenshot", L".png");
-        if (output && SavePixelsAsPng(output, screenshot)) {
-            publishedPath = output.Path();
-            return true;
-        }
-        return false;
+        return SavePixelsAsPng(outputDirectory, screenshot, publishedPath);
     }
     if (format != ScreenshotPixelFormat::R10G10B10A2 && format != ScreenshotPixelFormat::RGBA16F)
         return false;
@@ -876,19 +989,9 @@ bool SaveRawScreenshot(const std::filesystem::path& outputDirectory, const RawSc
         RawScreenshot converted;
         if (!ConvertHdrToSdrScreenshot(screenshot, sdrWhiteNits, converted))
             return false;
-        ReservedCaptureOutput output = ReservedCaptureOutput::Reserve(outputDirectory, L"screenshot", L".png");
-        if (output && SavePixelsAsPng(output, converted)) {
-            publishedPath = output.Path();
-            return true;
-        }
-        return false;
+        return SavePixelsAsPng(outputDirectory, converted, publishedPath);
     }
-    ReservedCaptureOutput output = ReservedCaptureOutput::Reserve(outputDirectory, L"screenshot", L".avif");
-    if (output && SaveHdrAvif(output, screenshot)) {
-        publishedPath = output.Path();
-        return true;
-    }
-    return false;
+    return SaveHdrAvif(outputDirectory, screenshot, publishedPath);
 }
 
 }  // namespace ce::screenshot

@@ -37,6 +37,7 @@ void EnsureDwmApi() {
 // ---- Palette (matching OBSIndicator exactly) ----
 static constexpr COLORREF kColWarnText = RGB(255, 20, 20);
 static constexpr COLORREF kColScreenshotText = RGB(20, 255, 20);
+static constexpr COLORREF kColScreenshotFailureText = RGB(255, 64, 64);
 static constexpr COLORREF kColStarting = RGB(255, 191, 0);
 
 namespace {
@@ -1078,6 +1079,7 @@ void PseudoOverlay::UpdateOverlay() {
     const auto textKind = ce::pseudo_overlay::SelectPseudoOverlayText(textInputs);
     const bool showStarting = textKind == ce::pseudo_overlay::OverlayTextKind::Starting;
     const bool showScreenshot = textKind == ce::pseudo_overlay::OverlayTextKind::Screenshot;
+    const bool screenshotSucceeded = screenshotNotificationSucceeded_.load(std::memory_order_relaxed);
     const bool showOverload = textKind == ce::pseudo_overlay::OverlayTextKind::EncoderOverload;
     const bool showW = textKind != ce::pseudo_overlay::OverlayTextKind::None;
     BYTE warnAlpha = 0;
@@ -1090,11 +1092,9 @@ void PseudoOverlay::UpdateOverlay() {
     }
     const std::string overloadMsg = FormatEncoderOverloadMessage(overloadWarnSustainFpsX100, overloadTargetFps);
     const char* msg = showStarting ? ce::recording_indicator::GetStartingText(recordingState)
-                      : showScreenshot ? "Screenshot saved!"
+                       : showScreenshot ? (screenshotSucceeded ? "Screenshot saved!" : "Screenshot failed!")
                       : showOverload   ? overloadMsg.c_str()
                                        : "NOT RECORDING";
-    bool isScreenshotMsg = showScreenshot;
-
     if (ghostActive) {
         warnAlpha = showW ? 255 : 0;
         if ((warnAlpha > 0) != lastWarnVis_ || ghostActive != lastOv_.ghost || msg != lastWarnMsg_)
@@ -1173,7 +1173,10 @@ void PseudoOverlay::UpdateOverlay() {
             DeleteObject(hK);
 
             SelectObject(hdcWarn_, fontWarn_);
-            SetTextColor(hdcWarn_, showStarting ? kColStarting : (isScreenshotMsg ? kColScreenshotText : kColWarnText));
+            SetTextColor(hdcWarn_, showStarting   ? kColStarting
+                                   : showScreenshot ? (screenshotSucceeded ? kColScreenshotText
+                                                                           : kColScreenshotFailureText)
+                                                    : kColWarnText);
             SetBkMode(hdcWarn_, TRANSPARENT);
 
             RECT rT = {S(10), S(5), warnW, warnH};
@@ -1596,7 +1599,8 @@ void PseudoOverlay::TriggerEncoderOverloadWarning(uint32_t sustainFpsX100) {
     PostRefresh();
 }
 
-void PseudoOverlay::ShowScreenshotNotification() {
+void PseudoOverlay::ShowScreenshotNotification(bool succeeded) {
+    screenshotNotificationSucceeded_.store(succeeded, std::memory_order_relaxed);
     screenshotNotifyUntil_.store(GetTickCount64() + 2000ULL);
     PostRefresh();
 }

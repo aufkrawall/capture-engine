@@ -102,6 +102,67 @@ TEST_F(ReservedCaptureOutputTest, AtomicCommitPublishesOnlyOwnedStagingReservati
     EXPECT_EQ(bytes, "complete-staging-payload");
 }
 
+TEST_F(ReservedCaptureOutputTest, AtomicNewPathPublicationNeverExposesAFinalPlaceholder) {
+    const ce::capture_output::OutputNameSeed stagingSeed{13380163200456ull, 43, 12};
+    const ce::capture_output::OutputNameSeed finalSeed{13380163200456ull, 43, 13};
+    auto staging =
+        ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"capture_stage", L"part",
+                                                                    stagingSeed);
+    ASSERT_TRUE(staging);
+    const std::filesystem::path stagingPath = staging.Path();
+    ASSERT_TRUE(staging.ReleaseToWriter());
+    {
+        std::ofstream writer(stagingPath, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(writer);
+        writer << "complete-staging-payload";
+    }
+
+    for (const auto& entry : std::filesystem::directory_iterator(directory))
+        EXPECT_NE(entry.path().extension(), L".png");
+    ASSERT_TRUE(staging.PublishToNewPathForTesting(directory, L"capture", L"png", finalSeed));
+    EXPECT_EQ(staging.Path().extension(), L".png");
+    EXPECT_FALSE(std::filesystem::exists(stagingPath));
+    std::ifstream published(staging.Path(), std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(published)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(bytes, "complete-staging-payload");
+}
+
+TEST_F(ReservedCaptureOutputTest, AtomicNewPathPublicationRetriesWithoutReplacingACollision) {
+    const ce::capture_output::OutputNameSeed finalSeed{13380163200456ull, 43, 14};
+    auto collision =
+        ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"capture", L"png", finalSeed);
+    ASSERT_TRUE(collision);
+    const std::filesystem::path collisionPath = collision.Path();
+    ASSERT_TRUE(collision.ReleaseToWriter());
+    {
+        std::ofstream writer(collisionPath, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(writer);
+        writer << "existing-output";
+    }
+    collision.Publish();
+
+    const ce::capture_output::OutputNameSeed stagingSeed{13380163200456ull, 43, 15};
+    auto staging =
+        ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"capture_stage", L"part",
+                                                                    stagingSeed);
+    ASSERT_TRUE(staging);
+    ASSERT_TRUE(staging.ReleaseToWriter());
+    {
+        std::ofstream writer(staging.Path(), std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(writer);
+        writer << "new-output";
+    }
+
+    ASSERT_TRUE(staging.PublishToNewPathForTesting(directory, L"capture", L"png", finalSeed));
+    EXPECT_NE(staging.Path(), collisionPath);
+    std::ifstream existing(collisionPath, std::ios::binary);
+    std::string existingBytes((std::istreambuf_iterator<char>(existing)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(existingBytes, "existing-output");
+    std::ifstream published(staging.Path(), std::ios::binary);
+    std::string publishedBytes((std::istreambuf_iterator<char>(published)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(publishedBytes, "new-output");
+}
+
 TEST_F(ReservedCaptureOutputTest, RejectsFilenameComponentsThatCouldEscapeTheCaptureDirectory) {
     const ce::capture_output::OutputNameSeed seed{13380163200456ull, 43, 11};
     EXPECT_FALSE(ce::capture_output::ReservedCaptureOutput::ReserveForTesting(directory, L"../capture", L"mkv", seed));

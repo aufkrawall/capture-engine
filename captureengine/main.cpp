@@ -1461,48 +1461,48 @@ int ControllerMain(HINSTANCE hInstance) {
                 } else if (msg.wParam == HOTKEY_ID_AUDIO_ONLY) {
                     ToggleAudioOnlyRecording();
                 } else if (msg.wParam == HOTKEY_ID_SCREENSHOT) {
-                    if (TakeScreenshot(g_Config.screenshotDir, g_Config.screenshotColorSpace)) {
-                        // Show notification in pseudo-overlay (WGC/desktop)
-                        if (g_PseudoOverlay) {
-                            g_PseudoOverlay->ShowScreenshotNotification();
-                        }
-                        // Show notification in inject overlay (hooked game)
-                        {
-                            HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-                            if (hDisc) {
-                                DiscoveryInfo* pDisc =
-                                    (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-                                if (ValidateDiscoveryInfo(pDisc)) {
-                                    uint32_t injPid = pDisc->GetInjectPid();
-                                    UnmapViewOfFile(pDisc);
-                                    CloseHandle(hDisc);
-                                    if (injPid != 0) {
-                                        wchar_t shmName[64];
-                                        GenerateSharedMemName(shmName, 64, injPid);
-                                        HANDLE hShm = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, shmName);
-                                        if (hShm) {
-                                            auto* pShm = (SharedMemoryLayout*)MapViewOfFile(
-                                                hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
-                                            if (pShm && ValidateSharedMemory(pShm)) {
-                                                pShm->runtimeState.notificationType.store(1, std::memory_order_release);
-                                                pShm->runtimeState.notificationExpiry.store(GetTickCount64() + 2000ULL,
-                                                                                            std::memory_order_release);
-                                            } else if (pShm) {
-                                                LogError("[Controller] Screenshot notification rejected incompatible "
-                                                         "inject shared memory ABI");
-                                            }
-                                            if (pShm) {
-                                                UnmapViewOfFile(pShm);
-                                            }
-                                            CloseHandle(hShm);
-                                        }
+                    const bool screenshotSaved =
+                        TakeScreenshot(g_Config.screenshotDir, g_Config.screenshotColorSpace);
+                    // Report both outcomes so a failed request is never indistinguishable from an ignored hotkey.
+                    if (g_PseudoOverlay)
+                        g_PseudoOverlay->ShowScreenshotNotification(screenshotSaved);
+                    // Show the same result in the inject overlay (hooked game).
+                    HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+                    if (hDisc) {
+                        DiscoveryInfo* pDisc =
+                            (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+                        if (ValidateDiscoveryInfo(pDisc)) {
+                            uint32_t injPid = pDisc->GetInjectPid();
+                            UnmapViewOfFile(pDisc);
+                            CloseHandle(hDisc);
+                            if (injPid != 0) {
+                                wchar_t shmName[64];
+                                GenerateSharedMemName(shmName, 64, injPid);
+                                HANDLE hShm = OpenFileMappingW(FILE_MAP_WRITE | FILE_MAP_READ, FALSE, shmName);
+                                if (hShm) {
+                                    auto* pShm = (SharedMemoryLayout*)MapViewOfFile(
+                                        hShm, FILE_MAP_WRITE | FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout));
+                                    if (pShm && ValidateSharedMemory(pShm)) {
+                                        const OverlayNotificationType notification =
+                                            screenshotSaved ? OverlayNotificationType::ScreenshotSaved
+                                                            : OverlayNotificationType::ScreenshotFailed;
+                                        pShm->runtimeState.notificationType.store(static_cast<uint32_t>(notification),
+                                                                                 std::memory_order_release);
+                                        pShm->runtimeState.notificationExpiry.store(GetTickCount64() + 2000ULL,
+                                                                                    std::memory_order_release);
+                                    } else if (pShm) {
+                                        LogError("[Controller] Screenshot notification rejected incompatible "
+                                                 "inject shared memory ABI");
                                     }
-                                } else {
-                                    if (pDisc)
-                                        UnmapViewOfFile(pDisc);
-                                    CloseHandle(hDisc);
+                                    if (pShm)
+                                        UnmapViewOfFile(pShm);
+                                    CloseHandle(hShm);
                                 }
                             }
+                        } else {
+                            if (pDisc)
+                                UnmapViewOfFile(pDisc);
+                            CloseHandle(hDisc);
                         }
                     }
                 }

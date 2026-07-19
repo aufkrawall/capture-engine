@@ -257,6 +257,54 @@ bool ReservedCaptureOutput::CommitStagingFile(ReservedCaptureOutput& staging) {
     return true;
 }
 
+bool ReservedCaptureOutput::PublishToNewPath(const std::filesystem::path& directory, const std::wstring& prefix,
+                                             const std::wstring& extension) {
+    return PublishToNewPathWithSeed(directory, prefix, extension, CurrentSeed());
+}
+
+bool ReservedCaptureOutput::PublishToNewPathForTesting(const std::filesystem::path& directory,
+                                                       const std::wstring& prefix, const std::wstring& extension,
+                                                       const OutputNameSeed& seed) {
+    return PublishToNewPathWithSeed(directory, prefix, extension, seed);
+}
+
+bool ReservedCaptureOutput::PublishToNewPathWithSeed(const std::filesystem::path& directory,
+                                                     const std::wstring& prefix, const std::wstring& extension,
+                                                     const OutputNameSeed& seed) {
+    if (published_ || path_.empty() || reservationHandle_ == INVALID_HANDLE_VALUE ||
+        path_.parent_path() != directory || !CurrentPathMatchesReservation()) {
+        SetLastError(ERROR_INVALID_STATE);
+        return false;
+    }
+    if (!CloseHandle(reservationHandle_)) {
+        reservationHandle_ = INVALID_HANDLE_VALUE;
+        return false;
+    }
+    reservationHandle_ = INVALID_HANDLE_VALUE;
+
+    constexpr uint32_t kMaximumCollisionAttempts = 1024;
+    for (uint32_t attempt = 0; attempt < kMaximumCollisionAttempts; ++attempt) {
+        const std::optional<std::wstring> filename = BuildFilename(prefix, extension, seed, attempt);
+        if (!filename) {
+            SetLastError(ERROR_INVALID_NAME);
+            return false;
+        }
+        const std::filesystem::path candidate = directory / *filename;
+        if (MoveFileExW(path_.c_str(), candidate.c_str(), MOVEFILE_WRITE_THROUGH)) {
+            path_ = candidate;
+            published_ = true;
+            return true;
+        }
+        const DWORD error = GetLastError();
+        if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS) {
+            SetLastError(error);
+            return false;
+        }
+    }
+    SetLastError(ERROR_FILE_EXISTS);
+    return false;
+}
+
 bool ReservedCaptureOutput::CleanupOwnedFile() {
     if (published_ || path_.empty() || !identity_.valid) {
         return false;

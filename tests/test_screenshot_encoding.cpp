@@ -157,6 +157,29 @@ DecodedAvifInfo DecodeAvif(const std::filesystem::path& path) {
 
 }  // namespace
 
+TEST(ScreenshotAvifPlanTest, UsesBoundedParallelTilesForLargeImagesOnly) {
+    const ce::screenshot::AvifEncodingPlan fourK = ce::screenshot::SelectAvifEncodingPlan(3840, 2160, 32);
+    EXPECT_EQ(fourK.threadCount, 16u);
+    EXPECT_EQ(fourK.tileColumnsLog2, 2u);
+    EXPECT_EQ(fourK.tileRowsLog2, 1u);
+
+    const ce::screenshot::AvifEncodingPlan fullHd = ce::screenshot::SelectAvifEncodingPlan(1920, 1080, 8);
+    EXPECT_EQ(fullHd.threadCount, 8u);
+    EXPECT_EQ(fullHd.tileColumnsLog2, 1u);
+    EXPECT_EQ(fullHd.tileRowsLog2, 0u);
+
+    const ce::screenshot::AvifEncodingPlan tiny = ce::screenshot::SelectAvifEncodingPlan(4, 4, 32);
+    EXPECT_EQ(tiny.threadCount, 4u);
+    EXPECT_EQ(tiny.tileColumnsLog2, 0u);
+    EXPECT_EQ(tiny.tileRowsLog2, 0u);
+
+    const ce::screenshot::AvifEncodingPlan singleThreaded =
+        ce::screenshot::SelectAvifEncodingPlan(3840, 2160, 0);
+    EXPECT_EQ(singleThreaded.threadCount, 1u);
+    EXPECT_EQ(singleThreaded.tileColumnsLog2, 0u);
+    EXPECT_EQ(singleThreaded.tileRowsLog2, 0u);
+}
+
 TEST(ScreenshotRawHeaderTest, AcceptsExactVersionedPayload) {
     const ScreenshotRawHeaderV2 header = ValidHeader();
     EXPECT_TRUE(ce::screenshot::ValidateRawHeader(header, header.totalSize, header.requestId));

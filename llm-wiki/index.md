@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-19 (presentation-contract-aware inject HDR/SDR video, screenshots, and all primary/secondary DX12 overlay routes; opaque whole-frame forced-SDR preparation; crash-safe exactly-once DXGI color-space tracking without shared-vtable slot 38 interception; HDR10 Rec.709-to-Rec.2020 overlay conversion and Windows SDR-white calibration; live-validated driver-independent Windows-HDR FP16 scRGB-to-P010 and Windows-SDR-white-calibrated HDR-to-SDR video; native-HDR/forced-SDR screenshot policy plus split-device readback; and the existing current build/graphics/audio/security state; see overlay-rendering.md, screenshots.md, wgc-capture.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-19 (presentation-contract-aware inject HDR/SDR video, screenshots, and all primary/secondary DX12 overlay routes; opaque whole-frame forced-SDR preparation; crash-safe exactly-once DXGI color-space tracking without shared-vtable slot 38 interception; HDR10 Rec.709-to-Rec.2020 overlay conversion and Windows SDR-white calibration; live-validated driver-independent Windows-HDR FP16 scRGB-to-P010 and Windows-SDR-white-calibrated HDR-to-SDR video; low-latency native-HDR/forced-SDR screenshots with placeholder-free publication and explicit result notifications; and the existing current build/graphics/audio/security state; see overlay-rendering.md, screenshots.md, wgc-capture.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -43,7 +43,7 @@ Primary sources:
 - `build.py.md`
   - Supported `build.py` flags, Windows Clang/Linux MinGW GCC hardening and strict-FP selection, older-MinGW hook/test-app D3D12-header and intrinsic-declaration compatibility, host-native PE/shader-tool/debug-info verification, cross-host FG SDK header preparation, fail-closed required x64 Vulkan stages and duplicate-object protection, single-preparation sanitizer/product flow, current-database advisory lint, managed Python lint tools, summary/detail artifacts, validated object/link caches, deterministic non-LTO unit-test/test-app profiles with unchanged production LTO, incremental/resume/no-build workflow, isolated object variants, source-built dependency closure, scoped DLL-search policy, sanitizer/CPU policy, FFmpeg fingerprints, operational notes, and MinGW pitfalls. Last verified 2026-07-19.
 - `screenshots.md`
-  - Shared ABI 37 screenshot requests, presentation-contract-aware SDR-R10/scRGB/HDR10 classification, native-HDR versus forced-SDR output policy, split-device WGC readback ownership, managed hook worker, strict payload validation, PNG/10-bit 4:4:4 AVIF encoding, and atomic publication. Last verified 2026-07-19.
+  - Shared ABI 37 screenshot requests, presentation-contract-aware SDR-R10/scRGB/HDR10 classification, native-HDR versus forced-SDR output policy, split-device WGC readback ownership, bounded low-latency 10-bit 4:4:4 AVIF, strict payload validation, placeholder-free atomic publication, and explicit result notifications. Last verified 2026-07-19.
 - `process-ipc.md`
   - Restricted private child channels, accept-before-finalize disposable media stops, internal GUI launch-feedback suppression, Explorer tray recovery, exact shared-memory ABI publication/isolation, session log routing, shared-ring integrity, and malformed/incompatible-message rejection. Last verified 2026-07-18.
 - `repo-map.md`
@@ -85,7 +85,7 @@ Primary sources:
 - `performance-priority.md`
   - `[Performance]` priorities, `[Overlay]` queue priority, adapter-aware HAGS auto resolution, D3D11 priority persistence/readback, capture/encoder MMCSS QoS, and D3D12 queue constraints. Last verified 2026-07-18. Stale-risk: medium.
 - `recording-output-paths.md`
-  - Canonical `[Output]` settings, shared collision-safe video/audio/screenshot output reservation, identity-owned cleanup, atomic screenshot publication, executable-relative/default paths, and elevated mapped-drive handling. Last verified 2026-07-18. Stale-risk: low.
+  - Canonical `[Output]` settings, collision-safe video/audio reservation, placeholder-free screenshot staging/publication, identity-owned cleanup, executable-relative/default paths, and elevated mapped-drive handling. Last verified 2026-07-19. Stale-risk: low.
 - `log.md`
   - Stub pointing to `log/recent.md` (recent activity) and `log/archive-YYYY-Www*.md` (weekly archives).
 

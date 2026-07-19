@@ -225,6 +225,12 @@ enum class ScreenshotPayloadKind : uint32_t {
     RawV2 = 1,
 };
 
+enum class OverlayNotificationType : uint32_t {
+    None = 0,
+    ScreenshotSaved = 1,
+    ScreenshotFailed = 2,
+};
+
 enum class ScreenshotPixelFormat : uint32_t {
     BGRA8 = 1,
     RGBA8 = 2,
@@ -556,7 +562,7 @@ struct alignas(8) CaptureState {
 
     // Transient overlay notification (host -> hook overlay)
     // notificationExpiry: GetTickCount64() value after which notification disappears (0 = none)
-    // notificationType: 0=none, 1=screenshot saved
+    // notificationType: OverlayNotificationType
     std::atomic<uint64_t> notificationExpiry{0};
     std::atomic<uint32_t> notificationType{0};
 

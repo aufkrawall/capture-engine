@@ -34,7 +34,14 @@ enum class ScreenshotOutputColorSpace : uint8_t {
     Bt709 = 1,
 };
 
+struct AvifEncodingPlan {
+    uint32_t threadCount = 1;
+    uint32_t tileColumnsLog2 = 0;
+    uint32_t tileRowsLog2 = 0;
+};
+
 uint32_t BytesPerPixel(ScreenshotPixelFormat format);
+AvifEncodingPlan SelectAvifEncodingPlan(uint32_t width, uint32_t height, uint32_t hardwareThreads);
 bool IsValidFormatEncoding(ScreenshotPixelFormat format, ScreenshotColorEncoding encoding);
 bool ValidateRawHeader(const ScreenshotRawHeaderV2& header, uint64_t fileSize, uint64_t expectedRequestId);
 bool ReadRawScreenshot(const std::filesystem::path& path, uint64_t expectedRequestId, RawScreenshot& screenshot);

@@ -1,6 +1,6 @@
 # Recording Output Paths
 
-Last cross-checked: 2026-07-18 (canonical Output config section plus shared collision-safe reservation and atomic publication for video, audio-only, PNG, and AVIF outputs)
+Last cross-checked: 2026-07-19 (canonical Output config, reserved video/audio ownership, and placeholder-free atomic screenshot publication)
 
 ## Summary
 
@@ -18,7 +18,7 @@ All capture outputs use `ce::capture_output::ReservedCaptureOutput`:
 - The destination is reserved with `CreateFileW(CREATE_NEW)`. Existing paths are never truncated, removed, or selected as the recording destination.
 - The reservation records the Windows volume/file identity. Failure cleanup deletes only a path that still has the reserved identity.
 - A video or audio muxer opens only its owned placeholder. The reservation handle remains open without delete sharing for the writer lifetime; successful close/trailer publishes the file, while failure cleanup removes only the owned partial file.
-- A screenshot is fully encoded and closed in a separately reserved staging file, then atomically replaces only its owned zero-byte placeholder with `ReplaceFileW(..., REPLACEFILE_WRITE_THROUGH)`.
+- A screenshot is fully encoded, flushed, and closed in a separately reserved `.part` file. Only then does `MoveFileExW(..., MOVEFILE_WRITE_THROUGH)` atomically give that same file a fresh final-extension name. No zero-byte `.png`/`.avif` placeholder is exposed during encoding, no existing file is replaced, and a destination collision is retried with a bounded suffix.
 - Post-mux duration probing and exact audio finalization retain the reserved filename. User-visible screenshot notification occurs only after final atomic publication.
 
 ## Mapped Drives And Elevation
@@ -48,7 +48,7 @@ Limits:
 
 ## Validation
 
-- `ReservedCaptureOutputTest` covers forced identical clock/PID/sequence values for video, audio-only, PNG, and AVIF extensions; it proves collision retry and byte-identical sentinel preservation.
+- `ReservedCaptureOutputTest` covers forced identical clock/PID/sequence values for video, audio-only, PNG, and AVIF extensions. It also proves staging-to-new-name publication exposes no final placeholder and retries a collision while preserving the byte-identical existing output.
 - The required full product build passed as build 0.1.4806. The canonical no-build run passed 1,501 native tests in 105 suites and all four Python tool self-tests.
 
 ## Open Questions / Stale-risk

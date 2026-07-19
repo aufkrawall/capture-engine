@@ -959,6 +959,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         }
         if (rowNotification) {
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Screenshot saved!") + kShadowPad);
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth("Screenshot failed!") + kShadowPad);
         }
 
         cachedContentWidth = measuredWidth;
@@ -1127,8 +1128,12 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         const char* notifText = nullptr;
         uint32_t notifColor = Colors::Green;
         switch (frameLayout.notificationType) {
-            case 1:
+            case static_cast<uint32_t>(OverlayNotificationType::ScreenshotSaved):
                 notifText = "Screenshot saved!";
+                break;
+            case static_cast<uint32_t>(OverlayNotificationType::ScreenshotFailed):
+                notifText = "Screenshot failed!";
+                notifColor = Colors::Red;
                 break;
             default:
                 break;
