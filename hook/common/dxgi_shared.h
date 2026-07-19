@@ -162,8 +162,11 @@ void RepairVTableHooksIfNeeded();
 
 // Common helpers
 bool IsVulkanPrimary();
-void RecordSwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE colorSpace);
+bool RecordSwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE colorSpace,
+                               bool* changed = nullptr);
 bool QuerySwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE& colorSpace);
+HRESULT SetSwapChainColorSpaceFromWrapper(IDXGISwapChain3* callableSwapChain, IDXGISwapChain* identitySwapChain,
+                                          DXGI_COLOR_SPACE_TYPE colorSpace);
 ce::presentation_color::Encoding ResolveSwapChainPresentationEncoding(IDXGISwapChain* swapChain,
                                                                       DXGI_FORMAT format,
                                                                       DXGI_COLOR_SPACE_TYPE* trackedColorSpace = nullptr,

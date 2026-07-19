@@ -3286,7 +3286,13 @@ TEST(DXGISharedTest, PresentationEncodingUsesColorSpaceRatherThanStorageFormat) 
                                                   DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709));
 }
 
-TEST(DXGISharedTest, SwapchainColorSpaceCallsAreTrackedOnWrappedAndVtablePaths) {
+TEST(DXGISharedTest, WrappedColorSpaceForwardOwnsExactlyOncePublication) {
+    EXPECT_TRUE(ce::presentation_color::ShouldRecordDetouredColorSpaceChange(0));
+    EXPECT_FALSE(ce::presentation_color::ShouldRecordDetouredColorSpaceChange(1));
+    EXPECT_FALSE(ce::presentation_color::ShouldRecordDetouredColorSpaceChange(2));
+}
+
+TEST(DXGISharedTest, SwapchainColorSpaceTrackingNeverPatchesSharedVtableSlot) {
     const auto readSource = [](const std::filesystem::path& path) {
         std::ifstream file(path, std::ios::binary);
         return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
@@ -3298,9 +3304,13 @@ TEST(DXGISharedTest, SwapchainColorSpaceCallsAreTrackedOnWrappedAndVtablePaths) 
     ASSERT_FALSE(shared.empty());
     ASSERT_FALSE(wrapper.empty());
     EXPECT_NE(shared.find("DetourSetColorSpace1"), std::string::npos);
-    EXPECT_NE(shared.find("vtable[38] = (void*)DetourSetColorSpace1"), std::string::npos);
-    EXPECT_NE(shared.find("RecordSwapChainColorSpace(pSwapChain, colorSpace)"), std::string::npos);
-    EXPECT_NE(wrapper.find("DXGIShared::RecordSwapChainColorSpace(m_pReal, ColorSpace)"), std::string::npos);
+    EXPECT_NE(shared.find("InlineHook::InstallPublished(colorSpaceAddress"), std::string::npos);
+    EXPECT_NE(shared.find("IsWrappedSwapChainObject(pSwapChain)"), std::string::npos);
+    EXPECT_NE(shared.find("SetSwapChainColorSpaceFromWrapper"), std::string::npos);
+    EXPECT_NE(wrapper.find("DXGIShared::SetSwapChainColorSpaceFromWrapper(m_pReal3, m_pReal, ColorSpace)"),
+              std::string::npos);
+    EXPECT_EQ(shared.find("vtable[38] = (void*)DetourSetColorSpace1"), std::string::npos);
+    EXPECT_EQ(shared.find("oSetColorSpace1 ="), std::string::npos);
 }
 
 TEST(DXGISharedTest, RuntimeOwnedOverlayRoutesUseCachedPresentationContractAndRefreshTransitions) {

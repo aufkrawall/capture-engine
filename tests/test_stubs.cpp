@@ -48,6 +48,9 @@ void HandleDX12ResizeEnd() {}
 bool InlineHook::Install(void*, void*, void**) {
     return false;
 }
+bool InlineHook::InstallPublished(void*, void*, void**, TrampolinePublisher, void*) {
+    return false;
+}
 void InlineHook::RemoveAll() {}
 void* InlineHook::CreateBypassTrampoline(void*) {
     return nullptr;

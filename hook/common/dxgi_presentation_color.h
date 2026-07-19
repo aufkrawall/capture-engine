@@ -42,4 +42,12 @@ inline Encoding ResolveDXGI(DXGI_FORMAT format, bool hasColorSpace, DXGI_COLOR_S
     }
 }
 
+// A wrapped swapchain owns publication for calls that it forwards to the real
+// IDXGISwapChain3. If the real method is also inline-hooked, the detour still
+// forwards through its trampoline but must not publish the same transition a
+// second time. Unwrapped calls are owned by the detour.
+inline bool ShouldRecordDetouredColorSpaceChange(unsigned wrapperForwardDepth) {
+    return wrapperForwardDepth == 0;
+}
+
 }  // namespace ce::presentation_color

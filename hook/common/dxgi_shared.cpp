@@ -239,21 +239,6 @@ constexpr GUID kCESwapChainColorSpaceGuid = {
 
 }  // namespace
 
-void RecordSwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE colorSpace) {
-    if (!swapChain)
-        return;
-    const int storedColorSpace = static_cast<int>(colorSpace);
-    const HRESULT result =
-        swapChain->SetPrivateData(kCESwapChainColorSpaceGuid, sizeof(storedColorSpace), &storedColorSpace);
-    if (FAILED(result)) {
-        static std::atomic<int> s_failureLogCount{0};
-        if (s_failureLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
-            HookLogImportant("DXGI: Failed to retain swapchain color-space contract sc=%p cs=%d hr=0x%08X",
-                             swapChain, storedColorSpace, static_cast<unsigned>(result));
-        }
-    }
-}
-
 bool QuerySwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE& colorSpace) {
     if (!swapChain)
         return false;
@@ -265,6 +250,37 @@ bool QuerySwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE& 
         return false;
     }
     colorSpace = static_cast<DXGI_COLOR_SPACE_TYPE>(storedColorSpace);
+    return true;
+}
+
+bool RecordSwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE colorSpace, bool* changed) {
+    if (changed) {
+        *changed = false;
+    }
+    if (!swapChain) {
+        return false;
+    }
+
+    DXGI_COLOR_SPACE_TYPE previousColorSpace = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    if (QuerySwapChainColorSpace(swapChain, previousColorSpace) && previousColorSpace == colorSpace) {
+        return true;
+    }
+
+    const int storedColorSpace = static_cast<int>(colorSpace);
+    const HRESULT result =
+        swapChain->SetPrivateData(kCESwapChainColorSpaceGuid, sizeof(storedColorSpace), &storedColorSpace);
+    if (FAILED(result)) {
+        static std::atomic<int> s_failureLogCount{0};
+        if (s_failureLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            HookLogImportant("DXGI: Failed to retain swapchain color-space contract sc=%p cs=%d hr=0x%08X",
+                             swapChain, storedColorSpace, static_cast<unsigned>(result));
+        }
+        return false;
+    }
+
+    if (changed) {
+        *changed = true;
+    }
     return true;
 }
 
@@ -498,12 +514,13 @@ static PFN_Present oPresent = nullptr;
 static PFN_Present1 oPresent1 = nullptr;
 static PFN_ResizeBuffers oResizeBuffers = nullptr;
 static PFN_ResizeBuffers1 oResizeBuffers1 = nullptr;
-static PFN_SetColorSpace1 oSetColorSpace1 = nullptr;
 
 // Inline hook trampolines - calling these bypasses the hook entirely
 static PFN_Present oPresentTrampoline = nullptr;
 static PFN_Present1 oPresent1Trampoline = nullptr;
-static PFN_SetColorSpace1 oSetColorSpace1Trampoline = nullptr;
+static std::atomic<PFN_SetColorSpace1> oSetColorSpace1Trampoline{nullptr};
+static std::mutex s_setColorSpace1HookMutex;
+static thread_local unsigned s_wrapperSetColorSpaceForwardDepth = 0;
 
 // Bypass trampolines — skip external E9/FF25 hooks (e.g. Streamline) at the
 // function entry point by executing original prologue bytes read from disk.
@@ -3970,16 +3987,113 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT 
 }
 
 HRESULT STDMETHODCALLTYPE DetourSetColorSpace1(IDXGISwapChain* pSwapChain, DXGI_COLOR_SPACE_TYPE colorSpace) {
-    PFN_SetColorSpace1 original = oSetColorSpace1Trampoline ? oSetColorSpace1Trampoline : oSetColorSpace1;
-    if (!original)
+    const PFN_SetColorSpace1 original = oSetColorSpace1Trampoline.load(std::memory_order_acquire);
+    if (!original) {
+        static std::atomic<int> s_missingTrampolineLogCount{0};
+        if (s_missingTrampolineLogCount.fetch_add(1, std::memory_order_relaxed) < 5) {
+            HookLogImportant(
+                "DXGI: SetColorSpace1 detour entered without a published trampoline; failing closed sc=%p cs=%d",
+                pSwapChain, static_cast<int>(colorSpace));
+        }
         return DXGI_ERROR_UNSUPPORTED;
+    }
+
     const HRESULT result = original(pSwapChain, colorSpace);
-    if (SUCCEEDED(result)) {
-        RecordSwapChainColorSpace(pSwapChain, colorSpace);
-        HookLogImportant("DXGI: Swapchain presentation color space changed sc=%p cs=%d", pSwapChain,
-                         static_cast<int>(colorSpace));
+    if (SUCCEEDED(result) &&
+        ce::presentation_color::ShouldRecordDetouredColorSpaceChange(s_wrapperSetColorSpaceForwardDepth)) {
+        bool changed = false;
+        if (RecordSwapChainColorSpace(pSwapChain, colorSpace, &changed) && changed) {
+            HookLogImportant("DXGI: Swapchain presentation color space changed source=inline sc=%p cs=%d",
+                             pSwapChain, static_cast<int>(colorSpace));
+        }
     }
     return result;
+}
+
+HRESULT SetSwapChainColorSpaceFromWrapper(IDXGISwapChain3* callableSwapChain, IDXGISwapChain* identitySwapChain,
+                                          DXGI_COLOR_SPACE_TYPE colorSpace) {
+    if (!callableSwapChain) {
+        return DXGI_ERROR_UNSUPPORTED;
+    }
+
+    ++s_wrapperSetColorSpaceForwardDepth;
+    const auto depthGuard = ce::make_scope_guard([]() { --s_wrapperSetColorSpaceForwardDepth; });
+    const HRESULT result = callableSwapChain->SetColorSpace1(colorSpace);
+    if (SUCCEEDED(result)) {
+        IDXGISwapChain* identity = identitySwapChain ? identitySwapChain : callableSwapChain;
+        bool changed = false;
+        if (RecordSwapChainColorSpace(identity, colorSpace, &changed) && changed) {
+            HookLogImportant("DXGI: Swapchain presentation color space changed source=wrapper sc=%p cs=%d",
+                             identity, static_cast<int>(colorSpace));
+        }
+    }
+    return result;
+}
+
+static void PublishSetColorSpace1Trampoline(void* trampoline, void*) {
+    oSetColorSpace1Trampoline.store(reinterpret_cast<PFN_SetColorSpace1>(trampoline), std::memory_order_release);
+}
+
+static bool InstallSetColorSpace1InlineHook(IDXGISwapChain* pSwapChain, const char* source) {
+    if (!pSwapChain) {
+        return false;
+    }
+    if (oSetColorSpace1Trampoline.load(std::memory_order_acquire)) {
+        return true;
+    }
+
+    // Inline-hook the real DXGI implementation only. Hooking the wrapper method
+    // would make the detour's trampoline call back into the wrapper and recreate
+    // the unsafe wrapper/detour composition that this path is designed to avoid.
+    if (IsWrappedSwapChainObject(pSwapChain)) {
+        static std::atomic<int> s_wrapperTargetLogCount{0};
+        if (s_wrapperTargetLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
+            HookLog("DXGI: SetColorSpace1 inline tracking skipped for wrapped %s swapchain %p",
+                    source ? source : "unknown", pSwapChain);
+        }
+        return false;
+    }
+
+    std::lock_guard<std::mutex> installLock(s_setColorSpace1HookMutex);
+    if (oSetColorSpace1Trampoline.load(std::memory_order_acquire)) {
+        return true;
+    }
+
+    IDXGISwapChain3* colorSpaceSwapChain = nullptr;
+    if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&colorSpaceSwapChain))) || !colorSpaceSwapChain) {
+        static std::atomic<int> s_unsupportedLogCount{0};
+        if (s_unsupportedLogCount.fetch_add(1, std::memory_order_relaxed) < 3) {
+            HookLog("DXGI: SetColorSpace1 tracking unavailable for %s swapchain %p (IDXGISwapChain3 unsupported)",
+                    source ? source : "unknown", pSwapChain);
+        }
+        return false;
+    }
+
+    void** colorSpaceVtable = *reinterpret_cast<void***>(colorSpaceSwapChain);
+    void* colorSpaceAddress =
+        colorSpaceVtable && IsReadableMemory(&colorSpaceVtable[38], sizeof(void*)) ? colorSpaceVtable[38] : nullptr;
+    colorSpaceSwapChain->Release();
+    if (!colorSpaceAddress || colorSpaceAddress == reinterpret_cast<void*>(DetourSetColorSpace1)) {
+        HookLogImportant("DXGI: Refusing unsafe SetColorSpace1 hook target source=%s sc=%p target=%p",
+                         source ? source : "unknown", pSwapChain, colorSpaceAddress);
+        return false;
+    }
+
+    void* colorSpaceTrampoline = nullptr;
+    if (!InlineHook::InstallPublished(colorSpaceAddress, reinterpret_cast<void*>(DetourSetColorSpace1),
+                                      &colorSpaceTrampoline, PublishSetColorSpace1Trampoline, nullptr)) {
+        if (oSetColorSpace1Trampoline.load(std::memory_order_acquire)) {
+            return true;
+        }
+        HookLogImportant(
+            "DXGI: SetColorSpace1 inline tracking unavailable source=%s sc=%p target=%p; wrapper tracking remains available",
+            source ? source : "unknown", pSwapChain, colorSpaceAddress);
+        return false;
+    }
+
+    HookLogImportant("DXGI: SetColorSpace1 inline tracking installed source=%s target=%p trampoline=%p",
+                     source ? source : "unknown", colorSpaceAddress, colorSpaceTrampoline);
+    return true;
 }
 
 bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
@@ -3996,6 +4110,8 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
     int count = s_installCount.fetch_add(1);
     HookLog("DXGIShared::InstallHooks CALLED #%d (swapchain=%p, presentOnly=%d)", count, pSwapChain,
             presentOnly ? 1 : 0);
+
+    InstallSetColorSpace1InlineHook(pSwapChain, "vtable-path");
 
     // Third-party overlays can install their own DXGI hooks and form recursive
     // Present chains with vtable patching. In that case the wrapper-based path
@@ -4038,15 +4154,6 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
     oPresent1 = (PFN_Present1)vtable[22];
     vtable[22] = (void*)DetourPresent1;
     HookLog("DXGIShared: Hooked Present1 at vtable[22] (original=%p, detour=%p)", oPresent1, DetourPresent1);
-
-    IDXGISwapChain3* colorSpaceSwapChain = nullptr;
-    if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&colorSpaceSwapChain))) && colorSpaceSwapChain) {
-        colorSpaceSwapChain->Release();
-        oSetColorSpace1 = (PFN_SetColorSpace1)vtable[38];
-        vtable[38] = (void*)DetourSetColorSpace1;
-        HookLog("DXGIShared: Hooked SetColorSpace1 at vtable[38] (original=%p, detour=%p)", oSetColorSpace1,
-                DetourSetColorSpace1);
-    }
 
     if (!presentOnly) {
         oResizeBuffers = (PFN_ResizeBuffers)vtable[13];
@@ -4124,6 +4231,8 @@ void Init() {
 bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
     if (!pSwapChain)
         return false;
+
+    InstallSetColorSpace1InlineHook(pSwapChain, "present-bootstrap");
 
     void* presentAddr = GetPresentAddress(pSwapChain);
     void* present1Addr = GetPresent1Address(pSwapChain);
@@ -4308,21 +4417,13 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         }
 
         DWORD oldProtect;
-        if (!VirtualProtect(vtable, 40 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        if (!VirtualProtect(vtable, 23 * sizeof(void*), PAGE_READWRITE, &oldProtect)) {
             HookLog("InstallPresentInlineHooks: VirtualProtect failed for vtable hook");
             s_inlineHooksInstalled = true;
             return true;
         }
 
         s_hookedVTable = vtable;
-
-        IDXGISwapChain3* colorSpaceSwapChain = nullptr;
-        if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&colorSpaceSwapChain))) && colorSpaceSwapChain) {
-            colorSpaceSwapChain->Release();
-            oSetColorSpace1 = (PFN_SetColorSpace1)vtable[38];
-            vtable[38] = (void*)DetourSetColorSpace1;
-            HookLog("InstallPresentInlineHooks: VTable hook on SetColorSpace1 (original=%p)", oSetColorSpace1);
-        }
 
         // === STEAM DX12 OVERLAY PRE-INITIALIZATION ===
         //
@@ -4387,7 +4488,7 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
             }
         }
 
-        VirtualProtect(vtable, 40 * sizeof(void*), oldProtect, &oldProtect);
+        VirtualProtect(vtable, 23 * sizeof(void*), oldProtect, &oldProtect);
 
         s_inlineHooksInstalled = true;
         return true;
@@ -4404,25 +4505,6 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         "InstallPresentInlineHooks: Present INLINE hook installed (addr=%p, "
         "trampoline=%p) — s_hookedVTable remains %p",
         presentAddr, presentTrampoline, s_hookedVTable);
-
-    IDXGISwapChain3* colorSpaceSwapChain = nullptr;
-    if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&colorSpaceSwapChain))) && colorSpaceSwapChain) {
-        void** colorSpaceVtable = *(void***)colorSpaceSwapChain;
-        void* colorSpaceAddress = colorSpaceVtable ? colorSpaceVtable[38] : nullptr;
-        colorSpaceSwapChain->Release();
-        if (colorSpaceAddress) {
-            void* colorSpaceTrampoline = nullptr;
-            if (InlineHook::Install(colorSpaceAddress, (void*)DetourSetColorSpace1, &colorSpaceTrampoline)) {
-                oSetColorSpace1Trampoline = (PFN_SetColorSpace1)colorSpaceTrampoline;
-                HookLogImportant(
-                    "InstallPresentInlineHooks: SetColorSpace1 INLINE hook installed (addr=%p trampoline=%p)",
-                    colorSpaceAddress, colorSpaceTrampoline);
-            } else {
-                HookLogImportant("InstallPresentInlineHooks: SetColorSpace1 inline hook unavailable; wrapper/vtable "
-                                 "tracking remains active");
-            }
-        }
-    }
 
     if (present1Addr) {
         void* present1Trampoline = nullptr;
@@ -4442,7 +4524,7 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
 
 void RemovePresentHooks() {
     InlineHook::RemoveAll();
-    oSetColorSpace1Trampoline = nullptr;
+    oSetColorSpace1Trampoline.store(nullptr, std::memory_order_release);
 
     s_slRoutingActive.store(false, std::memory_order_release);
     oPresentBypass = nullptr;
@@ -4466,19 +4548,13 @@ void RemovePresentHooks() {
         HookLog("DXGIShared: Removed Present1 vtable hook");
     }
 
-    if (oSetColorSpace1 && s_hookedVTable[38] == (void*)DetourSetColorSpace1) {
-        VirtualProtect(&s_hookedVTable[38], sizeof(void*), PAGE_READWRITE, &oldProtect);
-        s_hookedVTable[38] = (void*)oSetColorSpace1;
-        VirtualProtect(&s_hookedVTable[38], sizeof(void*), oldProtect, &oldProtect);
-        HookLog("DXGIShared: Removed SetColorSpace1 vtable hook");
-    }
 }
 
 void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason) {
     if (!s_hookedVTable) {
         return;
     }
-    if (!IsReadableMemory(s_hookedVTable, 40 * sizeof(void*))) {
+    if (!IsReadableMemory(s_hookedVTable, 23 * sizeof(void*))) {
         HookLogImportant(
             "DXGIShared: Cannot release Present vtable hooks for runtime handoff; vtable %p is not readable "
             "(reason=%s)",
@@ -4490,7 +4566,6 @@ void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason) {
     DWORD oldProtect = 0;
     bool restoredPresent = false;
     bool restoredPresent1 = false;
-    bool restoredSetColorSpace1 = false;
 
     if (oPresent && s_hookedVTable[8] == (void*)DetourPresent &&
         VirtualProtect(&s_hookedVTable[8], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
@@ -4506,18 +4581,11 @@ void ReleaseSwapchainPresentVTableHooksForRuntimeHandoff(const char* reason) {
         restoredPresent1 = true;
     }
 
-    if (oSetColorSpace1 && s_hookedVTable[38] == (void*)DetourSetColorSpace1 &&
-        VirtualProtect(&s_hookedVTable[38], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-        s_hookedVTable[38] = (void*)oSetColorSpace1;
-        VirtualProtect(&s_hookedVTable[38], sizeof(void*), oldProtect, &oldProtect);
-        restoredSetColorSpace1 = true;
-    }
-
-    if (restoredPresent || restoredPresent1 || restoredSetColorSpace1) {
+    if (restoredPresent || restoredPresent1) {
         HookLogImportant(
             "DXGIShared: Released swapchain Present vtable hooks for runtime handoff "
-            "(present=%d present1=%d colorSpace=%d vtable=%p restored8=%p restored22=%p reason=%s)",
-            restoredPresent ? 1 : 0, restoredPresent1 ? 1 : 0, restoredSetColorSpace1 ? 1 : 0, s_hookedVTable,
+            "(present=%d present1=%d vtable=%p restored8=%p restored22=%p reason=%s)",
+            restoredPresent ? 1 : 0, restoredPresent1 ? 1 : 0, s_hookedVTable,
             restoredPresent ? (void*)oPresent : s_hookedVTable[8],
             restoredPresent1 ? (void*)oPresent1 : s_hookedVTable[22], reason ? reason : "unknown");
         s_hookedVTable = nullptr;
@@ -4549,7 +4617,7 @@ void RepairVTableHooksIfNeeded() {
         }
         return;
     }
-    if (!IsReadableMemory(s_hookedVTable, 40 * sizeof(void*))) {
+    if (!IsReadableMemory(s_hookedVTable, 23 * sizeof(void*))) {
         HookLogImportant("DXGIShared: RepairVTable — s_hookedVTable %p not readable", s_hookedVTable);
         return;
     }
@@ -4583,18 +4651,6 @@ void RepairVTableHooksIfNeeded() {
         }
     }
 
-    if (oSetColorSpace1 && s_hookedVTable[38] != (void*)DetourSetColorSpace1) {
-        HookLogImportant("DXGIShared: vtable[38] OVERWRITTEN! was=%p expected=%p - re-hooking",
-                         s_hookedVTable[38], (void*)DetourSetColorSpace1);
-        oSetColorSpace1 = (PFN_SetColorSpace1)s_hookedVTable[38];
-        if (VirtualProtect(&s_hookedVTable[38], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-            s_hookedVTable[38] = (void*)DetourSetColorSpace1;
-            VirtualProtect(&s_hookedVTable[38], sizeof(void*), oldProtect, &oldProtect);
-            repaired = true;
-            HookLogImportant("DXGIShared: vtable[38] re-hooked (new oSetColorSpace1=%p)", oSetColorSpace1);
-        }
-    }
-
     static std::atomic<uint32_t> s_intactLogCount{0};
     if (repaired) {
         s_intactLogCount.store(0, std::memory_order_relaxed);
@@ -4608,7 +4664,7 @@ void RepairVTableHooksIfNeeded() {
 
 void RemoveSwapchainVTableHooks() {
     InlineHook::RemoveAll();
-    oSetColorSpace1Trampoline = nullptr;
+    oSetColorSpace1Trampoline.store(nullptr, std::memory_order_release);
 
     s_slRoutingActive.store(false, std::memory_order_release);
     oPresentBypass = nullptr;
@@ -4631,13 +4687,6 @@ void RemoveSwapchainVTableHooks() {
         s_hookedVTable[22] = (void*)oPresent1;
         VirtualProtect(&s_hookedVTable[22], sizeof(void*), oldProtect, &oldProtect);
         HookLog("DXGIShared: Removed Present1 vtable hook");
-    }
-
-    if (oSetColorSpace1 && s_hookedVTable[38] == (void*)DetourSetColorSpace1) {
-        VirtualProtect(&s_hookedVTable[38], sizeof(void*), PAGE_READWRITE, &oldProtect);
-        s_hookedVTable[38] = (void*)oSetColorSpace1;
-        VirtualProtect(&s_hookedVTable[38], sizeof(void*), oldProtect, &oldProtect);
-        HookLog("DXGIShared: Removed SetColorSpace1 vtable hook");
     }
 
     if (oResizeBuffers && s_hookedVTable[13] == (void*)DetourResizeBuffers) {

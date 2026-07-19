@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-19 (presentation-contract-aware inject HDR/SDR video, screenshots, and overlay rendering; HDR10 Rec.709-to-Rec.2020 overlay conversion and Windows SDR-white calibration; live-validated driver-independent Windows-HDR FP16 scRGB-to-P010 and Windows-SDR-white-calibrated HDR-to-SDR video; native-HDR/forced-SDR screenshot policy plus split-device readback; and the existing current build/graphics/audio/security state; see overlay-rendering.md, screenshots.md, wgc-capture.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-19 (presentation-contract-aware inject HDR/SDR video, screenshots, and overlay rendering; crash-safe exactly-once DXGI color-space tracking without shared-vtable slot 38 interception; HDR10 Rec.709-to-Rec.2020 overlay conversion and Windows SDR-white calibration; live-validated driver-independent Windows-HDR FP16 scRGB-to-P010 and Windows-SDR-white-calibrated HDR-to-SDR video; native-HDR/forced-SDR screenshot policy plus split-device readback; and the existing current build/graphics/audio/security state; see overlay-rendering.md, screenshots.md, wgc-capture.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
