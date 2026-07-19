@@ -3,6 +3,7 @@ import os
 import tempfile
 import time
 import unittest
+import zipfile
 from unittest.mock import patch
 from pathlib import Path
 
@@ -189,6 +190,74 @@ class BuildFlagPolicyTest(unittest.TestCase):
         )
         self.assertIn("glslang-tools", workflow)
         self.assertIn("spirv-tools", workflow)
+
+    def test_fg_sdk_host_setup_keeps_linux_header_only(self) -> None:
+        with patch.object(build, "IS_LINUX", True), patch.object(build, "setup_fg_sdk_headers") as headers, patch.object(
+            build, "setup_fg_sdk_dlls"
+        ) as runtime:
+            build.setup_fg_sdk_for_host(skip_updates=True)
+            headers.assert_called_once_with(skip_updates=True)
+            runtime.assert_not_called()
+
+        with patch.object(build, "IS_LINUX", False), patch.object(build, "setup_fg_sdk_headers") as headers, patch.object(
+            build, "setup_fg_sdk_dlls"
+        ) as runtime:
+            build.setup_fg_sdk_for_host(skip_updates=True)
+            headers.assert_not_called()
+            runtime.assert_called_once_with(skip_updates=True)
+
+    def test_fg_sdk_header_setup_extracts_cross_compile_inputs_without_runtime_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "cache"
+            includes = root / "include"
+            testapps = root / "testapp"
+            cache.mkdir()
+
+            streamline_zip = cache / build.STREAMLINE_SDK_ZIP_NAME
+            with zipfile.ZipFile(streamline_zip, "w") as archive:
+                archive.writestr("include/sl.h", "// Streamline header\n")
+                archive.writestr("bin/x64/sl.interposer.dll", b"not a PE")
+
+            fidelityfx_zip = cache / build.FFX_SDK_SOURCE_ZIP_NAME
+            with zipfile.ZipFile(fidelityfx_zip, "w") as archive:
+                prefix = "FidelityFX-SDK-2.2.0/Kits/FidelityFX/"
+                archive.writestr(prefix + "api/include/ffx_api/ffx_api.h", "// FFX API\n")
+                archive.writestr(prefix + "api/include/dx12/ffx_api_dx12.h", "// FFX DX12 API\n")
+                archive.writestr(prefix + "framegeneration/include/ffx_framegeneration.h", "// FFX FG\n")
+                archive.writestr(prefix + "upscalers/include/ffx_upscale.h", "// FFX upscale\n")
+
+            fidelityfx_vk_zip = cache / build.FFX_VK_SDK_ZIP_NAME
+            with zipfile.ZipFile(fidelityfx_vk_zip, "w") as archive:
+                archive.writestr("ffx-api/include/ffx_api/ffx_api.h", "// Vulkan FFX API\n")
+                archive.writestr("ffx-api/include/ffx_api/vk/ffx_api_vk.h", "// Vulkan backend\n")
+                archive.writestr("PrebuiltSignedDLL/amd_fidelityfx_vk.dll", b"not a PE")
+                archive.writestr("sdk/LICENSE.txt", "test license\n")
+
+            with patch.object(build, "FG_SDK_CACHE_DIR", str(cache)), patch.object(
+                build, "FG_SDK_INCLUDE_DIR", str(includes)
+            ), patch.object(build, "TESTAPP_BIN_DIR", str(testapps)), patch.object(
+                build, "FFX_VK_SDK_SHA256", build.sha256_file(str(fidelityfx_vk_zip))
+            ), patch.object(
+                build.urllib.request, "urlretrieve", side_effect=AssertionError("unexpected download")
+            ), patch.object(
+                build, "pe_has_authenticode_certificate", side_effect=AssertionError("unexpected PE inspection")
+            ), patch.object(
+                build, "_find_nvngx_driverstore_paths", side_effect=AssertionError("unexpected driver scan")
+            ):
+                build.setup_fg_sdk_headers(skip_updates=True)
+
+            expected_headers = (
+                includes / "streamline/include/sl.h",
+                includes / "fidelityfx/Kits/FidelityFX/api/include/ffx_api/ffx_api.h",
+                includes / "fidelityfx/Kits/FidelityFX/api/include/dx12/ffx_api_dx12.h",
+                includes / "fidelityfx/Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h",
+                includes / "fidelityfx/Kits/FidelityFX/upscalers/include/ffx_upscale.h",
+                includes / "fidelityfx_vk_v1_1_4/ffx_api/ffx_api.h",
+                includes / "fidelityfx_vk_v1_1_4/ffx_api/vk/ffx_api_vk.h",
+            )
+            self.assertTrue(all(header.is_file() for header in expected_headers))
+            self.assertFalse(testapps.exists())
 
     def test_ffmpeg_policy_includes_stack_and_object_size_hardening(self) -> None:
         with open(build.__file__, encoding="utf-8") as build_file:

@@ -1830,15 +1830,17 @@ def _find_nvngx_driverstore_paths() -> List[str]:
     return paths
 
 
-def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
-    """Download and extract FSR FG and DLSS FG SDK DLLs for test apps.
+def setup_fg_sdk_dependencies(skip_updates: bool = False, *, include_runtime_dlls: bool) -> None:
+    """Download and extract FG SDK headers plus optional Windows runtime DLLs.
 
     Downloads FidelityFX-SDK and Streamline-SDK archives to a cache dir,
-    then extracts only the needed runtime DLLs into the test app directory.
+    then extracts the headers needed to cross-compile the FG test apps. Native
+    Windows builds also extract the runtime DLLs into the test app directory.
     Respects --skip-updates to avoid re-downloading.
     """
     testapp_dir = TESTAPP_BIN_DIR
-    os.makedirs(testapp_dir, exist_ok=True)
+    if include_runtime_dlls:
+        os.makedirs(testapp_dir, exist_ok=True)
     os.makedirs(FG_SDK_CACHE_DIR, exist_ok=True)
     os.makedirs(FG_SDK_INCLUDE_DIR, exist_ok=True)
 
@@ -1880,29 +1882,46 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
 
     # _nvngx.dll comes from the NVIDIA driver (DriverStore), not from Streamline SDK zip.
     # Search dynamically in case the DriverStore path changes with driver updates.
-    _nvngx_sys_paths = _find_nvngx_driverstore_paths()
+    _nvngx_sys_paths = _find_nvngx_driverstore_paths() if include_runtime_dlls else []
 
-    missing_fsr = [d for d in fsr_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
-    missing_sl = [d for d in sl_known_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
-    missing_nvngx = not os.path.exists(os.path.join(testapp_dir, "_nvngx.dll"))
+    missing_fsr = (
+        [d for d in fsr_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
+        if include_runtime_dlls
+        else []
+    )
+    missing_sl = (
+        [d for d in sl_known_dlls if not os.path.exists(os.path.join(testapp_dir, d))]
+        if include_runtime_dlls
+        else []
+    )
+    missing_nvngx = include_runtime_dlls and not os.path.exists(os.path.join(testapp_dir, "_nvngx.dll"))
     missing_headers = (
         not os.path.exists(streamline_header_probe)
         or not os.path.exists(ffx_header_probe)
         or not os.path.exists(ffx_upscale_header_probe)
     )
-    missing_vk = (
+    missing_vk_headers = not os.path.exists(ffx_vk_header_probe)
+    missing_vk_runtime = include_runtime_dlls and (
         not os.path.exists(ffx_vk_dll)
-        or not os.path.exists(ffx_vk_header_probe)
         or not os.path.exists(ffx_vk_license)
         or not pe_has_authenticode_certificate(ffx_vk_dll)
     )
 
-    if not missing_fsr and not missing_sl and not missing_nvngx and not missing_headers and not missing_vk:
-        log("FG SDK DLLs already present - skipping download")
+    if (
+        not missing_fsr
+        and not missing_sl
+        and not missing_nvngx
+        and not missing_headers
+        and not missing_vk_headers
+        and not missing_vk_runtime
+    ):
+        log("FG SDK dependencies already present - skipping download")
         return
     log(
         f"FSR FG DLLs missing: {len(missing_fsr)}, Streamline DLLs missing: {len(missing_sl)}, "
-        f"headers missing: {1 if missing_headers else 0}, Vulkan FFX package missing: {1 if missing_vk else 0}"
+        f"headers missing: {1 if missing_headers else 0}, "
+        f"Vulkan FFX headers missing: {1 if missing_vk_headers else 0}, "
+        f"Vulkan FFX runtime missing: {1 if missing_vk_runtime else 0}"
     )
 
     def _ensure_zip(url: str, zip_name: str, expected_sha256: Optional[str] = None) -> str:
@@ -2062,24 +2081,28 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
                     with zf.open(entry, "r") as src, open(dest_path, "wb") as dst:
                         shutil.copyfileobj(src, dst)
                     extracted_headers += 1
-                elif normalized == "PrebuiltSignedDLL/amd_fidelityfx_vk.dll":
+                elif include_runtime_dlls and normalized == "PrebuiltSignedDLL/amd_fidelityfx_vk.dll":
                     with zf.open(entry, "r") as src, open(ffx_vk_dll, "wb") as dst:
                         shutil.copyfileobj(src, dst)
                     extracted_dll = True
-                elif normalized == "sdk/LICENSE.txt":
+                elif include_runtime_dlls and normalized == "sdk/LICENSE.txt":
                     with zf.open(entry, "r") as src, open(ffx_vk_license, "wb") as dst:
                         shutil.copyfileobj(src, dst)
                     extracted_license = True
         if not os.path.exists(ffx_vk_header_probe):
             raise RuntimeError("FidelityFX 1.1.4 Vulkan API headers were not found in the pinned archive")
-        if not os.path.exists(ffx_vk_dll) or not pe_has_authenticode_certificate(ffx_vk_dll):
-            raise RuntimeError("FidelityFX 1.1.4 Vulkan runtime is missing its Authenticode certificate")
-        if not os.path.exists(ffx_vk_license):
-            raise RuntimeError("FidelityFX 1.1.4 license was not found in the pinned archive")
-        log(
-            f"Prepared FidelityFX 1.1.4 Vulkan package: {extracted_headers} headers, "
-            f"DLL={'yes' if extracted_dll else 'cached'}, license={'yes' if extracted_license else 'cached'}"
-        )
+        if include_runtime_dlls:
+            if not os.path.exists(ffx_vk_dll) or not pe_has_authenticode_certificate(ffx_vk_dll):
+                raise RuntimeError("FidelityFX 1.1.4 Vulkan runtime is missing its Authenticode certificate")
+            if not os.path.exists(ffx_vk_license):
+                raise RuntimeError("FidelityFX 1.1.4 license was not found in the pinned archive")
+        if include_runtime_dlls:
+            log(
+                f"Prepared FidelityFX 1.1.4 Vulkan package: {extracted_headers} headers, "
+                f"DLL={'yes' if extracted_dll else 'cached'}, license={'yes' if extracted_license else 'cached'}"
+            )
+        else:
+            log(f"Prepared FidelityFX 1.1.4 Vulkan headers: {extracted_headers} extracted")
 
     if missing_fsr:
         _download_and_extract(
@@ -2100,14 +2123,14 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
     if not os.path.exists(ffx_header_probe) or not os.path.exists(ffx_upscale_header_probe):
         _extract_fidelityfx_headers(_ensure_zip(FFX_SDK_SOURCE_URL, FFX_SDK_SOURCE_ZIP_NAME))
 
-    if missing_vk:
+    if missing_vk_headers or missing_vk_runtime:
         _extract_fidelityfx_vulkan_package(_ensure_zip(FFX_VK_SDK_URL, FFX_VK_SDK_ZIP_NAME, FFX_VK_SDK_SHA256))
-    elif not pe_has_authenticode_certificate(ffx_vk_dll):
+    elif include_runtime_dlls and not pe_has_authenticode_certificate(ffx_vk_dll):
         raise RuntimeError("Cached FidelityFX 1.1.4 Vulkan runtime has no Authenticode certificate")
 
     # Copy _nvngx.dll from NVIDIA driver DriverStore if not present
     nvngx_dest = os.path.join(testapp_dir, "_nvngx.dll")
-    if not os.path.exists(nvngx_dest):
+    if include_runtime_dlls and not os.path.exists(nvngx_dest):
         for src in _nvngx_sys_paths:
             if os.path.exists(src):
                 shutil.copy2(src, nvngx_dest)
@@ -2117,12 +2140,33 @@ def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
             log("_nvngx.dll not found in DriverStore (NVIDIA NGX not activated on this system)")
 
     # Final report
-    all_expected = fsr_dlls + sl_known_dlls + ["_nvngx.dll"]
-    still_missing = [d for d in all_expected if not os.path.exists(os.path.join(testapp_dir, d))]
-    if still_missing:
-        log(f"Warning: some FG DLLs could not be extracted: {still_missing}")
+    if include_runtime_dlls:
+        all_expected = fsr_dlls + sl_known_dlls + ["_nvngx.dll"]
+        still_missing = [d for d in all_expected if not os.path.exists(os.path.join(testapp_dir, d))]
+        if still_missing:
+            log(f"Warning: some FG DLLs could not be extracted: {still_missing}")
+        else:
+            log("All FG SDK DLLs ready for test apps")
     else:
-        log("All FG SDK DLLs ready for test apps")
+        log("All FG SDK headers ready for cross-compiled test apps")
+
+
+def setup_fg_sdk_headers(skip_updates: bool = False) -> None:
+    """Prepare only the SDK headers required to cross-compile FG test apps."""
+    setup_fg_sdk_dependencies(skip_updates=skip_updates, include_runtime_dlls=False)
+
+
+def setup_fg_sdk_dlls(skip_updates: bool = False) -> None:
+    """Prepare SDK headers and Windows runtime DLLs for native test apps."""
+    setup_fg_sdk_dependencies(skip_updates=skip_updates, include_runtime_dlls=True)
+
+
+def setup_fg_sdk_for_host(skip_updates: bool = False) -> None:
+    """Prepare compile-time SDK inputs and native-only runtime payloads."""
+    if IS_LINUX:
+        setup_fg_sdk_headers(skip_updates=skip_updates)
+    else:
+        setup_fg_sdk_dlls(skip_updates=skip_updates)
 
 
 def safe_replace_or_rename(src: str, dst: str) -> None:
@@ -6767,9 +6811,8 @@ def compile_project(
         else:
             remove_stale_windows_sanitizer_runtime_dlls(BIN_DIR)
 
-    # 6. Download/extract FG SDK DLLs for test apps (FSR FG, DLSS FG)
-    if not IS_LINUX:
-        setup_fg_sdk_dlls(skip_updates=skip_updates)
+    # 6. Prepare FG SDK headers on every host and native runtime DLLs on Windows.
+    setup_fg_sdk_for_host(skip_updates=skip_updates)
 
     # 7. Compile Test Applications (DX9/10/11/12, Vulkan, OpenGL; x64/x86)
     x86_env_for_tests = None
