@@ -66,6 +66,7 @@ public:
     void WriteFrame(AVPacket* pkt);
 
     void Stop();
+    void Cancel();
 
     // Set Adapter LUID (call before Start or EncodeFrame)
     void SetAdapterLUID(int32_t low, int32_t high);
@@ -162,6 +163,8 @@ private:
     void RecordWrittenPacketTimeline(int streamIndex, int64_t pts, int64_t dts, int64_t duration, AVRational timeBase,
                                      uint32_t terminalDiscardSamples, int sampleRate);
     void LogPacketTimelineSummary(int64_t finalDurationUs) const;
+    uint64_t GetWrittenVideoPacketCount() const;
+    bool FinalizeOutputPublication(int trailerResult, int closeResult, int64_t finalDurationUs);
 
     std::function<void(AVPacket*)> onPacket;  // Callback member
     AVFormatContext* fmtCtx;
@@ -191,6 +194,7 @@ private:
     std::atomic<bool> isStopping = false;      // signaled by Stop()
     std::atomic<bool> flushRequested = false;  // signaled by Stop()
     std::atomic<bool> codecOpenFailed{false};  // Prevent infinite retry loop if codec fails to open
+    std::atomic<bool> discardOutputRequested{false};
 
     std::string colorConversion = "d3d11";  // "d3d11" or "auto"
     std::atomic<int64_t> startPts{-1};      // First frame PTS for relative timestamps

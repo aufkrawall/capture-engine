@@ -447,7 +447,7 @@ TEST(AudioCaptureSourceTest, AudioOnlyStopDrainsCommittedWasapiTailBeforeLoopShu
     const std::string source = ReadSource("mediaengine.cpp");
     ASSERT_FALSE(source.empty());
 
-    const size_t stopRecording = source.find("void StopRecording()");
+    const size_t stopRecording = source.find("void StopRecording(bool cancelUncommittedVideo = false)");
     ASSERT_NE(stopRecording, std::string::npos);
     const size_t audioOnlyStop = source.find("if (audioOnly) {", stopRecording);
     ASSERT_NE(audioOnlyStop, std::string::npos);

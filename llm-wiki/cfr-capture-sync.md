@@ -1,6 +1,6 @@
 # CFR Capture Sync
 
-Last cross-checked: 2026-07-18 (canonical WGC/AudioSync/SystemAudio config locations plus backend-neutral timestamp-nearest CFR playout including inject, capture-sync limiter/CFR phase preservation with variable-cadence fallback across inject/WGC/DXGI, contiguous screen-grab CFR packet PTS under timer/encoder debt, packet-only completed-capture video validation, inject source-clock targets independent of encoder/lookahead latency, convergent per-output inject debt recovery, immutable inject output-QPC grid, backend-stable wake scheduling, pre-live stop-drain termination, max-rate variable-input WGC producer contract, transactional CFR/audio startup, 60 ms audio-ingestion look-ahead, 300 ms WGC/DXGI look-ahead, exact codec-decoded endpoints, phase-aware latency diagnostics, event-driven inject ingestion, and ordered audio epochs)
+Last cross-checked: 2026-07-19 (canonical WGC/AudioSync/SystemAudio config locations plus atomic warm-up cancellation, unpublished content-gated video output, backend-neutral timestamp-nearest CFR playout including inject, capture-sync limiter/CFR phase preservation with variable-cadence fallback across inject/WGC/DXGI, contiguous screen-grab CFR packet PTS under timer/encoder debt, packet-only completed-capture video validation, inject source-clock targets independent of encoder/lookahead latency, convergent per-output inject debt recovery, immutable inject output-QPC grid, backend-stable wake scheduling, pre-live stop-drain termination, max-rate variable-input WGC producer contract, transactional CFR/audio startup, 60 ms audio-ingestion look-ahead, 300 ms WGC/DXGI look-ahead, exact codec-decoded endpoints, phase-aware latency diagnostics, event-driven inject ingestion, and ordered audio epochs)
 Stale-risk: low
 
 ## Inject contention invariants (2026-07-12)
@@ -13,6 +13,7 @@ Session triage distinguishes upstream screen-source starvation, proven DXGI Dupl
 
 Primary sources:
 - `common/capture_pipeline_policy.h`
+- `common/recording_lifecycle.h`
 - `common/wgc_pool_lease.h`
 - `common/inject_frame_ring_lease.h`
 - `common/frame_queue.h`
@@ -28,6 +29,8 @@ Primary sources:
 - `mediaengine/mux_invariants.h`
 - `llm-wiki/multi-audio-capture.md`
 - `tests/test_capture_pipeline_policy.cpp`
+- `tests/test_shared_runtime_state.cpp`
+- `tests/test_recording_start_feedback.cpp`
 - `tests/test_fps_limiter.cpp`
 - `tests/test_frame_queue.cpp`
 - `tests/test_inject_frame_ring_lease.cpp`
@@ -45,6 +48,12 @@ Primary sources:
 - `tests/test_av_sync_stimulus.cpp`
 
 ## Summary
+
+### Warm-up cancellation and output commit (2026-07-19)
+
+The second recording hotkey is always accepted. `Idle -> Warmup -> Live` and `Warmup -> Cancelling` share one atomic phase transition, so a concurrent stop and first-live-frame decision have exactly one winner. A stop that wins before live disarms the encoder worker, discards queued/pre-anchor audio without flushing it into the mux, and asks `VideoEncoder` to cancel; a stop after live commits follows normal CFR drain and exact A/V finalization. The explicit `firstVideoFrameCommitted` state avoids treating a valid zero-valued timestamp as “no frame.”
+
+Video prewarm may still open the device, codec, muxer, and header to preserve startup latency, but the staging reservation is created only at recording start and remains an identity-owned unpublished `.part` file. Final-extension publication is a same-directory atomic rename and requires no cancellation request, successful trailer and close, positive duration, and at least one successfully written video packet. Thus idle media initialization creates no file, and even a late race or unexpected empty-success path cannot expose a header-only MKV. Cancellation and publication decisions emit high-signal lifecycle/output reason logs; no sleep, debounce, or ignored input is part of correctness.
 
 ### Transactional timeline start and exact completion (2026-07-14)
 

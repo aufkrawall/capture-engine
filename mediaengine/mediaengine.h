@@ -83,8 +83,8 @@ MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timest
 // Start Recording (Create file, start encoders)
 MEDIAENGINE_API bool MediaEngine_StartRecording();
 
-// Stop Recording (Flush encoders, close files)
-MEDIAENGINE_API void MediaEngine_StopRecording();
+// Stop Recording (flush live output, or discard an uncommitted pre-live session)
+MEDIAENGINE_API void MediaEngine_StopRecording(bool cancelUncommittedVideo);
 
 // Release preserved encoder textures (call after game exits to free VRAM)
 MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures();

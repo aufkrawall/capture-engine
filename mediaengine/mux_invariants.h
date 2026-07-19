@@ -15,6 +15,42 @@ enum class HeaderValidationIssue : uint8_t {
     kInvalidTimeBase,
 };
 
+enum class VideoOutputDisposition : uint8_t {
+    kPublish = 0,
+    kDiscardCancelled,
+    kDiscardFinalizeFailure,
+    kDiscardNoVideo,
+};
+
+inline VideoOutputDisposition SelectVideoOutputDisposition(bool cancellationRequested, int trailerResult,
+                                                           int closeResult, int64_t finalDurationUs,
+                                                           uint64_t writtenVideoPackets) {
+    if (cancellationRequested) {
+        return VideoOutputDisposition::kDiscardCancelled;
+    }
+    if (trailerResult < 0 || closeResult < 0) {
+        return VideoOutputDisposition::kDiscardFinalizeFailure;
+    }
+    if (finalDurationUs <= 0 || writtenVideoPackets == 0) {
+        return VideoOutputDisposition::kDiscardNoVideo;
+    }
+    return VideoOutputDisposition::kPublish;
+}
+
+inline const char* VideoOutputDispositionToString(VideoOutputDisposition disposition) {
+    switch (disposition) {
+        case VideoOutputDisposition::kPublish:
+            return "publish";
+        case VideoOutputDisposition::kDiscardCancelled:
+            return "cancelled-before-live";
+        case VideoOutputDisposition::kDiscardFinalizeFailure:
+            return "finalize-failure";
+        case VideoOutputDisposition::kDiscardNoVideo:
+            return "no-video-packets";
+    }
+    return "unknown";
+}
+
 inline HeaderValidationIssue ValidateStreamForHeader(bool hasStream, bool hasCodecParams, int timeBaseNum,
                                                      int timeBaseDen) {
     if (!hasStream) {

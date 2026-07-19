@@ -66,6 +66,40 @@ TEST(RecordingStartFeedbackSourceTest, MediaOwnsLiveAndTerminalIntentTransitions
     EXPECT_NE(source.find("ackRecordingStarted.store(true"), std::string::npos);
 }
 
+TEST(RecordingStartFeedbackSourceTest, WarmupStopIsAcceptedAsCancellationBeforeLiveCommit) {
+    const std::string captureSource = ReadSource("captureengine/media_main.cpp");
+    const std::string mediaSource = ReadSource("mediaengine/mediaengine.cpp");
+    ASSERT_FALSE(captureSource.empty());
+    ASSERT_FALSE(mediaSource.empty());
+
+    EXPECT_NE(captureSource.find("TryArmCapturePipelineWarmup()"), std::string::npos);
+    EXPECT_NE(captureSource.find("TryCommitCapturePipelineLive()"), std::string::npos);
+    EXPECT_NE(captureSource.find("BeginCapturePipelineStop()"), std::string::npos);
+    EXPECT_NE(captureSource.find("MediaEngine_StopRecording(cancelBeforeLive)"), std::string::npos);
+    EXPECT_NE(mediaSource.find("CancelUncommittedVideoRecording()"), std::string::npos);
+    EXPECT_NE(mediaSource.find("videoEnc->Cancel()"), std::string::npos);
+}
+
+TEST(RecordingStartFeedbackSourceTest, VideoOutputStaysStagedUntilSuccessfulContentGatedPublication) {
+    const std::string source = ReadSource("mediaengine/video_encoder.cpp");
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("ReserveOutputStagingFile"), std::string::npos);
+    EXPECT_NE(source.find("SelectVideoOutputDisposition"), std::string::npos);
+    EXPECT_NE(source.find("PublishToNewPath"), std::string::npos);
+    EXPECT_NE(source.find("output_discarded"), std::string::npos);
+    EXPECT_NE(source.find("output_published"), std::string::npos);
+
+    const size_t init = source.find("bool VideoEncoder::Init(");
+    const size_t start = source.find("bool VideoEncoder::Start()");
+    const size_t reserveForRecording = source.find("outputReservation = ReserveOutputStagingFile(savedConfig)");
+    ASSERT_NE(init, std::string::npos);
+    ASSERT_NE(start, std::string::npos);
+    ASSERT_NE(reserveForRecording, std::string::npos);
+    EXPECT_LT(init, start);
+    EXPECT_LT(start, reserveForRecording);
+}
+
 TEST(RecordingStartFeedbackSourceTest, InjectOverlayContainsExactPendingLabelsAndPseudoOwnsUiThread) {
     const std::string overlay = ReadSource("hook/common/overlay_adapter.cpp");
     const std::string pseudo = ReadSource("captureengine/pseudo_overlay.cpp");

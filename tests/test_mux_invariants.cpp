@@ -20,6 +20,8 @@ using ce::mux::ObservePacketTimeline;
 using ce::mux::PacketTimelineExceedsTarget;
 using ce::mux::PacketTimelineStats;
 using ce::mux::ValidateStreamForHeader;
+using ce::mux::SelectVideoOutputDisposition;
+using ce::mux::VideoOutputDisposition;
 
 }  // namespace
 
@@ -30,6 +32,18 @@ TEST(MuxInvariantTest, BundledMatroskaMuxerRequiresAndReportsMicrosecondPrecisio
     EXPECT_TRUE(ce::media::IsMatroskaMuxer(formatContext));
     EXPECT_TRUE(ce::media::RequireMicrosecondMatroskaTimestampPrecision(formatContext));
     avformat_free_context(formatContext);
+}
+
+TEST(MuxInvariantTest, VideoOutputPublishesOnlyFinalizedCommittedVideo) {
+    EXPECT_EQ(SelectVideoOutputDisposition(false, 0, 0, 16667, 1), VideoOutputDisposition::kPublish);
+    EXPECT_EQ(SelectVideoOutputDisposition(true, 0, 0, 16667, 1),
+              VideoOutputDisposition::kDiscardCancelled);
+    EXPECT_EQ(SelectVideoOutputDisposition(false, -1, 0, 16667, 1),
+              VideoOutputDisposition::kDiscardFinalizeFailure);
+    EXPECT_EQ(SelectVideoOutputDisposition(false, 0, -1, 16667, 1),
+              VideoOutputDisposition::kDiscardFinalizeFailure);
+    EXPECT_EQ(SelectVideoOutputDisposition(false, 0, 0, 0, 1), VideoOutputDisposition::kDiscardNoVideo);
+    EXPECT_EQ(SelectVideoOutputDisposition(false, 0, 0, 16667, 0), VideoOutputDisposition::kDiscardNoVideo);
 }
 
 TEST(MuxInvariantTest, HeaderValidationAcceptsStreamsWithCodecParamsAndTimeBase) {

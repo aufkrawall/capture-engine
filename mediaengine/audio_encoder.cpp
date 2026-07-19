@@ -1190,13 +1190,21 @@ AudioEncoder::EncodeResult AudioEncoder::EncodeSamples(const uint8_t* data, int 
 }
 
 void AudioEncoder::Stop() {
-    if (initDone) {
+    Finish(true);
+}
+
+void AudioEncoder::Cancel() {
+    Finish(false);
+}
+
+void AudioEncoder::Finish(bool flush) {
+    if (flush && initDone) {
         Flush();
     }
 
     // Reset all state for next recording
-    DLL_Log("[AudioEnc] Stop: Resetting state (samplesCount=%lld, streamIndex=%d)", (long long)samplesCount,
-            streamIndex);
+    DLL_Log("[AudioEnc] %s: Resetting state (samplesCount=%lld, streamIndex=%d)", flush ? "Stop" : "Cancel",
+            (long long)samplesCount, streamIndex);
 
     samplesCount = 0;
     streamIndex = -1;  // Critical for next run

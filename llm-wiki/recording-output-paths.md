@@ -1,12 +1,12 @@
 # Recording Output Paths
 
-Last cross-checked: 2026-07-19 (canonical Output config, reserved video/audio ownership, and placeholder-free atomic screenshot publication)
+Last cross-checked: 2026-07-19 (canonical Output config, cancellation-safe staged video publication, reserved audio-only ownership, and placeholder-free atomic screenshot publication)
 
 ## Summary
 
 All capture outputs use `ce::capture_output::ReservedCaptureOutput`:
 
-- Normal video recordings reserve through `VideoEncoder` in `mediaengine/video_encoder.cpp`.
+- Normal video recordings reserve at recording start and write through `VideoEncoder` to an unpublished same-directory `.part`; idle media initialization creates no output. The file receives its final extension only after valid mux finalization.
 - Audio-only recordings reserve through `MediaEngine::InitAudioOnlyMuxer()` in `mediaengine/mediaengine.cpp`.
 - SDR PNG and HDR AVIF screenshots reserve and atomically publish through `captureengine/screenshot_encoding.cpp`.
 
@@ -17,9 +17,10 @@ All capture outputs use `ce::capture_output::ReservedCaptureOutput`:
 - Filenames contain UTC milliseconds, the writer PID, and an atomic process-local sequence. A collision adds a bounded retry suffix.
 - The destination is reserved with `CreateFileW(CREATE_NEW)`. Existing paths are never truncated, removed, or selected as the recording destination.
 - The reservation records the Windows volume/file identity. Failure cleanup deletes only a path that still has the reserved identity.
-- A video or audio muxer opens only its owned placeholder. The reservation handle remains open without delete sharing for the writer lifetime; successful close/trailer publishes the file, while failure cleanup removes only the owned partial file.
+- A video muxer opens only an identity-owned same-directory `.part` reservation. The container format is selected from configured metadata rather than the staging extension. After trailer and close succeed, publication additionally requires positive encoded duration and at least one successfully written video packet; only then does a collision-safe atomic rename expose the configured final extension. Warm-up cancellation, empty output, and finalize failure delete only the owned staging identity.
+- An audio-only muxer retains the final-extension reservation model. Its reservation handle remains open without delete sharing for the writer lifetime; successful close/trailer publishes the file, while failure cleanup removes only the owned partial file.
 - A screenshot is fully encoded, flushed, and closed in a separately reserved `.part` file. Only then does `MoveFileExW(..., MOVEFILE_WRITE_THROUGH)` atomically give that same file a fresh final-extension name. No zero-byte `.png`/`.avif` placeholder is exposed during encoding, no existing file is replaced, and a destination collision is retried with a bounded suffix.
-- Post-mux duration probing and exact audio finalization retain the reserved filename. User-visible screenshot notification occurs only after final atomic publication.
+- Video post-mux duration probing runs only after final atomic publication and uses the published filename. User-visible screenshot notification likewise occurs only after final atomic publication.
 
 ## Mapped Drives And Elevation
 
@@ -41,17 +42,20 @@ Limits:
 
 - `common/path_utils.{h,cpp}` (`ResolveMappedDrivePath`, `ReplaceDriveRootWithRemotePath`)
 - `common/reserved_capture_output.{h,cpp}` (`ResolveCaptureDirectory`, `ReservedCaptureOutput`)
-- `mediaengine/video_encoder.cpp` (`ReserveOutputFilename`, muxer ownership and publication)
+- `mediaengine/video_encoder.cpp` (`ReserveOutputStagingFile`, content-gated muxer publication and cancellation cleanup)
+- `mediaengine/mux_invariants.h` (`SelectVideoOutputDisposition`)
 - `mediaengine/mediaengine.cpp` (`InitAudioOnlyMuxer`, audio-only ownership and publication)
 - `captureengine/screenshot_encoding.cpp` (reserved staging and atomic final commit)
-- `tests/test_path_utils.cpp` and `tests/test_reserved_capture_output.cpp`
+- `tests/test_path_utils.cpp`, `tests/test_reserved_capture_output.cpp`, `tests/test_mux_invariants.cpp`, and `tests/test_recording_start_feedback.cpp`
 
 ## Validation
 
 - `ReservedCaptureOutputTest` covers forced identical clock/PID/sequence values for video, audio-only, PNG, and AVIF extensions. It also proves staging-to-new-name publication exposes no final placeholder and retries a collision while preserving the byte-identical existing output.
-- The required full product build passed as build 0.1.4806. The canonical no-build run passed 1,501 native tests in 105 suites and all four Python tool self-tests.
+- `MuxInvariantTest.VideoOutputPublishesOnlyFinalizedCommittedVideo` locks the independent cancellation, mux-finalization, duration, and written-video-packet publication gates.
+- The current cancellation-safe video publication change passed focused lifecycle/mux/source-contract coverage, incremental installed product build `0.1.5128`, the complete exact-build native suite, and all six Python tool self-tests.
 
 ## Open Questions / Stale-risk
 
 - Runtime validation with an actual elevated CE process writing to a persistent mapped network drive should confirm the log reports `source=registry_mapping` when the elevated token cannot see the live mapping.
+- A real hotkey stop during both inject and WGC/DXGI warm-up should confirm that no final recording and no lingering `.part` file remain; deterministic lifecycle and output-disposition tests cover the race and cleanup policy offline.
 - Filesystem atomicity and identity semantics still depend on the destination filesystem implementing the corresponding Windows operations; network-share runtime validation remains useful.

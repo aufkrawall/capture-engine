@@ -31,6 +31,7 @@
 #include "../common/logging.h"
 #include "../common/process_ipc.h"
 #include "../common/rate_window_utils.h"
+#include "../common/recording_lifecycle.h"
 #include "../common/secure_dll_loading.h"
 #include "../common/shared_defs.h"
 #include "../common/thread_power_throttling_compat.h"
@@ -674,7 +675,24 @@ void SetCapturePipelinePhase(CapturePipelinePhase phase) {
     if (!g_pSharedMem) {
         return;
     }
-    g_pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(phase), std::memory_order_relaxed);
+    g_pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(phase), std::memory_order_release);
+}
+
+bool TryArmCapturePipelineWarmup() {
+    return !g_pSharedMem ||
+           ce::recording_lifecycle::TryArmWarmup(g_pSharedMem->runtimeState.capturePhase, g_Recording);
+}
+
+bool TryCommitCapturePipelineLive() {
+    return !g_pSharedMem || ce::recording_lifecycle::TryCommitLive(g_pSharedMem->runtimeState.capturePhase, g_Recording);
+}
+
+CapturePipelinePhase BeginCapturePipelineStop() {
+    if (!g_pSharedMem) {
+        return CapturePipelinePhase::kCancelling;
+    }
+    const uint32_t liveFrames = g_pSharedMem->runtimeState.liveFramesEncoded.load(std::memory_order_acquire);
+    return ce::recording_lifecycle::BeginStop(g_pSharedMem->runtimeState.capturePhase, liveFrames);
 }
 
 void ResetRuntimeDiagnostics(SharedMemoryLayout* sharedMem) {
@@ -697,7 +715,7 @@ void ResetRuntimeDiagnostics(SharedMemoryLayout* sharedMem) {
     state.muxBackpressureCount.store(0, std::memory_order_relaxed);
     state.muxBackpressureWaitUs.store(0, std::memory_order_relaxed);
     state.muxBackpressureMaxWaitUs.store(0, std::memory_order_relaxed);
-    state.capturePhase.store(static_cast<uint32_t>(CapturePipelinePhase::kIdle), std::memory_order_relaxed);
+    state.capturePhase.store(static_cast<uint32_t>(CapturePipelinePhase::kIdle), std::memory_order_release);
     state.sourceFramesReceived.store(0, std::memory_order_relaxed);
     state.framesQueued.store(0, std::memory_order_relaxed);
     state.framesEncoded.store(0, std::memory_order_relaxed);
@@ -3065,7 +3083,14 @@ void EncoderThreadFunc(const AppConfig& config) {
     ScopedMmcssTask encoderMmcssTask(L"Pro Audio", AVRT_PRIORITY_HIGH, "EncoderThread");
 
     g_FrameQueue.StartRecording();
-    SetCapturePipelinePhase(CapturePipelinePhase::kWarmup);
+    if (!TryArmCapturePipelineWarmup()) {
+        const uint32_t phase = g_pSharedMem
+                                   ? g_pSharedMem->runtimeState.capturePhase.load(std::memory_order_acquire)
+                                   : static_cast<uint32_t>(CapturePipelinePhase::kIdle);
+        LogInfo("[RecordingLifecycle] Encoder warmup cancelled before arm (phase=%s requested=%d)",
+                CapturePipelinePhaseToString(phase), g_Recording.load(std::memory_order_acquire) ? 1 : 0);
+        return;
+    }
 
     LARGE_INTEGER qpcFreq;
     QueryPerformanceFrequency(&qpcFreq);
@@ -4304,11 +4329,15 @@ void EncoderThreadFunc(const AppConfig& config) {
         // encode processing time, not the full loop including sleep.
         if (g_pSharedMem) {
             if (!g_Recording.load(std::memory_order_acquire)) {
-                g_pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(CapturePipelinePhase::kDrain),
-                                                              std::memory_order_relaxed);
+                const auto phase = static_cast<CapturePipelinePhase>(
+                    g_pSharedMem->runtimeState.capturePhase.load(std::memory_order_acquire));
+                if (phase != CapturePipelinePhase::kCancelling) {
+                    g_pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(CapturePipelinePhase::kDrain),
+                                                                  std::memory_order_release);
+                }
             } else if (recordingOutputLive) {
                 g_pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(CapturePipelinePhase::kLive),
-                                                              std::memory_order_relaxed);
+                                                              std::memory_order_release);
             }
         }
         static DWORD lastThreadLog = 0;
@@ -8635,7 +8664,6 @@ void EncoderThreadFunc(const AppConfig& config) {
                 bufferedInjectFrames.size() + ((!useScreenGrab && popped && frame.isInjectMode) ? 1u : 0u);
             const bool liveReady = useScreenGrab || bufferedInjectReadyFrames >= pendingLiveInjectReadyFrames;
             if (!liveReady) {
-                SetCapturePipelinePhase(CapturePipelinePhase::kWarmup);
                 if (popped) {
                     if (useScreenGrab) {
                         TrackWarmupWgcFreshFrame(frame);
@@ -8653,9 +8681,22 @@ void EncoderThreadFunc(const AppConfig& config) {
                 continue;
             }
 
+            if (!TryCommitCapturePipelineLive()) {
+                const uint32_t phase = g_pSharedMem
+                                           ? g_pSharedMem->runtimeState.capturePhase.load(std::memory_order_acquire)
+                                           : static_cast<uint32_t>(CapturePipelinePhase::kIdle);
+                LogInfo(
+                    "[RecordingLifecycle] Warmup-to-live commit rejected (phase=%s requested=%d); pending frame "
+                    "discarded",
+                    CapturePipelinePhaseToString(phase), g_Recording.load(std::memory_order_acquire) ? 1 : 0);
+                if (popped) {
+                    DiscardQueuedFrame(frame);
+                }
+                continue;
+            }
+
             pendingLiveActivation = false;
             recordingOutputLive = true;
-            SetCapturePipelinePhase(CapturePipelinePhase::kLive);
             recordingLiveTick = GetTickCount64();
             if (MediaEngine_SetWgcStartupExtraDelayQpc) {
                 const int64_t startupSmoothExtraDelayQpc = useScreenGrab ? wgcSmoothnessActiveDelayQpc : 0;
@@ -8680,7 +8721,6 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
 
         if (!recordingOutputLive) {
-            SetCapturePipelinePhase(CapturePipelinePhase::kWarmup);
             if (popped) {
                 if (useScreenGrab) {
                     TrackWarmupWgcFreshFrame(frame);
@@ -11560,7 +11600,7 @@ bool StartRecording(const AppConfig& config) {
             g_Recording = false;
             SetCaptureRequestedState(false);
             SetRecordingVisibleState(false);
-            MediaEngine_StopRecording();
+            MediaEngine_StopRecording(true);
             SetActiveScreenGrab(false);
             PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed, "WGC capture initialization");
             timeEndPeriod(1);
@@ -11605,7 +11645,7 @@ void StopRecording() {
         SetRecordingVisibleState(false);
         SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
 
-        MediaEngine_StopRecording();
+        MediaEngine_StopRecording(false);
 
         if (g_pSharedMem) {
             ResetRuntimeDiagnostics(g_pSharedMem);
@@ -11622,8 +11662,16 @@ void StopRecording() {
 
     const bool wasActiveScreenGrab = IsActiveScreenGrab();
     const bool recordingUsesVfr = g_RecordingUsesVfr.load(std::memory_order_acquire);
+    g_Recording = false;
+    const CapturePipelinePhase stopTransition = BeginCapturePipelineStop();
+    const bool cancelBeforeLive = stopTransition == CapturePipelinePhase::kCancelling;
     const bool drainOutstandingCfrTicks =
+        !cancelBeforeLive &&
         ce::capture_policy::ShouldDrainOutstandingCfrTicksAtStop(wasActiveScreenGrab, recordingUsesVfr);
+    LogInfo("[RecordingLifecycle] Stop accepted as %s (path=%s liveFrames=%u)",
+            cancelBeforeLive ? "pre-live cancellation" : "live finalization",
+            wasActiveScreenGrab ? "WGC" : "inject",
+            g_pSharedMem ? g_pSharedMem->runtimeState.liveFramesEncoded.load(std::memory_order_acquire) : 0u);
     int64_t drainStopQpc = 0;
     if (drainOutstandingCfrTicks) {
         LARGE_INTEGER stopQpc;
@@ -11631,10 +11679,8 @@ void StopRecording() {
         drainStopQpc = stopQpc.QuadPart;
     }
 
-    g_Recording = false;
     SetCaptureRequestedState(false);
     SetRecordingVisibleState(false);
-    SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
     g_CfrDrainStopQpc.store(drainStopQpc, std::memory_order_release);
     g_DrainOutstandingCfrTicks.store(drainOutstandingCfrTicks && drainStopQpc > 0, std::memory_order_release);
     if (wasActiveScreenGrab) {
@@ -11676,7 +11722,7 @@ void StopRecording() {
         g_pSharedMem->encoderTextures.kmtReady.store(false, std::memory_order_release);
     }
 
-    MediaEngine_StopRecording();
+    MediaEngine_StopRecording(cancelBeforeLive);
     if (MediaEngine_ReleaseEncoderTextures) {
         MediaEngine_ReleaseEncoderTextures();
     }

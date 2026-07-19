@@ -52,6 +52,7 @@ public:
           audioRunning(false),
           recordingStartTime(),
           firstVideoFrameMs(0),
+          firstVideoFrameCommitted(false),
           lastVideoFrameMs(0),
           videoElapsedMs(0) {}
     ~MediaEngine() {
@@ -378,6 +379,7 @@ public:
     std::atomic<bool> audioFinalizingCfrStop{false};
     std::chrono::steady_clock::time_point recordingStartTime;  // CaptureEngine clock start time
     int64_t firstVideoFrameMs;                                 // Timestamp of first video frame for A/V sync
+    bool firstVideoFrameCommitted;
     int64_t lastVideoFrameMs;                                  // Timestamp of last video frame for audio trimming
     std::atomic<int64_t> videoElapsedMs;                       // Elapsed video time in ms for audio clock sync
     std::atomic<int64_t> recordingStartSystemQPCMs{0};         // Start time in System QPC MS (for Audio Alignment)
@@ -902,7 +904,7 @@ public:
 
     bool CanRepeatLastFrame() {
         std::lock_guard<std::recursive_mutex> lock(muxMutex);
-        return videoEnc && recording && firstVideoFrameMs != 0 && videoEnc->CanRepeatLastFrame();
+        return videoEnc && recording && firstVideoFrameCommitted && videoEnc->CanRepeatLastFrame();
     }
 
     void ResetRepeatFrameCache() {
@@ -1453,6 +1455,7 @@ public:
             // CRITICAL: Reset video clock for new recording to prevent stale
             // timestamps
             firstVideoFrameMs = 0;               // Reset for new recording
+            firstVideoFrameCommitted = false;
             videoElapsedMs.store(0);             // CRITICAL: Reset video clock for new recording
                                                  // to prevent stale timestamps
             recordingStartSystemQPCMs.store(0);  // CRITICAL: Reset QPC start time for new recording
@@ -1630,7 +1633,60 @@ public:
         return true;
     }
 
-    void StopRecording() {
+    void CancelUncommittedVideoRecording() {
+        {
+            std::lock_guard<std::recursive_mutex> lock(muxMutex);
+            if (!recording) {
+                return;
+            }
+            recording = false;
+        }
+
+        DLL_Log("[RecordingLifecycle] Cancelling recording before first live video frame");
+        StopAudioCaptureSources(true);
+        audioRunning.store(false, std::memory_order_release);
+        audioStopDrainRequested.store(false, std::memory_order_release);
+        audioStopDrainComplete.store(true, std::memory_order_release);
+        audioDrainCv.notify_all();
+        if (audioThread.joinable()) {
+            audioThread.join();
+        }
+
+        for (auto& src : audioSources) {
+            if (src.encoder) {
+                src.encoder->Cancel();
+            }
+            if (src.ringBuffer) {
+                src.ringBuffer->Clear();
+            }
+            if (src.syncResampler) {
+                src.syncResampler->Reset();
+            }
+            src.resampler.reset();
+            src.postResampleBuffer.clear();
+        }
+
+        audioSyncPending.store(false, std::memory_order_release);
+        audioFinalizingCfrStop.store(false, std::memory_order_release);
+        preservePendingStartupAudioPackets.store(false, std::memory_order_release);
+        firstVideoFrameMs = 0;
+        firstVideoFrameCommitted = false;
+        lastVideoFrameMs = 0;
+        videoElapsedMs.store(0, std::memory_order_release);
+        recordingStartSystemQPCMs.store(0, std::memory_order_release);
+        recordingStartSystemQpc100ns.store(0, std::memory_order_release);
+        injectTimelineState.Reset();
+        d3d11TimelineState.Reset();
+        timingModeFrozenForSession = false;
+        activeScreenGrab = false;
+
+        if (videoEnc) {
+            videoEnc->Cancel();
+        }
+        DLL_Log("[STOP SUMMARY] Recording cancelled before live output; staged media discarded");
+    }
+
+    void StopRecording(bool cancelUncommittedVideo = false) {
         // Audio-only: stop audio thread, write trailer, clean up
         if (audioOnly) {
             {
@@ -1753,6 +1809,7 @@ public:
                 CleanupAudioOnlyMuxer();
             }
             firstVideoFrameMs = 0;
+            firstVideoFrameCommitted = false;
             lastVideoFrameMs = 0;
             recordingStartSystemQPCMs.store(0);
             recordingStartSystemQpc100ns.store(0);
@@ -1766,6 +1823,14 @@ public:
                 config.avSyncReason.c_str(), config.avSyncUsedAudioProbe ? 1 : 0);
             DLL_Log("[STOP SUMMARY] Audio-only recording finalized");
             return;
+        }
+
+        if (cancelUncommittedVideo && !firstVideoFrameCommitted) {
+            CancelUncommittedVideoRecording();
+            return;
+        }
+        if (cancelUncommittedVideo) {
+            DLL_Log("[RecordingLifecycle] Cancellation arrived after the first video frame committed; finalizing");
         }
 
         ExtendCfrToCommonAudioLattice();
@@ -2198,6 +2263,7 @@ public:
 
         // Reset video frame tracking for next recording
         firstVideoFrameMs = 0;
+        firstVideoFrameCommitted = false;
         lastVideoFrameMs = 0;
         recordingStartSystemQPCMs.store(0);
         recordingStartSystemQpc100ns.store(0);
@@ -2228,7 +2294,7 @@ public:
         // Calculate QPC based timestamp for debugging/Legacy Start Time
         int64_t debugTimestamp = (qpcFreq > 0) ? (timestampQPC * 1000) / qpcFreq : timestampQPC;
 
-        const bool commitsFirstVideoFrame = this->firstVideoFrameMs == 0;
+        const bool commitsFirstVideoFrame = !this->firstVideoFrameCommitted;
 
         const int64_t steadyElapsedUs =
             commitsFirstVideoFrame
@@ -2261,6 +2327,7 @@ public:
             // first frame. A failed/deferred candidate must not discard audio
             // or establish a PTS origin for pixels that were never emitted.
             this->firstVideoFrameMs = debugTimestamp;
+            this->firstVideoFrameCommitted = true;
             this->recordingStartTime = now;
             const int64_t startQpc100ns =
                 (qpcFreq > 0 && timestampQPC > 0)
@@ -2309,7 +2376,7 @@ public:
         const bool wgcCfrRecording = IsWgcCfrRecording();
         // CFR drain: allow scheduled repeats to close already accrued CFR debt
         // before MediaEngine_StopRecording finalizes the encoders.
-        if (!videoEnc || firstVideoFrameMs == 0)
+        if (!videoEnc || !firstVideoFrameCommitted)
             return false;
         if (!recording && !cfrRecording)
             return false;
@@ -2450,7 +2517,7 @@ public:
             "[VideoPrewarm] D3D11 deferred encoder/mux prepare %s: dimensions=%ux%u hdr=%d elapsed=%lldus "
             "firstFrameCommitted=%d",
             prepared ? "complete" : "FAILED", width, height, isHDR ? 1 : 0, static_cast<long long>(elapsedUs),
-            firstVideoFrameMs != 0 ? 1 : 0);
+            firstVideoFrameCommitted ? 1 : 0);
         return prepared;
     }
 
@@ -2465,7 +2532,7 @@ public:
         auto now = std::chrono::steady_clock::now();
         int64_t debugTimestamp = (qpcFreq > 0) ? (timestampQPC * 1000) / qpcFreq : timestampQPC;
 
-        const bool commitsFirstVideoFrame = this->firstVideoFrameMs == 0;
+        const bool commitsFirstVideoFrame = !this->firstVideoFrameCommitted;
         int64_t firstAnchorQpc = timestampQPC;
         int64_t firstAnchorMs = debugTimestamp;
         int64_t firstStartQpc100ns = 0;
@@ -2552,6 +2619,7 @@ public:
         }
         if (commitsFirstVideoFrame) {
             this->firstVideoFrameMs = debugTimestamp;
+            this->firstVideoFrameCommitted = true;
             this->recordingStartTime = now;
             videoElapsedMs.store(0);
             DLL_Log("MediaEngine: First successfully encoded D3D11 frame at %lld ms (QPC: %lld) (StartQPC: %lld)",
@@ -6315,10 +6383,10 @@ MEDIAENGINE_API void MediaEngine_SetAudioOnly(bool audioOnly) {
         g_Engine->SetAudioOnly(audioOnly);
 }
 
-MEDIAENGINE_API void MediaEngine_StopRecording() {
+MEDIAENGINE_API void MediaEngine_StopRecording(bool cancelUncommittedVideo) {
     std::lock_guard<std::recursive_mutex> apiLock(g_EngineApiMutex);
     if (g_Engine)
-        g_Engine->StopRecording();
+        g_Engine->StopRecording(cancelUncommittedVideo);
 }
 
 MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures() {

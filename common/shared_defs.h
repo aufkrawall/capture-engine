@@ -401,6 +401,7 @@ enum class CapturePipelinePhase : uint32_t {
     kLive = 2,
     kDrain = 3,
     kStopping = 4,
+    kCancelling = 5,
 };
 
 struct ScreenGrabTargetSnapshot {
@@ -422,6 +423,8 @@ inline const char* CapturePipelinePhaseToString(CapturePipelinePhase phase) {
             return "drain";
         case CapturePipelinePhase::kStopping:
             return "stopping";
+        case CapturePipelinePhase::kCancelling:
+            return "cancelling";
     }
     return "unknown";
 }

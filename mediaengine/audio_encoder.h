@@ -126,8 +126,10 @@ public:
         return streamIndex;
     }
     void Stop();
+    void Cancel();
 
 private:
+    void Finish(bool flush);
     std::function<void(AVPacket*)> onPacket;
     AVCodecContext* codecCtx;
     std::unique_ptr<AudioResampler> resampler;

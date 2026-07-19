@@ -4,6 +4,7 @@
 
 #include "../common/config.h"
 #include "../common/inject_overlay_policy.h"
+#include "../common/recording_lifecycle.h"
 #include "../common/recording_indicator_policy.h"
 #include "../common/shared_defs.h"
 
@@ -223,7 +224,38 @@ TEST(SharedDefsTest, CapturePipelinePhaseStringCoversKnownAndUnknownValues) {
     EXPECT_STREQ(CapturePipelinePhaseToString(CapturePipelinePhase::kLive), "live");
     EXPECT_STREQ(CapturePipelinePhaseToString(CapturePipelinePhase::kDrain), "drain");
     EXPECT_STREQ(CapturePipelinePhaseToString(CapturePipelinePhase::kStopping), "stopping");
+    EXPECT_STREQ(CapturePipelinePhaseToString(CapturePipelinePhase::kCancelling), "cancelling");
     EXPECT_STREQ(CapturePipelinePhaseToString(999u), "unknown");
+}
+
+TEST(SharedDefsTest, RecordingStopCancelsOnlyBeforeLiveOutputExists) {
+    using ce::recording_lifecycle::SelectStopTransition;
+
+    EXPECT_EQ(SelectStopTransition(CapturePipelinePhase::kIdle, 0), CapturePipelinePhase::kCancelling);
+    EXPECT_EQ(SelectStopTransition(CapturePipelinePhase::kWarmup, 0), CapturePipelinePhase::kCancelling);
+    EXPECT_EQ(SelectStopTransition(CapturePipelinePhase::kLive, 0), CapturePipelinePhase::kStopping);
+    EXPECT_EQ(SelectStopTransition(CapturePipelinePhase::kWarmup, 1), CapturePipelinePhase::kStopping);
+    EXPECT_EQ(SelectStopTransition(CapturePipelinePhase::kDrain, 0), CapturePipelinePhase::kStopping);
+    EXPECT_EQ(SelectStopTransition(CapturePipelinePhase::kCancelling, 0), CapturePipelinePhase::kCancelling);
+    EXPECT_EQ(SelectStopTransition(CapturePipelinePhase::kStopping, 0), CapturePipelinePhase::kStopping);
+}
+
+TEST(SharedDefsTest, StopAndLiveCommitHaveOneAtomicWinner) {
+    std::atomic<uint32_t> phase{static_cast<uint32_t>(CapturePipelinePhase::kIdle)};
+    std::atomic<bool> requested{true};
+
+    ASSERT_TRUE(ce::recording_lifecycle::TryArmWarmup(phase, requested));
+    requested.store(false, std::memory_order_release);
+    EXPECT_EQ(ce::recording_lifecycle::BeginStop(phase, 0), CapturePipelinePhase::kCancelling);
+    EXPECT_FALSE(ce::recording_lifecycle::TryCommitLive(phase, requested));
+    EXPECT_EQ(static_cast<CapturePipelinePhase>(phase.load()), CapturePipelinePhase::kCancelling);
+
+    phase.store(static_cast<uint32_t>(CapturePipelinePhase::kIdle));
+    requested.store(true, std::memory_order_release);
+    ASSERT_TRUE(ce::recording_lifecycle::TryArmWarmup(phase, requested));
+    ASSERT_TRUE(ce::recording_lifecycle::TryCommitLive(phase, requested));
+    requested.store(false, std::memory_order_release);
+    EXPECT_EQ(ce::recording_lifecycle::BeginStop(phase, 0), CapturePipelinePhase::kStopping);
 }
 
 TEST(SharedDefsTest, OverlayConfigSeqlockPublishesStableSnapshot) {

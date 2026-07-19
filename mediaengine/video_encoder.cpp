@@ -1050,17 +1050,22 @@ static HANDLE NormalizeSourceHandleForWow64(HANDLE handle, uint32_t sourcePid) {
 #endif
 }
 
-static ce::capture_output::ReservedCaptureOutput ReserveOutputFilename(const VideoConfig& config) {
+static ce::capture_output::ReservedCaptureOutput ReserveOutputStagingFile(const VideoConfig& config) {
     const fs::path exeDir = ce::capture_output::GetExecutableDirectory();
     const fs::path outDir = ce::capture_output::ResolveCaptureDirectory(config.outputDir, exeDir);
-    const std::wstring extension(config.container.begin(), config.container.end());
-    auto reservation = ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture", extension);
+    auto reservation = ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_stage", L"part");
     if (reservation) {
-        DLL_Log("[VideoEncoder] Reserved output file: %s", reservation.Utf8Path().c_str());
+        DLL_Log("[VideoEncoder] Reserved unpublished staging output: %s", reservation.Utf8Path().c_str());
     } else {
-        DLL_Log("[VideoEncoder] ERROR: Could not reserve a collision-safe output in: %s", outDir.string().c_str());
+        DLL_Log("[VideoEncoder] ERROR: Could not reserve a collision-safe staging output in: %s",
+                outDir.string().c_str());
     }
     return reservation;
+}
+
+static int AllocateOutputContextForContainer(AVFormatContext** formatContext, const VideoConfig& config) {
+    const std::string formatHint = "capture." + config.container;
+    return avformat_alloc_output_context2(formatContext, nullptr, nullptr, formatHint.c_str());
 }
 
 // RAII Wrapper for MediaEngine D3D11 Guard
@@ -1390,6 +1395,50 @@ void VideoEncoder::LogPacketTimelineSummary(int64_t finalDurationUs) const {
     }
 }
 
+uint64_t VideoEncoder::GetWrittenVideoPacketCount() const {
+    if (!fmtCtx || !stream || stream->index < 0 ||
+        static_cast<size_t>(stream->index) >= writtenPacketTimelines.size()) {
+        return 0;
+    }
+    return writtenPacketTimelines[static_cast<size_t>(stream->index)].packetCount;
+}
+
+bool VideoEncoder::FinalizeOutputPublication(int trailerResult, int closeResult, int64_t finalDurationUs) {
+    const uint64_t writtenVideoPackets = GetWrittenVideoPacketCount();
+    const auto disposition = ce::mux::SelectVideoOutputDisposition(
+        discardOutputRequested.load(std::memory_order_acquire), trailerResult, closeResult, finalDurationUs,
+        writtenVideoPackets);
+    if (disposition != ce::mux::VideoOutputDisposition::kPublish) {
+        const bool removed = outputReservation.CleanupOwnedFile();
+        DLL_Log(
+            "[VideoEncoder] output_discarded reason=%s durationUs=%lld videoPackets=%llu trailer=%d close=%d "
+            "removed=%d staging='%s'",
+            ce::mux::VideoOutputDispositionToString(disposition), static_cast<long long>(finalDurationUs),
+            static_cast<unsigned long long>(writtenVideoPackets), trailerResult, closeResult, removed ? 1 : 0,
+            outputFilename.c_str());
+        return false;
+    }
+
+    const fs::path outputDirectory = ce::capture_output::ResolveCaptureDirectory(
+        savedConfig.outputDir, ce::capture_output::GetExecutableDirectory());
+    const std::wstring extension(savedConfig.container.begin(), savedConfig.container.end());
+    if (!outputReservation.PublishToNewPath(outputDirectory, L"capture", extension)) {
+        const DWORD publishError = GetLastError();
+        const bool removed = outputReservation.CleanupOwnedFile();
+        DLL_Log(
+            "[VideoEncoder] ERROR: output_publish_failed error=%lu durationUs=%lld videoPackets=%llu removed=%d "
+            "staging='%s'",
+            publishError, static_cast<long long>(finalDurationUs), static_cast<unsigned long long>(writtenVideoPackets),
+            removed ? 1 : 0, outputFilename.c_str());
+        return false;
+    }
+
+    outputFilename = outputReservation.Utf8Path();
+    DLL_Log("[VideoEncoder] output_published file='%s' durationUs=%lld videoPackets=%llu", outputFilename.c_str(),
+            static_cast<long long>(finalDurationUs), static_cast<unsigned long long>(writtenVideoPackets));
+    return true;
+}
+
 bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fps,
                         std::function<void(AVPacket*)> packetCallback) {
     // Clear handle failure cache from previous recording session
@@ -1417,16 +1466,12 @@ bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fp
     DLL_Log("[VideoEncoder] Step 2: Setting av_log level");
     av_log_set_level(AV_LOG_WARNING);
 
-    DLL_Log("[VideoEncoder] Step 3: Creating output filename");
-    outputReservation = ReserveOutputFilename(config);
-    if (!outputReservation) {
-        return false;
-    }
-    outputFilename = outputReservation.Utf8Path();
-    DLL_Log("[VideoEncoder] Initial output file candidate: %s", outputFilename.c_str());
+    DLL_Log("[VideoEncoder] Step 3: Deferring staging output reservation until recording start");
+    outputReservation.CleanupOwnedFile();
+    outputFilename.clear();
 
     DLL_Log("[VideoEncoder] Step 4: Calling avformat_alloc_output_context2");
-    if (avformat_alloc_output_context2(&fmtCtx, nullptr, nullptr, outputFilename.c_str()) < 0) {
+    if (AllocateOutputContextForContainer(&fmtCtx, config) < 0) {
         DLL_Log("[VideoEncoder] Failed to alloc output context");
         return false;
     }
@@ -2714,6 +2759,7 @@ void VideoEncoder::BeginDeferredRecording() {
     writerFinalizeTimedOut.store(false, std::memory_order_relaxed);
     writerFinalizeSlowWarningLogged.store(false, std::memory_order_relaxed);
     writerFinalizePhase.store(kWriterPhaseRunning, std::memory_order_relaxed);
+    discardOutputRequested.store(false, std::memory_order_relaxed);
     encodedDurationUs.store(0, std::memory_order_relaxed);
     lastAssignedVideoPts = -1;
     lastFrameDeferred.store(false, std::memory_order_relaxed);
@@ -2786,17 +2832,10 @@ bool VideoEncoder::Start() {
     }
 
     // If fmtCtx was freed by Stop(), recreate it for the new recording
-    // If fmtCtx was freed by Stop(), recreate it for the new recording
     if (!fmtCtx) {
-        // Generate new output filename using robust helper
-        outputReservation = ReserveOutputFilename(savedConfig);
-        if (!outputReservation) {
-            return false;
-        }
-        outputFilename = outputReservation.Utf8Path();
-        DLL_Log("[VideoEncoder] Creating new format context for: %s", outputFilename.c_str());
+        DLL_Log("[VideoEncoder] Creating new output format context for container: %s", savedConfig.container.c_str());
 
-        if (avformat_alloc_output_context2(&fmtCtx, nullptr, nullptr, outputFilename.c_str()) < 0) {
+        if (AllocateOutputContextForContainer(&fmtCtx, savedConfig) < 0) {
             DLL_Log("[VideoEncoder] Failed to allocate new format context");
             return false;
         }
@@ -2861,6 +2900,15 @@ bool VideoEncoder::Start() {
                 "open)",
                 prewarmMs);
         }
+    }
+
+    if (!outputReservation) {
+        outputReservation = ReserveOutputStagingFile(savedConfig);
+        if (!outputReservation) {
+            return false;
+        }
+        outputFilename = outputReservation.Utf8Path();
+        DLL_Log("[VideoEncoder] Reserved staging output for recording: %s", outputFilename.c_str());
     }
 
     BeginDeferredRecording();
@@ -3263,7 +3311,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 if (fmtCtx) {
                     avformat_free_context(fmtCtx);
                     fmtCtx = nullptr;
-                    avformat_alloc_output_context2(&fmtCtx, nullptr, nullptr, outputFilename.c_str());
+                    AllocateOutputContextForContainer(&fmtCtx, savedConfig);
                 }
                 const AVCodec* c = avcodec_find_encoder_by_name(savedConfig.encoder.c_str());
                 if (c)
@@ -4963,6 +5011,9 @@ void VideoEncoder::CleanupResources() {
     encoderEagainDrainCount = 0;
     encoderTimingLastLogTick = 0;
     asyncWriteErrorCount = 0;
+    if (outputReservation.CleanupOwnedFile()) {
+        DLL_Log("[VideoEncoder] Removed unpublished staging output during cleanup: %s", outputFilename.c_str());
+    }
 }
 
 void VideoEncoder::ReleasePreservedEncoderTextures() {
@@ -5166,12 +5217,7 @@ void VideoEncoder::Stop() {
                 }
             }
             fileOpened = false;
-            const bool published = trailerResult >= 0 && closeResult >= 0;
-            if (published) {
-                outputReservation.Publish();
-            } else {
-                outputReservation.CleanupOwnedFile();
-            }
+            const bool published = FinalizeOutputPublication(trailerResult, closeResult, finalDurationUs);
             DLL_Log("[VideoEncoder] mux_closed file='%s' finalDurationUs=%lld", outputFilename.c_str(),
                     (long long)finalDurationUs);
             if (published && finalDurationUs > 0) {
@@ -5181,6 +5227,12 @@ void VideoEncoder::Stop() {
     }
 
     CleanupResources();
+}
+
+void VideoEncoder::Cancel() {
+    discardOutputRequested.store(true, std::memory_order_release);
+    DLL_Log("[VideoEncoder] Cancellation requested; any unpublished output will be discarded");
+    Stop();
 }
 
 // ============================================================================
@@ -6855,12 +6907,7 @@ void VideoEncoder::AsyncWriteLoop() {
                     }
                 }
                 fileOpened = false;
-                const bool published = trailerResult >= 0 && closeResult >= 0;
-                if (published) {
-                    outputReservation.Publish();
-                } else {
-                    outputReservation.CleanupOwnedFile();
-                }
+                const bool published = FinalizeOutputPublication(trailerResult, closeResult, finalDurationUs);
                 DLL_Log("[VideoEncoder] mux_closed file='%s' finalDurationUs=%lld", outputFilename.c_str(),
                         (long long)finalDurationUs);
                 if (published && finalDurationUs > 0) {

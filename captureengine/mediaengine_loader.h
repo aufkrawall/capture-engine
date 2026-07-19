@@ -34,7 +34,7 @@ typedef bool (*MediaEngine_ProcessFrameD3D11_t)(void* texture, int64_t timestamp
                                                 bool isHDR, int32_t captureLeft, int32_t captureTop,
                                                 int64_t timelineElapsedUs, const ce::cursor::CaptureState* cursorState);
 typedef bool (*MediaEngine_StartRecording_t)();
-typedef void (*MediaEngine_StopRecording_t)();
+typedef void (*MediaEngine_StopRecording_t)(bool cancelUncommittedVideo);
 typedef void (*MediaEngine_ReleaseEncoderTextures_t)();
 typedef ID3D11Device* (*MediaEngine_GetD3D11Device_t)();
 typedef void (*MediaEngine_ReleaseSharedD3D11Device_t)();
