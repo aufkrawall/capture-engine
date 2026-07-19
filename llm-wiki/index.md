@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-19 (presentation-contract-aware inject HDR/SDR video, screenshots, and overlay rendering; crash-safe exactly-once DXGI color-space tracking without shared-vtable slot 38 interception; HDR10 Rec.709-to-Rec.2020 overlay conversion and Windows SDR-white calibration; live-validated driver-independent Windows-HDR FP16 scRGB-to-P010 and Windows-SDR-white-calibrated HDR-to-SDR video; native-HDR/forced-SDR screenshot policy plus split-device readback; and the existing current build/graphics/audio/security state; see overlay-rendering.md, screenshots.md, wgc-capture.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-19 (presentation-contract-aware inject HDR/SDR video, screenshots, and all primary/secondary DX12 overlay routes; opaque whole-frame forced-SDR preparation; crash-safe exactly-once DXGI color-space tracking without shared-vtable slot 38 interception; HDR10 Rec.709-to-Rec.2020 overlay conversion and Windows SDR-white calibration; live-validated driver-independent Windows-HDR FP16 scRGB-to-P010 and Windows-SDR-white-calibrated HDR-to-SDR video; native-HDR/forced-SDR screenshot policy plus split-device readback; and the existing current build/graphics/audio/security state; see overlay-rendering.md, screenshots.md, wgc-capture.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -33,7 +33,7 @@ Primary sources:
 - `configuration.md`
   - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, unlimited named application profiles with separate video-source and DLL-injection policies, window/audio/DesktopOverlay/override routing, validation rules, and maintenance invariants. Last verified 2026-07-19.
 - `overlay-rendering.md`
-  - Shared overlay layout/graph/font invariants, DXGI/Vulkan presentation-color contracts, HDR10 gamut/transfer and per-monitor paper-white rules, runtime-owned FG UI transitions, exact-ABI telemetry, legacy cache/state isolation, DirectDraw/PQ-alpha performance boundaries, and runtime-validation stale-risk. Last verified 2026-07-19.
+  - Shared overlay layout/graph/font invariants, DXGI/Vulkan presentation-color contracts including secondary DX12 renderer synchronization, HDR10 gamut/transfer and per-monitor paper-white rules, runtime-owned FG UI transitions, exact-ABI telemetry, legacy cache/state isolation, DirectDraw/PQ-alpha performance boundaries, and runtime-validation stale-risk. Last verified 2026-07-19.
 - `handoff-dx12-32bit-crash.md`
   - Fixed-state pickup note for the 32-bit DX12 inject-overlay crash/freeze: proven font-resource trigger, unconfirmed NVIDIA/WoW64 attribution, solid glyph-span text fix, runtime validation boundary, invariants, and source anchors. Last verified 2026-07-16.
 - `current.md`

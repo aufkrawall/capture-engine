@@ -3328,6 +3328,15 @@ TEST(DXGISharedTest, RuntimeOwnedOverlayRoutesUseCachedPresentationContractAndRe
     ASSERT_FALSE(streamlineRenderer.empty());
     EXPECT_NE(dx12.find("request.hdr = DX12_ResolveRuntimeOwnedOverlayTargetHDRState"), std::string::npos);
     EXPECT_NE(dx12.find("DX12: Presentation color state changed"), std::string::npos);
+    EXPECT_NE(dx12.find("g_D3D11On12Adapter.SetHDR(isHdr, static_cast<int>(format))"), std::string::npos);
+    size_t secondaryColorSyncCalls = 0;
+    for (size_t position = 0;
+         (position = dx12.find("SyncSecondaryDx12OverlayColorState(g_State.format)", position)) !=
+         std::string::npos;
+         ++position) {
+        ++secondaryColorSyncCalls;
+    }
+    EXPECT_EQ(secondaryColorSyncCalls, 4u);
     EXPECT_NE(streamlineHook.find("DX12_ResolveRuntimeOwnedOverlayTargetHDRState(format)"), std::string::npos);
     EXPECT_NE(streamlineRenderer.find("g_Renderer->UpdateHdr(request.hdr)"), std::string::npos);
     EXPECT_EQ(streamlineHook.find("const bool hdr = format == DXGI_FORMAT_R10G10B10A2"), std::string::npos);

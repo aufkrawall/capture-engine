@@ -39,6 +39,7 @@ Both producer and consumer require dimensions `1..16384`, checked 64-bit size ar
 - FP16 scRGB is interpreted as linear BT.709, transformed to linear BT.2020, scaled at 80 nits per scRGB unit, then encoded with ST.2084 before YUV conversion.
 - AVIF uses still-picture mode, `cpu-used=6`, `crf=12`, row multithreading, and BT.2020/PQ metadata. Every codec, mux, packet-write, drain, trailer, and close result is checked.
 - Forced-SDR screenshots query the primary monitor's `DISPLAYCONFIG_SDR_WHITE_LEVEL`, use `(raw / 1000) * 80 nits`, place that white at 80% linear SDR with a smooth highlight knee, apply sRGB transfer, and write PNG color metadata as full-range RGB/BT.709/sRGB. A logged 203-nit fallback is used only when Windows does not expose the value.
+- Injected overlay pixels must already obey the captured swapchain contract. Session `20260719_214733` showed the CPU screenshot tone map correctly retained the game while a secondary DX12 adapter had written sRGB endpoints directly into the PQ target; those nominal 10,000-nit saturated pixels were necessarily gamut-compressed toward white. Synchronizing that adapter's HDR/format state fixes the producer. A deterministic packed-RGB10 fixture proves correctly encoded 320-nit Rec.709 green returns as saturated SDR green with opaque PNG alpha.
 
 PNG/AVIF files use the shared collision-safe output reservation described in `recording-output-paths.md`. Encoding occurs in an owned staging file; publication and overlay notification happen only after flush/close and atomic commit.
 
@@ -52,7 +53,7 @@ Desktop fallback must not wait 15 seconds merely because the injector service ex
 
 ## Diagnostics And Tests
 
-`ScreenshotHookWorkerTest` covers successful `.part` to `.ready` publication and worker failure. `ScreenshotEncodingTest` covers header validation, exact/truncated reads, dimension and size boundaries, deterministic SDR/PQ/scRGB conversion, and publication failure. `ScreenshotAvifTest` decodes a produced AVIF and verifies dimensions, 10-bit 4:4:4, BT.2020/PQ metadata, and bounded pixel error. Collision tests live in `tests/test_reserved_capture_output.cpp`.
+`ScreenshotHookWorkerTest` covers successful `.part` to `.ready` publication and worker failure. `ScreenshotEncodingTest` covers header validation, exact/truncated reads, dimension and size boundaries, deterministic SDR/PQ/scRGB conversion, correctly encoded saturated overlay color, and publication failure. `ScreenshotAvifTest` decodes a produced AVIF and verifies dimensions, 10-bit 4:4:4, BT.2020/PQ metadata, and bounded pixel error. Collision tests live in `tests/test_reserved_capture_output.cpp`.
 
 Build `0.1.5116` was validated live on the HDR desktop. Native `auto` produced a non-black 3840x2160 AVIF with AV1 High, `yuv444p10le`, full-range BT.2020-NCL/PQ metadata and a visually correct decoded tone-map preview. Forced `bt709` produced a visually correct 3840x2160 RGBA PNG with full-range RGB, BT.709 primaries and sRGB transfer; the 16-worker 4K CPU tone-map took 57.833 ms and the full WGC-readback/conversion/PNG publication completed in about 450 ms. Both modes logged keyed-mutex acquisition, and the idle injector caused no hook wait.
 

@@ -296,7 +296,9 @@ TEST(VideoEncoderSourceTest, ExplicitBt709ToneMapsHdrBeforeSdrVideoProcessorConv
     EXPECT_NE(shader.find("float3 Hdr10ToSdr(float3 pqRec2020)"), std::string::npos);
     EXPECT_NE(shader.find("colorTransform == 3"), std::string::npos);
     EXPECT_NE(shader.find("colorTransform == 4"), std::string::npos);
+    EXPECT_NE(shader.find("c.a = 1.0"), std::string::npos);
     EXPECT_NE(source.find("passes=1 intermediate=RGB10 gamut=luminance-preserving"), std::string::npos);
+    EXPECT_NE(source.find("frameAlpha=opaque"), std::string::npos);
 }
 
 TEST(VideoEncoderSourceTest, RgbColorConversionShaderCompilesForRuntimeProfiles) {
@@ -334,7 +336,7 @@ TEST(VideoEncoderSourceTest, RgbColorConversionShaderCompilesForRuntimeProfiles)
     FreeLibrary(compilerModule);
 }
 
-TEST(VideoEncoderSourceTest, ForcedSdrToneMapPlacesConfiguredPaperWhiteAtSdrHeadroom) {
+TEST(VideoEncoderSourceTest, ForcedSdrToneMapPlacesConfiguredPaperWhiteAtSdrHeadroomAndForcesOpaqueOutput) {
     ce::ComGuard<ID3D11Device> device;
     ce::ComGuard<ID3D11DeviceContext> context;
     D3D_FEATURE_LEVEL featureLevel = {};
@@ -345,7 +347,7 @@ TEST(VideoEncoderSourceTest, ForcedSdrToneMapPlacesConfiguredPaperWhiteAtSdrHead
     ASSERT_GE(featureLevel, D3D_FEATURE_LEVEL_11_0);
 
     constexpr float kSdrWhiteNits = 203.0f;
-    const float sourcePixel[4] = {kSdrWhiteNits / 80.0f, kSdrWhiteNits / 80.0f, kSdrWhiteNits / 80.0f, 1.0f};
+    const float sourcePixel[4] = {kSdrWhiteNits / 80.0f, kSdrWhiteNits / 80.0f, kSdrWhiteNits / 80.0f, 0.0f};
     D3D11_TEXTURE2D_DESC sourceDesc = {};
     sourceDesc.Width = 1;
     sourceDesc.Height = 1;
@@ -450,6 +452,121 @@ TEST(VideoEncoderSourceTest, ForcedSdrToneMapPlacesConfiguredPaperWhiteAtSdrHead
     EXPECT_NEAR(red, 927, 1);
     EXPECT_NEAR(green, 927, 1);
     EXPECT_NEAR(blue, 927, 1);
+    EXPECT_EQ(packed >> 30, 3u);
+}
+
+TEST(VideoEncoderSourceTest, ForcedSdrPackedHdr10OverlayGreenRemainsColoredAndOpaque) {
+    ce::ComGuard<ID3D11Device> device;
+    ce::ComGuard<ID3D11DeviceContext> context;
+    D3D_FEATURE_LEVEL featureLevel = {};
+    const HRESULT deviceHr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                                D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr, 0, D3D11_SDK_VERSION,
+                                                device.addressof(), &featureLevel, context.addressof());
+    ASSERT_TRUE(SUCCEEDED(deviceHr)) << std::hex << deviceHr;
+    ASSERT_GE(featureLevel, D3D_FEATURE_LEVEL_11_0);
+
+    constexpr float kSdrWhiteNits = 320.0f;
+    constexpr uint32_t kHdr10OverlayGreen = 0x18c9ea0du;
+    D3D11_TEXTURE2D_DESC sourceDesc = {};
+    sourceDesc.Width = 1;
+    sourceDesc.Height = 1;
+    sourceDesc.MipLevels = 1;
+    sourceDesc.ArraySize = 1;
+    sourceDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
+    sourceDesc.SampleDesc.Count = 1;
+    sourceDesc.Usage = D3D11_USAGE_IMMUTABLE;
+    sourceDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA sourceData = {};
+    sourceData.pSysMem = &kHdr10OverlayGreen;
+    sourceData.SysMemPitch = sizeof(kHdr10OverlayGreen);
+    ce::ComGuard<ID3D11Texture2D> sourceTexture;
+    ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&sourceDesc, &sourceData, sourceTexture.addressof())));
+
+    D3D11_TEXTURE2D_DESC outputDesc = sourceDesc;
+    outputDesc.Usage = D3D11_USAGE_DEFAULT;
+    outputDesc.BindFlags = D3D11_BIND_RENDER_TARGET;
+    ce::ComGuard<ID3D11Texture2D> outputTexture;
+    ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&outputDesc, nullptr, outputTexture.addressof())));
+    ce::ComGuard<ID3D11ShaderResourceView> sourceView;
+    ce::ComGuard<ID3D11RenderTargetView> outputView;
+    ASSERT_TRUE(SUCCEEDED(device->CreateShaderResourceView(sourceTexture.get(), nullptr, sourceView.addressof())));
+    ASSERT_TRUE(SUCCEEDED(device->CreateRenderTargetView(outputTexture.get(), nullptr, outputView.addressof())));
+
+    ce::ComGuard<ID3DBlob> vertexBlob;
+    ce::ComGuard<ID3DBlob> pixelBlob;
+    ce::ComGuard<ID3DBlob> errors;
+    ASSERT_TRUE(SUCCEEDED(D3DCompile(ce::video_color::kRgbColorConversionShaderSource,
+                                     sizeof(ce::video_color::kRgbColorConversionShaderSource) - 1, nullptr, nullptr,
+                                     nullptr, "VS_Main", "vs_4_0", 0, 0, vertexBlob.addressof(), errors.addressof())));
+    errors.reset();
+    ASSERT_TRUE(SUCCEEDED(D3DCompile(ce::video_color::kRgbColorConversionShaderSource,
+                                     sizeof(ce::video_color::kRgbColorConversionShaderSource) - 1, nullptr, nullptr,
+                                     nullptr, "PS_Main", "ps_4_0", 0, 0, pixelBlob.addressof(), errors.addressof())));
+    ce::ComGuard<ID3D11VertexShader> vertexShader;
+    ce::ComGuard<ID3D11PixelShader> pixelShader;
+    ASSERT_TRUE(SUCCEEDED(device->CreateVertexShader(vertexBlob->GetBufferPointer(), vertexBlob->GetBufferSize(),
+                                                     nullptr, vertexShader.addressof())));
+    ASSERT_TRUE(SUCCEEDED(device->CreatePixelShader(pixelBlob->GetBufferPointer(), pixelBlob->GetBufferSize(), nullptr,
+                                                    pixelShader.addressof())));
+
+    D3D11_SAMPLER_DESC samplerDesc = {};
+    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
+    samplerDesc.AddressU = samplerDesc.AddressV = samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    ce::ComGuard<ID3D11SamplerState> sampler;
+    ASSERT_TRUE(SUCCEEDED(device->CreateSamplerState(&samplerDesc, sampler.addressof())));
+    struct CopyConstants {
+        uint32_t colorTransform;
+        uint32_t padding;
+        float outputInvWidth;
+        float outputInvHeight;
+        float lumaSharpenStrength;
+        float sdrWhiteNits;
+        float padding2[2];
+    };
+    const CopyConstants constants = {4, 0, 1.0f, 1.0f, 0.0f, kSdrWhiteNits, {0.0f, 0.0f}};
+    D3D11_BUFFER_DESC constantsDesc = {};
+    constantsDesc.ByteWidth = sizeof(constants);
+    constantsDesc.Usage = D3D11_USAGE_IMMUTABLE;
+    constantsDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_SUBRESOURCE_DATA constantsData = {};
+    constantsData.pSysMem = &constants;
+    ce::ComGuard<ID3D11Buffer> constantsBuffer;
+    ASSERT_TRUE(SUCCEEDED(device->CreateBuffer(&constantsDesc, &constantsData, constantsBuffer.addressof())));
+
+    D3D11_VIEWPORT viewport = {0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};
+    ID3D11RenderTargetView* outputViewRaw = outputView.get();
+    ID3D11ShaderResourceView* sourceViewRaw = sourceView.get();
+    ID3D11SamplerState* samplerRaw = sampler.get();
+    ID3D11Buffer* constantsRaw = constantsBuffer.get();
+    context->RSSetViewports(1, &viewport);
+    context->OMSetRenderTargets(1, &outputViewRaw, nullptr);
+    context->VSSetShader(vertexShader.get(), nullptr, 0);
+    context->PSSetShader(pixelShader.get(), nullptr, 0);
+    context->PSSetShaderResources(0, 1, &sourceViewRaw);
+    context->PSSetSamplers(0, 1, &samplerRaw);
+    context->PSSetConstantBuffers(0, 1, &constantsRaw);
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    context->Draw(3, 0);
+    ID3D11RenderTargetView* nullRtv = nullptr;
+    ID3D11ShaderResourceView* nullSrv = nullptr;
+    context->OMSetRenderTargets(1, &nullRtv, nullptr);
+    context->PSSetShaderResources(0, 1, &nullSrv);
+
+    D3D11_TEXTURE2D_DESC stagingDesc = outputDesc;
+    stagingDesc.Usage = D3D11_USAGE_STAGING;
+    stagingDesc.BindFlags = 0;
+    stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ce::ComGuard<ID3D11Texture2D> stagingTexture;
+    ASSERT_TRUE(SUCCEEDED(device->CreateTexture2D(&stagingDesc, nullptr, stagingTexture.addressof())));
+    context->CopyResource(stagingTexture.get(), outputTexture.get());
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    ASSERT_TRUE(SUCCEEDED(context->Map(stagingTexture.get(), 0, D3D11_MAP_READ, 0, &mapped)));
+    const uint32_t packed = *static_cast<const uint32_t*>(mapped.pData);
+    context->Unmap(stagingTexture.get(), 0);
+
+    EXPECT_NEAR(static_cast<int>(packed & 0x3ff), 0, 2);
+    EXPECT_NEAR(static_cast<int>((packed >> 10) & 0x3ff), 927, 2);
+    EXPECT_NEAR(static_cast<int>((packed >> 20) & 0x3ff), 4, 2);
     EXPECT_EQ(packed >> 30, 3u);
 }
 

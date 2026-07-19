@@ -185,6 +185,12 @@ float4 PS_Main(VS_OUT input) : SV_TARGET {
     } else if (colorTransform == 4) {
         c.rgb = Hdr10ToSdr(c.rgb);
     }
+    // A presented backbuffer's alpha is not a content-coverage contract. Games
+    // commonly leave it at zero, while an injected overlay writes non-zero
+    // alpha. The VideoProcessor may honor that per-pixel alpha and would then
+    // discard the game while retaining only the overlay. Every prepared video
+    // frame is an opaque whole-frame image, irrespective of source alpha.
+    c.a = 1.0;
     return c;  // Render target format handles packing / channel layout
 }
 )";

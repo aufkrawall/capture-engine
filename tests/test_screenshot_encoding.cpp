@@ -392,6 +392,22 @@ TEST(ScreenshotColorTest, ToneMapsHdrToSdrWithTheVideoPaperWhiteContract) {
                                                           converted));
 }
 
+TEST(ScreenshotColorTest, ToneMapsCorrectlyEncodedHdrOverlayGreenWithoutLosingChroma) {
+    // Rec.709 green at 320 nits, transformed to Rec.2020 then PQ/RGB10 by the
+    // HDR10 overlay shader. Alpha is deliberately zero because screenshot
+    // publication and video-frame preparation both treat the captured frame as
+    // an opaque image rather than trusting a game's backbuffer alpha channel.
+    constexpr uint32_t kHdr10OverlayGreen = 0x18c9ea0du;
+    ce::screenshot::Bgra8Pixel converted{};
+    ASSERT_TRUE(ce::screenshot::ConvertHdrPixelToSdrBgra(
+        ScreenshotPixelFormat::R10G10B10A2, reinterpret_cast<const uint8_t*>(&kHdr10OverlayGreen), 320.0f,
+        converted));
+    EXPECT_NEAR(converted.r, 0, 1);
+    EXPECT_NEAR(converted.g, 231, 1);
+    EXPECT_NEAR(converted.b, 1, 1);
+    EXPECT_EQ(converted.a, 255);
+}
+
 TEST(ScreenshotColorTest, ExplicitBt709PublishesAnHdrSourceAsPng) {
     std::filesystem::path directory = UniqueRawPath();
     directory.replace_extension();

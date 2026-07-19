@@ -4598,6 +4598,20 @@ bool DX12_ResolveRuntimeOwnedOverlayTargetHDRState(DXGI_FORMAT format) {
     return resolvedHDR;
 }
 
+static void SyncSecondaryDx12OverlayColorState(DXGI_FORMAT format) {
+    const bool isHdr = DX12_ResolveRuntimeOwnedOverlayTargetHDRState(format);
+    g_D3D11On12Adapter.SetHDR(isHdr, static_cast<int>(format));
+
+    static std::atomic<int> s_lastFormat{-1};
+    static std::atomic<int> s_lastHdr{-1};
+    const int previousFormat = s_lastFormat.exchange(static_cast<int>(format), std::memory_order_acq_rel);
+    const int previousHdr = s_lastHdr.exchange(isHdr ? 1 : 0, std::memory_order_acq_rel);
+    if (previousFormat != static_cast<int>(format) || previousHdr != (isHdr ? 1 : 0)) {
+        HookLogImportant("DX12: Secondary overlay color contract synchronized format=%d hdr=%d",
+                         static_cast<int>(format), isHdr ? 1 : 0);
+    }
+}
+
 static bool ResolveSwapchainOutputHDRState(IDXGISwapChain* swapchain, DXGI_FORMAT format, const char* logPrefix,
                                            int* outColorSpace = nullptr, bool* outSupported = nullptr) {
     if (outColorSpace) {
@@ -14493,6 +14507,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             // not track this value here — a non-zero guard would stall reuse).
             s_descFreeSlotFence = g_State.fence;
             s_descFreeSlotGuardValue = 0;
+            SyncSecondaryDx12OverlayColorState(g_State.format);
             g_D3D11On12Adapter.RenderOverlay(g_State.cachedWidth, g_State.cachedHeight);
             s_descFreeCmdList = nullptr;
 
@@ -14545,6 +14560,7 @@ static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {
             // PostSL/FG overlay: synchronized by the FG completion fence (see above).
             s_descFreeSlotFence = g_State.fence;
             s_descFreeSlotGuardValue = 0;
+            SyncSecondaryDx12OverlayColorState(g_State.format);
             g_D3D11On12Adapter.RenderOverlay(g_State.cachedWidth, g_State.cachedHeight);
             s_descFreeCmdList = nullptr;
         }
@@ -20643,6 +20659,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                             const char* api = "DX12";
                                                             g_D3D11On12Adapter.SetGraphicsAPI(api);
                                                         }
+                                                        SyncSecondaryDx12OverlayColorState(g_State.format);
                                                         g_D3D11On12Adapter.RenderOverlay(g_State.cachedWidth,
                                                                                          g_State.cachedHeight);
                                                         if (!useTextureDx12Backend) {
@@ -20758,6 +20775,7 @@ skipOverlayInit:  // FG cooldown guard jumps here to skip reinit but continue Pr
                                                     g_D3D11On12Adapter.SetGraphicsAPI(api);
                                                 }
 
+                                                SyncSecondaryDx12OverlayColorState(g_State.format);
                                                 g_D3D11On12Adapter.RenderOverlay(g_State.cachedWidth,
                                                                                  g_State.cachedHeight);
 

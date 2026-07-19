@@ -5826,7 +5826,7 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
             DLL_Log(
                 "[HDR->SDR] Whole-frame shader tone map active: transform=%s sourceWhite=%.1f-nit "
                 "output=BT709-G22 headroom=80%% passes=1 intermediate=RGB10 gamut=luminance-preserving "
-                "driverVPTransfer=0 cpuWait=0",
+                "driverVPTransfer=0 cpuWait=0 frameAlpha=opaque",
                 ce::video_format::DescribeRgbColorTransform(colorTransform), sdrWhiteNits);
             hdrToSdrLogged = true;
         }
