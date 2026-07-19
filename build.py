@@ -349,6 +349,25 @@ def get_llvm_readobj_exe() -> str:
     raise RuntimeError("llvm-readobj is required for Linux PE verification; install the 'llvm' package")
 
 
+def get_vulkan_fg_shader_tools() -> tuple[str, str]:
+    """Resolve shader tools that execute on the current build host."""
+    if IS_LINUX:
+        glslang = shutil.which("glslangValidator")
+        spirv_val = shutil.which("spirv-val")
+        if not glslang or not spirv_val:
+            raise RuntimeError(
+                "Vulkan FG shader build on Linux requires host glslangValidator and spirv-val; "
+                "install the 'glslang-tools' and 'spirv-tools' packages"
+            )
+        return glslang, spirv_val
+
+    glslang = os.path.join(MSYS2_DIR, "clang64", "bin", "glslangValidator.exe")
+    spirv_val = os.path.join(MSYS2_DIR, "clang64", "bin", "spirv-val.exe")
+    if not os.path.isfile(glslang) or not os.path.isfile(spirv_val):
+        raise RuntimeError("Vulkan FG shader build requires bundled glslangValidator.exe and spirv-val.exe")
+    return glslang, spirv_val
+
+
 def make_cpp_cflags(
     opt_flags: List[str],
     *,
@@ -2140,10 +2159,7 @@ def compile_vulkan_fg_shaders(env: Dict[str, str]) -> str:
     shader_dir = os.path.join(PROJECT_ROOT, "testapp", "shaders")
     output_dir = os.path.join(OBJ_DIR, "vulkan_fg_shaders")
     os.makedirs(output_dir, exist_ok=True)
-    glslang = os.path.join(MSYS2_DIR, "clang64", "bin", "glslangValidator.exe")
-    spirv_val = os.path.join(MSYS2_DIR, "clang64", "bin", "spirv-val.exe")
-    if not os.path.exists(glslang) or not os.path.exists(spirv_val):
-        raise RuntimeError("Vulkan FG shader build requires bundled glslangValidator.exe and spirv-val.exe")
+    glslang, spirv_val = get_vulkan_fg_shader_tools()
 
     shader_specs = [
         ("vulkan_fg_fullscreen.vert", "vert", "kFullscreenVertexSpirv"),

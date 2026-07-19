@@ -52,8 +52,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             g++-mingw-w64-x86-64 \
             g++-mingw-w64-i686 \
+            glslang-tools \
             llvm \
             pkg-config \
+            spirv-tools \
             zstd
 
       - name: Run build policy tests on Linux

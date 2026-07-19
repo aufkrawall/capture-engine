@@ -165,6 +165,31 @@ class BuildFlagPolicyTest(unittest.TestCase):
         ):
             self.assertEqual(build.get_llvm_readobj_exe(), "/usr/bin/llvm-readobj")
 
+    def test_linux_vulkan_shader_tools_are_host_native_and_installed_by_ci(self) -> None:
+        executables = {
+            "glslangValidator": "/usr/bin/glslangValidator",
+            "spirv-val": "/usr/bin/spirv-val",
+        }
+        with patch.object(build, "IS_LINUX", True), patch.object(
+            build.shutil,
+            "which",
+            side_effect=lambda executable: executables.get(executable),
+        ):
+            self.assertEqual(
+                build.get_vulkan_fg_shader_tools(),
+                ("/usr/bin/glslangValidator", "/usr/bin/spirv-val"),
+            )
+
+        with patch.object(build, "IS_LINUX", True), patch.object(build.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "glslang-tools.*spirv-tools"):
+                build.get_vulkan_fg_shader_tools()
+
+        workflow = (Path(build.__file__).parent / ".github/workflows/hardening-ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("glslang-tools", workflow)
+        self.assertIn("spirv-tools", workflow)
+
     def test_ffmpeg_policy_includes_stack_and_object_size_hardening(self) -> None:
         with open(build.__file__, encoding="utf-8") as build_file:
             source = build_file.read()
