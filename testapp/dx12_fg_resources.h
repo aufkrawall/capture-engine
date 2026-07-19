@@ -24,14 +24,16 @@ constexpr DXGI_FORMAT kMotionVectorFormat = DXGI_FORMAT_R16G16_FLOAT;
 constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D32_FLOAT;
 constexpr DXGI_FORMAT kMaskFormat = DXGI_FORMAT_R8_UNORM;
 constexpr D3D12_RESOURCE_STATES kColorReadState = static_cast<D3D12_RESOURCE_STATES>(
-    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    static_cast<UINT>(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) |
+    static_cast<UINT>(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
 // Plain shader-read for the depth texture between frames. Deliberately WITHOUT
 // D3D12_RESOURCE_STATE_DEPTH_READ: nothing rebinds it as a read-only DSV, and the pure SRV combo is
 // exactly representable as the FFX-side FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ declared for FSR
 // dispatch inputs (FFX state flags are NOT D3D12 state bits; mismatched declarations make the FFX
 // backend emit wrong transition barriers).
 constexpr D3D12_RESOURCE_STATES kDepthReadState = static_cast<D3D12_RESOURCE_STATES>(
-    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    static_cast<UINT>(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) |
+    static_cast<UINT>(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE));
 
 // Render-resolution inputs (sceneColor/motionVectors/depth/masks) feed the upscalers; the
 // display-resolution hudlessColor is the upscaled pre-UI frame consumed by FG and present-compose.

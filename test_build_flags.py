@@ -122,6 +122,8 @@ class BuildFlagPolicyTest(unittest.TestCase):
         project_root = Path(build.__file__).parent
         sampler_source = (project_root / "hook/common/dx12_sampler_policy.cpp").read_text(encoding="utf-8")
         dred_source = (project_root / "hook/common/dx12_dred.cpp").read_text(encoding="utf-8")
+        fg_resource_source = (project_root / "testapp/dx12_fg_resources.h").read_text(encoding="utf-8")
+        fg_dred_source = (project_root / "testapp/dx12_fg_switch_dred.inl").read_text(encoding="utf-8")
         overlay_sources = (
             (project_root / "hook/apis/dx12_streamline_ui_overlay.cpp").read_text(encoding="utf-8"),
             (project_root / "hook/apis/dx12_ffx_suspend_overlay.cpp").read_text(encoding="utf-8"),
@@ -137,6 +139,17 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertIn("#if CE_HAS_D3D12_DRED_SETTINGS1", dred_source)
         self.assertIn("#if CE_HAS_D3D12_DRED_DATA1", dred_source)
         self.assertIn("ID3D12DeviceRemovedExtendedData* dred", dred_source)
+        self.assertNotIn(
+            "D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE",
+            fg_resource_source,
+        )
+        self.assertGreaterEqual(fg_resource_source.count("static_cast<UINT>(D3D12_RESOURCE_STATE_"), 4)
+        self.assertIn("#if CE_TESTAPP_HAS_D3D12_DRED_SETTINGS1", fg_dred_source)
+        self.assertIn("#elif CE_TESTAPP_HAS_D3D12_DRED_SETTINGS", fg_dred_source)
+        self.assertIn("#elif CE_TESTAPP_HAS_D3D12_DRED_DATA", fg_dred_source)
+        self.assertIn("Compiler headers expose no DRED data interface", fg_dred_source)
+        self.assertIn("static const char* DredOpName(UINT op)", fg_dred_source)
+        self.assertNotIn("case D3D12_AUTO_BREADCRUMB_OP_", fg_dred_source)
         for source in overlay_sources:
             self.assertNotIn(
                 "D3D12_FORMAT_SUPPORT1_RENDER_TARGET | D3D12_FORMAT_SUPPORT1_BLENDABLE",
@@ -190,6 +203,24 @@ class BuildFlagPolicyTest(unittest.TestCase):
         )
         self.assertIn("glslang-tools", workflow)
         self.assertIn("spirv-tools", workflow)
+
+    def test_parallel_compile_rejects_duplicate_object_outputs_before_spawning_workers(self) -> None:
+        tasks = [([], "first.cpp", "shared.o"), ([], "second.cpp", "shared.o")]
+        with self.assertRaisesRegex(RuntimeError, "same object.*first.cpp.*second.cpp"):
+            build.parallel_compile_varied({}, "unused-compiler", tasks)
+
+    def test_linux_requires_x64_vulkan_layer_inputs_and_propagates_link_failures(self) -> None:
+        with patch.object(build, "IS_LINUX", True), patch.object(
+            build, "get_linux_vulkan_import_lib_path", return_value=None
+        ):
+            with self.assertRaisesRegex(RuntimeError, r"required Vulkan Layer \(x64\)"):
+                build.compile_vulkan_layer({}, "/usr/bin/x86_64-w64-mingw32-g++", [], "x64")
+            self.assertIsNone(build.compile_vulkan_layer({}, "/usr/bin/i686-w64-mingw32-g++", [], "x86"))
+
+        source = Path(build.__file__).read_text(encoding="utf-8")
+        self.assertIn("Vulkan import library unavailable for required x64 test applications", source)
+        self.assertIn('if IS_LINUX and arch == "x86":\n                log(f"Linux host: skipping Hook DLL', source)
+        self.assertIn('log(f"Error linking layer: {e}")\n        raise', source)
 
     def test_fg_sdk_host_setup_keeps_linux_header_only(self) -> None:
         with patch.object(build, "IS_LINUX", True), patch.object(build, "setup_fg_sdk_headers") as headers, patch.object(

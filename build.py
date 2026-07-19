@@ -4392,6 +4392,17 @@ def compile_object(env: Dict[str, str], clang_exe: str, cflags: List[str], src: 
 
 def parallel_compile_varied(env, clang_exe, compile_tasks):
     """Compile (flags, source, object) tasks through one bounded worker pool."""
+    compile_tasks = list(compile_tasks)
+    object_owners: Dict[str, str] = {}
+    for _, source, object_path in compile_tasks:
+        normalized_object = os.path.normcase(os.path.abspath(object_path))
+        previous_source = object_owners.get(normalized_object)
+        if previous_source is not None:
+            raise RuntimeError(
+                f"Multiple compile tasks target the same object {object_path}: {previous_source} and {source}"
+            )
+        object_owners[normalized_object] = source
+
     # Populate this once before worker threads race through object signatures; otherwise an empty
     # functools cache can hash the same large compiler executable concurrently in several workers.
     compute_compiler_fingerprint(clang_exe)
@@ -5386,6 +5397,8 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
 
     vulkan_lib = get_linux_vulkan_import_lib_path("x64")
     vulkan_lib_x86 = get_linux_vulkan_import_lib_path("x86")
+    if vulkan_lib is None:
+        raise RuntimeError("Vulkan import library unavailable for required x64 test applications")
 
     # DX12 Test App
     dx12_src = os.path.join(testapp_src_dir, "dx12_test.cpp")
@@ -5908,6 +5921,13 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     """Compile VK_LAYER_CE_overlay - Vulkan implicit layer for overlay and capture"""
     log(f"Compiling Vulkan Layer ({arch})...")
 
+    vulkan_lib = get_linux_vulkan_import_lib_path(arch)
+    if not vulkan_lib:
+        if arch == "x86" and IS_LINUX:
+            log("Linux host: skipping Vulkan Layer (x86) - Vulkan import library unavailable")
+            return
+        raise RuntimeError(f"Vulkan import library unavailable for required Vulkan Layer ({arch})")
+
     layer_dir = os.path.join(PROJECT_ROOT, "hook", "vulkan_layer")
     bin_dir = CAPTURE_BIN_DIR
     obj_dir = os.path.join(PROJECT_ROOT, "build", "obj", arch, "vulkan_layer")
@@ -6037,11 +6057,6 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
     else:
         layer_dll_name = "VK_LAYER_CE_overlay_x86.dll"
 
-    vulkan_lib = get_linux_vulkan_import_lib_path(arch)
-    if not vulkan_lib:
-        log(f"Linux host: skipping Vulkan Layer ({arch}) - Vulkan import library unavailable")
-        return
-
     layer_dll = os.path.join(bin_dir, layer_dll_name)
 
     ldflags = [
@@ -6158,6 +6173,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
 
     except Exception as e:
         log(f"Error linking layer: {e}")
+        raise
 
 
 def compile_project(
@@ -6336,7 +6352,7 @@ def compile_project(
         # Get vulkan lib path (use compiler-resolved import library on Linux)
         vulkan_lib = get_linux_vulkan_import_lib_path(arch)
         if vulkan_lib is None:
-            if IS_LINUX:
+            if IS_LINUX and arch == "x86":
                 log(f"Linux host: skipping Hook DLL {arch} - Vulkan import library unavailable")
                 continue
             raise RuntimeError(f"Vulkan import library unavailable for {arch}")
