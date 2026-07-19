@@ -19,6 +19,7 @@
 #include "../common/reserved_capture_output.h"
 #include "../common/shared_defs.h"
 #include "mux_invariants.h"
+#include "video_format_policy.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -394,6 +395,7 @@ private:
     bool vpDeviceCompareLogged = false;
     bool vpInputViewLogged = false;
     bool vpFp16CompatLogged = false;
+    bool vpColorContractLogged = false;
     enum class Fp16VpInputStrategy {
         kUnknown,
         kUseStaging,
@@ -460,7 +462,9 @@ private:
     ID3D11Texture2D* RenderFullscreenCopy(ID3D11Texture2D* input, uint32_t w, uint32_t h, DXGI_FORMAT inputSrvFormat,
                                           DXGI_FORMAT outputFormat, ID3D11Texture2D*& cachedTexture,
                                           ID3D11RenderTargetView*& cachedRTV, uint32_t& cachedWidth,
-                                          uint32_t& cachedHeight, const char* logPrefix, bool linearToSrgb = false);
+                                          uint32_t& cachedHeight, const char* logPrefix,
+                                          ce::video_format::RgbColorTransform colorTransform =
+                                              ce::video_format::RgbColorTransform::kNone);
     ID3D11Texture2D* SwapRBChannels(ID3D11Texture2D* input, uint32_t w, uint32_t h);
 
     // ASYNC PACKET WRITER

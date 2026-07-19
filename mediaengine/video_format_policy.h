@@ -1,8 +1,15 @@
 #pragma once
 
 #include <dxgiformat.h>
+#include <cstdint>
 
 namespace ce::video_format {
+
+enum class RgbColorTransform : uint32_t {
+    kNone = 0,
+    kLinearToSrgb = 1,
+    kScRgbToHdr10 = 2,
+};
 
 inline bool IsTypelessDxgiFormat(DXGI_FORMAT format) {
     switch (format) {
@@ -46,6 +53,29 @@ inline DXGI_FORMAT GetRgbShaderResourceViewFormat(DXGI_FORMAT textureFormat) {
 
 inline bool ShouldApplySdrLinearToSrgbBeforeRgb10(DXGI_FORMAT textureFormat, bool isHdr) {
     return !isHdr && IsFp16RgbInputFormat(textureFormat);
+}
+
+inline bool IsOutputBitDepthCompatibleWithHdr(bool isHdr, bool use10Bit) {
+    return !isHdr || use10Bit;
+}
+
+inline RgbColorTransform GetRgbColorTransform(DXGI_FORMAT textureFormat, bool isHdr) {
+    if (!IsFp16RgbInputFormat(textureFormat)) {
+        return RgbColorTransform::kNone;
+    }
+    return isHdr ? RgbColorTransform::kScRgbToHdr10 : RgbColorTransform::kLinearToSrgb;
+}
+
+inline const char* DescribeRgbColorTransform(RgbColorTransform transform) {
+    switch (transform) {
+        case RgbColorTransform::kLinearToSrgb:
+            return "scRGB-linear-to-sRGB";
+        case RgbColorTransform::kScRgbToHdr10:
+            return "scRGB-linear-P709-to-PQ-P2020";
+        case RgbColorTransform::kNone:
+        default:
+            return "passthrough";
+    }
 }
 
 }  // namespace ce::video_format

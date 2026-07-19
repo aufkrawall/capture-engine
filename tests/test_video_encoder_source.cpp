@@ -1,9 +1,14 @@
 #include <gtest/gtest.h>
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <d3dcompiler.h>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+
+#include "../mediaengine/video_color_conversion_shader.h"
 
 namespace {
 
@@ -17,6 +22,15 @@ std::string ReadVideoEncoderSource() {
 
 std::string ReadCursorRendererSource() {
     const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "cursor_renderer.cpp";
+    std::ifstream file(source, std::ios::binary);
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return contents.str();
+}
+
+std::string ReadVideoColorShaderSource() {
+    const std::filesystem::path source =
+        std::filesystem::current_path() / "mediaengine" / "video_color_conversion_shader.h";
     std::ifstream file(source, std::ios::binary);
     std::ostringstream contents;
     contents << file.rdbuf();
@@ -194,4 +208,59 @@ TEST(VideoEncoderSourceTest, CursorPrecompositionFailureNeverFailsVideoConversio
 
     EXPECT_EQ(cursorBody.find("return false;"), std::string::npos);
     EXPECT_NE(cursorBody.find("video conversion continues without this"), std::string::npos);
+}
+
+TEST(VideoEncoderSourceTest, HdrScRgbIsConvertedToHdr10BeforeVideoProcessorQuantization) {
+    const std::string source = ReadVideoEncoderSource();
+    const std::string shader = ReadVideoColorShaderSource();
+    ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(shader.empty());
+
+    EXPECT_NE(shader.find("float3 ScRgbToHdr10(float3 scRgb)"), std::string::npos);
+    EXPECT_NE(shader.find("rec2020.r * 80.0"), std::string::npos);
+    EXPECT_NE(shader.find("LinearNitsToPQ"), std::string::npos);
+    EXPECT_NE(shader.find("colorTransform == 2"), std::string::npos);
+
+    const size_t conversion = source.find("bool VideoEncoder::ConvertBGRAtoNV12");
+    const size_t normalize = source.find("const bool normalizeHdrScRgb", conversion);
+    const size_t inputView = source.find("CreateVideoProcessorInputView(vpInputTexture", normalize);
+    ASSERT_NE(conversion, std::string::npos);
+    ASSERT_NE(normalize, std::string::npos);
+    ASSERT_NE(inputView, std::string::npos);
+    EXPECT_LT(normalize, inputView);
+    EXPECT_NE(source.find("HDR conversion requires ID3D11VideoContext1 color-space control"), std::string::npos);
+}
+
+TEST(VideoEncoderSourceTest, RgbColorConversionShaderCompilesForRuntimeProfiles) {
+    HMODULE compilerModule = LoadLibraryExW(L"d3dcompiler_47.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    ASSERT_NE(compilerModule, nullptr);
+
+    using D3DCompileFn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR,
+                                          LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
+    auto compile = reinterpret_cast<D3DCompileFn>(GetProcAddress(compilerModule, "D3DCompile"));
+    ASSERT_NE(compile, nullptr);
+
+    struct ShaderProfile {
+        const char* entry;
+        const char* target;
+    };
+    const ShaderProfile profiles[] = {{"VS_Main", "vs_4_0"}, {"PS_Main", "ps_4_0"}};
+    for (const ShaderProfile& profile : profiles) {
+        ID3DBlob* blob = nullptr;
+        ID3DBlob* errors = nullptr;
+        const HRESULT hr = compile(ce::video_color::kRgbColorConversionShaderSource,
+                                   sizeof(ce::video_color::kRgbColorConversionShaderSource) - 1, nullptr, nullptr,
+                                   nullptr, profile.entry, profile.target, 0, 0, &blob, &errors);
+        const std::string diagnostic =
+            errors ? std::string(static_cast<const char*>(errors->GetBufferPointer()), errors->GetBufferSize()) : "";
+        if (errors) {
+            errors->Release();
+        }
+        if (blob) {
+            blob->Release();
+        }
+        EXPECT_TRUE(SUCCEEDED(hr)) << profile.entry << "/" << profile.target << ": " << diagnostic;
+    }
+
+    FreeLibrary(compilerModule);
 }

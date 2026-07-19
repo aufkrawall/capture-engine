@@ -1,6 +1,6 @@
 # WGC Capture
 
-Last cross-checked: 2026-07-18 (canonical WGC/Diagnostics config locations, max-rate variable-input CFR producer contract, live rate-window aging, transactional D3D11 encoder prewarm/start-contract commit, content-delay-aware stale-debt pruning, cursor/content timeline alignment, per-monitor DPI resources, DXGI pointer metadata, straight-alpha cursor extraction, and crash-safe single-stream SDR/HDR cursor shader creation.)
+Last cross-checked: 2026-07-19 (deterministic FP16 scRGB desktop-to-HDR10 conversion, strict HDR output/color-space contracts, canonical WGC/Diagnostics config locations, max-rate variable-input CFR producer contract, live rate-window aging, transactional D3D11 encoder prewarm/start-contract commit, content-delay-aware stale-debt pruning, cursor/content timeline alignment, per-monitor DPI resources, DXGI pointer metadata, straight-alpha cursor extraction, and crash-safe single-stream SDR/HDR cursor shader creation.)
 Stale-risk: medium (the finite-interval aliasing root cause and max-rate policy are unit-tested and analyzer-visible, but fresh real-game WGC plus DXGI keyed-mutex repeat/reclaim validation remains necessary)
 
 Primary sources:
@@ -22,6 +22,7 @@ Primary sources:
 - `captureengine/pseudo_overlay.cpp`
 - `mediaengine/mediaengine.cpp`
 - `mediaengine/video_encoder.cpp`
+- `mediaengine/video_color_conversion_shader.h`
 - `mediaengine/cursor_renderer.cpp`
 - `mediaengine/cursor_bitmap_utils.h`
 - `mediaengine/cursor_geometry.h`
@@ -46,6 +47,16 @@ Primary sources:
 - `tools/analyze_capture_av.py`
 
 ## Current Summary
+
+### HDR desktop color contract (2026-07-19)
+
+Windows HDR being enabled makes monitor-scope WGC/DXGI capture HDR even when the desktop application or game is SDR. DWM maps that SDR content into its HDR desktop composition, and Desktop Duplication/WGC exposes the result as linear FP16 scRGB: Rec.709 primaries, extended range, and `1.0 = 80 nits`. The encoder must therefore preserve the scRGB interpretation rather than treating `R16G16B16A16_FLOAT` as already encoded RGB10/PQ.
+
+Session `20260719_170645` proved the old failure. The output probe reported HDR color space 12, DXGI delivered authoritative `R16G16B16A16_FLOAT`, and AV1/P010 metadata was BT.2020/PQ. NVIDIA rejected the native FP16 VP input view with `0x80070057`; the compatibility path then quantized linear scRGB to `R10G10B10A2` unchanged and labeled that UNORM texture as linear G10 input for a driver-owned transfer/primary conversion. The resulting bitstream was structurally valid but its pixels were severely green/magenta and complementary-color corrupted. Correct stream tags could not repair already-corrupt pixels.
+
+All HDR FP16 frames now take one deterministic GPU normalization pass before any video-processor input-view attempt. The shader converts linear Rec.709/scRGB to linear Rec.2020, maps absolute scRGB luminance at 80 nits per unit through ST 2084, and only then quantizes to RGB10. Extended highlights survive until PQ encoding; negative/out-of-gamut scRGB components are clamped after the primary conversion, not prematurely. The VP receives ordinary `RGB_FULL_G2084_NONE_P2020` and performs only the PQ/Rec.2020 RGB-to-limited-P010 matrix/subsampling step. The existing straight-alpha cursor is composed into scRGB before this pass, so cursor and captured pixels share the exact transform. There is no CPU readback/upload, wait, extra synchronization, or slow copy. On the supplied NVIDIA path this also avoids the known-failing FP16 staging probe/copy; drivers that accept FP16 VP views still use the same deterministic shader contract.
+
+HDR encoding fails closed when `ID3D11VideoContext1` color-space control is unavailable, when output bit depth is explicitly 8-bit, or when configuration requests BT.709 metadata; CE does not emit a mismatched/corrupt HDR stream. SDR FP16 remains the separate linear-scRGB-to-sRGB path, while already-packed HDR RGB10 inputs remain PQ/Rec.2020 passthrough. Logs now identify the shader transform and exact ColorSpace1 input/output IDs. `VideoFormatPolicyTest` locks format/bit-depth selection, and `VideoEncoderSourceTest` compiles both runtime HLSL profiles with `d3dcompiler_47` as well as checking transform-before-VP ordering. Build `0.1.5108` passed the complete incremental product/packaging/PE gate and the exact-build full native/Python test gate. Fresh Windows-HDR desktop and SDR-game recordings are still required for final visual/runtime proof.
 
 ### Transactional CFR startup and delayed-debt pruning (2026-07-14)
 
