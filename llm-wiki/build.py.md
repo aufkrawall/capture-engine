@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-07-19 (compiler/host-specific Linux MinGW hardening and strict-FP selection, older-MinGW D3D12-header compatibility, host-native PE inspection and debug-info policy, obsolete standalone process-loopback helper cleanup/absence assertions, single-preparation default-quality flow, current-database lint, summary/detail artifact split, managed Python lint tooling, validated object/link caches, and existing production LTO, source-closure, packaging, sanitizer, and provenance policy)
+Last cross-checked: 2026-07-19 (compiler/host-specific Linux MinGW hardening and strict-FP selection, older-MinGW D3D12-header and intrinsic-declaration compatibility, host-native PE inspection and debug-info policy, obsolete standalone process-loopback helper cleanup/absence assertions, single-preparation default-quality flow, current-database lint, summary/detail artifact split, managed Python lint tooling, validated object/link caches, and existing production LTO, source-closure, packaging, sanitizer, and provenance policy)
 
 Primary sources:
 - `AGENTS.md`
@@ -11,8 +11,10 @@ Primary sources:
 - `hook/common/dx12_dred.cpp`
 - `hook/apis/dx12_streamline_ui_overlay.cpp`
 - `hook/apis/dx12_ffx_suspend_overlay.cpp`
+- `common/sequence_lock.h`
 - `test_build_flags.py`
 - `test_pe_hardening.py`
+- `tests/test_sequence_lock_stress.cpp`
 
 ## Scope
 `build.py` is the canonical build entry point. It parses flags manually from `sys.argv`; there is no `argparse`-generated help output to rely on.
@@ -239,6 +241,8 @@ Default quality mode currently:
 - **Clang-only CFG/strict-FP flags and host tools**: Ubuntu's `x86_64-w64-mingw32-g++` rejects `-mguard=cf`, GNU PE linkers reject the corresponding guard/no-guard switches, and GCC has no `-ffp-model=strict`. Select these through `compiler_supports_windows_cfg()`, `get_x64_linker_flags()`, `get_x86_testapp_cfg_link_flags()`, and `get_strict_fp_flags()` rather than appending global Clang flags. Linux final verification must execute host `llvm-readobj`, never the downloaded Windows `.exe`, and must expect in-image DWARF rather than PDBs. Source anchors: `build.py`, `tools/verify_pe_hardening.py`, `.github/workflows/hardening-ci.yml`, `test_build_flags.py`, and `test_pe_hardening.py`.
 
 - **Older D3D12 declarations/operators**: Ubuntu's system MinGW D3D12 header may omit `D3D12_ENCODE_BASIC_FILTER`, `ID3D12DeviceRemovedExtendedDataSettings1`, and `ID3D12DeviceRemovedExtendedData1`, while its enum flag operators are not necessarily `constexpr`. Keep sampler encoding independent of the convenience macro, form constant masks through integer casts, and capability-gate DRED v1 while retaining the base DRED settings/data path. `CE_HAS_D3D12_DRED_SETTINGS1` and `CE_HAS_D3D12_DRED_DATA1` may be forced to zero for a local legacy-branch compile check with newer headers. Source anchors: `hook/common/{dx12_sampler_policy,dx12_dred}.cpp`, `hook/apis/{dx12_streamline_ui_overlay,dx12_ffx_suspend_overlay}.cpp`, and `test_build_flags.py`.
+
+- **Intrinsic declarations must be direct**: `_mm_pause()` is not a language builtin declaration. A header that calls it must directly include `<intrin.h>` instead of relying on GTest, the Windows SDK, or another translation unit's include order. Native Clang may mask this omission through transitive declarations; Ubuntu MinGW GCC does not. Source anchors: `common/sequence_lock.h`, `tests/test_sequence_lock_stress.cpp`, and `test_build_flags.py`.
 
 - **LLVM 22 Windows x86 TLS**: the x86 hook/link path uses native Windows TLS. LLVM 22's `-femulated-tls` mode can leave unresolved local thread-local symbols at the LLD link boundary, so do not reintroduce that flag without a toolchain-specific fix and regression coverage. Source anchor: `build.py` Windows x86 compile/link/test flag construction.
 

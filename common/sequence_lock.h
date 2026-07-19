@@ -24,6 +24,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <intrin.h>  // for _mm_pause
 #include <thread>
 #include <type_traits>
 

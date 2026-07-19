@@ -142,6 +142,12 @@ class BuildFlagPolicyTest(unittest.TestCase):
                 source,
             )
 
+    def test_sequence_lock_declares_pause_intrinsic_without_transitive_headers(self) -> None:
+        project_root = Path(build.__file__).parent
+        source = (project_root / "common/sequence_lock.h").read_text(encoding="utf-8")
+
+        self.assertIn("#include <intrin.h>  // for _mm_pause", source)
+
     def test_native_clang_keeps_cfg_and_strict_fp_policy(self) -> None:
         clang = r"C:\msys64\clang64\bin\clang++.exe"
         flags = build.make_cpp_cflags(build.OPT_FLAGS_X64, compiler_exe=clang)

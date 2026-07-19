@@ -145,7 +145,7 @@ TEST(SequenceLockStressTest, CWrapperAtomicSequence) {
         while (running.load(std::memory_order_acquire)) {
             uint32_t start = SequenceLock_ReadBegin(&header);
             EXPECT_EQ(start % 2, 0u);
-            bool retry = SequenceLock_ReadRetry(&header, start);
+            (void)SequenceLock_ReadRetry(&header, start);
             std::this_thread::yield();
         }
     };
