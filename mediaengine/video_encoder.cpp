@@ -3286,6 +3286,12 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                         outputFilename.c_str());
             }
             BeginDeferredRecording();
+        } else if (!preservedOutputFilename.empty()) {
+            outputReservation = std::move(preservedOutputReservation);
+            outputFilename = preservedOutputFilename;
+            DLL_Log("[VideoEncoder] Restored deferred staging output for first frame: %s",
+                    outputFilename.c_str());
+            BeginDeferredRecording();
         }
     }
 
@@ -4317,6 +4323,12 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
                 DLL_Log("[VideoEncoder] Preserving output filename across WGC mode re-init: %s",
                         outputFilename.c_str());
             }
+            BeginDeferredRecording();
+        } else if (!preservedOutputFilename.empty()) {
+            outputReservation = std::move(preservedOutputReservation);
+            outputFilename = preservedOutputFilename;
+            DLL_Log("[VideoEncoder] Restored deferred staging output for first WGC frame: %s",
+                    outputFilename.c_str());
             BeginDeferredRecording();
         }
     }
