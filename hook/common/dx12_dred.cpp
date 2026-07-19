@@ -13,6 +13,48 @@
 #include "dx12_overlay_policy.h"
 #include "hook_common.h"
 
+// Ubuntu's MinGW headers can lag the Windows SDK and omit the DRED v1
+// interfaces while still exposing the base DRED interfaces. Keep the richer
+// path when its declarations exist and compile a functional base fallback
+// otherwise. The override points also let the legacy path be compile-tested
+// with newer headers.
+#ifndef CE_HAS_D3D12_DRED_SETTINGS
+#if defined(__ID3D12DeviceRemovedExtendedDataSettings_INTERFACE_DEFINED__)
+#define CE_HAS_D3D12_DRED_SETTINGS 1
+#else
+#define CE_HAS_D3D12_DRED_SETTINGS 0
+#endif
+#endif
+#ifndef CE_HAS_D3D12_DRED_SETTINGS1
+#if defined(__ID3D12DeviceRemovedExtendedDataSettings1_INTERFACE_DEFINED__)
+#define CE_HAS_D3D12_DRED_SETTINGS1 1
+#else
+#define CE_HAS_D3D12_DRED_SETTINGS1 0
+#endif
+#endif
+#ifndef CE_HAS_D3D12_DRED_DATA
+#if defined(__ID3D12DeviceRemovedExtendedData_INTERFACE_DEFINED__)
+#define CE_HAS_D3D12_DRED_DATA 1
+#else
+#define CE_HAS_D3D12_DRED_DATA 0
+#endif
+#endif
+#ifndef CE_HAS_D3D12_DRED_DATA1
+#if defined(__ID3D12DeviceRemovedExtendedData1_INTERFACE_DEFINED__)
+#define CE_HAS_D3D12_DRED_DATA1 1
+#else
+#define CE_HAS_D3D12_DRED_DATA1 0
+#endif
+#endif
+#if !CE_HAS_D3D12_DRED_SETTINGS
+#undef CE_HAS_D3D12_DRED_SETTINGS1
+#define CE_HAS_D3D12_DRED_SETTINGS1 0
+#endif
+#if !CE_HAS_D3D12_DRED_DATA
+#undef CE_HAS_D3D12_DRED_DATA1
+#define CE_HAS_D3D12_DRED_DATA1 0
+#endif
+
 // Retention belt-and-suspenders. The DRED entry points are `__declspec(dllexport)`
 // (see CE_DRED_API in the header) so the linker keeps them as GC roots on both x86
 // and x64 (plain `used` was honored on x64 LLD but NOT x86, so arming was silently
@@ -122,80 +164,85 @@ ce::dx12_overlay_policy::DredArmMode ArmMode() {
     return s_mode;
 }
 
-const char* BreadcrumbOpName(D3D12_AUTO_BREADCRUMB_OP op) {
+#if CE_HAS_D3D12_DRED_DATA
+
+const char* BreadcrumbOpName(UINT op) {
+    // Operation values are stable D3D12 ABI constants. Numeric cases keep this
+    // diagnostic code compatible with older headers that expose the base DRED
+    // node but not every newer D3D12_AUTO_BREADCRUMB_OP enumerator.
     switch (op) {
-        case D3D12_AUTO_BREADCRUMB_OP_SETMARKER:
+        case 0x0:
             return "SETMARKER";
-        case D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT:
+        case 0x1:
             return "BEGINEVENT";
-        case D3D12_AUTO_BREADCRUMB_OP_ENDEVENT:
+        case 0x2:
             return "ENDEVENT";
-        case D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED:
+        case 0x3:
             return "DRAWINSTANCED";
-        case D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED:
+        case 0x4:
             return "DRAWINDEXEDINSTANCED";
-        case D3D12_AUTO_BREADCRUMB_OP_EXECUTEINDIRECT:
+        case 0x5:
             return "EXECUTEINDIRECT";
-        case D3D12_AUTO_BREADCRUMB_OP_DISPATCH:
+        case 0x6:
             return "DISPATCH";
-        case D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION:
+        case 0x7:
             return "COPYBUFFERREGION";
-        case D3D12_AUTO_BREADCRUMB_OP_COPYTEXTUREREGION:
+        case 0x8:
             return "COPYTEXTUREREGION";
-        case D3D12_AUTO_BREADCRUMB_OP_COPYRESOURCE:
+        case 0x9:
             return "COPYRESOURCE";
-        case D3D12_AUTO_BREADCRUMB_OP_COPYTILES:
+        case 0xA:
             return "COPYTILES";
-        case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCE:
+        case 0xB:
             return "RESOLVESUBRESOURCE";
-        case D3D12_AUTO_BREADCRUMB_OP_CLEARRENDERTARGETVIEW:
+        case 0xC:
             return "CLEARRENDERTARGETVIEW";
-        case D3D12_AUTO_BREADCRUMB_OP_CLEARUNORDEREDACCESSVIEW:
+        case 0xD:
             return "CLEARUNORDEREDACCESSVIEW";
-        case D3D12_AUTO_BREADCRUMB_OP_CLEARDEPTHSTENCILVIEW:
+        case 0xE:
             return "CLEARDEPTHSTENCILVIEW";
-        case D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER:
+        case 0xF:
             return "RESOURCEBARRIER";
-        case D3D12_AUTO_BREADCRUMB_OP_EXECUTEBUNDLE:
+        case 0x10:
             return "EXECUTEBUNDLE";
-        case D3D12_AUTO_BREADCRUMB_OP_PRESENT:
+        case 0x11:
             return "PRESENT";
-        case D3D12_AUTO_BREADCRUMB_OP_RESOLVEQUERYDATA:
+        case 0x12:
             return "RESOLVEQUERYDATA";
-        case D3D12_AUTO_BREADCRUMB_OP_BEGINSUBMISSION:
+        case 0x13:
             return "BEGINSUBMISSION";
-        case D3D12_AUTO_BREADCRUMB_OP_ENDSUBMISSION:
+        case 0x14:
             return "ENDSUBMISSION";
-        case D3D12_AUTO_BREADCRUMB_OP_DECODEFRAME:
+        case 0x15:
             return "DECODEFRAME";
-        case D3D12_AUTO_BREADCRUMB_OP_PROCESSFRAMES:
+        case 0x16:
             return "PROCESSFRAMES";
-        case D3D12_AUTO_BREADCRUMB_OP_DISPATCHRAYS:
-            return "DISPATCHRAYS";
-        case D3D12_AUTO_BREADCRUMB_OP_BUILDRAYTRACINGACCELERATIONSTRUCTURE:
+        case 0x1F:
             return "BUILDRTAS";
+        case 0x22:
+            return "DISPATCHRAYS";
         default:
             return "OP";
     }
 }
 
-const char* AllocationTypeName(D3D12_DRED_ALLOCATION_TYPE type) {
+const char* AllocationTypeName(UINT type) {
     switch (type) {
-        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_QUEUE:
+        case 0x13:
             return "COMMAND_QUEUE";
-        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_ALLOCATOR:
+        case 0x14:
             return "COMMAND_ALLOCATOR";
-        case D3D12_DRED_ALLOCATION_TYPE_PIPELINE_STATE:
+        case 0x15:
             return "PIPELINE_STATE";
-        case D3D12_DRED_ALLOCATION_TYPE_COMMAND_LIST:
+        case 0x16:
             return "COMMAND_LIST";
-        case D3D12_DRED_ALLOCATION_TYPE_FENCE:
+        case 0x17:
             return "FENCE";
-        case D3D12_DRED_ALLOCATION_TYPE_DESCRIPTOR_HEAP:
+        case 0x18:
             return "DESCRIPTOR_HEAP";
-        case D3D12_DRED_ALLOCATION_TYPE_HEAP:
+        case 0x19:
             return "HEAP";
-        case D3D12_DRED_ALLOCATION_TYPE_RESOURCE:
+        case 0x22:
             return "RESOURCE";
         default:
             return "OTHER";
@@ -214,26 +261,85 @@ void LogWideName(const char* prefix, const WCHAR* wide) {
     }
 }
 
-void LogAllocationNodes(const char* label, const D3D12_DRED_ALLOCATION_NODE1* head) {
+template <typename BreadcrumbNode, typename ContextLogger>
+void LogBreadcrumbNodes(const BreadcrumbNode* head, ContextLogger logContexts) {
+    int node = 0;
+    bool anyIncomplete = false;
+    for (const BreadcrumbNode* n = head; n && node < 64; n = n->pNext, ++node) {
+        const char* listName = n->pCommandListDebugNameA ? n->pCommandListDebugNameA : "<unnamed>";
+        const char* queueName = n->pCommandQueueDebugNameA ? n->pCommandQueueDebugNameA : "<unnamed>";
+        const UINT lastCompleted = n->pLastBreadcrumbValue ? *n->pLastBreadcrumbValue : 0;
+        const bool incomplete = n->pLastBreadcrumbValue && lastCompleted < n->BreadcrumbCount;
+        if (!incomplete && n->BreadcrumbCount > 0 && lastCompleted >= n->BreadcrumbCount) {
+            continue;
+        }
+        anyIncomplete = anyIncomplete || incomplete;
+        HookLogImportant("DX12 DRED:  node#%d queue='%s' list='%s' completedOps=%u/%u%s", node, queueName, listName,
+                         lastCompleted, n->BreadcrumbCount,
+                         incomplete ? "  <-- INCOMPLETE (GPU hung in this list)" : "");
+        if (n->pCommandHistory && n->BreadcrumbCount > 0) {
+            const UINT start = lastCompleted > 3 ? lastCompleted - 3 : 0;
+            const UINT end = (lastCompleted + 4 < n->BreadcrumbCount) ? lastCompleted + 4 : n->BreadcrumbCount;
+            for (UINT i = start; i < end; ++i) {
+                HookLogImportant("DX12 DRED:    op[%u]=%s%s", i,
+                                 BreadcrumbOpName(static_cast<UINT>(n->pCommandHistory[i])),
+                                 (i == lastCompleted) ? "  <== last completed" : "");
+            }
+        }
+        logContexts(n);
+    }
+    if (node == 0) {
+        HookLogImportant("DX12 DRED:  (no breadcrumb nodes)");
+    } else if (!anyIncomplete) {
+        HookLogImportant("DX12 DRED:  (all breadcrumb nodes completed — fault may be page-fault only)");
+    }
+}
+
+void LogAllocationNodes(const char* label, const D3D12_DRED_ALLOCATION_NODE* head) {
     int count = 0;
-    for (const D3D12_DRED_ALLOCATION_NODE1* n = head; n && count < 32; n = n->pNext, ++count) {
+    for (const D3D12_DRED_ALLOCATION_NODE* n = head; n && count < 32; n = n->pNext, ++count) {
         const char* name = n->ObjectNameA ? n->ObjectNameA : nullptr;
         if (name) {
-            HookLogImportant("DX12 DRED:    [%s] type=%s name='%s' obj=%p", label,
-                             AllocationTypeName(n->AllocationType), name, (void*)n->pObject);
+            HookLogImportant("DX12 DRED:    [%s] type=%s name='%s'", label,
+                             AllocationTypeName(static_cast<UINT>(n->AllocationType)), name);
         } else if (n->ObjectNameW) {
-            HookLogImportant("DX12 DRED:    [%s] type=%s obj=%p name(W):", label, AllocationTypeName(n->AllocationType),
-                             (void*)n->pObject);
+            HookLogImportant("DX12 DRED:    [%s] type=%s name(W):", label,
+                             AllocationTypeName(static_cast<UINT>(n->AllocationType)));
             LogWideName("name=", n->ObjectNameW);
         } else {
-            HookLogImportant("DX12 DRED:    [%s] type=%s name=<unnamed> obj=%p", label,
-                             AllocationTypeName(n->AllocationType), (void*)n->pObject);
+            HookLogImportant("DX12 DRED:    [%s] type=%s name=<unnamed>", label,
+                             AllocationTypeName(static_cast<UINT>(n->AllocationType)));
         }
     }
     if (count == 0) {
         HookLogImportant("DX12 DRED:    [%s] (none)", label);
     }
 }
+
+#if CE_HAS_D3D12_DRED_DATA1
+void LogAllocationNodes1(const char* label, const D3D12_DRED_ALLOCATION_NODE1* head) {
+    int count = 0;
+    for (const D3D12_DRED_ALLOCATION_NODE1* n = head; n && count < 32; n = n->pNext, ++count) {
+        const char* name = n->ObjectNameA ? n->ObjectNameA : nullptr;
+        if (name) {
+            HookLogImportant("DX12 DRED:    [%s] type=%s name='%s' obj=%p", label,
+                             AllocationTypeName(static_cast<UINT>(n->AllocationType)), name, (void*)n->pObject);
+        } else if (n->ObjectNameW) {
+            HookLogImportant("DX12 DRED:    [%s] type=%s obj=%p name(W):", label,
+                             AllocationTypeName(static_cast<UINT>(n->AllocationType)), (void*)n->pObject);
+            LogWideName("name=", n->ObjectNameW);
+        } else {
+            HookLogImportant("DX12 DRED:    [%s] type=%s name=<unnamed> obj=%p", label,
+                             AllocationTypeName(static_cast<UINT>(n->AllocationType)), (void*)n->pObject);
+        }
+    }
+    if (count == 0) {
+        HookLogImportant("DX12 DRED:    [%s] (none)", label);
+    }
+}
+#endif
+
+#endif  // CE_HAS_D3D12_DRED_DATA
 
 }  // namespace
 
@@ -265,9 +371,15 @@ CE_DRED_KEEP bool ArmBeforeDeviceCreation() {
         return false;
     }
 
-    // Prefer Settings1 (adds breadcrumb-context strings); fall back to base.
+    // Prefer Settings1 (adds breadcrumb-context strings); fall back to base when
+    // the compile-time headers or the runtime do not expose it.
+    bool usedContextSettings = false;
+#if CE_HAS_D3D12_DRED_SETTINGS
+    HRESULT hr = E_NOINTERFACE;
+#endif
+#if CE_HAS_D3D12_DRED_SETTINGS1
     ID3D12DeviceRemovedExtendedDataSettings1* dred1 = nullptr;
-    HRESULT hr = pGetDebugInterface(__uuidof(ID3D12DeviceRemovedExtendedDataSettings1), (void**)&dred1);
+    hr = pGetDebugInterface(__uuidof(ID3D12DeviceRemovedExtendedDataSettings1), (void**)&dred1);
     if (SUCCEEDED(hr) && dred1) {
         if (fullMode) {
             dred1->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
@@ -275,7 +387,11 @@ CE_DRED_KEEP bool ArmBeforeDeviceCreation() {
         }
         dred1->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
         dred1->Release();
-    } else {
+        usedContextSettings = true;
+    }
+#endif
+    if (!usedContextSettings) {
+#if CE_HAS_D3D12_DRED_SETTINGS
         ID3D12DeviceRemovedExtendedDataSettings* dred = nullptr;
         hr = pGetDebugInterface(__uuidof(ID3D12DeviceRemovedExtendedDataSettings), (void**)&dred);
         if (FAILED(hr) || !dred) {
@@ -291,13 +407,20 @@ CE_DRED_KEEP bool ArmBeforeDeviceCreation() {
         }
         dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
         dred->Release();
+#else
+        static std::atomic<bool> s_headerLog{false};
+        if (!s_headerLog.exchange(true)) {
+            HookLogImportant("DX12 DRED: compiler headers expose no settings interface (DRED unavailable)");
+        }
+        return false;
+#endif
     }
 
     static std::atomic<bool> s_armedLog{false};
     if (!s_armedLog.exchange(true)) {
         HookLogImportant("DX12 DRED: armed %s (forced on) before device creation (mode=%s context1=%d)",
                          fullMode ? "auto-breadcrumbs + page-fault" : "page-fault only",
-                         fullMode ? "full" : "page-fault-only", dred1 ? 1 : 0);
+                         fullMode ? "full" : "page-fault-only", usedContextSettings ? 1 : 0);
     }
     return true;
 }
@@ -318,78 +441,84 @@ CE_DRED_KEEP void DumpOnDeviceRemoved(ID3D12Device* device, const char* reason) 
     // removal first — they often name the exact misuse behind the hang.
     DrainDebugLayerMessages(device, "device-removed");
 
-    ID3D12DeviceRemovedExtendedData1* dred = nullptr;
-    HRESULT hr = device->QueryInterface(__uuidof(ID3D12DeviceRemovedExtendedData1), (void**)&dred);
+#if CE_HAS_D3D12_DRED_DATA1
+    ID3D12DeviceRemovedExtendedData1* dred1 = nullptr;
+    HRESULT hr1 = device->QueryInterface(__uuidof(ID3D12DeviceRemovedExtendedData1), (void**)&dred1);
+    if (SUCCEEDED(hr1) && dred1) {
+        HookLogImportant("DX12 DRED: ===== device-removed extended data (%s) =====", reason ? reason : "?");
+
+        D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs = {};
+        if (SUCCEEDED(dred1->GetAutoBreadcrumbsOutput1(&breadcrumbs))) {
+            LogBreadcrumbNodes(breadcrumbs.pHeadAutoBreadcrumbNode, [](const D3D12_AUTO_BREADCRUMB_NODE1* node) {
+                for (UINT c = 0; c < node->BreadcrumbContextsCount && c < 16; ++c) {
+                    const D3D12_DRED_BREADCRUMB_CONTEXT& ctx = node->pBreadcrumbContexts[c];
+                    char prefix[48] = {};
+                    _snprintf_s(prefix, sizeof(prefix), _TRUNCATE, "ctx@op%u=", ctx.BreadcrumbIndex);
+                    LogWideName(prefix, ctx.pContextString);
+                }
+            });
+        } else {
+            HookLogImportant("DX12 DRED:  GetAutoBreadcrumbsOutput1 failed");
+        }
+
+        D3D12_DRED_PAGE_FAULT_OUTPUT1 pageFault = {};
+        if (SUCCEEDED(dred1->GetPageFaultAllocationOutput1(&pageFault))) {
+            HookLogImportant("DX12 DRED:  pageFaultVA=0x%llX", (unsigned long long)pageFault.PageFaultVA);
+            if (pageFault.PageFaultVA != 0 || pageFault.pHeadExistingAllocationNode ||
+                pageFault.pHeadRecentFreedAllocationNode) {
+                LogAllocationNodes1("existing", pageFault.pHeadExistingAllocationNode);
+                LogAllocationNodes1("recently-freed", pageFault.pHeadRecentFreedAllocationNode);
+            } else {
+                HookLogImportant("DX12 DRED:  (no page-fault VA — likely a pure hang, not an invalid access)");
+            }
+        } else {
+            HookLogImportant("DX12 DRED:  GetPageFaultAllocationOutput1 failed");
+        }
+
+        HookLogImportant("DX12 DRED: ===== end device-removed extended data =====");
+        dred1->Release();
+        return;
+    }
+#endif
+
+#if CE_HAS_D3D12_DRED_DATA
+    ID3D12DeviceRemovedExtendedData* dred = nullptr;
+    HRESULT hr = device->QueryInterface(__uuidof(ID3D12DeviceRemovedExtendedData), (void**)&dred);
     if (FAILED(hr) || !dred) {
         HookLogImportant(
-            "DX12 DRED: device-removed (%s) but ID3D12DeviceRemovedExtendedData1 unavailable hr=0x%08X "
+            "DX12 DRED: device-removed (%s) but DRED data interface unavailable hr=0x%08X "
             "(DRED not armed or unsupported)",
             reason ? reason : "?", (unsigned)hr);
         return;
     }
 
-    HookLogImportant("DX12 DRED: ===== device-removed extended data (%s) =====", reason ? reason : "?");
-
-    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs = {};
-    if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput1(&breadcrumbs))) {
-        int node = 0;
-        bool anyIncomplete = false;
-        for (const D3D12_AUTO_BREADCRUMB_NODE1* n = breadcrumbs.pHeadAutoBreadcrumbNode; n && node < 64;
-             n = n->pNext, ++node) {
-            const char* listName = n->pCommandListDebugNameA ? n->pCommandListDebugNameA : "<unnamed>";
-            const char* queueName = n->pCommandQueueDebugNameA ? n->pCommandQueueDebugNameA : "<unnamed>";
-            const UINT lastCompleted = n->pLastBreadcrumbValue ? *n->pLastBreadcrumbValue : 0;
-            const bool incomplete = n->pLastBreadcrumbValue && lastCompleted < n->BreadcrumbCount;
-            // Skip fully-completed nodes unless none are incomplete (keep log focused on the hang).
-            if (!incomplete && n->BreadcrumbCount > 0 && lastCompleted >= n->BreadcrumbCount) {
-                continue;
-            }
-            anyIncomplete = anyIncomplete || incomplete;
-            HookLogImportant("DX12 DRED:  node#%d queue='%s' list='%s' completedOps=%u/%u%s", node, queueName, listName,
-                             lastCompleted, n->BreadcrumbCount,
-                             incomplete ? "  <-- INCOMPLETE (GPU hung in this list)" : "");
-            if (n->pCommandHistory && n->BreadcrumbCount > 0) {
-                const UINT start = lastCompleted > 3 ? lastCompleted - 3 : 0;
-                const UINT end = (lastCompleted + 4 < n->BreadcrumbCount) ? lastCompleted + 4 : n->BreadcrumbCount;
-                for (UINT i = start; i < end; ++i) {
-                    HookLogImportant("DX12 DRED:    op[%u]=%s%s", i, BreadcrumbOpName(n->pCommandHistory[i]),
-                                     (i == lastCompleted) ? "  <== last completed" : "");
-                }
-            }
-            for (UINT c = 0; c < n->BreadcrumbContextsCount && c < 16; ++c) {
-                const D3D12_DRED_BREADCRUMB_CONTEXT& ctx = n->pBreadcrumbContexts[c];
-                char prefix[48] = {};
-                _snprintf_s(prefix, sizeof(prefix), _TRUNCATE, "ctx@op%u=", ctx.BreadcrumbIndex);
-                LogWideName(prefix, ctx.pContextString);
-            }
-        }
-        if (node == 0) {
-            HookLogImportant("DX12 DRED:  (no breadcrumb nodes)");
-        } else if (!anyIncomplete) {
-            HookLogImportant("DX12 DRED:  (all breadcrumb nodes completed — fault may be page-fault only)");
-        }
+    HookLogImportant("DX12 DRED: ===== device-removed base data (%s) =====", reason ? reason : "?");
+    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs = {};
+    if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs))) {
+        LogBreadcrumbNodes(breadcrumbs.pHeadAutoBreadcrumbNode, [](const D3D12_AUTO_BREADCRUMB_NODE*) {});
     } else {
-        HookLogImportant("DX12 DRED:  GetAutoBreadcrumbsOutput1 failed");
+        HookLogImportant("DX12 DRED:  GetAutoBreadcrumbsOutput failed");
     }
 
-    D3D12_DRED_PAGE_FAULT_OUTPUT1 pageFault = {};
-    if (SUCCEEDED(dred->GetPageFaultAllocationOutput1(&pageFault))) {
+    D3D12_DRED_PAGE_FAULT_OUTPUT pageFault = {};
+    if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&pageFault))) {
         HookLogImportant("DX12 DRED:  pageFaultVA=0x%llX", (unsigned long long)pageFault.PageFaultVA);
         if (pageFault.PageFaultVA != 0 || pageFault.pHeadExistingAllocationNode ||
             pageFault.pHeadRecentFreedAllocationNode) {
             LogAllocationNodes("existing", pageFault.pHeadExistingAllocationNode);
-            // Recently-freed allocations matching the fault VA are the smoking gun
-            // for stale-backbuffer access across the iflip<->composited transition.
             LogAllocationNodes("recently-freed", pageFault.pHeadRecentFreedAllocationNode);
         } else {
             HookLogImportant("DX12 DRED:  (no page-fault VA — likely a pure hang, not an invalid access)");
         }
     } else {
-        HookLogImportant("DX12 DRED:  GetPageFaultAllocationOutput1 failed");
+        HookLogImportant("DX12 DRED:  GetPageFaultAllocationOutput failed");
     }
-
-    HookLogImportant("DX12 DRED: ===== end device-removed extended data =====");
+    HookLogImportant("DX12 DRED: ===== end device-removed base data =====");
     dred->Release();
+#else
+    HookLogImportant("DX12 DRED: device-removed (%s), but compiler headers expose no DRED data interface",
+                     reason ? reason : "?");
+#endif
 }
 
 CE_DRED_KEEP int DebugLayerLevel() {

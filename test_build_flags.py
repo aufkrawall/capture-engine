@@ -117,6 +117,31 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertIn("-fcf-protection=full", flags)
         self.assertIn("-Wl,--high-entropy-va", build.get_x64_linker_flags(gcc))
 
+    def test_linux_mingw_sources_do_not_require_newer_d3d12_header_helpers(self) -> None:
+        project_root = Path(build.__file__).parent
+        sampler_source = (project_root / "hook/common/dx12_sampler_policy.cpp").read_text(encoding="utf-8")
+        dred_source = (project_root / "hook/common/dx12_dred.cpp").read_text(encoding="utf-8")
+        overlay_sources = (
+            (project_root / "hook/apis/dx12_streamline_ui_overlay.cpp").read_text(encoding="utf-8"),
+            (project_root / "hook/apis/dx12_ffx_suspend_overlay.cpp").read_text(encoding="utf-8"),
+        )
+
+        self.assertFalse(
+            any(
+                "D3D12_ENCODE_BASIC_FILTER(" in line and not line.lstrip().startswith("//")
+                for line in sampler_source.splitlines()
+            )
+        )
+        self.assertIn("constexpr D3D12_FILTER EncodeBasicFilter", sampler_source)
+        self.assertIn("#if CE_HAS_D3D12_DRED_SETTINGS1", dred_source)
+        self.assertIn("#if CE_HAS_D3D12_DRED_DATA1", dred_source)
+        self.assertIn("ID3D12DeviceRemovedExtendedData* dred", dred_source)
+        for source in overlay_sources:
+            self.assertNotIn(
+                "D3D12_FORMAT_SUPPORT1_RENDER_TARGET | D3D12_FORMAT_SUPPORT1_BLENDABLE",
+                source,
+            )
+
     def test_native_clang_keeps_cfg_and_strict_fp_policy(self) -> None:
         clang = r"C:\msys64\clang64\bin\clang++.exe"
         flags = build.make_cpp_cflags(build.OPT_FLAGS_X64, compiler_exe=clang)
@@ -419,7 +444,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertIn('layer_name = f"{layer_name_base}_b{CURRENT_BUILD_NUMBER}"', source)
         self.assertIn('"implementation_version": str(CURRENT_BUILD_NUMBER)', source)
 
-    def test_failed_unit_tests_capture_diagnostics(self) -> None:
+    def test_failed_unit_tests_capture_diagnostics_on_linux(self) -> None:
         previous_context = build.VERIFICATION_CONTEXT
         with tempfile.TemporaryDirectory() as temporary:
             test_exe = Path(temporary) / "unit_tests.exe"
@@ -432,7 +457,11 @@ class BuildFlagPolicyTest(unittest.TestCase):
                 stderr="diagnostic stderr\n",
             )
             try:
-                with patch.object(build.subprocess, "run", return_value=failure) as run, patch.object(build, "log"):
+                with patch.object(build, "IS_LINUX", True), patch.object(
+                    build.shutil,
+                    "which",
+                    side_effect=lambda executable: "/usr/bin/wine64" if executable == "wine64" else None,
+                ), patch.object(build.subprocess, "run", return_value=failure) as run, patch.object(build, "log"):
                     self.assertFalse(build.run_tests({}, str(test_exe)))
                 failure_log = Path(temporary) / "unit_tests_failure.log"
                 self.assertTrue(failure_log.exists())
@@ -441,6 +470,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
                 self.assertIn("diagnostic stderr", diagnostics)
                 self.assertTrue(run.call_args.kwargs["capture_output"])
                 self.assertEqual(run.call_args.kwargs["encoding"], "utf-8")
+                self.assertEqual(run.call_args.args[0][0], "/usr/bin/wine64")
             finally:
                 build.VERIFICATION_CONTEXT = previous_context
 

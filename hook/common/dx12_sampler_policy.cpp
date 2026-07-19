@@ -35,6 +35,19 @@ bool IsFiniteFloat(float value) {
     return (bits & exponentMask) != exponentMask;
 }
 
+constexpr D3D12_FILTER EncodeBasicFilter(D3D12_FILTER_TYPE minFilter, D3D12_FILTER_TYPE magFilter,
+                                         D3D12_FILTER_TYPE mipFilter, D3D12_FILTER_REDUCTION_TYPE reduction) {
+    // Some otherwise usable MinGW D3D12 headers expose the decode helpers but omit
+    // D3D12_ENCODE_BASIC_FILTER. Encode the documented filter bit layout directly.
+    const UINT encoded =
+        ((static_cast<UINT>(minFilter) & D3D12_FILTER_TYPE_MASK) << D3D12_MIN_FILTER_SHIFT) |
+        ((static_cast<UINT>(magFilter) & D3D12_FILTER_TYPE_MASK) << D3D12_MAG_FILTER_SHIFT) |
+        ((static_cast<UINT>(mipFilter) & D3D12_FILTER_TYPE_MASK) << D3D12_MIP_FILTER_SHIFT) |
+        ((static_cast<UINT>(reduction) & D3D12_FILTER_REDUCTION_TYPE_MASK)
+         << D3D12_FILTER_REDUCTION_TYPE_SHIFT);
+    return static_cast<D3D12_FILTER>(encoded);
+}
+
 Decision Classify(const D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
     if (!HasSamplerOverride(gfx)) {
         return Decision::OverrideDisabled;
@@ -89,13 +102,11 @@ Result ApplyImpl(D3D12_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {
     const float originalBias = desc.MipLODBias;
 
     if (gfx.mipMapping == "bilinear") {
-        desc.Filter =
-            D3D12_ENCODE_BASIC_FILTER(D3D12_DECODE_MIN_FILTER(desc.Filter), D3D12_DECODE_MAG_FILTER(desc.Filter),
-                                      D3D12_FILTER_TYPE_POINT, D3D12_DECODE_FILTER_REDUCTION(desc.Filter));
+        desc.Filter = EncodeBasicFilter(D3D12_DECODE_MIN_FILTER(desc.Filter), D3D12_DECODE_MAG_FILTER(desc.Filter),
+                                        D3D12_FILTER_TYPE_POINT, D3D12_DECODE_FILTER_REDUCTION(desc.Filter));
     } else if (gfx.mipMapping == "trilinear") {
-        desc.Filter =
-            D3D12_ENCODE_BASIC_FILTER(D3D12_DECODE_MIN_FILTER(desc.Filter), D3D12_DECODE_MAG_FILTER(desc.Filter),
-                                      D3D12_FILTER_TYPE_LINEAR, D3D12_DECODE_FILTER_REDUCTION(desc.Filter));
+        desc.Filter = EncodeBasicFilter(D3D12_DECODE_MIN_FILTER(desc.Filter), D3D12_DECODE_MAG_FILTER(desc.Filter),
+                                        D3D12_FILTER_TYPE_LINEAR, D3D12_DECODE_FILTER_REDUCTION(desc.Filter));
     }
 
     const D3D12_FILTER filterAfterMipMapping = desc.Filter;

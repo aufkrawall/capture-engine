@@ -384,8 +384,9 @@ bool Render(const RenderRequest& request) {
 
     D3D12_FEATURE_DATA_FORMAT_SUPPORT formatSupport = {};
     formatSupport.Format = rtvFormat;
-    constexpr D3D12_FORMAT_SUPPORT1 kRequiredFormatSupport =
-        static_cast<D3D12_FORMAT_SUPPORT1>(D3D12_FORMAT_SUPPORT1_RENDER_TARGET | D3D12_FORMAT_SUPPORT1_BLENDABLE);
+    constexpr D3D12_FORMAT_SUPPORT1 kRequiredFormatSupport = static_cast<D3D12_FORMAT_SUPPORT1>(
+        static_cast<UINT>(D3D12_FORMAT_SUPPORT1_RENDER_TARGET) |
+        static_cast<UINT>(D3D12_FORMAT_SUPPORT1_BLENDABLE));
     if (FAILED(backBufferDevice->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &formatSupport,
                                                      sizeof(formatSupport))) ||
         (formatSupport.Support1 & kRequiredFormatSupport) != kRequiredFormatSupport) {

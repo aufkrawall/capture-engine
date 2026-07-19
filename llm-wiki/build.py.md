@@ -1,10 +1,18 @@
 # build.py
 
-Last cross-checked: 2026-07-19 (compiler/host-specific Linux MinGW hardening and strict-FP selection, host-native PE inspection and debug-info policy, obsolete standalone process-loopback helper cleanup/absence assertions, single-preparation default-quality flow, current-database lint, summary/detail artifact split, managed Python lint tooling, validated object/link caches, and existing production LTO, source-closure, packaging, sanitizer, and provenance policy)
+Last cross-checked: 2026-07-19 (compiler/host-specific Linux MinGW hardening and strict-FP selection, older-MinGW D3D12-header compatibility, host-native PE inspection and debug-info policy, obsolete standalone process-loopback helper cleanup/absence assertions, single-preparation default-quality flow, current-database lint, summary/detail artifact split, managed Python lint tooling, validated object/link caches, and existing production LTO, source-closure, packaging, sanitizer, and provenance policy)
 
 Primary sources:
 - `AGENTS.md`
 - `build.py`
+- `.github/workflows/hardening-ci.yml`
+- `tools/verify_pe_hardening.py`
+- `hook/common/dx12_sampler_policy.cpp`
+- `hook/common/dx12_dred.cpp`
+- `hook/apis/dx12_streamline_ui_overlay.cpp`
+- `hook/apis/dx12_ffx_suspend_overlay.cpp`
+- `test_build_flags.py`
+- `test_pe_hardening.py`
 
 ## Scope
 `build.py` is the canonical build entry point. It parses flags manually from `sys.argv`; there is no `argparse`-generated help output to rely on.
@@ -147,7 +155,7 @@ Default quality mode currently:
 - `--gtest-filter` is passed through as `--gtest_filter=...` when `tests/unit_tests.exe` is executed.
 - `--tests-only` now takes effect before the normal product build phases, so focused test runs do not also rebuild the hook DLL, mediaengine DLL, captureengine.exe, Vulkan layer, and test apps.
 - `copy_test_runtime_dlls()` copies required MSYS2 and FFmpeg DLLs next to `tests/unit_tests.exe`, so direct execution works after a successful build.
-- An unfiltered `--run-tests` also runs `test_ffmpeg_patch_utils.py`, which exercises strict patch application after CRLF target normalization and rejects target traversal, plus `test_build_flags.py` and `test_pe_hardening.py` policy suites before the existing A/V tool self-tests. Linux hardening CI runs the two cross-host policy suites before cross-compiling as well.
+- An unfiltered `--run-tests` also runs `test_ffmpeg_patch_utils.py`, which exercises strict patch application after CRLF target normalization and rejects target traversal, plus `test_build_flags.py` and `test_pe_hardening.py` policy suites before the existing A/V tool self-tests. Linux hardening CI runs the two cross-host policy suites in their own fail-fast Actions step before cross-compiling. The failed-unit-test diagnostic regression explicitly mocks the Linux `wine64` resolution boundary so it invokes the intended fake test process independently of the host running Python.
 - On Linux, executing `unit_tests.exe` requires `wine64` or `wine` in `PATH`.
 
 ## Test App Build Behavior
@@ -224,11 +232,13 @@ Default quality mode currently:
 - Lint findings are fatal only for a standalone `--lint` invocation. Default, verify, and mixed build/test flows record a `warning` lint step and continue, so a style/LSP checker cannot prevent compilation or the authoritative test/product gates from running.
 - `--jobs` is now applied after environment initialization, fixing the earlier `env`-before-initialization bug in `main()`.
 - On Windows hosts, the build now emits CodeView debug info plus sidecar `.pdb` files for the built PE outputs while staying on the existing clang/lld toolchain.
-- On Linux and WSL, the script uses system MinGW cross-compilers, downloaded MSYS2 packages for dependencies, and a host-native `llvm-readobj` for final PE inspection. GCC-specific flag selection prevents Clang-only CFG, diagnostic, and strict-FP spellings from reaching the cross compiler.
+- On Linux and WSL, the script uses system MinGW cross-compilers, downloaded MSYS2 packages for dependencies, and a host-native `llvm-readobj` for final PE inspection. GCC-specific flag selection prevents Clang-only CFG, diagnostic, and strict-FP spellings from reaching the cross compiler. Hook DX12 sources also tolerate the older system D3D12 declarations: local sampler-bit encoding replaces a missing SDK helper, enum masks avoid non-`constexpr` MinGW operators, and DRED falls back from v1 settings/data to the functional base interfaces when v1 declarations are unavailable.
 
 ### MinGW Cross-Compile Pitfalls
 
 - **Clang-only CFG/strict-FP flags and host tools**: Ubuntu's `x86_64-w64-mingw32-g++` rejects `-mguard=cf`, GNU PE linkers reject the corresponding guard/no-guard switches, and GCC has no `-ffp-model=strict`. Select these through `compiler_supports_windows_cfg()`, `get_x64_linker_flags()`, `get_x86_testapp_cfg_link_flags()`, and `get_strict_fp_flags()` rather than appending global Clang flags. Linux final verification must execute host `llvm-readobj`, never the downloaded Windows `.exe`, and must expect in-image DWARF rather than PDBs. Source anchors: `build.py`, `tools/verify_pe_hardening.py`, `.github/workflows/hardening-ci.yml`, `test_build_flags.py`, and `test_pe_hardening.py`.
+
+- **Older D3D12 declarations/operators**: Ubuntu's system MinGW D3D12 header may omit `D3D12_ENCODE_BASIC_FILTER`, `ID3D12DeviceRemovedExtendedDataSettings1`, and `ID3D12DeviceRemovedExtendedData1`, while its enum flag operators are not necessarily `constexpr`. Keep sampler encoding independent of the convenience macro, form constant masks through integer casts, and capability-gate DRED v1 while retaining the base DRED settings/data path. `CE_HAS_D3D12_DRED_SETTINGS1` and `CE_HAS_D3D12_DRED_DATA1` may be forced to zero for a local legacy-branch compile check with newer headers. Source anchors: `hook/common/{dx12_sampler_policy,dx12_dred}.cpp`, `hook/apis/{dx12_streamline_ui_overlay,dx12_ffx_suspend_overlay}.cpp`, and `test_build_flags.py`.
 
 - **LLVM 22 Windows x86 TLS**: the x86 hook/link path uses native Windows TLS. LLVM 22's `-femulated-tls` mode can leave unresolved local thread-local symbols at the LLD link boundary, so do not reintroduce that flag without a toolchain-specific fix and regression coverage. Source anchor: `build.py` Windows x86 compile/link/test flag construction.
 

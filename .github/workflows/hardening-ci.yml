@@ -56,8 +56,10 @@ jobs:
             pkg-config \
             zstd
 
+      - name: Run build policy tests on Linux
+        shell: pwsh
+        run: python -m unittest -v test_build_flags.py test_pe_hardening.py
+
       - name: Cross-compile on Linux
         shell: pwsh
-        run: |
-          python -m unittest -v test_build_flags.py test_pe_hardening.py
-          python build.py --skip-updates
+        run: python build.py --skip-updates

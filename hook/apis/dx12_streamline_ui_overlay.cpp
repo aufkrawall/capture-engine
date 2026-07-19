@@ -497,8 +497,9 @@ bool TryRecordBootstrap(const RecordRequest& request) {
     }
     D3D12_FEATURE_DATA_FORMAT_SUPPORT support = {};
     support.Format = rtvFormat;
-    constexpr D3D12_FORMAT_SUPPORT1 required =
-        static_cast<D3D12_FORMAT_SUPPORT1>(D3D12_FORMAT_SUPPORT1_RENDER_TARGET | D3D12_FORMAT_SUPPORT1_BLENDABLE);
+    constexpr D3D12_FORMAT_SUPPORT1 required = static_cast<D3D12_FORMAT_SUPPORT1>(
+        static_cast<UINT>(D3D12_FORMAT_SUPPORT1_RENDER_TARGET) |
+        static_cast<UINT>(D3D12_FORMAT_SUPPORT1_BLENDABLE));
     if (FAILED(resourceDevice->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) ||
         (support.Support1 & required) != required) {
         return false;
