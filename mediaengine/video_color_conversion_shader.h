@@ -135,13 +135,18 @@ float P010UnormFromCode(float code)
     return floor(clamp(code, 0.0, 1023.0) + 0.5) * (64.0 / 65535.0);
 }
 
-float3 PqP2020ToLimitedYcbcr(float3 rgb)
+float3 PqP2020ToYcbcr(float3 rgb)
 {
-    // BT.2020 non-constant-luminance matrix, followed by the video-range
-    // 10-bit code mapping: Y=64..940 and Cb/Cr=64..960 around neutral 512.
+    // BT.2020 non-constant-luminance matrix, then the 10-bit code mapping.
+    // When sdrWhiteNits >= 1.0 (full-range HDR output), use the full
+    // 0-1023 code range; otherwise map to the standard video-range
+    // 10-bit codes: Y=64..940 and Cb/Cr=64..960 around neutral 512.
     float y = dot(rgb, float3(0.2627, 0.6780, 0.0593));
     float cb = (rgb.b - y) / 1.8814;
     float cr = (rgb.r - y) / 1.4746;
+    if (sdrWhiteNits >= 1.0) {
+        return float3(1023.0 * y, 512.0 + 1023.0 * cb, 512.0 + 1023.0 * cr);
+    }
     return float3(64.0 + 876.0 * y, 512.0 + 896.0 * cb, 512.0 + 896.0 * cr);
 }
 
@@ -156,7 +161,7 @@ float4 PS_P010Y(VS_OUT input) : SV_TARGET
         rgb += (rgb - neighbors * 0.25) * lumaSharpenStrength;
     }
     rgb = saturate(rgb);
-    float yCode = PqP2020ToLimitedYcbcr(rgb).x;
+    float yCode = PqP2020ToYcbcr(rgb).x;
     return float4(P010UnormFromCode(yCode), 0.0, 0.0, 1.0);
 }
 
@@ -169,10 +174,10 @@ float4 PS_P010UV(VS_OUT input) : SV_TARGET
     // across subsamples and is algebraically equivalent to averaging the
     // PQ-domain R'G'B' first (the matrix row-sum identity cancels).
     float2 halfPixel = outputInvSize * 0.5;
-    float3 c1 = PqP2020ToLimitedYcbcr(texIn.Sample(sam, input.uv + float2(-halfPixel.x, -halfPixel.y)).rgb);
-    float3 c2 = PqP2020ToLimitedYcbcr(texIn.Sample(sam, input.uv + float2(halfPixel.x, -halfPixel.y)).rgb);
-    float3 c3 = PqP2020ToLimitedYcbcr(texIn.Sample(sam, input.uv + float2(-halfPixel.x, halfPixel.y)).rgb);
-    float3 c4 = PqP2020ToLimitedYcbcr(texIn.Sample(sam, input.uv + float2(halfPixel.x, halfPixel.y)).rgb);
+    float3 c1 = PqP2020ToYcbcr(texIn.Sample(sam, input.uv + float2(-halfPixel.x, -halfPixel.y)).rgb);
+    float3 c2 = PqP2020ToYcbcr(texIn.Sample(sam, input.uv + float2(halfPixel.x, -halfPixel.y)).rgb);
+    float3 c3 = PqP2020ToYcbcr(texIn.Sample(sam, input.uv + float2(-halfPixel.x, halfPixel.y)).rgb);
+    float3 c4 = PqP2020ToYcbcr(texIn.Sample(sam, input.uv + float2(halfPixel.x, halfPixel.y)).rgb);
     float2 chroma = (float2(c1.y, c1.z) + float2(c2.y, c2.z) + float2(c3.y, c3.z) + float2(c4.y, c4.z)) * 0.25;
     return float4(P010UnormFromCode(chroma.x), P010UnormFromCode(chroma.y), 0.0, 1.0);
 }

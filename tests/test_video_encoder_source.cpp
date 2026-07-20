@@ -256,7 +256,7 @@ TEST(VideoEncoderSourceTest, HdrScRgbIsConvertedDirectlyToDeterministicP010) {
     EXPECT_NE(shader.find("rec2020.r * 80.0"), std::string::npos);
     EXPECT_NE(shader.find("LinearNitsToPQ"), std::string::npos);
     EXPECT_NE(shader.find("colorTransform == 2"), std::string::npos);
-    EXPECT_NE(shader.find("float3 PqP2020ToLimitedYcbcr(float3 rgb)"), std::string::npos);
+    EXPECT_NE(shader.find("float3 PqP2020ToYcbcr(float3 rgb)"), std::string::npos);
     EXPECT_NE(shader.find("64.0 + 876.0 * y"), std::string::npos);
     EXPECT_NE(shader.find("512.0 + 896.0 * cb"), std::string::npos);
     EXPECT_NE(shader.find("512.0 + 896.0 * cr"), std::string::npos);
@@ -673,7 +673,8 @@ TEST(VideoEncoderSourceTest, DirectHdrP010ShaderWritesCanonicalRedCodes) {
         float sdrWhiteNits;
         float padding2[2];
     };
-    const CopyConstants constants = {0, 0, 1.0f / kWidth, 1.0f / kHeight, 0.0f, 203.0f, {0.0f, 0.0f}};
+    // sdrWhiteNits=0 selects limited range (default for P010); sdrWhiteNits>=1 selects full range.
+    const CopyConstants constants = {0, 0, 1.0f / kWidth, 1.0f / kHeight, 0.0f, 0.0f, {0.0f, 0.0f}};
     D3D11_BUFFER_DESC constantsDesc = {};
     constantsDesc.ByteWidth = sizeof(constants);
     constantsDesc.Usage = D3D11_USAGE_IMMUTABLE;
@@ -721,10 +722,10 @@ TEST(VideoEncoderSourceTest, DirectHdrP010ShaderWritesCanonicalRedCodes) {
     D3D11_MAPPED_SUBRESOURCE mapped = {};
     ASSERT_TRUE(SUCCEEDED(context->Map(stagingTexture.get(), 0, D3D11_MAP_READ, 0, &mapped)));
 
-    const auto* bytes = static_cast<const uint8_t*>(mapped.pData);
     constexpr uint16_t kExpectedY = 294u << 6;
     constexpr uint16_t kExpectedCb = 387u << 6;
     constexpr uint16_t kExpectedCr = 960u << 6;
+    const auto* bytes = static_cast<const uint8_t*>(mapped.pData);
     EXPECT_EQ(*reinterpret_cast<const uint16_t*>(bytes), kExpectedY);
     EXPECT_EQ(*reinterpret_cast<const uint16_t*>(bytes + sizeof(uint16_t)), kExpectedY);
     EXPECT_EQ(*reinterpret_cast<const uint16_t*>(bytes + mapped.RowPitch), kExpectedY);
@@ -840,7 +841,7 @@ TEST(VideoEncoderSourceTest, DirectHdrP010ShaderProducesNeutralChromaForWhite) {
         float sdrWhiteNits;
         float padding2[2];
     };
-    const CopyConstants constants = {0, 0, 1.0f / kWidth, 1.0f / kHeight, 0.0f, 203.0f, {0.0f, 0.0f}};
+    const CopyConstants constants = {0, 0, 1.0f / kWidth, 1.0f / kHeight, 0.0f, 0.0f, {0.0f, 0.0f}};
     D3D11_BUFFER_DESC constantsDesc = {};
     constantsDesc.ByteWidth = sizeof(constants);
     constantsDesc.Usage = D3D11_USAGE_IMMUTABLE;

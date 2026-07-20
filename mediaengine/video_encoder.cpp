@@ -869,8 +869,8 @@ bool WantsFullOutputRange(const std::string& colorRange) {
     return !colorRange.empty() && _stricmp(colorRange.c_str(), "full") == 0;
 }
 
-OutputRangeMode GetEffectiveOutputRange(const std::string& colorRange, bool isHDR) {
-    if (WantsFullOutputRange(colorRange) && !isHDR) {
+OutputRangeMode GetEffectiveOutputRange(const std::string& colorRange, bool /*isHDR*/) {
+    if (WantsFullOutputRange(colorRange)) {
         return OutputRangeMode::kFull;
     }
     return OutputRangeMode::kLimited;
@@ -2149,9 +2149,6 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     // Color range
     std::string cr = savedConfig.colorRange;
     const OutputRangeMode outputRange = GetEffectiveOutputRange(cr, outputIsHDR);
-    if (WantsFullOutputRange(cr) && outputIsHDR) {
-        DLL_Log("[VideoEncoder] color_range=full requested for HDR, but VP/YCbCr output stays limited-range");
-    }
     codecCtx->color_range = GetAVColorRange(outputRange);
 
     // Bit depth and chroma subsampling → pixel format
@@ -6481,9 +6478,10 @@ bool VideoEncoder::ConvertHdrRgb10ToP010(ID3D11Texture2D* input, ID3D11Texture2D
     }
     const float lumaSharpenStrength =
         scalingEnabled ? std::clamp(savedConfig.scaling.sharpness / 400.0f, 0.0f, 0.25f) : 0.0f;
+    const float fullRangeFlag = WantsFullOutputRange(savedConfig.colorRange) ? 1.0f : 0.0f;
     *static_cast<CopyConstants*>(mapped.pData) = {
         0, 0, 1.0f / static_cast<float>(outputDesc.Width), 1.0f / static_cast<float>(outputDesc.Height),
-        lumaSharpenStrength, {0.0f, 0.0f, 0.0f}};
+        lumaSharpenStrength, {fullRangeFlag, 0.0f, 0.0f}};
     d3d11Context->Unmap(swapRBShaderCB, 0);
 
     d3d11Context->VSSetShader(swapRBShaderVS, nullptr, 0);
