@@ -88,7 +88,7 @@ TEST(VideoEncoderOptionsTest, NvencCQUsesTrueCQAndWiresMissingSettings) {
     config.bRefMode = "middle";
     config.multipass = "auto";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     const std::optional<std::string> preset = FindOptionValue(plan.generatedOptions, "preset");
     const std::optional<std::string> tune = FindOptionValue(plan.generatedOptions, "tune");
     const std::optional<std::string> rc = FindOptionValue(plan.generatedOptions, "rc");
@@ -142,7 +142,7 @@ TEST(VideoEncoderOptionsTest, AutoProfileChoosesCodecAwareDefaults) {
     h264.tuning.clear();
     h264.bitrate.clear();
     h264.maxBitrate.clear();
-    const EncoderOptionPlan h264Plan = BuildEncoderOptionPlan(h264, false, "420");
+    const EncoderOptionPlan h264Plan = BuildEncoderOptionPlan(h264, false, "420", false);
     const std::optional<std::string> h264Profile = FindOptionValue(h264Plan.generatedOptions, "profile");
     ASSERT_TRUE(h264Profile.has_value());
     EXPECT_EQ(h264Profile.value_or(""), "high");
@@ -152,7 +152,7 @@ TEST(VideoEncoderOptionsTest, AutoProfileChoosesCodecAwareDefaults) {
     hevc.tuning.clear();
     hevc.bitrate.clear();
     hevc.maxBitrate.clear();
-    const EncoderOptionPlan hevcPlan = BuildEncoderOptionPlan(hevc, true, "420");
+    const EncoderOptionPlan hevcPlan = BuildEncoderOptionPlan(hevc, true, "420", false);
     const std::optional<std::string> hevcProfile = FindOptionValue(hevcPlan.generatedOptions, "profile");
     ASSERT_TRUE(hevcProfile.has_value());
     EXPECT_EQ(hevcProfile.value_or(""), "main10");
@@ -162,7 +162,7 @@ TEST(VideoEncoderOptionsTest, AutoProfileChoosesCodecAwareDefaults) {
     av1Qsv.tuning.clear();
     av1Qsv.bitrate.clear();
     av1Qsv.maxBitrate.clear();
-    const EncoderOptionPlan av1QsvPlan = BuildEncoderOptionPlan(av1Qsv, false, "420");
+    const EncoderOptionPlan av1QsvPlan = BuildEncoderOptionPlan(av1Qsv, false, "420", false);
     const std::optional<std::string> av1QsvProfile = FindOptionValue(av1QsvPlan.generatedOptions, "profile");
     ASSERT_TRUE(av1QsvProfile.has_value());
     EXPECT_EQ(av1QsvProfile.value_or(""), "main");
@@ -172,7 +172,7 @@ TEST(VideoEncoderOptionsTest, CustomOptionsParseAndValidate) {
     VideoConfig config = MakeBaseVideoConfig("hevc_nvenc");
     config.customOptions = "rc-lookahead=8:spatial-aq=0:foo=bar";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, true, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, true, "420", false);
     ASSERT_TRUE(plan.errors.empty());
     ASSERT_EQ(plan.customOptions.size(), 3u);
     EXPECT_EQ(plan.customOptions[0].key, "rc-lookahead");
@@ -183,7 +183,7 @@ TEST(VideoEncoderOptionsTest, CustomOptionsParseAndValidate) {
     EXPECT_EQ(plan.customOptions[2].value, "bar");
 
     config.customOptions = "missing_equals";
-    const EncoderOptionPlan invalidPlan = BuildEncoderOptionPlan(config, true, "420");
+    const EncoderOptionPlan invalidPlan = BuildEncoderOptionPlan(config, true, "420", false);
     EXPECT_FALSE(invalidPlan.errors.empty());
     EXPECT_TRUE(HasMessageContaining(invalidPlan.errors, "missing '='"));
 }
@@ -192,7 +192,7 @@ TEST(VideoEncoderOptionsTest, Av1NvencDisablesUnusedS12mTimecodeAfterCustomOptio
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.customOptions = "foo=bar:s12m_tc=1";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, true, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, true, "420", false);
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(FindOptionValue(plan.customOptions, "s12m_tc").value_or(""), "1");
@@ -202,11 +202,11 @@ TEST(VideoEncoderOptionsTest, Av1NvencDisablesUnusedS12mTimecodeAfterCustomOptio
 
 TEST(VideoEncoderOptionsTest, S12mTimecodeSafetyOverrideIsScopedToAv1Nvenc) {
     VideoConfig av1Nvenc = MakeBaseVideoConfig("av1_nvenc");
-    const EncoderOptionPlan av1NvencPlan = BuildEncoderOptionPlan(av1Nvenc, false, "420");
+    const EncoderOptionPlan av1NvencPlan = BuildEncoderOptionPlan(av1Nvenc, false, "420", false);
     EXPECT_EQ(FindOptionValue(av1NvencPlan.requiredOptions, "s12m_tc").value_or(""), "0");
 
     for (const char* encoder : {"hevc_nvenc", "h264_nvenc", "av1_amf", "av1_qsv", "av1_mf"}) {
-        const EncoderOptionPlan plan = BuildEncoderOptionPlan(MakeBaseVideoConfig(encoder), false, "420");
+        const EncoderOptionPlan plan = BuildEncoderOptionPlan(MakeBaseVideoConfig(encoder), false, "420", false);
         EXPECT_FALSE(FindOptionValue(plan.requiredOptions, "s12m_tc").has_value()) << encoder;
     }
 }
@@ -218,7 +218,7 @@ TEST(VideoEncoderOptionsTest, NvencWeightedPredNotAutoEnabledForH264BFrames) {
     config.bFrames = 4;
     config.bRefMode.clear();
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     const std::optional<std::string> weightedPred = FindOptionValue(plan.generatedOptions, "weighted_pred");
 
     EXPECT_TRUE(plan.errors.empty());
@@ -233,7 +233,7 @@ TEST(VideoEncoderOptionsTest, NvencWeightedPredSkippedForAV1) {
     config.bRefMode.clear();
     config.multipass = "auto";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     const std::optional<std::string> weightedPred = FindOptionValue(plan.generatedOptions, "weighted_pred");
     const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
 
@@ -249,7 +249,7 @@ TEST(VideoEncoderOptionsTest, NvencWeightedPredNotSetWhenBFramesZero) {
     config.bFrames = 0;
     config.bRefMode.clear();
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     const std::optional<std::string> bRefMode = FindOptionValue(plan.generatedOptions, "b_ref_mode");
     const std::optional<std::string> weightedPred = FindOptionValue(plan.generatedOptions, "weighted_pred");
 
@@ -263,7 +263,7 @@ TEST(VideoEncoderOptionsTest, NvencExplicitBRefIsNotSentWithoutBFrames) {
     config.bFrames = 0;
     config.bRefMode = "middle";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
@@ -278,7 +278,7 @@ TEST(VideoEncoderOptionsTest, NvencExplicitBRefModeDisabledIsRespected) {
     config.bFrames = 4;
     config.bRefMode = "disabled";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     const std::optional<std::string> bRefMode = FindOptionValue(plan.generatedOptions, "b_ref_mode");
 
     EXPECT_TRUE(plan.errors.empty());
@@ -292,7 +292,7 @@ TEST(VideoEncoderOptionsTest, NvencAutoBRefModeIsResolvedByPatchedFfmpeg) {
     config.bFrames = 4;
     config.bRefMode = "auto";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "b_ref_mode").has_value());
@@ -306,7 +306,7 @@ TEST(VideoEncoderOptionsTest, NvencMultipassAutoUpgradeWithBFrames) {
     config.bRefMode = "middle";
     config.lookahead = "auto";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
 
     EXPECT_TRUE(plan.errors.empty());
@@ -329,7 +329,7 @@ TEST(VideoEncoderOptionsTest, NvencMultipassDisabledRespected) {
     config.bFrames = 4;
     config.multipass = "disabled";  // Explicit user choice
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
 
     EXPECT_TRUE(plan.errors.empty());
@@ -343,7 +343,7 @@ TEST(VideoEncoderOptionsTest, NvencMultipassNotUpgradedWhenExplicitlySet) {
     config.bFrames = 2;
     config.multipass = "fullres";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
 
     EXPECT_TRUE(plan.errors.empty());
@@ -357,7 +357,7 @@ TEST(VideoEncoderOptionsTest, NvencMultipassNotUpgradedWithoutBFrames) {
     config.bFrames = 0;
     config.multipass = "auto";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
 
     EXPECT_TRUE(plan.errors.empty());
@@ -372,7 +372,7 @@ TEST(VideoEncoderOptionsTest, NvencMultipassAutoUsesQresForCbrWithoutBFrames) {
     config.bFrames = 0;
     config.multipass = "auto";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     const std::optional<std::string> multipass = FindOptionValue(plan.generatedOptions, "multipass");
 
     EXPECT_TRUE(plan.errors.empty());
@@ -393,7 +393,7 @@ TEST(VideoEncoderOptionsTest, NvencSplitEncodeMapsSupportedModesForHevcAndAv1) {
             VideoConfig config = MakeBaseVideoConfig(encoder);
             config.splitEncode = mode.configured;
 
-            const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+            const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
 
             EXPECT_TRUE(plan.errors.empty()) << encoder << " " << mode.configured;
             EXPECT_EQ(FindOptionValue(plan.generatedOptions, "split_encode_mode").value_or(""), mode.expected)
@@ -406,17 +406,17 @@ TEST(VideoEncoderOptionsTest, NvencSplitEncodeRejectsForcedModesForH264) {
     VideoConfig config = MakeBaseVideoConfig("h264_nvenc");
 
     config.splitEncode = "auto";
-    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "split_encode_mode").has_value());
 
     config.splitEncode = "disabled";
-    plan = BuildEncoderOptionPlan(config, false, "420");
+    plan = BuildEncoderOptionPlan(config, false, "420", false);
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "split_encode_mode").has_value());
 
     config.splitEncode = "forced";
-    plan = BuildEncoderOptionPlan(config, false, "420");
+    plan = BuildEncoderOptionPlan(config, false, "420", false);
     EXPECT_TRUE(HasMessageContaining(plan.errors, "supported only for HEVC and AV1"));
 }
 
@@ -425,7 +425,7 @@ TEST(VideoEncoderOptionsTest, NvencSplitEncodeCustomOverrideRemainsCompatible) {
     config.splitEncode = "auto";
     config.customOptions = "split_encode_mode=3";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "split_encode_mode").value_or(""), "auto");
@@ -438,16 +438,16 @@ TEST(VideoEncoderOptionsTest, NvencSplitEncodeRejectsForcedHevcWeightedPredictio
     config.splitEncode = "forced";
     config.customOptions = "weighted_pred=1";
 
-    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     EXPECT_TRUE(HasMessageContaining(plan.errors, "cannot be combined with forced split-frame encoding"));
 
     config.splitEncode = "auto";
-    plan = BuildEncoderOptionPlan(config, false, "420");
+    plan = BuildEncoderOptionPlan(config, false, "420", false);
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_TRUE(HasMessageContaining(plan.warnings, "prevents automatic split-frame encoding"));
 
     config.splitEncode = "disabled";
-    plan = BuildEncoderOptionPlan(config, false, "420");
+    plan = BuildEncoderOptionPlan(config, false, "420", false);
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_FALSE(HasMessageContaining(plan.warnings, "split-frame encoding"));
 }
@@ -457,15 +457,15 @@ TEST(VideoEncoderOptionsTest, NvencLookaheadOffAutoAndExplicitDepthAreDeterminis
     config.bFrames = 4;
 
     config.lookahead = "off";
-    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "rc-lookahead").value_or(""), "0");
 
     config.lookahead = "auto";
-    plan = BuildEncoderOptionPlan(config, false, "420");
+    plan = BuildEncoderOptionPlan(config, false, "420", false);
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "rc-lookahead").value_or(""), "20");
 
     config.lookahead = "12";
-    plan = BuildEncoderOptionPlan(config, false, "420");
+    plan = BuildEncoderOptionPlan(config, false, "420", false);
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "rc-lookahead").value_or(""), "12");
 }
 
@@ -474,7 +474,7 @@ TEST(VideoEncoderOptionsTest, NvencLookaheadClampsToBFrameDependentLimit) {
     config.bFrames = 4;
     config.lookahead = "31";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     const std::optional<std::string> lookahead = FindOptionValue(plan.generatedOptions, "rc-lookahead");
 
     EXPECT_TRUE(plan.errors.empty());
@@ -489,7 +489,7 @@ TEST(VideoEncoderOptionsTest, NvencSpatialAndTemporalAqCanBeControlledIndependen
     config.temporalAq = false;
     config.aqStrength = 11;
 
-    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "spatial-aq").value_or(""), "1");
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "temporal-aq").value_or(""), "0");
@@ -497,7 +497,7 @@ TEST(VideoEncoderOptionsTest, NvencSpatialAndTemporalAqCanBeControlledIndependen
 
     config.spatialAq = false;
     config.temporalAq = true;
-    plan = BuildEncoderOptionPlan(config, false, "420");
+    plan = BuildEncoderOptionPlan(config, false, "420", false);
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "spatial-aq").value_or(""), "0");
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "temporal-aq").value_or(""), "1");
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "aq-strength").has_value());
@@ -512,7 +512,7 @@ TEST(VideoEncoderOptionsTest, InvalidNvencPolicyValuesAreRejected) {
     config.bRefMode = "all";
     config.aqStrength = 16;
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
 
     EXPECT_TRUE(HasMessageContaining(plan.errors, "lookahead"));
     EXPECT_TRUE(HasMessageContaining(plan.errors, "multipass"));
@@ -526,7 +526,7 @@ TEST(VideoEncoderOptionsTest, IsHardwareEncoderFlagSetCorrectly) {
     VideoConfig nvenc = MakeBaseVideoConfig("h264_nvenc");
     nvenc.bitrate.clear();
     nvenc.maxBitrate.clear();
-    const EncoderOptionPlan nvencPlan = BuildEncoderOptionPlan(nvenc, false, "420");
+    const EncoderOptionPlan nvencPlan = BuildEncoderOptionPlan(nvenc, false, "420", false);
     EXPECT_TRUE(nvencPlan.isHardwareEncoder);
 
     // libx264 is software
@@ -535,7 +535,7 @@ TEST(VideoEncoderOptionsTest, IsHardwareEncoderFlagSetCorrectly) {
     sw.tuning.clear();
     sw.bitrate.clear();
     sw.maxBitrate.clear();
-    const EncoderOptionPlan swPlan = BuildEncoderOptionPlan(sw, false, "420");
+    const EncoderOptionPlan swPlan = BuildEncoderOptionPlan(sw, false, "420", false);
     EXPECT_FALSE(swPlan.isHardwareEncoder);
 }
 
@@ -547,7 +547,7 @@ TEST(VideoEncoderOptionsTest, NvencHEVCBFramesMultipassAutoUpgrade) {
     config.multipass = "auto";
     config.lookahead = "auto";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(plan.maxBFrames, 4);
@@ -569,7 +569,7 @@ TEST(VideoEncoderOptionsTest, NvencAV1BFramesGetQPConstraints) {
     config.bRefMode = "middle";
     config.multipass = "qres";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(plan.maxBFrames, 4);
@@ -585,7 +585,7 @@ TEST(VideoEncoderOptionsTest, NvencAV1NoBFramesNoQPConstraints) {
     VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
     config.bFrames = 0;
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(plan.maxBFrames, 0);
@@ -598,7 +598,7 @@ TEST(VideoEncoderOptionsTest, NvencAV1CqpDoesNotApplyRateControlQpBound) {
     config.qp = 180;
     config.bFrames = 4;
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "qp").value_or(""), "180");
@@ -613,7 +613,7 @@ TEST(VideoEncoderOptionsTest, NvencHEVCBFramesNoQPConstraints) {
     config.bRefMode = "middle";
     config.multipass = "qres";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "max_qp_b").has_value());
@@ -627,7 +627,7 @@ TEST(VideoEncoderOptionsTest, NvencAV1BRefModeDisabledWithBFramesGetsQP) {
     config.bRefMode = "disabled";
     config.multipass = "qres";
 
-    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420");
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
 
     EXPECT_TRUE(plan.errors.empty());
     EXPECT_EQ(plan.maxBFrames, 2);

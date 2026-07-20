@@ -616,7 +616,8 @@ bool ParseCustomOptions(const std::string& input, std::vector<EncoderOption>* op
     return true;
 }
 
-EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bit, const std::string& resolvedChroma) {
+EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bit, const std::string& resolvedChroma,
+                                         bool outputIsHDR) {
     EncoderOptionPlan plan;
     const EncoderKind kind = ClassifyEncoder(config.encoder);
 
@@ -735,6 +736,24 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
         if (plan.maxBFrames > 0 && kind.family == CodecFamily::kAV1 && rateControl != "cqp" &&
             rateControl != "constqp") {
             AddGeneratedOption(&plan, "max_qp_b", "200");
+        }
+    }
+
+    // HDR10 static metadata — mastering display primaries and content light level.
+    // Players require these SEI messages to identify the stream as HDR10; without
+    // them the Windows Movies app and others treat PQ data as SDR, causing a
+    // washed-out, overly bright appearance. BT.2020 primaries with D65 white
+    // point match our PQ/BT.2020 encoding; 1000/400 nits are a reasonable
+    // generic cap for DWM composite captures.
+    if (outputIsHDR && kind.backend == EncoderBackend::kNVENC) {
+        if (kind.family == CodecFamily::kHEVC) {
+            AddGeneratedOption(&plan, "mastering-display",
+                               "G(0.170,0.797)B(0.131,0.046)R(0.708,0.292)WP(0.3127,0.3290)L(1000,0.0050)");
+            AddGeneratedOption(&plan, "cll", "1000,400");
+        } else if (kind.family == CodecFamily::kAV1) {
+            AddGeneratedOption(&plan, "mastering-display",
+                               "G(0.170,0.797)B(0.131,0.046)R(0.708,0.292)WP(0.3127,0.3290)L(1000,0.0050)");
+            AddGeneratedOption(&plan, "content_light_level", "1000,400");
         }
     }
 

@@ -2179,7 +2179,11 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     bd = resolvedFormat.bitDepth;
     chroma = resolvedFormat.chroma;
     bool use10bit = resolvedFormat.use10Bit;
-    codecCtx->chroma_sample_location = (resolvedFormat.chroma == "420") ? AVCHROMA_LOC_CENTER : AVCHROMA_LOC_UNSPECIFIED;
+    // Direct P010 shader (HDR) produces chroma at center; VideoProcessor (SDR)
+    // produces chroma at the standard MPEG-2/H.264 left position.
+    codecCtx->chroma_sample_location = (resolvedFormat.chroma == "420")
+                                           ? (outputIsHDR ? AVCHROMA_LOC_CENTER : AVCHROMA_LOC_LEFT)
+                                           : AVCHROMA_LOC_UNSPECIFIED;
 
     DLL_Log(
         "[VideoEncoder] Color config: space=%s range=%s bitDepth=%s chroma=%s "
@@ -2188,7 +2192,7 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
         GetPixFmtNameSafe(resolvedFormat.d3d11SwFormat), resolvedFormat.usesVideoProcessor ? "vp-yuv" : "direct-rgb",
         currentIsHDR ? 1 : 0, outputIsHDR ? 1 : 0);
 
-    const ce::video::EncoderOptionPlan optionPlan = ce::video::BuildEncoderOptionPlan(savedConfig, use10bit, chroma);
+    const ce::video::EncoderOptionPlan optionPlan = ce::video::BuildEncoderOptionPlan(savedConfig, use10bit, chroma, outputIsHDR);
     for (const auto& warning : optionPlan.warnings) {
         DLL_Log("[VideoEncoder] %s", warning.c_str());
     }
