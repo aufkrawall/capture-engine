@@ -876,3 +876,31 @@ C:\Program Files (x86)\LLVM\bin
 ```
 
 If winget reports no upgrade or already-installed status, verify availability using `winget list --id <PackageId> -e` before treating it as a failure.
+
+---
+
+## x86 memory safety validation gap
+
+The MinGW x86 toolchain (mingw32) does not provide ASan runtime libraries. The project's `--sanitize` flag explicitly fails closed for x86. This means `capture_hook_x86.dll` and `VK_LAYER_CE_overlay_x86.dll` cannot be built with AddressSanitizer.
+
+### Impact
+
+- Memory bugs (heap buffer overflow, use-after-free, stack buffer overflow) in x86 code paths cannot be detected by automated sanitizer runs.
+- x86-specific code paths include: `hook/apis/dx8_hook.cpp`, `hook/apis/ddraw_hook.cpp`, `hook/wrappers/inline_hook.cpp` (x86 `E9 rel32` JMP generation).
+
+### Mitigations
+
+- The x86 hook DLL shares the same C++ source files as x64, which IS sanitizer-tested.
+- x86-specific assembly/disassembly (`inline_hook.cpp`) is small and manually reviewed.
+- Manual review of x86-specific paths is recommended after any changes to those files.
+- Future option: cross-compile with MSVC x86 ASan (`build.py --msvc-x86-sanitizer`, requires Visual Studio Build Tools).
+
+### Tools to inspect x86-specific code paths
+
+```powershell
+# List x86 object files that may need manual review
+Get-ChildItem build\obj\x86\hook\apis\dx8_hook.obj, build\obj\x86\hook\apis\ddraw_hook.obj
+
+# Disassemble x86 inline hook trampolines (verify JMP rel32 correctness)
+& "build\msys64\clang64\bin\llvm-objdump.exe" -d build\obj\x86\hook\wrappers\inline_hook.obj
+```
