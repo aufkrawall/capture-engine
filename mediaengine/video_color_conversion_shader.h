@@ -162,16 +162,19 @@ float4 PS_P010Y(VS_OUT input) : SV_TARGET
 
 float4 PS_P010UV(VS_OUT input) : SV_TARGET
 {
-    // The chroma target is half-resolution. Sample the four corresponding
-    // output-luma locations so scaling and 4:2:0 downsampling happen in one
-    // deterministic shader pass without a CPU/GPU synchronization point.
+    // The chroma target is half-resolution. Convert each of the four
+    // corresponding R'G'B' samples to limited-range Y'CbCr individually
+    // (per BT.2100 NCL), then average the Cb and Cr values. Averaging
+    // the non-linear chroma codes directly preserves perceptual uniformity
+    // across subsamples and is algebraically equivalent to averaging the
+    // PQ-domain R'G'B' first (the matrix row-sum identity cancels).
     float2 halfPixel = outputInvSize * 0.5;
-    float3 rgb = texIn.Sample(sam, input.uv + float2(-halfPixel.x, -halfPixel.y)).rgb;
-    rgb += texIn.Sample(sam, input.uv + float2(halfPixel.x, -halfPixel.y)).rgb;
-    rgb += texIn.Sample(sam, input.uv + float2(-halfPixel.x, halfPixel.y)).rgb;
-    rgb += texIn.Sample(sam, input.uv + float2(halfPixel.x, halfPixel.y)).rgb;
-    float3 codes = PqP2020ToLimitedYcbcr(saturate(rgb * 0.25));
-    return float4(P010UnormFromCode(codes.y), P010UnormFromCode(codes.z), 0.0, 1.0);
+    float3 c1 = PqP2020ToLimitedYcbcr(texIn.Sample(sam, input.uv + float2(-halfPixel.x, -halfPixel.y)).rgb);
+    float3 c2 = PqP2020ToLimitedYcbcr(texIn.Sample(sam, input.uv + float2(halfPixel.x, -halfPixel.y)).rgb);
+    float3 c3 = PqP2020ToLimitedYcbcr(texIn.Sample(sam, input.uv + float2(-halfPixel.x, halfPixel.y)).rgb);
+    float3 c4 = PqP2020ToLimitedYcbcr(texIn.Sample(sam, input.uv + float2(halfPixel.x, halfPixel.y)).rgb);
+    float2 chroma = (float2(c1.y, c1.z) + float2(c2.y, c2.z) + float2(c3.y, c3.z) + float2(c4.y, c4.z)) * 0.25;
+    return float4(P010UnormFromCode(chroma.x), P010UnormFromCode(chroma.y), 0.0, 1.0);
 }
 
 float4 PS_Main(VS_OUT input) : SV_TARGET {

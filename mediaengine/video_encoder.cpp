@@ -2179,7 +2179,7 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     bd = resolvedFormat.bitDepth;
     chroma = resolvedFormat.chroma;
     bool use10bit = resolvedFormat.use10Bit;
-    codecCtx->chroma_sample_location = (resolvedFormat.chroma == "420") ? AVCHROMA_LOC_LEFT : AVCHROMA_LOC_UNSPECIFIED;
+    codecCtx->chroma_sample_location = (resolvedFormat.chroma == "420") ? AVCHROMA_LOC_CENTER : AVCHROMA_LOC_UNSPECIFIED;
 
     DLL_Log(
         "[VideoEncoder] Color config: space=%s range=%s bitDepth=%s chroma=%s "
