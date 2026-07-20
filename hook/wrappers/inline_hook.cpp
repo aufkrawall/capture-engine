@@ -1701,7 +1701,7 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
         pTarget[i] = 0x90;
     }
 
-    VirtualProtect(target, copySize, oldProtect, &oldProtect);
+    VirtualProtect(target, copySize, PAGE_EXECUTE_READ, &oldProtect);
     FlushInstructionCache(GetCurrentProcess(), target, copySize);
 
     g_hooks.push_back(entry);

@@ -10,6 +10,7 @@
 #include <sstream>
 #include "crash_dump_policy.h"
 #include "crash_handler.h"
+#include "../../common/secure_dll_loading.h"
 #include "dxgi_shared.h"
 #include "fg_detection.h"
 #include "hook_common.h"
@@ -151,7 +152,7 @@ FreezeWatchdog::~FreezeWatchdog() {
 
 bool FreezeWatchdog::InitializeDbgHelp() {
     std::call_once(dbgHelpInitOnce_, [this]() {
-        hDbgHelp_ = LoadLibraryA("dbghelp.dll");
+        hDbgHelp_ = ce::security::LoadSystemLibrary(L"dbghelp.dll");
         if (!hDbgHelp_) {
             OutputDebugStringA("[FreezeWatchdog] Failed to load dbghelp.dll\n");
             dbgHelpInitialized_ = true;

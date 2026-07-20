@@ -12,6 +12,7 @@
 
 #include "dx12_overlay_policy.h"
 #include "hook_common.h"
+#include "../../common/secure_dll_loading.h"
 
 // Ubuntu's MinGW headers can lag the Windows SDK and omit the DRED v1
 // interfaces while still exposing the base DRED interfaces. Keep the richer
@@ -358,7 +359,7 @@ CE_DRED_KEEP bool ArmBeforeDeviceCreation() {
 
     HMODULE d3d12 = GetModuleHandleW(L"d3d12.dll");
     if (!d3d12) {
-        d3d12 = LoadLibraryW(L"d3d12.dll");
+        d3d12 = ce::security::LoadSystemLibrary(L"d3d12.dll");
     }
     if (!d3d12) {
         return false;
@@ -576,7 +577,7 @@ CE_DRED_KEEP void ArmDebugLayerBeforeDeviceCreation() {
     }
     HMODULE d3d12 = GetModuleHandleW(L"d3d12.dll");
     if (!d3d12) {
-        d3d12 = LoadLibraryW(L"d3d12.dll");
+        d3d12 = ce::security::LoadSystemLibrary(L"d3d12.dll");
     }
     if (!d3d12) {
         return;

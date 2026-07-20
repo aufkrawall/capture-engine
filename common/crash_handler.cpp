@@ -1127,20 +1127,7 @@ void InstallCrashHandler() {
     // Pre-load DbgHelp.dll to ensure it's available during a crash (avoid loader
     // lock issues). Load from System32 to prevent DLL hijacking.
     if (!g_hDbgHelp) {
-        char sysDir[MAX_PATH];
-        UINT len = GetSystemDirectoryA(sysDir, MAX_PATH);
-        if (len > 0 && len < MAX_PATH - 16) {
-            strcat(sysDir, "\\DbgHelp.dll");
-            g_hDbgHelp = LoadLibraryA(sysDir);
-        }
-        if (!g_hDbgHelp) {
-            char sysDir2[MAX_PATH];
-            len = GetSystemDirectoryA(sysDir2, MAX_PATH);
-            if (len > 0 && len < MAX_PATH - 16) {
-                strcat(sysDir2, "\\DbgHelp.dll");
-                g_hDbgHelp = LoadLibraryExA(sysDir2, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-            }
-        }
+        g_hDbgHelp = ce::security::LoadSystemLibrary(L"dbghelp.dll");
         if (g_hDbgHelp) {
             g_pMiniDumpWriteDump = (MINIDUMPWRITEDUMP)GetProcAddress(g_hDbgHelp, "MiniDumpWriteDump");
             TraceCrash(g_pMiniDumpWriteDump ? "DbgHelp loaded successfully" : "Failed to get MiniDumpWriteDump");

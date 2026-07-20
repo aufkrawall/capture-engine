@@ -30,6 +30,7 @@ typedef float D3DVALUE;
 #include "../common/graphics_api_identity.h"
 #include "../common/input_manager.h"
 #include "../common/overlay_adapter.h"
+#include "../../common/secure_dll_loading.h"
 #include "../common/overlay_compat.h"
 #include "../wrappers/inline_hook.h"
 #include "../wrappers/vtable_hook.h"
@@ -1037,7 +1038,7 @@ public:
         D3D_FEATURE_LEVEL featureLevels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1};
         D3D_FEATURE_LEVEL featureLevel;
 
-        HMODULE hD3D11 = LoadLibraryA("d3d11.dll");
+        HMODULE hD3D11 = ce::security::LoadSystemLibrary(L"d3d11.dll");
         if (!hD3D11) {
             HookLog("DDraw: D3D11 DLL not found");
             return false;
@@ -1153,7 +1154,7 @@ public:
     bool CreateD3D9ExWrapper(HWND hwnd) {
         HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
         if (!d3d9)
-            d3d9 = LoadLibraryA("d3d9.dll");
+            d3d9 = ce::security::LoadSystemLibrary(L"d3d9.dll");
         if (!d3d9) {
             HookLog("DDraw: D3D9 DLL not found");
             return false;

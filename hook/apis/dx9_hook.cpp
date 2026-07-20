@@ -34,6 +34,7 @@
 #include "../vulkan_layer/layer_main.h"
 #include "../wrappers/inline_hook.h"
 #include "../wrappers/vtable_hook.h"
+#include "../../common/secure_dll_loading.h"
 #include "hook_common.h"
 #include "lod_helper.h"
 #include "performance_metrics.h"
@@ -365,7 +366,7 @@ static void EnsureDwmFlushLoaded() {
         return;
     HMODULE hDwm = GetModuleHandleA("dwmapi.dll");
     if (!hDwm)
-        hDwm = LoadLibraryA("dwmapi.dll");
+        hDwm = ce::security::LoadSystemLibrary(L"dwmapi.dll");
     if (!hDwm)
         return;
     g_DwmFlush = (DwmFlush_t)GetProcAddress(hDwm, "DwmFlush");

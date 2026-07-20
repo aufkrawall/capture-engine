@@ -23,6 +23,7 @@
 #include "../wrappers/vtable_hook.h"
 #include "hook_common.h"
 #include "performance_metrics.h"
+#include "../../common/secure_dll_loading.h"
 
 // D3D8 interface definitions (minimal subset needed for hooking)
 // D3D8 doesn't have official headers in modern SDKs
@@ -690,7 +691,7 @@ public:
         // Create D3D9Ex calls dynamic
         HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
         if (!d3d9)
-            d3d9 = LoadLibraryA("d3d9.dll");
+            d3d9 = ce::security::LoadSystemLibrary(L"d3d9.dll");
         if (!d3d9) {
             HookLog("DX8: D3D9 DLL not found");
             return false;
@@ -1095,7 +1096,7 @@ public:
         D3D_FEATURE_LEVEL featureLevels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1};
         D3D_FEATURE_LEVEL featureLevel;
 
-        HMODULE hD3D11 = LoadLibraryA("d3d11.dll");
+        HMODULE hD3D11 = ce::security::LoadSystemLibrary(L"d3d11.dll");
         if (!hD3D11) {
             HookLog("DX8: D3D11 DLL not found");
             return false;

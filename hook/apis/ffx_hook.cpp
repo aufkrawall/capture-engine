@@ -1179,7 +1179,7 @@ static void RestoreFfxConfigureBreakpointIfCurrent(void* target, const char* rea
     }
     *targetByte = g_ffxConfigureOriginalFirstByte;
     FlushInstructionCache(GetCurrentProcess(), targetByte, 1);
-    VirtualProtect(target, 1, oldProtect, &oldProtect);
+    VirtualProtect(target, 1, PAGE_EXECUTE_READ, &oldProtect);
     g_ffxConfigureVehArmed.store(false, std::memory_order_release);
     HookLogImportant("FFX Hook: Restored stale VEH breakpoint at %p before retargeting (%s)", target,
                      reason && reason[0] ? reason : "target changed");
@@ -1250,7 +1250,7 @@ static bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target, const char* module
     }
     *targetByte = 0xCC;
     FlushInstructionCache(GetCurrentProcess(), targetByte, 1);
-    VirtualProtect(reinterpret_cast<LPVOID>(target), 1, oldProtect, &oldProtect);
+    VirtualProtect(reinterpret_cast<LPVOID>(target), 1, PAGE_EXECUTE_READ, &oldProtect);
 
     g_ffxConfigureTarget.store(reinterpret_cast<void*>(target), std::memory_order_release);
     g_ffxConfigureVehArmed.store(true, std::memory_order_release);
@@ -1302,7 +1302,7 @@ static ffxReturnCode_t CallFfxConfigureOriginalGuarded(PfnFfxConfigure originalC
                 if (VirtualProtect(target, 1, PAGE_EXECUTE_READWRITE, &oldProtect)) {
                     *targetByte = g_ffxConfigureOriginalFirstByte;
                     FlushInstructionCache(GetCurrentProcess(), targetByte, 1);
-                    VirtualProtect(target, 1, oldProtect, &oldProtect);
+                    VirtualProtect(target, 1, PAGE_EXECUTE_READ, &oldProtect);
                     g_ffxConfigureVehArmed.store(false, std::memory_order_release);
                     pausedBreakpoint = true;
 
@@ -1370,7 +1370,7 @@ static LONG WINAPI FfxConfigureBreakpointVEH(EXCEPTION_POINTERS* ep) {
     }
     *static_cast<uint8_t*>(reinterpret_cast<LPVOID>(target)) = g_ffxConfigureOriginalFirstByte;
     FlushInstructionCache(GetCurrentProcess(), target, 1);
-    VirtualProtect(reinterpret_cast<LPVOID>(target), 1, oldProtect, &oldProtect);
+    VirtualProtect(reinterpret_cast<LPVOID>(target), 1, PAGE_EXECUTE_READ, &oldProtect);
     g_ffxConfigureVehArmed.store(false, std::memory_order_release);
 
     auto contextPtr = reinterpret_cast<ffxContext*>(

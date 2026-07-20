@@ -25,6 +25,7 @@
 #include "lod_helper.h"
 #include "opengl_sampler_override.h"
 #include "performance_metrics.h"
+#include "../../common/secure_dll_loading.h"
 
 // Check if Vulkan is primary API (to avoid double FPS limiting/Overlay)
 // Note: Vulkan hook removed - using VK_LAYER_CE_overlay (ICD layer approach)
@@ -424,7 +425,7 @@ public:
         D3D_FEATURE_LEVEL featureLevels[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1};
         D3D_FEATURE_LEVEL featureLevel;
 
-        HMODULE hD3D11 = LoadLibraryA("d3d11.dll");
+        HMODULE hD3D11 = ce::security::LoadSystemLibrary(L"d3d11.dll");
         if (!hD3D11) {
             HookLog("OpenGL: D3D11 DLL not found");
             return false;
@@ -1275,7 +1276,7 @@ static void DetectGPU(HDC hdc) {
 
     HMODULE hD3D11 = GetModuleHandleA("d3d11.dll");
     if (!hD3D11)
-        hD3D11 = LoadLibraryA("d3d11.dll");
+        hD3D11 = ce::security::LoadSystemLibrary(L"d3d11.dll");
     if (!hD3D11)
         return;
 

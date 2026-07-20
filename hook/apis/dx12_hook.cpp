@@ -40,6 +40,7 @@
 #include "../common/screenshot_hook.h"
 #include "../common/streamline_compat.h"
 #include "../common/streamline_runtime_policy.h"
+#include "../../common/secure_dll_loading.h"
 
 #include "../common/fps_limiter.h"
 #include "../common/freeze_watchdog.h"
@@ -2228,7 +2229,7 @@ static bool IsExecutableCodePointer(const void* ptr) {
 static void* ResolveLoadedOrLoadableExport(const char* moduleName, const char* functionName) {
     HMODULE module = GetModuleHandleA(moduleName);
     if (!module) {
-        module = LoadLibraryA(moduleName);
+        module = LoadLibraryExA(moduleName, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     }
     return module ? reinterpret_cast<void*>(GetProcAddress(module, functionName)) : nullptr;
 }
@@ -11508,7 +11509,7 @@ static bool InitD3D11On12(ID3D12Device* d3d12Dev, ID3D12CommandQueue* queue, IDX
     // Dynamically load D3D11On12CreateDevice
     HMODULE d3d11Lib = GetModuleHandleA("d3d11.dll");
     if (!d3d11Lib)
-        d3d11Lib = LoadLibraryA("d3d11.dll");
+        d3d11Lib = ce::security::LoadSystemLibrary(L"d3d11.dll");
     if (!d3d11Lib) {
         HookLogImportant("DX12 D3D11On12: d3d11.dll not available");
         return false;

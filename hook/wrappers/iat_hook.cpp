@@ -562,9 +562,9 @@ bool InitializeD3D12Hooks() {
     static bool s_WrappersPreloaded = false;
     if (!s_WrappersPreloaded) {
         s_WrappersPreloaded = true;
-        HMODULE hWrappers = LoadLibraryA("d3d12_wrappers.dll");
+        HMODULE hWrappers = LoadLibraryExW(L"d3d12_wrappers.dll", nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
         if (!hWrappers) {
-            hWrappers = LoadLibraryA("d3d12_wrappers_x86.dll");
+            hWrappers = LoadLibraryExW(L"d3d12_wrappers_x86.dll", nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR);
         }
         if (hWrappers) {
             WrapperLog("IAT: Pre-loaded d3d12_wrappers.dll at %p", hWrappers);

@@ -13,6 +13,7 @@
 #include "hook_common.h"
 #include "overlay_layout_policy.h"
 #include "perf_logger.h"
+#include "../../common/secure_dll_loading.h"
 
 #include <cfloat>  // FLT_MAX
 
@@ -62,7 +63,7 @@ public:
     ScopedThreadDpiAwareness() {
         HMODULE user32 = GetModuleHandleA("user32.dll");
         if (!user32) {
-            user32 = LoadLibraryA("user32.dll");
+            user32 = ce::security::LoadSystemLibrary(L"user32.dll");
         }
 
         setThreadDpiAwarenessContext_ =

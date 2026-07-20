@@ -47,6 +47,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -1446,11 +1447,26 @@ bool ShouldInjectChild(const char *exePath) {
     return false;
   }
 
-  // Skip common system and launcher processes (safety backstop)
+   // Skip common system and launcher processes (safety backstop)
   static const char *skipList[] = {"cmd.exe",
                                    "powershell.exe",
+                                   "pwsh.exe",
+                                   "powershell_ise.exe",
                                    "conhost.exe",
                                    "explorer.exe",
+                                   "wscript.exe",
+                                   "cscript.exe",
+                                   "mshta.exe",
+                                   "reg.exe",
+                                   "rundll32.exe",
+                                   "sdiagnhost.exe",
+                                   "regsvr32.exe",
+                                   "msiexec.exe",
+                                   "taskkill.exe",
+                                   "tasklist.exe",
+                                   "schtasks.exe",
+                                   "wmic.exe",
+                                   "mmc.exe",
                                    "steam.exe",
                                    "steamwebhelper.exe",
                                    "gameoverlayui.exe",
@@ -1470,8 +1486,20 @@ bool ShouldInjectChild(const char *exePath) {
                                    nullptr};
 
   for (int i = 0; skipList[i] != nullptr; i++) {
-    if (lowerName.find(skipList[i]) != std::string::npos) {
-      return false;
+    std::string_view entry(skipList[i]);
+    // Exact-match .exe filenames; substring-match generic terms (vc_redist, setup, install)
+    if (entry.size() >= 4 &&
+        (entry[entry.size() - 4] == '.' || entry[entry.size() - 4] == '.') &&
+        (entry[entry.size() - 3] == 'e' || entry[entry.size() - 3] == 'E') &&
+        (entry[entry.size() - 2] == 'x' || entry[entry.size() - 2] == 'X') &&
+        (entry[entry.size() - 1] == 'e' || entry[entry.size() - 1] == 'E')) {
+      if (lowerName == entry) {
+        return false;
+      }
+    } else {
+      if (lowerName.find(skipList[i]) != std::string::npos) {
+        return false;
+      }
     }
   }
 

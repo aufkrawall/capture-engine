@@ -18,6 +18,7 @@
 #include <array>
 #include <vector>
 #include "../../common/capture_base.h"
+#include "../../common/secure_dll_loading.h"
 #include "../../common/shared_defs.h"
 #include "../common/hook_common.h"
 #include "../common/screenshot_hook.h"
@@ -89,13 +90,13 @@ static bool CreateD3D11InteropDevice(IDXGIAdapter* adapter, ID3D11Device** ppDev
 
     HMODULE hDXGI = LoadLibraryA(dxgiPath);
     if (!hDXGI) {
-        hDXGI = LoadLibraryA("dxgi.dll");
+        hDXGI = ce::security::LoadSystemLibrary(L"dxgi.dll");
     }
 
     HMODULE hD3D11 = LoadLibraryA(d3d11Path);
     if (!hD3D11) {
         // Fallback to default search (non-DXVK scenarios)
-        hD3D11 = LoadLibraryA("d3d11.dll");
+        hD3D11 = ce::security::LoadSystemLibrary(L"d3d11.dll");
     }
     if (!hD3D11)
         return false;

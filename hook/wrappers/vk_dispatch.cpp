@@ -6,6 +6,7 @@
 
 #include "vk_dispatch.h"
 #include "../common/hook_common.h"
+#include "../../common/secure_dll_loading.h"
 
 namespace VkDispatch {
 
@@ -161,7 +162,7 @@ VkResult Initialize() {
     // Load vulkan-1.dll
     g_VulkanModule = GetModuleHandleA("vulkan-1.dll");
     if (!g_VulkanModule) {
-        g_VulkanModule = LoadLibraryA("vulkan-1.dll");
+        g_VulkanModule = ce::security::LoadSystemLibrary(L"vulkan-1.dll");
     }
 
     if (!g_VulkanModule) {
