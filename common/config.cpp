@@ -638,7 +638,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         profile.videoCaptureExplicit = videoValue != kMissingProfileValue;
         const bool videoCaptureImplicitlyEnabled =
             profile.legacyInjectionSyntax ? profile.injectionMode != ApplicationInjectionMode::kNone
-                                          : profile.dllInjection != ApplicationDllInjection::kNever;
+                                          : profile.dllInjection == ApplicationDllInjection::kAlways;
         const ApplicationVideoCapture compatibilityFallback =
             (legacyProfile || videoCaptureImplicitlyEnabled) ? ApplicationVideoCapture::kInherit
                                                              : ApplicationVideoCapture::kNone;
