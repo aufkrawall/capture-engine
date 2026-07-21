@@ -1136,6 +1136,9 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                 notifText = "Screenshot failed!";
                 notifColor = Colors::Red;
                 break;
+            case static_cast<uint32_t>(OverlayNotificationType::RecordingStopped):
+                notifText = "Recording stopped";
+                break;
             default:
                 break;
         }

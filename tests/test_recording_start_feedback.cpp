@@ -100,6 +100,36 @@ TEST(RecordingStartFeedbackSourceTest, VideoOutputStaysStagedUntilSuccessfulCont
     EXPECT_LT(start, reserveForRecording);
 }
 
+TEST(RecordingStartFeedbackSourceTest, RecordingStoppedEnumExists) {
+    const std::string source = ReadSource("common/shared_defs.h");
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("RecordingStopped = 3"), std::string::npos);
+}
+
+TEST(RecordingStartFeedbackSourceTest, RecordingStoppedTextInInjectOverlay) {
+    const std::string source = ReadSource("hook/common/overlay_adapter.cpp");
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("\"Recording stopped\""), std::string::npos);
+}
+
+TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnVideoStop) {
+    const std::string source = ReadSource("captureengine/main.cpp");
+    ASSERT_FALSE(source.empty());
+    const size_t stopLine = source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, \"record stop hotkey\")");
+    ASSERT_NE(stopLine, std::string::npos);
+    const size_t notifCall = source.find("ShowRecordingStoppedNotification()", stopLine);
+    EXPECT_NE(notifCall, std::string::npos);
+}
+
+TEST(RecordingStartFeedbackSourceTest, RecordingStopNotifPublishedOnAudioStop) {
+    const std::string source = ReadSource("captureengine/main.cpp");
+    ASSERT_FALSE(source.empty());
+    const size_t stopLine = source.find("PublishRecordingStartIntent(RecordingStartIntent::Idle, \"audio-only stop hotkey\")");
+    ASSERT_NE(stopLine, std::string::npos);
+    const size_t notifCall = source.find("ShowRecordingStoppedNotification()", stopLine);
+    EXPECT_NE(notifCall, std::string::npos);
+}
+
 TEST(RecordingStartFeedbackSourceTest, InjectOverlayContainsExactPendingLabelsAndPseudoOwnsUiThread) {
     const std::string overlay = ReadSource("hook/common/overlay_adapter.cpp");
     const std::string pseudo = ReadSource("captureengine/pseudo_overlay.cpp");

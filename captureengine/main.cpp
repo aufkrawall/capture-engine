@@ -926,6 +926,14 @@ void ToggleRecording() {
         }
     } else {
         PublishRecordingStartIntent(RecordingStartIntent::Idle, "record stop hotkey");
+        WithInjectSharedMem([&](SharedMemoryLayout* shm) {
+            shm->runtimeState.notificationType.store(
+                static_cast<uint32_t>(OverlayNotificationType::RecordingStopped), std::memory_order_release);
+            shm->runtimeState.notificationExpiry.store(GetTickCount64() + 2000ULL, std::memory_order_release);
+        });
+        if (g_PseudoOverlay) {
+            g_PseudoOverlay->ShowRecordingStoppedNotification();
+        }
         LogInfo("[Controller] Stopping recording...");
 
         RequestRecordingStopAndReleaseMedia("record hotkey", 5000);
@@ -992,6 +1000,14 @@ void ToggleAudioOnlyRecording() {
         }
     } else {
         PublishRecordingStartIntent(RecordingStartIntent::Idle, "audio-only stop hotkey");
+        WithInjectSharedMem([&](SharedMemoryLayout* shm) {
+            shm->runtimeState.notificationType.store(
+                static_cast<uint32_t>(OverlayNotificationType::RecordingStopped), std::memory_order_release);
+            shm->runtimeState.notificationExpiry.store(GetTickCount64() + 2000ULL, std::memory_order_release);
+        });
+        if (g_PseudoOverlay) {
+            g_PseudoOverlay->ShowRecordingStoppedNotification();
+        }
         LogInfo("[Controller] Stopping audio-only recording...");
 
         RequestRecordingStopAndReleaseMedia("audio-only hotkey", 5000);

@@ -743,6 +743,14 @@ void PseudoOverlay::OnTimerTick() {
     }
     lastScreenshotNotifyUntil = currentScreenshot;
 
+    static ULONGLONG lastRecordingStopNotifyUntil = 0;
+    ULONGLONG currentRecordingStop = recordingStopNotifyUntil_.load();
+    if ((lastRecordingStopNotifyUntil > 0 && currentRecordingStop == 0) ||
+        (currentRecordingStop > 0 && GetTickCount64() > currentRecordingStop)) {
+        UpdateOverlay();
+    }
+    lastRecordingStopNotifyUntil = currentRecordingStop;
+
     if (config_.showEncoderOverloadWarn && ce::recording_indicator::IsRecording(recordingIndicatorState_) &&
         EnsureSharedMemoryMapping() && pSharedMem_) {
         const uint32_t overloadFlags = pSharedMem_->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
@@ -1075,6 +1083,7 @@ void PseudoOverlay::UpdateOverlay() {
     textInputs.showEncoderOverloadWarn = config_.showEncoderOverloadWarn;
     textInputs.overloadWarnUntilMs = overloadWarnUntil_.load();
     textInputs.screenshotNotifyUntilMs = screenshotNotifyUntil_.load();
+    textInputs.recordingStopNotifyUntilMs = recordingStopNotifyUntil_.load();
     textInputs.nowMs = now;
     const auto textKind = ce::pseudo_overlay::SelectPseudoOverlayText(textInputs);
     const bool showStarting = textKind == ce::pseudo_overlay::OverlayTextKind::Starting;
@@ -1091,8 +1100,10 @@ void PseudoOverlay::UpdateOverlay() {
         overloadTargetFps = pSharedMem_->runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
     }
     const std::string overloadMsg = FormatEncoderOverloadMessage(overloadWarnSustainFpsX100, overloadTargetFps);
+    const bool showRecordingStopped = textKind == ce::pseudo_overlay::OverlayTextKind::RecordingStopped;
     const char* msg = showStarting ? ce::recording_indicator::GetStartingText(recordingState)
                        : showScreenshot ? (screenshotSucceeded ? "Screenshot saved!" : "Screenshot failed!")
+                      : showRecordingStopped ? "Recording stopped"
                       : showOverload   ? overloadMsg.c_str()
                                        : "NOT RECORDING";
     if (ghostActive) {
@@ -1175,8 +1186,9 @@ void PseudoOverlay::UpdateOverlay() {
             SelectObject(hdcWarn_, fontWarn_);
             SetTextColor(hdcWarn_, showStarting   ? kColStarting
                                    : showScreenshot ? (screenshotSucceeded ? kColScreenshotText
-                                                                           : kColScreenshotFailureText)
-                                                    : kColWarnText);
+                                                                            : kColScreenshotFailureText)
+                                   : showRecordingStopped ? kColScreenshotText
+                                                          : kColWarnText);
             SetBkMode(hdcWarn_, TRANSPARENT);
 
             RECT rT = {S(10), S(5), warnW, warnH};
@@ -1461,6 +1473,7 @@ void PseudoOverlay::ShutdownOnUiThread() {
     lastOv_ = {};
     lastCol_ = 0;
     lastWarnVis_ = false;
+    recordingStopNotifyUntil_.store(0, std::memory_order_relaxed);
     lastWarnMsg_.clear();
     warnActive_ = false;
     warnVisible_ = false;
@@ -1604,6 +1617,12 @@ void PseudoOverlay::ShowScreenshotNotification(bool succeeded) {
     screenshotNotifyUntil_.store(GetTickCount64() + 2000ULL);
     PostRefresh();
 }
+
+void PseudoOverlay::ShowRecordingStoppedNotification() {
+    recordingStopNotifyUntil_.store(GetTickCount64() + 2000ULL);
+    PostRefresh();
+}
+
 bool PseudoOverlay::EnsureOverlayWindows() {
     if (hOv_ && hWarn_) {
         return true;

@@ -229,6 +229,7 @@ enum class OverlayNotificationType : uint32_t {
     None = 0,
     ScreenshotSaved = 1,
     ScreenshotFailed = 2,
+    RecordingStopped = 3,
 };
 
 enum class ScreenshotPixelFormat : uint32_t {

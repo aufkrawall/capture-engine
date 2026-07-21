@@ -24,6 +24,7 @@ struct OverlayVisibilityInputs {
     uint64_t nowMs = 0;
     uint64_t overloadWarnUntilMs = 0;      // 0 = no overload warning pending
     uint64_t screenshotNotifyUntilMs = 0;  // 0 = no screenshot notification pending
+    uint64_t recordingStopNotifyUntilMs = 0;  // 0 = no recording-stopped notification pending
 };
 
 enum class OverlayTextKind : uint8_t {
@@ -32,6 +33,7 @@ enum class OverlayTextKind : uint8_t {
     NotRecording,
     EncoderOverload,
     Screenshot,
+    RecordingStopped,
 };
 
 inline OverlayTextKind SelectPseudoOverlayText(const OverlayVisibilityInputs& in) {
@@ -40,6 +42,9 @@ inline OverlayTextKind SelectPseudoOverlayText(const OverlayVisibilityInputs& in
     }
     if (in.screenshotNotifyUntilMs != 0 && in.nowMs < in.screenshotNotifyUntilMs) {
         return OverlayTextKind::Screenshot;
+    }
+    if (in.recordingStopNotifyUntilMs != 0 && in.nowMs < in.recordingStopNotifyUntilMs) {
+        return OverlayTextKind::RecordingStopped;
     }
     if (in.showEncoderOverloadWarn && in.overloadWarnUntilMs != 0 && in.nowMs < in.overloadWarnUntilMs) {
         return OverlayTextKind::EncoderOverload;

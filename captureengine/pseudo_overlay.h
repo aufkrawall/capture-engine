@@ -47,6 +47,9 @@ public:
     // Show a brief screenshot result notification (2 seconds).
     void ShowScreenshotNotification(bool succeeded);
 
+    // Show a brief recording-stopped notification (2 seconds).
+    void ShowRecordingStoppedNotification();
+
     bool IsInitialized() const {
         return initialized_.load(std::memory_order_acquire);
     }
@@ -148,6 +151,7 @@ private:
     std::atomic<uint32_t> overloadWarnSustainFpsX100_{0};
     std::atomic<ULONGLONG> screenshotNotifyUntil_{0};
     std::atomic<bool> screenshotNotificationSucceeded_{true};
+    std::atomic<ULONGLONG> recordingStopNotifyUntil_{0};
     // Warning blink state
     bool warnActive_ = false;
     bool warnVisible_ = false;

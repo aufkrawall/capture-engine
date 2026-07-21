@@ -18,6 +18,7 @@ pov::OverlayVisibilityInputs Base() {
     in.nowMs = 100000;
     in.overloadWarnUntilMs = 0;
     in.screenshotNotifyUntilMs = 0;
+    in.recordingStopNotifyUntilMs = 0;
     return in;
 }
 
@@ -190,6 +191,55 @@ TEST(PseudoOverlayVisibilityTest, IdleAndLiveNotificationsRetainExistingPriority
 
 TEST(PseudoOverlayVisibilityTest, IdleNothingPendingIsInactive) {
     EXPECT_FALSE(pov::ShouldPseudoOverlayBeVisible(Base()));
+}
+
+// ---- Recording stopped notification ----
+
+TEST(PseudoOverlayVisibilityTest, RecordingStoppedNotificationShows) {
+    auto in = Base();
+    in.mode = 2;
+    in.recordingState = ce::recording_indicator::State::Idle;
+    in.recordingStopNotifyUntilMs = in.nowMs + 2000;
+    EXPECT_TRUE(pov::ShouldPseudoOverlayBeVisible(in));
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::RecordingStopped);
+}
+
+TEST(PseudoOverlayVisibilityTest, RecordingStoppedExpiredDoesNotShow) {
+    auto in = Base();
+    in.mode = 2;
+    in.recordingState = ce::recording_indicator::State::Idle;
+    in.recordingStopNotifyUntilMs = in.nowMs;  // not strictly < nowMs
+    EXPECT_FALSE(pov::ShouldPseudoOverlayBeVisible(in));
+
+    in.recordingStopNotifyUntilMs = in.nowMs - 1;  // expired
+    EXPECT_FALSE(pov::ShouldPseudoOverlayBeVisible(in));
+}
+
+TEST(PseudoOverlayVisibilityTest, RecordingStoppedPriorityBelowScreenshot) {
+    auto in = Base();
+    in.mode = 2;
+    in.recordingState = ce::recording_indicator::State::Idle;
+    in.recordingStopNotifyUntilMs = in.nowMs + 2000;
+    in.screenshotNotifyUntilMs = in.nowMs + 2000;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::Screenshot);
+}
+
+TEST(PseudoOverlayVisibilityTest, RecordingStoppedPriorityAboveOverload) {
+    auto in = Base();
+    in.mode = 2;
+    in.recordingState = ce::recording_indicator::State::Idle;
+    in.recordingStopNotifyUntilMs = in.nowMs + 2000;
+    in.overloadWarnUntilMs = in.nowMs + 5000;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::RecordingStopped);
+}
+
+TEST(PseudoOverlayVisibilityTest, RecordingStoppedPriorityAboveNotRecording) {
+    auto in = Base();
+    in.mode = 2;
+    in.recordingState = ce::recording_indicator::State::Idle;
+    in.recordingStopNotifyUntilMs = in.nowMs + 2000;
+    in.warnVisible = true;
+    EXPECT_EQ(pov::SelectPseudoOverlayText(in), pov::OverlayTextKind::RecordingStopped);
 }
 
 // ---- Ghost keepalive ----
