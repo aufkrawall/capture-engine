@@ -155,39 +155,15 @@ SystemMetricsCollector::~SystemMetricsCollector() {
 
     if (updateThread.joinable()) {
         if (!JoinThreadWithTimeout(updateThread, 1500, "SystemMetricsCollector::~SystemMetricsCollector")) {
-            // Thread didn't stop in time.  Since this is a static singleton destroyed
-            // at DLL unload, we must NOT free the PDH/DXGI resources while the thread
-            // is still using them.  Detach and skip resource cleanup — the OS will
-            // reclaim them on process exit.
             updateThread.detach();
-            return;
         }
     }
 
-    if (cpuQuery) {
-        PdhCloseQuery((PDH_HQUERY)cpuQuery);
-        cpuQuery = nullptr;
-    }
-    if (gpuQuery) {
-        PdhCloseQuery((PDH_HQUERY)gpuQuery);
-        gpuQuery = nullptr;
-    }
-    if (cachedAdapter) {
-        ((IUnknown*)cachedAdapter)->Release();
-        cachedAdapter = nullptr;
-    }
-    if (cachedFactory) {
-        ((IUnknown*)cachedFactory)->Release();
-        cachedFactory = nullptr;
-    }
-    if (pdhBuffer) {
-        free(pdhBuffer);
-        pdhBuffer = nullptr;
-    }
-    if (vramQuery) {
-        PdhCloseQuery((PDH_HQUERY)vramQuery);
-        vramQuery = nullptr;
-    }
+    // Do NOT release DXGI, PDH, or other DLL-bound resources here.
+    // This destructor runs during DLL_PROCESS_DETACH (static singleton),
+    // when dxgi.dll, pdh.dll etc. may already be partially torn down.
+    // Releasing them at this point can raise exceptions (e.g. DXGI 0x87A).
+    // The OS reclaims all resources on process exit.
 }
 
 void SystemMetricsCollector::Shutdown() {
