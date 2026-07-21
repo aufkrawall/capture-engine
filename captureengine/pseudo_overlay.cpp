@@ -233,7 +233,8 @@ HWND GetMainWindowForProcess(DWORD pid) {
 
 bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, ce::recording_indicator::State recordingState,
                             bool warnVisible,
-                            ULONGLONG overloadWarnUntil, ULONGLONG screenshotNotifyUntil, bool ghostActive) {
+                            ULONGLONG overloadWarnUntil, ULONGLONG screenshotNotifyUntil,
+                            ULONGLONG recordingStopNotifyUntil, bool ghostActive) {
     // Delegate to the pure, unit-tested policy helper. The helper gates the NOT-RECORDING
     // warning on the resolved idle state so it can never leak into pending or active recording (see
     // common/pseudo_overlay_visibility.h and tests/test_pseudo_overlay_visibility.cpp).
@@ -246,6 +247,7 @@ bool ShouldOverlayBeVisible(const PseudoOverlayConfig& config, ce::recording_ind
     in.nowMs = GetTickCount64();
     in.overloadWarnUntilMs = overloadWarnUntil;
     in.screenshotNotifyUntilMs = screenshotNotifyUntil;
+    in.recordingStopNotifyUntilMs = recordingStopNotifyUntil;
     return ce::pseudo_overlay::ShouldPseudoOverlayBeVisible(in);
 }
 }  // namespace
@@ -821,7 +823,8 @@ void PseudoOverlay::UpdateOverlay() {
     const bool ghostActive = config_.alwaysRender && (!config_.alwaysRenderOnlyWhenGame || IsForegroundTarget());
 
     const bool shouldHaveVisibleOverlay = ShouldOverlayBeVisible(
-        config_, recordingState, warnVisible_, overloadWarnUntil_.load(), screenshotNotifyUntil_.load(), ghostActive);
+        config_, recordingState, warnVisible_, overloadWarnUntil_.load(), screenshotNotifyUntil_.load(),
+        recordingStopNotifyUntil_.load(), ghostActive);
 
     LogDebug(
         "[PseudoOverlay] UpdateOverlay: mode=%d recordingState=%u isRecording=%d warnVisible=%d ghost=%d "
