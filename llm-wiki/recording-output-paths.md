@@ -1,12 +1,12 @@
 # Recording Output Paths
 
-Last cross-checked: 2026-07-19 (canonical Output config, cancellation-safe staged video publication, reserved audio-only ownership, and placeholder-free atomic screenshot publication)
+Last cross-checked: 2026-07-22 (video staging now uses container extension directly, allowing mid-recording playback)
 
 ## Summary
 
 All capture outputs use `ce::capture_output::ReservedCaptureOutput`:
 
-- Normal video recordings reserve at recording start and write through `VideoEncoder` to an unpublished same-directory `.part`; idle media initialization creates no output. The file receives its final extension only after valid mux finalization.
+- Normal video recordings reserve at recording start and write through `VideoEncoder` to an unpublished same-directory file with the final container extension (`.mkv`, `.mp4`, etc.); idle media initialization creates no output. The file receives its final collision-safe name after valid mux finalization.
 - Audio-only recordings reserve through `MediaEngine::InitAudioOnlyMuxer()` in `mediaengine/mediaengine.cpp`.
 - SDR PNG and HDR AVIF screenshots reserve and atomically publish through `captureengine/screenshot_encoding.cpp`.
 
@@ -17,7 +17,7 @@ All capture outputs use `ce::capture_output::ReservedCaptureOutput`:
 - Filenames contain UTC milliseconds, the writer PID, and an atomic process-local sequence. A collision adds a bounded retry suffix.
 - The destination is reserved with `CreateFileW(CREATE_NEW)`. Existing paths are never truncated, removed, or selected as the recording destination.
 - The reservation records the Windows volume/file identity. Failure cleanup deletes only a path that still has the reserved identity.
-- A video muxer opens only an identity-owned same-directory `.part` reservation. The container format is selected from configured metadata rather than the staging extension. After trailer and close succeed, publication additionally requires positive encoded duration and at least one successfully written video packet; only then does a collision-safe atomic rename expose the configured final extension. Warm-up cancellation, empty output, and finalize failure delete only the owned staging identity.
+- A video muxer opens only an identity-owned same-directory reservation with the container extension. The container format is selected from configured metadata rather than the staging filename. After trailer and close succeed, publication additionally requires positive encoded duration and at least one successfully written video packet; only then does a collision-safe atomic rename expose the final collision-safe name. Warm-up cancellation, empty output, and finalize failure delete only the owned staging identity.
 - An audio-only muxer retains the final-extension reservation model. Its reservation handle remains open without delete sharing for the writer lifetime; successful close/trailer publishes the file, while failure cleanup removes only the owned partial file.
 - A screenshot is fully encoded, flushed, and closed in a separately reserved `.part` file. Only then does `MoveFileExW(..., MOVEFILE_WRITE_THROUGH)` atomically give that same file a fresh final-extension name. No zero-byte `.png`/`.avif` placeholder is exposed during encoding, no existing file is replaced, and a destination collision is retried with a bounded suffix.
 - Video post-mux duration probing runs only after final atomic publication and uses the published filename. User-visible screenshot notification likewise occurs only after final atomic publication.
@@ -57,5 +57,5 @@ Limits:
 ## Open Questions / Stale-risk
 
 - Runtime validation with an actual elevated CE process writing to a persistent mapped network drive should confirm the log reports `source=registry_mapping` when the elevated token cannot see the live mapping.
-- A real hotkey stop during both inject and WGC/DXGI warm-up should confirm that no final recording and no lingering `.part` file remain; deterministic lifecycle and output-disposition tests cover the race and cleanup policy offline.
+- A real hotkey stop during both inject and WGC/DXGI warm-up should confirm that no final recording and no lingering staging file remain; deterministic lifecycle and output-disposition tests cover the race and cleanup policy offline.
 - Filesystem atomicity and identity semantics still depend on the destination filesystem implementing the corresponding Windows operations; network-share runtime validation remains useful.

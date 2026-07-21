@@ -1085,7 +1085,8 @@ static HANDLE NormalizeSourceHandleForWow64(HANDLE handle, uint32_t sourcePid) {
 static ce::capture_output::ReservedCaptureOutput ReserveOutputStagingFile(const VideoConfig& config) {
     const fs::path exeDir = ce::capture_output::GetExecutableDirectory();
     const fs::path outDir = ce::capture_output::ResolveCaptureDirectory(config.outputDir, exeDir);
-    auto reservation = ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_stage", L"part");
+    const std::wstring ext(config.container.begin(), config.container.end());
+    auto reservation = ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_stage", ext);
     if (reservation) {
         DLL_Log("[VideoEncoder] Reserved unpublished staging output: %s", reservation.Utf8Path().c_str());
     } else {
