@@ -96,9 +96,9 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
 
     LoadConfig(missingFile, config);
 
-    // The shipped config keeps useful debug logging without trace-only CSV noise.
+    // The shipped config now defaults to trace-level logging.
     EXPECT_TRUE(config.debugLogging);
-    EXPECT_EQ(config.logLevel, LogLevel::Debug);
+    EXPECT_EQ(config.logLevel, LogLevel::Trace);
     EXPECT_EQ(config.captureMethod, "auto");
     EXPECT_FALSE(config.wgcSkipSplitDeviceFlush);
     EXPECT_TRUE(config.wgcSameDeviceCapture);
@@ -233,7 +233,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("Use process_list only for extra processes"), std::string::npos);
     EXPECT_NE(generatedText.find("enabled=false\n"), std::string::npos);
     EXPECT_EQ(generatedText.find("perf_metrics_logging="), std::string::npos);
-    EXPECT_NE(generatedText.find("log_level=debug"), std::string::npos);
+    EXPECT_NE(generatedText.find("log_level=trace"), std::string::npos);
     EXPECT_EQ(generatedText.find("nvidia_smooth_motion_compat="), std::string::npos);
     EXPECT_NE(generatedText.find("\n[Capture]\n"), std::string::npos);
     EXPECT_NE(generatedText.find("\n[WGC]\n"), std::string::npos);

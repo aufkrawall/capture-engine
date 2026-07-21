@@ -51,7 +51,8 @@ wgc_allow_lossy_bgra8_pool=false
 ; folder for recordings and screenshots.
 output_dir=
 screenshot_dir=
-; mkv, mp4, or mov. MKV is the safest choice if recording is interrupted.
+; mkv, mp4, or mov. Only MKV is actively tested. MKV is also the safest choice
+; if recording is interrupted.
 container=mkv
 
 [Screenshot]
@@ -142,9 +143,9 @@ sharpness=100
 ; These are the shared encoding defaults for system audio, microphones, and app
 ; audio. Individual sources can override them.
 ; aac, alac, flac, opus, or pcm.
-codec=alac
+codec=aac
 ; Kbps. Lossless codecs ignore this value.
-bitrate=192
+bitrate=320
 ; default uses 48000 Hz. You can also enter a positive sample rate such as 44100,
 ; 48000, or 96000. Opus always uses 48000 Hz.
 sample_rate=default
@@ -193,11 +194,11 @@ track=2
 [Hotkeys]
 ; Combinations such as Ctrl+Shift+F10 are supported. Empty disables a hotkey,
 ; except start_stop, which falls back to F9 so recording always has a toggle.
-start_stop=F9
-toggle_fps=
-screenshot=
+start_stop=CTRL+9
+toggle_fps=CTRL+8
+screenshot=CTRL+0
 ; Starts or stops a recording that contains audio but no video.
-audio_only=
+audio_only=CTRL+Minus
 
 ; =============================================================================
 ; OPTIONAL FEATURES
@@ -396,7 +397,7 @@ mic_capture_latency_ms=0
 
 [Logging]
 ; off, error, warn, info, debug, or trace. trace also writes the most diagnostic data.
-log_level=debug
+log_level=trace
 ; Optional subfolder below logs for crash dumps. Empty puts dumps directly in logs.
 ; Absolute paths and .. are ignored here.
 crash_dump_dir=
@@ -516,3 +517,46 @@ dx12_focus_analysis=false
 ;process=DxgiOverlayGame.exe
 ;video_capture=dxgi_dup
 ;dll_injection=always
+;
+;
+; ANTI-CHEAT SAFETY — these examples contrast safe and unsafe configurations.
+;
+; SAFE: WGC capture, no injection. Works with most anti-cheat software.
+;[Profile.Safe WGC Example]
+;process=SafeGame.exe
+;video_capture=wgc
+;dll_injection=never
+;DesktopOverlay.enabled=true
+;DesktopOverlay.mode=2
+;
+; SAFE: DXGI Desktop Duplication, no injection. No DLL is loaded.
+;[Profile.Safe DXGI Example]
+;process=AnotherSafeGame.exe
+;video_capture=dxgi_dup
+;dll_injection=never
+;
+; UNSAFE: inject capture loads the DLL into the game process, which anti-cheat
+; software detects as code injection. Do NOT use with multiplayer or anti-cheat.
+;[Profile.Unsafe Inject Example]
+;process=UnsafeGame.exe
+;video_capture=inject
+; Never add dll_injection=never here — inject capture already requires injection.
+;
+; UNSAFE: inject overlay without inject capture. The DLL is loaded solely for
+; the overlay. Anti-cheat still sees the injected DLL in the process.
+;[Profile.Unsafe Overlay-Only Example]
+;process=OverlayOnlyGame.exe
+;video_capture=wgc
+;dll_injection=always
+; The injected overlay is now available even though video comes from WGC.
+;
+; UNSAFE: both inject capture AND inject overlay. Maximum anti-cheat risk.
+;[Profile.Unsafe Full Inject Example]
+;process=FullInjectGame.exe
+;video_capture=inject
+; dll_injection=always is redundant here — inject capture already implies it.
+;
+; SUMMARY
+;   Safe:   never + wgc/dxgi_dup        — no DLL loaded
+;   Unsafe: inject or always            — DLL loaded, anti-cheat trigger
+;   Double unsafe: inject + always      — redundant, still just one DLL load

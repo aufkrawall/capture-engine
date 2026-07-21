@@ -847,7 +847,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     const std::string canonicalLogLevelRaw = GetStr("Logging", "log_level", kMissingConfigValue);
     const bool hasCanonicalLogLevel = canonicalLogLevelRaw != kMissingConfigValue;
     const std::string logLevelRaw = hasCanonicalLogLevel ? canonicalLogLevelRaw : GetStr("General", "log_level", "");
-    config.logLevel = ParseLogLevelString(logLevelRaw, LogLevel::Debug);
+    config.logLevel = ParseLogLevelString(logLevelRaw, LogLevel::Trace);
 
     if (!hasCanonicalLogLevel) {
         const std::string debugLoggingRaw = GetStr("General", "debug_logging", "");
@@ -1640,8 +1640,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     sysAudio.enabled = GetBoolCompat("SystemAudio", "enabled", "Audio", "enabled", true);
     sysAudio.tracks = GetIntListCompat("SystemAudio", "track", "Audio", "track", 1);
     sysAudio.device = GetStrCompat("SystemAudio", "device", "Audio", "device", "");
-    sysAudio.codec = GetStrCompat("SystemAudio", "codec", "Audio", "codec", "alac");
-    sysAudio.bitrate = GetIntCompat("SystemAudio", "bitrate", "Audio", "bitrate", 192);
+    sysAudio.codec = GetStrCompat("SystemAudio", "codec", "Audio", "codec", "aac");
+    sysAudio.bitrate = GetIntCompat("SystemAudio", "bitrate", "Audio", "bitrate", 320);
     sysAudio.sampleRate = NormalizeSampleRate(
         GetStrCompat("SystemAudio", "sample_rate", "Audio", "sample_rate", "default"), "SystemAudio");
     sysAudio.bitDepth = GetStrCompat("SystemAudio", "bit_depth", "Audio", "bit_depth", "default");

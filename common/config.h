@@ -362,7 +362,7 @@ struct PseudoOverlayApplicationConfig {
 struct AppConfig {
     // General
     bool debugLogging = true;  // Legacy compatibility view: true when logLevel >= Debug
-    LogLevel logLevel = LogLevel::Debug;
+    LogLevel logLevel = LogLevel::Trace;
     std::string captureMethod;  // "inject", "wgc", "dxgi_dup", "auto", or profile-local "none"
     // auto_fullscreen_capture: backend for UNHOOKED fullscreen-like game
     // targets in auto mode. true ("dxgi_dup", default) captures the game's
@@ -543,7 +543,7 @@ inline std::string NormalizeConfigToken(std::string value) {
     return value;
 }
 
-inline LogLevel ParseLogLevelString(const std::string& rawValue, LogLevel defaultLevel = LogLevel::Debug) {
+inline LogLevel ParseLogLevelString(const std::string& rawValue, LogLevel defaultLevel = LogLevel::Trace) {
     const std::string value = NormalizeConfigToken(rawValue);
     if (value.empty()) {
         return defaultLevel;
