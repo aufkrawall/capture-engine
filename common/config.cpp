@@ -636,11 +636,12 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             legacyProfile ? kMissingProfileValue
                           : ReadLiteralIniValue(path, section, "video_capture", kMissingProfileValue);
         profile.videoCaptureExplicit = videoValue != kMissingProfileValue;
+        const bool videoCaptureImplicitlyEnabled =
+            profile.legacyInjectionSyntax ? profile.injectionMode != ApplicationInjectionMode::kNone
+                                          : profile.dllInjection != ApplicationDllInjection::kNever;
         const ApplicationVideoCapture compatibilityFallback =
-            (legacyProfile ||
-             (profile.legacyInjectionSyntax && profile.injectionMode != ApplicationInjectionMode::kNone))
-                ? ApplicationVideoCapture::kInherit
-                : ApplicationVideoCapture::kNone;
+            (legacyProfile || videoCaptureImplicitlyEnabled) ? ApplicationVideoCapture::kInherit
+                                                             : ApplicationVideoCapture::kNone;
         profile.videoCapture = profile.videoCaptureExplicit
                                    ? ParseApplicationVideoCapture(section, videoValue, compatibilityFallback)
                                    : compatibilityFallback;
