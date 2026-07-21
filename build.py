@@ -307,6 +307,26 @@ def pdb_path_for_binary(binary_path: str) -> str:
     return os.path.splitext(os.path.abspath(binary_path))[0].replace("\\", "/") + ".pdb"
 
 
+def _get_linux_cross_linker_info(compiler: str) -> str:
+    """Return a diagnostic string about the expected cross-linker on Linux."""
+    if not IS_LINUX:
+        return ""
+    try:
+        result = subprocess.run(
+            [compiler, "-print-prog-name=ld"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            linker_path = result.stdout.strip()
+            if os.path.isfile(linker_path):
+                return linker_path
+            else:
+                return f"not_found({linker_path})"
+        return ""
+    except Exception:
+        return ""
+
+
 def append_windows_pdb_linker_flag(ldflags: List[str], binary_path: str) -> None:
     if not IS_WINDOWS:
         return
@@ -4336,6 +4356,41 @@ def detect_clang_resource_dir(env: Dict[str, str], clang_exe: str) -> Optional[s
     return os.path.join(clang_lib_dir, versions[0]).replace("\\", "/")
 
 
+def _verify_cross_object(obj: str, compiler: str, src: str) -> None:
+    """On Linux, verify that a freshly compiled cross-object is PE/COFF as expected."""
+    if not IS_LINUX:
+        return
+    file_exe = shutil.which("file")
+    if not file_exe:
+        return
+    try:
+        result = subprocess.run(
+            [file_exe, "-b", obj],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            desc = result.stdout.strip()
+            if not desc:
+                return
+            if "PE" in desc or "COFF" in desc or "MS Windows" in desc:
+                return
+            if "ELF" in desc:
+                log(
+                    f"ERROR: Cross-compiled object is ELF, not PE/COFF: {obj}\n"
+                    f"       Compiler: {compiler}\n"
+                    f"       Source: {src}\n"
+                    f"       Detected: {desc}"
+                )
+            else:
+                log(
+                    f"WARNING: Cross-compiled object has unexpected type: {obj}\n"
+                    f"       Compiler: {compiler}\n"
+                    f"       Detected: {desc}"
+                )
+    except Exception as e:
+        log(f"WARNING: Could not verify object format for {obj}: {e}", detail=True)
+
+
 def compile_object(env: Dict[str, str], clang_exe: str, cflags: List[str], src: str, obj: str) -> bool:
     """Compile a single object file. Returns True if compiled, False if skipped."""
     dep_file = obj + ".d"
@@ -4377,6 +4432,10 @@ def compile_object(env: Dict[str, str], clang_exe: str, cflags: List[str], src: 
         cmd = [clang_exe] + compile_flags + ["-c", src, "-o", obj]
 
     run_command(cmd, env=env)
+
+    # Verify the compiled object file on Linux cross-compilation.
+    if IS_LINUX and os.path.exists(obj):
+        _verify_cross_object(obj, clang_exe, src)
 
     # Save compile signature after successful compilation.
     hash_file = obj + ".hash"
@@ -5862,6 +5921,16 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
 
         log(f"Building {desc}...", detail=True)
         compiled = compile_object(tenv, compiler, compile_flags, source, object_path)
+
+        # On Linux, log the cross-linker path for diagnostic purposes.
+        if IS_LINUX:
+            linker_info = _get_linux_cross_linker_info(compiler)
+            if linker_info and linker_info.startswith("not_found("):
+                log(
+                    f"WARNING: Cross-linker not found for {compiler} - reported: {linker_info}",
+                    detail=True,
+                )
+
         link_driver_flags = [
             flag
             for flag in compile_flags
