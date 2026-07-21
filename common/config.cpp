@@ -2061,6 +2061,10 @@ AppConfig::HotkeyConfig ParseHotkey(const std::string& val) {
         hk.vkey = VK_ADD;
     } else if (key == "SUBTRACT" || key == "NUMMINUS") {
         hk.vkey = VK_SUBTRACT;
+    } else if (key == "MINUS" || key == "DASH" || key == "HYPHEN") {
+        hk.vkey = VK_OEM_MINUS;   // physical - key (between 0 and =)
+    } else if (key == "PLUS" || key == "EQUALS") {
+        hk.vkey = VK_OEM_PLUS;    // physical = key (between - and Backspace)
     } else if (key == "DECIMAL" || key == "NUMDOT") {
         hk.vkey = VK_DECIMAL;
     } else if (key == "DIVIDE" || key == "NUMDIV") {

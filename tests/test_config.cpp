@@ -1081,6 +1081,123 @@ TEST(ConfigHelpersTest, MatchModeToString) {
     EXPECT_STREQ(MatchModeToString(MatchMode::kTitleType), "title_type");
 }
 
+TEST(ConfigHelpersTest, ParseHotkeyModifierAndKeyCombinations) {
+    // Basic function key
+    auto hk = ParseHotkey("F9");
+    EXPECT_EQ(hk.vkey, VK_F9);
+    EXPECT_FALSE(hk.ctrl);
+    EXPECT_FALSE(hk.shift);
+    EXPECT_FALSE(hk.alt);
+    EXPECT_FALSE(hk.win);
+
+    // Single modifier
+    hk = ParseHotkey("Ctrl+F9");
+    EXPECT_EQ(hk.vkey, VK_F9);
+    EXPECT_TRUE(hk.ctrl);
+    EXPECT_FALSE(hk.shift);
+
+    hk = ParseHotkey("Shift+F10");
+    EXPECT_EQ(hk.vkey, VK_F10);
+    EXPECT_TRUE(hk.shift);
+
+    hk = ParseHotkey("Alt+R");
+    EXPECT_EQ(hk.vkey, 'R');
+    EXPECT_TRUE(hk.alt);
+
+    hk = ParseHotkey("Win+Home");
+    EXPECT_EQ(hk.vkey, VK_HOME);
+    EXPECT_TRUE(hk.win);
+
+    // Multiple modifiers
+    hk = ParseHotkey("Ctrl+Shift+F9");
+    EXPECT_EQ(hk.vkey, VK_F9);
+    EXPECT_TRUE(hk.ctrl);
+    EXPECT_TRUE(hk.shift);
+    EXPECT_FALSE(hk.alt);
+
+    hk = ParseHotkey("Alt+Ctrl+Shift+F1");
+    EXPECT_EQ(hk.vkey, VK_F1);
+    EXPECT_TRUE(hk.alt);
+    EXPECT_TRUE(hk.ctrl);
+    EXPECT_TRUE(hk.shift);
+
+    // MINUS / DASH / HYPHEN aliases (physical - key, VK_OEM_MINUS)
+    hk = ParseHotkey("Ctrl+Minus");
+    EXPECT_EQ(hk.vkey, VK_OEM_MINUS);
+    EXPECT_TRUE(hk.ctrl);
+
+    hk = ParseHotkey("Alt+Shift+Dash");
+    EXPECT_EQ(hk.vkey, VK_OEM_MINUS);
+    EXPECT_TRUE(hk.alt);
+    EXPECT_TRUE(hk.shift);
+
+    hk = ParseHotkey("Ctrl+Win+Hyphen");
+    EXPECT_EQ(hk.vkey, VK_OEM_MINUS);
+    EXPECT_TRUE(hk.ctrl);
+    EXPECT_TRUE(hk.win);
+
+    // PLUS / EQUALS aliases (physical = key, VK_OEM_PLUS)
+    hk = ParseHotkey("Ctrl+Plus");
+    EXPECT_EQ(hk.vkey, VK_OEM_PLUS);
+    EXPECT_TRUE(hk.ctrl);
+
+    hk = ParseHotkey("Shift+Equals");
+    EXPECT_EQ(hk.vkey, VK_OEM_PLUS);
+    EXPECT_TRUE(hk.shift);
+
+    // Plain minus/plus without modifiers
+    hk = ParseHotkey("Minus");
+    EXPECT_EQ(hk.vkey, VK_OEM_MINUS);
+
+    hk = ParseHotkey("Plus");
+    EXPECT_EQ(hk.vkey, VK_OEM_PLUS);
+
+    // Arrow keys
+    hk = ParseHotkey("Alt+Right");
+    EXPECT_EQ(hk.vkey, VK_RIGHT);
+    EXPECT_TRUE(hk.alt);
+
+    hk = ParseHotkey("Ctrl+Shift+Left");
+    EXPECT_EQ(hk.vkey, VK_LEFT);
+    EXPECT_TRUE(hk.ctrl);
+    EXPECT_TRUE(hk.shift);
+
+    // Alphanumeric keys
+    hk = ParseHotkey("Ctrl+5");
+    EXPECT_EQ(hk.vkey, '5');
+    EXPECT_TRUE(hk.ctrl);
+
+    hk = ParseHotkey("Alt+Shift+A");
+    EXPECT_EQ(hk.vkey, 'A');
+    EXPECT_TRUE(hk.alt);
+    EXPECT_TRUE(hk.shift);
+
+    // Named keys
+    hk = ParseHotkey("Ctrl+Space");
+    EXPECT_EQ(hk.vkey, VK_SPACE);
+    EXPECT_TRUE(hk.ctrl);
+
+    hk = ParseHotkey("Alt+Enter");
+    EXPECT_EQ(hk.vkey, VK_RETURN);
+    EXPECT_TRUE(hk.alt);
+
+    // Windows/Control aliases
+    hk = ParseHotkey("Control+F1");
+    EXPECT_EQ(hk.vkey, VK_F1);
+    EXPECT_TRUE(hk.ctrl);
+
+    hk = ParseHotkey("Windows+F2");
+    EXPECT_EQ(hk.vkey, VK_F2);
+    EXPECT_TRUE(hk.win);
+
+    // Empty/unrecognized returns vkey=0
+    hk = ParseHotkey("");
+    EXPECT_EQ(hk.vkey, 0);
+
+    hk = ParseHotkey("UnknownKey");
+    EXPECT_EQ(hk.vkey, 0);
+}
+
 class WhitelistEntryTest : public ::testing::Test {
 protected:
     std::string tempConfigFile;
