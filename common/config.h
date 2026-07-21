@@ -320,11 +320,13 @@ enum class ApplicationInjectionMode : uint8_t {
 struct ApplicationProfile {
     std::string section;
     WhitelistEntry target;
+    std::string captureMonitor = "auto";
     ApplicationVideoCapture videoCapture = ApplicationVideoCapture::kNone;
     ApplicationVideoCapture resolvedVideoCapture = ApplicationVideoCapture::kNone;
     ApplicationDllInjection dllInjection = ApplicationDllInjection::kWhenNeeded;
     ApplicationInjectionMode injectionMode = ApplicationInjectionMode::kNone;
     bool videoCaptureExplicit = false;
+    bool captureMonitorExplicit = false;
     bool legacyInjectionSyntax = false;
     bool legacy = false;
 };
@@ -364,6 +366,8 @@ struct AppConfig {
     bool debugLogging = true;  // Legacy compatibility view: true when logLevel >= Debug
     LogLevel logLevel = LogLevel::Trace;
     std::string captureMethod;  // "inject", "wgc", "dxgi_dup", "auto", or profile-local "none"
+    // Monitor-scope capture selector: auto, primary, window, cursor, or id:<DisplayConfig monitor path>.
+    std::string captureMonitor = "auto";
     // auto_fullscreen_capture: backend for UNHOOKED fullscreen-like game
     // targets in auto mode. true ("dxgi_dup", default) captures the game's
     // monitor via DXGI duplication so the live hardware cursor plane is

@@ -1,5 +1,6 @@
 #include "config.h"
 #include "mip_mapping_policy.h"
+#include "monitor_selection.h"
 #include "config_resource.h"
 #include <windows.h>
 #include <algorithm>
@@ -636,15 +637,27 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             legacyProfile ? kMissingProfileValue
                           : ReadLiteralIniValue(path, section, "video_capture", kMissingProfileValue);
         profile.videoCaptureExplicit = videoValue != kMissingProfileValue;
-        const bool videoCaptureImplicitlyEnabled =
-            profile.legacyInjectionSyntax ? profile.injectionMode != ApplicationInjectionMode::kNone
-                                          : profile.dllInjection == ApplicationDllInjection::kAlways;
         const ApplicationVideoCapture compatibilityFallback =
-            (legacyProfile || videoCaptureImplicitlyEnabled) ? ApplicationVideoCapture::kInherit
+            (legacyProfile || profile.legacyInjectionSyntax) ? ApplicationVideoCapture::kInherit
                                                              : ApplicationVideoCapture::kNone;
         profile.videoCapture = profile.videoCaptureExplicit
                                    ? ParseApplicationVideoCapture(section, videoValue, compatibilityFallback)
                                    : compatibilityFallback;
+
+        std::string monitorValue = legacyProfile
+                                       ? kMissingProfileValue
+                                       : ReadLiteralIniValue(path, section, "Capture.monitor", kMissingProfileValue);
+        if (monitorValue == kMissingProfileValue && !legacyProfile)
+            monitorValue = ReadLiteralIniValue(path, section, "monitor", kMissingProfileValue);
+        profile.captureMonitorExplicit = monitorValue != kMissingProfileValue;
+        if (profile.captureMonitorExplicit) {
+            ce::monitor_selection::Selector monitorSelector;
+            if (!ce::monitor_selection::TryParseSelector(monitorValue, monitorSelector)) {
+                LogInvalidConfigBoundary(section.c_str(), "monitor", monitorValue, "auto");
+            } else {
+                profile.captureMonitor = monitorSelector.canonical;
+            }
+        }
 
         auto duplicate = std::find_if(config.applicationProfiles.begin(), config.applicationProfiles.end(),
                                       [&](const ApplicationProfile& existing) {
@@ -866,10 +879,29 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     if (globalCaptureMethod == kMissingLiteralValue)
         globalCaptureMethod = ReadLiteralIniValue(path, "General", "capture_method", "auto");
     globalCaptureMethod = NormalizeCaptureMethod(globalCaptureMethod);
+    std::string globalCaptureMonitor = ReadLiteralIniValue(path, "Capture", "monitor", "auto");
+    {
+        ce::monitor_selection::Selector monitorSelector;
+        globalCaptureMonitor = ce::monitor_selection::TryParseSelector(globalCaptureMonitor, monitorSelector)
+                                   ? monitorSelector.canonical
+                                   : "auto";
+    }
 
     config.captureMethod =
         NormalizeCaptureMethod(GetStrCompat("Capture", "capture_method", "General", "capture_method", "auto"));
+    {
+        const std::string monitorValue = GetStr("Capture", "monitor", "auto");
+        ce::monitor_selection::Selector monitorSelector;
+        if (!ce::monitor_selection::TryParseSelector(monitorValue, monitorSelector)) {
+            LogInvalidConfigBoundary("Capture", "monitor", monitorValue, "auto");
+            config.captureMonitor = "auto";
+        } else {
+            config.captureMonitor = monitorSelector.canonical;
+        }
+    }
     for (ApplicationProfile& profile : config.applicationProfiles) {
+        if (!profile.captureMonitorExplicit)
+            profile.captureMonitor = globalCaptureMonitor;
         std::string profileCaptureMethod = globalCaptureMethod;
         std::string profileOverride =
             ReadLiteralIniValue(path, profile.section, "Capture.capture_method", kMissingLiteralValue);

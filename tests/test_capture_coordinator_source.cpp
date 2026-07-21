@@ -192,6 +192,26 @@ TEST(CaptureCoordinatorSourceTest, AutoInjectFallbackNeverDefaultsToAnUnresolved
               std::string::npos);
 }
 
+TEST(CaptureCoordinatorSourceTest, MonitorSelectionIsStableAndNeverFallsBackAcrossDisplays) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t monitorPrime = source.find("auto primeWgcMonitorTarget");
+    const size_t configuredPrime = source.find("auto primeConfiguredMonitorTarget", monitorPrime);
+    ASSERT_NE(monitorPrime, std::string::npos);
+    ASSERT_NE(configuredPrime, std::string::npos);
+    const std::string monitorPrimeBody = source.substr(monitorPrime, configuredPrime - monitorPrime);
+    EXPECT_NE(monitorPrimeBody.find("capture->InitForMonitor(d3dDevice, targetMonitor)"), std::string::npos);
+    EXPECT_EQ(source.find("capture->Init(d3dDevice)"), std::string::npos);
+    EXPECT_NE(monitorPrimeBody.find("refusing cross-monitor fallback"), std::string::npos);
+
+    EXPECT_NE(source.find("currentCapturedMonitorStableId"), std::string::npos);
+    EXPECT_NE(source.find("\"id:\" + currentCapturedMonitorStableId"), std::string::npos);
+    EXPECT_NE(source.find("discardCurrentWgcTarget(\"explicit monitor unavailable\")"), std::string::npos);
+    EXPECT_NE(source.find("refusing fallback to "), std::string::npos);
+    EXPECT_NE(source.find("another display"), std::string::npos);
+}
+
 TEST(CaptureCoordinatorSourceTest, WorkerTimeoutNeverDetachesAcrossLiveResources) {
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());

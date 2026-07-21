@@ -347,6 +347,47 @@ TEST_F(ConfigOverrideTest, LaterOverlappingNamedProfileWinsDeterministically) {
     EXPECT_EQ(config.video.fps, 81);
 }
 
+TEST_F(ConfigOverrideTest, MonitorSelectionSupportsGlobalAndProfileOverrides) {
+    WriteConfig(
+        "[Capture]\n"
+        "capture_method=dxgi_dup\n"
+        "monitor=primary\n"
+        "[Profile.Game]\n"
+        "process=game.exe\n"
+        "video_capture=dxgi_dup\n"
+        "monitor=window\n"
+        "[Profile.Stable]\n"
+        "process=stable.exe\n"
+        "video_capture=dxgi_dup\n"
+        "Capture.monitor=id:\\\\?\\DISPLAY#STABLE#{monitor-guid}\n"
+        "[Profile.Inherited Monitor]\n"
+        "process=inherited.exe\n"
+        "video_capture=dxgi_dup\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config, "other.exe");
+    EXPECT_EQ(config.captureMonitor, "primary");
+
+    LoadConfig(tempConfigFile, config, "game.exe");
+    EXPECT_EQ(config.captureMonitor, "window");
+    const auto gameProfile = std::find_if(config.applicationProfiles.begin(), config.applicationProfiles.end(),
+                                          [](const ApplicationProfile& profile) {
+                                              return profile.section == "Profile.Game";
+                                          });
+    ASSERT_NE(gameProfile, config.applicationProfiles.end());
+    EXPECT_TRUE(gameProfile->captureMonitorExplicit);
+    EXPECT_EQ(gameProfile->captureMonitor, "window");
+    const auto inheritedProfile =
+        std::find_if(config.applicationProfiles.begin(), config.applicationProfiles.end(),
+                     [](const ApplicationProfile& profile) { return profile.section == "Profile.Inherited Monitor"; });
+    ASSERT_NE(inheritedProfile, config.applicationProfiles.end());
+    EXPECT_FALSE(inheritedProfile->captureMonitorExplicit);
+    EXPECT_EQ(inheritedProfile->captureMonitor, "primary");
+
+    LoadConfig(tempConfigFile, config, "stable.exe");
+    EXPECT_EQ(config.captureMonitor, "id:\\\\?\\DISPLAY#STABLE#{monitor-guid}");
+}
+
 TEST_F(ConfigOverrideTest, LegacyProfileInjectionKeyRemainsSupported) {
     WriteConfig(
         "[Profile.1]\n"

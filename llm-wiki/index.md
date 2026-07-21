@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-19 (atomic pre-live recording cancellation and content-gated video publication; presentation-contract-aware inject HDR/SDR video, screenshots, and all primary/secondary DX12 overlay routes; opaque whole-frame forced-SDR preparation; crash-safe exactly-once DXGI color-space tracking without shared-vtable slot 38 interception; HDR10 Rec.709-to-Rec.2020 overlay conversion and Windows SDR-white calibration; live-validated driver-independent Windows-HDR FP16 scRGB-to-P010 and Windows-SDR-white-calibrated HDR-to-SDR video; low-latency native-HDR/forced-SDR screenshots with placeholder-free publication and explicit result notifications; and the existing current build/graphics/audio/security state; see recording-output-paths.md, cfr-capture-sync.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-21 (stable fail-closed monitor selection plus the existing current build, capture, graphics, audio, screenshot, and security state; see configuration.md, wgc-capture.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -31,7 +31,7 @@ Primary sources:
 
 ## Content Catalog
 - `configuration.md`
-  - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, unlimited named application profiles with separate video-source and DLL-injection policies, window/audio/DesktopOverlay/override routing, validation rules, and maintenance invariants. Last verified 2026-07-19.
+  - Resource-backed first-run template, task-oriented canonical sections and legacy aliases, stable fail-closed monitor selection, unlimited named application profiles with separate video-source and DLL-injection policies, window/audio/DesktopOverlay/override routing, validation rules, and maintenance invariants. Last verified 2026-07-21.
 - `overlay-rendering.md`
   - Shared overlay layout/graph/font invariants, DXGI/Vulkan presentation-color contracts including secondary DX12 renderer synchronization, HDR10 gamut/transfer and per-monitor paper-white rules, runtime-owned FG UI transitions, exact-ABI telemetry, legacy cache/state isolation, DirectDraw/PQ-alpha performance boundaries, and runtime-validation stale-risk. Last verified 2026-07-19.
 - `handoff-dx12-32bit-crash.md`
@@ -77,7 +77,7 @@ Primary sources:
 - `multi-audio-capture.md`
   - Multi system/microphone/app capture, including encoder-latency-independent inject CFR source-clock targets, rate-limited worker scheduling evidence, process-loopback protocol 4 descriptor/byte rings with private lifecycle state and transactional cursors, immutable safe producer-format normalization, evidence-complete fatal transport propagation, preserved startup markers, ordered close-before-reactivation, polling-first activation, render-session recovery, private disposable CaptureEngine worker isolation/recycle, the 60 ms CFR ingestion reservoir, exact finalization, and route-local compensation. Last verified 2026-07-18. Stale-risk: medium (fresh device/runtime validation remains necessary).
 - `wgc-capture.md`
-  - WGC and DXGI Desktop Duplication backends, including driver-independent FP16 scRGB-to-HDR10/P010 plane conversion, explicit Windows-SDR-white-calibrated HDR-to-SDR output, source/output HDR policy, canonical WGC/Diagnostics config locations, the max-rate variable-input CFR producer invariant, callback-rate aging, callback epochs, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and crash-safe straight-alpha point-sampled single-stream DPI/HDR cursor composition. Last verified 2026-07-19. Stale-risk: medium.
+  - WGC and DXGI Desktop Duplication backends, including stable single-monitor selection/fail-closed retargeting, driver-independent FP16 scRGB-to-HDR10/P010 plane conversion, explicit Windows-SDR-white-calibrated HDR-to-SDR output, source/output HDR policy, the max-rate variable-input CFR producer invariant, transactional handoff, FP16/R10 3 GB reservoir, startup prewarm, video-memory telemetry, OOM-only fallback, and crash-safe straight-alpha point-sampled single-stream DPI/HDR cursor composition. Last verified 2026-07-21. Stale-risk: medium.
 - `cfr-capture-sync.md`
   - Shared WGC/DXGI/inject CFR and A/V invariants, including atomic warm-up cancellation, capture-sync/CFR selection phase preservation with varying-cadence fallback, contiguous screen-grab packet PTS under overload, packet-only video validation, encoder-latency-independent inject audio targeting, max-rate variable-input WGC production, transactional startup, 60 ms audio-ingestion look-ahead, 300 ms WGC/DXGI look-ahead, nearest monotonic source selection, causal inject transport, convergent per-output overload recovery, and exact decoded stop/tail accounting. Last verified 2026-07-19. Stale-risk: medium.
 - `nvenc-encoding.md`

@@ -100,6 +100,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_TRUE(config.debugLogging);
     EXPECT_EQ(config.logLevel, LogLevel::Trace);
     EXPECT_EQ(config.captureMethod, "auto");
+    EXPECT_EQ(config.captureMonitor, "auto");
     EXPECT_FALSE(config.wgcSkipSplitDeviceFlush);
     EXPECT_TRUE(config.wgcSameDeviceCapture);
     EXPECT_TRUE(config.wgcSmoothnessBufferEnabled);
@@ -144,6 +145,8 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("wgc_skip_split_device_flush=false"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_same_device_capture=true"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_enabled=true"), std::string::npos);
+    EXPECT_NE(generatedText.find("monitor=auto"), std::string::npos);
+    EXPECT_NE(generatedText.find("CaptureEngine.exe --list-monitors"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_max_ms=300"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_vram_budget_mb=3000"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_video_memory_reservation=off"), std::string::npos);
@@ -172,6 +175,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     ASSERT_NE(profileExample, std::string::npos);
     EXPECT_GT(profileExample, diagnosticsSection);
     EXPECT_NE(generatedText.find(";video_capture=inherit", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";monitor=window", profileExample), std::string::npos);
     EXPECT_EQ(generatedText.find(";video_capture=global", profileExample), std::string::npos);
     const size_t practicalProfileExample = generatedText.find(";[Profile.hots]", profileExample);
     ASSERT_NE(practicalProfileExample, std::string::npos);
@@ -608,6 +612,25 @@ TEST_F(ConfigTest, AutoFullscreenCaptureBackendOption) {
         LoadConfig(tempConfigFile, config);
         EXPECT_TRUE(config.autoFullscreenPrefersDxgiDup);
     }
+}
+
+TEST_F(ConfigTest, MonitorSelectorParsesAndInvalidValuesFailToAuto) {
+    WriteConfig("[Capture]\nmonitor=cursor\n");
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.captureMonitor, "cursor");
+
+    WriteConfig("[Capture]\nmonitor=id:\\\\?\\DISPLAY#ACME123#{monitor-guid}\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.captureMonitor, "id:\\\\?\\DISPLAY#ACME123#{monitor-guid}");
+
+    WriteConfig("[Capture]\nmonitor=id:\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.captureMonitor, "auto");
+
+    WriteConfig("[Capture]\nmonitor=display-2\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.captureMonitor, "auto");
 }
 
 TEST_F(ConfigTest, CaptureMethodPredicateFamilies) {

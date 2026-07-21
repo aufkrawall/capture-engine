@@ -1,15 +1,18 @@
 # Configuration
 
-Last cross-checked: 2026-07-19
+Last cross-checked: 2026-07-21
 
 Primary sources:
 - `captureengine/config.ini.template`
 - `captureengine/captureengine.rc`
 - `common/config_resource.h`
 - `common/config.{h,cpp}`
+- `common/monitor_selection.{h,cpp}`
 - `captureengine/media_main.cpp`
 - `tests/config_template.rc`
 - `tests/test_config.cpp`
+- `tests/test_config_override.cpp`
+- `tests/test_monitor_selection.cpp`
 - `testapp/run_tests.py`
 
 ## Summary
@@ -42,6 +45,7 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 ## Important user-facing semantics
 
 - `capture_method` selects the global video acquisition policy, not whether a process is injected. A profile can therefore request WGC/DXGI video with `dll_injection=always` for the injected overlay and graphics overrides; hook-side video publication stays disabled while the screen-grab backend is active.
+- `[Capture] monitor=auto|primary|window|cursor|id:<stable-id>` selects the physical display for monitor-scope WGC/DXGI capture. `auto` resolves the known target window first, then an eligible foreground window, then the Windows primary display. `window` requires a matched target window; `cursor` is resolved once when recording starts. `CaptureEngine.exe --list-monitors` prints copyable DisplayConfig-backed IDs. A profile may use bare `monitor=` or `Capture.monitor=`. Explicit selectors fail closed if unavailable and never redirect capture to another display; DXGI may still fall back to WGC for the same resolved monitor. One recording has one monitor source; arbitrary multi-monitor compositing is not implemented.
 - Use qualified keys such as `Video.encoder` or `Graphics.vsync_mode` in `[Profile.*]`. Profile-local app audio uses the unambiguous `audio_enabled`, `audio_track`, `audio_codec`, `audio_bitrate`, `audio_sample_rate`, `audio_bit_depth`, `audio_downmix`, and `audio_capture_latency_ms` keys. Named profiles and their app-audio sources are not capped at eight. A numeric profile with `audio_enabled` still shadows the same-numbered legacy `[AppAudio.N]`; bare override keys remain compatible but can be ambiguous because several sections use names such as `enabled`, `bitrate`, or `track`.
 - Process-backed profiles can override every `[DesktopOverlay]` setting with qualified keys. While idle, the controller-side overlay follows the foreground profile. Once a video/audio recording starts it pins that profile so Alt+Tab does not change the indicator's mode, position, or appearance midway through the session; an actual injected-video source PID supersedes the provisional foreground selection.
 - Every process-backed application profile with a video route is automatically a `NOT RECORDING` warning target. `[DesktopOverlay] process_list` is now a global compatibility fallback for older configs and extra unprofiled processes; it is not needed beside a video profile. Profiles with `video_capture=none` do not become warning targets merely because they configure app audio.

@@ -29,6 +29,7 @@
 #include "../common/frame_queue.h"
 #include "../common/frame_timing_utils.h"
 #include "../common/logging.h"
+#include "../common/monitor_selection.h"
 #include "../common/process_ipc.h"
 #include "../common/rate_window_utils.h"
 #include "../common/recording_lifecycle.h"
@@ -627,6 +628,7 @@ bool MediaVideoConfigEquals(const VideoConfig& lhs, const VideoConfig& rhs) {
 
 bool MediaEngineConfigEquals(const AppConfig& lhs, const AppConfig& rhs) {
     if (lhs.logLevel != rhs.logLevel || lhs.captureMethod != rhs.captureMethod ||
+        lhs.captureMonitor != rhs.captureMonitor ||
         lhs.autoFullscreenPrefersDxgiDup != rhs.autoFullscreenPrefersDxgiDup ||
         lhs.wgcSkipSplitDeviceFlush != rhs.wgcSkipSplitDeviceFlush ||
         lhs.wgcSameDeviceCapture != rhs.wgcSameDeviceCapture ||
@@ -1667,6 +1669,13 @@ static const ApplicationProfile* FindApplicationProfileForProcess(const AppConfi
     return nullptr;
 }
 
+static const ApplicationProfile* FindApplicationProfileForTarget(const AppConfig& config,
+                                                                 const WhitelistEntry& target) {
+    auto found = std::find_if(config.applicationProfiles.begin(), config.applicationProfiles.end(),
+                              [&](const ApplicationProfile& profile) { return profile.target == target; });
+    return found == config.applicationProfiles.end() ? nullptr : &*found;
+}
+
 static int64_t RectArea(const RECT& rect) {
     const int64_t width = std::max<LONG>(0, rect.right - rect.left);
     const int64_t height = std::max<LONG>(0, rect.bottom - rect.top);
@@ -1675,7 +1684,8 @@ static int64_t RectArea(const RECT& rect) {
 
 static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, int* selectedScore = nullptr,
                                   bool requireExactProcessNames = false, uint32_t* selectedPid = nullptr,
-                                  std::string* selectedProcessName = nullptr) {
+                                  std::string* selectedProcessName = nullptr,
+                                  WhitelistEntry* selectedTarget = nullptr) {
     struct WgcSearchContext {
         const std::vector<WhitelistEntry>* targets;
         HWND result;
@@ -1686,6 +1696,8 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, in
         bool requireExactProcessNames;
         uint32_t bestPid;
         std::string bestProcessName;
+        WhitelistEntry bestTarget;
+        bool hasBestTarget;
     };
 
     HWND foregroundRoot = GetForegroundWindow();
@@ -1697,7 +1709,7 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, in
     }
 
     WgcSearchContext ctx = {&targets, NULL, foregroundRoot, 0, 0, std::numeric_limits<int>::min(),
-                            requireExactProcessNames, 0, {}};
+                            requireExactProcessNames, 0, {}, {}, false};
     EnumWindows(
         [](HWND hwnd, LPARAM lParam) -> BOOL {
             WgcSearchContext* context = (WgcSearchContext*)lParam;
@@ -1791,6 +1803,8 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, in
                         context->bestScore = score;
                         context->bestPid = pid;
                         context->bestProcessName = procName;
+                        context->bestTarget = entry;
+                        context->hasBestTarget = true;
                     }
                     break;
                 }
@@ -1815,6 +1829,8 @@ static HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, in
         *selectedPid = ctx.result ? ctx.bestPid : 0;
     if (selectedProcessName)
         *selectedProcessName = ctx.result ? ctx.bestProcessName : std::string{};
+    if (selectedTarget)
+        *selectedTarget = ctx.hasBestTarget ? ctx.bestTarget : WhitelistEntry{};
 
     return ctx.result;
 }
@@ -12003,25 +12019,10 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             ApplyMediaGpuSchedulingPriorityForDevice(config, d3dDevice);
             d3dDevice->GetImmediateContext(&d3dContext);
 
-            if (WGCCapture::IsSupported()) {
-                auto capture = std::make_shared<WGCCapture>();
-                applyWgcOptions(capture.get());
-                if (capture->Init(d3dDevice)) {
-                    // Connect encoder bottleneck flag to WGC for throttle
-                    capture->SetThrottleFlag(nullptr);
-                    PublishWgcCapture(std::move(capture), "initial WGC setup");
-                    LogInfo("[Media] WGC support initialized%s",
-                            IsPreferredScreenGrab() ? "" : " (standby for auto fallback)");
-                } else {
-                    if (IsPreferredScreenGrab()) {
-                        LogError("[Media] WGC capture init failed");
-                        unloadMediaEngineIdle();
-                        return 1;
-                    } else {
-                        LogInfo("[Media] WGC init failed - inject mode only");
-                    }
-                }
-            }
+            // Do not create a default-primary WGC item here. Target resolution
+            // belongs to the recording route below so stale/eager setup can
+            // never become an unintended cross-monitor source.
+            LogInfo("[Media] Screen-grab device ready; capture target initialization deferred until routing");
         }
     }
 
@@ -12068,6 +12069,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
     DWORD lastEarlyWgcScan = 0;
     DWORD lastWindowScanTime = 0;
     HWND currentCapturedWindow = NULL;
+    std::string currentCapturedMonitorStableId;
     bool currentTargetPrefersInject = false;
     WgcRetargetRequest pendingWgcRetarget;
     uint32_t lastSourcePid = 0;
@@ -12080,8 +12082,14 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
     auto clearCurrentWgcTarget = [&]() {
         currentCapturedWindow = NULL;
+        currentCapturedMonitorStableId.clear();
         currentTargetPrefersInject = false;
         pendingWgcRetarget = {};
+    };
+
+    auto discardCurrentWgcTarget = [&](const char* reason) {
+        PublishWgcCapture(nullptr, reason);
+        clearCurrentWgcTarget();
     };
 
     auto queueWgcRetarget = [&](HWND targetWindow, HMONITOR targetMonitor, bool preferMonitor, const char* reason) {
@@ -12193,6 +12201,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
 
         currentCapturedWindow = targetWindow;
+        currentCapturedMonitorStableId.clear();
         currentTargetPrefersInject = true;
         SetPreferredScreenGrab(false);
         LogInfo("[Media] %s: hooked fullscreen-like window 0x%p will use inject capture instead of WGC", reason,
@@ -12200,8 +12209,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         return true;
     };
 
-    auto primeWgcMonitorTarget = [&](HMONITOR targetMonitor = NULL) -> bool {
-        if (isExplicitInjectConfig()) {
+    auto primeWgcMonitorTarget = [&](HMONITOR targetMonitor) -> bool {
+        if (isExplicitInjectConfig() || !targetMonitor) {
             return false;
         }
 
@@ -12214,8 +12223,13 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
         {
             const auto existingCapture = g_WgcCap.Read();
-            if (targetMonitor == NULL && currentCapturedWindow == NULL && !currentTargetPrefersInject &&
-                existingCapture && existingCapture->IsUsingDesktopDuplication() == preferDuplication) {
+            HWND existingWindow = NULL;
+            HMONITOR existingMonitor = NULL;
+            if (existingCapture)
+                existingCapture->GetTargetIdentity(&existingWindow, &existingMonitor);
+            if (targetMonitor == existingMonitor && existingWindow == NULL && currentCapturedWindow == NULL &&
+                !currentTargetPrefersInject && existingCapture &&
+                existingCapture->IsUsingDesktopDuplication() == preferDuplication) {
                 applyWgcOptions(existingCapture.get());
                 existingCapture->SetCaptureCursor(
                     ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
@@ -12247,11 +12261,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         if (!initOk && targetMonitor) {
             initOk = capture->InitForMonitor(d3dDevice, targetMonitor);
             if (!initOk) {
-                LogWarn("[Media] Failed to init WGC for monitor 0x%p, falling back to primary", targetMonitor);
+                LogWarn("[Media] Failed to init WGC for selected monitor 0x%p; refusing cross-monitor fallback",
+                        targetMonitor);
             }
-        }
-        if (!initOk) {
-            initOk = capture->Init(d3dDevice);
         }
         if (!initOk) {
             return false;
@@ -12266,45 +12278,81 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         return true;
     };
 
+    auto primeConfiguredMonitorTarget = [&](HWND targetWindow, HMONITOR targetHint, const std::string& selectorText,
+                                            const char* context) -> bool {
+        ce::monitor_selection::Selector selector;
+        if (!ce::monitor_selection::TryParseSelector(selectorText, selector)) {
+            LogError("[CaptureTarget] invalid normalized monitor selector '%s' (%s)", selectorText.c_str(), context);
+            return false;
+        }
+
+        HWND foregroundWindow = NULL;
+        if (selector.kind == ce::monitor_selection::SelectorKind::kAuto) {
+            const ForegroundWgcWindowCandidate foreground = GetForegroundWgcWindowCandidate();
+            if (foreground.usable)
+                foregroundWindow = foreground.hwnd;
+        }
+
+        ce::monitor_selection::ResolveRequest request;
+        request.selector = selector;
+        request.targetWindow = targetWindow;
+        request.hint = targetHint;
+        request.foregroundWindow = foregroundWindow;
+        const ce::monitor_selection::ResolveResult resolved = ce::monitor_selection::Resolve(request);
+        if (!resolved) {
+            LogError(
+                "[CaptureTarget] monitor resolution failed: selector=%s context=%s error=%s; refusing fallback to "
+                "another display",
+                selector.canonical.c_str(), context, resolved.error.c_str());
+            return false;
+        }
+
+        const ce::monitor_selection::MonitorDescriptor& monitor = resolved.descriptor;
+        LogInfo(
+            "[CaptureTarget] resolved selector=%s reason=%s context=%s monitor=0x%p id=%s device=%s name=%s "
+            "bounds=(%ld,%ld)-(%ld,%ld) primary=%d adapter=%08X:%08X source=%u target=%u",
+            selector.canonical.c_str(), resolved.reason.c_str(), context, resolved.monitor, monitor.stableId.c_str(),
+            monitor.deviceName.c_str(), monitor.friendlyName.c_str(), monitor.desktopRect.left, monitor.desktopRect.top,
+            monitor.desktopRect.right, monitor.desktopRect.bottom, monitor.primary ? 1 : 0,
+            static_cast<uint32_t>(monitor.adapterLuid.HighPart), monitor.adapterLuid.LowPart, monitor.sourceId,
+            monitor.targetId);
+        if (!primeWgcMonitorTarget(resolved.monitor))
+            return false;
+        currentCapturedMonitorStableId = monitor.stableId;
+        return true;
+    };
+
+    auto primePinnedMonitorTarget = [&](HMONITOR previousMonitor, const char* context) -> bool {
+        if (!currentCapturedMonitorStableId.empty()) {
+            return primeConfiguredMonitorTarget(NULL, NULL, "id:" + currentCapturedMonitorStableId, context);
+        }
+        return primeConfiguredMonitorTarget(NULL, previousMonitor, "auto", context);
+    };
+
+    auto monitorSelectorIsExplicit = [](const std::string& selectorText) {
+        ce::monitor_selection::Selector selector;
+        return ce::monitor_selection::TryParseSelector(selectorText, selector) &&
+               ce::monitor_selection::IsExplicitSelector(selector);
+    };
+
     // Fullscreen-game duplication priming: capture the MONITOR that hosts the
-    // game window through DXGI duplication so the live hardware cursor plane
+    // game window through monitor-scope capture so the live hardware cursor plane
     // is preserved (WGC sessions demote the cursor to DWM-composed rendering;
-    // see wgc-capture.md). Caller falls back to WGC window capture on failure
-    // (cross-adapter or rotated output).
-    auto primeDxgiDupForWindowMonitor = [&](HWND targetWindow, const char* reason) -> bool {
+    // see wgc-capture.md). A duplication failure may use WGC for the same
+    // resolved monitor, but never a different display.
+    auto primeDxgiDupForWindowMonitor = [&](HWND targetWindow, const std::string& selectorText,
+                                            const char* reason) -> bool {
         if (isExplicitInjectConfig() || !targetWindow) {
             return false;
         }
-
-        HMONITOR targetMonitor = MonitorFromWindow(targetWindow, MONITOR_DEFAULTTONEAREST);
-        if (!targetMonitor) {
+        if (!primeConfiguredMonitorTarget(targetWindow, NULL, selectorText, reason))
             return false;
-        }
 
-        if (!ensureWgcDevice()) {
-            return false;
-        }
-
-        auto capture = std::make_shared<WGCCapture>();
-        applyWgcOptions(capture.get());
-        if (!capture->InitForMonitorDuplication(d3dDevice, targetMonitor)) {
-            LogWarn(
-                "[Media] DXGI duplication unavailable for fullscreen target's monitor "
-                "(%s hwnd=0x%p hmon=0x%p); using WGC window capture instead",
-                reason, targetWindow, targetMonitor);
-            return false;
-        }
-
-        capture->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
-        capture->SetThrottleFlag(nullptr);
-        PublishWgcCapture(std::move(capture), "fullscreen duplication retarget");
-        SetPreferredScreenGrab(true);
-        currentCapturedWindow = NULL;
-        currentTargetPrefersInject = false;
+        const auto capture = g_WgcCap.Read();
+        const bool usingDuplication = capture && capture->IsUsingDesktopDuplication();
         LogInfo(
-            "[Media] Auto mode: fullscreen game target captured via DXGI duplication of its monitor "
-            "(hardware cursor preserved) (%s hwnd=0x%p hmon=0x%p)",
-            reason, targetWindow, targetMonitor);
+            "[Media] Fullscreen game target captured from its selected monitor via %s (%s hwnd=0x%p)",
+            usingDuplication ? "DXGI duplication" : "same-monitor WGC fallback", reason, targetWindow);
         return true;
     };
 
@@ -12342,6 +12390,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             PublishWgcCapture(std::move(capture), "window retarget");
             SetPreferredScreenGrab(true);
             currentCapturedWindow = targetWindow;
+            currentCapturedMonitorStableId.clear();
             currentTargetPrefersInject = false;
             if (logPrimed) {
                 LogInfo("[Media] WGC target primed for window 0x%p", targetWindow);
@@ -12357,9 +12406,9 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         }
 
         LogWarn("[Media] Falling back to WGC monitor capture after window init failure");
-        if (!primeWgcMonitorTarget()) {
+        if (!primeConfiguredMonitorTarget(targetWindow, NULL, config.captureMonitor, "WGC window fallback")) {
             setWgcPreferenceAfterFailure();
-            clearCurrentWgcTarget();
+            discardCurrentWgcTarget("WGC window monitor fallback unavailable");
             return false;
         }
         return true;
@@ -12376,6 +12425,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         const bool restartActiveCapture = g_Recording && IsActiveScreenGrab();
         const auto previousCapture = g_WgcCap.Load();
         const HWND previousCapturedWindow = currentCapturedWindow;
+        const std::string previousCapturedMonitorStableId = currentCapturedMonitorStableId;
         const bool previousTargetPrefersInject = currentTargetPrefersInject;
         const bool previousPreferredScreenGrab = IsPreferredScreenGrab();
         if (restartActiveCapture) {
@@ -12392,6 +12442,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 PublishWgcCapture(previousCapture, "retarget rollback");
             }
             currentCapturedWindow = previousCapturedWindow;
+            currentCapturedMonitorStableId = previousCapturedMonitorStableId;
             currentTargetPrefersInject = previousTargetPrefersInject;
             SetPreferredScreenGrab(previousPreferredScreenGrab);
             if (restartActiveCapture && !StartWgcRecordingCapture(config)) {
@@ -12412,7 +12463,7 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             primed = primeWgcWindowTarget(request.window, true);
         }
         if (!primed) {
-            primed = primeWgcMonitorTarget(request.monitor);
+            primed = primePinnedMonitorTarget(request.monitor, "runtime monitor retarget");
         }
         if (!primed) {
             LogWarn("[Media] Failed to initialize queued WGC retarget; restoring previous source");
@@ -12447,10 +12498,12 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         uint32_t profileDxgiPid = 0;
         std::string profileWgcProcessName;
         std::string profileDxgiProcessName;
+        WhitelistEntry profileWgcTarget;
+        WhitelistEntry profileDxgiTarget;
         HWND profileWgcWindow = FindMatchingWgcWindow(config.profileWgcTargets, &profileWgcScore, true,
-                                                      &profileWgcPid, &profileWgcProcessName);
+                                                      &profileWgcPid, &profileWgcProcessName, &profileWgcTarget);
         HWND profileDxgiWindow = FindMatchingWgcWindow(config.profileDxgiDupTargets, &profileDxgiScore, true,
-                                                       &profileDxgiPid, &profileDxgiProcessName);
+                                                       &profileDxgiPid, &profileDxgiProcessName, &profileDxgiTarget);
         const bool useProfileDxgi = profileDxgiWindow && (!profileWgcWindow || profileDxgiScore > profileWgcScore);
         HWND profileWindow = useProfileDxgi ? profileDxgiWindow : profileWgcWindow;
         if (profileWindow) {
@@ -12463,9 +12516,28 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             processName = refreshActiveConfig(false, profileWindow, profilePid, profileProcessName);
             injectWhitelisted = isInjectCaptureTarget(processName);
             if (useProfileDxgi) {
-                if (primeDxgiDupForWindowMonitor(profileWindow, "application profile")) {
-                    LogInfo("[Media] Application profile selected DXGI duplication (process=%s hwnd=0x%p)",
+                std::string profileMonitorSelector = config.captureMonitor;
+                if (const ApplicationProfile* profile = FindApplicationProfileForTarget(config, profileDxgiTarget)) {
+                    profileMonitorSelector = profile->captureMonitor;
+                }
+                ce::monitor_selection::Selector parsedProfileSelector;
+                const bool explicitProfileMonitor =
+                    ce::monitor_selection::TryParseSelector(profileMonitorSelector, parsedProfileSelector) &&
+                    ce::monitor_selection::IsExplicitSelector(parsedProfileSelector);
+                if (primeDxgiDupForWindowMonitor(profileWindow, profileMonitorSelector, "application profile")) {
+                    const auto profileCapture = g_WgcCap.Read();
+                    LogInfo("[Media] Application profile selected monitor capture via %s (process=%s hwnd=0x%p)",
+                            profileCapture && profileCapture->IsUsingDesktopDuplication() ? "DXGI duplication"
+                                                                                          : "same-monitor WGC",
                             processName.empty() ? "unknown" : processName.c_str(), profileWindow);
+                    return;
+                }
+                if (explicitProfileMonitor) {
+                    LogError(
+                        "[Media] Application profile's explicit monitor target is unavailable; refusing window or "
+                        "primary fallback");
+                    SetPreferredScreenGrab(true);
+                    discardCurrentWgcTarget("explicit profile monitor unavailable");
                     return;
                 }
                 if (primeWgcWindowTarget(profileWindow, false, false)) {
@@ -12510,13 +12582,23 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             HMONITOR fallbackMonitor =
                 fallbackWindow ? MonitorFromWindow(fallbackWindow, MONITOR_DEFAULTTONEAREST) : NULL;
             if (fallbackWindow && IsWindowFullscreenLike(fallbackWindow) && config.autoFullscreenPrefersDxgiDup) {
-                fallbackReady = primeDxgiDupForWindowMonitor(fallbackWindow, "inject startup fallback");
+                fallbackReady =
+                    primeDxgiDupForWindowMonitor(fallbackWindow, config.captureMonitor, "inject startup fallback");
             }
-            if (!fallbackReady && fallbackWindow) {
+            const bool explicitMonitorFallbackFailed =
+                !fallbackReady && fallbackWindow && IsWindowFullscreenLike(fallbackWindow) &&
+                config.autoFullscreenPrefersDxgiDup && monitorSelectorIsExplicit(config.captureMonitor);
+            if (explicitMonitorFallbackFailed) {
+                LogError(
+                    "[CaptureTarget] explicit monitor startup fallback is unavailable; leaving inject fallback "
+                    "unarmed instead of selecting another display or window");
+            }
+            if (!fallbackReady && !explicitMonitorFallbackFailed && fallbackWindow) {
                 fallbackReady = primeWgcWindowTarget(fallbackWindow, false, false);
             }
-            if (!fallbackReady && fallbackMonitor && WGCCapture::IsSupported()) {
-                fallbackReady = primeWgcMonitorTarget(fallbackMonitor);
+            if (!fallbackReady && !explicitMonitorFallbackFailed && fallbackMonitor && WGCCapture::IsSupported()) {
+                fallbackReady = primeConfiguredMonitorTarget(fallbackWindow, fallbackMonitor, config.captureMonitor,
+                                                               "inject startup monitor fallback");
             }
             if (!fallbackReady && !fallbackWindow) {
                 LogWarn(
@@ -12560,33 +12642,45 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             if (!ensureWgcDevice()) {
                 LogWarn("[Media] Overlay whitelist requested WGC but D3D11 device unavailable");
                 setWgcPreferenceAfterFailure();
-                clearCurrentWgcTarget();
+                discardCurrentWgcTarget("overlay capture device unavailable");
                 return;
             }
 
             SetPreferredScreenGrab(true);
-            HWND hGameWindow = isExplicitDxgiDupConfig() ? NULL : GetMainWindowForProcess(sourcePid);
+            HWND hGameWindow = GetMainWindowForProcess(sourcePid);
+            if (isExplicitDxgiDupConfig()) {
+                if (!primeConfiguredMonitorTarget(hGameWindow, NULL, config.captureMonitor,
+                                                  "overlay target DXGI monitor capture")) {
+                    setWgcPreferenceAfterFailure();
+                    discardCurrentWgcTarget("overlay DXGI monitor unavailable");
+                }
+                return;
+            }
             if (hGameWindow) {
                 LogInfo("[Media] Overlay-only hook target %s; WGC capture selected", processName.c_str());
                 if (!primeWgcWindowTarget(hGameWindow, false, false)) {
                     LogWarn("[Media] Overlay-only WGC window target 0x%p failed to initialize; falling back to monitor",
                             hGameWindow);
-                    if (!primeWgcMonitorTarget()) {
+                    if (!primeConfiguredMonitorTarget(hGameWindow, NULL, config.captureMonitor,
+                                                      "overlay target monitor fallback")) {
                         setWgcPreferenceAfterFailure();
-                        clearCurrentWgcTarget();
+                        discardCurrentWgcTarget("overlay target monitor fallback unavailable");
                     }
                 }
-            } else if (!primeWgcMonitorTarget()) {
+            } else if (!primeConfiguredMonitorTarget(NULL, NULL, config.captureMonitor,
+                                                     "overlay target without a window")) {
                 setWgcPreferenceAfterFailure();
-                clearCurrentWgcTarget();
+                discardCurrentWgcTarget("overlay monitor unavailable");
             }
             return;
         }
 
         if (isExplicitScreenGrabConfig()) {
-            if (!primeWgcMonitorTarget()) {
+            HWND sourceWindow = sourcePid != 0 ? GetMainWindowForProcess(sourcePid) : NULL;
+            if (!primeConfiguredMonitorTarget(sourceWindow, NULL, config.captureMonitor,
+                                              "explicit monitor-scope capture")) {
                 setWgcPreferenceAfterFailure();
-                clearCurrentWgcTarget();
+                discardCurrentWgcTarget("explicit monitor unavailable");
             }
             return;
         }
@@ -12598,12 +12692,19 @@ int MediaProcessMain(const AppConfig& initialConfig) {
         if (isAutoCaptureConfig()) {
             if (sourcePid != 0) {
                 HWND hGameWindow = GetMainWindowForProcess(sourcePid);
-                if (hGameWindow &&
-                    ce::capture_policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(
-                        isAutoCaptureConfig(), isExplicitInjectConfig(), injectWhitelisted,
-                        IsWindowFullscreenLike(hGameWindow), config.autoFullscreenPrefersDxgiDup) &&
-                    primeDxgiDupForWindowMonitor(hGameWindow, "unhooked source window")) {
-                    return;
+                const bool monitorRouteRequested =
+                    hGameWindow && ce::capture_policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(
+                                       isAutoCaptureConfig(), isExplicitInjectConfig(), injectWhitelisted,
+                                       IsWindowFullscreenLike(hGameWindow), config.autoFullscreenPrefersDxgiDup);
+                if (monitorRouteRequested) {
+                    if (primeDxgiDupForWindowMonitor(hGameWindow, config.captureMonitor, "unhooked source window"))
+                        return;
+                    if (monitorSelectorIsExplicit(config.captureMonitor)) {
+                        LogError("[CaptureTarget] explicit auto-mode monitor target failed; refusing window fallback");
+                        SetPreferredScreenGrab(true);
+                        discardCurrentWgcTarget("explicit auto monitor unavailable");
+                        return;
+                    }
                 }
                 if (hGameWindow && primeWgcWindowTarget(hGameWindow, false, false)) {
                     LogInfo("[Media] Auto mode: %s is not on the inject whitelist; WGC window capture selected",
@@ -12617,11 +12718,21 @@ int MediaProcessMain(const AppConfig& initialConfig) {
             if (ce::capture_policy::ShouldPreferForegroundFullscreenWindowForAutoWgc(
                     isAutoCaptureConfig(), isExplicitInjectConfig(), injectWhitelisted, sourcePid != 0,
                     matchedConfiguredWgcWindow, foregroundCandidate.usable, foregroundCandidate.fullscreenLike)) {
-                if (ce::capture_policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(
+                const bool monitorRouteRequested =
+                    ce::capture_policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(
                         isAutoCaptureConfig(), isExplicitInjectConfig(), injectWhitelisted,
-                        foregroundCandidate.fullscreenLike, config.autoFullscreenPrefersDxgiDup) &&
-                    primeDxgiDupForWindowMonitor(foregroundCandidate.hwnd, "foreground fullscreen window")) {
-                    return;
+                        foregroundCandidate.fullscreenLike, config.autoFullscreenPrefersDxgiDup);
+                if (monitorRouteRequested) {
+                    if (primeDxgiDupForWindowMonitor(foregroundCandidate.hwnd, config.captureMonitor,
+                                                     "foreground fullscreen window"))
+                        return;
+                    if (monitorSelectorIsExplicit(config.captureMonitor)) {
+                        LogError(
+                            "[CaptureTarget] explicit foreground monitor target failed; refusing window fallback");
+                        SetPreferredScreenGrab(true);
+                        discardCurrentWgcTarget("explicit foreground monitor unavailable");
+                        return;
+                    }
                 }
                 if (primeWgcWindowTarget(foregroundCandidate.hwnd, false, false)) {
                     LogInfo(
@@ -12644,11 +12755,12 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     matchedConfiguredWgcWindow ? 1 : 0, config.wgcWindowTitles.size());
             }
 
-            if (primeWgcMonitorTarget()) {
+            if (primeConfiguredMonitorTarget(foregroundCandidate.usable ? foregroundCandidate.hwnd : NULL, NULL,
+                                             config.captureMonitor, "auto monitor fallback")) {
                 LogInfo("[Media] Auto mode: no inject whitelist match; WGC monitor capture selected");
             } else {
                 setWgcPreferenceAfterFailure();
-                clearCurrentWgcTarget();
+                discardCurrentWgcTarget("auto monitor target unavailable");
                 LogWarn("[Media] Auto mode: WGC target unavailable and inject capture is not allowed for this target");
             }
             return;
@@ -12851,7 +12963,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     if (!primeWgcWindowTarget(foundWindow, foundWindow != currentCapturedWindow, false)) {
                         LogWarn("[Media] WGC trigger window 0x%p failed to initialize; falling back to monitor target",
                                 foundWindow);
-                        if (!primeWgcMonitorTarget()) {
+                        if (!primeConfiguredMonitorTarget(foundWindow, NULL, config.captureMonitor,
+                                                          "configured WGC trigger fallback")) {
                             LogWarn("[Media] WGC trigger ignored: D3D11 device unavailable");
                         }
                     }
@@ -12862,7 +12975,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                             "to monitor/inject.",
                             currentCapturedWindow);
                         clearCurrentWgcTarget();
-                        if (!primeWgcMonitorTarget()) {
+                        if (!primeConfiguredMonitorTarget(NULL, NULL, config.captureMonitor,
+                                                          "invalid WGC window fallback")) {
                             setWgcPreferenceAfterFailure();
                         }
                     }
@@ -12916,11 +13030,20 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     if (!ensureWgcDevice()) {
                         LogWarn("[Media] Overlay whitelist requested WGC but D3D11 device unavailable");
                         setWgcPreferenceAfterFailure();
-                        clearCurrentWgcTarget();
+                        discardCurrentWgcTarget("connected overlay capture device unavailable");
                     } else {
                         SetPreferredScreenGrab(true);
 
-                        HWND hGameWindow = isExplicitDxgiDupConfig() ? NULL : GetMainWindowForProcess(currentSourcePid);
+                        HWND hGameWindow = GetMainWindowForProcess(currentSourcePid);
+                        if (isExplicitDxgiDupConfig()) {
+                            if (!primeConfiguredMonitorTarget(hGameWindow, NULL, config.captureMonitor,
+                                                              "connected overlay DXGI target")) {
+                                LogError("[Media] Failed to initialize selected DXGI monitor target");
+                                setWgcPreferenceAfterFailure();
+                                discardCurrentWgcTarget("connected overlay DXGI monitor unavailable");
+                            }
+                            continue;
+                        }
                         if (hGameWindow) {
                             LogInfo(
                                 "[Media] Overlay-only target: found main window 0x%p. "
@@ -12929,7 +13052,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 
                             if (primeWgcWindowTarget(hGameWindow, false, false)) {
                                 LogInfo("[Media] WGC window target primed for PID %u", currentSourcePid);
-                            } else if (primeWgcMonitorTarget()) {
+                            } else if (primeConfiguredMonitorTarget(hGameWindow, NULL, config.captureMonitor,
+                                                                    "connected overlay monitor fallback")) {
                                 LogWarn("[Media] Failed to init WGC for window - falling back to monitor capture");
                             } else {
                                 LogError("[Media] Failed to init WGC for window or monitor");
@@ -12940,7 +13064,8 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                                 "[Media] Whitelist: No main window found for PID %u. Using "
                                 "Monitor Capture.",
                                 currentSourcePid);
-                            if (!primeWgcMonitorTarget()) {
+                            if (!primeConfiguredMonitorTarget(NULL, NULL, config.captureMonitor,
+                                                              "connected overlay target without window")) {
                                 setWgcPreferenceAfterFailure();
                             }
                         }
@@ -12952,21 +13077,35 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                     LogInfo("[Media] Injection whitelist matched %s; using inject capture", procName.c_str());
                 } else if (!g_Recording && isAutoCaptureConfig()) {
                     HWND hGameWindow = GetMainWindowForProcess(currentSourcePid);
-                    if (hGameWindow &&
-                        ce::capture_policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(
-                            isAutoCaptureConfig(), isExplicitInjectConfig(), injectWhitelisted,
-                            IsWindowFullscreenLike(hGameWindow), config.autoFullscreenPrefersDxgiDup) &&
-                        primeDxgiDupForWindowMonitor(hGameWindow, "unhooked connected source window")) {
-                        // Selected duplication of the game's monitor.
+                    const bool monitorRouteRequested =
+                        hGameWindow && ce::capture_policy::ShouldPreferDxgiDuplicationForFullscreenAutoTarget(
+                                           isAutoCaptureConfig(), isExplicitInjectConfig(), injectWhitelisted,
+                                           IsWindowFullscreenLike(hGameWindow), config.autoFullscreenPrefersDxgiDup);
+                    bool monitorRouteSelected = false;
+                    if (monitorRouteRequested) {
+                        monitorRouteSelected = primeDxgiDupForWindowMonitor(
+                            hGameWindow, config.captureMonitor, "unhooked connected source window");
+                        if (!monitorRouteSelected && monitorSelectorIsExplicit(config.captureMonitor)) {
+                            LogError(
+                                "[CaptureTarget] explicit connected-source monitor target failed; refusing window "
+                                "fallback");
+                            SetPreferredScreenGrab(true);
+                            discardCurrentWgcTarget("explicit connected monitor unavailable");
+                            continue;
+                        }
+                    }
+                    if (monitorRouteSelected) {
+                        // Selected monitor-scope capture for the game's display.
                     } else if (hGameWindow && primeWgcWindowTarget(hGameWindow, false, false)) {
                         LogInfo("[Media] Auto mode: %s is not on the inject whitelist; WGC window capture selected",
                                 procName.c_str());
-                    } else if (primeWgcMonitorTarget()) {
+                    } else if (primeConfiguredMonitorTarget(hGameWindow, NULL, config.captureMonitor,
+                                                            "connected auto monitor fallback")) {
                         LogInfo("[Media] Auto mode: %s is not on the inject whitelist; WGC monitor capture selected",
                                 procName.c_str());
                     } else {
                         setWgcPreferenceAfterFailure();
-                        clearCurrentWgcTarget();
+                        discardCurrentWgcTarget("connected auto monitor unavailable");
                         LogWarn("[Media] Auto mode: WGC target unavailable for %s; no inject capture fallback",
                                 procName.c_str());
                     }

@@ -19,6 +19,7 @@
 #include "../common/config.h"
 #include "../common/crash_handler.h"
 #include "../common/logging.h"
+#include "../common/monitor_selection.h"
 #include "../common/process_ipc.h"
 #include "../common/shared_defs.h"
 #include "../common/strict_integer_parse.h"
@@ -109,6 +110,22 @@ void PrimeStartupCursor() {
     if (arrow) {
         SetCursor(arrow);
     }
+}
+
+bool HasExactCommandLineArgument(const wchar_t* expected) {
+    int argumentCount = 0;
+    wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+    if (!arguments)
+        return false;
+    bool found = false;
+    for (int index = 1; index < argumentCount; ++index) {
+        if (_wcsicmp(arguments[index], expected) == 0) {
+            found = true;
+            break;
+        }
+    }
+    LocalFree(arguments);
+    return found;
 }
 
 bool TryParseAutoRecordValue(std::string_view value, DWORD& result) {
@@ -254,6 +271,7 @@ void WriteSessionManifest(const std::string& logsDir, const AppConfig& config, P
              << "\n";
     manifest << "log_level=" << LogLevelToConfigString(config.logLevel) << "\n";
     manifest << "capture_method=" << config.captureMethod << "\n";
+    manifest << "capture_monitor=" << config.captureMonitor << "\n";
     manifest << "overlay_enabled=" << (config.overlay.showOverlay ? 1 : 0) << "\n";
     manifest << "overlay_observer_only=" << (config.overlay.observerOnly ? 1 : 0) << "\n";
     manifest << "overlay_observer_policy_only=" << (config.overlay.observerPolicyOnly ? 1 : 0) << "\n";
@@ -290,6 +308,7 @@ void WriteRecordingManifest(const std::string& logsDir, const AppConfig& config,
     manifest << "media_pid=" << processId << "\n";
     manifest << "media_log=" << mediaLog << "\n";
     manifest << "base_capture_method=" << config.captureMethod << "\n";
+    manifest << "base_capture_monitor=" << config.captureMonitor << "\n";
     manifest << "status=media_process_started\n";
     manifest << "notes=Recording-specific evidence; correlate by recording_id and media_pid.\n";
 }
@@ -1660,6 +1679,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Parse process mode from command line
     ProcessMode mode = ParseProcessMode(lpCmdLine);
+    if (mode == ProcessMode::Controller && HasExactCommandLineArgument(L"--list-monitors")) {
+        return ce::monitor_selection::WriteMonitorListToStandardOutput();
+    }
     if (mode == ProcessMode::Controller) {
         // An external launcher may have requested process-start feedback. Clear
         // it before config, logging, registration, or child startup; internal

@@ -1,10 +1,12 @@
 # WGC Capture
 
-Last cross-checked: 2026-07-19 (live-validated driver-independent FP16 scRGB desktop-to-HDR10/P010 and Windows-SDR-white-calibrated HDR-to-SDR output, screenshot split-device ownership, source/output HDR contracts, canonical WGC/Diagnostics config locations, max-rate variable-input CFR producer contract, live rate-window aging, transactional D3D11 encoder prewarm/start-contract commit, content-delay-aware stale-debt pruning, cursor/content timeline alignment, per-monitor DPI resources, DXGI pointer metadata, straight-alpha cursor extraction, and crash-safe single-stream SDR/HDR cursor shader creation.)
+Last cross-checked: 2026-07-21 (first-class stable monitor selection and fail-closed retargeting plus the existing live-validated driver-independent FP16 scRGB desktop-to-HDR10/P010 and Windows-SDR-white-calibrated HDR-to-SDR output, screenshot split-device ownership, source/output HDR contracts, max-rate variable-input CFR producer contract, transactional prewarm/start-contract commit, cursor/content timeline alignment, and crash-safe single-stream SDR/HDR cursor composition.)
 Stale-risk: medium (the finite-interval aliasing root cause and max-rate policy are unit-tested and analyzer-visible, but fresh real-game WGC plus DXGI keyed-mutex repeat/reclaim validation remains necessary)
 
 Primary sources:
 - `common/capture_pipeline_policy.h`
+- `common/monitor_selection.h`
+- `common/monitor_selection.cpp`
 - `common/atomic_shared_owner.h`
 - `common/callback_epoch.h`
 - `common/capture_handoff_state.h`
@@ -42,11 +44,18 @@ Primary sources:
 - `tests/test_atomic_shared_owner.cpp`
 - `tests/test_callback_epoch.cpp`
 - `tests/test_capture_coordinator_source.cpp`
+- `tests/test_monitor_selection.cpp`
 - `tests/test_capture_handoff_state.cpp`
 - `tests/test_shared_runtime_state.cpp`
 - `tools/analyze_capture_av.py`
 
 ## Current Summary
+
+### Monitor target selection and privacy boundary (2026-07-21)
+
+Monitor-scope WGC and DXGI Duplication capture exactly one physical display. `[Capture] monitor` accepts `auto`, `primary`, `window`, `cursor`, or `id:<stable-id>`; the same key (or `Capture.monitor`) may override a named profile. `auto` resolves the known target application's window first, then an eligible foreground application window, then the Windows primary display. Thus global explicit DXGI capture no longer ignores an available source window and blindly records primary. `window` requires a valid matched target, while `cursor` is sampled once at recording start. `CaptureEngine.exe --list-monitors` enumerates active displays and prints a copyable DisplayConfig monitor-device-path ID, friendly name, GDI device, bounds, primary state, adapter LUID, and source/target IDs. If DisplayConfig identity is unavailable, the command labels its `gdi:` fallback as topology-unstable.
+
+Resolution is centralized before backend initialization and logs selector, reason, context, stable ID, device/friendly names, bounds, primary state, adapter, and source/target identity. An explicit selector that is missing or cannot initialize fails closed: routing does not select primary, another monitor, or a window on another display. A DXGI initialization/start failure may use WGC only for the already resolved same monitor. Runtime reset pins the resolved stable identity, so hotplug/re-enumeration can reacquire the same physical display but cannot drift to whatever display later becomes primary or contains the cursor. `auto` also becomes identity-pinned after recording starts. Multi-monitor stitching/composition remains a separate unimplemented feature rather than an implicit virtual-desktop capture mode.
 
 ### HDR desktop color contract (2026-07-19)
 
@@ -96,7 +105,7 @@ The split-device key lifecycle also covers frames that are not encoded. If CFR s
 
 DXGI Desktop Duplication is a supported frame-source backend behind the shared screen-grab engine. `DxgiDuplicationSource` acquires frame-on-change desktop textures on a dedicated MMCSS thread and feeds the same preflight, retained-copy pool, ingress, CFR, cursor-composition, and A/V-sync machinery as WGC. Pointer-only updates do not create video frames; `AccumulatedFrames>1` measures consumer lag; `ACCESS_LOST` requests a full retarget/reset. Duplication preserves the separate hardware cursor plane where Windows exposes it, while live pointer-state diagnostics suppress encoder cursor composition if Windows embeds the cursor in the desktop image. **Strict format/handoff policy (2026-07-11):** `DXGI_OUTDUPL_DESC.ModeDesc.Format` is only a display-mode hint; the first acquired texture is authoritative. Explicit `capture_method=dxgi_dup` with `bit_depth=10` offers R10 then FP16 for SDR (FP16 only for HDR), waits for and validates the first frame, rejects BGRA8 instead of upconverting it, and fails recording rather than silently switching to WGC. Raw duplication textures never reach the encoder: R10 is shader-canonicalized into a CE-owned shared R10 render-target/SRV surface, while FP16 SDR uses the existing FP16-to-retained-R10 shader path; both then convert to P010 without an 8-bit intermediate. Direct VP input is probed only on these CE-owned canonical surfaces, with canonical staging fallback if the driver rejects the view. Budgeting uses the proven first-texture format and `requiresSourceFramePool=false`. Logs distinguish backend, canonicalization, staging, keyed-mutex failures, and CPU-wall/submission timing; those CPU values are not GPU timestamp durations. Real-hardware 4K120 validation remains required for throughput and random-stutter proof.
 
-Fresh configs define application targets with named `[Profile.*]` sections. `video_capture=wgc` generates a window-scoped WGC route; `video_capture=dxgi_dup` selects the matched window's monitor. `process`, optional `window_title`, and `window_match=exact|contains|contains_or_class` feed the existing scored window selector, and the selected process profile is loaded before recording so its media overrides apply. The compatibility-only `wgc_window_detection` list is still parsed, but a canonical profile for the same process/window removes that legacy entry. WGC and DXGI profile candidates are scored together at recording start so a foreground/fullscreen/title match wins rather than backend declaration order.
+Fresh configs define application targets with named `[Profile.*]` sections. `video_capture=wgc` generates a window-scoped WGC route; `video_capture=dxgi_dup` uses `monitor=auto` to select the matched window's monitor unless the profile supplies another selector. `process`, optional `window_title`, and `window_match=exact|contains|contains_or_class` feed the existing scored window selector, and the selected process profile is loaded before recording so its media overrides apply. The compatibility-only `wgc_window_detection` list is still parsed, but a canonical profile for the same process/window removes that legacy entry. WGC and DXGI profile candidates are scored together at recording start so a foreground/fullscreen/title match wins rather than backend declaration order.
 
 For a confirmed application-profile screen-grab target, media publishes the selected window PID and CE capture-device adapter LUID through ABI 37's separate seqlocked screen-grab target snapshot. The sensor service uses it only while no hook-owned source exists, preserving CPU/GPU/VRAM attribution for `dll_injection=never` WGC/DXGI recordings. This does not set hook `sourcePid`, request injection, read target memory, or hide CE from anti-cheat software; identity uses Windows' documented limited-query API and the already selected window owner.
 

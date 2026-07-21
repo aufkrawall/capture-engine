@@ -20,6 +20,15 @@
 ; dxgi_dup captures a monitor with DXGI Desktop Duplication.
 capture_method=auto
 
+; Monitor used by monitor-scope WGC and DXGI Duplication capture.
+; auto uses the target application's window, then an eligible foreground window,
+; then the Windows primary monitor. primary always uses the Windows main display.
+; window requires a matched target window. cursor uses the monitor containing the
+; pointer when recording starts. id:<stable-id> selects one exact physical display;
+; run CaptureEngine.exe --list-monitors to list copyable IDs. An explicit selector
+; never silently redirects recording to a different monitor.
+monitor=auto
+
 ; Fullscreen fallback used by auto: dxgi_dup or wgc_window.
 auto_fullscreen_capture=dxgi_dup
 
@@ -452,6 +461,10 @@ dx12_focus_analysis=false
 ; dxgi_dup = capture this window's monitor with DXGI Desktop Duplication.
 ; none = do not capture video for this profile.
 ;video_capture=inherit
+; Optional monitor override for monitor-scope capture: auto, primary, window,
+; cursor, or id:<stable-id> from CaptureEngine.exe --list-monitors. For a DXGI
+; profile, auto/window captures the monitor containing this profile's window.
+;monitor=window
 ;
 ; DLL injection normally follows the selected video source: inject loads the DLL;
 ; wgc, dxgi_dup, and none do not. inherit follows whichever source [Capture]
