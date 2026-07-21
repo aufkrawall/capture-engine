@@ -28,6 +28,10 @@ extern void DX12_DumpDredIfDeviceRemoved(const char* reason);
 extern void DX12_LogOverlayGpuBreadcrumbs(const char* reason);
 
 static std::string GetLogsDirectory() {
+    std::string cached = GetCrashDumpDirectory();
+    if (!cached.empty())
+        return cached;
+
     char pathBuffer[MAX_PATH] = {};
     if (BuildLogFilePathForModuleAddress((const void*)&GetLogsDirectory, "freeze_watchdog.tmp", pathBuffer,
                                          sizeof(pathBuffer))) {
