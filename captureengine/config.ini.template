@@ -256,11 +256,6 @@ load_color_high=FF0000
 ; auto matches the Windows SDR-white calibration of the game's current monitor.
 ; Otherwise enter an explicit 1-10000 nit overlay paper white.
 hdr_paper_white=auto
-; D3D12 DIRECT command-queue priority used by the injected overlay: low, normal,
-; or high. The historical setting name says copy, but this does not control a copy
-; queue.
-copy_queue_priority=normal
-
 [DesktopOverlay]
 ; This small screen-corner window works without injection and is useful with WGC
 ; or DXGI capture.

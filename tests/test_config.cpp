@@ -149,7 +149,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("wgc_video_memory_reservation=off"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_allow_lossy_bgra8_pool=false"), std::string::npos);
     EXPECT_NE(generatedText.find("gpu_scheduling_priority=auto"), std::string::npos);
-    EXPECT_NE(generatedText.find("copy_queue_priority=normal"), std::string::npos);
+    EXPECT_EQ(generatedText.find("copy_queue_priority"), std::string::npos);
     EXPECT_NE(generatedText.find("profile=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("multipass=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("split_encode=auto"), std::string::npos);
