@@ -287,12 +287,8 @@ show_encoder_overload_warnings=false
 ; deciding whether to show NOT RECORDING. Valid range: 0-10000.
 foreground_acquire_grace_ms=2000
 ; Profiles that have both process and a video route trigger the NOT RECORDING
-; warning automatically. Use process_list only for extra processes that have no
-; profile, or to keep an older config working. Separate names with | on one line,
-; or use the one-name-per-line form shown here.
-process_list=(
-;game.exe
-)
+; warning automatically. The legacy process_list fallback is only needed for
+; processes without a profile — and can be removed from new configs entirely.
 
 [FpsLimiter]
 ; Capture sync limits an injected application to a multiple of the recording frame

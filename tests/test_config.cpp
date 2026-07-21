@@ -230,7 +230,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("screenshot_include_overlay=true"), std::string::npos);
     EXPECT_NE(generatedText.find("audio_only="), std::string::npos);
     EXPECT_NE(generatedText.find("foreground_acquire_grace_ms=2000"), std::string::npos);
-    EXPECT_NE(generatedText.find("Use process_list only for extra processes"), std::string::npos);
+    EXPECT_NE(generatedText.find("process_list fallback is only needed"), std::string::npos);
     EXPECT_NE(generatedText.find("enabled=false\n"), std::string::npos);
     EXPECT_EQ(generatedText.find("perf_metrics_logging="), std::string::npos);
     EXPECT_NE(generatedText.find("log_level=trace"), std::string::npos);
