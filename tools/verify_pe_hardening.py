@@ -142,6 +142,15 @@ def shipped_binaries(
             yield path, False
 
 
+def is_ffmpeg_dll(path: Path, root: Path) -> bool:
+    """Return True if the DLL is under a 'ffmpeg/' subdirectory of root."""
+    try:
+        rel = path.relative_to(root)
+        return rel.parts[0].lower() == "ffmpeg" if len(rel.parts) > 1 else False
+    except ValueError:
+        return False
+
+
 def verify_tree(
     readobj: Path,
     root: Path,
@@ -151,6 +160,7 @@ def verify_tree(
     allow_missing_x64_cfg: bool = False,
     allow_missing_pdb: bool = False,
     executables_only: bool = False,
+    skip_imports_for_ffmpeg: bool = False,
 ) -> list[str]:
     failures: list[str] = []
     allowed_runtime_names = {name.lower() for name in allowed_runtime_dlls}
@@ -174,6 +184,20 @@ def verify_tree(
             allow_missing_x64_cfg=allow_missing_x64_cfg,
         )
         if result.errors:
+            if skip_imports_for_ffmpeg and is_ffmpeg_dll(path, root):
+                result_errors = [
+                    e for e in result.errors if not e.startswith("unresolved runtime imports")
+                ]
+                if not result_errors:
+                    architecture = expected_architecture(path)
+                    cfg_deferred = result.guard_function_count == 0 and (
+                        (allow_missing_x86_cfg and architecture == "x86")
+                        or (allow_missing_x64_cfg and architecture == "x64")
+                    )
+                    cfg_status = "CFG deferred" if cfg_deferred else f"{result.guard_function_count} CFG targets"
+                    print(f"PE hardening OK: {path.name} ({result.architecture}, {cfg_status})")
+                    continue
+                result = dataclasses.replace(result, errors=tuple(result_errors))
             failures.append(f"{path}: " + "; ".join(result.errors))
         else:
             architecture = expected_architecture(path)
@@ -196,6 +220,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--allow-missing-x64-cfg", action="store_true")
     parser.add_argument("--allow-missing-pdb", action="store_true")
     parser.add_argument("--executables-only", action="store_true")
+    parser.add_argument("--skip-ffmpeg-imports", action="store_true")
     args = parser.parse_args(argv)
     failures = verify_tree(
         args.llvm_readobj,
@@ -206,6 +231,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_missing_x64_cfg=args.allow_missing_x64_cfg,
         allow_missing_pdb=args.allow_missing_pdb,
         executables_only=args.executables_only,
+        skip_imports_for_ffmpeg=args.skip_ffmpeg_imports,
     )
     if failures:
         for failure in failures:

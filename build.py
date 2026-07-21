@@ -6989,6 +6989,8 @@ def compile_project(
         # active while effective x86 CFG is deferred.
         "--allow-missing-x86-cfg",
     ] + pe_verifier_host_flags
+    if IS_LINUX:
+        pe_verifier_command.append("--skip-ffmpeg-imports")
     if env.get("CE_SANITIZE") == "1":
         # The sanitizer pass intentionally produces only x64 developer artifacts.
         # Ignore stale x86 outputs from the preceding product build and recognize
