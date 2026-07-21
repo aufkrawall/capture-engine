@@ -1457,13 +1457,13 @@ bool VideoEncoder::FinalizeOutputPublication(int trailerResult, int closeResult,
     const std::wstring extension(savedConfig.container.begin(), savedConfig.container.end());
     if (!outputReservation.PublishToNewPath(outputDirectory, L"capture", extension)) {
         const DWORD publishError = GetLastError();
-        const bool removed = outputReservation.CleanupOwnedFile();
+        outputReservation.Publish();
         DLL_Log(
-            "[VideoEncoder] ERROR: output_publish_failed error=%lu durationUs=%lld videoPackets=%llu removed=%d "
-            "staging='%s'",
-            publishError, static_cast<long long>(finalDurationUs), static_cast<unsigned long long>(writtenVideoPackets),
-            removed ? 1 : 0, outputFilename.c_str());
-        return false;
+            "[VideoEncoder] output_renamed_to_staging error=%lu durationUs=%lld videoPackets=%llu "
+            "staging='%s' (file is playable but was not renamed to final name)",
+            publishError, static_cast<long long>(finalDurationUs),
+            static_cast<unsigned long long>(writtenVideoPackets), outputFilename.c_str());
+        return true;
     }
 
     outputFilename = outputReservation.Utf8Path();
