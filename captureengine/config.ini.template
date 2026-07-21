@@ -24,9 +24,6 @@ capture_method=auto
 auto_fullscreen_capture=dxgi_dup
 
 [WGC]
-; Same-device capture usually has the lowest overhead.
-wgc_same_device_capture=true
-
 ; Keep frame delivery even while CaptureEngine is delaying video to match audio.
 wgc_active_delay_uniform_cadence=true
 
@@ -403,6 +400,8 @@ crash_dump_dir=
 wgc_skip_split_device_flush=false
 ; off, mandatory, or full. Changes WGC video-memory reservation experiments.
 wgc_video_memory_reservation=off
+; Same-device capture usually has the lowest overhead.
+wgc_same_device_capture=true
 
 ; Passive and staged injected-overlay tests used by developers.
 overlay_observer_only=false
