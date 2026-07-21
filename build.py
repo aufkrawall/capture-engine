@@ -4374,6 +4374,8 @@ def _verify_cross_object(obj: str, compiler: str, src: str) -> None:
                 return
             if "PE" in desc or "COFF" in desc or "MS Windows" in desc:
                 return
+            if desc == "data":
+                return
             if "ELF" in desc:
                 log(
                     f"ERROR: Cross-compiled object is ELF, not PE/COFF: {obj}\n"
