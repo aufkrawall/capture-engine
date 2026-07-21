@@ -6,9 +6,10 @@ Primary sources:
 - `common/config.{h,cpp}`
 - `captureengine/{config.ini.template,media_main.cpp}`
 - `mediaengine/video_encoder.{h,cpp}`
+- `mediaengine/video_metadata.{h,cpp}`
 - `mediaengine/video_encoder_options.{h,cpp}`
 - `mediaengine/video_encoder_backend_options.{h,cpp}`
-- `tests/test_{config,video_encoder_hardware_options,video_encoder_source}.cpp`
+- `tests/test_{config,video_encoder_hardware_options,video_encoder_source,video_metadata}.cpp`
 - `ffmpeg_build/working/ffmpeg/libavcodec/{amfenc,qsvenc,mfenc}*`
 - `ffmpeg_build/working/ffmpeg/libavutil/hwcontext_qsv.c`
 - `build.py`
@@ -114,11 +115,26 @@ path and can explicitly request hardware or software MFT selection.
 
 ## Color metadata, diagnostics, and validation
 
-BT.2020/PQ encoder frames carry standard FFmpeg mastering-display and
-content-light side data in addition to color fields. The bundled AMF and QSV
-wrappers consume this metadata for supported HEVC/AV1 outputs; NVENC retains its
-backend-specific setup as well. Frame properties and side data are copied onto
-the directly mapped QSV frame before submission.
+HDR has one backend-neutral contract. The codec context receives BT.2020-NCL,
+ST 2084 PQ, range, top-left 4:2:0 siting, mastering-display, and content-light
+data before `avcodec_open2`; every submitted frame receives the same fields and
+side data; and the final `AVCodecParameters` receives the same static metadata
+for Matroska/MP4/MOV. This ordering is material: NVENC reads global HDR data at
+open, while AMF and QSV consume frame data. The directly mapped QSV frame keeps
+all properties through `av_frame_copy_props`.
+
+The coded color fields describe the pixels exactly. Static values are an
+explicit compatibility convention because post-DWM screen capture has neither
+source mastering data nor measured MaxCLL/MaxFALL: Display P3-D65, zero minimum,
+and the configurable `[Video] hdr_nominal_peak_nits` value (default 1000) for
+mastering maximum, MaxCLL, and MaxFALL. Logs call these values nominal rather
+than content-measured. HEVC and AV1 global headers are normalized with the
+bundled metadata BSFs so backend omissions cannot contradict the container.
+QSV AV1 supplies its sequence header in `AV_PKT_DATA_NEW_EXTRADATA`; only those
+rare header-bearing packets enter the same filter, while ordinary packets stay
+on the unchanged hot path. HDR H.264 is rejected as non-interoperable and Media
+Foundation remains SDR-only; supported HDR output is HEVC/AV1 through NVENC,
+AMF, or QSV.
 
 Startup diagnostics report the configured backend controls and the complete
 effective option plan. QSV logs its D3D11-derived device/frame setup, the first

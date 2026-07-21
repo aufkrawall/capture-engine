@@ -7,6 +7,7 @@ Primary sources:
 - `captureengine/config.ini.template`
 - `mediaengine/video_encoder.{h,cpp}`
 - `mediaengine/video_encoder_options.{h,cpp}`
+- `mediaengine/video_metadata.{h,cpp}`
 - `patches/ffmpeg/0001-matroska-add-timestamp-precision-option.patch`
 - `patches/ffmpeg/0002-nvenc-bframe-cfr-improvements.patch`
 - `ffmpeg_build/working/ffmpeg/libavcodec/{nvenc.c,nvenc_av1.c,utils.c}`
@@ -74,6 +75,14 @@ The shipped conservative defaults are split encoding off, lookahead off, and
 both AQ modes off. New configurations use automatic multipass and B-reference
 selection; existing split-encode text values remain compatible.
 
+HDR does not use NVENC-private `mastering-display`, `cll`, or
+`content_light_level` dictionary keys: those are not options exposed by the
+bundled NVENC wrappers. The shared metadata layer instead installs static
+side data on the codec context before open (the path NVENC actually consumes),
+on every frame, and on the stream parameters. HEVC/AV1 global headers are then
+normalized to limited/full range as configured, BT.2020-NCL/PQ, and Rec.2100
+top-left 4:2:0 siting. H.264 HDR is rejected; NVENC HDR uses HEVC or AV1.
+
 The older `[Video] custom_options=split_encode_mode=...` route remains usable
 and wins over the dedicated setting, with a migration warning. HEVC weighted
 prediction is incompatible with split-frame encoding according to the NVENC
@@ -118,7 +127,9 @@ bypass, blanket-picture-type, and flush-drain behavior.
 
 Startup logs show the configured lookahead, split AQ state/strength, B-frame
 mode, multipass and split-encode values, and the last-applied AV1 NVENC
-`s12m_tc=0` safety option. Generated-option logs show the effective
+`s12m_tc=0` safety option. HDR logs distinguish exact coded color fields from
+the configured nominal (not content-measured) mastering/content-light values.
+Generated-option logs show the effective
 `split_encode_mode` passed to FFmpeg.
 The patched wrapper logs the resolved automatic
 B-reference mode. The first hardware-frame VP output view logs its format and

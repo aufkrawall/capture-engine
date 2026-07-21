@@ -90,15 +90,21 @@ b_frames=0
 ; Extra FFmpeg options in key=value:key=value form. Empty means none.
 custom_options=
 capture_cursor=true
-; auto, 8, or 10. Explicit 10-bit needs a compatible source and encoder.
-bit_depth=8
+; auto preserves an HDR source as 10-bit and uses 8-bit for ordinary SDR.
+; Explicit 10-bit needs a compatible source and encoder.
+bit_depth=auto
 ; auto follows the captured source. bt709 forces SDR and tone-maps HDR input;
-; bt2020 preserves HDR input as BT.2020/PQ (and selects BT.2020 for SDR input).
+; bt2020 preserves HDR input as BT.2020/PQ. On an SDR source it selects SDR
+; BT.2020; it does not falsely relabel SDR pixels as PQ.
 color_space=auto
 ; auto, full, or limited.
 color_range=limited
 ; auto or 420. 422 and 444 are not supported yet.
 chroma_subsampling=auto
+; Nominal HDR mastering/content-light ceiling in nits (100-10000). Screen
+; capture has no measured mastering metadata after desktop composition, so this
+; compatibility value is written consistently to the encoder and container.
+hdr_nominal_peak_nits=1000
 
 [NVENC]
 ; p1 is fastest; p7 spends the most time on quality.

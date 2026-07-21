@@ -13,13 +13,13 @@
 #include "video_encoder_options.h"
 #include "video_color_conversion_shader.h"
 #include "video_format_policy.h"
+#include "video_metadata.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
 extern "C" {
 #include <libavutil/intreadwrite.h>
-#include <libavutil/mastering_display_metadata.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
@@ -904,9 +904,9 @@ const char* DescribeOutputRange(OutputRangeMode range) {
     return range == OutputRangeMode::kFull ? "full" : "limited";
 }
 
-void ApplyFrameColorMetadata(AVFrame* frame, const AVCodecContext* codec) {
+bool ApplyFrameColorMetadata(AVFrame* frame, const AVCodecContext* codec, int hdrNominalPeakNits) {
     if (!frame || !codec) {
-        return;
+        return false;
     }
 
     frame->color_range = codec->color_range;
@@ -916,33 +916,16 @@ void ApplyFrameColorMetadata(AVFrame* frame, const AVCodecContext* codec) {
     frame->chroma_location = codec->chroma_sample_location;
 
     if (codec->color_trc != AVCOL_TRC_SMPTE2084 || codec->color_primaries != AVCOL_PRI_BT2020) {
-        return;
+        return true;
     }
 
-    if (!av_frame_get_side_data(frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA)) {
-        AVMasteringDisplayMetadata* mastering = av_mastering_display_metadata_create_side_data(frame);
-        if (mastering) {
-            mastering->display_primaries[0][0] = av_make_q(708, 1000);
-            mastering->display_primaries[0][1] = av_make_q(292, 1000);
-            mastering->display_primaries[1][0] = av_make_q(170, 1000);
-            mastering->display_primaries[1][1] = av_make_q(797, 1000);
-            mastering->display_primaries[2][0] = av_make_q(131, 1000);
-            mastering->display_primaries[2][1] = av_make_q(46, 1000);
-            mastering->white_point[0] = av_make_q(3127, 10000);
-            mastering->white_point[1] = av_make_q(3290, 10000);
-            mastering->max_luminance = av_make_q(1000, 1);
-            mastering->min_luminance = av_make_q(5, 1000);
-            mastering->has_primaries = 1;
-            mastering->has_luminance = 1;
-        }
+    const int metadataResult =
+        ce::video_metadata::AddNominalHdrMetadataToFrame(frame, hdrNominalPeakNits);
+    if (metadataResult < 0) {
+        DLL_Log("[HDR Metadata] Failed to attach frame metadata: %d", metadataResult);
+        return false;
     }
-    if (!av_frame_get_side_data(frame, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL)) {
-        AVContentLightMetadata* light = av_content_light_metadata_create_side_data(frame);
-        if (light) {
-            light->MaxCLL = 1000;
-            light->MaxFALL = 400;
-        }
-    }
+    return true;
 }
 
 DXGI_COLOR_SPACE_TYPE GetVideoProcessorInputColorSpace(DXGI_FORMAT format, bool isHDR, bool forceLinear = false) {
@@ -1505,6 +1488,7 @@ bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fp
     this->captureCursor = config.captureCursor;
     this->gpuPriority = config.gpuPriority;
     this->onPacket = packetCallback;
+    hdrPacketMetadataLogged = false;
 
     // Initialize cursor renderer if cursor capture enabled
     if (captureCursor) {
@@ -2161,8 +2145,9 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     DLL_Log("[VideoEncoder] split_encode=%s", savedConfig.splitEncode.c_str());
     DLL_Log("[VideoEncoder] keyframe_interval=%d", savedConfig.keyframeInterval);
     DLL_Log("[VideoEncoder] qp=%d", savedConfig.qp);
-    DLL_Log("[VideoEncoder] bit_depth=%s color_space=%s color_range=%s chroma=%s", savedConfig.bitDepth.c_str(),
-            savedConfig.colorSpace.c_str(), savedConfig.colorRange.c_str(), savedConfig.chromaSubsampling.c_str());
+    DLL_Log("[VideoEncoder] bit_depth=%s color_space=%s color_range=%s chroma=%s hdr_nominal_peak_nits=%d",
+            savedConfig.bitDepth.c_str(), savedConfig.colorSpace.c_str(), savedConfig.colorRange.c_str(),
+            savedConfig.chromaSubsampling.c_str(), savedConfig.hdrNominalPeakNits);
     if (!savedConfig.customOptions.empty()) {
         DLL_Log("[VideoEncoder] custom_options=%s", savedConfig.customOptions.c_str());
     }
@@ -2259,10 +2244,10 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     bd = resolvedFormat.bitDepth;
     chroma = resolvedFormat.chroma;
     bool use10bit = resolvedFormat.use10Bit;
-    // Direct P010 shader (HDR) produces chroma at center; VideoProcessor (SDR)
-    // produces chroma at the standard MPEG-2/H.264 left position.
+    // Rec.2100 4:2:0 uses top-left siting. The direct HDR shader implements
+    // that phase; the SDR VideoProcessor uses the conventional left position.
     codecCtx->chroma_sample_location = (resolvedFormat.chroma == "420")
-                                           ? (outputIsHDR ? AVCHROMA_LOC_CENTER : AVCHROMA_LOC_LEFT)
+                                           ? (outputIsHDR ? AVCHROMA_LOC_TOPLEFT : AVCHROMA_LOC_LEFT)
                                            : AVCHROMA_LOC_UNSPECIFIED;
 
     DLL_Log(
@@ -2372,6 +2357,15 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
 
     codecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
 
+    if (outputIsHDR) {
+        const int metadataResult = ce::video_metadata::AddNominalHdrMetadataToCodecContext(
+            codecCtx, savedConfig.hdrNominalPeakNits);
+        if (metadataResult < 0) {
+            DLL_Log("[HDR Metadata] Failed to configure encoder metadata before codec open: %d", metadataResult);
+            return false;
+        }
+    }
+
     DLL_Log("[VideoEncoder] Opening Codec with options...");
     int ret = avcodec_open2(codecCtx, codec, &opts);
 
@@ -2416,8 +2410,40 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     }
 
     stream = avformat_new_stream(fmtCtx, codec);
-    avcodec_parameters_from_context(stream->codecpar, codecCtx);
+    if (!stream) {
+        DLL_Log("[VideoEncoder] Failed to allocate video stream");
+        codecOpenFailed = true;
+        return false;
+    }
+    ret = avcodec_parameters_from_context(stream->codecpar, codecCtx);
+    if (ret < 0) {
+        DLL_Log("[VideoEncoder] Failed to copy codec parameters: %d", ret);
+        codecOpenFailed = true;
+        return false;
+    }
     stream->codecpar->chroma_location = codecCtx->chroma_sample_location;
+    if (outputIsHDR) {
+        const bool hasOpenTimeGlobalHeader = stream->codecpar->extradata && stream->codecpar->extradata_size > 0;
+        ret = ce::video_metadata::NormalizeHdrCodecExtradata(stream->codecpar, codecCtx->time_base);
+        if (ret < 0) {
+            DLL_Log("[HDR Metadata] Failed to normalize global codec headers: %d", ret);
+            codecOpenFailed = true;
+            return false;
+        }
+        ret = ce::video_metadata::AddNominalHdrMetadataToCodecParameters(stream->codecpar,
+                                                                         savedConfig.hdrNominalPeakNits);
+        if (ret < 0) {
+            DLL_Log("[HDR Metadata] Failed to attach container metadata: %d", ret);
+            codecOpenFailed = true;
+            return false;
+        }
+        const int peak = ce::video_metadata::ClampHdrNominalPeakNits(savedConfig.hdrNominalPeakNits);
+        DLL_Log(
+            "[HDR Metadata] encoder/container/header contract: BT2020-NCL PQ chroma=top-left header=%s "
+            "mastering=P3-D65 min=0 max=%d-nit MaxCLL=%d MaxFALL=%d "
+            "values=nominal-not-content-measured",
+            hasOpenTimeGlobalHeader ? "normalized-at-open" : "normalize-new-extradata-packets", peak, peak, peak);
+    }
     stream->time_base = codecCtx->time_base;
     stream->avg_frame_rate = codecCtx->framerate;
     stream->r_frame_rate = codecCtx->framerate;
@@ -3119,9 +3145,36 @@ bool VideoEncoder::Start() {
     return true;
 }
 
+bool VideoEncoder::NormalizeHdrPacketIfNeeded(AVPacket* packet) {
+    if (!packet || !stream || packet->stream_index != stream->index || !ShouldEncodeHdrOutput()) {
+        return true;
+    }
+
+    const int result =
+        ce::video_metadata::NormalizeHdrPacketMetadata(packet, stream->codecpar, codecCtx->time_base);
+    if (result < 0) {
+        char error[AV_ERROR_MAX_STRING_SIZE] = {};
+        av_strerror(result, error, sizeof(error));
+        DLL_Log("[HDR Metadata] ERROR: Failed to normalize packet-carried sequence header: %d (%s)", result, error);
+        discardOutputRequested.store(true, std::memory_order_release);
+        return false;
+    }
+    if (result > 0 && !hdrPacketMetadataLogged) {
+        DLL_Log(
+            "[HDR Metadata] Normalized packet-carried sequence header and NEW_EXTRADATA; ordinary packets bypass "
+            "the metadata filter");
+        hdrPacketMetadataLogged = true;
+    }
+    return true;
+}
+
 void VideoEncoder::WriteFrame(AVPacket* pkt) {
     if (!fileOpened || !fmtCtx)
         return;
+
+    if (!NormalizeHdrPacketIfNeeded(pkt)) {
+        return;
+    }
 
     // Rescale timestamps from codec time_base to stream time_base
     AVStream* st = fmtCtx->streams[pkt->stream_index];
@@ -4231,7 +4284,10 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     auto afterConvert = PerfTimer::now();
     stats.colorConvertMs = PerfTimer::elapsed_ms(beforeConvert, afterConvert);
     bgraTex->Release();
-    ApplyFrameColorMetadata(d3d11Frame, codecCtx);
+    if (!ApplyFrameColorMetadata(d3d11Frame, codecCtx, savedConfig.hdrNominalPeakNits)) {
+        av_frame_free(&d3d11Frame);
+        return false;
+    }
 
     // Calculate relative PTS (start from 0) — timestamp is in microseconds
     const bool commitsStartPts = startPts.load(std::memory_order_relaxed) < 0;
@@ -4717,7 +4773,10 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
     auto afterConvert = PerfTimer::now();
     double convertMs = PerfTimer::elapsed_ms(beforeConvert, afterConvert);
-    ApplyFrameColorMetadata(d3d11Frame, codecCtx);
+    if (!ApplyFrameColorMetadata(d3d11Frame, codecCtx, savedConfig.hdrNominalPeakNits)) {
+        av_frame_free(&d3d11Frame);
+        return false;
+    }
 
     // Calculate PTS — pts is in microseconds
     const bool commitsStartPts = startPts.load(std::memory_order_relaxed) < 0;
@@ -4987,7 +5046,10 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     }
 
     auto afterConvert = PerfTimer::now();
-    ApplyFrameColorMetadata(d3d11Frame, codecCtx);
+    if (!ApplyFrameColorMetadata(d3d11Frame, codecCtx, savedConfig.hdrNominalPeakNits)) {
+        av_frame_free(&d3d11Frame);
+        return false;
+    }
 
     const int64_t targetPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, savedConfig.fps, startPts,
                                                     lastAssignedVideoPts, useExplicitCfrTimeline);
@@ -5723,8 +5785,8 @@ bool VideoEncoder::InitVideoProcessor() {
     videoProcessorInit = true;
 
     if (outputIsHDR) {
-        DLL_Log("[HDR P010] Initialized direct shader target for %dx%d -> %dx%d RGB10/PQ -> limited P010",
-                inputWidth, inputHeight, outputWidth, outputHeight);
+        DLL_Log("[HDR P010] Initialized direct shader target for %dx%d -> %dx%d RGB10/PQ -> %s P010", inputWidth,
+                inputHeight, outputWidth, outputHeight, DescribeOutputRange(outputRange));
     } else if (scalingEnabled) {
         DLL_Log(
             "[VideoProcessor] Initialized with SCALING: %dx%d -> %dx%d "
@@ -6747,9 +6809,11 @@ bool VideoEncoder::ConvertHdrRgb10ToP010(ID3D11Texture2D* input, ID3D11Texture2D
 
     if (!hdrP010DirectLogged) {
         DLL_Log(
-            "[HDR P010] Direct shader conversion active: input=RGB10_PQ_P2020 output=P010_BT2020NCL_LIMITED "
-            "matrix=shader planes=R16/R16G16 scaling=%ux%u->%ux%u lumaSharpen=%.3f driverVP=0 cpuWait=0",
-            inputDesc.Width, inputDesc.Height, outputDesc.Width, outputDesc.Height, lumaSharpenStrength);
+            "[HDR P010] Direct shader conversion active: input=RGB10_PQ_P2020 output=P010_BT2020NCL_%s "
+            "matrix=shader chroma=top-left planes=R16/R16G16 scaling=%ux%u->%ux%u lumaSharpen=%.3f "
+            "driverVP=0 cpuWait=0",
+            WantsFullOutputRange(savedConfig.colorRange) ? "FULL" : "LIMITED", inputDesc.Width, inputDesc.Height,
+            outputDesc.Width, outputDesc.Height, lumaSharpenStrength);
         hdrP010DirectLogged = true;
     }
     return true;
@@ -7042,6 +7106,12 @@ void VideoEncoder::AsyncWriteLoop() {
                     // We need to set stream index and rescale PTS here
                     // Note: We use the same write logic as WriteFrame but simplified
                     pkt->stream_index = stream->index;
+
+                    if (!NormalizeHdrPacketIfNeeded(pkt)) {
+                        av_packet_unref(pkt);
+                        flushedCount++;
+                        continue;
+                    }
 
                     av_packet_rescale_ts(pkt, codecCtx->time_base, stream->time_base);
                     if (pkt->dts == AV_NOPTS_VALUE) {

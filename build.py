@@ -3491,6 +3491,7 @@ class FFmpegBuilder:
             "--disable-bsfs",
             "--disable-protocols",
             "--enable-protocol=file",
+            "--enable-bsf=hevc_metadata,av1_metadata",
             "--enable-muxer=mp4,matroska,mov,flv,ts,avif",
             "--enable-demuxer=concat,matroska,mov,mp4",
             # SW Encoders (Audio)
@@ -3520,7 +3521,7 @@ class FFmpegBuilder:
         self.run([make_exe, "install"], cwd=build_dir, env=env)
 
 
-FFMPEG_BUILD_CONFIGURATION_VERSION = 8
+FFMPEG_BUILD_CONFIGURATION_VERSION = 9
 
 
 def ffmpeg_build_configuration_fingerprint():

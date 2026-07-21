@@ -165,6 +165,7 @@ private:
     void LogPacketTimelineSummary(int64_t finalDurationUs) const;
     uint64_t GetWrittenVideoPacketCount() const;
     bool FinalizeOutputPublication(int trailerResult, int closeResult, int64_t finalDurationUs);
+    bool NormalizeHdrPacketIfNeeded(AVPacket* packet);
 
     std::function<void(AVPacket*)> onPacket;  // Callback member
     AVFormatContext* fmtCtx;
@@ -196,6 +197,7 @@ private:
     std::atomic<bool> codecOpenFailed{false};  // Prevent infinite retry loop if codec fails to open
     bool qsvSurfaceMappingLogged = false;
     uint32_t qsvSurfaceMappingFailures = 0;
+    bool hdrPacketMetadataLogged = false;
     std::atomic<bool> discardOutputRequested{false};
 
     std::string colorConversion = "d3d11";  // "d3d11" or "auto"

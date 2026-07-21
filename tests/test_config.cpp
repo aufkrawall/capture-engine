@@ -121,6 +121,8 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_FALSE(config.video.temporalAq);
     EXPECT_EQ(config.video.aqStrength, 0);
     EXPECT_EQ(config.video.bRefMode, "auto");
+    EXPECT_EQ(config.video.bitDepth, "auto");
+    EXPECT_EQ(config.video.hdrNominalPeakNits, 1000);
     EXPECT_EQ(config.video.scaling.sharpness, 100);
     EXPECT_FALSE(config.graphics.forceMipBiasClamp);
     EXPECT_EQ(config.graphics.backbufferCount, -1);
@@ -169,6 +171,8 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("false keeps the source's channel layout"), std::string::npos);
     EXPECT_NE(generatedText.find("b_ref_mode=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("auto chooses middle when b_frames>0"), std::string::npos);
+    EXPECT_NE(generatedText.find("bit_depth=auto"), std::string::npos);
+    EXPECT_NE(generatedText.find("hdr_nominal_peak_nits=1000"), std::string::npos);
     EXPECT_EQ(generatedText.find("\naq="), std::string::npos);
     EXPECT_EQ(generatedText.find("\nmsaa_samples="), std::string::npos);
     EXPECT_EQ(generatedText.find("\nsgssaa="), std::string::npos);
@@ -956,6 +960,7 @@ TEST_F(ConfigTest, InvalidValuesFallBack) {
         "[Video]\n"
         "fps=0\n"
         "b_frames=5\n"
+        "hdr_nominal_peak_nits=99\n"
         "[Screenshot]\n"
         "color_space=display-p3\n"
         "[MediaFoundation]\n"
@@ -977,6 +982,7 @@ TEST_F(ConfigTest, InvalidValuesFallBack) {
     EXPECT_FLOAT_EQ(config.overlay.hdrPaperWhite, 0.0f);
     EXPECT_EQ(config.video.fps, 120);
     EXPECT_EQ(config.video.bFrames, 0);
+    EXPECT_EQ(config.video.hdrNominalPeakNits, 1000);
     EXPECT_EQ(config.screenshotColorSpace, "auto");
     EXPECT_EQ(config.video.mfQuality, 80);
     EXPECT_EQ(config.video.scaling.sharpness, 100);
@@ -984,6 +990,17 @@ TEST_F(ConfigTest, InvalidValuesFallBack) {
     EXPECT_EQ(config.wgcSmoothnessFloorMs, 0u);
     ASSERT_EQ(config.audioSources.size(), 1u);
     EXPECT_EQ(config.audioSources.front().sourceType, AudioConfig::SystemAudio);
+}
+
+TEST_F(ConfigTest, HdrNominalPeakAcceptsDocumentedRange) {
+    WriteConfig(
+        "[Video]\n"
+        "hdr_nominal_peak_nits=1600\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.video.hdrNominalPeakNits, 1600);
 }
 
 TEST_F(ConfigTest, BooleanTyposUseDocumentedFallbacks) {

@@ -169,6 +169,28 @@ TEST(VideoEncoderOptionsTest, AutoProfileChoosesCodecAwareDefaults) {
     EXPECT_EQ(av1QsvProfile.value_or(""), "main");
 }
 
+TEST(VideoEncoderOptionsTest, HdrRejectsNonInteroperableH264AcrossBackends) {
+    for (const char* encoder : {"h264_nvenc", "h264_amf", "h264_qsv", "h264_mf", "libx264"}) {
+        const EncoderOptionPlan plan = BuildEncoderOptionPlan(MakeBaseVideoConfig(encoder), true, "420", true);
+        EXPECT_TRUE(HasMessageContaining(plan.errors, "HDR output requires HEVC or AV1")) << encoder;
+    }
+
+    for (const char* encoder : {"hevc_nvenc", "av1_nvenc", "hevc_amf", "av1_amf", "hevc_qsv", "av1_qsv"}) {
+        const EncoderOptionPlan plan = BuildEncoderOptionPlan(MakeBaseVideoConfig(encoder), true, "420", true);
+        EXPECT_TRUE(plan.errors.empty()) << encoder;
+        EXPECT_FALSE(HasMessageContaining(plan.errors, "HDR output requires HEVC or AV1")) << encoder;
+    }
+}
+
+TEST(VideoEncoderOptionsTest, HdrMetadataIsNotSentAsUnknownNvencPrivateOptions) {
+    for (const char* encoder : {"hevc_nvenc", "av1_nvenc"}) {
+        const EncoderOptionPlan plan = BuildEncoderOptionPlan(MakeBaseVideoConfig(encoder), true, "420", true);
+        EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "mastering-display").has_value()) << encoder;
+        EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "cll").has_value()) << encoder;
+        EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "content_light_level").has_value()) << encoder;
+    }
+}
+
 TEST(VideoEncoderOptionsTest, CustomOptionsParseAndValidate) {
     VideoConfig config = MakeBaseVideoConfig("hevc_nvenc");
     config.customOptions = "rc-lookahead=8:spatial-aq=0:foo=bar";

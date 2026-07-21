@@ -122,6 +122,7 @@ struct VideoConfig {
     std::string colorSpace = "auto";         // "auto", "bt709", "bt2020"
     std::string colorRange = "auto";         // "auto", "full", "limited"
     std::string chromaSubsampling = "auto";  // "auto", "420", "422", "444"
+    int hdrNominalPeakNits = 1000;            // nominal compatibility metadata, 100-10000 nits
 
     // VFR Support
     bool useVFR = false;

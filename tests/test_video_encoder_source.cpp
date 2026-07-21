@@ -40,6 +40,14 @@ std::string ReadVideoColorShaderSource() {
     return contents.str();
 }
 
+std::string ReadVideoMetadataSource() {
+    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "video_metadata.cpp";
+    std::ifstream file(source, std::ios::binary);
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return contents.str();
+}
+
 size_t CountOccurrences(const std::string& source, const std::string& needle) {
     size_t count = 0;
     size_t position = 0;
@@ -208,14 +216,29 @@ TEST(VideoEncoderSourceTest, QuickSyncDerivesOneVplSurfacesDirectlyFromCaptureD3
 
 TEST(VideoEncoderSourceTest, HdrFramesCarryBackendNeutralStaticMetadata) {
     const std::string source = ReadVideoEncoderSource();
+    const std::string metadata = ReadVideoMetadataSource();
     ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(metadata.empty());
 
-    EXPECT_NE(source.find("av_mastering_display_metadata_create_side_data(frame)"), std::string::npos);
-    EXPECT_NE(source.find("av_content_light_metadata_create_side_data(frame)"), std::string::npos);
-    EXPECT_NE(source.find("mastering->has_primaries = 1"), std::string::npos);
-    EXPECT_NE(source.find("mastering->has_luminance = 1"), std::string::npos);
-    EXPECT_NE(source.find("light->MaxCLL = 1000"), std::string::npos);
-    EXPECT_NE(source.find("light->MaxFALL = 400"), std::string::npos);
+    const size_t configureMetadata = source.find("AddNominalHdrMetadataToCodecContext");
+    const size_t openCodec = source.find("avcodec_open2(codecCtx", configureMetadata);
+    ASSERT_NE(configureMetadata, std::string::npos);
+    ASSERT_NE(openCodec, std::string::npos);
+    EXPECT_LT(configureMetadata, openCodec);
+    EXPECT_NE(source.find("AddNominalHdrMetadataToCodecParameters"), std::string::npos);
+    EXPECT_NE(source.find("NormalizeHdrCodecExtradata"), std::string::npos);
+    EXPECT_NE(source.find("NormalizeHdrPacketMetadata"), std::string::npos);
+    EXPECT_NE(source.find("NormalizeHdrPacketIfNeeded"), std::string::npos);
+    EXPECT_NE(metadata.find("av_packet_get_side_data(packet, AV_PKT_DATA_NEW_EXTRADATA"), std::string::npos);
+    EXPECT_NE(metadata.find("av_mastering_display_metadata_create_side_data(frame)"), std::string::npos);
+    EXPECT_NE(metadata.find("av_content_light_metadata_create_side_data(frame)"), std::string::npos);
+    EXPECT_NE(metadata.find("mastering->display_primaries[0][0] = av_make_q(17, 25)"), std::string::npos);
+    EXPECT_NE(metadata.find("mastering->has_primaries = 1"), std::string::npos);
+    EXPECT_NE(metadata.find("mastering->has_luminance = 1"), std::string::npos);
+    EXPECT_NE(metadata.find("light->MaxCLL = nominalPeakNits"), std::string::npos);
+    EXPECT_NE(metadata.find("light->MaxFALL = nominalPeakNits"), std::string::npos);
+    EXPECT_NE(metadata.find("AV_PKT_DATA_MASTERING_DISPLAY_METADATA"), std::string::npos);
+    EXPECT_NE(metadata.find("AV_PKT_DATA_CONTENT_LIGHT_LEVEL"), std::string::npos);
     EXPECT_NE(source.find("av_frame_copy_props(qsvFrame, d3d11Frame)"), std::string::npos);
 }
 
@@ -316,6 +339,20 @@ TEST(VideoEncoderSourceTest, HdrScRgbIsConvertedDirectlyToDeterministicP010) {
     EXPECT_NE(source.find("driverVP=0 cpuWait=0"), std::string::npos);
     EXPECT_NE(source.find("refusing the driver VideoProcessor PQ fallback"), std::string::npos);
     EXPECT_EQ(source.find("HDR conversion requires ID3D11VideoContext1 color-space control"), std::string::npos);
+}
+
+TEST(VideoEncoderSourceTest, HdrP010UsesRec2100TopLeftChromaWithoutAnSdrPhaseShift) {
+    const std::string source = ReadVideoEncoderSource();
+    const std::string shader = ReadVideoColorShaderSource();
+    ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(shader.empty());
+
+    EXPECT_NE(source.find("outputIsHDR ? AVCHROMA_LOC_TOPLEFT : AVCHROMA_LOC_LEFT"), std::string::npos);
+    EXPECT_NE(shader.find("float2 topLeftPhase = input.uv - outputInvSize"), std::string::npos);
+    EXPECT_NE(shader.find("topLeftPhase + float2(outputInvSize.x, 0.0)"), std::string::npos);
+    EXPECT_NE(shader.find("topLeftPhase + float2(0.0, outputInvSize.y)"), std::string::npos);
+    EXPECT_NE(shader.find("topLeftPhase + outputInvSize"), std::string::npos);
+    EXPECT_EQ(shader.find("float2 halfPixel = outputInvSize * 0.5"), std::string::npos);
 }
 
 TEST(VideoEncoderSourceTest, ExplicitBt709ToneMapsHdrBeforeSdrVideoProcessorConversion) {

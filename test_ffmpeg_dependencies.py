@@ -99,12 +99,13 @@ class FfmpegDependencyManifestTest(unittest.TestCase):
             reset_outputs.assert_not_called()
             build_dependency.assert_not_called()
 
-    def test_ffmpeg_libaom_component_and_cache_version_are_current(self) -> None:
+    def test_ffmpeg_required_components_and_cache_version_are_current(self) -> None:
         build_source = Path(__file__).with_name("build.py").read_text(encoding="utf-8")
         self.assertIn('"--enable-encoder=libaom_av1"', build_source)
         self.assertIn('"--enable-decoder=libaom_av1"', build_source)
         self.assertNotIn('"--enable-encoder=libaom-av1"', build_source)
-        self.assertIn("FFMPEG_BUILD_CONFIGURATION_VERSION = 8", build_source)
+        self.assertIn('"--enable-bsf=hevc_metadata,av1_metadata"', build_source)
+        self.assertIn("FFMPEG_BUILD_CONFIGURATION_VERSION = 9", build_source)
 
 
 class FfmpegDependencyPeHelperTest(unittest.TestCase):

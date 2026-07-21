@@ -173,11 +173,15 @@ float4 PS_P010UV(VS_OUT input) : SV_TARGET
     // the non-linear chroma codes directly preserves perceptual uniformity
     // across subsamples and is algebraically equivalent to averaging the
     // PQ-domain R'G'B' first (the matrix row-sum identity cancels).
-    float2 halfPixel = outputInvSize * 0.5;
-    float3 c1 = PqP2020ToYcbcr(texIn.Sample(sam, input.uv + float2(-halfPixel.x, -halfPixel.y)).rgb);
-    float3 c2 = PqP2020ToYcbcr(texIn.Sample(sam, input.uv + float2(halfPixel.x, -halfPixel.y)).rgb);
-    float3 c3 = PqP2020ToYcbcr(texIn.Sample(sam, input.uv + float2(-halfPixel.x, halfPixel.y)).rgb);
-    float3 c4 = PqP2020ToYcbcr(texIn.Sample(sam, input.uv + float2(halfPixel.x, halfPixel.y)).rgb);
+    // Rec.2100 4:2:0 chroma is top-left co-sited. Linear sampling at these
+    // four phase points forms a separable 1-2-1 low-pass centered on the even
+    // luma sample. Its horizontal phase also matches SDR's left siting, so
+    // desktop/ClearType chroma is not shifted by an extra half luma pixel.
+    float2 topLeftPhase = input.uv - outputInvSize;
+    float3 c1 = PqP2020ToYcbcr(texIn.Sample(sam, topLeftPhase).rgb);
+    float3 c2 = PqP2020ToYcbcr(texIn.Sample(sam, topLeftPhase + float2(outputInvSize.x, 0.0)).rgb);
+    float3 c3 = PqP2020ToYcbcr(texIn.Sample(sam, topLeftPhase + float2(0.0, outputInvSize.y)).rgb);
+    float3 c4 = PqP2020ToYcbcr(texIn.Sample(sam, topLeftPhase + outputInvSize).rgb);
     float2 chroma = (float2(c1.y, c1.z) + float2(c2.y, c2.z) + float2(c3.y, c3.z) + float2(c4.y, c4.z)) * 0.25;
     return float4(P010UnormFromCode(chroma.x), P010UnormFromCode(chroma.y), 0.0, 1.0);
 }

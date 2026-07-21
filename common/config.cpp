@@ -1575,6 +1575,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.video.colorSpace = GetStr("Video", "color_space", "auto");
     config.video.colorRange = GetStr("Video", "color_range", "auto");
     config.video.chromaSubsampling = GetStr("Video", "chroma_subsampling", "auto");
+    config.video.hdrNominalPeakNits = GetBoundedInt("Video", "hdr_nominal_peak_nits", 1000, 100, 10000);
 
     // NVENC-specific settings (from [NVENC] section)
     config.video.preset = GetStr("NVENC", "preset", "p1");
