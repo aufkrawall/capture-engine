@@ -194,6 +194,8 @@ private:
     std::atomic<bool> isStopping = false;      // signaled by Stop()
     std::atomic<bool> flushRequested = false;  // signaled by Stop()
     std::atomic<bool> codecOpenFailed{false};  // Prevent infinite retry loop if codec fails to open
+    bool qsvSurfaceMappingLogged = false;
+    uint32_t qsvSurfaceMappingFailures = 0;
     std::atomic<bool> discardOutputRequested{false};
 
     std::string colorConversion = "d3d11";  // "d3d11" or "auto"
@@ -454,6 +456,7 @@ private:
                                           ID3D11Texture2D** preparedSource);
     void CleanupCursorCompositionResources();
     bool ConfigureAndOpenCodec();
+    AVFrame* PrepareEncoderInputFrame(AVFrame* d3d11Frame);
     bool ShouldEncodeHdrOutput() const;
     void UpdateSdrWhiteLevelForCaptureArea(int captureOriginX, int captureOriginY, UINT captureWidth,
                                            UINT captureHeight);

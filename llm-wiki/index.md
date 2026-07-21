@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-21 (stable fail-closed monitor selection plus the existing current build, capture, graphics, audio, screenshot, and security state; see configuration.md, wgc-capture.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-21 (AMF/oneVPL/MF encoding, stable fail-closed monitor selection, and the existing current build, capture, graphics, audio, screenshot, and security state; see hardware-encoding.md, configuration.md, wgc-capture.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -81,7 +81,9 @@ Primary sources:
 - `cfr-capture-sync.md`
   - Shared WGC/DXGI/inject CFR and A/V invariants, including atomic warm-up cancellation, capture-sync/CFR selection phase preservation with varying-cadence fallback, contiguous screen-grab packet PTS under overload, packet-only video validation, encoder-latency-independent inject audio targeting, max-rate variable-input WGC production, transactional startup, 60 ms audio-ingestion look-ahead, 300 ms WGC/DXGI look-ahead, nearest monotonic source selection, causal inject transport, convergent per-output overload recovery, and exact decoded stop/tail accounting. Last verified 2026-07-19. Stale-risk: medium.
 - `nvenc-encoding.md`
-  - NVENC hardware-frame ownership, safe CFR repeat encoding, startup capacity-warning suppression, lookahead/multipass/split-AQ/B-reference policy, native HEVC/AV1 split-frame multi-engine policy, AV1 S12M metadata safety, and bundled FFmpeg patch invariants. Last verified 2026-07-19. Stale-risk: medium (fresh driver/GPU matrix, including a multi-NVENC target, remains necessary).
+  - NVENC hardware-frame ownership, safe CFR repeat encoding, startup capacity-warning suppression, lookahead/multipass/split-AQ/B-reference policy, native HEVC/AV1 split-frame multi-engine policy, AV1 S12M metadata safety, and bundled FFmpeg patch invariants. Last verified 2026-07-21. Stale-risk: medium (fresh driver/GPU matrix, including a multi-NVENC target, remains necessary).
+- `hardware-encoding.md`
+  - AMD AMF, modern Intel oneVPL/Quick Sync, and Media Foundation hardware-frame ownership, native rate-control/quality/lookahead options, direct D3D11-to-QSV mapping, HDR metadata, diagnostics, and runtime-validation boundaries. Last verified 2026-07-21. Stale-risk: medium (fresh AMD and Intel runtime matrices remain necessary).
 - `performance-priority.md`
   - `[Performance]` priorities, `[Overlay]` queue priority, adapter-aware HAGS auto resolution, D3D11 priority persistence/readback, capture/encoder MMCSS QoS, and D3D12 queue constraints. Last verified 2026-07-18. Stale-risk: medium.
 - `recording-output-paths.md`

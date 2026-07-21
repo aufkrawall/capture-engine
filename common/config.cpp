@@ -1561,6 +1561,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.video.rateControl = GetStr("Video", "rate_control", "VBR");
     config.video.bitrate = GetStr("Video", "bitrate", "75Mbps");
     config.video.maxBitrate = GetStr("Video", "max_bitrate", "150Mbps");
+    config.video.bufferSize = GetStr("Video", "buffer_size", "");
     config.video.keyframeInterval = GetInt("Video", "keyframe_interval", 2);
     config.video.profile = GetStr("Video", "profile", "auto");
     config.video.bFrames = GetBoundedInt("Video", "b_frames", 0, 0, 4);
@@ -1589,11 +1590,42 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.video.aqStrength = GetBoundedInt("NVENC", "aq_strength", 0, 0, 15);
     config.video.bRefMode = GetStr("NVENC", "b_ref_mode", "auto");
 
+    // AMD AMF settings (from [AMF] section)
+    config.video.amfUsage = GetStr("AMF", "usage", "transcoding");
+    config.video.amfPreset = GetStr("AMF", "preset", "balanced");
+    config.video.amfQp = GetBoundedInt("AMF", "qp", 23, 0, 255);
+    config.video.amfAsyncDepth = GetBoundedInt("AMF", "async_depth", 16, 1, 42);
+    config.video.amfPreencode = GetBool("AMF", "preencode", false);
+    config.video.amfPreanalysis = GetBool("AMF", "preanalysis", false);
+    config.video.amfLookahead = GetStr("AMF", "lookahead", "off");
+    config.video.amfSpatialAq = GetBool("AMF", "spatial_aq", false);
+    config.video.amfTemporalAq = GetBool("AMF", "temporal_aq", false);
+    config.video.amfAqStrength = GetBoundedInt("AMF", "aq_strength", 1, 0, 2);
+    config.video.amfHighMotionQualityBoost = GetBool("AMF", "high_motion_quality_boost", false);
+    config.video.amfBRefMode = GetStr("AMF", "b_ref_mode", "auto");
+    config.video.amfEnforceHrd = GetBool("AMF", "enforce_hrd", false);
+    config.video.amfFillerData = GetBool("AMF", "filler_data", false);
+
+    // Intel oneVPL/Quick Sync settings (from [QuickSync] section)
+    config.video.qsvPreset = GetStr("QuickSync", "preset", "veryfast");
+    config.video.qsvQp = GetBoundedInt("QuickSync", "qp", 23, 0, 255);
+    config.video.qsvAsyncDepth = GetBoundedInt("QuickSync", "async_depth", 4, 1, 64);
+    config.video.qsvLowPower = GetStr("QuickSync", "low_power", "auto");
+    config.video.qsvLookahead = GetStr("QuickSync", "lookahead", "off");
+    config.video.qsvMbbRc = GetStr("QuickSync", "mbbrc", "auto");
+    config.video.qsvExtBrc = GetStr("QuickSync", "extbrc", "auto");
+    config.video.qsvAdaptiveI = GetStr("QuickSync", "adaptive_i", "auto");
+    config.video.qsvAdaptiveB = GetStr("QuickSync", "adaptive_b", "auto");
+    config.video.qsvLowDelayBrc = GetStr("QuickSync", "low_delay_brc", "auto");
+    config.video.qsvScenario = GetStr("QuickSync", "scenario", "unknown");
+
     // Media Foundation encoder settings (from [MediaFoundation] section)
     config.video.mfRateControl = GetStr("MediaFoundation", "rate_control", "quality");
     config.video.mfQuality = GetBoundedInt("MediaFoundation", "quality", 80, 0, 100);
-    config.video.mfScenario = GetStr("MediaFoundation", "scenario", "live_streaming");
+    config.video.mfScenario = GetStr("MediaFoundation", "scenario", "camera_record");
     config.video.mfHwEncoding = GetBool("MediaFoundation", "hw_encoding", true);
+    config.video.mfQualityVsSpeed = GetBoundedInt("MediaFoundation", "quality_vs_speed", -1, -1, 100);
+    config.video.mfLowLatency = GetBool("MediaFoundation", "low_latency", false);
 
     // GPU scaling
     config.video.scaling.enabled = GetBoolCompat("VideoScaling", "enabled", "Scaling", "enabled", false);

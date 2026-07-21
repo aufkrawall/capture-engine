@@ -337,6 +337,94 @@ TEST_F(ConfigTest, LegacyNvencAqOnlySuppliesMissingSplitAqValues) {
     EXPECT_FALSE(canonicalWins.video.temporalAq);
 }
 
+TEST_F(ConfigTest, ParseAmfQuickSyncAndMediaFoundationPolicies) {
+    WriteConfig(
+        "[Video]\n"
+        "buffer_size=240Mbps\n"
+        "[AMF]\n"
+        "usage=high_quality\n"
+        "preset=quality\n"
+        "qp=31\n"
+        "async_depth=12\n"
+        "preencode=true\n"
+        "preanalysis=true\n"
+        "lookahead=17\n"
+        "spatial_aq=true\n"
+        "temporal_aq=true\n"
+        "aq_strength=2\n"
+        "high_motion_quality_boost=true\n"
+        "b_ref_mode=enabled\n"
+        "enforce_hrd=true\n"
+        "filler_data=true\n"
+        "[QuickSync]\n"
+        "preset=slow\n"
+        "qp=27\n"
+        "async_depth=8\n"
+        "low_power=enabled\n"
+        "lookahead=24\n"
+        "mbbrc=enabled\n"
+        "extbrc=enabled\n"
+        "adaptive_i=disabled\n"
+        "adaptive_b=enabled\n"
+        "low_delay_brc=disabled\n"
+        "scenario=archive\n"
+        "[MediaFoundation]\n"
+        "scenario=camera_record\n"
+        "quality_vs_speed=73\n"
+        "low_latency=true\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.video.bufferSize, "240Mbps");
+    EXPECT_EQ(config.video.amfUsage, "high_quality");
+    EXPECT_EQ(config.video.amfPreset, "quality");
+    EXPECT_EQ(config.video.amfQp, 31);
+    EXPECT_EQ(config.video.amfAsyncDepth, 12);
+    EXPECT_TRUE(config.video.amfPreencode);
+    EXPECT_TRUE(config.video.amfPreanalysis);
+    EXPECT_EQ(config.video.amfLookahead, "17");
+    EXPECT_TRUE(config.video.amfSpatialAq);
+    EXPECT_TRUE(config.video.amfTemporalAq);
+    EXPECT_EQ(config.video.amfAqStrength, 2);
+    EXPECT_TRUE(config.video.amfHighMotionQualityBoost);
+    EXPECT_EQ(config.video.amfBRefMode, "enabled");
+    EXPECT_TRUE(config.video.amfEnforceHrd);
+    EXPECT_TRUE(config.video.amfFillerData);
+    EXPECT_EQ(config.video.qsvPreset, "slow");
+    EXPECT_EQ(config.video.qsvQp, 27);
+    EXPECT_EQ(config.video.qsvAsyncDepth, 8);
+    EXPECT_EQ(config.video.qsvLowPower, "enabled");
+    EXPECT_EQ(config.video.qsvLookahead, "24");
+    EXPECT_EQ(config.video.qsvMbbRc, "enabled");
+    EXPECT_EQ(config.video.qsvExtBrc, "enabled");
+    EXPECT_EQ(config.video.qsvAdaptiveI, "disabled");
+    EXPECT_EQ(config.video.qsvAdaptiveB, "enabled");
+    EXPECT_EQ(config.video.qsvLowDelayBrc, "disabled");
+    EXPECT_EQ(config.video.qsvScenario, "archive");
+    EXPECT_EQ(config.video.mfScenario, "camera_record");
+    EXPECT_EQ(config.video.mfQualityVsSpeed, 73);
+    EXPECT_TRUE(config.video.mfLowLatency);
+}
+
+TEST_F(ConfigTest, NewHardwareEncoderPoliciesHaveSafeDefaults) {
+    WriteConfig("[Video]\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_TRUE(config.video.bufferSize.empty());
+    EXPECT_EQ(config.video.amfUsage, "transcoding");
+    EXPECT_EQ(config.video.amfPreset, "balanced");
+    EXPECT_EQ(config.video.amfLookahead, "off");
+    EXPECT_EQ(config.video.qsvPreset, "veryfast");
+    EXPECT_EQ(config.video.qsvLookahead, "off");
+    EXPECT_EQ(config.video.qsvScenario, "unknown");
+    EXPECT_EQ(config.video.mfScenario, "camera_record");
+    EXPECT_EQ(config.video.mfQualityVsSpeed, -1);
+    EXPECT_FALSE(config.video.mfLowLatency);
+}
+
 TEST_F(ConfigTest, ParsePerformancePriorityValues) {
     WriteConfig(
         "[Performance]\n"

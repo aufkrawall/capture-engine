@@ -612,14 +612,28 @@ bool MediaScalingConfigEquals(const ScalingConfig& lhs, const ScalingConfig& rhs
 bool MediaVideoConfigEquals(const VideoConfig& lhs, const VideoConfig& rhs) {
     return lhs.encoder == rhs.encoder && lhs.fps == rhs.fps && lhs.container == rhs.container &&
            lhs.outputDir == rhs.outputDir && lhs.rateControl == rhs.rateControl && lhs.bitrate == rhs.bitrate &&
-           lhs.maxBitrate == rhs.maxBitrate && lhs.keyframeInterval == rhs.keyframeInterval &&
+           lhs.maxBitrate == rhs.maxBitrate && lhs.bufferSize == rhs.bufferSize &&
+           lhs.keyframeInterval == rhs.keyframeInterval &&
            lhs.preset == rhs.preset && lhs.tuning == rhs.tuning && lhs.multipass == rhs.multipass &&
            lhs.splitEncode == rhs.splitEncode && lhs.profile == rhs.profile && lhs.lookahead == rhs.lookahead &&
            lhs.spatialAq == rhs.spatialAq && lhs.temporalAq == rhs.temporalAq &&
            lhs.aqStrength == rhs.aqStrength && lhs.bFrames == rhs.bFrames && lhs.bRefMode == rhs.bRefMode &&
            lhs.customOptions == rhs.customOptions &&
-           lhs.captureCursor == rhs.captureCursor && lhs.qp == rhs.qp && lhs.mfRateControl == rhs.mfRateControl &&
-           lhs.mfQuality == rhs.mfQuality && lhs.mfScenario == rhs.mfScenario && lhs.mfHwEncoding == rhs.mfHwEncoding &&
+           lhs.captureCursor == rhs.captureCursor && lhs.qp == rhs.qp && lhs.amfUsage == rhs.amfUsage &&
+           lhs.amfPreset == rhs.amfPreset && lhs.amfQp == rhs.amfQp && lhs.amfAsyncDepth == rhs.amfAsyncDepth &&
+           lhs.amfPreencode == rhs.amfPreencode && lhs.amfPreanalysis == rhs.amfPreanalysis &&
+           lhs.amfLookahead == rhs.amfLookahead && lhs.amfSpatialAq == rhs.amfSpatialAq &&
+           lhs.amfTemporalAq == rhs.amfTemporalAq && lhs.amfAqStrength == rhs.amfAqStrength &&
+           lhs.amfHighMotionQualityBoost == rhs.amfHighMotionQualityBoost &&
+           lhs.amfBRefMode == rhs.amfBRefMode && lhs.amfEnforceHrd == rhs.amfEnforceHrd &&
+           lhs.amfFillerData == rhs.amfFillerData && lhs.qsvPreset == rhs.qsvPreset && lhs.qsvQp == rhs.qsvQp &&
+           lhs.qsvAsyncDepth == rhs.qsvAsyncDepth && lhs.qsvLowPower == rhs.qsvLowPower &&
+           lhs.qsvLookahead == rhs.qsvLookahead && lhs.qsvMbbRc == rhs.qsvMbbRc && lhs.qsvExtBrc == rhs.qsvExtBrc &&
+           lhs.qsvAdaptiveI == rhs.qsvAdaptiveI && lhs.qsvAdaptiveB == rhs.qsvAdaptiveB &&
+           lhs.qsvLowDelayBrc == rhs.qsvLowDelayBrc && lhs.qsvScenario == rhs.qsvScenario &&
+           lhs.mfRateControl == rhs.mfRateControl && lhs.mfQuality == rhs.mfQuality &&
+           lhs.mfScenario == rhs.mfScenario && lhs.mfHwEncoding == rhs.mfHwEncoding &&
+           lhs.mfQualityVsSpeed == rhs.mfQualityVsSpeed && lhs.mfLowLatency == rhs.mfLowLatency &&
            lhs.gpuPriority == rhs.gpuPriority && lhs.bitDepth == rhs.bitDepth && lhs.colorSpace == rhs.colorSpace &&
            lhs.colorRange == rhs.colorRange && lhs.chromaSubsampling == rhs.chromaSubsampling &&
            lhs.useVFR == rhs.useVFR && lhs.useVFR_AudioSync == rhs.useVFR_AudioSync &&

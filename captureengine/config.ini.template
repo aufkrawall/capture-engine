@@ -69,15 +69,18 @@ color_space=auto
 
 [Video]
 ; Choose an encoder supported by your GPU. CaptureEngine does not silently switch
-; to another encoder. Examples: av1_nvenc, hevc_amf, h264_qsv, av1_mf.
+; to another encoder. Examples: av1_nvenc, av1_amf, hevc_qsv, h264_mf.
 encoder=av1_nvenc
 ; Output frame rate, from 1 to 1000. Recordings use a constant frame rate.
 fps=120
-; VBR, CBR, CQ, or CQP. VBR and CBR use bitrate and max_bitrate. CQ uses qp as
-; its quality target and max_bitrate as a ceiling. CQP uses qp only.
+; VBR, CBR, CQ, or CQP. AMF and Quick Sync use their own qp setting below.
+; Quick Sync CQ uses QVBR when bitrate and max_bitrate are set, or ICQ when
+; bitrate is empty.
 rate_control=VBR
 bitrate=125Mbps
 max_bitrate=200Mbps
+; Optional VBV/HRD buffer size such as 250Mbps. Empty lets the encoder choose.
+buffer_size=
 ; Seconds between keyframes. 0 lets the encoder choose.
 keyframe_interval=2
 ; auto, or an encoder profile such as main, high, high10, main10, or rext.
@@ -135,16 +138,83 @@ aq_strength=0
 ; while b_frames=0. Leave auto normally; each can be costly with many B-frames.
 b_ref_mode=auto
 
+[AMF]
+; Used by h264_amf, hevc_amf, and av1_amf. The AMF runtime comes from the AMD
+; display driver; frames remain GPU-resident on the capture D3D11 device.
+; In addition to the common modes, [Video] rate_control accepts QVBR, HQVBR,
+; HQCBR, and VBR_LATENCY. CQ is the convenient QVBR alias.
+; transcoding, ultralowlatency, lowlatency, webcam, high_quality, or
+; lowlatency_high_quality.
+usage=transcoding
+; speed, balanced, quality, or high_quality.
+preset=balanced
+; Lower is higher quality. CQ uses 0-51. CQP uses 0-51 for H.264/HEVC and
+; 0-255 for AV1.
+qp=23
+; 1-42. Higher values allow more parallel work but add latency and surfaces.
+async_depth=16
+; Assisted rate control. These may improve compression but cost GPU time.
+preencode=false
+preanalysis=false
+; off, auto (20 frames), or 1-41. Lookahead enables preanalysis automatically.
+lookahead=off
+; Spatial AQ maps to VBAQ/CAQ. Temporal AQ uses AMF preanalysis.
+spatial_aq=false
+temporal_aq=false
+; Preanalysis CAQ strength: 0=low, 1=medium, 2=high.
+aq_strength=1
+high_motion_quality_boost=false
+; auto, disabled, or enabled. H.264 only and meaningful with B-frames.
+; H.264/AV1 support up to 3 B-frames; HEVC AMF currently exposes none.
+b_ref_mode=auto
+; Useful for strict streaming targets; normally leave both false for recording.
+enforce_hrd=false
+filler_data=false
+
+[QuickSync]
+; Used by h264_qsv, hevc_qsv, and av1_qsv through the bundled oneVPL dispatcher.
+; The encoder is derived from the capture D3D11 device and uses direct QSV
+; surface mapping, so no VAAPI layer or CPU frame transfer is involved.
+; [Video] rate_control also accepts QVBR and ICQ. CQ selects QVBR when both
+; bitrate fields are present and ICQ when bitrate is empty.
+; veryfast, faster, fast, medium, slow, slower, or veryslow.
+preset=veryfast
+; Lower is higher quality. CQ/ICQ uses 1-51. CQP allows 0-51, or 0-255 for AV1.
+qp=23
+; Maximum in-flight processing depth. The oneVPL/FFmpeg default is 4.
+async_depth=4
+; auto, disabled, or enabled. Low-power mode may restrict other features.
+low_power=auto
+; off, auto (20 frames), or 1-100. H.264 uses native LA/LA_ICQ; HEVC/AV1 use
+; oneVPL ExtBRC lookahead. Lookahead is not compatible with CBR or CQP.
+lookahead=off
+; MB-level bitrate control (H.264/HEVC), extended BRC, and adaptive frame
+; placement. Each accepts auto, disabled, or enabled.
+mbbrc=auto
+extbrc=auto
+adaptive_i=auto
+adaptive_b=auto
+low_delay_brc=auto
+; unknown, displayremoting, videoconference, archive, livestreaming,
+; cameracapture, videosurveillance, gamestreaming, or remotegaming.
+; AV1 currently ignores this oneVPL hint.
+scenario=unknown
+
 [MediaFoundation]
 ; Used by encoders ending in _mf.
-; cbr, pc_vbr, u_vbr, quality, ld_vbr, or g_vbr.
+; default, cbr, pc_vbr, u_vbr, quality, ld_vbr, g_vbr, or gld_vbr.
 rate_control=quality
 ; Quality target from 0 to 100. Higher values favor image quality.
 quality=80
-; live_streaming, archive, camera_record, or video_conference.
-scenario=live_streaming
+; camera_record requests CFR behavior from the MFT and is the recording default.
+; Other values: default, live_streaming, archive, or video_conference.
+scenario=camera_record
 ; true requests hardware encoding. false allows software encoding instead.
 hw_encoding=true
+; -1 uses the MFT default. 0-100 is passed as its quality-vs-speed policy.
+quality_vs_speed=-1
+; Low latency disables B-frames. Leave false for normal recordings.
+low_latency=false
 
 [VideoScaling]
 enabled=false

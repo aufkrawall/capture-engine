@@ -19,6 +19,7 @@
 
 extern "C" {
 #include <libavutil/intreadwrite.h>
+#include <libavutil/mastering_display_metadata.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
@@ -796,6 +797,11 @@ bool IsDirectRgbD3D11SwFormat(AVPixelFormat swFormat) {
     return swFormat == AV_PIX_FMT_BGRA || swFormat == AV_PIX_FMT_X2BGR10;
 }
 
+bool UsesQsvHardwareFrames(const std::string& encoderName) {
+    return encoderName.size() >= 4 &&
+           _stricmp(encoderName.c_str() + encoderName.size() - 4, "_qsv") == 0;
+}
+
 std::string ResolveRequestedBitDepth(const VideoConfig& config, bool prefer10Bit) {
     if (config.bitDepth.empty() || _stricmp(config.bitDepth.c_str(), "auto") == 0) {
         return prefer10Bit ? "10" : "8";
@@ -834,11 +840,25 @@ bool ResolveVideoFormat(const VideoConfig& config, bool isHDR, bool prefer10Bit,
 
     if (_stricmp(resolved.chroma.c_str(), "420") == 0) {
         resolved.chroma = "420";
-        resolved.codecPixFmt = AV_PIX_FMT_D3D11;
+        resolved.codecPixFmt = UsesQsvHardwareFrames(config.encoder) ? AV_PIX_FMT_QSV : AV_PIX_FMT_D3D11;
         resolved.d3d11SwFormat = resolved.use10Bit ? AV_PIX_FMT_P010 : AV_PIX_FMT_NV12;
         resolved.directDxgiFormat = DXGI_FORMAT_UNKNOWN;
         resolved.usesVideoProcessor = true;
         resolved.requiresEvenDimensions = true;
+        if (resolved.codecPixFmt == AV_PIX_FMT_QSV) {
+            if (!SupportsCodecPixelFormat(codec, AV_PIX_FMT_QSV) ||
+                !SupportsCodecPixelFormat(codec, resolved.d3d11SwFormat)) {
+                if (error) {
+                    *error = "[VideoEncoder] The selected Quick Sync codec does not support the requested bit depth";
+                }
+                return false;
+            }
+        } else if (!SupportsD3D11HwInputFormat(codec, resolved.d3d11SwFormat)) {
+            if (error) {
+                *error = "[VideoEncoder] The selected encoder does not support the requested D3D11 hardware input format";
+            }
+            return false;
+        }
         *out = resolved;
         return true;
     }
@@ -894,6 +914,35 @@ void ApplyFrameColorMetadata(AVFrame* frame, const AVCodecContext* codec) {
     frame->color_trc = codec->color_trc;
     frame->colorspace = codec->colorspace;
     frame->chroma_location = codec->chroma_sample_location;
+
+    if (codec->color_trc != AVCOL_TRC_SMPTE2084 || codec->color_primaries != AVCOL_PRI_BT2020) {
+        return;
+    }
+
+    if (!av_frame_get_side_data(frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA)) {
+        AVMasteringDisplayMetadata* mastering = av_mastering_display_metadata_create_side_data(frame);
+        if (mastering) {
+            mastering->display_primaries[0][0] = av_make_q(708, 1000);
+            mastering->display_primaries[0][1] = av_make_q(292, 1000);
+            mastering->display_primaries[1][0] = av_make_q(170, 1000);
+            mastering->display_primaries[1][1] = av_make_q(797, 1000);
+            mastering->display_primaries[2][0] = av_make_q(131, 1000);
+            mastering->display_primaries[2][1] = av_make_q(46, 1000);
+            mastering->white_point[0] = av_make_q(3127, 10000);
+            mastering->white_point[1] = av_make_q(3290, 10000);
+            mastering->max_luminance = av_make_q(1000, 1);
+            mastering->min_luminance = av_make_q(5, 1000);
+            mastering->has_primaries = 1;
+            mastering->has_luminance = 1;
+        }
+    }
+    if (!av_frame_get_side_data(frame, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL)) {
+        AVContentLightMetadata* light = av_content_light_metadata_create_side_data(frame);
+        if (light) {
+            light->MaxCLL = 1000;
+            light->MaxFALL = 400;
+        }
+    }
 }
 
 DXGI_COLOR_SPACE_TYPE GetVideoProcessorInputColorSpace(DXGI_FORMAT format, bool isHDR, bool forceLinear = false) {
@@ -1620,6 +1669,12 @@ void VideoEncoder::ReleaseInjectDeviceStateForScreenGrab() {
         d3d11Device->Release();
         d3d11Device = nullptr;
     }
+    if (hwFramesCtx) {
+        av_buffer_unref(&hwFramesCtx);
+    }
+    if (hwDeviceCtx) {
+        av_buffer_unref(&hwDeviceCtx);
+    }
     if (d3d11DeviceCtx) {
         av_buffer_unref(&d3d11DeviceCtx);
     }
@@ -2095,6 +2150,7 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     DLL_Log("[VideoEncoder] rate_control=%s", savedConfig.rateControl.c_str());
     DLL_Log("[VideoEncoder] bitrate=%s", savedConfig.bitrate.c_str());
     DLL_Log("[VideoEncoder] max_bitrate=%s", savedConfig.maxBitrate.c_str());
+    DLL_Log("[VideoEncoder] buffer_size=%s", savedConfig.bufferSize.empty() ? "(auto)" : savedConfig.bufferSize.c_str());
     DLL_Log("[VideoEncoder] profile=%s", savedConfig.profile.c_str());
     DLL_Log("[VideoEncoder] lookahead=%s", savedConfig.lookahead.c_str());
     DLL_Log("[VideoEncoder] spatial_aq=%s temporal_aq=%s aq_strength=%d", savedConfig.spatialAq ? "true" : "false",
@@ -2114,6 +2170,33 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
 
     // Check encoder type for option compatibility
     bool isMF = (savedConfig.encoder.find("_mf") != std::string::npos);
+    bool isAMF = (savedConfig.encoder.find("_amf") != std::string::npos);
+    bool isQSV = (savedConfig.encoder.find("_qsv") != std::string::npos);
+    if (isAMF) {
+        DLL_Log(
+            "[VideoEncoder] AMF usage=%s preset=%s qp=%d async_depth=%d preencode=%d preanalysis=%d "
+            "lookahead=%s spatial_aq=%d temporal_aq=%d",
+            savedConfig.amfUsage.c_str(), savedConfig.amfPreset.c_str(), savedConfig.amfQp, savedConfig.amfAsyncDepth,
+            savedConfig.amfPreencode ? 1 : 0, savedConfig.amfPreanalysis ? 1 : 0, savedConfig.amfLookahead.c_str(),
+            savedConfig.amfSpatialAq ? 1 : 0, savedConfig.amfTemporalAq ? 1 : 0);
+        DLL_Log("[VideoEncoder] AMF aq_strength=%d high_motion_boost=%d b_ref_mode=%s enforce_hrd=%d filler=%d",
+                savedConfig.amfAqStrength, savedConfig.amfHighMotionQualityBoost ? 1 : 0,
+                savedConfig.amfBRefMode.c_str(), savedConfig.amfEnforceHrd ? 1 : 0,
+                savedConfig.amfFillerData ? 1 : 0);
+    } else if (isQSV) {
+        DLL_Log(
+            "[VideoEncoder] Quick Sync preset=%s qp=%d async_depth=%d low_power=%s lookahead=%s mbbrc=%s "
+            "extbrc=%s adaptive_i=%s adaptive_b=%s low_delay_brc=%s scenario=%s",
+            savedConfig.qsvPreset.c_str(), savedConfig.qsvQp, savedConfig.qsvAsyncDepth,
+            savedConfig.qsvLowPower.c_str(), savedConfig.qsvLookahead.c_str(), savedConfig.qsvMbbRc.c_str(),
+            savedConfig.qsvExtBrc.c_str(), savedConfig.qsvAdaptiveI.c_str(), savedConfig.qsvAdaptiveB.c_str(),
+            savedConfig.qsvLowDelayBrc.c_str(), savedConfig.qsvScenario.c_str());
+    } else if (isMF) {
+        DLL_Log("[VideoEncoder] Media Foundation rate_control=%s quality=%d scenario=%s hw=%d quality_vs_speed=%d "
+                "low_latency=%d",
+                savedConfig.mfRateControl.c_str(), savedConfig.mfQuality, savedConfig.mfScenario.c_str(),
+                savedConfig.mfHwEncoding ? 1 : 0, savedConfig.mfQualityVsSpeed, savedConfig.mfLowLatency ? 1 : 0);
+    }
 
     // Set color properties from config (with auto-detection defaults)
     // Color space
@@ -2220,12 +2303,34 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
             DLL_Log("[VideoEncoder]   %s=%s (required)", option.key.c_str(), option.value.c_str());
         }
     }
-    DLL_Log("[VideoEncoder]   bitRate=%lld maxBitRate=%lld maxBFrames=%d", optionPlan.bitRate.value_or(0),
-            optionPlan.maxBitRate.value_or(0), optionPlan.maxBFrames);
+    DLL_Log("[VideoEncoder]   bitRate=%lld maxBitRate=%lld bufferSize=%lld globalQuality=%d profile=%d maxBFrames=%d",
+            optionPlan.bitRate.value_or(0), optionPlan.maxBitRate.value_or(0), optionPlan.bufferSize.value_or(0),
+            optionPlan.globalQuality.value_or(0), optionPlan.codecProfile.value_or(AV_PROFILE_UNKNOWN),
+            optionPlan.maxBFrames);
     DLL_Log("[VideoEncoder] ======================================");
 
     codecCtx->bit_rate = optionPlan.bitRate.value_or(0);
     codecCtx->rc_max_rate = optionPlan.maxBitRate.value_or(0);
+    codecCtx->rc_buffer_size = optionPlan.bufferSize.value_or(0);
+    codecCtx->rc_initial_buffer_occupancy =
+        optionPlan.bufferSize.has_value() ? *optionPlan.bufferSize - (*optionPlan.bufferSize / 4) : 0;
+    if (optionPlan.globalQuality.has_value()) {
+        codecCtx->global_quality = optionPlan.scaleGlobalQualityByQp2Lambda
+                                       ? *optionPlan.globalQuality * FF_QP2LAMBDA
+                                       : *optionPlan.globalQuality;
+    }
+    if (optionPlan.codecProfile.has_value()) {
+        codecCtx->profile = *optionPlan.codecProfile;
+    }
+    if (optionPlan.useConstantQscale) {
+        codecCtx->flags |= AV_CODEC_FLAG_QSCALE;
+    }
+    if (optionPlan.compressionLevel.has_value()) {
+        codecCtx->compression_level = *optionPlan.compressionLevel;
+    }
+    if (optionPlan.useLowDelay) {
+        codecCtx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    }
     codecCtx->max_b_frames = optionPlan.maxBFrames;
 
     // Equalize B-frame quality with P-frames.  For software encoders this
@@ -2248,16 +2353,6 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
         codecCtx->gop_size = savedConfig.fps * savedConfig.keyframeInterval;
     } else if (savedConfig.keyframeInterval < 0) {
         DLL_Log("[VideoEncoder] keyframe_interval=%d is invalid; using encoder default", savedConfig.keyframeInterval);
-    }
-
-    if (isMF) {
-        if (!savedConfig.mfRateControl.empty())
-            av_dict_set(&opts, "rate_control", savedConfig.mfRateControl.c_str(), 0);
-        if (savedConfig.mfQuality >= 0 && savedConfig.mfQuality <= 100)
-            av_dict_set_int(&opts, "quality", savedConfig.mfQuality, 0);
-        if (!savedConfig.mfScenario.empty())
-            av_dict_set(&opts, "scenario", savedConfig.mfScenario.c_str(), 0);
-        av_dict_set_int(&opts, "hw_encoding", savedConfig.mfHwEncoding ? 1 : 0, 0);
     }
 
     for (const auto& option : optionPlan.customOptions) {
@@ -2560,12 +2655,20 @@ bool VideoEncoder::EnsureDevice() {
     }
 
     codecCtx->pix_fmt = resolvedFormat.codecPixFmt;
+
+    // 3. D3D11 Frames Context
+    if (codecCtx->hw_frames_ctx) {
+        av_buffer_unref(&codecCtx->hw_frames_ctx);
+    }
     if (codecCtx->hw_device_ctx) {
         av_buffer_unref(&codecCtx->hw_device_ctx);
     }
-    codecCtx->hw_device_ctx = av_buffer_ref(d3d11DeviceCtx);
-
-    // 3. D3D11 Frames Context
+    if (hwFramesCtx) {
+        av_buffer_unref(&hwFramesCtx);
+    }
+    if (hwDeviceCtx) {
+        av_buffer_unref(&hwDeviceCtx);
+    }
     if (d3d11FramesCtx) {
         av_buffer_unref(&d3d11FramesCtx);
     }
@@ -2618,15 +2721,113 @@ bool VideoEncoder::EnsureDevice() {
         DLL_Log("[VideoEncoder] Failed to init D3D11 frames context");
         return false;
     }
-    if (codecCtx->hw_frames_ctx) {
-        av_buffer_unref(&codecCtx->hw_frames_ctx);
+
+    if (resolvedFormat.codecPixFmt == AV_PIX_FMT_QSV) {
+        int ret = av_hwdevice_ctx_create_derived(&hwDeviceCtx, AV_HWDEVICE_TYPE_QSV, d3d11DeviceCtx, 0);
+        if (ret < 0 || !hwDeviceCtx) {
+            char errbuf[AV_ERROR_MAX_STRING_SIZE];
+            av_strerror(ret, errbuf, sizeof(errbuf));
+            DLL_Log("[VideoEncoder] Failed to derive oneVPL/QSV device from the capture D3D11 device: %d (%s)", ret,
+                    errbuf);
+            codecOpenFailed = true;
+            return false;
+        }
+        if (!DeviceSupportsHwFrameSwFormat(hwDeviceCtx, resolvedFormat.d3d11SwFormat)) {
+            DLL_Log("[VideoEncoder] oneVPL/QSV device does not support sw_format=%s on the selected adapter",
+                    GetPixFmtNameSafe(resolvedFormat.d3d11SwFormat));
+            codecOpenFailed = true;
+            return false;
+        }
+
+        ret = av_hwframe_ctx_create_derived(&hwFramesCtx, AV_PIX_FMT_QSV, hwDeviceCtx, d3d11FramesCtx,
+                                            AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
+        if (ret < 0 || !hwFramesCtx) {
+            char errbuf[AV_ERROR_MAX_STRING_SIZE];
+            av_strerror(ret, errbuf, sizeof(errbuf));
+            DLL_Log("[VideoEncoder] Failed to derive zero-copy QSV frames from D3D11: %d (%s)", ret, errbuf);
+            codecOpenFailed = true;
+            return false;
+        }
+        DLL_Log("[VideoEncoder] oneVPL/QSV active on the capture adapter via direct D3D11 surface mapping");
+    } else {
+        hwDeviceCtx = av_buffer_ref(d3d11DeviceCtx);
+        hwFramesCtx = av_buffer_ref(d3d11FramesCtx);
+        if (!hwDeviceCtx || !hwFramesCtx) {
+            DLL_Log("[VideoEncoder] Failed to reference D3D11 hardware contexts for encoder input");
+            return false;
+        }
     }
-    codecCtx->hw_frames_ctx = av_buffer_ref(d3d11FramesCtx);
+
+    codecCtx->hw_device_ctx = av_buffer_ref(hwDeviceCtx);
+    codecCtx->hw_frames_ctx = av_buffer_ref(hwFramesCtx);
+    if (!codecCtx->hw_device_ctx || !codecCtx->hw_frames_ctx) {
+        DLL_Log("[VideoEncoder] Failed to attach active hardware contexts to codec");
+        return false;
+    }
     codecCtx->extra_hw_frames = 5;
     codecCtx->width = framesWidth;
     codecCtx->height = framesHeight;
 
     return ConfigureAndOpenCodec();
+}
+
+AVFrame* VideoEncoder::PrepareEncoderInputFrame(AVFrame* d3d11Frame) {
+    if (!d3d11Frame) {
+        return nullptr;
+    }
+    if (!UsesQsvHardwareFrames(savedConfig.encoder)) {
+        return d3d11Frame;
+    }
+    if (!hwFramesCtx || d3d11Frame->format != AV_PIX_FMT_D3D11) {
+        DLL_Log("[VideoEncoder] Cannot map QSV input: missing derived frames context or non-D3D11 source");
+        return nullptr;
+    }
+
+    AVFrame* qsvFrame = av_frame_alloc();
+    if (!qsvFrame) {
+        return nullptr;
+    }
+    qsvFrame->format = AV_PIX_FMT_QSV;
+    qsvFrame->width = d3d11Frame->width;
+    qsvFrame->height = d3d11Frame->height;
+    qsvFrame->hw_frames_ctx = av_buffer_ref(hwFramesCtx);
+    if (!qsvFrame->hw_frames_ctx) {
+        av_frame_free(&qsvFrame);
+        return nullptr;
+    }
+
+    const int mapResult =
+        av_hwframe_map(qsvFrame, d3d11Frame, AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT);
+    if (mapResult < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(mapResult, errbuf, sizeof(errbuf));
+        qsvSurfaceMappingFailures++;
+        if (qsvSurfaceMappingFailures <= 3 || qsvSurfaceMappingFailures % 300 == 0) {
+            DLL_Log("[VideoEncoder] Direct D3D11-to-QSV surface mapping failed: %d (%s), failures=%u", mapResult,
+                    errbuf, qsvSurfaceMappingFailures);
+        }
+        av_frame_free(&qsvFrame);
+        return nullptr;
+    }
+
+    const int copyResult = av_frame_copy_props(qsvFrame, d3d11Frame);
+    if (copyResult < 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(copyResult, errbuf, sizeof(errbuf));
+        qsvSurfaceMappingFailures++;
+        if (qsvSurfaceMappingFailures <= 3 || qsvSurfaceMappingFailures % 300 == 0) {
+            DLL_Log("[VideoEncoder] Failed to copy frame properties to QSV surface: %d (%s), failures=%u",
+                    copyResult, errbuf, qsvSurfaceMappingFailures);
+        }
+        av_frame_free(&qsvFrame);
+        return nullptr;
+    }
+
+    if (!qsvSurfaceMappingLogged) {
+        DLL_Log("[VideoEncoder] First D3D11 frame mapped directly to a oneVPL/QSV surface (no CPU transfer)");
+        qsvSurfaceMappingLogged = true;
+    }
+    return qsvFrame;
 }
 
 int VideoEncoder::AddAudioStream(const AudioConfig& config, AVCodecContext* audioCtx, int track) {
@@ -2876,8 +3077,9 @@ bool VideoEncoder::Start() {
 
         DLL_Log("[VideoEncoder] Recreated codec context for new recording");
 
-        if (d3d11FramesCtx) {
-            codecCtx->hw_frames_ctx = av_buffer_ref(d3d11FramesCtx);
+        if (hwFramesCtx) {
+            codecCtx->hw_device_ctx = av_buffer_ref(hwDeviceCtx);
+            codecCtx->hw_frames_ctx = av_buffer_ref(hwFramesCtx);
             codecCtx->extra_hw_frames = 5;
         }
     }
@@ -3310,6 +3512,12 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                 DLL_Log("[VideoEncoder] Reinitializing encoder at correct resolution (pre-file-open)");
                 CleanupVideoProcessor();
                 avcodec_free_context(&codecCtx);
+                if (hwFramesCtx) {
+                    av_buffer_unref(&hwFramesCtx);
+                }
+                if (hwDeviceCtx) {
+                    av_buffer_unref(&hwDeviceCtx);
+                }
                 if (d3d11FramesCtx) {
                     av_buffer_unref(&d3d11FramesCtx);
                     d3d11FramesCtx = nullptr;
@@ -4139,9 +4347,15 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     bool success = true;
 
     d3d11Frame->pts = targetPts;
+    AVFrame* encoderInputFrame = PrepareEncoderInputFrame(d3d11Frame);
 
-    if (success) {
-        success = sendFrame(d3d11Frame);
+    if (encoderInputFrame) {
+        success = sendFrame(encoderInputFrame);
+    } else {
+        success = false;
+    }
+    if (encoderInputFrame != d3d11Frame) {
+        av_frame_free(&encoderInputFrame);
     }
 
     const uint64_t timingNow = GetTickCount64();
@@ -4579,14 +4793,18 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     bool success = true;
 
     d3d11Frame->pts = targetPts;
+    AVFrame* encoderInputFrame = PrepareEncoderInputFrame(d3d11Frame);
 
     // Debug: Log input frame PTS
     if (encodeFrameCounter < 20 || encodeFrameCounter % 1000 == 0) {
         DLL_Log("[Framegrab DEBUG] Sending frame %d with input PTS=%lld", encodeFrameCounter, d3d11Frame->pts);
     }
 
-    if (success) {
-        success = sendFrame(d3d11Frame);
+    if (encoderInputFrame) {
+        success = sendFrame(encoderInputFrame);
+        if (encoderInputFrame != d3d11Frame) {
+            av_frame_free(&encoderInputFrame);
+        }
         if (success) {
             lastAssignedVideoPts = d3d11Frame->pts;
             outputFrameCount++;
@@ -4596,6 +4814,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
                 repeatSourceNeedsCursorRecompose = false;
             }
         }
+    } else {
+        success = false;
     }
 
     if (!success) {
@@ -4830,10 +5050,14 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     };
 
     d3d11Frame->pts = targetPts;
+    AVFrame* encoderInputFrame = PrepareEncoderInputFrame(d3d11Frame);
 
     auto encodeStart = PerfTimer::now();
-    const bool success = sendFrame(d3d11Frame);
+    const bool success = encoderInputFrame && sendFrame(encoderInputFrame);
     auto afterEncode = PerfTimer::now();
+    if (encoderInputFrame != d3d11Frame) {
+        av_frame_free(&encoderInputFrame);
+    }
 
     if (!success) {
         av_packet_free(&pkt);
@@ -4902,6 +5126,11 @@ void VideoEncoder::CleanupResources() {
         codecCtx = nullptr;
     }
 
+    if (hwFramesCtx)
+        av_buffer_unref(&hwFramesCtx);
+    if (hwDeviceCtx)
+        av_buffer_unref(&hwDeviceCtx);
+
     if (preserveEncoderTextures) {
         // Keep D3D11 device/context alive — textures are bound to it.
         // Only free FFmpeg HW contexts; they'll be recreated in EnsureDevice().
@@ -4912,11 +5141,6 @@ void VideoEncoder::CleanupResources() {
         // Reset initDone so EnsureDevice() rebuilds FFmpeg contexts but reuses the device
         initDone = false;
     }
-
-    if (hwDeviceCtx)
-        av_buffer_unref(&hwDeviceCtx);
-    if (hwFramesCtx)
-        av_buffer_unref(&hwFramesCtx);
 
     for (int i = 0; i < SHARED_TEXTURE_SLOT_COUNT; i++) {
         if (cachedSharedTextures[i]) {
@@ -5023,6 +5247,8 @@ void VideoEncoder::CleanupResources() {
     encoderPacketLatencyMaxUs = 0;
     encoderEagainDrainCount = 0;
     encoderTimingLastLogTick = 0;
+    qsvSurfaceMappingLogged = false;
+    qsvSurfaceMappingFailures = 0;
     asyncWriteErrorCount = 0;
     if (outputReservation.CleanupOwnedFile()) {
         DLL_Log("[VideoEncoder] Removed unpublished staging output during cleanup: %s", outputFilename.c_str());
@@ -5083,6 +5309,10 @@ void VideoEncoder::ReleasePreservedEncoderTextures() {
         d3d11Device->Release();
         d3d11Device = nullptr;
     }
+    if (hwFramesCtx)
+        av_buffer_unref(&hwFramesCtx);
+    if (hwDeviceCtx)
+        av_buffer_unref(&hwDeviceCtx);
     if (d3d11DeviceCtx)
         av_buffer_unref(&d3d11DeviceCtx);
     if (d3d11FramesCtx)

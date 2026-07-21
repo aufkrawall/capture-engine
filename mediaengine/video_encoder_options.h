@@ -21,6 +21,13 @@ struct EncoderOptionPlan {
     std::vector<EncoderOption> requiredOptions;
     std::optional<int64_t> bitRate;
     std::optional<int64_t> maxBitRate;
+    std::optional<int64_t> bufferSize;
+    std::optional<int> globalQuality;
+    std::optional<int> codecProfile;
+    bool scaleGlobalQualityByQp2Lambda = false;
+    std::optional<int> compressionLevel;
+    bool useConstantQscale = false;
+    bool useLowDelay = false;
     int maxBFrames = 0;
     bool isHardwareEncoder = false;
     std::vector<std::string> warnings;

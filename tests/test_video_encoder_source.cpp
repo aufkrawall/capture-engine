@@ -40,6 +40,16 @@ std::string ReadVideoColorShaderSource() {
     return contents.str();
 }
 
+size_t CountOccurrences(const std::string& source, const std::string& needle) {
+    size_t count = 0;
+    size_t position = 0;
+    while ((position = source.find(needle, position)) != std::string::npos) {
+        count++;
+        position += needle.size();
+    }
+    return count;
+}
+
 }  // namespace
 
 TEST(VideoEncoderSourceTest, CursorShaderCompilesAndCompilerModuleOutlivesReturnedBlobs) {
@@ -154,8 +164,8 @@ TEST(VideoEncoderSourceTest, Av1NvencSafetyOptionsOverrideCustomOptionsBeforeCod
     const std::string source = ReadVideoEncoderSource();
     ASSERT_FALSE(source.empty());
 
-    const size_t customApply = source.find("for (const auto& option : optionPlan.customOptions)",
-                                           source.find("if (isMF)"));
+    const size_t configure = source.find("bool VideoEncoder::ConfigureAndOpenCodec()");
+    const size_t customApply = source.find("for (const auto& option : optionPlan.customOptions)", configure);
     const size_t requiredApply = source.find("for (const auto& option : optionPlan.requiredOptions)", customApply);
     const size_t codecOpen = source.find("avcodec_open2(codecCtx, codec, &opts)", requiredApply);
     ASSERT_NE(customApply, std::string::npos);
@@ -177,6 +187,36 @@ TEST(VideoEncoderSourceTest, VideoProcessorOutputsAreOwnedByFfmpegHardwareFrames
               std::string::npos);
     EXPECT_EQ(source.find("nv12StagingTextures"), std::string::npos);
     EXPECT_EQ(source.find("av_buffer_create(reinterpret_cast<uint8_t*>(nv12Tex)"), std::string::npos);
+}
+
+TEST(VideoEncoderSourceTest, QuickSyncDerivesOneVplSurfacesDirectlyFromCaptureD3D11Frames) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("av_hwdevice_ctx_create_derived(&hwDeviceCtx, AV_HWDEVICE_TYPE_QSV, d3d11DeviceCtx"),
+              std::string::npos);
+    EXPECT_NE(source.find("av_hwframe_ctx_create_derived(&hwFramesCtx, AV_PIX_FMT_QSV, hwDeviceCtx, d3d11FramesCtx"),
+              std::string::npos);
+    EXPECT_NE(source.find("av_hwframe_map(qsvFrame, d3d11Frame, AV_HWFRAME_MAP_READ | AV_HWFRAME_MAP_DIRECT)"),
+              std::string::npos);
+    EXPECT_NE(source.find("resolved.codecPixFmt = UsesQsvHardwareFrames(config.encoder) ? AV_PIX_FMT_QSV"),
+              std::string::npos);
+    EXPECT_GE(CountOccurrences(source, "PrepareEncoderInputFrame(d3d11Frame)"), 3u);
+    EXPECT_EQ(source.find("av_hwframe_transfer_data"), std::string::npos);
+    EXPECT_NE(source.find("no CPU transfer"), std::string::npos);
+}
+
+TEST(VideoEncoderSourceTest, HdrFramesCarryBackendNeutralStaticMetadata) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    EXPECT_NE(source.find("av_mastering_display_metadata_create_side_data(frame)"), std::string::npos);
+    EXPECT_NE(source.find("av_content_light_metadata_create_side_data(frame)"), std::string::npos);
+    EXPECT_NE(source.find("mastering->has_primaries = 1"), std::string::npos);
+    EXPECT_NE(source.find("mastering->has_luminance = 1"), std::string::npos);
+    EXPECT_NE(source.find("light->MaxCLL = 1000"), std::string::npos);
+    EXPECT_NE(source.find("light->MaxFALL = 400"), std::string::npos);
+    EXPECT_NE(source.find("av_frame_copy_props(qsvFrame, d3d11Frame)"), std::string::npos);
 }
 
 TEST(VideoEncoderSourceTest, MetadataDurationDiagnosticsRunAfterTrailerAndIgnoreUnavailableFields) {

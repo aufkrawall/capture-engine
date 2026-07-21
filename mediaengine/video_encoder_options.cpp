@@ -1,10 +1,15 @@
 #include "video_encoder_options.h"
+#include "video_encoder_backend_options.h"
 
 #include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <limits>
 #include <string_view>
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+}
 
 namespace ce::video {
 namespace {
@@ -29,10 +34,7 @@ struct EncoderKind {
     EncoderBackend backend = EncoderBackend::kUnknown;
 };
 
-struct BitrateUsage {
-    bool applyBitrate = true;
-    bool applyMaxBitrate = true;
-};
+using BitrateUsage = detail::BackendBitrateUsage;
 
 struct ProfileDecision {
     std::string profile;
@@ -40,10 +42,11 @@ struct ProfileDecision {
     std::vector<std::string> warnings;
 };
 
-BitrateUsage MakeBitrateUsage(bool applyBitrate, bool applyMaxBitrate) {
+BitrateUsage MakeBitrateUsage(bool applyBitrate, bool applyMaxBitrate, bool applyBufferSize = true) {
     BitrateUsage usage;
     usage.applyBitrate = applyBitrate;
     usage.applyMaxBitrate = applyMaxBitrate;
+    usage.applyBufferSize = applyBufferSize;
     return usage;
 }
 
@@ -110,8 +113,11 @@ EncoderKind ClassifyEncoder(std::string_view encoderName) {
 }
 
 bool SupportsProfileOption(const EncoderKind& kind) {
-    if (kind.backend == EncoderBackend::kMF || kind.family == CodecFamily::kUnknown) {
+    if (kind.family == CodecFamily::kUnknown) {
         return false;
+    }
+    if (kind.backend == EncoderBackend::kMF) {
+        return kind.family == CodecFamily::kH264;
     }
     if (kind.family == CodecFamily::kAV1 && kind.backend == EncoderBackend::kNVENC) {
         return false;
@@ -466,23 +472,24 @@ BitrateUsage AddRateControlOptions(const VideoConfig& config, const EncoderKind&
             if (!TrimAscii(config.maxBitrate).empty()) {
                 AddWarning(plan, "max_bitrate is ignored when NVENC rate_control=constqp");
             }
-            return MakeBitrateUsage(false, false);
+            return MakeBitrateUsage(false, false, false);
         }
 
         AddError(plan, "Unsupported NVENC rate_control value: " + config.rateControl);
         return {};
     }
 
-    if (kind.backend != EncoderBackend::kMF) {
-        if (lower == "vbr" || lower == "cbr") {
-            AddGeneratedOption(plan, "rc", lower);
-        } else if (lower == "cq" || lower == "cqp" || lower == "constqp") {
-            AddGeneratedOption(plan, "rc", "constqp");
-            AddWarning(plan, "rate_control=" + lower +
-                                 " falls back to constqp for the selected backend; only NVENC gets true CQ mapping");
-        } else {
-            AddError(plan, "Unsupported rate_control value: " + config.rateControl);
-        }
+    if (const std::optional<BitrateUsage> hardwareUsage = detail::AddHardwareRateControlOptions(config, plan)) {
+        return *hardwareUsage;
+    }
+
+    if (lower == "vbr" || lower == "cbr") {
+        AddGeneratedOption(plan, "rc", lower);
+    } else if (lower == "cq" || lower == "cqp" || lower == "constqp") {
+        AddGeneratedOption(plan, "rc", "constqp");
+        AddWarning(plan, "rate_control=" + lower + " falls back to constqp for the selected backend");
+    } else {
+        AddError(plan, "Unsupported rate_control value: " + config.rateControl);
     }
 
     return {};
@@ -647,8 +654,15 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
                 AddError(&plan, "Unsupported NVENC tuning value: " + config.tuning);
             }
         }
-    } else if (kind.backend != EncoderBackend::kMF && !config.preset.empty()) {
+    } else if (kind.backend != EncoderBackend::kAMF && kind.backend != EncoderBackend::kQSV &&
+               kind.backend != EncoderBackend::kMF && !config.preset.empty()) {
         AddGeneratedOption(&plan, "preset", TrimAscii(config.preset));
+    }
+
+    if (use10Bit && kind.family == CodecFamily::kH264 &&
+        (kind.backend == EncoderBackend::kAMF || kind.backend == EncoderBackend::kQSV ||
+         kind.backend == EncoderBackend::kMF)) {
+        AddError(&plan, "10-bit H.264 is not supported by the selected hardware encoder path");
     }
 
     const ProfileDecision profileDecision = ResolveProfile(config, kind, use10Bit, resolvedChroma);
@@ -656,7 +670,17 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
         AddWarning(&plan, warning);
     }
     if (profileDecision.apply && !profileDecision.profile.empty()) {
-        AddGeneratedOption(&plan, "profile", profileDecision.profile);
+        if (kind.backend == EncoderBackend::kMF && kind.family == CodecFamily::kH264) {
+            if (profileDecision.profile == "baseline") {
+                plan.codecProfile = AV_PROFILE_H264_BASELINE;
+            } else if (profileDecision.profile == "main") {
+                plan.codecProfile = AV_PROFILE_H264_MAIN;
+            } else if (profileDecision.profile == "high") {
+                plan.codecProfile = AV_PROFILE_H264_HIGH;
+            }
+        } else {
+            AddGeneratedOption(&plan, "profile", profileDecision.profile);
+        }
     }
 
     const BitrateUsage bitrateUsage = AddRateControlOptions(config, kind, &plan);
@@ -666,8 +690,46 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
     if (bitrateUsage.applyMaxBitrate) {
         ParseConfiguredBitrate("max_bitrate", config.maxBitrate, &plan.maxBitRate, &plan);
     }
+    if (bitrateUsage.applyBufferSize) {
+        ParseConfiguredBitrate("buffer_size", config.bufferSize, &plan.bufferSize, &plan);
+    } else if (!TrimAscii(config.bufferSize).empty()) {
+        AddWarning(&plan, "buffer_size is ignored by the selected quality-only rate-control mode");
+    }
 
+    if (bitrateUsage.forceMaxBitrateToBitrate) {
+        if (plan.bitRate.has_value()) {
+            plan.maxBitRate = plan.bitRate;
+        }
+    }
+    if (bitrateUsage.rejectEqualBitrates && plan.bitRate.has_value() && plan.maxBitRate.has_value() &&
+        *plan.bitRate == *plan.maxBitRate) {
+        AddError(&plan,
+                 "Quick Sync infers CBR when bitrate equals max_bitrate; use a higher max_bitrate for VBR/QVBR");
+    }
+    const std::string selectedRateControl =
+        CanonicalizeEnumValue(config.rateControl.empty() ? "vbr" : config.rateControl);
+    const bool amfRequiresBitrate =
+        selectedRateControl == "vbr" || selectedRateControl == "cbr" || selectedRateControl == "cq" ||
+        selectedRateControl == "qvbr" || selectedRateControl == "hqvbr" || selectedRateControl == "hqcbr" ||
+        selectedRateControl == "vbr_latency";
+    if (kind.backend == EncoderBackend::kAMF && amfRequiresBitrate &&
+        (!plan.bitRate.has_value() || *plan.bitRate <= 0)) {
+        AddError(&plan, "The selected AMF rate-control mode requires bitrate");
+    }
+    const bool qsvRequiresBitrate =
+        selectedRateControl == "vbr" || selectedRateControl == "cbr" || selectedRateControl == "qvbr";
+    if (kind.backend == EncoderBackend::kQSV && qsvRequiresBitrate &&
+        (!plan.bitRate.has_value() || *plan.bitRate <= 0)) {
+        AddError(&plan, "The selected Quick Sync rate-control mode requires bitrate");
+    }
     plan.maxBFrames = ClampBFrames(config.bFrames, &plan);
+    detail::AddHardwareEncoderOptions(config, use10Bit, outputIsHDR, &plan);
+
+    const bool qsvQualityWithTarget = selectedRateControl == "cq" || selectedRateControl == "qvbr";
+    if (kind.backend == EncoderBackend::kQSV && qsvQualityWithTarget && plan.bitRate.has_value() &&
+        !plan.maxBitRate.has_value()) {
+        AddError(&plan, "Quick Sync QVBR requires max_bitrate in addition to bitrate");
+    }
 
     if (kind.backend == EncoderBackend::kNVENC) {
         const auto lookaheadDepth = ResolveNvencLookaheadDepth(config.lookahead, plan.maxBFrames, &plan);

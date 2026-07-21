@@ -60,6 +60,7 @@ struct VideoConfig {
     std::string rateControl;
     std::string bitrate;  // string to handle "75Mbps"
     std::string maxBitrate;
+    std::string bufferSize;  // VBV/HRD buffer size; empty lets the encoder choose
     int keyframeInterval;
     std::string preset;
     std::string tuning;
@@ -78,11 +79,42 @@ struct VideoConfig {
     // NVENC-specific settings
     int qp = 23;  // Quality value used for NVENC CQ/CQP modes (valid range depends on codec/mode)
 
+    // AMD AMF encoder-specific settings (h264_amf, hevc_amf, av1_amf)
+    std::string amfUsage = "transcoding";
+    std::string amfPreset = "balanced";
+    int amfQp = 23;
+    int amfAsyncDepth = 16;
+    bool amfPreencode = false;
+    bool amfPreanalysis = false;
+    std::string amfLookahead = "off";  // off, auto, or explicit depth 1-41
+    bool amfSpatialAq = false;
+    bool amfTemporalAq = false;
+    int amfAqStrength = 1;  // 0=low, 1=medium, 2=high
+    bool amfHighMotionQualityBoost = false;
+    std::string amfBRefMode = "auto";  // auto, disabled, enabled
+    bool amfEnforceHrd = false;
+    bool amfFillerData = false;
+
+    // Intel oneVPL/Quick Sync settings (h264_qsv, hevc_qsv, av1_qsv)
+    std::string qsvPreset = "veryfast";
+    int qsvQp = 23;
+    int qsvAsyncDepth = 4;
+    std::string qsvLowPower = "auto";    // auto, disabled, enabled
+    std::string qsvLookahead = "off";    // off, auto, or explicit depth 1-100
+    std::string qsvMbbRc = "auto";       // auto, disabled, enabled
+    std::string qsvExtBrc = "auto";      // auto, disabled, enabled
+    std::string qsvAdaptiveI = "auto";   // auto, disabled, enabled
+    std::string qsvAdaptiveB = "auto";   // auto, disabled, enabled
+    std::string qsvLowDelayBrc = "auto"; // auto, disabled, enabled
+    std::string qsvScenario = "unknown";
+
     // Media Foundation encoder-specific settings (h264_mf, hevc_mf)
-    std::string mfRateControl;  // cbr, pc_vbr, u_vbr, quality, ld_vbr, g_vbr
+    std::string mfRateControl = "quality";  // default, cbr, pc_vbr, u_vbr, quality, ld_vbr, g_vbr, gld_vbr
     int mfQuality = 80;         // 0-100, quality target
-    std::string mfScenario;     // live_streaming, archive, camera_record, etc.
+    std::string mfScenario = "camera_record";  // live_streaming, archive, camera_record, etc.
     bool mfHwEncoding = true;   // Force hardware encoding
+    int mfQualityVsSpeed = -1;  // -1 = MFT default, otherwise 0-100
+    bool mfLowLatency = false;
     int gpuPriority = 0;        // GPU priority from config
 
     // Color & format settings (auto = select based on SDR/HDR)
