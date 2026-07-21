@@ -17,6 +17,11 @@ enum CaptureStateFlags : uint32_t {
     // screenX/screenY identify the top-left of the cursor shape rather than
     // the cursor hotspot. DXGI Desktop Duplication uses this convention.
     kStatePositionIsShapeTopLeft = 1u << 4,
+    // Pixel ownership for the source frame selected on this CFR tick. Keep
+    // this separate from an actual CURSOR_SUPPRESSED observation: source
+    // ownership follows the delayed video frame, while pointer visibility is
+    // independently selected from the cursor timeline.
+    kStateSourceEmbedded = 1u << 5,
 };
 
 // A plain-data snapshot shared across the capture EXE / media-engine DLL ABI.
@@ -41,10 +46,21 @@ struct CaptureState {
         return (flags & kStateValid) != 0;
     }
     bool IsVisible() const {
-        return IsValid() && (flags & kStateVisible) != 0 && (flags & kStateSuppressed) == 0 && handle != 0;
+        return IsValid() && (flags & kStateVisible) != 0 &&
+               (flags & (kStateSuppressed | kStateSourceEmbedded)) == 0 && handle != 0;
     }
     bool PositionIsShapeTopLeft() const {
         return (flags & kStatePositionIsShapeTopLeft) != 0;
+    }
+    bool IsSourceEmbedded() const {
+        return (flags & kStateSourceEmbedded) != 0;
+    }
+    void SetSourceEmbedded(bool embedded) {
+        if (embedded) {
+            flags |= kStateSourceEmbedded;
+        } else {
+            flags &= ~kStateSourceEmbedded;
+        }
     }
 };
 
@@ -71,11 +87,24 @@ inline void ApplySourcePointerObservation(CaptureState* state, const SourcePoint
     // must not be retroactively associated with an unrelated desktop frame.
     state->associationQpc = observation.updateQpc;
     state->observedQpc = observation.updateQpc;
+    const bool sampledVisible = (state->flags & kStateVisible) != 0 && state->handle != 0;
+    const bool sampledSuppressed = (state->flags & kStateSuppressed) != 0;
     state->flags |= kStateValid;
-    state->flags &= ~(kStateVisible | kStateSuppressed | kStateHandleVisibilityFallback | kStatePositionIsShapeTopLeft);
+    state->flags &= ~(kStateVisible | kStateSuppressed | kStateHandleVisibilityFallback |
+                      kStatePositionIsShapeTopLeft | kStateSourceEmbedded);
+    if (sampledSuppressed) {
+        state->flags |= kStateSuppressed;
+    }
 
     if (observation.embedded) {
-        state->flags |= kStateSuppressed;
+        // Preserve the independently sampled cursor visibility/position for
+        // the delayed timeline. The selected source frame owns the pixels for
+        // this tick, so IsVisible() remains false until that ownership flag is
+        // cleared after a hardware-plane transition.
+        if (sampledVisible) {
+            state->flags |= kStateVisible;
+        }
+        state->flags |= kStateSourceEmbedded;
         return;
     }
     if (!observation.visible) {

@@ -248,6 +248,7 @@ private:
     int64_t inputFrameCount = 0;       // Number of frames received from hook
     int64_t skippedFrameCount = 0;     // Encoder-side skips
     int64_t duplicatedFrameCount = 0;  // Encoder-side duplicates
+    int64_t cursorAwareRepeatRenderCount = 0;  // Re-rendered from uncomposited RGB source
 
     // Cached shared textures (avoid reopening every frame)
     // Octo-buffered support (8 textures to prevent overwrite race)

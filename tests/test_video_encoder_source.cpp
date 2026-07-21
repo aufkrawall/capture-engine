@@ -309,6 +309,33 @@ TEST(VideoEncoderSourceTest, CursorPrecompositionFailureNeverFailsVideoConversio
     EXPECT_NE(cursorBody.find("video conversion continues without this"), std::string::npos);
 }
 
+TEST(VideoEncoderSourceTest, DirectRgbHdrCursorUsesTheQueriedWindowsSdrWhiteLevel) {
+    const std::string source = ReadVideoEncoderSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t prepare = source.find("bool VideoEncoder::PrepareD3D11TextureForEncode");
+    const size_t cache = source.find("bool VideoEncoder::CacheRepeatFrameTexture", prepare);
+    ASSERT_NE(prepare, std::string::npos);
+    ASSERT_NE(cache, std::string::npos);
+    const std::string body = source.substr(prepare, cache - prepare);
+
+    EXPECT_NE(body.find("cursorColorMode == CursorColorMode::Sdr ? 80.0f : sdrWhiteNits"), std::string::npos);
+    EXPECT_NE(body.find("cursorCaptureState, cursorColorMode, cursorPaperWhiteNits"), std::string::npos);
+}
+
+TEST(VideoEncoderSourceTest, CursorColorCalibrationAndRepeatRenderingAreDiagnosable) {
+    const std::string encoderSource = ReadVideoEncoderSource();
+    const std::string rendererSource = ReadCursorRendererSource();
+    ASSERT_FALSE(encoderSource.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(rendererSource.find("std::clamp(std::isfinite(paperWhiteNits)"), std::string::npos);
+    EXPECT_NE(rendererSource.find("[Cursor Color] SDR cursor mapping"), std::string::npos);
+    EXPECT_NE(rendererSource.find("calibration=%s alpha=straight"), std::string::npos);
+    EXPECT_NE(encoderSource.find("cursorAwareRepeatRenderCount++;"), std::string::npos);
+    EXPECT_NE(encoderSource.find("cursorAwareRepeatRenders=%lld"), std::string::npos);
+}
+
 TEST(VideoEncoderSourceTest, HdrScRgbIsConvertedDirectlyToDeterministicP010) {
     const std::string source = ReadVideoEncoderSource();
     const std::string shader = ReadVideoColorShaderSource();

@@ -176,6 +176,9 @@ void CursorRenderer::Cleanup() {
     lastCursor = nullptr;
     lastRequestedWidth = 0;
     lastRequestedHeight = 0;
+    lastLoggedColorMode = CursorColorMode::Sdr;
+    lastLoggedPaperWhiteNits = -1.0f;
+    lastLoggedTargetFormat = DXGI_FORMAT_UNKNOWN;
     resourcesCreated = false;
 }
 
@@ -695,6 +698,22 @@ bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int fram
 
     D3D11_TEXTURE2D_DESC targetDesc = {};
     targetTexture->GetDesc(&targetDesc);
+    const float resolvedPaperWhiteNits =
+        std::clamp(std::isfinite(paperWhiteNits) ? paperWhiteNits : 203.0f, 80.0f, 1000.0f);
+    if (lastLoggedColorMode != colorMode || lastLoggedTargetFormat != targetDesc.Format ||
+        std::abs(lastLoggedPaperWhiteNits - resolvedPaperWhiteNits) >= 0.5f) {
+        const char* mode = colorMode == CursorColorMode::ScRgb
+                               ? "scRGB-linear-P709"
+                               : (colorMode == CursorColorMode::Hdr10Pq ? "PQ-P2020" : "SDR-sRGB");
+        DLL_Log(
+            "[Cursor Color] SDR cursor mapping: targetFmt=%d target=%s paperWhite=%.1f-nit "
+            "calibration=%s alpha=straight",
+            targetDesc.Format, mode, resolvedPaperWhiteNits,
+            colorMode == CursorColorMode::Sdr ? "not-applicable" : "windows-sdr-white");
+        lastLoggedColorMode = colorMode;
+        lastLoggedPaperWhiteNits = resolvedPaperWhiteNits;
+        lastLoggedTargetFormat = targetDesc.Format;
+    }
     ID3D11RenderTargetView* targetRTV = GetTargetRenderView(targetTexture, targetDesc);
     if (!targetRTV) {
         return false;
@@ -717,7 +736,7 @@ bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int fram
     cb->cursorWidth = cursorW;
     cb->cursorHeight = cursorH;
     cb->colorMode = static_cast<float>(colorMode);
-    cb->paperWhiteNits = paperWhiteNits;
+    cb->paperWhiteNits = resolvedPaperWhiteNits;
     cb->padding0 = 0.0f;
     cb->padding1 = 0.0f;
     context->Unmap(constantBuffer, 0);

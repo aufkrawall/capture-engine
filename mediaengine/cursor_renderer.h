@@ -48,7 +48,7 @@ public:
     // This is optimized to be very fast when cursor is hidden (single API call)
     bool CompositeOntoFrame(ID3D11Texture2D* targetTexture, int frameWidth, int frameHeight,
                             const ce::cursor::CaptureState& state, CursorColorMode colorMode,
-                            float paperWhiteNits = 200.0f);
+                            float paperWhiteNits);
 
     // Resolves the full, unclipped cursor rectangle and prepares the cached
     // point-sampled cursor texture. Used to back up only the pixels that the
@@ -94,6 +94,9 @@ private:
     uint32_t cursorHeight = 0;
     bool isMonochrome = false;
     bool resourcesCreated = false;
+    CursorColorMode lastLoggedColorMode = CursorColorMode::Sdr;
+    float lastLoggedPaperWhiteNits = -1.0f;
+    DXGI_FORMAT lastLoggedTargetFormat = DXGI_FORMAT_UNKNOWN;
 
     static constexpr std::size_t kTargetRtvCacheSize = 64;
     struct TargetRtvCacheEntry {

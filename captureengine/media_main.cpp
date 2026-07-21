@@ -155,7 +155,8 @@ static int GetCursorMetricForDpi(int metric, UINT dpi) {
 }
 
 static ce::cursor::CaptureState CaptureCursorSnapshot(int64_t associationQpc, int32_t captureLeft, int32_t captureTop,
-                                                      uint32_t captureWidth, uint32_t captureHeight, bool suppressed) {
+                                                      uint32_t captureWidth, uint32_t captureHeight,
+                                                      bool sourceEmbedded) {
     ce::cursor::CaptureState state;
     state.associationQpc = associationQpc;
     state.captureLeft = captureLeft;
@@ -176,7 +177,7 @@ static ce::cursor::CaptureState CaptureCursorSnapshot(int64_t associationQpc, in
     state.handle = reinterpret_cast<uint64_t>(cursorInfo.hCursor);
     state.screenX = cursorInfo.ptScreenPos.x;
     state.screenY = cursorInfo.ptScreenPos.y;
-    if (suppressed || (cursorInfo.flags & CURSOR_SUPPRESSED) != 0) {
+    if ((cursorInfo.flags & CURSOR_SUPPRESSED) != 0) {
         state.flags |= ce::cursor::kStateSuppressed;
     } else if ((cursorInfo.flags & CURSOR_SHOWING) != 0) {
         state.flags |= ce::cursor::kStateVisible;
@@ -187,6 +188,7 @@ static ce::cursor::CaptureState CaptureCursorSnapshot(int64_t associationQpc, in
         // record it so diagnostics can distinguish it from normal visibility.
         state.flags |= ce::cursor::kStateVisible | ce::cursor::kStateHandleVisibilityFallback;
     }
+    state.SetSourceEmbedded(sourceEmbedded);
 
     state.dpi = GetCursorDpiAtPoint(cursorInfo.ptScreenPos);
     static thread_local UINT cachedMetricDpi = 0;
@@ -7631,9 +7633,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                    ? referenceFrame.cursorState.captureHeight
                                                    : referenceFrame.height;
                 const bool cursorEmbedded = useScreenGrab && referenceFrame.wgcCursorEmbedded;
+                // Source-embedded ownership belongs to the delayed reference
+                // frame, not to this live pointer sample. Publishing it here
+                // would delay suppression a second time and hide the cursor
+                // after an embedded -> hardware-plane transition.
                 const ce::cursor::CaptureState liveState =
                     CaptureCursorSnapshot(scheduledQpc, referenceFrame.captureLeft, referenceFrame.captureTop,
-                                          captureWidth, captureHeight, cursorEmbedded);
+                                          captureWidth, captureHeight, false);
                 ce::cursor::Timeline& timeline = useScreenGrab ? g_WgcCursorTimeline : g_InjectCursorTimeline;
                 timeline.Publish(liveState);
                 const int64_t cursorTargetQpc =
@@ -7642,13 +7648,11 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (!timeline.SelectAtOrBefore(cursorTargetQpc, &cursorState)) {
                     cursorState = liveState;
                 }
-                if (cursorEmbedded) {
-                    // Pixel ownership is authoritative: an embedded cursor in
-                    // the selected source texture must never be drawn again,
-                    // even if the delayed timeline selected an older state.
-                    cursorState.flags |= ce::cursor::kStateValid | ce::cursor::kStateSuppressed;
-                    cursorState.flags &= ~ce::cursor::kStateVisible;
-                }
+                // Pixel ownership is authoritative for exactly this selected
+                // source frame. Remove stale source ownership from the cursor
+                // history when the selected frame has a separate hardware
+                // pointer, while preserving a real CURSOR_SUPPRESSED state.
+                cursorState.SetSourceEmbedded(cursorEmbedded);
 
                 static uint64_t s_cursorTimelineLogCount = 0;
                 ++s_cursorTimelineLogCount;
@@ -7668,7 +7672,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                    : 0),
                         cursorState.dpi, cursorState.requestedWidth, cursorState.requestedHeight,
                         cursorState.captureLeft, cursorState.captureTop, cursorState.captureWidth,
-                        cursorState.captureHeight, cursorState.IsVisible() ? 1 : 0, cursorEmbedded ? 1 : 0,
+                        cursorState.captureHeight, cursorState.IsVisible() ? 1 : 0,
+                        cursorState.IsSourceEmbedded() ? 1 : 0,
                         (cursorState.flags & ce::cursor::kStateHandleVisibilityFallback) != 0 ? 1 : 0,
                         cursorState.PositionIsShapeTopLeft() ? "shape-top-left" : "hotspot");
                 }

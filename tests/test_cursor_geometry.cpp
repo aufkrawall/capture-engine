@@ -170,7 +170,42 @@ TEST(CursorCaptureStateTest, EmbeddedPointerSuppressesEncoderComposition) {
     ce::cursor::ApplySourcePointerObservation(&state, observation);
 
     EXPECT_FALSE(state.IsVisible());
+    EXPECT_TRUE(state.IsSourceEmbedded());
+    EXPECT_NE(state.flags & ce::cursor::kStateVisible, 0u);
+    EXPECT_EQ(state.flags & ce::cursor::kStateSuppressed, 0u);
+}
+
+TEST(CursorCaptureStateTest, SourceOwnershipCanClearWithoutOverridingOsSuppression) {
+    ce::cursor::CaptureState state;
+    state.handle = 1;
+    state.flags = ce::cursor::kStateValid | ce::cursor::kStateVisible | ce::cursor::kStateSourceEmbedded;
+
+    EXPECT_FALSE(state.IsVisible());
+    state.SetSourceEmbedded(false);
+    EXPECT_TRUE(state.IsVisible());
+
+    state.flags |= ce::cursor::kStateSuppressed | ce::cursor::kStateSourceEmbedded;
+    state.SetSourceEmbedded(false);
+    EXPECT_FALSE(state.IsVisible());
     EXPECT_NE(state.flags & ce::cursor::kStateSuppressed, 0u);
+}
+
+TEST(CursorCaptureStateTest, PointerObservationPreservesCurrentOsSuppression) {
+    ce::cursor::CaptureState state;
+    state.handle = 1;
+    state.flags = ce::cursor::kStateValid | ce::cursor::kStateVisible | ce::cursor::kStateSuppressed;
+
+    ce::cursor::SourcePointerObservation observation;
+    observation.valid = true;
+    observation.visible = true;
+    observation.positionValid = true;
+    observation.updateQpc = 500;
+    ce::cursor::ApplySourcePointerObservation(&state, observation);
+
+    EXPECT_FALSE(state.IsVisible());
+    EXPECT_NE(state.flags & ce::cursor::kStateVisible, 0u);
+    EXPECT_NE(state.flags & ce::cursor::kStateSuppressed, 0u);
+    EXPECT_FALSE(state.IsSourceEmbedded());
 }
 
 TEST(CursorTimelineTest, SelectsNewestStateAtOrBeforeContentTime) {

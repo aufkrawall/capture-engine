@@ -106,8 +106,9 @@ TEST(CaptureCoordinatorSourceTest, FreshAndRepeatedCfrFramesShareScheduledCursor
 
     const std::string resolverBody = source.substr(resolver, repeat - resolver);
     EXPECT_NE(resolverBody.find("timeline.SelectAtOrBefore(cursorTargetQpc, &cursorState)"), std::string::npos);
-    EXPECT_NE(resolverBody.find("cursorState.flags |= ce::cursor::kStateValid | ce::cursor::kStateSuppressed"),
-              std::string::npos);
+    EXPECT_NE(resolverBody.find("captureWidth, captureHeight, false)"), std::string::npos);
+    EXPECT_NE(resolverBody.find("cursorState.SetSourceEmbedded(cursorEmbedded)"), std::string::npos);
+    EXPECT_EQ(resolverBody.find("captureWidth, captureHeight, cursorEmbedded)"), std::string::npos);
 
     const std::string repeatBody = source.substr(repeat, recovery - repeat);
     EXPECT_NE(repeatBody.find("selectCursorStateForScheduledQpc(scheduledQpc, g_LastFrame, \"repeat\")"),

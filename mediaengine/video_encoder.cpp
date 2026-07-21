@@ -1789,8 +1789,10 @@ bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3
             const CursorColorMode cursorColorMode =
                 ShouldEncodeHdrOutput() && dstDesc.Format == DXGI_FORMAT_R10G10B10A2_UNORM ? CursorColorMode::Hdr10Pq
                                                                                            : CursorColorMode::Sdr;
+            const float cursorPaperWhiteNits =
+                cursorColorMode == CursorColorMode::Sdr ? 80.0f : sdrWhiteNits;
             cursorRenderer->CompositeOntoFrame(normalizedTexture, (int)dstDesc.Width, (int)dstDesc.Height,
-                                               cursorCaptureState, cursorColorMode);
+                                               cursorCaptureState, cursorColorMode, cursorPaperWhiteNits);
         }
     }
 
@@ -5143,6 +5145,7 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     g_framesEncoded++;
     outputFrameCount++;
     if (populatedFromRepeatSource) {
+        cursorAwareRepeatRenderCount++;
         CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
     }
     g_totalFenceWait += stats.fenceWaitMs;
@@ -5282,6 +5285,7 @@ void VideoEncoder::CleanupResources() {
     outputFrameCount = 0;
     skippedFrameCount = 0;
     duplicatedFrameCount = 0;
+    cursorAwareRepeatRenderCount = 0;
     encodeFrameCounter = 0;
     lastLogFrameCount = 0;
     nextOutputTime_ms = -1;
@@ -5401,9 +5405,9 @@ void VideoEncoder::Stop() {
             pSharedMem ? pSharedMem->runtimeState.drainFramesEncoded.load(std::memory_order_relaxed) : 0;
         DLL_Log(
             "[VideoEncoder] Recording stats: input=%lld output=%lld runtime=%u skipped=%lld duplicated=%lld phase=%s "
-            "live=%u drain=%u backpressure=%u peakMux=%uKB peakPkts=%u",
+            "live=%u drain=%u cursorAwareRepeatRenders=%lld backpressure=%u peakMux=%uKB peakPkts=%u",
             inputFrameCount, outputFrameCount, totalFrames, skippedFrameCount, duplicatedFrameCount,
-            CapturePipelinePhaseToString(phase), liveFrames, drainFrames,
+            CapturePipelinePhaseToString(phase), liveFrames, drainFrames, cursorAwareRepeatRenderCount,
             muxBackpressureCount.load(std::memory_order_relaxed),
             peakQueueBytes.load(std::memory_order_relaxed) / 1024u, peakQueuePackets.load(std::memory_order_relaxed));
 
