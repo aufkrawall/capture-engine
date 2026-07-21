@@ -1579,7 +1579,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.video.preset = GetStr("NVENC", "preset", "p1");
     config.video.tuning = GetStr("NVENC", "tuning", "hq");
     config.video.multipass = GetStr("NVENC", "multipass", "auto");
-    config.video.splitEncode = GetStr("NVENC", "split_encode", "auto");
+    config.video.splitEncode = GetStr("NVENC", "split_encode", "0");
     config.video.qp = GetInt("NVENC", "qp", 23);
     config.video.lookahead = GetStr("NVENC", "lookahead", "off");
     const std::string legacyAq = GetStr("NVENC", "aq", "");

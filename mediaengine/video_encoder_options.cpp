@@ -357,9 +357,14 @@ std::optional<std::string> CanonicalizeNvencMultipass(const std::string& value) 
 
 std::optional<std::string> CanonicalizeNvencSplitEncode(const std::string& value) {
     const std::string lower = CanonicalizeEnumValue(value);
-    if (lower.empty() || lower == "auto" || lower == "disabled" || lower == "forced" || lower == "2" ||
-        lower == "3" || lower == "4") {
-        return lower.empty() ? std::optional<std::string>("auto") : std::optional<std::string>(lower);
+    if (lower.empty() || lower == "0" || lower == "disabled") {
+        return "disabled";
+    }
+    if (lower == "1" || lower == "forced") {
+        return "forced";
+    }
+    if (lower == "2" || lower == "3" || lower == "4" || lower == "auto") {
+        return lower;
     }
     return std::nullopt;
 }
@@ -697,7 +702,7 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
 
         const auto splitEncode = CanonicalizeNvencSplitEncode(config.splitEncode);
         if (!splitEncode.has_value()) {
-            AddError(&plan, "Unsupported NVENC split_encode value: " + config.splitEncode);
+            AddError(&plan, "Unsupported NVENC split_encode value: " + config.splitEncode + " (expected 0-4)");
         } else if (SupportsNvencSplitEncoding(kind)) {
             AddGeneratedOption(&plan, "split_encode_mode", *splitEncode);
         } else if (*splitEncode != "auto" && *splitEncode != "disabled") {
@@ -784,7 +789,8 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
                                   config.splitEncode + "; migrate to the dedicated setting when possible");
         }
 
-        const std::string effectiveSplitEncode = customSplitEncode.value_or(config.splitEncode);
+        const std::string effectiveSplitEncode =
+            customSplitEncode.value_or(CanonicalizeNvencSplitEncode(config.splitEncode).value_or("disabled"));
         if (kind.family == CodecFamily::kHEVC && !IsNvencSplitEncodingDisabled(effectiveSplitEncode) &&
             customWeightedPrediction.has_value() && !IsDisabledBooleanValue(*customWeightedPrediction)) {
             if (IsNvencSplitEncodingForced(effectiveSplitEncode)) {

@@ -108,13 +108,11 @@ tuning=hq
 ; guarantees single-pass and the least encoder work.
 multipass=auto
 ; HEVC/AV1 split encoding shares each frame across physical NVENC engines but
-; still produces one stream. auto may turn it on or off using NVIDIA's preset,
-; tuning, and resolution policy; disabled guarantees split encoding is off.
-; forced requests splitting when multiple engines exist and lets the driver
-; choose the strip count; 2, 3, or 4 request that many strips when available.
-; Leave auto normally. Splitting can make slower presets real-time at a small
-; compression-efficiency cost. H.264 does not support it.
-split_encode=auto
+; still produces one stream. 0 disables it; 1 requests splitting when multiple
+; engines exist and lets the driver choose the strip count; 2, 3, or 4 request
+; that many strips when available. Splitting can make slower presets real-time
+; at a small compression-efficiency cost. H.264 supports only 0.
+split_encode=0
 ; Lower values mean higher quality. H.264/HEVC use 0-51. AV1 CQ uses 0-63.
 qp=23
 ; This is not a true/false switch: off guarantees lookahead is disabled; auto

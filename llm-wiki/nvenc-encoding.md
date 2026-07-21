@@ -1,6 +1,6 @@
 # NVENC Encoding Policy and FFmpeg Patches
 
-Last cross-checked: 2026-07-19
+Last cross-checked: 2026-07-21
 
 Primary sources:
 - `common/config.{h,cpp}`
@@ -37,16 +37,18 @@ semantics, decoder timing, or codec-specific headers.
 - `multipass=auto|disabled|qres|fullres`: `auto` selects `qres` for CBR or any
   B-frame encode and `disabled` for VBR/CQ without B-frames. Explicit choices
   are always emitted, including `disabled`.
-- `split_encode=auto|disabled|forced|2|3|4`: HEVC and AV1 map this directly to
-  FFmpeg/NVENC's native split-frame mode. It remains one encoder session and one
-  normal bitstream; NVENC divides each frame into horizontal strips across the
-  GPU's physical encoder engines. `auto` lets the driver decide from the preset,
-  tuning, and resolution. `forced` lets the driver select the strip count, while
-  `2`, `3`, and `4` request an explicit count and degrade to the number of engines
-  available. H.264 accepts only the harmless `auto`/`disabled` spellings because
-  NVIDIA does not support split encoding for that codec. Splitting can raise
-  throughput enough to make slower presets real-time, at a small compression-
-  efficiency cost from independently encoded strip boundaries.
+- `split_encode=0..4`: HEVC and AV1 use NVENC's native split-frame mode. It
+  remains one encoder session and one normal bitstream; NVENC divides each frame
+  into horizontal strips across the GPU's physical encoder engines. `0` maps to
+  FFmpeg's explicit `disabled` token and is the fresh/default policy. `1` maps to
+  `forced`, letting the driver select the strip count whenever multiple engines
+  exist. `2`, `3`, and `4` request an explicit count and degrade to the number of
+  engines available. H.264 accepts only `0` because NVIDIA does not support split
+  encoding for that codec. The former `auto`, `disabled`, and `forced` spellings
+  remain compatibility inputs; `auto` retains the old driver-selected
+  preset/tuning/resolution policy. Splitting can raise throughput enough to make
+  slower presets real-time, at a small compression-efficiency cost from
+  independently encoded strip boundaries.
 - `spatial_aq` and `temporal_aq` are independent explicit booleans.
   `aq_strength=0` leaves strength selection to NVENC; values 1-15 are emitted
   only with spatial AQ. Legacy `aq` supplies the default for either new key
@@ -68,9 +70,9 @@ semantics, decoder timing, or codec-specific headers.
   metadata hazard. It does not disable `extra_sei`, A53 closed captions, or HDR
   metadata and does not affect pixels, rate control, timestamps, or latency.
 
-The shipped conservative defaults are lookahead off and both AQ modes off.
-New configurations use automatic multipass and B-reference selection; existing
-explicit `disabled` values remain unchanged.
+The shipped conservative defaults are split encoding off, lookahead off, and
+both AQ modes off. New configurations use automatic multipass and B-reference
+selection; existing split-encode text values remain compatible.
 
 The older `[Video] custom_options=split_encode_mode=...` route remains usable
 and wins over the dedicated setting, with a migration warning. HEVC weighted

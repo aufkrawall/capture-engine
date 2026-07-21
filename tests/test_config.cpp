@@ -115,7 +115,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.copyQueuePriority, "normal");
     EXPECT_EQ(config.video.profile, "auto");
     EXPECT_EQ(config.video.multipass, "auto");
-    EXPECT_EQ(config.video.splitEncode, "auto");
+    EXPECT_EQ(config.video.splitEncode, "0");
     EXPECT_EQ(config.video.lookahead, "off");
     EXPECT_FALSE(config.video.spatialAq);
     EXPECT_FALSE(config.video.temporalAq);
@@ -157,8 +157,8 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("multipass=auto"), std::string::npos);
     EXPECT_NE(generatedText.find("auto selects qres for CBR or when b_frames>0"), std::string::npos);
     EXPECT_NE(generatedText.find("disabled \"Single Pass\""), std::string::npos);
-    EXPECT_NE(generatedText.find("split_encode=auto"), std::string::npos);
-    EXPECT_NE(generatedText.find("disabled guarantees split encoding is off"), std::string::npos);
+    EXPECT_NE(generatedText.find("split_encode=0"), std::string::npos);
+    EXPECT_NE(generatedText.find("0 disables it; 1 requests splitting"), std::string::npos);
     EXPECT_NE(generatedText.find("lookahead=off"), std::string::npos);
     EXPECT_NE(generatedText.find("enables a 20-frame depth"), std::string::npos);
     EXPECT_NE(generatedText.find("spatial_aq=false"), std::string::npos);
@@ -308,6 +308,15 @@ TEST_F(ConfigTest, ParseIndependentNvencQualityPolicies) {
     EXPECT_FALSE(config.video.temporalAq);
     EXPECT_EQ(config.video.aqStrength, 9);
     EXPECT_EQ(config.video.bRefMode, "middle");
+}
+
+TEST_F(ConfigTest, MissingNvencSplitEncodeDefaultsOff) {
+    WriteConfig("[NVENC]\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+
+    EXPECT_EQ(config.video.splitEncode, "0");
 }
 
 TEST_F(ConfigTest, LegacyNvencAqOnlySuppliesMissingSplitAqValues) {
