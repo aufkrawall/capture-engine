@@ -1,12 +1,13 @@
 # build.py
 
-Last cross-checked: 2026-07-19 (compiler/host-specific Linux MinGW hardening and strict-FP selection, older-MinGW hook/test-app D3D12-header and intrinsic-declaration compatibility, host-native PE inspection/shader tools/debug-info policy, cross-host FG SDK header preparation, fail-closed required x64 Vulkan stages and duplicate-object detection, obsolete standalone process-loopback helper cleanup/absence assertions, single-preparation default-quality flow, current-database lint, summary/detail artifact split, managed Python lint tooling, validated object/link caches, and existing production LTO, source-closure, packaging, sanitizer, and provenance policy)
+Last cross-checked: 2026-07-21 (AMF header-license packaging, compiler/host-specific Linux MinGW hardening and strict-FP selection, older-MinGW hook/test-app D3D12-header and intrinsic-declaration compatibility, host-native PE inspection/shader tools/debug-info policy, cross-host FG SDK header preparation, fail-closed required x64 Vulkan stages and duplicate-object detection, obsolete standalone process-loopback helper cleanup/absence assertions, single-preparation default-quality flow, current-database lint, summary/detail artifact split, managed Python lint tooling, validated object/link caches, and existing production LTO, source-closure, packaging, sanitizer, and provenance policy)
 
 Primary sources:
 - `AGENTS.md`
 - `build.py`
 - `.github/workflows/hardening-ci.yml`
 - `tools/verify_pe_hardening.py`
+- `licenses/FFmpeg_NOTICE.txt`
 - `hook/common/dx12_sampler_policy.cpp`
 - `hook/common/dx12_dred.cpp`
 - `hook/apis/dx12_streamline_ui_overlay.cpp`
@@ -29,6 +30,7 @@ Running `python build.py` is the full default-quality path. On Windows it update
 - Upstream archives are downloaded independently from the manifest URLs and checked against their pinned SHA-256 before the signed MSYS2 recipe is built. LLVM/libc++ and libiconv recipe key fingerprints are pinned and retrieved only through HKPS keyservers into a dedicated build keyring; signature or fingerprint failures abort the build.
 - A fresh MSYS2 bootstrap archive is selected from the official distribution listing, verified with its detached signature against `E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964`, and only then extracted. MSYS2 `pacman` remains the source of the compiler, linker, build tools, headers, and package-manager runtime; its installed package signatures are a separate trusted-toolchain boundary.
 - Final FFmpeg DLL synchronization enforces private-prefix provenance, checks the PE import closure against Windows system DLLs and the shipped directory, and validates PE export tables in the verification pass. The runtime bundle includes `libaom.dll`, `libwinpthread-1.dll`, and their licenses. FFmpeg retains SVT-AV1 and enables `libaom-av1` encoding/decoding for 10-bit 4:4:4 HDR screenshot AVIF. The current custom FFmpeg branch remains separately trusted input; this migration preserves its existing ABI set rather than upgrading FFmpeg majors.
+- License packaging is fail closed. Runtime notices are selected from the exact DLLs copied into `installed/captureengine/ffmpeg`; the bundled oneVPL dispatcher therefore emits `MIT_libvpl.txt`. AMF is the deliberate exception to DLL-triggered selection: FFmpeg compiles against the MSYS2 `amf-headers` package but dynamically loads the AMD-driver `amfrt64.dll`, so packaging unconditionally requires and copies that package's complete license and standards disclaimer as `MIT_AMF-Headers.txt` even though no AMD DLL is redistributed.
 - The release boundary is `installed/captureengine`: its product DLLs/EXEs are built by this project or by the source-built FFmpeg closure. `installed/testapp` is validation-only and may contain precompiled FSR, Streamline, NVIDIA, and other SDK/driver test binaries; never package that directory, `build/msys64`, SDK caches, or `external` build inputs as the product.
 - This establishes strong, reproducible provenance checks for the new dependency closure, not a claim of 100% trust for every project input. The precompiled MSYS2 toolchain/build environment and the existing FFmpeg Git source still require trust in their official distribution/repository; this change does not add a signed-commit/tag policy for that FFmpeg checkout. Hardware-specific oneVPL/QSV runtime validation remains an external validation step.
 

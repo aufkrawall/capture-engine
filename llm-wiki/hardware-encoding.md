@@ -11,6 +11,8 @@ Primary sources:
 - `tests/test_{config,video_encoder_hardware_options,video_encoder_source}.cpp`
 - `ffmpeg_build/working/ffmpeg/libavcodec/{amfenc,qsvenc,mfenc}*`
 - `ffmpeg_build/working/ffmpeg/libavutil/hwcontext_qsv.c`
+- `build.py`
+- `licenses/FFmpeg_NOTICE.txt`
 
 ## Summary and device ownership
 
@@ -33,6 +35,21 @@ The same-adapter invariant is intentional. Direct QSV mapping works when the
 capture D3D11 device is backed by an Intel adapter with a usable oneVPL runtime.
 Cross-adapter copies to an otherwise idle Intel iGPU are not implemented; an
 unsupported device/runtime must fail closed instead of adding a hidden CPU copy.
+
+## Distribution and licensing boundary
+
+Neither vendor encoder requires CaptureProject to redistribute a vendor driver
+runtime. AMF compiles against AMD's MIT-licensed SDK headers and dynamically
+loads `amfrt64.dll` from the installed AMD driver. Packaging always copies the
+complete AMF header license, including AMD's standards/patent disclaimer, as
+`MIT_AMF-Headers.txt` and fails if its source notice is missing.
+
+QSV ships the MIT-licensed oneVPL dispatcher as `libvpl-2.dll`, with its exact
+runtime notice copied as `MIT_libvpl.txt`. Intel hardware implementations such
+as `libmfx64-gen.dll` and `libmfxhw64.dll` remain driver-provided and are not
+part of the product bundle. Codec patent obligations remain separate from these
+copyright licenses and require market-specific review, as recorded in
+`licenses/FFmpeg_NOTICE.txt`.
 
 Windows VAAPI and D3D12 Video Encode are not intermediary backends here. VAAPI
 is not the native Windows Quick Sync route, while the bundled FFmpeg vendor

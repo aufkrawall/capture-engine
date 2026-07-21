@@ -12,6 +12,51 @@ from testapp import run_tests as integration_runner
 
 
 class BuildFlagPolicyTest(unittest.TestCase):
+    def test_amf_header_license_is_packaged_without_a_runtime_dll(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            licenses = root / "licenses"
+            ffmpeg = root / "ffmpeg"
+            amf_license = root / "msys64/clang64/share/licenses/amf-headers/LICENSE"
+            licenses.mkdir()
+            ffmpeg.mkdir()
+            amf_license.parent.mkdir(parents=True)
+            amf_license.write_text("AMF license and standards notice\n", encoding="utf-8")
+            (ffmpeg / "avcodec-63.dll").write_bytes(b"test")
+
+            with patch.object(build, "get_host_msys2_dir", return_value=str(root / "msys64")), patch.object(
+                build, "get_msys_license_root", return_value=str(root / "runtime-licenses")
+            ):
+                build.copy_bundled_runtime_licenses(str(licenses), str(ffmpeg))
+
+            self.assertEqual(
+                (licenses / "MIT_AMF-Headers.txt").read_text(encoding="utf-8"),
+                "AMF license and standards notice\n",
+            )
+
+    def test_missing_amf_header_license_fails_packaging_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            licenses = root / "licenses"
+            ffmpeg = root / "ffmpeg"
+            licenses.mkdir()
+            ffmpeg.mkdir()
+            (ffmpeg / "avcodec-63.dll").write_bytes(b"test")
+
+            with patch.object(build, "get_host_msys2_dir", return_value=str(root / "missing-msys64")), patch.object(
+                build, "get_msys_license_root", return_value=str(root / "runtime-licenses")
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Missing bundled build-time license source"):
+                    build.copy_bundled_runtime_licenses(str(licenses), str(ffmpeg))
+
+    def test_ffmpeg_notice_documents_vendor_runtime_boundary(self) -> None:
+        notice = (Path(build.__file__).parent / "licenses/FFmpeg_NOTICE.txt").read_text(encoding="utf-8")
+        self.assertIn("MIT_AMF-Headers.txt", notice)
+        self.assertIn("amfrt64.dll", notice)
+        self.assertIn("MIT_libvpl.txt", notice)
+        self.assertIn("libmfx64-gen.dll", notice)
+        self.assertIn("standards and patent disclaimer", notice)
+
     def test_obsolete_process_loopback_helper_outputs_are_removed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             installed = Path(temporary) / "installed"
@@ -223,16 +268,20 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertIn('log(f"Error linking layer: {e}")\n        raise', source)
 
     def test_fg_sdk_host_setup_keeps_linux_header_only(self) -> None:
-        with patch.object(build, "IS_LINUX", True), patch.object(build, "setup_fg_sdk_headers") as headers, patch.object(
-            build, "setup_fg_sdk_dlls"
-        ) as runtime:
+        with (
+            patch.object(build, "IS_LINUX", True),
+            patch.object(build, "setup_fg_sdk_headers") as headers,
+            patch.object(build, "setup_fg_sdk_dlls") as runtime,
+        ):
             build.setup_fg_sdk_for_host(skip_updates=True)
             headers.assert_called_once_with(skip_updates=True)
             runtime.assert_not_called()
 
-        with patch.object(build, "IS_LINUX", False), patch.object(build, "setup_fg_sdk_headers") as headers, patch.object(
-            build, "setup_fg_sdk_dlls"
-        ) as runtime:
+        with (
+            patch.object(build, "IS_LINUX", False),
+            patch.object(build, "setup_fg_sdk_headers") as headers,
+            patch.object(build, "setup_fg_sdk_dlls") as runtime,
+        ):
             build.setup_fg_sdk_for_host(skip_updates=True)
             headers.assert_not_called()
             runtime.assert_called_once_with(skip_updates=True)

@@ -2969,11 +2969,25 @@ def get_msys_license_root():
     return os.path.join(FFMPEG_DEPENDENCY_PREFIX, "share", "licenses")
 
 
+def get_amf_headers_license_path():
+    return os.path.join(
+        get_host_msys2_dir(),
+        "clang64",
+        "share",
+        "licenses",
+        "amf-headers",
+        "LICENSE",
+    )
+
+
 def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
     if not os.path.isdir(licenses_dst) or not os.path.isdir(ffmpeg_bin_dst):
         return
 
     license_root = get_msys_license_root()
+    build_time_license_specs = [
+        (get_amf_headers_license_path(), "MIT_AMF-Headers.txt"),
+    ]
     license_specs = [
         (
             "libiconv-2.dll",
@@ -3132,6 +3146,17 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
     bundled_dlls = {entry.lower() for entry in os.listdir(ffmpeg_bin_dst) if entry.lower().endswith(".dll")}
     copied_license_names = set()
     mapped_runtime_dlls = set()
+
+    # AMF is compiled from SDK headers but loads the driver-provided runtime at
+    # run time, so no bundled DLL exists that could trigger this notice.
+    for src, dst_name in build_time_license_specs:
+        if not os.path.exists(src):
+            raise RuntimeError(f"Missing bundled build-time license source: {src}")
+        dst = os.path.join(licenses_dst, dst_name)
+        if not safe_copy_file(src, dst):
+            raise RuntimeError(f"Failed to copy bundled build-time license {dst_name}")
+        copied_license_names.add(dst_name.lower())
+        log(f"Copied bundled build-time license {dst_name}")
 
     for dll_name, outputs in license_specs:
         dll_name_lower = dll_name.lower()
