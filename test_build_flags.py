@@ -51,11 +51,20 @@ class BuildFlagPolicyTest(unittest.TestCase):
 
     def test_ffmpeg_notice_documents_vendor_runtime_boundary(self) -> None:
         notice = (Path(build.__file__).parent / "licenses/FFmpeg_NOTICE.txt").read_text(encoding="utf-8")
+        self.assertIn("MIT_ffnvcodec.txt", notice)
+        self.assertIn("nvEncodeAPI64.dll", notice)
         self.assertIn("MIT_AMF-Headers.txt", notice)
         self.assertIn("amfrt64.dll", notice)
         self.assertIn("MIT_libvpl.txt", notice)
         self.assertIn("libmfx64-gen.dll", notice)
         self.assertIn("standards and patent disclaimer", notice)
+
+    def test_ffnvcodec_license_file_exists(self) -> None:
+        license_file = Path(build.__file__).parent / "licenses" / "MIT_ffnvcodec.txt"
+        self.assertTrue(license_file.exists(), f"Missing {license_file}")
+        content = license_file.read_text(encoding="utf-8")
+        self.assertIn("NVIDIA Corporation", content)
+        self.assertIn("MIT License", content)
 
     def test_obsolete_process_loopback_helper_outputs_are_removed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

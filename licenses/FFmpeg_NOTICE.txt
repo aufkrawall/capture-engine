@@ -5,6 +5,8 @@ The build configuration in build.py intentionally keeps GPL and nonfree mode dis
 
 Hardware acceleration support can still be enabled for NVIDIA NVENC/NVDEC, AMD AMF, Intel oneVPL/QSV, DXVA2, D3D11VA, Media Foundation, and Vulkan. Those paths rely on operating-system or GPU-vendor components already present on the end user's machine.
 
+The NVIDIA NVENC/NVDEC encoder and decoder are compiled against the MIT-licensed ffnvcodec headers (NVIDIA Video Codec SDK). The corresponding notice is in MIT_ffnvcodec.txt. The NVENC/NVDEC runtime (nvEncodeAPI64.dll) is loaded dynamically from the installed NVIDIA graphics driver and is not redistributed by this package.
+
 The AMD AMF encoder is compiled against AMD's MIT-licensed AMF SDK headers. The corresponding notice, including AMD's standards and patent disclaimer, is in MIT_AMF-Headers.txt. The AMF runtime (amfrt64.dll) is loaded dynamically from the installed AMD graphics driver and is not redistributed by this package.
 
 The Intel QSV encoder uses the MIT-licensed oneVPL dispatcher bundled as libvpl-2.dll; its notice is in MIT_libvpl.txt. The Intel hardware implementations selected by that dispatcher, such as libmfx64-gen.dll or libmfxhw64.dll, are supplied by the installed Intel graphics driver and are not redistributed by this package.
@@ -15,6 +17,7 @@ Release checklist for binary distribution:
 - do not forbid reverse engineering needed to debug modifications to the FFmpeg libraries
 - include FFmpeg attribution in release notes, download pages, and any about box or EULA used for distribution
 - keep the license texts for bundled runtime DLLs that are copied into the ffmpeg folder during packaging
+- keep the ffnvcodec header notice even though its driver-provided runtime is not bundled
 - keep the AMF SDK/header notice even though its driver-provided runtime is not bundled
 
 Patent notice:
