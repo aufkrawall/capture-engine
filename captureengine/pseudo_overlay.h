@@ -50,6 +50,11 @@ public:
     // Show a brief recording-stopped notification (2 seconds).
     void ShowRecordingStoppedNotification();
 
+    // Temporarily hide overlay windows so they do not appear in a screenshot.
+    // Must be paired with EndScreenshotCapture() after the capture completes.
+    void BeginScreenshotCapture();
+    void EndScreenshotCapture();
+
     bool IsInitialized() const {
         return initialized_.load(std::memory_order_acquire);
     }
@@ -151,6 +156,7 @@ private:
     std::atomic<uint32_t> overloadWarnSustainFpsX100_{0};
     std::atomic<ULONGLONG> screenshotNotifyUntil_{0};
     std::atomic<bool> screenshotNotificationSucceeded_{true};
+    std::atomic<bool> screenshotInProgress_{false};
     std::atomic<ULONGLONG> recordingStopNotifyUntil_{0};
     // Warning blink state
     bool warnActive_ = false;

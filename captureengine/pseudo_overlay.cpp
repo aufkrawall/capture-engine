@@ -897,6 +897,14 @@ void PseudoOverlay::UpdateOverlay() {
         return;
     }
 
+    if (screenshotInProgress_.load(std::memory_order_acquire)) {
+        if (hOv_)
+            ShowWindow(hOv_, SW_HIDE);
+        if (hWarn_)
+            ShowWindow(hWarn_, SW_HIDE);
+        return;
+    }
+
     LogDebug("[PseudoOverlay] Overlay windows present: hOv=%p hWarn=%p", (void*)hOv_, (void*)hWarn_);
 
     const AnchorInfo anchor = ResolveAnchorInfo();
@@ -1619,6 +1627,21 @@ void PseudoOverlay::ShowScreenshotNotification(bool succeeded) {
     screenshotNotificationSucceeded_.store(succeeded, std::memory_order_relaxed);
     screenshotNotifyUntil_.store(GetTickCount64() + 2000ULL);
     PostRefresh();
+}
+
+void PseudoOverlay::BeginScreenshotCapture() {
+    screenshotInProgress_.store(true, std::memory_order_release);
+    if (hOv_)
+        ShowWindow(hOv_, SW_HIDE);
+    if (hWarn_)
+        ShowWindow(hWarn_, SW_HIDE);
+    LogDebug("[PseudoOverlay] Overlay hidden for screenshot capture");
+}
+
+void PseudoOverlay::EndScreenshotCapture() {
+    screenshotInProgress_.store(false, std::memory_order_release);
+    PostRefresh();
+    LogDebug("[PseudoOverlay] Screenshot capture ended, overlay restore requested");
 }
 
 void PseudoOverlay::ShowRecordingStoppedNotification() {

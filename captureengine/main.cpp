@@ -1496,11 +1496,14 @@ int ControllerMain(HINSTANCE hInstance) {
                 } else if (msg.wParam == HOTKEY_ID_AUDIO_ONLY) {
                     ToggleAudioOnlyRecording();
                 } else if (msg.wParam == HOTKEY_ID_SCREENSHOT) {
+                    if (g_PseudoOverlay)
+                        g_PseudoOverlay->BeginScreenshotCapture();
                     const bool screenshotSaved =
                         TakeScreenshot(g_Config.screenshotDir, g_Config.screenshotColorSpace);
-                    // Report both outcomes so a failed request is never indistinguishable from an ignored hotkey.
-                    if (g_PseudoOverlay)
+                    if (g_PseudoOverlay) {
+                        g_PseudoOverlay->EndScreenshotCapture();
                         g_PseudoOverlay->ShowScreenshotNotification(screenshotSaved);
+                    }
                     // Show the same result in the inject overlay (hooked game).
                     HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
                     if (hDisc) {

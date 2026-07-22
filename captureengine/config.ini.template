@@ -292,10 +292,6 @@ screenshot=CTRL+0
 ; Starts or stops a recording that contains audio but no video.
 audio_only=CTRL+Minus
 
-; =============================================================================
-; OPTIONAL FEATURES
-; =============================================================================
-
 [Overlay]
 ; This is the overlay drawn inside injected applications.
 enabled=true
