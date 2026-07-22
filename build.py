@@ -4399,6 +4399,7 @@ def _verify_cross_object(obj: str, compiler: str, src: str) -> None:
             if not desc:
                 return
             if "PE" in desc or "COFF" in desc or "MS Windows" in desc:
+                log(f"Object verified as PE/COFF: {os.path.basename(obj)}", detail=True)
                 return
             if desc in ("data", "empty"):
                 return
@@ -4445,6 +4446,11 @@ def compile_object(env: Dict[str, str], clang_exe: str, cflags: List[str], src: 
         }
     )
 
+    # Always verify the compiled object file on Linux cross-compilation,
+    # whether freshly compiled or reused from cache.
+    if IS_LINUX and os.path.isfile(obj):
+        _verify_cross_object(obj, clang_exe, src)
+
     if not should_recompile(src, obj, dep_file, env, clang_exe, compile_flags):
         return False  # Skip - up to date
 
@@ -4460,10 +4466,6 @@ def compile_object(env: Dict[str, str], clang_exe: str, cflags: List[str], src: 
         cmd = [clang_exe] + compile_flags + ["-c", src, "-o", obj]
 
     run_command(cmd, env=env)
-
-    # Verify the compiled object file on Linux cross-compilation.
-    if IS_LINUX and os.path.exists(obj):
-        _verify_cross_object(obj, clang_exe, src)
 
     # Save compile signature after successful compilation.
     hash_file = obj + ".hash"
@@ -5950,14 +5952,16 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
         log(f"Building {desc}...", detail=True)
         compiled = compile_object(tenv, compiler, compile_flags, source, object_path)
 
-        # On Linux, log the cross-linker path for diagnostic purposes.
+        # On Linux, log the resolved linker path for diagnostic purposes.
         if IS_LINUX:
             linker_info = _get_linux_cross_linker_info(compiler)
-            if linker_info and linker_info.startswith("not_found("):
-                log(
-                    f"WARNING: Cross-linker not found for {compiler} - reported: {linker_info}",
-                    detail=True,
-                )
+            if linker_info:
+                if linker_info.startswith("not_found("):
+                    log(
+                        f"WARNING: Cross-linker not found for {compiler} - reported: {linker_info}",
+                    )
+                else:
+                    log(f"Cross-linker: {linker_info}", detail=True)
 
         link_driver_flags = [
             flag
