@@ -101,9 +101,9 @@ encode ownership contract, so it is not a useful fallback for this architecture.
 
 Media Foundation remains a compatibility fallback rather than the preferred
 vendor path. Its driver/MFT selection is comparatively opaque, controls are
-less portable between vendors, and the bundled D3D11 H.264/HEVC route accepts
-only NV12/8-bit SDR. AMF and QSV therefore provide better explicit capability
-and tuning surfaces on AMD and Intel hardware.
+less portable between vendors, and the bundled D3D11 H.264/HEVC/AV1 route
+accepts only NV12/8-bit SDR. AMF and QSV therefore provide better explicit
+capability and tuning surfaces on AMD and Intel hardware.
 
 Within that boundary, the MF path now validates its actual pixel-format/HDR
 limits up front, uses `camera_record` as the recording-oriented CFR scenario,
@@ -111,7 +111,8 @@ validates all exposed rate-control/scenario/quality values, passes the H.264
 profile through `AVCodecContext::profile`, exposes MFT quality-versus-speed via
 the codec compression-level field, and exposes low-delay mode while forcing
 B-frames off when required. It continues to use the GPU-resident D3D11 input
-path and can explicitly request hardware or software MFT selection.
+path, can explicitly request hardware or software MFT selection, and now also
+supports `av1_mf` alongside `h264_mf` and `hevc_mf`.
 
 ## Color metadata, diagnostics, and validation
 

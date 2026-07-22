@@ -3502,7 +3502,7 @@ class FFmpegBuilder:
             "--enable-encoder=h264_nvenc,hevc_nvenc,av1_nvenc",
             "--enable-encoder=h264_amf,hevc_amf,av1_amf",
             "--enable-encoder=h264_qsv,hevc_qsv,av1_qsv,vp9_qsv",
-            "--enable-encoder=h264_mf,hevc_mf",  # MediaFoundation
+            "--enable-encoder=h264_mf,hevc_mf,av1_mf",  # MediaFoundation
             # FFmpeg configure component names use underscores even though the
             # runtime encoder name exposed by libavcodec is "libaom-av1".
             "--enable-encoder=libaom_av1",  # AOM AV1 (HDR 4:4:4 still images)
@@ -3521,7 +3521,7 @@ class FFmpegBuilder:
         self.run([make_exe, "install"], cwd=build_dir, env=env)
 
 
-FFMPEG_BUILD_CONFIGURATION_VERSION = 9
+FFMPEG_BUILD_CONFIGURATION_VERSION = 10
 
 
 def ffmpeg_build_configuration_fingerprint():

@@ -445,7 +445,7 @@ void AddQsvOptions(const VideoConfig& config, const EncoderKind& kind, EncoderOp
 void AddMediaFoundationOptions(const VideoConfig& config, const EncoderKind& kind, bool use10Bit, bool outputIsHDR,
                                EncoderOptionPlan* plan) {
     if (use10Bit || outputIsHDR) {
-        AddError(plan, "Media Foundation H.264/HEVC accepts only NV12 in the bundled D3D11 path; use an 8-bit SDR output");
+        AddError(plan, "Media Foundation accepts only NV12 in the bundled D3D11 path; use an 8-bit SDR output");
     }
 
     const std::string rateControl = Canonicalize(config.mfRateControl);

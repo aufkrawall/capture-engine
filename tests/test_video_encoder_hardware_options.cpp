@@ -382,6 +382,12 @@ TEST(VideoEncoderOptionsTest, GeneratedHardwareOptionsExistInBundledFfmpeg) {
     hevcMf.mfScenario = "camera_record";
     cases.push_back({"HEVC Media Foundation", std::move(hevcMf), false});
 
+    VideoConfig av1Mf = MakeBaseVideoConfig("av1_mf");
+    av1Mf.mfRateControl = "quality";
+    av1Mf.mfQuality = 82;
+    av1Mf.mfScenario = "camera_record";
+    cases.push_back({"AV1 Media Foundation", std::move(av1Mf), false});
+
     for (const HardwareOptionCase& optionCase : cases) {
         ASSERT_NE(avcodec_find_encoder_by_name(optionCase.config.encoder.c_str()), nullptr) << optionCase.label;
         const EncoderOptionPlan plan =
