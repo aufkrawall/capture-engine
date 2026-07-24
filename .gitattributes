@@ -13,3 +13,8 @@
 *.a binary
 *.lib binary
 *.pdf binary
+
+# Fuzz seeds must stay byte-exact. Several deliberately carry CRLF, a BOM, an
+# embedded NUL, or invalid UTF-8; EOL normalisation would silently rewrite the
+# very inputs they exist to cover.
+tests/fuzz/corpus/** -text
