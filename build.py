@@ -44,7 +44,7 @@ from multiprocessing import cpu_count
 import re
 import json
 
-from typing import List, Dict, Optional, Union, Any
+from typing import List, Dict, Mapping, Optional, Union, Any
 
 from ffmpeg_dependencies import (
     SourceDependencyBuilder,
@@ -5041,6 +5041,115 @@ def write_process_diagnostics_artifact(
     return write_verification_artifact(artifact_name, filename, text)
 
 
+CLANG_TIDY_BASELINE_PATH = os.path.join(PROJECT_ROOT, "tools", "clang_tidy_baseline.json")
+
+
+def load_clang_tidy_baseline() -> Optional[Dict[str, int]]:
+    """Read the accepted per-check warning counts; None when no baseline exists yet."""
+    if not os.path.exists(CLANG_TIDY_BASELINE_PATH):
+        return None
+    try:
+        with open(CLANG_TIDY_BASELINE_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        checks = data.get("checks", {})
+        return {str(name): int(count) for name, count in checks.items()}
+    except (OSError, ValueError, TypeError) as error:
+        log(f"ERROR: Unreadable clang-tidy baseline {CLANG_TIDY_BASELINE_PATH}: {error}")
+        sys.exit(2)
+
+
+def write_clang_tidy_baseline(check_counts: Mapping[str, int]) -> None:
+    payload = {
+        "_comment": [
+            "Accepted clang-tidy warning counts, keyed by check rather than file:line so",
+            "ordinary edits do not churn the baseline. build.py fails when any check",
+            "exceeds its recorded count or a previously unseen check appears.",
+            "Regenerate deliberately with: python build.py --lint --update-lint-baseline",
+            "Lower counts are folded in automatically; the ratchet only tightens.",
+            "",
+            "The large frozen entries are accepted debt, not endorsements:",
+            "  bugprone-narrowing-conversions            pervasive in graphics/timing math",
+            "  bugprone-invalid-enum-default-initialization  D3D12_HEAP_PROPERTIES{} zero-init",
+            "  bugprone-throwing-static-initialization   std::mutex globals; non-throwing here",
+            "  bugprone-multi-level-implicit-pointer-conversion  COM void** out-params",
+            "  bugprone-argument-comment                 comment/parameter name drift only",
+            "  bugprone-exception-escape                 destructors; see git log for rationale",
+        ],
+        "checks": dict(sorted(check_counts.items())),
+        "total": sum(check_counts.values()),
+    }
+    os.makedirs(os.path.dirname(CLANG_TIDY_BASELINE_PATH), exist_ok=True)
+    write_text_atomic(CLANG_TIDY_BASELINE_PATH, json.dumps(payload, indent=2) + "\n")
+
+
+def evaluate_clang_tidy_baseline(check_counts: Mapping[str, int], lint_details: Dict[str, Any]) -> None:
+    """Fail when clang-tidy findings grow; fold in improvements automatically.
+
+    The raw warnings stay advisory because the existing backlog is large and mostly
+    low-value. Without a ratchet that backlog also hides genuinely useful findings,
+    so a *regression* against the recorded counts is fatal in every flow that lints.
+    """
+    update_requested = "--update-lint-baseline" in sys.argv
+    baseline = load_clang_tidy_baseline()
+
+    if baseline is None or update_requested:
+        write_clang_tidy_baseline(check_counts)
+        lint_details["clang_tidy_baseline"] = "written"
+        action = "Updated" if update_requested else "Created"
+        log(f"{action} clang-tidy baseline: {CLANG_TIDY_BASELINE_PATH} " f"({sum(check_counts.values())} warnings)")
+        return
+
+    regressions = []
+    for check, count in sorted(check_counts.items()):
+        allowed = baseline.get(check)
+        if allowed is None:
+            regressions.append(f"{check}: new check with {count} warning(s)")
+        elif count > allowed:
+            regressions.append(f"{check}: {count} > {allowed} allowed")
+
+    improvements = {
+        check: (allowed, check_counts.get(check, 0))
+        for check, allowed in baseline.items()
+        if check_counts.get(check, 0) < allowed
+    }
+
+    if regressions:
+        lint_details["clang_tidy_baseline"] = "regressed"
+        lint_details["clang_tidy_baseline_regressions"] = regressions
+        log("ERROR: clang-tidy findings regressed against the accepted baseline:")
+        for entry in regressions:
+            log(f"  {entry}")
+        log(f"Baseline: {CLANG_TIDY_BASELINE_PATH}")
+        log("Fix the new findings, or run --lint --update-lint-baseline if the increase is justified.")
+        diagnostics_path = verification_artifact_path("clang_tidy.log")
+        if diagnostics_path:
+            log(f"Complete clang-tidy diagnostics: {diagnostics_path}")
+        record_verification_step(
+            "lint",
+            "failed",
+            details={**lint_details, "reason": "clang_tidy_baseline_regression"},
+        )
+        sys.exit(1)
+
+    if improvements:
+        # Tighten immediately so a fixed warning cannot silently come back.
+        merged = dict(baseline)
+        for check, (_, actual) in improvements.items():
+            merged[check] = actual
+        for check, count in check_counts.items():
+            merged.setdefault(check, count)
+        write_clang_tidy_baseline(merged)
+        summary = ", ".join(f"{check} {old}->{new}" for check, (old, new) in sorted(improvements.items())[:6])
+        log(f"clang-tidy baseline tightened: {summary}")
+        lint_details["clang_tidy_baseline"] = "tightened"
+        lint_details["clang_tidy_baseline_improvements"] = {
+            check: {"was": old, "now": new} for check, (old, new) in improvements.items()
+        }
+    else:
+        lint_details["clang_tidy_baseline"] = "unchanged"
+        log(f"clang-tidy baseline: OK ({sum(check_counts.values())} warning(s), none above baseline)")
+
+
 def run_lint(env, *, advisory=False):
     log("=== Running Linting ===")
     lint_start = time.time()
@@ -5255,6 +5364,7 @@ def run_lint(env, *, advisory=False):
                     subsystem_counts[relative_path.replace("\\", "/").split("/", 1)[0]] += 1
             lint_details["clang_tidy_checks"] = dict(check_counts.most_common())
             lint_details["clang_tidy_subsystems"] = dict(subsystem_counts.most_common())
+            evaluate_clang_tidy_baseline(check_counts, lint_details)
             if res.returncode != 0 or warning_count > 0:
                 log(f"clang-tidy: {warning_count} warning(s) found (non-fatal)")
                 if check_counts:
