@@ -543,6 +543,7 @@ enum class CfrAppAudioBacklogDrainReason : uint8_t {
     ForceDrain,
     StartupNotSettled,
     StartupTimelineProtected,
+    TimelineRecoveryActive,
     BufferBelowMinimum,
     WithinSlack,
 };
@@ -570,6 +571,8 @@ inline const char* CfrAppAudioBacklogDrainReasonName(CfrAppAudioBacklogDrainReas
             return "startup_not_settled";
         case CfrAppAudioBacklogDrainReason::StartupTimelineProtected:
             return "startup_timeline_protected";
+        case CfrAppAudioBacklogDrainReason::TimelineRecoveryActive:
+            return "timeline_recovery";
         case CfrAppAudioBacklogDrainReason::BufferBelowMinimum:
             return "buffer_below_minimum";
         case CfrAppAudioBacklogDrainReason::WithinSlack:
@@ -580,7 +583,7 @@ inline const char* CfrAppAudioBacklogDrainReasonName(CfrAppAudioBacklogDrainReas
 
 inline CfrAppAudioBacklogDrainDecision ComputeCfrAppAudioBacklogDrainDecision(
     bool isCfrRecording, bool isAppAudioSource, bool forceDrain, bool trackStartupSettled,
-    bool startupTimelineProtected, int64_t rbAvailableSamples, int64_t targetLeadSamples,
+    bool startupTimelineProtected, bool timelineRecoveryActive, int64_t rbAvailableSamples, int64_t targetLeadSamples,
     int64_t minCompensationBufferSamples, int64_t compensationWindowSamples, double maxPitchPercent,
     int64_t activationSlackSamples, int64_t compensationDeadbandSamples) {
     CfrAppAudioBacklogDrainDecision decision;
@@ -606,6 +609,14 @@ inline CfrAppAudioBacklogDrainDecision ComputeCfrAppAudioBacklogDrainDecision(
     }
     if (startupTimelineProtected) {
         decision.reason = CfrAppAudioBacklogDrainReason::StartupTimelineProtected;
+        return decision;
+    }
+    if (timelineRecoveryActive) {
+        // When CFR output is behind wall time, every audio source naturally
+        // retains extra live capture. The video scheduler must repay that debt;
+        // accelerating only process-loopback audio would move it relative to
+        // system/mic tracks and the immutable video-content timeline.
+        decision.reason = CfrAppAudioBacklogDrainReason::TimelineRecoveryActive;
         return decision;
     }
     if (decision.backlogSamples < std::max<int64_t>(0, minCompensationBufferSamples)) {

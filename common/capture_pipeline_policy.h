@@ -528,22 +528,23 @@ inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, bool encode
                                            uint32_t recentDeliveredMin250Fps, uint32_t recentInputMin250Fps,
                                            uint32_t noFreshTickPermille, bool lowSourceMode,
                                            double audioLeadExcessMs = 0.0) {
-    (void)encoderBottlenecked;
     (void)encoderActivelyTooSlow;
     (void)bufferedWgcFrames;
     (void)frameCreditAccumulator;
-    (void)outputShortfallTicks;
     (void)outputFps;
     (void)recentDeliveredMin250Fps;
     (void)recentInputMin250Fps;
     (void)noFreshTickPermille;
     (void)lowSourceMode;
     (void)audioLeadExcessMs;
-    // WGC output emits one CFR tick per encoder-loop decision.  Backlog is not
-    // drained by burst-encoding old slots, because that creates visible speed
-    // changes and encourages audio trimming.  The smoother truthful result is
-    // one best-frame/hold/drop decision per tick.
-    return 1u;
+    // A WGC/DXGI worker wake and a CFR output slot are different clocks. Once
+    // the worker owes at least two output slots, service one additional held
+    // frame without moving the wake deadline. At severe debt the existing
+    // four-slot bound permits up to three held recovery slots. Fresh-frame
+    // catch-up remains disabled, so recovery represents missed wall time as
+    // the smallest debt-bounded visual hold instead of fast-forwarding video
+    // content or trimming/resampling audio to follow it.
+    return GetCfrCatchupTicksThisLoop(outputShortfallTicks, encoderBottlenecked);
 }
 
 inline double GetCfrShortfallDurationMs(uint32_t outputShortfallTicks, double frameIntervalMs) {
@@ -652,8 +653,8 @@ inline double GetInjectCfrServiceMsPerOutputTick(double cycleMs, uint32_t output
     return cycleMs / static_cast<double>(outputTicks);
 }
 
-inline int64_t GetNextInjectCfrOutputQpc(int64_t liveStartQpc, uint64_t liveTicksOutput,
-                                         int64_t targetIntervalTicks, int64_t fallbackQpc) {
+inline int64_t GetNextCfrOutputQpc(int64_t liveStartQpc, uint64_t liveTicksOutput, int64_t targetIntervalTicks,
+                                  int64_t fallbackQpc) {
     if (liveStartQpc <= 0 || targetIntervalTicks <= 0 ||
         liveTicksOutput > static_cast<uint64_t>((INT64_MAX - liveStartQpc) / targetIntervalTicks)) {
         return fallbackQpc;
@@ -662,11 +663,16 @@ inline int64_t GetNextInjectCfrOutputQpc(int64_t liveStartQpc, uint64_t liveTick
     return liveStartQpc + static_cast<int64_t>(liveTicksOutput) * targetIntervalTicks;
 }
 
+inline int64_t GetNextInjectCfrOutputQpc(int64_t liveStartQpc, uint64_t liveTicksOutput,
+                                         int64_t targetIntervalTicks, int64_t fallbackQpc) {
+    return GetNextCfrOutputQpc(liveStartQpc, liveTicksOutput, targetIntervalTicks, fallbackQpc);
+}
+
 inline bool ShouldAdvanceWakeDeadlineForCfrCatchupTick(bool useScreenGrab, bool injectRecoveryActive) {
-    // WGC/DXGI catch-up retains its existing one-deadline-per-output-slot scheduler. Inject recovery
-    // instead emits an extra overdue output slot while preserving the normal next wake deadline;
-    // otherwise two outputs followed by a two-tick wait can never repay wall-clock debt.
-    return useScreenGrab || !injectRecoveryActive;
+    // An overdue WGC/DXGI held-frame slot and an inject-recovery slot must not
+    // postpone the next normal wake. Otherwise two outputs followed by a
+    // two-tick wait can never repay wall-clock debt.
+    return !useScreenGrab && !injectRecoveryActive;
 }
 
 inline bool GetInjectCfrRecoveryActive(bool wasActive, bool recordingOutputLive, bool useVFR,
@@ -1914,34 +1920,23 @@ inline int64_t ClampWgcSelectionTargetToLiveQpc(
     bool lowSourceMode, bool liveRecoveryMode, uint32_t outputShortfallTicks, bool encoderBottlenecked,
     uint32_t severeShortfallThresholdTicks = kCfrShortfallCatchupThresholdTicks,
     bool encoderLimitedSmoothnessMode = false, int64_t intentionalContentDelayQpc = 0) {
+    (void)liveNowQpc;
+    (void)targetIntervalTicks;
+    (void)qpcTicksPerSecond;
     (void)lowSourceMode;
     (void)liveRecoveryMode;
+    (void)outputShortfallTicks;
     (void)encoderBottlenecked;
-    if (selectionTargetQpc <= 0) {
-        return selectionTargetQpc;
-    }
-    if (liveNowQpc <= 0 || targetIntervalTicks <= 0 || outputShortfallTicks < severeShortfallThresholdTicks) {
-        return selectionTargetQpc;
-    }
-
-    if (GetWgcLiveVisualDebtExcessTicksForMode(outputShortfallTicks, targetIntervalTicks, qpcTicksPerSecond,
-                                               encoderLimitedSmoothnessMode) == 0) {
-        return selectionTargetQpc;
-    }
-
-    const int64_t visualDebtFloorQpc = GetWgcLiveVisualDebtFloorQpcForMode(
-        liveNowQpc, targetIntervalTicks, qpcTicksPerSecond, encoderLimitedSmoothnessMode, intentionalContentDelayQpc);
-    if (visualDebtFloorQpc <= 0 || selectionTargetQpc >= visualDebtFloorQpc) {
-        return selectionTargetQpc;
-    }
-
-    // The CFR PTS/audio endpoint remain sequential and authoritative.  Once
-    // the encoder loop has fallen outside the bounded live window, however,
-    // keeping source selection pinned to the stale slot causes "too-new"
-    // repeats while good near-live frames pile up.  Clamp only the source-frame
-    // selection target to the live-window floor so overload is absorbed as
-    // visual debt drops, not audio cuts or fast-forwarded backlog.
-    return visualDebtFloorQpc;
+    (void)severeShortfallThresholdTicks;
+    (void)encoderLimitedSmoothnessMode;
+    (void)intentionalContentDelayQpc;
+    // Never move source selection ahead of the immutable CFR output slot.
+    // Doing so puts near-live video content into an older PTS while audio
+    // remains sample-continuous at that PTS, creating real content-level A/V
+    // drift even though packet endpoints still match. Overload debt is repaid
+    // with held-frame output slots; source pruning may discard obsolete input,
+    // but it must not change the content time requested by the current slot.
+    return selectionTargetQpc;
 }
 
 inline bool IsWgcFrameTooNewForCfrSlot(int64_t frameSelectionQpc, int64_t selectionTargetQpc,

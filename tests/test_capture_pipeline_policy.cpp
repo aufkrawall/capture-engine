@@ -2371,9 +2371,9 @@ TEST(CapturePipelinePolicyTest, WgcExtraCatchupRequiresSurplusAndNoEncoderBottle
     EXPECT_TRUE(policy::ShouldAllowWgcExtraCatchupTicks(true, 4, 0.0, policy::kCfrShortfallForceCatchupThresholdTicks));
 }
 
-TEST(CapturePipelinePolicyTest, WgcCatchupStaysSingleTickWhenSourceIsDegraded) {
-    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, false, 4, 2.0, 8, 120, 80, 82, 0, true), 1u);
-    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, false, 4, 2.0, 8, 120, 84, 84, 420, false), 1u);
+TEST(CapturePipelinePolicyTest, WgcCatchupUsesHeldRepeatEvenWhenSourceIsDegraded) {
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, false, 4, 2.0, 8, 120, 80, 82, 0, true), 2u);
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, false, 4, 2.0, 8, 120, 84, 84, 420, false), 2u);
 }
 
 TEST(CapturePipelinePolicyTest, WgcHealthySourcePrefersSmoothnessOverLiveCatchup) {
@@ -2403,7 +2403,7 @@ TEST(CapturePipelinePolicyTest, WgcCoverageCatchupClampRelaxesAtSevereShortfall)
     EXPECT_DOUBLE_EQ(policy::GetWgcForceCatchupBudgetFrameMultiplier(500.0), 4.0);
 }
 
-TEST(CapturePipelinePolicyTest, WgcLiveSelectionTargetClampsOnlyBeyondVisualDebtWindow) {
+TEST(CapturePipelinePolicyTest, WgcLiveSelectionTargetNeverFastForwardsPastCfrGrid) {
     EXPECT_EQ(policy::GetWgcLiveVisualDebtLimitQpc(100, 1000), 250);
     EXPECT_EQ(policy::GetWgcLiveVisualDebtLimitQpc(100, 0), 3200);
     EXPECT_EQ(policy::GetWgcLiveVisualDebtLimitTicks(100, 1000), 3u);
@@ -2413,15 +2413,15 @@ TEST(CapturePipelinePolicyTest, WgcLiveSelectionTargetClampsOnlyBeyondVisualDebt
 
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1400, 1600, 100, 1000, false, false, 0, false), 1400);
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, false, 3, false), 1000);
-    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, false, 4, false), 1350);
-    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, true, 20, true), 1350);
+    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, false, 4, false), 1000);
+    EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, true, 20, true), 1000);
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, true, 20, true,
                                                        policy::kCfrShortfallCatchupThresholdTicks, true),
-              1550);
+              1000);
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1360, 1600, 100, 1000, true, true, 20, true), 1360);
-    // A deliberate 400-tick content delay is the normal playout position, not
-    // stale visual debt. Only age beyond that delay plus the bounded debt
-    // allowance may be clamped away.
+    // A deliberate 400-tick content delay is the normal playout position.
+    // Neither intentional delay nor overload debt may move the requested
+    // source-content time ahead of its immutable output slot.
     EXPECT_EQ(policy::GetWgcLiveVisualDebtFloorQpcForMode(1600, 100, 1000, false, 400), 950);
     EXPECT_EQ(policy::GetWgcLiveVisualDebtFloorQpcForMode(1600, 100, 1000, true, 400), 1150);
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, true, 20, true,
@@ -2904,7 +2904,7 @@ TEST(CapturePipelinePolicyTest, InjectCfrRecoveryUsesHysteresisAndPausesWhileEnc
     EXPECT_EQ(policy::GetInjectCfrCatchupTicksThisLoop(100, true, true), 1u);
 }
 
-TEST(CapturePipelinePolicyTest, InjectCfrRecoveryRepaysDebtWithoutSelfThrottlingItsWakeCadence) {
+TEST(CapturePipelinePolicyTest, CfrRecoveryRepaysDebtWithoutSelfThrottlingItsWakeCadence) {
     constexpr double kFrameIntervalMs = 1000.0 / 120.0;
     EXPECT_DOUBLE_EQ(policy::GetInjectCfrServiceMsPerOutputTick(12.0, 2), 6.0);
     EXPECT_DOUBLE_EQ(policy::GetInjectCfrServiceMsPerOutputTick(6.0, 1), 6.0);
@@ -2914,7 +2914,8 @@ TEST(CapturePipelinePolicyTest, InjectCfrRecoveryRepaysDebtWithoutSelfThrottling
     EXPECT_TRUE(policy::IsEncoderTooSlowForTargetFps(12.0, kFrameIntervalMs, 120));
 
     EXPECT_FALSE(policy::ShouldAdvanceWakeDeadlineForCfrCatchupTick(false, true));
-    EXPECT_TRUE(policy::ShouldAdvanceWakeDeadlineForCfrCatchupTick(true, true));
+    EXPECT_FALSE(policy::ShouldAdvanceWakeDeadlineForCfrCatchupTick(true, true));
+    EXPECT_FALSE(policy::ShouldAdvanceWakeDeadlineForCfrCatchupTick(true, false));
     EXPECT_TRUE(policy::ShouldAdvanceWakeDeadlineForCfrCatchupTick(false, false));
 
     uint32_t scheduledTicks = policy::kCfrShortfallForceCatchupThresholdTicks;
@@ -2932,9 +2933,25 @@ TEST(CapturePipelinePolicyTest, InjectCfrRecoveryRepaysDebtWithoutSelfThrottling
     const uint32_t finalShortfall = policy::GetCfrOutputShortfallTicks(scheduledTicks, outputTicks);
     EXPECT_LE(finalShortfall, policy::kInjectCfrRecoveryExitShortfallTicks);
     EXPECT_FALSE(policy::GetInjectCfrRecoveryActive(recoveryActive, true, false, finalShortfall));
+
+    scheduledTicks = policy::kCfrShortfallForceCatchupThresholdTicks;
+    outputTicks = 0;
+    for (uint32_t loop = 0; loop < policy::kCfrShortfallForceCatchupThresholdTicks; ++loop) {
+        const uint32_t shortfall = policy::GetCfrOutputShortfallTicks(scheduledTicks, outputTicks);
+        outputTicks +=
+            policy::GetWgcCatchupTicksThisLoop(true, true, 4, 2.0, shortfall, 120, 118, 124, 0, false, 200.0);
+        ++scheduledTicks;
+    }
+    EXPECT_LT(policy::GetCfrOutputShortfallTicks(scheduledTicks, outputTicks),
+              policy::kCfrShortfallCatchupThresholdTicks);
 }
 
-TEST(CapturePipelinePolicyTest, InjectRecoveryOutputQpcStaysOnTheImmutableCfrGrid) {
+TEST(CapturePipelinePolicyTest, RecoveryOutputQpcStaysOnTheImmutableCfrGrid) {
+    EXPECT_EQ(policy::GetNextCfrOutputQpc(1000, 0, 100, 77), 1000);
+    EXPECT_EQ(policy::GetNextCfrOutputQpc(1000, 3, 100, 77), 1300);
+    EXPECT_EQ(policy::GetNextCfrOutputQpc(0, 3, 100, 77), 77);
+    EXPECT_EQ(policy::GetNextCfrOutputQpc(1000, 3, 0, 77), 77);
+    EXPECT_EQ(policy::GetNextCfrOutputQpc(INT64_MAX - 10, 2, 10, 77), 77);
     EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(1000, 0, 100, 77), 1000);
     EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(1000, 3, 100, 77), 1300);
     EXPECT_EQ(policy::GetNextInjectCfrOutputQpc(0, 3, 100, 77), 77);
@@ -2962,54 +2979,58 @@ TEST(CapturePipelinePolicyTest, InjectFreshCatchupRequiresHealthyEncoderAndTarge
 TEST(CapturePipelinePolicyTest, WgcCatchupTicksRecoverModerateShortfallWhenHealthy) {
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, false, 2, 1.0, policy::kCfrShortfallCatchupThresholdTicks, 120,
                                                  118, 120, 0, false),
-              1u);
+              2u);
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(
                   false, false, 4, 2.0, policy::kCfrShortfallForceCatchupThresholdTicks - 1, 120, 124, 130, 0, false),
-              1u);
+              2u);
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, true, 4, 2.0, policy::kCfrShortfallCatchupThresholdTicks, 120,
                                                  112, 124, 0, false),
-              1u);
+              2u);
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, true, 4, 2.0, policy::kCfrShortfallCatchupThresholdTicks, 120,
                                                  110, 112, 0, true),
-              1u);
+              2u);
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, false, 1, 2.0, policy::kCfrShortfallCatchupThresholdTicks, 120,
                                                  110, 112, 0, true),
-              1u);
+              2u);
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, false, 4, 0.5, policy::kCfrShortfallCatchupThresholdTicks, 120,
                                                  110, 112, 120, false),
+              2u);
+    EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, false, 4, 2.0,
+                                                 policy::kCfrShortfallCatchupThresholdTicks - 1, 120, 118, 120, 0,
+                                                 false),
               1u);
 }
 
-TEST(CapturePipelinePolicyTest, WgcAudioLeadPressureRestoresGentleCatchupUnderEncoderLoad) {
+TEST(CapturePipelinePolicyTest, WgcCatchupDoesNotWaitForDelayedAudioLeadTelemetry) {
     EXPECT_FALSE(policy::ShouldPrioritizeWgcAudioLeadCatchup(39.9));
     EXPECT_TRUE(policy::ShouldPrioritizeWgcAudioLeadCatchup(policy::kWgcAudioLeadCatchupThresholdMs));
 
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, true, 4, 2.0, policy::kCfrShortfallCatchupThresholdTicks, 120,
                                                  118, 124, 0, false, policy::kWgcAudioLeadCatchupThresholdMs - 0.1),
-              1u);
+              2u);
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, true, 4, 2.0, policy::kCfrShortfallCatchupThresholdTicks, 120,
                                                  118, 124, 0, false, policy::kWgcAudioLeadCatchupThresholdMs),
-              1u);
+              2u);
 }
 
-TEST(CapturePipelinePolicyTest, WgcAudioLeadPressureEscalatesAtForceThreshold) {
+TEST(CapturePipelinePolicyTest, WgcForceShortfallUsesBoundedHeldRepeatBurst) {
     EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(4), 0u);
     EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(2), 0u);
     EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(1), 0u);
 
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, true, 4, 2.0, policy::kCfrShortfallForceCatchupThresholdTicks,
                                                  120, 118, 124, 0, false, policy::kWgcAudioLeadCatchupThresholdMs),
-              1u);
+              4u);
 }
 
-TEST(CapturePipelinePolicyTest, WgcAudioLeadForceCatchupStaysGentleAfterEncoderRecovery) {
+TEST(CapturePipelinePolicyTest, WgcForceShortfallRepeatCatchupIsIndependentOfSourceRecovery) {
     EXPECT_TRUE(policy::IsWgcSourceRecoveredEnoughForSmoothAudioLeadCatchup(120, 116, 116, 40));
     EXPECT_FALSE(policy::IsWgcSourceRecoveredEnoughForSmoothAudioLeadCatchup(120, 115, 116, 40));
     EXPECT_FALSE(policy::IsWgcSourceRecoveredEnoughForSmoothAudioLeadCatchup(120, 116, 116, 200));
 
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, false, 4, 2.0, policy::kCfrShortfallForceCatchupThresholdTicks,
                                                  120, 116, 116, 40, false, policy::kWgcAudioLeadCatchupThresholdMs),
-              1u);
+              4u);
 }
 
 TEST(CapturePipelinePolicyTest, CfrCatchupTicksBurstAtForceThreshold) {
@@ -3020,16 +3041,16 @@ TEST(CapturePipelinePolicyTest, CfrCatchupTicksBurstAtForceThreshold) {
     // (the function uses min(shortfall, 4))
 }
 
-TEST(CapturePipelinePolicyTest, WgcCatchupTicksStillBurstAtForceThreshold) {
+TEST(CapturePipelinePolicyTest, WgcCatchupCapsSevereHeldRepeatBurstAtFourTicks) {
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(false, false, 2, 1.0, policy::kCfrShortfallForceCatchupThresholdTicks,
                                                  120, 118, 120, 0, false),
-              1u);
+              4u);
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, true, 4, 2.0, policy::kCfrShortfallForceCatchupThresholdTicks,
                                                  120, 112, 124, 0, false),
-              1u);
+              4u);
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, true, 2, 0.0, policy::kCfrShortfallForceCatchupThresholdTicks,
                                                  120, 84, 84, 200, true),
-              1u);
+              4u);
 }
 
 TEST(CapturePipelinePolicyTest, EncoderCapacityDiagnosticsQuantifyBudgetAndShortfall) {

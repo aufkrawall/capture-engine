@@ -120,10 +120,19 @@ TEST(CaptureCoordinatorSourceTest, FreshAndRepeatedCfrFramesShareScheduledCursor
               std::string::npos);
 }
 
-TEST(CaptureCoordinatorSourceTest, InjectRecoverySeparatesOutputGridFromWakeDeadlineWithoutChangingScreenGrab) {
+TEST(CaptureCoordinatorSourceTest, CfrRecoverySeparatesOutputGridFromWakeDeadlineForEveryBackend) {
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());
 
+    const size_t wgcOutputGrid = source.find("scheduledOutputQpc = ce::capture_policy::GetNextCfrOutputQpc");
+    const size_t wgcSelection = source.find("auto computeWgcSelectionTargetForTick", wgcOutputGrid);
+    ASSERT_NE(wgcOutputGrid, std::string::npos);
+    ASSERT_NE(wgcSelection, std::string::npos);
+    EXPECT_LT(wgcOutputGrid, wgcSelection);
+    EXPECT_NE(source.find("computeWgcSelectionTargetForTick(scheduledOutputQpc", wgcSelection), std::string::npos);
+    EXPECT_NE(source.find("scheduledOutputQpc > 0 ? scheduledOutputQpc", wgcSelection), std::string::npos);
+    EXPECT_EQ(source.find("wgcLiveRecoveryModeActive && !wgcAudioLeadCatchupPressure"), std::string::npos);
+    EXPECT_EQ(source.find("if (extraTick > 1)"), std::string::npos);
     EXPECT_NE(source.find("scheduledOutputQpc = ce::capture_policy::GetNextInjectCfrOutputQpc"),
               std::string::npos);
     EXPECT_NE(source.find("ShouldAdvanceWakeDeadlineForCfrCatchupTick(useScreenGrab,"), std::string::npos);

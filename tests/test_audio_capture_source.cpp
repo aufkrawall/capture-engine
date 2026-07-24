@@ -598,6 +598,8 @@ TEST(AudioCaptureSourceTest, AppBacklogDrainCannotStarveRouteFromDelayedSharedCa
     EXPECT_EQ(source.find("GetCaptureGroupMaxBufferedSamples"), std::string::npos);
     EXPECT_NE(source.find("const int64_t compensationBufferedSamples = rbLevel"), std::string::npos);
     EXPECT_NE(source.find("GetCaptureGroupBufferedSampleRange(srcIdx)"), std::string::npos);
+    EXPECT_NE(source.find("const bool cfrTimelineRecoveryActive"), std::string::npos);
+    EXPECT_NE(source.find("startupTimelineProtected, cfrTimelineRecoveryActive"), std::string::npos);
     EXPECT_NE(source.find("Applying route-local compensation so a delayed sibling cannot starve this"),
               std::string::npos);
     EXPECT_NE(source.find("ShouldTreatInactiveStartedAppCaptureAsSilence"), std::string::npos);

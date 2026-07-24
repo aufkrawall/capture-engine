@@ -3080,10 +3080,10 @@ public:
         constexpr bool kWgcPreferVideoRepeatsOverAudioCuts = true;
         constexpr double kDefaultMaxCompensationPercent = 1.0;
         constexpr double kTier1MaxPitchPercent = 0.05;  // Keep WGC source-clock correction below audible pitch shift.
-        // CFR app-audio latency drain. Process-loopback sources can sit well above the video-derived
-        // live target during WGC/source-limited runs even when packet durations end exactly aligned.
-        // Drain that content backlog through resampler compensation only: no trims/drops for normal
-        // sub-second excess, and no changes to system/mic or WGC video scheduling.
+        // CFR app-audio latency drain. Process-loopback sources can sit above the video-derived live
+        // target because of a route-local delivery backlog. Drain that backlog through resampler
+        // compensation only when the CFR timeline itself is healthy; wall-time video debt naturally
+        // buffers every live audio source and must be repaid by video holds, not app-only pitch change.
         constexpr double kAppAudioDrainMaxPitchPercent = 0.5;
         constexpr int64_t kAppAudioDrainSlackSamples = SAMPLE_RATE / 50;         // 20ms above target
         constexpr int64_t kAppAudioDrainDeadbandSamples = SAMPLE_RATE / 100;     // 10ms compensation deadband
@@ -3253,6 +3253,9 @@ public:
                 }
             }
         }
+        const bool cfrTimelineRecoveryActive =
+            ce::audio::ShouldSuppressCfrPositiveDriftCorrectionDuringLiveShortfall(
+                isCfrRecording, forceDrain, timelineShortfallMs, wgcEncoderBottlenecked);
 
         if (encodedSamplesPerSource.size() != audioSources.size()) {
             encodedSamplesPerSource.resize(audioSources.size(), 0);
@@ -3578,7 +3581,8 @@ public:
                     const int64_t appDrainBudgetSamples = static_cast<int64_t>(rbAvailable);
                     const auto appAudioDrainBudgetDecision = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
                         isCfrRecording, src.sourceType == AudioConfig::AppAudio, forceDrain, trackStartupSettled,
-                        startupTimelineProtected, appDrainBudgetSamples, expectedLeadSamplesForCorrection,
+                        startupTimelineProtected, cfrTimelineRecoveryActive, appDrainBudgetSamples,
+                        expectedLeadSamplesForCorrection,
                         kMinCompensationBufferSamples, static_cast<int64_t>(SAMPLE_RATE) * 10,
                         kAppAudioDrainMaxPitchPercent, kAppAudioDrainSlackSamples, kAppAudioDrainDeadbandSamples);
                     const double maxCompensationPercent =
@@ -3771,10 +3775,10 @@ public:
                             const int64_t trueDrift = compensationBufferedSamples - expectedLead;
                             const auto appAudioDrainDecision = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
                                 isCfrRecording, src.sourceType == AudioConfig::AppAudio, forceDrain,
-                                trackStartupSettled, startupTimelineProtected, compensationBufferedSamples,
-                                expectedLead, kMinCompensationBufferSamples, static_cast<int64_t>(SAMPLE_RATE) * 10,
-                                kAppAudioDrainMaxPitchPercent, kAppAudioDrainSlackSamples,
-                                kAppAudioDrainDeadbandSamples);
+                                trackStartupSettled, startupTimelineProtected, cfrTimelineRecoveryActive,
+                                compensationBufferedSamples, expectedLead, kMinCompensationBufferSamples,
+                                static_cast<int64_t>(SAMPLE_RATE) * 10, kAppAudioDrainMaxPitchPercent,
+                                kAppAudioDrainSlackSamples, kAppAudioDrainDeadbandSamples);
                             const double activeMaxCompensationPercent =
                                 appAudioDrainDecision.active
                                     ? kAppAudioDrainMaxPitchPercent

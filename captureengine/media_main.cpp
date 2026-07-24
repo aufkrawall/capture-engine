@@ -4551,7 +4551,7 @@ void EncoderThreadFunc(const AppConfig& config) {
 
             static uint64_t s_lastWgcTimelineDebtDropLogTick = 0;
             const uint64_t nowTick = GetTickCount64();
-            if (nowTick - s_lastWgcTimelineDebtDropLogTick >= 1000 || excessTicks >= maxDebtTicks) {
+            if (nowTick - s_lastWgcTimelineDebtDropLogTick >= 1000) {
                 LogWarn(
                     "[EncoderThread] WGC CFR visual timeline debt drop: reason=%s mode=%s excessTicks=%u "
                     "maxDebtTicks=%u maxExcessTicks=%llu shortfall=%u",
@@ -4902,8 +4902,6 @@ void EncoderThreadFunc(const AppConfig& config) {
             const double shortfallDurationMs =
                 ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
             wgcAudioLeadExcessMsCurrent = loadWgcAudioLeadExcessMs();
-            const bool wgcAudioLeadCatchupPressure =
-                ce::capture_policy::ShouldPrioritizeWgcAudioLeadCatchup(wgcAudioLeadExcessMsCurrent);
             wgcCoverageRepeatActiveCurrent = computeWgcCoverageRepeatActive(wgcAudioLeadExcessMsCurrent);
             shouldCatchUpToWallClock =
                 !config.video.useVFR && recordingOutputLive &&
@@ -4922,13 +4920,23 @@ void EncoderThreadFunc(const AppConfig& config) {
                     outputShortfallTicks, injectCfrRecoveryActive,
                     encoderCatchupBottleneckedCurrent || injectEncoderServiceTooSlowCurrent);
             }
-            if (activeScreenGrab && wgcLiveRecoveryModeActive && !wgcAudioLeadCatchupPressure) {
-                catchupTicksThisLoop = std::min<uint32_t>(catchupTicksThisLoop, 1u);
-            }
             if (activeScreenGrab &&
                 ce::capture_policy::ShouldClampWgcCoverageCatchupToSingleTick(
                     wgcCoverageRepeatActiveCurrent, encoderCatchupBottleneckedCurrent, shortfallDurationMs)) {
                 catchupTicksThisLoop = std::min<uint32_t>(catchupTicksThisLoop, 1u);
+            }
+            if (activeScreenGrab && catchupTicksThisLoop > 1u) {
+                static uint64_t s_lastWgcRepeatCatchupLogTick = 0;
+                const uint64_t nowTick = GetTickCount64();
+                if (nowTick - s_lastWgcRepeatCatchupLogTick >= 5000) {
+                    LogInfo(
+                        "[EncoderThread] WGC CFR repeat catch-up armed: shortfall=%u/%.1fms ticksThisLoop=%u "
+                        "audioLeadExcess=%.1fms encoderBottleneck=%d encoderTooSlow=%d buffered=%zu",
+                        outputShortfallTicks, shortfallDurationMs, catchupTicksThisLoop, wgcAudioLeadExcessMsCurrent,
+                        encoderCatchupBottleneckedCurrent ? 1 : 0, encoderTooSlowForTargetCurrent ? 1 : 0,
+                        bufferedWgcFrames.size());
+                    s_lastWgcRepeatCatchupLogTick = nowTick;
+                }
             }
         };
         recomputeCatchupPolicy();
@@ -5041,6 +5049,15 @@ void EncoderThreadFunc(const AppConfig& config) {
         }
 
         int64_t scheduledOutputQpc = scheduledSampleQpc;
+        if (!config.video.useVFR && recordingOutputLive && activeScreenGrab) {
+            // Worker wake deadlines may rebase after an expensive encode, but
+            // WGC/DXGI source selection, cursor sampling, and media submission
+            // must stay on the immutable CFR output grid. This also lets an
+            // extra held-frame slot repay debt without duplicating a QPC or
+            // postponing the next normal wake.
+            scheduledOutputQpc = ce::capture_policy::GetNextCfrOutputQpc(
+                liveStartQpc.QuadPart, liveTicksOutput, targetIntervalTicks, scheduledSampleQpc);
+        }
         const auto computeWgcSelectionTargetForTick = [&](int64_t scheduledQpcForTick, int64_t selectionGridTickForTick,
                                                           bool applyLiveDelay) {
             const int64_t fallbackTargetQpc =
@@ -5068,7 +5085,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcLiveRecoveryModeActive, uniformCadenceActiveDelay, effectiveContentDelayQpc);
         };
         const auto computeWgcSelectionTargetQpc = [&](bool applyLiveDelay) {
-            return computeWgcSelectionTargetForTick(scheduledSampleQpc, selectionGridTick, applyLiveDelay);
+            return computeWgcSelectionTargetForTick(scheduledOutputQpc, selectionGridTick, applyLiveDelay);
         };
         const auto computeLiveWgcSelectionTargetQpc = [&]() { return computeWgcSelectionTargetQpc(false); };
         const auto computeDelayedWgcSelectionTargetQpc = [&]() { return computeWgcSelectionTargetQpc(true); };
@@ -7060,7 +7077,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         };
                         const auto recordUniformWgcDelayRealizationForFrame = [&](const QueuedFrame& selectedFrame) {
                             const int64_t gridReferenceQpc =
-                                scheduledSampleQpc > 0 ? scheduledSampleQpc : selectionNowQpc.QuadPart;
+                                scheduledOutputQpc > 0 ? scheduledOutputQpc : selectionNowQpc.QuadPart;
                             if (qpcFreq.QuadPart <= 0 || selectedFrame.timestamp <= 0 || gridReferenceQpc <= 0) {
                                 return false;
                             }
@@ -7201,7 +7218,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                 ++wgcDelayUniformCadenceWindow;
                                 ++wgcDelayUniformCadenceTotal;
                                 // Measure the realized content delay against the GRID playout reference
-                                // (scheduledSampleQpc == the slot's ideal wall time), NOT wall-clock
+                                // (scheduledOutputQpc == the immutable output slot), NOT wall-clock
                                 // `selectionNowQpc`. The emitted frame lands at a fixed PTS slot and the
                                 // co-timed audio is anchored to the same grid, so the file's true A/V
                                 // content offset is `gridSlotTime - frame.timestamp`, independent of how
@@ -8909,10 +8926,6 @@ void EncoderThreadFunc(const AppConfig& config) {
                     : 0u;
 
             for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
-                if (extraTick > 1) {
-                    break;
-                }
-
                 if (useScreenGrab && config.video.useVFR &&
                     !ce::capture_policy::ShouldAllowWgcExtraCatchupTicks(
                         encoderTooSlowForTargetCurrent, bufferedWgcFrames.size(), frameCreditAccumulator,
