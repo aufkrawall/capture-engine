@@ -1712,7 +1712,12 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
     }
 
   } catch (...) {
-    // Fallback
+    // Never let a redirect-resolution failure escape into the game's loader.
+    // Falling back to the default load path is correct, but silently doing so
+    // hid why a Streamline/FG DLL was not redirected.
+    HookLog("Loader redirect resolution threw for %s - falling back to "
+            "default load path",
+            requestedPath.c_str());
   }
   return "";
 }

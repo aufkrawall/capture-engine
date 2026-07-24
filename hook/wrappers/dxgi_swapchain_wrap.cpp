@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstring>
 #include <mutex>
+#include "../../common/logging.h"
 #include "../../common/raii_helpers.h"
 #include "../apis/graphics_hook.h"
 #include "../common/dx12_overlay_policy.h"
@@ -631,7 +632,18 @@ void CWrapDXGISwapChain::PromoteInterfaces() {
             m_Version = 3;
         if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal4))))
             m_Version = 4;
-    } catch (...) {}
+    } catch (...) {
+        // A foreign swapchain (Streamline/FFX proxies in particular) can throw out
+        // of QueryInterface. Keeping the version reached so far is the right
+        // fallback, but swallowing it silently hid why an FG proxy was treated as
+        // an older interface than it really is.
+        static std::atomic<uint64_t> s_promoteFailures{0};
+        const uint64_t failures = s_promoteFailures.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (failures <= 3 || (failures % 100ull) == 0ull) {
+            HookLog("[DXGI] Swapchain interface promotion threw; retaining version %u (occurrence %llu)", m_Version,
+                    static_cast<unsigned long long>(failures));
+        }
+    }
 }
 
 void CWrapDXGISwapChain::CleanupOverlayResources() {

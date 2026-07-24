@@ -5,11 +5,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <exception>
 #include <mutex>
 #include <new>
 #include <utility>
 #include <vector>
+
+#include "../common/logging.h"
 
 namespace ce::process_loopback {
 
@@ -77,7 +80,18 @@ struct ProcessAudioSessionMonitor::SharedState {
         try {
             std::lock_guard<std::mutex> lock(pendingMutex);
             RememberProcessIdLocked(processId);
-        } catch (...) {}
+        } catch (...) {
+            // Runs on a WASAPI session-notification callback, so the exception must
+            // not escape. Losing the process id means a newly started app-audio
+            // session can be missed entirely, which previously looked like the app
+            // simply never produced audio.
+            static std::atomic<uint64_t> s_rememberFailures{0};
+            const uint64_t failures = s_rememberFailures.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (failures <= 3 || (failures % 100ull) == 0ull) {
+                LogWarn("[AppAudio] Failed to record notified session pid=%lu (occurrence %llu)", processId,
+                        static_cast<unsigned long long>(failures));
+            }
+        }
     }
 };
 
