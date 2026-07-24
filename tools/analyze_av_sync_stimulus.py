@@ -34,6 +34,9 @@ STRICT_CE_PATTERNS = {
     ),
     "audio_overflow": re.compile(r"\[PullAudio\] WARNING: Ring buffer overflow", re.IGNORECASE),
     "audio_extreme_drift": re.compile(r"\[PullAudio\] WARNING: Extreme drift detected", re.IGNORECASE),
+    "audio_stop_force_drain_backlog": re.compile(
+        r"\[PullAudio\] Stop force-drain backlog:", re.IGNORECASE
+    ),
     "audio_late_app_source_backlog": re.compile(
         r"\[PullAudio\] Source primed .*lateStart=(?:[1-9]\d{3,}|\d{5,})ms", re.IGNORECASE
     ),
@@ -49,7 +52,18 @@ STRICT_CE_PATTERNS = {
 
 LATE_APP_LIVE_JOIN_SRC_RE = re.compile(r"\[AudioLoop\] Late app source live join src=(\d+)", re.IGNORECASE)
 LATE_APP_PRIMED_SRC_RE = re.compile(
-    r"\[PullAudio\] Source primed\s+-\s+src=(\d+).*?lateStart=(\d+)ms",
+    r"\[PullAudio\] Source primed\s+-\s+src=(\d+).*?lateStart=(\d+)ms(?:\s+app=([01]))?",
+    re.IGNORECASE,
+)
+STOP_AUDIO_SOURCE_TYPE_RE = re.compile(
+    r"\[STOP AUDIO\] Source (\d+):.*?\bprocess=([^\s]+)", re.IGNORECASE
+)
+APP_DRAIN_STATE_RE = re.compile(
+    r"\[AppDrain\] state src=(\d+).*?\bforceDrain=([01])", re.IGNORECASE
+)
+AUDIO_EXTREME_DRIFT_SRC_RE = re.compile(
+    r"\[PullAudio\] WARNING: Extreme drift detected \([^)]*?\bsrc=(\d+)\)"
+    r"(?:.*?\bforceDrain=([01]))?",
     re.IGNORECASE,
 )
 
@@ -1510,20 +1524,66 @@ def offset_slope_is_acceptable(
 def analyze_ce_log_text(text):
     counts = {name: len(pattern.findall(text)) for name, pattern in STRICT_CE_PATTERNS.items()}
     counts["audio_late_app_source_backlog"] = count_unjoined_late_app_source_backlog(text)
+    raw_extreme_drift = counts["audio_extreme_drift"]
+    live_extreme_drift, historical_stop_force_drain = count_audio_extreme_drift_events(text)
+    classified_extreme_drift = live_extreme_drift + historical_stop_force_drain
+    counts["audio_extreme_drift"] = live_extreme_drift + max(
+        0, raw_extreme_drift - classified_extreme_drift
+    )
+    counts["audio_stop_force_drain_backlog"] += historical_stop_force_drain
     return counts
 
 
 def count_unjoined_late_app_source_backlog(text):
     live_join_sources = {match.group(1) for match in LATE_APP_LIVE_JOIN_SRC_RE.finditer(text)}
+
+    typed_stop_sources = {}
+    for match in STOP_AUDIO_SOURCE_TYPE_RE.finditer(text):
+        process = match.group(2)
+        typed_stop_sources[match.group(1)] = process != "-"
+
     count = 0
     matched_structured_line = False
     for match in LATE_APP_PRIMED_SRC_RE.finditer(text):
         matched_structured_line = True
-        if int(match.group(2)) >= 1000 and match.group(1) not in live_join_sources:
+        source = match.group(1)
+        explicit_app = match.group(3)
+        if explicit_app == "0":
+            continue
+        if explicit_app is None:
+            if source in typed_stop_sources and not typed_stop_sources[source]:
+                continue
+        if int(match.group(2)) >= 1000 and source not in live_join_sources:
             count += 1
     if matched_structured_line:
         return count
     return len(STRICT_CE_PATTERNS["audio_late_app_source_backlog"].findall(text))
+
+
+def count_audio_extreme_drift_events(text):
+    force_drain_by_source = {}
+    live_count = 0
+    stop_force_drain_count = 0
+    for line in text.splitlines():
+        drain_match = APP_DRAIN_STATE_RE.search(line)
+        if drain_match:
+            force_drain_by_source[drain_match.group(1)] = drain_match.group(2) == "1"
+
+        drift_match = AUDIO_EXTREME_DRIFT_SRC_RE.search(line)
+        if not drift_match:
+            continue
+        source = drift_match.group(1)
+        explicit_force_drain = drift_match.group(2)
+        is_force_drain = (
+            explicit_force_drain == "1"
+            if explicit_force_drain is not None
+            else force_drain_by_source.get(source, False)
+        )
+        if is_force_drain:
+            stop_force_drain_count += 1
+        else:
+            live_count += 1
+    return live_count, stop_force_drain_count
 
 
 def analyze_ce_log(path):
@@ -1820,7 +1880,17 @@ def evaluate(args, video_summary, audio_results, ce_counts, app_counts):
         (not check["passed"]) and check["failure_class"] in strict_audio_content_failure_classes for check in checks
     )
     for name, count in sorted(ce_counts.items()):
-        if name in {"audio_strict_source_padding", "audio_stop_tail_padding"}:
+        if name == "audio_stop_force_drain_backlog":
+            checks.append(
+                make_check(
+                    f"ce_log.{name}",
+                    True,
+                    count,
+                    "diagnostic-only post-target backlog",
+                    "ce_strict_log_event",
+                )
+            )
+        elif name in {"audio_strict_source_padding", "audio_stop_tail_padding"}:
             checks.append(
                 make_check(
                     f"ce_log.{name}",
@@ -2035,6 +2105,52 @@ def self_test():
         "[PullAudio] Source primed - src=9 track=1 buffered=1200 realBuffered=1200 needed=1200 lateStart=7459ms\n"
     )
     assert live_join_counts["audio_late_app_source_backlog"] == 0
+    typed_source_counts = analyze_ce_log_text(
+        "[PullAudio] Source primed - src=0 realBuffered=1200 samples "
+        "synthetic(ring=0 inflight=0 post=0) lateStart=4600ms\n"
+        "[AudioLoop] Late app source live join src=13 track=1 process=game.exe "
+        "packetStart=191057 trackCursor=191520 joinCursor=191520 suppressedGap=191057 "
+        "preservedGap=0 qpcStart=123\n"
+        "[PullAudio] Source primed - src=13 realBuffered=1200 samples "
+        "synthetic(ring=0 inflight=0 post=0) lateStart=3981ms\n"
+        "[STOP AUDIO] Source 0: track=3 encoded=48000 trim=cov:0 latTotal:0 liveUncat:0 "
+        "cat:0 normal:0 pad:0 qgap:1695 qjoin:0 qjoinKeep:0 ringPeak=20738 "
+        "ringUnderruns=0 process=-\n"
+        "[STOP AUDIO] Source 13: track=1 encoded=48000 trim=cov:0 latTotal:0 liveUncat:0 "
+        "cat:0 normal:0 pad:0 qgap:945 qjoin:191057 qjoinKeep:0 ringPeak=30545 "
+        "ringUnderruns=0 process=game.exe\n"
+    )
+    assert typed_source_counts["audio_late_app_source_backlog"] == 0
+    explicit_app_counts = analyze_ce_log_text(
+        "[PullAudio] Source primed - src=9 realBuffered=1200 samples "
+        "synthetic(ring=0 inflight=0 post=0) lateStart=7459ms app=1\n"
+    )
+    assert explicit_app_counts["audio_late_app_source_backlog"] == 1
+    historical_force_drain_counts = analyze_ce_log_text(
+        "[AppDrain] state src=11 track=1 active=0 reason=force_drain delayMs=2830 "
+        "targetMs=142 excessMs=2688 rb=135868 target=6816 delta=0 comp=0.0000% "
+        "forceDrain=1 startupSettled=1 startupProtected=0\n"
+        "[PullAudio] WARNING: Extreme drift detected (129052 samples src=11) - may indicate sync issue\n"
+    )
+    assert historical_force_drain_counts["audio_extreme_drift"] == 0
+    assert historical_force_drain_counts["audio_stop_force_drain_backlog"] == 1
+    live_drift_counts = analyze_ce_log_text(
+        "[PullAudio] WARNING: Extreme drift detected (129052 samples src=11) "
+        "forceDrain=0 - may indicate sync issue\n"
+    )
+    assert live_drift_counts["audio_extreme_drift"] == 1
+    assert live_drift_counts["audio_stop_force_drain_backlog"] == 0
+    legacy_unstructured_drift_counts = analyze_ce_log_text(
+        "[PullAudio] WARNING: Extreme drift detected - legacy diagnostic\n"
+    )
+    assert legacy_unstructured_drift_counts["audio_extreme_drift"] == 1
+    assert legacy_unstructured_drift_counts["audio_stop_force_drain_backlog"] == 0
+    current_force_drain_counts = analyze_ce_log_text(
+        "[PullAudio] Stop force-drain backlog: drift=129052 samples src=11 forceDrain=1 "
+        "(post-target backlog is excluded from output)\n"
+    )
+    assert current_force_drain_counts["audio_extreme_drift"] == 0
+    assert current_force_drain_counts["audio_stop_force_drain_backlog"] == 1
     clean_app_counts = analyze_app_log_text(
         "AVSYNC FRAME_TIMING planned_source_gap frameId=10 deltaMs=305.0 thresholdMs=33.3\n"
         "AVSYNC SUMMARY frame_timing targetFps=60 spikes=0\n"

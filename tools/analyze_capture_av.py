@@ -124,6 +124,9 @@ LOG_PATTERNS = {
     ),
     "wgc_post_stop_frame_drop": re.compile(r"\[EncoderThread\] WGC CFR post-stop frame drop"),
     "audio_extreme_drift": re.compile(r"\[PullAudio\] WARNING: Extreme drift detected"),
+    "audio_stop_force_drain_backlog": re.compile(
+        r"\[PullAudio\] Stop force-drain backlog:", re.IGNORECASE
+    ),
     "writer_finalize_timeout": re.compile(
         r"\[VideoEncoder\] Stop: (?:ERROR writer_finalize_timeout|WARNING - Writer thread did not finish)",
         re.IGNORECASE,
@@ -411,7 +414,19 @@ EXTERNAL_OVERLAY_RE = re.compile(r"\b(Steam|Rockstar|RTSS|ReShade|SpecialK|Strea
 CRASH_LOG_RE = re.compile(r"\b(CRASH DETECTED|Unhandled exception|Exception Code:|VEH Exception:)\b", re.IGNORECASE)
 LATE_APP_LIVE_JOIN_SRC_RE = re.compile(r"\[AudioLoop\] Late app source live join src=(\d+)", re.IGNORECASE)
 LATE_APP_PRIMED_SRC_RE = re.compile(
-    r"\[PullAudio\] Source primed\s+-\s+src=(\d+).*?lateStart=(\d+)ms",
+    r"\[PullAudio\] Source primed\s+-\s+src=(\d+).*?lateStart=(\d+)ms(?:\s+app=([01]))?",
+    re.IGNORECASE,
+)
+APP_DRAIN_STATE_RE = re.compile(
+    r"\[AppDrain\] state src=(\d+).*?\bforceDrain=([01])", re.IGNORECASE
+)
+AUDIO_EXTREME_DRIFT_SRC_RE = re.compile(
+    r"\[PullAudio\] WARNING: Extreme drift detected \([^)]*?\bsrc=(\d+)\)"
+    r"(?:.*?\bforceDrain=([01]))?",
+    re.IGNORECASE,
+)
+SCREEN_CAPTURE_BACKEND_TOKEN_RE = re.compile(
+    r"(?:\bBackend:\s*|\bbackend=)(DxgiDuplication|dxgi_duplication|dxgi_dup|WGC)\b",
     re.IGNORECASE,
 )
 
@@ -1418,15 +1433,54 @@ def attach_completed_capture_report(report, completed_capture):
 
 def count_unjoined_late_app_source_backlog(text):
     live_join_sources = {match.group(1) for match in LATE_APP_LIVE_JOIN_SRC_RE.finditer(text)}
+
+    typed_stop_sources = {}
+    for match in STOP_AUDIO_SOURCE_RE.finditer(text):
+        process = match.group(10) or ""
+        typed_stop_sources[match.group(1)] = bool(process and process != "-")
+
     count = 0
     matched_structured_line = False
     for match in LATE_APP_PRIMED_SRC_RE.finditer(text):
         matched_structured_line = True
-        if parse_int(match.group(2), 0) >= 1000 and match.group(1) not in live_join_sources:
+        source = match.group(1)
+        explicit_app = match.group(3)
+        if explicit_app == "0":
+            continue
+        if explicit_app is None:
+            if source in typed_stop_sources and not typed_stop_sources[source]:
+                continue
+        if parse_int(match.group(2), 0) >= 1000 and source not in live_join_sources:
             count += 1
     if matched_structured_line:
         return count
     return len(LOG_PATTERNS["audio_late_app_source_backlog"].findall(text))
+
+
+def count_audio_extreme_drift_events(text):
+    force_drain_by_source = {}
+    live_count = 0
+    stop_force_drain_count = 0
+    for line in text.splitlines():
+        drain_match = APP_DRAIN_STATE_RE.search(line)
+        if drain_match:
+            force_drain_by_source[drain_match.group(1)] = drain_match.group(2) == "1"
+
+        drift_match = AUDIO_EXTREME_DRIFT_SRC_RE.search(line)
+        if not drift_match:
+            continue
+        source = drift_match.group(1)
+        explicit_force_drain = drift_match.group(2)
+        is_force_drain = (
+            explicit_force_drain == "1"
+            if explicit_force_drain is not None
+            else force_drain_by_source.get(source, False)
+        )
+        if is_force_drain:
+            stop_force_drain_count += 1
+        else:
+            live_count += 1
+    return live_count, stop_force_drain_count
 
 
 def analyze_log(log_path):
@@ -1440,6 +1494,13 @@ def analyze_log_text(text):
     lines = text.splitlines()
     counts = {name: len(pattern.findall(text)) for name, pattern in LOG_PATTERNS.items()}
     counts["audio_late_app_source_backlog"] = count_unjoined_late_app_source_backlog(text)
+    raw_extreme_drift = counts["audio_extreme_drift"]
+    live_extreme_drift, historical_stop_force_drain = count_audio_extreme_drift_events(text)
+    classified_extreme_drift = live_extreme_drift + historical_stop_force_drain
+    counts["audio_extreme_drift"] = live_extreme_drift + max(
+        0, raw_extreme_drift - classified_extreme_drift
+    )
+    counts["audio_stop_force_drain_backlog"] += historical_stop_force_drain
     cadence_window_count = 0
 
     cadence_metrics = {
@@ -1745,19 +1806,33 @@ def normalize_screen_capture_backend(value):
     return ""
 
 
+def resolve_screen_capture_backend_history(manifest, media_evidence):
+    history = []
+
+    def append_backend(value):
+        backend = normalize_screen_capture_backend(value)
+        if backend and (not history or history[-1] != backend):
+            history.append(backend)
+
+    for event in media_evidence.get("screen_capture_backend_events", []):
+        append_backend(event.get("backend", ""))
+    if not history:
+        for perf in media_evidence.get("wgc_perf", []):
+            append_backend(perf.get("backend", ""))
+        for quality in media_evidence.get("wgc_quality", []):
+            append_backend(quality.get("backend", ""))
+    if not history:
+        append_backend(manifest.get("capture_method", ""))
+    return history
+
+
 def resolve_screen_capture_backend(manifest, media_evidence):
-    configured_backend = normalize_screen_capture_backend(manifest.get("capture_method", ""))
-    if configured_backend:
-        return configured_backend
-    for quality in reversed(media_evidence.get("wgc_quality", [])):
-        backend = normalize_screen_capture_backend(quality.get("backend", ""))
-        if backend:
-            return backend
-    for perf in reversed(media_evidence.get("wgc_perf", [])):
-        backend = normalize_screen_capture_backend(perf.get("backend", ""))
-        if backend:
-            return backend
-    return "screen_capture"
+    history = resolve_screen_capture_backend_history(manifest, media_evidence)
+    if not history:
+        return "screen_capture"
+    if len(history) == 1:
+        return history[0]
+    return "_to_".join(history)
 
 
 def parse_wgc_perf_line(line):
@@ -2119,6 +2194,7 @@ def filter_media_text_for_recording_window(media_text, recording_window_info):
 def merge_window_media_evidence(window_evidence, full_evidence):
     merged = dict(window_evidence)
     for key in (
+        "screen_capture_backend_events",
         "wgc_summary",
         "wgc_quality",
         "wgc_smoothness_summary",
@@ -2427,6 +2503,7 @@ def update_wgc_smoothness_item_from_line(item, line):
 
 
 def parse_media_triage(media_text):
+    screen_capture_backend_events = []
     source_starved = []
     attribution = []
     wgc_perf = []
@@ -2455,6 +2532,19 @@ def parse_media_triage(media_text):
     zero_drift_warnings = []
     packet_mismatch_warnings = 0
     for line in media_text.splitlines():
+        for backend_match in SCREEN_CAPTURE_BACKEND_TOKEN_RE.finditer(line):
+            backend = normalize_screen_capture_backend(backend_match.group(1))
+            if backend and (
+                not screen_capture_backend_events
+                or screen_capture_backend_events[-1]["backend"] != backend
+            ):
+                screen_capture_backend_events.append(
+                    {
+                        "backend": backend,
+                        "timestamp_us": parse_log_timestamp_us(line),
+                        "line": line,
+                    }
+                )
         source_match = WGC_SOURCE_STARVED_RE.search(line)
         if source_match:
             source_starved.append(
@@ -2930,6 +3020,7 @@ def parse_media_triage(media_text):
         if PACKET_MISMATCH_RE.search(line):
             packet_mismatch_warnings += 1
     return {
+        "screen_capture_backend_events": screen_capture_backend_events,
         "source_starved_episodes": source_starved,
         "wgc_attribution": attribution,
         "wgc_perf": wgc_perf,
@@ -3670,7 +3761,7 @@ def has_wgc_active_delay_post_selection_reject(media_evidence):
     return any(item.get("delay_post_selection_rejected_sync", 0) > 0 for item in media_evidence["wgc_smoothness_summary"])
 
 
-def has_wgc_av_sync_delay_residual_fault(media_evidence):
+def has_wgc_av_sync_delay_residual_fault(media_evidence, source_limited_playout_maximal=None):
     for item in media_evidence["wgc_smoothness_summary"]:
         if item.get("av_delay_ms", 0.0) <= 0.0:
             continue
@@ -3689,7 +3780,9 @@ def has_wgc_av_sync_delay_residual_fault(media_evidence):
             return True
         if not residual_logged:
             continue
-        if wgc_source_limited_delay_is_context(media_evidence, item):
+        if wgc_source_limited_delay_is_context(
+            media_evidence, item, source_limited_playout_maximal
+        ):
             continue
 
         if item.get("delay_residual_avg_abs_us", 0) > 5000:
@@ -3726,14 +3819,16 @@ def has_wgc_av_sync_delay_residual_fault(media_evidence):
     return False
 
 
-def has_wgc_audio_late_risk(media_evidence):
+def has_wgc_audio_late_risk(media_evidence, source_limited_playout_maximal=None):
     for item in media_evidence["wgc_smoothness_summary"]:
         if item.get("av_delay_ms", 0.0) <= 0.0:
             continue
 
         soft_late_accepted = item.get("delay_soft_late_accepted", 0)
         near_cap_accepted = item.get("delay_near_cap_accepted", 0)
-        if wgc_source_limited_delay_is_context(media_evidence, item):
+        if wgc_source_limited_delay_is_context(
+            media_evidence, item, source_limited_playout_maximal
+        ):
             continue
         source_limited_ceiling = wgc_is_sync_protected_source_limited_ceiling(media_evidence, item)
         if soft_late_accepted >= WGC_AUDIO_LATE_RISK_SOFT_ACCEPT_MIN_COUNT:
@@ -3917,6 +4012,67 @@ def has_wgc_source_limited_playout_maximal(media_evidence):
     return False
 
 
+def has_wgc_backend_transition_source_limited_playout_maximal(media_evidence, backend_history):
+    """Allow bounded lower-bound uncertainty across a proven capture-backend transition.
+
+    A DXGI duplication access-loss fallback changes producer cadence and resets the source
+    accounting domain. The aggregate lower bound can therefore undercount a small number of
+    necessary holds even when the runtime's complete policy verdict proves that CE added no
+    avoidable repeat cluster. Keep this exception transition-scoped and require exact output,
+    clean capacity/pool state, and complete selection-policy evidence.
+    """
+    has_dxgi_to_wgc_fallback = any(
+        previous == "dxgi_dup" and current == "wgc"
+        for previous, current in zip(backend_history, backend_history[1:])
+    )
+    if not has_dxgi_to_wgc_fallback or not has_source_starvation(media_evidence):
+        return False
+    if not has_exact_final_mux_evidence(media_evidence):
+        return False
+
+    coverage_items = [
+        item
+        for item in media_evidence["wgc_source_coverage"]
+        if item.get("source_repeat_lower_bound", 0) > 0
+        and item.get("policy_added_repeats", 0) == 0
+        and item.get("clean_encoder_mux", 0) > 0
+        and item.get("clean_pool", 0) > 0
+        and parse_hex_flags(item.get("encoder_overload", "0x0")) == 0
+        and item.get("mux_backpressure", 0) == 0
+        and item.get("pool_pressure", 0) == 0
+    ]
+    if not coverage_items:
+        return False
+
+    for item in media_evidence["wgc_smoothness_summary"]:
+        lower_bound = item.get("source_repeat_lower_bound", 0)
+        excess_repeats = item.get("excess_repeats", 0)
+        allowed_transition_excess = max(5, int(math.ceil(lower_bound * 0.10)))
+        matching_coverage = any(
+            coverage.get("source_repeat_lower_bound", 0) == lower_bound
+            and coverage.get("excess_repeats", 0) == excess_repeats
+            for coverage in coverage_items
+        )
+        if (
+            lower_bound > 0
+            and excess_repeats <= allowed_transition_excess
+            and item.get("wgc_smoothness_verdict_complete", 0) > 0
+            and item.get("policy_added_repeats", 0) == 0
+            and item.get("excess_repeat_clusters", 0) == 0
+            and item.get("excess_repeat_cluster_max_ticks", 0) == 0
+            and item.get("smoothness_not_maximal", 0) == 0
+            and item.get("mixed_policy_fault", 0) == 0
+            and item.get("sync_delay_policy_holds", 0) == 0
+            and item.get("delay_post_selection_rejected_sync", 0) == 0
+            and item.get("wgc_smoothness_evidence_incomplete", 0) == 0
+            and item.get("delay_soft_late_accepted", 0) == 0
+            and item.get("delay_repeat_soft_safe_candidate", 0) == 0
+            and matching_coverage
+        ):
+            return True
+    return False
+
+
 def wgc_source_delivery_period_us(media_evidence):
     worst_delivered_fps = min(
         (
@@ -3987,7 +4143,9 @@ def wgc_near_cap_acceptance_is_isolated(media_evidence, item):
     )
 
 
-def wgc_source_limited_delay_is_context(media_evidence, item):
+def wgc_source_limited_delay_is_context(
+    media_evidence, item, source_limited_playout_maximal=None
+):
     """True when delay variation is bounded by proven source delivery holes, not CE policy.
 
     A low-cadence desktop/variable-FPS source can make selected-frame age vary by its own
@@ -3998,8 +4156,10 @@ def wgc_source_limited_delay_is_context(media_evidence, item):
     source_period_us = wgc_source_delivery_period_us(media_evidence)
     if source_period_us <= 0:
         return False
+    if source_limited_playout_maximal is None:
+        source_limited_playout_maximal = has_wgc_source_limited_playout_maximal(media_evidence)
     if not (
-        has_wgc_source_limited_playout_maximal(media_evidence)
+        source_limited_playout_maximal
         and wgc_active_delay_matches_request(item)
         and wgc_has_source_limited_delay_context(media_evidence, item)
         and item.get("wgc_smoothness_verdict_complete", 0) > 0
@@ -4060,11 +4220,17 @@ def wgc_realized_delay_spread_us(item):
     return delay_max - delay_min
 
 
-def wgc_active_delay_variation_is_source_context(media_evidence, item):
-    return wgc_source_limited_delay_is_context(media_evidence, item)
+def wgc_active_delay_variation_is_source_context(
+    media_evidence, item, source_limited_playout_maximal=None
+):
+    return wgc_source_limited_delay_is_context(
+        media_evidence, item, source_limited_playout_maximal
+    )
 
 
-def has_wgc_active_delay_realized_delay_unstable(media_evidence):
+def has_wgc_active_delay_realized_delay_unstable(
+    media_evidence, source_limited_playout_maximal=None
+):
     """The realized content delay rubber-bands on an active-delay run.
 
     This is the GPU-bound under-delivery judder signature: the displayed content age swings by
@@ -4077,17 +4243,23 @@ def has_wgc_active_delay_realized_delay_unstable(media_evidence):
             continue
         if (
             wgc_realized_delay_spread_us(item) >= WGC_REALIZED_DELAY_INSTABILITY_SPREAD_US
-            and not wgc_active_delay_variation_is_source_context(media_evidence, item)
+            and not wgc_active_delay_variation_is_source_context(
+                media_evidence, item, source_limited_playout_maximal
+            )
         ):
             return True
     return False
 
 
-def has_wgc_source_limited_delay_variation_context(media_evidence):
+def has_wgc_source_limited_delay_variation_context(
+    media_evidence, source_limited_playout_maximal=None
+):
     return any(
         item.get("av_delay_ms", 0.0) > 0.0
         and wgc_realized_delay_spread_us(item) >= WGC_REALIZED_DELAY_INSTABILITY_SPREAD_US
-        and wgc_active_delay_variation_is_source_context(media_evidence, item)
+        and wgc_active_delay_variation_is_source_context(
+            media_evidence, item, source_limited_playout_maximal
+        )
         for item in media_evidence["wgc_smoothness_summary"]
     )
 
@@ -4257,7 +4429,9 @@ def summarize_started_app_source_health(media_evidence, log_summary):
     ]
     backlog_sources = [
         item for item in stop_sources
-        if item.get("packet_gap_samples", 0) >= 48000 and item.get("late_join_suppressed_samples", 0) == 0
+        if item.get("process") and item.get("process") != "-"
+        and item.get("packet_gap_samples", 0) >= 48000
+        and item.get("late_join_suppressed_samples", 0) == 0
     ]
     underrun_sources = [item for item in stop_sources if item.get("ring_underruns", 0) > 0 or item.get("pad_samples", 0) > 0]
     sparse_silence_sources = [item for item in underrun_sources if is_sparse_app_source_silence(item)]
@@ -4388,10 +4562,16 @@ def classify_session_triage(
         )
     manifest = parse_session_manifest(session_dir)
     recording_manifest = selected_recording.get("manifest", {})
+    screen_capture_backend_history = resolve_screen_capture_backend_history(manifest, media_evidence)
     screen_capture_backend = resolve_screen_capture_backend(manifest, media_evidence)
+    screen_capture_diagnostic_prefix = (
+        screen_capture_backend_history[0]
+        if len(screen_capture_backend_history) == 1
+        else "screen_capture"
+    )
 
     def screen_capture_diagnostic(suffix):
-        return f"{screen_capture_backend}_{suffix}"
+        return f"{screen_capture_diagnostic_prefix}_{suffix}"
 
     wgc_source_limits = summarize_wgc_source_limits(media_evidence)
     inject_pacing = summarize_inject_pacing(media_evidence)
@@ -4413,6 +4593,8 @@ def classify_session_triage(
         contexts.append("recording_evidence_missing_or_overwritten")
     if perf_scope_unavailable:
         contexts.append("recording_perf_evidence_unscoped")
+    if len(screen_capture_backend_history) > 1:
+        contexts.append("screen_capture_backend_transition")
     if recording_window_info and recording_window_info.get("active"):
         max_present_gap_ms = max((item["max_qpc_delta_us"] for item in perf_summaries), default=0) / 1000.0
         present_gap_evidence = []
@@ -4565,13 +4747,28 @@ def classify_session_triage(
     )
     if wgc_encoder_limited_judder:
         verdicts.append(screen_capture_diagnostic("encoder_limited_judder"))
+    wgc_clean_source_limited_coverage = has_wgc_clean_source_limited_coverage(media_evidence)
+    wgc_source_limited_playout_maximal = has_wgc_source_limited_playout_maximal(media_evidence)
+    wgc_backend_transition_source_limited_playout_maximal = (
+        has_wgc_backend_transition_source_limited_playout_maximal(
+            media_evidence, screen_capture_backend_history
+        )
+    )
+    wgc_source_limited_playout_maximal = (
+        wgc_source_limited_playout_maximal
+        or wgc_backend_transition_source_limited_playout_maximal
+    )
     wgc_av_sync_delay_risk = has_wgc_av_sync_delay_realization_risk(media_evidence)
     if wgc_av_sync_delay_risk:
         verdicts.append(screen_capture_diagnostic("av_sync_delay_unrealized"))
-    wgc_av_sync_delay_residual_fault = has_wgc_av_sync_delay_residual_fault(media_evidence)
+    wgc_av_sync_delay_residual_fault = has_wgc_av_sync_delay_residual_fault(
+        media_evidence, wgc_source_limited_playout_maximal
+    )
     if wgc_av_sync_delay_residual_fault:
         verdicts.append(screen_capture_diagnostic("av_sync_delay_residual"))
-    wgc_audio_late_risk = has_wgc_audio_late_risk(media_evidence)
+    wgc_audio_late_risk = has_wgc_audio_late_risk(
+        media_evidence, wgc_source_limited_playout_maximal
+    )
     if wgc_audio_late_risk:
         verdicts.append(screen_capture_diagnostic("audio_late_risk"))
     wgc_timestamp_domain_mismatch = has_wgc_timestamp_domain_mismatch(media_evidence)
@@ -4586,19 +4783,21 @@ def classify_session_triage(
     wgc_cfr_smoothness_not_maximal = has_wgc_cfr_smoothness_not_maximal(media_evidence)
     if wgc_cfr_smoothness_not_maximal:
         verdicts.append(screen_capture_diagnostic("cfr_smoothness_not_maximal"))
-    wgc_clean_source_limited_coverage = has_wgc_clean_source_limited_coverage(media_evidence)
-    wgc_source_limited_playout_maximal = has_wgc_source_limited_playout_maximal(media_evidence)
     wgc_startup_smoothness_underfilled = has_wgc_startup_smoothness_underfilled(media_evidence)
     if wgc_startup_smoothness_underfilled:
         if wgc_source_limited_playout_maximal:
             contexts.append(screen_capture_diagnostic("startup_reservoir_partial"))
         else:
             verdicts.append(screen_capture_diagnostic("startup_smoothness_underfilled"))
-    wgc_active_delay_realized_delay_unstable = has_wgc_active_delay_realized_delay_unstable(media_evidence)
+    wgc_active_delay_realized_delay_unstable = has_wgc_active_delay_realized_delay_unstable(
+        media_evidence, wgc_source_limited_playout_maximal
+    )
     if wgc_active_delay_realized_delay_unstable:
         verdicts.append(screen_capture_diagnostic("active_delay_realized_delay_unstable"))
     wgc_near_cap_window = wgc_near_cap_window_pressure(media_evidence)
-    wgc_source_limited_delay_variation_context = has_wgc_source_limited_delay_variation_context(media_evidence)
+    wgc_source_limited_delay_variation_context = has_wgc_source_limited_delay_variation_context(
+        media_evidence, wgc_source_limited_playout_maximal
+    )
     if wgc_source_limited_delay_variation_context:
         contexts.append(screen_capture_diagnostic("source_limited_delay_variation"))
     wgc_source_limited_smoothness_ceiling = has_wgc_source_limited_smoothness_ceiling(media_evidence)
@@ -4676,6 +4875,8 @@ def classify_session_triage(
         if item["max_packet_delta_us"] > 1000 or item["audio_past_target"] > 0
     ]
     exported_av_sync_ok = has_exact_final_mux_evidence(media_evidence)
+    if log_summary and log_summary["counts"].get("audio_stop_force_drain_backlog", 0) > 0:
+        contexts.append("audio_stop_force_drain_backlog")
     if stop_audio_shortfalls["multi_source_short_count"] > 0:
         verdicts.append("multi_app_audio_track_stall")
     timeline_audio_fault_counts = dict(strict_audio_fault_counts)
@@ -4781,6 +4982,9 @@ def classify_session_triage(
             "wgc_active_delay_realized_delay_unstable": wgc_active_delay_realized_delay_unstable,
             "wgc_clean_source_limited_coverage": wgc_clean_source_limited_coverage,
             "wgc_source_limited_playout_maximal": wgc_source_limited_playout_maximal,
+            "wgc_backend_transition_source_limited_playout_maximal": (
+                wgc_backend_transition_source_limited_playout_maximal
+            ),
             "wgc_source_limited_delay_variation_context": wgc_source_limited_delay_variation_context,
             "wgc_source_limited_smoothness_ceiling": wgc_source_limited_smoothness_ceiling,
             "wgc_source_coverage_best_effort": wgc_source_coverage_best_effort,
@@ -4808,6 +5012,7 @@ def classify_session_triage(
         },
         "evidence": {
             "screen_capture_backend": screen_capture_backend,
+            "screen_capture_backend_history": screen_capture_backend_history,
             "controller_recording_start_count": controller_recording_starts,
             "discovered_recording_evidence_count": len(discovered_recordings),
             "recording_evidence_incomplete": recording_evidence_incomplete,
@@ -4964,6 +5169,9 @@ def print_triage_report(report):
     evidence = report["evidence"]
     screen_capture_backend = evidence.get("screen_capture_backend", "screen_capture")
     print(f"  screen_capture_backend={screen_capture_backend}")
+    backend_history = evidence.get("screen_capture_backend_history", [])
+    if len(backend_history) > 1:
+        print(f"  screen_capture_backend_history={'->'.join(backend_history)}")
     print(f"  exported_av_sync_ok={int(evidence.get('exported_av_sync_ok', False))}")
     print(
         "  max_present_gap_ms={gap:.3f} source={source}".format(
@@ -4974,7 +5182,7 @@ def print_triage_report(report):
     print(
         "  {backend}_source_starved_episodes={detail} summary_episodes={summary} "
         "source_limited_repeats={repeats} dup={dup}/{live} ({dup_pct:.1f}%) "
-        "source_limited_pct={src_pct:.1f}% worst_contiguous_freeze={contig_dup}f/{contig_ms}ms "
+        "source_limited_pct={src_pct:.1f}% longest_contiguous_hold={contig_dup}f/{contig_ms}ms "
         "longest_episode={longest}ms episode_dups={longest_dup} "
         "worst_fps={worst_in}/{worst_del} perf_csv={perf_count}".format(
             backend=screen_capture_backend,
@@ -5153,7 +5361,9 @@ def print_triage_report(report):
     if evidence["cfr_phase_lock_summary"]:
         phase_lock = evidence["cfr_phase_lock_summary"][-1]
         phase_lock_backend = phase_lock["backend"]
-        if phase_lock_backend == "wgc" and screen_capture_backend == "dxgi_dup":
+        if len(backend_history) > 1:
+            phase_lock_backend = screen_capture_backend
+        elif phase_lock_backend == "wgc" and screen_capture_backend == "dxgi_dup":
             phase_lock_backend = screen_capture_backend
         print(
             "  cfr_phase_lock backend={backend} enabled={enabled} locked={locked} offset={offset}us "
@@ -5615,7 +5825,7 @@ def self_test():
         )
         contention_report = classify_session_triage(contention_attribution)
         for verdict in (
-            "wgc_upstream_producer_starvation",
+            "dxgi_dup_upstream_producer_starvation",
             "duplication_consumer_starvation",
             "capture_gpu_queue_starvation",
             "hardware_encoder_starvation",
@@ -5998,6 +6208,102 @@ def self_test():
         assert not report["faults"]["visual_timeline"]
         assert report["faults"]["wgc_clean_source_limited_coverage"]
         assert report["faults"]["wgc_source_limited_delay_variation_context"]
+
+        backend_transition_media = read_text_if_exists(
+            dxgi_variable_fps_source_limited / "media.log"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "\n[WGC CFR SUMMARY]",
+            "\n[WGC Perf] Input: 120 | Queued: 120 | MinIn250/500: 120/120 | "
+            "MinDel250/500: 120/120 | FreshMiss: 0pm | PoolLease: max=16 freeMin=48 "
+            "satDrop=0 overwritePrevented=0 mismatch=0 | Backend: WGC DupMissed: 0 | "
+            "Overload: 0x0\n[WGC CFR SUMMARY]",
+            1,
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "SourceLimitedRepeats=85", "SourceLimitedRepeats=77"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "sourceLimitedRepeats=85", "sourceLimitedRepeats=77"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "sourceRepeatLowerBound=85", "sourceRepeatLowerBound=77"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "Live=12728", "Live=3751"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "duplicates=85/12728", "duplicates=85/3751"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "excessRepeats=0", "excessRepeats=8"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "bestEffort=1", "bestEffort=0"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "cleanSelection=1", "cleanSelection=0"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "worstIn=56 worstDel=56", "worstIn=8 worstDel=8"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "realizedDelayMin=38874us realizedDelayMax=53330us",
+            "realizedDelayMin=0us realizedDelayMax=110000us",
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "delayResidualMax=9745us", "delayResidualMax=118694us"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "delayResidualLateMax=9745us", "delayResidualLateMax=118694us"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "rawResidualMax=10710us", "rawResidualMax=118694us"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "rawResidualLateMax=10710us", "rawResidualLateMax=118694us"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "predictedResidualLateMax=9745us", "predictedResidualLateMax=118694us"
+        )
+        backend_transition_media = backend_transition_media.replace(
+            "backend=dxgi_dup", "backend=wgc"
+        )
+        backend_transition = make_session(
+            "backend_transition_source_limited",
+            media=backend_transition_media,
+            capture_method="auto",
+        )
+        transition_report = classify_session_triage(backend_transition)
+        assert transition_report["evidence"]["screen_capture_backend"] == "dxgi_dup_to_wgc"
+        assert transition_report["evidence"]["screen_capture_backend_history"] == ["dxgi_dup", "wgc"]
+        assert "screen_capture_backend_transition" in transition_report["contexts"]
+        assert "screen_capture_source_starvation" in transition_report["verdicts"]
+        assert "screen_capture_startup_reservoir_partial" in transition_report["contexts"]
+        assert "screen_capture_source_limited_delay_variation" in transition_report["contexts"]
+        assert "screen_capture_av_sync_delay_residual" not in transition_report["verdicts"]
+        assert "screen_capture_audio_late_risk" not in transition_report["verdicts"]
+        assert "screen_capture_active_delay_realized_delay_unstable" not in transition_report["verdicts"]
+        assert "ce_visual_timeline_fault" not in transition_report["verdicts"]
+        assert transition_report["faults"]["wgc_source_limited_playout_maximal"]
+        assert transition_report["faults"]["wgc_backend_transition_source_limited_playout_maximal"]
+
+        single_backend_uncertain_source = make_session(
+            "single_backend_uncertain_source",
+            media=backend_transition_media.replace(
+                "Backend: DxgiDuplication", "Backend: WGC"
+            ),
+            capture_method="auto",
+        )
+        single_backend_report = classify_session_triage(single_backend_uncertain_source)
+        assert single_backend_report["evidence"]["screen_capture_backend"] == "wgc"
+        assert single_backend_report["evidence"]["screen_capture_backend_history"] == ["wgc"]
+        assert not single_backend_report["faults"][
+            "wgc_backend_transition_source_limited_playout_maximal"
+        ]
+        assert "wgc_av_sync_delay_residual" in single_backend_report["verdicts"]
+        assert "wgc_active_delay_realized_delay_unstable" in single_backend_report["verdicts"]
+        assert "ce_visual_timeline_fault" in single_backend_report["verdicts"]
 
         dxgi_desktop_source_limited = make_session(
             "dxgi_desktop_source_limited",
@@ -7809,6 +8115,38 @@ def self_test():
         assert "ce_audio_timeline_fault" not in report["verdicts"]
         assert report["evidence"]["started_app_source_health"]["late_join_live_count"] == 1
 
+        late_non_app_prime = make_session(
+            "late_non_app_prime",
+            media=(
+                "[PullAudio] Source primed - src=0 realBuffered=1389 samples "
+                "synthetic(ring=0 inflight=0 post=0) lateStart=4635ms\n"
+                "[AudioLoop] Late app source live join src=13 track=1 process=game.exe "
+                "packetStart=191057 trackCursor=191520 joinCursor=191520 suppressedGap=191057 "
+                "preservedGap=0 qpcStart=123\n"
+                "[PullAudio] Source primed - src=13 realBuffered=1457 samples "
+                "synthetic(ring=0 inflight=0 post=0) lateStart=3981ms\n"
+                "[STOP AUDIO] Source 0: track=3 encoded=48000 trim=cov:0 latTotal:0 liveUncat:0 "
+                "cat:0 normal:0 pad:0 qgap:1695 qjoin:0 qjoinKeep:0 ringPeak=20738 "
+                "ringUnderruns=0 process=-\n"
+                "[STOP AUDIO] Source 13: track=1 encoded=48000 trim=cov:0 latTotal:0 liveUncat:0 "
+                "cat:0 normal:0 pad:0 qgap:945 qjoin:191057 qjoinKeep:0 ringPeak=30545 "
+                "ringUnderruns=0 process=game.exe\n"
+            ),
+        )
+        report = classify_session_triage(late_non_app_prime)
+        assert "late_app_source_backlog" not in report["verdicts"]
+        assert report["evidence"]["started_app_source_health"]["late_source_backlog_count"] == 0
+
+        explicit_late_app_prime = make_session(
+            "explicit_late_app_prime",
+            media=(
+                "[PullAudio] Source primed - src=9 realBuffered=1200 samples "
+                "synthetic(ring=0 inflight=0 post=0) lateStart=7459ms app=1\n"
+            ),
+        )
+        report = classify_session_triage(explicit_late_app_prime)
+        assert "late_app_source_backlog" in report["verdicts"]
+
         sparse_app_source_silence = make_session(
             "sparse_app_source_silence",
             media=(
@@ -7962,6 +8300,53 @@ def self_test():
         report = classify_session_triage(stop_tail_padding)
         assert "ce_audio_timeline_fault" not in report["verdicts"]
         assert report["evidence"]["log_counts"]["audio_stop_tail_padding"] == 1
+
+        historical_stop_force_drain_backlog = make_session(
+            "historical_stop_force_drain_backlog",
+            media=(
+                "[AppDrain] state src=11 track=1 active=0 reason=force_drain delayMs=2830 "
+                "targetMs=142 excessMs=2688 rb=135868 target=6816 delta=0 comp=0.0000% "
+                "forceDrain=1 startupSettled=1 startupProtected=0\n"
+                "[PullAudio] WARNING: Extreme drift detected (129052 samples src=11) - may "
+                "indicate sync issue\n"
+                "[VideoEncoder] Final packet timeline: target=1000000 us videoEnd=1000000 us "
+                "audioMinEnd=1000000 us audioMaxEnd=1000000 us maxPacketDelta=0 us "
+                "streams(v=1 a=1) audioPastTarget=0\n"
+            ),
+        )
+        report = classify_session_triage(historical_stop_force_drain_backlog)
+        assert report["evidence"]["log_counts"]["audio_extreme_drift"] == 0
+        assert report["evidence"]["log_counts"]["audio_stop_force_drain_backlog"] == 1
+        assert "audio_stop_force_drain_backlog" in report["contexts"]
+        assert "ce_audio_timeline_fault" not in report["verdicts"]
+
+        current_stop_force_drain_counts = analyze_log_text(
+            "[PullAudio] Stop force-drain backlog: drift=129052 samples src=11 forceDrain=1 "
+            "(post-target backlog is excluded from output)\n"
+        )["counts"]
+        assert current_stop_force_drain_counts["audio_extreme_drift"] == 0
+        assert current_stop_force_drain_counts["audio_stop_force_drain_backlog"] == 1
+
+        live_extreme_drift = make_session(
+            "live_extreme_drift",
+            media=(
+                "[AppDrain] state src=11 track=1 active=1 reason=excess_backlog delayMs=2830 "
+                "targetMs=142 excessMs=2688 rb=135868 target=6816 delta=240 comp=0.5000% "
+                "forceDrain=0 startupSettled=1 startupProtected=0\n"
+                "[PullAudio] WARNING: Extreme drift detected (129052 samples src=11) "
+                "forceDrain=0 - may indicate sync issue\n"
+            ),
+        )
+        report = classify_session_triage(live_extreme_drift)
+        assert report["evidence"]["log_counts"]["audio_extreme_drift"] == 1
+        assert report["evidence"]["log_counts"]["audio_stop_force_drain_backlog"] == 0
+        assert "ce_audio_timeline_fault" in report["verdicts"]
+
+        legacy_unstructured_extreme_drift = analyze_log_text(
+            "[PullAudio] WARNING: Extreme drift detected - legacy diagnostic\n"
+        )["counts"]
+        assert legacy_unstructured_extreme_drift["audio_extreme_drift"] == 1
+        assert legacy_unstructured_extreme_drift["audio_stop_force_drain_backlog"] == 0
 
         zero_drift = make_session(
             "zero_drift",

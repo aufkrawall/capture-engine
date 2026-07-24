@@ -3289,10 +3289,11 @@ public:
                     src.isPrimed = true;
                     DLL_Log(
                         "[PullAudio] Source primed - src=%d realBuffered=%zu samples synthetic(ring=%llu inflight=%llu "
-                        "post=%llu) lateStart=%lldms",
+                        "post=%llu) lateStart=%lldms app=%d",
                         (int)srcIdx, primedSampleCount, (unsigned long long)src.startupSyntheticRingSamples,
                         (unsigned long long)src.startupSyntheticResamplerSamples,
-                        (unsigned long long)src.startupSyntheticPostSamples, src.observedLateStartMs);
+                        (unsigned long long)src.startupSyntheticPostSamples, src.observedLateStartMs,
+                        isAppAudioSource ? 1 : 0);
                 }
 
                 trackAllPrimed =
@@ -3826,10 +3827,17 @@ public:
                             if (std::abs(trueDrift) > SAMPLE_RATE * 2) {  // >2 seconds
                                 const uint64_t nowWarnTick = GetTickCount64();
                                 if (nowWarnTick - src.lastExtremeDriftWarnTick >= 1000) {
-                                    DLL_Log(
-                                        "[PullAudio] WARNING: Extreme drift detected (%lld samples src=%d) - may "
-                                        "indicate sync issue",
-                                        trueDrift, (int)srcIdx);
+                                    if (forceDrain) {
+                                        DLL_Log(
+                                            "[PullAudio] Stop force-drain backlog: drift=%lld samples src=%d "
+                                            "forceDrain=1 (post-target backlog is excluded from output)",
+                                            trueDrift, (int)srcIdx);
+                                    } else {
+                                        DLL_Log(
+                                            "[PullAudio] WARNING: Extreme drift detected (%lld samples src=%d) "
+                                            "forceDrain=0 - may indicate sync issue",
+                                            trueDrift, (int)srcIdx);
+                                    }
                                     src.lastExtremeDriftWarnTick = nowWarnTick;
                                 }
                             }
