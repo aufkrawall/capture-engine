@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-07-21 (AMF header-license packaging, compiler/host-specific Linux MinGW hardening and strict-FP selection, older-MinGW hook/test-app D3D12-header and intrinsic-declaration compatibility, host-native PE inspection/shader tools/debug-info policy, cross-host FG SDK header preparation, fail-closed required x64 Vulkan stages and duplicate-object detection, obsolete standalone process-loopback helper cleanup/absence assertions, single-preparation default-quality flow, current-database lint, summary/detail artifact split, managed Python lint tooling, validated object/link caches, and existing production LTO, source-closure, packaging, sanitizer, and provenance policy)
+Last cross-checked: 2026-07-24 (gate taxonomy corrected: the incremental and clean gates are build-only because any explicit action flag leaves default quality mode, `--verify` named as the complete gate with measured costs, clang-tidy baseline ratchet, and the `--run-fuzz`/`--fuzz-seconds`/`--update-lint-baseline` flags; previously 2026-07-21 for AMF header-license packaging, compiler/host-specific Linux MinGW hardening and strict-FP selection, older-MinGW hook/test-app D3D12-header and intrinsic-declaration compatibility, host-native PE inspection/shader tools/debug-info policy, cross-host FG SDK header preparation, fail-closed required x64 Vulkan stages and duplicate-object detection, obsolete standalone process-loopback helper cleanup/absence assertions, single-preparation default-quality flow, current-database lint, summary/detail artifact split, managed Python lint tooling, validated object/link caches, and existing production LTO, source-closure, packaging, sanitizer, and provenance policy)
 
 Primary sources:
 - `AGENTS.md`
@@ -41,7 +41,9 @@ For ordinary source changes, the required final product gate is a validated incr
 python build.py --incremental --skip-updates --concise
 ```
 
-Use the clean/default compile gate instead when the task touches `build.py`, compile/link/hardening policy, the dependency/toolchain/FFmpeg configuration, generated-build machinery, or shared ABI/layout; when stale artifacts are under investigation; or when explicitly requested:
+Both this and the clean gate below are **build** gates: they run no unit tests, lint, or sanitizers. Any explicit action flag, `--skip-updates` included, takes the invocation out of default quality mode, so those stages run only when requested (see the test and complete-gate commands below).
+
+Use the clean compile gate instead when the task touches `build.py`, compile/link/hardening policy, the dependency/toolchain/FFmpeg configuration, generated-build machinery, or shared ABI/layout; when stale artifacts are under investigation; or when explicitly requested:
 
 ```powershell
 python build.py --skip-updates --concise
@@ -61,7 +63,23 @@ Then run relevant tests against the freshly built binaries. The canonical full t
 python build.py --no-build --run-tests --skip-updates --concise
 ```
 
-No-build verification reuses `common/build_version.h`; it does not mint an identity for binaries it did not compile or invalidate version-dependent objects for the next build. During C++ iteration, use `--incremental --tests-only --run-tests --gtest-filter=<expr> --skip-updates --concise` where applicable. Do not repeat a clean build after every small edit. `--verify` remains available as an explicit broader quality/sanitizer workflow, but it is not the default agent command required by `AGENTS.md`.
+No-build verification reuses `common/build_version.h`; it does not mint an identity for binaries it did not compile or invalidate version-dependent objects for the next build. During C++ iteration, use `--incremental --tests-only --run-tests --gtest-filter=<expr> --skip-updates --concise` where applicable. Do not repeat a clean build after every small edit.
+
+`--verify` is the complete gate — clean build, full native suite, Python tool self-tests, lint with the clang-tidy ratchet, and the ASan/UBSan regression pass in one run:
+
+```powershell
+python build.py --verify --skip-updates --concise
+```
+
+`AGENTS.md` requires it before committing changes to `build.py`, toolchain/compile/link/hardening policy, shared ABI/layout, analyzer or test-gate policy, or the capture/CFR/FG/audio paths. It is not the routine per-change gate: measured on 2026-07-24 it took roughly 350 s (clean build 164 s, sanitizer regression 122 s, lint 63 s, native suite 9 s) against roughly 50 s for the incremental build gate and 12 s for the no-build test command. Adding `--run-fuzz --fuzz-seconds 30` brought the same run to 424 s.
+
+Cheaper partial gates worth preferring over a full `--verify`:
+
+```powershell
+python build.py --no-build --lint --skip-updates --concise
+```
+
+runs clang-format/flake8/pyright plus the clang-tidy ratchet with no rebuild (about 68 s).
 
 Console output is concise by default. `build.log` is the durable stage-summary/warning log; complete commands and successful/failed subprocess output go to `build/verification/<run>/build.details.log`, with bounded failure tails kept visible. `--verbose-commands` mirrors detail to the console for diagnosis. `--concise` remains accepted and is presentation-only: adding it, `--jobs`, or log-path overrides to an otherwise no-argument invocation cannot disable default-quality work.
 
@@ -89,7 +107,10 @@ Default quality mode currently:
 | `--no-build` | user-facing | Run requested checks against existing binaries without compiling | Reuses the current build identity instead of changing `build_version.h`; refuses a missing, stale, corrupted, or pre-manifest unit-test executable. |
 | `--run-integration-tests` | user-facing | Run smoke integration tests after the build | Also implies `--run-tests`. Before running, the script forces at least `log_level=debug` in `installed/captureengine/config.ini` if that file exists. |
 | `--full-integration` | user-facing | Run the full integration matrix | Implies `--run-integration-tests`, which also implies `--run-tests`. |
-| `--lint` | user-facing | Run `clang-format --dry-run -Werror`, `flake8`, and `pyright` | If passed alone, the script exits after linting and returns failure for findings. In default, verify, or mixed build/test flows, findings are recorded but advisory. |
+| `--lint` | user-facing | Run `clang-format --dry-run -Werror`, `flake8`, `pyright`, and clang-tidy | If passed alone, the script exits after linting and returns failure for findings. In default, verify, or mixed build/test flows, raw findings are recorded but advisory. A clang-tidy regression against the baseline is fatal in every flow that lints. |
+| `--update-lint-baseline` | user-facing | Rewrite `tools/clang_tidy_baseline.json` from the current run | Use deliberately, only when an increase is justified. Combine with `--no-build --lint` to avoid a rebuild. |
+| `--run-fuzz` | user-facing | Build and run the `tests/fuzz` libFuzzer harnesses | Fails closed on a missing libFuzzer runtime, an unregistered harness, an empty corpus, a crash, or zero executed units. Records `coverage.fuzz`. See `fuzzing.md`. |
+| `--fuzz-seconds N` | user-facing | Per-target fuzzing budget for `--run-fuzz` | Defaults to 60 s per target. |
 | `--format` | user-facing | Run `clang-format -i` and `black` | If passed alone, the script exits after formatting. Do not use it on existing source files unless explicitly requested; whole-file formatting creates unrelated churn in the current tree. |
 | `--incremental` | user-facing | Reuse signature-proven unchanged objects | Default behavior remains force rebuild. Source, compiler-binary, flags, dependency-file, and project-header content signatures fail closed to recompilation; normal link/package/verification stages still run. |
 | `--resume` | user-facing | Resume the immediately preceding failed top-level product build | Implies incremental object validation and reuses the failed attempt's build identity. Requires `--skip-updates`; refuses successful/no-build/sanitizer-child predecessors, identity or build-script mismatch, `--no-build`, and `--force-rebuild`. |
@@ -108,7 +129,8 @@ Default quality mode currently:
 
 ## Flag Interactions
 - `--verify` implies the normal post-change validation set: lint, unit tests, and sanitizer regression cadence.
-- No-arg default mode enables `--lint`, `--run-tests`, and `--sanitize-regression` behavior implicitly.
+- No-arg default mode enables `--lint`, `--run-tests`, and `--sanitize-regression` behavior implicitly. Only presentation flags (`--concise`, `--verbose-commands`, `--jobs`, `--log-file`, `--detail-log`) preserve it; **any** other flag, `--skip-updates` included, makes the invocation explicit and therefore build-only unless the corresponding action flags are also passed. This is the usual reason a "clean gate" run shows no test, lint, or sanitizer stage.
+- `--run-fuzz` composes with `--no-build` for a fuzz-only pass, and with `--verify` for one combined gate.
 - `--full-integration` implies `--run-integration-tests`.
 - `--run-integration-tests` implies `--run-tests`.
 - `--tests-only` does not imply `--run-tests` by itself; it only short-circuits the build after the unit-test build path. Use both when you want focused test execution.
@@ -204,7 +226,7 @@ Default quality mode currently:
 - Python tool self-tests execute concurrently through the bounded job policy, capture complete output, and replay diagnostics deterministically on failure. Native unit tests remain the preceding isolation boundary.
 - FFmpeg runtime DLL synchronization preserves byte-identical destinations instead of deleting/recopying them, verifies equality by SHA-256, and still verifies the PE import closure both after initial synchronization and at the final product boundary.
 - Incremental object signatures hash source content, the compiler executable contents, compile flags, and the content of compiler-reported project dependencies. Dependency mtimes remain a second signal for toolchain/system headers. Signature calculation now fails closed to recompilation instead of falling back to timestamps. This prevents an older-mtime checkout/restore of `common/shared_defs.h` (or another project header), a same-path compiler replacement, or an unreadable signature input from retaining an unproven object; `test_build_flags.py` covers each case.
-- Independently constructed x86 environments, including the late Vulkan-layer environment, inherit `FORCE_REBUILD` from the main build. The clean/default gate therefore recompiles every x64 and x86 object consistently; `--force-rebuild` additionally deletes the object tree first.
+- Independently constructed x86 environments, including the late Vulkan-layer environment, inherit `FORCE_REBUILD` from the main build. The clean gate therefore recompiles every x64 and x86 object consistently; `--force-rebuild` additionally deletes the object tree first.
 - Every ordinary product-producing invocation normally mints one build identity. Generated `build_version.h` is included only by `common/build_identity.cpp`; stable accessors provide the number/version/timestamp to discovery validation, logging, manifests, and Vulkan naming. It is deliberately absent from high-fanout `shared_defs.h` and `config.h`, so minting an identity invalidates only the identity translation unit in each relevant product object namespace rather than nearly every hook/media/controller translation unit. `--resume` is the guarded exception for an immediately preceding failed top-level product build, while `--tests-only`, `--no-build`, and the sanitizer child reuse the current identity because they do not create a new ordinary product build. Unit tests instead link a deterministic test-only identity implementation. This avoids duplicate successful identities, test/no-build-induced product invalidation, and generated-version fan-out.
 - Vulkan layer compilation only writes the DLLs and portable relative-path manifests. Each manifest layer name and implementation version includes the current build number, preventing an older installation's duplicate identity from shadowing it. `build.py` never imports `winreg`, enumerates Vulkan registrations, or mutates HKCU/HKLM. Registration ownership and repair belong to the running controller: ordinary startup repairs only HKCU and never requests elevation; an already-elevated controller may also repair HKLM.
 - Canonical verification now writes a compact verification bundle under `build/verification/<timestamp>_build_<n>/` containing:
