@@ -1,77 +1,100 @@
 # Fuzzing
 
-## Available targets
+Last verified: 2026-07-24
 
-| Target | Source | Purpose |
-|---|---|---|
-| Config parser | `tests/fuzz_config_parser_libfuzzer.cpp` | Fuzz `LoadConfig()` with arbitrary byte sequences |
-| IPC deserialization | `tests/fuzz_ipc_deserialize.cpp` | Fuzz `ValidatePayload`/`ValidateOpcodePayload` with arbitrary messages |
+Primary sources:
+- `tests/fuzz/*.cpp`
+- `tests/fuzz/corpus/`
+- `tests/test_ipc_message_validation.cpp`
+- `tests/test_config_fuzz.cpp`
+- `build.py` (`run_fuzz_targets`, `FUZZ_TARGET_CORPUS`)
 
-## Building and running
+## Summary
 
-All targets use the MSYS2 Clang toolchain with libFuzzer (`-fsanitize=fuzzer`).
+Two libFuzzer harnesses cover the project's untrusted-input parsers. They are built
+and executed by `build.py --run-fuzz`; they are **not** part of the ordinary unit
+gate. A permanent regression floor for the same code lives in the normal test suite
+so the validators stay covered without a fuzz run.
 
-### Config parser
+| Target | Harness | Under test | Corpus |
+|---|---|---|---|
+| Config parser | `tests/fuzz/fuzz_config_parser.cpp` | `LoadConfig()` (`common/config.cpp`) | `tests/fuzz/corpus/config/` |
+| IPC validation | `tests/fuzz/fuzz_ipc_deserialize.cpp` | `ValidateProcessMessage()` (`common/process_ipc.cpp`) | `tests/fuzz/corpus/ipc/` |
 
-```powershell
-cd <project_root>
-& "build\msys64\clang64\bin\clang++.exe" -fsanitize=fuzzer,address -o fuzz_config.exe `
-    tests/fuzz_config_parser_libfuzzer.cpp common/config.cpp -I common -I . -lshlwapi
+## Running
 
-# Run with default corpus
-mkdir -p tests/fuzz_corpus/config
-.\fuzz_config.exe -max_total_time=300 tests/fuzz_corpus/config/
+```bash
+python build.py --run-fuzz --fuzz-seconds 60 --skip-updates --concise
 ```
 
-### IPC deserialization
+`--run-fuzz` composes with `--no-build` for a fuzz-only pass. `--fuzz-seconds`
+defaults to 60 per target. Status appears as `coverage.fuzz` in the verification
+summary, with per-target output in the run's `fuzz_<corpus>.log` artifact and
+reproducers under its `fuzz_<corpus>/` directory.
 
-```powershell
-& "build\msys64\clang64\bin\clang++.exe" -fsanitize=fuzzer,address -o fuzz_ipc.exe `
-    tests/fuzz_ipc_deserialize.cpp common/process_ipc.cpp -I common -I .
+## Invariants
 
-mkdir -p tests/fuzz_corpus/ipc
-.\fuzz_ipc.exe -max_total_time=300 tests/fuzz_corpus/ipc/
+- **Fail closed.** The stage aborts on a missing libFuzzer runtime, a harness with no
+  registered corpus, an empty corpus, a crash, or a target that executes zero units.
+  A silently skipped or silently vacuous fuzz stage is the exact failure this
+  infrastructure exists to prevent — see the 2026-07-24 log entry.
+- **Every harness must be registered** in `FUZZ_TARGET_CORPUS` in `build.py`. Adding a
+  harness without a corpus fails the stage rather than fuzzing from nothing.
+- **Harnesses link the whole `common/` tree**, not a curated per-harness source list.
+  A curated list silently rots when the code under test grows a new dependency.
+- **Target public boundaries only.** The IPC harness drives `ValidateProcessMessage`,
+  the entry point every pipe reader funnels through. Do not target the file-local
+  `ValidatePayload` / `ValidateOpcodePayload` helpers: they are in an anonymous
+  namespace and are deliberately not part of the public surface.
+- **The committed corpus is a curated, reviewable test asset.** libFuzzer writes newly
+  discovered units into a scratch directory under `build/fuzz/`, never into
+  `tests/fuzz/corpus/`.
+- **Seeds are byte-exact.** `.gitattributes` marks `tests/fuzz/corpus/**` binary;
+  several config seeds deliberately carry CRLF, a BOM, an embedded NUL, or invalid
+  UTF-8, and EOL normalisation would rewrite the very inputs they cover.
+- **Fuzz compilations stay out of `compile_commands.json`.** They cover the same
+  `common/*.cpp` files as the product build and would otherwise replace the real
+  product flags in the LSP and clang-tidy view of those sources.
+
+## Toolchain notes
+
+libFuzzer needs manual wiring on this toolchain. The clang driver rejects
+`-fsanitize=fuzzer` for `x86_64-w64-windows-gnu` even though
+`libclang_rt.fuzzer-x86_64.a` ships with the MSYS2 Clang package, so `build.py`
+passes `-fsanitize-coverage=...` explicitly and links the archive directly.
+
+Two ASan options are set for the fuzz stage (`FUZZ_ASAN_OPTIONS`). Both were verified
+to fire only on reports containing no project frames:
+
+- `detect_container_overflow=0` — MSYS2 ships a non-instrumented `libc++`, so mixing
+  it with instrumented translation units reports false container overflows inside
+  libFuzzer's own corpus reader.
+- `intercept_strlen=0` — ASan's `strlen` interceptor fires on `ucrtbase`/`ntdll`
+  internal buffers during libFuzzer driver start-up.
+
+Heap use-after-free, double-free, and out-of-bounds detection remain fully enabled.
+
+## Always-run regression floor
+
+`--run-fuzz` is opt-in, so the same boundaries are pinned in the ordinary suite:
+
+- `tests/test_ipc_message_validation.cpp` replays the committed IPC corpus and asserts
+  exact accept/reject verdicts on length, payload termination, header, identity,
+  opcode, and sequence boundaries. It fails when the corpus is missing or empty.
+- `tests/test_config_fuzz.cpp` drives `LoadConfig` with generated byte sequences.
+
+When a crash is found, minimise it, add it to the corpus, and pin the verdict in the
+corresponding test rather than relying on the fuzz stage alone:
+
+```bash
+python build.py --run-fuzz --fuzz-seconds 300 --skip-updates --concise
 ```
 
-## Crash triage
+## Open questions / stale-risk
 
-When libFuzzer finds a crash it writes the reproducer input to a file in the corpus directory or the current directory as `crash-<sha1>`. To minimize:
-
-```powershell
-.\fuzz_config.exe -minimize_crash=1 -max_total_time=60 crash-<sha1>
-```
-
-Add the minimized crash input to the corpus and create a regression test:
-
-```cpp
-// In tests/test_config_fuzz.cpp or a new test file
-TEST(ConfigFuzzTest, Regression_CrashDescription) {
-    const std::string path = "...";
-    WriteFuzzFile(path, {0x...});  // bytes from minimized crash
-    AppConfig config;
-    EXPECT_NO_THROW(LoadConfig(path, config));
-}
-```
-
-## Corpus
-
-The initial corpus for config parsing lives in `tests/fuzz_corpus/config/`. It contains well-formed `.ini` files, edge cases (empty, comments only, max-size values), and previously discovered crash inputs.
-
-The IPC corpus (`tests/fuzz_corpus/ipc/`) contains valid `ProcessMessage` structures with various opcodes and payload sizes.
-
-## Coverage
-
-To generate coverage reports:
-
-```powershell
-# Build with coverage instrumentation
-& "build\msys64\clang64\bin\clang++.exe" -fprofile-instr-generate -fcoverage-mapping `
-    -o fuzz_config_cov.exe tests/fuzz_config_parser_libfuzzer.cpp common/config.cpp -I common -I .
-
-# Run with a seed corpus
-.\fuzz_config_cov.exe -runs=10000 tests/fuzz_corpus/config/
-
-# Generate coverage report
-& "build\msys64\clang64\bin\llvm-profdata.exe" merge -spacing default.profraw -o default.profdata
-& "build\msys64\clang64\bin\llvm-cov.exe" show ./fuzz_config_cov.exe -instr-profile=default.profdata
-```
+- Corpus breadth is modest (12 config seeds, 16 IPC seeds) and hand-authored; no
+  long-running or scheduled fuzz campaign exists yet.
+- The config harness materialises each input to a temp file because `LoadConfig` takes
+  a path, capping throughput near 40 exec/s. The IPC harness reaches roughly
+  350k exec/s. A buffer-level config entry point would remove that cap.
+- Coverage is x64-only; there is no x86 fuzz variant.

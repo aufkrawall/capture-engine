@@ -88,6 +88,14 @@ Primary sources:
   - `[Performance]` priorities, `[Overlay]` queue priority, adapter-aware HAGS auto resolution, D3D11 priority persistence/readback, capture/encoder MMCSS QoS, and D3D12 queue constraints. Last verified 2026-07-18. Stale-risk: medium.
 - `recording-output-paths.md`
   - Canonical `[Output]` settings, unpublished content-gated video staging/publication, collision-safe audio reservation, placeholder-free screenshot publication, identity-owned cleanup, executable-relative/default paths, and elevated mapped-drive handling. Last verified 2026-07-19. Stale-risk: low.
+- `fuzzing.md`
+  - libFuzzer harnesses for the config and IPC parsers, the fail-closed `build.py --run-fuzz` stage, curated byte-exact seed corpora, MinGW libFuzzer/ASan toolchain wiring, and the always-run regression floor that covers the same boundaries without a fuzz run. Last verified 2026-07-24.
+- `known-debt.md`
+  - Deliberately accepted debt with its reasoning: the nine oversized DX12/FG and capture files, the frozen clang-tidy baseline and its large entries, destructor exception escapes, duplicated overlay telemetry, the policy-header rationale for module/test mapping, and audit findings that were checked and falsified. Last verified 2026-07-24.
+- `debug-tools-security-audit.md`
+  - Security-audit tooling available for binary/dependency inspection, beyond the general debug tools.
+- `graphics-api-reporting.md`
+  - Graphics API detection and reporting behavior. Last verified 2026-07-16.
 - `log.md`
   - Stub pointing to `log/recent.md` (recent activity) and `log/archive-YYYY-Www*.md` (weekly archives).
 
