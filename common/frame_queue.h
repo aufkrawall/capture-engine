@@ -165,9 +165,12 @@ public:
     }
 
     // Producer: Push a frame (non-blocking, moves ownership).
-    // The queue always takes ownership; if it is already full, the oldest queued
-    // frame is dropped to make room. Use GetDroppedCount() for overflow telemetry.
-    bool Push(QueuedFrame&& frame, bool countAsDrop = true) {
+    // The queue always takes ownership and cannot fail; if it is already full, the
+    // oldest queued frame is dropped to make room. Use GetDroppedCount() for overflow
+    // telemetry. Returns void deliberately: callers must not write "push failed"
+    // recovery paths, because the pushed frame is unconditionally moved-from here and
+    // any such path would operate on a moved-from object.
+    void Push(QueuedFrame&& frame, bool countAsDrop = true) {
         ID3D11Texture2D* textureToRelease = nullptr;
         {
             std::lock_guard<std::mutex> lock(mtx);
@@ -196,7 +199,6 @@ public:
         if (textureToRelease) {
             textureToRelease->Release();
         }
-        return true;
     }
 
     // Consumer: Pop a frame (blocking with timeout, moves ownership)

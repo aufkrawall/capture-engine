@@ -92,7 +92,7 @@ TEST(FrameQueueTest, PushPop) {
     QueuedFrame frameIn;
     frameIn.timestamp = 12345;
 
-    EXPECT_TRUE(queue.Push(std::move(frameIn)));
+    queue.Push(std::move(frameIn));
     EXPECT_EQ(queue.Size(), 1);
 
     QueuedFrame frameOut;
@@ -106,7 +106,7 @@ TEST(FrameQueueTest, PeekTimestampReturnsFrontWithoutRemovingIt) {
     QueuedFrame frame;
     frame.timestamp = 98765;
 
-    EXPECT_TRUE(queue.Push(std::move(frame)));
+    queue.Push(std::move(frame));
 
     int64_t timestamp = 0;
     EXPECT_TRUE(queue.PeekTimestamp(timestamp));
@@ -124,12 +124,12 @@ TEST(FrameQueueTest, CapacityAndDrop) {
     QueuedFrame f3;
     f3.timestamp = 3;
 
-    EXPECT_TRUE(queue.Push(std::move(f1)));
-    EXPECT_TRUE(queue.Push(std::move(f2)));
+    queue.Push(std::move(f1));
+    queue.Push(std::move(f2));
     EXPECT_TRUE(queue.IsFull());
 
     // Third push should drop the oldest (timestamp=1)
-    EXPECT_TRUE(queue.Push(std::move(f3)));
+    queue.Push(std::move(f3));
     EXPECT_EQ(queue.Size(), 2);
     EXPECT_EQ(queue.GetDroppedCount(), 1);
 
@@ -150,8 +150,8 @@ TEST(FrameQueueTest, StartRecordingGracePeriodSuppresssImmediateOverflowDrops) {
     QueuedFrame second;
     second.timestamp = 2;
 
-    EXPECT_TRUE(queue.Push(std::move(first)));
-    EXPECT_TRUE(queue.Push(std::move(second)));
+    queue.Push(std::move(first));
+    queue.Push(std::move(second));
     EXPECT_EQ(queue.GetDroppedCount(), 0u);
 
     QueuedFrame out;
@@ -239,17 +239,17 @@ TEST(FrameQueueHardeningTest, RetargetDropsOnlyRetiredWgcEpochs) {
     QueuedFrame retired;
     retired.texture = &retiredTexture;
     retired.wgcSourceEpoch = 4;
-    ASSERT_TRUE(queue.Push(std::move(retired), false));
+    queue.Push(std::move(retired), false);
 
     QueuedFrame active;
     active.texture = &activeTexture;
     active.wgcSourceEpoch = 5;
-    ASSERT_TRUE(queue.Push(std::move(active), false));
+    queue.Push(std::move(active), false);
 
     QueuedFrame inject;
     inject.isInjectMode = true;
     inject.wgcSourceEpoch = 0;
-    ASSERT_TRUE(queue.Push(std::move(inject), false));
+    queue.Push(std::move(inject), false);
 
     EXPECT_EQ(queue.DiscardWgcEpochNotEqual(5), 1u);
     EXPECT_EQ(retiredTexture.ReleaseCallCount(), 1u);
@@ -302,7 +302,7 @@ TEST(FrameQueueHardeningTest, DroppingQueuedWgcFrameReleasesPoolLease) {
     first.wgcPoolSlot = 0;
     first.wgcPoolGeneration = 11;
     first.wgcPoolLease = WgcPoolSlotLease(leaseState, 0, 11);
-    EXPECT_TRUE(queue.Push(std::move(first), false));
+    queue.Push(std::move(first), false);
     EXPECT_EQ(leaseState->leasedCurrent.load(std::memory_order_relaxed), 1u);
 
     QueuedFrame second;
@@ -310,7 +310,7 @@ TEST(FrameQueueHardeningTest, DroppingQueuedWgcFrameReleasesPoolLease) {
     second.wgcPoolSlot = 1;
     second.wgcPoolGeneration = 11;
     second.wgcPoolLease = WgcPoolSlotLease(leaseState, 1, 11);
-    EXPECT_TRUE(queue.Push(std::move(second), false));
+    queue.Push(std::move(second), false);
 
     EXPECT_EQ(leaseState->slotLeases[0].load(std::memory_order_relaxed), 0u);
     EXPECT_EQ(leaseState->slotLeases[1].load(std::memory_order_relaxed), 1u);
@@ -334,7 +334,7 @@ TEST(FrameQueueHardeningTest, ClearingQueuedWgcFramesReleasesPoolLeases) {
         frame.wgcPoolSlot = slot;
         frame.wgcPoolGeneration = 13;
         frame.wgcPoolLease = WgcPoolSlotLease(leaseState, slot, 13);
-        EXPECT_TRUE(queue.Push(std::move(frame), false));
+        queue.Push(std::move(frame), false);
     }
     EXPECT_EQ(leaseState->leasedCurrent.load(std::memory_order_relaxed), 2u);
 
@@ -371,4 +371,70 @@ TEST(FrameQueueHardeningTest, InjectLineageSurvivesQueuedFrameMove) {
     EXPECT_EQ(source.sharedHandle, nullptr);
     EXPECT_EQ(source.fenceHandle, nullptr);
     EXPECT_EQ(source.textureIndex, -1);
+}
+
+// Push always takes ownership and cannot fail. A caller that cached the raw texture
+// before the move and released it on an imagined failure path would double-release.
+TEST(FrameQueueHardeningTest, PushTakesTextureOwnershipExactlyOnceOnOverflow) {
+    FakeTexture2D oldest;
+    FakeTexture2D newest;
+    FrameQueue queue(1);
+
+    QueuedFrame first;
+    first.texture = &oldest;
+    queue.Push(std::move(first), false);
+    EXPECT_EQ(oldest.ReleaseCallCount(), 0u);
+
+    // Overflow: the queue drops and releases the oldest frame itself.
+    QueuedFrame second;
+    second.texture = &newest;
+    queue.Push(std::move(second), false);
+    EXPECT_EQ(oldest.ReleaseCallCount(), 1u);
+    EXPECT_EQ(newest.ReleaseCallCount(), 0u);
+
+    // The surviving frame is handed to the consumer, still exactly once released.
+    QueuedFrame out;
+    ASSERT_TRUE(queue.Pop(out, 0));
+    EXPECT_EQ(out.texture, &newest);
+    EXPECT_EQ(newest.ReleaseCallCount(), 0u);
+    EXPECT_EQ(oldest.ReleaseCallCount(), 1u);
+}
+
+// Regression: the inject ingest path once carried an unreachable "push failed" branch
+// that called qf.injectRingLease.Reset() on the moved-from frame. Reset() on a
+// moved-from lease is a silent no-op, so had that branch ever become reachable the
+// ring slot would never have been completed and the producer would stall.
+TEST(FrameQueueHardeningTest, PushTransfersInjectRingLeaseOwnershipToQueue) {
+    FrameRingBuffer ring;
+    FrameSlot& slot = ring.slots[0];
+    slot.textureIndex = 0;
+    slot.frameIndex = 0;
+    slot.valid.store(1, std::memory_order_release);
+    ring.writeIndex.store(1, std::memory_order_release);
+
+    auto leaseState = std::make_shared<ce::InjectFrameRingLeaseState>(&ring);
+    FrameQueue queue(2);
+
+    QueuedFrame frame;
+    frame.isInjectMode = true;
+    frame.ringIndex = 0;
+    frame.injectRingLease = leaseState->Acquire(0);
+    ASSERT_TRUE(static_cast<bool>(frame.injectRingLease));
+
+    queue.Push(std::move(frame));
+
+    // The moved-from lease must be disarmed, and completing it must not advance the
+    // ring: the queued frame still owns the slot.
+    EXPECT_FALSE(static_cast<bool>(frame.injectRingLease));
+    frame.injectRingLease.Reset();
+    EXPECT_EQ(ring.readIndex.load(std::memory_order_acquire), 0u);
+    EXPECT_EQ(ring.slots[0].valid.load(std::memory_order_acquire), 1u);
+
+    // Only the consumer releasing the real lease completes the slot.
+    QueuedFrame out;
+    ASSERT_TRUE(queue.Pop(out, 0));
+    ASSERT_TRUE(static_cast<bool>(out.injectRingLease));
+    out.injectRingLease.Reset();
+    EXPECT_EQ(ring.readIndex.load(std::memory_order_acquire), 1u);
+    EXPECT_EQ(ring.slots[0].valid.load(std::memory_order_acquire), 0u);
 }

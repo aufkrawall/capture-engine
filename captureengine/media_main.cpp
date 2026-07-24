@@ -1157,10 +1157,9 @@ static void SubmitWgcQueuedFrame(QueuedFrame&& frame) {
         g_pSharedMem->runtimeState.framesQueued.fetch_add(1, std::memory_order_relaxed);
     }
 
-    ID3D11Texture2D* texture = frame.texture;
-    if (!g_FrameQueue.Push(std::move(frame)) && texture) {
-        texture->Release();
-    }
+    // The queue unconditionally takes ownership of frame.texture, including on the
+    // drop-oldest overflow path. Releasing a cached raw pointer here would double-release.
+    g_FrameQueue.Push(std::move(frame));
 }
 
 static void QueueWgcFrame(ID3D11Texture2D* texture, uint32_t width, uint32_t height, int64_t timestamp,
@@ -2555,34 +2554,32 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                             droppedCount++;
                             dropFrame = true;
                         } else {
+                            // Push cannot fail and always takes ownership; qf is moved-from
+                            // below, so no post-push recovery path may touch it.
                             const InjectFrameLineage lineage = MakeInjectFrameLineage(qf);
-                            if (g_FrameQueue.Push(std::move(qf))) {
-                                static uint64_t s_lastQueuedLineageLogTick = 0;
-                                const uint64_t nowTick = GetTickCount64();
-                                if (nowTick - s_lastQueuedLineageLogTick >= 1000) {
-                                    const uint32_t ringWrite =
-                                        g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
-                                    const uint32_t ringAckRead =
-                                        g_pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
-                                    const uint32_t nextIngest = localReadIndex + 1;
-                                    LogInfo(
-                                        "[Inject Thread] Queue frame=%u ring=%u tex=%d fence=%llu ts=%lld qDepth=%u "
-                                        "ringIngestNext=%u ringAckRead=%u ringWrite=%u ownedDepth=%u",
-                                        lineage.frameIndex, lineage.ringIndex, lineage.textureIndex,
-                                        static_cast<unsigned long long>(lineage.fenceValue),
-                                        static_cast<long long>(lineage.timestamp), queueDepth, nextIngest, ringAckRead,
-                                        ringWrite, static_cast<uint32_t>(ringWrite - ringAckRead));
-                                    s_lastQueuedLineageLogTick = nowTick;
-                                }
-                                if (!g_InjectDeliveredFirstFrame.exchange(true, std::memory_order_acq_rel)) {
-                                    LogInfo("[Inject Thread] First actual inject frame queued");
-                                }
-                                pushedCount++;
-                                g_pSharedMem->runtimeState.framesQueued.fetch_add(1, std::memory_order_relaxed);
-                            } else {
-                                droppedCount++;
-                                dropFrame = true;
+                            g_FrameQueue.Push(std::move(qf));
+                            static uint64_t s_lastQueuedLineageLogTick = 0;
+                            const uint64_t nowTick = GetTickCount64();
+                            if (nowTick - s_lastQueuedLineageLogTick >= 1000) {
+                                const uint32_t ringWrite =
+                                    g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
+                                const uint32_t ringAckRead =
+                                    g_pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
+                                const uint32_t nextIngest = localReadIndex + 1;
+                                LogInfo(
+                                    "[Inject Thread] Queue frame=%u ring=%u tex=%d fence=%llu ts=%lld qDepth=%u "
+                                    "ringIngestNext=%u ringAckRead=%u ringWrite=%u ownedDepth=%u",
+                                    lineage.frameIndex, lineage.ringIndex, lineage.textureIndex,
+                                    static_cast<unsigned long long>(lineage.fenceValue),
+                                    static_cast<long long>(lineage.timestamp), queueDepth, nextIngest, ringAckRead,
+                                    ringWrite, static_cast<uint32_t>(ringWrite - ringAckRead));
+                                s_lastQueuedLineageLogTick = nowTick;
                             }
+                            if (!g_InjectDeliveredFirstFrame.exchange(true, std::memory_order_acq_rel)) {
+                                LogInfo("[Inject Thread] First actual inject frame queued");
+                            }
+                            pushedCount++;
+                            g_pSharedMem->runtimeState.framesQueued.fetch_add(1, std::memory_order_relaxed);
                         }
                     } else {
                         droppedCount++;
