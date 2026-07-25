@@ -373,6 +373,7 @@ CFR_PHASE_LOCK_SUMMARY_RE = re.compile(
     r"Stable=(\d+) Unstable=(\d+) Acquire=(\d+) Rephase=(\d+) Release=(\d+) Multiplier=(\d+)",
     re.IGNORECASE,
 )
+CFR_PHASE_LOCK_LINE_RE = re.compile(r"\[CFR PHASE\s*LOCK(?: SUMMARY)?\]", re.IGNORECASE)
 FINAL_PACKET_TIMELINE_RE = re.compile(
     r"Final packet timeline: target=(\d+) us videoEnd=(\d+) us audioMinEnd=(\d+) us audioMaxEnd=(\d+) us "
     r"maxPacketDelta=(\d+) us.*audioPastTarget=(\d+)",
@@ -2566,19 +2567,20 @@ def parse_media_triage(media_text):
     zero_drift_warnings = []
     packet_mismatch_warnings = 0
     for line in media_text.splitlines():
-        for backend_match in SCREEN_CAPTURE_BACKEND_TOKEN_RE.finditer(line):
-            backend = normalize_screen_capture_backend(backend_match.group(1))
-            if backend and (
-                not screen_capture_backend_events
-                or screen_capture_backend_events[-1]["backend"] != backend
-            ):
-                screen_capture_backend_events.append(
-                    {
-                        "backend": backend,
-                        "timestamp_us": parse_log_timestamp_us(line),
-                        "line": line,
-                    }
-                )
+        if not CFR_PHASE_LOCK_LINE_RE.search(line):
+            for backend_match in SCREEN_CAPTURE_BACKEND_TOKEN_RE.finditer(line):
+                backend = normalize_screen_capture_backend(backend_match.group(1))
+                if backend and (
+                    not screen_capture_backend_events
+                    or screen_capture_backend_events[-1]["backend"] != backend
+                ):
+                    screen_capture_backend_events.append(
+                        {
+                            "backend": backend,
+                            "timestamp_us": parse_log_timestamp_us(line),
+                            "line": line,
+                        }
+                    )
         source_match = WGC_SOURCE_STARVED_RE.search(line)
         if source_match:
             source_starved.append(
@@ -3557,14 +3559,17 @@ def has_wgc_delivery_gap(media_evidence):
 
 
 def has_wgc_framepool_pressure_attribution(media_evidence):
-    pressure_hints = {"wgc_framepool_pressure", "wgc_framepool_overflow_suspected"}
-    return any(
-        item.get("fault_hint") in pressure_hints
-        or parse_numeric_prefix_int(item.get("poolSat"), 0) > 0
-        or parse_numeric_prefix_int(item.get("overwritePrevented"), 0) > 0
-        or parse_numeric_prefix_int(item.get("ingressDecimated"), 0) > 0
-        for item in media_evidence["wgc_attribution"]
-    )
+    coverage = media_evidence["wgc_source_coverage"]
+    final_pool_clean = bool(coverage) and all(item.get("clean_pool", 0) > 0 and item.get("pool_pressure", 0) == 0
+                                              for item in coverage)
+    for item in media_evidence["wgc_attribution"]:
+        hint = item.get("fault_hint")
+        overwrite_prevented = parse_numeric_prefix_int(item.get("overwritePrevented"), 0) > 0
+        lossy = any(parse_numeric_prefix_int(item.get(key), 0) > 0 for key in ("poolSat", "ingressDecimated"))
+        legacy_pressure = hint == "wgc_framepool_pressure" and not (overwrite_prevented and final_pool_clean)
+        if lossy or legacy_pressure or hint == "wgc_framepool_overflow_suspected":
+            return True
+    return False
 
 
 def parse_ms_ratio_value(value):
@@ -4820,6 +4825,13 @@ def classify_session_triage(
     wgc_framepool_pressure = has_wgc_framepool_pressure_attribution(media_evidence)
     if wgc_framepool_pressure:
         verdicts.append(screen_capture_diagnostic("framepool_pressure"))
+    wgc_pool_lease_contention = any(
+        item.get("fault_hint") == "wgc_pool_lease_contention"
+        or parse_numeric_prefix_int(item.get("overwritePrevented"), 0) > 0
+        for item in media_evidence["wgc_attribution"]
+    )
+    if wgc_pool_lease_contention and not wgc_framepool_pressure:
+        contexts.append(screen_capture_diagnostic("pool_lease_contention"))
     if has_inject_capture_pacer_limit(inject_pacing):
         verdicts.append("ce_capture_pacer_limited")
     inject_cfr_playout_churn = has_inject_cfr_playout_churn(inject_pacing)
@@ -6403,9 +6415,27 @@ def self_test():
         assert report["faults"]["wgc_clean_source_limited_coverage"]
         assert report["faults"]["wgc_source_limited_delay_variation_context"]
 
-        backend_transition_media = read_text_if_exists(
-            dxgi_variable_fps_source_limited / "media.log"
+        assert has_wgc_framepool_pressure_attribution(
+            parse_media_triage("[WGC CFR ATTRIBUTION] fault_hint=wgc_framepool_pressure poolSat=0 "
+                               "overwritePrevented=1 ingressDecimated=0")
         )
+        legacy_media = read_text_if_exists(dxgi_variable_fps_source_limited / "media.log") + (
+            "\n[CFR PhaseLock] backend=wgc state=acquired offset=10us stable=8 unstable=0 multiplier=1 "
+            "transitions=1/0/0\n"
+            "[CFR PHASE LOCK SUMMARY] Backend=wgc Enabled=1 Locked=1 Offset=10us Stable=8 "
+            "Unstable=0 Acquire=1 Rephase=0 Release=0 Multiplier=1\n"
+            "[WGC CFR ATTRIBUTION] fault_hint=wgc_framepool_pressure poolSat=0 "
+            "overwritePrevented=1659 ingressDecimated=0\n"
+        )
+        legacy_report = classify_session_triage(make_session("legacy_phase", legacy_media, capture_method="dxgi_dup"))
+        assert legacy_report["evidence"]["screen_capture_backend_history"] == ["dxgi_dup"]
+        assert "screen_capture_backend_transition" not in legacy_report["contexts"]
+        assert "dxgi_dup_pool_lease_contention" in legacy_report["contexts"]
+        assert "dxgi_dup_framepool_pressure" not in legacy_report["verdicts"]
+        assert not legacy_report["faults"]["visual_timeline"]
+        assert legacy_report["evidence"]["cfr_phase_lock_summary"][0]["offset_us"] == 10
+
+        backend_transition_media = read_text_if_exists(dxgi_variable_fps_source_limited / "media.log")
         backend_transition_media = backend_transition_media.replace(
             "\n[WGC CFR SUMMARY]",
             "\n[WGC Perf] Input: 120 | Queued: 120 | MinIn250/500: 120/120 | "
@@ -6414,55 +6444,25 @@ def self_test():
             "Overload: 0x0\n[WGC CFR SUMMARY]",
             1,
         )
-        backend_transition_media = backend_transition_media.replace(
-            "SourceLimitedRepeats=85", "SourceLimitedRepeats=77"
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "sourceLimitedRepeats=85", "sourceLimitedRepeats=77"
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "sourceRepeatLowerBound=85", "sourceRepeatLowerBound=77"
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "Live=12728", "Live=3751"
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "duplicates=85/12728", "duplicates=85/3751"
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "excessRepeats=0", "excessRepeats=8"
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "bestEffort=1", "bestEffort=0"
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "cleanSelection=1", "cleanSelection=0"
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "worstIn=56 worstDel=56", "worstIn=8 worstDel=8"
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "realizedDelayMin=38874us realizedDelayMax=53330us",
-            "realizedDelayMin=0us realizedDelayMax=110000us",
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "delayResidualMax=9745us", "delayResidualMax=118694us"
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "delayResidualLateMax=9745us", "delayResidualLateMax=118694us"
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "rawResidualMax=10710us", "rawResidualMax=118694us"
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "rawResidualLateMax=10710us", "rawResidualLateMax=118694us"
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "predictedResidualLateMax=9745us", "predictedResidualLateMax=118694us"
-        )
-        backend_transition_media = backend_transition_media.replace(
-            "backend=dxgi_dup", "backend=wgc"
-        )
+        for old, new in (
+            ("SourceLimitedRepeats=85", "SourceLimitedRepeats=77"),
+            ("sourceLimitedRepeats=85", "sourceLimitedRepeats=77"),
+            ("sourceRepeatLowerBound=85", "sourceRepeatLowerBound=77"),
+            ("Live=12728", "Live=3751"),
+            ("duplicates=85/12728", "duplicates=85/3751"),
+            ("excessRepeats=0", "excessRepeats=8"),
+            ("bestEffort=1", "bestEffort=0"),
+            ("cleanSelection=1", "cleanSelection=0"),
+            ("worstIn=56 worstDel=56", "worstIn=8 worstDel=8"),
+            ("realizedDelayMin=38874us realizedDelayMax=53330us", "realizedDelayMin=0us realizedDelayMax=110000us"),
+            ("delayResidualMax=9745us", "delayResidualMax=118694us"),
+            ("delayResidualLateMax=9745us", "delayResidualLateMax=118694us"),
+            ("rawResidualMax=10710us", "rawResidualMax=118694us"),
+            ("rawResidualLateMax=10710us", "rawResidualLateMax=118694us"),
+            ("predictedResidualLateMax=9745us", "predictedResidualLateMax=118694us"),
+            ("backend=dxgi_dup", "backend=wgc"),
+        ):
+            backend_transition_media = backend_transition_media.replace(old, new)
         backend_transition = make_session(
             "backend_transition_source_limited",
             media=backend_transition_media,

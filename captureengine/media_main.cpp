@@ -3819,13 +3819,14 @@ void EncoderThreadFunc(const AppConfig& config) {
             poolOverwritePrevented = currentPoolOverwritePrevented - wgcStarvedEpisode.startPoolOverwritePrevented;
             ingressDecimated = currentIngressDecimated - wgcStarvedEpisode.startIngressDecimated;
         }
-        const bool wgcFramepoolPressure = poolSaturatedDrops > 0 || poolOverwritePrevented > 0 || ingressDecimated > 0;
+        const bool wgcFramepoolPressure = poolSaturatedDrops > 0 || ingressDecimated > 0;
         const bool wgcDeliveryGap = deliveredBelowCfrTarget || callbackDeliveryGap;
-        const char* faultHint = capacityPressure       ? "ce_capacity_pressure"
-                                : wgcFramepoolPressure ? "wgc_framepool_pressure"
-                                : sourceBelowCfrTarget ? "source_below_cfr_target"
-                                : wgcDeliveryGap       ? "wgc_delivery_gap"
-                                                       : "source_starved";
+        const char* faultHint = capacityPressure               ? "ce_capacity_pressure"
+                                : wgcFramepoolPressure          ? "wgc_framepool_pressure"
+                                : sourceBelowCfrTarget          ? "source_below_cfr_target"
+                                : wgcDeliveryGap                ? "wgc_delivery_gap"
+                                : poolOverwritePrevented > 0    ? "wgc_pool_lease_contention"
+                                                               : "source_starved";
         const bool copySlow = wgcStarvedEpisode.maxCopyUs > frameBudgetUs;
         const bool fenceSlow = wgcStarvedEpisode.maxFenceUs > frameBudgetUs;
         if (durationMs >= captureSessionSummary.longestStarvedEpisodeMs) {
@@ -3962,18 +3963,14 @@ void EncoderThreadFunc(const AppConfig& config) {
     const bool avContentDelayActive = avContentDelayQpc > 0;
     // Smoothness FLOOR (WGC only): engage the active-delay jitter-absorbing playout even when there
     // is no audio-latency content delay. Configured = auto or explicit > 0; only meaningful for the
-    // WGC (screen-grab) path. wgcSmoothnessDelayDesired drives the smoothness arming gates below in
-    // place of avContentDelayActive, so the buffer arms for video-only / low-confidence captures.
-    // The resolved floor magnitude (wgcSmoothnessFloorDelayQpc) is derived once at the startup
-    // barrier from measured delivery jitter; here we only know whether it is configured.
+    // Screen-grab smoothness can arm without an A/V delay; the floor magnitude is resolved once
+    // at the startup barrier from measured delivery jitter.
     const bool wgcSmoothnessFloorConfigured = IsActiveScreenGrab() && config.wgcSmoothnessBufferEnabled &&
                                               !config.video.useVFR &&
                                               (config.wgcSmoothnessFloorAuto || config.wgcSmoothnessFloorMs > 0);
     const bool wgcSmoothnessDelayDesired =
         ce::capture_policy::WgcSmoothnessDelayDesired(avContentDelayActive, wgcSmoothnessFloorConfigured);
-    // Inject path has no selection target; it pops the oldest buffered frame above a reserve,
-    // so delaying inject video content = retaining this many extra frames (the oldest popped
-    // frame becomes ~L old). Rounded up to whole frames.
+    // Inject delays content by retaining whole extra frames above its oldest-first reserve.
     const size_t injectContentDelayFrames =
         (avContentDelayActive && frameIntervalMs > 0.0)
             ? static_cast<size_t>(std::ceil(static_cast<double>(maxAudioCaptureLatencyMs) / frameIntervalMs))
@@ -4014,7 +4011,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     const auto qpcToUs = [&](int64_t qpcDelta) -> int64_t {
         return qpcFreq.QuadPart > 0 ? (qpcDelta * 1000000) / qpcFreq.QuadPart : 0;
     };
-    const auto observeCaptureSyncPhaseSource = [&](const char* backend,
+    const auto observeCaptureSyncPhaseSource = [&](const char* path,
                                                     ce::capture_policy::CfrCadencePhaseLockState& state,
                                                     int64_t sourceTimestampQpc) {
         if (!captureSyncPhaseLockEnabled) {
@@ -4025,13 +4022,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                                  captureSyncSourceIntervalTicks);
         if (state.releases != releasesBefore) {
             LogInfo(
-                "[CFR PhaseLock] backend=%s state=released reason=variable_source stable=%u unstable=%u "
+                "[CFR PhaseLock] path=%s state=released reason=variable_source stable=%u unstable=%u "
                 "multiplier=%u releases=%llu",
-                backend, state.stableSourceIntervals, state.unstableSourceIntervals, captureSyncMultiplier,
+                path, state.stableSourceIntervals, state.unstableSourceIntervals, captureSyncMultiplier,
                 static_cast<unsigned long long>(state.releases));
         }
     };
-    const auto applyCaptureSyncPhaseTarget = [&](const char* backend,
+    const auto applyCaptureSyncPhaseTarget = [&](const char* path,
                                                  ce::capture_policy::CfrCadencePhaseLockState& state,
                                                  int64_t baseTargetQpc, int64_t sourceReferenceQpc) -> int64_t {
         const uint64_t acquisitionsBefore = state.acquisitions;
@@ -4046,9 +4043,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                                          ? "acquired"
                                          : (state.rephases != rephasesBefore ? "rephased" : "released");
             LogInfo(
-                "[CFR PhaseLock] backend=%s state=%s offset=%lldus stable=%u unstable=%u multiplier=%u "
+                "[CFR PhaseLock] path=%s state=%s offset=%lldus stable=%u unstable=%u multiplier=%u "
                 "transitions=%llu/%llu/%llu",
-                backend, transition, static_cast<long long>(qpcToUs(state.lockedPhaseQpc)),
+                path, transition, static_cast<long long>(qpcToUs(state.lockedPhaseQpc)),
                 state.stableSourceIntervals, state.unstableSourceIntervals, captureSyncMultiplier,
                 static_cast<unsigned long long>(state.acquisitions),
                 static_cast<unsigned long long>(state.rephases), static_cast<unsigned long long>(state.releases));
@@ -6232,8 +6229,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                             drainedFrame.selectionTimestamp =
                                 wgcInputPredictor.SmoothMonotonicTimestamp(drainedFrame.timestamp, targetIntervalTicks);
                             observeCaptureSyncPhaseSource(
-                                "wgc", wgcCfrPhaseLock,
-                                GetFrameSelectionTimestamp(drainedFrame));
+                                "screen_grab", wgcCfrPhaseLock, GetFrameSelectionTimestamp(drainedFrame));
                             if (drainedFrame.selectionTimestamp > 0 && qpcFreq.QuadPart > 0) {
                                 const int64_t devQpc =
                                     AbsoluteTimestampDistance(drainedFrame.selectionTimestamp, drainedFrame.timestamp);
@@ -6673,7 +6669,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                                   ? 0
                                                                   : GetFrameSelectionTimestamp(bufferedWgcFrames.back());
                         effectiveSelectionTargetQpc = applyCaptureSyncPhaseTarget(
-                            "wgc", wgcCfrPhaseLock, effectiveSelectionTargetQpc, phaseReferenceQpc);
+                            "screen_grab", wgcCfrPhaseLock, effectiveSelectionTargetQpc, phaseReferenceQpc);
                     }
                     if (useInjectParityDelayPacing) {
                         // Fixed-latency jitter-buffer playout for the active A/V content delay. WGC
@@ -6718,7 +6714,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                                   ? 0
                                                                   : GetFrameSelectionTimestamp(bufferedWgcFrames.back());
                         playoutTargetQpc = applyCaptureSyncPhaseTarget(
-                            "wgc", wgcCfrPhaseLock, playoutTargetQpc, phaseReferenceQpc);
+                            "screen_grab", wgcCfrPhaseLock, playoutTargetQpc, phaseReferenceQpc);
                         const int64_t playoutLeadToleranceQpc =
                             ce::capture_policy::GetWgcActiveDelayResidualToleranceQpc(targetIntervalTicks);
                         // Anti-freeze floor: if the encoder grid has drifted so far behind wall-clock
@@ -9228,7 +9224,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const int64_t catchupPhaseReferenceQpc =
                         GetFrameSelectionTimestamp(bufferedWgcFrames.back());
                     const int64_t catchupSelectionTargetQpc = applyCaptureSyncPhaseTarget(
-                        "wgc", wgcCfrPhaseLock, baseCatchupSelectionTargetQpc, catchupPhaseReferenceQpc);
+                        "screen_grab", wgcCfrPhaseLock, baseCatchupSelectionTargetQpc, catchupPhaseReferenceQpc);
                     QueuedFrame catchupFrame;
                     if (tryPopBufferedWgcFrameForTarget(catchupSelectionTargetQpc, catchupSelectionTargetQpc,
                                                         catchupNowQpc.QuadPart, false, &catchupFrame)) {
@@ -11461,10 +11457,13 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
         }
         const auto& phaseLockSummary = summaryUsesScreenGrab ? wgcCfrPhaseLock : injectCfrPhaseLock;
+        const char* phaseLockBackend = summaryUsesScreenGrab
+                                           ? (g_WgcCap && g_WgcCap->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc")
+                                           : "inject";
         LogInfo(
             "[CFR PHASE LOCK SUMMARY] Backend=%s Enabled=%d Locked=%d Offset=%lldus Stable=%u Unstable=%u "
             "Acquire=%llu Rephase=%llu Release=%llu Multiplier=%u",
-            summaryUsesScreenGrab ? "wgc" : "inject", captureSyncPhaseLockEnabled ? 1 : 0,
+            phaseLockBackend, captureSyncPhaseLockEnabled ? 1 : 0,
             phaseLockSummary.locked ? 1 : 0,
             static_cast<long long>(qpcToUs(phaseLockSummary.lockedPhaseQpc)),
             phaseLockSummary.stableSourceIntervals, phaseLockSummary.unstableSourceIntervals,
