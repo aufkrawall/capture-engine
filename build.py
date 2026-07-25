@@ -7493,37 +7493,6 @@ def compile_project(
     log("Build Complete.")
 
 
-def backup_sources(script_dir):
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_root = os.path.join(script_dir, "bak", timestamp)
-
-    log(f"Creating source backup in {backup_root}...")
-
-    dirs_to_backup = ["hook", "captureengine", "mediaengine", "common", "tests"]
-    files_to_backup = [
-        "build_and_run.py",
-        "CMakeLists.txt",
-    ]  # Add strict files if needed
-
-    for d in dirs_to_backup:
-        src_path = os.path.join(script_dir, d)
-        if os.path.exists(src_path):
-            dst_path = os.path.join(backup_root, d)
-            # Ignore binary/obj directories inside if any (though unlikely in source dirs)
-            shutil.copytree(
-                src_path,
-                dst_path,
-                ignore=shutil.ignore_patterns("*.obj", "*.o", "*.tmp"),
-            )
-
-    # Also backup root files
-    os.makedirs(backup_root, exist_ok=True)
-    for f in files_to_backup:
-        src = os.path.join(script_dir, f)
-        if os.path.exists(src):
-            shutil.copy2(src, backup_root)
-
-
 def ensure_debug_logging():
     """Ensure at least log_level=debug in bin/config.ini."""
     config_path = os.path.join(BIN_DIR, "config.ini")
@@ -7913,9 +7882,6 @@ def main():
     os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
     if DETAIL_LOG_FILE:
         os.makedirs(os.path.dirname(DETAIL_LOG_FILE), exist_ok=True)
-
-    # 0. Backup Sources - DISABLED per user request
-    # backup_sources(script_dir)
 
     if os.path.exists(LOG_FILE):
         try:
