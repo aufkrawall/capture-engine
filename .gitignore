@@ -29,7 +29,6 @@
 !.flake8
 *.csv
 *.dmp
-*.ps1
 compile.log
 build.log
 git-clean.log
@@ -74,10 +73,7 @@ telemetry-id
 compile_commands.json
 common/build_version.h
 
-.gitignore
-
-
-
+# CLAUDE.md is an absolute-path symlink to AGENTS.md, so it cannot be tracked.
 CLAUDE.md
 tests/logs/session_manifest.txt
 common/config.h.tmp0

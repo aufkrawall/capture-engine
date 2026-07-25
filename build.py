@@ -4904,6 +4904,7 @@ def run_python_tool_self_tests(env):
         ("clang_tidy_baseline_scope", unittest_command("test_clang_tidy_baseline")),
         ("file_size_baseline", unittest_command("test_file_size_baseline")),
         ("build_lint_policy", unittest_command("test_build_lint_policy")),
+        ("git_clean_paths", unittest_command("test_git_clean")),
         ("analyze_av_sync_stimulus", self_test_command("analysis", "analyze_av_sync_stimulus.py")),
         ("analyze_capture_av", self_test_command("analysis", "analyze_capture_av.py")),
         ("run_av_sync_matrix", self_test_command("analysis", "run_av_sync_matrix.py")),

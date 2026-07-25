@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 LOG_PATH = PROJECT_ROOT / "git-clean.log"
 
