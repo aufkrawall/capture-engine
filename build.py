@@ -4897,6 +4897,10 @@ def run_python_tool_self_tests(env):
             [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_clang_tidy_baseline.py")],
         ),
         (
+            "file_size_baseline",
+            [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_file_size_baseline.py")],
+        ),
+        (
             "analyze_av_sync_stimulus",
             [sys.executable, os.path.join(PROJECT_ROOT, "tools", "analyze_av_sync_stimulus.py"), "--self-test"],
         ),
@@ -5048,8 +5052,8 @@ def write_process_diagnostics_artifact(
 CLANG_TIDY_BASELINE_PATH = os.path.join(PROJECT_ROOT, "tools", "clang_tidy_baseline.json")
 
 
-def clang_tidy_scope_path(source_path: str) -> str:
-    """Project-relative, separator-normalized key for one linted translation unit."""
+def project_relative_key(source_path: str) -> str:
+    """Project-relative, separator-normalized key for one source file."""
     candidate = os.path.normpath(str(source_path))
     try:
         relative = os.path.relpath(candidate, PROJECT_ROOT)
@@ -5058,6 +5062,11 @@ def clang_tidy_scope_path(source_path: str) -> str:
     if relative.startswith(".."):
         relative = candidate
     return relative.replace("\\", "/")
+
+
+def clang_tidy_scope_path(source_path: str) -> str:
+    """Project-relative, separator-normalized key for one linted translation unit."""
+    return project_relative_key(source_path)
 
 
 def clang_tidy_scope_from_entries(compile_database: List[Any]) -> Dict[str, Any]:
@@ -5290,6 +5299,183 @@ def evaluate_clang_tidy_baseline(
     log(f"clang-tidy baseline: OK ({sum(check_counts.values())} warning(s), none above baseline)")
 
 
+FILE_SIZE_BASELINE_PATH = os.path.join(PROJECT_ROOT, "tools", "file_size_baseline.json")
+FILE_SIZE_LIMIT = 800
+FILE_SIZE_TARGET = 750
+
+LINTABLE_SOURCE_DIRS = ["common", "hook", "captureengine", "mediaengine", "testapp", "tests"]
+LINTABLE_SOURCE_SUFFIXES = (".cpp", ".h", ".hpp", ".c")
+# Mirrors the first-party Python that flake8 already lints (`py_targets` below).
+FILE_SIZE_PYTHON_DIRS = ["tools", "testapp"]
+
+
+def collect_lintable_cpp_sources() -> List[str]:
+    """First-party C++ sources shared by clang-format and the file-size ratchet.
+
+    External, vendored, and ImGui trees are excluded: their size is not ours to
+    manage and formatting them would produce large unrelated diffs.
+    """
+    files: List[str] = []
+    for directory in LINTABLE_SOURCE_DIRS:
+        root_path = os.path.join(PROJECT_ROOT, directory)
+        for root, _, filenames in os.walk(root_path):
+            for name in filenames:
+                if not name.endswith(LINTABLE_SOURCE_SUFFIXES):
+                    continue
+                path = os.path.join(root, name)
+                if "external" in path or "imgui" in path:
+                    continue
+                files.append(path)
+    return files
+
+
+def collect_file_size_python_sources() -> List[str]:
+    """First-party Python sources: the root build/test scripts plus `tools/`."""
+    files: List[str] = []
+    for name in sorted(os.listdir(PROJECT_ROOT)):
+        path = os.path.join(PROJECT_ROOT, name)
+        if name.endswith(".py") and os.path.isfile(path):
+            files.append(path)
+    for directory in FILE_SIZE_PYTHON_DIRS:
+        root_path = os.path.join(PROJECT_ROOT, directory)
+        for root, dirnames, filenames in os.walk(root_path):
+            dirnames[:] = [name for name in dirnames if name != "__pycache__"]
+            files.extend(os.path.join(root, name) for name in filenames if name.endswith(".py"))
+    return files
+
+
+def count_source_lines(path: str) -> int:
+    """Line count for one source file, tolerant of the tree's mixed encodings."""
+    with open(path, "rb") as handle:
+        return len(handle.read().splitlines())
+
+
+def collect_source_file_sizes() -> Dict[str, int]:
+    """Project-relative line counts for every file the size ratchet governs."""
+    sizes: Dict[str, int] = {}
+    for path in collect_lintable_cpp_sources() + collect_file_size_python_sources():
+        try:
+            sizes[project_relative_key(path)] = count_source_lines(path)
+        except OSError as error:
+            log(f"WARNING: could not measure {path}: {error}")
+    return sizes
+
+
+def load_file_size_baseline() -> Optional[Dict[str, int]]:
+    """Read the accepted per-file line counts; None when no baseline exists yet."""
+    if not os.path.exists(FILE_SIZE_BASELINE_PATH):
+        return None
+    try:
+        with open(FILE_SIZE_BASELINE_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return {str(path): int(count) for path, count in data.get("files", {}).items()}
+    except (OSError, ValueError, TypeError, AttributeError) as error:
+        log(f"ERROR: Unreadable file-size baseline {FILE_SIZE_BASELINE_PATH}: {error}")
+        sys.exit(2)
+
+
+def write_file_size_baseline(violations: Mapping[str, int]) -> bool:
+    payload: Dict[str, Any] = {
+        "_comment": [
+            "Accepted source files above the AGENTS.md size ceiling, with their line counts.",
+            f"The ceiling is {FILE_SIZE_LIMIT} lines; the working target when splitting is {FILE_SIZE_TARGET}.",
+            "build.py fails lint when a recorded file grows or a new file crosses the ceiling.",
+            "Counts below baseline are folded in automatically and files that drop under the",
+            "ceiling are removed, so a split file cannot silently grow back.",
+            "Regenerate deliberately with:",
+            "  python build.py --no-build --lint --update-lint-baseline --skip-updates --concise",
+            "",
+            "Every entry here is debt being worked off, not an endorsement.",
+        ],
+        "limit": FILE_SIZE_LIMIT,
+        "target": FILE_SIZE_TARGET,
+        "files": dict(sorted(violations.items())),
+        "count": len(violations),
+        "total": sum(violations.values()),
+    }
+    os.makedirs(os.path.dirname(FILE_SIZE_BASELINE_PATH), exist_ok=True)
+    return write_text_atomic_if_changed(FILE_SIZE_BASELINE_PATH, json.dumps(payload, indent=2) + "\n")
+
+
+def evaluate_file_size_baseline(sizes: Mapping[str, int], lint_details: Dict[str, Any]) -> None:
+    """Fail when a source file grows past the ceiling; fold in shrinkage automatically.
+
+    `AGENTS.md` keeps source files at roughly 600-800 lines. The rule was
+    documentation-only for a long time, so the tree drifted well past it; this
+    ratchet records the existing violations and makes any growth fatal, exactly
+    like the clang-tidy ratchet above.
+
+    There is no scope problem here: the walk is filesystem-based and always
+    complete, so improvements can be folded in unconditionally.
+    """
+    update_requested = "--update-lint-baseline" in sys.argv
+    baseline = load_file_size_baseline()
+    violations = {path: count for path, count in sizes.items() if count > FILE_SIZE_LIMIT}
+
+    lint_details["file_size_files"] = len(sizes)
+    lint_details["file_size_violations"] = len(violations)
+    lint_details["file_size_violation_lines"] = sum(violations.values())
+
+    if baseline is None or update_requested:
+        write_file_size_baseline(violations)
+        lint_details["file_size_baseline"] = "written"
+        action = "Updated" if update_requested else "Created"
+        log(f"{action} file-size baseline: {FILE_SIZE_BASELINE_PATH}")
+        log(f"  {len(violations)} file(s) over {FILE_SIZE_LIMIT} lines, {sum(violations.values())} lines total")
+        return
+
+    regressions = []
+    for path, count in sorted(violations.items()):
+        allowed = baseline.get(path)
+        if allowed is None:
+            regressions.append(f"{path}: {count} lines, past the {FILE_SIZE_LIMIT}-line ceiling (new violation)")
+        elif count > allowed:
+            regressions.append(f"{path}: {count} > {allowed} accepted lines")
+
+    if regressions:
+        lint_details["file_size_baseline"] = "regressed"
+        lint_details["file_size_regressions"] = regressions
+        log("ERROR: source files grew past the accepted size baseline:")
+        for entry in regressions:
+            log(f"  {entry}")
+        log(f"Baseline: {FILE_SIZE_BASELINE_PATH}")
+        log(f"AGENTS.md keeps source files at roughly 600-{FILE_SIZE_LIMIT} lines.")
+        log(f"Split the file (working target {FILE_SIZE_TARGET} lines) instead of growing it,")
+        log("or rerun with --lint --update-lint-baseline if the increase is genuinely justified.")
+        record_verification_step(
+            "lint",
+            "failed",
+            details={**lint_details, "reason": "file_size_baseline_regression"},
+        )
+        sys.exit(1)
+
+    # Shrinking a file below its recorded count - or under the ceiling entirely -
+    # tightens the baseline at once, so the space cannot be reclaimed silently.
+    improvements = {
+        path: (allowed, violations.get(path, 0))
+        for path, allowed in baseline.items()
+        if violations.get(path, 0) < allowed
+    }
+    if improvements:
+        write_file_size_baseline(violations)
+        resolved = sorted(path for path, (_, now) in improvements.items() if now == 0)
+        preview = ", ".join(
+            f"{path} {old}->{new or 'under limit'}" for path, (old, new) in sorted(improvements.items())[:6]
+        )
+        log(f"file-size baseline tightened: {len(improvements)} file(s) smaller ({preview})")
+        if resolved:
+            log(f"  {len(resolved)} file(s) now under the ceiling and dropped from the baseline")
+        lint_details["file_size_baseline"] = "tightened"
+        lint_details["file_size_resolved"] = resolved
+        lint_details["file_size_improvements"] = {
+            path: {"was": old, "now": new} for path, (old, new) in improvements.items()
+        }
+        return
+
+    lint_details["file_size_baseline"] = "unchanged"
+    log(f"file-size baseline: OK ({len(violations)} accepted file(s) over {FILE_SIZE_LIMIT} lines, none grew)")
+
+
 def run_lint(env, *, advisory=False):
     log("=== Running Linting ===")
     lint_start = time.time()
@@ -5306,25 +5492,7 @@ def run_lint(env, *, advisory=False):
     if clang_format and (IS_LINUX or os.path.exists(clang_format)):
         log("Running clang-format...")
 
-        files = []
-        dirs_to_lint = [
-            "common",
-            "hook",
-            "captureengine",
-            "mediaengine",
-            "testapp",
-            "tests",
-        ]
-
-        for d in dirs_to_lint:
-            root_path = os.path.join(PROJECT_ROOT, d)
-            for root, _, filenames in os.walk(root_path):
-                for f in filenames:
-                    if f.endswith((".cpp", ".h", ".hpp", ".c")):
-                        path = os.path.join(root, f)
-                        if "external" in path or "imgui" in path:
-                            continue
-                        files.append(path)
+        files = collect_lintable_cpp_sources()
 
         if files:
             chunk_size = 50
@@ -5370,7 +5538,13 @@ def run_lint(env, *, advisory=False):
         checks_ok = False
         lint_details["clang_format_missing"] = True
 
-    # 2. Python Linting (flake8)
+    # 2. Source file size ratchet (the AGENTS.md 600-800 line ceiling).
+    # Cheap and filesystem-only, so it runs before clang-tidy: during an active
+    # split a size regression is the likely failure and should surface fast.
+    log("Checking source file sizes...")
+    evaluate_file_size_baseline(collect_source_file_sizes(), lint_details)
+
+    # 3. Python Linting (flake8)
     # Check if flake8 is installed in host python
     try:
         subprocess.run(
@@ -5393,6 +5567,7 @@ def run_lint(env, *, advisory=False):
             "test_ffmpeg_dependencies.py",
             "test_ffmpeg_patch_utils.py",
             "test_clang_tidy_baseline.py",
+            "test_file_size_baseline.py",
             "testapp",
         ]
 
@@ -5413,7 +5588,7 @@ def run_lint(env, *, advisory=False):
         checks_ok = False
         lint_details["flake8_missing"] = True
 
-    # 3. Python type/LSP check (pyright)
+    # 4. Python type/LSP check (pyright)
     try:
         subprocess.run(
             [sys.executable, "-m", "pyright", "--version"],
@@ -5448,7 +5623,7 @@ def run_lint(env, *, advisory=False):
         checks_ok = False
         lint_details["pyright_missing"] = True
 
-    # 4. C++ Static Analysis (clang-tidy) — uses compile_commands.json, no recompilation
+    # 5. C++ Static Analysis (clang-tidy) — uses compile_commands.json, no recompilation
     clang_tidy = os.path.join(MSYS2_DIR, "clang64", "bin", "clang-tidy.exe")
     if IS_LINUX:
         clang_tidy = shutil.which("clang-tidy") or clang_tidy
@@ -5564,24 +5739,7 @@ def run_format(env):
 
     if clang_format and (IS_LINUX or os.path.exists(clang_format)):
         log("Formatting C++ files...")
-        files = []
-        dirs_to_lint = [
-            "common",
-            "hook",
-            "captureengine",
-            "mediaengine",
-            "testapp",
-            "tests",
-        ]
-        for d in dirs_to_lint:
-            root_path = os.path.join(PROJECT_ROOT, d)
-            for root, _, filenames in os.walk(root_path):
-                for f in filenames:
-                    if f.endswith((".cpp", ".h", ".hpp", ".c")):
-                        path = os.path.join(root, f)
-                        if "external" in path or "imgui" in path:
-                            continue
-                        files.append(path)
+        files = collect_lintable_cpp_sources()
 
         if files:
             chunk_size = 50
