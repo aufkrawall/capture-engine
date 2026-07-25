@@ -4307,20 +4307,25 @@ def write_compile_commands_json() -> Optional[str]:
     if not COMPILE_COMMANDS:
         return None
     try:
+        # One source can be compiled several times with different flags: the
+        # test apps build dx9_test.cpp as both plain D3D9 and D3D9Ex, plus x86
+        # variants, and every variant shares the same "file" key. Ordering the
+        # duplicates only by file left the survivor decided by whichever
+        # parallel compile task appended last, so the recorded flags - and with
+        # them the clang-tidy findings for that source - flipped between builds
+        # and made the lint ratchet non-deterministic. Sort on the full key and
+        # keep the first match: non-x86 sorts before x86, then flags decide.
         seen_files = set()
         unique_commands = []
-        sorted_commands = sorted(COMPILE_COMMANDS, key=lambda x: x["file"])
-        for cmd in sorted_commands:
-            enriched_cmd = enrich_compile_command_for_clangd(dict(cmd))
-            is_x86 = is_x86_compile_command(enriched_cmd["arguments"])
+        enriched_commands = [enrich_compile_command_for_clangd(dict(cmd)) for cmd in COMPILE_COMMANDS]
+        sorted_commands = sorted(
+            enriched_commands,
+            key=lambda c: (c["file"], is_x86_compile_command(c["arguments"]), c["arguments"]),
+        )
+        for enriched_cmd in sorted_commands:
             if enriched_cmd["file"] not in seen_files:
                 unique_commands.append(enriched_cmd)
                 seen_files.add(enriched_cmd["file"])
-            elif not is_x86:
-                for i, existing in enumerate(unique_commands):
-                    if existing["file"] == enriched_cmd["file"]:
-                        unique_commands[i] = enriched_cmd
-                        break
         compile_commands_path = os.path.join(PROJECT_ROOT, "compile_commands.json")
         payload = json.dumps(unique_commands, indent=4) + "\n"
         changed = write_text_atomic_if_changed(compile_commands_path, payload)
