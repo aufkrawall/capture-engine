@@ -13,10 +13,14 @@ import os
 d3dcompiler = ctypes.windll.d3dcompiler_47
 
 # D3DCompile signature
+
+
 class ID3DBlob(ctypes.Structure):
     pass
 
+
 ID3DBlobPtr = ctypes.POINTER(ID3DBlob)
+
 
 # Use COM interface manually
 class ID3DBlobVtbl(ctypes.Structure):
@@ -28,7 +32,9 @@ class ID3DBlobVtbl(ctypes.Structure):
         ("GetBufferSize", ctypes.CFUNCTYPE(ctypes.c_size_t, ctypes.c_void_p)),
     ]
 
+
 ID3DBlob._fields_ = [("lpVtbl", ctypes.POINTER(ID3DBlobVtbl))]
+
 
 def blob_get_data(blob_ptr):
     blob = blob_ptr.contents
@@ -37,10 +43,12 @@ def blob_get_data(blob_ptr):
     size = vtbl.GetBufferSize(ctypes.cast(blob_ptr, ctypes.c_void_p))
     return (ctypes.c_uint8 * size).from_address(ptr)
 
+
 def blob_release(blob_ptr):
     blob = blob_ptr.contents
     vtbl = blob.lpVtbl.contents
     vtbl.Release(ctypes.cast(blob_ptr, ctypes.c_void_p))
+
 
 D3DCompile = d3dcompiler.D3DCompile
 D3DCompile.restype = ctypes.c_long
@@ -269,6 +277,7 @@ float4 main(PS_INPUT input) : SV_Target {
 }
 """
 
+
 def compile_shader(source, target, name):
     code = ID3DBlobPtr()
     errors = ID3DBlobPtr()
@@ -296,6 +305,7 @@ def compile_shader(source, target, name):
     print(f"  Compiled {name}: {len(data)} bytes", file=sys.stderr)
     return data
 
+
 def format_array(name, data):
     lines = [f"static const uint8_t {name}[] = {{"]
     for i in range(0, len(data), 16):
@@ -307,6 +317,7 @@ def format_array(name, data):
     lines.append("};")
     lines.append("")
     return "\n".join(lines)
+
 
 def main():
     shaders = [
@@ -357,6 +368,7 @@ def main():
         f.write("\n".join(umbrella))
 
     print(f"Written to {out_path} and {len(part_files)} shader header(s) in {part_dir}", file=sys.stderr)
+
 
 if __name__ == "__main__":
     main()

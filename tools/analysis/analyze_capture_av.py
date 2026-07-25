@@ -2710,9 +2710,13 @@ def parse_media_triage(media_text):
                     "startup_delay_target_us": parse_int(smoothness_extra.group(5)) if smoothness_extra else 0,
                     "startup_reserve_selected": parse_int(smoothness_extra.group(6)) if smoothness_extra else 0,
                     "startup_reserve_reason": smoothness_extra.group(7) if smoothness_extra else "",
-                    "delay_reservoir_low_water_frames": parse_int(delay_realization.group(1)) if delay_realization else 0,
+                    "delay_reservoir_low_water_frames": (
+                        parse_int(delay_realization.group(1)) if delay_realization else 0
+                    ),
                     "delay_reservoir_target_frames": parse_int(delay_realization.group(2)) if delay_realization else 0,
-                    "delay_reservoir_low_water_ticks": parse_int(delay_realization.group(3)) if delay_realization else 0,
+                    "delay_reservoir_low_water_ticks": (
+                        parse_int(delay_realization.group(3)) if delay_realization else 0
+                    ),
                     "realized_delay_avg_us": parse_int(delay_realization.group(4)) if delay_realization else 0,
                     "realized_delay_min_us": parse_int(delay_realization.group(5)) if delay_realization else 0,
                     "realized_delay_max_us": parse_int(delay_realization.group(6)) if delay_realization else 0,
@@ -3273,7 +3277,10 @@ def parse_perf_csvs(session_dir, recording_window=None, live_source_only=False):
 def has_source_starvation(media_evidence):
     if media_evidence["source_starved_episodes"]:
         return True
-    if any(summary["source_limited_repeats"] > 0 or summary["starved_episodes"] > 0 for summary in media_evidence["wgc_summary"]):
+    if any(
+        summary["source_limited_repeats"] > 0 or summary["starved_episodes"] > 0
+        for summary in media_evidence["wgc_summary"]
+    ):
         return True
     return any(item["fresh_miss_pm"] >= 250 and item["min_in_250"] > 0 and item["min_in_250"] < item["min_del_250"]
                for item in media_evidence["wgc_perf"])
@@ -3576,7 +3583,11 @@ def has_wgc_encoder_overload_policy_fault(media_evidence, log_summary, capacity_
     counts = log_summary["counts"]
     if capacity_pressure_proven is False:
         return False
-    overload_seen = capacity_pressure_proven is True or log_summary.get("saw_encoder_overload") or log_summary.get("saw_mux_overload")
+    overload_seen = (
+        capacity_pressure_proven is True
+        or log_summary.get("saw_encoder_overload")
+        or log_summary.get("saw_mux_overload")
+    )
     overload_seen = overload_seen or any(item["overload_flags"] != 0 for item in media_evidence["wgc_perf"])
     overload_seen = overload_seen or any(attribution_has_capacity_pressure(item)
                                          for item in media_evidence["wgc_attribution"])
@@ -3634,7 +3645,11 @@ def has_wgc_encoder_limited_judder(media_evidence, log_summary, capacity_pressur
     counts = log_summary["counts"]
     if capacity_pressure_proven is False:
         return False
-    overload_seen = capacity_pressure_proven is True or log_summary.get("saw_encoder_overload") or log_summary.get("saw_mux_overload")
+    overload_seen = (
+        capacity_pressure_proven is True
+        or log_summary.get("saw_encoder_overload")
+        or log_summary.get("saw_mux_overload")
+    )
     overload_seen = overload_seen or any(item["overload_flags"] != 0 for item in media_evidence["wgc_perf"])
     overload_seen = overload_seen or any(attribution_has_capacity_pressure(item)
                                          for item in media_evidence["wgc_attribution"])
@@ -3817,7 +3832,10 @@ def has_wgc_timestamp_domain_mismatch(media_evidence):
 
 
 def has_wgc_active_delay_post_selection_reject(media_evidence):
-    return any(item.get("delay_post_selection_rejected_sync", 0) > 0 for item in media_evidence["wgc_smoothness_summary"])
+    return any(
+        item.get("delay_post_selection_rejected_sync", 0) > 0
+        for item in media_evidence["wgc_smoothness_summary"]
+    )
 
 
 def has_wgc_av_sync_delay_residual_fault(media_evidence, source_limited_playout_maximal=None):
@@ -4557,7 +4575,9 @@ def summarize_started_app_source_health(media_evidence, log_summary):
         and item.get("packet_gap_samples", 0) >= 48000
         and item.get("late_join_suppressed_samples", 0) == 0
     ]
-    underrun_sources = [item for item in stop_sources if item.get("ring_underruns", 0) > 0 or item.get("pad_samples", 0) > 0]
+    underrun_sources = [
+        item for item in stop_sources if item.get("ring_underruns", 0) > 0 or item.get("pad_samples", 0) > 0
+    ]
     sparse_silence_sources = [item for item in underrun_sources if is_sparse_app_source_silence(item)]
     active_underrun_sources = [item for item in underrun_sources if not is_sparse_app_source_silence(item)]
     return {
@@ -5092,7 +5112,11 @@ def classify_session_triage(
             "media_log": str(media_log) if media_log.exists() else None,
             "hook_logs": [str(path) for path in sorted(session_dir.glob("*.log")) if not is_media_log_path(path)],
             "perf_csv": [item["path"] for item in perf_summaries],
-            "session_manifest": str(session_dir / "session_manifest.txt") if (session_dir / "session_manifest.txt").exists() else None,
+            "session_manifest": (
+                str(session_dir / "session_manifest.txt")
+                if (session_dir / "session_manifest.txt").exists()
+                else None
+            ),
             "recording_manifest": str(selected_recording["manifest_path"])
             if selected_recording.get("manifest_path")
             else None,
@@ -5180,8 +5204,14 @@ def classify_session_triage(
             "wgc_smoothness_summary": media_evidence["wgc_smoothness_summary"],
             "wgc_perf_worst": {
                 "max_fresh_miss_pm": max((item["fresh_miss_pm"] for item in media_evidence["wgc_perf"]), default=0),
-                "min_input_250_fps": min((item["min_in_250"] for item in media_evidence["wgc_perf"] if item["min_in_250"] > 0), default=0),
-                "min_delivered_250_fps": min((item["min_del_250"] for item in media_evidence["wgc_perf"] if item["min_del_250"] > 0), default=0),
+                "min_input_250_fps": min(
+                    (item["min_in_250"] for item in media_evidence["wgc_perf"] if item["min_in_250"] > 0),
+                    default=0,
+                ),
+                "min_delivered_250_fps": min(
+                    (item["min_del_250"] for item in media_evidence["wgc_perf"] if item["min_del_250"] > 0),
+                    default=0,
+                ),
                 "max_callback_gap_us": max((item["cb_gap_max_us"] for item in media_evidence["wgc_perf"]), default=0),
                 "max_copy_us": max((item["copy_us"] for item in media_evidence["wgc_perf"]), default=0),
                 "max_convert_us": max((item.get("convert_us", 0) for item in media_evidence["wgc_perf"]), default=0),
@@ -5189,7 +5219,9 @@ def classify_session_triage(
                 "compact_retained_active": any(item.get("compact_retained", 0) for item in media_evidence["wgc_perf"]),
                 "source_format": max((item.get("source_format", 0) for item in media_evidence["wgc_perf"]), default=0),
                 "copy_format": max((item.get("copy_format", 0) for item in media_evidence["wgc_perf"]), default=0),
-                "max_pool_lease": max((item.get("pool_lease_max", 0) for item in media_evidence["wgc_perf"]), default=0),
+                "max_pool_lease": max(
+                    (item.get("pool_lease_max", 0) for item in media_evidence["wgc_perf"]), default=0
+                ),
                 "min_pool_free": min(
                     (item.get("pool_free_min", 0) for item in media_evidence["wgc_perf"]
                      if item.get("pool_lease_evidence", False)),
@@ -5436,7 +5468,11 @@ def print_triage_report(report):
             )
         )
     app_health = evidence["started_app_source_health"]
-    if app_health["late_source_backlog_count"] or app_health["late_join_live_count"] or app_health["app_gap_silence_count"]:
+    if (
+        app_health["late_source_backlog_count"]
+        or app_health["late_join_live_count"]
+        or app_health["app_gap_silence_count"]
+    ):
         print(
             "  app_source_health late_live_join={live} late_backlog={backlog} gap_silence={gap} "
             "sparse_silence_sources={sparse} active_underruns={active}".format(
@@ -5518,7 +5554,8 @@ def print_triage_report(report):
             phase_lock_backend = screen_capture_backend
         print(
             "  cfr_phase_lock backend={backend} enabled={enabled} locked={locked} offset={offset}us "
-            "stable={stable} unstable={unstable} transitions={acquire}/{rephase}/{release} multiplier={multiplier}".format(
+            "stable={stable} unstable={unstable} transitions={acquire}/{rephase}/{release} "
+            "multiplier={multiplier}".format(
                 backend=phase_lock_backend,
                 enabled=phase_lock["enabled"],
                 locked=phase_lock["locked"],
@@ -5821,13 +5858,15 @@ def print_window_summary(name, window):
         )
     )
     print(
-        f"  audio_duration_spread={window['audio_duration_spread']:.6f} max_video_audio_duration_delta={window['video_audio_max_delta']:.6f}"
+        f"  audio_duration_spread={window['audio_duration_spread']:.6f} "
+        f"max_video_audio_duration_delta={window['video_audio_max_delta']:.6f}"
     )
     if window["duplicate_runs"] is None:
         print("  duplicate_runs=skipped")
     else:
         print(
-            "  duplicate_runs framehash_frames={framehash_count} repeated_runs={repeated_runs} repeated_frames={repeated_frames} longest_run={longest}".format(
+            "  duplicate_runs framehash_frames={framehash_count} repeated_runs={repeated_runs} "
+            "repeated_frames={repeated_frames} longest_run={longest}".format(
                 framehash_count=window["duplicate_runs"]["framehash_count"],
                 repeated_runs=window["duplicate_runs"]["repeated_run_count"],
                 repeated_frames=window["duplicate_runs"]["repeated_frame_count"],
@@ -5912,7 +5951,11 @@ def self_test():
 
         source_gap = make_session(
             "source_gap",
-            media="[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) backpressure=0 peakMux=0KB peakPkts=0\n",
+            media=(
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us "
+                "audioMin=1000 us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) "
+                "overload(encoder=0 mux=0) backpressure=0 peakMux=0KB peakPkts=0\n"
+            ),
             hook="DetourPresent: heartbeat #3514 gap=299ms presentOwner=0x0000 depth=0 slFG=0 tid=0x1234\n",
             perf=(
                 "frame,qpc_us,total_us,capture_us,present_call_us,mux_queue_kb,overload_flags,api\n"
@@ -6749,9 +6792,14 @@ def self_test():
         wgc_starved = make_session(
             "wgc_starved",
             media=(
-                "[WGC CFR] Source-starved episode: duration=1016ms out=121 dup=34 minIn=4 minDel=4 freshMiss=465pm minBuf=0\n"
-                "[WGC CFR SUMMARY] Live=5791 Dup=151 DupPct=2.6% NoFresh=10pm NoReserve=0pm DupReason(src=151 def=0 timer=0 drain=0) SourceLimitedRepeats=151 StarvedEpisodes=319 longest=1109ms longestDup=34 worstIn=4 worstDel=4\n"
-                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) backpressure=0 peakMux=0KB peakPkts=0\n"
+                "[WGC CFR] Source-starved episode: duration=1016ms out=121 dup=34 minIn=4 "
+                "minDel=4 freshMiss=465pm minBuf=0\n"
+                "[WGC CFR SUMMARY] Live=5791 Dup=151 DupPct=2.6% NoFresh=10pm NoReserve=0pm "
+                "DupReason(src=151 def=0 timer=0 drain=0) SourceLimitedRepeats=151 "
+                "StarvedEpisodes=319 longest=1109ms longestDup=34 worstIn=4 worstDel=4\n"
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us "
+                "audioMin=1000 us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) "
+                "overload(encoder=0 mux=0) backpressure=0 peakMux=0KB peakPkts=0\n"
             ),
         )
         report = classify_session_triage(wgc_starved)
@@ -6987,7 +7035,11 @@ def self_test():
 
         mux_overload = make_session(
             "mux_overload",
-            media="[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=1) backpressure=3 peakMux=20000KB peakPkts=50\n",
+            media=(
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us "
+                "audioMin=1000 us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) "
+                "overload(encoder=0 mux=1) backpressure=3 peakMux=20000KB peakPkts=50\n"
+            ),
         )
         report = classify_session_triage(mux_overload)
         assert "ce_encoder_or_mux_backpressure" in report["verdicts"]
@@ -8043,7 +8095,8 @@ def self_test():
                 "smoothnessNotMaximal=0 mixedPolicyFault=0\n"
                 "[STOP AUDIO TRACK] Track 1: encoded=52558800 expected=52558800 diff=+0 (+0.000 ms) sources=[1]\n"
                 "[VideoEncoder] Final packet timeline: target=1094975000 us videoEnd=1094975000 us "
-                "audioMinEnd=1094975000 us audioMaxEnd=1094975000 us maxPacketDelta=0 us streams(v=1 a=1) audioPastTarget=0\n"
+                "audioMinEnd=1094975000 us audioMaxEnd=1094975000 us maxPacketDelta=0 us "
+                "streams(v=1 a=1) audioPastTarget=0\n"
                 "[VideoEncoder] Final metadata durations: target=1094975000 us video=1094975000 us "
                 "audioMin=1094975000 us audioMax=1094975000 us maxDelta=0 us streams(v=1 a=1) "
                 "overload(encoder=0 mux=0) backpressure=0\n"
@@ -8509,7 +8562,11 @@ def self_test():
 
         crash_session = make_session(
             "crash_session",
-            media="[VideoEncoder] Final metadata durations: target=1000 us video=1000 us audioMin=1000 us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) overload(encoder=0 mux=0) backpressure=0 peakMux=0KB peakPkts=0\n",
+            media=(
+                "[VideoEncoder] Final metadata durations: target=1000 us video=1000 us "
+                "audioMin=1000 us audioMax=1000 us maxDelta=0 us streams(v=1 a=2) "
+                "overload(encoder=0 mux=0) backpressure=0 peakMux=0KB peakPkts=0\n"
+            ),
         )
         (crash_session / "crash.log").write_text("[03:34:44] CRASH DETECTED - Handling exception\n", encoding="utf-8")
         report = classify_session_triage(crash_session)
@@ -8591,7 +8648,10 @@ def self_test():
 
         one_us = make_session(
             "one_us",
-            media="[VideoEncoder] WARNING: Post-mux audio duration mismatch (target=48266667 audioMinEnd=48266666 audioMaxEnd=48266666 maxDelta=1)\n",
+            media=(
+                "[VideoEncoder] WARNING: Post-mux audio duration mismatch "
+                "(target=48266667 audioMinEnd=48266666 audioMaxEnd=48266666 maxDelta=1)\n"
+            ),
         )
         report = classify_session_triage(one_us)
         assert "ce_audio_timeline_fault" not in report["verdicts"]
@@ -8955,7 +9015,9 @@ def main():
     audio_tail_marker_spread = (
         max(tail_marker_times) - min(tail_marker_times) if len(tail_marker_times) >= 2 else 0.0
     )
-    window_duration = max(0.0, min(args.window_seconds, format_duration if format_duration > 0.0 else args.window_seconds))
+    window_duration = max(
+        0.0, min(args.window_seconds, format_duration if format_duration > 0.0 else args.window_seconds)
+    )
     windows = {}
     if window_duration > 0.0 and format_duration > 0.0:
         middle_start = max(0.0, (format_duration / 2.0) - (window_duration / 2.0))
@@ -9245,7 +9307,10 @@ def main():
                 {
                     "name": f"audio_decode.a:{result['audio_ordinal']}",
                     "passed": result["returncode"] == 0 and result["stderr"] == "",
-                    "actual": f"returncode={result['returncode']} stderr={'empty' if result['stderr'] == '' else 'nonempty'}",
+                    "actual": (
+                        f"returncode={result['returncode']} "
+                        f"stderr={'empty' if result['stderr'] == '' else 'nonempty'}"
+                    ),
                     "expected": "returncode=0 stderr=empty",
                 }
             )

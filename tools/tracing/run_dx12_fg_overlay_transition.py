@@ -311,7 +311,9 @@ def write_bmp(path, bgra, width, height):
     pixel_offset = file_header_size + dib_header_size
     with path.open("wb") as output:
         output.write(struct.pack("<2sIHHI", b"BM", pixel_offset + pixel_bytes, 0, 0, pixel_offset))
-        output.write(struct.pack("<IiiHHIIiiII", dib_header_size, width, -height, 1, 32, BI_RGB, pixel_bytes, 0, 0, 0, 0))
+        output.write(
+            struct.pack("<IiiHHIIiiII", dib_header_size, width, -height, 1, 32, BI_RGB, pixel_bytes, 0, 0, 0, 0)
+        )
         output.write(bgra)
 
 
@@ -563,7 +565,8 @@ def run_probe(args):
                 samples.append(
                     Sample((now - start) * 1000.0, phase, dark_ratio, mean_luma, edge_ratio, bright_rg_ratio)
                 )
-                if phase in ("fsr", "transition", "dlss", "off-after", "fsr-transition", "fsr-after") and dark_ratio < minimum_dark_ratio:
+                dark_tracked_phases = ("fsr", "transition", "dlss", "off-after", "fsr-transition", "fsr-after")
+                if phase in dark_tracked_phases and dark_ratio < minimum_dark_ratio:
                     minimum_dark_ratio = dark_ratio
                     minimum_frame = frame
                 phase_minimum, phase_maximum = phase_extremes.get(phase, (2.0, -1.0))
@@ -682,7 +685,7 @@ def run_probe(args):
         and seam_minimum >= args.minimum_overlay_bright_rg_ratio
         and loss_ratio >= required_final_retained_ratio
         and all(
-        event in events for event in required_events
+            event in events for event in required_events
         )
     )
 

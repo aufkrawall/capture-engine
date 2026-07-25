@@ -12,7 +12,7 @@ Primary sources:
 - `patches/ffmpeg/0002-nvenc-bframe-cfr-improvements.patch`
 - `ffmpeg_build/working/ffmpeg/libavcodec/{nvenc.c,nvenc_av1.c,utils.c}`
 - `tests/test_{config,video_encoder_options,video_encoder_source}.cpp`
-- `test_ffmpeg_patch_utils.py`
+- `tools/tests/test_ffmpeg_patch_utils.py`
 - NVIDIA developer forum: `https://forums.developer.nvidia.com/t/ffmpeg-av1-nvenc-encoder-sometimes-generates-undecodeable-bitstreams/364011`
 
 ## Summary
@@ -118,7 +118,7 @@ and millisecond cluster limits use the same precision. Time-limit-based cluster
 rollover remains inside SimpleBlock's signed 16-bit relative-timecode range,
 including negative reordered timestamps.
 
-`test_ffmpeg_patch_utils.py` strictly applies both source-controlled patches to
+`tools/tests/test_ffmpeg_patch_utils.py` strictly applies both source-controlled patches to
 copies of their exact pinned FFmpeg target files. Semantic assertions guard the
 invariants above and reject the former unsafe lookahead-margin, capability-
 bypass, blanket-picture-type, and flush-drain behavior.

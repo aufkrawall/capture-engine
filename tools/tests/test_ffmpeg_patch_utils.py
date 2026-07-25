@@ -4,10 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ffmpeg_patch_utils import CustomPatchTargetError, normalize_custom_patch_targets
+from tools.ffmpeg_patch_utils import CustomPatchTargetError, normalize_custom_patch_targets
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PATCH_DIR = PROJECT_ROOT / "patches" / "ffmpeg"
 PINNED_FFMPEG = PROJECT_ROOT / "ffmpeg_build" / "repos" / "ffmpeg"
 

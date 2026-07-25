@@ -6,7 +6,7 @@ Primary sources:
 - `AGENTS.md`
 - `tools/clang_tidy_baseline.json`
 - `build.py` (`run_lint`, `evaluate_clang_tidy_baseline`, `clang_tidy_scope_gap`)
-- `test_clang_tidy_baseline.py`
+- `tools/tests/test_clang_tidy_baseline.py`
 
 ## Purpose
 

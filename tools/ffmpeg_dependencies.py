@@ -316,7 +316,7 @@ class SourceDependencyBuilder:
     ) -> None:
         self.project_root = project_root
         self.msys2_dir = msys2_dir
-        self.manifest_path = manifest_path or os.path.join(project_root, "ffmpeg_dependencies.json")
+        self.manifest_path = manifest_path or os.path.join(project_root, "tools", "ffmpeg_dependencies.json")
         self.manifest = load_dependency_manifest(self.manifest_path)
         self.logger = logger or (lambda message: None)
         self.runner = runner

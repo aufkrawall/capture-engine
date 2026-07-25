@@ -4,7 +4,6 @@ import argparse
 import array
 import json
 import math
-import os
 import re
 import statistics
 import subprocess
@@ -454,7 +453,6 @@ def decode_parity(frame, scaled_w, scaled_h, manifest, marker, palette_index):
 
 
 def decode_motion_at(frame, scaled_w, scaled_h, manifest, top_ratio, bar_width):
-    src_w = max(1, int(manifest["width"]))
     src_h = max(1, int(manifest["height"]))
     lane_height = parse_float(manifest.get("motion_lane_height"), 42.0)
     y = int(round(float(top_ratio) * src_h + lane_height / 2.0))
@@ -677,7 +675,9 @@ def infer_capture_timing(frames, manifest):
         period = 1.0
     min_offset = -period
     max_offset = max(min_offset, duration_seconds - capture_span + period)
-    expected = expected_transition_events(manifest, duration_seconds + max((item["time"] for item in transitions), default=0.0) + 2.0)
+    expected = expected_transition_events(
+        manifest, duration_seconds + max((item["time"] for item in transitions), default=0.0) + 2.0
+    )
     by_pair = {}
     by_to = {}
     for item in expected:
@@ -764,7 +764,10 @@ def load_source_stalls(manifest, capture_to_stimulus_offset=0.0):
 
 
 def cluster_overlaps_stall(cluster, stall):
-    return cluster["end_pts"] >= stall["start"] - stall["tolerance"] and cluster["start_pts"] <= stall["end"] + stall["tolerance"]
+    return (
+        cluster["end_pts"] >= stall["start"] - stall["tolerance"]
+        and cluster["start_pts"] <= stall["end"] + stall["tolerance"]
+    )
 
 
 def classify_repeat_clusters(clusters, manifest, stalls=None, nominal_output_fps=0.0):
@@ -817,7 +820,11 @@ def classify_repeat_clusters(clusters, manifest, stalls=None, nominal_output_fps
             if source_repeat_run > 1:
                 item["expected_max_frames"] = source_repeat_run
             unplanned.append(item)
-    missing = [stall for stall in stalls if stall["suppressed_present_count"] > 0 and stall["index"] not in matched_stalls]
+    missing = [
+        stall
+        for stall in stalls
+        if stall["suppressed_present_count"] > 0 and stall["index"] not in matched_stalls
+    ]
     return planned, source_fps_limited, unplanned, missing
 
 
@@ -903,7 +910,9 @@ def compress_states(samples, min_duration=0.08, transition_time_mode="midpoint")
 
     transitions = []
     for prev, cur in zip(segments, segments[1:]):
-        transition_time = cur["start"] if transition_time_mode == "first_new_sample" else (prev["end"] + cur["start"]) / 2.0
+        transition_time = (
+            cur["start"] if transition_time_mode == "first_new_sample" else (prev["end"] + cur["start"]) / 2.0
+        )
         transitions.append(
             {
                 "from": prev["state"],
@@ -1185,9 +1194,12 @@ def summarize_video(frames, manifest, timing, app_frame_anchors=None):
         )
     longest_motion_stall = max(longest_motion_stall, motion_stall_run)
     longest_fast_motion_stall = max(longest_fast_motion_stall, fast_motion_stall_run)
-    planned_clusters, source_fps_limited_clusters, unplanned_clusters, missing_planned_stalls = classify_repeat_clusters(
-        repeat_clusters, manifest, source_stalls, nominal_output_fps
-    )
+    (
+        planned_clusters,
+        source_fps_limited_clusters,
+        unplanned_clusters,
+        missing_planned_stalls,
+    ) = classify_repeat_clusters(repeat_clusters, manifest, source_stalls, nominal_output_fps)
     transitions = build_video_transitions(frames, manifest)
     return {
         "timing": timing,
@@ -1481,10 +1493,17 @@ def summarize_offsets_ms(offsets):
 
 def compute_offset_slope_ms_per_minute(points):
     usable = [
-        (parse_float(point.get("reference_time"), float("nan")), parse_float(point.get("offset_seconds"), float("nan")) * 1000.0)
+        (
+            parse_float(point.get("reference_time"), float("nan")),
+            parse_float(point.get("offset_seconds"), float("nan")) * 1000.0,
+        )
         for point in points
     ]
-    usable = [(time_value, offset_ms) for time_value, offset_ms in usable if math.isfinite(time_value) and math.isfinite(offset_ms)]
+    usable = [
+        (time_value, offset_ms)
+        for time_value, offset_ms in usable
+        if math.isfinite(time_value) and math.isfinite(offset_ms)
+    ]
     if len(usable) < 2:
         return 0.0
     mean_time = statistics.fmean(time_value for time_value, _ in usable)
@@ -1492,7 +1511,9 @@ def compute_offset_slope_ms_per_minute(points):
     denom = sum((time_value - mean_time) ** 2 for time_value, _ in usable)
     if denom <= 0.0:
         return 0.0
-    slope_ms_per_second = sum((time_value - mean_time) * (offset_ms - mean_offset) for time_value, offset_ms in usable) / denom
+    slope_ms_per_second = (
+        sum((time_value - mean_time) * (offset_ms - mean_offset) for time_value, offset_ms in usable) / denom
+    )
     return slope_ms_per_second * 60.0
 
 
@@ -1516,7 +1537,8 @@ def offset_slope_is_acceptable(
         return False
     if max_abs_guard_ms is not None and parse_float(offset_stats.get("max_abs"), 999999.0) > max_abs_guard_ms:
         return False
-    if max_mean_guard_ms is not None and abs(parse_float(offset_stats.get("mean_signed"), 999999.0)) > max_mean_guard_ms:
+    mean_signed_abs = abs(parse_float(offset_stats.get("mean_signed"), 999999.0))
+    if max_mean_guard_ms is not None and mean_signed_abs > max_mean_guard_ms:
         return False
     return True
 
@@ -2322,7 +2344,11 @@ def self_test():
         {"pts": 2.54, "palette": 4},
         {"pts": 2.90, "palette": 4},
     ]
-    timing_manifest = {"events": [{"palette": index} for index in range(16)], "duration_seconds": 10, "event_period_seconds": 1.0}
+    timing_manifest = {
+        "events": [{"palette": index} for index in range(16)],
+        "duration_seconds": 10,
+        "event_period_seconds": 1.0,
+    }
     timing = infer_capture_timing(frames, timing_manifest)
     assert abs(timing["capture_to_stimulus_offset_seconds"] - 1.46) < 0.01
     truncated_pts = [index / 60.0 for index in range(578)]
@@ -2342,7 +2368,11 @@ def self_test():
         {"pts": 2.24, "palette": 3},
         {"pts": 2.80, "palette": 3},
     ]
-    wrap_manifest = {"events": [{"palette": index} for index in range(16)], "duration_seconds": 16, "event_period_seconds": 1.0}
+    wrap_manifest = {
+        "events": [{"palette": index} for index in range(16)],
+        "duration_seconds": 16,
+        "event_period_seconds": 1.0,
+    }
     wrap_timing = infer_capture_timing(wrap_frames, wrap_manifest)
     assert 0.0 <= wrap_timing["capture_to_stimulus_offset_seconds"] < 2.0
     assert wrap_timing["anchor_error_seconds"] < 0.01
@@ -2468,7 +2498,12 @@ def self_test():
     assert low_source_summary["transitions"][0]["time_mode"] == "source_marker_interpolated"
     assert low_source_summary["transitions"][0]["time"] < 0.11
     assert abs(low_source_summary["transitions"][0]["display_time"] - 0.16) < 0.0001
-    motion_manifest = {"width": 1280, "marker_margin": 24, "motion_lane_bar_width": 96, "motion_lane_speed_cycles_per_second": 0.25}
+    motion_manifest = {
+        "width": 1280,
+        "marker_margin": 24,
+        "motion_lane_bar_width": 96,
+        "motion_lane_speed_cycles_per_second": 0.25,
+    }
     expected_center = expected_motion_from_stimulus(0.0, motion_manifest)
     assert abs(expected_center - ((24 + 48) / 1280.0)) < 0.001
     fast_manifest = {

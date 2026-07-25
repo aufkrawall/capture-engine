@@ -13,7 +13,7 @@
   "limit": 800,
   "target": 750,
   "files": {
-    "build.py": 8330,
+    "build.py": 8279,
     "captureengine/injection.cpp": 1695,
     "captureengine/main.cpp": 1904,
     "captureengine/media_main.cpp": 13403,
@@ -56,11 +56,11 @@
     "mediaengine/video_encoder.cpp": 7256,
     "mediaengine/video_encoder_options.cpp": 874,
     "testapp/run_tests.py": 1097,
-    "tools/analyze_av_sync_stimulus.py": 2612,
-    "tools/analyze_capture_av.py": 9318,
-    "tools/run_av_sync_matrix.py": 2094,
-    "tools/run_dx12_fg_overlay_transition.py": 832
+    "tools/analysis/analyze_av_sync_stimulus.py": 2647,
+    "tools/analysis/analyze_capture_av.py": 9383,
+    "tools/analysis/run_av_sync_matrix.py": 2112,
+    "tools/tracing/run_dx12_fg_overlay_transition.py": 835
   },
   "count": 47,
-  "total": 152276
+  "total": 152346
 }

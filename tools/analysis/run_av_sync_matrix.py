@@ -127,7 +127,9 @@ def modeled_sync_smoothness_initial_latencies_ms(args, scenario):
         "modeled_delay_ms": round(float(args.sync_smoothness_delay_ms), 3),
         "system_latency_ms": round(system_latency_ms, 3),
         "app_latency_ms": round(app_latency_ms, 3),
-        "modeled_source": "explicit_delay" if getattr(args, "sync_smoothness_delay_explicit", False) else "method_aware",
+        "modeled_source": (
+            "explicit_delay" if getattr(args, "sync_smoothness_delay_explicit", False) else "method_aware"
+        ),
     }
 
 
@@ -863,7 +865,9 @@ def run_scenario(args, scenario, run_root, ce_exe, app_exe, preflight_info=None)
     duration_ms = scenario_duration_sec * 1000
     app_duration = scenario_duration_sec + max(4, delay_ms // 1000 + 2)
     app_fps = resolve_app_fps(scenario_app_fps_arg, scenario.capture_method, scenario.fps)
-    app_audio_lead_ms = resolve_app_audio_lead_ms(args.app_audio_lead_ms, scenario.capture_method, scenario.fps, app_fps)
+    app_audio_lead_ms = resolve_app_audio_lead_ms(
+        args.app_audio_lead_ms, scenario.capture_method, scenario.fps, app_fps
+    )
     launch = [
         ce_exe,
         f"--auto-record={delay_ms},{duration_ms}",
@@ -1425,8 +1429,19 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Run deterministic A/V sync capture scenarios and analyze them.")
     parser.add_argument(
         "--profile",
-        choices=["quick", "codec-pass", "stress", "wgc-overload", "contention", "late-app", "raw-offset", "sync-smoothness",
-                 "full", "long-soak", "custom"],
+        choices=[
+            "quick",
+            "codec-pass",
+            "stress",
+            "wgc-overload",
+            "contention",
+            "late-app",
+            "raw-offset",
+            "sync-smoothness",
+            "full",
+            "long-soak",
+            "custom",
+        ],
         default="quick",
         help="Scenario profile. Bare runner defaults to the fast zero-drift quick gate.",
     )
@@ -1472,7 +1487,10 @@ def build_parser():
     parser.add_argument(
         "--allow-tearing",
         action="store_true",
-        help="Opt into DXGI tearing in the stimulus app for stress experiments. Default keeps visual evidence tear-free.",
+        help=(
+            "Opt into DXGI tearing in the stimulus app for stress experiments. "
+            "Default keeps visual evidence tear-free."
+        ),
     )
     parser.add_argument("--video-encoder", default="av1_nvenc")
     parser.add_argument("--ffmpeg", type=Path, default=default_tool_path("ffmpeg"))

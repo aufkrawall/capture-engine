@@ -4,12 +4,16 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import ffmpeg_dependencies as dependencies
+from tools import ffmpeg_dependencies as dependencies
+
+# The manifest sits next to ffmpeg_dependencies.py in tools/, one level above this
+# suite. Resolving it relative to __file__ keeps the tests runnable from any cwd.
+MANIFEST_PATH = Path(__file__).resolve().parents[1] / "ffmpeg_dependencies.json"
 
 
 class FfmpegDependencyManifestTest(unittest.TestCase):
     def test_manifest_has_pinned_build_order_and_versions(self) -> None:
-        manifest_path = Path(__file__).with_name("ffmpeg_dependencies.json")
+        manifest_path = MANIFEST_PATH
         manifest = dependencies.load_dependency_manifest(str(manifest_path))
         self.assertEqual(manifest["toolchain_version"], "22.1.8")
         self.assertEqual(
@@ -30,14 +34,14 @@ class FfmpegDependencyManifestTest(unittest.TestCase):
             self.assertTrue(dependency["source_package_signature_url"].endswith(".src.tar.zst.sig"))
 
     def test_manifest_fingerprint_is_stable(self) -> None:
-        manifest_path = Path(__file__).with_name("ffmpeg_dependencies.json")
+        manifest_path = MANIFEST_PATH
         self.assertEqual(
             dependencies.dependency_manifest_fingerprint(str(manifest_path)),
             dependencies.dependency_manifest_fingerprint(str(manifest_path)),
         )
 
     def test_manifest_fingerprint_changes_with_build_policy(self) -> None:
-        manifest_path = Path(__file__).with_name("ffmpeg_dependencies.json")
+        manifest_path = MANIFEST_PATH
         original = dependencies.dependency_manifest_fingerprint(str(manifest_path))
         with mock.patch.object(
             dependencies,
@@ -56,7 +60,7 @@ class FfmpegDependencyManifestTest(unittest.TestCase):
         self.assertNotEqual(original, changed)
 
     def test_force_rebuild_ignores_current_cached_prefix(self) -> None:
-        manifest_path = Path(__file__).with_name("ffmpeg_dependencies.json")
+        manifest_path = MANIFEST_PATH
         with tempfile.TemporaryDirectory() as temp_dir:
             builder = dependencies.SourceDependencyBuilder(
                 temp_dir,
@@ -81,7 +85,7 @@ class FfmpegDependencyManifestTest(unittest.TestCase):
             self.assertEqual(build_dependency.call_count, len(builder.manifest["dependencies"]))
 
     def test_reuses_current_cached_prefix_without_force_rebuild(self) -> None:
-        manifest_path = Path(__file__).with_name("ffmpeg_dependencies.json")
+        manifest_path = MANIFEST_PATH
         with tempfile.TemporaryDirectory() as temp_dir:
             builder = dependencies.SourceDependencyBuilder(
                 temp_dir,
@@ -100,12 +104,14 @@ class FfmpegDependencyManifestTest(unittest.TestCase):
             build_dependency.assert_not_called()
 
     def test_ffmpeg_required_components_and_cache_version_are_current(self) -> None:
-        build_source = Path(__file__).with_name("build.py").read_text(encoding="utf-8")
+        build_source = (Path(__file__).resolve().parents[2] / "build.py").read_text(encoding="utf-8")
         self.assertIn('"--enable-encoder=libaom_av1"', build_source)
         self.assertIn('"--enable-decoder=libaom_av1"', build_source)
         self.assertNotIn('"--enable-encoder=libaom-av1"', build_source)
         self.assertIn('"--enable-bsf=hevc_metadata,av1_metadata"', build_source)
-        self.assertIn("FFMPEG_BUILD_CONFIGURATION_VERSION = 9", build_source)
+        # Deliberate tripwire: changing the configure flags above must come with a
+        # cache-version bump, so this pin is updated by hand when that happens.
+        self.assertIn("FFMPEG_BUILD_CONFIGURATION_VERSION = 10", build_source)
 
 
 class FfmpegDependencyPeHelperTest(unittest.TestCase):

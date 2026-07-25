@@ -60,7 +60,7 @@ jobs:
 
       - name: Run build policy tests on Linux
         shell: pwsh
-        run: python -m unittest -v test_build_flags.py test_pe_hardening.py
+        run: python -m unittest -v tools.tests.test_build_flags tools.tests.test_pe_hardening
 
       - name: Cross-compile on Linux
         shell: pwsh

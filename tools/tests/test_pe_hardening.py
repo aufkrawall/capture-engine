@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-MODULE_PATH = Path(__file__).parent / "tools" / "verify_pe_hardening.py"
+MODULE_PATH = Path(__file__).resolve().parents[1] / "verify_pe_hardening.py"
 SPEC = importlib.util.spec_from_file_location("verify_pe_hardening", MODULE_PATH)
 assert SPEC and SPEC.loader
 hardening = importlib.util.module_from_spec(SPEC)

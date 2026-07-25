@@ -3,14 +3,15 @@
 import struct
 import sys
 
+
 def spv_to_c_array(spv_path, var_name):
     with open(spv_path, 'rb') as f:
         data = f.read()
-    
+
     # Convert to uint32 array
     count = len(data) // 4
     words = struct.unpack(f'<{count}I', data)
-    
+
     lines = [f'static const uint32_t {var_name}[] = {{']
     for i in range(0, len(words), 4):
         chunk = words[i:i+4]
@@ -22,9 +23,10 @@ def spv_to_c_array(spv_path, var_name):
     lines.append('};')
     return '\n'.join(lines)
 
+
 if __name__ == '__main__':
     if len(sys.argv) < 3:
         print(f"Usage: {sys.argv[0]} <spv_file> <var_name>")
         sys.exit(1)
-    
+
     print(spv_to_c_array(sys.argv[1], sys.argv[2]))

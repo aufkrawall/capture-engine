@@ -46,7 +46,7 @@ import json
 
 from typing import List, Dict, Mapping, Optional, Tuple, Union, Any
 
-from ffmpeg_dependencies import (
+from tools.ffmpeg_dependencies import (
     SourceDependencyBuilder,
     dependency_manifest_fingerprint,
     dependency_prefix,
@@ -57,7 +57,7 @@ from ffmpeg_dependencies import (
     verify_detached_signature,
     verify_pe_import_closure,
 )
-from ffmpeg_patch_utils import normalize_custom_patch_targets
+from tools.ffmpeg_patch_utils import normalize_custom_patch_targets
 
 # --- Platform Detection ---
 IS_WINDOWS = sys.platform == "win32"
@@ -2720,7 +2720,7 @@ def resolve_msys2_gtest_link_inputs(lib_dir: str, *, prefer_static: bool = False
 # --- FFmpeg Configuration ---
 FFMPEG_URL = "https://git.ffmpeg.org/ffmpeg.git"
 FFNVCODEC_URL = "https://git.videolan.org/git/ffmpeg/nv-codec-headers.git"
-FFMPEG_DEPENDENCY_MANIFEST = os.path.join(PROJECT_ROOT, "ffmpeg_dependencies.json")
+FFMPEG_DEPENDENCY_MANIFEST = os.path.join(PROJECT_ROOT, "tools", "ffmpeg_dependencies.json")
 FFMPEG_DEPENDENCY_MANIFEST_DATA = load_dependency_manifest(FFMPEG_DEPENDENCY_MANIFEST)
 FFMPEG_DEPENDENCY_PREFIX = dependency_prefix(PROJECT_ROOT)
 FFMPEG_RUNTIME_DLL_PATTERNS = [
@@ -4884,43 +4884,29 @@ def run_tests(env, test_exe, gtest_filter=None, run_python_tools=True):
 
 def run_python_tool_self_tests(env):
     log("=== Running Python Tool Self-Tests ===")
+    # The unittest suites live in tools/tests/ and import `build`, `tools.ffmpeg_*`
+    # by name. Dotted module names plus the pinned cwd below make that resolution
+    # independent of wherever the caller happened to invoke build.py from; passing
+    # file paths instead would leave sys.path[0] at the caller's directory.
+
+    def unittest_command(module):
+        return [sys.executable, "-m", "unittest", "-v", f"tools.tests.{module}"]
+
+    def self_test_command(*relative_path):
+        return [sys.executable, os.path.join(PROJECT_ROOT, "tools", *relative_path), "--self-test"]
+
     tool_tests = [
-        (
-            "ffmpeg_patch_utils",
-            [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_ffmpeg_patch_utils.py")],
-        ),
-        (
-            "build_flag_policy",
-            [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_build_flags.py")],
-        ),
-        (
-            "pe_hardening_policy",
-            [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_pe_hardening.py")],
-        ),
-        (
-            "clang_tidy_baseline_scope",
-            [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_clang_tidy_baseline.py")],
-        ),
-        (
-            "file_size_baseline",
-            [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_file_size_baseline.py")],
-        ),
-        (
-            "build_lint_policy",
-            [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_build_lint_policy.py")],
-        ),
-        (
-            "analyze_av_sync_stimulus",
-            [sys.executable, os.path.join(PROJECT_ROOT, "tools", "analyze_av_sync_stimulus.py"), "--self-test"],
-        ),
-        (
-            "analyze_capture_av",
-            [sys.executable, os.path.join(PROJECT_ROOT, "tools", "analyze_capture_av.py"), "--self-test"],
-        ),
-        (
-            "run_av_sync_matrix",
-            [sys.executable, os.path.join(PROJECT_ROOT, "tools", "run_av_sync_matrix.py"), "--self-test"],
-        ),
+        ("ffmpeg_patch_utils", unittest_command("test_ffmpeg_patch_utils")),
+        ("ffmpeg_dependencies", unittest_command("test_ffmpeg_dependencies")),
+        ("build_flag_policy", unittest_command("test_build_flags")),
+        ("build_gtest_link_inputs", unittest_command("test_build_gtest_link_inputs")),
+        ("pe_hardening_policy", unittest_command("test_pe_hardening")),
+        ("clang_tidy_baseline_scope", unittest_command("test_clang_tidy_baseline")),
+        ("file_size_baseline", unittest_command("test_file_size_baseline")),
+        ("build_lint_policy", unittest_command("test_build_lint_policy")),
+        ("analyze_av_sync_stimulus", self_test_command("analysis", "analyze_av_sync_stimulus.py")),
+        ("analyze_capture_av", self_test_command("analysis", "analyze_capture_av.py")),
+        ("run_av_sync_matrix", self_test_command("analysis", "run_av_sync_matrix.py")),
     ]
 
     def run_one(tool_test):
@@ -4929,6 +4915,7 @@ def run_python_tool_self_tests(env):
         result = subprocess.run(
             command,
             env=env,
+            cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -5573,17 +5560,13 @@ def run_lint(env, *, advisory=False):
 
     if has_flake8:
         log("Running flake8...")
-        # Lint build scripts and test scripts
-        # We need to specify paths explicitly to avoid traversing build/ directories if exclude fails
+        # Lint every first-party Python tree. Paths stay explicit so a failed exclude
+        # cannot drag flake8 into build/ or external/. This used to be a hand-listed
+        # subset of the root scripts, which silently left several test suites and all
+        # of tools/ unlinted; directory targets keep new files covered by default.
         py_targets = [
             "build.py",
-            "ffmpeg_dependencies.py",
-            "ffmpeg_patch_utils.py",
-            "test_ffmpeg_dependencies.py",
-            "test_ffmpeg_patch_utils.py",
-            "test_clang_tidy_baseline.py",
-            "test_file_size_baseline.py",
-            "test_build_lint_policy.py",
+            "tools",
             "testapp",
         ]
 
