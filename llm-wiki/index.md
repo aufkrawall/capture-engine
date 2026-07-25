@@ -41,7 +41,7 @@ Primary sources:
 - `codestyle.md`
   - Style/tooling rules, the no-whole-file-in-place-formatter constraint for existing sources, Python tooling config, and common tree conventions. Last verified 2026-07-12.
 - `build.py.md`
-  - Supported `build.py` flags, Windows Clang/Linux MinGW GCC hardening and strict-FP selection, host-native PE/shader/debug verification, cross-host FG SDK preparation, fail-closed Vulkan stages, validated object/link caches, incremental/resume/no-build workflow, source-built dependency closure, scoped DLL-search policy, FFmpeg fingerprints and the retained HEVC/AV1 metadata filters, operational notes, and MinGW pitfalls. Last verified 2026-07-21.
+  - Supported `build.py` flags, Windows Clang/Linux MinGW GCC hardening and strict-FP selection, host-native PE/shader/debug verification, cross-host FG SDK preparation, fail-closed Vulkan stages, validated object/link caches, the nested (non-cumulative) gate rule and default tests-only development loop, incremental/resume/no-build workflow, source-built dependency closure, scoped DLL-search policy, FFmpeg fingerprints and the retained HEVC/AV1 metadata filters, operational notes, and MinGW pitfalls. Last verified 2026-07-25.
 - `screenshots.md`
   - Shared ABI 37 screenshot requests, presentation-contract-aware SDR-R10/scRGB/HDR10 classification, native-HDR versus forced-SDR output policy, split-device WGC readback ownership, bounded low-latency 10-bit 4:4:4 AVIF, strict payload validation, placeholder-free atomic publication, and explicit result notifications. Last verified 2026-07-19.
 - `process-ipc.md`
@@ -73,7 +73,7 @@ Primary sources:
 - `pseudo-overlay.md`
   - Controller-side pseudo-overlay for WGC capture: dedicated UI-thread ownership, application-profile setting selection/pinning, automatic video-profile warning targets, instant amber recording-start state, modes, inject handoff, foreground detection/grace, compatibility process_list parsing, diagnostics, and source anchors. Last verified 2026-07-18.
 - `regression-testing-and-logging.md`
-  - Regression coverage expectations, runtime backend-transition and recording-scoped/source-relative analyzer attribution, stop-force-drain/live-drift separation, target-relative app-latency classification, the incremental/clean/resume build decision rule, concise verification diagnostics, and deterministic capture runners, including zero-drift, overload/long-soak, contention, and x86 compatibility gates. Last verified 2026-07-24.
+  - Regression coverage expectations, runtime backend-transition and recording-scoped/source-relative analyzer attribution, stop-force-drain/live-drift separation, target-relative app-latency classification, the nested incremental/clean/verify build decision rule, concise verification diagnostics, and deterministic capture runners, including zero-drift, overload/long-soak, contention, and x86 compatibility gates. Last verified 2026-07-25.
 - `multi-audio-capture.md`
   - Multi system/microphone/app capture, including timeline-recovery-safe route-local compensation, typed prime/stop-drain diagnostics, encoder-latency-independent inject CFR source-clock targets, rate-limited worker scheduling evidence, process-loopback protocol 4 transport/lifecycle integrity, polling-first activation, render-session recovery, private disposable worker isolation, the adaptive CFR ingestion reservoir, and exact finalization. Last verified 2026-07-25. Stale-risk: medium (fresh device/runtime validation remains necessary).
 - `wgc-capture.md`

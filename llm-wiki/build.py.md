@@ -1,6 +1,6 @@
 # build.py
 
-Last cross-checked: 2026-07-24 (gate taxonomy corrected: the incremental and clean gates are build-only because any explicit action flag leaves default quality mode, `--verify` named as the complete gate with measured costs, clang-tidy baseline ratchet, and the `--run-fuzz`/`--fuzz-seconds`/`--update-lint-baseline` flags; previously 2026-07-21 for AMF header-license packaging, compiler/host-specific Linux MinGW hardening and strict-FP selection, older-MinGW hook/test-app D3D12-header and intrinsic-declaration compatibility, host-native PE inspection/shader tools/debug-info policy, cross-host FG SDK header preparation, fail-closed required x64 Vulkan stages and duplicate-object detection, obsolete standalone process-loopback helper cleanup/absence assertions, single-preparation default-quality flow, current-database lint, summary/detail artifact split, managed Python lint tooling, validated object/link caches, and existing production LTO, source-closure, packaging, sanitizer, and provenance policy)
+Last cross-checked: 2026-07-25 (gates documented as nested rather than cumulative, tests-only iteration named the default development loop, lint scoped to explicit runs against a full compile database, clang-format advisory; previously 2026-07-24 gate taxonomy corrected: the incremental and clean gates are build-only because any explicit action flag leaves default quality mode, `--verify` named as the complete gate with measured costs, clang-tidy baseline ratchet, and the `--run-fuzz`/`--fuzz-seconds`/`--update-lint-baseline` flags; previously 2026-07-21 for AMF header-license packaging, compiler/host-specific Linux MinGW hardening and strict-FP selection, older-MinGW hook/test-app D3D12-header and intrinsic-declaration compatibility, host-native PE inspection/shader tools/debug-info policy, cross-host FG SDK header preparation, fail-closed required x64 Vulkan stages and duplicate-object detection, obsolete standalone process-loopback helper cleanup/absence assertions, single-preparation default-quality flow, current-database lint, summary/detail artifact split, managed Python lint tooling, validated object/link caches, and existing production LTO, source-closure, packaging, sanitizer, and provenance policy)
 
 Primary sources:
 - `AGENTS.md`
@@ -63,7 +63,9 @@ Then run relevant tests against the freshly built binaries. The canonical full t
 python build.py --no-build --run-tests --skip-updates --concise
 ```
 
-No-build verification reuses `common/build_version.h`; it does not mint an identity for binaries it did not compile or invalidate version-dependent objects for the next build. During C++ iteration, use `--incremental --tests-only --run-tests --gtest-filter=<expr> --skip-updates --concise` where applicable. Do not repeat a clean build after every small edit.
+No-build verification reuses `common/build_version.h`; it does not mint an identity for binaries it did not compile or invalidate version-dependent objects for the next build.
+
+The default development loop is `--incremental --tests-only --run-tests --gtest-filter=<expr> --skip-updates --concise` (about 5-7 s). Stay in it while writing code and reach for a product build or a heavier gate only when closing out the change; do not repeat a clean build after every small edit.
 
 `--verify` is the complete gate — clean build, full native suite, Python tool self-tests, lint with the clang-tidy ratchet, and the ASan/UBSan regression pass in one run:
 
@@ -73,13 +75,15 @@ python build.py --verify --skip-updates --concise
 
 `AGENTS.md` requires it before committing changes to `build.py`, toolchain/compile/link/hardening policy, shared ABI/layout, analyzer or test-gate policy, or the capture/CFR/FG/audio paths. It is not the routine per-change gate: measured on 2026-07-24 it took roughly 350 s (clean build 164 s, sanitizer regression 122 s, lint 63 s, native suite 9 s) against roughly 50 s for the incremental build gate and 12 s for the no-build test command. Adding `--run-fuzz --fuzz-seconds 30` brought the same run to 424 s.
 
-Cheaper partial gates worth preferring over a full `--verify`:
+**The gates are nested, not cumulative.** `--verify` performs the clean build, the full suite, the Python self-tests, lint, and the sanitizer pass itself, so when a change requires `--verify` it is the only gate to run. Prefixing it with `--incremental`, `--no-build --run-tests`, or `--no-build --lint` repeats work `--verify` redoes from scratch. The cheaper gates are alternatives for changes that do **not** require `--verify`:
 
 ```powershell
 python build.py --no-build --lint --skip-updates --concise
 ```
 
-runs clang-format/flake8/pyright plus the clang-tidy ratchet with no rebuild (about 68 s).
+runs clang-format/flake8/pyright plus the clang-tidy ratchet with no rebuild (about 68 s). Two constraints apply. Run it explicitly rather than routinely — it is redundant whenever `--verify` is also being run. And run it only against a full product compile database: the ratchet folds improvements in automatically, so linting after a `--tests-only` build (which regenerates `compile_commands.json` with a reduced entry count — 157 versus 236 as observed on 2026-07-25) silently writes artificially low accepted counts and makes the next full lint fail with phantom regressions across nearly every check. Recover with `git checkout -- tools/clang_tidy_baseline.json`.
+
+clang-format findings are advisory: the stage reports style differences without failing (92 files differed as of 2026-07-25) and `step.lint=warning` does not fail `--verify`. Wrap-column differences on newly added lines are not worth an edit or a rebuild, and `AGENTS.md` forbids running the formatter over existing files.
 
 Console output is concise by default. `build.log` is the durable stage-summary/warning log; complete commands and successful/failed subprocess output go to `build/verification/<run>/build.details.log`, with bounded failure tails kept visible. `--verbose-commands` mirrors detail to the console for diagnosis. `--concise` remains accepted and is presentation-only: adding it, `--jobs`, or log-path overrides to an otherwise no-argument invocation cannot disable default-quality work.
 
