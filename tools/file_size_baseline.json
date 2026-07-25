@@ -57,11 +57,11 @@
     "mediaengine/video_encoder.cpp": 7256,
     "mediaengine/video_encoder_options.cpp": 874,
     "testapp/run_tests.py": 1097,
-    "tools/analysis/analyze_av_sync_stimulus.py": 2647,
+    "tools/analysis/analyze_av_sync_stimulus.py": 2646,
     "tools/analysis/analyze_capture_av.py": 9383,
     "tools/analysis/run_av_sync_matrix.py": 2112,
-    "tools/tracing/run_dx12_fg_overlay_transition.py": 835
+    "tools/tracing/run_dx12_fg_overlay_transition.py": 841
   },
   "count": 48,
-  "total": 153270
+  "total": 153275
 }

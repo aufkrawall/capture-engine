@@ -155,7 +155,13 @@ class DesktopProbe:
         )
         if not ok:
             raise OSError(ctypes.get_last_error(), "BitBlt failed")
-        return ctypes.string_at(self.bits.value, self.width * self.height * 4)
+        # c_void_p.value is Optional; the constructor checks it is non-NULL, but
+        # narrowing it here keeps string_at from being handed None if that ever
+        # changes - it would otherwise fault instead of reporting the cause.
+        bits = self.bits.value
+        if bits is None:
+            raise OSError("DIB section has no backing pixel pointer")
+        return ctypes.string_at(bits, self.width * self.height * 4)
 
     def close(self):
         if getattr(self, "memory_dc", None) and getattr(self, "old_bitmap", None):

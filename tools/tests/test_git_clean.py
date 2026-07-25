@@ -14,11 +14,14 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from typing import Any
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "git-clean.py"
 SPEC = importlib.util.spec_from_file_location("git_clean", MODULE_PATH)
 assert SPEC and SPEC.loader
-git_clean = importlib.util.module_from_spec(SPEC)
+# Annotated Any because the module is loaded by path: a static checker cannot see
+# its attributes, and one test reassigns PROJECT_ROOT to exercise the guard.
+git_clean: Any = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = git_clean
 SPEC.loader.exec_module(git_clean)
 

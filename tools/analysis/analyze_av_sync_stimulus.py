@@ -2215,8 +2215,7 @@ def self_test():
     assert not planned
     assert len(source_fps_limited) == 1
     assert not unplanned
-    low_fps_stall_manifest = dict(manifest)
-    low_fps_stall_manifest["target_fps"] = 45
+    low_fps_stall_manifest = {**manifest, "target_fps": 45}
     low_fps_near_stall = [{"start_pts": 8.32, "end_pts": 8.34, "frames": 2, "repeated_frames": 1, "marker": 101}]
     planned, source_fps_limited, unplanned, missing = classify_repeat_clusters(
         low_fps_near_stall, low_fps_stall_manifest, nominal_output_fps=60.0
