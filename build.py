@@ -4893,6 +4893,10 @@ def run_python_tool_self_tests(env):
             [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_pe_hardening.py")],
         ),
         (
+            "clang_tidy_baseline_scope",
+            [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_clang_tidy_baseline.py")],
+        ),
+        (
             "analyze_av_sync_stimulus",
             [sys.executable, os.path.join(PROJECT_ROOT, "tools", "analyze_av_sync_stimulus.py"), "--self-test"],
         ),
@@ -5044,28 +5048,86 @@ def write_process_diagnostics_artifact(
 CLANG_TIDY_BASELINE_PATH = os.path.join(PROJECT_ROOT, "tools", "clang_tidy_baseline.json")
 
 
-def load_clang_tidy_baseline() -> Optional[Dict[str, int]]:
-    """Read the accepted per-check warning counts; None when no baseline exists yet."""
+def clang_tidy_scope_path(source_path: str) -> str:
+    """Project-relative, separator-normalized key for one linted translation unit."""
+    candidate = os.path.normpath(str(source_path))
+    try:
+        relative = os.path.relpath(candidate, PROJECT_ROOT)
+    except ValueError:
+        relative = candidate
+    if relative.startswith(".."):
+        relative = candidate
+    return relative.replace("\\", "/")
+
+
+def clang_tidy_scope_from_entries(compile_database: List[Any]) -> Dict[str, Any]:
+    """Describe which translation units a compilation database makes clang-tidy lint."""
+    units = set()
+    for entry in compile_database:
+        source_path = entry.get("file") if isinstance(entry, dict) else None
+        if source_path:
+            units.add(clang_tidy_scope_path(source_path))
+    return {"entries": len(units), "translation_units": sorted(units)}
+
+
+def clang_tidy_scope_gap(
+    baseline_scope: Optional[Mapping[str, Any]], current_scope: Optional[Mapping[str, Any]]
+) -> Optional[List[str]]:
+    """Baseline translation units this run did not lint; None when either scope is unknown.
+
+    Sources that no longer exist are not a gap: they cannot produce warnings any
+    more, so an ordinary deletion must not freeze the ratchet until someone
+    regenerates the baseline by hand.
+    """
+    if not isinstance(baseline_scope, dict) or not isinstance(current_scope, dict):
+        return None
+    baseline_units = baseline_scope.get("translation_units")
+    current_units = current_scope.get("translation_units")
+    if not isinstance(baseline_units, list) or not isinstance(current_units, list):
+        return None
+    missing = set(baseline_units) - set(current_units)
+    return sorted(unit for unit in missing if os.path.exists(os.path.join(PROJECT_ROOT, unit.replace("/", os.sep))))
+
+
+def load_clang_tidy_baseline() -> Optional[Dict[str, Any]]:
+    """Read the accepted per-check counts plus the lint scope they were measured over.
+
+    Returns None when no baseline exists yet. ``scope`` is None for a baseline
+    written before scope recording existed; its counts are then not comparable
+    downward against any run.
+    """
     if not os.path.exists(CLANG_TIDY_BASELINE_PATH):
         return None
     try:
         with open(CLANG_TIDY_BASELINE_PATH, "r", encoding="utf-8") as handle:
             data = json.load(handle)
-        checks = data.get("checks", {})
-        return {str(name): int(count) for name, count in checks.items()}
-    except (OSError, ValueError, TypeError) as error:
+        checks = {str(name): int(count) for name, count in data.get("checks", {}).items()}
+        scope = None
+        recorded_scope = data.get("scope")
+        if isinstance(recorded_scope, dict):
+            units = recorded_scope.get("translation_units")
+            if isinstance(units, list) and units:
+                scope = {"entries": len(set(units)), "translation_units": sorted({str(unit) for unit in units})}
+        return {"checks": checks, "scope": scope}
+    except (OSError, ValueError, TypeError, AttributeError) as error:
         log(f"ERROR: Unreadable clang-tidy baseline {CLANG_TIDY_BASELINE_PATH}: {error}")
         sys.exit(2)
 
 
-def write_clang_tidy_baseline(check_counts: Mapping[str, int]) -> None:
-    payload = {
+def write_clang_tidy_baseline(check_counts: Mapping[str, int], scope: Optional[Mapping[str, Any]] = None) -> bool:
+    payload: Dict[str, Any] = {
         "_comment": [
             "Accepted clang-tidy warning counts, keyed by check rather than file:line so",
             "ordinary edits do not churn the baseline. build.py fails when any check",
             "exceeds its recorded count or a previously unseen check appears.",
             "Regenerate deliberately with: python build.py --lint --update-lint-baseline",
             "Lower counts are folded in automatically; the ratchet only tightens.",
+            "",
+            "'scope' records the translation units these counts were measured over.",
+            "A run whose compilation database covers fewer of them (for example the",
+            "tests-only database a --tests-only build leaves behind) lints a subset,",
+            "so its lower counts are not evidence of improvement and are never folded",
+            "in. Increases stay fatal at any scope. Do not hand-edit 'scope'.",
             "",
             "The large frozen entries are accepted debt, not endorsements:",
             "  bugprone-narrowing-conversions            pervasive in graphics/timing math",
@@ -5078,22 +5140,80 @@ def write_clang_tidy_baseline(check_counts: Mapping[str, int]) -> None:
         "checks": dict(sorted(check_counts.items())),
         "total": sum(check_counts.values()),
     }
+    if scope and scope.get("translation_units"):
+        units = sorted({str(unit) for unit in scope["translation_units"]})
+        payload["scope"] = {"entries": len(units), "translation_units": units}
     os.makedirs(os.path.dirname(CLANG_TIDY_BASELINE_PATH), exist_ok=True)
-    write_text_atomic(CLANG_TIDY_BASELINE_PATH, json.dumps(payload, indent=2) + "\n")
+    return write_text_atomic_if_changed(CLANG_TIDY_BASELINE_PATH, json.dumps(payload, indent=2) + "\n")
 
 
-def evaluate_clang_tidy_baseline(check_counts: Mapping[str, int], lint_details: Dict[str, Any]) -> None:
+def evaluate_clang_tidy_baseline(
+    check_counts: Mapping[str, int],
+    lint_details: Dict[str, Any],
+    current_scope: Optional[Mapping[str, Any]] = None,
+) -> None:
     """Fail when clang-tidy findings grow; fold in improvements automatically.
 
     The raw warnings stay advisory because the existing backlog is large and mostly
     low-value. Without a ratchet that backlog also hides genuinely useful findings,
     so a *regression* against the recorded counts is fatal in every flow that lints.
+
+    Auto-tightening is only sound when this run linted everything the baseline was
+    measured over. A partial compilation database - notably the tests-only one a
+    `--tests-only` build leaves behind - lints a subset, so its lower counts say
+    nothing about the code and would otherwise ratchet the accepted counts down to
+    that subset, making the next full run fail with phantom regressions. Increases
+    stay fatal at any scope: warnings are only ever counted from translation units
+    that were actually linted, so a count above the baseline is a real regression
+    however small the scope was.
     """
     update_requested = "--update-lint-baseline" in sys.argv
-    baseline = load_clang_tidy_baseline()
+    baseline_record = load_clang_tidy_baseline()
+    baseline = baseline_record["checks"] if baseline_record else None
+    baseline_scope = baseline_record["scope"] if baseline_record else None
+
+    scope_gap = clang_tidy_scope_gap(baseline_scope, current_scope)
+    scope_reduced = bool(scope_gap)
+    # Fold improvements in only with proven equal-or-wider coverage; an unknown
+    # scope on either side is treated exactly like a reduced one.
+    tightening_allowed = scope_gap is not None and not scope_gap
+    if current_scope:
+        lint_details["clang_tidy_scope_units"] = int(current_scope.get("entries", 0))
+    if scope_gap is None:
+        lint_details["clang_tidy_scope"] = "unknown"
+    elif scope_reduced:
+        lint_details["clang_tidy_scope"] = "reduced"
+        lint_details["clang_tidy_scope_unlinted"] = len(scope_gap)
+        lint_details["clang_tidy_scope_unlinted_units"] = scope_gap[:20]
+    else:
+        lint_details["clang_tidy_scope"] = "full"
+
+    if scope_reduced:
+        baseline_units = len((baseline_scope or {}).get("translation_units", []))
+        examples = ", ".join(scope_gap[:3])
+        log(
+            f"clang-tidy lint scope reduced: {(current_scope or {}).get('entries', 0)} translation unit(s) linted, "
+            f"{len(scope_gap)} of the baseline's {baseline_units} not covered (e.g. {examples}). "
+            "Baseline auto-tightening is disabled for this run; regressions are still fatal."
+        )
+
+    if update_requested and scope_reduced:
+        # Rewriting the whole baseline from a subset is exactly the corruption the
+        # scope record exists to prevent, so refuse even when asked explicitly.
+        log("ERROR: refusing to rewrite the clang-tidy baseline from a partial compilation database.")
+        log(f"  {len(scope_gap)} baseline translation unit(s) were not linted by this run.")
+        log("  Regenerate the full database first (python build.py --incremental --skip-updates --concise),")
+        log("  then rerun with --no-build --lint --update-lint-baseline --skip-updates --concise.")
+        lint_details["clang_tidy_baseline"] = "update_refused_reduced_scope"
+        record_verification_step(
+            "lint",
+            "failed",
+            details={**lint_details, "reason": "clang_tidy_baseline_reduced_scope_update"},
+        )
+        sys.exit(2)
 
     if baseline is None or update_requested:
-        write_clang_tidy_baseline(check_counts)
+        write_clang_tidy_baseline(check_counts, current_scope)
         lint_details["clang_tidy_baseline"] = "written"
         action = "Updated" if update_requested else "Created"
         log(f"{action} clang-tidy baseline: {CLANG_TIDY_BASELINE_PATH} " f"({sum(check_counts.values())} warnings)")
@@ -5120,6 +5240,8 @@ def evaluate_clang_tidy_baseline(check_counts: Mapping[str, int], lint_details: 
         for entry in regressions:
             log(f"  {entry}")
         log(f"Baseline: {CLANG_TIDY_BASELINE_PATH}")
+        if scope_reduced:
+            log("This run linted a subset of the baseline scope; the reported checks still exceed it.")
         log("Fix the new findings, or run --lint --update-lint-baseline if the increase is justified.")
         diagnostics_path = verification_artifact_path("clang_tidy.log")
         if diagnostics_path:
@@ -5131,6 +5253,19 @@ def evaluate_clang_tidy_baseline(check_counts: Mapping[str, int], lint_details: 
         )
         sys.exit(1)
 
+    summary = ", ".join(f"{check} {old}->{new}" for check, (old, new) in sorted(improvements.items())[:6])
+    if improvements and not tightening_allowed:
+        reason = "reduced lint scope" if scope_reduced else "unknown lint scope"
+        lint_details["clang_tidy_baseline"] = "tightening_skipped"
+        lint_details["clang_tidy_baseline_tightening_skipped"] = {
+            check: {"was": old, "now": new} for check, (old, new) in improvements.items()
+        }
+        log(
+            f"clang-tidy baseline: {len(improvements)} check(s) below baseline left unchanged ({reason}); "
+            f"rerun lint against the full compilation database to fold them in ({summary})"
+        )
+        return
+
     if improvements:
         # Tighten immediately so a fixed warning cannot silently come back.
         merged = dict(baseline)
@@ -5138,16 +5273,21 @@ def evaluate_clang_tidy_baseline(check_counts: Mapping[str, int], lint_details: 
             merged[check] = actual
         for check, count in check_counts.items():
             merged.setdefault(check, count)
-        write_clang_tidy_baseline(merged)
-        summary = ", ".join(f"{check} {old}->{new}" for check, (old, new) in sorted(improvements.items())[:6])
+        write_clang_tidy_baseline(merged, current_scope or baseline_scope)
         log(f"clang-tidy baseline tightened: {summary}")
         lint_details["clang_tidy_baseline"] = "tightened"
         lint_details["clang_tidy_baseline_improvements"] = {
             check: {"was": old, "now": new} for check, (old, new) in improvements.items()
         }
-    else:
-        lint_details["clang_tidy_baseline"] = "unchanged"
-        log(f"clang-tidy baseline: OK ({sum(check_counts.values())} warning(s), none above baseline)")
+        return
+
+    lint_details["clang_tidy_baseline"] = "unchanged"
+    if tightening_allowed and write_clang_tidy_baseline(baseline, current_scope):
+        # Keep the recorded scope current when sources were added, so later subset
+        # detection compares against what a full run actually covers today.
+        lint_details["clang_tidy_baseline"] = "scope_refreshed"
+        log(f"clang-tidy baseline scope refreshed: {(current_scope or {}).get('entries', 0)} translation unit(s)")
+    log(f"clang-tidy baseline: OK ({sum(check_counts.values())} warning(s), none above baseline)")
 
 
 def run_lint(env, *, advisory=False):
@@ -5252,6 +5392,7 @@ def run_lint(env, *, advisory=False):
             "ffmpeg_patch_utils.py",
             "test_ffmpeg_dependencies.py",
             "test_ffmpeg_patch_utils.py",
+            "test_clang_tidy_baseline.py",
             "testapp",
         ]
 
@@ -5317,11 +5458,15 @@ def run_lint(env, *, advisory=False):
         run_clang_tidy_script = os.path.join(MSYS2_DIR, "clang64", "bin", "run-clang-tidy")
         compile_db = os.path.join(PROJECT_ROOT, "compile_commands.json")
         if os.path.exists(run_clang_tidy_script) and os.path.exists(compile_db):
+            clang_tidy_scope: Optional[Dict[str, Any]] = None
             try:
                 with open(compile_db, "r", encoding="utf-8") as compile_db_file:
-                    compile_db_entries = len(json.load(compile_db_file))
-                lint_details["compile_database_entries"] = compile_db_entries
+                    compile_db_data = json.load(compile_db_file)
+                lint_details["compile_database_entries"] = len(compile_db_data)
                 lint_details["compile_database_sha256"] = sha256_file(compile_db)
+                # run-clang-tidy lints every entry, so the database is the exact
+                # scope the baseline counts below were measured over.
+                clang_tidy_scope = clang_tidy_scope_from_entries(compile_db_data)
                 record_verification_artifact("compile_commands", compile_db)
             except Exception as error:
                 lint_details["compile_database_error"] = str(error)
@@ -5364,7 +5509,7 @@ def run_lint(env, *, advisory=False):
                     subsystem_counts[relative_path.replace("\\", "/").split("/", 1)[0]] += 1
             lint_details["clang_tidy_checks"] = dict(check_counts.most_common())
             lint_details["clang_tidy_subsystems"] = dict(subsystem_counts.most_common())
-            evaluate_clang_tidy_baseline(check_counts, lint_details)
+            evaluate_clang_tidy_baseline(check_counts, lint_details, clang_tidy_scope)
             if res.returncode != 0 or warning_count > 0:
                 log(f"clang-tidy: {warning_count} warning(s) found (non-fatal)")
                 if check_counts:

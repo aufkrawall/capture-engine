@@ -1,11 +1,12 @@
 # Known and Accepted Debt
 
-Last verified: 2026-07-24
+Last verified: 2026-07-25
 
 Primary sources:
 - `AGENTS.md`
 - `tools/clang_tidy_baseline.json`
-- `build.py` (`run_lint`, `evaluate_clang_tidy_baseline`)
+- `build.py` (`run_lint`, `evaluate_clang_tidy_baseline`, `clang_tidy_scope_gap`)
+- `test_clang_tidy_baseline.py`
 
 ## Purpose
 
@@ -45,7 +46,9 @@ compile times or merge conflicts start blocking work.
 
 `tools/clang_tidy_baseline.json` freezes 1,179 accepted warnings across 27 checks. The
 lint stage fails on any increase or any new check; counts below baseline are folded in
-automatically so a fixed warning cannot silently return.
+automatically so a fixed warning cannot silently return — but only when the run linted
+everything the recorded `scope` covers, so a partial `compile_commands.json` can no
+longer ratchet the accepted counts down to a subset (see `build.py.md`).
 
 The large frozen entries and why they are not being driven to zero:
 

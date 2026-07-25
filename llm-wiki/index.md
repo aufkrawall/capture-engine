@@ -41,7 +41,7 @@ Primary sources:
 - `codestyle.md`
   - Style/tooling rules, the no-whole-file-in-place-formatter constraint for existing sources, Python tooling config, and common tree conventions. Last verified 2026-07-12.
 - `build.py.md`
-  - Supported `build.py` flags, Windows Clang/Linux MinGW GCC hardening and strict-FP selection, host-native PE/shader/debug verification, cross-host FG SDK preparation, fail-closed Vulkan stages, validated object/link caches, the nested (non-cumulative) gate rule and default tests-only development loop, incremental/resume/no-build workflow, source-built dependency closure, scoped DLL-search policy, FFmpeg fingerprints and the retained HEVC/AV1 metadata filters, operational notes, and MinGW pitfalls. Last verified 2026-07-25.
+  - Supported `build.py` flags, Windows Clang/Linux MinGW GCC hardening and strict-FP selection, host-native PE/shader/debug verification, cross-host FG SDK preparation, fail-closed Vulkan stages, validated object/link caches, the nested (non-cumulative) gate rule and default tests-only development loop, the scope-aware clang-tidy ratchet, incremental/resume/no-build workflow, source-built dependency closure, scoped DLL-search policy, FFmpeg fingerprints and the retained HEVC/AV1 metadata filters, operational notes, and MinGW pitfalls. Last verified 2026-07-25.
 - `screenshots.md`
   - Shared ABI 37 screenshot requests, presentation-contract-aware SDR-R10/scRGB/HDR10 classification, native-HDR versus forced-SDR output policy, split-device WGC readback ownership, bounded low-latency 10-bit 4:4:4 AVIF, strict payload validation, placeholder-free atomic publication, and explicit result notifications. Last verified 2026-07-19.
 - `process-ipc.md`
@@ -91,7 +91,7 @@ Primary sources:
 - `fuzzing.md`
   - libFuzzer harnesses for the config and IPC parsers, the fail-closed `build.py --run-fuzz` stage, curated byte-exact seed corpora, MinGW libFuzzer/ASan toolchain wiring, and the always-run regression floor that covers the same boundaries without a fuzz run. Last verified 2026-07-24.
 - `known-debt.md`
-  - Deliberately accepted debt with its reasoning: the nine oversized DX12/FG and capture files, the frozen clang-tidy baseline and its large entries, destructor exception escapes, duplicated overlay telemetry, the policy-header rationale for module/test mapping, and audit findings that were checked and falsified. Last verified 2026-07-24.
+  - Deliberately accepted debt with its reasoning: the nine oversized DX12/FG and capture files, the scope-guarded frozen clang-tidy baseline and its large entries, destructor exception escapes, duplicated overlay telemetry, the policy-header rationale for module/test mapping, and audit findings that were checked and falsified. Last verified 2026-07-25.
 - `debug-tools-security-audit.md`
   - Security-audit tooling available for binary/dependency inspection, beyond the general debug tools.
 - `graphics-api-reporting.md`
