@@ -39,9 +39,7 @@
     "hook/common/custom_overlay_vk.cpp": 1273,
     "hook/common/dxgi_shared.cpp": 5416,
     "hook/common/fg_session_state.cpp": 1035,
-    "hook/common/fps_limiter.h": 1352,
     "hook/common/overlay_adapter.cpp": 1366,
-    "hook/common/reflex_limiter.h": 840,
     "hook/common/system_metrics.cpp": 943,
     "hook/main.cpp": 3544,
     "hook/vulkan_layer/layer_capture.cpp": 2459,
@@ -73,6 +71,6 @@
     "tools/run_av_sync_matrix.py": 2094,
     "tools/run_dx12_fg_overlay_transition.py": 832
   },
-  "count": 59,
-  "total": 174864
+  "count": 57,
+  "total": 172672
 }
