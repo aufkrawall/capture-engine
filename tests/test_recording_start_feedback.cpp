@@ -101,7 +101,9 @@ TEST(RecordingStartFeedbackSourceTest, VideoOutputStaysStagedUntilSuccessfulCont
 }
 
 TEST(RecordingStartFeedbackSourceTest, RecordingStoppedEnumExists) {
-    const std::string source = ReadSource("common/shared_defs.h");
+    // shared_defs.h is an umbrella over common/shared_defs_detail/; the overlay
+    // notification enum lives in the constants/config part.
+    const std::string source = ReadSource("common/shared_defs_detail/abi_constants_and_config.h");
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("RecordingStopped = 3"), std::string::npos);
 }
