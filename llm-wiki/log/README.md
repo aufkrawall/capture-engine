@@ -1,19 +1,60 @@
 # llm-wiki Log Archives
 
 - `recent.md` — Most recent activity (default read this).
-- `archive-YYYY-Www*.md` — Older weekly archives (letter suffix if week was split).
+- `archive-YYYY-Www*.md` — Older weekly archives (letter suffix if the week was split).
+
+Entries are newest-first both across files and within each file. Letter suffixes are
+shard ids assigned as a week was split, so the date range below — not the letter — is
+the authoritative ordering. Archives are kept near 230 lines; `recent.md` is rotated
+into a new archive once it grows past that, and the lint stage enforces the ceiling.
 
 ## Available archives
 
-- `archive-2026-W17a.md` (237 lines)
-- `archive-2026-W17b.md` (229 lines)
-- `archive-2026-W17c.md` (135 lines)
-- `archive-2026-W16a.md` (233 lines)
-- `archive-2026-W16b.md` (248 lines)
-- `archive-2026-W16c.md` (234 lines)
-- `archive-2026-W16d.md` (235 lines)
-- `archive-2026-W16e.md` (248 lines)
-- `archive-2026-W16f.md` (250 lines)
-- `archive-2026-W16g.md` (181 lines)
-- `archive-2026-W15a.md` (242 lines)
-- `archive-2026-W15b.md` (221 lines)
+| File | Lines | Covers |
+|---|---:|---|
+| `recent.md` | 223 | current |
+| `archive-2026-W29d.md` | 76 | 2026-07-14 |
+| `archive-2026-W29c.md` | 228 | 2026-07-14 .. 2026-07-15 |
+| `archive-2026-W29b.md` | 226 | 2026-07-16 .. 2026-07-17 |
+| `archive-2026-W29a.md` | 225 | 2026-07-17 .. 2026-07-19 |
+| `archive-2026-W28a.md` | 208 | 2026-07-11 .. 2026-07-12 |
+| `archive-2026-W27b.md` | 73 | 2026-06-29 .. 2026-06-30 |
+| `archive-2026-W27a.md` | 226 | 2026-06-30 .. 2026-07-24 |
+| `archive-2026-W26b.md` | 54 | 2026-06-22 |
+| `archive-2026-W26a.md` | 230 | 2026-06-22 .. 2026-07-23 |
+| `archive-2026-W25b.md` | 193 | 2026-06-15 .. 2026-06-18 |
+| `archive-2026-W25a.md` | 228 | 2026-06-16 .. 2026-06-21 |
+| `archive-2026-W24b.md` | 166 | 2026-06-08 .. 2026-06-12 |
+| `archive-2026-W24a.md` | 225 | 2026-06-11 .. 2026-07-15 |
+| `archive-2026-W23c.md` | 17 | 2026-06-01 |
+| `archive-2026-W23b.md` | 229 | 2026-06-01 .. 2026-06-03 |
+| `archive-2026-W23a.md` | 227 | 2026-06-03 .. 2026-07-24 |
+| `archive-2026-W22a.md` | 219 | 2026-05-25 .. 2026-06-02 |
+| `archive-2026-W21b.md` | 27 | 2026-05-18 .. 2026-05-19 |
+| `archive-2026-W21a.md` | 223 | 2026-05-19 .. 2026-05-31 |
+| `archive-2026-W20b.md` | 140 | 2026-05-12 .. 2026-05-13 |
+| `archive-2026-W20a.md` | 231 | 2026-05-13 .. 2026-05-17 |
+| `archive-2026-W19e.md` | 75 | 2026-05-04 .. 2026-05-05 |
+| `archive-2026-W19d.md` | 230 | 2026-05-04 .. 2026-05-05 |
+| `archive-2026-W19c.md` | 227 | 2026-05-05 .. 2026-05-06 |
+| `archive-2026-W19b.md` | 228 | 2026-05-06 .. 2026-06-05 |
+| `archive-2026-W19a.md` | 226 | 2026-05-08 .. 2026-05-31 |
+| `archive-2026-W18c.md` | 136 | 2026-04-23 .. 2026-05-01 |
+| `archive-2026-W18b.md` | 226 | 2026-04-30 .. 2026-05-02 |
+| `archive-2026-W18a.md` | 218 | 2026-05-02 .. 2026-07-25 |
+| `archive-2026-W17g.md` | 134 | 2026-04-22 |
+| `archive-2026-W17f.md` | 205 | 2026-04-22 .. 2026-04-23 |
+| `archive-2026-W17e.md` | 226 | 2026-04-23 |
+| `archive-2026-W17d.md` | 221 | 2026-04-24 .. 2026-04-25 |
+| `archive-2026-W17c.md` | 137 | 2026-04-17 .. 2026-04-20 |
+| `archive-2026-W17b.md` | 231 | 2026-04-17 .. 2026-04-21 |
+| `archive-2026-W17a.md` | 239 | 2026-04-21 |
+| `archive-2026-W16g.md` | 183 | 2026-04-13 |
+| `archive-2026-W16f.md` | 252 | 2026-04-13 .. 2026-04-15 |
+| `archive-2026-W16e.md` | 250 | 2026-04-15 |
+| `archive-2026-W16d.md` | 237 | 2026-04-15 |
+| `archive-2026-W16c.md` | 236 | 2026-04-16 |
+| `archive-2026-W16b.md` | 250 | 2026-04-16 |
+| `archive-2026-W16a.md` | 235 | 2026-04-16 .. 2026-04-19 |
+| `archive-2026-W15b.md` | 223 | 2026-04-11 .. 2026-04-12 |
+| `archive-2026-W15a.md` | 244 | 2026-04-12 |

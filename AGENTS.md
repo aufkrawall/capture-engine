@@ -55,6 +55,7 @@ Copyright (c) 2026 aufkrawall
 - Do not use sleeps, wait tables, polling delays, or timing bandaids as crash/race fixes!
 - Do not introduce nor accept racy, timing-sensitive, or fragile behavior!
 - Keep source files roughly 600-800 lines maximum; split up files when needed! This is enforced by the lint stage against `tools/file_size_baseline.json`, which records the files still over the 800-line ceiling. Growing a recorded file or pushing a new file past the ceiling fails lint; shrinking folds in automatically, and a file that drops back under the ceiling is removed from the baseline so the space cannot be silently reclaimed. Split toward the 750-line working target rather than sitting just under the ceiling.
+    - The ceiling covers C++ (`.cpp/.h/.hpp/.c/.inl`), first-party Python (`build.py`, `tools/`, `testapp/`), and **`llm-wiki/**/*.md`**. The wiki is included because `llm-wiki/log/recent.md` is rolling memory that its own convention archives at ~230 lines; with nothing enforcing that it reached 6212 lines and became the dominant contributor to git history size. Rotate it into `llm-wiki/log/archive-YYYY-Www[letter].md` and refresh `llm-wiki/log/README.md` instead of letting it grow. Markdown outside `llm-wiki/` is deliberately not governed.
 - Treat dumps, logs, media, captures, credentials, private keys, tokens, symbols, and user data as sensitive!
 - Do not commit secrets, dumps, logs, captures, private-symbol PDBs, large generated artifacts, user names or private user data!
 

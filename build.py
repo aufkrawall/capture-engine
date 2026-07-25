@@ -5308,6 +5308,12 @@ LINTABLE_SOURCE_SUFFIXES = (".cpp", ".h", ".hpp", ".c")
 FILE_SIZE_SOURCE_SUFFIXES = LINTABLE_SOURCE_SUFFIXES + (".inl",)
 # Mirrors the first-party Python that flake8 already lints (`py_targets` below).
 FILE_SIZE_PYTHON_DIRS = ["tools", "testapp"]
+# The wiki is governed by the same ceiling. `llm-wiki/log/recent.md` is rolling
+# memory that its own convention archives at ~230 lines, and with nothing
+# enforcing that it reached 6212 lines / 1.45 MB - stored as 2412 distinct blobs
+# over 479 commits, which is what made the repository history large. Capping
+# markdown here means the rotation cannot silently lapse again.
+FILE_SIZE_MARKDOWN_DIRS = ["llm-wiki"]
 
 
 def collect_lintable_cpp_sources(suffixes: Tuple[str, ...] = LINTABLE_SOURCE_SUFFIXES) -> List[str]:
@@ -5345,6 +5351,16 @@ def collect_file_size_python_sources() -> List[str]:
     return files
 
 
+def collect_file_size_markdown_sources() -> List[str]:
+    """First-party wiki pages the size ratchet governs."""
+    files: List[str] = []
+    for directory in FILE_SIZE_MARKDOWN_DIRS:
+        root_path = os.path.join(PROJECT_ROOT, directory)
+        for root, _, filenames in os.walk(root_path):
+            files.extend(os.path.join(root, name) for name in filenames if name.endswith(".md"))
+    return files
+
+
 def count_source_lines(path: str) -> int:
     """Line count for one source file, tolerant of the tree's mixed encodings."""
     with open(path, "rb") as handle:
@@ -5355,7 +5371,8 @@ def collect_source_file_sizes() -> Dict[str, int]:
     """Project-relative line counts for every file the size ratchet governs."""
     sizes: Dict[str, int] = {}
     cpp_sources = collect_lintable_cpp_sources(FILE_SIZE_SOURCE_SUFFIXES)
-    for path in cpp_sources + collect_file_size_python_sources():
+    other_sources = collect_file_size_python_sources() + collect_file_size_markdown_sources()
+    for path in cpp_sources + other_sources:
         try:
             sizes[project_relative_key(path)] = count_source_lines(path)
         except OSError as error:

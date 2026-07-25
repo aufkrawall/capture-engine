@@ -1,0 +1,17 @@
+# llm-wiki Log — Archive 2026-W23c
+
+### 2026-06-01 - Pseudo-overlay foreground-acquire grace period for Alt+Tab-in settle (later full builds/tests passed)
+
+- **Input**: User request to add a short wait time (~2s) when Alt+Tabbing back into a game so the controller-side pseudo-overlay does not race Windows MPO / fullscreen buffer rebinds. Observation: the pseudo-overlay's 500ms timer used to call `EnsureOverlayWindows` + `ShowWindow(SW_SHOWNA)` + `SetWindowPos` + `UpdateLayeredWindow` immediately on the first tick after the whitelisted PID became foreground. On some games/drivers this can destabilize the post-focus MPO re-attach and freeze the game window. Possibly a Windows MPO bug, not a CE code bug, but the safer default is to not race it.
+- **Fix**:
+  - New config knob `foreground_acquire_grace_ms` (default 2000, range 0-10000) on `PseudoOverlayConfig` (`common/config.h:283-285`) and the `[pseudo-overlay]` ini section (`captureengine/config.ini.template`).
+  - Pure policy helper `ce::pseudo_overlay::ComputeFocusGraceDecision(...)` in `common/pseudo_overlay_focus_grace.h/.cpp`. Fully unit-testable without Windows APIs. Detects focus-acquire transitions (first detection, PID swap, no-target→target), tracks grace expiry, and exposes abort signals (recording state change).
+  - `PseudoOverlay` now tracks `lastForegroundAcquireTick_`, `lastForegroundAcquirePid_`, `hadForegroundTarget_`, `prevIsRecording_`. `OnTimerTick` updates the transition tracking; `UpdateOverlay` evaluates the helper and skips `EnsureOverlayWindows` / `ShowWindow` / `SetWindowPos` / `UpdateLayeredWindow` while the decision says `suppressVisibleOverlay=true`. Sticky anchor and warning blink phase still advance during grace so the first post-grace frame is in-position and in-phase.
+  - Asymmetric: focus-OUT (Alt+Tab away) destroys the windows immediately. Only the focus-IN direction is debounced.
+  - `recordingStateChanged` aborts grace immediately so the user never sees "I pressed the hotkey but no indicator" after Alt+Tab-in. `UpdateConfig` resets in-flight grace when the knob is changed so the new value is honored on the next acquire.
+  - Logging breadcrumbs (`LogInfo`): `Foreground grace started pid=… grace=…ms`, `Foreground grace elapsed pid=… waited=…ms`, `Foreground grace aborted: focus_lost`, `Foreground grace reset: grace_ms changed N -> M`, `Foreground grace skipped: grace_ms=0`.
+  - Focused unit coverage in `tests/test_pseudo_overlay_focus_grace.cpp`: grace disabled, first detection, mid-session PID swap, focus lost, recording abort, grace clamping, grace boundary, no-transition steady state.
+- **Validation**:
+  - Later full project build/test runs on 2026-06-01 passed; keep manual Alt+Tab-in validation on at least one whitelisted game as the practical check for whether the 2s default feels right. The user can raise `foreground_acquire_grace_ms` up to 10s if a particular game/driver needs more settle time.
+- **Source anchors**: `common/config.h`, `common/config.cpp`, `common/pseudo_overlay_focus_grace.h`, `common/pseudo_overlay_focus_grace.cpp`, `captureengine/pseudo_overlay.h`, `captureengine/pseudo_overlay.cpp`, `tests/test_pseudo_overlay_focus_grace.cpp`, `captureengine/config.ini.template`, `llm-wiki/pseudo-overlay.md`.
+- **Wiki updates**: `llm-wiki/pseudo-overlay.md` now documents the grace period semantics, abort signals, asymmetry, and source anchors. `llm-wiki/current.md` `Last cross-checked` updated to 2026-06-01 with the new entry.

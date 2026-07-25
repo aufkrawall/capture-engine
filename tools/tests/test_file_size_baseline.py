@@ -92,6 +92,39 @@ class FileSizeBaselineTest(unittest.TestCase):
         self.write_source("testapp/dx12_fg_switch_streamline.inl", 10)
         self.assertIn("testapp/dx12_fg_switch_streamline.inl", build.collect_source_file_sizes())
 
+    def test_collection_covers_wiki_markdown_at_any_depth(self) -> None:
+        # `llm-wiki/log/recent.md` is rolling memory that the wiki's own
+        # convention archives at ~230 lines. Nothing enforced that, so it reached
+        # 6212 lines and dominated the repository's history size. The ratchet now
+        # governs the wiki, including nested pages.
+        self.write_source("llm-wiki/index.md", 10)
+        self.write_source("llm-wiki/log/recent.md", 10)
+        self.write_source("llm-wiki/frame-generation/guardrails.md", 10)
+
+        measured = build.collect_source_file_sizes()
+        self.assertIn("llm-wiki/index.md", measured)
+        self.assertIn("llm-wiki/log/recent.md", measured)
+        self.assertIn("llm-wiki/frame-generation/guardrails.md", measured)
+
+    def test_markdown_outside_the_wiki_stays_unmeasured(self) -> None:
+        # READMEs and design notes next to code are not the wiki's rolling log
+        # and are deliberately left out, so the scope stays predictable.
+        self.write_source("README.md", 10)
+        self.write_source("patches/ffmpeg/README.md", 10)
+
+        measured = build.collect_source_file_sizes()
+        self.assertNotIn("README.md", measured)
+        self.assertNotIn("patches/ffmpeg/README.md", measured)
+
+    def test_an_unrotated_wiki_log_fails_the_ceiling(self) -> None:
+        # The exact regression that went unnoticed: recent.md growing without
+        # being archived. Would have failed on the first lint run past 800 lines.
+        self.write_source("llm-wiki/log/recent.md", 6212)
+        self.evaluate({"hook/apis/dx12_hook.cpp": 900})  # seed a baseline
+        with self.assertRaises(SystemExit):
+            self.evaluate(build.collect_source_file_sizes())
+        self.assertTrue(self.logged("llm-wiki/log/recent.md"))
+
     # --- ratchet behaviour -------------------------------------------------------
 
     def test_first_run_records_only_files_over_the_ceiling(self) -> None:
