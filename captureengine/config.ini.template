@@ -111,23 +111,23 @@ hdr_nominal_peak_nits=1000
 preset=p1
 ; hq, ll, ull, or lossless.
 tuning=hq
-; Per-frame multipass: auto selects qres for CBR or when b_frames>0; otherwise
-; it selects disabled. OBS calls disabled "Single Pass" and qres/fullres
-; "Two Passes" at quarter/full resolution. Leave auto normally; disabled
-; guarantees single-pass and the least encoder work.
-multipass=auto
+; Per-frame multipass:
+; auto - selects qres for CBR or when b_frames>0; otherwise it selects disabled.
+; qres, fullres - manually choose between quarter and full res multipass.
+; disabled - guarantees single-pass and the least encoder work.
+multipass=disabled
 ; HEVC/AV1 split encoding shares each frame across physical NVENC engines but
-; still produces one stream. 0 disables it; 1 requests splitting when multiple
-; engines exist and lets the driver choose the strip count; 2, 3, or 4 request
-; that many strips when available. Splitting can make slower presets real-time
-; at a small compression-efficiency cost. H.264 supports only 0.
+; still produces one stream.
+; 0 disables it.
+; 1 requests splitting when multiple engines exist and lets the driver choose the strip count.
+; 2, 3, or 4 request that many strips when available.
 split_encode=0
 ; Lower values mean higher quality. H.264/HEVC use 0-51. AV1 CQ uses 0-63.
 qp=23
-; This is not a true/false switch: off guarantees lookahead is disabled; auto
-; enables a 20-frame depth; or enter 1-31 (capped at 31-b_frames). In OBS terms,
-; off is the Look-ahead checkbox cleared. Leave it off for the lowest latency
-; and GPU work; enable it for potentially better frame/bitrate decisions.
+; lookahead is not a true/false switch:
+; off guarantees lookahead is disabled.
+; auto enables a 20-frame depth;
+; or enter a value between 1-31 (capped at 31-b_frames).
 lookahead=off
 ; Spatial AQ spends more bits on detailed parts of each frame. OBS combines this
 ; and temporal_aq in its single "Adaptive Quantization" switch.
@@ -137,12 +137,13 @@ temporal_aq=false
 ; Spatial AQ strength: 0 lets NVENC choose; 1-15 ranges from weak to aggressive.
 ; This has no effect while spatial_aq=false. For an OBS-like enabled setting,
 ; set both AQ switches to true and use aq_strength=8.
-aq_strength=0
-; B-Frame as Reference (OBS wording): auto chooses middle when b_frames>0 and
-; the GPU supports it; otherwise it chooses disabled. disabled guarantees off;
+aq_strength=8
+; B-Frame as Reference:
+; auto - chooses middle when b_frames>0 and the GPU supports it; otherwise it chooses disabled.
+; disabled - guarantees off;
 ; each or middle forces that mode and may fail if unsupported. This has no effect
 ; while b_frames=0. Leave auto normally; each can be costly with many B-frames.
-b_ref_mode=auto
+b_ref_mode=disabled
 
 [AMF]
 ; Used by h264_amf, hevc_amf, and av1_amf. The AMF runtime comes from the AMD
@@ -209,12 +210,12 @@ scenario=unknown
 [MediaFoundation]
 ; Used by encoders ending in _mf.
 ; default, cbr, pc_vbr, u_vbr, quality, ld_vbr, g_vbr, or gld_vbr.
-rate_control=quality
+rate_control=pc_vbr
 ; Quality target from 0 to 100. Higher values favor image quality.
 quality=80
 ; camera_record requests CFR behavior from the MFT and is the recording default.
 ; Other values: default, live_streaming, archive, or video_conference.
-scenario=camera_record
+scenario=live_streaming
 ; true requests hardware encoding. false allows software encoding instead.
 hw_encoding=true
 ; -1 uses the MFT default. 0-100 is passed as its quality-vs-speed policy.

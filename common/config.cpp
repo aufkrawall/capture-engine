@@ -1580,7 +1580,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     // NVENC-specific settings (from [NVENC] section)
     config.video.preset = GetStr("NVENC", "preset", "p1");
     config.video.tuning = GetStr("NVENC", "tuning", "hq");
-    config.video.multipass = GetStr("NVENC", "multipass", "auto");
+    config.video.multipass = GetStr("NVENC", "multipass", "disabled");
     config.video.splitEncode = GetStr("NVENC", "split_encode", "0");
     config.video.qp = GetInt("NVENC", "qp", 23);
     config.video.lookahead = GetStr("NVENC", "lookahead", "off");
@@ -1588,8 +1588,8 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     const bool legacyAqEnabled = !legacyAq.empty() && ParseBool(legacyAq);
     config.video.spatialAq = GetBool("NVENC", "spatial_aq", legacyAqEnabled);
     config.video.temporalAq = GetBool("NVENC", "temporal_aq", legacyAqEnabled);
-    config.video.aqStrength = GetBoundedInt("NVENC", "aq_strength", 0, 0, 15);
-    config.video.bRefMode = GetStr("NVENC", "b_ref_mode", "auto");
+    config.video.aqStrength = GetBoundedInt("NVENC", "aq_strength", 8, 0, 15);
+    config.video.bRefMode = GetStr("NVENC", "b_ref_mode", "disabled");
 
     // AMD AMF settings (from [AMF] section)
     config.video.amfUsage = GetStr("AMF", "usage", "transcoding");
@@ -1621,9 +1621,9 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     config.video.qsvScenario = GetStr("QuickSync", "scenario", "unknown");
 
     // Media Foundation encoder settings (from [MediaFoundation] section)
-    config.video.mfRateControl = GetStr("MediaFoundation", "rate_control", "quality");
+    config.video.mfRateControl = GetStr("MediaFoundation", "rate_control", "pc_vbr");
     config.video.mfQuality = GetBoundedInt("MediaFoundation", "quality", 80, 0, 100);
-    config.video.mfScenario = GetStr("MediaFoundation", "scenario", "camera_record");
+    config.video.mfScenario = GetStr("MediaFoundation", "scenario", "live_streaming");
     config.video.mfHwEncoding = GetBool("MediaFoundation", "hw_encoding", true);
     config.video.mfQualityVsSpeed = GetBoundedInt("MediaFoundation", "quality_vs_speed", -1, -1, 100);
     config.video.mfLowLatency = GetBool("MediaFoundation", "low_latency", false);
