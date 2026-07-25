@@ -69,7 +69,7 @@ color_space=auto
 
 [Video]
 ; Choose an encoder supported by your GPU. CaptureEngine does not silently switch
-; to another encoder. Examples: av1_nvenc, av1_amf, hevc_qsv, h264_mf.
+; to another encoder. Examples: av1_nvenc, av1_amf, hevc_qsv, av1_mf, h264_mf.
 encoder=av1_nvenc
 ; Output frame rate, from 1 to 1000. Recordings use a constant frame rate.
 fps=120
