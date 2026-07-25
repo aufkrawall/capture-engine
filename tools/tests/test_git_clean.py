@@ -42,16 +42,31 @@ class GitCleanPathAnchorTest(unittest.TestCase):
         self.assertEqual(git_clean.LOG_PATH.resolve(), REPO_ROOT / "git-clean.log")
 
     def test_repo_root_guard_agrees_with_git(self) -> None:
+        # Asserted via --show-prefix, which is relative to the repository root
+        # and therefore identical under Windows git and MSYS2 git. Comparing
+        # --show-toplevel output would fail under an MSYS2 git on PATH, which is
+        # exactly the environment build.py runs the self-tests in.
         result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            ["git", "rev-parse", "--show-prefix"],
             cwd=git_clean.PROJECT_ROOT,
             capture_output=True,
             text=True,
             check=True,
         )
-        self.assertEqual(Path(result.stdout.strip()).resolve(), git_clean.PROJECT_ROOT.resolve())
-        # The guard raises when these disagree, so it must pass here.
+        self.assertEqual(result.stdout.strip(), "")
+        # The guard raises when the prefix is non-empty, so it must pass here.
         git_clean.ensure_repo_root()
+
+    def test_repo_root_guard_rejects_a_subdirectory(self) -> None:
+        # The failure this guard exists for: pointed one level down, it must
+        # refuse rather than clean the wrong tree.
+        original = git_clean.PROJECT_ROOT
+        git_clean.PROJECT_ROOT = original / "tools"
+        try:
+            with self.assertRaises(RuntimeError):
+                git_clean.ensure_repo_root()
+        finally:
+            git_clean.PROJECT_ROOT = original
 
 
 if __name__ == "__main__":

@@ -63,10 +63,16 @@ def append_log(message: str) -> None:
 
 
 def ensure_repo_root() -> None:
-    result = run_subprocess_checked(["git", "rev-parse", "--show-toplevel"], cwd=PROJECT_ROOT)
-    repo_root = Path(result.stdout.strip()).resolve()
-    if repo_root != PROJECT_ROOT.resolve():
-        raise RuntimeError(f"Expected repository root {PROJECT_ROOT}, got {repo_root}")
+    # `--show-prefix` is empty exactly when cwd is the repository root, and it
+    # reports a path *relative* to that root, so no path spellings are compared.
+    # `--show-toplevel` cannot be used for this: an MSYS2 git first on PATH
+    # reports `/c/Users/...`, which Windows Python resolves against the current
+    # drive as `C:\c\Users\...`, so an identical directory compared unequal and
+    # this guard refused to run. Normalising that spelling would stay fragile.
+    result = run_subprocess_checked(["git", "rev-parse", "--show-prefix"], cwd=PROJECT_ROOT)
+    prefix = result.stdout.strip()
+    if prefix:
+        raise RuntimeError(f"Expected {PROJECT_ROOT} to be the repository root, but it sits at '{prefix}' inside it")
 
 
 def build_git_clean_command(args: argparse.Namespace) -> list[str]:
