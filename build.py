@@ -44,7 +44,7 @@ from multiprocessing import cpu_count
 import re
 import json
 
-from typing import List, Dict, Mapping, Optional, Union, Any
+from typing import List, Dict, Mapping, Optional, Tuple, Union, Any
 
 from ffmpeg_dependencies import (
     SourceDependencyBuilder,
@@ -4906,6 +4906,10 @@ def run_python_tool_self_tests(env):
             [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_file_size_baseline.py")],
         ),
         (
+            "build_lint_policy",
+            [sys.executable, "-m", "unittest", "-v", os.path.join(PROJECT_ROOT, "test_build_lint_policy.py")],
+        ),
+        (
             "analyze_av_sync_stimulus",
             [sys.executable, os.path.join(PROJECT_ROOT, "tools", "analyze_av_sync_stimulus.py"), "--self-test"],
         ),
@@ -5310,11 +5314,16 @@ FILE_SIZE_TARGET = 750
 
 LINTABLE_SOURCE_DIRS = ["common", "hook", "captureengine", "mediaengine", "testapp", "tests"]
 LINTABLE_SOURCE_SUFFIXES = (".cpp", ".h", ".hpp", ".c")
+# The size ratchet also governs .inl files. They are ordinary C++ source under
+# the AGENTS.md rule, and the test apps use them to split a single translation
+# unit, so leaving them out would be an easy way to grow past the ceiling
+# unnoticed. clang-format's scope stays as it was.
+FILE_SIZE_SOURCE_SUFFIXES = LINTABLE_SOURCE_SUFFIXES + (".inl",)
 # Mirrors the first-party Python that flake8 already lints (`py_targets` below).
 FILE_SIZE_PYTHON_DIRS = ["tools", "testapp"]
 
 
-def collect_lintable_cpp_sources() -> List[str]:
+def collect_lintable_cpp_sources(suffixes: Tuple[str, ...] = LINTABLE_SOURCE_SUFFIXES) -> List[str]:
     """First-party C++ sources shared by clang-format and the file-size ratchet.
 
     External, vendored, and ImGui trees are excluded: their size is not ours to
@@ -5325,7 +5334,7 @@ def collect_lintable_cpp_sources() -> List[str]:
         root_path = os.path.join(PROJECT_ROOT, directory)
         for root, _, filenames in os.walk(root_path):
             for name in filenames:
-                if not name.endswith(LINTABLE_SOURCE_SUFFIXES):
+                if not name.endswith(suffixes):
                     continue
                 path = os.path.join(root, name)
                 if "external" in path or "imgui" in path:
@@ -5358,7 +5367,8 @@ def count_source_lines(path: str) -> int:
 def collect_source_file_sizes() -> Dict[str, int]:
     """Project-relative line counts for every file the size ratchet governs."""
     sizes: Dict[str, int] = {}
-    for path in collect_lintable_cpp_sources() + collect_file_size_python_sources():
+    cpp_sources = collect_lintable_cpp_sources(FILE_SIZE_SOURCE_SUFFIXES)
+    for path in cpp_sources + collect_file_size_python_sources():
         try:
             sizes[project_relative_key(path)] = count_source_lines(path)
         except OSError as error:
@@ -5573,6 +5583,7 @@ def run_lint(env, *, advisory=False):
             "test_ffmpeg_patch_utils.py",
             "test_clang_tidy_baseline.py",
             "test_file_size_baseline.py",
+            "test_build_lint_policy.py",
             "testapp",
         ]
 

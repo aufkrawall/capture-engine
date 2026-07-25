@@ -19,6 +19,15 @@ CheckOptions:
 
 # Analyze project headers, but do not report diagnostics from vendored or
 # generated/runtime trees. Those sources are not maintained by this project.
-HeaderFilterRegex: '(^|/)(common|hook|captureengine|mediaengine|testapp|tests)/'
-ExcludeHeaderFilterRegex: '(^|/)(external|build|installed|ffmpeg_build)/'
+#
+# Both patterns must match Windows paths, where clang-tidy reports included
+# files with backslashes, so every separator accepts '/' or '\'.
+#
+# The exclude list names the generated subtrees under build/ rather than
+# 'build' itself. A bare 'build' segment also matched this checkout's own
+# absolute path (...\Programme\build\captureproject\...), which silently
+# suppressed clang-tidy for every project header: 456 of 1616 findings, at
+# 195 header locations, were invisible until this was narrowed.
+HeaderFilterRegex: '[\\/](common|hook|captureengine|mediaengine|testapp|tests)[\\/]'
+ExcludeHeaderFilterRegex: '[\\/](external|installed|ffmpeg_build)[\\/]|[\\/]build[\\/](msys64|obj|tmp|fg_sdk_include|verification)[\\/]'
 FormatStyle: file

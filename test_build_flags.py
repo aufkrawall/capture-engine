@@ -686,12 +686,6 @@ class BuildFlagPolicyTest(unittest.TestCase):
             source.index('#include "vulkan_fg_switch_resources.inl"'),
         )
 
-    def test_clang_tidy_excludes_external_and_generated_headers(self) -> None:
-        config = (Path(build.__file__).parent / ".clang-tidy").read_text(encoding="utf-8")
-        self.assertIn("HeaderFilterRegex:", config)
-        self.assertIn("ExcludeHeaderFilterRegex:", config)
-        self.assertIn("external|build|installed|ffmpeg_build", config)
-
     def test_vulkan_layer_build_has_no_registry_side_effects(self) -> None:
         with open(build.__file__, encoding="utf-8") as build_file:
             source = build_file.read()
@@ -721,54 +715,6 @@ class BuildFlagPolicyTest(unittest.TestCase):
                 output_path = integration_runner.default_results_json_path(since)
 
             self.assertEqual(output_path, session_dir / "integration_results.json")
-
-
-class CompileCommandsDeterminismTest(unittest.TestCase):
-    """The compilation database must not depend on parallel compile ordering.
-
-    dx9_test.cpp is compiled as plain D3D9, as D3D9Ex, and again for x86, all
-    under the same "file" key. While the survivor was decided by whichever
-    parallel task appended last, the recorded flags flipped between builds and
-    took the clang-tidy findings for that source with them, so the lint ratchet
-    failed at random.
-    """
-
-    def entries(self, order):
-        return [
-            {
-                "directory": "C:/proj",
-                "file": "C:/proj/testapp/dx9_test.cpp",
-                "arguments": ["clang++", "-O2"] + extra + ["C:/proj/testapp/dx9_test.cpp"],
-            }
-            for extra in order
-        ]
-
-    def write(self, commands):
-        with tempfile.TemporaryDirectory() as temporary:
-            with patch.object(build, "PROJECT_ROOT", temporary), patch.object(
-                build, "COMPILE_COMMANDS", commands
-            ), patch.object(build, "log", lambda *args, **kwargs: None):
-                build.write_compile_commands_json()
-                return json.loads((Path(temporary) / "compile_commands.json").read_text(encoding="utf-8"))
-
-    def test_duplicate_sources_resolve_identically_regardless_of_append_order(self) -> None:
-        plain = []
-        d3d9ex = ["-DCE_TESTAPP_D3D9EX=1"]
-
-        forward = self.write(self.entries([plain, d3d9ex]))
-        reverse = self.write(self.entries([d3d9ex, plain]))
-
-        self.assertEqual(len(forward), 1)
-        self.assertEqual(forward, reverse)
-
-    def test_x86_variant_never_wins_over_the_x64_one(self) -> None:
-        x64 = ["--target=x86_64-w64-windows-gnu"]
-        x86 = ["--target=i686-w64-windows-gnu"]
-
-        for order in ([x64, x86], [x86, x64]):
-            written = self.write(self.entries(order))
-            self.assertEqual(len(written), 1)
-            self.assertFalse(build.is_x86_compile_command(written[0]["arguments"]))
 
 
 if __name__ == "__main__":
