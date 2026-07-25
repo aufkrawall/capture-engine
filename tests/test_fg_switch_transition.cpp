@@ -61,11 +61,20 @@ TEST(FsrExitTransitionTest, DlssActivationWaitsForSuccessfulReplacementPresent) 
 }
 
 TEST(FsrExitTransitionSourceTest, ReplacementIsPreparedBeforeFsrPresentationBreak) {
-    const std::filesystem::path source = std::filesystem::current_path() / "testapp" / "dx12_fg_switch_test.cpp";
-    ASSERT_TRUE(std::filesystem::exists(source));
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    // This asserts an ordering within the dx12_fg_switch_test translation unit:
+    // SwitchMode prepares DLSS before the FSR presentation break, and Render()
+    // only presents afterwards. Both halves moved into .inl files that
+    // dx12_fg_switch_test.cpp includes in this order, so read them in that
+    // order to reconstruct the span the assertions are about.
+    const std::filesystem::path testappDir = std::filesystem::current_path() / "testapp";
+    std::string text;
+    for (const char* part : {"dx12_fg_switch_runtime.inl", "dx12_fg_switch_render.inl"}) {
+        const std::filesystem::path source = testappDir / part;
+        ASSERT_TRUE(std::filesystem::exists(source)) << part;
+        std::ifstream stream(source, std::ios::binary);
+        ASSERT_TRUE(stream.good()) << part;
+        text.append((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    }
 
     const size_t switchMode = text.find("static bool SwitchMode(");
     const size_t disable = text.find("ConfigureFSR(false, nullptr, \"leave FSR mode\"", switchMode);

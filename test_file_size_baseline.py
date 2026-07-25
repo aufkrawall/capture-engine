@@ -86,6 +86,12 @@ class FileSizeBaselineTest(unittest.TestCase):
             },
         )
 
+    def test_collection_covers_inl_files(self) -> None:
+        # The test apps split a single translation unit across .inl files, so
+        # leaving them out would be an easy way past the ceiling.
+        self.write_source("testapp/dx12_fg_switch_streamline.inl", 10)
+        self.assertIn("testapp/dx12_fg_switch_streamline.inl", build.collect_source_file_sizes())
+
     # --- ratchet behaviour -------------------------------------------------------
 
     def test_first_run_records_only_files_over_the_ceiling(self) -> None:
