@@ -1016,3 +1016,148 @@ TEST(AudioSyncUtilsTest, WgcVisualContentLagClampsToRange) {
     EXPECT_EQ(ce::audio::ComputeWgcVisualContentLagMs(50, 70, 0, 4000), 0);  // lead exceeds shortfall -> floored at 0
     EXPECT_EQ(ce::audio::ComputeWgcVisualContentLagMs(10000, 0, 0, 4000), 4000);  // capped at max
 }
+
+// --- Adaptive CFR audio ingestion reservoir (logs/audiodeath consumer-overrun latch) ---
+
+TEST(AudioSyncUtilsTest, IngestReservoirStaysZeroWhileHeadroomIsHealthy) {
+    ce::audio::AudioIngestReservoirState state;
+    // Typical healthy CFR run: 60 ms reservoir minus ~12 ms delivery latency -> ~48 ms headroom.
+    for (int i = 0; i < 50; ++i) {
+        const auto decision = ce::audio::ComputeAudioIngestReservoir(state, /*active*/ true, /*observed*/ true,
+                                                                     /*headroomMs*/ 48, /*elapsedMs*/ 40);
+        EXPECT_EQ(decision.extraMs, 0);
+        EXPECT_FALSE(decision.raised);
+        state.extraMs = decision.extraMs;
+        state.healthyElapsedMs = decision.healthyElapsedMs;
+    }
+}
+
+TEST(AudioSyncUtilsTest, IngestReservoirDeepensByTheObservedDeficitPlusMargin) {
+    ce::audio::AudioIngestReservoirState state;
+    // The consumer overran the capture edge by 30 ms (headroom went negative).
+    const auto decision = ce::audio::ComputeAudioIngestReservoir(state, true, true, /*headroomMs*/ -30,
+                                                                 /*elapsedMs*/ 8);
+    EXPECT_TRUE(decision.raised);
+    // Needed = minHeadroom(25) - (-30) = 55, plus the 20 ms margin.
+    EXPECT_EQ(decision.extraMs, 75);
+    EXPECT_EQ(decision.healthyElapsedMs, 0);
+    EXPECT_FALSE(decision.atCap);
+}
+
+TEST(AudioSyncUtilsTest, IngestReservoirIsBoundedByTheCap) {
+    ce::audio::AudioIngestReservoirState state;
+    state.extraMs = ce::audio::kAudioIngestMaxExtraReservoirMs - 10;
+    const auto decision = ce::audio::ComputeAudioIngestReservoir(state, true, true, /*headroomMs*/ -5000, 8);
+    EXPECT_EQ(decision.extraMs, ce::audio::kAudioIngestMaxExtraReservoirMs);
+    EXPECT_TRUE(decision.atCap);
+    EXPECT_EQ(ce::audio::RaiseAudioIngestReservoirForShortfall(ce::audio::kAudioIngestMaxExtraReservoirMs, 10000),
+              ce::audio::kAudioIngestMaxExtraReservoirMs);
+}
+
+TEST(AudioSyncUtilsTest, IngestReservoirDecaysOnlyWithComfortableHeadroomAndNeverOnMissingEvidence) {
+    ce::audio::AudioIngestReservoirState state;
+    state.extraMs = 100;
+
+    // No placement evidence this window (every source genuinely idle) must hold, not decay.
+    auto decision = ce::audio::ComputeAudioIngestReservoir(state, true, /*observed*/ false, 0, 5000);
+    EXPECT_EQ(decision.extraMs, 100);
+    EXPECT_FALSE(decision.decayed);
+
+    // Headroom just above the minimum is not comfortable enough to give lookahead back.
+    decision = ce::audio::ComputeAudioIngestReservoir(state, true, true, /*headroomMs*/ 30, 5000);
+    EXPECT_EQ(decision.extraMs, 100);
+    EXPECT_EQ(decision.healthyElapsedMs, 0);
+
+    // Comfortable headroom decays one step per interval.
+    state.healthyElapsedMs = 0;
+    decision = ce::audio::ComputeAudioIngestReservoir(state, true, true, /*headroomMs*/ 120,
+                                                      ce::audio::kAudioIngestReservoirDecayIntervalMs);
+    EXPECT_TRUE(decision.decayed);
+    EXPECT_EQ(decision.extraMs, 100 - ce::audio::kAudioIngestReservoirDecayStepMs);
+}
+
+TEST(AudioSyncUtilsTest, IngestReservoirIsInactiveForVfrAndAudioOnly) {
+    ce::audio::AudioIngestReservoirState state;
+    state.extraMs = 250;
+    const auto decision = ce::audio::ComputeAudioIngestReservoir(state, /*active*/ false, true, -500, 40);
+    EXPECT_EQ(decision.extraMs, 0);
+    EXPECT_EQ(decision.healthyElapsedMs, 0);
+}
+
+// Regression guard for the `logs/audiodeath` failure: a single ~67 ms consumer overrun under
+// deliberate encoder overload silenced EVERY audio track for the remaining 3.5 minutes. The
+// consumer exported silence for the missing range, the per-source write cursor was pinned
+// forward, and every later packet was destroyed as timeline overlap - cursor and capture edge
+// both advance at wall rate, so the deficit could never repay itself. The fix holds the pull
+// for a late-but-live source instead of exporting silence, which is what lets the producer
+// overtake the cursor again.
+TEST(AudioSyncUtilsTest, LateLiveSourceHoldsThePullInsteadOfExportingDestructiveSilence) {
+    const int64_t rate = 48000;
+    const int64_t requested = rate / 120;                       // one 8.33 ms CFR quantum
+    const size_t buffered = 0;                                  // ring drained by the overrun
+
+    // Pre-fix behaviour: a started source with an empty ring is treated as silence, which pins
+    // the cursor ahead of the capture edge and destroys everything that arrives later.
+    EXPECT_TRUE(ce::audio::ShouldTreatStartedTimelineSourceShortfallAsSilence(
+        /*sparseStartedSourceMaySilence*/ true, buffered, requested,
+        ce::audio::kDefaultAudioPullQuantumSamples * 4));
+
+    // Fix: the source is still delivering real packets, so the pull holds instead.
+    EXPECT_TRUE(ce::audio::ShouldHoldCfrAudioPullForLateLiveSource(
+        /*isCfr*/ true, /*forceDrain*/ false, /*timelineValid*/ true, /*bootstrapComplete*/ true,
+        /*captureActive*/ true, /*recentRealPackets*/ true, requested, buffered, /*reservoirExtraMs*/ 0));
+
+    // A genuinely idle source (no recent packets) must still contribute silence so it cannot
+    // freeze a co-mixed track.
+    EXPECT_FALSE(ce::audio::ShouldHoldCfrAudioPullForLateLiveSource(true, false, true, true, true,
+                                                                    /*recentRealPackets*/ false, requested, buffered,
+                                                                    0));
+    // So must a source whose capture route already ended.
+    EXPECT_FALSE(ce::audio::ShouldHoldCfrAudioPullForLateLiveSource(true, false, true, true,
+                                                                    /*captureActive*/ false, true, requested, buffered,
+                                                                    0));
+    // The hold is bounded: once the reservoir is at its cap the track makes progress again.
+    EXPECT_FALSE(ce::audio::ShouldHoldCfrAudioPullForLateLiveSource(
+        true, false, true, true, true, true, requested, buffered,
+        /*reservoirExtraMs*/ ce::audio::kAudioIngestMaxExtraReservoirMs));
+    // Stop drain and VFR are never held.
+    EXPECT_FALSE(ce::audio::ShouldHoldCfrAudioPullForLateLiveSource(true, /*forceDrain*/ true, true, true, true, true,
+                                                                    requested, buffered, 0));
+    EXPECT_FALSE(ce::audio::ShouldHoldCfrAudioPullForLateLiveSource(/*isCfr*/ false, false, true, true, true, true,
+                                                                    requested, buffered, 0));
+    // A source with enough buffered content is never held.
+    EXPECT_FALSE(ce::audio::ShouldHoldCfrAudioPullForLateLiveSource(true, false, true, true, true, true, requested,
+                                                                    static_cast<size_t>(requested), 0));
+}
+
+// The reservoir alone recovers the recorded failure: one 67 ms overrun deepens the lookahead
+// past the observed deficit, so the pull target freezes long enough for the producer to pass
+// the cursor. Sample positions never move, so this is sync-neutral by construction.
+TEST(AudioSyncUtilsTest, IngestReservoirRecoversTheAudiodeathOverrunWithinOneEvaluation) {
+    ce::audio::AudioIngestReservoirState state;
+    const int64_t observedOverrunMs = -67;  // measured headroom right after the overrun
+    const auto decision = ce::audio::ComputeAudioIngestReservoir(state, true, true, observedOverrunMs, 8);
+    EXPECT_TRUE(decision.raised);
+    // The new reservoir must exceed the deficit, otherwise the cursor stays ahead forever.
+    EXPECT_GT(decision.extraMs, -observedOverrunMs);
+    EXPECT_LE(decision.extraMs, ce::audio::kAudioIngestMaxExtraReservoirMs);
+    // Total lookahead stays a bounded scheduling reservoir, not a content offset.
+    EXPECT_LE(ce::audio::kDefaultSteadyAudioPullLatencyMs + decision.extraMs,
+              ce::audio::kDefaultSteadyAudioPullLatencyMs + ce::audio::kAudioIngestMaxExtraReservoirMs);
+}
+
+TEST(AudioSyncUtilsTest, StarvedSourceResyncIsLastResortOnly) {
+    const int64_t deficit = 4800;  // 100 ms
+    // Not while the reservoir still has room to grow.
+    EXPECT_FALSE(
+        ce::audio::ShouldResyncStarvedLiveAudioSource(true, false, /*reservoirAtCap*/ false, true, 5000, deficit));
+    // Not before the starvation has actually persisted.
+    EXPECT_FALSE(ce::audio::ShouldResyncStarvedLiveAudioSource(true, false, true, true, /*starvedMs*/ 200, deficit));
+    // Not for an idle source, during stop drain, or in VFR.
+    EXPECT_FALSE(
+        ce::audio::ShouldResyncStarvedLiveAudioSource(true, false, true, /*recentPackets*/ false, 5000, deficit));
+    EXPECT_FALSE(ce::audio::ShouldResyncStarvedLiveAudioSource(true, /*forceDrain*/ true, true, true, 5000, deficit));
+    EXPECT_FALSE(ce::audio::ShouldResyncStarvedLiveAudioSource(/*isCfr*/ false, false, true, true, 5000, deficit));
+    // Only when the reservoir is exhausted and a live source is still fully starved.
+    EXPECT_TRUE(ce::audio::ShouldResyncStarvedLiveAudioSource(true, false, true, true, 5000, deficit));
+}

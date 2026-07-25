@@ -83,6 +83,17 @@ LOG_PATTERNS = {
     ),
     "audio_app_source_gap_silence": re.compile(r"\[PullAudio\] App source gap silence", re.IGNORECASE),
     "audio_zero_drift_residual": re.compile(r"\[A/V ZERO DRIFT WARNING\]", re.IGNORECASE),
+    # Real captured audio destroyed because the exported cursor ran past the live capture edge.
+    "audio_ingest_starvation": re.compile(
+        r"\[AudioLoop\] WARNING: source ingest starvation", re.IGNORECASE
+    ),
+    "audio_ingest_starvation_resync": re.compile(
+        r"\[AudioLoop\] WARNING: unrecoverable ingest starvation", re.IGNORECASE
+    ),
+    "audio_ingest_reservoir_deepened": re.compile(
+        r"\[PullAudio\] Ingest reservoir deepened", re.IGNORECASE
+    ),
+    "audio_late_live_source_hold": re.compile(r"\[PullAudio\] Late live source hold", re.IGNORECASE),
     "wgc_output_limited": re.compile(r"\[WGC CFR\] (?:Output limited|Encoder cannot sustain target)"),
     "wgc_stop_drain_aborted": re.compile(r"\[EncoderThread\] CFR stop drain aborted"),
     "wgc_fresh_catchup": re.compile(r"\[EncoderThread\] CFR Catchup applied using fresh frame"),
@@ -162,6 +173,8 @@ STRICT_SYNC_LOG_EVENTS = (
     "audio_app_source_gap_silence",
     "audio_zero_drift_residual",
     "audio_extreme_drift",
+    "audio_ingest_starvation",
+    "audio_ingest_starvation_resync",
     "wgc_fresh_catchup",
     "wgc_stop_drain_aborted",
     "wgc_stop_hold_repeats",
@@ -405,6 +418,21 @@ STOP_AUDIO_LATENCY_RE = re.compile(
     r"\[STOP AUDIO LATENCY\] Source (\d+) track=(\d+) appAudioDelay avg=([0-9.]+)ms max=(\d+)ms",
     re.IGNORECASE,
 )
+# Consumer-overrun evidence. `starve` counts real captured samples destroyed because the
+# exported cursor ran past the live capture edge; the recording still reports exact track
+# lengths and perfect packet timing, so this is the only direct proof of the failure.
+STOP_AUDIO_INGEST_RE = re.compile(
+    r"\[STOP AUDIO INGEST\] Source (\d+): track=(\d+) starve=(\d+) resync=(\d+)/(\d+) "
+    r"reservoirPeakMs=(-?\d+)(?: process=([^\s]+))?",
+    re.IGNORECASE,
+)
+# Legacy fallback for logs written before the destroyed-sample counter existed. A source that
+# trimmed a large fraction of its timeline as packet overlap was being starved by the consumer;
+# ordinary boundary de-duplication is a few hundred samples per recording.
+STOP_AUDIO_DETAIL_OVERLAP_RE = re.compile(
+    r"\[STOP AUDIO DETAIL\] Source (\d+):.*?overlap=(\d+)",
+    re.IGNORECASE,
+)
 ZERO_DRIFT_WARNING_RE = re.compile(
     r"\[A/V ZERO DRIFT WARNING\] Track (\d+) residual_samples=([+-]?\d+) residual_us=([+-]?\d+) "
     r"target_samples=(\d+) cursor_samples=(\d+)",
@@ -470,6 +498,8 @@ TRIAGE_AUDIO_FAULT_EVENTS = {
     "audio_app_source_gap_silence",
     "audio_zero_drift_residual",
     "audio_extreme_drift",
+    "audio_ingest_starvation",
+    "audio_ingest_starvation_resync",
 }
 
 TRIAGE_VISUAL_FAULT_EVENTS = {
@@ -2211,6 +2241,8 @@ def merge_window_media_evidence(window_evidence, full_evidence):
         "audio_finalizations",
         "stop_audio_tracks",
         "stop_audio_sources",
+        "stop_audio_ingest",
+        "stop_audio_overlap",
         "stop_app_audio_latency",
     ):
         merged[key] = full_evidence.get(key, [])
@@ -2528,6 +2560,8 @@ def parse_media_triage(media_text):
     audio_finalizations = []
     stop_audio_tracks = []
     stop_audio_sources = []
+    stop_audio_ingest = []
+    stop_audio_overlap = []
     stop_app_audio_latency = []
     zero_drift_warnings = []
     packet_mismatch_warnings = 0
@@ -2953,6 +2987,29 @@ def parse_media_triage(media_text):
                     "line": line,
                 }
             )
+        stop_detail_overlap_match = STOP_AUDIO_DETAIL_OVERLAP_RE.search(line)
+        if stop_detail_overlap_match:
+            stop_audio_overlap.append(
+                {
+                    "source": parse_int(stop_detail_overlap_match.group(1)),
+                    "overlap_samples": parse_int(stop_detail_overlap_match.group(2)),
+                    "line": line,
+                }
+            )
+        stop_ingest_match = STOP_AUDIO_INGEST_RE.search(line)
+        if stop_ingest_match:
+            stop_audio_ingest.append(
+                {
+                    "source": parse_int(stop_ingest_match.group(1)),
+                    "track": parse_int(stop_ingest_match.group(2)),
+                    "starved_samples": parse_int(stop_ingest_match.group(3)),
+                    "resync_samples": parse_int(stop_ingest_match.group(4)),
+                    "resync_events": parse_int(stop_ingest_match.group(5)),
+                    "reservoir_peak_ms": parse_int(stop_ingest_match.group(6)),
+                    "process": stop_ingest_match.group(7) or "",
+                    "line": line,
+                }
+            )
         stop_source_match = STOP_AUDIO_SOURCE_RE.search(line)
         if stop_source_match:
             stop_audio_sources.append(
@@ -3045,6 +3102,8 @@ def parse_media_triage(media_text):
         "audio_finalizations": audio_finalizations,
         "stop_audio_tracks": stop_audio_tracks,
         "stop_audio_sources": stop_audio_sources,
+        "stop_audio_ingest": stop_audio_ingest,
+        "stop_audio_overlap": stop_audio_overlap,
         "stop_app_audio_latency": stop_app_audio_latency,
         "zero_drift_warnings": zero_drift_warnings,
         "packet_mismatch_warnings": packet_mismatch_warnings,
@@ -4398,6 +4457,71 @@ def has_wgc_sync_delay_reserve_pressure(media_evidence):
     return False
 
 
+def summarize_audio_ingest_starvation(media_evidence, sample_rate=48000):
+    """Consumer-overrun evidence for the `logs/audiodeath` failure class.
+
+    A CFR recording can end with sample-exact track lengths, zero packet gaps, and zero
+    drift while every audio track is silent, because the exported cursor ran past the
+    live capture edge and each later packet was destroyed as timeline overlap. Track
+    length can never surface that, so the per-source destroyed-sample counter and the
+    real-vs-silence split of each exported track are the strict signals.
+    """
+    entries = media_evidence.get("stop_audio_ingest", [])
+    destroyed_samples = sum(item.get("starved_samples", 0) for item in entries)
+    resync_events = sum(item.get("resync_events", 0) for item in entries)
+    resync_samples = sum(item.get("resync_samples", 0) for item in entries)
+    reservoir_peak_ms = max((item.get("reservoir_peak_ms", 0) for item in entries), default=0)
+    affected = [item for item in entries if item.get("starved_samples", 0) > 0]
+
+    legacy_overlap_sources = []
+    if not entries:
+        # Pre-counter logs: a source that discarded a large fraction of its own timeline as
+        # packet overlap was starved by the consumer. Ordinary boundary de-duplication is a
+        # few hundred samples per recording, so require both an absolute second of loss and
+        # a meaningful share of the exported timeline before calling it a fault.
+        encoded_by_source = {
+            item["source"]: item.get("encoded_samples", 0)
+            for item in media_evidence.get("stop_audio_sources", [])
+        }
+        for item in media_evidence.get("stop_audio_overlap", []):
+            overlap = item.get("overlap_samples", 0)
+            encoded = encoded_by_source.get(item.get("source"), 0)
+            if overlap < sample_rate:
+                continue
+            if encoded > 0 and overlap * 50 < encoded:
+                continue
+            legacy_overlap_sources.append(
+                {
+                    "source": item.get("source"),
+                    "track": None,
+                    "starved_samples": overlap,
+                    "process": "",
+                }
+            )
+        if legacy_overlap_sources:
+            destroyed_samples = sum(item["starved_samples"] for item in legacy_overlap_sources)
+            affected = legacy_overlap_sources
+
+    return {
+        "evidence_available": bool(entries),
+        "legacy_overlap_evidence": bool(legacy_overlap_sources),
+        "destroyed_samples": destroyed_samples,
+        "destroyed_ms": (destroyed_samples * 1000.0 / sample_rate) if sample_rate > 0 else 0.0,
+        "resync_events": resync_events,
+        "resync_samples": resync_samples,
+        "reservoir_peak_ms": reservoir_peak_ms,
+        "affected_sources": [
+            {
+                "source": item.get("source"),
+                "track": item.get("track"),
+                "starved_samples": item.get("starved_samples", 0),
+                "process": item.get("process", ""),
+            }
+            for item in affected
+        ],
+    }
+
+
 def summarize_stop_audio_shortfalls(media_evidence):
     short_tracks = [
         item for item in media_evidence["stop_audio_tracks"]
@@ -4576,6 +4700,7 @@ def classify_session_triage(
     wgc_source_limits = summarize_wgc_source_limits(media_evidence)
     inject_pacing = summarize_inject_pacing(media_evidence)
     stop_audio_shortfalls = summarize_stop_audio_shortfalls(media_evidence)
+    audio_ingest_starvation = summarize_audio_ingest_starvation(media_evidence)
     started_app_source_health = summarize_started_app_source_health(media_evidence, log_summary)
     live_start_wall_us = parse_live_start_wall_us(media_text)
     stop_start_wall_us = parse_stop_start_wall_us(media_text)
@@ -4879,6 +5004,13 @@ def classify_session_triage(
         contexts.append("audio_stop_force_drain_backlog")
     if stop_audio_shortfalls["multi_source_short_count"] > 0:
         verdicts.append("multi_app_audio_track_stall")
+    # Consumer overrun destroys captured audio while leaving track lengths, packet timing,
+    # and drift residuals perfect, so it must be its own strict verdict rather than being
+    # inferred from any duration-based check.
+    if audio_ingest_starvation["destroyed_samples"] > 0:
+        verdicts.append("audio_ingest_starvation")
+    if audio_ingest_starvation["resync_events"] > 0:
+        verdicts.append("audio_ingest_starvation_resync")
     timeline_audio_fault_counts = dict(strict_audio_fault_counts)
     if exported_av_sync_ok:
         for source_health_event in (
@@ -4894,6 +5026,7 @@ def classify_session_triage(
         or final_packet_strict
         or media_evidence["zero_drift_warnings"]
         or stop_audio_shortfalls["short_count"] > 0
+        or audio_ingest_starvation["destroyed_samples"] > 0
     )
     source_audio_health_fault = (
         "late_app_source_backlog" in verdicts
@@ -5121,6 +5254,7 @@ def classify_session_triage(
             "late_writer_finalize_recovered": late_writer_finalize_recovered,
             "stop_audio_tracks": media_evidence["stop_audio_tracks"],
             "stop_audio_sources": media_evidence["stop_audio_sources"],
+            "audio_ingest_starvation": audio_ingest_starvation,
             "started_app_source_health": started_app_source_health,
             "app_audio_latency": app_audio_latency,
             "zero_drift_warnings": media_evidence["zero_drift_warnings"],
@@ -5282,6 +5416,23 @@ def print_triage_report(report):
                 count=stop_shortfalls["short_count"],
                 multi=stop_shortfalls["multi_source_short_count"],
                 worst=stop_shortfalls["worst_shortfall_ms"],
+            )
+        )
+    ingest_starvation = evidence.get("audio_ingest_starvation")
+    if ingest_starvation and (
+        ingest_starvation["destroyed_samples"]
+        or ingest_starvation["resync_events"]
+        or ingest_starvation["reservoir_peak_ms"]
+    ):
+        print(
+            "  audio_ingest destroyed={destroyed} samples ({destroyed_ms:.1f} ms) sources={sources} "
+            "resync={resync_events}/{resync_samples} reservoir_peak_ms={peak}".format(
+                destroyed=ingest_starvation["destroyed_samples"],
+                destroyed_ms=ingest_starvation["destroyed_ms"],
+                sources=len(ingest_starvation["affected_sources"]),
+                resync_events=ingest_starvation["resync_events"],
+                resync_samples=ingest_starvation["resync_samples"],
+                peak=ingest_starvation["reservoir_peak_ms"],
             )
         )
     app_health = evidence["started_app_source_health"]
@@ -8061,6 +8212,85 @@ def self_test():
         assert "multi_app_audio_track_stall" in report["verdicts"]
         assert "ce_audio_timeline_fault" in report["verdicts"]
         assert report["evidence"]["stop_audio_shortfalls"]["multi_source_short_count"] == 2
+
+        # `logs/audiodeath`: exact track lengths and perfect packet timing while every source
+        # was actually silent, because the exported cursor ran past the live capture edge and
+        # each later packet was destroyed as timeline overlap. Only the destroyed-sample
+        # counter can surface it, so it must be a strict verdict on its own.
+        audio_ingest_starvation = make_session(
+            "audio_ingest_starvation",
+            media=(
+                "[STOP AUDIO TRACK] Track 1: encoded=11888000 expected=11888000 diff=+0 (+0.000 ms) "
+                "realMixed=3056000 fullSilence=8832000 partialSilence=1091920 sources=[1,9]\n"
+                "[STOP AUDIO INGEST] Source 1: track=1 starve=0 resync=0/0 reservoirPeakMs=0 process=-\n"
+                "[STOP AUDIO INGEST] Source 9: track=1 starve=10109800 resync=0/0 reservoirPeakMs=500 "
+                "process=FortniteClient-Win64-Shipping.exe\n"
+            ),
+        )
+        report = classify_session_triage(audio_ingest_starvation)
+        assert "audio_ingest_starvation" in report["verdicts"]
+        assert "audio_ingest_starvation_resync" not in report["verdicts"]
+        assert "ce_audio_timeline_fault" in report["verdicts"]
+        starvation = report["evidence"]["audio_ingest_starvation"]
+        assert starvation["destroyed_samples"] == 10109800
+        assert starvation["reservoir_peak_ms"] == 500
+        assert len(starvation["affected_sources"]) == 1
+
+        # A healthy run reports the same line with zero destroyed samples and must stay clean,
+        # including when the adaptive reservoir legitimately deepened during the recording.
+        audio_ingest_healthy = make_session(
+            "audio_ingest_healthy",
+            media=(
+                "[STOP AUDIO INGEST] Source 0: track=1 starve=0 resync=0/0 reservoirPeakMs=95 process=-\n"
+                "[STOP AUDIO INGEST] Source 1: track=2 starve=0 resync=0/0 reservoirPeakMs=95 process=-\n"
+            ),
+        )
+        healthy_report = classify_session_triage(audio_ingest_healthy)
+        assert "audio_ingest_starvation" not in healthy_report["verdicts"]
+        assert healthy_report["evidence"]["audio_ingest_starvation"]["destroyed_samples"] == 0
+        assert healthy_report["evidence"]["audio_ingest_starvation"]["reservoir_peak_ms"] == 95
+
+        # Pre-counter logs (such as the original `logs/audiodeath` capture) still expose the
+        # failure through the per-source packet-overlap total, so triage of old sessions must
+        # not silently pass. Ordinary boundary de-duplication stays below the thresholds.
+        audio_ingest_legacy = make_session(
+            "audio_ingest_legacy",
+            media=(
+                "[STOP AUDIO] Source 9: track=1 encoded=11888000 trim=cov:0 latTotal:0 liveUncat:0 cat:0 "
+                "normal:0 pad:0 qgap:0 qjoin:0 qjoinKeep:0 ringPeak=46560 ringUnderruns=0 "
+                "process=FortniteClient-Win64-Shipping.exe\n"
+                "[STOP AUDIO DETAIL] Source 9: ratePpm=+0.00 compDelta=0 sat=0 trimRate(latTotal=0.0/min "
+                "boot=0.0/min cov=0.0/min tier2=0.0/min retain=0.0/min) totals(boot=0 tier2=0 retain=0 cat=0 "
+                "catEvents=0 liveUncat=0 post=0 overlap=10109800 ovf=0)\n"
+            ),
+        )
+        legacy_report = classify_session_triage(audio_ingest_legacy)
+        assert "audio_ingest_starvation" in legacy_report["verdicts"]
+        assert legacy_report["evidence"]["audio_ingest_starvation"]["legacy_overlap_evidence"]
+        assert legacy_report["evidence"]["audio_ingest_starvation"]["destroyed_samples"] == 10109800
+
+        audio_ingest_legacy_clean = make_session(
+            "audio_ingest_legacy_clean",
+            media=(
+                "[STOP AUDIO] Source 1: track=1 encoded=11888000 trim=cov:0 latTotal:0 liveUncat:0 cat:0 "
+                "normal:0 pad:0 qgap:1426 qjoin:0 qjoinKeep:0 ringPeak=38880 ringUnderruns=0 process=-\n"
+                "[STOP AUDIO DETAIL] Source 1: ratePpm=+0.00 compDelta=0 sat=0 trimRate(latTotal=0.0/min "
+                "boot=0.0/min cov=0.0/min tier2=0.0/min retain=0.0/min) totals(boot=0 tier2=0 retain=0 cat=0 "
+                "catEvents=0 liveUncat=0 post=0 overlap=161 ovf=0)\n"
+            ),
+        )
+        legacy_clean_report = classify_session_triage(audio_ingest_legacy_clean)
+        assert "audio_ingest_starvation" not in legacy_clean_report["verdicts"]
+        assert legacy_clean_report["evidence"]["audio_ingest_starvation"]["destroyed_samples"] == 0
+
+        # The last-resort re-anchor is bounded and content-costly, so it is its own verdict.
+        audio_ingest_resync = make_session(
+            "audio_ingest_resync",
+            media=("[STOP AUDIO INGEST] Source 3: track=1 starve=96000 resync=3360/1 reservoirPeakMs=500 process=-\n"),
+        )
+        resync_report = classify_session_triage(audio_ingest_resync)
+        assert "audio_ingest_starvation" in resync_report["verdicts"]
+        assert "audio_ingest_starvation_resync" in resync_report["verdicts"]
 
         late_app_backlog = make_session(
             "late_app_backlog",

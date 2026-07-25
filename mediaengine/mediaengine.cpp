@@ -122,6 +122,15 @@ public:
         uint64_t lastRetainedTrimWarnTick = 0;        // Rate-limit explicit retained-audio warnings
         uint64_t lastExtremeDriftWarnTick = 0;        // Rate-limit chronic large-drift diagnostics
         uint64_t lastPacketTimelineAdjustWarnTick = 0;
+        // Ingest starvation attribution. A packet whose whole timeline range falls behind the
+        // already-exported cursor is real audio destroyed by consumer overrun, not a source gap.
+        uint64_t lastRealPacketIngestTick = 0;       // Last tick a real packet was placed on the timeline
+        uint64_t timelineStarvationDropSamples = 0;  // Real samples destroyed because the consumer ran ahead
+        uint64_t timelineStarvationBeganTick = 0;    // Start of the current fully-starved episode (0 = healthy)
+        uint64_t lastTimelineStarvationWarnTick = 0;
+        int64_t timelineResyncOffsetSamples = 0;       // Last-resort placement re-anchor after unrecoverable starvation
+        uint64_t timelineResyncSuppressedSamples = 0;  // Content skipped by that re-anchor
+        uint32_t timelineResyncEvents = 0;
         uint64_t lastAppPlaceDiagTick = 0;    // Throttle app-source placement-divergence diagnostics
         uint64_t lastAppConsumeDiagTick = 0;  // Throttle app-source consume/drain diagnostics
         uint64_t lastCaptureGroupDivergenceWarnTick = 0;
@@ -429,6 +438,82 @@ public:
             bufferedSamples += src.ringBuffer->GetAvailable() / kChannels;
         }
         return bufferedSamples;
+    }
+
+    // AudioLoop -> PullAndEncodeAudio hand-off for the adaptive ingestion reservoir.
+    // Publishes the worst (minimum) headroom seen since the pull side last consumed it,
+    // normalized to the shared 48 kHz mixing rate. `kNoAudioIngestHeadroom` doubles as the
+    // "nothing observed this window" sentinel so one atomic carries both facts and no
+    // observation can be lost between the reader's two accesses.
+    static constexpr int64_t kNoAudioIngestHeadroom = std::numeric_limits<int64_t>::max();
+
+    void PublishAudioIngestHeadroom(int64_t headroomSamples, int sampleRate) {
+        if (sampleRate <= 0) {
+            return;
+        }
+        const int64_t normalizedSamples =
+            sampleRate == 48000 ? headroomSamples : (headroomSamples * 48000) / sampleRate;
+        int64_t observedWorst = audioIngestWorstHeadroomSamples.load(std::memory_order_relaxed);
+        while (normalizedSamples < observedWorst && !audioIngestWorstHeadroomSamples.compare_exchange_weak(
+                                                        observedWorst, normalizedSamples, std::memory_order_relaxed)) {
+        }
+    }
+
+    // Tracks fully-destroyed packets for one source and applies the bounded last-resort
+    // re-anchor when the adaptive reservoir has already saturated. Re-anchoring costs a
+    // one-time content skip on this source only; the alternative is permanent silence.
+    void ServiceSourceIngestStarvation(AudioSource& src, size_t srcIdx, int64_t packetStartSamples,
+                                       int64_t overlapSamples, size_t retainedWriteSamples, int resampledSamples,
+                                       int sampleRate, uint64_t nowTick) {
+        const bool packetFullyDestroyed = resampledSamples > 0 && retainedWriteSamples == 0 && overlapSamples > 0;
+        if (!packetFullyDestroyed) {
+            src.timelineStarvationBeganTick = 0;
+            return;
+        }
+
+        src.timelineStarvationDropSamples += static_cast<uint64_t>(resampledSamples);
+        if (src.timelineStarvationBeganTick == 0) {
+            src.timelineStarvationBeganTick = nowTick;
+        }
+
+        const int64_t boundedRate = std::max<int64_t>(1, sampleRate);
+        const int64_t starvedElapsedMs = static_cast<int64_t>(nowTick - src.timelineStarvationBeganTick);
+        const int64_t deficitSamples =
+            std::max<int64_t>(0, static_cast<int64_t>(src.qpcAlignedWrittenSamples) - packetStartSamples);
+        const bool reservoirAtCap = audioIngestReservoirExtraMs >= ce::audio::kAudioIngestMaxExtraReservoirMs;
+
+        if (nowTick - src.lastTimelineStarvationWarnTick >= 1000) {
+            DLL_Log(
+                "[AudioLoop] WARNING: source ingest starvation src=%zu track=%d process=%s destroyed=%llu samples "
+                "(%.1fms total) deficit=%lld samples (%lldms) starvedFor=%lldms reservoirExtra=%lldms atCap=%d. "
+                "The exported cursor ran past the live capture edge; every packet for this range is real audio "
+                "being discarded as timeline overlap.",
+                srcIdx, src.track, src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
+                (unsigned long long)src.timelineStarvationDropSamples,
+                static_cast<double>(src.timelineStarvationDropSamples) * 1000.0 / static_cast<double>(boundedRate),
+                (long long)deficitSamples, (long long)(deficitSamples * 1000 / boundedRate),
+                (long long)starvedElapsedMs, (long long)audioIngestReservoirExtraMs, reservoirAtCap ? 1 : 0);
+            src.lastTimelineStarvationWarnTick = nowTick;
+        }
+
+        if (!ce::audio::ShouldResyncStarvedLiveAudioSource(IsCfrRecording(), false, reservoirAtCap, true,
+                                                           starvedElapsedMs, deficitSamples,
+                                                           /*minStarvedMs=*/1500,
+                                                           /*minDeficitSamples=*/boundedRate / 100)) {
+            return;
+        }
+
+        src.timelineResyncOffsetSamples += deficitSamples;
+        src.timelineResyncSuppressedSamples += static_cast<uint64_t>(deficitSamples);
+        src.timelineResyncEvents++;
+        src.timelineStarvationBeganTick = 0;
+        src.packetBoundaryFadeInSamplesRemaining = static_cast<int>(std::max<int64_t>(1, boundedRate / 750));
+        DLL_Log(
+            "[AudioLoop] WARNING: unrecoverable ingest starvation - re-anchoring src=%zu track=%d process=%s by "
+            "%lld samples (%lldms) after %lldms at the reservoir cap. This source skips that much content once "
+            "so live audio resumes; track lengths, PTS, and every other source are unchanged.",
+            srcIdx, src.track, src.config.processName.empty() ? "<none>" : src.config.processName.c_str(),
+            (long long)deficitSamples, (long long)(deficitSamples * 1000 / boundedRate), (long long)starvedElapsedMs);
     }
 
     size_t DropOldestBufferedSamples(AudioSource& src, size_t samplesToDrop) {
@@ -788,6 +873,13 @@ public:
             src.catastrophicResyncEvents = 0;
             src.lastRetainedTrimWarnTick = 0;
             src.lastPacketTimelineAdjustWarnTick = 0;
+            src.lastRealPacketIngestTick = 0;
+            src.timelineStarvationDropSamples = 0;
+            src.timelineStarvationBeganTick = 0;
+            src.lastTimelineStarvationWarnTick = 0;
+            src.timelineResyncOffsetSamples = 0;
+            src.timelineResyncSuppressedSamples = 0;
+            src.timelineResyncEvents = 0;
             src.wgcCoverageLossTrimAccumulator = 0.0;
             src.prevLeadSamples = 0;
             src.prevLeadSnapshotMs = 0;
@@ -870,6 +962,19 @@ public:
     // Cached track→source index map, built once in StartRecording to avoid
     // per-frame reconstruction (~120 rebuilds/sec at 120fps).
     std::map<int, std::vector<size_t>> cachedTrackToSources;
+
+    // Adaptive CFR audio ingestion reservoir. The AudioLoop thread publishes the worst
+    // observed distance between a freshly placed packet and the already-exported cursor;
+    // PullAndEncodeAudio consumes it and deepens the pull lookahead so the producer can
+    // overtake the consumer again. Deepening is sync-neutral: it moves only the pull
+    // target, never a sample's timeline position. See audio_sync_utils.h for the policy.
+    std::atomic<int64_t> audioIngestWorstHeadroomSamples{std::numeric_limits<int64_t>::max()};
+    ce::audio::AudioIngestReservoirState audioIngestReservoir;
+    int64_t audioIngestReservoirExtraMs = 0;
+    uint64_t audioIngestReservoirEvalTick = 0;
+    uint64_t audioIngestReservoirLogTick = 0;
+    int64_t audioIngestReservoirLoggedMs = 0;
+    int64_t audioIngestReservoirPeakMs = 0;
 
     // PullAndEncodeAudio counters — reset per recording to avoid stale state
     int warpCount = 0;
@@ -1240,6 +1345,14 @@ public:
             trackPartialSilenceSamples[src.track] = 0;
         }
 
+        audioIngestWorstHeadroomSamples.store(kNoAudioIngestHeadroom, std::memory_order_relaxed);
+        audioIngestReservoir = ce::audio::AudioIngestReservoirState{};
+        audioIngestReservoirExtraMs = 0;
+        audioIngestReservoirEvalTick = 0;
+        audioIngestReservoirLogTick = 0;
+        audioIngestReservoirLoggedMs = 0;
+        audioIngestReservoirPeakMs = 0;
+
         warpCount = 0;
         dropLogCounter = 0;
         driftLogCounter = 0;
@@ -1561,6 +1674,13 @@ public:
                 src.catastrophicResyncEvents = 0;
                 src.lastRetainedTrimWarnTick = 0;
                 src.lastPacketTimelineAdjustWarnTick = 0;
+                src.lastRealPacketIngestTick = 0;
+                src.timelineStarvationDropSamples = 0;
+                src.timelineStarvationBeganTick = 0;
+                src.lastTimelineStarvationWarnTick = 0;
+                src.timelineResyncOffsetSamples = 0;
+                src.timelineResyncSuppressedSamples = 0;
+                src.timelineResyncEvents = 0;
                 src.wgcCoverageLossTrimAccumulator = 0.0;
                 src.prevLeadSamples = 0;
                 src.prevLeadSnapshotMs = 0;
@@ -2139,6 +2259,26 @@ public:
                     (unsigned long long)src.catastrophicResyncSamples, src.catastrophicResyncEvents,
                     (unsigned long long)uncategorizedLatencyTrim, (unsigned long long)src.postResampleTrimSamples,
                     (unsigned long long)src.packetTimelineOverlapSamples, (unsigned long long)src.overflowDropSamples);
+                // Consumer-overrun evidence. `starve` counts real captured samples destroyed
+                // because the exported cursor ran past the live capture edge; a nonzero value
+                // means audio content was lost even though every track length still matches.
+                DLL_Log(
+                    "[STOP AUDIO INGEST] Source %zu: track=%d starve=%llu resync=%llu/%u reservoirPeakMs=%lld "
+                    "process=%s",
+                    i, src.track, (unsigned long long)src.timelineStarvationDropSamples,
+                    (unsigned long long)src.timelineResyncSuppressedSamples, src.timelineResyncEvents,
+                    (long long)audioIngestReservoirPeakMs,
+                    src.config.processName.empty() ? "-" : src.config.processName.c_str());
+                if (src.timelineStarvationDropSamples > 0) {
+                    DLL_Log(
+                        "[STOP AUDIO INGEST] WARNING: Source %zu track=%d lost %llu real samples (%.1f ms) to "
+                        "consumer overrun; the ingestion reservoir peaked at %lldms extra. Track lengths and PTS "
+                        "stayed exact, but this much captured content never reached the file.",
+                        i, src.track, (unsigned long long)src.timelineStarvationDropSamples,
+                        static_cast<double>(src.timelineStarvationDropSamples) * 1000.0 /
+                            static_cast<double>(kStopSampleRate),
+                        (long long)audioIngestReservoirPeakMs);
+                }
                 DLL_Log(
                     "[AVSyncAuto] stop_audio_source: src=%zu track=%d codec=%s encodedSamples=%llu "
                     "captureLatencyMs=%.3f encoderReady=%d streamIndex=%d confidence=%s reason=%s",
@@ -2247,6 +2387,13 @@ public:
             src.catastrophicResyncEvents = 0;
             src.lastRetainedTrimWarnTick = 0;
             src.lastPacketTimelineAdjustWarnTick = 0;
+            src.lastRealPacketIngestTick = 0;
+            src.timelineStarvationDropSamples = 0;
+            src.timelineStarvationBeganTick = 0;
+            src.lastTimelineStarvationWarnTick = 0;
+            src.timelineResyncOffsetSamples = 0;
+            src.timelineResyncSuppressedSamples = 0;
+            src.timelineResyncEvents = 0;
             src.wgcCoverageLossTrimAccumulator = 0.0;
             src.prevLeadSamples = 0;
             src.prevLeadSnapshotMs = 0;
@@ -3105,6 +3252,53 @@ public:
         // overload trimming) do not apply when there is no video encoder.
         const bool isCfrRecording = !audioOnly && IsCfrRecording();
         const bool isWgcCfrRecording = !audioOnly && IsWgcCfrRecording();
+
+        const uint64_t pullTick = GetTickCount64();
+
+        // Adaptive ingestion reservoir. Deepening the pull lookahead is the only
+        // recovery for a consumer that overran the live capture edge: it freezes the
+        // pull target so the producers overtake the cursor again, with zero content
+        // loss and zero timeline change. Inactive for VFR/audio-only. The stop drain
+        // leaves the state untouched: it pulls at zero latency to the exact endpoint,
+        // and clearing the reservoir there would make the retained lead look like drift.
+        if (!forceDrain) {
+            const uint64_t reservoirTick = pullTick;
+            const bool reservoirActive = isCfrRecording;
+            const int64_t elapsedSinceEvalMs = audioIngestReservoirEvalTick == 0
+                                                   ? 0
+                                                   : static_cast<int64_t>(reservoirTick - audioIngestReservoirEvalTick);
+            audioIngestReservoirEvalTick = reservoirTick;
+            const int64_t observedHeadroomSamples =
+                audioIngestWorstHeadroomSamples.exchange(kNoAudioIngestHeadroom, std::memory_order_acq_rel);
+            const bool headroomObserved = observedHeadroomSamples != kNoAudioIngestHeadroom;
+            const int64_t observedHeadroomMs = headroomObserved ? (observedHeadroomSamples * 1000) / SAMPLE_RATE : 0;
+            const auto reservoirDecision = ce::audio::ComputeAudioIngestReservoir(
+                audioIngestReservoir, reservoirActive, headroomObserved, observedHeadroomMs, elapsedSinceEvalMs);
+            audioIngestReservoir.extraMs = reservoirDecision.extraMs;
+            audioIngestReservoir.healthyElapsedMs = reservoirDecision.healthyElapsedMs;
+            audioIngestReservoirExtraMs = reservoirDecision.extraMs;
+            audioIngestReservoirPeakMs = std::max(audioIngestReservoirPeakMs, reservoirDecision.extraMs);
+            const bool reservoirChanged = reservoirDecision.extraMs != audioIngestReservoirLoggedMs;
+            if (reservoirChanged && reservoirTick - audioIngestReservoirLogTick >= 1000) {
+                DLL_Log(
+                    "[PullAudio] Ingest reservoir %s: extra=%lldms (was %lldms) total=%lldms "
+                    "worstHeadroom=%lldms observed=%d atCap=%d peak=%lldms. Scheduling lookahead only - sample "
+                    "timeline positions, track lengths, and PTS are unchanged.",
+                    reservoirDecision.extraMs > audioIngestReservoirLoggedMs ? "deepened" : "relaxed",
+                    (long long)reservoirDecision.extraMs, (long long)audioIngestReservoirLoggedMs,
+                    (long long)(ce::audio::kDefaultSteadyAudioPullLatencyMs + reservoirDecision.extraMs),
+                    (long long)observedHeadroomMs, headroomObserved ? 1 : 0, reservoirDecision.atCap ? 1 : 0,
+                    (long long)audioIngestReservoirPeakMs);
+                audioIngestReservoirLoggedMs = reservoirDecision.extraMs;
+                audioIngestReservoirLogTick = reservoirTick;
+            }
+        }
+        const int64_t effectiveAudioPullLatencyMs = kSteadyAudioPullLatencyMs + audioIngestReservoirExtraMs;
+        const int64_t baseTargetLatencySamples = (effectiveAudioPullLatencyMs * SAMPLE_RATE) / 1000;
+        // Every track in this pass shares one target, so a per-track hold must request its
+        // raise against the same baseline; otherwise N tracks with the same shortfall would
+        // stack N raises and overshoot the reservoir.
+        const int64_t reservoirPassBaseMs = audioIngestReservoirExtraMs;
         const int64_t wallVideoMs = this->videoElapsedMs.load();
         int64_t encodedVideoMs = 0;
         int64_t audioTargetUs = videoTimelineUs;
@@ -3306,11 +3500,11 @@ public:
                 ce::audio::IsTrackAudioStartupSettled(trackBootstrapComplete[track], trackAllPrimed);
             int64_t trackAudioPullLatencyMs =
                 forceDrain ? 0
-                           : ce::audio::ComputeAudioPullLatencyMs(kSteadyAudioPullLatencyMs, trackStartupSettled,
+                           : ce::audio::ComputeAudioPullLatencyMs(effectiveAudioPullLatencyMs, trackStartupSettled,
                                                                   trackMaxObservedLateStartMs);
             if (isCfrRecording) {
                 trackAudioPullLatencyMs = ce::audio::ComputeSettledCfrAudioPullLatencyMs(
-                    trackAudioPullLatencyMs, trackStartupSettled, trackAllPrimed);
+                    trackAudioPullLatencyMs, trackStartupSettled, trackAllPrimed, effectiveAudioPullLatencyMs);
             }
             const int64_t trackAudioTargetUs = audioTargetUs - (std::max<int64_t>(trackAudioPullLatencyMs, 0) * 1000);
             const int64_t trackAudioTargetMs = trackAudioTargetUs > 0 ? (trackAudioTargetUs / 1000) : 0;
@@ -3320,7 +3514,7 @@ public:
 
             const int64_t targetSamples = ce::audio::ComputeDurationUsToSamples(trackAudioTargetUs, SAMPLE_RATE);
             const int64_t targetBufferedSamples = ce::audio::ComputeBufferedAudioTargetSamples(
-                SAMPLE_RATE, kBaseTargetLatencySamples, effectiveAudioTargetBufferLagMs, targetBufferedLagCapMs);
+                SAMPLE_RATE, baseTargetLatencySamples, effectiveAudioTargetBufferLagMs, targetBufferedLagCapMs);
 
             bool trackReadyForBootstrap = true;
             constexpr size_t kMinBootstrapRealSamples = static_cast<size_t>(SAMPLE_RATE / 40);  // 25ms
@@ -3482,15 +3676,54 @@ public:
                     }
                     break;
                 }
+                // A started source that is still delivering real packets is LATE, not silent.
+                // Exporting silence here is what permanently destroys its audio: the write
+                // cursor is pinned forward and every later packet is trimmed as timeline
+                // overlap while both cursors advance at wall rate. Hold the pull instead and
+                // deepen the reservoir by the shortfall so the producer can overtake again.
+                // The hold is bounded by the reservoir cap so a genuinely stuck source can
+                // never freeze a co-mixed track.
+                const int64_t sourceIngestIdleMs = src.lastRealPacketIngestTick == 0
+                                                       ? std::numeric_limits<int64_t>::max()
+                                                       : static_cast<int64_t>(pullTick - src.lastRealPacketIngestTick);
+                const bool sourceRecentlyDeliveredRealPackets =
+                    sourceIngestIdleMs <= ce::audio::kAudioIngestLiveSourceWindowMs;
+                if (!trackLargeBacklogDrain && !inactiveStartedAppSourceMaySilence && !finalStopDrain &&
+                    ce::audio::ShouldHoldCfrAudioPullForLateLiveSource(
+                        isCfrRecording, forceDrain, src.timelineValid, src.bootstrapComplete, !appCaptureRouteEnded,
+                        sourceRecentlyDeliveredRealPackets, samplesToEncode, bufferedTimelineSamples,
+                        audioIngestReservoirExtraMs)) {
+                    const int64_t shortfallSamples =
+                        samplesToEncode - static_cast<int64_t>(bufferedTimelineSamples);
+                    const int64_t shortfallMs = std::max<int64_t>(1, (shortfallSamples * 1000) / SAMPLE_RATE);
+                    audioIngestReservoirExtraMs =
+                        std::max(audioIngestReservoirExtraMs,
+                                 ce::audio::RaiseAudioIngestReservoirForShortfall(reservoirPassBaseMs, shortfallMs));
+                    audioIngestReservoir.extraMs = audioIngestReservoirExtraMs;
+                    audioIngestReservoir.healthyElapsedMs = 0;
+                    audioIngestReservoirPeakMs = std::max(audioIngestReservoirPeakMs, audioIngestReservoirExtraMs);
+                    deferForSourceBuffer = true;
+                    if (dropLogCounter++ % 500 == 0) {
+                        DLL_Log(
+                            "[PullAudio] Late live source hold: track=%d src=%zu buffered=%zu requested=%lld "
+                            "shortfall=%lldms idle=%lldms target=%lldms encoded=%lld reservoirExtra=%lldms. Holding "
+                            "the pull instead of exporting silence so late real audio is not destroyed as overlap.",
+                            track, srcIdx, bufferedTimelineSamples, samplesToEncode, shortfallMs,
+                            sourceIngestIdleMs == std::numeric_limits<int64_t>::max() ? -1 : sourceIngestIdleMs,
+                            trackAudioTargetMs, trackCursorSamples, audioIngestReservoirExtraMs);
+                    }
+                    break;
+                }
                 if (sparseStartedSourceMaySilence &&
                     bufferedTimelineSamples < static_cast<size_t>(std::max<int64_t>(samplesToEncode, 0)) &&
                     dropLogCounter++ % 500 == 0) {
                     DLL_Log(
                         "[PullAudio] Timeline source gap silence: track=%d src=%zu buffered=%zu requested=%lld "
-                        "target=%lldms encoded=%lld lookahead=%lldms inactiveApp=%d. Source contributes available "
-                        "samples plus silence for missing range after the ingestion reservoir.",
+                        "target=%lldms encoded=%lld lookahead=%lldms inactiveApp=%d idle=%lldms. Source contributes "
+                        "available samples plus silence for missing range after the ingestion reservoir.",
                         track, srcIdx, bufferedTimelineSamples, samplesToEncode, trackAudioTargetMs, trackCursorSamples,
-                        trackAudioPullLatencyMs, inactiveStartedAppSourceMaySilence ? 1 : 0);
+                        trackAudioPullLatencyMs, inactiveStartedAppSourceMaySilence ? 1 : 0,
+                        sourceIngestIdleMs == std::numeric_limits<int64_t>::max() ? -1 : sourceIngestIdleMs);
                 }
             }
             if (deferForSourceBuffer) {
@@ -3577,7 +3810,7 @@ public:
                     size_t rbAvailable = src.ringBuffer->GetAvailable() / CHANNELS;
                     const int64_t expectedLeadSamplesForCorrection =
                         std::max<int64_t>(targetLatencySamples,
-                                          kBaseTargetLatencySamples +
+                                          baseTargetLatencySamples +
                                               (effectiveSourceClockDriftLagMs * SAMPLE_RATE / 1000));
                     const int64_t appDrainBudgetSamples = static_cast<int64_t>(rbAvailable);
                     const auto appAudioDrainBudgetDecision = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
@@ -4854,13 +5087,21 @@ public:
                     trackAudioPullLatencyMs, wgcSelectedContentLeadMs, wgcVisualContentLagMs,
                     wgcEncoderBottlenecked ? 1 : 0, wgcDeliveredFps, wgcTargetFps);
 
-                if (isCfrRecording && trackStartupSettled && residualSamples != 0) {
+                // A deepened ingestion reservoir moves the pull TARGET back, so the already
+                // exported cursor legitimately leads it by up to the accumulated extra
+                // lookahead until wall time catches up. That lead is scheduling state, not
+                // drift: sample positions never moved. A cursor BEHIND the target is still a
+                // strict fault, and so is any lead the reservoir cannot explain.
+                const int64_t reservoirLeadAllowanceSamples =
+                    (std::max<int64_t>(0, audioIngestReservoirExtraMs) * SAMPLE_RATE) / 1000;
+                if (isCfrRecording && trackStartupSettled &&
+                    (residualSamples < 0 || residualSamples > reservoirLeadAllowanceSamples)) {
                     DLL_Log(
                         "[A/V ZERO DRIFT WARNING] Track %d residual_samples=%+lld residual_us=%+lld "
                         "target_samples=%lld cursor_samples=%lld target_us=%lld cursor_us=%lld "
-                        "audio_vs_encoded_us=%+lld audio_vs_target_us=%+lld",
+                        "audio_vs_encoded_us=%+lld audio_vs_target_us=%+lld reservoirExtraMs=%lld",
                         track, residualSamples, residualUs, targetSamples, audioSamples, trackAudioTargetUs, audioUs,
-                        audioVsEncodedUs, audioVsTargetUs);
+                        audioVsEncodedUs, audioVsTargetUs, audioIngestReservoirExtraMs);
                 }
 
                 if (std::abs(latencyAdjustedAvDrift) > 100) {
@@ -5965,10 +6206,19 @@ private:
                                     packetStartSamples += audioEqualizationDelaySamples[srcIdx];
                                     packetStartSamples = ce::audio::ApplyStartupPacketTimelineRebaseOffset(
                                         packetStartSamples, static_cast<int64_t>(src.startupRebasedGapSamples));
+                                    packetStartSamples += src.timelineResyncOffsetSamples;
+                                    const uint64_t ingestTick = GetTickCount64();
+                                    src.lastRealPacketIngestTick = ingestTick;
                                     if (srcIdx < encodedSamplesPerSource.size()) {
                                         const int64_t encodedCursorSamples =
                                             ce::audio::ResolveSourceTimelineWriteCursor(
                                                 src.qpcAlignedWrittenSamples, encodedSamplesPerSource[srcIdx]);
+                                        // Ingest headroom: how far this packet's content still sits AHEAD of the
+                                        // already-exported cursor. Negative means the consumer overran the capture
+                                        // edge and the packet is about to be destroyed as timeline overlap. The
+                                        // pull side turns the worst observation into extra scheduling lookahead.
+                                        PublishAudioIngestHeadroom(packetStartSamples - encodedSamplesPerSource[srcIdx],
+                                                                   targetFmt.sampleRate);
                                         if (encodedCursorSamples > static_cast<int64_t>(src.qpcAlignedWrittenSamples)) {
                                             const int64_t cursorAdvance =
                                                 encodedCursorSamples -
@@ -6101,6 +6351,15 @@ private:
                                                 static_cast<int>(packetTimelineFadeSamples);
                                         }
                                     }
+
+                                    // Consumer-overrun attribution. Losing the WHOLE packet to timeline overlap
+                                    // is not a benign de-duplication: it is real captured audio destroyed because
+                                    // the exported cursor ran past the capture edge. Both advance at wall rate, so
+                                    // without intervention the deficit is permanent and the source stays silent
+                                    // for the rest of the recording.
+                                    ServiceSourceIngestStarvation(src, srcIdx, packetStartSamples,
+                                                                  timelineAdjustment.overlapSamples, writeSamples,
+                                                                  outSamples, targetFmt.sampleRate, ingestTick);
 
                                     if ((timelineAdjustment.gapSamples >= (targetFmt.sampleRate / 200) ||
                                          timelineAdjustment.overlapSamples >= (targetFmt.sampleRate / 200))) {

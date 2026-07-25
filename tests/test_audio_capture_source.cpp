@@ -629,3 +629,48 @@ TEST(AudioCaptureSourceTest, CfrSourceGapsAreRouteLocalSilenceWithoutDestructive
     EXPECT_EQ(source.substr(cursorGuard, exportedCursor - cursorGuard).find("AudioConfig::AppAudio"),
               std::string::npos);
 }
+
+// Regression guard for the `logs/audiodeath` consumer-overrun latch: one transient overrun under
+// deliberate encoder overload silenced every audio track for the rest of the recording, because
+// the pull exported silence for a late-but-live source, the write cursor was pinned forward, and
+// every later packet was destroyed as timeline overlap. Pins the three wired-up pieces of the fix:
+// the ingest-side headroom measurement, the pull-side adaptive reservoir, and the late-live-source
+// hold that replaces destructive silence.
+TEST(AudioCaptureSourceTest, LateLiveSourceHoldsThePullAndDeepensTheIngestReservoir) {
+    const std::string source = ReadSource("mediaengine.cpp");
+    ASSERT_FALSE(source.empty());
+
+    // Ingest side publishes headroom from the pre-pin exported cursor and attributes destroyed audio.
+    const size_t loopBegin = source.find("void AudioLoop()");
+    ASSERT_NE(loopBegin, std::string::npos);
+    EXPECT_NE(source.find("PublishAudioIngestHeadroom(packetStartSamples - encodedSamplesPerSource[srcIdx]", loopBegin),
+              std::string::npos);
+    EXPECT_NE(source.find("ServiceSourceIngestStarvation(src, srcIdx, packetStartSamples", loopBegin),
+              std::string::npos);
+    EXPECT_NE(source.find("packetStartSamples += src.timelineResyncOffsetSamples;", loopBegin), std::string::npos);
+
+    // Pull side runs the reservoir controller and derives BOTH the pull latency and the buffered
+    // target from it, so the drift/backlog compensation lane cannot fight a deepened reservoir.
+    const size_t pullBegin = source.find("void PullAndEncodeAudio(");
+    ASSERT_NE(pullBegin, std::string::npos);
+    EXPECT_NE(source.find("ce::audio::ComputeAudioIngestReservoir(", pullBegin), std::string::npos);
+    EXPECT_NE(source.find("const int64_t effectiveAudioPullLatencyMs = kSteadyAudioPullLatencyMs +", pullBegin),
+              std::string::npos);
+    EXPECT_NE(source.find("ComputeAudioPullLatencyMs(effectiveAudioPullLatencyMs", pullBegin), std::string::npos);
+    EXPECT_NE(source.find("SAMPLE_RATE, baseTargetLatencySamples, effectiveAudioTargetBufferLagMs", pullBegin),
+              std::string::npos);
+
+    // The hold must be evaluated before the timeline-gap silence path, otherwise late real audio is
+    // still exported as silence and then destroyed.
+    const size_t hold = source.find("ce::audio::ShouldHoldCfrAudioPullForLateLiveSource(", pullBegin);
+    const size_t gapSilence = source.find("[PullAudio] Timeline source gap silence:", pullBegin);
+    ASSERT_NE(hold, std::string::npos);
+    ASSERT_NE(gapSilence, std::string::npos);
+    EXPECT_LT(hold, gapSilence);
+    EXPECT_NE(source.find("ce::audio::RaiseAudioIngestReservoirForShortfall(reservoirPassBaseMs", pullBegin),
+              std::string::npos);
+
+    // The stop drain must never clear the reservoir; the retained lead would look like drift.
+    EXPECT_NE(source.find("if (!forceDrain) {\n            const uint64_t reservoirTick = pullTick;"),
+              std::string::npos);
+}

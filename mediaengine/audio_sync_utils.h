@@ -15,6 +15,120 @@ constexpr int64_t kDefaultSteadyAudioPullLatencyMs = 60;
 constexpr int64_t kSettledCfrAudioPullLatencyMs = kDefaultSteadyAudioPullLatencyMs;
 constexpr int64_t kDefaultAudioPullQuantumSamples = 240;
 
+// ---------------------------------------------------------------------------
+// Adaptive CFR audio ingestion reservoir
+// ---------------------------------------------------------------------------
+// The fixed steady reservoir above is the ONLY margin between the CFR consumer
+// and the live capture edge. Its realized headroom is
+// `reservoirMs - captureDeliveryLatencyMs`, typically only 40-70 ms.
+//
+// If a single transient (encoder overload, DPC storm, scheduler hiccup) lets the
+// consumer overrun that margin, the track exports silence for the missing range
+// and the per-source write cursor is pinned forward to the exported cursor. Every
+// later packet then places BEHIND that cursor, is trimmed as timeline overlap, and
+// is destroyed. Because the exported cursor and the capture edge both advance at
+// exactly wall rate, the resulting deficit can never repay itself: the source goes
+// permanently silent while packet delivery stays perfectly healthy, and the file
+// still has sample-exact track lengths. Session `logs/audiodeath` lost ~3.5 minutes
+// of every audio track this way after one ~67 ms overrun.
+//
+// Deepening the reservoir is SYNC-NEUTRAL BY CONSTRUCTION: it changes only WHEN
+// samples are pulled (the pull target), never WHERE they land on the timeline
+// (the track cursor). Freezing the pull target lets the producer overtake the
+// consumer again with zero content loss, zero PTS change, and zero pitch change.
+constexpr int64_t kAudioIngestMinHeadroomMs = 25;
+constexpr int64_t kAudioIngestMaxExtraReservoirMs = 500;
+constexpr int64_t kAudioIngestReservoirMarginMs = 20;
+constexpr int64_t kAudioIngestReservoirDecayIntervalMs = 2000;
+constexpr int64_t kAudioIngestReservoirDecayStepMs = 5;
+constexpr int64_t kAudioIngestReservoirDecaySlackMs = 25;
+// A source that has not delivered a real packet for this long is genuinely idle
+// (silent app, stopped endpoint) rather than late; its missing range stays
+// timeline silence and must never block a co-mixed track.
+constexpr int64_t kAudioIngestLiveSourceWindowMs = 400;
+
+struct AudioIngestReservoirState {
+    int64_t extraMs = 0;
+    int64_t healthyElapsedMs = 0;
+};
+
+struct AudioIngestReservoirDecision {
+    int64_t extraMs = 0;
+    int64_t healthyElapsedMs = 0;
+    bool raised = false;
+    bool decayed = false;
+    bool atCap = false;
+};
+
+// Instant response path: a live source that is short by `shortfallMs` needs at
+// least that much extra scheduling lookahead plus a margin. Ratchets up only.
+inline int64_t RaiseAudioIngestReservoirForShortfall(int64_t currentExtraMs, int64_t shortfallMs,
+                                                     int64_t marginMs = kAudioIngestReservoirMarginMs,
+                                                     int64_t maxExtraMs = kAudioIngestMaxExtraReservoirMs) {
+    const int64_t boundedMaxMs = std::max<int64_t>(0, maxExtraMs);
+    const int64_t boundedCurrentMs = std::clamp<int64_t>(currentExtraMs, 0, boundedMaxMs);
+    if (shortfallMs <= 0) {
+        return boundedCurrentMs;
+    }
+
+    return std::min<int64_t>(boundedMaxMs, boundedCurrentMs + shortfallMs + std::max<int64_t>(0, marginMs));
+}
+
+// Steady-state controller: `observedHeadroomMs` is the worst (minimum) distance
+// between a freshly ingested packet's timeline placement and the already-exported
+// cursor since the previous evaluation. Negative means the consumer already
+// overran the producer and content is being destroyed.
+inline AudioIngestReservoirDecision ComputeAudioIngestReservoir(
+    const AudioIngestReservoirState& state, bool active, bool headroomObserved, int64_t observedHeadroomMs,
+    int64_t elapsedMs, int64_t minHeadroomMs = kAudioIngestMinHeadroomMs,
+    int64_t maxExtraMs = kAudioIngestMaxExtraReservoirMs, int64_t marginMs = kAudioIngestReservoirMarginMs,
+    int64_t decayIntervalMs = kAudioIngestReservoirDecayIntervalMs,
+    int64_t decayStepMs = kAudioIngestReservoirDecayStepMs, int64_t decaySlackMs = kAudioIngestReservoirDecaySlackMs) {
+    AudioIngestReservoirDecision decision;
+    const int64_t boundedMaxMs = std::max<int64_t>(0, maxExtraMs);
+    decision.extraMs = std::clamp<int64_t>(state.extraMs, 0, boundedMaxMs);
+    decision.healthyElapsedMs = std::max<int64_t>(0, state.healthyElapsedMs);
+    if (!active) {
+        decision.extraMs = 0;
+        decision.healthyElapsedMs = 0;
+        return decision;
+    }
+    if (!headroomObserved) {
+        // No live placement evidence this window (every source idle/silent).
+        // Hold the current reservoir; do not decay on missing evidence.
+        decision.atCap = decision.extraMs >= boundedMaxMs;
+        return decision;
+    }
+
+    const int64_t boundedMinHeadroomMs = std::max<int64_t>(0, minHeadroomMs);
+    if (observedHeadroomMs < boundedMinHeadroomMs) {
+        const int64_t raisedMs = RaiseAudioIngestReservoirForShortfall(
+            decision.extraMs, boundedMinHeadroomMs - observedHeadroomMs, marginMs, boundedMaxMs);
+        decision.raised = raisedMs > decision.extraMs;
+        decision.extraMs = raisedMs;
+        decision.healthyElapsedMs = 0;
+        decision.atCap = decision.extraMs >= boundedMaxMs;
+        return decision;
+    }
+
+    if (decision.extraMs <= 0 || observedHeadroomMs < boundedMinHeadroomMs + std::max<int64_t>(0, decaySlackMs)) {
+        decision.healthyElapsedMs = 0;
+        return decision;
+    }
+
+    decision.healthyElapsedMs += std::max<int64_t>(0, elapsedMs);
+    const int64_t boundedIntervalMs = std::max<int64_t>(1, decayIntervalMs);
+    if (decision.healthyElapsedMs >= boundedIntervalMs) {
+        const int64_t steps = decision.healthyElapsedMs / boundedIntervalMs;
+        decision.healthyElapsedMs -= steps * boundedIntervalMs;
+        const int64_t decayMs = steps * std::max<int64_t>(1, decayStepMs);
+        const int64_t decayedMs = std::max<int64_t>(0, decision.extraMs - decayMs);
+        decision.decayed = decayedMs < decision.extraMs;
+        decision.extraMs = decayedMs;
+    }
+    return decision;
+}
+
 struct PacketTimelineAdjustment {
     int64_t gapSamples = 0;
     int64_t overlapSamples = 0;
@@ -340,7 +454,9 @@ inline int64_t ComputeAudioPullLatencyMs(int64_t steadyLatencyMs, bool allSource
     }
 
     const int64_t startupLatencyMs = std::max<int64_t>(baseLatencyMs + 30, maxObservedLateStartMs + 20);
-    return std::clamp<int64_t>(startupLatencyMs, baseLatencyMs, 120);
+    // The startup cap must never fall below the steady base: an adaptive ingestion reservoir can
+    // push the base past 120 ms, and std::clamp with lo > hi is undefined behavior.
+    return std::clamp<int64_t>(startupLatencyMs, baseLatencyMs, std::max<int64_t>(baseLatencyMs, 120));
 }
 
 inline int64_t ComputeSettledCfrAudioPullLatencyMs(int64_t currentLatencyMs, bool trackStartupSettled,
@@ -932,6 +1048,42 @@ inline bool ShouldTreatStartedTimelineSourceShortfallAsSilence(bool sparseStarte
         return false;
     }
     return bufferedTimelineSamples < static_cast<size_t>(requestedSamples);
+}
+
+// A started source whose real content is merely LATE is not a silent source. It is
+// still delivering packets; the consumer simply ran past the capture edge. Holding
+// the pull (which only defers scheduling, never timeline placement) lets the
+// producer overtake the cursor again instead of exporting silence and then
+// destroying the real audio as timeline overlap. The hold is bounded by the
+// reservoir cap so a genuinely stuck source can never freeze a co-mixed track.
+inline bool ShouldHoldCfrAudioPullForLateLiveSource(bool isCfrRecording, bool forceDrain, bool sourceTimelineValid,
+                                                    bool sourceBootstrapComplete, bool sourceCaptureActive,
+                                                    bool sourceRecentlyDeliveredRealPackets, int64_t requestedSamples,
+                                                    size_t bufferedTimelineSamples, int64_t reservoirExtraMs,
+                                                    int64_t maxReservoirExtraMs = kAudioIngestMaxExtraReservoirMs) {
+    if (!isCfrRecording || forceDrain || !sourceTimelineValid || !sourceBootstrapComplete || !sourceCaptureActive ||
+        !sourceRecentlyDeliveredRealPackets || requestedSamples <= 0) {
+        return false;
+    }
+    if (reservoirExtraMs >= std::max<int64_t>(0, maxReservoirExtraMs)) {
+        return false;
+    }
+
+    return bufferedTimelineSamples < static_cast<size_t>(requestedSamples);
+}
+
+// Last resort. Only reachable when the reservoir is already at its cap and a live
+// source has still had every packet destroyed as timeline overlap for this long.
+// Re-anchoring costs that source a one-time content skip equal to the unrecoverable
+// deficit; the alternative is silence for the rest of the recording. Track lengths,
+// PTS, and every other source stay untouched.
+inline bool ShouldResyncStarvedLiveAudioSource(bool isCfrRecording, bool forceDrain, bool reservoirAtCap,
+                                               bool sourceRecentlyDeliveredRealPackets, int64_t starvedElapsedMs,
+                                               int64_t deficitSamples, int64_t minStarvedMs = 1500,
+                                               int64_t minDeficitSamples = 480) {
+    return isCfrRecording && !forceDrain && reservoirAtCap && sourceRecentlyDeliveredRealPackets &&
+           starvedElapsedMs >= std::max<int64_t>(0, minStarvedMs) &&
+           deficitSamples >= std::max<int64_t>(1, minDeficitSamples);
 }
 
 inline PacketTimelineAdjustment ComputePacketTimelineAdjustment(int64_t packetStartSamples,
