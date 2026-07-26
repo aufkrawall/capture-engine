@@ -341,6 +341,22 @@ TEST(CaptureCoordinatorSourceTest, WgcAndDuplicationStartupPrewarmsBeforeTransac
     EXPECT_NE(encoder.find("inputFrameCount++", encodeBegin), std::string::npos);
 }
 
+TEST(CaptureCoordinatorSourceTest, WgcStartupSmoothnessHistoryIsProtectedBeforeLiveDebtPruning) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t pruneHelper = source.find("auto pruneStaleWgcVisualDebt");
+    const size_t startupProtection = source.find("ShouldProtectWgcStartupSmoothnessHistory", pruneHelper);
+    const size_t liveDebtFloor = source.find("GetWgcLiveVisualDebtFloorQpcForMode", startupProtection);
+    ASSERT_NE(pruneHelper, std::string::npos);
+    ASSERT_NE(startupProtection, std::string::npos);
+    ASSERT_NE(liveDebtFloor, std::string::npos);
+    EXPECT_LT(pruneHelper, startupProtection);
+    EXPECT_LT(startupProtection, liveDebtFloor);
+    EXPECT_NE(source.find("WGC startup history protected from the shallower live-debt window", startupProtection),
+              std::string::npos);
+}
+
 TEST(CaptureCoordinatorSourceTest, ProvenStandbyFrameAndInjectRepeatSurviveHandoffBoundary) {
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());

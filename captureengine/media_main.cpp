@@ -3615,6 +3615,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     int64_t wgcAvSyncStartupEffectiveDelayQpc = 0;
     int64_t wgcStartupReserveWaitStartQpc = 0;
     uint32_t wgcStartupReserveWaitCount = 0;
+    bool wgcStartupHistoryProtectionLogged = false;
     int64_t wgcStartupReserveWaitInitialSpanUs = 0;
     uint32_t wgcStartupReserveWaitFreshenedMax = 0;
     uint32_t wgcFreshWarmupFrameCount = 0;
@@ -3907,6 +3908,7 @@ void EncoderThreadFunc(const AppConfig& config) {
         wgcStartupPreLiveDelayDroppedFrames = 0;
         wgcStartupReserveWaitStartQpc = 0;
         wgcStartupReserveWaitCount = 0;
+        wgcStartupHistoryProtectionLogged = false;
         wgcStartupReserveWaitInitialSpanUs = 0;
         wgcStartupReserveWaitFreshenedMax = 0;
         wgcFreshWarmupFrameCount = 0;
@@ -4117,6 +4119,13 @@ void EncoderThreadFunc(const AppConfig& config) {
         return ce::capture_policy::ShouldAttemptWgcStartupSmoothnessBuffer(
             config.wgcSmoothnessBufferEnabled, config.video.useVFR, wgcSmoothnessDelayDesired, targetIntervalTicks,
             getWgcSmoothnessRetainedFramesBudget());
+    };
+    const auto getWgcStartupSmoothnessTargetDelayQpc = [&](bool attempted) -> int64_t {
+        return attempted
+                   ? ce::capture_policy::GetWgcStartupSmoothnessTargetDelayQpc(
+                         getWgcSmoothnessRetainedFramesBudget(), targetIntervalTicks, getWgcSmoothnessOutputFps(),
+                         config.wgcSmoothnessBufferMaxMs)
+                   : 0;
     };
     const auto getWgcSmoothnessBufferReason = [&]() -> const char* {
         if (!config.wgcSmoothnessBufferEnabled) {
@@ -4661,6 +4670,19 @@ void EncoderThreadFunc(const AppConfig& config) {
                 return 0;
             }
             const bool encoderLimitedSmoothnessMode = isWgcEncoderLimitedSmoothnessMode();
+            const bool startupSmoothnessAttempted = shouldAttemptWgcStartupSmoothnessBufferNow();
+            const int64_t startupSmoothnessTargetQpc = getWgcStartupSmoothnessTargetDelayQpc(startupSmoothnessAttempted);
+            const int64_t liveVisualDebtLimitQpc = ce::capture_policy::GetWgcLiveVisualDebtLimitQpcForMode(
+                targetIntervalTicks, qpcFreq.QuadPart, encoderLimitedSmoothnessMode);
+            if (ce::capture_policy::ShouldProtectWgcStartupSmoothnessHistory(
+                    recordingOutputLive, startupSmoothnessAttempted, startupSmoothnessTargetQpc,
+                    liveVisualDebtLimitQpc)) {
+                if (!wgcStartupHistoryProtectionLogged) {
+                    wgcStartupHistoryProtectionLogged = true;
+                    LogInfo("[EncoderThread] WGC startup history protected from the shallower live-debt window");
+                }
+                return 0;
+            }
             const int64_t intentionalContentDelayQpc = getWgcEffectiveContentDelayQpc();
             const int64_t visualDebtFloorQpc = ce::capture_policy::GetWgcLiveVisualDebtFloorQpcForMode(
                 liveNowQpc, targetIntervalTicks, qpcFreq.QuadPart, encoderLimitedSmoothnessMode,
@@ -6696,28 +6718,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                             "screen_grab", wgcCfrPhaseLock, effectiveSelectionTargetQpc, phaseReferenceQpc);
                     }
                     if (useInjectParityDelayPacing) {
-                        // Fixed-latency jitter-buffer playout for the active A/V content delay. WGC
-                        // delivery is bursty/gappy under a GPU-bound VRR borderless source: DWM hands
-                        // frames to the capture pool in late batches even when the game itself presents
-                        // perfectly smoothly (real signature: game present max-interval ~10 ms while WGC
-                        // delivery dips to 24-110 fps with 170-200 ms callback gaps). The previous
-                        // oldest-first + count-based depth cap turned that delivery jitter into harsh
-                        // stutter -- a ~115 fps source manufactured ~20 dups AND ~14 drops in the SAME
-                        // second (simultaneous drop+dup churn), and oldest-first emission rubber-banded
-                        // the realized content delay 0..243 ms against a 30 ms target.
-                        //
-                        // Instead select the buffered frame nearest the grid playout target
-                        // (gridTick - contentDelay): drop frames the audio timeline has already passed,
-                        // emit the slot frame once it has aged in, otherwise hold (an evenly distributed
-                        // source-limited / delivery-gap repeat) leaving newer frames as reserve. This
-                        // consumes unique frames at the SOURCE rate by construction (no over-drain, no
-                        // clustered "too new" holds like the old grid-rate reservoir) and pins the
-                        // realized delay near the target regardless of delivery burstiness. After a true
-                        // gap it resumes at the correct delay by dropping the audio-passed backlog
-                        // (replaying it would put video behind audio) so the in-gap freeze stays clean.
-                        // All uniform-playout decisions run in the SMOOTHED selection-timestamp
-                        // domain (strictly monotonic, quantization noise removed); raw timestamps
-                        // stay available for sync validation, stop boundaries, and diagnostics.
+                        // Fixed-latency jitter-buffer playout selects nearest to gridTick-contentDelay.
+                        // Audio-passed surplus drops, too-new frames remain reserve, and true gaps hold while
+                        // preserving CFR PTS/content A/V delay; raw timestamps remain for validation.
                         while (!bufferedWgcFrames.empty() && lastEmittedWgcSelectionQpc > 0 &&
                                GetFrameSelectionTimestamp(bufferedWgcFrames.front()) > 0 &&
                                GetFrameSelectionTimestamp(bufferedWgcFrames.front()) <= lastEmittedWgcSelectionQpc) {
@@ -8046,10 +8049,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         smoothnessDesiredFrames > 0 && smoothnessRetainedFrames < smoothnessDesiredFrames;
                     // Full buildable reservoir target (audio-latency path uses this unchanged).
                     const int64_t smoothnessReservoirTargetDelayQpc =
-                        smoothnessStartupAttempted ? ce::capture_policy::GetWgcStartupSmoothnessTargetDelayQpc(
-                                                         smoothnessRetainedFrames, targetIntervalTicks,
-                                                         getWgcSmoothnessOutputFps(), config.wgcSmoothnessBufferMaxMs)
-                                                   : 0;
+                        getWgcStartupSmoothnessTargetDelayQpc(smoothnessStartupAttempted);
                     // Resolve the smoothness FLOOR once, here at the startup barrier, from measured pre-live
                     // WGC delivery jitter (auto) or the explicit config value, clamped to the buildable
                     // reservoir. It is then HELD FIXED for the session. For the audio-latency path

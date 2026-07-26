@@ -585,6 +585,53 @@ TEST(CapturePipelinePolicyTest, WgcLiveSelectionTargetNeverFastForwardsPastCfrGr
         policy::ShouldPreferEarlierFreshWgcFrameToPreserveReserve(1000, 1040, 1020, 100, true, true, true, true));
 }
 
+TEST(CapturePipelinePolicyTest, WgcStartupSmoothnessHistoryOutlivesShallowerLiveDebtWindow) {
+    constexpr int64_t kQpcPerSecond = 1000000;
+    constexpr int64_t kOutputIntervalQpc = 8333;
+    constexpr int64_t kRenderDelayQpc = 28000;
+    constexpr int64_t kSmoothnessTargetQpc = 300000;
+    constexpr int64_t kStartupContentDelayQpc = kRenderDelayQpc + kSmoothnessTargetQpc;
+    constexpr int64_t kLatestQpc = 1399000;
+    constexpr int64_t kLiveNowQpc = 1400000;
+
+    const int64_t liveDebtLimitQpc =
+        policy::GetWgcLiveVisualDebtLimitQpcForMode(kOutputIntervalQpc, kQpcPerSecond, false);
+    ASSERT_EQ(liveDebtLimitQpc, 250000);
+    EXPECT_TRUE(policy::ShouldProtectWgcStartupSmoothnessHistory(
+        /*recordingOutputLive=*/false, /*startupSmoothnessAttempted=*/true, kSmoothnessTargetQpc,
+        liveDebtLimitQpc));
+    EXPECT_FALSE(policy::ShouldProtectWgcStartupSmoothnessHistory(
+        /*recordingOutputLive=*/true, /*startupSmoothnessAttempted=*/true, kSmoothnessTargetQpc,
+        liveDebtLimitQpc));
+    EXPECT_FALSE(policy::ShouldProtectWgcStartupSmoothnessHistory(
+        /*recordingOutputLive=*/false, /*startupSmoothnessAttempted=*/false, kSmoothnessTargetQpc,
+        liveDebtLimitQpc));
+    EXPECT_FALSE(policy::ShouldProtectWgcStartupSmoothnessHistory(
+        /*recordingOutputLive=*/false, /*startupSmoothnessAttempted=*/true, liveDebtLimitQpc,
+        liveDebtLimitQpc));
+
+    std::vector<int64_t> fullHistory;
+    for (int64_t timestampQpc = 1000000; timestampQpc <= kLatestQpc; timestampQpc += 7000) {
+        fullHistory.push_back(timestampQpc);
+    }
+    const auto fullSelection = policy::SelectWgcStartupReserveCandidate(
+        fullHistory.data(), fullHistory.size(), kStartupContentDelayQpc, kOutputIntervalQpc / 2);
+    EXPECT_TRUE(fullSelection.usedDelayReserve);
+
+    const int64_t oldLiveDebtFloorQpc = policy::GetWgcLiveVisualDebtFloorQpcForMode(
+        kLiveNowQpc, kOutputIntervalQpc, kQpcPerSecond, false, kRenderDelayQpc);
+    std::vector<int64_t> prematurelyPrunedHistory;
+    for (const int64_t timestampQpc : fullHistory) {
+        if (timestampQpc >= oldLiveDebtFloorQpc) {
+            prematurelyPrunedHistory.push_back(timestampQpc);
+        }
+    }
+    const auto prunedSelection = policy::SelectWgcStartupReserveCandidate(
+        prematurelyPrunedHistory.data(), prematurelyPrunedHistory.size(), kStartupContentDelayQpc,
+        kOutputIntervalQpc / 2);
+    EXPECT_FALSE(prunedSelection.usedDelayReserve);
+}
+
 TEST(CapturePipelinePolicyTest, WgcCfrRejectsFramesTooNewForSlot) {
     EXPECT_FALSE(policy::IsWgcFrameTooNewForCfrSlot(1299, 1000, 100));
     EXPECT_FALSE(policy::IsWgcFrameTooNewForCfrSlot(1300, 1000, 100));
@@ -727,4 +774,3 @@ TEST(CapturePipelinePolicyTest, WgcActiveDelaySoftLateTargetProtectsHealthyWindo
                                                         policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000));
     EXPECT_TRUE(score.Accepted());
 }
-

@@ -104,14 +104,25 @@ inline bool IsWgcEncoderLimitedSmoothnessMode(bool encoderBottlenecked, bool enc
            (overloadFlags & (kEncoderOverloadFlagEncoder | kEncoderOverloadFlagMux)) != 0;
 }
 
+inline int64_t GetWgcLiveVisualDebtLimitQpcForMode(int64_t targetIntervalTicks, int64_t qpcTicksPerSecond,
+                                                   bool encoderLimitedSmoothnessMode) {
+    return encoderLimitedSmoothnessMode
+               ? GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcTicksPerSecond,
+                                              kWgcEncoderLimitedLiveVisualDebtMs,
+                                              kWgcEncoderLimitedLiveVisualDebtFrames)
+               : GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcTicksPerSecond);
+}
+
 inline uint32_t GetWgcLiveVisualDebtLimitTicksForMode(int64_t targetIntervalTicks, int64_t qpcTicksPerSecond,
                                                       bool encoderLimitedSmoothnessMode) {
-    if (!encoderLimitedSmoothnessMode) {
-        return GetWgcLiveVisualDebtLimitTicks(targetIntervalTicks, qpcTicksPerSecond);
+    const int64_t debtLimitQpc =
+        GetWgcLiveVisualDebtLimitQpcForMode(targetIntervalTicks, qpcTicksPerSecond, encoderLimitedSmoothnessMode);
+    if (targetIntervalTicks <= 0 || debtLimitQpc <= 0) {
+        return 0;
     }
 
-    return GetWgcLiveVisualDebtLimitTicks(targetIntervalTicks, qpcTicksPerSecond, kWgcEncoderLimitedLiveVisualDebtMs,
-                                          kWgcEncoderLimitedLiveVisualDebtFrames);
+    return std::max<uint32_t>(1u,
+                              static_cast<uint32_t>((debtLimitQpc + targetIntervalTicks - 1) / targetIntervalTicks));
 }
 
 inline uint32_t GetWgcLiveVisualDebtExcessTicks(uint32_t outputShortfallTicks, int64_t targetIntervalTicks,
@@ -172,10 +183,7 @@ inline int64_t GetWgcLiveVisualDebtFloorQpcForMode(int64_t liveNowQpc, int64_t t
                                                    int64_t qpcTicksPerSecond, bool encoderLimitedSmoothnessMode,
                                                    int64_t intentionalContentDelayQpc = 0) {
     const int64_t debtLimitQpc =
-        encoderLimitedSmoothnessMode
-            ? GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcTicksPerSecond, kWgcEncoderLimitedLiveVisualDebtMs,
-                                           kWgcEncoderLimitedLiveVisualDebtFrames)
-            : GetWgcLiveVisualDebtLimitQpc(targetIntervalTicks, qpcTicksPerSecond);
+        GetWgcLiveVisualDebtLimitQpcForMode(targetIntervalTicks, qpcTicksPerSecond, encoderLimitedSmoothnessMode);
     if (liveNowQpc <= 0 || debtLimitQpc <= 0) {
         return 0;
     }
@@ -186,6 +194,18 @@ inline int64_t GetWgcLiveVisualDebtFloorQpcForMode(int64_t liveNowQpc, int64_t t
     }
     const int64_t maximumFrameAgeQpc = contentDelayQpc + debtLimitQpc;
     return liveNowQpc > maximumFrameAgeQpc ? (liveNowQpc - maximumFrameAgeQpc) : 0;
+}
+
+inline bool ShouldProtectWgcStartupSmoothnessHistory(bool recordingOutputLive, bool startupSmoothnessAttempted,
+                                                     int64_t smoothnessTargetDelayQpc,
+                                                     int64_t liveVisualDebtLimitQpc) {
+    // Live visual-debt pruning is intentionally shallower than the optional startup jitter reservoir
+    // (250 ms versus a 300 ms default). Before the startup contract locks the smoothness delay, applying
+    // that live ceiling makes the requested reservoir mathematically unreachable and forces the
+    // partial-span fallback. Preserve the bounded pre-live history until the transactional contract
+    // selects its frame; the retained-frame cap still owns memory pressure.
+    return !recordingOutputLive && startupSmoothnessAttempted && smoothnessTargetDelayQpc > 0 &&
+           liveVisualDebtLimitQpc > 0 && smoothnessTargetDelayQpc > liveVisualDebtLimitQpc;
 }
 
 inline int64_t ClampWgcSelectionTargetToLiveQpc(
