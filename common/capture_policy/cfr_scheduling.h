@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <algorithm>
+#include <cmath>
 
 #include "constants.h"
 
@@ -387,12 +388,24 @@ inline bool IsWgcSourceRecoveredEnoughForSmoothAudioLeadCatchup(uint32_t outputF
            noFreshTickPermille < kWgcRecoveryEmptyTickPermille;
 }
 
-inline uint32_t GetWgcFreshCatchupBudgetThisLoop(uint32_t catchupTicksThisLoop) {
-    (void)catchupTicksThisLoop;
-    // WGC CFR does not spend historical shortfall by encoding extra fresh
-    // frames.  Extra debt is represented as visual holds/drops so audio remains
-    // continuous and source content never fast-forwards.
-    return 0u;
+inline uint32_t GetWgcFreshCatchupBudgetThisLoop(uint32_t catchupTicksThisLoop, bool encoderBottlenecked,
+                                                 bool encoderActivelyTooSlow, double freshServiceMs,
+                                                 double frameIntervalMs, size_t bufferedWgcFrames,
+                                                 size_t reserveFrames) {
+    if (catchupTicksThisLoop <= 1u || encoderBottlenecked || encoderActivelyTooSlow ||
+        !std::isfinite(freshServiceMs) || !std::isfinite(frameIntervalMs) || freshServiceMs <= 0.0 ||
+        frameIntervalMs <= 0.0 ||
+        freshServiceMs >= frameIntervalMs * kWgcFreshCatchupServiceBudgetRatio ||
+        bufferedWgcFrames <= reserveFrames) {
+        return 0u;
+    }
+
+    // Only reservoir surplus can replace held recovery slots. The caller still
+    // validates each candidate against that slot's immutable content-time
+    // target, so this changes pixels only: CFR PTS and audio remain untouched.
+    const size_t surplusFrames = bufferedWgcFrames - reserveFrames;
+    return static_cast<uint32_t>(
+        std::min<size_t>(static_cast<size_t>(catchupTicksThisLoop - 1u), surplusFrames));
 }
 
 inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, bool encoderActivelyTooSlow,
@@ -411,12 +424,12 @@ inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, bool encode
     (void)lowSourceMode;
     (void)audioLeadExcessMs;
     // A WGC/DXGI worker wake and a CFR output slot are different clocks. Once
-    // the worker owes at least two output slots, service one additional held
-    // frame without moving the wake deadline. At severe debt the existing
-    // four-slot bound permits up to three held recovery slots. Fresh-frame
-    // catch-up remains disabled, so recovery represents missed wall time as
-    // the smallest debt-bounded visual hold instead of fast-forwarding video
-    // content or trimming/resampling audio to follow it.
+    // the worker owes at least two output slots, service one additional recovery
+    // slot without moving the wake deadline. At severe debt the existing
+    // four-slot bound permits up to three recovery slots. Grid-matched buffered
+    // history may replace a hold only under the separate service-headroom and
+    // reservoir policy; all other debt remains the smallest bounded visual
+    // hold, without fast-forwarding video or trimming/resampling audio.
     return GetCfrCatchupTicksThisLoop(outputShortfallTicks, encoderBottlenecked);
 }
 

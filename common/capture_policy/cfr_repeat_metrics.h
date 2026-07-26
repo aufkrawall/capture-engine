@@ -86,20 +86,38 @@ inline bool IsWgcFrameWithinLiveVisualDebtWindow(int64_t frameSelectionQpc, int6
     return visualDebtFloorQpc <= 0 || frameSelectionQpc >= visualDebtFloorQpc;
 }
 
-inline bool ShouldUseFreshWgcCatchupFrame(int64_t frameSelectionQpc, int64_t liveNowQpc, int64_t targetIntervalTicks,
-                                          int64_t qpcTicksPerSecond, uint32_t outputShortfallTicks) {
-    (void)frameSelectionQpc;
-    (void)liveNowQpc;
-    (void)targetIntervalTicks;
-    (void)qpcTicksPerSecond;
-    if (outputShortfallTicks == 0) {
-        return true;
+inline bool ShouldUseFreshWgcCatchupFrame(int64_t frameSelectionQpc, int64_t rawFrameSelectionQpc,
+                                          int64_t sourceFrameQpc, int64_t selectionTargetQpc,
+                                          int64_t lastEmittedSelectionQpc, int64_t lastEmittedSourceQpc,
+                                          int64_t targetIntervalTicks) {
+    if (frameSelectionQpc <= 0 || sourceFrameQpc <= 0 || selectionTargetQpc <= 0 || targetIntervalTicks <= 0) {
+        return false;
+    }
+    if ((lastEmittedSelectionQpc > 0 && frameSelectionQpc <= lastEmittedSelectionQpc) ||
+        (lastEmittedSourceQpc > 0 && sourceFrameQpc <= lastEmittedSourceQpc)) {
+        return false;
     }
 
-    // Extra WGC catch-up ticks represent old CFR debt.  Encoding a fresh frame
-    // for those slots is a fast-forward/content-shift bug, even when final mux
-    // durations remain equal.  Old WGC debt must be absorbed by holds/drops.
-    return false;
+    // A recovery frame is safe only when it is historical content for this
+    // exact old CFR slot, not a current frame relabelled with an old PTS.
+    // Smoothed selection time must be nearest-neighbour close; raw compositor
+    // time gets one interval for its normal quantization/jitter offset.
+    const uint64_t selectionDistance = frameSelectionQpc >= selectionTargetQpc
+                                           ? static_cast<uint64_t>(frameSelectionQpc - selectionTargetQpc)
+                                           : static_cast<uint64_t>(selectionTargetQpc - frameSelectionQpc);
+    const uint64_t nearestTolerance = static_cast<uint64_t>(std::max<int64_t>(1, targetIntervalTicks / 2));
+    if (selectionDistance > nearestTolerance) {
+        return false;
+    }
+    if (rawFrameSelectionQpc > 0) {
+        const uint64_t rawDistance = rawFrameSelectionQpc >= selectionTargetQpc
+                                         ? static_cast<uint64_t>(rawFrameSelectionQpc - selectionTargetQpc)
+                                         : static_cast<uint64_t>(selectionTargetQpc - rawFrameSelectionQpc);
+        if (rawDistance > static_cast<uint64_t>(targetIntervalTicks)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 inline bool ShouldKeepWgcFrameForStopDrain(int64_t sourceFrameQpc, int64_t stopQpc) {

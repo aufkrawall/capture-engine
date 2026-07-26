@@ -1,5 +1,7 @@
 #include "test_capture_pipeline_policy_shared.h"
 
+#include <limits>
+
 TEST(CapturePipelinePolicyTest, WgcActiveDelayRepeatRescueScoresSafeFramesBeforeRepeat) {
     const uint32_t softLateTargetUs = policy::GetWgcActiveDelaySoftLateTargetUs(8333, 1000000);
 
@@ -238,12 +240,25 @@ TEST(CapturePipelinePolicyTest, WgcDelayReservoirFramesFollowMeasuredDelay) {
     EXPECT_TRUE(policy::ShouldPreserveWgcStartupPartialReserve(4, 180, true, true));
 }
 
-TEST(CapturePipelinePolicyTest, WgcFreshCatchupRejectsFramesOutsideLiveVisualDebtWindow) {
-    EXPECT_FALSE(policy::ShouldUseFreshWgcCatchupFrame(1360, 1600, 100, 1000, 20));
-    EXPECT_TRUE(policy::ShouldUseFreshWgcCatchupFrame(1000, 1600, 100, 1000, 0));
-    EXPECT_FALSE(policy::ShouldUseFreshWgcCatchupFrame(1349, 1600, 100, 1000, 20));
+TEST(CapturePipelinePolicyTest, WgcFreshCatchupRequiresGridMatchedMonotonicHistoricalFrame) {
+    EXPECT_TRUE(policy::ShouldUseFreshWgcCatchupFrame(1000, 995, 995, 1000, 900, 900, 100));
+    EXPECT_TRUE(policy::ShouldUseFreshWgcCatchupFrame(1050, 1100, 1090, 1000, 900, 900, 100));
+    EXPECT_FALSE(policy::ShouldUseFreshWgcCatchupFrame(1051, 1000, 1000, 1000, 900, 900, 100));
+    EXPECT_FALSE(policy::ShouldUseFreshWgcCatchupFrame(1000, 1101, 1000, 1000, 900, 900, 100));
+    EXPECT_FALSE(policy::ShouldUseFreshWgcCatchupFrame(1000, 995, 900, 1000, 900, 900, 100));
+    EXPECT_FALSE(policy::ShouldUseFreshWgcCatchupFrame(900, 895, 1000, 1000, 900, 900, 100));
+    EXPECT_FALSE(policy::ShouldUseFreshWgcCatchupFrame(1000, 995, 1000, 0, 900, 900, 100));
+
     EXPECT_TRUE(policy::IsWgcFrameWithinLiveVisualDebtWindow(1350, 1600, 100, 1000));
     EXPECT_FALSE(policy::IsWgcFrameWithinLiveVisualDebtWindow(1349, 1600, 100, 1000));
+}
+
+TEST(CapturePipelinePolicyTest, WgcFreshCatchupNeverRelabelsLiveContentIntoAnOldCfrSlot) {
+    constexpr int64_t kHistoricalSelectionTargetQpc = 1200;
+    EXPECT_TRUE(
+        policy::ShouldUseFreshWgcCatchupFrame(1200, 1195, 1195, kHistoricalSelectionTargetQpc, 1100, 1100, 100));
+    EXPECT_FALSE(
+        policy::ShouldUseFreshWgcCatchupFrame(1550, 1545, 1545, kHistoricalSelectionTargetQpc, 1100, 1100, 100));
 }
 
 TEST(CapturePipelinePolicyTest, WgcStopDrainKeepsOnlyFramesCapturedAtOrBeforeStop) {
@@ -439,10 +454,25 @@ TEST(CapturePipelinePolicyTest, WgcCatchupDoesNotWaitForDelayedAudioLeadTelemetr
               2u);
 }
 
-TEST(CapturePipelinePolicyTest, WgcForceShortfallUsesBoundedHeldRepeatBurst) {
-    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(4), 0u);
-    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(2), 0u);
-    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(1), 0u);
+TEST(CapturePipelinePolicyTest, WgcFreshCatchupSpendsOnlyReservoirSurplusWithEncoderHeadroom) {
+    constexpr double kFrameIntervalMs = 1000.0 / 120.0;
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(4, false, false, 5.0, kFrameIntervalMs, 9, 4), 3u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(2, false, false, 5.0, kFrameIntervalMs, 9, 4), 1u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(4, false, false, 5.0, kFrameIntervalMs, 5, 4), 1u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(4, true, false, 5.0, kFrameIntervalMs, 9, 4), 0u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(4, false, true, 5.0, kFrameIntervalMs, 9, 4), 0u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(4, false, false, 6.25, kFrameIntervalMs, 9, 4), 0u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(4, false, false, 6.3, kFrameIntervalMs, 9, 4), 0u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(4, false, false, 0.0, kFrameIntervalMs, 9, 4), 0u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(
+                  4, false, false, std::numeric_limits<double>::infinity(), kFrameIntervalMs, 9, 4),
+              0u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(
+                  4, false, false, std::numeric_limits<double>::quiet_NaN(), kFrameIntervalMs, 9, 4),
+              0u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(4, false, false, 5.0, 0.0, 9, 4), 0u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(1, false, false, 5.0, kFrameIntervalMs, 9, 4), 0u);
+    EXPECT_EQ(policy::GetWgcFreshCatchupBudgetThisLoop(4, false, false, 5.0, kFrameIntervalMs, 4, 4), 0u);
 
     EXPECT_EQ(policy::GetWgcCatchupTicksThisLoop(true, true, 4, 2.0, policy::kCfrShortfallForceCatchupThresholdTicks,
                                                  120, 118, 124, 0, false, policy::kWgcAudioLeadCatchupThresholdMs),
@@ -602,4 +632,3 @@ TEST(CapturePipelinePolicyTest, RecordingPressureRequiresAnAuthoritativeRuntimeE
     EXPECT_TRUE(policy::HasRecordingEncoderOrMuxPressure(0, 1, 0));
     EXPECT_TRUE(policy::HasRecordingEncoderOrMuxPressure(0, 0, 1));
 }
-

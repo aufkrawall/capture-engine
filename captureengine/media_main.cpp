@@ -1010,6 +1010,16 @@ struct CadenceHealthCounters {
         }
     }
 
+    void RecordSelectionError(int64_t signedErrorUs) {
+        RecordSignedError(signedErrorUs, selectionErrorAccumUs, selectionErrorSignedAccumUs, selectionErrorSamples,
+                          selectionErrorMaxUs, selectionEarlyMaxUs, selectionLateMaxUs);
+    }
+    void RecordOutputScheduleError(int64_t signedErrorUs) {
+        RecordSignedError(signedErrorUs, outputScheduleErrorAccumUs, outputScheduleErrorSignedAccumUs,
+                          outputScheduleErrorSamples, outputScheduleErrorMaxUs, outputScheduleEarlyMaxUs,
+                          outputScheduleLateMaxUs);
+    }
+
     // Input frame rate predictor diagnostics (updated per-second)
     uint32_t srcFpsX100 = 0;         // smoothed input FPS * 100
     uint32_t srcJitterUs = 0;        // smoothed jitter in microseconds
@@ -1019,6 +1029,17 @@ struct CadenceHealthCounters {
 
     void Reset() {
         *this = {};
+    }
+private:
+    static void RecordSignedError(int64_t signedErrorUs, uint64_t& absoluteAccumUs, int64_t& signedAccumUs,
+                                  uint32_t& samples, uint32_t& maxUs, uint32_t& earlyMaxUs, uint32_t& lateMaxUs) {
+        const uint64_t absoluteUs = static_cast<uint64_t>(signedErrorUs >= 0 ? signedErrorUs : -signedErrorUs);
+        absoluteAccumUs += absoluteUs;
+        signedAccumUs += signedErrorUs;
+        ++samples;
+        maxUs = std::max(maxUs, SaturatingToUint32(absoluteUs));
+        uint32_t& directionalMaxUs = signedErrorUs < 0 ? earlyMaxUs : lateMaxUs;
+        directionalMaxUs = std::max(directionalMaxUs, SaturatingToUint32(absoluteUs));
     }
 };
 
@@ -3143,6 +3164,7 @@ void EncoderThreadFunc(const AppConfig& config) {
     }
 
     double smoothedEncodeMs = 0.0;
+    double smoothedWgcFreshServiceMs = 0.0;
     double frameIntervalMs = 1000.0 / config.video.fps;
     uint64_t encoderWakeLateAccumUs = 0;
     uint64_t encoderWakeLateSamples = 0;
@@ -3537,6 +3559,8 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint32_t wgcRepeatTimerLateCount = 0;
     uint32_t wgcRepeatCatchupCount = 0;
     uint32_t wgcFreshCatchupCount = 0;
+    uint64_t wgcRepeatCatchupTotal = 0;
+    uint64_t wgcFreshCatchupTotal = 0;
     uint32_t wgcSelectFreshCount = 0;
     uint32_t wgcSelectDuplicateSourceCount = 0;
     uint32_t wgcDropObsoleteCount = 0;
@@ -8472,6 +8496,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcCfrPhaseLock.Reset();
                 smoothedEncCycleMs = 0.0;
                 smoothedInjectServiceMs = 0.0;
+                smoothedWgcFreshServiceMs = 0.0;
+                wgcRepeatCatchupTotal = 0;
+                wgcFreshCatchupTotal = 0;
                 injectServiceMaxUs = 0;
                 injectCfrRecoveryActive = false;
                 injectEncoderServiceTooSlowCurrent = false;
@@ -8583,6 +8610,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 wgcCoverageDelayTicksCurrent = 0;
                 wgcRepeatTimerLateCount = 0;
                 wgcRepeatCatchupCount = 0;
+                wgcFreshCatchupCount = 0;
                 wgcSelectFreshCount = 0;
                 wgcSelectDuplicateSourceCount = 0;
                 wgcDropObsoleteCount = 0;
@@ -8913,9 +8941,17 @@ void EncoderThreadFunc(const AppConfig& config) {
                 return;
             }
 
+            const size_t freshCatchupReserveFrames =
+                useScreenGrab && isWgcEffectiveContentDelayActive() ? getWgcDelayReservoirLowWaterFrames() : 0u;
+            const double freshCatchupServiceMs = std::max(smoothedWgcFreshServiceMs, smoothedEncodeMs);
+            const bool freshCatchupServiceTooSlow = ce::capture_policy::IsEncoderTooSlowForTargetFps(
+                freshCatchupServiceMs, frameIntervalMs, outputFps);
             uint32_t remainingFreshCatchupBudget =
                 useScreenGrab && !config.video.useVFR
-                    ? ce::capture_policy::GetWgcFreshCatchupBudgetThisLoop(catchupTicksThisLoop)
+                    ? ce::capture_policy::GetWgcFreshCatchupBudgetThisLoop(
+                          catchupTicksThisLoop, g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
+                          freshCatchupServiceTooSlow, freshCatchupServiceMs, frameIntervalMs, bufferedWgcFrames.size(),
+                          freshCatchupReserveFrames)
                     : 0u;
 
             for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
@@ -9050,24 +9086,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                             if (repeatScheduledQpc > 0) {
                                 const int64_t signedOutputScheduleErrorUs =
                                     ((catchupStartEnc.QuadPart - repeatScheduledQpc) * 1000000) / qpcFreq.QuadPart;
-                                const uint64_t absoluteOutputScheduleErrorUs = static_cast<uint64_t>(
-                                    signedOutputScheduleErrorUs >= 0 ? signedOutputScheduleErrorUs
-                                                                     : -signedOutputScheduleErrorUs);
-                                cadenceCounters.outputScheduleErrorAccumUs += absoluteOutputScheduleErrorUs;
-                                cadenceCounters.outputScheduleErrorSignedAccumUs += signedOutputScheduleErrorUs;
-                                cadenceCounters.outputScheduleErrorSamples++;
-                                cadenceCounters.outputScheduleErrorMaxUs =
-                                    std::max(cadenceCounters.outputScheduleErrorMaxUs,
-                                             SaturatingToUint32(absoluteOutputScheduleErrorUs));
-                                if (signedOutputScheduleErrorUs < 0) {
-                                    cadenceCounters.outputScheduleEarlyMaxUs = std::max(
-                                        cadenceCounters.outputScheduleEarlyMaxUs,
-                                        SaturatingToUint32(static_cast<uint64_t>(-signedOutputScheduleErrorUs)));
-                                } else {
-                                    cadenceCounters.outputScheduleLateMaxUs = std::max(
-                                        cadenceCounters.outputScheduleLateMaxUs,
-                                        SaturatingToUint32(static_cast<uint64_t>(signedOutputScheduleErrorUs)));
-                                }
+                                cadenceCounters.RecordOutputScheduleError(signedOutputScheduleErrorUs);
                             }
 
                             const bool catchupEncodeSucceeded = MediaEngine_ProcessFrame(
@@ -9216,210 +9235,202 @@ void EncoderThreadFunc(const AppConfig& config) {
 
                 if (allowFreshCatchup && useScreenGrab && MediaEngine_ProcessFrameD3D11 && !bufferedWgcFrames.empty()) {
                     const int64_t catchupGridTick = encoderGridTickCount + 1;
-                    LARGE_INTEGER catchupNowQpc;
-                    QueryPerformanceCounter(&catchupNowQpc);
-                    const int64_t baseCatchupSelectionTargetQpc = clampWgcSelectionTargetQpc(
-                        computeWgcSelectionTargetForTick(repeatScheduledQpc, catchupGridTick, false),
-                        catchupNowQpc.QuadPart);
-                    const int64_t catchupPhaseReferenceQpc =
-                        GetFrameSelectionTimestamp(bufferedWgcFrames.back());
-                    const int64_t catchupSelectionTargetQpc = applyCaptureSyncPhaseTarget(
-                        "screen_grab", wgcCfrPhaseLock, baseCatchupSelectionTargetQpc, catchupPhaseReferenceQpc);
+                    int64_t catchupSelectionTargetQpc = computeWgcSelectionTargetForTick(
+                        repeatScheduledQpc, catchupGridTick, wgcSelectionDelayAppliedThisTick);
+                    // Reuse the phase already learned by ordinary selection without
+                    // learning from buffered future history during debt recovery.
+                    // This keeps delayed and non-delayed recovery on exactly the same
+                    // content grid as their ordinary source-selection paths.
+                    catchupSelectionTargetQpc = ce::capture_policy::ApplyCfrCaptureSyncPhaseLock(
+                        wgcCfrPhaseLock, catchupSelectionTargetQpc, 0, captureSyncSourceIntervalTicks,
+                        captureSyncPhaseLockEnabled);
                     QueuedFrame catchupFrame;
-                    if (tryPopBufferedWgcFrameForTarget(catchupSelectionTargetQpc, catchupSelectionTargetQpc,
-                                                        catchupNowQpc.QuadPart, false, &catchupFrame)) {
+                    const size_t spendableCatchupFrames =
+                        bufferedWgcFrames.size() > freshCatchupReserveFrames
+                            ? bufferedWgcFrames.size() - freshCatchupReserveFrames
+                            : 0u;
+                    size_t catchupFrameIndex = spendableCatchupFrames;
+                    uint64_t catchupFrameDistance = std::numeric_limits<uint64_t>::max();
+                    for (size_t candidateIndex = 0; candidateIndex < spendableCatchupFrames; ++candidateIndex) {
+                        const QueuedFrame& candidate = bufferedWgcFrames[candidateIndex];
                         if (!ce::capture_policy::ShouldUseFreshWgcCatchupFrame(
-                                GetFrameSelectionTimestamp(catchupFrame), catchupNowQpc.QuadPart, targetIntervalTicks,
-                                qpcFreq.QuadPart, outputShortfallTicks)) {
-                            LogWarn(
-                                "[EncoderThread] WGC CFR stale fresh-catchup blocked: frameQpc=%lld nowQpc=%lld "
-                                "shortfall=%u buffered=%zu",
-                                static_cast<long long>(GetFrameSelectionTimestamp(catchupFrame)),
-                                static_cast<long long>(catchupNowQpc.QuadPart), outputShortfallTicks,
-                                bufferedWgcFrames.size());
-                            ReleaseQueuedFrameTexture(catchupFrame);
-                            ++wgcFreshSelectionMissCount;
-                            allowFreshCatchup = false;
+                                GetFrameSelectionTimestamp(candidate), getWgcRawSelectionTimestamp(candidate),
+                                candidate.timestamp, catchupSelectionTargetQpc, lastEmittedWgcSelectionQpc,
+                                lastEmittedWgcSourceQpc, targetIntervalTicks)) {
+                            continue;
+                        }
+                        const uint64_t candidateDistance = ce::capture_policy::GetCfrTimestampDistanceQpc(
+                            GetFrameSelectionTimestamp(candidate), catchupSelectionTargetQpc);
+                        if (candidateDistance < catchupFrameDistance) {
+                            catchupFrameIndex = candidateIndex;
+                            catchupFrameDistance = candidateDistance;
+                        }
+                    }
+                    if (catchupFrameIndex < spendableCatchupFrames) {
+                        for (size_t staleIndex = 0; staleIndex < catchupFrameIndex; ++staleIndex) {
+                            QueuedFrame stale = std::move(bufferedWgcFrames.front());
+                            bufferedWgcFrames.pop_front();
+                            ReleaseQueuedFrameTexture(stale);
+                            ++wgcDropObsoleteCount;
+                        }
+                        catchupFrame = std::move(bufferedWgcFrames.front());
+                        bufferedWgcFrames.pop_front();
+                        if (catchupFrame.duplicateSourceTimestamp) {
+                            ++wgcSelectDuplicateSourceCount;
                         } else {
-                            LARGE_INTEGER catchupStartEnc, catchupEndEnc;
-                            QueryPerformanceCounter(&catchupStartEnc);
-                            uint64_t frameAgeUs = 0;
-                            if (catchupFrame.timestamp > 0 && catchupStartEnc.QuadPart > catchupFrame.timestamp) {
-                                frameAgeUs = static_cast<uint64_t>((catchupStartEnc.QuadPart - catchupFrame.timestamp) *
-                                                                   1000000 / qpcFreq.QuadPart);
-                            }
-                            if (repeatScheduledQpc > 0) {
-                                const int64_t signedOutputScheduleErrorUs =
-                                    ((catchupStartEnc.QuadPart - repeatScheduledQpc) * 1000000) / qpcFreq.QuadPart;
-                                const uint64_t absoluteOutputScheduleErrorUs = static_cast<uint64_t>(
-                                    signedOutputScheduleErrorUs >= 0 ? signedOutputScheduleErrorUs
-                                                                     : -signedOutputScheduleErrorUs);
-                                cadenceCounters.outputScheduleErrorAccumUs += absoluteOutputScheduleErrorUs;
-                                cadenceCounters.outputScheduleErrorSignedAccumUs += signedOutputScheduleErrorUs;
-                                cadenceCounters.outputScheduleErrorSamples++;
-                                cadenceCounters.outputScheduleErrorMaxUs =
-                                    std::max(cadenceCounters.outputScheduleErrorMaxUs,
-                                             SaturatingToUint32(absoluteOutputScheduleErrorUs));
-                                if (signedOutputScheduleErrorUs < 0) {
-                                    cadenceCounters.outputScheduleEarlyMaxUs = std::max(
-                                        cadenceCounters.outputScheduleEarlyMaxUs,
-                                        SaturatingToUint32(static_cast<uint64_t>(-signedOutputScheduleErrorUs)));
-                                } else {
-                                    cadenceCounters.outputScheduleLateMaxUs = std::max(
-                                        cadenceCounters.outputScheduleLateMaxUs,
-                                        SaturatingToUint32(static_cast<uint64_t>(signedOutputScheduleErrorUs)));
-                                }
-                            }
+                            ++wgcSelectFreshCount;
+                        }
+                        LARGE_INTEGER catchupStartEnc, catchupEndEnc;
+                        QueryPerformanceCounter(&catchupStartEnc);
+                        const uint64_t frameAgeUs =
+                            catchupFrame.timestamp > 0 && catchupStartEnc.QuadPart > catchupFrame.timestamp
+                                ? static_cast<uint64_t>((catchupStartEnc.QuadPart - catchupFrame.timestamp) * 1000000 /
+                                                        qpcFreq.QuadPart)
+                                : 0u;
+                        if (repeatScheduledQpc > 0) {
+                            const int64_t signedErrorUs =
+                                ((catchupStartEnc.QuadPart - repeatScheduledQpc) * 1000000) / qpcFreq.QuadPart;
+                            cadenceCounters.RecordOutputScheduleError(signedErrorUs);
+                        }
 
-                            const int64_t catchupTimelineElapsedUs = computeLiveTimelineElapsedUs(repeatScheduledQpc);
-                            SyncDuplicationCursorSuppression(catchupFrame.wgcCursorEmbedded);
-                            const ce::cursor::CaptureState catchupCursorState =
-                                selectCursorStateForScheduledQpc(repeatScheduledQpc, catchupFrame, "fresh-catchup");
-                            const bool freshCatchupEncodeSucceeded = MediaEngine_ProcessFrameD3D11(
-                                catchupFrame.texture, catchupFrame.timestamp, catchupFrame.width, catchupFrame.height,
-                                catchupFrame.isHDR, catchupFrame.captureLeft, catchupFrame.captureTop,
-                                catchupTimelineElapsedUs, &catchupCursorState);
-                            const bool recoveredCatchupEncodeFailure =
-                                !freshCatchupEncodeSucceeded &&
-                                recoverScheduledFreshEncodeFailure(true, false, false, repeatScheduledQpc,
-                                                                   &catchupFrame, "WGC fresh-catchup");
-                            if (!freshCatchupEncodeSucceeded && !recoveredCatchupEncodeFailure) {
-                                ReleaseQueuedFrameTexture(catchupFrame);
-                                cadenceCounters.liveTickMissCount++;
-                                break;
+                        SyncDuplicationCursorSuppression(catchupFrame.wgcCursorEmbedded);
+                        const ce::cursor::CaptureState catchupCursorState =
+                            selectCursorStateForScheduledQpc(repeatScheduledQpc, catchupFrame, "fresh-catchup");
+                        const bool freshCatchupEncodeSucceeded = MediaEngine_ProcessFrameD3D11(
+                            catchupFrame.texture, catchupFrame.timestamp, catchupFrame.width, catchupFrame.height,
+                            catchupFrame.isHDR, catchupFrame.captureLeft, catchupFrame.captureTop,
+                            computeLiveTimelineElapsedUs(repeatScheduledQpc), &catchupCursorState);
+                        const bool recoveredCatchupEncodeFailure =
+                            !freshCatchupEncodeSucceeded &&
+                            recoverScheduledFreshEncodeFailure(true, false, false, repeatScheduledQpc, &catchupFrame,
+                                                               "WGC grid-matched fresh-catchup");
+                        if (!freshCatchupEncodeSucceeded && !recoveredCatchupEncodeFailure) {
+                            ReleaseQueuedFrameTexture(catchupFrame);
+                            ++cadenceCounters.liveTickMissCount;
+                            break;
+                        }
+                        releaseWgcLeaseAfterMediaEngineCopy(
+                            catchupFrame, recoveredCatchupEncodeFailure ? "fresh-catchup encode-failure repeat"
+                                                                        : "grid-matched fresh-catchup");
+                        QueryPerformanceCounter(&catchupEndEnc);
+                        const double currentEncodeMs =
+                            static_cast<double>(catchupEndEnc.QuadPart - catchupStartEnc.QuadPart) * 1000.0 /
+                            qpcFreq.QuadPart;
+                        const double pureEncodeMs = static_cast<double>(MediaEngine_GetLastFrameEncodeTimeUs()) / 1000.0;
+                        if (pureEncodeMs > 0.0) {
+                            smoothedEncodeMs = smoothedEncodeMs == 0.0
+                                                   ? pureEncodeMs
+                                                   : smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) +
+                                                         pureEncodeMs * kEncodeEmaAlpha;
+                        }
+                        if (freshCatchupEncodeSucceeded) {
+                            smoothedWgcFreshServiceMs =
+                                smoothedWgcFreshServiceMs == 0.0
+                                    ? std::max(currentEncodeMs, pureEncodeMs)
+                                    : smoothedWgcFreshServiceMs * (1.0 - kEncodeEmaAlpha) +
+                                          std::max(currentEncodeMs, pureEncodeMs) * kEncodeEmaAlpha;
+                        }
+                        UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs,
+                                                    ce::capture_policy::IsEncoderStartupWindow(
+                                                        recordingOutputLive, recordingLiveTick, GetTickCount64()));
+                        if (g_pSharedMem) {
+                            if (currentEncodeMs > frameIntervalMs * 1.10) {
+                                g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
                             }
-                            releaseWgcLeaseAfterMediaEngineCopy(
-                                catchupFrame, recoveredCatchupEncodeFailure ? "fresh-catchup encode-failure repeat"
-                                                                            : "fresh-catchup");
-                            QueryPerformanceCounter(&catchupEndEnc);
+                            g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+                            g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+                        }
 
-                            const double currentEncodeMs =
-                                (double)(catchupEndEnc.QuadPart - catchupStartEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
-                            const double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs() / 1000.0;
-                            if (pureEncodeMs > 0.0) {
-                                if (smoothedEncodeMs == 0.0) {
-                                    smoothedEncodeMs = pureEncodeMs;
-                                } else {
-                                    smoothedEncodeMs =
-                                        smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) + pureEncodeMs * kEncodeEmaAlpha;
-                                }
-                            }
-                            UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs,
-                                                        ce::capture_policy::IsEncoderStartupWindow(
-                                                            recordingOutputLive, recordingLiveTick, GetTickCount64()));
-
-                            if (g_pSharedMem) {
-                                if (currentEncodeMs > frameIntervalMs * 1.10) {
-                                    g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
-                                }
-                                g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
-                                g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
-                            }
-
-                            if (recoveredCatchupEncodeFailure) {
-                                ReleaseQueuedFrameTexture(catchupFrame);
-                                recordDuplicate(nullptr, nullptr, false, false, false, true);
-                                ++wgcRepeatCatchupCount;
-                                cadenceCounters.liveTickEmitCount++;
-                                cadenceCounters.liveTickDuplicateCount++;
-                                cadenceCounters.holdTicksRunning++;
-                                ++liveTicksOutput;
-                                ++encoderGridTickCount;
-                                ++cfrCatchupTicksExecuted;
-                                advanceWakeDeadlineForCatchupTick();
-                                continue;
-                            }
-
-                            if (g_HasLastFrame && !g_LastFrame.isInjectMode) {
-                                ReleaseQueuedFrameTexture(g_LastFrame);
-                            }
-                            g_LastFrame = std::move(catchupFrame);
-                            g_HasLastFrame = true;
-                            cadenceCounters.frameAgeAccumUs += frameAgeUs;
-                            cadenceCounters.frameAgeSamples++;
-                            cadenceCounters.frameAgeMaxUs =
-                                std::max(cadenceCounters.frameAgeMaxUs, SaturatingToUint32(frameAgeUs));
-
-                            if (g_LastFrame.timestamp > 0) {
-                                lastEmittedWgcSourceQpc = g_LastFrame.timestamp;
-                            }
-                            if (GetFrameSelectionTimestamp(g_LastFrame) > 0) {
-                                lastEmittedWgcSelectionQpc = GetFrameSelectionTimestamp(g_LastFrame);
-                            }
-                            lastSuccessfulWgcCursorEmbedded = g_LastFrame.wgcCursorEmbedded;
-                            hasSuccessfulWgcCursorMetadata = true;
-
-                            if (catchupSelectionTargetQpc > 0 && g_LastFrame.timestamp > 0) {
-                                if (encoderTooSlowForTargetCurrent) {
-                                    static uint64_t s_lastCatchupLog = 0;
-                                    uint64_t nowTick = GetTickCount64();
-                                    if (nowTick - s_lastCatchupLog >= 1000) {
-                                        LogInfo(
-                                            "[EncoderThread] CFR Catchup applied using fresh frame (encoder slow, but "
-                                            "preserving smoothness)");
-                                        s_lastCatchupLog = nowTick;
-                                    }
-                                }
-                                const int64_t signedSelectionErrorUs =
-                                    ((GetFrameSelectionTimestamp(g_LastFrame) - catchupSelectionTargetQpc) * 1000000) /
-                                    qpcFreq.QuadPart;
-                                const int64_t absoluteSelectionErrorUs =
-                                    signedSelectionErrorUs >= 0 ? signedSelectionErrorUs : -signedSelectionErrorUs;
-                                cadenceCounters.selectionErrorAccumUs +=
-                                    static_cast<uint64_t>(absoluteSelectionErrorUs);
-                                cadenceCounters.selectionErrorSignedAccumUs += signedSelectionErrorUs;
-                                cadenceCounters.selectionErrorSamples++;
-                                cadenceCounters.selectionErrorMaxUs =
-                                    std::max(cadenceCounters.selectionErrorMaxUs,
-                                             SaturatingToUint32(static_cast<uint64_t>(absoluteSelectionErrorUs)));
-                                if (signedSelectionErrorUs < 0) {
-                                    cadenceCounters.selectionEarlyMaxUs =
-                                        std::max(cadenceCounters.selectionEarlyMaxUs,
-                                                 SaturatingToUint32(static_cast<uint64_t>(-signedSelectionErrorUs)));
-                                } else {
-                                    cadenceCounters.selectionLateMaxUs =
-                                        std::max(cadenceCounters.selectionLateMaxUs,
-                                                 SaturatingToUint32(static_cast<uint64_t>(signedSelectionErrorUs)));
-                                }
-                                wgcSelectionErrorAccumUs += static_cast<uint64_t>(absoluteSelectionErrorUs);
-                                wgcSelectionErrorSignedAccumUs += signedSelectionErrorUs;
-                                ++wgcSelectionErrorSamples;
-                                wgcSelectionErrorMaxUs =
-                                    std::max(wgcSelectionErrorMaxUs,
-                                             SaturatingToUint32(static_cast<uint64_t>(absoluteSelectionErrorUs)));
-                                if (signedSelectionErrorUs < 0) {
-                                    wgcSelectionEarlyMaxUs =
-                                        std::max(wgcSelectionEarlyMaxUs,
-                                                 SaturatingToUint32(static_cast<uint64_t>(-signedSelectionErrorUs)));
-                                } else {
-                                    wgcSelectionLateMaxUs =
-                                        std::max(wgcSelectionLateMaxUs,
-                                                 SaturatingToUint32(static_cast<uint64_t>(signedSelectionErrorUs)));
-                                }
-                            }
-
-                            cadenceCounters.consecutiveDuplicateFrames = 0;
-                            captureSessionSummary.currentContiguousDupTicks = 0;
-                            cadenceCounters.liveTickEmitCount++;
-                            cadenceCounters.liveTickUniqueCount++;
-                            cadenceCounters.CommitHoldRun();
-                            cadenceCounters.holdTicksRunning = 1;
+                        if (recoveredCatchupEncodeFailure) {
+                            ReleaseQueuedFrameTexture(catchupFrame);
+                            recordDuplicate(nullptr, nullptr, false, false, false, true);
+                            ++wgcRepeatCatchupCount;
+                            ++wgcRepeatCatchupTotal;
+                            ++cadenceCounters.liveTickEmitCount;
+                            ++cadenceCounters.liveTickDuplicateCount;
+                            ++cadenceCounters.holdTicksRunning;
                             ++liveTicksOutput;
                             ++encoderGridTickCount;
                             ++cfrCatchupTicksExecuted;
-                            ++wgcFreshCatchupCount;
-                            if (remainingFreshCatchupBudget > 0u) {
-                                --remainingFreshCatchupBudget;
-                            }
+                            remainingFreshCatchupBudget = 0;
                             advanceWakeDeadlineForCatchupTick();
                             continue;
                         }
-                    }
 
-                    // Coverage-loss policy may intentionally hold fresh catch-up here
-                    // so the existing repeat path can absorb the mismatch instead.
-                    // For pure CFR shortfall, we MUST NOT break here! We must fall through
-                    // to repeatLastFrameForScheduledQpc to fill the timeline gaps!
+                        const int64_t selectedQpc = GetFrameSelectionTimestamp(catchupFrame);
+                        const int64_t rawSelectedQpc = getWgcRawSelectionTimestamp(catchupFrame);
+                        const int64_t signedSelectionErrorUs =
+                            ((selectedQpc - catchupSelectionTargetQpc) * 1000000) / qpcFreq.QuadPart;
+                        const int64_t signedRawSelectionErrorUs =
+                            rawSelectedQpc > 0
+                                ? ((rawSelectedQpc - catchupSelectionTargetQpc) * 1000000) / qpcFreq.QuadPart
+                                : signedSelectionErrorUs;
+                        const uint64_t absoluteSelectionErrorUs = static_cast<uint64_t>(
+                            signedSelectionErrorUs >= 0 ? signedSelectionErrorUs : -signedSelectionErrorUs);
+                        cadenceCounters.RecordSelectionError(signedSelectionErrorUs);
+                        wgcSelectionErrorAccumUs += absoluteSelectionErrorUs;
+                        wgcSelectionErrorSignedAccumUs += signedSelectionErrorUs;
+                        ++wgcSelectionErrorSamples;
+                        wgcSelectionErrorMaxUs =
+                            std::max(wgcSelectionErrorMaxUs, SaturatingToUint32(absoluteSelectionErrorUs));
+                        if (signedSelectionErrorUs < 0) {
+                            const uint32_t earlyUs =
+                                SaturatingToUint32(static_cast<uint64_t>(-signedSelectionErrorUs));
+                            wgcSelectionEarlyMaxUs = std::max(wgcSelectionEarlyMaxUs, earlyUs);
+                        } else {
+                            const uint32_t lateUs = SaturatingToUint32(absoluteSelectionErrorUs);
+                            wgcSelectionLateMaxUs = std::max(wgcSelectionLateMaxUs, lateUs);
+                        }
+                        if (wgcSelectionDelayAppliedThisTick) {
+                            recordWgcDelayRealization(signedSelectionErrorUs, signedRawSelectionErrorUs);
+                        }
+                        if (g_HasLastFrame && !g_LastFrame.isInjectMode) {
+                            ReleaseQueuedFrameTexture(g_LastFrame);
+                        }
+                        g_LastFrame = std::move(catchupFrame);
+                        g_HasLastFrame = true;
+                        cadenceCounters.frameAgeAccumUs += frameAgeUs;
+                        ++cadenceCounters.frameAgeSamples;
+                        cadenceCounters.frameAgeMaxUs =
+                            std::max(cadenceCounters.frameAgeMaxUs, SaturatingToUint32(frameAgeUs));
+                        lastEmittedWgcSourceQpc = g_LastFrame.timestamp;
+                        lastEmittedWgcSelectionQpc = selectedQpc;
+                        lastSuccessfulWgcCursorEmbedded = g_LastFrame.wgcCursorEmbedded;
+                        hasSuccessfulWgcCursorMetadata = true;
+
+                        static uint64_t s_lastGridCatchupLogTick = 0;
+                        const uint64_t gridCatchupNowTick = GetTickCount64();
+                        if (gridCatchupNowTick - s_lastGridCatchupLogTick >= 1000) {
+                            LogInfo(
+                                "[EncoderThread] WGC CFR grid-matched recovery frame: residual=%lldus raw=%lldus "
+                                "shortfall=%u buffered=%zu reserve=%zu freshSvcEma=%.2fms",
+                                static_cast<long long>(signedSelectionErrorUs),
+                                static_cast<long long>(signedRawSelectionErrorUs), outputShortfallTicks,
+                                bufferedWgcFrames.size(), freshCatchupReserveFrames, smoothedWgcFreshServiceMs);
+                            s_lastGridCatchupLogTick = gridCatchupNowTick;
+                        }
+
+                        cadenceCounters.consecutiveDuplicateFrames = 0;
+                        captureSessionSummary.currentContiguousDupTicks = 0;
+                        ++cadenceCounters.liveTickEmitCount;
+                        ++cadenceCounters.liveTickUniqueCount;
+                        cadenceCounters.CommitHoldRun();
+                        cadenceCounters.holdTicksRunning = 1;
+                        ++liveTicksOutput;
+                        ++encoderGridTickCount;
+                        ++cfrCatchupTicksExecuted;
+                        ++wgcFreshCatchupCount;
+                        ++wgcFreshCatchupTotal;
+                        --remainingFreshCatchupBudget;
+                        if (g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ||
+                            smoothedWgcFreshServiceMs >=
+                                frameIntervalMs * ce::capture_policy::kWgcFreshCatchupServiceBudgetRatio) {
+                            remainingFreshCatchupBudget = 0;
+                        }
+                        advanceWakeDeadlineForCatchupTick();
+                        continue;
+                    }
+                    // Without a sync-safe historical surplus frame, hold the prior frame for this exact CFR slot.
                     if (!(!config.video.useVFR && outputShortfallTicks > 0)) {
                         break;
                     }
@@ -9465,6 +9476,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 recordDuplicate(&g_LastFrame, duplicateLineage, false, false, false, true);
                 if (useScreenGrab) {
                     ++wgcRepeatCatchupCount;
+                    ++wgcRepeatCatchupTotal;
                 } else {
                     ++injectRepeatCatchupThisWindow;
                     ++injectRepeatCatchupTotal;
@@ -9583,22 +9595,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             if (scheduledLiveCfrTick && scheduledOutputQpc > 0) {
                 const int64_t signedOutputScheduleErrorUs =
                     ((startEnc.QuadPart - scheduledOutputQpc) * 1000000) / qpcFreq.QuadPart;
-                const uint64_t absoluteOutputScheduleErrorUs = static_cast<uint64_t>(
-                    signedOutputScheduleErrorUs >= 0 ? signedOutputScheduleErrorUs : -signedOutputScheduleErrorUs);
-                cadenceCounters.outputScheduleErrorAccumUs += absoluteOutputScheduleErrorUs;
-                cadenceCounters.outputScheduleErrorSignedAccumUs += signedOutputScheduleErrorUs;
-                cadenceCounters.outputScheduleErrorSamples++;
-                cadenceCounters.outputScheduleErrorMaxUs = std::max(cadenceCounters.outputScheduleErrorMaxUs,
-                                                                    SaturatingToUint32(absoluteOutputScheduleErrorUs));
-                if (signedOutputScheduleErrorUs < 0) {
-                    cadenceCounters.outputScheduleEarlyMaxUs =
-                        std::max(cadenceCounters.outputScheduleEarlyMaxUs,
-                                 SaturatingToUint32(static_cast<uint64_t>(-signedOutputScheduleErrorUs)));
-                } else {
-                    cadenceCounters.outputScheduleLateMaxUs =
-                        std::max(cadenceCounters.outputScheduleLateMaxUs,
-                                 SaturatingToUint32(static_cast<uint64_t>(signedOutputScheduleErrorUs)));
-                }
+                cadenceCounters.RecordOutputScheduleError(signedOutputScheduleErrorUs);
             }
 
             auto encodeCurrentFrame = [&]() {
@@ -9630,6 +9627,8 @@ void EncoderThreadFunc(const AppConfig& config) {
             };
 
             const bool attemptedFreshCandidate = popped && frameToProcess == &frame && !isDuplicate;
+            const bool attemptedFreshWgcCandidate =
+                attemptedFreshCandidate && frameToProcess && !frameToProcess->isInjectMode;
             encodeCurrentFrame();
             const bool recoveredFreshEncodeFailure =
                 !encodeSucceeded &&
@@ -9696,6 +9695,13 @@ void EncoderThreadFunc(const AppConfig& config) {
                 } else {
                     smoothedEncodeMs = smoothedEncodeMs * (1.0 - kEncodeEmaAlpha) + pureEncodeMs * kEncodeEmaAlpha;
                 }
+            }
+            if (attemptedFreshWgcCandidate && encodeSucceeded && !recoveredFreshEncodeFailure) {
+                smoothedWgcFreshServiceMs =
+                    smoothedWgcFreshServiceMs == 0.0
+                        ? std::max(currentEncodeMs, pureEncodeMs)
+                        : smoothedWgcFreshServiceMs * (1.0 - kEncodeEmaAlpha) +
+                              std::max(currentEncodeMs, pureEncodeMs) * kEncodeEmaAlpha;
             }
             const bool encoderStartupWindowActive =
                 ce::capture_policy::IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick, GetTickCount64());
@@ -9875,21 +9881,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 }
 
                 if (selectionMetricTargetQpc > 0 && frameToProcess && !frameToProcess->isInjectMode && !isDuplicate) {
-                    cadenceCounters.selectionErrorAccumUs += static_cast<uint64_t>(absoluteSelectionErrorUs);
-                    cadenceCounters.selectionErrorSignedAccumUs += signedSelectionErrorUs;
-                    cadenceCounters.selectionErrorSamples++;
-                    cadenceCounters.selectionErrorMaxUs =
-                        std::max(cadenceCounters.selectionErrorMaxUs,
-                                 SaturatingToUint32(static_cast<uint64_t>(absoluteSelectionErrorUs)));
-                    if (signedSelectionErrorUs < 0) {
-                        cadenceCounters.selectionEarlyMaxUs =
-                            std::max(cadenceCounters.selectionEarlyMaxUs,
-                                     SaturatingToUint32(static_cast<uint64_t>(-signedSelectionErrorUs)));
-                    } else {
-                        cadenceCounters.selectionLateMaxUs =
-                            std::max(cadenceCounters.selectionLateMaxUs,
-                                     SaturatingToUint32(static_cast<uint64_t>(signedSelectionErrorUs)));
-                    }
+                    cadenceCounters.RecordSelectionError(signedSelectionErrorUs);
                     wgcSelectionErrorAccumUs += static_cast<uint64_t>(absoluteSelectionErrorUs);
                     wgcSelectionErrorSignedAccumUs += signedSelectionErrorUs;
                     ++wgcSelectionErrorSamples;
@@ -10379,7 +10371,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 "TimerRebase=%u WgcDebtMax=%llu WgcLiveRebase=%u/%llu/%u | "
                 "EncLowBypass=%u/%llu ModeMis=%u/%llu SrcBack=%u/%llu | "
                 "InvalidMeta=%u InvalidHandle=%u | PktClamp=%u NegPTS=%u NonMonoPTS=%u | WgcThr=%u Adj=%u | Over=0x%X "
-                "MuxQ=%uKB/%u MuxBp=%u Wait=%uus Max=%uus | EncEma=%.2fms Budget=%upm Sust=%.1ffps TooSlow=%d "
+                "MuxQ=%uKB/%u MuxBp=%u Wait=%uus Max=%uus | EncEma=%.2fms FreshSvcEma=%.2fms Budget=%upm "
+                "Sust=%.1ffps TooSlow=%d "
                 "Bottleneck=%d | LowSrc=%d Recover=%d Cause=S%d/D%d/E%d | SrcFps=%.2f SrcJitter=%uus "
                 "DupTs=%u DupTsSkip=%u TsSmoothDev=%u/%u/%uus TsSmoothSnap=%u EncCycle=%.2fms EncSpike=%u",
                 CapturePipelinePhaseToString(state.capturePhase.load(std::memory_order_relaxed)), avgFrameAgeUs,
@@ -10432,7 +10425,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 nonMonotonicPts - lastNonMonotonicPtsCount, g_WgcProducerTargetFps.load(std::memory_order_relaxed),
                 wgcProducerRateRetuneCount, overloadFlags, (muxQueueBytes + 1023u) / 1024u, muxQueuePackets,
                 muxBackpressureCount, muxBackpressureWaitUs, muxBackpressureMaxWaitUs, smoothedEncodeMs,
-                encoderBudgetUtilizationPermille, sustainableOutputFps, encoderTooSlowForTarget ? 1 : 0,
+                smoothedWgcFreshServiceMs, encoderBudgetUtilizationPermille, sustainableOutputFps,
+                encoderTooSlowForTarget ? 1 : 0,
                 g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0, wgcLowSourceModeActive ? 1 : 0,
                 wgcLiveRecoveryModeActive ? 1 : 0, wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
                 wgcEncoderRecoveryLimitedCurrent ? 1 : 0, srcFpsX100Val / 100.0, srcJitterUsVal, dupTsPerSec,
@@ -10957,6 +10951,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(wgcLiveSchedulerRebaseTotal), wgcLiveSchedulerRebaseMaxTicks,
                 static_cast<unsigned long long>(wgcEncoderLimitedSourceDropTotal), wgcEncoderLimitedSourceDropMaxTicks,
                 static_cast<unsigned long long>(wgcPostStopFrameDropTotal), wgcPostStopFrameDropMaxUs);
+            LogInfo(
+                "[WGC CFR RECOVERY] GridFresh=%llu Held=%llu FreshSvcEma=%.2fms ServiceHeadroomRatio=%.2f "
+                "PtsGrid=immutable AudioTimeline=unchanged",
+                static_cast<unsigned long long>(wgcFreshCatchupTotal),
+                static_cast<unsigned long long>(wgcRepeatCatchupTotal), smoothedWgcFreshServiceMs,
+                ce::capture_policy::kWgcFreshCatchupServiceBudgetRatio);
             const int64_t wgcAvSyncStartupDelayUs =
                 qpcFreq.QuadPart > 0 && wgcAvSyncStartupEffectiveDelayQpc > 0
                     ? (wgcAvSyncStartupEffectiveDelayQpc * 1000000) / qpcFreq.QuadPart

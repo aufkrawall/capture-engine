@@ -146,6 +146,32 @@ TEST(CaptureCoordinatorSourceTest, CfrRecoverySeparatesOutputGridFromWakeDeadlin
     EXPECT_EQ(source.find("std::max(smoothedEncodeMs, smoothedEncCycleMs)"), std::string::npos);
 }
 
+TEST(CaptureCoordinatorSourceTest, WgcCatchupRecoveryChangesPixelsOnlyOnTheImmutableCfrGrid) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t recoveryBegin = source.find("const size_t freshCatchupReserveFrames");
+    const size_t recoveryEnd = source.find("if (!hasRepeatLastFramePath)", recoveryBegin);
+    ASSERT_NE(recoveryBegin, std::string::npos);
+    ASSERT_NE(recoveryEnd, std::string::npos);
+    const std::string recovery = source.substr(recoveryBegin, recoveryEnd - recoveryBegin);
+
+    EXPECT_NE(recovery.find("GetWgcFreshCatchupBudgetThisLoop"), std::string::npos);
+    EXPECT_NE(recovery.find("getWgcDelayReservoirLowWaterFrames"), std::string::npos);
+    EXPECT_NE(recovery.find("isWgcEffectiveContentDelayActive"), std::string::npos);
+    EXPECT_NE(recovery.find("smoothedWgcFreshServiceMs"), std::string::npos);
+    EXPECT_NE(recovery.find("std::max(currentEncodeMs, pureEncodeMs)"), std::string::npos);
+    EXPECT_NE(recovery.find("ShouldUseFreshWgcCatchupFrame"), std::string::npos);
+    EXPECT_NE(recovery.find("ApplyCfrCaptureSyncPhaseLock"), std::string::npos);
+    EXPECT_NE(recovery.find("computeWgcSelectionTargetForTick"), std::string::npos);
+    EXPECT_NE(recovery.find("computeLiveTimelineElapsedUs(repeatScheduledQpc)"), std::string::npos);
+    EXPECT_NE(recovery.find("++liveTicksOutput"), std::string::npos);
+    EXPECT_NE(recovery.find("++encoderGridTickCount"), std::string::npos);
+    EXPECT_EQ(recovery.find("clampWgcSelectionTargetQpc"), std::string::npos);
+    EXPECT_EQ(source.find("[EncoderThread] CFR Catchup applied using fresh frame"), std::string::npos);
+    EXPECT_NE(source.find("PtsGrid=immutable AudioTimeline=unchanged"), std::string::npos);
+}
+
 TEST(CaptureCoordinatorSourceTest, EncoderCapacityWarningUsesStartupGuard) {
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());
