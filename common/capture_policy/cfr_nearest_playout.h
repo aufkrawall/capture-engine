@@ -317,57 +317,6 @@ inline WgcNearestPlayoutDecision DecideWgcNearestPlayout(int64_t frontTimestampQ
     return DecideCfrNearestPlayout(frontTimestampQpc, playoutTargetQpc, leadToleranceQpc, lastEmittedTimestampQpc);
 }
 
-// Anti-freeze floor for the uniform active-delay playout slot target.
-//
-// The uniform playout target is grid-anchored (gridSlot - contentDelay) and intentionally UNCLAMPED so
-// the realized content delay is held through low-source / live-recovery. But when the CFR encoder grid
-// falls behind wall-clock and cannot repay the deficit (sustained encoder overload: the grid->wall
-// resync is gated off while a shortfall exists, and the per-loop rebase is capped), the grid-anchored
-// target drifts arbitrarily far behind the real-time WGC frame timestamps. Once it has drifted behind
-// the ENTIRE reserve -- i.e. even the OLDEST buffered frame is "too new for the slot"
-// (IsWgcFrameTooNewForCfrSlot) -- DecideWgcNearestPlayout holds every tick: the last frame repeats
-// forever while fresh frames pile up and drop as stale. Observed as a multi-second hard video freeze
-// (build 0.1.4402: a 20.9 s / 2510-tick contiguous duplicate run under 4K120 AV1 NVENC overload) with
-// only the composited cursor moving.
-//
-// When (and only when) even the oldest reserve frame is too-new for the slot, raise the slot target
-// just enough to age that oldest frame in, so playout resumes at the SOURCE rate against the deepest
-// reserve frame. The caller must first verify that the oldest frame is still old enough to preserve the
-// active content delay; otherwise a source-underfilled reservoir would be mistaken for encoder-grid
-// drift and the realized A/V delay would collapse toward live. This helper is a strict no-op in healthy
-// cadence: the oldest reserve frame is normally OLDER than the slot (it never trips the too-new
-// boundary), so the grid target stays authoritative and the realized delay is unchanged. The too-new
-// boundary (kWgcCfrSelectionMaxLeadTicks) sits well beyond source delivery jitter, so normal bursty
-// delivery cannot toggle the floor -- it engages only on a genuine sustained grid drift.
-inline int64_t ApplyWgcUniformPlayoutAntiFreezeFloor(int64_t playoutTargetQpc, int64_t oldestBufferedSlotQpc,
-                                                     int64_t targetIntervalTicks,
-                                                     uint32_t maxLeadTicks = kWgcCfrSelectionMaxLeadTicks) {
-    if (playoutTargetQpc <= 0 || oldestBufferedSlotQpc <= 0 || targetIntervalTicks <= 0) {
-        return playoutTargetQpc;
-    }
-    if (!IsWgcFrameTooNewForCfrSlot(oldestBufferedSlotQpc, playoutTargetQpc, targetIntervalTicks, maxLeadTicks)) {
-        return playoutTargetQpc;  // oldest reserve frame still ages into the slot -> healthy, no-op
-    }
-    // Land the oldest frame exactly on the emit boundary (target + tolerance): DecideWgcNearestPlayout
-    // and ShouldDropWgcFrontForNearerPlayout both use the SAME tolerance and a `<=` comparison, so the
-    // oldest frame is emitted and no newer reserve frame is dropped (max delay retained). Never lower
-    // the target (std::max) so a mis-ordered caller cannot collapse the delay.
-    const int64_t agedInTargetQpc = oldestBufferedSlotQpc - GetWgcActiveDelayResidualToleranceQpc(targetIntervalTicks);
-    return std::max(playoutTargetQpc, agedInTargetQpc);
-}
-
-inline bool IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(int64_t oldestBufferedAgeQpc, int64_t contentDelayQpc,
-                                                       int64_t targetIntervalTicks) {
-    if (contentDelayQpc <= 0) {
-        return true;
-    }
-    if (oldestBufferedAgeQpc <= 0 || targetIntervalTicks <= 0) {
-        return false;
-    }
-    const int64_t residualToleranceQpc = GetWgcActiveDelayResidualToleranceQpc(targetIntervalTicks);
-    return oldestBufferedAgeQpc + residualToleranceQpc >= contentDelayQpc;
-}
-
 inline bool ShouldAllowSingleFreshWgcHold(bool reservePressureActive, bool lowSourceMode, uint32_t recentInputMin250Fps,
                                           uint32_t outputFps, double smoothedInputPerTick) {
     if (!(reservePressureActive || lowSourceMode) || outputFps == 0) {

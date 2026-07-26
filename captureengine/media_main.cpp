@@ -3431,11 +3431,11 @@ void EncoderThreadFunc(const AppConfig& config) {
     uint64_t wgcDelayPaceCapTrimTotal = 0;
     uint32_t wgcDelayPaceCapTrimWindow = 0;
     DWORD wgcDelayPaceCapTrimLastLogTick = 0;
-    // Uniform-playout anti-freeze floor engagements: the encoder grid drifted so far behind wall-clock
-    // that even the oldest buffered frame was too-new for the slot, and the oldest frame was old enough
-    // to preserve the active content delay, so the target was raised to resume playout.
-    uint64_t wgcUniformAntiFreezeFloorTotal = 0;
-    uint64_t wgcUniformAntiFreezeFloorSkippedSyncTotal = 0;
+    // Deep encoder debt can leave every retained source frame newer than the immutable content target.
+    // Count the resulting sync-protected holds and their worst grid-relative lead; held-repeat catch-up
+    // advances the output grid without relabelling those future pixels into an older audio-aligned slot.
+    uint64_t wgcUniformGridDebtHoldTotal = 0;
+    uint64_t wgcUniformGridDebtLeadMaxUs = 0;
     uint64_t wgcRetainedCapTrimTotal = 0;
     uint32_t wgcRetainedCapTrimWindow = 0;
     DWORD wgcRetainedCapTrimLastLogTick = 0;
@@ -5184,7 +5184,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             // frames (reserve-preservation index-0 bias + soft-late older search) perturbs the
             // otherwise-uniform CFR cadence into abnormal judder. In uniform-cadence mode we take
             // the closest-to-target frame (monotonic + hard-cap guards stay intact) and let the
-            // realized content delay float gracefully; anti-freeze rescue/relaxed paths are kept.
+            // realized content delay float gracefully; sync-safe relaxed rescue paths are kept.
             const bool preferUniformActiveDelayCadence = ce::capture_policy::IsWgcActiveDelayUniformCadenceMode(
                 selectionDelayApplied, config.wgcActiveDelayUniformCadence);
             ce::capture_policy::WgcAdaptiveTelemetry activeDelayTelemetry{};
@@ -6733,7 +6733,6 @@ void EncoderThreadFunc(const AppConfig& config) {
                         // path maintains the delay through low-source/recovery rather than clamping
                         // toward live, which would re-collapse the realized delay -- the other half of
                         // the rubber-band).
-                        const int64_t effectiveContentDelayQpc = getWgcEffectiveContentDelayQpc();
                         int64_t playoutTargetQpc = (encoderGridStartQpc > 0 && targetIntervalTicks > 0)
                                                        ? computeDelayedWgcSelectionTargetQpc()
                                                        : 0;
@@ -6744,61 +6743,30 @@ void EncoderThreadFunc(const AppConfig& config) {
                             "screen_grab", wgcCfrPhaseLock, playoutTargetQpc, phaseReferenceQpc);
                         const int64_t playoutLeadToleranceQpc =
                             ce::capture_policy::GetWgcActiveDelayResidualToleranceQpc(targetIntervalTicks);
-                        // Anti-freeze floor: if the encoder grid has drifted so far behind wall-clock
-                        // that even the OLDEST buffered frame is "too new" for this slot, the grid target
-                        // would hold/repeat every tick while fresh frames pile up and drop stale -- a
-                        // multi-second hard freeze. Only raise the slot target when the oldest frame is
-                        // still old enough to preserve the active content delay. Otherwise this is an
-                        // underfilled WGC reserve, not encoder-grid drift, and advancing toward near-live
-                        // would trade the freeze for a visible A/V-delay collapse.
+                        // Never raise this immutable audio-aligned target to reach retained source history.
+                        // The former anti-freeze floor judged safety from wall-clock frame age, which can
+                        // still put seconds-newer visual content into an old CFR/audio slot after encoder
+                        // debt. Existing held-repeat catch-up advances the grid itself and resumes fresh
+                        // selection once the target reaches retained history, without changing PTS or audio.
                         if (!bufferedWgcFrames.empty()) {
                             const int64_t oldestBufferedSlotQpc = GetFrameSelectionTimestamp(bufferedWgcFrames.front());
-                            const int64_t oldestBufferedAgeQpc =
-                                selectionNowQpc.QuadPart > oldestBufferedSlotQpc
-                                    ? (selectionNowQpc.QuadPart - oldestBufferedSlotQpc)
-                                    : 0;
-                            const int64_t antiFreezeTargetQpc =
-                                ce::capture_policy::ApplyWgcUniformPlayoutAntiFreezeFloor(
-                                    playoutTargetQpc, oldestBufferedSlotQpc, targetIntervalTicks);
-                            const bool antiFreezeSyncSafe =
-                                ce::capture_policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(
-                                    oldestBufferedAgeQpc, effectiveContentDelayQpc, targetIntervalTicks);
-                            if (antiFreezeTargetQpc > playoutTargetQpc && antiFreezeSyncSafe) {
-                                ++wgcUniformAntiFreezeFloorTotal;
-                                static uint64_t s_lastAntiFreezeLogTick = 0;
-                                const uint64_t nowAntiFreezeTick = GetTickCount64();
-                                if (nowAntiFreezeTick - s_lastAntiFreezeLogTick >= 1000) {
-                                    s_lastAntiFreezeLogTick = nowAntiFreezeTick;
-                                    const int64_t driftUs = qpcToUs(antiFreezeTargetQpc - playoutTargetQpc);
-                                    const int64_t oldestAgeUs = qpcToUs(oldestBufferedAgeQpc);
-                                    const int64_t effectiveDelayUs = qpcToUs(effectiveContentDelayQpc);
+                            if (ce::capture_policy::IsWgcFrameTooNewForCfrSlot(
+                                    oldestBufferedSlotQpc, playoutTargetQpc, targetIntervalTicks)) {
+                                ++wgcUniformGridDebtHoldTotal;
+                                const uint64_t oldestLeadUs = static_cast<uint64_t>(
+                                    qpcToUs(oldestBufferedSlotQpc - playoutTargetQpc));
+                                wgcUniformGridDebtLeadMaxUs = std::max(wgcUniformGridDebtLeadMaxUs, oldestLeadUs);
+                                static uint64_t s_lastGridDebtHoldLogTick = 0;
+                                const uint64_t nowGridDebtHoldTick = GetTickCount64();
+                                if (nowGridDebtHoldTick - s_lastGridDebtHoldLogTick >= 1000) {
+                                    s_lastGridDebtHoldLogTick = nowGridDebtHoldTick;
                                     LogWarn(
-                                        "[WGC CFR] Uniform playout anti-freeze floor engaged: grid target drifted "
-                                        "%lldus behind the reserve (even the oldest buffered frame was too-new for "
-                                        "the slot); advancing to the oldest sync-safe frame to resume playout. "
-                                        "buffered=%zu oldestAge=%lldus effectiveDelay=%lldus total=%llu "
-                                        "(A/V PTS unchanged)",
-                                        static_cast<long long>(driftUs), bufferedWgcFrames.size(),
-                                        static_cast<long long>(oldestAgeUs), static_cast<long long>(effectiveDelayUs),
-                                        static_cast<unsigned long long>(wgcUniformAntiFreezeFloorTotal));
-                                }
-                                playoutTargetQpc = antiFreezeTargetQpc;
-                            } else if (antiFreezeTargetQpc > playoutTargetQpc) {
-                                ++wgcUniformAntiFreezeFloorSkippedSyncTotal;
-                                static uint64_t s_lastAntiFreezeSkippedLogTick = 0;
-                                const uint64_t nowAntiFreezeSkippedTick = GetTickCount64();
-                                if (nowAntiFreezeSkippedTick - s_lastAntiFreezeSkippedLogTick >= 1000) {
-                                    s_lastAntiFreezeSkippedLogTick = nowAntiFreezeSkippedTick;
-                                    const int64_t driftUs = qpcToUs(antiFreezeTargetQpc - playoutTargetQpc);
-                                    const int64_t oldestAgeUs = qpcToUs(oldestBufferedAgeQpc);
-                                    const int64_t effectiveDelayUs = qpcToUs(effectiveContentDelayQpc);
-                                    LogInfo(
-                                        "[WGC CFR] Uniform playout anti-freeze floor skipped to preserve content "
-                                        "delay: drift=%lldus buffered=%zu oldestAge=%lldus effectiveDelay=%lldus "
-                                        "skipped=%llu (reserve underfilled; waiting for sync-safe WGC content)",
-                                        static_cast<long long>(driftUs), bufferedWgcFrames.size(),
-                                        static_cast<long long>(oldestAgeUs), static_cast<long long>(effectiveDelayUs),
-                                        static_cast<unsigned long long>(wgcUniformAntiFreezeFloorSkippedSyncTotal));
+                                        "[WGC CFR] Uniform playout grid-debt sync hold: oldestLead=%lluus "
+                                        "shortfall=%u buffered=%zu total=%llu (held-repeat catch-up advances the "
+                                        "immutable CFR grid; visual/audio content targets and PTS unchanged)",
+                                        static_cast<unsigned long long>(oldestLeadUs), outputShortfallTicks,
+                                        bufferedWgcFrames.size(),
+                                        static_cast<unsigned long long>(wgcUniformGridDebtHoldTotal));
                                 }
                             }
                         }
@@ -10895,8 +10863,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     : 0ull;
             LogInfo(
                 "[WGC CFR SUMMARY] Live=%llu Dup=%llu DupPct=%.1f%% NoFresh=%llupm NoReserve=%llupm DupReason(src=%llu "
-                "def=%llu timer=%llu drain=%llu) SourceLimitedRepeats=%llu StarvedEpisodes=%llu AntiFreezeFloor=%llu "
-                "AntiFreezeFloorSkippedSync=%llu BiasClampCount=%llu longest=%llums longestDup=%llu "
+                "def=%llu timer=%llu drain=%llu) SourceLimitedRepeats=%llu StarvedEpisodes=%llu "
+                "GridDebtSyncHolds=%llu GridDebtLeadMax=%lluus BiasClampCount=%llu longest=%llums longestDup=%llu "
                 "longestContiguousDup=%llu (%llums) "
                 "worstIn=%u "
                 "worstDel=%u",
@@ -10910,8 +10878,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(captureSessionSummary.duplicateDrainTicks),
                 static_cast<unsigned long long>(captureSessionSummary.duplicateNoSourceTicks),
                 static_cast<unsigned long long>(captureSessionSummary.starvedEpisodes),
-                static_cast<unsigned long long>(wgcUniformAntiFreezeFloorTotal),
-                static_cast<unsigned long long>(wgcUniformAntiFreezeFloorSkippedSyncTotal),
+                static_cast<unsigned long long>(wgcUniformGridDebtHoldTotal),
+                static_cast<unsigned long long>(wgcUniformGridDebtLeadMaxUs),
                 static_cast<unsigned long long>(wgcBiasClampCount),
                 static_cast<unsigned long long>(captureSessionSummary.longestStarvedEpisodeMs),
                 static_cast<unsigned long long>(captureSessionSummary.longestStarvedEpisodeDuplicateTicks),

@@ -565,67 +565,41 @@ TEST(CapturePipelinePolicyTest, WgcNearestPlayoutEvenHoldsAndStableDelayUnderGap
     EXPECT_LE(s.longestHoldRun, 8);
 }
 
-TEST(CapturePipelinePolicyTest, WgcUniformPlayoutAntiFreezeFloorRaisesOnlyWhenReserveIsTooNew) {
+TEST(CapturePipelinePolicyTest, WgcUniformPlayoutDeepGridDebtKeepsAudioAlignedTargetAuthoritative) {
     const int64_t interval = 100;
     const int64_t tol = policy::GetWgcActiveDelayResidualToleranceQpc(interval);  // 90
-    // Oldest reserve frame OLDER than the slot -> healthy, no-op.
-    EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(/*target=*/1000, /*oldest=*/700, interval), 1000);
-    // Oldest within the too-new lead window (<= 3 intervals ahead) -> still aged-in, no-op.
-    EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(1000, 1300, interval), 1000);
-    // Oldest BEYOND the lead window (whole reserve is too-new = the freeze condition) -> raise the slot
-    // target so the oldest lands exactly on the emit boundary (oldest - tolerance), never further.
-    EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(1000, 1600, interval), 1600 - tol);
-    // The raised target makes DecideWgcNearestPlayout emit the previously-frozen oldest frame.
-    const int64_t raised = policy::ApplyWgcUniformPlayoutAntiFreezeFloor(1000, 1600, interval);
-    EXPECT_TRUE(policy::DecideWgcNearestPlayout(/*front=*/1600, raised, tol, /*lastEmitted=*/1500).emit);
-    // Never lowers the target; guards invalid inputs.
-    EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(2000, 1600, interval), 2000);
-    EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(0, 1600, interval), 0);
-    EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(1000, 0, interval), 1000);
-    EXPECT_EQ(policy::ApplyWgcUniformPlayoutAntiFreezeFloor(1000, 1600, 0), 1000);
+    constexpr int64_t kAudioAlignedTargetQpc = 1000;
+    constexpr int64_t kOldestRetainedFrameQpc = 1600;
+    constexpr int64_t kWallNowQpc = 5000;
+    constexpr int64_t kConfiguredContentDelayQpc = 1000;
+
+    // The removed wall-age heuristic accepted this frame even though it is 600 ticks newer than the
+    // audio-aligned target. Grid-relative safety must win regardless of how old the frame is by wall time.
+    EXPECT_GE(kWallNowQpc - kOldestRetainedFrameQpc, kConfiguredContentDelayQpc);
+    EXPECT_TRUE(policy::IsWgcFrameTooNewForCfrSlot(
+        kOldestRetainedFrameQpc, kAudioAlignedTargetQpc, interval));
+    const auto decision = policy::DecideWgcNearestPlayout(
+        kOldestRetainedFrameQpc, kAudioAlignedTargetQpc, tol, /*lastEmittedTimestampQpc=*/900);
+    EXPECT_TRUE(decision.hold);
+    EXPECT_FALSE(decision.emit);
+    EXPECT_FALSE(policy::IsWgcActiveDelayFinalSelectionWithinHardLimit(
+        kOldestRetainedFrameQpc, kOldestRetainedFrameQpc, kAudioAlignedTargetQpc, interval,
+        /*qpcTicksPerSecond=*/1000));
 }
 
-TEST(CapturePipelinePolicyTest, WgcUniformPlayoutAntiFreezeFloorRequiresSyncSafeOldestFrame) {
+TEST(CapturePipelinePolicyTest, WgcUniformPlayoutHeldRepeatCatchupRecoversDeepGridDebtWithoutContentLead) {
     const int64_t interval = 100;
-    const int64_t contentDelay = 1000;
-    const int64_t tol = policy::GetWgcActiveDelayResidualToleranceQpc(interval);
+    constexpr uint32_t kInitialShortfallTicks = 24;
+    constexpr int kReservoirFrames = 8;
+    const auto s = RunGridDebtCatchupPlayout(
+        /*wallLoops=*/200, interval, /*contentDelay=*/400, kInitialShortfallTicks, kReservoirFrames);
 
-    EXPECT_TRUE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(contentDelay - tol, contentDelay, interval));
-    EXPECT_TRUE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(contentDelay, contentDelay, interval));
-    EXPECT_FALSE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(contentDelay - tol - 1, contentDelay, interval));
-    EXPECT_FALSE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(
-        /*oldestBufferedAgeQpc=*/0, contentDelay, interval));
-    EXPECT_TRUE(policy::IsWgcUniformPlayoutAntiFreezeFloorSyncSafe(
-        /*oldestBufferedAgeQpc=*/0, /*contentDelayQpc=*/0, interval));
-}
-
-TEST(CapturePipelinePolicyTest, WgcUniformPlayoutFreezesUnderGridDriftWithoutAntiFreezeFloor) {
-    // Regression for the 20.9 s hard freeze (build 0.1.4402, 4K120 AV1 NVENC): once the encoder grid had
-    // drifted behind wall-clock far enough that the grid-anchored target sat below the ENTIRE reserve,
-    // every tick held while fresh frames kept arriving. Pre-fix (no floor) => a freeze spanning nearly
-    // the whole run despite a continuously full buffer.
-    const int reservoirFrames = 14;
-    auto s = RunGridDriftPlayout(/*ticks=*/500, /*interval=*/100, /*contentDelay=*/800, /*gridLag=*/1000,
-                                 reservoirFrames, /*applyAntiFreezeFloor=*/false);
-    EXPECT_GE(s.longestHoldRun, 480);  // essentially frozen for the whole run
-    EXPECT_LE(s.emits, 10);
-}
-
-TEST(CapturePipelinePolicyTest, WgcUniformPlayoutAntiFreezeFloorResumesPlayoutBehindAudio) {
-    const int reservoirFrames = 14;
-    const int64_t interval = 100;
-    auto s = RunGridDriftPlayout(/*ticks=*/500, interval, /*contentDelay=*/800, /*gridLag=*/1000, reservoirFrames,
-                                 /*applyAntiFreezeFloor=*/true);
-    // Freeze released: playout resumes at the source rate (one emit per tick after warmup).
-    EXPECT_GE(s.emits, 490);
-    EXPECT_LE(s.longestHoldRun, 2);
-    // Never backwards, and video content is NEVER newer than the co-timed audio/grid slot: the floor
-    // emits the OLDEST (deepest) reserve frame, so video stays behind audio -> A/V offset preserved.
-    EXPECT_EQ(s.backwardEmits, 0);
-    EXPECT_EQ(s.aheadOfAudioEmits, 0);
-    EXPECT_GE(s.minRealizedDelay, 0);
-    // Realized delay stays bounded within the reservoir depth (no unbounded lag, no rubber-band).
-    EXPECT_LE(s.maxRealizedDelay, reservoirFrames * interval);
+    EXPECT_GT(s.repeatEmits, 0);
+    EXPECT_GT(s.freshAfterDebt, 100);
+    EXPECT_EQ(s.finalShortfallTicks, 0u);
+    EXPECT_EQ(s.backwardFreshEmits, 0);
+    EXPECT_LE(s.maxContentLead, policy::GetWgcActiveDelayResidualToleranceQpc(interval));
+    EXPECT_LE(s.longestRepeatRun, static_cast<int>(kInitialShortfallTicks) + 2 * kReservoirFrames);
 }
 
 TEST(CapturePipelinePolicyTest, WgcNearestPlayoutDropsSurplus144HzFor120FpsWithoutRepeats) {
@@ -730,4 +704,3 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessSplitBudgetCompactsSdrFp16RetainedC
     EXPECT_EQ(budget.copyEstimatedBytes,
               policy::EstimateWgcSurfaceBytes(/*width=*/3840, /*height=*/2160, /*bytesPerPixel=*/4) * 50ull);
 }
-

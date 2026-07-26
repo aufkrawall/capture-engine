@@ -172,6 +172,24 @@ TEST(CaptureCoordinatorSourceTest, WgcCatchupRecoveryChangesPixelsOnlyOnTheImmut
     EXPECT_NE(source.find("PtsGrid=immutable AudioTimeline=unchanged"), std::string::npos);
 }
 
+TEST(CaptureCoordinatorSourceTest, WgcDeepGridDebtNeverMovesTheAudioAlignedSelectionTarget) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t uniformStart = source.find("int64_t playoutTargetQpc =");
+    const size_t uniformEnd = source.find("const uint32_t uniformActiveDelaySoftLateTargetUs", uniformStart);
+    ASSERT_NE(uniformStart, std::string::npos);
+    ASSERT_NE(uniformEnd, std::string::npos);
+    const std::string uniformSelection = source.substr(uniformStart, uniformEnd - uniformStart);
+
+    EXPECT_NE(uniformSelection.find("IsWgcFrameTooNewForCfrSlot"), std::string::npos);
+    EXPECT_NE(uniformSelection.find("Uniform playout grid-debt sync hold"), std::string::npos);
+    EXPECT_EQ(uniformSelection.find("ApplyWgcUniformPlayoutAntiFreezeFloor"), std::string::npos);
+    EXPECT_EQ(source.find("IsWgcUniformPlayoutAntiFreezeFloorSyncSafe"), std::string::npos);
+    EXPECT_NE(source.find("GridDebtSyncHolds="), std::string::npos);
+    EXPECT_NE(source.find("held-repeat catch-up advances the "), std::string::npos);
+}
+
 TEST(CaptureCoordinatorSourceTest, EncoderCapacityWarningUsesStartupGuard) {
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());

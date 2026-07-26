@@ -21,7 +21,7 @@
     "  bugprone-exception-escape                 destructors; see git log for rationale"
   ],
   "checks": {
-    "bugprone-argument-comment": 175,
+    "bugprone-argument-comment": 171,
     "bugprone-assignment-in-if-condition": 10,
     "bugprone-bitwise-pointer-cast": 51,
     "bugprone-branch-clone": 55,
@@ -50,7 +50,7 @@
     "performance-no-automatic-move": 5,
     "performance-unnecessary-value-param": 7
   },
-  "total": 1616,
+  "total": 1612,
   "scope": {
     "entries": 254,
     "translation_units": [
