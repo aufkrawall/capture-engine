@@ -196,6 +196,21 @@ inline int64_t GetWgcLiveVisualDebtFloorQpcForMode(int64_t liveNowQpc, int64_t t
     return liveNowQpc > maximumFrameAgeQpc ? (liveNowQpc - maximumFrameAgeQpc) : 0;
 }
 
+inline bool ShouldPruneWgcVisualDebtFrameForGrid(int64_t frameQpc, int64_t nextFrameQpc, int64_t wallDebtFloorQpc,
+                                                 int64_t immutableSelectionTargetQpc) {
+    if (frameQpc <= 0 || wallDebtFloorQpc <= 0 || frameQpc >= wallDebtFloorQpc) {
+        return false;
+    }
+    if (immutableSelectionTargetQpc <= 0) {
+        return true;
+    }
+
+    // During encoder debt, retain the newest predecessor of the immutable CFR
+    // content target. Relabelling newer pixels would break content-level A/V sync.
+    return frameQpc < immutableSelectionTargetQpc && nextFrameQpc > 0 &&
+           nextFrameQpc <= immutableSelectionTargetQpc;
+}
+
 inline bool ShouldProtectWgcStartupSmoothnessHistory(bool recordingOutputLive, bool startupSmoothnessAttempted,
                                                      int64_t smoothnessTargetDelayQpc,
                                                      int64_t liveVisualDebtLimitQpc) {

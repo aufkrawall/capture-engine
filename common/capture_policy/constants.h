@@ -117,12 +117,15 @@ constexpr uint32_t kCfrShortfallForceCatchupThresholdTicks = 18;
 // Four submissions at this cost fit inside three CFR intervals, so a maximum
 // four-tick recovery burst repays one slot instead of increasing wall-clock debt.
 constexpr double kWgcFreshCatchupServiceBudgetRatio = 0.75;
-// When fresh screen-grab submissions cannot sustain the CFR rate but cached
-// repeats are materially cheaper, reserve 5% service headroom and distribute
-// the necessary repeats evenly before visual grid debt escapes retained history.
+// When fresh screen-grab submissions cannot sustain CFR but cached repeats are
+// cheaper, reserve normal service headroom. If repeats approach the interval,
+// spend only part of their remaining real-time headroom on fresh-frame liveness.
 constexpr double kWgcOverloadRepeatPacerBudgetRatio = 0.95;
 constexpr double kWgcOverloadRepeatPacerMinAdvantageRatio = 0.05;
+constexpr double kWgcOverloadRepeatPacerMarginalHeadroomUseRatio = 0.75;
+constexpr double kWgcOverloadRepeatPacerDegradedFreshFraction = 0.05;
 constexpr uint32_t kWgcOverloadRepeatPacerMinSamples = 8;
+constexpr uint32_t kWgcOverloadRepeatPacerRecoveryConfirmTicks = 8;
 constexpr uint32_t kInjectCfrRecoveryExitShortfallTicks = 1;
 constexpr double kWgcSevereShortfallDurationMs = 500.0;
 constexpr uint32_t kWgcDeepUnderfeedMarginFps = 8;

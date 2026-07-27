@@ -4597,8 +4597,12 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
             return excessTicks;
         };
-        auto pruneStaleWgcVisualDebt = [&](int64_t liveNowQpc, const char* reason, bool allowDropAll) -> size_t {
+        auto pruneStaleWgcVisualDebt = [&](int64_t liveNowQpc, const char* reason, bool allowDropAll,
+                                           int64_t immutableSelectionTargetQpc) -> size_t {
             if (wgcWarmupUntilQpc > 0 && liveNowQpc < wgcWarmupUntilQpc) {
+                return 0;
+            }
+            if (outputShortfallTicks > 0 && immutableSelectionTargetQpc <= 0) {
                 return 0;
             }
             const bool encoderLimitedSmoothnessMode = isWgcEncoderLimitedSmoothnessMode();
@@ -4627,7 +4631,11 @@ void EncoderThreadFunc(const AppConfig& config) {
             uint64_t maxDebtUs = 0;
             while (!bufferedWgcFrames.empty()) {
                 const int64_t selectionTimestampQpc = GetFrameSelectionTimestamp(bufferedWgcFrames.front());
-                if (selectionTimestampQpc <= 0 || selectionTimestampQpc >= visualDebtFloorQpc) {
+                const int64_t nextSelectionTimestampQpc =
+                    bufferedWgcFrames.size() > 1 ? GetFrameSelectionTimestamp(bufferedWgcFrames[1]) : 0;
+                if (!ce::capture_policy::ShouldPruneWgcVisualDebtFrameForGrid(
+                        selectionTimestampQpc, nextSelectionTimestampQpc, visualDebtFloorQpc,
+                        immutableSelectionTargetQpc)) {
                     break;
                 }
                 if (bufferedWgcFrames.size() == 1 && !allowDropAll) {
@@ -4654,9 +4662,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                 if (nowTick - s_lastStaleWgcDebtLogTick >= 1000 || dropped >= 8) {
                     LogWarn(
                         "[EncoderThread] WGC CFR stale visual debt drop: reason=%s mode=%s dropped=%zu floorQpc=%lld "
-                        "liveNowQpc=%lld contentDelay=%lldus maxDebt=%lluus remaining=%zu shortfall=%u",
+                        "gridTargetQpc=%lld liveNowQpc=%lld contentDelay=%lldus maxDebt=%lluus remaining=%zu shortfall=%u",
                         reason ? reason : "unknown", encoderLimitedSmoothnessMode ? "encoder_limited" : "bounded_live",
-                        dropped, static_cast<long long>(visualDebtFloorQpc), static_cast<long long>(liveNowQpc),
+                        dropped, static_cast<long long>(visualDebtFloorQpc),
+                        static_cast<long long>(immutableSelectionTargetQpc), static_cast<long long>(liveNowQpc),
                         static_cast<long long>(qpcToUs(intentionalContentDelayQpc)),
                         static_cast<unsigned long long>(maxDebtUs), bufferedWgcFrames.size(), outputShortfallTicks);
                     s_lastStaleWgcDebtLogTick = nowTick;
@@ -4712,7 +4721,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     QueryPerformanceCounter(&drainNowQpc);
                     drainPolicyQpc = drainNowQpc.QuadPart;
                 }
-                pruneStaleWgcVisualDebt(drainPolicyQpc, "stop-drain", g_HasLastFrame && mediaEngineCanRepeatLastFrame);
+                pruneStaleWgcVisualDebt(drainPolicyQpc, "stop-drain",
+                                        g_HasLastFrame && mediaEngineCanRepeatLastFrame, 0);
             }
             const bool bufferedFrameAvailable =
                 activeScreenGrab ? !bufferedWgcFrames.empty() : !bufferedInjectFrames.empty();
@@ -5019,11 +5029,9 @@ void EncoderThreadFunc(const AppConfig& config) {
 
         int64_t scheduledOutputQpc = scheduledSampleQpc;
         if (!config.video.useVFR && recordingOutputLive && activeScreenGrab) {
-            // Worker wake deadlines may rebase after an expensive encode, but
-            // WGC/DXGI source selection, cursor sampling, and media submission
-            // must stay on the immutable CFR output grid. This also lets an
-            // extra held-frame slot repay debt without duplicating a QPC or
-            // postponing the next normal wake.
+            // Wake deadlines may rebase after expensive work, but source selection,
+            // cursor sampling, and submission stay on the immutable CFR grid. Extra
+            // held slots repay debt without duplicate QPC or postponing the next wake.
             scheduledOutputQpc = ce::capture_policy::GetNextCfrOutputQpc(
                 liveStartQpc.QuadPart, liveTicksOutput, targetIntervalTicks, scheduledSampleQpc);
         }
@@ -5031,22 +5039,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                           bool applyLiveDelay) {
             const int64_t fallbackTargetQpc =
                 ComputeIdealOutputQpc(encoderGridStartQpc, selectionGridTickForTick, targetIntervalTicks);
-            // The selection target must keep subtracting the content delay through WGC live-recovery on
-            // the uniform-cadence path. A VRR / GPU-bound source running below the output target keeps
-            // live-recovery LATCHED indefinitely (it only exits once the source outruns output, which a
-            // perpetually-below-target source never does), so a raw `!wgcLiveRecoveryModeActive` gate
-            // here collapses the realized content delay to ~0 and latches it there for the rest of the
-            // recording -- the collapse half of the realized-delay rubber-band (real session
-            // 20260626_050554: live-recovery engaged at ~31 s and the realized delay sat at ~0/late
-            // residual ~31.5 ms until stop, i.e. video ran ~31.5 ms ahead of the loopback audio it is
-            // meant to align with, and the collapse transition is a visible content fast-forward).
-            // Mirror ShouldLiveRecoverySuppressWgcSelectionDelay so the legacy reservoir path still
-            // yields to live-recovery while the uniform path HOLDS the delay (live-recovery keeps
-            // driving max-rate capture refill regardless; only the SELECTION delay is preserved). This
-            // matches the flag that ShouldApplyWgcSelectionDelay already keeps set
-            // (wgcSelectionDelayAppliedThisTick) -- previously the flag said "apply delay" while this
-            // target computation silently dropped it. GetWgcActiveDelaySelectionTargetQpc is the single
-            // source of truth that keeps the two decisions from diverging again.
+            // Uniform playout keeps its fixed delay through recovery; the legacy
+            // reservoir may yield it. Keep target and application on one helper.
             const int64_t effectiveContentDelayQpc = getWgcEffectiveContentDelayQpc();
             const bool uniformCadenceActiveDelay = effectiveContentDelayQpc > 0 && config.wgcActiveDelayUniformCadence;
             return ce::capture_policy::GetWgcActiveDelaySelectionTargetQpc(
@@ -5104,7 +5098,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                 return false;
             }
 
-            pruneStaleWgcVisualDebt(liveNowQpc, "selection", g_HasLastFrame && !g_LastFrame.isInjectMode);
+            pruneStaleWgcVisualDebt(liveNowQpc, "selection", g_HasLastFrame && !g_LastFrame.isInjectMode,
+                                    selectionTargetQpc);
 
             const bool lowSourceMode = wgcLowSourceModeActive;
             const bool deepUnderfeed = ce::capture_policy::IsWgcDeepUnderfeed(
@@ -6265,7 +6260,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         }
                     }
                     pruneStaleWgcVisualDebt(visualDebtPolicyQpc, "live-buffer",
-                                            g_HasLastFrame && !g_LastFrame.isInjectMode);
+                                            g_HasLastFrame && !g_LastFrame.isInjectMode, 0);
                 }
                 if (recordingOutputLive && !bufferedWgcFrames.empty()) {
                     trimBufferedWgcForPoolPressure("live-pool-pressure");
@@ -6612,8 +6607,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                         ((MediaEngine_RepeatLastFrameWithTimeline != nullptr) ||
                          (MediaEngine_RepeatLastFrame != nullptr)) &&
                         MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
+                    const bool wgcPacingCapacityPressure =
+                        wgcCapacityPressureActiveCurrent || outputShortfallTicks > 0;
                     const auto overloadPacerDecision = ce::capture_policy::UpdateWgcOverloadRepeatPacer(
-                        wgcOverloadRepeatPacer, true, wgcSourceHealthyForPacing, wgcCapacityPressureActiveCurrent,
+                        wgcOverloadRepeatPacer, true, wgcSourceHealthyForPacing, wgcPacingCapacityPressure,
                         wgcFreshAvailableAtTickStart, wgcRepeatAvailableForPacer, smoothedWgcFreshServiceMs,
                         smoothedWgcRepeatServiceMs, frameIntervalMs, wgcFreshServiceSamples, wgcRepeatServiceSamples);
                     wgcProactiveOverloadRepeatThisTick = overloadPacerDecision.repeat;
@@ -6623,9 +6620,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                     if (overloadPacerDecision.entered &&
                         overloadPacerNowTick - s_lastWgcOverloadPacerLogTick >= 1000) {
                         LogWarn(
-                            "[WGC CFR] Overload repeat pacer entered: backend=%s fresh=%.2fms/%u repeat=%.2fms/%u "
+                            "[WGC CFR] Overload repeat pacer entered: reason=%s backend=%s fresh=%.2fms/%u repeat=%.2fms/%u "
                             "budget=%.2fms freshFraction=%.3f shortfall=%u buffered=%zu source=%u/%u "
                             "repeats=%llu maxRun=%u (CFR PTS and audio timeline unchanged)",
+                            overloadPacerDecision.reason,
                             g_WgcCap && g_WgcCap->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc",
                             smoothedWgcFreshServiceMs, wgcFreshServiceSamples, smoothedWgcRepeatServiceMs,
                             wgcRepeatServiceSamples, overloadPacerDecision.serviceBudgetMs,
@@ -7861,10 +7859,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                         continue;
                     }
 
-                    // WGC/DXGI dimensions and texture format are known only after a frame arrives.
-                    // Finish the deferred codec/device/mux initialization now, while frame zero is
-                    // still transactional. The producer continues filling the reservoir during this
-                    // call, and no CFR slot or A/V anchor is committed by the prepare API.
+                    // Initialize codec/device/mux once WGC/DXGI format is known, then
+                    // discard prewarm-era pool contents and arm the real barrier.
                     if (!wgcEncoderPrewarmAttempted) {
                         wgcEncoderPrewarmAttempted = true;
                         LARGE_INTEGER prewarmStartQpc = {};
@@ -7877,7 +7873,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                         wgcEncoderPrewarmElapsedUs = qpcToUs(prewarmEndQpc.QuadPart - prewarmStartQpc.QuadPart);
                         LogInfo(
                             "[EncoderThread] WGC transactional video prewarm %s: elapsed=%lldus frameQpc=%lld "
-                            "dimensions=%ux%u hdr=%d queuedAfter=%zu bufferedAfter=%zu; frame zero remains pending",
+                            "dimensions=%ux%u hdr=%d queuedAfter=%zu bufferedAfter=%zu; timeline remains uncommitted",
                             wgcEncoderPrewarmSucceeded ? "complete" : "FAILED",
                             static_cast<long long>(wgcEncoderPrewarmElapsedUs), static_cast<long long>(frame.timestamp),
                             frame.width, frame.height, frame.isHDR ? 1 : 0, g_FrameQueue.Size(),
@@ -7889,6 +7885,36 @@ void EncoderThreadFunc(const AppConfig& config) {
                             DiscardQueuedFrame(frame);
                             break;
                         }
+
+                        // Restart after a long prewarm so live begins with fresh pool history.
+                        size_t prewarmEraDiscarded = 1;
+                        DiscardQueuedFrame(frame);
+                        frame = {};
+                        QueuedFrame prewarmEraFrame;
+                        while (g_FrameQueue.Pop(prewarmEraFrame, 0)) {
+                            DiscardQueuedFrame(prewarmEraFrame);
+                            prewarmEraFrame = {};
+                            ++prewarmEraDiscarded;
+                        }
+                        prewarmEraDiscarded += bufferedWgcFrames.size();
+                        ClearBufferedWgcFrames();
+                        wgcStartupBarrierDroppedFrames += SaturatingToUint32(prewarmEraDiscarded);
+                        wgcStartupReserveWaitStartQpc = 0;
+                        wgcStartupReserveWaitCount = 0;
+                        wgcStartupReserveWaitInitialSpanUs = 0;
+                        wgcStartupReserveWaitFreshenedMax = 0;
+                        LARGE_INTEGER postPrewarmNow = {};
+                        QueryPerformanceCounter(&postPrewarmNow);
+                        wgcStartupBarrierQpc = ce::capture_policy::GetWgcStartupBarrierQpc(
+                            postPrewarmNow.QuadPart, targetIntervalTicks);
+                        updateWgcIngressPressure("startup-post-prewarm-refresh");
+                        LogInfo(
+                            "[EncoderThread] WGC startup barrier refreshed after transactional prewarm: "
+                            "anchorQpc=%lld now=%lld discardedPrewarmEra=%zu elapsed=%lldus",
+                            static_cast<long long>(wgcStartupBarrierQpc),
+                            static_cast<long long>(postPrewarmNow.QuadPart), prewarmEraDiscarded,
+                            static_cast<long long>(wgcEncoderPrewarmElapsedUs));
+                        continue;
                     }
 
                     size_t startupBufferedExamined = 0;
@@ -7990,11 +8016,8 @@ void EncoderThreadFunc(const AppConfig& config) {
                     // Full buildable reservoir target (audio-latency path uses this unchanged).
                     const int64_t smoothnessReservoirTargetDelayQpc =
                         getWgcStartupSmoothnessTargetDelayQpc(smoothnessStartupAttempted);
-                    // Resolve the smoothness FLOOR once, here at the startup barrier, from measured pre-live
-                    // WGC delivery jitter (auto) or the explicit config value, clamped to the buildable
-                    // reservoir. It is then HELD FIXED for the session. For the audio-latency path
-                    // (avContentDelayActive) the floor is a deliberate no-op: the reservoir target already
-                    // dominates, so the validated with-audio behavior is unchanged.
+                    // Resolve and lock the jitter/config floor once; the audio-latency
+                    // reservoir already dominates it when active.
                     if (wgcSmoothnessFloorConfigured && smoothnessStartupAttempted &&
                         smoothnessReservoirTargetDelayQpc > 0) {
                         if (g_WgcCap) {
@@ -8041,9 +8064,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                             wgcSmoothnessFloorClampedBy = "none";
                         }
                     }
-                    // L>0: keep the full reservoir target (unchanged). L==0 floor: target ONLY the floor depth
-                    // (a smaller, jitter-sized buffer) rather than the full reservoir, trading less latency for
-                    // adequate jitter absorption. The floor is <= the reservoir by construction (clamped above).
+                    // Without audio latency, use only the smaller jitter-sized floor.
                     const int64_t smoothnessTargetDelayQpc =
                         avContentDelayActive ? smoothnessReservoirTargetDelayQpc
                                              : std::min(wgcSmoothnessFloorDelayQpc, smoothnessReservoirTargetDelayQpc);
@@ -8063,14 +8084,10 @@ void EncoderThreadFunc(const AppConfig& config) {
                         wgcSmoothnessBufferReason = "vram_cap_limited";
                     }
 
-                    // One-time smoothness-FLOOR decision log. Makes the auto-derivation auditable: what
-                    // delivery/source jitter was measured, what floor it produced, how it was clamped, and the
-                    // resulting effective target. A no-op note is logged for the with-audio path so it is clear
-                    // the validated behavior is unchanged there.
+                    // Log the smoothness-floor inputs, clamp, effective target, and
+                    // with-audio no-op once so the startup decision stays auditable.
                     if (wgcSmoothnessFloorConfigured && !wgcSmoothnessFloorLogged) {
-                        // Log once per recording. This block re-runs every startup-barrier re-evaluation
-                        // (~once per delivered frame during the reserve wait); the derived floor is stable
-                        // across those iterations, so a single line is sufficient and avoids log spam.
+                        // This runs on each reserve re-evaluation, but the result is stable.
                         wgcSmoothnessFloorLogged = true;
                         const char* floorNote = avContentDelayActive
                                                     ? "no-op: audio-latency reservoir target dominates"
@@ -8211,13 +8228,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const int64_t pileupSmoothnessActiveDelayQpc =
                         ce::capture_policy::SelectWgcStartupSmoothnessExtraDelayQpc(
                             actualStartupDelayQpc, avContentDelayQpc, smoothnessTargetDelayQpc);
-                    // When the reserve fill is UNDERFED (buildable reservoir target never reached) AND the
-                    // source is delivering at/above the CFR target, do not let the non-deterministic startup
-                    // buffer pile-up set the permanent read delay: a deep accidental lock starves fresh-frame
-                    // headroom and clusters "too-new" repeat holds for the whole session (startup-timing-
-                    // dependent judder). Pin to the measured jitter floor when that is shallower. Sync-neutral:
-                    // the extra delay is absorbed by the live-start schedule offset; audio stays anchored to
-                    // avContentDelay. Sources BELOW the CFR target keep the deep reservoir (lull absorption).
+                    // Avoid locking healthy-source startup pile-up as permanent delay.
                     const bool startupMinWindowSourceAtOrAboveCfr =
                         g_WgcCap && ce::capture_policy::IsWgcIngressSourceAtOrAboveCfrTarget(
                                         std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps)),
@@ -8324,22 +8335,24 @@ void EncoderThreadFunc(const AppConfig& config) {
                         wgcRetainedCapTrimWindow += startupRetainedCapTrimmed;
                     }
 
+                    LARGE_INTEGER anchorNow;
+                    QueryPerformanceCounter(&anchorNow);
                     ++pendingWgcStartContractGeneration;
                     const int64_t selectedContentDelayQpc = getWgcEffectiveContentDelayQpc();
-                    if (frame.timestamp > 0 && selectedContentDelayQpc >= 0 &&
-                        frame.timestamp <= INT64_MAX - selectedContentDelayQpc) {
-                        pendingWgcStartContract = ce::capture_policy::BuildCfrTimelineStartContract(
-                            frame.timestamp, frame.timestamp + selectedContentDelayQpc, avContentDelayQpc);
+                    if (frame.timestamp > 0) {
+                        pendingWgcStartContract = ce::capture_policy::BuildWallAnchoredCfrTimelineStartContract(
+                            anchorNow.QuadPart, selectedContentDelayQpc, avContentDelayQpc);
                     } else {
                         pendingWgcStartContract = {};
                     }
                     if (pendingWgcStartContract.valid) {
                         LogInfo(
                             "[EncoderThread] WGC CFR start contract selected: generation=%llu videoQpc=%lld "
-                            "selectionQpc=%lld liveQpc=%lld contentDelayUs=%lld renderDelayUs=%lld "
+                            "sourceQpc=%lld selectionQpc=%lld liveQpc=%lld contentDelayUs=%lld renderDelayUs=%lld "
                             "smoothReserveUs=%lld retainedNewer=%zu prewarm=%s/%lldus",
                             static_cast<unsigned long long>(pendingWgcStartContractGeneration),
                             static_cast<long long>(pendingWgcStartContract.videoOriginQpc),
+                            static_cast<long long>(frame.timestamp),
                             static_cast<long long>(GetFrameSelectionTimestamp(frame)),
                             static_cast<long long>(pendingWgcStartContract.liveQpc),
                             static_cast<long long>(qpcDeltaToUs(pendingWgcStartContract.contentDelayQpc)),
@@ -8360,8 +8373,6 @@ void EncoderThreadFunc(const AppConfig& config) {
                     }
                     updateWgcIngressPressure("startup-selected");
 
-                    LARGE_INTEGER anchorNow;
-                    QueryPerformanceCounter(&anchorNow);
                     const int64_t startupReserveWaitedUs =
                         wgcStartupReserveWaitStartQpc > 0 ? qpcToUs(anchorNow.QuadPart - wgcStartupReserveWaitStartQpc)
                                                           : 0;
@@ -8574,32 +8585,15 @@ void EncoderThreadFunc(const AppConfig& config) {
                                ? ce::capture_policy::GetWarmupInjectKeepCount(smoothedInjectFenceMs, frameIntervalMs)
                                : ce::capture_policy::GetInjectCfrStartupReadyFrames(liveInjectReserveFrames,
                                                                                    injectContentDelayFrames));
-                // CRITICAL: Reset nextSampleTime after sleeping one full interval
-                // so the first live tick fires at the correct cadence. During warmup,
-                // nextSampleTime advances freely (frames are discarded), so it can be
-                // far in the past when we transition to live. Without this, the first
-                // several live ticks fire immediately because nextSampleTime is behind
-                // now, creating a burst of frames at wrong spacing that causes visible
-                // judder in the first second of recording.
-                //
-                // The sleep ensures the encoder thread cadence is established BEFORE
-                // the first live encode, preventing the initial burst.
-                //
-                // WGC needs extra ticks because the encoder is lazily initialized at
-                // first frame encode (~127ms for codec open + MKV header + VP setup).
-                // Inject initializes the encoder at MediaEngine init, so only 1 tick
-                // is needed for the first frame's shader/texture setup (~12ms).
+                // Establish a fresh post-warmup deadline; WGC paid it before its barrier.
                 if (hTimer) {
                     LARGE_INTEGER afterLive;
                     QueryPerformanceCounter(&afterLive);
-                    // Inject needs extra ticks for NVENC encode warmup (~21ms for
-                    // rate control init, lookahead buffer fill).  WGC needs more
-                    // because the codec itself initializes at first frame (~127ms).
+                    // Inject still needs its encoder warmup interval here.
                     const bool wgcCfrDelayAlreadyDone = ce::capture_policy::ShouldUseWgcCfrStartupSyncBarrier(
                                                             useScreenGrab, config.video.useVFR, targetIntervalTicks) &&
                                                         wgcStartupPreLiveDelayComplete;
-                    // WGC CFR performs this delay before the final startup barrier
-                    // so the shared A/V anchor is selected from a fresh post-delay frame.
+                    // WGC CFR paid this before its final barrier.
                     int64_t sleepTicks =
                         wgcCfrDelayAlreadyDone
                             ? 0
@@ -9519,11 +9513,15 @@ void EncoderThreadFunc(const AppConfig& config) {
             int64_t signedSelectionErrorUs = 0;
             int64_t absoluteSelectionErrorUs = 0;
             int64_t signedRawSelectionErrorUs = 0;
+            const bool firstTransactionalWgcFrame = !frameToProcess->isInjectMode && liveTicksOutput == 0 &&
+                                                    pendingWgcStartContract.valid;
             const int64_t selectionMetricTargetQpc =
-                !frameToProcess->isInjectMode
-                    ? (wgcSelectionDelayAppliedThisTick ? computeDelayedWgcSelectionTargetQpc()
-                                                        : computeLiveWgcSelectionTargetQpc())
-                    : idealQpc;
+                firstTransactionalWgcFrame
+                    ? pendingWgcStartContract.videoOriginQpc
+                    : (!frameToProcess->isInjectMode
+                           ? (wgcSelectionDelayAppliedThisTick ? computeDelayedWgcSelectionTargetQpc()
+                                                               : computeLiveWgcSelectionTargetQpc())
+                           : idealQpc);
             if (selectionMetricTargetQpc > 0) {
                 const int64_t selectionTimestampQpc = !frameToProcess->isInjectMode
                                                           ? GetFrameSelectionTimestamp(*frameToProcess)
@@ -9573,9 +9571,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                 } else {
                     const int64_t liveTimelineElapsedUs =
                         scheduledLiveCfrTick ? computeLiveTimelineElapsedUs(scheduledOutputQpc) : -1;
+                    const int64_t wgcMediaTimestampQpc =
+                        firstTransactionalWgcFrame ? pendingWgcStartContract.videoOriginQpc
+                                                   : frameToProcess->timestamp;
                     SyncDuplicationCursorSuppression(frameToProcess->wgcCursorEmbedded);
                     encodeSucceeded = MediaEngine_ProcessFrameD3D11(
-                        frameToProcess->texture, frameToProcess->timestamp, frameToProcess->width,
+                        frameToProcess->texture, wgcMediaTimestampQpc, frameToProcess->width,
                         frameToProcess->height, frameToProcess->isHDR, frameToProcess->captureLeft,
                         frameToProcess->captureTop, liveTimelineElapsedUs, cursorState);
                     encodeDeferred = false;
@@ -9881,8 +9882,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                                                                     frameToProcess && !frameToProcess->isInjectMode &&
                                                                     pendingWgcStartContract.valid;
                         if (canCommitTransactionalWgcStart) {
-                            committedStartContract = ce::capture_policy::RebaseCfrTimelineStartContract(
-                                pendingWgcStartContract, frameToProcess->timestamp);
+                            committedStartContract = pendingWgcStartContract;
                         }
                         if (committedStartContract.valid) {
                             liveStartQpc.QuadPart = committedStartContract.liveQpc;

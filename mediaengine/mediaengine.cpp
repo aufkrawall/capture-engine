@@ -2713,8 +2713,8 @@ public:
                 const int64_t startupContentDelayUs =
                     qpcFreq > 0 ? (startupDelayQpc * 1000000) / qpcFreq : audioAnchorDelayUs;
                 DLL_Log(
-                    "MediaEngine: WGC CFR startup anchor candidate from first frame plus render delay "
-                    "(videoQPC=%lld anchorQPC=%lld nowQPC=%lld frameAge=%lldus startupContentDelay=%lldus "
+                    "MediaEngine: WGC CFR startup anchor candidate from timeline origin plus render delay "
+                    "(videoQPC=%lld anchorQPC=%lld nowQPC=%lld timelineAge=%lldus startupContentDelay=%lldus "
                     "audioAnchorDelay=%lldus contentDelayMs=%.3f renderDelayMs=%.3f smoothExtraDelayMs=%.3f "
                     "confidence=%s reason=%s)",
                     timestampQPC, firstAnchorQpc, nowQPC, frameAgeUs, startupContentDelayUs, audioAnchorDelayUs,

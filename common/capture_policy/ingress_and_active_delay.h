@@ -66,6 +66,15 @@ inline WgcIngressAdmissionDecision DecideWgcIngressAdmission(
         decision.reason = "wgc_ingress_decimated_hard_reserve";
         return decision;
     }
+    if (decision.softReservePressure) {
+        // These slots cover callback/encoder overlap and the selected-frame
+        // handoff. Letting low-water or recovery traffic consume them turns a
+        // nominal reserve into a full pool exactly when the consumer is late.
+        decision.accept = false;
+        decision.decimated = true;
+        decision.reason = "wgc_ingress_decimated_soft_reserve";
+        return decision;
+    }
 
     if (lowWaterFrames > 0 && retainedFrames <= lowWaterFrames) {
         decision.reason = "low_water";
@@ -83,17 +92,6 @@ inline WgcIngressAdmissionDecision DecideWgcIngressAdmission(
     const bool playoutShouldOwnSurplus =
         uniformPlayoutOwnsSurplus &&
         IsWgcIngressSourceAtOrAboveCfrTarget(outputFps, recentInputMin250Fps, recentInputMin500Fps);
-    if (decision.softReservePressure) {
-        if (playoutShouldOwnSurplus) {
-            decision.reason = "uniform_playout_soft_reserve";
-            return decision;
-        }
-        decision.accept = false;
-        decision.decimated = true;
-        decision.reason =
-            decision.hardReservePressure ? "wgc_ingress_decimated_hard_reserve" : "wgc_ingress_decimated_soft_reserve";
-        return decision;
-    }
 
     const bool retainedHigh = retainedFrames >= (retainedFrameCap - 1u);
     if (retainedHigh && admissionCreditFrames < 1.0) {

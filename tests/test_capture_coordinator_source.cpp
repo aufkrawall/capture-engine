@@ -369,17 +369,25 @@ TEST(CaptureCoordinatorSourceTest, WgcAndDuplicationStartupPrewarmsBeforeTransac
 
     const size_t startupBarrier = source.find("IsWgcFramePastStartupBarrier");
     const size_t prewarm = source.find("MediaEngine_PrepareFrameD3D11", startupBarrier);
-    const size_t contractSelection = source.find("WGC CFR start contract selected", prewarm);
+    const size_t refreshedBarrier =
+        source.find("WGC startup barrier refreshed after transactional prewarm", prewarm);
+    const size_t contractSelection = source.find("WGC CFR start contract selected", refreshedBarrier);
     const size_t firstEncodeCommit =
         source.find("WGC CFR start contract committed after first successful encode", contractSelection);
     ASSERT_NE(startupBarrier, std::string::npos);
     ASSERT_NE(prewarm, std::string::npos);
+    ASSERT_NE(refreshedBarrier, std::string::npos);
     ASSERT_NE(contractSelection, std::string::npos);
     ASSERT_NE(firstEncodeCommit, std::string::npos);
     EXPECT_LT(startupBarrier, prewarm);
-    EXPECT_LT(prewarm, contractSelection);
+    EXPECT_LT(prewarm, refreshedBarrier);
+    EXPECT_LT(refreshedBarrier, contractSelection);
     EXPECT_LT(contractSelection, firstEncodeCommit);
 
+    EXPECT_NE(source.find("BuildWallAnchoredCfrTimelineStartContract", refreshedBarrier), std::string::npos);
+    EXPECT_NE(source.find("firstTransactionalWgcFrame ? pendingWgcStartContract.videoOriginQpc"),
+              std::string::npos);
+    EXPECT_EQ(source.find("RebaseCfrTimelineStartContract(", contractSelection), std::string::npos);
     EXPECT_NE(source.find("Preserved transactional WGC startup reserve at live handoff"), std::string::npos);
     EXPECT_EQ(source.find("Flushed %zu warmup WGC frames before live handoff"), std::string::npos);
 
@@ -398,11 +406,20 @@ TEST(CaptureCoordinatorSourceTest, WgcStartupSmoothnessHistoryIsProtectedBeforeL
     const size_t pruneHelper = source.find("auto pruneStaleWgcVisualDebt");
     const size_t startupProtection = source.find("ShouldProtectWgcStartupSmoothnessHistory", pruneHelper);
     const size_t liveDebtFloor = source.find("GetWgcLiveVisualDebtFloorQpcForMode", startupProtection);
+    const size_t gridPrune = source.find("ShouldPruneWgcVisualDebtFrameForGrid", liveDebtFloor);
+    const size_t selectionPrune =
+        source.find("pruneStaleWgcVisualDebt(liveNowQpc, \"selection\"", gridPrune);
     ASSERT_NE(pruneHelper, std::string::npos);
     ASSERT_NE(startupProtection, std::string::npos);
     ASSERT_NE(liveDebtFloor, std::string::npos);
+    ASSERT_NE(gridPrune, std::string::npos);
+    ASSERT_NE(selectionPrune, std::string::npos);
     EXPECT_LT(pruneHelper, startupProtection);
     EXPECT_LT(startupProtection, liveDebtFloor);
+    EXPECT_LT(liveDebtFloor, gridPrune);
+    EXPECT_NE(source.find("outputShortfallTicks > 0 && immutableSelectionTargetQpc <= 0", pruneHelper),
+              std::string::npos);
+    EXPECT_NE(source.substr(selectionPrune, 300).find("selectionTargetQpc"), std::string::npos);
     EXPECT_NE(source.find("WGC startup history protected from the shallower live-debt window", startupProtection),
               std::string::npos);
 }

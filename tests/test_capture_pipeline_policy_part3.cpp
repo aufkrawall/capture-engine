@@ -129,10 +129,10 @@ TEST(CapturePipelinePolicyTest, WgcIngressAdmissionLetsUniformPlayoutOwnAboveTar
         /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
         /*admissionCreditFrames=*/2.0, /*freeCopySlots=*/6, /*reservedFreeCopySlots=*/6,
         /*uniformPlayoutOwnsSurplus=*/true);
-    EXPECT_TRUE(softReservePressure.accept);
-    EXPECT_FALSE(softReservePressure.decimated);
+    EXPECT_FALSE(softReservePressure.accept);
+    EXPECT_TRUE(softReservePressure.decimated);
     EXPECT_TRUE(softReservePressure.softReservePressure);
-    EXPECT_STREQ(softReservePressure.reason, "uniform_playout_soft_reserve");
+    EXPECT_STREQ(softReservePressure.reason, "wgc_ingress_decimated_soft_reserve");
 }
 
 TEST(CapturePipelinePolicyTest, WgcIngressAdmissionUniformPlayoutStillProtectsHardPoolAndBelowTargetSource) {
@@ -219,24 +219,24 @@ TEST(CapturePipelinePolicyTest, WgcPoolPressureTrimKeepsDelayTargetButProtectsFr
               34u);
 }
 
-TEST(CapturePipelinePolicyTest, WgcIngressAdmissionSoftReserveDoesNotBeatLowWaterAndRecovery) {
+TEST(CapturePipelinePolicyTest, WgcIngressAdmissionSoftReserveProtectsPoolBeforeLowWaterAndRecovery) {
     auto lowWater = policy::DecideWgcIngressAdmission(
         /*retainedFrames=*/5, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
         /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
         /*admissionCreditFrames=*/0.0, /*freeCopySlots=*/6, /*reservedFreeCopySlots=*/6);
-    EXPECT_TRUE(lowWater.accept);
-    EXPECT_FALSE(lowWater.decimated);
+    EXPECT_FALSE(lowWater.accept);
+    EXPECT_TRUE(lowWater.decimated);
     EXPECT_TRUE(lowWater.softReservePressure);
-    EXPECT_STREQ(lowWater.reason, "low_water");
+    EXPECT_STREQ(lowWater.reason, "wgc_ingress_decimated_soft_reserve");
 
     auto recovery = policy::DecideWgcIngressAdmission(
         /*retainedFrames=*/18, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/true,
         /*outputFps=*/120, /*recentInputMin250Fps=*/144, /*recentInputMin500Fps=*/144,
         /*admissionCreditFrames=*/0.0, /*freeCopySlots=*/6, /*reservedFreeCopySlots=*/6);
-    EXPECT_TRUE(recovery.accept);
-    EXPECT_FALSE(recovery.decimated);
+    EXPECT_FALSE(recovery.accept);
+    EXPECT_TRUE(recovery.decimated);
     EXPECT_TRUE(recovery.softReservePressure);
-    EXPECT_STREQ(recovery.reason, "recovery");
+    EXPECT_STREQ(recovery.reason, "wgc_ingress_decimated_soft_reserve");
 }
 
 TEST(CapturePipelinePolicyTest, WgcIngressAdmissionDoesNotDecimateBelowTargetSourceWithHeadroom) {
@@ -249,15 +249,15 @@ TEST(CapturePipelinePolicyTest, WgcIngressAdmissionDoesNotDecimateBelowTargetSou
     EXPECT_STREQ(decision.reason, "source_below_cfr_target");
 }
 
-TEST(CapturePipelinePolicyTest, WgcIngressAdmissionSoftReserveDoesNotBeatBelowTargetSource) {
+TEST(CapturePipelinePolicyTest, WgcIngressAdmissionSoftReserveProtectsPoolForBelowTargetSource) {
     const auto decision = policy::DecideWgcIngressAdmission(
         /*retainedFrames=*/18, /*retainedFrameCap=*/18, /*lowWaterFrames=*/8, /*recovering=*/false,
         /*outputFps=*/120, /*recentInputMin250Fps=*/108, /*recentInputMin500Fps=*/109,
         /*admissionCreditFrames=*/0.0, /*freeCopySlots=*/6, /*reservedFreeCopySlots=*/6);
-    EXPECT_TRUE(decision.accept);
-    EXPECT_FALSE(decision.decimated);
+    EXPECT_FALSE(decision.accept);
+    EXPECT_TRUE(decision.decimated);
     EXPECT_TRUE(decision.softReservePressure);
-    EXPECT_STREQ(decision.reason, "source_below_cfr_target");
+    EXPECT_STREQ(decision.reason, "wgc_ingress_decimated_soft_reserve");
 }
 
 TEST(CapturePipelinePolicyTest, WgcIngressAdmissionHardReserveIsFaultEvidenceForImportantFrames) {
@@ -578,6 +578,10 @@ TEST(CapturePipelinePolicyTest, WgcLiveSelectionTargetNeverFastForwardsPastCfrGr
     // source-content time ahead of its immutable output slot.
     EXPECT_EQ(policy::GetWgcLiveVisualDebtFloorQpcForMode(1600, 100, 1000, false, 400), 950);
     EXPECT_EQ(policy::GetWgcLiveVisualDebtFloorQpcForMode(1600, 100, 1000, true, 400), 1150);
+    EXPECT_TRUE(policy::ShouldPruneWgcVisualDebtFrameForGrid(1000, 1050, 1200, 0));
+    EXPECT_TRUE(policy::ShouldPruneWgcVisualDebtFrameForGrid(1000, 1090, 1200, 1100));
+    EXPECT_FALSE(policy::ShouldPruneWgcVisualDebtFrameForGrid(1090, 1110, 1200, 1100));
+    EXPECT_FALSE(policy::ShouldPruneWgcVisualDebtFrameForGrid(1110, 1150, 1200, 1100));
     EXPECT_EQ(policy::ClampWgcSelectionTargetToLiveQpc(1000, 1600, 100, 1000, false, true, 20, true,
                                                        policy::kCfrShortfallCatchupThresholdTicks, false, 400),
               1000);

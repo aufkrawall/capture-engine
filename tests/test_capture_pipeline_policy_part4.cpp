@@ -513,7 +513,7 @@ TEST(CapturePipelinePolicyTest, WgcOverloadRepeatPacerTurnsDeepHoldIntoEvenCapac
     EXPECT_LE(weightedServiceMs, kFrameIntervalMs * policy::kWgcOverloadRepeatPacerBudgetRatio + 0.01);
 }
 
-TEST(CapturePipelinePolicyTest, WgcOverloadRepeatPacerRequiresMeasuredFeasibleCapacityMix) {
+TEST(CapturePipelinePolicyTest, WgcOverloadRepeatPacerRequiresMeasuredUsefulRepeatCapacity) {
     constexpr double kFrameIntervalMs = 1000.0 / 120.0;
     constexpr uint32_t kSamples = policy::kWgcOverloadRepeatPacerMinSamples;
     policy::WgcOverloadRepeatPacerState state;
@@ -540,8 +540,20 @@ TEST(CapturePipelinePolicyTest, WgcOverloadRepeatPacerRequiresMeasuredFeasibleCa
 
     decision = policy::UpdateWgcOverloadRepeatPacer(
         state, true, true, true, true, true, 9.21, 8.0, kFrameIntervalMs, kSamples, kSamples);
+    EXPECT_TRUE(decision.active);
+    EXPECT_STREQ(decision.reason, "pacing");
+    EXPECT_GT(decision.serviceBudgetMs, kFrameIntervalMs * policy::kWgcOverloadRepeatPacerBudgetRatio);
+
+    state.ResetActivePacing();
+    decision = policy::UpdateWgcOverloadRepeatPacer(
+        state, true, true, true, true, true, 8.15, 7.7, kFrameIntervalMs, kSamples, kSamples);
     EXPECT_FALSE(decision.active);
-    EXPECT_STREQ(decision.reason, "no_feasible_mix");
+    EXPECT_STREQ(decision.reason, "fresh_within_budget");
+
+    decision = policy::UpdateWgcOverloadRepeatPacer(
+        state, true, true, true, true, true, 9.21, 8.9, kFrameIntervalMs, kSamples, kSamples);
+    EXPECT_FALSE(decision.active);
+    EXPECT_STREQ(decision.reason, "repeat_not_cheaper");
 }
 
 TEST(CapturePipelinePolicyTest, WgcOverloadRepeatPacerCreditsNaturalHoldsAndRecoversCleanly) {
@@ -566,10 +578,31 @@ TEST(CapturePipelinePolicyTest, WgcOverloadRepeatPacerCreditsNaturalHoldsAndReco
 
     decision = policy::UpdateWgcOverloadRepeatPacer(
         state, true, true, false, true, true, 7.0, 5.48, kFrameIntervalMs, kSamples, kSamples);
+    EXPECT_FALSE(decision.exited);
+    EXPECT_TRUE(decision.active);
+    EXPECT_FALSE(decision.repeat);
+    EXPECT_STREQ(decision.reason, "recovery_hysteresis");
+    for (uint32_t tick = 1; tick < policy::kWgcOverloadRepeatPacerRecoveryConfirmTicks; ++tick) {
+        decision = policy::UpdateWgcOverloadRepeatPacer(
+            state, true, true, false, true, true, 7.0, 5.48, kFrameIntervalMs, kSamples, kSamples);
+    }
     EXPECT_TRUE(decision.exited);
     EXPECT_FALSE(decision.active);
-    EXPECT_FALSE(decision.repeat);
-    EXPECT_STREQ(decision.reason, "no_feasible_mix");
+    EXPECT_STREQ(decision.reason, "service_recovered");
+}
+
+TEST(CapturePipelinePolicyTest, WgcOverloadRepeatPacerBoundsLivenessWhenEvenRepeatsMissInterval) {
+    constexpr double kFrameIntervalMs = 1000.0 / 120.0;
+    constexpr uint32_t kSamples = policy::kWgcOverloadRepeatPacerMinSamples;
+    policy::WgcOverloadRepeatPacerState state;
+    for (uint32_t tick = 0; tick < 400; ++tick) {
+        const auto decision = policy::UpdateWgcOverloadRepeatPacer(
+            state, true, true, true, true, true, 10.0, 8.5, kFrameIntervalMs, kSamples, kSamples);
+        EXPECT_TRUE(decision.active);
+        EXPECT_STREQ(decision.reason, "degraded_repeat_over_interval");
+    }
+    EXPECT_GT(state.freshGrants, 15u);
+    EXPECT_LE(state.maxConsecutiveProactiveRepeats, 20u);
 }
 
 TEST(CapturePipelinePolicyTest, WgcOverloadRepeatPacerServiceEmaUsesConservativeValidSamples) {

@@ -603,6 +603,18 @@ TEST(CapturePipelinePolicyTest, CfrTimelineStartContractKeepsVideoReserveAndAudi
     EXPECT_FALSE(policy::RebaseCfrTimelineStartContract({}, 200000).valid);
 }
 
+TEST(CapturePipelinePolicyTest, WallAnchoredCfrStartCannotInheritStaleSourceTimestampDebt) {
+    const auto contract = policy::BuildWallAnchoredCfrTimelineStartContract(
+        /*liveQpc=*/200000, /*contentDelayQpc=*/3300, /*renderLoopbackLatencyQpc=*/500);
+
+    ASSERT_TRUE(contract.valid);
+    EXPECT_EQ(contract.videoOriginQpc, 196700);
+    EXPECT_EQ(contract.liveQpc, 200000);
+    EXPECT_EQ(contract.audioAnchorQpc, 197200);
+    EXPECT_EQ(contract.smoothnessReserveQpc, 2800);
+    EXPECT_FALSE(policy::BuildWallAnchoredCfrTimelineStartContract(3300, 3300, 500).valid);
+}
+
 TEST(CapturePipelinePolicyTest, PartialStartupReservoirReselectsNearestMatchingContractFrame) {
     const int64_t candidates[] = {1000, 1100, 1180, 1240};
     EXPECT_EQ(policy::SelectNearestMonotonicTimestampIndex(candidates, 4, /*targetQpc=*/1140), 2u);
@@ -749,4 +761,3 @@ TEST(CapturePipelinePolicyTest, WgcOverlayWarningSuppressesEncoderPressureWhenSo
     EXPECT_EQ(policy::SelectWgcOverlayWarningKind(0, policy::kWgcCaptureHealthFlagSourceStarved),
               policy::kOverlayWarningNone);
 }
-

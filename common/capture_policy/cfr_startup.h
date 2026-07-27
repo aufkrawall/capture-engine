@@ -271,6 +271,15 @@ inline CfrTimelineStartContract BuildCfrTimelineStartContract(int64_t videoOrigi
     return contract;
 }
 
+inline CfrTimelineStartContract BuildWallAnchoredCfrTimelineStartContract(int64_t liveQpc, int64_t contentDelayQpc,
+                                                                          int64_t renderLoopbackLatencyQpc) {
+    if (liveQpc <= 0 || contentDelayQpc < 0 || contentDelayQpc < renderLoopbackLatencyQpc ||
+        liveQpc <= contentDelayQpc) {
+        return {};
+    }
+    return BuildCfrTimelineStartContract(liveQpc - contentDelayQpc, liveQpc, renderLoopbackLatencyQpc);
+}
+
 inline CfrTimelineStartContract RebaseCfrTimelineStartContract(const CfrTimelineStartContract& contract,
                                                                int64_t videoOriginQpc) {
     if (!contract.valid || videoOriginQpc <= 0 || contract.contentDelayQpc < 0 ||

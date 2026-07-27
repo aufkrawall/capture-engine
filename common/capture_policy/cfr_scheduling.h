@@ -413,6 +413,7 @@ struct WgcOverloadRepeatPacerState {
     double freshCredit = 0.0;
     double freshFraction = 1.0;
     double minimumFreshFraction = 1.0;
+    uint32_t recoveryConfirmTicks = 0;
     uint32_t consecutiveProactiveRepeats = 0;
     uint32_t maxConsecutiveProactiveRepeats = 0;
     uint64_t episodes = 0;
@@ -424,6 +425,7 @@ struct WgcOverloadRepeatPacerState {
         active = false;
         freshCredit = 0.0;
         freshFraction = 1.0;
+        recoveryConfirmTicks = 0;
         consecutiveProactiveRepeats = 0;
     }
 };
@@ -477,21 +479,45 @@ inline WgcOverloadRepeatPacerDecision UpdateWgcOverloadRepeatPacer(
         return decision;
     }
 
+    if (repeatServiceMs < frameIntervalMs) {
+        const double marginalBudgetMs =
+            repeatServiceMs +
+            (frameIntervalMs - repeatServiceMs) * kWgcOverloadRepeatPacerMarginalHeadroomUseRatio;
+        decision.serviceBudgetMs = std::max(decision.serviceBudgetMs, marginalBudgetMs);
+    }
     const double minimumAdvantageMs = frameIntervalMs * kWgcOverloadRepeatPacerMinAdvantageRatio;
-    const bool feasibleMix = freshServiceMs > decision.serviceBudgetMs &&
-                             repeatServiceMs < decision.serviceBudgetMs &&
-                             freshServiceMs - repeatServiceMs >= minimumAdvantageMs;
-    if (!feasibleMix) {
-        deactivate("no_feasible_mix");
+    const bool repeatHasUsefulAdvantage = freshServiceMs - repeatServiceMs >= minimumAdvantageMs;
+    if (!repeatHasUsefulAdvantage) {
+        deactivate("repeat_not_cheaper");
         return decision;
+    }
+    const bool freshNeedsPacing = freshServiceMs > decision.serviceBudgetMs;
+    if (state.active && !freshNeedsPacing) {
+        if (++state.recoveryConfirmTicks >= kWgcOverloadRepeatPacerRecoveryConfirmTicks) {
+            deactivate("service_recovered");
+            return decision;
+        }
+    } else {
+        state.recoveryConfirmTicks = 0;
     }
     if (!state.active && !capacityPressure) {
         decision.reason = "capacity_not_confirmed";
         return decision;
     }
+    if (!state.active && !freshNeedsPacing) {
+        decision.reason = "fresh_within_budget";
+        return decision;
+    }
 
-    const double freshFraction =
+    double freshFraction =
         std::clamp((decision.serviceBudgetMs - repeatServiceMs) / (freshServiceMs - repeatServiceMs), 0.0, 1.0);
+    if (repeatServiceMs >= frameIntervalMs) {
+        // No real-time mix exists. Repeats are still the least expensive work,
+        // but preserve bounded visual liveness so an intermittent episode can
+        // recover without an intentionally unbounded static run.
+        freshFraction = std::max(freshFraction, kWgcOverloadRepeatPacerDegradedFreshFraction);
+        decision.reason = "degraded_repeat_over_interval";
+    }
     if (!state.active) {
         state.active = true;
         state.freshCredit = 1.0 - freshFraction;
@@ -502,7 +528,9 @@ inline WgcOverloadRepeatPacerDecision UpdateWgcOverloadRepeatPacer(
     state.minimumFreshFraction = std::min(state.minimumFreshFraction, freshFraction);
     decision.active = true;
     decision.freshFraction = freshFraction;
-    decision.reason = "pacing";
+    if (repeatServiceMs < frameIntervalMs) {
+        decision.reason = freshNeedsPacing ? "pacing" : "recovery_hysteresis";
+    }
 
     if (!freshCandidateAvailable) {
         // A natural source hold already paid for a cheap slot. Preserve at most
