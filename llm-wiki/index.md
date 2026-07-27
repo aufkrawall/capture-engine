@@ -91,7 +91,7 @@ Primary sources:
 - `fuzzing.md`
   - libFuzzer harnesses for the config and IPC parsers, the fail-closed `build.py --run-fuzz` stage, curated byte-exact seed corpora, MinGW libFuzzer/ASan toolchain wiring, and the always-run regression floor that covers the same boundaries without a fuzz run. Last verified 2026-07-24.
 - `known-debt.md`
-  - Deliberately accepted debt with its reasoning: the nine oversized DX12/FG and capture files, the scope-guarded frozen clang-tidy baseline and its large entries, destructor exception escapes, duplicated overlay telemetry, the policy-header rationale for module/test mapping, and audit findings that were checked and falsified. Last verified 2026-07-25.
+  - Deliberately accepted debt with its reasoning: the staged oversized-source refactor and the eight FG/capture files still deferred because no automated gate can validate them, the scope-guarded frozen clang-tidy baseline and its per-translation-unit counting, destructor exception escapes, duplicated overlay telemetry, the policy-header rationale for module/test mapping, and audit findings that were checked and falsified. Last verified 2026-07-27.
 - `debug-tools-security-audit.md`
   - Security-audit tooling available for binary/dependency inspection, beyond the general debug tools.
 - `graphics-api-reporting.md`
