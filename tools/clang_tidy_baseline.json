@@ -52,7 +52,7 @@
   },
   "total": 1612,
   "scope": {
-    "entries": 262,
+    "entries": 263,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -107,6 +107,7 @@
       "hook/apis/opengl_texture_storage_override.cpp",
       "hook/apis/streamline_hook.cpp",
       "hook/capture/shared_capture.cpp",
+      "hook/capture/shared_capture_d3d12.cpp",
       "hook/common/cached_overlay_renderer.cpp",
       "hook/common/custom_font.cpp",
       "hook/common/custom_overlay.cpp",

@@ -33,7 +33,6 @@
     "hook/apis/opengl_hook.cpp": 1809,
     "hook/apis/opengl_sampler_override.cpp": 1113,
     "hook/apis/streamline_hook.cpp": 4065,
-    "hook/capture/shared_capture.cpp": 948,
     "hook/common/custom_overlay_dx12.cpp": 884,
     "hook/common/custom_overlay_gl.cpp": 942,
     "hook/common/custom_overlay_vk.cpp": 1273,
@@ -57,6 +56,6 @@
     "tools/analysis/run_av_sync_matrix.py": 2112,
     "tools/tracing/run_dx12_fg_overlay_transition.py": 841
   },
-  "count": 43,
-  "total": 145463
+  "count": 42,
+  "total": 144515
 }

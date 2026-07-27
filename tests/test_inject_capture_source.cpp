@@ -137,7 +137,7 @@ TEST(InjectCaptureSourceTest, D3D11CleanupOwnsImmediateContextAndSerializesCaptu
 }
 
 TEST(InjectCaptureSourceTest, D3D12SharedCaptureInitializationAndSubmissionAreTransactional) {
-    const std::string source = ReadSource("hook/capture/shared_capture.cpp");
+    const std::string source = ReadSource("hook/capture/shared_capture_d3d12.cpp");
     ASSERT_FALSE(source.empty());
     const std::string init =
         FunctionBody(source, "bool SharedCaptureD3D12::Initialize(", "bool SharedCaptureD3D12::CreateSharedResources(");
