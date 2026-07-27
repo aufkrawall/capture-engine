@@ -408,6 +408,139 @@ inline uint32_t GetWgcFreshCatchupBudgetThisLoop(uint32_t catchupTicksThisLoop, 
         std::min<size_t>(static_cast<size_t>(catchupTicksThisLoop - 1u), surplusFrames));
 }
 
+struct WgcOverloadRepeatPacerState {
+    bool active = false;
+    double freshCredit = 0.0;
+    double freshFraction = 1.0;
+    double minimumFreshFraction = 1.0;
+    uint32_t consecutiveProactiveRepeats = 0;
+    uint32_t maxConsecutiveProactiveRepeats = 0;
+    uint64_t episodes = 0;
+    uint64_t proactiveRepeats = 0;
+    uint64_t emittedRepeats = 0;
+    uint64_t freshGrants = 0;
+
+    void ResetActivePacing() {
+        active = false;
+        freshCredit = 0.0;
+        freshFraction = 1.0;
+        consecutiveProactiveRepeats = 0;
+    }
+};
+
+struct WgcOverloadRepeatPacerDecision {
+    bool active = false;
+    bool repeat = false;
+    bool entered = false;
+    bool exited = false;
+    double freshFraction = 1.0;
+    double serviceBudgetMs = 0.0;
+    const char* reason = "inactive";
+};
+
+inline WgcOverloadRepeatPacerDecision UpdateWgcOverloadRepeatPacer(
+    WgcOverloadRepeatPacerState& state, bool liveCfr, bool sourceHealthy, bool capacityPressure,
+    bool freshCandidateAvailable, bool repeatAvailable, double freshServiceMs, double repeatServiceMs,
+    double frameIntervalMs, uint32_t freshServiceSamples, uint32_t repeatServiceSamples) {
+    WgcOverloadRepeatPacerDecision decision{};
+    decision.serviceBudgetMs =
+        std::isfinite(frameIntervalMs) && frameIntervalMs > 0.0
+            ? frameIntervalMs * kWgcOverloadRepeatPacerBudgetRatio
+            : 0.0;
+
+    const auto deactivate = [&](const char* reason) {
+        decision.exited = state.active;
+        decision.freshFraction = state.freshFraction;
+        decision.reason = reason;
+        state.ResetActivePacing();
+    };
+    if (!liveCfr) {
+        deactivate("not_live_cfr");
+        return decision;
+    }
+    if (!sourceHealthy) {
+        deactivate("source_not_healthy");
+        return decision;
+    }
+    if (!repeatAvailable) {
+        deactivate("repeat_unavailable");
+        return decision;
+    }
+    if (freshServiceSamples < kWgcOverloadRepeatPacerMinSamples ||
+        repeatServiceSamples < kWgcOverloadRepeatPacerMinSamples) {
+        deactivate("warming_service_samples");
+        return decision;
+    }
+    if (!std::isfinite(freshServiceMs) || !std::isfinite(repeatServiceMs) ||
+        decision.serviceBudgetMs <= 0.0 || freshServiceMs <= 0.0 || repeatServiceMs <= 0.0) {
+        deactivate("invalid_service_samples");
+        return decision;
+    }
+
+    const double minimumAdvantageMs = frameIntervalMs * kWgcOverloadRepeatPacerMinAdvantageRatio;
+    const bool feasibleMix = freshServiceMs > decision.serviceBudgetMs &&
+                             repeatServiceMs < decision.serviceBudgetMs &&
+                             freshServiceMs - repeatServiceMs >= minimumAdvantageMs;
+    if (!feasibleMix) {
+        deactivate("no_feasible_mix");
+        return decision;
+    }
+    if (!state.active && !capacityPressure) {
+        decision.reason = "capacity_not_confirmed";
+        return decision;
+    }
+
+    const double freshFraction =
+        std::clamp((decision.serviceBudgetMs - repeatServiceMs) / (freshServiceMs - repeatServiceMs), 0.0, 1.0);
+    if (!state.active) {
+        state.active = true;
+        state.freshCredit = 1.0 - freshFraction;
+        ++state.episodes;
+        decision.entered = true;
+    }
+    state.freshFraction = freshFraction;
+    state.minimumFreshFraction = std::min(state.minimumFreshFraction, freshFraction);
+    decision.active = true;
+    decision.freshFraction = freshFraction;
+    decision.reason = "pacing";
+
+    if (!freshCandidateAvailable) {
+        // A natural source hold already paid for a cheap slot. Preserve at most
+        // one fresh-frame credit so the next covered slot is not needlessly held.
+        state.freshCredit = std::min(1.0, state.freshCredit + freshFraction);
+        state.consecutiveProactiveRepeats = 0;
+        return decision;
+    }
+
+    state.freshCredit += freshFraction;
+    if (state.freshCredit + 1e-12 >= 1.0) {
+        state.freshCredit -= 1.0;
+        state.consecutiveProactiveRepeats = 0;
+        ++state.freshGrants;
+        return decision;
+    }
+
+    decision.repeat = true;
+    ++state.proactiveRepeats;
+    ++state.consecutiveProactiveRepeats;
+    state.maxConsecutiveProactiveRepeats =
+        std::max(state.maxConsecutiveProactiveRepeats, state.consecutiveProactiveRepeats);
+    return decision;
+}
+
+inline void UpdateWgcServiceTimeEma(double wallServiceMs, double pureServiceMs, double smoothingAlpha,
+                                    double& smoothedServiceMs, uint32_t& serviceSamples) {
+    const double serviceMs = std::max(wallServiceMs, pureServiceMs);
+    if (!std::isfinite(serviceMs) || serviceMs <= 0.0 || !std::isfinite(smoothingAlpha) ||
+        smoothingAlpha <= 0.0 || smoothingAlpha > 1.0) {
+        return;
+    }
+    smoothedServiceMs = smoothedServiceMs == 0.0
+                            ? serviceMs
+                            : smoothedServiceMs * (1.0 - smoothingAlpha) + serviceMs * smoothingAlpha;
+    serviceSamples = serviceSamples < UINT32_MAX ? serviceSamples + 1u : UINT32_MAX;
+}
+
 inline uint32_t GetWgcCatchupTicksThisLoop(bool encoderBottlenecked, bool encoderActivelyTooSlow,
                                            size_t bufferedWgcFrames, double frameCreditAccumulator,
                                            uint32_t outputShortfallTicks, uint32_t outputFps,

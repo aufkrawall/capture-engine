@@ -6112,7 +6112,7 @@ def self_test():
         # WGC SUMMARY: new longestContiguousDup field parses, and worstIn/worstDel stay correct after
         # the group renumbering. This is the true visible-freeze metric (episode metrics overstate it).
         new_summary = WGC_SUMMARY_RE.search(
-            "[WGC CFR SUMMARY] Live=23460 Dup=3083 DupPct=13.1% NoFresh=179pm NoReserve=206pm "
+            "[WGC CFR SUMMARY] Live=23460 Dup=3083 DupPct=13.1% NoFresh=179pm NoReserve=206pm Pacer=42 "
             "DupReason(src=3072 def=0 timer=11 drain=0) SourceLimitedRepeats=3072 StarvedEpisodes=1451 "
             "longest=4110ms longestDup=292 longestContiguousDup=115 (958ms) worstIn=4 worstDel=4"
         )

@@ -16,7 +16,7 @@
     "build.py": 8297,
     "captureengine/injection.cpp": 1695,
     "captureengine/main.cpp": 1904,
-    "captureengine/media_main.cpp": 13370,
+    "captureengine/media_main.cpp": 13368,
     "captureengine/pseudo_overlay.cpp": 1702,
     "captureengine/wgc_capture.cpp": 5281,
     "common/config.cpp": 2140,
@@ -54,5 +54,5 @@
     "tools/tracing/run_dx12_fg_overlay_transition.py": 841
   },
   "count": 39,
-  "total": 141479
+  "total": 141477
 }

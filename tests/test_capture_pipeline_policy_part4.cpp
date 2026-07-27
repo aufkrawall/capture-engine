@@ -479,6 +479,117 @@ TEST(CapturePipelinePolicyTest, WgcFreshCatchupSpendsOnlyReservoirSurplusWithEnc
               4u);
 }
 
+TEST(CapturePipelinePolicyTest, WgcOverloadRepeatPacerTurnsDeepHoldIntoEvenCapacityMix) {
+    constexpr double kFrameIntervalMs = 1000.0 / 120.0;
+    constexpr double kFreshServiceMs = 9.21;
+    constexpr double kRepeatServiceMs = 5.48;
+    constexpr uint32_t kOutputTicks = 7744;
+    policy::WgcOverloadRepeatPacerState state;
+    uint32_t freshGrants = 0;
+    uint32_t proactiveRepeats = 0;
+
+    for (uint32_t tick = 0; tick < kOutputTicks; ++tick) {
+        const auto decision = policy::UpdateWgcOverloadRepeatPacer(
+            state, true, true, true, true, true, kFreshServiceMs, kRepeatServiceMs, kFrameIntervalMs,
+            policy::kWgcOverloadRepeatPacerMinSamples, policy::kWgcOverloadRepeatPacerMinSamples);
+        if (decision.repeat) {
+            ++proactiveRepeats;
+        } else {
+            ++freshGrants;
+        }
+    }
+
+    EXPECT_TRUE(state.active);
+    EXPECT_EQ(state.episodes, 1u);
+    EXPECT_EQ(state.proactiveRepeats, proactiveRepeats);
+    EXPECT_EQ(state.freshGrants, freshGrants);
+    EXPECT_GT(freshGrants, 5000u);
+    EXPECT_LT(freshGrants, 5100u);
+    EXPECT_LE(state.maxConsecutiveProactiveRepeats, 1u);
+    const double weightedServiceMs =
+        (static_cast<double>(freshGrants) * kFreshServiceMs +
+         static_cast<double>(proactiveRepeats) * kRepeatServiceMs) /
+        kOutputTicks;
+    EXPECT_LE(weightedServiceMs, kFrameIntervalMs * policy::kWgcOverloadRepeatPacerBudgetRatio + 0.01);
+}
+
+TEST(CapturePipelinePolicyTest, WgcOverloadRepeatPacerRequiresMeasuredFeasibleCapacityMix) {
+    constexpr double kFrameIntervalMs = 1000.0 / 120.0;
+    constexpr uint32_t kSamples = policy::kWgcOverloadRepeatPacerMinSamples;
+    policy::WgcOverloadRepeatPacerState state;
+
+    auto decision = policy::UpdateWgcOverloadRepeatPacer(
+        state, true, true, true, true, true, 9.21, 5.48, kFrameIntervalMs, kSamples - 1u, kSamples);
+    EXPECT_FALSE(decision.active);
+    EXPECT_STREQ(decision.reason, "warming_service_samples");
+
+    decision = policy::UpdateWgcOverloadRepeatPacer(
+        state, true, false, true, true, true, 9.21, 5.48, kFrameIntervalMs, kSamples, kSamples);
+    EXPECT_FALSE(decision.active);
+    EXPECT_STREQ(decision.reason, "source_not_healthy");
+
+    decision = policy::UpdateWgcOverloadRepeatPacer(
+        state, true, true, false, true, true, 9.21, 5.48, kFrameIntervalMs, kSamples, kSamples);
+    EXPECT_FALSE(decision.active);
+    EXPECT_STREQ(decision.reason, "capacity_not_confirmed");
+
+    decision = policy::UpdateWgcOverloadRepeatPacer(
+        state, true, true, true, true, false, 9.21, 5.48, kFrameIntervalMs, kSamples, kSamples);
+    EXPECT_FALSE(decision.active);
+    EXPECT_STREQ(decision.reason, "repeat_unavailable");
+
+    decision = policy::UpdateWgcOverloadRepeatPacer(
+        state, true, true, true, true, true, 9.21, 8.0, kFrameIntervalMs, kSamples, kSamples);
+    EXPECT_FALSE(decision.active);
+    EXPECT_STREQ(decision.reason, "no_feasible_mix");
+}
+
+TEST(CapturePipelinePolicyTest, WgcOverloadRepeatPacerCreditsNaturalHoldsAndRecoversCleanly) {
+    constexpr double kFrameIntervalMs = 1000.0 / 120.0;
+    constexpr uint32_t kSamples = policy::kWgcOverloadRepeatPacerMinSamples;
+    policy::WgcOverloadRepeatPacerState state;
+
+    auto decision = policy::UpdateWgcOverloadRepeatPacer(
+        state, true, true, true, true, true, 9.21, 5.48, kFrameIntervalMs, kSamples, kSamples);
+    EXPECT_TRUE(decision.entered);
+    EXPECT_FALSE(decision.repeat);
+
+    decision = policy::UpdateWgcOverloadRepeatPacer(
+        state, true, true, false, false, true, 9.21, 5.48, kFrameIntervalMs, kSamples, kSamples);
+    EXPECT_TRUE(decision.active);
+    EXPECT_FALSE(decision.repeat);
+
+    decision = policy::UpdateWgcOverloadRepeatPacer(
+        state, true, true, false, true, true, 9.21, 5.48, kFrameIntervalMs, kSamples, kSamples);
+    EXPECT_TRUE(decision.active);
+    EXPECT_FALSE(decision.repeat);
+
+    decision = policy::UpdateWgcOverloadRepeatPacer(
+        state, true, true, false, true, true, 7.0, 5.48, kFrameIntervalMs, kSamples, kSamples);
+    EXPECT_TRUE(decision.exited);
+    EXPECT_FALSE(decision.active);
+    EXPECT_FALSE(decision.repeat);
+    EXPECT_STREQ(decision.reason, "no_feasible_mix");
+}
+
+TEST(CapturePipelinePolicyTest, WgcOverloadRepeatPacerServiceEmaUsesConservativeValidSamples) {
+    double serviceMs = 0.0;
+    uint32_t samples = 0;
+
+    policy::UpdateWgcServiceTimeEma(4.0, 6.0, 0.25, serviceMs, samples);
+    EXPECT_DOUBLE_EQ(serviceMs, 6.0);
+    EXPECT_EQ(samples, 1u);
+
+    policy::UpdateWgcServiceTimeEma(10.0, 8.0, 0.25, serviceMs, samples);
+    EXPECT_DOUBLE_EQ(serviceMs, 7.0);
+    EXPECT_EQ(samples, 2u);
+
+    policy::UpdateWgcServiceTimeEma(std::numeric_limits<double>::quiet_NaN(), 8.0, 0.25, serviceMs, samples);
+    policy::UpdateWgcServiceTimeEma(8.0, 8.0, 0.0, serviceMs, samples);
+    EXPECT_DOUBLE_EQ(serviceMs, 7.0);
+    EXPECT_EQ(samples, 2u);
+}
+
 TEST(CapturePipelinePolicyTest, WgcForceShortfallRepeatCatchupIsIndependentOfSourceRecovery) {
     EXPECT_TRUE(policy::IsWgcSourceRecoveredEnoughForSmoothAudioLeadCatchup(120, 116, 116, 40));
     EXPECT_FALSE(policy::IsWgcSourceRecoveredEnoughForSmoothAudioLeadCatchup(120, 115, 116, 40));

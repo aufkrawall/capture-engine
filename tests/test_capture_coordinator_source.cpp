@@ -160,7 +160,8 @@ TEST(CaptureCoordinatorSourceTest, WgcCatchupRecoveryChangesPixelsOnlyOnTheImmut
     EXPECT_NE(recovery.find("getWgcDelayReservoirLowWaterFrames"), std::string::npos);
     EXPECT_NE(recovery.find("isWgcEffectiveContentDelayActive"), std::string::npos);
     EXPECT_NE(recovery.find("smoothedWgcFreshServiceMs"), std::string::npos);
-    EXPECT_NE(recovery.find("std::max(currentEncodeMs, pureEncodeMs)"), std::string::npos);
+    EXPECT_NE(recovery.find("UpdateWgcServiceTimeEma("), std::string::npos);
+    EXPECT_NE(recovery.find("currentEncodeMs, pureEncodeMs, kEncodeEmaAlpha"), std::string::npos);
     EXPECT_NE(recovery.find("ShouldUseFreshWgcCatchupFrame"), std::string::npos);
     EXPECT_NE(recovery.find("ApplyCfrCaptureSyncPhaseLock"), std::string::npos);
     EXPECT_NE(recovery.find("computeWgcSelectionTargetForTick"), std::string::npos);
@@ -188,6 +189,37 @@ TEST(CaptureCoordinatorSourceTest, WgcDeepGridDebtNeverMovesTheAudioAlignedSelec
     EXPECT_EQ(source.find("IsWgcUniformPlayoutAntiFreezeFloorSyncSafe"), std::string::npos);
     EXPECT_NE(source.find("GridDebtSyncHolds="), std::string::npos);
     EXPECT_NE(source.find("held-repeat catch-up advances the "), std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, ScreenGrabOverloadPacingRepeatsWithoutMovingTheCfrOrAudioGrid) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t telemetryTick = source.find("const bool scheduledWgcTelemetryTick");
+    const size_t pacerCall = source.find("UpdateWgcOverloadRepeatPacer(", telemetryTick);
+    const size_t repeatBranch = source.find("if (wgcProactiveOverloadRepeatThisTick)", pacerCall);
+    const size_t ordinarySelection = source.find("else if (!g_EncoderRunning && !bufferedWgcFrames.empty())",
+                                                 repeatBranch);
+    ASSERT_NE(telemetryTick, std::string::npos);
+    ASSERT_NE(pacerCall, std::string::npos);
+    ASSERT_NE(repeatBranch, std::string::npos);
+    ASSERT_NE(ordinarySelection, std::string::npos);
+    EXPECT_LT(telemetryTick, pacerCall);
+    EXPECT_LT(pacerCall, repeatBranch);
+    EXPECT_LT(repeatBranch, ordinarySelection);
+
+    const std::string pacerIntegration = source.substr(telemetryTick, ordinarySelection - telemetryTick);
+    EXPECT_NE(pacerIntegration.find("IsWgcIngressSourceAtOrAboveCfrTarget"), std::string::npos);
+    EXPECT_NE(pacerIntegration.find("wgcFreshAvailableAtTickStart"), std::string::npos);
+    EXPECT_NE(pacerIntegration.find("smoothedWgcFreshServiceMs"), std::string::npos);
+    EXPECT_NE(pacerIntegration.find("smoothedWgcRepeatServiceMs"), std::string::npos);
+    EXPECT_NE(pacerIntegration.find("CFR PTS and audio timeline unchanged"), std::string::npos);
+    EXPECT_EQ(pacerIntegration.find("++liveTicksOutput"), std::string::npos);
+    EXPECT_EQ(pacerIntegration.find("scheduledOutputQpc ="), std::string::npos);
+    EXPECT_EQ(source.find("UpdateWgcOverloadRepeatPacer(", pacerCall + 1), std::string::npos);
+    EXPECT_NE(source.find("++wgcOverloadRepeatPacer.emittedRepeats"), std::string::npos);
+    EXPECT_NE(source.find("else if (!duplicateFromCapacityPacerReason)"), std::string::npos);
+    EXPECT_NE(source.find("wgcProactiveOverloadRepeatThisTick);"), std::string::npos);
 }
 
 TEST(CaptureCoordinatorSourceTest, EncoderCapacityWarningUsesStartupGuard) {
