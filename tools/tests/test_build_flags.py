@@ -225,6 +225,24 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertEqual(build.get_x86_testapp_cfg_link_flags(clang), build.TESTAPP_X86_CFG_LINK_FLAGS)
         self.assertEqual(build.get_strict_fp_flags(clang), build.CLANG_STRICT_FP_FLAGS)
 
+    def test_every_screenshot_encoding_source_is_registered_for_strict_floating_point(self) -> None:
+        # screenshot_encoding_internal.h is what defines the screenshot encoding
+        # module, so every translation unit that includes it carries part of the
+        # HDR conversion and must be compiled with -ffp-model=strict. Splitting
+        # one of these files without registering the new half would silently drop
+        # strict FP from the moved code, which no other gate would notice.
+        captureengine = Path(build.PROJECT_ROOT) / "captureengine"
+        module_sources = {
+            source.name
+            for source in captureengine.glob("*.cpp")
+            if "screenshot_encoding_internal.h" in source.read_text(encoding="utf-8")
+        }
+
+        self.assertTrue(module_sources, "no screenshot encoding sources found")
+        self.assertEqual(module_sources, build.STRICT_FP_SCREENSHOT_SOURCES)
+        for name in build.STRICT_FP_SCREENSHOT_SOURCES:
+            self.assertTrue((captureengine / name).is_file(), f"{name} is registered but does not exist")
+
     def test_linux_llvm_readobj_resolution_uses_host_executable(self) -> None:
         with patch.object(build, "IS_LINUX", True), patch.object(
             build.shutil,

@@ -184,9 +184,9 @@ LD_OPT_FLAGS_X64 = [
 ]
 
 # Floating-point state that affects timestamps, mixing, resampling, or HDR color
-# conversion must not vary with contraction/reassociation decisions. Clang's
-# aggregate strict model has no GCC spelling, so use its explicit GCC
-# equivalents when Linux selects the system MinGW GCC toolchain.
+# conversion must not vary with contraction/reassociation decisions; register
+# every split half of a listed file too. Clang's aggregate strict model has no
+# GCC spelling, so use its explicit GCC equivalents on system MinGW GCC.
 STRICT_FP_MEDIA_SOURCES = {
     "app_audio_capture.cpp",
     "audio_capture.cpp",
@@ -198,6 +198,7 @@ STRICT_FP_MEDIA_SOURCES = {
     "process_loopback_worker.cpp",
     "video_encoder.cpp",
 }
+STRICT_FP_SCREENSHOT_SOURCES = {"screenshot_encoding.cpp", "screenshot_hdr_encoding.cpp"}
 CLANG_STRICT_FP_FLAGS = ["-ffp-model=strict"]
 GCC_STRICT_FP_FLAGS = ["-fno-fast-math", "-ffp-contract=off", "-frounding-math", "-fsignaling-nans"]
 
@@ -4695,13 +4696,12 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
 
     compile_tasks.extend((test_cflags, src, obj) for src, obj in src_obj_pairs)
 
-    screenshot_encoding_src = os.path.join(PROJECT_ROOT, "captureengine", "screenshot_encoding.cpp")
-    screenshot_encoding_obj = os.path.join(obj_dir, "captureengine", "screenshot_encoding.test.o").replace("\\", "/")
-    compile_tasks.append((test_cflags + strict_fp_flags, screenshot_encoding_src, screenshot_encoding_obj))
-
-    pseudo_overlay_src = os.path.join(PROJECT_ROOT, "captureengine", "pseudo_overlay.cpp")
-    pseudo_overlay_obj = os.path.join(obj_dir, "captureengine", "pseudo_overlay.test.o").replace("\\", "/")
-    compile_tasks.append((test_cflags, pseudo_overlay_src, pseudo_overlay_obj))
+    captureengine_test_objs = []
+    for name in sorted(STRICT_FP_SCREENSHOT_SOURCES) + ["pseudo_overlay.cpp"]:
+        extra = strict_fp_flags if name in STRICT_FP_SCREENSHOT_SOURCES else []
+        obj = os.path.join(obj_dir, "captureengine", os.path.splitext(name)[0] + ".test.o").replace("\\", "/")
+        compile_tasks.append((test_cflags + extra, os.path.join(PROJECT_ROOT, "captureengine", name), obj))
+        captureengine_test_objs.append(obj)
 
     # 4. Compile hook/common for tests
     hook_common_src = glob.glob(os.path.join(PROJECT_ROOT, "hook", "common", "*.cpp"))
@@ -4741,7 +4741,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         + test_objs
         + common_objs
         + me_objs
-        + [screenshot_encoding_obj, pseudo_overlay_obj]
+        + captureengine_test_objs
         + [config_resource_obj]
         + hook_common_objs
         + hook_wrapper_test_objs
@@ -7244,7 +7244,7 @@ def compile_project(
                 continue
             rel_path = os.path.relpath(src, PROJECT_ROOT)
             obj = os.path.join(ce_obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
-            if os.path.basename(src) == "screenshot_encoding.cpp":
+            if os.path.basename(src) in STRICT_FP_SCREENSHOT_SOURCES:
                 strict_fp_src_obj_pairs.append((src, obj))
             else:
                 src_obj_pairs.append((src, obj))
