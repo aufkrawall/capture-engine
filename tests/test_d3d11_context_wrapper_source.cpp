@@ -14,14 +14,27 @@ std::string ReadTextFile(const std::filesystem::path& path) {
     return contents.str();
 }
 
+// The device-context wrapper is implemented across one internal header and four
+// translation units. Assertions below describe the wrapper as a whole, so they
+// run over the concatenation in declaration-then-definition order.
+std::string ReadContextWrapperSources() {
+    const auto dir = std::filesystem::current_path() / "hook" / "wrappers";
+    std::string combined;
+    for (const char* part : {"d3d11_devicecontext_wrap_internal.h", "d3d11_context_forced_af.cpp",
+                             "d3d11_devicecontext_wrap.cpp", "d3d11_devicecontext_forward.cpp",
+                             "d3d11_devicecontext_get.cpp"}) {
+        const std::filesystem::path path = dir / part;
+        EXPECT_TRUE(std::filesystem::exists(path)) << part;
+        combined += ReadTextFile(path);
+        combined += '\n';
+    }
+    return combined;
+}
+
 }  // namespace
 
 TEST(D3D11ContextWrapperSourceTest, PromotesInheritedContextInterfacesIndependently) {
-    const std::filesystem::path source =
-        std::filesystem::current_path() / "hook" / "wrappers" / "d3d11_devicecontext_wrap.cpp";
-    ASSERT_TRUE(std::filesystem::exists(source));
-
-    const std::string text = ReadTextFile(source);
+    const std::string text = ReadContextWrapperSources();
     ASSERT_FALSE(text.empty());
 
     EXPECT_NE(text.find("m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1))"), std::string::npos);
@@ -36,7 +49,7 @@ TEST(D3D11ContextWrapperSourceTest, PromotesInheritedContextInterfacesIndependen
 
 TEST(D3D11ContextWrapperSourceTest, ForcedAFHotPathUsesObjectOwnedCachesAndDirtyState) {
     const auto root = std::filesystem::current_path();
-    const std::string context = ReadTextFile(root / "hook" / "wrappers" / "d3d11_devicecontext_wrap.cpp");
+    const std::string context = ReadContextWrapperSources();
     const std::string device = ReadTextFile(root / "hook" / "wrappers" / "d3d11_device_wrap.cpp");
     const std::string rawHook = ReadTextFile(root / "hook" / "apis" / "dx11_hook.cpp");
 

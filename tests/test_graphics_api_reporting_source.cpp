@@ -52,7 +52,10 @@ TEST(GraphicsApiReportingSourceTest, D3D9CreationEvidenceKeepsClassicAndExDevice
 }
 
 TEST(GraphicsApiReportingSourceTest, D3D10AndD3D11UseCreationAndExternalInterfaceEvidence) {
-    const std::string wrappers = ReadGraphicsApiSource("hook/wrappers/wrapper_hooks.cpp");
+    // The wrapper entry points are split between the DXGI factory exports and
+    // the device-creation exports; the D3D10 evidence lives in the latter.
+    const std::string wrappers = ReadGraphicsApiSource("hook/wrappers/wrapper_hooks.cpp") + "\n" +
+                                 ReadGraphicsApiSource("hook/wrappers/wrapper_hooks_devices.cpp");
     const std::string dx11 = ReadGraphicsApiSource("hook/apis/dx11_hook.cpp");
     ASSERT_FALSE(wrappers.empty());
     ASSERT_FALSE(dx11.empty());

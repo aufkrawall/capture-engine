@@ -44,11 +44,7 @@
     "hook/main.cpp": 3544,
     "hook/vulkan_layer/layer_capture.cpp": 2459,
     "hook/vulkan_layer/vulkan_layer.cpp": 1626,
-    "hook/wrappers/d3d11_devicecontext_wrap.cpp": 2136,
     "hook/wrappers/dxgi_swapchain_wrap.cpp": 1953,
-    "hook/wrappers/iat_hook.cpp": 1092,
-    "hook/wrappers/inline_hook.cpp": 2510,
-    "hook/wrappers/wrapper_hooks.cpp": 1135,
     "mediaengine/app_audio_capture.cpp": 1749,
     "mediaengine/audio_capture.cpp": 1170,
     "mediaengine/audio_encoder.cpp": 1592,
@@ -61,6 +57,6 @@
     "tools/analysis/run_av_sync_matrix.py": 2112,
     "tools/tracing/run_dx12_fg_overlay_transition.py": 841
   },
-  "count": 47,
-  "total": 152336
+  "count": 43,
+  "total": 145463
 }

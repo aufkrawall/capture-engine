@@ -259,7 +259,10 @@ TEST(DX12SamplerPolicyTest, AppliesSamePolicyToStaticSamplerWithoutChangingBindi
 
 TEST(DX12SamplerPolicyTest, RuntimeCoverageIncludesDynamicExportsAndPrecompiledRootSignatures) {
     const auto root = std::filesystem::current_path();
-    const std::string iat = ReadTextFile(root / "hook" / "wrappers" / "iat_hook.cpp");
+    // The IAT engine is split between the patching primitives and the per-API
+    // installation that registers the dynamic exports; assert over both.
+    const std::string iat = ReadTextFile(root / "hook" / "wrappers" / "iat_hook.cpp") + "\n" +
+                            ReadTextFile(root / "hook" / "wrappers" / "iat_hook_init.cpp");
     const std::string hooks = ReadTextFile(root / "hook" / "apis" / "dx12_sampler_hooks.cpp");
 
     EXPECT_NE(iat.find("RegisterDynamicHook(\"D3D12CreateDevice\""), std::string::npos);

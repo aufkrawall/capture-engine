@@ -233,7 +233,8 @@ TEST(CrashHandlerSourceTest, ExternalDumpHelperSuppressesGuiLaunchFeedback) {
 }
 
 TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap) {
-    const std::filesystem::path source = std::filesystem::current_path() / "hook" / "wrappers" / "inline_hook.cpp";
+    const std::filesystem::path source =
+        std::filesystem::current_path() / "hook" / "wrappers" / "inline_hook_trampoline.cpp";
     const std::string contents = ReadBinaryFile(source);
     ASSERT_FALSE(contents.empty());
     EXPECT_NE(contents.find("PAGE_EXECUTE_READ | PAGE_TARGETS_INVALID"), std::string::npos);
@@ -252,9 +253,10 @@ TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap)
     EXPECT_NE(registrationArguments.find("allocationSize"), std::string::npos);
     EXPECT_NE(registrationArguments.find("1, &target"), std::string::npos);
 
-    const size_t allocatorStart = contents.find("static uint8_t* AllocateWritableTrampolinePage");
-    const size_t allocatorEnd = contents.find("// Deep hook data structures", allocatorStart);
+    const size_t allocatorStart = contents.find("uint8_t* AllocateWritableTrampolinePage(void* preferredAddress) {");
     ASSERT_NE(allocatorStart, std::string::npos);
+    // The allocator body runs to the first column-0 closing brace after it.
+    const size_t allocatorEnd = contents.find("\n}\n", allocatorStart);
     ASSERT_NE(allocatorEnd, std::string::npos);
     EXPECT_EQ(contents.substr(allocatorStart, allocatorEnd - allocatorStart).find("PAGE_EXECUTE_READWRITE"),
               std::string::npos);
