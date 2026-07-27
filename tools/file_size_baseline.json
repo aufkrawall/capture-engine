@@ -18,11 +18,8 @@
     "captureengine/main.cpp": 1904,
     "captureengine/media_main.cpp": 13370,
     "captureengine/pseudo_overlay.cpp": 1702,
-    "captureengine/screenshot_encoding.cpp": 997,
     "captureengine/wgc_capture.cpp": 5281,
     "common/config.cpp": 2140,
-    "common/crash_handler.cpp": 1167,
-    "common/process_ipc.cpp": 872,
     "hook/apis/ddraw_hook.cpp": 2835,
     "hook/apis/dx11_hook.cpp": 5750,
     "hook/apis/dx12_hook.cpp": 23716,
@@ -56,6 +53,6 @@
     "tools/analysis/run_av_sync_matrix.py": 2112,
     "tools/tracing/run_dx12_fg_overlay_transition.py": 841
   },
-  "count": 42,
-  "total": 144515
+  "count": 39,
+  "total": 141479
 }

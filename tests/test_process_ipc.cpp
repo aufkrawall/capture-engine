@@ -155,9 +155,15 @@ TEST(ProcessIPCTest, RecordingIdentityIsStrictAndProducesImmutableMediaLogNames)
 
 TEST(ProcessIPCTest, ProductionUsesInheritedEndpointsWithoutFixedPipeConstants) {
     const std::string header = ReadSource("common/process_ipc.h");
-    const std::string source = ReadSource("common/process_ipc.cpp");
+    // The endpoint implementation is split across the server and client halves,
+    // so both are scanned: the positive expectations below name code from each,
+    // and the negative ones must hold across the whole implementation.
+    const std::string serverSource = ReadSource("common/process_ipc.cpp");
+    const std::string clientSource = ReadSource("common/process_ipc_client.cpp");
+    const std::string source = serverSource + clientSource;
     ASSERT_FALSE(header.empty());
-    ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(serverSource.empty());
+    ASSERT_FALSE(clientSource.empty());
     EXPECT_EQ(header.find("PIPE_NAME_INJECT"), std::string::npos);
     EXPECT_EQ(header.find("CaptureEngine_Inject"), std::string::npos);
     EXPECT_EQ(source.find("WaitNamedPipe"), std::string::npos);

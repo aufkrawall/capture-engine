@@ -4,8 +4,8 @@
 // funnels through (common/process_ipc.cpp). It covers the bytesRead bounds check,
 // magic/version/headerSize/totalSize consistency, sender identity, nonce, sequence
 // policy, and both payload validators. Do not target the file-local ValidatePayload
-// helpers directly: they live in an anonymous namespace and are deliberately not
-// part of the public surface.
+// helpers directly: they have internal linkage and are deliberately not part of the
+// public surface.
 //
 // Built and run by build.py --run-fuzz; see llm-wiki/fuzzing.md.
 
