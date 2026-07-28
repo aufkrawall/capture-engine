@@ -3,6 +3,7 @@
 /installed/
 /ffmpeg_build/
 /captures/
+/temp/
 /testapp/bin/
 
 # Third-party generated dependency bundle
