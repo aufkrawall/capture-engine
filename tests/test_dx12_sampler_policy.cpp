@@ -8,6 +8,7 @@
 
 #include "../hook/common/dx12_sampler_policy.h"
 #include "../hook/common/sampler_override_utils.h"
+#include "source_fragment_reader.h"
 
 namespace {
 
@@ -32,10 +33,7 @@ GraphicsConfig ForcedAf(const char* value = "16x") {
 }
 
 std::string ReadTextFile(const std::filesystem::path& path) {
-    std::ifstream stream(path, std::ios::binary);
-    std::ostringstream contents;
-    contents << stream.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(path);
 }
 
 void SetFloatBits(float& value, uint32_t bits) {

@@ -61,7 +61,7 @@ class ClangTidyConfigPolicyTest(unittest.TestCase):
 
 class LintDriverContextTest(unittest.TestCase):
     def test_build_script_registers_the_live_module_for_the_extracted_driver(self) -> None:
-        source = Path(build.__file__).read_text(encoding="utf-8")
+        source = build.read_source_text()
         self.assertIn('sys.modules.setdefault("build", sys.modules[__name__])', source)
         self.assertEqual(build.run_lint.__module__, "tools.lint_driver")
 

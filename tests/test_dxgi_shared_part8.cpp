@@ -249,9 +249,9 @@ TEST(DXGISharedSourceTest, PresentPerfRowIsDedupedAcrossOuterAndInnerLoggers) {
     namespace fs = std::filesystem;
     auto readFile = [](const fs::path& p) {
         EXPECT_TRUE(fs::exists(p)) << p.string();
-        std::ifstream stream(p, std::ios::binary);
-        EXPECT_TRUE(stream.good()) << p.string();
-        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        const std::string text = ce::test_source::ReadLogicalSource(p);
+        EXPECT_FALSE(text.empty()) << p.string();
+        return text;
     };
 
     const std::string shared = readFile(fs::current_path() / "hook" / "common" / "dxgi_shared.cpp");
@@ -283,9 +283,9 @@ TEST(DXGISharedSourceTest, StartupTransportRetainSitesGatedAndHandoffReleasesRet
     namespace fs = std::filesystem;
     auto readFile = [](const fs::path& p) {
         EXPECT_TRUE(fs::exists(p)) << p.string();
-        std::ifstream stream(p, std::ios::binary);
-        EXPECT_TRUE(stream.good()) << p.string();
-        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        const std::string text = ce::test_source::ReadLogicalSource(p);
+        EXPECT_FALSE(text.empty()) << p.string();
+        return text;
     };
 
     const std::string shared = readFile(fs::current_path() / "hook" / "common" / "dxgi_shared.cpp");
@@ -714,4 +714,3 @@ TEST(DXGISharedTest, SteamDX12InitVtableUnhookRestorePattern) {
 
     VirtualFree(alloc, 0, MEM_RELEASE);
 }
-

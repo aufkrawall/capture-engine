@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-07-28 (content-addressed/parallel verification, best-effort fullscreen-focus WGC/DXGI privacy blackout, post-prewarm wall-anchored WGC/DXGI startup, authoritative copy-pool reserve, grid-aware visual-debt retention, marginal/degraded overload liveness pacing, adaptive CFR audio ingestion reservoir, immutable-grid encoder-debt recovery, timeline-recovery-safe app audio, transition-aware capture diagnostics, DXGI source-limited cadence, delayed cursor ownership, HDR/SDR signaling, hardware encoders, monitor selection, and the existing current build, graphics, audio, screenshot, and security state; see build.py.md, configuration.md, wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, regression-testing-and-logging.md, current.md, and log/recent.md)
+Last cross-checked: 2026-07-28 (content-addressed/parallel verification, bounded source-fragment facades, best-effort fullscreen-focus WGC/DXGI privacy blackout, post-prewarm wall-anchored WGC/DXGI startup, authoritative copy-pool reserve, grid-aware visual-debt retention, marginal/degraded overload liveness pacing, adaptive CFR audio ingestion reservoir, immutable-grid encoder-debt recovery, timeline-recovery-safe app audio, transition-aware capture diagnostics, DXGI source-limited cadence, delayed cursor ownership, HDR/SDR signaling, hardware encoders, monitor selection, and the existing current build, graphics, audio, screenshot, and security state; see build.py.md, codestyle.md, configuration.md, wgc-capture.md, cfr-capture-sync.md, multi-audio-capture.md, regression-testing-and-logging.md, current.md, and log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -39,7 +39,7 @@ Primary sources:
 - `current.md`
   - Compact current-state summary, current logging model, and token-efficient routing into the longer wiki pages.
 - `codestyle.md`
-  - Style/tooling rules, the no-whole-file-in-place-formatter constraint for existing sources, Python tooling config, and common tree conventions. Last verified 2026-07-12.
+  - Style/tooling rules, the no-whole-file-in-place-formatter constraint for existing sources, bounded C++/Python fragment rules, Python tooling config, and common tree conventions. Last verified 2026-07-28.
 - `build.py.md`
   - Supported `build.py` flags, content-addressed clang-tidy and exact-input sanitizer reuse, isolated/concurrent verification stages, early preflight, Windows Clang/Linux MinGW GCC hardening and strict-FP selection, host-native PE/shader/debug verification, cross-host FG SDK preparation, fail-closed Vulkan stages, validated object/link caches, the nested gate rule and default tests-only development loop, scope-aware ratchets, incremental/resume/no-build workflow, dependency closure, operational notes, and MinGW pitfalls. Last verified 2026-07-28.
 - `screenshots.md`
@@ -91,7 +91,7 @@ Primary sources:
 - `fuzzing.md`
   - libFuzzer harnesses for the config and IPC parsers, the fail-closed `build.py --run-fuzz` stage, curated byte-exact seed corpora, MinGW libFuzzer/ASan toolchain wiring, and the always-run regression floor that covers the same boundaries without a fuzz run. Last verified 2026-07-24.
 - `known-debt.md`
-  - Deliberately accepted debt with its reasoning: the staged oversized-source refactor and the eight FG/capture files still deferred because no automated gate can validate them, the scope-guarded frozen clang-tidy baseline and its per-translation-unit counting, destructor exception escapes, duplicated overlay telemetry, the policy-header rationale for module/test mapping, and audit findings that were checked and falsified. Last verified 2026-07-27.
+  - Deliberately accepted debt with its reasoning: the resolved oversized-source ratchet and its future split rules, the scope-guarded frozen clang-tidy baseline and its per-translation-unit counting, destructor exception escapes, duplicated overlay telemetry, the policy-header rationale for module/test mapping, and audit findings that were checked and falsified. Last verified 2026-07-28.
 - `debug-tools-security-audit.md`
   - Security-audit tooling available for binary/dependency inspection, beyond the general debug tools.
 - `graphics-api-reporting.md`

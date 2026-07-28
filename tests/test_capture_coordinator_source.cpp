@@ -5,30 +5,20 @@
 #include <sstream>
 #include <string>
 
+#include "source_fragment_reader.h"
+
 namespace {
 
 std::string ReadCoordinatorSource() {
-    const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "media_main.cpp";
-    std::ifstream file(source, std::ios::binary);
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" / "media_main.cpp");
 }
 
 std::string ReadWgcCaptureSource() {
-    const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "wgc_capture.cpp";
-    std::ifstream file(source, std::ios::binary);
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" / "wgc_capture.cpp");
 }
 
 std::string ReadVideoEncoderSource() {
-    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "video_encoder.cpp";
-    std::ifstream file(source, std::ios::binary);
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "mediaengine" / "video_encoder.cpp");
 }
 
 std::string ReadPrivacyRuntimeSource() {

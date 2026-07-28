@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import build
 from tools import ffmpeg_dependencies as dependencies
 
 # The manifest sits next to ffmpeg_dependencies.py in tools/, one level above this
@@ -104,7 +105,7 @@ class FfmpegDependencyManifestTest(unittest.TestCase):
             build_dependency.assert_not_called()
 
     def test_ffmpeg_required_components_and_cache_version_are_current(self) -> None:
-        build_source = (Path(__file__).resolve().parents[2] / "build.py").read_text(encoding="utf-8")
+        build_source = build.read_source_text()
         self.assertIn('"--enable-encoder=libaom_av1"', build_source)
         self.assertIn('"--enable-decoder=libaom_av1"', build_source)
         self.assertNotIn('"--enable-encoder=libaom-av1"', build_source)

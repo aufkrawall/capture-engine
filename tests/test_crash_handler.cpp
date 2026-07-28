@@ -7,6 +7,7 @@
 
 #include "../common/crash_handler.h"
 #include "../hook/common/freeze_watchdog.h"
+#include "source_fragment_reader.h"
 
 namespace {
 
@@ -55,6 +56,10 @@ std::string ReadBinaryFile(const std::filesystem::path& path) {
         return {};
     }
     return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+}
+
+std::string ReadSourceFile(const std::filesystem::path& path) {
+    return ce::test_source::ReadLogicalSource(path);
 }
 
 }  // namespace
@@ -227,7 +232,7 @@ TEST(CrashHandlerBinaryTest, HookDllContainsCfgSealedTrampolineRegressionStrings
 
 TEST(CrashHandlerSourceTest, ExternalDumpHelperSuppressesGuiLaunchFeedback) {
     const std::filesystem::path source = std::filesystem::current_path() / "hook" / "main.cpp";
-    const std::string contents = ReadBinaryFile(source);
+    const std::string contents = ReadSourceFile(source);
     ASSERT_FALSE(contents.empty());
     EXPECT_NE(contents.find("si.dwFlags = STARTF_USESHOWWINDOW | STARTF_FORCEOFFFEEDBACK;"), std::string::npos);
 }
@@ -235,7 +240,7 @@ TEST(CrashHandlerSourceTest, ExternalDumpHelperSuppressesGuiLaunchFeedback) {
 TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap) {
     const std::filesystem::path source =
         std::filesystem::current_path() / "hook" / "wrappers" / "inline_hook_trampoline.cpp";
-    const std::string contents = ReadBinaryFile(source);
+    const std::string contents = ReadSourceFile(source);
     ASSERT_FALSE(contents.empty());
     EXPECT_NE(contents.find("PAGE_EXECUTE_READ | PAGE_TARGETS_INVALID"), std::string::npos);
     EXPECT_NE(contents.find("PAGE_EXECUTE_READ |"), std::string::npos);
@@ -264,7 +269,7 @@ TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap)
 
 TEST(CrashHandlerSourceTest, FatalHookBootstrapPublishesTrampolinesBeforeIatRouting) {
     const std::filesystem::path source = std::filesystem::current_path() / "hook" / "main.cpp";
-    const std::string contents = ReadBinaryFile(source);
+    const std::string contents = ReadSourceFile(source);
     ASSERT_FALSE(contents.empty());
 
     const size_t bootstrap = contents.find("void TryInstallFatalTerminationDumpHooks()");
@@ -286,7 +291,7 @@ TEST(CrashHandlerSourceTest, FatalHookBootstrapPublishesTrampolinesBeforeIatRout
 
     const std::filesystem::path inlineSource =
         std::filesystem::current_path() / "hook" / "wrappers" / "inline_hook.cpp";
-    const std::string inlineContents = ReadBinaryFile(inlineSource);
+    const std::string inlineContents = ReadSourceFile(inlineSource);
     ASSERT_FALSE(inlineContents.empty());
     const size_t livePatch = inlineContents.find("LogDirect(\"Patching target function...\");");
     const size_t publish = inlineContents.rfind("publisher(trampoline, publisherContext);", livePatch);

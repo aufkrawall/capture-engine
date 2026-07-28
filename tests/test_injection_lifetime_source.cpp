@@ -5,12 +5,11 @@
 #include <sstream>
 #include <string>
 
+#include "source_fragment_reader.h"
+
 TEST(InjectionLifetimeSourceTest, DelayedWorkersRemainOwnedUntilJoin) {
     const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "injection.cpp";
-    std::ifstream file(source, std::ios::binary);
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    const std::string text = contents.str();
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     EXPECT_NE(text.find("t.detach()"), std::string::npos);

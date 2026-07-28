@@ -18,16 +18,14 @@
 #include "../hook/common/custom_overlay.h"
 #include "../hook/common/legacy_overlay_cache.h"
 #include "../hook/common/overlay_layout_policy.h"
+#include "source_fragment_reader.h"
 
 using namespace CustomOverlay;
 
 namespace {
 
 std::string ReadOverlaySource(const std::filesystem::path& relativePath) {
-    std::ifstream file(std::filesystem::current_path() / relativePath, std::ios::binary);
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);
 }
 
 size_t CountOccurrences(const std::string& text, const std::string& needle) {

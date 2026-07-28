@@ -289,7 +289,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
                 build.compile_vulkan_layer({}, "/usr/bin/x86_64-w64-mingw32-g++", [], "x64")
             self.assertIsNone(build.compile_vulkan_layer({}, "/usr/bin/i686-w64-mingw32-g++", [], "x86"))
 
-        source = Path(build.__file__).read_text(encoding="utf-8")
+        source = build.read_source_text()
         self.assertIn("Vulkan import library unavailable for required x64 test applications", source)
         self.assertIn('if IS_LINUX and arch == "x86":\n                log(f"Linux host: skipping Hook DLL', source)
         self.assertIn('log(f"Error linking layer: {e}")\n        raise', source)
@@ -367,13 +367,11 @@ class BuildFlagPolicyTest(unittest.TestCase):
             self.assertFalse(testapps.exists())
 
     def test_ffmpeg_policy_includes_stack_and_object_size_hardening(self) -> None:
-        with open(build.__file__, encoding="utf-8") as build_file:
-            source = build_file.read()
+        source = build.read_source_text()
         self.assertIn("-mguard=cf -fstack-protector-strong -D_FORTIFY_SOURCE=2", source)
 
     def test_plain_build_forces_ffmpeg_source_closure_rebuild(self) -> None:
-        with open(build.__file__, encoding="utf-8") as build_file:
-            source = build_file.read()
+        source = build.read_source_text()
         self.assertIn("full_source_rebuild = not skip_updates", source)
         self.assertIn("dependency_builder.ensure(force_rebuild=full_source_rebuild)", source)
         self.assertIn("needs_rebuild = full_source_rebuild", source)
@@ -426,7 +424,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
 
         identity_source = (project_root / "common/build_identity.cpp").read_text(encoding="utf-8")
         self.assertIn('#include "build_version.h"', identity_source)
-        build_source = (project_root / "build.py").read_text(encoding="utf-8")
+        build_source = build.read_source_text()
         self.assertIn('os.path.join(PROJECT_ROOT, "common", "build_identity.cpp")', build_source)
 
     def test_incremental_signature_failure_recompiles_instead_of_trusting_timestamps(self) -> None:
@@ -646,8 +644,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
         bump_version.assert_not_called()
 
     def test_vulkan_manifests_use_build_specific_layer_identity(self) -> None:
-        with open(build.__file__, encoding="utf-8") as build_file:
-            source = build_file.read()
+        source = build.read_source_text()
         self.assertIn('layer_name = f"{layer_name_base}_b{CURRENT_BUILD_NUMBER}"', source)
         self.assertIn('"implementation_version": str(CURRENT_BUILD_NUMBER)', source)
 
@@ -705,8 +702,7 @@ class BuildFlagPolicyTest(unittest.TestCase):
         )
 
     def test_vulkan_layer_build_has_no_registry_side_effects(self) -> None:
-        with open(build.__file__, encoding="utf-8") as build_file:
-            source = build_file.read()
+        source = build.read_source_text()
         self.assertNotIn("cleanup_vulkan_layer_registry", source)
         self.assertNotIn("import winreg", source)
         self.assertNotIn("winreg.", source)

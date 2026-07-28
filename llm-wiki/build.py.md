@@ -22,6 +22,17 @@ Primary sources:
 ## Scope
 `build.py` is the canonical build entry point. It parses flags manually from `sys.argv`; there is no `argparse`-generated help output to rely on.
 
+## Bounded source facade
+
+The checked-in `build.py` is a small compatibility facade. It executes its ordered
+`build_part_*.py` files with `compile(..., globals(), globals())`, so the original
+module namespace, `import build`, monkeypatching, constants, and CLI behavior remain
+unchanged. The analysis and test-runner entry points use the same pattern. Source
+policy tests call `build.read_source_text()` or `tests/source_fragment_reader.h` to
+inspect the logical source rather than the forwarding facade. Keep part order stable,
+do not import parts as separate modules, and update the facade only through the
+bounded-source workflow documented in `codestyle.md`.
+
 ## Default Mode
 Running `python build.py` is the full default-quality path. On Windows it updates MSYS2 as needed and deliberately rebuilds the complete pinned FFmpeg dependency closure and custom FFmpeg from source. Use `python build.py --skip-updates` when you want to reuse verified source-built outputs and skip update work; stale or missing outputs still rebuild for correctness.
 

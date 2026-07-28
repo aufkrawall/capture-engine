@@ -1,6 +1,6 @@
 # Known and Accepted Debt
 
-Last verified: 2026-07-27
+Last verified: 2026-07-28
 
 Primary sources:
 - `AGENTS.md`
@@ -18,37 +18,31 @@ should be fixed and removed from this page.
 
 ## Oversized source files
 
-`AGENTS.md` sets a roughly 600-800 line ceiling, enforced by the lint stage against
-`tools/file_size_baseline.json`. **As of 2026-07-27 the baseline records 39 files over
-the ceiling, 141,479 lines.** A staged refactor has been reducing it: 68 files two
-sessions ago, 47 at the start of 2026-07-27, 42 after the `hook/wrappers` and
-`shared_capture` splits, 39 after `crash_handler`, `screenshot_encoding` and
-`process_ipc`. Goal state is `"count": 0`.
+The debt is resolved as of 2026-07-28. `tools/file_size_baseline.json` now has
+`count: 0` and `total: 0`, and the live source-size scan reports no governed source
+file above the 800-line ceiling. The 39 entries that remained after the earlier
+wrapper, shared-capture, crash-handler, screenshot, and IPC work are now represented
+by ordered bounded fragments, with a working target of roughly 650 lines per fragment.
 
-The **2026-07-24 decision to defer splitting entirely is superseded** for everything
-outside the FG/capture core. It still stands for these eight files, ~73,000 lines:
+C++ wrappers include ordered `.inl` fragments inside the original translation unit.
+This preserves anonymous-namespace state, file-static ownership, ABI, compiler flags,
+hot-path placement, and the original include/preprocessor context. Conditional groups
+must not cross fragment boundaries; the WGC `HAS_WGC` / fallback branches remain
+explicitly guarded by the wrapper. Python entry points are compatibility facades that
+execute ordered `.py` fragments in one module-global namespace, preserving
+`python build.py`, `import build`, monkeypatching, constants, and CLI behavior.
+`build.read_source_text()` and `tests/source_fragment_reader.h` expose the logical
+source to source-policy tests rather than making tests depend on the small facade.
 
-| File | Lines |
-|---|---:|
-| `hook/apis/dx12_hook.cpp` | 23,716 |
-| `captureengine/media_main.cpp` | 13,370 |
-| `mediaengine/video_encoder.cpp` | 7,256 |
-| `mediaengine/mediaengine.cpp` | 6,891 |
-| `hook/apis/dx9_hook.cpp` | 5,782 |
-| `hook/apis/dx11_hook.cpp` | 5,750 |
-| `hook/common/dxgi_shared.cpp` | 5,416 |
-| `captureengine/wgc_capture.cpp` | 5,281 |
-
-These are governed by the non-negotiable constraints in `AGENTS.md` — no lost overlay
-rendering across FG transitions, no crashes in any switching direction, exact CFR/A-V
-sync. Their behaviour is the product of a long series of narrowly targeted fixes
-documented in `frame-generation/case-studies.md` and `log/`. Critically, **no automated
-gate covers them**: `--verify` proves they compile, link and pass unit tests, but the
-constraints they carry can only be validated by a real Talos/GTA FG-switching session.
-A split here is therefore not verifiable by an agent alone.
-
-For everything else the split is routine and proven; see the method and its traps in
-`log/recent.md` (2026-07-27).
+Future bounded-source work must: choose preprocessor- or top-level-AST-safe cuts; keep
+performance-sensitive state in the same translation unit; update explicit source,
+Vulkan-layer, and strict-FP lists; prove exact logical reassembly (or an explicit
+conditional transformation); run focused tests and the appropriate `--verify` gate;
+and leave the baseline at zero. Python fragment files are shared-namespace
+implementation details and are excluded from standalone flake8/pyright discovery;
+the facades, compileall, source-reassembly checks, runtime tests, and full gates remain
+the validation boundary. This is a tooling constraint, not permission to suppress a
+new file that exceeds 800 lines.
 
 ## clang-tidy baseline
 

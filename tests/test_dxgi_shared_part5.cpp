@@ -349,8 +349,7 @@ TEST(DXGISharedTest, WrappedColorSpaceForwardOwnsExactlyOncePublication) {
 
 TEST(DXGISharedTest, SwapchainColorSpaceTrackingNeverPatchesSharedVtableSlot) {
     const auto readSource = [](const std::filesystem::path& path) {
-        std::ifstream file(path, std::ios::binary);
-        return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+        return ce::test_source::ReadLogicalSource(path);
     };
     const std::string shared =
         readSource(std::filesystem::current_path() / "hook" / "common" / "dxgi_shared.cpp");
@@ -370,8 +369,7 @@ TEST(DXGISharedTest, SwapchainColorSpaceTrackingNeverPatchesSharedVtableSlot) {
 
 TEST(DXGISharedTest, RuntimeOwnedOverlayRoutesUseCachedPresentationContractAndRefreshTransitions) {
     const auto readSource = [](const std::filesystem::path& path) {
-        std::ifstream file(path, std::ios::binary);
-        return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+        return ce::test_source::ReadLogicalSource(path);
     };
     const auto root = std::filesystem::current_path();
     const std::string dx12 = readSource(root / "hook" / "apis" / "dx12_hook.cpp");
@@ -753,4 +751,3 @@ TEST(DXGISharedTest, InactiveFGOverlaySpaceReservationRequiresShortPostSLTeardow
     EXPECT_FALSE(
         ce::dx12_overlay_policy::ShouldReserveInactiveFGOverlaySpaceDuringRecentPostFSRTeardown(true, false, false));
 }
-

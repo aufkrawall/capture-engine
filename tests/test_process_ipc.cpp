@@ -15,6 +15,7 @@
 
 #include "../common/process_ipc.h"
 #include "../common/restricted_child_process.h"
+#include "source_fragment_reader.h"
 
 namespace {
 
@@ -37,8 +38,7 @@ ProcessMessage ValidCommand() {
 }
 
 std::string ReadSource(const std::filesystem::path& relativePath) {
-    std::ifstream stream(std::filesystem::current_path() / relativePath, std::ios::binary);
-    return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);
 }
 
 std::optional<uintptr_t> CommandLineHandle(const wchar_t* prefix) {

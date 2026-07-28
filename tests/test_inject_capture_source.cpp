@@ -5,14 +5,12 @@
 #include <iterator>
 #include <string>
 
+#include "source_fragment_reader.h"
+
 namespace {
 
 std::string ReadSource(const std::filesystem::path& relativePath) {
-    const auto path = std::filesystem::current_path() / relativePath;
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream.good())
-        return {};
-    return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);
 }
 
 std::string FunctionBody(const std::string& source, const std::string& signature, const std::string& nextSignature) {

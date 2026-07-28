@@ -4,6 +4,8 @@
 #include <fstream>
 #include <string>
 
+#include "source_fragment_reader.h"
+
 #include "../common/build_identity.h"
 #include "../common/vulkan_layer_registration.h"
 #include "../hook/vulkan_layer/vulkan_presentation_color.h"
@@ -175,9 +177,8 @@ TEST(VulkanLayerRegistrationSourceTest, RepairTargetsOwnedManifestNamesInWritabl
 
 TEST(VulkanLayerRegistrationSourceTest, ControllerRetainsOneExactPlanThroughUnregistration) {
     const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "main.cpp";
-    std::ifstream input(source, std::ios::binary);
-    ASSERT_TRUE(input.is_open()) << source.string();
-    const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty()) << source.string();
 
     EXPECT_NE(text.find("ScopedVulkanRegistration() : plan_(BuildControllerVulkanRegistrationPlan())"),
               std::string::npos);

@@ -92,9 +92,7 @@ TEST(DXGISharedSourceTest, NormalSwapchainReturnRebaselinesBeforeFirstPresent) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     const size_t handler = text.find("HandlePostSLRouteForNormalSwapchainReturn(");
@@ -117,9 +115,7 @@ TEST(DXGISharedSourceTest, AuthoritativeDLSSOffNativeReturnProofFeedsFirstMatchi
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     const size_t handler = text.find("HandlePostSLRouteForNormalSwapchainReturn(");
@@ -157,9 +153,7 @@ TEST(DXGISharedSourceTest, CleanPresentReturnRetiresPostSLRouteBeforeNormalQueue
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     const size_t processFrame = text.find("void ProcessFrame(");
@@ -240,9 +234,7 @@ TEST(DXGISharedSourceTest, PostFSROwnershipProofsAreExactAndPublishedBeforeTrans
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     const size_t queueCaptureComment = text.find("// Capture the queue that was passed to CreateSwapChain");
@@ -305,9 +297,7 @@ TEST(DXGISharedSourceTest, ExactExplicitOffProxyUsesLastSuccessfulQueueAheadOfAn
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     const size_t postSLRender = text.find("static void PostSLOverlayRender(IDXGISwapChain* pSwapChain) {");
@@ -332,9 +322,7 @@ TEST(DXGISharedSourceTest, ExactExplicitOffDirectDrawSuppressesOnlySameThreadNes
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "common" / "dxgi_shared.cpp";
     ASSERT_TRUE(fs::exists(source));
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     const size_t present = text.find(
@@ -406,9 +394,7 @@ TEST(DXGISharedSourceTest, WrapperPresentScopeSpansProcessFrameAndRealPresentFor
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "wrappers" / "dxgi_swapchain_wrap.cpp";
     ASSERT_TRUE(fs::exists(source));
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     const size_t present = text.find("HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(");
@@ -439,9 +425,7 @@ TEST(DXGISharedSourceTest, WrappedPassThroughDrivesOnlySuccessfulExactProxyKeepA
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     const size_t helper = text.find("bool DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(");
@@ -472,9 +456,7 @@ TEST(DXGISharedSourceTest, NormalCommandSubmitCannotRetireExactOffKeepAliveWitho
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     EXPECT_EQ(text.find("RetirePostSLExplicitOffKeepAliveAfterNormalRouteDraw"), std::string::npos);
@@ -729,4 +711,3 @@ TEST(DXGISharedTest, LiveNoCallbackNativeFSRSuspensionToggleRequiresExactShape) 
     EXPECT_FALSE(IsLiveNoCallbackNativeFSRSuspensionToggle(RuntimeMode::kDLSSFG, RuntimeMode::kOff, false, true, true,
                                                            true, true, true));
 }
-

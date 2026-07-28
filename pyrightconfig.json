@@ -9,7 +9,8 @@
     "build/msys64",
     ".venv",
     "build",
-    "installed"
+    "installed",
+    "**/*_part_*.py"
   ],
   "ignore": [],
   "strict": [],

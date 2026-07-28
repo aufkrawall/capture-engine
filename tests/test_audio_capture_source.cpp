@@ -5,21 +5,16 @@
 #include <sstream>
 #include <string>
 
+#include "source_fragment_reader.h"
+
 namespace {
 
 std::string ReadSource(const char* filename) {
-    const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / filename;
-    std::ifstream file(source, std::ios::binary);
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "mediaengine" / filename);
 }
 
 std::string ReadProjectSource(const std::filesystem::path& relativePath) {
-    std::ifstream file(std::filesystem::current_path() / relativePath, std::ios::binary);
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);
 }
 
 void ExpectBufferEmptyHandledBeforeGenericFailure(const std::string& source) {

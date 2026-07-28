@@ -17,40 +17,29 @@
 
 #include "../common/raii_helpers.h"
 #include "../mediaengine/video_color_conversion_shader.h"
+#include "source_fragment_reader.h"
 
 namespace {
 
 std::string ReadVideoEncoderSource() {
     const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "video_encoder.cpp";
-    std::ifstream file(source, std::ios::binary);
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(source);
 }
 
 std::string ReadCursorRendererSource() {
     const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "cursor_renderer.cpp";
-    std::ifstream file(source, std::ios::binary);
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(source);
 }
 
 std::string ReadVideoColorShaderSource() {
     const std::filesystem::path source =
         std::filesystem::current_path() / "mediaengine" / "video_color_conversion_shader.h";
-    std::ifstream file(source, std::ios::binary);
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(source);
 }
 
 std::string ReadVideoMetadataSource() {
     const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "video_metadata.cpp";
-    std::ifstream file(source, std::ios::binary);
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(source);
 }
 
 size_t CountOccurrences(const std::string& source, const std::string& needle) {
@@ -64,4 +53,3 @@ size_t CountOccurrences(const std::string& source, const std::string& needle) {
 }
 
 }  // namespace
-

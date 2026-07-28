@@ -1,6 +1,6 @@
 # Code Style
 
-Last cross-checked: 2026-07-12
+Last cross-checked: 2026-07-28
 
 Primary sources:
 - `AGENTS.md`
@@ -32,6 +32,19 @@ This page records the style rules that are either tool-backed or strongly reflec
 - `pyright` uses `typeCheckingMode: basic`.
 - `pyright` targets Python 3.10 on Windows.
 - `pyright` has `analyzeUnannotatedFunctions: true`.
+
+### Bounded source fragments
+
+- The governed source ceiling is 800 lines; split toward a working target near 650-750 and never pad a small file.
+- C++ `.inl` fragments are ordered includes inside the original `.cpp` translation unit. Keep anonymous/file-static state,
+  preprocessor groups, strict-FP source identity, hot paths, and explicit build lists intact.
+- Python compatibility facades execute ordered fragments in one module-global namespace. This preserves direct scripts,
+  `import build`, monkeypatching, constants, and CLI behavior. `*_part_*.py` files are excluded from standalone flake8/
+  pyright discovery because their names/imports intentionally come from neighboring fragments; source reassembly tests,
+  `compileall`, facade execution, and the full verification gate cover the logical program.
+- Before accepting a split, compare logical source reassembly, inspect symbol/state ownership, run focused tests, and use
+  `--verify` for build, parser/configuration, media/capture, audio, graphics, or FG changes. Keep
+  `tools/file_size_baseline.json` at zero rather than treating it as a permanent allowlist.
 
 ## Common Tree Conventions
 - Headers generally use `#pragma once`.

@@ -5,13 +5,12 @@
 #include <sstream>
 #include <string>
 
+#include "source_fragment_reader.h"
+
 namespace {
 
 std::string ReadTextFile(const std::filesystem::path& path) {
-    std::ifstream file(path, std::ios::binary);
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(path);
 }
 
 // The device-context wrapper is implemented across one internal header and four

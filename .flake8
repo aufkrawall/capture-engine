@@ -2,3 +2,6 @@
 max-line-length = 120
 # E203: whitespace before ':' — false positive for slice notation (black/pycodestyle disagree)
 extend-ignore = E203
+# Fragments execute in the facade's shared namespace; lint the facade and
+# preserve logical-source coverage through the source reassembly tests.
+extend-exclude = *_part_*.py

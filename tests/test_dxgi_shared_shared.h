@@ -17,6 +17,7 @@
 #include "../hook/common/ffx_api_parsing.h"
 #include "../hook/wrappers/iat_hook.h"
 #include "../hook/wrappers/inline_hook_policy.h"
+#include "source_fragment_reader.h"
 
 
 
@@ -413,7 +414,6 @@
 // Streamline FG ON while the latch is set is a warm resume of a continuously-
 // live path.
 // ---------------------------------------------------------------------------
-
 
 
 

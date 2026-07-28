@@ -9,13 +9,10 @@ TEST(DXGISharedSourceTest, ProtectedCreateQueueRecoveryPrecedesFFXProxyPresentHo
     const fs::path dx12Source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(ffxSource));
     ASSERT_TRUE(fs::exists(dx12Source));
-
-    std::ifstream ffxStream(ffxSource, std::ios::binary);
-    std::ifstream dx12Stream(dx12Source, std::ios::binary);
-    ASSERT_TRUE(ffxStream.good());
-    ASSERT_TRUE(dx12Stream.good());
-    const std::string ffxText((std::istreambuf_iterator<char>(ffxStream)), std::istreambuf_iterator<char>());
-    const std::string dx12Text((std::istreambuf_iterator<char>(dx12Stream)), std::istreambuf_iterator<char>());
+    const std::string ffxText = ce::test_source::ReadLogicalSource(ffxSource);
+    const std::string dx12Text = ce::test_source::ReadLogicalSource(dx12Source);
+    ASSERT_FALSE(ffxText.empty());
+    ASSERT_FALSE(dx12Text.empty());
 
     const size_t createBlock = ffxText.find("if (parsedSwapChainCreate.recognized && context && *context");
     ASSERT_NE(createBlock, std::string::npos);
@@ -176,9 +173,9 @@ TEST(DXGISharedSourceTest, NoCallbackPresentDrivesFencedCompositeNotBundle) {
     namespace fs = std::filesystem;
 
     auto readFile = [](const fs::path& p) {
-        std::ifstream stream(p, std::ios::binary);
-        EXPECT_TRUE(stream.good()) << p.string();
-        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        const std::string text = ce::test_source::ReadLogicalSource(p);
+        EXPECT_FALSE(text.empty()) << p.string();
+        return text;
     };
 
     const fs::path present = fs::current_path() / "hook" / "common" / "dxgi_shared.cpp";
@@ -232,9 +229,7 @@ TEST(DXGISharedSourceTest, FFXUiCompositeClearsSubstituteTargetTransparent) {
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
 
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     const size_t composite = text.find("bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr");
@@ -272,9 +267,9 @@ TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceReassertOnlyFromProxyPr
     namespace fs = std::filesystem;
     auto readFile = [](const fs::path& p) {
         EXPECT_TRUE(fs::exists(p)) << p.string();
-        std::ifstream stream(p, std::ios::binary);
-        EXPECT_TRUE(stream.good()) << p.string();
-        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        const std::string text = ce::test_source::ReadLogicalSource(p);
+        EXPECT_FALSE(text.empty()) << p.string();
+        return text;
     };
 
     const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
@@ -328,9 +323,9 @@ TEST(DXGISharedSourceTest, NoCallbackSubstituteUiResourceReassertOnlyFromProxyPr
 TEST(DXGISharedSourceTest, FFXUiRegistrationPublishesOnlyAfterProviderSuccess) {
     namespace fs = std::filesystem;
     auto readFile = [](const fs::path& p) {
-        std::ifstream stream(p, std::ios::binary);
-        EXPECT_TRUE(stream.good()) << p.string();
-        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        const std::string text = ce::test_source::ReadLogicalSource(p);
+        EXPECT_FALSE(text.empty()) << p.string();
+        return text;
     };
 
     const std::string ffx = readFile(fs::current_path() / "hook" / "apis" / "ffx_hook.cpp");
@@ -356,9 +351,7 @@ TEST(DXGISharedSourceTest, FFXUiRegistrationPublishesOnlyAfterProviderSuccess) {
 TEST(DXGISharedSourceTest, FFXOwnerQueueRendererRetainsTargetsAndNeverCpuWaits) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_ffx_suspend_overlay.cpp";
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
 
     EXPECT_NE(text.find("ComPtr<ID3D12Resource> inFlightTarget"), std::string::npos);
     EXPECT_NE(text.find("slot.inFlightTarget = targetResource"), std::string::npos);
@@ -371,9 +364,9 @@ TEST(DXGISharedSourceTest, FFXOwnerQueueRendererRetainsTargetsAndNeverCpuWaits) 
 TEST(DXGISharedSourceTest, DurableCachedFFXConfigureRouteRetiresContendedVehAndLogsFirstTransitionPresent) {
     namespace fs = std::filesystem;
     auto readFile = [](const fs::path& path) {
-        std::ifstream stream(path, std::ios::binary);
-        EXPECT_TRUE(stream.good()) << path.string();
-        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        const std::string text = ce::test_source::ReadLogicalSource(path);
+        EXPECT_FALSE(text.empty()) << path.string();
+        return text;
     };
     const std::string ffx = readFile(fs::current_path() / "hook" / "apis" / "ffx_hook.cpp");
     const std::string dx12 = readFile(fs::current_path() / "hook" / "apis" / "dx12_hook.cpp");
@@ -392,9 +385,7 @@ TEST(DXGISharedSourceTest, DurableCachedFFXConfigureRouteRetiresContendedVehAndL
 TEST(DXGISharedSourceTest, FFXProxyPresentRemovalQuiescesAndDrainsEnteredDetours) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
 
     EXPECT_NE(text.find("g_FFXProxyPresentDetoursInFlight.fetch_add"), std::string::npos);
     EXPECT_NE(text.find("g_FFXProxyPresentQuiescing.store(true"), std::string::npos);
@@ -407,9 +398,9 @@ TEST(DXGISharedSourceTest, FFXProxyPresentRemovalQuiescesAndDrainsEnteredDetours
 TEST(DXGISharedSourceTest, StreamlineFirstActivationUsesOfficialUiTagWithoutExtraGpuWork) {
     namespace fs = std::filesystem;
     auto readFile = [](const fs::path& path) {
-        std::ifstream stream(path, std::ios::binary);
-        EXPECT_TRUE(stream.good()) << path.string();
-        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        const std::string text = ce::test_source::ReadLogicalSource(path);
+        EXPECT_FALSE(text.empty()) << path.string();
+        return text;
     };
 
     const std::string streamline = readFile(fs::current_path() / "hook" / "apis" / "streamline_hook.cpp");
@@ -487,9 +478,9 @@ TEST(DXGISharedSourceTest, StreamlineFirstActivationUsesOfficialUiTagWithoutExtr
 TEST(DXGISharedSourceTest, StreamlineGetStateOnlyActivationAdoptsPreTaggedOfficialUi) {
     namespace fs = std::filesystem;
     auto readFile = [](const fs::path& path) {
-        std::ifstream stream(path, std::ios::binary);
-        EXPECT_TRUE(stream.good()) << path.string();
-        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        const std::string text = ce::test_source::ReadLogicalSource(path);
+        EXPECT_FALSE(text.empty()) << path.string();
+        return text;
     };
 
     const std::string streamline = readFile(fs::current_path() / "hook" / "apis" / "streamline_hook.cpp");
@@ -570,4 +561,3 @@ TEST(DXGISharedSourceTest, StreamlineGetStateOnlyActivationAdoptsPreTaggedOffici
     EXPECT_EQ(renderer.find("queue->ExecuteCommandLists"), std::string::npos);
     EXPECT_EQ(renderer.find("WaitForSingleObject"), std::string::npos);
 }
-

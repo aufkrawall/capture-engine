@@ -8,6 +8,7 @@
 
 #include "../captureengine/host_metrics_policy.h"
 #include "../common/shared_defs.h"
+#include "source_fragment_reader.h"
 
 namespace {
 
@@ -15,10 +16,7 @@ using scan_host::metrics_policy::AdapterResolutionSource;
 using scan_host::metrics_policy::GpuEngineSample;
 
 std::string ReadProjectSource(const std::filesystem::path& relativePath) {
-    std::ifstream file(std::filesystem::current_path() / relativePath, std::ios::binary);
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);
 }
 
 GpuEngineSample Sample(uint32_t pid, int64_t luid, double utilization, bool video = false) {

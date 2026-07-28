@@ -85,7 +85,7 @@ class VerificationParallelismTest(unittest.TestCase):
                 self.assertEqual(build.get_compile_commands_path(), str(Path(project) / "compile_commands.json"))
 
     def test_isolated_child_does_not_target_product_or_source_test_outputs(self) -> None:
-        source = Path(build.__file__).read_text(encoding="utf-8")
+        source = build.read_source_text()
         self.assertIn('TEST_OUTPUT_DIR = os.path.join(ISOLATED_BUILD_ROOT, "tests")', source)
         self.assertIn('child_env["CE_ISOLATED_BUILD_ROOT"] = SANITIZER_STAGE_ROOT', source)
         self.assertIn("tests_dir = TEST_OUTPUT_DIR", source)

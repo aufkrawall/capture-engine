@@ -195,9 +195,8 @@ TEST(DXGISharedTest, ExactPrewarmedPostSLHandoffSurvivesItsFirstMatchingPresent)
 TEST(DXGISharedSourceTest, PrewarmedPostSLHandoffProofIsArmedAndConsumedBeforeGenericSwapchainCleanup) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
-    std::ifstream input(source, std::ios::binary);
-    ASSERT_TRUE(input.is_open()) << source.string();
-    const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty()) << source.string();
 
     const size_t prewarm = text.find("PrewarmPostSLOverlayForFreshStreamlineHandoff(pSwapChain, pQueue, context)");
     const size_t arm = text.find("g_PrewarmedPostSLHandoffSwapchain.store(pSwapChain", prewarm);
@@ -219,9 +218,8 @@ TEST(DXGISharedSourceTest, PrewarmedPostSLHandoffProofIsArmedAndConsumedBeforeGe
 TEST(DXGISharedSourceTest, RepeatedPureDLSSHandoffUsesOnlyPriorHealthyPostSLProof) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
-    std::ifstream input(source, std::ios::binary);
-    ASSERT_TRUE(input.is_open()) << source.string();
-    const std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
+    ASSERT_FALSE(text.empty()) << source.string();
 
     const size_t successfulSubmit =
         text.find("if (SUCCEEDED(postDevReason) && rendered && pSwapChain && submittedQueue)");
@@ -315,9 +313,7 @@ TEST(DXGISharedSourceTest, RetainedStartupActivationSwapchainReleasedOnChurnOffA
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
 
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     EXPECT_NE(text.find("ReleaseStreamlineStartupActivationSwapchain(\"DX12: Streamline FG OFF (startup churn)\")"),
@@ -369,9 +365,7 @@ TEST(DXGISharedSourceTest, OuterOffPreservesExactConfirmedPostSLProxyBeforeTrans
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
 
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     const size_t outerOff = text.find("const bool preserveConfirmedPostSLProxyResourcesAcrossOuterOff");
@@ -602,9 +596,7 @@ TEST(DXGISharedSourceTest, PreSLFallbackRespectsConfirmedPostSLSuspensionKeepAli
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
 
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     // The pre-SL fallback uninstall must be guarded by the keep-alive latch,
@@ -634,9 +626,7 @@ TEST(DXGISharedSourceTest, StaleFSRQueueClearReceivesWarmResumeFlag) {
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
 
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     // The stale-FSR-queue clear call must pass resumeConfirmedPostSLFromKeepAlive so a warm
@@ -662,9 +652,7 @@ TEST(DXGISharedSourceTest, ProxyBackbufferOverlayUsesTargetCompatibleOwnerQueueF
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
     ASSERT_TRUE(fs::exists(source));
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
     ASSERT_FALSE(text.empty());
 
     const size_t prework = text.find("DX12_RunFFXProxyPrePresentWork(");
@@ -703,9 +691,7 @@ TEST(DXGISharedSourceTest, ProxyBackbufferOverlayUsesTargetCompatibleOwnerQueueF
 TEST(DXGISharedSourceTest, ProtectedFFXStartupNestedPresentNeverSubmitsOnStagedInternalQueue) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / "hook" / "apis" / "dx12_hook.cpp";
-    std::ifstream stream(source, std::ios::binary);
-    ASSERT_TRUE(stream.good());
-    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    const std::string text = ce::test_source::ReadLogicalSource(source);
 
     const size_t processFrameQueueRouting = text.find("FSR FG: FSR creates a NEW swapchain");
     ASSERT_NE(processFrameQueueRouting, std::string::npos);
@@ -722,4 +708,3 @@ TEST(DXGISharedSourceTest, ProtectedFFXStartupNestedPresentNeverSubmitsOnStagedI
     EXPECT_EQ(text.find("gameQueue = protectedOfficialFFXStartupQueueRef"), std::string::npos)
         << "the staged nested DXGI create queue is AMD's internal presenter and is evidence only";
 }
-

@@ -5,13 +5,12 @@
 #include <sstream>
 #include <string>
 
+#include "source_fragment_reader.h"
+
 namespace {
 
 std::string ReadProjectFile(const std::filesystem::path& relativePath) {
-    std::ifstream stream(std::filesystem::current_path() / relativePath, std::ios::binary);
-    std::ostringstream text;
-    text << stream.rdbuf();
-    return text.str();
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);
 }
 
 void ExpectContains(const std::string& text, const char* needle) {

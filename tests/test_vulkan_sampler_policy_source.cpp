@@ -6,15 +6,13 @@
 #include <string>
 
 #include "../hook/vulkan_layer/vulkan_sampler_policy.h"
+#include "source_fragment_reader.h"
 
 namespace {
 
 std::string ReadVulkanLayerSource() {
-    const auto path = std::filesystem::current_path() / "hook" / "vulkan_layer" / "vulkan_layer.cpp";
-    std::ifstream stream(path, std::ios::binary);
-    std::ostringstream contents;
-    contents << stream.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(
+        std::filesystem::current_path() / "hook" / "vulkan_layer" / "vulkan_layer.cpp");
 }
 
 }  // namespace
