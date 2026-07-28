@@ -622,6 +622,7 @@ dx12_focus_analysis=false
 ;process=SafeGame.exe
 ;video_capture=wgc
 ;dll_injection=never
+;Capture.black_when_no_fullscreen_focus=true
 ;DesktopOverlay.enabled=true
 ;DesktopOverlay.mode=2
 ;
@@ -630,6 +631,7 @@ dx12_focus_analysis=false
 ;process=AnotherSafeGame.exe
 ;video_capture=dxgi_dup
 ;dll_injection=never
+;Capture.black_when_no_fullscreen_focus=true
 ;
 ; UNSAFE: inject capture loads the DLL into the game process, which anti-cheat
 ; software detects as code injection. Do NOT use with multiplayer or anti-cheat.
