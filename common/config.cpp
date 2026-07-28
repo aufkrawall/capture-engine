@@ -874,8 +874,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     }
     config.debugLogging = IsDebugLoggingEnabled(config.logLevel);
     constexpr const char* kMissingLiteralValue = "\x1d";
-    std::string globalCaptureMethod =
-        ReadLiteralIniValue(path, "Capture", "capture_method", kMissingLiteralValue);
+    std::string globalCaptureMethod = ReadLiteralIniValue(path, "Capture", "capture_method", kMissingLiteralValue);
     if (globalCaptureMethod == kMissingLiteralValue)
         globalCaptureMethod = ReadLiteralIniValue(path, "General", "capture_method", "auto");
     globalCaptureMethod = NormalizeCaptureMethod(globalCaptureMethod);
@@ -899,6 +898,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             config.captureMonitor = monitorSelector.canonical;
         }
     }
+    config.blackWhenNoFullscreenFocus = GetBool("Capture", "black_when_no_fullscreen_focus", false);
     for (ApplicationProfile& profile : config.applicationProfiles) {
         if (!profile.captureMonitorExplicit)
             profile.captureMonitor = globalCaptureMonitor;

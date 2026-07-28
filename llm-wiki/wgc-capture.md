@@ -1,6 +1,6 @@
 # WGC Capture
 
-Last cross-checked: 2026-07-27 (measured WGC/DXGI overload repeat pacing, retained-cap-bounded pre-live startup history, grid-relative deep-debt sync protection, grid-matched historical-frame overload recovery on the immutable output grid, timeline-recovery-safe audio, loss-aware copy-pool diagnostics, actual-backend phase-lock attribution, stable monitor selection, HDR/SDR output plus metadata/chroma, fail-closed retargeting, transactional prewarm/start, delayed pointer ownership, Windows-SDR-white cursor mapping, and crash-safe cursor composition.)
+Last cross-checked: 2026-07-28 (best-effort fullscreen-focus privacy blackout, measured WGC/DXGI overload repeat pacing, retained-cap-bounded pre-live startup history, grid-relative deep-debt sync protection, grid-matched historical-frame overload recovery on the immutable output grid, timeline-recovery-safe audio, loss-aware copy-pool diagnostics, actual-backend phase-lock attribution, stable monitor selection, HDR/SDR output plus metadata/chroma, fail-closed retargeting, transactional prewarm/start, delayed pointer ownership, Windows-SDR-white cursor mapping, and crash-safe cursor composition.)
 Stale-risk: medium (the finite-interval aliasing root cause and max-rate policy are unit-tested and analyzer-visible, but fresh real-game WGC plus DXGI keyed-mutex repeat/reclaim validation remains necessary)
 
 Primary sources:
@@ -13,11 +13,13 @@ Primary sources:
 - `common/wgc_pool_lease.h`
 - `common/shared_defs.h`
 - `common/cursor_capture_state.h`
+- `common/screen_grab_privacy.{h,cpp}`
 - `captureengine/wgc_capture.cpp`
 - `captureengine/wgc_capture.h`
 - `captureengine/dxgi_dup_capture.cpp`
 - `captureengine/dxgi_dup_capture.h`
 - `captureengine/media_main.cpp`
+- `captureengine/screen_grab_privacy_runtime.{h,cpp}`
 - `captureengine/sensor_service.cpp`
 - `captureengine/host_metrics.cpp`
 - `captureengine/ipc.cpp`
@@ -44,6 +46,7 @@ Primary sources:
 - `tests/test_atomic_shared_owner.cpp`
 - `tests/test_callback_epoch.cpp`
 - `tests/test_capture_coordinator_source.cpp`
+- `tests/test_screen_grab_privacy.cpp`
 - `tests/test_monitor_selection.cpp`
 - `tests/test_capture_handoff_state.cpp`
 - `tests/test_shared_runtime_state.cpp`
@@ -56,6 +59,16 @@ Primary sources:
 Monitor-scope WGC and DXGI Duplication capture exactly one physical display. `[Capture] monitor` accepts `auto`, `primary`, `window`, `cursor`, or `id:<stable-id>`; the same key (or `Capture.monitor`) may override a named profile. `auto` resolves the known target application's window first, then an eligible foreground application window, then the Windows primary display. Thus global explicit DXGI capture no longer ignores an available source window and blindly records primary. `window` requires a valid matched target, while `cursor` is sampled once at recording start. `CaptureEngine.exe --list-monitors` enumerates active displays and prints a copyable DisplayConfig monitor-device-path ID, friendly name, GDI device, bounds, primary state, adapter LUID, and source/target IDs. If DisplayConfig identity is unavailable, the command labels its `gdi:` fallback as topology-unstable.
 
 Resolution is centralized before backend initialization and logs selector, reason, context, stable ID, device/friendly names, bounds, primary state, adapter, and source/target identity. An explicit selector that is missing or cannot initialize fails closed: routing does not select primary, another monitor, or a window on another display. A DXGI initialization/start failure may use WGC only for the already resolved same monitor. Runtime reset pins the resolved stable identity, so hotplug/re-enumeration can reacquire the same physical display but cannot drift to whatever display later becomes primary or contains the cursor. `auto` also becomes identity-pinned after recording starts. Multi-monitor stitching/composition remains a separate unimplemented feature rather than an implicit virtual-desktop capture mode.
+
+### Fullscreen-focus privacy blackout (2026-07-28)
+
+`[Capture] black_when_no_fullscreen_focus=false` is an opt-in gate on the actual active WGC or DXGI Duplication path; inject video is unchanged. A profile can override it with `Capture.black_when_no_fullscreen_focus=true`. For window capture, the captured target's normalized root window must be the stable foreground root and must match its monitor bounds through either window or client bounds within the existing 8-pixel fullscreen tolerance. For monitor capture, the stable foreground root must be fullscreen-like on the exact captured `HMONITOR`. A missing target, foreground transition, invalid/minimized/invisible window, unavailable bounds/monitor, cross-monitor fullscreen window, or other ambiguous observation fails closed to black.
+
+CaptureEngine samples the foreground root before and after classification using documented passive Win32 window-state APIs. It opens no process handles, reads no process memory, installs no hooks, sends no messages, injects no input/DLL, and performs no anti-cheat bypass behavior. That non-interaction boundary reduces exposure for a genuinely non-injected WGC/DXGI profile but is not universal anti-cheat approval: use `dll_injection=never` when injection must be excluded. Windows can misreport focus or bounds during transitions, so the feature is explicitly best-effort and not a guaranteed privacy/redaction boundary; it may occasionally mask or reveal incorrectly.
+
+Loss of matching focus masks the next output immediately. Reacquisition records an observation QPC and remains black until normal source selection supplies a frame captured at or after that threshold, preventing an older buffered desktop frame from being revealed. Source frames continue to be consumed while masked. Fresh frames, cached repeats, CFR catch-up, and VFR blackout ticks all pass through the same decision; masked output receives an empty cursor state. Source epoch/target, device, format, or size changes reset the gate and its black cache.
+
+The black source is a GPU-only D3D11 render-target texture created from the authoritative screen-grab texture descriptor and cleared once to opaque black. BGRA8, R10, and FP16/scRGB are supported without CPU readback/upload or synchronization waits, preserving the session's SDR/HDR encoding contract. The media repeat-cache state records whether its pixels are known black. A failed black submission may repeat only a known-black cache; otherwise the cache is invalidated and recording is stopped/cancelled loudly instead of falling back to previously captured real pixels. Audio samples, video PTS/CFR grid, mixing, compensation, track duration, and finalization remain unchanged. Transition-only `[PrivacyBlackout]` diagnostics avoid process identity and the session summary reports entries, black frames, ambiguous observations, and maximum post-focus wait.
 
 ### HDR desktop color contract (2026-07-19)
 
@@ -195,6 +208,7 @@ Do not treat D3D12 COPY queues or HAGS as a proven WGC fix. Current WGC receives
 
 ## Config Flags
 
+- `[Capture] black_when_no_fullscreen_focus=false`: best-effort fullscreen-focus privacy blackout for active WGC/DXGI capture. See the privacy section above for target matching, fail-closed behavior, reliability warning, and anti-cheat boundary.
 - `[Diagnostics] wgc_skip_split_device_flush=false`: when true, split-device WGC skips the producer-side `ID3D11DeviceContext::Flush()` after `CopyResource`. Keyed mutex acquire/release remains unchanged. Treat this as a GPU-bound performance experiment until runtime validation proves it does not corrupt frames or underfeed the encoder.
 - `[WGC] wgc_same_device_capture=true`: preferred low-overhead WGC path. When false, WGC creates a dedicated capture D3D11 device and uses the split-device keyed-mutex texture-pool path. A live option change requests WGC retarget/reset so the device choice is reinitialized. Treat dedicated mode as a diagnostic/fallback path, not the normal smoothness target.
 - `[WGC] wgc_smoothness_buffer_enabled=true`: enables the bounded WGC startup smoothness reservoir when CFR, active render-domain delay, source-rate, and VRAM-budget gates allow it.

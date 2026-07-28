@@ -31,6 +31,23 @@ std::string ReadVideoEncoderSource() {
     return contents.str();
 }
 
+std::string ReadPrivacyRuntimeSource() {
+    const std::filesystem::path source =
+        std::filesystem::current_path() / "captureengine" / "screen_grab_privacy_runtime.cpp";
+    std::ifstream file(source, std::ios::binary);
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return contents.str();
+}
+
+std::string ReadPrivacyPolicySource() {
+    const std::filesystem::path source = std::filesystem::current_path() / "common" / "screen_grab_privacy.cpp";
+    std::ifstream file(source, std::ios::binary);
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    return contents.str();
+}
+
 }  // namespace
 
 TEST(CaptureCoordinatorSourceTest, WgcRetargetUsesAtomicallyPublishedSharedOwnership) {
@@ -326,9 +343,12 @@ TEST(CaptureCoordinatorSourceTest, WgcFramesCarryProducerEpochInsteadOfSamplingC
 
 TEST(CaptureCoordinatorSourceTest, SourceEpochInvalidatesMediaEngineRepeatPixels) {
     const std::string source = ReadCoordinatorSource();
+    const std::string privacyRuntime = ReadPrivacyRuntimeSource();
     ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(privacyRuntime.empty());
 
-    EXPECT_NE(source.find("MediaEngine_ResetRepeatFrameCache()"), std::string::npos);
+    EXPECT_NE(source.find("privacyRuntime.ResetSource()"), std::string::npos);
+    EXPECT_NE(privacyRuntime.find("MediaEngine_ResetRepeatFrameCache()"), std::string::npos);
     EXPECT_NE(source.find("ShouldRepeatAfterScheduledFreshEncodeFailure"), std::string::npos);
     EXPECT_NE(source.find("CFR fresh encode failure recovered with cached duplicate"), std::string::npos);
 }
@@ -448,4 +468,71 @@ TEST(CaptureCoordinatorSourceTest, ProvenStandbyFrameAndInjectRepeatSurviveHando
     ASSERT_NE(disarmRetention, std::string::npos);
     ASSERT_NE(takeRetained, std::string::npos);
     EXPECT_LT(disarmRetention, takeRetained);
+}
+
+TEST(CaptureCoordinatorSourceTest, ScreenGrabPrivacyGatesEveryVideoSubmissionShape) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t repeatBegin = source.find("auto repeatLastFrameForScheduledQpc");
+    const size_t repeatEnd = source.find("auto recoverScheduledFreshEncodeFailure", repeatBegin);
+    ASSERT_NE(repeatBegin, std::string::npos);
+    ASSERT_NE(repeatEnd, std::string::npos);
+    const std::string repeat = source.substr(repeatBegin, repeatEnd - repeatBegin);
+    EXPECT_NE(repeat.find("evaluateScreenGrabPrivacy(nullptr)"), std::string::npos);
+    EXPECT_NE(repeat.find("submitPrivacyBlackFrame(g_LastFrame"), std::string::npos);
+    EXPECT_NE(repeat.find("privacyRuntime.RepeatCacheIsBlack()"), std::string::npos);
+
+    const size_t catchupBegin = source.find("const auto privacyDecision = evaluateScreenGrabPrivacy(&catchupFrame)");
+    const size_t catchupEnd = source.find("recoveredCatchupEncodeFailure", catchupBegin);
+    ASSERT_NE(catchupBegin, std::string::npos);
+    ASSERT_NE(catchupEnd, std::string::npos);
+    EXPECT_NE(source.substr(catchupBegin, catchupEnd - catchupBegin).find("submitPrivacyBlackFrame(catchupFrame"),
+              std::string::npos);
+
+    const size_t vfrBegin = source.find("if (!frameToProcess && useScreenGrab && config.video.useVFR");
+    const size_t vfrEnd = source.find("if ((!frameToProcess || wantsTrueRepeatLastFrame)", vfrBegin);
+    ASSERT_NE(vfrBegin, std::string::npos);
+    ASSERT_NE(vfrEnd, std::string::npos);
+    const std::string vfr = source.substr(vfrBegin, vfrEnd - vfrBegin);
+    EXPECT_NE(vfr.find("evaluateScreenGrabPrivacy(nullptr)"), std::string::npos);
+    EXPECT_NE(vfr.find("submitPrivacyBlackFrame(g_LastFrame"), std::string::npos);
+
+    const size_t freshBegin = source.find("const auto privacyDecision = evaluateScreenGrabPrivacy(frameToProcess)");
+    const size_t freshEnd = source.find("encodeDeferred = false", freshBegin);
+    ASSERT_NE(freshBegin, std::string::npos);
+    ASSERT_NE(freshEnd, std::string::npos);
+    EXPECT_NE(source.substr(freshBegin, freshEnd - freshBegin).find("submitPrivacyBlackFrame(*frameToProcess"),
+              std::string::npos);
+
+    EXPECT_NE(source.find("privacyRuntime.ResetSource()"), std::string::npos);
+    EXPECT_NE(source.find("privacyRuntime.PrepareTexture(frame.texture)"), std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, ScreenGrabPrivacyBlackFailureCannotRevealCachedPixelsOrCursor) {
+    const std::string runtime = ReadPrivacyRuntimeSource();
+    ASSERT_FALSE(runtime.empty());
+
+    EXPECT_NE(runtime.find("repeatCacheIsBlack_ && gate_.LastOutputWasBlack()"), std::string::npos);
+    EXPECT_NE(runtime.find("ResetMediaRepeatCache();"), std::string::npos);
+    EXPECT_NE(runtime.find("const ce::cursor::CaptureState hiddenCursor"), std::string::npos);
+    EXPECT_NE(runtime.find("&hiddenCursor"), std::string::npos);
+    EXPECT_NE(runtime.find("MediaEngine_ProcessFrameD3D11(blackTexture_.Get()"), std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, ScreenGrabPrivacyUsesOnlyPassiveWindowStateQueries) {
+    const std::string policy = ReadPrivacyPolicySource();
+    const std::string runtime = ReadPrivacyRuntimeSource();
+    ASSERT_FALSE(policy.empty());
+    ASSERT_FALSE(runtime.empty());
+    const std::string combined = policy + runtime;
+
+    EXPECT_NE(policy.find("GetForegroundWindow()"), std::string::npos);
+    EXPECT_NE(policy.find("GetWindowRect("), std::string::npos);
+    EXPECT_NE(policy.find("GetMonitorInfo("), std::string::npos);
+    for (const char* forbidden :
+         {"OpenProcess(", "ReadProcessMemory(", "WriteProcessMemory(", "SetWindowsHookEx(", "SetWinEventHook(",
+          "SendMessage(", "PostMessage(", "CreateRemoteThread(", "SendInput("}) {
+        EXPECT_EQ(combined.find(forbidden), std::string::npos) << forbidden;
+    }
 }

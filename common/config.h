@@ -401,6 +401,7 @@ struct AppConfig {
     std::string captureMethod;  // "inject", "wgc", "dxgi_dup", "auto", or profile-local "none"
     // Monitor-scope capture selector: auto, primary, window, cursor, or id:<DisplayConfig monitor path>.
     std::string captureMonitor = "auto";
+    bool blackWhenNoFullscreenFocus = false;
     // auto_fullscreen_capture: backend for UNHOOKED fullscreen-like game
     // targets in auto mode. true ("dxgi_dup", default) captures the game's
     // monitor via DXGI duplication so the live hardware cursor plane is

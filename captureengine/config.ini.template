@@ -29,6 +29,16 @@ capture_method=auto
 ; never silently redirects recording to a different monitor.
 monitor=auto
 
+; Best-effort privacy mask for WGC and DXGI Duplication. When true, video is
+; opaque black (including cursor and overlays) unless the selected window is
+; focused and fullscreen-like, or a fullscreen-like foreground window occupies
+; the selected monitor. Windows focus/bounds detection is not 100% reliable, so
+; this is not a guaranteed privacy or redaction boundary. The check uses passive
+; window-state APIs only; it does not inspect or inject into the captured app.
+; It does not make injection anti-cheat-safe or claim universal approval; use a
+; WGC/DXGI profile with dll_injection=never when injection must be excluded.
+black_when_no_fullscreen_focus=false
+
 ; Fullscreen fallback used by auto: dxgi_dup or wgc_window.
 auto_fullscreen_capture=dxgi_dup
 

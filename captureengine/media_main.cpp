@@ -33,12 +33,18 @@
 #include "../common/process_ipc.h"
 #include "../common/rate_window_utils.h"
 #include "../common/recording_lifecycle.h"
+#include "../common/screen_grab_privacy.h"
 #include "../common/secure_dll_loading.h"
 #include "../common/shared_defs.h"
 #include "../common/thread_power_throttling_compat.h"
+#include "capture_cadence_diagnostics.h"
 #include "mediaengine_loader.h"
+#include "screen_grab_privacy_runtime.h"
 #include "wgc_capture.h"
 #include "windows_gpu_scheduling.h"
+
+using ce::screen_grab_privacy::GetWindowClientRectInScreen;
+using ce::screen_grab_privacy::IsWindowFullscreenLike;
 
 #ifdef _MSC_VER
 #pragma comment(lib, "avrt.lib")
@@ -51,6 +57,7 @@ static std::atomic<bool> g_EncoderRunning{false};
 static std::atomic<bool> g_IsEncoderBottlenecked{false};
 static std::atomic<bool> g_RecordingUsesVfr{false};
 static std::atomic<bool> g_DrainOutstandingCfrTicks{false};
+static std::atomic<bool> g_PrivacyFailClosedStopRequested{false};
 static std::atomic<int64_t> g_CfrDrainStopQpc{0};
 
 BOOL WINAPI MediaConsoleHandler(DWORD ctrlType) {
@@ -879,69 +886,6 @@ void PublishRecordingStartFailure(RecordingFailureCode failureCode, const char* 
              static_cast<uint32_t>(failureCode));
 }
 
-bool GetWindowClientRectInScreen(HWND hwnd, RECT& rect) {
-    RECT clientRect = {};
-    if (!GetClientRect(hwnd, &clientRect)) {
-        return false;
-    }
-
-    POINT topLeft = {clientRect.left, clientRect.top};
-    POINT bottomRight = {clientRect.right, clientRect.bottom};
-    if (!ClientToScreen(hwnd, &topLeft) || !ClientToScreen(hwnd, &bottomRight)) {
-        return false;
-    }
-
-    rect.left = topLeft.x;
-    rect.top = topLeft.y;
-    rect.right = bottomRight.x;
-    rect.bottom = bottomRight.y;
-    return true;
-}
-
-bool RectNearlyMatches(const RECT& lhs, const RECT& rhs, LONG tolerance) {
-    auto absDiff = [](LONG a, LONG b) -> LONG { return (a >= b) ? (a - b) : (b - a); };
-
-    return absDiff(lhs.left, rhs.left) <= tolerance && absDiff(lhs.top, rhs.top) <= tolerance &&
-           absDiff(lhs.right, rhs.right) <= tolerance && absDiff(lhs.bottom, rhs.bottom) <= tolerance;
-}
-
-bool IsWindowFullscreenLike(HWND hwnd) {
-    if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
-        return false;
-    }
-
-    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    if (!monitor) {
-        return false;
-    }
-
-    MONITORINFO monitorInfo = {};
-    monitorInfo.cbSize = sizeof(monitorInfo);
-    if (!GetMonitorInfo(monitor, &monitorInfo)) {
-        return false;
-    }
-
-    RECT windowRect = {};
-    RECT clientRect = {};
-    const bool haveWindowRect = GetWindowRect(hwnd, &windowRect) != FALSE;
-    const bool haveClientRect = GetWindowClientRectInScreen(hwnd, clientRect);
-    constexpr LONG kFullscreenTolerancePx = 8;
-
-    if (!haveWindowRect && !haveClientRect) {
-        return false;
-    }
-
-    const bool windowMatchesMonitor =
-        haveWindowRect && RectNearlyMatches(windowRect, monitorInfo.rcMonitor, kFullscreenTolerancePx);
-    const bool clientMatchesMonitor =
-        haveClientRect && RectNearlyMatches(clientRect, monitorInfo.rcMonitor, kFullscreenTolerancePx);
-    if (!windowMatchesMonitor && !clientMatchesMonitor) {
-        return false;
-    }
-
-    return true;
-}
-
 bool WindowBelongsToProcess(HWND hwnd, DWORD pid) {
     if (!hwnd || pid == 0) {
         return false;
@@ -955,93 +899,6 @@ bool WindowBelongsToProcess(HWND hwnd, DWORD pid) {
 bool ShouldPreferInjectCaptureForFullscreenWindow(HWND hwnd, DWORD pid) {
     return WindowBelongsToProcess(hwnd, pid) && IsWindowFullscreenLike(hwnd);
 }
-
-struct InjectFrameLineage {
-    uint32_t frameIndex = 0;
-    int32_t textureIndex = -1;
-    uint64_t fenceValue = 0;
-    uint32_t ringIndex = 0;
-    int64_t timestamp = 0;
-    int64_t enqueueQpc = 0;
-    uint32_t deferCount = 0;
-
-    bool IsValid() const {
-        return frameIndex != 0 || fenceValue != 0 || timestamp != 0;
-    }
-};
-
-struct CadenceHealthCounters {
-    uint64_t frameAgeAccumUs = 0;
-    uint32_t frameAgeSamples = 0;
-    uint32_t frameAgeMaxUs = 0;
-    uint64_t selectionErrorAccumUs = 0;
-    int64_t selectionErrorSignedAccumUs = 0;
-    uint32_t selectionErrorSamples = 0;
-    uint32_t selectionErrorMaxUs = 0;
-    uint32_t selectionEarlyMaxUs = 0;
-    uint32_t selectionLateMaxUs = 0;
-    uint32_t consecutiveDeferredFrames = 0;
-    uint32_t maxConsecutiveDeferredFrames = 0;
-    uint32_t consecutiveDuplicateFrames = 0;
-    uint32_t maxConsecutiveDuplicateFrames = 0;
-    uint32_t liveTickEmitCount = 0;
-    uint32_t liveTickUniqueCount = 0;
-    uint32_t liveTickDuplicateCount = 0;
-    uint32_t liveTickMissCount = 0;
-    uint64_t outputScheduleErrorAccumUs = 0;
-    int64_t outputScheduleErrorSignedAccumUs = 0;
-    uint32_t outputScheduleErrorSamples = 0;
-    uint32_t outputScheduleErrorMaxUs = 0;
-    uint32_t outputScheduleEarlyMaxUs = 0;
-    uint32_t outputScheduleLateMaxUs = 0;
-
-    // Hold-time histogram: how many output ticks each unique source frame was
-    // shown for.  holdHist[0]=frames shown 1 tick, holdHist[1]=2 ticks, …
-    // holdHist[kHoldHistBuckets-1]=6+ ticks.  Even distribution → smooth video.
-    static constexpr uint32_t kHoldHistBuckets = 6;
-    uint32_t holdHist[kHoldHistBuckets] = {};
-    uint32_t holdTicksRunning = 0;  // ticks the current source frame has been shown
-
-    void CommitHoldRun() {
-        if (holdTicksRunning > 0) {
-            const uint32_t bucket = std::min(holdTicksRunning, kHoldHistBuckets) - 1;
-            holdHist[bucket]++;
-            holdTicksRunning = 0;
-        }
-    }
-
-    void RecordSelectionError(int64_t signedErrorUs) {
-        RecordSignedError(signedErrorUs, selectionErrorAccumUs, selectionErrorSignedAccumUs, selectionErrorSamples,
-                          selectionErrorMaxUs, selectionEarlyMaxUs, selectionLateMaxUs);
-    }
-    void RecordOutputScheduleError(int64_t signedErrorUs) {
-        RecordSignedError(signedErrorUs, outputScheduleErrorAccumUs, outputScheduleErrorSignedAccumUs,
-                          outputScheduleErrorSamples, outputScheduleErrorMaxUs, outputScheduleEarlyMaxUs,
-                          outputScheduleLateMaxUs);
-    }
-
-    // Input frame rate predictor diagnostics (updated per-second)
-    uint32_t srcFpsX100 = 0;         // smoothed input FPS * 100
-    uint32_t srcJitterUs = 0;        // smoothed jitter in microseconds
-    uint32_t encCycleAvgUs = 0;      // encoder cycle time EMA in microseconds
-    uint32_t encCycleMaxUs = 0;      // max encoder cycle time in microseconds
-    uint32_t dupTimestampCount = 0;  // frames with duplicate timestamps per second
-
-    void Reset() {
-        *this = {};
-    }
-private:
-    static void RecordSignedError(int64_t signedErrorUs, uint64_t& absoluteAccumUs, int64_t& signedAccumUs,
-                                  uint32_t& samples, uint32_t& maxUs, uint32_t& earlyMaxUs, uint32_t& lateMaxUs) {
-        const uint64_t absoluteUs = static_cast<uint64_t>(signedErrorUs >= 0 ? signedErrorUs : -signedErrorUs);
-        absoluteAccumUs += absoluteUs;
-        signedAccumUs += signedErrorUs;
-        ++samples;
-        maxUs = std::max(maxUs, SaturatingToUint32(absoluteUs));
-        uint32_t& directionalMaxUs = signedErrorUs < 0 ? earlyMaxUs : lateMaxUs;
-        directionalMaxUs = std::max(directionalMaxUs, SaturatingToUint32(absoluteUs));
-    }
-};
 
 InjectFrameLineage MakeInjectFrameLineage(const QueuedFrame& frame) {
     InjectFrameLineage lineage;
@@ -1436,6 +1293,11 @@ static bool StartWgcRecordingCapture(const AppConfig& config) {
     HWND activeWgcWindow = NULL;
     HMONITOR activeWgcMonitor = NULL;
     capture->GetTargetIdentity(&activeWgcWindow, &activeWgcMonitor);
+    LogInfo(
+        "[PrivacyBlackout] session enabled=%d target=%s policy=matching-foreground-fullscreen failMode=black "
+        "processInspection=0 hooks=0",
+        config.blackWhenNoFullscreenFocus ? 1 : 0,
+        activeWgcWindow ? "window" : (activeWgcMonitor ? "monitor" : "unresolved"));
     int32_t activeCaptureLeft = 0;
     int32_t activeCaptureTop = 0;
     const bool haveCaptureOrigin = capture->GetCaptureOrigin(activeCaptureLeft, activeCaptureTop);
@@ -3145,6 +3007,8 @@ void EncoderThreadFunc(const AppConfig& config) {
 
     LARGE_INTEGER qpcFreq;
     QueryPerformanceFrequency(&qpcFreq);
+    ce::screen_grab_privacy::ScreenGrabPrivacyRuntime privacyRuntime;
+    privacyRuntime.Reset(config.blackWhenNoFullscreenFocus);
     int64_t targetIntervalTicks = qpcFreq.QuadPart / config.video.fps;
     const uint32_t captureSyncMultiplier =
         static_cast<uint32_t>(std::clamp(config.fpsLimiter.captureSyncMultiplier, 1, 8));
@@ -4497,9 +4361,7 @@ void EncoderThreadFunc(const AppConfig& config) {
             wgcOverloadRepeatPacer.ResetActivePacing();
             lastSuccessfulWgcCursorEmbedded = false;
             hasSuccessfulWgcCursorMetadata = false;
-            if (MediaEngine_ResetRepeatFrameCache) {
-                MediaEngine_ResetRepeatFrameCache();
-            }
+            privacyRuntime.ResetSource();
             ResetDuplicationCursorSuppression("WGC source epoch change");
             LogInfo(
                 "[EncoderThread] WGC source epoch changed: epoch=%llu bufferedDiscarded=%zu queuedDiscarded=%zu; "
@@ -7655,16 +7517,74 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
             return cursorState;
         };
+        auto evaluateScreenGrabPrivacy = [&](const QueuedFrame* freshFrame) {
+            if (!privacyRuntime.IsEnabled()) {
+                return ce::screen_grab_privacy::GateDecision{};
+            }
+            HWND targetWindow = nullptr, confirmedWindow = nullptr;
+            HMONITOR targetMonitor = nullptr, confirmedMonitor = nullptr;
+            const auto captureBefore = g_WgcCap.Read();
+            if (captureBefore) {
+                captureBefore->GetTargetIdentity(&targetWindow, &targetMonitor);
+            }
+            const auto focus = ce::screen_grab_privacy::CaptureStableFullscreenFocus();
+            const auto captureAfter = g_WgcCap.Read();
+            if (captureAfter) {
+                captureAfter->GetTargetIdentity(&confirmedWindow, &confirmedMonitor);
+            }
+            const bool stableCaptureTarget = captureBefore && captureAfter &&
+                                             captureBefore.get() == captureAfter.get() &&
+                                             targetWindow == confirmedWindow && targetMonitor == confirmedMonitor;
+            const int64_t freshFrameQpc =
+                freshFrame ? (freshFrame->rawTimestamp > 0 ? freshFrame->rawTimestamp : freshFrame->timestamp) : 0;
+            return privacyRuntime.Evaluate(useScreenGrab, targetWindow, targetMonitor, stableCaptureTarget, focus,
+                                           freshFrame != nullptr, freshFrameQpc);
+        };
+        auto requestPrivacyFailClosedStop = [&](const char* reason) {
+            LogError(
+                "[PrivacyBlackout] FAIL-CLOSED: %s; cached video is invalidated and recording will stop rather than "
+                "expose captured pixels",
+                reason ? reason : "opaque-black submission failed");
+            privacyRuntime.ResetSource();
+            g_PrivacyFailClosedStopRequested.store(true, std::memory_order_release);
+            g_EncoderRunning.store(false, std::memory_order_release);
+        };
+        auto submitPrivacyBlackFrame = [&](const QueuedFrame& referenceFrame, int64_t mediaTimestampQpc,
+                                           int64_t scheduledQpc, int64_t timelineElapsedUs) {
+            if (!privacyRuntime.SubmitBlack(referenceFrame.texture, referenceFrame.isHDR, mediaTimestampQpc,
+                                            scheduledQpc, timelineElapsedUs, useScreenGrab && !config.video.useVFR)) {
+                requestPrivacyFailClosedStop("opaque-black frame submission failed");
+                return false;
+            }
+            return true;
+        };
         auto repeatLastFrameForScheduledQpc = [&](int64_t scheduledQpc) {
+            if (useScreenGrab && privacyRuntime.IsEnabled()) {
+                const auto privacyDecision = evaluateScreenGrabPrivacy(nullptr);
+                if (privacyDecision.useBlackFrame) {
+                    if (!g_HasLastFrame || g_LastFrame.isInjectMode) {
+                        requestPrivacyFailClosedStop("no screen-grab texture is available for an opaque-black tick");
+                        return false;
+                    }
+                    return submitPrivacyBlackFrame(g_LastFrame, scheduledQpc,
+                                                   scheduledQpc, computeLiveTimelineElapsedUs(scheduledQpc));
+                }
+            }
             ce::cursor::CaptureState cursorState;
-            if (config.video.captureCursor && g_HasLastFrame) {
+            if (config.video.captureCursor && g_HasLastFrame && !privacyRuntime.RepeatCacheIsBlack()) {
                 cursorState = selectCursorStateForScheduledQpc(scheduledQpc, g_LastFrame, "repeat");
             }
+            bool succeeded = false;
             if (useScreenGrab && !config.video.useVFR && MediaEngine_RepeatLastFrameWithTimeline) {
-                return MediaEngine_RepeatLastFrameWithTimeline(scheduledQpc, computeLiveTimelineElapsedUs(scheduledQpc),
-                                                               &cursorState);
+                succeeded = MediaEngine_RepeatLastFrameWithTimeline(
+                    scheduledQpc, computeLiveTimelineElapsedUs(scheduledQpc), &cursorState);
+            } else {
+                succeeded = MediaEngine_RepeatLastFrame && MediaEngine_RepeatLastFrame(scheduledQpc, &cursorState);
             }
-            return MediaEngine_RepeatLastFrame && MediaEngine_RepeatLastFrame(scheduledQpc, &cursorState);
+            if (succeeded && useScreenGrab && privacyRuntime.IsEnabled()) {
+                privacyRuntime.CommitRepeatOutput();
+            }
+            return succeeded;
         };
         auto recoverScheduledFreshEncodeFailure = [&](bool scheduledCfrTick, bool freshEncodeSucceeded,
                                                       bool freshEncodeDeferred, int64_t scheduledQpc,
@@ -7866,8 +7786,9 @@ void EncoderThreadFunc(const AppConfig& config) {
                         LARGE_INTEGER prewarmStartQpc = {};
                         LARGE_INTEGER prewarmEndQpc = {};
                         QueryPerformanceCounter(&prewarmStartQpc);
+                        const bool privacyTextureReady = privacyRuntime.PrepareTexture(frame.texture);
                         wgcEncoderPrewarmSucceeded =
-                            MediaEngine_PrepareFrameD3D11 &&
+                            privacyTextureReady && MediaEngine_PrepareFrameD3D11 &&
                             MediaEngine_PrepareFrameD3D11(frame.texture, frame.width, frame.height, frame.isHDR);
                         QueryPerformanceCounter(&prewarmEndQpc);
                         wgcEncoderPrewarmElapsedUs = qpcToUs(prewarmEndQpc.QuadPart - prewarmStartQpc.QuadPart);
@@ -7878,6 +7799,12 @@ void EncoderThreadFunc(const AppConfig& config) {
                             static_cast<long long>(wgcEncoderPrewarmElapsedUs), static_cast<long long>(frame.timestamp),
                             frame.width, frame.height, frame.isHDR ? 1 : 0, g_FrameQueue.Size(),
                             bufferedWgcFrames.size());
+                        if (!privacyTextureReady) {
+                            LogError(
+                                "[PrivacyBlackout] Failed to create the GPU opaque-black texture for %ux%u; "
+                                "recording start is rejected rather than exposing captured pixels",
+                                frame.width, frame.height);
+                        }
                         if (!wgcEncoderPrewarmSucceeded) {
                             PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed,
                                                          "WGC deferred encoder/mux initialization");
@@ -9231,13 +9158,25 @@ void EncoderThreadFunc(const AppConfig& config) {
                             cadenceCounters.RecordOutputScheduleError(signedErrorUs);
                         }
 
-                        SyncDuplicationCursorSuppression(catchupFrame.wgcCursorEmbedded);
-                        const ce::cursor::CaptureState catchupCursorState =
-                            selectCursorStateForScheduledQpc(repeatScheduledQpc, catchupFrame, "fresh-catchup");
-                        const bool freshCatchupEncodeSucceeded = MediaEngine_ProcessFrameD3D11(
-                            catchupFrame.texture, catchupFrame.timestamp, catchupFrame.width, catchupFrame.height,
-                            catchupFrame.isHDR, catchupFrame.captureLeft, catchupFrame.captureTop,
-                            computeLiveTimelineElapsedUs(repeatScheduledQpc), &catchupCursorState);
+                        const int64_t catchupTimelineElapsedUs = computeLiveTimelineElapsedUs(repeatScheduledQpc);
+                        const auto privacyDecision = evaluateScreenGrabPrivacy(&catchupFrame);
+                        bool freshCatchupEncodeSucceeded = false;
+                        if (privacyDecision.useBlackFrame) {
+                            freshCatchupEncodeSucceeded =
+                                submitPrivacyBlackFrame(catchupFrame, catchupFrame.timestamp, repeatScheduledQpc,
+                                                        catchupTimelineElapsedUs);
+                        } else {
+                            SyncDuplicationCursorSuppression(catchupFrame.wgcCursorEmbedded);
+                            const ce::cursor::CaptureState catchupCursorState =
+                                selectCursorStateForScheduledQpc(repeatScheduledQpc, catchupFrame, "fresh-catchup");
+                            freshCatchupEncodeSucceeded = MediaEngine_ProcessFrameD3D11(
+                                catchupFrame.texture, catchupFrame.timestamp, catchupFrame.width, catchupFrame.height,
+                                catchupFrame.isHDR, catchupFrame.captureLeft, catchupFrame.captureTop,
+                                catchupTimelineElapsedUs, &catchupCursorState);
+                            if (freshCatchupEncodeSucceeded && privacyRuntime.IsEnabled()) {
+                                privacyRuntime.CommitRealOutput();
+                            }
+                        }
                         const bool recoveredCatchupEncodeFailure =
                             !freshCatchupEncodeSucceeded &&
                             recoverScheduledFreshEncodeFailure(true, false, false, repeatScheduledQpc, &catchupFrame,
@@ -9432,6 +9371,22 @@ void EncoderThreadFunc(const AppConfig& config) {
             }
         };
 
+        if (!frameToProcess && useScreenGrab && config.video.useVFR && recordingOutputLive &&
+            privacyRuntime.IsEnabled()) {
+            const auto privacyDecision = evaluateScreenGrabPrivacy(nullptr);
+            if (privacyDecision.useBlackFrame && g_HasLastFrame && !g_LastFrame.isInjectMode) {
+                LARGE_INTEGER privacyVfrQpc = {};
+                QueryPerformanceCounter(&privacyVfrQpc);
+                const bool blackSucceeded =
+                    submitPrivacyBlackFrame(g_LastFrame, privacyVfrQpc.QuadPart, privacyVfrQpc.QuadPart, -1);
+                if (blackSucceeded && g_pSharedMem) {
+                    g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+                    g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+                }
+                continue;
+            }
+        }
+
         if ((!frameToProcess || wantsTrueRepeatLastFrame) && scheduledLiveCfrTick && hasRepeatLastFramePath) {
             LARGE_INTEGER repeatStartEnc, repeatEndEnc;
             QueryPerformanceCounter(&repeatStartEnc);
@@ -9574,11 +9529,21 @@ void EncoderThreadFunc(const AppConfig& config) {
                     const int64_t wgcMediaTimestampQpc =
                         firstTransactionalWgcFrame ? pendingWgcStartContract.videoOriginQpc
                                                    : frameToProcess->timestamp;
-                    SyncDuplicationCursorSuppression(frameToProcess->wgcCursorEmbedded);
-                    encodeSucceeded = MediaEngine_ProcessFrameD3D11(
-                        frameToProcess->texture, wgcMediaTimestampQpc, frameToProcess->width,
-                        frameToProcess->height, frameToProcess->isHDR, frameToProcess->captureLeft,
-                        frameToProcess->captureTop, liveTimelineElapsedUs, cursorState);
+                    const auto privacyDecision = evaluateScreenGrabPrivacy(frameToProcess);
+                    if (privacyDecision.useBlackFrame) {
+                        encodeSucceeded =
+                            submitPrivacyBlackFrame(*frameToProcess, wgcMediaTimestampQpc, scheduledOutputQpc,
+                                                    liveTimelineElapsedUs);
+                    } else {
+                        SyncDuplicationCursorSuppression(frameToProcess->wgcCursorEmbedded);
+                        encodeSucceeded = MediaEngine_ProcessFrameD3D11(
+                            frameToProcess->texture, wgcMediaTimestampQpc, frameToProcess->width,
+                            frameToProcess->height, frameToProcess->isHDR, frameToProcess->captureLeft,
+                            frameToProcess->captureTop, liveTimelineElapsedUs, cursorState);
+                        if (encodeSucceeded && privacyRuntime.IsEnabled()) {
+                            privacyRuntime.CommitRealOutput();
+                        }
+                    }
                     encodeDeferred = false;
                 }
             };
@@ -11371,6 +11336,7 @@ void EncoderThreadFunc(const AppConfig& config) {
                 static_cast<unsigned long long>(wgcSourceRepeatLowerBoundTotal),
                 static_cast<unsigned long long>(wgcDeliveryRepeatLowerBoundTotal),
                 static_cast<unsigned long long>(wgcPolicyNoSourceRepeats));
+            privacyRuntime.LogSummary(qpcFreq.QuadPart);
         } else {
             LogInfo(
                 "[Inject CFR SUMMARY] Live=%llu Dup=%llu DupPct=%.1f%% DupReason(src=%llu def=%llu timer=%llu "
@@ -11447,6 +11413,7 @@ bool StartRecording(const AppConfig& config) {
     if (g_Recording)
         return true;
 
+    g_PrivacyFailClosedStopRequested.store(false, std::memory_order_release);
     LogInfo("[Media] Starting recording...");
 
     timeBeginPeriod(1);
@@ -12876,6 +12843,11 @@ int MediaProcessMain(const AppConfig& initialConfig) {
                 StopRecording();
             g_Running = false;
             break;
+        }
+
+        if (g_PrivacyFailClosedStopRequested.exchange(false, std::memory_order_acq_rel) && g_Recording) {
+            LogError("[PrivacyBlackout] Owner thread is stopping the recording after a fail-closed video error");
+            StopRecording();
         }
 
         if (g_pSharedMem) {

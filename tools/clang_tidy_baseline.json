@@ -52,7 +52,7 @@
   },
   "total": 1612,
   "scope": {
-    "entries": 266,
+    "entries": 269,
     "translation_units": [
       "captureengine/dump_helper.cpp",
       "captureengine/dxgi_dup_capture.cpp",
@@ -67,6 +67,7 @@
       "captureengine/mediaengine_loader.cpp",
       "captureengine/process_loopback_worker_host.cpp",
       "captureengine/pseudo_overlay.cpp",
+      "captureengine/screen_grab_privacy_runtime.cpp",
       "captureengine/screenshot.cpp",
       "captureengine/screenshot_encoding.cpp",
       "captureengine/screenshot_hdr_encoding.cpp",
@@ -89,6 +90,7 @@
       "common/pseudo_overlay_focus_grace.cpp",
       "common/reserved_capture_output.cpp",
       "common/restricted_child_process.cpp",
+      "common/screen_grab_privacy.cpp",
       "common/secure_dll_loading.cpp",
       "common/utils/scanner.cpp",
       "common/vulkan_layer_registration.cpp",
@@ -298,6 +300,7 @@
       "tests/test_reserved_capture_output.cpp",
       "tests/test_ring_buffer.cpp",
       "tests/test_sampler_override_utils.cpp",
+      "tests/test_screen_grab_privacy.cpp",
       "tests/test_screenshot_encoding.cpp",
       "tests/test_screenshot_hook_worker.cpp",
       "tests/test_screenshot_source.cpp",

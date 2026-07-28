@@ -9,6 +9,7 @@
 #include "../common/process_identity.h"
 #include "../common/pseudo_overlay_profile_policy.h"
 #include "../common/pseudo_overlay_visibility.h"
+#include "../common/screen_grab_privacy.h"
 #include "../common/secure_dll_loading.h"
 
 #include <dwmapi.h>
@@ -33,6 +34,8 @@ void EnsureDwmApi() {
 #include <cctype>
 #include <cstring>
 #include <string>
+
+using ce::screen_grab_privacy::IsWindowFullscreenLike;
 
 // ---- Palette (matching OBSIndicator exactly) ----
 static constexpr COLORREF kColWarnText = RGB(255, 20, 20);
@@ -109,32 +112,6 @@ std::string FormatEncoderOverloadMessage(uint32_t sustainFpsX100, uint32_t targe
     return buffer;
 }
 
-bool GetWindowClientRectInScreen(HWND hwnd, RECT& rect) {
-    RECT clientRect = {};
-    if (!GetClientRect(hwnd, &clientRect)) {
-        return false;
-    }
-
-    POINT topLeft = {clientRect.left, clientRect.top};
-    POINT bottomRight = {clientRect.right, clientRect.bottom};
-    if (!ClientToScreen(hwnd, &topLeft) || !ClientToScreen(hwnd, &bottomRight)) {
-        return false;
-    }
-
-    rect.left = topLeft.x;
-    rect.top = topLeft.y;
-    rect.right = bottomRight.x;
-    rect.bottom = bottomRight.y;
-    return true;
-}
-
-bool RectNearlyMatches(const RECT& lhs, const RECT& rhs, LONG tolerance) {
-    auto absDiff = [](LONG a, LONG b) -> LONG { return (a >= b) ? (a - b) : (b - a); };
-
-    return absDiff(lhs.left, rhs.left) <= tolerance && absDiff(lhs.top, rhs.top) <= tolerance &&
-           absDiff(lhs.right, rhs.right) <= tolerance && absDiff(lhs.bottom, rhs.bottom) <= tolerance;
-}
-
 static HBITMAP CreateArgbDibSection(int width, int height, void** ppBits) {
     BITMAPINFO bmi = {};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -160,41 +137,6 @@ static void ApplyPremultipliedAlpha(void* pBits, int width, int height) {
             a = b;
         px[i] = (a << 24) | (v & 0x00FFFFFF);
     }
-}
-
-// Keep the pseudo-overlay fullscreen-like heuristic aligned with media_main's
-// window detection so controller-side overlay behavior tracks capture policy.
-bool IsWindowFullscreenLike(HWND hwnd) {
-    if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
-        return false;
-    }
-
-    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    if (!monitor) {
-        return false;
-    }
-
-    MONITORINFO monitorInfo = {};
-    monitorInfo.cbSize = sizeof(monitorInfo);
-    if (!GetMonitorInfo(monitor, &monitorInfo)) {
-        return false;
-    }
-
-    RECT windowRect = {};
-    RECT clientRect = {};
-    const bool haveWindowRect = GetWindowRect(hwnd, &windowRect) != FALSE;
-    const bool haveClientRect = GetWindowClientRectInScreen(hwnd, clientRect);
-    constexpr LONG kFullscreenTolerancePx = 8;
-
-    if (!haveWindowRect && !haveClientRect) {
-        return false;
-    }
-
-    const bool windowMatchesMonitor =
-        haveWindowRect && RectNearlyMatches(windowRect, monitorInfo.rcMonitor, kFullscreenTolerancePx);
-    const bool clientMatchesMonitor =
-        haveClientRect && RectNearlyMatches(clientRect, monitorInfo.rcMonitor, kFullscreenTolerancePx);
-    return windowMatchesMonitor || clientMatchesMonitor;
 }
 
 struct WindowSearch {

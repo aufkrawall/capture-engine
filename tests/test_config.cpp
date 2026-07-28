@@ -16,6 +16,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.logLevel, LogLevel::Trace);
     EXPECT_EQ(config.captureMethod, "auto");
     EXPECT_EQ(config.captureMonitor, "auto");
+    EXPECT_FALSE(config.blackWhenNoFullscreenFocus);
     EXPECT_FALSE(config.wgcSkipSplitDeviceFlush);
     EXPECT_TRUE(config.wgcSameDeviceCapture);
     EXPECT_TRUE(config.wgcSmoothnessBufferEnabled);
@@ -63,6 +64,10 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("wgc_same_device_capture=true"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_enabled=true"), std::string::npos);
     EXPECT_NE(generatedText.find("monitor=auto"), std::string::npos);
+    EXPECT_NE(generatedText.find("black_when_no_fullscreen_focus=false"), std::string::npos);
+    EXPECT_NE(generatedText.find("not 100% reliable"), std::string::npos);
+    EXPECT_NE(generatedText.find("does not inspect or inject"), std::string::npos);
+    EXPECT_NE(generatedText.find("WGC/DXGI profile with dll_injection=never"), std::string::npos);
     EXPECT_NE(generatedText.find("CaptureEngine.exe --list-monitors"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_max_ms=300"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_vram_budget_mb=3000"), std::string::npos);
@@ -654,6 +659,23 @@ TEST_F(ConfigTest, MonitorSelectorParsesAndInvalidValuesFailToAuto) {
     EXPECT_EQ(config.captureMonitor, "auto");
 }
 
+TEST_F(ConfigTest, FullscreenFocusBlackoutParsesGloballyAndFromProfile) {
+    WriteConfig("[Capture]\nblack_when_no_fullscreen_focus=true\n");
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    EXPECT_TRUE(config.blackWhenNoFullscreenFocus);
+
+    WriteConfig(
+        "[Capture]\n"
+        "black_when_no_fullscreen_focus=false\n"
+        "[Profile.Privacy]\n"
+        "process=privacy-game.exe\n"
+        "video_capture=dxgi_dup\n"
+        "Capture.black_when_no_fullscreen_focus=true\n");
+    LoadConfig(tempConfigFile, config, "privacy-game.exe");
+    EXPECT_TRUE(config.blackWhenNoFullscreenFocus);
+}
+
 TEST_F(ConfigTest, CaptureMethodPredicateFamilies) {
     EXPECT_TRUE(IsDxgiDupCaptureMethod("dxgi_dup"));
     EXPECT_TRUE(IsDxgiDupCaptureMethod("desktop_dup"));
@@ -716,4 +738,3 @@ TEST_F(ConfigTest, ParseDx12FocusAnalysisOption) {
     EXPECT_TRUE(config.overlay.dx12FocusAnalysis);
     EXPECT_TRUE(IsOverlayDx12FocusAnalysis(config.overlay));
 }
-
